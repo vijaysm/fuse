@@ -174,7 +174,7 @@ class CommGraph {
   /// the same rule `MpiTransport` already states.
   ///
   /// `base_comm_handle` is `MPI_Comm_c2f()` of a communicator whose group
-  /// contains every rank of both components -- `MPI_COMM_WORLD` under spec §6
+  /// contains every rank of both components -- `MPI_COMM_WORLD` under spec Section 6
   /// mode 1, which is the only integration mode v1 implements. It is an
   /// explicit argument rather than an assumed `MPI_COMM_WORLD` because
   /// "assumed world" is not testable against a subset without spawning a job

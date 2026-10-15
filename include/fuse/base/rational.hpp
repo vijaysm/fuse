@@ -66,7 +66,7 @@ struct ExactTimeRecord {
 };
 static_assert(sizeof(ExactTimeRecord) == 16 && alignof(ExactTimeRecord) == 8);
 
-/// Exact rational time. Spec §4.3: floating-point time accumulation would
+/// Exact rational time. Spec Section 4.3: floating-point time accumulation would
 /// destroy the decomposition into common-refinement intervals over long runs, so every time quantity in FUSE
 /// is a Rational.
 ///
@@ -81,7 +81,7 @@ static_assert(sizeof(ExactTimeRecord) == 16 && alignof(ExactTimeRecord) == 8);
 /// every *value* FUSE ever represents (simulated time in reasonable units)
 /// fits comfortably once reduced. Comparisons (`operator<=>`) never reduce,
 /// so they are compared directly as 128-bit products with no narrowing at
-/// all — a comparison always has a well-defined answer regardless of
+/// all -- a comparison always has a well-defined answer regardless of
 /// magnitude.
 class Rational {
  public:
@@ -275,7 +275,7 @@ class Rational {
 
   /// Reduce (n, d) to lowest terms entirely in a 128-bit intermediate.
   /// Negation and the gcd's absolute value happen in Int128, so INT64_MIN is
-  /// never negated in int64_t — the classic UB this class used to hit.
+  /// never negated in int64_t -- the classic UB this class used to hit.
   /// Callers check the result fits int64_t (detail::check_fits_i64) and
   /// throw if it doesn't; that is a programmer error (a genuinely
   /// unrepresentable time value), not something to silently narrow.
@@ -299,7 +299,7 @@ class Rational {
 };
 
 /// Largest g such that a and b are both integer multiples of g.
-/// gcd(a/b, c/d) = gcd(a,c) / lcm(b,d). Used by §8.3's decomposition into
+/// gcd(a/b, c/d) = gcd(a,c) / lcm(b,d). Used by Section 8.3's decomposition into
 /// common-refinement intervals.
 /// Largest g such that a and b are both integer multiples of g, or nothing
 /// when that value is not representable. The throwing spelling below rejects
@@ -331,7 +331,7 @@ class Rational {
   return Rational{static_cast<std::int64_t>(g), static_cast<std::int64_t>(l)};
 }
 
-/// gcd(a/b, c/d) = gcd(a,c) / lcm(b,d). Used by §8.3's decomposition into
+/// gcd(a/b, c/d) = gcd(a,c) / lcm(b,d). Used by Section 8.3's decomposition into
 /// common-refinement intervals.
 /// Rejects where try_gcd_rational() reports nothing.
 [[nodiscard]] constexpr Rational gcd_rational(const Rational& a,

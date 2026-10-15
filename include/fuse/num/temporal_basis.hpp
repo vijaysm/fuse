@@ -10,17 +10,17 @@
 #include "fuse/base/ids.hpp"
 #include "fuse/base/error.hpp"
 
-/// Spec §4.4 / §7.3: the temporal half of a space-time representation. These
+/// Spec Section 4.4 / Section 7.3: the temporal half of a space-time representation. These
 /// are the raw basis kernels -- fitting, evaluating and integrating a
 /// polynomial or a cubic spline in time -- factored out of `Waveform` so the
 /// space-time projection operator (Task 6.3) can reuse them without owning a
 /// sample buffer.
 ///
-/// Tier C per spec §3.1: header-only. Everything here is `inline`; there is no
+/// Tier C per spec Section 3.1: header-only. Everything here is `inline`; there is no
 /// translation unit and nothing to add to `src/CMakeLists.txt`.
 ///
 /// CONVENTION -- all of these take *plain doubles* for time. Exact rational
-/// time (spec §4.3) lives one level up in `Waveform`, which converts to double
+/// time (spec Section 4.3) lives one level up in `Waveform`, which converts to double
 /// only after forming the exact difference `t - window_begin`. Callers should
 /// do the same: pass window-local times, not absolute simulated times, or the
 /// monomial powers below will lose precision to cancellation.
@@ -477,7 +477,7 @@ inline void solve_cubic_spline_moments_into(const SplineMomentPlan& plan,
 /// t.back()] is clamped to the end interval's cubic, i.e. it EXTRAPOLATES.
 /// That is deliberate at this level (it keeps the kernel total), and it is
 /// exactly why `Waveform::evaluate` range-checks before calling: extrapolation
-/// is `Extrapolate`'s job per spec §5.1, not an interpolator's.
+/// is `Extrapolate`'s job per spec Section 5.1, not an interpolator's.
 [[nodiscard]] inline double eval_cubic_spline(const std::vector<double>& t,
                                               const std::vector<double>& f,
                                               const std::vector<double>& m,

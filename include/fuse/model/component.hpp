@@ -17,7 +17,7 @@
 namespace fuse {
 
 /// Contiguous range of world-communicator ranks owned by a component.
-/// Disjoint rank sets are the normal case (spec §4.1); overlap is legal.
+/// Disjoint rank sets are the normal case (spec Section 4.1); overlap is legal.
 /// Which ranks a component runs on.
 ///
 /// An explicit sorted list of distinct ranks, not a range. Three layouts that
@@ -204,7 +204,7 @@ enum class ComponentKind { Physics, Coupler };
   return "Unknown";
 }
 
-/// Spec §8.1: `interval` is the component's own coupling interval.
+/// Spec Section 8.1: `interval` is the component's own coupling interval.
 /// Independent intervals are the default; lockstep is all intervals equal.
 struct ComponentDecl {
   std::string           name;

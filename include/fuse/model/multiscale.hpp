@@ -1,6 +1,6 @@
 #pragma once
 
-/// Multiscale and surrogate contracts — **declared, and rejecting.**
+/// Multiscale and surrogate contracts -- **declared, and rejecting.**
 ///
 /// Neither parent implements these. They are declared now, at the stage that
 /// freezes the descriptor, for one reason: the narrow waist is about to become a
@@ -8,27 +8,27 @@
 /// shape now costs nothing; discovering it after the freeze costs a version.
 ///
 /// **Every entry point here refuses.** Not "returns empty", not "works for the
-/// simple case" — a refusal with a code, which a test asserts fires. That is the
+/// simple case" -- a refusal with a code, which a test asserts fires. That is the
 /// distinction the testing page calls out: a deliberate refusal counts as verified
-/// only when a test makes the refusal happen. The alternative — a stub that
-/// silently succeeds — would let a graph declare a micro-macro coupling, validate
+/// only when a test makes the refusal happen. The alternative -- a stub that
+/// silently succeeds -- would let a graph declare a micro-macro coupling, validate
 /// clean, and run as if the closure had been applied.
 ///
 /// What each type is FOR, so the eventual implementation is not a guess:
 ///
-///  * `InstanceSet` — N independent instances of a component (representative
+///  * `InstanceSet` -- N independent instances of a component (representative
 ///    volume elements, subgrid columns, particles) sharing one description. The
 ///    macro scale sees an aggregate; each instance runs its own time loop.
-///  * `Closure` — the reduction from instance results to the macro quantity, and
+///  * `Closure` -- the reduction from instance results to the macro quantity, and
 ///    the distribution of macro state back down. The direction matters: a closure
 ///    that is not the adjoint of its own distribution silently breaks
 ///    conservation across scales.
-///  * `Overlap` — how much of the macro cell each instance accounts for.
+///  * `Overlap` -- how much of the macro cell each instance accounts for.
 ///    Coverage that does not sum to one is the multiscale analogue of a
 ///    non-conservative remap, so it is accounted for, not assumed.
-///  * `SamplePool` — the instance results available for reuse, which is what makes
+///  * `SamplePool` -- the instance results available for reuse, which is what makes
 ///    an emulator possible: it is trained on, and validated against, this pool.
-///  * `SurrogateContract` — what a learned model must state before it may stand in
+///  * `SurrogateContract` -- what a learned model must state before it may stand in
 ///    for a component: where it is applicable, how out-of-distribution input is
 ///    detected, whether it carries hidden state (and therefore whether a rollback
 ///    is even meaningful), how deterministic it is bit-for-bit, and what kind of
@@ -155,7 +155,7 @@ struct SurrogateContract {
 [[nodiscard]] Result<void> declare_closure(const ClosureSpec& spec);
 
 /// Checking that coverage sums to one. Refuses: `E-MULTISCALE-NOT-IMPLEMENTED`
-/// — and note that it refuses even for coverage that WOULD pass, because a
+/// -- and note that it refuses even for coverage that WOULD pass, because a
 /// check that only sometimes runs is worse than one that never does.
 [[nodiscard]] Result<void> check_overlap(const OverlapSpec& spec);
 

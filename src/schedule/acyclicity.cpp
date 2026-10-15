@@ -7,7 +7,7 @@
 #include <utility>
 #include <vector>
 
-// Spec §8.2's hard init-time gate.
+// Spec Section 8.2's hard init-time gate.
 //
 // THE PROBLEM THIS SOLVES, AND WHY THE OBVIOUS IMPLEMENTATION IS WRONG.
 //
@@ -48,7 +48,7 @@ constexpr Vertex kNoVertex = 0xFFFFFFFFu;
 }
 
 // ---------------------------------------------------------------------------
-// The iteration-region rule (spec §5.3, Task 7.2).
+// The iteration-region rule (spec Section 5.3, Task 7.2).
 //
 // Task 7.2 fills `IterationRegion::carried`: the coupler buffers whose value at
 // sweep k is formed from their value at sweep k-1 -- today, the output of a
@@ -161,7 +161,7 @@ class CarriedValues {
 /// *previous* period (or a previous iterate) rather than by this one?
 ///
 /// Lowering implements `channel.lag(n)` as a `TimeLevel` shift rather than a
-/// node (spec §4.3, rules_channel.cpp step 4): every arc emitted downstream of
+/// node (spec Section 4.3, rules_channel.cpp step 4): every arc emitted downstream of
 /// the shift carries `offset -= n`, and the terminal `Sink`'s own output arc is
 /// re-typed back to the field's natural level (that mismatch is exactly what
 /// `.allow_time_level_mismatch()` authorises). So along a lagged chain the
@@ -200,7 +200,7 @@ class CarriedValues {
 [[nodiscard]] bool is_loop_carried(const OperatorDAG& dag,
                                    const CarriedValues& carried,
                                    const Node& consumer, ArcId in) {
-  // Spec §5.3 / Task 7.2: the iteration region carries this value from the
+  // Spec Section 5.3 / Task 7.2: the iteration region carries this value from the
   // previous sweep, so it constrains nothing inside this one. See the comment
   // on CarriedValues for the two guards that keep this from being a false
   // negative. Checked before the `consumer.output.valid()` guard below only
@@ -966,7 +966,7 @@ CycleReport prove_acyclic(const CouplingGraph& g, const OperatorDAG& dag,
       "  Fix: add .lag(1) to one channel on the cycle to make it an explicit "
       "scheme, together with .allow_time_level_mismatch(\"reason\") to "
       "authorise the staggering.\n"
-      "  Or make it implicit: spec §5.3's iteration region breaks a cycle only "
+      "  Or make it implicit: spec Section 5.3's iteration region breaks a cycle only "
       "where it carries a previous-iterate value, and declaring the region "
       "alone does not create one. Task 7.2 derives IterationRegion::carried "
       "from the SSA form, and a region whose channels have no .relax(omega) "

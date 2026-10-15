@@ -14,7 +14,7 @@
 
 namespace fuse {
 
-/// Spec §5.4. Conservative finite-volume remap weights built from a supermesh
+/// Spec Section 5.4. Conservative finite-volume remap weights built from a supermesh
 /// (Farrell, Piggott, Pain, Gorman & Wilson, CMAME 198 (2009) 2632).
 ///
 /// ===========================================================================
@@ -111,7 +111,7 @@ struct RemapWeights {
   // --- conservation audit, filled by build_weights ---------------------------
   //
   // Carried on the matrix so a caller -- the space-time conservation gate of
-  // spec §7.4 above all -- can check what it was handed without rebuilding the
+  // spec Section 7.4 above all -- can check what it was handed without rebuilding the
   // supermesh or re-deriving the measures.
 
   /// `sum_i m^s_i` and `sum_j m^t_j` over the entities this rank holds. Equal,
@@ -221,7 +221,7 @@ struct RemapWeights {
                             w.val.size(), w.n_rows, w.n_cols};
 }
 
-/// Spec §5.4: (source mesh entity set, target mesh entity set, discretization pair, method) ->
+/// Spec Section 5.4: (source mesh entity set, target mesh entity set, discretization pair, method) ->
 /// weights, hash-keyed so identical field transfers share one build.
 ///
 /// `temporal` and `temporal_degree` are unused until Phase 6 Task 6.3. They are
@@ -610,7 +610,7 @@ struct RemapPlan {
                                                    const CouplingGraph& graph,
                                                    MeshBackend& backend);
 
-/// Spec §5.4: weights are built once at setup, shared by identical field transfers.
+/// Spec Section 5.4: weights are built once at setup, shared by identical field transfers.
 ///
 /// The returned pointer is stable for the life of the cache -- entries are held
 /// through `unique_ptr`, so rehashing the map does not move the weights -- and

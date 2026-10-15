@@ -18,7 +18,7 @@ enum class Anchor { WindowStart, WindowEnd, Absolute };
 }
 
 /// The time at which a value lives: t_ref + offset*dt, from iterate k.
-/// Spec §4.3. Every dataflow-graph edge carries one; mismatches are errors
+/// Spec Section 4.3. Every dataflow-graph edge carries one; mismatches are errors
 /// raised while compiling into the dataflow graph.
 struct TimeLevel {
   Anchor   anchor = Anchor::WindowEnd;
@@ -54,7 +54,7 @@ struct TimeLevel {
   }
 };
 
-/// Strict by default (spec §4.3). A deliberate mismatch is authorised on the
+/// Strict by default (spec Section 4.3). A deliberate mismatch is authorised on the
 /// field transfer via allow_time_level_mismatch(reason), not by relaxing this.
 [[nodiscard]] inline bool compatible(const TimeLevel& produced,
                                      const TimeLevel& required) noexcept {

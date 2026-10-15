@@ -16,7 +16,7 @@
 namespace fuse {
 
 /// One entry of the flat instruction stream. Three inputs covers every
-/// primitive in spec §5.1; Merge with more than three sources is lowered as a
+/// primitive in spec Section 5.1; Merge with more than three sources is lowered as a
 /// left-fold of pairwise merges. A node that arrives here with more inputs
 /// than the array holds is rejected by `schedule()` rather than truncated --
 /// a truncated instruction reads the wrong operands and computes plausible
@@ -56,7 +56,7 @@ struct Instruction {
   /// that run differently dump identically, which is the one thing a
   /// byte-compared artifact must not do.
   TickPhase             phase = TickPhase::BeforeTicks;
-  /// Iteration-region index (spec §5.3), or -1. `region_enter` is set on the
+  /// Iteration-region index (spec Section 5.3), or -1. `region_enter` is set on the
   /// first instruction of one pass over a region's body and `region_exit` on
   /// the last, so the interpreter has explicit loop boundaries and never has
   /// to reconstruct them from node membership. `schedule()` refuses to build
@@ -104,7 +104,7 @@ namespace detail {
     const std::vector<Instruction>& instructions);
 }  // namespace detail
 
-/// Spec §2 layer 3: immutable after construction. The hot loop interprets this
+/// Spec Section 2 layer 3: immutable after construction. The hot loop interprets this
 /// vector -- no virtual dispatch per DOF, no map lookup, no allocation.
 ///
 /// The instruction order is a *dependence* order, not merely a time order:
@@ -136,7 +136,7 @@ class ExecutionPlan {
   [[nodiscard]] bool lockstep() const noexcept { return lockstep_; }
   [[nodiscard]] std::size_t region_count() const noexcept { return region_count_; }
 
-  /// The --fuse-dump-plan artifact (spec §2.3). Stable and deterministic: the
+  /// The --fuse-dump-plan artifact (spec Section 2.3). Stable and deterministic: the
   /// stream is imbued with std::locale::classic(), so neither a grouping
   /// thousands separator nor a comma decimal point from the host
   /// application's global locale can reach a golden file.
@@ -176,7 +176,7 @@ struct ScheduleResult {
 ///
 /// Error codes:
 ///   E-SCHED-PERIOD / -EXPLODE / -EXPAND / -INTERVAL  forwarded from expand()
-///   E-SCHED-CYCLE    spec §8.2's hard gate: the time-resolved schedule for
+///   E-SCHED-CYCLE    spec Section 8.2's hard gate: the time-resolved schedule for
 ///                    one period has a dependence cycle no lag breaks
 ///   E-SCHED-ORDER    the emitted stream reads an operand no earlier
 ///                    instruction wrote. A scheduler defect, not a user error,
@@ -189,7 +189,7 @@ struct ScheduleResult {
 /// are not a real producer/consumer pair), and a sweep of 26,647 generated
 /// graphs measured about 8% spurious violations on clean multirate schedules
 /// and zero real ones. Failing on it would reject roughly one legal multirate
-/// schedule in twelve -- exactly the configurations spec §8 exists to support.
+/// schedule in twelve -- exactly the configurations spec Section 8 exists to support.
 /// Ordering is derived from the SSA dependence relation instead and verified
 /// against it, which has no such failure mode.
 ///   E-SCHED-ARITY    an operator with more inputs than `Instruction` holds
@@ -212,7 +212,7 @@ struct ScheduleResult {
 ///                    them)
 ///
 /// `mode` is forwarded to `expand()` and is a test seam: it exists so that a
-/// lockstep graph can be built both with and without spec §8.2's fast path and
+/// lockstep graph can be built both with and without spec Section 8.2's fast path and
 /// the two plans compared. `ExpandMode::Auto` is the production setting.
 /// `ExecutionPlan::lockstep()` reports the property of the *graph* either way,
 /// so the two dumps are comparable byte for byte.

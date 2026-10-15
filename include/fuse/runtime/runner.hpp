@@ -24,7 +24,7 @@ struct RunnerConfig {
   bool        check_conservation = true;
   double      conservation_tolerance = 1e-12;
   bool        abort_on_violation = false;
-  /// Spec §5.3. An iteration region that reaches `max_iterations` without
+  /// Spec Section 5.3. An iteration region that reaches `max_iterations` without
   /// meeting its convergence criterion has NOT converged, and the values it
   /// leaves behind are the last iterate, not a converged solution.
   ///
@@ -48,7 +48,7 @@ struct RunnerConfig {
   bool        force_distributed_nodal_remap = false;
 
   /// `MPI_Comm_c2f()` of a communicator whose group contains every rank of
-  /// every component in the graph -- `MPI_COMM_WORLD` under spec §6 mode 1,
+  /// every component in the graph -- `MPI_COMM_WORLD` under spec Section 6 mode 1,
   /// which is the only integration mode v1 implements. Set it to make
   /// `Transport` actually redistribute; leave it unset and `Transport` moves
   /// whole arcs, which is what `copy` does and what every existing caller
@@ -146,7 +146,7 @@ struct RunStats {
   /// Region-periods that hit `max_iterations` without satisfying the
   /// criterion. Non-zero means some answer in this run is not converged.
   std::int64_t windows_not_converged = 0;
-  /// Spec §5.4. How many conservative remap matrices `initialize()` built for
+  /// Spec Section 5.4. How many conservative remap matrices `initialize()` built for
   /// this plan -- one per distinct `RemapPlan`, built at setup and never in
   /// the step loop.
   ///
@@ -164,7 +164,7 @@ struct RunStats {
   std::int64_t remap_weight_nonzeros = 0;
   /// Times the runtime compared a component's registered `Provides` storage
   /// against the checkpoint it took, after that component's `restore_state()`
-  /// (spec §5.3: FUSE verifies that the component saved what the derived set
+  /// (spec Section 5.3: FUSE verifies that the component saved what the derived set
   /// said it must, rather than trusting `supports_rollback()`). Exposed so the
   /// verification is observable, and therefore testable, rather than asserted
   /// in a comment.
@@ -225,7 +225,7 @@ struct RunStats {
   std::int64_t device_transport_moves = 0;
 };
 
-/// Per-region outcome of the most recent period (spec §5.3).
+/// Per-region outcome of the most recent period (spec Section 5.3).
 struct IterationStats {
   int    iterations = 0;
   bool   converged = false;
@@ -255,7 +255,7 @@ struct ExternalAdvanceRequest {
   /// StepContext's own doc comment).
   StepContext ctx;
   /// True exactly once, on the first time this component is resumed to
-  /// after an iteration region's `save_state()` captured it (spec §5.3).
+  /// after an iteration region's `save_state()` captured it (spec Section 5.3).
   /// `fuse_step_report::requires_checkpoint`'s real meaning, once this
   /// request reaches the ABI.
   bool requires_checkpoint = false;
@@ -362,7 +362,7 @@ struct ExternalAdvanceRequest {
   std::int32_t delivery_field = -1;
 };
 
-/// Spec §2 layer 3: interprets the flat instruction stream. Every ArcId is
+/// Spec Section 2 layer 3: interprets the flat instruction stream. Every ArcId is
 /// resolved to a raw pointer once at initialize(); the loop allocates nothing.
 class Runner {
  public:
@@ -452,7 +452,7 @@ class Runner {
   [[nodiscard]] const std::vector<IterationStats>& iteration_stats()
       const noexcept;
   /// The derived checkpoint set's explanation for every region, in DAG region
-  /// order (spec §5.3: the user never wrote the set down, so the only way they
+  /// order (spec Section 5.3: the user never wrote the set down, so the only way they
   /// can disagree with it is if it is printed). Available after initialize().
   [[nodiscard]] const std::vector<std::string>& checkpoint_explanations()
       const noexcept;

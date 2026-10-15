@@ -21,7 +21,7 @@
 /// `test/linalg/pcg_test.cpp`'s own ill-conditioned case measures exactly
 /// this gap. So a candidate convergence (the recurrence's `r` meets the
 /// tolerance) is never reported directly: `x` is recomputed against a
-/// FRESH `apply(x, ·)` first, and only the relative norm of THAT
+/// FRESH `apply(x, _)` first, and only the relative norm of THAT
 /// recomputed residual decides whether to return converged, and is the
 /// value `SolverReport::residual_norm` reports. If the recomputed residual
 /// disagrees, the recurrence is resynchronised to it (a residual

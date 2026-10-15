@@ -9,7 +9,7 @@
 #include "fuse/base/result.hpp"
 #include "fuse/schedule/slab.hpp"
 
-/// Spec §7.3: the `T` of `M = T (x) W`. This header builds the temporal half
+/// Spec Section 7.3: the `T` of `M = T (x) W`. This header builds the temporal half
 /// of a tier-1 (tensor-product) space-time remap: the matrix that carries a
 /// field from the source component's time partition onto the target's over one
 /// window. `W`, the spatial supermesh operator, is Phase 5's job.
@@ -49,7 +49,7 @@
 ///      same span, to round-off.
 ///
 /// Property 2 is a COLUMN sum, and it is the one the space-time conservation
-/// check of spec §7.4 rides on. (Task 6.2's brief stated the conservation
+/// check of spec Section 7.4 rides on. (Task 6.2's brief stated the conservation
 /// property as `sum_j T_ij * dt_src == dt_tgt`, a *row* sum. That identity is
 /// false for the weights the same brief prescribes: under 4x subcycling every
 /// `T_0j` is 1/4 and `dt_src` is 1/4, so the left side is 1/4 while `dt_tgt` is
@@ -153,7 +153,7 @@ namespace fuse {
 /// admit the same degrees.
 inline constexpr int kMaxTemporalDegree = 4;
 
-/// Spec §7.3: the `T` of `M = T (x) W`, in the same COO triplet shape as a
+/// Spec Section 7.3: the `T` of `M = T (x) W`, in the same COO triplet shape as a
 /// spatial remap operator, deliberately -- the tensor product is then two
 /// sparse applications rather than a special case.
 ///
@@ -231,7 +231,7 @@ struct SpatialWeightsView {
 /// steps that feed one target step, and zeroing here would make that loop
 /// silently keep only the last contribution. Zero `dst` once before the loop.
 ///
-/// Tier 2 (true 4D intersection for moving meshes, spec §7.2) would replace
+/// Tier 2 (true 4D intersection for moving meshes, spec Section 7.2) would replace
 /// this with a non-factorising operator; the seam is here.
 ///
 /// DEVIATION FROM THE BRIEF: the brief returns `void`. Every precondition

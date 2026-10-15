@@ -27,7 +27,7 @@ constexpr std::int32_t kNoRegion = -1;
 constexpr std::size_t kMaxInstructionInputs =
     std::tuple_size<decltype(Instruction::in)>::value;
 static_assert(kMaxInstructionInputs == 3,
-              "spec §5.1: three inputs covers every primitive; Merge is "
+              "spec Section 5.1: three inputs covers every primitive; Merge is "
               "lowered as a left-fold of pairwise merges");
 
 /// Does `in` carry a value from an earlier coupling period into `consumer`,
@@ -260,22 +260,22 @@ static_assert(kMaxInstructionInputs == 3,
 }
 
 /// Reorder inside each (time, phase) instant so one region's members come out
-/// contiguously — KNOWN_ISSUES D1, fixed 2026-09-21.
+/// contiguously -- KNOWN_ISSUES D1, fixed 2026-09-21.
 ///
 /// The sort below orders an instant by topological rank, which is a dependence
 /// order but says nothing about grouping: two independent chains at the same
 /// instant interleave whenever their ranks alternate, and whether they do
 /// depended on the order the user happened to declare their components in. A
 /// region whose body was cut in half by an unrelated channel was then refused
-/// (`E-SCHED-REGION`) even though an order existed that kept it whole — the
+/// (`E-SCHED-REGION`) even though an order existed that kept it whole -- the
 /// user's only cure was to move a declaration, which is not a property of
 /// their coupling at all.
 ///
 /// The rule is a greedy emission with one preference: while a region has
 /// members left in this instant, prefer its ready members; otherwise take the
-/// first ready instruction. **Only ready instructions are ever emitted** — an
+/// first ready instruction. **Only ready instructions are ever emitted** -- an
 /// instruction whose operands are all written already, carried in from the
-/// previous period, or unproduced — so this cannot invert a dependence, which
+/// previous period, or unproduced -- so this cannot invert a dependence, which
 /// is why it needs no argument beyond that sentence. `check_dependence_order`
 /// re-derives the same property from the finished stream regardless.
 ///
@@ -839,7 +839,7 @@ ScheduleResult schedule(const CouplingGraph& g, const OperatorDAG& dag,
   }
   const TimedDag& td = timed.value();
 
-  // Spec §8.2: the hard gate. A graph that fails it produces no plan at all.
+  // Spec Section 8.2: the hard gate. A graph that fails it produces no plan at all.
   const CycleReport cycles = prove_acyclic(g, dag, td);
   if (!cycles.acyclic) {
     result.diags.add(Severity::Error, "E-SCHED-CYCLE", cycles.explanation);
@@ -1006,7 +1006,7 @@ ScheduleResult schedule(const CouplingGraph& g, const OperatorDAG& dag,
                      return a.origin_node < b.origin_node;
                    });
 
-  // Spec §2 layer 3: iteration regions become explicit loop boundaries here,
+  // Spec Section 2 layer 3: iteration regions become explicit loop boundaries here,
   // not something the interpreter rediscovers from node membership. Computed
   // BEFORE the dependence check because the grouping below needs it, and the
   // grouping must be inside the window the check validates -- checking the

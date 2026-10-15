@@ -12,7 +12,7 @@
 #include "fuse/model/iteration.hpp"
 #include "fuse/model/restart.hpp"
 
-/// Spec §5.1 (`Accelerate`: residual history -> correction) and §5.3
+/// Spec Section 5.1 (`Accelerate`: residual history -> correction) and Section 5.3
 /// (implicit coupling groups). One implementation family serves Picard, constant
 /// relaxation, Aitken, secant, Steffensen, IQN-ILS and IQN-IMVJ, because they
 /// differ only in how much of the residual history they keep and how they
@@ -34,7 +34,7 @@ namespace fuse {
 // depend on the numerics layer. This header declares the accelerators
 // themselves; what to configure them with is part of the graph.
 
-/// Spec §5.3. Stateful across the iterations of a window; `reset()` marks a
+/// Spec Section 5.3. Stateful across the iterations of a window; `reset()` marks a
 /// window boundary.
 class Accelerator {
  public:
@@ -138,7 +138,7 @@ class Accelerator {
   /// is a member, sized on the first call for a given `n` and reused
   /// thereafter (a growing `n` resizes, a shrinking one keeps the larger
   /// buffer). An accelerated implicit coupling group calls this from inside the sweep
-  /// loop, which spec §2 layer 3 requires to allocate nothing;
+  /// loop, which spec Section 2 layer 3 requires to allocate nothing;
   /// Accelerator.SteadyStateUpdateAllocatesNothing and
   /// Iteration.TheAcceleratorAllocatesNothingPerUpdate measure it for every
   /// kind rather than asserting it here. Three things are outside that
@@ -167,7 +167,7 @@ class Accelerator {
     return 0;
   }
 
-  /// Multi-field support (spec §5.3: per-field scaling is part of the
+  /// Multi-field support (spec Section 5.3: per-field scaling is part of the
   /// accelerator interface, not an add-on). `offsets` gives the start index of
   /// each field block inside the concatenated vector. It must begin at 0 and
   /// must not decrease; equal neighbours are an empty block, which a rank

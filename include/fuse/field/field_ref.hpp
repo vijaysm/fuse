@@ -124,7 +124,7 @@ struct Layout {
 /// to the same owner storage.
 ///
 /// The owner must keep the pointed-to storage alive, at a fixed address, for
-/// as long as any `FieldRef` to it — or any `FieldRegistry` holding one — is
+/// as long as any `FieldRef` to it -- or any `FieldRegistry` holding one -- is
 /// in use. In particular a component must not register `vec.data()` and then
 /// grow `vec`: that reallocates and every registered view dangles. Register
 /// storage whose address is stable for the run (the coupler resolves once at
@@ -159,7 +159,7 @@ class FieldRef {
   ///
   /// Checked unconditionally rather than via assert(): under `-O3 -DNDEBUG`
   /// an assert compiles out and a bad index becomes a silent heap overflow.
-  /// A negative `c` is the sharpest case — `static_cast<std::size_t>(-1)`
+  /// A negative `c` is the sharpest case -- `static_cast<std::size_t>(-1)`
   /// turns into an enormous positive offset.
   [[nodiscard]] double& at(std::size_t i, int c = 0) {
     return data_[checked_offset(i, c)];

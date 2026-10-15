@@ -8,7 +8,7 @@
 
 namespace fuse {
 
-/// Spec §4.2. disc+order select the remap operator; units are checked at
+/// Spec Section 4.2. disc+order select the remap operator; units are checked at
 /// lowering; conservation drives which verification runs.
 struct FieldSpec {
   std::string    name;

@@ -22,7 +22,7 @@
 /// itself depends on). Quadratic interpolation picks the first backtrack;
 /// cubic interpolation (Dennis & Schnabel, "Numerical Methods for
 /// Unconstrained Optimization and Nonlinear Equations", SIAM, 1996,
-/// §6.3.1) picks every one after, using the two most recent trial points.
+/// Section 6.3.1) picks every one after, using the two most recent trial points.
 ///
 /// SNESLINESEARCHCP: for a residual that is itself a gradient,
 /// `F = grad(Phi)`, the directional derivative of `Phi` along `d` is

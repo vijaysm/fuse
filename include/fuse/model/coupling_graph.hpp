@@ -21,7 +21,7 @@ namespace fuse {
 
 using IterationRegionIdx = RegionIdx;
 
-/// Spec §5.3's authored iteration region: which channels iterate, when to
+/// Spec Section 5.3's authored iteration region: which channels iterate, when to
 /// stop, and how to accelerate.
 ///
 /// `convergence` HAS NO SAFE DEFAULT. An empty `ConvergenceCriterion` reports
@@ -31,7 +31,7 @@ using IterationRegionIdx = RegionIdx;
 /// `verify_iteration_region()` refuses it with `E-ITER-NOCONVERGE`, and the
 /// runner calls that from `initialize()`. Set it with `.until(...)`.
 ///
-/// Both this and `acceleration` cross the descriptor (§3.2's narrow waist) and
+/// Both this and `acceleration` cross the descriptor (Section 3.2's narrow waist) and
 /// the YAML round trip. Dropping either there would let a graph authored in
 /// YAML, or handed across the C ABI, iterate with no convergence test at all;
 /// see `graph/descriptor.hpp` and `src/graph/yaml_io.cpp`, which carry them,
@@ -126,7 +126,7 @@ struct IterationRegionDecl {
 
 class CouplingGraph;
 
-/// `g.iterate({...}).until(...).max_iterations(...)` from spec §5.3.
+/// `g.iterate({...}).until(...).max_iterations(...)` from spec Section 5.3.
 ///
 /// Re-resolves its declaration through the graph on every mutating call
 /// rather than caching a reference, so it stays valid across an
@@ -141,7 +141,7 @@ class IterationBuilder {
   /// Converged::Absolute(1e-8, "flux")`.
   IterationBuilder& until(ConvergenceCriterion c);
   /// The single-measure spelling. `Converged::Relative(...)` returns a
-  /// `ConvergenceMeasure`, and spec §5.3's example passes one directly.
+  /// `ConvergenceMeasure`, and spec Section 5.3's example passes one directly.
   IterationBuilder& until(ConvergenceMeasure m);
   IterationBuilder& max_iterations(int n);
   /// Sets `acceleration` to `cfg`. S7.2's own addition: when
@@ -190,7 +190,7 @@ class IterationBuilder {
   IterationRegionIdx id_;
 };
 
-/// Spec §2 layer 1: the authored representation. Pure data — no execution,
+/// Spec Section 2 layer 1: the authored representation. Pure data -- no execution,
 /// no MPI, no MOAB. This is the only thing users write and the only thing
 /// serialised.
 class CouplingGraph {
@@ -251,7 +251,7 @@ class CouplingGraph {
         static_cast<std::uint32_t>(iteration_regions_.size() - 1)};
   }
 
-  /// Spec §5.3: `g.iterate({fsi_channels}).until(...).max_iterations(30)`.
+  /// Spec Section 5.3: `g.iterate({fsi_channels}).until(...).max_iterations(30)`.
   ///
   /// The region is named `"iterate<k>"` unless `.name()` overrides it; the
   /// name appears in every diagnostic the region can raise, so it is part of

@@ -65,7 +65,7 @@ inline constexpr std::int64_t kMaxPeriodTicks = 1'000'000;
   return *l;
 }
 
-/// Spec §8.2: one clock per component; there is no global time step.
+/// Spec Section 8.2: one clock per component; there is no global time step.
 ///
 /// now() is computed as start + step*interval, never accumulated, so it is
 /// exact at any step and O(1) to query. Ticks are {start + k*interval : k >= 0}
@@ -227,7 +227,7 @@ class ClockSet {
     return due;
   }
 
-  /// Spec §8.2: lockstep is the degenerate case and gets a fast path. A
+  /// Spec Section 8.2: lockstep is the degenerate case and gets a fast path. A
   /// coupler's own default interval (Rational{1}, since it declares
   /// none) never participates -- see the ctor's own comment.
   [[nodiscard]] bool is_lockstep() const {

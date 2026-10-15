@@ -28,7 +28,7 @@ namespace {
 
 /// The quadratic model's minimiser for the FIRST backtrack, derived from
 /// `f0`, the inexact-Newton slope estimate `f'(0) = -2 f0`, and the one
-/// trial `f(lambda)` available. Dennis & Schnabel §6.3.1's quadratic step,
+/// trial `f(lambda)` available. Dennis & Schnabel Section 6.3.1's quadratic step,
 /// specialised to this slope: with `m(t) = f0 - 2 f0 t + c t^2` fit to
 /// agree with `f(lambda)` at `t = lambda`, `c = (f(lambda) - f0 +
 /// 2 f0 lambda) / lambda^2`, and the minimiser of `m` is `t* = f0 / c`.
@@ -43,7 +43,7 @@ double quadratic_backtrack(double f0, double lambda, double f_lambda) {
   return f0 / c;
 }
 
-/// Dennis & Schnabel §6.3.1's cubic backtrack: fits a cubic through
+/// Dennis & Schnabel Section 6.3.1's cubic backtrack: fits a cubic through
 /// `f0`, slope `-2 f0`, and the two most recent trials
 /// `(lambda1, f1)` (most recent) and `(lambda2, f2)`, and returns the
 /// cubic's own interior minimiser.

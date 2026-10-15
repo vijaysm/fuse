@@ -1,4 +1,4 @@
-// src/partition/collectives.cpp — the only translation unit in
+// src/partition/collectives.cpp -- the only translation unit in
 // fuse::partition that names an MPI type. Every function here is declared
 // in the public detail/collectives.hpp without one (docs/dev/layering.md:
 // mpi.h never appears in a public header).

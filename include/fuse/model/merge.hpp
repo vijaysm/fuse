@@ -6,7 +6,7 @@
 /// view: the compiler used to bind one arc per target field, so a second
 /// channel writing the same field silently replaced the first. A fuzz sweep of
 /// the parent project found 232 graphs out of 19,181 that the acyclicity proof
-/// certified as loop-free *because* the dropped writers removed the loop — the
+/// certified as loop-free *because* the dropped writers removed the loop -- the
 /// plan was proven correct, and it was not the plan the user described.
 ///
 /// The fix is not to make the compiler guess. Summing two heat fluxes and
@@ -26,7 +26,7 @@ enum class MergeOp : std::uint8_t {
   /// Add the contributions. The right rule for an extensive quantity split
   /// across contributing components: two heat fluxes into one surface add.
   Sum = 0,
-  /// Arithmetic mean. For an intensive quantity sampled by several sources —
+  /// Arithmetic mean. For an intensive quantity sampled by several sources --
   /// note that it is unweighted, so it is only meaningful when the sources
   /// cover comparable extents.
   Mean = 1,
@@ -46,7 +46,7 @@ enum class MergeOp : std::uint8_t {
 
 /// Declared per target field. The channels are not listed: every channel that
 /// targets the field participates, because a list would let a channel be
-/// written, forgotten, and silently dropped — the failure this type exists to
+/// written, forgotten, and silently dropped -- the failure this type exists to
 /// remove. Order is channel declaration order, which is what makes `First`
 /// well defined and the merge deterministic across ranks.
 struct MergeSpec {

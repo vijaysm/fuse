@@ -69,7 +69,7 @@ struct ExtrapolateSpec {
 };
 
 /// One directed coupling edge with its temporal and spatial semantics.
-/// Spec §5.2 lowers this into primitive operators.
+/// Spec Section 5.2 lowers this into primitive operators.
 struct Channel {
   std::string     name;
   FieldId         source;
@@ -79,7 +79,7 @@ struct Channel {
   SpacetimeSpec   spacetime;
   RelaxSpec       relax;
   ExtrapolateSpec extrapolate;
-  int             lag = 0;  // spec §4.3: lag(k) is a TimeLevel offset of -k
+  int             lag = 0;  // spec Section 4.3: lag(k) is a TimeLevel offset of -k
   std::string     time_level_mismatch_reason;  // empty = strict typing enforced
 };
 

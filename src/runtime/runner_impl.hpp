@@ -2,7 +2,7 @@
 
 /// Private to src/runtime/. `Runner::Impl` is shared by exactly two
 /// translation units -- runner.cpp, which interprets the flat stream, and
-/// iteration.cpp, which drives spec §5.3's iteration regions -- so it lives in
+/// iteration.cpp, which drives spec Section 5.3's iteration regions -- so it lives in
 /// a header rather than an anonymous namespace. It is deliberately NOT under
 /// include/: nothing outside the runtime may depend on it.
 
@@ -37,7 +37,7 @@ namespace fuse {
 namespace detail {
 
 /// A resolved buffer: either coupler-allocated storage or an alias to a
-/// component's own array (spec §4.2).
+/// component's own array (spec Section 4.2).
 ///
 /// `data` is a raw pointer resolved once in initialize(). For a coupler-owned
 /// arc it points into `Impl::storage[i]`, which is sized once and never
@@ -62,7 +62,7 @@ struct Slot {
 
 /// What a `Constrain` compares, resolved at setup.
 ///
-/// Spec §5.2 inserts `Constrain` immediately after a channel's `Remap`, so the
+/// Spec Section 5.2 inserts `Constrain` immediately after a channel's `Remap`, so the
 /// quantity it verifies is "did the remap move the integral?": the weighted
 /// integral of the value entering the Remap, over the SOURCE region, against
 /// the weighted integral of the value leaving it, over the TARGET region.
@@ -180,7 +180,7 @@ struct NodalDistRemap {
 };
 
 /// One space-time channel's operator and its window of source history
-/// (spec §7.3, Task 6.3). Everything here is sized once in `resolve_spacetime`
+/// (spec Section 7.3, Task 6.3). Everything here is sized once in `resolve_spacetime`
 /// and never resized afterwards; the sweep loop only indexes it.
 ///
 /// THE OPERATOR. `temporal` is the `T` of `M = T (x) W`, built by
@@ -447,7 +447,7 @@ struct Resolved {
   /// channel: the `Sample` that fills the history and the `Interpolate` that
   /// projects it.
   std::int32_t  spacetime = -1;
-  /// Spec §5.4 (Task 5.5). Index into `Impl::remap_weights`, or -1.
+  /// Spec Section 5.4 (Task 5.5). Index into `Impl::remap_weights`, or -1.
   ///
   /// -1 does NOT mean "no remap": it means the PROVED-COINCIDENT identity.
   /// `resolve_remap()` only leaves it at -1 after checking, cell by cell, that
@@ -493,7 +493,7 @@ struct Tick {
 ///       `Residual` node reads, i.e. the last coupler-side value of the
 ///       channel before delivery.
 ///   `feed_arc` holds `y` -- it is the `Sink`'s output, which IS the
-///       component's registered array (spec §4.2), so reading it is reading
+///       component's registered array (spec Section 4.2), so reading it is reading
 ///       exactly what the component was advanced with.
 ///   `sink_instruction` re-delivers an accelerated `y` mid-region. Without it
 ///       the components would be re-advanced from the same inputs every sweep
@@ -675,7 +675,7 @@ struct RegionRuntime {
   /// the arithmetic that settles it, is in resolve_regions().
   std::vector<std::uint32_t>       carried_arcs;
 
-  /// Spec §5.3's distinguishing claim over preCICE: the runtime verifies that
+  /// Spec Section 5.3's distinguishing claim over preCICE: the runtime verifies that
   /// the component saved what the analysis said it must, rather than trusting
   /// `supports_rollback()`. These are the `Source` outputs of the checkpointed
   /// components -- the state they write in `advance()` that FUSE can see -- and
@@ -965,13 +965,13 @@ struct Runner::Impl {
   /// this list instead, so no process rejects a configuration alone.
   std::vector<detail::Tick>        all_ticks;
   std::vector<detail::ConstrainInfo> constrains;
-  /// Spec §7.3: one entry per space-time `Interpolate` node. Built once in
+  /// Spec Section 7.3: one entry per space-time `Interpolate` node. Built once in
   /// resolve_spacetime(); `spacetime_by_node` maps the DAG node id to the
   /// index, so both the `Sample` and the `Interpolate` of one channel resolve
   /// to the same entry.
   std::vector<detail::SpacetimeInfo> spacetimes;
   std::unordered_map<std::uint32_t, std::uint32_t> spacetime_by_node;
-  /// Spec §5.4: the spatial half `W`. Built ONCE per distinct `RemapPlan` in
+  /// Spec Section 5.4: the spatial half `W`. Built ONCE per distinct `RemapPlan` in
   /// resolve_remap(), which runs inside setup(); `remap_cache` owns the
   /// matrices and hands out pointers that stay valid for its lifetime, so
   /// nothing here is rebuilt, re-sized or re-hashed once the run starts.
@@ -1440,7 +1440,7 @@ struct Runner::Impl {
   /// `ConstrainInfo` references. Allocates once, never in the hot loop.
   void build_constrain_device_buffers();
   Result<void> resolve_instructions();
-  /// Spec §6 mode 1. Splits one communicator per component out of
+  /// Spec Section 6 mode 1. Splits one communicator per component out of
   /// `config.base_communicator` and builds one `CommGraph` per entry of
   /// `transport_plans`. A no-op when `base_communicator` is unset.
   ///
@@ -1496,7 +1496,7 @@ struct Runner::Impl {
   Result<void> attach_comm_graphs();
   [[nodiscard]] Result<void> check_transport_extents() const;
   Result<void> resolve_constrain(const Instruction& ins, detail::Resolved& r);
-  /// Spec §5.4 (Task 5.5). Gives one `Remap` instruction its operator: either
+  /// Spec Section 5.4 (Task 5.5). Gives one `Remap` instruction its operator: either
   /// real weights from `remap_cache`, or the identity -- but only after
   /// PROVING the two regions are the same cells in the same order. Refuses
   /// everything else, because the only remaining alternative is an identity
@@ -1570,7 +1570,7 @@ struct Runner::Impl {
   Result<void> nodal_dist_scatter_on(detail::NodalDistRemap& plan, const detail::Slot& out_slot,
                                      std::size_t components,
                                      const std::vector<double>& owned_loads);
-  /// Spec §7.3 (Task 6.3). Builds one `SpacetimeInfo` per space-time
+  /// Spec Section 7.3 (Task 6.3). Builds one `SpacetimeInfo` per space-time
   /// `Interpolate` node and refuses every configuration the interpreter cannot
   /// execute correctly, rather than falling back to a lower-order basis.
   Result<void> resolve_spacetime();
@@ -1940,7 +1940,7 @@ struct Runner::Impl {
   std::vector<char> slot_just_checkpointed;
   std::vector<char> slot_just_restored;
 
-  // --- src/runtime/iteration.cpp (spec §5.3) -------------------------------
+  // --- src/runtime/iteration.cpp (spec Section 5.3) -------------------------------
   /// Builds `regions` and refuses every plan whose shape the sweep loop below
   /// cannot execute correctly. Called from setup().
   /// Time windows track (C3): also resolves each window member's own

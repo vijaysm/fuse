@@ -26,13 +26,13 @@ struct SlabDecomposition {
   Rational          period{1};
   /// True when the source and target partitions coincide -- equal intervals,
   /// both anchored at 0 -- so every slab is a whole step of both sides and
-  /// nothing is sub-stepped. This is spec §8.2's lockstep fast path. Note it
+  /// nothing is sub-stepped. This is spec Section 8.2's lockstep fast path. Note it
   /// is *not* the same as `slabs.size() == 1`: equal intervals shorter than
   /// the period give several slabs and are still the lockstep case.
   bool              degenerate = false;
 };
 
-/// Spec §8.3: a runaway decomposition is a setup error, not a hang.
+/// Spec Section 8.3: a runaway decomposition is a setup error, not a hang.
 inline constexpr std::int64_t kMaxSlabsPerPeriod = 100'000;
 
 /// Intersect the source and target time partitions of [0, period).
@@ -48,7 +48,7 @@ inline constexpr std::int64_t kMaxSlabsPerPeriod = 100'000;
                                                   Rational period);
 
 /// Test seam: how many times has decompose() been called? Used to prove the
-/// lockstep fast path (spec §8.2) does not touch the slab machinery.
+/// lockstep fast path (spec Section 8.2) does not touch the slab machinery.
 [[nodiscard]] std::uint64_t decompose_call_count();
 void reset_decompose_call_count();
 

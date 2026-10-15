@@ -20,7 +20,7 @@ namespace fuse {
 /// container is node-based for the same reason.
 ///
 /// Lifetime: the registry copies pointers, not data. See the FieldRef
-/// lifetime contract — the component that registered the storage must keep it
+/// lifetime contract -- the component that registered the storage must keep it
 /// alive and at a fixed address for as long as the registry is in use.
 class FieldRegistry {
  public:
@@ -40,7 +40,7 @@ class FieldRegistry {
     // Task 4.1 wrote this as an unconditional rejection, which made a component
     // that legitimately owns zero elements of a mesh entity set impossible to bind:
     // `std::vector<double>{}.data()` is null, and on a partitioned mesh a rank
-    // owning none of a mesh entity set is ordinary, not an error (spec §4.1, and the
+    // owning none of a mesh entity set is ordinary, not an error (spec Section 4.1, and the
     // n->m redistribution of Task 5.4 is built around it). An empty view
     // addresses nothing -- `Layout::well_formed()` already says so explicitly
     // -- so there is no pointer for it to get wrong.

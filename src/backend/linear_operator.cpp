@@ -71,7 +71,7 @@ class ComposedOperator final : public LinearOperator {
                    std::shared_ptr<const LinearOperator> inner)
       : outer_(std::move(outer)),
         inner_(std::move(inner)),
-        kind_(std::string(outer_->kind()) + "∘" + std::string(inner_->kind())) {}
+        kind_(std::string(outer_->kind()) + " o " + std::string(inner_->kind())) {}
 
   [[nodiscard]] std::size_t rows() const noexcept override { return outer_->rows(); }
   [[nodiscard]] std::size_t cols() const noexcept override { return inner_->cols(); }
@@ -138,7 +138,7 @@ class ComposedOperator final : public LinearOperator {
     return inner_->apply_transpose(outer_cols, out, 1);
   }
 
-  /// Order-dependent by construction: A∘B and B∘A are different operators, so
+  /// Order-dependent by construction: A o B and B o A are different operators, so
   /// mixing the factor signatures commutatively would let a plan reuse the
   /// wrong persisted map. The constant is arbitrary but fixed; it is written
   /// into files.

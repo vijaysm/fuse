@@ -21,7 +21,7 @@ struct TransportSpec {
   std::size_t elements = 0;
   int         components = 1;
 
-  /// Redistribution pattern for non-local transports (spec §4.1: a component's
+  /// Redistribution pattern for non-local transports (spec Section 4.1: a component's
   /// ranks and the coupler's ranks may be disjoint). All three are empty for a
   /// local transport, which is why `CopyTransport` never looks at them.
   ///
@@ -38,7 +38,7 @@ struct TransportSpec {
   std::vector<std::size_t> global_ids;
 };
 
-/// Spec §2.2: the one seam by which in-process, MPI, MPMD, and LowFive
+/// Spec Section 2.2: the one seam by which in-process, MPI, MPMD, and LowFive
 /// coupling share a runtime. Everything else in the DAG is unchanged.
 ///
 /// HOT-LOOP CONTRACT (Task 4.6). `Runner::Impl::execute` calls `prepare()`
@@ -95,7 +95,7 @@ class CopyTransport final : public Transport {
 };
 
 #if FUSE_HAVE_MPI
-/// n->m redistribution across two disjoint rank sets (spec §4.1, §6 mode 1).
+/// n->m redistribution across two disjoint rank sets (spec Section 4.1, Section 6 mode 1).
 ///
 /// The communicator crosses the boundary as `MPI_Comm_c2f(comm)`, so this
 /// header names no MPI type and `mpi.h` stays off a consumer's include path,
@@ -222,7 +222,7 @@ class MpiTransport final : public Transport {
 };
 #endif  // FUSE_HAVE_MPI
 
-/// Task 8.4, spec §5 mechanism 4: coupled data carried through LowFive,
+/// Task 8.4, spec Section 5 mechanism 4: coupled data carried through LowFive,
 /// Argonne's HDF5 Virtual Object Layer connector. A component writes its
 /// fields with ordinary `H5Fcreate` / `H5Dcreate` / `H5Dwrite` calls; the VOL
 /// connector intercepts them in memory and the data is handed to the coupler

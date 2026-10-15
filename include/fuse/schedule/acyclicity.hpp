@@ -10,7 +10,7 @@
 
 namespace fuse {
 
-/// Verdict of the spec §8.2 init-time gate.
+/// Verdict of the spec Section 8.2 init-time gate.
 ///
 /// WHAT `acyclic == true` PROVES: the schedule that `expand()` produced for
 /// **one** coupling period, with every dependence that reaches back across the
@@ -78,7 +78,7 @@ struct CycleReport {
   std::string order_explanation;
 };
 
-/// Spec §8.2's hard init-time gate: prove that the time-resolved schedule for
+/// Spec Section 8.2's hard init-time gate: prove that the time-resolved schedule for
 /// one coupling period has no dependence cycle.
 ///
 /// A cycle with a **lag** in it is legal and must be accepted: `A -> B` at

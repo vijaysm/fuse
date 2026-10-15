@@ -14,11 +14,11 @@
 
 namespace fuse {
 
-/// Spec §2 layer 2. Single assignment: every arc has exactly one producer,
+/// Spec Section 2 layer 2. Single assignment: every arc has exactly one producer,
 /// enforced at add_node time rather than checked afterwards.
 class OperatorDAG {
  public:
-  /// Spec §5.3. `carried` is the derived checkpoint set (Phase 7 Task 7.2):
+  /// Spec Section 5.3. `carried` is the derived checkpoint set (Phase 7 Task 7.2):
   /// the loop-carried coupler buffers whose sweep-k value depends on sweep
   /// k-1's (src/ir/checkpoint.cpp names a node's output as carried when its
   /// kind is `OpKind::Relax` or `OpKind::Accelerate` -- see
@@ -34,7 +34,7 @@ class OperatorDAG {
   /// `Runner::Impl::run_region` to the region's whole concatenated iterate
   /// vector, `R.x_old`/`R.x_new`/`R.x_out`), not as a per-channel IR node the
   /// way `Relax` is. `OpKind::Accelerate` is therefore not "reserved for a
-  /// future lowering rule" so much as a spec-table artifact (spec §5.1 lists
+  /// future lowering rule" so much as a spec-table artifact (spec Section 5.1 lists
   /// it alongside `Relax` among the primitives) that predates that design
   /// decision and was never removed; `checkpoint.cpp`'s `Accelerate` branch
   /// and `Runner::Impl::execute`'s `case OpKind::Accelerate` (runner.cpp,
@@ -90,7 +90,7 @@ class OperatorDAG {
   // Reference-invalidation hazard: the returned reference is into a
   // std::vector that add_arc()/add_node() can reallocate. It is invalidated
   // by any subsequent call to either. Callers must re-resolve by id rather
-  // than hold the reference across a mutating call — the same rule as
+  // than hold the reference across a mutating call -- the same rule as
   // ChannelBuilder (see channel.hpp), which was redesigned for exactly this
   // reason.
   [[nodiscard]] const Node& node(NodeId id) const { return nodes_.at(id.value()); }
@@ -108,7 +108,7 @@ class OperatorDAG {
   }
 
   /// Kahn's algorithm with ties broken by ascending NodeId, so the order is
-  /// reproducible run to run — golden dumps depend on it.
+  /// reproducible run to run -- golden dumps depend on it.
   [[nodiscard]] std::vector<NodeId> topological_order() const {
     std::vector<int> indegree(nodes_.size(), 0);
     for (const auto& n : nodes_) {

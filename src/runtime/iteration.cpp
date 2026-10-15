@@ -26,10 +26,10 @@
 #include <mpi.h>
 #endif
 
-/// Spec §5.3: executing an iteration region.
+/// Spec Section 5.3: executing an iteration region.
 ///
 /// WHAT THE ITERATION IS OVER. Let `y` be the vector FUSE delivers into the
-/// participants' `Requires` storage -- the `Sink` outputs, which by spec §4.2
+/// participants' `Requires` storage -- the `Sink` outputs, which by spec Section 4.2
 /// *are* the components' own arrays. One sweep evaluates `G(y)`: every
 /// checkpointed component is restored, re-advanced over the SAME interval with
 /// `y` on its inputs, and the region body transports, remaps, constrains and
@@ -57,7 +57,7 @@
 ///     residual history, to the fixed point of a DIFFERENT operator.
 ///     checkpoint_regions() therefore runs from the top of step_period().
 ///
-///  2. THE RUNTIME VERIFIES THE ROLLBACK RATHER THAN TRUSTING IT. spec §5.3
+///  2. THE RUNTIME VERIFIES THE ROLLBACK RATHER THAN TRUSTING IT. spec Section 5.3
 ///     is explicit that FUSE "verifies at runtime" that the component saved
 ///     what the derived set said it must; that is the claim that makes the
 ///     derivation trustworthy instead of merely plausible, and it is what
@@ -582,7 +582,7 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
     R.max_iterations = reg.max_iterations;
     R.convergence = decl.convergence;
 
-    // THE GATE (spec §5.3, Task 7.2). This is the only call site of
+    // THE GATE (spec Section 5.3, Task 7.2). This is the only call site of
     // verify_iteration_region(), and it is why IterationRegionDecl carries a
     // ConvergenceCriterion at all: without the field there is nowhere for the
     // criterion to live, so the E-ITER-NOCONVERGE check could never run and a
@@ -2049,7 +2049,7 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
       if (!acc.ok()) return acc.error();
       R.accel = std::move(acc.value());
       if (R.blocks.size() > 1) {
-        // Per-field scaling (spec §5.3) needs to know where each field starts.
+        // Per-field scaling (spec Section 5.3) needs to know where each field starts.
         std::vector<std::size_t> offsets;
         offsets.reserve(R.blocks.size());
         for (const detail::RegionBlock& b : R.blocks) offsets.push_back(b.offset);
@@ -3933,7 +3933,7 @@ detail::Task<Result<void>> Runner::Impl::run_region(
       if (slot < slot_just_checkpointed.size()) slot_just_checkpointed[slot] = 0;
     }
 
-    // Spec §5.3's verification. `supports_rollback()` was a promise; this is
+    // Spec Section 5.3's verification. `supports_rollback()` was a promise; this is
     // the check. Bytes, not a tolerance: a restore is a copy of what was saved,
     // so anything but an exact match means state the analysis named did not
     // come back -- and a NaN, which no tolerance comparison can see, does.

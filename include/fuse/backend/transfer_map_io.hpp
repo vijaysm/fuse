@@ -1,6 +1,6 @@
 #pragma once
 
-/// Persisted transfer maps — S5.4.
+/// Persisted transfer maps -- S5.4.
 ///
 /// A remap matrix costs far more to build than to apply: a supermesh
 /// intersection over two unstructured meshes dominates setup, and the result
@@ -11,7 +11,7 @@
 /// WHY THE FILE HOLDS GLOBAL IDS AND NOT THE MATRIX
 /// ===========================================================================
 ///
-/// `RemapWeights::row` and `::col` are LOCAL entity indices — `n_rows` and
+/// `RemapWeights::row` and `::col` are LOCAL entity indices -- `n_rows` and
 /// `n_cols` are documented as local, and `MeshView` deliberately reports
 /// nothing global (see its header: "A rank sees a partition, never the whole
 /// mesh"). Writing those indices out would produce a file that is only
@@ -23,7 +23,7 @@
 /// via `MeshView::global_id`. That makes a shard written by any rank at any
 /// rank count readable by any rank at any other rank count: a reader keeps
 /// the rows whose target entity it owns and ignores the rest. Persisting at
-/// two ranks and reloading at four is then not a special case — it is the
+/// two ranks and reloading at four is then not a special case -- it is the
 /// only thing the format can do.
 ///
 /// Entries are sorted by (target gid, source gid). Sorted order is part of
@@ -38,19 +38,19 @@
 /// ===========================================================================
 ///
 /// Validated, each with its own rejection:
-///   - `E-MAP-MAGIC` / `E-MAP-VERSION` — not one of our files, or a format
+///   - `E-MAP-MAGIC` / `E-MAP-VERSION` -- not one of our files, or a format
 ///     this build does not read. The version is bumped whenever a field's
 ///     meaning changes, never reused.
-///   - `E-MAP-TRUNCATED` — the entry count in the header disagrees with the
+///   - `E-MAP-TRUNCATED` -- the entry count in the header disagrees with the
 ///     bytes present. A partial write from a killed job reads as truncated
 ///     rather than as a short map.
-///   - `E-MAP-CHECKSUM` — the payload hash disagrees. This catches the
+///   - `E-MAP-CHECKSUM` -- the payload hash disagrees. This catches the
 ///     silent-corruption case that a length check cannot.
-///   - `E-MAP-IDENTITY` — the map's own description (order, monotonicity,
+///   - `E-MAP-IDENTITY` -- the map's own description (order, monotonicity,
 ///     the two topological dimensions) disagrees with what the caller asked
 ///     for. Two builders return the same triplet structure for different
 ///     kinds of object (`RemapWeights`'s own note), so the file says which.
-///   - `E-MAP-COVERAGE` — **the distribution check.** A target entity this
+///   - `E-MAP-COVERAGE` -- **the distribution check.** A target entity this
 ///     rank owns has no row in what was read. That is what a mismatched
 ///     partition looks like from the reader's side: either the shards do not
 ///     cover this rank's share, or they were written for a different mesh.
@@ -58,7 +58,7 @@
 ///     field the map was supposed to fill.
 ///
 /// NOT validated, deliberately: whether the weights are still *numerically*
-/// right for the meshes in hand. Nothing in a file can establish that — the
+/// right for the meshes in hand. Nothing in a file can establish that -- the
 /// meshes could have moved under the same global ids. `RemapWeights` carries
 /// its own conservation audit (`max_row_defect`, `max_col_defect`), those
 /// fields are persisted, and a caller that cares re-checks them against the

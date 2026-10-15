@@ -66,7 +66,7 @@ namespace {
 }
 
 // ---------------------------------------------------------------------------
-// Spec §5.4 (Task 5.5): when may a `Remap` be an element-wise copy?
+// Spec Section 5.4 (Task 5.5): when may a `Remap` be an element-wise copy?
 // ---------------------------------------------------------------------------
 
 /// The outcome of asking whether two regions are, cell for cell and index for
@@ -283,7 +283,7 @@ Result<void> Runner::Impl::resolve_buffers(FieldRegistry& registry) {
     arc_field.emplace(n.output.value(), *fid);
     // Only a Source output is state the component wrote in advance(); a Sink
     // output is the coupler's delivery into the component's Requires array,
-    // which the component is not expected to checkpoint. Spec §5.3's runtime
+    // which the component is not expected to checkpoint. Spec Section 5.3's runtime
     // verification (iteration.cpp) compares the former and never the latter.
     if (n.kind == OpKind::Source &&
         n.output.value() < slot_source_owner.size()) {
@@ -300,14 +300,14 @@ Result<void> Runner::Impl::resolve_buffers(FieldRegistry& registry) {
     s.persistent = b.is_persistent;
 
     if (!b.is_component_owned) {
-      // Spec §4.2: a coupler intermediate. The coupler allocates it, once.
+      // Spec Section 4.2: a coupler intermediate. The coupler allocates it, once.
       storage[i].assign(s.total(), 0.0);
       s.data = storage[i].data();
       s.owned_by_component = false;
       continue;
     }
 
-    // Spec §4.2: the coupler NEVER owns component data. This arc aliases the
+    // Spec Section 4.2: the coupler NEVER owns component data. This arc aliases the
     // array the component registered; allocating a shadow buffer here would
     // mean the component never sees the coupled values.
     const auto it = arc_field.find(b.arc.value());
@@ -778,7 +778,7 @@ Result<void> Runner::Impl::resolve_constrain(const Instruction& ins,
 }
 
 // ---------------------------------------------------------------------------
-// Spec §5.4: the spatial remap (Task 5.5)
+// Spec Section 5.4: the spatial remap (Task 5.5)
 // ---------------------------------------------------------------------------
 
 Result<void> Runner::Impl::resolve_remap(const Instruction& ins, Resolved& r) {
@@ -1938,7 +1938,7 @@ Result<void> Runner::Impl::apply_nodal_dist_remap(const Instruction& ins, const 
 }
 
 // ---------------------------------------------------------------------------
-// Spec §7.3: the space-time remap (Task 6.3)
+// Spec Section 7.3: the space-time remap (Task 6.3)
 // ---------------------------------------------------------------------------
 
 namespace {
@@ -2263,7 +2263,7 @@ Result<void> Runner::Impl::resolve_instructions() {
   const Result<void> st = resolve_spacetime();
   if (!st.ok()) return st;
 
-  // Spec §5.3, Phase 7 Task 7.5. The loop itself lives in
+  // Spec Section 5.3, Phase 7 Task 7.5. The loop itself lives in
   // src/runtime/iteration.cpp; resolve_regions() builds it. What is still
   // refused here is a marker with no region behind it: the interpreter would
   // walk straight over an enter/exit pair and run the body exactly once, which
@@ -2386,7 +2386,7 @@ Result<void> Runner::Impl::resolve_instructions() {
     switch (ins.kind) {
       case OpKind::Interpolate: {
         const auto it = spacetime_by_node.find(ins.origin_node.value());
-        if (it == spacetime_by_node.end()) break;  // the lag no-op, not §7.3
+        if (it == spacetime_by_node.end()) break;  // the lag no-op, not Section 7.3
         r.spacetime = static_cast<std::int32_t>(it->second);
         const SpacetimeInfo& info = spacetimes[it->second];
         if (info.width != r.out_total) {
@@ -3165,7 +3165,7 @@ Result<void> Runner::Impl::setup(ComponentSet& components,
   }
 
   // Last: resolve_regions() needs the ticks and the resolved buffers, and it
-  // is the single place spec §5.3's preconditions are checked
+  // is the single place spec Section 5.3's preconditions are checked
   // (E-ITER-NOCONVERGE, E-ITER-MAXITER, E-ITER-NOROLLBACK).
   r = resolve_regions(components, registry);
   if (!r.ok()) return r;
@@ -3286,7 +3286,7 @@ Result<void> Runner::Impl::resolve_epoch_participants() {
   // reconcile_epoch() actually sends and receives on, not MPI_COMM_WORLD.
   // `MPI_TAG_UB` is an attribute of a communicator and nothing here
   // guarantees the two share a value -- only that they usually do, under the
-  // spec §6 mode 1 usage `RunnerConfig::base_communicator` documents as
+  // spec Section 6 mode 1 usage `RunnerConfig::base_communicator` documents as
   // today's only integration mode. A caller that ever hands this something
   // other than MPI_COMM_WORLD itself would have this check silently pass on
   // MPI_COMM_WORLD's bound while reconcile_epoch()'s own communicator has a
@@ -4020,7 +4020,7 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
         break;
       }
 
-      // Spec §7.3, tier 1: `dst = sum_j T(dst_step, j) * (W x_j)`, with `W`
+      // Spec Section 7.3, tier 1: `dst = sum_j T(dst_step, j) * (W x_j)`, with `W`
       // the identity here because the channel's spatial half is the separate
       // `Remap` node and `T (x) W == (T (x) I)(I (x) W)`.
       //
@@ -4070,7 +4070,7 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
         // check either carries real weights below or never got past setup.
         num::copy<Space>(span_c(in_ptr(0), n), span_m(out_ptr(), n));
       } else {
-        // Spec §5.4: `g = W f`, with `W` the conservative FV<->FV matrix
+        // Spec Section 5.4: `g = W f`, with `W` the conservative FV<->FV matrix
         // built from the supermesh at SETUP (src/remap/intx_weights.cpp).
         // Nothing is allocated, looked up or rebuilt here -- `remap_weights`
         // AND `remap_csr` were both filled in resolve_remap()
@@ -4124,7 +4124,7 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
     case OpKind::Sample: {
       if (ins.n_in == 0 || !ins.out.valid()) break;
       if (r.spacetime >= 0) {
-        // Spec §7.3: file this source step's value in the temporal history.
+        // Spec Section 7.3: file this source step's value in the temporal history.
         // The arc still carries the latest sample so that the SSA value is
         // defined and inspectable; the projection reads `history`.
         SpacetimeInfo& st = spacetimes[static_cast<std::size_t>(r.spacetime)];
@@ -4799,7 +4799,7 @@ detail::Task<Result<void>> Runner::Impl::advance(ComponentSet& components,
   ctx.t_begin = Rational{period_index} * plan.period() + tick.time;
   ctx.t_end = ctx.t_begin + tick.dt;
   ctx.step = period_index * tick.per_period + tick.local_step;
-  // Spec §5.3: 0 outside a region, and the 0-based sweep index inside one. A
+  // Spec Section 5.3: 0 outside a region, and the 0-based sweep index inside one. A
   // component re-advanced over the same interval with iteration > 0 has had
   // restore_state() called first (see iteration.cpp).
   ctx.iteration = iteration;
@@ -4871,7 +4871,7 @@ detail::Task<Result<void>> Runner::Impl::step_period(ComponentSet& components) {
   // ticks early.
   //
   // Phase 1 is why a target that takes several steps per coupling period sees
-  // a different value on each of them (spec §7.3, and the plain multirate case
+  // a different value on each of them (spec Section 7.3, and the plain multirate case
   // too). The chain that closes target step k is stamped exactly where step
   // k+1 begins; running it in phase 1 hands step k+1 the value step k earned,
   // which is the shortest lag causality allows -- the projection for step k is
@@ -4882,7 +4882,7 @@ detail::Task<Result<void>> Runner::Impl::step_period(ComponentSet& components) {
   // Across the period boundary the exchange remains explicitly lagged: the
   // last target step's value is written at t = period, after every tick of the
   // period, and is consumed by the target's first advance of the next one.
-  // Spec §5.3: the checkpoint is taken HERE, before the first advance of the
+  // Spec Section 5.3: the checkpoint is taken HERE, before the first advance of the
   // period, and not at the region's enter instruction. By the time control
   // reaches the region the participants have already advanced once -- the
   // ticks below run before the instructions that read their output -- so a

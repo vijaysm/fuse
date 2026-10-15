@@ -288,7 +288,7 @@ class Reader {
 
 }  // namespace detail
 
-/// Spec §3.2: the ABI narrow waist. C++, Fortran, Python, and YAML all
+/// Spec Section 3.2: the ABI narrow waist. C++, Fortran, Python, and YAML all
 /// produce and consume this buffer.
 [[nodiscard]] inline std::vector<std::byte> serialize(const CouplingGraph& g) {
   detail::Writer w;
@@ -374,7 +374,7 @@ class Reader {
     w.pod(static_cast<std::uint32_t>(r.channels.size()));
     for (const ChannelId c : r.channels) w.pod(c.value());
     w.pod(static_cast<std::int32_t>(r.max_iterations));
-    // Spec §5.3, and the reason this record grew a version. Leaving the
+    // Spec Section 5.3, and the reason this record grew a version. Leaving the
     // criterion out here would silently drop it at the narrow waist: a graph
     // written by C++ and read back by Fortran, Python or the C ABI would
     // arrive with an EMPTY criterion, which reports satisfied and therefore

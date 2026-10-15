@@ -135,7 +135,7 @@ struct LoweringContext {
 /// Returns true if the rule claimed the channel.
 using LoweringRule = std::function<bool(LoweringContext&, ChannelId)>;
 
-/// Spec §5.2: a registry, not a switch. New numerics register a rule; the
+/// Spec Section 5.2: a registry, not a switch. New numerics register a rule; the
 /// core is untouched.
 class LoweringRegistry {
  public:
@@ -205,23 +205,23 @@ struct LoweringResult {
   [[nodiscard]] bool ok() const { return !diags.has_errors(); }
 };
 
-/// Spec §2: CouplingGraph -> OperatorDAG.
+/// Spec Section 2: CouplingGraph -> OperatorDAG.
 /// `policy` must be the one the validator used: the compiler emits the
 /// conversions the connection check authorized, so a different policy here
 /// would silently compile a plan the checker never approved.
 [[nodiscard]] LoweringResult lower(const CouplingGraph& g, ConnectPolicy policy = {});
 
-/// Spec §5.2: inserts the Constrain (from conservation) and Diagnose
+/// Spec Section 5.2: inserts the Constrain (from conservation) and Diagnose
 /// (always) operators the user did not write, immediately after this
 /// channel's Remap. (Transport, the third derived operator, is placed by the
 /// channel rule itself in rules_channel.cpp, since v1 hardcodes it
-/// immediately before Remap — see that file's comment.) Called from inside
+/// immediately before Remap -- see that file's comment.) Called from inside
 /// lower_channel, between the Remap and Relax stages: the DAG is
 /// append-only, so Constrain/Diagnose must be created before any
 /// user-authored Relax node that should consume their output.
 void insert_derived_ops(LoweringContext& ctx, ChannelId cid);
 
-/// Spec §5.3: turns graph-level IterationRegionDecls into DAG regions with
+/// Spec Section 5.3: turns graph-level IterationRegionDecls into DAG regions with
 /// residual arcs, and fills `IterationRegion::carried` from
 /// derive_checkpoint_set() below (Phase 7 Task 7.2).
 void build_iteration_regions(LoweringContext& ctx);
@@ -314,7 +314,7 @@ void seed_window_source_arcs(LoweringContext& ctx);
 void finish_window_regions(LoweringContext& ctx);
 
 // ---------------------------------------------------------------------------
-// Spec §5.3: the derived checkpoint set (Task 7.2).
+// Spec Section 5.3: the derived checkpoint set (Task 7.2).
 //
 // FUSE derives the checkpoint set rather than asking the user. preCICE pushes
 // this onto every adapter via requiresWritingCheckpoint(); here a dataflow
@@ -355,7 +355,7 @@ struct CheckpointSet {
 /// be restorable, and this refuses a run in which one of them is not.
 /// `E-ITER-NOROLLBACK` for a component that reports
 /// `supports_rollback() == false`, and equally for one the analysis named that
-/// is not registered at all — an unverifiable claim is refused, not assumed.
+/// is not registered at all -- an unverifiable claim is refused, not assumed.
 /// Also `E-ITER-NONDETERMINISTIC` (KNOWN_ISSUES.md B3) for one whose
 /// `determinism_level() == DeterminismLevel::Nondeterministic`: the sweep
 /// loop's convergence test compares successive iterates, and noise in a
@@ -405,7 +405,7 @@ struct CheckpointSet {
     const ConvergenceCriterion& convergence);
 
 /// The names one residual of an iteration region answers to: its channel, and
-/// the two fields that channel connects. Spec §5.3 lets a convergence measure
+/// the two fields that channel connects. Spec Section 5.3 lets a convergence measure
 /// name any of the three.
 struct MeasureTarget {
   std::string channel;

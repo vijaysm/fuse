@@ -22,7 +22,7 @@ constexpr std::int8_t narrow_exponent(int v) {
 }
 }  // namespace detail
 
-/// SI dimension exponents. Spec §4.2: exponent vectors compose and compare;
+/// SI dimension exponents. Spec Section 4.2: exponent vectors compose and compare;
 /// unit strings do not.
 struct Units {
   std::int8_t length = 0;       // m
@@ -108,7 +108,7 @@ struct Units {
     std::string out;
     for (const auto& e : entries) {
       if (e.exp == 0) continue;
-      if (!out.empty()) out += "·";  // middle dot
+      if (!out.empty()) out += "*";  // multiplication separator between SI base units
       out += e.sym;
       if (e.exp != 1) {
         out += "^";
@@ -118,9 +118,9 @@ struct Units {
     if (out.empty()) out = "1";
     // The affine part is part of the unit's identity, so it belongs in the
     // text. Without it a mismatch between pascal and kilopascal prints as two
-    // identical strings -- "cannot assign kg·m^-1·s^-2 to kg·m^-1·s^-2" --
+    // identical strings -- "cannot assign kg*m^-1*s^-2 to kg*m^-1*s^-2" --
     // which is exactly the diagnostic a user cannot act on.
-    if (scale != Rational{1}) out = scale.to_string() + "·" + out;
+    if (scale != Rational{1}) out = scale.to_string() + "*" + out;
     if (offset != Rational{0}) out += " + " + offset.to_string();
     return out;
   }

@@ -19,7 +19,7 @@ struct Point {
   double x = 0.0, y = 0.0, z = 0.0;
 };
 
-/// Spec §4.1: the core knows only counts, ownership, ids, and geometry.
+/// Spec Section 4.1: the core knows only counts, ownership, ids, and geometry.
 /// No third-party type appears here (Global Constraints).
 ///
 /// DESIGNED FOR THE DISTRIBUTED, UNSTRUCTURED CASE. The Phase 4 backend is a
@@ -240,7 +240,7 @@ class MeshBackend {
   virtual ~MeshBackend() = default;
 
   /// Load one mesh, interpreting `decl.source` however the backend sees fit
-  /// (spec §4.1: the source string is opaque above this layer).
+  /// (spec Section 4.1: the source string is opaque above this layer).
   ///
   /// MESH ID CONTRACT. The n-th SUCCESSFUL `load` defines `MeshId{n}`,
   /// counting from zero; a failed load consumes no id. `CouplingGraph`

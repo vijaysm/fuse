@@ -22,9 +22,9 @@ inline std::string channel_ctx(const CouplingGraph& g, ChannelId c) {
 
 /// True unless `w` is a FromComponent window naming a component that does
 /// not exist in `g`. `Id::valid()` only tests the 0xFFFFFFFF sentinel, not
-/// `component_count()`, so an out-of-range (but not sentinel) id — reachable
+/// `component_count()`, so an out-of-range (but not sentinel) id -- reachable
 /// either from direct-API misuse or from a hand-patched descriptor, since
-/// `deserialize()` does not itself validate embedded window component ids —
+/// `deserialize()` does not itself validate embedded window component ids --
 /// must be caught here before any `.at()`-based lookup can throw.
 inline bool window_component_ok(const CouplingGraph& g, const Window& w) {
   if (w.kind != Window::Kind::FromComponent) return true;
@@ -515,7 +515,7 @@ inline Rational channel_window(const CouplingGraph& g, ChannelId cid,
             ctx);
     }
 
-    // Spec §4.3: OASIS documents lag beyond the coupling period as a
+    // Spec Section 4.3: OASIS documents lag beyond the coupling period as a
     // restartability and deadlock hazard.
     //
     // BM-8: `ch.lag` is a raw `int32_t` read off the wire with no range
@@ -559,7 +559,7 @@ inline Rational channel_window(const CouplingGraph& g, ChannelId cid,
   // severity is the whole point of the check.
   //
   // Combining writers is now supported, but only when the user says HOW:
-  // `graph.merge(field, MergeOp::…)`. Summing two heat fluxes and averaging two
+  // `graph.merge(field, MergeOp::...)`. Summing two heat fluxes and averaging two
   // temperatures are different physics, and nothing in the field descriptions
   // chooses between them, so the compiler must not guess.
   //
