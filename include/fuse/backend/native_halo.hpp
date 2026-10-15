@@ -91,6 +91,17 @@ struct Box3 {
 /// what rank `r` receives; hand it to `exchange_migration_buffers` (a real
 /// communicator) or concatenate directly across simulated ranks (an
 /// in-process test).
+///
+/// DEVICE-RESIDENT (Migration track, 2026-10-15). Built from
+/// `mesh.device_arrays()` via `fuse::native::device::pack_fanout<true,
+/// Space>` (include/fuse/backend/native/mesh_pack_device.hpp), the
+/// many-to-many generalization of `pack_to` a halo copy needs: unlike a
+/// migrated cell (one destination), the SAME owned cell may appear in
+/// several of `send_by_local_index`'s per-rank lists, so the packing
+/// domain is the flattened (cell, destination rank) send list, not the
+/// cell set. No host-serving `NativeMeshView` accessor is called; see
+/// `pack_for_migration`'s identical note on the one remaining host round
+/// trip (the packed wire bytes, not the mesh).
 [[nodiscard]] std::vector<std::vector<std::byte>> pack_halo_cells(
     const NativeMeshView& mesh, const std::vector<std::vector<std::size_t>>& send_by_local_index,
     const std::vector<std::size_t>& owned_block_index, int my_rank, int num_ranks);

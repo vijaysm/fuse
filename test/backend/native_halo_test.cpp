@@ -176,6 +176,55 @@ TEST(NativeHaloPackMerge, RoundTripAdoptsExactlyTheRequestedCellsAsNonOwnedCopie
   EXPECT_EQ(final_view.value()->entity_count(1), 3u);
 }
 
+TEST(NativeHaloPackMerge, PackHaloCellsMaterializesNoHostMirror) {
+  // Migration track, 2026-10-15: pack_halo_cells now builds its wire
+  // records from device_arrays() via fuse::native::device::pack_fanout,
+  // never from the view's own lazy host mirror.
+  auto arrays0 = generate_native_mesh("line:4", 0, 2);
+  ASSERT_TRUE(arrays0.ok());
+  auto view0 = NativeMeshView::create_from_host(arrays0.value(), 0);
+  ASSERT_TRUE(view0.ok());
+  ASSERT_EQ(view0.value()->host_mirrors_materialized(), 0);
+
+  const auto owned0 = owned_block_index(*view0.value());
+  std::vector<std::vector<std::size_t>> send_by_local_index(2);
+  send_by_local_index[1].push_back(1);
+  const auto packed = pack_halo_cells(*view0.value(), send_by_local_index, owned0,
+                                      /*my_rank=*/0, /*num_ranks=*/2);
+  ASSERT_EQ(packed.size(), 2u);
+
+  EXPECT_EQ(view0.value()->host_mirrors_materialized(), 0)
+      << "pack_halo_cells touched the source view's lazy host mirror";
+}
+
+TEST(NativeHaloPackMerge, PackHaloCellsFansOutOneCellToSeveralDestinations) {
+  // A source cell overlapping more than one target rank's covering set is
+  // sent to BOTH -- the many-to-many case fuse::native::device::pack_to's
+  // single-destination-per-cell model cannot express (one cell, one
+  // `dest_of_owned` entry), which is why pack_halo_cells goes through
+  // `device::pack_fanout` (a flattened (cell, destination) send list)
+  // instead. Both copies must carry identical bytes: a halo record's
+  // content depends only on the cell and the constant `my_rank`/
+  // `owned_block_index`, never on which destination it is bound for.
+  auto arrays0 = generate_native_mesh("line:4", 0, 2);
+  ASSERT_TRUE(arrays0.ok());
+  auto view0 = NativeMeshView::create_from_host(arrays0.value(), 0);
+  ASSERT_TRUE(view0.ok());
+
+  const auto owned0 = owned_block_index(*view0.value());
+  std::vector<std::vector<std::size_t>> send_by_local_index(3);  // 3 simulated ranks
+  send_by_local_index[1].push_back(1);  // rank 0's local cell 1 -> rank 1
+  send_by_local_index[2].push_back(1);  // AND -> rank 2 (fanout)
+  const auto packed = pack_halo_cells(*view0.value(), send_by_local_index, owned0,
+                                      /*my_rank=*/0, /*num_ranks=*/3);
+  ASSERT_EQ(packed.size(), 3u);
+  EXPECT_TRUE(packed[0].empty()) << "nothing is ever sent to one's own rank";
+  EXPECT_FALSE(packed[1].empty());
+  EXPECT_FALSE(packed[2].empty());
+  EXPECT_EQ(packed[1], packed[2])
+      << "the same cell sent to two destinations must pack identical bytes for each";
+}
+
 // ---------------------------------------------------------------------------
 // The Brusselator-shaped scenario: U (source) on a 16x16 quad grid, V
 // (target) on a 24x24 quad grid, both slab-decomposed by ROW

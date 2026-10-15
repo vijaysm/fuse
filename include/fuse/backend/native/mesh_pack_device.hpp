@@ -2,21 +2,22 @@
 
 /// Device-capable pack for the native mesh's migration and halo wire
 /// format (docs/dev/device-resident-arcs.md's Phase 2: "halo and migration
-/// pack/unpack ... producing the device CSR directly"). The existing entry
-/// points (`native_migration.cpp`'s `pack_for_migration`/`pack_one_cell`,
-/// `native_halo.cpp`'s `pack_halo_cells`/`pack_one_halo_cell`) build these
-/// same wire records by walking `NativeMeshView`, a host-only, VALIDATED
-/// view (docs/dev/native-mesh.md: `Result`/`Failure`/`fmt` are not
-/// device-callable, so `NativeMeshView::create_from_host` is a one-time,
-/// host-side cost by design) -- no new device entry point routes through
-/// it. This header instead operates directly on `MeshArrays<Space>`'s own
-/// CSR connectivity, which is plain data, valid in any Kokkos memory
-/// space, so that in Device mode the packing itself -- the owned-block
-/// numbering, every record's exact byte size, and the byte-level write --
-/// runs as Kokkos kernels on `Space`, with only `exchange_migration_
-/// buffers`'s MPI alltoall (unchanged by this header; the GPU-aware
-/// exchange is the transport track's own follow-up) staged through host
-/// buffers.
+/// pack/unpack ... producing the device CSR directly"). `pack_for_migration`
+/// (native_migration.cpp) and `pack_halo_cells` (native_halo.cpp) are now
+/// wired directly to `pack_to`/`pack_fanout` below (Migration track,
+/// 2026-10-15): both read `NativeMeshView::device_arrays()` -- plain CSR
+/// data, valid in any Kokkos memory space -- instead of walking the VIEW's
+/// own host-only, VALIDATED accessors (`cell_vertices`/`vertex_x`/
+/// `cell_faces`, which materialize the lazy host mirror on first call;
+/// docs/dev/native-mesh.md: `Result`/`Failure`/`fmt` are not
+/// device-callable, so `NativeMeshView::create_from_host`'s VALIDATION
+/// stays a one-time, host-side cost by design, but nothing past that
+/// needs the mirror an old caller's `cell_vertices`/`vertex_x` calls used
+/// to force). The owned-block numbering, every record's exact byte size,
+/// and the byte-level write all run as Kokkos kernels on `Space`;
+/// `exchange_migration_buffers`'s MPI alltoall is the GPU-aware exchange
+/// track's own follow-up (this same track, see native_migration.hpp's
+/// header comment on `mpi_is_gpu_aware`), not this header's concern.
 ///
 /// `pack_to<kHaloRecord, Space>` is the named seam this is: a caller on
 /// `Space == Kokkos::DefaultExecutionSpace::memory_space` gets
@@ -260,6 +261,97 @@ template <bool kHaloRecord, class Space>
           KOKKOS_LAMBDA(const int c) {
             if (contrib(c) == 0) return;
             write_record<kHaloRecord>(mesh_local, c, buf.data(), offset(c), 0, 0);
+          });
+    }
+    result[static_cast<std::size_t>(r)] = buf;
+  }
+  return result;
+}
+
+/// The many-to-many generalization `pack_to` cannot express: a migrated
+/// cell has exactly ONE destination, but a halo copy's covering set
+/// (`covering_set_destinations`, native_halo.hpp) may send the SAME owned
+/// cell to SEVERAL destination ranks, so no `dest_of_owned(ob) == r`
+/// equality test can name every destination of a cell at once. The domain
+/// here is not the cell set but the flattened (cell, destination rank)
+/// SEND list itself -- `cell_of_send(s)`/`dest_rank_of_send(s)` give send
+/// index `s`'s local cell index and destination, with `n_sends` entries
+/// total (>= the owned cell count when a cell is replicated to more than
+/// one destination, <= it when some owned cells are sent nowhere).
+/// `owner_rank_of_cell`/`owned_block_idx_of_cell` are indexed by LOCAL
+/// CELL index directly (size `mesh.cell_count()`), not by send index or
+/// owned-block position, since `pack_halo_cells`'s own owner rank is one
+/// constant (`my_rank`) and `owned_block_index` is already a per-local-
+/// cell lookup (native_halo.hpp's `owned_block_index`) -- the caller's
+/// existing arrays need no re-indexing to become these views' host
+/// mirrors. Read only when `kHaloRecord`; omit both for a hypothetical
+/// fanout migration pack (not a case this track's two real callers need:
+/// `pack_for_migration` itself still goes through `pack_to`, whose
+/// one-destination-per-cell model is exactly what migration is).
+///
+/// Cost: one `parallel_for` over `n_sends` for record sizes, then per
+/// destination rank the same `parallel_for` + `parallel_scan` +
+/// `parallel_reduce` + `parallel_for` shape `pack_to` uses, over `n_sends`
+/// instead of `cell_count()` -- `O(num_ranks * n_sends)`, matching
+/// `pack_to`'s own cost note at this track's test scale.
+template <bool kHaloRecord, class Space>
+[[nodiscard]] std::vector<Kokkos::View<std::byte*, Space>> pack_fanout(
+    const MeshArrays<Space>& mesh, const Kokkos::View<int*, Space>& cell_of_send,
+    const Kokkos::View<int*, Space>& dest_rank_of_send, int num_ranks,
+    const Kokkos::View<std::int32_t*, Space>& owner_rank_of_cell = {},
+    const Kokkos::View<std::int64_t*, Space>& owned_block_idx_of_cell = {}) {
+  using ExecSpace = typename Space::execution_space;
+  const int n_sends = static_cast<int>(cell_of_send.extent(0));
+  const MeshArrays<Space> mesh_local = mesh;
+
+  Kokkos::View<std::size_t*, Space> sizes("fuse::native::device::fanout_sizes", n_sends);
+  Kokkos::parallel_for(
+      "fuse::native::device::fanout_record_sizes", Kokkos::RangePolicy<ExecSpace>(0, n_sends),
+      KOKKOS_LAMBDA(const int s) {
+        sizes(s) = record_size<kHaloRecord>(mesh_local, cell_of_send(s));
+      });
+
+  std::vector<Kokkos::View<std::byte*, Space>> result(static_cast<std::size_t>(num_ranks));
+  for (int r = 0; r < num_ranks; ++r) {
+    Kokkos::View<std::size_t*, Space> contrib("fuse::native::device::fanout_contrib", n_sends);
+    Kokkos::parallel_for(
+        "fuse::native::device::fanout_contrib_fill", Kokkos::RangePolicy<ExecSpace>(0, n_sends),
+        KOKKOS_LAMBDA(const int s) { contrib(s) = (dest_rank_of_send(s) == r) ? sizes(s) : 0; });
+
+    Kokkos::View<std::size_t*, Space> offset("fuse::native::device::fanout_offset", n_sends);
+    Kokkos::parallel_scan(
+        "fuse::native::device::fanout_offset_scan", Kokkos::RangePolicy<ExecSpace>(0, n_sends),
+        KOKKOS_LAMBDA(const int s, std::size_t& running, const bool final_pass) {
+          const std::size_t val = contrib(s);
+          if (final_pass) offset(s) = running;
+          running += val;
+        });
+
+    std::size_t total = 0;
+    Kokkos::parallel_reduce(
+        "fuse::native::device::fanout_total_reduce", Kokkos::RangePolicy<ExecSpace>(0, n_sends),
+        KOKKOS_LAMBDA(const int s, std::size_t& acc) { acc += contrib(s); }, total);
+
+    Kokkos::View<std::byte*, Space> buf(
+        Kokkos::view_alloc("fuse::native::device::fanout_buf", Kokkos::WithoutInitializing),
+        total);
+    // Same nvcc first-capture-under-if-constexpr workaround `pack_to` above
+    // documents: two launches, not one branching lambda.
+    if constexpr (kHaloRecord) {
+      Kokkos::parallel_for(
+          "fuse::native::device::fanout_write_halo", Kokkos::RangePolicy<ExecSpace>(0, n_sends),
+          KOKKOS_LAMBDA(const int s) {
+            if (contrib(s) == 0) return;
+            const int c = cell_of_send(s);
+            write_record<kHaloRecord>(mesh_local, c, buf.data(), offset(s),
+                                      owner_rank_of_cell(c), owned_block_idx_of_cell(c));
+          });
+    } else {
+      Kokkos::parallel_for(
+          "fuse::native::device::fanout_write_migration", Kokkos::RangePolicy<ExecSpace>(0, n_sends),
+          KOKKOS_LAMBDA(const int s) {
+            if (contrib(s) == 0) return;
+            write_record<kHaloRecord>(mesh_local, cell_of_send(s), buf.data(), offset(s), 0, 0);
           });
     }
     result[static_cast<std::size_t>(r)] = buf;
