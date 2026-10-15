@@ -1331,6 +1331,23 @@ struct Runner::Impl {
   /// Host, where slot_host_read() never copies).
   std::vector<double> block_host_scratch;
 
+  /// runtime-exchange track: device-resident twin of `weight_sets`, same
+  /// index, built once in `build_constrain_device_buffers()` right after
+  /// `place_arcs_on_device()` (Device mode only; empty under Host). Lets
+  /// `OpKind::Constrain`'s conservation sums integrate on the arc's own
+  /// space (device-resident-arcs.md's "Constrain (reduction result)")
+  /// instead of pulling a device-resident `before_arc`/output back to
+  /// host just to multiply it against a host weight vector.
+  std::vector<Kokkos::View<double*, DeviceMemSpace>> weight_sets_device;
+  /// Fixed-chunk scratch for `OpKind::Constrain`'s device-space
+  /// conservation sums (`fuse::num::deterministic_dot`), sized once in
+  /// `build_constrain_device_buffers()` from the largest weight set any
+  /// Constrain references. Distinct from `reduction_scratch` above: that
+  /// one is a `HostSpace` view iteration.cpp's own block reductions use
+  /// unconditionally, this one lives in `DeviceMemSpace` and is read only
+  /// by the Device-dispatched `execute_on<DeviceExecSpace>` instantiation.
+  Kokkos::View<double*, DeviceMemSpace> constrain_reduction_scratch;
+
   /// A5: the device path's ONLY buffer, allocated once in `setup()` when
   /// `config.execution_space == Device` (zero-extent otherwise). Every arc
   /// buffer, `previous[]` iterate and space-time history row stays where it
@@ -1378,6 +1395,13 @@ struct Runner::Impl {
   /// `OpKind::Transport` case falls back to the host-staged path for it,
   /// exactly as under Host. Allocates once, never in the hot loop.
   void build_transport_device_buffers();
+  /// runtime-exchange track: device mode only, called right after
+  /// `build_transport_device_buffers()`. Mirrors every entry of
+  /// `weight_sets` into `weight_sets_device` (built once; `weight_sets`
+  /// itself never changes after setup) and sizes
+  /// `constrain_reduction_scratch` from the largest weight set any
+  /// `ConstrainInfo` references. Allocates once, never in the hot loop.
+  void build_constrain_device_buffers();
   Result<void> resolve_instructions();
   /// Spec §6 mode 1. Splits one communicator per component out of
   /// `config.base_communicator` and builds one `CommGraph` per entry of
