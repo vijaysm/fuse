@@ -207,6 +207,51 @@ void field_weights(const std::vector<std::size_t>& offsets, const double* r,
 /// two translation units are the only participants.
 std::unique_ptr<Accelerator> make_quasi_newton(const AccelConfig& cfg);
 
+std::size_t total_rows(std::span<const RestartRowBlock> blocks) {
+  std::size_t n = 0;
+  for (const RestartRowBlock& b : blocks) n += b.ids.size();
+  return n;
+}
+
+Result<void> put_field_per_block(RestartWriter& writer,
+                                 const std::string& name_prefix,
+                                 std::span<const RestartRowBlock> blocks,
+                                 std::span<const double> flat,
+                                 int components) {
+  std::size_t off = 0;
+  for (const RestartRowBlock& block : blocks) {
+    const std::size_t count = block.ids.size();
+    const std::string qualified = name_prefix + "/" + block.field_name;
+    const Result<void> r = writer.put_field(
+        qualified, block.ids,
+        flat.subspan(off * static_cast<std::size_t>(components),
+                     count * static_cast<std::size_t>(components)),
+        components, static_cast<std::int64_t>(count));
+    if (!r.ok()) return r;
+    off += count;
+  }
+  return Result<void>::success();
+}
+
+Result<void> get_field_per_block(RestartReader& reader,
+                                 const std::string& name_prefix,
+                                 std::span<const RestartRowBlock> blocks,
+                                 std::span<double> flat, int components) {
+  std::size_t off = 0;
+  for (const RestartRowBlock& block : blocks) {
+    const std::size_t count = block.ids.size();
+    const std::string qualified = name_prefix + "/" + block.field_name;
+    const Result<void> r = reader.get_field(
+        qualified, block.ids,
+        flat.subspan(off * static_cast<std::size_t>(components),
+                     count * static_cast<std::size_t>(components)),
+        components);
+    if (!r.ok()) return r;
+    off += count;
+  }
+  return Result<void>::success();
+}
+
 }  // namespace detail
 
 const char* to_cstring(AccelKind k) noexcept {
@@ -272,6 +317,16 @@ class NoneAccel final : public Accelerator {
   [[nodiscard]] std::string name() const override { return "None"; }
   [[nodiscard]] std::size_t columns() const override { return 0; }
 
+  /// Restart track round 2: plain Picard carries no state at all between
+  /// calls (x_out = x_new, nothing retained) -- trivially, correctly
+  /// restartable by doing nothing, which is exactly what the base class's
+  /// no-op export/import already do. Overridden here only so the Runner's
+  /// restart_state_implemented() check sees `true` rather than the base
+  /// class's conservative `false`.
+  [[nodiscard]] bool restart_state_implemented() const noexcept override {
+    return true;
+  }
+
   Result<void> update(const double* x_old, const double* x_new, double* x_out,
                       std::size_t n, int iteration) override {
     const Result<void> args =
@@ -289,6 +344,16 @@ class ConstantAccel final : public Accelerator {
   void reset() override {}
   [[nodiscard]] std::string name() const override { return "Constant"; }
   [[nodiscard]] std::size_t columns() const override { return 0; }
+
+  /// Restart track round 2: `omega_` is a FIXED run option supplied at
+  /// construction (AccelConfig::omega, restored identically by the
+  /// graph/config the owning run re-reads, not by this interface) --
+  /// never learned history, so there is genuinely nothing for restart to
+  /// carry. Overridden only so the Runner sees `true` rather than the
+  /// base class's conservative `false`.
+  [[nodiscard]] bool restart_state_implemented() const noexcept override {
+    return true;
+  }
 
   Result<void> update(const double* x_old, const double* x_new, double* x_out,
                       std::size_t n, int iteration) override {
@@ -400,6 +465,79 @@ class AitkenAccel final : public Accelerator {
     return Result<void>::success();
   }
 
+  /// Restart track round 2: `r_prev_`/`omega_`/`have_prev_` are exactly
+  /// the state the NEXT update() call reads (`r_` itself is recomputed
+  /// fresh from x_new-x_old every call, so it carries nothing forward
+  /// and is not restarted). `have_prev_ == false` (no sweep has
+  /// completed since the last reset()) writes nothing -- a reader finding
+  /// no fields for this name_prefix leaves `have_prev_` at its
+  /// freshly-constructed `false`, which is the bit-identical same-rank
+  /// state. EXACT-KEY fix: `r_prev_` is written per BLOCK
+  /// (detail::put_field_per_block), one dataset per owning field name,
+  /// never one dataset for the whole region keyed by a combined id.
+  [[nodiscard]] bool restart_state_implemented() const noexcept override {
+    return true;
+  }
+
+  Result<void> export_restart_state(
+      RestartWriter& writer, std::string_view name_prefix,
+      std::span<const RestartRowBlock> blocks) const override {
+    if (!have_prev_) return Result<void>::success();
+    if (detail::total_rows(blocks) != n_) {
+      return Failure{"E-RESTART-BAD-NUMBERING",
+                     "AitkenAccel::export_restart_state: " +
+                         std::to_string(detail::total_rows(blocks)) +
+                         " row global ids for an accelerator of length " +
+                         std::to_string(n_)};
+    }
+    const std::string omega_name = std::string(name_prefix) + "/aitken/omega";
+    const std::string r_prefix = std::string(name_prefix) + "/aitken/r_prev";
+    Result<void> r = writer.put_scalar(omega_name, omega_);
+    if (!r.ok()) return r;
+    return detail::put_field_per_block(writer, r_prefix, blocks, r_prev_, 1);
+  }
+
+  Result<void> import_restart_state(RestartReader& reader,
+                                    std::string_view name_prefix,
+                                    std::span<const RestartRowBlock> blocks,
+                                    bool allow_reset_on_mismatch,
+                                    bool& did_reset) override {
+    did_reset = false;
+    n_ = detail::total_rows(blocks);
+    r_.resize(n_);
+    r_prev_.resize(n_);
+    const std::string omega_name = std::string(name_prefix) + "/aitken/omega";
+    const std::string r_prefix = std::string(name_prefix) + "/aitken/r_prev";
+    const Result<double> om = reader.get_scalar(omega_name);
+    if (!om.ok()) {
+      // E-RESTART-MISSING-SCALAR specifically: export_restart_state()
+      // wrote nothing at all for this name_prefix because have_prev_ was
+      // false when the point was written (no sweep had yet completed
+      // since the last reset()) -- the bit-identical same-rank state,
+      // not a refusal.
+      if (om.error().code == "E-RESTART-MISSING-SCALAR") {
+        have_prev_ = false;
+        omega_ = omega0_;
+        return Result<void>::success();
+      }
+      return om.error();
+    }
+    const Result<void> rr =
+        detail::get_field_per_block(reader, r_prefix, blocks, r_prev_, 1);
+    if (!rr.ok()) {
+      // The scalar WAS written (history existed), but this row's own
+      // global id is not among the ones the file recorded -- owner
+      // decision 4's layout-change case.
+      if (!allow_reset_on_mismatch) return rr;
+      did_reset = true;
+      reset();
+      return Result<void>::success();
+    }
+    omega_ = om.value();
+    have_prev_ = true;
+    return Result<void>::success();
+  }
+
  private:
   double              omega0_;
   double              omega_;
@@ -477,6 +615,73 @@ class SteffensenAccel final : public Accelerator {
     }
     r_.swap(r_prev_);
     for (std::size_t i = 0; i < n; ++i) x_old_prev_[i] = x_old[i];
+    have_prev_ = true;
+    return Result<void>::success();
+  }
+
+  /// Restart track round 2: `r_prev_`/`x_old_prev_`/`have_prev_` are the
+  /// state the NEXT update() call reads (`omega0_` is a fixed run
+  /// option, `r_` is recomputed fresh every call). EXACT-KEY fix: both
+  /// arrays are written per BLOCK (detail::put_field_per_block), one
+  /// dataset per owning field name.
+  [[nodiscard]] bool restart_state_implemented() const noexcept override {
+    return true;
+  }
+
+  Result<void> export_restart_state(
+      RestartWriter& writer, std::string_view name_prefix,
+      std::span<const RestartRowBlock> blocks) const override {
+    if (!have_prev_) return Result<void>::success();
+    if (detail::total_rows(blocks) != n_) {
+      return Failure{"E-RESTART-BAD-NUMBERING",
+                     "SteffensenAccel::export_restart_state: " +
+                         std::to_string(detail::total_rows(blocks)) +
+                         " row global ids for an accelerator of length " +
+                         std::to_string(n_)};
+    }
+    const std::string r_prefix = std::string(name_prefix) + "/steffensen/r_prev";
+    const std::string x_prefix =
+        std::string(name_prefix) + "/steffensen/x_old_prev";
+    Result<void> r = detail::put_field_per_block(writer, r_prefix, blocks,
+                                                  r_prev_, 1);
+    if (!r.ok()) return r;
+    return detail::put_field_per_block(writer, x_prefix, blocks, x_old_prev_,
+                                       1);
+  }
+
+  Result<void> import_restart_state(RestartReader& reader,
+                                    std::string_view name_prefix,
+                                    std::span<const RestartRowBlock> blocks,
+                                    bool allow_reset_on_mismatch,
+                                    bool& did_reset) override {
+    did_reset = false;
+    n_ = detail::total_rows(blocks);
+    r_.resize(n_);
+    r_prev_.resize(n_);
+    x_old_prev_.resize(n_);
+    const std::string r_prefix = std::string(name_prefix) + "/steffensen/r_prev";
+    const std::string x_prefix =
+        std::string(name_prefix) + "/steffensen/x_old_prev";
+    const Result<void> rr =
+        detail::get_field_per_block(reader, r_prefix, blocks, r_prev_, 1);
+    if (!rr.ok()) {
+      if (rr.error().code == "E-RESTART-MISSING-FIELD") {
+        have_prev_ = false;
+        return Result<void>::success();
+      }
+      if (!allow_reset_on_mismatch) return rr;
+      did_reset = true;
+      reset();
+      return Result<void>::success();
+    }
+    const Result<void> xr =
+        detail::get_field_per_block(reader, x_prefix, blocks, x_old_prev_, 1);
+    if (!xr.ok()) {
+      if (!allow_reset_on_mismatch) return xr;
+      did_reset = true;
+      reset();
+      return Result<void>::success();
+    }
     have_prev_ = true;
     return Result<void>::success();
   }
