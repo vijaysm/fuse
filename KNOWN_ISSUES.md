@@ -7209,3 +7209,51 @@ construction. Invisible on every machine this library builds on, but a big-endia
 emit descriptors the golden files and any little-endian peer refuse. Recorded in `bytes.hpp` and
 `docs/dev/abi-design.md`; routing `pod()` through `bytes::put_integer` changes every golden file's bytes
 and waits for a deliberate `kGraphVersion` bump.
+
+### D63. Restart-to-disk cannot capture a period mid-suspension -- DESIGN CONSTRAINT, not a defect, recorded 2026-10-15 (Restart track, Stage B Slice 1)
+
+`Runner::write_restart_fields()`/`restore_restart_fields()` (`src/runtime/runner.cpp`) and the
+orchestration above them (`fuse::write_restart_point()`/`restore_restart_point()`,
+`src/runtime/restart.cpp`) assume every call happens at a period boundary -- `run_period()` or
+`run()` having returned, never while `resume_period()` has a suspended coroutine outstanding for
+an externally-driven (ABI) participant (`src/runtime/resume.hpp`). This is not an oversight:
+`docs/dev/restart.md` Section 1.1 states the reason directly, and it has not changed with Slice 1's
+implementation -- a suspended coroutine frame is a stack of local variables and a resume address
+inside a specific compiled binary, with no serializable representation `fuse::RestartWriter` or
+any other interface could give it. Nothing in this track attempts to close this; a restart point
+taken mid-suspension is a caller error this code does not itself detect (no test exercises it,
+because there is nothing a test could assert about the outcome beyond "undefined" -- the coroutine
+frame's own locals are not inspectable from outside `src/runtime/resume.hpp`).
+
+**What to do.** Nothing. A restart point must be taken only immediately after `run_period()`/`run()`
+returns successfully, before the next `advance()` of any kind -- the convention every test in
+`test/runtime/restart_test.cpp` already follows, and the one Slice 2 (rank-count-independent
+restart, Brusselator) inherits unchanged.
+
+### D64. `QuasiNewtonAccel` (IQN-ILS/IQN-IMVJ) does not implement restart state -- OPEN, scope decision for a future round, recorded 2026-10-15 (Restart track, Stage B Slice 1, round 2)
+
+`fuse::Accelerator::restart_state_implemented()` (`include/fuse/num/accelerator.hpp`) is `false`
+for `QuasiNewtonAccel` -- it inherits the base class's default, never overriding
+`export_restart_state()`/`import_restart_state()`. A restart into an IQN-ILS- or IQN-IMVJ-
+accelerated region therefore refuses collectively (`E-RESTART-ACCEL-NOT-IMPLEMENTED`) unless the
+run opts into `allow_accelerator_reset_on_mismatch`, in which case `Accelerator::reset()` runs
+instead and the reset is reported (`Runner::restore_restart_fields()`'s own `any_accelerator_reset`
+out-parameter) -- never a silent, wrong restore. This is `test/runtime/restart_test.cpp`'s own
+`AccelNotImplementedRefusesWithoutOptIn`/`AccelNotImplementedWithAllowResetSucceedsAndReports`
+tests' subject, using `AccelKind::IQN_ILS` directly (a real production kind, not a hand-rolled
+test double) -- the refusal mechanism itself (round 2's "NO SILENT RESET" fix) is fully
+implemented and tested; what is open is IQN's own restart STATE.
+
+**What a future round needs, if the owner wants IQN restart implemented rather than reset-by-
+default:** export/import `v_`/`w_` (the retained secant columns, `n x cols_`), `x_new_prev_`/
+`r_prev_`, `have_prev_`, `blocks_` (IQN-IMVJ's folded inverse-Jacobian chain, each block its own
+`v`/`z`/`cols`), and `chain_reprieves_`, all keyed by the SAME `(qualified field name, global id)`
+exact-key scheme round 2 built for Aitken/Steffensen (`fuse::RestartRowBlock`,
+`detail::put_field_per_block()`/`get_field_per_block()`, `src/num/accel_relaxation.cpp`) --
+`QuasiNewtonAccel`'s own scratch members (`r_`, `d_`, `alpha_`, `ls_a_`/`ls_b_`, `rho_`, `jrho_`,
+`probe_`, `jac_a_`/`jac_b_`/`jac_beta_`, `fold_col_`/`fold_jv_`, `spare_`) need nothing: every one
+is re-derived from the members above on the next call (the class's own comment: "None of it
+carries information between calls"), including `spare_`, whose documented post-construction state
+("Empty until the cap first binds") is exactly what a fresh object already has. A dn_heat round
+trip with `.accelerate(AccelKind::IQN_ILS)` -- mirroring the existing Aitken one -- is the
+verification this needs once written.

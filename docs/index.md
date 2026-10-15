@@ -37,6 +37,7 @@ user/field-pipeline
 user/examples
 user/mms-pair
 user/dn-heat
+user/restart
 user/convergence
 user/coupling-windows
 user/interface-transfer
@@ -67,6 +68,7 @@ dev/rank-agreement
 dev/debugging
 dev/porting
 dev/abi-design
+dev/restart
 dev/partitioning
 dev/native-mesh
 dev/native-halo
