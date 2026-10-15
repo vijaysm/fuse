@@ -1,4 +1,4 @@
-// test/backend/native_migration_mpi_test.cpp — real migration under a REAL
+// test/backend/native_migration_mpi_test.cpp -- real migration under a REAL
 // mpiexec, RCB-driven.
 //
 // NOT YET RUN: this sandbox cannot initialize MPI (mpiexec cannot bind a

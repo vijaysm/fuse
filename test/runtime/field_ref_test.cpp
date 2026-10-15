@@ -103,7 +103,7 @@ TEST(FieldRegistry, RejectsNullData) {
 
 // The complement of RejectsNullData above, and the reason its premise is
 // "null with something to point at" rather than "null". A rank that owns no
-// elements of a region is ordinary on a partitioned mesh (spec §4.1), and the
+// elements of a region is ordinary on a partitioned mesh (spec Section 4.1), and the
 // empty vector it hands over has a null data(). Refusing that would make a
 // component unbindable on exactly the ranks the MPI transport exists to
 // serve.

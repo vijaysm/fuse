@@ -1,4 +1,4 @@
-// test/search/distributed_mpi_test.cpp — fuse::search's distributed point
+// test/search/distributed_mpi_test.cpp -- fuse::search's distributed point
 // query under a REAL mpiexec.
 //
 // NOT YET RUN: this sandbox cannot initialize MPI (docs/dev/testing.md),

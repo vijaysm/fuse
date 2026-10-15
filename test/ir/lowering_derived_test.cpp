@@ -148,7 +148,7 @@ TEST(DerivedOps, DiagnoseIsATypePreservingPassThrough) {
   FAIL() << "no Diagnose emitted";
 }
 
-// The full spec §5.2 chain, end to end.
+// The full spec Section 5.2 chain, end to end.
 TEST(DerivedOps, ReproducesTheSpecChainOrder) {
   CouplingGraph g = pair(true, Conservation::Extensive);
   g.channel(fuse::ChannelId{0}).accumulate(fuse::AccumOp::Mean).relax(0.7);

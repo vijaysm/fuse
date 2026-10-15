@@ -19,7 +19,7 @@ TEST(Slab, EqualIntervalsGiveOneDegenerateSlab) {
 
 // degenerate means "the two partitions coincide", not "there is exactly one
 // slab": with equal sub-period intervals every slab is a whole step of both
-// sides, which is precisely the lockstep fast path of spec §8.2.
+// sides, which is precisely the lockstep fast path of spec Section 8.2.
 TEST(Slab, EqualSubPeriodIntervalsAreStillDegenerate) {
   const auto r = decompose(Rational{1, 2}, Rational{1, 2}, Rational{1});
   ASSERT_TRUE(r.ok()) << r.error().message;

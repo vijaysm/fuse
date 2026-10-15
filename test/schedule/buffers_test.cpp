@@ -127,7 +127,7 @@ TEST(Buffers, OneDeclarationPerArc) {
   }
 }
 
-// Spec §4.2: the coupler allocates only its own intermediates.
+// Spec Section 4.2: the coupler allocates only its own intermediates.
 TEST(Buffers, ComponentOwnedArcsAreNotAllocated) {
   const auto plan = plan_for(pair_with_accumulate());
   int owned = 0;
@@ -172,7 +172,7 @@ TEST(Buffers, ComponentOwnedIsExactlyTheSourceAndSinkOutputs) {
     EXPECT_EQ(plan.buffers[i].is_component_owned, expect_owned[i] != 0)
         << "arc " << i << " (\"" << plan.buffers[i].label << "\")";
   }
-  // The intermediates the coupler does own are spec §4.2's list: the waveform
+  // The intermediates the coupler does own are spec Section 4.2's list: the waveform
   // sample, the accumulator, transport staging, the remap target, diagnose.
   EXPECT_EQ(plan.total_coupler_elements, 100u * (dag.arc_count() - 2));
 }
@@ -252,7 +252,7 @@ TEST(Buffers, PersistentIsExactlyTheWaveformArcsWhenThereIsNoLag) {
   EXPECT_EQ(waveforms, 1) << "Sample produces the one waveform accumulator";
 }
 
-// Spec §4.3: lag(k) *is* a TimeLevel offset of -k. The lagged buffer is
+// Spec Section 4.3: lag(k) *is* a TimeLevel offset of -k. The lagged buffer is
 // written in period p and read in period p+1, so recycling it inside a period
 // makes the consumer read this period's value -- silently turning an explicit
 // lagged scheme into an unstable implicit one, with no error at any point.

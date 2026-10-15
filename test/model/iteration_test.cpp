@@ -155,7 +155,7 @@ TEST(ConvergenceMeasure, NonPositiveToleranceIsRejected) {
   EXPECT_THROW((void)bad.satisfied(0.0, 1.0), fuse::InvalidArgument);
 }
 
-// Spec §5.3: `Relative(...) & Absolute(...)`.
+// Spec Section 5.3: `Relative(...) & Absolute(...)`.
 TEST(ConvergenceCriterion, ConjunctionRequiresEveryMeasure) {
   const ConvergenceCriterion c =
       C::Relative(1e-6, "T") & C::Absolute(1e-8, "flux");

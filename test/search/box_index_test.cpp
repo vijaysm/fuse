@@ -1,4 +1,4 @@
-// test/search/box_index_test.cpp — BoxIndex against a brute-force reference
+// test/search/box_index_test.cpp -- BoxIndex against a brute-force reference
 // in 1D, 2D and 3D; shared faces/vertices; k-nearest; the empty index.
 
 #include "fuse/search/box_index.hpp"

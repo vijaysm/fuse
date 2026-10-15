@@ -1,4 +1,4 @@
-// test/partition/repartition_mpi_test.cpp — fuse::partition::repartition
+// test/partition/repartition_mpi_test.cpp -- fuse::partition::repartition
 // under a REAL mpiexec.
 //
 // NOT YET RUN: this sandbox cannot initialize MPI, exactly the posture

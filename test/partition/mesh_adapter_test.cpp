@@ -1,4 +1,4 @@
-// test/partition/mesh_adapter_test.cpp — centroids_of against
+// test/partition/mesh_adapter_test.cpp -- centroids_of against
 // SerialMeshBackend's generated line and box meshes (the task's named
 // fixture source: "the native mesh does not exist yet"). The
 // E-PART-MIXED-DIM rejection itself is a cross-rank property (see

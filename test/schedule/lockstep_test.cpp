@@ -1,6 +1,6 @@
-// Task 3.7 -- spec §8.2's lockstep fast path.
+// Task 3.7 -- spec Section 8.2's lockstep fast path.
 //
-// Lockstep is an *optimisation*, not a second set of semantics. §8.1 makes
+// Lockstep is an *optimisation*, not a second set of semantics. Section 8.1 makes
 // independent per-component intervals the default and lockstep the degenerate
 // case, so the fast path is only legitimate if it is unobservable: the plan it
 // produces must be the plan the general, slab-based path produces for the same
@@ -360,7 +360,7 @@ TEST(Lockstep, ForceGeneralIsTheProductionPathOnNonLockstepGraphs) {
 }
 
 // ---------------------------------------------------------------------------
-// Spec §8.2's two measurable criteria.
+// Spec Section 8.2's two measurable criteria.
 // ---------------------------------------------------------------------------
 
 TEST(Lockstep, ExactlyOneInstructionPerDagNode) {
@@ -582,7 +582,7 @@ TEST(LockstepDetection, AccumulationDoesNotChangeTheClassification) {
   EXPECT_EQ(b.general_decompose, 0u);
 }
 
-/// Spec §8.2 gates the fast path on "all intervals equal **and** no channel is
+/// Spec Section 8.2 gates the fast path on "all intervals equal **and** no channel is
 /// space-time". The clocks alone still say lockstep; the plan must not.
 TEST(LockstepDetection, ASpacetimeChannelDisablesTheFastPath) {
   const CouplingGraph g = spacetime_plus_plain(Rational{1});
@@ -602,7 +602,7 @@ TEST(LockstepDetection, ASpacetimeChannelDisablesTheFastPath) {
 
 /// Task 6.3 made the space-time flag a LOWERING change: the channel gains a
 /// `Sample` on the source clock and an `Interpolate` carrying the temporal
-/// basis on the target clock (spec §7.3's `T`). This test asserted the
+/// basis on the target clock (spec Section 7.3's `T`). This test asserted the
 /// opposite before 6.3 -- "spacetime changes no lowering rule, so the plans
 /// differ only in the `lockstep=` marker" -- which is now false by design, so
 /// what it pins instead is that the flag adds exactly that pair and moves

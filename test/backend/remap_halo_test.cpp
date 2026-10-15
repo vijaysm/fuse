@@ -1,4 +1,4 @@
-// The remap halo's SERIAL contract — the part the issue tracker
+// The remap halo's SERIAL contract -- the part the issue tracker
 // `A-PARTITIONED` gap that can be tested without a launcher.
 //
 // `build_remap_halo`, `exchange_remap_halo` and `accumulate_remap_halo` had 34

@@ -1,7 +1,7 @@
 // CommGraph and the Crystal Router underneath it, under a real mpiexec.
 //
 // This is the regression matrix of docs/specs/2026-09-11-comm-graph-design.md
-// §7. Every test here is named after what it pins rather than after the
+// Section 7. Every test here is named after what it pins rather than after the
 // function it calls, and every load-bearing one was checked against a
 // deliberately broken build before being trusted -- the discipline
 // docs/HANDOFF.md "Lessons paid for" item 2 exists for.
@@ -920,7 +920,7 @@ TEST(CommGraph, TheNearestNeighborToleranceBoundaryIsInclusiveAndRefusesBeyond) 
     } else {
       ASSERT_FALSE(built.ok()) << "a query " << c.what << " was accepted";
       EXPECT_EQ(built.error().code, "E-COMMGRAPH-NOMATCH");
-      // The rejection names the distance actually found, per spec §6 -- the
+      // The rejection names the distance actually found, per spec Section 6 -- the
       // practice E-REMAP-COVERAGE already follows.
       EXPECT_NE(built.error().message.find("nearest one found"),
                 std::string::npos)
@@ -1246,7 +1246,7 @@ TEST(CommGraph, TwoIndependentlySplitCommunicatorsAreEnoughToBuildTheGraph) {
 }
 
 // ===========================================================================
-// Rejections and degenerate cases (spec §6)
+// Rejections and degenerate cases (spec Section 6)
 // ===========================================================================
 
 TEST(CommGraph, NearestNeighborWithoutAToleranceIsRefusedBeforeAnyCollective) {

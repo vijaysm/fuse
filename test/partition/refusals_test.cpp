@@ -1,4 +1,4 @@
-// test/partition/refusals_test.cpp — deliberate rejections firing
+// test/partition/refusals_test.cpp -- deliberate rejections firing
 // (docs/dev/testing.md: "counts as verified only when a test makes it
 // fire"). Every case here asserts an exception, so this whole target
 // carries the THROWS label (see test/CMakeLists.txt).

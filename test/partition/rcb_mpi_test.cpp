@@ -1,4 +1,4 @@
-// test/partition/rcb_mpi_test.cpp — fuse::partition under a REAL mpiexec.
+// test/partition/rcb_mpi_test.cpp -- fuse::partition under a REAL mpiexec.
 //
 // NOT YET RUN: this sandbox cannot initialize MPI (mpiexec cannot bind a
 // port, and a singleton MPI_Init aborts here), so nothing in this file has

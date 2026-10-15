@@ -1,4 +1,4 @@
-// test/partition/fixtures.hpp — synthetic centroid/weight/gid generators
+// test/partition/fixtures.hpp -- synthetic centroid/weight/gid generators
 // shared by the oracle-parity and mesh-adapter tests.
 //
 // RCB partitions on (centroid, weight, global id) alone -- nothing in
