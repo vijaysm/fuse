@@ -22,6 +22,8 @@
 #include <mpi.h>
 
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <set>
 #include <unordered_map>
 #include <vector>
@@ -343,4 +345,64 @@ TEST(NativeMigrationMpi, ADimensionMismatchVisibleOnlyOnTheDestinationRefusesEve
   } else {
     EXPECT_EQ(result.error().code, "E-MESH-MIGRATE-PEER-REFUSED") << "rank " << rank;
   }
+}
+
+// Migration track, 2026-10-15: `exchange_migration_buffers<Space>` (the
+// GPU-aware replacement, native_migration.hpp's own "GPU-AWARE MPI"
+// paragraph) must move the SAME bytes to the SAME destinations as the
+// `std::vector<std::byte>` overload it replaces -- checked directly
+// against mesh-free, synthetic per-(sender, destination) payloads (every
+// byte distinct by construction, so a misrouted or truncated buffer is
+// caught), under BOTH settings of `FUSE_TRANSPORT_HOST_STAGING` (forcing
+// the host-staged branch even when this MPI build genuinely is
+// CUDA-aware, and leaving the run-time probe to decide).
+TEST(NativeMigrationMpi, GpuAwareExchangeOverloadMatchesHostVectorOverloadByteForByte) {
+  int rank = 0, size = 1;
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+  MPI_Comm_size(MPI_COMM_WORLD, &size);
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);
+
+  std::vector<std::vector<std::byte>> send_host(static_cast<std::size_t>(size));
+  for (int d = 0; d < size; ++d) {
+    const std::size_t n = static_cast<std::size_t>((rank + 1) * (d + 1));
+    send_host[static_cast<std::size_t>(d)].resize(n);
+    for (std::size_t k = 0; k < n; ++k) {
+      send_host[static_cast<std::size_t>(d)][k] =
+          static_cast<std::byte>((rank * 31 + d * 7 + static_cast<int>(k)) % 251);
+    }
+  }
+
+  const auto comm = world_handle();
+  using Space = NativeMeshView::DeviceMemSpace;
+  for (const char* staging : {"0", "1"}) {
+    setenv("FUSE_TRANSPORT_HOST_STAGING", staging, /*overwrite=*/1);
+
+    const auto expected = exchange_migration_buffers(send_host, comm);
+
+    std::vector<Kokkos::View<std::byte*, Space>> send_device(static_cast<std::size_t>(size));
+    for (int d = 0; d < size; ++d) {
+      const auto& s = send_host[static_cast<std::size_t>(d)];
+      Kokkos::View<std::byte*, Space> v(
+          Kokkos::view_alloc("GpuAwareExchangeTest::send_device", Kokkos::WithoutInitializing),
+          s.size());
+      if (!s.empty()) {
+        auto mirror = Kokkos::create_mirror_view(v);
+        std::memcpy(mirror.data(), s.data(), s.size());
+        Kokkos::deep_copy(v, mirror);
+      }
+      send_device[static_cast<std::size_t>(d)] = v;
+    }
+
+    const auto got_device = exchange_migration_buffers<Space>(send_device, comm);
+    ASSERT_EQ(got_device.size(), expected.size()) << "rank " << rank << " staging=" << staging;
+    for (std::size_t r = 0; r < got_device.size(); ++r) {
+      auto mirror = Kokkos::create_mirror_view(got_device[r]);
+      Kokkos::deep_copy(mirror, got_device[r]);
+      std::vector<std::byte> got_bytes(mirror.extent(0));
+      if (!got_bytes.empty()) std::memcpy(got_bytes.data(), mirror.data(), mirror.extent(0));
+      EXPECT_EQ(got_bytes, expected[r]) << "rank " << rank << " staging=" << staging
+                                        << " recv-from " << r;
+    }
+  }
+  unsetenv("FUSE_TRANSPORT_HOST_STAGING");
 }

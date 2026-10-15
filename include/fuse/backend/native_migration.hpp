@@ -25,22 +25,42 @@
 /// the recombined result -- exactly how the partition track tests RCB
 /// against an emulated-rank oracle.
 ///
-/// GPU-AWARE MPI. `fuse::native::mpi_is_gpu_aware()` is a run-time probe
-/// (`MPIX_Query_cuda_support()` where OpenMPI's extension declares it,
-/// falling back to `cmake/FuseMpiGpuAware.cmake`'s configure-time constant
-/// where it does not). `exchange_migration_buffers` here does NOT consult
-/// it: this file's own migration exchange always stages through host
-/// buffers regardless, per the standing priority (robustness before
-/// efficiency) -- a device-resident native-mesh migration path is still
-/// future work. See docs/dev/native-mesh.md.
+/// GPU-AWARE MPI (Migration track, 2026-10-15; superseding the paragraph
+/// this replaces -- see KNOWN_ISSUES.md and docs/dev/native-mesh.md's own
+/// updated section). `fuse::native::mpi_is_gpu_aware()` is now a thin
+/// wrapper over `fuse::linalg::mpi_is_gpu_aware()` (comm.hpp,
+/// src/linalg/mpi_gpu_aware.cpp) -- the SAME run-time probe
+/// (`MPIX_Query_cuda_support()` where this MPI's own extension declares
+/// it, falling back to `cmake/FuseMpiGpuAware.cmake`'s configure-time
+/// constant where it does not), no longer duplicated between `backend`
+/// and `transport`: both now call the one copy in `fuse::linalg`, a layer
+/// below each of them (tools/check-layering.py) that `backend` already
+/// links PRIVATE.
 ///
-/// NOT shared with `fuse::transport::MpiTransport::is_gpu_aware()`
-/// (src/transport/mpi_transport.cpp, docs/dev/device-resident-arcs.md
-/// Phase 3), which duplicates the identical probe rather than calling this
-/// one: `transport`'s library does not link `backend`'s (the CMake link
-/// graph is stricter than the header-include direction
-/// tools/check-layering.py enforces), the same reason `fuse::partition`'s
-/// own `CommHandle` duplicates this file's, rather than including it.
+/// The `std::vector<std::byte>`-based `exchange_migration_buffers` below
+/// is UNCHANGED and still what `migrate`/`build_native_remap_halo` call:
+/// it always stages through host buffers, per the OLD "robustness before
+/// efficiency" policy this paragraph used to state as a standing
+/// priority -- a priority the user's own instruction (mesh and topology
+/// operations run on the device) now supersedes, but wiring the
+/// replacement all the way through `migrate`/`build_native_remap_halo`
+/// needs `unpack_migrated_mesh`/`merge_halo_cells` to stop requiring a
+/// host-resident `std::vector<std::byte>` buffer first (KNOWN_ISSUES
+/// D51's own remaining gap). This track adds the GPU-aware REPLACEMENT
+/// as a Space-templated overload, `exchange_migration_buffers<Space>`,
+/// taking and returning `Kokkos::View<std::byte*, Space>` buffers --
+/// `MPI_Alltoallv` on the raw device pointer when `Space` is a device
+/// memory space and the probe above says this MPI build may take one
+/// (and `FUSE_TRANSPORT_HOST_STAGING` is not forcing the fallback),
+/// staged through host buffers (the SAME two-phase size-then-payload
+/// shape the `std::vector` overload already uses) otherwise -- verified
+/// byte-for-byte against the `std::vector` overload at 1/2/3 ranks, both
+/// settings of `FUSE_TRANSPORT_HOST_STAGING`
+/// (test/backend/native_migration_mpi_test.cpp), but NOT YET called by
+/// `pack_for_migration`/`migrate` (same reason `pack_to`/`dedup_by_gid`
+/// were added and tested standalone before this round wired the first
+/// of them in): the primitive is proven; wiring it end-to-end is this
+/// track's own next increment, narrowing KNOWN_ISSUES D51 accordingly.
 
 #include <cstddef>
 #include <cstdint>
@@ -86,6 +106,20 @@ inline constexpr CommHandle kNullComm = -1;
 /// owned cell count, `E-MESH-MIGRATE-RANGE` when an entry names a
 /// destination outside `[0, num_ranks)`. This is the LOCAL half of the
 /// collective rejection `migrate` performs -- see its own comment.
+///
+/// DEVICE-RESIDENT (Migration track, 2026-10-15). The wire records are
+/// built from `mesh.device_arrays()` via
+/// `fuse::native::device::pack_to<false, Space>`
+/// (include/fuse/backend/native/mesh_pack_device.hpp) -- no
+/// `NativeMeshView` host-serving accessor (`cell_vertices`/`vertex_x`/
+/// `cell_faces`) is called, so a device-resident caller's host mirror
+/// (`host_mirrors_materialized()`) stays unmaterialized through this
+/// call. `dest` is copied to a small device array first (bookkeeping,
+/// not mesh geometry); the one remaining host round trip is the packed
+/// WIRE BYTES themselves, copied back to this function's own
+/// `std::vector<std::byte>` return type for `exchange_migration_
+/// buffers` below, which is not yet GPU-aware (this track's own
+/// follow-up item).
 [[nodiscard]] Result<std::vector<std::vector<std::byte>>> pack_for_migration(
     const NativeMeshView& mesh, const std::vector<int>& dest, int num_ranks);
 
@@ -98,6 +132,25 @@ inline constexpr CommHandle kNullComm = -1;
 /// this is the identity (`result = {send[0]}`), touching no MPI symbol.
 [[nodiscard]] std::vector<std::vector<std::byte>> exchange_migration_buffers(
     const std::vector<std::vector<std::byte>>& send, CommHandle comm);
+
+/// GPU-aware replacement for the overload above (see this header's own
+/// "GPU-AWARE MPI" paragraph for status: proven standalone, not yet
+/// called by `migrate`/`build_native_remap_halo`). `send[r]` and the
+/// result are `Kokkos::View<std::byte*, Space>` -- the SAME per-
+/// destination buffers `fuse::native::device::pack_to`/`pack_fanout`
+/// already produce, so a caller on a device-resident mesh never copies
+/// its packed buffers to the host before calling this. When `Space` is a
+/// device memory space and `fuse::linalg::mpi_is_gpu_aware()` is true,
+/// `MPI_Alltoallv` is handed the device buffers' own raw pointers
+/// directly; otherwise each buffer is staged to a host
+/// `std::vector<std::byte>`, exchanged via the identical two-phase
+/// (`MPI_Alltoall` for sizes, `MPI_Alltoallv` for payload) shape the
+/// `std::vector` overload uses, and copied back. `comm == kNullComm` is
+/// the identity, touching no MPI symbol, matching the `std::vector`
+/// overload exactly.
+template <class Space>
+[[nodiscard]] std::vector<Kokkos::View<std::byte*, Space>> exchange_migration_buffers(
+    const std::vector<Kokkos::View<std::byte*, Space>>& send, CommHandle comm);
 
 /// Unpacks every buffer in `received` (this rank's own share, from
 /// `exchange_migration_buffers` or directly from `pack_for_migration` in

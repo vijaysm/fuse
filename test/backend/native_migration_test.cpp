@@ -148,6 +148,26 @@ TEST(NativeMigration, EmulatedRoundTripThroughTwoDifferentPartitionsReproducesTh
         "global cell ids (up to local ordering)";
 }
 
+TEST(NativeMigration, PackForMigrationMaterializesNoHostMirror) {
+  // Migration track, 2026-10-15: pack_for_migration now builds its wire
+  // records from device_arrays() via fuse::native::device::pack_to, never
+  // from the view's own lazy host mirror (cell_vertices/vertex_x/
+  // cell_faces) -- host_mirrors_materialized() must stay 0 across the
+  // whole call.
+  auto arrays = generate_native_mesh("hexbox:3x3x3", 0, 1);
+  ASSERT_TRUE(arrays.ok());
+  auto view = NativeMeshView::create_from_host(arrays.value(), 0);
+  ASSERT_TRUE(view.ok());
+  ASSERT_EQ(view.value()->host_mirrors_materialized(), 0);
+
+  std::vector<int> dest(view.value()->cell_count(), 0);
+  auto packed = pack_for_migration(*view.value(), dest, 1);
+  ASSERT_TRUE(packed.ok()) << packed.error().message;
+
+  EXPECT_EQ(view.value()->host_mirrors_materialized(), 0)
+      << "pack_for_migration touched the source view's lazy host mirror";
+}
+
 // ---- rejections -------------------------------------------------------------
 
 TEST(NativeMigration, RefusesAnIncompleteAssignment) {

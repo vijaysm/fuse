@@ -10,20 +10,11 @@
 
 #include "fuse/base/config.hpp"
 #include "fuse/base/error.hpp"
+#include "fuse/backend/native/mesh_pack_device.hpp"
+#include "fuse/linalg/comm.hpp"  // fuse::linalg::mpi_is_gpu_aware, the shared probe
 
 #if FUSE_HAVE_MPI
 #include <mpi.h>
-// Declares MPIX_Query_cuda_support()/MPIX_CUDA_AWARE_SUPPORT when this
-// OpenMPI was built with CUDA-aware support -- the same header
-// cmake/FuseMpiGpuAware.cmake's configure-time probe compiles against.
-// Absent on an MPI with no such extension (the MPICH 5.0.0a1 at /opt/mpich
-// has no mpi-ext.h), so the include is conditional; #if defined(...) below,
-// never an unconditional call.
-#if defined(__has_include)
-#if __has_include(<mpi-ext.h>)
-#include <mpi-ext.h>
-#endif
-#endif
 #endif
 
 namespace fuse::native {
@@ -82,14 +73,8 @@ int allreduce_min_int(int local, CommHandle comm) {
 #endif
 }
 
-// ---- byte-buffer append/read helpers -------------------------------------
-
-template <class T>
-void append_pod(std::vector<std::byte>& buf, const T& v) {
-  static_assert(std::is_trivially_copyable_v<T>);
-  const auto* p = reinterpret_cast<const std::byte*>(&v);
-  buf.insert(buf.end(), p, p + sizeof(T));
-}
+// ---- byte-buffer read helper (unpack only; pack now goes through
+// `fuse::native::device::pack_to`, mesh_pack_device.hpp) -------------------
 
 template <class T>
 T read_pod(const std::vector<std::byte>& buf, std::size_t& pos) {
@@ -100,66 +85,34 @@ T read_pod(const std::vector<std::byte>& buf, std::size_t& pos) {
   return v;
 }
 
-void pack_one_cell(const NativeMeshView& mesh, std::size_t c, std::vector<std::byte>& out) {
-  const auto type = mesh.cell_type_of(c);
-  const auto& verts = mesh.cell_vertices(c);  // mesh-local vertex indices
-  append_pod<std::int64_t>(out, static_cast<std::int64_t>(mesh.global_id(mesh.dimension(), c)));
-  append_pod<std::uint8_t>(out, static_cast<std::uint8_t>(type));
-  append_pod<std::int32_t>(out, static_cast<std::int32_t>(verts.size()));
-  // mesh-local vertex index -> position within THIS cell's closure (0..n-1),
-  // needed below to translate a polyhedron's face lists.
-  std::unordered_map<int, int> local_to_closure;
-  local_to_closure.reserve(verts.size());
-  for (std::size_t k = 0; k < verts.size(); ++k) {
-    const int lv = verts[k];
-    local_to_closure[lv] = static_cast<int>(k);
-    append_pod<std::int64_t>(out, static_cast<std::int64_t>(mesh.vertex_gid_of(
-                                      static_cast<std::size_t>(lv))));
-    append_pod<double>(out, mesh.vertex_x(static_cast<std::size_t>(lv), 0));
-    append_pod<double>(out, mesh.vertex_x(static_cast<std::size_t>(lv), 1));
-    append_pod<double>(out, mesh.vertex_x(static_cast<std::size_t>(lv), 2));
-  }
-  if (type == CellType::Polyhedron) {
-    const auto& faces = mesh.cell_faces(c);
-    append_pod<std::int32_t>(out, static_cast<std::int32_t>(faces.size()));
-    for (const auto& face : faces) {
-      append_pod<std::int32_t>(out, static_cast<std::int32_t>(face.size()));
-      for (int lv : face) {
-        append_pod<std::int32_t>(out, static_cast<std::int32_t>(local_to_closure.at(lv)));
-      }
-    }
-  }
+/// Copies a device-resident packed buffer to a host `std::vector<std::byte>`
+/// -- the ONE host round trip `pack_for_migration` still pays, for the wire
+/// bytes themselves (never the mesh's own geometry), until
+/// `exchange_migration_buffers` below becomes GPU-aware (this track's own
+/// follow-up item).
+std::vector<std::byte> to_host_bytes(const Kokkos::View<std::byte*, NativeMeshView::DeviceMemSpace>& v) {
+  auto mirror = Kokkos::create_mirror_view(v);
+  Kokkos::deep_copy(mirror, v);
+  std::vector<std::byte> out(mirror.extent(0));
+  if (!out.empty()) std::memcpy(out.data(), mirror.data(), mirror.extent(0));
+  return out;
 }
 
 }  // namespace
 
-// A5 Phase 3 (docs/dev/device-resident-arcs.md): a run-time probe, not the
-// bare configure-time constant. `MPIX_Query_cuda_support()` (OpenMPI's
-// extension, declared by <mpi-ext.h> exactly when `FUSE_MPI_GPU_AWARE`'s own
-// configure-time check -- cmake/FuseMpiGpuAware.cmake -- found the macro)
-// reports whether CUDA-aware buffers are actually enabled for THIS process,
-// which can differ from "the library was built with the capability": OpenMPI
-// disables it at run time when `OMPI_MCA_opal_cuda_support` is unset or 0,
-// something the configure-time macro alone cannot see. Where the extension
-// is not declared at all (MPICH without it, or no MPI), `FUSE_MPI_GPU_AWARE`
-// is the only signal there is, exactly as before this change.
-//
-// `FUSE_TRANSPORT_HOST_STAGING=1` forces this to false regardless of what
-// either probe reports: the one lever that lets the host-staged fallback
-// path (src/transport/mpi_transport.cpp, src/runtime/runner.cpp's
-// `OpKind::Transport` case) be exercised by a test even on a machine whose
-// MPI genuinely is GPU-aware, rather than only on one that is not.
-bool mpi_is_gpu_aware() {
-  if (const char* force = std::getenv("FUSE_TRANSPORT_HOST_STAGING");
-      force != nullptr && force[0] != '\0' && force[0] != '0') {
-    return false;
-  }
-#if FUSE_HAVE_MPI && defined(MPIX_CUDA_AWARE_SUPPORT)
-  return MPIX_Query_cuda_support() != 0;
-#else
-  return FUSE_MPI_GPU_AWARE != 0;
-#endif
-}
+// Migration track, 2026-10-15: a thin wrapper over the shared probe
+// (`fuse::linalg::mpi_is_gpu_aware()`, src/linalg/mpi_gpu_aware.cpp) --
+// kept as its own function, rather than deleted in favour of every call
+// site naming `fuse::linalg::mpi_is_gpu_aware()` directly, for source
+// compatibility with this header's existing callers
+// (`exchange_migration_buffers` below, and every caller outside this
+// file that already spells it `fuse::native::mpi_is_gpu_aware()`). See
+// comm.hpp's own declaration for the probe's full behaviour (the
+// `MPIX_Query_cuda_support()` run-time check, the `FUSE_MPI_GPU_AWARE`
+// configure-time fallback, and the `FUSE_TRANSPORT_HOST_STAGING=1`
+// override) -- this file used to duplicate that logic; see
+// src/linalg/mpi_gpu_aware.cpp's header comment for why it no longer does.
+bool mpi_is_gpu_aware() { return fuse::linalg::mpi_is_gpu_aware(); }
 
 Result<std::vector<std::vector<std::byte>>> pack_for_migration(const NativeMeshView& mesh,
                                                                 const std::vector<int>& dest,
@@ -179,13 +132,25 @@ Result<std::vector<std::vector<std::byte>>> pack_for_migration(const NativeMeshV
     }
   }
 
-  std::vector<std::vector<std::byte>> result(static_cast<std::size_t>(num_ranks));
-  std::size_t oi = 0;
-  for (std::size_t c = 0; c < mesh.cell_count(); ++c) {
-    if (!mesh.is_owned(mesh.dimension(), c)) continue;
-    const int d = dest[oi++];
-    pack_one_cell(mesh, c, result[static_cast<std::size_t>(d)]);
-  }
+  // Device-resident pack (Migration track, 2026-10-15): `dest`, one entry
+  // per OWNED cell, is this function's only host-side input besides the
+  // view itself -- copied to a small device array below (bookkeeping, not
+  // mesh geometry) so `device::pack_to` can read `mesh.device_arrays()`
+  // directly. No `NativeMeshView` host-serving accessor (`cell_vertices`,
+  // `vertex_x`, `cell_faces`) is called anywhere in this function, so no
+  // host mirror is materialized by a migration pack.
+  using Space = NativeMeshView::DeviceMemSpace;
+  Kokkos::View<int*, Kokkos::HostSpace> dest_h(
+      Kokkos::view_alloc("pack_for_migration::dest_h", Kokkos::WithoutInitializing), nowned);
+  for (std::size_t i = 0; i < nowned; ++i) dest_h(i) = dest[i];
+  Kokkos::View<int*, Space> dest_d(
+      Kokkos::view_alloc("pack_for_migration::dest_d", Kokkos::WithoutInitializing), nowned);
+  Kokkos::deep_copy(dest_d, dest_h);
+
+  auto packed = device::pack_to<false, Space>(mesh.device_arrays(), dest_d, num_ranks);
+
+  std::vector<std::vector<std::byte>> result(packed.size());
+  for (std::size_t r = 0; r < packed.size(); ++r) result[r] = to_host_bytes(packed[r]);
   return result;
 }
 
@@ -245,6 +210,132 @@ std::vector<std::vector<std::byte>> exchange_migration_buffers(
   return {};
 #endif
 }
+
+// Migration track, 2026-10-15: the GPU-aware replacement for the
+// `std::vector` overload above (native_migration.hpp's own "GPU-AWARE
+// MPI" paragraph has this primitive's status: proven standalone here,
+// not yet called by `migrate`/`build_native_remap_halo`). `Space` is a
+// device memory space with `fuse::linalg::mpi_is_gpu_aware()` true (and
+// `FUSE_TRANSPORT_HOST_STAGING` not forcing the fallback) hands
+// `MPI_Alltoallv` the device buffers' own raw pointers via one flat
+// device-resident send/receive buffer (Alltoallv needs ONE base pointer
+// plus displacements, while `send[r]` are independently allocated
+// Views); every other case stages through host `std::vector<std::byte>`
+// buffers, the identical two-phase shape the `std::vector` overload
+// above already uses, then copies the result back to `Space`.
+template <class Space>
+std::vector<Kokkos::View<std::byte*, Space>> exchange_migration_buffers(
+    const std::vector<Kokkos::View<std::byte*, Space>>& send, CommHandle comm) {
+  if (comm == kNullComm) {
+    FUSE_ASSERT(send.size() == 1,
+               "exchange_migration_buffers<Space>: kNullComm means exactly one rank, so "
+               "`send` must have exactly one entry (got {})", send.size());
+    return {send[0]};
+  }
+#if FUSE_HAVE_MPI
+  MPI_Comm c = resolve(comm);
+  const int num_ranks = comm_size(comm);
+  FUSE_ASSERT(static_cast<int>(send.size()) == num_ranks,
+             "exchange_migration_buffers<Space>: send.size() ({}) must equal the "
+             "communicator size ({})", send.size(), num_ranks);
+
+  std::vector<int> send_sizes(static_cast<std::size_t>(num_ranks));
+  for (int r = 0; r < num_ranks; ++r) {
+    send_sizes[static_cast<std::size_t>(r)] = static_cast<int>(send[static_cast<std::size_t>(r)].extent(0));
+  }
+  std::vector<int> recv_sizes(static_cast<std::size_t>(num_ranks));
+  MPI_Alltoall(send_sizes.data(), 1, MPI_INT, recv_sizes.data(), 1, MPI_INT, c);
+
+  std::vector<int> send_displs(static_cast<std::size_t>(num_ranks));
+  std::vector<int> recv_displs(static_cast<std::size_t>(num_ranks));
+  int send_total = 0, recv_total = 0;
+  for (int r = 0; r < num_ranks; ++r) {
+    send_displs[static_cast<std::size_t>(r)] = send_total;
+    recv_displs[static_cast<std::size_t>(r)] = recv_total;
+    send_total += send_sizes[static_cast<std::size_t>(r)];
+    recv_total += recv_sizes[static_cast<std::size_t>(r)];
+  }
+
+  // Device-resident path only when `Space` genuinely is a device memory
+  // space AND the run-time probe (not merely "this build links CUDA-aware
+  // MPI") says so -- the identical condition `FUSE_TRANSPORT_HOST_STAGING`
+  // overrides inside the probe itself (comm.hpp).
+  constexpr bool kSpaceIsHost = std::is_same_v<Space, Kokkos::HostSpace>;
+  const bool use_device_ptrs = !kSpaceIsHost && fuse::linalg::mpi_is_gpu_aware();
+
+  std::vector<Kokkos::View<std::byte*, Space>> result(static_cast<std::size_t>(num_ranks));
+  if (use_device_ptrs) {
+    Kokkos::View<std::byte*, Space> flat_send(
+        Kokkos::view_alloc("exchange_migration_buffers::flat_send_d", Kokkos::WithoutInitializing),
+        send_total);
+    for (int r = 0; r < num_ranks; ++r) {
+      const auto& s = send[static_cast<std::size_t>(r)];
+      if (s.extent(0) == 0) continue;
+      const auto dst = Kokkos::subview(
+          flat_send, Kokkos::make_pair(send_displs[static_cast<std::size_t>(r)],
+                                       send_displs[static_cast<std::size_t>(r)] +
+                                           send_sizes[static_cast<std::size_t>(r)]));
+      Kokkos::deep_copy(dst, s);
+    }
+    Kokkos::View<std::byte*, Space> flat_recv(
+        Kokkos::view_alloc("exchange_migration_buffers::flat_recv_d", Kokkos::WithoutInitializing),
+        recv_total);
+    MPI_Alltoallv(flat_send.data(), send_sizes.data(), send_displs.data(), MPI_BYTE,
+                 flat_recv.data(), recv_sizes.data(), recv_displs.data(), MPI_BYTE, c);
+    for (int r = 0; r < num_ranks; ++r) {
+      const auto n = recv_sizes[static_cast<std::size_t>(r)];
+      Kokkos::View<std::byte*, Space> buf(
+          Kokkos::view_alloc("exchange_migration_buffers::recv_buf_d", Kokkos::WithoutInitializing),
+          n);
+      if (n > 0) {
+        const auto src = Kokkos::subview(
+            flat_recv, Kokkos::make_pair(recv_displs[static_cast<std::size_t>(r)],
+                                         recv_displs[static_cast<std::size_t>(r)] + n));
+        Kokkos::deep_copy(buf, src);
+      }
+      result[static_cast<std::size_t>(r)] = buf;
+    }
+  } else {
+    std::vector<std::byte> flat_send_h(static_cast<std::size_t>(send_total));
+    for (int r = 0; r < num_ranks; ++r) {
+      const auto& s = send[static_cast<std::size_t>(r)];
+      if (s.extent(0) == 0) continue;
+      auto mirror = Kokkos::create_mirror_view(s);
+      Kokkos::deep_copy(mirror, s);
+      std::memcpy(flat_send_h.data() + send_displs[static_cast<std::size_t>(r)], mirror.data(),
+                 mirror.extent(0));
+    }
+    std::vector<std::byte> flat_recv_h(static_cast<std::size_t>(recv_total));
+    MPI_Alltoallv(flat_send_h.data(), send_sizes.data(), send_displs.data(), MPI_BYTE,
+                 flat_recv_h.data(), recv_sizes.data(), recv_displs.data(), MPI_BYTE, c);
+    for (int r = 0; r < num_ranks; ++r) {
+      const auto n = static_cast<std::size_t>(recv_sizes[static_cast<std::size_t>(r)]);
+      Kokkos::View<std::byte*, Space> buf(
+          Kokkos::view_alloc("exchange_migration_buffers::recv_buf_d2", Kokkos::WithoutInitializing),
+          n);
+      if (n > 0) {
+        auto mirror = Kokkos::create_mirror_view(buf);
+        std::memcpy(mirror.data(), flat_recv_h.data() + recv_displs[static_cast<std::size_t>(r)], n);
+        Kokkos::deep_copy(buf, mirror);
+      }
+      result[static_cast<std::size_t>(r)] = buf;
+    }
+  }
+  return result;
+#else
+  refuse_no_mpi();
+  return {};
+#endif
+}
+
+template std::vector<Kokkos::View<std::byte*, Kokkos::HostSpace>>
+exchange_migration_buffers<Kokkos::HostSpace>(
+    const std::vector<Kokkos::View<std::byte*, Kokkos::HostSpace>>&, CommHandle);
+#if defined(KOKKOS_ENABLE_CUDA) || defined(KOKKOS_ENABLE_HIP) || defined(KOKKOS_ENABLE_SYCL)
+template std::vector<Kokkos::View<std::byte*, NativeMeshView::DeviceMemSpace>>
+exchange_migration_buffers<NativeMeshView::DeviceMemSpace>(
+    const std::vector<Kokkos::View<std::byte*, NativeMeshView::DeviceMemSpace>>&, CommHandle);
+#endif
 
 Result<MeshArrays<Kokkos::HostSpace>> unpack_migrated_mesh(
     const std::vector<std::vector<std::byte>>& received, int dim, int my_rank) {

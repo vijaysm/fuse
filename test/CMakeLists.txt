@@ -1191,8 +1191,13 @@ fuse_add_device_twin(backend.native_distributed_mesh fuse_backend_native_distrib
                      THROWS)
 fuse_tests_gated_by(FUSE_ENABLE_MPI backend/native_migration_mpi_test.cpp)
 if(FUSE_ENABLE_MPI)
+  # DEVICE_TWIN (Migration track, 2026-10-15): re-runs at 1, 2, 3 ranks
+  # under FUSE_EXECUTION_SPACE=device, covering
+  # GpuAwareExchangeOverloadMatchesHostVectorOverloadByteForByte's own
+  # Kokkos::View<..., NativeMeshView::DeviceMemSpace> path under the
+  # Runner's device interpreter as well as the default one.
   fuse_add_mpi_test(backend native_migration_mpi LIBS fuse::backend fuse::partition MPI::MPI_CXX
-                    RANKS 2 3 4 5)
+                    RANKS 2 3 4 5 DEVICE_TWIN)
 endif()
 # The native mesh backend's planar/volumetric remap halo ("Halo" track,
 # docs/dev/native-halo.md): the in-process-emulated pure-function pieces,
