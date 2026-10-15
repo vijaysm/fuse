@@ -15,8 +15,10 @@ fuse_step_report 104
 fuse_ongoing 40
 fuse_run_request 16
 fuse_base_communicator_info 24
-fuse_participant_abi_v1 144
+fuse_participant_abi_v1 152
 fuse_field_spec 32
 fuse_field_table 32
 fuse_provider_instance 16
-fuse_provider_abi_v1 80
+fuse_provider_abi_v1 96
+fuse_restart_blob_sink 40
+fuse_restart_blob_source 32

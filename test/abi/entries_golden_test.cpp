@@ -79,6 +79,8 @@ TEST(AbiGolden, StructSizesMatchTheTable) {
       {"fuse_field_table", sizeof(fuse_field_table)},
       {"fuse_provider_instance", sizeof(fuse_provider_instance)},
       {"fuse_provider_abi_v1", sizeof(fuse_provider_abi_v1)},
+      {"fuse_restart_blob_sink", sizeof(fuse_restart_blob_sink)},
+      {"fuse_restart_blob_source", sizeof(fuse_restart_blob_source)},
   };
 
   std::ifstream golden(std::string(FUSE_TEST_GOLDEN_DIR) + "/../abi/struct_sizes.golden");
@@ -136,10 +138,10 @@ TEST(AbiGolden, NoStructHasTrailingPaddingALaterMemberCouldHide) {
   FUSE_NO_TRAILING_PADDING(fuse_ongoing, next_component);
   FUSE_NO_TRAILING_PADDING(fuse_run_request, periods);
   FUSE_NO_TRAILING_PADDING(fuse_base_communicator_info, reserved);
-  FUSE_NO_TRAILING_PADDING(fuse_participant_abi_v1, base_communicator);
+  FUSE_NO_TRAILING_PADDING(fuse_participant_abi_v1, request_restart_point);
   FUSE_NO_TRAILING_PADDING(fuse_field_spec, element_type);
   FUSE_NO_TRAILING_PADDING(fuse_field_table, written);
   FUSE_NO_TRAILING_PADDING(fuse_provider_instance, self);
-  FUSE_NO_TRAILING_PADDING(fuse_provider_abi_v1, capabilities);
+  FUSE_NO_TRAILING_PADDING(fuse_provider_abi_v1, load_restart_blob);
 }
 #undef FUSE_NO_TRAILING_PADDING

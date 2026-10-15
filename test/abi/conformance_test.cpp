@@ -671,6 +671,49 @@ TEST(ConformanceTest, PluginRestoreStateErrorIsRefused) {
   EXPECT_EQ(restored.error().code, "E-ABI-PROVIDER-RESTORE");
 }
 
+// docs/dev/restart.md round 2, item 4: "a C consumer test of the new
+// entries at tier 0." Exercises fuse_provider_abi_v1::save_restart_blob/
+// load_restart_blob end to end through the REAL stack this project's
+// own C ABI defines -- a dlopen()'d C plugin (test/abi/plugins/
+// linear_provider.c), ProviderAdapter's query-then-fill CALLER side
+// (src/abi/provider_adapter.cpp), and fuse::Component's own interface
+// (fuse/runtime/component.hpp) -- never calling the generated struct
+// layout directly, which would only prove the header compiles.
+TEST(ConformanceTest, ProviderSaveAndLoadRestartBlobRoundTrips) {
+  fuse::abi_detail::Registry registry;
+  ASSERT_TRUE(registry.mount_dynamic("upstream", FUSE_TEST_C_PROVIDER_PLUGIN).ok());
+  fuse::Result<std::unique_ptr<fuse::Component>> extracted = registry.extract("upstream");
+  ASSERT_TRUE(extracted.ok());
+  std::unique_ptr<fuse::Component> comp = std::move(extracted).value();
+
+  fuse::FieldRegistry freg;
+  const fuse::CouplingGraph graph =
+      fuse::abi_test::build_two_component_lag1_graph(fuse::Rational{1}, /*cells=*/1);
+  ASSERT_TRUE(comp->register_fields(freg, graph).ok());
+
+  // The plugin set FUSE_CAP_RESTART_FORM_B, so the capability bit this
+  // C ABI entry is gated on must have made it all the way through.
+  EXPECT_TRUE(comp->supports_restart_form_b());
+
+  const fuse::Result<std::vector<std::byte>> saved = comp->save_restart_blob();
+  ASSERT_TRUE(saved.ok()) << saved.error().code << ": " << saved.error().message;
+  // The plugin's own fixed byte pattern (g_restart_blob, "LIN-RB-1"),
+  // never a default-constructed empty blob.
+  const std::vector<std::byte> expected = {
+      std::byte{0x4c}, std::byte{0x49}, std::byte{0x4e}, std::byte{0x2d},
+      std::byte{0x52}, std::byte{0x42}, std::byte{0x2d}, std::byte{0x31}};
+  EXPECT_EQ(saved.value(), expected);
+  EXPECT_EQ(comp->restart_blob_version(), 7u);
+
+  // Round trip: load the SAME bytes back. The plugin's own
+  // p_load_restart_blob() checks them against its own fixed pattern and
+  // the version, so this proves the bytes and the version both crossed
+  // the ABI boundary intact, not just that SOME call returned FUSE_OK.
+  const fuse::Result<void> loaded =
+      comp->load_restart_blob(saved.value(), comp->restart_blob_version());
+  ASSERT_TRUE(loaded.ok()) << loaded.error().code << ": " << loaded.error().message;
+}
+
 TEST(ConformanceTest, ProviderAdapterRefusesWhenComponentNotInGraph) {
   fuse::abi_detail::Registry registry;
   ASSERT_TRUE(registry.mount_dynamic("upstream", FUSE_TEST_C_PROVIDER_PLUGIN).ok());

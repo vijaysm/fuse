@@ -203,7 +203,62 @@ static fuse_status p_capabilities(fuse_provider_ctx* self, const fuse_null* in, 
 #else
   if (out == NULL) return FUSE_ERR_INVALID;
   out->struct_size = sizeof(fuse_capability_set);
-  out->flags = 0;
+  /* docs/dev/restart.md round 2, item 4: this plugin's own
+   * save_restart_blob/load_restart_blob below are real, so it declares
+   * FUSE_CAP_RESTART_FORM_B -- the C consumer test's own tier-0 proof
+   * that the new entries are callable and round-trip through the WHOLE
+   * stack (this plugin -> fuse::abi_detail::ProviderAdapter ->
+   * fuse::Component), not merely present in the generated header. */
+  out->flags = FUSE_CAP_RESTART_FORM_B;
+  return FUSE_OK;
+#endif
+}
+
+/* docs/dev/restart.md round 2, item 4. A fixed, recognisable byte pattern
+ * -- not all-zero, so a test comparing against a zero-filled buffer by
+ * accident would still fail -- and a version distinct from 0 (the
+ * Component base class's own default), so a round-trip test can tell
+ * "this plugin's real value came back" from "the base class default
+ * leaked through unnoticed". */
+static const unsigned char g_restart_blob[8] = {
+    0x4c, 0x49, 0x4e, 0x2d, 0x52, 0x42, 0x2d, 0x31 /* "LIN-RB-1" */};
+#define FUSE_TEST_RESTART_BLOB_VERSION 7u
+
+static fuse_status p_save_restart_blob(fuse_provider_ctx* self,
+                                       const fuse_null* in,
+                                       fuse_restart_blob_sink* out) {
+  (void)self; (void)in;
+#ifdef FUSE_TEST_BAD_RESTART_SAVE
+  (void)out;
+  return FUSE_ERR_RUNTIME;
+#else
+  if (out == NULL) return FUSE_ERR_INVALID;
+  out->struct_size   = sizeof(fuse_restart_blob_sink);
+  out->written       = sizeof(g_restart_blob);
+  out->blob_version  = FUSE_TEST_RESTART_BLOB_VERSION;
+  if (out->buffer == NULL || out->capacity < sizeof(g_restart_blob)) {
+    return FUSE_OK; /* query-size path, or too small: nothing written */
+  }
+  memcpy(out->buffer, g_restart_blob, sizeof(g_restart_blob));
+  return FUSE_OK;
+#endif
+}
+
+static fuse_status p_load_restart_blob(fuse_provider_ctx* self,
+                                       const fuse_restart_blob_source* in,
+                                       fuse_null* out) {
+  (void)self; (void)out;
+#ifdef FUSE_TEST_BAD_RESTART_LOAD
+  (void)in;
+  return FUSE_ERR_RUNTIME;
+#else
+  if (in == NULL) return FUSE_ERR_INVALID;
+  if (in->blob_version != FUSE_TEST_RESTART_BLOB_VERSION) return FUSE_ERR_VERSION;
+  if (in->byte_count != sizeof(g_restart_blob)) return FUSE_ERR_INVALID;
+  if (memcmp(in->bytes, g_restart_blob, sizeof(g_restart_blob)) != 0) {
+    return FUSE_ERR_INVALID; /* the bytes that come back must be the SAME
+                                 ones this plugin itself wrote */
+  }
   return FUSE_OK;
 #endif
 }
@@ -213,6 +268,7 @@ static const fuse_provider_abi_v1 g_table = {
     FUSE_ABI_VERSION,
     p_version, p_create, p_destroy, p_describe, p_bind, p_advance,
     p_save_state, p_restore_state, p_capabilities,
+    p_save_restart_blob, p_load_restart_blob,
 };
 
 #if defined(__GNUC__) || defined(__clang__)

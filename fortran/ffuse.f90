@@ -30,6 +30,7 @@ module ffuse
   integer(c_int32_t), parameter, public :: FUSE_CAP_MPI_CONNECT = 8_c_int32_t
   integer(c_int32_t), parameter, public :: FUSE_CAP_LOWFIVE = 16_c_int32_t
   integer(c_int32_t), parameter, public :: FUSE_CAP_YAML = 32_c_int32_t
+  integer(c_int32_t), parameter, public :: FUSE_CAP_RESTART_FORM_B = 64_c_int32_t
   integer(c_int32_t), parameter, public :: FUSE_ABI_VERSION = 1_c_int32_t
   integer(c_int32_t), parameter, public :: FUSE_ABI_MAX_STRUCT_SIZE = 65536_c_int32_t
 
@@ -99,6 +100,21 @@ module ffuse
     integer(c_int64_t) :: capacity = 0_c_int64_t
     integer(c_int64_t) :: written = 0_c_int64_t
   end type fuse_graph_sink
+
+  type, bind(C), public :: fuse_restart_blob_sink
+    integer(c_int32_t) :: struct_size = 0_c_int32_t
+    type(c_ptr) :: buffer = c_null_ptr
+    integer(c_int64_t) :: capacity = 0_c_int64_t
+    integer(c_int64_t) :: written = 0_c_int64_t
+    integer(c_int32_t) :: blob_version = 0_c_int32_t
+  end type fuse_restart_blob_sink
+
+  type, bind(C), public :: fuse_restart_blob_source
+    integer(c_int32_t) :: struct_size = 0_c_int32_t
+    type(c_ptr) :: bytes = c_null_ptr
+    integer(c_int64_t) :: byte_count = 0_c_int64_t
+    integer(c_int32_t) :: blob_version = 0_c_int32_t
+  end type fuse_restart_blob_source
 
   type, bind(C), public :: fuse_setup_options
     integer(c_int32_t) :: struct_size = 0_c_int32_t
@@ -348,6 +364,14 @@ module ffuse
       type(fuse_base_communicator_info), intent(inout) :: out
       integer(c_int32_t) :: status
     end function ffuse_base_communicator
+
+    function ffuse_request_restart_point(ctx, in, out) result(status) bind(C, name="ffuse_request_restart_point")
+      import :: c_int32_t, c_ptr, fuse_null
+      type(c_ptr), value :: ctx
+      type(fuse_null), intent(in) :: in
+      type(fuse_null), intent(inout) :: out
+      integer(c_int32_t) :: status
+    end function ffuse_request_restart_point
   end interface
 
   public :: fuse_version, &
@@ -366,7 +390,8 @@ module ffuse
             fuse_end_step, &
             fuse_run, &
             fuse_view_field, &
-            fuse_base_communicator
+            fuse_base_communicator, &
+            fuse_request_restart_point
 
   interface fuse_last_error
     module procedure fuse_last_error_struct, fuse_last_error_message
@@ -660,5 +685,16 @@ contains
     out%struct_size = int(c_sizeof(out), c_int32_t)
     status = ffuse_base_communicator(ctx%ptr, in, out)
   end function fuse_base_communicator
+
+  function fuse_request_restart_point(ctx, in, out) result(status)
+    type(fuse_ctx), intent(in) :: ctx
+    type(fuse_null), intent(inout) :: in
+    type(fuse_null), intent(inout) :: out
+    integer(c_int32_t) :: status
+
+    in%struct_size = int(c_sizeof(in), c_int32_t)
+    out%struct_size = int(c_sizeof(out), c_int32_t)
+    status = ffuse_request_restart_point(ctx%ptr, in, out)
+  end function fuse_request_restart_point
 
 end module ffuse

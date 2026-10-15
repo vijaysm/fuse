@@ -35,6 +35,7 @@ enum {
   FUSE_CAP_MPI_CONNECT = 8,  /* coupling between separately launched executables over MPI connect/accept or MPMD */
   FUSE_CAP_LOWFIVE = 16,  /* coupling between executables through LowFive's in-memory HDF5 path */
   FUSE_CAP_YAML = 32,  /* load_graph accepts a YAML path */
+  FUSE_CAP_RESTART_FORM_B = 64,  /* save_restart_blob/load_restart_blob are real, not the default no-op (docs/dev/restart.md round 2, item 4) */
   FUSE_ABI_VERSION = 1,  /* the table version this header describes */
   FUSE_ABI_MAX_STRUCT_SIZE = 65536  /* a struct_size above this is a corrupt header, not a future one */
 };
@@ -130,6 +131,27 @@ typedef struct fuse_graph_sink {
   uint64_t capacity;  /* in: bytes available */
   uint64_t written;  /* out: bytes the graph needs; nothing is written when it exceeds capacity */
 } fuse_graph_sink;
+
+/* where a provider's own restart-to-disk blob is written (docs/dev/restart.md */
+/* Section 3, Option B -- opaque, versioned bytes, same-decomposition restore */
+/* only; the SAME query-then-fill shape fuse_graph_sink already uses, reused */
+/* rather than inventing a second one) */
+typedef struct fuse_restart_blob_sink {
+  uint32_t struct_size;
+  void*    buffer;  /* in: caller's buffer, or NULL to query the size */
+  uint64_t capacity;  /* in: bytes available */
+  uint64_t written;  /* out: bytes the blob needs; nothing is written when it exceeds capacity */
+  uint32_t blob_version;  /* out: this provider's own restart_blob_version(), recorded so a reader can refuse an incompatible blob by name rather than by a corrupted read (the same posture kGraphVersion already takes for the coupling graph) */
+} fuse_restart_blob_sink;
+
+/* a provider's own restart-to-disk blob, read back (docs/dev/restart.md */
+/* Section 3, Option B) */
+typedef struct fuse_restart_blob_source {
+  uint32_t    struct_size;
+  const void* bytes;  /* the blob this SAME provider wrote at an earlier save_restart_blob() call */
+  uint64_t    byte_count;  /* length of bytes */
+  uint32_t    blob_version;  /* the version recorded when this blob was written */
+} fuse_restart_blob_source;
 
 /* process-level settings, before initialize */
 typedef struct fuse_setup_options {

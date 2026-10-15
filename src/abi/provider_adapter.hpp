@@ -56,6 +56,19 @@ class ProviderAdapter final : public fuse::Component {
   fuse::Result<void> advance(const fuse::StepContext& ctx) override;
   fuse::Result<void> save_state() override;
   fuse::Result<void> restore_state() override;
+  /// Restart track round 2, item 4: forwards to the plugin's own
+  /// save_restart_blob/load_restart_blob table entries (Option B,
+  /// docs/dev/restart.md Section 3) when FUSE_CAP_RESTART_FORM_B was
+  /// set at create() time; the inherited Component defaults (empty
+  /// blob, version 0) apply otherwise, exactly as save_state()/
+  /// restore_state() already fall back to a no-op when the table entry
+  /// itself is null.
+  fuse::Result<std::vector<std::byte>> save_restart_blob() override;
+  fuse::Result<void> load_restart_blob(std::span<const std::byte> bytes,
+                                       std::uint32_t written_by_version) override;
+  [[nodiscard]] std::uint32_t restart_blob_version() const override {
+    return last_blob_version_;
+  }
   [[nodiscard]] std::uint64_t capabilities() const override { return capabilities_; }
 
  private:
@@ -63,6 +76,12 @@ class ProviderAdapter final : public fuse::Component {
   const fuse_provider_abi_v1* table_;
   fuse_provider_ctx*           self_ = nullptr;
   std::uint64_t                capabilities_ = 0;
+  /// Set by save_restart_blob() from the plugin's own `out->blob_version`
+  /// (the single source of truth for this run's own blob format), read
+  /// back by restart_blob_version() -- the Runner calls these two methods
+  /// in that order (src/runtime/runner.cpp's write_restart_fields()), so
+  /// caching is correct, not a race.
+  std::uint32_t                last_blob_version_ = 0;
   fuse::SerialMeshBackend      backend_;
   /// Owns the storage every field this component declares reads and writes;
   /// indexed the same order as `graph.component(id).fields` at

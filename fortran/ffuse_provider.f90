@@ -10,9 +10,11 @@
 
 module ffuse_provider
   use, intrinsic :: iso_c_binding
-  use ffuse, only: fuse_null, fuse_version_info, fuse_capability_set, &
-                   fuse_field_view, fuse_field_table, fuse_provider_instance, &
-                   fuse_step_request, fuse_step_report, FUSE_ABI_VERSION
+  use ffuse, only: fuse_capability_set, fuse_field_table, fuse_field_view, &
+                   fuse_null, fuse_provider_instance, &
+                   fuse_restart_blob_sink, fuse_restart_blob_source, &
+                   fuse_step_report, fuse_step_request, fuse_version_info, &
+                   FUSE_ABI_VERSION
   implicit none
   private
 
@@ -31,6 +33,8 @@ module ffuse_provider
     type(c_funptr) :: save_state = c_null_funptr
     type(c_funptr) :: restore_state = c_null_funptr
     type(c_funptr) :: capabilities = c_null_funptr
+    type(c_funptr) :: save_restart_blob = c_null_funptr
+    type(c_funptr) :: load_restart_blob = c_null_funptr
   end type fuse_provider_abi_v1
 
   ! ---- one abstract interface per entry, so a plugin's own bind(C)
@@ -108,6 +112,22 @@ module ffuse_provider
       type(fuse_capability_set), intent(inout) :: out
       integer(c_int32_t) :: status
     end function ffuse_provider_capabilities_proc
+
+    function ffuse_provider_save_restart_blob_proc(self, in, out) result(status) bind(C)
+      import :: c_int32_t, c_ptr, fuse_null, fuse_restart_blob_sink
+      type(c_ptr), value :: self
+      type(fuse_null), intent(in) :: in
+      type(fuse_restart_blob_sink), intent(inout) :: out
+      integer(c_int32_t) :: status
+    end function ffuse_provider_save_restart_blob_proc
+
+    function ffuse_provider_load_restart_blob_proc(self, in, out) result(status) bind(C)
+      import :: c_int32_t, c_ptr, fuse_null, fuse_restart_blob_source
+      type(c_ptr), value :: self
+      type(fuse_restart_blob_source), intent(in) :: in
+      type(fuse_null), intent(inout) :: out
+      integer(c_int32_t) :: status
+    end function ffuse_provider_load_restart_blob_proc
   end interface
 
   public :: ffuse_provider_bootstrap, &
@@ -120,6 +140,8 @@ module ffuse_provider
             ffuse_provider_set_save_state, &
             ffuse_provider_set_restore_state, &
             ffuse_provider_set_capabilities, &
+            ffuse_provider_set_save_restart_blob, &
+            ffuse_provider_set_load_restart_blob, &
             ffuse_provider_version_proc, &
             ffuse_provider_create_proc, &
             ffuse_provider_destroy_proc, &
@@ -128,7 +150,9 @@ module ffuse_provider
             ffuse_provider_advance_proc, &
             ffuse_provider_save_state_proc, &
             ffuse_provider_restore_state_proc, &
-            ffuse_provider_capabilities_proc
+            ffuse_provider_capabilities_proc, &
+            ffuse_provider_save_restart_blob_proc, &
+            ffuse_provider_load_restart_blob_proc
 
 contains
 
@@ -194,6 +218,20 @@ contains
 
     table%capabilities = c_funloc(proc)
   end subroutine ffuse_provider_set_capabilities
+
+  subroutine ffuse_provider_set_save_restart_blob(table, proc)
+    type(fuse_provider_abi_v1), intent(inout) :: table
+    procedure(ffuse_provider_save_restart_blob_proc) :: proc
+
+    table%save_restart_blob = c_funloc(proc)
+  end subroutine ffuse_provider_set_save_restart_blob
+
+  subroutine ffuse_provider_set_load_restart_blob(table, proc)
+    type(fuse_provider_abi_v1), intent(inout) :: table
+    procedure(ffuse_provider_load_restart_blob_proc) :: proc
+
+    table%load_restart_blob = c_funloc(proc)
+  end subroutine ffuse_provider_set_load_restart_blob
 
   ! A plugin's own exported `fuse_provider_abi(abi_version) bind(C,
   ! name="fuse_provider_abi")` (docs/dev/abi-design.md, point 4: the plugin
