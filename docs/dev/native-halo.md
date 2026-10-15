@@ -174,3 +174,11 @@ full merge, but the DECISION at its core -- which this entry's own scope note (2
   `build_weights_via_supermesh`, alongside the MOAB path, via `dynamic_cast`; a backend that is neither
   MOAB nor native and reports more than one rank is not covered by any E-REMAP-PARALLEL check in this
   tree (none exists yet that does).
+- runtime-exchange track, follow-up round: this file's own halo exchange
+  (`exchange_migration_buffers()`, native_migration.hpp/.cpp) was
+  explicitly out of scope for the ghost-field and nodal-remap exchange
+  work that round did (device-resident-arcs.md, "Runtime-exchange track,
+  follow-up round") -- that function's own "always stages through host
+  buffers regardless, per the standing priority" policy sentence is
+  UNCHANGED; its device-residency belongs to the separate Migration
+  track's own worktree, not this one.

@@ -7346,3 +7346,30 @@ quick tier had 11 timeouts (334 rows): the three restart rows and eight rows tha
 program exited 3 of 3 under the default provider, the restart rows passed, and the quick tier passed 334 of 334
 (78.37 s). Nothing in FUSE sets the provider. If a host run again times out with every rank inside `MPI_Finalize`,
 run the five-line program first: a hang there is this environment state, not FUSE.
+
+### D66. The device-direct (GPU-aware, zero host round trip) exchange path this round adds to the ghost and nodal-remap exchanges cannot be exercised for real on higgs — OPEN, measured 2026-10-15 (runtime-exchange track, follow-up round)
+
+`fuse::linalg::mpi_is_gpu_aware()` (comm.hpp, this round's own shared probe, moved from
+`fuse::transport::MpiTransport`'s former private copy) is measured to return `false` unconditionally on
+higgs: its OpenMPI 4.1.5 was configured `--without-cuda` (`ompi_info`'s own configure-line record), so
+`MPIX_Query_cuda_support()` returns `0` at run time even though the `MPIX_CUDA_AWARE_SUPPORT` extension
+macro IS declared at compile time (`FUSE_MPI_HAS_GPU_AWARE_EXTENSION=1` in the cache) — confirmed directly
+with a standalone probe program (`MPIX_Query_cuda_support()=0`), not inferred from the configure line
+alone. This is the identical probe `fuse::transport::MpiTransport::is_gpu_aware()` already used before
+this round (device-resident-arcs.md Phase 3) and the identical situation that path was already in:
+`RunnerTransport.ADeviceResidentRunDeliversTheSourceValuesGpuAwareOrNot`'s own comment calling higgs's
+OpenMPI "GPU-aware" predates this measurement and is not supported by it — left uncorrected here (out of
+this track's scope; that file belongs to the Transport track) but recorded so a future reader does not
+repeat the assumption.
+
+Consequence for this round's two new exchanges (`fuse::backend::DeviceGhostExchanger`,
+`test/parallel/device_ghost_exchange_test.cpp`; the nodal-distributed-remap plan,
+`nodal_remap_distributed.cpp`'s `build_distributed_remap_plan` plus `Runner::Impl::nodal_dist_gather_on`/
+`nodal_dist_scatter_on`): the device-direct branch (pack/unpack on `Space`, `PackedExchanger::
+exchange_packed()`/`exchange_packed_adjoint()` handed device pointers straight) is implemented and
+compiles, and the host-staged fallback branch (always taken on this hardware) is verified correct at
+1-5 ranks, under both the natural (false) and `FUSE_TRANSPORT_HOST_STAGING=1`-forced probe value. The
+device-direct branch itself has no host run that reaches it: nothing on higgs can confirm it moves data
+correctly with real device pointers in MPI's hands, as opposed to merely compiling. A host with a
+genuinely CUDA-aware OpenMPI (or MPICH built against UCX/CUDA) is what this needs; until then this
+branch is UNVERIFIED, not failing.

@@ -382,6 +382,8 @@ case now stages a device-resident `in`/`out` slot through one
 same helpers `iteration.cpp`'s sweep loop already uses), around an MPI
 exchange that still runs entirely on host buffers.
 
+**SUPERSEDED by "Runtime-exchange track, follow-up round (2026-10-15)" below** (the lead's layering decision resolved the first two of these three items; kept verbatim as the historical record of why they were blocked, not because they still are).
+
 **Why the nodal-dist and ghost-field exchanges themselves stay host
 buffers, not GPU-aware MPI.** Two separate, pre-existing architectural
 decisions block a literal "hand MPI a device pointer" implementation for
@@ -422,3 +424,138 @@ track's call to overturn:
 **Lead must know.** The GhostExchanger and migration-exchange blockers
 above are findings, not fixes -- report-runtime-exchange.md states them as
 deviations. Overturning either standing decision is the owner's call.
+
+## Runtime-exchange track, follow-up round (2026-10-15)
+
+**Lead's layering decision, acted on.** `fuse::linalg` stays Kokkos-free
+(comm.hpp's own header comment is unchanged); the GPU-aware probe and the
+device-side packing both moved to the layers the lead named:
+
+- `fuse::linalg::mpi_is_gpu_aware()` (comm.hpp/comm_mpi.cpp) is now the
+  ONE probe `fuse::transport::MpiTransport::is_gpu_aware()` calls (it
+  used to carry its own private copy, `transport_mpi_is_gpu_aware()`,
+  deleted this round) and the one `fuse::backend::DeviceGhostExchanger`
+  and the nodal-remap plan below also call -- `linalg` sits below both
+  `transport` and `backend` (tools/check-layering.py), so this is the
+  lowest layer either can include it from. `FUSE_TRANSPORT_HOST_STAGING=1`
+  still forces it `false`; every new MPI row below is tested under both
+  settings.
+- `fuse::linalg::PackedExchanger` (comm.hpp), implemented by
+  `MpiExchanger` (comm_mpi.cpp) alongside `GhostExchanger`: exposes the
+  pack/unpack maps and counts/displacements `GhostExchanger::update()`
+  already derives once, plus two raw `MPI_Alltoallv` primitives
+  (`exchange_packed()`, and its adjoint `exchange_packed_adjoint()` for
+  a scatter-add) over caller-packed buffers. `GhostExchanger::update()`'s
+  own signature and contract are UNCHANGED -- reached with
+  `std::dynamic_pointer_cast<const PackedExchanger>`, `nullptr` for the
+  serial exchanger.
+- `fuse::backend::DeviceGhostExchanger` (new,
+  `include/fuse/backend/device_ghost_exchange.hpp`, header-only,
+  templated on `Space`): drives `PackedExchanger` with Kokkos pack/unpack
+  kernels, handing MPI a device pointer directly when `Space` is a device
+  space and `mpi_is_gpu_aware()`, host-staging (deep_copy around the same
+  `exchange_packed()` call) otherwise. `update()` is the forward (gather)
+  direction; `update_adjoint()` is the scatter-add the nodal-remap H^T
+  direction needs. NOT wired into an existing production caller --
+  `fuse::linalg::DistVector` (the one existing `GhostExchanger::update()`
+  caller) is plain host `std::vector` by design, and
+  `NativeMeshBackend::remap_halo_pattern` only builds a `GhostPattern`,
+  never calls `update()` on it itself (that is
+  `examples/brusselator/species_core.hpp`'s own example code) -- this is
+  new infrastructure for the next device-resident consumer, proven on
+  its own terms (`test/parallel/device_ghost_exchange_test.cpp`, a ring
+  pattern at 1-5 ranks, `.device` twins at 1-3, both
+  `FUSE_TRANSPORT_HOST_STAGING` settings).
+
+**The nodal-distributed-remap exchange is now a one-time resolved plan.**
+`fuse::build_distributed_remap_plan` (nodal_remap_distributed.hpp/cpp,
+new) resolves, ONCE at setup (alongside `build_distributed_interp_rows`,
+only when `comm_handle` names a REAL communicator -- a single-rank run
+keeps the unchanged `apply_distributed_H`/`apply_distributed_HT` path,
+below), every row's `src_global_ids` to (owner rank, owner's own local
+position) via one additional one-time `MPI_Allgatherv`, then builds a
+component-expanded `fuse::linalg::GhostPattern` and its `MpiExchanger`
+exactly the way `make_mpi_exchanger` already does for ghost fields. The
+per-period cost drops from "replicate the whole source mesh and rebuild
+an `unordered_map`" (the previous round's own blocker paragraph, deleted
+below) to one `MPI_Alltoallv` of a plain value array, gather/scattered
+with Kokkos kernels (`Runner::Impl::nodal_dist_gather_on`/
+`nodal_dist_scatter_on`, runner.cpp) on whichever `Space` the arc already
+lives in.
+
+A SECOND exchanger (`DistributedRemapPlan::ghost_fill_exchanger`) turned
+out to be required, not optional: `apply_distributed_HT`'s own contract
+overwrites every LOCAL row -- owned or ghost -- with the same global
+total for its global id, and the plan's primary exchanger only
+scatter-adds into each vertex's OWNER. Found the hard way (a real host
+MPI run, `NodalRemapRunnerMpi.DisjointRankSets` at 3 ranks: rank 0's own
+assertions passed, rank 1's did not -- its one GHOST entry of a vertex
+rank 0 owns stayed 0 instead of the broadcast total; every OWNED entry on
+every rank was already correct). `ghost_fill_exchanger` is a second,
+component-expanded `GhostPattern` over every LOCAL ghost entity of the
+nodal mesh, reusing the SAME global ownership map the primary pattern's
+derivation already computed -- a second cheap pattern build, not a second
+Allgatherv.
+
+**A second, independent bug found and fixed before any of this reached a
+real multi-rank test: a per-rank early return cannot guard a collective.**
+`DeviceGhostExchanger::update()`'s first draft returned early when THIS
+rank's own `ghost_size() == 0`, reasoning (wrongly) that an exchange with
+nothing to move is a no-op. `ghost_size()` is a PER-RANK count; one rank
+having zero local ghosts while a PEER has some is the ordinary case for
+the nodal-remap pattern specifically (a rank that owns no evaluation
+entities for a channel has `n_rows == 0`, hence zero slots, while a peer
+that does still needs its own `MPI_Alltoallv`), and every rank of the
+communicator must still enter that collective, whatever ITS own counts
+are -- `MpiExchanger::update()` itself (comm_mpi.cpp) never special-cases
+a zero count for exactly this reason. The early return deadlocked
+`parallel.nodal_remap_runner` at every rank count above 1 (host run,
+measured: every rank stuck in `MPI_Alltoallv`, confirmed via a per-rank
+`mpiexec --output-filename` trace showing no rank reaching the next
+output after `[ RUN ]`). Removed; a zero-count `MPI_Alltoallv` entry is a
+well-defined, cheap no-op MPI already handles, the same reason the
+pack/unpack Kokkos kernels this round adds are never guarded by a
+`n == 0` check either (a `RangePolicy(0, 0)` `parallel_for` is simply
+zero iterations).
+
+**Still host-only, now narrowed to one real limitation instead of three.**
+Of the previous round's three blockers, two are resolved by this round
+(ghost exchange, nodal-remap exchange); the third --
+`fuse::native::exchange_migration_buffers()` -- is explicitly OUT of this
+round's scope (owned by the separate Migration track, a different
+worktree; its own header comment's "always stages through host buffers
+regardless, per the standing priority" policy sentence is left UNCHANGED,
+not rewritten, since this round touches neither that file nor its
+caller). H^T's own INPUT gather (the eval-side value times the eval
+side's own cell measure) still runs on host regardless of `Space`:
+`MeshView::measure()` has no device-callable form, a pre-existing
+limitation of the mesh interface this round's scope does not change.
+
+**Hardware cannot verify the device-direct branch.** `mpi_is_gpu_aware()`
+is measured `false` unconditionally on higgs (KNOWN_ISSUES.md D66):
+OpenMPI 4.1.5 here was configured `--without-cuda`, so
+`MPIX_Query_cuda_support()` returns 0 at run time even though the
+extension macro is declared at compile time. Every new MPI row this
+round adds is verified correct via the host-staged fallback (always
+taken on this hardware) under both the natural and forced
+`FUSE_TRANSPORT_HOST_STAGING=1` settings; the device-direct branch
+(handing MPI a device pointer with no host round trip) compiles and is
+reachable in the code, but no host run here can confirm it moves data
+correctly with a real device pointer in MPI's own hands.
+
+**A reproducibility trade, declared.** The original nodal-remap
+exchange's own design (nodal_remap_distributed.hpp's header comment)
+proves its H^T total "bit-identical across rank counts" by summing every
+contribution in one global, rank-count-independent order (sorted by
+contributor global id) after an `MPI_Allgatherv` of the WHOLE term list.
+The plan-based path's scatter-add uses `Kokkos::atomic_add` into each
+owner's own position instead -- correct, but summing in whatever order
+messages/threads happen to arrive, which is NOT reproducible across rank
+counts (or, in principle, across runs). `parallel.nodal_remap_runner`'s
+own checks (1e-12 relative tolerance, not exact equality) do not
+distinguish the two; tightening that test to catch the difference, or
+recovering the stronger guarantee with a precomputed, rank-count-fixed
+sort order over the exchange's own receive buffer, is this round's one
+explicitly open follow-up, not attempted here (`apply_distributed_H`/
+`apply_distributed_HT` themselves, used at `comm_handle ==
+fuse::search::kNullComm`, keep the stronger guarantee unchanged).

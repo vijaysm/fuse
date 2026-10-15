@@ -105,7 +105,19 @@ that:
    **update, runtime-exchange track: also moved to the space-AWARE group;
    its own case stages its arcs explicitly around the still-host-buffered
    MPI exchange, the same shape Transport's own mixed-pair fallback
-   uses**), `WindowAdvance`/`Map`/`Reduce`/`Closure` (refusals). Only about
+   uses**.
+   **Update, runtime-exchange track, follow-up round (device-resident-
+   arcs.md, "Runtime-exchange track, follow-up round"): "still-host-
+   buffered" above is now true only when `comm_handle ==
+   fuse::search::kNullComm` (a single-rank run). A REAL communicator
+   drives a one-time resolved exchange plan instead
+   (`nodal_remap_distributed.cpp`'s `build_distributed_remap_plan`) whose
+   per-period gather (`Runner::Impl::nodal_dist_gather_on<Space>`) and
+   scatter-add (`nodal_dist_scatter_on<Space>`) pack/unpack on `Space`
+   and hand MPI a device pointer when `fuse::linalg::mpi_is_gpu_aware()`
+   -- the same space-AWARE shape Transport's own case already has, not
+   the mixed-pair host-staged fallback this paragraph described when it
+   was written), `WindowAdvance`/`Map`/`Reduce`/`Closure` (refusals). Only about
    9 of ~15 `OpKind`s are templated on `HostExecSpace` today and need `Space`
    genericity: `Interpolate`'s identity-copy branch, `Remap`'s identity and
    weighted branches, `Sample`'s non-spacetime branch, `Accumulate`,
