@@ -72,3 +72,13 @@ old = "    if (nsimplex == 0) {"
 new = "    if (false) {  // nsimplex == 0 -- no-geometry refusal disabled"
 target = "fuse_search_refusals_test"
 test = "search.refusals"
+
+[[mutation]]
+id = "search-build-device-resident-flag-tied-to-backend"
+area = "search"
+describes = "BoxIndex::build_device_resident sets device_ (the flag size()/empty()/query_points()/query_nearest() read to pick impl_->device_tree over impl_->host_tree) back to kHasDeviceBackend instead of true -- on a build with no CUDA/HIP/SYCL backend this entry point then builds the tree into device_tree but routes every read to the untouched, default-constructed host_tree, so size() reports 0 for any nonempty input. box_index_test.cpp's BuildDeviceResidentSizeMatchesBoxCountForZeroOneAndSevenBoxes (n=1 and n=7) and mesh_adapter_test.cpp's DeviceElementBoxesMatchHostElementBoxesForANativeMesh both make it fire."
+file = "src/search/box_index.cpp"
+old = "  out.device_ = true;"
+new = "  out.device_ = kHasDeviceBackend;  // ties routing to the backend, not to where the tree was built"
+target = "fuse_search_box_index_test"
+test = "search.box_index"

@@ -330,5 +330,33 @@ TEST(BoxIndex, ViewBasedBuildAndQueryMatchVectorBasedOnTheSameIndex) {
   }
 }
 
+// `build_device_resident`'s `device_` must say "the tree is in
+// `impl_->device_tree`" unconditionally -- this entry point never builds
+// into `impl_->host_tree` the way `build()` can (box_index.cpp's own
+// comment on the function) -- independently of whether this build has a
+// real CUDA/HIP/SYCL backend. `size()`/`empty()` read `impl_->device_tree`
+// only when `device_` is true; pinned here for 0, 1 and 7 boxes so a
+// regression that ties `device_` back to `kHasDeviceBackend` (this build
+// has none, so that reads false) is caught by `size()`/`empty()` directly,
+// independently of mesh_adapter_test.cpp's own
+// DeviceElementBoxesMatchHostElementBoxesForANativeMesh.
+TEST(BoxIndex, BuildDeviceResidentSizeMatchesBoxCountForZeroOneAndSevenBoxes) {
+  using MemSpace = Kokkos::DefaultExecutionSpace::memory_space;
+  for (const std::size_t n : {std::size_t{0}, std::size_t{1}, std::size_t{7}}) {
+    SCOPED_TRACE(::testing::Message() << "n = " << n);
+    auto boxes = random_boxes(2, n);
+
+    Kokkos::View<Box*, MemSpace> boxes_view("pin_build_device_resident_boxes", n);
+    auto boxes_mirror = Kokkos::create_mirror_view(boxes_view);
+    for (std::size_t i = 0; i < n; ++i) boxes_mirror(i) = boxes[i];
+    Kokkos::deep_copy(boxes_view, boxes_mirror);
+
+    auto idx = BoxIndex::build_device_resident(Kokkos::View<const Box*, MemSpace>(boxes_view));
+    ASSERT_TRUE(idx.ok()) << idx.error().message;
+    EXPECT_EQ(idx.value().size(), n);
+    EXPECT_EQ(idx.value().empty(), n == 0);
+  }
+}
+
 }  // namespace
 }  // namespace fuse::search
