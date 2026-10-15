@@ -228,7 +228,21 @@ Result<BoxIndex> BoxIndex::build_device_resident(
   BoxIndex out;
   const std::size_t n = boxes.extent(0);
   out.impl_ = std::make_unique<Impl>();
-  out.device_ = kHasDeviceBackend;
+  // This entry point always builds the tree into impl_->device_tree, below
+  // (there is no host-tree branch here the way build() has) -- device_ is
+  // the flag size()/empty()/query_points()/query_nearest() read to choose
+  // which Impl member to address, so it must say "the data is in
+  // device_tree" unconditionally, not "this build has a real device
+  // backend". Those are two different facts: kHasDeviceBackend answers
+  // the second one, and only it belongs in executes_on_device()'s
+  // calculation (device_ && kHasDeviceBackend) below. On a build with no
+  // CUDA/HIP/SYCL backend, DeviceTree and HostTree are the same type over
+  // the same memory space (this file's own EXECUTION SPACE comment at the
+  // top), so setting device_ = kHasDeviceBackend here left the routing
+  // flag false while the tree sat in device_tree -- every
+  // size()/empty()/query call then read the untouched, default-constructed
+  // host_tree instead.
+  out.device_ = true;
   if (n == 0) {
     out.dimension_ = 0;
     return std::move(out);
