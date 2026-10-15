@@ -257,6 +257,11 @@ target_compile_definitions(fuse-coupler-transport PUBLIC
   FUSE_CONNECT_ACCEPT_ENABLED=$<BOOL:${FUSE_ENABLE_CONNECT_ACCEPT}>)
 target_compile_features(fuse-coupler-transport PUBLIC cxx_std_20)
 target_link_libraries(fuse-coupler-transport PUBLIC fuse::schedule)
+# runtime-exchange track: mpi_transport.cpp now calls the shared
+# fuse::linalg::mpi_is_gpu_aware() probe (comm.hpp) instead of its own
+# duplicate -- PRIVATE, the same visibility fuse-coupler-backend already
+# gives this same edge, since nothing transport exports depends on linalg.
+target_link_libraries(fuse-coupler-transport PRIVATE fuse::linalg)
 if(FUSE_ENABLE_MPI)
   target_link_libraries(fuse-coupler-transport PUBLIC MPI::MPI_CXX)
 endif()

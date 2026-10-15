@@ -40,17 +40,28 @@
 // collective is kept.
 
 // Explicit, not transitive: the feature macro is read below (docs/dev/invariants.md).
-#include "fuse/base/config.hpp"
+#include "fuse/base/config.hpp"  // FUSE_MPI_GPU_AWARE
 
 #include "fuse/linalg/comm.hpp"
 
 #include "fuse/base/error.hpp"
 
+#include <cstdlib>
 #include <limits>
 
 #if FUSE_HAVE_MPI
 #include <algorithm>
 #include <mpi.h>
+// Declares MPIX_Query_cuda_support()/MPIX_CUDA_AWARE_SUPPORT when this
+// OpenMPI was built with CUDA-aware support -- moved here from
+// src/transport/mpi_transport.cpp's own (now superseded) copy of this
+// probe, mirrored verbatim since this is where the probe now lives
+// (comm.hpp's own header comment on `mpi_is_gpu_aware()`).
+#if defined(__has_include)
+#if __has_include(<mpi-ext.h>)
+#include <mpi-ext.h>
+#endif
+#endif
 #endif
 
 namespace fuse::linalg {
@@ -110,7 +121,7 @@ class MpiReducer : public Reducer {
   int size_ = 1;
 };
 
-class MpiExchanger : public GhostExchanger {
+class MpiExchanger : public GhostExchanger, public PackedExchanger {
  public:
   MpiExchanger(MPI_Comm comm, std::size_t owned_n, std::size_t ghost_n,
               std::vector<int> req_counts, std::vector<int> req_displs,
@@ -160,14 +171,50 @@ class MpiExchanger : public GhostExchanger {
                "MpiExchanger::update: accumulated recv total overflowed int (wrapped to {})",
                recv_total);
     std::vector<double> recv_buf(static_cast<std::size_t>(recv_total), 0.0);
-    const int rc = MPI_Alltoallv(send_buf.data(), ans_counts_.data(), ans_displs_.data(),
-                                 MPI_DOUBLE, recv_buf.data(), req_counts_.data(),
-                                 req_displs_.data(), MPI_DOUBLE, comm_);
+    // runtime-exchange track: the Alltoallv itself is now exchange_packed()
+    // below, reused rather than re-dialled here -- `update()` is exactly
+    // this function's own pack/unpack loops wrapped around that call.
+    const auto ex = exchange_packed(send_buf.data(), recv_buf.data());
+    if (!ex.ok()) return ex.error();
+    for (int k = 0; k < recv_total; ++k) {
+      ghosts[fill_index_[static_cast<std::size_t>(k)]] = recv_buf[static_cast<std::size_t>(k)];
+    }
+    return Result<void>::success();
+  }
+
+  // ---- PackedExchanger: the same Alltoallv, over buffers a caller packed
+  // and will unpack itself (comm.hpp's own header comment on why this
+  // exists alongside update()). ----
+
+  [[nodiscard]] const std::vector<std::int64_t>& pack_index() const override { return ans_index_; }
+  [[nodiscard]] const std::vector<std::int64_t>& unpack_index() const override {
+    return fill_index_;
+  }
+  [[nodiscard]] const std::vector<int>& send_counts() const override { return ans_counts_; }
+  [[nodiscard]] const std::vector<int>& send_displs() const override { return ans_displs_; }
+  [[nodiscard]] const std::vector<int>& recv_counts() const override { return req_counts_; }
+  [[nodiscard]] const std::vector<int>& recv_displs() const override { return req_displs_; }
+
+  [[nodiscard]] Result<void> exchange_packed(const double* send, double* recv) const override {
+    const int rc = MPI_Alltoallv(send, ans_counts_.data(), ans_displs_.data(), MPI_DOUBLE, recv,
+                                 req_counts_.data(), req_displs_.data(), MPI_DOUBLE, comm_);
     if (rc != MPI_SUCCESS) {
       return Failure{"E-LINALG-MPI-ALLTOALLV", "MPI_Alltoallv of ghost values failed"};
     }
-    for (int k = 0; k < recv_total; ++k) {
-      ghosts[fill_index_[static_cast<std::size_t>(k)]] = recv_buf[static_cast<std::size_t>(k)];
+    return Result<void>::success();
+  }
+
+  [[nodiscard]] Result<void> exchange_packed_adjoint(const double* send,
+                                                      double* recv) const override {
+    // The SAME Alltoallv as exchange_packed(), with send/receive roles
+    // swapped -- this rank now sends using its own REQUEST grouping and
+    // receives using its own ANSWER grouping (comm.hpp's own header
+    // comment on PackedExchanger explains why this is the adjoint).
+    const int rc = MPI_Alltoallv(send, req_counts_.data(), req_displs_.data(), MPI_DOUBLE, recv,
+                                 ans_counts_.data(), ans_displs_.data(), MPI_DOUBLE, comm_);
+    if (rc != MPI_SUCCESS) {
+      return Failure{"E-LINALG-MPI-ALLTOALLV",
+                     "MPI_Alltoallv (adjoint) of scatter contributions failed"};
     }
     return Result<void>::success();
   }
@@ -266,6 +313,22 @@ class ParticipantSetReducer : public Reducer {
 
 std::shared_ptr<const Reducer> make_mpi_reducer(int comm_f) {
   return std::make_shared<const MpiReducer>(resolve(comm_f));
+}
+
+// Moved here from src/transport/mpi_transport.cpp's own (now superseded)
+// transport_mpi_is_gpu_aware() -- identical probe body, now the one copy
+// both `transport` and `backend` call (comm.hpp's own header comment on
+// `mpi_is_gpu_aware()` explains the layering choice).
+bool mpi_is_gpu_aware() {
+  if (const char* force = std::getenv("FUSE_TRANSPORT_HOST_STAGING");
+      force != nullptr && force[0] != '\0' && force[0] != '0') {
+    return false;
+  }
+#if defined(MPIX_CUDA_AWARE_SUPPORT)
+  return MPIX_Query_cuda_support() != 0;
+#else
+  return FUSE_MPI_GPU_AWARE != 0;
+#endif
 }
 
 Result<ParticipantSetReducerResult> make_participant_set_reducer(
