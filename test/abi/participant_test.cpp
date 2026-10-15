@@ -280,6 +280,67 @@ TEST(AbiParticipant, StepBoundsAreTheSchedulesRationals) {
   EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
 }
 
+// docs/dev/restart.md round 2, item 4's participant-side request: a C
+// consumer test of request_restart_point() through the REAL plain-C
+// table, proving the flag reaches fuse::Runner::take_restart_point_
+// request() (checked via the fuse::abi_test::runner_of() seam, since
+// CONSUMING that flag is the embedding host's own job, never something
+// the plain C ABI itself exposes a read-back entry for -- that method's
+// own doc comment, fuse/runtime/runner.hpp).
+TEST(AbiParticipant, RequestRestartPointSetsTheRunnersFlagIdempotently) {
+  const auto* t = Table();
+  ASSERT_NE(t, nullptr);
+  const auto bytes = fuse::abi_test::build_two_component_lag1_bytes(fuse::Rational{1});
+  fuse_ctx* ctx = CreateAndLoad(t, bytes);
+
+  // Before initialize(): a no-op, not an error -- no Runner exists yet
+  // to hold the flag (entries.def's own doc comment on this entry).
+  ASSERT_EQ(t->request_restart_point(ctx, nullptr, nullptr), FUSE_OK);
+  EXPECT_EQ(fuse::abi_test::runner_of(ctx), nullptr);
+
+  double up_storage[4] = {0, 0, 0, 0};
+  double down_storage[4] = {0, 0, 0, 0};
+  fuse_field_name fname{.struct_size = sizeof(fname)};
+  fname.component = "upstream";
+  fname.field = "out";
+  fuse_field_ref fref{.struct_size = sizeof(fref)};
+  ASSERT_EQ(t->field_handle(ctx, &fname, &fref), FUSE_OK);
+  fuse_field_view fview{.struct_size = sizeof(fview)};
+  fview.handle = fref.handle;
+  fview.element_type = FUSE_ELEMENT_F64;
+  fview.memspace = FUSE_MEMSPACE_HOST;
+  fview.ownership = FUSE_OWNERSHIP_OWNED;
+  fview.components = 1;
+  fview.count = 4;
+  fview.owned_count = 4;
+  fview.stride = 1;
+  fview.data = up_storage;
+  ASSERT_EQ(t->register_field(ctx, &fview, nullptr), FUSE_OK);
+  fname.component = "downstream";
+  fname.field = "in";
+  ASSERT_EQ(t->field_handle(ctx, &fname, &fref), FUSE_OK);
+  fview.handle = fref.handle;
+  fview.data = down_storage;
+  ASSERT_EQ(t->register_field(ctx, &fview, nullptr), FUSE_OK);
+  ASSERT_EQ(t->initialize(ctx, nullptr, nullptr), FUSE_OK);
+
+  fuse::Runner* runner = fuse::abi_test::runner_of(ctx);
+  ASSERT_NE(runner, nullptr);
+  EXPECT_FALSE(runner->take_restart_point_request())
+      << "no request has been made yet";
+
+  ASSERT_EQ(t->request_restart_point(ctx, nullptr, nullptr), FUSE_OK);
+  // Idempotent: two requests before the host polls still leave exactly
+  // ONE pending request, consumed by the FIRST take_restart_point_
+  // request() call -- the second call must find nothing left pending.
+  ASSERT_EQ(t->request_restart_point(ctx, nullptr, nullptr), FUSE_OK);
+  EXPECT_TRUE(runner->take_restart_point_request());
+  EXPECT_FALSE(runner->take_restart_point_request())
+      << "take_restart_point_request() must CONSUME the flag, not peek";
+
+  EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
+}
+
 // AbiParticipant.AThrowingComponentBecomesRuntimeErrorWithTheMessage
 // (ABI-EXCEPTION-CONTAINMENT).
 TEST(AbiParticipant, AThrowingComponentBecomesRuntimeErrorWithTheMessage) {

@@ -634,11 +634,39 @@ def _fortran_provider_abstract_interface(name: str, inp: str, out: str) -> list[
 
 
 def gen_fortran_provider_module(spec: Spec) -> str:
+    # BUG FOUND AND FIXED (docs/dev/restart.md round 2, item 4): this
+    # `use` list was hardcoded rather than computed from spec.provider_
+    # entries' own (inp, out) struct types, so the Fortran provider
+    # module silently omitted any struct a NEWLY APPENDED provider entry
+    # introduced -- exactly what happened when save_restart_blob/
+    # load_restart_blob were appended: ffuse_provider.f90 referenced
+    # fuse_restart_blob_sink/fuse_restart_blob_source without importing
+    # either, and gfortran's own "Cannot IMPORT ... does not exist"
+    # caught it immediately (a real build failure, not a lint warning).
+    # Computed here instead, so the next appended provider entry's own
+    # struct types are picked up automatically, never needing a second
+    # hand-edit to this list.
+    needed_structs = sorted({t for (_, inp, out, _) in spec.provider_entries
+                             for t in (inp, out)})
+    # Wrapped across Fortran free-form continuation lines (gfortran's
+    # default line limit is 132 columns without -ffree-line-length-none,
+    # which this project does not pass): one name per fragment, packed
+    # greedily onto each line, same "&" continuation style the generator
+    # already uses elsewhere in this file (see gen_fortran_module's own
+    # wrapped USE/PUBLIC lists below).
+    use_names = needed_structs + ["FUSE_ABI_VERSION"]
+    use_lines: list[str] = []
+    cur = "  use ffuse, only: "
+    for i, nm in enumerate(use_names):
+        piece = nm + (", " if i < len(use_names) - 1 else "")
+        if len(cur) + len(piece) > 76 and cur.strip() not in ("use ffuse, only:",):
+            use_lines.append(cur + "&")
+            cur = "                   "
+        cur += piece
+    use_lines.append(cur)
     o = [FORTRAN_PROVIDER_BANNER, "module ffuse_provider",
          "  use, intrinsic :: iso_c_binding",
-         "  use ffuse, only: fuse_null, fuse_version_info, fuse_capability_set, &",
-         "                   fuse_field_view, fuse_field_table, fuse_provider_instance, &",
-         "                   fuse_step_request, fuse_step_report, FUSE_ABI_VERSION",
+         *use_lines,
          "  implicit none",
          "  private", ""]
 

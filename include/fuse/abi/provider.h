@@ -59,6 +59,24 @@ typedef struct fuse_provider_abi_v1 {
   /* self may be NULL; FUSE_CAP_CHECKPOINT means save_state/restore_state are */
   /* real, not the default no-op */
   fuse_status (*capabilities)(fuse_provider_ctx* self, const fuse_null* in, fuse_capability_set* out);
+
+  /* docs/dev/restart.md round 2, item 4 -- restart-to-disk Option B, appended */
+  /* LAST per this table's own append-only rule above: an opaque, versioned */
+  /* byte record capturing whatever save_state()'s in-memory rollback cannot */
+  /* reach (component-private state outside register_fields()' own storage). */
+  /* Same-decomposition restore only -- the rank-count refusal that gates this */
+  /* happens ABOVE this ABI boundary, in fuse::check_restart_rank_count(), */
+  /* never here. FUSE_CAP_CHECKPOINT has no bearing on this entry; a provider */
+  /* not implementing it reports written=0 and blob_version=0, which the caller */
+  /* must treat as \"nothing to capture\", not as an error, exactly as the C++ */
+  /* Component::save_restart_blob() default already does */
+  fuse_status (*save_restart_blob)(fuse_provider_ctx* self, const fuse_null* in, fuse_restart_blob_sink* out);
+
+  /* the read-back counterpart of save_restart_blob(); FUSE_ERR_VERSION (not a */
+  /* silent misread) if blob_version names a version this provider's own */
+  /* current build does not recognise -- the same posture kGraphVersion already */
+  /* takes for the coupling graph (fuse/model/descriptor.hpp) */
+  fuse_status (*load_restart_blob)(fuse_provider_ctx* self, const fuse_restart_blob_source* in, fuse_null* out);
 } fuse_provider_abi_v1;
 
 /* THE ONE EXPORTED SYMBOL A PLUGIN PROVIDES. Returns the table for

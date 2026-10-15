@@ -112,4 +112,15 @@ fuse::RunStats run_stats(const fuse_ctx* ctx);
 /// leaves `ctx` unchanged) when `ctx` is null or in neither state.
 bool force_communicator_set(fuse_ctx* ctx, std::int64_t value);
 
+/// Restart track round 2, item 4's own C consumer test
+/// (test/abi/conformance_test.cpp): the plain C participant ABI has no
+/// entry that reads Runner::take_restart_point_request() back out --
+/// that call is the EMBEDDING HOST's own job, never a plugin's (that
+/// method's own doc comment, fuse/runtime/runner.hpp) -- so a test
+/// proving fuse_request_restart_point() reached the real Runner needs
+/// this seam to reach past the ABI and ask it directly. Returns nullptr
+/// if `ctx` is null or the context has not reached Initialized (no
+/// Runner exists yet).
+fuse::Runner* runner_of(fuse_ctx* ctx);
+
 }  // namespace fuse::abi_test

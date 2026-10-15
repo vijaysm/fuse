@@ -158,6 +158,14 @@ fuse::Result<void> ProviderAdapter::register_fields(fuse::FieldRegistry& registr
       // level, so silence must decode to std::nullopt, not a guess.
       capabilities_ = (((caps.flags & FUSE_CAP_CHECKPOINT) != 0) ? fuse::kCapabilityRollback
                                                                   : std::uint64_t{0}) |
+                      // Restart track round 2, item 4: a plugin that sets
+                      // FUSE_CAP_RESTART_FORM_B is declaring save_restart_blob()/
+                      // load_restart_blob() are real, not the inherited no-op --
+                      // the SAME posture FUSE_CAP_CHECKPOINT already takes for
+                      // save_state/restore_state, one bit over.
+                      (((caps.flags & FUSE_CAP_RESTART_FORM_B) != 0)
+                           ? fuse::kCapabilityRestartFormB
+                           : std::uint64_t{0}) |
                       // A provider's own instance is opaque past the fields it
                       // binds; FUSE's byte-for-byte rollback check can never see
                       // state the plugin keeps that was never described and
@@ -368,6 +376,78 @@ fuse::Result<void> ProviderAdapter::restore_state() {
   if (rc != FUSE_OK) {
     return fuse::Failure{"E-ABI-PROVIDER-RESTORE",
                          "provider '" + name_ + "': restore_state() returned " + std::to_string(rc)};
+  }
+  return fuse::Result<void>::success();
+}
+
+/// Restart track round 2, item 4. Two calls to the SAME table entry, the
+/// identical query-then-fill shape fuse_graph_sink's own CALLEE side
+/// already establishes (participant.cpp's impl_save_graph) -- here as the
+/// CALLER: first with buffer=NULL to learn `written`, then with a buffer
+/// of that exact size. `table_->save_restart_blob == nullptr` (the entry
+/// was never offered) and `out.written == 0` (the plugin has nothing to
+/// capture) are BOTH the Component base class's own "empty blob" default
+/// -- never an error, since the owner's design treats "nothing to
+/// restart" as a legitimate answer, not a missing feature.
+fuse::Result<std::vector<std::byte>> ProviderAdapter::save_restart_blob() {
+  last_blob_version_ = 0;
+  if (table_ == nullptr || table_->save_restart_blob == nullptr) {
+    return std::vector<std::byte>{};
+  }
+  fuse_null in{sizeof(fuse_null)};
+  fuse_restart_blob_sink query{sizeof(fuse_restart_blob_sink)};
+  fuse_status rc = table_->save_restart_blob(self_, &in, &query);
+  if (rc != FUSE_OK) {
+    return fuse::Failure{"E-ABI-PROVIDER-RESTART-SAVE",
+                         "provider '" + name_ +
+                             "': save_restart_blob() (size query) returned " +
+                             std::to_string(rc)};
+  }
+  if (query.written == 0) {
+    last_blob_version_ = query.blob_version;
+    return std::vector<std::byte>{};
+  }
+  std::vector<std::byte> bytes(query.written);
+  fuse_restart_blob_sink fill{sizeof(fuse_restart_blob_sink)};
+  fill.buffer   = bytes.data();
+  fill.capacity = bytes.size();
+  rc = table_->save_restart_blob(self_, &in, &fill);
+  if (rc != FUSE_OK) {
+    return fuse::Failure{"E-ABI-PROVIDER-RESTART-SAVE",
+                         "provider '" + name_ +
+                             "': save_restart_blob() (fill) returned " +
+                             std::to_string(rc)};
+  }
+  if (fill.written != query.written) {
+    return fuse::Failure{
+        "E-ABI-PROVIDER-RESTART-SAVE",
+        "provider '" + name_ + "': save_restart_blob() reported " +
+            std::to_string(query.written) +
+            " bytes on the size query and " + std::to_string(fill.written) +
+            " on the fill call -- the two calls must agree, or the buffer "
+            "this adapter allocated from the FIRST answer does not hold "
+            "everything the SECOND call tried to write"};
+  }
+  last_blob_version_ = fill.blob_version;
+  return bytes;
+}
+
+fuse::Result<void> ProviderAdapter::load_restart_blob(
+    std::span<const std::byte> bytes, std::uint32_t written_by_version) {
+  if (table_ == nullptr || table_->load_restart_blob == nullptr) {
+    return fuse::Result<void>::success();
+  }
+  fuse_restart_blob_source in{sizeof(fuse_restart_blob_source)};
+  in.bytes        = bytes.data();
+  in.byte_count   = bytes.size();
+  in.blob_version = written_by_version;
+  fuse_null out{sizeof(fuse_null)};
+  const fuse_status rc = table_->load_restart_blob(self_, &in, &out);
+  if (rc != FUSE_OK) {
+    return fuse::Failure{"E-ABI-PROVIDER-RESTART-LOAD",
+                         "provider '" + name_ +
+                             "': load_restart_blob() returned " +
+                             std::to_string(rc)};
   }
   return fuse::Result<void>::success();
 }

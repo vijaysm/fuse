@@ -2052,6 +2052,28 @@ fuse_status impl_base_communicator(fuse_ctx* ctx, const fuse_null*,
   });
 }
 
+/// Restart track round 2, item 4's participant-side request
+/// (entries.def's own doc comment on this entry, fuse/runtime/
+/// runner.hpp's Runner::request_restart_point()). A no-op, not an
+/// error, before initialize(): no Runner exists yet to hold the flag,
+/// and a participant calling this too early has asked for nothing this
+/// entry can act on -- the SAME "nothing to do yet" posture
+/// fuse_base_communicator() takes before setup() (formed=0).
+fuse_status impl_request_restart_point(fuse_ctx* ctx, const fuse_null*,
+                                       fuse_null* out) {
+  return with_ctx(ctx, [&](fuse_ctx& c) -> fuse_status {
+    if (out != nullptr) {
+      const fuse_status sz = check_struct_size(out);
+      if (sz != FUSE_OK) return sz;
+      out->struct_size = sizeof(fuse_null);
+    }
+    if (c.runner.has_value()) {
+      c.runner->request_restart_point();
+    }
+    return FUSE_OK;
+  });
+}
+
 // ----------------------------------------------------------- the table
 
 // Member-count cross-check (abi-design.md point 5 / task instructions):

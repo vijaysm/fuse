@@ -49,6 +49,7 @@ program sizes_test
     type(c_funptr) :: run = c_null_funptr
     type(c_funptr) :: view_field = c_null_funptr
     type(c_funptr) :: base_communicator = c_null_funptr
+    type(c_funptr) :: request_restart_point = c_null_funptr
   end type fuse_participant_abi_v1_mirror
 
   type(c_ptr) :: a_pointer
@@ -73,6 +74,8 @@ program sizes_test
   type(fuse_field_table) :: v_field_table
   type(fuse_provider_instance) :: v_provider_instance
   type(fuse_provider_abi_v1) :: v_provider_table
+  type(fuse_restart_blob_sink) :: v_restart_blob_sink
+  type(fuse_restart_blob_source) :: v_restart_blob_source
 
   a_pointer = c_null_ptr
 
@@ -98,4 +101,6 @@ program sizes_test
   write(*, '(A," ",I0)') "fuse_field_table", c_sizeof(v_field_table)
   write(*, '(A," ",I0)') "fuse_provider_instance", c_sizeof(v_provider_instance)
   write(*, '(A," ",I0)') "fuse_provider_abi_v1", c_sizeof(v_provider_table)
+  write(*, '(A," ",I0)') "fuse_restart_blob_sink", c_sizeof(v_restart_blob_sink)
+  write(*, '(A," ",I0)') "fuse_restart_blob_source", c_sizeof(v_restart_blob_source)
 end program sizes_test

@@ -56,4 +56,11 @@ fuse::RunStats run_stats(const fuse_ctx* ctx) {
   return ctx->runner->stats();
 }
 
+fuse::Runner* runner_of(fuse_ctx* ctx) {
+  if (ctx == nullptr) return nullptr;
+  if (ctx->state != fuse_ctx::State::Initialized) return nullptr;
+  if (!ctx->runner.has_value()) return nullptr;
+  return &*ctx->runner;
+}
+
 }  // namespace fuse::abi_test

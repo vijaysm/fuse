@@ -105,6 +105,7 @@ FUSE_ABI_ENUM(FUSE_CAP_MPI,            4,  "a communicator may be set; without i
 FUSE_ABI_ENUM(FUSE_CAP_MPI_CONNECT,    8,  "coupling between separately launched executables over MPI connect/accept or MPMD")
 FUSE_ABI_ENUM(FUSE_CAP_LOWFIVE,       16,  "coupling between executables through LowFive's in-memory HDF5 path")
 FUSE_ABI_ENUM(FUSE_CAP_YAML,          32,  "load_graph accepts a YAML path")
+FUSE_ABI_ENUM(FUSE_CAP_RESTART_FORM_B, 64,  "save_restart_blob/load_restart_blob are real, not the default no-op (docs/dev/restart.md round 2, item 4)")
 
 /* ---- limits ------------------------------------------------------------- */
 FUSE_ABI_ENUM(FUSE_ABI_VERSION,        1,  "the table version this header describes")
@@ -157,6 +158,21 @@ FUSE_ABI_FIELD(void*,          c_ptr,      buffer,       "in: caller's buffer, o
 FUSE_ABI_FIELD(uint64_t,       c_int64_t,  capacity,     "in: bytes available")
 FUSE_ABI_FIELD(uint64_t,       c_int64_t,  written,      "out: bytes the graph needs; nothing is written when it exceeds capacity")
 FUSE_ABI_STRUCT_END(fuse_graph_sink)
+
+FUSE_ABI_STRUCT(fuse_restart_blob_sink, "where a provider's own restart-to-disk blob is written (docs/dev/restart.md Section 3, Option B -- opaque, versioned bytes, same-decomposition restore only; the SAME query-then-fill shape fuse_graph_sink already uses, reused rather than inventing a second one)")
+FUSE_ABI_FIELD(uint32_t,       c_int32_t,  struct_size,  "")
+FUSE_ABI_FIELD(void*,          c_ptr,      buffer,       "in: caller's buffer, or NULL to query the size")
+FUSE_ABI_FIELD(uint64_t,       c_int64_t,  capacity,     "in: bytes available")
+FUSE_ABI_FIELD(uint64_t,       c_int64_t,  written,      "out: bytes the blob needs; nothing is written when it exceeds capacity")
+FUSE_ABI_FIELD(uint32_t,       c_int32_t,  blob_version, "out: this provider's own restart_blob_version(), recorded so a reader can refuse an incompatible blob by name rather than by a corrupted read (the same posture kGraphVersion already takes for the coupling graph)")
+FUSE_ABI_STRUCT_END(fuse_restart_blob_sink)
+
+FUSE_ABI_STRUCT(fuse_restart_blob_source, "a provider's own restart-to-disk blob, read back (docs/dev/restart.md Section 3, Option B)")
+FUSE_ABI_FIELD(uint32_t,       c_int32_t,  struct_size,  "")
+FUSE_ABI_FIELD(const void*,    c_ptr,      bytes,        "the blob this SAME provider wrote at an earlier save_restart_blob() call")
+FUSE_ABI_FIELD(uint64_t,       c_int64_t,  byte_count,   "length of bytes")
+FUSE_ABI_FIELD(uint32_t,       c_int32_t,  blob_version, "the version recorded when this blob was written")
+FUSE_ABI_STRUCT_END(fuse_restart_blob_source)
 
 FUSE_ABI_STRUCT(fuse_setup_options, "process-level settings, before initialize")
 FUSE_ABI_FIELD(uint32_t,       c_int32_t,  struct_size,  "")
@@ -267,6 +283,7 @@ FUSE_ABI_ENTRY(run,                 fuse_run_request,   fuse_null,          "FUS
 FUSE_ABI_ENTRY(view_field,          fuse_field_ref,     fuse_field_view,    "Unit 3 (S6 phase 3, Conformance), appended 2026-10-04 -- LAST, per this table's own append-only rule above (an entry inserted mid-table would shift every later member's offset, breaking a caller compiled against the previous layout): the reverse of register_field -- FUSE hands back a view of ITS OWN storage for the named handle, rather than the caller handing FUSE a pointer. Named view_field, not field_view, because the latter collides with the fuse_field_view TYPE it returns once Fortran lower-cases both (tools/gen-abi.py's own check). Before initialize, this is the same native storage register_field was already given (an early call is legal but pointless: the application already holds that pointer). After initialize, a window-scoped field (see fuse_field_view's own window_samples comment) returns the window path's own private buffer instead -- the one surface through which an application participating in a LowFive-bound window channel reads the waveform it must write, or writes the waveform it must deliver, with no other FUSE call involved in the transfer itself. FUSE_ERR_NOTFOUND if the handle names no field in the loaded graph.")
 
 FUSE_ABI_ENTRY(base_communicator,   fuse_null,          fuse_base_communicator_info, "D14 (KNOWN_ISSUES.md), appended 2026-10-13 -- LAST, per this table's own append-only rule above, same reason view_field states for itself: a local, non-collective read of this context's own c.communicator/ c.communicator_set, already agreed identically on every rank by setup()'s own collective (connect.hpp's own module comment); lets a Connect-mode (accept/connect) caller recover the merged base communicator setup() formed internally and never exposed before this entry, the gap D14's own \"what remains\" item 3 named. Legal before setup() (formed=0, communicator=0) and for every launch mode, not Connect alone: InProcess/Plugin/Mpmd callers get back their own, already-trivial base communicator the same way.")
+FUSE_ABI_ENTRY(request_restart_point, fuse_null, fuse_null, "docs/dev/restart.md round 2, item 4 -- appended LAST per this table's own append-only rule above. An externally-driven (ABI) participant's own way to ask that a restart point be taken: SETS A FLAG (fuse::Runner::request_restart_point()), never writes a file itself -- write_restart_point() needs a RestartWriter the embedding host process configures (a file path, which HDF5 layout), which this entry's fixed (ctx, in, out) shape cannot carry. The embedding host polls fuse::Runner::take_restart_point_request() after every run_period()/resume_period() call and decides whether, and how, to act on it; a participant that never polls back its own host's restart cadence has asked for nothing more than that one bit of intent. Idempotent: calling this more than once before the host polls leaves exactly one pending request, never a queue. Legal at any time after initialize(); has no effect before it, since no Runner exists yet to hold the flag.")
 
 /* ---- provider direction (2026-10-02): the coupler calls a plugin --------
  * The struct catalogue above is SHARED: fuse_null, fuse_version_info,
@@ -312,6 +329,8 @@ FUSE_ABI_PROVIDER_ENTRY(advance,    fuse_step_request,  fuse_step_report,   "int
 FUSE_ABI_PROVIDER_ENTRY(save_state, fuse_null,          fuse_null,          "checkpoint the state advance() mutates, so the same interval can be re-advanced; only one checkpoint need be retained")
 FUSE_ABI_PROVIDER_ENTRY(restore_state, fuse_null,       fuse_null,          "restore the state captured by the most recent successful save_state()")
 FUSE_ABI_PROVIDER_ENTRY(capabilities, fuse_null,        fuse_capability_set, "self may be NULL; FUSE_CAP_CHECKPOINT means save_state/restore_state are real, not the default no-op")
+FUSE_ABI_PROVIDER_ENTRY(save_restart_blob, fuse_null, fuse_restart_blob_sink, "docs/dev/restart.md round 2, item 4 -- restart-to-disk Option B, appended LAST per this table's own append-only rule above: an opaque, versioned byte record capturing whatever save_state()'s in-memory rollback cannot reach (component-private state outside register_fields()' own storage). Same-decomposition restore only -- the rank-count refusal that gates this happens ABOVE this ABI boundary, in fuse::check_restart_rank_count(), never here. FUSE_CAP_CHECKPOINT has no bearing on this entry; a provider not implementing it reports written=0 and blob_version=0, which the caller must treat as \"nothing to capture\", not as an error, exactly as the C++ Component::save_restart_blob() default already does")
+FUSE_ABI_PROVIDER_ENTRY(load_restart_blob, fuse_restart_blob_source, fuse_null, "the read-back counterpart of save_restart_blob(); FUSE_ERR_VERSION (not a silent misread) if blob_version names a version this provider's own current build does not recognise -- the same posture kGraphVersion already takes for the coupling graph (fuse/model/descriptor.hpp)")
 
 #ifdef FUSE_ABI_STRUCT_DEFINED_HERE
 #undef FUSE_ABI_STRUCT

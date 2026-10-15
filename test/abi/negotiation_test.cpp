@@ -55,6 +55,10 @@ struct FakeV2Table {
   // FakeV2Table for the identical reason view_field's own comment just
   // gave for itself, one entry later.
   decltype(fuse_participant_abi_v1::base_communicator) base_communicator;
+  // docs/dev/restart.md round 2, item 4 -- appended to entries.def LAST,
+  // same reason: request_restart_point() is now part of the real v1
+  // table's own prefix too, one entry later again.
+  decltype(fuse_participant_abi_v1::request_restart_point) request_restart_point;
   // The appended v2 member. Never read by a v1 caller (struct_size says it
   // isn't there) and never read by this test's "v2 caller" EITHER, when the
   // table it was handed turns out to be a real v1 one -- see

@@ -105,6 +105,22 @@ typedef struct fuse_participant_abi_v1 {
   /* InProcess/Plugin/Mpmd callers get back their own, already-trivial base */
   /* communicator the same way. */
   fuse_status (*base_communicator)(fuse_ctx* ctx, const fuse_null* in, fuse_base_communicator_info* out);
+
+  /* docs/dev/restart.md round 2, item 4 -- appended LAST per this table's own */
+  /* append-only rule above. An externally-driven (ABI) participant's own way */
+  /* to ask that a restart point be taken: SETS A FLAG */
+  /* (fuse::Runner::request_restart_point()), never writes a file itself -- */
+  /* write_restart_point() needs a RestartWriter the embedding host process */
+  /* configures (a file path, which HDF5 layout), which this entry's fixed */
+  /* (ctx, in, out) shape cannot carry. The embedding host polls */
+  /* fuse::Runner::take_restart_point_request() after every */
+  /* run_period()/resume_period() call and decides whether, and how, to act on */
+  /* it; a participant that never polls back its own host's restart cadence has */
+  /* asked for nothing more than that one bit of intent. Idempotent: calling */
+  /* this more than once before the host polls leaves exactly one pending */
+  /* request, never a queue. Legal at any time after initialize(); has no */
+  /* effect before it, since no Runner exists yet to hold the flag. */
+  fuse_status (*request_restart_point)(fuse_ctx* ctx, const fuse_null* in, fuse_null* out);
 } fuse_participant_abi_v1;
 
 /* THE ONE EXPORTED SYMBOL. Returns the table for `abi_version`, or NULL

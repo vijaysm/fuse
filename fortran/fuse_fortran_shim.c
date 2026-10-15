@@ -132,3 +132,9 @@ FUSE_FORTRAN_EXPORT fuse_status ffuse_base_communicator(fuse_ctx* ctx, const fus
   if (!table || !table->base_communicator) return FUSE_ERR_UNSUPPORTED;
   return table->base_communicator(ctx, in, out);
 }
+
+FUSE_FORTRAN_EXPORT fuse_status ffuse_request_restart_point(fuse_ctx* ctx, const fuse_null* in, fuse_null* out) {
+  const fuse_participant_abi_v1* table = fuse_fortran_shim_table();
+  if (!table || !table->request_restart_point) return FUSE_ERR_UNSUPPORTED;
+  return table->request_restart_point(ctx, in, out);
+}
