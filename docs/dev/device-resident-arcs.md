@@ -182,6 +182,11 @@ Closes the wiring gap the round above left open for two of its three kernels, an
   reusable primitive, not yet called by `merge_halo_cells`/`unpack_migrated_mesh` themselves.
   RED/GREEN: `test/backend/native_mesh_merge_device_test.cpp`, both Host- and Device-space
   instantiations, against a from-scratch `std::unordered_map`/`std::unordered_set` reference.
+  **Superseded (Migration track, 2026-10-15, round 3):** CLOSED -- the renumbering pass and a
+  wire-format-v2 header close both gaps this entry named, and `migrate`/`build_native_remap_halo` now
+  call the device-resident unpack/merge end to end with no host mirror materialized across the full
+  round trip. See docs/dev/native-halo.md's "Device merge decision" and KNOWN_ISSUES.md D51's closing
+  text for the three narrow, declared exceptions that remain.
 
 A hit found and fixed along the way, in this round's OWN new code rather than pre-existing
 infrastructure: every `Kokkos::View<double* [3], Space>` this round constructs (MLS's device point
@@ -300,9 +305,9 @@ the next step starts. Host mode byte-identity is the standing invariant.
    `LayoutRight` in every space (D54). Weight builders: the migration/halo
    wire pack, a batched MLS solve and the supermesh candidate-pair broad
    phase exist as space-templated kernels with their own rows, but none is
-   wired into its production entry point yet (D51-D53 name what blocks
-   each: the receive-side merge, the MLS rank diagnostic, the r3d clip's
-   packaging). Transport: `MpiTransport::is_gpu_aware()` is a run-time
+   wired into its production entry point yet (D52/D53 name what blocks
+   each: the MLS rank diagnostic, the r3d clip's packaging; D51, the
+   receive-side merge, closed 2026-10-15 round 3). Transport: `MpiTransport::is_gpu_aware()` is a run-time
    probe; the `Transport` case packs/unpacks on the device and hands MPI a
    device pointer when the MPI is GPU-aware, stages through host buffers
    otherwise (`FUSE_TRANSPORT_HOST_STAGING=1` forces that path); a mixed
@@ -431,9 +436,13 @@ track's call to overturn:
   and a GPU-aware `exchange_migration_buffers<Space>` overload exists and
   is proven standalone. The ORIGINAL `std::vector` overload this bullet
   described is still what `migrate`/`build_native_remap_halo` call,
-  because `unpack_migrated_mesh`/`merge_halo_cells` have not yet been
-  updated to accept a device-resident buffer (KNOWN_ISSUES.md D51) -- see
-  docs/dev/native-halo.md for the current, narrower gap.
+  because `unpack_migrated_mesh`/`merge_halo_cells` had not yet been
+  updated to accept a device-resident buffer (KNOWN_ISSUES.md D51) --
+  **superseded (round 3, 2026-10-15):** both now delegate to the
+  device-templated `unpack_migrated_mesh_device`/`merge_halo_cells_device`,
+  and `migrate`/`build_native_remap_halo` call the `Space`-templated
+  `exchange_migration_buffers<Space>` overload directly; see
+  docs/dev/native-halo.md for the closed state.
 
 **Lead must know.** The GhostExchanger and migration-exchange blockers
 above are findings, not fixes -- report-runtime-exchange.md states them as

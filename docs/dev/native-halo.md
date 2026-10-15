@@ -160,17 +160,19 @@ Verified byte-for-byte against that existing overload at 1-5 ranks and both
 `test/backend/native_migration_mpi_test.cpp`; `backend.native_migration_mpi` gained a `DEVICE_TWIN`
 registration at 2/3 ranks to cover it under the Runner's device interpreter too).
 
-NOT YET WIRED: `migrate`/`build_native_remap_halo` still call the ORIGINAL `std::vector` overload,
-because `unpack_migrated_mesh`/`merge_halo_cells` still require a host-resident buffer -- see
-KNOWN_ISSUES.md D51's own narrowing for exactly what is left.
+**Wired in (Migration track, 2026-10-15, round 3).** `migrate` and `build_native_remap_halo` now call
+the `Space`-templated `exchange_migration_buffers<Space>` overload directly -- the device-resident
+buffers `pack_to`/`pack_fanout` produce go straight to the exchange and straight on to the device merge
+below, with no `std::vector<std::byte>` staging anywhere in either function. See "Device merge decision"
+below for the receive side this unblocked.
 
-## Device merge decision (KNOWN_ISSUES D51, narrowed)
+## Device merge decision (KNOWN_ISSUES D51, CLOSED)
 
 `include/fuse/backend/native/mesh_merge_device.hpp` adds `fuse::native::device::dedup_by_gid<Space>`:
 the receiving side's MERGE DECISION itself -- "is this incoming global id already held, and if it is
 genuinely new, which ONE of possibly several cross-sender copies is canonical" -- as Kokkos kernels on
 `Space`, replacing the `std::unordered_map`/`std::unordered_set` membership test `merge_halo_cells`'s
-cell dedup and `unpack_migrated_mesh`'s vertex dedup both make today. A sort-and-compact pass:
+cell dedup and `unpack_migrated_mesh`'s vertex dedup used to make. A sort-and-compact pass:
 `Kokkos::Experimental::sort_by_key` the concatenation of the already-held gids and the incoming
 candidates (carrying a signed tag that encodes both side and original position), then one
 `Kokkos::parallel_scan` over the sorted order assigns every DISTINCT value one ascending slot, and an
@@ -183,23 +185,50 @@ case the real wire traffic can produce (no overlap, incoming duplicates of an ex
 cross-sender duplicates among incoming, empty incoming, empty existing), in both Host mode and (when
 this Kokkos has one) a Cuda/HIP/SYCL backend (`test/backend/native_mesh_merge_device_test.cpp`).
 
-**Not yet done:** wiring this primitive into `merge_halo_cells`/`unpack_migrated_mesh` themselves.
-Two gaps remain, both stated rather than assumed:
+**Wired in (Migration track, 2026-10-15, round 3).** The two gaps the round-2 text above left open are
+both closed:
 
-1. **Slot numbering.** `dedup_by_gid`'s output numbers the merged gid set ascending BY VALUE, not by
-   the Host builders' own append-order convention (every existing vertex/cell keeps its original local
-   index; new ones are appended in first-encounter order) -- a caller that needs byte-for-byte parity
-   with the Host numbering adds one more renumbering pass (sketched in `mesh_merge_device.hpp`'s own
-   header comment), not a second dedup algorithm.
-2. **Record-boundary discovery.** The wire format's records are variable length with no byte-length
-   prefix (`mesh_pack_device.hpp`'s own format), so locating each record's start offset in a received
-   buffer -- the step before a flat gid array for `dedup_by_gid` even exists -- is only discoverable by
-   walking the buffer; parallelizing that (or adding a length prefix so it CAN be parallelized) is a
-   separate change neither this entry nor `dedup_by_gid` attempts.
+1. **Slot numbering.** `renumber_append_order<Space>` (mesh_merge_device.hpp) wraps `dedup_by_gid` with
+   the mechanical renumbering pass round 2 only sketched: a `Kokkos::parallel_scan` over
+   `incoming_is_new` gives each canonical new entry its rank among canonical entries in ascending
+   ORIGINAL INCOMING index, so `final_index_of_incoming(i) = E + that rank` for a new entry and the
+   existing entry's own original index otherwise -- exactly the Host builders' append-order convention,
+   bit for bit, not merely up to a permutation.
+2. **Record-boundary discovery.** The wire format gained a fixed-size header -- `[int64 record_count]
+   [record_count + 1 int64 absolute byte offsets][payload]`, written by `alloc_buffer_with_header`
+   (mesh_pack_device.hpp) from the same `contrib`/`payload_offset` arrays `pack_to`/`pack_fanout` already
+   compute -- so `parse_buffers<kHaloRecord, Space>` (mesh_merge_device.hpp) locates every record's start
+   with one `parallel_for` indexed by record, never a sequential walk of the variable-length payload that
+   follows it. A buffer with zero records is left entirely empty (no header at all), preserving the
+   pre-header "nothing sent to this rank" contract (`pack_halo_cells`'s own "nothing is ever sent to
+   one's own rank" case).
 
-So a Device-mode caller of `build_native_remap_halo`/`migrate` still needs a host round trip for the
-full merge, but the DECISION at its core -- which this entry's own scope note (2026-10-13) named as
-"the open piece," for lack of a device-friendly hash-set primitive -- is now implemented and tested.
+`unpack_migrated_mesh_device<Space>`/`merge_halo_cells_device<Space>` (mesh_merge_device.hpp) are the
+full device-resident receive-side rebuild this entry described from round 1: `unpack_migrated_mesh`/
+`merge_halo_cells` (native_migration.cpp/native_halo.cpp) now delegate to them directly on `Space =
+Kokkos::HostSpace` -- literally the same template Device instantiates, not a parallel reimplementation,
+which is what guarantees the two numbering schemes agree -- and `migrate`/`build_native_remap_halo` call
+the `Space = NativeMeshView::DeviceMemSpace` instantiation end to end. No step of either function touches
+a `NativeMeshView` host-serving accessor; `host_mirrors_materialized() == 0` is asserted across the
+FULL round trip, source and rebuilt result view, host and MPI (1-5 ranks), both
+`FUSE_TRANSPORT_HOST_STAGING` settings, `.device` twins included
+(`test/backend/native_migration_test.cpp`'s `FullMigrateRoundTripMaterializesNoHostMirrorOnEitherView`,
+`test/backend/native_migration_mpi_test.cpp`'s
+`MigrateMaterializesNoHostMirrorOnEitherViewUnderEitherStagingSetting`,
+`test/parallel/native_halo_mpi_test.cpp`'s
+`BuildRemapHaloMaterializesNoHostMirrorOnTheRebuiltSourceView`). Every existing
+`backend.native_migration*`/`native_halo*`/`partition.repartition*` row and its `.device` twin still
+agrees exactly with its own prior (Host-only) numbers.
+
+Three narrow, DECLARED exceptions remain, none test-covered or load-bearing for this track's own mandate
+(see KNOWN_ISSUES.md D51's closing text for the full statement of each): no cross-cell Polyhedron face
+dedup on the device path (private per-cell faces instead -- untested by any generator in this suite, so
+this round added the suite's first Polyhedron migration case to prove conservation, not face count);
+`resolve_vertex_ownership_device<Space>`'s one bounded host round trip for `vertex_gid` only (`MPI_
+Allgatherv` has no GPU-aware form the way `MPI_Alltoallv` does); and `NativeMeshBuilder::build()`'s
+fixed-shape corner-count refusal (`E-MESH-CONNECTIVITY`), a pre-existing gap for any direct `create_from_
+host` caller (NM-8) that this device path does not newly need since no sender here produces malformed
+corner counts.
 
 ## Open items
 

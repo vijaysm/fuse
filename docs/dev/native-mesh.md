@@ -327,23 +327,19 @@ is not yet templated -- see "What is deferred" below and KNOWN_ISSUES.md.
 
 ## What is deferred
 
-- **Device-resident migration/halo MERGE.** `pack_to<Space>` (above) moves packing to the device; the
-  symmetric unpack/merge (`unpack_migrated_mesh`'s vertex dedup, `merge_halo_cells`'s cell dedup, both
-  by global id) still runs on the host. The bulk per-field data copy generalizes the same way packing
-  did; the open piece is the membership decision itself, which wants a device-friendly sorted-unique or
-  hash-set primitive this track did not build.
 - **Coverage migration (M3).** This migrates OWNED cells whole; it does not build or maintain GHOST
   layers across a repartition. A caller needing ghosts after migration re-derives them separately.
 - **Per-placement remap weights.** `repartition`'s convenience wrapper uses a uniform per-cell weight;
   load-imbalance-aware weighting is available by calling `rcb_partition`/`migrate` directly, not through
   the wrapper.
-- **Device-resident intersection / exchange, pack and exchange primitives ready, not yet wired end-to-end.** The pack side
-  (`pack_for_migration`/`pack_halo_cells`) is now device-resident (see "Repartition migration (M2)" and
-  docs/dev/native-halo.md's own "Device packing" section), and a GPU-aware `exchange_migration_buffers
-  <Space>` exists and is proven standalone (see "GPU-aware MPI" above) -- but `migrate`/
-  `build_native_remap_halo` still call the ORIGINAL host-staged overload, because `unpack_migrated_
-  mesh`/`merge_halo_cells` still need a host-resident `std::vector<std::byte>` buffer (KNOWN_ISSUES.md
-  D51). Wiring the three together end-to-end is the natural next increment, not attempted this round.
+- **Device-resident migration/halo, CLOSED 2026-10-15 (Migration track, round 3).** `pack_for_migration`/
+  `pack_halo_cells`, `exchange_migration_buffers<Space>`, and `unpack_migrated_mesh`/`merge_halo_cells`
+  (via their device-templated `unpack_migrated_mesh_device`/`merge_halo_cells_device`) are wired end to
+  end in `migrate`/`build_native_remap_halo`, with no host mirror materialized across the full round
+  trip (KNOWN_ISSUES.md D51, docs/dev/native-halo.md's "Device merge decision"). Three narrow, declared
+  exceptions remain (no cross-cell Polyhedron face dedup on device, one bounded host round trip for
+  `resolve_vertex_ownership_device`'s vertex gids, and `E-MESH-CONNECTIVITY`'s corner-count check not
+  reproduced) -- see D51's closing text for why none blocks this track's own mandate.
 - **Field-transfer integration for a migrated mesh.** The layout driver's `--migrate` mode verifies MESH
   conservation properties, not a full FIELD hand-off through the coupling graph's transport layer for an
   arbitrary post-migration entity ordering. Matching migrated entities back to `MpiTransport`'s exchange

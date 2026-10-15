@@ -6592,7 +6592,7 @@ successful run) -- likely the window-scoped region's own blocks/history are size
 
 **Closed.** The cause is the one `verification.brusselator_runner.device` hit the same day: `setup()` sized the device staging lanes AFTER `resolve_regions()`, which executes a window-scoped region's lagged import chain once during region resolution, so that first `Interpolate` saw `device_staging_stride == 0`. Commit 581c5d1 moves the sizing ahead of `resolve_regions()`; the window twins at 2 and 3 ranks pass on the integrated tree (see the final report).
 
-### D51. Native halo/migration's device-side merge (dedup-by-global-id) is not implemented
+### ~~D51. Native halo/migration's device-side merge (dedup-by-global-id) is not implemented~~ — CLOSED 2026-10-15 (Migration track, round 3)
 
 **Scope note, 2026-10-13.** `fuse::native::device::pack_to<Space>` (include/fuse/backend/native/
 mesh_pack_device.hpp) templates the migration and halo wire PACK on the Kokkos memory space, verified
@@ -6676,6 +6676,85 @@ point of either change. This is this round's own deferred item -- the
 same "proven standalone, not yet wired" shape this entry's own round-2
 text left `pack_to`/`dedup_by_gid` in, before this round wired the
 first of them (`pack_to`/`pack_fanout`) all the way in.
+
+
+
+**CLOSED, 2026-10-15 (Migration track, round 3).** Both remaining gaps
+this entry's round-2 text named are done: (1) `renumber_append_order`
+(mesh_merge_device.hpp) is the mechanical renumbering pass over
+`dedup_by_gid`'s own output -- a `parallel_scan` over `incoming_is_new`
+assigning each canonical new entry `E + its rank among canonical entries
+in ascending ORIGINAL INCOMING index` -- so Device's final vertex/cell
+numbering agrees with Host's append-order convention bit for bit, not
+merely up to a permutation; (2) the wire format gained a fixed-size
+header (record count + per-record absolute byte offsets, prepended by
+`alloc_buffer_with_header`) so `parse_buffers` locates every record's
+start with one `parallel_for` indexed by record, never a sequential walk
+of the variable-length payload. `unpack_migrated_mesh_device`/
+`merge_halo_cells_device<Space>` (mesh_merge_device.hpp) are the full
+device-resident receive-side rebuild this entry has described since
+round 1, and `migrate`/`build_native_remap_halo` now call them directly
+(via `device::pack_to`/`pack_fanout` -> `exchange_migration_buffers
+<Space>` -> device unpack/merge -> `NativeMeshView::create<Space>`) --
+no step of either function touches a `NativeMeshView` host-serving
+accessor, checked by `host_mirrors_materialized() == 0` assertions
+spanning the FULL round trip, source and rebuilt result view, both
+`FUSE_TRANSPORT_HOST_STAGING` settings, host and MPI (1-5 ranks),
+`.device` twins included (`NativeMigration.FullMigrateRoundTripMaterializes
+NoHostMirrorOnEitherView`, `NativeMigrationMpi.MigrateMaterializesNoHost
+MirrorOnEitherViewUnderEitherStagingSetting`, `NativeHaloMpi.
+BuildRemapHaloMaterializesNoHostMirrorOnTheRebuiltSourceView`). Every
+existing `backend.native_migration*`/`native_halo*`/`partition.
+repartition*` row and its `.device` twin agrees exactly with its own
+prior (Host round-1) numbers -- the wire format change is receive-side
+transparent; `backend.native_migration`'s own in-process round-trip test
+needed a one-line update (two independently-packed buffers are now two
+`received` entries, not one byte-concatenated blob, since each buffer is
+self-describing from its own start under the new header).
+
+Three narrow, DECLARED exceptions, none test-covered or load-bearing for
+anything this track's mandate asks for:
+
+1. **Polyhedron, no cross-cell face dedup on the device path.** A
+  migrated or halo-adopted Polyhedron's faces are rebuilt as NEW, PRIVATE
+  entries (an identity `cell_face_indices`, `cell_face_flip` always
+  false) rather than Host's `NativeMeshBuilder::add_polyhedron_cell`
+  sorted-key + cyclic-match dedup against another cell's already-recorded
+  face. Confirmed by grep across every migration/halo/repartition test
+  file before this track started: none uses a `CellType::Polyhedron`
+  generator (`hexbox`/`line`/`quad` only), so no existing coverage
+  exercises cross-cell face sharing through either pipeline --
+  `NativeMigration.PolyhedronCellSurvivesADeviceResidentMigrationRoundTrip`
+  (new this round) checks a single migrated Polyhedron's own
+  conservation (cell/vertex count, volume, ownership), not face count,
+  specifically because this limitation means face count is not expected
+  to match Host's for a mesh with shared Polyhedron faces. A future
+  device-side face dedup would need the same sort-and-compact shape
+  `dedup_by_gid` already established, keyed on each face's sorted-vertex-
+  gid set instead of a single gid.
+2. **`resolve_vertex_ownership_device<Space>`'s one bounded host round
+  trip.** Only `vertex_gid` -- an O(nv) int64 bookkeeping array, never
+  cell/vertex geometry -- stages to the host for the `MPI_Allgather`/
+  `MPI_Allgatherv` that computes each vertex's global minimum-rank owner;
+  `MPI_Allgatherv` has no GPU-aware form the way `MPI_Alltoallv`
+  (`exchange_migration_buffers<Space>`) does, so this is not a missed
+  optimisation. Does not touch `host_mirrors_materialized()`'s lazy-
+  mirror cache (a different mechanism; see this track's own tests above).
+3. **`NativeMeshBuilder::build()`'s `E-MESH-CONNECTIVITY` fixed-shape
+  corner-count refusal is not reproduced** on the device path (only its
+  sibling `E-MESH-DIM` check, a cell's topological dimension against the
+  mesh's own, is -- `all_cells_match_dimension`, folded into `migrate`'s
+  and `build_native_remap_halo`'s own post-exchange peer-refusal
+  reconciliation, closing the one regression this round's own ctest run
+  caught: `NativeMigrationMpi.ADimensionMismatchVisibleOnlyOnTheDestination
+  RefusesEverywhere`). This mirrors a PRE-EXISTING gap in
+  `NativeMeshView::create_from_host` itself (NM-8's own comment, native_
+  mesh.cpp) for any direct caller bypassing `NativeMeshBuilder` --
+  this track's device path is such a caller now, same as that comment
+  already warned a future one would be. Not reachable by any wire data
+  this codebase's own senders produce (a sender's own records always
+  carry a self-consistent corner count for their `CellType`), so no test
+  here exercises it.
 
 ### ~~D52. MLS device solve coarsens `E-MLS-RANK`'s diagnostic and is not wired into `build_mls_weights`; `KokkosBatched::SerialGesv` does not build here~~ — CLOSED 2026-10-14 (round 2)
 
