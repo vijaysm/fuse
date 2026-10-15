@@ -17,7 +17,7 @@ from pathlib import Path
 ABI_TIME = re.compile(r"\b(double|float)\b[^;,)]*\b\w*(time|dt|step_size|interval|when)\w*\b",
                       re.IGNORECASE)
 ASSERT_CALL = re.compile(r"^\s*assert\s*\(")
-# A bare `throw std::…` bypasses the on-error policy and carries no backtrace.
+# A bare `throw std::...` bypasses the on-error policy and carries no backtrace.
 BARE_THROW = re.compile(r"\bthrow\s+std::[a-z_]+\s*[({]")
 IOSTREAM = re.compile(r"^\s*#\s*include\s*<(iostream|sstream|iomanip)>")
 # A build-feature macro read without including the generated config header.
@@ -174,7 +174,7 @@ def scan(root: Path) -> list[str]:
                         f"throw or return a status"
                     )
                 if BARE_THROW.search(line):
-                    problems.append(f"{rel}:{lineno}: bare `throw std::…`; use FUSE_THROW so the "
+                    problems.append(f"{rel}:{lineno}: bare `throw std::...`; use FUSE_THROW so the "
                                     f"on-error policy runs and a backtrace is captured")
                 if IOSTREAM.match(line):
                     # The rule's PURPOSE is that no library output depends on the

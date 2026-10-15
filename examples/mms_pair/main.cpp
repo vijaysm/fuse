@@ -1,4 +1,4 @@
-// Demo A of spec §11, at the Phase 4 milestone: two in-process C++ components
+// Demo A of spec Section 11, at the Phase 4 milestone: two in-process C++ components
 // exchanging a field through graph -> lower -> schedule -> run, with an
 // analytic answer to check the result against.
 //
