@@ -670,3 +670,54 @@ So: when a document, manifest, or commit message is about to state a symbol,
 test name, error code or rank count, re-read it from the file at full width
 first. Every gate in `tools/` exists because this class of error is invisible
 to review — all seven wrong names in that draft read perfectly well.
+
+## Benchmarks
+
+`ctest -L bench` runs the scaled device benchmark (`bench/scaled_device_benchmark.cpp`,
+registered in `test/CMakeLists.txt`'s own "bench" section): a native structured-quad
+provider/consumer mesh pair, a conservative weighted Remap (the two grids differ by one
+cell per side, so they cannot coincide and the Remap is never the identity-copy
+shortcut), an MpiTransport exchange across a disjoint rank split, a Diagnose and a Sink
+-- the same instruction shapes [](device-resident-arcs.md) step 6's own gate exercises,
+at a problem size (`--n`, default 1000: 1e6 provider cells) orders of magnitude larger
+than that gate's few-hundred-to-few-thousand-cell rows, so per-instruction kernel-launch
+and host-stop overhead can be told apart from genuine arithmetic cost. Labelled `bench`
+only (never `example`, `gtest` or `parallel`): a bare `ctest -j1` or
+`.github/workflows/ci.yml`'s tier0 leg does not run it by accident
+(`.github/workflows/ci.yml`'s two tier0 invocations pass `-LE bench` for exactly this
+reason). A small-size correctness row, `example.scaled_device_benchmark` (and its
+`.device` twin), runs in the default tiers: the binary's own `--verify` flag builds and
+runs the small graph under `RunnerConfig::RunnerExecutionSpace::Host` and `Device`, in
+one process, and asserts the delivered consumer values agree to 1e-14 relative -- the
+RED/GREEN evidence for this row lives in the binary's own exit status, not in a separate
+comparison script.
+
+Each scaled row is registered at 1, 2 and 3 ranks (`bench.scaled_device_benchmark.<n>`)
+with a `FUSE_EXECUTION_SPACE=device` twin at each rank count
+(`bench.scaled_device_benchmark.<n>.device`, `--fields device` so the provider/consumer
+storage itself is device-resident, not merely the elementwise kernels' dispatch space).
+`FUSE_BENCH_N` (a CMake cache variable, default 1000) sizes every row's `--n` at
+configure time; the binary's own `--n`/`--periods`/`--fields`/`--timing` flags are
+documented in its header comment.
+
+**The 2- and 3-rank rows are currently `DISABLED TRUE`** (KNOWN_ISSUES.md D69): the nodal
+Remap's distributed point-location search refuses to place the domain's own corner
+vertex at those rank counts and this problem size, a found gap sharing its root cause
+with D67. Only `bench.scaled_device_benchmark.1[.device]` runs today; re-enable the
+disabled rows (`test/CMakeLists.txt`'s own bench section) once D67/D69 are fixed.
+
+`tools/bench-device.py` is the timing harness: it runs
+`fuse_bench_scaled_device_benchmark` host vs device N times (`FUSE_EXECUTION_SPACE`
+unset, then `=device`), records `/proc/loadavg` before and after each run, and prints
+and saves a Markdown table of the median and minimum wall time per phase. Usage:
+
+```
+python3 tools/bench-device.py --binary <build>/bench/fuse_bench_scaled_device_benchmark \
+    --ranks 1 2 3 --n 1000 --periods 5 --repeats 5 --out bench-report.md
+```
+
+A run is labelled preliminary in its own report unless the 1-minute load average was
+below 2 both before and after every repetition -- see that script's own `--max-load`
+flag. Numbers taken while another build or test sweep shares the host are not a quiet
+measurement; `tools/bench-device.py` records the load it saw either way, and the caller
+decides whether to trust the result.
