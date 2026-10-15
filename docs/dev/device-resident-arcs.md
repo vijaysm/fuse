@@ -363,8 +363,8 @@ the next step starts. Host mode byte-identity is the standing invariant.
    measurement; the Runner's own kernels are not the bottleneck at these
    sizes.
 
-7. DONE (round 2, 2026-10-15, five tracks integrated at a97489aa on main
-   35229b28). Weight builders: `build_mls_weights` runs its k-nearest
+7. DONE (round 2, 2026-10-15, five tracks integrated at bd1c3d34 on main
+   3020f389). Weight builders: `build_mls_weights` runs its k-nearest
    search and per-target solve on the resolved execution space (D52
    closed); `build_supermesh_weights` runs the candidate-pair broad phase
    on the device for dim >= 2, the r3d/r2d clip stays host (D53). Native
@@ -392,9 +392,11 @@ the next step starts. Host mode byte-identity is the standing invariant.
    one probe, `fuse::linalg::mpi_is_gpu_aware()`, decides device pointers
    versus host staging for Transport, the ghost exchange, the nodal
    remap and migration (`FUSE_TRANSPORT_HOST_STAGING=1` forces staging).
-   Gate on higgs at a97489aa: build clean; anchors 355/355; invariants
-   and layering 0 violations; `ctest -j1 -LE device` 333/335 (D55, D56
-   only); `ctest -j1 -L device` 35/35. Caveat: higgs's Open MPI is not
+   Gate on higgs at bd1c3d34 (this series rebased onto main 3020f389):
+   build clean; anchors 359/359; invariants and layering 0 violations;
+   `ctest -j1 -LE device` 333/335 (D55, D56 only); `ctest -j1 -L device`
+   35/35. The same series before the rebase (a97489aa on main 35229b28)
+   gave 333/335, 35/35, anchors 355/355. Caveat: higgs's Open MPI is not
    CUDA-aware, so the device-pointer branch of every exchange is compiled
    and reachable but ran only its host-staged fallback here (D66). Still
    host: `previous[]`, space-time history and window-region bookkeeping
