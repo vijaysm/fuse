@@ -22,4 +22,5 @@ page for the `ffuse` module's generated names and type mapping in full, and
 executable. Those pages are about a foreign code driving FUSE; [](providers.md) is the other
 direction — FUSE driving a plugin you write, in C or Fortran, named by path in the graph.
 [](lowfive.md) is a fourth way to move a field: two unmodified codes exchanging it through
-ordinary, intercepted HDF5 calls.
+ordinary, intercepted HDF5 calls. [](restart.md) is a different problem again: writing a run's own
+state to disk so a LATER process can resume it, at the same rank count or a different one.
