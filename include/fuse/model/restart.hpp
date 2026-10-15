@@ -67,6 +67,7 @@
 #include "fuse/base/result.hpp"
 #include "fuse/model/coupling_graph.hpp"
 #include "fuse/model/descriptor.hpp"
+#include "fuse/model/element_type.hpp"
 
 namespace fuse {
 
@@ -123,9 +124,54 @@ struct RestartRowBlock {
   std::vector<std::int64_t> ids;
 };
 
+/// Returned by every typed `get_field<T>()`/`get_scalar<T>()` call --
+/// never only `Result<void>` -- so a caller using `ReadConversion::
+/// AllowNarrowing` (the only mode under which any field below is ever
+/// nonzero) gets the owner's own required disclosure: "the read reports
+/// the largest change it made, measured over the values actually read"
+/// (docs/dev/restart.md Section 11). `ReadConversion::Exact`/`Widening`
+/// always report `converted_any == false` with both magnitudes at their
+/// default zero -- a caller never has to branch on which `ReadConversion`
+/// it asked for before deciding whether to look at the report; reading it
+/// is always safe, and under those two modes it is also always
+/// trivially true (no value changed, because neither mode permits a
+/// value-changing conversion at all).
+struct ReadConversionReport {
+  bool converted_any = false;
+  /// Floating narrowing only: `max(|stored_exact_value -
+  /// converted_value|)` over every value this call actually read, in the
+  /// STORED type's own units. Zero whenever `converted_any` is false, OR
+  /// whenever every narrowed value happened to round exactly (that zero
+  /// is a TRUE zero then, not "unmeasured" -- the mutation row collapsing
+  /// this computation to an unconditional zero, docs/dev/restart.md
+  /// Section 11, test/model/typed_restart_test.cpp, is what guards the
+  /// difference).
+  double max_absolute_change = 0.0;
+  std::size_t changed_count = 0;  ///< how many of the values read actually
+                                  ///< differed from their stored-exact value.
+};
+
 class RestartWriter {
  public:
   virtual ~RestartWriter() = default;
+
+  /// The ONE virtual `put_field*` entry point -- `put_field<T>()` below is
+  /// every caller's actual call surface; this exists so a backend
+  /// (`Hdf5GroupWriter`, `fuse/restart_io/hdf5_restart_io.cpp`) overrides
+  /// ONE function per concern (write typed bytes) rather than one per
+  /// `ElementType`, and so `QualifyingRestartWriter`/
+  /// `IdCollectingRestartWriter` below forward ONE call each. `values`'s
+  /// byte length is always `ids.size() * components *
+  /// element_type_info(type).byte_size` -- the caller's own `put_field<T>()`
+  /// guarantees this via `std::as_bytes()`, never checked again here
+  /// (nothing outside this header ever calls `put_field_bytes()` any
+  /// other way).
+  virtual Result<void> put_field_bytes(std::string_view qualified_name,
+                                       std::span<const std::int64_t> ids,
+                                       ElementType type,
+                                       std::span<const std::byte> values,
+                                       int components,
+                                       std::int64_t declared_global_size) = 0;
 
   /// `ids.size() * components == values.size()`, `ids` carry no duplicate
   /// within THIS call (checked here, locally; the cross-caller duplicate
@@ -136,24 +182,57 @@ class RestartWriter {
   /// `static_cast<std::int64_t>(ids.size())`); every caller writing the
   /// SAME `qualified_name` must declare the SAME value, or `finish_point()`
   /// refuses by name (E-RESTART-GLOBAL-SIZE-MISMATCH).
-  virtual Result<void> put_field(std::string_view qualified_name,
-                                 std::span<const std::int64_t> ids,
-                                 std::span<const double> values,
-                                 int components,
-                                 std::int64_t declared_global_size) = 0;
+  ///
+  /// TYPED (Stage B Slice 1b, docs/dev/restart.md Section 11): `T` is any
+  /// type `fuse::ElementTypeOf<T>` (fuse/model/element_type.hpp) names --
+  /// an unsupported `T` is a compile-time `static_assert` there, never a
+  /// runtime failure here, per the owner's own instruction. The stored
+  /// `ElementType` becomes part of this field's own on-disk metadata; a
+  /// LATER `get_field<U>()` call with a DIFFERENT `U` is resolved by
+  /// `ReadConversion`, never silently reinterpreted.
+  template <class T>
+  Result<void> put_field(std::string_view qualified_name,
+                         std::span<const std::int64_t> ids,
+                         std::span<const T> values, int components,
+                         std::int64_t declared_global_size) {
+    return put_field_bytes(qualified_name, ids, kElementTypeOf<T>,
+                           std::as_bytes(values), components,
+                           declared_global_size);
+  }
+
+  /// The ONE virtual `put_scalar*` entry point -- see `put_field_bytes()`'s
+  /// own comment on why a byte-oriented virtual exists under a typed
+  /// template front end.
+  virtual Result<void> put_scalar_bytes(std::string_view qualified_name,
+                                        ElementType type,
+                                        std::span<const std::byte> value) = 0;
 
   /// A value with no spatial index -- replicated, written once per restart
   /// point. First writer for a given name wins; a SECOND call for the
   /// same name with a DIFFERENT value is `Failure` (E-RESTART-SCALAR-
   /// DISAGREE), never silently overwritten, since "replicated" means every
   /// caller agrees, not "whoever wrote last".
-  virtual Result<void> put_scalar(std::string_view qualified_name,
-                                  double value) = 0;
+  ///
+  /// TYPED, same reasoning as `put_field<T>()` above -- and the reason
+  /// this exists as a template rather than the round-1 `put_scalar(name,
+  /// double)` overload: an `std::int64_t` counter (e.g. `fuse::runtime`'s
+  /// own period index, `src/runtime/restart.cpp`) going through `double`
+  /// loses precision for any magnitude `double`'s 53-bit significand
+  /// cannot cover exactly, which the owner's own instruction names
+  /// directly ("int64 counters must not go through double").
+  template <class T>
+  Result<void> put_scalar(std::string_view qualified_name, T value) {
+    return put_scalar_bytes(qualified_name, kElementTypeOf<T>,
+                            std::as_bytes(std::span<const T, 1>(&value, 1)));
+  }
 
   /// Exact: the Rational's own `{numerator, denominator}` pair
   /// (`fuse::ExactTimeRecord`, fuse/base/rational.hpp), never only the
   /// lossy `to_double()` -- docs/dev/restart.md Section 4.1's own
-  /// `@time_numerator`/`@time_denominator` vs `@time_double` split.
+  /// `@time_numerator`/`@time_denominator` vs `@time_double` split. NOT
+  /// part of the `ElementType`/`ReadConversion` scheme above: a
+  /// `Rational` is a PAIR of exact integers with its own equality, not a
+  /// single numeric element a narrowing policy would apply to.
   virtual Result<void> put_scalar_rational(std::string_view qualified_name,
                                            const Rational& value) = 0;
 
@@ -163,7 +242,9 @@ class RestartWriter {
   /// component.hpp), recorded so a reader can refuse an incompatible
   /// blob by name rather than by a corrupted read -- the same posture
   /// `kGraphVersion` (fuse/model/descriptor.hpp) already takes for the
-  /// coupling graph.
+  /// coupling graph. UNCHANGED by Slice 1b's typed-fields work (owner's
+  /// own instruction: "the opaque byte record (form B) is unchanged") --
+  /// an opaque blob has no element type for this scheme to tag.
   virtual Result<void> put_blob(std::string_view qualified_name,
                                 std::span<const std::byte> bytes,
                                 std::uint32_t version) = 0;
@@ -201,10 +282,56 @@ class RestartReader {
  public:
   virtual ~RestartReader() = default;
 
-  virtual Result<void> get_field(std::string_view qualified_name,
-                                 std::span<const std::int64_t> ids,
-                                 std::span<double> out, int components) = 0;
-  virtual Result<double> get_scalar(std::string_view qualified_name) = 0;
+  /// The ONE virtual `get_field*` entry point -- see `RestartWriter::
+  /// put_field_bytes()`'s own comment on the same pattern.
+  /// `requested_type` is the CALLER's own type (`get_field<T>()`'s `T`);
+  /// the STORED type is whatever `put_field<U>()` originally wrote, read
+  /// back from this field's own on-disk metadata. `conversion` decides
+  /// whether/how a mismatch between the two is resolved -- see
+  /// `fuse::ReadConversion`'s own doc comment (fuse/model/element_type.hpp)
+  /// for the full policy; `out`'s byte length is always `ids.size() *
+  /// components * element_type_info(requested_type).byte_size`, exactly
+  /// like `put_field_bytes()`'s `values`.
+  virtual Result<ReadConversionReport> get_field_bytes(
+      std::string_view qualified_name, std::span<const std::int64_t> ids,
+      ElementType requested_type, std::span<std::byte> out, int components,
+      ReadConversion conversion) = 0;
+
+  /// `conversion` defaults to `ReadConversion::Exact` -- the robustness-
+  /// first default (docs/dev/restart.md Section 11): a caller that does
+  /// not ask for a conversion gets none, ever, even one that would always
+  /// be exact for every value in this particular file.
+  template <class T>
+  Result<ReadConversionReport> get_field(
+      std::string_view qualified_name, std::span<const std::int64_t> ids,
+      std::span<T> out, int components,
+      ReadConversion conversion = ReadConversion::Exact) {
+    return get_field_bytes(qualified_name, ids, kElementTypeOf<T>,
+                           std::as_writable_bytes(out), components,
+                           conversion);
+  }
+
+  /// The ONE virtual `get_scalar*` entry point.
+  virtual Result<ReadConversionReport> get_scalar_bytes(
+      std::string_view qualified_name, ElementType requested_type,
+      std::span<std::byte> out, ReadConversion conversion) = 0;
+
+  /// Out-parameter, not a return-by-value `Result<T>` (round 1's own
+  /// `get_scalar(name) -> Result<double>` shape) -- `ReadConversionReport`
+  /// is the call's own `Result<>` payload now, and a value AND a report
+  /// cannot both occupy that one slot without inventing a pair type this
+  /// project has no other use for; every call site already had to check
+  /// `.ok()` before reading the value, so reading `out` after a
+  /// successful call is the same number of steps, not an added one.
+  template <class T>
+  Result<ReadConversionReport> get_scalar(
+      std::string_view qualified_name, T& out,
+      ReadConversion conversion = ReadConversion::Exact) {
+    return get_scalar_bytes(qualified_name, kElementTypeOf<T>,
+                            std::as_writable_bytes(std::span<T, 1>(&out, 1)),
+                            conversion);
+  }
+
   virtual Result<Rational> get_scalar_rational(std::string_view qualified_name) = 0;
 
   /// `version` receives the writer's own declared `restart_blob_version()`.
@@ -243,14 +370,18 @@ class QualifyingRestartWriter final : public RestartWriter {
   QualifyingRestartWriter(RestartWriter& inner, std::string prefix)
       : inner_(inner), prefix_(std::move(prefix)) {}
 
-  Result<void> put_field(std::string_view name, std::span<const std::int64_t> ids,
-                         std::span<const double> values, int components,
-                         std::int64_t declared_global_size) override {
-    return inner_.put_field(qualify(name), ids, values, components,
-                            declared_global_size);
+  Result<void> put_field_bytes(std::string_view name,
+                               std::span<const std::int64_t> ids,
+                               ElementType type,
+                               std::span<const std::byte> values,
+                               int components,
+                               std::int64_t declared_global_size) override {
+    return inner_.put_field_bytes(qualify(name), ids, type, values,
+                                  components, declared_global_size);
   }
-  Result<void> put_scalar(std::string_view name, double value) override {
-    return inner_.put_scalar(qualify(name), value);
+  Result<void> put_scalar_bytes(std::string_view name, ElementType type,
+                                std::span<const std::byte> value) override {
+    return inner_.put_scalar_bytes(qualify(name), type, value);
   }
   Result<void> put_scalar_rational(std::string_view name,
                                    const Rational& value) override {
@@ -285,12 +416,18 @@ class QualifyingRestartReader final : public RestartReader {
   QualifyingRestartReader(RestartReader& inner, std::string prefix)
       : inner_(inner), prefix_(std::move(prefix)) {}
 
-  Result<void> get_field(std::string_view name, std::span<const std::int64_t> ids,
-                         std::span<double> out, int components) override {
-    return inner_.get_field(qualify(name), ids, out, components);
+  Result<ReadConversionReport> get_field_bytes(
+      std::string_view name, std::span<const std::int64_t> ids,
+      ElementType requested_type, std::span<std::byte> out, int components,
+      ReadConversion conversion) override {
+    return inner_.get_field_bytes(qualify(name), ids, requested_type, out,
+                                  components, conversion);
   }
-  Result<double> get_scalar(std::string_view name) override {
-    return inner_.get_scalar(qualify(name));
+  Result<ReadConversionReport> get_scalar_bytes(
+      std::string_view name, ElementType requested_type,
+      std::span<std::byte> out, ReadConversion conversion) override {
+    return inner_.get_scalar_bytes(qualify(name), requested_type, out,
+                                   conversion);
   }
   Result<Rational> get_scalar_rational(std::string_view name) override {
     return inner_.get_scalar_rational(qualify(name));
@@ -329,14 +466,18 @@ class QualifyingRestartReader final : public RestartReader {
 /// put afterward; a restore immediately re-reads it).
 class IdCollectingRestartWriter final : public RestartWriter {
  public:
-  Result<void> put_field(std::string_view name, std::span<const std::int64_t> ids,
-                         std::span<const double> /*values*/, int /*components*/,
-                         std::int64_t /*declared_global_size*/) override {
+  Result<void> put_field_bytes(std::string_view name,
+                               std::span<const std::int64_t> ids,
+                               ElementType /*type*/,
+                               std::span<const std::byte> /*values*/,
+                               int /*components*/,
+                               std::int64_t /*declared_global_size*/) override {
     ids_by_name_[std::string(name)] =
         std::vector<std::int64_t>(ids.begin(), ids.end());
     return Result<void>::success();
   }
-  Result<void> put_scalar(std::string_view, double) override {
+  Result<void> put_scalar_bytes(std::string_view, ElementType,
+                                std::span<const std::byte>) override {
     return Result<void>::success();
   }
   Result<void> put_scalar_rational(std::string_view, const Rational&) override {

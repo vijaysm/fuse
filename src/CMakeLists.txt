@@ -91,6 +91,8 @@ add_library(fuse-coupler-model
   model/compatibility.cpp
   model/multiscale.cpp
   model/yaml_io.cpp
+  model/element_type.cpp
+  model/float_bits.cpp
 )
 add_library(fuse::model ALIAS fuse-coupler-model)
 target_compile_features(fuse-coupler-model PUBLIC cxx_std_20)

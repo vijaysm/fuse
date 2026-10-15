@@ -3,11 +3,15 @@
 #include <hdf5.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <set>
 #include <unordered_map>
 #include <vector>
+
+#include "fuse/model/element_type.hpp"
+#include "fuse/model/float_bits.hpp"
 
 namespace fuse::restart_io {
 
@@ -50,6 +54,7 @@ using HDataset = Hid<H5Dclose>;
 using HDataspace = Hid<H5Sclose>;
 using HAttr = Hid<H5Aclose>;
 using HLcpl = Hid<H5Pclose>;
+using HType = Hid<H5Tclose>;
 
 /// A link-creation property list with intermediate-group creation on --
 /// used for every `H5Dcreate2`/`H5Gcreate2` below, so a qualified name
@@ -163,6 +168,552 @@ using HLcpl = Hid<H5Pclose>;
   return std::string(buf.data());
 }
 
+/// `fuse::restart_io`'s own typed-field backend (Stage B Slice 1b):
+/// every value is written/read as an EXACT byte copy of its own native
+/// representation, memory type identical to file type, for EVERY
+/// `H5Dwrite`/`H5Dread` this backend ever issues -- see this file's own
+/// top-of-file note on why: HDF5's own soft conversion cannot be
+/// trusted uniformly across every float format this project supports
+/// (measured: `H5T__conv_f_f()` refuses a `H5T_NORM_MSBSET` source/
+/// destination with "normalization method not implemented yet"), so
+/// this backend never asks HDF5 to convert anything -- all CROSS-TYPE
+/// conversion is `fuse::detail::narrow_float()`/this file's own integer
+/// conversion, never `H5Dread`'s own type-conversion machinery.
+/// Predefined native types (`H5T_NATIVE_*`) are used for every INTEGER
+/// width and `Bool`; every FLOAT type (`Binary16`/`BFloat16`/`Binary32`/
+/// `Binary64`/`LongDouble`) goes through `make_derived_float_type()`
+/// below -- ONE code path for all five, not a native-type shortcut for
+/// the common case plus a separately-tested derived path for the
+/// exotic one (see that function's own comment for why: a shortcut
+/// using `H5T_NATIVE_LDOUBLE` cannot represent a FOREIGN file's `long
+/// double`, e.g. x86-64 extended precision read on this Mac, docs/
+/// dev/restart.md Section 11 item 6 -- measured to fail the identical
+/// way the untrusted HDF5 soft-conversion above does).
+/// Builds a user-defined HDF5 floating-point datatype matching `info`'s
+/// OWN fields EXACTLY -- `significand_bits`/`exponent_bits`/
+/// `exponent_bias`/`explicit_integer_bit`/`byte_size`, whatever they are.
+/// Used for EVERY float `ElementType` (`Binary16`/`BFloat16`/`Binary32`/
+/// `Binary64`/`LongDouble`), not only the two with no HDF5-predefined
+/// equivalent -- `info` is NOT always this build's own canonical
+/// metadata for its enumerator: `fuse::restart_io`'s own `read_and_
+/// verify_type_metadata()` can hand this function an info built from a
+/// FOREIGN file's own attributes (docs/dev/restart.md Section 11, item
+/// 6 -- a hand-built x86-64-style 80-bit `long double`), which this
+/// Mac's `H5T_NATIVE_LDOUBLE` cannot represent at all. ONE code path for
+/// both cases, rather than a native-type shortcut for the common case
+/// plus a separately-tested derived path for the exotic one, is what
+/// closed a real, measured defect this round: `H5Dread()`/`H5Dwrite()`
+/// against `H5T_NATIVE_LDOUBLE` as the MEMORY type while the FILE type
+/// is a hand-built 80-bit MSBSET one asks HDF5 to CONVERT between them,
+/// which fails the identical way `H5T__conv_f_f()` already does for any
+/// other `H5T_NORM_MSBSET` pair ("normalization method not implemented
+/// yet") -- this function makes the memory type and the file type
+/// IDENTICAL in every case, so no conversion is ever requested.
+///
+/// PRECISION/ORDERING. HDF5's own `H5Tset_precision()` doc comment:
+/// "When decreasing the precision of a floating point type, set the
+/// locations and sizes of the sign, mantissa, and exponent fields
+/// first" -- measured directly (docs/dev/restart.md Section 11) that
+/// the CONVERSE is required for an INCREASE: growing size/precision
+/// FIRST, then calling `H5Tset_fields()` once there is room. This
+/// function therefore picks a base type (`H5T_IEEE_F32LE`, 32-bit
+/// precision, if `info`'s own needed precision fits within it; `H5T_
+/// IEEE_F64LE`, 64 bits, otherwise) and reorders size/precision/fields
+/// in whichever direction it is really moving. `precision` itself is
+/// `stored_mantissa_bits + exponent_bits + 1` (the sign bit) --
+/// `stored_mantissa_bits` is `significand_bits` ITSELF for an explicit
+/// leading bit, `significand_bits - 1` for an implicit one (the
+/// implicit bit occupies no on-disk storage at all) -- NOT `significand_
+/// bits + exponent_bits + 1`, which overcounts by exactly one stored
+/// bit whenever the leading bit is implicit (every format here except
+/// x86 extended): a overcounted `H5Tset_precision()` happened to be
+/// silently corrected by `H5Tset_size()`'s own doc-stated auto-shrink
+/// ("if the significant bits still hang over the edge, the number of
+/// significant bits is decreased") for every DEcrease case this project
+/// tested, masking the defect until the INCREASE case (x86 extended, no
+/// shrink to recover into) surfaced it outright -- measured directly,
+/// not a hypothetical.
+[[nodiscard]] Result<HType> make_derived_float_type(const fuse::ElementTypeInfo& info) {
+  const std::size_t stored_mantissa_bits =
+      info.explicit_integer_bit ? info.significand_bits
+                                : info.significand_bits - 1;
+  const std::size_t precision = stored_mantissa_bits + info.exponent_bits + 1;
+  const std::size_t mpos = 0;
+  const std::size_t epos = stored_mantissa_bits;
+  const std::size_t spos = stored_mantissa_bits + info.exponent_bits;
+  const H5T_norm_t norm = info.explicit_integer_bit ? H5T_NORM_MSBSET
+                                                     : H5T_NORM_IMPLIED;
+
+  const bool use_f32_base = precision <= 32;
+  HType t(H5Tcopy(use_f32_base ? H5T_IEEE_F32LE : H5T_IEEE_F64LE));
+  if (!t.valid()) return Failure{"E-RESTART-HDF5", "H5Tcopy failed for " + info.name};
+  const std::size_t base_precision = use_f32_base ? 32 : 64;
+
+  auto set_fields = [&]() -> Result<void> {
+    if (H5Tset_fields(t, spos, epos, info.exponent_bits, mpos,
+                      stored_mantissa_bits) < 0) {
+      return Failure{"E-RESTART-HDF5", "H5Tset_fields failed for " + info.name};
+    }
+    if (H5Tset_ebias(t, static_cast<std::size_t>(info.exponent_bias)) < 0) {
+      return Failure{"E-RESTART-HDF5", "H5Tset_ebias failed for " + info.name};
+    }
+    if (H5Tset_norm(t, norm) < 0) {
+      return Failure{"E-RESTART-HDF5", "H5Tset_norm failed for " + info.name};
+    }
+    return Result<void>::success();
+  };
+  auto shrink_or_grow_size = [&]() -> Result<void> {
+    if (H5Tset_precision(t, precision) < 0) {
+      return Failure{"E-RESTART-HDF5", "H5Tset_precision failed for " + info.name};
+    }
+    if (H5Tset_size(t, info.byte_size) < 0) {
+      return Failure{"E-RESTART-HDF5", "H5Tset_size failed for " + info.name};
+    }
+    return Result<void>::success();
+  };
+
+  if (precision <= base_precision) {
+    // Decrease (or no change): fields first, while the base's own wider
+    // precision still has room for every field position.
+    Result<void> r = set_fields();
+    if (!r.ok()) return r.error();
+    r = shrink_or_grow_size();
+    if (!r.ok()) return r.error();
+  } else {
+    // Increase: grow size/precision first, THEN fields -- the opposite
+    // order, required (measured directly, see this function's own doc
+    // comment).
+    Result<void> r = shrink_or_grow_size();
+    if (!r.ok()) return r.error();
+    r = set_fields();
+    if (!r.ok()) return r.error();
+  }
+  if (H5Tset_order(t, H5T_ORDER_LE) < 0) {
+    return Failure{"E-RESTART-HDF5", "H5Tset_order failed for " + info.name};
+  }
+  return t;
+}
+
+[[nodiscard]] Result<HType> make_hdf5_type_for(const fuse::ElementTypeInfo& info) {
+  using fuse::ElementType;
+  switch (info.element_type) {
+    case ElementType::Int8:   return HType(H5Tcopy(H5T_NATIVE_INT8));
+    case ElementType::Int16:  return HType(H5Tcopy(H5T_NATIVE_INT16));
+    case ElementType::Int32:  return HType(H5Tcopy(H5T_NATIVE_INT32));
+    case ElementType::Int64:  return HType(H5Tcopy(H5T_NATIVE_INT64));
+    case ElementType::UInt8:  return HType(H5Tcopy(H5T_NATIVE_UINT8));
+    case ElementType::UInt16: return HType(H5Tcopy(H5T_NATIVE_UINT16));
+    case ElementType::UInt32: return HType(H5Tcopy(H5T_NATIVE_UINT32));
+    case ElementType::UInt64: return HType(H5Tcopy(H5T_NATIVE_UINT64));
+    case ElementType::Bool:   return HType(H5Tcopy(H5T_NATIVE_UINT8));
+    case ElementType::Binary16:
+    case ElementType::BFloat16:
+    case ElementType::Binary32:
+    case ElementType::Binary64:
+    case ElementType::LongDouble:
+      return make_derived_float_type(info);
+  }
+  return Failure{"E-RESTART-HDF5",
+                 "make_hdf5_type_for: unhandled ElementType '" + info.name + "'"};
+}
+
+/// Writes every metadata fact `fuse::ElementTypeInfo` carries as its own
+/// HDF5 attribute on `loc` (a dataset) -- docs/dev/restart.md Section 11,
+/// item 5: "element-type name, byte size, for floating types significand
+/// and exponent widths and exponent bias, byte order". `is_signed` is
+/// meaningful only for an integer type; written as 0 for every other
+/// kind (float, bool) so the attribute always exists and a reader never
+/// needs a separate "does this attribute apply" branch.
+[[nodiscard]] Result<void> write_type_metadata(hid_t loc,
+                                               const fuse::ElementTypeInfo& info) {
+  Result<void> r = write_scalar_attr_str(loc, "element_type", info.name);
+  if (!r.ok()) return r;
+  r = write_scalar_attr_u32(loc, "byte_size", static_cast<std::uint32_t>(info.byte_size));
+  if (!r.ok()) return r;
+  r = write_scalar_attr_u32(loc, "significand_bits",
+                            static_cast<std::uint32_t>(info.significand_bits));
+  if (!r.ok()) return r;
+  r = write_scalar_attr_u32(loc, "exponent_bits",
+                            static_cast<std::uint32_t>(info.exponent_bits));
+  if (!r.ok()) return r;
+  r = write_scalar_attr_u64(loc, "exponent_bias",
+                            static_cast<std::uint64_t>(info.exponent_bias));
+  if (!r.ok()) return r;
+  r = write_scalar_attr_str(loc, "byte_order", "little");
+  if (!r.ok()) return r;
+  const std::uint32_t is_signed = info.is_signed_integer ? 1 : 0;
+  return write_scalar_attr_u32(loc, "is_signed", is_signed);
+}
+
+/// Reads `loc`'s own `element_type`-family attributes AND independently
+/// queries its ACTUAL HDF5 datatype (`H5Dget_type`), then checks the
+/// two agree -- docs/dev/restart.md Section 11, item 5's own "the HDF5
+/// dataset datatype itself must equal that type (verify the attribute
+/// and the dataset type agree on read; disagreement refuses by name --
+/// it means a corrupted or foreign file)".
+///
+/// RETURNS AN `ElementTypeInfo` BUILT FROM THE FILE'S OWN ATTRIBUTES,
+/// NEVER `fuse::element_type_info()`'s global table for the matching
+/// enumerator. This is deliberate, not an oversight: a restart point
+/// written on a different platform (x86-64's 80-bit `long double`, read
+/// on this Mac's 53-bit one, docs/dev/restart.md Section 11, item 6) is
+/// internally self-consistent -- its OWN attributes agree with its OWN
+/// actual HDF5 datatype -- but genuinely DIFFERS from what THIS build's
+/// `element_type_info(ElementType::LongDouble)` says a `long double`
+/// looks like. Comparing the attributes against the global table instead
+/// of against the dataset's own real type would reject every such file
+/// before `ReadConversion` is ever consulted, making `AllowNarrowing`
+/// unable to do the ONE thing item 6 asks it to do. "Corrupted or
+/// foreign" in the owner's own phrasing means a file whose OWN two
+/// descriptions of itself (attribute vs. real HDF5 type) disagree --
+/// not a file that disagrees with this reader's own platform.
+///
+/// An `element_type` NAME with no matching `ElementType` enumerator at
+/// all (a newer file version using a kind this build has never heard of)
+/// refuses by name (E-RESTART-UNKNOWN-ELEMENT-TYPE) rather than
+/// guessing -- `fuse::ElementTypeInfo` needs SOME enumerator to tag the
+/// returned info with, and there is no sense in which an unknown one
+/// could serve that role.
+[[nodiscard]] Result<fuse::ElementTypeInfo> read_and_verify_type_metadata(
+    hid_t loc, const std::string& context) {
+  const Result<std::string> name = read_attr_str(loc, "element_type");
+  if (!name.ok()) return name.error();
+  const auto maybe_type = fuse::element_type_from_name(name.value());
+  if (!maybe_type.has_value()) {
+    return Failure{"E-RESTART-UNKNOWN-ELEMENT-TYPE",
+                   context + ": element_type attribute names '" + name.value() +
+                       "', which this build does not recognise -- written by "
+                       "a newer version of this format"};
+  }
+
+  const Result<std::uint32_t> byte_size = read_attr_u32(loc, "byte_size");
+  if (!byte_size.ok()) return byte_size.error();
+  const Result<std::uint32_t> sig_bits = read_attr_u32(loc, "significand_bits");
+  if (!sig_bits.ok()) return sig_bits.error();
+  const Result<std::uint32_t> exp_bits = read_attr_u32(loc, "exponent_bits");
+  if (!exp_bits.ok()) return exp_bits.error();
+  const Result<std::uint64_t> exp_bias = read_attr_u64(loc, "exponent_bias");
+  if (!exp_bias.ok()) return exp_bias.error();
+  const Result<std::uint32_t> is_signed_attr = read_attr_u32(loc, "is_signed");
+  if (!is_signed_attr.ok()) return is_signed_attr.error();
+
+  // Build the info THIS FILE describes, from its own attributes --
+  // the canonical table entry for the same enumerator is consulted
+  // nowhere in this function.
+  fuse::ElementTypeInfo info;
+  info.element_type = maybe_type.value();
+  info.name = name.value();
+  info.byte_size = byte_size.value();
+  info.significand_bits = sig_bits.value();
+  info.exponent_bits = exp_bits.value();
+  info.exponent_bias = static_cast<std::int64_t>(exp_bias.value());
+  info.is_bool = (maybe_type.value() == fuse::ElementType::Bool);
+  info.is_float = (sig_bits.value() > 0 || exp_bits.value() > 0) && !info.is_bool;
+  info.is_signed_integer = !info.is_float && !info.is_bool && is_signed_attr.value() != 0;
+  info.is_unsigned_integer = !info.is_float && !info.is_bool && is_signed_attr.value() == 0;
+  // explicit_integer_bit cannot be recovered from the attributes alone
+  // (this project does not write one -- it is derived from H5Tget_norm()
+  // below, where it matters: the cross-check against the dataset's own
+  // actual HDF5 type).
+
+  // Cross-check against the dataset's OWN actual HDF5 datatype, not only
+  // the attributes -- an attribute is just more bytes in the same file; a
+  // corruption (or a foreign WRITER that did not keep the two in step)
+  // that changed one but not the other is exactly what this catches.
+  Hid<H5Tclose> actual(H5Dget_type(loc));
+  if (!actual.valid()) {
+    return Failure{"E-RESTART-HDF5", context + ": H5Dget_type failed"};
+  }
+  const std::size_t actual_size = H5Tget_size(actual);
+  if (actual_size != info.byte_size) {
+    return Failure{"E-RESTART-TYPE-METADATA-MISMATCH",
+                   context + ": dataset's own HDF5 type has size " +
+                       std::to_string(actual_size) + ", attribute claims " +
+                       std::to_string(info.byte_size) + " for '" +
+                       name.value() + "'"};
+  }
+  const H5T_class_t cls = H5Tget_class(actual);
+  if (info.is_float) {
+    if (cls != H5T_FLOAT) {
+      return Failure{"E-RESTART-TYPE-METADATA-MISMATCH",
+                     context + ": attribute claims floating type '" +
+                         name.value() + "' but the dataset's own HDF5 type "
+                         "class is not H5T_FLOAT"};
+    }
+    size_t spos = 0, epos = 0, esize = 0, mpos = 0, msize = 0;
+    if (H5Tget_fields(actual, &spos, &epos, &esize, &mpos, &msize) < 0) {
+      return Failure{"E-RESTART-HDF5", context + ": H5Tget_fields failed"};
+    }
+    const H5T_norm_t norm = H5Tget_norm(actual);
+    info.explicit_integer_bit = (norm == H5T_NORM_MSBSET);
+    const std::size_t expected_stored_mantissa =
+        info.explicit_integer_bit ? info.significand_bits
+                                  : info.significand_bits - 1;
+    const std::size_t actual_ebias = H5Tget_ebias(actual);
+    if (esize != info.exponent_bits || msize != expected_stored_mantissa ||
+        actual_ebias != static_cast<std::size_t>(info.exponent_bias)) {
+      return Failure{"E-RESTART-TYPE-METADATA-MISMATCH",
+                     context + ": dataset's own HDF5 float fields disagree "
+                     "with its own element_type attribute ('" + name.value() + "')"};
+    }
+  } else if (!info.is_bool) {
+    if (cls != H5T_INTEGER) {
+      return Failure{"E-RESTART-TYPE-METADATA-MISMATCH",
+                     context + ": attribute claims integer type '" +
+                         name.value() + "' but the dataset's own HDF5 type "
+                         "class is not H5T_INTEGER"};
+    }
+    const H5T_sign_t sign = H5Tget_sign(actual);
+    const bool actual_signed = (sign == H5T_SGN_2);
+    if (actual_signed != info.is_signed_integer) {
+      return Failure{"E-RESTART-TYPE-METADATA-MISMATCH",
+                     context + ": dataset's own HDF5 integer signedness "
+                     "disagrees with its own element_type attribute ('" +
+                         name.value() + "')"};
+    }
+  }
+  return info;
+}
+
+/// `info.element_type == Bool`'s own extra invariant: every stored byte
+/// must be exactly 0 or 1 (docs/dev/restart.md Section 11, item 3) --
+/// checked unconditionally on read, independent of `ReadConversion`
+/// (this is a corrupted-file detector, not a type-widening policy).
+[[nodiscard]] Result<void> validate_bool_bytes(std::span<const std::uint8_t> bytes,
+                                               const std::string& context) {
+  for (const std::uint8_t b : bytes) {
+    if (b != 0 && b != 1) {
+      return Failure{"E-RESTART-BAD-BOOL-BYTE",
+                     context + ": stored bool byte is " + std::to_string(b) +
+                         ", neither 0 nor 1 -- the file is corrupted"};
+    }
+  }
+  return Result<void>::success();
+}
+
+/// Decodes `raw` (exactly `info.byte_size` bytes, `info` an INTEGER or
+/// `Bool` `ElementTypeInfo`) into a signed-or-unsigned 64-bit canonical
+/// value -- the integer analogue of `fuse::detail::decode_float_bits()`.
+struct DecodedInt {
+  bool is_signed = false;
+  std::int64_t s = 0;
+  std::uint64_t u = 0;
+};
+[[nodiscard]] DecodedInt decode_int_bytes(std::span<const std::byte> raw,
+                                          const fuse::ElementTypeInfo& info) {
+  DecodedInt d;
+  if (info.is_bool) {
+    std::uint8_t v = 0;
+    std::memcpy(&v, raw.data(), 1);
+    d.is_signed = false;
+    d.u = v;
+    return d;
+  }
+  d.is_signed = info.is_signed_integer;
+  if (d.is_signed) {
+    switch (info.byte_size) {
+      case 1: { std::int8_t v; std::memcpy(&v, raw.data(), 1); d.s = v; break; }
+      case 2: { std::int16_t v; std::memcpy(&v, raw.data(), 2); d.s = v; break; }
+      case 4: { std::int32_t v; std::memcpy(&v, raw.data(), 4); d.s = v; break; }
+      default: { std::int64_t v; std::memcpy(&v, raw.data(), 8); d.s = v; break; }
+    }
+  } else {
+    switch (info.byte_size) {
+      case 1: { std::uint8_t v; std::memcpy(&v, raw.data(), 1); d.u = v; break; }
+      case 2: { std::uint16_t v; std::memcpy(&v, raw.data(), 2); d.u = v; break; }
+      case 4: { std::uint32_t v; std::memcpy(&v, raw.data(), 4); d.u = v; break; }
+      default: { std::uint64_t v; std::memcpy(&v, raw.data(), 8); d.u = v; break; }
+    }
+  }
+  return d;
+}
+
+/// Encodes `d` into `target`'s own native width, refusing
+/// (E-RESTART-INTEGER-OVERFLOW) if the value does not fit -- "integers
+/// that do not fit refuse even under AllowNarrowing: an integer value
+/// change is not a rounding" (owner's own words, docs/dev/restart.md
+/// Section 11) -- so this function takes no `ReadConversion` parameter at
+/// all; the overflow check is unconditional. Signed -> unsigned is
+/// refused unconditionally too (E-RESTART-SIGNED-TO-UNSIGNED), matching
+/// `fuse::is_exact_widening()`'s own "never" rule -- `AllowNarrowing`
+/// extends precision policy, not this safety rule.
+[[nodiscard]] Result<void> encode_int_checked(const DecodedInt& d,
+                                              const fuse::ElementTypeInfo& target,
+                                              std::span<std::byte> out,
+                                              const std::string& context) {
+  if (d.is_signed && !target.is_signed_integer) {
+    return Failure{"E-RESTART-SIGNED-TO-UNSIGNED",
+                   context + ": refusing to convert a signed value to an "
+                   "unsigned type '" + target.name + "'"};
+  }
+  if (target.is_signed_integer) {
+    std::int64_t val;
+    if (d.is_signed) {
+      val = d.s;
+    } else {
+      if (d.u > static_cast<std::uint64_t>(INT64_MAX)) {
+        return Failure{"E-RESTART-INTEGER-OVERFLOW",
+                       context + ": value " + std::to_string(d.u) +
+                           " does not fit in '" + target.name + "'"};
+      }
+      val = static_cast<std::int64_t>(d.u);
+    }
+    bool fits;
+    switch (target.byte_size) {
+      case 1: fits = (val >= -128 && val <= 127); break;
+      case 2: fits = (val >= -32768 && val <= 32767); break;
+      case 4: fits = (val >= -2147483648LL && val <= 2147483647LL); break;
+      default: fits = true; break;
+    }
+    if (!fits) {
+      return Failure{"E-RESTART-INTEGER-OVERFLOW",
+                     context + ": value " + std::to_string(val) +
+                         " does not fit in '" + target.name + "'"};
+    }
+    switch (target.byte_size) {
+      case 1: { auto v = static_cast<std::int8_t>(val); std::memcpy(out.data(), &v, 1); break; }
+      case 2: { auto v = static_cast<std::int16_t>(val); std::memcpy(out.data(), &v, 2); break; }
+      case 4: { auto v = static_cast<std::int32_t>(val); std::memcpy(out.data(), &v, 4); break; }
+      default: { std::memcpy(out.data(), &val, 8); break; }
+    }
+  } else {
+    std::uint64_t val = d.u;  // d.is_signed is false here (checked above)
+    bool fits;
+    switch (target.byte_size) {
+      case 1: fits = (val <= 255); break;
+      case 2: fits = (val <= 65535); break;
+      case 4: fits = (val <= 4294967295ULL); break;
+      default: fits = true; break;
+    }
+    if (!fits) {
+      return Failure{"E-RESTART-INTEGER-OVERFLOW",
+                     context + ": value " + std::to_string(val) +
+                         " does not fit in '" + target.name + "'"};
+    }
+    switch (target.byte_size) {
+      case 1: { auto v = static_cast<std::uint8_t>(val); std::memcpy(out.data(), &v, 1); break; }
+      case 2: { auto v = static_cast<std::uint16_t>(val); std::memcpy(out.data(), &v, 2); break; }
+      case 4: { auto v = static_cast<std::uint32_t>(val); std::memcpy(out.data(), &v, 4); break; }
+      default: { std::memcpy(out.data(), &val, 8); break; }
+    }
+  }
+  return Result<void>::success();
+}
+
+/// Converts ONE element's worth of bytes from `stored` (`src`) to
+/// `requested` (`dst`), per `conversion` -- the one dispatch every
+/// `get_field_bytes()`/`get_scalar_bytes()` row goes through, whether
+/// `stored == requested` (the fast, copy-only path every call takes
+/// before Slice 1b existed) or not. Accumulates into `report` --
+/// `changed`/`abs_change` are per-element; the caller aggregates
+/// `max_absolute_change`/`changed_count`/`converted_any` across every
+/// element a single call reads (docs/dev/restart.md Section 11's own
+/// "measured over the values actually read", not merely declared from
+/// the types).
+[[nodiscard]] Result<void> convert_one_element(
+    const fuse::ElementTypeInfo& from_info, std::span<const std::byte> src,
+    fuse::ElementType requested, std::span<std::byte> dst,
+    fuse::ReadConversion conversion, const std::string& context,
+    bool& changed, double& abs_change) {
+  changed = false;
+  abs_change = 0.0;
+  const fuse::ElementTypeInfo& to_info = fuse::element_type_info(requested);
+  const bool identical_type =
+      from_info.element_type == requested && from_info.byte_size == to_info.byte_size &&
+      from_info.significand_bits == to_info.significand_bits &&
+      from_info.exponent_bits == to_info.exponent_bits &&
+      from_info.exponent_bias == to_info.exponent_bias;
+  if (identical_type) {
+    std::memcpy(dst.data(), src.data(), dst.size());
+    return Result<void>::success();
+  }
+  if (conversion == fuse::ReadConversion::Exact) {
+    return Failure{"E-RESTART-TYPE-MISMATCH",
+                   context + ": stored as '" + from_info.name +
+                       "', requested as '" + to_info.name +
+                       "' -- ReadConversion::Exact requires an identical "
+                       "type (pass ReadConversion::Widening or "
+                       "AllowNarrowing to permit a conversion)"};
+  }
+  const bool is_widening_exact = fuse::is_exact_widening(from_info, to_info);
+
+  if (conversion == fuse::ReadConversion::Widening && !is_widening_exact) {
+    return Failure{"E-RESTART-TYPE-MISMATCH",
+                   context + ": stored as '" + from_info.name +
+                       "', requested as '" + to_info.name + "' is not an "
+                       "exact widening -- ReadConversion::Widening does "
+                       "not permit this conversion (pass AllowNarrowing "
+                       "if a lossy conversion is acceptable)"};
+  }
+
+  if (from_info.is_float && to_info.is_float) {
+    const fuse::detail::NarrowingResult nr =
+        fuse::detail::narrow_float(src, from_info, to_info);
+    fuse::detail::encode_float_bits(nr.decoded, to_info, dst);
+    changed = nr.changed;
+    abs_change = nr.absolute_change;
+    return Result<void>::success();
+  }
+
+  if ((from_info.is_signed_integer || from_info.is_unsigned_integer ||
+      from_info.is_bool) &&
+      (to_info.is_signed_integer || to_info.is_unsigned_integer)) {
+    const DecodedInt d = decode_int_bytes(src, from_info);
+    // Integer -> integer is EXACT whenever is_exact_widening() said so
+    // (Widening path, already checked above) and otherwise may still
+    // fit under AllowNarrowing -- encode_int_checked() itself decides,
+    // and an integer value change from narrowing is refused there, not
+    // reported (owner's own rule: "an integer value change is not a
+    // rounding").
+    return encode_int_checked(d, to_info, dst, context);
+  }
+
+  if ((from_info.is_signed_integer || from_info.is_unsigned_integer ||
+      from_info.is_bool) &&
+      to_info.is_float) {
+    // Only reached when is_exact_widening() already said this exact
+    // (int,float) pair is covered -- never reached under AllowNarrowing
+    // alone, because integer -> float is not in this project's own
+    // AllowNarrowing scope (docs/dev/restart.md Section 11's own open
+    // question on this gap). conversion must therefore be Widening here.
+    if (conversion != fuse::ReadConversion::Widening) {
+      return Failure{"E-RESTART-TYPE-MISMATCH",
+                     context + ": integer '" + from_info.name +
+                         "' -> float '" + to_info.name + "' is only "
+                         "supported under ReadConversion::Widening, not "
+                         "AllowNarrowing (no narrowing int->float "
+                         "conversion is implemented)"};
+    }
+    const DecodedInt d = decode_int_bytes(src, from_info);
+    fuse::detail::DecodedFloat fv;
+    fv.sign = d.is_signed && d.s < 0;
+    const std::uint64_t magnitude =
+        d.is_signed ? static_cast<std::uint64_t>(fv.sign ? -d.s : d.s) : d.u;
+    if (magnitude == 0) {
+      fv.is_zero = true;
+    } else {
+      std::uint64_t m = magnitude;
+      std::int64_t exp = 0;
+      while (m > (std::uint64_t{1} << (to_info.significand_bits - 1))) {
+        m >>= 1;
+        ++exp;
+      }
+      while (m < (std::uint64_t{1} << (to_info.significand_bits - 1))) {
+        m <<= 1;
+        --exp;
+      }
+      fv.significand = m;
+      fv.unbiased_exponent = exp;
+    }
+    fuse::detail::encode_float_bits(fv, to_info, dst);
+    return Result<void>::success();
+  }
+
+  return Failure{"E-RESTART-TYPE-MISMATCH",
+                 context + ": no conversion from '" + from_info.name +
+                     "' to '" + to_info.name + "' is implemented"};
+}
+
 /// The write side of one restart point, scoped to the HDF5 group `group_`.
 /// Every qualified name `put_field`/`put_scalar`/`put_scalar_rational`/
 /// `put_blob` is given creates its own namespaced dataset path below this
@@ -173,20 +724,25 @@ class Hdf5GroupWriter final : public RestartWriter {
  public:
   explicit Hdf5GroupWriter(hid_t group) : group_(group) {}
 
-  Result<void> put_field(std::string_view name, std::span<const std::int64_t> ids,
-                         std::span<const double> values, int components,
-                         std::int64_t declared_global_size) override {
+  Result<void> put_field_bytes(std::string_view name,
+                               std::span<const std::int64_t> ids,
+                               fuse::ElementType type,
+                               std::span<const std::byte> values,
+                               int components,
+                               std::int64_t declared_global_size) override {
     const std::string key(name);
     if (ids_by_name_.count(key) != 0) {
       return Failure{"E-RESTART-DUPLICATE-CALL",
                      "put_field('" + key + "') called more than once for "
                      "this restart point"};
     }
-    if (static_cast<std::int64_t>(ids.size()) * components !=
+    const fuse::ElementTypeInfo& info = fuse::element_type_info(type);
+    if (static_cast<std::int64_t>(ids.size()) * components *
+            static_cast<std::int64_t>(info.byte_size) !=
         static_cast<std::int64_t>(values.size())) {
       return Failure{"E-RESTART-FIELD-SHAPE",
-                     "put_field('" + key + "'): ids.size()*components != "
-                     "values.size()"};
+                     "put_field('" + key + "'): ids.size()*components*"
+                     "byte_size != values.size()"};
     }
     {
       std::set<std::int64_t> uniq(ids.begin(), ids.end());
@@ -223,49 +779,53 @@ class Hdf5GroupWriter final : public RestartWriter {
       if (!d.valid()) {
         return Failure{"E-RESTART-HDF5", "H5Dcreate2 " + ids_path};
       }
-      if (ids.empty()) {
-        // H5Dwrite with a zero-extent dataspace and a null buffer is
-        // well-defined (writes nothing); std::span::data() on an empty
-        // span may be null, which H5Dwrite accepts for H5S_ALL over a
-        // zero-size dataset.
-      } else if (H5Dwrite(d, H5T_NATIVE_INT64, H5S_ALL, H5S_ALL, H5P_DEFAULT,
-                          ids.data()) < 0) {
+      if (!ids.empty() &&
+          H5Dwrite(d, H5T_NATIVE_INT64, H5S_ALL, H5S_ALL, H5P_DEFAULT,
+                  ids.data()) < 0) {
         return Failure{"E-RESTART-HDF5", "H5Dwrite " + ids_path};
       }
     }
     {
+      const Result<HType> h5type = make_hdf5_type_for(info);
+      if (!h5type.ok()) return h5type.error();
       const hsize_t dims[2] = {ids.size(),
                                static_cast<hsize_t>(components)};
       HDataspace sp(H5Screate_simple(2, dims, nullptr));
-      HDataset d(H5Dcreate2(group_, val_path.c_str(), H5T_NATIVE_DOUBLE, sp,
+      HDataset d(H5Dcreate2(group_, val_path.c_str(), h5type.value(), sp,
                             lcpl.value(), H5P_DEFAULT, H5P_DEFAULT));
       if (!d.valid()) {
         return Failure{"E-RESTART-HDF5", "H5Dcreate2 " + val_path};
       }
       if (!values.empty() &&
-          H5Dwrite(d, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT,
+          H5Dwrite(d, h5type.value(), H5S_ALL, H5S_ALL, H5P_DEFAULT,
                   values.data()) < 0) {
         return Failure{"E-RESTART-HDF5", "H5Dwrite " + val_path};
       }
+      const Result<void> mr = write_type_metadata(d, info);
+      if (!mr.ok()) return mr;
     }
     ids_by_name_[key] = std::vector<std::int64_t>(ids.begin(), ids.end());
     declared_size_by_name_[key] = declared_global_size;
     return Result<void>::success();
   }
 
-  Result<void> put_scalar(std::string_view name, double value) override {
+  Result<void> put_scalar_bytes(std::string_view name, fuse::ElementType type,
+                                std::span<const std::byte> value) override {
+    const fuse::ElementTypeInfo& info = fuse::element_type_info(type);
     const std::string path = "scalars/" + std::string(name);
+    const Result<HType> h5type = make_hdf5_type_for(info);
+    if (!h5type.ok()) return h5type.error();
     const Result<HLcpl> lcpl = make_lcpl();
     if (!lcpl.ok()) return lcpl.error();
     HDataspace sp(H5Screate(H5S_SCALAR));
-    HDataset d(H5Dcreate2(group_, path.c_str(), H5T_NATIVE_DOUBLE, sp,
+    HDataset d(H5Dcreate2(group_, path.c_str(), h5type.value(), sp,
                           lcpl.value(), H5P_DEFAULT, H5P_DEFAULT));
     if (!d.valid()) return Failure{"E-RESTART-HDF5", "H5Dcreate2 " + path};
-    if (H5Dwrite(d, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT,
-                &value) < 0) {
+    if (H5Dwrite(d, h5type.value(), H5S_ALL, H5S_ALL, H5P_DEFAULT,
+                value.data()) < 0) {
       return Failure{"E-RESTART-HDF5", "H5Dwrite " + path};
     }
-    return Result<void>::success();
+    return write_type_metadata(d, info);
   }
 
   Result<void> put_scalar_rational(std::string_view name,
@@ -366,8 +926,10 @@ class Hdf5GroupReader final : public RestartReader {
  public:
   explicit Hdf5GroupReader(hid_t group) : group_(group) {}
 
-  Result<void> get_field(std::string_view name, std::span<const std::int64_t> ids,
-                         std::span<double> out, int components) override {
+  Result<fuse::ReadConversionReport> get_field_bytes(
+      std::string_view name, std::span<const std::int64_t> ids,
+      fuse::ElementType requested_type, std::span<std::byte> out,
+      int components, fuse::ReadConversion conversion) override {
     const std::string key(name);
     const std::string ids_path = "fields/" + key + "/ids";
     const std::string val_path = "fields/" + key + "/values";
@@ -388,21 +950,46 @@ class Hdf5GroupReader final : public RestartReader {
     }
     HDataset vd(H5Dopen2(group_, val_path.c_str(), H5P_DEFAULT));
     if (!vd.valid()) return Failure{"E-RESTART-HDF5", "H5Dopen2 " + val_path};
-    std::vector<double> file_values(static_cast<std::size_t>(n) *
-                                    static_cast<std::size_t>(components));
-    if (n > 0 && H5Dread(vd, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT,
-                         file_values.data()) < 0) {
-      return Failure{"E-RESTART-HDF5", "H5Dread " + val_path};
+
+    const Result<fuse::ElementTypeInfo> stored_type_r =
+        read_and_verify_type_metadata(vd, "get_field('" + key + "')");
+    if (!stored_type_r.ok()) return stored_type_r.error();
+    const fuse::ElementTypeInfo& stored_info = stored_type_r.value();
+    const fuse::ElementTypeInfo& requested_info =
+        fuse::element_type_info(requested_type);
+
+    std::vector<std::byte> file_values(
+        static_cast<std::size_t>(n) * static_cast<std::size_t>(components) *
+        stored_info.byte_size);
+    {
+      const Result<HType> file_h5type = make_hdf5_type_for(stored_info);
+      if (!file_h5type.ok()) return file_h5type.error();
+      if (n > 0 &&
+          H5Dread(vd, file_h5type.value(), H5S_ALL, H5S_ALL, H5P_DEFAULT,
+                 file_values.data()) < 0) {
+        return Failure{"E-RESTART-HDF5", "H5Dread " + val_path};
+      }
     }
+    if (stored_info.is_bool) {
+      std::vector<std::uint8_t> as_u8(file_values.size());
+      std::memcpy(as_u8.data(), file_values.data(), file_values.size());
+      const Result<void> bv =
+          validate_bool_bytes(as_u8, "get_field('" + key + "')");
+      if (!bv.ok()) return bv.error();
+    }
+
     std::unordered_map<std::int64_t, std::size_t> pos;
     pos.reserve(file_ids.size());
     for (std::size_t i = 0; i < file_ids.size(); ++i) pos[file_ids[i]] = i;
-    if (static_cast<std::int64_t>(ids.size()) * components !=
+    if (static_cast<std::int64_t>(ids.size()) * components *
+            static_cast<std::int64_t>(requested_info.byte_size) !=
         static_cast<std::int64_t>(out.size())) {
       return Failure{"E-RESTART-FIELD-SHAPE",
-                     "get_field('" + key + "'): ids.size()*components != "
-                     "out.size()"};
+                     "get_field('" + key + "'): ids.size()*components*"
+                     "byte_size != out.size()"};
     }
+
+    fuse::ReadConversionReport report;
     for (std::size_t i = 0; i < ids.size(); ++i) {
       const auto it = pos.find(ids[i]);
       if (it == pos.end()) {
@@ -412,16 +999,38 @@ class Hdf5GroupReader final : public RestartReader {
                            " is not present in this restart point"};
       }
       for (int c = 0; c < components; ++c) {
-        out[i * static_cast<std::size_t>(components) +
-            static_cast<std::size_t>(c)] =
-            file_values[it->second * static_cast<std::size_t>(components) +
-                       static_cast<std::size_t>(c)];
+        const std::size_t src_off =
+            (it->second * static_cast<std::size_t>(components) +
+             static_cast<std::size_t>(c)) *
+            stored_info.byte_size;
+        const std::size_t dst_off =
+            (i * static_cast<std::size_t>(components) +
+             static_cast<std::size_t>(c)) *
+            requested_info.byte_size;
+        bool changed = false;
+        double abs_change = 0.0;
+        const Result<void> cr = convert_one_element(
+            stored_info,
+            std::span<const std::byte>(file_values.data() + src_off,
+                                       stored_info.byte_size),
+            requested_type,
+            std::span<std::byte>(out.data() + dst_off, requested_info.byte_size),
+            conversion, "get_field('" + key + "')", changed, abs_change);
+        if (!cr.ok()) return cr.error();
+        if (changed) {
+          report.converted_any = true;
+          ++report.changed_count;
+          report.max_absolute_change =
+              std::max(report.max_absolute_change, abs_change);
+        }
       }
     }
-    return Result<void>::success();
+    return report;
   }
 
-  Result<double> get_scalar(std::string_view name) override {
+  Result<fuse::ReadConversionReport> get_scalar_bytes(
+      std::string_view name, fuse::ElementType requested_type,
+      std::span<std::byte> out, fuse::ReadConversion conversion) override {
     const std::string path = "scalars/" + std::string(name);
     const Result<bool> exists = link_exists(group_, path);
     if (!exists.ok() || !exists.value()) {
@@ -431,11 +1040,47 @@ class Hdf5GroupReader final : public RestartReader {
     }
     HDataset d(H5Dopen2(group_, path.c_str(), H5P_DEFAULT));
     if (!d.valid()) return Failure{"E-RESTART-HDF5", "H5Dopen2 " + path};
-    double v = 0.0;
-    if (H5Dread(d, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, &v) < 0) {
+
+    const Result<fuse::ElementTypeInfo> stored_type_r =
+        read_and_verify_type_metadata(d, "get_scalar('" + std::string(name) + "')");
+    if (!stored_type_r.ok()) return stored_type_r.error();
+    const fuse::ElementTypeInfo& stored_info = stored_type_r.value();
+    const fuse::ElementTypeInfo& requested_info =
+        fuse::element_type_info(requested_type);
+
+    std::vector<std::byte> file_value(stored_info.byte_size);
+    const Result<HType> file_h5type = make_hdf5_type_for(stored_info);
+    if (!file_h5type.ok()) return file_h5type.error();
+    if (H5Dread(d, file_h5type.value(), H5S_ALL, H5S_ALL, H5P_DEFAULT,
+               file_value.data()) < 0) {
       return Failure{"E-RESTART-HDF5", "H5Dread " + path};
     }
-    return v;
+    if (stored_info.is_bool) {
+      std::vector<std::uint8_t> as_u8(file_value.size());
+      std::memcpy(as_u8.data(), file_value.data(), file_value.size());
+      const Result<void> bv =
+          validate_bool_bytes(as_u8, "get_scalar('" + std::string(name) + "')");
+      if (!bv.ok()) return bv.error();
+    }
+    if (out.size() != requested_info.byte_size) {
+      return Failure{"E-RESTART-FIELD-SHAPE",
+                     "get_scalar('" + std::string(name) + "'): out size " +
+                         std::to_string(out.size()) + " != requested type "
+                         "byte size " + std::to_string(requested_info.byte_size)};
+    }
+    fuse::ReadConversionReport report;
+    bool changed = false;
+    double abs_change = 0.0;
+    const Result<void> cr = convert_one_element(
+        stored_info, file_value, requested_type, out, conversion,
+        "get_scalar('" + std::string(name) + "')", changed, abs_change);
+    if (!cr.ok()) return cr.error();
+    if (changed) {
+      report.converted_any = true;
+      report.changed_count = 1;
+      report.max_absolute_change = abs_change;
+    }
+    return report;
   }
 
   Result<Rational> get_scalar_rational(std::string_view name) override {

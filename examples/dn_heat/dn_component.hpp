@@ -299,6 +299,12 @@ class DirichletSlab final : public fuse::Component,
       q_[i] = k1_eff(i, u_in_[i]) * (T1 - u_in_[i]) / kL1;
     }
     time_ = t;
+    // Stage B Slice 1b's own int32/bool restart-field demonstration (see
+    // write_restart()'s own comment) -- not physically meaningful,
+    // updated here only so save_state()/restore_state() and a restart
+    // round trip both have something real to carry.
+    ++sweep_count_;
+    parity_flag_ = (sweep_count_ % 2) == 0;
     return fuse::Result<void>::success();
   }
 
@@ -306,6 +312,8 @@ class DirichletSlab final : public fuse::Component,
     std::copy(q_.begin(), q_.end(), saved_q_.begin());  // element-wise
     saved_time_ = time_;
     saved_history_ = history_;
+    saved_sweep_count_ = sweep_count_;
+    saved_parity_flag_ = parity_flag_;
     ++save_count;
     return fuse::Result<void>::success();
   }
@@ -316,6 +324,8 @@ class DirichletSlab final : public fuse::Component,
     std::copy(saved_q_.begin(), saved_q_.end(), q_.begin());
     time_ = saved_time_;
     history_ = saved_history_;
+    sweep_count_ = saved_sweep_count_;
+    parity_flag_ = saved_parity_flag_;
     ++restore_count;
     return fuse::Result<void>::success();
   }
@@ -365,29 +375,48 @@ class DirichletSlab final : public fuse::Component,
   fuse::Result<void> write_restart(fuse::RestartWriter& writer) override {
     std::vector<std::int64_t> ids(n_);
     for (std::size_t i = 0; i < n_; ++i) ids[i] = static_cast<std::int64_t>(i);
-    fuse::Result<void> r =
-        writer.put_field("q_wall", ids, q_, 1, static_cast<std::int64_t>(n_));
+    fuse::Result<void> r = writer.put_field<double>(
+        "q_wall", ids, q_, 1, static_cast<std::int64_t>(n_));
     if (!r.ok()) return r;
-    r = writer.put_field("u_wall_in", ids, u_in_, 1, static_cast<std::int64_t>(n_));
+    r = writer.put_field<double>("u_wall_in", ids, u_in_, 1,
+                                 static_cast<std::int64_t>(n_));
     if (!r.ok()) return r;
     r = writer.put_scalar("time", time_);
     if (!r.ok()) return r;
-    return writer.put_scalar("history", history_);
+    r = writer.put_scalar("history", history_);
+    if (!r.ok()) return r;
+    // Stage B Slice 1b (docs/dev/restart.md Section 11): at least one
+    // INTEGER and one BOOL restart field, covering the typed interface
+    // end to end through the Runner -- sweep_count_ (int32) and
+    // parity_flag_ (bool) are DirichletSlab's own trivial counters (see
+    // their own declaration comment), not physically meaningful, chosen
+    // only so a round trip exercises both kinds through a real component.
+    r = writer.put_scalar("sweep_count", sweep_count_);
+    if (!r.ok()) return r;
+    return writer.put_scalar("parity_flag", parity_flag_);
   }
 
   fuse::Result<void> read_restart(fuse::RestartReader& reader) override {
     std::vector<std::int64_t> ids(n_);
     for (std::size_t i = 0; i < n_; ++i) ids[i] = static_cast<std::int64_t>(i);
-    fuse::Result<void> r = reader.get_field("q_wall", ids, q_, 1);
-    if (!r.ok()) return r;
-    r = reader.get_field("u_wall_in", ids, u_in_, 1);
-    if (!r.ok()) return r;
-    const fuse::Result<double> t = reader.get_scalar("time");
+    const fuse::Result<fuse::ReadConversionReport> qr =
+        reader.get_field<double>("q_wall", ids, q_, 1);
+    if (!qr.ok()) return qr.error();
+    const fuse::Result<fuse::ReadConversionReport> ur =
+        reader.get_field<double>("u_wall_in", ids, u_in_, 1);
+    if (!ur.ok()) return ur.error();
+    const fuse::Result<fuse::ReadConversionReport> t =
+        reader.get_scalar("time", time_);
     if (!t.ok()) return t.error();
-    time_ = t.value();
-    const fuse::Result<double> h = reader.get_scalar("history");
+    const fuse::Result<fuse::ReadConversionReport> h =
+        reader.get_scalar("history", history_);
     if (!h.ok()) return h.error();
-    history_ = h.value();
+    const fuse::Result<fuse::ReadConversionReport> sc =
+        reader.get_scalar("sweep_count", sweep_count_);
+    if (!sc.ok()) return sc.error();
+    const fuse::Result<fuse::ReadConversionReport> pf =
+        reader.get_scalar("parity_flag", parity_flag_);
+    if (!pf.ok()) return pf.error();
     return fuse::Result<void>::success();
   }
 
@@ -425,6 +454,15 @@ class DirichletSlab final : public fuse::Component,
   /// visible to the runtime's byte comparison of registered storage either --
   /// that checks q_/u_, this is private.
   [[nodiscard]] double history() const { return history_; }
+  /// Stage B Slice 1b (docs/dev/restart.md Section 11): a genuine int32
+  /// and a genuine bool restart field, each restored through the typed
+  /// `put_scalar<T>()`/`get_scalar<T>()` interface -- not physically
+  /// meaningful (see write_restart()'s own comment), exposed here only
+  /// so a test can compare the restored run's own value against the
+  /// uninterrupted reference run's, the same way every other private
+  /// counter on this class already is.
+  [[nodiscard]] std::int32_t sweep_count() const { return sweep_count_; }
+  [[nodiscard]] bool parity_flag() const { return parity_flag_; }
 
   int advance_count = 0;
   int save_count = 0;
@@ -444,6 +482,10 @@ class DirichletSlab final : public fuse::Component,
   double              saved_time_ = 0.0;
   double              history_ = 0.0;
   double              saved_history_ = 0.0;
+  std::int32_t        sweep_count_ = 0;
+  std::int32_t        saved_sweep_count_ = 0;
+  bool                parity_flag_ = false;
+  bool                saved_parity_flag_ = false;
 };
 
 /// Slab 2: the Neumann solver. Requires the interface heat flux, provides the
@@ -548,10 +590,11 @@ class NeumannSlab final : public fuse::Component,
   fuse::Result<void> write_restart(fuse::RestartWriter& writer) override {
     std::vector<std::int64_t> ids(n_);
     for (std::size_t i = 0; i < n_; ++i) ids[i] = static_cast<std::int64_t>(i);
-    fuse::Result<void> r =
-        writer.put_field("u_wall", ids, u_, 1, static_cast<std::int64_t>(n_));
+    fuse::Result<void> r = writer.put_field<double>(
+        "u_wall", ids, u_, 1, static_cast<std::int64_t>(n_));
     if (!r.ok()) return r;
-    r = writer.put_field("q_wall_in", ids, q_in_, 1, static_cast<std::int64_t>(n_));
+    r = writer.put_field<double>("q_wall_in", ids, q_in_, 1,
+                                 static_cast<std::int64_t>(n_));
     if (!r.ok()) return r;
     r = writer.put_scalar("time", time_);
     if (!r.ok()) return r;
@@ -561,16 +604,18 @@ class NeumannSlab final : public fuse::Component,
   fuse::Result<void> read_restart(fuse::RestartReader& reader) override {
     std::vector<std::int64_t> ids(n_);
     for (std::size_t i = 0; i < n_; ++i) ids[i] = static_cast<std::int64_t>(i);
-    fuse::Result<void> r = reader.get_field("u_wall", ids, u_, 1);
-    if (!r.ok()) return r;
-    r = reader.get_field("q_wall_in", ids, q_in_, 1);
-    if (!r.ok()) return r;
-    const fuse::Result<double> t = reader.get_scalar("time");
+    const fuse::Result<fuse::ReadConversionReport> ur =
+        reader.get_field<double>("u_wall", ids, u_, 1);
+    if (!ur.ok()) return ur.error();
+    const fuse::Result<fuse::ReadConversionReport> qr =
+        reader.get_field<double>("q_wall_in", ids, q_in_, 1);
+    if (!qr.ok()) return qr.error();
+    const fuse::Result<fuse::ReadConversionReport> t =
+        reader.get_scalar("time", time_);
     if (!t.ok()) return t.error();
-    time_ = t.value();
-    const fuse::Result<double> h = reader.get_scalar("history");
+    const fuse::Result<fuse::ReadConversionReport> h =
+        reader.get_scalar("history", history_);
     if (!h.ok()) return h.error();
-    history_ = h.value();
     return fuse::Result<void>::success();
   }
 

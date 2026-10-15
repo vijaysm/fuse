@@ -18,7 +18,9 @@
 
 #include "dn_component.hpp"
 
+#include <cmath>
 #include <cstdio>
+#include <limits>
 #include <memory>
 #include <vector>
 
@@ -138,6 +140,13 @@ struct RunResult {
   double dirichlet_time = 0, neumann_time = 0;
   double dirichlet_history = 0, neumann_history = 0;
   std::size_t last_period_sweeps = 0;
+  // Stage B Slice 1b (docs/dev/restart.md Section 11): DirichletSlab's own
+  // int32/bool restart fields (sweep_count_/parity_flag_) -- compared
+  // here so the round-trip tests verify the TYPED interface end to end
+  // through the Runner, not only the double fields every test already
+  // covered.
+  std::int32_t dirichlet_sweep_count = 0;
+  bool dirichlet_parity_flag = false;
 };
 
 RunResult run_n_periods(DnHeatFixture& s, std::int64_t n) {
@@ -154,6 +163,8 @@ RunResult run_n_periods(DnHeatFixture& s, std::int64_t n) {
   out.neumann_time = nn->time();
   out.dirichlet_history = d->history();
   out.neumann_history = nn->history();
+  out.dirichlet_sweep_count = d->sweep_count();
+  out.dirichlet_parity_flag = d->parity_flag();
   const auto& istats = s.runner->iteration_stats();
   if (!istats.empty()) out.last_period_sweeps = static_cast<std::size_t>(istats[0].iterations);
   return out;
@@ -173,6 +184,8 @@ void expect_bit_identical(const RunResult& a, const RunResult& b) {
   EXPECT_EQ(a.dirichlet_history, b.dirichlet_history);
   EXPECT_EQ(a.neumann_history, b.neumann_history);
   EXPECT_EQ(a.last_period_sweeps, b.last_period_sweeps);
+  EXPECT_EQ(a.dirichlet_sweep_count, b.dirichlet_sweep_count);
+  EXPECT_EQ(a.dirichlet_parity_flag, b.dirichlet_parity_flag);
 }
 
 /// Writes a restart point at the CURRENT state of `s` (after `k`
@@ -289,9 +302,11 @@ TEST(Restart, GrowingLayoutAppendsASecondPointWithoutDamagingTheFirst) {
   auto pr = fuse::restart_io::open_restart_point(
       fuse::restart_io::FileLayout::GrowingFile, path, "p2");
   ASSERT_TRUE(pr.ok()) << pr.error().code << ": " << pr.error().message;
-  const fuse::Result<double> t = pr.value()->reader().get_scalar("__point/period_index");
+  std::int64_t period_value = -1;
+  const fuse::Result<fuse::ReadConversionReport> t =
+      pr.value()->reader().get_scalar("__point/period_index", period_value);
   ASSERT_TRUE(t.ok());
-  EXPECT_EQ(static_cast<std::int64_t>(t.value()), 2);
+  EXPECT_EQ(period_value, 2);
   std::remove(path.c_str());
 }
 
@@ -457,7 +472,7 @@ TEST(Restart, BadGlobalIdNumberingRefuses) {
   const std::vector<std::int64_t> dup_ids = {0, 1, 1};  // duplicate
   const std::vector<double> values = {1.0, 2.0, 3.0};
   const fuse::Result<void> r =
-      pw.value()->writer().put_field("x", dup_ids, values, 1, 3);
+      pw.value()->writer().put_field<double>("x", dup_ids, values, 1, 3);
   EXPECT_FALSE(r.ok());
   EXPECT_EQ(r.error().code, "E-RESTART-DUPLICATE-ID");
   std::remove(path.c_str());
@@ -476,7 +491,7 @@ TEST(Restart, DeclaredGlobalSizeMismatchRefuses) {
   const std::vector<double> values = {1.0, 2.0, 3.0};
   // Declares a global size of 5 but only reports 3 ids.
   const fuse::Result<void> r =
-      pw.value()->writer().put_field("x", ids, values, 1, 5);
+      pw.value()->writer().put_field<double>("x", ids, values, 1, 5);
   EXPECT_FALSE(r.ok());
   EXPECT_EQ(r.error().code, "E-RESTART-BAD-NUMBERING");
   std::remove(path.c_str());
@@ -552,7 +567,7 @@ TEST(Restart, MissingComponentRecordRefuses) {
   // to disk (a truncated or hand-edited fixture).
   ASSERT_TRUE(pw.value()->writer().put_scalar_rational("__point/time",
                                                        fuse::Rational{0}).ok());
-  ASSERT_TRUE(pw.value()->writer().put_scalar("__point/period_index", 0.0).ok());
+  ASSERT_TRUE(pw.value()->writer().put_scalar("__point/period_index", std::int64_t{0}).ok());
   ASSERT_TRUE(pw.value()->finish().ok());
 
   auto restored = make_setup(10, fuse::AccelConfig{.kind = fuse::AccelKind::None});
@@ -674,5 +689,241 @@ TEST(Restart, PerBlockKeysNeverCollideOnIdenticalLocalIds) {
          "their own high bits; an exact per-field dataset name cannot";
   EXPECT_EQ(round_tripped[4], 21.0);
   EXPECT_EQ(round_tripped[5], 22.0);
+  std::remove(path.c_str());
+}
+
+// ---------------------------------------------------- Stage B Slice 1b
+
+// Stage B Slice 1b (docs/dev/restart.md Section 11): restart fields are
+// now templated on the element type -- these tests exercise that
+// directly against `fuse::restart_io::Hdf5GroupWriter`/`Hdf5GroupReader`
+// (through the public `create_restart_point()`/`open_restart_point()`
+// entry points every other test in this file already uses), rather than
+// through a real Component, so each one is scoped to exactly the type
+// or refusal it names.
+
+namespace {
+template <class T>
+fuse::Result<void> write_one_typed(const std::string& path, const char* name,
+                                   T value) {
+  fuse::restart_io::Provenance prov;
+  prov.format_version = fuse::restart_io::kFormatVersion;
+  prov.fuse_version = "test";
+  auto pw = fuse::restart_io::create_restart_point(
+      fuse::restart_io::FileLayout::SeparateMeshAndPoints, path, prov, "");
+  if (!pw.ok()) return pw.error();
+  const fuse::Result<void> r = pw.value()->writer().put_scalar(name, value);
+  if (!r.ok()) return r;
+  return pw.value()->finish();
+}
+}  // namespace
+
+// Every element type the typed interface supports (owner's own closed
+// enumeration, fuse/model/element_type.hpp), round-tripped through a
+// real HDF5 file, bit for bit -- the owner's own test requirement:
+// "round trip bit-identical per type (every enumerator)".
+TEST(TypedRestart, EveryElementTypeRoundTripsBitIdentical) {
+  const std::string path = temp_dir_path("typed_roundtrip.h5");
+
+#define FUSE_TYPED_ROUNDTRIP_CASE(T, VALUE)                                 \
+  {                                                                         \
+    std::remove(path.c_str());                                             \
+    const T original = (VALUE);                                           \
+    ASSERT_TRUE(write_one_typed<T>(path, "v", original).ok());             \
+    auto pr = fuse::restart_io::open_restart_point(                        \
+        fuse::restart_io::FileLayout::SeparateMeshAndPoints, path, "");    \
+    ASSERT_TRUE(pr.ok());                                                  \
+    T restored{};                                                         \
+    const auto rr = pr.value()->reader().get_scalar("v", restored);        \
+    ASSERT_TRUE(rr.ok()) << rr.error().code << ": " << rr.error().message; \
+    EXPECT_FALSE(rr.value().converted_any);                                \
+    EXPECT_EQ(restored, original) << "type " << #T;                        \
+  }
+
+  FUSE_TYPED_ROUNDTRIP_CASE(std::int8_t, std::int8_t{-123})
+  FUSE_TYPED_ROUNDTRIP_CASE(std::int16_t, std::int16_t{-12345})
+  FUSE_TYPED_ROUNDTRIP_CASE(std::int32_t, std::int32_t{-123456789})
+  FUSE_TYPED_ROUNDTRIP_CASE(std::int64_t, std::int64_t{-123456789012345LL})
+  FUSE_TYPED_ROUNDTRIP_CASE(std::uint8_t, std::uint8_t{250})
+  FUSE_TYPED_ROUNDTRIP_CASE(std::uint16_t, std::uint16_t{64000})
+  FUSE_TYPED_ROUNDTRIP_CASE(std::uint32_t, std::uint32_t{4000000000u})
+  FUSE_TYPED_ROUNDTRIP_CASE(std::uint64_t,
+                            std::uint64_t{18000000000000000000ULL})
+  FUSE_TYPED_ROUNDTRIP_CASE(fuse::bfloat16,
+                            fuse::bfloat16::from_float(-3.25f))
+  FUSE_TYPED_ROUNDTRIP_CASE(float, 1.0f + std::numeric_limits<float>::epsilon())
+  FUSE_TYPED_ROUNDTRIP_CASE(double,
+                            1.0 + std::numeric_limits<double>::epsilon())
+  FUSE_TYPED_ROUNDTRIP_CASE(long double, static_cast<long double>(-2.5))
+  FUSE_TYPED_ROUNDTRIP_CASE(bool, true)
+  FUSE_TYPED_ROUNDTRIP_CASE(bool, false)
+#if defined(__FLT16_MANT_DIG__)
+  FUSE_TYPED_ROUNDTRIP_CASE(_Float16, static_cast<_Float16>(1.5))
+#endif
+
+#undef FUSE_TYPED_ROUNDTRIP_CASE
+  std::remove(path.c_str());
+}
+
+// Both file layouts (owner's own test requirement) -- a single
+// representative type (double) is enough to prove the typed machinery
+// works identically under GrowingFile, since the type dispatch itself
+// does not depend on which layout wrote it (both route through the
+// SAME `Hdf5GroupWriter`/`Hdf5GroupReader`).
+TEST(TypedRestart, TypedScalarRoundTripsUnderGrowingFileLayoutToo) {
+  const std::string path = temp_dir_path("typed_growing.h5");
+  std::remove(path.c_str());
+  fuse::restart_io::Provenance prov;
+  prov.format_version = fuse::restart_io::kFormatVersion;
+  prov.fuse_version = "test";
+  auto pw = fuse::restart_io::create_restart_point(
+      fuse::restart_io::FileLayout::GrowingFile, path, prov, "p1");
+  ASSERT_TRUE(pw.ok());
+  ASSERT_TRUE(pw.value()->writer().put_scalar("v", std::int32_t{-42}).ok());
+  ASSERT_TRUE(pw.value()->finish().ok());
+
+  auto pr = fuse::restart_io::open_restart_point(
+      fuse::restart_io::FileLayout::GrowingFile, path, "p1");
+  ASSERT_TRUE(pr.ok());
+  std::int32_t restored = 0;
+  const auto rr = pr.value()->reader().get_scalar("v", restored);
+  ASSERT_TRUE(rr.ok());
+  EXPECT_EQ(restored, -42);
+  std::remove(path.c_str());
+}
+
+// ReadConversion::Exact (the default) requires an identical type --
+// written as double, requested as int32 refuses, naming both types.
+TEST(TypedRestart, ExactRefusesOnTypeMismatchNamingBothTypes) {
+  const std::string path = temp_dir_path("typed_exact_mismatch.h5");
+  ASSERT_TRUE(write_one_typed<double>(path, "v", 3.0).ok());
+  auto pr = fuse::restart_io::open_restart_point(
+      fuse::restart_io::FileLayout::SeparateMeshAndPoints, path, "");
+  ASSERT_TRUE(pr.ok());
+  std::int32_t restored = 0;
+  const auto rr = pr.value()->reader().get_scalar("v", restored);
+  EXPECT_FALSE(rr.ok());
+  EXPECT_EQ(rr.error().code, "E-RESTART-TYPE-MISMATCH");
+  EXPECT_NE(rr.error().message.find("binary64"), std::string::npos);
+  EXPECT_NE(rr.error().message.find("int32"), std::string::npos);
+  std::remove(path.c_str());
+}
+
+// ReadConversion::Widening permits only an EXACT conversion -- written
+// as binary16, requested as bfloat16 (same significand coverage, but a
+// WIDER exponent range on the destination, see fuse::is_exact_widening's
+// own exponent-containment rule) is NOT exact and refuses even under
+// Widening.
+TEST(TypedRestart, WideningRefusesANonExactConversion) {
+#if defined(__FLT16_MANT_DIG__)
+  const std::string path = temp_dir_path("typed_widening_refuses.h5");
+  ASSERT_TRUE(write_one_typed<_Float16>(path, "v", static_cast<_Float16>(1.5)).ok());
+  auto pr = fuse::restart_io::open_restart_point(
+      fuse::restart_io::FileLayout::SeparateMeshAndPoints, path, "");
+  ASSERT_TRUE(pr.ok());
+  fuse::bfloat16 restored;
+  const auto rr = pr.value()->reader().get_scalar(
+      "v", restored, fuse::ReadConversion::Widening);
+  EXPECT_FALSE(rr.ok());
+  EXPECT_EQ(rr.error().code, "E-RESTART-TYPE-MISMATCH");
+  std::remove(path.c_str());
+#else
+  GTEST_SKIP() << "this compiler has no _Float16 (binary16)";
+#endif
+}
+
+// Widening DOES permit an exact conversion -- the positive counterpart
+// of the test above, written as bfloat16 (whose significand AND
+// exponent range both fit binary32 exactly), requested as binary32.
+TEST(TypedRestart, WideningSucceedsOnAnExactConversionWithNoReportedChange) {
+  const std::string path = temp_dir_path("typed_widening_ok.h5");
+  ASSERT_TRUE(write_one_typed<fuse::bfloat16>(
+                  path, "v", fuse::bfloat16::from_float(-3.25f))
+                 .ok());
+  auto pr = fuse::restart_io::open_restart_point(
+      fuse::restart_io::FileLayout::SeparateMeshAndPoints, path, "");
+  ASSERT_TRUE(pr.ok());
+  float restored = 0.0f;
+  const auto rr = pr.value()->reader().get_scalar(
+      "v", restored, fuse::ReadConversion::Widening);
+  ASSERT_TRUE(rr.ok()) << rr.error().code << ": " << rr.error().message;
+  EXPECT_FALSE(rr.value().converted_any);
+  EXPECT_EQ(restored, -3.25f);
+  std::remove(path.c_str());
+}
+
+// "integers that do not fit refuse even under AllowNarrowing: an integer
+// value change is not a rounding" (owner's own words).
+TEST(TypedRestart, IntegerOverflowRefusesEvenUnderAllowNarrowing) {
+  const std::string path = temp_dir_path("typed_int_overflow.h5");
+  ASSERT_TRUE(write_one_typed<std::int32_t>(path, "v", 100000).ok());
+  auto pr = fuse::restart_io::open_restart_point(
+      fuse::restart_io::FileLayout::SeparateMeshAndPoints, path, "");
+  ASSERT_TRUE(pr.ok());
+  std::int8_t restored = 0;
+  const auto rr = pr.value()->reader().get_scalar(
+      "v", restored, fuse::ReadConversion::AllowNarrowing);
+  EXPECT_FALSE(rr.ok());
+  EXPECT_EQ(rr.error().code, "E-RESTART-INTEGER-OVERFLOW");
+  std::remove(path.c_str());
+}
+
+// An integer value that DOES fit succeeds under AllowNarrowing (and is
+// not itself a "rounding" -- changed_any stays false, since an integer
+// narrowing is exact-or-refused, never partially lossy).
+TEST(TypedRestart, IntegerNarrowingThatFitsSucceeds) {
+  const std::string path = temp_dir_path("typed_int_narrow_ok.h5");
+  ASSERT_TRUE(write_one_typed<std::int32_t>(path, "v", 100).ok());
+  auto pr = fuse::restart_io::open_restart_point(
+      fuse::restart_io::FileLayout::SeparateMeshAndPoints, path, "");
+  ASSERT_TRUE(pr.ok());
+  std::int8_t restored = 0;
+  const auto rr = pr.value()->reader().get_scalar(
+      "v", restored, fuse::ReadConversion::AllowNarrowing);
+  ASSERT_TRUE(rr.ok()) << rr.error().code << ": " << rr.error().message;
+  EXPECT_EQ(restored, 100);
+  std::remove(path.c_str());
+}
+
+// Float narrowing under AllowNarrowing reports the actual change it
+// measured -- binary64 -> bfloat16, a value with real low-order bits
+// that bfloat16's 8-bit significand cannot hold.
+TEST(TypedRestart, FloatNarrowingReportsAMeasuredChange) {
+  const std::string path = temp_dir_path("typed_float_narrow.h5");
+  const double original = 1.0 + std::ldexp(1.0, -20);  // well within
+                                                        // double's 53 bits,
+                                                        // far beyond bf16's 8
+  ASSERT_TRUE(write_one_typed<double>(path, "v", original).ok());
+  auto pr = fuse::restart_io::open_restart_point(
+      fuse::restart_io::FileLayout::SeparateMeshAndPoints, path, "");
+  ASSERT_TRUE(pr.ok());
+  fuse::bfloat16 restored;
+  const auto rr = pr.value()->reader().get_scalar(
+      "v", restored, fuse::ReadConversion::AllowNarrowing);
+  ASSERT_TRUE(rr.ok()) << rr.error().code << ": " << rr.error().message;
+  EXPECT_TRUE(rr.value().converted_any);
+  EXPECT_GT(rr.value().max_absolute_change, 0.0);
+  EXPECT_EQ(restored.to_float(), 1.0f);  // rounds down to exactly 1.0
+  std::remove(path.c_str());
+}
+
+// Same-type requests are unaffected by which ReadConversion was asked
+// for -- the "fast path" every pre-Slice-1b round-trip test already
+// relies on, re-stated here as its own explicit property.
+TEST(TypedRestart, IdenticalTypeNeverReportsAChangeUnderAnyConversionMode) {
+  const std::string path = temp_dir_path("typed_identical.h5");
+  ASSERT_TRUE(write_one_typed<double>(path, "v", 3.14).ok());
+  for (const fuse::ReadConversion conv :
+       {fuse::ReadConversion::Exact, fuse::ReadConversion::Widening,
+        fuse::ReadConversion::AllowNarrowing}) {
+    auto pr = fuse::restart_io::open_restart_point(
+        fuse::restart_io::FileLayout::SeparateMeshAndPoints, path, "");
+    ASSERT_TRUE(pr.ok());
+    double restored = 0.0;
+    const auto rr = pr.value()->reader().get_scalar("v", restored, conv);
+    ASSERT_TRUE(rr.ok());
+    EXPECT_FALSE(rr.value().converted_any);
+    EXPECT_EQ(restored, 3.14);
+  }
   std::remove(path.c_str());
 }

@@ -386,7 +386,7 @@ foreach(t rational units error)
 endforeach()
 
 # ---------------------------------------------------------------- model
-foreach(t semantics transform compatibility multiscale connect builder yaml_io region component channel coupling_graph descriptor capabilities)
+foreach(t semantics transform compatibility multiscale connect builder yaml_io region component channel coupling_graph descriptor capabilities bfloat16 element_type float_bits)
   fuse_add_gtest(model ${t})
 endforeach()
 fuse_add_gtest(model validate THROWS)
@@ -796,11 +796,17 @@ target_include_directories(fuse_runtime_fixed_point_residual_test PRIVATE
 # (fuse_tests_gated_by below, mirroring the `if(FUSE_ENABLE_MOAB)` block
 # elsewhere in this file), because test/runtime/restart_test.cpp names
 # <fuse/restart_io/hdf5_restart_io.hpp>, built only under that option.
-fuse_tests_gated_by(FUSE_ENABLE_HDF5 runtime/restart_test.cpp)
+fuse_tests_gated_by(FUSE_ENABLE_HDF5 runtime/restart_test.cpp runtime/typed_restart_hdf5_test.cpp)
 if(FUSE_ENABLE_HDF5)
   fuse_add_gtest(runtime restart LIBS fuse::runtime fuse::backend fuse::restart_io)
   target_include_directories(fuse_runtime_restart_test PRIVATE
     ${CMAKE_SOURCE_DIR}/examples/dn_heat)
+  # Stage B Slice 1b: white-box corruption/foreign-file fixtures that
+  # must touch <hdf5.h> directly (see typed_restart_hdf5_test.cpp's own
+  # top comment on why this is allowed) -- a SEPARATE binary from
+  # fuse_runtime_restart_test so that file's own includes never need
+  # HDF5's own headers for the ordinary public-API tests.
+  fuse_add_gtest(runtime typed_restart_hdf5 LIBS fuse::runtime fuse::restart_io ${FUSE_RESTART_HDF5_TARGET} MPI::MPI_C)
 endif()
 # S7.2: proves the graph-level trigger -- IterationBuilder::accelerate()/
 # ::newton() setting requires_residual_capability/requires_linearization_
