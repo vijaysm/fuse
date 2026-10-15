@@ -12,6 +12,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include "fuse/backend/native/mesh_pack_device.hpp"
 #include "fuse/base/config.hpp"
 #include "fuse/base/error.hpp"
 
@@ -32,19 +33,9 @@ MPI_Comm resolve(CommHandle comm) {
 }
 #endif
 
-// ---- byte-buffer append/read helpers, matching native_migration.cpp's own
-// convention exactly (duplicated rather than shared: the halo wire format
-// carries two extra leading fields native_migration.cpp's own per-cell
-// packer does not, and a "copy, never move" cell is a different enough
-// operation from a migrated one that sharing a helper would mean threading
-// an unused owner/index pair through every migration call site instead). --
-
-template <class T>
-void append_pod(std::vector<std::byte>& buf, const T& v) {
-  static_assert(std::is_trivially_copyable_v<T>);
-  const auto* p = reinterpret_cast<const std::byte*>(&v);
-  buf.insert(buf.end(), p, p + sizeof(T));
-}
+// ---- byte-buffer read helper (unpack only; pack now goes through
+// `fuse::native::device::pack_fanout`, mesh_pack_device.hpp, matching
+// native_migration.cpp's own post-wiring shape) ----------------------------
 
 template <class T>
 T read_pod(const std::vector<std::byte>& buf, std::size_t& pos) {
@@ -53,6 +44,17 @@ T read_pod(const std::vector<std::byte>& buf, std::size_t& pos) {
   std::memcpy(&v, buf.data() + pos, sizeof(T));
   pos += sizeof(T);
   return v;
+}
+
+/// See native_migration.cpp's identical helper's comment: the one host
+/// round trip a halo pack still pays, for the wire bytes themselves, not
+/// the mesh's own geometry.
+std::vector<std::byte> to_host_bytes(const Kokkos::View<std::byte*, NativeMeshView::DeviceMemSpace>& v) {
+  auto mirror = Kokkos::create_mirror_view(v);
+  Kokkos::deep_copy(mirror, v);
+  std::vector<std::byte> out(mirror.extent(0));
+  if (!out.empty()) std::memcpy(out.data(), mirror.data(), mirror.extent(0));
+  return out;
 }
 
 }  // namespace
@@ -152,57 +154,72 @@ std::vector<std::size_t> owned_block_index(const NativeMeshView& mesh) {
   return idx;
 }
 
-namespace {
-
-void pack_one_halo_cell(const NativeMeshView& mesh, std::size_t c, int owner_rank,
-                        std::int64_t owned_block_idx, std::vector<std::byte>& out) {
-  const auto type = mesh.cell_type_of(c);
-  const auto& verts = mesh.cell_vertices(c);
-  append_pod<std::int32_t>(out, owner_rank);
-  append_pod<std::int64_t>(out, owned_block_idx);
-  append_pod<std::int64_t>(out, static_cast<std::int64_t>(mesh.global_id(mesh.dimension(), c)));
-  append_pod<std::uint8_t>(out, static_cast<std::uint8_t>(type));
-  append_pod<std::int32_t>(out, static_cast<std::int32_t>(verts.size()));
-  std::unordered_map<int, int> local_to_closure;
-  local_to_closure.reserve(verts.size());
-  for (std::size_t k = 0; k < verts.size(); ++k) {
-    const int lv = verts[k];
-    local_to_closure[lv] = static_cast<int>(k);
-    append_pod<std::int64_t>(out, static_cast<std::int64_t>(mesh.vertex_gid_of(
-                                      static_cast<std::size_t>(lv))));
-    append_pod<double>(out, mesh.vertex_x(static_cast<std::size_t>(lv), 0));
-    append_pod<double>(out, mesh.vertex_x(static_cast<std::size_t>(lv), 1));
-    append_pod<double>(out, mesh.vertex_x(static_cast<std::size_t>(lv), 2));
-  }
-  if (type == CellType::Polyhedron) {
-    const auto& faces = mesh.cell_faces(c);
-    append_pod<std::int32_t>(out, static_cast<std::int32_t>(faces.size()));
-    for (const auto& face : faces) {
-      append_pod<std::int32_t>(out, static_cast<std::int32_t>(face.size()));
-      for (int lv : face) {
-        append_pod<std::int32_t>(out, static_cast<std::int32_t>(local_to_closure.at(lv)));
-      }
-    }
-  }
-}
-
-}  // namespace
-
 std::vector<std::vector<std::byte>> pack_halo_cells(
     const NativeMeshView& mesh, const std::vector<std::vector<std::size_t>>& send_by_local_index,
     const std::vector<std::size_t>& owned_block_index, int my_rank, int num_ranks) {
-  std::vector<std::vector<std::byte>> result(static_cast<std::size_t>(num_ranks));
+  const int dim = mesh.dimension();
+  const std::size_t n = mesh.cell_count();
+
+  // Flatten the per-destination send lists into one (local cell index,
+  // destination rank) pair per send -- the domain `device::pack_fanout`
+  // iterates. A halo copy, unlike a migrated cell, may name the SAME
+  // owned cell for SEVERAL destinations (a source cell overlapping more
+  // than one target rank's covering set), which is exactly why the
+  // single-destination `device::pack_to` (wired into `pack_for_migration`)
+  // cannot serve this caller.
+  std::vector<int> cell_of_send_host;
+  std::vector<int> dest_of_send_host;
   for (int r = 0; r < num_ranks; ++r) {
     for (const std::size_t c : send_by_local_index[static_cast<std::size_t>(r)]) {
-      FUSE_ASSERT(mesh.is_owned(mesh.dimension(), c),
+      FUSE_ASSERT(mesh.is_owned(dim, c),
                  "pack_halo_cells: cell {} is being sent as a halo copy but this rank does not "
                  "own it",
                  c);
-      pack_one_halo_cell(mesh, c, my_rank,
-                        static_cast<std::int64_t>(owned_block_index[c]),
-                        result[static_cast<std::size_t>(r)]);
+      cell_of_send_host.push_back(static_cast<int>(c));
+      dest_of_send_host.push_back(r);
     }
   }
+  const std::size_t n_sends = cell_of_send_host.size();
+
+  using Space = NativeMeshView::DeviceMemSpace;
+  Kokkos::View<int*, Kokkos::HostSpace> cell_h(
+      Kokkos::view_alloc("pack_halo_cells::cell_h", Kokkos::WithoutInitializing), n_sends);
+  Kokkos::View<int*, Kokkos::HostSpace> dest_h(
+      Kokkos::view_alloc("pack_halo_cells::dest_h", Kokkos::WithoutInitializing), n_sends);
+  for (std::size_t i = 0; i < n_sends; ++i) {
+    cell_h(i) = cell_of_send_host[i];
+    dest_h(i) = dest_of_send_host[i];
+  }
+  Kokkos::View<int*, Space> cell_d(
+      Kokkos::view_alloc("pack_halo_cells::cell_d", Kokkos::WithoutInitializing), n_sends);
+  Kokkos::View<int*, Space> dest_d(
+      Kokkos::view_alloc("pack_halo_cells::dest_d", Kokkos::WithoutInitializing), n_sends);
+  Kokkos::deep_copy(cell_d, cell_h);
+  Kokkos::deep_copy(dest_d, dest_h);
+
+  // `owner_rank` is one constant (`my_rank`: a halo cell is COPIED, never
+  // migrated) and `owned_block_idx_of_cell` is `owned_block_index` itself
+  // (already indexed by local cell), both per LOCAL CELL (size `n`), not
+  // per send -- `device::pack_fanout`'s own convention (its header
+  // comment), chosen so neither array needs a second indirection through
+  // the send list.
+  Kokkos::View<std::int32_t*, Kokkos::HostSpace> owner_h("pack_halo_cells::owner_h", n);
+  Kokkos::View<std::int64_t*, Kokkos::HostSpace> owned_idx_h("pack_halo_cells::owned_idx_h", n);
+  for (std::size_t c = 0; c < n; ++c) {
+    owner_h(c) = my_rank;
+    owned_idx_h(c) = static_cast<std::int64_t>(owned_block_index[c]);
+  }
+  Kokkos::View<std::int32_t*, Space> owner_d(
+      Kokkos::view_alloc("pack_halo_cells::owner_d", Kokkos::WithoutInitializing), n);
+  Kokkos::View<std::int64_t*, Space> owned_idx_d(
+      Kokkos::view_alloc("pack_halo_cells::owned_idx_d", Kokkos::WithoutInitializing), n);
+  Kokkos::deep_copy(owner_d, owner_h);
+  Kokkos::deep_copy(owned_idx_d, owned_idx_h);
+
+  auto packed = device::pack_fanout<true, Space>(mesh.device_arrays(), cell_d, dest_d, num_ranks,
+                                                 owner_d, owned_idx_d);
+  std::vector<std::vector<std::byte>> result(packed.size());
+  for (std::size_t r = 0; r < packed.size(); ++r) result[r] = to_host_bytes(packed[r]);
   return result;
 }
 
