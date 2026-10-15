@@ -4657,6 +4657,248 @@ Result<void> Runner::run_period(ComponentSet& components) {
   }
 }
 
+namespace {
+
+/// Restart track (docs/dev/restart.md), Stage B Slice 1: builds the
+/// `field name -> owning component name` map a `RegionBlock::target_field`
+/// is resolved through to find the accelerator row's qualified field
+/// name. Built fresh per call rather than cached on `Impl` -- it is read
+/// at most twice per restart point (once on write, once on restore,
+/// never inside the hot per-period loop) and the graph it is built from
+/// does not change across a run, so caching it would save nothing a
+/// restart point's own I/O does not already dwarf.
+fuse::Result<std::unordered_map<std::string, std::string>>
+build_field_owner_map(const fuse::CouplingGraph& graph) {
+  std::unordered_map<std::string, std::string> owner;
+  for (std::size_t ci = 0; ci < graph.component_count(); ++ci) {
+    const fuse::ComponentId cid{static_cast<std::uint32_t>(ci)};
+    const fuse::ComponentDecl& decl = graph.component(cid);
+    for (const fuse::FieldId fid : decl.fields) {
+      const std::string& fname = graph.field(fid).name;
+      const auto it = owner.find(fname);
+      if (it != owner.end() && it->second != decl.name) {
+        return fuse::Failure{
+            "E-RESTART-AMBIGUOUS-FIELD-NAME",
+            "build_field_owner_map: field '" + fname +
+                "' is declared by both '" + it->second + "' and '" +
+                decl.name +
+                "' -- an accelerated region's own row cannot be "
+                "resolved to one owning component's global ids"};
+      }
+      owner[fname] = decl.name;
+    }
+  }
+  return owner;
+}
+
+}  // namespace
+
+std::int64_t Runner::current_period_index() const noexcept {
+  return impl_->period_index;
+}
+
+void Runner::set_current_period_index(std::int64_t period_index) noexcept {
+  impl_->period_index = period_index;
+}
+
+void Runner::request_restart_point() noexcept {
+  impl_->restart_point_requested = true;
+}
+
+bool Runner::take_restart_point_request() noexcept {
+  const bool requested = impl_->restart_point_requested;
+  impl_->restart_point_requested = false;
+  return requested;
+}
+
+Result<void> Runner::write_restart_fields(RestartWriter& writer,
+                                          ComponentSet& components) const {
+  if (!impl_->initialized) {
+    return Failure{"E-RT-INIT",
+                   "write_restart_fields() called before a successful "
+                   "initialize()"};
+  }
+  for (Component& c : components) {
+    if (c.supports_restart_form_a()) {
+      QualifyingRestartWriter qw(writer, c.name());
+      const Result<void> r = c.write_restart(qw);
+      if (!r.ok()) return r;
+    }
+    if (c.supports_restart_form_b()) {
+      const Result<std::vector<std::byte>> blob = c.save_restart_blob();
+      if (!blob.ok()) return blob.error();
+      const Result<void> r =
+          writer.put_blob(c.name() + "/__blob",
+                          std::span<const std::byte>(blob.value()),
+                          c.restart_blob_version());
+      if (!r.ok()) return r;
+    }
+  }
+
+  const Result<std::unordered_map<std::string, std::string>> owner_map =
+      build_field_owner_map(impl_->graph);
+  if (!owner_map.ok()) return owner_map.error();
+
+  for (const detail::RegionRuntime& region : impl_->regions) {
+    if (region.accel == nullptr) continue;
+    // Round 2 EXACT-KEY fix: one RestartRowBlock PER RegionBlock, each
+    // carrying its OWNING component's own unmodified ids under its own
+    // qualified field name -- never concatenated into one flat id space.
+    std::vector<RestartRowBlock> blocks;
+    blocks.reserve(region.blocks.size());
+    for (const detail::RegionBlock& block : region.blocks) {
+      if (block.length == 0) continue;
+      const auto oit = owner_map.value().find(block.target_field);
+      if (oit == owner_map.value().end()) {
+        return Failure{"E-RESTART-BAD-NUMBERING",
+                       "write_restart_fields: region '" + region.name +
+                           "' block for field '" + block.target_field +
+                           "' has no owning component -- its accelerator "
+                           "row has no global id to restart by"};
+      }
+      const std::string qualified = oit->second + "/" + block.target_field;
+      const Result<std::vector<std::int64_t>> ids = writer.recorded_ids(qualified);
+      if (!ids.ok()) return ids.error();
+      if (ids.value().size() != block.length) {
+        return Failure{
+            "E-RESTART-BAD-NUMBERING",
+            "write_restart_fields: region '" + region.name + "' block for '" +
+                qualified + "' expects " + std::to_string(block.length) +
+                " rows, component reported " +
+                std::to_string(ids.value().size())};
+      }
+      blocks.push_back(RestartRowBlock{qualified, ids.value()});
+    }
+    // Round 2 fix 1 (NO SILENT RESET): an accelerator that does not
+    // implement restart state writes nothing for this region -- the
+    // base class's export_restart_state() default is a harmless no-op
+    // on the WRITE side (nothing is lost that was ever asked to be
+    // captured); the refusal this round's fix 1 requires is on the
+    // RESTORE side, enforced in restore_restart_fields() below, driven
+    // by the CURRENT run's own restart_state_implemented(), never by
+    // what a previous write did or did not record.
+    if (!region.accel->restart_state_implemented()) continue;
+    const Result<void> r =
+        region.accel->export_restart_state(writer, region.name, blocks);
+    if (!r.ok()) return r;
+  }
+  return Result<void>::success();
+}
+
+Result<void> Runner::restore_restart_fields(RestartReader& reader,
+                                            ComponentSet& components,
+                                            bool allow_accelerator_reset_on_mismatch,
+                                            bool& any_accelerator_reset) {
+  if (!impl_->initialized) {
+    return Failure{"E-RT-INIT",
+                   "restore_restart_fields() called before a successful "
+                   "initialize()"};
+  }
+  any_accelerator_reset = false;
+
+  // Step 1: discover every Form-A component's OWN current global ids,
+  // without touching the restore file at all -- see IdCollectingRestartWriter's
+  // own doc comment (fuse/model/restart.hpp) for why this must run BEFORE
+  // any real restore of component state.
+  IdCollectingRestartWriter id_collector;
+  for (Component& c : components) {
+    if (!c.supports_restart_form_a()) continue;
+    QualifyingRestartWriter qw(id_collector, c.name());
+    const Result<void> r = c.write_restart(qw);
+    if (!r.ok()) return r;
+  }
+
+  for (Component& c : components) {
+    if (c.supports_restart_form_a()) {
+      QualifyingRestartReader qr(reader, c.name());
+      const Result<void> r = c.read_restart(qr);
+      if (!r.ok()) return r;
+    }
+    if (c.supports_restart_form_b()) {
+      std::uint32_t version = 0;
+      Result<std::vector<std::byte>> blob =
+          reader.get_blob(c.name() + "/__blob", version);
+      if (!blob.ok()) return blob.error();
+      const Result<void> r = c.load_restart_blob(blob.value(), version);
+      if (!r.ok()) return r;
+    }
+  }
+
+  const Result<std::unordered_map<std::string, std::string>> owner_map =
+      build_field_owner_map(impl_->graph);
+  if (!owner_map.ok()) return owner_map.error();
+
+  for (detail::RegionRuntime& region : impl_->regions) {
+    if (region.accel == nullptr) continue;
+
+    // Round 2 fix 1 (NO SILENT RESET), owner decision 4: refuse by name
+    // unless the run opted in. This check is COLLECTIVE BY
+    // CONSTRUCTION, not by an added reduction -- every rank's graph
+    // assigns the SAME AccelKind to the SAME region (validate()'s own
+    // precondition is identical input on every rank), so
+    // restart_state_implemented() evaluates to the identical boolean on
+    // every rank without any communication, exactly like the
+    // version-mismatch and missing-component refusals already in this
+    // file's own verification plan (docs/dev/restart.md Section 7.iii).
+    // The check runs BEFORE any per-block id resolution below, so an
+    // unimplemented accelerator never even touches the restore file.
+    if (!region.accel->restart_state_implemented()) {
+      if (!allow_accelerator_reset_on_mismatch) {
+        return Failure{
+            "E-RESTART-ACCEL-NOT-IMPLEMENTED",
+            "restore_restart_fields: region '" + region.name +
+                "' accelerator '" + region.accel->name() +
+                "' does not implement restart state "
+                "(Accelerator::restart_state_implemented() == false) and "
+                "the run did not opt into resetting it -- pass "
+                "allow_accelerator_reset_on_mismatch=true to accept "
+                "Accelerator::reset() for this region instead of a "
+                "restored history"};
+      }
+      region.accel->reset();
+      any_accelerator_reset = true;
+      continue;
+    }
+
+    // Round 2 EXACT-KEY fix: one RestartRowBlock PER RegionBlock, each
+    // carrying its OWNING component's own unmodified, CURRENT ids under
+    // its own qualified field name -- never concatenated into one flat
+    // id space keyed by a combined/hashed value.
+    std::vector<RestartRowBlock> blocks;
+    blocks.reserve(region.blocks.size());
+    for (const detail::RegionBlock& block : region.blocks) {
+      if (block.length == 0) continue;
+      const auto oit = owner_map.value().find(block.target_field);
+      if (oit == owner_map.value().end()) {
+        return Failure{"E-RESTART-BAD-NUMBERING",
+                       "restore_restart_fields: region '" + region.name +
+                           "' block for field '" + block.target_field +
+                           "' has no owning component"};
+      }
+      const std::string qualified = oit->second + "/" + block.target_field;
+      const Result<std::vector<std::int64_t>> ids =
+          id_collector.recorded_ids(qualified);
+      if (!ids.ok()) return ids.error();
+      if (ids.value().size() != block.length) {
+        return Failure{
+            "E-RESTART-BAD-NUMBERING",
+            "restore_restart_fields: region '" + region.name + "' block for '" +
+                qualified + "' expects " + std::to_string(block.length) +
+                " rows, component currently reports " +
+                std::to_string(ids.value().size())};
+      }
+      blocks.push_back(RestartRowBlock{qualified, ids.value()});
+    }
+    bool did_reset = false;
+    const Result<void> r = region.accel->import_restart_state(
+        reader, region.name, blocks, allow_accelerator_reset_on_mismatch,
+        did_reset);
+    if (!r.ok()) return r;
+    any_accelerator_reset = any_accelerator_reset || did_reset;
+  }
+  return Result<void>::success();
+}
+
 Result<std::optional<ExternalAdvanceRequest>> Runner::resume_period(
     ComponentSet& components) {
   if (!impl_->initialized) {

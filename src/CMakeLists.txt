@@ -541,6 +541,14 @@ add_library(fuse-coupler-runtime
   runtime/checkpoint_support.cpp
   runtime/window_coupler.cpp
   runtime/fixed_point_residual.cpp
+  # Restart track (docs/dev/restart.md), Stage B Slice 1: the Runner-level
+  # orchestration (time/period_index + component/accelerator field
+  # restart) -- backend-agnostic, so it lives here unconditionally rather
+  # than in the FUSE_ENABLE_HDF5-gated library below, which supplies only
+  # the CONCRETE HDF5 reader/writer this code is written against the
+  # abstract fuse::RestartWriter/RestartReader interface, never HDF5
+  # itself.
+  runtime/restart.cpp
   # KNOWN_ISSUES.md D57 ("Collectives" track): FUSE_COLLECTIVE_TRACE's own
   # pure formatter, called from run_region() (iteration.cpp) -- kept in
   # its own translation unit so test/runtime/collective_trace_test.cpp
@@ -592,6 +600,61 @@ if(FUSE_ENABLE_PETSC)
   target_link_libraries(fuse-coupler-petsc PRIVATE PkgConfig::PETSc MPI::MPI_C)
   set_target_properties(fuse-coupler-petsc PROPERTIES
     EXPORT_NAME petsc
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN ON
+  )
+endif()
+
+# --------------------------------------------------------------- restart
+# Restart track (docs/dev/restart.md), Stage B Slice 1: the CONCRETE
+# HDF5 writer/reader (hid_t never escapes this library's own public
+# headers -- fuse/restart_io/hdf5_restart_io.hpp's own header comment).
+# Built ONLY under FUSE_ENABLE_HDF5, against FUSE_RESTART_HDF5_TARGET
+# (cmake/FuseDependencies.cmake), the SAME HDF5 target FUSE_ENABLE_LOWFIVE
+# resolves -- one shared find_package(HDF5) call, so the two can never
+# resolve to two different HDF5 images when both options are ON. Depends
+# on fuse::runtime only for fuse::RestartWriter/RestartReader's OWN
+# header (fuse/model/restart.hpp, which fuse::runtime already pulls in);
+# it does not need Component/ComponentSet/Runner at all -- the Runner-
+# facing orchestration (fuse::write_restart_point()/restore_restart_point(),
+# fuse/runtime/restart.hpp) lives in fuse-coupler-runtime itself,
+# unconditionally, and is handed a RestartWriter/RestartReader this
+# library merely happens to implement.
+if(FUSE_ENABLE_HDF5)
+  add_library(fuse-coupler-restart-io
+    restart_io/hdf5_restart_io.cpp
+  )
+  add_library(fuse::restart_io ALIAS fuse-coupler-restart-io)
+  target_compile_features(fuse-coupler-restart-io PUBLIC cxx_std_20)
+  target_link_libraries(fuse-coupler-restart-io PUBLIC fuse::model)
+  # PRIVATE: <hdf5.h> appears only in this library's own .cpp
+  # (src/restart_io/hdf5_restart_io.cpp), never in a public
+  # fuse/restart_io/*.hpp (tools/check-layering.py's FORBIDDEN_PUBLIC,
+  # the same convention PETSc's own public headers already follow) --
+  # nothing above this library needs HDF5's own include path or link
+  # line propagated to it.
+  # MPI::MPI_C: /opt/hdf5's own public header makes <mpi.h> unconditional
+  # on any translation unit naming <hdf5.h> (H5public.h:65, measured --
+  # see cmake/FuseDependencies.cmake's own comment on this exact point,
+  # right next to FUSE_ENABLE_PETSC's identical <petsc.h>/<mpi.h> fix);
+  # PRIVATE because <hdf5.h> appears only in this library's own .cpp.
+  target_link_libraries(fuse-coupler-restart-io PRIVATE ${FUSE_RESTART_HDF5_TARGET} MPI::MPI_C)
+  # Restart track round 2, item 5: owner decision 2's cross-rank half (a
+  # genuine MPI_Allgatherv collective, not the INCIDENTAL <mpi.h> the
+  # comment above explains) -- a SEPARATE translation unit, added only
+  # under FUSE_ENABLE_MPI, so the distinction between "mpi.h leaked in
+  # from HDF5's own header" and "this file does a real collective" stays
+  # visible to a reader of this block, the same separation src/linalg's
+  # comm_serial.cpp/comm_mpi.cpp pair already keeps for the identical
+  # reason (that CMakeLists.txt block's own comment). Compiled here only
+  # (never run: MPI cannot start in this sandbox, per the owner's
+  # standing rule) -- host_pending names the exact mpirun command the
+  # owner runs this against.
+  if(FUSE_ENABLE_MPI)
+    target_sources(fuse-coupler-restart-io PRIVATE restart_io/collective_check_mpi.cpp)
+  endif()
+  set_target_properties(fuse-coupler-restart-io PROPERTIES
+    EXPORT_NAME restart_io
     CXX_VISIBILITY_PRESET hidden
     VISIBILITY_INLINES_HIDDEN ON
   )

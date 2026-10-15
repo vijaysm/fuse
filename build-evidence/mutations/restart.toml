@@ -1,0 +1,135 @@
+# Mutations for the Restart track (docs/dev/restart.md), Stage B Slice 1.
+# Own file per the review-fix protocol: do not edit build-evidence/
+# mutations.toml directly while other tracks hold it dirty.
+#
+# Every row below was applied by hand against the named file, rebuilt
+# (ninja -j3 fuse_runtime_restart_test), the WHOLE unfiltered
+# fuse_runtime_restart_test binary (14 tests) run and its PASSED/FAILED
+# counts recorded in each row's own `result` key, then the file restored
+# from a saved pre-mutation copy and confirmed byte-identical via `cmp`
+# before moving to the next row.
+
+[[mutation]]
+id = "restart-duplicate-id-check-disabled"
+area = "restart_io (Hdf5GroupWriter::put_field, owner decision 2's local pre-check)"
+describes = "put_field()'s own local duplicate-id check (within one call) is disabled -- a component or accelerator reporting the same global id twice for the same field would silently write both rows instead of being refused, the one check decision 2's own 'checked, not trusted' posture puts ahead of finish_point()'s batched, cross-caller version of the same question."
+file = "src/restart_io/hdf5_restart_io.cpp"
+old = """    {
+      std::set<std::int64_t> uniq(ids.begin(), ids.end());
+      if (uniq.size() != ids.size()) {
+        return Failure{"E-RESTART-DUPLICATE-ID",
+                       "put_field('" + key + "'): duplicate global id in "
+                       "one call"};
+      }
+    }"""
+new = """    // MUTATION: duplicate-id check disabled.
+    if (false) {
+      std::set<std::int64_t> uniq(ids.begin(), ids.end());
+      if (uniq.size() != ids.size()) {
+        return Failure{"E-RESTART-DUPLICATE-ID",
+                       "put_field('" + key + "'): duplicate global id in "
+                       "one call"};
+      }
+    }"""
+target = "fuse_runtime_restart_test"
+test = "runtime.restart"
+result = "CONFIRMED 2026-10-15: full unfiltered fuse_runtime_restart_test (14 tests) ran 13 PASSED / 1 FAILED. Restart.BadGlobalIdNumberingRefuses failed: this test calls put_field() directly with a duplicate id ({0,1,1}) and asserts the call itself returns E-RESTART-DUPLICATE-ID -- with the check disabled, put_field() instead wrote the field and returned success, so EXPECT_FALSE(r.ok()) failed first. Every other test, none of which feeds put_field() a duplicate id within one call, still passed -- including the two bit-identical round trips, which never exercise this path at all (every id Form A reports in this slice's fixtures is already locally unique). Restored; cmp against the pre-mutation file reported no difference."
+
+[[mutation]]
+id = "restart-period-index-not-resumed"
+area = "runtime/restart (restore_restart_point, the Runner's own clock)"
+describes = "restore_restart_point() restores every component's and accelerator's own state but never calls Runner::set_current_period_index() -- the Runner's own clock (Impl::period_index, which ctx.t_begin/ctx.t_end are computed from at the TOP of the next run_period(), src/runtime/runner.cpp) is left at wherever it was before the restore (0, for a freshly-initialize()d Runner), so the first post-restart period recomputes times as if the run had never advanced at all, even though every registered field was correctly restored to its mid-run values. This is a real defect this round's own first implementation attempt had, caught by the test below before it reached the owner -- see docs/dev/restart.md Section 9's own 'measured findings' note."
+file = "src/runtime/restart.cpp"
+old = """  // The Runner's own clock is not a fuse::Component and restore_restart_
+  // fields() does not touch it -- see Runner::set_current_period_index()'s
+  // own doc comment for why this call belongs here, after fields succeed,
+  // rather than folded into restore_restart_fields() itself.
+  runner.set_current_period_index(out_period_index);
+  return Result<void>::success();"""
+new = """  // MUTATION: period-index resumption disabled.
+  // runner.set_current_period_index(out_period_index);
+  return Result<void>::success();"""
+target = "fuse_runtime_restart_test"
+test = "runtime.restart"
+result = "CONFIRMED 2026-10-15: full unfiltered fuse_runtime_restart_test (14 tests) ran 12 PASSED / 2 FAILED. Restart.SameRankRoundTripSeparateLayout and Restart.SameRankRoundTripGrowingLayout both failed, each on multiple EXPECT_EQ mismatches across q[]/u[]/dirichlet_time/neumann_time/last_period_sweeps -- e.g. a.dirichlet_time (the uninterrupted 5-period reference) read 5, b.dirichlet_time (restore after 3, run 2 more) read 2: the restored run's own two post-restart periods computed StepContext times for periods 0-1 instead of 3-4, because Impl::period_index was never set back to 3. This is the IDENTICAL symptom this round's own diagnostic assertion (test/runtime/restart_test.cpp's own EXPECT_EQ(d->time(), 3.0) immediately after restore, before any further period) proved was NOT the cause -- that check still passes under this mutation, confirming the restored FIELD state is correct and the defect is specifically the Runner's own un-resumed clock, isolated to these two tests. The other 12 tests, none of which calls run_period() again after a restore, still passed. Restored; cmp against the pre-mutation file reported no difference."
+
+[[mutation]]
+id = "restart-per-block-key-collapsed-to-id-alone"
+area = "num (detail::put_field_per_block/get_field_per_block, round 2's EXACT-KEY fix)"
+describes = "Both per-block helpers' own qualified dataset name (name_prefix + '/' + block.field_name) are collapsed to name_prefix alone, in one mutation spanning both functions (the only way to make the old-text anchor unique while mutating both occurrences the real test needs) -- the exact shape round 1's hash-combined key had before round 2 replaced it, now with no key distinguishing field at all: every block of one region's accelerator state writes to the SAME dataset name, so two blocks with identical local ids (dirichlet/neumann's own shape) collide."
+file = "src/num/accel_relaxation.cpp"
+old = """    const std::string qualified = name_prefix + "/" + block.field_name;
+    const Result<void> r = writer.put_field(
+        qualified, block.ids,
+        flat.subspan(off * static_cast<std::size_t>(components),
+                     count * static_cast<std::size_t>(components)),
+        components, static_cast<std::int64_t>(count));
+    if (!r.ok()) return r;
+    off += count;
+  }
+  return Result<void>::success();
+}
+
+Result<void> get_field_per_block(RestartReader& reader,
+                                 const std::string& name_prefix,
+                                 std::span<const RestartRowBlock> blocks,
+                                 std::span<double> flat, int components) {
+  std::size_t off = 0;
+  for (const RestartRowBlock& block : blocks) {
+    const std::size_t count = block.ids.size();
+    const std::string qualified = name_prefix + "/" + block.field_name;"""
+new = """    const std::string qualified = name_prefix;  // MUTATION: key collapsed to id alone
+    const Result<void> r = writer.put_field(
+        qualified, block.ids,
+        flat.subspan(off * static_cast<std::size_t>(components),
+                     count * static_cast<std::size_t>(components)),
+        components, static_cast<std::int64_t>(count));
+    if (!r.ok()) return r;
+    off += count;
+  }
+  return Result<void>::success();
+}
+
+Result<void> get_field_per_block(RestartReader& reader,
+                                 const std::string& name_prefix,
+                                 std::span<const RestartRowBlock> blocks,
+                                 std::span<double> flat, int components) {
+  std::size_t off = 0;
+  for (const RestartRowBlock& block : blocks) {
+    const std::size_t count = block.ids.size();
+    const std::string qualified = name_prefix;  // MUTATION: key collapsed to id alone"""
+target = "fuse_runtime_restart_test"
+test = "runtime.restart"
+result = "CONFIRMED 2026-10-15 (round 2): full unfiltered fuse_runtime_restart_test (17 tests) ran 12 PASSED / 5 FAILED. Failures: SameRankRoundTripSeparateLayout, SameRankRoundTripGrowingLayout, GrowingLayoutAppendsASecondPointWithoutDamagingTheFirst, AcceleratorLayoutChangeWithoutOptInRefuses (write_point(...).ok() returned false), and Restart.PerBlockKeysNeverCollideOnIdenticalLocalIds (w.ok() returned false, exact message \"E-RESTART-DUPLICATE-CALL: put_field('region/aitken/r_prev') called more than once for this restart point\") -- every test whose graph has more than one accelerated block. The other 12 tests, none of which writes more than one accelerated block under one name_prefix, still passed. Restored; cmp against the pre-mutation file reported no difference; rebuilt afterward and confirmed 17/17 passing again."
+
+[[mutation]]
+id = "restart-accel-not-implemented-gate-disabled"
+area = "runtime (Runner::restore_restart_fields, round 2's NO-SILENT-RESET fix)"
+describes = "The restart_state_implemented() collective refusal gate in restore_restart_fields() is disabled (replaced with `if (false)`), so an accelerator that does not implement restart state (QuasiNewtonAccel/IQN-ILS/IQN-IMVJ today) is never refused and never resets through this gate -- the call falls through into import_restart_state(), whose base-class default now unconditionally returns Failure (E-RESTART-NOT-IMPLEMENTED) regardless of the run's own allow_accelerator_reset_on_mismatch setting, so even the opt-in path breaks."
+file = "src/runtime/runner.cpp"
+old = """    if (!region.accel->restart_state_implemented()) {
+      if (!allow_accelerator_reset_on_mismatch) {
+        return Failure{
+            "E-RESTART-ACCEL-NOT-IMPLEMENTED",
+            "restore_restart_fields: region '" + region.name +
+                "' accelerator '" + region.accel->name() +
+                "' does not implement restart state "
+                "(Accelerator::restart_state_implemented() == false) and "
+                "the run did not opt into resetting it -- pass "
+                "allow_accelerator_reset_on_mismatch=true to accept "
+                "Accelerator::reset() for this region instead of a "
+                "restored history"};
+      }
+      region.accel->reset();
+      any_accelerator_reset = true;
+      continue;
+    }"""
+new = """    // MUTATION: no-silent-reset gate disabled
+    if (false) {
+      region.accel->reset();
+      any_accelerator_reset = true;
+      continue;
+    }"""
+target = "fuse_runtime_restart_test"
+test = "runtime.restart"
+result = "CONFIRMED 2026-10-15 (round 2): full unfiltered fuse_runtime_restart_test (17 tests) ran 15 PASSED / 2 FAILED. AccelNotImplementedRefusesWithoutOptIn failed: EXPECT_EQ(rr.error().code, \"E-RESTART-ACCEL-NOT-IMPLEMENTED\") got \"E-RESTART-NOT-IMPLEMENTED\" instead (the gate never ran, so the call fell through into the base-class default). AccelNotImplementedWithAllowResetSucceedsAndReports failed: rr.ok() was false, exact message \"E-RESTART-NOT-IMPLEMENTED: Accelerator::import_restart_state(): IQN-ILS does not override export_restart_state()/import_restart_state()/restart_state_implemented(), so this call cannot be trusted to mean \\\"nothing to restore\\\" -- the caller must check restart_state_implemented() before ever reaching this default\" -- opting in no longer causes a successful reset, because the gate that would call reset() never runs. Every other test, none of which uses an AccelKind the base default ever reaches, still passed. Restored; cmp against the pre-mutation file reported no difference; rebuilt afterward and confirmed 17/17 passing again."

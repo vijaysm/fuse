@@ -120,6 +120,16 @@ option(FUSE_ENABLE_MPI     "Tier 1: MPI transport, CommGraph, epochs across rank
 option(FUSE_ENABLE_MOAB    "Tier 2: MOAB mesh backend, Intx2Mesh, TempestRemap"    OFF)
 option(FUSE_ENABLE_PETSC   "Tier 3: PETSc solver plugin and physics-kit"           OFF)
 option(FUSE_ENABLE_LOWFIVE "HDF5-VOL interception transport"                        OFF)
+# Restart track (docs/dev/restart.md), Slice 1. Plain HDF5 I/O for restart-to-
+# disk and the XDMF sidecar -- never LowFive's VOL property list, so a restart
+# file genuinely reaches disk (docs/user/lowfive.md: LowFive's own interception
+# is in-memory only). Shares find_package(HDF5) and its resolved target with
+# FUSE_ENABLE_LOWFIVE below (one call, hoisted to run for EITHER option) so
+# the two can never resolve to two different HDF5 images when both are ON --
+# the two-HDF5-image hazard the probe below guards against (KNOWN_ISSUES.md
+# D14) therefore does not gain a new case from this option: restart's own
+# HDF5 usage IS LowFive's own HDF5 target by construction, not a second one.
+option(FUSE_ENABLE_HDF5    "Restart-to-disk writer/reader (plain HDF5, never LowFive's VOL)" OFF)
 # Not a tier: touches only the two examples' sparse direct solves
 # (examples/common/sparse_solve_backend.hpp), never the library. Needs the
 # Kokkos CUDA backend (checked where Kokkos is resolved, below).
@@ -1047,12 +1057,40 @@ macro(fuse_resolve_dependencies)
       find_package(MPI REQUIRED COMPONENTS C)
     endif()
   endif()
-  if(FUSE_ENABLE_LOWFIVE)
-    # ------------------------------------------------------------ LowFive
-    # Task 8.4 / S6 LowFive track. must be a SHARED HDF5 build; LowFive
-    # dlopens the VOL, and a static HDF5 cannot back a runtime-loaded plugin.
+  if(FUSE_ENABLE_HDF5 OR FUSE_ENABLE_LOWFIVE)
+    # ------------------------------------------------------- shared HDF5
+    # Restart track (docs/dev/restart.md): hoisted out of the FUSE_ENABLE_
+    # LOWFIVE-only block below so FUSE_ENABLE_HDF5 triggers the IDENTICAL
+    # find_package(HDF5) call -- one CMake package-resolution cache entry,
+    # so when both options are ON they resolve to the SAME HDF5 image by
+    # construction, never two. This is the direct fix for the Stage-A
+    # open question on this exact point (docs/dev/restart.md's own
+    # open_questions list, "FUSE_ENABLE_HDF5 as a new, separate CMake
+    # option... needs the two-HDF5-image-hazard probe extended"): the
+    # probe needs no extension, because there is no second HDF5 root to
+    # compare against -- restart's own target (FUSE_RESTART_HDF5_TARGET,
+    # set below) literally IS the target fuse::lowfive links, not a
+    # independently-resolved copy of it. A static HDF5 still cannot back
+    # LowFive's runtime-loaded VOL plugin when FUSE_ENABLE_LOWFIVE is also
+    # ON (the pre-existing constraint, restated: nothing about adding
+    # FUSE_ENABLE_HDF5 loosens it).
+    #
+    # MEASURED 2026-10-15 (Stage B Slice 1, building this exact option for
+    # the first time): host facts name /opt/hdf5 as a PARALLEL build
+    # (H5_HAVE_PARALLEL), and its own public header makes that
+    # unconditional on the INCLUDING translation unit, not on anything
+    # FUSE controls -- /opt/hdf5/include/H5public.h:65 is a bare
+    # `#include <mpi.h>`, so ANY translation unit naming <hdf5.h> against
+    # this install needs an MPI include path, exactly the situation the
+    # FUSE_ENABLE_PETSC block immediately above this one already
+    # resolved for <petsc.h>'s own unconditional <mpi.h> -- same fix,
+    # same reasoning, guarded identically so a build that already found
+    # MPI (FUSE_ENABLE_MPI=ON, or the PETSc block just above) does not
+    # re-find it.
+    if(NOT TARGET MPI::MPI_C)
+      find_package(MPI REQUIRED COMPONENTS C)
+    endif()
     find_package(HDF5 REQUIRED COMPONENTS C)
-    find_package(LowFive REQUIRED)   # cmake/FindLowFive.cmake: no vendor config ships one
 
     if(TARGET HDF5::HDF5)
       set(_fuse_lowfive_hdf5_target HDF5::HDF5)
@@ -1067,6 +1105,23 @@ macro(fuse_resolve_dependencies)
       endif()
       set(_fuse_lowfive_hdf5_target fuse-hdf5-raw)
     endif()
+    # Restart's own target: the SAME resolved HDF5, named for the restart
+    # library below to link against without re-deriving the HDF5::HDF5-vs-
+    # fuse-hdf5-raw choice a second time.
+    set(FUSE_RESTART_HDF5_TARGET "${_fuse_lowfive_hdf5_target}")
+  endif()
+
+  if(FUSE_ENABLE_HDF5)
+    message(STATUS "fuse: FUSE_ENABLE_HDF5 ON, restart-to-disk writer/reader "
+                   "against ${FUSE_RESTART_HDF5_TARGET} (plain HDF5, never "
+                   "LowFive's VOL property list)")
+  endif()
+
+  if(FUSE_ENABLE_LOWFIVE)
+    # ------------------------------------------------------------ LowFive
+    # Task 8.4 / S6 LowFive track. must be a SHARED HDF5 build; LowFive
+    # dlopens the VOL, and a static HDF5 cannot back a runtime-loaded plugin.
+    find_package(LowFive REQUIRED)   # cmake/FindLowFive.cmake: no vendor config ships one
 
     if(NOT TARGET fuse::lowfive)
       add_library(fuse-lowfive INTERFACE IMPORTED GLOBAL)

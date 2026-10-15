@@ -1,12 +1,16 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "fuse/base/result.hpp"
 #include "fuse/model/iteration.hpp"
+#include "fuse/model/restart.hpp"
 
 /// Spec §5.1 (`Accelerate`: residual history -> correction) and §5.3
 /// (implicit coupling groups). One implementation family serves Picard, constant
@@ -183,6 +187,98 @@ class Accelerator {
     return field_offsets_;
   }
 
+  /// Round 2 fix 1 (docs/dev/restart.md, NO SILENT RESET). Whether
+  /// `export_restart_state()`/`import_restart_state()` below are a REAL
+  /// implementation for this accelerator kind -- even a trivial one,
+  /// because the kind provably has no learned state to restart at all.
+  /// `NoneAccel`/`ConstantAccel` override this to return `true` for
+  /// exactly that reason (`ConstantAccel::omega_` is a FIXED run option,
+  /// never learned history); `AitkenAccel`/`SteffensenAccel` override it
+  /// to `true` because their restart methods below are real. Default:
+  /// `false` -- a kind that inherits the base classes' no-op
+  /// export/import (`QuasiNewtonAccel` today; any future kind that adds
+  /// learned state without also overriding these three methods) reports
+  /// `false`, and `fuse::Runner::restore_restart_fields()`
+  /// (src/runtime/runner.cpp) checks this BEFORE calling
+  /// `import_restart_state()` at all: `false` with the run's restore
+  /// options not opted into resetting an unimplemented accelerator is a
+  /// collective refusal (E-RESTART-ACCEL-NOT-IMPLEMENTED), never a
+  /// silent `reset()`. This check is collective BY CONSTRUCTION, not by
+  /// an added reduction: every rank's graph assigns the SAME `AccelKind`
+  /// to the SAME region (`validate()`'s own precondition, identical
+  /// input on every rank), so `restart_state_implemented()` returns the
+  /// identical boolean on every rank without any communication -- the
+  /// same reasoning already used for the version-mismatch and
+  /// missing-component refusals (docs/dev/restart.md Section 7.iii).
+  [[nodiscard]] virtual bool restart_state_implemented() const noexcept {
+    return false;
+  }
+
+  /// Restart track (docs/dev/restart.md), owner decision 4: accelerator
+  /// memory is keyed by (field, global id) so it MOVES across a
+  /// rank-count change rather than being reset. Round 2's own EXACT-KEY
+  /// fix: `blocks` is the region's own stacked interface vector broken
+  /// into the SAME per-field sub-ranges `fuse::Runner` already tracks
+  /// (`detail::RegionBlock`, src/runtime/runner_impl.hpp) -- block `k`'s
+  /// `ids` are THAT block's OWNING component's own global ids, used
+  /// UNMODIFIED (never combined with another block's ids into one flat
+  /// id space, and never hashed). The sum of every block's
+  /// `ids.size()` must equal the `n` the most recent `update()` call
+  /// used, in the SAME block order `update()`'s own flat buffers are
+  /// laid out in. `name_prefix` qualifies every dataset this call
+  /// writes with the calling region's own name, so two regions' own
+  /// accelerators never collide in one restart point; each block's own
+  /// `field_name` further qualifies within that, so two blocks of the
+  /// SAME region's accelerator never collide either (RestartRowBlock's
+  /// own doc comment, fuse/model/restart.hpp).
+  ///
+  /// Default: a successful no-op. Correct ONLY for a kind whose
+  /// `restart_state_implemented()` is `true` and which has genuinely
+  /// no learned state (`NoneAccel`/`ConstantAccel`); for any OTHER kind
+  /// this default must never run, because `restart_state_implemented()`
+  /// reporting `false` is what stops the Runner from calling it in a
+  /// context where silence would be mistaken for success (see that
+  /// method's own doc comment).
+  virtual Result<void> export_restart_state(
+      RestartWriter& /*writer*/, std::string_view /*name_prefix*/,
+      std::span<const RestartRowBlock> /*blocks*/) const {
+    return Result<void>::success();
+  }
+
+  /// The read-back counterpart. `allow_reset_on_mismatch` is the owner's
+  /// explicit, off-by-default run option (docs/dev/restart.md's
+  /// `@written_by_stacked_vector_layout_hash` refusal): `false` (the
+  /// default) means a row with no matching entry in the file is
+  /// `Failure` (E-RESTART-BAD-NUMBERING); `true` means `reset()` runs
+  /// instead and `did_reset` is set to `true`, for the caller to report
+  /// at restart (owner decision 4: "when used it is reported at
+  /// restart").
+  ///
+  /// Default: UNCONDITIONAL `Failure` (E-RESTART-NOT-IMPLEMENTED) --
+  /// round 2 fix 1's own "the default no-op must not be able to look
+  /// like success" requirement, stated here as literally as the
+  /// interface allows: the base class itself refuses rather than
+  /// returning a success a caller could mistake for "nothing to
+  /// restore". `fuse::Runner::restore_restart_fields()` already checks
+  /// `restart_state_implemented()` before reaching this call at all (so
+  /// this Failure is normally dead code, reached only if some OTHER
+  /// caller invokes `import_restart_state()` directly without that
+  /// guard) -- defense in depth, not the primary mechanism.
+  virtual Result<void> import_restart_state(
+      RestartReader& /*reader*/, std::string_view /*name_prefix*/,
+      std::span<const RestartRowBlock> /*blocks*/,
+      bool /*allow_reset_on_mismatch*/, bool& did_reset) {
+    did_reset = false;
+    return Failure{"E-RESTART-NOT-IMPLEMENTED",
+                   "Accelerator::import_restart_state(): " + name() +
+                       " does not override export_restart_state()/"
+                       "import_restart_state()/restart_state_implemented(), "
+                       "so this call cannot be trusted to mean \"nothing to "
+                       "restore\" -- the caller must check "
+                       "restart_state_implemented() before ever reaching "
+                       "this default"};
+  }
+
  protected:
   Accelerator() = default;
 
@@ -217,6 +313,37 @@ void relax_into(double w, const double* x_old, const double* x_new,
                 double* x_out, std::size_t n);
 void field_weights(const std::vector<std::size_t>& offsets, const double* r,
                    std::size_t n, std::vector<double>& out);
+
+/// Round 2 EXACT-KEY fix (docs/dev/restart.md). Shared by every
+/// Accelerator implementation that restarts a flat, stacked-interface-
+/// vector buffer (AitkenAccel::r_prev_, SteffensenAccel::r_prev_/
+/// x_old_prev_, QuasiNewtonAccel's own buffers if a future round
+/// implements them): writes `flat` -- one value per row, `components`
+/// doubles per row, laid out in the SAME block order as `blocks` --  as
+/// one `put_field()` call PER BLOCK, under `name_prefix + "/" +
+/// block.field_name`, using that block's own unmodified ids. Two
+/// blocks can never collide because they are written under two
+/// different qualified names, never the same name distinguished only by
+/// a hoped-for-unique id.
+[[nodiscard]] Result<void> put_field_per_block(
+    RestartWriter& writer, const std::string& name_prefix,
+    std::span<const RestartRowBlock> blocks, std::span<const double> flat,
+    int components);
+
+/// The read-back counterpart of put_field_per_block(). Returns the
+/// FIRST block's own error unmodified (missing-id/missing-field error
+/// codes are identical to the single-call case, so an existing caller's
+/// `if (!r.ok()) { check error().code; ... }` pattern needs no change
+/// beyond looping) -- not a reduction across blocks, since the first
+/// failing id already ends the attempt.
+[[nodiscard]] Result<void> get_field_per_block(
+    RestartReader& reader, const std::string& name_prefix,
+    std::span<const RestartRowBlock> blocks, std::span<double> flat,
+    int components);
+
+/// Sum of every block's own row count -- the `n` an accelerator's flat
+/// buffer must have for the SAME `blocks` list.
+[[nodiscard]] std::size_t total_rows(std::span<const RestartRowBlock> blocks);
 
 // The dense least-squares solve is not declared here: it moved to
 // fuse/linalg/least_squares.hpp, which is where a backend can be substituted

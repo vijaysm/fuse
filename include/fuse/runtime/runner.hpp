@@ -12,6 +12,7 @@
 #include "fuse/field/registry.hpp"
 #include "fuse/backend/mesh_view.hpp"
 #include "fuse/runtime/component.hpp"
+#include "fuse/model/restart.hpp"
 #include "fuse/runtime/fixed_point_residual.hpp"
 #include "fuse/schedule/plan.hpp"
 #include "fuse/transport/transport.hpp"
@@ -630,6 +631,84 @@ class Runner {
   /// `Runner` not yet `initialize()`d.
   [[nodiscard]] Result<std::vector<std::size_t>> debug_newton_gmres_iterations(
       std::size_t region_index) const;
+
+  /// Restart track (docs/dev/restart.md), Stage B Slice 1. The period
+  /// counter `run_period()`/`run()` advance (`Runner::Impl::period_index`,
+  /// src/runtime/runner_impl.hpp) -- a restart point records this value
+  /// (docs/dev/restart.md Section 4.1's `@period_index`) so a restored
+  /// run resumes counting from where the point was taken, not from zero.
+  [[nodiscard]] std::int64_t current_period_index() const noexcept;
+
+  /// The write-side counterpart: resumes the Runner's own clock
+  /// (`ctx.t_begin = Rational{period_index} * plan.period() + tick.time`,
+  /// `src/runtime/runner.cpp`) at `period_index`, so the NEXT `run_period()`/
+  /// `run()` computes the SAME `StepContext` times an uninterrupted run
+  /// would have at that period -- the one piece of state `Runner::
+  /// restore_restart_fields()` does NOT touch (it restores component and
+  /// accelerator state only), because the Runner's own clock is not a
+  /// `fuse::Component`: `fuse::restore_restart_point()` (fuse/runtime/
+  /// restart.hpp) calls this with the restart point's own recorded
+  /// `@period_index` immediately after `restore_restart_fields()`
+  /// succeeds, before the caller's first post-restart `run_period()`.
+  /// A caller error to call this after any `run_period()`/`run()` call
+  /// has already advanced the SAME Runner past period 0 for a reason
+  /// other than restoring -- not checked here (this Runner has no way to
+  /// tell "restoring" from "resetting"), the caller's own responsibility
+  /// the same way `resume_period()`/`run_period()` mutual exclusivity is.
+  void set_current_period_index(std::int64_t period_index) noexcept;
+
+  /// Writes every restartable component's own state (Form A via
+  /// `Component::write_restart()`, Form B via `Component::
+  /// save_restart_blob()`, gated on `supports_restart_form_a()`/
+  /// `supports_restart_form_b()` -- a component with NEITHER bit set is
+  /// skipped entirely, the same default-no-op posture `save_state()`'s
+  /// own default takes for a component that is never iterated) and every
+  /// accelerated region's own accelerator memory (`RegionRuntime::accel`,
+  /// keyed by the owning component's own global ids -- owner decision 4)
+  /// into `writer`. Does NOT call `writer.finish_point()` -- the caller
+  /// (`fuse::write_restart_point()`, fuse/runtime/restart.hpp) does that
+  /// once, after also writing the provenance scalars this method does
+  /// not touch. A caller error to call this before a successful
+  /// `initialize()`, reported the same way `run_period()` reports it.
+  Result<void> write_restart_fields(RestartWriter& writer,
+                                    ComponentSet& components) const;
+
+  /// The read-back counterpart of `write_restart_fields()`, called before
+  /// the FIRST `run_period()`/`run()` after a restore. For each
+  /// accelerated region, `allow_accelerator_reset_on_mismatch` is the
+  /// owner's explicit, off-by-default run option (docs/dev/restart.md
+  /// Section 4.1): when a region's current stacked-vector layout does
+  /// not match what the file recorded for it, `false` refuses by name
+  /// (E-RESTART-BAD-NUMBERING); `true` calls `Accelerator::reset()`
+  /// instead and sets `any_accelerator_reset` to `true` -- the caller
+  /// reports this at restart (owner decision 4: "when used it is
+  /// reported at restart"), never silently.
+  Result<void> restore_restart_fields(RestartReader& reader,
+                                      ComponentSet& components,
+                                      bool allow_accelerator_reset_on_mismatch,
+                                      bool& any_accelerator_reset);
+
+  /// Restart track round 2 (docs/dev/restart.md), item 4's participant-
+  /// side request. An externally-driven (ABI) participant has no other
+  /// way to ask that a restart point be taken, because write_restart_
+  /// point() needs a RestartWriter the embedding HOST process configures
+  /// (a file path, which HDF5 layout) -- something no ABI entry's fixed
+  /// `(ctx, in, out)` shape can carry (entries.def's own "ONE RULE").
+  /// This is therefore a FLAG, not a trigger: the participant marks its
+  /// own wish, and the embedding host -- the same C++/Python driver that
+  /// already calls write_restart_point() itself -- polls
+  /// take_restart_point_request() after every run_period()/
+  /// resume_period() call and decides whether, and how, to act on it.
+  /// Idempotent: calling this more than once before the host polls
+  /// leaves exactly one pending request, never a queue.
+  void request_restart_point() noexcept;
+
+  /// True if request_restart_point() was called since the last time
+  /// this function returned true; CLEARS the flag on the same call that
+  /// reports it (consume, not peek), so two independent callers polling
+  /// cannot both believe a request is still pending after one of them
+  /// has already acted on it.
+  [[nodiscard]] bool take_restart_point_request() noexcept;
 
  private:
   struct Impl;

@@ -70,7 +70,27 @@
 ///               call is usable for this component's own block. Independent
 ///               of bit 4: a component may answer the residual question
 ///               without ever linearising it.
-///   bits 6-63   reserved. Must be zero; no current caller sets or checks
+///   bit 6       kCapabilityRestartFormA -- Restart track (docs/dev/
+///               restart.md), Stage B Slice 1, owner decision 1: the
+///               component offers `write_restart()`/`read_restart()`
+///               (`fuse::Component`, fuse/runtime/component.hpp) keyed by
+///               its OWN global ids, re-partitionable across a rank-count
+///               change. A component that lives on one rank numbers its
+///               own entries `0..n-1` -- trivially satisfiable, so every
+///               one of the four worked examples sets this bit.
+///   bit 7       kCapabilityRestartFormB -- the component offers
+///               `save_restart_blob()`/`load_restart_blob()`, an opaque,
+///               versioned per-rank byte record, same-decomposition only.
+///               Independent of bit 6: a component may set EITHER, or
+///               BOTH (checked at restart-open time, not inferred from one
+///               implying the other) -- owner decision 1's "capability"
+///               is this one 64-bit space carrying two independent bits,
+///               not a three-way enum, so a future third restart form
+///               does not have to redefine what the first two already mean.
+///               A restart on a different rank count is refused BY NAME,
+///               collectively, if ANY component in the graph sets bit 7
+///               without bit 6 (owner decision 1).
+///   bits 8-63   reserved. Must be zero; no current caller sets or checks
 ///               them. A future bit here is additive (an old binary reading
 ///               a newer one sees zero and treats it as absent), so no
 ///               version bump accompanies adding one -- the descriptor
@@ -145,11 +165,22 @@ inline constexpr std::uint64_t kCapabilityResidual = std::uint64_t{1} << 4;
 /// derivative for that component's own block.
 inline constexpr std::uint64_t kCapabilityLinearization = std::uint64_t{1} << 5;
 
-/// Bits 6-63: reserved, must be zero. Named so a future bit is added by
+/// Restart track (docs/dev/restart.md), owner decision 1: Form A, keyed by
+/// the component's own global ids, re-partitionable. See the file header's
+/// BIT LAYOUT entry for bit 6.
+inline constexpr std::uint64_t kCapabilityRestartFormA = std::uint64_t{1} << 6;
+
+/// Restart track (docs/dev/restart.md), owner decision 1: Form B, an
+/// opaque versioned per-rank blob, same-decomposition only. See the file
+/// header's BIT LAYOUT entry for bit 7.
+inline constexpr std::uint64_t kCapabilityRestartFormB = std::uint64_t{1} << 7;
+
+/// Bits 8-63: reserved, must be zero. Named so a future bit is added by
 /// narrowing this constant, not by grepping for a magic number.
 inline constexpr std::uint64_t kCapabilityReservedMask =
     ~(kCapabilityRollback | kCapabilityDeterminismMask | kCapabilityHiddenState |
-      kCapabilityResidual | kCapabilityLinearization);
+      kCapabilityResidual | kCapabilityLinearization | kCapabilityRestartFormA |
+      kCapabilityRestartFormB);
 
 /// Packs `level` into the 2-bit determinism field, zero elsewhere. The
 /// encoding is the enumerator's own raw value, left-shifted into place --

@@ -329,7 +329,66 @@ class DirichletSlab final : public fuse::Component,
   [[nodiscard]] std::uint64_t capabilities() const override {
     return fuse::make_capabilities(/*rollback=*/true, fuse::DeterminismLevel::Bitwise,
                                    /*hidden_state=*/true) |
-           fuse::kCapabilityResidual;
+           fuse::kCapabilityResidual | fuse::kCapabilityRestartFormA;
+  }
+
+  /// Restart track (docs/dev/restart.md), owner decision 1: this
+  /// component lives on one rank (examples/dn_heat/main.cpp's own
+  /// `.ranks` placement), so it numbers its own entries `0..n_-1` --
+  /// trivially re-partitionable because there is nothing to
+  /// re-partition. Every piece of state an exact restart must capture
+  /// for this component: the registered fields `q_`/`u_in_` (both
+  /// Provides and Requires -- `u_in_` must be restored too, because an
+  /// ordinary (non-window) iteration region's NEXT period's sweep 0
+  /// seeds its iterate from the CURRENT registered storage, not from a
+  /// fresh exchange, exactly as `restore_state()`'s own element-wise
+  /// copy already relies on for mid-period rollback), and the private
+  /// state `save_state()`/`restore_state()` already carry across a
+  /// rollback (`time_`, `history_`) -- `capabilities()`'s own
+  /// `hidden_state=true` already says these exist; restart makes them
+  /// durable the same way rollback makes them resumable.
+  /// FIELD NAMES, NOT ARBITRARY LABELS: `"q_wall"`/`"u_wall_in"` are this
+  /// component's OWN two fields' graph names (`g.add_field(cd,
+  /// FieldSpec{.name = "q_wall", ...})`/`"u_wall_in"`, examples/
+  /// dn_heat/main.cpp's own `build_graph()`), not invented. An
+  /// accelerated region's own row-to-component resolution
+  /// (`Runner::write_restart_fields()`, src/runtime/runner.cpp) looks a
+  /// `RegionBlock::target_field` up by the OWNING component's name plus
+  /// that EXACT field name (`RegionBlock::target_field` is itself
+  /// `graph.field(channel.target).name`, `src/runtime/iteration.cpp:
+  /// 1627`) -- so a Form-A field that participates in an accelerated
+  /// channel's own residual MUST be reported under the graph's own
+  /// field name, never a component-private label, or the accelerator's
+  /// row ids cannot be resolved at all (measured: the first version of
+  /// this override used "q"/"u_in" and every restart round trip refused
+  /// with E-RESTART-MISSING-FIELD at the accelerator-export step).
+  fuse::Result<void> write_restart(fuse::RestartWriter& writer) override {
+    std::vector<std::int64_t> ids(n_);
+    for (std::size_t i = 0; i < n_; ++i) ids[i] = static_cast<std::int64_t>(i);
+    fuse::Result<void> r =
+        writer.put_field("q_wall", ids, q_, 1, static_cast<std::int64_t>(n_));
+    if (!r.ok()) return r;
+    r = writer.put_field("u_wall_in", ids, u_in_, 1, static_cast<std::int64_t>(n_));
+    if (!r.ok()) return r;
+    r = writer.put_scalar("time", time_);
+    if (!r.ok()) return r;
+    return writer.put_scalar("history", history_);
+  }
+
+  fuse::Result<void> read_restart(fuse::RestartReader& reader) override {
+    std::vector<std::int64_t> ids(n_);
+    for (std::size_t i = 0; i < n_; ++i) ids[i] = static_cast<std::int64_t>(i);
+    fuse::Result<void> r = reader.get_field("q_wall", ids, q_, 1);
+    if (!r.ok()) return r;
+    r = reader.get_field("u_wall_in", ids, u_in_, 1);
+    if (!r.ok()) return r;
+    const fuse::Result<double> t = reader.get_scalar("time");
+    if (!t.ok()) return t.error();
+    time_ = t.value();
+    const fuse::Result<double> h = reader.get_scalar("history");
+    if (!h.ok()) return h.error();
+    history_ = h.value();
+    return fuse::Result<void>::success();
   }
 
   /// `fuse::ImplicitComponent::evaluate_residual()`. See the class's own
@@ -478,7 +537,41 @@ class NeumannSlab final : public fuse::Component,
   [[nodiscard]] std::uint64_t capabilities() const override {
     return fuse::make_capabilities(/*rollback=*/true, fuse::DeterminismLevel::Bitwise,
                                    /*hidden_state=*/true) |
-           fuse::kCapabilityResidual;
+           fuse::kCapabilityResidual | fuse::kCapabilityRestartFormA;
+  }
+
+  /// Restart track (docs/dev/restart.md), owner decision 1 -- see
+  /// DirichletSlab's own comment on this pair of methods, unchanged in
+  /// substance here.
+  /// Same convention as DirichletSlab::write_restart() -- `"u_wall"`/
+  /// `"q_wall_in"` are this component's own two graph field names.
+  fuse::Result<void> write_restart(fuse::RestartWriter& writer) override {
+    std::vector<std::int64_t> ids(n_);
+    for (std::size_t i = 0; i < n_; ++i) ids[i] = static_cast<std::int64_t>(i);
+    fuse::Result<void> r =
+        writer.put_field("u_wall", ids, u_, 1, static_cast<std::int64_t>(n_));
+    if (!r.ok()) return r;
+    r = writer.put_field("q_wall_in", ids, q_in_, 1, static_cast<std::int64_t>(n_));
+    if (!r.ok()) return r;
+    r = writer.put_scalar("time", time_);
+    if (!r.ok()) return r;
+    return writer.put_scalar("history", history_);
+  }
+
+  fuse::Result<void> read_restart(fuse::RestartReader& reader) override {
+    std::vector<std::int64_t> ids(n_);
+    for (std::size_t i = 0; i < n_; ++i) ids[i] = static_cast<std::int64_t>(i);
+    fuse::Result<void> r = reader.get_field("u_wall", ids, u_, 1);
+    if (!r.ok()) return r;
+    r = reader.get_field("q_wall_in", ids, q_in_, 1);
+    if (!r.ok()) return r;
+    const fuse::Result<double> t = reader.get_scalar("time");
+    if (!t.ok()) return t.error();
+    time_ = t.value();
+    const fuse::Result<double> h = reader.get_scalar("history");
+    if (!h.ok()) return h.error();
+    history_ = h.value();
+    return fuse::Result<void>::success();
   }
 
   /// `fuse::ImplicitComponent::evaluate_residual()`. See DirichletSlab's

@@ -780,6 +780,18 @@ fuse_add_gtest(runtime implicit_component)
 fuse_add_gtest(runtime fixed_point_residual LIBS fuse::runtime fuse::backend)
 target_include_directories(fuse_runtime_fixed_point_residual_test PRIVATE
   ${CMAKE_SOURCE_DIR}/examples/dn_heat)
+# Restart track (docs/dev/restart.md), Stage B Slice 1: the dn_heat
+# round trip and every refusal, at tier 0 -- gated on FUSE_ENABLE_HDF5
+# the same way test/CMakeLists.txt already gates a MOAB-only test file
+# (fuse_tests_gated_by below, mirroring the `if(FUSE_ENABLE_MOAB)` block
+# elsewhere in this file), because test/runtime/restart_test.cpp names
+# <fuse/restart_io/hdf5_restart_io.hpp>, built only under that option.
+fuse_tests_gated_by(FUSE_ENABLE_HDF5 runtime/restart_test.cpp)
+if(FUSE_ENABLE_HDF5)
+  fuse_add_gtest(runtime restart LIBS fuse::runtime fuse::backend fuse::restart_io)
+  target_include_directories(fuse_runtime_restart_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/examples/dn_heat)
+endif()
 # S7.2: proves the graph-level trigger -- IterationBuilder::accelerate()/
 # ::newton() setting requires_residual_capability/requires_linearization_
 # capability -- end to end through the SAME verify_iteration_region() entry
@@ -867,7 +879,8 @@ fuse_tests_gated_by(FUSE_ENABLE_MPI
   parallel/window_newton_mpi_test.cpp
   parallel/linalg_mpi_test.cpp parallel/brusselator_grid_mpi_test.cpp
   parallel/schur_slab_mpi_test.cpp parallel/krylov_mpi_test.cpp
-  parallel/derivative_gate_mpi_test.cpp parallel/participant_reducer_mpi_test.cpp)
+  parallel/derivative_gate_mpi_test.cpp parallel/participant_reducer_mpi_test.cpp
+  parallel/restart_collective_mpi_test.cpp)
 if(FUSE_ENABLE_MPI)
   foreach(t comm_graph mpi_transport)
     fuse_add_mpi_test(parallel ${t} LIBS fuse::runtime)
@@ -891,6 +904,16 @@ if(FUSE_ENABLE_MPI)
   # linalg_mpi_test.cpp's own make_mpi_reducer() tests cannot exercise
   # at all (that factory reduces over the WHOLE communicator).
   fuse_add_mpi_test(parallel participant_reducer_mpi LIBS fuse::linalg RANKS 2 3 LABELS linalg)
+  # Restart track round 2, item 5: owner decision 2's cross-rank half
+  # (fuse::restart_io::collective_duplicate_and_coverage_check(),
+  # src/restart_io/collective_check_mpi.cpp), over a REAL MPI_COMM_WORLD.
+  # RANKS 2 3 only (not the default 1 2 3 4 5 -- a single rank needs no
+  # collective at all, and this round's own scope is "2 and 3 ranks,
+  # within the four-task rule"): built here, run on the host.
+  if(FUSE_ENABLE_HDF5)
+    fuse_add_mpi_test(parallel restart_collective_mpi LIBS fuse::restart_io MPI::MPI_CXX
+      RANKS 2 3 LABELS restart_io)
+  endif()
   # "Schur-slab" track, tier 1: SchurSlabSolver and Reducer::allgather's own
   # MPI implementation, over a real MPI_COMM_WORLD. RANKS 2 3, per the task:
   # built here, run on the host.

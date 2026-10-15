@@ -83,6 +83,20 @@ LAYERS = [
     # already-ranked could be made to depend on it by a future layer
     # insertion between `petsc` and whatever used to be the topmost entry.
     "petsc",
+    # `restart_io` (fuse::restart_io, Restart track, docs/dev/restart.md,
+    # Stage B Slice 1) sits at the TOP for the SAME reason `petsc` does,
+    # immediately above: its own library links PUBLIC `fuse::model` only
+    # (the abstract fuse::RestartWriter/RestartReader interfaces,
+    # fuse/model/restart.hpp) and PRIVATE the HDF5 target -- well below
+    # `abi` -- and nothing in the library depends on it in return (the
+    # Runner-facing orchestration, fuse::write_restart_point()/
+    # restore_restart_point(), lives in `runtime` itself, taking the
+    # abstract interface as a parameter; it never names this layer).
+    # Placing it after every existing layer needs no argument about
+    # exactly where between `model` and `abi` it belongs, and guarantees
+    # by construction that nothing already-ranked could be made to
+    # depend on it by a future layer insertion.
+    "restart_io",
 ]
 
 # Third-party headers that may appear in a PUBLIC header, per layer. Anything
@@ -129,6 +143,10 @@ ALLOWED_PUBLIC_THIRD_PARTY = {
     # src/petsc/*.cpp, behind plain std::span/DistVector shapes. Nothing
     # third-party is named in this layer's public surface at all.
     "petsc": set(),
+    # fuse/restart_io/*.hpp name no HDF5 type at all (hid_t never escapes
+    # past src/restart_io/hdf5_restart_io.cpp, that header's own comment) --
+    # the SAME posture `petsc` already takes for PETSc.
+    "restart_io": set(),
 }
 
 # Never in any public header, at any layer, outside its own backend directory.

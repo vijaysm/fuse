@@ -20,6 +20,7 @@
 #include "fuse/model/capabilities.hpp"
 #include "fuse/model/coupling_graph.hpp"
 #include "fuse/model/multiscale.hpp"
+#include "fuse/model/restart.hpp"
 
 namespace fuse {
 
@@ -383,6 +384,107 @@ class Component {
   /// error; an implementer that can detect it should return an error rather
   /// than restore garbage.
   virtual Result<void> restore_state() { return Result<void>::success(); }
+
+  /// Restart track (docs/dev/restart.md), Stage B Slice 1, owner decision 1,
+  /// Form A: put every array this component owns into `writer`, keyed by
+  /// THIS COMPONENT'S OWN global ids for the array's index space -- a
+  /// component that lives on one rank numbers its own entries `0..n-1`,
+  /// trivially satisfying the "re-partitionable" requirement (there is
+  /// nothing to re-partition when the whole array is already on one
+  /// rank); a mesh-backed component uses `MeshView::global_id()`
+  /// (fuse/backend/mesh_view.hpp) instead, so a later restart at a
+  /// DIFFERENT rank count can find each row by the mesh entity it
+  /// belongs to, not by this run's own local position.
+  ///
+  /// Deliberately a SEPARATE virtual from `save_state()`/`restore_state()`
+  /// above, which this method shares no caller with: those are the
+  /// in-memory, single-slot ROLLBACK checkpoint `run_region()` uses to
+  /// re-advance one iteration-region sweep (R16's own caveat on that pair
+  /// applies to restart identically and is restated here rather than
+  /// assumed: FUSE can verify that every id this call named was written
+  /// by SOME rank and that no id repeats, `RestartWriter::finish_point()`'s
+  /// own contract, but it cannot verify that `values` is a faithful
+  /// serialization of this component's full state).
+  ///
+  /// Called at a period boundary only (docs/dev/restart.md Section 1.1:
+  /// an externally-driven component's suspended coroutine frame has no
+  /// serializable representation, so a restart point is never taken
+  /// mid-period). The default is a successful no-op, correct only for a
+  /// component that declares neither `kCapabilityRestartFormA` nor
+  /// `kCapabilityRestartFormB` -- `write_restart_point()` (fuse/runtime/
+  /// restart.hpp) never calls this for such a component at all.
+  ///
+  /// PURITY. An override must not mutate component state: `Runner::
+  /// restore_restart_fields()` calls this a SECOND time on a restore
+  /// (through `fuse::IdCollectingRestartWriter`, fuse/model/restart.hpp),
+  /// purely to learn this component's own current global ids before
+  /// `read_restart()` is called for real, with no intent to change
+  /// anything -- a `write_restart()` with a side effect would run it
+  /// twice. This mirrors `advance()`'s own purity requirement inside an
+  /// iteration region's repeated sweeps (this header's own comment on
+  /// that method), for the identical reason: a method FUSE may call more
+  /// than once for the same logical point must be a pure function of
+  /// the state it reports.
+  virtual Result<void> write_restart(RestartWriter& /*writer*/) {
+    return Result<void>::success();
+  }
+
+  /// The read-back counterpart of `write_restart()`. Called before the
+  /// FIRST period after a restart, in the SAME per-component order
+  /// `write_restart()` was called in when the point was written (the
+  /// order itself carries no meaning Form A's own id-keyed reads depend
+  /// on, but `restore_restart_point()`, fuse/runtime/restart.hpp,
+  /// fixes one anyway, for a reproducible error if a read ever fails
+  /// partway through).
+  virtual Result<void> read_restart(RestartReader& /*reader*/) {
+    return Result<void>::success();
+  }
+
+  /// Form B (owner decision 1): an opaque, versioned per-rank byte
+  /// record, same-decomposition only -- `memcpy`-cheap for a component
+  /// with no mesh behind it to implement, at the cost that a restart at
+  /// a DIFFERENT rank count refuses this component BY NAME (owner
+  /// decision 1: a graph refuses a rank-count change collectively if ANY
+  /// component in it sets `kCapabilityRestartFormB` without also setting
+  /// `kCapabilityRestartFormA`). The default returns an empty blob,
+  /// correct only for a component that does not set
+  /// `kCapabilityRestartFormB`.
+  virtual Result<std::vector<std::byte>> save_restart_blob() {
+    return std::vector<std::byte>{};
+  }
+
+  /// `written_by_version` is this component's own `restart_blob_version()`
+  /// AT WRITE TIME, so an implementer can refuse a version it no longer
+  /// understands by name rather than misread old bytes under a new
+  /// layout -- the same posture `kGraphVersion` (fuse/model/
+  /// descriptor.hpp) already takes for the coupling graph.
+  virtual Result<void> load_restart_blob(std::span<const std::byte> /*bytes*/,
+                                         std::uint32_t /*written_by_version*/) {
+    return Result<void>::success();
+  }
+
+  /// This component's own serialization version for `save_restart_blob()`/
+  /// `load_restart_blob()`. Must be constant for the object's lifetime,
+  /// the same contract `capabilities()` already carries. The default, 0,
+  /// is the version a component that never overrides either blob method
+  /// writes (an empty blob at version 0, read back by a default
+  /// `load_restart_blob()` that ignores it) -- consistent, never
+  /// meaningful on its own.
+  [[nodiscard]] virtual std::uint32_t restart_blob_version() const { return 0; }
+
+  /// Whether `kCapabilityRestartFormA` is set. Non-virtual for the same
+  /// reason `supports_rollback()` is (component.hpp's own comment on that
+  /// method): one place states everything a derived class knows about
+  /// itself (`capabilities()`), so an old override of a `bool` method
+  /// from before this bit existed cannot silently shadow it.
+  [[nodiscard]] bool supports_restart_form_a() const {
+    return (capabilities() & kCapabilityRestartFormA) != 0;
+  }
+
+  /// Whether `kCapabilityRestartFormB` is set.
+  [[nodiscard]] bool supports_restart_form_b() const {
+    return (capabilities() & kCapabilityRestartFormB) != 0;
+  }
 
   /// This component's capability bits (KNOWN_ISSUES.md B3). ONE virtual;
   /// `supports_rollback()`, `determinism_level()` and `carries_hidden_state()`

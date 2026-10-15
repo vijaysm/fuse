@@ -1043,6 +1043,10 @@ struct Runner::Impl {
   std::vector<std::vector<double>> transport_in_scratch, transport_out_scratch;
   RunStats                         stats;
   std::int64_t                     period_index = 0;
+  /// Restart track round 2, Runner::request_restart_point()'s own
+  /// backing flag -- see that method's doc comment (fuse/runtime/
+  /// runner.hpp) for why this is a flag, not a trigger.
+  bool                              restart_point_requested = false;
   /// KNOWN_ISSUES.md D57 ("Collectives" track). FUSE_COLLECTIVE_TRACE's
   /// own per-rank, monotonically increasing count of collective
   /// instructions (fuse::is_collective(), include/fuse/ir/op.hpp) this

@@ -35,6 +35,18 @@ TEST(Capabilities, LinearizationIsBitFive) {
   EXPECT_EQ(fuse::kCapabilityLinearization, std::uint64_t{1} << 5);
 }
 
+// Restart track (docs/dev/restart.md), Stage B Slice 1: bits 6-7, taken
+// from what was "bits 6-63 reserved" before this track -- the same
+// pattern ResidualIsBitFour/LinearizationIsBitFive above already pin for
+// the S7.1 bits that preceded them.
+TEST(Capabilities, RestartFormAIsBitSix) {
+  EXPECT_EQ(fuse::kCapabilityRestartFormA, std::uint64_t{1} << 6);
+}
+
+TEST(Capabilities, RestartFormBIsBitSeven) {
+  EXPECT_EQ(fuse::kCapabilityRestartFormB, std::uint64_t{1} << 7);
+}
+
 TEST(Capabilities, DeterminismMaskIsBitsOneAndTwo) {
   EXPECT_EQ(fuse::kCapabilityDeterminismMask, std::uint64_t{0b0110});
   EXPECT_EQ(fuse::kCapabilityDeterminismShift, std::uint64_t{1});
@@ -52,6 +64,17 @@ TEST(Capabilities, NamedBitsDoNotOverlap) {
   EXPECT_EQ(fuse::kCapabilityLinearization & fuse::kCapabilityRollback, 0u);
   EXPECT_EQ(fuse::kCapabilityLinearization & fuse::kCapabilityDeterminismMask, 0u);
   EXPECT_EQ(fuse::kCapabilityLinearization & fuse::kCapabilityHiddenState, 0u);
+  EXPECT_EQ(fuse::kCapabilityRestartFormA & fuse::kCapabilityRestartFormB, 0u);
+  EXPECT_EQ(fuse::kCapabilityRestartFormA & fuse::kCapabilityLinearization, 0u);
+  EXPECT_EQ(fuse::kCapabilityRestartFormA & fuse::kCapabilityResidual, 0u);
+  EXPECT_EQ(fuse::kCapabilityRestartFormA & fuse::kCapabilityRollback, 0u);
+  EXPECT_EQ(fuse::kCapabilityRestartFormA & fuse::kCapabilityDeterminismMask, 0u);
+  EXPECT_EQ(fuse::kCapabilityRestartFormA & fuse::kCapabilityHiddenState, 0u);
+  EXPECT_EQ(fuse::kCapabilityRestartFormB & fuse::kCapabilityLinearization, 0u);
+  EXPECT_EQ(fuse::kCapabilityRestartFormB & fuse::kCapabilityResidual, 0u);
+  EXPECT_EQ(fuse::kCapabilityRestartFormB & fuse::kCapabilityRollback, 0u);
+  EXPECT_EQ(fuse::kCapabilityRestartFormB & fuse::kCapabilityDeterminismMask, 0u);
+  EXPECT_EQ(fuse::kCapabilityRestartFormB & fuse::kCapabilityHiddenState, 0u);
 }
 
 TEST(Capabilities, ReservedMaskIsEverythingElse) {
@@ -59,7 +82,9 @@ TEST(Capabilities, ReservedMaskIsEverythingElse) {
                               fuse::kCapabilityDeterminismMask |
                               fuse::kCapabilityHiddenState |
                               fuse::kCapabilityResidual |
-                              fuse::kCapabilityLinearization;
+                              fuse::kCapabilityLinearization |
+                              fuse::kCapabilityRestartFormA |
+                              fuse::kCapabilityRestartFormB;
   EXPECT_EQ(fuse::kCapabilityReservedMask, ~named);
   EXPECT_EQ(fuse::kCapabilityReservedMask & named, 0u);
 }
