@@ -210,58 +210,99 @@ placement shapes the existing `layout.*` rows already cover. Compiled and linked
 ## Execution space
 
 `MeshArrays<MemorySpace>`'s template argument has always defaulted to
-`Kokkos::DefaultExecutionSpace::memory_space` -- device memory on a CUDA/HIP/SYCL build -- but
-`NativeMeshView::create`/`create_from_host` mirrored every array to the host unconditionally and
-validated/decomposed/measured entirely there, so nothing about the mesh was actually device-resident
-once a `NativeMeshView` existed. This section is what changed.
+`Kokkos::DefaultExecutionSpace::memory_space` -- device memory on a CUDA/HIP/SYCL build. Through two
+rounds of work this is now `NativeMeshView`'s own PRIMARY storage, not merely a type parameter nothing
+read: `create_from_host` mirrors to the host ONCE to validate (below), but keeps nothing from that
+pass -- what the view holds afterward is `device_arrays()` and the device-resident derived geometry,
+with every host-serving query rebuilt from those lazily.
 
-**Validation stays host-only, unconditionally -- this did not move.** Connectivity range checks,
-the polygon/polyhedron fan triangulation (`canonical_fan_triangulation`), and the star-shapedness
-checks (`canonical_cell_tetrahedra`) all return `Result`/use `fmt::format`, neither of which is
+**Validation stays host-only, unconditionally.** Connectivity range checks, the polygon/polyhedron
+fan triangulation (`canonical_fan_triangulation`), and the star-shapedness checks
+(`canonical_cell_tetrahedra`) all return `Result`/use `fmt::format`, neither of which is
 device-callable in this codebase's own convention (same standing priority -- robustness over
-efficiency -- the file header above already states). `create_from_host` runs this exactly as
-before, over the SAME host-mirrored `MeshArrays<Kokkos::HostSpace>` `create<MemorySpace>` has always
-produced via `to_memory_space<Kokkos::HostSpace>`: that mirror is already "created on demand" (once
-per mesh construction, not on every query) and "cached" (held for the view's lifetime in the
-existing `vertex_xyz_`/`cell_vertices_`/`cell_simplices_`/`measure_`/`centroid_` host members,
-exactly as `measure(dim,i)`/`centroid(dim,i)` have always served them) -- there was no unconditional,
-per-query re-mirroring to make lazy, because none existed.
+efficiency -- the file header above already states). `create_from_host` runs this once, over a
+host-mirrored `MeshArrays<Kokkos::HostSpace>`, exactly as before.
 
-**What is new: a genuinely device-resident, independently computed primary pair.**
-`NativeMeshView::device_measure()`/`device_centroid()` are `Kokkos::View<double*, DeviceMemSpace>`/
-`Kokkos::View<double* [3], DeviceMemSpace>` (`DeviceMemSpace = Kokkos::DefaultExecutionSpace::memory_space`),
-populated by two Kokkos kernels dispatched on `Kokkos::DefaultExecutionSpace` at the end of
-`create_from_host`, after the host validation loop above has already run:
+**Device-primary storage, on-demand host mirrors.** What changed is what happens to that validation
+pass's own host-side scratch afterward. `device_arrays_` -- `to_memory_space<DeviceMemSpace>` of the
+constructor's input, built unconditionally at the TOP of `create_from_host` -- is this view's PRIMARY
+storage, exposed as `device_arrays()`. The host arrays the validation pass computes as it goes
+(`vertex_xyz_`/`cell_vertices_`/`cell_faces_`/`cell_simplices_`/`centroid_`/`measure_` -- everything
+`measure(dim,i)`/`centroid(dim,i)`/`simplex_count`/`simplex_points`/`cell_vertices`/`vertex_x` serve)
+are no longer retained once construction finishes: `create_from_host`'s last step releases them
+(`std::vector<...>().swap(...)`, not merely `.clear()`, so the capacity is actually freed, not just the
+size). `ensure_host_mirror()` rebuilds them the FIRST time any of those accessors is actually called --
+a plain mirror of `device_arrays_` plus the device-resident measure/centroid/simplex CSR below, not a
+second validation pass (that already succeeded once; this step cannot fail) -- and caches the result
+for the view's lifetime after that. `host_mirrors_materialized()` is this count (0 immediately after
+construction, 1 after the first host accessor call), the hook
+`test/backend/native_distributed_mesh_test.cpp`'s `NoHostMirrorExistsUntilAHostAccessorIsCalled` checks
+directly. Every *other* field (`vertex_gid_`/`vertex_owner_`/`vertex_owned_`/`cell_type_`/`cell_gid_`/
+`cell_owner_`/`cell_owned_`) is cheap per-entity bookkeeping copied once from the constructor's host
+argument, not part of this lazy group -- there is no fallible geometry behind any of them to defer.
+
+**The device-resident derived geometry, unchanged in shape, now retained in full.**
+`NativeMeshView::device_measure()`/`device_centroid()` are
+`Kokkos::View<double*, DeviceMemSpace>`/`Kokkos::View<double* [3], DeviceMemSpace>`
+(`DeviceMemSpace = Kokkos::DefaultExecutionSpace::memory_space`), populated by two Kokkos kernels
+dispatched on `Kokkos::DefaultExecutionSpace` at the end of `create_from_host`, after the host
+validation pass has already run:
 
 * **Centroid** is a per-cell vertex average (the SAME convention `centroid(dim,i)` has always used,
-  not a simplex-weighted one -- see this file's existing comment on that choice), computed directly
-  from `vertex_coords` and the cell-to-vertex CSR with no simplex decomposition involved at all, in
-  the same ascending-corner order the host loop uses.
+  not a simplex-weighted one), computed directly from `vertex_coords` and the cell-to-vertex CSR with
+  no simplex decomposition involved at all, in the same ascending-corner order the host pass uses.
 * **Measure** sums each cell's own simplices -- the SAME simplex corners
   `canonical_fan_triangulation`/`canonical_cell_tetrahedra` just validated, flattened into a device
-  CSR -- in the same order the host loop pushed them, through device-callable counterparts of
+  CSR -- in the same order the host pass pushed them, through device-callable counterparts of
   `geometry.hpp`'s `triangle_area`/`tetrahedron_volume` formulas (`native_mesh.cpp`'s anonymous
   namespace; independent of that header's host-only operator overloads, so geometry.hpp itself is
   untouched).
 
-Both kernels reproduce the host loop's own accumulation order exactly, so on a host-only build
-(`Kokkos::DefaultExecutionSpace` IS the host space there) the device arrays are bit-identical to
-`measure_`/`centroid_`; on higgs's CUDA build they agree to 1e-14 relative (nvcc's FMA contraction;
-KNOWN_ISSUES.md D45, the accepted contraction gap). `measure(dim,i)`/`centroid(dim,i)` and every existing `MeshView` consumer keep
-reading the pre-existing host arrays unchanged -- nothing above the backend sees `DeviceMemSpace` or
-has to change.
+Both kernels reproduce the host pass's own accumulation order exactly, so on a host-only build
+(`Kokkos::DefaultExecutionSpace` IS the host space there) the device arrays are bit-identical to a
+materialized `measure_`/`centroid_`; on higgs's CUDA build they agree to 1e-14 relative (nvcc's FMA
+contraction; KNOWN_ISSUES.md D45, the accepted contraction gap) -- and since `ensure_host_mirror()`
+now serves `measure_`/`centroid_` BY MIRRORING `device_measure_`/`device_centroid_` rather than
+recomputing them, that is no longer merely a cross-check this file's tests happen to make: it is the
+actual relationship between what a host accessor returns and what the device computed.
 
-**What this does NOT make device-resident.** `simplex_count`/`simplex_points` (the variable-length
-per-cell simplex corner list `element_boxes`/the supermesh builder read) still come from the host
-`cell_simplices_` member only; there is no device CSR exposed for them, only the flattened one
-`create_from_host` builds and discards after feeding the measure kernel. `NativeMeshBuilder` (host
-`std::vector`-based construction), the VTK file reader/writer, `fuse::native::migrate`'s pack/unpack,
-and `build_native_remap_halo`/`build_supermesh_weights` (the MLS and conservative-intersection
-weight builders) all still go through the host-only `MeshView`/`MeshArrays<Kokkos::HostSpace>`
-surface and are unaffected by this section -- see "What is deferred" below and
-docs/dev/device-resident-arcs.md's own Phase 2 ordering (search, then this file, then halo and
-migration pack/unpack, then the weight builders, named there as this track's siblings' scope, not
-this one's).
+**New: the device simplex CSR is retained, not discarded.** `device_simplex_offsets()`/
+`device_simplex_corners()` -- previously flattened inside `create_from_host` purely to feed the
+measure kernel, then thrown away (this section used to say so explicitly) -- are now persisted as
+`Kokkos::View<int*, DeviceMemSpace>`/`Kokkos::View<double* [4][3], Kokkos::LayoutRight, DeviceMemSpace>`
+members. Cell `c`'s simplices are rows `offsets(c)..offsets(c+1)` of `corners`; a row's first
+`dimension() + 1` corner slots are the simplex's physical points, the same convention
+`cell_simplices_`'s own `std::array<Point, 4>` has always used. `ensure_host_mirror()` unflattens this
+CSR into `cell_simplices_` rather than recomputing it, the same "mirror, not re-derive" relationship
+measure/centroid now have.
+
+**What this makes possible: device-resident element boxes.**
+`fuse::search::element_boxes_device_resident` (`include/fuse/search/mesh_adapter.hpp`,
+`src/search/mesh_adapter_device.cpp`) takes a simplex CSR shaped exactly like
+`device_simplex_offsets()`/`device_simplex_corners()` and returns `Kokkos::View<Box*, DeviceMemSpace>`
+-- the device-resident counterpart of `element_boxes` (same file), built with a `Kokkos::parallel_scan`
+compaction over an optional per-entity `owned` flag (the device analogue of `element_boxes`'s own
+`is_owned` filter) rather than a sequential `push_back`. `fuse::search` cannot name
+`fuse::backend::NativeMeshView` (this layer sits below backend, mesh_adapter.hpp's own header
+comment), so this is not a `MeshLike`-constrained template the way `element_boxes` is: a caller that
+CAN name both (`fuse::backend` itself, or a test linking it) passes the native mesh's own CSR views
+directly, and feeds the result straight to `BoxIndex::build_device_resident` -- index construction for
+a native mesh's elements never touches the host at all.
+`test/search/mesh_adapter_test.cpp`'s `DeviceElementBoxesMatchHostElementBoxesForANativeMesh` checks
+the device path reproduces `element_boxes`'s own boxes to 1e-13 and that the device view's
+`host_mirrors_materialized()` never leaves 0 across the whole pipeline (CSR read, box build, index
+build).
+
+**What is still host-only.** `NativeMeshBuilder` (host `std::vector`-based construction), the VTK file
+reader/writer, `fuse::native::migrate`'s pack/unpack, and `build_native_remap_halo`/
+`build_supermesh_weights` (the MLS and conservative-intersection weight builders) all still go through
+the host-only `MeshView`/`MeshArrays<Kokkos::HostSpace>` surface and are unaffected by this section --
+see "What is deferred" below and docs/dev/device-resident-arcs.md's own Phase 2 ordering (search, then
+this file, then halo and migration pack/unpack, then the weight builders, named there as this track's
+siblings' scope, not this one's). The halo receive-side merge and migration's unpack (both a
+dedup-by-global-id decision) still run on the host regardless of what space the mesh they operate on
+is in -- unaffected by `NativeMeshView` becoming device-primary, since neither goes through
+`NativeMeshView` at all (`MeshArrays<Space>`'s own CSR, directly).
 
 ## Device-capable packing (Phase 2, "weight-builders" track)
 

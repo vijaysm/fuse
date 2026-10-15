@@ -397,6 +397,7 @@ endif()
 add_library(fuse-coupler-search
   search/box_index.cpp
   search/distributed.cpp
+  search/mesh_adapter_device.cpp
 )
 add_library(fuse::search ALIAS fuse-coupler-search)
 target_compile_features(fuse-coupler-search PUBLIC cxx_std_20)

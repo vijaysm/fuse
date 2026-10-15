@@ -169,6 +169,19 @@ throughout, including the per-query determinism sort -- an in-place insertion so
 thread per query directly on device memory (`sort_segments_on_device`, box_index.cpp), accepted as
 O(k^2) per (typically short) hit segment in exchange for never touching the host.
 
+**Building the boxes `build_device_resident` indexes, without a host round trip.**
+`element_boxes` (`mesh_adapter.hpp`) is the host-side box builder, templated over the `MeshLike`
+duck-typed concept so this layer never names `fuse::backend`. `element_boxes_device_resident` (same
+header, `src/search/mesh_adapter_device.cpp`) is its device-resident counterpart: not a template
+(there is no device-resident "duck typed" mesh concept to constrain against), it takes a simplex CSR
+already in `Kokkos::DefaultExecutionSpace::memory_space` -- offsets, corner coordinates, corners per
+simplex, and an optional per-entity `owned` flag mirroring `element_boxes`'s own `is_owned` filter --
+and returns `Kokkos::View<Box*, DeviceMemSpace>`, compacted over `owned` with a `Kokkos::parallel_scan`
+rather than a sequential `push_back`. A caller that can name a concrete mesh type
+(`fuse::backend::NativeMeshView::device_simplex_offsets()`/`device_simplex_corners()`,
+docs/dev/native-mesh.md's "Execution space") feeds this straight into `build_device_resident`: box
+construction AND index construction for that mesh's elements never touch the host.
+
 `query_points_distributed` threads the same `ExecutionSpace` through to its local `BoxIndex`
 (`comm == kNullComm`) and to the `ArborX::DistributedTree` it builds directly otherwise
 (`run_distributed_query<Space>`, distributed.cpp), copying `local_boxes`/`points` to the resolved
