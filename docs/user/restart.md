@@ -79,6 +79,53 @@ fuse::restore_restart_point(runner, components, pr.value()->reader(),
 // run_period()/run() call resumes the Runner's own clock from there.
 ```
 
+## Typed fields
+
+`RestartWriter::put_field<T>()`/`put_scalar<T>()` and `RestartReader::
+get_field<T>()`/`get_scalar<T>()` are templates over ONE virtual byte-based
+pair (`*_bytes()`); `T` is resolved to a `fuse::ElementType` at compile
+time via `ElementTypeOf<T>` (a `static_assert` fires for any `T` outside the
+supported set: `std::int8_t`..`std::int64_t`, `std::uint8_t`..`std::
+uint64_t`, `fuse::bfloat16`, `float`, `double`, `long double`, `bool`, and
+`_Float16` where the compiler provides it). Every field and scalar carries
+its own element-type metadata in the file (see `docs/user/glossary.md`'s
+"Element types" section); the writer never assumes the reader's `T` matches
+what was written.
+
+```cpp
+// Writing an integer and a bool field alongside the existing double ones:
+writer.put_field<std::int32_t>("dirichlet.sweep_count", ids, sweep_counts, 1);
+writer.put_scalar<bool>("dirichlet.parity_flag", parity);
+
+// Reading back: the default conversion is ReadConversion::Exact, so a
+// mismatched T refuses by name (E-RESTART-TYPE-MISMATCH) rather than
+// silently reinterpreting bytes.
+std::vector<std::int32_t> sweep_counts(ids.size());
+auto rr = reader.get_field<std::int32_t>("dirichlet.sweep_count", ids,
+                                         std::span(sweep_counts), 1);
+bool parity = false;
+auto rs = reader.get_scalar<bool>("dirichlet.parity_flag", parity);
+
+// A caller that KNOWS it is reading a widened or narrowed type says so
+// explicitly; it is never the default:
+double widened;
+auto rw = reader.get_scalar<double>("some.bfloat16.scalar", widened,
+                                     fuse::ReadConversion::Widening);
+if (rw.ok() && rw.value().max_absolute_change > 0.0) {
+  // AllowNarrowing: report and act on the largest change actually
+  // measured over the values read, never silently accepted.
+}
+```
+
+`dn_heat`'s `DirichletSlab`/`NeumannSlab` keep their existing physical state
+(`time_`, `history_`, `beta_`, `t_ref_`) as `double` (`Binary64`), per the
+owner's decision 7 (accelerator/waveform histories stay binary64,
+documented in `docs/dev/restart.md` Section 11). `DirichletSlab` ALSO
+carries a demonstration `std::int32_t sweep_count_` and `bool
+parity_flag_`, round-tripped end to end through the `Runner` by `test/
+runtime/restart_test.cpp`'s `RunResult::dirichlet_sweep_count`/
+`dirichlet_parity_flag`.
+
 ## The two file layouts
 
 `FileLayout::SeparateMeshAndPoints`: one file per restart point, created
@@ -119,6 +166,29 @@ the CURRENT run's shape; this one means no accelerator state was ever
 written for that region in the first place, because the accelerator kind
 does not support it -- restoring into an IQN-accelerated region without
 opting in always refuses, never silently restarts the accelerator cold.
+
+A SEPARATE family of refusals, added for typed fields, covers element-type
+mismatches: `E-RESTART-TYPE-MISMATCH` (`ReadConversion::Exact`'s
+refuse-by-name on any element-type difference, or `Widening`'s refusal when
+the stored-to-requested conversion is not PROVEN exact from the two types'
+own metadata -- a float narrowing or any signed-to-unsigned conversion is
+never "widening"), `E-RESTART-TYPE-METADATA-MISMATCH` (the file's own
+per-field attributes -- `element_type`, `byte_size`, `significand_bits`,
+`exponent_bits`, `exponent_bias`, `byte_order`, `is_signed` -- disagree with
+the file's own HDF5 dataset/attribute datatype; this is checked for
+INTERNAL self-consistency against the dataset's own actual type, never
+against this build's global `element_type_info()` table, so a genuinely
+foreign-platform file is never structurally impossible to read),
+`E-RESTART-UNKNOWN-ELEMENT-TYPE` (an `element_type` attribute name this
+build's `element_type_from_name()` does not recognise -- a newer file
+format reader should refuse by name, not guess), `E-RESTART-BAD-BOOL-BYTE`
+(a `Bool` field's stored byte is neither `0` nor `1`), `E-RESTART-INTEGER-
+OVERFLOW` (an integer narrowing that does not fit the target type, refused
+even under `AllowNarrowing` -- this mode bounds silent error, it does not
+disable the overflow check), and `E-RESTART-SIGNED-TO-UNSIGNED` (refused
+unconditionally, under every `ReadConversion` mode including
+`AllowNarrowing` -- a negative stored value reinterpreted as unsigned is
+never an acceptable "narrowing").
 
 ## Restart through the C/Fortran ABI
 
