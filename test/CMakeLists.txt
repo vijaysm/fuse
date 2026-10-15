@@ -891,6 +891,9 @@ fuse_tests_gated_by(FUSE_ENABLE_MPI
   parallel/schur_slab_mpi_test.cpp parallel/krylov_mpi_test.cpp
   parallel/derivative_gate_mpi_test.cpp parallel/participant_reducer_mpi_test.cpp
   parallel/restart_collective_mpi_test.cpp)
+# restart_collective_mpi_test.cpp links fuse::restart_io, built only under
+# FUSE_ENABLE_HDF5, so an MPI-on/HDF5-off configuration must see it as gated.
+fuse_tests_gated_by(FUSE_ENABLE_HDF5 parallel/restart_collective_mpi_test.cpp)
 if(FUSE_ENABLE_MPI)
   foreach(t comm_graph mpi_transport)
     fuse_add_mpi_test(parallel ${t} LIBS fuse::runtime)
