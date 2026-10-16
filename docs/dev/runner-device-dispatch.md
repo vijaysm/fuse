@@ -211,16 +211,20 @@ when the code contradicted the plan's assumption:
   `Relax`/`Residual` on the device path — performance only, which this
   document already concedes for the whole device path.
 
-  NOT superseded (window-regions track, 2026-10-15, docs/dev/
-  device-resident-arcs.md step 8): a device-resident companion for
-  `previous[]` and an unpinned window-import arc were ATTEMPTED this
-  round, on the theory that `advance_window()`'s own `slot_host_read()`
-  would remove the "would have desynchronised the window path" risk this
-  bullet names. The attempt was reverted -- see step 8's own account of
-  the correctness regression it produced and the bisection that narrowed
-  it without finding the cause. `previous[]` stays staged through the
-  per-instruction device lane for `Relax`/`Residual`, unchanged from this
-  bullet's own original account.
+  SUPERSEDED for a device-resident arc (window-regions track, round 2,
+  2026-10-16, docs/dev/device-resident-arcs.md step 8): `advance_window()`
+  now reaches a window-import arc only through `slot_host_read()`, which
+  removes the desynchronisation risk this bullet named (that read was
+  never the device-native copy the plan originally worried about -- it is
+  a deep_copy INTO a host scratch buffer, the same direction `previous[]`
+  itself already read in). `Relax`/`Residual` now keep the carried
+  iterate in a same-space `previous_device[arc]` companion instead of
+  staging `previous[]` through `device_staging`, for an arc that is
+  itself device-resident; an arc that stayed host-resident still stages
+  through the original per-instruction device lane, unchanged. The
+  previous round's attempt at this hit a real correctness regression and
+  was reverted -- see step 8's own account of the root cause (a
+  device-placement bug unrelated to this bullet's own risk) and the fix.
 - **No `reduction_scratch` device companion.** It is used only by
   `iteration.cpp`'s deterministic norms over host arc buffers, which stay
   host-resident under this port. If `iteration.cpp` ever dispatches on

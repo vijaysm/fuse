@@ -290,12 +290,13 @@ the next step starts. Host mode byte-identity is the standing invariant.
    its sibling `evaluate_region_residual()` -- closed through
    `slot_to_host()`/`host_to_slot()`/`slot_to_vector()`/`slot_host_read()`,
    the same helpers 6510f5e already used elsewhere in this file.
-   ATTEMPTED, BLOCKED (window-regions track, 2026-10-15): unpinning a
-   WINDOW-scoped region's own arcs and giving `previous[]` a device-
-   resident companion is NOT done -- see the "Window-regions track" section
-   below for what was tried, what it broke, and the bisection that narrowed
-   the fault without finding it. Still host, by this rule: `previous[]`,
-   the space-time history, and every arc a window-scoped region names.
+   DONE (window-regions track, round 2, 2026-10-16, 9d5a705b): a WINDOW-
+   scoped region's own arcs are no longer pinned either, and `previous[]`
+   has a device-resident companion (`previous_device`) for a Relax/
+   Residual output arc that is itself device-resident. See step 8 below
+   for the device-placement bug this surfaced and the four raw-touch
+   fixes it took to get there. Still host, unconditionally: the space-
+   time history (staged per instruction, out of this track's scope).
 4. DONE (4610b22, 581c5d1, 7b369f4). `FUSE_EXECUTION_SPACE` resolves
    `RunnerConfig::RunnerExecutionSpace::Default`; `fuse_add_device_twin()`
    registers the 14 `.device` rows (docs/dev/testing.md, "The device
@@ -447,6 +448,77 @@ the next step starts. Host mode byte-identity is the standing invariant.
    and needed no change here) and `build_temporal_projection`'s own
    setup-time matrix assembly (exact rational arithmetic, not a per-period
    cost).
+9. DONE (window-regions track, round 2, 2026-10-16, 9d5a705b).
+   `place_arcs_on_device()` no longer pins a window-scoped region's own
+   arcs; `advance_window()`, `refresh_window_member_history()`,
+   `resolve_pending_window_straddles()` and `run_region()`'s own per-
+   sweep lagged-import snapshot reach them only through
+   `slot_host_read()`/`host_to_slot()`/`slot_to_host()`/a new
+   `scalar_to_slot()` (for the handful of writes that land at a stride
+   other than the arc's own start); `previous[]` has a device-resident
+   companion (`previous_device`) for a Relax/Residual output arc that is
+   itself device-resident -- the same shape step 3 already used for an
+   ordinary region. `place_arcs_on_device()` also had its own latent bug
+   toward this end, independent of the real one below: `OpKind::
+   WindowAdvance` fell through its `switch` to the unconditional "pin
+   every arc this instruction names" default, the same as a genuinely
+   host-only instruction, even though nothing in this change needed it
+   pinned (fixed by adding it to the space-aware case list).
+   `runtime.window_runner_straddle` now carries a `DEVICE_TWIN`
+   registration (it did not before this round).
+
+   THE ROOT CAUSE the previous round's bisection narrowed but did not
+   find: `place_arcs_on_device()`'s own per-arc device-storage allocation
+   allocated `device_storage[i]` zero-filled and then discarded
+   `storage[i]` (`std::vector<double>().swap(storage[i])`) with no copy
+   between the two. For an ORDINARY region's arc that is always correct,
+   since `storage[i]` never holds anything but the cold-start zero
+   `resolve_buffers()` gave it at that point. A window-scoped region's own
+   arc is different: `resolve_regions()`'s own "PRIMING THROUGH THE
+   TRANSFER" pass (Unit 2b, D19) writes a member's REAL initial condition
+   into its export arc before `place_arcs_on_device()` ever runs -- and
+   that pass runs exactly once, so there is no later rewrite to recover
+   the value from. The zero-fill silently replaced it with 0.0 the instant
+   the arc was allowed to land on the device, which it never had been
+   before this track started (every window arc was pinned). Found by
+   adding a temporary value trace to `advance_window()`'s own `arr`/t=0-
+   correction reads and comparing a host run against a device run of the
+   SAME single-sweep test side by side: the host run's first `advance_
+   window()` call read the member's real 0.2 initial condition off its
+   import arc; the device run read 0.0 off the identical arc on the
+   identical sweep. Fixed by one `Kokkos::deep_copy` of `storage[i]` into
+   `device_storage[i]` before the swap -- a no-op for every arc that really
+   is still the cold-start zero, and the fix for every arc that is not.
+
+   Two further raw touches, found by the lead's own writer-vs-reader
+   hypothesis and in fact genuine bugs independent of the root cause
+   above: `resolve_pending_window_straddles()` read `slots[cfg.
+   window_import.value()].data` directly (a straddling provider's own
+   post-replay import waveform) and separately wrote `import_slot.
+   data[...]` directly (publishing that provider's real value into every
+   OTHER member's own lagged-consumer import arc) -- both now go through
+   `slot_host_read()` and `scalar_to_slot()` respectively. And three
+   `previous[]`-only commit writes -- `run_region()`'s own per-block Sink-
+   delivery commit, `run_region_newton()`'s own commit, and `evaluate_
+   window_region_residual()`'s own deliver-to-lagged-shadow write -- kept
+   writing the host `previous[arc]` unconditionally even after a Relax/
+   Residual output arc started keeping its live carried iterate in
+   `previous_device[arc]` instead, orphaning every one of those writes the
+   instant such an arc went device-resident; a new `sync_previous()`
+   helper (`runner_impl.hpp`) gives all three the same device/host
+   dispatch `host_to_slot()` already gives a plain value write.
+
+   GREEN: `runtime.window_runner_straddle` (9/9 on both the host row and
+   the new `.device` row), `verification.iteration.device`, `parallel.
+   window_runner_mpi.{2,3}.device`, the window rows of `runtime.
+   runner_device`, and a full `ctest -j1 -L device` run (36/36). Two
+   failures are pre-existing and unrelated to this change, confirmed by
+   reproducing the identical failure against the unmodified `40693952`
+   source with this track's own commits reverted: `parallel.window_newton_
+   mpi.3` (TIMEOUT at exactly 120.13s on this shared host, independent of
+   this change) and `verification.fsi_energy_diag.
+   FullBudgetOnTheDominantModeCloses` (a deterministic, bit-identical
+   1.45x tolerance margin miss in FSI code this track never touches).
 
 ## What the placement trace shows today
 
