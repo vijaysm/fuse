@@ -477,7 +477,7 @@ Result<DistributedInterpRows> build_distributed_interp_rows(const MeshView& src_
 
   // ---- Broad phase: one padded box per assembled source cell --------------
   //
-  // THE FIX FOR D70 (KNOWN_ISSUES.md). The eval loop below used to test
+  // THE FIX FOR D74 (KNOWN_ISSUES.md). The eval loop below used to test
   // EVERY cell in the assembled global mesh against EVERY locally-owned
   // evaluation point -- unlike this same search's serial counterpart
   // (general_interp.hpp's build_general_interp_weights), which narrows to a
@@ -572,7 +572,7 @@ Result<DistributedInterpRows> build_distributed_interp_rows(const MeshView& src_
   // that never fails at all -- takes part in the SAME collective and
   // returns the SAME outcome.
   //
-  // D70's own fix: a per-candidate invert_reference_map failure
+  // D74's own fix: a per-candidate invert_reference_map failure
   // (E-INTERP-NEWTON / E-INTERP-DEGENERATE) no longer aborts the
   // evaluation point outright -- it means only that THIS candidate is not
   // usable, exactly like one that converges but lands outside the
@@ -615,7 +615,7 @@ Result<DistributedInterpRows> build_distributed_interp_rows(const MeshView& src_
     const auto consider = [&](std::size_t c) {
       const auto inv = invert_reference_map(cells[c], target);
       if (!inv.ok()) {
-        // Skip just this candidate (D70's fix) -- another nearby one, or
+        // Skip just this candidate (D74's fix) -- another nearby one, or
         // this same point already found as a tight match at a lower-gid
         // cell, still decides the row.
         return;

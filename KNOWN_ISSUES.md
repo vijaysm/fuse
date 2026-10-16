@@ -7561,8 +7561,8 @@ further than this round's own scope (the scatter-add determinism, not the weight
 tests of the same primitive) would be the next place to isolate it with a 2-rank-vs-1-rank weight dump,
 if this round's track's own time allowed.
 
-**Re-tested after D70's fix (scaled-bench track, follow-up round, 2026-10-16): NOT the same mechanism.**
-D70's root cause turned out to be `build_distributed_interp_rows`'s per-eval-point candidate
+**Re-tested after D74's fix (scaled-bench track, follow-up round, 2026-10-16): NOT the same mechanism.**
+D74's root cause turned out to be `build_distributed_interp_rows`'s per-eval-point candidate
 scan testing EVERY cell in the assembled mesh with no broad-phase spatial filter, aborting an
 evaluation point outright the instant ANY single candidate (however far away) failed to
 converge -- even one whose genuine answer the same scan had already found. Fixing that (a
@@ -7838,8 +7838,6 @@ over a window-scoped region. Four Runner-level round-trip tests for this exact c
 than shipped failing or weakened.
 
 
-### D73. A cross-rank general (non-nodal) weighted Remap on NativeMeshBackend builds a silently empty conservative matrix with no remap-halo call -- OPEN, found 2026-10-15 (scaled-bench track)
-
 ### D73. A cross-rank general (non-nodal) weighted Remap on NativeMeshBackend builds a silently empty conservative matrix with no remap-halo call -- FIXED 2026-10-16 (found 2026-10-15, scaled-bench track)
 
 Found while building `test/bench/scaled_device_benchmark.cpp`'s scaled provider/consumer row: a
@@ -7879,7 +7877,7 @@ one to remember. Left for the lead to scope; `test/parallel/remap_halo_mpi_test.
 are the next place to start.
 
 
-### D69 FIX (scaled-bench track, follow-up round, 2026-10-16)
+### D73 FIX (scaled-bench track, follow-up round, 2026-10-16)
 
 **Chosen approach: refusal, not automatic halo.** `Runner::Impl::resolve_remap()`'s general
 weighted branch now refuses by name (`E-RT-REMAP-NO-HALO`) when `NativeMeshBackend` is the
@@ -7907,7 +7905,7 @@ succeeds, reproducing the original defect exactly), then GREEN (fix restored:
 `initialize()` refuses with `E-RT-REMAP-NO-HALO`) at ranks 2 and 3, host and `.device` twin
 (`parallel.native_remap_halo_runner.{2,3}[.device]`, all passing).
 
-### D70. A nodal "consistent" Remap's distributed point-location search refuses at the domain's own corner vertex (global id 0) at some multi-rank splits -- FIXED 2026-10-16 (found 2026-10-15, scaled-bench track)
+### D74. A nodal "consistent" Remap's distributed point-location search refuses at the domain's own corner vertex (global id 0) at some multi-rank splits -- FIXED 2026-10-16 (found 2026-10-15, scaled-bench track)
 
 Found while registering `bench.scaled_device_benchmark.{2,3}[.device]` (`test/bench/scaled_device_benchmark.cpp`):
 a nodal "consistent" channel between a provider's (N+1)^2 vertices and a consumer's N^2 cells, both
@@ -7938,8 +7936,8 @@ registration: `bench.scaled_device_benchmark.{2,3}` and their `.device` twins ar
 `bench.scaled_device_benchmark.1[.device]` (no multi-rank split, no replicated gather) and the small
 `example.scaled_device_benchmark[.device]` correctness row (world size 1, same reason) are
 unaffected and pass. Re-enabling the two disabled rows is the right acceptance test for whoever
-fixes D67/D70's shared root cause.
-### D70 FIX (scaled-bench track, follow-up round, 2026-10-16)
+fixes D67/D74's shared root cause.
+### D74 FIX (scaled-bench track, follow-up round, 2026-10-16)
 
 **Root cause, directly diagnosed (not the corner-precision theory originally suspected).**
 Temporary instrumentation of the failing N=1000, 2-rank case caught the mechanism in the act:

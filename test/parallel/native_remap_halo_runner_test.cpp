@@ -1,4 +1,4 @@
-// Scaled-bench track, D69 fix follow-up. KNOWN_ISSUES.md D69: a general
+// Scaled-bench track, D73 fix follow-up. KNOWN_ISSUES.md D73: a general
 // (non-nodal) weighted Remap between two components on DISJOINT MPI rank
 // sets, backed by `fuse::native::NativeMeshBackend`, used to build a
 // SILENTLY EMPTY conservative matrix (`RunStats::remap_weight_nonzeros ==
@@ -9,12 +9,12 @@
 // weighted builder (no `.remap_method()` override). `Runner::initialize()`
 // must now REFUSE by name (`E-RT-REMAP-NO-HALO`) rather than silently
 // proceed to a zero-nonzero matrix -- the chosen fix (`src/runtime/
-// runner.cpp`'s own comment on the D69 block explains why the automatic-
+// runner.cpp`'s own comment on the D73 block explains why the automatic-
 // halo alternative was not taken in this round).
 //
 // test/parallel/nodal_remap_runner.* and its serial twin exercise the
 // NODAL path this same disjoint-placement shape also supports (an
-// orthogonal, unaffected code path -- KNOWN_ISSUES.md D69's own header
+// orthogonal, unaffected code path -- KNOWN_ISSUES.md D73's own header
 // explains why the two differ); this file is the general-weighted path's
 // own disjoint-placement row, which had none before this fix.
 
@@ -96,7 +96,7 @@ std::function<fuse::Result<void>(fuse::Transport&)> mpi_comm_setup() {
 /// provider owns the first half of the ranks, consumer the rest. Both
 /// `fuse_add_mpi_test`'s `RANKS 2 3` split this evenly (one rank each at
 /// world 2) and unevenly (one rank, two ranks, at world 3) -- either way,
-/// genuinely disjoint, which is D69's own repro condition.
+/// genuinely disjoint, which is D73's own repro condition.
 struct Placement {
   fuse::RankSet provider;
   fuse::RankSet consumer;
@@ -120,7 +120,7 @@ struct Harness {
 /// Two differently-resolved native quad meshes (2x2 and 3x3 cells, both
 /// plain FV at dimension 2) on disjoint rank sets, through a GENERAL
 /// (non-nodal) weighted channel -- no `.remap_method()` override, so
-/// `Runner::Impl::resolve_remap()` takes the branch this file's own D69
+/// `Runner::Impl::resolve_remap()` takes the branch this file's own D73
 /// fix touches, never the nodal-distributed one.
 [[nodiscard]] std::unique_ptr<Harness> build() {
   const int rank = world_rank();
@@ -192,7 +192,7 @@ struct Harness {
 }  // namespace
 
 TEST(NativeRemapHalo, DisjointGeneralWeightedRemapRefusesRatherThanBuildingAnEmptyMatrix) {
-  // D69's own repro shape, at whatever rank count this ctest row runs
+  // D73's own repro shape, at whatever rank count this ctest row runs
   // (`fuse_add_mpi_test`'s own RANKS 2 3): provider and consumer never
   // share a rank, so every rank's local-only intersection search would
   // otherwise see only one side's geometry. Before this fix,
@@ -219,7 +219,7 @@ TEST(NativeRemapHalo, DisjointGeneralWeightedRemapRefusesRatherThanBuildingAnEmp
 
   const auto init = runner.initialize(h->components, h->registry, cfg);
   ASSERT_FALSE(init.ok()) << "expected E-RT-REMAP-NO-HALO; initialize() succeeded instead "
-                             "(the D69 fix regressed, or an automatic halo now makes this "
+                             "(the D73 fix regressed, or an automatic halo now makes this "
                              "channel genuinely buildable -- in either case, update this test)";
   EXPECT_EQ(init.error().code, "E-RT-REMAP-NO-HALO");
 }

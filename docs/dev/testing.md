@@ -700,11 +700,11 @@ storage itself is device-resident, not merely the elementwise kernels' dispatch 
 configure time; the binary's own `--n`/`--periods`/`--fields`/`--timing` flags are
 documented in its header comment.
 
-**The 2- and 3-rank rows are currently `DISABLED TRUE`** (KNOWN_ISSUES.md D70): the nodal
+**The 2- and 3-rank rows are currently `DISABLED TRUE`** (KNOWN_ISSUES.md D74): the nodal
 Remap's distributed point-location search refuses to place the domain's own corner
 vertex at those rank counts and this problem size, a found gap sharing its root cause
 with D67. Only `bench.scaled_device_benchmark.1[.device]` runs today; re-enable the
-disabled rows (`test/CMakeLists.txt`'s own bench section) once D67/D70 are fixed.
+disabled rows (`test/CMakeLists.txt`'s own bench section) once D67/D74 are fixed.
 
 `tools/bench-device.py` is the timing harness: it runs
 `fuse_bench_scaled_device_benchmark` host vs device N times (`FUSE_EXECUTION_SPACE`

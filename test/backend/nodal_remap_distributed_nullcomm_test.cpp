@@ -92,7 +92,7 @@ class LocalLineMesh final : public MeshView {
 /// cell next to well-formed ones, each with an honest (non-fabricated)
 /// bounding box.
 ///
-/// KNOWN_ISSUES.md D70's own mechanism, reproduced here without MPI at
+/// KNOWN_ISSUES.md D74's own mechanism, reproduced here without MPI at
 /// all. The ORIGINAL (unfiltered, every-cell) eval loop in
 /// `build_distributed_interp_rows` tested EVERY source cell against EVERY
 /// evaluation point, in cell order, and aborted the WHOLE evaluation point

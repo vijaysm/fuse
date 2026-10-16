@@ -1269,10 +1269,10 @@ fuse_tests_gated_by(FUSE_ENABLE_MPI parallel/native_halo_mpi_test.cpp)
 if(FUSE_ENABLE_MPI)
   fuse_add_mpi_test(parallel native_halo_mpi LIBS fuse::backend MPI::MPI_CXX RANKS 2 3 DEVICE_TWIN)
 endif()
-# Scaled-bench track, D69 fix: a general (non-nodal) weighted Remap between
+# Scaled-bench track, D73 fix: a general (non-nodal) weighted Remap between
 # two NativeMeshBackend components on DISJOINT rank sets must now refuse
 # (E-RT-REMAP-NO-HALO) rather than silently build an empty matrix. RANKS 2 3
-# matches D69's own repro (disjoint at both an even and an uneven split);
+# matches D73's own repro (disjoint at both an even and an uneven split);
 # DEVICE_TWIN re-runs the same refusal under FUSE_EXECUTION_SPACE=device,
 # which this channel never reaches far enough to dispatch on anyway, but
 # keeping the convention uniform with every other parallel row here.
@@ -2341,7 +2341,7 @@ if(FUSE_ENABLE_MPI)
         ENVIRONMENT "FUSE_EXECUTION_SPACE=device")
     endif()
   endforeach()
-  # KNOWN_ISSUES.md D70, FIXED (follow-up round): the nodal Remap's
+  # KNOWN_ISSUES.md D74, FIXED (follow-up round): the nodal Remap's
   # distributed point-location search used to refuse to place the
   # domain's own corner vertex (global id 0) at 2 and 3 ranks, host and
   # device alike -- root cause was build_distributed_interp_rows's own
@@ -2351,7 +2351,7 @@ if(FUSE_ENABLE_MPI)
   # point whose genuine answer the same scan had already found
   # (src/backend/nodal_remap_distributed.cpp's own comment on the fix).
   # bench.scaled_device_benchmark.{2,3}[.device] are no longer disabled;
-  # confirmed green at N=1000 on this host (KNOWN_ISSUES.md D70 entry).
+  # confirmed green at N=1000 on this host (KNOWN_ISSUES.md D74 entry).
 else()
   message(STATUS "fuse: fuse_bench_scaled_device_benchmark not built -- needs FUSE_ENABLE_MPI=ON")
 endif()

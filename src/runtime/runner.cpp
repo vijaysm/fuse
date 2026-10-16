@@ -1174,7 +1174,7 @@ Result<void> Runner::Impl::resolve_remap(const Instruction& ins, Resolved& r) {
 
   // ---- A NATIVE-BACKEND ANALOGUE OF THE MOAB HALO REFUSAL ABOVE -----------
   //
-  // KNOWN_ISSUES.md D69: a general (non-nodal) weighted Remap between two
+  // KNOWN_ISSUES.md D73: a general (non-nodal) weighted Remap between two
   // components placed on DISJOINT rank sets, backed by NativeMeshBackend,
   // used to proceed straight to `remap_cache.get_or_build` below with no
   // halo at all -- each rank's local intersection search saw only its own
@@ -1245,7 +1245,7 @@ Result<void> Runner::Impl::resolve_remap(const Instruction& ins, Resolved& r) {
                 "built for this (source, target) pair. Each rank's local "
                 "intersection search would see only its own side's geometry, so "
                 "the conservative weight build would silently return an EMPTY "
-                "matrix (KNOWN_ISSUES.md D69) rather than fail -- refused here "
+                "matrix (KNOWN_ISSUES.md D73) rather than fail -- refused here "
                 "instead. Place both components on one rank, route through a "
                 "nodal 'consistent' channel (nodal_remap_distributed.hpp, which "
                 "already resolves ownership once at setup), or drive the remap "
