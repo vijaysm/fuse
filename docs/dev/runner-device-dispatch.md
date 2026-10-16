@@ -124,6 +124,17 @@ that:
    `Extrapolate`, `Merge`, `Scale`, `Relax`, `Residual`. **Decision: only
    these ~9 cases become `Space`-templated; everything else in `execute()`
    is untouched, regardless of `execution_space`.**
+   **Update, spacetime-history track (2026-10-15, device-resident-arcs.md
+   step 8):** `Sample`'s and `Interpolate`'s own SPACETIME branches (`r.
+   spacetime >= 0`), not named in this paragraph's list because they were
+   host-only when it was written, are `Space`-templated now too --
+   `Sample` writes its history row with a same-space `Kokkos::deep_copy`,
+   and `Interpolate` calls `num::apply_spacetime_device`
+   (space_kernels.hpp) instead of the host-only `apply_spacetime`.
+   `place_arcs_on_device()` no longer pins either instruction's arcs.
+   Unaffected: the host-only `apply_spacetime` (`src/backend/
+   spacetime.cpp`) itself, still the Host-mode entry point and the device
+   kernel's own oracle.
 
 Both narrowings were confirmed with the user via `AskUserQuestion` before
 proceeding, each time with the full size/risk picture disclosed. The user's

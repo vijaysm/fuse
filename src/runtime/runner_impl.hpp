@@ -214,7 +214,21 @@ struct SpacetimeInfo {
   /// RunnerConfig::execution_space is Device. Sample's history branch
   /// writes a row here with a same-space deep_copy -- no host round trip
   /// -- when its own arc is device-resident. Empty in Host mode.
+  /// `identity_*_device`/`temporal_*_device` (added alongside the device
+  /// Interpolate kernel) mirror the spatial and temporal operators the
+  /// same way; see their own comments where they are declared.
   Kokkos::View<double*, Kokkos::DefaultExecutionSpace::memory_space> history_device;
+  /// CSR mirror of `identity_row`/`identity_col`/`identity_val` above
+  /// (`row_begin` has `elements + 1` entries); flat mirrors of
+  /// `temporal.col`/`temporal.val`. `num::apply_spacetime_device`
+  /// (space_kernels.hpp) walks these; the per-target-step slice into the
+  /// temporal pair is `row_begin[tgt]..row_begin[tgt + 1]` above, a
+  /// host-known value, so no device-resident temporal row_begin is kept.
+  Kokkos::View<std::size_t*, Kokkos::DefaultExecutionSpace::memory_space> identity_row_begin_device;
+  Kokkos::View<std::size_t*, Kokkos::DefaultExecutionSpace::memory_space> identity_col_device;
+  Kokkos::View<double*,      Kokkos::DefaultExecutionSpace::memory_space> identity_val_device;
+  Kokkos::View<std::size_t*, Kokkos::DefaultExecutionSpace::memory_space> temporal_col_device;
+  Kokkos::View<double*,      Kokkos::DefaultExecutionSpace::memory_space> temporal_val_device;
 
   [[nodiscard]] SpatialWeightsView identity() const noexcept {
     return SpatialWeightsView{identity_row.data(), identity_col.data(),

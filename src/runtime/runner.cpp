@@ -424,8 +424,11 @@ void Runner::Impl::place_arcs_on_device() {
       // `SpacetimeInfo::history_device` with a same-space deep_copy (its
       // own case in execute_on() below), so it no longer forces its arcs
       // to host -- Space-generic unconditionally, like Accumulate above.
+      // Interpolate's history branch now runs num::apply_spacetime_device
+      // (space_kernels.hpp) instead of the host-only apply_spacetime, so
+      // it is Space-generic unconditionally too.
       case OpKind::Sample:       generic = true; break;
-      case OpKind::Interpolate:  generic = r.spacetime < 0; break;   // apply_spacetime is host
+      case OpKind::Interpolate:  generic = true; break;
       case OpKind::Source: case OpKind::ExternalDelivery: case OpKind::Sink:
       case OpKind::Accelerate: case OpKind::Epoch: case OpKind::Transport:
       case OpKind::Constrain: case OpKind::Diagnose:
@@ -1977,6 +1980,31 @@ namespace {
                "channel '" + channel + "' has an unknown window kind"};
 }
 
+/// Round 3 (spacetime-history track): a flat, unmanaged-wrapped deep_copy
+/// of a setup-time host std::vector onto `Kokkos::DefaultExecutionSpace`'s
+/// memory space. Used once per channel, at resolve_spacetime() time, for
+/// SpacetimeInfo's device mirrors -- not a hot-loop helper, so the longer
+/// Kokkos::View labels below are not held to the per-call label-length
+/// budget space_kernels.hpp's own comment documents (build_remap_csr's
+/// own labels are the same length class, for the same reason).
+template <class T>
+[[nodiscard]] Kokkos::View<T*, Kokkos::DefaultExecutionSpace::memory_space>
+mirror_vector_to_device(const std::vector<T>& v, const char* label) {
+  // Kokkos::view_alloc's label/pointer overloads are disambiguated by the
+  // deduced argument TYPE, and a `const char*` forwarded through a template
+  // parameter deduces differently from a string-literal argument passed
+  // inline (the std::string overload used everywhere else in this file,
+  // e.g. build_constrain_device_buffers(), always sees a literal) --
+  // std::string(label) below is what makes this call unambiguously a
+  // label, not a pointer-to-existing-memory allocation.
+  Kokkos::View<T*, Kokkos::DefaultExecutionSpace::memory_space> dev(
+      Kokkos::view_alloc(std::string(label), Kokkos::WithoutInitializing), v.size());
+  Kokkos::deep_copy(
+      dev, Kokkos::View<const T*, Kokkos::HostSpace,
+                        Kokkos::MemoryTraits<Kokkos::Unmanaged>>(v.data(), v.size()));
+  return dev;
+}
+
 }  // namespace
 
 Result<void> Runner::Impl::resolve_spacetime() {
@@ -2135,6 +2163,41 @@ Result<void> Runner::Impl::resolve_spacetime() {
                    "channel '" + ch.name + "' spans " +
                        std::to_string(info.elements) +
                        " entities, more than a COO index can hold"};
+    }
+
+    if (config.execution_space == RunnerConfig::RunnerExecutionSpace::Device) {
+      // Round 3 (spacetime-history track): the identity spatial operator's
+      // CSR mirror (one pass, assuming identity_row is already ascending
+      // by construction above -- a stable sort would be the identity
+      // permutation here) and flat mirrors of the temporal operator's own
+      // COO, for num::apply_spacetime_device (space_kernels.hpp)'s
+      // OpKind::Interpolate case.
+      std::vector<std::size_t> id_row_begin(info.elements + 1);
+      {
+        std::size_t k = 0;
+        for (std::size_t t = 0; t < info.elements; ++t) {
+          id_row_begin[t] = k;
+          while (k < info.identity_row.size() &&
+                 static_cast<std::size_t>(info.identity_row[k]) == t) {
+            ++k;
+          }
+        }
+        id_row_begin[info.elements] = k;
+      }
+      const std::vector<std::size_t> id_col(info.identity_col.begin(),
+                                           info.identity_col.end());
+      const std::vector<std::size_t> t_col(info.temporal.col.begin(),
+                                          info.temporal.col.end());
+      info.identity_row_begin_device =
+          mirror_vector_to_device(id_row_begin, "fuse::st_id_rowbeg_dev");
+      info.identity_col_device =
+          mirror_vector_to_device(id_col, "fuse::st_id_col_dev");
+      info.identity_val_device =
+          mirror_vector_to_device(info.identity_val, "fuse::st_id_val_dev");
+      info.temporal_col_device =
+          mirror_vector_to_device(t_col, "fuse::st_t_col_dev");
+      info.temporal_val_device =
+          mirror_vector_to_device(info.temporal.val, "fuse::st_t_val_dev");
     }
 
     spacetime_by_node.emplace(i, static_cast<std::uint32_t>(spacetimes.size()));
@@ -4043,17 +4106,42 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
       // `check_spacetime_schedule()` has already proved every one of them was
       // written this period.
       SpacetimeInfo& st = spacetimes[static_cast<std::size_t>(r.spacetime)];
-      double* out = out_ptr();
-      for (std::size_t k = 0; k < n; ++k) out[k] = 0.0;
-
       const auto tgt = static_cast<std::size_t>(ins.dst_step);
-      const SpatialWeightsView spatial = st.identity();
-      for (std::size_t k = st.row_begin[tgt]; k < st.row_begin[tgt + 1]; ++k) {
-        const auto src_step = static_cast<std::size_t>(st.temporal.col[k]);
-        const Result<void> a = apply_spacetime(
-            spatial, st.temporal, st.history.data() + src_step * st.width, out,
-            st.elements, st.components, src_step, tgt);
-        if (!a.ok()) return a;
+      if constexpr (kHostAccessible) {
+        double* out = out_ptr();
+        for (std::size_t k = 0; k < n; ++k) out[k] = 0.0;
+        const SpatialWeightsView spatial = st.identity();
+        for (std::size_t k = st.row_begin[tgt]; k < st.row_begin[tgt + 1]; ++k) {
+          const auto src_step = static_cast<std::size_t>(st.temporal.col[k]);
+          const Result<void> a = apply_spacetime(
+              spatial, st.temporal, st.history.data() + src_step * st.width, out,
+              st.elements, st.components, src_step, tgt);
+          if (!a.ok()) return a;
+        }
+      } else {
+        // Round 3 (spacetime-history track): the temporal projection and
+        // the (today always identity) spatial weights run as one Space
+        // kernel, batched over this target step's few source terms, one
+        // thread per target spatial entity -- num::apply_spacetime_device
+        // (space_kernels.hpp), reading SpacetimeInfo's device-resident
+        // mirrors built once in resolve_spacetime(). `st.row_begin[tgt]`/
+        // `[tgt + 1]` are host values (see SpacetimeInfo's own comment on
+        // why no device-resident temporal row_begin is kept).
+        num::apply_spacetime_device<Space>(
+            num::IndexSpanOf<Space>(st.identity_row_begin_device.data(),
+                                    st.identity_row_begin_device.extent(0)),
+            num::IndexSpanOf<Space>(st.identity_col_device.data(),
+                                    st.identity_col_device.extent(0)),
+            num::ConstSpanOf<Space>(st.identity_val_device.data(),
+                                    st.identity_val_device.extent(0)),
+            num::IndexSpanOf<Space>(st.temporal_col_device.data(),
+                                    st.temporal_col_device.extent(0)),
+            num::ConstSpanOf<Space>(st.temporal_val_device.data(),
+                                    st.temporal_val_device.extent(0)),
+            num::ConstSpanOf<Space>(st.history_device.data(),
+                                    st.history_device.extent(0)),
+            span_m(out_ptr(), n), st.row_begin[tgt], st.row_begin[tgt + 1],
+            st.width, static_cast<std::size_t>(st.components));
       }
       break;
     }
@@ -4146,23 +4234,15 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
           num::copy<Space>(span_c(in_ptr(0), st.width),
                            span_m(st.history.data() + j * st.width, st.width));
         } else {
-          // Round 3 (spacetime-history track): the write into the ring
-          // itself is a same-space deep_copy into `history_device`, no
-          // host walk. Interpolate's own apply_spacetime (src/backend/
-          // spacetime.cpp) is still host-only, so the corresponding host
-          // `history` row is refreshed right after -- an intentional
-          // device_boundary_copies crossing, the same convention
-          // Impl::component_epoch's own mirror refresh already counts
-          // under -- until a device-resident Interpolate kernel reads
-          // `history_device` directly and this refresh is no longer
-          // needed.
+          // Round 3 (spacetime-history track): a same-space deep_copy
+          // into the device-resident ring, no host walk. Interpolate's
+          // own history branch now reads `history_device` directly
+          // (num::apply_spacetime_device, its own case below), so the
+          // host `history` vector is not kept in sync in Device mode --
+          // nothing still reads it on that path.
           Kokkos::deep_copy(
               num::SpanOf<Space>(st.history_device.data() + j * st.width, st.width),
               span_c(in_ptr(0), st.width));
-          Kokkos::deep_copy(
-              num::SpanOf<HostExecSpace>(st.history.data() + j * st.width, st.width),
-              num::ConstSpanOf<Space>(st.history_device.data() + j * st.width, st.width));
-          ++stats.device_boundary_copies;
         }
         num::copy<Space>(span_c(in_ptr(0), n), span_m(out_ptr(), n));
         break;
