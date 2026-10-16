@@ -420,8 +420,12 @@ void Runner::Impl::place_arcs_on_device() {
         // rather than this function forcing them to host.
         if (r.nodal_dist >= 0) { space_aware = true; } else { generic = true; }
         break;
-      case OpKind::Sample:      generic = r.spacetime < 0; break;   // history branch is host
-      case OpKind::Interpolate: generic = r.spacetime < 0; break;   // apply_spacetime is host
+      // Round 3 (spacetime-history track): Sample's history branch writes
+      // `SpacetimeInfo::history_device` with a same-space deep_copy (its
+      // own case in execute_on() below), so it no longer forces its arcs
+      // to host -- Space-generic unconditionally, like Accumulate above.
+      case OpKind::Sample:       generic = true; break;
+      case OpKind::Interpolate:  generic = r.spacetime < 0; break;   // apply_spacetime is host
       case OpKind::Source: case OpKind::ExternalDelivery: case OpKind::Sink:
       case OpKind::Accelerate: case OpKind::Epoch: case OpKind::Transport:
       case OpKind::Constrain: case OpKind::Diagnose:
@@ -2108,6 +2112,15 @@ Result<void> Runner::Impl::resolve_spacetime() {
                        " values, which overflows std::size_t"};
     }
     info.history.assign(n_src * info.width, 0.0);
+
+    // Round 3 (spacetime-history track): the device-resident twin of
+    // `history` above, zero-filled the same way. Built here, once, rather
+    // than lazily on first Sample, so every period's write is a plain
+    // same-space copy with no first-touch branch in the hot loop.
+    if (config.execution_space == RunnerConfig::RunnerExecutionSpace::Device) {
+      info.history_device = Kokkos::View<double*, Kokkos::DefaultExecutionSpace::memory_space>(
+          Kokkos::view_alloc("fuse::st_history_dev"), info.history.size());
+    }
 
     info.identity_row.resize(info.elements);
     info.identity_col.resize(info.elements);
@@ -4129,8 +4142,28 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
         // defined and inspectable; the projection reads `history`.
         SpacetimeInfo& st = spacetimes[static_cast<std::size_t>(r.spacetime)];
         const auto j = static_cast<std::size_t>(ins.src_step);
-        num::copy<Space>(span_c(in_ptr(0), st.width),
-                         span_m(st.history.data() + j * st.width, st.width));
+        if constexpr (kHostAccessible) {
+          num::copy<Space>(span_c(in_ptr(0), st.width),
+                           span_m(st.history.data() + j * st.width, st.width));
+        } else {
+          // Round 3 (spacetime-history track): the write into the ring
+          // itself is a same-space deep_copy into `history_device`, no
+          // host walk. Interpolate's own apply_spacetime (src/backend/
+          // spacetime.cpp) is still host-only, so the corresponding host
+          // `history` row is refreshed right after -- an intentional
+          // device_boundary_copies crossing, the same convention
+          // Impl::component_epoch's own mirror refresh already counts
+          // under -- until a device-resident Interpolate kernel reads
+          // `history_device` directly and this refresh is no longer
+          // needed.
+          Kokkos::deep_copy(
+              num::SpanOf<Space>(st.history_device.data() + j * st.width, st.width),
+              span_c(in_ptr(0), st.width));
+          Kokkos::deep_copy(
+              num::SpanOf<HostExecSpace>(st.history.data() + j * st.width, st.width),
+              num::ConstSpanOf<Space>(st.history_device.data() + j * st.width, st.width));
+          ++stats.device_boundary_copies;
+        }
         num::copy<Space>(span_c(in_ptr(0), n), span_m(out_ptr(), n));
         break;
       }

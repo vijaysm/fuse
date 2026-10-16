@@ -209,6 +209,13 @@ struct SpacetimeInfo {
   int                       components = 1;
   std::size_t               width = 0;      // elements * components
 
+  /// Device-resident mirror of `history` (round 3, spacetime-history
+  /// track), built once in resolve_spacetime() when
+  /// RunnerConfig::execution_space is Device. Sample's history branch
+  /// writes a row here with a same-space deep_copy -- no host round trip
+  /// -- when its own arc is device-resident. Empty in Host mode.
+  Kokkos::View<double*, Kokkos::DefaultExecutionSpace::memory_space> history_device;
+
   [[nodiscard]] SpatialWeightsView identity() const noexcept {
     return SpatialWeightsView{identity_row.data(), identity_col.data(),
                               identity_val.data(), identity_val.size(),
