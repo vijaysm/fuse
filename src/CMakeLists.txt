@@ -665,6 +665,13 @@ if(FUSE_ENABLE_HDF5)
   # owner runs this against.
   if(FUSE_ENABLE_MPI)
     target_sources(fuse-coupler-restart-io PRIVATE restart_io/collective_check_mpi.cpp)
+    # Restart track round 2, item 3 (the brief's own main item): the
+    # collective multi-task WRITE -- include/fuse/restart_io/
+    # hdf5_restart_io_mpi.hpp's own header comment for the design.
+    # Links MPI::MPI_CXX (not just MPI_C above) for MPI_Exscan/
+    # MPI_Allreduce/MPI_Bcast/MPI_Barrier used directly in this TU.
+    target_sources(fuse-coupler-restart-io PRIVATE restart_io/hdf5_restart_io_mpi.cpp)
+    target_link_libraries(fuse-coupler-restart-io PRIVATE MPI::MPI_CXX)
   endif()
   set_target_properties(fuse-coupler-restart-io PROPERTIES
     EXPORT_NAME restart_io
