@@ -1532,6 +1532,7 @@ if(FUSE_LINALG_BACKEND_IS_EIGEN)
   # history, IQN-ILS/IQN-IMVJ accelerator state) at tier 0 -- gated on
   # FUSE_ENABLE_HDF5 the same way runtime/restart_test.cpp already is,
   # because this file names <fuse/restart_io/hdf5_restart_io.hpp>.
+  fuse_tests_gated_by(FUSE_ENABLE_HDF5 verification/brusselator_restart_test.cpp)
   if(FUSE_ENABLE_HDF5)
     fuse_add_gtest(verification brusselator_restart NO_LAYER_LIB
                    LIBS fuse::runtime fuse::backend fuse::model fuse::linalg
