@@ -1264,6 +1264,19 @@ struct Runner::Impl {
     Rational    provider_interval{1};
     DtPolicy    provider_policy = DtPolicy::Adjustable;
     std::size_t provider_capacity = 1;
+
+    /// Restart track (docs/dev/restart.md Section 9 item 4, window-
+    /// waveform history, Slice 2): this member's own EXPORT field --
+    /// the identical `FieldId` `resolve_regions()`'s local `exported_
+    /// field` variable already resolves (this struct's own top comment:
+    /// "mirrors member_exported_field()/member_imported_field()") --
+    /// stored here so restart's own orchestration can find THIS
+    /// member's qualified field name (`build_field_owner_map()`'s
+    /// output, keyed by `graph.field(exported_field).name`) the SAME
+    /// way `RegionBlock::target_field` already lets accelerator restart
+    /// find an accelerated channel's owning component, without a
+    /// second graph walk. Invalid when this member exports nothing.
+    FieldId     exported_field;
   };
   std::unordered_map<std::uint32_t, WindowMemberConfig> window_member_config;
 

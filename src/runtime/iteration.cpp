@@ -1032,6 +1032,12 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
           }
         }
 
+        // Restart track (docs/dev/restart.md Section 9 item 4): stash the
+        // SAME exported_field this function already resolved above, so
+        // restart's own orchestration (Runner::write_restart_fields()/
+        // restore_restart_fields(), src/runtime/runner.cpp) can find
+        // this member's qualified field name without re-deriving it.
+        cfg.exported_field = exported_field;
         window_member_config[node] = cfg;
         R.window_member_nodes.push_back(NodeId{node});
 
