@@ -212,7 +212,7 @@ when the code contradicted the plan's assumption:
   document already concedes for the whole device path.
 
   SUPERSEDED for a device-resident arc (window-regions track, round 2,
-  2026-10-16, docs/dev/device-resident-arcs.md step 8): `advance_window()`
+  2026-10-16, docs/dev/device-resident-arcs.md step 9): `advance_window()`
   now reaches a window-import arc only through `slot_host_read()`, which
   removes the desynchronisation risk this bullet named (that read was
   never the device-native copy the plan originally worried about -- it is
@@ -223,7 +223,7 @@ when the code contradicted the plan's assumption:
   itself device-resident; an arc that stayed host-resident still stages
   through the original per-instruction device lane, unchanged. The
   previous round's attempt at this hit a real correctness regression and
-  was reverted -- see step 8's own account of the root cause (a
+  was reverted -- see step 9's own account of the root cause (a
   device-placement bug unrelated to this bullet's own risk) and the fix.
 - **No `reduction_scratch` device companion.** It is used only by
   `iteration.cpp`'s deterministic norms over host arc buffers, which stay
