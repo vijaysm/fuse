@@ -392,6 +392,68 @@ void remap_apply(IndexSpanOf<Space> row_begin, IndexSpanOf<Space> col,
       RemapMultiFunctor<Space>{row_begin, col, val, x, y, components});
 }
 
+/// Round 3 (spacetime-history track): the space-time Interpolate's history
+/// branch (spec section 7.3's `T (x) I`, src/backend/spacetime.cpp's
+/// apply_spacetime) as a Space kernel, for one fixed target time step at a
+/// time -- the shape execute_on()'s own OpKind::Interpolate case calls this
+/// with, once per instruction. One thread per TARGET SPATIAL ENTITY: the
+/// temporal operator's row for this target step (`[t_begin, t_end)`, a few
+/// terms -- the reconstruction stencil width) is the same small range for
+/// every entity, so each thread walks it; the entity's own row of the
+/// spatial operator (today always the identity, SpacetimeInfo::identity()'s
+/// own comment) is walked the same way, so a future non-identity spatial
+/// half (Phase 5) needs no change here. Deterministic: ascending temporal
+/// index within `[t_begin, t_end)`, ascending spatial index within the
+/// entity's own row -- the same order apply_spacetime's own per-triplet
+/// loop uses, so a device run reproduces the host answer to rounding.
+template <class Space>
+struct SpacetimeInterpolateFunctor {
+  IndexSpanOf<Space> spatial_row_begin;  // elements + 1
+  IndexSpanOf<Space> spatial_col;
+  ConstSpanOf<Space> spatial_val;
+  IndexSpanOf<Space> temporal_col;  // full array; [t_begin, t_end) is this call's slice
+  ConstSpanOf<Space> temporal_val;
+  ConstSpanOf<Space> history;  // n_src_steps * width, source-step-major
+  SpanOf<Space> out;           // spatial.n_rows * components
+  std::size_t t_begin = 0, t_end = 0;
+  std::size_t width = 0;  // elements * components of one history row
+  std::size_t components = 1;
+  KOKKOS_INLINE_FUNCTION void operator()(const std::size_t e) const {
+    const std::size_t rbase = e * components;
+    for (std::size_t c = 0; c < components; ++c) out(rbase + c) = 0.0;
+    const std::size_t s_begin = spatial_row_begin(e);
+    const std::size_t s_end = spatial_row_begin(e + 1);
+    for (std::size_t sk = s_begin; sk < s_end; ++sk) {
+      const std::size_t cbase = spatial_col(sk) * components;
+      const double w_s = spatial_val(sk);
+      for (std::size_t tk = t_begin; tk < t_end; ++tk) {
+        const double a = w_s * temporal_val(tk);
+        const std::size_t hbase = temporal_col(tk) * width + cbase;
+        for (std::size_t c = 0; c < components; ++c) {
+          out(rbase + c) += a * history(hbase + c);
+        }
+      }
+    }
+  }
+};
+
+template <class Space>
+void apply_spacetime_device(IndexSpanOf<Space> spatial_row_begin,
+                            IndexSpanOf<Space> spatial_col,
+                            ConstSpanOf<Space> spatial_val,
+                            IndexSpanOf<Space> temporal_col,
+                            ConstSpanOf<Space> temporal_val,
+                            ConstSpanOf<Space> history, SpanOf<Space> out,
+                            std::size_t t_begin, std::size_t t_end,
+                            std::size_t width, std::size_t components) {
+  const std::size_t n_rows = spatial_row_begin.extent(0) - 1;
+  Kokkos::parallel_for(
+      "fuse::st_interp", Kokkos::RangePolicy<Space>(0, n_rows),
+      SpacetimeInterpolateFunctor<Space>{spatial_row_begin, spatial_col, spatial_val,
+                                        temporal_col, temporal_val, history, out,
+                                        t_begin, t_end, width, components});
+}
+
 /// Fixed-order reductions whose answer does not depend on the execution
 /// space's thread count -- unlike `dot`/`weighted_norm_squared` above, whose
 /// own comments say plainly that a parallel reduction's summation order is

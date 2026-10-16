@@ -231,6 +231,14 @@ struct Scenario {
   std::size_t   dst_cells = 8;
   /// 0 leaves the channel without a Relax node.
   double        relax_omega = 0.0;
+  /// `TemporalBasis::None` leaves the channel without a space-time
+  /// projection (the ordinary Accumulate/lag path). Round 3
+  /// (spacetime-history track): mutually exclusive with `accum` --
+  /// resolve_spacetime() itself refuses both on the same channel
+  /// (E-RT-SPACETIME), the same refusal `channel_test.cpp` covers at the
+  /// model layer.
+  fuse::TemporalBasis spacetime_basis = fuse::TemporalBasis::None;
+  int                  spacetime_degree = 0;
 };
 
 /// Sample(Mean) four times per period, Accumulate (copy + 1/4 scale) once,
@@ -245,6 +253,17 @@ Scenario mean_over_four_substeps() {
 /// coincide) followed by Relax(0.5): the two FMA-shaped kernels.
 Scenario weighted_remap_then_relax() {
   return Scenario{.src_cells = 8, .dst_cells = 6, .relax_omega = 0.5};
+}
+
+/// Linear (degree 1) space-time projection of a four-substep source onto one
+/// target step, same subcycling ratio `mean_over_four_substeps()` uses: a
+/// Sample per source tick (writing `SpacetimeInfo::history`) and one
+/// Interpolate per target tick (`num::apply_spacetime_device` in Device
+/// mode), round 3 (spacetime-history track).
+Scenario spacetime_linear_projection() {
+  return Scenario{.src_dt = Rational{1, 4}, .dst_dt = Rational{1},
+                  .spacetime_basis = fuse::TemporalBasis::Linear,
+                  .spacetime_degree = 1};
 }
 
 struct Harness {
@@ -291,6 +310,9 @@ std::unique_ptr<Harness> build(const Scenario& s) {
   const auto ch = g.add_channel("link", src, tgt);
   if (s.accum != fuse::AccumOp::Instant) g.channel(ch).accumulate(s.accum);
   if (s.relax_omega != 0.0) g.channel(ch).relax(s.relax_omega);
+  if (s.spacetime_basis != fuse::TemporalBasis::None) {
+    g.channel(ch).spacetime(s.spacetime_basis, s.spacetime_degree);
+  }
 
   EXPECT_TRUE(h->backend.load(g.mesh(m1)).ok());
   EXPECT_TRUE(h->backend.load(g.mesh(m2)).ok());
@@ -321,6 +343,7 @@ struct Outcome {
   bool                has_sample = false;
   bool                has_accumulate = false;
   bool                has_remap = false;
+  bool                has_interpolate = false;  // round 3: spacetime-history track
   int                 transports = 0;   // Transport instructions per period
   int                 diagnoses = 0;    // Diagnose instructions per period
   int                 accumulates = 0;  // Accumulate instructions per period
@@ -340,6 +363,7 @@ Outcome run(const Scenario& s, Space space, int periods) {
   o.has_sample = h->has(OpKind::Sample);
   o.has_accumulate = h->has(OpKind::Accumulate);
   o.has_remap = h->has(OpKind::Remap);
+  o.has_interpolate = h->has(OpKind::Interpolate);
   o.transports = h->count(OpKind::Transport);
   o.diagnoses = h->count(OpKind::Diagnose);
   o.accumulates = h->count(OpKind::Accumulate);
@@ -778,4 +802,53 @@ TEST(RunnerDevice, OrdinaryIterationRegionConvergesOnTheDeviceLikeTheHost) {
   EXPECT_GT(dev.stats.device_resident_arcs, 0)
       << "the ordinary region's block arcs stayed on the host";
   EXPECT_GT(dev.stats.device_dispatches, 0);
+}
+
+// Round 3 (spacetime-history track, docs/dev/device-resident-arcs.md step
+// 8): the space-time projection's Sample/Interpolate pair, the last two
+// Space-generic-able OpKinds this plan can exercise single-process. Sample
+// writes SpacetimeInfo::history_device with a same-space deep_copy;
+// Interpolate runs num::apply_spacetime_device (space_kernels.hpp) instead
+// of the host-only apply_spacetime. Before this track, place_arcs_on_device()
+// pinned both instructions' arcs unconditionally (PINS, not generic), so a
+// device-registered chain through a spacetime channel crossed the host/
+// device boundary at every Sample and Interpolate call; RED on that tree
+// would show device_boundary_copies/device_staged_copies > 0 here. GREEN
+// now that both are classified generic.
+TEST(RunnerDevice, SpacetimeHistoryIsDeviceResidentAndAgreesWithHost) {
+  if constexpr (!kHasDeviceBackend) GTEST_SKIP() << "no device backend";
+  Scenario s = spacetime_linear_projection();
+  const Outcome host = run(s, Space::Host, 3);
+  s.device_fields = true;
+  const Outcome dev = run(s, Space::Device, 3);
+  ASSERT_TRUE(host.init.ok()) << host.init.error().message;
+  ASSERT_TRUE(dev.init.ok()) << dev.init.error().message;
+  ASSERT_TRUE(dev.has_sample);
+  ASSERT_TRUE(dev.has_interpolate);
+  ASSERT_EQ(host.consumer.size(), dev.consumer.size());
+  ASSERT_FALSE(host.consumer.empty());
+  for (std::size_t i = 0; i < host.consumer.size(); ++i) {
+    const double a = host.consumer[i];
+    const double b = dev.consumer[i];
+    // A handful of ulps: one FMA contraction per target entity in
+    // SpacetimeInterpolateFunctor (space_kernels.hpp), the same accepted
+    // gap D45 documents for RelaxFunctor/RemapMultiFunctor.
+    EXPECT_NEAR(a, b, 1e-14 * std::max(1.0, std::abs(a))) << "cell " << i;
+  }
+  EXPECT_NE(host.consumer.front(), 0.0);
+  EXPECT_GT(dev.stats.device_dispatches, 0);
+  EXPECT_GT(dev.stats.device_resident_arcs, 0);
+  // THE assertion this track exists for: Sample and Interpolate no longer
+  // pin their arcs, so a fully device-registered spacetime chain crosses
+  // the host/device boundary zero times and stages nothing through a
+  // device_staging lane -- the same standard
+  // DeviceRegisteredFieldsCrossTheBoundaryZeroTimesAndAgreeWithHost holds
+  // the ordinary (non-spacetime) chain to.
+  EXPECT_EQ(dev.stats.device_boundary_copies, 0)
+      << "a device-registered spacetime chain crossed the boundary even "
+         "though Sample and Interpolate are both classified generic";
+  EXPECT_EQ(dev.stats.device_staged_copies, 0)
+      << "something was staged through a device_staging lane even though "
+         "no instruction in this chain is host-only anymore";
+  EXPECT_EQ(host.stats.device_staged_copies, 0);
 }

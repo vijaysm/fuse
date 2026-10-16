@@ -405,6 +405,34 @@ the next step starts. Host mode byte-identity is the standing invariant.
    `DistVector` and the component-internal linear algebra; accelerators
    and Newton; `MeshView::measure()` has no device-callable form for the
    nodal remap's H^T input scaling.
+8. DONE (spacetime-history track, 2026-10-15). The space-time projection's
+   two remaining host-only instructions are Space-generic now.
+   `SpacetimeInfo::history` has a device-resident twin, `history_device`
+   (`Kokkos::View<double*, DeviceMemSpace>`, same zero-filled, never-
+   resized ring as the host vector), built once in `resolve_spacetime()`
+   when `RunnerConfig::execution_space` is `Device`. `OpKind::Sample`'s
+   history branch writes its row there with a same-space `Kokkos::deep_copy`
+   -- no host round trip -- and is Space-generic unconditionally
+   (`place_arcs_on_device()` no longer pins its arcs on `r.spacetime >= 0`).
+   `OpKind::Interpolate`'s history branch runs the temporal projection and
+   the spatial weights (`T (x) I` of spec section 7.3) as one Space kernel,
+   `num::apply_spacetime_device` (`include/fuse/num/space_kernels.hpp`):
+   one thread per target spatial entity, walking the same small temporal
+   stencil (the row_begin slice for this target step) and the entity's own
+   row of the spatial operator (today always the identity,
+   `SpacetimeInfo::identity()`'s own comment -- a future non-identity
+   spatial half needs no change to this kernel), in the same ascending
+   order the host `apply_spacetime` it replaces uses, so the device answer
+   agrees with host to rounding. The host-only `apply_spacetime`
+   (`src/backend/spacetime.cpp`) and its own unit tests
+   (`test/backend/spacetime_test.cpp`) are UNCHANGED -- it is still what
+   Host-mode execution calls, and still the oracle the device kernel is
+   checked against. Still host: the WINDOW regions track's own bookkeeping
+   (a different track's scope; `detail::WindowMemberState::history`,
+   iteration.cpp, is a separate structure from `SpacetimeInfo::history`
+   and needed no change here) and `build_temporal_projection`'s own
+   setup-time matrix assembly (exact rational arithmetic, not a per-period
+   cost).
 
 ## What the placement trace shows today
 
