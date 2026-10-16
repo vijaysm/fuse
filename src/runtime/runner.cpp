@@ -261,6 +261,7 @@ Result<void> Runner::Impl::resolve_buffers(FieldRegistry& registry) {
   device_mirror_epoch.assign(buffers.size(), 0);
   slots.assign(buffers.size(), Slot{});
   previous.assign(buffers.size(), {});
+  previous_device.assign(buffers.size(), {});
   sample_count.assign(buffers.size(), 0);
   slot_source_owner.assign(buffers.size(), -1);
 
@@ -410,6 +411,21 @@ void Runner::Impl::place_arcs_on_device() {
       case OpKind::Scale: case OpKind::Relax: case OpKind::Residual:
         generic = true;
         break;
+      case OpKind::WindowAdvance:
+        // Time windows track (docs/dev/device-resident-arcs.md, step 8):
+        // this instruction never reaches execute_on() at all --
+        // run_region()'s own body loop dispatches it to advance_window()
+        // instead (that function's own OpKind::WindowAdvance case,
+        // iteration.cpp, has the full account) -- but it still carries a
+        // declared `ins.out` (its own export arc) in the compiled
+        // stream, and WITHOUT this case that arc fell through to
+        // `default` below and was pinned unconditionally, regardless of
+        // this function's own window-region loop further down. Marked
+        // space-aware, not generic: nothing here marks its arcs
+        // `read_by_kernel`, since no Space-generic kernel ever touches
+        // them directly.
+        space_aware = true;
+        break;
       case OpKind::Remap:
         // An ordinary weighted Remap is still Space-generic
         // (num::remap_apply<Space>, read_by_kernel marking included).
@@ -459,29 +475,20 @@ void Runner::Impl::place_arcs_on_device() {
   // An ordinary region's block, carried and verify arcs are reached from
   // iteration.cpp / fixed_point_residual.cpp only through the space-aware
   // slot_to_host()/host_to_slot()/slot_host_read() helpers (step 3), so
-  // they may live on the device. A WINDOW-scoped region's bookkeeping
-  // (advance_window(), priming, lagged imports, the t0 correction) still
-  // dereferences its arcs on the host, so every arc it names stays there.
-  // runtime-exchange track: a Constrain's `before_arc` is no longer pinned
-  // here -- execute_on()'s OpKind::Constrain case reads it through its own
-  // space-aware helper (span_any_c()) exactly as it reads its own in/out
-  // arcs, so the arc is free to land wherever place_arcs_on_device()'s own
-  // default (device-resident unless something else pins it) puts it.
-  for (const detail::RegionRuntime& R : regions) {
-    if (!R.window_scoped) continue;
-    for (const detail::RegionBlock& b : R.blocks) {
-      pin(b.value_arc); pin(b.residual_arc); pin(b.feed_arc);
-    }
-    for (const std::uint32_t a : R.carried_arcs) pin(a);
-    for (const std::uint32_t a : R.verify_arcs) pin(a);
-    for (const ArcId a : R.window_lagged_import_arcs) pin_arc(a);
-  }
-  for (const auto& [node, cfg] : window_member_config) {
-    pin_arc(cfg.window_import);
-    pin_arc(cfg.window_import_delivery_arc);
-  }
-  for (const auto& [field, arc] : window_export_field_arc) pin_arc(arc);
-  for (const auto& [field, arc] : window_import_field_arc) pin_arc(arc);
+  // they may live on the device. A WINDOW-scoped region's own bookkeeping
+  // (advance_window(), priming, lagged imports, the t0 correction,
+  // resolve_pending_window_straddles()) now reaches every arc it names
+  // through the SAME space-aware helpers, plus scalar_to_slot() for the
+  // single-element writes none of step 3's helpers covered (docs/dev/
+  // device-resident-arcs.md, step 8) -- so a window-scoped region's own
+  // block/carried/verify/lagged-import/window_import/window_export arcs
+  // are no longer pinned here either, the same way step 3 already left
+  // an ordinary region's. runtime-exchange track: a Constrain's
+  // `before_arc` is no longer pinned here -- execute_on()'s
+  // OpKind::Constrain case reads it through its own space-aware helper
+  // (span_any_c()) exactly as it reads its own in/out arcs, so the arc is
+  // free to land wherever place_arcs_on_device()'s own default (device-
+  // resident unless something else pins it) puts it.
 
   for (std::size_t i = 0; i < n_arcs; ++i) {
     Slot& s = slots[i];
@@ -501,12 +508,47 @@ void Runner::Impl::place_arcs_on_device() {
     if (pinned[i]) continue;
     if (device_storage[i].extent(0) < s.total()) {
       device_storage[i] = Kokkos::View<double*, DeviceMemSpace>(
-          Kokkos::view_alloc("fuse::dev_arc"), s.total());  // zero-filled, like storage
+          Kokkos::view_alloc("fuse::dev_arc", Kokkos::WithoutInitializing),
+          s.total());
     }
+    // Time windows track (step 8): `storage[i]` is not always the cold-
+    // start zero resolve_buffers() first gave it -- a window-scoped
+    // region's own priming pass (resolve_regions(), this file's
+    // "PRIMING THROUGH THE TRANSFER" comment) writes the member's own
+    // real initial condition into some of these arcs before this
+    // function ever runs, and that pass runs exactly once, strictly
+    // before this one (never again, so there is no later rewrite to
+    // rely on instead). Copying it across before the host buffer is
+    // discarded is the fix: the OLD unconditional zero-fill silently
+    // replaced that real value with 0.0 the instant an arc landed on
+    // the device, undetectable until a window-scoped region's own arcs
+    // were ever allowed to land there at all (this round's own
+    // confirmed, reproducible divergence -- docs/dev/device-resident-
+    // arcs.md, step 8). A no-op for every OTHER arc here, which really
+    // is still the cold-start zero resolve_buffers() gave it.
+    Kokkos::deep_copy(num::SpanOf<DeviceExecSpace>(device_storage[i].data(), s.total()),
+                      num::ConstSpanOf<HostExecSpace>(storage[i].data(), s.total()));
     std::vector<double>().swap(storage[i]);  // the host copy is gone for good
     s.data = device_storage[i].data();
     s.device = true;
     ++stats.device_resident_arcs;
+    // Time windows track (step 8): a Relax/Residual output arc's own
+    // previous-iterate buffer (sized in the OpKind::Relax/Residual case
+    // of this plan's own instruction-resolution pass, before this
+    // function ever runs) gets a device-resident twin here too, seeded
+    // from that same cold-start-zero host buffer, so execute_on()'s own
+    // Relax/Residual case can keep the carried iterate on this arc's own
+    // space rather than staging it through `device_staging` every sweep.
+    if (!previous[i].empty() &&
+        previous_device[i].extent(0) < previous[i].size()) {
+      previous_device[i] = Kokkos::View<double*, DeviceMemSpace>(
+          Kokkos::view_alloc("fuse::dev_previous", Kokkos::WithoutInitializing),
+          previous[i].size());
+      Kokkos::deep_copy(num::SpanOf<DeviceExecSpace>(previous_device[i].data(),
+                                                      previous[i].size()),
+                        num::ConstSpanOf<HostExecSpace>(previous[i].data(),
+                                                          previous[i].size()));
+    }
   }
   if (trace) {
     const std::vector<BufferDecl>& buffers = plan.buffers().buffers;
@@ -4394,10 +4436,23 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
     case OpKind::Relax: {
       if (ins.n_in == 0 || !ins.out.valid()) break;
       double* out = out_ptr();
-      std::vector<double>& prev = previous[ins.out.value()];  // pre-sized
-      num::relax<Space>(ins.attrs.omega, span_c(prev.data(), n),
-                        span_c(in_ptr(0), n), span_m(out, n));
-      num::copy<Space>(span_c(out, n), span_m(prev.data(), n));
+      const std::size_t out_arc = ins.out.value();
+      // Step 8: when this arc's own previous-iterate buffer has a
+      // device-resident twin (place_arcs_on_device() allocates one
+      // whenever the arc itself landed on the device), keep the carried
+      // iterate on that same space instead of staging the host `prev`
+      // vector through `device_staging` every sweep.
+      if (slots[out_arc].device && previous_device[out_arc].extent(0) >= n) {
+        double* const prev_dev = previous_device[out_arc].data();
+        num::relax<Space>(ins.attrs.omega, num::ConstSpanOf<Space>(prev_dev, n),
+                          span_c(in_ptr(0), n), span_m(out, n));
+        num::copy<Space>(span_c(out, n), num::SpanOf<Space>(prev_dev, n));
+      } else {
+        std::vector<double>& prev = previous[out_arc];  // pre-sized
+        num::relax<Space>(ins.attrs.omega, span_c(prev.data(), n),
+                          span_c(in_ptr(0), n), span_m(out, n));
+        num::copy<Space>(span_c(out, n), span_m(prev.data(), n));
+      }
       break;
     }
 
@@ -4683,10 +4738,20 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
         const double* b = in_ptr(1);
         num::residual<Space>(span_c(a, n), span_c(b, n), span_m(out, n));
       } else {
-        std::vector<double>& prev = previous[ins.out.value()];  // pre-sized
-        num::residual<Space>(span_c(a, n), span_c(prev.data(), n),
-                             span_m(out, n));
-        num::copy<Space>(span_c(a, n), span_m(prev.data(), n));
+        const std::size_t out_arc = ins.out.value();
+        // Step 8: same device-native carried-iterate path as
+        // OpKind::Relax above, for the one-input form of Residual.
+        if (slots[out_arc].device && previous_device[out_arc].extent(0) >= n) {
+          double* const prev_dev = previous_device[out_arc].data();
+          num::residual<Space>(span_c(a, n), num::ConstSpanOf<Space>(prev_dev, n),
+                               span_m(out, n));
+          num::copy<Space>(span_c(a, n), num::SpanOf<Space>(prev_dev, n));
+        } else {
+          std::vector<double>& prev = previous[out_arc];  // pre-sized
+          num::residual<Space>(span_c(a, n), span_c(prev.data(), n),
+                               span_m(out, n));
+          num::copy<Space>(span_c(a, n), span_m(prev.data(), n));
+        }
       }
       break;
     }
@@ -6330,6 +6395,20 @@ Result<Runner::FieldWindowView> Runner::field_window_view(FieldId field) const {
     return Failure{"E-RT-ARC", "window arc has no resolved buffer"};
   }
   const detail::Slot& slot = impl_->slots[arc.value()];
+  if (slot.device) {
+    // Step 8: a window-scoped region's own export/import arc is no
+    // longer pinned to the host (place_arcs_on_device() no longer pins
+    // it), so this raw-pointer accessor needs the same refusal
+    // Runner::buffer() already gives a device-resident ordinary arc,
+    // above -- a raw `const double*` into device memory would be
+    // dereferenced on the host the instant a caller read through it.
+    return Failure{"E-RT-SPACE",
+                 "window arc " + std::to_string(arc.value()) +
+                     " is resident in device memory (RunnerConfig::"
+                     "execution_space == Device); its values reach the "
+                     "host only through the component field this window "
+                     "channel delivers to"};
+  }
   const int field_components = impl_->graph.field(field).components;
   const int arc_components = impl_->dag.arc(arc).type.components;
   const std::int32_t window_samples =
