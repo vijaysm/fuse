@@ -17,6 +17,8 @@
 #include <fmt/format.h>
 
 #include "fuse/search/types.hpp"
+#include "fuse/search/box_index.hpp"
+#include "fuse/search/geometry.hpp"
 
 namespace fuse {
 namespace {
@@ -473,40 +475,131 @@ Result<DistributedInterpRows> build_distributed_interp_rows(const MeshView& src_
   if (!cells_r.ok()) return cells_r.error();
   const std::vector<Cell>& cells = cells_r.value();
 
+  // ---- Broad phase: one padded box per assembled source cell --------------
+  //
+  // THE FIX FOR D70 (KNOWN_ISSUES.md). The eval loop below used to test
+  // EVERY cell in the assembled global mesh against EVERY locally-owned
+  // evaluation point -- unlike this same search's serial counterpart
+  // (general_interp.hpp's build_general_interp_weights), which narrows to a
+  // handful of candidates through exactly this kind of box index FIRST. At
+  // scale (N=1000, 1e6 cells and 1e6 evaluation points) that unfiltered
+  // scan fed `invert_reference_map` cells arbitrarily far from the target
+  // -- an instrumented run of the N=1000, 2-rank case caught it directly:
+  // candidate index 17997 (a cell near x=0.997) was Newton-inverted
+  // against a target at (0.0005, 0.0005), the opposite corner of the
+  // domain, and a damped Gauss-Newton started from THAT cell's own
+  // reference centre for a target that far outside it did not converge
+  // within 50 iterations (last residual 1.92e-12 against a 1e-12
+  // tolerance) -- even though the GENUINE containing cell (global id 0)
+  // had already been found as a tight match at candidate index 0, earlier
+  // in that very same scan. The scan simply never stopped looking once it
+  // had the right answer, and a later, unrelated candidate's non-
+  // convergence aborted the whole evaluation point. Building the same kind
+  // of index build_general_interp_weights already uses, over this
+  // function's own (Allgatherv-replicated) `cells`, and querying it per
+  // evaluation point the same way, fixes both halves of that: Newton is
+  // now only ever invoked on a small, genuinely nearby candidate set, so a
+  // stray distant cell's non-convergence can no longer reach this code at
+  // all, and the whole search drops from O(n_eval * n_cells) to
+  // O(n_eval * candidates) -- the latter a small constant on a structured
+  // mesh, which is also why this was never exercised before this track's
+  // 1e6-cell benchmark row.
+  //
+  // NOT the same mechanism as D67 (the 1-ULP VALUE disagreement in
+  // NodalRemapRunnerMpi.ConsistentTransposeIsBitIdenticalAcrossRankCounts):
+  // that test's winning cell is chosen by the SAME lowest-global-id
+  // tie-break this function already used before this fix, which depends
+  // only on which candidates pass tier (a) or (b), never on scan order --
+  // adding a broad-phase filter that still finds every genuine tier (a)/(b)
+  // candidate (the padding below matches kRefEpsLoose, the loosest bound
+  // either tier accepts) cannot change which cell wins or its computed
+  // natural coordinates. D67 is re-run, unchanged, after this fix lands
+  // (KNOWN_ISSUES.md records the outcome); it remains open on its own.
+  std::vector<search::Box> cell_boxes;
+  cell_boxes.reserve(cells.size());
+  for (const Cell& cell : cells) {
+    search::Point lo{std::numeric_limits<double>::max(), std::numeric_limits<double>::max(),
+                     std::numeric_limits<double>::max()};
+    search::Point hi{std::numeric_limits<double>::lowest(), std::numeric_limits<double>::lowest(),
+                     std::numeric_limits<double>::lowest()};
+    for (std::size_t k = 0; k < cell.n; ++k) {
+      lo.x = std::min(lo.x, cell.p[k].x); hi.x = std::max(hi.x, cell.p[k].x);
+      lo.y = std::min(lo.y, cell.p[k].y); hi.y = std::max(hi.y, cell.p[k].y);
+      lo.z = std::min(lo.z, cell.p[k].z); hi.z = std::max(hi.z, cell.p[k].z);
+    }
+    // Padded by kRefEpsLoose -- the SAME bound the fallback tier below
+    // already accepts a candidate within, not the default (rounding-scale)
+    // tolerance -- so the broad phase can never drop a genuine tier (b)
+    // candidate before the narrow phase gets to classify it (identical
+    // reasoning to build_general_interp_weights' own box padding).
+    cell_boxes.push_back(
+        search::padded(search::Box{lo, hi}, search::Tolerance{.relative = kRefEpsLoose}));
+  }
+  const auto box_index_r = search::BoxIndex::build(cell_boxes);
+  if (!box_index_r.ok()) return Failure{box_index_r.error().code, box_index_r.error().message};
+  const search::BoxIndex& box_index = box_index_r.value();
+
   DistributedInterpRows out;
   const std::size_t n_eval = eval_points.entity_count(eval_dim);
 
-  // Round 4 (KNOWN_ISSUES.md D8): NEITHER branch below returns directly.
-  // Both a per-candidate invert_reference_map failure (E-INTERP-NEWTON /
-  // E-INTERP-DEGENERATE) and "no candidate contains this point"
-  // (E-INTERP-DOMAIN) depend on THIS rank's own local evaluation entities,
-  // so returning either one straight from this loop -- as an earlier
-  // version of this file did -- would let a rank with no bad point return
-  // success and go on to call a FURTHER collective its partners, having
-  // hit the failure, never reach. `local_failed`/`local_fail_code_id`/
-  // `local_fail_entity_gid` record the FIRST such local failure (if any)
-  // and the loop then simply stops adding rows; `agree_on_local_failure`
-  // below is the single place every rank -- including one with zero local
-  // evaluation entities, or one that never fails at all -- takes part in
-  // the SAME collective and returns the SAME outcome.
+  // One query point per LOCALLY OWNED evaluation entity -- `owned_j[oi]`
+  // names which entity index (into `eval_points`) query `oi` answers for.
+  std::vector<std::size_t> owned_j;
+  std::vector<search::Point> owned_targets;
+  owned_j.reserve(n_eval);
+  owned_targets.reserve(n_eval);
+  for (std::size_t j = 0; j < n_eval; ++j) {
+    if (!eval_points.is_owned(eval_dim, j)) continue;
+    const Vec3 t = to_vec(eval_points.centroid(eval_dim, j));
+    owned_j.push_back(j);
+    owned_targets.push_back(search::Point{t.x, t.y, t.z});
+  }
+  const auto hits_r = box_index.query_points(owned_targets);
+  if (!hits_r.ok()) return Failure{hits_r.error().code, hits_r.error().message};
+  const search::QueryResult& hits = hits_r.value();
+  const int k_nearest = static_cast<int>(std::min<std::size_t>(8, cells.size()));
+
+  // Round 4 (KNOWN_ISSUES.md D8): the branch below does not return
+  // directly. "No candidate contains this point" (E-INTERP-DOMAIN) depends
+  // on THIS rank's own local evaluation entities, so returning it straight
+  // from this loop -- as an earlier version of this file did -- would let
+  // a rank with no bad point return success and go on to call a FURTHER
+  // collective its partners, having hit the failure, never reach.
+  // `local_failed`/`local_fail_code_id`/`local_fail_entity_gid` record the
+  // FIRST such local failure (if any) and the loop then simply stops
+  // adding rows; `agree_on_local_failure` below is the single place every
+  // rank -- including one with zero local evaluation entities, or one
+  // that never fails at all -- takes part in the SAME collective and
+  // returns the SAME outcome.
+  //
+  // D70's own fix: a per-candidate invert_reference_map failure
+  // (E-INTERP-NEWTON / E-INTERP-DEGENERATE) no longer aborts the
+  // evaluation point outright -- it means only that THIS candidate is not
+  // usable, exactly like one that converges but lands outside the
+  // reference domain. The broad phase above already keeps the candidate
+  // set small and genuinely nearby, so a converging failure here is rare;
+  // when every candidate for a point fails or lands outside both tiers,
+  // the outcome is E-INTERP-DOMAIN below, same as it always was for "no
+  // containing cell found."
   bool local_failed = false;
   int local_fail_code_id = 0;
   std::size_t local_fail_entity_gid = 0;
 
-  for (std::size_t j = 0; j < n_eval && !local_failed; ++j) {
-    if (!eval_points.is_owned(eval_dim, j)) continue;
+  for (std::size_t oi = 0; oi < owned_j.size() && !local_failed; ++oi) {
+    const std::size_t j = owned_j[oi];
     const Vec3 target = to_vec(eval_points.centroid(eval_dim, j));
 
     // TWO-TIER SELECTION -- identical rule to general_interp.hpp's serial
     // builder (see that file's kRefEpsTight/kRefEpsLoose comments for the
-    // derivation); only the candidate list's SOURCE differs (every rank's
-    // Allgatherv'd cell here vs. a broad-phase box query there). Tier (a): a
-    // candidate that GENUINELY contains the point (kRefEpsTight) wins
-    // outright, tie-broken by lowest source global id ONLY among tight
-    // matches. Tier (b), reached only when no candidate passes tier (a): the
-    // single least-violating candidate (raw, eps = 0, score), accepted if it
-    // also clears kRefEpsLoose -- the genuine curved-surface faceting gap,
-    // never a tie-break.
+    // derivation); the candidate list's SOURCE is now the SAME kind of
+    // broad-phase box query that builder uses, over this function's own
+    // Allgatherv-replicated `cells`. Tier (a): a candidate that GENUINELY
+    // contains the point (kRefEpsTight) wins outright, tie-broken by
+    // lowest source global id ONLY among tight matches. Tier (b), reached
+    // only when no candidate passes tier (a): the single least-violating
+    // candidate (raw, eps = 0, score), accepted if it also clears
+    // kRefEpsLoose -- the genuine curved-surface faceting gap, never a
+    // tie-break.
     bool have_tight = false;
     std::size_t tight_c = 0;
     std::size_t tight_gid = 0;
@@ -518,21 +611,14 @@ Result<DistributedInterpRows> build_distributed_interp_rows(const MeshView& src_
     double fallback_score = std::numeric_limits<double>::max();
     std::array<double, 3> fallback_u{};
     bool fallback_passes_loose = false;
-    bool newton_failed = false;
 
-    for (std::size_t c = 0; c < cells.size(); ++c) {
+    const auto consider = [&](std::size_t c) {
       const auto inv = invert_reference_map(cells[c], target);
       if (!inv.ok()) {
-        // E-INTERP-NEWTON or E-INTERP-DEGENERATE, both from
-        // invert_reference_map's own documented contract (general_interp.hpp)
-        // -- NOT returned directly; recorded for the agreed outcome below.
-        local_failed = true;
-        newton_failed = true;
-        local_fail_code_id = (inv.error().code == "E-INTERP-DEGENERATE")
-                                 ? static_cast<int>(FailCode::kDegenerate)
-                                 : static_cast<int>(FailCode::kNewton);
-        local_fail_entity_gid = eval_points.global_id(eval_dim, j);
-        break;
+        // Skip just this candidate (D70's fix) -- another nearby one, or
+        // this same point already found as a tight match at a lower-gid
+        // cell, still decides the row.
+        return;
       }
       const double diam = std::max(cell_diameter(cells[c]), 1.0);
       const bool surf_ok = inv.value().residual <= kSurfaceTol * diam;
@@ -545,7 +631,7 @@ Result<DistributedInterpRows> build_distributed_interp_rows(const MeshView& src_
           tight_gid = gid;
           tight_u = inv.value().u;
         }
-        continue;
+        return;
       }
 
       const double lateral = reference_violation(cells[c].shape, inv.value().u, 0.0);
@@ -554,15 +640,9 @@ Result<DistributedInterpRows> build_distributed_interp_rows(const MeshView& src_
       const bool passes_loose =
           surf_ok && in_reference_domain(cells[c].shape, inv.value().u, kRefEpsLoose);
       // REVIEW.md TF-13: a STRICT `score <` leaves an exact tie decided by
-      // iteration order, which here is `cells`' own order -- the
-      // Allgatherv's rank-concatenation order (gather_global_source),
-      // which depends on how many ranks ran and which rank owned which
-      // cell. The header's bit-identical-across-rank-counts claim then
-      // fails in the tied, no-tight-match case. Tie-broken by lowest
-      // global id -- a property of the cell, not of the gather -- the
-      // SAME rule tier (a) already uses above, and the one the serial
-      // twin (general_interp.hpp's deterministic box-index order) achieves
-      // by a different, equally rank-count-independent route.
+      // iteration order; tie-broken by lowest global id -- a property of
+      // the cell, not of the gather or the query order -- the SAME rule
+      // tier (a) already uses above.
       if (!have_fallback || score < fallback_score ||
           (score == fallback_score && gid < fallback_gid)) {
         have_fallback = true;
@@ -572,8 +652,25 @@ Result<DistributedInterpRows> build_distributed_interp_rows(const MeshView& src_
         fallback_u = inv.value().u;
         fallback_passes_loose = passes_loose;
       }
+    };
+
+    for (std::size_t p = hits.offsets[oi]; p < hits.offsets[oi + 1]; ++p) {
+      consider(hits.indices[p]);
     }
-    if (newton_failed) break;
+    // A safety net for a point whose padded box query found nothing at all
+    // (genuinely just outside every cell's own padded box, e.g. at the
+    // mesh's outer boundary): the k-nearest cell boxes, the same fallback
+    // build_general_interp_weights' own ClampToBoundary path uses, so this
+    // point still gets a fair tier (b) chance before being refused.
+    if (!have_tight && !have_fallback) {
+      const auto nn_r = box_index.query_nearest({owned_targets[oi]}, k_nearest);
+      if (nn_r.ok()) {
+        for (std::size_t p = nn_r.value().offsets[0]; p < nn_r.value().offsets[1]; ++p) {
+          consider(nn_r.value().indices[p]);
+        }
+      }
+    }
+
 
     std::size_t best_c;
     std::array<double, 3> best_u{};

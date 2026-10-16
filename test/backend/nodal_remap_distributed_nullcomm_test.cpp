@@ -21,6 +21,8 @@
 
 #include "fuse/backend/nodal_remap_distributed.hpp"
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <vector>
 
@@ -83,6 +85,98 @@ class LocalLineMesh final : public MeshView {
  private:
   std::size_t n_cells_;
   std::vector<Point> verts_;
+};
+
+/// A minimal, hand-built 2D MeshView (Quad cells only) -- enough control
+/// over geometry and connectivity to place a genuinely DEGENERATE decoy
+/// cell next to well-formed ones, each with an honest (non-fabricated)
+/// bounding box.
+///
+/// KNOWN_ISSUES.md D70's own mechanism, reproduced here without MPI at
+/// all. The ORIGINAL (unfiltered, every-cell) eval loop in
+/// `build_distributed_interp_rows` tested EVERY source cell against EVERY
+/// evaluation point, in cell order, and aborted the WHOLE evaluation point
+/// the instant ANY single candidate's `invert_reference_map` failed --
+/// even one far outside that candidate's own bounding box, and even after
+/// the genuine answer had ALREADY been found earlier in that very same
+/// scan. The decoy cell below is collapsed along one axis (two pairs of
+/// coincident corners): its Jacobian is identically rank-deficient
+/// everywhere (the collapsed axis contributes nothing to the forward map,
+/// for ANY natural coordinate), so `invert_reference_map` genuinely fails
+/// with `E-INTERP-DEGENERATE` for any target -- a real, reproducible
+/// failure, not a contrived one, and precisely the defect shape
+/// `invert_reference_map`'s own singular-Jacobian check exists to catch.
+class ManualQuadMesh final : public MeshView {
+ public:
+  ManualQuadMesh(std::vector<Point> verts, std::vector<std::array<std::size_t, 4>> cells)
+      : verts_(std::move(verts)), cells_(std::move(cells)) {}
+
+  int dimension() const override { return 2; }
+  std::size_t entity_count(int dim) const override {
+    if (dim == 0) return verts_.size();
+    if (dim == 2) return cells_.size();
+    return 0;
+  }
+  std::size_t owned_count(int dim) const override { return entity_count(dim); }
+  bool is_owned(int, std::size_t) const override { return true; }
+  Point centroid(int dim, std::size_t i) const override {
+    if (dim == 0) return verts_.at(i);
+    Point c{0, 0, 0};
+    for (const std::size_t v : cells_.at(i)) { c.x += verts_[v].x; c.y += verts_[v].y; }
+    return Point{c.x / 4.0, c.y / 4.0, 0.0};
+  }
+  double measure(int dim, std::size_t) const override {
+    if (dim == 0) throw std::out_of_range("ManualQuadMesh: no vertex measure");
+    return 1.0;  // unused by this test
+  }
+  std::size_t global_id(int, std::size_t i) const override { return i; }
+  std::size_t simplex_count(int dim, std::size_t) const override {
+    return dim == 2 ? fuse::cell_simplex_count(CellShape::Quad, 4) : 0;
+  }
+  void simplex_points(int dim, std::size_t i, std::size_t s, Point* out) const override {
+    if (dim != 2) throw std::out_of_range("ManualQuadMesh: wrong dimension");
+    int corners[4] = {0, 0, 0, 0};
+    if (!fuse::simplex_corners(CellShape::Quad, 4, s, corners)) {
+      throw std::out_of_range("ManualQuadMesh::simplex_points: simplex out of range");
+    }
+    for (int k = 0; k < 3; ++k) out[k] = verts_.at(cells_.at(i)[static_cast<std::size_t>(corners[k])]);
+  }
+  Result<CellVertices> cell_vertices(int dim, std::size_t i) const override {
+    if (dim != 2) return fuse::Failure{"E-MESH-NO-CELL-VERTICES", "ManualQuadMesh: wrong dimension"};
+    CellVertices out;
+    out.shape = CellShape::Quad;
+    out.vertices.assign(cells_.at(i).begin(), cells_.at(i).end());
+    return out;
+  }
+
+ private:
+  std::vector<Point> verts_;
+  std::vector<std::array<std::size_t, 4>> cells_;
+};
+
+/// A bare point cloud for the EVAL side: `build_distributed_interp_rows`
+/// only ever reads `entity_count`/`is_owned`/`centroid`/`global_id` at
+/// `eval_dim` off its second argument, so nothing else needs implementing.
+class PointCloud final : public MeshView {
+ public:
+  explicit PointCloud(std::vector<Point> pts) : pts_(std::move(pts)) {}
+  int dimension() const override { return 0; }
+  std::size_t entity_count(int dim) const override { return dim == 0 ? pts_.size() : 0; }
+  std::size_t owned_count(int dim) const override { return entity_count(dim); }
+  bool is_owned(int, std::size_t) const override { return true; }
+  Point centroid(int, std::size_t i) const override { return pts_.at(i); }
+  double measure(int, std::size_t) const override {
+    throw std::out_of_range("PointCloud: no measure");
+  }
+  std::size_t global_id(int, std::size_t i) const override { return i; }
+  std::size_t simplex_count(int, std::size_t) const override { return 0; }
+  void simplex_points(int, std::size_t, std::size_t, Point*) const override {}
+  Result<CellVertices> cell_vertices(int, std::size_t) const override {
+    return fuse::Failure{"E-MESH-NO-CELL-VERTICES", "PointCloud: no cells"};
+  }
+
+ private:
+  std::vector<Point> pts_;
 };
 
 }  // namespace
@@ -151,4 +245,56 @@ TEST(NodalRemapDistributedNullComm, RealCommunicatorWithoutMpiRefuses) {
 #else
   GTEST_SKIP() << "this build has MPI; the NOMPI refusal path is exercised only without it";
 #endif
+}
+
+TEST(NodalRemapDistributedNullComm, DegenerateDecoyCellDoesNotAbortAnAlreadyFoundMatch) {
+  // Two well-formed unit-square cells side by side ([0,1]x[0,1], gid 0;
+  // [1,2]x[0,1], gid 1), plus a degenerate decoy (gid 2) collapsed onto
+  // the DIAGONAL segment from (0,0) to (2,1) (corners v0, v5, v5, v0 --
+  // two coincident pairs, chosen off-axis so the decoy's own bounding box
+  // still varies in both x and y, exactly like the real cells' boxes --
+  // a box index cannot mix box dimensionalities, so an axis-aligned
+  // collapse, which flattens the box itself, is not a usable
+  // reproduction here). Its Jacobian is rank-deficient along its own
+  // collapsed direction for EVERY natural coordinate (the second pair
+  // cancels identically in the forward map, the same algebra an
+  // axis-aligned collapse uses), so `invert_reference_map` genuinely
+  // fails (E-INTERP-DEGENERATE) for any target -- including one, like
+  // this test's own, at the genuine corner cell 0, which this decoy's
+  // own (uncollapsed) bounding box legitimately overlaps, so the fix's
+  // broad phase cannot simply exclude it either.
+  const std::vector<Point> verts = {
+      {0.0, 0.0, 0.0},  // v0
+      {1.0, 0.0, 0.0},  // v1
+      {1.0, 1.0, 0.0},  // v2
+      {0.0, 1.0, 0.0},  // v3
+      {2.0, 0.0, 0.0},  // v4
+      {2.0, 1.0, 0.0},  // v5
+  };
+  const std::vector<std::array<std::size_t, 4>> cells = {
+      {0, 1, 2, 3},  // gid 0: unit square [0, 1] x [0, 1]
+      {1, 4, 5, 2},  // gid 1: unit square [1, 2] x [0, 1]
+      {0, 5, 5, 0},  // gid 2: the degenerate decoy, collapsed along the (0,0)-(2,1) diagonal
+  };
+  ManualQuadMesh src(verts, cells);
+  PointCloud tgt({{0.5, 0.5, 0.0}});  // the centroid of cell 0
+
+  const auto rows_r =
+      fuse::build_distributed_interp_rows(src, tgt, /*eval_dim=*/0, fuse::search::kNullComm);
+  ASSERT_TRUE(rows_r.ok()) << rows_r.error().message;
+  const fuse::DistributedInterpRows& rows = rows_r.value();
+  ASSERT_EQ(rows.rows.size(), 1u);
+  EXPECT_LT(rows.max_row_defect, 1e-10);
+
+  // The winning cell must be the genuine tight match (cell 0's own four
+  // corner vertices, gids 0-3), never the degenerate decoy (which would
+  // name only corner vertex gids 0 and 5) -- the fix must have silently
+  // skipped it as just another non-winning candidate, exactly as it
+  // would skip a real cell that merely does not contain the point.
+  std::vector<std::size_t> cols;
+  for (const auto& row : rows.rows) {
+    for (const std::size_t gid : row.src_global_ids) cols.push_back(gid);
+  }
+  std::sort(cols.begin(), cols.end());
+  EXPECT_EQ(cols, (std::vector<std::size_t>{0, 1, 2, 3}));
 }

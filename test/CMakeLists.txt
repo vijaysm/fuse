@@ -2329,22 +2329,17 @@ if(FUSE_ENABLE_MPI)
         ENVIRONMENT "FUSE_EXECUTION_SPACE=device")
     endif()
   endforeach()
-  # KNOWN_ISSUES.md D70 (found running these rows at N=1000): the nodal
-  # Remap's distributed point-location search refuses to place the
+  # KNOWN_ISSUES.md D70, FIXED (follow-up round): the nodal Remap's
+  # distributed point-location search used to refuse to place the
   # domain's own corner vertex (global id 0) at 2 and 3 ranks, host and
-  # device alike. Disabled rather than left failing or silently dropped;
-  # bench.scaled_device_benchmark.1[.device] (no multi-rank split) and
-  # example.scaled_device_benchmark[.device] (world size 1) are
-  # unaffected. Re-enable once D70's own root cause (shared with D67) is
-  # fixed.
-  foreach(_bench_disabled_ranks 2 3)
-    set_tests_properties(bench.scaled_device_benchmark.${_bench_disabled_ranks}
-      PROPERTIES DISABLED TRUE)
-    if(FUSE_KOKKOS_HAS_DEVICE)
-      set_tests_properties(bench.scaled_device_benchmark.${_bench_disabled_ranks}.device
-        PROPERTIES DISABLED TRUE)
-    endif()
-  endforeach()
+  # device alike -- root cause was build_distributed_interp_rows's own
+  # per-eval-point candidate scan testing EVERY cell in the assembled
+  # mesh with no broad-phase spatial filter, so a single unrelated,
+  # far-away cell's Newton non-convergence could abort an evaluation
+  # point whose genuine answer the same scan had already found
+  # (src/backend/nodal_remap_distributed.cpp's own comment on the fix).
+  # bench.scaled_device_benchmark.{2,3}[.device] are no longer disabled;
+  # confirmed green at N=1000 on this host (KNOWN_ISSUES.md D70 entry).
 else()
   message(STATUS "fuse: fuse_bench_scaled_device_benchmark not built -- needs FUSE_ENABLE_MPI=ON")
 endif()

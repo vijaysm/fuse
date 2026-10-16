@@ -7561,6 +7561,21 @@ further than this round's own scope (the scatter-add determinism, not the weight
 tests of the same primitive) would be the next place to isolate it with a 2-rank-vs-1-rank weight dump,
 if this round's track's own time allowed.
 
+**Re-tested after D70's fix (scaled-bench track, follow-up round, 2026-10-16): NOT the same mechanism.**
+D70's root cause turned out to be `build_distributed_interp_rows`'s per-eval-point candidate
+scan testing EVERY cell in the assembled mesh with no broad-phase spatial filter, aborting an
+evaluation point outright the instant ANY single candidate (however far away) failed to
+converge -- even one whose genuine answer the same scan had already found. Fixing that (a
+`search::BoxIndex` broad phase, plus treating a per-candidate failure as a skip rather than an
+abort) cannot change which cell wins a genuine tier (a)/(b) match, since the winning-candidate
+rule itself (lowest global id among tight matches) is unchanged and the broad phase still finds
+every such candidate (padded by the same `kRefEpsLoose` the fallback tier already uses). Directly
+confirmed, not just argued: `NodalRemapRunnerMpi.ConsistentTransposeIsBitIdenticalAcrossRankCounts`
+re-run after the fix reproduces the EXACT SAME bit pattern at the SAME vertex --
+`0.06611570247933884481` at one rank, `0.066115702479338858688` at both two and three ranks,
+unchanged to the last bit. D67 remains open on its own; whatever produces this 1-ULP gap is a
+different, still-undiagnosed mechanism in the same function.
+
 ### D68. `BoxIndex::build_device_resident` tied its tree-routing flag to `kHasDeviceBackend`, reading `size()`/`empty()`/every query from the untouched host tree on a build with no device backend -- FOUND AND FIXED 2026-10-15 (MeshAdapter track)
 
 **What was found.** `search.mesh_adapter`'s `MeshAdapter.DeviceElementBoxesMatchHostElementBoxesForANativeMesh`
@@ -7862,7 +7877,7 @@ one to remember. Left for the lead to scope; `test/parallel/remap_halo_mpi_test.
 are the next place to start.
 
 
-### D70. A nodal "consistent" Remap's distributed point-location search refuses at the domain's own corner vertex (global id 0) at some multi-rank splits -- OPEN, found 2026-10-15 (scaled-bench track)
+### D70. A nodal "consistent" Remap's distributed point-location search refuses at the domain's own corner vertex (global id 0) at some multi-rank splits -- FIXED 2026-10-16 (found 2026-10-15, scaled-bench track)
 
 Found while registering `bench.scaled_device_benchmark.{2,3}[.device]` (`test/bench/scaled_device_benchmark.cpp`):
 a nodal "consistent" channel between a provider's (N+1)^2 vertices and a consumer's N^2 cells, both
@@ -7894,3 +7909,53 @@ registration: `bench.scaled_device_benchmark.{2,3}` and their `.device` twins ar
 `example.scaled_device_benchmark[.device]` correctness row (world size 1, same reason) are
 unaffected and pass. Re-enabling the two disabled rows is the right acceptance test for whoever
 fixes D67/D70's shared root cause.
+### D70 FIX (scaled-bench track, follow-up round, 2026-10-16)
+
+**Root cause, directly diagnosed (not the corner-precision theory originally suspected).**
+Temporary instrumentation of the failing N=1000, 2-rank case caught the mechanism in the act:
+`build_distributed_interp_rows`'s eval loop tested the evaluation point for cell global id 0
+(centroid `(0.0005, 0.0005)`, the domain's own near-corner cell) against candidate index 17997
+-- a cell near `x = 0.997`, nowhere close -- and `invert_reference_map`'s damped Gauss-Newton,
+started from THAT cell's own reference centre for a target that far outside it, genuinely did
+not converge within 50 iterations (last residual `1.92e-12` against a `1e-12` tolerance). The
+loop had ALREADY found the correct containing cell (global id 0) as a tight match at candidate
+index 0, moments earlier in the very same scan -- but the scan never stopped looking once it had
+the right answer, because (unlike `general_interp.hpp`'s serial counterpart, which narrows to a
+handful of nearby candidates through a `search::BoxIndex` broad phase FIRST) this function tested
+literally every cell in the assembled global mesh, unconditionally, for every evaluation point,
+and treated ANY single candidate's Newton failure -- however far away, however irrelevant -- as
+an immediate, unconditional abort of the whole evaluation point.
+
+**The fix.** `build_distributed_interp_rows` now builds the SAME kind of `search::BoxIndex`
+broad phase `build_general_interp_weights` already uses, over this function's own
+(Allgatherv-replicated) assembled cells, padded by the same `kRefEpsLoose` bound the fallback
+tier already accepts a candidate within. Each evaluation point now only tests the small, genuinely
+nearby candidate set the box query returns (plus a k-nearest fallback when that query finds
+nothing at all, matching the serial builder's own `ClampToBoundary` safety net) -- so a stray
+far cell's Newton non-convergence can no longer reach this code at all, and a per-candidate
+failure that still occurs (a genuinely degenerate nearby cell) is now SKIPPED, not fatal, exactly
+like a converging candidate that merely lands outside the reference domain. This also drops the
+whole search from O(n_eval * n_cells) to O(n_eval * candidates) -- a small constant on a
+structured mesh -- which is why the defect was never exercised before this track's 1e6-cell row.
+
+**Relationship to D67: investigated, NOT the same mechanism.** See the addendum on D67's own
+entry above: re-running `NodalRemapRunnerMpi.ConsistentTransposeIsBitIdenticalAcrossRankCounts`
+after this fix reproduces the EXACT SAME 1-ULP bit pattern D67 already documented, unchanged.
+D67 remains open on its own.
+
+RED/GREEN:
+  * `NodalRemapDistributedNullComm.DegenerateDecoyCellDoesNotAbortAnAlreadyFoundMatch` (new,
+    `test/backend/nodal_remap_distributed_nullcomm_test.cpp`, no MPI needed): a hand-built 2D
+    mesh with two well-formed unit-square cells plus a genuinely degenerate decoy cell (two
+    coincident corner pairs, collapsed along an off-axis diagonal so its own bounding box stays
+    full-dimensional) reproduces this exact mechanism deterministically, in-process. Confirmed
+    RED first (fix reverted: fails `E-INTERP-DEGENERATE`, reproducing the abort), then GREEN
+    (fix restored: the genuine tight match wins, the decoy is silently skipped).
+  * `bench.scaled_device_benchmark.{2,3}[.device]` RE-ENABLED (the `DISABLED TRUE` block removed
+    from `test/CMakeLists.txt`) and confirmed GREEN at N=1000: ranks 1, 2 and 3, host and
+    device, all six rows passing (build 43-125s, initialize 19-77s, period ~0.2-0.9s under
+    shared host load at the time of this run -- see report-scaled-bench.md's follow-up section
+    for the full table).
+  * `parallel.nodal_remap_runner.{1..5}[.device]` and `verification.nodal_remap_runner_serial
+    [.device]` (D67/D8's own suite) re-run UNCHANGED and confirmed still green (15/15 passing),
+    confirming this fix does not touch that suite's own behaviour.
