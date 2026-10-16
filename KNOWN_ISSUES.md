@@ -7862,7 +7862,7 @@ one to remember. Left for the lead to scope; `test/parallel/remap_halo_mpi_test.
 are the next place to start.
 
 
-### D69. A nodal "consistent" Remap's distributed point-location search refuses at the domain's own corner vertex (global id 0) at some multi-rank splits -- OPEN, found 2026-10-15 (scaled-bench track)
+### D70. A nodal "consistent" Remap's distributed point-location search refuses at the domain's own corner vertex (global id 0) at some multi-rank splits -- OPEN, found 2026-10-15 (scaled-bench track)
 
 Found while registering `bench.scaled_device_benchmark.{2,3}[.device]` (`test/bench/scaled_device_benchmark.cpp`):
 a nodal "consistent" channel between a provider's (N+1)^2 vertices and a consumer's N^2 cells, both
@@ -7893,4 +7893,4 @@ registration: `bench.scaled_device_benchmark.{2,3}` and their `.device` twins ar
 `bench.scaled_device_benchmark.1[.device]` (no multi-rank split, no replicated gather) and the small
 `example.scaled_device_benchmark[.device]` correctness row (world size 1, same reason) are
 unaffected and pass. Re-enabling the two disabled rows is the right acceptance test for whoever
-fixes D67/D69's shared root cause.
+fixes D67/D70's shared root cause.

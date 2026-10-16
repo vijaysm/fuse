@@ -26,7 +26,7 @@
 // path (fuse::build_nodal_dist_remap(), an ArborX-backed point-location
 // search) rather than the general conservative weighted builder, whose
 // host-only r3d/r2d clip this file measured as unusably slow at scale
-// (KNOWN_ISSUES.md D68). A Diagnose instruction follows automatically
+// (KNOWN_ISSUES.md D69). A Diagnose instruction follows automatically
 // (fuse::insert_derived_ops: any channel that emitted a Remap gets one),
 // then Sink. Both fields carry Conservation::None, so no Constrain is
 // inserted -- this program's own chain is Sample -> Remap -> Diagnose ->
@@ -56,7 +56,7 @@
 // TIMEOUT. Separately, and regardless of that cost, the SAME earlier
 // version's weight build produced a silently EMPTY conservative matrix
 // (RunStats::remap_weight_nonzeros == 0) at every rank count above 1, a
-// found gap recorded as KNOWN_ISSUES.md D68 (NativeMeshBackend's general
+// found gap recorded as KNOWN_ISSUES.md D69 (NativeMeshBackend's general
 // weighted branch has no automatic remap-halo exchange across a disjoint
 // placement). Both findings, and the decision to switch this file's own
 // scaled row to the nodal path instead, are recorded there in full.
@@ -332,7 +332,7 @@ struct GraphBundle {
   // (an ArborX-backed nearest/containment query, O(n log n)), not the
   // general conservative builder's broad-phase-plus-host-only-r3d-clip
   // path -- measured on this host to cost 13+ seconds of setup at a mere
-  // 1e4 cells and growing far faster than linearly (KNOWN_ISSUES.md D68's
+  // 1e4 cells and growing far faster than linearly (KNOWN_ISSUES.md D69's
   // own measurement log), which made it unusable at this file's target
   // size. The nodal path is also the one with its OWN cross-rank MPI
   // exchange (apply_nodal_dist_remap(), an MPI_Allgatherv under the
@@ -391,7 +391,7 @@ struct GraphBundle {
   // next to it -- so this file's instruction chain is Sample -> Remap ->
   // Diagnose -> Sink, not ... -> Remap -> Transport -> .... A SEPARATE,
   // non-nodal weighted channel that also carried a real Transport
-  // instruction would need the remap-halo exchange D68 found missing for
+  // instruction would need the remap-halo exchange D69 found missing for
   // NativeMeshBackend; test/parallel/runner_transport_test.cpp's own
   // `parallel.runner_transport.{1,2,3}[.device]` ctest rows already
   // exercise a standalone Transport instruction (at a few cells, not
