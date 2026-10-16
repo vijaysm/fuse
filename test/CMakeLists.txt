@@ -777,6 +777,12 @@ foreach(t runner checkpoint epoch_schedule window_convergence window_coupler
          collective_trace)
   fuse_add_gtest(runtime ${t})
 endforeach()
+# Time windows track (docs/dev/device-resident-arcs.md, step 8): this
+# row's own window-scoped arcs (window_import, window_import_delivery_arc,
+# the export/import field arcs) are no longer pinned to the host, so its
+# device leg is registered the same way verification.iteration's already
+# is above.
+fuse_add_device_twin(runtime.window_runner_straddle fuse_runtime_window_runner_straddle_test)
 fuse_add_gtest(runtime component_iface THROWS)
 # S7.1's residual/linearisation seam: fuse::ImplicitComponent,
 # fuse::LinearizationToken and Component::implicit() themselves (header-

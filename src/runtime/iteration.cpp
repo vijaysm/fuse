@@ -2625,9 +2625,11 @@ Result<void> Runner::Impl::run_region_newton(ComponentSet& components,
 
   for (const detail::RegionBlock& b : R.blocks) {
     const double* fed = x.data() + b.offset;
+    // Space-aware (docs/dev/device-resident-arcs.md, step 8): keeps
+    // `previous_device[arc]` in sync too, when this arc went device-
+    // resident -- see sync_previous()'s own comment (runner_impl.hpp).
     for (const std::uint32_t arc : {b.value_arc, b.residual_arc}) {
-      std::vector<double>& shadow = previous[arc];
-      if (shadow.size() == b.length) num::copy(fed, shadow.data(), b.length);
+      sync_previous(arc, fed, b.length, /*resize=*/false);
     }
   }
   for (std::size_t mi = 0; mi < R.measure_block.size(); ++mi) {
@@ -2767,9 +2769,10 @@ Result<void> Runner::Impl::evaluate_window_region_residual(
       if (b.newton_offset == detail::RegionBlock::kNotInNewtonVector) {
         continue;
       }
-      std::vector<double>& shadow = previous[b.feed_arc];
-      if (shadow.size() != b.length) shadow.assign(b.length, 0.0);
-      num::copy(x.data() + b.newton_offset, shadow.data(), b.length);
+      // Space-aware (docs/dev/device-resident-arcs.md, step 8): see
+      // sync_previous()'s own comment (runner_impl.hpp).
+      sync_previous(b.feed_arc, x.data() + b.newton_offset, b.length,
+                   /*resize=*/true);
     }
   }
 
@@ -3321,7 +3324,11 @@ detail::Task<Result<void>> Runner::Impl::run_region(
       const detail::Slot& s = slots[a.value()];
       std::vector<double>& shadow = previous[a.value()];
       if (shadow.size() != s.total()) shadow.assign(s.total(), 0.0);
-      if (s.data != nullptr) num::copy(s.data, shadow.data(), s.total());
+      // Space-aware: a window-scoped region's own arcs may be device-
+      // resident (docs/dev/device-resident-arcs.md, step 8), so this can
+      // no longer assume `s.data` is a host pointer the way the plain
+      // num::copy() it replaces did.
+      if (s.data != nullptr) slot_to_host(s, shadow.data(), s.total());
     }
     for (std::size_t i = enter; i <= exit; ++i) {
       // The same rule as the period loop (`is_collective`, fuse/ir/op.hpp):
@@ -4022,9 +4029,10 @@ detail::Task<Result<void>> Runner::Impl::run_region(
       const detail::RegionBlock& b = R.blocks[bi];
       const double* fed = R.x_out.data() + b.offset;
       host_to_slot(fed, slots[b.value_arc], b.length);
+      // Space-aware (docs/dev/device-resident-arcs.md, step 8): see
+      // sync_previous()'s own comment (runner_impl.hpp).
       for (const std::uint32_t arc : {b.value_arc, b.residual_arc}) {
-        std::vector<double>& shadow = previous[arc];
-        if (shadow.size() == b.length) num::copy(fed, shadow.data(), b.length);
+        sync_previous(arc, fed, b.length, /*resize=*/false);
       }
       if (step_failure.has_value() &&
           !is_collective(stream[b.sink_instruction].kind)) {
@@ -4136,10 +4144,15 @@ void Runner::Impl::refresh_window_member_history(detail::RegionRuntime& R) {
         sample_count - 1 - static_cast<std::size_t>(shift);
     const detail::Slot& import_slot = slots[cfg.window_import.value()];
     if (import_slot.data == nullptr) continue;
+    // Space-aware: one deep_copy of the whole slot, not a raw host
+    // dereference per element, when this arc is device-resident
+    // (docs/dev/device-resident-arcs.md, step 8).
+    const double* import_host = slot_host_read(
+        import_slot, import_slot.total(), window_host_scratch);
     detail::WindowMemberState& st_import = window_member_state[node];
     for (std::size_t e = 0; e < cfg.length; ++e) {
       const double v_boundary =
-          import_slot.data[e * cfg.provider_capacity + last_sample];
+          import_host[e * cfg.provider_capacity + last_sample];
       if (st_import.history.size() <= e) st_import.history.resize(e + 1);
       if (st_import.history[e].empty() ||
           st_import.history[e].back().first != this_T1) {
@@ -4321,7 +4334,13 @@ Result<void> Runner::Impl::resolve_pending_window_straddles(
     // between the window that just finished and this call.
     std::vector<Waveform> import_wf;
     if (cfg.window_import.valid() && cfg.required != nullptr) {
-      const double* arr = slots[cfg.window_import.value()].data;
+      // Space-aware: this reads the live buffer directly (this function's
+      // own comment just above), so it can no longer assume `.data` is a
+      // host pointer once a window-scoped region's arcs may be device-
+      // resident (docs/dev/device-resident-arcs.md, step 8).
+      const detail::Slot& import_slot = slots[cfg.window_import.value()];
+      const double* arr =
+          slot_host_read(import_slot, import_slot.total(), window_host_scratch);
       const Rational idx_q = nominal_T0 / cfg.window_length;
       const std::int64_t prev_window_index = idx_q.num() / idx_q.den();
       const std::vector<Rational> times = window_sample_times(
@@ -4478,8 +4497,13 @@ Result<void> Runner::Impl::resolve_pending_window_straddles(
                      "consumer's own window_import arc is not sized the "
                      "way this write expects (length * provider_capacity)"};
       }
+      // Space-aware: `import_slot` can be device-resident now that a
+      // window-scoped region's arcs are no longer pinned to the host
+      // (docs/dev/device-resident-arcs.md, step 8) -- this publish write
+      // used to assume a host pointer the same way the read above did.
       for (std::size_t e = 0; e < other_cfg.length && e < cfg.length; ++e) {
-        import_slot.data[e * other_cfg.provider_capacity + 0] = cfg.provided[e];
+        scalar_to_slot(cfg.provided[e], import_slot,
+                       e * other_cfg.provider_capacity + 0);
       }
     }
   }
@@ -4689,9 +4713,16 @@ detail::Task<Result<void>> Runner::Impl::advance_window(
     // function's own top comment: forced true, both directions, under
     // Jacobi; declared true for GaussSeidel's lagged direction only).
     const bool use_predictor = cfg.import_lagged && first_sweep_of_pass;
-    const double* arr = cfg.import_lagged
-                            ? previous[cfg.window_import.value()].data()
-                            : slots[cfg.window_import.value()].data;
+    // Space-aware: `previous[]` is always a host vector (run_region()'s
+    // own snapshot above), but the live/unlagged branch reads the arc
+    // directly, which may now be device-resident (docs/dev/device-
+    // resident-arcs.md, step 8).
+    const detail::Slot& live_import_slot = slots[cfg.window_import.value()];
+    const double* arr =
+        cfg.import_lagged
+            ? previous[cfg.window_import.value()].data()
+            : slot_host_read(live_import_slot, live_import_slot.total(),
+                             window_host_scratch);
     // `import_t0 = T0` unconditionally (no "back one window" shift):
     // the driver's own predictor, above, already needs no raw read at
     // all for the first-sweep-of-a-lagged-pass case, and every other
@@ -4733,6 +4764,26 @@ detail::Task<Result<void>> Runner::Impl::advance_window(
         cfg.window_length, absolute_instance);
     const int shift = window_sample_shift(
         cfg.provider_interval, cfg.provider_policy, Rational{0}, T0);
+
+    // Space-aware, hoisted out of the per-element loop below: this
+    // member's own t=0 history correction names ONE arc for every `e`
+    // (cfg.window_import_delivery_arc, or cfg.window_import when that is
+    // not set), so it is read once here, on its own scratch buffer --
+    // never the same one `arr` above just used, since the two can name
+    // different arcs and both are needed in the same loop iteration.
+    // docs/dev/device-resident-arcs.md, step 8.
+    const ArcId t0_correction_arc = cfg.window_import_delivery_arc.valid()
+                                         ? cfg.window_import_delivery_arc
+                                         : cfg.window_import;
+    const bool t0_correction_valid =
+        t0_correction_arc.value() < slots.size() &&
+        slots[t0_correction_arc.value()].data != nullptr;
+    const double* t0_correction_host =
+        t0_correction_valid
+            ? slot_host_read(slots[t0_correction_arc.value()],
+                             slots[t0_correction_arc.value()].total(),
+                             window_t0_scratch)
+            : nullptr;
 
     import_wf.reserve(cfg.length);
     for (std::size_t e = 0; e < cfg.length; ++e) {
@@ -4809,16 +4860,11 @@ detail::Task<Result<void>> Runner::Impl::advance_window(
       // kind; it must happen before the k-loop below, since `k >= 1`'s
       // own extrapolation reads this SAME entry as one of its fit
       // points.
-      const ArcId t0_correction_arc = cfg.window_import_delivery_arc.valid()
-                                           ? cfg.window_import_delivery_arc
-                                           : cfg.window_import;
       if (use_predictor && T0 == Rational{0} && e < st.history.size() &&
           !st.history[e].empty() && st.history[e].front().first == Rational{0} &&
-          t0_correction_arc.value() < slots.size() &&
-          slots[t0_correction_arc.value()].data != nullptr) {
+          t0_correction_valid) {
         st.history[e].front().second =
-            slots[t0_correction_arc.value()]
-                .data[e * cfg.provider_capacity + 0];
+            t0_correction_host[e * cfg.provider_capacity + 0];
       }
 
       for (std::size_t k = 0; k < times.size(); ++k) {
@@ -4902,7 +4948,15 @@ detail::Task<Result<void>> Runner::Impl::advance_window(
                      "field wide enough for this not to happen"};
   }
 
-  double* out = cfg.provided != nullptr ? slots[ins.out.value()].data : nullptr;
+  // Space-aware: this member's own EXPORT arc may be device-resident
+  // (docs/dev/device-resident-arcs.md, step 8), so every write below
+  // goes through scalar_to_slot() rather than a raw host pointer; `out`
+  // itself is kept only as the readiness flag the four write sites below
+  // already guarded on (unchanged from before this fix: `ins.out` is
+  // valid whenever `cfg.provided` is non-null, by the same invariant the
+  // raw pointer read this replaces relied on).
+  const bool out_valid = cfg.provided != nullptr;
+  detail::Slot* const out_slot = out_valid ? &slots[ins.out.value()] : nullptr;
 
   // Sample 0: the window-start value. NEVER `cfg.provided[e]` read live --
   // `Component::restore_state()` is only contractually required to
@@ -4922,9 +4976,9 @@ detail::Task<Result<void>> Runner::Impl::advance_window(
   if (first_sweep_of_pass) {
     start_value.assign(cfg.provided, cfg.provided + cfg.length);
   }
-  if (out != nullptr) {
+  if (out_valid) {
     for (std::size_t e = 0; e < cfg.length; ++e) {
-      out[e * cfg.capacity + 0] = start_value[e];
+      scalar_to_slot(start_value[e], *out_slot, e * cfg.capacity + 0);
     }
   }
 
@@ -5013,9 +5067,9 @@ detail::Task<Result<void>> Runner::Impl::advance_window(
           },
           v_at_t1.data());
       if (!split_r.ok()) co_return split_r.error();
-      if (out != nullptr) {
+      if (out_valid) {
         for (std::size_t e = 0; e < cfg.length; ++e) {
-          out[e * cfg.capacity + (s + 1)] = v_at_t1[e];
+          scalar_to_slot(v_at_t1[e], *out_slot, e * cfg.capacity + (s + 1));
         }
       }
       continue;
@@ -5066,9 +5120,9 @@ detail::Task<Result<void>> Runner::Impl::advance_window(
     const Result<void> ar = comp.advance(ctx);
     note_component_ran();
     if (!ar.ok()) co_return ar;
-    if (out != nullptr) {
+    if (out_valid) {
       for (std::size_t e = 0; e < cfg.length; ++e) {
-        out[e * cfg.capacity + (s + 1)] = cfg.provided[e];
+        scalar_to_slot(cfg.provided[e], *out_slot, e * cfg.capacity + (s + 1));
       }
     }
   }
@@ -5078,9 +5132,11 @@ detail::Task<Result<void>> Runner::Impl::advance_window(
   // left as whatever a PREVIOUS, possibly-wider window instance wrote --
   // a stale nonzero tail is silently-wrong-looking state for anyone
   // inspecting the raw buffer, even though nothing in this design reads it.
-  if (out != nullptr) {
+  if (out_valid) {
     for (std::size_t s2 = steps.size() + 1; s2 < cfg.capacity; ++s2) {
-      for (std::size_t e = 0; e < cfg.length; ++e) out[e * cfg.capacity + s2] = 0.0;
+      for (std::size_t e = 0; e < cfg.length; ++e) {
+        scalar_to_slot(0.0, *out_slot, e * cfg.capacity + s2);
+      }
     }
   }
 

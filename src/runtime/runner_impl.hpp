@@ -935,6 +935,53 @@ struct Runner::Impl {
     Kokkos::deep_copy(num::SpanOf<DeviceExecSpace>(s.data, n),
                       num::ConstSpanOf<HostExecSpace>(src, n));
   }
+  /// Single-element counterpart of host_to_slot(), for a sweep-loop write
+  /// that touches one element of the slot at a time (advance_window()'s
+  /// own sample writes, resolve_pending_window_straddles()'s own publish
+  /// loop): the same deep_copy-or-direct-write rule, at n=1, so neither
+  /// caller has to stage a whole-slot scratch vector just to set one
+  /// double. docs/dev/device-resident-arcs.md, step 8.
+  static void scalar_to_slot(double value, const detail::Slot& s,
+                             std::size_t offset) {
+    if (!s.device) { s.data[offset] = value; return; }
+    Kokkos::deep_copy(num::SpanOf<DeviceExecSpace>(s.data + offset, 1),
+                      num::ConstSpanOf<HostExecSpace>(&value, 1));
+  }
+  /// Keeps a Relax/Residual output arc's own previous-iterate buffer
+  /// (`previous[arc]` on the host, `previous_device[arc]` when the arc
+  /// itself is device-resident, step 8) in sync with a value this
+  /// sweep's own GaussSeidel/Newton bookkeeping just committed to that
+  /// arc from OUTSIDE execute_on() -- run_region()'s own per-block Sink
+  /// delivery and the Newton seam's own commit/deliver-to-lagged-shadow
+  /// writes all share this, each a different caller of the SAME role
+  /// execute_on()'s own Relax/Residual case already plays at the end of
+  /// ITS OWN sweep (this header's own `prev`/`previous_device` comments).
+  /// Missing this device branch left exactly this call's own previous
+  /// round (docs/dev/device-resident-arcs.md, step 8) with a confirmed,
+  /// reproducible divergence: `previous_device` took over as the arc's
+  /// own live carried iterate, but these three callers kept writing the
+  /// now-orphaned host `previous[arc]` instead, so the NEXT sweep's
+  /// Residual read whatever `previous_device[arc]` already held --
+  /// never this commit's own value. `resize`: true grows a mismatched or
+  /// unsized host shadow to `n` (the Newton seam's own deliver-to-
+  /// lagged-shadow write); false skips entirely on a mismatch, the same
+  /// guard run_region()'s own commit write already had.
+  void sync_previous(std::uint32_t arc, const double* fed, std::size_t n,
+                     bool resize) {
+    if (arc >= slots.size()) return;
+    if (slots[arc].device && previous_device[arc].extent(0) >= n) {
+      Kokkos::deep_copy(num::SpanOf<DeviceExecSpace>(previous_device[arc].data(), n),
+                        num::ConstSpanOf<HostExecSpace>(fed, n));
+      return;
+    }
+    std::vector<double>& shadow = previous[arc];
+    if (resize) {
+      if (shadow.size() != n) shadow.assign(n, 0.0);
+      num::copy(fed, shadow.data(), n);
+    } else if (shadow.size() == n) {
+      num::copy(fed, shadow.data(), n);
+    }
+  }
   static void slot_to_vector(const detail::Slot& s, std::vector<double>& v, std::size_t n) {
     if (!s.device) { v.assign(s.data, s.data + n); return; }
     v.resize(n);
@@ -977,6 +1024,13 @@ struct Runner::Impl {
   void note_component_ran() noexcept { ++component_epoch; }
   std::vector<detail::Slot>        slots;         // parallel to arcs
   std::vector<std::vector<double>> previous;      // previous iterate, for Relax
+  /// Device-resident twin of `previous`, same index: the Relax/Residual
+  /// carried-iterate copy for an arc that `place_arcs_on_device()` left
+  /// device-resident, so that copy is a same-space num::copy<Space>()
+  /// instead of a round trip through `device_staging`. Empty for a slot
+  /// `previous[i]` covers that stayed host-resident, and empty outright
+  /// under Host mode. docs/dev/device-resident-arcs.md, step 8.
+  std::vector<Kokkos::View<double*, DeviceMemSpace>> previous_device;
   std::vector<std::size_t>         sample_count;  // per arc, for Accumulate
   std::vector<detail::Resolved>    resolved;      // parallel to instructions
   std::vector<detail::Tick>        ticks;         // one period's worth, sorted
@@ -1401,6 +1455,19 @@ struct Runner::Impl {
   /// in setup() to the longest region block (Device mode only; empty under
   /// Host, where slot_host_read() never copies).
   std::vector<double> block_host_scratch;
+  /// Host landing buffer for a window-scoped region's own slot_host_read()
+  /// calls (advance_window()'s own live/unlagged import read,
+  /// refresh_window_member_history(), resolve_pending_window_straddles()'s
+  /// own read) -- grown, never shrunk, to the largest window arc any
+  /// region names. Device mode only; empty under Host.
+  std::vector<double> window_host_scratch;
+  /// Second, independent landing buffer for advance_window()'s own t=0
+  /// history correction (`cfg.window_import_delivery_arc`): needed
+  /// simultaneously with `window_host_scratch` within the same call,
+  /// since that correction's own read and the live/unlagged import read
+  /// above can name two different arcs at once. docs/dev/device-resident-
+  /// arcs.md, step 8.
+  std::vector<double> window_t0_scratch;
 
   /// runtime-exchange track: device-resident twin of `weight_sets`, same
   /// index, built once in `build_constrain_device_buffers()` right after
