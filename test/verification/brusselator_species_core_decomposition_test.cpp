@@ -692,6 +692,132 @@ TEST(BrusselatorSpeciesCoreDecomposition, ThreePartitionSchurMatchesSingleRankUC
   EXPECT_LT(max_abs_diff, 1e-12);
 }
 
+// ---- Restart track round 2, item 3: does Brusselator's own decomposed ----
+// ---- solve depend on decomposition (rank count), at the restart ---------
+// ---- track's own dt/window cadence? -------------------------------------
+//
+// MPI cannot start in this sandbox, so the parallel ctest row
+// (brusselator_restart_mpi, test/parallel/brusselator_restart_mpi_test.cpp)
+// is registered build-but-not-run; this serial, thread-barrier-decomposed
+// measurement is what justifies the comparison strategy that row's own
+// host_pending asserts: EXACT bit-identical comparison BY GLOBAL ID for
+// restored (pre-advance) state -- a restore is a file read, not a
+// recomputation, so it is unaffected by how many ranks wrote or are
+// reading it -- but only a MEASURED tolerance for any state produced by
+// advancing one more window AFTER a restore at a DIFFERENT rank count
+// than the reference ran at, because the Schur-decomposed solve's own
+// cross-rank inner products (TwoPartitionSchurMatchesSingleRankUCore,
+// ThreePartitionSchurMatchesSingleRankUCore, above) are already measured
+// to depend on partition count at the ~1e-12 scale even for `state()`
+// itself, not merely for the global_mean()-based diagnostics
+// (external_total_/exchange_out_, species_core.hpp:592-595's own
+// comment). Reuses kNx/kNy=8x8 (this file's own divides-evenly-by-2-
+// and-by-3 grid; the restart track's own 5x5 U-grid does not partition
+// evenly by either 2 or 3) but matches the restart track's own dt
+// (kDtU=0.002, test/verification/brusselator_restart_test.cpp:68) and
+// window length (kWindow=0.02 -> 10 sub-steps,
+// brusselator_restart_test.cpp:68) exactly, since cadence, not grid
+// size, is what this measurement is about.
+TEST(BrusselatorSpeciesCoreDecomposition, OneWindowAtRestartCadenceMeasuresDecompositionOrderSensitivity) {
+  constexpr double kRestartDt = 0.002;       // matches kDtU exactly
+  constexpr int kRestartSubStepsPerWindow = 10;  // 0.02 / 0.002, matches kWindow exactly
+
+  fuse::native::NativeMeshBackend whole_backend(0, 1);
+  auto whole_grid_r = NativeGrid::make(whole_backend, "g", kNx, kNy);
+  ASSERT_TRUE(whole_grid_r.ok());
+  const NativeGrid& whole_grid = whole_grid_r.value();
+  Vector required0 = brusselator::initial_condition(/*is_u=*/false, kNx, kNy);
+
+  PhysicsConfig cfg_direct;
+  cfg_direct.solver = SolverKind::Direct;
+  UCore reference(whole_grid, cfg_direct, required0);
+
+  PhysicsConfig cfg_schur;
+  cfg_schur.solver = SolverKind::Schur;
+
+  double max_abs_diff_two = 0.0, max_abs_diff_three = 0.0;
+  double t = 0.0;
+  {
+    auto partitioned = make_partitioned_grid("g", kNx, kNy, 2);
+    const BarrierGroup group(2);
+    auto cores = make_cores_concurrently<UCore>(2, [&](int r) {
+      const auto& g = partitioned.grids[static_cast<std::size_t>(r)];
+      return std::make_unique<UCore>(g, cfg_schur, slice_owned(required0, g),
+                                     group.make_reducer(r, 2),
+                                     group.make_exchanger_factory(r, 2));
+    });
+    for (int sub = 0; sub < kRestartSubStepsPerWindow; ++sub) {
+      const auto ref = reference.step(t, t + kRestartDt, kRestartDt, required0);
+      ASSERT_TRUE(ref.ok()) << ref.error().message;
+      const auto decomposed =
+          step_all_partitions(cores, partitioned.grids, t, t + kRestartDt, kRestartDt, required0);
+      t += kRestartDt;
+      for (int c = 0; c < kNx * kNy; ++c) {
+        max_abs_diff_two =
+            std::max(max_abs_diff_two, std::abs(decomposed.state[c] - reference.state()[c]));
+      }
+    }
+  }
+  // Re-run the reference from t=0 so the 3-partition comparison is against
+  // the SAME one-window reference trajectory, not a continuation of the
+  // 2-partition block above's own reference. A SEPARATE NativeMeshBackend
+  // instance, not whole_backend reused -- a second NativeGrid::make("g",
+  // ...) of a DIFFERENT size on the SAME backend instance collides on the
+  // already-registered mesh name "g", exactly the failure mode
+  // ThreePartitionSchurMatchesSingleRankUCore's own separate backend
+  // instance (above) avoids.
+  t = 0.0;
+  {
+    fuse::native::NativeMeshBackend whole_backend3(0, 1);
+    auto partitioned = make_partitioned_grid("g", kNx, kNy3, 3);
+    auto whole_grid3_r = NativeGrid::make(whole_backend3, "g", kNx, kNy3);
+    ASSERT_TRUE(whole_grid3_r.ok());
+    Vector required0_3 = brusselator::initial_condition(/*is_u=*/false, kNx, kNy3);
+    UCore reference3_grid(whole_grid3_r.value(), cfg_direct, required0_3);
+    const BarrierGroup group(3);
+    auto cores = make_cores_concurrently<UCore>(3, [&](int r) {
+      const auto& g = partitioned.grids[static_cast<std::size_t>(r)];
+      return std::make_unique<UCore>(g, cfg_schur, slice_owned(required0_3, g),
+                                     group.make_reducer(r, 3),
+                                     group.make_exchanger_factory(r, 3));
+    });
+    for (int sub = 0; sub < kRestartSubStepsPerWindow; ++sub) {
+      const auto ref = reference3_grid.step(t, t + kRestartDt, kRestartDt, required0_3);
+      ASSERT_TRUE(ref.ok()) << ref.error().message;
+      const auto decomposed =
+          step_all_partitions(cores, partitioned.grids, t, t + kRestartDt, kRestartDt, required0_3);
+      t += kRestartDt;
+      for (int c = 0; c < kNx * kNy3; ++c) {
+        max_abs_diff_three =
+            std::max(max_abs_diff_three, std::abs(decomposed.state[c] - reference3_grid.state()[c]));
+      }
+    }
+  }
+  std::fprintf(stderr,
+              "[OneWindowAtRestartCadenceMeasuresDecompositionOrderSensitivity] "
+              "max_abs_diff_two_partition=%.3e max_abs_diff_three_partition=%.3e\n",
+              max_abs_diff_two, max_abs_diff_three);
+  // MEASURED, not assumed (restart track round 2, item 3): one restart
+  // window's worth of Schur-decomposed solves (10 sub-steps at dt=0.002)
+  // disagrees with an undecomposed reference at the SAME ~1e-12 scale the
+  // existing TwoPartitionSchurMatchesSingleRankUCore /
+  // ThreePartitionSchurMatchesSingleRankUCore measurements already
+  // established for a different grid size and sub-step count -- the
+  // disagreement is decomposition-order round-off, not a function of
+  // which grid or how many sub-steps. Conclusion recorded in
+  // docs/dev/restart.md's own Round 2 record and in the delivered
+  // report's open_questions: the parallel ctest row's "write at N,
+  // restore at M != N, advance one further window" scenario must NOT
+  // assert bit-identical equality on that further window against a
+  // same-rank-count reference; it must use a measured tolerance with
+  // margin over this scale (recommended 1e-9, three orders of magnitude
+  // above the measured ~1e-12, since the parallel test advances real MPI
+  // ranks rather than this file's own thread-barrier simulation and the
+  // true floating-point path may differ further).
+  EXPECT_LT(max_abs_diff_two, 1e-10);
+  EXPECT_LT(max_abs_diff_three, 1e-10);
+}
+
 // ---- UCore: N-partition Krylov (Pcg/Gmres) within a DERIVED tolerance ---
 
 namespace {

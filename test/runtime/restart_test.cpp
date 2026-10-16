@@ -127,6 +127,18 @@ fuse::AccelConfig aitken_cfg() {
                            .initial_relaxation = 0.5};
 }
 
+/// Restart track (docs/dev/restart.md Section 9 item 4; KNOWN_ISSUES.md
+/// D64, closed this round): IQN-ILS over the SAME dirichlet_neumann
+/// graph aitken_cfg() uses -- an ORDINARY (non-window-scoped) iteration
+/// region, where `RegionBlock::length` equals the registered field's
+/// own single-sample size by construction, so the window-scoped
+/// id-space mismatch recorded in open_questions (a window region's own
+/// RegionBlock::length is `n * capacity`, not `n`) cannot arise here.
+fuse::AccelConfig iqn_ils_cfg() {
+  return fuse::AccelConfig{.kind = fuse::AccelKind::IQN_ILS,
+                           .initial_relaxation = 0.5, .reuse = 8};
+}
+
 std::string temp_dir_path(const std::string& leaf) {
   return std::string(::testing::TempDir()) + "fuse_restart_test_" + leaf;
 }
@@ -274,6 +286,44 @@ TEST(Restart, SameRankRoundTripGrowingLayout) {
   const fuse::Result<void> rr =
       restore_point(*restored, fuse::restart_io::FileLayout::GrowingFile, path,
                     "p3", /*allow_reset=*/false, any_reset);
+  ASSERT_TRUE(rr.ok()) << rr.error().code << ": " << rr.error().message;
+  EXPECT_FALSE(any_reset);
+  const RunResult restored_result = run_n_periods(*restored, 2);
+
+  expect_bit_identical(ref_result, restored_result);
+  std::remove(path.c_str());
+}
+
+/// KNOWN_ISSUES.md D64 (closed this round): the SAME round trip as
+/// SameRankRoundTripSeparateLayout, with IQN-ILS in place of Aitken --
+/// before this round, restoring into this region would have refused
+/// (E-RESTART-ACCEL-NOT-IMPLEMENTED), proven by AccelNotImplementedRefuses
+/// WithoutOptIn below (which deliberately keeps a DIFFERENT, test-only
+/// accelerator kind as the refusal's own subject so this positive test
+/// and that refusal test do not fight over the same graph). expect_bit_
+/// identical's own comparison includes q/u (the registered fields,
+/// restored via Form A) and the Runner's own sweep count for the tail
+/// windows -- a wrong or missing IQN history would show up there as a
+/// sweep-count divergence, not only as a numerically-different answer.
+TEST(Restart, SameRankRoundTripSeparateLayoutIqnIls) {
+  const std::string path = temp_dir_path("separate_iqn.h5");
+  std::remove(path.c_str());
+
+  auto ref = make_setup(/*max_iterations=*/40, iqn_ils_cfg());
+  const RunResult ref_result = run_n_periods(*ref, 5);
+
+  auto part1 = make_setup(/*max_iterations=*/40, iqn_ils_cfg());
+  run_n_periods(*part1, 3);
+  const fuse::Result<void> w =
+      write_point(*part1, fuse::restart_io::FileLayout::SeparateMeshAndPoints,
+                 path, "", 3);
+  ASSERT_TRUE(w.ok()) << w.error().code << ": " << w.error().message;
+
+  auto restored = make_setup(/*max_iterations=*/40, iqn_ils_cfg());
+  bool any_reset = false;
+  const fuse::Result<void> rr =
+      restore_point(*restored, fuse::restart_io::FileLayout::SeparateMeshAndPoints,
+                    path, "", /*allow_reset=*/false, any_reset);
   ASSERT_TRUE(rr.ok()) << rr.error().code << ": " << rr.error().message;
   EXPECT_FALSE(any_reset);
   const RunResult restored_result = run_n_periods(*restored, 2);
@@ -585,35 +635,133 @@ TEST(Restart, MissingComponentRecordRefuses) {
   std::remove(path.c_str());
 }
 
-// ---------------------------------------------------------------- round 2
-// MUST FIX 1: NO SILENT RESET. QuasiNewtonAccel (IQN_ILS/IQN_IMVJ) inherits
-// Accelerator's base-class export/import_restart_state() -- it does not
-// override restart_state_implemented(), export_restart_state(), or
-// import_restart_state(), so it is exactly the "a future Accelerator that
-// keeps the default" case this fix targets, using a REAL production
-// AccelKind rather than a hand-rolled test-only subclass.
+// ---------------------------------------------------------------- B
+// Rank-count independence rests entirely on get_field() resolving rows
+// BY GLOBAL ID, never by file position -- a reader at a DIFFERENT rank
+// count asks for its own ids in whatever order its own local mesh
+// enumerates them, which is generally NOT the order the writer (at a
+// different rank count, or even the same one with a different field
+// author) stored them in. MEASURED while reviewing this round's own
+// additions: no existing test in this file ever reads a field's ids
+// out of the order they were written in, so a reader that quietly
+// substituted "i-th requested id -> i-th stored row" for the real
+// id->row lookup would pass every other test here. This one asks for
+// the SAME three ids written, in REVERSED order, and checks the VALUES
+// come back correspondingly reversed -- the direct, minimal proof that
+// position and id are not being confused.
+TEST(Restart, GetFieldResolvesRowsByIdNotByFilePosition) {
+  const std::string path = temp_dir_path("by_id_not_position.h5");
+  std::remove(path.c_str());
+  fuse::restart_io::Provenance prov;
+  prov.format_version = fuse::restart_io::kFormatVersion;
+  prov.fuse_version = "test";
+  auto pw = fuse::restart_io::create_restart_point(
+      fuse::restart_io::FileLayout::SeparateMeshAndPoints, path, prov, "");
+  ASSERT_TRUE(pw.ok());
 
-fuse::AccelConfig iqn_ils_cfg() {
-  return fuse::AccelConfig{.kind = fuse::AccelKind::IQN_ILS,
-                           .initial_relaxation = 0.5};
+  const std::vector<std::int64_t> write_ids = {7, 3, 11};
+  const std::vector<double> write_values = {70.0, 30.0, 110.0};
+  const fuse::Result<void> w = pw.value()->writer().put_field<double>(
+      "f", write_ids, write_values, 1, 3);
+  ASSERT_TRUE(w.ok()) << w.error().message;
+  ASSERT_TRUE(pw.value()->finish().ok());
+
+  auto pr = fuse::restart_io::open_restart_point(
+      fuse::restart_io::FileLayout::SeparateMeshAndPoints, path, "");
+  ASSERT_TRUE(pr.ok());
+
+  // Same three ids, REVERSED, plus a single-id read of the MIDDLE one --
+  // if the reader were resolving by position instead of by id, reading
+  // id 11 alone (file position 2) would wrongly return 30.0 (write_ids'
+  // position-1 value) or some other position-derived value instead of
+  // 110.0.
+  const std::vector<std::int64_t> reversed_ids = {11, 3, 7};
+  std::vector<double> out(3, 0.0);
+  const fuse::Result<fuse::ReadConversionReport> r1 =
+      pr.value()->reader().get_field<double>("f", reversed_ids, out, 1);
+  ASSERT_TRUE(r1.ok()) << r1.error().message;
+  EXPECT_EQ(out[0], 110.0);
+  EXPECT_EQ(out[1], 30.0);
+  EXPECT_EQ(out[2], 70.0);
+
+  const std::vector<std::int64_t> single_id = {11};
+  std::vector<double> single_out(1, 0.0);
+  const fuse::Result<fuse::ReadConversionReport> r2 =
+      pr.value()->reader().get_field<double>("f", single_id, single_out, 1);
+  ASSERT_TRUE(r2.ok()) << r2.error().message;
+  EXPECT_EQ(single_out[0], 110.0);
+  std::remove(path.c_str());
+}
+
+// ---------------------------------------------------------------- round 2
+// MUST FIX 1: NO SILENT RESET. Round 2 used QuasiNewtonAccel (IQN_ILS)
+// as this fix's test subject, because at that point IQN_ILS genuinely
+// inherited Accelerator's base-class no-op export/import_restart_
+// state(). This round implements IQN_ILS's own restart state
+// (KNOWN_ISSUES.md D64, closed -- see Restart.SameRankRoundTripSeparate
+// LayoutIqnIls above), so IQN_ILS no longer exercises this refusal.
+// Per the owner's own instruction ("keep the refusal path for a
+// test-only accelerator that does not implement it"), these two tests
+// now inject a genuinely test-only `Accelerator` that never overrides
+// `restart_state_implemented()`/`export_restart_state()`/`import_
+// restart_state()` -- i.e. it is, by construction, "a future
+// Accelerator that keeps the default", the exact case this fix
+// targets -- via `Runner::debug_replace_region_accelerator()`
+// (fuse/runtime/runner.hpp), a TEST-ONLY seam added this round for
+// exactly this purpose (no AccelKind enumerator exists for a
+// never-implements-restart accelerator, nor should one: every genuine
+// production kind now implements restart state or is trivial).
+class NeverImplementsRestartAccel final : public fuse::Accelerator {
+ public:
+  void reset() override {}
+  [[nodiscard]] std::string name() const override {
+    return "NeverImplementsRestartAccel (test-only)";
+  }
+  [[nodiscard]] std::size_t columns() const override { return 0; }
+  fuse::Result<void> update(const double* /*x_old*/, const double* x_new,
+                            double* x_out, std::size_t n, int) override {
+    for (std::size_t i = 0; i < n; ++i) x_out[i] = x_new[i];
+    return fuse::Result<void>::success();
+  }
+  // Deliberately NOT overridden: restart_state_implemented() (stays
+  // `false`), export_restart_state() (stays a no-op), import_restart_
+  // state() (stays the unconditional Failure) -- exactly the base
+  // class's own documented defaults.
+};
+
+/// `dirichlet_neumann` is the ONLY iteration region this graph compiles
+/// (build_graph(), above), so region_index 0 is its own index on EVERY
+/// `Runner` this file builds -- not re-derived per call because there is
+/// nothing to look up: `debug_replace_region_accelerator()`'s own
+/// doc comment states the convention (an out-of-range index refuses).
+std::unique_ptr<DnHeatFixture> make_setup_with_test_only_accel(
+    int max_iterations, double initial_u = 305.0) {
+  // aitken_cfg() builds a REAL accelerator first (Runner::initialize()
+  // requires SOME AccelKind to compile a region into an accelerated
+  // one at all); the test-only accelerator then REPLACES it in place.
+  auto s = make_setup(max_iterations, aitken_cfg(), initial_u);
+  const fuse::Result<void> r = s->runner->debug_replace_region_accelerator(
+      0, std::make_unique<NeverImplementsRestartAccel>());
+  if (!r.ok()) ADD_FAILURE() << "debug_replace_region_accelerator: " << r.error().message;
+  return s;
 }
 
 TEST(Restart, AccelNotImplementedRefusesWithoutOptIn) {
   const std::string path = temp_dir_path("accel_not_implemented.h5");
   std::remove(path.c_str());
-  auto s = make_setup(40, iqn_ils_cfg());
+  auto s = make_setup_with_test_only_accel(40);
   run_n_periods(*s, 3);
   ASSERT_TRUE(write_point(*s, fuse::restart_io::FileLayout::SeparateMeshAndPoints,
                           path, "", 3)
                  .ok());
 
-  auto restored = make_setup(40, iqn_ils_cfg());
+  auto restored = make_setup_with_test_only_accel(40);
   bool any_reset = false;
   const fuse::Result<void> rr = restore_point(
       *restored, fuse::restart_io::FileLayout::SeparateMeshAndPoints, path, "",
       /*allow_reset=*/false, any_reset);
   ASSERT_FALSE(rr.ok())
-      << "QuasiNewtonAccel::restart_state_implemented() == false must "
+      << "an accelerator whose restart_state_implemented() == false must "
          "refuse, not silently succeed, when the run did not opt in";
   EXPECT_EQ(rr.error().code, "E-RESTART-ACCEL-NOT-IMPLEMENTED");
   EXPECT_FALSE(any_reset);
@@ -623,13 +771,13 @@ TEST(Restart, AccelNotImplementedRefusesWithoutOptIn) {
 TEST(Restart, AccelNotImplementedWithAllowResetSucceedsAndReports) {
   const std::string path = temp_dir_path("accel_not_implemented_reset.h5");
   std::remove(path.c_str());
-  auto s = make_setup(40, iqn_ils_cfg());
+  auto s = make_setup_with_test_only_accel(40);
   run_n_periods(*s, 3);
   ASSERT_TRUE(write_point(*s, fuse::restart_io::FileLayout::SeparateMeshAndPoints,
                           path, "", 3)
                  .ok());
 
-  auto restored = make_setup(40, iqn_ils_cfg());
+  auto restored = make_setup_with_test_only_accel(40);
   bool any_reset = false;
   const fuse::Result<void> rr = restore_point(
       *restored, fuse::restart_io::FileLayout::SeparateMeshAndPoints, path, "",
@@ -638,6 +786,124 @@ TEST(Restart, AccelNotImplementedWithAllowResetSucceedsAndReports) {
   EXPECT_TRUE(any_reset)
       << "opting in must call Accelerator::reset() and REPORT it, per "
          "owner decision 4 (\"when used it is reported at restart\")";
+  std::remove(path.c_str());
+}
+
+// ---------------------------------------------------------------- D64
+// closure, direct level: a Runner-level round trip (above) cannot
+// observe QuasiNewtonAccel's own v_/w_/cols_/have_prev_ at all for
+// AccelKind::IQN_ILS specifically, MEASURED while writing this test --
+// a restart point is only ever taken at a period (here, window)
+// boundary (D63), and the very FIRST update() call of the NEXT window
+// has iteration == 0, which calls reset() before anything else;
+// reset() with retain_ == false (every kind except IQN_IMVJ) discards
+// v_/w_/cols_/have_prev_ unconditionally, so a WRONG restore of them
+// is invisible through the Runner for IQN_ILS -- it would have been
+// invisible to AccelNotImplementedRefusesWithoutOptIn's own predecessor
+// too, had it ever reached far enough to check. This test instead
+// drives `fuse::Accelerator` directly (no Runner, no window
+// boundary), with `AccelKind::IQN_IMVJ` (`retain_ == true`) so that
+// `blocks_`/`chain_reprieves_` -- the ONE piece of this accelerator's
+// state that genuinely crosses a window/restart boundary by design
+// (Section 1.3: "IQN-IMVJ folds it into blocks_ instead") -- has
+// something real to restore, and reads EVERY member back bit for bit
+// via `columns()`/`retained_blocks()` plus continued `update()` calls
+// against an UNINTERRUPTED sibling fed the identical input sequence.
+TEST(Restart, QuasiNewtonAccelExportImportRestartStateRoundTripsBitForBit) {
+  constexpr std::size_t kN = 6;
+  const fuse::AccelConfig cfg{.kind = fuse::AccelKind::IQN_IMVJ,
+                             .initial_relaxation = 0.3, .reuse = 4};
+
+  auto make = [&]() {
+    auto r = fuse::make_accelerator(cfg);
+    EXPECT_TRUE(r.ok()) << r.error().message;
+    return std::move(r.value());
+  };
+  auto reference = make();
+
+  // A deterministic, non-trivial input sequence: two windows' worth of
+  // sweeps (3 then 2), so the first window's own reset() folds a REAL
+  // (cols_ > 0) window into blocks_ -- retained_blocks() > 0 is what
+  // this test actually exercises restoring.
+  std::vector<double> x_old(kN), x_new(kN), x_out(kN);
+  auto step = [&](fuse::Accelerator& a, int iteration, double seed) {
+    for (std::size_t i = 0; i < kN; ++i) {
+      x_old[i] = seed + 0.1 * static_cast<double>(i);
+      x_new[i] = x_old[i] + 0.05 * std::sin(seed + static_cast<double>(i));
+    }
+    const fuse::Result<void> r =
+        a.update(x_old.data(), x_new.data(), x_out.data(), kN, iteration);
+    EXPECT_TRUE(r.ok()) << r.error().message;
+  };
+  step(*reference, 0, 1.0);
+  step(*reference, 1, 1.3);
+  step(*reference, 2, 1.6);
+  reference->reset();  // window boundary: folds this window into blocks_
+  step(*reference, 0, 2.0);
+  step(*reference, 1, 2.4);
+  ASSERT_GT(reference->retained_blocks(), 0u)
+      << "DIAGNOSTIC: the input sequence above must populate blocks_ for "
+         "this test to exercise anything -- see the test's own comment";
+  ASSERT_GT(reference->columns(), 0u);
+
+  std::vector<std::int64_t> ids(kN);
+  for (std::size_t i = 0; i < kN; ++i) ids[i] = static_cast<std::int64_t>(i);
+  const std::vector<fuse::RestartRowBlock> blocks = {
+      fuse::RestartRowBlock{"imvj_field", ids}};
+
+  const std::string path = temp_dir_path("iqn_imvj_direct.h5");
+  std::remove(path.c_str());
+  fuse::restart_io::Provenance prov;
+  prov.format_version = fuse::restart_io::kFormatVersion;
+  prov.fuse_version = "test";
+  auto pw = fuse::restart_io::create_restart_point(
+      fuse::restart_io::FileLayout::SeparateMeshAndPoints, path, prov, "");
+  ASSERT_TRUE(pw.ok());
+  ASSERT_TRUE(reference->restart_state_implemented());
+  const fuse::Result<void> wr =
+      reference->export_restart_state(pw.value()->writer(), "region", blocks);
+  ASSERT_TRUE(wr.ok()) << wr.error().code << ": " << wr.error().message;
+  ASSERT_TRUE(pw.value()->finish().ok());
+
+  auto restored = make();
+  auto pr = fuse::restart_io::open_restart_point(
+      fuse::restart_io::FileLayout::SeparateMeshAndPoints, path, "");
+  ASSERT_TRUE(pr.ok());
+  bool did_reset = false;
+  const fuse::Result<void> rr = restored->import_restart_state(
+      pr.value()->reader(), "region", blocks, /*allow_reset_on_mismatch=*/false,
+      did_reset);
+  ASSERT_TRUE(rr.ok()) << rr.error().code << ": " << rr.error().message;
+  EXPECT_FALSE(did_reset);
+  EXPECT_EQ(restored->columns(), reference->columns());
+  EXPECT_EQ(restored->retained_blocks(), reference->retained_blocks());
+
+  // Continue BOTH with the identical remaining input sequence; every
+  // x_out and every reported column/block count must match bit for
+  // bit from here on, which is only possible if v_/w_/x_new_prev_/
+  // r_prev_/have_prev_/blocks_/chain_reprieves_ ALL restored correctly
+  // (a wrong value in any one of them perturbs the least-squares fit
+  // or the Jprev^{-1} application, which changes x_out).
+  std::vector<double> x_out_ref(kN), x_out_restored(kN);
+  for (int iteration = 2; iteration <= 4; ++iteration) {
+    for (std::size_t i = 0; i < kN; ++i) {
+      x_old[i] = 3.0 + 0.1 * static_cast<double>(i);
+      x_new[i] = x_old[i] + 0.05 * std::sin(3.0 + static_cast<double>(iteration) +
+                                            static_cast<double>(i));
+    }
+    const fuse::Result<void> rref =
+        reference->update(x_old.data(), x_new.data(), x_out_ref.data(), kN, iteration);
+    const fuse::Result<void> rres =
+        restored->update(x_old.data(), x_new.data(), x_out_restored.data(), kN, iteration);
+    ASSERT_TRUE(rref.ok()) << rref.error().message;
+    ASSERT_TRUE(rres.ok()) << rres.error().message;
+    for (std::size_t i = 0; i < kN; ++i) {
+      EXPECT_EQ(x_out_ref[i], x_out_restored[i])
+          << "iteration " << iteration << ", element " << i;
+    }
+    EXPECT_EQ(reference->columns(), restored->columns());
+    EXPECT_EQ(reference->retained_blocks(), restored->retained_blocks());
+  }
   std::remove(path.c_str());
 }
 
@@ -689,6 +955,97 @@ TEST(Restart, PerBlockKeysNeverCollideOnIdenticalLocalIds) {
          "their own high bits; an exact per-field dataset name cannot";
   EXPECT_EQ(round_tripped[4], 21.0);
   EXPECT_EQ(round_tripped[5], 22.0);
+  std::remove(path.c_str());
+}
+
+// ---------------------------------------------------------------- round 2
+// MUST FIX 2 (KNOWN_ISSUES.md D69, closed this round): a window-scoped
+// region's own accelerated vector is K samples per element, not one --
+// RestartRowBlock::window_capacity, demuxed by detail::put_field_per_
+// block()/get_field_per_block() into one sub-dataset per sample. Two
+// blocks of DIFFERENT capacities (3 and 4), 18 total rows (2*3 + 3*4),
+// round-tripped through the SAME accelerator export/import_restart_state
+// path QuasiNewtonAccelExportImportRestartStateRoundTripsBitForBit above
+// exercises for the non-window case, then one further update() call
+// compared bit-for-bit against an uninterrupted sibling.
+TEST(Restart, AitkenAccelWindowCapacityPerSampleRestartRoundTripsBitForBit) {
+  const fuse::AccelConfig cfg{.kind = fuse::AccelKind::Aitken,
+                             .initial_relaxation = 0.5};
+  auto make = [&]() {
+    auto r = fuse::make_accelerator(cfg);
+    EXPECT_TRUE(r.ok()) << r.error().message;
+    return std::move(r.value());
+  };
+  auto reference = make();
+
+  constexpr std::size_t kNA = 2, kCapA = 3;  // block A: 2 elements, 3 samples
+  constexpr std::size_t kNB = 3, kCapB = 4;  // block B: 3 elements, 4 samples
+  constexpr std::size_t kN = kNA * kCapA + kNB * kCapB;  // 18
+
+  std::vector<double> x_old(kN), x_new(kN), x_out(kN);
+  auto step = [&](fuse::Accelerator& a, int iteration, double seed) {
+    for (std::size_t i = 0; i < kN; ++i) {
+      x_old[i] = seed + 0.1 * static_cast<double>(i);
+      x_new[i] = x_old[i] + 0.05 * std::sin(seed + static_cast<double>(i));
+    }
+    const fuse::Result<void> r =
+        a.update(x_old.data(), x_new.data(), x_out.data(), kN, iteration);
+    EXPECT_TRUE(r.ok()) << r.error().message;
+  };
+  step(*reference, 0, 1.0);
+  step(*reference, 1, 1.4);
+
+  std::vector<std::int64_t> ids_a = {100, 101};
+  std::vector<std::int64_t> ids_b = {200, 201, 202};
+  std::vector<fuse::RestartRowBlock> blocks(2);
+  blocks[0] = fuse::RestartRowBlock{"window_u", ids_a};
+  blocks[0].window_capacity = kCapA;
+  blocks[1] = fuse::RestartRowBlock{"window_v", ids_b};
+  blocks[1].window_capacity = kCapB;
+
+  const std::string path = temp_dir_path("aitken_window_capacity.h5");
+  std::remove(path.c_str());
+  fuse::restart_io::Provenance prov;
+  prov.format_version = fuse::restart_io::kFormatVersion;
+  prov.fuse_version = "test";
+  auto pw = fuse::restart_io::create_restart_point(
+      fuse::restart_io::FileLayout::SeparateMeshAndPoints, path, prov, "");
+  ASSERT_TRUE(pw.ok());
+  ASSERT_TRUE(reference->restart_state_implemented());
+  const fuse::Result<void> wr =
+      reference->export_restart_state(pw.value()->writer(), "region", blocks);
+  ASSERT_TRUE(wr.ok()) << wr.error().code << ": " << wr.error().message;
+  ASSERT_TRUE(pw.value()->finish().ok());
+
+  auto restored = make();
+  auto pr = fuse::restart_io::open_restart_point(
+      fuse::restart_io::FileLayout::SeparateMeshAndPoints, path, "");
+  ASSERT_TRUE(pr.ok());
+  bool did_reset = false;
+  const fuse::Result<void> rr = restored->import_restart_state(
+      pr.value()->reader(), "region", blocks, /*allow_reset_on_mismatch=*/false,
+      did_reset);
+  ASSERT_TRUE(rr.ok()) << rr.error().code << ": " << rr.error().message;
+  EXPECT_FALSE(did_reset);
+
+  std::vector<double> x_out_ref(kN), x_out_restored(kN);
+  for (int iteration = 2; iteration <= 3; ++iteration) {
+    for (std::size_t i = 0; i < kN; ++i) {
+      x_old[i] = 3.0 + 0.1 * static_cast<double>(i);
+      x_new[i] = x_old[i] + 0.05 * std::sin(3.0 + static_cast<double>(iteration) +
+                                            static_cast<double>(i));
+    }
+    const fuse::Result<void> rref =
+        reference->update(x_old.data(), x_new.data(), x_out_ref.data(), kN, iteration);
+    const fuse::Result<void> rres =
+        restored->update(x_old.data(), x_new.data(), x_out_restored.data(), kN, iteration);
+    ASSERT_TRUE(rref.ok()) << rref.error().message;
+    ASSERT_TRUE(rres.ok()) << rres.error().message;
+    for (std::size_t i = 0; i < kN; ++i) {
+      EXPECT_EQ(x_out_ref[i], x_out_restored[i])
+          << "iteration " << iteration << ", element " << i;
+    }
+  }
   std::remove(path.c_str());
 }
 

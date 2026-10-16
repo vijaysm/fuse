@@ -56,16 +56,48 @@ result = "CONFIRMED 2026-10-15: full unfiltered fuse_runtime_restart_test (14 te
 [[mutation]]
 id = "restart-per-block-key-collapsed-to-id-alone"
 area = "num (detail::put_field_per_block/get_field_per_block, round 2's EXACT-KEY fix)"
-describes = "Both per-block helpers' own qualified dataset name (name_prefix + '/' + block.field_name) are collapsed to name_prefix alone, in one mutation spanning both functions (the only way to make the old-text anchor unique while mutating both occurrences the real test needs) -- the exact shape round 1's hash-combined key had before round 2 replaced it, now with no key distinguishing field at all: every block of one region's accelerator state writes to the SAME dataset name, so two blocks with identical local ids (dirichlet/neumann's own shape) collide."
+describes = "Both per-block helpers' own qualified dataset name (name_prefix + '/' + block.field_name) are collapsed to name_prefix alone, in one mutation spanning both functions (the only way to make the old-text anchor unique while mutating both occurrences the real test needs) -- the exact shape round 1's hash-combined key had before round 2 replaced it, now with no key distinguishing field at all: every block of one region's accelerator state writes to the SAME dataset name, so two blocks with identical local ids (dirichlet/neumann's own shape) collide. Anchor re-cut 2026-10-15 after this round's own window_capacity demux refactor renamed the ordinary-case local from count to n_elem and inserted the per-sample branch between the two qualified assignments; the mutated behavior is unchanged."
 file = "src/num/accel_relaxation.cpp"
 old = """    const std::string qualified = name_prefix + "/" + block.field_name;
-    const Result<void> r = writer.put_field(
-        qualified, block.ids,
-        flat.subspan(off * static_cast<std::size_t>(components),
-                     count * static_cast<std::size_t>(components)),
-        components, static_cast<std::int64_t>(count));
-    if (!r.ok()) return r;
-    off += count;
+    if (block.window_capacity == 0) {
+      // Ordinary case, UNCHANGED since round 2's own EXACT-KEY fix: one
+      // row per id, contiguous in `flat`.
+      const Result<void> r = writer.put_field(
+          qualified, block.ids,
+          flat.subspan(off * static_cast<std::size_t>(components),
+                       n_elem * static_cast<std::size_t>(components)),
+          components, static_cast<std::int64_t>(n_elem));
+      if (!r.ok()) return r;
+      off += n_elem;
+      continue;
+    }
+    // Window-scoped case (KNOWN_ISSUES.md D69, formerly D68): this
+    // block's own slice of `flat` is `n_elem * window_capacity` rows,
+    // element-major sample-minor (index(e, s) = e*window_capacity + s).
+    // Demux into `window_capacity` separate, per-sample, per-element-id
+    // sub-datasets -- a strided gather per sample, since the per-sample
+    // rows are NOT contiguous in `flat` (they are contiguous per ELEMENT,
+    // not per sample).
+    const std::size_t cap = block.window_capacity;
+    std::vector<double> sample_vals(n_elem * static_cast<std::size_t>(components));
+    for (std::size_t s = 0; s < cap; ++s) {
+      for (std::size_t e = 0; e < n_elem; ++e) {
+        const std::size_t src_row = off + e * cap + s;
+        for (int c = 0; c < components; ++c) {
+          sample_vals[e * static_cast<std::size_t>(components) +
+                      static_cast<std::size_t>(c)] =
+              flat[src_row * static_cast<std::size_t>(components) +
+                   static_cast<std::size_t>(c)];
+        }
+      }
+      const std::string sample_qualified =
+          qualified + "/sample" + std::to_string(s);
+      const Result<void> r = writer.put_field(
+          sample_qualified, block.ids, std::span<const double>(sample_vals),
+          components, static_cast<std::int64_t>(n_elem));
+      if (!r.ok()) return r;
+    }
+    off += n_elem * cap;
   }
   return Result<void>::success();
 }
@@ -76,16 +108,48 @@ Result<void> get_field_per_block(RestartReader& reader,
                                  std::span<double> flat, int components) {
   std::size_t off = 0;
   for (const RestartRowBlock& block : blocks) {
-    const std::size_t count = block.ids.size();
+    const std::size_t n_elem = block.ids.size();
     const std::string qualified = name_prefix + "/" + block.field_name;"""
 new = """    const std::string qualified = name_prefix;  // MUTATION: key collapsed to id alone
-    const Result<void> r = writer.put_field(
-        qualified, block.ids,
-        flat.subspan(off * static_cast<std::size_t>(components),
-                     count * static_cast<std::size_t>(components)),
-        components, static_cast<std::int64_t>(count));
-    if (!r.ok()) return r;
-    off += count;
+    if (block.window_capacity == 0) {
+      // Ordinary case, UNCHANGED since round 2's own EXACT-KEY fix: one
+      // row per id, contiguous in `flat`.
+      const Result<void> r = writer.put_field(
+          qualified, block.ids,
+          flat.subspan(off * static_cast<std::size_t>(components),
+                       n_elem * static_cast<std::size_t>(components)),
+          components, static_cast<std::int64_t>(n_elem));
+      if (!r.ok()) return r;
+      off += n_elem;
+      continue;
+    }
+    // Window-scoped case (KNOWN_ISSUES.md D69, formerly D68): this
+    // block's own slice of `flat` is `n_elem * window_capacity` rows,
+    // element-major sample-minor (index(e, s) = e*window_capacity + s).
+    // Demux into `window_capacity` separate, per-sample, per-element-id
+    // sub-datasets -- a strided gather per sample, since the per-sample
+    // rows are NOT contiguous in `flat` (they are contiguous per ELEMENT,
+    // not per sample).
+    const std::size_t cap = block.window_capacity;
+    std::vector<double> sample_vals(n_elem * static_cast<std::size_t>(components));
+    for (std::size_t s = 0; s < cap; ++s) {
+      for (std::size_t e = 0; e < n_elem; ++e) {
+        const std::size_t src_row = off + e * cap + s;
+        for (int c = 0; c < components; ++c) {
+          sample_vals[e * static_cast<std::size_t>(components) +
+                      static_cast<std::size_t>(c)] =
+              flat[src_row * static_cast<std::size_t>(components) +
+                   static_cast<std::size_t>(c)];
+        }
+      }
+      const std::string sample_qualified =
+          qualified + "/sample" + std::to_string(s);
+      const Result<void> r = writer.put_field(
+          sample_qualified, block.ids, std::span<const double>(sample_vals),
+          components, static_cast<std::int64_t>(n_elem));
+      if (!r.ok()) return r;
+    }
+    off += n_elem * cap;
   }
   return Result<void>::success();
 }
@@ -96,11 +160,11 @@ Result<void> get_field_per_block(RestartReader& reader,
                                  std::span<double> flat, int components) {
   std::size_t off = 0;
   for (const RestartRowBlock& block : blocks) {
-    const std::size_t count = block.ids.size();
+    const std::size_t n_elem = block.ids.size();
     const std::string qualified = name_prefix;  // MUTATION: key collapsed to id alone"""
 target = "fuse_runtime_restart_test"
 test = "runtime.restart"
-result = "CONFIRMED 2026-10-15 (round 2): full unfiltered fuse_runtime_restart_test (17 tests) ran 12 PASSED / 5 FAILED. Failures: SameRankRoundTripSeparateLayout, SameRankRoundTripGrowingLayout, GrowingLayoutAppendsASecondPointWithoutDamagingTheFirst, AcceleratorLayoutChangeWithoutOptInRefuses (write_point(...).ok() returned false), and Restart.PerBlockKeysNeverCollideOnIdenticalLocalIds (w.ok() returned false, exact message \"E-RESTART-DUPLICATE-CALL: put_field('region/aitken/r_prev') called more than once for this restart point\") -- every test whose graph has more than one accelerated block. The other 12 tests, none of which writes more than one accelerated block under one name_prefix, still passed. Restored; cmp against the pre-mutation file reported no difference; rebuilt afterward and confirmed 17/17 passing again."
+result = "CONFIRMED 2026-10-15 (round 2, anchor re-cut after the window_capacity demux refactor and after a mid-round workspace reset required reconstructing this file): mutate.py --build-dir build1 --area <num per-block area> reported KILLED restart-per-block-key-collapsed-to-id-alone test fails, 1 killed of 1. Restored; rebuilt fuse_runtime_restart_test and confirmed passing again."
 
 [[mutation]]
 id = "restart-accel-not-implemented-gate-disabled"

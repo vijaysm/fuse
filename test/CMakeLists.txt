@@ -896,10 +896,13 @@ fuse_tests_gated_by(FUSE_ENABLE_MPI
   parallel/linalg_mpi_test.cpp parallel/brusselator_grid_mpi_test.cpp
   parallel/schur_slab_mpi_test.cpp parallel/krylov_mpi_test.cpp
   parallel/derivative_gate_mpi_test.cpp parallel/participant_reducer_mpi_test.cpp
-  parallel/restart_collective_mpi_test.cpp parallel/device_ghost_exchange_test.cpp)
-# restart_collective_mpi_test.cpp links fuse::restart_io, built only under
-# FUSE_ENABLE_HDF5, so an MPI-on/HDF5-off configuration must see it as gated.
-fuse_tests_gated_by(FUSE_ENABLE_HDF5 parallel/restart_collective_mpi_test.cpp)
+  parallel/restart_collective_mpi_test.cpp parallel/device_ghost_exchange_test.cpp
+  parallel/brusselator_restart_mpi_test.cpp)
+# restart_collective_mpi_test.cpp/brusselator_restart_mpi_test.cpp both link
+# fuse::restart_io, built only under FUSE_ENABLE_HDF5, so an MPI-on/HDF5-off
+# configuration must see both as gated.
+fuse_tests_gated_by(FUSE_ENABLE_HDF5 parallel/restart_collective_mpi_test.cpp
+  parallel/brusselator_restart_mpi_test.cpp)
 if(FUSE_ENABLE_MPI)
   foreach(t comm_graph mpi_transport)
     fuse_add_mpi_test(parallel ${t} LIBS fuse::runtime)
@@ -1025,6 +1028,31 @@ if(FUSE_ENABLE_MPI)
   else()
     fuse_tests_gated_by(FUSE_LINALG_BACKEND_IS_EIGEN parallel/brusselator_grid_mpi_test.cpp)
     list(APPEND _fuse_eigen_gated_tests parallel.brusselator_grid_mpi)
+  endif()
+  # Restart track round 2, item 3 (the brief's own main item): the
+  # rank-count-independent restart's own parallel half -- write at N
+  # ranks restore at N, and write at one rank count restore at another
+  # (1->2, 1->3, 2->3) -- over the SAME Brusselator shape
+  # brusselator_restart_test.cpp already proves at tier 0. RANKS 2 3
+  # only, within the four-task rule: built here, run on the host
+  # (host_pending names the exact mpirun command and what each rank
+  # prints on success and on each foreseeable failure). Gated the same
+  # way brusselator_restart_test.cpp (tier 0) already is, plus
+  # FUSE_LINALG_BACKEND_IS_EIGEN for the same Eigen3::Eigen-direct
+  # reason brusselator_grid_mpi above is.
+  if(FUSE_LINALG_BACKEND_IS_EIGEN AND FUSE_ENABLE_HDF5)
+    fuse_add_mpi_test(parallel brusselator_restart_mpi
+                       LIBS fuse::runtime fuse::backend fuse::model fuse::linalg
+                            fuse::restart_io Eigen3::Eigen Kokkos::kokkos MPI::MPI_CXX
+                       RANKS 2 3 LABELS restart_io)
+    target_include_directories(fuse_parallel_brusselator_restart_mpi_test PRIVATE
+      ${CMAKE_SOURCE_DIR}/examples/brusselator)
+  else()
+    fuse_tests_gated_by(FUSE_LINALG_BACKEND_IS_EIGEN parallel/brusselator_restart_mpi_test.cpp)
+    fuse_tests_gated_by(FUSE_ENABLE_HDF5 parallel/brusselator_restart_mpi_test.cpp)
+    if(NOT FUSE_LINALG_BACKEND_IS_EIGEN)
+      list(APPEND _fuse_eigen_gated_tests parallel.brusselator_restart_mpi)
+    endif()
   endif()
   # comm_graph_test exercises CrystalRouter directly, which is a private
   # implementation header under src/transport/ -- the transport layer's public
@@ -1481,6 +1509,18 @@ if(FUSE_LINALG_BACKEND_IS_EIGEN)
                  LIBS fuse::runtime fuse::backend fuse::model fuse::linalg Eigen3::Eigen Kokkos::kokkos)
   target_include_directories(fuse_verification_brusselator_refusal_coverage_test PRIVATE
     ${CMAKE_SOURCE_DIR}/examples/brusselator)
+  # Restart track (docs/dev/restart.md), Stage B Slice 2: the Brusselator
+  # Runner round trip (Form A over MeshView::global_id(), window-waveform
+  # history, IQN-ILS/IQN-IMVJ accelerator state) at tier 0 -- gated on
+  # FUSE_ENABLE_HDF5 the same way runtime/restart_test.cpp already is,
+  # because this file names <fuse/restart_io/hdf5_restart_io.hpp>.
+  if(FUSE_ENABLE_HDF5)
+    fuse_add_gtest(verification brusselator_restart NO_LAYER_LIB
+                   LIBS fuse::runtime fuse::backend fuse::model fuse::linalg
+                        fuse::restart_io Eigen3::Eigen Kokkos::kokkos)
+    target_include_directories(fuse_verification_brusselator_restart_test PRIVATE
+      ${CMAKE_SOURCE_DIR}/examples/brusselator)
+  endif()
 else()
   # review-2026-10-11 BC-1: brusselator_newton_norm/brusselator_accept_layout/
   # brusselator_external_delivery_size (device-track additions, same LIBS as
