@@ -6,9 +6,11 @@ regions (see `docs/user/glossary.md`'s own entry on that pair): rollback
 re-advances one sweep inside the SAME process; restart writes a run's own
 state to a file so a LATER process -- possibly at a different rank count --
 can resume it. The full design is `docs/dev/restart.md`; this page is the
-practical "how do I use it" companion, current as of Stage B Slice 1
-(same-rank-count round trip, both file layouts, every refusal; a
-rank-count-independent restart is Slice 2 work, not yet implemented).
+practical "how do I use it" companion, current as of Stage B Slice 2
+(same-rank-count round trip, both file layouts, every refusal, plus a
+rank-count-INDEPENDENT restore -- see "Changing the rank count between
+write and restore" below for exactly what that covers and what it still
+does not).
 
 ## Building it
 
@@ -189,6 +191,99 @@ disable the overflow check), and `E-RESTART-SIGNED-TO-UNSIGNED` (refused
 unconditionally, under every `ReadConversion` mode including
 `AllowNarrowing` -- a negative stored value reinterpreted as unsigned is
 never an acceptable "narrowing").
+
+## Changing the rank count between write and restore
+
+A restart point written at one task count can be restored at a DIFFERENT
+task count, provided every component in the graph uses Form A and keys its
+own rows by a stable global id (`fuse::MeshView::global_id(dim, i)`, not a
+position in the component's own local array). `HDF5GroupReader::
+get_field_bytes()` (`src/restart_io/hdf5_restart_io.cpp`) resolves every row
+by an id-to-position map built from the file's own stored ids, never from
+the order the caller happens to request them in -- a reader at a different
+rank count simply asks for a different, smaller or larger, set of ids than
+the writer owned, and gets back exactly those rows regardless of where they
+sit in the file. `examples/brusselator/species_component.hpp`'s
+`UComponent`/`VComponent` are the worked example: both set
+`kCapabilityRestartFormA` and key every field -- the registered `u_out`/
+`u_in`/`v_out`/`v_in` AND each component's own private hidden state
+(`UCore::state_`/`q_prev_`, `VDiffusionCore::state_`) -- by
+`NativeGrid::global_id()`. `VComponent` is the case worth copying exactly:
+it owns TWO different id spaces in one component (U-grid ids for the
+fields it exchanges, V-grid ids for its own private `v_state`), and keys
+each by the grid it actually belongs to, never by the other.
+
+Accelerator state and window-waveform history move across a rank-count
+change the same way -- keyed by (field, global id), not by position.
+`QuasiNewtonAccel` (IQN-ILS and IQN-IMVJ) now implements restart state like
+every other accelerator kind (`None`, `Constant`, `Aitken`, `Steffensen`
+already did); `Accelerator::restart_state_implemented()` is `true` for all
+of them, closing `KNOWN_ISSUES.md` D64. A window member's own `history`
+(the per-sample record `detail::WindowMemberState` keeps for its waveform)
+restarts the same way, keyed by the member's own exported field's global
+ids, one triple per retained sample.
+
+**The WRITE side is now collective.**
+`fuse::restart_io::create_restart_point_collective()`
+(`include/fuse/restart_io/hdf5_restart_io_mpi.hpp`, compiled under
+`FUSE_ENABLE_MPI`) lets every task write its own rows of a field at an
+`MPI_Exscan`-derived offset in one collective hyperslab write, so a
+restart point can now genuinely be PRODUCED by more than one task, not
+only read back by a different count than one. This round's own declared
+scope: `ElementType::Binary64`/`Int64` fields only (anything else refuses
+`E-RESTART-TYPE-MISMATCH`); `FileLayout::SeparateMeshAndPoints` only
+(`FileLayout::GrowingFile` refuses `E-RESTART-COLLECTIVE-LAYOUT-
+UNSUPPORTED`); scalars, rationals, and blobs all refuse
+(`E-RESTART-COLLECTIVE-SCALAR-UNSUPPORTED`) -- HDF5's own metadata
+operations are collective-required even for a value one task alone
+would otherwise host, and this round's own time did not extend to that
+path. The READ side needed no changes at all: `get_field_bytes()`
+already resolved every row by id (above), regardless of which task, or
+how many, wrote it.
+
+A restored (pre-advance) field, accelerator, or window-waveform-history
+row compares bit-identically BY GLOBAL ID across any change in task
+count, because restoring is a file read, not a recomputation. A state
+produced by advancing the simulation one FURTHER window after such a
+restore is a different matter: Brusselator's own Schur-decomposed solve
+path performs cross-task inner products whose floating-point summation
+order depends on how the mesh is partitioned, so comparing a run
+continued at a different task count against a reference that never
+changed count will disagree at the ~1e-13 scale
+(`test/verification/brusselator_species_core_decomposition_test.cpp`'s
+own `TwoPartitionSchurMatchesSingleRankUCore` /
+`ThreePartitionSchurMatchesSingleRankUCore` /
+`OneWindowAtRestartCadenceMeasuresDecompositionOrderSensitivity`) --
+expected, measured, round-off, not a restart defect.
+
+What this does NOT yet cover, precisely:
+
+- **A window-scoped region's own accelerator state now restarts.**
+  `KNOWN_ISSUES.md` D69 (renumbered from round 1's own D68, which a later
+  `main` commit took for an unrelated BoxIndex fix), CLOSED: a
+  window-scoped channel's accelerated vector -- the whole stacked
+  window-transfer buffer, not the single-sample size a component's
+  `write_restart()` reports ids for -- is now demuxed into one sub-dataset
+  per sample, keyed by (field, global id, sample index), and refuses by
+  name rather than silently resetting when the run did not opt into
+  `allow_accelerator_reset_on_mismatch`. **Still open** (`KNOWN_ISSUES.md`
+  D72): a window-scoped region's own CONSUMER-side transfer buffer
+  (`cfg.window_import`) is not correctly reconstructed after a restart, so
+  a `Runner`-driven round trip with a real accelerator (Aitken, IQN-ILS)
+  over a window-scoped region does not yet reproduce the reference run's
+  own iteration count, even though the accelerator's own state round-trips
+  correctly in isolation.
+- **A window member's `last_window_waveform` is implemented but dead code
+  under the `Runner` driver.** `KNOWN_ISSUES.md` D70 (renumbered from
+  round 1's own D69): only the standalone `fuse::WindowCoupler` driver
+  populates this member today; a `Runner`-driven restart point never has
+  anything to write there, so restoring it is a no-op in practice until
+  that gap closes.
+- **A real accelerator over a `WaveformIteration::GaussSeidel` window
+  refuses restart outright.** `KNOWN_ISSUES.md` D71, pre-existing, named
+  precisely this round: `E-RT-WINDOW-ACCEL`
+  (`src/runtime/iteration.cpp:1836-1851`). Out of restart's own scope to
+  fix.
 
 ## Restart through the C/Fortran ABI
 

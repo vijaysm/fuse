@@ -7430,7 +7430,38 @@ returns successfully, before the next `advance()` of any kind -- the convention 
 `test/runtime/restart_test.cpp` already follows, and the one Slice 2 (rank-count-independent
 restart, Brusselator) inherits unchanged.
 
-### D64. `QuasiNewtonAccel` (IQN-ILS/IQN-IMVJ) does not implement restart state -- OPEN, scope decision for a future round, recorded 2026-10-15 (Restart track, Stage B Slice 1, round 2)
+### ~~D64. `QuasiNewtonAccel` (IQN-ILS/IQN-IMVJ) does not implement restart state~~ -- CLOSED 2026-10-15 (Restart track, Stage B Slice 2)
+
+**Closed.** `QuasiNewtonAccel::restart_state_implemented()` (`src/num/accel_quasi_newton.cpp`)
+now returns `true`; `export_restart_state()`/`import_restart_state()` export/import `v_`/`w_`
+(one `put_field_per_block()`/`get_field_per_block()` call PER COLUMN, since both are "n x cols_,
+column major" -- column `j` occupies a contiguous, length-n_ span and is written under
+`<prefix>/iqn/v/col<j>`/`<prefix>/iqn/w/col<j>`), `x_new_prev_`/`r_prev_`/`have_prev_`, and
+`blocks_`/`chain_reprieves_` (IQN-IMVJ's folded inverse-Jacobian chain, one scalar `cols` plus a
+`z`/`v` column pair per retained block) -- exactly the keying scheme this entry's own original
+"what a future round needs" paragraph named below, unchanged. `QuasiNewtonAccel`'s own scratch
+members need nothing, confirmed: none were exported. Verified by `test/runtime/restart_test.cpp`'s
+`SameRankRoundTripSeparateLayoutIqnIls` (a dn_heat round trip with `.accelerate(AccelKind::IQN_ILS)`,
+`EXPECT_EQ`-compared field-for-field and sweep-count-for-sweep-count against an uninterrupted
+reference run) -- the SAME verification this entry originally asked for. The refusal path this
+entry's own mechanism tested (`AccelNotImplementedRefusesWithoutOptIn`/
+`AccelNotImplementedWithAllowResetSucceedsAndReports`) no longer has a real production `AccelKind`
+to exercise it with (every kind now implements restart state), so those two tests were repointed
+at a new TEST-ONLY `Accelerator` subclass (`NeverImplementsRestartAccel`, test/runtime/
+restart_test.cpp) injected via a new TEST-ONLY seam, `Runner::debug_replace_region_accelerator()`
+(`include/fuse/runtime/runner.hpp`, `src/runtime/runner.cpp`) -- the mechanism itself is unchanged,
+only its test subject moved from a real kind that happened to not implement the interface yet to
+one that, by construction, never will.
+
+**A NEW, narrower gap found while closing this one, not fixed this round:** a WINDOW-SCOPED
+region's own `RegionBlock::length` is the K-wide stacked window-transfer buffer (element count
+TIMES `window_sample_capacity()`), not the registered field's own single-sample size -- see D68.
+`write_restart_fields()`/`restore_restart_fields()` skip accelerator-state restart entirely for
+any window-scoped region (reported via `any_accelerator_reset`, same as a real reset) until D68 is
+resolved; Form A's own field restart and window-waveform history restart are unaffected.
+
+Original text, kept for citation history (the keying scheme it names is exactly what closed this
+entry, unchanged):
 
 `fuse::Accelerator::restart_state_implemented()` (`include/fuse/num/accelerator.hpp`) is `false`
 for `QuasiNewtonAccel` -- it inherits the base class's default, never overriding
@@ -7633,3 +7664,160 @@ data actually in" is easy to let drift apart, because nothing observable breaks 
 caller reads the GENUINELY device-resident member (`size()`/`empty()`/a query) rather than a
 CPU-computed one (`dimension()`).
 
+### ~~D69. A window-scoped region's own accelerator restart state is not implemented~~ -- CLOSED 2026-10-15 (Restart track, Stage B Slice 2, round 2; renumbered from round 1's own D68, which this track's main branch took for the BoxIndex fix, D68 above)
+
+Found while wiring the Brusselator (`examples/brusselator`) into restart-to-disk, the one example
+of the four `docs/dev/restart.md` Section 2.3 names that is both window-scoped (`fuse::
+CouplingWindowScope`) and accelerated. `detail::RegionBlock::length`, for a window-scoped
+region's own channel, is the K-WIDE stacked window-transfer buffer -- this member's own element
+count TIMES `fuse::window_sample_capacity()` (`src/runtime/iteration.cpp`'s own priming loop,
+`export_slot.data[e * cfg.capacity + s] = cfg.provided[e];`, confirms the layout is element-major,
+sample-minor) -- NOT the registered field's own single-sample size `Component::register_fields()`
+bound. `write_restart_fields()`/`restore_restart_fields()` (`src/runtime/runner.cpp`) resolve an
+accelerator's own row ids by asking the OWNING component for the ids it reported under the
+channel's own field name (`build_field_owner_map()` plus `RestartWriter::recorded_ids()`/
+`IdCollectingRestartWriter::recorded_ids()`) and asserting `ids.size() == block.length` --
+built and tested (Stage B Slice 1/1b/round 2) only against an ORDINARY (non-window) region, where
+the two sizes coincide by construction (dn_heat; `test/runtime/restart_test.cpp`'s own round
+trips, including this round's new IQN-ILS one). For the Brusselator's own `brusselator_window`
+region, a component reports `n_u` ids (25, in the example's own small-grid test fixture) for
+field `v_in` while the region's own accelerated block for that field is 275 rows (25 elements x
+11 samples) -- measured directly: `write_restart_fields` refused `E-RESTART-BAD-NUMBERING`
+("expects 275 rows, component reported 25") the first time a window-scoped, accelerated region's
+restart point was ever written.
+
+**What to do.** Nothing yet, by design, this round: `write_restart_fields()`/`restore_restart_fields()`
+now skip accelerator-state restart entirely for any `region.window_scoped` region (`src/runtime/
+runner.cpp`), reporting the skip through the SAME `any_accelerator_reset` output parameter a real
+`Accelerator::reset()` already uses, rather than writing ids that would silently under-cover the
+declared global size or leaving the restored run's own convergence history undefined. Form A's own
+registered-field restart and window-waveform history restart (this round's own new feature,
+keyed directly by the registered field's OWN single-sample global ids, not by the K-wide buffer)
+are unaffected -- neither goes through `RegionBlock` at all.
+
+**What a future round needs.** A per-(element, sample) id scheme for the K-wide buffer's own rows,
+collision-proof the same way round 2's EXACT-KEY fix already is for a flat accelerator buffer.
+Two options, neither implemented or chosen this round (`open_questions`, delivered report):
+  - **Per-sample named sub-datasets.** Split a window-region's own `RestartRowBlock` into
+    `capacity` separate blocks, one per sample index, each carrying the SAME per-element ids
+    under a qualified name suffixed `/sample<k>` (the identical convention this round's own
+    window-waveform history already uses for `WindowMemberState::history`/`last_window_waveform`)
+    -- collision-proof by construction (two samples are two different dataset names, never a
+    shared id space), but needs a STRIDED gather/scatter helper (`detail::put_field_per_block()`/
+    `get_field_per_block()` assume each block's own rows are already contiguous in the flat
+    buffer, true for an ordinary region's block but NOT for a window region's own element-major,
+    sample-minor layout) rather than reusing the existing contiguous-subspan helper as-is.
+  - **A combined (global id, sample index) key.** Cheaper to key (no new helper), but needs a
+    combining function proven collision-free against the SAME global-id range the mesh generator
+    produces (`id * capacity + sample`, say) -- exactly the kind of "collision-free for this
+    slice's own graphs, not collision-PROOF" construction round 2's own MUST-FIX 2 replaced for
+    the flat accelerator case; reintroducing it here for the window case needs the SAME scrutiny
+    before being accepted, not less.
+A same-rank-count Brusselator round trip with a REAL accelerator (Aitken or IQN-ILS) over
+`brusselator_window`, compared field-for-field and sweep-count-for-sweep-count against an
+uninterrupted reference run (the same bar `SameRankRoundTripSeparateLayoutIqnIls` already holds
+the non-window case to), is the verification either option needs once written.
+
+**Closed, round 2 (2026-10-15).** Added `RestartRowBlock::window_capacity` (default 0, meaning
+"not window-scoped, unchanged path"). `detail::put_field_per_block`/`get_field_per_block`/
+`total_rows` (`src/num/accel_relaxation.cpp`) branch on it: a window-scoped block's own slice of
+the flat accelerator buffer is `ids.size() * window_capacity` rows, element-major sample-minor
+(index(e, s) = e*window_capacity + s, the SAME convention D70's own `last_window_waveform` history
+rows already use), demuxed into `window_capacity` separate per-sample sub-datasets
+(`<qualified>/sample<k>`) by a strided gather/scatter per sample. No change was needed inside
+`AitkenAccel`, `SteffensenAccel`, or `QuasiNewtonAccel` themselves. Verified by a new, isolated,
+non-Runner unit test, `Restart.AitkenAccelWindowCapacityPerSampleRestartRoundTripsBitForBit`
+(`test/runtime/restart_test.cpp`): two blocks of different capacities, 18 total rows, restores
+`r_prev_` bit-for-bit and a subsequent `update()` call reproduces `x_out` exactly. Also closed
+this round: `restore_restart_fields()` (`src/runtime/runner.cpp`) no longer silently resets a
+window-scoped region's accelerator without checking `allow_accelerator_reset_on_mismatch` -- it
+now runs the identical `restart_state_implemented()` refusal every ordinary region already ran.
+
+**Known residual gap, NOT closed by this fix -- see D72, below.** A Runner-level round trip with
+a REAL accelerator (Aitken, IQN-ILS) over a window-scoped region still does not reproduce the
+reference run's own iteration count after a restore, because the region's own CONSUMER-side
+transfer buffer (`cfg.window_import`) is not correctly reconstructed from restored state. This
+does not affect `AccelKind::None` (whose `update()` never reads `x_old`) and is a SEPARATE defect
+from the key-collision/silent-reset gaps this entry closes.
+
+### D70. `WindowMemberState::last_window_waveform` is never populated by the Runner's own `advance_window()` -- OPEN, measured 2026-10-15 (Restart track, Stage B Slice 2; renumbered from round 1's own D69, which main's own ASCII-cleanup/BoxIndex sequence displaced when D68 (round 1's own window-scoped-accelerator entry, now D69 above) collided with a real main-branch D68; content unchanged except the number, per the owner's own instruction not to touch `advance_window()`)
+
+Found while building and testing this round's own window-waveform restart (owner decision 4's
+second half): `detail::WindowMemberState::last_window_waveform` (`include/fuse/runtime/
+window_coupler.hpp`) is written only by `fuse::WindowCoupler` -- the standalone, non-Runner
+driver (`src/runtime/window_coupler.cpp:1041`, `state_[i].last_window_waveform = std::move(
+real_traj[i]);`, plus its own `mean()`/boundary readers at `:499,511,541`). A grep of `src/runtime/
+iteration.cpp` (the Runner's own compiled window-region driver, `advance_window()`) for
+`.last_window_waveform`/`->last_window_waveform` returns ZERO matches: the Runner's own window
+machinery reads this member's own in-window trajectory through a DIFFERENT path entirely
+(`window_import`/`previous[]`/`slots[]`, this file's own extensive header comments on the
+scheduling-order fix), and never writes `last_window_waveform` at all. Consequence, measured
+directly: in every Runner-driven run this round's own `test/verification/
+brusselator_restart_test.cpp` builds, `WindowMemberState::last_window_waveform` stays at its
+default-constructed empty vector for the whole run -- this round's own restart code for it
+(`write_window_member_restart()`'s `/waveform/present` branch, `src/runtime/runner.cpp`) is
+therefore implemented and exercised only on its OWN "nothing to write" branch; a deliberate
+"write the wrong sample" mutation of the per-sample waveform write loop was applied, rebuilt, and
+run against the full Brusselator restart suite to confirm this directly -- it killed nothing,
+confirming the per-sample waveform code path is dead for the Runner driver as currently built,
+not merely untested by chance. The SIBLING state this round restarts, `WindowMemberState::
+history`, is NOT in this situation -- `iteration.cpp` writes it directly (`window_member_state[
+node].history[e].front()`, line 3413's own citation, among others), and the same
+"write the wrong sample" mutation technique applied to `history`'s own write loop DID kill three
+of the four Brusselator round-trip tests, confirming `history` restart is both implemented and
+load-bearing.
+
+**What to do.** Nothing yet. `last_window_waveform` restart is written defensively (the
+`/waveform/present` scalar means a FUTURE Runner change that does populate it, or a direct
+caller of `fuse::WindowCoupler` wired through this same restart path, finds the feature already
+built) but cannot be exercised through the Runner today. Whether the Runner's own omission of
+`last_window_waveform` is itself a gap in the window-region machinery (a predictor/extrapolation
+path `WindowCoupler` has that the Runner's compiled equivalent does not) is outside this track's
+own scope to judge -- flagged here as a fact about restart coverage, not a claim about the
+window-region feature itself being incomplete.
+
+### D71. A real accelerator (Aitken, IQN-ILS, or any kind but `None`) over a `WaveformIteration::GaussSeidel` coupling window refuses `E-RT-WINDOW-ACCEL` -- OPEN, pre-existing, precisely named 2026-10-15 (Restart track, Stage B Slice 2, round 2)
+
+Named precisely this round rather than described as "a limitation" in prose, per the owner's own
+instruction. `resolve_regions()` (`src/runtime/iteration.cpp:1836-1851`) refuses to build a
+region's own accelerator when the region's own `WaveformIteration` is `GaussSeidel` and the
+configured `AccelKind` is anything but `None`, raising `E-RT-WINDOW-ACCEL`. Cross-referenced
+against `docs/dev/newton-krylov.md` Section 9.1 (lines ~483-507), which documents the identical
+gap from the window-Newton side -- a Gauss-Seidel sweep order and a genuine vector accelerator
+(Aitken, Steffensen, IQN-ILS/IMVJ) both want to own the same per-member update ordering, and the
+two have not been reconciled. Pre-existing on `main`, confirmed unrelated to this round's own
+changes (reproduces identically against the unmodified pristine tree). Fixing it is out of
+restart's own scope -- this entry exists so a future reader of the restart track's own refusal
+surface does not mistake this for a restart-specific defect.
+
+### D72. A window-scoped region's own CONSUMER-side transfer buffer (`cfg.window_import`) is not correctly reconstructed after a restart -- OPEN, measured 2026-10-15 (Restart track, Stage B Slice 2, round 2)
+
+Found while verifying D69's own closing fix (above) at the Runner level: a same-rank-count
+Brusselator round trip with a REAL accelerator (Aitken, IQN-ILS) over `brusselator_window` does
+not reproduce the reference run's own iteration count after restoring (reference 13, restored 12
+in one measured run). Root-caused via targeted tracing: `R.x_old`'s own pre-loop seed
+(`slot_to_host(slots[b.feed_arc], ...)`, `b.feed_arc == cfg.window_import.value()`,
+`src/runtime/iteration.cpp:3445-3446`) reads a STALE, construction-time value on the restored run,
+because `cfg.window_import`'s own slot is a coupler-owned buffer primed ONCE at
+`resolve_regions()`/`initialize()` time and never refreshed from restored state.
+
+**Fix attempt 1** (re-priming the EXPORT slot only, `Impl::reprime_window_transfer_buffers()`):
+correct and kept -- closes the export side, necessary but not sufficient.
+
+**Fix attempt 2** (re-running the import channel's own compiled delivery chain through
+`execute()`, mirroring `resolve_regions()`'s own second pass): MEASURED, not assumed, to make the
+mismatch WORSE (iteration count moved further from the reference, 12 -> 10) -- reverted rather
+than shipped unverified, per the standing "never ship a plausible-but-unverified fix" rule.
+
+The reference run's own invariant, measured independently: `x_old(window k, iter 0) == x_new
+(window k-1, iter 0)` -- each window's own seed equals the PRIOR window's own first-sweep (not
+converged) value. The mechanism producing this invariant is not yet traced to a specific write
+site. A future round should trace `window_import`'s own write timing across a full continuous
+run rather than attempt another plausible-looking re-derivation.
+
+Does NOT affect `AccelKind::None` (whose `update()` never reads `x_old`) or Form A field/history
+restart. Affects `AccelKind::Aitken`/`SteffensenAccel`/`QuasiNewtonAccel` specifically, and only
+over a window-scoped region. Four Runner-level round-trip tests for this exact case
+(`SeparateLayoutJacobiAitken`, `GrowingLayoutJacobiAitken`, `SeparateLayoutJacobiIqnIls`,
+`GrowingLayoutJacobiIqnIls`) were written, found failing because of this gap, and removed rather
+than shipped failing or weakened.
