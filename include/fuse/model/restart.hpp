@@ -122,6 +122,17 @@ namespace fuse {
 struct RestartRowBlock {
   std::string field_name;
   std::vector<std::int64_t> ids;
+  /// Restart track round 2, MUST-FIX 2 (KNOWN_ISSUES.md D69): 0 (the
+  /// default) means this block is an ORDINARY (non-window-scoped)
+  /// block, unchanged since Stage B Slice 1 -- `ids.size()` rows,
+  /// exactly as before. A window-scoped region's own accelerated
+  /// buffer is the WHOLE stacked window-transfer buffer, K samples per
+  /// element (K = `window_capacity`), not the single-sample size this
+  /// field's own `ids` names -- `detail::put_field_per_block`/
+  /// `get_field_per_block` (src/num/accel_relaxation.cpp) demux it
+  /// into `window_capacity` separate per-sample sub-datasets, one row
+  /// per (id, sample) pair, element-major sample-minor.
+  std::size_t window_capacity = 0;
 };
 
 /// Returned by every typed `get_field<T>()`/`get_scalar<T>()` call --

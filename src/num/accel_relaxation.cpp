@@ -209,7 +209,9 @@ std::unique_ptr<Accelerator> make_quasi_newton(const AccelConfig& cfg);
 
 std::size_t total_rows(std::span<const RestartRowBlock> blocks) {
   std::size_t n = 0;
-  for (const RestartRowBlock& b : blocks) n += b.ids.size();
+  for (const RestartRowBlock& b : blocks) {
+    n += b.ids.size() * (b.window_capacity > 0 ? b.window_capacity : 1);
+  }
   return n;
 }
 
@@ -220,15 +222,47 @@ Result<void> put_field_per_block(RestartWriter& writer,
                                  int components) {
   std::size_t off = 0;
   for (const RestartRowBlock& block : blocks) {
-    const std::size_t count = block.ids.size();
+    const std::size_t n_elem = block.ids.size();
     const std::string qualified = name_prefix + "/" + block.field_name;
-    const Result<void> r = writer.put_field(
-        qualified, block.ids,
-        flat.subspan(off * static_cast<std::size_t>(components),
-                     count * static_cast<std::size_t>(components)),
-        components, static_cast<std::int64_t>(count));
-    if (!r.ok()) return r;
-    off += count;
+    if (block.window_capacity == 0) {
+      // Ordinary case, UNCHANGED since round 2's own EXACT-KEY fix: one
+      // row per id, contiguous in `flat`.
+      const Result<void> r = writer.put_field(
+          qualified, block.ids,
+          flat.subspan(off * static_cast<std::size_t>(components),
+                       n_elem * static_cast<std::size_t>(components)),
+          components, static_cast<std::int64_t>(n_elem));
+      if (!r.ok()) return r;
+      off += n_elem;
+      continue;
+    }
+    // Window-scoped case (KNOWN_ISSUES.md D69, formerly D68): this
+    // block's own slice of `flat` is `n_elem * window_capacity` rows,
+    // element-major sample-minor (index(e, s) = e*window_capacity + s).
+    // Demux into `window_capacity` separate, per-sample, per-element-id
+    // sub-datasets -- a strided gather per sample, since the per-sample
+    // rows are NOT contiguous in `flat` (they are contiguous per ELEMENT,
+    // not per sample).
+    const std::size_t cap = block.window_capacity;
+    std::vector<double> sample_vals(n_elem * static_cast<std::size_t>(components));
+    for (std::size_t s = 0; s < cap; ++s) {
+      for (std::size_t e = 0; e < n_elem; ++e) {
+        const std::size_t src_row = off + e * cap + s;
+        for (int c = 0; c < components; ++c) {
+          sample_vals[e * static_cast<std::size_t>(components) +
+                      static_cast<std::size_t>(c)] =
+              flat[src_row * static_cast<std::size_t>(components) +
+                   static_cast<std::size_t>(c)];
+        }
+      }
+      const std::string sample_qualified =
+          qualified + "/sample" + std::to_string(s);
+      const Result<void> r = writer.put_field(
+          sample_qualified, block.ids, std::span<const double>(sample_vals),
+          components, static_cast<std::int64_t>(n_elem));
+      if (!r.ok()) return r;
+    }
+    off += n_elem * cap;
   }
   return Result<void>::success();
 }
@@ -239,15 +273,38 @@ Result<void> get_field_per_block(RestartReader& reader,
                                  std::span<double> flat, int components) {
   std::size_t off = 0;
   for (const RestartRowBlock& block : blocks) {
-    const std::size_t count = block.ids.size();
+    const std::size_t n_elem = block.ids.size();
     const std::string qualified = name_prefix + "/" + block.field_name;
-    const Result<fuse::ReadConversionReport> r = reader.get_field(
-        qualified, block.ids,
-        flat.subspan(off * static_cast<std::size_t>(components),
-                     count * static_cast<std::size_t>(components)),
-        components);
-    if (!r.ok()) return r.error();
-    off += count;
+    if (block.window_capacity == 0) {
+      const Result<fuse::ReadConversionReport> r = reader.get_field(
+          qualified, block.ids,
+          flat.subspan(off * static_cast<std::size_t>(components),
+                       n_elem * static_cast<std::size_t>(components)),
+          components);
+      if (!r.ok()) return r.error();
+      off += n_elem;
+      continue;
+    }
+    const std::size_t cap = block.window_capacity;
+    std::vector<double> sample_vals(n_elem * static_cast<std::size_t>(components));
+    for (std::size_t s = 0; s < cap; ++s) {
+      const std::string sample_qualified =
+          qualified + "/sample" + std::to_string(s);
+      const Result<fuse::ReadConversionReport> r = reader.get_field(
+          sample_qualified, block.ids, std::span<double>(sample_vals),
+          components);
+      if (!r.ok()) return r.error();
+      for (std::size_t e = 0; e < n_elem; ++e) {
+        const std::size_t dst_row = off + e * cap + s;
+        for (int c = 0; c < components; ++c) {
+          flat[dst_row * static_cast<std::size_t>(components) +
+               static_cast<std::size_t>(c)] =
+              sample_vals[e * static_cast<std::size_t>(components) +
+                         static_cast<std::size_t>(c)];
+        }
+      }
+    }
+    off += n_elem * cap;
   }
   return Result<void>::success();
 }
@@ -327,6 +384,25 @@ class NoneAccel final : public Accelerator {
     return true;
   }
 
+  /// Latent bug fixed this round: the base class's export_restart_state()
+  /// default IS a success no-op (correct here), but its
+  /// import_restart_state() default is an UNCONDITIONAL Failure (by
+  /// design -- Accelerator::import_restart_state()'s own doc comment),
+  /// meant to be unreachable once restart_state_implemented() reports
+  /// true. Declaring true above without overriding THIS method meant any
+  /// real Runner-driven restore through a None-accelerated region hit
+  /// that unconditional Failure -- never caught before because no prior
+  /// test completed a real restore all the way to the accelerator-restore
+  /// call for an explicit AccelKind::None region. Genuinely nothing to
+  /// restore (no learned state at all), so this is a real no-op, not a
+  /// workaround.
+  Result<void> import_restart_state(RestartReader&, std::string_view,
+                                    std::span<const RestartRowBlock>, bool,
+                                    bool& did_reset) override {
+    did_reset = false;
+    return Result<void>::success();
+  }
+
   Result<void> update(const double* x_old, const double* x_new, double* x_out,
                       std::size_t n, int iteration) override {
     const Result<void> args =
@@ -353,6 +429,17 @@ class ConstantAccel final : public Accelerator {
   /// base class's conservative `false`.
   [[nodiscard]] bool restart_state_implemented() const noexcept override {
     return true;
+  }
+
+  /// Same latent bug, same fix, as NoneAccel above: omega_ is a fixed
+  /// run option, never learned history, so there is genuinely nothing
+  /// to restore; the base class's import_restart_state() default must
+  /// not be relied on (it unconditionally fails by design).
+  Result<void> import_restart_state(RestartReader&, std::string_view,
+                                    std::span<const RestartRowBlock>, bool,
+                                    bool& did_reset) override {
+    did_reset = false;
+    return Result<void>::success();
   }
 
   Result<void> update(const double* x_old, const double* x_new, double* x_out,

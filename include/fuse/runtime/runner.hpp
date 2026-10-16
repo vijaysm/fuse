@@ -11,6 +11,7 @@
 #include "fuse/base/ids.hpp"
 #include "fuse/field/registry.hpp"
 #include "fuse/backend/mesh_view.hpp"
+#include "fuse/num/accelerator.hpp"
 #include "fuse/runtime/component.hpp"
 #include "fuse/model/restart.hpp"
 #include "fuse/runtime/fixed_point_residual.hpp"
@@ -709,6 +710,22 @@ class Runner {
   /// cannot both believe a request is still pending after one of them
   /// has already acted on it.
   [[nodiscard]] bool take_restart_point_request() noexcept;
+
+  /// Restart track (docs/dev/restart.md Section 9 item 4): TEST-ONLY,
+  /// the same `debug_` convention as `debug_newton_scale()` above --
+  /// never called by production code. Replaces region `region_index`'s
+  /// own `Accelerator` with `accel` in place, after `initialize()` has
+  /// already built the region from the graph's own `AccelKind`. Exists
+  /// for exactly one purpose: exercising `restore_restart_fields()`'s
+  /// own E-RESTART-ACCEL-NOT-IMPLEMENTED refusal against an accelerator
+  /// that genuinely never overrides `restart_state_implemented()`
+  /// (every REAL `AccelKind` does, as of this round -- see KNOWN_ISSUES.md
+  /// D64's closure), without reintroducing a hand-rolled test double
+  /// into a graph-compiled region any other way. Refuses the same way
+  /// `debug_newton_scale()` does for an out-of-range `region_index` or
+  /// a `Runner` not yet `initialize()`d.
+  [[nodiscard]] Result<void> debug_replace_region_accelerator(
+      std::size_t region_index, std::unique_ptr<Accelerator> accel);
 
  private:
   struct Impl;

@@ -5262,6 +5262,293 @@ build_field_owner_map(const fuse::CouplingGraph& graph) {
   return owner;
 }
 
+/// Restart track (docs/dev/restart.md Section 9 item 4, window-waveform
+/// history, Slice 2). Writes ONE window member's own subcycling state
+/// (`detail::WindowMemberState`, fuse/runtime/window_coupler.hpp) keyed
+/// by the SAME global ids the member's own owning component already
+/// reported for its exported field (owner decision 4: accelerator and
+/// window-waveform histories are both keyed by (field, global id)).
+/// `qualified_base` is "__window/" + owner_component + "/" + field_name
+/// -- a SEPARATE top-level name space from the field's own real dataset
+/// (owner_component + "/" + field_name, written by the component's OWN
+/// write_restart() call through its QualifyingRestartWriter), so a
+/// window member's own restart point never collides with the registered
+/// field it is itself exported through.
+fuse::Result<void> write_window_member_restart(
+    RestartWriter& writer, const std::string& qualified_base,
+    std::span<const std::int64_t> ids, const detail::WindowMemberState& st) {
+  Result<void> r = writer.put_scalar_rational(qualified_base + "/clock", st.clock);
+  if (!r.ok()) return r;
+  r = writer.put_scalar<bool>(qualified_base + "/straddle_pending", st.straddle_pending);
+  if (!r.ok()) return r;
+  r = writer.put_scalar_rational(qualified_base + "/straddle_window_start",
+                                 st.straddle_window_start);
+  if (!r.ok()) return r;
+  r = writer.put_scalar_rational(qualified_base + "/straddle_window_end",
+                                 st.straddle_window_end);
+  if (!r.ok()) return r;
+
+  const std::size_t length = ids.size();
+  if (st.history.size() != length) {
+    return Failure{"E-RESTART-BAD-NUMBERING",
+                   "write_window_member_restart: " + qualified_base + " has " +
+                       std::to_string(st.history.size()) + " history entries for " +
+                       std::to_string(length) + " global ids"};
+  }
+  const std::size_t h_count = length > 0 ? st.history[0].size() : 0;
+  for (std::size_t e = 0; e < length; ++e) {
+    if (st.history[e].size() != h_count) {
+      return Failure{
+          "E-RESTART-BAD-NUMBERING",
+          "write_window_member_restart: " + qualified_base +
+              " every element must have the SAME history length to be "
+              "restarted by this (field, global id)-per-sample scheme; "
+              "element 0 has " + std::to_string(h_count) + ", element " +
+              std::to_string(e) + " has " + std::to_string(st.history[e].size())};
+    }
+  }
+  r = writer.put_scalar<std::int64_t>(qualified_base + "/history/count",
+                                      static_cast<std::int64_t>(h_count));
+  if (!r.ok()) return r;
+  std::vector<std::int64_t> t_num(length), t_den(length);
+  std::vector<double> values(length);
+  for (std::size_t k = 0; k < h_count; ++k) {
+    for (std::size_t e = 0; e < length; ++e) {
+      t_num[e] = st.history[e][k].first.num();
+      t_den[e] = st.history[e][k].first.den();
+      values[e] = st.history[e][k].second;
+    }
+    const std::string sp = qualified_base + "/history/sample" + std::to_string(k);
+    r = writer.put_field<std::int64_t>(sp + "/time_num", ids, t_num, 1,
+                                       static_cast<std::int64_t>(length));
+    if (!r.ok()) return r;
+    r = writer.put_field<std::int64_t>(sp + "/time_den", ids, t_den, 1,
+                                       static_cast<std::int64_t>(length));
+    if (!r.ok()) return r;
+    r = writer.put_field<double>(sp + "/value", ids, values, 1,
+                                 static_cast<std::int64_t>(length));
+    if (!r.ok()) return r;
+  }
+
+  if (st.last_window_waveform.empty()) {
+    return writer.put_scalar<bool>(qualified_base + "/waveform/present", false);
+  }
+  if (st.last_window_waveform.size() != length) {
+    return Failure{"E-RESTART-BAD-NUMBERING",
+                   "write_window_member_restart: " + qualified_base + " has " +
+                       std::to_string(st.last_window_waveform.size()) +
+                       " waveform entries for " + std::to_string(length) +
+                       " global ids"};
+  }
+  const bool any_present = std::any_of(
+      st.last_window_waveform.begin(), st.last_window_waveform.end(),
+      [](const std::unique_ptr<Waveform>& w) { return w != nullptr; });
+  r = writer.put_scalar<bool>(qualified_base + "/waveform/present", any_present);
+  if (!r.ok()) return r;
+  if (!any_present) return Result<void>::success();
+  for (std::size_t e = 0; e < length; ++e) {
+    if (st.last_window_waveform[e] == nullptr) {
+      return Failure{"E-RESTART-BAD-NUMBERING",
+                     "write_window_member_restart: " + qualified_base + " element " +
+                         std::to_string(e) +
+                         " has no last_window_waveform while another element of "
+                         "the SAME member does -- every element of one window "
+                         "member must agree on whether a window has completed yet"};
+    }
+  }
+  const Waveform& wf0 = *st.last_window_waveform[0];
+  const std::size_t sample_count = wf0.sample_count();
+  for (std::size_t e = 1; e < length; ++e) {
+    if (st.last_window_waveform[e]->sample_count() != sample_count) {
+      return Failure{"E-RESTART-BAD-NUMBERING",
+                     "write_window_member_restart: " + qualified_base +
+                         " every element's last_window_waveform must have the "
+                         "SAME sample count to be restarted by this per-sample "
+                         "scheme; element 0 has " + std::to_string(sample_count) +
+                         ", element " + std::to_string(e) + " has " +
+                         std::to_string(st.last_window_waveform[e]->sample_count())};
+    }
+  }
+  r = writer.put_scalar_rational(qualified_base + "/waveform/begin", wf0.window_begin());
+  if (!r.ok()) return r;
+  r = writer.put_scalar_rational(qualified_base + "/waveform/end", wf0.window_end());
+  if (!r.ok()) return r;
+  r = writer.put_scalar<std::int64_t>(qualified_base + "/waveform/capacity",
+                                      static_cast<std::int64_t>(wf0.capacity()));
+  if (!r.ok()) return r;
+  r = writer.put_scalar<std::int64_t>(qualified_base + "/waveform/sample_count",
+                                      static_cast<std::int64_t>(sample_count));
+  if (!r.ok()) return r;
+  for (std::size_t s = 0; s < sample_count; ++s) {
+    for (std::size_t e = 0; e < length; ++e) {
+      const Rational t = st.last_window_waveform[e]->sample_time(s);
+      t_num[e] = t.num();
+      t_den[e] = t.den();
+      values[e] = st.last_window_waveform[e]->sample_values(s)[0];
+    }
+    const std::string sp = qualified_base + "/waveform/sample" + std::to_string(s);
+    r = writer.put_field<std::int64_t>(sp + "/time_num", ids, t_num, 1,
+                                       static_cast<std::int64_t>(length));
+    if (!r.ok()) return r;
+    r = writer.put_field<std::int64_t>(sp + "/time_den", ids, t_den, 1,
+                                       static_cast<std::int64_t>(length));
+    if (!r.ok()) return r;
+    r = writer.put_field<double>(sp + "/value", ids, values, 1,
+                                 static_cast<std::int64_t>(length));
+    if (!r.ok()) return r;
+  }
+  return Result<void>::success();
+}
+
+/// The read-back counterpart. `allow_reset_on_mismatch`/`did_reset`
+/// mirror the accelerator path's own owner-decision-4 escape hatch: a
+/// missing (field, global id) row for ANY element of this member's own
+/// history or waveform refuses by name unless the run opted in, in
+/// which case THIS MEMBER's own history/waveform is cleared (did_reset
+/// set) rather than loaded -- the clock and straddle scalars, which
+/// carry no per-element id at all, are restored unconditionally either
+/// way, the same split the accelerator path draws between its scalar
+/// omega (Aitken) and its per-row r_prev.
+fuse::Result<void> restore_window_member_restart(
+    RestartReader& reader, const std::string& qualified_base,
+    std::span<const std::int64_t> ids, bool allow_reset_on_mismatch, bool& did_reset,
+    detail::WindowMemberState& st) {
+  did_reset = false;
+  const Result<Rational> clock_r = reader.get_scalar_rational(qualified_base + "/clock");
+  if (!clock_r.ok()) {
+    // Nothing was ever written under this prefix -- the WRITE side skips
+    // a window member entirely when it has no detail::WindowMemberState
+    // entry yet (the region's own window never advanced before the
+    // point was taken). Leaving `st` untouched (its caller-supplied,
+    // freshly default-constructed value) is the bit-identical same-run
+    // state: a WindowMemberState that has never advanced either.
+    if (clock_r.error().code == "E-RESTART-MISSING-SCALAR") {
+      return Result<void>::success();
+    }
+    return clock_r.error();
+  }
+  bool straddle_pending = false;
+  const Result<ReadConversionReport> sp_r =
+      reader.get_scalar<bool>(qualified_base + "/straddle_pending", straddle_pending);
+  if (!sp_r.ok()) return sp_r.error();
+  const Result<Rational> sws_r =
+      reader.get_scalar_rational(qualified_base + "/straddle_window_start");
+  if (!sws_r.ok()) return sws_r.error();
+  const Result<Rational> swe_r =
+      reader.get_scalar_rational(qualified_base + "/straddle_window_end");
+  if (!swe_r.ok()) return swe_r.error();
+
+  const std::size_t length = ids.size();
+  std::int64_t h_count = 0;
+  const Result<ReadConversionReport> hc_r =
+      reader.get_scalar<std::int64_t>(qualified_base + "/history/count", h_count);
+  if (!hc_r.ok()) return hc_r.error();
+  if (h_count < 0) {
+    return Failure{"E-RESTART-BAD-NUMBERING",
+                   "restore_window_member_restart: " + qualified_base +
+                       "/history/count is negative"};
+  }
+
+  std::vector<detail::WindowBoundaryHistory> history(length);
+  bool reset_history = false;
+  {
+    std::vector<std::int64_t> t_num(length), t_den(length);
+    std::vector<double> values(length);
+    for (std::int64_t k = 0; k < h_count && !reset_history; ++k) {
+      const std::string sp = qualified_base + "/history/sample" + std::to_string(k);
+      const Result<ReadConversionReport> rn =
+          reader.get_field<std::int64_t>(sp + "/time_num", ids, t_num, 1);
+      const Result<ReadConversionReport> rd =
+          rn.ok() ? reader.get_field<std::int64_t>(sp + "/time_den", ids, t_den, 1) : rn;
+      const Result<ReadConversionReport> rv =
+          rd.ok() ? reader.get_field<double>(sp + "/value", ids, values, 1) : rd;
+      if (!rv.ok()) {
+        if (!allow_reset_on_mismatch) return rv.error();
+        reset_history = true;
+        break;
+      }
+      for (std::size_t e = 0; e < length; ++e) {
+        history[e].emplace_back(Rational{t_num[e], t_den[e]}, values[e]);
+      }
+    }
+  }
+  if (reset_history) {
+    for (auto& h : history) h.clear();
+    did_reset = true;
+  }
+
+  std::vector<std::unique_ptr<Waveform>> waveform(length);
+  bool present = false;
+  const Result<ReadConversionReport> wp_r =
+      reader.get_scalar<bool>(qualified_base + "/waveform/present", present);
+  if (!wp_r.ok()) return wp_r.error();
+  if (present && !reset_history) {
+    const Result<Rational> wb_r = reader.get_scalar_rational(qualified_base + "/waveform/begin");
+    if (!wb_r.ok()) return wb_r.error();
+    const Result<Rational> we_r = reader.get_scalar_rational(qualified_base + "/waveform/end");
+    if (!we_r.ok()) return we_r.error();
+    std::int64_t capacity = 0, sample_count = 0;
+    const Result<ReadConversionReport> cap_r =
+        reader.get_scalar<std::int64_t>(qualified_base + "/waveform/capacity", capacity);
+    if (!cap_r.ok()) return cap_r.error();
+    const Result<ReadConversionReport> sc_r =
+        reader.get_scalar<std::int64_t>(qualified_base + "/waveform/sample_count", sample_count);
+    if (!sc_r.ok()) return sc_r.error();
+    if (capacity < 0 || sample_count < 0) {
+      return Failure{"E-RESTART-BAD-NUMBERING",
+                     "restore_window_member_restart: " + qualified_base +
+                         "/waveform has a negative count"};
+    }
+    for (auto& w : waveform) {
+      w = std::make_unique<Waveform>(1, static_cast<std::size_t>(capacity),
+                                     TemporalBasis::Linear, 1);
+      w->reset(wb_r.value(), we_r.value());
+    }
+    std::vector<std::int64_t> t_num(length), t_den(length);
+    std::vector<double> values(length);
+    bool reset_waveform = false;
+    for (std::int64_t s = 0; s < sample_count && !reset_waveform; ++s) {
+      const std::string sp = qualified_base + "/waveform/sample" + std::to_string(s);
+      const Result<ReadConversionReport> rn =
+          reader.get_field<std::int64_t>(sp + "/time_num", ids, t_num, 1);
+      const Result<ReadConversionReport> rd =
+          rn.ok() ? reader.get_field<std::int64_t>(sp + "/time_den", ids, t_den, 1) : rn;
+      const Result<ReadConversionReport> rv =
+          rd.ok() ? reader.get_field<double>(sp + "/value", ids, values, 1) : rd;
+      if (!rv.ok()) {
+        if (!allow_reset_on_mismatch) return rv.error();
+        reset_waveform = true;
+        break;
+      }
+      for (std::size_t e = 0; e < length; ++e) {
+        const Rational t{t_num[e], t_den[e]};
+        const double v = values[e];
+        const Result<void> pr = waveform[e]->push(t, &v);
+        if (!pr.ok()) return pr;
+      }
+    }
+    if (reset_waveform) {
+      for (auto& w : waveform) w.reset();
+      did_reset = true;
+    }
+  } else if (reset_history) {
+    // The history read already reset this member; a waveform matched
+    // against the CURRENT ids would be meaningless once the history it
+    // is a refinement of no longer corresponds to anything -- every
+    // element's waveform resets too, the same all-or-nothing posture
+    // Accelerator::reset() already takes for its own state.
+    for (auto& w : waveform) w.reset();
+  }
+
+  st.clock = clock_r.value();
+  st.straddle_pending = straddle_pending;
+  st.straddle_window_start = sws_r.value();
+  st.straddle_window_end = swe_r.value();
+  st.history = std::move(history);
+  st.last_window_waveform = std::move(waveform);
+  return Result<void>::success();
+}
+
 }  // namespace
 
 std::int64_t Runner::current_period_index() const noexcept {
@@ -5274,6 +5561,23 @@ void Runner::set_current_period_index(std::int64_t period_index) noexcept {
 
 void Runner::request_restart_point() noexcept {
   impl_->restart_point_requested = true;
+}
+
+Result<void> Runner::debug_replace_region_accelerator(
+    std::size_t region_index, std::unique_ptr<Accelerator> accel) {
+  if (!impl_->initialized) {
+    return Failure{"E-RT-INIT",
+                   "debug_replace_region_accelerator() called before a "
+                   "successful initialize()"};
+  }
+  if (region_index >= impl_->regions.size()) {
+    return Failure{"E-RT-REGION-INDEX",
+                   "debug_replace_region_accelerator: region_index " +
+                       std::to_string(region_index) + " out of range (" +
+                       std::to_string(impl_->regions.size()) + " regions)"};
+  }
+  impl_->regions[region_index].accel = std::move(accel);
+  return Result<void>::success();
 }
 
 bool Runner::take_restart_point_request() noexcept {
@@ -5315,9 +5619,33 @@ Result<void> Runner::write_restart_fields(RestartWriter& writer,
     // Round 2 EXACT-KEY fix: one RestartRowBlock PER RegionBlock, each
     // carrying its OWNING component's own unmodified ids under its own
     // qualified field name -- never concatenated into one flat id space.
+    //
+    // MUST-FIX 2 (KNOWN_ISSUES.md D69, closed round 2): a window-scoped
+    // region's own RegionBlock::length is the K-WIDE stacked window-
+    // transfer buffer (element count TIMES window_export_capacity), not
+    // the registered field's own single-sample size a component's
+    // write_restart() reports ids for -- block.length / block.
+    // window_export_capacity recovers the element count the ids must
+    // match; RestartRowBlock::window_capacity carries K through to
+    // detail::put_field_per_block (src/num/accel_relaxation.cpp), which
+    // demuxes the K samples into per-sample sub-datasets.
+    //
+    // Latent bug fixed this round: region.blocks' own iteration order
+    // does not always match ascending RegionBlock::offset (measured for
+    // brusselator_window: the U/u_in block at offset 275 iterates before
+    // the V/v_in block at offset 0) -- the running-offset accumulation
+    // in put_field_per_block()/get_field_per_block() assumes iteration
+    // order matches layout order, so a local copy sorted by offset is
+    // built here rather than iterating region.blocks directly.
+    std::vector<detail::RegionBlock> sorted_blocks(region.blocks.begin(),
+                                                   region.blocks.end());
+    std::sort(sorted_blocks.begin(), sorted_blocks.end(),
+             [](const detail::RegionBlock& a, const detail::RegionBlock& b) {
+               return a.offset < b.offset;
+             });
     std::vector<RestartRowBlock> blocks;
-    blocks.reserve(region.blocks.size());
-    for (const detail::RegionBlock& block : region.blocks) {
+    blocks.reserve(sorted_blocks.size());
+    for (const detail::RegionBlock& block : sorted_blocks) {
       if (block.length == 0) continue;
       const auto oit = owner_map.value().find(block.target_field);
       if (oit == owner_map.value().end()) {
@@ -5330,15 +5658,19 @@ Result<void> Runner::write_restart_fields(RestartWriter& writer,
       const std::string qualified = oit->second + "/" + block.target_field;
       const Result<std::vector<std::int64_t>> ids = writer.recorded_ids(qualified);
       if (!ids.ok()) return ids.error();
-      if (ids.value().size() != block.length) {
+      const std::size_t cap = block.window_export_capacity;
+      const std::size_t expected_elems = cap > 0 ? block.length / cap : block.length;
+      if (ids.value().size() != expected_elems) {
         return Failure{
             "E-RESTART-BAD-NUMBERING",
             "write_restart_fields: region '" + region.name + "' block for '" +
-                qualified + "' expects " + std::to_string(block.length) +
+                qualified + "' expects " + std::to_string(expected_elems) +
                 " rows, component reported " +
                 std::to_string(ids.value().size())};
       }
-      blocks.push_back(RestartRowBlock{qualified, ids.value()});
+      RestartRowBlock rb{qualified, ids.value()};
+      rb.window_capacity = cap;
+      blocks.push_back(std::move(rb));
     }
     // Round 2 fix 1 (NO SILENT RESET): an accelerator that does not
     // implement restart state writes nothing for this region -- the
@@ -5352,6 +5684,38 @@ Result<void> Runner::write_restart_fields(RestartWriter& writer,
     const Result<void> r =
         region.accel->export_restart_state(writer, region.name, blocks);
     if (!r.ok()) return r;
+  }
+
+  // Window-waveform history (docs/dev/restart.md Section 9 item 4, Slice
+  // 2): keyed by the SAME (owning field, global id) pairs the owning
+  // component's own write_restart() just recorded above, under a
+  // SEPARATE "__window/" top-level prefix so a window member's own
+  // restart point never collides with the registered field it is
+  // itself exported through.
+  for (const auto& [node, cfg] : impl_->window_member_config) {
+    if (!cfg.exported_field.valid()) continue;
+    const std::string& field_name = impl_->graph.field(cfg.exported_field).name;
+    const auto oit = owner_map.value().find(field_name);
+    if (oit == owner_map.value().end()) {
+      return Failure{"E-RESTART-BAD-NUMBERING",
+                     "write_restart_fields: window member's own exported "
+                     "field '" + field_name + "' has no owning component"};
+    }
+    const std::string qualified = oit->second + "/" + field_name;
+    const Result<std::vector<std::int64_t>> ids = writer.recorded_ids(qualified);
+    if (!ids.ok()) return ids.error();
+    if (ids.value().size() != cfg.length) {
+      return Failure{"E-RESTART-BAD-NUMBERING",
+                     "write_restart_fields: window member for '" + qualified +
+                         "' expects " + std::to_string(cfg.length) +
+                         " rows, component reported " +
+                         std::to_string(ids.value().size())};
+    }
+    const auto st_it = impl_->window_member_state.find(node);
+    if (st_it == impl_->window_member_state.end()) continue;  // never advanced
+    const Result<void> wr = write_window_member_restart(
+        writer, "__window/" + qualified, ids.value(), st_it->second);
+    if (!wr.ok()) return wr;
   }
   return Result<void>::success();
 }
@@ -5402,6 +5766,15 @@ Result<void> Runner::restore_restart_fields(RestartReader& reader,
   for (detail::RegionRuntime& region : impl_->regions) {
     if (region.accel == nullptr) continue;
 
+    // MUST-FIX 1 (NO SILENT RESET), round 2: a window-scoped region
+    // used to be special-cased here to silently any_accelerator_reset
+    // = true and skip, WITHOUT checking allow_accelerator_reset_on_
+    // mismatch -- that special case is removed. Every region, window-
+    // scoped or not, now runs the IDENTICAL refusal-by-name check
+    // below; MUST-FIX 2 (closing D69) is what makes a window-scoped
+    // region's own accelerator genuinely restartable rather than
+    // merely refusing less silently.
+    //
     // Round 2 fix 1 (NO SILENT RESET), owner decision 4: refuse by name
     // unless the run opted in. This check is COLLECTIVE BY
     // CONSTRUCTION, not by an added reduction -- every rank's graph
@@ -5435,9 +5808,18 @@ Result<void> Runner::restore_restart_fields(RestartReader& reader,
     // carrying its OWNING component's own unmodified, CURRENT ids under
     // its own qualified field name -- never concatenated into one flat
     // id space keyed by a combined/hashed value.
+    //
+    // Same window_export_capacity/sort-by-offset fix as
+    // write_restart_fields() above -- see that function's own comment.
+    std::vector<detail::RegionBlock> sorted_blocks(region.blocks.begin(),
+                                                   region.blocks.end());
+    std::sort(sorted_blocks.begin(), sorted_blocks.end(),
+             [](const detail::RegionBlock& a, const detail::RegionBlock& b) {
+               return a.offset < b.offset;
+             });
     std::vector<RestartRowBlock> blocks;
-    blocks.reserve(region.blocks.size());
-    for (const detail::RegionBlock& block : region.blocks) {
+    blocks.reserve(sorted_blocks.size());
+    for (const detail::RegionBlock& block : sorted_blocks) {
       if (block.length == 0) continue;
       const auto oit = owner_map.value().find(block.target_field);
       if (oit == owner_map.value().end()) {
@@ -5450,21 +5832,62 @@ Result<void> Runner::restore_restart_fields(RestartReader& reader,
       const Result<std::vector<std::int64_t>> ids =
           id_collector.recorded_ids(qualified);
       if (!ids.ok()) return ids.error();
-      if (ids.value().size() != block.length) {
+      const std::size_t cap = block.window_export_capacity;
+      const std::size_t expected_elems = cap > 0 ? block.length / cap : block.length;
+      if (ids.value().size() != expected_elems) {
         return Failure{
             "E-RESTART-BAD-NUMBERING",
             "restore_restart_fields: region '" + region.name + "' block for '" +
-                qualified + "' expects " + std::to_string(block.length) +
+                qualified + "' expects " + std::to_string(expected_elems) +
                 " rows, component currently reports " +
                 std::to_string(ids.value().size())};
       }
-      blocks.push_back(RestartRowBlock{qualified, ids.value()});
+      RestartRowBlock rb{qualified, ids.value()};
+      rb.window_capacity = cap;
+      blocks.push_back(std::move(rb));
     }
     bool did_reset = false;
     const Result<void> r = region.accel->import_restart_state(
         reader, region.name, blocks, allow_accelerator_reset_on_mismatch,
         did_reset);
     if (!r.ok()) return r;
+    any_accelerator_reset = any_accelerator_reset || did_reset;
+  }
+
+  // Window-waveform history restore (docs/dev/restart.md Section 9 item
+  // 4, Slice 2): see write_restart_fields()'s own comment on the
+  // "__window/" prefix. `any_accelerator_reset` is shared across both
+  // the accelerator reset report and this one -- owner decision 4 names
+  // one reporting convention ("when used it is reported at restart")
+  // for both kinds, and this round reuses it rather than widening the
+  // public restore_restart_point()/restore_restart_fields() signature
+  // with a second output parameter the owner has not asked for.
+  for (auto& [node, cfg] : impl_->window_member_config) {
+    if (!cfg.exported_field.valid()) continue;
+    const std::string& field_name = impl_->graph.field(cfg.exported_field).name;
+    const auto oit = owner_map.value().find(field_name);
+    if (oit == owner_map.value().end()) {
+      return Failure{"E-RESTART-BAD-NUMBERING",
+                     "restore_restart_fields: window member's own exported "
+                     "field '" + field_name + "' has no owning component"};
+    }
+    const std::string qualified = oit->second + "/" + field_name;
+    const Result<std::vector<std::int64_t>> ids =
+        id_collector.recorded_ids(qualified);
+    if (!ids.ok()) return ids.error();
+    if (ids.value().size() != cfg.length) {
+      return Failure{"E-RESTART-BAD-NUMBERING",
+                     "restore_restart_fields: window member for '" + qualified +
+                         "' expects " + std::to_string(cfg.length) +
+                         " rows, component currently reports " +
+                         std::to_string(ids.value().size())};
+    }
+    bool did_reset = false;
+    detail::WindowMemberState& st = impl_->window_member_state[node];
+    const Result<void> wr = restore_window_member_restart(
+        reader, "__window/" + qualified, ids.value(),
+        allow_accelerator_reset_on_mismatch, did_reset, st);
+    if (!wr.ok()) return wr;
     any_accelerator_reset = any_accelerator_reset || did_reset;
   }
   return Result<void>::success();

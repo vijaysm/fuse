@@ -713,6 +713,31 @@ class UCore {
   [[nodiscard]] const Vector& provided() const { return provided_; }
   [[nodiscard]] double external_total() const { return external_total_; }
   [[nodiscard]] double exchange_out() const { return exchange_out_; }
+  /// Restart track (docs/dev/restart.md Section 1.8, Slice 2): the
+  /// lagged reaction rate from the step just committed -- hidden state
+  /// `advance()` mutates outside what `register_fields()` bound
+  /// (Section 1.8's own per-example table), not derivable from `state()`
+  /// alone (it is `q_new` from the LAST `step()` call, a function of the
+  /// reaction fixed point that call's own iteration converged to, not a
+  /// pure function of `state()`/`required()`).
+  [[nodiscard]] const Vector& q_prev() const { return q_prev_; }
+  /// Restart track: the read-back counterpart of every accessor above
+  /// that is not already re-derivable from the registered field storage
+  /// a restore pass restores first (`provided_`'s own invariant --
+  /// `provided_ == q_prev_` always, by construction at the constructor
+  /// and at the end of every successful `step()` -- means `provided_`
+  /// does not need its own restore entry here; the caller re-sets it to
+  /// the restored `q_prev` right after this call, matching the
+  /// invariant exactly rather than restoring a THIRD copy of the same
+  /// values under a different name).
+  void restore_restart_state(Vector state, Vector q_prev, double external_total,
+                             double exchange_out) {
+    state_ = std::move(state);
+    q_prev_ = std::move(q_prev);
+    provided_ = q_prev_;
+    external_total_ = external_total;
+    exchange_out_ = exchange_out;
+  }
   /// The mean of the WHOLE species over every rank's owned cells: one
   /// reduction, so it is a collective every rank of the component must
   /// call. On one rank it is `state().mean()` bit for bit. A participant's
@@ -829,6 +854,13 @@ class VDiffusionCore {
   [[nodiscard]] double exchange_in() const { return exchange_in_; }
   /// See `UCore::state_mean`: the whole species' mean, a collective.
   [[nodiscard]] double state_mean() const { return global_mean(state_); }
+  /// Restart track: the read-back counterpart of `state()`/`exchange_in()`
+  /// -- see `UCore::restore_restart_state()`'s own comment, identical
+  /// reasoning, a smaller set of members.
+  void restore_restart_state(Vector state, double exchange_in) {
+    state_ = std::move(state);
+    exchange_in_ = exchange_in;
+  }
 
  private:
   /// See `UCore::global_mean`'s own comment -- identical reasoning, a

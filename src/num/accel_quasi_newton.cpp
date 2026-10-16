@@ -3,6 +3,8 @@
 #include <cstddef>
 #include <limits>
 #include <memory>
+#include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -456,6 +458,250 @@ class QuasiNewtonAccel final : public Accelerator {
     r_.swap(r_prev_);
     have_prev_  = true;
     return step;
+  }
+
+  /// Restart track (docs/dev/restart.md Section 9 item 4; KNOWN_ISSUES.md
+  /// D64, now implemented): every member this class carries forward
+  /// between update() calls -- v_/w_ (the current window's own secant
+  /// columns), x_new_prev_/r_prev_/have_prev_ (the previous iterate and
+  /// residual), blocks_/chain_reprieves_ (IQN-IMVJ's folded
+  /// inverse-Jacobian chain) -- is real, learned state, so this is a
+  /// genuine implementation, not the inherited no-op default. The
+  /// per-solve SCRATCH members (r_, d_, alpha_, ls_a_/ls_b_, rho_,
+  /// jrho_, probe_, jac_a_/jac_b_/jac_beta_, fold_col_/fold_jv_,
+  /// ls_scratch_, filter_scratch_) need nothing: every one of them is
+  /// written before it is read on every call (the class's own storage
+  /// comment above), so there is nothing in them to carry across a
+  /// restart.
+  [[nodiscard]] bool restart_state_implemented() const noexcept override {
+    return true;
+  }
+
+  /// EXACT-KEY scheme (round 2's own fix, accel_relaxation.cpp), extended
+  /// to a MULTI-COLUMN buffer: v_/w_ are "n x cols_, column major" (the
+  /// class's own member comment), so column j occupies v_[j*n_, (j+1)*n_)
+  /// contiguously -- exactly the single-component, length-n_ row layout
+  /// put_field_per_block() already writes one dataset per block
+  /// for. Writing one CALL PER COLUMN (dataset name suffixed "/col<j>")
+  /// keeps every row keyed by the SAME (owning field name, global id)
+  /// pair the accelerator's caller (Runner::write_restart_fields())
+  /// already resolved into `blocks`, with no transpose and no new id
+  /// space: column j's n_ values are blocks[0].ids[0..], blocks[0].ids
+  /// next block's own ids, etc., in exactly the order update()'s own
+  /// flat buffer already uses.
+  Result<void> export_restart_state(
+      RestartWriter& writer, std::string_view name_prefix,
+      std::span<const RestartRowBlock> blocks) const override {
+    if (total_rows(blocks) != n_) {
+      return Failure{"E-RESTART-BAD-NUMBERING",
+                     "QuasiNewtonAccel::export_restart_state: " +
+                         std::to_string(total_rows(blocks)) +
+                         " row global ids for an accelerator of length " +
+                         std::to_string(n_)};
+    }
+    const std::string prefix = std::string(name_prefix) + "/iqn";
+    Result<void> r = writer.put_scalar<std::int64_t>(
+        prefix + "/cols", static_cast<std::int64_t>(cols_));
+    if (!r.ok()) return r;
+    r = writer.put_scalar<bool>(prefix + "/have_prev", have_prev_);
+    if (!r.ok()) return r;
+    r = writer.put_scalar<std::int32_t>(
+        prefix + "/chain_reprieves", static_cast<std::int32_t>(chain_reprieves_));
+    if (!r.ok()) return r;
+    r = writer.put_scalar<std::int64_t>(
+        prefix + "/num_blocks", static_cast<std::int64_t>(blocks_.size()));
+    if (!r.ok()) return r;
+    if (have_prev_) {
+      r = put_field_per_block(writer, prefix + "/x_new_prev", blocks,
+                                      x_new_prev_, 1);
+      if (!r.ok()) return r;
+      r = put_field_per_block(writer, prefix + "/r_prev", blocks,
+                                      r_prev_, 1);
+      if (!r.ok()) return r;
+    }
+    for (std::size_t j = 0; j < cols_; ++j) {
+      r = put_field_per_block(
+          writer, prefix + "/v/col" + std::to_string(j), blocks,
+          std::span<const double>(v_.data() + j * n_, n_), 1);
+      if (!r.ok()) return r;
+      r = put_field_per_block(
+          writer, prefix + "/w/col" + std::to_string(j), blocks,
+          std::span<const double>(w_.data() + j * n_, n_), 1);
+      if (!r.ok()) return r;
+    }
+    for (std::size_t b = 0; b < blocks_.size(); ++b) {
+      const std::string bprefix = prefix + "/blocks/" + std::to_string(b);
+      r = writer.put_scalar<std::int64_t>(
+          bprefix + "/cols", static_cast<std::int64_t>(blocks_[b].cols));
+      if (!r.ok()) return r;
+      for (std::size_t j = 0; j < blocks_[b].cols; ++j) {
+        r = put_field_per_block(
+            writer, bprefix + "/z/col" + std::to_string(j), blocks,
+            std::span<const double>(blocks_[b].z.data() + j * n_, n_), 1);
+        if (!r.ok()) return r;
+        r = put_field_per_block(
+            writer, bprefix + "/v/col" + std::to_string(j), blocks,
+            std::span<const double>(blocks_[b].v.data() + j * n_, n_), 1);
+        if (!r.ok()) return r;
+      }
+    }
+    return Result<void>::success();
+  }
+
+  /// The read-back counterpart. A missing (field, id) row at ANY step
+  /// below -- the layout-mismatch case owner decision 4 names -- is
+  /// handled uniformly through `guard()`: `allow_reset_on_mismatch ==
+  /// false` refuses by name (propagating the ORIGINAL E-RESTART-MISSING-*
+  /// error so the caller sees which row was missing), `true` drops
+  /// EVERYTHING read so far and calls reset() plus clears the retained
+  /// Jacobian chain (a layout change invalidates the chain exactly as a
+  /// change of `n` already does in update(), Section 1.3's own stated
+  /// reason: a different rank count's stacked vector has no element-wise
+  /// correspondence to the old one). `/iqn/cols` missing entirely (not a
+  /// layout mismatch, a genuinely ABSENT record -- defensive: today's own
+  /// orchestration, Runner::write_restart_fields(), always calls
+  /// export_restart_state() whenever this region has an accelerator at
+  /// all, so this branch is reached only if a restore graph adds a NEW
+  /// accelerated region the write-time graph never had) is treated the
+  /// same as a fresh, never-run accelerator: n_ is set and every buffer
+  /// cleared, success, no reset reported (there was nothing to reset).
+  Result<void> import_restart_state(
+      RestartReader& reader, std::string_view name_prefix,
+      std::span<const RestartRowBlock> blocks, bool allow_reset_on_mismatch,
+      bool& did_reset) override {
+    did_reset = false;
+    const std::size_t new_n = total_rows(blocks);
+    const std::string prefix = std::string(name_prefix) + "/iqn";
+
+    std::int64_t cols_read = 0;
+    Result<ReadConversionReport> cr =
+        reader.get_scalar<std::int64_t>(prefix + "/cols", cols_read);
+    if (!cr.ok()) {
+      if (cr.error().code == "E-RESTART-MISSING-SCALAR") {
+        n_ = new_n;
+        clear_window();
+        blocks_.clear();
+        chain_reprieves_ = 0;
+        return Result<void>::success();
+      }
+      return cr.error();
+    }
+    bool have_prev_read = false;
+    cr = reader.get_scalar<bool>(prefix + "/have_prev", have_prev_read);
+    if (!cr.ok()) return cr.error();
+    std::int32_t chain_reprieves_read = 0;
+    cr = reader.get_scalar<std::int32_t>(prefix + "/chain_reprieves",
+                                         chain_reprieves_read);
+    if (!cr.ok()) return cr.error();
+    std::int64_t num_blocks_read = 0;
+    cr = reader.get_scalar<std::int64_t>(prefix + "/num_blocks", num_blocks_read);
+    if (!cr.ok()) return cr.error();
+    if (cols_read < 0 || num_blocks_read < 0) {
+      return Failure{"E-RESTART-BAD-NUMBERING",
+                     "QuasiNewtonAccel::import_restart_state: " + prefix +
+                         " recorded a negative column or block count"};
+    }
+
+    // Any row this run's OWN CURRENT global ids ask for but the file does
+    // not have is the layout-mismatch case: everything read so far for
+    // THIS import_restart_state() call is discarded (this object's own
+    // members are untouched until every row below has been read
+    // successfully) and reset() runs instead, exactly as Aitken/
+    // Steffensen's own guard already does.
+    const auto guard =
+        [&](Result<void> rr) -> std::optional<Result<void>> {
+      if (rr.ok()) return std::nullopt;
+      if (!allow_reset_on_mismatch) return rr;
+      did_reset = true;
+      n_ = new_n;
+      reset();
+      blocks_.clear();
+      chain_reprieves_ = 0;
+      return Result<void>::success();
+    };
+
+    std::vector<double> x_new_prev_read, r_prev_read;
+    if (have_prev_read) {
+      x_new_prev_read.resize(new_n);
+      r_prev_read.resize(new_n);
+      if (auto out = guard(get_field_per_block(
+              reader, prefix + "/x_new_prev", blocks, x_new_prev_read, 1))) {
+        return *out;
+      }
+      if (auto out = guard(get_field_per_block(
+              reader, prefix + "/r_prev", blocks, r_prev_read, 1))) {
+        return *out;
+      }
+    }
+
+    std::vector<double> v_read(new_n * static_cast<std::size_t>(cols_read));
+    std::vector<double> w_read(new_n * static_cast<std::size_t>(cols_read));
+    for (std::int64_t j = 0; j < cols_read; ++j) {
+      if (auto out = guard(get_field_per_block(
+              reader, prefix + "/v/col" + std::to_string(j), blocks,
+              std::span<double>(v_read.data() + static_cast<std::size_t>(j) * new_n,
+                                new_n),
+              1))) {
+        return *out;
+      }
+      if (auto out = guard(get_field_per_block(
+              reader, prefix + "/w/col" + std::to_string(j), blocks,
+              std::span<double>(w_read.data() + static_cast<std::size_t>(j) * new_n,
+                                new_n),
+              1))) {
+        return *out;
+      }
+    }
+
+    std::vector<JacobianBlock> blocks_read;
+    blocks_read.reserve(static_cast<std::size_t>(num_blocks_read));
+    for (std::int64_t b = 0; b < num_blocks_read; ++b) {
+      const std::string bprefix = prefix + "/blocks/" + std::to_string(b);
+      std::int64_t bcols = 0;
+      // This scalar is written for every b < num_blocks_read whenever
+      // export_restart_state() ran at all (it is not gated on any
+      // per-row condition), so its absence here is a genuinely malformed
+      // file, not a layout mismatch -- propagated directly, never routed
+      // through guard()'s own reset path.
+      const Result<ReadConversionReport> bc =
+          reader.get_scalar<std::int64_t>(bprefix + "/cols", bcols);
+      if (!bc.ok()) return bc.error();
+      if (bcols < 0) {
+        return Failure{"E-RESTART-BAD-NUMBERING",
+                       "QuasiNewtonAccel::import_restart_state: " + bprefix +
+                           "/cols is negative"};
+      }
+      JacobianBlock jb;
+      jb.cols = static_cast<std::size_t>(bcols);
+      jb.z.assign(new_n * jb.cols, 0.0);
+      jb.v.assign(new_n * jb.cols, 0.0);
+      for (std::size_t j = 0; j < jb.cols; ++j) {
+        if (auto out = guard(get_field_per_block(
+                reader, bprefix + "/z/col" + std::to_string(j), blocks,
+                std::span<double>(jb.z.data() + j * new_n, new_n), 1))) {
+          return *out;
+        }
+        if (auto out = guard(get_field_per_block(
+                reader, bprefix + "/v/col" + std::to_string(j), blocks,
+                std::span<double>(jb.v.data() + j * new_n, new_n), 1))) {
+          return *out;
+        }
+      }
+      blocks_read.push_back(std::move(jb));
+    }
+
+    n_ = new_n;
+    cols_ = static_cast<std::size_t>(cols_read);
+    v_ = std::move(v_read);
+    w_ = std::move(w_read);
+    have_prev_ = have_prev_read;
+    if (have_prev_) {
+      x_new_prev_ = std::move(x_new_prev_read);
+      r_prev_ = std::move(r_prev_read);
+    }
+    blocks_ = std::move(blocks_read);
+    chain_reprieves_ = static_cast<int>(chain_reprieves_read);
+    return Result<void>::success();
   }
 
  private:

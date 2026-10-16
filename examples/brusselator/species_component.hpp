@@ -124,6 +124,7 @@ class UComponent final : public fuse::Component,
             fuse::Rational window_length = fuse::Rational{0})
       : name_(std::move(name)),
         n_(grid.size()),
+        grid_(&grid),
         core_(grid, cfg, initial_v_on_u),
         required_(std::move(initial_v_on_u)),
         provided_(core_.provided()),
@@ -219,7 +220,96 @@ class UComponent final : public fuse::Component,
     if (own_interval_ > fuse::Rational{0}) {
       caps |= fuse::kCapabilityResidual | fuse::kCapabilityLinearization;
     }
+    // Restart track (docs/dev/restart.md Section 9 item 1, Slice 2):
+    // Form A over this component's own U-grid global ids (write_restart()/
+    // read_restart() below) -- unconditional, unlike the window-metadata
+    // bits above, because every UComponent (both drivers, every existing
+    // test) has a real NativeGrid behind it to number by.
+    caps |= fuse::kCapabilityRestartFormA;
     return caps;
+  }
+
+  /// Restart track (docs/dev/restart.md Section 9 item 1, Section 2.3's
+  /// own "Brusselator example" row; Slice 2). Every array this
+  /// component owns, keyed by `grid_->global_id(e)` -- the SAME
+  /// `cell_gid = ix + iy*nx` the native quad generator assigns, unique
+  /// and contiguous over the whole logical grid independent of this
+  /// run's own rank count (Section 2.2). `"u_out"`/`"u_in"` are this
+  /// component's own two FieldSpec names in the coupling graph
+  /// (brusselator_graph.hpp's own `add_window_coupling()`), not
+  /// invented -- see `docs/user/restart.md`'s own naming rule and
+  /// `examples/dn_heat/dn_component.hpp`'s identical comment for the
+  /// measured reason this naming convention exists: an accelerated
+  /// channel's own row-to-component resolution looks a field up by this
+  /// EXACT string. `"u_state"`/`"u_q_prev"` are this component's own
+  /// PRIVATE hidden state (Section 1.8 -- `UCore::state_`/`q_prev_`,
+  /// neither bound through `register_fields()`), free to choose any
+  /// name that does not collide under this component's own `QualifyingRestartWriter`
+  /// prefix. `provided_` and `q_prev_` are not both written: `UCore`'s
+  /// own documented invariant (`provided_ == q_prev_` always, after
+  /// construction and after every successful `step()`) means restoring
+  /// `q_prev_` and re-deriving `provided_` from it (`UCore::
+  /// restore_restart_state()`'s own doc comment) is a complete,
+  /// bit-identical restore of both, never an approximation.
+  fuse::Result<void> write_restart(fuse::RestartWriter& writer) override {
+    std::vector<std::int64_t> ids(static_cast<std::size_t>(n_));
+    for (int e = 0; e < n_; ++e) {
+      ids[static_cast<std::size_t>(e)] = grid_->global_id(e);
+    }
+    const std::int64_t gsize = static_cast<std::int64_t>(n_);
+    const std::size_t count = static_cast<std::size_t>(n_);
+    fuse::Result<void> r = writer.put_field<double>(
+        "u_out", ids, std::span<const double>(provided_.data(), count), 1, gsize);
+    if (!r.ok()) return r;
+    r = writer.put_field<double>(
+        "u_in", ids, std::span<const double>(required_.data(), count), 1, gsize);
+    if (!r.ok()) return r;
+    r = writer.put_field<double>(
+        "u_state", ids,
+        std::span<const double>(core_.state().data(), count), 1, gsize);
+    if (!r.ok()) return r;
+    r = writer.put_field<double>(
+        "u_q_prev", ids,
+        std::span<const double>(core_.q_prev().data(), count), 1, gsize);
+    if (!r.ok()) return r;
+    r = writer.put_scalar<double>("u_external_total", core_.external_total());
+    if (!r.ok()) return r;
+    return writer.put_scalar<double>("u_exchange_out", core_.exchange_out());
+  }
+
+  /// The read-back counterpart of `write_restart()`. Reads directly into
+  /// `provided_`/`required_` (this component's own FUSE-bound storage,
+  /// restored exactly like `DirichletSlab`'s `q_`/`u_in_`), and into
+  /// freshly sized locals for `core_`'s own private state, handed to
+  /// `UCore::restore_restart_state()` once every row has been read
+  /// successfully -- never partially mutating `core_` on a failing read.
+  fuse::Result<void> read_restart(fuse::RestartReader& reader) override {
+    std::vector<std::int64_t> ids(static_cast<std::size_t>(n_));
+    for (int e = 0; e < n_; ++e) {
+      ids[static_cast<std::size_t>(e)] = grid_->global_id(e);
+    }
+    const std::size_t count = static_cast<std::size_t>(n_);
+    fuse::Result<fuse::ReadConversionReport> r = reader.get_field<double>(
+        "u_out", ids, std::span<double>(provided_.data(), count), 1);
+    if (!r.ok()) return r.error();
+    r = reader.get_field<double>(
+        "u_in", ids, std::span<double>(required_.data(), count), 1);
+    if (!r.ok()) return r.error();
+    Vector state(n_), q_prev(n_);
+    r = reader.get_field<double>(
+        "u_state", ids, std::span<double>(state.data(), count), 1);
+    if (!r.ok()) return r.error();
+    r = reader.get_field<double>(
+        "u_q_prev", ids, std::span<double>(q_prev.data(), count), 1);
+    if (!r.ok()) return r.error();
+    double external_total = 0.0, exchange_out = 0.0;
+    r = reader.get_scalar<double>("u_external_total", external_total);
+    if (!r.ok()) return r.error();
+    r = reader.get_scalar<double>("u_exchange_out", exchange_out);
+    if (!r.ok()) return r.error();
+    core_.restore_restart_state(std::move(state), std::move(q_prev), external_total,
+                                exchange_out);
+    return fuse::Result<void>::success();
   }
 
   /// S7.2 WindowNewton (newton-krylov.md Sec. 9): the window-member
@@ -411,6 +501,12 @@ class UComponent final : public fuse::Component,
 
   std::string name_;
   int n_;
+  /// Restart track (Slice 2): the grid `write_restart()`/`read_restart()`
+  /// read global ids from. Non-owning: `grid` outlives this component in
+  /// every caller (`Rig`/`main.cpp` both hold their own `NativeGrid`
+  /// outside the `ComponentSet`), the same convention `weights_uv_`/
+  /// `weights_vu_` below already use for VComponent.
+  const NativeGrid* grid_;
   UCore core_;
   Vector required_;   ///< P_VU(V) mean over this step, on the U grid -- FUSE-bound storage
   Vector provided_;   ///< q, on the U grid, valid at ctx.t_end -- FUSE-bound storage
@@ -533,7 +629,79 @@ class VComponent final : public fuse::Component,
     if (own_interval_ > fuse::Rational{0}) {
       caps |= fuse::kCapabilityResidual | fuse::kCapabilityLinearization;
     }
+    // Restart track: see `UComponent::capabilities()`'s own comment --
+    // the identical unconditional bit, on the identical sentinel.
+    caps |= fuse::kCapabilityRestartFormA;
     return caps;
+  }
+
+  /// Restart track (docs/dev/restart.md Section 9 item 1, Slice 2).
+  /// TWO DIFFERENT global-id spaces in one component, by construction
+  /// (the file header's own "both members use WindowMember::length =
+  /// N_u"): `"v_out"`/`"v_in"` are this component's own FUSE-bound
+  /// fields, which live on the U GRID (`n_u_` elements, `u_grid_`'s own
+  /// global ids) -- NOT the V grid, even though `v_out`'s own values
+  /// are `P_VU(state_)`, state_ itself being a V-grid quantity already
+  /// remapped onto the U grid before `register_fields()` ever bound it.
+  /// `"v_state"` is `core_.state()` itself (`VDiffusionCore`'s own
+  /// hidden state, Section 1.8), genuinely ON the V grid (`n_v_`
+  /// elements) and keyed by `v_grid_`'s OWN global ids -- a component
+  /// restarted at a different rank count re-partitions THIS array by
+  /// the V mesh's own decomposition, independent of how `v_out`/`v_in`
+  /// (U-grid-keyed) re-partition.
+  fuse::Result<void> write_restart(fuse::RestartWriter& writer) override {
+    std::vector<std::int64_t> u_ids(static_cast<std::size_t>(n_u_));
+    for (int e = 0; e < n_u_; ++e) {
+      u_ids[static_cast<std::size_t>(e)] = u_grid_->global_id(e);
+    }
+    std::vector<std::int64_t> v_ids(static_cast<std::size_t>(n_v_));
+    for (int e = 0; e < n_v_; ++e) {
+      v_ids[static_cast<std::size_t>(e)] = v_grid_->global_id(e);
+    }
+    const std::size_t u_count = static_cast<std::size_t>(n_u_);
+    const std::size_t v_count = static_cast<std::size_t>(n_v_);
+    fuse::Result<void> r = writer.put_field<double>(
+        "v_out", u_ids, std::span<const double>(provided_.data(), u_count), 1,
+        static_cast<std::int64_t>(n_u_));
+    if (!r.ok()) return r;
+    r = writer.put_field<double>(
+        "v_in", u_ids, std::span<const double>(required_.data(), u_count), 1,
+        static_cast<std::int64_t>(n_u_));
+    if (!r.ok()) return r;
+    r = writer.put_field<double>(
+        "v_state", v_ids, std::span<const double>(core_.state().data(), v_count),
+        1, static_cast<std::int64_t>(n_v_));
+    if (!r.ok()) return r;
+    return writer.put_scalar<double>("v_exchange_in", core_.exchange_in());
+  }
+
+  /// The read-back counterpart of `write_restart()`.
+  fuse::Result<void> read_restart(fuse::RestartReader& reader) override {
+    std::vector<std::int64_t> u_ids(static_cast<std::size_t>(n_u_));
+    for (int e = 0; e < n_u_; ++e) {
+      u_ids[static_cast<std::size_t>(e)] = u_grid_->global_id(e);
+    }
+    std::vector<std::int64_t> v_ids(static_cast<std::size_t>(n_v_));
+    for (int e = 0; e < n_v_; ++e) {
+      v_ids[static_cast<std::size_t>(e)] = v_grid_->global_id(e);
+    }
+    const std::size_t u_count = static_cast<std::size_t>(n_u_);
+    const std::size_t v_count = static_cast<std::size_t>(n_v_);
+    fuse::Result<fuse::ReadConversionReport> r = reader.get_field<double>(
+        "v_out", u_ids, std::span<double>(provided_.data(), u_count), 1);
+    if (!r.ok()) return r.error();
+    r = reader.get_field<double>(
+        "v_in", u_ids, std::span<double>(required_.data(), u_count), 1);
+    if (!r.ok()) return r.error();
+    Vector state(n_v_);
+    r = reader.get_field<double>(
+        "v_state", v_ids, std::span<double>(state.data(), v_count), 1);
+    if (!r.ok()) return r.error();
+    double exchange_in = 0.0;
+    r = reader.get_scalar<double>("v_exchange_in", exchange_in);
+    if (!r.ok()) return r.error();
+    core_.restore_restart_state(std::move(state), exchange_in);
+    return fuse::Result<void>::success();
   }
 
   /// S7.2 WindowNewton (newton-krylov.md Sec. 9): `UComponent::evaluate_

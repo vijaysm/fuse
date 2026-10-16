@@ -282,6 +282,27 @@ class NativeGrid {
   /// `j_lo() == 0`.
   [[nodiscard]] int native_index_of(int c) const noexcept { return native_of_canonical_[static_cast<std::size_t>(c)]; }
 
+  /// Restart track (docs/dev/restart.md Section 2.2-2.3, Slice 2): the
+  /// `fuse::MeshView::global_id(2, i)` of the native cell at LOCAL
+  /// canonical index `c = (j - j_lo())*nx+i`, i.e. the SAME `cell_gid =
+  /// ix + iy*nx` (`src/backend/native_generators.cpp`'s own
+  /// `Grid::cell_gid`, this file's own top comment) FUSE's quad
+  /// generator assigns -- contiguous and unique over the WHOLE
+  /// (un-partitioned) logical grid, independent of how many ranks this
+  /// grid is sliced across (the per-field-family table's own entry for
+  /// "Brusselator example"). Returned as `std::int64_t` (the id type
+  /// every `fuse::RestartWriter`/`RestartReader` call uses), widened
+  /// from `global_id()`'s own `std::size_t` -- exact for this generator
+  /// (`cell_gid` never exceeds `nx*ny`, far inside `int64_t`'s range for
+  /// any grid size this example builds). `global_id_of_canonical_` is
+  /// filled once, in `make()`, from the SAME `view->global_id(2,
+  /// native_idx)` call already sitting beside the `view->centroid(2,
+  /// native_idx)` read that resolves `native_of_canonical_` -- no
+  /// second mesh walk.
+  [[nodiscard]] std::int64_t global_id(int c) const noexcept {
+    return global_id_of_canonical_[static_cast<std::size_t>(c)];
+  }
+
   /// Gathers an OWNED, LOCAL-canonical-order field (size `owned_size()`)
   /// into native-mesh local-index order (what fuse::RemapWeights
   /// addresses). At num_ranks()==1, `owned_size() == size()` and LOCAL ==
@@ -306,6 +327,10 @@ class NativeGrid {
   int j_lo_ = 0, j_hi_ = 0;  ///< this rank's GLOBAL row band, [j_lo_, j_hi_)
   fuse::MeshId mesh_id_{};
   std::vector<int> native_of_canonical_;  ///< indexed by LOCAL canonical index (j-j_lo_)*nx+i
+  /// Restart track: indexed the SAME way as `native_of_canonical_`, the
+  /// native mesh's own `MeshView::global_id(2, native_of_canonical_[c])`
+  /// for LOCAL canonical index `c`. See `global_id()`'s own comment.
+  std::vector<std::int64_t> global_id_of_canonical_;
 };
 
 inline fuse::Result<NativeGrid> NativeGrid::make(fuse::native::NativeMeshBackend& backend,
@@ -346,6 +371,7 @@ inline fuse::Result<NativeGrid> NativeGrid::make(fuse::native::NativeMeshBackend
                             std::to_string(g.j_hi_) + "))"};
   }
   g.native_of_canonical_.assign(expected_owned, -1);
+  g.global_id_of_canonical_.assign(expected_owned, -1);
   std::vector<int> seen(expected_owned, -1);
   for (std::size_t native_idx = 0; native_idx < n2; ++native_idx) {
     const fuse::Point c = view->centroid(2, native_idx);
@@ -370,6 +396,8 @@ inline fuse::Result<NativeGrid> NativeGrid::make(fuse::native::NativeMeshBackend
     }
     seen[static_cast<std::size_t>(canonical)] = 1;
     g.native_of_canonical_[static_cast<std::size_t>(canonical)] = static_cast<int>(native_idx);
+    g.global_id_of_canonical_[static_cast<std::size_t>(canonical)] =
+        static_cast<std::int64_t>(view->global_id(2, native_idx));
   }
   return std::move(g);
 }
