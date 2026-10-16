@@ -7840,6 +7840,8 @@ than shipped failing or weakened.
 
 ### D73. A cross-rank general (non-nodal) weighted Remap on NativeMeshBackend builds a silently empty conservative matrix with no remap-halo call -- OPEN, found 2026-10-15 (scaled-bench track)
 
+### D73. A cross-rank general (non-nodal) weighted Remap on NativeMeshBackend builds a silently empty conservative matrix with no remap-halo call -- FIXED 2026-10-16 (found 2026-10-15, scaled-bench track)
+
 Found while building `test/bench/scaled_device_benchmark.cpp`'s scaled provider/consumer row: a
 conservative weighted channel (two native structured-quad meshes of different resolution, no
 `.remap_method()` override, so `Runner::Impl::resolve_remap()` takes the general weighted branch, not
@@ -7876,6 +7878,34 @@ one to remember. Left for the lead to scope; `test/parallel/remap_halo_mpi_test.
 `runner.cpp`'s own comment at the `MoabMeshBackend` halo-refusal check (search for `E-RT-REMAP-HALO`)
 are the next place to start.
 
+
+### D69 FIX (scaled-bench track, follow-up round, 2026-10-16)
+
+**Chosen approach: refusal, not automatic halo.** `Runner::Impl::resolve_remap()`'s general
+weighted branch now refuses by name (`E-RT-REMAP-NO-HALO`) when `NativeMeshBackend` is the
+backend, the source and target components' `RankSet`s are genuinely disjoint (share no rank,
+`RankSet::overlaps()`), and `NativeMeshBackend::has_remap_halo()` reports no halo has been built
+for that `(source, target, dimension)` triple at this placement. This mirrors the existing
+`MoabMeshBackend` halo check a few lines above it (`E-RT-REMAP-HALO`) exactly, and for the same
+reason stated there: wiring `fuse::native::build_remap_halo`/`build_native_remap_halo`
+(native_halo.hpp) in AUTOMATICALLY needs two open architectural questions settled first --
+where in the instruction stream a COLLECTIVE exchange can run so every rank reaches it in the
+same order (`remap_plan.hpp`'s own "ORDER MATTERS": the halo must be built BEFORE `schedule()`
+sizes any buffer, and `resolve_remap()` runs well after that point), and whether filling a
+component's own array's halo slots is the coupler's contract to take on. The MOAB side already
+settled both by refusing rather than guessing; the native backend had no analogous refusal at
+all before this fix, so a silently empty matrix was the only reachable outcome. The
+automatic-halo alternative is preferred in the abstract and is left for the lead to scope
+(same open question, now stated for both backends in one place); refusing is the honest interim
+answer within this round's own time, and -- unlike the silent empty matrix it replaces -- never
+produces a wrong answer with no diagnostic.
+
+RED/GREEN: `test/parallel/native_remap_halo_runner_test.cpp` (new), a minimal two-differently-
+resolved-native-quad-mesh Runner setup on disjoint rank sets, general weighted channel (no
+`.remap_method()` override). Confirmed RED first (fix reverted: `initialize()` silently
+succeeds, reproducing the original defect exactly), then GREEN (fix restored:
+`initialize()` refuses with `E-RT-REMAP-NO-HALO`) at ranks 2 and 3, host and `.device` twin
+(`parallel.native_remap_halo_runner.{2,3}[.device]`, all passing).
 
 ### D70. A nodal "consistent" Remap's distributed point-location search refuses at the domain's own corner vertex (global id 0) at some multi-rank splits -- FIXED 2026-10-16 (found 2026-10-15, scaled-bench track)
 

@@ -31,6 +31,8 @@
 // Names no MOAB type -- that is the whole point of the header -- but the class
 // only exists in a build that has the backend.
 #include "fuse/backend/moab_backend.hpp"
+#include "fuse/backend/native_backend.hpp"
+#include "fuse/backend/native_halo.hpp"
 #endif
 
 #if FUSE_HAVE_MPI
@@ -1169,6 +1171,90 @@ Result<void> Runner::Impl::resolve_remap(const Instruction& ins, Resolved& r) {
     }
   }
 #endif
+
+  // ---- A NATIVE-BACKEND ANALOGUE OF THE MOAB HALO REFUSAL ABOVE -----------
+  //
+  // KNOWN_ISSUES.md D69: a general (non-nodal) weighted Remap between two
+  // components placed on DISJOINT rank sets, backed by NativeMeshBackend,
+  // used to proceed straight to `remap_cache.get_or_build` below with no
+  // halo at all -- each rank's local intersection search saw only its own
+  // region's local geometry, so the conservative weight build silently
+  // returned a matrix with `nnz() == 0` on every rank, every time: not a
+  // crash, not a wrong answer flagged anywhere, a plausible-looking empty
+  // transfer with no diagnostic at all.
+  //
+  // `fuse::native::build_remap_halo`/`build_native_remap_halo`
+  // (native_halo.hpp) exist to exchange exactly this geometry first, and
+  // `NativeMeshBackend::has_remap_halo` distinguishes "never built" from
+  // "built, with legitimately zero cells adopted" -- but calling the build
+  // AUTOMATICALLY from here needs the SAME two architectural questions the
+  // MOAB halo refusal above already raises: where in the instruction
+  // stream a COLLECTIVE exchange can run so every rank reaches it in the
+  // same order (remap_plan.hpp's own "ORDER MATTERS" -- the halo must run
+  // BEFORE schedule() sizes any buffer, and resolve_remap() here runs
+  // AFTER that point), and whether filling a component's own array's halo
+  // slots is the coupler's contract to take on. MOAB's own halo settles
+  // both by refusing rather than guessing (E-RT-REMAP-HALO, above); the
+  // native backend had no analogous refusal at all, so the silent empty
+  // matrix was the only outcome ever reachable. This refuses the same way,
+  // for the same reason: never apply a plausible matrix with no
+  // diagnostic. The automatic-halo fix is preferred and left for the lead
+  // to scope (same open sequencing question as the MOAB side); this
+  // refusal is the honest interim answer, chosen over guessing at a
+  // restructuring of Runner::initialize()'s own call order within this
+  // round's time.
+  if (dynamic_cast<const fuse::native::NativeMeshBackend*>(&backend) != nullptr) {
+    const RankSet* src_ranks_ptr =
+        (src_component.valid() && src_component.value() < graph.component_count())
+            ? &graph.component(src_component).ranks
+            : nullptr;
+    const RankSet* dst_ranks_ptr =
+        (dst_component.valid() && dst_component.value() < graph.component_count())
+            ? &graph.component(dst_component).ranks
+            : nullptr;
+    const bool disjoint = src_ranks_ptr != nullptr && dst_ranks_ptr != nullptr &&
+                          !src_ranks_ptr->empty() && !dst_ranks_ptr->empty() &&
+                          !src_ranks_ptr->overlaps(*dst_ranks_ptr);
+    if (disjoint) {
+      const auto* native = static_cast<const fuse::native::NativeMeshBackend*>(&backend);
+      const Region& sr = graph.region(src);
+      const Region& tr = graph.region(tgt);
+      bool halo_exists = false;
+      if (sr.mesh.valid() && sr.mesh.value() < graph.mesh_count() && tr.mesh.valid() &&
+          tr.mesh.value() < graph.mesh_count()) {
+        const Result<MeshId> smid = native->mesh_id(graph.mesh(sr.mesh).name);
+        const Result<MeshId> tmid = native->mesh_id(graph.mesh(tr.mesh).name);
+        if (smid.ok() && tmid.ok()) {
+          const Result<const MeshView*> sview = native->view(smid.value());
+          const int sdim =
+              sr.dimension >= 0 ? sr.dimension : (sview.ok() ? sview.value()->dimension() : -1);
+          if (sdim >= 0) {
+            halo_exists = native->has_remap_halo(smid.value(), tmid.value(), sdim, placement);
+          }
+        }
+      }
+      if (!halo_exists) {
+        return Failure{
+            "E-RT-REMAP-NO-HALO",
+            label + " connects region '" + graph.region(src).name + "' (component '" +
+                graph.component(src_component).name + "') and region '" +
+                graph.region(tgt).name + "' (component '" +
+                graph.component(dst_component).name +
+                "'), placed on disjoint rank sets, through a general (non-nodal) "
+                "weighted Remap on a NativeMeshBackend mesh, with no remap halo "
+                "built for this (source, target) pair. Each rank's local "
+                "intersection search would see only its own side's geometry, so "
+                "the conservative weight build would silently return an EMPTY "
+                "matrix (KNOWN_ISSUES.md D69) rather than fail -- refused here "
+                "instead. Place both components on one rank, route through a "
+                "nodal 'consistent' channel (nodal_remap_distributed.hpp, which "
+                "already resolves ownership once at setup), or drive the remap "
+                "halo directly before this Remap runs "
+                "(fuse::native::build_remap_halo/build_native_remap_halo, "
+                "native_halo.hpp)."};
+      }
+    }
+  }
 
   const std::size_t before_builds = remap_cache.misses();
   const Result<const RemapWeights*> w =

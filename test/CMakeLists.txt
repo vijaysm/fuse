@@ -1269,6 +1269,18 @@ fuse_tests_gated_by(FUSE_ENABLE_MPI parallel/native_halo_mpi_test.cpp)
 if(FUSE_ENABLE_MPI)
   fuse_add_mpi_test(parallel native_halo_mpi LIBS fuse::backend MPI::MPI_CXX RANKS 2 3 DEVICE_TWIN)
 endif()
+# Scaled-bench track, D69 fix: a general (non-nodal) weighted Remap between
+# two NativeMeshBackend components on DISJOINT rank sets must now refuse
+# (E-RT-REMAP-NO-HALO) rather than silently build an empty matrix. RANKS 2 3
+# matches D69's own repro (disjoint at both an even and an uneven split);
+# DEVICE_TWIN re-runs the same refusal under FUSE_EXECUTION_SPACE=device,
+# which this channel never reaches far enough to dispatch on anyway, but
+# keeping the convention uniform with every other parallel row here.
+fuse_tests_gated_by(FUSE_ENABLE_MPI parallel/native_remap_halo_runner_test.cpp)
+if(FUSE_ENABLE_MPI)
+  fuse_add_mpi_test(parallel native_remap_halo_runner LIBS fuse::runtime fuse::backend
+                    MPI::MPI_CXX RANKS 2 3 DEVICE_TWIN)
+endif()
 fuse_add_gtest(backend supermesh THROWS)
 # Device-resident-arcs Phase 2, "weight-builders" track (KNOWN_ISSUES D53,
 # narrowed): build_supermesh_weights' broad phase dispatches to
