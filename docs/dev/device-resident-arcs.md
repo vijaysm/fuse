@@ -520,6 +520,60 @@ the next step starts. Host mode byte-identity is the standing invariant.
    FullBudgetOnTheDominantModeCloses` (a deterministic, bit-identical
    1.45x tolerance margin miss in FSI code this track never touches).
 
+10. Measured on higgs at the round-3 gate commit (75ef68d1 on main
+    c642769; Debug, GTX 1050 Ti, Open MPI without CUDA support so every
+    exchange is host-staged), 2026-10-16, with nothing else running: the
+    1-minute load was 1.9 before the first run and the rank-1 and rank-2
+    runs kept it below 2.5; the rank-3 runs' own OpenMP threads raised it
+    to 4.5-6. Gate: build clean; anchors 363/363; invariants, layering and
+    check-ascii 0 violations; `ctest -j1 -LE device|bench` 339/341 (D55,
+    D56 only); `ctest -j1 -L device -LE bench` 39/39.
+
+    Scaled benchmark (`test/bench/scaled_device_benchmark`, N=1000: 1e6
+    consumer cells, 1e6 provider vertices, nodal consistent Remap, 5
+    periods, 3 repetitions, medians via `tools/bench-device.py`):
+
+| ranks | space | build (s) | initialize (s) | period (s) |
+|---|---|---|---|---|
+| 1 | host | 77.4 | 25.9 | 0.409 |
+| 1 | device | 75.3 | 13.2 | 0.0145 |
+| 2 | host | 40.3 | 32.3 | 0.511 |
+| 2 | device | 40.4 | 19.4 | 0.284 |
+| 3 | host | 28.7 | 30.7 | 0.271 |
+| 3 | device | 28.9 | 25.0 | 0.166 |
+
+    At one rank the per-period device time is 28x below the host's: the
+    per-cell arithmetic dominates and no exchange is involved. At two and
+    three ranks the gap narrows to 1.6-1.8x because the nodal remap's
+    exchange and the halo fill are staged through host buffers on this
+    MPI (D66); a CUDA-aware MPI is the next measurement. `build` is mesh
+    generation on the host and is the same in both rows.
+
+    Device twins at the same commit (one process, the same binaries;
+    compare with step 6's loaded 2026-10-13 table):
+
+| row | host (s) | `.device` (s) | ratio | step-6 ratio |
+|---|---|---|---|---|
+| `verification.brusselator_runner` | 62.23 | 96.83 | 1.56 | 21.36 |
+| `verification.iteration` | 0.57 | 0.78 | 1.37 | 22.20 |
+| `verification.fsi_transient` | 68.36 | 77.98 | 1.14 | 7.37 |
+| `verification.fsi_coupled` | 5.95 | 6.30 | 1.06 | 5.74 |
+| `verification.gray_scott_multirate` | 16.57 | 16.57 | 1.00 | 1.30 |
+| `example.brusselator.runner` | 18.25 | 31.47 | 1.72 | 1.24 |
+| `example.gray_scott` | 45.40 | 45.60 | 1.00 | 0.94 |
+| `parallel.window_runner_mpi.2` | 0.67 | 0.98 | 1.46 | 1.49 |
+| `parallel.window_runner_mpi.3` | 0.79 | 1.78 | 2.25 | 3.27 |
+| `parallel.nodal_remap_runner.3` | 0.69 | 0.68 | 0.99 | 1.08 |
+| `parallel.runner_transport.3` | 0.69 | 0.77 | 1.12 | 1.41 |
+| `runtime.window_runner_straddle` | 0.47 | 0.65 | 1.38 | n/a |
+
+    The two rows step 6 singled out (`brusselator_runner`, `iteration`)
+    dropped from 21-22x to 1.4-1.6x once the window-scoped regions'
+    arcs and `previous[]` stopped being staged per instruction (step 9);
+    the remaining factor at these sizes (hundreds to thousands of cells)
+    is kernel launch latency, which the scaled benchmark above shows
+    disappearing at 1e6 cells.
+
 ## What the placement trace shows today
 
 `FUSE_DEVICE_DEBUG=1 ./fuse_runtime_runner_device_test` on the mean-over-four-
