@@ -7510,8 +7510,10 @@ nic=bridge101: No such file or directory)`, and MPICH's abort path then recurses
 process dies with SIGSEGV about 50 s later. `bridge101` is a virtual-machine bridge on the owner's machine
 (`192.168.97.0/24`, member `vmenet1`), which libfabric's default NIC selection prefers over `en0`. Every
 `gtest` binary that links MPI (`fuse_test_main.cpp:236` calls `MPI_Finalize`) therefore crashed AFTER all its
-tests had passed, which made 26 of 352 quick-tier rows report SegFault or Failed with no FUSE defect
-behind any of them. Measured matrix on `/tmp/mpi5` and `parallel.connect.accept.1+1`: default: abort,
+tests had passed. In the owner's interrupted `ctest -LE slow` run of 2026-10-17, 17 of the 26 rows that had
+started reported SegFault, Failed or Timeout (the other 9, none of which link MPI, passed); the run was
+stopped at row 26 of 352, so the full count under this state was not measured. Of the 17, only the two
+`parallel.brusselator_restart_mpi` rows had a FUSE defect behind them (D75). Measured matrix on `/tmp/mpi5` and `parallel.connect.accept.1+1`: default: abort,
 accept fails; `FI_PROVIDER=tcp`: exits, accept TIMES OUT (the plain tcp provider does not carry
 `MPI_Comm_accept`/`connect`); `FI_TCP_IFACE=en0` alone: abort; **`FI_PROVIDER="tcp;ofi_rxm"
 FI_TCP_IFACE=en0`: exits AND accept passes.** With that environment the quick tier passed 347 of 352 on
