@@ -7516,9 +7516,11 @@ accept fails; `FI_PROVIDER=tcp`: exits, accept TIMES OUT (the plain tcp provider
 `MPI_Comm_accept`/`connect`); `FI_TCP_IFACE=en0` alone: abort; **`FI_PROVIDER="tcp;ofi_rxm"
 FI_TCP_IFACE=en0`: exits AND accept passes.** With that environment the quick tier passed 347 of 352 on
 `f51987b`; the five remaining were the collective restart writer (D75, fixed) and three accept rows that
-time out intermittently under the pinned provider (`parallel.connect.accept.2+3`, `.3+2`,
-`verification.brusselator.participants.accept.5`; `accept.1+1` and `.3` passed), not yet separated from
-the environment. Recommended host setting until MPICH's NIC selection is fixed or the bridge is gone:
+time out intermittently under the pinned provider. Rerun alone, each row both passed and timed out across
+two runs (`parallel.connect.accept.3+2` passed alone after timing out in the tier; `participants.accept.3`
+timed out alone after passing in the tier; `accept.2+3` timed out under both the pinned and the default
+provider). No commit since `d622b50`, where all accept rows passed on 2026-10-16 13:25, touches the
+connect/accept path, so this is the same libfabric state, not a code change; D23 holds the open item. Recommended host setting until MPICH's NIC selection is fixed or the bridge is gone:
 `export FI_PROVIDER="tcp;ofi_rxm" FI_TCP_IFACE=en0`. Nothing in FUSE sets the provider.
 
 ### D66. The device-direct (GPU-aware, zero host round trip) exchange path this round adds to the ghost and nodal-remap exchanges cannot be exercised for real on higgs — OPEN, measured 2026-10-15 (runtime-exchange track, follow-up round)
