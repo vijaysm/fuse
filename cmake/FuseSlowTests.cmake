@@ -18,6 +18,9 @@
 # runs a whole example at one thread and again at every core and compares the
 # two outputs exactly (tools/compare-runs.cmake).
 set(FUSE_SLOW_TESTS
+  bench.scaled_device_benchmark.1   # 61.4 s average over 2 runs, build-all, 2026-10-17
+  bench.scaled_device_benchmark.2   # 41.5 s average over 2 runs, build-all, 2026-10-17
+  bench.scaled_device_benchmark.3   # 35.2 s average over 2 runs, build-all, 2026-10-17
   example.brusselator.newton_petsc   # 10.1 s average over 9 runs, build-all, 2026-10-15
   example.brusselator.omp_identical                    #  313.2 s
   petsc.brusselator_newton                             #  244.2 s average of 5 runs; a passing run took 1220.8 s (the other four were aborted early)
