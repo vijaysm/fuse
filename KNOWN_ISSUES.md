@@ -7503,6 +7503,24 @@ program exited 3 of 3 under the default provider, the restart rows passed, and t
 (78.37 s). Nothing in FUSE sets the provider. If a host run again times out with every rank inside `MPI_Finalize`,
 run the five-line program first: a hang there is this environment state, not FUSE.
 
+**Cause measured 2026-10-17.** The same program now ABORTS instead of hanging: `MPI_Finalize` fails in
+`MPIDI_OFI_mpi_finalize_hook` -> `flush_send_queue` -> `flush_send` with `OFI call tsenddata failed (default
+nic=bridge101: No such file or directory)`, and MPICH's abort path then recurses (`MPID_Abort` ->
+`MPIR_Debugger_set_aborting` -> `finalize_lock` assertion -> `MPID_Abort`) until the stack overflows, so the
+process dies with SIGSEGV about 50 s later. `bridge101` is a virtual-machine bridge on the owner's machine
+(`192.168.97.0/24`, member `vmenet1`), which libfabric's default NIC selection prefers over `en0`. Every
+`gtest` binary that links MPI (`fuse_test_main.cpp:236` calls `MPI_Finalize`) therefore crashed AFTER all its
+tests had passed, which made 26 of 352 quick-tier rows report SegFault or Failed with no FUSE defect
+behind any of them. Measured matrix on `/tmp/mpi5` and `parallel.connect.accept.1+1`: default: abort,
+accept fails; `FI_PROVIDER=tcp`: exits, accept TIMES OUT (the plain tcp provider does not carry
+`MPI_Comm_accept`/`connect`); `FI_TCP_IFACE=en0` alone: abort; **`FI_PROVIDER="tcp;ofi_rxm"
+FI_TCP_IFACE=en0`: exits AND accept passes.** With that environment the quick tier passed 347 of 352 on
+`f51987b`; the five remaining were the collective restart writer (D75, fixed) and three accept rows that
+time out intermittently under the pinned provider (`parallel.connect.accept.2+3`, `.3+2`,
+`verification.brusselator.participants.accept.5`; `accept.1+1` and `.3` passed), not yet separated from
+the environment. Recommended host setting until MPICH's NIC selection is fixed or the bridge is gone:
+`export FI_PROVIDER="tcp;ofi_rxm" FI_TCP_IFACE=en0`. Nothing in FUSE sets the provider.
+
 ### D66. The device-direct (GPU-aware, zero host round trip) exchange path this round adds to the ghost and nodal-remap exchanges cannot be exercised for real on higgs — OPEN, measured 2026-10-15 (runtime-exchange track, follow-up round)
 
 `fuse::linalg::mpi_is_gpu_aware()` (comm.hpp, this round's own shared probe, moved from
@@ -7987,3 +8005,32 @@ RED/GREEN:
   * `parallel.nodal_remap_runner.{1..5}[.device]` and `verification.nodal_remap_runner_serial
     [.device]` (D67/D8's own suite) re-run UNCHANGED and confirmed still green (15/15 passing),
     confirming this fix does not touch that suite's own behaviour.
+
+### ~~D75. The collective restart writer produced files no reader could open~~ -- FIXED 2026-10-17
+
+**Measured** on the owner's machine (MPICH 5.0.0a1, HDF5 1.14.1 parallel, `FI_PROVIDER="tcp;ofi_rxm"
+FI_TCP_IFACE=en0`): `parallel.brusselator_restart_mpi.{2,3}` failed on every multi-task write while the
+one-task write (the serial writer) passed. Three defects in `src/restart_io/hdf5_restart_io_mpi.cpp`, each
+exposed by the fix before it, all three invisible at tier 0 because the sandbox cannot start MPI and the
+collective writer is compiled only with `FUSE_ENABLE_MPI`:
+
+1. `finish()` closed the file while the point group was still open. With the MPI-IO driver the default
+   close degree is semi, so `H5Fclose` fails; the handle helper discarded the failure, the file stayed open
+   with unflushed metadata, and rank 0 renamed it. Reader: `E-RESTART-TRUNCATED: does not open as a valid
+   HDF5 file`. Fix: close the group first (as the serial writer does), close the file explicitly and refuse
+   if the collective close fails.
+2. The file attributes were written as `@format_version`, `@fuse_library_version`, ... (the names in
+   `docs/dev/restart.md` Section 4.1's draft table), while the serial writer and the reader use
+   `format_version`, `fuse_version`, `descriptor_hash`, `written_by_rank_count`, `mesh_checksum`. Reader:
+   `E-RESTART-TRUNCATED: missing attribute format_version`. Fix: the serial writer's names; the design table
+   corrected to the names actually on disk.
+3. No per-field type attributes (`element_type`, `byte_size`, `significand_bits`, `exponent_bits`,
+   `exponent_bias`, `byte_order`, `is_signed`) were written: the writer was built against the pre-typed
+   reader (slice 1b made them required) and rebased without noticing. Fix: the same seven attributes on the
+   collective `values` dataset.
+
+After the three fixes: `parallel.restart_collective_mpi.{2,3}` and `parallel.brusselator_restart_mpi.{2,3}`
+pass, and the two-invocation write-at-3/restore-at-2 protocol passes both invocations (`h5dump -A` on the
+written file shows the five file attributes and the seven type attributes). Lesson recorded with D23/D38:
+a host row that cannot run in the sandbox must be run on the host BEFORE its code is described as
+delivered; slice 2's report said "built but not run", and all three defects sat behind that.

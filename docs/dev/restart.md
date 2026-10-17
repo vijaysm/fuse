@@ -435,11 +435,13 @@ count" is a property the owner must track per-component, not a single yes/no for
 
 ```
 /                                   (root)
-  @format_name          = "fuse-restart"     (string attribute)
-  @format_version       = <uint32>           (bumped per Section 4.4's rule)
-  @fuse_library_version = {major, minor, patch}   (mirrors fuse_semantic_version, types.h:55-59)
-  @descriptor_hash       = <uint64>          (fnv1a over serialize(graph), see below)
-  @written_by_rank_count = <uint32>          (MPI_Comm_size() at write time; Option-B refusal key, Section 3)
+  format_version        = <uint32>           (bumped per Section 4.4's rule)
+  fuse_version          = <string>           (the library version string)
+  descriptor_hash       = <uint64>           (fnv1a over serialize(graph), see below)
+  written_by_rank_count = <uint32>           (MPI_Comm_size() at write time; Option-B refusal key, Section 3)
+  mesh_checksum         = <uint64>
+  (names as written by both writers and read by the reader; this table's draft used "@"-prefixed
+   names and a format_name attribute that were never implemented -- KNOWN_ISSUES.md D75)
 
   /mesh                              (written ONCE per file; never rewritten by a later restart point)
     @mesh_backend        = "native" | "moab"
