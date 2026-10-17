@@ -27,11 +27,16 @@
 #include "fuse/schedule/slab.hpp"
 #include "fuse/schedule/window.hpp"
 
+// The native backend is built in every configuration (src/CMakeLists.txt
+// lists backend/native_backend.cpp unconditionally), and the D73 refusal
+// below names fuse::native::NativeMeshBackend outside any MOAB guard; the
+// include was inside the MOAB block and broke every build without MOAB.
+#include "fuse/backend/native_backend.hpp"
+
 #if FUSE_HAVE_MOAB
 // Names no MOAB type -- that is the whole point of the header -- but the class
 // only exists in a build that has the backend.
 #include "fuse/backend/moab_backend.hpp"
-#include "fuse/backend/native_backend.hpp"
 #include "fuse/backend/native_halo.hpp"
 #endif
 
