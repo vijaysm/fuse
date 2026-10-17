@@ -42,6 +42,13 @@ class Hid {
     id_ = -1;
   }
   [[nodiscard]] hid_t get() const noexcept { return id_; }
+  /// Gives up ownership without closing, so a caller can close the
+  /// handle itself and inspect the result (Hid::reset() discards it).
+  [[nodiscard]] hid_t release() noexcept {
+    const hid_t id = id_;
+    id_ = -1;
+    return id;
+  }
   [[nodiscard]] bool valid() const noexcept { return id_ >= 0; }
   operator hid_t() const noexcept { return id_; }  // NOLINT: implicit
 
@@ -88,73 +95,6 @@ using HType = Hid<H5Tclose>;
   return lcpl;
 }
 
-/// One field's own collective write: `my_offset`'s own hyperslab of a
-/// `declared_global_size`-long dataset, created collectively by every
-/// task of `comm` (the SAME extent on every task, per this interface's
-/// own contract), written collectively via `H5FD_MPIO_COLLECTIVE`.
-/// `raw`'s own byte length is `local_count * components *
-/// element_byte_size` -- the caller's own `put_field_bytes()` already
-/// checked this against `ids.size()`.
-[[nodiscard]] Result<void> write_one_collective_dataset(
-    hid_t group, MPI_Comm comm, const std::string& path, hid_t native_type,
-    std::int64_t declared_global_size, int components,
-    std::int64_t my_offset, std::int64_t local_count, const void* raw) {
-  const Result<HProp> lcpl = make_lcpl();
-  if (!lcpl.ok()) return lcpl.error();
-  const hsize_t dims[2] = {static_cast<hsize_t>(declared_global_size),
-                           static_cast<hsize_t>(components)};
-  const int rank = components > 1 ? 2 : 1;
-  HDataspace file_space(H5Screate_simple(rank, dims, nullptr));
-  if (!file_space.valid()) {
-    return Failure{"E-RESTART-HDF5", "H5Screate_simple (file) " + path};
-  }
-  // Collective: every task calls H5Dcreate2 with the IDENTICAL extent,
-  // type and path -- HDF5's own metadata-operations-are-collective
-  // requirement under the MPI-IO file driver.
-  HDataset dset(H5Dcreate2(group, path.c_str(), native_type, file_space,
-                          lcpl.value(), H5P_DEFAULT, H5P_DEFAULT));
-  if (!dset.valid()) return Failure{"E-RESTART-HDF5", "H5Dcreate2 " + path};
-
-  HDataspace this_task_file_space(H5Dget_space(dset));
-  if (!this_task_file_space.valid()) {
-    return Failure{"E-RESTART-HDF5", "H5Dget_space " + path};
-  }
-  HDataspace mem_space;
-  if (local_count > 0) {
-    const hsize_t start[2] = {static_cast<hsize_t>(my_offset), 0};
-    const hsize_t count[2] = {static_cast<hsize_t>(local_count),
-                              static_cast<hsize_t>(components)};
-    if (H5Sselect_hyperslab(this_task_file_space, H5S_SELECT_SET, start,
-                            nullptr, count, nullptr) < 0) {
-      return Failure{"E-RESTART-HDF5", "H5Sselect_hyperslab " + path};
-    }
-    mem_space = HDataspace(H5Screate_simple(rank, count, nullptr));
-  } else {
-    // This task owns no rows of this field this point -- participates
-    // in the SAME collective H5Dwrite call with a zero-size selection
-    // (docs/dev/restart.md Section 4.3's own "replicated or absent
-    // data" pattern, generalised to "absent FOR THIS TASK"), never
-    // skips the call outright.
-    if (H5Sselect_none(this_task_file_space) < 0) {
-      return Failure{"E-RESTART-HDF5", "H5Sselect_none " + path};
-    }
-    mem_space = HDataspace(H5Screate(H5S_NULL));
-  }
-  if (!mem_space.valid()) {
-    return Failure{"E-RESTART-HDF5", "H5Screate (mem) " + path};
-  }
-  HProp dxpl(H5Pcreate(H5P_DATASET_XFER));
-  if (!dxpl.valid()) return Failure{"E-RESTART-HDF5", "H5Pcreate (dxpl) " + path};
-  if (H5Pset_dxpl_mpio(dxpl, H5FD_MPIO_COLLECTIVE) < 0) {
-    return Failure{"E-RESTART-HDF5", "H5Pset_dxpl_mpio " + path};
-  }
-  if (H5Dwrite(dset, native_type, mem_space, this_task_file_space, dxpl,
-              raw) < 0) {
-    return Failure{"E-RESTART-HDF5", "H5Dwrite (collective) " + path};
-  }
-  (void)comm;
-  return Result<void>::success();
-}
 
 [[nodiscard]] Result<void> write_scalar_attr_str_collective(hid_t loc,
                                                              const char* name,
@@ -202,6 +142,111 @@ template <class T>
                                                              std::uint64_t value) {
   return write_scalar_attr_num_collective<std::uint64_t>(loc, name, value,
                                                          H5T_NATIVE_UINT64);
+}
+
+/// The seven per-field type attributes the reader's own
+/// read_and_verify_type_metadata() requires (hdf5_restart_io.cpp,
+/// write_type_metadata). The collective writer was built against the
+/// pre-typed reader and wrote none of them. Found by reading the reader
+/// (read_and_verify_type_metadata opens "element_type" first), not by a
+/// measurement: on the owner's machine the two earlier defects in this file
+/// (KNOWN_ISSUES.md D75, items 1 and 2) refused every collectively written
+/// file before the type check was reached, so this omission was never seen
+/// as its own error. Attribute creation is collective in parallel HDF5;
+/// every task calls this with the same values, as for the dataset itself.
+[[nodiscard]] Result<void> write_type_metadata_collective(
+    hid_t loc, const fuse::ElementTypeInfo& info) {
+  Result<void> r = write_scalar_attr_str_collective(loc, "element_type", info.name);
+  if (!r.ok()) return r;
+  r = write_scalar_attr_u32_collective(loc, "byte_size",
+                                       static_cast<std::uint32_t>(info.byte_size));
+  if (!r.ok()) return r;
+  r = write_scalar_attr_u32_collective(loc, "significand_bits",
+                                       static_cast<std::uint32_t>(info.significand_bits));
+  if (!r.ok()) return r;
+  r = write_scalar_attr_u32_collective(loc, "exponent_bits",
+                                       static_cast<std::uint32_t>(info.exponent_bits));
+  if (!r.ok()) return r;
+  r = write_scalar_attr_u64_collective(loc, "exponent_bias",
+                                       static_cast<std::uint64_t>(info.exponent_bias));
+  if (!r.ok()) return r;
+  r = write_scalar_attr_str_collective(loc, "byte_order", "little");
+  if (!r.ok()) return r;
+  return write_scalar_attr_u32_collective(loc, "is_signed",
+                                          info.is_signed_integer ? 1u : 0u);
+}
+
+/// One field's own collective write: `my_offset`'s own hyperslab of a
+/// `declared_global_size`-long dataset, created collectively by every
+/// task of `comm` (the SAME extent on every task, per this interface's
+/// own contract), written collectively via `H5FD_MPIO_COLLECTIVE`.
+/// `raw`'s own byte length is `local_count * components *
+/// element_byte_size` -- the caller's own `put_field_bytes()` already
+/// checked this against `ids.size()`.
+[[nodiscard]] Result<void> write_one_collective_dataset(
+    hid_t group, MPI_Comm comm, const std::string& path, hid_t native_type,
+    std::int64_t declared_global_size, int components,
+    std::int64_t my_offset, std::int64_t local_count, const void* raw,
+    const fuse::ElementTypeInfo* type_info) {
+  const Result<HProp> lcpl = make_lcpl();
+  if (!lcpl.ok()) return lcpl.error();
+  const hsize_t dims[2] = {static_cast<hsize_t>(declared_global_size),
+                           static_cast<hsize_t>(components)};
+  const int rank = components > 1 ? 2 : 1;
+  HDataspace file_space(H5Screate_simple(rank, dims, nullptr));
+  if (!file_space.valid()) {
+    return Failure{"E-RESTART-HDF5", "H5Screate_simple (file) " + path};
+  }
+  // Collective: every task calls H5Dcreate2 with the IDENTICAL extent,
+  // type and path -- HDF5's own metadata-operations-are-collective
+  // requirement under the MPI-IO file driver.
+  HDataset dset(H5Dcreate2(group, path.c_str(), native_type, file_space,
+                          lcpl.value(), H5P_DEFAULT, H5P_DEFAULT));
+  if (!dset.valid()) return Failure{"E-RESTART-HDF5", "H5Dcreate2 " + path};
+  if (type_info != nullptr) {
+    const Result<void> mr = write_type_metadata_collective(dset, *type_info);
+    if (!mr.ok()) return mr;
+  }
+
+  HDataspace this_task_file_space(H5Dget_space(dset));
+  if (!this_task_file_space.valid()) {
+    return Failure{"E-RESTART-HDF5", "H5Dget_space " + path};
+  }
+  HDataspace mem_space;
+  if (local_count > 0) {
+    const hsize_t start[2] = {static_cast<hsize_t>(my_offset), 0};
+    const hsize_t count[2] = {static_cast<hsize_t>(local_count),
+                              static_cast<hsize_t>(components)};
+    if (H5Sselect_hyperslab(this_task_file_space, H5S_SELECT_SET, start,
+                            nullptr, count, nullptr) < 0) {
+      return Failure{"E-RESTART-HDF5", "H5Sselect_hyperslab " + path};
+    }
+    mem_space = HDataspace(H5Screate_simple(rank, count, nullptr));
+  } else {
+    // This task owns no rows of this field this point -- participates
+    // in the SAME collective H5Dwrite call with a zero-size selection
+    // (docs/dev/restart.md Section 4.3's own "replicated or absent
+    // data" pattern, generalised to "absent FOR THIS TASK"), never
+    // skips the call outright.
+    if (H5Sselect_none(this_task_file_space) < 0) {
+      return Failure{"E-RESTART-HDF5", "H5Sselect_none " + path};
+    }
+    mem_space = HDataspace(H5Screate(H5S_NULL));
+  }
+  if (!mem_space.valid()) {
+    return Failure{"E-RESTART-HDF5", "H5Screate (mem) " + path};
+  }
+  HProp dxpl(H5Pcreate(H5P_DATASET_XFER));
+  if (!dxpl.valid()) return Failure{"E-RESTART-HDF5", "H5Pcreate (dxpl) " + path};
+  if (H5Pset_dxpl_mpio(dxpl, H5FD_MPIO_COLLECTIVE) < 0) {
+    return Failure{"E-RESTART-HDF5", "H5Pset_dxpl_mpio " + path};
+  }
+  if (H5Dwrite(dset, native_type, mem_space, this_task_file_space, dxpl,
+              raw) < 0) {
+    return Failure{"E-RESTART-HDF5", "H5Dwrite (collective) " + path};
+  }
+  (void)comm;
+  return Result<void>::success();
 }
 
 /// The collective writer. Every task's own `put_field()` call supplies
@@ -276,12 +321,13 @@ class CollectivePointWriterImpl final : public PointWriter, public RestartWriter
     const Result<void> wr = write_one_collective_dataset(
         group_, comm_, "fields/" + key + "/values", native_type,
         declared_global_size, components, my_offset, local_count,
-        values.data());
+        values.data(), &fuse::element_type_info(type));
     if (!wr.ok()) return wr;
 
     const Result<void> wi = write_one_collective_dataset(
         group_, comm_, "fields/" + key + "/ids", H5T_NATIVE_INT64,
-        declared_global_size, 1, my_offset, local_count, ids.data());
+        declared_global_size, 1, my_offset, local_count, ids.data(),
+        nullptr);  // the ids dataset carries no type attributes, as in the serial writer
     if (!wi.ok()) return wi;
 
     for (std::int64_t id : ids) local_ids_.emplace_back(key, id);
@@ -345,7 +391,21 @@ class CollectivePointWriterImpl final : public PointWriter, public RestartWriter
                      "finish(): a peer task did not reach finish() "
                      "successfully"};
     }
-    file_.reset();
+    // Close the point group BEFORE the file, as the serial writer does.
+    // With the MPI-IO driver the default close degree is semi: H5Fclose
+    // fails while any object in the file is still open, Hid::reset()
+    // discards that failure, and the file stays open with its metadata
+    // unflushed when rank 0 renames it. Measured on the owner's machine
+    // 2026-10-17: every collectively written file was refused on read
+    // with E-RESTART-TRUNCATED ("does not open as a valid HDF5 file").
+    // H5Fclose is collective; its result is checked so a failed close is
+    // a refusal, never a renamed partial file.
+    group_.reset();
+    const hid_t file_id = file_.release();
+    if (file_id >= 0 && H5Fclose(file_id) < 0) {
+      return Failure{"E-RESTART-HDF5",
+                     "finish(): collective H5Fclose of " + temp_path_ + " failed"};
+    }
     int rank_in_comm = 0;
     MPI_Comm_rank(comm_, &rank_in_comm);
     int rename_rc = 0;
@@ -407,18 +467,23 @@ Result<std::unique_ptr<PointWriter>> create_restart_point_collective(
     return Failure{"E-RESTART-HDF5",
                    "create_restart_point_collective: cannot create " + temp_path};
   }
-  Result<void> r = write_scalar_attr_str_collective(file, "@format_name", "fuse-restart");
+  // The SAME five file attributes, under the SAME names, as the serial
+  // writer (hdf5_restart_io.cpp, create_restart_point): the reader asks
+  // for "format_version" and the rest by these exact names. The collective
+  // writer first wrote "@"-prefixed names and a different version key, and
+  // every file it produced was refused with E-RESTART-TRUNCATED "missing
+  // attribute format_version" (owner's machine, 2026-10-17).
+  Result<void> r = write_scalar_attr_u32_collective(file, "format_version",
+                                                    provenance.format_version);
   if (!r.ok()) return r.error();
-  r = write_scalar_attr_u32_collective(file, "@format_version", provenance.format_version);
+  r = write_scalar_attr_str_collective(file, "fuse_version", provenance.fuse_version);
   if (!r.ok()) return r.error();
-  r = write_scalar_attr_str_collective(file, "@fuse_library_version", provenance.fuse_version);
+  r = write_scalar_attr_u64_collective(file, "descriptor_hash", provenance.descriptor_hash);
   if (!r.ok()) return r.error();
-  r = write_scalar_attr_u64_collective(file, "@descriptor_hash", provenance.descriptor_hash);
-  if (!r.ok()) return r.error();
-  r = write_scalar_attr_u32_collective(file, "@written_by_rank_count",
+  r = write_scalar_attr_u32_collective(file, "written_by_rank_count",
                                        static_cast<std::uint32_t>(size));
   if (!r.ok()) return r.error();
-  r = write_scalar_attr_u64_collective(file, "@mesh_checksum", provenance.mesh_checksum);
+  r = write_scalar_attr_u64_collective(file, "mesh_checksum", provenance.mesh_checksum);
   if (!r.ok()) return r.error();
 
   HGroup point_group(H5Gopen2(file, "/", H5P_DEFAULT));
