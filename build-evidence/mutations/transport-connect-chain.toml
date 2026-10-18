@@ -1,0 +1,20 @@
+# Mutations for KNOWN_ISSUES.md D18's N-way connect chain generalisation
+# (connect_chain_plan(), include/fuse/transport/connect.hpp). Own file
+# per the review-fix protocol.
+#
+# Applied by hand, rebuilt, run, confirmed to fail EXACTLY the named
+# row, then restored byte-for-byte (cmp against the pre-mutation file
+# showed no difference; md5 recorded below).
+
+[[mutation]]
+id = "connect-chain-plan-is-acceptor-check-removed"
+area = "transport-connect-chain"
+describes = "connect_chain_plan()'s own refusal of a step-2-or-later joining component that does not declare is_acceptor = true is removed (if (false) in place of the real check), so a chain graph that never names which component opens the port at that step is accepted instead of refused E-CONNECT-SPEC"
+file = "include/fuse/transport/connect.hpp"
+old = """    if (!joining.launch.is_acceptor) {
+      return Failure{"""
+new = """    if (false) {  // MUTATION: is_acceptor check removed
+      return Failure{"""
+target = "fuse_transport_connect_test"
+test = "transport.connect"
+result = "CONFIRMED 2026-10-18: ConnectChainPlan.RefusesAStepTwoJoinerThatDoesNotDeclareIsAcceptor failed (ASSERT_FALSE(r.ok()) -- connect_chain_plan() returned success instead of E-CONNECT-SPEC for a step-2 joiner with is_acceptor=false). All other 38 tests in the binary, including the port_file-empty sibling check (RefusesAStepTwoJoinerWithNoPortFile, a separate conditional) and every ConnectModeComponents/ValidateLaunchLayout case, still passed. Restored; cmp against the pre-mutation file reported no difference, md5 2b5bf615677de67a9ebdf5837cf29b04 matches the restored file."

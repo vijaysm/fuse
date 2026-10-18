@@ -437,16 +437,21 @@ struct ConnectedWorld {
 /// component order -- the same order `connect()`'s own comment fixes
 /// `MPI_Intercomm_merge`'s high/low argument by, so the merged numbering is
 /// the same thing on both sides regardless of which side happens to
-/// publish the port. Refuses `E-CONNECT-SPEC` when the count is not
-/// exactly two: D18's own limit (KNOWN_ISSUES.md), and the reason
-/// `connect_pairwise()` (connect.cpp) cannot do anything with a third one.
+/// publish the port. Refuses `E-CONNECT-SPEC` when there are FEWER THAN
+/// TWO: nothing for a connect handshake to join.
+///
+/// KNOWN_ISSUES.md D18. Before this round, this function refused anything
+/// other than EXACTLY two (the only case `connect_pairwise()` implemented,
+/// in connect.cpp); `connect_chain_plan()`, immediately below, generalises
+/// the merge itself to any count `>= 2`, so this function's own refusal
+/// narrows to the one limit that is still real: a chain needs at least two
+/// components to have anything to chain.
 ///
 /// Review 2026-10-11 TR-17. This rule used to live inline inside
 /// `connect_pairwise()`, behind `#if FUSE_HAVE_MPI` and `MPI_Initialized()`
-/// -- a real, reachable refusal (any graph with a third `Connect`-mode
-/// component hits it) with no test anywhere in the tree, because its only
-/// caller needed a live MPI world to reach at all. Pulled out beside
-/// `validate_launch_layout()` so a tier-0 test can fire it directly.
+/// -- a real, reachable refusal with no test anywhere in the tree, because
+/// its only caller needed a live MPI world to reach at all. Pulled out
+/// beside `validate_launch_layout()` so a tier-0 test can fire it directly.
 [[nodiscard]] inline Result<std::vector<ComponentId>> connect_mode_components(
     const CouplingGraph& g) {
   std::vector<ComponentId> out;
@@ -455,13 +460,85 @@ struct ConnectedWorld {
       out.push_back(ComponentId{i});
     }
   }
-  if (out.size() != 2) {
+  if (out.size() < 2) {
     return Failure{
         "E-CONNECT-SPEC",
-        "pairwise connect() supports exactly two connect-mode components; "
-        "the graph declares " + std::to_string(out.size())};
+        "connect() needs at least two connect-mode components to form a "
+        "connection; the graph declares " + std::to_string(out.size())};
   }
   return out;
+}
+
+/// One step of `connect_chain()`'s own merge sequence (KNOWN_ISSUES.md
+/// D18's generalisation of `connect_pairwise()` to N connect-mode
+/// components, "each component publishes its port name once"). At step
+/// `step_index` (1-based, through `order.size() - 1`), the chain already
+/// merged from `order[0 .. step_index - 1]` joins with `joining` --
+/// `order[step_index]` alone, never more than one component per step.
+///
+/// THE RULE, stated once here rather than split across connect.cpp's own
+/// per-mode branches: step 1 (`step_index == 1`) is UNCHANGED from
+/// today's two-component path -- whichever of `order[0]`/`order[1]`
+/// declares `LaunchSpec::is_acceptor == true` opens the port, read from
+/// whichever of the two names a `port_file` (connect.cpp's own existing
+/// `connect_pairwise()` logic, reused verbatim for this one step). EVERY
+/// LATER step (`step_index >= 2`) fixes the role structurally rather than
+/// asking the already-merged chain to carry an opinion no single
+/// `LaunchSpec` can state for a composite of several components: `joining`
+/// (`order[step_index]`, a single component with its own `LaunchSpec`)
+/// MUST declare `is_acceptor == true` and a non-empty `port_file` -- "each
+/// component publishes its port name once" literally, since `joining`
+/// publishes ONE port, used ONLY at the single step it joins -- and the
+/// chain merged so far is always the connector, waiting on that one file.
+/// Refuses `E-CONNECT-SPEC`, naming the component and the step, when a
+/// step-2-or-later `joining` declares `is_acceptor == false` (nothing
+/// would open its own port) or an empty `port_file` (`service_name`
+/// chain connection is not implemented, the same limit
+/// `connect_pairwise()` already states for the two-component case).
+struct ChainMergeStep {
+  ComponentId joining;
+  std::size_t step_index;  ///< 1-based position of `joining` in `order`
+};
+
+[[nodiscard]] inline Result<std::vector<ChainMergeStep>> connect_chain_plan(
+    const CouplingGraph& g) {
+  const auto order_result = connect_mode_components(g);
+  if (!order_result.ok()) return order_result.error();
+  const std::vector<ComponentId>& order = order_result.value();
+
+  std::vector<ChainMergeStep> steps;
+  steps.reserve(order.size() - 1);
+  for (std::size_t i = 1; i < order.size(); ++i) {
+    const ComponentDecl& joining = g.component(order[i]);
+    if (i == 1) {
+      // Step 1: today's two-component rule, unchanged -- exactly one of
+      // order[0]/order[1] must be the acceptor, and connect_pairwise()
+      // (connect.cpp) is what actually checks and uses that; this plan
+      // only has to confirm there is a chain to continue past it.
+      steps.push_back(ChainMergeStep{order[i], i});
+      continue;
+    }
+    if (!joining.launch.is_acceptor) {
+      return Failure{
+          "E-CONNECT-SPEC",
+          "component '" + joining.name + "' is step " + std::to_string(i) +
+              " of an N-way connect chain (joining components merged so "
+              "far) and must declare is_acceptor = true: each component "
+              "publishes its own port name once, at the one step it "
+              "joins, and the already-merged chain cannot itself open a "
+              "port since no single LaunchSpec describes it"};
+    }
+    if (joining.launch.port_file.empty()) {
+      return Failure{
+          "E-CONNECT-SPEC",
+          "component '" + joining.name + "' is step " + std::to_string(i) +
+              " of an N-way connect chain and must declare its own "
+              "port_file; service_name chain connection is not "
+              "implemented by this connect()"};
+    }
+    steps.push_back(ChainMergeStep{order[i], i});
+  }
+  return steps;
 }
 
 #if FUSE_HAVE_MPI

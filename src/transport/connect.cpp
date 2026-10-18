@@ -124,11 +124,21 @@ namespace {
                                                       const ConnectOptions& opts) {
   // TR-17: the two-component rule itself now lives in connect.hpp, pure
   // and MPI-free, so a tier-0 test can fire its refusal directly.
+  //
+  // D18: connect_mode_components() may now return MORE than two
+  // components (the N-way chain generalisation) -- this function is
+  // ALWAYS the two-party merge of the first two in that order, used
+  // standalone for a plain two-component graph and as connect_chain()'s
+  // own step 1 for a longer one; connect_chain() never calls this with
+  // `my_id` outside {order[0], order[1]}, so looking only at those two
+  // here, regardless of how many more the graph declares, is correct.
   const auto order_result = ::fuse::transport::connect_mode_components(g);
   if (!order_result.ok()) return order_result.error();
   const std::vector<ComponentId>& order = order_result.value();
-  const bool i_am_first = (order[0] == my_id);
-  const ComponentId partner_id = i_am_first ? order[1] : order[0];
+  const ComponentId first_id = order[0];
+  const ComponentId second_id = order[1];
+  const bool i_am_first = (first_id == my_id);
+  const ComponentId partner_id = i_am_first ? second_id : first_id;
   const ComponentDecl& mine = g.component(my_id);
   const ComponentDecl& partner = g.component(partner_id);
 
@@ -232,6 +242,154 @@ namespace {
   return out;
 }
 
+// KNOWN_ISSUES.md D18. Generalises connect_pairwise() above to any number
+// of Connect-mode components (>= 2), per connect_chain_plan()'s own rule
+// (connect.hpp): step 1 is connect_pairwise() ITSELF, verbatim, between
+// order[0] and order[1]; each later step i merges the chain already
+// formed from order[0..i-1] with order[i] alone, with order[i] always
+// the acceptor (connect_chain_plan() already refused a graph where that
+// is not declared, before this function is ever called). For the
+// REAL two-component graph (order.size() == 2) this performs EXACTLY
+// one merge -- step 1 -- so behaviour for every existing two-component
+// caller is unchanged.
+//
+// Built, not run: this sandbox cannot start mpiexec (KNOWN_ISSUES.md C1).
+// The host rows this entry names (`parallel.connect.chain.{3,4}`) are not
+// registered in this round -- see KNOWN_ISSUES.md D18's own updated entry
+// for why building the matching N-executable test harness was scoped out
+// of this round's budget, and what test/parallel/connect/connect_common.
+// hpp's own build_graph()/run_participant() would need to grow a third
+// and fourth participant executable.
+[[nodiscard]] Result<ConnectedWorld> connect_chain(const CouplingGraph& g,
+                                                   ComponentId my_id,
+                                                   MPI_Comm world,
+                                                   const ConnectOptions& opts) {
+  const auto plan_result = connect_chain_plan(g);
+  if (!plan_result.ok()) return plan_result.error();
+  const std::vector<ChainMergeStep>& steps = plan_result.value();
+  const auto order_result = connect_mode_components(g);
+  if (!order_result.ok()) return order_result.error();
+  const std::vector<ComponentId>& order = order_result.value();
+
+  // Step 1: today's two-component path, unchanged, and ONLY for a
+  // process playing order[0] or order[1] -- connect_pairwise() is
+  // collective over `world`, and a process playing some LATER component
+  // in the chain (order[2+]) has a `world` that is its own separate
+  // executable's MPI_COMM_WORLD, sharing no rank with order[0]'s or
+  // order[1]'s; calling connect_pairwise() there would mean this
+  // process's own world entering a collective its real step-1 peers
+  // never reach. For a plain two-component graph this is the only step
+  // and the result IS the final merged world; for a longer chain it is
+  // the seed every later step grows. A process that is neither order[0]
+  // nor order[1] waits for its OWN joining step, below, carrying `world`
+  // forward unchanged until then.
+  MPI_Comm current = world;
+  if (my_id == order[0] || my_id == order[1]) {
+    Result<ConnectedWorld> chain_result = connect_pairwise(g, my_id, world, opts);
+    if (!chain_result.ok()) return chain_result.error();
+    current = MPI_Comm_f2c(static_cast<MPI_Fint>(chain_result.value().base_comm_f));
+  }
+
+  for (std::size_t s = 1; s < steps.size(); ++s) {
+    const ChainMergeStep& step = steps[s];
+    const bool i_am_joining = (my_id == step.joining);
+    // Whether THIS process is already part of the chain formed by steps
+    // [1 .. step.step_index - 1]: true for order[0..step.step_index-1]'s
+    // own ranks, which by connect_chain_plan()'s own numbering is every
+    // component strictly before the one joining at this step.
+    bool i_am_in_chain_so_far = false;
+    for (std::size_t k = 0; k < step.step_index; ++k) {
+      if (my_id == order[k]) { i_am_in_chain_so_far = true; break; }
+    }
+    if (!i_am_joining && !i_am_in_chain_so_far) continue;  // not part of this step
+
+    const ComponentDecl& joining_decl = g.component(step.joining);
+    const std::string& connect_file = joining_decl.launch.port_file;
+
+    int rank = 0;
+    int rc = MPI_Comm_rank(current, &rank);
+    if (rc != MPI_SUCCESS) {
+      return Failure{"E-CONNECT-MPI", "MPI_Comm_rank failed: " + mpi_error_text(rc)};
+    }
+
+    MPI_Comm intercomm = MPI_COMM_NULL;
+    if (i_am_joining) {
+      // The joining component is always the acceptor for its own step
+      // (connect_chain_plan()'s own rule) -- identical shape to
+      // connect_pairwise()'s own acceptor branch above, just reached for
+      // a LATER step's single joining component instead of order[1].
+      char port_name[MPI_MAX_PORT_NAME] = {};
+      int         open_rc = MPI_SUCCESS;
+      std::string open_detail;
+      if (rank == 0) {
+        rc = MPI_Open_port(MPI_INFO_NULL, port_name);
+        if (rc != MPI_SUCCESS) {
+          open_rc = rc;
+          open_detail = "MPI_Open_port failed: " + mpi_error_text(rc);
+        } else if (auto r = publish_port_file(connect_file, port_name); !r.ok()) {
+          open_rc = MPI_ERR_OTHER;
+          open_detail = r.error().message;
+        }
+      }
+      rc = MPI_Bcast(&open_rc, 1, MPI_INT, 0, current);
+      if (rc != MPI_SUCCESS) {
+        return Failure{"E-CONNECT-MPI",
+                       "MPI_Bcast of the port-open outcome failed: " + mpi_error_text(rc)};
+      }
+      if (open_rc != MPI_SUCCESS) {
+        return Failure{"E-CONNECT-MPI",
+                       rank == 0 ? open_detail
+                                 : "rank 0 failed to open or publish the chain step's "
+                                   "acceptor port; its own diagnostic carries the detail"};
+      }
+      rc = MPI_Bcast(port_name, MPI_MAX_PORT_NAME, MPI_CHAR, 0, current);
+      if (rc != MPI_SUCCESS) {
+        return Failure{"E-CONNECT-MPI", "MPI_Bcast of the port name failed: " + mpi_error_text(rc)};
+      }
+      rc = MPI_Comm_accept(port_name, MPI_INFO_NULL, 0, current, &intercomm);
+      if (rc != MPI_SUCCESS) {
+        return Failure{"E-CONNECT-MPI", "MPI_Comm_accept failed: " + mpi_error_text(rc)};
+      }
+      if (rank == 0) MPI_Close_port(port_name);
+    } else {
+      // Already part of the chain formed so far: the connector side,
+      // waiting on the joining component's own published port.
+      const auto port_result =
+          wait_for_port_file(connect_file, opts.timeout_s, opts.poll_interval_s);
+      if (!port_result.ok()) return port_result.error();
+      rc = MPI_Comm_connect(port_result.value().c_str(), MPI_INFO_NULL, 0, current, &intercomm);
+      if (rc != MPI_SUCCESS) {
+        return Failure{"E-CONNECT-MPI", "MPI_Comm_connect failed: " + mpi_error_text(rc)};
+      }
+    }
+
+    // The chain formed so far is always "low" (0) and the joining
+    // component is always "high" (1): the chain's own ranks keep their
+    // existing numbering and the joining component's ranks are appended
+    // after them, preserving the graph's own component order across
+    // every step, the same reasoning connect_pairwise() states for its
+    // own single merge.
+    MPI_Comm merged = MPI_COMM_NULL;
+    rc = MPI_Intercomm_merge(intercomm, i_am_joining ? 1 : 0, &merged);
+    MPI_Comm_disconnect(&intercomm);
+    if (rc != MPI_SUCCESS) {
+      return Failure{"E-CONNECT-MPI", "MPI_Intercomm_merge failed: " + mpi_error_text(rc)};
+    }
+    // `current` before this step was either `world` (this process's own
+    // local world, for a process joining at this step with no prior
+    // merge of its own to free) or a PRIOR merged communicator this same
+    // function formed and is responsible for; only the latter is this
+    // function's own to release here.
+    if (current != world) MPI_Comm_free(&current);
+    current = merged;
+  }
+
+  ConnectedWorld out;
+  out.base_comm_f = static_cast<int>(MPI_Comm_c2f(current));
+  out.teardown = ConnectedWorld::Teardown::Disconnect;
+  return out;
+}
+
 }  // namespace
 
 Result<ConnectedWorld> connect(const CouplingGraph& g, int my_world_comm_f,
@@ -271,7 +429,12 @@ Result<ConnectedWorld> connect(const CouplingGraph& g, int my_world_comm_f,
           !r.ok()) {
         return r.error();
       }
-      return connect_pairwise(g, opts.my_component, world, opts);
+      // D18 (KNOWN_ISSUES.md): connect_chain() subsumes the plain
+      // two-component case as its own single step (connect_chain_plan()'s
+      // own rule, connect.hpp), so every existing two-component caller's
+      // behaviour is unchanged -- this is connect_pairwise()'s own body,
+      // run once, for order.size() == 2.
+      return connect_chain(g, opts.my_component, world, opts);
     case LaunchMode::Plugin:
       // A plugin is mounted (fuse::abi_detail::Registry), never launched: it
       // shares the host process and its communicator exactly like an

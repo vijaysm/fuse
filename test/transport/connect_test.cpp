@@ -129,6 +129,26 @@ TEST(ValidateLaunchLayout, InProcessComponentsAreIgnored) {
 // process exactly like an InProcess one (launch.hpp's own doc on
 // LaunchMode::Plugin), so it imposes no requirement on the launched
 // components' numbering either.
+// KNOWN_ISSUES.md D15, round 2 (item 3, "a plugin on a rank subset"): the
+// existing PluginComponentsAreIgnored case below only ever gives Plugin a
+// RankSet spanning the WHOLE run; this one gives it a STRICT SUBSET of a
+// larger world and confirms validate_launch_layout() needs no special
+// case for that -- the existing rule ("Plugin needs no rank block of its
+// own") already covers a subset, since it imposes no RankSet constraint
+// on a Plugin component at all, whatever that RankSet happens to be.
+TEST(ValidateLaunchLayout, AcceptsAPluginComponentOnAStrictRankSubset) {
+  CouplingGraph g;
+  g.add_component({.name = "mpmd_host", .ranks = {0, 3},
+                   .launch = {.mode = LaunchMode::Mpmd, .appnum = 0}});
+  // Plugin, placed on ranks {1} of this 3-rank world -- a subset, not
+  // the whole run and not merely "ranks after the launched block".
+  g.add_component({.name = "plugin_on_subset", .ranks = {1, 1},
+                   .launch = {.mode = LaunchMode::Plugin}});
+
+  const auto r = validate_launch_layout(g);
+  EXPECT_TRUE(r.ok()) << r.error().message;
+}
+
 TEST(ValidateLaunchLayout, PluginComponentsAreIgnored) {
   CouplingGraph g;
   g.add_component({.name = "mpmd-a",
@@ -506,20 +526,32 @@ TEST(WaitForPortFile, RefusesWhenTheFileExistsButIsEmpty) {
 // a live MPI world to reach at all (test/transport/transport.md's own
 // finding). Pulled out to connect.hpp as a pure function so it fires here.
 
-TEST(ConnectModeComponents, RefusesAThirdConnectModeComponent) {
+// KNOWN_ISSUES.md D18: connect_mode_components() used to refuse anything
+// other than exactly two Connect-mode components (RefusesAThirdConnect
+// ModeComponent's own old name and assertion, before this round); the
+// N-way chain generalisation (connect_chain_plan(), immediately below)
+// means three -- or any count >= 2 -- is now accepted here, in the
+// graph's own declaration order. The chain's OWN per-step rules (each
+// joining component beyond the first must declare is_acceptor and a
+// port_file) are connect_chain_plan()'s job, tested separately below;
+// this function's only remaining limit is "at least two".
+TEST(ConnectModeComponents, AcceptsThreeConnectModeComponentsInGraphOrder) {
   CouplingGraph g;
   const LaunchSpec connect_a{
       .mode = LaunchMode::Connect, .is_acceptor = true, .port_file = "/tmp/x"};
   const LaunchSpec connect_b{.mode = LaunchMode::Connect, .port_file = "/tmp/x"};
-  const LaunchSpec connect_c{.mode = LaunchMode::Connect, .port_file = "/tmp/y"};
+  const LaunchSpec connect_c{
+      .mode = LaunchMode::Connect, .is_acceptor = true, .port_file = "/tmp/y"};
   g.add_component({.name = "a", .ranks = {0, 1}, .launch = connect_a});
   g.add_component({.name = "b", .ranks = {1, 1}, .launch = connect_b});
   g.add_component({.name = "c", .ranks = {2, 1}, .launch = connect_c});
 
   const auto r = fuse::transport::connect_mode_components(g);
-  ASSERT_FALSE(r.ok());
-  EXPECT_EQ(r.error().code, "E-CONNECT-SPEC");
-  EXPECT_NE(r.error().message.find("3"), std::string::npos) << r.error().message;
+  ASSERT_TRUE(r.ok()) << r.error().message;
+  ASSERT_EQ(r.value().size(), 3u);
+  EXPECT_EQ(r.value()[0], ComponentId{0});
+  EXPECT_EQ(r.value()[1], ComponentId{1});
+  EXPECT_EQ(r.value()[2], ComponentId{2});
 }
 
 TEST(ConnectModeComponents, RefusesJustOneConnectModeComponent) {
@@ -546,6 +578,145 @@ TEST(ConnectModeComponents, AcceptsExactlyTwoInGraphOrder) {
   EXPECT_EQ(r.value().size(), 2u);
   EXPECT_EQ(r.value()[0], ComponentId{0});
   EXPECT_EQ(r.value()[1], ComponentId{1});
+}
+
+// ---- connect_chain_plan() (KNOWN_ISSUES.md D18's N-way generalisation) ---
+
+// Three components: step 1 (a/b) is today's two-component rule,
+// unchanged; step 2 (the chain so far, joined by c) requires c itself
+// to declare is_acceptor and a port_file -- "each component publishes
+// its port name once", connect.hpp's own rule.
+TEST(ConnectChainPlan, ThreeComponentsProduceTwoSteps) {
+  CouplingGraph g;
+  g.add_component({.name = "a", .ranks = {0, 1},
+                   .launch = {.mode = LaunchMode::Connect, .is_acceptor = true,
+                              .port_file = "/tmp/ab"}});
+  g.add_component({.name = "b", .ranks = {1, 1},
+                   .launch = {.mode = LaunchMode::Connect, .port_file = "/tmp/ab"}});
+  g.add_component({.name = "c", .ranks = {2, 1},
+                   .launch = {.mode = LaunchMode::Connect, .is_acceptor = true,
+                              .port_file = "/tmp/c"}});
+
+  const auto r = fuse::transport::connect_chain_plan(g);
+  ASSERT_TRUE(r.ok()) << r.error().message;
+  ASSERT_EQ(r.value().size(), 2u);
+  EXPECT_EQ(r.value()[0].joining, ComponentId{1});
+  EXPECT_EQ(r.value()[0].step_index, 1u);
+  EXPECT_EQ(r.value()[1].joining, ComponentId{2});
+  EXPECT_EQ(r.value()[1].step_index, 2u);
+}
+
+// Four components: three steps, each later one (b joining at step 1 is
+// exempt -- the unchanged two-component rule; c at step 2 and d at step
+// 3 both need their own is_acceptor/port_file).
+TEST(ConnectChainPlan, FourComponentsProduceThreeSteps) {
+  CouplingGraph g;
+  g.add_component({.name = "a", .ranks = {0, 1},
+                   .launch = {.mode = LaunchMode::Connect, .is_acceptor = true,
+                              .port_file = "/tmp/ab"}});
+  g.add_component({.name = "b", .ranks = {1, 1},
+                   .launch = {.mode = LaunchMode::Connect, .port_file = "/tmp/ab"}});
+  g.add_component({.name = "c", .ranks = {2, 1},
+                   .launch = {.mode = LaunchMode::Connect, .is_acceptor = true,
+                              .port_file = "/tmp/c"}});
+  g.add_component({.name = "d", .ranks = {3, 1},
+                   .launch = {.mode = LaunchMode::Connect, .is_acceptor = true,
+                              .port_file = "/tmp/d"}});
+
+  const auto r = fuse::transport::connect_chain_plan(g);
+  ASSERT_TRUE(r.ok()) << r.error().message;
+  ASSERT_EQ(r.value().size(), 3u);
+  EXPECT_EQ(r.value()[0].joining, ComponentId{1});
+  EXPECT_EQ(r.value()[1].joining, ComponentId{2});
+  EXPECT_EQ(r.value()[1].step_index, 2u);
+  EXPECT_EQ(r.value()[2].joining, ComponentId{3});
+  EXPECT_EQ(r.value()[2].step_index, 3u);
+}
+
+TEST(ConnectChainPlan, RefusesAStepTwoJoinerThatDoesNotDeclareIsAcceptor) {
+  CouplingGraph g;
+  g.add_component({.name = "a", .ranks = {0, 1},
+                   .launch = {.mode = LaunchMode::Connect, .is_acceptor = true,
+                              .port_file = "/tmp/ab"}});
+  g.add_component({.name = "b", .ranks = {1, 1},
+                   .launch = {.mode = LaunchMode::Connect, .port_file = "/tmp/ab"}});
+  g.add_component({.name = "c", .ranks = {2, 1},
+                   .launch = {.mode = LaunchMode::Connect, .is_acceptor = false,
+                              .port_file = "/tmp/c"}});
+
+  const auto r = fuse::transport::connect_chain_plan(g);
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.error().code, "E-CONNECT-SPEC");
+  EXPECT_NE(r.error().message.find("c"), std::string::npos) << r.error().message;
+  EXPECT_NE(r.error().message.find("is_acceptor"), std::string::npos) << r.error().message;
+}
+
+TEST(ConnectChainPlan, RefusesAStepTwoJoinerWithNoPortFile) {
+  CouplingGraph g;
+  g.add_component({.name = "a", .ranks = {0, 1},
+                   .launch = {.mode = LaunchMode::Connect, .is_acceptor = true,
+                              .port_file = "/tmp/ab"}});
+  g.add_component({.name = "b", .ranks = {1, 1},
+                   .launch = {.mode = LaunchMode::Connect, .port_file = "/tmp/ab"}});
+  g.add_component({.name = "c", .ranks = {2, 1},
+                   .launch = {.mode = LaunchMode::Connect, .is_acceptor = true}});
+
+  const auto r = fuse::transport::connect_chain_plan(g);
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.error().code, "E-CONNECT-SPEC");
+  EXPECT_NE(r.error().message.find("port_file"), std::string::npos) << r.error().message;
+}
+
+TEST(ConnectChainPlan, RefusesWithFewerThanTwoConnectModeComponents) {
+  CouplingGraph g;
+  g.add_component({.name = "a", .ranks = {0, 1},
+                   .launch = {.mode = LaunchMode::Connect, .is_acceptor = true,
+                              .port_file = "/tmp/x"}});
+  g.add_component({.name = "serial", .ranks = {1, 1}});  // InProcess default
+
+  const auto r = fuse::transport::connect_chain_plan(g);
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.error().code, "E-CONNECT-SPEC");
+}
+
+// validate_launch_layout() is unaffected by the chain generalisation: a
+// 3- or 4-component Connect chain is still one consecutive block per
+// component in graph order (D36's gap rule, tested above with mpmd/
+// in-process blocks, applies identically regardless of how many
+// Connect-mode blocks there are).
+TEST(ValidateLaunchLayout, AcceptsThreeConsecutiveConnectBlocksInGraphOrder) {
+  CouplingGraph g;
+  g.add_component({.name = "a", .ranks = {0, 1},
+                   .launch = {.mode = LaunchMode::Connect, .is_acceptor = true,
+                              .port_file = "/tmp/ab"}});
+  g.add_component({.name = "b", .ranks = {1, 1},
+                   .launch = {.mode = LaunchMode::Connect, .port_file = "/tmp/ab"}});
+  g.add_component({.name = "c", .ranks = {2, 1},
+                   .launch = {.mode = LaunchMode::Connect, .is_acceptor = true,
+                              .port_file = "/tmp/c"}});
+
+  const auto r = validate_launch_layout(g);
+  EXPECT_TRUE(r.ok()) << r.error().message;
+}
+
+TEST(ValidateLaunchLayout, AcceptsFourConsecutiveConnectBlocksWithAGapFilledByInProcess) {
+  CouplingGraph g;
+  g.add_component({.name = "a", .ranks = {0, 1},
+                   .launch = {.mode = LaunchMode::Connect, .is_acceptor = true,
+                              .port_file = "/tmp/ab"}});
+  g.add_component({.name = "b", .ranks = {1, 1},
+                   .launch = {.mode = LaunchMode::Connect, .port_file = "/tmp/ab"}});
+  // A gap at rank 2, covered by an in-process component (D36's own
+  // rule), before the third and fourth Connect-mode blocks.
+  g.add_component({.name = "filler", .ranks = {2, 1}});  // InProcess default
+  g.add_component({.name = "c", .ranks = {3, 1},
+                   .launch = {.mode = LaunchMode::Connect, .is_acceptor = true,
+                              .port_file = "/tmp/c"}});
+  g.add_component({.name = "d", .ranks = {4, 1},
+                   .launch = {.mode = LaunchMode::Connect, .port_file = "/tmp/c"}});
+
+  const auto r = validate_launch_layout(g);
+  EXPECT_TRUE(r.ok()) << r.error().message;
 }
 
 // ---- the accept/connect capability gate (KNOWN_ISSUES D23) ---------------
