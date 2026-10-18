@@ -1877,6 +1877,26 @@ struct Runner::Impl {
   /// at the original call site.
   void refresh_window_member_history(detail::RegionRuntime& R);
 
+  /// the issue tracker (owner priority, Restart/):
+  /// re-prime every window-scoped region's own CONSUMER-side transfer
+  /// buffer (`window_import`, a coupler-owned slot primed ONCE at
+  /// resolve_regions()/initialize() time, before any restore ever
+  /// runs) from the restored PROVIDER's own `WindowMemberState::
+  /// last_window_waveform` (now a live producer in advance_
+  /// window(), src/runtime/iteration.cpp) -- called once, from
+  /// Runner::restore_restart_fields(), right after every window
+  /// member's own history/waveform has been restored. Two earlier fix
+  /// attempts (re-priming the EXPORT slot only; re-running the import
+  /// channel's own delivery chain through execute()) are recorded in
+  /// the issue tracker and were measured insufficient/harmful
+  /// respectively -- both predate, and so had no genuinely
+  /// restored per-sample trajectory to re-prime FROM: last_window_
+  /// waveform was unconditionally empty on every Runner-driven restore
+  /// until this round. See this function's own definition (iteration.
+  /// cpp) for the full derivation and the measured trace that
+  /// confirmed it.
+  [[nodiscard]] Result<void> reprime_window_import_after_restore();
+
   ///  WindowNewton (newton-krylov.md Sec. 9.5): the `LinearizationToken*`
   /// of the component that PROVIDES the window channel whose consumer-side
   /// `window_import` arc is `feed_arc` -- `nullptr` if no such channel, or
