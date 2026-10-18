@@ -6467,7 +6467,52 @@ built from each substrate's own terminal residuals (dn_heat: an exact bound, ‖
 sum over its 20 periods; the Brusselator: a calibrated reference error times one plus the residual
 ratio), and both held on the owner's machine on 2026-10-12 (dn_heat: observed 3.572609e-10 K against
 5.888415e-07 K, ratio 6.067e-04; the Brusselator: per element against 5.390239e-15, with the observed
-maximum not yet printed — the test now prints it).
+maximum not yet printed -- the test now prints it).
+
+**Built 2026-10-18 (Substrate track, plan S7.2b phase 2 closing): the per-region selector exercised
+with TWO Newton regions in ONE graph, naming genuinely different substrates, which nothing before this
+entry's own close had tested.** Sec. 11's own tests (above, PetscSelect track) built the registry, the
+eager refusal, and the descriptor field, and measured dn_heat/the Brusselator run WHOLLY through one
+substrate at a time (`--newton-petsc`/`--substrate petsc` pick the substrate for the graph's own single
+Newton region); nothing built there put two Newton-selected regions, naming different substrates, in
+the same graph. `test/runtime/newton_region_test.cpp` gained
+`NewtonRegion.TwoNewtonRegionsOneUnavailableSubstrateIsRefusedByNameNotByRegionOrder` (region A native,
+region B an unregistered Petsc, refused `E-NEWTON-PETSC-UNAVAILABLE` naming region B specifically, never
+region A) and `NewtonRegion.TwoNewtonRegionsInOneRunnerDispatchToTheirOwnSubstrateIndependently` (a test
+double registered for `Petsc`, per `register_newton_substrate()`'s own documented "a test double" use,
+proving the Runner reaches two different registered functions for two regions inside ONE
+`Runner::run_period()` call -- without PETSc, `install()`, or MPI). `examples/dn_heat/main.cpp`'s own
+`--newton-petsc` path gained `build_dual_substrate_graph()`/`run_dual_substrate_case()`: a second,
+independent dirichlet-neumann pair in the SAME graph as the existing comparison, region
+`dirichlet_neumann_a` on Native and `dirichlet_neumann_b` on Petsc, run together, printing both
+regions' own convergence histories and checked against each other with the SAME sharp,
+per-period-summed bound the existing native/petsc comparison uses; still gated `FUSE_HAVE_PETSC`, still
+run only under `--newton-petsc`, no new ctest row (runs inside the existing
+`example.dn_heat.newton_petsc` row). Full account, including why the eager refusal needs no cross-rank
+agreement step (the graph and the per-process registry state are both SPMD-identical across ranks by
+construction, never rank-sensed), is `docs/dev/newton-krylov.md` Sec. 13.
+
+**Verified tier-0, without PETSc, this sandbox, 2026-10-18:** `/tmp/substrate/b0` (Debug,
+`FUSE_ENABLE_PETSC=OFF`), clean build, 0 errors; full quick-tier `ctest -LE slow`, 206/206 PASS
+(unchanged pass count and rate -- both new cases run inside the pre-existing `runtime.newton_region`
+ctest row, which already counted as one row before and after); the two new cases individually
+confirmed PASS by direct binary invocation (`--gtest_filter`); `example.dn_heat`/`example.dn_heat.dump`
+unaffected (default invocation's own output is unaffected by this track's additions, which are
+entirely inside the pre-existing `--newton-petsc` path). `tools/check-layering.py` (0 violations),
+`tools/verify-import.py` (693 files, 0 problems), `tools/gen-abi.py --check` (6 current, 0 stale),
+`tools/mutate.py --check-anchors` (363 valid, 0 stale) all pass; `tools/check-invariants.py`'s own 7
+violations are pre-existing on pristine (element_type.hpp/element_type_test.cpp/restart_test.cpp, none
+of which this track touched), confirmed identical before and after by diff against pristine.
+
+**NOT STRUCK: this closes plan S7.2b phase 2's own remaining item, but does not close D32 itself.**
+D32's own "the communicator remains" (above) and every `petsc.*`/`example.dn_heat.newton_petsc` row
+stay exactly as host-pending as they were before this entry: this sandbox cannot complete a bare
+`MPI_Init()` (the same constraint named throughout this entry and D31), so
+`example.dn_heat.newton_petsc`'s own dual-substrate case is BUILT here, never RUN -- a host run of that
+ctest row is what measures whether the two regions' own converged states actually agree to the printed
+bound, the one thing this sandbox's tier-0 verification above cannot show. D31's own cross-rank
+communicator lift (Sec. 9.10/11.3) is independently still open (D31's own heading, above) and unrelated
+to this closing beyond sharing the same host-pending status.
 
 ### D48. A `Transport` instruction can have one arc device-resident and the other host, even in Device mode — FOUND AND FIXED 2026-10-13
 
@@ -7562,7 +7607,7 @@ correctly with real device pointers in MPI's hands, as opposed to merely compili
 genuinely CUDA-aware OpenMPI (or MPICH built against UCX/CUDA) is what this needs; until then this
 branch is UNVERIFIED, not failing.
 
-### D67. `build_distributed_interp_rows`'s per-cell containment search disagrees by 1 ULP at the domain's own boundary vertex between an exactly-one-rank replica and a real multi-rank one — OPEN, found 2026-10-15 (runtime-exchange track, follow-up round)
+### ~~D67. `build_distributed_interp_rows`'s per-cell containment search disagrees by 1 ULP at the domain's own boundary vertex between an exactly-one-rank replica and a real multi-rank one~~ -- FIXED 2026-10-18 (found 2026-10-15, runtime-exchange track; closed, PointLocation track)
 
 Found while adding `NodalRemapRunnerMpi.ConsistentTransposeIsBitIdenticalAcrossRankCounts` (the lead's
 determinism follow-up's own RED/GREEN row, `test/parallel/nodal_remap_runner_test.cpp`): the H^T
@@ -7607,6 +7652,72 @@ re-run after the fix reproduces the EXACT SAME bit pattern at the SAME vertex --
 `0.06611570247933884481` at one rank, `0.066115702479338858688` at both two and three ranks,
 unchanged to the last bit. D67 remains open on its own; whatever produces this 1-ULP gap is a
 different, still-undiagnosed mechanism in the same function.
+
+**ROOT CAUSE, FOUND (PointLocation track, 2026-10-18): NOT a tie-break, and NOT `gather_global_source`'s
+assembly order -- two DIFFERENT floating-point expressions for the SAME Edge-cell hat weight, selected
+by which of two unrelated code paths a caller's placement happens to route through.** The vertex in
+question has exactly ONE candidate source cell (it is the mesh's own left edge, not a shared interior
+vertex at all) -- there is no tie to break here, which the original write-up's own "two near-tied
+candidate cells" theory did not consider. `Runner::resolve_remap`'s `both_on_one_rank` (runner.cpp,
+"A single-rank placement on BOTH sides skips this whole path") sends a one-rank placement -- exactly
+`NodalRemapRunnerMpi.ConsistentTransposeIsBitIdenticalAcrossRankCounts`'s own world_size == 1 case, AND
+that same test's `compute_reference()` helper, which calls the public dispatcher directly -- through the
+ORIGINAL, serial `fuse::build_consistent_interp_weights` -> (`dimension() == 1`) ->
+`build_consistent_interp_weights_1d` (consistent_interp.hpp): a coordinate-sort algorithm that computed
+the bracketing hat weight as `t = (x - lo.x) / (hi.x - lo.x)` directly. ANY placement spanning more than
+one rank instead takes `build_nodal_dist_remap` -> `build_distributed_interp_rows`
+(nodal_remap_distributed.hpp), which -- regardless of dimension, per general_interp.hpp's own dispatch
+comment -- always inverts a cell's reference map through `general_interp_detail::invert_reference_map`'s
+damped Gauss-Newton: for an Edge cell, one step from `u = 0` lands at `du = dot(jac, res) / dot(jac,
+jac)` with `jac = p1 - p0`, `res = target - p0`, which reduces (`jac`/`res` scalar here) to `(h*dx)/(h*h)`
+-- ALGEBRAICALLY the same ratio as `t = dx/h`, but NOT bit-identical: the extra multiply before the
+divide rounds differently from a bare divide, in general. Confirmed directly, not just argued: a
+serial, NO-MPI reproduction (`NodalRemapDistributedNullComm.
+D67SerialAndDistributedEdgeWeightsAgreeAtTheDomainBoundary`, test/backend/nodal_remap_distributed_
+nullcomm_test.cpp) calls `build_distributed_interp_rows`/`build_consistent_interp_weights` directly on
+the SAME n_beam=7/n_fluid=11 mesh pair and reproduces the IDENTICAL bit pattern this entry already
+named (`0.68181818181818187874` vs `0.68181818181818176772` at beam vertex 0, and six further
+mismatches at OTHER bracketing vertices this file's own 1-ULP-at-gid-0-only framing had not noticed,
+since the aggregated `beam_load` sum happens to wash most of them out) -- with zero MPI symbol
+anywhere in that translation unit, which rules out `gather_global_source`'s null-comm-vs-Allgatherv
+assembly order as a cause (that theory's own premise, re-examined: every vertex position and cell
+connectivity entry gathered by Allgatherv is copied byte-for-byte from the owning rank's own
+`MeshView::centroid`/`global_id`, concatenated in ascending-global-id rank order regardless of rank
+count for this file's own `GeometricLineMesh` -- there is no arithmetic for a decomposition to perturb).
+
+**THE FIX.** Both code paths now compute this one ratio through a single shared predicate,
+`general_interp_detail::edge_hat_weights` (general_interp.hpp): a synthetic 2-corner `CellShape::Edge`
+cell built from the two bracketing physical positions, run through the SAME `invert_reference_map`/
+`basis_weights` the distributed and general (2D/3D) builders already use.
+`build_consistent_interp_weights_1d`'s "genuine bracket" branch (consistent_interp.hpp) now calls it
+instead of computing `t` directly, so whichever code path a caller's placement selects, the computed
+weight is the identical bit pattern, because it is now the identical computation. The 1D algorithm's
+own coordinate-sort (finding WHICH pair brackets a point, needing no `cell_vertices` connectivity at
+all) is UNCHANGED -- only the arithmetic of the weight ITSELF, once the bracket is already found, is
+now shared; this preserves the design rationale consistent_interp.hpp's own header gives for keeping
+the two dispatch paths separate (a connectivity-free 1D source, which `build_general_interp_weights`
+cannot serve at all, must keep working).
+
+**VERIFICATION, entirely in this sandbox (MPI cannot start here, but neither code path needs MPI to
+diverge or to agree).** RED first: reverting the fix and re-running
+`NodalRemapDistributedNullComm.D67SerialAndDistributedEdgeWeightsAgreeAtTheDomainBoundary` (serial,
+no MPI) reproduces 7 of 22 compared (fluid cell, beam vertex) entries disagreeing by exactly 1 ULP,
+including the exact value this entry already named at beam vertex 0; reverting the fix and tightening
+`NodalRemapRunnerSerial.TheOneRankCaseOfTheMpiFixtureRunsAndIsExact`'s own beam-load check to
+`EXPECT_EQ` (verification/nodal_remap_runner_serial_test.cpp -- the one-rank case of the MPI fixture,
+runnable without MPI, which already exercises BOTH code paths at one participant via
+`RunnerConfig::force_distributed_nodal_remap`) reproduces the SAME discrepancy
+(`0.066115702479338859` vs `0.066115702479338845`) at the full `Runner`/`CouplingGraph` level, not
+just the raw primitive. GREEN after the fix: both tests pass; the fix was then restored and the file
+confirmed byte-identical to pristine before the mutation/RED check (`diff` exit 0). `test/parallel/
+nodal_remap_runner_test.cpp`'s own `ConsistentTransposeIsBitIdenticalAcrossRankCounts` had excluded
+beam vertex (global id) 0 from its exact check at a 5e-16 tolerance, with a comment attributing the
+gap to the (now ruled out) Allgatherv-assembly theory; that exclusion is removed (every vertex is now
+asserted bitwise-identical) and the comment corrected to this entry's own root cause -- that file is
+MPI-gated and only compiled, never run, in this sandbox (host_pending: `ctest --test-dir <build> -R
+'parallel\\.nodal_remap_runner\\.[1-5]'` on the owner's machine is what confirms it at a genuine
+multi-rank launch, though the mechanism and the fix are already proven, without MPI, by the two
+tests above).
 
 ### D68. `BoxIndex::build_device_resident` tied its tree-routing flag to `kHasDeviceBackend`, reading `size()`/`empty()`/every query from the untouched host tree on a build with no device backend -- FOUND AND FIXED 2026-10-15 (MeshAdapter track)
 
@@ -8019,6 +8130,18 @@ RED/GREEN:
   * `parallel.nodal_remap_runner.{1..5}[.device]` and `verification.nodal_remap_runner_serial
     [.device]` (D67/D8's own suite) re-run UNCHANGED and confirmed still green (15/15 passing),
     confirming this fix does not touch that suite's own behaviour.
+
+**Re-examined (PointLocation track, 2026-10-18), while fixing D67's own 1-ULP arithmetic-divergence
+root cause.** D74's own fix (the broad-phase box index, above) is a DIFFERENT, unrelated defect
+(a per-candidate Newton failure wrongly aborting an already-found match) from D67's (two code paths
+computing the same Edge-cell hat weight by different floating-point expressions) and is unaffected by
+D67's fix: `bench.scaled_device_benchmark.{2,3}[.device]` remain enabled (no `DISABLED` row re-added to
+test/CMakeLists.txt) and this track introduces no change to `build_distributed_interp_rows`'s broad
+phase or its per-candidate skip-on-failure logic. No skipped or disabled test remains attached to this
+entry to un-skip; the one case this track's own task description had in mind under that name --
+`NodalRemapRunnerMpi.ConsistentTransposeIsBitIdenticalAcrossRankCounts`'s own beam-vertex-0 exclusion,
+softened to a `5e-16` tolerance and explicitly attributed to D67 in its own comment (not to D74) -- is
+addressed under D67 above (the exclusion is removed; every vertex is now asserted bitwise-identical).
 
 ### ~~D75. The collective restart writer produced files no reader could open~~ -- FIXED 2026-10-17
 
