@@ -596,7 +596,7 @@ if(FUSE_ENABLE_TESTS AND FUSE_ENABLE_MPI AND TARGET brusselator_u_main AND TARGE
       # MPI_Comm_dup'd communicator exactly like MpiTransport's own tests do.
       set_tests_properties(${_name} PROPERTIES
         LABELS "parallel;mpi;verification;brusselator" TIMEOUT 120
-        ENVIRONMENT "OMPI_MCA_coll_tuned_use_dynamic_rules=1;OMPI_MCA_coll_tuned_alltoallv_algorithm=2;OMPI_MCA_rmaps_base_oversubscribe=1")
+        ENVIRONMENT "OMPI_MCA_coll_tuned_use_dynamic_rules=1;OMPI_MCA_coll_tuned_alltoallv_algorithm=2;OMPI_MCA_rmaps_base_oversubscribe=1;PRTE_MCA_rmaps_default_mapping_policy=:oversubscribe")
     endforeach()
   endforeach()
 endif()
@@ -655,7 +655,7 @@ if(FUSE_ENABLE_TESTS AND FUSE_ENABLE_MPI AND FUSE_ENABLE_LOWFIVE
     set_tests_properties(${_name} PROPERTIES
       LABELS "parallel;mpi;lowfive;verification;brusselator"
       TIMEOUT 120
-      ENVIRONMENT "OMPI_MCA_coll_tuned_use_dynamic_rules=1;OMPI_MCA_coll_tuned_alltoallv_algorithm=2;OMPI_MCA_rmaps_base_oversubscribe=1")
+      ENVIRONMENT "OMPI_MCA_coll_tuned_use_dynamic_rules=1;OMPI_MCA_coll_tuned_alltoallv_algorithm=2;OMPI_MCA_rmaps_base_oversubscribe=1;PRTE_MCA_rmaps_default_mapping_policy=:oversubscribe")
   endforeach()
 endif()
 # ---- S6 phase 3 Unit 3b host rows: end ---------------------------------
