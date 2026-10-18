@@ -386,9 +386,14 @@ foreach(t rational units error)
 endforeach()
 
 # ---------------------------------------------------------------- model
-foreach(t semantics transform compatibility multiscale connect builder yaml_io region component channel coupling_graph descriptor capabilities bfloat16 element_type float_bits)
+foreach(t semantics transform compatibility connect builder yaml_io region channel coupling_graph descriptor capabilities bfloat16 element_type float_bits)
   fuse_add_gtest(model ${t})
 endforeach()
+# multiscale and component assert a Refusal is raised (OverlapSpec::total's
+# overflow, RankSet's bounds); registered without THROWS they aborted the
+# no-exceptions leg the first time it ran as a leg (2026-10-18).
+fuse_add_gtest(model multiscale THROWS)
+fuse_add_gtest(model component THROWS)
 fuse_add_gtest(model validate THROWS)
 # R-49 (REVIEW.md, pass 2): moved here from num/ -- ConvergenceMeasure,
 # ConvergenceCriterion, MeasureKind and Converged are declared in
@@ -1519,7 +1524,15 @@ if(FUSE_LINALG_BACKEND_IS_EIGEN)
   foreach(t brusselator_weights brusselator_physics brusselator_runner brusselator_grid_decomposition
             brusselator_species_core_decomposition brusselator_newton_norm brusselator_accept_layout
             brusselator_external_delivery_size)
-    fuse_add_gtest(verification ${t} NO_LAYER_LIB
+    # species_core_decomposition asserts make_diffusion_solver throws for
+    # SolverKind::Direct on a decomposed grid, so it carries THROWS (the
+    # no-exceptions leg aborted on it, 2026-10-18); the others throw nothing.
+    if(t STREQUAL "brusselator_species_core_decomposition")
+      set(_fuse_bruss_throws THROWS)
+    else()
+      set(_fuse_bruss_throws)
+    endif()
+    fuse_add_gtest(verification ${t} NO_LAYER_LIB ${_fuse_bruss_throws}
                    LIBS fuse::runtime fuse::backend fuse::model fuse::linalg Eigen3::Eigen Kokkos::kokkos)
     target_include_directories(fuse_verification_${t}_test PRIVATE
       ${CMAKE_SOURCE_DIR}/examples/brusselator)
