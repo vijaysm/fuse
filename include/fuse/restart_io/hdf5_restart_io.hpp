@@ -16,6 +16,7 @@
 #include <string>
 
 #include "fuse/base/result.hpp"
+#include "fuse/model/coupling_graph.hpp"
 #include "fuse/model/restart.hpp"
 
 namespace fuse::restart_io {
@@ -31,13 +32,43 @@ namespace fuse::restart_io {
 ///                          per point).
 enum class FileLayout { SeparateMeshAndPoints, GrowingFile };
 
+/// Bumped 1 -> 2 for D62 (KNOWN_ISSUES.md): adding `Provenance::
+/// descriptor_version` below is a restart-file schema change, by this
+/// project's own append-only-with-a-version-bump convention (the same one
+/// `fuse::kGraphVersion` itself follows) -- a point written under format
+/// 1 has no `descriptor_version` attribute to read at all, so it is
+/// refused by THIS check (unconditional, format_version != kFormatVersion,
+/// the same gate `open_restart_point()` already applied before this
+/// change) rather than failing later with a generic HDF5 attribute-open
+/// error that does not name what is actually missing.
+inline constexpr std::uint32_t kFormatVersion = 2;
+
 /// File-level metadata, written as real fixed-width HDF5 attributes
 /// (never through `fuse::RestartWriter::put_scalar()`'s lossy `double`,
 /// which cannot carry `descriptor_hash`'s full 64-bit range -- see
 /// fuse/runtime/restart.hpp's own header comment on this exact point).
 struct Provenance {
-  std::uint32_t format_version = 1;
+  std::uint32_t format_version = kFormatVersion;
   std::string   fuse_version;
+  /// D62 (KNOWN_ISSUES.md): the coupling-graph descriptor's own
+  /// `fuse::kGraphVersion` (fuse/model/descriptor.hpp) THIS POINT WAS
+  /// WRITTEN UNDER, recorded independently of `descriptor_hash` below so
+  /// `open_restart_point()` can distinguish "this point was written by a
+  /// FUSE build with a DIFFERENT descriptor version" (refused here, by
+  /// name, unconditionally -- a descriptor-version mismatch means the
+  /// wire layout itself may disagree, the same reason `fuse::deserialize()`
+  /// refuses a version mismatch before ever comparing content) from "this
+  /// point was written by the SAME descriptor version but a DIFFERENT
+  /// graph" (the caller's own job to catch by comparing `descriptor_hash`
+  /// against `fuse::restart_descriptor_hash(current_graph)` --
+  /// `fuse::check_restart_descriptor_hash()`, fuse/runtime/restart.hpp --
+  /// since only the caller holds the current graph to hash). Defaults to
+  /// THIS BUILD's own `fuse::kGraphVersion`, the only value a normal
+  /// write path would ever want: a restart point does not choose a
+  /// descriptor version, it inherits whatever the writing library build
+  /// compiled in, exactly like `format_version` above inherits
+  /// `kFormatVersion`.
+  std::uint32_t descriptor_version = fuse::kGraphVersion;
   std::uint64_t descriptor_hash = 0;
   std::uint32_t written_by_rank_count = 1;
   /// 0 is the sentinel "no mesh was written for this point" -- Slice 1's
@@ -50,8 +81,6 @@ struct Provenance {
   /// example this slice's own design doc names as that slice's pilot.
   std::uint64_t mesh_checksum = 0;
 };
-
-inline constexpr std::uint32_t kFormatVersion = 1;
 
 /// The write side of one restart point. `finish()` performs the atomic
 /// rename (`SeparateMeshAndPoints`) or copy-append-rename (`GrowingFile`,
@@ -103,5 +132,27 @@ class PointReader {
 [[nodiscard]] Result<std::unique_ptr<PointReader>> open_restart_point(
     FileLayout layout, const std::string& path,
     const std::string& point_label = {});
+
+/// D62 (KNOWN_ISSUES.md): the CONTENT half of the descriptor provenance
+/// check, with its own refusal code (E-RESTART-DESCRIPTOR-HASH),
+/// distinguished from `open_restart_point()`'s own E-RESTART-DESCRIPTOR-
+/// VERSION refusal above: that one fires on a DIFFERENT descriptor
+/// VERSION and needs no graph (`fuse::kGraphVersion` is a compile-time
+/// constant of this build, checked unconditionally by `open_restart_point()`
+/// itself); this one fires on the SAME descriptor version but a DIFFERENT
+/// graph, and needs `current_graph` to compute `fuse::restart_descriptor_
+/// hash()` (fuse/model/restart.hpp) against. Free function, not a
+/// `PointReader` method, for the SAME reason `PointReader`'s own doc
+/// comment above gives for leaving every other provenance check to the
+/// caller: this file-level reader cannot see the current graph. A
+/// `provenance` that already came back from a successful
+/// `open_restart_point()` is guaranteed to carry a `descriptor_version`
+/// equal to `fuse::kGraphVersion` (that refusal fires first, inside
+/// `open_restart_point()`, before a caller ever gets a `Provenance` to
+/// pass here) -- so a mismatch this function reports is a genuine
+/// content difference, a different graph under the SAME wire format,
+/// never a version disagreement arriving mislabelled as a hash one.
+[[nodiscard]] Result<void> check_restart_descriptor_hash(
+    const CouplingGraph& current_graph, const Provenance& provenance);
 
 }  // namespace fuse::restart_io

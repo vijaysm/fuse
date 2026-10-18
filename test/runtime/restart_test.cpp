@@ -390,9 +390,14 @@ TEST(Restart, VersionMismatchRefuses) {
 TEST(Restart, DescriptorHashMismatchIsCaughtByTheCaller) {
   // open_restart_point() itself does not compare the hash (fuse/
   // restart_io/hdf5_restart_io.hpp's own PointReader comment: it cannot
-  // see the CURRENT graph). The caller compares provenance().
-  // descriptor_hash against fuse::restart_descriptor_hash(current_graph)
-  // -- this test proves the two differ for a graph that gained a field.
+  // see the CURRENT graph). D62 (KNOWN_ISSUES.md): the caller now makes
+  // that comparison through the NAMED refusal fuse::restart_io::
+  // check_restart_descriptor_hash() rather than a bare EXPECT_NE on the
+  // raw hashes -- "a refusal counts as verified only when a test makes
+  // it fire" -- this test proves it fires for a graph that gained a
+  // field, with its own code, E-RESTART-DESCRIPTOR-HASH, distinct from
+  // the descriptor-VERSION refusal DescriptorVersionMismatchRefuses
+  // exercises below.
   const std::string path = temp_dir_path("hash.h5");
   std::remove(path.c_str());
   auto s = make_setup(10, aitken_cfg());
@@ -414,6 +419,75 @@ TEST(Restart, DescriptorHashMismatchIsCaughtByTheCaller) {
   ASSERT_TRUE(pr.ok());
   EXPECT_NE(pr.value()->provenance().descriptor_hash,
            fuse::restart_descriptor_hash(other->graph));
+
+  const auto checked = fuse::restart_io::check_restart_descriptor_hash(
+      other->graph, pr.value()->provenance());
+  ASSERT_FALSE(checked.ok());
+  EXPECT_EQ(checked.error().code, "E-RESTART-DESCRIPTOR-HASH");
+
+  // The SAME graph that wrote the point must NOT be refused.
+  const auto matches = fuse::restart_io::check_restart_descriptor_hash(
+      s->graph, pr.value()->provenance());
+  EXPECT_TRUE(matches.ok()) << matches.error().message;
+  std::remove(path.c_str());
+}
+
+// D62 (KNOWN_ISSUES.md): the VERSION half of the descriptor provenance
+// check -- distinct from the hash check above, fires INSIDE
+// open_restart_point() itself (no current graph needed: fuse::kGraphVersion
+// is a compile-time constant of this build), with its own refusal code,
+// E-RESTART-DESCRIPTOR-VERSION.
+TEST(Restart, DescriptorVersionMismatchRefuses) {
+  const std::string path = temp_dir_path("descriptor_version.h5");
+  std::remove(path.c_str());
+  auto s = make_setup(10, aitken_cfg());
+  fuse::restart_io::Provenance prov;
+  prov.format_version = fuse::restart_io::kFormatVersion;
+  prov.fuse_version = "test";
+  prov.descriptor_hash = fuse::restart_descriptor_hash(s->graph);
+  prov.descriptor_version = fuse::kGraphVersion - 1;  // a stale descriptor version
+  auto pw = fuse::restart_io::create_restart_point(
+      fuse::restart_io::FileLayout::SeparateMeshAndPoints, path, prov, "");
+  ASSERT_TRUE(pw.ok());
+  ASSERT_TRUE(fuse::write_restart_point(*s->runner, s->components,
+                                       pw.value()->writer(), fuse::Rational{0}, 0)
+                 .ok());
+  ASSERT_TRUE(pw.value()->finish().ok());
+
+  const auto pr = fuse::restart_io::open_restart_point(
+      fuse::restart_io::FileLayout::SeparateMeshAndPoints, path, "");
+  ASSERT_FALSE(pr.ok());
+  EXPECT_EQ(pr.error().code, "E-RESTART-DESCRIPTOR-VERSION");
+  std::remove(path.c_str());
+}
+
+// A point written with no explicit descriptor_version (the default
+// member initializer, fuse::kGraphVersion -- "a restart point does not
+// choose a descriptor version, it inherits whatever the writing library
+// build compiled in") opens cleanly: every OTHER restart test in this
+// file constructs Provenance exactly this way, so this is also what
+// proves none of them silently relies on a mismatch that happens not to
+// fire.
+TEST(Restart, DescriptorVersionDefaultsToTheCurrentBuildAndOpensCleanly) {
+  const std::string path = temp_dir_path("descriptor_version_default.h5");
+  std::remove(path.c_str());
+  auto s = make_setup(10, aitken_cfg());
+  fuse::restart_io::Provenance prov;  // descriptor_version left at its default
+  prov.format_version = fuse::restart_io::kFormatVersion;
+  prov.fuse_version = "test";
+  prov.descriptor_hash = fuse::restart_descriptor_hash(s->graph);
+  auto pw = fuse::restart_io::create_restart_point(
+      fuse::restart_io::FileLayout::SeparateMeshAndPoints, path, prov, "");
+  ASSERT_TRUE(pw.ok());
+  ASSERT_TRUE(fuse::write_restart_point(*s->runner, s->components,
+                                       pw.value()->writer(), fuse::Rational{0}, 0)
+                 .ok());
+  ASSERT_TRUE(pw.value()->finish().ok());
+
+  const auto pr = fuse::restart_io::open_restart_point(
+      fuse::restart_io::FileLayout::SeparateMeshAndPoints, path, "");
+  ASSERT_TRUE(pr.ok()) << pr.error().message;
+  EXPECT_EQ(pr.value()->provenance().descriptor_version, fuse::kGraphVersion);
   std::remove(path.c_str());
 }
 

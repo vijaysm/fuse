@@ -1271,6 +1271,13 @@ Result<std::unique_ptr<PointWriter>> create_restart_point(
     if (!r.ok()) return r.error();
     r = write_scalar_attr_str(file, "fuse_version", provenance.fuse_version);
     if (!r.ok()) return r.error();
+    // D62 (KNOWN_ISSUES.md): written as its own attribute, independent of
+    // descriptor_hash, so open_restart_point() can refuse a descriptor-
+    // version mismatch by name BEFORE ever comparing hashes -- see
+    // Provenance::descriptor_version's own doc comment (fuse/restart_io/
+    // hdf5_restart_io.hpp) for why the two checks are split this way.
+    r = write_scalar_attr_u32(file, "descriptor_version", provenance.descriptor_version);
+    if (!r.ok()) return r.error();
     r = write_scalar_attr_u64(file, "descriptor_hash", provenance.descriptor_hash);
     if (!r.ok()) return r.error();
     r = write_scalar_attr_u32(file, "written_by_rank_count",
@@ -1348,6 +1355,29 @@ Result<std::unique_ptr<PointReader>> open_restart_point(
   Result<std::string> ver = read_attr_str(file, "fuse_version");
   if (!ver.ok()) return ver.error();
   prov.fuse_version = ver.value();
+  // D62 (KNOWN_ISSUES.md): refused HERE, unconditionally, before
+  // descriptor_hash is even read -- a descriptor-version mismatch means
+  // the WIRE LAYOUT fuse::serialize()/deserialize() used to produce
+  // descriptor_hash may itself disagree between the point's own writer
+  // and this build, the same reason fuse::deserialize() refuses a
+  // kGraphVersion mismatch before ever comparing content (fuse/model/
+  // descriptor.hpp). Unlike descriptor_hash, no current graph is needed
+  // to make this comparison -- fuse::kGraphVersion is a compile-time
+  // constant of THIS build -- so this check belongs here, the same way
+  // the pre-existing format_version check above does, rather than in the
+  // caller-side fuse::check_restart_descriptor_hash() (fuse/runtime/
+  // restart.hpp), which exists for the comparison that DOES need the
+  // current graph.
+  Result<std::uint32_t> dv = read_attr_u32(file, "descriptor_version");
+  if (!dv.ok()) return dv.error();
+  prov.descriptor_version = dv.value();
+  if (prov.descriptor_version != fuse::kGraphVersion) {
+    return Failure{"E-RESTART-DESCRIPTOR-VERSION",
+                   "open_restart_point: this point's own descriptor_version " +
+                       std::to_string(prov.descriptor_version) +
+                       " is not the supported " +
+                       std::to_string(fuse::kGraphVersion)};
+  }
   Result<std::uint64_t> dh = read_attr_u64(file, "descriptor_hash");
   if (!dh.ok()) return dh.error();
   prov.descriptor_hash = dh.value();
@@ -1383,6 +1413,23 @@ Result<std::unique_ptr<PointReader>> open_restart_point(
   Hdf5GroupReader inner(group.get());
   return std::unique_ptr<PointReader>(std::make_unique<PointReaderImpl>(
       std::move(file), std::move(group), prov, std::move(inner)));
+}
+
+Result<void> check_restart_descriptor_hash(const CouplingGraph& current_graph,
+                                           const Provenance& provenance) {
+  const std::uint64_t current_hash = restart_descriptor_hash(current_graph);
+  if (provenance.descriptor_hash != current_hash) {
+    return Failure{"E-RESTART-DESCRIPTOR-HASH",
+                   "check_restart_descriptor_hash: this point's own "
+                   "descriptor_hash " +
+                       std::to_string(provenance.descriptor_hash) +
+                       " does not match the current graph's " +
+                       std::to_string(current_hash) +
+                       " (same descriptor_version " +
+                       std::to_string(provenance.descriptor_version) +
+                       " -- the graph itself differs, not its wire format)"};
+  }
+  return Result<void>::success();
 }
 
 }  // namespace fuse::restart_io

@@ -468,16 +468,24 @@ Result<std::unique_ptr<PointWriter>> create_restart_point_collective(
     return Failure{"E-RESTART-HDF5",
                    "create_restart_point_collective: cannot create " + temp_path};
   }
-  // The SAME five file attributes, under the SAME names, as the serial
+  // The SAME six file attributes, under the SAME names, as the serial
   // writer (hdf5_restart_io.cpp, create_restart_point): the reader asks
   // for "format_version" and the rest by these exact names. The collective
   // writer first wrote "@"-prefixed names and a different version key, and
   // every file it produced was refused with E-RESTART-TRUNCATED "missing
-  // attribute format_version" (owner's machine, 2026-10-17).
+  // attribute format_version" (owner's machine, 2026-10-17). D62
+  // (KNOWN_ISSUES.md) added "descriptor_version" as its own sixth
+  // attribute (open_restart_point() reads it unconditionally regardless
+  // of which writer produced the file, so this path must write it too --
+  // a file missing it is refused the same way a pre-D62 file missing
+  // "format_version" was).
   Result<void> r = write_scalar_attr_u32_collective(file, "format_version",
                                                     provenance.format_version);
   if (!r.ok()) return r.error();
   r = write_scalar_attr_str_collective(file, "fuse_version", provenance.fuse_version);
+  if (!r.ok()) return r.error();
+  r = write_scalar_attr_u32_collective(file, "descriptor_version",
+                                       provenance.descriptor_version);
   if (!r.ok()) return r.error();
   r = write_scalar_attr_u64_collective(file, "descriptor_hash", provenance.descriptor_hash);
   if (!r.ok()) return r.error();
