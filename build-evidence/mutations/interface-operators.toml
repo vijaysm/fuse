@@ -34,10 +34,10 @@ test = "verification.interface_transfer"
 [[mutation]]
 id = "consistent-interp-bracket-drops-partition-of-unity"
 area = "backend"
-describes = "H's row-sum-one (partition of unity) property is what the header's whole conservation and power-balance argument rests on: every downstream identity is derived from sum_i H_ji == 1, not re-derived from the raw weights. The bracketing formula for a genuine two-node interpolation is val_a = 1-t, val_b = t; pinning val_a at 1.0 regardless of t breaks the row sum for every bracketed target point, which should be visible immediately in the exactness, order, conservation and power-balance tests -- all of which read the row sum, not just one of them."
+describes = "H's row-sum-one (partition of unity) property is what the header's whole conservation and power-balance argument rests on: every downstream identity is derived from sum_i H_ji == 1, not re-derived from the raw weights. The bracketing weight for a genuine two-node interpolation comes from edge_hat_weights(lo.x, hi.x, x) (general_interp.hpp), whose two components always sum to 1 (a partition of unity, general_interp_detail::basis_weights' own documented property); pinning val_a at 1.0 regardless of the second component breaks the row sum for every bracketed target point, which should be visible immediately in the exactness, order, conservation and power-balance tests -- all of which read the row sum, not just one of them. (Anchor updated, PointLocation track, 2026-10-18: KNOWN_ISSUES.md D67's fix replaced the direct `t = (x - lo.x) / (hi.x - lo.x)` ratio this row used to corrupt with a call to the shared predicate both the serial and distributed builders now use; the mutation's OWN intent -- break partition-of-unity by pinning the low node's weight -- carries over unchanged to the new call site.)"
 file = "include/fuse/backend/consistent_interp.hpp"
-old = "      val_a = 1.0 - t;\n      val_b = t;"
-new = "      val_a = 1.0;\n      val_b = t;"
+old = "      val_a = hat.value().first;\n      val_b = hat.value().second;"
+new = "      val_a = 1.0;\n      val_b = hat.value().second;"
 target = "fuse_backend_operator_conformance_test"
 test = "backend.operator_conformance"
 

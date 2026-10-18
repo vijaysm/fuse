@@ -594,6 +594,14 @@ fuse_add_gtest(backend nodal_interp)
 # header). Proves the null-comm branch nodal_remap_distributed.cpp's
 # allgatherv_records() takes is not dead code that merely compiles.
 fuse_add_gtest(backend nodal_remap_distributed_nullcomm)
+# KNOWN_ISSUES.md D67/D74 follow-up: the lowest-global-id tie-break for a
+# point exactly on a shared face/edge/vertex, cross-checked between the
+# serial (build_general_interp_weights) and distributed
+# (build_distributed_interp_rows, comm_handle == kNullComm) code paths, at
+# every boundary vertex of a structured mesh across several resolutions,
+# plus a 1-ULP perturbation of a genuinely 4-way shared interior vertex.
+# Plain fuse_add_gtest target, no MPI linked, runs in this sandbox.
+fuse_add_gtest(backend nodal_tie_break)
 # The "nodal fields" track's field_extent()/region_extent_kind() (mesh_view.hpp)
 # and their wiring into make_region_sizes(), on both the serial and native
 # backends -- native_backend.hpp's 2D/3D generators are what give this file

@@ -74,6 +74,7 @@
 #include <cstdint>
 #include <limits>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <fmt/format.h>
@@ -599,6 +600,64 @@ inline constexpr double kRefEpsTight = 1e3 * kNewtonTol;
 /// one changes both, and a reviewer checking "why 0.1" only has to read it
 /// once.
 inline constexpr double kRefEpsLoose = kSurfaceTol;
+
+/// The piecewise-linear hat-function weight of the two nodes bracketing a
+/// 1D point `target_x` (`lo_x` the LOW node's coordinate, `hi_x` the HIGH
+/// node's, along whichever single axis a caller has already reduced its
+/// geometry to) -- computed via `invert_reference_map`/`basis_weights` on a
+/// synthetic, 2-corner `CellShape::Edge` cell collapsed onto that axis
+/// (`y = z = 0` on both corners and the target), rather than the direct
+/// ratio `(target_x - lo_x) / (hi_x - lo_x)`.
+///
+/// WHY THIS EXISTS (KNOWN_ISSUES.md D67). `consistent_interp.hpp`'s 1D
+/// coordinate-sort algorithm (`build_consistent_interp_weights_1d`) used to
+/// compute this exact ratio directly with that one division;
+/// `build_distributed_interp_rows` (nodal_remap_distributed.hpp) and
+/// `build_general_interp_weights` above compute the SAME physical quantity
+/// for an Edge cell through `invert_reference_map`'s damped Gauss-Newton
+/// instead -- one step from `u = 0`, landing at `du = dot(jac, res) /
+/// dot(jac, jac)` with `jac = p1 - p0`, `res = target - p0` (exact to
+/// round-off for an affine cell, per this file's own header comment on
+/// why an affine shape converges in one step). The two expressions are
+/// ALGEBRAICALLY identical (`du` reduces to the same ratio when `jac` is a
+/// scalar `h = hi_x - lo_x` and `res` a scalar `dx = target_x - lo_x`:
+/// `(h*dx)/(h*h)` versus `dx/h`) but NOT bit-identical: one extra multiply
+/// before the divide rounds differently from a bare divide, in general. A
+/// real host run measured exactly this 1-ULP gap at several bracketing
+/// vertices of a 7-cell/11-cell pair (e.g. 0.06611570247933884 from the
+/// direct ratio against 0.06611570247933886 from the Gauss-Newton step, at
+/// the domain's own left edge) -- `NodalRemapDistributedNullComm.
+/// D67SerialAndDistributedEdgeWeightsAgreeAtTheDomainBoundary`
+/// (test/backend/nodal_remap_distributed_nullcomm_test.cpp) reproduces it
+/// serially, with no MPI at all. Routing BOTH call sites through this one
+/// function closes the gap: whichever code path a caller's placement
+/// selects (`Runner::resolve_remap`'s `both_on_one_rank`, runner.cpp --
+/// the SERIAL dispatch for a one-rank placement, or the DISTRIBUTED
+/// `build_distributed_interp_rows` otherwise), the computed weight is now
+/// the identical bit pattern, because it is now the identical computation.
+///
+/// Never fails in practice -- every caller rejects `hi_x == lo_x` (within
+/// its own degeneracy tolerance) before reaching here, so the synthetic
+/// Edge cell's Jacobian (`hi_x - lo_x`, nonzero) is never singular, and one
+/// Newton step converges an affine map to round-off unconditionally -- but
+/// still returns a `Result` and never calls `.value()` on an unchecked one
+/// internally, matching this file's own "rejects, never throws" contract:
+/// a future change to `invert_reference_map` that adds a genuine failure
+/// mode here must surface as a `Failure` to the caller, not an abort.
+[[nodiscard]] inline Result<std::pair<double, double>> edge_hat_weights(double lo_x, double hi_x,
+                                                                        double target_x) {
+  Cell c;
+  c.shape = CellShape::Edge;
+  c.n = 2;
+  c.p[0] = Vec3{lo_x, 0.0, 0.0};
+  c.p[1] = Vec3{hi_x, 0.0, 0.0};
+  const auto inv = invert_reference_map(c, Vec3{target_x, 0.0, 0.0});
+  if (!inv.ok()) {
+    return Failure{inv.error().code, "edge_hat_weights: " + inv.error().message};
+  }
+  const std::array<double, 8> bw = basis_weights(CellShape::Edge, inv.value().u);
+  return std::make_pair(bw[0], bw[1]);
+}
 
 }  // namespace general_interp_detail
 

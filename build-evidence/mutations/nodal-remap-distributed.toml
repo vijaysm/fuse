@@ -220,3 +220,27 @@ requires = "mpi"
 # BOTH the unmutated fix (expect PASS) and this mutation (expect the
 # original FAIL to reappear) is the one outcome this sandbox cannot supply
 # for itself.
+
+[[mutation]]
+id = "nodal-remap-dist-tie-break-picks-highest-global-id"
+area = "backend"
+describes = "build_distributed_interp_rows' own tier-(a) tie-break among GENUINELY-containing candidates (its own comment: 'tie-broken by lowest source global id ONLY among tight matches', mirroring general_interp.hpp's identical rule for the serial builder) is inverted to pick the HIGHEST global id instead, so a target point exactly on a shared face/edge/vertex between two candidate cells is assigned the wrong cell's weights depending on which id happens to be higher rather than a rule every rank computes identically from global ids alone (KNOWN_ISSUES.md D67/D74)."
+file = "src/backend/nodal_remap_distributed.cpp"
+old = "        if (!have_tight || gid < tight_gid) {"
+new = "        if (!have_tight || gid > tight_gid) {"
+target = "fuse_backend_nodal_tie_break_test"
+test = "backend.nodal_tie_break"
+# KILLED, observed directly in this sandbox (Tier 0, no MPI needed): applied
+# by hand to src/backend/nodal_remap_distributed.cpp, rebuilt
+# fuse_backend_nodal_tie_break_test, confirmed the mutation turns
+# NodalTieBreak.EveryBoundaryVertexOfAStructuredMeshAtSeveralResolutionsIsSingleOwned
+# and NodalTieBreak.OneUlpPerturbationOfASharedInteriorVertexStillResolvesConsistently
+# from passing to failing at every boundary EDGE vertex and at the mesh's own
+# 4-way shared centre vertex (two or four genuine candidates,
+# StructuredQuadMesh's own reversed cell numbering means the mutation's
+# inverted rule now picks the geometrically-wrong, higher-id cell) while
+# NodalTieBreak.TheMeshsOwnCornerGlobalIdZeroIsSingleOwnedAtEveryResolution
+# (only one cell touches the domain corner, no tie to invert) stays
+# accidentally passing -- exactly the asymmetry an inverted tie-break
+# produces. File restored byte-for-byte (cmp against a pre-mutation backup)
+# and the test suite reconfirmed green (3/3) immediately after.

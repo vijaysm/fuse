@@ -700,11 +700,16 @@ storage itself is device-resident, not merely the elementwise kernels' dispatch 
 configure time; the binary's own `--n`/`--periods`/`--fields`/`--timing` flags are
 documented in its header comment.
 
-**The 2- and 3-rank rows are currently `DISABLED TRUE`** (KNOWN_ISSUES.md D74): the nodal
-Remap's distributed point-location search refuses to place the domain's own corner
-vertex at those rank counts and this problem size, a found gap sharing its root cause
-with D67. Only `bench.scaled_device_benchmark.1[.device]` runs today; re-enable the
-disabled rows (`test/CMakeLists.txt`'s own bench section) once D67/D74 are fixed.
+**The 2- and 3-rank rows were `DISABLED TRUE`** (KNOWN_ISSUES.md D74) until the
+scaled-bench track's 2026-10-16 fix (the nodal Remap's distributed point-location search
+had refused to place the domain's own corner vertex at those rank counts and this
+problem size) re-enabled them -- this passage is updated, not current when it still
+read "currently DISABLED". D67, the separate 1-ULP arithmetic-divergence this entry's
+own text once linked to D74 as a shared root cause, was investigated and found NOT to
+share D74's mechanism at all (two different floating-point expressions for the same
+Edge-cell hat weight, picked by which of two code paths a placement's rank count
+routes through -- KNOWN_ISSUES.md D67's own closing entry); it is fixed independently
+and needed no change to this file's bench rows or their registration.
 
 `tools/bench-device.py` is the timing harness: it runs
 `fuse_bench_scaled_device_benchmark` host vs device N times (`FUSE_EXECUTION_SPACE`

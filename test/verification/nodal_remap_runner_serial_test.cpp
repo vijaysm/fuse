@@ -233,8 +233,20 @@ TEST(NodalRemapRunnerSerial, TheOneRankCaseOfTheMpiFixtureRunsAndIsExact) {
           << c.name << ": H is not exact at fluid cell " << j;
     }
     const std::vector<double> ref = compute_reference(c.n_beam, c.n_fluid);
+    // KNOWN_ISSUES.md D67 (lead's determinism follow-up, 2026-10-15/16):
+    // `beam_load` here and `ref` are now both ultimately an Edge-cell hat
+    // weight run through ONE shared predicate
+    // (general_interp_detail::edge_hat_weights) regardless of which of the
+    // two code paths this test's own `dist` flag selects (the rank-local
+    // weights intx_weights.cpp builds via build_consistent_interp_weights,
+    // same function `ref` calls directly -- or build_nodal_dist_remap /
+    // build_distributed_interp_rows's Gauss-Newton, which constructs an
+    // algebraically identical synthetic Edge cell) -- so this is EXACT
+    // bitwise equality, not a tolerance, at every resolution this file's
+    // own cases cover, closing the 1-ULP gap a real host run measured
+    // between a one-rank reference and a real multi-rank run.
     for (std::size_t i = 0; i < o.beam_load.size(); ++i) {
-      EXPECT_NEAR(o.beam_load[i], ref.at(i), 1e-12 * std::abs(ref.at(i)) + 1e-13)
+      EXPECT_EQ(o.beam_load[i], ref.at(i))
           << c.name << ": beam vertex " << i << " differs from the serial reference";
     }
     double sent = 0.0, received = 0.0, p_fluid = 0.0, p_beam = 0.0;

@@ -347,28 +347,37 @@ void run_and_check(std::size_t n_beam, std::size_t n_fluid, fuse::RankSet beam_r
     // storage in (a one-rank build's fluid-cell LOCAL index IS its GLOBAL
     // id, and that storage is itself grouped by ascending fluid cell), so
     // the two are expected to agree to the LAST BIT, not just in tolerance.
-    if (exact_beam_load && gid != 0) {
+    //
+    // KNOWN_ISSUES.md D67, CLOSED 2026-10-18: gid 0 (x=0, the domain's own
+    // left edge) used to be excluded from this exact check, at a 5e-16
+    // tolerance instead, because a real host run measured its weight
+    // differing from the one-rank reference by 1 ULP at rank counts 2 and
+    // 3. The root cause was NOT gather_global_source's null-comm-vs-
+    // Allgatherv assembly (that theory, D67's own first write-up, was
+    // investigated and ruled out -- see
+    // test/backend/nodal_remap_distributed_nullcomm_test.cpp's own
+    // D67SerialAndDistributedEdgeWeightsAgreeAtTheDomainBoundary, which
+    // reproduces the identical 1-ULP gap with ZERO MPI involved at all):
+    // `Runner::resolve_remap`'s `both_on_one_rank` (runner.cpp) sends a
+    // one-rank placement like THIS test's own world_size==1 case, and
+    // `compute_reference()` above, through the SERIAL dispatch
+    // (`build_consistent_interp_weights` -> `build_consistent_interp_
+    // weights_1d`, consistent_interp.hpp's own coordinate-sort), while any
+    // placement spanning more than one rank goes through the DISTRIBUTED
+    // primitive (`build_nodal_dist_remap` -> `build_distributed_interp_
+    // rows`, general_interp_detail's Gauss-Newton) -- two DIFFERENT
+    // floating-point expressions for the SAME Edge-cell hat weight. Both
+    // now share one predicate (`general_interp_detail::edge_hat_weights`,
+    // general_interp.hpp), so gid 0 needs no exclusion any more: EVERY
+    // vertex is checked bitwise identical here, at every rank count this
+    // file is registered for (parallel-matrix.toml: 1 through 5) -- a host
+    // run (host_pending, this sandbox cannot start MPI) is what confirms
+    // that at a genuine multi-rank launch; test/verification/nodal_remap_
+    // runner_serial_test.cpp's TheOneRankCaseOfTheMpiFixtureRunsAndIsExact
+    // already confirms it for world_size 1 (both code paths, no MPI
+    // needed) in this sandbox.
+    if (exact_beam_load) {
       EXPECT_EQ(beam_load[i], ref.beam_load.at(gid))
-          << "rank " << world_rank() << " beam local vertex " << i << " (global id " << gid << ")";
-    } else if (exact_beam_load) {
-      // gid 0 (x=0, the domain's own left edge) is excluded from the
-      // EXACT check above: a real host run (ranks 1/2/3, both host and
-      // .device) found its weight differs from the one-rank reference by
-      // 1 ULP, identically at rank counts 2 AND 3 -- i.e., a GENUINE,
-      // reproducible discrepancy between an exactly-one-rank replica
-      // assembly (gather_global_source's own trivial local-copy branch)
-      // and a real multi-rank MPI_Allgatherv concatenation, in
-      // `build_distributed_interp_rows`'s own per-cell containment
-      // search at this one boundary vertex -- NOT the H^T scatter-add's
-      // arrival-order nondeterminism this test targets (that part
-      // already proved rank-count-independent: every OTHER vertex here
-      // matches bitwise, and this one itself matches between ranks 2
-      // and 3). Pre-existing, out of this round's scope (recorded as
-      // KNOWN_ISSUES D67); still checked, at a tolerance (5e-16, an
-      // order of magnitude above the observed 1-ULP gap) tight enough
-      // that a regression to arrival-order Kokkos::atomic_add would
-      // still be caught here too.
-      EXPECT_NEAR(beam_load[i], ref.beam_load.at(gid), 5e-16)
           << "rank " << world_rank() << " beam local vertex " << i << " (global id " << gid << ")";
     } else {
       EXPECT_NEAR(beam_load[i], ref.beam_load.at(gid), 1e-12 * std::abs(ref.beam_load.at(gid)) + 1e-13)

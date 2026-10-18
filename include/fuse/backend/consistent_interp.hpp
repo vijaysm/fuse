@@ -307,13 +307,37 @@ namespace fuse {
     } else {
       // Genuine bracket: `it` is strictly greater than x (the equal and
       // below-span cases were handled above), so the pair is (it-1, it).
+      //
+      // KNOWN_ISSUES.md D67: this used to compute `t = (x - lo.x) /
+      // (hi.x - lo.x)` directly, a DIFFERENT floating-point expression
+      // from the one `build_distributed_interp_rows`/`build_general_
+      // interp_weights` use for the SAME Edge-cell hat weight
+      // (`general_interp_detail::invert_reference_map`'s Gauss-Newton
+      // step) -- algebraically identical, not bit-identical, so the two
+      // code paths could (and, measured on a real 7-cell/11-cell pair,
+      // did) disagree by 1 ULP at several bracketing vertices. Routing
+      // this bracket through the SAME shared predicate
+      // (`general_interp_detail::edge_hat_weights`) both code paths now
+      // call closes that gap: whichever path a caller's placement
+      // selects computes the identical bits. `lo.x != hi.x` is already
+      // guaranteed by the coincident-vertex rejection above (tolerance
+      // `tol`), so the synthetic Edge cell this delegates to can never
+      // hit a singular Jacobian; the `Result` is still checked rather
+      // than `.value()`-d, matching this file's own "rejects, never
+      // throws" contract.
       const AxisNode& lo = *(it - 1);
       const AxisNode& hi = *it;
-      const double t = (x - lo.x) / (hi.x - lo.x);  // in (0, 1)
+      const auto hat = general_interp_detail::edge_hat_weights(lo.x, hi.x, x);
+      if (!hat.ok()) {
+        return Failure{hat.error().code,
+                       fmt::format("build_consistent_interp_weights: target point {} (x = "
+                                   "{:.6g}), bracket [{:.6g}, {:.6g}]: {}",
+                                   j, x, lo.x, hi.x, hat.error().message)};
+      }
       col_a = lo.idx;
       col_b = hi.idx;
-      val_a = 1.0 - t;
-      val_b = t;
+      val_a = hat.value().first;
+      val_b = hat.value().second;
     }
 
     w.row.push_back(static_cast<std::int32_t>(j));

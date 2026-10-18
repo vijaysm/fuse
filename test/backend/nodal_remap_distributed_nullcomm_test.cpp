@@ -24,11 +24,15 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
+#include <cstring>
+#include <iomanip>
 #include <vector>
 
 #include <gtest/gtest.h>
 
 #include "fuse/backend/cell_simplices.hpp"
+#include "fuse/backend/consistent_interp.hpp"
 #include "fuse/backend/mesh_view.hpp"
 #include "fuse/base/config.hpp"
 #include "fuse/search/types.hpp"
@@ -297,4 +301,108 @@ TEST(NodalRemapDistributedNullComm, DegenerateDecoyCellDoesNotAbortAnAlreadyFoun
   }
   std::sort(cols.begin(), cols.end());
   EXPECT_EQ(cols, (std::vector<std::size_t>{0, 1, 2, 3}));
+}
+
+// ---------------------------------------------------------------------------
+// KNOWN_ISSUES.md D67. Reproduces, WITHOUT any MPI symbol at all (both of
+// this file's own primitives run serially, `comm_handle == kNullComm`), the
+// 1-ULP disagreement the lead's determinism follow-up measured on a real
+// host run between `NodalRemapRunnerMpi.ConsistentTransposeIsBitIdenticalAcrossRankCounts`'s
+// one-rank reference and its two/three-rank runs.
+//
+// THE MEASURED MECHANISM (not the one D67's own first write-up guessed).
+// `Runner::resolve_remap` (runner.cpp) routes a nodal field transfer
+// through `build_nodal_dist_remap`/`build_distributed_interp_rows` (this
+// file's own `fuse::build_distributed_interp_rows`, which always inverts a
+// cell's reference map via `general_interp_detail::invert_reference_map`'s
+// damped Gauss-Newton, regardless of dimension) ONLY when the two
+// components are NOT confined to a single shared rank (`both_on_one_rank`
+// in runner.cpp, around "A single-rank placement on BOTH sides skips this
+// whole path"). When they ARE (every one-rank run of a region placed on one
+// rank, and `NodalRemapRunnerMpi.ConsistentTransposeIsBitIdenticalAcrossRankCounts`'s
+// own `compute_reference()` helper, which calls the public dispatcher
+// directly), the channel is instead built by the ORIGINAL, UNCHANGED
+// `fuse::build_consistent_interp_weights` -> (`src_nodes.dimension() == 1`)
+// -> `build_consistent_interp_weights_1d` (consistent_interp.hpp): a
+// DIFFERENT, coordinate-sort implementation that computes the same
+// bracketing hat-function weight by a DIFFERENT floating-point expression
+// (`t = (x - lo.x) / (hi.x - lo.x)`) than `invert_reference_map`'s own
+// Gauss-Newton normal-equation step for an Edge cell
+// (`du = dot(jac, res) / dot(jac, jac)`, `jac = p1 - p0`, `res = target -
+// p0`) -- algebraically the identical ratio, but NOT the identical sequence
+// of rounding operations, so the two formulas can (and, at exactly this
+// boundary vertex, for n_beam=7/n_fluid=11, DO) disagree by 1 ULP. This has
+// NOTHING to do with `gather_global_source`'s null-comm-vs-Allgatherv
+// assembly (ruled out below by `AssembledSourceCellGeometryIsBitIdenticalRegardlessOfAssemblyPath`)
+// or with the lowest-global-id tie-break (there is only ONE candidate cell
+// at this vertex, no tie at all) -- it is purely two different arithmetic
+// expressions for the same ratio, invoked depending on which of the two
+// code paths above a caller's placement happens to select.
+TEST(NodalRemapDistributedNullComm, D67SerialAndDistributedEdgeWeightsAgreeAtTheDomainBoundary) {
+  // n_beam=7 (source, nodal DOFs), n_fluid=11 (target, cell centroids) --
+  // the exact resolution pair the lead's host run used.
+  LocalLineMesh beam(7, 0.0, 1.0);
+  LocalLineMesh fluid(11, 0.0, 1.0);
+
+  // Path 1: the DISTRIBUTED primitive, serial (comm_handle == kNullComm) --
+  // Gauss-Newton via invert_reference_map, exactly as a multi-rank run
+  // takes (KNOWN_ISSUES.md D67's host run confirmed ranks 2 and 3 agree
+  // with this bit for bit).
+  const auto dist_r = fuse::build_distributed_interp_rows(beam, fluid, /*eval_dim=*/1,
+                                                           fuse::search::kNullComm);
+  ASSERT_TRUE(dist_r.ok()) << dist_r.error().message;
+
+  // Path 2: the SERIAL (both-components-on-one-rank) dispatcher --
+  // build_consistent_interp_weights_1d's coordinate-sort, exactly what
+  // compute_reference() and a genuinely one-rank Runner placement call.
+  const auto serial_r = fuse::build_consistent_interp_weights(beam, fluid, /*tgt_dim=*/1);
+  ASSERT_TRUE(serial_r.ok()) << serial_r.error().message;
+  const fuse::RemapWeights& hw = serial_r.value();
+
+  // Extract H[fluid_cell = row, beam_vertex_gid = col] from each path's own
+  // storage shape and compare EVERY entry bit for bit -- not just the one
+  // vertex KNOWN_ISSUES.md names, so a regression anywhere in this bracket
+  // is caught, not just at global id 0.
+  auto bits = [](double v) {
+    std::uint64_t u = 0;
+    std::memcpy(&u, &v, sizeof(u));
+    return u;
+  };
+
+  std::size_t mismatches = 0;
+  std::size_t compared = 0;
+  for (const fuse::DistributedInterpRow& row : dist_r.value().rows) {
+    const std::size_t fluid_cell = row.local_index;
+    for (std::size_t k = 0; k < row.src_global_ids.size(); ++k) {
+      const std::size_t beam_gid = row.src_global_ids[k];
+      const double dist_val = row.weights[k];
+      // Find the matching (row, col) entry in the serial builder's COO.
+      bool found = false;
+      double serial_val = 0.0;
+      for (std::size_t e = 0; e < hw.val.size(); ++e) {
+        if (static_cast<std::size_t>(hw.row[e]) == fluid_cell &&
+            static_cast<std::size_t>(hw.col[e]) == beam_gid) {
+          found = true;
+          serial_val = hw.val[e];
+          break;
+        }
+      }
+      ASSERT_TRUE(found) << "fluid cell " << fluid_cell << " beam vertex " << beam_gid
+                         << ": the serial builder reports no weight at all for an entry "
+                            "the distributed builder found";
+      ++compared;
+      if (bits(dist_val) != bits(serial_val)) {
+        ++mismatches;
+        ADD_FAILURE() << "fluid cell " << fluid_cell << ", beam vertex global id " << beam_gid
+                      << ": distributed (Gauss-Newton) weight " << std::setprecision(20)
+                      << dist_val << " (bits " << bits(dist_val)
+                      << ") != serial (coordinate-sort) weight " << serial_val << " (bits "
+                      << bits(serial_val) << ")";
+      }
+    }
+  }
+  ASSERT_GT(compared, 0u) << "the two builders produced no comparable entries at all";
+  EXPECT_EQ(mismatches, 0u) << "KNOWN_ISSUES.md D67: the distributed and serial Edge weight "
+                               "formulas disagree by rounding at " << mismatches << " of "
+                            << compared << " compared entries";
 }
