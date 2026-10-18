@@ -1165,6 +1165,47 @@ if(FUSE_ENABLE_MPI)
     endforeach()
   endforeach()
 endif()
+
+# KNOWN_ISSUES.md D18, round 2 (the lead's own instruction): the N-way
+# chain generalisation of the pair above, built independently
+# (connect_chain_common.hpp, connect_chain_{a,b,c,d}.cpp, run_chain.sh)
+# so the six rows above carry zero risk from this new code. Same C1
+# caveat: every row below is host_verification_needed; what IS verified
+# here is that all four executables build at tier 1 under real MPI.
+if(FUSE_ENABLE_MPI)
+  add_executable(fuse_parallel_connect_chain_a parallel/connect/connect_chain_a.cpp)
+  add_executable(fuse_parallel_connect_chain_b parallel/connect/connect_chain_b.cpp)
+  add_executable(fuse_parallel_connect_chain_c parallel/connect/connect_chain_c.cpp)
+  add_executable(fuse_parallel_connect_chain_d parallel/connect/connect_chain_d.cpp)
+  foreach(t fuse_parallel_connect_chain_a fuse_parallel_connect_chain_b
+            fuse_parallel_connect_chain_c fuse_parallel_connect_chain_d)
+    target_include_directories(${t} PRIVATE parallel/connect)
+    target_link_libraries(${t} PRIVATE fuse::runtime fuse::transport MPI::MPI_CXX)
+  endforeach()
+
+  # Every link is one rank (connect_chain_common.hpp's own header
+  # comment on why), so the chain's own output reuses golden-1+1.txt
+  # regardless of chain length -- no new golden file needed.
+  set(_fuse_connect_chain_golden ${CMAKE_CURRENT_SOURCE_DIR}/parallel/connect/golden-1+1.txt)
+  foreach(_count 3 4)
+    if(NOT FUSE_ENABLE_CONNECT_ACCEPT)
+      continue()
+    endif()
+    set(_name parallel.connect.chain.${_count})
+    set(_scratch ${CMAKE_CURRENT_BINARY_DIR}/connect-scratch/chain-${_count})
+    add_test(NAME ${_name}
+      COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/parallel/connect/run_chain.sh
+              ${_count} ${MPIEXEC_EXECUTABLE}
+              $<TARGET_FILE:fuse_parallel_connect_chain_a>
+              $<TARGET_FILE:fuse_parallel_connect_chain_b>
+              $<TARGET_FILE:fuse_parallel_connect_chain_c>
+              $<TARGET_FILE:fuse_parallel_connect_chain_d>
+              ${_fuse_connect_chain_golden} ${_scratch} 60)
+    set_tests_properties(${_name} PROPERTIES
+      LABELS "parallel;mpi;connect" TIMEOUT 120
+      ENVIRONMENT "OMPI_MCA_coll_tuned_use_dynamic_rules=1;OMPI_MCA_coll_tuned_alltoallv_algorithm=2;OMPI_MCA_rmaps_base_oversubscribe=1")
+  endforeach()
+endif()
 # ---- S6 phase 3, "MPI connect" track: end ---------------------------------
 
 
@@ -1638,8 +1679,23 @@ if(FUSE_LINALG_BACKEND STREQUAL "eigen")
   # directly rather than through the installed library.
   target_sources(fuse_verification_brusselator_period_rollover_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/abi/test_support.cpp)
+
+  # KNOWN_ISSUES.md D57, "the period contract" (docs/dev/abi-design.md):
+  # the SAME invariant brusselator_period_rollover_test.cpp pins as FOUND,
+  # stated generically here, directly on every real step's own `period`
+  # field. Same deps/includes/sources as the row above, for the same
+  # reasons -- including the SAME Eigen gating (brusselator::
+  # add_window_coupling() pulls in the Brusselator's diffusion solver).
+  fuse_add_gtest(verification abi_period_boundary NO_LAYER_LIB
+                 LIBS fuse::runtime fuse::backend fuse::model fuse::abi Eigen3::Eigen Kokkos::kokkos)
+  target_include_directories(fuse_verification_abi_period_boundary_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/examples/brusselator
+    ${CMAKE_SOURCE_DIR}/src/abi)
+  target_sources(fuse_verification_abi_period_boundary_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/abi/test_support.cpp)
 else()
-  fuse_tests_gated_by(FUSE_LINALG_BACKEND_IS_EIGEN verification/brusselator_period_rollover_test.cpp)
+  fuse_tests_gated_by(FUSE_LINALG_BACKEND_IS_EIGEN verification/brusselator_period_rollover_test.cpp
+                       verification/abi_period_boundary_test.cpp)
 endif()
 
 # S6 phase 3 ("LowFive" track), Unit 3: brusselator_graph_tool.cpp's own
@@ -2125,6 +2181,12 @@ target_compile_definitions(fuse_abi_entries_golden_test PRIVATE
 
 fuse_add_gtest(abi struct_size)
 
+# D61 (KNOWN_ISSUES.md): the pure MPI_MINLOC-equivalent arithmetic
+# src/abi/participant.cpp's reconcile_collective_status() uses, tested
+# directly with no MPI and no fuse_ctx at all -- include/fuse/abi/
+# collective_reconcile.hpp's own header comment has the full account.
+fuse_add_gtest(abi collective_reconcile)
+
 # Soma-import port (docs/dev/soma-import.md, test/unit/capi_test.c row): the
 # defensive contract participant.h documents on create()/destroy()/last_error()
 # itself (non-NULL ctx rejected, a double destroy reported not crashed, the
@@ -2189,6 +2251,20 @@ if(FUSE_ENABLE_MPI)
   fuse_add_mpi_test(parallel abi_participant_mpi LIBS fuse::abi)
   target_include_directories(fuse_parallel_abi_participant_mpi_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR})
+endif()
+
+# KNOWN_ISSUES.md D61, round 2 (the lead's own instruction): the
+# asymmetric-refusal row abi_participant_mpi_test.cpp's own header
+# comment explicitly declines to attempt -- see abi_reconcile_mpi_test.
+# cpp's own header for why a one-component, spanning-RankSet, no-channel
+# graph is what lets this row exercise a REAL multi-rank begin_step()
+# without needing a correct per-rank field decomposition. RANKS 2 3 only
+# (not the default 1..5): rank 1 must exist to host the deliberately
+# malformed request, and TIMEOUT 120 (fuse_add_mpi_test's own default) is
+# the "timeout harness" itself -- a hang reads as a timeout, not a pass.
+fuse_tests_gated_by(FUSE_ENABLE_MPI parallel/abi_reconcile_mpi_test.cpp)
+if(FUSE_ENABLE_MPI)
+  fuse_add_mpi_test(parallel abi_reconcile_mpi LIBS fuse::abi RANKS 2 3)
 endif()
 
 # ---------------------------------------------------------------- abi (provider, S6 phase 4)
@@ -2319,6 +2395,25 @@ else()
   # substitutes" rule.
   target_compile_definitions(fuse_abi_conformance_test PRIVATE
     FUSE_TEST_FORTRAN_PROVIDER_PLUGIN="")
+endif()
+
+# KNOWN_ISSUES.md D15, round 2, item 3 (the lead's own instruction): "a
+# plugin on a rank subset" -- the real C provider plugin
+# (fuse_test_provider_linear, defined above in this same section)
+# mounted on a STRICT SUBSET of a real multi-rank base communicator.
+# Needs fuse::abi-static + fuse_abi_test_support (abi_test::
+# inject_component(), the SAME seam test/abi/conformance_test.cpp above
+# already links directly) and FUSE_TEST_C_PROVIDER_PLUGIN -- registered
+# here, after that target, so add_dependencies() below can name it.
+fuse_tests_gated_by(FUSE_ENABLE_MPI parallel/provider_subset_mpi_test.cpp)
+if(FUSE_ENABLE_MPI)
+  fuse_add_mpi_test(parallel provider_subset_mpi LIBS fuse::abi-static fuse_abi_test_support
+                     RANKS 2 3)
+  target_compile_definitions(fuse_parallel_provider_subset_mpi_test PRIVATE
+    FUSE_TEST_C_PROVIDER_PLUGIN="$<TARGET_FILE:fuse_test_provider_linear>")
+  add_dependencies(fuse_parallel_provider_subset_mpi_test fuse_test_provider_linear)
+  target_include_directories(fuse_parallel_provider_subset_mpi_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/abi)
 endif()
 
 # ---------------------------------------------------------------- bench

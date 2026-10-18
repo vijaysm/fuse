@@ -1,0 +1,27 @@
+# Mutation for KNOWN_ISSUES.md D15, round 2, item 3's tier-0 counterpart
+# (ValidateLaunchLayout.AcceptsAPluginComponentOnAStrictRankSubset,
+# test/transport/connect_test.cpp). Own file per the review-fix protocol.
+#
+# No production code changed for this item (validate_launch_layout()
+# already accepted a Plugin component placed on a strict rank subset
+# before this round; this round only adds a test that pins that
+# behaviour and the real MPI row, test/parallel/provider_subset_mpi_
+# test.cpp, built not run per KNOWN_ISSUES.md C1). The mutation below
+# is therefore against validate_launch_layout() itself, to demonstrate
+# that this new test (and no untargeted test) actually depends on the
+# Plugin-is-a-filler-not-a-block behaviour it claims to pin.
+#
+# Applied by hand, rebuilt, run, confirmed to fail EXACTLY the named
+# rows, then restored byte-for-byte (cmp against the pre-mutation file
+# showed no difference; md5 recorded below).
+
+[[mutation]]
+id = "validate-launch-layout-plugin-skip-removed"
+area = "abi-provider-subset"
+describes = "validate_launch_layout()'s own skip for LaunchMode::Plugin (it shares the host process's communicator, so it needs no rank block of its own) is removed, so a Plugin component is treated as a launched block like Mpmd/Connect and its own rank range is checked against the graph's block ordering"
+file = "include/fuse/transport/connect.hpp"
+old = """    if (c.launch.mode == LaunchMode::InProcess || c.launch.mode == LaunchMode::Plugin) {"""
+new = """    if (c.launch.mode == LaunchMode::InProcess || false) {  // MUTATION: Plugin removed"""
+target = "fuse_transport_connect_test"
+test = "transport.connect"
+result = "CONFIRMED 2026-10-18: ValidateLaunchLayout.AcceptsAPluginComponentOnAStrictRankSubset (this round's new test) and the pre-existing ValidateLaunchLayout.PluginComponentsAreIgnored both failed -- validate_launch_layout() returned E-CONNECT-SPEC ('starts at rank 0, but the launched components before it ... occupy ranks [0, 2)') for a Plugin component whose own rank was being checked as if it needed a contiguous block in sequence, instead of being skipped as a filler. The other 38 tests in the 40-test binary (across all 6 test suites, including the other 19 ValidateLaunchLayout cases) still passed. Restored; cmp against the pre-mutation file reported no difference, md5 2b5bf615677de67a9ebdf5837cf29b04 matches the restored file."

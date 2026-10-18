@@ -1,0 +1,178 @@
+// KNOWN_ISSUES.md D15, round 2, item 3 (the lead's own instruction): "a
+// plugin on a rank subset" -- the one item of D15's own three missing
+// pieces that is pure MPI and needs no device support. Every provider-
+// direction fixture before this round ran single-process
+// (test/abi/conformance_test.cpp's own GraphDeclaredPluginIsAutoMounted
+// AndRun, which this file's own graph and driving sequence mirror); this
+// one places the `LaunchMode::Plugin` component on a STRICT SUBSET of a
+// real multi-rank base communicator and confirms both halves: the
+// hosting rank(s) actually call through the plugin, and the NON-hosting
+// rank runs `fuse_run()` to completion without ever touching it.
+//
+// Compiled under FUSE_ENABLE_MPI only; MPI cannot start in this sandbox
+// (KNOWN_ISSUES.md C1), so this row is BUILT, never run here. See
+// KNOWN_ISSUES.md D15's own updated entry for the design question this
+// row's own existence surfaced (Registry::mount_dynamic() dlopen()s the
+// plugin on every rank, not only the hosting ones) and for why that
+// question is NOT decided by this file.
+#include "fuse/base/config.hpp"
+
+#include <gtest/gtest.h>
+#include <mpi.h>
+
+#include <memory>
+#include <string>
+#include <vector>
+
+#include "fuse/abi/participant.h"
+#include "fuse/backend/serial_backend.hpp"
+#include "fuse/base/units.hpp"
+#include "fuse/model/coupling_graph.hpp"
+#include "fuse/model/descriptor.hpp"
+#include "fuse/model/field_spec.hpp"
+#include "fuse/model/launch.hpp"
+#include "fuse/runtime/component.hpp"
+
+#include "test_support.hpp"
+
+namespace {
+
+const fuse_participant_abi_v1* Table() {
+  return fuse_coupler_abi(FUSE_ABI_VERSION);
+}
+
+/// test/abi/conformance_test.cpp's own DownstreamSink, copied rather than
+/// shared (that file's class is local to its own translation unit, not
+/// exposed through any header): a native component that simply records
+/// every value it receives, so a hosting rank's own effect through the
+/// plugin is independently observable without reaching into the
+/// plugin's own C source.
+class DownstreamSink final : public fuse::Component {
+ public:
+  [[nodiscard]] std::string name() const override { return "downstream"; }
+
+  fuse::Result<void> register_fields(fuse::FieldRegistry& registry,
+                                     const fuse::CouplingGraph& graph) override {
+    const auto cid = graph.find_component("downstream");
+    if (!cid.has_value()) return fuse::Failure{"E-TEST", "no 'downstream' component"};
+    storage_.assign(1, -1.0);
+    for (const fuse::FieldId f : graph.component(*cid).fields) {
+      auto r = registry.bind(f, fuse::FieldRef{storage_.data(),
+                                               fuse::Layout{.stride = 1, .count = storage_.size()},
+                                               fuse::MemorySpace::Host});
+      if (!r.ok()) return r;
+    }
+    return fuse::Result<void>::success();
+  }
+  fuse::Result<void> advance(const fuse::StepContext&) override {
+    history.push_back(storage_.empty() ? -1.0 : storage_.front());
+    return fuse::Result<void>::success();
+  }
+  fuse::Result<void> save_state() override { return fuse::Result<void>::success(); }
+  fuse::Result<void> restore_state() override { return fuse::Result<void>::success(); }
+  [[nodiscard]] std::uint64_t capabilities() const override { return 0; }
+
+  std::vector<double> history;
+
+ private:
+  std::vector<double> storage_;
+};
+
+}  // namespace
+
+TEST(ProviderSubsetMpi, APluginOnARankSubsetRunsOnlyOnItsOwnHostingRanksWithNoHang) {
+  const auto* t = Table();
+  ASSERT_NE(t, nullptr);
+
+  int rank = 0, world_size = 0;
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+  MPI_Comm_size(MPI_COMM_WORLD, &world_size);
+  ASSERT_GE(world_size, 2) << "this row needs at least 2 ranks (RANKS 2 3)";
+
+  // "upstream" (the plugin) is placed on every rank EXCEPT rank 0 --
+  // {1} of a 2-rank world, {1,2} of a 3-rank world, per this round's own
+  // task. "downstream" (native, injected below) stays on rank 0 alone.
+  fuse::CouplingGraph g;
+  const auto m1 = g.add_mesh(fuse::MeshDecl{.name = "m1", .source = "generated:line:1"});
+  const auto m2 = g.add_mesh(fuse::MeshDecl{.name = "m2", .source = "generated:line:1"});
+  const auto r1 = g.add_region(fuse::Region{.name = "r1", .mesh = m1, .dimension = 1});
+  const auto r2 = g.add_region(fuse::Region{.name = "r2", .mesh = m2, .dimension = 1});
+  const auto up = g.add_component(fuse::ComponentDecl{
+      .name = "upstream", .ranks = fuse::RankSet{1, world_size - 1}, .interval = fuse::Rational{1},
+      .launch = fuse::LaunchSpec{.mode = fuse::LaunchMode::Plugin,
+                                 .plugin_path = FUSE_TEST_C_PROVIDER_PLUGIN}});
+  const auto down = g.add_component(fuse::ComponentDecl{
+      .name = "downstream", .ranks = fuse::RankSet{0, 1}, .interval = fuse::Rational{1}});
+  const auto out_f = g.add_field(
+      up, fuse::FieldSpec{.name = "out", .region = r1, .components = 1,
+                          .units = fuse::units::kKelvin,
+                          .conservation = fuse::Conservation::None,
+                          .intent = fuse::Intent::Provides});
+  const auto in_f = g.add_field(
+      down, fuse::FieldSpec{.name = "in", .region = r2, .components = 1,
+                            .units = fuse::units::kKelvin,
+                            .conservation = fuse::Conservation::None,
+                            .intent = fuse::Intent::Requires});
+  const auto ch = g.add_channel("link", out_f, in_f);
+  g.channel(ch).remap(fuse::RemapFlags::Conservative);
+  const auto bytes = fuse::serialize(g);
+
+  fuse_context_out co{.struct_size = sizeof(co)};
+  ASSERT_EQ(t->create(nullptr, nullptr, &co), FUSE_OK);
+  fuse_ctx* ctx = co.ctx;
+  fuse_graph_source src{.struct_size = sizeof(src)};
+  src.bytes = bytes.data();
+  src.byte_count = bytes.size();
+  ASSERT_EQ(t->load_graph(ctx, &src, nullptr), FUSE_OK);
+
+  // Real base communicator (every rank, identical input) -- what makes
+  // this an actual multi-rank placement rather than N independent
+  // single-process runs.
+  fuse_setup_options opts{.struct_size = sizeof(opts)};
+  opts.communicator = static_cast<std::int64_t>(MPI_Comm_c2f(MPI_COMM_WORLD));
+  ASSERT_EQ(t->setup(ctx, &opts, nullptr), FUSE_OK);
+
+  auto sink = std::make_unique<DownstreamSink>();
+  DownstreamSink* sink_ptr = sink.get();
+  ASSERT_TRUE(fuse::abi_test::inject_component(ctx, "downstream", std::move(sink)));
+
+  const fuse_status init_rc = t->initialize(ctx, nullptr, nullptr);
+  if (init_rc != FUSE_OK) {
+    fuse_error err{.struct_size = sizeof(err)};
+    char buf[512] = {0};
+    err.buffer = buf;
+    err.capacity = sizeof(buf);
+    t->last_error(ctx, nullptr, &err);
+    FAIL() << "rank " << rank << ": fuse_initialize failed: " << buf;
+  }
+
+  // Every rank -- hosting the plugin or not -- calls fuse_run() with the
+  // SAME request: the NON-hosting rank hosts nothing at all (neither
+  // "upstream" nor "downstream", for every rank >= 1 beyond the plugin's
+  // own RankSet on a 3-rank world there is none here, but rank 0 hosts
+  // only "downstream", never "upstream") and must still execute its own
+  // share of the period's collectives, per entries.def's own doc on
+  // `run` (and D61's own reconciliation, round 1, if this rank's call
+  // ever refused locally while others did not).
+  fuse_run_request rr{.struct_size = sizeof(rr)};
+  rr.periods = 3;
+  const fuse_status run_rc = t->run(ctx, &rr, nullptr);
+
+  std::vector<std::int32_t> all_rc(static_cast<std::size_t>(world_size));
+  const std::int32_t mine = run_rc;
+  MPI_Allgather(&mine, 1, MPI_INT32_T, all_rc.data(), 1, MPI_INT32_T, MPI_COMM_WORLD);
+  for (int r = 0; r < world_size; ++r) {
+    EXPECT_EQ(all_rc[static_cast<std::size_t>(r)], FUSE_OK)
+        << "rank " << r << " did not return FUSE_OK from fuse_run() "
+           "(rank " << rank << " observing)";
+  }
+
+  if (rank == 0) {
+    // Only rank 0 hosts "downstream"; its own history is the
+    // independent evidence that values actually crossed from the
+    // plugin, hosted entirely on OTHER ranks, to here.
+    EXPECT_EQ(sink_ptr->history.size(), 3u);
+  }
+
+  EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
+}
