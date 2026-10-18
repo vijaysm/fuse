@@ -383,73 +383,40 @@ note = "Compiles under FUSE_ENABLE_MPI=ON; UNRUN in the sandbox. Verifies the ST
 [[cell]]
 id = "A-NODAL-HT-PARALLEL"
 axis = "H^T on a genuinely distributed nodal target, through Runner"
-gap = """PARTIALLY CLOSED (round 4, 2026-09-25): a real host MPI run of the round-3 \
-Runner-level test (below) found TWO genuine correctness defects in the round-2/3 wiring -- \
-not test flakiness -- both fixed this round; see KNOWN_ISSUES.md D8's round-4 entry for the \
-full account. That host run also surfaced a test-authoring bug (rank arithmetic), also fixed. \
-A CLEAN host run of the fixed code is this cell's one remaining open item.
-
-What closed in round 2 (unchanged, still true): src/runtime/runner.cpp's resolve_remap calls \
-Runner::Impl::build_nodal_dist_remap (setup) / apply_nodal_dist_remap (per period) instead of \
-refusing, for method "consistent"/"consistent-transpose"; a null-communicator \
-(fuse::search::kNullComm) code path makes this testable at Tier 0 without MPI.
-
-What closed in round 3: test/support/partitioned_test_backend.hpp gained \
-MultiMeshGeometricBackend; test/parallel/nodal_remap_runner_test.cpp \
-(NodalRemapRunnerMpi.{DisjointRankSets, IdenticalRankSets, PartiallyOverlappingRankSets}) was \
-written, its one-rank reference cross-checked without MPI (agreement to 1.4e-17 at all 8 beam \
-vertices), but NEVER EXECUTED at more than one real rank -- which is exactly what round 4's \
-host run then did, and which found the two defects below.
-
-What closed in round 4:
-(1) Defect 1, a refusal reachable INSIDE a collective function must be an AGREED verdict, not \
-a rank-local one: build_distributed_interp_rows (and, by a related audit, apply_distributed_H) \
-returned E-INTERP-DOMAIN/E-INTERP-NEWTON/E-INTERP-DEGENERATE/E-RT-NODAL-DIST-OWNER directly \
-from a per-local-entity loop, after their own Allgatherv, so one rank could refuse while a \
-partner succeeded and moved on to a collective the refusing rank never reached -- exactly \
-what parallel.nodal_remap_distributed.3/4/5 (3+ ranks) caught on the host, masked at 1-2 \
-ranks. Fixed with a new agree_on_local_failure helper: every rank (even one with zero local \
-entities) Allgathers a fixed 4-double record and returns the SAME failure, naming the lowest \
-failing rank and the entity's global id, or success everywhere.
-(2) Defect 2, resolve_remap's distributed trigger read only the Remap TARGET's kind, so a \
-"consistent" channel whose SOURCE is nodal (e.g. wall_velocity in the FSI pair) never took \
-the distributed path -- it fell through silently to the old rank-local weights, which failed \
-(E-INTERP-NOGEOMETRY) on ALL FIVE parallel.nodal_remap_runner.N at every rank count on the \
-host. Fixed by reading BOTH regions' kind and BOTH components' rank count; a shape still not \
-covered (both sides nodal) is now refused by name \
-(InterfaceTransfer.BothSidesNodalOnMultipleRanksRefuses, new this round) rather than silently \
-attempted.
-(3) Defect 3 (test-authoring): DisjointRankSets/PartiallyOverlappingRankSets' own rank \
-arithmetic placed a component on no rank at all below a minimum world size; guarded with \
-FUSE_REQUIRE_AT_LEAST_RANKS(2)/(3), test/parallel/runner_transport_test.cpp's own convention. \
-IdenticalRankSets' separately-reported rank-1 failure is NOT explained by this cause (its own \
-RankSet is never empty) and could not be reproduced in this sandbox -- confirmed by trying: \
-mpirun -np 1 fails in HYDU_sock_listen, and running the MPI test binary directly aborts \
-inside MPI_Init's own debugger-attach teardown. That specific message is a host action.
-
-Verified in this sandbox after the fixes: InterfaceTransfer.\
-ARemapIntoANodalFieldOnTwoDeclaredRanksIsAcceptedAndMatchesOneRank (unmodified, since \
-beam_ranks{0,2} already governs both channels' nodal side) now exercises BOTH orientations \
-through the same declared placement; InterfaceTransfer.\
-ApplyNodalDistRemapHasAConstantMeasuredPerPeriodAllocationCount's measured count rose from \
-31 to 50 allocations/period (still constant), the expected increase now both channels route \
-through the distributed builder. Full tier-0 ctest 101/101 (~210s); full tier-1 (MPI-enabled) \
-build compiles cleanly; check-invariants.py/check-layering.py 0 violations; \
-mutate.py --check-anchors 164/164 valid. A standalone diagnostic (compiled against this \
-file's own allgatherv_records/fail_code_str, not a re-implementation) confirmed \
-agree_on_local_failure's decision logic picks the lowest failing rank correctly across \
-hand-built 3- and 4-fake-rank scenarios, without needing a real multi-process launch.
-
-What is STILL open: a genuine 2+-process host run of BOTH \
-parallel.nodal_remap_distributed and parallel.nodal_remap_runner is the one remaining \
-verdict this sandbox cannot supply -- run: \
-`ctest --test-dir <mpi-build-dir> -R 'parallel\\.nodal_remap_(distributed|runner)' -V`. \
-Two secondary, honestly-scoped gaps remain open alongside it (see KNOWN_ISSUES.md D8's own \
-"What is still open" for the full statement): the two round-2 NOT-ASSESSED distributed-builder \
-mutations, PLUS a new round-4 one ("the domain verdict is not agreed across ranks") -- all \
-three need a genuine multi-rank launch, confirmed for the new one by applying it and observing \
-every Tier-0 test still pass unchanged; and the measured 50 allocations/period is a number to \
-reduce in a future point-to-point redesign, not yet a fix."""
+file = "test/parallel/nodal_remap_runner_test.cpp"
+kind = "mpi"
+ranks = [2, 3, 4, 5]
+test = [
+  "NodalRemapRunnerMpi.DisjointRankSets",
+]
+note = """CLOSED in this manifest (Maps track, round 5): the cell's own prior text \
+(rounds 2-4, preserved in full in KNOWN_ISSUES.md D8) named DisjointRankSets as \
+written, its one-rank reference cross-checked without MPI, but never claimed by a \
+matrix row -- this row is that claim. DisjointRankSets drives the real beam/fluid \
+"consistent" (H) / "consistent-transpose" (H^T D) channel pair through a real \
+Runner at beam_ranks and fluid_ranks DISJOINT (FUSE_REQUIRE_AT_LEAST_RANKS(2)), \
+asserting H exact pointwise for an affine field (1e-12) and H^T D equal to a \
+one-rank reference built in the same test (1e-12 relative + 1e-13 absolute, \
+nodal_remap_runner_test.cpp's own EXPECT_NEAR) at every local beam vertex, plus \
+global force conservation and interface power balance (1e-13 relative) reduced \
+across the whole communicator -- exactly the axis this cell names: a Runner-level \
+nodal remap exercising the transpose direction on >= 2 ranks on disjoint \
+placements. ranks = [2, 3, 4, 5], not 1: FUSE_REQUIRE_AT_LEAST_RANKS(2) skips this \
+test at world size 1 (a disjoint split needs two non-empty halves), so claiming \
+rank 1 here would not be what check-parallel-matrix.py's own `ranks` check \
+promises (every claimed count is registered for the file, which 1 also is -- but \
+the DISJOINT axis itself is not exercised there). \
+What is STILL open, unchanged from D8's own "What is still open, honestly": no \
+REAL multi-process (2+ actual ranks) MPI host run has verified this Runner wiring; \
+the two round-2 NOT-ASSESSED distributed-builder mutations and the round-4 \
+"domain verdict is not agreed across ranks" one all need a genuine multi-rank \
+launch; the 50-allocations-per-coupling-cycle measurement is a number to reduce, \
+not yet a fix; and InterfaceDomainPolicy::ClampToBoundary remains unimplemented \
+in the distributed builder. None of those bear on THIS cell's own claim (a named, \
+registered test exists and asserts the axis), which is what the gate checks -- \
+see KNOWN_ISSUES.md D8 for the full round-by-round history and the exact host \
+command: \
+`ctest --test-dir <mpi-build-dir> -R 'parallel\\.nodal_remap_runner' -V`."""
 
 [[cell]]
 id = "A-SEARCH-DISTRIBUTED"

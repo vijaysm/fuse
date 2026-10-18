@@ -911,7 +911,7 @@ fuse_tests_gated_by(FUSE_ENABLE_MPI
   parallel/schur_slab_mpi_test.cpp parallel/krylov_mpi_test.cpp
   parallel/derivative_gate_mpi_test.cpp parallel/participant_reducer_mpi_test.cpp
   parallel/restart_collective_mpi_test.cpp parallel/device_ghost_exchange_test.cpp
-  parallel/brusselator_restart_mpi_test.cpp)
+  parallel/brusselator_restart_mpi_test.cpp parallel/transfer_map_reload_mpi_test.cpp)
 # restart_collective_mpi_test.cpp/brusselator_restart_mpi_test.cpp both link
 # fuse::restart_io, built only under FUSE_ENABLE_HDF5, so an MPI-on/HDF5-off
 # configuration must see both as gated.
@@ -994,6 +994,14 @@ if(FUSE_ENABLE_MPI)
   # directly -- this row stays for the primitive-level coverage the Runner
   # test does not itself re-derive (e.g. its own out-of-domain refusal).
   fuse_add_mpi_test(parallel nodal_remap_distributed LIBS fuse::backend)
+  # S5.4: the real-MPI twin of test/backend/
+  # transfer_map_real_builder_reload_test.cpp -- build_supermesh_weights
+  # persisted at 2 real ranks, reloaded at 3 (two-invocation protocol,
+  # FUSE_TRANSFER_MAP_RELOAD_MPI_FIXED_PATH / _ROLE, copied from
+  # brusselator_restart_mpi_test.cpp's own WriteAtMoreRanksRestoreAtFewer
+  # ByGlobalId). RANKS 2 3 only: this file's one test plays both roles,
+  # neither of which needs any other registered rank count.
+  fuse_add_mpi_test(parallel transfer_map_reload_mpi LIBS fuse::backend RANKS 2 3)
   # runtime-exchange track, follow-up round: DeviceGhostExchanger
   # (include/fuse/backend/device_ghost_exchange.hpp), a ring pattern over
   # Kokkos-space-resident buffers. DEVICE_TWIN re-runs it under
@@ -1299,6 +1307,15 @@ fuse_add_gtest(backend supermesh THROWS)
 # in the file under the device interpreter.
 fuse_add_device_twin(backend.supermesh fuse_backend_supermesh_test THROWS)
 fuse_add_gtest(backend transfer_map_io THROWS)
+# S5.4: the real-builder analogue of the synthetic round trip above --
+# build_supermesh_weights, not a hand-built RemapWeights triplet, through
+# the same persist/merge/localise path, at write-rank-count != read-rank-
+# count, both >= 2. Needs partitioned_test_backend.hpp's GeometricLineMesh
+# (test/support/), the nodal-remap track's own real-coordinate 1D fixture,
+# which GeometricLineMesh's own simplex/measure/global_id implementation
+# makes usable here too -- see test/parallel/nodal_remap_runner_test.cpp's
+# header for that class's own history.
+fuse_add_gtest(backend transfer_map_real_builder_reload THROWS)
 # supermesh_test reaches src/backend/supermesh_detail.hpp directly, a private
 # header (REVIEW.md R-12/BK-M2), the same way parallel/comm_graph_test reaches
 # CrystalRouter above: one test target's include path, not a widened public
