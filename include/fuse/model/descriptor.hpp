@@ -1,17 +1,51 @@
 #pragma once
 
+#include <bit>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <span>
 #include <string>
+#include <type_traits>
 #include <vector>
 
+#include "fuse/base/bytes.hpp"
 #include "fuse/base/result.hpp"
 #include "fuse/model/coupling_graph.hpp"
 
 namespace fuse {
 
 inline constexpr std::uint32_t kGraphMagic   = 0x46555345u;  // "FUSE"
+/// 15: D62 (KNOWN_ISSUES.md), the descriptor byte-order fix. Before this
+///     bump, `detail::Writer::pod`/`detail::Reader::pod` wrote a value's
+///     native in-memory representation via `memcpy` -- host-endian, not
+///     the little-endian rule `fuse/base/bytes.hpp` states for every other
+///     canonical encoding in this library (BM-5, review 2026-10-11; see
+///     that header's own note and docs/dev/abi-design.md's "The graph
+///     descriptor's byte order"). `pod()` now routes every unsigned POD
+///     through `bytes::put_integer`/`bytes::get_integer`, every signed POD
+///     through `bytes::put_signed`/`bytes::get_signed`, and every
+///     floating-point POD through the same pair applied to its bit
+///     pattern (`std::bit_cast` to/from an equal-width unsigned integer).
+///     No field gains or loses a byte of width (`sizeof(T)` is unchanged
+///     for every `T` this file calls `pod()` with), and on every host this
+///     library has ever built for (little-endian) the wire bytes this
+///     produces are bit-for-bit identical to what the old `memcpy`-based
+///     `pod()` wrote -- the only observable change in a descriptor's bytes
+///     on such a host is this version field itself, 14 to 15. What
+///     changes is the GUARANTEE: the wire bytes no longer depend on the
+///     writing host's native byte order at all, because `bytes::
+///     put_integer`/`put_signed` build them from the value through
+///     shifts, never from its memory layout. A v14 reader handed a v15
+///     buffer would read the first field written through the new path
+///     (every field in the descriptor, starting with `n_mesh` right after
+///     the version word) using its OWN `memcpy`-based `pod()` -- on a
+///     little-endian host that happens to still decode correctly, which
+///     is exactly why a byte-order bug is invisible there; the version
+///     check refuses the mismatch unconditionally rather than relying on
+///     that coincidence, consistent with every version bump that came
+///     before it.
+///
 /// 14: the NewtonModel track (2026-10-12), measure-weighted Newton residual
 ///     scaling and the direct residual-evaluation path. `NewtonConfig`
 ///     (fuse/model/iteration.hpp) gains two more fields, `norm` (`fuse::
@@ -150,23 +184,46 @@ inline constexpr std::uint32_t kGraphMagic   = 0x46555345u;  // "FUSE"
 /// the iteration regions and never see the merge rules, so it would read a
 /// graph that says "one writer per field" from bytes that say otherwise -- and
 /// it would read it successfully. The version check turns that into a refusal.
-inline constexpr std::uint32_t kGraphVersion = 14u;
+inline constexpr std::uint32_t kGraphVersion = 15u;
 
 namespace detail {
 
-// BM-5 (review 2026-10-11): `pod()` below writes a value's native
-// in-memory representation -- host-endian, NOT the little-endian rule
-// fuse/base/bytes.hpp states for every other canonical encoding in this
-// library. See bytes.hpp's own note and docs/dev/abi-design.md's "The
-// graph descriptor's byte order" section for why this is recorded rather
-// than changed immediately.
+// D62 (KNOWN_ISSUES.md), descriptor kGraphVersion 15: `pod()` below used to
+// write a value's native in-memory representation -- host-endian, NOT the
+// little-endian rule fuse/base/bytes.hpp states for every other canonical
+// encoding in this library (BM-5, review 2026-10-11; see bytes.hpp's own
+// note and docs/dev/abi-design.md's "The graph descriptor's byte order"
+// section for the history). It now routes every POD through the SAME
+// canonical encoders bytes.hpp already defines, picked by `T`'s own
+// category at compile time (`if constexpr`, so each instantiation emits
+// exactly one of the three paths, not a runtime branch):
+//   - floating-point: `std::bit_cast` to an equal-width unsigned integer,
+//     then `bytes::put_integer`/`bytes::get_integer` on the bit pattern --
+//     this file's only floating-point PODs are `double`, width 8.
+//   - signed integral: `bytes::put_signed`/`bytes::get_signed`, the
+//     two's-complement bit pattern at `sizeof(T)` width.
+//   - unsigned integral: `bytes::put_integer`/`bytes::get_integer` at
+//     `sizeof(T)` width.
+// Every call site already passes an exact-width fundamental type (an
+// explicit `static_cast` to `std::uintN_t`/`std::intN_t`, or a `double`
+// directly) -- never a raw enum or a type whose width varies by platform
+// -- so `sizeof(T)` is exactly the width the wire format has always used
+// for that field; no field changed width by this fix, only how its bytes
+// are produced.
 class Writer {
  public:
   template <class T>
   void pod(const T& v) {
     static_assert(std::is_trivially_copyable_v<T>);
-    const auto* p = reinterpret_cast<const std::byte*>(&v);
-    buf_.insert(buf_.end(), p, p + sizeof(T));
+    if constexpr (std::is_floating_point_v<T>) {
+      static_assert(sizeof(T) == sizeof(std::uint64_t),
+                    "only double (8 bytes) is written by this file today");
+      bytes::put_integer(buf_, std::bit_cast<std::uint64_t>(v), sizeof(T));
+    } else if constexpr (std::is_signed_v<T>) {
+      bytes::put_signed(buf_, static_cast<std::int64_t>(v), sizeof(T));
+    } else {
+      bytes::put_integer(buf_, static_cast<std::uint64_t>(v), sizeof(T));
+    }
   }
   void str(const std::string& s) {
     pod(static_cast<std::uint32_t>(s.size()));
@@ -199,14 +256,38 @@ class Reader {
 
   [[nodiscard]] bool ok() const noexcept { return ok_; }
 
+  // D62 (KNOWN_ISSUES.md), descriptor kGraphVersion 15: the decode-side
+  // mirror of Writer::pod's own comment above -- the same three paths
+  // (floating-point via bit pattern, signed via two's complement, unsigned
+  // directly), each routed through bytes.hpp's `get_integer`/`get_signed`
+  // rather than a native-layout `memcpy`. `ok_` is the SAME failure flag
+  // `get_integer`/`get_signed` are handed directly (by reference), so a
+  // truncated buffer is reported exactly as before: `ok_` set to false,
+  // `pos_` left unmoved, and every subsequent `pod()` call on this `Reader`
+  // short-circuits to a default-constructed value without reading further
+  // (bytes.hpp's own `get_integer` returns 0 immediately once `ok` is
+  // already false coming in only because `pos_ + width > buf_.size()` is
+  // still checked fresh each call; a `Reader` that already failed keeps
+  // `pos_` at the position of the FIRST failure, so a second corrupt field
+  // is never reached, matching the pre-D62 behaviour exactly).
   template <class T>
   T pod() {
     static_assert(std::is_trivially_copyable_v<T>);
-    T v{};
-    if (pos_ + sizeof(T) > buf_.size()) { ok_ = false; return v; }
-    std::memcpy(&v, buf_.data() + pos_, sizeof(T));
-    pos_ += sizeof(T);
-    return v;
+    if constexpr (std::is_floating_point_v<T>) {
+      static_assert(sizeof(T) == sizeof(std::uint64_t),
+                    "only double (8 bytes) is read by this file today");
+      const auto raw = bytes::get_integer(buf_, pos_, sizeof(T), ok_);
+      if (!ok_) return T{};
+      return std::bit_cast<T>(raw);
+    } else if constexpr (std::is_signed_v<T>) {
+      const auto raw = bytes::get_signed(buf_, pos_, sizeof(T), ok_);
+      if (!ok_) return T{};
+      return static_cast<T>(raw);
+    } else {
+      const auto raw = bytes::get_integer(buf_, pos_, sizeof(T), ok_);
+      if (!ok_) return T{};
+      return static_cast<T>(raw);
+    }
   }
   std::string str() {
     const auto n = pod<std::uint32_t>();

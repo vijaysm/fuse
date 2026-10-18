@@ -1,9 +1,12 @@
 #include <algorithm>
+#include <array>
+#include <bit>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <type_traits>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -521,7 +524,7 @@ TEST(Descriptor, SupersededFrozenBytesAreRefusedByThisReader) {
   for (const char* name : {"waist-v1.bin", "waist-v4.bin", "waist-v5.bin",
                           "waist-v6.bin", "waist-v7.bin", "waist-v8.bin",
                           "waist-v9.bin", "waist-v10.bin", "waist-v11.bin",
-                          "waist-v12.bin", "waist-v13.bin"}) {
+                          "waist-v12.bin", "waist-v13.bin", "waist-v14.bin"}) {
     const std::filesystem::path old_golden =
         std::filesystem::path(FUSE_TEST_GOLDEN_DIR) / name;
     ASSERT_TRUE(std::filesystem::exists(old_golden)) << old_golden;
@@ -551,10 +554,183 @@ TEST(Descriptor, TheFrozenV1BytesAreRefusedByThisReader) {
   EXPECT_EQ(r.error().code, "E-DESC-VERSION");
 }
 
+// ---- D62 (KNOWN_ISSUES.md): the descriptor byte-order fix ---------------
+//
+// The task's own owner decision named the version bump "4 to 5"; this
+// repository's actual kGraphVersion was 14 at the time this fix landed
+// (ten intervening version bumps from other tracks), so the checks below
+// are written against the REAL versions, 14 (superseded) and 15 (current),
+// not the stale 4/5 the task text names. See this track's own deviations.
+
+// The ONLY difference, on this (little-endian) host, between the frozen
+// v14 golden's bytes and what this build's serialize() now writes for the
+// IDENTICAL fixture graph is the version word -- proving kGraphVersion 15
+// changed no field's width or position, only (a) the version tag and (b)
+// the GUARANTEE that the bytes no longer depend on the writing host's own
+// byte order (invisible here precisely because this host is little-endian,
+// exactly as descriptor.hpp's own v15 history entry and bytes.hpp's header
+// comment both state).
+TEST(Descriptor, V14AndV15BytesOfTheSameGraphDifferOnlyInTheVersionWord) {
+  const auto v15_bytes = fuse::serialize(fuse::testing::freeze_fixture());
+
+  const std::filesystem::path v14_golden =
+      std::filesystem::path(FUSE_TEST_GOLDEN_DIR) / "waist-v14.bin";
+  ASSERT_TRUE(std::filesystem::exists(v14_golden)) << v14_golden;
+  std::ifstream in(v14_golden, std::ios::binary);
+  const std::vector<char> raw((std::istreambuf_iterator<char>(in)),
+                              std::istreambuf_iterator<char>());
+  std::vector<std::byte> v14_bytes(raw.size());
+  for (std::size_t i = 0; i < raw.size(); ++i) v14_bytes[i] = static_cast<std::byte>(raw[i]);
+
+  ASSERT_EQ(v14_bytes.size(), v15_bytes.size())
+      << "v14 and v15 bytes differ in length -- the fix changed a field's width";
+  std::size_t first_diff = v14_bytes.size();
+  std::size_t diff_count = 0;
+  for (std::size_t i = 0; i < v14_bytes.size(); ++i) {
+    if (v14_bytes[i] != v15_bytes[i]) {
+      if (diff_count == 0) first_diff = i;
+      ++diff_count;
+    }
+  }
+  EXPECT_EQ(diff_count, 1u) << "exactly one byte should differ between v14 and v15 "
+                               "descriptors of the same graph on a little-endian host";
+  EXPECT_EQ(first_diff, 4u) << "the differing byte should be the version word's own "
+                               "first byte (offset 4, right after the 4-byte magic)";
+
+  // Patch v15's version word down to 14 and confirm the result IS the
+  // frozen v14 golden, byte for byte.
+  auto v15_relabeled_as_v14 = v15_bytes;
+  fuse::detail::Writer w14;
+  w14.pod(fuse::kGraphMagic);
+  w14.pod(std::uint32_t{14});
+  const auto prefix_v14 = w14.take();
+  std::copy(prefix_v14.begin(), prefix_v14.end(), v15_relabeled_as_v14.begin());
+  EXPECT_EQ(v15_relabeled_as_v14, v14_bytes)
+      << "v15 bytes, relabeled back to version 14, do not match the frozen v14 golden";
+}
+
+// The checker this task asked for: decode the superseded version's bytes
+// and the current version's bytes for the SAME graph, and show the two
+// decode to the SAME graph. deserialize() itself refuses a v14 buffer by
+// version (SupersededFrozenBytesAreRefusedByThisReader, above) -- by
+// design, not a limitation this checker works around by inventing a
+// second reader. It instead relabels the frozen v14 payload's version
+// word to 15 (the EXACT inverse of the previous test's own relabel) and
+// hands the result to the one production deserialize(): the previous
+// test already proved that relabeling is the ONLY byte that differs
+// between the two, so decoding the relabeled v14 payload decodes the
+// SAME field bytes freeze_fixture()'s own v15 serialize() produces.
+TEST(Descriptor, V14AndV15BytesOfTheSameGraphDecodeIdentically) {
+  const auto v15_bytes = fuse::serialize(fuse::testing::freeze_fixture());
+
+  const std::filesystem::path v14_golden =
+      std::filesystem::path(FUSE_TEST_GOLDEN_DIR) / "waist-v14.bin";
+  ASSERT_TRUE(std::filesystem::exists(v14_golden)) << v14_golden;
+  std::ifstream in(v14_golden, std::ios::binary);
+  const std::vector<char> raw((std::istreambuf_iterator<char>(in)),
+                              std::istreambuf_iterator<char>());
+  std::vector<std::byte> v14_bytes(raw.size());
+  for (std::size_t i = 0; i < raw.size(); ++i) v14_bytes[i] = static_cast<std::byte>(raw[i]);
+  ASSERT_EQ(v14_bytes.size(), v15_bytes.size());
+
+  auto v14_relabeled_as_v15 = v14_bytes;
+  std::copy(v15_bytes.begin(), v15_bytes.begin() + 8, v14_relabeled_as_v15.begin());
+
+  const auto from_v14 = fuse::deserialize(v14_relabeled_as_v15);
+  ASSERT_TRUE(from_v14.ok()) << from_v14.error().message;
+  const auto from_v15 = fuse::deserialize(v15_bytes);
+  ASSERT_TRUE(from_v15.ok()) << from_v15.error().message;
+  EXPECT_TRUE(structurally_equal(from_v14.value(), from_v15.value()))
+      << "the v14 golden's payload and the v15 build's own serialize() output "
+         "decode to different graphs for the identical fixture";
+}
+
+// This sandbox has no big-endian host to build or run on (the task's own
+// constraint). This test instead shows, by construction rather than by
+// executing on real big-endian hardware, that `fuse::detail::Writer::pod`
+// (now routed through `bytes::put_integer`/`bytes::put_signed`, D62) can
+// no longer depend on the host's native byte order the way the pre-D62
+// memcpy-based `pod()` did: `bytes::put_integer`/`put_signed` build their
+// output from the VALUE through right-shifts and masks -- an operation
+// the C++ standard defines on the abstract integer value, not on its
+// storage layout -- so a second encoder written the SAME way (shifts, no
+// `reinterpret_cast`, no `memcpy`) must agree with `Writer::pod` on every
+// host, including one this sandbox cannot reach. The BYTE-SWAPPING WRITER
+// STUB stands in for the superseded, memcpy-based `pod()` AS IF it ran on
+// a big-endian host: a big-endian host's native memcpy of a value is the
+// byte-reverse of this (little-endian) host's own native memcpy of the
+// same value, so reversing this host's memcpy output reproduces exactly
+// what the OLD `pod()` would have written there.
+namespace {
+template <class T>
+std::vector<std::byte> shift_based_reference_encoding(T v) {
+  // The canonical encoding, rebuilt here independently of bytes.hpp so
+  // this test does not simply check bytes::put_integer against itself:
+  // pure integer arithmetic on the VALUE, touching no memory layout.
+  std::vector<std::byte> out;
+  if constexpr (std::is_floating_point_v<T>) {
+    const auto bits = std::bit_cast<std::uint64_t>(v);
+    for (std::size_t i = 0; i != sizeof(T); ++i)
+      out.push_back(static_cast<std::byte>((bits >> (8 * i)) & 0xffU));
+  } else {
+    using U = std::make_unsigned_t<T>;
+    const auto bits = static_cast<std::uint64_t>(static_cast<U>(v));
+    for (std::size_t i = 0; i != sizeof(T); ++i)
+      out.push_back(static_cast<std::byte>((bits >> (8 * i)) & 0xffU));
+  }
+  return out;
+}
+
+template <class T>
+std::vector<std::byte> memcpy_based_stub_as_if_big_endian(T v) {
+  // What the SUPERSEDED (pre-D62) memcpy-based pod() would have written
+  // on a big-endian host: the byte-reverse of what it writes HERE (this
+  // host's own native memcpy), because flipping every bit of a two's-
+  // complement integer's or an IEEE-754 float's byte ORDER is exactly
+  // what swapping host endianness does to memcpy's output.
+  std::array<std::byte, sizeof(T)> native{};
+  std::memcpy(native.data(), &v, sizeof(T));
+  std::vector<std::byte> reversed(native.rbegin(), native.rend());
+  return reversed;
+}
+}  // namespace
+
+TEST(Descriptor, PodBytesNoLongerDependOnHostByteOrderViaSwapStub) {
+  const std::uint8_t  u8  = 0xAB;
+  const std::int32_t  i32 = -100000;
+  const std::uint32_t u32 = 0x01020304u;
+  const std::uint64_t u64 = 0x0102030405060708ULL;
+  const double        f64 = 1.5;  // exact in binary: 0x3FF8000000000000
+
+  const auto check = [](auto value, const char* name) {
+    fuse::detail::Writer w;
+    w.pod(value);
+    const auto actual = w.take();
+    const auto reference = shift_based_reference_encoding(value);
+    EXPECT_EQ(actual, reference)
+        << name << ": Writer::pod no longer matches a pure value-arithmetic "
+                   "(host-layout-independent) encoding";
+
+    if (sizeof(value) > 1) {
+      const auto old_big_endian_host_would_have_written =
+          memcpy_based_stub_as_if_big_endian(value);
+      EXPECT_NE(actual, old_big_endian_host_would_have_written)
+          << name << ": the byte-swap stub must reproduce the SUPERSEDED bug "
+                     "(a big-endian host disagreeing with this one) to be a "
+                     "meaningful contrast against the fixed Writer::pod";
+    }
+  };
+  check(u8, "uint8_t");
+  check(i32, "int32_t");
+  check(u32, "uint32_t");
+  check(u64, "uint64_t");
+  check(f64, "double");
+}
+
 TEST(Descriptor, MatchesTheFrozenWaistBytes) {
   const auto bytes = fuse::serialize(fuse::testing::freeze_fixture());
   const std::filesystem::path golden =
-      std::filesystem::path(FUSE_TEST_GOLDEN_DIR) / "waist-v14.bin";
+      std::filesystem::path(FUSE_TEST_GOLDEN_DIR) / "waist-v15.bin";
   ASSERT_TRUE(std::filesystem::exists(golden)) << golden;
 
   std::ifstream in(golden, std::ios::binary);

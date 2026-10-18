@@ -53,6 +53,80 @@ void signed_values_use_two_s_complement()
     require(lowest == of({0, 0, 0, 0, 0, 0, 0, 0x80}), "INT64_MIN did not encode exactly");
 }
 
+// D62 (KNOWN_ISSUES.md): get_integer/get_signed are the decode side
+// fuse::detail::Reader (fuse/model/descriptor.hpp) now routes through,
+// replacing a native-layout memcpy. RED on pristine (these two functions
+// do not exist there at all -- the file this test was added to is the
+// SAME commit that adds them, so there is no separate pre-fix build to
+// show failing; the round-trip assertions below are what would catch a
+// decode that silently disagreed with put_integer/put_signed's own
+// encoding, which is the behaviour a memcpy-based implementation could
+// never have exercised this way).
+void get_integer_is_the_inverse_of_put_integer()
+{
+    std::vector<std::byte> out;
+    bytes::put_integer(out, 0x0102030405060708ULL, 8);
+    std::size_t pos = 0;
+    bool ok = true;
+    const auto value = bytes::get_integer(out, pos, 8, ok);
+    require(ok, "get_integer reported failure on a buffer exactly the right size");
+    require(value == 0x0102030405060708ULL, "get_integer did not invert put_integer");
+    require(pos == 8, "get_integer advanced pos by something other than width");
+
+    // Narrow width: the inverse of "bytes above width are discarded" is
+    // reading back exactly what was kept.
+    std::vector<std::byte> narrow;
+    bytes::put_integer(narrow, 0xffULL, 1);
+    std::size_t narrow_pos = 0;
+    bool narrow_ok = true;
+    require(bytes::get_integer(narrow, narrow_pos, 1, narrow_ok) == 0xffULL,
+            "get_integer did not invert a 1-byte put_integer");
+    require(narrow_ok, "get_integer failed on an exact-width 1-byte buffer");
+
+    // Truncation: pos+width past the end refuses and leaves pos unmoved,
+    // the same truncation contract fuse::detail::Reader relies on.
+    std::vector<std::byte> truncated{std::byte{0x01}, std::byte{0x02}};
+    std::size_t trunc_pos = 0;
+    bool trunc_ok = true;
+    const auto truncated_value = bytes::get_integer(truncated, trunc_pos, 4, trunc_ok);
+    require(!trunc_ok, "get_integer did not refuse a truncated buffer");
+    require(trunc_pos == 0, "get_integer advanced pos despite refusing");
+    require(truncated_value == 0, "get_integer returned a nonzero value on refusal");
+}
+
+void get_signed_is_the_inverse_of_put_signed_including_sign_extension()
+{
+    // A negative value at narrower-than-64-bit width is the case a naive
+    // "reinterpret the unsigned bits as signed" decode gets wrong: the
+    // sign bit sits at bit 7 of a 1-byte field, not bit 63, so recovering
+    // -1 from 0xff at width 1 requires sign-extending from the WIDTH's own
+    // top bit, not std::int64_t's.
+    for (const auto [value, width] : {std::pair{std::int64_t{-1}, std::size_t{1}},
+                                      std::pair{std::int64_t{-1}, std::size_t{4}},
+                                      std::pair{std::int64_t{-1}, std::size_t{8}},
+                                      std::pair{std::int64_t{INT64_MIN}, std::size_t{8}},
+                                      std::pair{std::int64_t{127}, std::size_t{1}},
+                                      std::pair{std::int64_t{-128}, std::size_t{1}}})
+    {
+        std::vector<std::byte> out;
+        bytes::put_signed(out, value, width);
+        std::size_t pos = 0;
+        bool ok = true;
+        const auto recovered = bytes::get_signed(out, pos, width, ok);
+        require(ok, "get_signed reported failure on a buffer exactly the right size");
+        require(recovered == value, "get_signed did not sign-extend from the field's own width");
+        require(pos == width, "get_signed advanced pos by something other than width");
+    }
+
+    // Truncation refuses the same way get_integer's own does.
+    std::vector<std::byte> truncated{std::byte{0xff}};
+    std::size_t trunc_pos = 0;
+    bool trunc_ok = true;
+    (void)bytes::get_signed(truncated, trunc_pos, 4, trunc_ok);
+    require(!trunc_ok, "get_signed did not refuse a truncated buffer");
+    require(trunc_pos == 0, "get_signed advanced pos despite refusing");
+}
+
 // The rule this file exists for.
 void the_length_prefix_prevents_adjacent_collisions()
 {
@@ -128,6 +202,10 @@ void the_hash_depends_on_every_byte_and_on_order()
 
 TEST(Bytes, IntegersAreLittleEndianAndFixedWidth) { integers_are_little_endian_and_fixed_width(); }
 TEST(Bytes, SignedValuesUseTwoSComplement) { signed_values_use_two_s_complement(); }
+TEST(Bytes, GetIntegerIsTheInverseOfPutInteger) { get_integer_is_the_inverse_of_put_integer(); }
+TEST(Bytes, GetSignedIsTheInverseOfPutSignedIncludingSignExtension) {
+  get_signed_is_the_inverse_of_put_signed_including_sign_extension();
+}
 TEST(Bytes, TheLengthPrefixPreventsAdjacentCollisions) { the_length_prefix_prevents_adjacent_collisions(); }
 TEST(Bytes, RationalsEncodeBothTerms) { rationals_encode_both_terms(); }
 TEST(Bytes, TheHashDependsOnEveryByteAndOnOrder) { the_hash_depends_on_every_byte_and_on_order(); }

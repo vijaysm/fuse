@@ -118,16 +118,48 @@ rules, each of which a test enforces:
 
 The coupling-graph descriptor (`fuse::serialize`/`fuse::deserialize`, `include/fuse/model/
 descriptor.hpp`) is also described as "the ABI narrow waist", but it is a separate encoding
-from the C-ABI struct rules above and does not follow them. `detail::Writer::pod`/`detail::
-Reader::pod` write a value's native in-memory representation via `memcpy` -- host-endian, not
-the little-endian rule `include/fuse/base/bytes.hpp` states for every OTHER canonical encoding
-in the library (the field-entry key, the semantic model, the operator chain). BM-5 (review
-2026-10-11): this was undocumented and untested; every machine this library has built on so
-far is little-endian, so the gap has never been visible. Recorded rather than fixed immediately
-(see `bytes.hpp`'s own note for why): the descriptor is host-endian and same-host-family only
-until a version bump routes it through `bytes::put_integer` deliberately, at a point where the
-golden-file churn that bump causes is expected. A big-endian host building and exchanging
-descriptors with a little-endian peer would silently disagree about every multi-byte field.
+from the C-ABI struct rules above and does not follow them in how it crosses the C ABI's own
+narrow waist (`fuse_graph_source`/`fuse_graph_sink`, `include/fuse/abi/entries.def`) -- raw
+bytes, not a `struct_size`-negotiated struct. It DOES now follow `bytes.hpp`'s own canonical
+encoding, as of `kGraphVersion` 15 (KNOWN_ISSUES.md D62, fixed 2026-10-18).
+
+**History.** `detail::Writer::pod`/`detail::Reader::pod` used to write a value's native
+in-memory representation via `memcpy` -- host-endian, not the little-endian rule
+`include/fuse/base/bytes.hpp` states for every OTHER canonical encoding in the library (the
+field-entry key, the semantic model, the operator chain). BM-5 (review 2026-10-11): this was
+undocumented and untested; every machine this library had built on so far was little-endian,
+so the gap was never visible. Recorded rather than fixed immediately (`bytes.hpp`'s own note
+at the time): the descriptor was host-endian and same-host-family only until a version bump
+routed it through `bytes::put_integer` deliberately, at a point where the golden-file churn
+that bump causes was expected. A big-endian host building and exchanging descriptors with a
+little-endian peer would have silently disagreed about every multi-byte field.
+
+**The fix (D62).** `Writer::pod`/`Reader::pod` now route every POD through `bytes::
+put_integer`/`bytes::get_integer` (unsigned), `bytes::put_signed`/`bytes::get_signed` (signed,
+two's-complement), or `std::bit_cast` to/from an equal-width unsigned integer through the same
+pair (floating-point -- only `double` appears in this file). `bytes.hpp` gained `get_integer`/
+`get_signed` as part of this fix: before D62 it was write-only (used for canonical hashing in
+`src/backend/weights_operator.cpp`, `src/model/semantics.cpp`, `src/model/transform.cpp`), with
+no decode side at all, because nothing round-tripped through it until the descriptor did.
+`kGraphVersion` bumped 14 -> 15. No field changed width or position: on a little-endian host
+(every host this library has ever built on) the wire bytes for a given graph are unchanged
+except for the version word itself -- the fix changes the GUARANTEE (host-independence), not
+the bytes a little-endian host happens to produce, which is exactly why the bug was invisible
+here and would not have been on a big-endian host. `test/model/descriptor_test.cpp`'s
+`V14AndV15BytesOfTheSameGraphDifferOnlyInTheVersionWord` and
+`V14AndV15BytesOfTheSameGraphDecodeIdentically` verify this directly; this sandbox has no
+big-endian host to build or run on, so `PodBytesNoLongerDependOnHostByteOrderViaSwapStub`
+demonstrates the host-independence by construction (a byte-swapping writer stub standing in for
+the superseded host) instead of by executing on one.
+
+The ABI's own negotiation of this version is unchanged by the fix: `fuse_load_graph()`
+(`src/abi/participant.cpp`) hands raw bytes straight to `fuse::deserialize()`, which refuses a
+`kGraphVersion` mismatch by name (`E-DESC-VERSION`) before this fix and still does after it --
+`test/abi/negotiation_test.cpp`'s `LoadGraphRefusesAnOutdatedDescriptorVersionByName` exercises
+this through the ABI boundary explicitly. The restart-to-disk provenance check gained its own,
+independent version/hash distinction for the SAME reason -- see KNOWN_ISSUES.md D62's own
+closing note and `fuse/restart_io/hdf5_restart_io.hpp`'s `Provenance::descriptor_version` /
+`check_restart_descriptor_hash()`.
 
 ## Fortran: `ffuse`
 

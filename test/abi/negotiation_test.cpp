@@ -15,6 +15,8 @@
 
 #include "fuse/abi/participant.h"
 
+#include "fuse/model/descriptor.hpp"
+
 #include "graph_fixture.hpp"
 
 namespace {
@@ -137,6 +139,48 @@ void DriveOnePeriod(const fuse_participant_abi_v1* t, fuse_ctx* ctx,
 }
 
 }  // namespace
+
+// D62 (KNOWN_ISSUES.md): the coupling-graph descriptor crosses the C ABI
+// through fuse_graph_source/fuse_graph_sink (include/fuse/abi/entries.def,
+// docs/dev/abi-design.md's "The graph descriptor's byte order"), and its
+// own version is negotiated the SAME way the ABI table's own abi_version
+// is above: fuse_load_graph() hands raw bytes straight to fuse::
+// deserialize() (src/abi/participant.cpp's impl_load_graph), which
+// refuses a kGraphVersion mismatch BY NAME (E-DESC-VERSION) rather than
+// reinterpreting bytes written under a different wire layout -- the
+// descriptor's own version check is not bypassed, weakened, or silently
+// reinterpreted just because it now arrives through the C boundary
+// instead of a direct fuse::deserialize() call (test/model/descriptor_
+// test.cpp's own InheritedVersionIsRefusedNotReinterpreted covers the
+// direct call; this is the SAME refusal, exercised through the ABI).
+TEST(AbiNegotiation, LoadGraphRefusesAnOutdatedDescriptorVersionByName) {
+  auto bytes = fuse::abi_test::build_two_component_lag1_bytes();
+  ASSERT_GE(bytes.size(), 8u);
+  // Patch the version word (the 4 bytes right after the magic) to one
+  // less than this build's own fuse::kGraphVersion -- a descriptor this
+  // build has definitely never produced, by construction.
+  fuse::detail::Writer w;
+  w.pod(fuse::kGraphMagic);
+  w.pod(fuse::kGraphVersion - 1);
+  const auto prefix = w.take();
+  std::copy(prefix.begin(), prefix.end(), bytes.begin());
+
+  const fuse_participant_abi_v1* t = fuse_coupler_abi(FUSE_ABI_VERSION);
+  ASSERT_NE(t, nullptr);
+  fuse_context_out co{.struct_size = sizeof(co)};
+  ASSERT_EQ(t->create(nullptr, nullptr, &co), FUSE_OK);
+  fuse_ctx* ctx = co.ctx;
+  fuse_graph_source src{.struct_size = sizeof(src)};
+  src.bytes = bytes.data();
+  src.byte_count = bytes.size();
+
+  const fuse_status rc = t->load_graph(ctx, &src, nullptr);
+  EXPECT_EQ(rc, FUSE_ERR_INVALID);
+  fuse_error err{.struct_size = sizeof(err)};
+  ASSERT_EQ(t->last_error(ctx, nullptr, &err), FUSE_OK);
+  EXPECT_STREQ(err.code, "E-DESC-VERSION");
+  EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
+}
 
 // AbiNegotiation.V1CallerAgainstV2Table: a v1 caller, using nothing but the
 // fuse_participant_abi_v1 type, drives the graph through a hand-built v2
