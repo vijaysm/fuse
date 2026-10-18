@@ -6914,7 +6914,7 @@ Host-mode rows (which do not cross this path) are unaffected and green.
 
 **Fixed.** `MeshArrays::vertex_coords` is declared `Kokkos::LayoutRight` in every memory space (`include/fuse/backend/native_mesh.hpp`), so the host arrays keep the layout they always had and the device copy in `to_memory_space<Target>()` is a contiguous copy; `NativeMeshView::create_from_host`'s local pinning of the same layout stands. The two `backend.native_mesh_pack_device` cases that skipped on the throw now run the copy.
 
-### D55. `parallel.window_newton_mpi.3` hangs on higgs's Open MPI 4.1.5 — OPEN, found by the device-merge gate 2026-10-13
+### D55. `parallel.window_newton_mpi.3` hangs on higgs's Open MPI 4.1.5 — CLOSED 2026-10-18 (does not reproduce on Open MPI 5.0.9), found by the device-merge gate 2026-10-13
 
 `WindowNewtonMpi.TwoDisjointRanksMatchTheSingleProcessReference` at three ranks (two participants, one
 bystander) never returns on higgs (Open MPI 4.1.5, Kokkos Cuda build); the two-rank row passes, and the
@@ -6928,7 +6928,14 @@ the participants then enter on the shared transport communicator is what the bys
 the first thing to check. Not diagnosed further: higgs has no `gdb` on the job shell's PATH to capture
 per-rank stacks. The row is registered and times out (120 s) on that host until this is understood.
 
-### D56. `FsiEnergyDiag.FullBudgetOnTheDominantModeCloses`'s mass-correction gate fails on higgs's toolchain by 1.5x — OPEN, found by the device-merge gate 2026-10-13
+**2026-10-18.** higgs's MPI was replaced by a spack-built Open MPI 5.0.9 (CUDA-aware). On the first
+full gate against it (main 01a6d25, build-all, Kokkos Cuda build) `parallel.window_newton_mpi.3`
+passed in the ordinary time (0.82 s; 2.57 s on a standalone rerun), as did `.2` (the row has no
+`.device` twin); the hang was never reproduced
+anywhere but Open MPI 4.1.5, so it is closed as an artifact of that MPI without a FUSE change. The
+bystander-rank observation above stands as a reading of the code, not as a measured cause.
+
+### D56. `FsiEnergyDiag.FullBudgetOnTheDominantModeCloses`'s mass-correction gate fails on higgs's toolchain by 1.5x (host leg), by 5x in the device twin on the 2026-10-18 stack — OPEN, found by the device-merge gate 2026-10-13
 
 The gate `max_abs_diff_non_outflow < 0.5 * eig_quality * max|u_raw|` (test/verification/
 fsi_energy_diag_test.cpp, "MASS-CORRECTION ISOLATION") measured 1.720e-10 against a tolerance of
@@ -6939,6 +6946,14 @@ tolerance convention the factor is not to be widened: the derivation (one eig_qu
 error in the extracted inputs, scaled by |u_raw|) is missing a term on this toolchain -- the two
 `cn_step` solves' own forward-error difference is the candidate. The `.device` twin of the row passes
 (its energy budget runs on the selected oscillatory mode exactly as the host leg does).
+
+**2026-10-18.** On higgs's rebuilt stack (Open MPI 5.0.9, Eigen 5.0.0, the same GCC 13.3 host pass
+through nvcc_wrapper) the picture inverted: the host row `verification.fsi_energy_diag` PASSED in both
+the build-all tree and the tier-0+cuSPARSE tree, while the `.device` twin failed the same gate at
+`fsi_energy_diag_test.cpp:2224` with `max_abs_diff_non_outflow` = 1.632e-10 against a tolerance of
+3.278e-11 (5x). Which row fails therefore depends on the toolchain and the execution space while the
+gate's own derivation is unchanged, which supports the reading above that the derivation is missing a
+term rather than that any one build is wrong; the factor is still not to be widened.
 
 ### D57. The ABI's own period-rollover eagerly started an extra period `Runner::run()` never requests, and both sides hit a base-communicator collective the other side had already left
 
