@@ -726,3 +726,16 @@ below 2 both before and after every repetition -- see that script's own `--max-l
 flag. Numbers taken while another build or test sweep shares the host are not a quiet
 measurement; `tools/bench-device.py` records the load it saw either way, and the caller
 decides whether to trust the result.
+
+## The no-exceptions leg and the THROWS label
+
+A test that asserts an exception is raised (`EXPECT_THROW`, `ASSERT_THROW`, or a
+hand-written `catch (const fuse::Refusal&)`) cannot pass in a
+`FUSE_ENABLE_EXCEPTIONS=OFF` build: the refusal aborts the process and ctest
+reports "Subprocess aborted". Such a test is registered with `THROWS`
+(`fuse_add_gtest(<layer> <name> THROWS)`), which adds the `throws` label the
+no-exceptions CI leg excludes with `ctest -LE 'throws|bench'`.
+`tools/check-throws-labels.py` finds a throwing test registered without the
+label statically; it runs with the other static gates in CI. The first run of
+the no-exceptions leg as a leg (2026-10-18) found three unlabelled tests the
+gate now catches.
