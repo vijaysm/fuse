@@ -216,3 +216,43 @@ new = """      if (const Result<const num::NewtonSolveFn*> substrate_fn =
 target = "fuse_runtime_newton_region_test"
 test = "runtime.newton_region"
 result = "Hand-proved 2026-10-11, /tmp/petscselect/b0 (tier-0 without PETSc): 17 cases, all pass before; after mutation, 1 fails (NewtonRegion.ARegionSelectingAnUnregisteredSubstrateIsRefusedAtSetup -- the eager check's own result is discarded, so a graph naming an unavailable substrate is accepted at initialize() instead of refused), 16 pass. File restored and md5/cmp-verified byte-identical; rebuilt and reran to confirm all 17 pass again."
+
+# Substrate track (plan S7.2b phase 2 closing): the per-region DISPATCH
+# call site, not the eager setup-time check above -- a defect here is
+# invisible to any test built from a SINGLE Newton region (every such
+# region's own config already names the substrate the mutation hard-codes,
+# Native, so a single-region test cannot tell the two apart), and is caught
+# only by a graph with two Newton regions naming genuinely DIFFERENT
+# substrates, exactly what TwoNewtonRegionsInOneRunnerDispatchToTheirOwn
+# SubstrateIndependently (test/runtime/newton_region_test.cpp) builds.
+
+[[mutation]]
+id = "newton-region-dispatch-ignores-own-config-substrate"
+area = "runtime"
+describes = "run_region_newton()'s own dispatch call site passes a HARD-CODED NewtonSubstrate::Native to resolve_newton_substrate() instead of decl.newton_config.substrate -- every Newton-selected region would solve through whichever substrate is registered for Native, regardless of what its own graph declaration names, defeating per-region selection silently rather than refusing (every SINGLE-region test with substrate left at its own default, Native, is unaffected and cannot distinguish this from correct code)."
+file = "src/runtime/iteration.cpp"
+old = """  const Result<const num::NewtonSolveFn*> substrate_fn =
+      resolve_newton_substrate(R.name, decl.newton_config.substrate);
+  if (!substrate_fn.ok()) return substrate_fn.error();
+
+  const Result<num::NewtonResult> solved =
+      (*substrate_fn.value())(f, x, precond_apply, refresh_precond, opt,
+                               R.newton_comm_f);
+  if (!solved.ok()) return solved.error();
+  const num::NewtonResult& nr = solved.value();
+
+  st.iterations = nr.iterations;"""
+new = """  const Result<const num::NewtonSolveFn*> substrate_fn =
+      resolve_newton_substrate(R.name, NewtonSubstrate::Native);
+  if (!substrate_fn.ok()) return substrate_fn.error();
+
+  const Result<num::NewtonResult> solved =
+      (*substrate_fn.value())(f, x, precond_apply, refresh_precond, opt,
+                               R.newton_comm_f);
+  if (!solved.ok()) return solved.error();
+  const num::NewtonResult& nr = solved.value();
+
+  st.iterations = nr.iterations;"""
+target = "fuse_runtime_newton_region_test"
+test = "runtime.newton_region"
+result = "Hand-proved 2026-10-18, /tmp/substrate/b0 (tier-0 without PETSc, applied at the real line 2567 anchor -- the `old`/`new` blocks above use a nearby, uniquely-matching anchor since the exact dispatch lines recur byte-for-byte at the window call site; the measurement itself mutated only the ordinary-region call at line 2567): 19 cases, all pass before; after mutation, 1 fails (NewtonRegion.TwoNewtonRegionsInOneRunnerDispatchToTheirOwnSubstrateIndependently -- region B's own declared Petsc substrate is never looked up, g_test_double_calls stays 0 instead of 1, and region B's q() becomes bit-identical to region A's instead of differing), 18 pass, INCLUDING TwoNewtonRegionsOneUnavailableSubstrateIsRefusedByNameNotByRegionOrder and ARegionSelectingAnUnregisteredSubstrateIsRefusedAtSetup (both unaffected: neither reaches run_region_newton() at all, since both expect initialize() itself to refuse). File restored and md5-verified byte-identical (292ee305e271b547318524b2266a6c09 before and after); rebuilt and reran to confirm all 19 pass again."

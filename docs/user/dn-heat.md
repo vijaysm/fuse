@@ -320,6 +320,33 @@ makes the graph non-affine, or the state carried between periods stops being
 a plain, unscaled assignment); the bound itself must never be loosened to
 make a failing run pass.
 
+### Two regions, two substrates, in one graph
+
+The row above runs the WHOLE graph through one substrate at a time --
+`newton` and `newton-petsc` are two separate invocations of the same
+Newton region, compared against each other afterward. `NewtonConfig::
+substrate` is chosen per region (docs/dev/newton-krylov.md Section 11),
+so a single graph may name a different substrate for each of its own
+Newton regions; `--newton-petsc` also runs that case directly: a SECOND,
+independent dirichlet-neumann pair in the same graph, region
+"dirichlet_neumann_a" on the native substrate and region
+"dirichlet_neumann_b" on PETSc, solved together through one Runner
+invocation. The printed `[dual-substrate]` lines carry both regions' own
+residual histories for the final period and both regions' own converged
+flags; the two regions' own converged interface temperatures are checked
+against each other with the same sharp, per-period-summed bound the
+newton/newton-petsc comparison above uses. See docs/dev/newton-krylov.md
+Section 13 for the full derivation and for
+`test/runtime/newton_region_test.cpp`'s own tier-0, PETSc-free proof of
+the same per-region dispatch (a registered test double standing in for
+PETSc, so the dispatch itself is checked without needing PETSc or MPI at
+all). This case runs under the same `example.dn_heat.newton_petsc` ctest
+row as the rows above; this sandbox cannot execute PETSc at all (PETSc's
+own `PetscInitialize` calls `MPI_Init`, which does not complete here --
+the same constraint recorded for every other `petsc.*` row), so it is
+built, not run, here and awaits the same host run that measures the rows
+above.
+
 ## Measured against
 
 `ctest` row `example.dn_heat` runs the configuration matrix above and gates exit status on exactly
