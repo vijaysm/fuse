@@ -1115,7 +1115,7 @@ TEST(TypedRestart, EveryElementTypeRoundTripsBitIdentical) {
   FUSE_TYPED_ROUNDTRIP_CASE(long double, static_cast<long double>(-2.5))
   FUSE_TYPED_ROUNDTRIP_CASE(bool, true)
   FUSE_TYPED_ROUNDTRIP_CASE(bool, false)
-#if defined(FUSE_HAVE_FLOAT16)
+#if FUSE_NATIVE_FLOAT16
   FUSE_TYPED_ROUNDTRIP_CASE(_Float16, static_cast<_Float16>(1.5))
 #endif
 
@@ -1173,7 +1173,7 @@ TEST(TypedRestart, ExactRefusesOnTypeMismatchNamingBothTypes) {
 // own exponent-containment rule) is NOT exact and refuses even under
 // Widening.
 TEST(TypedRestart, WideningRefusesANonExactConversion) {
-#if defined(FUSE_HAVE_FLOAT16)
+#if FUSE_NATIVE_FLOAT16
   const std::string path = temp_dir_path("typed_widening_refuses.h5");
   ASSERT_TRUE(write_one_typed<_Float16>(path, "v", static_cast<_Float16>(1.5)).ok());
   auto pr = fuse::restart_io::open_restart_point(
