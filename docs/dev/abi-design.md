@@ -161,6 +161,146 @@ independent version/hash distinction for the SAME reason -- see KNOWN_ISSUES.md 
 closing note and `fuse/restart_io/hdf5_restart_io.hpp`'s `Provenance::descriptor_version` /
 `check_restart_descriptor_hash()`.
 
+## How the participant ABI reconciles a collective refusal
+
+KNOWN_ISSUES.md D61. `entries.def` marks `setup`, `initialize`, `begin_step`
+and `end_step` COLLECTIVE in their own doc strings (`setup` "COLLECTIVE
+over the communicator"; `initialize` "COLLECTIVE"; `begin_step`/`end_step`
+"COLLECTIVE over the component's processes"), and `run`'s own doc string,
+while not using that literal word, states it "still executes this call's
+own share of the period's collectives" -- the same reason D61 names `run`
+alongside the other four. Before this entry, each of the five decided a
+refusal from this rank's own local state only (a bad `struct_size`, the
+context in the wrong state, an out-of-turn call) and returned, with
+nothing agreeing that decision across the rest of the component's ranks.
+On a multi-rank component this is exactly the hazard `docs/dev/
+invariants.md`'s `A4` names for any terminal that does IO or reduction: "a
+rank-subset invocation is a refusal -- reconciled through `Epoch` so that
+the refusal itself cannot hang." The ABI boundary met every OTHER part of
+that contract and none of this one.
+
+**The fix.** `src/abi/participant.cpp`'s `reconcile_collective_status()`
+runs after the entry's own local body has computed its verdict and before
+that verdict reaches the caller: every rank of the communicator being
+reconciled over contributes its own `(fuse_status, rank)` pair to one
+`MPI_Allreduce` with `MPI_MINLOC` -- the one-call form of "MIN over an
+encoded status" that also reports which rank the minimum came from, which
+is what lets a non-originating rank's message NAME the rank that refused.
+`FUSE_OK` is 0 and every `FUSE_ERR_*` code is negative (`entries.def`), so
+the plain minimum already propagates any refusal over `FUSE_OK`; two
+different ranks refusing with two different codes agree on the more
+negative one, deterministically. The rank whose own local status equals
+the agreed one keeps its own message unchanged; every other rank's
+message is rewritten to name the refusing rank and the agreed code, per
+this page's own standing rule that every rank must return the SAME code,
+not merely a code drawn from the same enum.
+
+The pure arithmetic -- given every rank's own local status, which one
+wins and whose message survives -- lives in `fuse::abi_detail::
+reconcile_local_statuses` (`include/fuse/abi/collective_reconcile.hpp`),
+with no MPI in it, so `test/abi/collective_reconcile_test.cpp` fires every
+branch (all agree, one refusal among many, two different refusals, a tie)
+at tier 0. `src/abi/participant.cpp`'s own glue calls that same function
+for its test-only stub-reducer path (`fuse::abi_test::
+force_fake_collective_peers()`, `test/abi/participant_test.cpp`) and
+calls the real `MPI_Allreduce(MPI_2INT, MPI_MINLOC, ...)` otherwise, so
+the two paths cannot disagree about what "agreed" means.
+
+**Which communicator.** `initialize`/`begin_step`/`end_step`/`run`
+reconcile over the context's own already-resolved base communicator
+(`communicator`/`communicator_set`, set once by `setup()`). `setup()`
+itself cannot use that -- its own local checks (`struct_size`, `reserved`,
+`my_component`) can fail before the base communicator is resolved -- so it
+reconciles over the RAW input communicator, `fuse_setup_options::
+communicator`, the one handle guaranteed identical, by construction, on
+every rank that is meant to agree. A caller that passes `communicator ==
+0` (no MPI, or a context that is not part of any multi-rank component)
+has nothing to reconcile: both paths treat that exactly as the Runner's
+own `reconcile_epoch()` treats an unconfigured `base_communicator` -- a
+no-op, not a refusal.
+
+**What is not reconciled, and why.** The other ten participant-table
+entries (`version`, `capabilities`, `create`, `destroy`, `last_error`,
+`load_graph`, `save_graph`, `field_handle`, `register_field`,
+`view_field`, `base_communicator`, `request_restart_point`) are none of
+them marked COLLECTIVE in `entries.def`, and each is a purely local
+operation on this rank's own handle, this rank's own copy of the
+(identically loaded) graph, or this rank's own storage -- `register_field`
+included: registering a field is this rank's own storage handed to this
+rank's own copy of the graph, with no cross-rank agreement meaningful for
+it. There is no `finalize` entry in `entries.def` at all; `destroy` is the
+nearest analogue and, per its own doc string ("a double destroy is
+`FUSE_ERR_INVALID`, not a crash"), is a per-handle operation, not a
+collective one -- the same posture SOMA's own `soma_destroy()` takes.
+
+**What this does not cover.** A rank that is live but calls a DIFFERENT
+entry than its peers on the same step (so `with_ctx()` itself refuses
+`E-ABI-HANDLE` before any body runs on a null or already-destroyed
+handle) has no communicator this reconciliation can read -- there is no
+live `fuse_ctx` to ask. That is a caller confusing which handle or which
+entry to call, not a refusal this entry's own body decided, and is
+outside this fix's scope (KNOWN_ISSUES.md D61's own entry records it as
+the residual exposure).
+
+**Cost, accepted as the permanent price of this fix (decided 2026-10-18).**
+`begin_step`/`end_step` are step-boundary calls (this page's own "costs"
+section: "every entry point is a setup or step-boundary call, never
+per-degree-of-freedom"), so one small `MPI_Allreduce` added to each is
+bounded, not asymptotic -- but it is one more real collective per step,
+beyond whatever `Transport`/`Epoch`/`Constrain` instructions the compiled
+plan already runs for that step. The owner accepted this as the standing
+cost rather than asking for it to be removed. Follow-up, recorded and not
+pursued further: a cheaper mechanism would piggyback the encoded status
+onto a collective the step already performs instead of a separate
+`MPI_Allreduce`.
+
+## The period contract (what a window-per-period boundary must not do)
+
+KNOWN_ISSUES.md D57. A caller of the participant ABI, or of `fuse::
+Runner::run()` directly, is entitled to ask for a COUNT of coupling
+periods -- never a promise that state has "settled" past that count, even
+on a graph whose window-scoped region reaches a fixed point every period.
+`fuse::Runner::run_period()`'s own doc comment (`include/fuse/runtime/
+runner.hpp`) states the Runner's half of this contract in full; the
+ABI's own half is `src/abi/participant.cpp`'s `prime_next_request()`
+(called from `fuse_begin_step()`): when the current period has just
+drained with no end time declared AND a base communicator is configured,
+it must stop and leave starting the FOLLOWING period's own first request
+to a LATER, separate caller-initiated call -- never resume the stream
+again inside the SAME call that just closed the prior period.
+
+**Why this is the ABI's problem, not just the Runner's.** Resolving a
+period's own first request ahead of being asked for it is harmless on a
+single process (there is no partner rank to disagree with). It stops
+being harmless the moment a base communicator is configured: a driver
+with its own bound on how many periods to run (an ABI caller's own `for
+(p = 0; p < periods; ++p)` loop, or `Runner::run()`'s own `for (i = 0; i
+< periods; ++i) run_period();`) stops EXACTLY at that bound and never
+calls in again, while a caller with no such bound (nothing in
+`fuse_setup_options` requires one) may resolve and run a further period
+regardless. D57's own real row measured the consequence: U and V, both
+driven through the ABI with no end time declared, each continued a THIRD,
+unrequested period's own base-communicator `Constrain` reduction after a
+converged window reached its fixed point at the end of period 2, while
+the in-process coupler -- driven through `run(components, 2)`, which
+executes exactly 2 periods and returns -- had already left. U and V then
+hung in that `MPI_Allreduce`, each waiting for a peer that would never
+call in again.
+
+**Enforced by** `test/verification/abi_period_boundary_test.cpp`'s
+`AbiPeriodBoundary.NeverRunsAPeriodTheCallerDidNotRequestOnceStateHasRea
+chedAFixedPoint`, a tier-0 (no MPI) test through the real public ABI,
+using `fuse::abi_test::force_communicator_set()` to put a single-process
+graph into the `communicator_set == true` state the real, multi-rank row
+is actually in -- the same seam `test/verification/
+brusselator_period_rollover_test.cpp` (D57's own earlier, Brusselator-
+specific pin) already uses. The decisive assertion in both: at the call
+where the loop's own tracked period count first reaches the requested
+count, `fuse_step_report::next_component` must equal -1 -- the ONLY value
+`fuse_begin_step()` reports when nothing is genuinely cached for a
+further period; any other value, even with `step_opened == 0`, means a
+request for an UNREQUESTED further period was already resolved.
+
 ## Fortran: `ffuse`
 
 Fortran gets flat `bind(C)` procedures rather than the table (the exception stated under "The

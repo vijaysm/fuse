@@ -3103,7 +3103,7 @@ rendezvous still runs only on a rank whose own first HDF5 call loads the plugin,
 touches HDF5 never reaches it — moving the rendezvous into an explicit step every participant calls
 (`connect()`'s MPMD choreography is the natural site) is the larger fix, left open here.
 
-### D15. The provider direction (S6 phase 4, "Adapter host" track) is implemented and conformance-tested on one process; device fields, mixed checkpoint/restore, and a plugin on a rank subset are not
+### D15. The provider direction (S6 phase 4, "Adapter host" track) is implemented and conformance-tested on one process; device fields and mixed checkpoint/restore still are not -- a plugin on a rank subset is tested and built 2026-10-18 (round 2), awaiting the host run
 
 **What is done, measured 2026-10-02.** `include/fuse/abi/provider.h` (generated from a second
 `entries.def` entry list, `FUSE_ABI_PROVIDER_ENTRY`, sharing the participant direction's own
@@ -3148,6 +3148,75 @@ this ordering at all).
   separately confirmed for a `Plugin` component that itself spans more than one rank.
 - **MPI.** Every row above is single-process; `ABI-COLLECTIVE-AGREEMENT`'s own host-run caveat
   applies identically to the provider direction and is not re-stated per row.
+
+**Corrected 2026-10-18 (ABI track, round 2).** An earlier round of this same task framed this
+entry as "the multi-process device-fill comparison for the provider direction is compiled but
+never run" and asked that it be registered as a ctest row. That framing was measured and found
+wrong: searched the whole tree (`grep` for "device" combined with "provider"/"fill" across `test/`,
+`src/abi/`) and found no such test anywhere, compiled or otherwise. `src/abi/provider_adapter.cpp:294`
+hardcodes `view.memspace = FUSE_MEMSPACE_HOST` unconditionally -- there is no device-resident path in
+the provider direction's adapter at all. This entry's own "What is not covered" bullets above already
+named the real, accurate scope; restated here as three separately closeable items, each with what it
+needs:
+
+1. **Device fields.** `register_field`'s own `FUSE_MEMSPACE_DEVICE` refusal (`E-ABI-REGISTER-MEMSPACE`)
+   has no provider-direction counterpart: `ProviderAdapter` only ever allocates host storage. Needs a
+   design decision (not built here) on how a plugin asks for a device pointer at all -- the provider
+   ABI's `bind()` entry takes a `fuse_field_view` the SAME shape the participant direction's
+   `register_field` does, so the natural extension is reading `memspace` there too, but committing to
+   that is new ABI-surface work, not a test-registration fix.
+2. **Checkpoint/restore through a mixed iteration region.** `ProviderAdapter::save_state()`/
+   `restore_state()` forward to the plugin's own entries when present, but no test puts a
+   plugin-backed component inside an `IterationRegionDecl` alongside a native one and checks the
+   sweep converges identically. Needs a conformance fixture combining `test/abi/graph_fixture.hpp`'s
+   iteration-region shape with `test/abi/plugins/linear_provider.c`'s own plugin -- no new ABI surface,
+   a test-authoring gap only.
+3. **A plugin on a rank subset.** Untested until this round (see below): every provider-direction
+   fixture before this round ran single-process, and `fuse::transport::validate_launch_layout()`
+   treats `Plugin` as needing no rank block at all (same as `InProcess`), which was correct for the
+   single-process case but not separately confirmed for a `Plugin` component placed on a SUBSET of a
+   multi-rank world.
+
+**Built this round (item 3 only, per the lead's own instruction -- items 1 and 2 need a design
+decision or new test authorship this round does not attempt).** `test/transport/connect_test.cpp`'s
+new `ValidateLaunchLayout.AcceptsAPluginComponentOnAStrictRankSubset` case confirms, pure and MPI-free, that `validate_launch_layout()` already
+accepts a `Plugin` component whose `RankSet` is a strict subset of the run (`{1}` of a 2-rank world,
+`{1,2}` of a 3-rank world) with NO special-casing needed -- the existing "Plugin needs no rank block"
+rule already covers a rank SUBSET, not only the whole run, because it imposes no constraint on
+`RankSet` at all. `test/parallel/provider_subset_mpi_test.cpp` (new, `parallel.provider_subset_mpi.
+{2,3}`, built under `FUSE_ENABLE_MPI`, never run here per C1) mounts `test/abi/plugins/
+linear_provider.c` as a `LaunchMode::Plugin` component placed on ranks `{1}`/`{1,2}` of a 2-/3-rank
+graph (a native `downstream` component, injected test-only, alone on rank 0) and confirms both
+halves at once: every rank's `fuse_run()` returns `FUSE_OK` (`MPI_Allgather`'d and checked against
+every entry, not just locally), so the non-hosting rank runs the SAME call to completion with no
+hang; and, independently, rank 0's own `downstream` sink recorded exactly 3 values after 3 periods
+-- data that could only have crossed the channel if the plugin, hosted entirely on the OTHER ranks,
+actually advanced and wrote through `bind()` as the participant direction already does. This does
+NOT show whether the non-hosting rank's own process skips `dlopen()`-ing the plugin's shared object
+at all -- the design question below answers that, and the answer is no, it does not skip it. No new
+design decision was needed to make THIS row buildable, so nothing is raised to `open_questions` for
+item 3 itself; items 1 and 2 remain open, named above, for whoever picks this entry up next.
+Built, never run (C1 above). **Host-pending:**
+
+```
+ctest --test-dir <build> -R 'parallel\.provider_subset_mpi\.(2|3)' -V
+```
+
+**Design question surfaced, NOT decided here (per the task's own stop condition).**
+`fuse::abi_detail::Registry::mount_dynamic()` (`src/abi/registry.cpp`) is called once per
+`LaunchMode::Plugin` component declared in the graph, by EVERY rank of the process set
+`fuse_initialize()` runs on -- it does not itself consult the component's own `RankSet` at all before
+`dlopen()`-ing the shared object and constructing a `ProviderAdapter` for it. For the rank-subset row
+above this is harmless (a non-hosting rank's own `ProviderAdapter` is built but never advanced, since
+`Runner::hosts_component()` gates every call into it), but it means EVERY rank of the base
+communicator loads the plugin's shared object into its own address space, whether or not that rank
+ever uses it -- for a large `RankSet`-subset deployment (many ranks, one hosting a plugin on a few of
+them) this is `dlopen()` cost and address-space footprint paid by every rank for nothing. Left as an
+open question: is mounting the shared object only on hosting ranks (reading `RankSet` at
+`mount_dynamic()` time) worth the added coupling between the registry and the graph's own placement
+model, or is paying the `dlopen()` cost everywhere an acceptable simplification given a plugin's own
+shared object is typically small compared to the physics it wraps?
+
 
 ## C. Not defects — do not fix these
 
@@ -6022,7 +6091,7 @@ No descriptor version bump: the launch record was already part of every componen
 canonical bytes) and `YamlIo.AnInProcessCouplerWritesNoLaunchBlock`, with the mutation
 `a-couplers-launch-mode-is-dropped-by-the-writer`. The hang itself is host-only.
 
-### D18. `fuse::transport::connect()`'s `Connect`-mode path supports exactly two components; a third refuses `E-CONNECT-SPEC` — OPEN, not pursued (Conformance Unit 2 routes around it)
+### D18. `fuse::transport::connect()`'s `Connect`-mode path supports exactly two components; a third refuses `E-CONNECT-SPEC` -- GENERALISED 2026-10-18 (tier-0); host executables/ctest rows built 2026-10-18 (round 2), awaiting the host run
 
 `connect_pairwise()` (`src/transport/connect.cpp`) reads, verbatim:
 
@@ -6139,6 +6208,64 @@ constraint, C1 above).
    here.** The four ctest rows that answer it
    (`verification.brusselator.participants.{mpmd,accept}.{3,5}`) are D19's
    own to own; see that entry.
+
+**Generalised 2026-10-18 (ABI track), per this entry's own sketch above.** `connect_mode_
+components()` (`include/fuse/transport/connect.hpp`) now refuses only fewer than two Connect-mode
+components, not "not exactly two" -- the generalisation itself lives in the new, pure
+`connect_chain_plan()` beside it: step 1 is today's two-component rule, UNCHANGED (whichever of the
+first two declares `LaunchSpec::is_acceptor` opens the port, exactly as `connect_pairwise()` always
+decided); every later step fixes the role structurally, resolving this entry's own open "which
+single rank... plays acceptor for the next merge" question the way this round's own task named it:
+"each component publishes its port name once" -- the SINGLE component joining at that step must
+itself declare `is_acceptor = true` and its own `port_file`, and the chain already merged is always
+the connector, since no single `LaunchSpec` can state an opinion for a composite of several
+components. `connect_chain()` (`src/transport/connect.cpp`) implements the merge itself: step 1 is
+`connect_pairwise()`'s own body (now scoped to the first two of `connect_mode_components()`'s
+result explicitly, since that function may return more than two); each later step is a fresh
+accept/connect + `MPI_Intercomm_merge` between the chain formed so far (low) and the joining
+component (high), preserving the graph's own component order the same way the existing two-
+component case already does. `connect()`'s `LaunchMode::Connect` case now dispatches to
+`connect_chain()` unconditionally, which performs exactly one merge (step 1 only) for a plain
+two-component graph -- zero behaviour change for every existing caller.
+
+**Tier-0 tested, pure.** `test/transport/connect_test.cpp`'s `ConnectChainPlan` suite: 3 and 4
+components each produce the expected step count and joining order; a step-2-or-later joiner that
+does not declare `is_acceptor` or has no `port_file` is refused `E-CONNECT-SPEC` naming the
+component; fewer than two Connect-mode components still refuses. `ConnectModeComponents.
+AcceptsThreeConnectModeComponentsInGraphOrder` replaces the old `RefusesAThirdConnectModeComponent`
+(renamed, not merely edited, since the assertion inverts -- this is the literal subject of this
+entry's own fix). `ValidateLaunchLayout.AcceptsThreeConsecutiveConnectBlocksInGraphOrder` and
+`...AcceptsFourConsecutiveConnectBlocksWithAGapFilledByInProcess` confirm D36's own gap rule is
+unaffected by the chain length -- it was already stated generically over "however many launched
+blocks", never specifically over two.
+
+**Built this round (ABI track, round 2), per the lead's own instruction.** A THIRD and FOURTH
+participant executable now exist, deliberately NOT sharing `connect_a.cpp`/`connect_b.cpp`/
+`connect_common.hpp` (those two, and the six ctest rows already passing against them, keep zero
+exposure to this round's new code): `test/parallel/connect/connect_chain_common.hpp` defines
+`ChainLinkComponent` (producer / middle-passthrough / consumer-only roles, selected by which of its
+optional in/out fields are set) and `build_chain_graph(count)` (components named a/b/c/d per
+`count`, step 1's acceptor/connector exactly as today, every later joiner its own acceptor per
+this entry's fix above); `connect_chain_{a,b,c,d}.cpp` are thin drivers naming each one's own index;
+`run_chain.sh` launches `count` of them concurrently and diffs the last link's own output against a
+golden file. Because every link in this graph is exactly one rank, `partition_block()`'s own
+decomposition is the identity at every hop, so the existing two-component `golden-1+1.txt` is the
+correct reference for a chain of any length -- no new golden file was needed. Registered as
+`parallel.connect.chain.{3,4}` (`test/CMakeLists.txt`, gated on `FUSE_ENABLE_MPI` and
+`FUSE_ENABLE_CONNECT_ACCEPT`, 3 and 4 executables respectively, within the project's 4-task launch
+limit), built clean under a real `FUSE_ENABLE_MPI=ON` configure -- `connect_chain()` itself now has
+an executable exercising its actual MPI calls, where round 1 had none. Built, never run (C1 above).
+**Host-pending:**
+
+```
+ctest --test-dir <build> -R 'parallel\.connect\.chain\.(3|4)' -V
+```
+
+**Still not done (same gap this entry already named, now smaller).** The N-way generalisation's
+design sketch above remains unexercised past `connect_chain_plan()`'s own pure-function tests until
+the host actually runs `parallel.connect.chain.{3,4}` -- whether the exchanged values at the LAST
+link match the in-process N-component reference exactly, as the existing 2-component row already
+confirms for N=2, is what that host run settles, not anything checkable here.
 
 ### ~~D19. The coupling-window path (`src/runtime/iteration.cpp`) has never run across more than one process~~ — CLOSED 2026-10-09: `parallel.window_runner_mpi.{2,3}` pass on the host (2026-10-08) and the three-executable Brusselator runs through it (D25)
 
@@ -7393,6 +7520,44 @@ reports a VALUE mismatch with the hang gone -- would mean a genuinely separate d
 order track, or the open `R.participants`/cold-start questions in this entry's own "Does not close" section
 above) is now visible with the hang out of the way, not a regression from either round's own fix.
 
+**Round 3 (2026-10-18, ABI track): the invariant itself, written down and given a second,
+graph-independent test.** Everything above pins this entry as it was FOUND -- through the real
+Brusselator participant files' own driving-loop shape. Neither round stated the general rule those
+files happen to satisfy once fixed. `docs/dev/abi-design.md`'s new "The period contract" section,
+and a matching doc comment on `fuse::Runner::run_period()` (`include/fuse/runtime/runner.hpp`), now
+state it directly: a caller is entitled to a COUNT of periods, never a promise that state has
+settled past that count, and the Runner must never execute a period's real instructions beyond the
+last one actually requested, even once a window-scoped region has reached a fixed point and the
+NEXT period's first request costs nothing to resolve ahead of time.
+
+`test/verification/abi_period_boundary_test.cpp`'s `AbiPeriodBoundary.NeverRunsAPeriodTheCallerDid
+NotRequestOnceStateHasReachedAFixedPoint` states the invariant as a direct, per-step check rather
+than as a single reading of `next_component` at the end: it drives the SAME minimal window graph
+`brusselator_period_rollover_test.cpp` builds through the real public ABI, and on EVERY step that
+actually opens (`fuse_step_report::step_opened == 1`, meaning real instructions -- including this
+region's own Constrain, which is what hung a multi-rank run in its own base-communicator
+MPI_Allreduce, this entry's own "How it surfaced") asserts that step's own `period` field is
+strictly less than `kRequestedPeriods` (2) -- the number of periods this test actually asked for.
+No Runner-level oracle (`fuse::Runner::run()`'s own in-process reference, or `fuse::RunStats`) is
+needed to state this: the bound is read directly off the SAME report field every real caller
+already reads, matching the simpler design this file's own header comment settled on over an
+earlier draft that compared `fuse::RunStats::conservation_checks` against a Runner reference (that
+draft was replaced during this round once it proved fragile to get genuinely equivalent to the
+Runner's own stopping point, not because the invariant itself changed). RED-verified directly: with
+`prime_next_request()`'s fix reverted, this test fails (the caller's own loop never observes a
+period boundary within a 500-step safety cap, because the rollover keeps resolving further
+unrequested periods) -- restored afterward, confirmed byte-identical. This is independent evidence
+from `brusselator_period_rollover_test.cpp`'s own `next_component == -1` assertion, reusing the
+SAME proven graph-construction helper (`brusselator::add_window_coupling()`) rather than a
+from-scratch window fixture, for the reason stated in this new file's own header comment:
+re-deriving a coupling window's setup from first principles is exactly the kind of
+duplicated-and-drifting logic this entry's own "Fix" section already warned against for a parallel
+model of `prime_next_request()`'s control flow.
+
+**Still open, unchanged by this round.** Round 2's own fix (`u_loop.c`/`v_loop.f90`'s propagation
+of `next_component`) has never been run on the real multi-rank host row; "What the host must
+verify (Round 2)" above is still the host's own next step, and this round added no new host-run
+requirement beyond it.
 
 ### D58. `tools/probe-hdf5-images.c` counts distinct dylib paths matching `libhdf5`/`libhdf5_hl`, and cannot see an HDF5 implementation embedded inside another library's own binary; OPEN, doc-only, the probe is NOT changed
 
@@ -7493,7 +7658,7 @@ package config recreates `fuse-lowfive` from them when `FUSE_ENABLE_LOWFIVE` was
 `build-lowfive` and `build-all`, and `example.demo_b` still passes. No configure-time refusal was added: nothing
 could make one fire, and the two install-consumer rows are the test that does.
 
-### D61. The participant ABI's refusals are decided rank-locally and never reconciled across a component's ranks — OPEN, documented (review 2026-10-11 AB-10)
+### D61. The participant ABI's refusals are decided rank-locally and never reconciled across a component's ranks — FIXED (tier-0); host row built 2026-10-18 (round 2), awaiting the host run (review 2026-10-11 AB-10)
 
 `begin_step`/`end_step`/`setup`/`initialize`/`run` return codes such as `E-ABI-STEP-ORDER` or
 `E-ABI-STEP-ALREADY-OPEN` from local state only; an out-of-turn or omitted call on one rank of a
@@ -7504,6 +7669,78 @@ the same calls, in the same order") and the residual exposure. Routing local ABI
 same reconciliation the Runner uses, plus a host-run two-rank refusal-not-hang row, is the fix; the
 existing MPI participant fixture deliberately avoids the asymmetric call sequence, so the row needs a
 timeout harness first.
+
+**Fixed 2026-10-18 (ABI track).** `src/abi/participant.cpp`'s
+`reconcile_collective_status()` reconciles `setup`, `initialize`,
+`begin_step`, `end_step` and `run` -- the five entries.def marks
+COLLECTIVE (or, for `run`, states execute "this call's own share of the
+period's collectives") -- with one `MPI_Allreduce(MPI_2INT, MPI_MINLOC,
+...)` of `(fuse_status, rank)` on the context's own base communicator
+(the raw input communicator for `setup()` itself, since its own base
+communicator is not yet resolved when its local checks can fail; the
+already-resolved one for the other four), before any verdict reaches the
+caller. `FUSE_OK` is 0 and every `FUSE_ERR_*` code is negative
+(entries.def), so the plain minimum already propagates any refusal over
+`FUSE_OK`, and `MPI_MINLOC` additionally reports which rank the minimum
+came from -- what lets a non-originating rank's message be rewritten to
+NAME the refusing rank, satisfying this entry's own "the others get the
+agreed code with a message naming the rank". The pure arithmetic (`fuse::
+abi_detail::reconcile_local_statuses`, `include/fuse/abi/
+collective_reconcile.hpp`) has no MPI in it and is tested directly
+(`test/abi/collective_reconcile_test.cpp`, 7 cases: all agree, one
+refusal among many, the refusing rank need not be rank 0, two different
+codes picking the more negative one deterministically in either order, a
+tie breaking by the lowest rank, a single participant, defensive empty
+input). The real glue's OWN test-only stub reducer (`fuse::abi_test::
+force_fake_collective_peers()`, `src/abi/test_support.{hpp,cpp}`) lets
+`test/abi/participant_test.cpp`'s new `AbiParticipantCollectiveReconcilia
+tion` suite exercise the FULL path -- through the real `begin_step()`
+entry, not a reimplementation -- at tier 0 with no MPI runtime: the
+originating rank's own message survives unchanged; a rank that locally
+SUCCEEDED still adopts a fake peer's refusal, with its own message
+rewritten to name that peer; and the whole mechanism is confirmed inert
+(no-op) when no communicator is configured, so the suite's many other,
+single-process `AbiParticipant` cases are unaffected. `docs/dev/
+abi-design.md`'s new "How the participant ABI reconciles a collective
+refusal" section records the rule, which ten entries it deliberately does
+NOT apply to and why (none of them is marked COLLECTIVE; `register_field`
+was checked explicitly, per this round's own task, and found not to be).
+The one `MPI_Allreduce` added to each of the five entries is accepted as
+the standing cost of this fix (the lead's own decision, round 2) -- that
+page's own text now records this as a one-line follow-up, not an open
+question: a cheaper mechanism would piggyback the encoded status onto a
+collective the step already performs, instead of a separate reduction.
+
+**Built this round (ABI track, round 2).** Rather than extend
+`test/parallel/abi_participant_mpi_test.cpp` (whose existing fixture
+deliberately avoids the asymmetric call sequence this reconciliation is
+meant to rescue, and whose components are all single-rank, unsuitable
+for a real collective check), a new file,
+`test/parallel/abi_reconcile_mpi_test.cpp`, builds a minimal
+single-component graph whose `RankSet` spans the ENTIRE MPI world and
+calls the real `fuse_setup()`/`fuse_register_field()`/`fuse_initialize()`
+over `MPI_COMM_WORLD`; rank 1 alone then corrupts its own
+`fuse_step_request::struct_size` before calling `fuse_begin_step()`, and
+every rank's return code is gathered with `MPI_Allgather` and asserted
+identical (`FUSE_ERR_VERSION`), confirming the fix rescues exactly the
+asymmetric sequence this entry's own first paragraph names. No channel is
+registered on the one field (so no per-rank size cross-check can ever
+fire independently of this path), which keeps the fixture minimal without
+weakening what it tests. Registered as `parallel.abi_reconcile_mpi.{2,3}`
+(`test/CMakeLists.txt`, `RANKS 2 3`, the project's own default 120s ctest
+`TIMEOUT` already satisfies this entry's "needs a timeout harness first"
+-- `fuse_add_mpi_test()` sets it for every MPI row, not only this one).
+Built clean under a real `FUSE_ENABLE_MPI=ON` configure. Built, never run
+(C1 above). **Host-pending:**
+
+```
+ctest --test-dir <build> -R 'parallel\.abi_reconcile_mpi\.(2|3)' -V
+```
+
+Confirming on the host that every rank returns the SAME code with no
+hang, rather than the originating rank's peers stranding inside
+`resume_period()` as this entry's own opening paragraph describes, is
+what that host run settles.
 
 ### ~~D62. The graph descriptor is host-endian while `bytes.hpp`'s canonical rules are little-endian~~ -- FIXED 2026-10-18 (Descriptor track)
 
