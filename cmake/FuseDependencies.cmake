@@ -982,6 +982,30 @@ macro(fuse_resolve_dependencies)
             "Point TEMPESTREMAP_DIR at the TempestRemap install MOAB was built against.")
         endif()
       endif()
+      # TempestRemap's installed headers (GridElements.h, OfflineMap.h,
+      # TempestRemapAPI.h) declare their netCDF-backed API only when
+      # TEMPEST_NETCDF is defined, and from v2.2 on that macro lives in the
+      # generated TempestConfig.h, which the headers include only when
+      # HAVE_TEMPEST_CONFIG_H is defined. MOAB itself compiles with that
+      # define; so must every consumer of those headers (tempest_weights.cpp),
+      # or the OfflineMap/GenerateOfflineMap declarations are simply absent.
+      # Older TempestRemap installs have no TempestConfig.h and define
+      # TEMPEST_NETCDF on the command line, so the define is conditional.
+      set(_fuse_tempest_config_h FALSE)
+      foreach(_d IN LISTS MOAB_INCLUDE_DIRS)
+        if(EXISTS "${_d}/TempestConfig.h")
+          set(_fuse_tempest_config_h TRUE)
+        endif()
+      endforeach()
+      if(_fuse_tempest_config_h)
+        set(FUSE_MOAB_COMPILE_DEFINITIONS HAVE_TEMPEST_CONFIG_H)
+        message(STATUS "fuse: TempestRemap ships TempestConfig.h; "
+                       "defining HAVE_TEMPEST_CONFIG_H for fuse::moab consumers")
+      else()
+        set(FUSE_MOAB_COMPILE_DEFINITIONS "")
+      endif()
+    else()
+      set(FUSE_MOAB_COMPILE_DEFINITIONS "")
     endif()
     if(NOT TARGET fuse::moab)
       # An IMPORTED target is exempt from install(EXPORT)'s "every PUBLIC
@@ -1005,6 +1029,9 @@ macro(fuse_resolve_dependencies)
       target_include_directories(fuse-moab SYSTEM INTERFACE ${MOAB_INCLUDE_DIRS})
       target_link_libraries(fuse-moab INTERFACE ${_fuse_moab_libs_dedup})
       target_link_directories(fuse-moab INTERFACE ${MOAB_LIBRARY_DIRS})
+      if(FUSE_MOAB_COMPILE_DEFINITIONS)
+        target_compile_definitions(fuse-moab INTERFACE ${FUSE_MOAB_COMPILE_DEFINITIONS})
+      endif()
       # MOAB's public headers include <moab_mpi.h>, which includes <mpi.h>
       # unconditionally for a parallel MOAB build -- so anything consuming a
       # MOAB header needs MPI's include path even if it never calls MPI
