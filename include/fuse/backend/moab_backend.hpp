@@ -370,6 +370,38 @@ class MoabMeshBackend final : public MeshBackend {
   /// Never throws.
   [[nodiscard]] Result<MoabNativeMesh> native_mesh(MeshId id) const;
 
+  /// KNOWN_ISSUES D5's MOAB half, the mismatch `resolve()` (intx_weights.cpp)
+  /// had until this overload existed: `native_mesh(id)` above ALWAYS answers
+  /// the backend's DEFAULT `moab::Core` (`impl_->mb`), regardless of
+  /// `placed_view(id, placement)` having answered a DIFFERENT processor
+  /// set's OWN `moab::Core` (`set_placements`'s own "one moab::Core per
+  /// processor set" contract). A caller that resolves its VIEW through a
+  /// placement but its Core/file_set/communicator through this overload's
+  /// placement-oblivious sibling queries the WRONG Core -- the right file
+  /// set handle, read against the wrong Interface, which is not even
+  /// guaranteed to be a refusal (a same-numbered file set can easily exist,
+  /// by coincidence, in both Cores) rather than a silently wrong answer.
+  /// `placement` invalid, or no processor sets declared, answers EXACTLY
+  /// `native_mesh(id)` above (mesh_view.hpp's own default-answer contract);
+  /// otherwise, when this rank participates in `placement`, the triple
+  /// belongs to THAT processor set's own `core`/`pcomm` and `meshes[id]`'s
+  /// own `file_set()`. `E-MESH-PLACEMENT` when this rank does NOT
+  /// participate in `placement` at all -- there is no Core to answer a
+  /// handle into, the same reason `placed_view` answers the empty view
+  /// rather than a handle from a Core that was never built here.
+  [[nodiscard]] Result<MoabNativeMesh> native_mesh(MeshId id, ComponentId placement) const;
+
+  /// Whether THIS RANK is inside `placement`'s own declared processor set --
+  /// the same test `placed_view`/`native_mesh(id, placement)` already make
+  /// internally (KNOWN_ISSUES D5), exposed so a caller (intx_weights.cpp's
+  /// `resolve()`) can derive "structurally outside this placement" from the
+  /// PLACEMENT itself rather than from a local entity count, which a
+  /// genuinely empty (but in-placement) mesh could also produce. `false`
+  /// for an invalid `placement` or when none were declared -- there is
+  /// nothing to be "outside" of, which is a different question from
+  /// whether this rank participates in a GIVEN one.
+  [[nodiscard]] bool placement_participates(ComponentId placement) const noexcept;
+
  private:
   struct Impl;
   std::unique_ptr<Impl> impl_;

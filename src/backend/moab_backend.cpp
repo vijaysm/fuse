@@ -1737,6 +1737,76 @@ Result<MoabNativeMesh> MoabMeshBackend::native_mesh(MeshId id) const {
       static_cast<std::uint64_t>(impl_->meshes[id.value()]->file_set()), pc};
 }
 
+Result<MoabNativeMesh> MoabMeshBackend::native_mesh(MeshId id,
+                                                    ComponentId placement) const {
+  if (impl_ == nullptr) {
+    return Failure{"E-MESH-MOVED",
+                 "native_mesh() on a moved-from MoabMeshBackend"};
+  }
+  // mesh_view.hpp's default-answer contract, restated here: no placement
+  // named, or none declared at all, means exactly the backend's own default
+  // Core -- the identical answer the placement-oblivious overload gives.
+  if (!placement.valid() || impl_->placements.empty()) {
+    return native_mesh(id);
+  }
+  if (placement.value() >= impl_->placements.size()) {
+    return Failure{"E-MESH-PLACEMENT",
+                 "no placement was declared for component " +
+                     std::to_string(placement.value()) + " (" +
+                     std::to_string(impl_->placements.size()) +
+                     " declared by set_placements())"};
+  }
+  if (!id.valid() || id.value() >= impl_->meshes.size()) {
+    return Failure{"E-MESH-ID", "no mesh with id " + std::to_string(id.value()) +
+                                  " (" + std::to_string(impl_->meshes.size()) +
+                                  " loaded)"};
+  }
+  static_assert(sizeof(moab::EntityHandle) <= sizeof(std::uint64_t),
+                "moab::EntityHandle does not fit in std::uint64_t");
+#ifdef FUSE_MOAB_PARALLEL
+  if (impl_->pcomm != nullptr) {
+    const Impl::PlacementContext& ctx = *impl_->placement_ctx[placement.value()];
+    if (!ctx.participates()) {
+      return Failure{"E-MESH-PLACEMENT",
+                   "this rank does not participate in placement " +
+                       std::to_string(placement.value()) +
+                       "; there is no Core here to resolve a native handle "
+                       "against (placed_view answers the empty view for the "
+                       "identical reason)"};
+    }
+    if (id.value() >= ctx.meshes.size() || ctx.meshes[id.value()] == nullptr) {
+      return Failure{"E-MESH-PLACEMENT",
+                   "placement " + std::to_string(placement.value()) +
+                       "'s own decomposition of mesh " +
+                       std::to_string(id.value()) + " was never built"};
+    }
+    return MoabNativeMesh{
+        static_cast<void*>(ctx.core.get()),
+        static_cast<std::uint64_t>(ctx.meshes[id.value()]->file_set()),
+        static_cast<void*>(ctx.pcomm.get())};
+  }
+#endif
+  // Serial / no-communicator mode (Mode A, moab_backend.hpp): there is only
+  // ever the one Core, exactly as `placed_view`'s own Mode A branch answers
+  // `view(id)` rather than a placement-specific one.
+  return native_mesh(id);
+}
+
+bool MoabMeshBackend::placement_participates(ComponentId placement) const noexcept {
+  if (impl_ == nullptr) return false;
+  if (!placement.valid() || impl_->placements.empty()) return false;
+  if (placement.value() >= impl_->placements.size()) return false;
+#ifdef FUSE_MOAB_PARALLEL
+  if (impl_->pcomm != nullptr) {
+    return impl_->placement_ctx[placement.value()]->participates();
+  }
+#endif
+  // Mode A (no communicator): "this rank" is rank 0 of an effective size-1
+  // communicator, the identical convention `placed_view`'s own Mode A
+  // branch uses.
+  return impl_->placements[placement.value()].contains(0);
+}
+
 /// A mesh entity set resolved to a MOAB set and dimension, independent of WHICH
 /// Core/view it was resolved against -- unlike `MoabMeshBackend::Impl::
 /// Resolved` (which also carries the owning `MoabMeshView*`), this is a
