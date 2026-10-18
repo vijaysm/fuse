@@ -1809,46 +1809,28 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
 
     // --- the accelerator ----------------------------------------------------
     //
-    // A WaveformIteration::GaussSeidel window's own UNLAGGED transfer is
-    // resolved WITHIN the same sweep it is fed from (WindowMemberConfig::
-    // import_lagged's own comment) -- it carries no residual of its own to
-    // accelerate, exactly like WindowCoupler's `accel_members`/
-    // `accel_member_offset`/`accel_total` restriction excludes it from the
-    // accelerated vector there (window_coupler.hpp/.cpp). R.blocks below is
-    // NOT YET restricted the same way: every block this region measures,
-    // lagged or not, currently enters R.accel's vector undifferentiated.
-    // Running a real accelerator over that undifferentiated vector would
-    // accelerate a quantity the method does not define an iterate history
-    // for, which is a silently-wrong answer, not a scoped approximation --
-    // so a GaussSeidel window rejects any accelerator but `AccelKind::None`
-    // until R.blocks carries the same restriction.
+    // D71 (owner priority, closed): a WaveformIteration::GaussSeidel
+    // window's own UNLAGGED transfer is resolved WITHIN the same sweep it
+    // is fed from (WindowMemberConfig::import_lagged's own comment) and
+    // carries no residual of its own to accelerate -- WindowCoupler's own
+    // `accel_members`/`accel_member_offset`/`accel_total` restriction
+    // already excludes it there (window_coupler.hpp/.cpp's own
+    // "provides_unlagged_channel" comment). `run_region()`'s own R.accel-
+    // >update() call site (this file, below) now applies the IDENTICAL
+    // exclusion to R.blocks, reusing the SAME membership test (a block's
+    // own feed_arc present in R.window_lagged_import_arcs) run_region_
+    // newton_window()'s own newton_offset already uses for the window-
+    // Newton interface vector -- so a real accelerator over a GaussSeidel
+    // window now accelerates exactly the lagged direction's own residual,
+    // the method's own iterate, never the undifferentiated full vector
+    // this refusal used to exist to protect against. Measured (test/
+    // verification/brusselator_restart_test.cpp's own SeparateLayoutGauss
+    // SeidelAitken/IqnIls): iteration counts against the SAME config
+    // under Jacobi are recorded in the delivered report.
     //
     // S7.2 WindowNewton: `AccelKind::Newton` is excluded from this check,
     // not merely another case of it -- a Newton-selected region is not an
-    // `Accelerator` at all (this function's own very next `if`, below),
-    // and `run_region_newton_window()`'s own interface vector IS built
-    // with the GaussSeidel restriction this comment names (newton-krylov.
-    // md Sec. 9.1: `RegionBlock::newton_offset`, computed below from
-    // `R.window_lagged_import_arcs`, excludes exactly the unlagged
-    // transfer this refusal exists to protect against). Refusing Newton
-    // here too would block a combination this track's own design
-    // specifically lifted.
-    if (R.window_scoped &&
-        decl.window_scope->iteration == WaveformIteration::GaussSeidel &&
-        decl.acceleration.kind != AccelKind::None &&
-        decl.acceleration.kind != AccelKind::Newton) {
-      return Failure{
-          "E-RT-WINDOW-ACCEL",
-          "iteration region '" + R.name + "' is a WaveformIteration::"
-          "GaussSeidel coupling window naming accelerator '" +
-          std::string(to_cstring(decl.acceleration.kind)) +
-          "'; the Runner does not yet exclude the unlagged transfer's own "
-          "residual block from the accelerated vector the way "
-          "WindowCoupler's accel_members/accel_member_offset/accel_total "
-          "restriction does, so accelerating GaussSeidel here would "
-          "compute something other than the method. Use AccelKind::None "
-          "for a GaussSeidel window until that restriction is wired in"};
-    }
+    // `Accelerator` at all (this function's own very next `if`, below).
 
     // S7.2: a Newton-selected region is not accelerated at all -- the
     // Newton-Krylov solve (run_region_newton(), this file's own sibling
@@ -3892,8 +3874,127 @@ detail::Task<Result<void>> Runner::Impl::run_region(
     }
     if (k + 1 == R.max_iterations) break;
 
-    const Result<void> a = R.accel->update(R.x_old.data(), R.x_new.data(),
-                                           R.x_out.data(), R.n, k);
+    // D71 (owner priority): a WaveformIteration::GaussSeidel window's own
+    // UNLAGGED transfer is resolved WITHIN the same sweep it is fed from
+    // (WindowMemberConfig::import_lagged's own comment) and carries no
+    // residual of its own to accelerate -- excluded from the accelerated
+    // vector exactly as WindowCoupler::sweep_window()'s own accel_members/
+    // accel_member_offset/accel_total restriction already excludes it
+    // (window_coupler.cpp's own "provides_unlagged_channel" comment), and
+    // exactly as run_region_newton_window()'s own newton_offset already
+    // excludes it from the window-Newton interface vector (this file,
+    // resolve_regions(), "KNOWN_ISSUES.md D31" comment) -- the SAME
+    // membership test (b.feed_arc present in R.window_lagged_import_arcs),
+    // reused rather than re-derived, so the Picard/accelerator path cannot
+    // disagree with the Newton path about which direction is lagged.
+    // Under WaveformIteration::Jacobi, effective_channel_lag() forces
+    // every channel lagged (fuse/model/coupling_graph.hpp), so every
+    // block's own feed_arc is already in R.window_lagged_import_arcs and
+    // `any_excluded` is always false there -- this is a no-op for Jacobi
+    // and for every ordinary (non-window) region, which keeps calling
+    // R.accel->update() on the full R.n-sized vector exactly as before
+    // this fix, unchanged.
+    // Allocation-free scan first (Iteration.TheSweepLoopAllocatesNothing/
+    // TheAcceleratorAllocatesNothingPerUpdate's own invariant, test/
+    // verification/iteration_test.cpp -- this region's own sweep loop,
+    // ordinary or window-scoped, allocates nothing per sweep): whether
+    // ANY block is excluded is a single bool, never a vector, and this
+    // scan is a no-op read of R.window_lagged_import_arcs -- already
+    // built, never resized here -- for every ordinary (non-window)
+    // region (R.window_scoped false, loop body never runs) and for
+    // every Jacobi window (every block's own feed_arc is already lagged
+    // there, so the loop runs but never sets any_excluded), which is
+    // every case these two tests exercise and must keep allocating
+    // nothing. Only a genuinely GaussSeidel-plus-real-accelerator sweep
+    // -- unreachable before this fix (refused by name) and so not a
+    // sweep either allocation test's own region ever reaches -- sets
+    // any_excluded and takes the projected branch below, which does
+    // allocate (the projection buffers themselves).
+    bool any_excluded = false;
+    if (R.window_scoped && !R.window_lagged_import_arcs.empty()) {
+      for (const detail::RegionBlock& b : R.blocks) {
+        const bool lagged =
+            std::find(R.window_lagged_import_arcs.begin(),
+                     R.window_lagged_import_arcs.end(),
+                     ArcId{b.feed_arc}) != R.window_lagged_import_arcs.end();
+        if (!lagged) { any_excluded = true; break; }
+      }
+    }
+
+    Result<void> a = Result<void>::success();
+    if (!any_excluded) {
+      a = R.accel->update(R.x_old.data(), R.x_new.data(), R.x_out.data(), R.n, k);
+    } else {
+      // Project the lagged blocks' own slices into a smaller vector (in
+      // ASCENDING full-vector-offset order, the SAME order resolve_
+      // regions() already lays R.accel's own field_partition out in),
+      // accelerate exactly that, then scatter back; an excluded block's
+      // own slice of x_out is a straight Gauss-Seidel substitution from
+      // x_new -- already exact, given what every other block just
+      // computed -- never a relaxed iterate, the identical reasoning
+      // WindowCoupler's own "y_out = y_new; default" comment gives.
+      // Re-derived here, not carried from the scan above: that scan
+      // exits at the FIRST unlagged block (the common, nothing-to-do
+      // case only needs to know "any at all", never which), so it
+      // cannot also be this branch's own membership list.
+      std::vector<std::size_t> included_bi;
+      included_bi.reserve(R.blocks.size());
+      for (std::size_t bi = 0; bi < R.blocks.size(); ++bi) {
+        const bool lagged =
+            std::find(R.window_lagged_import_arcs.begin(),
+                     R.window_lagged_import_arcs.end(),
+                     ArcId{R.blocks[bi].feed_arc}) !=
+            R.window_lagged_import_arcs.end();
+        if (lagged) included_bi.push_back(bi);
+      }
+      std::sort(included_bi.begin(), included_bi.end(),
+               [&](std::size_t a2, std::size_t b2) {
+                 return R.blocks[a2].offset < R.blocks[b2].offset;
+               });
+      std::size_t accel_n = 0;
+      std::vector<std::size_t> accel_offset(R.blocks.size(), 0);
+      std::vector<std::size_t> partition_offsets;
+      partition_offsets.reserve(included_bi.size());
+      for (const std::size_t bi : included_bi) {
+        partition_offsets.push_back(accel_n);
+        accel_offset[bi] = accel_n;
+        accel_n += R.blocks[bi].length;
+      }
+      std::vector<double> x_old_proj(accel_n), x_new_proj(accel_n), x_out_proj(accel_n);
+      for (const std::size_t bi : included_bi) {
+        const detail::RegionBlock& b = R.blocks[bi];
+        std::copy(R.x_old.begin() + static_cast<std::ptrdiff_t>(b.offset),
+                 R.x_old.begin() + static_cast<std::ptrdiff_t>(b.offset + b.length),
+                 x_old_proj.begin() + static_cast<std::ptrdiff_t>(accel_offset[bi]));
+        std::copy(R.x_new.begin() + static_cast<std::ptrdiff_t>(b.offset),
+                 R.x_new.begin() + static_cast<std::ptrdiff_t>(b.offset + b.length),
+                 x_new_proj.begin() + static_cast<std::ptrdiff_t>(accel_offset[bi]));
+      }
+      // QuasiNewtonAccel's own per-field weighting (field_weights(),
+      // src/num/accel_quasi_newton.cpp) reads Accelerator::field_
+      // partition() against WHATEVER vector it is handed -- resolve_
+      // regions() set it once for the FULL (R.n-sized) vector, which
+      // disagrees with this projected (accel_n-sized) one; saved and
+      // restored around this call so every OTHER sweep (Jacobi,
+      // non-window, or a GaussSeidel sweep excluding nothing this
+      // region) keeps reading the original, unchanged partition.
+      const std::vector<std::size_t> saved_partition = R.accel->field_partition();
+      R.accel->set_field_partition(partition_offsets.size() > 1 ? partition_offsets
+                                                                : std::vector<std::size_t>{});
+      a = R.accel->update(x_old_proj.data(), x_new_proj.data(), x_out_proj.data(),
+                         accel_n, k);
+      R.accel->set_field_partition(saved_partition);
+      if (a.ok()) {
+        R.x_out = R.x_new;  // default: excluded blocks pass straight through
+        for (const std::size_t bi : included_bi) {
+          const detail::RegionBlock& b = R.blocks[bi];
+          std::copy(x_out_proj.begin() + static_cast<std::ptrdiff_t>(accel_offset[bi]),
+                   x_out_proj.begin() +
+                       static_cast<std::ptrdiff_t>(accel_offset[bi] + b.length),
+                   R.x_out.begin() + static_cast<std::ptrdiff_t>(b.offset));
+        }
+      }
+    }
     if (!a.ok()) {
       // E-ACCEL-DIVERGED and friends: x_out's contents are not part of the
       // contract after a failed update, so nothing here reads them.
@@ -4162,6 +4263,106 @@ void Runner::Impl::refresh_window_member_history(detail::RegionRuntime& R) {
       }
     }
   }
+}
+
+// KNOWN_ISSUES.md D72 (owner priority): see this function's own
+// declaration (runner_impl.hpp) for why it exists. Called once, from
+// Runner::restore_restart_fields(), after every window member's own
+// detail::WindowMemberState has been restored (history AND, since D70,
+// last_window_waveform).
+//
+// Root cause (confirmed by disabling this call behind a temporary env
+// gate and re-running the four Brusselator Aitken/IQN-ILS round-trip
+// tests, instrumentation since removed): with this call disabled, the
+// restored run reproduces D72's own originally-measured symptom exactly
+// -- iterations_per_window[0] reports 12 against the uninterrupted
+// reference's 13, and U/V's own final fields disagree from the 5th
+// significant digit on -- confirming run_region_window()'s own pre-loop
+// seed (`slot_to_host(slots[b.feed_arc], ...)`, this file's own "y_0"
+// comment, b.feed_arc == cfg.window_import.value() for a window-scoped
+// region) is reading a stale buffer on the restored run's first
+// post-restore window instance: resolve_regions()/initialize() primes
+// `window_import` exactly ONCE, at construction, and before this fix
+// restore_restart_fields() touched only detail::WindowMemberState
+// (history, and -- since D70 -- last_window_waveform), never this live
+// buffer, so the construction-time cold-start value survived untouched
+// into the first post-restore sweep's residual and accelerator input.
+//
+// The fix: last_window_waveform (D70) is now exactly the restored
+// PROVIDER's own real, per-sample trajectory over the window that just
+// completed, pushed in the SAME (sample index -> buffer offset
+// e*provider_capacity+s) layout advance_window()'s own out_slot writes
+// already use (this file's own sibling function, above) -- so copying
+// it into the CONSUMER's window_import buffer, sample for sample, is
+// not a re-derivation, only a replay of a write resolve_regions()'s own
+// "ordinary prime" pass already does once at construction, now done
+// again after a restore with the restored values instead of the
+// construction-time ones. With this call enabled, all four previously-
+// removed round-trip tests (test/verification/brusselator_restart_
+// test.cpp) pass bit for bit, including iterations_per_window.
+Result<void> Runner::Impl::reprime_window_import_after_restore() {
+  for (auto& [node, cfg] : window_member_config) {
+    if (!cfg.window_import.valid()) continue;
+    if (cfg.window_import.value() >= slots.size()) continue;
+    detail::Slot& import_slot = slots[cfg.window_import.value()];
+    // Storage is bound only where the member is hosted (the per-rank
+    // binding rule); a non-hosted rank has nothing to re-prime.
+    if (import_slot.data == nullptr) {
+      if (cfg.hosted) {
+        return Failure{"E-RESTART-WINDOW-REPRIME",
+                       "reprime_window_import_after_restore(): hosted window member has "
+                       "no bound import storage"};
+      }
+      continue;
+    }
+    const detail::WindowMemberState* provider_state = nullptr;
+    for (const auto& [other_node, other_cfg] : window_member_config) {
+      if (other_cfg.region_index == cfg.region_index &&
+          other_cfg.component_slot == cfg.provider_component_slot) {
+        const auto st_it = window_member_state.find(other_node);
+        if (st_it != window_member_state.end()) provider_state = &st_it->second;
+        break;
+      }
+    }
+    if (provider_state == nullptr) continue;
+    const std::vector<std::unique_ptr<Waveform>>& wf =
+        provider_state->last_window_waveform;
+    // Empty means the point was taken before the provider completed a
+    // window (D70 populates it every sweep), so the construction-time
+    // prime IS the continuous run's seed: nothing to do. Any other shape
+    // disagreement is a defect in the point or the graph and is refused
+    // by name, never skipped: a silent skip here would be a silent reset
+    // of the accelerator's seed (owner decision 4).
+    if (wf.empty()) continue;
+    if (wf.size() != cfg.length) {
+      return Failure{"E-RESTART-WINDOW-REPRIME",
+                     "reprime_window_import_after_restore(): restored last_window_waveform "
+                     "has " + std::to_string(wf.size()) + " entities, the window member has " +
+                         std::to_string(cfg.length)};
+    }
+    for (std::size_t e = 0; e < cfg.length; ++e) {
+      if (wf[e] == nullptr) {
+        return Failure{"E-RESTART-WINDOW-REPRIME",
+                       "reprime_window_import_after_restore(): restored last_window_waveform "
+                       "entity " + std::to_string(e) + " is absent while others are present"};
+      }
+      if (wf[e]->sample_count() > cfg.provider_capacity) {
+        return Failure{"E-RESTART-WINDOW-REPRIME",
+                       "reprime_window_import_after_restore(): restored waveform carries " +
+                           std::to_string(wf[e]->sample_count()) +
+                           " samples, the import buffer holds " +
+                           std::to_string(cfg.provider_capacity)};
+      }
+    }
+    for (std::size_t e = 0; e < cfg.length; ++e) {
+      const std::size_t n_samples = wf[e]->sample_count();
+      for (std::size_t s = 0; s < n_samples; ++s) {
+        scalar_to_slot(wf[e]->sample_values(s)[0], import_slot,
+                       e * cfg.provider_capacity + s);
+      }
+    }
+  }
+  return Result<void>::success();
 }
 
 // S7.2 WindowNewton (newton-krylov.md Sec. 9.7's own test plan):
@@ -4982,6 +5183,40 @@ detail::Task<Result<void>> Runner::Impl::advance_window(
     }
   }
 
+  // D70 (owner decision 2026-10-18): populate WindowMemberState::
+  // last_window_waveform here, so write_window_member_restart()'s own
+  // "/waveform/present" branch (runner.cpp) has a live producer for the
+  // Runner-compiled path -- measured dead (KNOWN_ISSUES.md D70) because
+  // this function never built one. Mirrors WindowCoupler::sweep_window()'s
+  // own `real_traj[i]` (window_coupler.cpp): one Waveform per element,
+  // reset over [pass_start_clock, this sweep's own last substep end),
+  // seeded at sample 0 with the SAME start_value this function already
+  // caches above, with one more real (non-extrapolated) sample pushed at
+  // each substep's own committed time. WindowCoupler rebuilds this local
+  // trajectory from scratch every sweep and commits whatever the LAST
+  // sweep of a pass left in it (its own "Commit" comment, after the sweep
+  // loop exits); advance_window() is itself called once per sweep per
+  // member, so building a fresh trajectory on every call and moving it
+  // into st.last_window_waveform at the end of this function reproduces
+  // that identical "whatever the last sweep left" semantics with no extra
+  // per-pass bookkeeping. Guarded on out_valid: a member with no Provides
+  // field (cfg.provided == nullptr) has no trajectory of its own to
+  // record, the same guard the sample-0 write immediately above already
+  // uses for the identical reason.
+  std::vector<std::unique_ptr<Waveform>> window_waveform_trace;
+  if (out_valid) {
+    window_waveform_trace.resize(cfg.length);
+    for (std::size_t e = 0; e < cfg.length; ++e) {
+      window_waveform_trace[e] =
+          std::make_unique<Waveform>(1, cfg.capacity, TemporalBasis::Linear, 1);
+      window_waveform_trace[e]->reset(pass_start_clock,
+                                      steps.empty() ? T1 : steps.back().t1);
+      double v0 = start_value[e];
+      const Result<void> p0 = window_waveform_trace[e]->push(pass_start_clock, &v0);
+      if (!p0.ok()) co_return p0.error();
+    }
+  }
+
   // `import_t0`'s own shift (this function's own top comment): on the
   // FIRST sweep of a pass, a LAGGED import's waveform lives on the
   // PREVIOUS window's own absolute time axis (`[T0-window_length,
@@ -5072,6 +5307,27 @@ detail::Task<Result<void>> Runner::Impl::advance_window(
           scalar_to_slot(v_at_t1[e], *out_slot, e * cfg.capacity + (s + 1));
         }
       }
+      // D70: one real sample per substep index, matching the out_slot
+      // write just above exactly -- not WindowCoupler::sweep_window()'s
+      // own real_traj[i], which (for this same straddling case) pushes a
+      // SECOND knot at sub.t1 when T1 < sub.t1. That second knot has no
+      // out_slot write of its own to mirror and no compiled capacity
+      // reserved for it here (cfg.capacity is sized from steps.size()+1,
+      // the same bound this function's own E-RT-WINDOW-CAPACITY check
+      // above enforces); Brusselator (the restored test target for D70
+      // and D72) uses DtPolicy::Adjustable for both members, which never
+      // straddles, so this branch is not exercised by either. Declared
+      // here rather than silently reproduced: a DtPolicy::Fixed member
+      // that straddles would get one fewer trajectory sample than
+      // WindowCoupler's own driver records, a known, intentionally
+      // undercovered case (open_questions in the delivered report).
+      if (out_valid) {
+        for (std::size_t e = 0; e < cfg.length; ++e) {
+          double v = v_at_t1[e];
+          const Result<void> pr = window_waveform_trace[e]->push(T1, &v);
+          if (!pr.ok()) co_return pr.error();
+        }
+      }
       continue;
     }
 
@@ -5124,6 +5380,13 @@ detail::Task<Result<void>> Runner::Impl::advance_window(
       for (std::size_t e = 0; e < cfg.length; ++e) {
         scalar_to_slot(cfg.provided[e], *out_slot, e * cfg.capacity + (s + 1));
       }
+      // D70: real sample at this substep's own committed time, matching
+      // the out_slot write immediately above.
+      for (std::size_t e = 0; e < cfg.length; ++e) {
+        double v = cfg.provided[e];
+        const Result<void> pr = window_waveform_trace[e]->push(sub.t1, &v);
+        if (!pr.ok()) co_return pr.error();
+      }
     }
   }
 
@@ -5160,6 +5423,14 @@ detail::Task<Result<void>> Runner::Impl::advance_window(
   // the SAME field, correctly, exactly once, after this region's own
   // k-loop exits -- making the per-sweep write here not just wrong but
   // redundant.)
+
+  // D70: commit this sweep's own trajectory -- whichever sweep turns out
+  // to be this pass's last (converged or run to max_iterations) is the
+  // one whose trajectory survives, exactly as WindowCoupler::
+  // sweep_window()'s own "Commit" step (window_coupler.cpp) does for
+  // real_traj[i], since both rebuild this local trace from scratch every
+  // sweep and this function is itself called once per sweep per member.
+  if (out_valid) st.last_window_waveform = std::move(window_waveform_trace);
 
   st.clock = final_clock;
   // A straddling last substep (DtPolicy::Fixed, this member's own

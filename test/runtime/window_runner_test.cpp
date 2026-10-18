@@ -576,7 +576,24 @@ TEST(WindowRunner, RefusesAWindowMemberWhoseExportIsNotTheFieldsSize) {
       << init.error().message;
 }
 
-TEST(WindowRunner, GaussSeidelWindowRejectsAcceleratedRegion) {
+// KNOWN_ISSUES.md D71 (owner priority, closed, Windows track, 2026-10-18):
+// this test USED to pin the refusal (E-RT-WINDOW-ACCEL) a GaussSeidel
+// window with a real accelerator unconditionally raised, because
+// Runner::Impl::run_region()'s own accelerated vector did not yet
+// exclude the window's own unlagged transfer from it the way
+// WindowCoupler::sweep_window()'s own accel_members/accel_member_
+// offset/accel_total restriction already does. That exclusion is now
+// implemented at the R.accel->update() call site (src/runtime/
+// iteration.cpp, see its own comment for the derivation and test/
+// verification/brusselator_restart_test.cpp's own GaussSeidelAitken/
+// IqnIlsConvergesAndMatchesJacobi for the Brusselator-scale measurement),
+// so the combination this test's own name describes is no longer
+// refused -- renamed and rewritten to pin the NEW behaviour (initialize()
+// succeeds, run_period() converges) rather than deleted, so a future
+// regression of either direction (a silent re-introduction of the
+// refusal, or a silent return to accelerating the undifferentiated
+// full vector) shows up here.
+TEST(WindowRunner, GaussSeidelWindowWithAcceleratorNoLongerRefuses) {
   const CouplingGraph g = make_single_window_graph(
       WaveformIteration::GaussSeidel, fuse::AccelKind::Constant);
 
@@ -600,10 +617,16 @@ TEST(WindowRunner, GaussSeidelWindowRejectsAcceleratedRegion) {
 
   Runner runner{g, lowered.dag, sched.plan, backend};
   const auto init = runner.initialize(components, registry);
-  ASSERT_FALSE(init.ok())
-      << "a GaussSeidel window with a real accelerator should be refused, "
-         "not silently accelerated wrong";
-  EXPECT_EQ(init.error().code, "E-RT-WINDOW-ACCEL") << init.error().message;
+  ASSERT_TRUE(init.ok())
+      << "D71: a GaussSeidel window with a real accelerator must no "
+         "longer refuse E-RT-WINDOW-ACCEL -- " << init.error().message;
+
+  const auto ran = runner.run_period(components);
+  ASSERT_TRUE(ran.ok()) << ran.error().message;
+  ASSERT_EQ(runner.iteration_stats().size(), 1u);
+  const fuse::IterationStats& st = runner.iteration_stats().front();
+  EXPECT_TRUE(st.converged) << "did not converge in " << st.iterations
+                            << " sweeps";
 }
 
 // A `DtPolicy::Fixed` member (here, B: interval 1 against a window of

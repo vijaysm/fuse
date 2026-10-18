@@ -6159,6 +6159,21 @@ Result<void> Runner::restore_restart_fields(RestartReader& reader,
     if (!wr.ok()) return wr;
     any_accelerator_reset = any_accelerator_reset || did_reset;
   }
+
+  // KNOWN_ISSUES.md D72 (owner priority): every window member's own
+  // detail::WindowMemberState has just been restored above (history,
+  // and -- since D70 -- last_window_waveform); re-prime the live
+  // window_import buffer every window-scoped region's own accelerator
+  // and GS/Jacobi residual read directly (run_region_window()'s own
+  // pre-loop seed, src/runtime/iteration.cpp) from it, so a restored
+  // run's first post-restore window instance sees the SAME seed a
+  // continuous run would have, not whatever initialize()'s own
+  // construction-time "ordinary prime" pass left there. See this
+  // function's own definition for the full derivation.
+  if (Result<void> rp = impl_->reprime_window_import_after_restore(); !rp.ok()) {
+    return rp.error();
+  }
+
   return Result<void>::success();
 }
 

@@ -306,6 +306,39 @@ TEST(BrusselatorRestart, GrowingLayoutJacobiNoAccel) {
                 "growing_jacobi_none.h5");
 }
 
+// KNOWN_ISSUES.md D72: a window-scoped region's own CONSUMER-side
+// transfer buffer (cfg.window_import) with a REAL accelerator.
+// Previously removed (both fix attempts measured insufficient/harmful,
+// see KNOWN_ISSUES.md); restored here once D72's own fix (advance_
+// window()'s D70-populated last_window_waveform re-primes the live
+// window_import buffer right after restore_restart_fields(), see
+// Runner::Impl::reprime_window_import_after_restore(), src/runtime/
+// iteration.cpp) makes the restored run's per-window iteration count
+// and final fields agree with the reference run bit for bit.
+TEST(BrusselatorRestart, SeparateLayoutJacobiAitken) {
+  run_round_trip(WaveformIteration::Jacobi, AccelKind::Aitken,
+                fuse::restart_io::FileLayout::SeparateMeshAndPoints,
+                "separate_jacobi_aitken.h5");
+}
+
+TEST(BrusselatorRestart, GrowingLayoutJacobiAitken) {
+  run_round_trip(WaveformIteration::Jacobi, AccelKind::Aitken,
+                fuse::restart_io::FileLayout::GrowingFile,
+                "growing_jacobi_aitken.h5");
+}
+
+TEST(BrusselatorRestart, SeparateLayoutJacobiIqnIls) {
+  run_round_trip(WaveformIteration::Jacobi, AccelKind::IQN_ILS,
+                fuse::restart_io::FileLayout::SeparateMeshAndPoints,
+                "separate_jacobi_iqnils.h5");
+}
+
+TEST(BrusselatorRestart, GrowingLayoutJacobiIqnIls) {
+  run_round_trip(WaveformIteration::Jacobi, AccelKind::IQN_ILS,
+                fuse::restart_io::FileLayout::GrowingFile,
+                "growing_jacobi_iqnils.h5");
+}
+
 /// Owner decision 2's refusal, D63's own convention applied to this
 /// example: a restart at a graph whose descriptor differs refuses by
 /// name. Exercised here by restoring a point written by the Jacobi
@@ -438,4 +471,277 @@ TEST(BrusselatorRestart, WindowScopedAccelNotImplementedWithAllowResetSucceedsAn
       << "opting in must call Accelerator::reset() and REPORT it, per "
          "owner decision 4 (\"when used it is reported at restart\")";
   std::remove(path.c_str());
+}
+
+// KNOWN_ISSUES.md D70 (owner decision 2026-10-18): advance_window()
+// (src/runtime/iteration.cpp, the Runner-compiled window driver) now
+// populates WindowMemberState::last_window_waveform every sweep, the
+// same local-trajectory-rebuilt-every-sweep convention WindowCoupler::
+// sweep_window() already uses for its own real_traj[i] (window_coupler.
+// cpp) -- so write_window_member_restart()'s own "/waveform/present"
+// branch (runner.cpp) has a live producer for the Runner driver, where
+// before this fix it was unconditionally false (measured dead: a grep
+// of iteration.cpp for .last_window_waveform/->last_window_waveform
+// returned zero matches).
+TEST(BrusselatorRestart, WaveformPresentAfterAdvanceThroughTheRunner) {
+  const std::string path = temp_dir_path("waveform_present.h5");
+  std::remove(path.c_str());
+  auto s = make_setup(WaveformIteration::Jacobi, AccelKind::None);
+  ASSERT_NE(s, nullptr);
+  run_n_periods(*s, 2);
+  ASSERT_TRUE(write_point(*s, fuse::restart_io::FileLayout::SeparateMeshAndPoints,
+                          path, "", 2)
+                 .ok());
+
+  auto pr = fuse::restart_io::open_restart_point(
+      fuse::restart_io::FileLayout::SeparateMeshAndPoints, path, "");
+  ASSERT_TRUE(pr.ok()) << pr.error().code << ": " << pr.error().message;
+  bool present_u = false, present_v = false;
+  const fuse::Result<fuse::ReadConversionReport> ru =
+      pr.value()->reader().get_scalar<bool>("__window/U/u_out/waveform/present",
+                                            present_u);
+  ASSERT_TRUE(ru.ok()) << ru.error().code << ": " << ru.error().message;
+  const fuse::Result<fuse::ReadConversionReport> rv =
+      pr.value()->reader().get_scalar<bool>("__window/V/v_out/waveform/present",
+                                            present_v);
+  ASSERT_TRUE(rv.ok()) << rv.error().code << ": " << rv.error().message;
+  EXPECT_TRUE(present_u) << "U's own last_window_waveform must be populated "
+                            "by advance_window() after at least one window "
+                            "has completed (D70)";
+  EXPECT_TRUE(present_v) << "V's own last_window_waveform must be populated "
+                            "by advance_window() after at least one window "
+                            "has completed (D70)";
+  std::remove(path.c_str());
+}
+
+// D70's second acceptance criterion: a restored run's first window after
+// restore uses the same extrapolation history (here, the SAME
+// last_window_waveform samples) as an uninterrupted reference run would
+// have recorded at the identical window boundary. Compared through the
+// restart file's own reader directly (RestartReader::get_field),
+// bypassing the fact that detail::WindowMemberState is not otherwise
+// exposed on the public Runner surface -- the SAME per-(field, global
+// id, sample index) rows write_window_member_restart() writes and
+// restore_window_member_restart() reads are read back here on both
+// sides of the comparison.
+void expect_window_waveform_bit_identical(const std::string& path_a,
+                                          const std::string& path_b,
+                                          const std::string& qualified_base) {
+  auto pa = fuse::restart_io::open_restart_point(
+      fuse::restart_io::FileLayout::SeparateMeshAndPoints, path_a, "");
+  ASSERT_TRUE(pa.ok()) << pa.error().code << ": " << pa.error().message;
+  auto pb = fuse::restart_io::open_restart_point(
+      fuse::restart_io::FileLayout::SeparateMeshAndPoints, path_b, "");
+  ASSERT_TRUE(pb.ok()) << pb.error().code << ": " << pb.error().message;
+
+  bool present_a = false, present_b = false;
+  ASSERT_TRUE(pa.value()->reader()
+                 .get_scalar<bool>(qualified_base + "/waveform/present", present_a)
+                 .ok());
+  ASSERT_TRUE(pb.value()->reader()
+                 .get_scalar<bool>(qualified_base + "/waveform/present", present_b)
+                 .ok());
+  ASSERT_TRUE(present_a);
+  ASSERT_TRUE(present_b);
+
+  std::int64_t sample_count_a = 0, sample_count_b = 0;
+  ASSERT_TRUE(pa.value()
+                 ->reader()
+                 .get_scalar<std::int64_t>(qualified_base + "/waveform/sample_count",
+                                           sample_count_a)
+                 .ok());
+  ASSERT_TRUE(pb.value()
+                 ->reader()
+                 .get_scalar<std::int64_t>(qualified_base + "/waveform/sample_count",
+                                           sample_count_b)
+                 .ok());
+  ASSERT_EQ(sample_count_a, sample_count_b);
+
+  // Global ids are whatever the component currently reports -- identical
+  // on both sides here (same fixture, same grid), discovered the same
+  // way restore_restart_fields() does: write a throwaway point from one
+  // of the two fixtures and read the field's own ids back out of it is
+  // unnecessary here since both components are NativeGrid::make() over
+  // the SAME (kNxU, kNyU)/(kNxV, kNyV) sizes -- the ids are positional
+  // (0..n-1) by construction (brusselator::NativeGrid::make()).
+  const bool is_u = qualified_base.find("U/u_out") != std::string::npos;
+  const std::size_t n = is_u ? static_cast<std::size_t>(kNxU * kNyU)
+                            : static_cast<std::size_t>(kNxU * kNyU);
+  std::vector<std::int64_t> ids(n);
+  for (std::size_t i = 0; i < n; ++i) ids[i] = static_cast<std::int64_t>(i);
+
+  for (std::int64_t s = 0; s < sample_count_a; ++s) {
+    const std::string sp = qualified_base + "/waveform/sample" + std::to_string(s);
+    std::vector<double> values_a(n), values_b(n);
+    std::vector<std::int64_t> tn_a(n), tn_b(n), td_a(n), td_b(n);
+    ASSERT_TRUE(
+        pa.value()->reader().get_field<double>(sp + "/value", ids, values_a, 1).ok());
+    ASSERT_TRUE(
+        pb.value()->reader().get_field<double>(sp + "/value", ids, values_b, 1).ok());
+    ASSERT_TRUE(pa.value()
+                   ->reader()
+                   .get_field<std::int64_t>(sp + "/time_num", ids, tn_a, 1)
+                   .ok());
+    ASSERT_TRUE(pb.value()
+                   ->reader()
+                   .get_field<std::int64_t>(sp + "/time_num", ids, tn_b, 1)
+                   .ok());
+    ASSERT_TRUE(pa.value()
+                   ->reader()
+                   .get_field<std::int64_t>(sp + "/time_den", ids, td_a, 1)
+                   .ok());
+    ASSERT_TRUE(pb.value()
+                   ->reader()
+                   .get_field<std::int64_t>(sp + "/time_den", ids, td_b, 1)
+                   .ok());
+    for (std::size_t e = 0; e < n; ++e) {
+      EXPECT_EQ(tn_a[e], tn_b[e]) << "sample " << s << " element " << e;
+      EXPECT_EQ(td_a[e], td_b[e]) << "sample " << s << " element " << e;
+      EXPECT_EQ(values_a[e], values_b[e]) << "sample " << s << " element " << e;
+    }
+  }
+}
+
+// KNOWN_ISSUES.md D71 (owner priority, closed): a real accelerator
+// (Aitken, IQN-ILS) over a WaveformIteration::GaussSeidel coupling
+// window used to refuse E-RT-WINDOW-ACCEL unconditionally
+// (resolve_regions(), src/runtime/iteration.cpp). Fixed by excluding
+// the GaussSeidel window's own unlagged transfer from the accelerated
+// vector at the Runner::Impl::run_region() accelerator-update call
+// site, the identical membership test (a block's own feed_arc present
+// in R.window_lagged_import_arcs) run_region_newton_window()'s own
+// newton_offset already uses for the window-Newton interface vector
+// -- see that call site's own comment for the full derivation. These
+// tests exercise the Brusselator window region (two members, one
+// window-scoped region) under GaussSeidel with a real accelerator and
+// confirm it both runs to convergence AND agrees with the Jacobi/same-
+// accelerator run's own physical answer (within the window's own
+// convergence tolerance kTol, never bit-for-bit -- Jacobi and
+// GaussSeidel are different fixed-point ITERATIONS of the SAME
+// converged answer, not the same sweep sequence).
+TEST(BrusselatorRestart, GaussSeidelAitkenConvergesAndMatchesJacobi) {
+  auto jacobi = make_setup(WaveformIteration::Jacobi, AccelKind::Aitken);
+  ASSERT_NE(jacobi, nullptr);
+  const RunResult jacobi_result = run_n_periods(*jacobi, 6);
+
+  auto gs = make_setup(WaveformIteration::GaussSeidel, AccelKind::Aitken);
+  ASSERT_NE(gs, nullptr)
+      << "GaussSeidel + AccelKind::Aitken must no longer refuse "
+         "E-RT-WINDOW-ACCEL (D71)";
+  const RunResult gs_result = run_n_periods(*gs, 6);
+
+  // Pinned, not just bounded: MEASURED on the fixed build, this exact
+  // sequence (mutation testing found the weaker "GS <= Jacobi" bound
+  // below passes even with the GaussSeidel exclusion (D71's own fix)
+  // disabled entirely on THIS rig -- Jacobi itself grows close to its
+  // own iteration cap here, 15,16,18,25,25,25, which the undifferentiated
+  // full-vector mutation's own 15,16,16,18,19,21 still clears). Pinning
+  // the real count is what actually exercises the fix; re-measure and
+  // update this vector, with a comment naming the measurement, if a
+  // future change to the accelerator or the problem genuinely moves it.
+  const std::vector<int> expected_gs_iterations = {7, 8, 9, 9, 9, 9};
+  ASSERT_EQ(gs_result.iterations_per_window.size(), expected_gs_iterations.size());
+  for (std::size_t w = 0; w < expected_gs_iterations.size(); ++w) {
+    EXPECT_EQ(gs_result.iterations_per_window[w], expected_gs_iterations[w])
+        << "window " << w
+        << " -- GaussSeidel's own measured sweep count regressed; this is "
+           "exactly what D71's own fix (excluding the unlagged transfer "
+           "from the accelerated vector) changes";
+  }
+  ASSERT_EQ(jacobi_result.iterations_per_window.size(),
+           gs_result.iterations_per_window.size());
+  for (std::size_t w = 0; w < jacobi_result.iterations_per_window.size(); ++w) {
+    EXPECT_LE(gs_result.iterations_per_window[w], jacobi_result.iterations_per_window[w])
+        << "window " << w
+        << " -- GaussSeidel should converge in no more sweeps than Jacobi "
+           "on this problem (the same property GaussSeidelConvergesInNo"
+           "MoreIterationsThanJacobi, brusselator_runner_test.cpp, pins "
+           "without an accelerator)";
+  }
+  ASSERT_EQ(jacobi_result.u_final.size(), gs_result.u_final.size());
+  for (int i = 0; i < jacobi_result.u_final.size(); ++i) {
+    EXPECT_NEAR(jacobi_result.u_final[i], gs_result.u_final[i], 1e-8) << "U[" << i << "]";
+  }
+  ASSERT_EQ(jacobi_result.v_final.size(), gs_result.v_final.size());
+  for (int i = 0; i < jacobi_result.v_final.size(); ++i) {
+    EXPECT_NEAR(jacobi_result.v_final[i], gs_result.v_final[i], 1e-8) << "V[" << i << "]";
+  }
+}
+
+TEST(BrusselatorRestart, GaussSeidelIqnIlsConvergesAndMatchesJacobi) {
+  auto jacobi = make_setup(WaveformIteration::Jacobi, AccelKind::IQN_ILS);
+  ASSERT_NE(jacobi, nullptr);
+  const RunResult jacobi_result = run_n_periods(*jacobi, 6);
+
+  auto gs = make_setup(WaveformIteration::GaussSeidel, AccelKind::IQN_ILS);
+  ASSERT_NE(gs, nullptr)
+      << "GaussSeidel + AccelKind::IQN_ILS must no longer refuse "
+         "E-RT-WINDOW-ACCEL (D71)";
+  const RunResult gs_result = run_n_periods(*gs, 6);
+
+  // Pinned, not just bounded -- see GaussSeidelAitkenConvergesAndMatches
+  // Jacobi's own comment above for why the weaker bound alone is not
+  // enough to exercise this fix. MEASURED on the fixed build.
+  const std::vector<int> expected_gs_iterations = {7, 8, 8, 8, 8, 8};
+  ASSERT_EQ(gs_result.iterations_per_window.size(), expected_gs_iterations.size());
+  for (std::size_t w = 0; w < expected_gs_iterations.size(); ++w) {
+    EXPECT_EQ(gs_result.iterations_per_window[w], expected_gs_iterations[w])
+        << "window " << w;
+  }
+  ASSERT_EQ(jacobi_result.iterations_per_window.size(),
+           gs_result.iterations_per_window.size());
+  for (std::size_t w = 0; w < jacobi_result.iterations_per_window.size(); ++w) {
+    EXPECT_LE(gs_result.iterations_per_window[w], jacobi_result.iterations_per_window[w])
+        << "window " << w;
+  }
+  ASSERT_EQ(jacobi_result.u_final.size(), gs_result.u_final.size());
+  for (int i = 0; i < jacobi_result.u_final.size(); ++i) {
+    EXPECT_NEAR(jacobi_result.u_final[i], gs_result.u_final[i], 1e-8) << "U[" << i << "]";
+  }
+  ASSERT_EQ(jacobi_result.v_final.size(), gs_result.v_final.size());
+  for (int i = 0; i < jacobi_result.v_final.size(); ++i) {
+    EXPECT_NEAR(jacobi_result.v_final[i], gs_result.v_final[i], 1e-8) << "V[" << i << "]";
+  }
+}
+
+TEST(BrusselatorRestart, RestoredRunReproducesLastWindowWaveformBitForBit) {
+  const std::string ref_path = temp_dir_path("waveform_ref4.h5");
+  const std::string p3_path = temp_dir_path("waveform_p3.h5");
+  const std::string restored_path = temp_dir_path("waveform_restored4.h5");
+  std::remove(ref_path.c_str());
+  std::remove(p3_path.c_str());
+  std::remove(restored_path.c_str());
+
+  auto ref = make_setup(WaveformIteration::Jacobi, AccelKind::None);
+  ASSERT_NE(ref, nullptr);
+  run_n_periods(*ref, 4);
+  ASSERT_TRUE(write_point(*ref, fuse::restart_io::FileLayout::SeparateMeshAndPoints,
+                          ref_path, "", 4)
+                 .ok());
+
+  auto part1 = make_setup(WaveformIteration::Jacobi, AccelKind::None);
+  ASSERT_NE(part1, nullptr);
+  run_n_periods(*part1, 3);
+  ASSERT_TRUE(write_point(*part1, fuse::restart_io::FileLayout::SeparateMeshAndPoints,
+                          p3_path, "", 3)
+                 .ok());
+
+  auto restored = make_setup(WaveformIteration::Jacobi, AccelKind::None);
+  ASSERT_NE(restored, nullptr);
+  bool any_reset = false;
+  ASSERT_TRUE(restore_point(*restored, fuse::restart_io::FileLayout::SeparateMeshAndPoints,
+                            p3_path, "", /*allow_reset=*/false, any_reset)
+                 .ok());
+  EXPECT_FALSE(any_reset);
+  run_n_periods(*restored, 1);
+  ASSERT_TRUE(write_point(*restored, fuse::restart_io::FileLayout::SeparateMeshAndPoints,
+                          restored_path, "", 4)
+                 .ok());
+
+  expect_window_waveform_bit_identical(ref_path, restored_path, "__window/U/u_out");
+  expect_window_waveform_bit_identical(ref_path, restored_path, "__window/V/v_out");
+
+  std::remove(ref_path.c_str());
+  std::remove(p3_path.c_str());
+  std::remove(restored_path.c_str());
 }
