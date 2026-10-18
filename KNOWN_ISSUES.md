@@ -773,6 +773,10 @@ unrun is the mutation gate over those tests:
 FUSE_MUTATE_MPI=1 python3 tools/mutate.py --build-dir build-all --area backend
 ```
 
+**Re-measured 2026-10-18:** `parallel.moab_placed_view_mpi.{1..5}` Passed again in the owner's quick tier at
+`cb127c5` (MOAB now `/opt/moab/cmake-all`, shared HDF5). The heading's "awaiting the host" refers only to the
+weights below, in progress 2026-10-18 (MoabHalo track).
+
 **What remains of D5:** per-placement remap *weights* built on two independently decomposed
 MOAB processor sets and compared. The builders already resolve through `placed_view`, but nobody
 has assembled and checked such a matrix.
@@ -6233,7 +6237,7 @@ this sandbox cannot start it (C1) — so the fix is unconfirmed until a host exe
 - `parallel.window_runner_mpi.2` (step (e), new)
 - `parallel.window_runner_mpi.3` (step (e), new)
 
-### D31. Newton over a coupling window (S7.2 WindowNewton, `newton-krylov.md` Sec. 9) was single-rank only; the multi-rank `ParticipantSetReducer` is now built — BUILT 2026-10-12, host MPI run still required to close
+### ~~D31. Newton over a coupling window (S7.2 WindowNewton, `newton-krylov.md` Sec. 9) was single-rank only; the multi-rank `ParticipantSetReducer` is now built — BUILT 2026-10-12, host MPI run still required to close~~ -- CLOSED 2026-10-18, host-verified
 
 `Runner::Impl::run_region_newton_window()`/`evaluate_window_region_residual()` (src/runtime/iteration.cpp)
 implement Newton-Krylov over a WINDOW-scoped coupling region, reusing `check_region_supports_newton()`'s
@@ -6318,6 +6322,12 @@ outer-Newton and GMRES iteration counts the single-process `Runner` does, and wh
 states fall inside the Higham round-off bound the test derives and prints rather than asserting bitwise.
 D32's own PETSc substrate lift (below) shares this same host-pending status under
 `petsc.window_newton_mpi.{2,3}`.
+
+
+**HOST-VERIFIED 2026-10-18** (owner's machine, MPICH 5.0.0a1, `FI_PROVIDER="tcp;ofi_rxm" FI_TCP_IFACE=en0`, `build-all`
+quick tier at `cb127c5`): `parallel.participant_reducer_mpi.{2,3}`, `parallel.window_newton_mpi.{2,3}` and
+`petsc.window_newton_mpi.{2,3}` all Passed. The 3-rank reducer leg is the non-contiguous participant subset
+{0,2}. D55 (the same `window_newton_mpi.3` row hanging under Open MPI 4.1.5 on higgs) stays open on its own.
 
 ### D32. The PETSc solver plugin is the second substrate behind the S7 seam — BUILT AND MEASURED 2026-10-11; the communicator remains
 
