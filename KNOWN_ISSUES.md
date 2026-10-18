@@ -781,6 +781,68 @@ weights below, in progress 2026-10-18 (MoabHalo track).
 MOAB processor sets and compared. The builders already resolve through `placed_view`, but nobody
 has assembled and checked such a matrix.
 
+**DESIGN RULING, round 2 (the lead, 2026-10-18, consistent with the owner's D73 decision to build
+remap halos automatically): HALO BRIDGING, not a two-placement `RemapPlan`.** `RemapPlan::placement`
+stays the TARGET's own placement (its existing, already-closed meaning, unchanged). The source side
+is brought onto the target's own ranks by a remap halo built from the SOURCE's own placement, so a
+subsequent `build_weights(plan, graph, backend)` resolves BOTH sides through `plan.placement` alone
+-- target cells local, source cells as halo -- exactly as the single-placement case (closed
+2026-09-25) already does. Superseded round 1's own "RemapPlan cannot express this" framing: the
+intended fix is not a new `RemapPlan` field, but a new MOAB entry point that builds the halo itself
+across the two placements.
+
+**PARTIALLY FIXED, round 2 (2026-10-18, "MoabHalo" track).** Three pieces built and tier-0/build
+verified; the central cross-Core migration is NOT complete -- declared explicitly as a scope
+reduction from what this round's brief asked for, not cut silently:
+
+1. **A real, previously-undiscovered correctness bug, found and fixed:**
+   `MoabMeshBackend::native_mesh(MeshId)` always answered the backend's DEFAULT `moab::Core`
+   (`impl_->mb`), regardless of which placement's `placed_view` a caller had resolved --
+   `set_placements` gives each declared processor set its OWN, SEPARATE `moab::Core`
+   (`PlacementContext::core`, `moab_backend.cpp:939-955`), so `resolve()` (`intx_weights.cpp`) was
+   reading the right VIEW through the wrong CORE the moment a real per-placement decomposition was
+   used with `build_weights`/`build_remap_halo` -- never exercised before this track (KNOWN_ISSUES'
+   own "nobody has assembled and checked such a matrix"), so never caught. Fixed: a new, placement-
+   aware `MoabMeshBackend::native_mesh(MeshId, ComponentId)` overload (`moab_backend.hpp`/`.cpp`)
+   and `resolve()` now calls it with the SAME placement its view came from.
+2. **Structural-vs-genuine empty, derived from the placement, not a local size:** a new
+   `MoabMeshBackend::placement_participates(ComponentId) const` query, and `resolve()` gained an
+   `allow_empty` parameter (default `false`, every EXISTING caller unaffected) that returns a VALID,
+   empty `Side` -- instead of refusing `E-REMAP-REGION` -- exactly when this rank is structurally
+   outside the given placement, or (for an `allow_empty` caller specifically) when its own local
+   chunk, in or out of a halo, simply holds none of the mesh at this dimension.
+3. **A new `build_remap_halo` overload** (`remap_plan.hpp`/`intx_weights.cpp`), taking an explicit
+   `source_placement` alongside the plan's own (target) placement -- the interface shape the lead's
+   ruling names. It correctly no-ops on a rank outside the target placement, and correctly
+   delegates to the EXISTING single-placement path when source and target placements resolve to the
+   SAME `moab::Core` (checked by pointer, not assumed). **For the genuinely cross-Core case --
+   source and target placements with DIFFERENT `moab::Core` instances, the actual substance of this
+   item -- it returns an explicit, named refusal (`E-MESH-HALO-CROSS-PLACEMENT-UNIMPLEMENTED`)
+   rather than attempting it.** MEASURED reason, not assumed: MOAB's own covering-set construction
+   (`Intx2MeshOnSphere`/`FindMaxEdges`/`construct_covering_set`, the same machinery the
+   single-placement path already uses) needs BOTH file sets in the SAME `moab::Interface`; there is
+   no MOAB entry point that intersects a file set living in one Core against one living in another.
+   Bridging two independent Cores needs a MIGRATE-BY-GLOBAL-ID exchange -- box overlap over the base
+   communicator, packing each needed source cell's vertices/connectivity/GLOBAL_ID on its owning
+   rank and creating fresh MOAB entities for it inside the target placement's own Core -- the MOAB
+   analogue of `fuse::native::build_native_remap_halo`'s own box-overlap/pack/merge architecture
+   (native_halo.cpp). Not built: a correct implementation is a multi-hundred-line undertaking
+   (mirroring native_halo.cpp's own size) that this track's remaining time could not respon
+   sibly deliver UNVERIFIED (this sandbox cannot run MPI at all, so nothing cross-rank can be
+   verified by execution here regardless; the risk is shipping large, novel, untested MOAB
+   entity-creation code, not merely an unverified test row).
+
+**Compiled (tier-0 + MOAB/MPI build, system compiler, both 0 errors), NOT run** (C1: this sandbox
+cannot initialise MPI at all): `test/parallel/moab_placed_weights_mpi_test.cpp`'s three rows --
+(1) a rank outside the target placement is a successful no-op; (2) the same-Core delegation
+reproduces the single-placement `build_remap_halo` answer exactly; (3) the genuinely disjoint pair
+(`A = [0, size/2)`, `B = [size/2, size)`) refuses with the EXACT named code
+`E-MESH-HALO-CROSS-PLACEMENT-UNIMPLEMENTED`. Registered `parallel.moab_placed_weights_mpi.{2,3}`.
+Row (3)'s own "row sums, conservation against a serial single-placement build to a derived
+tolerance" -- what this item was asked to assert -- is NOT yet assertable: there is no real halo to
+build those row sums FROM until the migrate-by-global-id mechanism above exists. Flagged as
+`host_pending`/`open_questions` in this track's own report, not claimed as delivered.
+
 
 **History.** First recorded as a coverage gap, then corrected to a capability
 gap. The Runner filled both `CommGraphSide`s from one `backend.view(MeshId)`,
@@ -1532,7 +1594,7 @@ available.
 
 ---
 
-### D8. A Remap into a nodal field on more than one rank is rejected -- FIXED for the consistent/consistent-transpose methods, awaiting a host run (round 5): the S5.5 matrix row is closed; every other method's rejection is unchanged
+### D8. A Remap into a nodal field on more than one rank is rejected -- FIXED for the consistent/consistent-transpose methods, HOST-VERIFIED 2026-10-18 at 1 to 5 ranks (round 5): the S5.5 matrix row is closed; every other method's rejection is unchanged
 
 `E-RT-REMAP-NODAL-PARALLEL` (`resolve_remap`, `src/runtime/runner.cpp`)
 rejects any Remap whose target is a nodal field (ContinuousGLL order 1) on a
@@ -2001,6 +2063,14 @@ item 3 (per-placement supermesh weights), which this round did not touch.
 ```
 ctest --test-dir <mpi-build-dir> -R 'parallel\.nodal_remap_(distributed|runner)' -V
 ```
+
+**HOST-VERIFIED 2026-10-18** (owner's machine, `build-all` at `66d35cc`, MPICH 5.0.0a1,
+`FI_PROVIDER="tcp;ofi_rxm" FI_TCP_IFACE=en0`): `parallel.nodal_remap_distributed.{1,2,3,4,5}` and
+`parallel.nodal_remap_runner.{1,2,3,4,5}` all Passed (0.72, 0.15, 0.15, 0.18, 0.17 s and 1.19, 0.18,
+0.23, 0.24, 0.28 s), with `backend.nodal_tie_break` and `verification.nodal_remap_runner_serial` in the
+same run, 35/35. The multi-process run this entry asked for has happened; what stays open is the
+non-consistent methods' `E-RT-REMAP-NODAL-PARALLEL` refusal (pending D5 item 3), the three NOT-ASSESSED
+mutations and `ClampToBoundary`, exactly as the paragraph above lists them.
 
 ### ~~D9. The coupled channel-beam FSI gains energy over many periods~~ — FIXED 2026-09-25: the traction had the sign of the force on the fluid
 
@@ -5721,7 +5791,7 @@ through `ENVIRONMENT_MODIFICATION`. The build itself still needs the variable ex
 `_machine` preset sets it for configure only); that is a property of Open MPI's compiler wrapper,
 not of this project.
 
-### D27. The native backend's remap halo has no `accumulate_remap_halo` counterpart
+### D27. The native backend's remap halo has no `accumulate_remap_halo` counterpart -- FIXED, tier-0 verified 2026-10-18; multi-rank row awaiting the host
 
 **Closed for the forward direction, 2026-10-10 ("Halo" track):** `fuse::native::NativeMeshBackend`
 now builds a planar/volumetric remap halo (`build_native_remap_halo`,
@@ -5738,6 +5808,84 @@ native counterpart. `test/backend/native_halo_test.cpp`'s own column-mass-by-glo
 does this bookkeeping in the TEST, not through a library call; nothing in the Halo track's scope
 needed a library-level reverse exchange, but a future native-backend conservation-audit tool would
 want one.
+
+**FIXED, TIER-0 HOST-VERIFIED-EQUIVALENT 2026-10-18 ("MoabHalo" track, round 2); the real
+multi-rank row remains host-pending.** `fuse::native::accumulate_remap_halo`
+(`include/fuse/backend/native_halo.hpp`, `src/backend/native_halo.cpp`) is the reverse exchange:
+each ghost slot's value is ADDED to its owner's own slot and the ghost slot is then zeroed, built
+from `fuse::linalg::PackedExchanger::exchange_packed_adjoint` (comm.hpp) -- the SAME adjoint
+Alltoallv `src/backend/nodal_remap_distributed.cpp`'s own H^T scatter-add already uses, reached
+through `unpack_index()`/`pack_index()` rather than any new mechanism.
+
+DIRECTION CORRECTION FROM THIS ENTRY'S OWN TASK BRIEF -- CONFIRMED CORRECT BY THE LEAD (round 2):
+the dispatching brief for this track named the open half as "MoabMeshBackend::accumulate_remap_halo"
+and asked to mirror "NativeMeshBackend::accumulate_remap_halo." Neither matched this entry's own
+text above, nor the code: `MoabMeshBackend::accumulate_remap_halo` (`src/backend/moab_backend.cpp:3030`)
+was ALREADY implemented and tested (`test/parallel/remap_halo_mpi_test.cpp`'s
+`RemapHaloMpiSphere.BuildRemapHaloDeliversExactHaloValuesAndRoundTripsExactly`); `NativeMeshBackend`
+had no `accumulate_remap_halo` of any kind before this change. The fix followed THIS entry's own
+record (native side missing), not the brief's; the lead's round-2 review confirmed this reading was
+right and the brief was wrong.
+
+BUFFER SIGNATURE, SETTLED (round 2, lead's ruling): MOAB's version takes one combined
+`entity_count(dim) * components` buffer; the native version takes the SAME two separate
+`owned`/`ghosts` arrays `GhostExchanger::update()` already uses for the forward fill, one component
+per call. This is the PERMANENT native API -- no combined-buffer entry point is to be added.
+
+**Measured (tier 0, this sandbox, serial -- no MPI needed, 2026-10-18 round 2):**
+`ctest -R backend.native_halo` (`fuse_backend_native_halo_test`, run directly with
+`KMP_DUPLICATE_LIB_OK=TRUE OMP_PROC_BIND=false` -- an unrelated, pre-existing duplicate-OpenMP-
+runtime warning this binary's own link graph pulls in, not from this change): **21/21 PASS**, 539 ms
+total, including the 5 new `NativeHaloAccumulate` rows (argument validation, the no-op path via
+`make_serial_exchanger()`, the missing-`PackedExchanger`-facet refusal via a test-only
+`GhostExchanger`, and an independent arithmetic oracle over the REAL 3-rank misaligned
+`GhostPattern` the existing `run_halo_pipeline` fixture builds, proving the conservation identity:
+folding every halo copy -- each starting at exactly 1.0 -- back to its owner accounts for exactly
+one addition per halo instance, with nothing lost or duplicated, EXACT not a tolerance). Mutation
+rows added and killed by the whole binary (see build-evidence/mutations/native_halo.toml); counts
+recorded verbatim in this track's own report, restore confirmed byte-identical against pristine.
+**Built, host-pending:** `NativeHaloMpi.AccumulateRemapHaloRoundTripsExactly`
+(`test/parallel/native_halo_mpi_test.cpp`) mirrors the MOAB test above under a REAL communicator at
+2 and 3 ranks (`parallel.native_halo_mpi.{2,3}`, already registered) -- this sandbox cannot
+initialise MPI at all (C1), so this row is compiled only.
+
+**Round-2 side finding, NOT a library defect (round 1 wrongly opened, then closed, D78 for this --
+struck from the record entirely, not merely closed, since it never described a real defect in this
+project).** ROOT CAUSE, corrected by the lead after round 1 mis-diagnosed it: this is a SANDBOX
+CONFIGURE choice, not a FUSE defect of any kind. Round 1 ran `cmake` from the `kokkos-dev` conda
+environment, which also put that environment's own `c++` (conda-packaged clang 21) first on PATH,
+so `CMAKE_CXX_COMPILER` resolved to it by default. That compiler's own config file
+(`<env>/bin/<triplet>-clang++.cfg`) prepends `-isystem <env>/include` -- which happens to carry a
+conda-packaged `kokkos` header tree (5.2.1), different from this project's intended `/opt/kokkos`
+(5.1.0) -- ahead of this project's own flags, so round 1's first symptom (undefined `Kokkos::
+OpenMP::concurrency() const`, the pre-5.x member API, against a 5.x library) was a header/library
+version mismatch from that wrong compiler's own implicit search path. A CMake-side mitigation
+(`IMPORTED_NO_SYSTEM TRUE` on the Kokkos imported targets, `cmake/FuseDependencies.cmake`,
+CMake-3.25-gated) makes this project's own BEFORE-prepended Kokkos include win that ordering fight
+regardless of compiler, and is kept as a harmless defense-in-depth (verified: no `-Werror`/`-Wall`
+anywhere in this project today, so relaxing Kokkos headers from "system" changes no diagnostic
+severity) -- but it is NOT the fix. Even with headers resolved correctly, that SAME conda compiler
+links its own `libc++.1.dylib` via `@rpath` into the test binary, while `/opt/kokkos`'s own
+`libkokkoscore.5.1` was built by Apple clang against the SYSTEM `libc++` -- two C++ runtimes in one
+process, which the lead measured segfaulting at startup before any test could run. THE FIX is
+`-DCMAKE_C_COMPILER=/usr/bin/cc -DCMAKE_CXX_COMPILER=/usr/bin/c++` in a FRESH build directory (the
+compiler is cached; a stale build directory keeps the wrong one) -- the SAME system Apple clang the
+lead's own clean-export builds already use, 211/211 tier-0 in this identical sandbox. Re-verified
+with this configuration (below); this is a build-invocation choice (which compiler happens to be
+first on a particular shell's PATH), never a project source change, and nothing to carry forward
+as a standing KNOWN_ISSUES entry once stated once, here.
+
+**Re-verified, 2026-10-18, round 3, system compiler (`/usr/bin/cc`/`/usr/bin/c++`), fresh build
+directory:** full tier-0 `ctest`: **211/213 PASS** (926.9 s real). The 2 failures
+(`abi.install_consumer_c`, `abi.conformance` -- `ConformanceTest.LagOneGraphAllFourKindsMatchNative`/
+`SubcycledMeanGraphAllFourKindsMatchNative`, both `E-ABI-LOAD` on the Fortran plugin) are
+UNRELATED to this entry and PRE-EXISTING: reproduced identically on an unmodified pristine export
+under the IDENTICAL system-compiler configuration (this sandbox's Fortran toolchain is not fully
+wired for the `/usr/bin/c++` configuration the ABI Fortran-plugin conformance rows need; a
+pre-existing sandbox-configuration gap, not a code defect, and not this track's to fix).
+`backend.native_halo` specifically: **1/1 PASS, 0.29 s**, no `KMP_DUPLICATE_LIB_OK`/`OMP_PROC_BIND`
+workaround needed at all under the system compiler -- confirming those were round 2's own
+artifact of the wrong compiler, not anything this project's test needs.
 
 ### ~~D28. U's own species-core solver seam is closed; the mpmd.5 row that would first exercise it across a real two-rank U is still host-only~~ — CLOSED 2026-10-10 (host run, see D25's host paragraph)
 
@@ -6689,6 +6837,16 @@ ctest row is what measures whether the two regions' own converged states actuall
 bound, the one thing this sandbox's tier-0 verification above cannot show. D31's own cross-rank
 communicator lift (Sec. 9.10/11.3) is independently still open (D31's own heading, above) and unrelated
 to this closing beyond sharing the same host-pending status.
+
+
+**HOST-VERIFIED 2026-10-18** (owner's machine, `build-all` at `66d35cc`, PETSc on): `petsc.init`,
+`petsc.token`, `petsc.derivative_gate`, `petsc.snes`, `petsc.brusselator_newton`,
+`petsc.window_newton_mpi.{2,3}` all Passed, and `fuse_example_dn_heat --newton-petsc` ran the
+dual-substrate case: `region_a=native region_b=petsc periods=20 converged_a=1 converged_b=1`, final-period
+residual histories `5.680512e+01 4.311954e+00 1.765836e-02 1.484199e-09` (native) and `5.680512e+01
+4.311952e+00 1.765848e-02 2.799275e-09 2.799275e-09` (petsc), `agreement disagreement=3.572609e-10 K
+sharp_bound=5.888415e-07 K ratio=6.067182e-04`, exit 0. The per-region substrate selection is
+host-verified; this entry's remaining item is the communicator statement in its heading, unchanged.
 
 ### D48. A `Transport` instruction can have one arc device-resident and the other host, even in Device mode — FOUND AND FIXED 2026-10-13
 
