@@ -8,6 +8,7 @@
 #include <cstring>
 #include <set>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "fuse/model/element_type.hpp"
@@ -69,7 +70,7 @@ using HType = Hid<H5Tclose>;
     return Failure{"E-RESTART-HDF5",
                    "H5Pset_create_intermediate_group failed"};
   }
-  return lcpl;
+  return std::move(lcpl);  // nvcc does not implicitly move into Result<T>
 }
 
 [[nodiscard]] Result<bool> link_exists(hid_t loc, const std::string& path) {
@@ -291,7 +292,7 @@ using HType = Hid<H5Tclose>;
   if (H5Tset_order(t, H5T_ORDER_LE) < 0) {
     return Failure{"E-RESTART-HDF5", "H5Tset_order failed for " + info.name};
   }
-  return t;
+  return std::move(t);  // nvcc does not implicitly move into Result<T>
 }
 
 [[nodiscard]] Result<HType> make_hdf5_type_for(const fuse::ElementTypeInfo& info) {

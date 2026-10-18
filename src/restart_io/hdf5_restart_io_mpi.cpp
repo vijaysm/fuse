@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <set>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "fuse/model/element_type.hpp"
@@ -92,7 +93,7 @@ using HType = Hid<H5Tclose>;
   if (H5Pset_create_intermediate_group(lcpl, 1) < 0) {
     return Failure{"E-RESTART-HDF5", "H5Pset_create_intermediate_group failed"};
   }
-  return lcpl;
+  return std::move(lcpl);  // nvcc does not implicitly move into Result<T>
 }
 
 
