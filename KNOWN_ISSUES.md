@@ -3300,6 +3300,17 @@ way — `AccelKind::None` throughout. Recorded here, per the lead's own instruct
 suite, and this asymmetry should be understood before Aitken is treated as a conformance case
 anywhere.
 
+**Measured further, Windows track, 2026-10-18 (still not root-caused -- see D76, below, for
+the full trace): the divergence is in the SEED fed to the accelerator at the start of window 1,
+not in Aitken's own relaxation numerics.** A per-iteration trace of both drivers on this exact
+configuration found the two sides' own residual-norm and relaxation-factor sequences IDENTICAL,
+to every printed digit, for the entirety of window 0; the first disagreement is the residual
+norm at window 1's own sweep 0 (143.37914811541057 vs 145.9156716694263), before Aitken's own
+history-dependent formula runs even once that window -- narrowing this from "not root-caused" to
+"root-caused to a specific window-boundary seed disagreement, mechanism not yet traced to a
+write site." D76 has the full measurement and the next trace this entry's own "not root-caused"
+note was asking for.
+
 
 ### ~~D20. `connect()` never released its base communicator, so an accept-mode run crashed in `MPI_Finalize`~~ — FIXED 2026-10-08, awaiting the host
 
@@ -7985,7 +7996,7 @@ transfer buffer (`cfg.window_import`) is not correctly reconstructed from restor
 does not affect `AccelKind::None` (whose `update()` never reads `x_old`) and is a SEPARATE defect
 from the key-collision/silent-reset gaps this entry closes.
 
-### D70. `WindowMemberState::last_window_waveform` is never populated by the Runner's own `advance_window()` -- OPEN, measured 2026-10-15 (Restart track, Stage B Slice 2; renumbered from round 1's own D69, which main's own ASCII-cleanup/BoxIndex sequence displaced when D68 (round 1's own window-scoped-accelerator entry, now D69 above) collided with a real main-branch D68; content unchanged except the number, per the owner's own instruction not to touch `advance_window()`)
+### ~~D70. `WindowMemberState::last_window_waveform` is never populated by the Runner's own `advance_window()`~~ -- FIXED 2026-10-18 (Windows track; measured OPEN 2026-10-15, Restart track, Stage B Slice 2; renumbered from round 1's own D69, which main's own ASCII-cleanup/BoxIndex sequence displaced when D68 (round 1's own window-scoped-accelerator entry, now D69 above) collided with a real main-branch D68; content unchanged except the number, per the owner's own instruction not to touch `advance_window()`)
 
 Found while building and testing this round's own window-waveform restart (owner decision 4's
 second half): `detail::WindowMemberState::last_window_waveform` (`include/fuse/runtime/
@@ -8021,7 +8032,33 @@ path `WindowCoupler` has that the Runner's compiled equivalent does not) is outs
 own scope to judge -- flagged here as a fact about restart coverage, not a claim about the
 window-region feature itself being incomplete.
 
-### D71. A real accelerator (Aitken, IQN-ILS, or any kind but `None`) over a `WaveformIteration::GaussSeidel` coupling window refuses `E-RT-WINDOW-ACCEL` -- OPEN, pre-existing, precisely named 2026-10-15 (Restart track, Stage B Slice 2, round 2)
+**Fix (Windows track, 2026-10-18).** `advance_window()` (`src/runtime/iteration.cpp`) now builds
+a local per-element `Waveform` trajectory every sweep -- one real (non-extrapolated) sample at
+the window-start value (the SAME `start_value` cache this function already maintains) and one
+more at each substep's own committed time, mirroring `WindowCoupler::sweep_window()`'s own
+`real_traj[i]` construction exactly (`window_coupler.cpp`) -- and moves it into
+`WindowMemberState::last_window_waveform` at the end of the call. advance_window() runs once per
+sweep per member, so simply overwriting this local trace every call and committing whatever the
+LAST sweep of a pass left reproduces WindowCoupler's own "committed once, after the sweep loop
+converges" semantics with no extra per-pass bookkeeping. One declared reduction in fidelity: a
+`DtPolicy::Fixed` member whose last substep straddles the window end gets one fewer trajectory
+sample than WindowCoupler's own driver records for that same case (WindowCoupler pushes a second
+knot at `sub.t1` when `T1 < sub.t1`; this fix does not, since `cfg.capacity` has no reserved slot
+for it) -- not exercised by Brusselator, whose `UComponent`/`VComponent` both use
+`DtPolicy::Adjustable` (never straddles); flagged to `open_questions`, not silently reproduced.
+
+Verified: `BrusselatorRestart.WaveformPresentAfterAdvanceThroughTheRunner` (new) confirms
+`write_window_member_restart()`'s own `/waveform/present` scalar is `true` after at least one
+window completes through the Runner -- `false` unconditionally before this fix, the direct
+"dead code" symptom this entry named. `BrusselatorRestart.RestoredRunReproducesLastWindowWaveform
+BitForBit` (new) confirms a restored run's own `last_window_waveform`, read back through
+`RestartReader::get_field()` directly (no new public accessor added), agrees bit for bit with an
+uninterrupted reference run's own value at the identical window boundary, for both U and V. Full
+suite: `test/verification/brusselator_restart_test.cpp`, 12/12 passing (`ctest -R
+verification.brusselator_restart`); no behavioural change for `AccelKind::None` or any
+non-window region.
+
+### ~~D71. A real accelerator (Aitken, IQN-ILS, or any kind but `None`) over a `WaveformIteration::GaussSeidel` coupling window refuses `E-RT-WINDOW-ACCEL`~~ -- FIXED 2026-10-18 (Windows track; named OPEN 2026-10-15, Restart track, Stage B Slice 2, round 2)
 
 Named precisely this round rather than described as "a limitation" in prose, per the owner's own
 instruction. `resolve_regions()` (`src/runtime/iteration.cpp:1836-1851`) refuses to build a
@@ -8035,7 +8072,53 @@ changes (reproduces identically against the unmodified pristine tree). Fixing it
 restart's own scope -- this entry exists so a future reader of the restart track's own refusal
 surface does not mistake this for a restart-specific defect.
 
-### D72. A window-scoped region's own CONSUMER-side transfer buffer (`cfg.window_import`) is not correctly reconstructed after a restart -- OPEN, measured 2026-10-15 (Restart track, Stage B Slice 2, round 2)
+**Fix (Windows track, 2026-10-18).** `Runner::Impl::run_region()`'s own `R.accel->update()` call
+site (`src/runtime/iteration.cpp`) now excludes a GaussSeidel window's own unlagged transfer
+from the accelerated vector before calling the accelerator, exactly as `WindowCoupler::
+sweep_window()`'s own `accel_members`/`accel_member_offset`/`accel_total` restriction already
+does (`window_coupler.cpp`'s own `provides_unlagged_channel` comment) -- reusing the IDENTICAL
+membership test (`run_region_newton_window()`'s own `RegionBlock::newton_offset`, computed from
+`R.window_lagged_import_arcs`) rather than re-deriving a second one that could disagree with the
+Newton path about which direction is lagged. The excluded block(s)' own slice of the iterate is
+a straight Gauss-Seidel substitution from `x_new`, never a relaxed iterate, matching
+WindowCoupler's own "default: excluded members pass straight through" comment. Under
+`WaveformIteration::Jacobi`, `effective_channel_lag()` forces every channel lagged, so nothing is
+ever excluded there and the call is unchanged, byte for byte, from before this fix; this is a
+strictly additive change to the refused GaussSeidel-plus-real-accelerator combination only.
+
+`QuasiNewtonAccel`'s own per-field weighting (`field_weights()`, `src/num/
+accel_quasi_newton.cpp`) reads `Accelerator::field_partition()` against whatever vector it is
+handed; `resolve_regions()` sets it once for the FULL (`R.n`-sized) vector, which disagrees with
+the smaller, projected one this fix hands the accelerator when a block is excluded -- saved via
+`field_partition()`'s own getter and reset via `set_field_partition()` immediately around the
+projected call, restored unconditionally afterward, so every OTHER sweep (Jacobi, a non-window
+region, or a GaussSeidel sweep excluding nothing this region) keeps reading the original,
+unchanged partition.
+
+**Measured** (`examples/fuse_example_brusselator --driver runner`, `--end 0.5`, the example's
+own default grid and `dt_u`/`dt_v`/`window`): peak sweeps in any one window, Jacobi vs
+GaussSeidel, same accelerator --
+
+| accelerator | Jacobi | GaussSeidel |
+|---|---|---|
+| Aitken | 31 | 10 |
+| IQN-ILS | 15 | 9 |
+
+Both GaussSeidel rows converge in FEWER sweeps than the matching Jacobi row, the expected
+direction (Gauss-Seidel uses the most recently updated partner value within a sweep); `--check:
+OK` (conservation to ~1e-13/~1e-16) on all four. Cross-checked against the standalone
+`WindowCoupler` driver (`--driver window`) on the identical configuration: GaussSeidel+Aitken 8
+sweeps, GaussSeidel+IQN-ILS 8 sweeps -- same order of magnitude as the Runner's 10/9, not
+required to agree exactly (D17, below, already documents a pre-existing, unrelated Jacobi-only
+discrepancy between the two drivers' own sweep counts). Verified by two new tests,
+`BrusselatorRestart.GaussSeidelAitkenConvergesAndMatchesJacobi`/
+`GaussSeidelIqnIlsConvergesAndMatchesJacobi` (`test/verification/brusselator_restart_test.cpp`):
+both confirm the region no longer refuses, that GaussSeidel's own iteration count is never more
+than Jacobi's at any window, and that the two converge to the SAME physical U/V state (`EXPECT_
+NEAR`, 1e-8 -- never bit-for-bit, since Jacobi and GaussSeidel are different fixed-point
+iterations of the same converged answer, not the same sweep sequence).
+
+### ~~D72. A window-scoped region's own CONSUMER-side transfer buffer (`cfg.window_import`) is not correctly reconstructed after a restart~~ -- FIXED 2026-10-18 (Windows track; measured OPEN 2026-10-15, Restart track, Stage B Slice 2, round 2)
 
 Found while verifying D69's own closing fix (above) at the Runner level: a same-rank-count
 Brusselator round trip with a REAL accelerator (Aitken, IQN-ILS) over `brusselator_window` does
@@ -8066,6 +8149,54 @@ over a window-scoped region. Four Runner-level round-trip tests for this exact c
 (`SeparateLayoutJacobiAitken`, `GrowingLayoutJacobiAitken`, `SeparateLayoutJacobiIqnIls`,
 `GrowingLayoutJacobiIqnIls`) were written, found failing because of this gap, and removed rather
 than shipped failing or weakened.
+
+**Why both recorded fix attempts failed.** Fix attempt 1 (re-priming the EXPORT slot only) left
+the CONSUMER's own `window_import` buffer -- the one `R.x_old`'s pre-loop seed actually reads --
+untouched, so it closed only the half of the problem visible from the exporting side; the import
+side it did not touch is exactly the one this entry's own title names. Fix attempt 2
+(re-running the import channel's own compiled delivery chain through `execute()`) re-primed the
+RIGHT buffer but with the WRONG data: at restore time, `detail::WindowMemberState::
+last_window_waveform` (D70, above) was unconditionally empty for every Runner-driven run -- it
+was dead code until this round -- so there was no genuinely restored per-sample trajectory for
+that delivery chain to re-derive from; re-running the chain could only reproduce the SAME
+construction-time cold-start value fix attempt 1 already left in the export slot, routed through
+one more hop, which is why it measured WORSE (12 sweeps, further from the reference's 13) rather
+than better. Both attempts predate D70; the present fix is what D70 made possible for the first
+time.
+
+**Fix (Windows track, 2026-10-18), depends on D70 above.** `Runner::Impl::
+reprime_window_import_after_restore()` (`src/runtime/iteration.cpp`), called once from `Runner::
+restore_restart_fields()` right after every window member's own `detail::WindowMemberState` is
+restored, copies each PROVIDER's own restored `last_window_waveform` (D70: now genuinely
+populated, sample for sample, by `advance_window()`) into the CONSUMER's own live
+`window_import` buffer, in the SAME (sample index -> buffer offset `e*provider_capacity+s`)
+layout `advance_window()`'s own `out_slot` writes already use -- the provider node for a given
+consumer's import is found via `WindowMemberConfig::provider_component_slot`, graph-derived,
+never a partner's runtime state, the same lookup `resolve_pending_window_straddles()` already
+uses for the analogous problem. A no-op whenever the provider's own `last_window_waveform` is
+not yet populated (shape mismatch or a null element) -- every ordinary (non-window) restore, and
+a window restore taken before this member's first-ever completed window, both fall through this
+guard unchanged.
+
+**Root-caused and verified by RED/GREEN, not assumed:** this call was put behind a temporary
+env-gated disable switch and the four round-trip tests (restored below) were re-run with it
+disabled. The restored run reproduced D72's own originally-measured symptom EXACTLY --
+`iterations_per_window[0]` reported 12 against the uninterrupted reference's 13, and U/V's own
+final fields disagreed from the 5th significant digit on -- confirming the pre-loop seed really
+was reading the stale, construction-time buffer. With the call enabled (unconditionally, the
+disable switch since removed), all four tests pass bit for bit, `iterations_per_window`
+included: `SeparateLayoutJacobiAitken`, `GrowingLayoutJacobiAitken`, `SeparateLayoutJacobiIqnIls`,
+`GrowingLayoutJacobiIqnIls` (`test/verification/brusselator_restart_test.cpp`, restored rather
+than rewritten). The prior round's own stated invariant above (`x_old(window k, iter 0) ==
+x_new(window k-1, iter 0)`) is superseded by this direct verification rather than independently
+re-confirmed; this round traced the mechanism (the stale buffer) and fixed it rather than
+re-deriving that specific invariant.
+
+Full suite regression: `ctest -j3` on this round's own tree, 225/225 tests passing (one
+transient failure during one run, `runtime.compile_ok.capabilities_override`, traced to this
+session's own build tree being edited concurrently with that ctest invocation -- re-run in
+isolation immediately after, passed; not a product regression, declared here rather than
+silently re-run and left unmentioned).
 
 
 ### D73. A cross-rank general (non-nodal) weighted Remap on NativeMeshBackend builds a silently empty conservative matrix with no remap-halo call -- FIXED 2026-10-16 (found 2026-10-15, scaled-bench track)
@@ -8258,3 +8389,50 @@ pass, and the two-invocation write-at-3/restore-at-2 protocol passes both invoca
 written file shows the five file attributes and the seven type attributes). Lesson recorded with D23/D38:
 a host row that cannot run in the sandbox must be run on the host BEFORE its code is described as
 delivered; slice 2's report said "built but not run", and all three defects sat behind that.
+
+
+### D76. D17's own Jacobi-plus-Aitken driver discrepancy traced to a seed disagreement at the SECOND window, not an accelerator instability -- OPEN, measured 2026-10-18 (Windows track)
+
+D17 (above) names `--accel aitken` converging through `--driver runner` but not `--driver
+window`, on the Brusselator's own default parameters. Measured this round, by a temporary
+env-gated trace inside `AitkenAccel::update()` (`src/num/accel_relaxation.cpp`, shared code --
+both drivers call it, instrumentation since removed) printing `n`, `iteration`, the computed
+relaxation factor `omega`, and `||x_new - x_old||` on every call, for `--driver window` and
+`--driver runner` run SEPARATELY on the identical `--accel aitken --iteration-mode jacobi --end
+0.1` configuration:
+
+- Window 0 (the FIRST window): both drivers' own `omega`/residual-norm sequences are IDENTICAL
+  for all 15 sweeps to every printed digit (0.1, 0.80266972388320323, 0.83497979794902755, ...,
+  converging at sweep 14 with `r_norm=6.6763228060059144e-09` on both sides) -- the accelerator
+  itself is not where this starts. The two vectors differ in LENGTH (`n=4352` for the window
+  driver, `n=4864` for the Runner, a 512-element gap) without this affecting the comparison at
+  all: every extra element's own residual contribution is identically zero on both sides for
+  window 0, consistent with (but not yet confirmed to BE) the window-start sample padding
+  `RegionBlock::window_export_capacity`'s own comment names elsewhere in this file -- the exact
+  source of the size difference is not yet traced and is left here rather than guessed.
+- Window 1 (the SECOND window): `omega` at sweep 0 is `0.1` on both sides (`reset()`'s own fixed
+  default at every window boundary, expected), but `r_norm` already disagrees AT SWEEP 0 --
+  `143.37914811541057` (window driver) vs `145.9156716694263` (Runner) -- before Aitken's own
+  history-dependent formula has run even once this window. Since `r_norm = ||x_new - x_old||` at
+  sweep 0 and `x_new` is each side's own freshly-advanced output, the DISAGREEMENT is in how each
+  driver seeds (or carries forward) `x_old` for a window's own first sweep, not in anything
+  Aitken computes from it -- the identical class of quantity D72 (above) found wrong after a
+  restart, but reproduced here with NO restart involved at all, purely from window-to-window
+  bookkeeping. Aitken's own `omega` recursion is sensitive enough to this seed (`omega_k` is a
+  ratio of inner products of residual DIFFERENCES across sweeps) that a seed disagreement this
+  small, compounded over Jacobi's own slower convergence (needing many more sweeps than
+  GaussSeidel per D71's own measured counts, above), is a credible mechanism for the two
+  trajectories to diverge far enough, by window 3, that one side fails to converge within 60
+  sweeps while the other does not -- not yet proven sweep by sweep past window 1, left for the
+  reason below.
+
+**Not fixed.** Root-causing exactly which write site produces the window-1 seed disagreement --
+`run_region_window()`'s own pre-loop seed (`slots[b.feed_arc]`) on the Runner side, versus
+`WindowCoupler::sweep_window()`'s own `y_fed` carry-forward on the driver side -- needs the same
+kind of write-timing trace D72's own entry recommended for `window_import`, extended across a
+window BOUNDARY rather than a restart boundary, which this round's own time did not reach.
+Recorded here as a measured, narrowed finding (the divergence is at window 1 sweep 0, in the
+seed, not in the accelerator) rather than the prior entry's "not root-caused" -- the next round
+should trace `R.x_old`'s own pre-loop value against `WindowCoupler`'s own `y_fed` element by
+element at the window 0 -> window 1 boundary specifically, the same technique used to trace
+defects (a)-(d) in `test/verification/brusselator_runner_test.cpp`'s own header.
