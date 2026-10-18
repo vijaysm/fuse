@@ -610,6 +610,38 @@ struct RemapPlan {
                                                    const CouplingGraph& graph,
                                                    MeshBackend& backend);
 
+/// KNOWN_ISSUES D5's "last half" (round 2 ruling, HALO BRIDGING, not a
+/// two-placement RemapPlan): the OVERLOAD this design needs, kept separate
+/// from the one above rather than adding a second placement field to
+/// `RemapPlan` itself (`plan.placement` stays the TARGET's placement, its
+/// existing, already-closed meaning). `source_placement` names which
+/// processor set OWNS the source cells -- generally DIFFERENT from
+/// `plan.placement`, and possibly rank-disjoint from it entirely. On a
+/// rank that participates in `plan.placement` (the target's own processor
+/// set), this brings the covering source cells onto that rank as halo
+/// copies, so a subsequent `build_weights(plan, graph, backend)` resolves
+/// BOTH sides through `plan.placement` alone -- the target's cells local,
+/// the source's as halo -- exactly as the single-placement case already
+/// does. A rank outside `plan.placement` does nothing (the Runner's own
+/// BuildRemapHalo instruction is what is expected to not call this there
+/// at all; this function still tolerates being asked, per this track's own
+/// `resolve()` fix, rather than refusing).
+///
+/// NOT YET A FULL IMPLEMENTATION for the case the two placements' own
+/// `moab::Core`s actually differ (`MoabMeshBackend::set_placements`'s own
+/// "one moab::Core per processor set" contract, moab_backend.hpp) -- see
+/// this function's own body and KNOWN_ISSUES.md D5 for the measured reason
+/// (MOAB's `Intx2MeshOnSphere` covering-set construction needs BOTH file
+/// sets in the SAME `moab::Interface`; bridging two independent Cores needs
+/// a migrate-by-global-id exchange, the MOAB-specific analogue of
+/// `fuse::native::build_native_remap_halo`'s own box-overlap/pack/merge
+/// architecture, not yet built). Returns a clearly named, specific refusal
+/// in that case rather than silently producing an incomplete halo.
+[[nodiscard]] Result<std::size_t> build_remap_halo(const RemapPlan& plan,
+                                                   const CouplingGraph& graph,
+                                                   MeshBackend& backend,
+                                                   ComponentId source_placement);
+
 /// Spec Section 5.4: weights are built once at setup, shared by identical field transfers.
 ///
 /// The returned pointer is stable for the life of the cache -- entries are held

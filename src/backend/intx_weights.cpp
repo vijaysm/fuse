@@ -623,7 +623,8 @@ template <class T>
 
 [[nodiscard]] Result<Side> resolve(const CouplingGraph& graph,
                                    const MeshBackend& backend, RegionId id,
-                                   ComponentId placement, const char* which) {
+                                   ComponentId placement, const char* which,
+                                   bool allow_empty = false) {
   if (!id.valid() || id.value() >= graph.region_count()) {
     return Failure{"E-REMAP-REGION",
                  std::string(which) + " region id " +
@@ -673,13 +674,33 @@ template <class T>
   const auto mid = moab_backend->mesh_id(graph.mesh(r.mesh).name);
   if (!mid.ok()) return mid.error();
 
-  // MoabMeshBackend gives every processor set the default decomposition today
-  // (one ParallelComm per backend, KNOWN_ISSUES D5's MOAB half); routing
-  // through placed_view here is what makes that a MOAB change and not a
-  // builder change when it lands.
+  // D5, the fix this track's round 2 found necessary: the VIEW (what
+  // entities exist, local-index addressed) and the Core/file_set/
+  // communicator TRIPLE it is read through must come from the SAME
+  // placement -- `native_mesh(mid, placement)` (moab_backend.hpp), not the
+  // placement-oblivious overload, which always answered the backend's
+  // DEFAULT Core regardless of which processor set's view was resolved.
   const auto view = moab_backend->placed_view(mid.value(), placement);
   if (!view.ok()) return view.error();
-  const auto native = moab_backend->native_mesh(mid.value());
+
+  // STRUCTURAL emptiness (this rank is outside `placement`'s own processor
+  // set, mesh_view.hpp's documented "empty view, never the default"
+  // contract) is derived from the plan's placement itself
+  // (`placement_participates`), never from a local size -- exactly what
+  // this track's round-2 brief requires, so a genuinely empty mesh (a data
+  // problem) is not silently accepted just because its local count also
+  // happens to be zero. There is no Core to ask for a native handle when
+  // this rank does not participate at all, so `native_mesh` is skipped in
+  // that case; `allow_empty` callers get a Side with no MOAB handles,
+  // which is correct -- nothing downstream of `resolve()` may dereference
+  // `s.mb`/`s.file_set` for a Side this function returns with empty
+  // `cells`.
+  const bool structurally_outside_placement =
+      placement.valid() && !moab_backend->placement_participates(placement);
+  Result<MoabNativeMesh> native =
+      structurally_outside_placement
+          ? Result<MoabNativeMesh>(MoabNativeMesh{})
+          : moab_backend->native_mesh(mid.value(), placement);
   if (!native.ok()) return native.error();
 
   Side s;
@@ -691,6 +712,36 @@ template <class T>
   s.pcomm = native.value().parallel_comm;
   s.dim = r.dimension >= 0 ? r.dimension : s.view->dimension();
   s.label = std::string(which) + " region '" + r.name + "'";
+
+  // STRUCTURALLY outside `placement` (this rank's own copy of `native` is
+  // the default-constructed MoabNativeMesh{} above, deliberately: there is
+  // no Core here to query at all) -- a VALID, empty contribution for an
+  // `allow_empty` caller, derived from `placement_participates` above, not
+  // from `range.empty()` below. `s.dim` falls back to the REGION's own
+  // declared dimension (never 0, the empty view's own answer) when one was
+  // given, because a caller resolving the cross-placement pair needs SOME
+  // dimension to agree `a.dim == b.dim` against; an unset Region::dimension
+  // here is `E-REMAP-DIM` below, the same "cells of dimension 1, 2 or 3"
+  // floor every Side must clear regardless of how it got there.
+  if (structurally_outside_placement) {
+    if (!allow_empty) {
+      return Failure{"E-MESH-PLACEMENT",
+                   s.label + " is outside its own placement's processor "
+                             "set, and this call did not permit an empty "
+                             "contribution"};
+    }
+    if (r.dimension < 1 || r.dimension > 3) {
+      return Failure{"E-REMAP-DIM",
+                   s.label + " is outside its own placement's processor set, "
+                             "so its dimension cannot be read off a view that "
+                             "holds nothing; Region::dimension must be set "
+                             "explicitly (1, 2 or 3) for a cross-placement "
+                             "resolve"};
+    }
+    s.dim = r.dimension;
+    return s;  // cells/measure empty, measure_total 0, not_owned 0 -- all
+               // default-constructed, and correctly so: nothing here.
+  }
 
   // REVIEW.md N-BACKEND-1: agree on the DIMENSION ITSELF before it feeds any
   // further local computation or a downstream a.dim/b.dim comparison in
@@ -740,6 +791,22 @@ template <class T>
                        " in its MeshView; the local index spaces disagree"};
     }
     if (range.empty()) {
+      // `allow_empty`: this rank DOES participate in `placement` (the
+      // branch above already returned for the case it does not), but its
+      // own local chunk -- owned cells plus whatever a remap halo may have
+      // adopted for this pair -- happens to hold none of this mesh at this
+      // dimension. Legitimate for a genuinely disjoint source/target
+      // placement pair (this target rank's own region simply does not
+      // overlap any source cell), so a caller that already knows it is
+      // resolving one half of such a pair may ask for a valid empty
+      // contribution rather than a hard refusal here. NOT keyed on
+      // `has_remap_halo` (this function resolves ONE region at a time and
+      // does not have the (source, target) PAIR id to ask it with) --
+      // `allow_empty` is this track's own, narrower approximation of "the
+      // plan's placement and the halo's presence" the design calls for;
+      // every EXISTING caller still passes the default `false` and is
+      // completely unaffected.
+      if (allow_empty) return s;
       return Failure{"E-REMAP-REGION", s.label + " holds no dimension-" +
                                          std::to_string(s.dim) + " cells"};
     }
@@ -2182,6 +2249,97 @@ Result<std::size_t> build_remap_halo(const RemapPlan& plan,
   return moab_backend->adopt_remap_halo(a.mid, b.mid, a.dim, handles.data(),
                                         handles.size());
 #endif
+}
+
+// ---------------------------------------------------------------------------
+// KNOWN_ISSUES D5's last half, round 2: HALO BRIDGING across two
+// independently decomposed placements (the lead's ruling; see this
+// function's own declaration in remap_plan.hpp for the full design). The
+// target's processor set is `plan.placement`; the source's is
+// `source_placement`, a DIFFERENT processor set in general.
+// ---------------------------------------------------------------------------
+Result<std::size_t> build_remap_halo(const RemapPlan& plan, const CouplingGraph& graph,
+                                     MeshBackend& backend, ComponentId source_placement) {
+  using namespace remap_detail;  // NOLINT: file-local detail namespace
+
+  auto* moab_backend = dynamic_cast<MoabMeshBackend*>(&backend);
+  if (moab_backend == nullptr) {
+    return Failure{"E-REMAP-BACKEND",
+                 "build_remap_halo (cross-placement overload) needs the MOAB "
+                 "backend; this is the '" + backend.name() + "' backend"};
+  }
+
+  // The target: resolved through plan.placement, exactly as the
+  // single-placement path does. `allow_empty`: a rank outside
+  // plan.placement is expected not to be called here at all (the Runner's
+  // own structural, collectively agreed condition), but this function does
+  // not assume its caller enforced that -- it tolerates the case rather
+  // than crashing or hanging on it.
+  auto tgt = resolve(graph, backend, plan.tgt, plan.placement, "target", /*allow_empty=*/true);
+  if (!tgt.ok()) return tgt.error();
+  Side& b = tgt.value();
+
+  // A rank structurally outside the target's own placement has nothing to
+  // build: this call is a successful no-op for it, matching the "serial,
+  // one rank, or the identity" no-op this function's single-placement
+  // sibling already returns BUILT-with-zero-cells for.
+  if (!moab_backend->placement_participates(plan.placement)) {
+    return std::size_t{0};
+  }
+
+  // The source: resolved through source_placement, NOT plan.placement --
+  // this is the whole point of the overload. `allow_empty` for the
+  // identical reason: this target rank may legitimately own none of the
+  // source placement's own processor set's local chunk overlapping it
+  // (checked geometrically below, not assumed).
+  auto src = resolve(graph, backend, plan.src, source_placement, "source", /*allow_empty=*/true);
+  if (!src.ok()) return src.error();
+  Side& a = src.value();
+
+  if (a.dim != b.dim) {
+    return Failure{"E-REMAP-DIM",
+                 "the source cells are dimension " + std::to_string(a.dim) +
+                     " and the target cells dimension " + std::to_string(b.dim) +
+                     "; a halo pairs one with the other and needs the same dimension on "
+                     "both sides"};
+  }
+
+  // SAME Core: source_placement and plan.placement happen to resolve into
+  // the SAME moab::Core (the degenerate case -- no placements declared at
+  // all, or both names the identical processor set) -- the EXISTING
+  // single-placement machinery above already handles this correctly, and
+  // calling it is simpler and more tested than duplicating its geometry
+  // here.
+  if (a.mb == b.mb) {
+    return build_remap_halo(plan, graph, backend);
+  }
+
+  // DIFFERENT Cores: the genuinely cross-placement case this track's round
+  // 2 measured and could not complete in the time available (KNOWN_ISSUES
+  // D5). MOAB's own covering-set construction (Intx2MeshOnSphere,
+  // FindMaxEdges, construct_covering_set, all used by the single-placement
+  // path above) takes ONE moab::Interface and intersects two file sets
+  // WITHIN it; it has no notion of a file set living in a DIFFERENT Core,
+  // and there is no MOAB entry point that accepts one. Bridging this pair
+  // needs a MIGRATE-BY-GLOBAL-ID exchange -- box overlap over the base
+  // communicator (the SAME technique `fuse::native::build_native_remap_
+  // halo`/native_halo.cpp already implements and this track's own D27 work
+  // reused for its reverse exchange), packing each needed source cell's
+  // vertices/connectivity/GLOBAL_ID on its owning rank (in
+  // source_placement) and creating fresh MOAB entities for it inside the
+  // TARGET placement's own Core (`create_vertices`/the element-creation
+  // calls `adopt_remap_halo`'s own file-set `add_entities` step assumes
+  // already exist, which they do not here) -- not yet built. Refused
+  // explicitly, naming the exact gap, rather than silently returning an
+  // incomplete or wrong halo.
+  return Failure{"E-MESH-HALO-CROSS-PLACEMENT-UNIMPLEMENTED",
+               "build_remap_halo: source placement and target placement resolve to "
+               "DIFFERENT moab::Core instances (MoabMeshBackend::set_placements's own "
+               "one-Core-per-processor-set contract). MOAB's covering-set construction "
+               "needs both meshes in the SAME moab::Interface; bridging two independent "
+               "Cores needs a migrate-by-global-id exchange (the MOAB analogue of "
+               "fuse::native::build_native_remap_halo's box-overlap/pack/merge "
+               "architecture), which is not yet implemented. See KNOWN_ISSUES.md D5."};
 }
 
 Result<RemapWeights> build_weights(const RemapPlan& plan,

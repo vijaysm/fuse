@@ -628,7 +628,7 @@ else()
   set(FUSE_ENABLE_MOAB_MPI OFF)
 endif()
 fuse_tests_gated_by(FUSE_ENABLE_MOAB_MPI parallel/remap_halo_mpi_test.cpp
-  parallel/moab_placed_view_mpi_test.cpp)
+  parallel/moab_placed_view_mpi_test.cpp parallel/moab_placed_weights_mpi_test.cpp)
 
 if(FUSE_ENABLE_MOAB)
   # MOAB_LIBRARY_DIRS (cmake/FuseDependencies.cmake) is this project's own
@@ -778,6 +778,20 @@ if(FUSE_ENABLE_MOAB)
     endif()
     foreach(_fuse_moab_mpi_rank 1 2 3 4 5)
       set_tests_properties(parallel.moab_placed_view_mpi.${_fuse_moab_mpi_rank} PROPERTIES
+        ENVIRONMENT_MODIFICATION "${_fuse_moab_env_mods}")
+    endforeach()
+
+    # KNOWN_ISSUES D5's last remaining half: per-placement remap WEIGHTS on
+    # two independently (and, here, disjointly) decomposed MOAB processor
+    # sets. Generated box meshes, not the real sphere fixture -- see
+    # test/parallel/moab_placed_weights_mpi_test.cpp's own header for why
+    # that is enough for THIS item's own question. RANKS 2 3 only: the
+    # fixture's own disjoint A/B split needs at least 2 ranks, and this
+    # track's budget registers only what it measured (2 and 3).
+    fuse_add_mpi_test(parallel moab_placed_weights_mpi LIBS fuse::backend MPI::MPI_CXX
+                       RANKS 2 3 LABELS moab)
+    foreach(_fuse_moab_mpi_rank 2 3)
+      set_tests_properties(parallel.moab_placed_weights_mpi.${_fuse_moab_mpi_rank} PROPERTIES
         ENVIRONMENT_MODIFICATION "${_fuse_moab_env_mods}")
     endforeach()
   endif()
