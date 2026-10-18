@@ -2191,3 +2191,153 @@ TEST(AbiParticipant, DeliveryPendingIsAlwaysZeroOnAnOrdinaryGraph) {
 
   EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
 }
+
+// -------------------------------------------- D61 collective reconciliation
+//
+// KNOWN_ISSUES.md D61: begin_step()/end_step()/setup()/initialize()/run()
+// must reconcile a collective refusal across the component's ranks
+// (docs/dev/abi-design.md, "How the participant ABI reconciles a
+// collective refusal") rather than returning on this rank's own local
+// verdict alone. These tests exercise the REAL glue
+// (src/abi/participant.cpp's reconcile_collective_status(), reached
+// through the public begin_step()/end_step() entries exactly as a real
+// caller would) through fuse::abi_test::force_fake_collective_peers()
+// -- the stub reducer that stands in for a live MPI_Allreduce(MPI_2INT,
+// MPI_MINLOC, ...) at tier 0 (no MPI runtime). The pure arithmetic
+// itself (which status, which rank) is tested independently and more
+// exhaustively in collective_reconcile_test.cpp; these tests confirm
+// the WIRING -- that begin_step()/end_step() actually call through to
+// it, at the right gate (force_communicator_set()), with the right
+// rank's message surviving.
+
+TEST(AbiParticipantCollectiveReconciliation,
+     ThisRankSStateRefusalIsOverriddenWhenAFakePeerAlsoRefusedWithADifferentCode) {
+  const auto* t = Table();
+  ASSERT_NE(t, nullptr);
+  const auto bytes = fuse::abi_test::build_two_component_lag1_bytes();
+  fuse_ctx* ctx = CreateAndLoad(t, bytes);
+  // begin_step() before initialize() is a LOCAL, deterministic refusal
+  // (E-ABI-STEP-STATE, FUSE_ERR_STATE == -3) on every rank that reaches
+  // it -- not the collective-agreement scenario this entry targets, but
+  // a convenient, always-reproducible local refusal to reconcile a FAKE
+  // peer's own DIFFERENT code against.
+  ASSERT_TRUE(fuse::abi_test::force_communicator_set(ctx, 1));
+  // self_rank=0, one fake peer reporting FUSE_ERR_INVALID (-1). -3 < -1,
+  // so this rank's OWN refusal (FUSE_ERR_STATE) is the agreed one, and
+  // this rank is the origin: its message must be UNCHANGED (still
+  // naming the real local reason), not rewritten to name a peer.
+  ASSERT_TRUE(fuse::abi_test::force_fake_collective_peers(ctx, /*self_rank=*/0,
+                                                           {FUSE_ERR_INVALID}));
+
+  fuse_step_request req{.struct_size = sizeof(req)};
+  req.component = "upstream";
+  fuse_step_report rep{.struct_size = sizeof(rep)};
+  const fuse_status rc = t->begin_step(ctx, &req, &rep);
+  EXPECT_EQ(rc, FUSE_ERR_STATE);
+
+  fuse_error err{.struct_size = sizeof(err)};
+  char buf[256] = {0};
+  err.buffer = buf;
+  err.capacity = sizeof(buf);
+  ASSERT_EQ(t->last_error(ctx, nullptr, &err), FUSE_OK);
+  const std::string message(buf);
+  // This rank originated the agreed status: its own message, naming the
+  // real local reason (begin_step() before initialize()), must survive
+  // -- NOT the generic "rank N refused" rewrite a non-originating rank
+  // gets (checked by the next test).
+  EXPECT_EQ(message.find("rank "), std::string::npos)
+      << "the originating rank's own message must not be rewritten: " << message;
+
+  EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
+}
+
+TEST(AbiParticipantCollectiveReconciliation,
+     ThisRankSSuccessIsOverriddenWhenAFakePeerRefused) {
+  const auto* t = Table();
+  ASSERT_NE(t, nullptr);
+  const auto bytes = fuse::abi_test::build_two_component_lag1_bytes();
+  fuse_ctx* ctx = CreateAndLoad(t, bytes);
+
+  double up_storage[4] = {0, 0, 0, 0};
+  double down_storage[4] = {0, 0, 0, 0};
+  fuse_field_name fname{.struct_size = sizeof(fname)};
+  fuse_field_ref fref{.struct_size = sizeof(fref)};
+  fuse_field_view fview{.struct_size = sizeof(fview)};
+  fview.element_type = FUSE_ELEMENT_F64;
+  fview.memspace = FUSE_MEMSPACE_HOST;
+  fview.ownership = FUSE_OWNERSHIP_OWNED;
+  fview.components = 1;
+  fview.count = 4;
+  fview.owned_count = 4;
+  fview.stride = 1;
+  fname.component = "upstream";
+  fname.field = "out";
+  ASSERT_EQ(t->field_handle(ctx, &fname, &fref), FUSE_OK);
+  fview.handle = fref.handle;
+  fview.data = up_storage;
+  ASSERT_EQ(t->register_field(ctx, &fview, nullptr), FUSE_OK);
+  fname.component = "downstream";
+  fname.field = "in";
+  ASSERT_EQ(t->field_handle(ctx, &fname, &fref), FUSE_OK);
+  fview.handle = fref.handle;
+  fview.data = down_storage;
+  ASSERT_EQ(t->register_field(ctx, &fview, nullptr), FUSE_OK);
+  ASSERT_EQ(t->initialize(ctx, nullptr, nullptr), FUSE_OK);
+  ASSERT_TRUE(fuse::abi_test::force_communicator_set(ctx, 1));
+
+  // "upstream" ticks first in this graph's schedule, so this call
+  // succeeds LOCALLY (FUSE_OK) -- but a fake peer (rank 1 of 2) reports
+  // E-ABI-STEP-ORDER's own FUSE_ERR_STATE. The agreed status must be
+  // that peer's refusal (the only non-FUSE_OK candidate), and this
+  // rank's OWN report must be REWRITTEN to carry it, naming rank 1 --
+  // exactly the hazard D61 exists to close: a rank that locally "passed"
+  // must not proceed alone while a peer refused.
+  ASSERT_TRUE(fuse::abi_test::force_fake_collective_peers(ctx, /*self_rank=*/0,
+                                                           {FUSE_ERR_STATE}));
+
+  fuse_step_request req{.struct_size = sizeof(req)};
+  req.component = "upstream";
+  fuse_step_report rep{.struct_size = sizeof(rep)};
+  const fuse_status rc = t->begin_step(ctx, &req, &rep);
+  EXPECT_EQ(rc, FUSE_ERR_STATE)
+      << "a rank that locally succeeded must still adopt a peer's refusal";
+
+  fuse_error err{.struct_size = sizeof(err)};
+  char buf[256] = {0};
+  err.buffer = buf;
+  err.capacity = sizeof(buf);
+  ASSERT_EQ(t->last_error(ctx, nullptr, &err), FUSE_OK);
+  const std::string message(buf);
+  EXPECT_NE(message.find("rank 1"), std::string::npos)
+      << "the rewritten message must name the refusing rank: " << message;
+
+  EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
+}
+
+TEST(AbiParticipantCollectiveReconciliation,
+     NoCommunicatorConfiguredMeansNoReconciliationEvenWithFakePeersSet) {
+  // Single-process posture (force_communicator_set() never called):
+  // reconcile_collective_status() must treat this exactly like
+  // reconcile_epoch() treats an unconfigured base_communicator -- a
+  // no-op -- even if a test (by mistake, or deliberately here) left fake
+  // peers configured. This is the gate every other test in this section
+  // relies on NOT firing by accident on the suite's many other,
+  // single-process AbiParticipant cases.
+  const auto* t = Table();
+  ASSERT_NE(t, nullptr);
+  const auto bytes = fuse::abi_test::build_two_component_lag1_bytes();
+  fuse_ctx* ctx = CreateAndLoad(t, bytes);
+  ASSERT_TRUE(fuse::abi_test::force_fake_collective_peers(ctx, /*self_rank=*/0,
+                                                           {FUSE_OK}));
+
+  fuse_step_request req{.struct_size = sizeof(req)};
+  req.component = "downstream";  // out of turn: a real, local E-ABI-STEP-STATE
+  fuse_step_report rep{.struct_size = sizeof(rep)};
+  const fuse_status rc = t->begin_step(ctx, &req, &rep);
+  EXPECT_EQ(rc, FUSE_ERR_STATE)
+      << "with no communicator configured, the local verdict must stand "
+         "unreconciled, exactly as before D61";
+
+  EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
+}
+

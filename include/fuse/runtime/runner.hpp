@@ -385,6 +385,58 @@ class Runner {
   /// ask before configuring rather than after failing.
   [[nodiscard]] static std::string_view device_execution_space_name() noexcept;
 
+  /// THE PERIOD CONTRACT (KNOWN_ISSUES.md D57; stated here as the Runner's
+  /// own half -- docs/dev/abi-design.md states the ABI's half of the same
+  /// rule). A period is this Runner's own unit of forward progress: one
+  /// call to `run_period()`, or the externally driven equivalent
+  /// `resume_period()` resuming until the SAME period boundary, advances
+  /// the compiled instruction stream through exactly one period and no
+  /// further. What a caller is entitled to ask for is a COUNT of periods
+  /// (`run()`'s own `periods` argument; an ABI caller's own loop counting
+  /// `fuse_step_report::period`) -- never a promise that state has
+  /// "settled" or "converged" past that count, even on a graph whose
+  /// window-scoped region happens to reach a fixed point every period
+  /// (D57's own real row: a time window that converges in 12 sweeps,
+  /// every period, on a graph with no declared end time at all).
+  ///
+  /// THE INVARIANT D57 FOUND MISSING: **this Runner must never execute a
+  /// period's real instructions beyond the last one the caller actually
+  /// asked for, even when every externally driven component's own request
+  /// for that period has already been resolved and cached.** Resolving
+  /// period N's own first request is "looking up what that period's own
+  /// start requires" and may be done eagerly with no observable effect
+  /// (`fuse_is_coupling_ongoing()`'s own `next_component` does exactly
+  /// this, for free, at a period's start -- its own doc comment). ACTING
+  /// on a period beyond the caller's own requested count -- running a
+  /// real `Transport`/`Epoch`/`Constrain` instruction, or calling a
+  /// component's real `advance()` -- is not: a base-communicator
+  /// collective inside that extra period has no guarantee any OTHER rank
+  /// of the same component ever reaches it, because a driver with its own
+  /// bound (an ABI caller's own `for (p = 0; p < periods; ++p)` loop, or
+  /// `Runner::run()`'s own `for (i = 0; i < periods; ++i) run_period();`)
+  /// stops exactly at that bound and never calls in again. D57's own
+  /// real row measured the consequence directly: two externally driven
+  /// ranks (U, V) each continued into an UNREQUESTED third period's own
+  /// `Constrain` reduction after a converged, no-end-time window reached
+  /// its fixed point at the end of period 2, while a third rank (the
+  /// in-process coupler, driven through `run(components, 2)`) had
+  /// already returned -- U and V then hung forever in that `Constrain`'s
+  /// `MPI_Allreduce`, waiting for a peer that would never call in again.
+  ///
+  /// WHAT ENFORCES THIS. `src/abi/participant.cpp`'s `prime_next_request()`
+  /// is the one caller-facing place this invariant can be violated from:
+  /// when the current period has just drained with no end time declared
+  /// AND a base communicator is configured (`fuse_ctx::communicator_set`),
+  /// it must stop -- `c.next_request.reset(); return true;` -- and leave
+  /// starting the FOLLOWING period's own first request to a LATER,
+  /// separate caller-initiated `fuse_begin_step()` call, rather than
+  /// resuming the stream again inside the SAME call that just closed the
+  /// prior period. `test/verification/abi_period_boundary_test.cpp`'s
+  /// `AbiPeriodBoundary.NeverRunsAPeriodTheCallerDidNotRequestOnceState
+  /// HasReachedAFixedPoint` pins exactly this, at tier 0, through the
+  /// real public ABI (no MPI, `fuse::abi_test::force_communicator_set()`
+  /// standing in for a live communicator the same way D57's own earlier
+  /// `brusselator_period_rollover_test.cpp` does).
   Result<void> run_period(ComponentSet& components);
   Result<void> run(ComponentSet& components, std::int64_t periods);
 
