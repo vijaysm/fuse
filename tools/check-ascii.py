@@ -68,9 +68,24 @@ def is_declared_binary_fixture(rel_posix: str) -> bool:
 
 
 def tracked_files(root: Path) -> list[Path]:
-    out = subprocess.run(["git", "ls-files"], cwd=root, check=True,
-                          stdout=subprocess.PIPE, text=True).stdout
-    return [root / line for line in out.splitlines() if line]
+    """Every tracked file, or every regular file when `root` is not a git
+    checkout (a `git archive` export, which is how the CI legs and verify.sh
+    run the gates: the first local run of the CI gates leg died here with a
+    CalledProcessError, 2026-10-18). The walk skips directories git would
+    never track or that hold build output."""
+    proc = subprocess.run(["git", "ls-files"], cwd=root,
+                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    if proc.returncode == 0:
+        return [root / line for line in proc.stdout.splitlines() if line]
+    skip_dirs = {".git", "_build", "__pycache__", ".cache", "CMakeFiles", "Testing"}
+    files: list[Path] = []
+    for path in sorted(root.rglob("*")):
+        rel = path.relative_to(root).parts
+        if any(part in skip_dirs or part.startswith("build") for part in rel[:-1]):
+            continue
+        if path.is_file() and not path.is_symlink():
+            files.append(path)
+    return files
 
 
 def display_path(path: Path, root: Path) -> str:

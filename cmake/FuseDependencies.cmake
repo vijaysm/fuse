@@ -230,8 +230,17 @@ FetchContent_Declare(r3d
   GIT_REPOSITORY https://github.com/devonmpowell/r3d.git GIT_TAG ${FUSE_R3D_TAG}
   FIND_PACKAGE_ARGS NAMES r3d)
 
+# SOURCE_SUBDIR names a directory with no CMakeLists.txt, so
+# FetchContent_MakeAvailable downloads Eigen and adds NOTHING: Eigen is
+# header-only, and its top-level CMakeLists.txt creates an unconditional
+# `uninstall` custom target that collides with the one yaml-cpp creates when
+# both are fetched into one build ("add_custom_target cannot create target
+# uninstall", every tier-0 eigen leg, first local run of the CI legs
+# 2026-10-18). The Eigen3::Eigen target is then made below from the source
+# directory alone.
 FetchContent_Declare(Eigen3
-  GIT_REPOSITORY https://gitlab.com/libeigen/eigen.git GIT_TAG ${FUSE_EIGEN_TAG} GIT_SHALLOW ON)
+  GIT_REPOSITORY https://gitlab.com/libeigen/eigen.git GIT_TAG ${FUSE_EIGEN_TAG} GIT_SHALLOW ON
+  SOURCE_SUBDIR fuse-header-only-no-cmake)
 
 # ArborX. GIT_TAG is the pinned COMMIT (see FUSE_ARBORX_COMMIT's comment
 # above), not the tag string -- FIND_PACKAGE_ARGS still names the version so
@@ -266,7 +275,12 @@ file(WRITE "${FUSE_RESOLUTION_FILE}" "")
 # otherwise fail with the hint, because guessing is how a build silently stops
 # measuring the library the machine was tuned with.
 function(fuse_require package)
-  cmake_parse_arguments(ARG "" "VERSION;FETCH_AS;HINT" "NAMES" ${ARGN})
+  # HEADER_ONLY: the FetchContent_Declare used a SOURCE_SUBDIR with no
+  # CMakeLists.txt, so MakeAvailable only downloads; nothing is added as a
+  # directory, the version cannot be read from a directory scope, and the
+  # caller builds the imported target itself from <content>_SOURCE_DIR,
+  # which this function exports for that purpose.
+  cmake_parse_arguments(ARG "HEADER_ONLY" "VERSION;FETCH_AS;HINT" "NAMES" ${ARGN})
   set(_names ${ARG_NAMES})
   if(NOT _names)
     set(_names ${package})
@@ -324,7 +338,10 @@ function(fuse_require package)
   # Reading it this way reports the version that was actually BUILT rather than
   # the tag we asked for, which are the same thing until a tag is moved.
   string(TOLOWER "${_content}" _content_lc)
-  if(DEFINED ${_content_lc}_SOURCE_DIR)
+  if(ARG_HEADER_ONLY)
+    set(${_content_lc}_SOURCE_DIR "${${_content_lc}_SOURCE_DIR}" PARENT_SCOPE)
+    set(${package}_VERSION "${ARG_VERSION}" PARENT_SCOPE)
+  elseif(DEFINED ${_content_lc}_SOURCE_DIR)
     get_directory_property(_fetched_version
       DIRECTORY "${${_content_lc}_SOURCE_DIR}" DEFINITION ${package}_VERSION)
     if(_fetched_version)
@@ -643,7 +660,17 @@ macro(fuse_resolve_dependencies)
     # No version constraint: Eigen3Config is SameMajorVersion, so asking for 3.4
     # rejects an installed 5.x outright. The facade uses dense QR, small
     # least-squares and sparse products, whose API is identical across both.
-    fuse_require(Eigen3 NAMES Eigen3 HINT "Set FUSE_LINALG_BACKEND=builtin to use the built-in factorisation instead.")
+    fuse_require(Eigen3 NAMES Eigen3 HEADER_ONLY HINT "Set FUSE_LINALG_BACKEND=builtin to use the built-in factorisation instead.")
+    if(NOT TARGET Eigen3::Eigen)
+      # The fetch path (see the FetchContent_Declare above) adds no
+      # subdirectory, so the target does not exist yet; an installed Eigen
+      # provides it through Eigen3Config and skips this.
+      if(NOT eigen3_SOURCE_DIR OR NOT EXISTS "${eigen3_SOURCE_DIR}/Eigen/Core")
+        message(FATAL_ERROR "fuse: Eigen3 was fetched but ${eigen3_SOURCE_DIR}/Eigen/Core does not exist")
+      endif()
+      add_library(Eigen3::Eigen INTERFACE IMPORTED)
+      target_include_directories(Eigen3::Eigen SYSTEM INTERFACE "${eigen3_SOURCE_DIR}")
+    endif()
     # Every TU here goes through nvcc_wrapper when Kokkos has CUDA (see the
     # Kokkos::CUDA block above), and Eigen under nvcc marks every method
     # EIGEN_DEVICE_FUNC (= __host__ __device__), which nvcc then warns about
