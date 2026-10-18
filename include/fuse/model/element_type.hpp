@@ -45,8 +45,15 @@
 /// trait but fails with an internal compiler error ("unsupported float
 /// variant") as soon as a value of that type is formed, so a translation
 /// unit compiled by nvcc never sees the `_Float16` specialisations below.
+///
+/// This is a per-translation-unit compiler fact, not a configure-time
+/// option, so it is NOT a `FUSE_HAVE_*` macro: those are `#cmakedefine01`
+/// values from config.hpp.in and tools/check-invariants.py reserves the
+/// name pattern for them. Always defined, as 0 or 1, tested with `#if`.
 #if defined(__FLT16_MANT_DIG__) && !defined(__CUDACC__)
-#define FUSE_HAVE_FLOAT16 1
+#define FUSE_NATIVE_FLOAT16 1
+#else
+#define FUSE_NATIVE_FLOAT16 0
 #endif
 #include <string>
 #include <type_traits>
@@ -236,7 +243,7 @@ struct ElementTypeOf<bool> {
   static constexpr ElementType value = ElementType::Bool;
 };
 
-#if defined(FUSE_HAVE_FLOAT16)
+#if FUSE_NATIVE_FLOAT16
 /// Only ever instantiated by a build whose compiler provides `_Float16`
 /// (see the file header comment) -- `fuse::put_field<_Float16>()` simply
 /// does not exist to call on a compiler without it, which is the

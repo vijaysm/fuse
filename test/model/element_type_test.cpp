@@ -21,7 +21,7 @@ TEST(ElementType, TraitResolvesEveryCppTypeToItsOwnEnumerator) {
   static_assert(fuse::kElementTypeOf<double> == fuse::ElementType::Binary64);
   static_assert(fuse::kElementTypeOf<long double> == fuse::ElementType::LongDouble);
   static_assert(fuse::kElementTypeOf<bool> == fuse::ElementType::Bool);
-#if defined(FUSE_HAVE_FLOAT16)
+#if FUSE_NATIVE_FLOAT16
   static_assert(fuse::kElementTypeOf<_Float16> == fuse::ElementType::Binary16);
 #endif
   SUCCEED();
