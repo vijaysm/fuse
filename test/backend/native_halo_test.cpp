@@ -944,4 +944,149 @@ TEST(NativeHaloSecondTarget, GhostOffsetIndexesTheSecondHaloBlockCorrectly) {
       << "measured linear-field reproduction error through a SECOND halo's ghost block";
 }
 
+
+// ---------------------------------------------------------------------------
+// KNOWN_ISSUES D27: `fuse::native::accumulate_remap_halo`, the reverse
+// exchange. The nontrivial data motion (the adjoint Alltoallv) needs a
+// REAL `PackedExchanger`, which needs MPI -- not available in this sandbox
+// (docs/dev/testing.md) -- so what is RUN here is (a) the function's own
+// argument validation and no-op short-circuits, against `make_serial_
+// exchanger()` and a minimal test-only `GhostExchanger` that is NOT a
+// `PackedExchanger`, both requiring no MPI symbol at all, and (b) an
+// INDEPENDENT arithmetic oracle proving the conservation identity the
+// function's own contract states (owner's sum plus every halo copy's sum,
+// summed back, equals owned-count plus halo-count when every slot starts
+// at 1.0) over the REAL `GhostPattern` the 3-rank misaligned U/V fixture
+// above produces -- the identical technique `NativeHaloQuadGrid`'s own
+// `Oracle` above uses for the covering-set geometry, applied here to the
+// reverse-exchange arithmetic instead. `test/parallel/native_halo_mpi_
+// test.cpp`'s own `AccumulateRemapHaloRoundTripsExactly` is the host-run
+// proof that the PRODUCTION function's own Alltoallv reproduces this same
+// identity; this file proves the identity itself and the function's
+// reachable-without-MPI refusals.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// A `GhostExchanger` that reports a nonzero ghost count but is NOT a
+/// `PackedExchanger` -- the one way to reach `accumulate_remap_halo`'s own
+/// `E-MESH-HALO` "no PackedExchanger facet" refusal without a real MPI
+/// build, where `make_mpi_exchanger()`'s concrete type always implements
+/// both (comm_mpi.cpp's own `MpiExchanger : public GhostExchanger, public
+/// PackedExchanger`). `update()` is never called by `accumulate_remap_
+/// halo` (only `ghost_size()` is, before the `dynamic_cast`), so it is
+/// left unimplemented-but-correct (a trivial no-op) rather than omitted.
+class GhostOnlyFakeExchanger : public fuse::linalg::GhostExchanger {
+ public:
+  explicit GhostOnlyFakeExchanger(std::size_t ghost_n) : ghost_n_(ghost_n) {}
+  [[nodiscard]] std::size_t ghost_size() const override { return ghost_n_; }
+  [[nodiscard]] fuse::Result<void> update(const double*, std::size_t, double*,
+                                          std::size_t) const override {
+    return fuse::Result<void>::success();
+  }
+
+ private:
+  std::size_t ghost_n_;
+};
+
+}  // namespace
+
+TEST(NativeHaloAccumulate, SerialExchangerIsASuccessfulNoOp) {
+  const auto exchanger = fuse::linalg::make_serial_exchanger();
+  ASSERT_EQ(exchanger->ghost_size(), 0u);
+  double owned = 7.0;
+  const auto r =
+      fuse::native::accumulate_remap_halo(*exchanger, &owned, 1, /*ghosts=*/nullptr, /*ghost_n=*/0);
+  ASSERT_TRUE(r.ok()) << r.error().message;
+  EXPECT_EQ(owned, 7.0) << "a no-op must not touch the owned buffer at all";
+}
+
+TEST(NativeHaloAccumulate, GhostCountMismatchRefusesWithEMeshArg) {
+  const auto exchanger = fuse::linalg::make_serial_exchanger();  // ghost_size() == 0
+  double owned = 0.0;
+  std::vector<double> ghosts(3, 1.0);
+  const auto r = fuse::native::accumulate_remap_halo(*exchanger, &owned, 1, ghosts.data(), 3);
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.error().code, "E-MESH-ARG");
+}
+
+TEST(NativeHaloAccumulate, NoPackedExchangerFacetRefusesWithEMeshHalo) {
+  GhostOnlyFakeExchanger exchanger(2);
+  double owned = 0.0;
+  std::vector<double> ghosts(2, 1.0);
+  const auto r = fuse::native::accumulate_remap_halo(exchanger, &owned, 1, ghosts.data(), 2);
+  ASSERT_FALSE(r.ok()) << "a GhostExchanger with ghosts but no PackedExchanger facet must refuse, "
+                         "not silently skip the accumulation";
+  EXPECT_EQ(r.error().code, "E-MESH-HALO");
+}
+
+TEST(NativeHaloAccumulate, NullBufferWithOutstandingGhostsRefusesWithEMeshArg) {
+  GhostOnlyFakeExchanger exchanger(1);
+  std::vector<double> ghosts(1, 1.0);
+  const auto r = fuse::native::accumulate_remap_halo(exchanger, /*owned=*/nullptr, 0,
+                                                     ghosts.data(), 1);
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.error().code, "E-MESH-ARG");
+}
+
+// ---------------------------------------------------------------------------
+// The arithmetic oracle: the SAME double loop a correct adjoint exchange
+// must perform (for every rank r and every one of its ghosts g: add
+// ghosts_of[r][g] into owned_of[pattern[r].owner_rank[g]][pattern[r].
+// remote_local_index[g]], then zero it), run directly over the REAL
+// `GhostPattern` objects `run_halo_pipeline` built for the 3-rank
+// misaligned U/V fixture -- proving the IDENTITY the production function's
+// contract states, independent of any MPI plumbing. Every contribution is
+// exactly 1.0 and every count here is far below 2^53, so the identity
+// below is EXACT (not a tolerance), the same trick
+// `RemapHaloMpiSphere.BuildRemapHaloDeliversExactHaloValuesAndRoundTripsEx
+// actly` (test/parallel/remap_halo_mpi_test.cpp) uses for the MOAB side of
+// this exact contract.
+// ---------------------------------------------------------------------------
+TEST(NativeHaloAccumulate, OracleSumOfOwnedAfterFoldingEveryHaloCopyEqualsCellsPlusHaloInstances) {
+  constexpr int kRanks = 3;
+  auto ranks = build_ranks(kRanks);
+  const auto run = run_halo_pipeline(ranks, kRanks);
+
+  // owned_of[r] starts at 1.0 per OWNED U cell (the same convention the
+  // MOAB test uses: every local entity, owned or halo, starts at 1.0).
+  std::vector<std::vector<double>> owned_of(kRanks);
+  std::vector<std::vector<double>> ghosts_of(kRanks);
+  std::size_t total_owned = 0;
+  std::size_t total_halo = 0;
+  for (int r = 0; r < kRanks; ++r) {
+    const std::size_t owned_n = ranks[static_cast<std::size_t>(r)].u->owned_count(2);
+    owned_of[static_cast<std::size_t>(r)].assign(owned_n, 1.0);
+    const std::size_t ghost_n = run.pattern[static_cast<std::size_t>(r)].owner_rank.size();
+    ghosts_of[static_cast<std::size_t>(r)].assign(ghost_n, 1.0);
+    total_owned += owned_n;
+    total_halo += ghost_n;
+  }
+  ASSERT_GT(total_halo, 0u) << "the 6/5/5 vs 8/8/8 row split is misaligned, so this oracle must "
+                              "exercise a nonzero fold, the same precondition "
+                              "ThreeRanksMisalignedAdoptsExactlyWhatTheOracleComputes checks";
+
+  for (int r = 0; r < kRanks; ++r) {
+    const auto& pattern = run.pattern[static_cast<std::size_t>(r)];
+    auto& ghosts = ghosts_of[static_cast<std::size_t>(r)];
+    for (std::size_t g = 0; g < pattern.owner_rank.size(); ++g) {
+      const auto owner = static_cast<std::size_t>(pattern.owner_rank[g]);
+      const auto remote_idx = static_cast<std::size_t>(pattern.remote_local_index[g]);
+      owned_of[owner][remote_idx] += ghosts[g];
+      ghosts[g] = 0.0;
+    }
+  }
+
+  double total = 0.0;
+  for (int r = 0; r < kRanks; ++r) {
+    for (const double v : owned_of[static_cast<std::size_t>(r)]) total += v;
+    for (const double v : ghosts_of[static_cast<std::size_t>(r)]) {
+      EXPECT_EQ(v, 0.0) << "rank " << r << ": every halo slot must be zeroed after folding";
+    }
+  }
+  EXPECT_EQ(total, static_cast<double>(total_owned) + static_cast<double>(total_halo))
+      << "folding every halo copy back to its owner must account for exactly one addition per "
+        "halo instance, with nothing lost or duplicated";
+}
+
 }  // namespace

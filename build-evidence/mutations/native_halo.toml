@@ -1,0 +1,54 @@
+# Mutations for KNOWN_ISSUES D27: fuse::native::accumulate_remap_halo's
+# argument-validation and no-op refusals (src/backend/native_halo.cpp). Own
+# file per the review-fix protocol: do not edit build-evidence/mutations.toml
+# directly while other fixers hold it dirty.
+#
+# The REAL Alltoallv-based summation inside accumulate_remap_halo's
+# `#if FUSE_HAVE_MPI` branch needs a real communicator to exercise at all
+# (this sandbox cannot initialise MPI, KNOWN_ISSUES.md C1), so it is NOT
+# mutation-tested here -- only the argument validation and no-op paths
+# `NativeHaloAccumulate`'s tier-0 rows (test/backend/native_halo_test.cpp)
+# actually run are. test/parallel/native_halo_mpi_test.cpp's own
+# AccumulateRemapHaloRoundTripsExactly row is the host-run proof for the
+# summation itself.
+
+[[mutation]]
+id = "accumulate-remap-halo-ghost-count-mismatch-not-checked"
+area = "backend"
+describes = "accumulate_remap_halo's own ghost_n-must-match-the-exchanger's-pattern check (native_halo.hpp's own contract) is removed, so a caller passing a ghost_n that disagrees with the exchanger's own ghost_size() is silently accepted instead of refused E-MESH-ARG."
+file = "src/backend/native_halo.cpp"
+old = "  if (ghost_n != exchanger.ghost_size()) {"
+new = "  if (false) {"
+target = "fuse_backend_native_halo_test"
+test = "backend.native_halo"
+
+[[mutation]]
+id = "accumulate-remap-halo-zero-ghost-noop-skipped"
+area = "backend"
+describes = "The ghost_n == 0 no-op short-circuit is removed, so a serial (or already-fully-folded) call falls through into the PackedExchanger dynamic_cast below -- make_serial_exchanger()'s object is not a PackedExchanger, so this flips a documented successful no-op into an E-MESH-HALO refusal."
+file = "src/backend/native_halo.cpp"
+old = "  if (ghost_n == 0) {"
+new = "  if (false) {"
+target = "fuse_backend_native_halo_test"
+test = "backend.native_halo"
+
+[[mutation]]
+id = "accumulate-remap-halo-null-buffer-not-checked"
+area = "backend"
+describes = "The null-owned/null-ghosts guard is removed, so a caller handing a null buffer with outstanding ghosts is not refused E-MESH-ARG before the function would otherwise dereference it."
+file = "src/backend/native_halo.cpp"
+old = "  if (owned == nullptr || ghosts == nullptr) {"
+new = "  if (false) {"
+target = "fuse_backend_native_halo_test"
+test = "backend.native_halo"
+
+[[mutation]]
+id = "accumulate-remap-halo-missing-packed-exchanger-facet-not-checked"
+area = "backend"
+describes = "The PackedExchanger dynamic_cast null-check is removed, so a GhostExchanger that reports outstanding ghosts but implements no PackedExchanger facet (a caller/factory mismatch native_halo.hpp's own contract names explicitly) is not refused E-MESH-HALO -- the function proceeds to call through a null pointer instead. Lives inside accumulate_remap_halo's own `#if FUSE_HAVE_MPI` branch (native_halo.cpp), so a tier-0 (no-MPI) build never compiles this line at all -- confirmed empirically: the SAME test (NoPackedExchangerFacetRefusesWithEMeshHalo) passes unchanged with this mutation applied under fuse_backend_native_halo_test's tier-0 configuration, because the mutated line is dead code there, not because the test is weak. requires = \"mpi\" marks it NOT-ASSESSED rather than falsely KILLED, the same courtesy the transport mutations already use (KNOWN_ISSUES D5's own history)."
+file = "src/backend/native_halo.cpp"
+old = "  if (packed == nullptr) {"
+new = "  if (false) {"
+target = "fuse_backend_native_halo_test"
+test = "backend.native_halo"
+requires = "mpi"

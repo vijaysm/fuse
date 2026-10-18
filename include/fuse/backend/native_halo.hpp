@@ -156,4 +156,74 @@ struct Box3 {
                                                           MeshId source, MeshId target, int dim,
                                                           ComponentId placement);
 
+// ===========================================================================
+// KNOWN_ISSUES D27: the reverse exchange, the native backend's counterpart
+// to `MoabMeshBackend::accumulate_remap_halo` (moab_backend.hpp). The
+// forward fill above (`remap_halo_pattern` plugged into
+// `fuse::linalg::make_mpi_exchanger`/`GhostExchanger::update`) has no
+// reverse; this is it.
+// ===========================================================================
+
+/// COLLECTIVE, the reverse of the fill `GhostExchanger::update()` performs
+/// along the SAME pattern: `ghosts[g]` is ADDED to its owner's own slot of
+/// `owned` (`owned[pattern.remote_local_index[g]]` on rank
+/// `pattern.owner_rank[g]`, for the `GhostPattern` `exchanger` was built
+/// from), and every ghost slot is then zeroed. Exists for the identical
+/// reason `MoabMeshBackend::accumulate_remap_halo` does (its own header
+/// comment, moab_backend.hpp): a conservation audit that sums a source
+/// cell's weight contributions across every rank holding a copy of it needs
+/// the two partial sums -- the owner's own and every halo copy's -- folded
+/// into one place, and only their sum is the cell's real coverage.
+///
+/// Built from `fuse::linalg::PackedExchanger::exchange_packed_adjoint`
+/// (comm.hpp) -- the SAME "ADJOINT exchange" primitive
+/// `src/backend/nodal_remap_distributed.cpp`'s own H^T scatter-add already
+/// uses to fold ghost contributions back to their owners, reached here via
+/// `unpack_index()` (this rank's own ghosts, in the order `send_buf` must
+/// be packed) and `pack_index()` (this rank's own owned entries, in the
+/// order the adjoint call's answer comes back) rather than any new
+/// mechanism. Reusing the EXCHANGER object a caller already built for the
+/// forward fill, not rebuilding one, is the design comm.hpp's own header
+/// comment states ("the pattern itself ... is derived ONCE").
+///
+/// DEVIATION FROM `MoabMeshBackend::accumulate_remap_halo`'s LITERAL
+/// SIGNATURE, stated rather than left to be discovered as an undocumented
+/// diff: MOAB's version takes one combined `entity_count(dim) * components`
+/// buffer (owned and halo slots together, addressed by MeshView local
+/// index) because that is how MOAB's own halo exchange already addresses a
+/// field. The native backend's existing `GhostExchanger`/`PackedExchanger`
+/// machinery -- the SAME one the forward fill already uses
+/// (`native_halo_mpi_test.cpp`'s own `BuildRemapHaloThenBuildWeightsThen
+/// ExchangeReproducesALinearFieldToOrderH` test) -- addresses a field as
+/// two SEPARATE arrays, `owned` (size `owned_n`) and `ghosts` (size
+/// `exchanger.ghost_size()`), the same two arrays `GhostExchanger::update()`
+/// itself takes; there is no existing native consumer of a SINGLE
+/// MeshView-local-index-addressed buffer for this halo. This function
+/// follows that SAME two-array idiom rather than introducing a different
+/// one, so `exchange_remap_halo`'s and this function's buffers share the
+/// addressing convention everything else in this file already uses.
+/// `components` is not a parameter for the identical reason
+/// `GhostExchanger::update()` itself has none: a caller needing more than
+/// one component calls this once per component, exactly as
+/// `native_halo_mpi_test.cpp`'s own forward-fill test calls `update()` once
+/// per field it fills.
+///
+/// A no-op, returning success, when `ghost_n == 0` -- the identical
+/// serial/no-halo short-circuit `exchanger.ghost_size() == 0` already
+/// reports, correct for both a true one-rank run and a halo that adopted no
+/// cells.
+///
+/// Errors, never throws: `E-MESH-ARG` for a null `owned`/`ghosts` pointer
+/// with a nonzero size, or for `ghost_n != exchanger.ghost_size()`;
+/// `E-MESH-HALO` if `ghost_n > 0` but `exchanger` exposes no
+/// `PackedExchanger` facet (unreachable for a real `make_mpi_exchanger()`
+/// result, which always implements both; reachable only from a caller
+/// handing this function a `GhostExchanger` of its own that reports ghosts
+/// without implementing the adjoint exchange -- a caller/factory mismatch,
+/// not a data error); whatever `exchange_packed_adjoint` itself propagates
+/// from its own `MPI_Alltoallv`.
+[[nodiscard]] Result<void> accumulate_remap_halo(const fuse::linalg::GhostExchanger& exchanger,
+                                                 double* owned, std::size_t owned_n,
+                                                 double* ghosts, std::size_t ghost_n);
+
 }  // namespace fuse::native

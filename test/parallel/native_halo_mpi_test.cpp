@@ -283,6 +283,75 @@ TEST(NativeHaloMpi, BuildRemapHaloIsIdempotentUnderARealCommunicator) {
 // failure. Post-fix: every rank returns within the timeout, rank 0 with
 // its own E-REMAP-DIM and every other rank with E-MESH-HALO-PEER-REFUSED.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// KNOWN_ISSUES D27: `fuse::native::accumulate_remap_halo`, the reverse
+// exchange, under a REAL communicator -- the native counterpart of
+// `RemapHaloMpiSphere.BuildRemapHaloDeliversExactHaloValuesAndRoundTripsEx
+// actly` (test/parallel/remap_halo_mpi_test.cpp), adapted to this
+// backend's own owned/ghost two-array idiom instead of MOAB's combined
+// local-index buffer (native_halo.hpp's own header comment on that
+// difference). Every local slot -- owned or ghost -- starts at EXACTLY
+// 1.0; `accumulate_remap_halo` adds every ghost's value into its owner
+// and zeroes the ghost, so the global sum of every rank's OWNED array
+// afterward must equal (global owned cell count) + (global ghost
+// count) EXACTLY (every addition is of the value 1.0, well inside
+// double's 2^53 exact-integer range at this problem size) -- the
+// identical "lost or duplicated message breaks the identity outright"
+// check the MOAB test performs.
+// ---------------------------------------------------------------------------
+TEST(NativeHaloMpi, AccumulateRemapHaloRoundTripsExactly) {
+  int rank = 0, size = 1;
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+  MPI_Comm_size(MPI_COMM_WORLD, &size);
+  Fixture f(rank, size);
+
+  const auto adopted = fuse::build_remap_halo(f.plan, f.graph, f.backend);
+  ASSERT_TRUE(adopted.ok()) << adopted.error().code << ": " << adopted.error().message;
+
+  const auto u_view_r = f.backend.native_view(f.u_mid, ComponentId{});
+  ASSERT_TRUE(u_view_r.ok());
+  const NativeMeshView& u = *u_view_r.value();
+
+  const auto pattern_r = f.backend.remap_halo_pattern(f.u_mid, f.v_mid, 2);
+  ASSERT_TRUE(pattern_r.ok()) << pattern_r.error().message;
+  const std::size_t owned_n = u.owned_count(2);
+  auto exchanger = fuse::linalg::make_mpi_exchanger(world_handle(), pattern_r.value(), owned_n);
+  ASSERT_NE(exchanger, nullptr);
+  const std::size_t ghost_n = exchanger->ghost_size();
+  ASSERT_EQ(ghost_n, pattern_r.value().owner_rank.size());
+
+  std::vector<double> owned(owned_n, 1.0);
+  std::vector<double> ghosts(ghost_n, 1.0);
+  const auto acc =
+      fuse::native::accumulate_remap_halo(*exchanger, owned.data(), owned_n, ghosts.data(), ghost_n);
+  ASSERT_TRUE(acc.ok()) << acc.error().code << ": " << acc.error().message;
+
+  for (std::size_t g = 0; g < ghost_n; ++g) {
+    EXPECT_EQ(ghosts[g], 0.0) << "rank " << rank
+                             << ": accumulate_remap_halo must zero every ghost slot it folded "
+                                "into its owner";
+  }
+  double local_owned_sum = 0.0;
+  for (const double v : owned) local_owned_sum += v;
+
+  const long long local_cells = static_cast<long long>(owned_n);
+  const long long local_halo = static_cast<long long>(ghost_n);
+  long long global_cells = 0, global_halo = 0;
+  double global_owned_sum = 0.0;
+  ASSERT_EQ(MPI_Allreduce(&local_cells, &global_cells, 1, MPI_LONG_LONG, MPI_SUM, MPI_COMM_WORLD),
+           MPI_SUCCESS);
+  ASSERT_EQ(MPI_Allreduce(&local_halo, &global_halo, 1, MPI_LONG_LONG, MPI_SUM, MPI_COMM_WORLD),
+           MPI_SUCCESS);
+  ASSERT_EQ(MPI_Allreduce(&local_owned_sum, &global_owned_sum, 1, MPI_DOUBLE, MPI_SUM,
+                         MPI_COMM_WORLD),
+           MPI_SUCCESS);
+  EXPECT_EQ(global_owned_sum,
+           static_cast<double>(global_cells) + static_cast<double>(global_halo))
+      << "accumulate_remap_halo's round trip must be exact: every one of the " << global_halo
+      << " halo instances built across the communicator must add exactly once to its rightful "
+        "owner";
+}
+
 TEST(NativeHaloMpi, ADisagreeingDimensionRefusesOnEveryRankInsteadOfHanging) {
   int rank = 0, size = 1;
   MPI_Comm_rank(MPI_COMM_WORLD, &rank);

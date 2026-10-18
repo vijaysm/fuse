@@ -596,4 +596,85 @@ Result<std::size_t> build_native_remap_halo(NativeMeshBackend& backend, MeshId s
 #endif  // FUSE_HAVE_MPI
 }
 
+// ---------------------------------------------------------------------------
+// KNOWN_ISSUES D27: the reverse exchange (native_halo.hpp's own header
+// comment carries the full contract). Built from
+// `fuse::linalg::PackedExchanger::exchange_packed_adjoint`, the same
+// adjoint Alltoallv `src/backend/nodal_remap_distributed.cpp`'s own H^T
+// scatter-add already uses -- `unpack_index()`/`pack_index()` are the two
+// index maps that primitive exposes (comm.hpp's own header comment: "this
+// participant's REQUEST side"/"ANSWER side"), and neither depends on any
+// detail of the concrete MPI exchanger beyond the `PackedExchanger`
+// interface itself.
+// ---------------------------------------------------------------------------
+Result<void> accumulate_remap_halo(const fuse::linalg::GhostExchanger& exchanger, double* owned,
+                                   std::size_t owned_n, double* ghosts, std::size_t ghost_n) {
+  if (ghost_n != exchanger.ghost_size()) {
+    return Failure{"E-MESH-ARG",
+                 fmt::format("accumulate_remap_halo: ghost_n={} does not match the exchanger's "
+                            "own pattern ({} ghosts)",
+                            ghost_n, exchanger.ghost_size())};
+  }
+  if (ghost_n == 0) {
+    // The identical serial/no-halo short-circuit `exchanger.ghost_size() ==
+    // 0` already reports: no Alltoallv is issued, so this is correct both
+    // for a true one-rank run (`make_serial_exchanger()`) and for a
+    // multi-rank run whose halo adopted no cells.
+    return Result<void>::success();
+  }
+  if (owned == nullptr || ghosts == nullptr) {
+    return Failure{"E-MESH-ARG",
+                 fmt::format("accumulate_remap_halo: null buffer with {} ghost(s) outstanding",
+                            ghost_n)};
+  }
+  (void)owned_n;  // not indexed directly: every write goes through pack_index()'s own mapping.
+#if FUSE_HAVE_MPI
+  const auto* packed = dynamic_cast<const fuse::linalg::PackedExchanger*>(&exchanger);
+  if (packed == nullptr) {
+    return Failure{"E-MESH-HALO",
+                 fmt::format("accumulate_remap_halo: this exchanger carries {} ghost(s) but "
+                            "exposes no PackedExchanger facet -- unreachable for a real "
+                            "make_mpi_exchanger() result, which always implements both",
+                            ghost_n)};
+  }
+  // Pack this rank's own ghost values in REQUEST order (`unpack_index()`'s
+  // own order: entry k is which GHOST SLOT this request-ordered position
+  // answers -- the same map `update()` itself reads FROM when filling
+  // ghosts; here the roles are reversed, so it is read, not written).
+  const auto& unpack_idx = packed->unpack_index();
+  std::vector<double> send_buf(ghost_n, 0.0);
+  for (std::size_t k = 0; k < ghost_n; ++k) {
+    send_buf[k] = ghosts[static_cast<std::size_t>(unpack_idx[k])];
+  }
+  // The adjoint Alltoallv: this rank's REQUEST-ordered ghost values travel
+  // to their owners, landing in ANSWER order -- `pack_index()[k]` is which
+  // of THIS rank's own owned local indices answer-position k's value
+  // belongs to (the same map `update()` reads FROM to pack an owned value
+  // for a REQUESTER; here it names the DESTINATION of an incoming one).
+  const auto& pack_idx = packed->pack_index();
+  std::vector<double> recv_buf(pack_idx.size(), 0.0);
+  const auto ex = packed->exchange_packed_adjoint(send_buf.data(), recv_buf.data());
+  if (!ex.ok()) return ex.error();
+  // Accumulate: a caller receiving into the same destination index more
+  // than once (several requesters holding a halo copy of the same owned
+  // entity) must add, exactly as `comm.hpp`'s own `exchange_packed_adjoint`
+  // header comment states -- the ordinary scatter-add a plain `+=` loop
+  // already performs, with no further grouping needed.
+  for (std::size_t k = 0; k < pack_idx.size(); ++k) {
+    owned[static_cast<std::size_t>(pack_idx[k])] += recv_buf[k];
+  }
+  // The halo copies have been handed to their owners; leaving them in
+  // place would let a second call add them again -- the identical
+  // bookkeeping `MoabMeshBackend::Impl::run_halo_exchange`'s own reverse
+  // branch performs (moab_backend.cpp).
+  for (std::size_t g = 0; g < ghost_n; ++g) ghosts[g] = 0.0;
+  return Result<void>::success();
+#else
+  return Failure{"E-MESH-HALO",
+               fmt::format("accumulate_remap_halo: {} ghost(s) outstanding but this build has "
+                          "no MPI, so no PackedExchanger facet can exist",
+                          ghost_n)};
+#endif  // FUSE_HAVE_MPI
+}
+
 }  // namespace fuse::native
