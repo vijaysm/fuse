@@ -1558,6 +1558,7 @@ else()
     verification/brusselator_newton_norm_test.cpp
     verification/brusselator_accept_layout_test.cpp
     verification/brusselator_external_delivery_size_test.cpp
+    verification/brusselator_restart_test.cpp
     verification/brusselator_diffusion_solver_cache_test.cpp
     verification/brusselator_refusal_coverage_test.cpp)
   list(APPEND _fuse_eigen_gated_tests
@@ -1582,17 +1583,26 @@ endif()
 # tier 0 can reach. Needs fuse::abi on top of the plain brusselator deps
 # above (hence its own fuse_add_gtest call, not folded into the foreach
 # loop above, which never links fuse::abi).
-fuse_add_gtest(verification brusselator_period_rollover NO_LAYER_LIB
-               LIBS fuse::runtime fuse::backend fuse::model fuse::abi Eigen3::Eigen Kokkos::kokkos)
-target_include_directories(fuse_verification_brusselator_period_rollover_test PRIVATE
-  ${CMAKE_SOURCE_DIR}/examples/brusselator
-  ${CMAKE_SOURCE_DIR}/src/abi)
-# fuse::abi_test::run_stats() (src/abi/test_support.{hpp,cpp}) reaches
-# past the frozen public ABI to read fuse::RunStats off the context's
-# own Runner -- the SAME test-only seam test/abi/*.cpp already link
-# directly rather than through the installed library.
-target_sources(fuse_verification_brusselator_period_rollover_test PRIVATE
-  ${CMAKE_SOURCE_DIR}/src/abi/test_support.cpp)
+# Links Eigen3::Eigen (the Brusselator's diffusion solver), so it exists
+# only under FUSE_LINALG_BACKEND=eigen, like the Brusselator foreach above;
+# under builtin it is declared gated (BC-1). Registered unconditionally at
+# first, it failed every builtin configure (first local run of the CI
+# tier0 legs, 2026-10-18), hidden behind the restart test's own gap.
+if(FUSE_LINALG_BACKEND STREQUAL "eigen")
+  fuse_add_gtest(verification brusselator_period_rollover NO_LAYER_LIB
+                 LIBS fuse::runtime fuse::backend fuse::model fuse::abi Eigen3::Eigen Kokkos::kokkos)
+  target_include_directories(fuse_verification_brusselator_period_rollover_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/examples/brusselator
+    ${CMAKE_SOURCE_DIR}/src/abi)
+  # fuse::abi_test::run_stats() (src/abi/test_support.{hpp,cpp}) reaches
+  # past the frozen public ABI to read fuse::RunStats off the context's
+  # own Runner -- the SAME test-only seam test/abi/*.cpp already link
+  # directly rather than through the installed library.
+  target_sources(fuse_verification_brusselator_period_rollover_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/abi/test_support.cpp)
+else()
+  fuse_tests_gated_by(FUSE_LINALG_BACKEND_IS_EIGEN verification/brusselator_period_rollover_test.cpp)
+endif()
 
 # S6 phase 3 ("LowFive" track), Unit 3: brusselator_graph_tool.cpp's own
 # --transport lowfive wiring, reproduced directly against validate() --
