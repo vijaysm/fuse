@@ -1532,7 +1532,7 @@ available.
 
 ---
 
-### D8. A Remap into a nodal field on more than one rank is rejected — PARTIALLY LIFTED (round 4): two real correctness defects found by a host MPI run are fixed; a real multi-rank host run is still the final outcome
+### D8. A Remap into a nodal field on more than one rank is rejected -- FIXED for the consistent/consistent-transpose methods, awaiting a host run (round 5): the S5.5 matrix row is closed; every other method's rejection is unchanged
 
 `E-RT-REMAP-NODAL-PARALLEL` (`resolve_remap`, `src/runtime/runner.cpp`)
 rejects any Remap whose target is a nodal field (ContinuousGLL order 1) on a
@@ -1963,6 +1963,44 @@ even `-np 1`: `mpirun` fails in `HYDU_sock_listen`, and the binary run directly 
 
 One rank is enough, and the failing assertion's own message names the stage.
 
+
+**Progress (2026-10-18, Maps track, round 5): the S5.5 matrix cell this entry's
+own round-3/4 text named (`A-NODAL-HT-PARALLEL`,
+`build-evidence/parallel-matrix.toml`) is CLOSED, not merely narrated.** The
+cell held a `gap = "..."` block describing `NodalRemapRunnerMpi.DisjointRankSets`
+as already written and cross-checked without MPI, but naming no row that
+`tools/check-parallel-matrix.py` could verify -- so the gate counted it as a
+gap regardless of what the test file already proved. It is now a `test` row
+(`file`, `kind = "mpi"`, `ranks = [2, 3, 4, 5]`,
+`test = ["NodalRemapRunnerMpi.DisjointRankSets"]`): the gate reads the test
+name out of the file, confirms the file is registered, confirms every claimed
+rank count is registered for it, and reports 0 gaps (was 1), 72 claims
+verified (was 70), 0 broken. `ranks` excludes 1 deliberately --
+`FUSE_REQUIRE_AT_LEAST_RANKS(2)` skips `DisjointRankSets` at world size 1 (a
+disjoint split needs two non-empty halves), and the axis this cell names is
+specifically the disjoint-placement, transpose-direction case, which rank 1
+cannot exercise even though the file is registered there.
+
+No library or test code changed in this round: the Runner wiring, the two
+round-4 defect fixes, and `DisjointRankSets` itself are byte-identical to
+round 4. This round's own patch touches only
+`build-evidence/parallel-matrix.toml` (the cell) and this entry. Everything
+this entry's "What is still open, honestly" paragraph already listed --
+no real multi-process host run of `parallel.nodal_remap_runner` or
+`parallel.nodal_remap_distributed`, the two round-2 NOT-ASSESSED mutations
+plus the round-4 one, the 50-allocations-per-coupling-cycle measurement, and
+`InterfaceDomainPolicy::ClampToBoundary` -- remains open exactly as stated
+there; closing the matrix cell is a claim that the coverage EXISTS and is
+correctly named, not a claim that a host has run it. The heading's "FIXED"
+is scoped to the two methods this round's own wiring (rounds 2-4) handles
+(`"consistent"`/`"consistent-transpose"`); every other field-transfer method
+is rejected by `E-RT-REMAP-NODAL-PARALLEL` exactly as before, pending D5
+item 3 (per-placement supermesh weights), which this round did not touch.
+
+**Host action, unchanged from round 4's own instruction:**
+```
+ctest --test-dir <mpi-build-dir> -R 'parallel\.nodal_remap_(distributed|runner)' -V
+```
 
 ### ~~D9. The coupled channel-beam FSI gains energy over many periods~~ — FIXED 2026-09-25: the traction had the sign of the force on the fluid
 
@@ -7456,14 +7494,63 @@ same reconciliation the Runner uses, plus a host-run two-rank refusal-not-hang r
 existing MPI participant fixture deliberately avoids the asymmetric call sequence, so the row needs a
 timeout harness first.
 
-### D62. The graph descriptor is host-endian while `bytes.hpp`'s canonical rules are little-endian — OPEN, recorded (review 2026-10-11 BM-5)
+### ~~D62. The graph descriptor is host-endian while `bytes.hpp`'s canonical rules are little-endian~~ -- FIXED 2026-10-18 (Descriptor track)
 
-`detail::Writer::pod`/`Reader::pod` in `include/fuse/model/descriptor.hpp` memcpy the native
-representation; every other canonical encoding in `fuse/base/bytes.hpp` is little-endian by
-construction. Invisible on every machine this library builds on, but a big-endian host or adapter would
-emit descriptors the golden files and any little-endian peer refuse. Recorded in `bytes.hpp` and
-`docs/dev/abi-design.md`; routing `pod()` through `bytes::put_integer` changes every golden file's bytes
-and waits for a deliberate `kGraphVersion` bump.
+**Fixed.** `detail::Writer::pod`/`detail::Reader::pod` (`include/fuse/model/descriptor.hpp`) now route
+every POD through the SAME canonical encoders `fuse/base/bytes.hpp` already defines for every other
+encoding in this library: an unsigned integral through `bytes::put_integer`/`bytes::get_integer`
+(ADDED this round -- `get_integer`/`get_signed` did not exist before, `bytes.hpp` was write-only), a
+signed integral through `bytes::put_signed`/`bytes::get_signed` (two's-complement bit pattern), and a
+floating-point value (only `double` appears in this file) through `std::bit_cast` to/from an
+equal-width unsigned integer and the same pair. `kGraphVersion` bumped 14 -> 15 (this track's own
+owner decision named the bump "4 to 5"; the repository's actual version was 14 by the time this fix
+landed, ten intervening bumps from other tracks -- the fix is applied against the REAL version
+numbers, not the stale ones the decision text named; see this track's own deviations).
+
+No field changed width or position: every `pod()` call site already passed an exact-width
+fundamental type at a fixed `sizeof(T)`, so on every host this library has ever built for
+(little-endian), the wire bytes `fuse::serialize()` now produces for a given graph are bit-for-bit
+identical to what the pre-fix `memcpy`-based `pod()` wrote, except for the version word itself --
+verified directly: `test/model/descriptor_test.cpp`'s
+`V14AndV15BytesOfTheSameGraphDifferOnlyInTheVersionWord` diffs the frozen `waist-v14.bin` golden
+against this build's own `serialize()` output for the identical fixture graph and asserts exactly one
+byte differs, at the version word's own offset. `V14AndV15BytesOfTheSameGraphDecodeIdentically`
+relabels each buffer to the version the other's bytes already match and confirms both decode to the
+same graph through the one production `deserialize()`. What changed is the GUARANTEE, not (on this
+host) the bytes: the wire format no longer depends on the writing host's native byte order, because
+`bytes::put_integer`/`put_signed` build their output from the VALUE through shifts, never from its
+memory layout. This sandbox has no big-endian host to build or run on;
+`PodBytesNoLongerDependOnHostByteOrderViaSwapStub` demonstrates the host-independence by construction
+instead -- a byte-swapping writer stub standing in for what the superseded `memcpy`-based `pod()`
+would have written on a big-endian host, shown to disagree with the fixed `Writer::pod`, which in turn
+is shown to match a second, independently written shift-only (host-layout-free) reference encoding.
+
+Every superseded golden (`waist-v1.bin` through `waist-v14.bin`) is kept and refused by `kGraphVersion`'s
+own version check (`SupersededFrozenBytesAreRefusedByThisReader`, extended to include `waist-v14.bin`
+this round); `waist-v15.bin` is the new frozen reference
+(`MatchesTheFrozenWaistBytes`). The ABI's own descriptor negotiation (`fuse_load_graph`, `include/
+fuse/abi/entries.def`'s `fuse_graph_source`/`fuse_graph_sink`) was already correct -- it hands raw
+bytes straight to `fuse::deserialize()`, which already refused a version mismatch by name
+(`E-DESC-VERSION`) before this fix and still does after it; `test/abi/negotiation_test.cpp`'s new
+`LoadGraphRefusesAnOutdatedDescriptorVersionByName` exercises that path explicitly rather than relying
+on the direct-call coverage alone. The restart-to-disk provenance check (`fuse/restart_io/
+hdf5_restart_io.hpp`/`.cpp`) gained its own, independent distinction: `Provenance::descriptor_version`
+is a NEW attribute (restart `kFormatVersion` bumped 1 -> 2 for the schema change), refused by name
+(`E-RESTART-DESCRIPTOR-VERSION`) inside `open_restart_point()` itself -- no current graph needed, since
+`fuse::kGraphVersion` is a compile-time constant -- distinct from the pre-existing `descriptor_hash`
+content check, now a named caller-side function, `fuse::restart_io::check_restart_descriptor_hash()`
+(`E-RESTART-DESCRIPTOR-HASH`), that DOES need the current graph and so cannot live inside the
+file-level reader (`fuse/restart_io/hdf5_restart_io.hpp`'s own `PointReader` doc comment: this layer
+cannot see the current graph). The collective (MPI) restart writer (`src/restart_io/
+hdf5_restart_io_mpi.cpp`) was updated to write the same new attribute and BUILT under
+`-DFUSE_ENABLE_MPI=ON`, but -- MPI cannot start in this sandbox -- NOT run; see `host_pending` in this
+round's own delivered report for the exact `ctest -R` to run on a host that can start MPI.
+
+`docs/dev/abi-design.md`'s "The graph descriptor's byte order" section and `bytes.hpp`'s own header
+comment are updated to describe the fix rather than the gap. Verified by `test/base/bytes_test.cpp`
+(`get_integer`/`get_signed` round-trip `put_integer`/`put_signed`, including sign extension at every
+width) and `test/model/descriptor_test.cpp` (30 tests, all passing on this build, tier 0, no MPI, no
+HDF5).
 
 ### D63. Restart-to-disk cannot capture a period mid-suspension -- DESIGN CONSTRAINT, not a defect, recorded 2026-10-15 (Restart track, Stage B Slice 1)
 
