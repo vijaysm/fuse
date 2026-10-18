@@ -2142,3 +2142,137 @@ tick itself to skip the rollback bracket for a region whose OWN residual
 path never needs to undo it (`Direct` specifically), which is a change to
 shared scheduling code well outside this track's own owned files, and is
 recorded here rather than attempted.
+
+## 13. Two Newton regions, two substrates, in one graph (Substrate track, plan S7.2b phase 2 closing)
+
+Section 11 built the per-region selector itself (the registry, the eager
+refusal, the descriptor field) and measured it on dn_heat/Brusselator runs
+each solved WHOLLY by one substrate at a time -- `--newton-petsc`/
+`--substrate petsc` pick the substrate for the entire graph's one Newton
+region, so every existing measurement compares two SEPARATE Runner
+invocations of the SAME graph, never two regions dispatched independently
+inside the SAME invocation. Nothing in Section 11's own tests built a
+graph with more than one Newton-selected region, so the one property
+plan S7.2b phase 2 actually names -- substrate chosen "per iteration
+region, from the graph" -- had a registry and a refusal that support it,
+but no test or example that EXERCISES it with two regions whose own
+substrates genuinely differ. This section closes that gap.
+
+### 13.1 The test: two regions, two substrates, one Runner, without PETSc or MPI
+
+`test/runtime/newton_region_test.cpp` gained a second, independent
+dirichlet-neumann Newton region ("dirichlet_neumann_a"/
+"dirichlet_neumann_b", `make_two_newton_region_setup()`) in the SAME
+`CouplingGraph`/`Runner` as `make_newton_setup()`'s own single-region
+fixture, and two tests:
+
+- `NewtonRegion.TwoNewtonRegionsOneUnavailableSubstrateIsRefusedByNameNotByRegionOrder`:
+  region A names `Native` (available), region B names `Petsc`
+  (unregistered in this binary). `Runner::initialize()` refuses
+  `E-NEWTON-PETSC-UNAVAILABLE` naming `dirichlet_neumann_b`, never
+  `dirichlet_neumann_a` -- `resolve_regions()`'s own eager loop (Sec.
+  11.2) walks every Newton-selected region, so the unavailable substrate
+  on the SECOND region is still caught, not missed because the first
+  region's own check already passed.
+- `NewtonRegion.TwoNewtonRegionsInOneRunnerDispatchToTheirOwnSubstrateIndependently`:
+  `fuse::num::register_newton_substrate(NewtonSubstrate::Petsc, fn)`'s own
+  header comment (`fuse/num/newton_krylov.hpp`) names "a test double" as
+  the documented reason a caller may replace a registry entry -- this
+  test registers one for `Petsc` that takes ZERO Newton steps and never
+  corrects `x`, then runs region A (`Native`) and region B (this double)
+  together through ONE `Runner::run_period()` call. Both regions start
+  from the IDENTICAL affine dn_heat problem and would be BIT IDENTICAL
+  had the Runner dispatched both through the same substrate (the affine
+  solve is deterministic); the test measures that `dirichlet_a->q()` and
+  `dirichlet_b->q()` DIFFER, direct evidence the Runner reached two
+  different functions for the two regions in one call, not an assumption
+  about what either region's own converged value should be. Neither
+  test links PETSc, calls `fuse::petsc::install()`, or touches MPI: the
+  registry is a public `fuse::num` map keyed on the two-value
+  `fuse::num::NewtonSubstrate` enum, reachable at tier 0 in every build.
+
+Both tests are declared in that order in the file and must stay in that
+order: `fuse::num::register_newton_substrate()` mutates a process-global
+registry that persists for the rest of the binary's own run (this
+project's ctest rows run one gtest BINARY, not one `TEST()` case, per
+row -- `test/CMakeLists.txt`'s own `add_test(NAME ${layer}.${name}
+COMMAND ${target})` -- so every `TEST()` in this file shares that
+process). The refusal test depends on `Petsc` being unregistered and so
+must run before the dispatch test ever registers it, the same ordering
+constraint `NewtonRegion.ARegionSelectingAnUnregisteredSubstrateIsRefused
+AtSetup` (Sec. 11.2, single region) already relies on implicitly by being
+declared earlier in the file than anything that touches the registry.
+
+### 13.2 The example: dn_heat, `--newton-petsc`, one graph, both substrates
+
+`examples/dn_heat/main.cpp`'s own `--newton-petsc` path (Sec. 11.6) gained
+`build_dual_substrate_graph()`/`run_dual_substrate_case()`: a SECOND,
+independent dirichlet-neumann pair in the SAME graph as the existing
+`newton`/`newton-petsc` comparison, region "dirichlet_neumann_a" on
+`NewtonSubstrate::Native` and "dirichlet_neumann_b" on
+`NewtonSubstrate::Petsc`, run through ONE `Runner` for the SAME `kPeriods`
+coupling cycles. The printed `[dual-substrate]` lines carry both regions'
+own residual histories for the final period and both regions' own
+`converged` flags; the agreement check between the two regions' own
+converged interface temperatures uses the SAME sharp, per-period-summed
+bound (`dn_heat::agreement_bound()`, Sec. "AgreementBounds track" above,
+round 4) the native/petsc comparison above already uses, applied to
+region a/region b instead of to two separate invocations. Still gated
+`#if FUSE_HAVE_PETSC` and still run only under `--newton-petsc`, so the
+default invocation's output is unaffected and the existing
+`example.dn_heat.newton_petsc` ctest row (`examples/CMakeLists.txt`,
+`FUSE_ENABLE_PETSC`-gated) is what runs this case; no new ctest row was
+added. This sandbox cannot execute it (PETSc's own `PetscInitialize`
+calls `MPI_Init`, which cannot complete here -- the SAME constraint Sec.
+10's own "Where the measurements came from" paragraph and
+`KNOWN_ISSUES.md` D32 already record for every other `petsc.*` row); it
+is BUILT, not run, here. A host run of `example.dn_heat.newton_petsc`
+is what closes this.
+
+### 13.3 Why the refusal needs no cross-rank agreement step
+
+The standing coupling-code discipline this project holds every collective
+refusal to: a rank must never return on a condition it computed alone
+without first agreeing with its peers, so that every rank that refuses
+does so with the same code, not some ranks refusing while others
+continue into a collective the refusing ranks never reach. `resolve_
+newton_substrate()`'s own refusal (Sec. 11.2) satisfies this by
+CONSTRUCTION, not by a runtime reduction, for two reasons together:
+
+1. **The input is the graph, not a local observation.** `NewtonConfig::
+   substrate` is a field of the SAME `CouplingGraph`/descriptor every
+   rank of a correctly driven MPI run loads identically (Sec. 11.4's own
+   append-only wire format exists precisely so every rank reads the
+   SAME bytes) -- it is not read from a per-rank environment variable,
+   a per-rank file, or anything else that could differ rank to rank.
+2. **The registry state is SPMD-identical, not rank-sensed.** Whether
+   `NewtonSubstrate::Petsc` is registered in a given process depends only
+   on (a) `FUSE_HAVE_PETSC`, a COMPILE-TIME macro -- identical in every
+   rank of one MPI job, since every rank runs the same binary -- and (b)
+   whether that binary's own `main()` called `fuse::petsc::install()`,
+   which an SPMD `main()` calls (or does not) unconditionally, the same
+   way on every rank, not behind a rank-number branch. Neither example in
+   this file, nor any test, calls `install()` conditionally on rank.
+
+So `resolve_regions()`'s own refusal is a pure function of two inputs
+that are themselves guaranteed identical across every rank of one run --
+every rank computes the SAME answer independently, with no `MPI_
+Allreduce`/`MPI_Bcast` needed to make that true, the same "agree by
+construction, not by communication" shape `to_num_newton_substrate()`'s
+own translation (Sec. 11.2) already has for any other graph-derived
+field. This is not itself new evidence that D55 (`KNOWN_ISSUES.md`,
+higgs's Open MPI 4.1.5 hang) is unrelated to Newton substrate selection --
+D55 is window-Newton's own bystander-rank question, orthogonal to this
+one -- it is recorded here because this track's own task brief asked the
+collective-refusal question directly and the answer is a property of
+WHERE the two inputs come from, not an additional runtime check this
+track added.
+
+### 13.4 What this section does not change
+
+`kGraphVersion` stays at 14 (Sec. 12.4): nothing in this section adds a
+model field, so there is nothing to append to the descriptor. The
+registry, the eager refusal, the YAML key, and the communicator decision
+are all exactly as Sections 11.1-11.3 describe; this section adds
+coverage of a case those sections' own tests did not build, not a new
+mechanism.

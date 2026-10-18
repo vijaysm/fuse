@@ -298,6 +298,208 @@ fuse::CouplingGraph build_graph(fuse::NewtonConfig cfg, int max_iterations) {
   return g;
 }
 
+/// S7.2b phase 2 (Substrate track, plan S7.2b): ONE graph with TWO
+/// independent Newton regions, "dirichlet_neumann_a" and
+/// "dirichlet_neumann_b" -- each its own mesh/component/field/channel
+/// pair, no channel crossing between them, both solving the SAME affine
+/// dn_heat problem (beta = 0.0) from the SAME zero initial state. This is
+/// the per-region selector itself (NewtonConfig::substrate, resolved
+/// independently per region by resolve_newton_substrate(), src/runtime/
+/// iteration.cpp), exercised with the REAL PETSc substrate rather than
+/// the test double test/runtime/newton_region_test.cpp's own
+/// TwoNewtonRegionsInOneRunnerDispatchToTheirOwnSubstrateIndependently
+/// uses to prove the same dispatch at tier 0, without PETSc or MPI.
+fuse::CouplingGraph build_dual_substrate_graph(fuse::NewtonSubstrate substrate_a,
+                                               fuse::NewtonSubstrate substrate_b,
+                                               int max_iterations) {
+  fuse::CouplingGraph g;
+  const std::string src = "generated:line:" + std::to_string(kStations);
+
+  struct Built {
+    fuse::ChannelId flux;
+    fuse::ChannelId temp;
+  };
+  auto build_pair = [&](const std::string& tag) {
+    const auto m1 = g.add_mesh(fuse::MeshDecl{.name = "iface_1_" + tag, .source = src});
+    const auto m2 = g.add_mesh(fuse::MeshDecl{.name = "iface_2_" + tag, .source = src});
+    const auto r1 = g.add_region(
+        fuse::Region{.name = "iface_1_" + tag, .mesh = m1, .dimension = 1});
+    const auto r2 = g.add_region(
+        fuse::Region{.name = "iface_2_" + tag, .mesh = m2, .dimension = 1});
+
+    const auto cd = g.add_component(fuse::ComponentDecl{
+        .name = "dirichlet_" + tag, .ranks = {0, 1},
+        .interval = fuse::Rational{1, kPeriodDen}});
+    const auto cn = g.add_component(fuse::ComponentDecl{
+        .name = "neumann_" + tag, .ranks = {1, 1},
+        .interval = fuse::Rational{1, kPeriodDen}});
+
+    const auto q_out = g.add_field(cd, fuse::FieldSpec{
+        .name = "q_wall_" + tag, .region = r1, .units = fuse::units::kHeatFluxDensity,
+        .conservation = fuse::Conservation::Extensive,
+        .intent = fuse::Intent::Provides});
+    const auto u_in = g.add_field(cd, fuse::FieldSpec{
+        .name = "u_wall_in_" + tag, .region = r1, .units = fuse::units::kKelvin,
+        .conservation = fuse::Conservation::Intensive,
+        .intent = fuse::Intent::Requires});
+    const auto q_in = g.add_field(cn, fuse::FieldSpec{
+        .name = "q_wall_in_" + tag, .region = r2,
+        .units = fuse::units::kHeatFluxDensity,
+        .conservation = fuse::Conservation::Extensive,
+        .intent = fuse::Intent::Requires});
+    const auto u_out = g.add_field(cn, fuse::FieldSpec{
+        .name = "u_wall_" + tag, .region = r2, .units = fuse::units::kKelvin,
+        .conservation = fuse::Conservation::Intensive,
+        .intent = fuse::Intent::Provides});
+
+    const auto flux = g.add_channel("flux_" + tag, q_out, q_in);
+    const auto temp = g.add_channel("wall_temperature_" + tag, u_out, u_in);
+    g.channel(temp).lag(1).allow_time_level_mismatch(
+        "resolved by the Dirichlet-Neumann implicit coupling group");
+    return Built{flux, temp};
+  };
+
+  const Built a = build_pair("a");
+  const Built b = build_pair("b");
+
+  fuse::ConvergenceCriterion crit_a;
+  crit_a.add(fuse::Converged::Relative(kTol, "u_wall_a"));
+  crit_a.add(fuse::Converged::Relative(kTol, "q_wall_a"));
+  fuse::NewtonConfig cfg_a;
+  cfg_a.substrate = substrate_a;
+  g.iterate({a.flux, a.temp})
+      .name("dirichlet_neumann_a")
+      .until(std::move(crit_a))
+      .max_iterations(max_iterations)
+      .newton(cfg_a);
+
+  fuse::ConvergenceCriterion crit_b;
+  crit_b.add(fuse::Converged::Relative(kTol, "u_wall_b"));
+  crit_b.add(fuse::Converged::Relative(kTol, "q_wall_b"));
+  fuse::NewtonConfig cfg_b;
+  cfg_b.substrate = substrate_b;
+  g.iterate({b.flux, b.temp})
+      .name("dirichlet_neumann_b")
+      .until(std::move(crit_b))
+      .max_iterations(max_iterations)
+      .newton(cfg_b);
+
+  return g;
+}
+
+struct DualOutcome {
+  bool                ok = false;
+  std::string         error;
+  std::vector<double> residual_history_a;
+  std::vector<double> residual_history_b;
+  /// One entry per coupling period, each region's OWN terminal residual
+  /// for that period -- the same per-period quantity run_case()'s own
+  /// `Outcome::per_period_final_residual` captures and
+  /// `dn_heat::agreement_bound()`'s "PER-PERIOD RECURSION" derivation
+  /// (agreement_bound.hpp) needs for the SHARP sum bound, not the
+  /// weaker last-period-only one (this file's own round-4 correction,
+  /// above, replaced round 3's last-period-only bound for exactly this
+  /// reason).
+  std::vector<double> per_period_final_residual_a;
+  std::vector<double> per_period_final_residual_b;
+  bool                converged_a = false;
+  bool                converged_b = false;
+  std::vector<double> u_final_a;
+  std::vector<double> u_final_b;
+  double              t_final = 0.0;
+};
+
+/// Runs `build_dual_substrate_graph()`'s own graph for `periods` coupling
+/// cycles through ONE `Runner`, returning BOTH regions' own convergence
+/// histories -- `iteration_stats()[0]` is region "dirichlet_neumann_a"
+/// (declared first, above) and `iteration_stats()[1]` is
+/// "dirichlet_neumann_b" (IterationStats carries no name of its own;
+/// src/runtime/iteration.cpp resolves and runs a graph's own iteration
+/// regions in `IterationRegionIdx` order, the same order `g.iterate()`
+/// declared them in, and `Runner::iteration_stats()`'s own header comment
+/// (fuse/runtime/runner.hpp) documents that accessor as indexed the same
+/// way).
+DualOutcome run_dual_substrate_case(fuse::NewtonSubstrate substrate_a,
+                                    fuse::NewtonSubstrate substrate_b,
+                                    int max_iterations, std::int64_t periods) {
+  DualOutcome o;
+  fuse::CouplingGraph graph =
+      build_dual_substrate_graph(substrate_a, substrate_b, max_iterations);
+
+  fuse::SerialMeshBackend backend;
+  for (std::uint32_t i = 0; i < graph.mesh_count(); ++i) {
+    const auto r = backend.load(graph.mesh(fuse::MeshId{i}));
+    if (!r.ok()) { o.error = "mesh load: " + r.error().message; return o; }
+  }
+
+  const auto lowered = lower(graph);
+  if (!lowered.ok()) { o.error = lowered.diags.to_string(); return o; }
+
+  const fuse::ClockSet clocks{graph};
+  auto sched = schedule(graph, lowered.dag, clocks,
+                        fuse::make_region_sizes(graph, backend));
+  if (!sched.ok()) { o.error = sched.diags.to_string(); return o; }
+
+  fuse::ComponentSet components;
+  auto dirichlet_a = std::make_unique<dn::DirichletSlab>(
+      "dirichlet_a", kStations, dn::Wiring::Connected);
+  auto neumann_a = std::make_unique<dn::NeumannSlab>(
+      "neumann_a", kStations, dn::Wiring::Connected);
+  auto dirichlet_b = std::make_unique<dn::DirichletSlab>(
+      "dirichlet_b", kStations, dn::Wiring::Connected);
+  auto neumann_b = std::make_unique<dn::NeumannSlab>(
+      "neumann_b", kStations, dn::Wiring::Connected);
+  dn::NeumannSlab* n_a = neumann_a.get();
+  dn::NeumannSlab* n_b = neumann_b.get();
+  components.add(std::move(dirichlet_a));
+  components.add(std::move(neumann_a));
+  components.add(std::move(dirichlet_b));
+  components.add(std::move(neumann_b));
+
+  fuse::FieldRegistry registry;
+  for (auto& c : components) {
+    const auto r = c.register_fields(registry, graph);
+    if (!r.ok()) { o.error = "register_fields: " + r.error().message; return o; }
+  }
+
+  fuse::RunnerConfig rcfg;
+  rcfg.abort_on_nonconvergence = true;
+  fuse::Runner runner{graph, lowered.dag, sched.plan, backend};
+  if (const auto r = runner.initialize(components, registry, rcfg); !r.ok()) {
+    o.error = "initialize: " + r.error().message;
+    return o;
+  }
+
+  o.per_period_final_residual_a.reserve(static_cast<std::size_t>(
+      periods > 0 ? periods : 0));
+  o.per_period_final_residual_b.reserve(static_cast<std::size_t>(
+      periods > 0 ? periods : 0));
+  for (std::int64_t p = 0; p < periods; ++p) {
+    if (const auto r = runner.run(components, 1); !r.ok()) {
+      o.error = "run: " + r.error().message;
+      return o;
+    }
+    if (runner.iteration_stats().size() >= 2) {
+      const std::vector<double>& ha = runner.iteration_stats()[0].residual_history;
+      const std::vector<double>& hb = runner.iteration_stats()[1].residual_history;
+      o.per_period_final_residual_a.push_back(ha.empty() ? 0.0 : ha.back());
+      o.per_period_final_residual_b.push_back(hb.empty() ? 0.0 : hb.back());
+    }
+  }
+
+  if (runner.iteration_stats().size() >= 2) {
+    o.residual_history_a = runner.iteration_stats()[0].residual_history;
+    o.residual_history_b = runner.iteration_stats()[1].residual_history;
+    o.converged_a = runner.iteration_stats()[0].converged;
+    o.converged_b = runner.iteration_stats()[1].converged;
+  }
+  o.t_final = n_a->time();
+  o.u_final_a = n_a->u();
+  o.u_final_b = n_b->u();
+  o.ok = true;
+  return o;
+}
+
 struct Outcome {
   bool                ok = false;
   std::string         error;
@@ -708,6 +910,62 @@ int main(int argc, char** argv) {
       std::printf("NOTE: the informational newton-nl-petsc row did not "
                   "complete: %s\n", newton_nl_petsc.error.c_str());
     }
+
+    // S7.2b phase 2 (Substrate track): the per-region selector itself,
+    // run with BOTH substrates active in ONE graph/Runner at once --
+    // "newton" and "newton-petsc" above run the SAME graph twice, once
+    // per substrate, as two SEPARATE Runner invocations; this one graph
+    // has region "dirichlet_neumann_a" (Native) and region
+    // "dirichlet_neumann_b" (Petsc) together, so the dispatch happening
+    // PER REGION, inside a single Runner::run() call, is directly
+    // observable rather than inferred by comparing two runs.
+    const DualOutcome dual = run_dual_substrate_case(
+        fuse::NewtonSubstrate::Native, fuse::NewtonSubstrate::Petsc,
+        kMaxIterations, kPeriods);
+    if (!dual.ok) {
+      std::fprintf(stderr, "FAIL: dual-substrate (one graph, two regions) "
+                           "did not run: %s\n", dual.error.c_str());
+      return 1;
+    }
+    check(dual.converged_a, "dual-substrate region a (native) converges");
+    check(dual.converged_b, "dual-substrate region b (petsc) converges");
+    std::printf("[dual-substrate] region_a=native region_b=petsc "
+               "periods=%lld converged_a=%d converged_b=%d\n",
+               static_cast<long long>(kPeriods), dual.converged_a ? 1 : 0,
+               dual.converged_b ? 1 : 0);
+    std::printf("[dual-substrate] region_a (native) residual history, "
+               "final period:");
+    for (const double v : dual.residual_history_a) std::printf(" %.6e", v);
+    std::printf("\n");
+    std::printf("[dual-substrate] region_b (petsc)  residual history, "
+               "final period:");
+    for (const double v : dual.residual_history_b) std::printf(" %.6e", v);
+    std::printf("\n");
+    // Both regions solve the SAME affine problem from the SAME zero
+    // initial state, entirely independently of each other (no channel or
+    // field crosses between "dirichlet_neumann_a" and
+    // "dirichlet_neumann_b") -- so their converged interface
+    // temperatures must agree to the SAME sharp bound run_case()'s own
+    // native/petsc comparison above measures, this being the identical
+    // pair of substrates on the identical problem, merely dispatched from
+    // one graph instead of two.
+    double dual_d = 0.0;
+    for (std::size_t i = 0; i < std::min(dual.u_final_a.size(), dual.u_final_b.size()); ++i) {
+      dual_d = std::max(dual_d, std::abs(dual.u_final_a[i] - dual.u_final_b[i]));
+    }
+    // The SHARP bound (round 4, this file's own correction, above): the
+    // sum over every period's own terminal residual, not the last
+    // period's alone -- identical derivation to the native/petsc
+    // comparison above, applied to region a/region b instead.
+    const double dual_bound = dn_heat::agreement_bound(
+        dual.per_period_final_residual_a, dual.per_period_final_residual_b);
+    std::printf("[dual-substrate] agreement disagreement=%.6e K "
+               "sharp_bound=%.6e K ratio=%.6e\n",
+               dual_d, dual_bound, dual_bound > 0.0 ? dual_d / dual_bound : 0.0);
+    check(dual_d <= dual_bound,
+          "dual-substrate region a and region b agree to the derived bound "
+          "(disagreement " + std::to_string(dual_d) + " K, bound " +
+          std::to_string(dual_bound) + " K)");
 
     // The agreement bound: SHARP (round 4 -- the owner's own correction
     // to round 3). Round 3 used ONLY the LAST (20th) period's own

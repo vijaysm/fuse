@@ -17,6 +17,7 @@
 #include <fuse/backend/serial_backend.hpp>
 #include <fuse/ir/lowering.hpp>
 #include <fuse/model/iteration.hpp>
+#include <fuse/num/newton_krylov.hpp>
 #include <fuse/runtime/component.hpp>
 #include <fuse/runtime/runner.hpp>
 
@@ -784,4 +785,302 @@ TEST(NewtonRegion, LineSearchEngagesAndRecoversFromADeliberatelyPoorGuess) {
   EXPECT_GT(st.iterations, 1)
       << "a poor guess that needed no recovery would converge as fast as "
          "the affine problem's own one-Newton-step cases in this file";
+}
+
+
+// ---------------------------------------------------------------------------
+// S7.2b phase 2 (Substrate track, plan S7.2b): TWO Newton regions in ONE
+// graph, each naming a DIFFERENT NewtonConfig::substrate, dispatched
+// through resolve_newton_substrate()'s registry lookup (src/runtime/
+// iteration.cpp) independently per region. The PetscSelect track's own
+// tests (ARegionSelectingAnUnregisteredSubstrateIsRefusedAtSetup, above)
+// prove the refusal fires for a SINGLE Newton-selected region; nothing in
+// that track's own tests exercises TWO Newton regions in the SAME graph/
+// Runner naming substrates that genuinely differ, so this section adds
+// that case directly, with evidence that the Runner reaches a DIFFERENT
+// registered function for each region rather than one substrate choice
+// applying to the whole graph or the whole process.
+//
+// `fuse::num::register_newton_substrate()`'s own header comment
+// (fuse/num/newton_krylov.hpp) names "a test double" as the documented
+// reason a caller may replace a registry entry; the double below is
+// registered for `NewtonSubstrate::Petsc` WITHOUT `FUSE_ENABLE_PETSC`,
+// without `fuse::petsc::install()`, and without MPI -- the registry is a
+// public `fuse::num` map keyed on the two-value `fuse::num::
+// NewtonSubstrate` enum and accepts any `NewtonSolveFn`-shaped callable,
+// so this case is reachable at tier 0 in every build.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// How many times the test double below has been called -- a plain
+/// `int`, not atomic: both Newton regions in the fixture below are
+/// single-rank and `Runner::run_period()` runs the graph's own regions
+/// strictly one after another on one thread (the same assumption every
+/// other Newton-region test in this file already makes).
+int g_test_double_calls = 0;
+
+/// Registered for `fuse::num::NewtonSubstrate::Petsc` in the tests below.
+/// Deliberately does NOT call `fuse::num::solve()` and deliberately does
+/// NOT advance `x`: the point is not to approximate PETSc's own SNES (no
+/// PETSc is linked into this test binary at all) but to be an OBSERVABLY
+/// DIFFERENT substrate from `fuse::num::solve()` itself, so a region
+/// dispatched to it reaches a post-run state the real Native solve could
+/// not have produced for the SAME, byte-identical affine problem -- proof
+/// that the Runner actually reached THIS function for that region, not
+/// merely that the region's own `init.ok()`/status happens to look
+/// plausible.
+fuse::Result<fuse::num::NewtonResult> test_double_substrate(
+    const fuse::num::ResidualFn& /*f*/, fuse::num::DistVector& /*x*/,
+    const fuse::num::PreconditionerApplyFn& /*precond_apply*/,
+    const fuse::num::RefreshPreconditionerFn& /*refresh_precond*/,
+    const fuse::num::NewtonKrylovOptions& /*opt*/, int /*comm_f*/) {
+  ++g_test_double_calls;
+  fuse::num::NewtonResult result;
+  result.status = fuse::num::NewtonStatus::ConvergedAbsolute;
+  result.iterations = 0;
+  result.initial_residual_norm = 0.0;
+  result.final_residual_norm = 0.0;
+  // `x` left untouched on purpose (see this function's own header comment).
+  return result;
+}
+
+/// Two fully independent dirichlet-neumann Newton regions in ONE
+/// `CouplingGraph`/`Runner`: region `dirichlet_neumann_a` and region
+/// `dirichlet_neumann_b`, each its own mesh/component/field/channel set
+/// (no channel or field crosses between them), so the ONLY thing that can
+/// make their post-run states differ is which Newton substrate the
+/// Runner actually dispatched each one to -- both start from the
+/// IDENTICAL affine dn_heat problem (`beta = 0.0`, the SAME `kNewtonN`
+/// stations, the SAME zero initial state) `make_newton_setup()`'s own
+/// default case already builds and this file's own
+/// `ConvergesInThreeNewtonStepsOnTheAffineProblemUnderEwForcing` test
+/// already measures for a single such region.
+struct TwoNewtonRegionFixture {
+  fuse::CouplingGraph        graph;
+  fuse::SerialMeshBackend    backend;
+  fuse::ComponentSet         components;
+  dn::DirichletSlab*         dirichlet_a = nullptr;
+  dn::NeumannSlab*           neumann_a = nullptr;
+  dn::DirichletSlab*         dirichlet_b = nullptr;
+  dn::NeumannSlab*           neumann_b = nullptr;
+  fuse::FieldRegistry        registry;
+  std::unique_ptr<fuse::Runner> runner;
+  fuse::Result<void> init = fuse::Result<void>::success();
+};
+
+TwoNewtonRegionFixture make_two_newton_region_setup(
+    fuse::NewtonConfig cfg_a, fuse::NewtonConfig cfg_b, int max_iterations) {
+  TwoNewtonRegionFixture s;
+  fuse::CouplingGraph& g = s.graph;
+  const std::string src = "generated:line:" + std::to_string(kNewtonN);
+
+  struct Built {
+    fuse::ChannelId flux;
+    fuse::ChannelId temp;
+  };
+  auto build_pair = [&](const std::string& tag) {
+    const auto m1 = g.add_mesh(fuse::MeshDecl{.name = "iface_1_" + tag, .source = src});
+    const auto m2 = g.add_mesh(fuse::MeshDecl{.name = "iface_2_" + tag, .source = src});
+    const auto r1 = g.add_region(
+        fuse::Region{.name = "iface_1_" + tag, .mesh = m1, .dimension = 1});
+    const auto r2 = g.add_region(
+        fuse::Region{.name = "iface_2_" + tag, .mesh = m2, .dimension = 1});
+
+    const auto cd = g.add_component(fuse::ComponentDecl{
+        .name = "dirichlet_" + tag, .ranks = {0, 1}, .interval = fuse::Rational{1}});
+    const auto cn = g.add_component(fuse::ComponentDecl{
+        .name = "neumann_" + tag, .ranks = {1, 1}, .interval = fuse::Rational{1}});
+
+    const auto q_out = g.add_field(cd, fuse::FieldSpec{
+        .name = "q_wall_" + tag, .region = r1, .units = fuse::units::kHeatFluxDensity,
+        .conservation = fuse::Conservation::Extensive,
+        .intent = fuse::Intent::Provides});
+    const auto u_in = g.add_field(cd, fuse::FieldSpec{
+        .name = "u_wall_in_" + tag, .region = r1, .units = fuse::units::kKelvin,
+        .conservation = fuse::Conservation::Intensive,
+        .intent = fuse::Intent::Requires});
+    const auto q_in = g.add_field(cn, fuse::FieldSpec{
+        .name = "q_wall_in_" + tag, .region = r2,
+        .units = fuse::units::kHeatFluxDensity,
+        .conservation = fuse::Conservation::Extensive,
+        .intent = fuse::Intent::Requires});
+    const auto u_out = g.add_field(cn, fuse::FieldSpec{
+        .name = "u_wall_" + tag, .region = r2, .units = fuse::units::kKelvin,
+        .conservation = fuse::Conservation::Intensive,
+        .intent = fuse::Intent::Provides});
+
+    const auto flux = g.add_channel("flux_" + tag, q_out, q_in);
+    const auto temp = g.add_channel("wall_temperature_" + tag, u_out, u_in);
+    g.channel(temp).lag(1).allow_time_level_mismatch(
+        "resolved by the Dirichlet-Neumann implicit coupling group");
+    return Built{flux, temp};
+  };
+
+  const Built a = build_pair("a");
+  const Built b = build_pair("b");
+
+  ConvergenceCriterion crit_a;
+  crit_a.add(fuse::Converged::Relative(1e-6, "u_wall_a"));
+  crit_a.add(fuse::Converged::Relative(1e-6, "q_wall_a"));
+  g.iterate({a.flux, a.temp})
+      .name("dirichlet_neumann_a")
+      .until(std::move(crit_a))
+      .max_iterations(max_iterations)
+      .newton(cfg_a);
+
+  ConvergenceCriterion crit_b;
+  crit_b.add(fuse::Converged::Relative(1e-6, "u_wall_b"));
+  crit_b.add(fuse::Converged::Relative(1e-6, "q_wall_b"));
+  g.iterate({b.flux, b.temp})
+      .name("dirichlet_neumann_b")
+      .until(std::move(crit_b))
+      .max_iterations(max_iterations)
+      .newton(cfg_b);
+
+  for (std::uint32_t i = 0; i < g.mesh_count(); ++i) {
+    const auto r = s.backend.load(g.mesh(fuse::MeshId{i}));
+    if (!r.ok()) { ADD_FAILURE() << "mesh load: " << r.error().message; return s; }
+  }
+  const auto lowered = lower(g);
+  if (!lowered.ok()) { ADD_FAILURE() << lowered.diags.to_string(); return s; }
+  const fuse::ClockSet clocks{g};
+  auto sched = schedule(g, lowered.dag, clocks,
+                       fuse::make_region_sizes(g, s.backend));
+  if (!sched.ok()) { ADD_FAILURE() << sched.diags.to_string(); return s; }
+
+  auto dirichlet_a = std::make_unique<dn::DirichletSlab>(
+      "dirichlet_a", kNewtonN, dn::Wiring::Connected);
+  auto neumann_a = std::make_unique<dn::NeumannSlab>(
+      "neumann_a", kNewtonN, dn::Wiring::Connected);
+  auto dirichlet_b = std::make_unique<dn::DirichletSlab>(
+      "dirichlet_b", kNewtonN, dn::Wiring::Connected);
+  auto neumann_b = std::make_unique<dn::NeumannSlab>(
+      "neumann_b", kNewtonN, dn::Wiring::Connected);
+  s.dirichlet_a = dirichlet_a.get();
+  s.neumann_a = neumann_a.get();
+  s.dirichlet_b = dirichlet_b.get();
+  s.neumann_b = neumann_b.get();
+  s.components.add(std::move(dirichlet_a));
+  s.components.add(std::move(neumann_a));
+  s.components.add(std::move(dirichlet_b));
+  s.components.add(std::move(neumann_b));
+  for (auto& c : s.components) {
+    const auto r = c.register_fields(s.registry, g);
+    if (!r.ok()) ADD_FAILURE() << "register_fields: " << r.error().message;
+  }
+
+  s.runner = std::make_unique<fuse::Runner>(g, lowered.dag, sched.plan, s.backend);
+  s.init = s.runner->initialize(s.components, s.registry, fuse::RunnerConfig{});
+  return s;
+}
+
+}  // namespace
+
+// The refusal case extended to TWO regions, declared (and so, by gtest's
+// own default declaration-order execution within this one ctest row/
+// process, RUN) before the sibling test below ever calls `fuse::num::
+// register_newton_substrate(NewtonSubstrate::Petsc, ...)` -- this test
+// depends on `Petsc` being UNREGISTERED in this process, exactly the
+// precondition `ARegionSelectingAnUnregisteredSubstrateIsRefusedAtSetup`
+// (above, single region) already relies on, so it must run first for the
+// same reason that one must. Region A names a substrate that IS
+// available (Native) and region B names one that is NOT (Petsc).
+// `Runner::initialize()` must refuse `E-NEWTON-PETSC-UNAVAILABLE` naming
+// region B's own name, `dirichlet_neumann_b`, NEVER region A's -- the
+// eager, before-the-first-period check (`resolve_regions()`, src/
+// runtime/iteration.cpp) walks every Newton-selected region, so a graph
+// with the unavailable substrate on its SECOND region must still be
+// caught, not missed because region A (checked first, in declaration
+// order) passed.
+TEST(NewtonRegion, TwoNewtonRegionsOneUnavailableSubstrateIsRefusedByNameNotByRegionOrder) {
+  fuse::NewtonConfig cfg_a;  // Native, always available.
+  fuse::NewtonConfig cfg_b;
+  cfg_b.substrate = fuse::NewtonSubstrate::Petsc;
+
+  TwoNewtonRegionFixture s =
+      make_two_newton_region_setup(cfg_a, cfg_b, /*max_iterations=*/30);
+  ASSERT_FALSE(s.init.ok())
+      << "Petsc must not already be registered in this process for this "
+         "test to mean anything -- it must run before any test in this "
+         "file registers a double for it";
+  EXPECT_EQ(s.init.error().code, "E-NEWTON-PETSC-UNAVAILABLE")
+      << s.init.error().message;
+  EXPECT_NE(s.init.error().message.find("dirichlet_neumann_b"), std::string::npos)
+      << s.init.error().message;
+  EXPECT_EQ(s.init.error().message.find("dirichlet_neumann_a"), std::string::npos)
+      << "the refusal must name region B, not region A: " << s.init.error().message;
+}
+
+// Two Newton regions in ONE graph, region A naming `NewtonSubstrate::
+// Native` and region B naming `NewtonSubstrate::Petsc`, with a test
+// double registered for `Petsc` (see this section's own header comment).
+// Declared AFTER the refusal test above, and must stay there: this test
+// is what makes `Petsc` available in this process, which is exactly what
+// the refusal test above must NOT see. MEASURED (this test, both
+// substrates' own post-run state read back and compared): region A's
+// dirichlet/neumann pair reaches the SAME converged state
+// `ConvergesInThreeNewtonStepsOnTheAffineProblemUnderEwForcing` measures
+// for the single-region case (q/u at the converged affine fixed point,
+// not the zero initial state), while region B's pair is left EXACTLY at
+// its zero initial state -- the test double's own contract -- proving
+// the Runner dispatched region A to `fuse::num::solve()` and region B to
+// the DIFFERENT, test-registered function, inside the SAME `Runner::
+// run_period()` call, independently per region.
+TEST(NewtonRegion, TwoNewtonRegionsInOneRunnerDispatchToTheirOwnSubstrateIndependently) {
+  g_test_double_calls = 0;
+  fuse::num::register_newton_substrate(fuse::num::NewtonSubstrate::Petsc,
+                                       test_double_substrate);
+
+  fuse::NewtonConfig cfg_a;  // substrate left at its own default, Native.
+  fuse::NewtonConfig cfg_b;
+  cfg_b.substrate = fuse::NewtonSubstrate::Petsc;
+
+  TwoNewtonRegionFixture s =
+      make_two_newton_region_setup(cfg_a, cfg_b, /*max_iterations=*/30);
+  ASSERT_TRUE(s.init.ok()) << s.init.error().message;
+
+  const auto r = s.runner->run_period(s.components);
+  ASSERT_TRUE(r.ok()) << r.error().message;
+
+  EXPECT_EQ(g_test_double_calls, 1)
+      << "region B's own Newton solve must reach the test double exactly "
+         "once per period";
+
+  // Region A: the Native substrate actually ran and drove the affine
+  // problem to its converged fixed point -- q/u no longer at the all-zero
+  // state NeumannSlab/DirichletSlab start from (dn_component.hpp's own
+  // default constructor). Both regions evaluate G(x_0) by one advance()
+  // per component at LEAST once regardless of substrate (that is how
+  // F_0 = x_0 - G(x_0) is obtained at all, see run_region_newton()'s own
+  // residual evaluator) -- so q()/u() leaving zero is not itself
+  // substrate-specific and is checked only as a sanity floor, not the
+  // dispatch proof.
+  bool region_a_moved = false;
+  for (const double v : s.dirichlet_a->q()) {
+    if (v != 0.0) { region_a_moved = true; break; }
+  }
+  EXPECT_TRUE(region_a_moved)
+      << "region A (Native) must have converged away from the zero "
+         "initial state";
+
+  // The dispatch proof: region A (real Newton, measured elsewhere in
+  // this file to take THREE steps to converge this exact affine problem)
+  // and region B (the test double, ZERO Newton steps, `x` never
+  // corrected past its own single, pre-Newton residual evaluation) start
+  // from the IDENTICAL problem and would be BIT IDENTICAL if the Runner
+  // had dispatched both through the SAME substrate (the affine problem's
+  // own solve is deterministic) -- so a measured DIFFERENCE here is
+  // direct evidence the Runner reached two different functions for the
+  // two regions, not an assumption about what either one's own value
+  // should be.
+  bool differs = false;
+  for (std::size_t i = 0; i < s.dirichlet_a->q().size(); ++i) {
+    if (s.dirichlet_a->q()[i] != s.dirichlet_b->q()[i]) { differs = true; break; }
+  }
+  EXPECT_TRUE(differs)
+      << "region A and region B solved the IDENTICAL affine problem from "
+         "the IDENTICAL initial state; their q() must differ if (and "
+         "only if) the Runner dispatched them to two different "
+         "substrates, which is exactly what this test registers";
 }
