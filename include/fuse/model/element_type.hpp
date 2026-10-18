@@ -38,6 +38,16 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+
+/// Set when THIS translation unit can use the native `_Float16`. The host
+/// compiler's `__FLT16_MANT_DIG__` is necessary but not sufficient: nvcc's
+/// front end (CUDA 12.5, measured on higgs) accepts the type in a type
+/// trait but fails with an internal compiler error ("unsupported float
+/// variant") as soon as a value of that type is formed, so a translation
+/// unit compiled by nvcc never sees the `_Float16` specialisations below.
+#if defined(__FLT16_MANT_DIG__) && !defined(__CUDACC__)
+#define FUSE_HAVE_FLOAT16 1
+#endif
 #include <string>
 #include <type_traits>
 
@@ -226,7 +236,7 @@ struct ElementTypeOf<bool> {
   static constexpr ElementType value = ElementType::Bool;
 };
 
-#if defined(__FLT16_MANT_DIG__)
+#if defined(FUSE_HAVE_FLOAT16)
 /// Only ever instantiated by a build whose compiler provides `_Float16`
 /// (see the file header comment) -- `fuse::put_field<_Float16>()` simply
 /// does not exist to call on a compiler without it, which is the
