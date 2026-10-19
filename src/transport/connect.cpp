@@ -25,6 +25,44 @@ namespace {
   return std::string(buf, static_cast<std::size_t>(len));
 }
 
+// KNOWN_ISSUES.md D18, round 3 (the lead's own instruction): parallel.
+// connect.chain.3 failed in 10.7s (not a 120s TIMEOUT) and chain.4 timed
+// out at 120s -- distinguishable, on the host, only from WHICH rendezvous
+// step each process was in when it stopped, which no log before this
+// round captured (run_chain.sh's own a/b/c/d.log carried nothing past
+// MPICH's own leak report). The accept rows this chain reuses
+// (connect_pairwise(), run_pair.sh) are already known-intermittent on
+// this host (D23/D65); this trace is what lets a future host run tell
+// "the chain itself deadlocks" apart from "the same pre-existing
+// accept/connect intermittency, now on a 3- or 4-way chain". OFF by
+// default -- the style docs/dev's own examples/brusselator/participants/
+// lowfive_attach_decision.hpp follows for FUSE_LOWFIVE_ATTACH_TRACE:
+// `fuse::transport` cannot depend on that file at all (it sits ABOVE
+// this layer), so this is a separate, local instance of the identical
+// pattern, not a reuse of it.
+[[nodiscard]] inline bool ParseConnectChainTraceEnabledEnv(const char* raw) noexcept {
+  return raw != nullptr && raw[0] == '1' && raw[1] == '\0';
+}
+
+[[nodiscard]] bool ChainTraceEnabled() {
+  static const bool enabled =
+      ParseConnectChainTraceEnabledEnv(std::getenv("FUSE_CONNECT_CHAIN_TRACE"));
+  return enabled;
+}
+
+// `rank` is THIS step's own local-communicator rank (`current`, not the
+// chain's eventual merged rank) -- the one piece of context that tells
+// two lines from the SAME step apart (e.g. "rank 0 opened the port" vs
+// "rank 0 is still waiting after MPI_Bcast", never printed by a rank
+// that is not rank 0 for an accept-side action).
+void TraceChainStep(const char* fn, std::size_t step_index, int rank, const char* what) {
+  if (!ChainTraceEnabled()) return;
+  std::fprintf(stderr,  // NOLINT(fuse-raw-io)
+               "FUSE_CONNECT_CHAIN_TRACE: %s step=%zu rank=%d: %s\n", fn, step_index, rank,
+               what);
+  std::fflush(stderr);
+}
+
 // Review 2026-10-11 TR-9. The same discipline mpi_transport.cpp's and
 // comm_graph.cpp's own header comments state: a failure that cannot be
 // agreed across ranks (because it happens inside, or strictly between,
@@ -285,9 +323,11 @@ namespace {
   // forward unchanged until then.
   MPI_Comm current = world;
   if (my_id == order[0] || my_id == order[1]) {
+    TraceChainStep("connect_chain", 0, -1, "entering step 1 (connect_pairwise)");
     Result<ConnectedWorld> chain_result = connect_pairwise(g, my_id, world, opts);
     if (!chain_result.ok()) return chain_result.error();
     current = MPI_Comm_f2c(static_cast<MPI_Fint>(chain_result.value().base_comm_f));
+    TraceChainStep("connect_chain", 0, -1, "step 1 (connect_pairwise) returned");
   }
 
   for (std::size_t s = 1; s < steps.size(); ++s) {
@@ -311,6 +351,9 @@ namespace {
     if (rc != MPI_SUCCESS) {
       return Failure{"E-CONNECT-MPI", "MPI_Comm_rank failed: " + mpi_error_text(rc)};
     }
+    TraceChainStep("connect_chain", step.step_index, rank,
+                   i_am_joining ? "entering step as the JOINING (acceptor) side"
+                                : "entering step as the CHAIN-SO-FAR (connector) side");
 
     MPI_Comm intercomm = MPI_COMM_NULL;
     if (i_am_joining) {
@@ -329,6 +372,9 @@ namespace {
         } else if (auto r = publish_port_file(connect_file, port_name); !r.ok()) {
           open_rc = MPI_ERR_OTHER;
           open_detail = r.error().message;
+        } else {
+          TraceChainStep("connect_chain", step.step_index, rank,
+                         ("opened and published port file " + connect_file).c_str());
         }
       }
       rc = MPI_Bcast(&open_rc, 1, MPI_INT, 0, current);
@@ -346,21 +392,29 @@ namespace {
       if (rc != MPI_SUCCESS) {
         return Failure{"E-CONNECT-MPI", "MPI_Bcast of the port name failed: " + mpi_error_text(rc)};
       }
+      TraceChainStep("connect_chain", step.step_index, rank,
+                     "calling MPI_Comm_accept -- blocks until the connector side arrives");
       rc = MPI_Comm_accept(port_name, MPI_INFO_NULL, 0, current, &intercomm);
       if (rc != MPI_SUCCESS) {
         return Failure{"E-CONNECT-MPI", "MPI_Comm_accept failed: " + mpi_error_text(rc)};
       }
+      TraceChainStep("connect_chain", step.step_index, rank, "MPI_Comm_accept returned");
       if (rank == 0) MPI_Close_port(port_name);
     } else {
       // Already part of the chain formed so far: the connector side,
       // waiting on the joining component's own published port.
+      TraceChainStep("connect_chain", step.step_index, rank,
+                     ("polling for port file " + connect_file).c_str());
       const auto port_result =
           wait_for_port_file(connect_file, opts.timeout_s, opts.poll_interval_s);
       if (!port_result.ok()) return port_result.error();
+      TraceChainStep("connect_chain", step.step_index, rank,
+                     "found the port file -- calling MPI_Comm_connect");
       rc = MPI_Comm_connect(port_result.value().c_str(), MPI_INFO_NULL, 0, current, &intercomm);
       if (rc != MPI_SUCCESS) {
         return Failure{"E-CONNECT-MPI", "MPI_Comm_connect failed: " + mpi_error_text(rc)};
       }
+      TraceChainStep("connect_chain", step.step_index, rank, "MPI_Comm_connect returned");
     }
 
     // The chain formed so far is always "low" (0) and the joining
@@ -375,6 +429,7 @@ namespace {
     if (rc != MPI_SUCCESS) {
       return Failure{"E-CONNECT-MPI", "MPI_Intercomm_merge failed: " + mpi_error_text(rc)};
     }
+    TraceChainStep("connect_chain", step.step_index, rank, "MPI_Intercomm_merge done for this step");
     // `current` before this step was either `world` (this process's own
     // local world, for a process joining at this step with no prior
     // merge of its own to free) or a PRIOR merged communicator this same
