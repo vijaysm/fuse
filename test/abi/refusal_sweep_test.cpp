@@ -187,6 +187,24 @@ TEST(AbiRefusalSweep, SetupRefusesAnMpmdComponentWithNoCommunicator) {
 // rank this graph's own RankSet{0, 1} and LaunchSpec::appnum=0 declare.
 #if FUSE_HAVE_MPI
 TEST(AbiRefusalSweep, SetupAcceptsAnMpmdComponentWithACommunicatorHandleOfZeroWhenFlagged) {
+  // connect()'s Mpmd branch reads MPI_APPNUM, which a launcher sets. Open MPI
+  // sets it (to 0) even for a singleton MPI_Init; MPICH sets nothing without
+  // mpiexec (measured on MPICH 5.0.0a1, 2026-10-19: this row run plain is
+  // refused with status -4, run under `mpiexec -n 1` it passes). The graph
+  // below also declares exactly one rank.
+  {
+    int world_size = 0;
+    int has_appnum = 0;
+    int* appnum = nullptr;
+    MPI_Comm_size(MPI_COMM_WORLD, &world_size);
+    MPI_Comm_get_attr(MPI_COMM_WORLD, MPI_APPNUM, &appnum, &has_appnum);
+    if (world_size != 1 || has_appnum == 0 || appnum == nullptr || *appnum != 0) {
+      GTEST_SKIP() << "needs one rank with MPI_APPNUM == 0 (Open MPI singleton, or "
+                      "`mpiexec -n 1`); world size " << world_size << ", MPI_APPNUM "
+                   << (has_appnum != 0 && appnum != nullptr ? std::to_string(*appnum)
+                                                             : std::string{"unset"});
+    }
+  }
   fuse::CouplingGraph g;
   fuse::ComponentDecl decl{
       .name = "upstream", .ranks = fuse::RankSet{0, 1}, .interval = fuse::Rational{1}};
