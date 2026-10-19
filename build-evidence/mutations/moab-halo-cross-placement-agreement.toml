@@ -25,13 +25,19 @@ target = "fuse_parallel_moab_placed_weights_mpi_test"
 test = "parallel.moab_placed_weights_mpi"
 requires = "mpi"
 
-[[mutation]]
-id = "off-placement-rank-skips-the-adopt-remap-halo-collective"
-area = "backend"
-describes = "The off-target-placement branch inside same_named_placement reverts to a LOCALLY decided, non-collective no-op (return std::size_t{0};) instead of joining MoabMeshBackend::adopt_remap_halo's own reconcile_halo -- the exact hang the owner's 2026-10-19 ruling named and the host measured in parallel.moab_placed_weights_mpi.{2,3} (SamePlacementOnBothSidesDelegatesToTheSinglePlacementPath, round 6 landing). A participating peer still delegates into the single-placement path's real covering-set build, which enters adopt_remap_halo's MPI_Allreduce over the backend's base communicator; an off-placement rank that returns here instead of joining it leaves that collective waiting for a rank that never arrives. Not killable by a fast assertion in this sandbox (the symptom is a HANG, not a wrong answer) -- caught on the host by a timeout on exactly this row, which is why KNOWN_ISSUES D81 names the measured wall-clock time (0.36-0.88 s) the fixed version actually takes, not just a pass/fail bit."
-file = "src/backend/intx_weights.cpp"
-old = "    if (!moab_backend->placement_participates(plan.placement)) {\n      return moab_backend->adopt_remap_halo(a.mid, b.mid, a.dim, nullptr, 0);\n    }"
-new = "    if (!moab_backend->placement_participates(plan.placement)) {\n      return std::size_t{0};\n    }"
-target = "fuse_parallel_moab_placed_weights_mpi_test"
-test = "parallel.moab_placed_weights_mpi"
-requires = "mpi"
+# RETIRED round 10 (KNOWN_ISSUES D83, owner decision 2026-10-19: make the
+# adoption placement-aware, not a refusal): the row that used to live here,
+# "off-placement-rank-skips-the-adopt-remap-halo-collective", mutated the
+# off-target-placement branch's `return std::size_t{0};` back to the
+# round-7 shape (`return moab_backend->adopt_remap_halo(a.mid, b.mid,
+# a.dim, nullptr, 0);`, joining a collective inside `adopt_remap_halo` that
+# ran over the backend's BASE communicator). D83's own round-10 fix moved
+# that collective to run over the PLACEMENT's own sub-communicator instead
+# (`moab-halo-placement-aware-adoption.toml`), so an off-placement rank no
+# longer has anything to join there at all -- `return std::size_t{0};` is
+# now the CORRECT, round-6-era shape again, not a regression to guard
+# against. The anchor this row's own `old` field named
+# (`moab_backend->adopt_remap_halo(a.mid, b.mid, a.dim, nullptr, 0)` inside
+# that specific branch) no longer exists in the file (confirmed via
+# `tools/mutate.py --check-anchors`, not assumed) -- removed rather than
+# left to report STALE-ANCHOR on every future check.

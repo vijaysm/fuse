@@ -1,0 +1,50 @@
+# KNOWN_ISSUES D83 round 10 (owner decision 2026-10-19: make the adoption
+# placement-aware, not a refusal). MoabMeshBackend::adopt_remap_halo (and
+# its own caches, has_remap_halo, regather_with_halo, plan_halo_exchange,
+# run_halo_exchange), src/backend/moab_backend.cpp. Own file per the
+# review-fix protocol: do not edit moab-sphere.toml,
+# moab-halo-cross-placement-agreement.toml, moab-halo-active-comm-size.toml,
+# moab-placement.toml, or mutations.toml directly while other fixers hold
+# them dirty.
+#
+# NOT HAND-VERIFIED THIS ROUND, for the same sandbox-wide reason every
+# other MOAB mutations file in this tree already states: ANY MOAB-linked
+# binary aborts on construction here (moab::Core's constructor calls
+# MPI_Init_thread; this sandbox cannot initialise MPI at all, not even at
+# one rank, and FUSE_ENABLE_MOAB hard-requires FUSE_ENABLE_MPI in this
+# tree's own CMakeLists.txt). Written and reasoned through by hand;
+# `requires = "mpi"`, the same NOT-ASSESSED courtesy every other MOAB-only
+# row in this project already uses.
+
+[[mutation]]
+id = "halo-pairs-cache-key-drops-placement"
+area = "backend"
+describes = "has_remap_halo's own cache lookup ignores the placement it was asked about, always looking up the DEFAULT Core's key (ComponentId{}.value()) regardless of what placement the caller named -- the exact aliasing KNOWN_ISSUES D83 records: a placement that never had its own halo built would read as having one, the moment the DEFAULT Core's halo for the same (source, target, dim) was built. Killed by moab_placed_weights_mpi_test.cpp's own DefaultCoreAndAPlacementsHaloForTheSamePairDoNotAlias: after building ONLY the default Core's halo, EXPECT_FALSE(backend.has_remap_halo(smid, tmid, 2, ComponentId{0})) would read TRUE instead under this mutation."
+file = "src/backend/moab_backend.cpp"
+old = "  return impl_->halo_pairs.find(std::make_tuple(\n             source.value(), target.value(), dim, placement.value())) !=\n         impl_->halo_pairs.end();"
+new = "  return impl_->halo_pairs.find(std::make_tuple(\n             source.value(), target.value(), dim, ComponentId{}.value())) !=\n         impl_->halo_pairs.end();"
+target = "fuse_parallel_moab_placed_weights_mpi_test"
+test = "parallel.moab_placed_weights_mpi"
+requires = "mpi"
+
+[[mutation]]
+id = "adopt-remap-halo-reads-gid-through-the-wrong-interface"
+area = "backend"
+describes = "The per-covering-cell GLOBAL_ID read reverts to impl_->mb (the backend's DEFAULT Core) instead of the resolved mb (pr.mb, the SAME Core the caller's covering-set cells actually live in) -- the exact KNOWN_ISSUES D83 bug this round's own fix removes: a moab::EntityHandle from a placement's own Core, read back through a DIFFERENT Core's internal numbering, is undefined by MOAB's own contract. Killed by parallel.moab_placed_weights_mpi.4 (the first row with a genuine 2-rank-per-placement covering-set construction, KNOWN_ISSUES D81 round 9): via_overload would answer E-MESH-HALO (\"a covering cell carries no positive GLOBAL_ID\") again, or a wrong (but plausible) adopted count, instead of the real, non-zero, agreeing answer this row's own EXPECT_GT/EXPECT_EQ require."
+file = "src/backend/moab_backend.cpp"
+old = "    if (mb.tag_get_data(gid, &h, 1, &g) != moab::MB_SUCCESS || g <= 0) {"
+new = "    if (impl_->mb.tag_get_data(gid, &h, 1, &g) != moab::MB_SUCCESS || g <= 0) {"
+target = "fuse_parallel_moab_placed_weights_mpi_test"
+test = "parallel.moab_placed_weights_mpi"
+requires = "mpi"
+
+[[mutation]]
+id = "adopt-remap-halo-skips-the-collective-agreement-for-one-check"
+area = "backend"
+describes = "The per-covering-cell GLOBAL_ID check's own reconcile_step call is replaced by a bare, LOCALLY decided Result -- the agreement this round's own brief named explicitly (point 3: \"the collective agreement inside reconcile_halo must run over the placement's own communicator\"), skipped for exactly this one check. In a 2-rank-per-placement row where the two members of that placement would otherwise disagree (one holds a genuinely bad covering cell, its peer does not), the rank that fails now returns ALONE instead of agreeing with its peer first -- its peer, unaware, proceeds into the SAME placement's own further collectives (add_entities's own reconcile_step, regather_with_halo, plan_halo_exchange's own Allgather/Alltoall(v)) and hangs waiting for a peer that already returned. NOT KILLABLE BY A CLEAN ASSERTION in this sandbox or on the host in the general case -- the observable symptom is a TIMEOUT, which ctest itself reports as a test FAILURE (not a passing run), not a specific refusal code; recorded honestly as a hang-shaped kill, the same class round 7's own now-superseded mutation documented, rather than claimed as a fast, assertion-based one."
+file = "src/backend/moab_backend.cpp"
+old = "  {\n    const Result<void> agreed = reconcile_step(\n        bad_cell_gid, \"a covering cell carries no positive GLOBAL_ID, so it \"\n                      \"cannot be matched to the source cell it copies\");\n    if (!agreed.ok()) return agreed.error();\n  }"
+new = "  {\n    const Result<void> agreed = bad_cell_gid\n        ? Result<void>(Failure{\"E-MESH-HALO\",\n                              \"a covering cell carries no positive GLOBAL_ID, so it \"\n                              \"cannot be matched to the source cell it copies\"})\n        : Result<void>::success();\n    if (!agreed.ok()) return agreed.error();\n  }"
+target = "fuse_parallel_moab_placed_weights_mpi_test"
+test = "parallel.moab_placed_weights_mpi"
+requires = "mpi"

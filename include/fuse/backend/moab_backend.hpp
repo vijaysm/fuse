@@ -371,21 +371,31 @@ class MoabMeshBackend final : public MeshBackend {
 
   /// Whether `build_remap_halo(source, target, dim)` (declared in
   /// `fuse/backend/remap_plan.hpp`, because its geometry half belongs to the
-  /// remap layer) has been run for this triple. Never
-  /// throws; false on a moved-from backend or an unknown id.
-  [[nodiscard]] bool has_remap_halo(MeshId source, MeshId target,
-                                    int dim) const noexcept;
+  /// remap layer) has been run for this triple AT `placement` (default: the
+  /// unplaced/default-Core decomposition, matching every caller that does
+  /// not pass one). Never throws; false on a moved-from backend or an
+  /// unknown id. KNOWN_ISSUES D83: `placement` is part of the bookkeeping
+  /// key precisely because `build_remap_halo` can run once per placement on
+  /// the SAME (source, target, dim) triple (a component's own decomposition
+  /// is its own halo); omitting it would make the default Core and every
+  /// declared placement clobber each other's recorded answer -- matching
+  /// `fuse::native::NativeMeshBackend::has_remap_halo`'s own contract
+  /// exactly (native_backend.hpp).
+  [[nodiscard]] bool has_remap_halo(MeshId source, MeshId target, int dim,
+                                    ComponentId placement = ComponentId{}) const noexcept;
 
   /// How many of mesh `source`'s dimension-`dim` local entities are halo cells
-  /// adopted by `build_remap_halo`. They are the last `remap_halo_size` local
-  /// indices only by accident of MOAB's handle ordering -- use
-  /// `MeshView::is_owned`, not arithmetic on this number, to tell them apart.
-  [[nodiscard]] std::size_t remap_halo_size(MeshId source,
-                                            int dim) const noexcept;
+  /// adopted by `build_remap_halo` AT `placement` (default: the unplaced
+  /// decomposition). They are the last `remap_halo_size` local indices only
+  /// by accident of MOAB's handle ordering -- use `MeshView::is_owned`, not
+  /// arithmetic on this number, to tell them apart.
+  [[nodiscard]] std::size_t remap_halo_size(
+      MeshId source, int dim, ComponentId placement = ComponentId{}) const noexcept;
 
-  /// COLLECTIVE over the backend's communicator, and every rank must call it
-  /// the same number of times in the same order. Fill the halo slots of
-  /// `buffer` with the values their owners hold.
+  /// COLLECTIVE over `placement`'s own communicator (default: the backend's
+  /// own, unplaced one), and every rank that participates in it must call
+  /// this the same number of times in the same order. Fill the halo slots
+  /// of `buffer` with the values their owners hold.
   ///
   /// `buffer` is `entity_count(dim) * components` doubles, entity-major with
   /// the component index fastest -- the layout `apply_weights` takes. Slots
@@ -397,12 +407,14 @@ class MoabMeshBackend final : public MeshBackend {
   ///
   /// Errors: `E-MESH-MOVED`, `E-MESH-ID`, `E-MESH-DIM`, `E-MESH-ARG` for a
   /// null buffer or `components < 1`, `E-MESH-HALO` for an MPI failure.
-  [[nodiscard]] Result<void> exchange_remap_halo(MeshId source, int dim,
-                                                 double* buffer,
-                                                 int components) const;
+  [[nodiscard]] Result<void> exchange_remap_halo(
+      MeshId source, int dim, double* buffer, int components,
+      ComponentId placement = ComponentId{}) const;
 
   /// COLLECTIVE, the reverse of `exchange_remap_halo`: each halo slot's value
   /// is ADDED to the owner's slot, and the halo slots are then zeroed.
+  /// `placement` is the SAME `ComponentId` `exchange_remap_halo` takes, for
+  /// the identical reason.
   ///
   /// Exists for the conservation audit, which is the one quantity a halo makes
   /// non-local: a source cell straddling a target partition boundary has part
@@ -410,9 +422,9 @@ class MoabMeshBackend final : public MeshBackend {
   /// halo copy, and only their sum is the cell's real coverage. Summing
   /// locally and comparing per rank is how a correct map gets reported as a
   /// coverage failure -- and, worse, gets reported as one on SOME ranks only.
-  [[nodiscard]] Result<void> accumulate_remap_halo(MeshId source, int dim,
-                                                   double* buffer,
-                                                   int components) const;
+  [[nodiscard]] Result<void> accumulate_remap_halo(
+      MeshId source, int dim, double* buffer, int components,
+      ComponentId placement = ComponentId{}) const;
 
   /// INTERNAL SEAM for `build_remap_halo`'s geometry half, which lives in
   /// `src/backend/intx_weights.cpp` because that is where the surface
@@ -420,9 +432,19 @@ class MoabMeshBackend final : public MeshBackend {
   /// (`moab::EntityHandle`s, as opaque integers) as halo cells of `source` at
   /// `dim`, skipping any whose global id this rank already holds. Nothing but
   /// `build_remap_halo` may call it.
+  ///
+  /// KNOWN_ISSUES D83 (owner decision 2026-10-19): `placement` (default: the
+  /// unplaced/default-Core decomposition) names WHICH Core/communicator
+  /// `cells` were built in -- the caller's own `native_mesh(source,
+  /// placement)` resolution, which it must pass the SAME `placement` to, so
+  /// the `moab::EntityHandle`s in `cells` are read back through the Core
+  /// that actually allocated them. Reading them through a DIFFERENT Core
+  /// (the gap this item records) is undefined by MOAB's own contract, not
+  /// merely wrong bookkeeping.
   Result<std::size_t> adopt_remap_halo(MeshId source, MeshId target, int dim,
                                        const std::uint64_t* cells,
-                                       std::size_t count);
+                                       std::size_t count,
+                                       ComponentId placement = ComponentId{});
 
   /// INTERNAL SEAM, added for Task 5.2 (`src/backend/intx_weights.cpp`) and used
   /// nowhere else. `MeshView` deliberately exposes no connectivity and no

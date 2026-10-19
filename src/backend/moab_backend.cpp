@@ -907,7 +907,12 @@ struct MoabMeshBackend::Impl {
   /// (default-decomposition) Core. Declared after `mb` so the reference
   /// member below binds to an already-constructed object; `pcomm` (when
   /// this build has MPI) is wired in by `set_communicator`, once it exists.
-  MeshLoader base_loader{mb};
+  // `mutable`, like `mb` just above and for the identical reason:
+  // `resolve_for_halo` (KNOWN_ISSUES D83) hands back a `MeshLoader*` for
+  // `gather()` to call, which is not const, from what is otherwise a pure
+  // Core/communicator/view LOOKUP that every other `const` reader in this
+  // file (e.g. `run_halo_exchange`) also needs to call.
+  mutable MeshLoader base_loader{mb};
 
   // --- per-placement decomposition (KNOWN_ISSUES D5, MOAB half) -----------
   //
@@ -991,17 +996,95 @@ struct MoabMeshBackend::Impl {
     HaloExchange ex;
   };
 
-  /// (mesh index, dimension) -> halo. `std::map`, not `unordered_map`: a
-  /// handful of entries, and a stable iteration order keeps diagnostics
-  /// reproducible.
-  std::map<std::pair<std::size_t, int>, HaloState> halos;
-  /// (source mesh, target mesh, dimension) -> cells adopted for that pair.
-  /// Presence, not the count, is what `has_remap_halo` answers: zero adopted
-  /// cells is a legitimate outcome and must not read as "never built".
-  std::map<std::tuple<std::size_t, std::size_t, int>, std::size_t> halo_pairs;
+  /// KNOWN_ISSUES D83 (owner decision 2026-10-19: make the adoption
+  /// placement-aware, not a refusal). Every piece this subsystem needs to
+  /// operate against ONE Core/communicator, resolved ONCE per call the
+  /// same way `MoabMeshBackend::native_mesh(id, placement)` already
+  /// resolves its own triple -- a placement's own `ctx->core`/`ctx->pcomm`
+  /// when `placement` names a processor set this rank participates in,
+  /// `mb`/`pcomm` (the backend's default decomposition) otherwise. Shared
+  /// by `adopt_remap_halo`/`regather_with_halo`/`plan_halo_exchange`/
+  /// `run_halo_exchange`, so none of them can resolve this differently --
+  /// the same "one shared helper, one formula" shape the round-6 sphere
+  /// functions already set. `view`/`loader` are null only when `mesh_index`
+  /// is out of range for the resolved Core -- every caller already checks
+  /// mesh id validity before calling `resolve`, so this is defensive, not
+  /// load-bearing. `participates` is false ONLY for a rank structurally
+  /// outside a NAMED placement (mirrors `native_mesh(id, placement)`'s own
+  /// `E-MESH-PLACEMENT` refusal); every other field is left default
+  /// (nullptr) in that case, and the caller decides what "nothing here"
+  /// means for it (a local no-op, same as this file's other placement
+  /// refusals).
+  struct PlacementResolved {
+    moab::Interface* mb = nullptr;
+#ifdef FUSE_MOAB_PARALLEL
+    moab::ParallelComm* pcomm = nullptr;
+#else
+    // No ParallelComm type exists to name in this configuration (FUSE
+    // built against MOAB without MPI, or without FUSE_HAVE_MPI): every
+    // site that reads `pr.pcomm` is itself inside an `#ifdef
+    // FUSE_MOAB_PARALLEL` (or checks `impl_->parallel()`/an equivalent
+    // first), so this member is never touched here -- kept as a plain
+    // `void*`, always null, only so the struct's own shape does not
+    // change across configurations.
+    void* pcomm = nullptr;
+#endif
+    MoabMeshView* view = nullptr;
+    MeshLoader* loader = nullptr;
+    bool participates = true;
+  };
 
-  [[nodiscard]] const HaloState* halo(std::size_t mesh, int dim) const {
-    const auto it = halos.find({mesh, dim});
+  [[nodiscard]] PlacementResolved resolve_for_halo(std::size_t mesh_index,
+                                                   ComponentId placement) const {
+    PlacementResolved r;
+#ifdef FUSE_MOAB_PARALLEL
+    if (placement.valid() && !placements.empty() && pcomm != nullptr) {
+      if (placement.value() >= placement_ctx.size()) {
+        r.participates = false;
+        return r;
+      }
+      PlacementContext& ctx = *placement_ctx[placement.value()];
+      if (!ctx.participates()) {
+        r.participates = false;
+        return r;
+      }
+      r.mb = ctx.core.get();
+      r.pcomm = ctx.pcomm.get();
+      r.view = mesh_index < ctx.meshes.size() ? ctx.meshes[mesh_index].get() : nullptr;
+      r.loader = ctx.loader.get();
+      return r;
+    }
+#endif
+    // Invalid/no-placements/no-communicator: the backend's own default
+    // decomposition -- `native_mesh(id, placement)`'s own identical
+    // fallback (moab_backend.cpp).
+    r.mb = &mb;
+#ifdef FUSE_MOAB_PARALLEL
+    r.pcomm = pcomm.get();
+#endif
+    r.view = mesh_index < meshes.size() ? meshes[mesh_index].get() : nullptr;
+    r.loader = &base_loader;
+    return r;
+  }
+
+  /// (mesh index, dimension, placement value) -> halo. `ComponentId::value()`
+  /// (`kInvalid` for the default Core) is the third key component, so the
+  /// default Core and every declared placement each get their OWN entry --
+  /// KNOWN_ISSUES D83's own "do not alias" requirement; before this round
+  /// every placement silently shared the DEFAULT Core's single entry.
+  /// `std::map`, not `unordered_map`: a handful of entries, and a stable
+  /// iteration order keeps diagnostics reproducible.
+  std::map<std::tuple<std::size_t, int, std::uint32_t>, HaloState> halos;
+  /// (source mesh, target mesh, dimension, placement value) -> cells adopted
+  /// for that pair AT that placement. Presence, not the count, is what
+  /// `has_remap_halo` answers: zero adopted cells is a legitimate outcome
+  /// and must not read as "never built".
+  std::map<std::tuple<std::size_t, std::size_t, int, std::uint32_t>, std::size_t>
+      halo_pairs;
+
+  [[nodiscard]] const HaloState* halo(std::size_t mesh, int dim,
+                                      ComponentId placement) const {
+    const auto it = halos.find({mesh, dim, placement.value()});
     return it == halos.end() ? nullptr : &it->second;
   }
 
@@ -1011,17 +1094,19 @@ struct MoabMeshBackend::Impl {
   /// the covering-set construction, so MOAB rightly considers it this rank's
   /// own. It is not: its values come from elsewhere and it must be excluded
   /// from every reduction.
-  [[nodiscard]] Result<void> regather_with_halo(std::size_t mesh, int dim);
+  [[nodiscard]] Result<void> regather_with_halo(std::size_t mesh, int dim,
+                                                ComponentId placement);
 
   /// Build `HaloExchange` for `dim` of `mesh` from scratch.
-  [[nodiscard]] Result<void> plan_halo_exchange(std::size_t mesh, int dim);
+  [[nodiscard]] Result<void> plan_halo_exchange(std::size_t mesh, int dim,
+                                                ComponentId placement);
 
   /// The body of both public exchange directions. `gather == true` moves
   /// owner -> halo and overwrites; `gather == false` moves halo -> owner,
   /// adding, and then zeroes the halo slots.
   [[nodiscard]] Result<void> run_halo_exchange(std::size_t mesh, int dim,
                                                double* buffer, int components,
-                                               bool gather) const;
+                                               bool gather, ComponentId placement) const;
 
   [[nodiscard]] bool parallel() const {
 #ifdef FUSE_MOAB_PARALLEL
@@ -2425,12 +2510,21 @@ int MoabMeshBackend::communicator_size() const noexcept {
 // ===========================================================================
 
 Result<void> MoabMeshBackend::Impl::regather_with_halo(std::size_t mesh,
-                                                       int dim) {
-  MoabMeshView& view = *meshes[mesh];
-  const Result<void> g = base_loader.gather(view);
+                                                       int dim,
+                                                       ComponentId placement) {
+  // KNOWN_ISSUES D83: resolved THROUGH `placement`, exactly as
+  // `adopt_remap_halo` resolves the Core these cells actually live in --
+  // never `meshes[mesh]`/`base_loader` unconditionally, which was the
+  // whole gap.
+  const PlacementResolved pr = resolve_for_halo(mesh, placement);
+  if (!pr.participates || pr.view == nullptr || pr.loader == nullptr) {
+    return Result<void>::success();
+  }
+  MoabMeshView& view = *pr.view;
+  const Result<void> g = pr.loader->gather(view);
   if (!g.ok()) return g;
 
-  const HaloState* h = halo(mesh, dim);
+  const HaloState* h = halo(mesh, dim, placement);
   if (h == nullptr || h->cells.empty()) return Result<void>::success();
 
   DimData& dd = view.dim_data_mut(dim);
@@ -2741,17 +2835,25 @@ Result<void> MoabMeshBackend::set_placements(std::vector<RankSet> placements) {
 }
 
 Result<void> MoabMeshBackend::Impl::plan_halo_exchange(std::size_t mesh,
-                                                       int dim) {
+                                                       int dim,
+                                                       ComponentId placement) {
 #ifndef FUSE_MOAB_PARALLEL
   (void)mesh;
   (void)dim;
+  (void)placement;
   return Result<void>::success();
 #else
-  HaloState& h = halos[{mesh, dim}];
+  // KNOWN_ISSUES D83: resolved THROUGH `placement` -- the communicator the
+  // Allgather/Alltoall(v) below run over, and the view/handles they read,
+  // must be the SAME Core/communicator `adopt_remap_halo` built this
+  // halo's own cells against, never the backend's default unconditionally.
+  const PlacementResolved pr = resolve_for_halo(mesh, placement);
+  HaloState& h = halos[{mesh, dim, placement.value()}];
   h.ex = HaloExchange{};
-  if (pcomm == nullptr) return Result<void>::success();
+  if (!pr.participates) return Result<void>::success();
+  if (pr.pcomm == nullptr) return Result<void>::success();
 
-  const MPI_Comm comm = pcomm->comm();
+  const MPI_Comm comm = pr.pcomm->comm();
   int nproc = 1, me = 0;
   // REVIEW.md TF-8 (N-BACKEND-3 class): unchecked, `nproc`/`me` silently
   // keep their initialisers (1, 0) on failure -- sized and addressed as a
@@ -2769,7 +2871,8 @@ Result<void> MoabMeshBackend::Impl::plan_halo_exchange(std::size_t mesh,
   }
   const auto np = static_cast<std::size_t>(nproc);
 
-  const MoabMeshView& view = *meshes[mesh];
+  if (pr.view == nullptr) return Result<void>::success();
+  const MoabMeshView& view = *pr.view;
   const DimData& dd = view.dim_data(dim);
   // REVIEW.md R-02: reconciled BEFORE the first collective below (the
   // MPI_Allgather a few lines down), not after -- this check needs no
@@ -2927,21 +3030,33 @@ Result<void> MoabMeshBackend::Impl::plan_halo_exchange(std::size_t mesh,
 Result<void> MoabMeshBackend::Impl::run_halo_exchange(std::size_t mesh,
                                                       int dim, double* buffer,
                                                       int components,
-                                                      bool gather_dir) const {
+                                                      bool gather_dir,
+                                                      ComponentId placement) const {
 #ifndef FUSE_MOAB_PARALLEL
   (void)mesh;
   (void)dim;
   (void)buffer;
   (void)components;
   (void)gather_dir;
+  (void)placement;
   return Result<void>::success();
 #else
-  const HaloState* h = halo(mesh, dim);
-  if (h == nullptr || pcomm == nullptr) return Result<void>::success();
+  // KNOWN_ISSUES D83: the SAME (mesh, dim, placement) key
+  // `plan_halo_exchange` filed this plan under, and the SAME placement's
+  // own communicator the Alltoallv below runs over -- `const` here, so
+  // `resolve_for_halo` (non-const) cannot be called; the pieces it would
+  // resolve to `pcomm`/`view` are not needed beyond the communicator
+  // itself, already answered by the SAME logic `plan_halo_exchange` used
+  // to size `h->ex` in the first place.
+  const HaloState* h = halo(mesh, dim, placement);
+  if (h == nullptr) return Result<void>::success();
   const HaloExchange& ex = h->ex;
   if (ex.req_counts.empty()) return Result<void>::success();
 
-  const MPI_Comm comm = pcomm->comm();
+  const PlacementResolved pr = resolve_for_halo(mesh, placement);
+  if (!pr.participates || pr.pcomm == nullptr) return Result<void>::success();
+
+  const MPI_Comm comm = pr.pcomm->comm();
   const auto nc = static_cast<std::size_t>(components);
   const auto np = ex.req_counts.size();
 
@@ -2998,7 +3113,8 @@ Result<void> MoabMeshBackend::Impl::run_halo_exchange(std::size_t mesh,
 Result<std::size_t> MoabMeshBackend::adopt_remap_halo(MeshId source,
                                                       MeshId target, int dim,
                                                       const std::uint64_t* cells,
-                                                      std::size_t count) {
+                                                      std::size_t count,
+                                                      ComponentId placement) {
   if (impl_ == nullptr) {
     return Failure{"E-MESH-MOVED", "adopt_remap_halo() on a moved-from backend"};
   }
@@ -3012,21 +3128,51 @@ Result<std::size_t> MoabMeshBackend::adopt_remap_halo(MeshId source,
   }
   const std::size_t s = source.value();
   const std::size_t t = target.value();
-  const auto key = std::make_tuple(s, t, dim);
+  const auto key = std::make_tuple(s, t, dim, placement.value());
   const auto seen = impl_->halo_pairs.find(key);
   if (seen != impl_->halo_pairs.end()) return seen->second;
 
-  if (!impl_->parallel()) {
+  // KNOWN_ISSUES D83 (owner decision 2026-10-19: make the adoption
+  // placement-aware, not a refusal): resolved ONCE, through `placement`,
+  // the SAME way `native_mesh(id, placement)` resolves its own triple --
+  // a placement's own Core/communicator/view when `placement` names a
+  // processor set this rank participates in, the backend's default
+  // decomposition otherwise. EVERY MOAB call below goes through `pr.mb`/
+  // `pr.pcomm`/`pr.view`, never `impl_->mb`/`impl_->pcomm`/
+  // `impl_->meshes[s]` directly -- the EntityHandle-across-Cores mismatch
+  // D83 recorded (a covering cell built in a placement's own Core has no
+  // meaning read against `impl_->mb`'s unrelated internal numbering) is
+  // exactly what this removes.
+  const Impl::PlacementResolved pr = impl_->resolve_for_halo(s, placement);
+  if (!pr.participates) {
+    return Failure{"E-MESH-PLACEMENT",
+                 "adopt_remap_halo(): this rank does not participate in "
+                 "placement " + std::to_string(placement.value()) +
+                 "; there is no Core here to adopt a halo cell into"};
+  }
+
+  if (pr.pcomm == nullptr) {
     // No communicator to reconcile against either: a one-rank (or
     // no-MPI-build) caller has nothing to adopt and no peer to disagree
     // with.
     impl_->halo_pairs.emplace(key, std::size_t{0});
-    const Result<void> p = impl_->plan_halo_exchange(s, dim);
+    const Result<void> p = impl_->plan_halo_exchange(s, dim, placement);
     if (!p.ok()) return p.error();
     return std::size_t{0};
   }
 
-  MoabMeshView& view = *impl_->meshes[s];
+#ifndef FUSE_MOAB_PARALLEL
+  // `pr.pcomm` is unconditionally null without FUSE_MOAB_PARALLEL (the
+  // PlacementResolved field guard just above), so the `pr.pcomm ==
+  // nullptr` branch already returned above on every path reachable in
+  // this configuration; kept only so the function compiles here too (no
+  // MPI_Comm, no reconcile_halo -- neither is declared without this
+  // macro).
+  return Failure{"E-MESH-HALO",
+               "adopt_remap_halo(): unreachable without FUSE_MOAB_PARALLEL"};
+#else
+  moab::Interface& mb = *pr.mb;
+  MoabMeshView& view = *pr.view;
   const DimData& dd = view.dim_data(dim);
 
   // REVIEW.md TF-3: every rejection below (`gid_error`, the GLOBAL_ID tag
@@ -3037,33 +3183,20 @@ Result<std::size_t> MoabMeshBackend::adopt_remap_halo(MeshId source,
   // local covering set is an ordinary outcome, not an error) from rank to
   // rank -- and each one precedes `plan_halo_exchange`'s own collectives
   // (the Allgather/Alltoall(v) inside it, already guarded by
-  // N-BACKEND-2/R-02's own `reconcile_halo` calls one frame down).
-  // `impl_->parallel()` just above is a BACKEND-WIDE property (true
-  // identically on every rank of this communicator, not a per-call one),
-  // so every rank that reaches this point runs the SAME five
-  // `reconcile_step` calls below, in the SAME order, regardless of its own
-  // `count` -- `count == 0` must NOT skip any of them (an earlier version
-  // of this fix did exactly that, which would have let a rank with an
-  // empty local covering set skip a collective a peer with a non-empty one
-  // still enters -- the same hang TF-3 reports, reintroduced one level
-  // down). Routed through that SAME `reconcile_halo` one frame earlier
-  // here, so a rank whose local covering set has a defect refuses in step
-  // with every peer instead of returning alone while an unaffected peer
-  // proceeds into `plan_halo_exchange`'s collectives.
-#ifdef FUSE_MOAB_PARALLEL
-  const MPI_Comm halo_comm = impl_->pcomm->comm();
-#endif
+  // N-BACKEND-2/R-02's own `reconcile_halo` calls one frame down). Every
+  // PARTICIPATING rank of `pr.pcomm`'s own communicator reaches this
+  // point identically (`pr.participates` is a structural property of the
+  // declared processor set, true or false the same way on every rank that
+  // calls this with the SAME `placement`), so every one of them runs the
+  // SAME five `reconcile_step` calls below, in the SAME order, regardless
+  // of its own `count` -- `count == 0` must NOT skip any of them (an
+  // earlier version of this fix did exactly that, which would have let a
+  // rank with an empty local covering set skip a collective a peer with a
+  // non-empty one still enters -- the same hang TF-3 reports, reintroduced
+  // one level down).
+  const MPI_Comm halo_comm = pr.pcomm->comm();
   const auto reconcile_step = [&](bool failed, std::string msg) -> Result<void> {
-#ifdef FUSE_MOAB_PARALLEL
     return reconcile_halo(halo_comm, failed, msg);
-#else
-    // impl_->parallel() is always false without FUSE_MOAB_PARALLEL, so the
-    // early `!impl_->parallel()` return above always fires first and this
-    // branch never runs; kept only so the function compiles in every
-    // configuration.
-    return failed ? Result<void>(Failure{"E-MESH-HALO", std::move(msg)})
-                  : Result<void>::success();
-#endif
   };
 
   {
@@ -3076,9 +3209,9 @@ Result<std::size_t> MoabMeshBackend::adopt_remap_halo(MeshId source,
   std::set<std::size_t> present(dd.global_ids.begin(), dd.global_ids.end());
 
   moab::Tag gid = nullptr;
-  const bool no_gid_tag = impl_->mb.tag_get_handle(GLOBAL_ID_TAG_NAME, 1,
-                                                    moab::MB_TYPE_INTEGER,
-                                                    gid) != moab::MB_SUCCESS;
+  const bool no_gid_tag = mb.tag_get_handle(GLOBAL_ID_TAG_NAME, 1,
+                                            moab::MB_TYPE_INTEGER,
+                                            gid) != moab::MB_SUCCESS;
   {
     const Result<void> agreed = reconcile_step(
         no_gid_tag, "the mesh has no GLOBAL_ID tag, so a halo cell cannot be "
@@ -3086,18 +3219,21 @@ Result<std::size_t> MoabMeshBackend::adopt_remap_halo(MeshId source,
     if (!agreed.ok()) return agreed.error();
   }
 
-  Impl::HaloState& state = impl_->halos[{s, dim}];
+  Impl::HaloState& state = impl_->halos[{s, dim, placement.value()}];
   std::vector<moab::EntityHandle> keep;
   keep.reserve(count);
   bool bad_cell_gid = false;
   // `no_gid_tag` is already agreed false on every rank by this point (the
   // reconcile_step above would have returned otherwise), so `gid` is a
   // valid tag handle here -- but only when `count > 0` does this rank have
-  // any cells of its own to read it for.
+  // any cells of its own to read it for. `cells[k]` is a handle in `mb`
+  // (the SAME Core `pr.mb` resolved, because the caller built the
+  // covering set through `native_mesh(source, placement)`'s own triple)
+  // -- never `impl_->mb` directly, which is the whole fix.
   for (std::size_t k = 0; !no_gid_tag && k < count && !bad_cell_gid; ++k) {
     const auto h = static_cast<moab::EntityHandle>(cells[k]);
     int g = 0;
-    if (impl_->mb.tag_get_data(gid, &h, 1, &g) != moab::MB_SUCCESS || g <= 0) {
+    if (mb.tag_get_data(gid, &h, 1, &g) != moab::MB_SUCCESS || g <= 0) {
       bad_cell_gid = true;
       break;
     }
@@ -3115,8 +3251,8 @@ Result<std::size_t> MoabMeshBackend::adopt_remap_halo(MeshId source,
 
   bool add_failed = false;
   if (!keep.empty()) {
-    add_failed = impl_->mb.add_entities(view.file_set(), keep.data(),
-                                        static_cast<int>(keep.size())) !=
+    add_failed = mb.add_entities(view.file_set(), keep.data(),
+                                 static_cast<int>(keep.size())) !=
                  moab::MB_SUCCESS;
     if (!add_failed) state.cells.insert(keep.begin(), keep.end());
   }
@@ -3127,30 +3263,32 @@ Result<std::size_t> MoabMeshBackend::adopt_remap_halo(MeshId source,
     if (!agreed.ok()) return agreed.error();
   }
 
-  const Result<void> rg = impl_->regather_with_halo(s, dim);
+  const Result<void> rg = impl_->regather_with_halo(s, dim, placement);
   {
     const Result<void> agreed =
         reconcile_step(!rg.ok(), rg.ok() ? std::string() : rg.error().message);
     if (!agreed.ok()) return agreed.error();
   }
-  const Result<void> p = impl_->plan_halo_exchange(s, dim);
+  const Result<void> p = impl_->plan_halo_exchange(s, dim, placement);
   if (!p.ok()) return p.error();
 
   impl_->halo_pairs.emplace(key, keep.size());
   return keep.size();
+#endif  // FUSE_MOAB_PARALLEL
 }
 
-bool MoabMeshBackend::has_remap_halo(MeshId source, MeshId target,
-                                     int dim) const noexcept {
+bool MoabMeshBackend::has_remap_halo(MeshId source, MeshId target, int dim,
+                                     ComponentId placement) const noexcept {
   if (impl_ == nullptr) return false;
   return impl_->halo_pairs.find(std::make_tuple(
-             source.value(), target.value(), dim)) != impl_->halo_pairs.end();
+             source.value(), target.value(), dim, placement.value())) !=
+         impl_->halo_pairs.end();
 }
 
-std::size_t MoabMeshBackend::remap_halo_size(MeshId source,
-                                             int dim) const noexcept {
+std::size_t MoabMeshBackend::remap_halo_size(
+    MeshId source, int dim, ComponentId placement) const noexcept {
   if (impl_ == nullptr) return 0;
-  const Impl::HaloState* h = impl_->halo(source.value(), dim);
+  const Impl::HaloState* h = impl_->halo(source.value(), dim, placement);
   return h == nullptr ? 0 : h->cells.size();
 }
 
@@ -3169,7 +3307,8 @@ namespace {
 
 Result<void> MoabMeshBackend::exchange_remap_halo(MeshId source, int dim,
                                                   double* buffer,
-                                                  int components) const {
+                                                  int components,
+                                                  ComponentId placement) const {
   if (impl_ == nullptr) {
     return Failure{"E-MESH-MOVED",
                  "exchange_remap_halo() on a moved-from backend"};
@@ -3185,12 +3324,13 @@ Result<void> MoabMeshBackend::exchange_remap_halo(MeshId source, int dim,
     return halo_arg_error(buffer, components);
   }
   return impl_->run_halo_exchange(source.value(), dim, buffer, components,
-                                  /*gather_dir=*/true);
+                                  /*gather_dir=*/true, placement);
 }
 
 Result<void> MoabMeshBackend::accumulate_remap_halo(MeshId source, int dim,
                                                     double* buffer,
-                                                    int components) const {
+                                                    int components,
+                                                    ComponentId placement) const {
   if (impl_ == nullptr) {
     return Failure{"E-MESH-MOVED",
                  "accumulate_remap_halo() on a moved-from backend"};
@@ -3206,7 +3346,7 @@ Result<void> MoabMeshBackend::accumulate_remap_halo(MeshId source, int dim,
     return halo_arg_error(buffer, components);
   }
   return impl_->run_halo_exchange(source.value(), dim, buffer, components,
-                                  /*gather_dir=*/false);
+                                  /*gather_dir=*/false, placement);
 }
 
 Result<void> MoabMeshBackend::set_communicator(int fortran_comm_handle) {
