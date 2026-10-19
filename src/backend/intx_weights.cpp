@@ -198,7 +198,12 @@ constexpr double kCoverageTol = 1e-9;
   // same region on both sides): every one of the source's cells IS a target
   // cell already, local by construction, so no halo is ever needed for it.
   // ==========================================================================
-  if (const auto* native_backend = dynamic_cast<const native::NativeMeshBackend*>(&backend)) {
+  // Hoisted out of the `if` below (round 7, RemapHalo track): the
+  // conservative-coverage fold further down needs this SAME pointer, not a
+  // second `dynamic_cast`, and `nullptr` on a non-native backend is exactly
+  // the "this check does not apply" guard that code needs too.
+  const auto* native_backend = dynamic_cast<const native::NativeMeshBackend*>(&backend);
+  if (native_backend != nullptr) {
     // KNOWN_ISSUES.md D73 (RemapHalo track round 6, host measurement 2026-10-19): `plan.placement`
     // is the ONLY argument missing here -- `has_remap_halo`'s own 4th parameter defaults to
     // `ComponentId{}` (the "unplaced decomposition", that default parameter's own doc comment,
@@ -230,7 +235,7 @@ constexpr double kCoverageTol = 1e-9;
     }
   }
   auto built = build_supermesh_weights(*s.value().view, *d.value().view,
-                                       s.value().dim);
+                                       s.value().dim, plan.conservation);
   if (!built.ok()) return built.error();
   // Soma-import finding (docs/dev/soma-import.md, RemapPartial.* rows), same
   // defect as REVIEW.md TF-5: this path computed min_src_coverage all along
@@ -244,6 +249,42 @@ constexpr double kCoverageTol = 1e-9;
   // guarantee quietly not enforced). Same check, same tolerance, same error
   // code as the MOAB path below, so a plan rejected there is rejected here
   // for the identical reason.
+  //
+  // KNOWN_ISSUES.md D73 (RemapHalo track round 7, host measurement
+  // 2026-10-19): `min_src_coverage`, as `build_supermesh_weights` just
+  // returned it, is the coverage of the intersections THIS rank's own
+  // merged views produced -- correct on a single rank, but on a partitioned
+  // read a source cell this rank OWNS may have every one of its
+  // intersections live on a PEER, which adopted it through the halo (the
+  // "rank 0 (4 source cells, NO target cells)" shape: every one of its
+  // owned cells shows 0% local coverage, even though the SAME cells are
+  // fully covered once the peer's own halo-copy intersection is counted).
+  // `fuse::native::fold_and_reduce_source_coverage` folds each halo copy's
+  // own share back to its owner (the reverse of the forward fill
+  // `build_native_remap_halo` itself already performs) and reduces the
+  // result to one number over the WHOLE base communicator, so every rank's
+  // Conservative check reads the SAME, now-correct value -- "agree first",
+  // never a refusal one rank reaches alone from a locally computed 0%.
+  if (has(plan.flags, RemapFlags::Conservative) && native_backend != nullptr &&
+      native_backend->communicator_size() > 1 && s.value().mid.value() != d.value().mid.value()) {
+    // KNOWN_ISSUES.md D82 (owner decision 2026-10-19): recovers the RAW
+    // intersection measure from the (already divided) weight -- undo
+    // whichever division build_supermesh_weights just applied: Extensive
+    // divided by the SOURCE cell's own measure, Intensive by the target's.
+    const bool extensive = plan.conservation == Conservation::Extensive;
+    std::vector<double> src_covered(built.value().n_cols, 0.0);
+    for (std::size_t k = 0; k < built.value().val.size(); ++k) {
+      const auto i = static_cast<std::size_t>(built.value().col[k]);
+      const auto j = static_cast<std::size_t>(built.value().row[k]);
+      src_covered[i] += extensive ? built.value().val[k] * s.value().view->measure(s.value().dim, i)
+                                  : built.value().val[k] * d.value().view->measure(d.value().dim, j);
+    }
+    const auto folded = native::fold_and_reduce_source_coverage(
+        *native_backend, s.value().mid, d.value().mid, s.value().dim, plan.placement,
+        *s.value().view, src_covered);
+    if (!folded.ok()) return folded.error();
+    built.value().min_src_coverage = folded.value();
+  }
   if (has(plan.flags, RemapFlags::Conservative) &&
       built.value().min_src_coverage < 1.0 - kCoverageTol) {
     return Failure{

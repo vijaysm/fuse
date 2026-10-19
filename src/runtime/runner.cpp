@@ -1179,6 +1179,13 @@ Result<void> Runner::Impl::resolve_remap(const Instruction& ins, Resolved& r) {
   // The decomposition the weights index. Part of the plan's key, so the same
   // channel on two placements builds two matrices rather than sharing one.
   p.placement = placement;
+  // KNOWN_ISSUES.md D82 (owner decision 2026-10-19): the SAME place
+  // `placement` is read, two lines above -- the Remap arc's own
+  // ValueType, set from the channel's declared FieldSpec::conservation at
+  // lower() time (lowering.cpp's source_type()) and preserved unmodified
+  // through every copy between there and here (rules_channel.cpp's own
+  // `ValueType remapped = type;` never touches `.conservation`).
+  p.conservation = dag.arc(ins.out).type.conservation;
   // THE METHOD STRING IS A BUILDER SELECTOR, AND IT IS THE USER'S. It is
   // `Channel::remap.method_override`, carried verbatim through lowering, and
   // it is forwarded here unaltered rather than being defaulted, normalised or

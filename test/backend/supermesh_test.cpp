@@ -1473,3 +1473,66 @@ TEST(SupermeshDevice, OneDimensionalStaysOnHostBroadPhaseUnderDeviceToo) {
   EXPECT_LT(w.max_row_defect, 1e-14);
   EXPECT_LT(w.max_col_defect, 1e-14);
 }
+
+// ===========================================================================
+// KNOWN_ISSUES.md D82 (owner decision 2026-10-19): the normalisation convention
+// build_supermesh_weights applies is chosen by its own Conservation argument.
+// Both tests below use a STRICT, convention-specific assertion (amount
+// conserved for Extensive; the constant reproduced exactly for Intensive) --
+// not a loose tolerance either one could pass by coincidence -- so the
+// mutation row that swaps them (build-evidence/mutations/supermesh.toml) is
+// killed by the WRONG assertion failing, not by a widened bound.
+// ===========================================================================
+
+TEST(Supermesh, ExtensiveConservesTheTotalAmountNotTheConstant) {
+  // A non-matching resolution over the SAME domain (both box generators,
+  // dim 3): Extensive and Intensive give DIFFERENT matrices on a pair like
+  // this, so this test would pass under either convention's assertion only
+  // by the kind of coincidence D82's own "why no prior test caught this"
+  // section describes.
+  auto p = pair_of("generated:box:2x2x2", "generated:box:3x3x3");
+  ASSERT_TRUE(p != nullptr);
+  const auto built =
+      fuse::build_supermesh_weights(*p->src, *p->tgt, 3, fuse::Conservation::Extensive);
+  ASSERT_TRUE(built.ok()) << built.error().code << ": " << built.error().message;
+  const fuse::RemapWeights& w = built.value();
+
+  constexpr double kFillValue = 7.0;
+  const std::vector<double> f(w.n_cols, kFillValue);
+  const std::vector<double> g = apply_map(w, f);
+
+  const double source_sum = std::accumulate(f.begin(), f.end(), 0.0);
+  const double target_sum = std::accumulate(g.begin(), g.end(), 0.0);
+  EXPECT_NEAR(source_sum, target_sum, 1e-9)
+      << "Extensive must conserve the TOTAL amount (source_sum == target_sum), not reproduce "
+         "the constant on every target cell -- source_sum=" << source_sum
+      << " target_sum=" << target_sum;
+
+  // 7.0 * 8 source cells (2x2x2): pins the source side so the real
+  // assertion above is checking the TARGET against a known number, not two
+  // unknowns.
+  EXPECT_NEAR(source_sum, 56.0, 1e-9);
+}
+
+TEST(Supermesh, IntensiveReproducesTheConstantNotJustTheTotal) {
+  auto p = pair_of("generated:box:2x2x2", "generated:box:3x3x3");
+  ASSERT_TRUE(p != nullptr);
+  const auto built =
+      fuse::build_supermesh_weights(*p->src, *p->tgt, 3, fuse::Conservation::Intensive);
+  ASSERT_TRUE(built.ok()) << built.error().code << ": " << built.error().message;
+  const fuse::RemapWeights& w = built.value();
+
+  constexpr double kFillValue = 7.0;
+  const std::vector<double> f(w.n_cols, kFillValue);
+  const std::vector<double> g = apply_map(w, f);
+
+  // The STRICT, convention-specific check: EVERY target cell reads back the
+  // SAME constant -- not merely a total that happens to match (which a
+  // swapped-normalisation mutation could still satisfy by the pair's own
+  // total-measure coincidence; the per-cell check cannot).
+  for (double v : g) {
+    EXPECT_NEAR(v, kFillValue, 1e-12)
+        << "Intensive (row-sum-to-1) must reproduce a constant field exactly on every "
+           "target cell, regardless of how many source cells intersected it";
+  }
+}

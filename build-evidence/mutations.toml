@@ -596,10 +596,10 @@ test = "backend.supermesh"
 [[mutation]]
 id = "supermesh-divides-by-the-source-measure"
 area = "backend"
-describes = "the weight is normalised by the source cell's measure instead of the target's, which preserves mass but destroys constant preservation on a non-matching pair"
+describes = "KNOWN_ISSUES.md D82 (owner decision 2026-10-19): the divisor is unconditionally the source cell's measure regardless of the channel's declared conservation kind, so an Intensive channel (which must divide by the target measure, row-sum-to-1) gets the Extensive divisor instead and loses constant-field preservation on a non-matching pair"
 file = "src/backend/supermesh.cpp"
-old = "    const double val = measure / mj;"
-new = "    const double val = measure / src.measure(dim, i);"
+old = "    const double divisor = extensive ? src.measure(dim, i) : tgt.measure(dim, j);"
+new = "    const double divisor = src.measure(dim, i);"
 target = "fuse_backend_supermesh_test"
 test = "backend.supermesh"
 

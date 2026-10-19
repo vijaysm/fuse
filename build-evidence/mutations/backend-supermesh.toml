@@ -51,3 +51,13 @@ old = "    return a.src_gid < b.src_gid;"
 new = "    return a.col < b.col;"
 target = "fuse_backend_transfer_map_io_test"
 test = "backend.transfer_map_io"
+
+[[mutation]]
+id = "supermesh-normalises-extensive-the-same-as-intensive"
+area = "backend"
+describes = "KNOWN_ISSUES.md D82 (owner decision 2026-10-19): Extensive's weights must normalise by source measure (columns sum to 1, the transferred amount conserves); Intensive's weights normalise by target measure (rows sum to 1, the field value interpolates). Flipping the sense of the conservation-kind test makes build_supermesh_weights apply Intensive's row normalisation to an Extensive channel (or vice versa): the per-row-sum/monotone diagnostics still pass (they do not know which convention is being asked for), so only an assertion that checks the CONSERVED QUANTITY -- total transferred amount for Extensive, a constant field's value for Intensive -- catches this."
+file = "src/backend/supermesh.cpp"
+old = "const bool extensive = conservation == Conservation::Extensive;"
+new = "const bool extensive = conservation != Conservation::Extensive;"
+target = "fuse_backend_supermesh_test"
+test = "backend.supermesh"

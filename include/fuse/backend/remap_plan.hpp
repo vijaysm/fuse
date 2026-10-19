@@ -251,6 +251,29 @@ struct RemapPlan {
   /// Part of `key()`: the same plan on two processor sets is two matrices.
   ComponentId    placement{};
 
+  /// KNOWN_ISSUES.md D82 (owner decision 2026-10-19): which amount<->matrix
+  /// convention the general (non-nodal) weighted FV<->FV path normalises
+  /// by. `Extensive` (the field's VALUE directly IS the conserved amount)
+  /// needs column normalisation (`val = overlap_measure / source_cell_
+  /// measure`, so each source column sums to 1 and its whole amount is
+  /// redistributed); `Intensive` (value = density, amount = value *
+  /// measure) needs row normalisation (`val = overlap_measure /
+  /// target_cell_measure`, so each target row sums to 1), which is what
+  /// `build_supermesh_weights` always built before this field existed.
+  /// `None` (the default, no caller sets it today) falls back to the
+  /// Intensive convention -- unchanged behaviour for anyone who does not
+  /// yet pass this field. Read once in `Runner::Impl::resolve_remap()`
+  /// from the Remap arc's own `ValueType::conservation` (lowering.cpp's
+  /// `source_type()` sets it from the channel's own `FieldSpec::
+  /// conservation`, and it survives unmodified through every ValueType
+  /// copy between there and the Remap's own output arc, rules_channel.cpp
+  /// -- `validate()`'s own `E-CONSERV` check already guarantees the
+  /// source and target fields agree, so either side's value is
+  /// authoritative). Part of `key()`: the same channel asked for under two
+  /// different conventions (impossible through the graph today, but not
+  /// through this struct) must not share a cached matrix.
+  Conservation   conservation = Conservation::None;
+
   friend bool operator==(const RemapPlan&, const RemapPlan&) = default;
 
   /// The cache key. Every field of the struct appears, so two plans with the
@@ -267,7 +290,8 @@ struct RemapPlan {
            std::to_string(static_cast<std::uint32_t>(flags)) + "/" +
            std::to_string(method.size()) + ":" + method + "/" +
            to_cstring(temporal) + std::to_string(temporal_degree) + "@" +
-           (placement.valid() ? std::to_string(placement.value()) : std::string{"-"});
+           (placement.valid() ? std::to_string(placement.value()) : std::string{"-"}) + "#" +
+           to_cstring(conservation);
   }
 };
 

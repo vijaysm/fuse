@@ -41,13 +41,24 @@
 //     does not exist yet for the native backend -- see the task's
 //     open_questions.
 //   * "fluid_force" -> "beam_force": an INTEGRATED quantity (traction
-//     integrated to a per-cell force density), Conservation::Extensive,
-//     field transfer marked `.conservative()`. `ConservativeTransferPreservesTotalForce`
-//     checks the measure-weighted SUM delivered equals the measure-weighted
-//     sum sent, to round-off (Extensive fields are densities: the conserved
-//     amount is value*measure, confirmed empirically -- the un-weighted sums
-//     disagreed by exactly the n_fluid/n_beam ratio).
+//     integrated to a per-cell force -- already an amount, not a density),
+//     Conservation::Extensive, field transfer marked `.conservative()`.
+//     `ConservativeTransferPreservesTotalForce` checks the PLAIN (unweighted)
+//     SUM delivered equals the plain sum sent, to round-off -- KNOWN_ISSUES.md
+//     D82 (owner decision 2026-10-19): Extensive's own value directly IS the
+//     conserved amount, not a density, so no measure weighting belongs here
+//     at all. A STALE version of this comment (and the assertion below, now
+//     fixed) claimed the opposite ("Extensive fields are densities") and
+//     added measure-weighting to the test's own sums as a WORKAROUND for
+//     D82's own pre-existing library defect (the unconditional Intensive
+//     normalisation build_supermesh_weights always applied before D82's own
+//     fix landed) -- compensating in the test for a bug in the library,
+//     rather than fixing the library, and then mis-describing the result as
+//     the field's own semantics. Once the library was fixed to apply
+//     Extensive's own column normalisation, the compensating weighting here
+//     became a SECOND, now-wrong correction on top of a now-correct matrix.
 //
+
 // `TransferOrderOnASmoothField` repeats the pointwise study over four
 // resolutions and measures the order, mirroring
 // Supermesh.ObservedOrderOnANonMatchingPairIsAtLeastOne but through the
@@ -302,16 +313,15 @@ TEST(InterfaceTransfer, ConservativeTransferPreservesTotalForce) {
 
   // "force" is a per-cell amount (already integrated), so the TOTAL is the
   // plain sum across cells -- no measure weighting, unlike a density.
-  // Extensive fields are densities (spec's FV convention: a cell's stored
-  // value integrates to an amount only once multiplied by the cell's
-  // measure), so the conserved total is the measure-weighted sum, not the
-  // plain sum of per-cell values -- confirmed empirically: the plain sums
-  // disagreed by exactly the n_fluid/n_beam ratio before this weighting was
-  // added.
+  // KNOWN_ISSUES.md D82 (owner decision 2026-10-19): Extensive's own value
+  // directly IS the conserved amount; build_supermesh_weights now applies
+  // Extensive's own column (source-measure) normalisation, so a plain,
+  // unweighted sum is the right comparison -- no compensating measure
+  // weighting belongs on either side.
   double total_sent = 0.0;
-  for (const double v : r.beam_sent) total_sent += v * measure_of(s.n_fluid);
+  for (const double v : r.beam_sent) total_sent += v;
   double total_received = 0.0;
-  for (const double v : r.beam_force) total_received += v * measure_of(s.n_beam);
+  for (const double v : r.beam_force) total_received += v;
 
   EXPECT_NEAR(total_received, total_sent, 1e-11 * std::abs(total_sent))
       << "sent " << total_sent << " received " << total_received;

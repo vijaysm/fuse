@@ -172,7 +172,8 @@ struct Harness {
 /// calling the right functions in the wrong order. Either way, `Runner::
 /// Impl::resolve_remap_halo()`'s own verification is the gate expected to
 /// refuse when the halo genuinely was never built.
-[[nodiscard]] std::unique_ptr<Harness> build(bool build_halo) {
+[[nodiscard]] std::unique_ptr<Harness> build(bool build_halo,
+                                             fuse::Conservation conservation = fuse::Conservation::Extensive) {
   const int rank = world_rank();
   const int world = world_size();
   const Placement pl = placement_for(world);
@@ -196,12 +197,12 @@ struct Harness {
   const auto out = g.add_field(
       provider_id, fuse::FieldSpec{.name = "out", .region = r_provider,
                                   .units = fuse::units::kKelvin,
-                                  .conservation = fuse::Conservation::Extensive,
+                                  .conservation = conservation,
                                   .intent = fuse::Intent::Provides});
   const auto in = g.add_field(
       consumer_id, fuse::FieldSpec{.name = "in", .region = r_consumer,
                                   .units = fuse::units::kKelvin,
-                                  .conservation = fuse::Conservation::Extensive,
+                                  .conservation = conservation,
                                   .intent = fuse::Intent::Requires});
   const auto link = g.add_channel("link", out, in);  // no remap_method(): the general weighted path
   g.channel(link).remap(fuse::RemapFlags::Conservative);
@@ -456,6 +457,57 @@ TEST(NativeRemapHalo, DisjointGeneralWeightedRemapConservesOnceTheHaloIsBuilt) {
   EXPECT_GT(global_target_sum, tol)
       << "the delivered total must be genuinely non-zero, not merely within tolerance "
          "of zero (KNOWN_ISSUES.md D73's own silent-empty-matrix failure mode)";
+}
+
+// ---------------------------------------------------------------------------
+// KNOWN_ISSUES.md D82 (owner decision 2026-10-19): the SAME disjoint
+// provider/consumer shape, under `Conservation::Intensive` instead --
+// `build_supermesh_weights`'s own ORIGINAL (unchanged) target-measure
+// normalisation, which makes a CONSTANT field reproduce exactly (not just
+// conserve its total): every target cell, fully covered by a provider whose
+// own field is a single uniform value, must read back that SAME value,
+// because the weights in its row sum to 1 regardless of which individual
+// source cells they came from.
+// ---------------------------------------------------------------------------
+TEST(NativeRemapHalo, DisjointGeneralWeightedRemapPreservesAConstantFieldExactlyUnderIntensiveConservation) {
+  ASSERT_GE(world_size(), 2) << "this row is registered RANKS 2 3; at 1 rank "
+                                "provider and consumer coincide and nothing is disjoint";
+  auto h = build(/*build_halo=*/true, fuse::Conservation::Intensive);
+
+  for (auto& comp : h->components) {
+    const auto r = comp.register_fields(h->registry, h->graph);
+    ASSERT_TRUE(r.ok()) << r.error().message;
+  }
+
+  Runner runner{h->graph, h->dag, h->plan, h->backend};
+  RunnerConfig cfg;
+  cfg.transport = "mpi";
+  cfg.base_communicator = MPI_Comm_c2f(MPI_COMM_WORLD);
+  cfg.transport_setup = mpi_comm_setup();
+  cfg.check_conservation = true;
+
+  const auto init = runner.initialize(h->components, h->registry, cfg);
+  ASSERT_TRUE(init.ok()) << (init.ok() ? std::string{} : init.error().message);
+
+  const auto run = runner.run_period(h->components);
+  ASSERT_TRUE(run.ok()) << (run.ok() ? std::string{} : run.error().message);
+
+  Side* const consumer_ptr = dynamic_cast<Side*>(h->components.find("consumer"));
+  ASSERT_NE(consumer_ptr, nullptr);
+  Side& consumer_side = *consumer_ptr;
+
+  // Every OWNED consumer cell this rank holds must read back the SAME
+  // constant the provider's own field was filled with (`Side::fill`,
+  // 7.0) -- to rounding, not to the Higham bound the Extensive test above
+  // needs for a SUM: a single row-normalised matvec on a uniform input is
+  // one weighted average per output, not an accumulation across many
+  // terms, so a much tighter, near-epsilon tolerance is the honest one.
+  constexpr double kFillValue = 7.0;
+  for (double v : consumer_side.bufs["in"]) {
+    EXPECT_NEAR(v, kFillValue, 1e-12)
+        << "Intensive conservation (row-sum-to-1 normalisation) must reproduce a constant "
+           "field exactly, regardless of how many source cells intersected this target cell";
+  }
 }
 
 TEST(NativeRemapHalo, DisjointGeneralWeightedRemapRefusesWhenTheHaloWasNeverBuilt) {

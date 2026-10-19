@@ -9,17 +9,28 @@
 /// express, they are required to agree.
 ///
 /// WHAT IT COMPUTES. For every target cell `j` and source cell `i` it computes
-/// the exact measure of their intersection, `|T_j n S_i|`, and sets
+/// the exact measure of their intersection, `|T_j intersect S_i|`, and
+/// normalises by ONE of two conventions, chosen by the `Conservation`
+/// argument (KNOWN_ISSUES.md D82, owner decision 2026-10-19):
 ///
-///     W_ji = |T_j n S_i| / m_j        (m_j = measure of target cell j)
+///     Intensive: W_ji = |T_j intersect S_i| / m_j   (m_j = target cell j's own measure)
+///     Extensive: W_ji = |T_j intersect S_i| / n_i   (n_i = source cell i's own measure)
 ///
-/// so that `g_j = sum_i W_ji f_i` is the measure-weighted average of the
-/// source field over the target cell. That single formula is both
-/// constant-preserving (`sum_i W_ji = 1` where the meshes overlap fully) and
-/// conservative in the integral sense (`sum_j g_j m_j = sum_i f_i m_i`), which
-/// is why there is no separate "conservative" variant here: a first-order
-/// supermesh map is conservative by construction, and the audit fields on
-/// `RemapWeights` report how nearly it achieved it on the pair it was given.
+/// `Intensive` (the field's value is a DENSITY, the conserved amount is
+/// `value * measure`) makes `sum_i W_ji = 1` (every target row), so
+/// `g_j = sum_i W_ji f_i` is the measure-weighted average of the source field
+/// over the target cell -- constant-preserving and conservative in the
+/// integral sense (`sum_j g_j m_j = sum_i f_i n_i`) together, which is why
+/// there was no separate "conservative" variant before this field existed: a
+/// first-order supermesh map is conservative under THIS convention by
+/// construction. `Extensive` (the field's value directly IS the conserved
+/// amount) instead makes `sum_j W_ji = 1` (every source COLUMN), so the whole
+/// amount `f_i` in source cell `i` is redistributed across the target cells
+/// it overlaps (`sum_i f_i = sum_j g_j`) rather than reinterpreted as a
+/// density -- the two conventions agree only when every overlapping pair
+/// shares the same measure. `RemapWeights`'s own audit fields (`min_src_
+/// coverage`, `max_row_defect`, ...) report how nearly the CHOSEN convention
+/// achieved its own guarantee on the pair it was given, not the other one's.
 ///
 /// EXACTNESS. The intersection measures are exact up to floating-point
 /// rounding, not quadrature: the geometric kernel clips polytopes and computes
@@ -46,6 +57,7 @@ namespace fuse {
 /// supermesh would look like a legitimate zero-overlap answer.
 [[nodiscard]] Result<RemapWeights> build_supermesh_weights(const MeshView& src,
                                                            const MeshView& tgt,
-                                                           int dim);
+                                                           int dim,
+                                                           Conservation conservation = Conservation::None);
 
 }  // namespace fuse

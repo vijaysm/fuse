@@ -273,7 +273,15 @@ struct HostCandidateCsr {
 }  // namespace
 
 Result<RemapWeights> build_supermesh_weights(const MeshView& src,
-                                             const MeshView& tgt, int dim) {
+                                             const MeshView& tgt, int dim,
+                                             Conservation conservation) {
+  // KNOWN_ISSUES.md D82 (owner decision 2026-10-19): Extensive normalises by
+  // the SOURCE cell's own measure (columns sum to 1, the whole source
+  // amount redistributed); every other value (Intensive, and None for a
+  // caller that has not yet threaded a channel's declared conservation
+  // through) keeps the ORIGINAL target-measure normalisation (rows sum to
+  // 1) this function always built before this parameter existed.
+  const bool extensive = conservation == Conservation::Extensive;
   if (dim < 1 || dim > 3) {
     return Failure{"E-REMAP-DIM",
                    "supermesh weights are defined for entity dimension 1, 2 "
@@ -478,17 +486,22 @@ Result<RemapWeights> build_supermesh_weights(const MeshView& src,
   w.val.reserve(acc.size());
   double min_w = 1.0;
   std::vector<double> row_sum(w.n_rows, 0.0);
+  std::vector<double> col_sum(w.n_cols, 0.0);  // Extensive's own "amount preserved" check
   std::size_t dropped = 0;
   for (const auto& [key, measure] : acc) {
     const auto [j, i] = key;
-    const double mj = tgt.measure(dim, j);
-    if (!(mj > 0.0)) {
+    // Extensive divides by the SOURCE cell's own measure (so the column
+    // sums to 1, the amount fully redistributed); Intensive (and the
+    // unchanged default) divides by the TARGET cell's, as always.
+    const double divisor = extensive ? src.measure(dim, i) : tgt.measure(dim, j);
+    if (!(divisor > 0.0)) {
       return Failure{"E-REMAP-MEASURE",
-                     "target entity " + std::to_string(j) +
-                         " has measure " + std::to_string(mj) +
+                     std::string(extensive ? "source" : "target") + " entity " +
+                         std::to_string(extensive ? i : j) + " has measure " +
+                         std::to_string(divisor) +
                          "; dividing by it would give an infinite weight"};
     }
-    const double val = measure / mj;
+    const double val = measure / divisor;
     if (val < kNegligible) {
       ++dropped;
       continue;
@@ -497,6 +510,7 @@ Result<RemapWeights> build_supermesh_weights(const MeshView& src,
     w.col.push_back(static_cast<std::int32_t>(i));
     w.val.push_back(val);
     row_sum[j] += val;
+    col_sum[i] += val;
     min_w = std::min(min_w, val);
   }
   // REVIEW.md TF-15: `acc.empty()` (no candidate pair overlapped at all) is
@@ -524,7 +538,12 @@ Result<RemapWeights> build_supermesh_weights(const MeshView& src,
   for (std::size_t k = 0; k < w.val.size(); ++k) {
     const auto j = static_cast<std::size_t>(w.row[k]);
     const auto i = static_cast<std::size_t>(w.col[k]);
-    const double m = w.val[k] * tgt.measure(dim, j);
+    // Recovers the RAW geometric intersection measure from the (already
+    // divided) weight -- a purely geometric fact, independent of which
+    // convention normalised it, so this must undo whichever division the
+    // assembly loop above applied: Extensive divided by src.measure(i),
+    // Intensive by tgt.measure(j).
+    const double m = extensive ? w.val[k] * src.measure(dim, i) : w.val[k] * tgt.measure(dim, j);
     src_covered[i] += m;
     tgt_covered[j] += m;
   }
@@ -555,23 +574,40 @@ Result<RemapWeights> build_supermesh_weights(const MeshView& src,
     if (!audit.ok()) return audit.error();
   }
 
-  // Constant preservation: the row residual.
+  // Constant preservation: the row residual. A guarantee under Intensive
+  // (rows sum to 1 by construction there); under Extensive the row sum is
+  // not asked to be 1 at all (D82, KNOWN_ISSUES.md) -- still computed and
+  // reported here as a diagnostic (a caller may want it), but the
+  // CONSERVED quantity under Extensive is read from max_col_defect/col_sum
+  // below, not from this field.
   for (std::size_t j = 0; j < w.n_rows; ++j) {
     w.max_row_defect = std::max(w.max_row_defect, std::abs(row_sum[j] - 1.0));
   }
 
-  // Conservation: the column residual. sum_j W_ji m_j is the mass the map
-  // delivers from a unit field on source cell i, and it must equal m_i.
-  std::vector<double> col_mass(w.n_cols, 0.0);
-  for (std::size_t k = 0; k < w.val.size(); ++k) {
-    col_mass[static_cast<std::size_t>(w.col[k])] +=
-        w.val[k] * tgt.measure(dim, static_cast<std::size_t>(w.row[k]));
-  }
-  for (std::size_t i = 0; i < w.n_cols; ++i) {
-    const double mi = src.measure(dim, i);
-    if (mi > 0.0) {
-      w.max_col_defect =
-          std::max(w.max_col_defect, std::abs(col_mass[i] - mi) / mi);
+  // Conservation: the column residual -- "does source cell i's own amount
+  // come back out the other side". Extensive's own column sum IS that
+  // amount already (sum_j W_ji = 1 by construction, no measure multiply
+  // needed: a unit field on source cell i delivers its own value, which IS
+  // the amount, to every target cell it overlaps, and the weights already
+  // sum that to 1). Intensive needs the ORIGINAL mass computation: sum_j
+  // W_ji m_j is the mass a unit DENSITY on source cell i delivers, and it
+  // must equal m_i, the amount that density represents.
+  if (extensive) {
+    for (std::size_t i = 0; i < w.n_cols; ++i) {
+      w.max_col_defect = std::max(w.max_col_defect, std::abs(col_sum[i] - 1.0));
+    }
+  } else {
+    std::vector<double> col_mass(w.n_cols, 0.0);
+    for (std::size_t k = 0; k < w.val.size(); ++k) {
+      col_mass[static_cast<std::size_t>(w.col[k])] +=
+          w.val[k] * tgt.measure(dim, static_cast<std::size_t>(w.row[k]));
+    }
+    for (std::size_t i = 0; i < w.n_cols; ++i) {
+      const double mi = src.measure(dim, i);
+      if (mi > 0.0) {
+        w.max_col_defect =
+            std::max(w.max_col_defect, std::abs(col_mass[i] - mi) / mi);
+      }
     }
   }
   // Identical for this builder: it assembles from MeshView::measure directly,
@@ -585,6 +621,12 @@ Result<RemapWeights> build_supermesh_weights(const MeshView& src,
   // weight non-negative AND every row summing to one. A partially covered
   // target cell fails the second and dilutes a constant downwards, so it is
   // not monotone even though its weights are all positive.
+  // Bound-preservation is an INTENSIVE-convention question (does a value
+  // stay within the range of the values it was built from); Extensive asks
+  // a different question (is the amount conserved, max_col_defect above),
+  // so this field keeps its existing row-sum-based definition unconditionally
+  // rather than being redefined per convention -- a caller reading it on an
+  // Extensive matrix should not expect it to mean "bound preserving" there.
   w.monotone = (w.min_weight >= 0.0) && (w.max_row_defect <= 1e-12);
   return w;
 }
