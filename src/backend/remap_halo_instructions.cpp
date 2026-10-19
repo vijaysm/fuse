@@ -8,6 +8,9 @@
 #include "fuse/backend/remap_plan.hpp"
 #include "fuse/base/config.hpp"  // FUSE_HAVE_MOAB
 #include "fuse/model/component.hpp"  // fuse::RankSet
+#if FUSE_HAVE_MOAB
+#include "fuse/backend/moab_backend.hpp"  // MoabMeshBackend, for the dispatch below
+#endif
 
 namespace fuse {
 namespace {
@@ -113,11 +116,20 @@ Result<std::size_t> execute_remap_halo_instructions(const CouplingGraph& graph,
                                                 source_placement, plan.placement);
     } else {
 #if FUSE_HAVE_MOAB
-      // The MOAB cross-placement overload (remap_plan.hpp); refuses
-      // E-REMAP-BACKEND for any backend that is neither this nor Native,
-      // which is the same answer the single-placement entry point would
-      // give such a backend.
-      r = build_remap_halo(plan, graph, backend, source_placement);
+      // The MOAB cross-placement overload (remap_plan.hpp) for a MOAB
+      // backend. Any other backend (the serial backend, a test double) has
+      // no partitioned read and therefore nothing to adopt: a successful
+      // no-op, the same answer the no-MOAB build below gives, so the two
+      // configurations agree. Before 2026-10-19 this branch handed every
+      // non-native backend to the MOAB overload, which refuses
+      // E-REMAP-BACKEND for a serial backend; the refusal was invisible in a
+      // no-MOAB tier-0 build and turned 30 serial rows red on a MOAB-enabled
+      // host (KNOWN_ISSUES.md D73 round 8's host run).
+      if (dynamic_cast<MoabMeshBackend*>(&backend) != nullptr) {
+        r = build_remap_halo(plan, graph, backend, source_placement);
+      } else {
+        r = std::size_t{0};
+      }
 #else
       // The 4-argument overload's own DEFINITION lives only in
       // intx_weights.cpp's FUSE_HAVE_MOAB half (remap_plan.hpp declares
