@@ -1159,6 +1159,68 @@ Result<void> MpiTransport::prepare(const TransportSpec& spec) {
 }
 
 // ---------------------------------------------------------------------------
+// packed_layout / move_packed -- the device-direct track's own seam
+// ---------------------------------------------------------------------------
+//
+// `move()` below packs `src` into `send_buf` via `send_index`, exchanges
+// `send_buf`/`recv_buf` with `MPI_Alltoallv`, unpacks `recv_buf` into `dst`
+// via `recv_index`, then applies `local_copy` directly -- all host work,
+// because `send_index`/`recv_index` are `std::memcpy`'d from a `src`/`dst`
+// this function has always assumed is host memory. `packed_layout()` hands
+// a caller copies of the three index arrays so it can perform the pack and
+// unpack steps ITSELF, on whatever execution space it likes (typically the
+// device, when `is_gpu_aware()` says MPI can take a device pointer);
+// `move_packed()` is then only the `MPI_Alltoallv` in the middle, on
+// buffers already in packed order -- host or device, the caller's choice.
+
+Result<TransportPackedLayout> MpiTransport::packed_layout() const {
+  const Impl* p = impl_.get();
+  if (p == nullptr || !p->planned) {
+    return Failure{"E-TRANSPORT-UNPLANNED",
+                 "packed_layout() before a successful build_plan()"};
+  }
+  TransportPackedLayout out;
+  out.send_index = p->send_index;
+  out.recv_index = p->recv_index;
+  out.local_copy = p->local_copy;
+  out.components = p->p_components;
+  return out;
+}
+
+Result<void> MpiTransport::move_packed(const double* packed_send,
+                                       double* packed_recv) {
+  Impl* p = impl_.get();
+  if (p == nullptr || !p->planned) {
+    return Failure{"E-TRANSPORT-UNPLANNED",
+                 "move_packed() before a successful build_plan()"};
+  }
+  // `send_buf`/`recv_buf` (sized by build_plan()/build_plan_from_peers() to
+  // at least one element, never zero, for the same MPI-implementation
+  // reason move()'s own header comment gives) are not read here -- this
+  // call packs/unpacks nothing. A null buffer would be indistinguishable
+  // from a correct zero-count argument to MPI_Alltoallv, which several MPI
+  // implementations dislike regardless of count, so the caller is held to
+  // the same "always at least one element" contract move() keeps for its
+  // own buffers rather than special-cased here.
+  if (packed_send == nullptr || packed_recv == nullptr) {
+    return Failure{"E-TRANSPORT-NULL",
+                 "move_packed() given a null packed buffer; pass a buffer "
+                 "of at least one element even when this rank's own share "
+                 "is empty, exactly as move() requires of send_buf/recv_buf"};
+  }
+
+  const int rc = MPI_Alltoallv(packed_send, p->sendcounts.data(),
+                               p->sdispls.data(), MPI_DOUBLE, packed_recv,
+                               p->recvcounts.data(), p->rdispls.data(),
+                               MPI_DOUBLE, p->comm);
+  if (rc != MPI_SUCCESS) {
+    return Failure{"E-TRANSPORT-MPI",
+                 "MPI_Alltoallv failed: " + mpi_error_text(rc)};
+  }
+  return Result<void>::success();
+}
+
+// ---------------------------------------------------------------------------
 // move
 // ---------------------------------------------------------------------------
 
