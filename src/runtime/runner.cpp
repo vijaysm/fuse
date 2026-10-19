@@ -880,7 +880,10 @@ Result<void> Runner::Impl::resolve_remap_halo(const Instruction& ins, std::size_
       const int sdim =
           sr.dimension >= 0 ? sr.dimension : (sview.ok() ? sview.value()->dimension() : -1);
       if (sdim >= 0) {
-        built = moab->has_remap_halo(smid.value(), tmid.value(), sdim);
+        // KNOWN_ISSUES D83: threaded through, matching the native branch
+        // just above -- a placed component's own halo is filed under its
+        // own cache entry, never the default Core's.
+        built = moab->has_remap_halo(smid.value(), tmid.value(), sdim, placement);
       }
     }
 #endif
@@ -1233,12 +1236,15 @@ Result<void> Runner::Impl::resolve_remap(const Instruction& ins, Resolved& r) {
         const int sdim = sr.dimension >= 0
                              ? sr.dimension
                              : (sview.ok() ? sview.value()->dimension() : -1);
-        if (sdim >= 0 && mb->remap_halo_size(smid.value(), sdim) > 0) {
+        // KNOWN_ISSUES D83: threaded through -- this placed component's own
+        // halo (if any) is filed under its own cache entry, never the
+        // default Core's.
+        if (sdim >= 0 && mb->remap_halo_size(smid.value(), sdim, placement) > 0) {
           return Failure{
               "E-RT-REMAP-HALO",
               label + " reads region '" + graph.region(src).name +
                   "', whose mesh carries a remap halo of " +
-                  std::to_string(mb->remap_halo_size(smid.value(), sdim)) +
+                  std::to_string(mb->remap_halo_size(smid.value(), sdim, placement)) +
                   " cells. The weights would have columns for those cells, "
                   "and the runtime does not yet run "
                   "MoabMeshBackend::exchange_remap_halo() to fill them, so "

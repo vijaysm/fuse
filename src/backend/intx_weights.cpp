@@ -2179,7 +2179,13 @@ Result<std::size_t> build_remap_halo(const RemapPlan& plan,
   // meant to cover.
   const int ranks = active_comm_size(a.pcomm);
   if (ranks <= 1 || a.pcomm == nullptr || a.file_set == b.file_set) {
-    return moab_backend->adopt_remap_halo(a.mid, b.mid, a.dim, nullptr, 0);
+    // KNOWN_ISSUES D83: threaded through `plan.placement` so this
+    // degenerate no-op is filed under the SAME (mesh, mesh, dim, placement)
+    // cache key the real covering-set build below uses for the identical
+    // pair -- the default Core and every declared placement each get
+    // their own entry, never aliasing one another.
+    return moab_backend->adopt_remap_halo(a.mid, b.mid, a.dim, nullptr, 0,
+                                          plan.placement);
   }
 
 #ifndef FUSE_REMAP_PARALLEL
@@ -2318,8 +2324,13 @@ Result<std::size_t> build_remap_halo(const RemapPlan& plan,
   // (source, target, dimension).
   static_cast<void>(mb.delete_entities(&covering, 1));
 
+  // KNOWN_ISSUES D83 (owner decision 2026-10-19: make the adoption
+  // placement-aware): `handles` are `moab::EntityHandle`s in `mb` (= `a.mb`,
+  // resolved above through `plan.placement`) -- `plan.placement` is passed
+  // through so `adopt_remap_halo` reads them back through the SAME Core
+  // that allocated them, never the backend's default one unconditionally.
   return moab_backend->adopt_remap_halo(a.mid, b.mid, a.dim, handles.data(),
-                                        handles.size());
+                                        handles.size(), plan.placement);
 #endif
 }
 
@@ -2393,28 +2404,31 @@ Result<std::size_t> build_remap_halo(const RemapPlan& plan, const CouplingGraph&
   if (same_named_placement) {
     // SAME declared placement on both sides (the degenerate case -- no
     // placements declared at all, or both name the identical processor
-    // set): EVERY rank of the base communicator reaches
-    // `MoabMeshBackend::adopt_remap_halo` together here, because
-    // `adopt_remap_halo`'s own `reconcile_halo` reduces over
-    // `impl_->pcomm->comm()` -- the backend's BASE communicator, not a
-    // placement's own sub-communicator. A rank outside `plan.placement`
-    // (hence with nothing of its own to contribute) does NOT return a
-    // bare, locally decided `std::size_t{0}` -- doing so let it skip
-    // `adopt_remap_halo` entirely while a participating peer (reached via
-    // the delegation just below) entered its `MPI_Allreduce` over that
-    // SAME base communicator, which then hung waiting for a peer that
-    // never arrives. MEASURED 2026-10-19 (host, lead's report):
-    // parallel.moab_placed_weights_mpi.{2,3} hung in
-    // SamePlacementOnBothSidesDelegatesToTheSinglePlacementPath for
-    // exactly this reason. It calls `adopt_remap_halo` itself instead,
-    // with no local cells to contribute -- the SAME zero-cells call this
-    // function's single-placement sibling already makes for its own
-    // "serial, one rank, or the identity" no-op (the `a.pcomm == nullptr`
-    // branch, just below in this file) -- so every rank of the base
-    // communicator, participating or not, reaches this exact collective
-    // together.
+    // set).
+    //
+    // KNOWN_ISSUES D83 round 10 (owner decision 2026-10-19: make the
+    // adoption placement-aware, not a refusal) SUPERSEDES round 7's own
+    // fix here. Round 7 made an off-placement rank call
+    // `adopt_remap_halo(..., nullptr, 0)` to join a collective inside it
+    // that, at the time, ALWAYS ran over `impl_->pcomm->comm()` -- the
+    // backend's BASE communicator -- regardless of placement, because
+    // `adopt_remap_halo` had no way to resolve a placement's own Core at
+    // all. D83's own fix changes WHICH communicator that collective runs
+    // over: `adopt_remap_halo(..., placement)` now resolves
+    // `reconcile_halo`'s own communicator THROUGH `placement` (its own
+    // `PlacementContext::pcomm`, `moab_backend.cpp`), so the agreement is
+    // scoped to `plan.placement`'s OWN members -- never the base
+    // communicator, and never a rank outside the placement. A rank
+    // outside `plan.placement` therefore has NOTHING to agree on with
+    // placement A's own members any more, and returns a bare, LOCALLY
+    // decided `std::size_t{0}` again -- round 6's original shape, now
+    // correct again because the collective it used to need to join no
+    // longer includes it. (If the agreement had instead stayed on the
+    // base communicator, this rank would still need to join it here --
+    // stated explicitly per the round-10 brief's own instruction to say
+    // which and why.)
     if (!moab_backend->placement_participates(plan.placement)) {
-      return moab_backend->adopt_remap_halo(a.mid, b.mid, a.dim, nullptr, 0);
+      return std::size_t{0};
     }
     if (a.dim != b.dim) {
       return Failure{"E-REMAP-DIM",
@@ -2648,9 +2662,14 @@ Result<RemapWeights> build_weights(const RemapPlan& plan,
   // `E-REMAP-PARALLEL`, checked at every registered rank count 1..5, both
   // sides of the boundary this paragraph names.
   // ==========================================================================
+  // KNOWN_ISSUES D83: `plan.placement` passed through -- `build_weights`
+  // always resolves both sides through `plan.placement` alone (this
+  // function's own design, remap_plan.hpp), so the halo this call checks
+  // for is the one filed under THAT placement's own cache entry, not the
+  // default Core's.
   if (a.backend != nullptr && a.backend->communicator_size() > 1 &&
       a.file_set != b.file_set &&
-      !a.backend->has_remap_halo(a.mid, b.mid, a.dim)) {
+      !a.backend->has_remap_halo(a.mid, b.mid, a.dim, plan.placement)) {
     return Failure{
         "E-REMAP-PARALLEL",
         "the mesh backend was given a communicator of " +
