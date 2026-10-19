@@ -227,7 +227,9 @@ def main() -> int:
         path = ROOT / m["file"]
         original = path.read_text()
         if original.count(m["old"]) != 1:
-            results.append((m, "INVALID", f"`old` occurs {original.count(m['old'])} times"))
+            note = f"`old` occurs {original.count(m['old'])} times"
+            results.append((m, "INVALID", note))
+            print(f"INVALID   {m['id']:<36} {note}")
             continue
         try:
             path.write_text(original.replace(m["old"], m["new"], 1))
@@ -261,6 +263,22 @@ def main() -> int:
                                          + m["equivalent"])
         finally:
             path.write_text(original)
+        # Confirm the restore put back the exact pre-mutation bytes. In one
+        # sandboxed full sweep (2026-10-18, 363 rows, Linux overlay file
+        # system) ten files were left mutated with no exception and an
+        # ordinary verdict; not reproduced on the owner's machine, but a gate
+        # whose contract is "the tree is byte-identical afterwards" must
+        # check it rather than trust the write. A failure here is loud.
+        restored = path.read_text()
+        if restored != original:
+            path.write_text(original)
+            restored2 = path.read_text()
+            if restored2 != original:
+                verdict, note = ("RESTORE-FAILED",
+                                  f"{m['file']} did not restore to its pre-mutation "
+                                  "bytes even after a forced second write")
+            else:
+                note = note + " [RESTORE-NOTE: required a forced second write]"
         results.append((m, verdict, note))
         print(f"{verdict:<9} {m['id']:<36} {note}")
 
