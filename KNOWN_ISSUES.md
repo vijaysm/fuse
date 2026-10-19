@@ -9817,6 +9817,105 @@ rank 0, 4 and 9 on rank 1). So the halo the instruction built is not the one the
 two-placement overload records it under a key the single-pair query does not find, or the query is made on a
 backend/view other than the one that adopted. The weight-triplet trace printed nothing (no weights were built).
 `parallel.remap_halo_mpi.{1..5}` PASS with the new rescale assertions.
+
+### D73 FIX, ROUND 7 (RemapHalo track round 6, 2026-10-19): the halo the instruction built really was not the one the weight builder looked up -- a missing argument, not a drifted key
+
+**Root cause.** `build_weights_via_supermesh`'s own `NativeMeshBackend` branch (`src/backend/intx_weights.cpp`)
+called `native_backend->has_remap_halo(s.value().mid, d.value().mid, s.value().dim)` -- THREE arguments.
+`has_remap_halo`'s own fourth parameter, `ComponentId placement = ComponentId{}` (native_backend.hpp),
+defaults to the "unplaced decomposition" when omitted -- so this call always asked under `ComponentId{}`,
+regardless of what `plan.placement` actually was. `fuse::native::build_native_remap_halo`'s own
+`commit_remap_halo` call records the triple under `placement` -- the consumer's real, non-default
+`ComponentId` for any channel with an actual component assigned (round 3's own fix; unchanged since). The
+two never agreed except by coincidence (`plan.placement == ComponentId{}`, the one case every EXISTING
+tier-0 test for this check happened to use -- `BackendFixture`'s own fixture, `NativeHaloBuildWeights`'s
+whole existing suite -- none of them ever registered a graph component at all).
+
+**Why rank 0's "4 and 0 entities" refusal was not a second defect.** `supermesh_side()` resolves BOTH
+`s`/`d` through `plan.placement` (unchanged, already correct); on rank 0 (outside the consumer's own
+`RankSet` in this round's 2-rank fixture) the SOURCE side reads 4 entities precisely because
+`build_native_remap_halo` commits EVERY rank's own locally-merged view (owned cells plus whatever it
+adopted, zero in rank 0's case) under `placement`, not just the ranks inside the consumer's `RankSet` --
+the merge already ran correctly, on every rank, before this round's own fix. `d.value()` reads 0 entities
+on rank 0 for the ordinary, already-understood reason (outside the consumer's own `RankSet`, no target
+cells to weight at all). Passing `plan.placement` to `has_remap_halo` resolves BOTH ranks' refusals with
+the one fix: rank 0's own halo was ALSO committed under the real `(source, target, dim, placement)` key
+(the collective commit runs on every rank, not just the ones with nonzero adopted counts), so the query
+finds it there too, once asked correctly. No separate "zero target cells is a valid no-op" carve-out is
+needed in this check at all -- the check was already running the SAME lookup on every rank; it only ever
+needed the right key.
+
+**Ruled out: node-id/placement drift between the `BuildRemapHalo` instruction and the `Remap` instruction.**
+Checked by reading, not assumed: both `n.attrs.dst_rank_set` (the `BuildRemapHalo` node's own attribute,
+set in `rules_channel.cpp` as `remap_placement(g, ch).value()`) and the eventual `Remap` arc's own
+`rank_set` (propagated through the SAME `coupler_rank_set`/`dst_rank_set` chain in the same file, all the
+way to `moved.rank_set = dst_rank_set` and its siblings) trace back to ONE function call,
+`remap_placement(g, ch)`, for the SAME channel `ch` -- a pure coupling-graph lookup
+(`g.owner_of(ch.target)`, or the `remap_on` override when one applies and could matter) with nothing
+rank-count- or layout-dependent in it. `resolve_remap()`'s own `p.placement` (runner.cpp:1178) is set from
+`dag.arc(ins.out).type.rank_set` -- the very same value the lowering chain above already propagated from
+`remap_placement(g, ch)`. The halo-build side and the weight-build side were never at risk of computing
+two different `ComponentId`s for the same channel; the bug was purely the missing fourth argument.
+
+**Ruled out: `Runner` holding a different `MeshBackend&` than the one the halo was committed into.**
+`Runner::Runner(const CouplingGraph&, const OperatorDAG&, ExecutionPlan, const MeshBackend& backend)`
+(runner.hpp/.cpp) takes `backend` by `const&` and forwards it unchanged into `Runner::Impl`'s own
+constructor -- no copy, no per-component indirection. The host measurement itself already proves this:
+rank 0's own resolved SOURCE view (4 entities) reflects the exact post-merge state `build_native_remap_
+halo` wrote moments earlier -- that could only be true if `Runner` reads through the SAME backend object
+the halo build committed into.
+
+**Fix.** One line: `has_remap_halo(s.value().mid, d.value().mid, s.value().dim, plan.placement)`. The same
+convention already existed two call sites away in the SAME binary -- `Runner::Impl::resolve_remap_halo`
+(runner.cpp:871, :1313) already threads `remap_placement(graph, ch)` through as a fourth argument to this
+exact function; `build_weights_via_supermesh`'s own call was the one outlier that never did. The MOAB
+backend's OWN `has_remap_halo(source, target, dim)` overload (its own 3-argument signature,
+`moab_backend.hpp`) is untouched -- out of this round's own scope (`src/backend/moab_backend.*`), and the
+Side-struct call site at `intx_weights.cpp`'s own MOAB half uses the MOAB backend's signature, not this
+one.
+
+**Verified, tier-0, no MPI needed.** New test `NativeHaloBuildWeights.BuildWeightsFindsAHaloCommittedUnder
+AnActualComponentPlacement` (test/backend/native_halo_test.cpp) registers a real, non-default graph
+component ("consumer", `RankSet` spanning every simulated rank), commits a halo under it via
+`commit_remap_halo` directly (`run_halo_pipeline`'s own in-process allgather computes the pattern, the
+SAME no-MPI simulation `BackendFixture` already uses), fakes `communicator_size() > 1` via
+`set_communicator()` on a placeholder handle (same existing convention), and calls `fuse::build_weights`
+with `plan.placement` set to that SAME component -- the first test in the file to give `commit_remap_halo`
+and `plan.placement` the same real, non-default `ComponentId`. Confirmed RED first (the fourth argument
+reverted by hand): the test's own `ASSERT_TRUE(w.ok())` fails and reports the EXACT `E-REMAP-PARALLEL` text
+the owner's host measured, character for character. `ASSERT_TRUE` inside the per-rank loop returns out of
+the test function on its first failure, so that run alone only exercises rank 0; a second, separate RED
+run, with the loop's own start index moved to `r = 1` so rank 0 is skipped, independently captured rank 1's
+own failure -- IDENTICAL inner text (this check's own message does not vary by rank; the per-rank entity
+counts the owner's host message quotes come from `Runner::Impl::resolve_remap()`'s own wrapping text, a
+layer above the `fuse::build_weights()` call this test makes directly, not from this check itself). Both
+RED runs were the full, unfiltered `fuse_backend_native_halo_test` binary (not `--gtest_filter`-restricted
+to the one new test), each showing every other test in the binary unaffected -- 24/25 pass both times, the
+new test the only failure either way. Restored both files and reconfirmed GREEN with the same full,
+unfiltered binary (25/25), byte-identical (md5 3b121dbbf1b20f96174932702a3c4b0c for intx_weights.cpp,
+41980c027a93240c964893750c7fac14 for native_halo_test.cpp).
+
+**The 3-rank case: checked by reading, not by running.** `remap_placement(g, ch)` is a pure
+`CouplingGraph` lookup with no rank-count-dependent branch at all -- the fix generalizes to any `N` and any
+provider/consumer `RankSet` split (disjoint, overlapping, or identical) without further code change: the
+query now asks under whatever `ComponentId` the commit used, for any channel, at any rank count.
+
+**host_pending.** `parallel.native_remap_halo_runner.{2,3}[.device]` is this round's own host-pending row:
+with the key-mismatch fix, `Runner::initialize()` is expected to stop refusing on both ranks and proceed to
+build real weights; D82's own conservation numbers (16 nonzeros over 4 adopted source cells, this
+sequence's own long-flagged NEXT question) become reachable only once this row is green. D73 stays open
+until that measurement lands.
+
+**Host run of round 7 (lead, 2026-10-19, `build-all` at `324f4df` + round 7, 2 ranks, both traces on):** the
+key fix took. Rank 1 (the consumer, 9 target cells, 4 adopted source cells) builds 16 weights; the trace lists
+them, and every target row sums to 1 (corner cells 1 x 1, edge cells 0.5 + 0.5, the centre 4 x 0.25): the
+intensive normalisation on an Extensive channel, which is D82, now measured on the host. Rank 0 (4 source cells,
+no target) then refuses `initialize()` with "RemapFlags::Conservative was requested, but the target domain covers
+only 0.000000% of the worst source cell (of 4)", and rank 1 refuses in sympathy ("another rank of the base
+communicator failed to resolve its buffers"). The coverage check sums the intersections this rank holds, but the
+intersections covering rank 0's source cells are on rank 1 (which adopted them): the per-source-cell coverage
+must be reduced across the ranks before the worst cell is judged, agreed first and then refused by every rank
+together. Round 8.
 ### D74 FIX (scaled-bench track, follow-up round, 2026-10-16)
 
 **Root cause, directly diagnosed (not the corner-precision theory originally suspected).**

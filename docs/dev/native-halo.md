@@ -350,3 +350,18 @@ D73's own "FIX, ROUND 6" account for the full host measurement and the tier-0 re
 (`NativeHaloPackMerge.RoundTripIntoAnEmptyLocalMeshAdoptsTheReceivedCellsWithoutThrowing`,
 native_halo_test.cpp, no MPI needed).
 
+**The weight builder's own query key (round 6, 2026-10-19).** `commit_remap_halo` records a halo under
+`(source, target, dim, placement)`; `has_remap_halo`'s own fourth argument, `placement`, defaults to
+`ComponentId{}` when omitted. `build_weights_via_supermesh`'s own `NativeMeshBackend` branch
+(`intx_weights.cpp`) called `has_remap_halo` with no fourth argument at all, so it always asked under
+the default -- regardless of `plan.placement`, the real, non-default `ComponentId` any channel with an
+actual component assigns. Every existing tier-0 test for this check used `ComponentId{}` on both sides
+(no graph component registered), so the gap was invisible until a real placement was involved: the
+owner's host measured both ranks of a run refusing `E-REMAP-PARALLEL` even though `build_native_remap_
+halo`'s own trace had already shown the halo committing cleanly moments earlier. Fixed by threading
+`plan.placement` through, the SAME convention `Runner::Impl::resolve_remap_halo` (runner.cpp) already
+uses two call sites away. See KNOWN_ISSUES.md D73's own "FIX, ROUND 7" account for the full host
+measurement, why rank 0's own zero-target-cells refusal was the SAME defect and not a second one, and
+the tier-0 reproduction (`NativeHaloBuildWeights.BuildWeightsFindsAHaloCommittedUnderAnActualComponent
+Placement`, native_halo_test.cpp, no MPI needed).
+
