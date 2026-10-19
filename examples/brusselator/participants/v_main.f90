@@ -370,6 +370,11 @@ program v_main
   ! from the loaded graph and connects accordingly.
   my_component_name = "V" // c_null_char
   setup%communicator = int(MPI_COMM_WORLD, c_int64_t)
+  ! KNOWN_ISSUES.md D76: MPI_COMM_WORLD's own Fortran handle is 0 under
+  ! Open MPI, which this struct's older sentinel read as "no communicator"
+  ! -- set has_communicator so fuse_setup() knows 0 really is this
+  ! process's own world, not an absent one.
+  setup%has_communicator = 1_c_int32_t
   setup%my_component = c_loc(my_component_name)
   status = fuse_setup(ctx, setup, nothing)
   call check(status, "setup")
