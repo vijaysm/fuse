@@ -9,6 +9,10 @@
 
 #include <gtest/gtest.h>
 
+#if FUSE_HAVE_MPI
+#include <mpi.h>
+#endif
+
 #include <memory>
 #include <string>
 #include <vector>
@@ -196,10 +200,14 @@ TEST(AbiRefusalSweep, SetupAcceptsAnMpmdComponentWithACommunicatorHandleOfZeroWh
   fuse_ctx* ctx = CreateAndLoad(t, bytes);
 
   fuse_setup_options opts{.struct_size = sizeof(opts)};
-  opts.communicator = 0;  // Open MPI's own MPI_COMM_WORLD handle.
+  // This process's REAL MPI_COMM_WORLD Fortran handle: 0 under Open MPI (the
+  // collision D76 fixes -- the flag below is what keeps it from reading as
+  // "none supplied"), nonzero under MPICH (0x44000000). A literal 0 would be
+  // an invalid handle for connect() to dereference under MPICH.
+  opts.communicator = static_cast<int64_t>(MPI_Comm_c2f(MPI_COMM_WORLD));
   opts.has_end_time = 0;
   opts.my_component = "upstream";
-  opts.has_communicator = 1;  // D76: communicator == 0 is deliberately supplied.
+  opts.has_communicator = 1;  // D76: a handle of 0 is deliberately supplied.
   EXPECT_EQ(t->setup(ctx, &opts, nullptr), FUSE_OK);
 
   fuse_base_communicator_info info{.struct_size = sizeof(info)};
