@@ -365,7 +365,12 @@ bool has_sample(const Channel& ch) {
     const Node& n = dag.node(nid);
     Rational t{0};
     TickPhase phase = TickPhase::BeforeTicks;
-    if (claimed_by_channel(g, n)) {
+    if (n.kind == OpKind::BuildRemapHalo) {
+      // D73: carries no SSA value and is not one more instance of its
+      // origin channel's own chain -- it runs once, at the front of the
+      // stream, the same instant `Source` gets (the defaults already set
+      // above), regardless of which channel named it.
+    } else if (claimed_by_channel(g, n)) {
       const Channel& ch = g.channel_at(ChannelId{n.origin.value()});
       if (has_sample(ch) && runs_on_source_clock(n.kind)) {
         t = Rational{0};
@@ -544,6 +549,19 @@ Result<TimedDag> expand(const CouplingGraph& g, const OperatorDAG& dag,
       // out.nodes is the only vector that grows and nothing points into it.
       const Node& n = dag.node(nid);
       if (n.origin != cid) continue;
+
+      // D73: `BuildRemapHalo` carries no SSA value (op.hpp's own doc
+      // comment) and is not laid out on this channel's slab decomposition
+      // at all -- one instance, at `t = 0`, `TickPhase::BeforeTicks`, the
+      // same instant `Source` gets below in the boundary pass. Checked
+      // before `sampled`/`decomp` so it never reaches either.
+      if (n.kind == OpKind::BuildRemapHalo) {
+        if (!emit(nid, Rational{0}, 0, 0, TickPhase::BeforeTicks)) {
+          return explode_error();
+        }
+        continue;
+      }
+
       // Time windows track: a WindowAdvance node (finish_window_regions(),
       // src/ir/window_lowering.cpp) has this SAME channel as its origin
       // too, and flows through this loop exactly like the channel's own

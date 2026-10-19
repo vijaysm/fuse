@@ -133,12 +133,21 @@ TEST(OpKind, CollectiveClassificationIsDeliberate) {
   // is the same shape -- the application-performed transfer that fills it
   // happens entirely outside this instruction stream, so it involves no
   // other rank set of THIS graph's own exchange -- and was never added here.
+  // D73: BuildRemapHalo's own REAL geometry exchange
+  // (`fuse::execute_remap_halo_instructions()`) is collective, but it
+  // never runs through this instruction at all -- it has to happen
+  // before `schedule()`, which has already run by the time this
+  // instruction reaches the hot loop (see that enumerator's own doc
+  // comment, fuse/ir/op.hpp). By the point this classification governs,
+  // the instruction is a verified no-op; skipping it after a failure
+  // touches no other rank.
   for (const OpKind k : {OpKind::Source, OpKind::Sink, OpKind::Sample,
                          OpKind::Accumulate, OpKind::Interpolate,
                          OpKind::Extrapolate, OpKind::Remap, OpKind::Merge,
                          OpKind::Relax, OpKind::Residual, OpKind::Accelerate,
                          OpKind::Diagnose, OpKind::Scale,
-                         OpKind::WindowAdvance, OpKind::ExternalDelivery}) {
+                         OpKind::WindowAdvance, OpKind::ExternalDelivery,
+                         OpKind::BuildRemapHalo}) {
     EXPECT_FALSE(is_collective(k)) << fuse::to_cstring(k);
   }
 
@@ -157,5 +166,8 @@ TEST(OpKind, CollectiveClassificationIsDeliberate) {
   // stopped gating" class R-06/R-51 were fixed for). A new operator makes
   // this fail until it is added to one of the lists above.
   EXPECT_EQ(static_cast<int>(OpKind::ExternalDelivery) + 1, 21)  // 3+15+3
+      << "OpKind gained or lost an operator; classify it above";
+  // D73: BuildRemapHalo is the 22nd, added to the "false" list above.
+  EXPECT_EQ(static_cast<int>(OpKind::BuildRemapHalo) + 1, 22)
       << "OpKind gained or lost an operator; classify it above";
 }

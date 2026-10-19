@@ -1068,33 +1068,47 @@ TEST(ExecutionPlan, DumpShowsWhichInstructionsRunAfterTheTicks) {
   const auto first = dump.find("  0  t=");
   ASSERT_NE(first, std::string::npos);
   EXPECT_EQ(dump.substr(first),
-            "  0  t=0  Source  node=0  out=%0\n"
-            "  1  t=1/2  Transport  node=1  in=[%0]  out=%1  {0->1}  "
+            // D73 (automatic remap halo, owner decision 2026-10-18): this
+            // channel is a cross-rank weighted (non-nodal, non-consistent,
+            // {remap=C}) transfer between disjoint placements, so the
+            // lowering now emits one `BuildRemapHalo` instruction for it,
+            // at the front of the stream (node 0, t=0) -- shifting every
+            // other node id by +1 and every instruction index by +1.
+            "  0  t=0  BuildRemapHalo  node=0\n"
+            "  1  t=0  Source  node=1  out=%0\n"
+            "  2  t=1/2  Transport  node=2  in=[%0]  out=%1  {0->1}  "
             "after-ticks\n"
             // The agreement point sits immediately after the move, on both
             // ticks. Every rank that took part in the move reaches it.
-            "  2  t=1/2  Epoch  node=2  in=[%1]  out=%2  "
+            "  3  t=1/2  Epoch  node=3  in=[%1]  out=%2  "
             "{reason=after-transport}  after-ticks\n"
-            "  3  t=1/2  Remap  node=3  in=[%2]  out=%3  {remap=C}  "
+            "  4  t=1/2  Remap  node=4  in=[%2]  out=%3  {remap=C}  "
             "after-ticks\n"
-            "  4  t=1/2  Constrain  node=4  in=[%3]  out=%4  after-ticks\n"
-            "  5  t=1/2  Diagnose  node=5  in=[%4]  out=%5  after-ticks\n"
-            "  6  t=1/2  Sink  node=6  in=[%5]  out=%6  after-ticks\n"
-            "  7  t=1  Transport  node=1  in=[%0]  out=%1  {0->1}\n"
-            "  8  t=1  Epoch  node=2  in=[%1]  out=%2  "
+            "  5  t=1/2  Constrain  node=5  in=[%3]  out=%4  after-ticks\n"
+            "  6  t=1/2  Diagnose  node=6  in=[%4]  out=%5  after-ticks\n"
+            "  7  t=1/2  Sink  node=7  in=[%5]  out=%6  after-ticks\n"
+            "  8  t=1  Transport  node=2  in=[%0]  out=%1  {0->1}\n"
+            "  9  t=1  Epoch  node=3  in=[%1]  out=%2  "
             "{reason=after-transport}\n"
-            "  9  t=1  Remap  node=3  in=[%2]  out=%3  {remap=C}\n"
-            "  10  t=1  Constrain  node=4  in=[%3]  out=%4\n"
-            "  11  t=1  Diagnose  node=5  in=[%4]  out=%5\n"
-            "  12  t=1  Sink  node=6  in=[%5]  out=%6\n");
+            "  10  t=1  Remap  node=4  in=[%2]  out=%3  {remap=C}\n"
+            "  11  t=1  Constrain  node=5  in=[%3]  out=%4\n"
+            "  12  t=1  Diagnose  node=6  in=[%4]  out=%5\n"
+            "  13  t=1  Sink  node=7  in=[%5]  out=%6\n");
 }
 
 TEST(ExecutionPlan, DumpIsByteExact) {
   const auto r = build(pair(Rational{1}, Rational{1}));
   ASSERT_TRUE(r.ok()) << r.diags.to_string();
   EXPECT_EQ(r.plan.to_string(),
+            // D73: this channel is a cross-rank weighted ({remap=C})
+            // transfer between disjoint placements, so `lower()` emits one
+            // `BuildRemapHalo` instruction for it (node 0, t=0, no buffer
+            // of its own -- OpKind::BuildRemapHalo's own doc comment,
+            // op.hpp) ahead of everything else; the buffer table is
+            // unchanged, every other node id and instruction index shifts
+            // by +1.
             "# fuse-plan v1\n"
-            "period=1 lockstep=yes instructions=7 buffers=7 "
+            "period=1 lockstep=yes instructions=8 buffers=7 "
             "coupler_elements=320 regions=0\n"
             "buffer 0   %0  elements=64  components=1  region=r0  "
             "owner=component  persistent=no  \"a.f\"\n"
@@ -1116,12 +1130,13 @@ TEST(ExecutionPlan, DumpIsByteExact) {
             "owner=coupler  persistent=no  \"c/diagnose\"\n"
             "buffer 6   %6  elements=64  components=1  region=r1  "
             "owner=component  persistent=no  \"b.f_in\"\n"
-            "  0  t=0  Source  node=0  out=%0\n"
-            "  1  t=1  Transport  node=1  in=[%0]  out=%1  {0->1}\n"
-            "  2  t=1  Epoch  node=2  in=[%1]  out=%2  "
+            "  0  t=0  BuildRemapHalo  node=0\n"
+            "  1  t=0  Source  node=1  out=%0\n"
+            "  2  t=1  Transport  node=2  in=[%0]  out=%1  {0->1}\n"
+            "  3  t=1  Epoch  node=3  in=[%1]  out=%2  "
             "{reason=after-transport}\n"
-            "  3  t=1  Remap  node=3  in=[%2]  out=%3  {remap=C}\n"
-            "  4  t=1  Constrain  node=4  in=[%3]  out=%4\n"
-            "  5  t=1  Diagnose  node=5  in=[%4]  out=%5\n"
-            "  6  t=1  Sink  node=6  in=[%5]  out=%6\n");
+            "  4  t=1  Remap  node=4  in=[%2]  out=%3  {remap=C}\n"
+            "  5  t=1  Constrain  node=5  in=[%3]  out=%4\n"
+            "  6  t=1  Diagnose  node=6  in=[%4]  out=%5\n"
+            "  7  t=1  Sink  node=7  in=[%5]  out=%6\n");
 }

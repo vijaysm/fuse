@@ -4,6 +4,7 @@
 #include <fuse/schedule/acyclicity.hpp>
 #include <fuse/schedule/expand.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -493,15 +494,33 @@ TEST(Acyclicity, EmissionOrderViolationIsReported) {
   // Sanity: as emitted, the order is fine.
   ASSERT_TRUE(prove_acyclic(g, lowered.dag, td.value()).emission_order_valid);
 
-  // Move the first instruction to the back. It is a Source with live
-  // consumers, so every one of them now runs before its producer. (Indices
-  // into TimedDag::nodes *are* the emission order; the dependence graph is
-  // keyed on (node, instance) and so is unaffected by the move.)
+  // Move the FIRST SOURCE instruction to the back. It is a Source with
+  // live consumers, so every one of them now runs before its producer.
+  // (Indices into TimedDag::nodes *are* the emission order; the
+  // dependence graph is keyed on (node, instance) and so is unaffected by
+  // the move.)
+  //
+  // D73 (automatic remap halo, owner decision 2026-10-18): `two_way()`'s
+  // two channels are cross-rank weighted transfers between disjoint
+  // placements (region_changes alone triggers their Remap, `ra != rb`),
+  // so `lower()` now emits a `BuildRemapHalo` instruction for each, and
+  // `expand()` stamps them at `t = 0` -- the SAME instant `Source` gets,
+  // sorting them ahead of it by `NodeId` (OpKind::BuildRemapHalo's own
+  // doc comment, op.hpp). `nodes.front()` is therefore no longer
+  // guaranteed to be the Source this test needs: it carries no output
+  // arc at all (op.hpp, same comment), so moving IT to the back would
+  // not demonstrate the violation this test is about (nothing consumes
+  // it, so no consumer could ever run before it). Found explicitly
+  // instead of assumed, so neither this test nor the one below depends
+  // on exactly which instructions sort ahead of the Source it needs.
   auto& nodes = td.value().nodes;
   ASSERT_GE(nodes.size(), 2u);
-  const fuse::TimedNode first = nodes.front();
-  ASSERT_EQ(lowered.dag.node(first.node).kind, fuse::OpKind::Source);
-  nodes.erase(nodes.begin());
+  const auto source_it = std::find_if(nodes.begin(), nodes.end(), [&](const fuse::TimedNode& tn) {
+    return lowered.dag.node(tn.node).kind == fuse::OpKind::Source;
+  });
+  ASSERT_NE(source_it, nodes.end());
+  const fuse::TimedNode first = *source_it;
+  nodes.erase(source_it);
   nodes.push_back(first);
 
   const auto report = prove_acyclic(g, lowered.dag, td.value());

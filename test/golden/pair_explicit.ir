@@ -1,8 +1,9 @@
 # fuse-ir v1
-node 0   Source                    -> %0 : Instant<r0, kg*s^-3, Extensive, [WindowEnd, k], ranks=0>  "fluid.q"
-node 1   Transport    %0           -> %1 : Instant<r0, kg*s^-3, Extensive, [WindowEnd, k], ranks=1>  "flux/transport" {0->1}
-node 2   Epoch        %1           -> %2 : Instant<r0, kg*s^-3, Extensive, [WindowEnd, k], ranks=1>  "flux/epoch" {reason=after-transport}
-node 3   Remap        %2           -> %3 : Instant<r1, kg*s^-3, Extensive, [WindowEnd, k], ranks=1>  "flux/remap" {remap=C}
-node 4   Constrain    %3           -> %4 : Instant<r1, kg*s^-3, Extensive, [WindowEnd, k], ranks=1>  "flux/constrain"
-node 5   Diagnose     %4           -> %5 : Instant<r1, kg*s^-3, Extensive, [WindowEnd, k], ranks=1>  "flux/diagnose"
-node 6   Sink         %5           -> %6 : Instant<r1, kg*s^-3, Extensive, [WindowEnd, k], ranks=1>  "solid.q_in"
+node 0   BuildRemapHalo              -> (none)  "flux/build_remap_halo"
+node 1   Source                    -> %0 : Instant<r0, kg*s^-3, Extensive, [WindowEnd, k], ranks=0>  "fluid.q"
+node 2   Transport    %0           -> %1 : Instant<r0, kg*s^-3, Extensive, [WindowEnd, k], ranks=1>  "flux/transport" {0->1}
+node 3   Epoch        %1           -> %2 : Instant<r0, kg*s^-3, Extensive, [WindowEnd, k], ranks=1>  "flux/epoch" {reason=after-transport}
+node 4   Remap        %2           -> %3 : Instant<r1, kg*s^-3, Extensive, [WindowEnd, k], ranks=1>  "flux/remap" {remap=C}
+node 5   Constrain    %3           -> %4 : Instant<r1, kg*s^-3, Extensive, [WindowEnd, k], ranks=1>  "flux/constrain"
+node 6   Diagnose     %4           -> %5 : Instant<r1, kg*s^-3, Extensive, [WindowEnd, k], ranks=1>  "flux/diagnose"
+node 7   Sink         %5           -> %6 : Instant<r1, kg*s^-3, Extensive, [WindowEnd, k], ranks=1>  "solid.q_in"

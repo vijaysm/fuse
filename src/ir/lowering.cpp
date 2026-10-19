@@ -192,6 +192,17 @@ LoweringResult lower(const CouplingGraph& g, ConnectPolicy policy) {
   LoweringContext ctx{.graph = g, .dag = result.dag, .diags = result.diags,
                       .connect_policy = policy};
 
+  // D73 (automatic remap halo, owner decision 2026-10-18): step 0, before
+  // step 1's `Source` loop below -- not after it, and not folded into
+  // step 2's per-channel rule -- so every `BuildRemapHalo` node this emits
+  // gets a lower `NodeId` than every `Source` node, which is what makes
+  // `OperatorDAG::topological_order()`'s ascending-NodeId tie-break (and,
+  // downstream, `expand()`'s own `t = 0` stamp for both kinds) place it at
+  // the front of the compiled instruction stream. See `OpKind::
+  // BuildRemapHalo`'s own doc comment (fuse/ir/op.hpp) and `emit_remap_
+  // halo_instructions()`'s (fuse/ir/lowering.hpp).
+  emit_remap_halo_instructions(ctx);
+
   // Time windows track: every field a window-scoped iteration region's
   // own exporting member provides instead of an ordinary Source
   // (seed_window_source_arcs(), called after step 1). Computed once, up

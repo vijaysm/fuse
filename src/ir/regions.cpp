@@ -54,6 +54,22 @@ void build_iteration_regions(LoweringContext& ctx) {
       // what surfaced this as a scheduling-order defect rather than a
       // graph error.
       if (node.kind == OpKind::Sink && !decl.window_scope.has_value()) continue;
+      // D73: `BuildRemapHalo` carries the SAME channel origin its qualifying
+      // channel's ordinary chain does (so `fuse::execute_remap_halo_
+      // instructions()` and `Runner::Impl::resolve_remap_halo()` can find
+      // the channel it is for), but it is a ONE-TIME setup instruction
+      // (`expand()` stamps a single instance at `t = 0`, `TickPhase::
+      // BeforeTicks` -- OpKind::BuildRemapHalo's own doc comment, op.hpp),
+      // never one more node the loop below re-executes per sweep. Without
+      // this exclusion it was swept into `region.body` by the SAME origin
+      // match that finds the channel's Transport/Remap/.../Sink chain,
+      // which both misreports the loop as starting at `t = 0` (`region_
+      // enter` lands on it instead of on the real first chain node) and
+      // risks `E-SCHED-REGION` on an otherwise valid graph the moment a
+      // `t = 0` instruction unrelated to this region's own channels sorts
+      // between it and the rest of the body (`schedule()` requires a
+      // region's body to be instantiated as CONTIGUOUS whole-body passes).
+      if (node.kind == OpKind::BuildRemapHalo) continue;
       if (node.origin.valid() && member_channels.count(node.origin.value())) {
         region.body.push_back(NodeId{n});
       }

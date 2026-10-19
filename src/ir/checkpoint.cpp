@@ -151,7 +151,24 @@ CheckpointSet derive_checkpoint_set(const CouplingGraph& g,
     // because build_iteration_regions() runs before lower() creates the Sink
     // nodes (lowering.cpp steps 2 and 3), so the body contains no Sink and the
     // delivery is invisible in the DAG at this point.
-    if (n.origin.valid() && n.origin.value() < g.channel_count()) {
+    //
+    // D73 ROUND 2: excludes `OpKind::BuildRemapHalo` explicitly, the same way
+    // `build_iteration_regions()` (src/ir/regions.cpp) excludes it from a
+    // region's own `body` collection. `BuildRemapHalo` carries the
+    // qualifying channel's own `ChannelId` as its `origin` (so `execute_
+    // remap_halo_instructions()` and `Runner::Impl::resolve_remap_halo()`
+    // can find the channel it is for), but it is a ONE-TIME setup
+    // instruction with no field value at all (`OpKind::BuildRemapHalo`'s own
+    // doc comment, op.hpp) -- not a per-iteration body member whose
+    // component this checkpoint set should name. Without this exclusion, a
+    // caller that ever handed this function a `region.body` containing a
+    // `BuildRemapHalo` node (this file's own `derive_checkpoint_set` does
+    // not itself enforce round 1's exclusion -- it trusts the caller's own
+    // `body`) would silently attribute that channel's components to the
+    // checkpoint set regardless of whether the real body actually reads or
+    // writes anything belonging to them.
+    if (n.kind != OpKind::BuildRemapHalo &&
+        n.origin.valid() && n.origin.value() < g.channel_count()) {
       const Channel& ch = g.channel_at(n.origin);
       if (ch.source.valid() && ch.source.value() < g.field_count()) {
         comps.push_back(g.owner_of(ch.source).value());

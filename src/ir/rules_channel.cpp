@@ -1,3 +1,4 @@
+#include <optional>
 #include <string>
 
 #include "fuse/ir/lowering.hpp"
@@ -449,7 +450,126 @@ bool lower_channel(LoweringContext& ctx, ChannelId cid) {
   return true;
 }
 
+/// D73. Whether channel `cid` is a CROSS-RANK WEIGHTED (non-nodal,
+/// non-consistent) channel: one whose Remap, if `lower_channel()` lowers it
+/// today, takes `Runner::Impl::resolve_remap()`'s general conservative /
+/// MLS / tempest / intx branch rather than the nodal-distributed H / H^T
+/// one (`fuse::remap_moves_placement`, fuse/model/remap_kind.hpp, answers
+/// false for this channel's method and fields), whose source field's own
+/// component and whose Remap placement (`remap_placement()` above) are
+/// physically different sets of ranks, and that genuinely lowers to a
+/// `Remap` node at all (an explicit `RemapFlags` or a region change --
+/// `lower_channel()`'s own step 5 gate).
+///
+/// MUST STAY IN SYNC with `lower_channel()`'s own `ranks_differ` /
+/// `remap_moves` / `coupler_rank_set` / `region_changes` computation
+/// (above, this same file): this predicate runs in a SEPARATE, EARLIER
+/// pass (`emit_remap_halo_instructions()`, called from `lower()` in
+/// src/ir/lowering.cpp before step 1's `Source` loop -- see `OpKind::
+/// BuildRemapHalo`'s own doc comment, fuse/ir/op.hpp, for why this must
+/// precede every `Source` node in `NodeId` order), not inside
+/// `lower_channel()` itself, so the two cannot share one evaluation the
+/// way `remap_moves_placement`/`could_ever_emit_remap` already let
+/// `validate()` and this file agree from one function. A disagreement
+/// between this predicate and `lower_channel()`'s own reasoning is not a
+/// silent wrong answer either way it goes: a channel this predicate missed
+/// still runs headfirst into `Runner::Impl::resolve_instructions()`'s own
+/// structural check (E-RT-REMAP-NO-HALO), built independently of the IR,
+/// and a channel it over-emits for costs an idempotent, zero-adopted-cells
+/// halo build and nothing else (`build_native_remap_halo`'s own "zero
+/// adopted cells is a legitimate result" contract, native_halo.hpp).
+///
+/// `lowfive_bound` (the source field declares `hdf5_path`) is excluded
+/// unconditionally -- the same reason `lower_channel()` forces its own
+/// `ranks_differ = false` for it: the application performs this channel's
+/// transfer outside the graph, FUSE moves nothing, and a halo neither
+/// `Remap` nor `Transport` will ever read would be invented work.
+[[nodiscard]] bool channel_needs_remap_halo(const CouplingGraph& g, ChannelId cid) {
+  if (!cid.valid() || cid.value() >= g.channel_count()) return false;
+  const Channel& ch = g.channel_at(cid);
+  if (g.field(ch.source).hdf5_path.has_value()) return false;
+
+  const FieldSpec& source_field = g.field(ch.source);
+  const FieldSpec& target_field = g.field(ch.target);
+  if (remap_moves_placement(ch.remap.method_override, source_field, target_field)) {
+    return false;  // the nodal-distributed H / H^T path, not this one
+  }
+
+  const ComponentId source_component = g.owner_of(ch.source);
+  const ComponentId placement = remap_placement(g, ch);
+
+  bool ranks_differ = source_component.value() != placement.value();
+  if (source_component.valid() && placement.valid()) {
+    const RankSet& source_ranks = g.component(source_component).ranks;
+    const RankSet& placement_ranks = g.component(placement).ranks;
+    ranks_differ = !source_ranks.same_as(placement_ranks);
+  }
+  if (!ranks_differ) return false;
+
+  const bool region_changes = source_field.region != target_field.region;
+  return ch.remap.flags != RemapFlags::None || region_changes;
+}
+
 }  // namespace
+
+/// D73 (automatic remap halo, owner decision 2026-10-18). The placement
+/// `lower_channel()`'s own Remap step runs on: the coupler channel `ch`
+/// names via `RemapSpec::remap_on` when one is declared AND `could_ever_
+/// emit_remap()` says it could actually change this channel's lowering
+/// (fuse/model/remap_kind.hpp; mirrors `lower_channel()`'s own `coupler_
+/// rank_set`, this same file, above), the target's own owning component
+/// otherwise. PUBLIC (declared in fuse/ir/lowering.hpp) so `fuse::
+/// execute_remap_halo_instructions()` (fuse/backend/remap_halo_instructions.cpp)
+/// can resolve the SAME placement a `BuildRemapHalo` instruction's own
+/// `channel_needs_remap_halo()` gate (above) used to decide whether to
+/// emit it, from one definition rather than two that could drift.
+ComponentId remap_placement(const CouplingGraph& g, const Channel& ch) {
+  const ComponentId dst_component = g.owner_of(ch.target);
+  const bool remap_on_declared =
+      ch.remap.remap_on.valid() && ch.remap.remap_on.value() < g.component_count();
+  const bool remap_on_could_matter =
+      remap_on_declared &&
+      could_ever_emit_remap(ch.remap.flags, g.field(ch.source), g.field(ch.target),
+                            ch.remap.method_override);
+  return remap_on_could_matter ? ch.remap.remap_on : dst_component;
+}
+
+/// D73. One `BuildRemapHalo` instruction per channel `channel_needs_remap_
+/// halo()` above names, in channel id order, with empty inputs and the
+/// invalid `ArcId{}` as output -- see `OpKind::BuildRemapHalo`'s own doc
+/// comment (fuse/ir/op.hpp) for why this instruction carries no SSA value
+/// at all. Called from `lower()` (src/ir/lowering.cpp) BEFORE step 1's
+/// `Source` loop, so every `BuildRemapHalo` node gets a lower `NodeId`
+/// than every `Source` node -- `OperatorDAG::topological_order()`'s own
+/// "ties broken by ascending NodeId" rule (dag.hpp) is what turns that
+/// into "first in the compiled stream" once `expand()` also stamps every
+/// instance at `t = 0`, `TickPhase::BeforeTicks` (the same instant
+/// `Source` gets).
+void emit_remap_halo_instructions(LoweringContext& ctx) {
+  const CouplingGraph& g = ctx.graph;
+  for (std::uint32_t i = 0; i < g.channel_count(); ++i) {
+    const ChannelId cid{i};
+    if (!channel_needs_remap_halo(g, cid)) continue;
+    const Channel& ch = g.channel_at(cid);
+
+    // ROUND 2 (owner decision 2026-10-18): carry BOTH arcs' owning
+    // components through the instruction's own `attrs`, the same
+    // `src_rank_set`/`dst_rank_set` fields `Transport`/`Epoch` nodes
+    // already use for exactly this purpose (dump.hpp's `attrs_string`
+    // only prints them for `OpKind::Transport`, so this adds no visible
+    // text to any golden dump). `execute_remap_halo_instructions()`
+    // (fuse/backend/remap_halo_instructions.cpp) reads them back rather
+    // than re-deriving `g.owner_of(ch.source)`/`remap_placement(g, ch)` a
+    // second time at execution: what this instruction acts on is frozen
+    // at lowering, the same decision `channel_needs_remap_halo()` just
+    // made, not whatever the graph would answer if asked again later.
+    OpAttrs attrs;
+    attrs.src_rank_set = static_cast<int>(g.owner_of(ch.source).value());
+    attrs.dst_rank_set = static_cast<int>(remap_placement(g, ch).value());
+    ctx.dag.add_node(OpKind::BuildRemapHalo, /*inputs=*/{}, /*output=*/ArcId{},
+                     attrs, cid, ch.name + "/build_remap_halo");
+  }
+}
 
 void register_builtin_rules(LoweringRegistry& reg) {
   reg.add("channel.default", 100, lower_channel);

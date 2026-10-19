@@ -281,6 +281,33 @@ void build_iteration_regions(LoweringContext& ctx);
 /// has run -- see `finish_window_regions()`.
 void seed_window_source_arcs(LoweringContext& ctx);
 
+/// D73 (automatic remap halo, owner decision 2026-10-18). Emits one
+/// `OpKind::BuildRemapHalo` node (src/ir/rules_channel.cpp) per
+/// cross-rank weighted (non-nodal, non-consistent) channel of `ctx.graph`
+/// -- `channel_needs_remap_halo()`'s own gate, src/ir/rules_channel.cpp.
+///
+/// Called from `lower()` BEFORE step 1 (the `Source` loop), not after
+/// it and not from inside step 2's per-channel rule: `OpKind::
+/// BuildRemapHalo`'s own doc comment (fuse/ir/op.hpp) is why every
+/// instance must precede every `Source` node in `NodeId` order, and
+/// `fuse::execute_remap_halo_instructions()` (fuse/ir/remap_halo_
+/// instructions.hpp) is the separate, caller-driven step that gives this
+/// instruction its REAL effect (a mesh backend's remap halo) before
+/// `schedule()` ever sizes a buffer from that mesh -- see that function's
+/// own header for why `Runner::initialize()` cannot be the one to run it.
+void emit_remap_halo_instructions(LoweringContext& ctx);
+
+/// D73. The component whose decomposition channel `ch`'s own `Remap` runs
+/// on -- `RemapSpec::remap_on` when declared and able to matter, `g.owner_
+/// of(ch.target)` otherwise. Defined in src/ir/rules_channel.cpp, where
+/// `lower_channel()`'s own inline `coupler_rank_set` computation (that
+/// file's own comment there explains why the two are not shared code) and
+/// `channel_needs_remap_halo()`'s gate both have to agree with it; exposed
+/// here so `fuse::execute_remap_halo_instructions()` (fuse/ir/remap_halo_
+/// instructions.cpp) can resolve the SAME placement a `BuildRemapHalo`
+/// instruction's own emission decided, from one definition.
+[[nodiscard]] ComponentId remap_placement(const CouplingGraph& g, const Channel& ch);
+
 /// Time windows track: creates the actual `OpKind::WindowAdvance` node for
 /// every member of every window-scoped iteration region, in
 /// `members_in_first_seen_order()`'s (a duplicate of `fuse::

@@ -108,6 +108,37 @@ enum class OpKind {
   /// scratch buffer, reachable by the application only through the new
   /// `field_view` ABI accessor (docs/user/lowfive.md, Unit 3).
   ExternalDelivery,
+
+  /// D73 (automatic remap halo, owner decision 2026-10-18). COLLECTIVE,
+  /// NO DATA: emitted by the lowering (src/ir/rules_channel.cpp,
+  /// `channel_needs_remap_halo()` / the front pass in src/ir/lowering.cpp)
+  /// once per cross-rank weighted (non-nodal, non-consistent) channel --
+  /// the branch `fuse::remap_moves_placement` (fuse/model/remap_kind.hpp)
+  /// answers false for, so `Runner::Impl::resolve_remap()` takes the
+  /// general conservative/MLS/tempest/intx builder rather than the
+  /// nodal-distributed one. `Node::inputs` is empty, like `Source`, and
+  /// `Node::output` is the invalid `ArcId{}`: this instruction moves no
+  /// value through the dataflow graph, it exchanges MESH GEOMETRY on the
+  /// backend the Remap that follows will read. `expand()` stamps every
+  /// instance at `t = 0`, `TickPhase::BeforeTicks` -- the same instant
+  /// `Source` gets -- so it sorts to the front of the instruction stream,
+  /// ahead of every per-period chain.
+  ///
+  /// Its REAL geometry exchange cannot run inside `Runner::execute()`'s
+  /// hot loop: the matching "ORDER MATTERS" note (fuse/backend/moab_
+  /// backend.hpp, fuse/backend/remap_plan.hpp) says a mesh's remap halo
+  /// must be built BEFORE `make_region_sizes`/`plan_buffers`/`schedule()`
+  /// size any buffer on it, and by the time a `Runner` exists `schedule()`
+  /// already has. `fuse::make_region_sizes(graph, dag, backend)` therefore
+  /// runs `fuse::execute_remap_halo_instructions()`
+  /// (fuse/backend/remap_halo_instructions.hpp) before it reads any entity
+  /// count, satisfying every `BuildRemapHalo` node `lower()` emitted at the
+  /// one point every caller already passes `dag` through (owner decision
+  /// 2026-10-18, KNOWN_ISSUES.md D73 and D77); `Runner::Impl::resolve_
+  /// instructions()` only VERIFIES, collectively, that each one was
+  /// (`NativeMeshBackend::has_remap_halo` / `MoabMeshBackend::has_remap_
+  /// halo`), and refuses by name if not.
+  BuildRemapHalo,
 };
 
 /// Whether executing this operator involves the other ranks of its exchange.
@@ -138,6 +169,23 @@ enum class OpKind {
     case OpKind::Remap: case OpKind::Merge: case OpKind::Relax:
     case OpKind::Residual: case OpKind::Accelerate:
     case OpKind::Diagnose: case OpKind::Scale:
+      return false;
+    // D73: the REAL geometry exchange this instruction represents
+    // (`fuse::native::build_native_remap_halo`, `fuse::build_remap_halo`,
+    // each its own MPI_Allgather/MPI_Allgatherv plus a cell exchange,
+    // agreed over the base communicator already) runs once, before
+    // `schedule()` ever sizes a buffer -- see `fuse::execute_remap_halo_
+    // instructions()` (fuse/backend/remap_halo_instructions.hpp) and this
+    // enumerator's own doc comment above. By the time this instruction
+    // reaches `Runner::Impl::execute()`'s per-period hot loop, the
+    // exchange has already happened (or been refused) at setup time in
+    // `Runner::Impl::resolve_instructions()`, which only reads the
+    // backend's own local bookkeeping (`has_remap_halo()`, no MPI call).
+    // Nothing a rank could skip here touches another rank, so unlike
+    // `Epoch`/`Transport`/`Constrain` this is not collective at the point
+    // this classification governs (`step_failure`'s skip-after-failure
+    // rule, runner.cpp / iteration.cpp).
+    case OpKind::BuildRemapHalo:
       return false;
     // Same reasoning as Source: it involves no other rank set of this
     // graph's own exchange (the application-performed transfer that
@@ -186,6 +234,7 @@ enum class OpKind {
     case OpKind::Closure:     return "Closure";
     case OpKind::WindowAdvance: return "WindowAdvance";
     case OpKind::ExternalDelivery: return "ExternalDelivery";
+    case OpKind::BuildRemapHalo:   return "BuildRemapHalo";
   }
   return "Unknown";
 }
