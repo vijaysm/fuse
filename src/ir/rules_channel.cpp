@@ -552,7 +552,7 @@ void emit_remap_halo_instructions(LoweringContext& ctx) {
     if (!channel_needs_remap_halo(g, cid)) continue;
     const Channel& ch = g.channel_at(cid);
 
-    // ROUND 2 (owner decision 2026-10-18): carry BOTH arcs' owning
+    // ROUND 2 (lead's design decision 2026-10-18): carry BOTH arcs' owning
     // components through the instruction's own `attrs`, the same
     // `src_rank_set`/`dst_rank_set` fields `Transport`/`Epoch` nodes
     // already use for exactly this purpose (dump.hpp's `attrs_string`

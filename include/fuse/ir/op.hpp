@@ -109,8 +109,10 @@ enum class OpKind {
   /// `field_view` ABI accessor (docs/user/lowfive.md, Unit 3).
   ExternalDelivery,
 
-  /// D73 (automatic remap halo, owner decision 2026-10-18). COLLECTIVE,
-  /// NO DATA: emitted by the lowering (src/ir/rules_channel.cpp,
+  /// D73 (automatic remap halo, owner decision 2026-10-18). A real
+  /// collective MPI exchange runs once at setup time, but `is_collective()`
+  /// below returns false for it (see that function's own comment on this
+  /// case) -- NO DATA: emitted by the lowering (src/ir/rules_channel.cpp,
   /// `channel_needs_remap_halo()` / the front pass in src/ir/lowering.cpp)
   /// once per cross-rank weighted (non-nodal, non-consistent) channel --
   /// the branch `fuse::remap_moves_placement` (fuse/model/remap_kind.hpp)

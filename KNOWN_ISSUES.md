@@ -9067,6 +9067,70 @@ back onto the `BuildRemapHalo` node). Neither mutation is caught by both gates a
 measured and recorded which ONE actually fires for each, rather than asserting "a mismatch is caught"
 without naming which check does it.
 
+### D73 FIX, ROUND 4 (RemapHalo track round 3, 2026-10-18): the halo was built, but over the WRONG source cells -- fixed, host-measurement host_pending
+
+**First host run of this track's own rows, owner's machine, MPICH 5.0.0a1, build-all at `b044c8a`:**
+`parallel.native_remap_halo_runner.{2,3}` both FAILED. Per-rank capture at 2 ranks, rank 0:
+`initialize()` SUCCEEDED (the halo build reported success and `has_remap_halo()` answered true), the
+weight build ran once (`remap_weight_builds == 1`), and the matrix was EMPTY
+(`remap_weight_nonzeros == 0`); the conservation check (`:393`) then failed by the full source total
+(34.999999999999986 vs. a tolerance of 9.09e-15). This is KNOWN_ISSUES.md D73's own silently-empty-
+matrix failure mode, ONE LAYER DEEPER than the refusal its own fix added: the halo genuinely WAS built
+(not skipped, not refused), it just adopted nothing.
+
+**Root cause, read directly from `register_default_placements()` (native_backend.cpp):** every
+component gets a placed view of EVERY mesh, generated fresh over ITS OWN `RankSet` -- a component's view
+of a mesh outside its own `RankSet` is the documented EMPTY view, not a refusal. The single-placement
+`build_native_remap_halo` (native_halo.cpp) resolved the SOURCE mesh's view through `placement` -- the
+TARGET's own placement, following `RemapPlan::placement`'s own already-closed meaning -- which is exactly
+the empty-view case on every rank that actually holds the source's real decomposition (they are outside
+the target's own `RankSet`). `my_owned_src_boxes` was therefore empty on every provider rank, so the
+covering-set exchange adopted nothing, `commit_remap_halo` still ran and recorded the triple as built,
+and `has_remap_halo()` answered true on a "build was called" basis that never checked WHAT it adopted.
+Confirmed structurally with no MPI needed at all (`has_remap_halo`/`native_view` are pure local
+bookkeeping): a new tier-0 test, `NativeHaloCrossPlacement.SourceMeshViewedThroughTheTargetsPlacement
+IsEmptyButThroughItsOwnIsNot` (test/backend/native_halo_test.cpp), resolves the SAME source mesh through
+both components' own placements on one process and shows the exact empty-vs-real split.
+
+**Fix: a two-placement `fuse::native::build_native_remap_halo` overload** (native_halo.hpp/.cpp),
+mirroring the MOAB cross-placement `fuse::build_remap_halo(plan, graph, backend, source_placement)`
+overload the MoabHalo track already landed (remap_plan.hpp's own "KNOWN_ISSUES D5's 'last half'" doc).
+`source_placement` resolves ONLY the source view; `target`/`placement` and the final `commit_remap_halo`
+key are unchanged from the single-placement form, so every existing lookup by the target's own placement
+still finds the result where it already expected to. The single-placement overload now delegates to this
+one with `source_placement == placement` (the identity case it already reduces to correctly), so every
+existing caller and test of the single-placement form is unaffected (measured: `fuse_backend_native_halo_
+test`, 21/21 unchanged, plus 2 new tests, 23/23). `fuse::execute_remap_halo_instructions()`
+(src/backend/remap_halo_instructions.cpp) now dispatches directly to this overload for `NativeMeshBackend`
+(reading `source_placement` back from the `BuildRemapHalo` instruction's own `attrs.src_rank_set`, carried
+there since round 2 for exactly this day) and to the already-landed MOAB overload otherwise, bypassing
+the generic single-placement `fuse::build_remap_halo(plan, graph, backend)` entirely for both backends.
+
+**Tracing added, per the owner's own request:** `FUSE_REMAP_HALO_TRACE=1` (off by default, same getenv
+convention as `FUSE_COLLECTIVE_TRACE`/`FUSE_CONSERVATION_DEBUG`) prints, per rank: owned source cells and
+their bounding box, target cells and their bounding box (native_halo.cpp, before the covering-set
+exchange), adopted source cells (native_halo.cpp, after it), and the resulting weight matrix's own
+nonzero count per channel (runner.cpp, where `build_weights()`'s return is first read) -- together naming
+which of the owner's own four hypotheses the next host run actually hits, if this fix is not the whole
+story.
+
+**Mutation evidence.** `build-evidence/mutations/native_halo.toml` gained two rows: one tier-0 runnable
+(the two-placement overload's own `commit_remap_halo` key, caught by the new `NativeHaloCrossPlacement`
+test at the `ranks <= 1` short-circuit -- applied, built, run, confirmed killed, restored byte-identical,
+re-verified green) and one `requires = "mpi"` (the real view-resolution fix itself, which lives inside
+the `#if FUSE_HAVE_MPI` multi-rank exchange body this file's own header comment already excludes from
+mutation testing for the identical reason D27's own rows do -- NOT ASSESSED here, named as host_pending).
+
+**What this round could NOT measure, and why it is still host_pending:** the real multi-rank covering-set
+exchange needs a live MPI run (`mpiexec` with >= 2 real ranks), which this sandbox cannot start at all --
+the SAME constraint that let the original defect reach the owner's host unmeasured in the first place.
+`parallel.native_remap_halo_runner.{2,3}[.device]` is this round's own host-pending row (again); the exact
+command and what each rank's `FUSE_REMAP_HALO_TRACE=1` output must show on success are in this round's
+own structured `host_pending` field. Per the owner's own closing instruction: if `remap_weight_nonzeros`
+is non-zero but the conservation check at `:393` still fails, that is evidence the per-period VALUE
+exchange into the halo-adopted cells (the open question this track's own round 1 first raised, still
+unresolved) is the NEXT defect, and D73 stays open until the row is green on the host.
+
 ### D74. A nodal "consistent" Remap's distributed point-location search refuses at the domain's own corner vertex (global id 0) at some multi-rank splits -- FIXED 2026-10-16 (found 2026-10-15, scaled-bench track)
 
 Found while registering `bench.scaled_device_benchmark.{2,3}[.device]` (`test/bench/scaled_device_benchmark.cpp`):

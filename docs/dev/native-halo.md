@@ -291,3 +291,44 @@ could place the call incorrectly by hand; `Runner::Impl::resolve_remap_halo()` s
 `has_remap_halo()` lookup, no MPI call), and refuses `E-RT-REMAP-HALO-NOT-BUILT` by name when it was
 not -- now the gate for a caller that bypassed `make_region_sizes()` entirely, rather than one that
 merely called two separate steps in the wrong order.
+
+**Resolving the SOURCE mesh through its own placement, not the target's (round 3, 2026-10-18).**
+`register_default_placements()` (native_backend.cpp) gives every component a placed view of every
+mesh, generated over THAT component's own `RankSet`; a component's view of a mesh outside its own
+`RankSet` is the documented EMPTY view, not a refusal. `build_native_remap_halo`'s single-placement
+form resolved BOTH the source and target mesh through the same `placement` argument -- correct for the
+target (that argument is, by `RemapPlan::placement`'s own already-closed meaning, the target's own
+placement), but wrong for the source on every rank that holds the source's real decomposition: those
+ranks sit outside the target's `RankSet`, so the source view they got back was empty, the covering-set
+exchange adopted nothing, and `commit_remap_halo` still recorded the triple as built. This is
+KNOWN_ISSUES.md D73's "FIX ROUND 4" entry; see there for the host measurement that exposed it. The fix
+is a second, two-placement overload, `build_native_remap_halo(backend, source, target, dim,
+source_placement, placement)`: `source_placement` resolves ONLY the source view; `target` and
+`placement` -- and therefore `commit_remap_halo`'s own key -- are unchanged from the single-placement
+form, so every existing lookup by the target's own placement (`has_remap_halo`, `native_view`,
+`placed_view`) still finds the result where it already expected to. The single-placement overload now
+delegates to this one with `source_placement == placement`, the identity case it already reduced to
+correctly, so no existing caller changes behavior. `fuse::execute_remap_halo_instructions()`
+(src/backend/remap_halo_instructions.cpp) reads the source component's `RankSet` back out of the
+`BuildRemapHalo` instruction's own `attrs.src_rank_set` (carried there since round 2) and calls this
+overload directly for a `NativeMeshBackend`, mirroring the MOAB cross-placement
+`fuse::build_remap_halo(plan, graph, backend, source_placement)` overload the MoabHalo track landed in
+`intx_weights.cpp` for the identical reason -- both backends now bypass the old single-placement
+generic dispatcher entirely for this call.
+
+**`FUSE_REMAP_HALO_TRACE=1` (round 3).** Off by default, same `getenv`-cached convention as
+`FUSE_COLLECTIVE_TRACE`/`FUSE_CONSERVATION_DEBUG`. When set, each rank prints, through `fmt::print`
+to stderr: before the covering-set exchange (native_halo.cpp), its own owned source cell count and
+bounding box alongside the target cell count and bounding box; after the exchange, the adopted source
+cell count; and, once `Runner::Impl::resolve_remap()` finishes building a channel's weights
+(runner.cpp), that channel's resulting nonzero count. On a build that adopts the correct cells, the
+adopted count on a providing rank should be close to its own target-side peers' owned counts (exact
+equality is not expected -- the covering set can include extra boundary cells -- but zero adopted
+cells with a non-empty owned-source count is the D73 "FIX ROUND 4" defect recurring). Reproduce with:
+
+```
+mpiexec -n 2 env FUSE_REMAP_HALO_TRACE=1 \
+    ./fuse_parallel_native_remap_halo_runner_test \
+    --gtest_filter=NativeRemapHalo.DisjointGeneralWeightedRemapConservesOnceTheHaloIsBuilt
+```
+
