@@ -387,7 +387,7 @@ std::int64_t reference_conservation_checks(int periods) {
   const auto lowered = fuse::lower(g);
   if (!lowered.ok()) { fprintf(stderr, "DIAG lower: %s\n", lowered.diags.to_string().c_str()); return -1; }
   const fuse::ClockSet clocks{g};
-  const auto sched = fuse::schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, backend));
+  const auto sched = fuse::schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, lowered.dag, backend));
   if (!sched.ok()) { fprintf(stderr, "DIAG schedule: %s\n", sched.diags.to_string().c_str()); return -1; }
 
   fuse::ComponentSet components;

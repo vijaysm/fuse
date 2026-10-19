@@ -389,7 +389,7 @@ struct Args {
     return 1;
   }
   const fuse::ClockSet clocks{g};
-  const auto sched = fuse::schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, backend));
+  const auto sched = fuse::schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, lowered.dag, backend));
   if (!sched.ok()) {
     std::fprintf(stderr, "schedule() failed:\n%s\n", sched.diags.to_string().c_str());
     MPI_Abort(MPI_COMM_WORLD, 1);

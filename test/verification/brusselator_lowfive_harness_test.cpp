@@ -308,8 +308,7 @@ void RunExternalDeliveryMatchesInProcessRunner(WaveformIteration wi) {
   const auto ref_lowered = fuse::lower(ref_graph);
   ASSERT_TRUE(ref_lowered.ok()) << ref_lowered.diags.to_string();
   const fuse::ClockSet ref_clocks{ref_graph};
-  const auto ref_sched = fuse::schedule(ref_graph, ref_lowered.dag, ref_clocks,
-                                        fuse::make_region_sizes(ref_graph, ref_backend));
+  const auto ref_sched = fuse::schedule(ref_graph, ref_lowered.dag, ref_clocks, fuse::make_region_sizes(ref_graph, ref_lowered.dag, ref_backend));
   ASSERT_TRUE(ref_sched.ok()) << ref_sched.diags.to_string();
 
   fuse::RemapPlan rp_vu; rp_vu.src = ref_v_region; rp_vu.tgt = ref_u_region;
@@ -873,7 +872,7 @@ namespace {
   const auto lowered = fuse::lower(graph);
   EXPECT_TRUE(lowered.ok()) << lowered.diags.to_string();
   const fuse::ClockSet clocks{graph};
-  auto sched = fuse::schedule(graph, lowered.dag, clocks, fuse::make_region_sizes(graph, backend));
+  auto sched = fuse::schedule(graph, lowered.dag, clocks, fuse::make_region_sizes(graph, lowered.dag, backend));
   EXPECT_TRUE(sched.ok()) << sched.diags.to_string();
   return std::move(sched.plan);
 }
@@ -903,7 +902,7 @@ namespace {
   const auto lowered = fuse::lower(graph);
   EXPECT_TRUE(lowered.ok()) << lowered.diags.to_string();
   const fuse::ClockSet clocks{graph};
-  auto sched = fuse::schedule(graph, lowered.dag, clocks, fuse::make_region_sizes(graph, backend));
+  auto sched = fuse::schedule(graph, lowered.dag, clocks, fuse::make_region_sizes(graph, lowered.dag, backend));
   EXPECT_TRUE(sched.ok()) << sched.diags.to_string();
   return std::move(sched.plan);
 }

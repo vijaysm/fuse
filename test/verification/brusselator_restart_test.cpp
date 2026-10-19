@@ -145,8 +145,7 @@ struct BrusselatorFixture {
   s->lowered = lower(s->graph);
   if (!s->lowered.ok()) { ADD_FAILURE() << s->lowered.diags.to_string(); return nullptr; }
   const fuse::ClockSet clocks{s->graph};
-  auto sched = schedule(s->graph, s->lowered.dag, clocks,
-                       fuse::make_region_sizes(s->graph, s->backend));
+  auto sched = schedule(s->graph, s->lowered.dag, clocks, fuse::make_region_sizes(s->graph, s->lowered.dag, s->backend));
   if (!sched.ok()) { ADD_FAILURE() << sched.diags.to_string(); return nullptr; }
 
   s->runner = std::make_unique<fuse::Runner>(s->graph, s->lowered.dag, sched.plan, s->backend);

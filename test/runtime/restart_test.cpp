@@ -99,8 +99,7 @@ std::unique_ptr<DnHeatFixture> make_setup(
   const auto lowered = lower(s->graph);
   if (!lowered.ok()) { ADD_FAILURE() << lowered.diags.to_string(); return s; }
   const fuse::ClockSet clocks{s->graph};
-  auto sched = schedule(s->graph, lowered.dag, clocks,
-                       fuse::make_region_sizes(s->graph, s->backend));
+  auto sched = schedule(s->graph, lowered.dag, clocks, fuse::make_region_sizes(s->graph, lowered.dag, s->backend));
   if (!sched.ok()) { ADD_FAILURE() << sched.diags.to_string(); return s; }
 
   auto dirichlet = std::make_unique<dn::DirichletSlab>("dirichlet", kN,

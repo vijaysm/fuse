@@ -150,8 +150,7 @@ void with_fsi_case(const FsiCase& c, F&& body) {
   const auto lowered = lower(graph);
   if (!lowered.ok()) throw std::runtime_error("lower: " + lowered.diags.to_string());
   const fuse::ClockSet clocks{graph};
-  auto sched = fuse::schedule(graph, lowered.dag, clocks,
-                              fuse::make_region_sizes(graph, backend));
+  auto sched = fuse::schedule(graph, lowered.dag, clocks, fuse::make_region_sizes(graph, lowered.dag, backend));
   if (!sched.ok()) throw std::runtime_error("schedule: " + sched.diags.to_string());
 
   const double Umax = c.U_max, H = c.H;

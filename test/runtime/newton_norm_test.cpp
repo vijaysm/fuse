@@ -124,7 +124,7 @@ NewtonDnHeatFixture make_newton_setup(int max_iterations, fuse::NewtonConfig cfg
   const auto lowered = lower(g);
   if (!lowered.ok()) { ADD_FAILURE() << lowered.diags.to_string(); return s; }
   const fuse::ClockSet clocks{g};
-  auto sched = schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, s.backend));
+  auto sched = schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, lowered.dag, s.backend));
   if (!sched.ok()) { ADD_FAILURE() << sched.diags.to_string(); return s; }
 
   auto dirichlet = std::make_unique<dn::DirichletSlab>(
@@ -389,7 +389,7 @@ DiagonalFixture make_diagonal_setup(int max_iterations, const NewtonConfig& cfg,
   const auto lowered = lower(g);
   if (!lowered.ok()) { ADD_FAILURE() << lowered.diags.to_string(); return s; }
   const fuse::ClockSet clocks{g};
-  auto sched = schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, s.backend));
+  auto sched = schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, lowered.dag, s.backend));
   if (!sched.ok()) { ADD_FAILURE() << sched.diags.to_string(); return s; }
 
   // lo_out = 0.3 * hi_in + 1.0 (physical); hi_out = 0.3 * lo_in + 1.0
@@ -921,7 +921,7 @@ TEST(NewtonNorm, AmbiguousToleranceScaleRefusesAtSetup) {
   const auto lowered = lower(g);
   ASSERT_TRUE(lowered.ok()) << lowered.diags.to_string();
   const fuse::ClockSet clocks{g};
-  auto sched = schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, backend));
+  auto sched = schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, lowered.dag, backend));
   ASSERT_TRUE(sched.ok()) << sched.diags.to_string();
 
   fuse::Runner runner(g, lowered.dag, sched.plan, backend);
@@ -1164,7 +1164,7 @@ MixedScaleFixture make_mixed_scale_setup(const NewtonConfig& cfg, double scale,
   const auto lowered = lower(g);
   if (!lowered.ok()) { ADD_FAILURE() << lowered.diags.to_string(); return s; }
   const fuse::ClockSet clocks{g};
-  auto sched = schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, s.backend));
+  auto sched = schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, lowered.dag, s.backend));
   if (!sched.ok()) { ADD_FAILURE() << sched.diags.to_string(); return s; }
 
   // A_out = p_nat*scale * B_in + q_nat*scale (A's own units `scale` times

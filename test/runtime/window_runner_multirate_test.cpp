@@ -233,7 +233,7 @@ RunnerResult run_via_runner(WaveformIteration mode, DtPolicy pol_a,
   }
   const fuse::ClockSet clocks{g};
   const auto sched =
-      schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, backend));
+      schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, lowered.dag, backend));
   if (!sched.ok()) { out.error = sched.diags.to_string(); return out; }
 
   auto a_owned = std::make_unique<LinearOdeComponent>("A", kAA, kAB, kAX0);
@@ -546,7 +546,7 @@ TEST(WindowRunnerMultirate, ThreeConsecutivePeriodsMatchDriverAcrossRepeatedCall
   ASSERT_TRUE(backend.load(g.mesh(fuse::MeshId{0})).ok());
   const fuse::ClockSet clocks{g};
   const auto sched =
-      schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, backend));
+      schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, lowered.dag, backend));
   ASSERT_TRUE(sched.ok()) << sched.diags.to_string();
 
   auto a_owned = std::make_unique<LinearOdeComponent>("A", kAA, kAB, kAX0);
@@ -749,7 +749,7 @@ TEST(WindowRunnerMultirate, WindowRegionMixedWithOrdinaryComponentAcrossRepeated
       << "lcm(window length 1/3, C's own interval 1/2) must be 1 for this "
          "fixture to exercise three window instances per period";
   const auto sched =
-      schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, backend));
+      schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, lowered.dag, backend));
   ASSERT_TRUE(sched.ok()) << sched.diags.to_string();
 
   auto a_owned = std::make_unique<LinearOdeComponent>("A", kAA, kAB, kAX0);

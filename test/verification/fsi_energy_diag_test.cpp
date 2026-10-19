@@ -683,8 +683,7 @@ Eigen::VectorXd run_one_coupled_period(const CoupledCase& c, const CoupledDims& 
   if (!lowered.ok()) throw std::runtime_error("lower: " + lowered.diags.to_string());
   if (kTrace) { std::printf("  [trace] schedule\n"); std::fflush(stdout); }
   const fuse::ClockSet clocks{graph};
-  auto sched = fuse::schedule(graph, lowered.dag, clocks,
-                              fuse::make_region_sizes(graph, backend));
+  auto sched = fuse::schedule(graph, lowered.dag, clocks, fuse::make_region_sizes(graph, lowered.dag, backend));
   if (!sched.ok()) throw std::runtime_error("schedule: " + sched.diags.to_string());
   if (kTrace) { std::printf("  [trace] scheduled ok\n"); std::fflush(stdout); }
 
@@ -982,8 +981,7 @@ TEST(FsiEnergyDiag, LongRunEnergyIsBounded) {
   const auto lowered = lower(graph);
   ASSERT_TRUE(lowered.ok());
   const fuse::ClockSet clocks{graph};
-  auto sched = fuse::schedule(graph, lowered.dag, clocks,
-                              fuse::make_region_sizes(graph, backend));
+  auto sched = fuse::schedule(graph, lowered.dag, clocks, fuse::make_region_sizes(graph, lowered.dag, backend));
   ASSERT_TRUE(sched.ok());
 
   const auto inflow = [H](double y) { return 4.0 * 1.0 * y * (H - y) / (H * H); };
@@ -1447,8 +1445,7 @@ CoupledPeriodDiag run_one_coupled_period_with_budget(const CoupledCase& c,
   const auto lowered = lower(graph);
   if (!lowered.ok()) throw std::runtime_error("lower: " + lowered.diags.to_string());
   const fuse::ClockSet clocks{graph};
-  auto sched = fuse::schedule(graph, lowered.dag, clocks,
-                              fuse::make_region_sizes(graph, backend));
+  auto sched = fuse::schedule(graph, lowered.dag, clocks, fuse::make_region_sizes(graph, lowered.dag, backend));
   if (!sched.ok()) throw std::runtime_error("schedule: " + sched.diags.to_string());
 
   const double H = c.H, Umax = c.Umax;

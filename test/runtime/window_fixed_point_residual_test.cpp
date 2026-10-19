@@ -209,8 +209,7 @@ Fixture make_fixture(AccelKind accel = AccelKind::Newton,
     return s;
   }
   const fuse::ClockSet clocks{s.graph};
-  const auto sched = fuse::schedule(s.graph, lowered.dag, clocks,
-                                    fuse::make_region_sizes(s.graph, s.backend));
+  const auto sched = fuse::schedule(s.graph, lowered.dag, clocks, fuse::make_region_sizes(s.graph, lowered.dag, s.backend));
   if (!sched.ok()) {
     s.init = fuse::Failure{"E-TEST", sched.diags.to_string()};
     return s;

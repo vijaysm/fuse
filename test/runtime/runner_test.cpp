@@ -414,7 +414,7 @@ std::unique_ptr<Harness> build(HarnessOpts o) {
 
   const fuse::ClockSet clocks{g};
   auto sched =
-      schedule(g, h->dag, clocks, fuse::make_region_sizes(g, h->backend));
+      schedule(g, h->dag, clocks, fuse::make_region_sizes(g, h->dag, h->backend));
   EXPECT_TRUE(sched.ok()) << sched.diags.to_string();
   h->plan = sched.plan;
 
@@ -1252,7 +1252,7 @@ TEST(Runner, AFailedStepBlocksOnlyWhatReadsFromIt) {
   ASSERT_TRUE(lowered.ok()) << lowered.diags.to_string();
   fuse::OperatorDAG dag = lowered.dag;
   const fuse::ClockSet clocks{g};
-  const auto sched = schedule(g, dag, clocks, fuse::make_region_sizes(g, backend));
+  const auto sched = schedule(g, dag, clocks, fuse::make_region_sizes(g, dag, backend));
   ASSERT_TRUE(sched.ok()) << sched.diags.to_string();
   fuse::ExecutionPlan plan = sched.plan;
 
@@ -1348,7 +1348,7 @@ TEST(Runner, ASecondChannelStillAdvancesAfterAnUnrelatedRegionFails) {
   ASSERT_TRUE(lowered.ok()) << lowered.diags.to_string();
   fuse::OperatorDAG dag = lowered.dag;
   const fuse::ClockSet clocks{g};
-  const auto sched = schedule(g, dag, clocks, fuse::make_region_sizes(g, backend));
+  const auto sched = schedule(g, dag, clocks, fuse::make_region_sizes(g, dag, backend));
   ASSERT_TRUE(sched.ok()) << sched.diags.to_string();
   fuse::ExecutionPlan plan = sched.plan;
 

@@ -919,8 +919,7 @@ std::unique_ptr<HookHarness> make_hook_harness() {
   h->dag = lowered.dag;
 
   const fuse::ClockSet clocks{g};
-  auto sched = fuse::schedule(g, h->dag, clocks,
-                              fuse::make_region_sizes(g, h->backend));
+  auto sched = fuse::schedule(g, h->dag, clocks, fuse::make_region_sizes(g, h->dag, h->backend));
   EXPECT_TRUE(sched.ok()) << sched.diags.to_string();
   h->plan = sched.plan;
 

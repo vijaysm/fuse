@@ -135,8 +135,7 @@ double run_to_midspan_deflection(std::size_t nx_beam, std::size_t nx_fluid,
   const auto lowered = lower(graph);
   if (!lowered.ok()) throw std::runtime_error("lower: " + lowered.diags.to_string());
   const fuse::ClockSet clocks{graph};
-  auto sched = fuse::schedule(graph, lowered.dag, clocks,
-                              fuse::make_region_sizes(graph, backend));
+  auto sched = fuse::schedule(graph, lowered.dag, clocks, fuse::make_region_sizes(graph, lowered.dag, backend));
   if (!sched.ok()) throw std::runtime_error("schedule: " + sched.diags.to_string());
 
   const auto inflow = [](double y) { return 4.0 * U_max * y * (H - y) / (H * H); };

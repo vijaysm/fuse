@@ -215,8 +215,7 @@ void RunBothMembersMatchInProcessRunner(WaveformIteration wi) {
   const auto ref_lowered = fuse::lower(ref.graph);
   ASSERT_TRUE(ref_lowered.ok()) << ref_lowered.diags.to_string();
   const fuse::ClockSet ref_clocks{ref.graph};
-  const auto ref_sched = fuse::schedule(ref.graph, ref_lowered.dag, ref_clocks,
-                                        fuse::make_region_sizes(ref.graph, ref.backend));
+  const auto ref_sched = fuse::schedule(ref.graph, ref_lowered.dag, ref_clocks, fuse::make_region_sizes(ref.graph, ref_lowered.dag, ref.backend));
   ASSERT_TRUE(ref_sched.ok()) << ref_sched.diags.to_string();
 
   // V built first, U seeded from V's own initial `provided` value remapped
@@ -472,8 +471,7 @@ TEST(BrusselatorParticipants, ExternallyDrivenMultiSubstepWindowDrivenByNextComp
   const auto ref_lowered = fuse::lower(ref.graph);
   ASSERT_TRUE(ref_lowered.ok()) << ref_lowered.diags.to_string();
   const fuse::ClockSet ref_clocks{ref.graph};
-  const auto ref_sched = fuse::schedule(ref.graph, ref_lowered.dag, ref_clocks,
-                                        fuse::make_region_sizes(ref.graph, ref.backend));
+  const auto ref_sched = fuse::schedule(ref.graph, ref_lowered.dag, ref_clocks, fuse::make_region_sizes(ref.graph, ref_lowered.dag, ref.backend));
   ASSERT_TRUE(ref_sched.ok()) << ref_sched.diags.to_string();
 
   auto ref_comp_v = std::make_unique<brusselator::VComponent>(

@@ -203,7 +203,7 @@ TEST(RunnerDeterminism, LargeIterationRegionIsBitIdenticalAcrossThreadCounts) {
   ASSERT_TRUE(lowered.ok()) << lowered.diags.to_string();
   const fuse::ClockSet clocks{g};
   const auto sched =
-      schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, backend));
+      schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, lowered.dag, backend));
   ASSERT_TRUE(sched.ok()) << sched.diags.to_string();
 
   ComponentSet components;

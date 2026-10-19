@@ -135,7 +135,7 @@ TEST(AcceptLayoutPlacement, UsPlannedOwnedSizeIsItsWholeFieldWhenRanksUIsOneAfte
   // buffers() consult, and "the plan sizes that field at N on this rank"
   // in the host's own E-RT-SIZE message is a direct report of this
   // function's return value.
-  const fuse::RegionSizes sizes = fuse::make_region_sizes(fx.g, backend);
+  const fuse::RegionSizes sizes = fuse::make_region_sizes(fx.g, lowered.dag, backend);
   const std::size_t u_size = sizes(fx.u_region, static_cast<int>(fx.handles.u_component.value()));
   // Under the PRE-D36 declaration (U's own RankSet spanning the bundled
   // coupler rank too, RankSet{0, 2} instead of {0, 1}), this call returns
@@ -174,7 +174,11 @@ TEST(AcceptLayoutPlacement, UIsNotPlacedAtAllOnTheCouplersOwnRank) {
   fuse::native::NativeMeshBackend backend(/*rank=*/1, /*num_ranks=*/3);
   ASSERT_TRUE(backend.load(fx.g.mesh(fx.u_mesh), fx.g).ok());
 
-  const fuse::RegionSizes sizes = fuse::make_region_sizes(fx.g, backend);
+  // No lower() call in this test's own scope -- it checks make_region_
+  // sizes()'s placement arithmetic directly, not anything a BuildRemapHalo
+  // instruction would act on; an empty OperatorDAG is the correct,
+  // zero-instruction input for that question.
+  const fuse::RegionSizes sizes = fuse::make_region_sizes(fx.g, fuse::OperatorDAG{}, backend);
   const std::size_t u_size_here = sizes(fx.u_region, static_cast<int>(fx.handles.u_component.value()));
   EXPECT_EQ(u_size_here, 0u)
       << "rank 1 is the coupler's own bundled rank, outside U's declared RankSet "
@@ -209,7 +213,8 @@ TEST(AcceptLayoutPlacement, VsOwnPlannedSizeOnUsMeshIsUnaffectedByD36) {
   fuse::native::NativeMeshBackend backend(/*rank=*/2, /*num_ranks=*/3);
   ASSERT_TRUE(backend.load(fx.g.mesh(fx.u_mesh), fx.g).ok());
 
-  const fuse::RegionSizes sizes = fuse::make_region_sizes(fx.g, backend);
+  // Same reasoning as UIsNotPlacedAtAllOnTheCouplersOwnRank above.
+  const fuse::RegionSizes sizes = fuse::make_region_sizes(fx.g, fuse::OperatorDAG{}, backend);
   const std::size_t v_size = sizes(fx.u_region, static_cast<int>(fx.handles.v_component.value()));
   EXPECT_EQ(v_size, 256u)
       << "V's own RankSet ({ranks_u + ranks_coupler, ranks_v}) is unchanged by D36, so "

@@ -126,8 +126,7 @@ DnHeatFixture make_setup(int max_iterations = 30) {
     return s;
   }
   const fuse::ClockSet clocks{s.graph};
-  auto sched = schedule(s.graph, lowered.dag, clocks,
-                       fuse::make_region_sizes(s.graph, s.backend));
+  auto sched = schedule(s.graph, lowered.dag, clocks, fuse::make_region_sizes(s.graph, lowered.dag, s.backend));
   if (!sched.ok()) {
     ADD_FAILURE() << sched.diags.to_string();
     return s;
