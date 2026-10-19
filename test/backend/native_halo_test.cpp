@@ -19,6 +19,8 @@
 
 #include "fuse/backend/native_halo.hpp"
 
+#include "fuse/base/config.hpp"  // FUSE_HAVE_MPI
+
 #include <algorithm>
 #include <cmath>
 #include <map>
@@ -29,6 +31,7 @@
 
 #include "fuse/backend/native_backend.hpp"
 #include "fuse/backend/remap_plan.hpp"
+#include "fuse/backend/supermesh.hpp"
 #include "fuse/model/component.hpp"  // ComponentDecl
 #include "fuse/model/coupling_graph.hpp"
 
@@ -1102,13 +1105,41 @@ TEST(NativeHaloAccumulate, NoPackedExchangerFacetRefusesWithEMeshHalo) {
   EXPECT_EQ(r.error().code, "E-MESH-HALO");
 }
 
-TEST(NativeHaloAccumulate, NullBufferWithOutstandingGhostsRefusesWithEMeshArg) {
+// A null buffer refuses only when this rank would touch it: a null ghost
+// buffer with ghosts outstanding, or a null owned buffer with owned entries.
+// A rank that owns nothing (owned_n == 0) legitimately passes a null owned
+// buffer (an empty std::vector's data()); refusing it, as this function did
+// until 2026-10-19, was a local return in front of the collective exchange
+// and deadlocked parallel.native_remap_halo_runner.2 (KNOWN_ISSUES.md D73
+// round 8). With owned_n == 0 the call proceeds to the exchanger-facet check,
+// which is what this fake (no PackedExchanger facet) then refuses.
+TEST(NativeHaloAccumulate, NullGhostBufferWithOutstandingGhostsRefusesWithEMeshArg) {
+  GhostOnlyFakeExchanger exchanger(1);
+  double owned = 0.0;
+  const auto r = fuse::native::accumulate_remap_halo(exchanger, &owned, 1,
+                                                     /*ghosts=*/nullptr, 1);
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.error().code, "E-MESH-ARG");
+}
+
+TEST(NativeHaloAccumulate, NullOwnedBufferWithOwnedEntriesRefusesWithEMeshArg) {
+  GhostOnlyFakeExchanger exchanger(1);
+  std::vector<double> ghosts(1, 1.0);
+  const auto r = fuse::native::accumulate_remap_halo(exchanger, /*owned=*/nullptr, 1,
+                                                     ghosts.data(), 1);
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.error().code, "E-MESH-ARG");
+}
+
+TEST(NativeHaloAccumulate, NullOwnedBufferOwningNothingIsNotAnArgumentError) {
   GhostOnlyFakeExchanger exchanger(1);
   std::vector<double> ghosts(1, 1.0);
   const auto r = fuse::native::accumulate_remap_halo(exchanger, /*owned=*/nullptr, 0,
                                                      ghosts.data(), 1);
-  ASSERT_FALSE(r.ok());
-  EXPECT_EQ(r.error().code, "E-MESH-ARG");
+  ASSERT_FALSE(r.ok()) << "this fake has no PackedExchanger facet, so the exchange itself refuses";
+  EXPECT_EQ(r.error().code, "E-MESH-HALO")
+      << "E-MESH-ARG here would mean the owned_n == 0 null buffer was refused before the "
+         "exchange, the local return that deadlocked the 2-rank runner row";
 }
 
 // ---------------------------------------------------------------------------
@@ -1338,4 +1369,314 @@ TEST(NativeHaloBuildWeights, BuildWeightsFindsAHaloCommittedUnderAnActualCompone
                            "has_remap_halo under plan.placement, the same key commit_remap_halo used, "
                            "not the default it silently fell back to before this round's fix";
   }
+}
+
+
+// ===========================================================================
+// KNOWN_ISSUES.md D73 ROUND 8 (RemapHalo track round 7): the conservative
+// coverage check, DISTRIBUTED. `fuse::native::fold_and_reduce_source_
+// coverage` (native_halo.cpp) is the production fix; its own real fold (a
+// collective Alltoallv-based exchange, through `fuse::linalg::make_mpi_
+// exchanger`) needs a real multi-rank MPI run this sandbox cannot start --
+// `requires = "mpi"`, host_pending, same reason the real cross-rank halo
+// exchange already is. What IS tier-0 testable, and is tested below: (1)
+// the function refuses SAFELY (no crash, no silently-wrong answer) when a
+// real fold is needed but this build has no MPI; (2) the function is a
+// correct, real no-op/pass-through at `communicator_size() <= 1` (no MPI
+// needed at all, genuinely exercises the production code); and (3) the
+// CORE INSIGHT the fix rests on -- folding a halo copy's own coverage back
+// to its owner turns a 0%-local refusal into a correct pass -- demonstrated
+// by hand, mirroring `accumulate_remap_halo`'s own documented contract
+// EXACTLY (`owned[pattern.remote_local_index[g]] += ghosts[g]`), using
+// `fuse::build_supermesh_weights` (the REAL production geometry kernel, not
+// a stand-in) on each simulated rank's own local view.
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// (1): a real halo (ghost_n > 0, committed by hand, the same bookkeeping-
+// only technique the CrossPlacement tests above use) but a FAKE multi-rank
+// communicator (set_communicator() on a placeholder handle, never a real
+// MPI_Comm) -- the one combination a no-MPI tier-0 build can reach at all
+// without hanging or crashing a real collective it cannot perform. Must
+// refuse E-REMAP-PARALLEL, not guess.
+// ---------------------------------------------------------------------------
+TEST(NativeHaloDistributedCoverage, FoldRefusesRatherThanGuessWithoutMpiWhenAHaloHasGhosts) {
+#if FUSE_HAVE_MPI
+  // Built WITH MPI (the bmoab tier): fold_and_reduce_source_coverage would
+  // take the make_mpi_exchanger branch instead of refusing, and that
+  // function performs REAL collective calls (MPI_Alltoall) during
+  // construction -- against the placeholder handle below, which was never
+  // a real MPI_Comm, that is undefined behaviour, not a clean failure. This
+  // leg of the function (communicator_size() > 1, genuinely real MPI) is
+  // `requires = "mpi"`, host_pending, same reason the real cross-rank halo
+  // exchange already is -- skipped here rather than risked.
+  GTEST_SKIP() << "communicator_size() > 1 under a real FUSE_HAVE_MPI build needs a functioning "
+                  "multi-rank MPI_Comm to exercise safely; host_pending, not tier-0 testable";
+#else
+  NativeMeshBackend backend(/*rank=*/1, /*num_ranks=*/2);
+  backend.set_communicator(/*placeholder, never dereferenced for anything but communicator_size()*/ 1);
+  ASSERT_TRUE(backend.load(MeshDecl{.name = "U", .source = kUSource}).ok());
+  ASSERT_TRUE(backend.load(MeshDecl{.name = "V", .source = kVSource}).ok());
+  const MeshId real_u = MeshId{0};
+  const MeshId real_v = MeshId{1};
+
+  // Commit a halo with ONE real ghost -- enough that remap_halo_pattern's
+  // own pattern.owner_rank is non-empty, which is all fold_and_reduce_
+  // source_coverage reads before it ever needs a real exchanger.
+  fuse::linalg::GhostPattern pattern;
+  pattern.owner_rank = {0};
+  pattern.remote_local_index = {0};
+  auto committed = backend.commit_remap_halo(real_u, ComponentId{}, nullptr, real_v, 2, pattern);
+  ASSERT_TRUE(committed.ok()) << committed.error().message;
+
+  const auto u_view_r = backend.native_view(real_u, ComponentId{});
+  ASSERT_TRUE(u_view_r.ok());
+  std::vector<double> src_covered(u_view_r.value()->entity_count(2), 0.0);
+
+  const auto folded = fuse::native::fold_and_reduce_source_coverage(
+      backend, real_u, real_v, 2, ComponentId{}, *u_view_r.value(), src_covered);
+  ASSERT_FALSE(folded.ok()) << "a fake multi-rank communicator with a real halo pattern and no "
+                               "MPI must refuse, not silently return a wrong number";
+  EXPECT_EQ(folded.error().code, "E-REMAP-PARALLEL");
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// (2): `communicator_size() <= 1` -- the genuine single-process case, no
+// MPI needed at all (make_serial_exchanger, the same no-op path the
+// forward-fill's own ranks<=1 short-circuit uses). Fully exercises the
+// PRODUCTION function; must return the LOCAL min, unchanged, since there is
+// no peer to fold with.
+// ---------------------------------------------------------------------------
+TEST(NativeHaloDistributedCoverage, FoldIsANoOpPassThroughAtOneRank) {
+  NativeMeshBackend backend(/*rank=*/0, /*num_ranks=*/1);
+  ASSERT_TRUE(backend.load(MeshDecl{.name = "U", .source = kUSource}).ok());
+  ASSERT_TRUE(backend.load(MeshDecl{.name = "V", .source = kVSource}).ok());
+  const MeshId real_u = MeshId{0};
+  const MeshId real_v = MeshId{1};
+
+  fuse::linalg::GhostPattern pattern;  // empty: nothing adopted, matches ranks<=1
+  auto committed = backend.commit_remap_halo(real_u, ComponentId{}, nullptr, real_v, 2, pattern);
+  ASSERT_TRUE(committed.ok()) << committed.error().message;
+
+  const auto u_view_r = backend.native_view(real_u, ComponentId{});
+  ASSERT_TRUE(u_view_r.ok());
+  const std::size_t n = u_view_r.value()->entity_count(2);
+  std::vector<double> src_covered(n, 0.0);
+  for (std::size_t c = 0; c < n; ++c) {
+    src_covered[c] = 0.5 * u_view_r.value()->measure(2, c);  // half-covered, by construction
+  }
+
+  const auto folded = fuse::native::fold_and_reduce_source_coverage(
+      backend, real_u, real_v, 2, ComponentId{}, *u_view_r.value(), src_covered);
+  ASSERT_TRUE(folded.ok()) << folded.error().message;
+  EXPECT_NEAR(folded.value(), 0.5, 1e-12)
+      << "one rank, nothing to fold or reduce: the LOCAL minimum is the answer";
+}
+
+// ---------------------------------------------------------------------------
+// (3) THE CORE INSIGHT, by hand: a source cell's intersections can live
+// entirely on the peer that adopted it, and a LOCAL-ONLY coverage check
+// sees zero where the DISTRIBUTED one -- folding that peer's own
+// intersection back to this cell's owner -- sees the true answer. Uses the
+// REAL `fuse::build_supermesh_weights` on each simulated rank's own local
+// view (no stand-in geometry kernel), and hand-applies `accumulate_remap_
+// halo`'s own documented contract (`owned[remote_local_index[g]] +=
+// ghosts[g]`) to fold, mirroring round 5's own in-process technique (no
+// MPI, no real exchanger -- the real one is `requires = "mpi"` above).
+// ---------------------------------------------------------------------------
+TEST(NativeHaloDistributedCoverage, FoldingAPeersGhostCoverageTurnsALocalZeroIntoTheTrueAnswer) {
+  // Rank 0: owns all 4 cells of a 2x2 quad U (the source), and sees NO
+  // target cells of its own (register_default_placements' own "outside the
+  // processor set: an EMPTY view" rule for a disjoint-placement channel --
+  // reproduced here directly, no graph/backend needed, same technique
+  // NativeHaloPackMerge's own empty-local-mesh test above uses).
+  auto u_arrays = generate_native_mesh("quad:2x2", /*rank=*/0, /*num_ranks=*/1);
+  ASSERT_TRUE(u_arrays.ok()) << u_arrays.error().message;
+  auto u_view0 = NativeMeshView::create_from_host(u_arrays.value(), /*rank=*/0);
+  ASSERT_TRUE(u_view0.ok()) << u_view0.error().message;
+  ASSERT_EQ(u_view0.value()->owned_count(2), 4u);
+
+  fuse::native::MeshArrays<Kokkos::HostSpace> empty_v;
+  empty_v.dim = 2;
+  auto v_view0 = NativeMeshView::create_from_host(empty_v, /*rank=*/0);
+  ASSERT_TRUE(v_view0.ok()) << v_view0.error().message;
+  ASSERT_EQ(v_view0.value()->entity_count(2), 0u);
+
+  // Rank 0's OWN local supermesh: 4 source cells against 0 target cells --
+  // NOTHING intersects, so every one of rank 0's own cells shows 0 covered
+  // measure, the EXACT local-only shape the owner's host measured ("the
+  // target domain covers only 0.000000% of the worst source cell").
+  auto built0 = fuse::build_supermesh_weights(*u_view0.value(), *v_view0.value(), 2);
+  ASSERT_TRUE(built0.ok()) << built0.error().message;
+  EXPECT_EQ(built0.value().val.size(), 0u);
+  std::vector<double> src_covered0(u_view0.value()->entity_count(2), 0.0);
+  // (the reconstruction build_weights_via_supermesh's own native branch
+  // uses, intx_weights.cpp: val[k] * tgt.measure(dim, row[k]), summed by
+  // col[k] -- empty here since built0.value().val is empty)
+  double local_min0 = 1.0;
+  for (std::size_t c = 0; c < src_covered0.size(); ++c) {
+    const double m = u_view0.value()->measure(2, c);
+    if (m > 0.0) local_min0 = std::min(local_min0, src_covered0[c] / m);
+  }
+  EXPECT_NEAR(local_min0, 0.0, 1e-12) << "rank 0 ALONE: 0% coverage -- a local-only check refuses";
+
+  // Rank 1: owns a real 3x3 quad V (the target, the SAME [0,1]x[0,1]
+  // domain as U), and ADOPTS every one of rank 0's U cells as ghost copies
+  // (merge_halo_cells, the SAME primitive the real halo build uses) -- the
+  // REAL geometric peer whose intersections cover rank 0's cells fully.
+  auto v_arrays = generate_native_mesh("quad:3x3", /*rank=*/0, /*num_ranks=*/1);
+  ASSERT_TRUE(v_arrays.ok()) << v_arrays.error().message;
+  auto v_view1 = NativeMeshView::create_from_host(v_arrays.value(), /*rank=*/1);
+  ASSERT_TRUE(v_view1.ok()) << v_view1.error().message;
+
+  fuse::native::MeshArrays<Kokkos::HostSpace> empty_u;
+  empty_u.dim = 2;
+  auto empty_u_view = NativeMeshView::create_from_host(empty_u, /*rank=*/1);
+  ASSERT_TRUE(empty_u_view.ok()) << empty_u_view.error().message;
+
+  const auto owned0_idx = owned_block_index(*u_view0.value());
+  std::vector<std::vector<std::size_t>> send_by_local_index(2);
+  for (std::size_t c = 0; c < u_view0.value()->cell_count(); ++c) {
+    send_by_local_index[1].push_back(c);  // every one of rank 0's owned cells -> rank 1
+  }
+  const auto packed =
+      pack_halo_cells(*u_view0.value(), send_by_local_index, owned0_idx, /*my_rank=*/0, /*num_ranks=*/2);
+  ASSERT_EQ(packed.size(), 2u);
+  std::vector<std::vector<std::byte>> received_by_rank1 = {packed[1]};
+  std::vector<int> owner_rank;
+  std::vector<std::int64_t> owner_owned_index;
+  auto merged_u1 = merge_halo_cells(*empty_u_view.value(), received_by_rank1, /*my_rank=*/1,
+                                    &owner_rank, &owner_owned_index);
+  ASSERT_TRUE(merged_u1.ok()) << merged_u1.error().message;
+  auto u_view1 = NativeMeshView::create_from_host(merged_u1.value(), /*rank=*/1);
+  ASSERT_TRUE(u_view1.ok()) << u_view1.error().message;
+  ASSERT_EQ(u_view1.value()->entity_count(2), 4u);
+  ASSERT_EQ(u_view1.value()->owned_count(2), 0u) << "every one of rank 1's own U cells is adopted";
+
+  // Rank 1's OWN local supermesh: the 4 adopted (ghost) U cells against its
+  // 9 REAL V cells -- the REAL intersections, which fully cover U.
+  auto built1 = fuse::build_supermesh_weights(*u_view1.value(), *v_view1.value(), 2);
+  ASSERT_TRUE(built1.ok()) << built1.error().message;
+  EXPECT_GT(built1.value().val.size(), 0u) << "rank 1 holds the REAL intersections";
+  std::vector<double> src_covered1(u_view1.value()->entity_count(2), 0.0);
+  for (std::size_t k = 0; k < built1.value().val.size(); ++k) {
+    const auto i = static_cast<std::size_t>(built1.value().col[k]);
+    const auto j = static_cast<std::size_t>(built1.value().row[k]);
+    src_covered1[i] += built1.value().val[k] * v_view1.value()->measure(2, j);
+  }
+
+  // THE FOLD, by hand, mirroring accumulate_remap_halo's own documented
+  // contract exactly: ghosts[g] (rank 1's own src_covered1, since every one
+  // of rank 1's U cells is a ghost) is ADDED to its owner's own slot
+  // (owner_rank[g] == 0, remote_local_index[g] == g here -- rank 0 sent its
+  // 4 owned cells in ascending order, so the identity map) of rank 0's
+  // OWNED src_covered0.
+  ASSERT_EQ(owner_rank.size(), 4u);
+  for (std::size_t g = 0; g < owner_rank.size(); ++g) {
+    ASSERT_EQ(owner_rank[g], 0);
+    src_covered0[static_cast<std::size_t>(owner_owned_index[g])] += src_covered1[g];
+  }
+
+  double folded_min0 = 1.0;
+  for (std::size_t c = 0; c < src_covered0.size(); ++c) {
+    const double m = u_view0.value()->measure(2, c);
+    if (m > 0.0) folded_min0 = std::min(folded_min0, src_covered0[c] / m);
+  }
+  EXPECT_NEAR(folded_min0, 1.0, 1e-9)
+      << "FOLDED: rank 0's own cells, once rank 1's own intersections are counted, are fully "
+         "covered -- the distributed check passes where the local-only one (above) refused";
+}
+
+// ---------------------------------------------------------------------------
+// THE GATE ITSELF, through the REAL `fuse::build_weights` entry point: a
+// disjoint provider/consumer split (CrossPlacement's own convention) where
+// rank 0 owns all 4 source cells and NO target cells -- the owner's host
+// measured shape exactly. Conservative is requested and the communicator
+// is faked to 2 ranks (no real MPI, so the fold itself cannot complete) --
+// the CORRECT, SAFE answer is `E-REMAP-PARALLEL` ("I would need to fold
+// across ranks and cannot"), NOT the OLD `E-REMAP-COVERAGE` ("the target
+// covers 0% of the worst source cell"), which is what judging from rank 0's
+// own LOCAL-ONLY coverage (the pre-fix defect, or this round's own fix
+// skipped at its call site) would silently reproduce. This is the kill
+// target for the "skipped reduction" mutation: removing the call to
+// `fold_and_reduce_source_coverage` makes `min_src_coverage` stay at
+// `build_supermesh_weights`'s own LOCAL value (0, nothing intersects rank
+// 0's own empty target view), and the Conservative check below fires on
+// THAT stale number instead.
+// ---------------------------------------------------------------------------
+TEST(NativeHaloDistributedCoverage, BuildWeightsAttemptsTheFoldRatherThanJudgingFromLocalCoverageAlone) {
+#if FUSE_HAVE_MPI
+  // Same reason as FoldRefusesRatherThanGuessWithoutMpiWhenAHaloHasGhosts
+  // above: with MPI compiled in, build_weights reaches the fold, the fold
+  // builds a real exchanger on the placeholder handle below, and MPICH
+  // aborts the process on MPI_Comm_size ("Invalid communicator") -- measured
+  // on the owner's MOAB+MPI tree 2026-10-19 (backend.native_halo and its two
+  // OpenMP variants red). The multi-rank leg is parallel.native_remap_halo_
+  // runner.{2,3}'s; this test pins the no-MPI refusal only.
+  GTEST_SKIP() << "build_weights reaches the fold's real-MPI leg under FUSE_HAVE_MPI; the "
+                  "placeholder handle cannot carry it. Covered by parallel.native_remap_halo_runner.";
+#else
+  CouplingGraph graph;
+  const MeshId u_mid = graph.add_mesh(MeshDecl{.name = "U", .source = "generated:quad:2x2"});
+  const MeshId v_mid = graph.add_mesh(MeshDecl{.name = "V", .source = "generated:quad:3x3"});
+  const RegionId u_region =
+      graph.add_region(Region{.name = "u_all", .mesh = u_mid, .entity_set = "", .dimension = 2});
+  const RegionId v_region =
+      graph.add_region(Region{.name = "v_all", .mesh = v_mid, .entity_set = "", .dimension = 2});
+  const ComponentId provider = graph.add_component(
+      ComponentDecl{.name = "provider", .ranks = RankSet{0, 1}, .interval = Rational{1}});
+  const ComponentId consumer = graph.add_component(
+      ComponentDecl{.name = "consumer", .ranks = RankSet{1, 1}, .interval = Rational{1}});
+
+  // Rank 0: inside provider's own RankSet, outside consumer's -- the exact
+  // split register_default_placements() gives it the WHOLE U mesh (4
+  // cells, a size-1 decomposition) under PROVIDER's own placement, and the
+  // EMPTY view under CONSUMER's -- `supermesh_side()` resolves the SOURCE
+  // side through `plan.placement` (consumer), so without a real commit the
+  // source view it reads is that EMPTY one, not rank 0's real 4 cells
+  // (round 3's own two-placement fix is precisely what replaces it).
+  NativeMeshBackend backend(/*rank=*/0, /*num_ranks=*/2);
+  backend.set_communicator(/*placeholder, never dereferenced -- see BackendFixture above*/ 1);
+  ASSERT_TRUE(backend.load(MeshDecl{.name = "U", .source = "generated:quad:2x2"}, graph).ok());
+  ASSERT_TRUE(backend.load(MeshDecl{.name = "V", .source = "generated:quad:3x3"}, graph).ok());
+
+  // Commit the REAL merge rank 0's own build_native_remap_halo would
+  // produce: its 4 owned cells (resolved through PROVIDER's own placement,
+  // the real one), nothing adopted (rank 0 has no target cells of its own
+  // to need anything from a peer) -- merge_halo_cells with an EMPTY
+  // received list is exactly that no-op merge, the same primitive the real
+  // exchange uses.
+  const auto own_view_r = backend.native_view(u_mid, provider);
+  ASSERT_TRUE(own_view_r.ok()) << own_view_r.error().message;
+  std::vector<int> owner_rank;
+  std::vector<std::int64_t> owner_owned_index;
+  auto merged = merge_halo_cells(*own_view_r.value(), /*received=*/{}, /*my_rank=*/0, &owner_rank,
+                                 &owner_owned_index);
+  ASSERT_TRUE(merged.ok()) << merged.error().message;
+  auto new_view = NativeMeshView::create_from_host(merged.value(), /*rank=*/0);
+  ASSERT_TRUE(new_view.ok()) << new_view.error().message;
+  ASSERT_EQ(new_view.value()->entity_count(2), 4u);
+
+  fuse::linalg::GhostPattern empty_pattern;  // nothing adopted, matches the no-op merge above
+  auto committed = backend.commit_remap_halo(u_mid, consumer, std::move(new_view.value()), v_mid, 2,
+                                             empty_pattern);
+  ASSERT_TRUE(committed.ok()) << committed.error().message;
+
+  RemapPlan plan;
+  plan.src = u_region;
+  plan.tgt = v_region;
+  plan.placement = consumer;
+  plan.flags = fuse::RemapFlags::Conservative;
+
+  const auto w = fuse::build_weights(plan, graph, backend);
+  ASSERT_FALSE(w.ok()) << "rank 0 alone, no MPI, Conservative requested: the fold cannot "
+                          "complete, so this must refuse -- not silently succeed with a "
+                          "mis-folded number";
+  EXPECT_EQ(w.error().code, "E-REMAP-PARALLEL")
+      << "got \"" << w.error().code << "\": \"" << w.error().message
+      << "\" -- E-REMAP-COVERAGE here would mean the fold was SKIPPED and the Conservative "
+         "check judged from rank 0's own local-only (and locally 0%) coverage instead, the "
+         "exact pre-fix defect";
+#endif
 }

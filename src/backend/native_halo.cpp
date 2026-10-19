@@ -723,15 +723,26 @@ Result<void> accumulate_remap_halo(const fuse::linalg::GhostExchanger& exchanger
                             "own pattern ({} ghosts)",
                             ghost_n, exchanger.ghost_size())};
   }
-  (void)owned_n;  // not indexed directly: every write goes through pack_index()'s own mapping.
-  // Unconditional on FUSE_HAVE_MPI and on ghost_n == 0's own fix below
-  // (next comment): a caller handing a nonzero ghost count a null buffer
-  // is a caller bug this refuses regardless of what kind of exchanger
-  // backs it -- unchanged from before this round.
-  if (ghost_n > 0 && (owned == nullptr || ghosts == nullptr)) {
+  // `owned_n` is not indexed directly (every write goes through pack_index()'s
+  // own mapping) but it decides whether `owned` may be null: a rank that owns
+  // NO entries receives nothing, so its owned buffer is legitimately empty
+  // (std::vector::data() of an empty vector is null). Refusing on that null
+  // here, as this function did until 2026-10-19, was a LOCAL return in front
+  // of the collective below: the consumer rank of parallel.native_remap_halo_
+  // runner.2 (0 owned source cells, 4 adopted) refused "null buffer with 4
+  // ghost(s) outstanding" while the provider rank sat in the MPI_Alltoallv
+  // (KNOWN_ISSUES.md D73 round 8, host-measured by the lead). Each check
+  // below refuses only when a buffer this rank will actually touch is null;
+  // both are unconditional on FUSE_HAVE_MPI and on the exchanger kind.
+  if (ghost_n > 0 && ghosts == nullptr) {
     return Failure{"E-MESH-ARG",
-                 fmt::format("accumulate_remap_halo: null buffer with {} ghost(s) outstanding",
+                 fmt::format("accumulate_remap_halo: null ghost buffer with {} ghost(s) outstanding",
                             ghost_n)};
+  }
+  if (owned_n > 0 && owned == nullptr) {
+    return Failure{"E-MESH-ARG",
+                 fmt::format("accumulate_remap_halo: null owned buffer with {} owned entries",
+                            owned_n)};
   }
 #if FUSE_HAVE_MPI
   const auto* packed = dynamic_cast<const fuse::linalg::PackedExchanger*>(&exchanger);
@@ -771,10 +782,10 @@ Result<void> accumulate_remap_halo(const fuse::linalg::GhostExchanger& exchanger
   // covers `ghosts`; only `owned` needs a fresh check here, for the
   // ghost_n == 0 case the check above does not reach (`owned` is
   // dereferenced below through `pack_index()`, whose size depends on
-  // peers' requests, not on ghost_n).
-  if (owned == nullptr) {
-    return Failure{"E-MESH-ARG", "accumulate_remap_halo: null owned buffer"};
-  }
+  // peers' requests, not on ghost_n). With owned_n == 0 nothing can be
+  // requested from this rank, so pack_index() is empty and `owned` is never
+  // dereferenced: the owned_n-conditioned check above is the whole rule.
+
   // Pack this rank's own ghost values in REQUEST order (`unpack_index()`'s
   // own order: entry k is which GHOST SLOT this request-ordered position
   // answers -- the same map `update()` itself reads FROM when filling
@@ -816,6 +827,110 @@ Result<void> accumulate_remap_halo(const fuse::linalg::GhostExchanger& exchanger
                           "no MPI, so no PackedExchanger facet can exist",
                           ghost_n)};
 #endif  // FUSE_HAVE_MPI
+}
+
+Result<double> fold_and_reduce_source_coverage(const NativeMeshBackend& backend, MeshId source,
+                                               MeshId target, int dim, ComponentId placement,
+                                               const MeshView& src_view,
+                                               const std::vector<double>& src_covered) {
+  const std::size_t owned_n = src_view.owned_count(dim);
+  FUSE_ASSERT(src_covered.size() == src_view.entity_count(dim),
+             "fold_and_reduce_source_coverage: src_covered has {} entries, source view has {} -- "
+             "caller must pass one entry per LOCAL source cell",
+             src_covered.size(), src_view.entity_count(dim));
+
+  const auto pattern_r = backend.remap_halo_pattern(source, target, dim, placement);
+  if (!pattern_r.ok()) return pattern_r.error();
+  const auto offset_r = backend.remap_halo_ghost_offset(source, target, dim, placement);
+  if (!offset_r.ok()) return offset_r.error();
+  const std::size_t ghost_n = pattern_r.value().owner_rank.size();
+  const std::size_t offset = offset_r.value();
+
+  // The SAME owned-cells-first, this-triple's-own-ghost-block-at-offset
+  // layout `remap_halo_pattern`'s own header comment documents and
+  // `test/parallel/native_halo_mpi_test.cpp`'s own exchange already relies
+  // on (`ghost_field[c - owned_n]`) -- not the general `MeshView` contract
+  // (which does not promise owned cells are a prefix), but THIS backend's
+  // own `merge_halo_cells`/`commit_remap_halo` guarantee for the mesh it
+  // just adopted into.
+  std::vector<double> owned_covered(src_covered.begin(), src_covered.begin() + static_cast<std::ptrdiff_t>(owned_n));
+  std::vector<double> ghost_covered(
+      src_covered.begin() + static_cast<std::ptrdiff_t>(owned_n + offset),
+      src_covered.begin() + static_cast<std::ptrdiff_t>(owned_n + offset + ghost_n));
+
+  // `communicator_size() <= 1`/`kNullComm`, NOT `ghost_n == 0`: the exchanger
+  // this rank builds is the SAME COLLECTIVE every other rank in the base
+  // communicator must also build (make_mpi_exchanger's own two-phase
+  // Alltoall/Alltoallv derivation, comm_mpi.cpp's header comment) -- a rank
+  // with no ghosts OF ITS OWN may still be the OWNER a peer's ghost reports
+  // to, and skipping the collective here because this rank's own pattern is
+  // empty would desynchronise it from a peer that is NOT empty, exactly the
+  // mistake `build_native_remap_halo`'s own short-circuit condition
+  // (`ranks <= 1 || communicator() == kNullComm || source == target`,
+  // above in this same file) is careful not to make for the forward fill.
+  std::shared_ptr<const fuse::linalg::GhostExchanger> exchanger;
+  if (backend.communicator_size() <= 1 || backend.communicator() == kNullComm) {
+    exchanger = fuse::linalg::make_serial_exchanger();
+  } else {
+#if FUSE_HAVE_MPI
+    exchanger = fuse::linalg::make_mpi_exchanger(backend.communicator(), pattern_r.value(), owned_n);
+#else
+    return Failure{"E-REMAP-PARALLEL",
+                 fmt::format("fold_and_reduce_source_coverage: the native mesh backend reports a "
+                            "communicator of {} ranks, so folding a halo's own coverage back to "
+                            "its owner is a real collective exchange, but this build has no MPI "
+                            "(FUSE_HAVE_MPI=0) to perform it -- refusing rather than judging "
+                            "conservative coverage from an incomplete fold",
+                            backend.communicator_size())};
+#endif
+  }
+  if (exchanger == nullptr) {
+    return Failure{"E-REMAP-PARALLEL",
+                 "fold_and_reduce_source_coverage: could not build the ghost exchanger for this "
+                 "halo's own pattern"};
+  }
+
+  const auto folded =
+      accumulate_remap_halo(*exchanger, owned_covered.data(), owned_n, ghost_covered.data(), ghost_n);
+  if (!folded.ok()) return folded.error();
+
+  // The minimum over OWNED cells only (every ghost slot was just zeroed by
+  // the fold above, the same bookkeeping `accumulate_remap_halo`'s own
+  // header comment documents): a rank owning none leaves `local_min` at the
+  // neutral `1.0`, contributing nothing to the MIN reduction below rather
+  // than a stray `0` that would make an empty set look uncovered.
+  double local_min = 1.0;
+  for (std::size_t c = 0; c < owned_n; ++c) {
+    const double m = src_view.measure(dim, c);
+    if (m > 0.0) {
+      local_min = std::min(local_min, owned_covered[c] / m);
+    }
+  }
+
+  // "Agree first": every rank reduces the SAME way, over the WHOLE base
+  // communicator -- not just the ranks this one halo's own pattern names --
+  // so a Conservative refusal built from the result is identical on every
+  // rank, never a condition only one of them computed.
+  if (backend.communicator_size() <= 1 || backend.communicator() == kNullComm) {
+    return local_min;
+  }
+#if FUSE_HAVE_MPI
+  double global_min = local_min;
+  const MPI_Comm resolved = resolve(backend.communicator());
+  if (MPI_Allreduce(MPI_IN_PLACE, &global_min, 1, MPI_DOUBLE, MPI_MIN, resolved) != MPI_SUCCESS) {
+    return Failure{"E-REMAP-PARALLEL",
+                 "fold_and_reduce_source_coverage: could not reduce the per-rank coverage minimum "
+                 "over the base communicator; refusing rather than letting ranks reach the "
+                 "Conservative decision from different numbers"};
+  }
+  return global_min;
+#else
+  return Failure{"E-REMAP-PARALLEL",
+               fmt::format("fold_and_reduce_source_coverage: the native mesh backend reports a "
+                          "communicator of {} ranks, but this build has no MPI (FUSE_HAVE_MPI=0) "
+                          "to agree the coverage minimum across them",
+                          backend.communicator_size())};
+#endif
 }
 
 }  // namespace fuse::native

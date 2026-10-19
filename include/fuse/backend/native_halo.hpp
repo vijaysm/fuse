@@ -275,4 +275,51 @@ struct Box3 {
                                                  double* owned, std::size_t owned_n,
                                                  double* ghosts, std::size_t ghost_n);
 
+// ===========================================================================
+// KNOWN_ISSUES D73 ROUND 7: the conservative coverage check, DISTRIBUTED.
+// `build_weights_via_supermesh`'s own `RemapFlags::Conservative` audit
+// (intx_weights.cpp) reads `min_src_coverage` off the LOCAL supermesh -- the
+// intersections THIS rank's own merged source/target views produced. On a
+// partitioned read, a source cell this rank OWNS but whose only intersecting
+// target cells live on a peer (adopted there as the peer's own halo copy of
+// this cell) shows ZERO local coverage, even though the map covers it fully
+// once the peer's own intersection is counted. This is that count: each
+// halo copy's own share is folded into its OWNER's own slot (the reverse of
+// the forward fill `GhostExchanger::update()` performs, `accumulate_remap_
+// halo` above), and the resulting per-owned-cell minimum is then reduced to
+// one number over the WHOLE base communicator -- "agree first" -- so every
+// rank's Conservative check reads the SAME, now-correct value.
+// ===========================================================================
+
+/// `src_covered[c]` is the covered measure (NOT yet divided by the cell's
+/// own measure) of LOCAL source cell `c` at `(source, target, dim,
+/// placement)` -- `build_supermesh_weights`'s own per-cell coverage sum
+/// (supermesh.cpp), recoverable by a caller from the `RemapWeights` it
+/// already returned (`val[k] * tgt.measure(dim, row[k])`, summed by
+/// `col[k]`) without this function needing a `RemapWeights` of its own.
+/// `src_covered.size()` must equal `src_view.entity_count(dim)`, in THIS
+/// backend's own owned-cells-first layout (`remap_halo_pattern`'s own
+/// header comment: owned cells occupy `[0, owned_count(dim))`, this
+/// triple's own ghost block `[owned_count(dim) + remap_halo_ghost_offset(
+/// ...), ...)`-- the SAME convention `test/parallel/native_halo_mpi_test.
+/// cpp`'s own exchange already relies on).
+///
+/// Returns the GLOBAL minimum, over every rank's own OWNED source cells (a
+/// rank owning none contributes the neutral value `1.0`, never a stray `0`
+/// that would make it look un-covered), of `(this cell's own coverage, after
+/// folding in every peer's halo copy) / (this cell's own measure)` --
+/// IDENTICAL on every rank that calls this, by construction, so a
+/// Conservative refusal built from it is agreed before any rank acts on it,
+/// never a locally computed condition one rank reaches alone.
+///
+/// `E-REMAP-PARALLEL` if the halo fold or the final reduction cannot
+/// complete (no `FUSE_HAVE_MPI` in this build despite `communicator_size()
+/// > 1`, a collective failure resolving the communicator, or the backend's
+/// own bookkeeping reports no halo at all for this triple -- the caller is
+/// expected to have already checked `has_remap_halo` before calling this,
+/// so that last case is a caller bug, not a data error).
+[[nodiscard]] Result<double> fold_and_reduce_source_coverage(
+    const NativeMeshBackend& backend, MeshId source, MeshId target, int dim, ComponentId placement,
+    const MeshView& src_view, const std::vector<double>& src_covered);
+
 }  // namespace fuse::native
