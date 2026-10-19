@@ -152,6 +152,45 @@ after `load()` and before the first `build_remap_halo`/`build_weights` call,
 collectively (every rank holding a piece of the mesh, or of that placement's
 own share of it, in the same order).
 
+### A remap halo on a placement is adopted into THAT placement's own Core
+
+`build_remap_halo`'s covering-set construction (above) runs inside whichever
+`moab::Interface` the two meshes were resolved through -- the backend's
+default Core when no placement is named, or a DECLARED placement's own,
+independently-read Core (`set_placements()`, `docs/user/placement.md`)
+otherwise. KNOWN_ISSUES D83 (owner decision 2026-10-19): the covering cells
+that construction finds are adopted back into THAT SAME Core --
+`MoabMeshBackend::adopt_remap_halo`, `has_remap_halo`, `remap_halo_size`,
+`exchange_remap_halo` and `accumulate_remap_halo` all take an optional
+trailing `ComponentId placement` (default: the unplaced decomposition,
+matching every existing caller that does not pass one), and resolve every
+MOAB call -- the GLOBAL_ID tag read, `add_entities`, the gather/scatter
+exchange -- through that placement's own Core and communicator, never the
+default Core's unconditionally. A `moab::EntityHandle` is only ever
+meaningful within the ONE Core that allocated it; reading one back through
+a DIFFERENT Core (what an earlier revision of this library did whenever the
+delegated single-placement path happened to resolve through a NAMED
+placement rather than the default) is undefined by MOAB's own contract, not
+merely a bookkeeping slip, and is what the "no positive GLOBAL_ID" refusal
+in KNOWN_ISSUES D81's own round 7/8/9 history was actually measuring.
+
+The bookkeeping this adopts into (`has_remap_halo`'s own cache) is keyed by
+`(source, target, dim, placement)`, not `(source, target, dim)` alone: the
+default Core's own halo for a pair and a placement's own halo for the
+IDENTICAL pair are two independent entries, and building one never makes
+the other read as built. A driver (or the runtime's own weight builder)
+that resolves a channel's mesh pair through a placement must pass that SAME
+placement to `has_remap_halo`/`remap_halo_size` to find the halo
+`build_remap_halo` actually adopted for it.
+
+The collective agreement a halo adoption needs (every rank must agree
+whether the covering set it found is trustworthy before any rank acts on
+it) runs over the SAME communicator the covering-set construction itself
+used -- a placement's own sub-communicator when one is named, never the
+backend's base communicator on its behalf. A rank outside the named
+placement has nothing to agree on with that placement's own members and
+takes no part in it at all.
+
 ### A note on negligible overlaps
 
 Two cells that merely share a face have an intersection of measure zero, but

@@ -10209,7 +10209,7 @@ substitution does not weaken the finding -- but the "Kokkos AND ArborX both fetc
 not reproduced bit-for-bit in this sandbox, and the ArborX/Kokkos version-pin incompatibility above
 is itself a new, OPEN finding worth the owner's attention independent of this entry.
 
-### D81. `MoabMeshBackend::project_onto_unit_sphere` has no placement-aware form, so a per-placement Core cannot rescale a real, differently-scaled spherical mesh pair before a halo build -- FOUND 2026-10-19 (MoabHalo track, round 5), OPEN, owner decision needed
+### ~~D81. `MoabMeshBackend::project_onto_unit_sphere` has no placement-aware form, so a per-placement Core cannot rescale a real, differently-scaled spherical mesh pair before a halo build -- FOUND 2026-10-19 (MoabHalo track, round 5), OPEN, owner decision needed
 
 **Measured, by reading, not re-guessing (round 5):** the real, non-matching ATM/OCN sphere pair
 (`wholeATM_T.h5m`, radius **1.000000**; `recMeshOcn.h5m`, radius **6371229.000000**, Earth radius
@@ -10432,6 +10432,9 @@ one-rank shortcut the guard now takes. No registered row runs MOAB's covering-se
 sub-communicator with more than one rank, so whether a multi-rank placement's covering cells carry GLOBAL_ID is
 NOT MEASURED; round 7's refusal was reached only through the wrong guard. Round 9 adds a 4-rank row with A =
 {0, 1}. D81 stays open until that row passes.
+
+**CLOSED on the host (lead, 2026-10-19):** with D83's placement-aware adoption the 4-rank row builds the halo on
+the rescaled pair; see D83. The driver-side explicit rescale is the contract (owner decision 2026-10-19).
 ### D82. A general (non-nodal) FV<->FV weighted Remap on a `Conservation::Extensive` channel does not conserve the delivered total when source and target cells have different measures -- OPEN, found 2026-10-19 (RemapHalo track, round 4, while separating causes for D73's own host-measured conservation failure)
 
 **Not a halo or placement defect.** Reproduced on ONE process, no MPI, no partitioned rank sets at all --
@@ -10503,12 +10506,13 @@ needed at all. D73's own `host_pending` row (above) is expected to still show a 
 once D73's own fix is confirmed on the host (the real multi-rank exchange adopting the correct cells),
 but will not show 28 either, until D82 is separately fixed.
 
-### D83. `MoabMeshBackend::adopt_remap_halo` (and `regather_with_halo`/`plan_halo_exchange`, the
+### ~~D83. `MoabMeshBackend::adopt_remap_halo` (and `regather_with_halo`/`plan_halo_exchange`, the
 covering-cell adoption subsystem behind the remap halo, R3) is hardwired to the backend's DEFAULT
 Core and base communicator, so the 4-argument `build_remap_halo`'s own "same Core, delegate"
 strategy (round 2) is wrong whenever `plan.placement` is a GENUINELY declared placement, not just
 the "no placements declared" default -- FOUND 2026-10-19 (MoabHalo track, round 9, while building the
-test row D81 round 8's own host note asked for), OPEN, owner decision needed
+test row D81 round 8's own host note asked for); owner decision 2026-10-19: make the adoption
+placement-aware; BUILT round 10, OPEN until the host confirms it
 
 **Measured, by reading, not re-guessing:** `MoabMeshBackend::adopt_remap_halo` (`moab_backend.cpp`)
 takes `source`/`target`/`dim`/`cells`/`count` but no `ComponentId` -- it resolves `MoabMeshView& view
@@ -10600,3 +10604,98 @@ after the fact.
 copies`. No hang, no crash, no false positive. Rows 2 and 3 still PASS (1.05 s, 0.63 s) through the one-rank
 shortcut. The row is expected red until the owner decides between the two shapes above; it is the measurement
 D83 needs and is kept registered.
+
+
+**Round 10 build (MoabHalo track, owner decision 2026-10-19: "make the adoption placement-aware (the
+complete fix), not the refusal"), not yet host-verified, STAYS OPEN until it is:** `MoabMeshBackend::
+adopt_remap_halo`/`has_remap_halo`/`remap_halo_size`/`exchange_remap_halo`/`accumulate_remap_halo` all
+gained a trailing `ComponentId placement = ComponentId{}` (default: the unplaced decomposition, so
+every existing caller that does not pass one is unchanged) -- matching
+`fuse::native::NativeMeshBackend::has_remap_halo`'s own, already-established convention exactly
+(`native_backend.hpp`; confirmed by reading it first, as instructed, before choosing the shape here).
+A new, shared `Impl::resolve_for_halo(mesh_index, placement)` (`moab_backend.cpp`) resolves
+`{Interface*, ParallelComm*, MoabMeshView*, MeshLoader*}` ONCE per call, the SAME way
+`native_mesh(id, placement)` resolves its own triple -- a placement's own Core/communicator/view when
+`placement` names a processor set this rank participates in, the backend's default decomposition
+otherwise -- and `adopt_remap_halo`/`regather_with_halo`/`plan_halo_exchange`/`run_halo_exchange` all
+resolve through it, never `impl_->mb`/`impl_->pcomm`/`impl_->meshes[s]` directly. Every MOAB call that
+used to read `impl_->mb` unconditionally (the GLOBAL_ID tag lookup, the per-covering-cell GLOBAL_ID
+read, `add_entities`) now reads the resolved `Interface&` instead -- the `moab::EntityHandle`-across-
+Cores mismatch this item recorded is what that removes. `halo_pairs`/`halos` are now keyed by `(mesh,
+[mesh,] dim, placement.value())`, not `(mesh, [mesh,] dim)` alone, so the default Core's own halo and
+a declared placement's own halo for the IDENTICAL pair are independent entries -- read every caller of
+both caches (`build_weights`'s own `E-REMAP-PARALLEL` check, `Runner::Impl::resolve_remap`'s own
+`E-RT-REMAP-HALO`/`E-RT-REMAP-NO-HALO` refusals) and threaded `plan.placement`/the Runner's own
+`remap_placement(graph, ch)` through each one that did not already carry it -- the gap the brief named
+("so the runtime's weight builder on a placed component finds the halo it built") was real:
+`runner.cpp`'s own MOAB branch called `moab->has_remap_halo(...)` with NO placement at all, one line
+below the NATIVE branch's own `native->has_remap_halo(..., placement)`, which this round's call site
+now matches.
+
+**The collective agreement** (point 3 of the brief): `adopt_remap_halo`'s own `reconcile_halo` now
+runs over `pr.pcomm->comm()` -- the resolved placement's OWN sub-communicator when one is named, the
+backend's base communicator otherwise -- never the base communicator unconditionally on a placement's
+behalf. This SUPERSEDES round 7's own fix, which (correctly, for what `adopt_remap_halo` could resolve
+at the time) made an off-placement rank join that collective by calling `adopt_remap_halo(...,
+nullptr, 0)`; with the agreement now scoped to the placement itself, an off-placement rank has nothing
+to agree on with that placement's own members and reverts to a bare, local `std::size_t{0}` again
+(`intx_weights.cpp`'s own `same_named_placement` branch) -- round 6's original shape, correct again
+for a different reason than it was before round 7 existed. Stated explicitly, per the brief's own
+instruction: the choice taken is "move the agreement to the placement's own communicator", not "keep
+off-placement ranks joining the base communicator" -- the former is what the resolved `pr.pcomm` IS,
+construction by construction, once `adopt_remap_halo` is placement-aware at all. Round 7's own
+now-superseded mutation (`off-placement-rank-skips-the-adopt-remap-halo-collective`,
+`moab-halo-cross-placement-agreement.toml`) is RETIRED, its own anchor confirmed gone (`tools/
+mutate.py --check-anchors`), not left to report stale. Three new rows
+(`moab-halo-placement-aware-adoption.toml`, all `requires = "mpi"` for the same C1 reason every other
+MOAB mutation in this project already states): the cache key dropping `placement` (killed by the new
+test below), the GLOBAL_ID read reverting to `impl_->mb` (killed by `parallel.moab_placed_weights_mpi.4`,
+D81 round 9's own row), and the per-cell GLOBAL_ID check's own agreement skipped for one rank
+(honestly a HANG-shaped kill, the same class round 7's own retired row was -- the symptom is a
+timeout ctest itself reports as a failure, not a fast refusal code, recorded as such rather than
+claimed otherwise).
+
+**GLOBAL_ID (point 4):** with the Interface mismatch removed, the tag read is expected to succeed
+without any EXTRA step -- `MeshLoader::read_file`'s own `PARALLEL_RESOLVE_SHARED_ENTS` option is
+already identical between the default Core's read and every placement's own (confirmed round 8,
+re-confirmed by re-reading this round), so `resolve_shared_ents`/the GLOBAL_ID tag were already run,
+correctly, on the placement's own Core at LOAD time; the bug was purely in WHICH Interface `adopt_
+remap_halo` read them back through afterward. No `assign_global_ids` or equivalent call was added, by
+design -- host_pending below is exactly the check that this reasoning, not just the Interface fix
+itself, is correct.
+
+**Tests (point 5):** `moab_placed_weights_mpi_test.cpp` gained
+`DefaultCoreAndAPlacementsHaloForTheSamePairDoNotAlias` -- builds the default Core's own halo for a
+(source, target, dim) triple via `adopt_remap_halo` directly (no placement), confirms a DECLARED
+placement's own query for the IDENTICAL triple reads as NOT built, then builds the placement's own and
+confirms BOTH directions of independence (building one does not retroactively satisfy the other, and
+building the second does not un-build the first). `parallel.moab_placed_weights_mpi.4` (D81 round 9's
+own row) is the test this item's own fix must pass to close -- its existing `EXPECT_GT`/`EXPECT_EQ`
+assertions were not changed this round, since they already describe the CORRECT behaviour this fix
+aims for.
+
+**ABI/IR check (the brief's own stop condition):** `plan.placement`/`Runner::Impl::resolve_remap`'s
+own `remap_placement(graph, ch)` were ALREADY available everywhere this round needed to thread a
+placement through -- `RemapPlan::placement` is a plain field, not new state, and every reader this
+round touched (`build_weights`, `resolve_remap`) already had it in scope or one call away. No ABI or
+IR change was needed; the subsystem's own state (the `halo_pairs`/`halos` caches) lives entirely
+inside `MoabMeshBackend::Impl`, never crossing an ABI boundary.
+
+**host_pending:** `parallel.moab_placed_weights_mpi.4`, test (2)
+(`SamePlacementOnBothSidesDelegatesToTheSinglePlacementPath`)'s own `EXPECT_GT(via_overload.value(),
+0u)` and `EXPECT_EQ(via_overload.value(), via_single.value())` -- this closes D83 if BOTH pass with a
+real, non-zero adopted count; a repeat of `E-MESH-HALO` ("no positive GLOBAL_ID") would mean the
+GLOBAL_ID reasoning above (point 4) was wrong and an extra `resolve_shared_ents`/`assign_global_ids`
+step genuinely is needed. The NEW test,
+`DefaultCoreAndAPlacementsHaloForTheSamePairDoNotAlias`, confirming the cache-key independence
+directly. `parallel.moab_placed_weights_mpi.{2,3}` and `parallel.remap_halo_mpi.{1..5}` remaining PASS,
+unaffected (the one-rank-placement shortcut and the default-Core path are both unchanged in shape,
+only in which cache key they file under).
+
+
+**CLOSED on the host (lead, 2026-10-19, `build-all` at `cb2935d` + round 10):** `parallel.moab_placed_weights_mpi.4`
+PASS (0.76 s): placement A = {0, 1} builds a real covering-set halo through the placement-aware adoption, test
+2's non-zero adopted count and overload == single-path assertions hold, and the new no-alias test passes.
+`parallel.moab_placed_weights_mpi.{2,3}` PASS (0.74 s, 0.57 s), `parallel.remap_halo_mpi.{1..5}` PASS. The
+GLOBAL_ID refusal of rounds 7 and 9 was the wrong-Interface read, as the round-10 reading said; no extra
+global-id step was needed.

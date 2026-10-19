@@ -417,6 +417,78 @@ TEST(MoabPlacedWeightsMpi, RescalingTheDefaultCoreDoesNotAffectAPlacementsOwnCop
   }
 }
 
+// ---------------------------------------------------------------------------
+// (5) KNOWN_ISSUES D83's own "do not alias" requirement (owner decision
+// 2026-10-19: make the adoption placement-aware): the default Core's own
+// recorded halo for a (source, target, dim) triple and a DECLARED
+// placement's own recorded halo for the IDENTICAL triple must be two
+// independent cache entries -- `halo_pairs`/`halos` are now keyed by
+// `(mesh, mesh, dim, placement)`, not `(mesh, mesh, dim)` alone. A mutation
+// that drops `placement` from either key would make querying ONE answer
+// from having only ever built the OTHER -- checked directly here via
+// `adopt_remap_halo`/`has_remap_halo`, without needing a real covering-set
+// build (a `count == 0` call is a legitimate "built, nothing adopted"
+// answer either way, and is all the cache-key independence question
+// needs).
+// ---------------------------------------------------------------------------
+TEST(MoabPlacedWeightsMpi, DefaultCoreAndAPlacementsHaloForTheSamePairDoNotAlias) {
+  int size = 1, rank = 0;
+  MPI_Comm_size(MPI_COMM_WORLD, &size);
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+  ASSERT_GE(size, 2) << "this row is only meaningful with more than one rank";
+  const DisjointRankSets sets(size);
+
+  fuse::MoabMeshBackend backend;
+  ASSERT_TRUE(backend.set_communicator(world_handle()).ok());
+  ASSERT_TRUE(backend.set_placements({sets.a, sets.b}).ok());
+  ASSERT_TRUE(backend.load({.name = "s", .source = FUSE_SPHERE_ATM}).ok());
+  ASSERT_TRUE(backend.load({.name = "t", .source = FUSE_SPHERE_OCN}).ok());
+  const fuse::MeshId smid = backend.mesh_id("s").value();
+  const fuse::MeshId tmid = backend.mesh_id("t").value();
+
+  // Build ONLY the default Core's own halo (no placement argument --
+  // ComponentId{}'s own default).
+  const auto default_built =
+      backend.adopt_remap_halo(smid, tmid, /*dim=*/2, nullptr, 0);
+  ASSERT_TRUE(default_built.ok()) << default_built.error().code << ": "
+                                 << default_built.error().message;
+  EXPECT_TRUE(backend.has_remap_halo(smid, tmid, 2))
+      << "the default Core's own halo must be recorded";
+
+  // Placement A's own halo for the IDENTICAL (source, target, dim) must
+  // NOT already read as built -- it has never itself been adopted, only
+  // the DEFAULT Core's copy has. A mutation dropping `placement` from
+  // `halo_pairs`'s own key would make this EXPECT_FALSE read true instead
+  // (the default Core's entry would satisfy both queries).
+  if (sets.a.contains(rank)) {
+    EXPECT_FALSE(backend.has_remap_halo(smid, tmid, 2, fuse::ComponentId{0}))
+        << "rank " << rank
+        << ": placement A's own halo must be independent of the default "
+           "Core's -- building the default Core's must not make A's own "
+           "query read as already built too";
+  }
+  // Symmetrically for B.
+  if (sets.b.contains(rank)) {
+    EXPECT_FALSE(backend.has_remap_halo(smid, tmid, 2, fuse::ComponentId{1}))
+        << "rank " << rank << ": placement B's own halo must be independent too";
+  }
+
+  // Now build placement A's OWN halo too, and confirm the default Core's
+  // own answer is UNCHANGED -- independence in both directions, not just
+  // one.
+  if (sets.a.contains(rank)) {
+    const auto a_built = backend.adopt_remap_halo(smid, tmid, /*dim=*/2,
+                                                  nullptr, 0, fuse::ComponentId{0});
+    ASSERT_TRUE(a_built.ok()) << a_built.error().code << ": " << a_built.error().message;
+    EXPECT_TRUE(backend.has_remap_halo(smid, tmid, 2, fuse::ComponentId{0}))
+        << "rank " << rank << ": placement A's own halo, once built, must read as built";
+  }
+  EXPECT_TRUE(backend.has_remap_halo(smid, tmid, 2))
+      << "rank " << rank
+      << ": the default Core's own halo must still read as built after A's own was "
+         "adopted separately -- the two entries must not have collided";
+}
+
 #else  // !FUSE_SPHERE_ATM
 
 TEST(MoabPlacedWeightsMpi, SkippedWithoutTheSphereMeshFixture) {
