@@ -8,10 +8,8 @@
 // zero risk from this round's own new code.
 //
 // THE GRAPH. `count` components named "a","b","c","d" (only the first
-// `count` declared), each ONE rank (na = 1 for every link -- see
-// run_chain.sh's own header for why this keeps the golden comparison
-// reusing golden-1+1.txt rather than a new golden file per chain length).
-// Component i < count-1 exports field "outi" (Provides); component i > 0
+// `count` declared), each ONE rank. Component i < count-1 exports
+// field "outi" (Provides); component i > 0
 // imports "ini" (Requires, fed by component i-1's "outi-1"). A middle
 // component (0 < i < count-1) therefore has BOTH: ChainLinkComponent's
 // own advance() copies its import storage into its export storage
@@ -94,8 +92,16 @@ class ChainTestMesh final : public fuse::MeshView {
 /// ConnectTestBackend states why). Every link's RankSet is {link_index,
 /// 1}: one rank per component, in chain order, which is also why
 /// partition_block() at every hop is the identity (`n/1` entities, all
-/// of them, every time) and the chain's own output matches golden-1+1.txt
-/// unchanged regardless of chain length.
+/// of them, every time).
+///
+/// KNOWN_ISSUES.md D18, round 5 (the lead's own instruction, measured on
+/// the host): this comment used to claim "the chain's own output
+/// matches golden-1+1.txt unchanged regardless of chain length" -- FALSE.
+/// `kEntities` below is 4, not golden-1+1.txt's own `na=1`, and the
+/// LAST component's own merged rank is `count - 1` (2 for a 3-chain, not
+/// golden-1+1.txt's hardcoded 1). connect_golden.cpp's own `--chain`
+/// mode computes this chain's actual golden from the SAME
+/// partition_block() call this file makes; run_chain.sh now uses it.
 class ChainTestBackend final : public fuse::MeshBackend {
  public:
   ChainTestBackend(int me, int count, std::size_t n_entities, int dim)
@@ -312,8 +318,9 @@ struct Args {
 /// any count -- src/transport/connect.cpp), runs `args.periods` periods,
 /// and -- ONLY on the LAST component -- prints every value it holds, in
 /// the SAME "rank=... i=... value=..." format connect_common.hpp's own
-/// run_participant() uses, so run_chain.sh's diff against golden-1+1.txt
-/// is the identical comparison the 2-component row already makes.
+/// run_participant() uses, so run_chain.sh's diff against its own
+/// golden-chain-<count>.txt (KNOWN_ISSUES.md D18 round 5; connect_
+/// golden.cpp's own --chain mode) is a plain text comparison.
 /// `my_index` is this executable's own 0-based position in the chain.
 [[nodiscard]] inline int run_chain_participant(int argc, char** argv, int my_index) {
   MPI_Init(&argc, &argv);
