@@ -10701,6 +10701,146 @@ on the host alongside D73's own distributed-coverage fix.
 **Host measurement (lead, 2026-10-19):** with round 7's normalisation, `parallel.native_remap_halo_runner.2` passes
 and rank 1's weight columns each sum to 1 (trace above, D73 round 8). The MOAB half (MoabHalo round 11) is landing
 separately; the heading closes when both halves have passed on the host, including the 3-rank native row.
+
+### D82 FIX, ROUND 11 (MoabHalo track, 2026-10-19): the MOAB half -- `fuse::Conservation`-aware
+weight normalisation in `intx_weights.cpp`'s `assemble()`; the native/supermesh half above is the
+RemapHalo track's own concurrent round 7, not touched here; OPEN overall until both land and
+host-verify together
+
+**Owner decision (2026-10-19), as given**: remap weights normalise by the channel's `Conservation` kind,
+carried in `RemapPlan`. Extensive: `w(t,s) = |t intersect s| / |s|` (columns per source cell sum to 1,
+the amount transfers). Intensive: `w(t,s) = |t intersect s| / |t|` (rows sum to 1, the CURRENT/existing
+form). This entry's own scope is the MOAB intersection weight path only (`assemble()`, the first-order
+FV<->FV `Intx2MeshOnSphere`/box-intersection builder) -- NOT the MOAB high-order (order>1,
+TempestRemap-backed) path, `assemble_high_order()`, which builds its weights from an external backend's
+own already-assembled matrix and would need that backend's cooperation to renormalise, a materially
+larger change than a local formula swap; left open, named explicitly as a gap, not silently skipped.
+
+**Coordination with the RemapHalo track's own round 7 (in flight concurrently)**: `RemapPlan::conservation`
+does not exist in the tree this round started from. Added LOCALLY (`include/fuse/backend/remap_plan.hpp`,
+the field, its doc, and its own participation in `key()`) as a coordination stand-in, under the exact name
+`plan.conservation` the owner named -- marked `TEMPORARY` in its own doc comment, to be DROPPED when
+RemapHalo's own version of this field lands (sourced from the channel's declared `Conservation` at
+`lower()` time) and the owner reconciles the two patches.
+
+**Where the MOAB path divides intersection measures (read first, per the owner's own instruction).**
+`assemble()` (the pre-existing formula, until this round): `W_ji = (overlap_ij / sm.src_parent[i]) *
+(src.measure[i] / tgt.measure[j])`. `sm.src_parent[i]`/`sm.tgt_parent[j]` ("parent measures in the SAME
+functional as the pieces", that struct's own comment) are computed by `parent_measures()` via
+`spherical_polygon_area` -- the SAME exact great-circle-excess formula the intersection polygons
+themselves are measured in. `src.measure[i]`/`tgt.measure[j]` come from `MeshView::measure()`
+(`Side::measure`'s own assembly loop) -- for a MOAB quad this is `element_measure()`'s `quad_area()`, the
+BILINEAR PATCH through the cell's four corners (8x8 Gauss-Legendre, that function's own doc), NOT a
+spherical-excess measure at all. These are TWO DIFFERENT measures, read by two different call sites in the
+SAME formula. (This discrepancy is not new -- `remap_plan.hpp`'s own "WHICH SUM IS WHICH" header already
+names it and measured 9.88e-4 on a different mesh pair; this round measured it DIRECTLY on this track's own
+two real files, below.)
+
+**Why the discrepancy matters here, and why it is NOT the dominant mechanism.** Read algebraically before
+writing the fix (no sphere, no MOAB needed): a matched-measure, non-spherical source cell of measure 4,
+split EXACTLY into three target cells of measure 1, 1, 2 (full coverage, `src_parent == src_measure`
+exactly -- zero bilinear-vs-spherical discrepancy at all). Applying the pre-existing formula to an
+Extensive (amount-valued) field of 10.0: `w_j = (overlap_j/4)*(4/measure_j) = overlap_j/measure_j`, giving
+weights of 1, 1, 1 on the three target cells -- `delivered_total = 10+10+10 = 30`, a 3x inflation, even
+though source and target measures are read in the IDENTICAL quadrature. The dominant failure mode is that
+the pre-existing formula's density-conversion factor is simply the WRONG OPERATION for an amount-valued
+field whenever a source cell is split across target cells of a different measure -- independent of any
+sphere-specific measure mismatch. `test/backend/remap_weight_normalize_test.cpp`'s own
+`IntensiveMisappliedToAnAmountFieldInflatesTheTotalAcrossAnUnevenSplit` reproduces this exact number and
+RUNS, tier-0, in this sandbox (no MOAB/MPI symbol in that translation unit). The bilinear-vs-spherical
+discrepancy (below) is a SECOND, smaller, sphere-specific residual on top of this.
+
+**(b) Whether `|s|`/`|t|` and the intersection measure are the same quadrature: measured, not picked.**
+Read directly off `wholeATM_T.h5m`'s (726 Quad4 cells, radius 1.0 -- confirmed via the file's own
+`tstt/nodes/coordinates` norms) and `recMeshOcn.h5m`'s (6 Polygon5 + 7147 Polygon6 cells, radius
+6371229.0) own raw node coordinates and connectivity (read via HDF5 directly, h5py, no MOAB), computing
+BOTH `spherical_polygon_area` (spherical excess, matching `intx_weights.cpp`'s own formula exactly) and
+the bilinear/flat measure (`quad_area`'s 8x8 Gauss rule for ATM's quads; `polygon_area`'s Newell formula
+for OCN's pentagons/hexagons, both matching `moab_backend.cpp`'s own formulas exactly) on every real cell:
+
+```
+wholeATM_T.h5m   (726 quads,  radius 1.0):        rel. discrepancy  mean 4.38e-3  max 5.07e-3
+recMeshOcn.h5m   (7153 polys, radius 6371229.0):   rel. discrepancy  mean 1.81e-4  max 1.84e-4
+```
+
+Both totals reproduce the exact sphere area (`spherical_polygon_area`'s own sum: 12.566370614359174 for
+ATM against `4*pi*r^2 = 12.566370614359172`), confirming the measurement rather than a formula bug. The
+discrepancy has the SAME SIGN on every cell measured (the bilinear patch through points on a convex sphere
+is always inscribed, never circumscribed, so it never cancels across cells) and is an order of magnitude
+larger on ATM (726 cells, coarser) than on OCN (7153 cells, finer) -- consistent with the O(h^2) scaling
+`remap_plan.hpp`'s own header already states.
+
+**(c) What the existing MOAB rows assert about conservation, and with what tolerance.** Read, not
+re-guessed: `test/parallel/remap_halo_mpi_test.cpp`'s own `BuildRemapHaloDeliversExactHaloValuesAndRoundTripsExactly`
+calls `build_weights()` on the real ATM/OCN pair and explicitly asserts NOTHING about `min_src_coverage`/
+`max_col_defect` beyond `w.ok()` -- its own comment: "whether this pair's Conservative flag would be
+satisfied depends on how much of ATM's domain the regional OCN mesh geometrically covers, which nobody has
+measured on the real files (KNOWN_ISSUES D4)... prints the audit numbers for the host log rather than
+gating on a value derived from no measurement." No existing MOAB row on this real pair has a derived
+tolerance; this round's own two new rows are the first.
+
+**The fix.** `fuse::normalize_remap_weight` (`include/fuse/backend/remap_weight_normalize.hpp`), a pure
+function (four doubles and a `Conservation`, no MOAB/MPI symbol) called from `assemble()`'s one weight
+loop and nowhere else: `Conservation::Extensive` returns `overlap / src_measure` (drops the density
+conversion factor entirely -- this closes the DOMINANT mechanism above regardless of measure convention,
+and the column sum is 1 up to the (b) measurement above wherever `src_measure` and the intersection's own
+quadrature differ); anything else (`Intensive`, `None`) returns the pre-existing, UNCHANGED formula. The
+audit's own `col_sum`/`max_col_defect` accumulation (the per-entry loop, and the per-source-cell check) is
+ALSO made kind-aware, so the reported residual always matches the invariant the chosen kind actually
+guarantees (Extensive: raw weight-sum compared to 1; Intensive/None: unchanged) -- leaving it always in the
+pre-existing (Intensive) form under `Conservation::Extensive` would have reported a number that means
+nothing for that kind, a quieter version of the same "measures silently without checking" failure this
+entry is about. `row_sum`/`max_row_defect` is left UNCHANGED (still a plain weight sum compared to 1) under
+EITHER kind -- under Extensive it is a diagnostic, not a promised property (documented in `assemble()`'s
+own comment).
+
+**Deviation, named rather than silently decided**: `RemapWeights::col_defect_is_measure_weighted`
+(`remap_plan.hpp`'s own doc: "whether `max_col_defect` is a conservation residual in `MeshView::measure` AT
+ALL... FALSE for the consistent-interpolation (H) builders") is NOT set to `false` for `Extensive` weights,
+even though their `col_sum` is no longer `tgt.measure`-weighted at all -- changing that flag's own meaning
+for a THIRD case (FV builder, Extensive kind) beyond its documented two (FV vs. nodal/H) is a design
+question for the owner, left open rather than decided here.
+
+**Tests.** `test/backend/remap_weight_normalize_test.cpp` (tier-0, NO MOAB/MPI symbol -- confirmed by
+actually RUNNING it in a separate, MPI-disabled build tree in this sandbox, 6/6 PASS): the pure-function
+cases above, plus the matched-measure uneven-split reproduction of both the fix and the pre-existing bug.
+`test/parallel/remap_halo_mpi_test.cpp` gains two rows on the real sphere pair, each read back
+`min_src_coverage`/`min_tgt_coverage` (~1.0) before trusting its own conservation assertion, so neither is
+vacuous under D4's own partial-coverage unknown: `ExtensiveChannelConservesTheDeliveredTotalAcrossTheSpherePair`
+(OCN as source, ATM as target -- REVERSED from the fixture's own default direction, because ATM is global
+and so fully covers ANY region on the same sphere, giving OCN-as-source the full coverage Extensive's own
+column property needs; asserts `global_target_total` within `4e-4` relative of `global_source_total`, 2x
+the (b) measurement's own max) and `IntensiveChannelPreservesAConstantFieldAcrossTheSpherePair` (the
+fixture's own default direction, ATM source / OCN target; asserts `max_row_defect < 1.2e-2`, 2x the (b)
+measurement's own ATM-side max plus OCN's own, and a direct per-cell check that a constant density field
+reads back within that same tolerance on every owned OCN target cell). Mutation
+`build-evidence/mutations/remap-conservation-normalize.toml`: the Extensive/Intensive branch swap is
+HAND-VERIFIED in this sandbox (applied, rebuilt, 4 of 6 `remap_weight_normalize_test` cases fail, restored,
+rebuilt clean, diff confirmed byte-identical); the `assemble()` call-site mutation (`col_sum` always
+measure-weighted) is `requires = "mpi"`, NOT-ASSESSED, for the same sandbox-wide reason every other
+MOAB-only mutation in this project already states.
+
+**host_pending**: both new `RemapHaloMpiSphere.*` rows above (built, not run -- no MOAB-linked binary
+initialises in this sandbox, confirmed again this round even for the tier-0, MOAB-free normalize test once
+the WHOLE build tree is configured with `FUSE_ENABLE_MPI=ON`, which is why the hand-verified mutation above
+needed its own separate, MPI-disabled tree). The `4e-4`/`1.2e-2` tolerances are DERIVED (per-cell geometry
+measured directly off the two real files, with a 2x safety margin), not measured end-to-end through the
+real `Intx2MeshOnSphere` intersection -- the host run is what confirms or refutes them against the actual
+built matrix, and either outcome is useful: a PASS confirms the bound; a FAIL with the actual achieved
+number narrows it for next round.
+
+
+**Landing and host run (lead, 2026-10-19, `build-all` at `c4f347b` + round 11):** the `RemapPlan::conservation`
+stand-in was dropped at landing; the field from `faf3080` (default `None`, set in `resolve_remap()` from the arc
+type, in `key()`) is the one both halves read, and `None` is Intensive in `normalize_remap_weight`. Host:
+`backend.remap_weight_normalize` PASS, `parallel.remap_halo_mpi.1` PASS,
+`RemapHaloMpiSphere.IntensiveChannelPreservesAConstantFieldAcrossTheSpherePair` PASS (2 ranks, 105 ms),
+`moab_placed_weights_mpi.{2,3,4}` PASS. `ExtensiveChannelConservesTheDeliveredTotalAcrossTheSpherePair` FAILS at
+2 and 3 ranks: `min_src_coverage=0`, and the delivered total is 7071.7313770552337 (2 ranks) / 7083.1195621762208
+(3 ranks) for a source total of 7153 -- a loss that changes with the rank count, 28x the derived tolerance, so a
+partition effect (the reversed direction's halo, and the MOAB path's coverage still judged from this rank's
+intersections alone, D73 round 8's defect on the other backend), not a tolerance matter. Round 12; the tolerance
+is not widened.
 ### ~~D83. `MoabMeshBackend::adopt_remap_halo` (and `regather_with_halo`/`plan_halo_exchange`, the
 covering-cell adoption subsystem behind the remap halo, R3) is hardwired to the backend's DEFAULT
 Core and base communicator, so the 4-argument `build_remap_halo`'s own "same Core, delegate"
