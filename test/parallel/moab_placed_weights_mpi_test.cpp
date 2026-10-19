@@ -53,6 +53,7 @@
 // constraint test/parallel/moab_placed_view_mpi_test.cpp's own header
 // states. Compiled here; the outcome comes from a host run.
 
+#include <cstdio>
 #include <vector>
 
 #include <mpi.h>
@@ -132,11 +133,31 @@ TEST(MoabPlacedWeightsMpi, ARankOutsideTheTargetPlacementIsASuccessfulNoOp) {
   const DisjointRankSets sets(size);
 
   const auto r = fuse::build_remap_halo(f.plan, f.graph, f.backend, fuse::ComponentId{0});
-  ASSERT_TRUE(r.ok()) << r.error().code << ": " << r.error().message;
+  // Printed before any assertion (host instruction, round 3 FAIL 2): a
+  // non-uniform per-rank failure here previously surfaced only as rank 0's
+  // own "failed on rank(s) ..." line (fuse_test_main.cpp's MpiFailureReducer),
+  // with the failing rank's own code/message absent from the captured log
+  // because -outfile-pattern only kept rank 0's stdout.
+  std::fprintf(stderr, "rank %d (in B=%d): build_remap_halo(source_placement=A) ok=%d%s%s\n",
+              rank, sets.b.contains(rank) ? 1 : 0, r.ok() ? 1 : 0,
+              r.ok() ? "" : " code=", r.ok() ? "" : r.error().code.c_str());
   if (!sets.b.contains(rank)) {
+    // This row's own title and header comment: a rank OUTSIDE the target's
+    // placement B must see a successful no-op. That is all this row checks.
+    ASSERT_TRUE(r.ok()) << r.error().code << ": " << r.error().message;
     EXPECT_EQ(r.value(), 0u) << "rank " << rank << ": outside the target's own placement, "
                                                    "nothing to adopt";
+    return;
   }
+  // A rank INSIDE B, bridging a genuinely DISJOINT source placement A: the
+  // design this file's own header documents refuses this with the named
+  // cross-placement gap (checked explicitly by
+  // DisjointSourceAndTargetPlacementsRefuseWithTheNamedCrossPlacementGap
+  // below) -- it is not a no-op, so nothing further is asserted about it
+  // here. Measured 2026-10-19 (round 3 FAIL 2): a prior revision of this
+  // row asserted `r.ok()` for EVERY rank, including ranks inside B, which
+  // is the refusal case by design -- that assertion was simply wrong for
+  // this fixture, not a sign of a defect in the overload under test.
 }
 
 // ---------------------------------------------------------------------------
@@ -149,16 +170,41 @@ TEST(MoabPlacedWeightsMpi, ARankOutsideTheTargetPlacementIsASuccessfulNoOp) {
 // own "same Core" branch.
 // ---------------------------------------------------------------------------
 TEST(MoabPlacedWeightsMpi, SamePlacementOnBothSidesDelegatesToTheSinglePlacementPath) {
-  int size = 1;
+  int size = 1, rank = 0;
   MPI_Comm_size(MPI_COMM_WORLD, &size);
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
   ASSERT_GE(size, 2) << "this row is only meaningful with more than one rank";
   DisjointPlacementFixture f(size);
   f.plan.placement = fuse::ComponentId{0};  // both sides through A this time
+  const DisjointRankSets sets(size);
 
   const auto via_overload = fuse::build_remap_halo(f.plan, f.graph, f.backend, fuse::ComponentId{0});
+  std::fprintf(stderr, "rank %d (in A=%d): via_overload ok=%d%s%s\n", rank,
+              sets.a.contains(rank) ? 1 : 0, via_overload.ok() ? 1 : 0,
+              via_overload.ok() ? "" : " code=",
+              via_overload.ok() ? "" : via_overload.error().code.c_str());
+  if (!sets.a.contains(rank)) {
+    // The overload's own structural no-op (placement_participates) must
+    // still succeed off A -- checked here, but NOT compared against
+    // via_single below: the pre-existing single-placement path was never
+    // designed to tolerate a rank outside plan.placement (its own
+    // resolve() call defaults allow_empty=false and refuses E-REMAP-REGION
+    // there by design, unchanged by this track) -- measured 2026-10-19
+    // (round 3 FAIL 2): a prior revision of this row called via_single
+    // unconditionally and asserted it `ok()` on every rank, which fails
+    // off A for exactly this reason, not because of a defect in the new
+    // overload the row's own title names.
+    ASSERT_TRUE(via_overload.ok()) << via_overload.error().code << ": "
+                                   << via_overload.error().message;
+    EXPECT_EQ(via_overload.value(), 0u) << "rank " << rank << ": outside A, nothing to adopt";
+    return;
+  }
   ASSERT_TRUE(via_overload.ok()) << via_overload.error().code << ": "
                                  << via_overload.error().message;
   const auto via_single = fuse::build_remap_halo(f.plan, f.graph, f.backend);
+  std::fprintf(stderr, "rank %d: via_single ok=%d%s%s\n", rank, via_single.ok() ? 1 : 0,
+              via_single.ok() ? "" : " code=",
+              via_single.ok() ? "" : via_single.error().code.c_str());
   ASSERT_TRUE(via_single.ok()) << via_single.error().code << ": " << via_single.error().message;
   EXPECT_EQ(via_overload.value(), via_single.value())
       << "the same-Core delegation must reproduce the single-placement answer exactly";
