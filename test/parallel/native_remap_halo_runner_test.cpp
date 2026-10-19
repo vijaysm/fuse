@@ -210,6 +210,30 @@ struct Harness {
     EXPECT_TRUE(h->backend.load(g.mesh(fuse::MeshId{i}), g).ok());
   }
 
+  // ROUND 4 (KNOWN_ISSUES.md D73, host measurement 2026-10-18): this call
+  // was MISSING entirely. `cfg.transport_setup` (below, at Runner
+  // construction) adopts a real MPI communicator for the TRANSPORT Runner
+  // uses for Transport/Epoch -- a DIFFERENT object from `h->backend`, the
+  // NativeMeshBackend `fuse::make_region_sizes()` calls immediately below
+  // to build every `BuildRemapHalo` instruction. Without this,
+  // `h->backend.communicator()` stayed `kNullComm` for the entire `build()`
+  // call (native_backend.hpp's own doc on `set_communicator`: "`kNullComm`
+  // ... means no covering-set exchange is possible ... treats every mesh
+  // here as serial"), so `fuse::native::build_native_remap_halo`'s own
+  // `ranks <= 1 || backend.communicator() == kNullComm` short-circuit
+  // (native_halo.cpp) fired UNCONDITIONALLY regardless of how many real
+  // MPI ranks this row actually ran under -- the real covering-set
+  // exchange this test exists to exercise, and every
+  // `FUSE_REMAP_HALO_TRACE` line inside it, never ran at all. Measured on
+  // the owner's host 2026-10-18: `parallel.native_remap_halo_runner.{2,3}`
+  // produced NEITHER of native_halo.cpp's own trace lines on either rank,
+  // only runner.cpp's per-channel nonzero count -- exactly what a
+  // short-circuited halo build looks like. `test/parallel/native_halo_mpi_
+  // test.cpp:63` is the established pattern this call now matches: set the
+  // BACKEND's own communicator right after construction/`load()`, before
+  // anything that can build or need a halo.
+  h->backend.set_communicator(MPI_Comm_c2f(MPI_COMM_WORLD));
+
   const auto lowered = lower(g);
   EXPECT_TRUE(lowered.ok()) << lowered.diags.to_string();
   h->dag = lowered.dag;
@@ -349,9 +373,38 @@ TEST(NativeRemapHalo, DisjointGeneralWeightedRemapConservesOnceTheHaloIsBuilt) {
   // right below is what actually measures that, through the one channel
   // the public API exposes it by (the delivered field's own sum).
   EXPECT_EQ(runner.stats().remap_weight_builds, 1);
-  EXPECT_GT(runner.stats().remap_weight_nonzeros, 0)
-      << "KNOWN_ISSUES.md D73's own defect: a genuinely empty matrix, built but with "
-         "nothing in it";
+  // ROUND 4 (owner request, 2026-10-18): PER RANK, not globally. The weight
+  // matrix's own ROWS are the TARGET region's entities (build_supermesh_
+  // weights: "row(target)"); a rank outside the target component's own
+  // placement/RankSet (`placement_for(world).consumer` here) owns zero
+  // target cells by construction (register_default_placements's own
+  // "outside the processor set: an EMPTY view" rule, native_backend.cpp),
+  // so its own local weight build correctly has zero rows and therefore
+  // zero nonzeros -- not KNOWN_ISSUES.md D73's own defect (a target-hosting
+  // rank's matrix coming back empty), but the ordinary, expected shape of a
+  // rank that was never asked to build anything. Asserting `> 0`
+  // unconditionally on every rank, as this row did through round 3, would
+  // have FAILED on the provider-only rank even with the halo working
+  // perfectly -- it happened not to, only because `world_size() == 2` in
+  // this fixture's own even 50/50 split (`placement_for`) puts the
+  // provider-only rank and the one assertion-running process at DIFFERENT
+  // ranks, and gtest's `EXPECT_*` macros run (and would fail) independently
+  // on whichever rank reaches them -- so the gap was real, just not yet
+  // triggered by this specific RANKS 2 case the way RANKS 3 (one provider
+  // rank, two consumer ranks, or vice versa) could.
+  const int this_rank = world_rank();
+  const Placement pl = placement_for(world_size());
+  const bool this_rank_hosts_target = pl.consumer.contains(this_rank);
+  if (this_rank_hosts_target) {
+    EXPECT_GT(runner.stats().remap_weight_nonzeros, 0)
+        << "KNOWN_ISSUES.md D73's own defect: a genuinely empty matrix, built but with "
+           "nothing in it, on a rank that DOES host the target component's own cells";
+  } else {
+    EXPECT_EQ(runner.stats().remap_weight_nonzeros, 0)
+        << "this rank owns no target cells at all (outside the target component's own "
+           "placement), so its local weight build correctly has zero rows; a non-zero "
+           "count here would mean rows were built for entities this rank does not own";
+  }
 
   const auto run = runner.run_period(h->components);
   ASSERT_TRUE(run.ok()) << (run.ok() ? std::string{} : run.error().message);

@@ -1379,6 +1379,21 @@ Result<void> Runner::Impl::resolve_remap(const Instruction& ins, Resolved& r) {
                  "FUSE_REMAP_HALO_TRACE rank={} channel='{}' remap_weight_nonzeros={} "
                  "remap_weight_builds={}\n",
                  me, label, weights->nnz(), stats.remap_weight_builds);
+      // ROUND 4 (owner request, 2026-10-18): "print the matrix (rows, cols,
+      // values) under the trace on the target rank" -- the triplets
+      // themselves, not just the count, so a wrong NORMALISATION (every
+      // row summing to 1.0, the density/Intensive convention
+      // build_supermesh_weights/build_weights always build, per that
+      // function's own "Constant preservation: the row residual" check --
+      // see KNOWN_ISSUES.md D73's own round-4 account) is visible without a
+      // debugger, the same way the per-rank cell counts above are for the
+      // halo's own geometry.
+      for (std::size_t k = 0; k < weights->val.size(); ++k) {
+        fmt::print(stderr,
+                   "FUSE_REMAP_HALO_TRACE rank={} channel='{}' weight[{}]: row(target)={} "
+                   "col(source)={} val={:.17g}\n",
+                   me, label, k, weights->row[k], weights->col[k], weights->val[k]);
+      }
     }
   }
 
