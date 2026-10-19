@@ -46,6 +46,7 @@
 #include "fuse_test_main.hpp"
 
 #include <cmath>
+#include <cstdlib>
 #include <functional>
 #include <memory>
 #include <string>
@@ -53,6 +54,7 @@
 
 #include <fuse/backend/serial_backend.hpp>
 #include <fuse/ir/lowering.hpp>
+#include <fuse/linalg/comm.hpp>
 #include <fuse/runtime/runner.hpp>
 #include <fuse/schedule/plan.hpp>
 #include <fuse/schedule/window.hpp>
@@ -246,6 +248,12 @@ struct RunOutcome {
   std::string error;
   std::vector<double> x_a_per_window, x_b_per_window;
   std::vector<int> iterations_per_window;
+  // Transport-direct track (KNOWN_ISSUES.md D66/D77): this rank's own
+  // RunStats counters after the run, read here so a caller does not need
+  // its own Runner handle to check which Transport path a window actually
+  // took.
+  long long device_transport_moves = 0;
+  long long device_boundary_copies = 0;
 };
 
 // Runs `periods` periods/window-instances (explicit_interval == period
@@ -295,6 +303,10 @@ RunOutcome run_window(const CouplingGraph& g, int periods,
     out.x_b_per_window.push_back(pb->x());
     out.iterations_per_window.push_back(st.iterations);
   }
+  out.device_transport_moves =
+      static_cast<long long>(runner.stats().device_transport_moves);
+  out.device_boundary_copies =
+      static_cast<long long>(runner.stats().device_boundary_copies);
   out.ok = true;
   return out;
 }
@@ -428,3 +440,143 @@ TEST(WindowRunnerMpi, ThreeRanksWithAnUncoupledThirdMatchTheReference) {
   }
   ASSERT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
 }
+
+
+// Transport-direct track (KNOWN_ISSUES.md D66, closed by D77). This
+// fixture's own Transport arcs (a2b's and b2a's coupler-side buffers) are
+// coupler storage, not aliased directly to either component's own field --
+// under Device execution space they land on the device on BOTH ends, and
+// `A`/`B`'s DISJOINT placement (rank 0, rank 1) makes this a genuine MPI
+// exchange: exactly the both-arcs-device, matched-plan configuration that
+// used to hand MpiTransport::move() a device pointer and segfault in its
+// own std::memcpy (parallel.window_runner_mpi.{2,3}.device, this track's
+// own RED state). `RunnerConfig::execution_space` is set explicitly, so
+// this test runs under Device on the plain ctest row and the `.device`
+// twin alike, independent of `fuse_add_mpi_test`'s own DEVICE_TWIN
+// mechanism (FUSE_EXECUTION_SPACE only matters when execution_space is
+// left at its Default).
+#if defined(KOKKOS_ENABLE_CUDA) || defined(KOKKOS_ENABLE_HIP) || \
+    defined(KOKKOS_ENABLE_SYCL)
+TEST(WindowRunnerMpi, DeviceDirectTransportMatchesHostAndSetsMovesCounter) {
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);
+  ::unsetenv("FUSE_TRANSPORT_HOST_STAGING");
+
+  const CouplingGraph ref_graph =
+      build_window_graph(RankSet{0, 0}, RankSet{0, 0});
+  const RunOutcome ref = run_window(ref_graph, kPeriods, RunnerConfig{}, false);
+  ASSERT_TRUE(ref.ok) << ref.error;
+
+  const RankSet a_ranks{0, 1};
+  const RankSet b_ranks{1, 1};
+  const CouplingGraph mpi_graph = build_window_graph(a_ranks, b_ranks);
+  RunnerConfig cfg;
+  cfg.transport = "mpi";
+  cfg.base_communicator = MPI_Comm_c2f(MPI_COMM_WORLD);
+  cfg.transport_setup = mpi_comm_setup();
+  cfg.execution_space = RunnerConfig::RunnerExecutionSpace::Device;
+  const RunOutcome got = run_window(mpi_graph, kPeriods, cfg, false);
+  ASSERT_TRUE(got.ok) << got.error << " (rank " << current_rank() << ")";
+
+  // Delivery: pure data movement end to end (the ODE integration itself is
+  // identical regardless of which Transport path moved the coupled value),
+  // so bitwise equality against the no-MPI reference is the right check,
+  // exactly like the two tests above.
+  const bool hosts_a = a_ranks.contains(current_rank());
+  const bool hosts_b = b_ranks.contains(current_rank());
+  ASSERT_EQ(got.x_a_per_window.size(), ref.x_a_per_window.size());
+  for (std::size_t w = 0; w < ref.x_a_per_window.size(); ++w) {
+    if (hosts_a) {
+      EXPECT_EQ(got.x_a_per_window[w], ref.x_a_per_window[w])
+          << "window " << w << ", rank " << current_rank();
+    }
+    if (hosts_b) {
+      EXPECT_EQ(got.x_b_per_window[w], ref.x_b_per_window[w])
+          << "window " << w << ", rank " << current_rank();
+    }
+    if (hosts_a || hosts_b) {
+      EXPECT_EQ(got.iterations_per_window[w], ref.iterations_per_window[w])
+          << "window " << w << ", rank " << current_rank();
+    }
+  }
+
+  // Whichever rank sends and which receives is an implementation detail of
+  // the matching, not something this test pins; the SUM across the job is
+  // what the configuration guarantees, the same discipline runner_
+  // transport_test.cpp's own ADeviceResidentRunDeliversTheSourceValues
+  // GpuAwareOrNot test uses.
+  long long local_moves = got.device_transport_moves;
+  long long total_moves = 0;
+  ASSERT_EQ(MPI_Allreduce(&local_moves, &total_moves, 1, MPI_LONG_LONG,
+                          MPI_SUM, MPI_COMM_WORLD),
+           MPI_SUCCESS);
+  if (fuse::linalg::mpi_is_gpu_aware()) {
+    EXPECT_GT(total_moves, 0)
+        << "GPU-aware MPI did not take the device-direct Transport path "
+           "(Transport::move_packed())";
+  } else {
+    EXPECT_EQ(total_moves, 0);
+  }
+  ASSERT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
+}
+
+// The host-staged fallback, forced via FUSE_TRANSPORT_HOST_STAGING=1, for
+// THIS both-arcs-device configuration specifically -- runner_transport_
+// test.cpp's own TheHostStagedFallbackDeliversTheSameValuesEvenWhenForced
+// never reaches the both-device branch at all (its own header comment),
+// so it cannot stand in for this row.
+TEST(WindowRunnerMpi, DeviceDirectTransportHostStagedFallbackForced) {
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);
+  ::setenv("FUSE_TRANSPORT_HOST_STAGING", "1", /*overwrite=*/1);
+
+  const CouplingGraph ref_graph =
+      build_window_graph(RankSet{0, 0}, RankSet{0, 0});
+  const RunOutcome ref = run_window(ref_graph, kPeriods, RunnerConfig{}, false);
+  ASSERT_TRUE(ref.ok) << ref.error;
+
+  const RankSet a_ranks{0, 1};
+  const RankSet b_ranks{1, 1};
+  const CouplingGraph mpi_graph = build_window_graph(a_ranks, b_ranks);
+  RunnerConfig cfg;
+  cfg.transport = "mpi";
+  cfg.base_communicator = MPI_Comm_c2f(MPI_COMM_WORLD);
+  cfg.transport_setup = mpi_comm_setup();
+  cfg.execution_space = RunnerConfig::RunnerExecutionSpace::Device;
+  const RunOutcome got = run_window(mpi_graph, kPeriods, cfg, false);
+  ASSERT_TRUE(got.ok) << got.error << " (rank " << current_rank() << ")";
+
+  const bool hosts_a = a_ranks.contains(current_rank());
+  const bool hosts_b = b_ranks.contains(current_rank());
+  ASSERT_EQ(got.x_a_per_window.size(), ref.x_a_per_window.size());
+  for (std::size_t w = 0; w < ref.x_a_per_window.size(); ++w) {
+    if (hosts_a) {
+      EXPECT_EQ(got.x_a_per_window[w], ref.x_a_per_window[w])
+          << "window " << w << ", rank " << current_rank();
+    }
+    if (hosts_b) {
+      EXPECT_EQ(got.x_b_per_window[w], ref.x_b_per_window[w])
+          << "window " << w << ", rank " << current_rank();
+    }
+    if (hosts_a || hosts_b) {
+      EXPECT_EQ(got.iterations_per_window[w], ref.iterations_per_window[w])
+          << "window " << w << ", rank " << current_rank();
+    }
+  }
+
+  long long local_moves = got.device_transport_moves;
+  long long local_boundary = got.device_boundary_copies;
+  long long total_moves = 0, total_boundary = 0;
+  ASSERT_EQ(MPI_Allreduce(&local_moves, &total_moves, 1, MPI_LONG_LONG,
+                          MPI_SUM, MPI_COMM_WORLD),
+           MPI_SUCCESS);
+  ASSERT_EQ(MPI_Allreduce(&local_boundary, &total_boundary, 1, MPI_LONG_LONG,
+                          MPI_SUM, MPI_COMM_WORLD),
+           MPI_SUCCESS);
+  EXPECT_EQ(total_moves, 0)
+      << "FUSE_TRANSPORT_HOST_STAGING=1 did not force the fallback";
+  EXPECT_GT(total_boundary, 0)
+      << "no rank staged the both-device Transport arc through the "
+         "host-staged fallback";
+  ::unsetenv("FUSE_TRANSPORT_HOST_STAGING");
+  ASSERT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
+}
+#endif  // KOKKOS_ENABLE_CUDA || KOKKOS_ENABLE_HIP || KOKKOS_ENABLE_SYCL
