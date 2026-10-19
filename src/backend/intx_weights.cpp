@@ -46,6 +46,7 @@
 
 #include <array>
 #include <cmath>
+#include <cstdlib>
 #include <exception>
 #include <cstdio>
 #include <numeric>
@@ -1607,6 +1608,200 @@ struct Audit {
                                             1);
 }
 
+// ---------------------------------------------------------------------------
+// KNOWN_ISSUES D82 round 13: instrumentation only, behind FUSE_REMAP_HALO_
+// TRACE=1 (the SAME switch native_halo.cpp's own trace uses, off by
+// default; cached once per process, exactly as remap_halo_trace_enabled()
+// there does, so getenv is paid at most once). Nothing in this section
+// changes a single computed value -- it reads state `assemble()` already
+// has in hand and, for the ONE genuinely cross-rank piece (which rank's
+// target region a given centroid falls in), performs its own small
+// Allgather. The round-12 lesson applies here too: that Allgather is
+// EVERY rank's own call whenever tracing is on and the communicator has
+// more than one rank, never conditioned on whether THIS rank personally
+// has anything to report.
+// ---------------------------------------------------------------------------
+
+[[nodiscard]] bool remap_halo_trace_enabled() {
+  static const bool enabled = std::getenv("FUSE_REMAP_HALO_TRACE") != nullptr;
+  return enabled;
+}
+
+/// Everything round 13's own dispatch asked for, in one place because all
+/// four pieces read the SAME per-call state (`covered_before_fold`,
+/// `covered_after_fold`, `intersected_src`, `sm`, `src`, `tgt`) and the
+/// owner's own three hypotheses are only separable by reading them
+/// together:
+///
+///   (A) the covering set misses boundary cells -- look at whether an
+///       uncovered cell's centroid falls inside ANOTHER rank's target box
+///       (printed per cell below) while that cell was never adopted there
+///       (not directly observable from here -- the adopting rank's own
+///       trace line, `adopted_source_cells`, is the other half: if NO
+///       rank's adopted_source_cells is large enough to plausibly include
+///       it, or the centroid falls in NO rank's target box at all, (A) is
+///       ruled out; if it falls in a rank's box that this trace shows had
+///       `adopted_cells_never_intersected` include it, (A) is implicated).
+///   (B) adopted cells are not intersected -- `adopted_cells_never_
+///       intersected` on the rank that plausibly adopted it (per (2)'s own
+///       centroid-vs-box check) being close to `adopted_source_cells`
+///       (most or all of what it adopted never intersected anything) is
+///       this hypothesis; a rescale-not-applied symptom would show as
+///       EVERY adopted cell failing to intersect, not a scattered few.
+///   (C) the fold does not reach the owner -- `owned_cells_receiving_a_
+///       fold_contribution=0` on a rank whose `zero_coverage_before_fold`
+///       is nonzero, while SOME other rank's own trace shows nonzero
+///       intersections against cells it adopted (i.e. mass was computed
+///       somewhere, but never arrived), is this hypothesis, distinct from
+///       (A)/(b): the geometry worked, the exchange did not.
+void trace_remap_halo_coverage(const Side& src, const Side& tgt,
+                               const Supermesh& sm,
+                               const std::vector<double>& covered_before_fold,
+                               const std::vector<double>& covered_after_fold,
+                               const std::vector<char>& intersected_src) {
+  if (!remap_halo_trace_enabled()) return;
+  try {
+    int my_rank = 0;
+    int nproc = 1;
+    bool parallel = false;
+    MPI_Comm comm = MPI_COMM_NULL;
+#ifdef FUSE_REMAP_PARALLEL
+    if (src.pcomm != nullptr) {
+      auto* pc = static_cast<moab::ParallelComm*>(src.pcomm);
+      comm = pc->comm();
+      if (MPI_Comm_size(comm, &nproc) == MPI_SUCCESS && nproc > 1) {
+        parallel = true;
+        static_cast<void>(MPI_Comm_rank(comm, &my_rank));
+      }
+    }
+#endif
+    const std::size_t n_src = src.cells.size();
+
+    // (1): before/after zero-coverage counts over OWNED cells, and how many
+    // owned cells' coverage CHANGED due to the fold (a nonzero contribution
+    // arrived from a peer).
+    std::size_t owned_n = 0, zero_before = 0, zero_after = 0, received = 0;
+    for (std::size_t i = 0; i < n_src; ++i) {
+      if (!src.view->is_owned(src.dim, i)) continue;
+      ++owned_n;
+      if (!(covered_before_fold[i] > 0.0)) ++zero_before;
+      if (!(covered_after_fold[i] > 0.0)) ++zero_after;
+      if (covered_after_fold[i] != covered_before_fold[i]) ++received;
+    }
+
+    // (4): per-owned-cell coverage-ratio histogram, AFTER the fold.
+    std::size_t hist_0 = 0, hist_low = 0, hist_mid = 0, hist_full = 0;
+    for (std::size_t i = 0; i < n_src; ++i) {
+      if (!src.view->is_owned(src.dim, i)) continue;
+      const double c = covered_after_fold[i] / sm.src_parent[i];
+      if (c <= 0.0) ++hist_0;
+      else if (c < 0.5) ++hist_low;
+      else if (c < 0.99) ++hist_mid;
+      else ++hist_full;
+    }
+
+    // (3): adopted (non-owned, i.e. halo copy) cells that were NEVER
+    // intersected with any local target cell on THIS, the adopting, rank.
+    std::size_t adopted_n = 0, adopted_zero_intersections = 0;
+    for (std::size_t i = 0; i < n_src; ++i) {
+      if (src.view->is_owned(src.dim, i)) continue;
+      ++adopted_n;
+      if (!intersected_src[i]) ++adopted_zero_intersections;
+    }
+
+    fmt::print(
+        stderr,
+        "FUSE_REMAP_HALO_TRACE rank={} source_mesh={} target_mesh={} dim={} "
+        "owned_source_cells={} zero_coverage_before_fold={} "
+        "zero_coverage_after_fold={} owned_cells_receiving_a_fold_"
+        "contribution={} adopted_source_cells={} "
+        "adopted_cells_never_intersected={} coverage_histogram[0]={} "
+        "coverage_histogram(0,0.5)={} coverage_histogram[0.5,0.99)={} "
+        "coverage_histogram[0.99,+)={}\n",
+        my_rank, src.mid.value(), tgt.mid.value(), src.dim, owned_n,
+        zero_before, zero_after, received, adopted_n,
+        adopted_zero_intersections, hist_0, hist_low, hist_mid, hist_full);
+
+    // (2): up to 5 uncovered owned cells -- global id, centroid, and which
+    // rank's own target bounding box contains it. COLLECTIVE (the Allgather
+    // below): every rank participates whenever tracing is on and the
+    // communicator has more than one rank, not just ranks with something
+    // to report.
+    if (!parallel) return;
+
+    // This rank's own LOCAL target-cell AABB (owned + halo copies it holds)
+    // -- a proxy for Intx2MeshOnSphere's own internal "processor euler box"
+    // (not claimed identical; MOAB does not expose that box to read back).
+    double lo[3] = {1e300, 1e300, 1e300};
+    double hi[3] = {-1e300, -1e300, -1e300};
+    std::vector<double> scratch;
+    for (std::size_t j = 0; j < tgt.cells.size(); ++j) {
+      auto xyz = corner_coords(*tgt.mb, tgt.cells[j], scratch);
+      if (!xyz.ok()) continue;
+      const std::size_t nv = xyz.value().size() / 3;
+      for (std::size_t v = 0; v < nv; ++v) {
+        for (int k = 0; k < 3; ++k) {
+          const double c =
+              xyz.value()[3 * v + static_cast<std::size_t>(k)];
+          lo[k] = std::min(lo[k], c);
+          hi[k] = std::max(hi[k], c);
+        }
+      }
+    }
+    double my_box[6] = {lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]};
+    std::vector<double> all_boxes(static_cast<std::size_t>(nproc) * 6, 0.0);
+    if (MPI_Allgather(my_box, 6, MPI_DOUBLE, all_boxes.data(), 6, MPI_DOUBLE,
+                      comm) != MPI_SUCCESS) {
+      fmt::print(stderr,
+                "FUSE_REMAP_HALO_TRACE rank={} Allgather of target boxes "
+                "failed\n",
+                my_rank);
+      return;
+    }
+
+    std::size_t printed = 0;
+    for (std::size_t i = 0; i < n_src && printed < 5; ++i) {
+      if (!src.view->is_owned(src.dim, i)) continue;
+      const double c = covered_after_fold[i] / sm.src_parent[i];
+      if (c > 0.0) continue;  // only the UNCOVERED ones
+      ++printed;
+      const Point p = src.view->centroid(src.dim, i);
+      const double r = std::sqrt(p.x * p.x + p.y * p.y + p.z * p.z);
+      const double lon = std::atan2(p.y, p.x) * 180.0 / M_PI;
+      const double lat =
+          r > 0.0 ? std::asin(std::clamp(p.z / r, -1.0, 1.0)) * 180.0 / M_PI
+                  : 0.0;
+      std::size_t gid = 0;
+      try {
+        gid = src.view->global_id(src.dim, i);
+      } catch (const std::exception&) {
+        gid = 0;
+      }
+      std::string containing;
+      for (int rr = 0; rr < nproc; ++rr) {
+        const double* b = &all_boxes[static_cast<std::size_t>(rr) * 6];
+        if (p.x >= b[0] && p.x <= b[3] && p.y >= b[1] && p.y <= b[4] &&
+            p.z >= b[2] && p.z <= b[5]) {
+          if (!containing.empty()) containing += ",";
+          containing += std::to_string(rr);
+        }
+      }
+      if (containing.empty()) containing = "NONE";
+      fmt::print(
+          stderr,
+          "FUSE_REMAP_HALO_TRACE rank={} uncovered_owned_source_cell "
+          "local_index={} global_id={} centroid_xyz=({:.6g},{:.6g},{:.6g}) "
+          "lon={:.4g} lat={:.4g} contained_by_target_box_of_rank={}\n",
+          my_rank, i, gid, p.x, p.y, p.z, lon, lat, containing);
+    }
+  } catch (const std::exception& e) {
+    fmt::print(stderr,
+              "FUSE_REMAP_HALO_TRACE: trace itself threw: {} (diagnostic "
+              "only -- the real result is unaffected)\n",
+              e.what());
+  }
+}
+
 /// Reduce the audit over the communicator, so every rank reports the same
 /// numbers and, above all, reaches the same accept/reject outcome.
 [[nodiscard]] Result<void> reduce_audit([[maybe_unused]] const Side& src,
@@ -1720,6 +1915,14 @@ struct Audit {
   std::vector<double> covered_tgt(w.n_rows, 0.0);
   std::vector<double> row_sum(w.n_rows, 0.0);
   std::vector<double> col_sum(w.n_cols, 0.0);
+  // KNOWN_ISSUES D82 round 13 instrumentation (hypothesis (B), "adopted
+  // cells are not intersected"): every source local index that appears as
+  // the `col` of at least one entry in `sm.entries` -- i.e. Intx2MeshOnSphere
+  // found SOME overlap for it, regardless of which rank's target cell. Cost
+  // is one bool per source cell regardless of whether tracing is on; kept
+  // unconditional rather than gated, so it cannot itself be the thing that
+  // silently diverges between a traced and an untraced run.
+  std::vector<char> intersected_src(w.n_cols, 0);
   const bool extensive = conservation == Conservation::Extensive;
 
   w.row.reserve(sm.entries.size());
@@ -1740,6 +1943,7 @@ struct Audit {
         area, sm.src_parent[i], src.measure[i], tgt.measure[j], conservation);
     covered_src[i] += area;
     covered_tgt[j] += area;
+    intersected_src[i] = 1;
     row_sum[j] += weight;
     // Extensive: `weight` is already the fraction of source cell i's AMOUNT
     // this entry carries, so the column total that must read 1 (round 11's
@@ -1775,11 +1979,19 @@ struct Audit {
   //     decides an error below is reduced over the communicator first, so all
   //     ranks reach the same outcome.
   // ==========================================================================
+  // KNOWN_ISSUES D82 round 13 instrumentation: snapshot BEFORE the fold --
+  // hypothesis (C), "the fold does not reach the owner", is read off the
+  // difference between this and covered_src AFTER the call below.
+  const std::vector<double> covered_src_before_fold = covered_src;
+
   {
     const Result<void> f =
         fold_halo_contributions(src, covered_src, col_sum);
     if (!f.ok()) return f.error();
   }
+
+  trace_remap_halo_coverage(src, tgt, sm, covered_src_before_fold, covered_src,
+                            intersected_src);
 
   Audit audit;
   for (std::size_t i = 0; i < w.n_cols; ++i) {
