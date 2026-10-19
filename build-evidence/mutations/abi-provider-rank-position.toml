@@ -1,0 +1,39 @@
+# Mutations for KNOWN_ISSUES.md D15 round 5's multi-rank-component field
+# sizing in ProviderAdapter::register_fields() (src/abi/
+# provider_adapter.cpp). Own file per the review-fix protocol.
+#
+# Applied by hand, rebuilt, run, confirmed to fail EXACTLY the named
+# rows, then restored byte-for-byte (cmp against the pre-mutation file
+# showed no difference; md5 recorded in each row's own result).
+
+[[mutation]]
+id = "provider-adapter-count-ignores-rank-position"
+area = "abi-provider-rank-position"
+describes = "register_fields()'s own per-position even_rank_share() call is bypassed; a hosted rank always registers the region's FULL size regardless of its position in a multi-rank component's own RankSet -- round 3's own binary rule, reinstated, which is exactly the bug measured on the host at parallel.provider_subset_mpi.3 (rank 2, a RankSet member at position 1 of 2, registered the full size where the plan expects an empty view)"
+file = "src/abi/provider_adapter.cpp"
+old = """        if (hosting_rank_.has_value()) {
+          const fuse::RankSet& ranks = graph.component(*cid).ranks;
+          const int position = ranks.index_of(*hosting_rank_);
+          // `hosted` is already true, so `position >= 0` here: this rank
+          // IS a member of its own component's RankSet by construction.
+          const auto [lo, hi] = fuse::abi_detail::even_rank_share(
+              full, position, static_cast<int>(ranks.size()));
+          count = hi - lo;
+        } else {
+          count = full;  // single-process caller: unchanged from round 3.
+        }"""
+new = """        count = full;  // MUTATION: per-position split bypassed, round-3 binary rule restored"""
+target = "fuse_abi_conformance_test"
+test = "abi.conformance"
+result = "CONFIRMED 2026-10-19: ConformanceTest.ProviderAdapterSplitsAMultiRankComponentsRegionByPosition failed (rank 2, position 1 of 2 over a 1-element region, expected count 0, got 1). All other 26 cases in the 27-test binary still passed, confirming this is the only test in the suite that depends on per-position splitting rather than plain RankSet membership. Restored; cmp against the pre-mutation file reported no difference, md5 f30c85150fa973a49887eb9d9b6aed48 matches the restored file."
+
+[[mutation]]
+id = "provider-adapter-plugin-bind-gate-reverted-to-hosted"
+area = "abi-provider-rank-position"
+describes = "the PLUGIN's own bind() gate is reverted from `count > 0` to round 3's `hosted` -- a hosted rank at a zero-share position (the SAME multi-rank case as the mutation above) then calls the plugin's bind() with a NULL data pointer, which linear_provider.c's own p_bind() refuses by design"
+file = "src/abi/provider_adapter.cpp"
+old = """      if (count > 0) {"""
+new = """      if (hosted) {  // MUTATION: gate reverted to RankSet membership, ignoring count"""
+target = "fuse_abi_conformance_test"
+test = "abi.conformance"
+result = "CONFIRMED 2026-10-19: ConformanceTest.ProviderAdapterSplitsAMultiRankComponentsRegionByPosition failed differently from the mutation above -- register_fields() itself returned E-ABI-PROVIDER-BIND (\"bind() of field 'out' returned -1\") for rank 2 instead of a wrong size, since the plugin's own p_bind() refused the NULL data pointer a zero-count, still-`hosted`-true rank now produces. All other 26 cases still passed. Restored; cmp against the pre-mutation file reported no difference, md5 f30c85150fa973a49887eb9d9b6aed48 matches the restored file."

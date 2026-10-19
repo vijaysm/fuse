@@ -6,6 +6,7 @@
 #include <optional>
 #include <unordered_set>
 
+#include "fuse/abi/rank_share.hpp"
 #include "fuse/base/rational.hpp"
 #include "fuse/field/field_ref.hpp"
 #include "fuse/model/capabilities.hpp"
@@ -296,18 +297,60 @@ fuse::Result<void> ProviderAdapter::register_fields(fuse::FieldRegistry& registr
       // "a short registration is a heap overflow in the hot loop" is the
       // Runner's own refusal for the OPPOSITE direction; this is that
       // same contract, violated from the adapter's side instead. Decided
-      // here: `hosted` (above), not backend_.region_size(), decides
-      // whether this rank registers the region's real size or an empty
-      // view -- the D24 rule applied at the one place in this file that
-      // did not yet follow it, rather than teaching backend_ itself to
-      // understand a RankSet (SerialMeshBackend's whole point, this
+      // here (round 3): `hosted` (above), not backend_.region_size(),
+      // decides whether this rank registers the region's real size or an
+      // empty view -- the D24 rule applied at the one place in this file
+      // that did not yet follow it, rather than teaching backend_ itself
+      // to understand a RankSet (SerialMeshBackend's whole point, this
       // class's own header comment, is NOT to).
+      //
+      // ROUND 3's "hosted ? full size : 0" RULE WAS STILL TOO COARSE,
+      // MEASURED ON THE HOST (KNOWN_ISSUES.md D15's own round-5
+      // paragraph): `hosted` only answers RankSet MEMBERSHIP, a binary
+      // question -- correct for a ONE-rank component (every fixture
+      // before this round), wrong for a component spanning MORE than one
+      // rank. A 3-rank run placed "upstream" on RankSet{1, 2} (two
+      // ranks): the REAL plan decomposes its one-cell region over THOSE
+      // two ranks by POSITION (D24's own rule, applied by NativeMeshBackend
+      // to every placement), giving rank 1 (position 0 of 2) the one cell
+      // and rank 2 (position 1 of 2) NONE -- but `hosted` is true for
+      // BOTH (both are RankSet members), so round 3's rule registered
+      // the FULL size (1) on rank 2 too, disagreeing with the plan's own
+      // 0-entry expectation there ("field 'upstream.out' is registered
+      // with 1x1 values but the plan sizes its region at 0x1"). NOT the
+      // dlopen()-everywhere design question D15 round 3 left open
+      // (Registry::mount_dynamic() mounting the plugin on every rank
+      // regardless of RankSet): that question is about WHETHER a
+      // non-hosting rank's own ProviderAdapter exists at all, not about
+      // what a HOSTING rank of a multi-rank component registers -- rank
+      // 2 is squarely a RankSet member here, this is a hosting-rank bug.
+      //
+      // Fixed by applying the SAME per-position split the plan's own
+      // backend already applies, via fuse::abi_detail::even_rank_share()
+      // (include/fuse/abi/rank_share.hpp -- a duplicate of fuse::native::
+      // rank_slice's own formula, not a call to it; see that header's own
+      // doc comment for why duplicated rather than reused). For a
+      // single-process caller (`hosting_rank_` unset), `group_size` is
+      // always effectively 1 (nothing to split), so this degenerates to
+      // the UNCHANGED round-3 behaviour (the full region size) -- no
+      // existing caller's behaviour changes.
       const fuse::Region& region = graph.region(spec.region);
       std::size_t count = 0;
       if (hosted) {
         const fuse::Result<std::size_t> sz = backend_.region_size(region);
         if (!sz.ok()) return fuse::Result<void>{sz.error()};
-        count = sz.value();
+        const std::size_t full = sz.value();
+        if (hosting_rank_.has_value()) {
+          const fuse::RankSet& ranks = graph.component(*cid).ranks;
+          const int position = ranks.index_of(*hosting_rank_);
+          // `hosted` is already true, so `position >= 0` here: this rank
+          // IS a member of its own component's RankSet by construction.
+          const auto [lo, hi] = fuse::abi_detail::even_rank_share(
+              full, position, static_cast<int>(ranks.size()));
+          count = hi - lo;
+        } else {
+          count = full;  // single-process caller: unchanged from round 3.
+        }
       }
 
       storage_[i].assign(count * static_cast<std::size_t>(spec.components), 0.0);
@@ -322,18 +365,32 @@ fuse::Result<void> ProviderAdapter::register_fields(fuse::FieldRegistry& registr
       if (!bound.ok()) return bound;
 
       // D24/D15 round 3: the PLUGIN's own bind() is skipped entirely when
-      // this rank does not host the component -- `count == 0` here means
-      // `base` (storage_[i].data() on a just-.assign(0, ...)'d, possibly
-      // EMPTY vector) is not guaranteed non-null by the standard, and
-      // linear_provider.c's own p_bind() (this track's own reference
-      // plugin) refuses any bind() whose `data` is NULL, by design (a
-      // defensive check every well-behaved provider is entitled to make).
-      // FUSE's own registry.bind() above already recorded the empty view
-      // -- every rank still resolves this field's own placement, D24's
-      // own rule -- so the plugin loses nothing it was ever going to read
-      // from (Runner::hosts_component() never calls advance() for this
-      // component on a non-hosting rank either).
-      if (hosted) {
+      // `count == 0` -- `base` (storage_[i].data() on a just-.assign(0,
+      // ...)'d, possibly EMPTY vector) is not guaranteed non-null by the
+      // standard, and linear_provider.c's own p_bind() (this track's own
+      // reference plugin) refuses any bind() whose `data` is NULL, by
+      // design (a defensive check every well-behaved provider is
+      // entitled to make). FUSE's own registry.bind() above already
+      // recorded the empty view -- every rank still resolves this
+      // field's own placement, D24's own rule -- so the plugin loses
+      // nothing it was ever going to read from (Runner::hosts_component()
+      // never calls advance() for this component on a non-hosting rank
+      // either).
+      //
+      // ROUND 3 GATED THIS ON `hosted` ALONE -- correct for a ONE-rank
+      // component, where `hosted` and `count > 0` always agreed. ROUND 5
+      // (KNOWN_ISSUES.md D15, measured on the host): a MULTI-rank
+      // component's own hosting rank can still own ZERO elements at this
+      // rank's particular POSITION (the even-split remainder rule above)
+      // -- `hosted` alone would have called the plugin's own bind() with
+      // a NULL `base` here too, refused by the SAME p_bind() check this
+      // comment already describes, for the SAME reason. Gated on `count
+      // > 0` instead, which is exactly the condition `base` is non-null
+      // for in practice (and the condition D24's own rule actually
+      // cares about: whether this rank has anything of the region to
+      // hand the plugin at all, not merely whether it is a RankSet
+      // member).
+      if (count > 0) {
         fuse_field_view view{sizeof(fuse_field_view)};
         view.handle            = static_cast<std::int32_t>(fid.value());
         view.element_type      = FUSE_ELEMENT_F64;

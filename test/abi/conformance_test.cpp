@@ -783,6 +783,63 @@ TEST(ConformanceTest, ProviderAdapterRegistersAnEmptyViewWhenThisRankDoesNotHost
       << "a non-hosting rank must register an EMPTY view, not the region's full size";
 }
 
+TEST(ConformanceTest, ProviderAdapterSplitsAMultiRankComponentsRegionByPosition) {
+  // KNOWN_ISSUES.md D15, round 5 (host measurement): round 3's fix above
+  // (ProviderAdapterRegistersAnEmptyViewWhenThisRankDoesNotHostIt) only
+  // covers RankSet MEMBERSHIP -- "hosted or not", a binary question that
+  // happens to be the whole answer for a ONE-rank component (every
+  // fixture before this round). provider_subset_mpi_test.cpp's own
+  // 3-rank graph places "upstream" on RankSet{1, 2} (TWO ranks): the
+  // real plan decomposes its one-cell region over THOSE two ranks by
+  // POSITION (D24's own rule, applied by NativeMeshBackend to every
+  // placement), giving rank 1 (position 0 of 2) the one cell and rank 2
+  // (position 1 of 2) none -- but round 3's rule answers `hosted = true`
+  // for BOTH (both are RankSet members) and registered the FULL region
+  // size on rank 2 too, measured on the host as "field 'upstream.out' is
+  // registered with 1x1 values but the plan sizes its region at 0x1".
+  // Fixed by applying the SAME per-position split the plan's own backend
+  // already applies (fuse::abi_detail::even_rank_share(), include/fuse/
+  // abi/rank_share.hpp) whenever `hosting_rank_` is set and the
+  // component's own RankSet has more than one member.
+  fuse::abi_detail::Registry registry;
+  ASSERT_TRUE(registry.mount_dynamic("upstream", FUSE_TEST_C_PROVIDER_PLUGIN).ok());
+  fuse::Result<std::unique_ptr<fuse::Component>> extracted = registry.extract("upstream");
+  ASSERT_TRUE(extracted.ok());
+  std::unique_ptr<fuse::Component> comp = std::move(extracted).value();
+  auto* adapter = dynamic_cast<fuse::abi_detail::ProviderAdapter*>(comp.get());
+  ASSERT_NE(adapter, nullptr);
+
+  fuse::CouplingGraph graph;
+  const auto mesh = graph.add_mesh(fuse::MeshDecl{.name = "m", .source = "generated:line:1"});
+  const auto region = graph.add_region(fuse::Region{.name = "r", .mesh = mesh, .dimension = 1});
+  const auto up = graph.add_component(fuse::ComponentDecl{
+      .name = "upstream", .ranks = fuse::RankSet{1, 2}, .interval = fuse::Rational{1}});
+  (void)graph.add_field(up, fuse::FieldSpec{.name = "out", .region = region, .components = 1,
+                                            .units = fuse::units::kKelvin,
+                                            .conservation = fuse::Conservation::None,
+                                            .intent = fuse::Intent::Provides});
+  const std::optional<fuse::FieldId> fid =
+      graph.find_field(graph.find_component("upstream").value(), "out");
+  ASSERT_TRUE(fid.has_value());
+
+  fuse::FieldRegistry freg_rank1;
+  adapter->set_hosting_rank(1);  // position 0 of 2 -- owns the one cell
+  ASSERT_TRUE(comp->register_fields(freg_rank1, graph).ok());
+  const fuse::Result<fuse::FieldRef> bound1 = freg_rank1.get(*fid);
+  ASSERT_TRUE(bound1.ok()) << (bound1.ok() ? "" : bound1.error().message);
+  EXPECT_EQ(bound1.value().size(), 1u) << "rank 1 (position 0 of 2) owns the one cell";
+
+  fuse::FieldRegistry freg_rank2;
+  adapter->set_hosting_rank(2);  // position 1 of 2 -- a RankSet MEMBER, owns NONE of it
+  ASSERT_TRUE(comp->register_fields(freg_rank2, graph).ok());
+  const fuse::Result<fuse::FieldRef> bound2 = freg_rank2.get(*fid);
+  ASSERT_TRUE(bound2.ok()) << (bound2.ok() ? "" : bound2.error().message);
+  EXPECT_EQ(bound2.value().size(), 0u)
+      << "rank 2 is a RankSet member (round 3's binary rule would have registered the full "
+         "size here) but owns none of the one-cell region at this position -- the bug "
+         "round 5 fixes";
+}
+
 TEST(ConformanceTest, ProviderAdapterRegisterFieldsExceptionBecomesAFailure) {
   // register_fields()'s own try/catch (E-ABI-PROVIDER-EXCEPTION) guards
   // against anything FUSE's own backend/graph calls can throw, not just
