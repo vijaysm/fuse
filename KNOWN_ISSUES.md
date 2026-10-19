@@ -11102,6 +11102,162 @@ local_delivered_mass=4113.3035465820722`, rank 1 `5399/363/1822`, mass 3577, del
 intersection geometry on the rescaled pair is complete and the 1.14% / 0.98% loss is a partition effect. Round 13
 is an instrumentation round (uncovered cells before and after the fold, their centroids against the processor
 boxes, adopted cells with no intersection, folded contributions received); no further fix from reading alone.
+
+### D82 ROUND 13 (MoabHalo track, 2026-10-19): instrumentation, not a fix --
+the round-12 collective-agreement cleanup changed nothing measurable; the
+loss is a genuine partition effect, still unattributed between the owner's
+three named hypotheses
+
+**HOST re-measurement after round 12 landed:** identical numbers to the
+digit -- 2 ranks delivered 7071.7313770552337, 3 ranks 7083.1195621762208,
+`min_src_coverage=0` both times. Round 12's own open question ("a skipped
+Alltoallv would have hung, and the host saw a finite number") was the right
+doubt: `src.not_owned == 0` was never the thing skipping the collective in
+this specific failure. The removal stays (it IS a genuine collective-rule
+cleanup, the same class as D27 and round 7's `adopt_remap_halo` fix, and
+left in per the owner's own instruction not to revert it), but it is
+recorded here as NOT a fix for this symptom.
+
+**parallel.remap_halo_mpi.1 PASSES** (the identical Extensive test at ONE
+rank: full coverage, exact conservation) -- so `Intx2MeshOnSphere` on the
+D81-rescaled pair covers OCN completely when the whole problem sits on one
+rank. `.{2,3,4,5}` all fail identically. The loss (1.14% at 2 ranks, 0.98%
+at 3) is a PARTITION effect, confined to exactly the two things that change
+between one rank and several: the covering-set construction, and the fold.
+
+**This round is instrumentation only**, per explicit instruction: no further
+fix proposed from reading alone. Added, behind `FUSE_REMAP_HALO_TRACE=1`
+(the existing switch `native_halo.cpp` already uses, off by default, read
+once via a function-local static exactly as that file's own
+`remap_halo_trace_enabled()` does) --
+
+  1. Per rank: owned source cells with zero coverage BEFORE the fold and
+     AFTER it (`zero_coverage_before_fold`/`zero_coverage_after_fold`), and
+     how many owned cells' coverage value CHANGED as a result of the fold
+     (`owned_cells_receiving_a_fold_contribution` -- a nonzero entry
+     genuinely arriving in `accumulate_remap_halo`'s owned buffer, not
+     merely the call having been made).
+  2. For up to 5 owned cells still uncovered after the fold: local index,
+     global id, centroid (xyz on the unit sphere, plus derived lon/lat),
+     and which rank(s) own target-cell bounding box contains that centroid
+     -- a COLLECTIVE Allgather of every rank's own local target-cell AABB
+     (a declared PROXY for `Intx2MeshOnSphere`'s own internal "processor
+     euler box", which MOAB does not expose for reading back), run by
+     EVERY rank whenever tracing is on and the communicator has more than
+     one rank, never conditioned on whether THIS rank personally has an
+     uncovered cell to report (round 12's own collective-agreement lesson,
+     applied here instead of relearned).
+  3. On each rank: of the cells it ADOPTED (halo copies, not owned), how
+     many were NEVER intersected with any local target cell
+     (`adopted_cells_never_intersected` of `adopted_source_cells`).
+  4. Per rank: a histogram of every OWNED source cell's own coverage ratio
+     (covered measure / `sm.src_parent`, the supermesh's own functional,
+     AFTER the fold) in four bins: exactly 0, `(0, 0.5)`, `[0.5, 0.99)`,
+     `[0.99, +)`.
+
+All four read state `assemble()`'s own `fold_halo_contributions` call site
+already has in hand (a `std::vector<char> intersected_src` was added,
+populated unconditionally during the existing overlap-merge loop at
+negligible cost, so it is the SAME data in a traced and an untraced run);
+nothing it reads or does is gated differently from the production path
+except the printing itself and the one Allgather. Implementation:
+`trace_remap_halo_coverage` (new, `intx_weights.cpp`, right after
+`fold_halo_contributions`), called from `assemble()` immediately after the
+fold, wrapped in its own `try`/`catch` so a trace-time exception (an invalid
+`global_id`, say) cannot turn a diagnostic-only run into a different
+failure than production would see.
+
+**How the three hypotheses separate, read off the trace (owner's own
+framing, point for point):**
+
+  * **(A) the covering set for OCN->ATM misses boundary cells.** Shown if
+    an uncovered cell's centroid (item 2) falls inside ANOTHER rank's
+    target box while that OTHER rank's own `adopted_source_cells` (item 1,
+    printed on that rank's own line) is too small to plausibly include it,
+    or the centroid falls in NO rank's box at all (`contained_by_target_
+    box_of_rank=NONE` -- geometrically outside every rank's own target
+    region, which given ATM is global would itself be a stronger, separate
+    finding).
+  * **(B) adopted cells are not intersected.** Shown if, on the rank whose
+    box (per item 2) plausibly should have adopted the cell,
+    `adopted_cells_never_intersected` (item 3) is close to
+    `adopted_source_cells` -- most or all of what that rank adopted failed
+    to intersect anything, which is the shape a systematic defect on
+    adopted copies (GLOBAL_ID, orientation, or -- the owner's own named
+    suspicion -- the D81 rescale not having been applied to the adopted
+    copy's own coordinates, since the rescale is driver-side and runs
+    BEFORE `build_remap_halo`, so an adopted copy transported with its
+    PRE-rescale coordinates would silently fail to overlap a target mesh
+    it was never actually coincident with) would produce, as opposed to a
+    few scattered misses.
+  * **(C) the fold is not reaching the owner.** Shown if
+    `owned_cells_receiving_a_fold_contribution` (item 1) is 0 on a rank
+    whose `zero_coverage_before_fold` is nonzero, WHILE some other rank's
+    own trace line shows nonzero intersections against cells it adopted
+    (i.e. `adopted_cells_never_intersected` on THAT rank is less than its
+    own `adopted_source_cells` -- mass was genuinely computed somewhere,
+    it simply never arrived at the owner). Distinct from (A)/(B): the
+    geometry worked, the exchange did not.
+
+**Exact host command, 2 ranks** (MPICH's Hydra `-outfile-pattern`/
+`-errfile-pattern`, confirmed real flags on MPICH, unlike OpenMPI --
+`fuse::testing::MpiFailureReducer` suppresses non-rank-0 GTest reporting by
+default, so `FUSE_TEST_PRINT_ALL_RANKS=1` is also set):
+
+```
+cd build-all
+FUSE_REMAP_HALO_TRACE=1 FUSE_TEST_PRINT_ALL_RANKS=1 mpiexec -n 2 \
+  -outfile-pattern=/tmp/d82_r13_2rank-%r.out \
+  -errfile-pattern=/tmp/d82_r13_2rank-%r.err \
+  ./test/fuse_parallel_remap_halo_mpi_test \
+  --gtest_filter=RemapHaloMpiSphere.ExtensiveChannelConservesTheDeliveredTotalAcrossTheSpherePair
+```
+
+and at 3 ranks, identically with `-n 3` and a `3rank` file-pattern instead
+of `2rank`. The trace writes to `stderr` via `fmt::print`, so the `.err`
+files are where the `FUSE_REMAP_HALO_TRACE` lines land; the `.out` files
+carry GTest's own per-rank PASS/FAIL text (meaningful now that
+`FUSE_TEST_PRINT_ALL_RANKS=1` is set).
+
+**Verification in this sandbox** (unchanged constraint: no MOAB-linked
+binary can be RUN here). Built, not run: the full MOAB/MPI tree (503/503
+targets), including `fuse_parallel_remap_halo_mpi_test` with the new trace
+call compiled in (and, since `FUSE_REMAP_HALO_TRACE` is read via
+`std::getenv` at runtime, dormant and zero-behavior-change when unset --
+confirmed by reading, not by running, since that is exactly what this
+sandbox cannot do). Tier-0: 219 tests, 217 PASS, the same 2 pre-existing
+unrelated failures every round. All 5 gates clean.
+
+**Deviation, named rather than silently decided:** item (2)'s own
+"processor euler box" is a per-rank AABB built from this rank's LOCAL
+target cells' corner coordinates, NOT a call into
+`Intx2MeshOnSphere::build_processor_euler_boxes` itself (that method's own
+box data is not exposed for reading back once computed, and re-deriving it
+would need re-running the covering-set construction a second time, costly
+and, worse, itself a SECOND source of truth to keep consistent with the
+first). Stated as a declared proxy in the trace's own code comment and
+here, not claimed identical -- a cell whose centroid the PROXY box misses
+but MOAB's own internal box would have caught (or vice versa) is possible,
+and if the trace's own attribution looks inconsistent with where the real
+covering set clearly must have looked, that discrepancy is itself useful
+information about how tight a proxy this is.
+
+**host_pending**: the actual trace output, at 2 and 3 ranks -- which is what
+the next round reads to pick among (A)/(B)/(C) rather than reasoning further
+from here.
+
+
+**Host trace (lead, 2026-10-19, `build-all` at `fc689cf` + round 13, 2 ranks):** rank 0 `owned_source_cells=3576
+zero_coverage_before_fold=1583 zero_coverage_after_fold=17 owned_cells_receiving_a_fold_contribution=1665
+adopted_source_cells=2443 adopted_cells_never_intersected=203`, histogram `[0]=17 (0,0.5)=12 [0.5,0.99)=30
+[0.99,+)=3517`; rank 1 `3577 / 2142 -> 28 / 2240 / 1822 / 157`, histogram `28 / 19 / 27 / 3503`. 3 ranks: `2402 /
+743 -> 4 / 806 / 1861 / 568`, `2403 / 1789 -> 11 / 1914 / 3541 / 1259`, `2348 / 1592 -> 20 / 1691 / 1220 / 257`. The
+fold works (hypothesis C is out). The loss is 45 cells at zero coverage plus 88 partially covered at 2 ranks; the
+same global ids recur at 2 and 3 ranks (793, 1357, 1358, 2024, 2146, 402, 571, 1230, 1738, 1918, ...), at
+latitudes from -73 to 78 and near the equator alike. The chord-box proxy does not decide between A (covering set
+missed the cell on the rank whose target cells cover it) and B (adopted there, intersected nothing). Round 14 is a
+per-cell probe: for each uncovered or partially covered owned cell, every rank reports adopted-here,
+intersected-area-here and an independent single-pair overlap with its local target cells.
 ### ~~D83. `MoabMeshBackend::adopt_remap_halo` (and `regather_with_halo`/`plan_halo_exchange`, the
 covering-cell adoption subsystem behind the remap halo, R3) is hardwired to the backend's DEFAULT
 Core and base communicator, so the 4-argument `build_remap_halo`'s own "same Core, delegate"
