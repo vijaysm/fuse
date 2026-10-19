@@ -1363,6 +1363,23 @@ Result<void> Runner::Impl::resolve_remap(const Instruction& ins, Resolved& r) {
   if (remap_cache.misses() != before_builds) {
     ++stats.remap_weight_builds;
     stats.remap_weight_nonzeros += static_cast<std::int64_t>(weights->nnz());
+    // D73/D5 ROUND 3 (owner request, 2026-10-18): the per-rank half of
+    // FUSE_REMAP_HALO_TRACE the halo-build side (native_halo.cpp) cannot
+    // print itself, since the nonzero count is only known once build_
+    // weights() (intx_weights.cpp) has actually run. Same getenv
+    // convention as FUSE_CONSERVATION_DEBUG just below in this file.
+    if (std::getenv("FUSE_REMAP_HALO_TRACE") != nullptr) {
+      int me = -1;
+#if FUSE_HAVE_MPI
+      if (config.base_communicator.has_value()) {
+        MPI_Comm_rank(MPI_Comm_f2c(static_cast<MPI_Fint>(*config.base_communicator)), &me);
+      }
+#endif
+      fmt::print(stderr,
+                 "FUSE_REMAP_HALO_TRACE rank={} channel='{}' remap_weight_nonzeros={} "
+                 "remap_weight_builds={}\n",
+                 me, label, weights->nnz(), stats.remap_weight_builds);
+    }
   }
 
   // The matrix is indexed by MeshView local entity indices; the buffers are
