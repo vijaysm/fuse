@@ -843,6 +843,43 @@ tolerance" -- what this item was asked to assert -- is NOT yet assertable: there
 build those row sums FROM until the migrate-by-global-id mechanism above exists. Flagged as
 `host_pending`/`open_questions` in this track's own report, not claimed as delivered.
 
+**ROUND 3 -- two pre-existing TEST bugs found and fixed, not a defect in the round-2 production
+code (host-reported FAIL 2):** the host run failed
+`MoabPlacedWeightsMpi.ARankOutsideTheTargetPlacementIsASuccessfulNoOp` on rank 1 (2 ranks:
+`A = {0}`, `B = {1}`), and separately reported `...ok()` coming back false inside
+`SamePlacementOnBothSidesDelegatesToTheSinglePlacementPath`. Both diagnosed by code inspection
+(this sandbox cannot run either row -- MPI_Init fails here regardless, C1) after adding
+`std::fprintf(stderr, ...)` diagnostics before each assertion, per the lead's instruction, so a
+future host run captures the refusing rank's own code/message directly:
+
+1. **Test (1)'s own assertion was wrong for a rank INSIDE the target placement.** Its title and
+   header comment both say it checks the NO-OP half of the contract (a rank OUTSIDE B) -- but the
+   row asserted `r.ok()` UNCONDITIONALLY, for every rank, including rank 1 (which IS inside B at
+   `size == 2`). For that rank, bridging the genuinely disjoint source placement A is PRECISELY the
+   refusal case test (3) below exists to check (`E-MESH-HALO-CROSS-PLACEMENT-UNIMPLEMENTED`) -- not
+   a no-op, so asserting success there was simply incorrect test logic, not a sign of a production
+   defect. Fixed: the row now only asserts `r.ok()` for ranks outside B, and prints the in-B rank's
+   own outcome to stderr without asserting on it (test (3) already covers that case).
+2. **Test (2) compared two code paths with GENUINELY DIFFERENT off-placement behaviour by
+   design.** With `plan.placement` overridden to A for this row, a rank outside A gets `via_overload
+   == 0` (the new overload's own `placement_participates` no-op, by design) but `via_single`
+   -- the PRE-EXISTING single-placement `build_remap_halo`, untouched by this track -- was never
+   designed to tolerate a rank outside `plan.placement`: its own `resolve()` call defaults
+   `allow_empty = false` and refuses `E-REMAP-REGION` there, exactly as it always has. The row
+   asserted `via_single.ok()` unconditionally, which fails off A for this reason alone. Fixed: the
+   row now checks the overload's own no-op for ranks outside A and returns before calling
+   `via_single` there (safe: `via_single` would have refused non-collectively at its own first
+   `resolve()` call anyway, never reaching any real MPI collective, so skipping the call changes
+   nothing observable); the delegation comparison the title names is checked only for ranks inside
+   A, where both paths attempt the real build.
+
+Neither fix touches `src/backend/intx_weights.cpp` or any other production file from round 2 --
+both are test-file-only corrections (`test/parallel/moab_placed_weights_mpi_test.cpp`). Compiled
+(0 errors) under the MOAB/MPI build; not run here (C1). The lead's separate correction that FAIL
+2's rank-1 failure does NOT hang (the "killed after 20s" was the diagnostic command's own SSH
+limit, not the test -- `fuse_test_main.cpp`'s uniform-failure reducer working as designed) is noted
+and the test fixes above do not change that reducer's behaviour.
+
 
 **History.** First recorded as a coverage gap, then corrected to a capability
 gap. The Runner filled both `CommGraphSide`s from one `backend.view(MeshId)`,
@@ -3173,7 +3210,7 @@ rendezvous still runs only on a rank whose own first HDF5 call loads the plugin,
 touches HDF5 never reaches it — moving the rendezvous into an explicit step every participant calls
 (`connect()`'s MPMD choreography is the natural site) is the larger fix, left open here.
 
-### D15. The provider direction (S6 phase 4, "Adapter host" track) is implemented and conformance-tested on one process; device fields and mixed checkpoint/restore still are not -- a plugin on a rank subset is tested and built 2026-10-18 (round 2), awaiting the host run
+### D15. The provider direction (S6 phase 4, "Adapter host" track) is implemented and conformance-tested on one process; device fields and mixed checkpoint/restore still are not -- a plugin on a rank subset is tested, built and now FIXED 2026-10-19 (round 3) for a real host failure, awaiting the host re-run
 
 **What is done, measured 2026-10-02.** `include/fuse/abi/provider.h` (generated from a second
 `entries.def` entry list, `FUSE_ABI_PROVIDER_ENTRY`, sharing the participant direction's own
@@ -3285,7 +3322,48 @@ them) this is `dlopen()` cost and address-space footprint paid by every rank for
 open question: is mounting the shared object only on hosting ranks (reading `RankSet` at
 `mount_dynamic()` time) worth the added coupling between the registry and the graph's own placement
 model, or is paying the `dlopen()` cost everywhere an acceptable simplification given a plugin's own
-shared object is typically small compared to the physics it wraps?
+shared object is typically small compared to the physics it wraps? **Still open after round 3** (not
+addressed by the fix below, which is orthogonal: whether the plugin is mounted everywhere or only on
+hosting ranks, the sizing bug below applied to any rank that WAS mounted but did not host the field).
+
+**Fixed 2026-10-19 (ABI track, round 3), measured on the host.** `parallel.provider_subset_mpi.2`
+failed at `fuse_initialize()`, rank 0 (the non-hosting rank): `field 'upstream.out' is registered with
+1x1 values but the plan sizes its region at 0x1`. `ProviderAdapter::register_fields()`
+(`src/abi/provider_adapter.cpp`) sizes every field from its OWN private `fuse::SerialMeshBackend`
+(this class's own header comment: "a Component's register_fields() is handed no backend of its own ...
+ProviderAdapter is generic over any graph") -- a single-address-space backend with NO concept of a rank
+or a `RankSet` at all, so `region_size()` always reports the region's FULL size, on every rank,
+regardless of whether this component is even placed there. The REAL plan (built from `fuse_ctx::
+backend`, a rank-aware `fuse::native::NativeMeshBackend`) correctly gives a non-hosting rank an EMPTY
+view -- D24's own closed rule ("a component that does not live on this rank gets an empty view of the
+right dimension ... because every rank resolves every placement ... while only hosting ranks read
+one") -- so the two disagreed. **Decided (the lead's own two options): the registration is sized from
+the plan, not the other way round** -- `ProviderAdapter` cannot teach `SerialMeshBackend` to understand
+a `RankSet` (that backend's whole point, its own header comment, is NOT to), so `set_hosting_rank()`
+(new, `provider_adapter.hpp`) tells the adapter which rank it is on the real base communicator; `
+register_fields()` now checks `graph.component(cid).ranks.contains(*hosting_rank_)` and binds a
+ZERO-count view, skipping `backend_.region_size()` entirely, when this rank is not a member --
+`std::nullopt` (every single-process caller, unchanged) still means "assume hosted everywhere", so no
+existing caller's behaviour changes. A second, related bug surfaced fixing the first: `count == 0`
+with `storage_[i].data()` on a just-cleared, possibly EMPTY `std::vector` is not guaranteed non-null,
+and `test/abi/plugins/linear_provider.c`'s own `p_bind()` refuses any `bind()` whose `data` is NULL --
+fixed by skipping the PLUGIN's own `bind()` call entirely when not hosted (FUSE's own `registry.
+bind()` still runs, recording the empty view, so every rank still resolves the field's own placement;
+the plugin loses nothing it was ever going to read, since `Runner::hosts_component()` already never
+calls `advance()` for it here). Pinned at tier 0: `ConformanceTest.
+ProviderAdapterRegistersAnEmptyViewWhenThisRankDoesNotHostIt` (`test/abi/conformance_test.cpp`) directly
+constructs a `ProviderAdapter`, calls `set_hosting_rank(1)` against a component whose own declared
+`RankSet` is `{0}` (`build_two_component_lag1_graph()`'s own "upstream" placement), and confirms `
+register_fields()` succeeds with a bound, zero-size view rather than refusing or crashing -- a mutation
+removing the hosting check (`build-evidence/mutations/abi-provider-hosting-rank.toml`) confirmed this
+is the ONLY test in the 26-test binary that depends on it. `parallel.provider_subset_mpi.{2,3}` is
+unchanged in shape (same test file as round 2); the fix is entirely in `ProviderAdapter`, so this is a
+re-derivation, not a rewrite. Built clean under `FUSE_ENABLE_MPI=ON`. Built, never run (C1). **Host-
+pending:**
+
+```
+ctest --test-dir <build> -R 'parallel\.provider_subset_mpi\.(2|3)' -V
+```
 
 
 ## C. Not defects — do not fix these
@@ -5887,6 +5965,60 @@ pre-existing sandbox-configuration gap, not a code defect, and not this track's 
 workaround needed at all under the system compiler -- confirming those were round 2's own
 artifact of the wrong compiler, not anything this project's test needs.
 
+**ROUND 3 -- REAL BUG FOUND AND FIXED in `accumulate_remap_halo` itself (host-reported FAIL 1):**
+the host's multi-rank row (`parallel.native_halo_mpi.3`,
+`NativeHaloMpi.AccumulateRemapHaloRoundTripsExactly`) FAILED: `global_owned_sum = 272` against the
+expected `global_cells + global_halo = 288` (16 of 32 halo contributions lost; the 2-rank row,
+`parallel.native_halo_mpi.2`, passed exactly). Diagnosed WITHOUT real MPI: a standalone, in-process
+harness (not added to the test suite -- see "diagnostic, not a deliverable" below) drove the REAL
+production pipeline -- `cell_box`/`covering_set_destinations`/`owned_block_index`/
+`pack_halo_cells`/`merge_halo_cells` (the same pure functions `build_native_remap_halo` itself
+calls) for the 16x16/24x24 fixture at 3 simulated ranks, a faithful in-process stand-in for
+`make_mpi_exchanger`'s own phase-1/2/3 grouping (comm_mpi.cpp) reading peers' already-built request
+state directly in place of a real `MPI_Alltoall`/`MPI_Alltoallv`, and the REAL
+`fuse::native::accumulate_remap_halo`. It reproduced the exact deficit: rank 0 has `owned_n=96`,
+`ghost_n=0` (it ghosts nothing), but OWNS 16 of rank 1's ghost cells (`by_owner=[16,0,0]` on rank
+1); rank 0's own `owned` sum stayed at 96 after the call instead of 112. ROOT CAUSE: the function's
+`if (ghost_n == 0) return success();` short-circuit treated "this rank has no outgoing ghost
+copies to hand back" as equivalent to "no exchange is needed" -- but `exchange_packed_adjoint` is
+ONE COLLECTIVE `MPI_Alltoallv` over the exchanger's communicator; a rank with `ghost_n == 0` may
+still be the OWNER of entries peers ghost (`pack_index()`'s own size depends on what OTHER ranks
+requested from THIS rank, not on this rank's own ghost count), and skipping the call on exactly
+that rank drops every contribution it was due. No duplicate `(owner, remote_local_index)` ghost
+pairs were found (ruling out a double-ghosting/dedup explanation), and every ghost slot was
+correctly zeroed on the ranks that did call through -- the loss was isolated entirely to the
+skipped collective on the zero-ghost rank. FIX (`src/backend/native_halo.cpp`): the null-buffer
+checks were made unconditional (covering `ghost_n > 0` for both `owned`/`ghosts`, independent of
+`FUSE_HAVE_MPI`) and moved ahead of the facet check so existing error-code contracts are unchanged;
+inside the real-`PackedExchanger` branch, the `ghost_n == 0` case no longer returns early -- it
+proceeds to pack (a zero-length send buffer), exchange, and accumulate exactly as
+`MpiExchanger::update()` itself already does with no such short-circuit, with a fresh `owned ==
+nullptr` check added for the case the narrower null-buffer guard no longer reaches. The TRUE no-op
+cases (`make_serial_exchanger()`'s result, and a non-MPI build with `ghost_n == 0`) are unchanged.
+**Re-measured with the fix** (same in-process harness): `total_owned_after = 288.0`, exactly
+matching `cells + halo = 256 + 32`; the 2-rank case (`ghost_n == 0` on BOTH ranks there, the
+8+8/12+12 split aligning exactly, zero cells adopted) is unaffected (`256.0`, unchanged). All 5
+existing tier-0 `NativeHaloAccumulate` rows re-verified passing against the fixed code (`backend.
+native_halo`: 3/3 PASS, including the `.omp1`/`.omp12` variants). Mutation rows
+(`build-evidence/mutations/native_halo.toml`) updated for the moved/narrowed checks and
+re-measured by direct build+run+restore cycles: `accumulate-remap-halo-ghost-count-mismatch-not-
+checked`, `accumulate-remap-halo-zero-ghost-noop-skipped` (now anchored to the non-MPI `#else`
+branch, the one a tier-0 build actually compiles), and `accumulate-remap-halo-null-buffer-not-
+checked` all KILLED; a new row, `accumulate-remap-halo-real-exchanger-null-owned-not-checked` (the
+new `owned == nullptr` check inside the real-exchanger branch), is marked `requires = "mpi"`
+(NOT-ASSESSED) alongside the pre-existing `accumulate-remap-halo-missing-packed-exchanger-facet-
+not-checked` -- both live inside the `#if FUSE_HAVE_MPI` branch, dead code in a tier-0 build, same
+as before. **Diagnostic, not a deliverable:** the in-process reproduction above was a throwaway
+standalone executable (its own `main()`, never calling `MPI_Init` -- this sandbox's
+`MPI_Init_thread` fails even for a single bare process, "OFI call ep_enable failed... Operation not
+permitted", the same C1 constraint as every other MPI row here) built and run by hand against this
+build tree; it was not added to the test suite and leaves no new source file in this patch --
+`test/backend/native_halo_test.cpp`'s own existing `NativeHaloAccumulate` suite is the committed
+regression coverage, re-verified above. **Host-pending again:** `parallel.native_halo_mpi.{2,3}`
+need a real re-run to confirm the fix against the ACTUAL host decomposition (which may or may not
+assign `ghost_n == 0` to the identical rank the in-process reproduction did -- the FIX does not
+depend on which rank that is).
+
 ### ~~D28. U's own species-core solver seam is closed; the mpmd.5 row that would first exercise it across a real two-rank U is still host-only~~ — CLOSED 2026-10-10 (host run, see D25's host paragraph)
 
 **Closed this session (species-core decomposition track): the implicit diffusion SOLVE**, the one
@@ -6239,7 +6371,7 @@ No descriptor version bump: the launch record was already part of every componen
 canonical bytes) and `YamlIo.AnInProcessCouplerWritesNoLaunchBlock`, with the mutation
 `a-couplers-launch-mode-is-dropped-by-the-writer`. The hang itself is host-only.
 
-### D18. `fuse::transport::connect()`'s `Connect`-mode path supports exactly two components; a third refuses `E-CONNECT-SPEC` -- GENERALISED 2026-10-18 (tier-0); host executables/ctest rows built 2026-10-18 (round 2), awaiting the host run
+### D18. `fuse::transport::connect()`'s `Connect`-mode path supports exactly two components; a third refuses `E-CONNECT-SPEC` -- GENERALISED 2026-10-18 (tier-0); host executables built, HUNG on the host 2026-10-18, a diagnostic trace added 2026-10-19 (round 3), awaiting a re-run with it on
 
 `connect_pairwise()` (`src/transport/connect.cpp`) reads, verbatim:
 
@@ -6414,6 +6546,59 @@ design sketch above remains unexercised past `connect_chain_plan()`'s own pure-f
 the host actually runs `parallel.connect.chain.{3,4}` -- whether the exchanged values at the LAST
 link match the in-process N-component reference exactly, as the existing 2-component row already
 confirms for N=2, is what that host run settles, not anything checkable here.
+
+**Measured on the host 2026-10-18 (round 3): both rows failed, differently.**
+`parallel.connect.chain.3`'s three executables were killed (signal 15) after about 10.7 seconds, with
+no FUSE message in any of `a.log`/`b.log`/`c.log` beyond MPICH's own leak report -- the chain never
+completed its rendezvous. `parallel.connect.chain.4` ran the full 120-second ctest `TIMEOUT`.
+
+**`run_chain.sh`'s own timeout, explained (neither value matches the measured ~10.7s).** Two SEPARATE
+timeouts are in play, and neither is 10 seconds: the ctest row's own `TIMEOUT` property is 120s
+(`test/CMakeLists.txt`); `run_chain.sh`'s own ninth positional argument (`${9:-60}`, 60 if omitted --
+this round's own CMake registration passes `60` explicitly) is forwarded to EVERY participant as `--
+timeout`, the budget `wait_for_port_file()` (`include/fuse/transport/connect.hpp`) polls for a peer's
+port file before giving up -- a LIBRARY-level timeout, not a process-kill. Neither explains a kill at
+~10.7s; `run_chain.sh` itself issues no `kill` of its own (`grep -n kill test/parallel/connect/
+run_chain.sh` finds nothing) -- the signal 15 must come from something outside this script and this
+ctest row's own declared timeouts, which this sandbox has no way to identify without the host's own
+process tree at the time.
+
+**The accept/connect ORDER, read and reasoned through, not run (C1): no circular wait found.**
+`connect_chain()`'s per-step loop (`src/transport/connect.cpp`) gives the LAST-joining component
+(order[N-1]) its own acceptor role from the START of the function -- a process playing order[2] or
+later is NEITHER order[0] nor order[1], so it skips the two-component "step 1" entirely and goes
+straight to its OWN joining step's `MPI_Comm_accept`, with nothing else collective in between. The
+chain-so-far's own connector role at each later step runs only AFTER that pair's own prior step
+completes (the loop is sequential, `for (s = 1; s < steps.size(); ++s)`, and every process in the
+chain reaches each step in the SAME graph order). For N=3 (a, b, c): c opens its own port and blocks
+in `MPI_Comm_accept` immediately; a and b merge via `port_ab` independently of c, THEN both call `
+wait_for_port_file(port_c)` + `MPI_Comm_connect` together. For N=4 (a, b, c, d): c AND d both open
+their own ports immediately (neither is order[0] or order[1] either), c's own step runs first in loop
+order, then d's; no step's own acceptor is waiting on another step's own connector to move first in a
+way that could cycle back. This is a STRUCTURAL read, not a measurement; the two-component accept rows
+this chain reuses are already known-intermittent on this host (D23/D65), so a chain failure could
+equally be the SAME intermittency recurring at a longer chain, not a new defect in the ordering above.
+
+**Built this round: a trace line per rendezvous step, OFF by default, in the style of
+`FUSE_LOWFIVE_ATTACH_TRACE`** (examples/brusselator/participants/lowfive_attach_decision.hpp's own
+pattern -- reimplemented locally in `src/transport/connect.cpp` rather than reused, since `fuse::
+transport` cannot depend on a file in `examples/`, which sits ABOVE it in the layering). `
+FUSE_CONNECT_CHAIN_TRACE=1` prints one line per step per rank to stderr at: entering step 1; step 1
+returned; entering a later step (joining or chain-so-far side); the acceptor opening and publishing
+its port; calling `MPI_Comm_accept` ("blocks until the connector side arrives"); `MPI_Comm_accept`
+returning; the connector polling for the port file; finding it and calling `MPI_Comm_connect`; `
+MPI_Comm_connect` returning; and `MPI_Intercomm_merge` completing for that step. **Host-pending,
+re-run with tracing on, to distinguish this entry's own code from D23/D65's intermittency:**
+
+```
+FUSE_CONNECT_CHAIN_TRACE=1 ctest --test-dir <build> -R 'parallel\.connect\.chain\.(3|4)' -V
+```
+
+A trace that stops cleanly after one step's own "calling MPI_Comm_accept" line, with its matching
+connector's own "polling for port file" line never appearing, points at THIS chain's own rendezvous
+(a port file never written, or written to the wrong path); a trace where every expected line appears
+in order but the test still hangs or is killed points at the SAME accept/connect intermittency the
+2-component rows already show (D23/D65), not a defect in the chain's own step ordering.
 
 ### ~~D19. The coupling-window path (`src/runtime/iteration.cpp`) has never run across more than one process~~ — CLOSED 2026-10-09: `parallel.window_runner_mpi.{2,3}` pass on the host (2026-10-08) and the three-executable Brusselator runs through it (D25)
 
@@ -7816,7 +8001,7 @@ package config recreates `fuse-lowfive` from them when `FUSE_ENABLE_LOWFIVE` was
 `build-lowfive` and `build-all`, and `example.demo_b` still passes. No configure-time refusal was added: nothing
 could make one fire, and the two install-consumer rows are the test that does.
 
-### D61. The participant ABI's refusals are decided rank-locally and never reconciled across a component's ranks — OPEN; the first fix was REVERTED 2026-10-18 after the host run (see the REVERTED paragraph)
+### D61. The participant ABI's refusals are decided rank-locally and never reconciled across a component's ranks — FIXED AGAIN 2026-10-19 (round 3, tier-0), after the first fix was REVERTED 2026-10-18 (see the REVERTED paragraph); host row re-derived, awaiting the host run
 
 `begin_step`/`end_step`/`setup`/`initialize`/`run` return codes such as `E-ABI-STEP-ORDER` or
 `E-ABI-STEP-ALREADY-OPEN` from local state only; an out-of-turn or omitted call on one rank of a
@@ -7922,6 +8107,69 @@ communicator without MPI must stay reconciliation-free by construction. The pure
 (`reconcile_local_statuses`) and its test were sound and can return with the fix. `parallel.abi_
 reconcile_mpi.{2,3}` also failed on the host for a different reason (`LoadedContext` returned null, test
 line 120) that the next round must explain first.
+
+**Fixed again 2026-10-19 (ABI track, round 3), per the design settled above.** `include/fuse/abi/
+collective_reconcile.hpp` and `test/abi/collective_reconcile_test.cpp` return unchanged (the pure
+arithmetic was never wrong). `src/abi/participant.cpp` adds `fuse_ctx::my_component` (`std::optional<
+fuse::ComponentId>`, stored once by `impl_setup()` from `fuse_setup_options::my_component`, whichever
+branch resolves it -- Mpmd/Connect or not) and `fuse_ctx::collective_comm_f` (`int`, `0` meaning
+"nothing to reconcile", context.hpp's own comment has every way it stays that value). `impl_
+initialize_local()` forms it exactly once, inside the SAME `if (c.communicator_set)` block the
+Runner's own transport configuration already uses, by calling `fuse::linalg::make_participant_set_
+reducer()` (`src/linalg/comm_mpi.cpp`, D32's own `MPI_Comm_split` -- reused directly, not
+reimplemented, since layering already lets `fuse::abi` depend on `fuse::linalg`) with `my_component`'s
+own `RankSet::ranks()` as the participant list. `reconcile_collective_status()` reconciles `
+initialize`/`begin_step`/`end_step`/`run` over `c.collective_comm_f` -- NEVER `c.communicator` -- fixing
+both REVERTED bugs at once: splitting by `my_component`'s own ranks (not the base communicator's full
+span) means a multi-executable run's differing per-component call counts no longer pair the wrong
+Allreduces together; and `collective_comm_f` staying `0` for every context `fuse::abi_test::
+force_communicator_set()` touches (that seam never runs the real split path again, by its own design --
+see its doc comment) means a faked, non-MPI handle can no longer reach `MPI_Comm_f2c`/`MPI_Comm_rank`
+at all. `setup()` is EXCLUDED from reconciliation this round (round 2 reconciled it over the raw,
+unsplit communicator -- the first REVERTED bug, generalised): `my_component` is itself an ARGUMENT to
+setup(), not yet resolved when setup()'s own local checks can fail, so there is no component-local
+communicator for setup() to reconcile over yet; its own refusals are structural (malformed options, an
+unknown `my_component` name, a missing communicator for Mpmd/Connect) and decided identically, from the
+same bytes, on every rank that is supposed to agree, which is why this entry's own opening paragraph
+names the hazard as an out-of-turn CALL, not a setup()-time configuration mismatch. Tier-0 re-confirmed:
+the 3 `AbiParticipantCollectiveReconciliation` cases (orphaned, not reverted, by `1e0676b` -- they
+exercise the stub-reducer path through the real `begin_step()` entry, unaffected by which communicator
+the REAL MPI path would use) pass again; `collective_reconcile_test.cpp`'s 7 cases unchanged; the 3
+tier-0 rows that crashed the host (`abi_period_boundary`, `brusselator_period_rollover`,
+`brusselator_u_loop_step_fix`, all three via `force_communicator_set(ctx, 1)`) pass, and now do so
+because `collective_comm_f` structurally never forms for them, not by coincidence.
+
+**`LoadedContext` returned null, explained.** Not a function in this file (the name is `
+SetupSpanningComponent()`, a generic reference to "the thing that sets up and returns the loaded
+context", by analogy with `test/abi/struct_size_test.cpp`'s own `LoadedContext()` helper of the same
+shape). The real cause: the graph's one field was registered with a FIXED `count = 0` on EVERY rank,
+uniformly, with mesh source `"generated:line:1"` (one cell, total, regardless of `world_size`) --
+intended to dodge the CROSS-RANK size agreement check (E-RT-SIZE) by having no channel at all, but
+missing that the schedule's own plan still checks THIS rank's own registered count against THIS rank's
+own LOCAL share of the region (a check independent of channels or cross-rank agreement -- the identical
+class KNOWN_ISSUES.md D15 round 3's own `provider_subset_mpi_test.cpp` finding exposed from the other
+direction, below). On a world of 2 or 3 ranks, "generated:line:1" decomposes unevenly (one rank gets the
+single cell, the others get zero) while every rank registered a UNIFORM `count = 0` -- wrong for
+whichever rank the one cell landed on. Fixed by parameterising the mesh source --
+`"generated:line:<world_size>"` -- so every rank's own share is EXACTLY one cell, with no remainder, and
+registering `count = 1` (a real `double`, not `nullptr`) on every rank to match. `my_component = "p"`
+was also missing from this file's own `fuse_setup_options` (needed for `collective_comm_f` to form at
+all, see above) -- without it, this round's own fix would have silently reconciled nothing, the test's
+entire point lost, not by a crash but by a silent no-op.
+
+**Built this round, re-derived from the fix above.** `test/parallel/abi_reconcile_mpi_test.cpp`
+(rewritten, same shape and claim as before -- rank 1 alone corrupts its own `fuse_step_request` before
+`begin_step()`, every rank's return code gathered with `MPI_Allgather` and asserted identical). Built
+clean under a real `FUSE_ENABLE_MPI=ON` configure. Built, never run (C1 above). **Host-pending:**
+
+```
+ctest --test-dir <build> -R 'parallel\.abi_reconcile_mpi\.(2|3)' -V
+```
+
+A pass means every rank returns `FUSE_ERR_VERSION` with no hang; a hang here, this time, would mean the
+`my_component`-split communicator itself is wrong in some way tier 0 cannot see (e.g. the split's own
+`key` ordering); a per-rank MISMATCH in the gathered codes would mean `reconcile_collective_status()`'s
+own gate (`c.collective_comm_f == 0` skipping reconciliation) fired when it should not have.
 
 ### ~~D62. The graph descriptor is host-endian while `bytes.hpp`'s canonical rules are little-endian~~ -- FIXED 2026-10-18 (Descriptor track)
 

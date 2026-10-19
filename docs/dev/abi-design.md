@@ -195,6 +195,25 @@ message is rewritten to name the refusing rank and the agreed code, per
 this page's own standing rule that every rank must return the SAME code,
 not merely a code drawn from the same enum.
 
+**LESSON (round 3, the hard way).** The first version of this fix reconciled over the
+context's own base communicator (`c.communicator`) -- the MERGED world of
+every component in a multi-executable run. Measured on the host:
+`verification.brusselator.participants.{mpmd,accept}.{3,5}` all timed
+out, because U, V and the coupler each call `begin_step`/`end_step` a
+DIFFERENT number of times per window, so an `MPI_Allreduce` keyed to "all
+ranks of the base communicator" never finds the same NUMBER of
+contributions on both sides of the reduction -- the collective itself
+never completes. The general rule this measured: **a collective that
+pairs calls ACROSS components can only run on a communicator whose every
+member makes the SAME sequence of calls** -- the base communicator is the
+wrong scope for anything keyed to one component's own call sequence,
+exactly as it would be wrong to run an `MPI_Allreduce` over `MPI_COMM_
+WORLD` for a quantity only some ranks compute. The REVERTED paragraph
+below and D61's own KNOWN_ISSUES.md entry carry the full measurement;
+this page's own fix, below, reconciles over a component-local
+communicator instead, precisely to keep every member of the reduction
+making the identical sequence of calls.
+
 The pure arithmetic -- given every rank's own local status, which one
 wins and whose message survives -- lives in `fuse::abi_detail::
 reconcile_local_statuses` (`include/fuse/abi/collective_reconcile.hpp`),
@@ -206,32 +225,43 @@ force_fake_collective_peers()`, `test/abi/participant_test.cpp`) and
 calls the real `MPI_Allreduce(MPI_2INT, MPI_MINLOC, ...)` otherwise, so
 the two paths cannot disagree about what "agreed" means.
 
-**Which communicator.** `initialize`/`begin_step`/`end_step`/`run`
-reconcile over the context's own already-resolved base communicator
-(`communicator`/`communicator_set`, set once by `setup()`). `setup()`
-itself cannot use that -- its own local checks (`struct_size`, `reserved`,
-`my_component`) can fail before the base communicator is resolved -- so it
-reconciles over the RAW input communicator, `fuse_setup_options::
-communicator`, the one handle guaranteed identical, by construction, on
-every rank that is meant to agree. A caller that passes `communicator ==
-0` (no MPI, or a context that is not part of any multi-rank component)
-has nothing to reconcile: both paths treat that exactly as the Runner's
-own `reconcile_epoch()` treats an unconfigured `base_communicator` -- a
-no-op, not a refusal.
+**Which communicator (round 3, corrected).** `initialize`/`begin_step`/
+`end_step`/`run` reconcile over `fuse_ctx::collective_comm_f` -- a
+COMPONENT-LOCAL communicator, split exactly once, inside `initialize()`'s
+own already-existing `if (c.communicator_set)` block, by `fuse_setup_
+options::my_component`'s own `RankSet` (`fuse::linalg::
+make_participant_set_reducer()`, the SAME `MPI_Comm_split` the Runner's
+own window-region reduction already trusts, D32 -- reused, not
+reimplemented). `0` means "nothing to reconcile": the default; whenever
+`my_component` was never named (no component to split by); and, BY
+CONSTRUCTION, for every context `fuse::abi_test::force_communicator_set()`
+touches, since that seam sets `communicator`/`communicator_set` directly
+and never re-runs the real split path (its own doc comment: deliberately
+callable AFTER a successful `initialize()`, to reach a LATER gate in
+isolation). `setup()` is NOT reconciled at all, this round -- `my_
+component` is itself an ARGUMENT to `setup()`, not yet resolved when its
+own local checks (`struct_size`, `reserved`, an unknown `my_component`
+name) can fail, so there is no component-local communicator for `setup()`
+to reconcile over yet, and reconciling it over anything ELSE (the base
+communicator, round 2's own choice) is exactly the mistake the lesson
+above names. `setup()`'s own refusals are structural, decided from the
+same bytes on every rank that is meant to agree, independent of
+reconciliation.
 
-**What is not reconciled, and why.** The other ten participant-table
-entries (`version`, `capabilities`, `create`, `destroy`, `last_error`,
-`load_graph`, `save_graph`, `field_handle`, `register_field`,
-`view_field`, `base_communicator`, `request_restart_point`) are none of
-them marked COLLECTIVE in `entries.def`, and each is a purely local
-operation on this rank's own handle, this rank's own copy of the
-(identically loaded) graph, or this rank's own storage -- `register_field`
-included: registering a field is this rank's own storage handed to this
-rank's own copy of the graph, with no cross-rank agreement meaningful for
-it. There is no `finalize` entry in `entries.def` at all; `destroy` is the
-nearest analogue and, per its own doc string ("a double destroy is
-`FUSE_ERR_INVALID`, not a crash"), is a per-handle operation, not a
-collective one -- the same posture SOMA's own `soma_destroy()` takes.
+**What is not reconciled, and why.** `setup()` (above, round 3), and the
+other ten participant-table entries (`version`, `capabilities`, `create`,
+`destroy`, `last_error`, `load_graph`, `save_graph`, `field_handle`,
+`register_field`, `view_field`, `base_communicator`,
+`request_restart_point`) are none of them marked COLLECTIVE in
+`entries.def`, and each is a purely local operation on this rank's own
+handle, this rank's own copy of the (identically loaded) graph, or this
+rank's own storage -- `register_field` included: registering a field is
+this rank's own storage handed to this rank's own copy of the graph, with
+no cross-rank agreement meaningful for it. There is no `finalize` entry
+in `entries.def` at all; `destroy` is the nearest analogue and, per its
+own doc string ("a double destroy is `FUSE_ERR_INVALID`, not a crash"),
+is a per-handle operation, not a collective one -- the same posture
+SOMA's own `soma_destroy()` takes.
 
 **What this does not cover.** A rank that is live but calls a DIFFERENT
 entry than its peers on the same step (so `with_ctx()` itself refuses
