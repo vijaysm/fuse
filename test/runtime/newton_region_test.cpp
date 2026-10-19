@@ -389,8 +389,7 @@ NewtonDnHeatFixture make_newton_setup(
   const auto lowered = lower(g);
   if (!lowered.ok()) { ADD_FAILURE() << lowered.diags.to_string(); return s; }
   const fuse::ClockSet clocks{g};
-  auto sched = schedule(g, lowered.dag, clocks,
-                       fuse::make_region_sizes(g, s.backend));
+  auto sched = schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, lowered.dag, s.backend));
   if (!sched.ok()) { ADD_FAILURE() << sched.diags.to_string(); return s; }
 
   auto dirichlet = std::make_unique<dn::DirichletSlab>(
@@ -945,8 +944,7 @@ TwoNewtonRegionFixture make_two_newton_region_setup(
   const auto lowered = lower(g);
   if (!lowered.ok()) { ADD_FAILURE() << lowered.diags.to_string(); return s; }
   const fuse::ClockSet clocks{g};
-  auto sched = schedule(g, lowered.dag, clocks,
-                       fuse::make_region_sizes(g, s.backend));
+  auto sched = schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, lowered.dag, s.backend));
   if (!sched.ok()) { ADD_FAILURE() << sched.diags.to_string(); return s; }
 
   auto dirichlet_a = std::make_unique<dn::DirichletSlab>(

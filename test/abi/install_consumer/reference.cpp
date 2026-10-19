@@ -97,7 +97,7 @@ int main() {
   }
   const fuse::ClockSet clocks{graph};
   const fuse::ScheduleResult sched =
-      fuse::schedule(graph, lowered.dag, clocks, fuse::make_region_sizes(graph, backend));
+      fuse::schedule(graph, lowered.dag, clocks, fuse::make_region_sizes(graph, lowered.dag, backend));
   if (!sched.ok()) {
     std::fprintf(stderr, "schedule failed: %s\n", sched.diags.to_string().c_str());
     return 1;

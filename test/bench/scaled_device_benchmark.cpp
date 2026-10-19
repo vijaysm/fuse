@@ -453,8 +453,7 @@ struct Harness {
   }
   h->dag = lowered.dag;
   const fuse::ClockSet clocks{h->graph};
-  const auto sched = schedule(h->graph, h->dag, clocks,
-                              fuse::make_region_sizes(h->graph, h->backend));
+  const auto sched = schedule(h->graph, h->dag, clocks, fuse::make_region_sizes(h->graph, h->dag, h->backend));
   if (!sched.ok()) {
     *err = fuse::Failure{"E-BENCH-SCHEDULE", sched.diags.to_string()};
     return h;

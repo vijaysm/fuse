@@ -270,7 +270,7 @@ class TwoComponentJob {
 
     const fuse::ClockSet clocks{graph};
     const auto sched =
-        schedule(graph, dag, clocks, fuse::make_region_sizes(graph, backend));
+        schedule(graph, dag, clocks, fuse::make_region_sizes(graph, dag, backend));
     EXPECT_TRUE(sched.ok()) << sched.diags.to_string();
     plan = sched.plan;
 

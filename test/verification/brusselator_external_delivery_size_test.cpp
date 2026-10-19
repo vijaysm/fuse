@@ -235,8 +235,7 @@ Result<void> initialize_on_rank(int this_rank) {
     return fuse::Failure{"E-TEST-LOWER", lowered.diags.to_string()};
   }
   const fuse::ClockSet clocks{lg.g};
-  const auto sched = fuse::schedule(lg.g, lowered.dag, clocks,
-                                    fuse::make_region_sizes(lg.g, backend));
+  const auto sched = fuse::schedule(lg.g, lowered.dag, clocks, fuse::make_region_sizes(lg.g, lowered.dag, backend));
   if (!sched.ok()) {
     return fuse::Failure{"E-TEST-SCHEDULE", sched.diags.to_string()};
   }
@@ -432,8 +431,7 @@ Result<void> initialize_disjoint_on_rank(int this_rank) {
   const auto lowered = fuse::lower(dg.g);
   if (!lowered.ok()) return fuse::Failure{"E-TEST-LOWER", lowered.diags.to_string()};
   const fuse::ClockSet clocks{dg.g};
-  const auto sched = fuse::schedule(dg.g, lowered.dag, clocks,
-                                    fuse::make_region_sizes(dg.g, backend));
+  const auto sched = fuse::schedule(dg.g, lowered.dag, clocks, fuse::make_region_sizes(dg.g, lowered.dag, backend));
   if (!sched.ok()) return fuse::Failure{"E-TEST-SCHEDULE", sched.diags.to_string()};
 
   ComponentSet components;

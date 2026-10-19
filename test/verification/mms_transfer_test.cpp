@@ -298,8 +298,7 @@ void build_plan(Fixture& f, const GraphOpts& o) {
   f.dag = lowered.dag;
 
   const fuse::ClockSet clocks{g};
-  auto sched = schedule(g, f.dag, clocks,
-                        fuse::make_region_sizes(g, f.backend));
+  auto sched = schedule(g, f.dag, clocks, fuse::make_region_sizes(g, f.dag, f.backend));
   ASSERT_TRUE(sched.ok()) << sched.diags.to_string();
   f.plan = sched.plan;
 }

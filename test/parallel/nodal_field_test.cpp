@@ -134,7 +134,7 @@ TEST(NodalTransport, EveryLocalCopyMatchesTheGlobalIdentity) {
   ASSERT_TRUE(lowered.ok()) << lowered.diags.to_string();
   const fuse::ClockSet clocks{graph};
   const auto sched =
-      fuse::schedule(graph, lowered.dag, clocks, fuse::make_region_sizes(graph, backend));
+      fuse::schedule(graph, lowered.dag, clocks, fuse::make_region_sizes(graph, lowered.dag, backend));
   ASSERT_TRUE(sched.ok()) << sched.diags.to_string();
 
   const auto view = backend.view(fuse::MeshId{0}).value();

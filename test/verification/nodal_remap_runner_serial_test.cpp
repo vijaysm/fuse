@@ -147,7 +147,7 @@ Outcome run_pair(std::size_t n_beam, std::size_t n_fluid, double vel_a, double v
   const auto lowered = fuse::lower(g);
   if (!lowered.ok()) throw std::runtime_error("lower: " + lowered.diags.to_string());
   const fuse::ClockSet clocks{g};
-  auto sched = fuse::schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, backend));
+  auto sched = fuse::schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, lowered.dag, backend));
   if (!sched.ok()) throw std::runtime_error("schedule: " + sched.diags.to_string());
 
   const auto local_count = [&](const CouplingGraph& gg, fuse::FieldId fid) -> std::size_t {

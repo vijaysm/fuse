@@ -343,8 +343,7 @@ std::unique_ptr<Fixture> build_from(CouplingGraph graph,
   f->dag = lowered.dag;
 
   const fuse::ClockSet clocks{g};
-  auto sched = schedule(g, f->dag, clocks,
-                        fuse::make_region_sizes(g, f->backend));
+  auto sched = schedule(g, f->dag, clocks, fuse::make_region_sizes(g, f->dag, f->backend));
   EXPECT_TRUE(sched.ok()) << sched.diags.to_string();
   f->plan = sched.plan;
 
@@ -885,7 +884,7 @@ TEST(Iteration, ASpacetimeChannelInAnIterationRegionIsRefusedNotSilentlyWrong) {
   ASSERT_TRUE(lowered.ok()) << lowered.diags.to_string();
   const fuse::ClockSet clocks{g};
   const auto sched =
-      schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, backend));
+      schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, lowered.dag, backend));
   // Unlike the explicit-field-transfer-hanging-off-a-component case, this construction
   // is NOT caught by `schedule()`: a space-time field transfer with a single source
   // and target step per period satisfies E-SCHED-REGION's contiguity rule
@@ -957,8 +956,7 @@ TEST(Iteration, RejectsAnExplicitChannelHangingOffAnIteratedComponent) {
   const auto lowered = lower(g);
   ASSERT_TRUE(lowered.ok()) << lowered.diags.to_string();
   const fuse::ClockSet clocks{g};
-  const auto sched = schedule(g, lowered.dag, clocks,
-                              fuse::make_region_sizes(g, backend));
+  const auto sched = schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, lowered.dag, backend));
   ASSERT_FALSE(sched.ok());
   EXPECT_NE(sched.diags.to_string().find("E-SCHED-REGION"), std::string::npos)
       << sched.diags.to_string();

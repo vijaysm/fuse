@@ -198,7 +198,7 @@ TEST(MakeRegionSizesNodal, LineMeshVertexCountIsCellsPlusOne) {
       sizing_graph("generated:line:9", Discretization::ContinuousGLL, 1, 1);
   fuse::SerialMeshBackend b;
   ASSERT_TRUE(b.load(g.mesh(MeshId{0})).ok());
-  const fuse::RegionSizes sizes = fuse::make_region_sizes(g, b);
+  const fuse::RegionSizes sizes = fuse::make_region_sizes(g, fuse::OperatorDAG{}, b);
   EXPECT_EQ(sizes(RegionId{0}, -1), 10u);
 }
 
@@ -208,7 +208,7 @@ TEST(MakeRegionSizesNodal, BoxMeshVertexCountIsTheStructuredGridFormula) {
       sizing_graph("generated:box:3x2x4", Discretization::ContinuousGLL, 1, 3);
   fuse::SerialMeshBackend b;
   ASSERT_TRUE(b.load(g.mesh(MeshId{0})).ok());
-  const fuse::RegionSizes sizes = fuse::make_region_sizes(g, b);
+  const fuse::RegionSizes sizes = fuse::make_region_sizes(g, fuse::OperatorDAG{}, b);
   EXPECT_EQ(sizes(RegionId{0}, -1), 4u * 3u * 5u);
   // The same mesh entity set's CELL count is unaffected -- region_size() on its own,
   // with no field in view, still answers the way it always has.
@@ -225,7 +225,7 @@ TEST(MakeRegionSizesNodal, QuadAndTriangleMeshesOnTheSameGridShareVertexCounts) 
                                         Discretization::ContinuousGLL, 1, 2);
     NativeMeshBackend b(/*rank=*/0, /*num_ranks=*/1);
     ASSERT_TRUE(b.load(g.mesh(MeshId{0})).ok()) << kind;
-    const fuse::RegionSizes sizes = fuse::make_region_sizes(g, b);
+    const fuse::RegionSizes sizes = fuse::make_region_sizes(g, fuse::OperatorDAG{}, b);
     EXPECT_EQ(sizes(RegionId{0}, -1), 20u) << kind;
   }
 
@@ -235,14 +235,14 @@ TEST(MakeRegionSizesNodal, QuadAndTriangleMeshesOnTheSameGridShareVertexCounts) 
         sizing_graph("generated:quad:4x3", Discretization::FV, 0, 2);
     NativeMeshBackend bq(0, 1);
     ASSERT_TRUE(bq.load(gq.mesh(MeshId{0})).ok());
-    EXPECT_EQ(fuse::make_region_sizes(gq, bq)(RegionId{0}, -1), 12u);
+    EXPECT_EQ(fuse::make_region_sizes(gq, fuse::OperatorDAG{}, bq)(RegionId{0}, -1), 12u);
   }
   {
     const CouplingGraph gt =
         sizing_graph("generated:tri:4x3", Discretization::FV, 0, 2);
     NativeMeshBackend bt(0, 1);
     ASSERT_TRUE(bt.load(gt.mesh(MeshId{0})).ok());
-    EXPECT_EQ(fuse::make_region_sizes(gt, bt)(RegionId{0}, -1), 24u);
+    EXPECT_EQ(fuse::make_region_sizes(gt, fuse::OperatorDAG{}, bt)(RegionId{0}, -1), 24u);
   }
 }
 
@@ -256,7 +256,7 @@ TEST(MakeRegionSizesNodal, HexAndTetMeshesOnTheSameGridShareVertexCounts) {
                                         Discretization::ContinuousGLL, 1, 3);
     NativeMeshBackend b(0, 1);
     ASSERT_TRUE(b.load(g.mesh(MeshId{0})).ok()) << kind;
-    const fuse::RegionSizes sizes = fuse::make_region_sizes(g, b);
+    const fuse::RegionSizes sizes = fuse::make_region_sizes(g, fuse::OperatorDAG{}, b);
     EXPECT_EQ(sizes(RegionId{0}, -1), 36u) << kind;
   }
 
@@ -266,14 +266,14 @@ TEST(MakeRegionSizesNodal, HexAndTetMeshesOnTheSameGridShareVertexCounts) {
         sizing_graph("generated:hexbox:2x2x3", Discretization::FV, 0, 3);
     NativeMeshBackend bh(0, 1);
     ASSERT_TRUE(bh.load(gh.mesh(MeshId{0})).ok());
-    EXPECT_EQ(fuse::make_region_sizes(gh, bh)(RegionId{0}, -1), 12u);
+    EXPECT_EQ(fuse::make_region_sizes(gh, fuse::OperatorDAG{}, bh)(RegionId{0}, -1), 12u);
   }
   {
     const CouplingGraph gt =
         sizing_graph("generated:tetbox:2x2x3", Discretization::FV, 0, 3);
     NativeMeshBackend bt(0, 1);
     ASSERT_TRUE(bt.load(gt.mesh(MeshId{0})).ok());
-    EXPECT_EQ(fuse::make_region_sizes(gt, bt)(RegionId{0}, -1), 72u);
+    EXPECT_EQ(fuse::make_region_sizes(gt, fuse::OperatorDAG{}, bt)(RegionId{0}, -1), 72u);
   }
 }
 
@@ -288,7 +288,7 @@ TEST(MakeRegionSizesNodal, RefusesANamedEntitySubsetForANodalField) {
                           .disc = Discretization::ContinuousGLL, .order = 1});
   fuse::SerialMeshBackend b;
   ASSERT_TRUE(b.load(g.mesh(MeshId{0})).ok());
-  const fuse::RegionSizes sizes = fuse::make_region_sizes(g, b);
+  const fuse::RegionSizes sizes = fuse::make_region_sizes(g, fuse::OperatorDAG{}, b);
   EXPECT_THROW((void)sizes(r, -1), fuse::InvariantViolation);
 }
 
@@ -297,7 +297,7 @@ TEST(MakeRegionSizesNodal, ThrowsRatherThanGuessingForAnUnimplementedDiscretizat
       sizing_graph("generated:line:5", Discretization::ContinuousGLL, 2, 1);
   fuse::SerialMeshBackend b;
   ASSERT_TRUE(b.load(g.mesh(MeshId{0})).ok());
-  const fuse::RegionSizes sizes = fuse::make_region_sizes(g, b);
+  const fuse::RegionSizes sizes = fuse::make_region_sizes(g, fuse::OperatorDAG{}, b);
   EXPECT_THROW((void)sizes(RegionId{0}, -1), fuse::InvariantViolation);
 }
 
@@ -313,7 +313,7 @@ TEST(MakeRegionSizesNodal, ThrowsRatherThanSilentlyPickingOneShapeForAMixedRegio
                           .disc = Discretization::ContinuousGLL, .order = 1});
   fuse::SerialMeshBackend b;
   ASSERT_TRUE(b.load(g.mesh(MeshId{0})).ok());
-  const fuse::RegionSizes sizes = fuse::make_region_sizes(g, b);
+  const fuse::RegionSizes sizes = fuse::make_region_sizes(g, fuse::OperatorDAG{}, b);
   EXPECT_THROW((void)sizes(r, -1), fuse::InvariantViolation);
 }
 

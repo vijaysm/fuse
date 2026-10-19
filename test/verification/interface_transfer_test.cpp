@@ -173,8 +173,7 @@ RunResult run_once(const TransferCase& s) {
   if (!lowered.ok()) throw std::runtime_error(lowered.diags.to_string());
 
   const fuse::ClockSet clocks{g};
-  auto sched = fuse::schedule(g, lowered.dag, clocks,
-                              fuse::make_region_sizes(g, backend));
+  auto sched = fuse::schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, lowered.dag, backend));
   if (!sched.ok()) throw std::runtime_error(sched.diags.to_string());
 
   ComponentSet components;
@@ -578,12 +577,12 @@ NodalResult run_consistent_pair(std::size_t n_beam, std::size_t n_fluid,
   const auto lowered = lower(g);
   if (!lowered.ok()) throw std::runtime_error("lower: " + lowered.diags.to_string());
   const fuse::ClockSet clocks{g};
-  auto sched = fuse::schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, backend));
+  auto sched = fuse::schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, lowered.dag, backend));
   if (!sched.ok()) throw std::runtime_error("schedule: " + sched.diags.to_string());
 
   // One buffer per field, sized by what the backend says the mesh entity set holds;
   // a nodal field needs n+1 values, which is what this test is checking.
-  const auto sizes = fuse::make_region_sizes(g, backend);
+  const auto sizes = fuse::make_region_sizes(g, lowered.dag, backend);
   NodalResult out;
   class Side final : public fuse::Component {
    public:
@@ -699,7 +698,7 @@ TEST(InterfaceTransfer, NodalFieldPassesThroughAPlainChannelOnTheSameMesh) {
   const auto lowered = lower(g);
   ASSERT_TRUE(lowered.ok()) << lowered.diags.to_string();
   const fuse::ClockSet clocks{g};
-  const auto sizes = fuse::make_region_sizes(g, backend);
+  const auto sizes = fuse::make_region_sizes(g, lowered.dag, backend);
   auto sched = fuse::schedule(g, lowered.dag, clocks, sizes);
   ASSERT_TRUE(sched.ok()) << sched.diags.to_string();
 
@@ -771,7 +770,7 @@ TEST(InterfaceTransfer, AnUnimplementedNodalOrderRefusesThroughTheRealScheduling
   const auto lowered = lower(g);
   ASSERT_TRUE(lowered.ok()) << lowered.diags.to_string();
   const fuse::ClockSet clocks{g};
-  const auto sizes = fuse::make_region_sizes(g, backend);
+  const auto sizes = fuse::make_region_sizes(g, lowered.dag, backend);
 
   bool threw = false;
   std::string what;
@@ -915,7 +914,7 @@ TEST(InterfaceTransfer, BothSidesNodalOnMultipleRanksRefuses) {
   const auto lowered = lower(g);
   ASSERT_TRUE(lowered.ok()) << lowered.diags.to_string();
   const fuse::ClockSet clocks{g};
-  auto sched = fuse::schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, backend));
+  auto sched = fuse::schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, lowered.dag, backend));
   ASSERT_TRUE(sched.ok()) << sched.diags.to_string();
 
   class Side final : public fuse::Component {
@@ -1011,7 +1010,7 @@ TEST(InterfaceTransfer, ApplyNodalDistRemapHasAConstantMeasuredPerPeriodAllocati
   const auto lowered = lower(g);
   ASSERT_TRUE(lowered.ok()) << lowered.diags.to_string();
   const fuse::ClockSet clocks{g};
-  auto sched = fuse::schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, backend));
+  auto sched = fuse::schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, lowered.dag, backend));
   ASSERT_TRUE(sched.ok()) << sched.diags.to_string();
 
   class Side final : public fuse::Component {

@@ -212,7 +212,7 @@ struct Rig {
   const auto lowered = lower(graph);
   if (!lowered.ok()) { out.error = lowered.diags.to_string(); return out; }
   const fuse::ClockSet clocks{graph};
-  auto sched = schedule(graph, lowered.dag, clocks, fuse::make_region_sizes(graph, rig->backend));
+  auto sched = schedule(graph, lowered.dag, clocks, fuse::make_region_sizes(graph, lowered.dag, rig->backend));
   if (!sched.ok()) { out.error = sched.diags.to_string(); return out; }
 
   fuse::RunnerConfig rcfg;

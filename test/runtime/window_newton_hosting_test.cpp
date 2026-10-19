@@ -212,7 +212,7 @@ TEST(WindowNewtonHosting, LocalNewtonVectorKeepsOnlyTheBlockThisRankHostsOnAsRan
   ASSERT_TRUE(backend.load(g.mesh(fuse::MeshId{0})).ok());
   const fuse::ClockSet clocks{g};
   const auto sched =
-      schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, backend));
+      schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, lowered.dag, backend));
   ASSERT_TRUE(sched.ok()) << sched.diags.to_string();
 
   ComponentSet components;
@@ -249,7 +249,7 @@ TEST(WindowNewtonHosting, LocalNewtonVectorKeepsOnlyTheBlockThisRankHostsOnBsRan
   ASSERT_TRUE(backend.load(g.mesh(fuse::MeshId{0})).ok());
   const fuse::ClockSet clocks{g};
   const auto sched =
-      schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, backend));
+      schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, lowered.dag, backend));
   ASSERT_TRUE(sched.ok()) << sched.diags.to_string();
 
   ComponentSet components;
@@ -296,7 +296,7 @@ TEST(WindowNewtonHosting, NoCommunicatorAndNoForcedRankRunsPurelyLocalWithNothin
   ASSERT_TRUE(backend.load(g.mesh(fuse::MeshId{0})).ok());
   const fuse::ClockSet clocks{g};
   const auto sched =
-      schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, backend));
+      schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, lowered.dag, backend));
   ASSERT_TRUE(sched.ok()) << sched.diags.to_string();
 
   ComponentSet components;

@@ -489,7 +489,7 @@ TEST(WindowRunner, SingleWindowRegionExecutesAndConverges) {
   ASSERT_TRUE(backend.load(g.mesh(fuse::MeshId{0})).ok());
   const fuse::ClockSet clocks{g};
   const auto sched =
-      schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, backend));
+      schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, lowered.dag, backend));
   ASSERT_TRUE(sched.ok()) << sched.diags.to_string();
 
   auto a_owned = std::make_unique<LinearBlock>("A", 1.0, 0.5);
@@ -560,7 +560,7 @@ TEST(WindowRunner, RefusesAWindowMemberWhoseExportIsNotTheFieldsSize) {
   ASSERT_TRUE(backend.load(g.mesh(fuse::MeshId{0})).ok());
   const fuse::ClockSet clocks{g};
   const auto sched =
-      schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, backend));
+      schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, lowered.dag, backend));
   ASSERT_TRUE(sched.ok()) << sched.diags.to_string();
   ComponentSet components;
   components.add(std::make_unique<LinearBlock>("A", 1.0, 0.5));
@@ -604,7 +604,7 @@ TEST(WindowRunner, GaussSeidelWindowWithAcceleratorNoLongerRefuses) {
   ASSERT_TRUE(backend.load(g.mesh(fuse::MeshId{0})).ok());
   const fuse::ClockSet clocks{g};
   const auto sched =
-      schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, backend));
+      schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, lowered.dag, backend));
   ASSERT_TRUE(sched.ok()) << sched.diags.to_string();
 
   auto a_owned = std::make_unique<LinearBlock>("A", 1.0, 0.5);
@@ -656,7 +656,7 @@ TEST(WindowRunner, FixedPolicyStraddleNowSucceeds) {
   ASSERT_TRUE(backend.load(g.mesh(fuse::MeshId{0})).ok());
   const fuse::ClockSet clocks{g};
   const auto sched =
-      schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, backend));
+      schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, lowered.dag, backend));
   ASSERT_TRUE(sched.ok()) << sched.diags.to_string();
 
   auto a_owned = std::make_unique<LinearBlock>("A", 1.0, 0.5);
@@ -699,7 +699,7 @@ TEST(WindowRunner, FixedPolicyStraddleWithGenuineRemapIsRejected) {
   ASSERT_TRUE(backend.load(g.mesh(fuse::MeshId{1})).ok());
   const fuse::ClockSet clocks{g};
   const auto sched =
-      schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, backend));
+      schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, lowered.dag, backend));
   ASSERT_TRUE(sched.ok()) << sched.diags.to_string();
 
   auto a_owned = std::make_unique<LinearBlock>("A", 1.0, 0.5);
@@ -736,7 +736,7 @@ TEST(WindowRunner, FixedPolicyStraddleWithRankMismatchIsRejected) {
   ASSERT_TRUE(backend.load(g.mesh(fuse::MeshId{0})).ok());
   const fuse::ClockSet clocks{g};
   const auto sched =
-      schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, backend));
+      schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, lowered.dag, backend));
   ASSERT_TRUE(sched.ok()) << sched.diags.to_string();
 
   auto a_owned = std::make_unique<LinearBlock>("A", 1.0, 0.5);
@@ -836,7 +836,7 @@ TEST(WindowRunner, WindowChannelRemapRoutedToCouplerMatchesIdentityClosedForm) {
   ASSERT_TRUE(backend.load(g.mesh(fuse::MeshId{0})).ok());
   const fuse::ClockSet clocks{g};
   const auto sched =
-      schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, backend));
+      schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, lowered.dag, backend));
   ASSERT_TRUE(sched.ok()) << sched.diags.to_string();
 
   auto a_owned = std::make_unique<LinearBlock>("A", 1.0, 0.5);
@@ -900,7 +900,7 @@ TEST(WindowRunner, NonHostedMemberTakesNoSubstepsAndMatchesTheHostedExport) {
   ASSERT_TRUE(backend.load(g.mesh(fuse::MeshId{0})).ok());
   const fuse::ClockSet clocks{g};
   const auto sched =
-      schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, backend));
+      schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, lowered.dag, backend));
   ASSERT_TRUE(sched.ok()) << sched.diags.to_string();
 
   // --- Reference: both members hosted (this_process unset, the default

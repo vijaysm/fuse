@@ -222,7 +222,7 @@ RunOutcome run_window_newton_petsc(const CouplingGraph& g, const RunnerConfig& c
   }
   const fuse::ClockSet clocks{g};
   const auto sched =
-      fuse::schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, backend));
+      fuse::schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, lowered.dag, backend));
   if (!sched.ok()) { out.error = sched.diags.to_string(); return out; }
 
   auto a = std::make_unique<LinearOdeComponent>("A", kAA, kAB, kAX0);
@@ -367,8 +367,7 @@ TEST(WindowNewtonPetscMpi, ThreeRanksWithAnUncoupledThirdMatchTheReference) {
     fuse::SerialMeshBackend backend;
     ASSERT_TRUE(backend.load(mpi_graph.mesh(fuse::MeshId{0})).ok());
     const fuse::ClockSet clocks{mpi_graph};
-    const auto sched = fuse::schedule(mpi_graph, lowered.dag, clocks,
-                                      fuse::make_region_sizes(mpi_graph, backend));
+    const auto sched = fuse::schedule(mpi_graph, lowered.dag, clocks, fuse::make_region_sizes(mpi_graph, lowered.dag, backend));
     ASSERT_TRUE(sched.ok()) << sched.diags.to_string();
 
     auto a = std::make_unique<LinearOdeComponent>("A", kAA, kAB, kAX0);

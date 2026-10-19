@@ -321,7 +321,7 @@ std::unique_ptr<Harness> build(const Scenario& s) {
   EXPECT_TRUE(lowered.ok()) << lowered.diags.to_string();
   h->dag = lowered.dag;
   const fuse::ClockSet clocks{g};
-  auto sched = schedule(g, h->dag, clocks, fuse::make_region_sizes(g, h->backend));
+  auto sched = schedule(g, h->dag, clocks, fuse::make_region_sizes(g, h->dag, h->backend));
   EXPECT_TRUE(sched.ok()) << sched.diags.to_string();
   h->plan = sched.plan;
 
@@ -745,7 +745,7 @@ RegionOutcome run_region(Space space, int periods) {
   const auto lowered = lower(g);
   EXPECT_TRUE(lowered.ok()) << lowered.diags.to_string();
   const fuse::ClockSet clocks{g};
-  auto sched = schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, backend));
+  auto sched = schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, lowered.dag, backend));
   EXPECT_TRUE(sched.ok()) << sched.diags.to_string();
 
   ComponentSet components;

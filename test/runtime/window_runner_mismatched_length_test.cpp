@@ -200,7 +200,7 @@ TEST(WindowRunnerMismatchedLength, InitializeAndOnePeriodSucceedWithoutOverflow)
 
   const fuse::ClockSet clocks{g};
   const auto sched =
-      fuse::schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, backend));
+      fuse::schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, lowered.dag, backend));
   ASSERT_TRUE(sched.ok()) << sched.diags.to_string();
 
   auto comp_a = std::make_unique<VectorBlock>("A", 4, /*a=*/1.0, /*k=*/0.5);

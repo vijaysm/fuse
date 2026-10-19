@@ -563,7 +563,7 @@ TEST(SerialMesh, MakeRegionSizesReportsTheBackendsCounts) {
       two_mesh_graph("generated:box:3x3x3", "generated:line:11");
   SerialMeshBackend b;
   ASSERT_NO_FATAL_FAILURE(load_graph_meshes(b, g));
-  const fuse::RegionSizes sizes = make_region_sizes(g, b);
+  const fuse::RegionSizes sizes = make_region_sizes(g, fuse::OperatorDAG{}, b);
   EXPECT_EQ(sizes(RegionId{0}, -1), 27u);
   EXPECT_EQ(sizes(RegionId{1}, -1), 11u);
 }
@@ -573,7 +573,7 @@ TEST(SerialMesh, MakeRegionSizesHandlesABoundaryRegion) {
                                          "generated:line:3", "left", 2);
   SerialMeshBackend b;
   ASSERT_NO_FATAL_FAILURE(load_graph_meshes(b, g));
-  const fuse::RegionSizes sizes = make_region_sizes(g, b);
+  const fuse::RegionSizes sizes = make_region_sizes(g, fuse::OperatorDAG{}, b);
   EXPECT_EQ(sizes(RegionId{0}, -1), 8u);
 }
 
@@ -585,7 +585,7 @@ TEST(SerialMesh, MakeRegionSizesThrowsRatherThanReturningZero) {
                                          "generated:line:3", "nonexistent", 2);
   SerialMeshBackend b;
   ASSERT_NO_FATAL_FAILURE(load_graph_meshes(b, g));
-  const fuse::RegionSizes sizes = make_region_sizes(g, b);
+  const fuse::RegionSizes sizes = make_region_sizes(g, fuse::OperatorDAG{}, b);
   EXPECT_THROW((void)sizes(RegionId{0}, -1), std::runtime_error);
   EXPECT_EQ(sizes(RegionId{1}, -1), 3u);  // the healthy region still answers
 }
@@ -595,7 +595,7 @@ TEST(SerialMesh, MakeRegionSizesThrowsOnAnOutOfRangeRegionId) {
       two_mesh_graph("generated:box:2x2x2", "generated:line:3");
   SerialMeshBackend b;
   ASSERT_NO_FATAL_FAILURE(load_graph_meshes(b, g));
-  const fuse::RegionSizes sizes = make_region_sizes(g, b);
+  const fuse::RegionSizes sizes = make_region_sizes(g, fuse::OperatorDAG{}, b);
   EXPECT_THROW((void)sizes(RegionId{}, -1), fuse::InvalidArgument);       // invalid
   EXPECT_THROW((void)sizes(RegionId{7}, -1), fuse::InvalidArgument);      // past the end
 }
@@ -619,7 +619,7 @@ TEST(SerialMesh, BufferPlanIsSizedByTheRealMesh) {
   ASSERT_TRUE(timed.ok()) << timed.error().message;
 
   const fuse::BufferPlan plan =
-      plan_buffers(dag, timed.value(), make_region_sizes(g, b));
+      plan_buffers(dag, timed.value(), make_region_sizes(g, dag, b));
   ASSERT_EQ(plan.buffers.size(), dag.arc_count());
   ASSERT_GT(plan.buffers.size(), 0u);
   for (const auto& decl : plan.buffers) {
@@ -708,8 +708,8 @@ TEST(SerialMesh, MakeRegionSizesIsIndependentOfBackendLoadOrder) {
   ASSERT_TRUE(backwards.load(g.mesh(MeshId{1})).ok());
   ASSERT_TRUE(backwards.load(g.mesh(MeshId{0})).ok());
 
-  const fuse::RegionSizes a = make_region_sizes(g, forwards);
-  const fuse::RegionSizes b = make_region_sizes(g, backwards);
+  const fuse::RegionSizes a = make_region_sizes(g, fuse::OperatorDAG{}, forwards);
+  const fuse::RegionSizes b = make_region_sizes(g, fuse::OperatorDAG{}, backwards);
   EXPECT_EQ(a(RegionId{0}, -1), 27u);
   EXPECT_EQ(a(RegionId{1}, -1), 11u);
   EXPECT_EQ(b(RegionId{0}, -1), 27u);
@@ -725,7 +725,7 @@ TEST(SerialMesh, MakeRegionSizesThrowsWhenTheBackendNeverLoadedTheMesh) {
   ASSERT_TRUE(b.load(MeshDecl{.name = "unrelated",
                               .source = "generated:box:9x9x9"}).ok());
   ASSERT_TRUE(b.load(g.mesh(MeshId{1})).ok());  // "mb"
-  const fuse::RegionSizes sizes = make_region_sizes(g, b);
+  const fuse::RegionSizes sizes = make_region_sizes(g, fuse::OperatorDAG{}, b);
   EXPECT_EQ(sizes(RegionId{1}, -1), 11u);
   // Mesh entity set 0 lives on "ma", which was never loaded. Positionally it would
   // have resolved to the 9x9x9 box and returned 729.
