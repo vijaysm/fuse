@@ -6528,6 +6528,20 @@ rank before the port-name `Bcast`, so a rank-0-only failure no longer leaves its
 collective. The path is behind `FUSE_ENABLE_CONNECT_ACCEPT`, OFF on the host this round built on, so the
 fix compiled but could not be exercised; it runs when this entry's accept rows run.
 
+
+**Isolated to the MPI library (lead, 2026-10-19):** `tools/probe-intercomm-merge.c`, a 60-line program with no
+FUSE code (accept/connect over a port file, then `MPI_Intercomm_merge`), reproduces the hangs on the owner's
+machine with MPICH 5.0.0a1 and the D65 provider pinning. Six runs per layout: acceptor 1 + connector 1: 5 OK;
+2 + 1: 3 OK (2 hung in the merge, 1 in connect); 2 + 3: 2 OK; 3 + 2: 1 OK. Hangs occur both inside
+`MPI_Comm_connect`/`MPI_Comm_accept` (no rank reports the intercomm formed) and inside `MPI_Intercomm_merge`
+(every rank reports formed, none reports merged). With the default libfabric provider connect never completes.
+FUSE's rows match: `parallel.connect.chain.3` (single-rank acceptors throughout) passed 7 of 7 the same day;
+`parallel.connect.accept.2+3` 0 of 5, `verification.brusselator.participants.accept.{3,5}` 0 of 4 and
+`parallel.connect.chain.4` 0 of 3, all sampled inside `MPI_Intercomm_merge` or `MPI_Comm_connect`/`accept`
+before any FUSE collective. The failure rate rises with the process count, so the configure-time probe
+(`cmake/FuseMpiDynamic.cmake`, one rank a side) measures "working" on a library that is not usable for the
+multi-rank layouts. Open: the owner chooses between a released MPICH, Open MPI, or an MPMD-only launch for
+these rows; until then the accept rows are expected red on this host and are not evidence about FUSE.
 ### ~~D22. A shared Kokkos aborts the process at exit~~ — CLOSED 2026-10-09
 
 **What it was.** `Kokkos::initialize()` registers its own exit hook, and that hook ran
