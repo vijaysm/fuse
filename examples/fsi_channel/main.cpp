@@ -214,7 +214,7 @@ int main(int argc, char** argv) {
   }
   const fuse::ClockSet clocks{graph};
   auto sched = fuse::schedule(graph, lowered.dag, clocks,
-                              fuse::make_region_sizes(graph, backend));
+                              fuse::make_region_sizes(graph, lowered.dag, backend));
   if (!sched.ok()) {
     std::fprintf(stderr, "schedule: %s\n", sched.diags.to_string().c_str());
     return 1;

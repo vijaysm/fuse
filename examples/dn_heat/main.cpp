@@ -437,7 +437,7 @@ DualOutcome run_dual_substrate_case(fuse::NewtonSubstrate substrate_a,
 
   const fuse::ClockSet clocks{graph};
   auto sched = schedule(graph, lowered.dag, clocks,
-                        fuse::make_region_sizes(graph, backend));
+                        fuse::make_region_sizes(graph, lowered.dag, backend));
   if (!sched.ok()) { o.error = sched.diags.to_string(); return o; }
 
   fuse::ComponentSet components;
@@ -574,7 +574,7 @@ Outcome run_case(fuse::AccelConfig accel, int max_iterations,
 
   const fuse::ClockSet clocks{graph};
   auto sched = schedule(graph, lowered.dag, clocks,
-                        fuse::make_region_sizes(graph, backend));
+                        fuse::make_region_sizes(graph, lowered.dag, backend));
   if (!sched.ok()) { o.error = sched.diags.to_string(); return o; }
 
   if (dump) {
@@ -692,7 +692,7 @@ Outcome run_case(fuse::NewtonConfig cfg, int max_iterations,
 
   const fuse::ClockSet clocks{graph};
   auto sched = schedule(graph, lowered.dag, clocks,
-                        fuse::make_region_sizes(graph, backend));
+                        fuse::make_region_sizes(graph, lowered.dag, backend));
   if (!sched.ok()) { o.error = sched.diags.to_string(); return o; }
 
   if (dump) {
