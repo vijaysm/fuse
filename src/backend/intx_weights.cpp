@@ -1567,10 +1567,37 @@ struct Audit {
 /// Send each halo column's share of the coverage and of the column sum to the
 /// rank that owns the cell, and add it there. A no-op without a halo, so the
 /// serial path is bit-for-bit what it was.
+///
+/// KNOWN_ISSUES D82 round 12 (HOST-MEASURED, RemapHaloMpiSphere.Extensive...,
+/// 2/3 ranks): this USED to early-return on `src.not_owned == 0` -- "this
+/// rank holds no halo copies, so nothing of mine needs folding" -- which is
+/// true for EVERY rank only in the serial/no-halo case this comment's own
+/// intent names, but is a LOCALLY evaluated condition in a genuinely
+/// partitioned halo, where it is entirely possible for rank A to hold zero
+/// halo copies (so it skipped the call) while rank B holds some that belong
+/// to cells A OWNS -- B's own accumulate_remap_halo call still runs (it is
+/// the collective's one and only call on B), but A, having never called it
+/// at all, never receives the contribution MOAB routes to its owner. The
+/// owned slot A reads afterwards is still whatever LOCAL intersection A's
+/// own rank computed -- zero, for a source cell whose only intersection
+/// happened on B's adopted copy -- which is exactly `min_src_coverage=0`
+/// "a source cell on this rank whose covering target cells all live on
+/// another rank" the host measured. This is the same class of bug D27
+/// (`accumulate_remap_halo`'s own since-fixed `ghost_n==0` skip) and round
+/// 7 (`adopt_remap_halo`'s collective-agreement branch) were about: a
+/// per-rank, not collectively-agreed, condition deciding whether to enter a
+/// collective. Fixed by removing it: `accumulate_remap_halo` (via
+/// `run_halo_exchange`) already has its OWN collectively-consistent
+/// short-circuits (`halo() == nullptr`, `ex.req_counts.empty()`,
+/// `!pr.participates`), each evaluated from state every rank in the same
+/// communicator necessarily agrees on (the halo was built, or not, by the
+/// SAME collective `build_remap_halo` call) -- calling it unconditionally
+/// whenever a backend exists is the serial-path no-op this function's own
+/// header already promises, now made safe for the general partitioned case.
 [[nodiscard]] Result<void> fold_halo_contributions(const Side& src,
                                                    std::vector<double>& covered,
                                                    std::vector<double>& col_sum) {
-  if (src.not_owned == 0 || src.backend == nullptr) {
+  if (src.backend == nullptr) {
     return Result<void>::success();
   }
   const Result<void> a =

@@ -481,6 +481,16 @@ TEST(RemapHaloMpiSphere, ExtensiveChannelConservesTheDeliveredTotalAcrossTheSphe
 
   const auto halo = fuse::build_remap_halo(reversed, f.graph, f.backend);
   ASSERT_TRUE(halo.ok()) << halo.error().code << ": " << halo.error().message;
+  // Round 12 build item (1): the halo under test is (source=OCN,
+  // target=ATM) -- a DIFFERENT (mesh, mesh, dim) pair than the fixture's
+  // own default direction -- so assert it exists BEFORE trusting any
+  // coverage/conservation number the weight build reports; a silently
+  // missing or wrong-direction halo should fail HERE, not show up later
+  // as an unexplained coverage gap.
+  ASSERT_TRUE(f.backend.has_remap_halo(f.omid, f.amid, 2))
+      << "build_remap_halo(reversed) reported success but has_remap_halo "
+         "does not see a halo for (OCN source, ATM target) -- the two "
+         "disagree about what was just built";
 
   const auto w = fuse::build_weights(reversed, f.graph, f.backend);
   ASSERT_TRUE(w.ok()) << w.error().code << ": " << w.error().message;
@@ -510,6 +520,20 @@ TEST(RemapHaloMpiSphere, ExtensiveChannelConservesTheDeliveredTotalAcrossTheSphe
   for (std::size_t i = 0; i < src_view->entity_count(2); ++i) {
     if (src_view->is_owned(2, i)) local_source_total += 1.0;
   }
+
+  // Round 12 build item (3): per-rank attribution, printed UNCONDITIONALLY
+  // (every rank, not just rank 0) so a host run can localise any remaining
+  // gap to a specific rank or boundary rather than only seeing the
+  // already-reduced global numbers below.
+  int this_rank = 0;
+  MPI_Comm_rank(MPI_COMM_WORLD, &this_rank);
+  std::fprintf(stderr,
+              "[RemapHaloMpiSphere.Extensive] rank=%d local_src_cells=%zu "
+              "local_tgt_cells=%zu adopted_src_halo_cells=%zu "
+              "local_source_mass=%.17g local_delivered_mass=%.17g\n",
+              this_rank, src_view->entity_count(2), tgt_view->entity_count(2),
+              f.backend.remap_halo_size(f.omid, 2), local_source_total,
+              local_target_total);
 
   double global_target_total = 0.0, global_source_total = 0.0;
   ASSERT_EQ(MPI_Allreduce(&local_target_total, &global_target_total, 1,
@@ -555,6 +579,9 @@ TEST(RemapHaloMpiSphere, IntensiveChannelPreservesAConstantFieldAcrossTheSphereP
   // of them.
   const auto halo = fuse::build_remap_halo(f.plan, f.graph, f.backend);
   ASSERT_TRUE(halo.ok()) << halo.error().code << ": " << halo.error().message;
+  ASSERT_TRUE(f.backend.has_remap_halo(f.amid, f.omid, 2))
+      << "build_remap_halo(f.plan) reported success but has_remap_halo does "
+         "not see a halo for (ATM source, OCN target)";
 
   const auto w = fuse::build_weights(f.plan, f.graph, f.backend);
   ASSERT_TRUE(w.ok()) << w.error().code << ": " << w.error().message;
@@ -562,6 +589,22 @@ TEST(RemapHaloMpiSphere, IntensiveChannelPreservesAConstantFieldAcrossTheSphereP
       << "OCN (regional target) must be fully covered by ATM (global "
          "source) -- the precondition for a non-vacuous constant-"
          "preservation check";
+
+  // Round 12 build item (3): per-rank attribution, every rank.
+  {
+    int this_rank = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &this_rank);
+    const auto* src_view = f.backend.view(f.amid).value();
+    const auto* tgt_view = f.backend.view(f.omid).value();
+    std::fprintf(stderr,
+                "[RemapHaloMpiSphere.Intensive] rank=%d local_src_cells=%zu "
+                "local_tgt_cells=%zu adopted_src_halo_cells=%zu "
+                "min_src_coverage(reduced)=%.17g min_tgt_coverage(reduced)=%.17g "
+                "max_row_defect(reduced)=%.17g\n",
+                this_rank, src_view->entity_count(2), tgt_view->entity_count(2),
+                f.backend.remap_halo_size(f.amid, 2), w.value().min_src_coverage,
+                w.value().min_tgt_coverage, w.value().max_row_defect);
+  }
 
   // Derived tolerance, NOT picked. Same O(h^2) mechanism as the Extensive
   // test above, now on the ROW (constant-preservation) side, so it is
