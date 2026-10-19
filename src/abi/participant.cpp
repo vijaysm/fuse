@@ -19,6 +19,7 @@
 #include "fuse/base/config.hpp"
 
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <cstdlib>   // std::atexit, for the Kokkos finalize hook; std::getenv/atoi below
 #include <mutex>
@@ -51,7 +52,6 @@
 #include "fuse/base/version.hpp"
 #include "fuse/field/field_ref.hpp"
 #include "fuse/ir/lowering.hpp"
-#include "fuse/linalg/comm.hpp"
 #include "fuse/model/component.hpp"
 #include "fuse/model/descriptor.hpp"
 #include "fuse/model/field_spec.hpp"
@@ -1176,7 +1176,7 @@ fuse_status impl_initialize_local(fuse_ctx* ctx, const fuse_null*, fuse_null*) {
       };
 #endif  // FUSE_HAVE_MPI  (without it a non-zero communicator was already refused in setup)
     }
-    // D61 round 3 (KNOWN_ISSUES.md): the component-local communicator
+    // D61 round 4 (KNOWN_ISSUES.md): the component-local communicator
     // reconcile_collective_status() (below) reconciles initialize()/
     // begin_step()/end_step()/run() over -- formed EXACTLY ONCE, here,
     // inside the SAME `if (c.communicator_set)` guard the Runner's own
@@ -1185,39 +1185,104 @@ fuse_status impl_initialize_local(fuse_ctx* ctx, const fuse_null*, fuse_null*) {
     // set() fakes (that seam only ever runs AFTER a real initialize()
     // has already completed -- see context.hpp's own comment on
     // `collective_comm_f`, and this entry's REVERTED paragraph for the
-    // host crash that conflating the two caused). `my_component`'s own
-    // RankSet (resolved at setup() time) is the participant list: the
-    // SAME component this process calls begin_step()/end_step()/run()
-    // for, so splitting by it -- rather than reconciling over the base
-    // communicator's own full span, this entry's FIRST reverted bug --
-    // is what lets a collective pair correctly even when other
-    // components of the same merged world make a different number of
-    // calls per window. fuse::linalg::make_participant_set_reducer()
-    // (src/linalg/comm_mpi.cpp) is the SAME MPI_Comm_split the Runner's
-    // own window-region reduction already trusts (src/runtime/
-    // iteration.cpp, D32's ParticipantSetReducer use) -- reused here
-    // rather than a second hand-written split, so the two cannot
-    // disagree about how a participant set becomes a sub-communicator.
+    // host crash that conflating the two caused).
+    //
+    // ROUND 3's OWN VERSION OF THIS BLOCK WAS WRONG, MEASURED ON THE HOST
+    // (KNOWN_ISSUES.md D61's own round-4 paragraph carries the stack
+    // samples). It called `fuse::linalg::make_participant_set_reducer()`
+    // -- written for a REGION, where every rank of the base communicator
+    // passes the IDENTICAL participant list, so "am I in it" (colour 0)
+    // vs "not" (MPI_UNDEFINED) is the only distinction that can ever
+    // exist. Here, each rank passes its OWN component's RankSet, not a
+    // shared one: a U-rank calls it with U's own ranks, a V-rank with
+    // V's own -- and a rank is trivially always a member of its OWN
+    // component's set, so EVERY rank computed colour 0 and
+    // `MPI_Comm_split` placed U, V and the coupler into ONE shared
+    // communicator -- exactly the base-communicator reconciliation
+    // this entry's round-2 revert already measured as a deadlock, by a
+    // different route. The lesson this page's own abi-design.md records
+    // ("a collective that pairs calls across components can only run on
+    // a communicator whose every member makes the SAME sequence of
+    // calls") applies to the SPLIT ITSELF, not only to the reconcile
+    // call it feeds.
+    //
+    // THE FIX: `colour` must be DISTINCT PER COMPONENT, not a uniform 0,
+    // so `MPI_Comm_split` partitions the base communicator by WHICH
+    // component each rank plays, not by "did I pass a valid set at all"
+    // (every rank always does). `my_component`'s own `ComponentId::
+    // value()` is exactly that -- stable, distinct per component, known
+    // identically on every rank from the SAME loaded graph. `key` orders
+    // ranks within the resulting sub-communicator by this rank's
+    // position in `my_component`'s own declared `RankSet` (unchanged
+    // from round 3). A rank with NO component at all (`my_component`
+    // never named at setup() time -- e.g. accept mode's bundled coupler-
+    // placeholder rank when it is not itself named my_component; see
+    // examples/brusselator/participants/u_main.c's own placeholder
+    // branch and lowfive_attach_decision.hpp's account of the identical
+    // posture) passes `MPI_UNDEFINED` and gets `MPI_COMM_NULL` back --
+    // `collective_comm_f` stays 0, "nothing to reconcile", precisely
+    // the semantics `ParticipantSetReducerResult::comm_f` documented for
+    // the SAME convention, reused here without the type this function no
+    // longer calls.
+    //
+    // `MPI_Comm_split` IS COLLECTIVE OVER THE WHOLE BASE COMMUNICATOR:
+    // every rank must call it TOGETHER, including one passing
+    // `MPI_UNDEFINED` -- round 3's own version called this ONLY `if (c.
+    // my_component.has_value())`, which would itself have left a
+    // componentless rank never entering the split at all, hanging every
+    // OTHER rank that did. Fixed by moving the `my_component.has_value()`
+    // check INSIDE (deciding `colour`), not around, the call.
 #if FUSE_HAVE_MPI
-    if (c.communicator_set && c.my_component.has_value()) {
-      const fuse::ComponentDecl& mc = c.graph.component(*c.my_component);
-      const fuse::Result<fuse::linalg::ParticipantSetReducerResult> split =
-          fuse::linalg::make_participant_set_reducer(static_cast<int>(c.communicator),
-                                                     mc.ranks.ranks());
-      if (!split.ok()) {
+    if (c.communicator_set) {
+      const MPI_Comm base = MPI_Comm_f2c(static_cast<MPI_Fint>(c.communicator));
+      int base_rank = 0;
+      if (base == MPI_COMM_NULL || MPI_Comm_rank(base, &base_rank) != MPI_SUCCESS) {
         return fail(&c, FUSE_ERR_RUNTIME, "E-ABI-INIT-COMM-SPLIT",
-                   std::string("fuse_initialize: could not form a component-local "
-                               "communicator for my_component '") +
-                       mc.name + "' to reconcile collective ABI entries over: " +
-                       split.error().message);
+                   "fuse_initialize: could not read this rank's own position in the "
+                   "base communicator to split a component-local communicator from it");
       }
-      // 0 on a rank this component's own RankSet does not name -- should
-      // never happen on the real setup()->initialize() path (my_component
-      // is THIS process's own component, validated against the loaded
-      // graph at setup() time), but left exactly as unformed (comm_f ==
-      // 0) rather than asserted: reconcile_collective_status() already
-      // treats that value as "nothing to reconcile".
-      c.collective_comm_f = split.value().comm_f;
+      int colour = MPI_UNDEFINED;
+      int key = 0;
+      std::optional<std::uint32_t> component_value;
+      int position = -1;
+      if (c.my_component.has_value()) {
+        const fuse::ComponentDecl& mc = c.graph.component(*c.my_component);
+        position = mc.ranks.index_of(base_rank);
+        component_value = c.my_component->value();
+      }
+      // fuse::abi_detail::decide_split_colour_key (include/fuse/abi/
+      // collective_reconcile.hpp): the pure half of this decision, tested
+      // directly at tier 0 with no MPI dependency -- see that header's own
+      // doc comment for why round 3's version of this call (`make_
+      // participant_set_reducer`) computed the wrong thing here, and what
+      // `position < 0` defensively covers (should never happen on the
+      // real setup()->initialize() path).
+      if (const auto ck = fuse::abi_detail::decide_split_colour_key(component_value, position);
+          ck.has_value()) {
+        colour = ck->colour;
+        key = ck->key;
+      }
+      MPI_Comm sub = MPI_COMM_NULL;
+      const int split_rc = MPI_Comm_split(base, colour, key, &sub);
+      if (split_rc != MPI_SUCCESS) {
+        return fail(&c, FUSE_ERR_RUNTIME, "E-ABI-INIT-COMM-SPLIT",
+                   "fuse_initialize: MPI_Comm_split (for the per-component "
+                   "reconciliation communicator) returned error code " +
+                       std::to_string(split_rc));
+      }
+      if (sub != MPI_COMM_NULL) {
+        // A fresh communicator, set to return errors rather than abort
+        // the job: every OTHER MPI call this file makes is already
+        // reported through fail() when it fails, and a communicator this
+        // function itself just created is exactly the one place where
+        // doing the same costs nothing (no caller outside this file ever
+        // sees the handle to disagree about its error-handling policy).
+        MPI_Comm_set_errhandler(sub, MPI_ERRORS_RETURN);
+        c.collective_comm_f = static_cast<int>(MPI_Comm_c2f(sub));
+      }
+      // colour == MPI_UNDEFINED: sub is MPI_COMM_NULL, collective_comm_f
+      // stays 0 -- reconcile_collective_status() already treats that as
+      // "nothing to reconcile".
     }
 #endif  // FUSE_HAVE_MPI
     // Unit 2b (D19), step (d): fuse::abi_test::force_this_process()'s own
@@ -2191,9 +2256,17 @@ fuse_status impl_request_restart_point(fuse_ctx* ctx, const fuse_null*,
 //      the other side and the whole run hangs. Fixed by reconciling over
 //      a COMPONENT-LOCAL communicator instead (see impl_initialize_local()
 //      above, where it is split once from the real base communicator by
-//      `my_component`'s own RankSet -- the same `MPI_Comm_split`
-//      `fuse::linalg::make_participant_set_reducer()` already trusts,
-//      D32).
+//      `my_component`'s own RankSet). ROUND 3's OWN FIRST ATTEMPT AT THIS
+//      reused `fuse::linalg::make_participant_set_reducer()` (D32's own
+//      `MPI_Comm_split`) directly -- wrong for a DIFFERENT reason, measured
+//      on the host and fixed in round 4: that function colours a rank by
+//      "is it a member of THE participant list passed in", written for a
+//      caller where every rank passes the SAME list; here, every rank
+//      passes its OWN component's list and is trivially always a member of
+//      it, so every rank computed colour 0 and landed back in ONE shared
+//      communicator -- the identical bug, by a different route. Round 4's
+//      own fix calls `MPI_Comm_split` directly, colouring by `my_component`'s
+//      own `ComponentId::value()` (distinct per component) instead.
 //   2. Reading `c.communicator`/`c.communicator_set` directly, which
 //      `fuse::abi_test::force_communicator_set()` can set to a value that
 //      is not a real MPI handle at all (its own doc comment: deliberately

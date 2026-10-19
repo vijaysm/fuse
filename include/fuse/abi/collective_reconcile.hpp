@@ -14,6 +14,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 namespace fuse::abi_detail {
@@ -61,6 +62,43 @@ struct ReconciledStatus {
     }
   }
   return out;
+}
+
+/// This rank's own colour and key for the round-4 per-component
+/// MPI_Comm_split (src/abi/participant.cpp's own impl_initialize_local()),
+/// decided here as pure arithmetic for the same "split for testability"
+/// reason this header's other half already gives: the decision that was
+/// WRONG in round 3 (every rank computing the SAME colour 0, landing every
+/// component on one shared communicator -- KNOWN_ISSUES.md D61's own
+/// round-4 paragraph) is exactly the part worth pinning directly, with no
+/// MPI call in the way.
+struct SplitColourKey {
+  int colour = 0;
+  int key = 0;
+};
+
+/// `component_value` is this rank's own `my_component`'s `ComponentId::
+/// value()`, or `std::nullopt` when this rank hosts no component at all
+/// (`fuse_ctx::my_component` unset at setup() time). `position_in_rankset`
+/// is this rank's own position in that component's declared `RankSet`
+/// (`RankSet::index_of`), or a negative value for the defensive case that
+/// should never happen on the real setup()->initialize() path (a resolved
+/// my_component whose own graph RankSet somehow does not name this rank).
+///
+/// Returns `std::nullopt` in either "no component" case above -- the
+/// caller maps that to MPI_UNDEFINED, since this function has no MPI
+/// dependency and is exercised directly at tier 0. Otherwise returns the
+/// `{colour, key}` pair `MPI_Comm_split` partitions the base communicator
+/// with: `colour` is `component_value` itself (DISTINCT per component --
+/// never a uniform value two different components could both produce,
+/// which is exactly the property round 3's `make_participant_set_reducer`
+/// call did not have); `key` is `position_in_rankset` unchanged, ordering
+/// ranks within the resulting sub-communicator by their own position in
+/// the component's declared RankSet.
+[[nodiscard]] inline std::optional<SplitColourKey> decide_split_colour_key(
+    std::optional<std::uint32_t> component_value, int position_in_rankset) noexcept {
+  if (!component_value.has_value() || position_in_rankset < 0) return std::nullopt;
+  return SplitColourKey{static_cast<int>(*component_value), position_in_rankset};
 }
 
 }  // namespace fuse::abi_detail
