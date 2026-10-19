@@ -6542,6 +6542,17 @@ before any FUSE collective. The failure rate rises with the process count, so th
 (`cmake/FuseMpiDynamic.cmake`, one rank a side) measures "working" on a library that is not usable for the
 multi-rank layouts. Open: the owner chooses between a released MPICH, Open MPI, or an MPMD-only launch for
 these rows; until then the accept rows are expected red on this host and are not evidence about FUSE.
+
+**Where the reproducer hangs (lead, 2026-10-19, rerun after the owner answered the firewall prompt; 3 + 2
+ranks, fourth attempt):** every one of the five processes reports the intercomm formed and then sits in
+`MPI_Intercomm_merge -> MPIR_Intercomm_merge_impl (comm_impl.c:1132) -> MPIR_Get_contextid_sparse_group
+(contextid.c:458) -> MPIR_Allreduce_intra_reduce_scatter_allgather -> MPIR_Wait`: the context-id agreement
+over the newly merged group never completes, with all five ranks inside the same collective. Rates with the
+prompt answered, 6 runs each: 1 + 1: 5 OK; 2 + 1: 4 OK; 2 + 3: 4 OK; 3 + 2: 2 OK, plus one segmentation fault
+inside MPI. The application firewall is enabled with stealth mode and lists every FUSE test binary and the
+reproducer as "Allow incoming connections", so it is not blocking; a rebuilt binary is a new one to it and
+hangs until its prompt is answered. `FI_TCP_IFACE=lo0` never connects (0 of 18). MPICH is `ch4:ofi`
+5.0.0a1 (development copy); no second MPI implementation is installed to compare against.
 ### ~~D22. A shared Kokkos aborts the process at exit~~ — CLOSED 2026-10-09
 
 **What it was.** `Kokkos::initialize()` registers its own exit hook, and that hook ran
