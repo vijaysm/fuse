@@ -158,6 +158,27 @@ requires = "mpi"
 # puts consumer_b on a rank outside the region: the mutant leaves that rank
 # blocked in linkB's Transport until ctest's TIMEOUT. Traced, compiled, not
 # yet run.
+#
+# D3 close-out session (2026-10-18/19, tree exported at 01a6d25, tier 0,
+# system compiler /usr/bin/c++): this row stays `requires = "mpi"` --
+# AChannelOutsideTheRegionStillCompletesAfterTheRegionFails has its own
+# FUSE_REQUIRE_AT_LEAST_RANKS(3) guard, so Tier 0 (no communicator) cannot
+# reach it; `tools/mutate.py --check-anchors` confirms both `old` anchors in
+# this file occur exactly once, and the full Tier 0 sweep in this session
+# reports it NOT-ASSESSED (needs MPI), never SURVIVED or KILLED, matching
+# `requires = "mpi"`'s own courtesy. Separately configured an MPI+Fortran
+# build (-DFUSE_ENABLE_MPI=ON -DFUSE_ENABLE_FORTRAN=ON) against the same
+# exported tree and built `fuse_parallel_runner_transport_test` to
+# completion (link succeeded) without running it -- MPI cannot initialise a
+# process in this sandbox (KNOWN_ISSUES.md C1), so the host run this row has
+# asked for since 2026-10-02 is still the only way to close it. Host
+# command (same shape as the row's own RECOMMENDED HOST ACTION, generalised
+# to the gate): `FUSE_MUTATE_MPI=1 tools/mutate.py --build-dir <mpi-build>
+# --area runtime` picks up both this row and
+# coupler-region-participants-missing-its-ranks (below) in one pass, or
+# isolate this one row with `ctest --test-dir <mpi-build> -R
+# '^parallel.runner_transport.3$' --output-on-failure` before and after
+# hand-applying the mutation, per the RECOMMENDED HOST ACTION above.
 
 [[mutation]]
 id = "one-transport-shared-across-every-plan"
@@ -402,6 +423,25 @@ requires = "mpi"
 # get past. The test above compiles (Tier 1, MPI-enabled) but was NOT run;
 # a host run at >= 2 ranks is what confirms the E-RT-REGION outcome on the
 # coupler's rank.
+#
+# D3 close-out session (2026-10-18/19, tree exported at 01a6d25, tier 0,
+# system compiler /usr/bin/c++): confirmed IterationRegionParticipantsInclu-
+# deADisjointCoupler is reachable only under a real communicator --
+# `FUSE_REQUIRE_AT_LEAST_RANKS(2)` skips it at Tier 0, and this session's
+# full Tier 0 mutation sweep reports this row NOT-ASSESSED (needs MPI), the
+# same courtesy `requires = "mpi"` gives every row in this file that needs a
+# launcher this sandbox does not have. `tools/mutate.py --check-anchors`
+# confirms the `old` loop-bound anchor above occurs exactly once. Separately
+# built (not run) `fuse_parallel_runner_transport_test` to completion under
+# an MPI+Fortran configuration (-DFUSE_ENABLE_MPI=ON
+# -DFUSE_ENABLE_FORTRAN=ON) against the same exported tree, confirming the
+# test compiles against the CURRENT iteration.cpp/runner_transport_test.cpp,
+# not just against the tree it was written on. Host command: `FUSE_MUTATE_
+# MPI=1 tools/mutate.py --build-dir <mpi-build> --area runtime` (covers this
+# row and region-failure-abandons-the-rest-of-the-period together), or
+# isolate this row with `ctest --test-dir <mpi-build> -R
+# '^parallel.runner_transport.4$' --output-on-failure` before and after
+# hand-applying the mutation.
 
 # KNOWN_ISSUES.md D11 (closing) / matrix cell A-SPACES-TRANSPORT: the
 # coupling hot loop moved onto Kokkos' default host execution space

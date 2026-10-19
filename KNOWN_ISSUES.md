@@ -1180,7 +1180,7 @@ its `FUSE_REQUIRE_AT_LEAST_RANKS` guard — will only show up on a host run.
 
 ---
 
-### D3. ~~Four behaviours no test detects~~ — two runtime mutations survive on the host; DEFERRED 2026-10-02 in favour of the core implementation
+### D3. ~~Four behaviours no test detects~~ -- two runtime mutations survive on the host; FIXED, awaiting host run (tests written, both confirmed MPI-only and build-verified 2026-10-18/19)
 
 **State on 2026-10-02 (host runs on `ba0892e` and `ca7f7a5`).** The hang the first host run of
 `StillRunsASecondChannelAfterARegionFailsUnderMpi` hit was a real runtime defect, fixed in
@@ -1357,6 +1357,37 @@ re-applied, since this sandbox cannot initialize MPI (C1) and mutate.py
 rewrites sources in place (forbidden while two other tracks share this
 checkout). `host_verification_needed` lists exactly what the host run must
 confirm.
+
+**2026-10-18/19 close-out session (tree exported at `01a6d25`, tier 0, system
+compiler `/usr/bin/c++`).** Both named survivors --
+`region-failure-abandons-the-rest-of-the-period` and
+`coupler-region-participants-missing-its-ranks` -- already had their killing
+tests written against this tree
+(`RunnerTransport.AChannelOutsideTheRegionStillCompletesAfterTheRegionFails`
+and `RunnerTransport.IterationRegionParticipantsIncludeADisjointCoupler`,
+`test/parallel/runner_transport_test.cpp`); both rows are already marked
+`requires = "mpi"` in `build-evidence/mutations/transport-runtime.toml`. This
+session: (1) ran `tools/mutate.py --check-anchors`, confirming all 363
+manifest anchors (including these two) occur exactly once in the current
+tree; (2) ran the full tier 0 mutation sweep (every area, no MPI launcher):
+305 killed, 2 declared equivalent, 32 not assessed (needs MPI or PETSc,
+these two among them), 17 without a baseline (all behind MOAB, PETSc or
+HDF5-restart, none enabled at tier 0), 7 not killed (5 survived + 2
+inconclusive, none of them these two rows, see the full table in this
+session's report); (3) separately configured an MPI+Fortran build against
+the same exported tree and built `fuse_parallel_runner_transport_test` to a
+successful link, confirming the test still compiles against the current
+`iteration.cpp`/`runner.cpp` -- not run, because MPI cannot initialise a
+process in this sandbox (C1). Both rows are therefore **built and
+Tier-0-confirmed-unreachable, not Tier-0-killed**; closing D3 at tier 0 is
+not possible by construction (the behaviours are collective and need a
+partner rank). Host command to finish the kill: `FUSE_MUTATE_MPI=1
+tools/mutate.py --build-dir <mpi-build> --area runtime` (covers both rows
+in one pass; `<mpi-build>` configured with `-DFUSE_ENABLE_MPI=ON
+-DFUSE_ENABLE_FORTRAN=ON -DCMAKE_Fortran_COMPILER=<gfortran>` against the
+same `$COMMON`/`$PP` as tier 0). Full per-row detail (anchor counts, the
+exact ctest row each test needs, and why Tier 0 cannot see either behaviour)
+is recorded alongside each row in `transport-runtime.toml`.
 
 ---
 
