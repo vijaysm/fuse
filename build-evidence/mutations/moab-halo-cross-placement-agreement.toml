@@ -1,0 +1,37 @@
+# KNOWN_ISSUES D81 round 7 (owner ruling 2026-10-19, "a collective path
+# never returns on a locally computed condition"): the cross-placement
+# `fuse::build_remap_halo` overload's own same-placement-vs-different-
+# placement decision (src/backend/intx_weights.cpp). Own file per the
+# review-fix protocol: do not edit moab-sphere.toml, moab-placement.toml,
+# or mutations.toml directly while other fixers hold them dirty.
+#
+# NOT HAND-VERIFIED THIS ROUND, for the same sandbox-wide reason every
+# other MOAB mutations file in this tree already states: ANY MOAB-linked
+# binary aborts on construction here (moab::Core's constructor calls
+# MPI_Init_thread; this sandbox cannot initialise MPI at all, not even at
+# one rank, and FUSE_ENABLE_MOAB hard-requires FUSE_ENABLE_MPI in this
+# tree's own CMakeLists.txt). Written and reasoned through by hand;
+# `requires = "mpi"`, the same NOT-ASSESSED courtesy every other MOAB-only
+# row in this project already uses.
+
+[[mutation]]
+id = "cross-placement-decision-ignores-source-placement"
+area = "backend"
+describes = "same_named_placement is forced to false regardless of source_placement/plan.placement's actual values, so the SAME-placement branch (SamePlacementOnBothSidesDelegatesToTheSinglePlacementPath's own case, source_placement == plan.placement) is never taken: a rank that should delegate to the single-placement path and build a real halo instead falls into the different-placement branch and either returns a bogus no-op (if it does not structurally participate in plan.placement) or wrongly refuses E-MESH-HALO-CROSS-PLACEMENT-UNIMPLEMENTED (if it does) for a case that is NOT cross-placement at all. Killed by SamePlacementOnBothSidesDelegatesToTheSinglePlacementPath's own EXPECT_EQ(via_overload.value(), via_single.value()): via_overload would answer 0 or a refusal instead of the single-placement path's own real adopted-cell count."
+file = "src/backend/intx_weights.cpp"
+old = "  const bool same_named_placement = (source_placement == plan.placement);"
+new = "  const bool same_named_placement = false;"
+target = "fuse_parallel_moab_placed_weights_mpi_test"
+test = "parallel.moab_placed_weights_mpi"
+requires = "mpi"
+
+[[mutation]]
+id = "off-placement-rank-skips-the-adopt-remap-halo-collective"
+area = "backend"
+describes = "The off-target-placement branch inside same_named_placement reverts to a LOCALLY decided, non-collective no-op (return std::size_t{0};) instead of joining MoabMeshBackend::adopt_remap_halo's own reconcile_halo -- the exact hang the owner's 2026-10-19 ruling named and the host measured in parallel.moab_placed_weights_mpi.{2,3} (SamePlacementOnBothSidesDelegatesToTheSinglePlacementPath, round 6 landing). A participating peer still delegates into the single-placement path's real covering-set build, which enters adopt_remap_halo's MPI_Allreduce over the backend's base communicator; an off-placement rank that returns here instead of joining it leaves that collective waiting for a rank that never arrives. Not killable by a fast assertion in this sandbox (the symptom is a HANG, not a wrong answer) -- caught on the host by a timeout on exactly this row, which is why KNOWN_ISSUES D81 names the measured wall-clock time (0.36-0.88 s) the fixed version actually takes, not just a pass/fail bit."
+file = "src/backend/intx_weights.cpp"
+old = "    if (!moab_backend->placement_participates(plan.placement)) {\n      return moab_backend->adopt_remap_halo(a.mid, b.mid, a.dim, nullptr, 0);\n    }"
+new = "    if (!moab_backend->placement_participates(plan.placement)) {\n      return std::size_t{0};\n    }"
+target = "fuse_parallel_moab_placed_weights_mpi_test"
+test = "parallel.moab_placed_weights_mpi"
+requires = "mpi"

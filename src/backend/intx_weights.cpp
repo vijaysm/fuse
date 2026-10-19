@@ -2269,6 +2269,32 @@ Result<std::size_t> build_remap_halo(const RemapPlan& plan, const CouplingGraph&
                  "backend; this is the '" + backend.name() + "' backend"};
   }
 
+  // KNOWN_ISSUES D81 round 7 (owner, 2026-10-19): "a collective path never
+  // returns on a locally computed condition: agree first, then every rank
+  // refuses with the same code." The ORIGINAL version of this function
+  // decided "delegate to the single-placement path" vs "refuse, the two
+  // placements genuinely differ" by comparing `a.mb == b.mb` -- the TWO
+  // SIDES' OWN moab::Core pointers, resolved per-rank. That comparison is
+  // NOT collectively consistent: for a rank outside `plan.placement`,
+  // `b.mb` reads nullptr regardless of what `source_placement` resolves
+  // to, so the SAME call can read as "same Core" on one rank and
+  // "different Core" on another, depending only on which of the two
+  // placements that particular rank happens to belong to -- READ AGAINST
+  // this file's own test (1), ARankOutsideTheTargetPlacementIsASuccess
+  // fulNoOp: there, a rank outside B (the target) that IS inside A (the
+  // source) would misread as "same Core" under the pointer test even
+  // though source_placement (A) and plan.placement (B) genuinely differ.
+  // The question this branch actually needs answered is GLOBAL to the
+  // CALL, not local to a rank: do `source_placement` and `plan.placement`
+  // name the SAME declared processor set? That is a plain equality of two
+  // `ComponentId` values (the same way `fuse::native::build_native_remap_
+  // halo` decides its own analogous question once, over the backend's
+  // single shared communicator, before any rank branches on its own
+  // local state -- read 2026-10-19, native_halo.cpp, to confirm the
+  // pattern before reusing it here) -- identical, deterministically, on
+  // every rank, with no MOAB/MPI call at all.
+  const bool same_named_placement = (source_placement == plan.placement);
+
   // The target: resolved through plan.placement, exactly as the
   // single-placement path does. `allow_empty`: a rank outside
   // plan.placement is expected not to be called here at all (the Runner's
@@ -2279,23 +2305,68 @@ Result<std::size_t> build_remap_halo(const RemapPlan& plan, const CouplingGraph&
   if (!tgt.ok()) return tgt.error();
   Side& b = tgt.value();
 
-  // A rank structurally outside the target's own placement has nothing to
-  // build: this call is a successful no-op for it, matching the "serial,
-  // one rank, or the identity" no-op this function's single-placement
-  // sibling already returns BUILT-with-zero-cells for.
-  if (!moab_backend->placement_participates(plan.placement)) {
-    return std::size_t{0};
-  }
-
   // The source: resolved through source_placement, NOT plan.placement --
   // this is the whole point of the overload. `allow_empty` for the
   // identical reason: this target rank may legitimately own none of the
   // source placement's own processor set's local chunk overlapping it
-  // (checked geometrically below, not assumed).
+  // (checked geometrically below, not assumed). Resolved HERE,
+  // unconditionally, rather than only on a rank inside plan.placement:
+  // `a.mid` (a name lookup, never placement-dependent) is needed below
+  // even by a rank outside plan.placement, when `same_named_placement`
+  // sends it into `adopt_remap_halo` too (see the next comment).
   auto src = resolve(graph, backend, plan.src, source_placement, "source", /*allow_empty=*/true);
   if (!src.ok()) return src.error();
   Side& a = src.value();
 
+  if (same_named_placement) {
+    // SAME declared placement on both sides (the degenerate case -- no
+    // placements declared at all, or both name the identical processor
+    // set): EVERY rank of the base communicator reaches
+    // `MoabMeshBackend::adopt_remap_halo` together here, because
+    // `adopt_remap_halo`'s own `reconcile_halo` reduces over
+    // `impl_->pcomm->comm()` -- the backend's BASE communicator, not a
+    // placement's own sub-communicator. A rank outside `plan.placement`
+    // (hence with nothing of its own to contribute) does NOT return a
+    // bare, locally decided `std::size_t{0}` -- doing so let it skip
+    // `adopt_remap_halo` entirely while a participating peer (reached via
+    // the delegation just below) entered its `MPI_Allreduce` over that
+    // SAME base communicator, which then hung waiting for a peer that
+    // never arrives. MEASURED 2026-10-19 (host, lead's report):
+    // parallel.moab_placed_weights_mpi.{2,3} hung in
+    // SamePlacementOnBothSidesDelegatesToTheSinglePlacementPath for
+    // exactly this reason. It calls `adopt_remap_halo` itself instead,
+    // with no local cells to contribute -- the SAME zero-cells call this
+    // function's single-placement sibling already makes for its own
+    // "serial, one rank, or the identity" no-op (the `a.pcomm == nullptr`
+    // branch, just below in this file) -- so every rank of the base
+    // communicator, participating or not, reaches this exact collective
+    // together.
+    if (!moab_backend->placement_participates(plan.placement)) {
+      return moab_backend->adopt_remap_halo(a.mid, b.mid, a.dim, nullptr, 0);
+    }
+    if (a.dim != b.dim) {
+      return Failure{"E-REMAP-DIM",
+                   "the source cells are dimension " + std::to_string(a.dim) +
+                       " and the target cells dimension " + std::to_string(b.dim) +
+                       "; a halo pairs one with the other and needs the same dimension on "
+                       "both sides"};
+    }
+    // The EXISTING single-placement machinery already handles this
+    // correctly, and calling it is simpler and more tested than
+    // duplicating its geometry here.
+    return build_remap_halo(plan, graph, backend);
+  }
+
+  // DIFFERENT declared placements: a rank outside the target's own
+  // placement has nothing to build -- a genuine, LOCAL-ONLY no-op (no
+  // MPI collective either here or in the refusal below), so ranks may
+  // disagree about their own participation here without agreeing first --
+  // unlike the `same_named_placement` branch above, nothing downstream of
+  // either arm of this `if` ever calls `adopt_remap_halo` or any other
+  // collective.
+  if (!moab_backend->placement_participates(plan.placement)) {
+    return std::size_t{0};
+  }
   if (a.dim != b.dim) {
     return Failure{"E-REMAP-DIM",
                  "the source cells are dimension " + std::to_string(a.dim) +
@@ -2304,17 +2375,7 @@ Result<std::size_t> build_remap_halo(const RemapPlan& plan, const CouplingGraph&
                      "both sides"};
   }
 
-  // SAME Core: source_placement and plan.placement happen to resolve into
-  // the SAME moab::Core (the degenerate case -- no placements declared at
-  // all, or both names the identical processor set) -- the EXISTING
-  // single-placement machinery above already handles this correctly, and
-  // calling it is simpler and more tested than duplicating its geometry
-  // here.
-  if (a.mb == b.mb) {
-    return build_remap_halo(plan, graph, backend);
-  }
-
-  // DIFFERENT Cores: the genuinely cross-placement case this track's round
+  // The genuinely cross-placement case this track's round
   // 2 measured and could not complete in the time available (KNOWN_ISSUES
   // D5). MOAB's own covering-set construction (Intx2MeshOnSphere,
   // FindMaxEdges, construct_covering_set, all used by the single-placement
