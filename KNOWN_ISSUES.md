@@ -10278,6 +10278,61 @@ refused: a covering cell carries no positive GLOBAL_ID, so it cannot be matched 
 (test 2 at line 285); tests 1 and 3 pass; `parallel.remap_halo_mpi.{1..5}` PASS, so the default-Core load of the
 same pair does carry GLOBAL_ID. Round 8: the per-placement load path must give its covering cells the same
 GLOBAL_ID guarantee.
+
+**Round 8 fix (MoabHalo track, not yet host-verified, STAYS OPEN until it is):** the host's round-7
+run confirmed the hang is gone (both ranks of `SamePlacementOnBothSidesDelegatesToTheSinglePlacementPath`
+now agree, collectively, on the SAME outcome) but that outcome is a NEW refusal, `E-MESH-HALO`: "a
+covering cell carries no positive GLOBAL_ID, so it cannot be matched to the source cell it copies" --
+the single-placement path's real covering-set build, now actually reached for the first time on a
+placement's own Core, produced a covering cell MOAB's own exchange did not tag. Read first, as
+instructed: (a) `MoabMeshBackend::load`/`load_into_placements` -- the default Core's read
+(`impl_->base_loader.read_file`) and every placement's own read (`ctx.loader->read_file`) call the
+IDENTICAL `MeshLoader::read_file`, with the SAME `PARALLEL=READ_PART;...;PARALLEL_RESOLVE_SHARED_ENTS;
+PARALLEL_COMM=<id>` option string, differing only in which `moab::Interface`/`moab::ParallelComm` they
+target -- no step is skipped for a placement's own Core; (b) `project_onto_unit_sphere`/`sphere_radius`
+(round 6) only ever call `get_coords`/`set_coords` on vertices -- confirmed by re-reading
+`measure_sphere_radius`/`project_sphere` -- never touch a tag, an entity handle, or entity creation, so
+they are NOT implicated, as suspected; (c) the covering set IS exactly what MOAB's own
+`ParallelComm`/`Intx2MeshOnSphere` machinery creates (`construct_covering_set`, via
+`worker.set_parallel_comm(pc)`), and GLOBAL_ID propagation onto those cells depends on a REAL,
+multi-rank exchange happening at all. MEASURED, by reading the single-placement `build_remap_halo`'s
+own degenerate-communicator guard: `const int ranks = moab_backend->communicator_size();` reads the
+BACKEND's BASE communicator (`impl_->pcomm`'s own size, moab_backend.cpp's `communicator_size()`) --
+correct for the single-Core/no-placements case, where `a.pcomm` IS `impl_->pcomm` by construction, so
+the two can never disagree there -- but WRONG for a placement whose own sub-communicator is SMALLER
+than the base one: `moab_placed_weights_mpi_test.cpp`'s own `DisjointRankSets` gives placement A
+EXACTLY ONE rank ({0}) at a 2-rank run, so `communicator_size()` read 2 (the base communicator) and
+this guard -- whose own comment already says "a one-rank communicator... need no halo" -- did NOT
+shortcut, sending a genuinely 1-RANK `ParallelComm` into `Intx2MeshOnSphere`'s real, cross-rank
+covering-set construction: a configuration NO PASSING TEST in this tree had exercised before (
+`remap_halo_mpi_test.cpp` always runs the single-Core path over the FULL base communicator; a 1-rank
+run THERE takes this same shortcut before ever reaching the construction, never a 1-rank PLACEMENT
+inside a LARGER job). FIXED by reading the size of the communicator THIS CONSTRUCTION will actually
+run over (a new shared helper, `active_comm_size(void* pcomm)`, intx_weights.cpp, mirroring the "one
+shared helper, like the rescale" pattern `measure_sphere_radius`/`project_sphere` already set) instead
+of the backend's unrelated base communicator size -- the two can only ever disagree on a placement
+path, exactly the case this guard's own comment already meant to cover. The `E-MESH-HALO` refusal
+itself is UNCHANGED and did exactly its job: a genuinely untrustworthy covering cell was refused, not
+silently adopted. Confirmed (by re-reading the test, not re-running it): `SamePlacementOnBothSidesDel
+egatesToTheSinglePlacementPath`'s own `via_single` print and `EXPECT_EQ(via_overload.value(),
+via_single.value())` check were never reached on the host because `ASSERT_TRUE(via_overload.ok())`
+(the line immediately before `via_single` is even computed) failed first and returned -- with
+`via_overload` now expected to succeed, the test's own existing code reaches and exercises `via_single`
+without any test-file change. One new mutation
+(`build-evidence/mutations/moab-halo-active-comm-size.toml`, `requires = "mpi"` for the same C1 reason
+every MOAB-linked row in this project already states): reverting the guard to the backend's base
+communicator size. D81 stays OPEN until the lead's own host run confirms
+`parallel.moab_placed_weights_mpi.{2,3}` passes test (2) with a SUCCESSFUL, non-zero adopted halo and
+`via_overload`/`via_single` agreeing exactly, and that tests (1) and (3) remain unaffected.
+
+
+**Host run of round 8 (lead, 2026-10-19, `build-all` at `bc332d2` + round 8):** `parallel.moab_placed_weights_mpi.{2,3}`
+PASS (0.73 s, 0.41 s), `parallel.remap_halo_mpi.{1..5}` PASS. Limit of that measurement: the fixture's
+`DisjointRankSets` uses `split = size / 2`, so placement A is `{0}` at both 2 and 3 ranks and test 2 passes by the
+one-rank shortcut the guard now takes. No registered row runs MOAB's covering-set construction on a placement
+sub-communicator with more than one rank, so whether a multi-rank placement's covering cells carry GLOBAL_ID is
+NOT MEASURED; round 7's refusal was reached only through the wrong guard. Round 9 adds a 4-rank row with A =
+{0, 1}. D81 stays open until that row passes.
 ### D82. A general (non-nodal) FV<->FV weighted Remap on a `Conservation::Extensive` channel does not conserve the delivered total when source and target cells have different measures -- OPEN, found 2026-10-19 (RemapHalo track, round 4, while separating causes for D73's own host-measured conservation failure)
 
 **Not a halo or placement defect.** Reproduced on ONE process, no MPI, no partitioned rank sets at all --
