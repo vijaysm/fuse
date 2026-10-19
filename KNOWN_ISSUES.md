@@ -9738,6 +9738,85 @@ local source cells, `merge_halo_cells_device` copies a 1-element offsets view in
 and the exception unwinds past the collective. Round 6 fixes the empty-local-mesh merge and makes the merge
 exception-safe across the two agreement Allreduces. The harness switch `FUSE_TEST_PRINT_ALL_RANKS` (lead) keeps
 a non-zero rank's gtest printer so its failure text is visible; without it rank 1's message was lost.
+
+### D73 FIX, ROUND 6 (RemapHalo track round 5, 2026-10-19): the halo exchange itself now runs for real -- it threw on a rank with no local cells, hanging its peer; fixed both the throw and the function's own exception safety across the collective it sits inside
+
+**Root cause.** `device::merge_halo_cells_device<Space>` (mesh_merge_device.hpp) copies the EXISTING part of
+`out.cell_vertex_offsets` (and the identically-shaped `cell_face_offsets`/`face_vertex_offsets`) from
+`source`'s own array, assuming it carries at least `E_cells + 1` elements -- the canonical "ncells + 1" CSR
+size a non-empty mesh always has. A rank whose own local mesh genuinely has ZERO cells (`register_default_
+placements()`'s own "outside the processor set: an EMPTY view" rule, native_backend.cpp -- precisely the
+"rank hosts only the target" case this round's own host run exercised for the first time, now that
+`set_communicator()` lets the real exchange run) reports `cell_vertex_offsets` at extent 0, not the
+1-element `{0}` the "+1" convention implies; `cell_count()`'s own formula (`extent(0) == 0 ? 0 : extent(0) -
+1`) already documents this as a VALID, DISTINCT empty-mesh representation, but the deep_copy never checked
+for it, so copying `E_cells + 1 == 1` elements from a 0-extent source threw a Kokkos shape-mismatch
+exception -- measured on the owner's host character-for-character: `"Deprecation Error: Kokkos::deep_copy
+extents of views don't match: fuse::native::device::merge_cvo(1) (0)"`.
+
+**Why this hung rather than refused.** The throw happened on rank 1 INSIDE `build_native_remap_halo`
+(native_halo.cpp), strictly after the real collective exchange (`exchange_migration_buffers`) had already
+completed successfully on every rank, but BEFORE the function's own post-exchange verdict `MPI_Allreduce` --
+a purely local segment the function had never made exception-safe. Rank 1's exception unwound straight out
+of the function (and the test body), skipping its own call into that Allreduce; rank 0, which merged
+cleanly, reached its OWN call and blocked forever waiting for a peer that had already exited -- the standing
+rule ("a collective path never returns on a locally computed condition") violated by an uncaught exception
+rather than an early return.
+
+**Fix, both halves, as instructed.** (1) `merge_halo_cells_device`'s three "ncells/nfaces + 1"-sized
+deep_copy calls (`cell_vertex_offsets`, `cell_face_offsets`, `face_vertex_offsets`) are now guarded on
+`E_cells > 0`/`E_faces > 0`, skipping the copy entirely when there is nothing existing to preserve; every
+position of the destination array is still written unconditionally by the existing new-cells scan (when any
+new cells exist) or its own trailing single-element write (which also covers position 0 when the merged
+mesh is empty too) -- no gap either way. (2) `build_native_remap_halo`'s own merge-and-view-creation segment
+(from the device-resident merge through `NativeMeshView::create<Space>`) is now wrapped in a `try`/`catch`
+that folds any exception into the SAME `post_check` the function's own pre-existing refusal paths already
+used, so the existing post-exchange `Allreduce` still runs -- and therefore still agrees -- on every rank
+regardless of which one, if any, threw locally. The new error (`E-MESH-HALO-MERGE`) carries the original
+exception's own `what()` text.
+
+**Checked pack_halo_cells_device and exchange_migration_buffers, as instructed; neither shares the
+defect.** `pack_halo_cells_device`/`device::pack_fanout` iterate `[0, n_sends)` -- for a rank with zero
+owned cells, `n_sends == 0`, so every `parallel_for`/`parallel_scan`/`parallel_reduce` range is empty and
+NO CSR array is ever read; packing from an empty local mesh is already safe by construction, not because
+anything checks for it explicitly. `exchange_migration_buffers` routes raw byte buffers sized per
+destination rank (a standard zero-size-send-is-legal MPI pattern) with no mesh/CSR awareness at all.
+
+**Verified, tier-0, no MPI needed.** New test `NativeHaloPackMerge.RoundTripIntoAnEmptyLocalMeshAdoptsThe
+ReceivedCellsWithoutThrowing` (test/backend/native_halo_test.cpp) calls `merge_halo_cells` -- the HostSpace
+instantiation of the SAME templated `device::merge_halo_cells_device` the real failure went through -- with
+a hand-built, all-default (0-extent) local `MeshArrays` receiving a real 4-cell packed buffer from a
+populated `generated:quad:2x2` peer, no backend, graph, or MPI needed. Confirmed RED first (the fix's own
+`E_cells > 0` guard reverted by hand): the test's `EXPECT_NO_THROW` fires and reports the EXACT error text
+the owner's host measured, character for character; every other test in the binary unaffected (23/24
+pass). Restored and reconfirmed GREEN (24/24), byte-identical file (md5 d004596548ab96f72309fd8089eee85c).
+The exception-safety half (the `try`/`catch` in `build_native_remap_halo`) sits past the function's own
+`ranks <= 1` short-circuit and cannot be reached at any rank count this sandbox can run -- a mutation row
+for it is `requires = "mpi"`, host_pending, in `build-evidence/mutations/native_halo.toml`.
+
+**The 3-rank case (`RANKS 3`, `placement_for(3)`): checked by reading, not by running.** `half = 3 / 2 = 1`
+gives `provider = [0, 1)` (rank 0 only) and `consumer = [1, 3)` (ranks 1 and 2, each a 2-way split of
+consumer's own decomposition). Under the fixed `source_placement`-based resolution (round 5's own fix), BOTH
+rank 1 and rank 2 see the EMPTY view of the source mesh (both are outside provider's own `RankSet`) -- i.e.,
+BOTH ranks hit the empty-local-mesh merge path this round fixes, not just one; the fix is general (keyed on
+`E_cells`/`E_faces`, not on which or how many ranks have them), so this needs no further code change, only
+the host's own confirmation once it can run.
+
+**host_pending.** `parallel.native_remap_halo_runner.{2,3}[.device]` is STILL this round's own host-pending
+row. Per the owner's own closing instruction, D82's conservation question is reachable only once this round's
+own fix lets the halo build for real; confirming the weight-triplet trace's own numbers (16 nonzeros over 4
+adopted source cells) is the NEXT host run's job, not this round's -- D73 stays open until that row is green.
+
+
+**Host run of round 6 (lead, 2026-10-19, `build-all` at `7762be7` + round 6, 2 ranks, both traces on):** the hang
+is gone and the halo builds: rank 0 `adopted_source_cells=0`, rank 1 `adopted_source_cells=4`, no exception.
+The row then fails at `runner.initialize()` on BOTH ranks with the weight builder's own refusal: "Building
+conservative weights instead failed: the native mesh backend reports a communicator of 2 ranks, so its meshes
+are partitioned, and no remap halo has been built for this source/target pair" (regions hold 4 and 0 entities on
+rank 0, 4 and 9 on rank 1). So the halo the instruction built is not the one the weight builder looks up: the
+two-placement overload records it under a key the single-pair query does not find, or the query is made on a
+backend/view other than the one that adopted. The weight-triplet trace printed nothing (no weights were built).
+`parallel.remap_halo_mpi.{1..5}` PASS with the new rescale assertions.
 ### D74 FIX (scaled-bench track, follow-up round, 2026-10-16)
 
 **Root cause, directly diagnosed (not the corner-precision theory originally suspected).**
@@ -10095,6 +10174,56 @@ item is fixed. **Owner decision 2026-10-19:** a placement-aware rescale invoked 
 driver checks whether a mesh is on the unit sphere, or forces the rescale for every mesh); the library must
 not assume or apply a rescale on its own.
 
+**Round 6 build (MoabHalo track, not yet host-verified, STAYS OPEN until it is):** implemented the owner's
+decision. `project_onto_unit_sphere(MeshId)` now returns `SphereProjectionReport{mean_radius, applied_factor,
+already_unit}` instead of a bare `double`, and gained a sibling `project_onto_unit_sphere(MeshId,
+ComponentId)` overload; a new `sphere_radius(MeshId) const` / `sphere_radius(MeshId, ComponentId) const` pair
+returns `SphereRadiusReport{mean_radius, max_deviation}` as a pure measurement, so a driver can decide
+whether a rescale is needed before calling for one. Both placement-aware overloads resolve through the
+SAME, already-tested `native_mesh(id, placement)` placement selection `build_remap_halo` itself uses (not a
+second, independent lookup), and both pairs (query/rescale, default/placement-aware) share ONE measurement
+routine and ONE rescale routine (`measure_sphere_radius`/`project_sphere`, file-local to
+`moab_backend.cpp`) so the default and placement-aware forms cannot drift onto different formulas. A mesh
+already on the unit sphere to within `kUnitSphereTol = 1e-9` (about 4e6x `double`'s own machine epsilon,
+comfortably under Earth's ~3e-3 flattening -- stated beside the constant) is left untouched: no vertex
+coordinate is read back or rewritten, and the report says so (`already_unit = true`). The library itself
+still never calls either function (confirmed by grep across `src/` and `examples/` after every edit settled
+-- the only matches are the four functions' own definitions); the driver-side call is now made explicitly in
+`test/parallel/moab_placed_weights_mpi_test.cpp`'s fixture (rescales `smid`/`tmid` on each placement a rank
+actually participates in, before building any halo) and in `test/parallel/remap_halo_mpi_test.cpp`'s
+`SpherePairMpi` fixture (rescales the default Core for both files, with new assertions on the measured
+formula and the no-op case). `moab_placed_weights_mpi_test.cpp`'s test (2) is restored to asserting a
+SUCCESSFUL delegated halo with an equal adopted-cell count on both paths, now that the geometry refusal
+should no longer fire once the driver has rescaled; a NEW test,
+`RescalingTheDefaultCoreDoesNotAffectAPlacementsOwnCopy`, rescales only the default Core's copy of the ocean
+mesh and asserts each placement's own, independently-read copy still measures the original (Earth) radius
+through `sphere_radius(id, placement)` -- the dedicated regression for the placement-selection failure mode
+the owner named. Three new mutations (`build-evidence/mutations/moab-sphere.toml`: the no-op branch, the
+rescale formula, and the placement-selection call) are all `requires = "mpi"`, like every other MOAB-linked
+mutation in this project -- `FUSE_ENABLE_MOAB` hard-requires `FUSE_ENABLE_MPI` in this tree's own
+`CMakeLists.txt` (confirmed by a direct configure attempt, not assumed), so there is no MOAB build in this
+sandbox, tier-0 or otherwise, that can execute any of them; sandbox-side verification stopped at "compiles,
+and the un-mutated code builds and links" (`fuse-coupler-backend`, plus every MOAB/MPI test target), the
+same C1 constraint every prior round's MOAB work has hit. `docs/user/geometry.md` gained a "Meshes at
+different radii" section recording the driver-owns-the-rescale rule. **Deviation from the round-6 brief:**
+`sphere_radius`'s return type is `Result<SphereRadiusReport>` (mean radius AND max deviation), not the
+literal `Result<double>` the brief named -- "mean radius with the max deviation" needs two numbers, and the
+report mirrors `project_onto_unit_sphere`'s own report shape rather than inventing a second return
+convention. D81 stays OPEN until the lead's own host run confirms `parallel.moab_placed_weights_mpi.{2,3}`
+(all four `TEST(MoabPlacedWeightsMpi, ...)` cases in the binary, including the new rescale-then-
+build-succeeds test (2) and the new placement-selection regression test (4)) and
+`parallel.remap_halo_mpi.{1,2,3,4,5}` (the formula/no-op assertions added to `SpherePairMpi`) at
+every registered rank count.
+
+
+**Host run of round 6 (lead, 2026-10-19):** `parallel.remap_halo_mpi.{1..5}` PASS (0.36-0.88 s) with the
+measured-formula and no-op assertions, so the placement-aware rescale works on the real pair.
+`parallel.moab_placed_weights_mpi.{2,3}` now HANG in test 2 (the geometry refusal that used to fire first is
+gone): rank 0 (in placement A) is in `build_remap_halo(plan, graph, backend)` (the single-placement path) ->
+`MoabMeshBackend::adopt_remap_halo` -> `reconcile_halo` -> `MPI_Allreduce`, while rank 1 (outside A) has
+finished the test body, having printed `via_overload ok=1` (the off-placement no-op). The single-placement
+path's reconcile is collective over a communicator rank 1 never enters: a collective returning on a locally
+computed condition, which E-REMAP-GEOMETRY had masked. Round 7.
 ### D82. A general (non-nodal) FV<->FV weighted Remap on a `Conservation::Extensive` channel does not conserve the delivered total when source and target cells have different measures -- OPEN, found 2026-10-19 (RemapHalo track, round 4, while separating causes for D73's own host-measured conservation failure)
 
 **Not a halo or placement defect.** Reproduced on ONE process, no MPI, no partitioned rank sets at all --
