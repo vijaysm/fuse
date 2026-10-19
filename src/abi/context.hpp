@@ -220,20 +220,6 @@ struct fuse_ctx {
   bool               has_end_time = false;
   fuse::Rational     end_time{0};
 
-  // --- D61 (KNOWN_ISSUES.md) test-only seam ---
-  /// fuse::abi_test::force_fake_collective_peers(): when set, reconcile_
-  /// collective_status() (participant.cpp) uses THIS rank's position and
-  /// the peer statuses below, through the SAME pure arithmetic
-  /// (fuse::abi_detail::reconcile_local_statuses, include/fuse/abi/
-  /// collective_reconcile.hpp) the real MPI_Allreduce(MPI_MINLOC) glue
-  /// uses, instead of calling MPI -- the only way a tier-0 test (no MPI
-  /// runtime, C1) can exercise the full reconciliation path, including
-  /// the message a non-originating rank gets rewritten to. std::nullopt
-  /// (the default) changes nothing: every context that never calls this
-  /// seam reconciles for real (or not at all, with no communicator set).
-  std::optional<int>            test_fake_collective_self_rank;
-  std::vector<std::int32_t>     test_fake_collective_peer_statuses;
-
   // --- last_error() state ---
   std::string last_error_code;
   std::string last_error_message;

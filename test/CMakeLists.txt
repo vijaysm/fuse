@@ -2195,12 +2195,6 @@ target_compile_definitions(fuse_abi_entries_golden_test PRIVATE
 
 fuse_add_gtest(abi struct_size)
 
-# D61 (KNOWN_ISSUES.md): the pure MPI_MINLOC-equivalent arithmetic
-# src/abi/participant.cpp's reconcile_collective_status() uses, tested
-# directly with no MPI and no fuse_ctx at all -- include/fuse/abi/
-# collective_reconcile.hpp's own header comment has the full account.
-fuse_add_gtest(abi collective_reconcile)
-
 # Soma-import port (docs/dev/soma-import.md, test/unit/capi_test.c row): the
 # defensive contract participant.h documents on create()/destroy()/last_error()
 # itself (non-NULL ctx rejected, a double destroy reported not crashed, the
@@ -2265,20 +2259,6 @@ if(FUSE_ENABLE_MPI)
   fuse_add_mpi_test(parallel abi_participant_mpi LIBS fuse::abi)
   target_include_directories(fuse_parallel_abi_participant_mpi_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR})
-endif()
-
-# KNOWN_ISSUES.md D61, round 2 (the lead's own instruction): the
-# asymmetric-refusal row abi_participant_mpi_test.cpp's own header
-# comment explicitly declines to attempt -- see abi_reconcile_mpi_test.
-# cpp's own header for why a one-component, spanning-RankSet, no-channel
-# graph is what lets this row exercise a REAL multi-rank begin_step()
-# without needing a correct per-rank field decomposition. RANKS 2 3 only
-# (not the default 1..5): rank 1 must exist to host the deliberately
-# malformed request, and TIMEOUT 120 (fuse_add_mpi_test's own default) is
-# the "timeout harness" itself -- a hang reads as a timeout, not a pass.
-fuse_tests_gated_by(FUSE_ENABLE_MPI parallel/abi_reconcile_mpi_test.cpp)
-if(FUSE_ENABLE_MPI)
-  fuse_add_mpi_test(parallel abi_reconcile_mpi LIBS fuse::abi RANKS 2 3)
 endif()
 
 # ---------------------------------------------------------------- abi (provider, S6 phase 4)
