@@ -10,25 +10,47 @@
 // sides through `plan.placement` alone, exactly as the single-placement
 // case already does.
 //
-// GENERATED MESHES, not the real sphere fixture -- see this file's own
-// previous revision's note (test/parallel/moab_placed_view_mpi_test.cpp's
-// header: a generated mesh under a communicator does not actually
-// PARTITION) for why that limitation does not matter for what THIS file
-// measures: whether the halo-bridging overload can resolve a source and a
-// target through two DIFFERENT, rank-disjoint placements at all.
+// THE REAL, NON-MATCHING SPHERE PAIR (round 4 fix; FUSE_SPHERE_ATM/
+// FUSE_SPHERE_OCN, test/CMakeLists.txt), NOT a generated box mesh. Round
+// 2/3 used `generated:box:4x4x4`/`generated:box:2x2x2` (dimension 3) on
+// the stated reasoning that a generated mesh under a communicator does
+// not actually partition anyway (moab_placed_view_mpi_test.cpp's own
+// header), so a structural-resolution check did not need real geometry.
+// MEASURED WRONG, round 4 (host run at HEAD 512ab69): MOAB's own
+// covering-set construction (Intx2MeshOnSphere/FindMaxEdges/
+// construct_covering_set, src/backend/intx_weights.cpp) is declared on
+// dimension-2 SURFACES ONLY (the SAME restriction the single-placement
+// `build_remap_halo` already states and tests, remap_halo_test.cpp/
+// remap_halo_mpi_test.cpp) -- a dimension-3 fixture hits
+// E-MESH-HALO-GEOMETRY the moment ANY path through this file's own
+// overload reaches a REAL covering-set attempt (the same-Core delegation,
+// test (2) below), before the cross-placement logic under test is ever
+// exercised. READ AGAINST THE BRIEF (round 4 question 1): the production
+// couplings this item exists for (Brusselator, dn_heat) are both 2-D
+// surfaces; nothing in D5's own history or the owner's D73 decision asks
+// for a VOLUMETRIC covering set. The dimension-3 fixture was therefore an
+// accident of copying `BoxPairMpi` (remap_halo_mpi_test.cpp), which
+// deliberately uses a non-spherical box pair to test E-MESH-HALO-GEOMETRY
+// itself -- the wrong fixture to reuse for a test that needs a REAL halo
+// to actually build. Fixed by switching to the SAME non-matching
+// ATM/OCN sphere pair `RemapHaloMpiSphere`'s own tests already use
+// successfully under a real communicator (parallel.remap_halo_mpi.{1..5}
+// PASS at this HEAD) -- gated identically (`#ifdef FUSE_SPHERE_ATM`,
+// which CMake defines only when BOTH wholeATM_T.h5m and recMeshOcn.h5m
+// were found), with the same `#else` GTEST_SKIP fallback
+// moab_placed_view_mpi_test.cpp uses when they are not.
 //
-// MEASURED FINDING, round 2 (read AND built, not yet host-run -- see this
-// file's own "NOT YET RUN" paragraph): `MoabMeshBackend::set_placements`
-// gives every declared processor set its OWN `moab::Core` (moab_backend.cpp's
-// `PlacementContext::core`), and MOAB's own covering-set construction
-// (`Intx2MeshOnSphere`/`FindMaxEdges`/`construct_covering_set`,
-// src/backend/intx_weights.cpp) needs BOTH meshes in the SAME
-// `moab::Interface` -- there is no MOAB entry point that intersects a file
-// set living in one Core against a file set living in another. Bridging two
-// DIFFERENT per-placement Cores therefore needs a migrate-by-global-id
-// exchange (the MOAB analogue of `fuse::native::build_native_remap_halo`'s
-// own box-overlap/pack/merge architecture, native_halo.cpp) that is NOT YET
-// BUILT. `fuse::build_remap_halo`'s new 4-argument overload
+// MEASURED FINDING, round 2 (read AND built, not yet host-run at the
+// time): `MoabMeshBackend::set_placements` gives every declared processor
+// set its OWN `moab::Core` (moab_backend.cpp's `PlacementContext::core`),
+// and MOAB's own covering-set construction needs BOTH meshes in the SAME
+// `moab::Interface` -- there is no MOAB entry point that intersects a
+// file set living in one Core against a file set living in another.
+// Bridging two DIFFERENT per-placement Cores therefore needs a
+// migrate-by-global-id exchange (the MOAB analogue of
+// `fuse::native::build_native_remap_halo`'s own box-overlap/pack/merge
+// architecture, native_halo.cpp) that is NOT YET BUILT.
+// `fuse::build_remap_halo`'s 4-argument overload
 // (`include/fuse/backend/remap_plan.hpp`, `src/backend/intx_weights.cpp`)
 // therefore does exactly three things, all measured here: (1) when the
 // calling rank is structurally outside the TARGET's own placement, a
@@ -38,12 +60,29 @@
 // declared, or an identical processor set given for both), it delegates to
 // the EXISTING, already-tested single-placement `build_remap_halo`, and
 // this row checks that delegation reproduces the single-placement answer
-// exactly; (3) when the two Cores genuinely DIFFER (a true cross-placement
-// pair), an explicit, named refusal (`E-MESH-HALO-CROSS-PLACEMENT-
-// UNIMPLEMENTED`) rather than an incomplete or silently wrong halo.
-// KNOWN_ISSUES.md D5 records this as the measured, built-but-incomplete
-// state; closing it needs the migrate-by-global-id mechanism above, which
-// this track's own report flags as not completed in the time available.
+// exactly -- now against a REAL halo build between two genuinely
+// dimension-2 meshes, not a dimension check refusing before the
+// delegation is ever meaningfully exercised; (3) when the two Cores
+// genuinely DIFFER (a true cross-placement pair), an explicit, named
+// refusal (`E-MESH-HALO-CROSS-PLACEMENT-UNIMPLEMENTED`) rather than an
+// incomplete or silently wrong halo. KNOWN_ISSUES.md D5 records this as
+// the measured, built-but-incomplete state; closing it needs the
+// migrate-by-global-id mechanism above, which this track's own report
+// flags as not completed in the time available.
+//
+// ROUND 4, QUESTION 2 (read, not re-designed): is
+// E-MESH-HALO-CROSS-PLACEMENT-UNIMPLEMENTED on an in-B rank the refusal
+// round 2 added for the case round 3's test (3) below EXPECTS, or the
+// overload refusing where it should have adopted? Read against this
+// file's own three rows: test (3) is EXACTLY the row that asserts this
+// refusal on every in-B rank, by design, for the genuinely disjoint pair
+// -- so seeing it there is correct, not a defect. The round-3 host
+// failure was test (2)'s `ASSERT_TRUE(via_overload.ok())`, which failed
+// on an in-A rank for an UNRELATED reason (E-MESH-HALO-GEOMETRY from the
+// wrong, dimension-3 fixture, via the delegated single-placement path),
+// not because the overload answered wrongly for test (2)'s own same-Core
+// case. No refusal-path logic in `build_remap_halo`'s 4-argument overload
+// changes this round; only the fixture's mesh pair does.
 //
 // NOT YET RUN: this sandbox cannot initialise MPI at all (docs/dev/
 // testing.md; KNOWN_ISSUES.md C1), and a build with FUSE_ENABLE_MOAB AND
@@ -88,8 +127,17 @@ struct DisjointRankSets {
   }
 };
 
-/// Box geometry (try_boxes, intx_weights.cpp), NOT the real sphere fixture.
-/// Index 0 -> A (the SOURCE's own placement), index 1 -> B (the TARGET's).
+}  // namespace
+
+#ifdef FUSE_SPHERE_ATM
+
+namespace {
+
+/// The REAL, non-matching sphere pair `RemapHaloMpiSphere`'s own tests
+/// already build a halo from successfully (remap_halo_mpi_test.cpp) --
+/// atmosphere as the SOURCE, ocean as the TARGET, dimension 2 on both
+/// sides. Index 0 -> A (the SOURCE's own placement), index 1 -> B (the
+/// TARGET's).
 struct DisjointPlacementFixture {
   fuse::MoabMeshBackend backend;
   fuse::CouplingGraph graph;
@@ -101,16 +149,16 @@ struct DisjointPlacementFixture {
     EXPECT_TRUE(backend.set_communicator(world_handle()).ok());
     EXPECT_TRUE(backend.set_placements({sets.a, sets.b}).ok());
 
-    const char* src = "generated:box:4x4x4";
-    const char* tgt = "generated:box:2x2x2";
+    const char* src = FUSE_SPHERE_ATM;
+    const char* tgt = FUSE_SPHERE_OCN;
     EXPECT_TRUE(backend.load({.name = "s", .source = src}).ok());
     EXPECT_TRUE(backend.load({.name = "t", .source = tgt}).ok());
     smid = graph.add_mesh({.name = "s", .source = src});
     tmid = graph.add_mesh({.name = "t", .source = tgt});
     const fuse::RegionId srid =
-        graph.add_region({.name = "s_all", .mesh = smid, .dimension = 3});
+        graph.add_region({.name = "s_all", .mesh = smid, .dimension = 2});
     const fuse::RegionId trid =
-        graph.add_region({.name = "t_all", .mesh = tmid, .dimension = 3});
+        graph.add_region({.name = "t_all", .mesh = tmid, .dimension = 2});
     plan.src = srid;
     plan.tgt = trid;
     plan.placement = fuse::ComponentId{1};  // B, the target's own placement
@@ -167,7 +215,9 @@ TEST(MoabPlacedWeightsMpi, ARankOutsideTheTargetPlacementIsASuccessfulNoOp) {
 // which must delegate to, and reproduce exactly, the EXISTING
 // single-placement build_remap_halo -- the D5 item already closed
 // 2026-09-25, checked here as a regression guard on the new overload's
-// own "same Core" branch.
+// own "same Core" branch. Round 4: now a REAL halo build between the
+// dimension-2 ATM/OCN pair, not a dimension refusal (see this file's own
+// header, question 1).
 // ---------------------------------------------------------------------------
 TEST(MoabPlacedWeightsMpi, SamePlacementOnBothSidesDelegatesToTheSinglePlacementPath) {
   int size = 1, rank = 0;
@@ -225,6 +275,9 @@ TEST(MoabPlacedWeightsMpi, DisjointSourceAndTargetPlacementsRefuseWithTheNamedCr
   const DisjointRankSets sets(size);
 
   const auto r = fuse::build_remap_halo(f.plan, f.graph, f.backend, fuse::ComponentId{0});
+  std::fprintf(stderr, "rank %d (in B=%d): build_remap_halo(source_placement=A) ok=%d%s%s\n",
+              rank, sets.b.contains(rank) ? 1 : 0, r.ok() ? 1 : 0,
+              r.ok() ? "" : " code=", r.ok() ? "" : r.error().code.c_str());
   if (sets.b.contains(rank)) {
     ASSERT_FALSE(r.ok()) << "rank " << rank
                          << ": a target-placement rank asking to bridge a genuinely "
@@ -237,3 +290,12 @@ TEST(MoabPlacedWeightsMpi, DisjointSourceAndTargetPlacementsRefuseWithTheNamedCr
                        << r.error().message;
   }
 }
+
+#else  // !FUSE_SPHERE_ATM
+
+TEST(MoabPlacedWeightsMpi, SkippedWithoutTheSphereMeshFixture) {
+  GTEST_SKIP() << "wholeATM_T.h5m / recMeshOcn.h5m not found; pass -DFUSE_MOAB_MESHFILES=<moab-"
+                  "source>/MeshFiles/unittest to compile the halo-bridging checks";
+}
+
+#endif  // FUSE_SPHERE_ATM

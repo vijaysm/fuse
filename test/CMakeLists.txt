@@ -783,13 +783,23 @@ if(FUSE_ENABLE_MOAB)
 
     # KNOWN_ISSUES D5's last remaining half: per-placement remap WEIGHTS on
     # two independently (and, here, disjointly) decomposed MOAB processor
-    # sets. Generated box meshes, not the real sphere fixture -- see
-    # test/parallel/moab_placed_weights_mpi_test.cpp's own header for why
-    # that is enough for THIS item's own question. RANKS 2 3 only: the
-    # fixture's own disjoint A/B split needs at least 2 ranks, and this
-    # track's budget registers only what it measured (2 and 3).
+    # sets. ROUND 4: the real, non-matching ATM/OCN sphere pair, not a
+    # generated box mesh -- see test/parallel/moab_placed_weights_mpi_
+    # test.cpp's own header for why the round-2/3 generated-box fixture
+    # was wrong (dimension 3; MOAB's covering-set construction is
+    # dimension-2-surfaces-only) and gated identically to
+    # parallel.remap_halo_mpi/parallel.moab_placed_view_mpi above (an
+    # `#else GTEST_SKIP` fallback compiles when the files are absent).
+    # RANKS 2 3 only: the fixture's own disjoint A/B split needs at least
+    # 2 ranks, and this track's budget registers only what it measured
+    # (2 and 3).
     fuse_add_mpi_test(parallel moab_placed_weights_mpi LIBS fuse::backend MPI::MPI_CXX
                        RANKS 2 3 LABELS moab)
+    if(FUSE_SPHERE_ATM_FILE AND FUSE_SPHERE_OCN_FILE)
+      target_compile_definitions(fuse_parallel_moab_placed_weights_mpi_test PRIVATE
+        FUSE_SPHERE_ATM="${FUSE_SPHERE_ATM_FILE}"
+        FUSE_SPHERE_OCN="${FUSE_SPHERE_OCN_FILE}")
+    endif()
     foreach(_fuse_moab_mpi_rank 2 3)
       set_tests_properties(parallel.moab_placed_weights_mpi.${_fuse_moab_mpi_rank} PROPERTIES
         ENVIRONMENT_MODIFICATION "${_fuse_moab_env_mods}")

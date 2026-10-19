@@ -880,6 +880,63 @@ both are test-file-only corrections (`test/parallel/moab_placed_weights_mpi_test
 limit, not the test -- `fuse_test_main.cpp`'s uniform-failure reducer working as designed) is noted
 and the test fixes above do not change that reducer's behaviour.
 
+**ROUND 4 -- the fixture's own mesh pair was wrong, not the overload (host-reported, same two tests):**
+the host run (build-all at HEAD 512ab69) showed `ARankOutsideTheTargetPlacementIsASuccessfulNoOp`'s
+own rank-1 print and `SamePlacementOnBothSidesDelegatesToTheSinglePlacementPath` failing on an in-A
+rank with `E-MESH-HALO-GEOMETRY: "...these cells are dimension 3. Volume covering sets are
+UNIMPLEMENTED here..."`. READ, per the lead's two questions, rather than re-guessed:
+
+1. **Does D5 need a volumetric covering set?** No -- checked against the production couplings this
+   item exists for: Brusselator and dn_heat are both 2-D surface couplings, and nothing in D5's own
+   history or the owner's D73 decision asks for a volumetric covering set. The fixture
+   (`generated:box:4x4x4`/`generated:box:2x2x2`, dimension 3) was an accident of copying
+   `BoxPairMpi` (`test/parallel/remap_halo_mpi_test.cpp`) -- that file's OWN header comment states
+   it is "the generated, NON-SPHERICAL, NON-IDENTITY box pair" built SPECIFICALLY to exercise
+   `E-MESH-HALO-GEOMETRY` itself (a structural refusal that needs no real geometry), not to build a
+   real halo. Compounding this: `moab_placed_view_mpi_test.cpp`'s own header already states "a
+   generated mesh under a communicator does not actually PARTITION" -- round 2/3 read that as
+   license to reuse the box pair here too, but it mattered differently for THIS file: a
+   structurally-resolving no-op (test 1) or same-Core delegation (test 2) does not need a real
+   partition to be ASKED FOR, but test 2's delegation reaches the single-placement path's REAL
+   covering-set construction once the Cores match, where the box pair's dimension (not its lack of
+   partitioning) is what fails it. Fixed: the fixture now uses the SAME real, non-matching
+   ATM/OCN sphere pair (`FUSE_SPHERE_ATM`/`FUSE_SPHERE_OCN`) `RemapHaloMpiSphere`'s own tests
+   already build a halo from successfully under a real communicator
+   (`parallel.remap_halo_mpi.{1..5}` PASS at this HEAD), gated identically (`#ifdef FUSE_SPHERE_ATM`,
+   defined only when both `wholeATM_T.h5m` and `recMeshOcn.h5m` are found, with the same `#else
+   GTEST_SKIP` fallback `moab_placed_view_mpi_test.cpp` already uses) and the region dimension
+   corrected to 2. `test/CMakeLists.txt`'s registration gained the matching
+   `target_compile_definitions`.
+2. **Is `E-MESH-HALO-CROSS-PLACEMENT-UNIMPLEMENTED` on the in-B rank a bug?** No -- read against
+   this file's own three rows: test (3)
+   (`DisjointSourceAndTargetPlacementsRefuseWithTheNamedCrossPlacementGap`) is EXACTLY the row that
+   asserts this refusal on every in-B rank, by design, for the genuinely disjoint pair, so seeing it
+   there (in the host's own rank-1 print from test 1, which no longer asserts on it after round 3's
+   fix) is correct, not a defect. The actual FAILING assertion was test 2's own
+   `ASSERT_TRUE(via_overload.ok())`, which failed for an UNRELATED reason (the dimension-3 fixture's
+   `E-MESH-HALO-GEOMETRY`, reached through the delegated single-placement path once the same-Core
+   case matched) -- not because the 4-argument overload answered wrongly for test 2's own same-Core
+   case. No refusal-path logic in `build_remap_halo`'s 4-argument overload changes this round; only
+   the fixture's mesh pair and its region dimension do.
+
+**Coordination (read, not edited, per instruction):** `src/backend/remap_halo_instructions.cpp` at
+HEAD 632d9ba (RemapHalo track round 3, landed mid-round) now dispatches `OpKind::BuildRemapHalo`
+directly to EITHER the native two-placement `fuse::native::build_native_remap_halo(backend, source,
+target, dim, source_placement, placement)` overload (RemapHalo's own new work, native_halo.hpp) OR
+this item's own MOAB `fuse::build_remap_halo(plan, graph, backend, source_placement)` overload
+(guarded under `#if FUSE_HAVE_MOAB`, falling back to the single-placement entry point when MOAB is
+absent, since no `MoabMeshBackend` can exist there either) -- bypassing the generic single-placement
+`fuse::build_remap_halo(plan, graph, backend)` entirely for both backends. This item's own 4-argument
+overload's SIGNATURE is unchanged and already matches what the dispatcher calls; no edit was needed or
+made to `remap_halo_instructions.cpp`, `native_halo.hpp`, or `native_halo.cpp` this round.
+
+**Compiled (tier-0 + MOAB/MPI build, system compiler, 0 errors), NOT run** (C1): the three
+`moab_placed_weights_mpi_test.cpp` rows, now built against the real sphere pair. Full tier-0 ctest at
+this HEAD: 215/217 PASS (the 2 failures, `abi.install_consumer_c`/`abi.conformance`, are the same
+pre-existing Fortran-toolchain gap recorded in D27's own round-3 paragraph, confirmed unrelated to
+this change). `backend.native_halo` (+ `.omp1`/`.omp12`): 3/3 PASS, unaffected (this round touches no
+production code, only the test fixture and its CMake registration).
+
 
 **History.** First recorded as a coverage gap, then corrected to a capability
 gap. The Runner filled both `CommGraphSide`s from one `backend.view(MeshId)`,
@@ -979,6 +1036,14 @@ ranks, full overlap at every rank count, and all 18 `layout.*` tests pass, inclu
 
 ---
 
+
+**Host run of the round-4 fixture (lead, 2026-10-19, `build-all` at `632d9ba` + this fixture, 2 and 3 ranks):**
+the dimension-3 mask is gone and the per-rank behaviour matches the round-4 reading (B ranks refuse
+`E-MESH-HALO-CROSS-PLACEMENT-UNIMPLEMENTED`, the A rank's overload call succeeds). The row now fails one
+layer further, at test 2's same-Core delegation (line 252): `E-REMAP-GEOMETRY: the two surfaces are
+spheres of different radius (1.000000 and 6371229.000000); they are not the same domain`. `wholeATM_T.h5m`
+is a unit sphere and `recMeshOcn.h5m` is at Earth radius. Round 5 reads how the sibling sphere rows make
+this pair usable, without weakening the geometry refusal.
 ### ~~D4. Two axes of the parallel matrix have no coverage~~ — CLOSED 2026-09-28, host-verified
 
 **Host run 2026-09-28:** `ctest -R 'layout.coupler|parallel.runner_transport|parallel.remap_halo|backend.remap_halo'`
@@ -5869,7 +5934,7 @@ through `ENVIRONMENT_MODIFICATION`. The build itself still needs the variable ex
 `_machine` preset sets it for configure only); that is a property of Open MPI's compiler wrapper,
 not of this project.
 
-### D27. The native backend's remap halo has no `accumulate_remap_halo` counterpart -- FIXED, tier-0 verified 2026-10-18; multi-rank row awaiting the host
+### D27. The native backend's remap halo has no `accumulate_remap_halo` counterpart -- FIXED AND HOST-VERIFIED 2026-10-19 (round 4)
 
 **Closed for the forward direction, 2026-10-10 ("Halo" track):** `fuse::native::NativeMeshBackend`
 now builds a planar/volumetric remap halo (`build_native_remap_halo`,
@@ -6014,10 +6079,12 @@ standalone executable (its own `main()`, never calling `MPI_Init` -- this sandbo
 permitted", the same C1 constraint as every other MPI row here) built and run by hand against this
 build tree; it was not added to the test suite and leaves no new source file in this patch --
 `test/backend/native_halo_test.cpp`'s own existing `NativeHaloAccumulate` suite is the committed
-regression coverage, re-verified above. **Host-pending again:** `parallel.native_halo_mpi.{2,3}`
-need a real re-run to confirm the fix against the ACTUAL host decomposition (which may or may not
-assign `ghost_n == 0` to the identical rank the in-process reproduction did -- the FIX does not
-depend on which rank that is).
+regression coverage, re-verified above.
+
+**CLOSED, HOST-VERIFIED, round 4 (2026-10-19):** host run (owner's machine, build-all at HEAD
+512ab69) confirms `parallel.native_halo_mpi.2` AND `parallel.native_halo_mpi.3` both PASS --
+`global_owned_sum` now exactly 288 at 3 ranks, matching the in-process reproduction above exactly.
+The fix stands as measured; this item's own reverse-exchange half is closed.
 
 ### ~~D28. U's own species-core solver seam is closed; the mpmd.5 row that would first exercise it across a real two-rank U is still host-only~~ — CLOSED 2026-10-10 (host run, see D25's host paragraph)
 
