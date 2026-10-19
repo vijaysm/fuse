@@ -6553,6 +6553,16 @@ inside MPI. The application firewall is enabled with stealth mode and lists ever
 reproducer as "Allow incoming connections", so it is not blocking; a rebuilt binary is a new one to it and
 hangs until its prompt is answered. `FI_TCP_IFACE=lo0` never connects (0 of 18). MPICH is `ch4:ofi`
 5.0.0a1 (development copy); no second MPI implementation is installed to compare against.
+
+**Comparison with a released MPICH (lead, 2026-10-19, owner's choice):** the same reproducer, compiled with the
+system clang against conda-forge MPICH 5.0.2 (`ch4:ofi`, env `mpich-probe`), run with the same
+`FI_PROVIDER="tcp;ofi_rxm" FI_TCP_IFACE=en0` pinning: 2 + 1, 2 + 3 and 3 + 2 ranks 6 of 6 OK each, 1 + 1
+6 of 6 OK once the firewall prompt for the new binary had been answered (the first four 1 + 1 runs, before the
+answer, did not connect; the binary then appears in the firewall list as allowed). Without the pinning the
+released build fails outright in `MPIDI_OFI_dynamic_send`: "default nic=bridge101: No such file or directory",
+D65's interface choice. Conclusion: the development copy 5.0.0a1 at `/opt/mpich` loses messages in the merged
+communicator's context-id agreement; the released 5.0.2 does not on this machine. The provider pinning is
+still required with either.
 ### ~~D22. A shared Kokkos aborts the process at exit~~ — CLOSED 2026-10-09
 
 **What it was.** `Kokkos::initialize()` registers its own exit hook, and that hook ran
