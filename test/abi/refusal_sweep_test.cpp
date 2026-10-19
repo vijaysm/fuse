@@ -166,6 +166,52 @@ TEST(AbiRefusalSweep, SetupRefusesAnMpmdComponentWithNoCommunicator) {
   EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
 }
 
+// KNOWN_ISSUES.md D76: the Fortran handle of MPI_COMM_WORLD is 0 under Open
+// MPI (mpif.h: MPI_COMM_WORLD=0), which collided with this struct's own
+// sentinel for "no communicator supplied" -- examples/brusselator/
+// participants/{u_main.c,v_main.f90,coupler_main.c} pass exactly this
+// handle and were refused by SetupRefusesAnMpmdComponentWithNoCommunicator's
+// own check, above, on every Open MPI build (MPICH's own MPI_COMM_WORLD
+// handle, 0x44000000, never collided, so the defect was invisible there).
+// Guarded on FUSE_HAVE_MPI, like BaseCommunicatorReadsBackAFormedCommunicator
+// WhenMpiIsAvailable (struct_size_test.cpp): unlike that test, my_component
+// here IS set, so impl_setup() really does call fuse::transport::connect()
+// for this Mpmd-launched component -- safe even outside mpiexec because
+// Open MPI's singleton MPI_Init already sets MPI_APPNUM=0 for a one-process
+// job (measured on higgs, 2026-10-18: both a bare singleton MPI_Init and
+// `mpiexec -n 1` report MPI_APPNUM flag=1, appnum=0), matching the single
+// rank this graph's own RankSet{0, 1} and LaunchSpec::appnum=0 declare.
+#if FUSE_HAVE_MPI
+TEST(AbiRefusalSweep, SetupAcceptsAnMpmdComponentWithACommunicatorHandleOfZeroWhenFlagged) {
+  fuse::CouplingGraph g;
+  fuse::ComponentDecl decl{
+      .name = "upstream", .ranks = fuse::RankSet{0, 1}, .interval = fuse::Rational{1}};
+  decl.launch.mode = fuse::LaunchMode::Mpmd;
+  decl.launch.appnum = 0;
+  g.add_component(decl);
+  const auto bytes = fuse::serialize(g);
+
+  const auto* t = Table();
+  ASSERT_NE(t, nullptr);
+  fuse_ctx* ctx = CreateAndLoad(t, bytes);
+
+  fuse_setup_options opts{.struct_size = sizeof(opts)};
+  opts.communicator = 0;  // Open MPI's own MPI_COMM_WORLD handle.
+  opts.has_end_time = 0;
+  opts.my_component = "upstream";
+  opts.has_communicator = 1;  // D76: communicator == 0 is deliberately supplied.
+  EXPECT_EQ(t->setup(ctx, &opts, nullptr), FUSE_OK);
+
+  fuse_base_communicator_info info{.struct_size = sizeof(info)};
+  EXPECT_EQ(t->base_communicator(ctx, nullptr, &info), FUSE_OK);
+  EXPECT_EQ(info.formed, 1)
+      << "a flagged communicator == 0 must form the base communicator, "
+         "exactly like any other nonzero handle";
+
+  EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
+}
+#endif  // FUSE_HAVE_MPI
+
 TEST(AbiRefusalSweep, SetupRefusesANonZeroReservedField) {
   // Review 2026-10-11 AB-11: entries.def documents fuse_setup_options::
   // reserved as "must be 0"; nothing checked it until this round's fix.

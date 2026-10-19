@@ -176,13 +176,11 @@ old = """    const char* my_component =
         struct_size_covers(in->struct_size, offsetof(fuse_setup_options, my_component) +
                                                 sizeof(in->my_component))
             ? in->my_component
-            : nullptr;
-    if (in->communicator != 0) {"""
-new = """    const char* my_component = in->my_component;
-    if (in->communicator != 0) {"""
+            : nullptr;"""
+new = """    const char* my_component = in->my_component;"""
 target = "fuse_abi_struct_size_test"
 test = "abi.struct_size"
-result = "PROVED BY HAND 2026-10-03 (tools/mutate.py --area abi refuses against this uncommitted tree, the same constraint recorded for every other row in this file). Applied to a scratch ASan tree (-fsanitize=address,undefined -fno-omit-frame-pointer): AbiStructSize.OldCallerStructSizeNeverReadsMyComponent (the heap-exact-buffer test this row targets) ABORTED with 'AddressSanitizer: heap-buffer-overflow ... participant.cpp:439 in impl_setup', exactly the read this guard exists to prevent. Restored from a /tmp backup; cmp reported no difference; full rebuild (both the tier-0 bafter tree and the tier-1 b1mpi tree) confirmed the test passes again."
+result = "PROVED BY HAND 2026-10-03 (tools/mutate.py --area abi refuses against this uncommitted tree, the same constraint recorded for every other row in this file). Applied to a scratch ASan tree (-fsanitize=address,undefined -fno-omit-frame-pointer): AbiStructSize.OldCallerStructSizeNeverReadsMyComponent (the heap-exact-buffer test this row targets) ABORTED with 'AddressSanitizer: heap-buffer-overflow ... participant.cpp:439 in impl_setup', exactly the read this guard exists to prevent. Restored from a /tmp backup; cmp reported no difference; full rebuild (both the tier-0 bafter tree and the tier-1 b1mpi tree) confirmed the test passes again. Anchor text updated 2026-10-18 (KNOWN_ISSUES.md D76, abi-communicator track): the trailing `if (in->communicator != 0) {` line was dropped from the quote because D76's has_communicator field inserted a comment block and a new struct_size_covers() read between my_component's assignment and that line, and the anchor's own `old` text otherwise no longer matches the file verbatim; the my_component quote itself is untouched by D76 and was NOT re-proved by hand this round."
 
 [[mutation]]
 id = "run-external-refuses-unconditionally-not-by-hosting"
