@@ -7816,7 +7816,7 @@ package config recreates `fuse-lowfive` from them when `FUSE_ENABLE_LOWFIVE` was
 `build-lowfive` and `build-all`, and `example.demo_b` still passes. No configure-time refusal was added: nothing
 could make one fire, and the two install-consumer rows are the test that does.
 
-### D61. The participant ABI's refusals are decided rank-locally and never reconciled across a component's ranks — FIXED (tier-0); host row built 2026-10-18 (round 2), awaiting the host run (review 2026-10-11 AB-10)
+### D61. The participant ABI's refusals are decided rank-locally and never reconciled across a component's ranks — OPEN; the first fix was REVERTED 2026-10-18 after the host run (see the REVERTED paragraph)
 
 `begin_step`/`end_step`/`setup`/`initialize`/`run` return codes such as `E-ABI-STEP-ORDER` or
 `E-ABI-STEP-ALREADY-OPEN` from local state only; an out-of-turn or omitted call on one rank of a
@@ -7899,6 +7899,29 @@ Confirming on the host that every rank returns the SAME code with no
 hang, rather than the originating rank's peers stranding inside
 `resume_period()` as this entry's own opening paragraph describes, is
 what that host run settles.
+
+
+**REVERTED 2026-10-18 (lead, `1e0676b`), measured on the owner's machine at `033874e`.** The round-2 fix
+(`reconcile_collective_status()` in `src/abi/participant.cpp`, one `MPI_Allreduce(MPI_2INT, MPI_MINLOC)`
+per collective entry) was wrong in two ways the sandbox cannot see because it cannot start MPI:
+1. It reconciled over the BASE communicator (`c.communicator`, the merged world of a multi-executable
+   run), not over the component's own ranks. Different components make different numbers of
+   `begin_step`/`end_step` calls per window, so the Allreduces never pair: `verification.brusselator.
+   participants.{mpmd,accept}.{3,5}` all timed out (120 s), rows that passed the day before at `d622b50`.
+2. It called `MPI_Comm_f2c`/`MPI_Comm_rank` on whatever handle `fuse_setup_options::communicator`
+   carried. `abi.struct_size`'s `BaseCommunicatorReadsBackAFormedCommunicatorWhenMpiIsAvailable` passes
+   99, and `verification.{abi_period_boundary,brusselator_period_rollover,brusselator_u_loop_step_fix}`
+   use `fuse::abi_test::force_communicator_set(ctx, 1)`; MPICH's default error handler aborts on an
+   invalid communicator (`Abort(...) internal_Comm_rank: Invalid communicator`), so all four rows died.
+   Nothing had touched those handles before `initialize()`.
+What a correct fix needs: a COMPONENT-LOCAL communicator, split once from the real base communicator by
+`my_component` after the graph is loaded (the ABI analogue of the Runner's `ParticipantSetReducer`),
+stored in the context and freed at `destroy`; reconciliation only over that communicator and only when
+it was actually formed (never over a raw or placeholder handle); and the two tier-0 rows that model a
+communicator without MPI must stay reconciliation-free by construction. The pure arithmetic
+(`reconcile_local_statuses`) and its test were sound and can return with the fix. `parallel.abi_
+reconcile_mpi.{2,3}` also failed on the host for a different reason (`LoadedContext` returned null, test
+line 120) that the next round must explain first.
 
 ### ~~D62. The graph descriptor is host-endian while `bytes.hpp`'s canonical rules are little-endian~~ -- FIXED 2026-10-18 (Descriptor track)
 
@@ -8661,6 +8684,141 @@ succeeds, reproducing the original defect exactly), then GREEN (fix restored:
 `initialize()` refuses with `E-RT-REMAP-NO-HALO`) at ranks 2 and 3, host and `.device` twin
 (`parallel.native_remap_halo_runner.{2,3}[.device]`, all passing).
 
+### D73 FIX, ROUND 2 (RemapHalo track, 2026-10-18): the refusal above is replaced by an
+automatic halo, driven by the lowering, not by the Runner
+
+**Owner decision 2026-10-18:** the automatic-halo alternative ROUND 1 above left for the lead to
+scope is now implemented. `src/ir/rules_channel.cpp`'s new `channel_needs_remap_halo()` runs in a
+front pass (`emit_remap_halo_instructions()`, called from `lower()` BEFORE step 1's `Source` loop) and
+emits one collective `OpKind::BuildRemapHalo` instruction (fuse/ir/op.hpp) per cross-rank weighted
+(non-nodal, non-consistent) channel -- the exact branch `Runner::Impl::resolve_remap()` takes when
+`fuse::remap_moves_placement` answers false. `expand()` stamps every instance at `t = 0`,
+`TickPhase::BeforeTicks`, sorting it to the front of the compiled stream.
+
+**Where the real exchange runs, and why not inside `Runner::initialize()`.** `remap_plan.hpp`'s own
+"ORDER MATTERS" note says a remap halo must be built before `make_region_sizes`/`plan_buffers`/
+`schedule()` size any buffer on the mesh it grows -- and `schedule()` is called by the CALLER, to build
+the `ExecutionPlan` passed to `Runner`'s own constructor, before `Runner::initialize()` ever runs.
+Measured directly against this file's own test fixture (2x2/3x3 native quad meshes, disjoint
+placement): `make_region_sizes`'s `RegionSizes` callback is invoked once, synchronously, inside
+`schedule()`'s own `plan_buffers` phase, reading the backend's PRE-halo entity counts; a halo built any
+later cannot retroactively widen an `ExecutionPlan`'s already-frozen `BufferDecl::elements`, and the
+existing `E-RT-REMAP-SIZE` check (added for exactly this hazard, remap_plan.hpp's own doc) is what would
+catch the resulting mismatch. So the real geometry exchange runs in a NEW free function, `fuse::execute_
+remap_halo_instructions()` (fuse/backend/remap_halo_instructions.hpp), which a caller runs ONCE, between
+loading the mesh backend and calling `schedule()` -- the same point `build_remap_halo()` already had to
+be called manually. `Runner::Impl::resolve_remap_halo()` (new, called from `resolve_instructions()` for
+every `BuildRemapHalo` instruction, before the corresponding channel's own `Remap` instruction) only
+VERIFIES, via a local `has_remap_halo()` lookup (no MPI call -- safe because `execute_remap_halo_
+instructions()` is itself collective, so the answer is consistent across every rank of the base
+communicator by construction), and refuses `E-RT-REMAP-HALO-NOT-BUILT` when it was not. The OLDER,
+ad hoc "disjoint rank sets -> check has_remap_halo" refusal this round's own predecessor added is left
+in place, unchanged, as a second, independent gate -- defense in depth, not replaced, since it is
+already tested and already correct for the case it covers.
+
+**Both backends.** `NativeMeshBackend` builds through `fuse::build_remap_halo` -> `fuse::native::
+build_native_remap_halo`, exactly as before; `MoabMeshBackend` dispatches through the SAME `fuse::
+build_remap_halo` entry point (its own existing `dynamic_cast` split, intx_weights.cpp), so the new
+instruction covers it identically -- no MOAB-specific code was added in this round, since `fuse::build_
+remap_halo`'s own dispatcher already handled both.
+
+**IR goldens changed, by exactly the new instruction.** `test/golden/{pair_explicit,pair_accumulate_
+remap_relax,pair_iterated,window_two_member,window_two_member_jacobi}.{ir,plan}` each gained one
+`BuildRemapHalo` node at the front (two, for the two-channel window fixtures) with every other node id
+and instruction index shifted by the same count; `pair_lowfive_bound.ir` (an application-performed
+transfer, `ranks_differ` forced false the same way `lower_channel()` forces it) is unchanged, confirmed
+by diff against the pre-round tree.
+
+**A real bug found and fixed in the SAME round, not a pre-existing one:** `build_iteration_regions()`
+(src/ir/regions.cpp) was sweeping a window-scoped region's own `BuildRemapHalo` instructions into
+`IterationRegion::body` by the SAME origin-channel match that finds the region's ordinary Transport/
+Remap/.../Sink chain, which (a) moved `region_enter` onto the `BuildRemapHalo` instruction instead of
+the real first chain node, and (b) risked `E-SCHED-REGION` the moment an unrelated `t = 0` instruction
+sorted between a region's `BuildRemapHalo` and the rest of its body (the body must be instantiated as
+contiguous whole-body passes). Caught by `test/schedule/window_region_golden_test.cpp`'s own byte-exact
+dump before this round's patch was considered done; fixed by excluding `OpKind::BuildRemapHalo`
+explicitly from body collection, the same way an ordinary (non-window) region already excludes `Sink`.
+
+**RED/GREEN, this round:** `test/parallel/native_remap_halo_runner_test.cpp` rewritten --
+`DisjointGeneralWeightedRemapConservesOnceTheHaloIsBuilt` (GREEN: `execute_remap_halo_instructions()`
+called before `schedule()`, `initialize()` and a real `run_period()` succeed, conservation checked to a
+Higham recursive-summation bound derived in the test itself) and `DisjointGeneralWeightedRemapRefuses
+WhenTheHaloWasNeverBuilt` (RED: the halo is never built, `initialize()` refuses `E-RT-REMAP-HALO-NOT-
+BUILT`). Both BUILT (host cannot start MPI in this sandbox), not run; `parallel.native_remap_halo_
+runner.{2,3}[.device]` is this round's own host-pending row, same as round 1's.
+
+**Tier-0 coverage, this round:** `test/ir/ir_op_test.cpp` (the new enumerator's own `is_collective`
+classification and the exhaustiveness count), `test/schedule/plan_test.cpp`'s `ExecutionPlan.
+DumpIsByteExact`/`DumpShowsWhichInstructionsRunAfterTheTicks` (updated for the new instruction) and
+`test/schedule/acyclicity_test.cpp`'s `EmissionOrderViolationIsReported` (updated to find its Source
+node explicitly rather than assume it is the first in emission order, since `BuildRemapHalo` now sorts
+ahead of it) all pass; the golden-dump tests above are this track's own "instruction present, position,
+once per channel" and "ordering" tier-0 checks, run and passing.
+
+**Open, left for the lead:** D5's disjoint-placement weights are settled as HALO BRIDGING (owner note,
+2026-10-18, relayed mid-round): `RemapPlan::placement` stays the TARGET placement; the halo build
+additionally needs the SOURCE's own placement (`graph.owner_of(channel.source)`) as a second argument,
+threaded through a new overload of `fuse::build_remap_halo`/`build_native_remap_halo` the separate
+MoabHalo track is adding. `fuse::execute_remap_halo_instructions()` passes only `plan.placement` today,
+because that is the only parameter the signature accepts as of this round's own export (`git rev-parse
+HEAD` = `01a6d2535c9005e86d55b57ca79b680c68633741`, three commits after `cb127c5`); once the two-
+placement overload lands, that call needs `graph.owner_of(ch.source)` added as a second argument. See
+this track's own `open_questions` for the exact line.
+
+### D73 FIX, ROUND 3 (RemapHalo track round 2, 2026-10-18): the execution point moved into `make_region_sizes()`; D77 closed
+
+**Owner decision 2026-10-18 (second round):** D77's open question is decided. Rather than refactoring
+`Runner`'s own constructor to call `schedule()` internally (a breaking change to every existing caller),
+the owner moved `fuse::execute_remap_halo_instructions()`'s own call site ONE level down, into `fuse::
+make_region_sizes()` (fuse/backend/mesh_view.hpp, implemented src/backend/serial_backend.cpp):
+`make_region_sizes(graph, dag, backend)` now builds every halo `dag` carries, collectively, BEFORE
+constructing the `RegionSizes` callback it returns -- not as a separate call a caller remembers to place
+correctly, but as the first thing the ONE function every caller already passes `dag` to does.
+`execute_remap_halo_instructions()` itself did not change; round 1's own free function is now called from
+one place instead of from every application's own setup code, and its header comment says so explicitly
+("NOT A PUBLIC STEP THE APPLICATION MUST TAKE").
+
+**Signature change, every caller updated.** `make_region_sizes()` gained a middle `const OperatorDAG&
+dag` argument and its `backend` parameter became non-const (building a halo mutates the backend's own
+mesh state). The two-argument overload was RETIRED rather than kept and documented as a silent-skip
+risk: every caller this track found already had `dag` in scope at the call site (`schedule()`'s own next
+argument, a few tokens away) --
+`examples/layout_driver/main.cpp`, `examples/brusselator/main.cpp`, `examples/dn_heat/main.cpp` (3
+sites), `examples/fsi_channel/main.cpp`, `examples/mms_pair/main.cpp`, `src/abi/participant.cpp:973`,
+`python/src/component_bindings.cpp`, and every test under `test/` that calls it (~130 call sites across
+~45 files) were updated to pass it. A handful of pure region-sizing unit tests
+(`test/backend/{serial_mesh,field_extent}_test.cpp`) construct no `CouplingGraph` channel at all and
+never call `lower()`; these pass a default-constructed `fuse::OperatorDAG{}` (zero nodes, so `execute_
+remap_halo_instructions()` is the documented no-op for a dag with nothing to build).
+
+**Two-placement attrs, ahead of the overload.** Per the owner's standing instruction not to wait for the
+MoabHalo track: `emit_remap_halo_instructions()` (src/ir/rules_channel.cpp) now stamps BOTH arcs' owning
+components onto the `BuildRemapHalo` instruction's own `attrs` -- `attrs.src_rank_set` (the channel's
+source component) and `attrs.dst_rank_set` (`fuse::remap_placement()`'s own target placement) -- the
+SAME `OpAttrs` fields `Transport`/`Epoch` nodes already carry their own rank-set pair in, so this adds no
+new field and no new golden-dump text (`dump.hpp`'s `attrs_string` only prints `src_rank_set`/
+`dst_rank_set` for `OpKind::Transport`). `execute_remap_halo_instructions()` now reads `attrs.dst_rank_
+set` back for `plan.placement` rather than recomputing `remap_placement()` a second time; `attrs.src_
+rank_set` sits ready, unused by today's one-placement `fuse::build_remap_halo` call, for the day the
+MoabHalo track's two-placement overload lands (`graph.component(ComponentId{attrs.src_rank_set}).ranks`
+is the source's own `RankSet`, resolvable with no further graph lookup) -- a dated comment at the call
+site (src/backend/remap_halo_instructions.cpp) names exactly where it goes.
+
+**Mutation evidence, this round: which gate actually catches a skipped halo.** Two new rows in
+`build-evidence/mutations/ir-schedule.toml`: `make-region-sizes-skips-halo-build` (the call to `execute_
+remap_halo_instructions()` inside `make_region_sizes()` is removed) and `regions-includes-build-remap-
+halo-in-body` (round 1's own `build_iteration_regions()` fix, src/ir/regions.cpp, is reverted). Both
+applied, built, and run for real in this round (not merely asserted -- see the corresponding `local_
+verification` entries this round's own structured output cites): the first is caught by `Runner::Impl::
+resolve_remap_halo()`'s `E-RT-REMAP-HALO-NOT-BUILT` refusal (proven by `test/parallel/native_remap_halo_
+runner_test.cpp`'s own RED row design, since `make_region_sizes()`'s callback still answers with the
+PRE-halo entity count either way -- the halo never grows the mesh, so there is no larger buffer to size
+and therefore no `E-RT-REMAP-SIZE` to catch instead); the second is caught by `test/schedule/window_
+region_golden_test.cpp`'s byte-exact dump (the window region's own `body`/`region_enter` positions move
+back onto the `BuildRemapHalo` node). Neither mutation is caught by both gates at once -- this round
+measured and recorded which ONE actually fires for each, rather than asserting "a mismatch is caught"
+without naming which check does it.
+
 ### D74. A nodal "consistent" Remap's distributed point-location search refuses at the domain's own corner vertex (global id 0) at some multi-rank splits -- FIXED 2026-10-16 (found 2026-10-15, scaled-bench track)
 
 Found while registering `bench.scaled_device_benchmark.{2,3}[.device]` (`test/bench/scaled_device_benchmark.cpp`):
@@ -8831,3 +8989,47 @@ seed, not in the accelerator) rather than the prior entry's "not root-caused" --
 should trace `R.x_old`'s own pre-loop value against `WindowCoupler`'s own `y_fed` element by
 element at the window 0 -> window 1 boundary specifically, the same technique used to trace
 defects (a)-(d) in `test/verification/brusselator_runner_test.cpp`'s own header.
+
+### ~~D77. The automatic remap halo (D73) is driven by a NEW free function the caller runs before `schedule()`, not by `Runner::initialize()`~~ -- CLOSED 2026-10-18: the build moved into `make_region_sizes()` (owner decision) 2026-10-18, owner decided (RemapHalo track)
+
+The owner's 2026-10-18 decision for D73 described the contract as "the Runner executes [`BuildRemapHalo`]
+during `initialize()` BEFORE `schedule()` sizes any buffer". That literal sequence measured impossible in
+the architecture this track's round 1 shipped against: `schedule()` is called by whichever code builds
+the `ExecutionPlan` passed to `Runner`'s own constructor (`Runner::Runner(graph, dag, plan, backend)`),
+which is necessarily BEFORE `Runner::initialize()` can run at all. `schedule()`'s own `RegionSizes`
+callback (`make_region_sizes`) reads the mesh backend's entity counts once, synchronously, to freeze
+every `BufferDecl::elements` in the plan; growing a mesh's remap halo any later (inside `Runner::
+initialize()`, as the owner's wording implied) cannot retroactively widen an already-frozen buffer size.
+`fuse/backend/moab_backend.hpp`'s own "ORDER MATTERS" comment and `fuse/backend/remap_plan.hpp`'s own
+`build_remap_halo()` doc already stated this constraint for the pre-existing, manual-build-halo
+discipline; round 1's own measurement (`test/parallel/native_remap_halo_runner_test.cpp`'s fixture)
+confirmed it still held for the automatic case.
+
+**Round 1** (recorded here as this issue's own body, when it was still open) shipped the functionally
+equivalent caller-driven design: a new free function, `fuse::execute_remap_halo_instructions()`, that
+application code called directly between `backend.load()` and `schedule()`.
+
+**Round 2 decision, 2026-10-18 (this entry's closing round):** rather than a `Runner`-constructor
+refactor, the owner decided to move the call site ONE level DOWN, into `fuse::make_region_sizes()`
+itself (fuse/backend/mesh_view.hpp) -- the one function every existing caller already passes the lowered
+`OperatorDAG` to, immediately before `schedule()` runs. `make_region_sizes()` now calls `fuse::execute_
+remap_halo_instructions()` on its own `dag` argument BEFORE building the `RegionSizes` callback it
+returns, so the halo is built collectively, structurally (every rank already agrees on the set and order
+of `BuildRemapHalo` instructions, with no data-dependent branch), and a caller cannot forget the call or
+place it after `schedule()` by hand -- the two steps that used to be a caller's own two separate
+responsibilities are now one. `execute_remap_halo_instructions()` itself is UNCHANGED in its own
+contract; it is simply no longer a public step application code takes directly (see its own header
+comment, fuse/backend/remap_halo_instructions.hpp). `Runner::Impl::resolve_remap_halo()`'s `E-RT-REMAP-
+HALO-NOT-BUILT` verification stays exactly as round 1 left it -- the second, independent gate, now
+catching a caller that bypassed `make_region_sizes()` entirely (hand-rolling its own `RegionSizes`,
+something the type system cannot prevent) rather than a caller that merely called the two steps in the
+wrong order, which this round's design makes structurally impossible for every caller already found in
+this tree. `make_region_sizes()`'s own two-argument overload is RETIRED, not merely deprecated: every
+caller in this tree (`examples/{layout_driver,brusselator,dn_heat,fsi_channel,mms_pair}/main.cpp`, `src/
+abi/participant.cpp`, `python/src/component_bindings.cpp`, every test under `test/`) already had the
+lowered `dag` in scope at the call site, so there is no caller left to keep a reduced-information
+overload for; see `KNOWN_ISSUES.md`'s own D73 ROUND 3 paragraph below for the measured mutation proving
+`E-RT-REMAP-HALO-NOT-BUILT` (not a size mismatch) is what actually catches a bypass.
+
+D5's disjoint-placement halo-bridging second-placement argument remains open, unaffected by this
+decision -- see D73 ROUND 3 below for its current status.
