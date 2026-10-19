@@ -872,3 +872,42 @@ claim does not inherit that caveat). `apply_distributed_H`/
 `apply_distributed_HT` themselves, used at `comm_handle ==
 fuse::search::kNullComm`, were never affected (they keep their own
 original guarantee throughout).
+
+## TODO: remaining device work (as of 2026-10-19)
+
+Host-only or open from earlier rounds (marked TODO by the owner, 2026-10-19):
+
+- TODO D53: the supermesh (r3d/r2d) clip stays host-only; the device
+  feasibility measurement is blocked on three build-system items, not on the
+  algorithm (KNOWN_ISSUES.md D53).
+- TODO D67: the 1-ULP boundary-vertex weight-build difference. Main struck it
+  on 2026-10-18 (b49a1ef, 1D hat weights through the shared reference-map
+  inversion), after the base this branch was cut from. Left as a TODO until
+  the device twin of `build_distributed_interp_rows` is re-measured on higgs
+  at multi-rank splits.
+- TODO D73: the automatic remap halo. The RemapHalo track on main (rounds 1-4,
+  caller-driven `execute_remap_halo_instructions`, then `make_region_sizes()`)
+  owns the host path and was still waiting on its host measurement; the device
+  path of the halo build (`accumulate_remap_halo` and the halo exchange on
+  `Space`) has not been exercised. Re-run `parallel.native_remap_halo_runner.*`
+  and its `.device` twins on higgs once that lands.
+- TODO `MeshView::measure()` has no device-callable form: the distributed
+  nodal remap's H^T input gather (eval-side value times the eval cell measure)
+  still runs on the host regardless of `Space`.
+- TODO DistVector, the accelerators (Aitken, IQN-ILS, IQN-IMVJ) and the Newton
+  solves are host-only: arcs they touch are staged at the boundary, not kept
+  on the device.
+
+Open from the 2026-10-18 gate on higgs's rebuilt stack (each already recorded
+in KNOWN_ISSUES.md):
+
+- TODO D56: `verification.fsi_energy_diag.device` fails the mass-correction
+  gate on higgs (1.63e-10 vs 3.28e-11); main's D80 fix should cure it and has
+  not been measured on that host.
+- TODO D44: `verification.fsi_coupled.device` diverges under the cusolverRf
+  backend in the FUSE_ENABLE_CUSPARSE tree (not diagnosed).
+- TODO quiet timings: the scaled benchmark and `tools/bench-device.py` have
+  not been re-measured with the device-direct Transport path (the published
+  numbers in rollout step 10 are from the host-staged path).
+- TODO other backends: only Kokkos CUDA (sm_61) with Open MPI has been run;
+  HIP and SYCL builds, and MPICH with a CUDA-aware build, are untested.
