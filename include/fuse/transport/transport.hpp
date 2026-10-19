@@ -15,6 +15,34 @@ namespace fuse {
 struct CommGraphPeer;
 struct LocalCopyPair;
 
+/// Transport-direct track (2026-10-18). The packed layout behind one
+/// backend's `move()`: the permutation it applies to pack `move()`'s `src`
+/// into its own exchange-ordered send buffer (`send_index`), the mirror
+/// permutation it applies to unpack the received buffer into `dst`
+/// (`recv_index`), the same-rank matches it copies directly rather than
+/// exchanging (`local_copy`), and the field's component count. Every index
+/// is entity-level (not expanded by `components`) -- the same granularity
+/// `TransportSpec::global_ids` uses.
+///
+/// WHY THIS EXISTS. `move()` packs and unpacks on buffers it owns and
+/// never shares, which is correct as long as the caller's own `src`/`dst`
+/// are host memory: `MpiTransport::move()`'s pack/unpack loops are
+/// `std::memcpy`, a host routine. Under a GPU-aware MPI a caller may hold
+/// `src`/`dst` on the device instead, and wants to pack and unpack THERE
+/// too, with `move_packed()` performing only the exchange itself on
+/// buffers already in packed order. `packed_layout()` is what lets such a
+/// caller build its own device-resident copies of `send_index`/
+/// `recv_index`/`local_copy` once, at setup, and run the pack/unpack as
+/// ordinary Kokkos kernels on whichever execution space it is already
+/// using -- `fuse::runtime::Runner` (src/runtime/runner.cpp) is that
+/// caller today.
+struct TransportPackedLayout {
+  std::vector<std::size_t> send_index;
+  std::vector<std::size_t> recv_index;
+  std::vector<std::pair<std::size_t, std::size_t>> local_copy;
+  int components = 1;
+};
+
 struct TransportSpec {
   int         src_rank_set = -1;
   int         dst_rank_set = -1;
@@ -70,6 +98,38 @@ class Transport {
   /// between the two libraries (Migration track, 2026-10-15:
   /// src/linalg/mpi_gpu_aware.cpp's own header comment has the history).
   [[nodiscard]] virtual bool is_gpu_aware() const noexcept { return false; }
+
+  /// Transport-direct track. The planned packed layout behind `move()`,
+  /// for a caller that wants to pack and unpack `move()`'s pack/unpack
+  /// step itself (on a different execution space, typically) and hand
+  /// `move_packed()` only the already-packed buffers. Returns
+  /// `E-TRANSPORT-NOPACKED` by default -- correct for every backend that
+  /// has no such layout (`CopyTransport`, `LowFiveTransport`) or has not
+  /// yet been planned; a caller must check the result and fall back to
+  /// `move()` when it fails.
+  [[nodiscard]] virtual Result<TransportPackedLayout> packed_layout() const {
+    return Failure{"E-TRANSPORT-NOPACKED",
+                 name() + " has no packed layout; move_packed() needs "
+                          "MpiTransport::build_plan() or "
+                          "build_plan_from_peers()"};
+  }
+
+  /// Transport-direct track. The exchange step alone -- no pack, no
+  /// unpack, no same-rank copy -- exactly the collective `move()`
+  /// performs on ITS OWN already-packed buffers. `packed_send` must hold
+  /// `packed_layout()->send_index.size() * components` doubles in the
+  /// order `packed_layout()` describes; `packed_recv` the same for
+  /// `recv_index`. Both may be device pointers exactly when
+  /// `is_gpu_aware()` is true; this default implementation always
+  /// refuses, so a caller whose `packed_layout()` call already failed
+  /// never reaches it.
+  virtual Result<void> move_packed(const double* packed_send,
+                                   double* packed_recv) {
+    (void)packed_send;
+    (void)packed_recv;
+    return Failure{"E-TRANSPORT-NOPACKED",
+                 name() + " has no move_packed(); use move() instead"};
+  }
 };
 
 /// In-process copy. Phase 5 adds "mpi"; Phase 8 adds "lowfive".
@@ -210,6 +270,25 @@ class MpiTransport final : public Transport {
   /// even that from `move()`, so this reads the cached value, never the
   /// probe itself).
   [[nodiscard]] bool is_gpu_aware() const noexcept override;
+
+  /// Transport-direct track. `send_index`/`recv_index`/`local_copy` are
+  /// copies of the arrays `move()` itself packs and unpacks with, read
+  /// after a successful `build_plan()`/`build_plan_from_peers()`. Not
+  /// hot-loop: a caller builds its own device mirror of these ONCE, at
+  /// setup, alongside the host plan -- see `move_packed()`'s own comment
+  /// for the full contract.
+  [[nodiscard]] Result<TransportPackedLayout> packed_layout() const override;
+
+  /// Transport-direct track. `MPI_Alltoallv` alone, on the buffers given --
+  /// no pack, no unpack, no same-rank copy. `packed_send`/`packed_recv` may
+  /// be device pointers exactly when `is_gpu_aware()` is true: this is what
+  /// lets a caller that packs on the device (via `packed_layout()`'s
+  /// indices) hand MPI a device pointer with zero host round trip, instead
+  /// of `move()`'s own host-only `std::memcpy` pack/unpack -- which is a
+  /// HOST routine and may not be handed a device pointer; doing so is
+  /// KNOWN_ISSUES.md D66/D77's segfault, not a supported use.
+  Result<void> move_packed(const double* packed_send,
+                           double* packed_recv) override;
 
   /// Doubles this rank sends / receives per `move`. Diagnostic; zero before
   /// `build_plan`.
