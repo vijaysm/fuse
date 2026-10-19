@@ -13,7 +13,7 @@ namespace fuse {
 
 /// Supplied by the mesh backend: how many entities does this region hold on
 /// this rank? Phase 3 tests pass a constant; Phase 4 Task 4.2 wires the real
-/// one via `make_region_sizes(graph, backend)`. Taking the callback now means
+/// one via `make_region_sizes(graph, dag, backend)`. Taking the callback now means
 /// the signature does not change when the backend arrives.
 ///
 /// It is only ever called with a valid `RegionId`; `plan_buffers` rejects a

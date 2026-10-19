@@ -76,7 +76,7 @@ TEST(ConstrainSequence, IdenticalAcrossAllThreeRealRankPlacements) {
   ASSERT_TRUE(lowered.ok()) << lowered.diags.to_string();
   const fuse::ClockSet clocks{g};
   const auto sched =
-      fuse::schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, backend));
+      fuse::schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, lowered.dag, backend));
   ASSERT_TRUE(sched.ok()) << sched.diags.to_string();
 
   // Sanity: this row's own graph really does compile a Constrain

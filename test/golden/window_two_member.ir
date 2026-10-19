@@ -1,18 +1,20 @@
 # fuse-ir v1
-node 12  WindowAdvance              -> %0 : Instant<r0x2, K, Extensive, [WindowEnd, k], ranks=0>  "a.a_out/window" {window_import=%13}
-node 0   Transport    %0           -> %2 : Instant<r0x2, K, Extensive, [WindowEnd, k], ranks=1>  "a2b/transport" {0->1}
-node 1   Epoch        %2           -> %3 : Instant<r0x2, K, Extensive, [WindowEnd, k], ranks=1>  "a2b/epoch" {reason=after-transport}
-node 2   Remap        %3           -> %4 : Instant<r1x2, K, Extensive, [WindowEnd, k], ranks=1>  "a2b/remap"
-node 3   Constrain    %4           -> %5 : Instant<r1x2, K, Extensive, [WindowEnd, k], ranks=1>  "a2b/constrain"
-node 4   Diagnose     %5           -> %6 : Instant<r1x2, K, Extensive, [WindowEnd, k], ranks=1>  "a2b/diagnose"
-node 10  Sink         %6           -> %12 : Instant<r1x2, K, Extensive, [WindowEnd, k], ranks=1>  "b.b_in/window"
-node 13  WindowAdvance              -> %1 : Instant<r1x2, K, Extensive, [WindowEnd, k], ranks=1>  "b.b_out/window" {window_import=%12}
-node 5   Transport    %1           -> %7 : Instant<r1x2, K, Extensive, [WindowEnd-1, k], ranks=0>  "b2a/transport" {1->0}
-node 6   Epoch        %7           -> %8 : Instant<r1x2, K, Extensive, [WindowEnd-1, k], ranks=0>  "b2a/epoch" {reason=after-transport}
-node 7   Remap        %8           -> %9 : Instant<r0x2, K, Extensive, [WindowEnd-1, k], ranks=0>  "b2a/remap"
-node 8   Constrain    %9           -> %10 : Instant<r0x2, K, Extensive, [WindowEnd-1, k], ranks=0>  "b2a/constrain"
-node 9   Diagnose     %10          -> %11 : Instant<r0x2, K, Extensive, [WindowEnd-1, k], ranks=0>  "b2a/diagnose"
-node 11  Sink         %11          -> %13 : Instant<r0x2, K, Extensive, [WindowEnd, k], ranks=0>  "a.a_in/window"
-node 14  Residual     %6           -> %14 : Instant<r1x2, K, Extensive, [WindowEnd, k], ranks=1>  "a2b/residual"
-node 15  Residual     %11          -> %15 : Instant<r0x2, K, Extensive, [WindowEnd-1, k], ranks=0>  "b2a/residual"
-region 0 "window" body=[0,1,2,3,4,5,6,7,8,9,10,11,12,13] residuals=[%14,%15] carried=[] max_iter=20
+node 0   BuildRemapHalo              -> (none)  "a2b/build_remap_halo"
+node 1   BuildRemapHalo              -> (none)  "b2a/build_remap_halo"
+node 14  WindowAdvance              -> %0 : Instant<r0x2, K, Extensive, [WindowEnd, k], ranks=0>  "a.a_out/window" {window_import=%13}
+node 2   Transport    %0           -> %2 : Instant<r0x2, K, Extensive, [WindowEnd, k], ranks=1>  "a2b/transport" {0->1}
+node 3   Epoch        %2           -> %3 : Instant<r0x2, K, Extensive, [WindowEnd, k], ranks=1>  "a2b/epoch" {reason=after-transport}
+node 4   Remap        %3           -> %4 : Instant<r1x2, K, Extensive, [WindowEnd, k], ranks=1>  "a2b/remap"
+node 5   Constrain    %4           -> %5 : Instant<r1x2, K, Extensive, [WindowEnd, k], ranks=1>  "a2b/constrain"
+node 6   Diagnose     %5           -> %6 : Instant<r1x2, K, Extensive, [WindowEnd, k], ranks=1>  "a2b/diagnose"
+node 12  Sink         %6           -> %12 : Instant<r1x2, K, Extensive, [WindowEnd, k], ranks=1>  "b.b_in/window"
+node 15  WindowAdvance              -> %1 : Instant<r1x2, K, Extensive, [WindowEnd, k], ranks=1>  "b.b_out/window" {window_import=%12}
+node 7   Transport    %1           -> %7 : Instant<r1x2, K, Extensive, [WindowEnd-1, k], ranks=0>  "b2a/transport" {1->0}
+node 8   Epoch        %7           -> %8 : Instant<r1x2, K, Extensive, [WindowEnd-1, k], ranks=0>  "b2a/epoch" {reason=after-transport}
+node 9   Remap        %8           -> %9 : Instant<r0x2, K, Extensive, [WindowEnd-1, k], ranks=0>  "b2a/remap"
+node 10  Constrain    %9           -> %10 : Instant<r0x2, K, Extensive, [WindowEnd-1, k], ranks=0>  "b2a/constrain"
+node 11  Diagnose     %10          -> %11 : Instant<r0x2, K, Extensive, [WindowEnd-1, k], ranks=0>  "b2a/diagnose"
+node 13  Sink         %11          -> %13 : Instant<r0x2, K, Extensive, [WindowEnd, k], ranks=0>  "a.a_in/window"
+node 16  Residual     %6           -> %14 : Instant<r1x2, K, Extensive, [WindowEnd, k], ranks=1>  "a2b/residual"
+node 17  Residual     %11          -> %15 : Instant<r0x2, K, Extensive, [WindowEnd-1, k], ranks=0>  "b2a/residual"
+region 0 "window" body=[2,3,4,5,6,7,8,9,10,11,12,13,14,15] residuals=[%14,%15] carried=[] max_iter=20
