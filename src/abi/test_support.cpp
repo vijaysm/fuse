@@ -63,4 +63,16 @@ fuse::Runner* runner_of(fuse_ctx* ctx) {
   return &*ctx->runner;
 }
 
+// D61 (KNOWN_ISSUES.md): see this function's own declaration
+// (test_support.hpp) for what this sets and why reconcile_collective_
+// status() (participant.cpp) treats it as a stand-in for a real
+// MPI_Allreduce.
+bool force_fake_collective_peers(fuse_ctx* ctx, int self_rank,
+                                 std::vector<std::int32_t> peer_statuses) {
+  if (ctx == nullptr) return false;
+  ctx->test_fake_collective_self_rank = self_rank;
+  ctx->test_fake_collective_peer_statuses = std::move(peer_statuses);
+  return true;
+}
+
 }  // namespace fuse::abi_test

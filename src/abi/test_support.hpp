@@ -124,5 +124,29 @@ bool force_communicator_set(fuse_ctx* ctx, std::int64_t value);
 /// Runner exists yet).
 fuse::Runner* runner_of(fuse_ctx* ctx);
 
+/// D61 (KNOWN_ISSUES.md), "Collectives" track. Stub reducer for
+/// reconcile_collective_status() (participant.cpp): makes a tier-0 test
+/// (no MPI runtime, C1) exercise the FULL reconciliation path a real
+/// collective ABI entry (fuse_setup/fuse_initialize/fuse_begin_step/
+/// fuse_end_step/fuse_run) takes across a component's ranks -- including
+/// the rewritten message a non-originating rank gets -- by supplying the
+/// OTHER ranks' own local statuses directly, in place of a real
+/// MPI_Allreduce(MPI_2INT, MPI_MINLOC, ...). `self_rank` is this
+/// context's own position among the (conceptual) participants;
+/// `peer_statuses` is every OTHER rank's own local fuse_status, in rank
+/// order with `self_rank`'s own slot omitted (so `peer_statuses.size()`
+/// is one less than the total participant count). The one piece this
+/// context cannot fake is its OWN local status -- that is always the real
+/// return value the entry's own impl_* body just computed, inserted at
+/// `self_rank`'s position by reconcile_collective_status() itself.
+///
+/// Also requires a communicator to be configured (force_communicator_set
+/// (), above) -- reconcile_collective_status() treats "no communicator"
+/// as "nothing to reconcile", single-process, exactly like
+/// reconcile_epoch() does for an Epoch; this seam only replaces the MPI
+/// call, not that gate. Returns false (and leaves `ctx` unchanged) when
+/// `ctx` is null.
+bool force_fake_collective_peers(fuse_ctx* ctx, int self_rank,
+                                 std::vector<std::int32_t> peer_statuses);
 
 }  // namespace fuse::abi_test

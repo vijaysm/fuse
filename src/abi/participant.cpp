@@ -43,6 +43,7 @@
 #include <impl/Kokkos_DeviceManagement.hpp>
 #endif
 
+#include "fuse/abi/collective_reconcile.hpp"
 #include "fuse/abi/device_binding.hpp"
 #include "fuse/backend/mesh_view.hpp"
 #include "fuse/base/error.hpp"
@@ -50,6 +51,7 @@
 #include "fuse/base/version.hpp"
 #include "fuse/field/field_ref.hpp"
 #include "fuse/ir/lowering.hpp"
+#include "fuse/linalg/comm.hpp"
 #include "fuse/model/component.hpp"
 #include "fuse/model/descriptor.hpp"
 #include "fuse/model/field_spec.hpp"
@@ -61,6 +63,7 @@
 
 #include "context.hpp"
 #include "external_step_component.hpp"
+#include "provider_adapter.hpp"
 
 namespace {
 
@@ -503,6 +506,13 @@ fuse_status impl_destroy(fuse_ctx* ctx, const fuse_null*, fuse_null*) {
     // same channel fuse_last_error() reads for a null handle.
     fuse::transport::ConnectedWorld owned = c.connected;
     c.connected = fuse::transport::ConnectedWorld{};
+    // D61 round 3: the component-local reconciliation communicator
+    // (context.hpp's own comment on `collective_comm_f`), freed the same
+    // way -- extracted before delete, released after, 0 meaning there is
+    // nothing to free (the default, or any of the "never formed" cases
+    // that field's own comment lists).
+    const int owned_collective_comm_f = c.collective_comm_f;
+    c.collective_comm_f = 0;
     delete &c;
 #if FUSE_HAVE_MPI
     if (auto r = fuse::transport::disconnect(owned); !r.ok()) {
@@ -511,8 +521,19 @@ fuse_status impl_destroy(fuse_ctx* ctx, const fuse_null*, fuse_null*) {
       thread_error_status()  = FUSE_ERR_RUNTIME;
       return FUSE_ERR_RUNTIME;
     }
+    if (owned_collective_comm_f != 0) {
+      MPI_Comm comm = MPI_Comm_f2c(static_cast<MPI_Fint>(owned_collective_comm_f));
+      if (comm != MPI_COMM_NULL && MPI_Comm_free(&comm) != MPI_SUCCESS) {
+        thread_error_code()    = "E-ABI-COLLECTIVE-COMM";
+        thread_error_message() = "fuse_destroy: MPI_Comm_free failed on the "
+                                 "component-local reconciliation communicator";
+        thread_error_status()  = FUSE_ERR_RUNTIME;
+        return FUSE_ERR_RUNTIME;
+      }
+    }
 #else
     (void)owned;
+    (void)owned_collective_comm_f;
 #endif
     return FUSE_OK;
   });
@@ -664,6 +685,10 @@ fuse_status impl_setup(fuse_ctx* ctx, const fuse_setup_options* in, fuse_null*) 
                      std::string("fuse_setup_options: my_component names '") +
                          my_component + "', which the loaded graph does not declare");
         }
+        // D61 round 3 (KNOWN_ISSUES.md): kept for initialize() to split
+        // the component-local reconciliation communicator by -- see
+        // context.hpp's own comment on `my_component`/`collective_comm_f`.
+        c.my_component = cid;
         const fuse::LaunchMode mode = c.graph.component(*cid).launch.mode;
         if (mode == fuse::LaunchMode::Mpmd || mode == fuse::LaunchMode::Connect) {
           fuse::transport::ConnectOptions copts;
@@ -710,6 +735,12 @@ fuse_status impl_setup(fuse_ctx* ctx, const fuse_setup_options* in, fuse_null*) 
       // all, so only Mpmd/Connect are refused here.
       const auto cid = c.graph.find_component(my_component);
       if (cid.has_value()) {
+        // D61 round 3: stored even on this no-communicator path -- see
+        // context.hpp's own comment -- though collective_comm_f (below,
+        // initialize()) only ever forms when communicator_set is ALSO
+        // true, so this has no effect on a single-process run beyond
+        // recording which component this process named.
+        c.my_component = cid;
         const fuse::LaunchMode mode = c.graph.component(*cid).launch.mode;
         if (mode == fuse::LaunchMode::Mpmd || mode == fuse::LaunchMode::Connect) {
           return fail(&c, FUSE_ERR_INVALID, "E-ABI-SETUP-COMPONENT",
@@ -921,7 +952,7 @@ fuse_status impl_view_field(fuse_ctx* ctx, const fuse_field_ref* in,
   });
 }
 
-fuse_status impl_initialize(fuse_ctx* ctx, const fuse_null*, fuse_null*) {
+fuse_status impl_initialize_local(fuse_ctx* ctx, const fuse_null*, fuse_null*) {
   return with_ctx(ctx, [&](fuse_ctx& c) -> fuse_status {
     if (c.state != fuse_ctx::State::Loaded) {
       return fail(&c, FUSE_ERR_STATE, "E-ABI-INIT-STATE",
@@ -1034,6 +1065,23 @@ fuse_status impl_initialize(fuse_ctx* ctx, const fuse_null*, fuse_null*) {
                      extracted.error().message);
         }
         std::unique_ptr<fuse::Component> comp = std::move(extracted).value();
+        // KNOWN_ISSUES.md D15 round 3: tell the adapter which rank it is
+        // on the REAL base communicator, if any -- see provider_adapter.
+        // hpp's own comment on set_hosting_rank() and D24 (this file's
+        // own `rank` above, the SAME value backend construction used).
+        // Always a ProviderAdapter here (mount_dynamic() above only ever
+        // constructs one); the dynamic_cast exists so a future second
+        // concrete type mounted the same way fails loudly, not silently.
+        if (c.communicator_set) {
+          auto* adapter = dynamic_cast<fuse::abi_detail::ProviderAdapter*>(comp.get());
+          if (adapter == nullptr) {
+            return fail(&c, FUSE_ERR_RUNTIME, "E-ABI-PROVIDER-TYPE",
+                       "fuse_initialize: component '" + name +
+                           "' was mounted via mount_dynamic() but is not a "
+                           "ProviderAdapter");
+          }
+          adapter->set_hosting_rank(rank);
+        }
         const fuse::Result<void> r = comp->register_fields(c.fields, c.graph);
         if (!r.ok()) {
           return fail(&c, FUSE_ERR_RUNTIME, std::string(r.error().code),
@@ -1128,6 +1176,50 @@ fuse_status impl_initialize(fuse_ctx* ctx, const fuse_null*, fuse_null*) {
       };
 #endif  // FUSE_HAVE_MPI  (without it a non-zero communicator was already refused in setup)
     }
+    // D61 round 3 (KNOWN_ISSUES.md): the component-local communicator
+    // reconcile_collective_status() (below) reconciles initialize()/
+    // begin_step()/end_step()/run() over -- formed EXACTLY ONCE, here,
+    // inside the SAME `if (c.communicator_set)` guard the Runner's own
+    // transport configuration above already uses, so it can never be
+    // confused with a communicator fuse::abi_test::force_communicator_
+    // set() fakes (that seam only ever runs AFTER a real initialize()
+    // has already completed -- see context.hpp's own comment on
+    // `collective_comm_f`, and this entry's REVERTED paragraph for the
+    // host crash that conflating the two caused). `my_component`'s own
+    // RankSet (resolved at setup() time) is the participant list: the
+    // SAME component this process calls begin_step()/end_step()/run()
+    // for, so splitting by it -- rather than reconciling over the base
+    // communicator's own full span, this entry's FIRST reverted bug --
+    // is what lets a collective pair correctly even when other
+    // components of the same merged world make a different number of
+    // calls per window. fuse::linalg::make_participant_set_reducer()
+    // (src/linalg/comm_mpi.cpp) is the SAME MPI_Comm_split the Runner's
+    // own window-region reduction already trusts (src/runtime/
+    // iteration.cpp, D32's ParticipantSetReducer use) -- reused here
+    // rather than a second hand-written split, so the two cannot
+    // disagree about how a participant set becomes a sub-communicator.
+#if FUSE_HAVE_MPI
+    if (c.communicator_set && c.my_component.has_value()) {
+      const fuse::ComponentDecl& mc = c.graph.component(*c.my_component);
+      const fuse::Result<fuse::linalg::ParticipantSetReducerResult> split =
+          fuse::linalg::make_participant_set_reducer(static_cast<int>(c.communicator),
+                                                     mc.ranks.ranks());
+      if (!split.ok()) {
+        return fail(&c, FUSE_ERR_RUNTIME, "E-ABI-INIT-COMM-SPLIT",
+                   std::string("fuse_initialize: could not form a component-local "
+                               "communicator for my_component '") +
+                       mc.name + "' to reconcile collective ABI entries over: " +
+                       split.error().message);
+      }
+      // 0 on a rank this component's own RankSet does not name -- should
+      // never happen on the real setup()->initialize() path (my_component
+      // is THIS process's own component, validated against the loaded
+      // graph at setup() time), but left exactly as unformed (comm_f ==
+      // 0) rather than asserted: reconcile_collective_status() already
+      // treats that value as "nothing to reconcile".
+      c.collective_comm_f = split.value().comm_f;
+    }
+#endif  // FUSE_HAVE_MPI
     // Unit 2b (D19), step (d): fuse::abi_test::force_this_process()'s own
     // seam -- std::nullopt (the default) leaves config exactly what it
     // was before this field existed.
@@ -1483,8 +1575,8 @@ bool prime_next_request(fuse_ctx& c, const char* fn, bool* rolled_over,
   return true;
 }
 
-fuse_status impl_begin_step(fuse_ctx* ctx, const fuse_step_request* in,
-                           fuse_step_report* out) {
+fuse_status impl_begin_step_local(fuse_ctx* ctx, const fuse_step_request* in,
+                                  fuse_step_report* out) {
   return with_ctx(ctx, [&](fuse_ctx& c) -> fuse_status {
     const fuse_status sz = check_struct_size(in);
     if (sz != FUSE_OK) return sz;
@@ -1832,8 +1924,8 @@ fuse_status impl_begin_step(fuse_ctx* ctx, const fuse_step_request* in,
   });
 }
 
-fuse_status impl_end_step(fuse_ctx* ctx, const fuse_step_request* in,
-                         fuse_step_report* out) {
+fuse_status impl_end_step_local(fuse_ctx* ctx, const fuse_step_request* in,
+                                fuse_step_report* out) {
   return with_ctx(ctx, [&](fuse_ctx& c) -> fuse_status {
     const fuse_status sz = check_struct_size(in);
     if (sz != FUSE_OK) return sz;
@@ -1944,7 +2036,7 @@ fuse_status impl_end_step(fuse_ctx* ctx, const fuse_step_request* in,
   });
 }
 
-fuse_status impl_run(fuse_ctx* ctx, const fuse_run_request* in, fuse_null*) {
+fuse_status impl_run_local(fuse_ctx* ctx, const fuse_run_request* in, fuse_null*) {
   return with_ctx(ctx, [&](fuse_ctx& c) -> fuse_status {
     if (c.state != fuse_ctx::State::Initialized) {
       return fail(&c, FUSE_ERR_STATE, "E-ABI-RUN-STATE",
@@ -2071,6 +2163,250 @@ fuse_status impl_request_restart_point(fuse_ctx* ctx, const fuse_null*,
       c.runner->request_restart_point();
     }
     return FUSE_OK;
+  });
+}
+
+// --------------------------------------------- D61 collective reconciliation
+//
+// KNOWN_ISSUES.md D61: begin_step()/end_step()/initialize()/run() each
+// decided a refusal from this rank's own local state only, with nothing
+// agreeing that decision across the rest of the component's ranks before
+// returning -- violating the standing rule a collective path never
+// returns on a locally computed condition (KNOWN_ISSUES.md D3, docs/dev/
+// invariants.md I2/A4), which src/runtime/runner.cpp's own
+// reconcile_epoch() already upholds for the C++ terminals, through the
+// Epoch instruction. The ABI boundary meets the SAME contract here, by
+// the same means A4 names for a terminal: one MPI_Allreduce of an
+// encoded status before anyone acts on it, not a further round after the
+// fact.
+//
+// ROUND 3, REPLACING A REVERTED FIX (KNOWN_ISSUES.md D61's own REVERTED
+// paragraph carries the measurements). The first attempt reconciled over
+// TWO wrong communicators:
+//   1. The base communicator (`c.communicator`), which in a multi-
+//      executable run spans every component (U, V and the coupler all
+//      merged into one world) -- different components make different
+//      numbers of begin_step()/end_step() calls per window, so an
+//      Allreduce keyed to the WRONG set of ranks never finds a partner on
+//      the other side and the whole run hangs. Fixed by reconciling over
+//      a COMPONENT-LOCAL communicator instead (see impl_initialize_local()
+//      above, where it is split once from the real base communicator by
+//      `my_component`'s own RankSet -- the same `MPI_Comm_split`
+//      `fuse::linalg::make_participant_set_reducer()` already trusts,
+//      D32).
+//   2. Reading `c.communicator`/`c.communicator_set` directly, which
+//      `fuse::abi_test::force_communicator_set()` can set to a value that
+//      is not a real MPI handle at all (its own doc comment: deliberately
+//      callable AFTER a successful initialize(), to reach a LATER gate in
+//      isolation, never meant to feed MPI itself) -- `MPI_Comm_f2c` on
+//      that fake value, then `MPI_Comm_rank` on the result, aborted three
+//      tier-0 rows on the host (MPICH's default error handler on an
+//      invalid communicator; this sandbox has no MPI runtime at all, so
+//      it could not have caught this). Fixed by reconciling over
+//      `c.collective_comm_f` instead -- a SEPARATE field `force_
+//      communicator_set()` never touches, which stays 0 (its default,
+//      "nothing to reconcile") for every context that seam builds, BY
+//      CONSTRUCTION: the real split only ever runs inside initialize()'s
+//      own `if (c.communicator_set)` block, before the seam has had any
+//      chance to set a fake value (or not at all, if the seam is the
+//      ONLY thing that ever sets communicator_set on that context).
+//
+// WHICH ENTRIES, AND WHY SETUP() IS NOT ONE OF THEM. Four of entries.def's
+// fifteen participant-table members: initialize, begin_step, end_step,
+// run. `setup()` is explicitly EXCLUDED this round, unlike round 2:
+// `my_component` -- the only thing that tells this function WHICH
+// component's ranks to split a communicator by -- is an ARGUMENT to
+// setup() itself (`fuse_setup_options::my_component`), resolved partway
+// through its own body; there is no component-local communicator to
+// reconcile setup()'s own verdict over until setup() has already decided
+// one. Reconciling setup() over the raw, UNSPLIT base communicator (round
+// 2's own choice) is exactly bug 1 above, generalised: setup() is called
+// once per component, by definition, before any other component in the
+// same merged world has necessarily called it too, so there is no single
+// communicator setup() could reconcile over that is guaranteed to span
+// only ITS OWN component's ranks. Left rank-local, same as every entry
+// NOT in the list below: setup()'s own refusals are structural (a
+// malformed `fuse_setup_options`, an unknown `my_component` name, a
+// missing communicator for an Mpmd/Connect launch) -- the SAME bytes on
+// every rank that is supposed to agree would also decide them the same
+// way independently, which is why KNOWN_ISSUES.md D61's own first
+// paragraph names the hazard as an OUT-OF-TURN or OMITTED call (begin_
+// step/end_step), not a setup()-time configuration mismatch.
+//
+// Of the remaining four:
+//   - initialize/begin_step/end_step are marked COLLECTIVE in entries.
+//     def's own doc string (initialize "COLLECTIVE"; begin_step/end_step
+//     "COLLECTIVE over the component's processes").
+//   - run's own doc string is not marked with that literal word, but
+//     states it "still executes this call's own share of the period's
+//     collectives" even when refusing nothing itself, and KNOWN_ISSUES.md
+//     D61 names it explicitly alongside the other four -- a rank that
+//     refuses run() locally (E-ABI-RUN-EXTERNAL) while its peers proceed
+//     into the period's own Transport/Epoch/Constrain collectives hangs
+//     them exactly as an unreconciled begin_step()/end_step() refusal
+//     does.
+//   - The other eleven entries (now including setup) are NOT reconciled
+//     here, for the reasons round 2's own version of this comment already
+//     gave: none is marked COLLECTIVE in entries.def; each is a purely
+//     local operation on this rank's own handle, copy of the (identically
+//     loaded) graph, or storage; register_field was checked explicitly
+//     (per the original round's own task) and found not collective
+//     either; there is no "finalize" entry at all (destroy() is the
+//     nearest analogue and is, per entries.def, a per-handle operation).
+//
+// THE RULE. reconcile_collective_status() below runs AFTER the entry's
+// own impl_*_local() body has computed its local verdict, and BEFORE that
+// verdict reaches the caller: every rank of the communicator being
+// reconciled over contributes its own (fuse_status, rank) pair to one
+// MPI_Allreduce with MPI_MINLOC (the one-call equivalent of "MIN over an
+// encoded status" that ALSO reports which rank the minimum came from,
+// needed to name the refusing rank in the rewritten message every other
+// rank gets). FUSE_OK is 0 and every FUSE_ERR_* code is negative
+// (entries.def), so the plain minimum already propagates any refusal
+// over FUSE_OK, and two different ranks refusing with two different
+// codes agree on the more negative one, deterministically -- the pure
+// arithmetic lives in fuse::abi_detail::reconcile_local_statuses
+// (include/fuse/abi/collective_reconcile.hpp), so this glue and its own
+// tier-0 test (collective_reconcile_test.cpp) cannot drift apart on what
+// "agreed" means.
+//
+// WHICH COMMUNICATOR, restated precisely: `c.collective_comm_f`,
+// `int`-valued, `0` meaning "nothing to reconcile" (see context.hpp's
+// own comment on the field for every way it stays 0). The TOP-LEVEL
+// gate is still `c.communicator_set` -- a context with no communicator
+// configured at all (single-process, or a tier-0 test that never calls
+// force_communicator_set()) has nothing to reconcile, exactly as
+// reconcile_epoch() treats an unconfigured base_communicator.
+//
+// WHAT THIS DOES NOT COVER. A rank that is live but passes an invalid
+// `ctx` handle to a DIFFERENT call than its peers (so with_ctx() refuses
+// E-ABI-HANDLE before any body runs) has no communicator this function
+// can read at all -- there is no fuse_ctx to ask. That specific
+// misuse -- confusing which handle to call, not a refusal this entry's
+// own body decided -- is not rescued here; KNOWN_ISSUES.md D61's own
+// entry records this as the residual scope, consistent with D61's "the
+// ABI boundary... said nothing about it" being about THIS call's own
+// refusal, not about a caller passing the wrong object entirely. A
+// process whose own base communicator carries a real multi-rank run but
+// never names `my_component` at setup() time also gets no reconciliation
+// (`collective_comm_f` stays 0, with no component to split by) -- a
+// narrow, documented gap: `my_component` is REQUIRED at setup() time for
+// Mpmd/Connect launches already (E-ABI-SETUP-COMPONENT), so this can only
+// arise for an InProcess/Plugin-only graph handed a real communicator
+// directly, without going through fuse::transport::connect() at all.
+//
+// COST, ACCEPTED AS PERMANENT (the lead's own decision, round 2, restated
+// here since it still applies): begin_step()/end_step() are step-boundary
+// calls (abi-design.md's own "costs" section: "every entry point is a
+// setup or step-boundary call, never per-degree-of-freedom"), so one
+// small MPI_Allreduce added to each is bounded, not asymptotic -- but it
+// IS one more real collective per step, on top of whatever Transport/
+// Epoch/Constrain instructions the compiled plan already runs for that
+// step. Follow-up, recorded and not pursued further: a cheaper mechanism
+// would piggyback the encoded status onto a collective the step already
+// performs instead of a separate MPI_Allreduce.
+fuse_status reconcile_collective_status(fuse_ctx& c, fuse_status local_status,
+                                        const char* fn) noexcept {
+  if (!c.communicator_set) return local_status;  // nothing configured: rank-local, unchanged
+
+  // Test-only seam (fuse::abi_test::force_fake_collective_peers): simulate
+  // N ranks with no MPI runtime, through the SAME pure arithmetic the real
+  // MPI glue below uses. Gated on communicator_set (above) exactly like
+  // the real path, so setting fake peers with NO force_communicator_set()
+  // call still reconciles nothing (test/abi/participant_test.cpp's own
+  // NoCommunicatorConfiguredMeansNoReconciliationEvenWithFakePeersSet).
+  if (c.test_fake_collective_self_rank.has_value()) {
+    const int self = *c.test_fake_collective_self_rank;
+    std::vector<std::int32_t> all;
+    all.reserve(c.test_fake_collective_peer_statuses.size() + 1);
+    for (std::size_t i = 0; i < c.test_fake_collective_peer_statuses.size() + 1; ++i) {
+      if (static_cast<int>(i) == self) {
+        all.push_back(local_status);
+      } else {
+        const std::size_t peer_index =
+            i < static_cast<std::size_t>(self) ? i : i - 1;
+        all.push_back(c.test_fake_collective_peer_statuses.at(peer_index));
+      }
+    }
+    const fuse::abi_detail::ReconciledStatus agreed =
+        fuse::abi_detail::reconcile_local_statuses(all);
+    if (agreed.origin_rank == self) return local_status;  // this rank's own message stands
+    if (agreed.status == FUSE_OK) return FUSE_OK;
+    return fail(&c, static_cast<fuse_status>(agreed.status), "E-ABI-COLLECTIVE-REFUSED",
+               std::string(fn) + ": rank " + std::to_string(agreed.origin_rank) +
+                   " of this component refused (status " +
+                   std::to_string(agreed.status) +
+                   "); reconciled across every rank of the component's own "
+                   "communicator so every rank returns the same code "
+                   "(docs/dev/abi-design.md)");
+  }
+
+#if FUSE_HAVE_MPI
+  if (c.collective_comm_f == 0) return local_status;  // no component-local
+                                                       // communicator was ever formed
+  const MPI_Comm comm = MPI_Comm_f2c(static_cast<MPI_Fint>(c.collective_comm_f));
+  if (comm == MPI_COMM_NULL) return local_status;  // nothing sane to reconcile over
+  int rank = 0;
+  if (MPI_Comm_rank(comm, &rank) != MPI_SUCCESS) {
+    return fail(&c, FUSE_ERR_RUNTIME, "E-ABI-COLLECTIVE-COMM",
+               std::string(fn) + ": MPI_Comm_rank failed while reconciling status "
+                                  "across the component's ranks");
+  }
+  // MPI_2INT packs two plain `int`s; fuse_status is int32_t. Every
+  // platform this library builds on has sizeof(int) == 4, so the two
+  // agree, but it is cheap to say so rather than assume it.
+  static_assert(sizeof(int) == sizeof(std::int32_t),
+               "MPI_2INT packs two `int`s; fuse_status is int32_t -- the two must agree");
+  struct { std::int32_t status; int rank; } in{local_status, rank}, out{0, 0};
+  if (MPI_Allreduce(&in, &out, 1, MPI_2INT, MPI_MINLOC, comm) != MPI_SUCCESS) {
+    return fail(&c, FUSE_ERR_RUNTIME, "E-ABI-COLLECTIVE-COMM",
+               std::string(fn) + ": MPI_Allreduce(MPI_MINLOC) failed while "
+                                  "reconciling status across the component's ranks");
+  }
+  if (out.rank == rank) return local_status;  // this rank's own message stands (incl. FUSE_OK)
+  if (out.status == FUSE_OK) return FUSE_OK;
+  return fail(&c, static_cast<fuse_status>(out.status), "E-ABI-COLLECTIVE-REFUSED",
+             std::string(fn) + ": rank " + std::to_string(out.rank) +
+                 " of this component refused (status " + std::to_string(out.status) +
+                 "); reconciled across every rank of the component's own "
+                 "communicator so every rank returns the same code "
+                 "(docs/dev/abi-design.md)");
+#else
+  return local_status;
+#endif
+}
+
+fuse_status impl_initialize(fuse_ctx* ctx, const fuse_null* in, fuse_null* out) {
+  const fuse_status local = impl_initialize_local(ctx, in, out);
+  if (!is_live(ctx)) return local;  // no ctx to reconcile through; see "WHAT THIS DOES NOT COVER"
+  return with_ctx(ctx, [&](fuse_ctx& c) -> fuse_status {
+    return reconcile_collective_status(c, local, "fuse_initialize");
+  });
+}
+
+fuse_status impl_begin_step(fuse_ctx* ctx, const fuse_step_request* in,
+                            fuse_step_report* out) {
+  const fuse_status local = impl_begin_step_local(ctx, in, out);
+  if (!is_live(ctx)) return local;
+  return with_ctx(ctx, [&](fuse_ctx& c) -> fuse_status {
+    return reconcile_collective_status(c, local, "fuse_begin_step");
+  });
+}
+
+fuse_status impl_end_step(fuse_ctx* ctx, const fuse_step_request* in,
+                          fuse_step_report* out) {
+  const fuse_status local = impl_end_step_local(ctx, in, out);
+  if (!is_live(ctx)) return local;
+  return with_ctx(ctx, [&](fuse_ctx& c) -> fuse_status {
+    return reconcile_collective_status(c, local, "fuse_end_step");
+  });
+}
+
+fuse_status impl_run(fuse_ctx* ctx, const fuse_run_request* in, fuse_null* out) {
+  const fuse_status local = impl_run_local(ctx, in, out);
+  if (!is_live(ctx)) return local;
+  return with_ctx(ctx, [&](fuse_ctx& c) -> fuse_status {
+    return reconcile_collective_status(c, local, "fuse_run");
   });
 }
 

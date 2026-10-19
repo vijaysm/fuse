@@ -205,9 +205,41 @@ struct fuse_ctx {
   /// meaning exactly what it always meant.
   std::optional<int> test_force_this_process;
 
+  // --- D61 (KNOWN_ISSUES.md) test-only seam ---
+  /// fuse::abi_test::force_fake_collective_peers(): when set,
+  /// reconcile_collective_status() (participant.cpp) uses THIS rank's
+  /// position and the peer statuses below, through the SAME pure
+  /// arithmetic (fuse::abi_detail::reconcile_local_statuses, include/
+  /// fuse/abi/collective_reconcile.hpp) the real MPI_Allreduce(MPI_MINLOC)
+  /// glue uses, instead of calling MPI -- the only way a tier-0 test (no
+  /// MPI runtime, C1) can exercise the full reconciliation path,
+  /// including the message a non-originating rank gets rewritten to.
+  /// `std::nullopt` (the default) changes nothing: every context that
+  /// never calls this seam reconciles for real (over `collective_comm_f`
+  /// above when formed, or not at all). Gated identically to the real
+  /// path by `communicator_set` -- set this with NO `force_communicator_
+  /// set()` call and reconciliation still does not run, exactly as if
+  /// no collective communicator were configured at all.
+  std::optional<int>            test_fake_collective_self_rank;
+  std::vector<std::int32_t>     test_fake_collective_peer_statuses;
+
   // --- setup() state, consumed at initialize() ---
   bool               communicator_set = false;
   std::int64_t       communicator = 0;
+
+  /// `fuse_setup_options::my_component`, resolved once at setup() time
+  /// (impl_setup(), participant.cpp) and kept here for initialize() to
+  /// read: which graph component THIS process's own begin_step()/
+  /// end_step()/run() calls are external to. Set whenever the name
+  /// resolves against the loaded graph, regardless of LaunchMode -- not
+  /// only for Mpmd/Connect, where it ALSO decides whether to form the
+  /// real base communicator (see impl_setup's own `my_component`
+  /// handling) -- so initialize() has one place to read it from
+  /// regardless of which branch set it. `std::nullopt` (the default)
+  /// means no caller ever named one: KNOWN_ISSUES.md D61's own component-
+  /// local reconciliation communicator (`collective_comm_f` below) then
+  /// never forms, exactly as if no communicator were configured at all.
+  std::optional<fuse::ComponentId> my_component;
 
   /// What `fuse::transport::connect()` formed during setup(), when this
   /// context's own component is launched rather than in-process. Held so
@@ -219,6 +251,31 @@ struct fuse_ctx {
   fuse::transport::ConnectedWorld connected;
   bool               has_end_time = false;
   fuse::Rational     end_time{0};
+
+  // --- D61 (KNOWN_ISSUES.md) collective reconciliation, round 3 ---
+  /// The component-local communicator `reconcile_collective_status()`
+  /// (participant.cpp) reconciles initialize()/begin_step()/end_step()/
+  /// run() over -- an `MPI_Comm_split()` of the REAL base communicator by
+  /// `my_component`'s own RankSet, formed EXACTLY ONCE, inside
+  /// initialize()'s own `if (c.communicator_set)` block, the same guard
+  /// that already resolves the Runner's own transport. `0` (never a real
+  /// handle, the same convention `fuse::linalg::
+  /// ParticipantSetReducerResult::comm_f` documents) means "nothing to
+  /// reconcile": the default, before initialize() ever runs; whenever
+  /// `communicator_set` is true but `my_component` was never named (no
+  /// component to split by); and -- BY CONSTRUCTION, not by a separate
+  /// check -- for every context `fuse::abi_test::force_communicator_set()`
+  /// touches, since that seam sets `communicator_set`/`communicator`
+  /// directly and never runs initialize()'s own real communicator-
+  /// resolution path again (its own doc comment: callable AFTER a
+  /// successful initialize() specifically so it does NOT retrigger that
+  /// path). KNOWN_ISSUES.md D61's own REVERTED paragraph is why this
+  /// field exists at all: the first fix reconciled over `c.communicator`
+  /// directly, which a faked `force_communicator_set(ctx, 1)` handle
+  /// fed straight into `MPI_Comm_f2c`/`MPI_Comm_rank`, aborting three
+  /// tier-0 rows on the host (no MPI in this sandbox, so the sandbox
+  /// never caught it). Freed at destroy() via `MPI_Comm_free()`.
+  int                collective_comm_f = 0;
 
   // --- last_error() state ---
   std::string last_error_code;
