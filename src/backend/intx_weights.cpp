@@ -2021,6 +2021,41 @@ constexpr double kHighOrderCoverageTol = 1e-6;
 
 }  // namespace remap_detail
 
+namespace {
+
+/// KNOWN_ISSUES D81 round 8: the number of ranks a covering-set
+/// construction over `pcomm` will ACTUALLY run with -- `pcomm`'s own
+/// communicator, never `MoabMeshBackend::communicator_size()`'s answer
+/// (always the BACKEND's base communicator, `impl_->pcomm`'s own size,
+/// moab_backend.cpp). The two coincide for the single-Core/no-placements
+/// case, where `a.pcomm` IS `impl_->pcomm` by construction -- but a
+/// DECLARED placement's own sub-communicator (`set_placements()`,
+/// moab_backend.hpp) can be smaller than the base one it was split from: a
+/// single-rank placement inside a multi-rank job, the exact shape
+/// `moab_placed_weights_mpi_test.cpp`'s own `DisjointRankSets` fixture
+/// gives placement A at a 2-rank run (A = {0} alone). Shared between the
+/// single-placement `build_remap_halo` below and anywhere else that needs
+/// the SAME answer, the same way `measure_sphere_radius`/`project_sphere`
+/// (moab_backend.cpp) are shared between `sphere_radius`'s default and
+/// placement-aware overloads -- so the default-Core and a placement's own
+/// path can never read this differently.
+int active_comm_size(void* pcomm) {
+  if (pcomm == nullptr) return 1;
+#ifdef FUSE_REMAP_PARALLEL
+  const int n = static_cast<int>(
+      static_cast<moab::ParallelComm*>(pcomm)->proc_config().proc_size());
+  return n > 0 ? n : 1;
+#else
+  // No MPI in this build: `pcomm` cannot be anything but null here (every
+  // ParallelComm this file ever constructs needs FUSE_REMAP_PARALLEL), so
+  // this branch exists only so the function type-checks in that
+  // configuration too.
+  return 1;
+#endif
+}
+
+}  // namespace
+
 // ===========================================================================
 // The remap halo (R3). See remap_plan.hpp for the contract and moab_backend.hpp
 // for the mesh-layer half.
@@ -2105,7 +2140,31 @@ Result<std::size_t> build_remap_halo(const RemapPlan& plan,
   // mesh) all need no halo. Recorded as BUILT all the same, so a caller may
   // make the call unconditionally and `build_weights` can key its rejection on
   // "was this asked for" rather than on "did it find anything".
-  const int ranks = moab_backend->communicator_size();
+  //
+  // KNOWN_ISSUES D81 round 8 (MEASURED 2026-10-19, host): this guard used
+  // to read `moab_backend->communicator_size()` -- the BACKEND's base
+  // communicator, always correct for the single-Core/no-placements case
+  // (where `a.pcomm` IS `impl_->pcomm`), but WRONG for a placement whose
+  // own sub-communicator is smaller than the base one:
+  // `SamePlacementOnBothSidesDelegatesToTheSinglePlacementPath`'s own
+  // placement A is a genuine 1-rank communicator at a 2-rank run, so
+  // `communicator_size()` read 2 (the BASE communicator) and this guard
+  // did not shortcut -- sending a genuinely 1-rank `ParallelComm` into
+  // `Intx2MeshOnSphere`'s real, cross-rank covering-set construction, a
+  // configuration no PASSING test in this tree had exercised before
+  // (`remap_halo_mpi_test.cpp` always runs the single-Core path over the
+  // FULL base communicator; a 1-rank run THERE takes this same shortcut
+  // before ever reaching the construction, never a 1-rank PLACEMENT inside
+  // a larger job). The resulting covering cell carried no positive
+  // GLOBAL_ID -- `adopt_remap_halo`'s own `E-MESH-HALO` refusal, doing
+  // exactly its job once asked to adopt a cell it cannot trust; kept
+  // unchanged. Fixed by reading `active_comm_size(a.pcomm)` -- the size of
+  // the communicator THIS CONSTRUCTION will actually run over -- instead
+  // of the backend's unrelated base communicator size; the two can only
+  // ever disagree on a placement path, which is exactly the case this
+  // guard's own "one-rank communicator... need no halo" comment already
+  // meant to cover.
+  const int ranks = active_comm_size(a.pcomm);
   if (ranks <= 1 || a.pcomm == nullptr || a.file_set == b.file_set) {
     return moab_backend->adopt_remap_halo(a.mid, b.mid, a.dim, nullptr, 0);
   }

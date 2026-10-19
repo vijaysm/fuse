@@ -1,0 +1,30 @@
+# KNOWN_ISSUES D81 round 8 (host measured, 2026-10-19): the single-
+# placement `build_remap_halo`'s own degenerate-communicator guard
+# (src/backend/intx_weights.cpp) used the backend's BASE communicator size
+# instead of the size of the communicator the covering-set construction
+# actually runs over, sending a genuinely 1-rank placement's ParallelComm
+# into MOAB's real cross-rank covering-set machinery -- a configuration
+# that produced a covering cell with no positive GLOBAL_ID. Own file per
+# the review-fix protocol: do not edit moab-sphere.toml,
+# moab-halo-cross-placement-agreement.toml, moab-placement.toml, or
+# mutations.toml directly while other fixers hold them dirty.
+#
+# NOT HAND-VERIFIED THIS ROUND, for the same sandbox-wide reason every
+# other MOAB mutations file in this tree already states: ANY MOAB-linked
+# binary aborts on construction here (moab::Core's constructor calls
+# MPI_Init_thread; this sandbox cannot initialise MPI at all, not even at
+# one rank, and FUSE_ENABLE_MOAB hard-requires FUSE_ENABLE_MPI in this
+# tree's own CMakeLists.txt). Written and reasoned through by hand;
+# `requires = "mpi"`, the same NOT-ASSESSED courtesy every other MOAB-only
+# row in this project already uses.
+
+[[mutation]]
+id = "single-placement-guard-uses-backend-communicator-not-active-one"
+area = "backend"
+describes = "The single-placement build_remap_halo's degenerate-communicator guard reverts to moab_backend->communicator_size() (the backend's BASE communicator) instead of active_comm_size(a.pcomm) (the communicator THIS construction actually runs over) -- the exact KNOWN_ISSUES D81 round 8 regression: a 1-rank placement inside a multi-rank job (moab_placed_weights_mpi_test.cpp's own DisjointRankSets, placement A = {0} at a 2-rank run) reads ranks=2 instead of ranks=1, so the guard does not shortcut and sends a genuinely 1-rank ParallelComm into Intx2MeshOnSphere's real covering-set construction, which was measured on the host to produce a covering cell with no positive GLOBAL_ID. Killed by SamePlacementOnBothSidesDelegatesToTheSinglePlacementPath: via_overload would answer E-MESH-HALO instead of a successful, adopted-cell count."
+file = "src/backend/intx_weights.cpp"
+old = "  const int ranks = active_comm_size(a.pcomm);"
+new = "  const int ranks = moab_backend->communicator_size();"
+target = "fuse_parallel_moab_placed_weights_mpi_test"
+test = "parallel.moab_placed_weights_mpi"
+requires = "mpi"
