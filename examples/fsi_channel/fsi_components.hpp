@@ -174,6 +174,18 @@ class FluidComponent final : public fuse::Component {
     force_out_.assign(p.nx, 0.0);
   }
 
+  // DIAGNOSTIC ONLY (track FsiMassCorr). When non-null, advance() copies
+  // velocity_in_ into *debug_last_velocity_in_used right before the call
+  // into fluid_.step() below, overwriting any earlier capture -- so after
+  // the enclosing Runner::run_period() returns, this buffer holds the wall
+  // velocity that actually produced the fluid solver's own state, which is
+  // NOT necessarily what velocity_in() reads back afterward (see
+  // fsi_energy_diag_test.cpp's own "MASS-CORRECTION ISOLATION" section for
+  // why that distinction is the question being measured). Null by default,
+  // so every existing caller's behaviour is unchanged. Not thread-safe;
+  // for single-threaded diagnostic use only.
+  std::vector<double>* debug_last_velocity_in_used = nullptr;
+
   [[nodiscard]] std::string name() const override { return name_; }
 
   fuse::Result<void> register_fields(fuse::FieldRegistry& reg,
@@ -206,6 +218,9 @@ class FluidComponent final : public fuse::Component {
       // t0; velocity_in_ (whatever this sweep's coupling field transfer just
       // delivered) is the wall velocity at t1. See StokesSolver::step's
       // own header comment for why both time levels matter.
+      if (debug_last_velocity_in_used != nullptr) {
+        *debug_last_velocity_in_used = velocity_in_;
+      }
       fluid_.step(dt, t0, t1, velocity_in_t0_, velocity_in_, inflow_);
     }
     // wall_traction() reads the mid-step (t_{n+1/2}) traction -- see

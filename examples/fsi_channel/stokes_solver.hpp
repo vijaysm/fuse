@@ -770,6 +770,13 @@ class StokesSolver {
     // removed here, but it is demonstrably NOT the (or not the only)
     // mechanism sustaining D9's coupled energy growth; that mechanism is
     // still open (KNOWN_ISSUES.md D9's "round 2" section).
+    // DIAGNOSTIC HOOK ONLY (track FsiMassCorr): if non-null, capture the
+    // exact (u_, v_) fed into this call immediately before it -- lets the
+    // test verify these equal diag.u0/diag.v0 bit-for-bit, rather than
+    // assuming the Runner's checkpoint/restore contract guarantees it.
+    // Null by default; no behaviour change for any existing caller.
+    if (debug_last_u0_used != nullptr) *debug_last_u0_used = u_;
+    if (debug_last_v0_used != nullptr) *debug_last_v0_used = v_;
     FlowState next =
         cn_step(p_, bcs, SourceTerms{}, dt, t0, t1, u_, v_, pin_, nullptr, nullptr,
                &lu_cache_);
@@ -971,6 +978,11 @@ class StokesSolver {
   // a hardcoded shape every call, so `dt` is the ONLY input to cn_step's
   // matrix that can vary call to call on a single instance.
   CnStepLuCache lu_cache_;
+
+ public:
+  // DIAGNOSTIC ONLY (track FsiMassCorr). See step()'s own comment above.
+  std::vector<double>* debug_last_u0_used = nullptr;
+  std::vector<double>* debug_last_v0_used = nullptr;
 };
 
 }  // namespace fsi
