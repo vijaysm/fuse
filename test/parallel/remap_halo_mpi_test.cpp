@@ -237,6 +237,15 @@ struct SpherePairMpi {
   fuse::CouplingGraph    graph;
   fuse::MeshId           amid, omid;
   fuse::RemapPlan        plan;
+  // Round 11 (KNOWN_ISSUES D82): stored so a test can build its OWN plan
+  // with src/tgt reversed from the fixture's default (ATM source, OCN
+  // target) -- ATM is global (covers the whole sphere), so EITHER
+  // direction gives one side full coverage by construction: OCN-as-source
+  // is fully covered BY the global ATM target (min_src_coverage ~ 1,
+  // needed for Extensive's own column-sum-1 property), and ATM-as-source
+  // fully covers the regional OCN target (min_tgt_coverage ~ 1, needed for
+  // Intensive's own row-sum-1 property) -- the EXISTING direction below.
+  fuse::RegionId         aregion, oregion;
 
   SpherePairMpi() {
     EXPECT_TRUE(backend.set_communicator(world_handle()).ok());
@@ -277,12 +286,10 @@ struct SpherePairMpi {
              "its vertex coordinates";
     }
 
-    const fuse::RegionId arid =
-        graph.add_region({.name = "a_all", .mesh = amid, .dimension = 2});
-    const fuse::RegionId orid =
-        graph.add_region({.name = "o_all", .mesh = omid, .dimension = 2});
-    plan.src = arid;
-    plan.tgt = orid;
+    aregion = graph.add_region({.name = "a_all", .mesh = amid, .dimension = 2});
+    oregion = graph.add_region({.name = "o_all", .mesh = omid, .dimension = 2});
+    plan.src = aregion;
+    plan.tgt = oregion;
   }
 };
 
@@ -443,6 +450,148 @@ TEST(RemapHaloMpiSphere,
         "src_measure_total(local)=%.17g tgt_measure_total(local)=%.17g\n",
         w.value().min_src_coverage, w.value().max_col_defect,
         w.value().src_measure_total, w.value().tgt_measure_total);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// KNOWN_ISSUES D82, MOAB half, round 11 (owner decision 2026-10-19: remap
+// weights normalise by the channel's Conservation kind). Both rows below
+// read `min_src_coverage`/`min_tgt_coverage` back before trusting the
+// conservation assertion that follows it -- a direction where the relevant
+// side is NOT fully covered would make either property vacuous, not wrong,
+// and D4 already documents that nobody has measured partial coverage on
+// this real pair.
+// ---------------------------------------------------------------------------
+
+TEST(RemapHaloMpiSphere, ExtensiveChannelConservesTheDeliveredTotalAcrossTheSpherePair) {
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);
+  SpherePairMpi f;
+
+  // REVERSED from the fixture's default (ATM source, OCN target): OCN
+  // (regional) as SOURCE, ATM (global) as TARGET. ATM spans the whole
+  // sphere, so every OCN source cell is fully covered by ATM target cells
+  // regardless of OCN's own regional extent (min_src_coverage ~ 1) --
+  // exactly the precondition Extensive's column-sum-1 property
+  // (normalize_remap_weight's own doc, remap_weight_normalize.hpp) needs
+  // to be a meaningful, non-vacuous check at all.
+  fuse::RemapPlan reversed = f.plan;
+  reversed.src = f.oregion;
+  reversed.tgt = f.aregion;
+  reversed.conservation = fuse::Conservation::Extensive;
+
+  const auto halo = fuse::build_remap_halo(reversed, f.graph, f.backend);
+  ASSERT_TRUE(halo.ok()) << halo.error().code << ": " << halo.error().message;
+
+  const auto w = fuse::build_weights(reversed, f.graph, f.backend);
+  ASSERT_TRUE(w.ok()) << w.error().code << ": " << w.error().message;
+  EXPECT_NEAR(w.value().min_src_coverage, 1.0, 1e-6)
+      << "OCN (regional) must be fully covered by ATM (global) in this "
+         "direction -- the precondition for a non-vacuous total-"
+         "conservation check";
+
+  const auto* src_view = f.backend.view(f.omid).value();  // OCN, source
+  const auto* tgt_view = f.backend.view(f.amid).value();  // ATM, target
+  const std::size_t n_tgt = tgt_view->entity_count(2);
+
+  // amount[i] = 1.0 for every LOCAL (owned or halo) OCN source cell: a
+  // trivially-constant field needs no forward exchange to be consistent
+  // across ranks -- every copy, owned or ghost, already reads 1.0.
+  const fuse::RemapWeights& wv = w.value();
+  std::vector<double> dst(n_tgt, 0.0);
+  for (std::size_t k = 0; k < wv.nnz(); ++k) {
+    dst[static_cast<std::size_t>(wv.row[k])] += wv.val[k] * 1.0;
+  }
+
+  double local_target_total = 0.0;
+  for (std::size_t j = 0; j < n_tgt; ++j) {
+    if (tgt_view->is_owned(2, j)) local_target_total += dst[j];
+  }
+  double local_source_total = 0.0;
+  for (std::size_t i = 0; i < src_view->entity_count(2); ++i) {
+    if (src_view->is_owned(2, i)) local_source_total += 1.0;
+  }
+
+  double global_target_total = 0.0, global_source_total = 0.0;
+  ASSERT_EQ(MPI_Allreduce(&local_target_total, &global_target_total, 1,
+                          MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD),
+            MPI_SUCCESS);
+  ASSERT_EQ(MPI_Allreduce(&local_source_total, &global_source_total, 1,
+                          MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD),
+            MPI_SUCCESS);
+
+  // Derived tolerance, NOT picked. The Extensive formula's column sum is
+  // exact in the SUPERMESH's own (spherical) measure but normalises by
+  // MeshView::measure -- the bilinear patch through each cell's corners,
+  // which falls short of the true spherical area by O(h^2)
+  // (RemapPlan's own "WHICH SUM IS WHICH" header measured 9.88e-4 on a
+  // different mesh pair). Round 11 measured this DIRECTLY on
+  // recMeshOcn.h5m's own 7153 real cells -- the SOURCE side here, since
+  // normalize_remap_weight's Extensive branch divides by the SOURCE cell's
+  // own measure -- via the production area formulas
+  // (spherical_polygon_area, polygon_area) read off the file's own raw
+  // coordinates: relative discrepancy 1.81e-4 mean, 1.84e-4 max. Every
+  // term has the SAME sign (a bilinear patch through points on a convex
+  // sphere is always inscribed, never circumscribed), so the terms do not
+  // cancel across cells; the expected relative error in "target total ==
+  // source total" is this per-cell discrepancy's weighted average, bounded
+  // by the measured max with a 2x safety margin.
+  constexpr double kDerivedRelTol = 4e-4;  // 2x 1.84e-4, rounded up
+  EXPECT_NEAR(global_target_total, global_source_total,
+             kDerivedRelTol * global_source_total)
+      << "D82: an Extensive channel's delivered total (" << global_target_total
+      << ") must track the source total (" << global_source_total
+      << ") to the bilinear-vs-spherical measure discrepancy derived above";
+}
+
+TEST(RemapHaloMpiSphere, IntensiveChannelPreservesAConstantFieldAcrossTheSpherePair) {
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);
+  SpherePairMpi f;
+  f.plan.conservation = fuse::Conservation::Intensive;  // explicit; also the default
+
+  // The fixture's OWN direction (ATM source, OCN target): ATM (global)
+  // fully covers OCN (regional) as target (min_tgt_coverage ~ 1) --
+  // the precondition for Intensive's row-sum-1 (constant-preservation)
+  // property to be a meaningful check at every OCN cell, not merely some
+  // of them.
+  const auto halo = fuse::build_remap_halo(f.plan, f.graph, f.backend);
+  ASSERT_TRUE(halo.ok()) << halo.error().code << ": " << halo.error().message;
+
+  const auto w = fuse::build_weights(f.plan, f.graph, f.backend);
+  ASSERT_TRUE(w.ok()) << w.error().code << ": " << w.error().message;
+  EXPECT_NEAR(w.value().min_tgt_coverage, 1.0, 1e-6)
+      << "OCN (regional target) must be fully covered by ATM (global "
+         "source) -- the precondition for a non-vacuous constant-"
+         "preservation check";
+
+  // Derived tolerance, NOT picked. Same O(h^2) mechanism as the Extensive
+  // test above, now on the ROW (constant-preservation) side, so it is
+  // bounded by the SOURCE mesh's own discrepancy here: round 11 measured
+  // wholeATM_T.h5m's own 726 real cells (ATM is the source in this
+  // direction) at 4.38e-3 mean, 5.07e-3 max -- an order of magnitude
+  // coarser than recMeshOcn.h5m's, because ATM's cells are far larger.
+  // max_row_defect's worst case is bounded by ATM's measured max plus
+  // OCN's own (negligible by comparison), with a 2x safety margin.
+  constexpr double kDerivedRowTol = 1.2e-2;  // 2x (5.07e-3 + 1.84e-4), rounded up
+  EXPECT_LT(w.value().max_row_defect, kDerivedRowTol)
+      << "D82: the pre-existing (Intensive) formula's constant-preservation "
+         "residual on the real sphere pair, to the bilinear-vs-spherical "
+         "measure discrepancy derived above";
+
+  // Directly, not just via the audit field: apply a CONSTANT density field
+  // and confirm every OWNED OCN target cell reads back close to it.
+  const auto* tgt_view = f.backend.view(f.omid).value();  // OCN, target
+  const std::size_t n_tgt = tgt_view->entity_count(2);
+  constexpr double kDensity = 7.0;
+  const fuse::RemapWeights& wv = w.value();
+  std::vector<double> dst(n_tgt, 0.0);
+  for (std::size_t k = 0; k < wv.nnz(); ++k) {
+    dst[static_cast<std::size_t>(wv.row[k])] += wv.val[k] * kDensity;
+  }
+  for (std::size_t j = 0; j < n_tgt; ++j) {
+    if (!tgt_view->is_owned(2, j)) continue;
+    EXPECT_NEAR(dst[j], kDensity, kDerivedRowTol * kDensity)
+        << "owned OCN target cell " << j << " did not preserve the "
+           "constant density field to the derived tolerance";
   }
 }
 

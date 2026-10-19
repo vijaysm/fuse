@@ -1,0 +1,48 @@
+# KNOWN_ISSUES D82, MOAB half, round 11 (owner decision 2026-10-19: remap
+# weights normalise by the channel's Conservation kind, carried in
+# RemapPlan). fuse::normalize_remap_weight
+# (include/fuse/backend/remap_weight_normalize.hpp), and its single call
+# site in intx_weights.cpp's assemble() (the MOAB FV<->FV order-1 path).
+# Own file per the review-fix protocol: do not edit moab-sphere.toml,
+# moab-halo-cross-placement-agreement.toml, moab-halo-active-comm-size.toml,
+# moab-halo-placement-aware-adoption.toml, moab-placement.toml, or
+# mutations.toml directly while other fixers hold them dirty.
+#
+# The first row below is HAND-VERIFIED in this sandbox, not just read:
+# `normalize_remap_weight` takes four doubles and an enum, no MOAB or MPI
+# symbol, so test/backend/remap_weight_normalize_test.cpp actually BUILDS
+# AND RUNS here (165-test tier-0 tree, FUSE_ENABLE_MPI=OFF) -- the mutation
+# below was applied, the target rebuilt, and the named test's own
+# ExtensiveAndIntensiveDisagreeWheneverMeasuresDiffer /
+# ExtensiveConservesAnAmountFieldAcrossAnUnevenSplit cases were confirmed to
+# fail under it before the file was restored. The second row exercises the
+# SAME function's call site inside intx_weights.cpp's MOAB `assemble()`
+# (the audit's own col_sum accumulation), which only a MOAB-linked target
+# can reach -- `requires = "mpi"`, the same NOT-ASSESSED courtesy every
+# other MOAB-only row in this project already uses, since no MOAB-linked
+# binary can be RUN in this sandbox (moab::Core's constructor calls
+# MPI_Init_thread, which aborts here; confirmed again this round -- even a
+# tier-0, MOAB-free test binary aborts the same way once FUSE_ENABLE_MPI=ON
+# is configured for the WHOLE build, which is why this round's hand-
+# verified row above needed its OWN, separate, MPI-free build tree).
+
+[[mutation]]
+id = "normalize-remap-weight-swaps-extensive-and-intensive"
+area = "backend"
+describes = "normalize_remap_weight's Extensive branch is swapped for the Intensive/default formula and vice versa -- the exact D82 regression this round's own fix closes: an Extensive-tagged channel would again be remapped with the density-conversion factor, inflating or deflating the delivered total whenever a source cell is split across target cells of a different measure. HAND-VERIFIED in this sandbox (tier-0, no MOAB/MPI needed): applying this mutation and rebuilding fuse_backend_remap_weight_normalize_test, ExtensiveAndIntensiveDisagreeWheneverMeasuresDiffer fails (EXPECT_NE sees two equal values -- the swap makes Extensive's own call site return the Intensive value, 0.3, instead of 0.75) and ExtensiveConservesAnAmountFieldAcrossAnUnevenSplit fails (delivered_total reads 30.0, not 10.0 -- the exact 3x inflation IntensiveMisappliedToAnAmountFieldInflatesTheTotalAcrossAnUnevenSplit documents as the pre-existing bug). Restored and rebuilt clean afterwards; diff against the original confirmed byte-identical."
+file = "include/fuse/backend/remap_weight_normalize.hpp"
+old = "  if (kind == Conservation::Extensive) {\n    return overlap / src_measure;\n  }\n  return (overlap / src_parent_measure) * (src_measure / tgt_measure);"
+new = "  if (kind != Conservation::Extensive) {\n    return overlap / src_measure;\n  }\n  return (overlap / src_parent_measure) * (src_measure / tgt_measure);"
+target = "fuse_backend_remap_weight_normalize_test"
+test = "backend.remap_weight_normalize"
+
+[[mutation]]
+id = "assemble-col-sum-always-measure-weighted"
+area = "backend"
+describes = "assemble()'s own col_sum accumulation (intx_weights.cpp) reverts to ALWAYS multiplying by tgt.measure[j], even under Conservation::Extensive -- re-introducing exactly the density conversion normalize_remap_weight's own Extensive branch was written to drop, one step later, inside the audit this round also made kind-aware. Under this mutation, an Extensive channel's max_col_defect would read against src.measure[i] * (a measure ratio), not against 1.0 -- round 11's own 'source total == target total' sphere-pair test (RemapHaloMpiSphere.ExtensiveChannelConservesTheDeliveredTotalAcrossTheSpherePair, test/parallel/remap_halo_mpi_test.cpp) would see a GLOBAL target total scaled by each receiving cell's own tgt.measure, not the plain sum the test's own Allreduce expects, and fail its EXPECT_NEAR. NOT-ASSESSED here: no MOAB-linked binary can be RUN in this sandbox (moab::Core's constructor aborts on MPI_Init_thread); read and reasoned through by hand against the exact formula col_sum[i] += extensive ? weight : weight * tgt.measure[j] this round's own diff introduces."
+file = "src/backend/intx_weights.cpp"
+old = "    col_sum[i] += extensive ? weight : weight * tgt.measure[j];"
+new = "    col_sum[i] += weight * tgt.measure[j];"
+target = "fuse_parallel_remap_halo_mpi_test"
+test = "parallel.remap_halo_mpi"
+requires = "mpi"

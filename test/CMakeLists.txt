@@ -612,6 +612,13 @@ fuse_add_gtest(backend nodal_tie_break)
 # backends -- native_backend.hpp's 2D/3D generators are what give this file
 # quad/tri/hex/tet coverage without duplicating a mesh generator here.
 fuse_add_gtest(backend field_extent THROWS)
+# KNOWN_ISSUES.md D82, MOAB half, round 11: the pure conservation-kind
+# weight-normalisation function intx_weights.cpp's MOAB path calls
+# (fuse/backend/remap_weight_normalize.hpp) -- no MOAB or MPI symbol, so
+# this is tier-0 and actually RUNS, unlike the sphere-pair rows in
+# test/parallel/remap_halo_mpi_test.cpp that exercise the same formula
+# through the real intersection.
+fuse_add_gtest(backend remap_weight_normalize)
 
 # The MOAB backend's own tests. Registered only when MOAB is enabled -- absent
 # rather than skipped, because a skipped test reads like a passing one.
