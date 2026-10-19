@@ -394,3 +394,16 @@ and its "FIX, ROUND 8" account above for the mechanism, the pre-existing test th
 (`interface_transfer_test.cpp`), and the RED/GREEN-verified mutation row. The MOAB intersection path's own
 high-order weight formula is UNCHANGED by this round (MoabHalo track's own scope).
 
+**The 3-rank duplicate in the comm-graph's own flat offer list (round 9, 2026-10-19).** Once the coverage
+fold and the D82 normalisation above both landed, a 3-rank run of the SAME disjoint-placement fixture failed
+one stage further on: `parallel.native_remap_halo_runner.3` refused with "global id 2 is held by source rank 0
+and again by source rank 0". The halo itself was right (rank 1 adopts 4 cells, rank 2 adopts 2, 16 total
+nonzeros, matching the 2-rank case's own weights) -- the defect was in the TRANSPORT layer, not here:
+`CommGraph::build`'s own `emit()` (src/transport/comm_graph.cpp) flattened one owned entity's offer into its
+owner's own declared list ONCE PER DESTINATION PEER that wanted it, rather than once per unique entity, so a
+cell two different adopting ranks both committed a halo over was declared twice by its true, single owner.
+Fixed in `fuse::dedupe_flat_source_offers` (transport.hpp/comm_graph_support.cpp) -- see KNOWN_ISSUES.md D73's
+own "FIX, ROUND 9" account for the full mechanism and the RED/GREEN-verified mutation row. Nothing in THIS
+file's own halo-building or merge code was touched; readers debugging a native-halo defect that only shows up
+at 3+ ranks (not 2) should check the comm-graph's own entity enumeration before suspecting the halo build
+itself, exactly the trap this round's own first read of the symptom fell into.

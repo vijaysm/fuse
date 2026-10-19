@@ -9340,7 +9340,7 @@ isolation immediately after, passed; not a product regression, declared here rat
 silently re-run and left unmentioned).
 
 
-### D73. A cross-rank general (non-nodal) weighted Remap on NativeMeshBackend builds a silently empty conservative matrix with no remap-halo call -- FIXED 2026-10-16 (found 2026-10-15, scaled-bench track)
+### ~~D73. A cross-rank general (non-nodal) weighted Remap on NativeMeshBackend builds a silently empty conservative matrix with no remap-halo call -- FIXED 2026-10-16 (found 2026-10-15, scaled-bench track)
 
 Found while building `test/bench/scaled_device_benchmark.cpp`'s scaled provider/consumer row: a
 conservative weighted channel (two native structured-quad meshes of different resolution, no
@@ -10105,6 +10105,123 @@ is measured on the host at 2 ranks. `parallel.native_remap_halo_runner.3` FAILS 
 with `global id 2 is held by source rank 0 and again by source rank 0; pass owned entities only`: rank 1 adopts 4
 cells and rank 2 adopts 2 (trace), both copies of source cell 2 carry owner rank 0, and the communication-graph
 construction is handed the merged view's ghost copies as if owned. Round 9.
+
+### D73 FIX, ROUND 9 (RemapHalo track round 8, 2026-10-19): the 3-rank duplicate -- one owned source entity declared TWICE in its owner's own flat offer list, not a ghost mistaken for owned
+
+**Read before fixing, per the lead's own instruction: 420b95c and 0865a33.** `execute_remap_halo_instructions`
+now answers a non-native, non-MOAB backend with a successful no-op instead of handing it to the MOAB overload
+(420b95c); `fuse::native::accumulate_remap_halo` (this round's own round-8 fold) now conditions its null-buffer
+checks on the buffer this rank actually touches rather than refusing whenever `owned_covered` is empty on a
+rank that owns nothing (0865a33). Neither touched this round.
+
+**Root cause, found by reading `CommGraph::build`'s own assembly step (`comm_graph.cpp`), not by guessing from
+the symptom's own wording.** The round-8 writeup above quoted the lead's own framing -- "the communication-graph
+construction is handed the merged view's ghost copies as if owned" -- but `gather_side()` (the function that
+reads entities OFF a merged view) already filters by `mv.is_owned(dim, i)` correctly on the source side, and
+`device::merge_halo_cells_device<Space>` already marks every appended ghost cell `cell_is_owned(E_cells + j) =
+false` (mesh_merge_device.hpp:1050) -- confirmed by reading both, not assumed. The actual duplicate is ONE
+rank's step LATER: `emit()` (the lambda that turns the matched-pair accumulator `acc.send`/`acc.recv` into
+`CommGraph::send_ids_`/`recv_ids_`) walks `acc.send`, a `std::map<int, std::vector<Entry>>` keyed by
+DESTINATION peer (`absorb()`'s own `a->send[r.dst_rank].push_back(...)`), and for EVERY peer bucket appends
+that peer's own entries' global ids into the SAME, SHARED flat vector. When two DIFFERENT destination ranks
+(1 and 2 in the host's own 3-rank trace) each independently adopted the SAME owned source cell (cell 2) through
+the remap halo and each therefore asks rank 0 for it, rank 0's own `acc.send` has TWO buckets (keyed 1 and 2)
+each containing an `Entry{gid=2, ...}` -- and `emit()` flattens both into `g.send_ids_`, declaring global id 2
+TWICE in rank 0's OWN list. `MpiTransport::build_plan`'s own Phase D (`mpi_transport.cpp`) builds an `owner`
+map from this flat list assuming each entity appears from its true owner EXACTLY once -- confirmed by reading
+a SECOND, even earlier check in the SAME function: the "mine" map construction (`mpi_transport.cpp`'s own
+send-index build, a few lines above Phase D) ALSO refuses a repeat within one rank's own `global_ids` as
+"rank X lists global id Y twice in its own global_ids" -- and finds the first repeat as "global id 2 is held by
+source rank 0 and again by source rank 0".
+
+**Why the repeat is unnecessary, not merely wrong -- confirmed by reading how the send side is actually built.**
+`MpiTransport::build_plan`'s SEND construction walks every destination rank `d`'s OWN want-list (gathered via
+`MPI_Allgatherv`, independent of how many times rank 0 itself declared the id) and, for each wanted id, does a
+single O(1) `mine.find(...)` lookup against rank 0's own (would-be unique) offer map. The SAME key can be
+looked up as many times as there are destination ranks that want it -- fan-out is entirely expressed by the
+OUTER loop over destinations, never by repeating the KEY in `mine`'s own source map. Declaring an owned entity
+once is therefore sufficient for correctness; declaring it twice is what the duplicate-ownership check
+(correctly) cannot tell apart from a genuine ambiguity, because the flat list alone carries no peer tag once
+flattened.
+
+**The fix.** `fuse::dedupe_flat_source_offers` (`include/fuse/transport/transport.hpp`, implemented in a NEW
+file, `src/transport/comm_graph_support.cpp`, added to `fuse-coupler-transport`'s UNCONDITIONAL sources list so
+this pure, no-MPI data transform is available and unit-testable even in a build with no MPI at all -- `comm_
+graph.hpp`/`.cpp` themselves are compiled only under `FUSE_ENABLE_MPI`, src/CMakeLists.txt:252). Takes one
+rank's own per-peer offers, already grouped as `std::map<int, std::vector<std::pair<global id, local index>>>`
+(the same shape `emit()` already builds before flattening), and returns the flat `(ids, idxs)` pair with each
+global id kept on its FIRST occurrence only (lowest peer first, matching `emit()`'s own per-peer sort order) --
+every occurrence of a given id carries the SAME local index regardless of peer, since it names the SAME
+physical entity on this rank, so keeping any one occurrence is correct. `emit()` (`comm_graph.cpp`) now takes a
+`dedupe_flat` flag: `true` for the SEND side (where repeats across peers are a harmless, unnecessary artifact
+of flattening a fan-out), `false` for the RECV side (where a genuine repeat would mean THIS rank itself wants
+the same remote entity written into two different local slots, which `idxs`' own per-occurrence local index
+must keep distinct -- untouched by this fix).
+
+**Tier-0, no MPI.** `test/transport/transport_test.cpp`: `DedupeFlatSourceOffers.
+TwoDifferentPeersWantingTheSameOwnedCellCollapseToOneDeclaration` reproduces the host's own 3-rank shape by
+hand (rank 0 owns cells 0-3; peer 1 wants all 4, peer 2 wants {2, 3}) and confirms the flattened list is the 4
+unique ids, not 6; `WithoutDedupingTheSameInputWouldDeclareTheSharedCellTwice` confirms the SAME input,
+flattened the OLD way (no dedup), reproduces global id 2 appearing twice -- the exact precondition `mpi_
+transport.cpp`'s own refusal fires on; `NoFanOutIsAPureFlatten` and `EmptyInputIsEmptyOutput` cover the
+no-repeat and empty cases. A new mutation row, `dedupe-flat-source-offers-does-not-dedupe` (`build-evidence/
+mutations/transport-comm-graph.toml`, forces the `seen.insert(gid).second` guard to `true` unconditionally,
+i.e. no dedup at all), is RED/GREEN-verified: RED kills `TwoDifferentPeersWantingTheSameOwnedCellCollapseToOne
+Declaration` (ids.size() == 6, not 4); GREEN restore confirmed byte-identical (md5 `418801bee6e2352b75b871ad9
+bd0f583`). `tools/mutate.py --check-anchors`: 411 valid, 0 stale.
+
+**The 3-rank case this fix targets: checked by reading the production call path, not by running (host_pending
+for the real exchange).** `emit()`'s own per-peer loop has no 2-peer-specific assumption anywhere -- `acc.send`
+is a `std::map<int, std::vector<Entry>>` with one entry per ACTUAL destination peer, however many there are,
+and `dedupe_flat_source_offers` walks every key in that map regardless of count. `MpiTransport::build_plan`'s
+own send-construction loop (`for d in destinations`) is likewise N-ary. The fix generalizes to any number of
+adopting peers sharing any number of owned cells without further code change; the REAL multi-rank exchange
+itself (the Allgatherv-based matching `mpi_transport.cpp` performs) remains `requires = "mpi"`, same as every
+prior round's own real exchange work.
+
+**The missing tier-0 test for 420b95c (the lead's own fix, this round's other ask) -- WRITTEN, NOT VERIFIED
+this round; environment blocker, reported rather than worked around.** `RemapHalo.ASerialBackendGraphWithABuild
+RemapHaloNodeIsASuccessfulNoOp` (`test/backend/remap_halo_test.cpp`) builds a real cross-placement graph (two
+components with disjoint `RankSet`s, a `Conservation::Extensive` channel, `RemapFlags::Conservative` --
+`plan_test.cpp`'s own `pair()` convention, which already proves a graph can declare two placements while
+actually running on one process) against a `SerialMeshBackend`, lowers it for real, and asserts `fuse::execute_
+remap_halo_instructions` returns `.ok()`. This test needs MOAB compiled in to even exercise 420b95c's own
+branch (the bug is inside `#if FUSE_HAVE_MOAB`), matching `remap_halo_test.cpp`'s own existing `LABELS moab`
+registration (`test/CMakeLists.txt:660`) -- it needs no MPI launcher, a single ctest row like every other test
+in that file. It could NOT be compiled or run this round: `/opt/kokkos`'s installed library (confirmed on BOTH
+the `.dylib` and the static `.a`, by `nm`) does not export `Kokkos::OpenMP::concurrency() const` -- the
+non-static member the installed HEADERS declare (`OpenMP/Kokkos_OpenMP.hpp:104`) whenever `KOKKOS_ENABLE_
+DEPRECATED_CODE_4` is not seen as defined by the consuming translation unit; `KokkosCore_config.h` (the
+generated header that WOULD define it) is present at `/opt/kokkos/include/KokkosCore_config.h` and does define
+it, yet `fuse-coupler-backend`'s own translation units (`supermesh.cpp.o`, `native_halo.cpp.o`, `mls_weights.
+cpp.o`, and `fuse-coupler-search`'s `box_index.cpp.o`) still instantiate the no-arg member form and fail to
+link -- a header/library/config-propagation mismatch this track did not further diagnose once it was confirmed
+EXTERNAL to this patch (reproduced identically against a FRESH, completely unmodified pristine export of the
+same HEAD, in the no-MOAB tier-0 configuration too, not only `bmoab`; a scratch shim providing the missing
+symbol directly was attempted and also failed to compile under the SAME macro's own effective state, confirming
+this is not a one-line workaround). This blocks EVERY test target that links `fuse-coupler-backend` or `fuse-
+coupler-search` in this sandbox session, not only this track's own new test -- reported to the lead as a
+standing session-level blocker, not specific to this patch, rather than silently worked around or left
+unmentioned. The test's own correctness was checked by reading only: it follows `BoxPair`'s established
+construction pattern in the same file one-for-one, and `execute_remap_halo_instructions`'s own non-native,
+non-MOAB branch (420b95c, already landed) is a three-line `r = std::size_t{0};` with no further logic to get
+wrong.
+
+**host_pending.** The real fix: `parallel.native_remap_halo_runner.3`, both the Extensive and the new Intensive
+row, expected to PASS once this patch lands -- source total == target total (28 == 28) for Extensive, a
+constant field preserved exactly for Intensive, the SAME two assertions `.2` already confirms at 2 ranks. The
+420b95c test above, once the environment blocker clears.
+
+**Lead's note (2026-10-19):** the "/opt/kokkos header/library mismatch" this round reports is the sandbox's conda compiler ahead of the system one on PATH, loading a second C++ runtime (found and broadcast earlier this session); the lead's clean-export verification with the system compiler built every target and ran tier 0, and the host run below is the measurement.
+
+**CLOSED on the host (lead, 2026-10-19, `build-all` at `c48a14d` + round 9):** `parallel.native_remap_halo_runner.2`
+PASS (0.82 s) and `.3` PASS (0.09 s), both the Extensive conservation test (28 == 28) and the Intensive
+constant-field test, with `parallel.mpi_transport.{1..5}`, `transport.*`, `connect.chain.3`, `window_newton_mpi`,
+`participant_reducer_mpi` and the `participants.mpmd` rows unchanged. D73 is closed: the automatic remap halo is
+built inside `make_region_sizes`, exchanged for real, found by the weight builder under the plan's placement,
+its conservative coverage folded to the owners and agreed, and a source entity adopted by two peers is declared
+once by its owner. The native half of D82 closes on the same rows; the MOAB half stays open under its own
+rounds.
 ### D74 FIX (scaled-bench track, follow-up round, 2026-10-16)
 
 **Root cause, directly diagnosed (not the corner-precision theory originally suspected).**
