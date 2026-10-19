@@ -5,6 +5,7 @@
 #include "fuse/backend/mls_weights.hpp"
 #include "fuse/backend/native_halo.hpp"
 #include "fuse/backend/remap_plan.hpp"
+#include "fuse/backend/remap_weight_normalize.hpp"
 #include "fuse/backend/supermesh.hpp"
 
 #include "high_order_backend.hpp"
@@ -1661,14 +1662,22 @@ struct Audit {
 /// Turn raw overlaps into the sorted, merged, normalised COO matrix and fill
 /// the conservation audit.
 ///
-///     W_ji = (overlap_ij / parent_i) * (m^s_i / m^t_j)
+///     Conservation::Intensive (and None), UNCHANGED:
+///         W_ji = (overlap_ij / parent_i) * (m^s_i / m^t_j)
+///     Conservation::Extensive, KNOWN_ISSUES D82 (round 11):
+///         W_ji = overlap_ij / m^s_i
 ///
-/// The first factor is the dimensionless fraction of source cell `i` that lies
-/// in target cell `j`; the second converts a source density to a target
-/// density. Nothing is renormalised to force either sum: see the header for
-/// why the tempting `overlap / sum_k overlap_ik` was rejected.
+/// `normalize_remap_weight` (fuse/backend/remap_weight_normalize.hpp) is the
+/// one place either formula is written; see its own doc for why Extensive
+/// drops the density-to-density factor entirely rather than keeping it with
+/// a different denominator, and for the two real per-cell measurements
+/// (wholeATM_T.h5m, recMeshOcn.h5m) behind the test tolerance that formula's
+/// own residual needs. Nothing is renormalised to force either sum to
+/// exactly 1: see the header for why the tempting `overlap / sum_k
+/// overlap_ik` was rejected.
 [[nodiscard]] Result<RemapWeights> assemble(const Side& src, const Side& tgt,
-                                            Supermesh sm, bool conservative) {
+                                            Supermesh sm, bool conservative,
+                                            Conservation conservation) {
   RemapWeights w;
   w.n_rows = tgt.cells.size();
   w.n_cols = src.cells.size();
@@ -1684,6 +1693,7 @@ struct Audit {
   std::vector<double> covered_tgt(w.n_rows, 0.0);
   std::vector<double> row_sum(w.n_rows, 0.0);
   std::vector<double> col_sum(w.n_cols, 0.0);
+  const bool extensive = conservation == Conservation::Extensive;
 
   w.row.reserve(sm.entries.size());
   w.col.reserve(sm.entries.size());
@@ -1699,12 +1709,19 @@ struct Audit {
     }
     const std::size_t i = static_cast<std::size_t>(sm.entries[k].col);
     const std::size_t j = static_cast<std::size_t>(sm.entries[k].row);
-    const double weight =
-        (area / sm.src_parent[i]) * (src.measure[i] / tgt.measure[j]);
+    const double weight = normalize_remap_weight(
+        area, sm.src_parent[i], src.measure[i], tgt.measure[j], conservation);
     covered_src[i] += area;
     covered_tgt[j] += area;
     row_sum[j] += weight;
-    col_sum[i] += weight * tgt.measure[j];
+    // Extensive: `weight` is already the fraction of source cell i's AMOUNT
+    // this entry carries, so the column total that must read 1 (round 11's
+    // own "source total == target total" test) is the raw weight sum, not
+    // a measure-weighted one -- multiplying by tgt.measure[j] here would
+    // re-introduce exactly the density conversion Extensive exists to drop.
+    // Intensive/None: unchanged (the amount leaving source cell i, checked
+    // against its own measure below).
+    col_sum[i] += extensive ? weight : weight * tgt.measure[j];
     w.row.push_back(sm.entries[k].row);
     w.col.push_back(sm.entries[k].col);
     w.val.push_back(weight);
@@ -1757,9 +1774,15 @@ struct Audit {
       audit.over_value = c;
       audit.over_index = i;
     }
+    // Extensive: col_sum[i] is already the raw weight-sum (should read 1,
+    // the fraction of source cell i's amount that was fully distributed);
+    // Intensive/None: col_sum[i] is tgt.measure-weighted (should read
+    // src.measure[i], unchanged from before round 11).
     audit.max_col_defect =
         std::max(audit.max_col_defect,
-                 std::fabs(col_sum[i] - src.measure[i]) / src.measure[i]);
+                 extensive ? std::fabs(col_sum[i] - 1.0)
+                           : std::fabs(col_sum[i] - src.measure[i]) /
+                                 src.measure[i]);
   }
   for (std::size_t j = 0; j < w.n_rows; ++j) {
     if (!tgt.view->is_owned(tgt.dim, j)) continue;
@@ -2909,7 +2932,7 @@ Result<RemapWeights> build_weights(const RemapPlan& plan,
   if (ba.ok && bb.ok) {
     auto sm = reconcile(a.pcomm, intersect_boxes(a, b, ba.mesh, bb.mesh));
     if (!sm.ok()) return sm.error();
-    return finish(assemble(a, b, std::move(sm.value()), conservative));
+    return finish(assemble(a, b, std::move(sm.value()), conservative, plan.conservation));
   }
 
   if (a.dim == 2) {
@@ -2939,7 +2962,7 @@ Result<RemapWeights> build_weights(const RemapPlan& plan,
       }
       auto sm = reconcile(a.pcomm, intersect_surfaces(a, b, fa.value(), fb.value()));
       if (!sm.ok()) return sm.error();
-      return finish(assemble(a, b, std::move(sm.value()), conservative));
+      return finish(assemble(a, b, std::move(sm.value()), conservative, plan.conservation));
     }
   }
 
