@@ -143,6 +143,21 @@ def main() -> int:
         line.startswith("FUSE_ENABLE_MPI:") and line.rstrip().endswith("=ON")
         for line in cache.read_text(errors="replace").splitlines())
 
+    # Same courtesy, for `requires = "lowfive"`: LowFiveTransport's real
+    # body (src/transport/lowfive_transport.cpp) is entirely behind `#if
+    # FUSE_HAVE_LOWFIVE` -- a build configured with FUSE_ENABLE_LOWFIVE=OFF
+    # (the default; tier 0's own configure does not turn it on) compiles
+    # out that code path altogether, so its own test binary runs only the
+    # `#else` stub suite (`LowFiveTransport.EveryEntryPointRefusesWithout
+    # LowFive`), which passes identically with or without the mutation --
+    # a false SURVIVED, not evidence the mutated line is unobservable.
+    # Checked from the cache, like `build_has_mpi` above, because this is
+    # a pure compile-time flag with no launcher to fail at runtime (unlike
+    # "mpi"/"petsc", which also need a working process launcher).
+    build_has_lowfive = any(
+        line.startswith("FUSE_ENABLE_LOWFIVE:") and line.rstrip().endswith("=ON")
+        for line in cache.read_text(errors="replace").splitlines())
+
     # FpPolicy track, KNOWN_ISSUES.md D30: a `requires = "release"` gate
     # (read from CMAKE_BUILD_TYPE, the same courtesy "mpi"/"petsc" get) was
     # added here for base.fp_policy's probe on the premise that Debug
@@ -209,6 +224,13 @@ def main() -> int:
                             "MPI build, which exits 0 either way; assess it against a "
                             "build configured with -DFUSE_ENABLE_MPI=OFF"))
             print(f"NOT-ASSESSED  {m['id']}  (needs a build with NO MPI)")
+            continue
+        if m.get("requires") == "lowfive" and not build_has_lowfive:
+            results.append((m, "NOT-ASSESSED",
+                            "needs a build configured with -DFUSE_ENABLE_LOWFIVE=ON; "
+                            "LowFiveTransport's real body is behind #if FUSE_HAVE_LOWFIVE "
+                            "and does not exist to fail in a build without it"))
+            print(f"NOT-ASSESSED  {m['id']}  (needs FUSE_ENABLE_LOWFIVE=ON)")
             continue
         if m.get("requires") == "petsc" and not petsc_available:
             results.append((m, "NOT-ASSESSED",
