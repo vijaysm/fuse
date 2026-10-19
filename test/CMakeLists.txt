@@ -2293,6 +2293,19 @@ if(FUSE_ENABLE_MPI)
   fuse_add_mpi_test(parallel abi_reconcile_mpi LIBS fuse::abi RANKS 2 3)
 endif()
 
+# KNOWN_ISSUES.md D61, round 4 (the lead's own instruction, after round 3's
+# fix deadlocked verification.brusselator.participants.{mpmd,accept}.{3,5}
+# on the real host): the minimal model abi_reconcile_mpi_test.cpp's own
+# single spanning component cannot exercise -- TWO components on DISJOINT
+# rank sets, each calling begin_step()/end_step() a DIFFERENT number of
+# times. RANKS 3 only (not the default, not 2 3): this row's graph is
+# built for exactly u={0}, v={1,2} and refuses to run under any other
+# rank count (see the test's own TEST body assertion).
+fuse_tests_gated_by(FUSE_ENABLE_MPI parallel/abi_reconcile_disjoint_mpi_test.cpp)
+if(FUSE_ENABLE_MPI)
+  fuse_add_mpi_test(parallel abi_reconcile_disjoint_mpi LIBS fuse::abi RANKS 3)
+endif()
+
 # ---------------------------------------------------------------- abi (provider, S6 phase 4)
 # test/abi/conformance_test.cpp's four kinds, two of which need a REAL
 # dlopen()'d shared object (never a hand-built in-memory table standing in
