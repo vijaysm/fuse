@@ -198,17 +198,51 @@ target = "fuse_runtime_restart_test"
 test = "runtime.restart"
 result = "CONFIRMED 2026-10-15 (round 2): full unfiltered fuse_runtime_restart_test (17 tests) ran 15 PASSED / 2 FAILED. AccelNotImplementedRefusesWithoutOptIn failed: EXPECT_EQ(rr.error().code, \"E-RESTART-ACCEL-NOT-IMPLEMENTED\") got \"E-RESTART-NOT-IMPLEMENTED\" instead (the gate never ran, so the call fell through into the base-class default). AccelNotImplementedWithAllowResetSucceedsAndReports failed: rr.ok() was false, exact message \"E-RESTART-NOT-IMPLEMENTED: Accelerator::import_restart_state(): IQN-ILS does not override export_restart_state()/import_restart_state()/restart_state_implemented(), so this call cannot be trusted to mean \\\"nothing to restore\\\" -- the caller must check restart_state_implemented() before ever reaching this default\" -- opting in no longer causes a successful reset, because the gate that would call reset() never runs. Every other test, none of which uses an AccelKind the base default ever reaches, still passed. Restored; cmp against the pre-mutation file reported no difference; rebuilt afterward and confirmed 17/17 passing again."
 
+# mutate.py builds `ctest -R "^{test}$"` from a SINGLE test field; the
+# original row below named three comma-joined targets/tests, which never
+# matched any real ctest name and reported NO-BASELINE rather than the
+# three separate outcomes the 2026-10-15 hand run actually found (each
+# ctest row quoted verbatim in its own `result` below). Split into one row
+# per test, same `file`/`old`/`new` (mutate.py applies it once regardless
+# of how many rows name it -- the anchor is checked per row, so applying
+# the SAME file edit three times in three separate mutate.py rows is
+# redundant but harmless: each row's own apply/build/run/restore cycle is
+# independent).
 [[mutation]]
-id = "typed-restart-widening-admits-narrowing"
+id = "typed-restart-widening-admits-narrowing-restart"
 area = "model (fuse::detail::is_exact_widening, Stage B Slice 1b typed fields)"
 describes = "is_exact_widening() unconditionally returns true regardless of its two ElementTypeInfo arguments, so ReadConversion::Widening admits every conversion -- including a float narrowing (reduced significand/exponent range) or a signed-to-unsigned conversion that should never be classified as lossless."
 file = "src/model/element_type.cpp"
 old = """bool is_exact_widening(const ElementTypeInfo& f, const ElementTypeInfo& t) {"""
 new = """bool is_exact_widening(const ElementTypeInfo& f, const ElementTypeInfo& t) {
   return true;  // MUTATION: Widening check always admits"""
-target = "fuse_runtime_restart_test, fuse_runtime_typed_restart_hdf5_test, fuse_model_element_type_test"
-test = "runtime.restart, runtime.typed_restart_hdf5, model.element_type"
-result = "CONFIRMED 2026-10-15 (Stage B Slice 1b): fuse_runtime_restart_test ran 25 PASSED / 1 FAILED (TypedRestart.WideningRefusesANonExactConversion). fuse_runtime_typed_restart_hdf5_test ran 3 PASSED / 1 FAILED (TypedRestartHdf5.HandBuiltX86LongDoubleExactAndWideningRefuseAllowNarrowingReportsDelta -- its Widening-refuses assertion wrongly succeeded, then a bad_variant_access exception fired reading the resulting Failure as a value). fuse_model_element_type_test ran 4 PASSED / 1 FAILED (ElementType.IsExactWideningMatchesEveryOwnerNamedCase -- multiple EXPECT_FALSE checks on known-non-widening pairs wrongly evaluated true). Restored; cmp against the pre-mutation file reported no difference; rebuilt afterward and confirmed all three suites passing again (26/26, 4/4, 5/5 respectively)."
+target = "fuse_runtime_restart_test"
+test = "runtime.restart"
+result = "CONFIRMED 2026-10-15 (Stage B Slice 1b): fuse_runtime_restart_test ran 25 PASSED / 1 FAILED (TypedRestart.WideningRefusesANonExactConversion). Restored; cmp against the pre-mutation file reported no difference; rebuilt afterward and confirmed 26/26 passing again."
+
+[[mutation]]
+id = "typed-restart-widening-admits-narrowing-typed-restart-hdf5"
+area = "model (fuse::detail::is_exact_widening, Stage B Slice 1b typed fields)"
+describes = "is_exact_widening() unconditionally returns true regardless of its two ElementTypeInfo arguments, so ReadConversion::Widening admits every conversion -- including a float narrowing (reduced significand/exponent range) or a signed-to-unsigned conversion that should never be classified as lossless."
+file = "src/model/element_type.cpp"
+old = """bool is_exact_widening(const ElementTypeInfo& f, const ElementTypeInfo& t) {"""
+new = """bool is_exact_widening(const ElementTypeInfo& f, const ElementTypeInfo& t) {
+  return true;  // MUTATION: Widening check always admits"""
+target = "fuse_runtime_typed_restart_hdf5_test"
+test = "runtime.typed_restart_hdf5"
+result = "CONFIRMED 2026-10-15 (Stage B Slice 1b): fuse_runtime_typed_restart_hdf5_test ran 3 PASSED / 1 FAILED (TypedRestartHdf5.HandBuiltX86LongDoubleExactAndWideningRefuseAllowNarrowingReportsDelta -- its Widening-refuses assertion wrongly succeeded, then a bad_variant_access exception fired reading the resulting Failure as a value). Restored; cmp against the pre-mutation file reported no difference; rebuilt afterward and confirmed 4/4 passing again."
+
+[[mutation]]
+id = "typed-restart-widening-admits-narrowing-element-type"
+area = "model (fuse::detail::is_exact_widening, Stage B Slice 1b typed fields)"
+describes = "is_exact_widening() unconditionally returns true regardless of its two ElementTypeInfo arguments, so ReadConversion::Widening admits every conversion -- including a float narrowing (reduced significand/exponent range) or a signed-to-unsigned conversion that should never be classified as lossless."
+file = "src/model/element_type.cpp"
+old = """bool is_exact_widening(const ElementTypeInfo& f, const ElementTypeInfo& t) {"""
+new = """bool is_exact_widening(const ElementTypeInfo& f, const ElementTypeInfo& t) {
+  return true;  // MUTATION: Widening check always admits"""
+target = "fuse_model_element_type_test"
+test = "model.element_type"
+result = "CONFIRMED 2026-10-15 (Stage B Slice 1b): fuse_model_element_type_test ran 4 PASSED / 1 FAILED (ElementType.IsExactWideningMatchesEveryOwnerNamedCase -- multiple EXPECT_FALSE checks on known-non-widening pairs wrongly evaluated true). Restored; cmp against the pre-mutation file reported no difference; rebuilt afterward and confirmed 5/5 passing again."
 
 [[mutation]]
 id = "typed-restart-bfloat16-truncates-instead-of-rne"
@@ -231,8 +265,11 @@ target = "fuse_model_bfloat16_test"
 test = "model.bfloat16"
 result = "CONFIRMED 2026-10-15 (Stage B Slice 1b): fuse_model_bfloat16_test ran 2 PASSED / 2 FAILED (BFloat16.RoundToNearestEvenAtExactTies, BFloat16.RoundingOverflowAtTheTopOfTheRangeBecomesInfinity). NOT caught by BFloat16.ExhaustiveBitToFloatToBitIdentityOverEveryNonNanPattern or BFloat16.ToFloatIsAlwaysExactWidening, by construction: the exhaustive test's inputs are bf16 bit patterns widened losslessly to float first, so every value it round-trips already has all-zero bits in the range truncation vs. rounding would differ on -- exactly why the two dedicated tie/overflow tests exist separately. Restored; cmp against the pre-mutation file reported no difference; rebuilt afterward and confirmed 4/4 passing again."
 
+# Same mutate.py regex defect as typed-restart-widening-admits-narrowing
+# above: one row named three comma-joined targets/tests. Split into one
+# row per test; same `file`/`old`/`new` in each.
 [[mutation]]
-id = "typed-restart-narrow-float-reports-zero-change"
+id = "typed-restart-narrow-float-reports-zero-change-float-bits"
 area = "model (fuse::detail::narrow_float, Stage B Slice 1b typed fields)"
 describes = "narrow_float()'s result.absolute_change is forced to 0.0 regardless of the computed delta_units/ldexp result, so a float narrowing conversion under ReadConversion::AllowNarrowing silently under-reports the largest change it actually made."
 file = "src/model/float_bits.cpp"
@@ -244,6 +281,40 @@ new = """    result.absolute_change = 0.0;  // MUTATION: reported change always 
     (void)std::fabs(std::ldexp(static_cast<double>(delta_units),
                              static_cast<int>(src.unbiased_exponent -
                                               (from_bits - 1))));"""
-target = "fuse_model_float_bits_test, fuse_runtime_restart_test, fuse_runtime_typed_restart_hdf5_test"
-test = "model.float_bits, runtime.restart, runtime.typed_restart_hdf5"
-result = "CONFIRMED 2026-10-15 (Stage B Slice 1b): fuse_model_float_bits_test ran 5 PASSED / 1 FAILED (FloatBits.OwnerScenario_X86ExtendedLongDoubleNarrowsToMacDoubleWithReportedDelta). fuse_runtime_restart_test ran 8 PASSED / 1 FAILED of the TypedRestart suite (TypedRestart.FloatNarrowingReportsAMeasuredChange: EXPECT_GT(max_absolute_change, 0.0) got 0 vs 0). fuse_runtime_typed_restart_hdf5_test ran 3 PASSED / 1 FAILED (TypedRestartHdf5.HandBuiltX86LongDoubleExactAndWideningRefuseAllowNarrowingReportsDelta: max_absolute_change reported 0 against an independently computed 1.0842021724855044e-19). Restored; cmp against the pre-mutation file reported no difference; rebuilt afterward and confirmed all three suites passing again (6/6, 26/26, 4/4 respectively)."
+target = "fuse_model_float_bits_test"
+test = "model.float_bits"
+result = "CONFIRMED 2026-10-15 (Stage B Slice 1b): fuse_model_float_bits_test ran 5 PASSED / 1 FAILED (FloatBits.OwnerScenario_X86ExtendedLongDoubleNarrowsToMacDoubleWithReportedDelta). Restored; cmp against the pre-mutation file reported no difference; rebuilt afterward and confirmed 6/6 passing again."
+
+[[mutation]]
+id = "typed-restart-narrow-float-reports-zero-change-restart"
+area = "model (fuse::detail::narrow_float, Stage B Slice 1b typed fields)"
+describes = "narrow_float()'s result.absolute_change is forced to 0.0 regardless of the computed delta_units/ldexp result, so a float narrowing conversion under ReadConversion::AllowNarrowing silently under-reports the largest change it actually made."
+file = "src/model/float_bits.cpp"
+old = """    result.absolute_change =
+        std::fabs(std::ldexp(static_cast<double>(delta_units),
+                             static_cast<int>(src.unbiased_exponent -
+                                              (from_bits - 1))));"""
+new = """    result.absolute_change = 0.0;  // MUTATION: reported change always zero
+    (void)std::fabs(std::ldexp(static_cast<double>(delta_units),
+                             static_cast<int>(src.unbiased_exponent -
+                                              (from_bits - 1))));"""
+target = "fuse_runtime_restart_test"
+test = "runtime.restart"
+result = "CONFIRMED 2026-10-15 (Stage B Slice 1b): fuse_runtime_restart_test ran 8 PASSED / 1 FAILED of the TypedRestart suite (TypedRestart.FloatNarrowingReportsAMeasuredChange: EXPECT_GT(max_absolute_change, 0.0) got 0 vs 0). Restored; cmp against the pre-mutation file reported no difference; rebuilt afterward and confirmed 26/26 passing again."
+
+[[mutation]]
+id = "typed-restart-narrow-float-reports-zero-change-typed-restart-hdf5"
+area = "model (fuse::detail::narrow_float, Stage B Slice 1b typed fields)"
+describes = "narrow_float()'s result.absolute_change is forced to 0.0 regardless of the computed delta_units/ldexp result, so a float narrowing conversion under ReadConversion::AllowNarrowing silently under-reports the largest change it actually made."
+file = "src/model/float_bits.cpp"
+old = """    result.absolute_change =
+        std::fabs(std::ldexp(static_cast<double>(delta_units),
+                             static_cast<int>(src.unbiased_exponent -
+                                              (from_bits - 1))));"""
+new = """    result.absolute_change = 0.0;  // MUTATION: reported change always zero
+    (void)std::fabs(std::ldexp(static_cast<double>(delta_units),
+                             static_cast<int>(src.unbiased_exponent -
+                                              (from_bits - 1))));"""
+target = "fuse_runtime_typed_restart_hdf5_test"
+test = "runtime.typed_restart_hdf5"
+result = "CONFIRMED 2026-10-15 (Stage B Slice 1b): fuse_runtime_typed_restart_hdf5_test ran 3 PASSED / 1 FAILED (TypedRestartHdf5.HandBuiltX86LongDoubleExactAndWideningRefuseAllowNarrowingReportsDelta: max_absolute_change reported 0 against an independently computed 1.0842021724855044e-19). Restored; cmp against the pre-mutation file reported no difference; rebuilt afterward and confirmed 4/4 passing again."

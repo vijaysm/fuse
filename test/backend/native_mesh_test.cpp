@@ -123,6 +123,32 @@ TEST(NativeMesh, ADegenerateSimplexHasZeroMeasureAndNotANaN) {
   EXPECT_FALSE(std::isnan(flat.measure(0)));
 }
 
+// `ADegenerateSimplexHasZeroMeasureAndNotANaN` above assumes the Gram
+// determinant of three near-collinear points rounds NEGATIVE; under this
+// project's own floating-point policy (FUSE_FP_REPRODUCIBLE, cmake/
+// FuseFpPolicy.cmake, -ffp-contract=off on every target) the SPECIFIC
+// points chosen there round to EXACTLY 0.0 instead -- measured directly:
+// p1=(0.7,0.2,0.1), p2=(2.1,0.6,0.3) are exact integer multiples (p2 =
+// 3*p1) of one another, so the Gram determinant's two product terms
+// (g00*g11 and g01*g01) round to the IDENTICAL double under plain
+// (unfused) multiply-then-subtract, and the mutation gate's own
+// `if (false) return 0.0;` row (`mesh-returns-nan-for-a-degenerate-
+// simplex`, build-evidence/mutations.toml) survives: det is never
+// negative here, so the removed clamp is never exercised, with or
+// without the mutation. The three points below were found (and their
+// exact bit pattern confirmed, via hex float literals so no decimal
+// round-trip can change them) to round NEGATIVE under this SAME
+// -ffp-contract=off build: det = -4.5474735088646411896e-13.
+TEST(NativeMesh, ADegenerateSimplexWithoutFmaStillHasZeroMeasure) {
+  auto flat = one_simplex<2, 3>(
+      {{{0x1.19a8bd5cf4ba8p+2, 0x1.e9aa93ac5de7p+0, 0x1.0bf22a60f376cp+2}},
+       {{0x1.cc9361635aa68p+1, 0x1.3d09a6fa7506cp+2, 0x1.4b11db07ded48p+2}},
+       {{0x1.e5ba39699acdcp+2, -0x1.45599ee06360cp+3, 0x1.13119479b72bp-2}}});
+  ASSERT_TRUE(flat.finalize().ok());
+  EXPECT_EQ(flat.measure(0), 0.0);
+  EXPECT_FALSE(std::isnan(flat.measure(0)));
+}
+
 TEST(NativeMesh, APointCloudHasNoExtent) {
   TestMesh<0, 3> pc("pc", 2, 2, 2);
   for (std::size_t i = 0; i < 2; ++i) {

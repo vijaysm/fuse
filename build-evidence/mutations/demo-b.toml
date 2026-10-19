@@ -13,6 +13,18 @@ new = """  std::string sentinel = file + ".soma-writable-probe";
   const int fd = ::open(sentinel.c_str(), O_CREAT | O_EXCL | O_WRONLY, 0600);"""
 target = "fuse_transport_lowfive_test"
 test = "transport.lowfive"
+# This row names no MPI need (set_location()'s probe is plain POSIX), but
+# its own code -- all of LowFiveTransport's real body -- is compiled out
+# behind #if FUSE_HAVE_LOWFIVE whenever FUSE_ENABLE_LOWFIVE is OFF (tier
+# 0's own default configure). Without this gate the tier-0 sweep runs the
+# mutation against a binary that never compiled the mutated line into
+# anything the linked test could reach -- the #else stub suite passes
+# identically either way, a false SURVIVED (see `test/transport/
+# lowfive_test.cpp`'s own `LowFiveTransport.SetLocationIsNotBlockedByA
+# PeersProbe`, which already asserts the correct contract and DOES kill
+# this mutation, hand-verified against a LowFive-enabled, MPI-disabled-
+# at-runtime build -- build-evidence's own report for this track).
+requires = "lowfive"
 
 [[mutation]]
 id = "distributed-build-plan-registers-no-intercomm"

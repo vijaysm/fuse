@@ -470,7 +470,58 @@ new = """          window_export_meta[ins.out.value()] = {cfg.capacity, valid_su
                                                   cfg.hosted};  // MUTATED: exporter-side flag restored"""
 target = "fuse_runtime_window_hosting_test"
 test = "runtime.window_hosting"
-# Expected kill: WindowHosting.BlockOwnershipFollowsTheConsumersProcessorSetOnAsRank
+# RE-ASSESSED 2026-10-19 (Survivors track). This row SURVIVED the full
+# tier-0 sweep at `90d98ee`. Traced the reason to a SECOND, independent
+# computation of the same observable, added after this row and the tests
+# below were written (same date, per the field's own doc comment): read
+# `src/runtime/iteration.cpp`'s resolve_regions() in full --
+# `window_export_meta[ins.out.value()]` (the map this mutation's `old`/
+# `new` touches) is read into `b.window_hosted` exactly once (the line
+# right above `found->second.hosted`), and for EVERY window-scoped
+# residual block this is IMMEDIATELY overwritten a few dozen lines later,
+# unconditionally whenever `b.window_export_capacity > 0` (which is true
+# whenever the FIRST assignment ran at all, since both are gated by the
+# SAME `window_export_meta.find()` success):
+#
+#   if (b.window_export_capacity > 0 && ch.target.valid() && ...) {
+#     const ComponentId consumer = graph.owner_of(ch.target);
+#     if (consumer.valid() && ...) {
+#       b.window_hosted = !this_process.has_value() ||
+#           graph.component(consumer).ranks.contains(*this_process);
+#     }
+#   }
+#
+# `ch` here is `graph.channel_at(origin)`, and `origin` is the RESIDUAL
+# node's OWN `.origin` field -- set directly, unconditionally, to the
+# region's own declared channel `c` at Residual-node construction
+# (`src/ir/regions.cpp`: `ctx.dag.add_node(OpKind::Residual, {it->second},
+# res, OpAttrs{}, c, ...)`), never derived from the hop-walk that resolves
+# `window_export_meta` itself. So for ANY graph reaching this far, `ch` IS
+# the same channel the region declares, its `target`/`consumer` are always
+# valid (a malformed channel would already be rejected at lowering), and
+# this override recomputes EXACTLY the formula `cfg.export_consumer_hosted`
+# itself uses -- independently of whether `window_export_meta`'s own third
+# field (this mutation's target) carried `cfg.hosted` or
+# `cfg.export_consumer_hosted`. `window_export_meta`'s `.hosted` field has
+# exactly one reader in the whole tree (grepped: this one `found->second.
+# hosted` assignment, nowhere else), and that reader's result is always
+# discarded by the override above before `resolve_regions()` returns.
+#
+# VERIFIED by direct build-apply-run (90d98ee export, tier-0, no MPI,
+# system /usr/bin/c++): with ONLY this mutation applied, `ctest -R
+# ^runtime.window_hosting$` PASSES (22/22 unaffected) -- confirms
+# SURVIVED. With the mutation STILL applied and the override block above
+# ALSO additionally disabled (`if (false && b.window_export_capacity > 0
+# ...)`, a diagnostic, not part of this mutation), the SAME ctest row
+# FAILS with exactly the three tests the row's own comment below expects
+# (BlockOwnershipFollowsTheConsumersProcessorSetOnAsRank/OnBsRank and
+# FanOutBlocksFollowTheirOwnConsumerNotTheFirstChannel) -- confirming the
+# override, and nothing else, is what makes this mutation unobservable:
+# removing it (not part of the real fix, diagnostic only, reverted) is
+# necessary AND sufficient to restore the kill the row's own comment
+# documents from 2026-10-08, before the override existed.
+equivalent = "window_export_meta's third field (cfg.hosted vs cfg.export_consumer_hosted) has exactly one reader in resolve_regions() (src/runtime/iteration.cpp), and that reader's result is unconditionally overwritten, for every window-scoped residual block, by an independent recomputation of the identical consumer-hosted formula from the block's own channel (graph.owner_of(ch.target)) before resolve_regions() returns -- verified by disabling that later recomputation and observing the SAME existing tests then catch the mutation. No graph can reach window_export_meta's own third field as the final RegionBlock::window_hosted value under the current resolve_regions() structure, so this specific mutation is behaviourally equivalent to no-op as currently written -- the redundant recomputation (added the same day as this row, per RegionBlock::window_hosted's own Unit-2b-step-(c) doc comment) is what should be reviewed, not this test."
+# Expected kill (pre-override, 2026-10-08; no longer reachable -- see equivalent= above): WindowHosting.BlockOwnershipFollowsTheConsumersProcessorSetOnAsRank
 # and WindowHosting.BlockOwnershipFollowsTheConsumersProcessorSetOnBsRank (the
 # two tests that force this_process to a rank where the two window members'
 # own RankSets are DISJOINT -- window_hosting_test.cpp's own

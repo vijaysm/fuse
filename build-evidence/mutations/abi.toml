@@ -91,14 +91,37 @@ result = "CONFIRMED 2026-10-02: the fuse_abi_participant_test BINARY ABORTED wit
 [[mutation]]
 id = "abi-second-symbol-exported"
 area = "abi"
-describes = "the link-time export allowlist gains a second name (a real, already-linked Kokkos symbol, standing in for \"a new public entry point someone remembered to allowlist but forgot to also add to the golden file\"), so the built shared library exports two symbols instead of the one test/abi/exported_symbols.golden names. Proves the allowlist, not source-level visibility, is what actually bounds the export set -- confirmed the hard way: the first attempt at this mutation added a second `__attribute__((visibility(\"default\")))` extern \"C\" function in participant.cpp WITHOUT touching the allowlist, and nm still reported exactly one exported symbol, because ld64's -exported_symbols_list silently drops anything not on it regardless of the symbol's own compiled visibility."
+describes = "the link-time export allowlist gains a second name (a real, already-linked r3d symbol, standing in for \"a new public entry point someone remembered to allowlist but forgot to also add to the golden file\"), so the built shared library exports two symbols instead of the one test/abi/exported_symbols.golden names. Proves the allowlist, not source-level visibility, is what actually bounds the export set -- confirmed the hard way: the first attempt at this mutation added a second `__attribute__((visibility(\"default\")))` extern \"C\" function in participant.cpp WITHOUT touching the allowlist, and nm still reported exactly one exported symbol, because ld64's -exported_symbols_list silently drops anything not on it regardless of the symbol's own compiled visibility."
 file = "src/abi/exported_symbols.sym"
 old = """_fuse_coupler_abi"""
 new = """_fuse_coupler_abi
-__ZN6Kokkos11num_devicesEv"""
+_r3d_orient"""
 target = "fuse-abi-shared"
 test = "abi.exported_symbols"
-result = "CONFIRMED 2026-10-02: after rebuilding fuse-abi-shared with the mutated allowlist, `nm -gU` on libfuse-abi.dylib showed two text symbols (ZN6Kokkos11num_devicesEv, fuse_coupler_abi) against the golden file's one; running check_exported_symbols.cmake directly (the same command ctest's abi.exported_symbols issues) FAILED with exactly that diff. Restored; cmp reported no difference."
+# Re-anchored 2026-10-19 (Survivors track): the stand-in symbol used to be
+# `__ZN6Kokkos11num_devicesEv`, which SURVIVED the full tier-0 sweep at
+# `90d98ee` -- not because the allowlist check stopped comparing a set
+# (`test/abi/check_exported_symbols.cmake`'s own `if(NOT _actual STREQUAL
+# _expected)` still compares the full sorted list, unchanged), but because
+# Kokkos is now a found, external SHARED library this target links
+# (src/CMakeLists.txt's own comment on `fuse-abi-shared`'s INSTALL_RPATH:
+# "Kokkos is ... always a found, external SHARED library"), so
+# `Kokkos::num_devices` is never a DEFINED symbol inside libfuse-abi.dylib
+# at all -- confirmed directly, `nm libfuse-abi.dylib` shows no
+# `Kokkos11num_devices` symbol of any kind, defined or hidden, and
+# `otool -L` lists `libkokkoscore.dylib` as a runtime dependency. Allow-
+# listing a symbol the library never defines cannot make ld64 export it;
+# the mutation changed the allowlist but the built library's actual
+# exported-symbol SET was identically {fuse_coupler_abi} with or without
+# it. `r3d_orient` (from the vendored r3d, PRIVATE-linked into
+# fuse-coupler-backend, `src/CMakeLists.txt`'s own comment: "r3d is the
+# supermesh kernel ... PRIVATE ... has no installable existence of its
+# own") is genuinely statically linked and compiled WITHOUT hidden
+# visibility (r3d's own CMakeLists.txt, vendored, sets no
+# CXX_VISIBILITY_PRESET) -- confirmed directly: `nm libfuse-abi.dylib`
+# (no `-gU`) shows `t _r3d_orient` (a local, hidden-by-the-allowlist, but
+# genuinely DEFINED text symbol) before this mutation is applied.
+result = "CONFIRMED 2026-10-02 (original Kokkos-symbol draft, no longer reproducible -- see note above): after rebuilding fuse-abi-shared with the mutated allowlist, `nm -gU` on libfuse-abi.dylib showed two text symbols (ZN6Kokkos11num_devicesEv, fuse_coupler_abi) against the golden file's one. RE-VERIFIED 2026-10-19 with the re-anchored `new` above (90d98ee export, tier-0, system /usr/bin/c++): after rebuilding fuse-abi-shared, `nm -gU` showed `fuse_coupler_abi;r3d_orient` against the golden file's `fuse_coupler_abi`; ctest -R ^abi.exported_symbols$ FAILED with check_exported_symbols.cmake reporting exactly that diff (\"expected: fuse_coupler_abi; actual: fuse_coupler_abi;r3d_orient\"). Restored; cmp reported no difference; rebuilt and reconfirmed passing."
 
 [[mutation]]
 id = "abi-step-order-refusal-removed"
@@ -123,10 +146,26 @@ old = """    const bool treat_as_mismatch = (req.component != in->component) || 
       }"""
 new = """    const bool treat_as_mismatch = rolled_over;
     if (treat_as_mismatch) {
-      if (false) {"""
+      if (false) {
+      }"""
+# Re-anchored 2026-10-19 (Survivors track, inconclusive-row fix): the `new`
+# text above used to leave `if (false) {` UNCLOSED, on the premise (true
+# when this row was written, 2026-10-02) that the enclosing `if
+# (treat_as_mismatch) {` body ended right there. It no longer does -- the
+# window-period-rollover handling ("Resuming past a proxy...") was added
+# inside that SAME outer `if` afterward, so the unclosed brace swallowed
+# that unrelated code into the new dead branch, shifting every later
+# brace in the function by one and failing to compile (reported
+# INCONCLUSIVE: "mutant does not compile; rewrite it", not a static_assert
+# in the test file). `old`'s own net brace balance is +1 (the outer `if`
+# deliberately left open, closed by the unchanged code that follows); the
+# fix adds the matching `}` so `new`'s balance is +1 too -- an empty,
+# always-false inner block that disables ONLY the step-order refusal,
+# leaving the rollover handling below exactly as reachable as `old` left
+# it.
 target = "fuse_abi_participant_test"
 test = "abi.participant"
-result = "CONFIRMED 2026-10-02: AbiParticipant.BeginStepOutOfTurnIsRefusedNamingTheExpectedComponent failed on EXPECT_EQ(t->begin_step(ctx, &down_req, &rep), FUSE_ERR_STATE) -- begin_step(downstream) returned FUSE_OK (0) instead of FUSE_ERR_STATE (-3) when called out of turn. The other six AbiParticipant cases, none of which calls begin_step() out of the schedule's own order, still passed. Restored; cmp against the pre-mutation file reported no difference."
+result = "CONFIRMED 2026-10-02: AbiParticipant.BeginStepOutOfTurnIsRefusedNamingTheExpectedComponent failed on EXPECT_EQ(t->begin_step(ctx, &down_req, &rep), FUSE_ERR_STATE) -- begin_step(downstream) returned FUSE_OK (0) instead of FUSE_ERR_STATE (-3) when called out of turn. The other six AbiParticipant cases, none of which calls begin_step() out of the schedule's own order, still passed. Restored; cmp against the pre-mutation file reported no difference. RE-VERIFIED 2026-10-19 against the re-anchored `new` above (90d98ee export, tier-0, system /usr/bin/c++): compiles cleanly; ctest -R ^abi.participant$ reports exactly 1 FAILED -- AbiParticipant.BeginStepOutOfTurnIsRefusedNamingTheExpectedComponent -- of 22; restored and reconfirmed 22/22 passing, byte-identical cmp against the pre-mutation file."
 
 [[mutation]]
 id = "abi-begin-step-writes-next-component-past-an-old-callers-struct-size"
@@ -139,10 +178,9 @@ old = """    if (struct_size_covers(declared_out_size,
       out->next_component = -2;
     }"""
 new = """    out->next_component = -2;"""
-target = "fuse_abi_participant_test"
-test = "abi.participant"
-result = "PROVED BY HAND 2026-10-03 (tools/mutate.py --area abi could not run against this uncommitted tree -- the gate refuses with 'include/ or src/ has uncommitted changes; the gate restores by copy-back', the same constraint recorded for Defects 1 and 2). Applied to a scratch ASan tree (-fsanitize=address,undefined -fno-omit-frame-pointer): AbiParticipant.OldCallerStructSizeNeverTouchesNextComponent (the heap-exact-buffer test this row targets) ABORTED with 'AddressSanitizer: heap-buffer-overflow ... participant.cpp:900 in impl_begin_step', exactly the write this guard exists to prevent. MEASURED AGAIN in the ordinary (non-ASan) bafter tree with the same mutation: gtest itself printed '[ OK ] ... [PASSED] 1 test' (the 4-byte write past a 64/72-byte heap allocation did not visibly corrupt the fields the test asserts on) but the PROCESS then exited 139 (SIGSEGV) during teardown -- malloc's own heap-metadata corruption surfacing on a later free(), not a sanitizer. So unlike Defect 2 (whose plain build ran clean to completion), this particular overflow crashes even without a sanitizer, just one allocation's destructor later than the overflowing write itself; ASan's report is still the one that names the exact line and the exact kind of defect, so it remains the decisive oracle, with the plain-build crash as corroborating (if less legible) evidence. Restored from a /tmp backup both times; cmp reported no difference both times."
-
+target = "fuse_abi_struct_size_test"
+test = "abi.struct_size"
+result = "KILLED by abi.struct_size (AbiStructSize.OldCallerStepReportIsNeverWrittenPastItsOwnStructSize, lead 2026-10-19): the old-size report ends at a PROT_NONE page, so the unconditional write faults on every run. The previous record (PROVED BY HAND with ASan, plain-build crash at teardown) was allocator-dependent: tools/mutate.py --area abi reported SURVIVED for this row in a clean tier-0 tree on 2026-10-19, which is why the deterministic test replaced it."
 [[mutation]]
 id = "abi-is-coupling-ongoing-reverts-to-undetermined-at-period-start"
 area = "abi"
@@ -339,7 +377,27 @@ old = """      Kokkos::initialize(settings);
         }
       });"""
 new = "      Kokkos::initialize(settings);"
-target = "fuse_abi_consumer"
+# NO-BASELINE defect: "fuse_abi_consumer" is not a CMake target of this
+# project's own build tree -- it is the name run-smoke-test.cmake (test/
+# abi/install_consumer/run-smoke-test.cmake) gives the EXECUTABLE it
+# configures and builds, at ctest-run time, inside its own nested
+# CONSUMER_BUILD_DIR, a sub-build `cmake --build <build_dir> --target
+# fuse_abi_consumer` (mutate.py's own pre-build step) cannot see.
+#
+# "fuse-abi-shared" is the correct target, not "install": the
+# `abi.install_consumer_c` ctest COMMAND is itself the script that does
+# `cmake --install ${FUSE_BUILD_DIR} --prefix ${FUSE_INSTALL_PREFIX}` (a
+# prefix safely inside the build tree, test/abi/CMakeLists.txt's own
+# -DFUSE_INSTALL_PREFIX=...) and then configures/builds/runs the pure-C
+# consumer against it -- all of that happens when ctest RUNS the test, not
+# when mutate.py pre-builds it. mutate.py's own pre-build step only needs
+# the library the mutation actually touches (this file compiles into
+# fuse-abi-objects, linked into fuse-abi-shared) to be up to date before
+# that install step copies it; "install" would instead run `cmake --build
+# <build_dir> --target install` directly against THIS tree's own
+# CMAKE_INSTALL_PREFIX (/usr/local by default here), which a normal build
+# user cannot write to -- a new, self-inflicted NO-BASELINE, not a fix.
+target = "fuse-abi-shared"
 test = "abi.install_consumer_c"
 
 [[mutation]]

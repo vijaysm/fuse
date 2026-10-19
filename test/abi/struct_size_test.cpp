@@ -16,6 +16,9 @@
 #include <memory>
 #include <vector>
 
+#include <sys/mman.h>
+#include <unistd.h>
+
 #include "fuse/abi/participant.h"
 #include "fuse/model/descriptor.hpp"
 #include "fuse/model/coupling_graph.hpp"
@@ -126,6 +129,67 @@ TEST(AbiStructSize, OldCallerStructSizeNeverReadsMyComponent) {
   EXPECT_EQ(t->setup(ctx, old_opts, nullptr), FUSE_OK);
 
   EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
+}
+
+// AbiStructSize.OldCallerStructSizeNeverReadsMyComponent (above) allocates
+// exactly kOldSize bytes and checks only that setup()/destroy() still
+// return FUSE_OK -- it never inspects the bytes impl_setup() would read if
+// the struct_size_covers() guard were removed, so a plain (non-ASan) build
+// does not reliably observe the out-of-bounds read: whatever garbage byte
+// pattern the allocator happens to leave past the buffer is read into a
+// local variable and, on most runs, never dereferenced in a way the test
+// can see. The mutation gate's own row (`abi-setup-reads-my-component-
+// past-an-old-callers-struct-size`, build-evidence/mutations/abi.toml)
+// therefore SURVIVES a tier-0 run: no sanitizer, no fault.
+//
+// This test makes the same out-of-bounds read fault DETERMINISTICALLY, on
+// every run, with no sanitizer required: `old_opts` is placed so that
+// every byte from kOldSize onward -- including all 8 bytes of the
+// `my_component` pointer field itself -- lies on a SEPARATE mmap'd page
+// immediately following it, and that page is `mprotect`'d PROT_NONE. The
+// correct code, gated by `struct_size_covers()`, never reads at or past
+// `kOldSize` and returns normally; code that removes the gate (the
+// mutation) touches the protected page and the process receives SIGBUS/
+// SIGSEGV immediately, which ctest reports as a failed test -- a real
+// kill, not a probabilistic one.
+TEST(AbiStructSize, OldCallerStructSizeNeverReadsPastItsOwnAllocation) {
+  constexpr std::size_t kOldSize =
+      offsetof(fuse_setup_options, end_time) + sizeof(fuse_exact_time);
+  static_assert(kOldSize < sizeof(fuse_setup_options),
+               "my_component must have grown fuse_setup_options (rule 3)");
+  static_assert(kOldSize + sizeof(fuse_setup_options::my_component) <=
+                    sizeof(fuse_setup_options),
+               "my_component must fit the frozen struct's own tail");
+
+  const long page = ::sysconf(_SC_PAGESIZE);
+  ASSERT_GT(page, 0);
+  ASSERT_LE(static_cast<long>(kOldSize), page)
+      << "the old-caller prefix must fit in one page below the guard page";
+
+  void* region = ::mmap(nullptr, static_cast<std::size_t>(2) * static_cast<std::size_t>(page),
+                        PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  ASSERT_NE(region, MAP_FAILED);
+  std::byte* page0 = reinterpret_cast<std::byte*>(region);
+  std::byte* page1 = page0 + page;
+  // Every byte at or past kOldSize (my_component's own 8 bytes included)
+  // sits on page1; page1 is unreadable, so any access to it faults.
+  ASSERT_EQ(::mprotect(page1, static_cast<std::size_t>(page), PROT_NONE), 0);
+  std::byte* raw = page1 - kOldSize;
+
+  auto* old_opts = reinterpret_cast<fuse_setup_options*>(raw);
+  old_opts->struct_size  = static_cast<std::uint32_t>(kOldSize);
+  old_opts->communicator = 0;
+  old_opts->has_end_time = 0;
+  old_opts->reserved     = 0;
+  old_opts->end_time     = fuse_exact_time{.numerator = 0, .denominator = 1};
+
+  const auto* t = Table();
+  ASSERT_NE(t, nullptr);
+  fuse_ctx* ctx = LoadedContext(t);
+  EXPECT_EQ(t->setup(ctx, old_opts, nullptr), FUSE_OK);
+  EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
+
+  ::munmap(region, static_cast<std::size_t>(2) * static_cast<std::size_t>(page));
 }
 
 
@@ -341,4 +405,86 @@ TEST(AbiStructSize, OldCallerFuseStepRequestIsAccepted) {
   EXPECT_EQ(t->end_step(ctx, old_req, &end_rep), FUSE_OK);
 
   EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
+}
+
+// The write-side mirror of OldCallerStructSizeNeverReadsPastItsOwnAllocation
+// (docs/dev/abi-design.md rule 2): a caller compiled before next_component
+// was appended to fuse_step_report (2026-10-03) hands begin_step() a report
+// whose struct_size stops at t_end. begin_step() must not write
+// next_component (or any later member) into it. The report is placed so that
+// its first byte past the old size is the first byte of a PROT_NONE page: the
+// correct, struct_size_covers()-gated code returns normally; code that writes
+// next_component unconditionally (build-evidence/mutations/abi.toml,
+// abi-begin-step-writes-next-component-past-an-old-callers-struct-size)
+// faults on every run, instead of corrupting a heap allocation that may or
+// may not crash at teardown (lead, 2026-10-19: that row survived the gate in a
+// clean tree because the plain-build heap overflow it relied on is
+// allocator-dependent).
+TEST(AbiStructSize, OldCallerStepReportIsNeverWrittenPastItsOwnStructSize) {
+  constexpr std::size_t kOldSize = offsetof(fuse_step_report, next_component);
+  static_assert(kOldSize == offsetof(fuse_step_report, t_end) + sizeof(fuse_exact_time),
+                "next_component must directly follow t_end (rule 3)");
+  static_assert(kOldSize < sizeof(fuse_step_report),
+                "next_component and its successors must have grown fuse_step_report");
+
+  const long page = ::sysconf(_SC_PAGESIZE);
+  ASSERT_GT(page, 0);
+  ASSERT_LE(static_cast<long>(kOldSize), page);
+
+  void* region = ::mmap(nullptr, static_cast<std::size_t>(2) * static_cast<std::size_t>(page),
+                        PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  ASSERT_NE(region, MAP_FAILED);
+  std::byte* page0 = reinterpret_cast<std::byte*>(region);
+  std::byte* page1 = page0 + page;
+  ASSERT_EQ(::mprotect(page1, static_cast<std::size_t>(page), PROT_NONE), 0);
+  auto* old_rep = reinterpret_cast<fuse_step_report*>(page1 - kOldSize);
+  old_rep->struct_size = static_cast<std::uint32_t>(kOldSize);
+
+  const auto* t = Table();
+  ASSERT_NE(t, nullptr);
+
+  fuse_context_out co{.struct_size = sizeof(co)};
+  ASSERT_EQ(t->create(nullptr, nullptr, &co), FUSE_OK);
+  fuse_ctx* ctx = co.ctx;
+  const auto bytes = fuse::abi_test::build_two_component_lag1_bytes();
+  fuse_graph_source src{.struct_size = sizeof(src)};
+  src.bytes = bytes.data();
+  src.byte_count = bytes.size();
+  ASSERT_EQ(t->load_graph(ctx, &src, nullptr), FUSE_OK);
+
+  double up_storage[4] = {1, 2, 3, 4};
+  double down_storage[4] = {0, 0, 0, 0};
+  fuse_field_name fname{.struct_size = sizeof(fname)};
+  fname.component = "upstream";
+  fname.field = "out";
+  fuse_field_ref fref{.struct_size = sizeof(fref)};
+  ASSERT_EQ(t->field_handle(ctx, &fname, &fref), FUSE_OK);
+  fuse_field_view fview{.struct_size = sizeof(fview)};
+  fview.handle = fref.handle;
+  fview.element_type = FUSE_ELEMENT_F64;
+  fview.memspace = FUSE_MEMSPACE_HOST;
+  fview.ownership = FUSE_OWNERSHIP_OWNED;
+  fview.components = 1;
+  fview.count = 4;
+  fview.owned_count = 4;
+  fview.stride = 1;
+  fview.data = up_storage;
+  ASSERT_EQ(t->register_field(ctx, &fview, nullptr), FUSE_OK);
+  fname.component = "downstream";
+  fname.field = "in";
+  ASSERT_EQ(t->field_handle(ctx, &fname, &fref), FUSE_OK);
+  fview.handle = fref.handle;
+  fview.data = down_storage;
+  ASSERT_EQ(t->register_field(ctx, &fview, nullptr), FUSE_OK);
+  ASSERT_EQ(t->initialize(ctx, nullptr, nullptr), FUSE_OK);
+
+  fuse_step_request req{.struct_size = sizeof(req)};
+  req.component = "upstream";
+  EXPECT_EQ(t->begin_step(ctx, &req, old_rep), FUSE_OK);
+  EXPECT_EQ(old_rep->step, 0);
+
+  fuse_step_report end_rep{.struct_size = sizeof(end_rep)};
+  EXPECT_EQ(t->end_step(ctx, &req, &end_rep), FUSE_OK);
+  EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
+  ::munmap(region, static_cast<std::size_t>(2) * static_cast<std::size_t>(page));
 }

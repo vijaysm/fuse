@@ -35,7 +35,7 @@ test = "model.descriptor"
 [[mutation]]
 id = "rational-lcm-denominator-overflows"
 area = "base"
-describes = "lcm_denominator() reverts to the direct int64_t std::lcm call, reintroducing the overflow gcd_rational's sibling fix removed (R-15)"
+describes = "lcm_denominator() reverts to a direct int64_t computation (multiply before dividing by the gcd -- std::lcm's own exposed formula, without the Int128 width), reintroducing the overflow gcd_rational's sibling fix removed (R-15)"
 file = "include/fuse/base/rational.hpp"
 old = """    const detail::Int128 ad = a.den_;
     const detail::Int128 bd = b.den_;
@@ -43,9 +43,35 @@ old = """    const detail::Int128 ad = a.den_;
     const detail::Int128 l = (ad / dg) * bd;  // divide first: no needless growth
     detail::check_fits_i64(l, "Rational::lcm_denominator: denominator lcm overflow");
     return Rational{1, static_cast<std::int64_t>(l)};"""
-new = "    return Rational{1, std::lcm(a.den_, b.den_)};"
+new = """    std::int64_t ad = a.den_, bd = b.den_;
+    std::int64_t gx = ad, gy = bd;
+    while (gy != 0) {
+      const std::int64_t gt = gy;
+      gy = gx % gy;
+      gx = gt;
+    }
+    // MUTATION: reverts to a direct int64_t computation -- multiply before
+    // dividing by the gcd, std::lcm's own exposed formula without the
+    // Int128 width -- reintroducing the overflow gcd_rational's sibling
+    // fix removed (R-15). No <numeric> needed (std::lcm is not called),
+    // unlike an earlier draft of this row that failed to compile because
+    // this file never includes <numeric>.
+    return Rational{1, static_cast<std::int64_t>((ad * bd) / gx)};"""
 target = "fuse_base_rational_test"
 test = "base.rational"
+# Re-anchored 2026-10-19 (Survivors track, inconclusive-row fix): the
+# original `new` above called `std::lcm(a.den_, b.den_)`, which does not
+# compile -- rational.hpp includes <compare>/<cstdint>/<limits>/<optional>/
+# <string> and neither fuse/base/error.hpp nor fuse/base/result.hpp pulls
+# in <numeric> transitively on this toolchain (confirmed directly: a
+# standalone translation unit with the SAME include list and a bare
+# `std::lcm` call fails with "no member named 'lcm' in namespace 'std'",
+# Apple clang 21.0.0 / libc++). Reported INCONCLUSIVE ("mutant does not
+# compile; rewrite it"), not a static_assert kill. The fix reimplements
+# the pre-fix defect directly (multiply the two denominators before
+# dividing by their gcd, in plain int64_t -- the exact overflow R-15
+# removed) with a local Euclidean gcd loop, needing no new include.
+result = "RE-VERIFIED 2026-10-19 against the re-anchored `new` above (90d98ee export, tier-0, system /usr/bin/c++): compiles cleanly; ctest -R ^base.rational$ reports exactly 1 FAILED -- Rational.LcmDenominatorRefusesAnUnrepresentableCommonTick -- of 27; restored and reconfirmed 27/27 passing, byte-identical cmp against the pre-mutation file."
 
 [[mutation]]
 id = "descriptor-accepts-non-positive-unit-scale"
