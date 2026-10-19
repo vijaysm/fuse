@@ -1060,8 +1060,23 @@ template <class Space>
   out.cell_vertex_offsets = Kokkos::View<int*, Space>(
       Kokkos::view_alloc("fuse::native::device::merge_cvo", Kokkos::WithoutInitializing),
       n_cells_out + 1);
-  Kokkos::deep_copy(Kokkos::subview(out.cell_vertex_offsets, Kokkos::make_pair(0, E_cells + 1)),
-                    source.cell_vertex_offsets);
+  // KNOWN_ISSUES.md D73 (RemapHalo track round 5, host measurement 2026-10-19): an EMPTY
+  // local mesh (E_cells == 0, the "rank hosts only the target" case `MeshArrays::
+  // cell_count()`'s own `cell_vertex_offsets.extent(0) == 0 ? 0 : ...` branch documents)
+  // reports its OWN `cell_vertex_offsets` at extent 0, NOT the canonical size-1 `{0}`
+  // singleton a non-empty mesh's "ncells + 1" CSR invariant would suggest -- copying
+  // `E_cells + 1 == 1` elements FROM a 0-extent source throws a Kokkos deep_copy shape
+  // mismatch ("merge_cvo(1) (0)"), measured on the owner's host at exactly this line.
+  // Skipped entirely when there is nothing existing to preserve: position 0 of `out`'s
+  // own array (and every other position through `n_cells_out`) is still written
+  // unconditionally below, either by the new-cells scan (when `n_new_cells > 0`) or by
+  // the scan's own trailing single-element `parallel_for` (`cell_vertex_offsets(n_cells_
+  // out) = E_conn + new_conn_total`, which also covers position 0 when `n_cells_out == 0`
+  // too) -- no gap either way.
+  if (E_cells > 0) {
+    Kokkos::deep_copy(Kokkos::subview(out.cell_vertex_offsets, Kokkos::make_pair(0, E_cells + 1)),
+                      source.cell_vertex_offsets);
+  }
   Kokkos::View<int*, Space> new_cell_nverts(
       Kokkos::view_alloc("fuse::native::device::merge_new_nverts", Kokkos::WithoutInitializing),
       n_new_cells);
@@ -1124,8 +1139,14 @@ template <class Space>
   out.cell_face_offsets = Kokkos::View<int*, Space>(
       Kokkos::view_alloc("fuse::native::device::merge_cfo", Kokkos::WithoutInitializing),
       n_cells_out + 1);
-  Kokkos::deep_copy(Kokkos::subview(out.cell_face_offsets, Kokkos::make_pair(0, E_cells + 1)),
-                    source.cell_face_offsets);
+  // Same empty-local-mesh guard as `cell_vertex_offsets` above, same reason
+  // (`cell_face_offsets` carries the identical "ncells + 1" CSR convention, `E_cells == 0`
+  // means `source.cell_face_offsets` is 0-extent, not the 1-element `{0}` a copy of
+  // `E_cells + 1` elements would need).
+  if (E_cells > 0) {
+    Kokkos::deep_copy(Kokkos::subview(out.cell_face_offsets, Kokkos::make_pair(0, E_cells + 1)),
+                      source.cell_face_offsets);
+  }
   int new_faces_total = 0;
   {
     auto cell_face_offsets = out.cell_face_offsets;
@@ -1182,8 +1203,16 @@ template <class Space>
   out.face_vertex_offsets = Kokkos::View<int*, Space>(
       Kokkos::view_alloc("fuse::native::device::merge_fvo", Kokkos::WithoutInitializing),
       FC_total + 1);
-  Kokkos::deep_copy(Kokkos::subview(out.face_vertex_offsets, Kokkos::make_pair(0, E_faces + 1)),
-                    source.face_vertex_offsets);
+  // Same empty-local-mesh guard, same "ncells + 1"-style CSR convention, this time over
+  // FACES rather than cells (`E_faces == 0` for any non-Polyhedron mesh regardless of
+  // cell count, per `MeshArrays`'s own "meaningless ... for a non-Polyhedron cell"
+  // comment -- so this guard is live on every quad/FV mesh this track's own fixture
+  // uses, empty or not, not only the empty-local-mesh case `cell_vertex_offsets`/
+  // `cell_face_offsets` above need it for).
+  if (E_faces > 0) {
+    Kokkos::deep_copy(Kokkos::subview(out.face_vertex_offsets, Kokkos::make_pair(0, E_faces + 1)),
+                      source.face_vertex_offsets);
+  }
   int new_closure_total = 0;
   {
     auto face_vertex_offsets = out.face_vertex_offsets;

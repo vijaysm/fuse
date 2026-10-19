@@ -180,6 +180,84 @@ TEST(NativeHaloPackMerge, RoundTripAdoptsExactlyTheRequestedCellsAsNonOwnedCopie
   EXPECT_EQ(final_view.value()->entity_count(1), 3u);
 }
 
+TEST(NativeHaloPackMerge, RoundTripIntoAnEmptyLocalMeshAdoptsTheReceivedCellsWithoutThrowing) {
+  // KNOWN_ISSUES.md D73 (RemapHalo track round 5, host measurement
+  // 2026-10-19): the "rank hosts only the target" case every disjoint-
+  // placement run has -- a rank whose own local mesh genuinely has ZERO
+  // cells (`NativeMeshBackend::register_default_placements()`'s own
+  // "outside the processor set: an EMPTY view" rule, native_backend.cpp --
+  // the identical construction this test reproduces by hand, no backend or
+  // graph needed) receiving its first halo copies from a peer. Measured on
+  // the owner's host: `device::merge_halo_cells_device<Space>` threw a
+  // Kokkos `deep_copy` shape-mismatch ("merge_cvo(1) (0)") trying to copy
+  // this rank's own (EMPTY, 0-extent) `cell_vertex_offsets` as if it were
+  // the canonical 1-element `{0}` a non-empty mesh's "ncells + 1" CSR
+  // invariant implies -- the exact mechanism this test isolates with NO
+  // MPI and NO backend/graph machinery, only `merge_halo_cells` itself
+  // (the HostSpace instantiation of `device::merge_halo_cells_device` this
+  // track's own round-5 fix touches, mesh_merge_device.hpp).
+  fuse::native::MeshArrays<Kokkos::HostSpace> empty_local;
+  empty_local.dim = 2;  // the ONLY field register_default_placements's own
+                        // empty-view construction sets; every Kokkos::View
+                        // member stays default-constructed (extent 0),
+                        // including cell_vertex_offsets -- NOT the
+                        // canonical size-1 `{0}` a populated 0-cell mesh
+                        // would carry.
+  auto empty_view = NativeMeshView::create_from_host(empty_local, /*rank=*/1);
+  ASSERT_TRUE(empty_view.ok()) << empty_view.error().message;
+  ASSERT_EQ(empty_view.value()->cell_count(), 0u);
+
+  // The peer: a real, populated 4-cell mesh (rank 0's own whole
+  // "generated:quad:2x2", matching the RemapHalo track's own disjoint
+  // fixture -- a one-rank component's RankSet-size-1 decomposition gives
+  // it the WHOLE mesh, round 4's own finding) sending every one of its
+  // owned cells as halo copies to rank 1.
+  auto arrays0 = generate_native_mesh("quad:2x2", /*rank=*/0, /*num_ranks=*/1);
+  ASSERT_TRUE(arrays0.ok()) << arrays0.error().message;
+  auto view0 = NativeMeshView::create_from_host(arrays0.value(), /*rank=*/0);
+  ASSERT_TRUE(view0.ok()) << view0.error().message;
+  ASSERT_EQ(view0.value()->cell_count(), 4u);
+
+  const auto owned0 = owned_block_index(*view0.value());
+  std::vector<std::vector<std::size_t>> send_by_local_index(2);  // 2 simulated ranks
+  for (std::size_t c = 0; c < view0.value()->cell_count(); ++c) {
+    send_by_local_index[1].push_back(c);  // every one of rank 0's owned cells -> rank 1
+  }
+  const auto packed = pack_halo_cells(*view0.value(), send_by_local_index, owned0,
+                                      /*my_rank=*/0, /*num_ranks=*/2);
+  ASSERT_EQ(packed.size(), 2u);
+  EXPECT_FALSE(packed[1].empty());
+
+  std::vector<std::vector<std::byte>> received_by_rank1 = {packed[1]};
+  std::vector<int> owner_rank;
+  std::vector<std::int64_t> owner_owned_index;
+  // Before this round's own fix (mesh_merge_device.hpp's three CSR-offset
+  // deep_copy calls, now guarded on `E_cells > 0`/`E_faces > 0`), this call
+  // threw instead of returning a Result -- EXPECT_NO_THROW is the point of
+  // this test, not merely a style choice.
+  fuse::Result<fuse::native::MeshArrays<Kokkos::HostSpace>> merged =
+      fuse::native::MeshArrays<Kokkos::HostSpace>{};
+  EXPECT_NO_THROW({
+    merged = merge_halo_cells(*empty_view.value(), received_by_rank1, /*my_rank=*/1, &owner_rank,
+                             &owner_owned_index);
+  });
+  ASSERT_TRUE(merged.ok()) << merged.error().message;
+
+  auto new_view1 = NativeMeshView::create_from_host(merged.value(), /*rank=*/1);
+  ASSERT_TRUE(new_view1.ok()) << new_view1.error().message;
+  EXPECT_EQ(new_view1.value()->owned_count(2), 0u) << "a rank that owned nothing still owns "
+                                                        "nothing after adopting halo copies";
+  EXPECT_EQ(new_view1.value()->entity_count(2), 4u) << "every one of the peer's 4 cells was "
+                                                         "adopted";
+  ASSERT_EQ(owner_rank.size(), 4u);
+  ASSERT_EQ(owner_owned_index.size(), 4u);
+  for (std::size_t i = 0; i < owner_rank.size(); ++i) {
+    EXPECT_EQ(owner_rank[i], 0) << "every adopted cell's owner is rank 0, the only sender";
+    EXPECT_FALSE(new_view1.value()->is_owned(2, i))
+        << "an adopted cell is a non-owned copy, same as the non-empty-local-mesh case above";
+  }
+}
+
 TEST(NativeHaloPackMerge, PackHaloCellsMaterializesNoHostMirror) {
   // Migration track, 2026-10-15: pack_halo_cells now builds its wire
   // records from device_arrays() via fuse::native::device::pack_fanout,
