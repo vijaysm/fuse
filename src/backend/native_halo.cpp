@@ -615,32 +615,64 @@ Result<void> accumulate_remap_halo(const fuse::linalg::GhostExchanger& exchanger
                             "own pattern ({} ghosts)",
                             ghost_n, exchanger.ghost_size())};
   }
-  if (ghost_n == 0) {
-    // The identical serial/no-halo short-circuit `exchanger.ghost_size() ==
-    // 0` already reports: no Alltoallv is issued, so this is correct both
-    // for a true one-rank run (`make_serial_exchanger()`) and for a
-    // multi-rank run whose halo adopted no cells.
-    return Result<void>::success();
-  }
-  if (owned == nullptr || ghosts == nullptr) {
+  (void)owned_n;  // not indexed directly: every write goes through pack_index()'s own mapping.
+  // Unconditional on FUSE_HAVE_MPI and on ghost_n == 0's own fix below
+  // (next comment): a caller handing a nonzero ghost count a null buffer
+  // is a caller bug this refuses regardless of what kind of exchanger
+  // backs it -- unchanged from before this round.
+  if (ghost_n > 0 && (owned == nullptr || ghosts == nullptr)) {
     return Failure{"E-MESH-ARG",
                  fmt::format("accumulate_remap_halo: null buffer with {} ghost(s) outstanding",
                             ghost_n)};
   }
-  (void)owned_n;  // not indexed directly: every write goes through pack_index()'s own mapping.
 #if FUSE_HAVE_MPI
   const auto* packed = dynamic_cast<const fuse::linalg::PackedExchanger*>(&exchanger);
   if (packed == nullptr) {
+    if (ghost_n == 0) {
+      // A true no-op: no outstanding ghosts AND no PackedExchanger facet
+      // to exchange them through -- `make_serial_exchanger()`'s own
+      // result (ghost_size() == 0, not a PackedExchanger at all).
+      return Result<void>::success();
+    }
     return Failure{"E-MESH-HALO",
                  fmt::format("accumulate_remap_halo: this exchanger carries {} ghost(s) but "
                             "exposes no PackedExchanger facet -- unreachable for a real "
                             "make_mpi_exchanger() result, which always implements both",
                             ghost_n)};
   }
+  // `packed` is a REAL make_mpi_exchanger() result: `exchange_packed_
+  // adjoint()` below is one `MPI_Alltoallv` over the exchanger's own
+  // communicator, a COLLECTIVE every rank in that communicator must call
+  // together. `ghost_n == 0` says only that THIS rank has no ghost
+  // copies of its own to hand back -- it says nothing about whether a
+  // PEER'S ghost copy of one of THIS rank's own owned entries is
+  // waiting to arrive (`pack_index()`'s size, the answer-side count,
+  // depends on what OTHER ranks requested from this rank, not on this
+  // rank's own ghost_n). Short-circuiting here on ghost_n == 0 alone (as
+  // this function did before) skips the call on exactly that rank,
+  // losing every contribution it was due: measured 2026-10-19 by an
+  // in-process reproduction of the 16x16/24x24 fixture at 3 ranks (round
+  // 3) -- the rank with ghost_n == 0 there still owns 16 of a peer's
+  // ghost cells, and omitting its own call to the collective lost
+  // exactly those 16 (host-measured parallel.native_halo_mpi.3,
+  // NativeHaloMpi.AccumulateRemapHaloRoundTripsExactly:
+  // global_owned_sum=272 vs the expected 288). A real `MpiExchanger`
+  // must therefore always proceed to the exchange below, exactly as
+  // `MpiExchanger::update()` itself does -- that function has no such
+  // short-circuit either. The ghost_n > 0 null check above already
+  // covers `ghosts`; only `owned` needs a fresh check here, for the
+  // ghost_n == 0 case the check above does not reach (`owned` is
+  // dereferenced below through `pack_index()`, whose size depends on
+  // peers' requests, not on ghost_n).
+  if (owned == nullptr) {
+    return Failure{"E-MESH-ARG", "accumulate_remap_halo: null owned buffer"};
+  }
   // Pack this rank's own ghost values in REQUEST order (`unpack_index()`'s
   // own order: entry k is which GHOST SLOT this request-ordered position
   // answers -- the same map `update()` itself reads FROM when filling
   // ghosts; here the roles are reversed, so it is read, not written).
+  // Zero-length when ghost_n == 0, which is a valid (possibly locally
+  // empty) send side of the same collective Alltoallv every peer calls.
   const auto& unpack_idx = packed->unpack_index();
   std::vector<double> send_buf(ghost_n, 0.0);
   for (std::size_t k = 0; k < ghost_n; ++k) {
@@ -670,6 +702,7 @@ Result<void> accumulate_remap_halo(const fuse::linalg::GhostExchanger& exchanger
   for (std::size_t g = 0; g < ghost_n; ++g) ghosts[g] = 0.0;
   return Result<void>::success();
 #else
+  if (ghost_n == 0) return Result<void>::success();
   return Failure{"E-MESH-HALO",
                fmt::format("accumulate_remap_halo: {} ghost(s) outstanding but this build has "
                           "no MPI, so no PackedExchanger facet can exist",
