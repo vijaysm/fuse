@@ -20,6 +20,7 @@
 #include <gtest/gtest.h>
 #include <mpi.h>
 
+#include <cstdio>
 #include <memory>
 #include <string>
 #include <vector>
@@ -47,15 +48,31 @@ const fuse_participant_abi_v1* Table() {
 /// every value it receives, so a hosting rank's own effect through the
 /// plugin is independently observable without reaching into the
 /// plugin's own C source.
+///
+/// KNOWN_ISSUES.md D15, round 4 (host measurement): this class always
+/// registered a FULL, 1-entry view REGARDLESS of rank -- exactly
+/// ProviderAdapter's own round-3 bug (D24: "a component that does not
+/// live on this rank gets an empty view"), except here on the OTHER
+/// side of this test's own channel. "downstream" is placed at RankSet
+/// {0, 1} (rank 0 only); on a 2-rank world, rank 1 is NOT in it, so this
+/// class registering count=1 there disagreed with the real plan's own
+/// 0-entry expectation -- the E-RT-SETUP-PEER host failure this entry's
+/// own round-4 paragraph measures. `hosted` (constructor argument, the
+/// caller's own `graph.component(...).ranks.contains(rank)` check,
+/// mirroring ProviderAdapter::set_hosting_rank()'s own convention)
+/// decides whether this rank registers the real size or an empty view.
 class DownstreamSink final : public fuse::Component {
  public:
+  explicit DownstreamSink(bool hosted) : hosted_(hosted) {}
+
   [[nodiscard]] std::string name() const override { return "downstream"; }
 
   fuse::Result<void> register_fields(fuse::FieldRegistry& registry,
                                      const fuse::CouplingGraph& graph) override {
     const auto cid = graph.find_component("downstream");
     if (!cid.has_value()) return fuse::Failure{"E-TEST", "no 'downstream' component"};
-    storage_.assign(1, -1.0);
+    const std::size_t count = hosted_ ? 1 : 0;
+    storage_.assign(count, -1.0);
     for (const fuse::FieldId f : graph.component(*cid).fields) {
       auto r = registry.bind(f, fuse::FieldRef{storage_.data(),
                                                fuse::Layout{.stride = 1, .count = storage_.size()},
@@ -75,6 +92,7 @@ class DownstreamSink final : public fuse::Component {
   std::vector<double> history;
 
  private:
+  bool                 hosted_;
   std::vector<double> storage_;
 };
 
@@ -132,7 +150,9 @@ TEST(ProviderSubsetMpi, APluginOnARankSubsetRunsOnlyOnItsOwnHostingRanksWithNoHa
   opts.communicator = static_cast<std::int64_t>(MPI_Comm_c2f(MPI_COMM_WORLD));
   ASSERT_EQ(t->setup(ctx, &opts, nullptr), FUSE_OK);
 
-  auto sink = std::make_unique<DownstreamSink>();
+  // "downstream" is placed at RankSet{0, 1} -- rank 0 only (see `down`
+  // above); every other rank must register an EMPTY view, D15 round 4.
+  auto sink = std::make_unique<DownstreamSink>(/*hosted=*/rank == 0);
   DownstreamSink* sink_ptr = sink.get();
   ASSERT_TRUE(fuse::abi_test::inject_component(ctx, "downstream", std::move(sink)));
 
@@ -143,6 +163,21 @@ TEST(ProviderSubsetMpi, APluginOnARankSubsetRunsOnlyOnItsOwnHostingRanksWithNoHa
     err.buffer = buf;
     err.capacity = sizeof(buf);
     t->last_error(ctx, nullptr, &err);
+    // KNOWN_ISSUES.md D15, round 4 (host measurement): test/support/
+    // fuse_test_main.cpp's own main() deletes every NON-ZERO rank's own
+    // GoogleTest result printer (so an MPI job's own log is not N copies
+    // of the same test names) -- which ALSO silently swallows a FAIL()
+    // message's own text on any rank but 0. The one rank whose own
+    // fuse_initialize() genuinely failed is exactly the rank most likely
+    // to be non-zero here ("upstream" is hosted on ranks 1..world_size-1,
+    // never rank 0) -- its own diagnostic was lost this way on the host
+    // (E-RT-SETUP-PEER's own message, printed correctly on rank 0, said
+    // only "see that rank's own error", and rank 1's log had nothing).
+    // Printed to stderr directly, bypassing GoogleTest's own printer
+    // entirely, so it reaches this rank's own captured log regardless of
+    // which rank is 0.
+    std::fprintf(stderr, "rank %d: fuse_initialize failed: %s\n", rank, buf);
+    std::fflush(stderr);
     FAIL() << "rank " << rank << ": fuse_initialize failed: " << buf;
   }
 

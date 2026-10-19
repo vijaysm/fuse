@@ -20,6 +20,25 @@
 #   run_chain.sh <count: 3|4> <mpiexec> \
 #                <chain_a_exe> <chain_b_exe> <chain_c_exe> <chain_d_exe> \
 #                <golden_file> <scratch_dir> [timeout_s]
+#
+# KNOWN_ISSUES.md D18, round 4 (the lead's own instruction): a 2026-10-19
+# host re-run with FUSE_CONNECT_CHAIN_TRACE=1 set printed NOTHING in
+# a.log/b.log/c.log. Unlike test/parallel/brusselator_participants/
+# run_participants.sh's own FUSE_LOWFIVE_ATTACH_TRACE (which is never
+# forwarded by this project's own CMake registrations at all -- a plain
+# manually-set shell variable, relying entirely on ctest's own default
+# environment inheritance through this script down to mpiexec's launched
+# ranks), this script now forwards FUSE_CONNECT_CHAIN_TRACE EXPLICITLY,
+# via `-genv`, to every rank it launches -- not because inheritance is
+# known to be broken here (this sandbox cannot run mpiexec at all, C1, so
+# that could not be measured), but because `-genv` removes the ambient-
+# inheritance question entirely as a possible cause, and the diagnostic
+# line below SAYS, in the ctest row's own captured output (not a.log/b.
+# log/c.log, which are per-rank, post-launch), whether this script's own
+# shell ever saw the variable at all -- the other candidate the task
+# named ("the failure happens before the first traced step") is still
+# possible and this script cannot rule it out; only the trace lines
+# themselves (now definitely reaching every rank's own environment) can.
 set -u
 
 COUNT="$1"; MPIEXEC="$2"
@@ -36,16 +55,28 @@ rm -f "$A_LOG" "$B_LOG" "$C_LOG" "$D_LOG"
 
 COMMON_ARGS="--count $COUNT --port-ab $PORT_AB --port-c $PORT_C --port-d $PORT_D --timeout $TIMEOUT"
 
+# This script's own stderr (unlike a.log/b.log/c.log) is captured by
+# ctest itself -- visible via `ctest -V`/`--output-on-failure` -- so this
+# line answers "did FUSE_CONNECT_CHAIN_TRACE reach this script's own
+# shell at all" independent of whatever each participant's own log shows.
+GENV_ARGS=()
+if [ -n "${FUSE_CONNECT_CHAIN_TRACE:-}" ]; then
+  GENV_ARGS=(-genv FUSE_CONNECT_CHAIN_TRACE "$FUSE_CONNECT_CHAIN_TRACE")
+  echo "run_chain.sh: FUSE_CONNECT_CHAIN_TRACE='$FUSE_CONNECT_CHAIN_TRACE' in this script's own environment -- forwarding to every rank via mpiexec -genv" >&2
+else
+  echo "run_chain.sh: FUSE_CONNECT_CHAIN_TRACE is NOT set in this script's own environment" >&2
+fi
+
 RC=0
-"$MPIEXEC" -n 1 "$A_EXE" $COMMON_ARGS > "$A_LOG" 2>&1 &
+"$MPIEXEC" "${GENV_ARGS[@]}" -n 1 "$A_EXE" $COMMON_ARGS > "$A_LOG" 2>&1 &
 PID_A=$!
-"$MPIEXEC" -n 1 "$B_EXE" $COMMON_ARGS > "$B_LOG" 2>&1 &
+"$MPIEXEC" "${GENV_ARGS[@]}" -n 1 "$B_EXE" $COMMON_ARGS > "$B_LOG" 2>&1 &
 PID_B=$!
-"$MPIEXEC" -n 1 "$C_EXE" $COMMON_ARGS > "$C_LOG" 2>&1 &
+"$MPIEXEC" "${GENV_ARGS[@]}" -n 1 "$C_EXE" $COMMON_ARGS > "$C_LOG" 2>&1 &
 PID_C=$!
 PID_D=""
 if [ "$COUNT" -ge 4 ]; then
-  "$MPIEXEC" -n 1 "$D_EXE" $COMMON_ARGS > "$D_LOG" 2>&1 &
+  "$MPIEXEC" "${GENV_ARGS[@]}" -n 1 "$D_EXE" $COMMON_ARGS > "$D_LOG" 2>&1 &
   PID_D=$!
 fi
 
