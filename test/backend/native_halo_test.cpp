@@ -29,15 +29,19 @@
 
 #include "fuse/backend/native_backend.hpp"
 #include "fuse/backend/remap_plan.hpp"
+#include "fuse/model/component.hpp"  // ComponentDecl
 #include "fuse/model/coupling_graph.hpp"
 
 namespace {
 
 using namespace fuse::native;  // NOLINT
+using fuse::ComponentDecl;
 using fuse::ComponentId;
 using fuse::CouplingGraph;
 using fuse::MeshDecl;
 using fuse::MeshId;
+using fuse::RankSet;
+using fuse::Rational;
 using fuse::Region;
 using fuse::RegionId;
 using fuse::RemapPlan;
@@ -1090,3 +1094,93 @@ TEST(NativeHaloAccumulate, OracleSumOfOwnedAfterFoldingEveryHaloCopyEqualsCellsP
 }
 
 }  // namespace
+
+
+// ---------------------------------------------------------------------------
+// KNOWN_ISSUES D5/D73 ROUND 3 (owner's host measurement, 2026-10-18):
+// `parallel.native_remap_halo_runner.{2,3}` both failed with a built-but-
+// EMPTY halo (`remap_weight_nonzeros == 0` despite `initialize()`
+// succeeding) -- the same silently-empty-matrix failure mode D73's own
+// fix was supposed to close, now one layer deeper. ROOT CAUSE, proved
+// here WITHOUT needing a real multi-rank MPI run (which this sandbox
+// cannot start; the full exchange is host_pending): `register_default_
+// placements()` (native_backend.cpp) hands every component a placed view
+// of EVERY mesh, and a component's view of a mesh OUTSIDE its own
+// RankSet is the documented EMPTY view, not a refusal. The single-
+// placement `build_native_remap_halo` resolved the SOURCE mesh through
+// the TARGET's own placement -- exactly the empty-view case, on every
+// rank that actually holds the source's real decomposition. This test
+// exercises `native_view()` directly (no MPI, no communicator, no
+// collective at all) to show the empty-vs-real view split that makes
+// the bug possible, and that `source_placement` (this round's own fix)
+// is the one that finds the real cells.
+// ---------------------------------------------------------------------------
+TEST(NativeHaloCrossPlacement, SourceMeshViewedThroughTheTargetsPlacementIsEmptyButThroughItsOwnIsNot) {
+  CouplingGraph graph;
+  const MeshId mid = graph.add_mesh(MeshDecl{.name = "U", .source = kUSource});
+  const ComponentId provider = graph.add_component(
+      ComponentDecl{.name = "provider", .ranks = RankSet{0, 1}, .interval = Rational{1}});
+  const ComponentId consumer = graph.add_component(
+      ComponentDecl{.name = "consumer", .ranks = RankSet{1, 1}, .interval = Rational{1}});
+
+  // This process IS rank 0 -- inside `provider`'s own RankSet, outside
+  // `consumer`'s -- the exact split a disjoint-placement channel needs,
+  // reached here with no MPI launch at all: `register_default_
+  // placements()` only reads `rank_`/`num_ranks_`, the backend's own
+  // constructor arguments, never an actual communicator.
+  NativeMeshBackend backend(/*rank=*/0, /*num_ranks=*/2);
+  ASSERT_TRUE(backend.load(MeshDecl{.name = "U", .source = kUSource}, graph).ok());
+
+  const auto via_provider = backend.native_view(mid, provider);
+  ASSERT_TRUE(via_provider.ok()) << via_provider.error().code << ": " << via_provider.error().message;
+  EXPECT_GT(via_provider.value()->owned_count(2), 0u)
+      << "rank 0 is INSIDE provider's own RankSet{0,1}; its view of the mesh it actually "
+         "decomposes must hold real owned cells";
+
+  const auto via_consumer = backend.native_view(mid, consumer);
+  ASSERT_TRUE(via_consumer.ok()) << via_consumer.error().code << ": " << via_consumer.error().message;
+  EXPECT_EQ(via_consumer.value()->owned_count(2), 0u)
+      << "rank 0 is OUTSIDE consumer's own RankSet{1,1}; register_default_placements()'s own "
+         "documented contract hands it the EMPTY view there -- this is exactly the view the "
+         "single-placement build_native_remap_halo used to resolve the SOURCE mesh through "
+         "(the target's own placement), which is why it adopted nothing while still reporting "
+         "success";
+}
+
+
+// ---------------------------------------------------------------------------
+// The two-placement overload's own short-circuit path (ranks <= 1, no
+// multi-rank collective reached at all -- tier-0 runnable, unlike the
+// real exchange this round's own fix touches, which needs a live
+// multi-rank MPI run this sandbox cannot start): `commit_remap_halo`
+// must still key the result by `placement` (the TARGET's own, the
+// single-placement form's existing convention every downstream lookup
+// -- has_remap_halo, native_view, placed_view, supermesh_side in
+// intx_weights.cpp -- already relies on), NOT by `source_placement`,
+// even though `source_placement` is now a distinct, unrelated argument.
+// ---------------------------------------------------------------------------
+TEST(NativeHaloCrossPlacement, TwoPlacementOverloadsShortCircuitStillCommitsUnderTheTargetsPlacement) {
+  CouplingGraph graph;
+  const MeshId u_mid = graph.add_mesh(MeshDecl{.name = "U", .source = kUSource});
+  const MeshId v_mid = graph.add_mesh(MeshDecl{.name = "V", .source = kVSource});
+  const ComponentId provider = graph.add_component(
+      ComponentDecl{.name = "provider", .ranks = RankSet{0, 1}, .interval = Rational{1}});
+  const ComponentId consumer = graph.add_component(
+      ComponentDecl{.name = "consumer", .ranks = RankSet{0, 1}, .interval = Rational{1}});
+
+  NativeMeshBackend backend(/*rank=*/0, /*num_ranks=*/1);  // ranks <= 1: short-circuits
+  ASSERT_TRUE(backend.load(MeshDecl{.name = "U", .source = kUSource}, graph).ok());
+  ASSERT_TRUE(backend.load(MeshDecl{.name = "V", .source = kVSource}, graph).ok());
+
+  const auto r = build_native_remap_halo(backend, u_mid, v_mid, 2, /*source_placement=*/provider,
+                                         /*placement=*/consumer);
+  ASSERT_TRUE(r.ok()) << r.error().code << ": " << r.error().message;
+  EXPECT_EQ(r.value(), 0u);
+
+  EXPECT_TRUE(backend.has_remap_halo(u_mid, v_mid, 2, consumer))
+      << "committed under the TARGET's own placement -- every existing lookup (has_remap_halo, "
+         "native_view, placed_view, supermesh_side in intx_weights.cpp) keys by this one";
+  EXPECT_FALSE(backend.has_remap_halo(u_mid, v_mid, 2, provider))
+      << "must NOT be keyed by source_placement -- that argument names which cells get OFFERED "
+         "for adoption, not where the result is filed";
+}

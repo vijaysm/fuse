@@ -156,6 +156,55 @@ struct Box3 {
                                                           MeshId source, MeshId target, int dim,
                                                           ComponentId placement);
 
+/// KNOWN_ISSUES D5's "last half" (HALO BRIDGING), the native-backend
+/// counterpart to `fuse::build_remap_halo`'s own MOAB cross-placement
+/// overload (remap_plan.hpp -- "the OVERLOAD this design needs, kept
+/// separate from the one above rather than adding a second placement
+/// field to RemapPlan itself"). The single-placement overload above
+/// resolves BOTH `source` and `target` through `placement` -- correct for
+/// `target` (that IS its own placement), wrong for `source` whenever
+/// `source_placement != placement`: `register_default_placements()`
+/// (native_backend.cpp) hands every component a placed view of EVERY
+/// mesh, generated fresh over that component's OWN `RankSet`, and a
+/// component's view of a mesh it does not itself decompose is the EMPTY
+/// view documented there ("outside the processor set") -- not a refusal,
+/// a legitimately empty one. Resolving `source` through the TARGET's own
+/// placement therefore sees zero owned source cells on every rank that
+/// actually holds the source mesh's real decomposition (they are outside
+/// the TARGET's own RankSet), so the covering-set exchange below adopts
+/// NOTHING: `build_native_remap_halo` (the single-placement form) reports
+/// success (`commit_remap_halo` still runs and records the triple as
+/// built), `has_remap_halo()` then answers true, and the Remap that
+/// follows builds a matrix with zero rows contributed from the source
+/// side -- a second, deeper instance of KNOWN_ISSUES D73's own silently-
+/// empty-matrix failure mode, this time past the refusal that failure
+/// mode's own fix added, because the halo genuinely WAS built, just over
+/// the wrong source cells. MEASURED on the owner's host (round 3,
+/// 2026-10-18): `parallel.native_remap_halo_runner.{2,3}` both failed
+/// with `remap_weight_nonzeros == 0` despite `initialize()` succeeding --
+/// exactly this.
+///
+/// `source_placement` resolves ONLY `source`'s own view (`backend.
+/// native_view(source, source_placement)`, this function's own first
+/// change from the single-placement form); `target` still resolves
+/// through `placement`, and the adopted result is still COMMITTED under
+/// `placement` (`backend.commit_remap_halo(source, placement, ...)`,
+/// unchanged) -- so every existing lookup by the target's own placement
+/// (`has_remap_halo`, `native_view`, `placed_view`, `supermesh_side` in
+/// intx_weights.cpp) finds it exactly where it already expected to.
+/// Only WHICH cells get offered for adoption changes; nothing about
+/// where the result lives changes.
+///
+/// The single-placement overload above now DELEGATES to this one with
+/// `source_placement == placement` -- the identity case this function's
+/// own two-placement logic already reduces to correctly when the two
+/// placements coincide (every existing caller and every existing test
+/// of the single-placement form is therefore unaffected).
+[[nodiscard]] Result<std::size_t> build_native_remap_halo(NativeMeshBackend& backend,
+                                                          MeshId source, MeshId target, int dim,
+                                                          ComponentId source_placement,
+                                                          ComponentId placement);
+
 // ===========================================================================
 // KNOWN_ISSUES D27: the reverse exchange, the native backend's counterpart
 // to `MoabMeshBackend::accumulate_remap_halo` (moab_backend.hpp). The

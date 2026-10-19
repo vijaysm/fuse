@@ -7,10 +7,13 @@
 #include "fuse/backend/native_halo.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
+
+#include <fmt/format.h>
 
 #include "fuse/backend/native/mesh_pack_device.hpp"
 #include "fuse/backend/native/mesh_merge_device.hpp"
@@ -24,6 +27,36 @@
 namespace fuse::native {
 
 namespace {
+
+/// D73/D5 ROUND 3 (owner request, 2026-10-18, host measurement): off by
+/// default, in the style of this tree's other per-rank trace env vars
+/// (FUSE_COLLECTIVE_TRACE, FUSE_NEWTON_DEBUG) -- cached once per process,
+/// never re-read per call, so the getenv cost is paid at most once. Writes
+/// to stderr, not stdout, matching the convention the Runner's own debug
+/// traces already use (never interleaved with a test harness's own
+/// stdout-captured assertions).
+[[nodiscard]] bool remap_halo_trace_enabled() {
+  static const bool enabled = std::getenv("FUSE_REMAP_HALO_TRACE") != nullptr;
+  return enabled;
+}
+
+/// The axis-aligned union of `boxes`, or an explicitly empty box (all
+/// bounds at +inf/-inf, printed as such rather than as a plausible-looking
+/// zero) when `boxes` is empty -- an empty box is itself diagnostic
+/// evidence (hypothesis (b)/(c) in the owner's own round-3 request: did
+/// this rank have ANY owned/adopted cells to bound at all).
+[[nodiscard]] std::string trace_box_union(const std::vector<Box3>& boxes) {
+  if (boxes.empty()) return "EMPTY (no cells)";
+  Box3 u = boxes.front();
+  for (std::size_t i = 1; i < boxes.size(); ++i) {
+    for (int k = 0; k < 3; ++k) {
+      u.lo[k] = std::min(u.lo[k], boxes[i].lo[k]);
+      u.hi[k] = std::max(u.hi[k], boxes[i].hi[k]);
+    }
+  }
+  return fmt::format("[{:.6g},{:.6g}]x[{:.6g},{:.6g}]x[{:.6g},{:.6g}]", u.lo[0], u.hi[0], u.lo[1],
+                      u.hi[1], u.lo[2], u.hi[2]);
+}
 
 #if FUSE_HAVE_MPI
 MPI_Comm resolve(CommHandle comm) {
@@ -363,6 +396,17 @@ void allgather_boxes(const std::vector<Box3>& my_boxes, CommHandle comm, int num
 
 Result<std::size_t> build_native_remap_halo(NativeMeshBackend& backend, MeshId source,
                                             MeshId target, int dim, ComponentId placement) {
+  // The identity case this two-placement form's own logic already
+  // reduces to correctly when the two placements coincide -- see this
+  // function's OWN two-placement overload's header comment
+  // (native_halo.hpp) for why `source_placement` had to become a
+  // separate parameter rather than reusing `placement` for both sides.
+  return build_native_remap_halo(backend, source, target, dim, placement, placement);
+}
+
+Result<std::size_t> build_native_remap_halo(NativeMeshBackend& backend, MeshId source,
+                                            MeshId target, int dim, ComponentId source_placement,
+                                            ComponentId placement) {
   const int ranks = backend.communicator_size();
   if (ranks <= 1 || backend.communicator() == kNullComm || source.value() == target.value()) {
     const Result<void> rec = backend.commit_remap_halo(source, placement, nullptr, target, dim,
@@ -440,7 +484,15 @@ Result<std::size_t> build_native_remap_halo(NativeMeshBackend& backend, MeshId s
   // own pattern (native_migration.cpp), BEFORE `allgather_boxes` below, so
   // no rank can return its own refusal while a peer proceeds into that
   // collective.
-  auto src_r = backend.native_view(source, placement);
+  // KNOWN_ISSUES D5 HALO BRIDGING (round 3, 2026-10-18): `source` resolves
+  // through `source_placement` -- NOT `placement` -- because `source`'s
+  // own owned cells live under its OWN component's decomposition, which
+  // is generally a DIFFERENT processor set than the target's. Resolving
+  // it through `placement` (the target's own) used to see the EMPTY view
+  // `register_default_placements()` hands every component for a mesh it
+  // does not itself decompose -- this function's own header comment has
+  // the full measured account.
+  auto src_r = backend.native_view(source, source_placement);
   auto tgt_r = backend.native_view(target, placement);
   Result<void> local_check = Result<void>::success();
   if (!src_r.ok()) {
@@ -493,6 +545,15 @@ Result<std::size_t> build_native_remap_halo(NativeMeshBackend& backend, MeshId s
       my_owned_src_boxes.push_back(cell_box(src, c));
       owned_local_index.push_back(c);
     }
+  }
+
+  if (remap_halo_trace_enabled()) {
+    fmt::print(stderr,
+               "FUSE_REMAP_HALO_TRACE rank={} source_mesh={} target_mesh={} dim={} "
+               "owned_source_cells={} source_box={} target_cells={} target_box={}\n",
+               my_rank, source.value(), target.value(), dim, my_owned_src_boxes.size(),
+               trace_box_union(my_owned_src_boxes), my_target_boxes.size(),
+               trace_box_union(my_target_boxes));
   }
 
   const std::vector<std::vector<int>> dest_for_owned =
@@ -585,6 +646,14 @@ Result<std::size_t> build_native_remap_halo(NativeMeshBackend& backend, MeshId s
   }
 
   const std::size_t adopted = owner_rank.size();
+
+  if (remap_halo_trace_enabled()) {
+    fmt::print(stderr,
+               "FUSE_REMAP_HALO_TRACE rank={} source_mesh={} target_mesh={} dim={} "
+               "adopted_source_cells={}\n",
+               my_rank, source.value(), target.value(), dim, adopted);
+  }
+
   fuse::linalg::GhostPattern pattern;
   pattern.owner_rank = std::move(owner_rank);
   pattern.remote_local_index = std::move(owner_owned_index);

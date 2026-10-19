@@ -63,3 +63,68 @@ new = "  if (false) {"
 target = "fuse_backend_native_halo_test"
 test = "backend.native_halo"
 requires = "mpi"
+
+# ---------------------------------------------------------------------------
+# KNOWN_ISSUES D5/D73 ROUND 3 (owner's host measurement, 2026-10-18): the
+# two-placement build_native_remap_halo overload (HALO BRIDGING). The real
+# cross-rank exchange this fix touches lives past the ranks<=1 short-
+# circuit, inside the SAME `#if FUSE_HAVE_MPI` multi-rank body this file's
+# own header comment already excludes from mutation testing (needs a real
+# communicator, KNOWN_ISSUES.md C1) -- one row below is marked
+# `requires = "mpi"` for exactly that reason, and names the real target
+# (test/parallel/native_remap_halo_runner_test.cpp) this sandbox cannot run.
+# The short-circuit's own commit-key plumbing IS tier-0 testable and IS
+# tested below.
+# ---------------------------------------------------------------------------
+
+[[mutation]]
+id = "two-placement-halo-commits-under-source-placement-not-target"
+area = "backend"
+describes = "The two-placement build_native_remap_halo overload's own ranks<=1 short-circuit commit_remap_halo call (the one a single-process caller like this track's own new tier-0 test actually reaches) is mutated to key by source_placement instead of placement (the target's own) -- every existing lookup by the target's placement (has_remap_halo, native_view, placed_view, supermesh_side in intx_weights.cpp) would then find nothing, reintroducing exactly the refusal the halo build was supposed to satisfy."
+file = "src/backend/native_halo.cpp"
+old = """    const Result<void> rec = backend.commit_remap_halo(source, placement, nullptr, target, dim,
+                                                       fuse::linalg::GhostPattern{});"""
+new = """    const Result<void> rec = backend.commit_remap_halo(source, source_placement, nullptr, target, dim,
+                                                       fuse::linalg::GhostPattern{});"""
+target = "fuse_backend_native_halo_test"
+test = "backend.native_halo"
+# Expected kill: NativeHaloCrossPlacement.TwoPlacementOverloadsShortCircuit
+# StillCommitsUnderTheTargetsPlacement (new this round) -- calls the
+# two-placement overload at ranks<=1 (this sandbox's own only reachable
+# path, no MPI needed at all). VERIFIED 2026-10-18 (this track's own
+# round-3 session): first attempt mutated the WRONG one of this
+# function's two commit_remap_halo call sites (the one past the real
+# multi-rank exchange, which a ranks<=1 test never reaches) and measured
+# a false negative -- 23/23 still passed, caught by re-reading the test's
+# own short-circuit condition against which call site it actually
+# executes, not by trusting the row's own first draft. Corrected to this
+# line, re-applied by hand, fuse_backend_native_halo_test rebuilt, re-run
+# -- the new test's own has_remap_halo assertions invert exactly as
+# described (true under source_placement, false under placement, the
+# opposite of what the test checks) and the test fails; every other test
+# in the binary, unaffected by this one line, still passes (22/23). File
+# restored and re-verified byte-identical, full suite green again
+# (23/23). Re-verified a second time after this round's own later
+# printf-to-fmt (check-invariants) and attribution-wording fixes touched
+# the same file: same apply/build/run/confirm-kill (22/23)/restore/
+# byte-identical/re-verify-green (23/23) cycle, repeated end to end on
+# the file's own final text.
+
+[[mutation]]
+id = "two-placement-halo-resolves-source-through-targets-placement"
+area = "backend"
+describes = "The two-placement build_native_remap_halo overload's own fix -- resolving the SOURCE view through source_placement rather than placement -- is reverted, reproducing the exact defect measured on the owner's host 2026-10-18 (parallel.native_remap_halo_runner.{2,3}: initialize() succeeds, remap_weight_builds == 1, remap_weight_nonzeros == 0, the conservation check at :393 fails by the full source total). This line sits past the ranks<=1 short-circuit, inside the #if FUSE_HAVE_MPI multi-rank exchange body this file's own header comment already excludes from mutation testing (needs a real communicator to reach at all, KNOWN_ISSUES.md C1)."
+file = "src/backend/native_halo.cpp"
+old = "  auto src_r = backend.native_view(source, source_placement);"
+new = "  auto src_r = backend.native_view(source, placement);"
+target = "fuse_parallel_native_remap_halo_runner_test"
+test = "parallel.native_remap_halo_runner"
+requires = "mpi"
+# NOT ASSESSED in this sandbox (cannot start MPI) -- host_pending. On the
+# owner's host, expect: with this mutation applied, NativeRemapHalo.
+# DisjointGeneralWeightedRemapConservesOnceTheHaloIsBuilt fails identically to
+# the UNFIXED behaviour already measured 2026-10-18 (remap_weight_
+# nonzeros == 0, the :352/:393 EXPECT failures quoted in the round-3 task
+# message); with it reverted (this round's own committed fix), that same
+# row is expected to go GREEN for the first time -- the one measurement
+# this round's own patch cannot make for itself.
