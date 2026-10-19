@@ -623,7 +623,7 @@ int main(int argc, char** argv) {
   // unanimous, so it is turned into the same agreed exit as every other one.
   std::optional<decltype(schedule(graph, lowered.dag, clocks, fuse::RegionSizes{}))> sched;
   try {
-    sched = schedule(graph, lowered.dag, clocks, fuse::make_region_sizes(graph, backend));
+    sched = schedule(graph, lowered.dag, clocks, fuse::make_region_sizes(graph, lowered.dag, backend));
   } catch (const std::exception& e) {
     if (rank == 0) std::cerr << "schedule failed: " << e.what() << '\n';
     return agree_and_exit(1);

@@ -970,7 +970,7 @@ fuse_status impl_initialize(fuse_ctx* ctx, const fuse_null*, fuse_null*) {
     }
     c.dag    = lowered.dag;
     c.clocks = fuse::ClockSet{c.graph};
-    const fuse::RegionSizes sizes = fuse::make_region_sizes(c.graph, *c.backend);
+    const fuse::RegionSizes sizes = fuse::make_region_sizes(c.graph, *c.dag, *c.backend);
     const fuse::ScheduleResult sched =
         fuse::schedule(c.graph, *c.dag, *c.clocks, sizes);
     if (!sched.ok()) {

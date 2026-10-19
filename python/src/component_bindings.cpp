@@ -271,7 +271,8 @@ class Session {
         lowered = fuse::lower(g);
         if (lowered.ok()) {
           const fuse::ClockSet clocks{g};
-          scheduled = fuse::schedule(g, lowered.dag, clocks, fuse::make_region_sizes(g, backend_));
+          scheduled = fuse::schedule(g, lowered.dag, clocks,
+                                     fuse::make_region_sizes(g, lowered.dag, backend_));
         }
       }
     }
