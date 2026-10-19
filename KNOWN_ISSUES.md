@@ -5528,6 +5528,17 @@ deterministic by construction and, at these sizes, no slower than the launch-bou
 solve) or the D43 coupling fix. The determinism contract D45 established for reductions
 applies to any device solver fuse adopts; this is the measured reason.
 
+**2026-10-18 addendum (cuSPARSE tree on higgs's rebuilt stack, Open MPI 5.0.9, CUDA 12.5.82).** The
+tier-0 + `FUSE_ENABLE_CUSPARSE=ON` tree's gate had until now excluded the `.device` twins (`-LE
+device`); running them for the first time, `verification.fsi_coupled.device`
+(`FsiCoupled.SteadyStateBeamDeflectionMatchesTheAnalyticLinearLoad`, fsi_coupled_test.cpp:441) diverged
+outright under the cusolverRf backend: errors 2.4e+49, 2.0e+51, 3.1e+52 over the three resolutions
+(observed order -5.16), while the same row passes in the same tree on the host leg and both legs pass
+in the Eigen-SparseLU build-all tree. `verification.fsi_transient.device` passed in the same run. This
+is the cusolverRf fluid solve under the device execution space, the combination this entry already
+names for `example.fsi_channel`; recorded here, not diagnosed, and not a regression of any earlier
+gate since no earlier gate ran the row.
+
 ### ~~D45. The deterministic dot and norm reductions differed from the host by one ulp on the Cuda leg~~ — CLOSED 2026-10-10
 
 **Measured 2026-10-10** as `num.space_kernels`'s `DeterministicReductionsMatchTheChunkedReferenceExactly`
@@ -7540,7 +7551,7 @@ provider). No commit since `d622b50`, where all accept rows passed on 2026-10-16
 connect/accept path, so this is the same libfabric state, not a code change; D23 holds the open item. Recommended host setting until MPICH's NIC selection is fixed or the bridge is gone:
 `export FI_PROVIDER="tcp;ofi_rxm" FI_TCP_IFACE=en0`. Nothing in FUSE sets the provider.
 
-### D66. The device-direct (GPU-aware, zero host round trip) exchange path this round adds to the ghost and nodal-remap exchanges cannot be exercised for real on higgs — OPEN, measured 2026-10-15 (runtime-exchange track, follow-up round)
+### D66. The device-direct (GPU-aware, zero host round trip) exchange path this round adds to the ghost and nodal-remap exchanges cannot be exercised for real on higgs — CLOSED 2026-10-18 (exercised on Open MPI 5.0.9: ghost/nodal-remap/migration branches pass, the Transport branch failed and is D77), measured 2026-10-15 (runtime-exchange track, follow-up round)
 
 `fuse::linalg::mpi_is_gpu_aware()` (comm.hpp, this round's own shared probe, moved from
 `fuse::transport::MpiTransport`'s former private copy) is measured to return `false` unconditionally on
@@ -7566,6 +7577,23 @@ device-direct branch itself has no host run that reaches it: nothing on higgs ca
 correctly with real device pointers in MPI's hands, as opposed to merely compiling. A host with a
 genuinely CUDA-aware OpenMPI (or MPICH built against UCX/CUDA) is what this needs; until then this
 branch is UNVERIFIED, not failing.
+
+**2026-10-18, closed.** higgs's MPI was replaced by a spack-built Open MPI 5.0.9 that IS CUDA-aware:
+`MPIX_Query_cuda_support()` returns 1, a standalone device-pointer `MPI_Sendrecv` ring passed at 1-3
+ranks, and `fuse::linalg::mpi_is_gpu_aware()` is therefore true at run time, so every device-direct
+branch above is now the branch actually taken under `FUSE_EXECUTION_SPACE=device` unless
+`FUSE_TRANSPORT_HOST_STAGING=1` forces the fallback. Measured on main 01a6d25 (Debug, Kokkos Cuda,
+`ctest -L device -LE bench`, 39 rows): `parallel.device_ghost_exchange.{2,3,4}.device` passed with
+their `last_update_took_device_direct_path()` assertion now on its TRUE branch;
+`parallel.nodal_remap_distributed.{2,3,4}.device`, `parallel.nodal_remap_runner.{2,3,4}.device` and
+`backend.native_migration_mpi.{2,3,4}.device` passed (the 5-rank twins of each ran once Open MPI 5's
+launcher was given `PRTE_MCA_rmaps_default_mapping_policy=:oversubscribe`, see the test CMake); the
+one device-direct branch that FAILED was the Runner's `Transport` case, which handed
+`MpiTransport::move()` -- a host routine -- a device pointer and segfaulted in `std::memcpy`
+(`parallel.window_runner_mpi.{2,3}.device`). That defect and its fix (`Transport::packed_layout()` /
+`move_packed()`, pack and unpack on `Space` in the Runner) are D77. Both legs of every exchange are
+therefore now measured on real hardware: the device-direct branch under the natural probe value and
+the host-staged branch under the forced one.
 
 ### D67. `build_distributed_interp_rows`'s per-cell containment search disagrees by 1 ULP at the domain's own boundary vertex between an exactly-one-rank replica and a real multi-rank one — OPEN, found 2026-10-15 (runtime-exchange track, follow-up round)
 

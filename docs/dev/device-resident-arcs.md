@@ -602,6 +602,27 @@ the next step starts. Host mode byte-identity is the standing invariant.
     is kernel launch latency, which the scaled benchmark above shows
     disappearing at 1e6 cells.
 
+11. Measured on higgs after its 2026-10-17 stack change (Open MPI 5.0.9,
+   CUDA-aware; MOAB 5.6.0 rebuilt against it; Eigen 5.0.0; HDF5 on), gate
+   2026-10-18 on main 01a6d25 plus the fixes it forced: build-all host leg
+   332/353 before the Open MPI 5 launcher was told to oversubscribe
+   (every 5-rank and MPMD row refused with "not enough slots"; fixed by
+   adding `PRTE_MCA_rmaps_default_mapping_policy=:oversubscribe` next to
+   the Open MPI 4 variable in every MPI row's ENVIRONMENT), device leg
+   36/39, cuSPARSE tree 19/21. `fuse::linalg::mpi_is_gpu_aware()` is TRUE
+   here now, so this gate is the first in which the device-direct branch
+   of every exchange ran: ghost exchange, nodal remap and migration passed
+   (D66 closed); the Runner's `Transport` case segfaulted and is fixed by
+   `Transport::packed_layout()`/`move_packed()` (step 10, D77). Also
+   found: `parallel.window_newton_mpi.3` no longer hangs (D55 closed, an
+   Open MPI 4.1.5 artifact); `verification.fsi_energy_diag` now passes on
+   the host leg and fails the same gate in its `.device` twin (D56 moved,
+   still open); the participant ABI's `communicator == 0` sentinel
+   collides with Open MPI's Fortran handle for MPI_COMM_WORLD (D76, fixed
+   with `has_communicator`); `verification.fsi_coupled.device` in the
+   cuSPARSE tree (a row no earlier gate had run) diverges under the
+   cusolverRf backend, recorded under D44 rather than fixed.
+
 ## What the placement trace shows today
 
 `FUSE_DEVICE_DEBUG=1 ./fuse_runtime_runner_device_test` on the mean-over-four-
