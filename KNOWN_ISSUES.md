@@ -9033,3 +9033,113 @@ overload for; see `KNOWN_ISSUES.md`'s own D73 ROUND 3 paragraph below for the me
 
 D5's disjoint-placement halo-bridging second-placement argument remains open, unaffected by this
 decision -- see D73 ROUND 3 below for its current status.
+
+### D80. `FsiEnergyDiag.FullBudgetOnTheDominantModeCloses`'s mass-correction isolation check compared a `cn_step` call on the literal `c.dt` against production's own `dt_delivered` -- FOUND AND FIXED 2026-10-19 (FsiMassCorr track)
+
+**Measured on this machine (2026-10-18/19, first local run of the CI legs).** Test
+`FsiEnergyDiag.FullBudgetOnTheDominantModeCloses`
+(`test/verification/fsi_energy_diag_test.cpp:2284`, `ASSERT_LT(max_abs_diff_non_outflow,
+mass_corr_tol)`) failed deterministically (6 of 6 runs identical to every printed digit) in a
+Release, `FUSE_ENABLE_EXCEPTIONS=OFF` build with Kokkos fetched Serial-only from source and Eigen
+fetched (pinned tag): `eig_quality_combined=1.252e-07`, `max|u_raw|=1.270e-02`,
+`tolerance=3.501e-11` (the OLD tolerance, `0.5*eig_quality*max|u_raw|`), `max|u1-u_raw|` away from
+the outflow column `=1.081e-10` (ratio 3.089 -- FAILS). The owner's own Debug build-all (exceptions
+on, installed Kokkos 5.1.0 OpenMP+Serial, installed Eigen) measured the SAME quantity at
+`1.545e-10` against a looser tolerance (`2.064e-09`, ratio 0.075 -- passes), and D56 (above) records
+the identical gate failing by 1.5x on a third (GCC 13.3/higgs) toolchain -- the quantity moving
+across builds is `eig_quality` (the eigensolver's own residual, by ~50x between builds), while the
+measured mismatch itself sits at `1.1e-10` to `1.5e-10` in every build. This was the standing clue
+that `eig_quality` was the wrong scale: the eigensolver's residual and this identity's own fluid
+solve are unrelated linear algebra.
+
+**Mechanism, measured directly, not assumed.** Three candidate mechanisms were tested, each by a
+measurement that isolates it, using `FluidComponent::debug_last_velocity_in_used` and
+`StokesSolver::debug_last_u0_used`/`debug_last_v0_used` (new diagnostic hooks, null by default --
+`examples/fsi_channel/fsi_components.hpp`, `examples/fsi_channel/stokes_solver.hpp`):
+
+ 1. **Hypothesis (c), a test sampling artifact** ("`u1` and `u_raw` sampled at different states"):
+    `diag.vwall1` (what the test fed `measure_full_energy_identity_general`) is
+    `fluid_ptr->velocity_in()` read back AFTER `Runner::run_period()` returns -- i.e. the region's
+    own `G(y)` (`src/runtime/iteration.cpp`'s own header comment: "the Sink instructions ...
+    deliver G(y)"), which need not equal `y`, the wall velocity the LAST `advance()` call actually
+    solved from, by more than the region's own convergence tolerance. Measured directly: `|y -
+    G(y)| = 3.90e-18` (round-off) on this case, and feeding `y` instead of `diag.vwall1` reproduced
+    the IDENTICAL `1.081237e-10` mismatch to 7 significant figures. REJECTED.
+ 2. **The cross-call cached saddle-point factorisation** (`StokesSolver::lu_cache_`, which
+    production's `step()` reuses across sweeps while the test's own reconstruction always
+    refactorises): forcing `step()` to always refactorise too (temporarily, in isolation)
+    reproduced the IDENTICAL `1.081237e-10` to every printed digit. REJECTED.
+ 3. **`diag.u0`/`diag.v0` not bit-identical to the `(u_, v_)` the last `advance()` actually
+    restored and solved from**: measured directly, both gaps are EXACTLY `0.0`. REJECTED.
+
+**What remained, and confirmed the mechanism.** The test's own call,
+`measure_full_energy_identity_general(fc, c.dt, diag.u0, diag.v0, diag.vwall0, diag.vwall1)`,
+passed the LITERAL `c.dt` as `cn_step`'s own `dt` argument. Every PRODUCTION `cn_step` call in this
+same run executes on `dt_delivered = rationalize_dt(c.dt).to_double()` -- `build_fsi_graph()`
+quantizes `c.dt` through this file's own `rationalize_dt()` before handing it to the coupling
+graph, exactly the mechanism D34 (above) already found and fixed for the beam-side identity in this
+SAME test file, reintroduced here for the fluid-side (mass-correction) identity. `cn_step`'s own
+matrix carries `dt` through the time-derivative (`O(1/dt)`) coefficient, so the relative dt error
+`|c.dt - dt_delivered| / dt_delivered = 4.596e-7` (D34's own measured ratio, unchanged on this case)
+perturbs EVERY column of the solve, not just the outflow one the mass correction touches -- an
+across-the-board leak, not a defect confined to one column. Feeding `dt_delivered` instead of the
+literal `c.dt` collapsed the non-outflow mismatch from `1.081e-10` to `4.443e-15` (round-off) in
+BOTH the Release/no-exceptions build (Kokkos found/installed + ArborX found/installed, Eigen/GTest/
+fmt fetched -- see Deviations below) and a Debug build (`OMP_NUM_THREADS=1`) of the same
+composition -- CONFIRMED, and toolchain-independent as expected for a deterministic bookkeeping fix
+(unlike `eig_quality`, which moved 50x between builds while this mismatch did not). Hypothesis (a),
+a bookkeeping mismatch, is the mechanism; hypothesis (b), a genuine defect in the mass correction's
+own column restriction, is REJECTED: the correction's own code (`examples/fsi_channel/
+stokes_solver.hpp`, the outflow-mass-conservation block) writes to exactly one `idx_u(p_, p_.nx,
+j)` per row and no other index (confirmed by a hand-mutation that adds a second write to
+`idx_u(p_, p_.nx - 1, j)`, which this test's new tolerance catches at a ratio of `1.4e9`, see
+Mutations below).
+
+**Fix.** `measure_full_energy_identity_general` is called with `dt_delivered`, not `c.dt`. The
+tolerance is re-derived from the solve's own backward stability rather than from `eig_quality`:
+with `dt` fixed, `diag.u1` (away from the outflow column) and `u_raw` are two INDEPENDENT solves of
+the IDENTICAL assembled saddle-point system `A x = rhs` (production's cached factorisation vs. this
+call's fresh one), each backward-stable per Higham (*Accuracy and Stability of Numerical
+Algorithms*, 2nd ed., secs. 9.3-9.5) with relative error bounded by this project's own established
+per-solve constant `2*kappa_2(A)*u` (the same form D34 already uses for the beam's own direct
+solve). Two independent solves of one system can therefore differ by up to the SUM of their two
+bounds, `4*kappa_2(A)*u`, scaled by the solution's own magnitude. `kappa_2(A)` is measured directly
+(dense `JacobiSVD` on the assembled saddle-point matrix `cn_step` solved -- `N=53` on this grid, an
+exact dense SVD): `kappa_2(A_fluid)=3.532030e+05`, tolerance `=4*kappa_2(A)*u*max|u_raw|=3.984e-12`,
+observed mismatch `4.443e-15` (ratio to tolerance `0.001` -- not vacuous, not tighter than the
+observed mismatch).
+
+**Mutations (byte-identical restore after each).**
+ 1. Reverting the fix (literal `c.dt` restored): the new tolerance-based assertion FAILS, ratio
+    `27.141` (`max|u1-u_raw|=1.081e-10` against tolerance `3.984e-12`) -- killed.
+ 2. A second write added to the mass correction's own loop (`next.u[idx_u(p_, p_.nx - 1, j)] +=
+    correction;`, simulating hypothesis (b), a real leak into the adjacent column): the assertion
+    FAILS, ratio `1.4e9` (`max|u1-u_raw|=3.315e-03`) -- killed decisively.
+
+**Verified.** `fuse_verification_fsi_energy_diag_test` (`FsiEnergyDiag.*`, 6/6) passes with the fix
+in both a Release/`FUSE_ENABLE_EXCEPTIONS=OFF` build (Kokkos+ArborX found/installed, Eigen/GTest/fmt
+fetched) and a Debug build of the same composition, `OMP_NUM_THREADS=1` -- identical
+`kappa_2(A_fluid)` and mismatch in both, as expected for a deterministic fix. `tools/check-ascii.py`,
+`tools/check-invariants.py` and `tools/mutate.py --check-anchors` all pass on the touched files.
+
+**Deviations from the measured-failing leg's exact composition.** The measured-failing leg named
+above fetched Kokkos (Serial-only) AND Eigen AND GTest from source. In this sandbox, cloning a git
+repository is blocked outright (creating a `.git` directory anywhere fails with "Operation not
+permitted", a sandbox-wide restriction, not specific to this project) -- dependency sources were
+instead fetched as plain HTTPS tarballs and pointed at via `FETCHCONTENT_SOURCE_DIR_<NAME>`. That
+substitution does not affect this finding: forcing Kokkos AND ArborX to BOTH be fetched together
+with this project's current pins is independently impossible regardless of sandboxing -- ArborX's
+pinned commit (`8f89be60bc3797670b9be8843da7dcdbc5f2333f`) calls `find_package(Kokkos 4.5 REQUIRED
+CONFIG)` in its own `CMakeLists.txt`, while `FUSE_KOKKOS_TAG` pins Kokkos at `4.4.01` (< 4.5), and
+neither `FetchContent_Declare(Kokkos ...)` nor `FetchContent_Declare(ArborX ...)`
+(`cmake/FuseDependencies.cmake`) carries `FIND_PACKAGE_ARGS`/`OVERRIDE_FIND_PACKAGE`, so there is no
+redirect letting ArborX's own `find_package(Kokkos 4.5)` resolve against a freshly-fetched,
+sub-4.5 Kokkos target -- measured directly: fetching both together fails configure with "Could not
+find a package configuration file provided by Kokkos (requested version 4.5)". This build instead
+used Kokkos+ArborX found/installed (a consistent pair) with Eigen/GTest/fmt fetched. Given the
+mechanism (D34's own `rationalize_dt()`/`dt_delivered` bookkeeping split) and its fix are properties
+of the TEST's own arithmetic, not of which Kokkos backend is linked, and the fix was confirmed
+identically in both a Release/no-exceptions and a Debug build of this composition, this
+substitution does not weaken the finding -- but the "Kokkos AND ArborX both fetched" leg itself was
+not reproduced bit-for-bit in this sandbox, and the ArborX/Kokkos version-pin incompatibility above
+is itself a new, OPEN finding worth the owner's attention independent of this entry.
