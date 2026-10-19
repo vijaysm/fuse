@@ -10403,3 +10403,101 @@ contained, single-file patch. Left open for the owner's own decision on scope an
 needed at all. D73's own `host_pending` row (above) is expected to still show a DIFFERENT value from 63
 once D73's own fix is confirmed on the host (the real multi-rank exchange adopting the correct cells),
 but will not show 28 either, until D82 is separately fixed.
+
+### D83. `MoabMeshBackend::adopt_remap_halo` (and `regather_with_halo`/`plan_halo_exchange`, the
+covering-cell adoption subsystem behind the remap halo, R3) is hardwired to the backend's DEFAULT
+Core and base communicator, so the 4-argument `build_remap_halo`'s own "same Core, delegate"
+strategy (round 2) is wrong whenever `plan.placement` is a GENUINELY declared placement, not just
+the "no placements declared" default -- FOUND 2026-10-19 (MoabHalo track, round 9, while building the
+test row D81 round 8's own host note asked for), OPEN, owner decision needed
+
+**Measured, by reading, not re-guessing:** `MoabMeshBackend::adopt_remap_halo` (`moab_backend.cpp`)
+takes `source`/`target`/`dim`/`cells`/`count` but no `ComponentId` -- it resolves `MoabMeshView& view
+= *impl_->meshes[s];`, looks up the GLOBAL_ID tag via `impl_->mb.tag_get_handle(...)`, and (the per-
+covering-cell check) reads each `cells[k]`'s GLOBAL_ID via `impl_->mb.tag_get_data(gid, &h, 1, &g)`
+-- EVERY one of these reads `impl_->mb`, the backend's own DEFAULT `moab::Core`, unconditionally.
+`regather_with_halo` (`view = *meshes[mesh]`, `base_loader.gather(view)`) and `plan_halo_exchange`
+(`pcomm->comm()`, where `pcomm` is `impl_`'s own member) do the identical thing -- neither takes a
+placement either. `impl_->halo_pairs`/`impl_->halos` (the caches keying both) are single,
+backend-wide maps, not one per placement.
+
+This is CORRECT, and the only possibility, for the single-Core (no placements declared) case: there
+`a.mb` -- the `moab::Interface` the covering set was built in -- literally IS `impl_->mb` (`native_
+mesh(id)`'s own answer, `moab_backend.cpp`), so the `moab::EntityHandle`s in `cells` are valid in
+`impl_->mb`'s own address space by construction, and `add_entities(view.file_set(), keep.data(),
+...)` adds them into the SAME Interface they came from.
+
+It is WRONG whenever a rank resolves through a DECLARED placement whose own Core differs from
+`impl_->mb`: `set_placements()` gives each processor set its OWN, independently-read `moab::Core`
+(`PlacementContext::core`, `moab_backend.cpp:939`), and `native_mesh(id, placement)` returns THAT
+Core, never `impl_->mb`, whenever the rank participates (confirmed re-reading it this round). The
+single-placement `build_remap_halo(plan, graph, backend)`'s own covering-set construction
+(`intx_weights.cpp`) resolves `a.mb`/`a.file_set`/the covering set's `handles` through
+`resolve(..., plan.placement, ...)` -- so for a genuinely DECLARED `plan.placement`, EVERY `moab::
+EntityHandle` it hands to `adopt_remap_halo` lives in THAT PLACEMENT's own `ctx->core`, not
+`impl_->mb`. `moab::EntityHandle` is an opaque integer meaningful only within the ONE `moab::Core`
+that allocated it (MOAB's own sequence-manager encoding; not a cross-Interface identifier); handing
+one Core's handle to a DIFFERENT Core's `tag_get_data`/`add_entities` is undefined by MOAB's own
+contract, not merely untested by this project. The round-7/round-8 host measurement ("a covering
+cell carries no positive GLOBAL_ID") is CONSISTENT with this: a handle from `ctx->core` interpreted
+against `impl_->mb` would, at best, fail the lookup outright (the observed refusal) -- but nothing
+in `adopt_remap_halo` checks that the handle is even plausible for `impl_->mb` first, so a WORSE,
+SILENT outcome (the raw integer happening to alias a DIFFERENT, valid entity already present in
+`impl_->mb`, e.g. a cell the default Core separately read of the SAME file) cannot be ruled out by
+reading alone, only by a host run.
+
+**Consequence, discovered while building D81 round 9's own 4-rank test row:** every row this track
+has run through round 8 gave the delegating placement (A, `moab_placed_weights_mpi_test.cpp`'s own
+`DisjointRankSets`) EXACTLY ONE rank, which takes `intx_weights.cpp`'s degenerate "serial/one-rank/
+identity" shortcut (`active_comm_size(a.pcomm) <= 1`, D81 round 8's own fix) straight to
+`adopt_remap_halo(..., nullptr, 0)` -- `count == 0`, so the per-cell GLOBAL_ID loop never executes
+and this gap was never reached. The NEW 4-rank row (A = {0, 1}, a genuine two-rank `ParallelComm`)
+is the FIRST configuration in this tree where the covering-set construction's real, non-empty
+`handles` would actually be handed to `adopt_remap_halo` while resolved through a placement's own,
+non-default Core -- exactly the configuration this item describes as broken by construction, not
+merely unmeasured.
+
+**NOT FIXED THIS ROUND, by design, not by omission:** a correct fix needs `adopt_remap_halo`
+(and `regather_with_halo`/`plan_halo_exchange`, and their `halo_pairs`/`halos` caches) to become
+placement-aware THROUGHOUT -- resolving `mb`/`pcomm`/the mesh view/the caches through WHICHEVER
+Core a call's cells actually came from, the same shape `sphere_radius`/`project_onto_unit_sphere`
+already took in round 6, but touching substantially more state (two caches keyed only by `(mesh,
+dim)`, not `(mesh, dim, placement)`, plus two downstream functions, not one self-contained
+measurement/rescale pair) than "one shared helper" can safely cover without review. The alternative
+-- the 4-argument overload refusing by name whenever `plan.placement` would resolve through a
+non-default Core, rather than delegating into machinery not built for that Core -- is the OTHER
+option, mirroring this track's own D5 refusal for the genuinely-cross-Core case. Recorded here
+rather than guessed at, per this track's own standing practice (D81 itself, round 5) of stopping to
+record a new item rather than implementing a design choice unreviewed.
+
+**open_questions (for the owner):** (a) should `adopt_remap_halo`'s own subsystem become fully
+placement-aware (one `halo_pairs`/`halos` pair per declared placement, every downstream call
+resolving the SAME Core/communicator the caller's own `MoabNativeMesh` already names) -- the more
+complete fix, but the larger one; or (b) should the 4-argument `build_remap_halo` refuse by a NEW,
+named code (e.g. `E-MESH-HALO-PLACEMENT-UNIMPLEMENTED`) whenever `plan.placement` is a genuinely
+declared (non-default) placement, rather than delegating into a subsystem not built for it, until
+(a) is done -- the narrower, safer stopgap, at the cost of leaving `moab_placed_weights_mpi_test.
+cpp`'s own test (2) refusing rather than succeeding at 4 ranks even after this item closes, for a
+different, NAMED reason than today's accidental one.
+
+**host_pending:** `parallel.moab_placed_weights_mpi.4`, test (2)
+(`SamePlacementOnBothSidesDelegatesToTheSinglePlacementPath`)'s own `EXPECT_GT(via_overload.value(),
+0u)` and `EXPECT_EQ(via_overload.value(), via_single.value())` rows. Three foreseeable outcomes, read
+against this item's own analysis: (i) `E-MESH-HALO`, "a covering cell carries no positive GLOBAL_ID"
+again -- CONFIRMS the handle-lookup-against-the-wrong-Core hypothesis above (the lookup fails
+outright); (ii) a hang or crash inside the covering-set construction or `adopt_remap_halo` itself --
+would mean the cross-Core handle reuse is worse than a clean failure (undefined behaviour MOAB's own
+contract allows and this analysis warned of); (iii) a POSITIVE but WRONG adopted count (the row's own
+assertions would PASS, by coincidence, while the adopted cells are not the ones actually needed) --
+the single most dangerous outcome of the three, since nothing in this test or in `adopt_remap_halo`
+itself would catch it, and would mean this item's "fails safely today" framing is itself wrong. Any
+of the three is a measurement this item needs, not a surprise this track should try to explain away
+after the fact.
+
+**Host run of the 4-rank row (lead, 2026-10-19, `build-all` at `12573d7` + round 9):** outcome (i).
+`parallel.moab_placed_weights_mpi.4` FAILS at test 2 line 309 in 0.54 s with every rank agreeing: ranks 0 and
+1 (placement A) and ranks 2 and 3 (outside A) all report `via_overload ok=0 code=E-MESH-HALO`, message
+`rank 0 refused: a covering cell carries no positive GLOBAL_ID, so it cannot be matched to the source cell it
+copies`. No hang, no crash, no false positive. Rows 2 and 3 still PASS (1.05 s, 0.63 s) through the one-rank
+shortcut. The row is expected red until the owner decides between the two shapes above; it is the measurement
+D83 needs and is kept registered.
