@@ -142,12 +142,18 @@ itself. A participant written in C or Fortran has neither: it loads a graph some
 (`fuse_load_graph`) and never touches `fuse::transport::connect()`, or any other C++, at all —
 `fuse_setup_options::my_component` is the one field that makes this possible. Set it to the name of
 the component THIS process plays, with `communicator` holding this executable's own
-`MPI_COMM_WORLD` (as a Fortran handle, `MPI_Comm_c2f`):
+`MPI_COMM_WORLD` (as a Fortran handle, `MPI_Comm_c2f`). On Open MPI, that handle IS 0
+(KNOWN_ISSUES.md D76 -- Open MPI's own `mpif.h` numbers `MPI_COMM_WORLD` as 0, unlike MPICH's
+`0x44000000`), which collides with this struct's own original sentinel for "no communicator
+supplied"; set `has_communicator = 1` so `fuse_setup()` reads a `communicator` of 0 as this
+process's own world, not an absent one. An old caller whose `struct_size` predates
+`has_communicator` keeps the original sentinel (`communicator == 0` means none) unchanged:
 
 ```c
 fuse_setup_options opts = {.struct_size = sizeof(opts)};
-opts.communicator  = MPI_Comm_c2f(MPI_COMM_WORLD);
-opts.my_component  = "ocean";
+opts.communicator      = MPI_Comm_c2f(MPI_COMM_WORLD);
+opts.has_communicator  = 1;  /* D76: 0 is a real handle on Open MPI */
+opts.my_component      = "ocean";
 fuse_coupler_abi(FUSE_ABI_VERSION)->setup(ctx, &opts, NULL);
 ```
 

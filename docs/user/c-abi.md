@@ -353,7 +353,11 @@ if (info.formed) {
 
 Legal at any context state, including before `fuse_setup()` has ever been called
 (`info.formed == 0`, `info.communicator == 0`, matching `fuse_setup_options::communicator`'s own
-documented default of "none"). A local, non-collective read: every rank of the base communicator
+documented default of "none"). `info.formed` is also 1 when `fuse_setup_options::has_communicator`
+was set and `communicator == 0` was supplied deliberately (KNOWN_ISSUES.md D76 -- see "A C or
+Fortran participant never calls `connect()` itself" in `docs/user/multiple-executables.md`): a
+caller cannot tell the two "zero" cases apart from `communicator` alone, which is exactly why
+`formed` is checked first. A local, non-collective read: every rank of the base communicator
 already agrees on its own existence from `fuse_setup()`'s own collective (forming it in the first
 place IS the collective; reading back what each rank already has is not). Not meaningful across
 ranks as a single shared integer — like any MPI communicator, each rank's own `MPI_Comm_c2f` handle
@@ -387,6 +391,7 @@ each grown since they were first frozen — every append documented, by commit, 
 | `fuse_step_report` | 64 → 72 | `da33572` | `next_component`, alongside `fuse_ongoing`'s own append |
 | `fuse_step_report` | 72 → 88 | `f768fb3` | `step_opened` and `period` together (the "`step_opened`" section above) |
 | `fuse_step_report` | 88 → 104 | `dfcd9d1` | `delivery_pending` and `delivery_field` together (the "`delivery_pending`" section above) |
+| `fuse_setup_options` | 48 -> 56 | (D76 fix) | `has_communicator` (KNOWN_ISSUES.md D76 -- Open MPI's own Fortran handle for `MPI_COMM_WORLD` is 0, which collided with this struct's "communicator == 0 means none supplied" sentinel; see "Recovering the base communicator" below and `docs/user/multiple-executables.md`) |
 
 Every intermediate append also claims its own few bytes of trailing padding as an explicitly named
 `reserved*` member (`abi-design.md` rule 3: a struct whose size does not change when a member is
