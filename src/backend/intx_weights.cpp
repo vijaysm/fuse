@@ -199,8 +199,21 @@ constexpr double kCoverageTol = 1e-9;
   // cell already, local by construction, so no halo is ever needed for it.
   // ==========================================================================
   if (const auto* native_backend = dynamic_cast<const native::NativeMeshBackend*>(&backend)) {
+    // KNOWN_ISSUES.md D73 (RemapHalo track round 6, host measurement 2026-10-19): `plan.placement`
+    // is the ONLY argument missing here -- `has_remap_halo`'s own 4th parameter defaults to
+    // `ComponentId{}` (the "unplaced decomposition", that default parameter's own doc comment,
+    // native_backend.hpp), but `fuse::native::build_native_remap_halo`'s own `commit_remap_halo`
+    // call (native_halo.cpp) records the triple under `placement` -- the TARGET's own, real
+    // ComponentId, round 3's own fix, never the default. A halo genuinely built and committed under
+    // a real placement is therefore invisible to this exact check, which asked under a DIFFERENT
+    // key (the default) that was never written to -- measured on the owner's host: `initialize()`
+    // refused E-REMAP-PARALLEL on BOTH ranks of a GREEN row whose own trace already showed the halo
+    // had built cleanly (adopted_source_cells printed correctly, no exception) moments earlier.
+    // Passing `plan.placement` here is the SAME placement `supermesh_side()` already resolved both
+    // `s`/`d` through, two lines above -- the query now asks under the identical key the commit
+    // wrote.
     if (native_backend->communicator_size() > 1 && s.value().mid.value() != d.value().mid.value() &&
-        !native_backend->has_remap_halo(s.value().mid, d.value().mid, s.value().dim)) {
+        !native_backend->has_remap_halo(s.value().mid, d.value().mid, s.value().dim, plan.placement)) {
       return Failure{
           "E-REMAP-PARALLEL",
           "the native mesh backend reports a communicator of " +

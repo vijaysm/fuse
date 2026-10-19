@@ -1262,3 +1262,80 @@ TEST(NativeHaloCrossPlacement, TwoPlacementOverloadsShortCircuitStillCommitsUnde
       << "must NOT be keyed by source_placement -- that argument names which cells get OFFERED "
          "for adoption, not where the result is filed";
 }
+
+
+// ---------------------------------------------------------------------------
+// KNOWN_ISSUES.md D73 (RemapHalo track round 6): `build_weights_via_supermesh`'s
+// own E-REMAP-PARALLEL check (intx_weights.cpp) called `has_remap_halo(s.mid,
+// d.mid, s.dim)` with NO FOURTH ARGUMENT, so it asked under `ComponentId{}`
+// (that parameter's own documented default, native_backend.hpp) no matter what
+// `plan.placement` actually was. `commit_remap_halo` records under `placement`
+// -- the real, non-default `ComponentId` every channel with an actual
+// component assigns (round 3's own fix; the test just above this one proves
+// the commit side). Every EXISTING tier-0 test for this check (`BackendFixture`
+// above, `NativeHaloBuildWeights`'s own suite) used `ComponentId{}` on BOTH
+// sides -- no graph component was ever registered there at all -- so the
+// mismatch between "what was committed" and "what was queried" was invisible:
+// the default always matched the default. This is the first test in the file
+// to give `commit_remap_halo` and `plan.placement` the SAME real, non-default
+// `ComponentId` and then call `fuse::build_weights` the way `Runner::
+// initialize()` actually does, reproducing the owner's host measurement
+// (both ranks of a 2-rank run refused E-REMAP-PARALLEL although the halo had
+// already built and committed cleanly) without needing MPI: `set_communicator`
+// to a placeholder non-null handle (`communicator_size() > 1`, the fixture's
+// own existing convention above) is enough to reach the check, and
+// `run_halo_pipeline`'s in-process allgather (no MPI call of any kind) is
+// enough to compute a real pattern to commit.
+// ---------------------------------------------------------------------------
+TEST(NativeHaloBuildWeights, BuildWeightsFindsAHaloCommittedUnderAnActualComponentPlacement) {
+  constexpr int kRanks = 2;
+  CouplingGraph graph;
+  const MeshId u_mid = graph.add_mesh(MeshDecl{.name = "U", .source = kUSource});
+  const MeshId v_mid = graph.add_mesh(MeshDecl{.name = "V", .source = kVSource});
+  const RegionId u_region =
+      graph.add_region(Region{.name = "u_all", .mesh = u_mid, .entity_set = "", .dimension = 2});
+  const RegionId v_region =
+      graph.add_region(Region{.name = "v_all", .mesh = v_mid, .entity_set = "", .dimension = 2});
+  // Spans every rank in this fixture, so `register_default_placements()`
+  // decomposes each mesh over the WHOLE communicator under this placement --
+  // the identical split `build_ranks(kRanks)`/`generate_native_mesh` below
+  // already computes, so the two agree cell-for-cell without any extra
+  // reconciliation.
+  const ComponentId consumer = graph.add_component(
+      ComponentDecl{.name = "consumer", .ranks = RankSet{0, kRanks}, .interval = Rational{1}});
+
+  auto pieces = build_ranks(kRanks);
+  auto run = run_halo_pipeline(pieces, kRanks);
+
+  std::vector<std::unique_ptr<NativeMeshBackend>> backends;
+  for (int r = 0; r < kRanks; ++r) {
+    auto backend = std::make_unique<NativeMeshBackend>(r, kRanks);
+    backend->set_communicator(/*placeholder, never dereferenced -- see BackendFixture above*/ 1);
+    ASSERT_TRUE(backend->load(MeshDecl{.name = "U", .source = kUSource}, graph).ok());
+    ASSERT_TRUE(backend->load(MeshDecl{.name = "V", .source = kVSource}, graph).ok());
+    auto committed = backend->commit_remap_halo(
+        u_mid, consumer, std::move(run.new_u[static_cast<std::size_t>(r)]), v_mid, 2,
+        run.pattern[static_cast<std::size_t>(r)]);
+    ASSERT_TRUE(committed.ok()) << "rank " << r << ": " << committed.error().message;
+    backends.push_back(std::move(backend));
+  }
+
+  RemapPlan plan;
+  plan.src = u_region;
+  plan.tgt = v_region;
+  plan.placement = consumer;
+
+  for (int r = 0; r < kRanks; ++r) {
+    EXPECT_TRUE(backends[static_cast<std::size_t>(r)]->has_remap_halo(u_mid, v_mid, 2, consumer))
+        << "rank " << r << ": committed under `consumer`, must be found under `consumer`";
+    EXPECT_FALSE(backends[static_cast<std::size_t>(r)]->has_remap_halo(u_mid, v_mid, 2, ComponentId{}))
+        << "rank " << r << ": nothing was ever committed under the default placement -- a query "
+           "that silently falls back to it must not see this halo";
+
+    const auto w = fuse::build_weights(plan, graph, *backends[static_cast<std::size_t>(r)]);
+    ASSERT_TRUE(w.ok()) << "rank " << r << ": " << w.error().code << ": " << w.error().message
+                        << " -- build_weights_via_supermesh's own E-REMAP-PARALLEL check must query "
+                           "has_remap_halo under plan.placement, the same key commit_remap_halo used, "
+                           "not the default it silently fell back to before this round's fix";
+  }
+}
