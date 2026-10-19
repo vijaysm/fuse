@@ -10224,6 +10224,60 @@ gone): rank 0 (in placement A) is in `build_remap_halo(plan, graph, backend)` (t
 finished the test body, having printed `via_overload ok=1` (the off-placement no-op). The single-placement
 path's reconcile is collective over a communicator rank 1 never enters: a collective returning on a locally
 computed condition, which E-REMAP-GEOMETRY had masked. Round 7.
+**Round 7 fix (MoabHalo track, not yet host-verified, STAYS OPEN until it is):** the host's round-6
+run passed `parallel.remap_halo_mpi.{1..5}` (the placement-aware rescale itself works), but
+`parallel.moab_placed_weights_mpi.{2,3}` HUNG to the timeout in
+`SamePlacementOnBothSidesDelegatesToTheSinglePlacementPath` -- the owner's rule, verbatim: "a
+collective path never returns on a locally computed condition: agree first, then every rank
+refuses with the same code." Measured root cause, reading `fuse::build_remap_halo`'s cross-placement
+overload (`src/backend/intx_weights.cpp`) against `fuse::native::build_native_remap_halo`
+(`native_halo.cpp`, read first as instructed, to confirm the pattern before reusing it): a rank
+structurally outside the target's own placement returned a bare, LOCALLY decided
+`std::size_t{0}` the moment `MoabMeshBackend::placement_participates(plan.placement)` read false --
+skipping `MoabMeshBackend::adopt_remap_halo` entirely -- while a participating peer, delegating into
+the EXISTING single-placement path for the identical (same-Core) case, entered that function's own
+`reconcile_halo`, an `MPI_Allreduce` over `impl_->pcomm->comm()` -- the backend's BASE communicator
+(every rank `set_communicator()` was given), confirmed by reading `adopt_remap_halo`'s own
+`halo_comm` -- not a placement's own sub-communicator. The native backend's own
+`build_native_remap_halo` was read for comparison and confirmed to use the SAME shape: one shared,
+backend-wide communicator, every rank entering the identical collective-bearing code regardless of
+local participation, never branching early on a per-rank fact before that collective. FIXED by
+making the branch decision itself ("delegate to the single-placement path" vs "refuse, the two
+placements genuinely differ") a value comparison (`source_placement == plan.placement`, a plain
+`ComponentId` equality, identical on every rank with no MOAB/MPI call) instead of the ORIGINAL
+`a.mb == b.mb` per-rank Core-pointer comparison it replaces -- that comparison was NOT collectively
+consistent, since `b.mb` reads nullptr for any rank outside `plan.placement` regardless of what
+`source_placement` resolves to, so the same call could read as "same Core" on one rank and
+"different Core" on a peer (measured against this track's own test (1),
+`ARankOutsideTheTargetPlacementIsASuccessfulNoOp`: a rank outside B that is inside A would have
+misread as "same Core" under the old pointer test, even though source_placement A and
+plan.placement B genuinely differ there). With the branch now decided once, identically, per call:
+when `source_placement == plan.placement` (test (2)'s own case), EVERY rank of the base
+communicator -- participating or not -- reaches `adopt_remap_halo` together, a non-participating
+rank contributing zero local cells (the SAME zero-cells call the single-placement path's own
+"serial, one rank, or the identity" no-op already makes, proven safe); when they differ (tests (1)
+and (3)), NEITHER branch (the off-placement no-op, or the in-placement refusal) ever calls any MPI
+collective at all, so ranks may disagree about their own participation there with no risk of a
+hang, exactly as measured working before this round. Two new mutations
+(`build-evidence/mutations/moab-halo-cross-placement-agreement.toml`, `requires = "mpi"` like every
+other MOAB-linked row in this project, for the identical C1 sandbox reason): forcing the branch
+decision to a constant, and reverting the off-placement arm to the old, pre-fix local return.
+Neither is sandbox-executable; the second is a HANG under mutation, not a wrong answer, so its own
+regression value is in never going backward past this fix, not in a fast kill signal. No tier-0
+(non-MOAB) test is possible for any part of this: the whole function lives inside
+`src/backend/intx_weights.cpp`'s own `#else // FUSE_HAVE_MOAB` branch (confirmed by reading the
+file's preprocessor structure), never compiled into a tier-0 build at all, on top of the
+already-confirmed C1 constraint that no MOAB-linked binary can even be constructed in this sandbox.
+D81 stays OPEN until the lead's own host run confirms `parallel.moab_placed_weights_mpi.{2,3}`
+terminates (not hangs) with test (2) passing, and that tests (1) and (3) still pass unchanged.
+
+
+**Host run of round 7 (lead, 2026-10-19, `build-all` at `921fef3` + round 7, 2 ranks):** the hang is gone; the
+row terminates in 0.67 s. Both ranks of placement A now agree and refuse together with `E-MESH-HALO: rank 0
+refused: a covering cell carries no positive GLOBAL_ID, so it cannot be matched to the source cell it copies`
+(test 2 at line 285); tests 1 and 3 pass; `parallel.remap_halo_mpi.{1..5}` PASS, so the default-Core load of the
+same pair does carry GLOBAL_ID. Round 8: the per-placement load path must give its covering cells the same
+GLOBAL_ID guarantee.
 ### D82. A general (non-nodal) FV<->FV weighted Remap on a `Conservation::Extensive` channel does not conserve the delivered total when source and target cells have different measures -- OPEN, found 2026-10-19 (RemapHalo track, round 4, while separating causes for D73's own host-measured conservation failure)
 
 **Not a halo or placement defect.** Reproduced on ONE process, no MPI, no partitioned rank sets at all --
