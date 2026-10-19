@@ -1190,7 +1190,12 @@ struct GeneralIdentityResult {
 GeneralIdentityResult measure_full_energy_identity_general(
     const fsi::ChannelParams& c, double dt, const std::vector<double>& u0,
     const std::vector<double>& v0_in, const std::vector<double>& v_wall_old,
-    const std::vector<double>& v_wall_new) {
+    const std::vector<double>& v_wall_new,
+    // DIAGNOSTIC ONLY (track FsiMassCorr): if non-null, filled with the
+    // assembled saddle-point matrix cn_step() solved, for a condition-number
+    // measurement (the mass-correction isolation tolerance below is derived
+    // from it). Null by default; no existing call site is affected.
+    Eigen::SparseMatrix<double>* debug_matrix_out = nullptr) {
   using fsi::detail::idx_p;
   using fsi::detail::idx_u;
   using fsi::detail::idx_v;
@@ -1225,7 +1230,7 @@ GeneralIdentityResult measure_full_energy_identity_general(
   const fsi::PressurePin pin{0, ny - 1, 0.0};
   const fsi::FlowState next =
       fsi::cn_step(c, bcs, fsi::SourceTerms{}, dt, t0, t1, u0, v0, pin,
-                  nullptr, nullptr);
+                  debug_matrix_out, nullptr);
   const std::vector<double>& u1 = next.u;
   const std::vector<double>& v1 = next.v;
   const std::vector<double>& p1 = next.p;
@@ -1433,9 +1438,16 @@ struct CoupledPeriodDiag {
   std::vector<double> load_in_interior;    // size m_beam, beam's OWN nodes
 };
 
-CoupledPeriodDiag run_one_coupled_period_with_budget(const CoupledCase& c,
-                                                     const CoupledDims& d,
-                                                     const Eigen::VectorXd& x) {
+CoupledPeriodDiag run_one_coupled_period_with_budget(
+    const CoupledCase& c, const CoupledDims& d, const Eigen::VectorXd& x,
+    // DIAGNOSTIC ONLY (track FsiMassCorr). When non-null, filled with the
+    // wall velocity actually fed into the LAST fluid advance() call of
+    // this period -- see FluidComponent::debug_last_velocity_in_used's own
+    // comment (examples/fsi_channel/fsi_components.hpp). Null by default,
+    // so every existing call site is unaffected.
+    std::vector<double>* out_last_velocity_in_used = nullptr,
+    std::vector<double>* out_last_u0_used = nullptr,
+    std::vector<double>* out_last_v0_used = nullptr) {
   fuse::CouplingGraph graph = build_fsi_graph(c);
   fuse::SerialMeshBackend backend;
   for (std::uint32_t i = 0; i < graph.mesh_count(); ++i) {
@@ -1461,6 +1473,16 @@ CoupledPeriodDiag run_one_coupled_period_with_budget(const CoupledCase& c,
       inflow);
   fsi::BeamComponent* beam_ptr = beam.get();
   fsi::FluidComponent* fluid_ptr = fluid.get();
+  if (out_last_velocity_in_used != nullptr) {
+    out_last_velocity_in_used->assign(c.nx_fluid, 0.0);
+    fluid_ptr->debug_last_velocity_in_used = out_last_velocity_in_used;
+  }
+  if (out_last_u0_used != nullptr) {
+    fluid_ptr->solver().debug_last_u0_used = out_last_u0_used;
+  }
+  if (out_last_v0_used != nullptr) {
+    fluid_ptr->solver().debug_last_v0_used = out_last_v0_used;
+  }
   components.add(std::move(beam));
   components.add(std::move(fluid));
 
@@ -1756,7 +1778,14 @@ TEST(FsiEnergyDiag, FullBudgetOnTheDominantModeCloses) {
   // the complex eigenvector's own one-step map.
   CoupledCase c0 = c;
   c0.Umax = 0.0;
-  const CoupledPeriodDiag diag = run_one_coupled_period_with_budget(c0, d, x);
+  // DIAGNOSTIC (track FsiMassCorr): capture the wall velocity actually fed
+  // into the LAST fluid advance() call of this period, as distinct from
+  // whatever fluid_ptr->velocity_in() reads back once run_period() has
+  // returned (diag.vwall1, below). See FluidComponent::
+  // debug_last_velocity_in_used's own comment.
+  std::vector<double> vwall1_actually_used, u0_actually_used, v0_actually_used;
+  const CoupledPeriodDiag diag = run_one_coupled_period_with_budget(
+      c0, d, x, &vwall1_actually_used, &u0_actually_used, &v0_actually_used);
   const CoupledPeriodDiag diag_im = run_one_coupled_period_with_budget(c0, d, x_im);
 
   // For a real matrix M with M v = lambda v (v = x + i*x_im, lambda =
@@ -2163,10 +2192,85 @@ TEST(FsiEnergyDiag, FullBudgetOnTheDominantModeCloses) {
          "close -- nothing past this point can be trusted until it does";
 
   // ---- Fluid-side: isolate the post-solve mass correction ----------------
+  //
+  // MECHANISM, measured directly (track FsiMassCorr, not assumed): this
+  // identity used to key its tolerance to `eig_quality` (the eigensolver's
+  // own residual), on the theory that `u_raw` -- an INDEPENDENT `cn_step`
+  // solve fed the SAME `diag.u0`/`diag.v0`/`diag.vwall0`/`diag.vwall1`
+  // extracted from the production run -- differs from `diag.u1` only by
+  // the eigenvector's own inaccuracy. Three alternative mechanisms were
+  // tested directly, in order, each by a measurement that isolates it:
+  //
+  //  (1) hypothesis (c), a test sampling artifact ("u1 and u_raw sampled
+  //      at different states"): `diag.vwall1` is `fluid_ptr->velocity_in()`
+  //      read back AFTER `Runner::run_period()` returns -- i.e. the
+  //      region's own `G(y)` (src/runtime/iteration.cpp's own header
+  //      comment: "the Sink instructions ... deliver G(y)") -- which need
+  //      not equal `y`, the value the LAST `advance()` actually solved
+  //      from, by more than the region's own convergence tolerance.
+  //      `FluidComponent::debug_last_velocity_in_used` (examples/
+  //      fsi_channel/fsi_components.hpp) captures `y` directly: measured
+  //      |y - G(y)| = 3.90e-18 (round-off) on this case, and feeding `y`
+  //      instead of `diag.vwall1` reproduces the IDENTICAL 1.081e-10
+  //      non-outflow mismatch to 7 significant figures. REJECTED.
+  //  (2) the cross-call cached saddle-point factorisation (`StokesSolver::
+  //      lu_cache_`): `step()` reuses it; this reconstruction's own
+  //      `cn_step` call always refactorises. Forcing `step()` to always
+  //      refactorise too (temporarily, in isolation) reproduced the
+  //      IDENTICAL 1.081237e-10 to every printed digit. REJECTED.
+  //  (3) `diag.u0`/`diag.v0` not being bit-identical to the (u_, v_) the
+  //      last `advance()` actually restored and solved from --
+  //      `StokesSolver::debug_last_u0_used`/`debug_last_v0_used` measure
+  //      this directly: both gaps are EXACTLY 0.0. REJECTED.
+  //
+  // What remained, and confirmed the mechanism: this call passed the
+  // LITERAL `c.dt` as `cn_step`'s own `dt` argument, while every
+  // PRODUCTION `cn_step` call in this run executed on `dt_delivered =
+  // rationalize_dt(c.dt).to_double()` -- the SAME test-owned
+  // rationalize_dt()/dt_delivered split D34 (above) already found and
+  // fixed for the beam-side identity, reintroduced here for the fluid
+  // side. `cn_step`'s own matrix carries `dt` through the time-derivative
+  // (O(1/dt)) coefficient, so a relative dt error of
+  // |c.dt - dt_delivered| / dt_delivered = 4.596e-7 (measured above, beam
+  // section) perturbs EVERY column of the solve, not just the outflow
+  // one the correction touches -- exactly an across-the-board leak, not a
+  // defect confined to one column. Feeding `dt_delivered` instead of the
+  // literal `c.dt` collapsed the non-outflow mismatch from 1.081e-10 to
+  // 4.443e-15 (round-off, ~4 orders of magnitude below `u_raw_scale`
+  // times machine epsilon) -- CONFIRMED. Fixed below by using
+  // `dt_delivered` directly; hypotheses (a) [this one] vs. (b) [a genuine
+  // defect in the correction's own column-restriction] are thereby
+  // distinguished: (b) is REJECTED too, since the correction's own code
+  // (examples/fsi_channel/stokes_solver.hpp, the outflow-mass-conservation
+  // block) writes to exactly one `idx_u(p_, p_.nx, j)` per row and no
+  // other index, and the non-outflow mismatch vanishes once the INPUT
+  // bookkeeping (not the correction) is fixed.
   const fsi::ChannelParams fc{.nx = c.nx_fluid, .ny = c.ny_fluid, .L = c.L,
                               .H = c.H, .mu = c.mu, .rho = c.rho_f};
+  // Evidence for the mechanism story above (hypotheses (c) and the
+  // checkpoint/restore contract), measured rather than assumed.
+  double vwall1_gap = 0.0, u0_gap = 0.0, v0_gap = 0.0;
+  for (std::size_t i = 0; i < vwall1_actually_used.size(); ++i) {
+    vwall1_gap = std::max(vwall1_gap,
+                          std::abs(vwall1_actually_used[i] - diag.vwall1[i]));
+  }
+  for (std::size_t i = 0; i < u0_actually_used.size(); ++i) {
+    u0_gap = std::max(u0_gap, std::abs(u0_actually_used[i] - diag.u0[i]));
+  }
+  for (std::size_t i = 0; i < v0_actually_used.size(); ++i) {
+    v0_gap = std::max(v0_gap, std::abs(v0_actually_used[i] - diag.v0[i]));
+  }
+  std::printf("\n==== MASS-CORRECTION MECHANISM EVIDENCE (measured, see comment "
+             "above) ====\n");
+  std::printf("max|y - G(y)| on fluid_velocity_in (hypothesis (c) check) = %.3e\n",
+             vwall1_gap);
+  std::printf("max|u0_actually_used - diag.u0|, |v0_actually_used - diag.v0| "
+             "(checkpoint/restore contract check) = %.3e, %.3e\n", u0_gap, v0_gap);
+
+  Eigen::SparseMatrix<double> A_fluid_debug;
   const GeneralIdentityResult gen = measure_full_energy_identity_general(
-      fc, c.dt, diag.u0, diag.v0, diag.vwall0, diag.vwall1);
+      fc, dt_delivered, diag.u0, diag.v0, diag.vwall0, diag.vwall1,
+      &A_fluid_debug);
   const std::vector<double>& u_raw = gen.u_raw;
   using fsi::detail::idx_u;
   double max_abs_diff_non_outflow = 0.0, max_abs_diff_outflow = 0.0;
@@ -2188,28 +2292,36 @@ TEST(FsiEnergyDiag, FullBudgetOnTheDominantModeCloses) {
     const double diff = diag.u1[idx_u(fc, c.nx_fluid, j)] - u_raw[idx_u(fc, c.nx_fluid, j)];
     max_correction_deviation = std::max(max_correction_deviation, std::abs(diff - correction));
   }
-  // Tolerance DERIVED, not chosen: `u_raw` is an INDEPENDENT `cn_step`
-  // solve fed `diag.u0`/`diag.v0`/`diag.vwall0`/`diag.vwall1`, all
-  // extracted from the SAME production run that produced `diag.u1` --
-  // any mismatch away from the outflow column comes from the SAME
-  // eig_quality-level relative error in those inputs (see the beam
-  // identity's own comment above), scaled by `u_raw`'s own magnitude,
-  // not from a second, independent error source.
   double u_raw_scale = 0.0;
   for (const double v : u_raw) u_raw_scale = std::max(u_raw_scale, std::abs(v));
-  // Away from the outflow column the two solves differ only by the solver's
-  // own convergence, which is why this is keyed to eig_quality rather than to
-  // round-off. Factor 0.5, not 20: the measured difference is 1.115e-10
-  // against 1.4e-9, and at the factor of 20 it had been 0.2% of the tolerance,
-  // which asserts nothing. This is also tighter than the plain 1e-8 bound it
-  // originally replaced.
-  const double mass_corr_tol = 0.5 * eig_quality * u_raw_scale;
-  std::printf("\n==== MASS-CORRECTION ISOLATION ====\n");
-  std::printf("max|u_raw| (velocity scale for the tolerance below) = %.3e\n",
-             u_raw_scale);
-  std::printf("mass-correction isolation tolerance = 0.5*eig_quality*max|u_raw| "
-             "= %.3e\n",
-             mass_corr_tol);
+  // Tolerance DERIVED from the solve's own backward stability, not from
+  // eig_quality (eig_quality is the EIGENSOLVER's residual; the
+  // eigenvector x and the fluid saddle-point solve are unrelated linear
+  // algebra, and tying one's tolerance to the other's residual was the
+  // original defect this round replaced). With the dt bookkeeping fixed
+  // above, `diag.u1` (away from the outflow column) and `u_raw` are two
+  // INDEPENDENT solves of the IDENTICAL assembled system `A x = rhs`
+  // (production's cached factorisation vs. this call's fresh one) --
+  // each backward-stable per Higham (Accuracy and Stability of Numerical
+  // Algorithms, 2nd ed., sec. 9.3-9.5), with relative error bounded by
+  // this project's own established per-solve constant `2*kappa_2(A)*u`
+  // (the SAME form already used for the beam's own direct solve, above).
+  // Two independent solves of one system can therefore differ by up to
+  // the SUM of their two bounds, `4*kappa_2(A)*u`, scaled by the
+  // solution's own magnitude. `kappa_2(A)` is measured directly (dense
+  // JacobiSVD on the assembled saddle-point matrix cn_step solved -- A is
+  // small enough, N=53 on this grid, for an exact dense SVD).
+  const Eigen::MatrixXd A_fluid_dense = Eigen::MatrixXd(A_fluid_debug);
+  const Eigen::JacobiSVD<Eigen::MatrixXd> svd_fluid(A_fluid_dense);
+  const Eigen::VectorXd sv_fluid = svd_fluid.singularValues();
+  const double kappa_fluid = sv_fluid(0) / sv_fluid(sv_fluid.size() - 1);
+  const double mass_corr_tol = 4.0 * kappa_fluid * u_mach * u_raw_scale;
+  std::printf("\n==== MASS-CORRECTION ISOLATION TOLERANCE (Higham, derived) ====\n");
+  std::printf("N(A_fluid)=%d kappa_2(A_fluid)=%.6e (measured directly, not cited)\n",
+             static_cast<int>(A_fluid_dense.rows()), kappa_fluid);
+  std::printf("max|u_raw| (velocity scale) = %.3e\n", u_raw_scale);
+  std::printf("mass-correction isolation tolerance = 4*kappa_2(A_fluid)*u*max|u_raw| "
+             "= %.3e\n", mass_corr_tol);
   std::printf("max|u1-u_raw| away from outflow column = %.3e (must be ~0: "
              "correction touches ONLY the outflow column; ratio to "
              "tolerance = %.3f)\n",
@@ -2218,8 +2330,12 @@ TEST(FsiEnergyDiag, FullBudgetOnTheDominantModeCloses) {
              "%.3e, ratio to tolerance = %.3f)\n",
              correction, max_correction_deviation,
              max_correction_deviation / mass_corr_tol);
-  ASSERT_LT(max_abs_diff_non_outflow, mass_corr_tol);
-  ASSERT_LT(max_correction_deviation, mass_corr_tol);
+  ASSERT_LT(max_abs_diff_non_outflow, mass_corr_tol)
+      << "the mass correction touches a column other than the outflow one "
+         "(or the dt_delivered/literal-c.dt bookkeeping above has regressed)";
+  ASSERT_LT(max_correction_deviation, mass_corr_tol)
+      << "the outflow correction is not uniform across j (or the "
+         "dt_delivered/literal-c.dt bookkeeping above has regressed)";
 
   ASSERT_LT(std::abs(gen.id.closure_residual), 1e-9 * std::abs(gen.id.E1))
       << "the RAW (uncorrected) cn_step solution's own energy identity "
