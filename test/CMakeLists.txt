@@ -790,17 +790,22 @@ if(FUSE_ENABLE_MOAB)
     # dimension-2-surfaces-only) and gated identically to
     # parallel.remap_halo_mpi/parallel.moab_placed_view_mpi above (an
     # `#else GTEST_SKIP` fallback compiles when the files are absent).
-    # RANKS 2 3 only: the fixture's own disjoint A/B split needs at least
-    # 2 ranks, and this track's budget registers only what it measured
-    # (2 and 3).
+    # RANKS 2 3 4: the fixture's own disjoint A/B split (DisjointRankSets,
+    # split = size/2) needs at least 2 ranks for 2 and 3, and ALSO gives A
+    # a genuine TWO-rank sub-communicator at 4 (A = {0,1}, B = {2,3}) --
+    # KNOWN_ISSUES D81 round 9: every row through 3 ranks gives placement
+    # A exactly ONE rank (round 8's own measured limit), so MOAB's real
+    # covering-set construction over a per-placement ParallelComm with
+    # MORE than one rank was never exercised until this row. Within the
+    # owner's per-launch task cap (participants rows run 5).
     fuse_add_mpi_test(parallel moab_placed_weights_mpi LIBS fuse::backend MPI::MPI_CXX
-                       RANKS 2 3 LABELS moab)
+                       RANKS 2 3 4 LABELS moab)
     if(FUSE_SPHERE_ATM_FILE AND FUSE_SPHERE_OCN_FILE)
       target_compile_definitions(fuse_parallel_moab_placed_weights_mpi_test PRIVATE
         FUSE_SPHERE_ATM="${FUSE_SPHERE_ATM_FILE}"
         FUSE_SPHERE_OCN="${FUSE_SPHERE_OCN_FILE}")
     endif()
-    foreach(_fuse_moab_mpi_rank 2 3)
+    foreach(_fuse_moab_mpi_rank 2 3 4)
       set_tests_properties(parallel.moab_placed_weights_mpi.${_fuse_moab_mpi_rank} PROPERTIES
         ENVIRONMENT_MODIFICATION "${_fuse_moab_env_mods}")
     endforeach()

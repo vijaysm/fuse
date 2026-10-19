@@ -111,8 +111,17 @@ int world_handle() { return static_cast<int>(MPI_Comm_c2f(MPI_COMM_WORLD)); }
 
 /// Splits `size` ranks into two DISJOINT, non-empty rank sets: A gets
 /// `[0, size/2)`, B gets `[size/2, size)` -- at `size == 2`, A = {0},
-/// B = {1}; at `size == 3`, A = {0}, B = {1, 2}. Neither set is ever empty
-/// at the registered rank counts (2, 3).
+/// B = {1}; at `size == 3`, A = {0}, B = {1, 2}; at `size == 4`, A =
+/// {0, 1}, B = {2, 3}. Neither set is ever empty at the registered rank
+/// counts (2, 3, 4). KNOWN_ISSUES D81 round 9: `size == 4` is the FIRST
+/// registered row where a placement's own sub-communicator (A, here) has
+/// MORE than one rank -- at 2 and 3 ranks A is always exactly {0}, a
+/// single-rank ParallelComm that round 8 measured takes a DIFFERENT code
+/// path (the degenerate "serial/one-rank/identity" shortcut,
+/// intx_weights.cpp) than a genuine multi-rank covering-set construction
+/// ever reaches, so nothing at 2 or 3 ranks measures the configuration D5
+/// and D81 actually exist for: a real coupling places SEVERAL ranks per
+/// component.
 struct DisjointRankSets {
   fuse::RankSet a;
   fuse::RankSet b;
@@ -251,6 +260,21 @@ TEST(MoabPlacedWeightsMpi, ARankOutsideTheTargetPlacementIsASuccessfulNoOp) {
 // ComponentId)` overload on placement A's own copy of BOTH meshes before
 // either test in this file runs a geometry-sensitive call, so this row
 // goes back to its original intent.
+//
+// ROUND 9 (KNOWN_ISSUES D81, owner note 2026-10-19): at 2 and 3 ranks, A
+// is always exactly ONE rank -- round 8's own fix makes that case take
+// `intx_weights.cpp`'s degenerate "serial/one-rank/identity" shortcut
+// (`active_comm_size(a.pcomm) <= 1`), which never reaches MOAB's real,
+// cross-rank covering-set construction at all (`cells = nullptr, count =
+// 0`). At 4 ranks, A = {0, 1} -- a GENUINE two-rank ParallelComm -- so
+// THIS row is the first one that actually exercises that construction
+// over a placement's own, non-degenerate sub-communicator, with real,
+// non-zero adopted cells expected on EVERY rank of A. See KNOWN_ISSUES
+// D83 for what reading `MoabMeshBackend::adopt_remap_halo` (and its own
+// `regather_with_halo`/`plan_halo_exchange`) found about this
+// configuration before any host run: a structural reason this row may
+// still refuse at 4 ranks that is NOT the round-7/8 guard, and is NOT
+// fixed this round.
 // ---------------------------------------------------------------------------
 TEST(MoabPlacedWeightsMpi, SamePlacementOnBothSidesDelegatesToTheSinglePlacementPath) {
   int size = 1, rank = 0;
@@ -284,6 +308,19 @@ TEST(MoabPlacedWeightsMpi, SamePlacementOnBothSidesDelegatesToTheSinglePlacement
   }
   ASSERT_TRUE(via_overload.ok()) << via_overload.error().code << ": "
                                  << via_overload.error().message;
+  // ROUND 9: a real halo, not just a successful delegation -- at 4 ranks
+  // (A's own two members), the rescaled ATM/OCN pair genuinely overlaps
+  // across the partition boundary WITHIN A, so each of A's own ranks must
+  // adopt at least one covering cell. At 2 and 3 ranks A is a single rank
+  // holding BOTH meshes' entire content already, so a zero adopted count
+  // there would be equally legitimate (there is no partition boundary
+  // within A to cross) -- this assertion is deliberately scoped to the
+  // row where it is actually meaningful.
+  if (size >= 4) {
+    EXPECT_GT(via_overload.value(), 0u)
+        << "rank " << rank << ": a 2-rank placement's own partition boundary should need a "
+                              "real halo, not an empty one";
+  }
   const auto via_single = fuse::build_remap_halo(f.plan, f.graph, f.backend);
   std::fprintf(stderr, "rank %d: via_single ok=%d%s%s\n", rank, via_single.ok() ? 1 : 0,
               via_single.ok() ? "" : " code=",
