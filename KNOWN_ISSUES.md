@@ -1036,7 +1036,6 @@ ranks, full overlap at every rank count, and all 18 `layout.*` tests pass, inclu
 
 ---
 
-
 **Host run of the round-4 fixture (lead, 2026-10-19, `build-all` at `632d9ba` + this fixture, 2 and 3 ranks):**
 the dimension-3 mask is gone and the per-rank behaviour matches the round-4 reading (B ranks refuse
 `E-MESH-HALO-CROSS-PLACEMENT-UNIMPLEMENTED`, the A rank's overload call succeeds). The row now fails one
@@ -6012,7 +6011,7 @@ through `ENVIRONMENT_MODIFICATION`. The build itself still needs the variable ex
 `_machine` preset sets it for configure only); that is a property of Open MPI's compiler wrapper,
 not of this project.
 
-### D27. The native backend's remap halo has no `accumulate_remap_halo` counterpart -- FIXED AND HOST-VERIFIED 2026-10-19 (round 4)
+### ~~D27. The native backend's remap halo has no `accumulate_remap_halo` counterpart -- FIXED AND HOST-VERIFIED 2026-10-19 (round 4)
 
 **Closed for the forward direction, 2026-10-10 ("Halo" track):** `fuse::native::NativeMeshBackend`
 now builds a planar/volumetric remap halo (`build_native_remap_halo`,
@@ -9721,3 +9720,67 @@ identically in both a Release/no-exceptions and a Debug build of this compositio
 substitution does not weaken the finding -- but the "Kokkos AND ArborX both fetched" leg itself was
 not reproduced bit-for-bit in this sandbox, and the ArborX/Kokkos version-pin incompatibility above
 is itself a new, OPEN finding worth the owner's attention independent of this entry.
+
+### D81. `MoabMeshBackend::project_onto_unit_sphere` has no placement-aware form, so a per-placement Core cannot rescale a real, differently-scaled spherical mesh pair before a halo build -- FOUND 2026-10-19 (MoabHalo track, round 5), OPEN, owner decision needed
+
+**Measured, by reading, not re-guessing (round 5):** the real, non-matching ATM/OCN sphere pair
+(`wholeATM_T.h5m`, radius **1.000000**; `recMeshOcn.h5m`, radius **6371229.000000**, Earth radius
+in metres -- read off the host's own `:252` failure message, confirming
+`test/parallel/remap_halo_mpi_test.cpp`'s own header comment on the same two files) is usable
+WITHOUT a placement only because `MoabMeshBackend::project_onto_unit_sphere(MeshId)`
+(`moab_backend.hpp`/`.cpp`) rescales the mesh's vertices in `impl_->mb` -- the backend's OWN
+default `moab::Core`, declared as a plain member (`mutable moab::Core mb`, `moab_backend.cpp:882`),
+distinct from every `PlacementContext::core` `set_placements()` creates (`moab_backend.cpp:939-
+955`). `MoabMeshBackend::load()` reads a decl's source TWICE independently when placements are
+declared: once into `impl_->mb` (always), and again into EVERY placement's own Core
+(`Impl::load_into_placements`, `#ifdef FUSE_MOAB_PARALLEL`) -- two (or more) separate MOAB reads of
+the SAME file, each producing its OWN, UNRELATED copy of the mesh's vertex coordinates.
+`project_onto_unit_sphere` is keyed by `MeshId` alone and touches only `impl_->mb`'s copy; it has
+no `ComponentId` parameter and no placement-aware overload (confirmed: it is the function's ONLY
+declaration and its ONLY call site in this tree, `test/parallel/remap_halo_mpi_test.cpp`'s
+`SpherePairMpi` fixture, which never declares a placement at all, so `resolve()`'s own
+`native_mesh(id, placement)` -> `native_mesh(id)` fallback for "no placement declared" is exactly
+what makes rescaling `impl_->mb` sufficient THERE). The SAME two files resolved through a DECLARED
+placement (`native_mesh(id, ComponentId)` -> `impl_->placement_ctx[p]->core`, the path
+`MoabPlacedWeightsMpi`'s own fixture uses, and the path this item's own 4-argument
+`build_remap_halo` overload and its single-placement delegation both resolve through) never see
+that rescale at all -- `project_onto_unit_sphere(id)` on the default Core is a complete no-op for
+either placement's own Core copy. `test/parallel/moab_placed_view_mpi_test.cpp` (the sibling D5
+view-layer test) never calls `project_onto_unit_sphere` either -- it loads only ONE mesh
+(`FUSE_SPHERE_ATM`) into every placement, so it never needs to reconcile two different radii in
+the first place, and so offers no working precedent for the two-mesh, per-placement case.
+
+**Consequence, a real gap for a real use case:** any FUSE application coupling two independently
+decomposed MOAB components over real geophysical mesh files at genuinely different nominal radii
+(the Earth-radius-vs-unit-sphere split `wholeATM_T.h5m`/`recMeshOcn.h5m` exist to exemplify,
+not a contrived test artifact) hits `E-REMAP-GEOMETRY` ("the two surfaces are spheres of different
+radius") the moment it tries to build a cross-placement (or even a same-placement, non-default)
+halo between them, with NO available rescale path -- `project_onto_unit_sphere` exists but cannot
+reach the Cores such a coupling actually resolves through. This is NOT specific to the
+cross-placement (`E-MESH-HALO-CROSS-PLACEMENT-UNIMPLEMENTED`) gap D5 already records: it blocks
+even the SAME-placement case (this track's own test (2),
+`SamePlacementOnBothSidesDelegatesToTheSinglePlacementPath`), since that row resolves BOTH source
+and target through the SAME declared placement's own Core, not the default one.
+
+**NOT FIXED THIS ROUND, by instruction:** stopped here rather than adding a placement-aware
+`project_onto_unit_sphere(MeshId, ComponentId)` overload unreviewed -- the right design is an
+owner decision between (at least) two shapes, recorded in this round's own `open_questions`:
+(a) a load-time rescale that normalises EVERY placement's own copy of a mesh onto a common unit
+sphere automatically (needs `Extensive`-flagged quantities, per `docs/user/placement.md`'s own
+vocabulary, rescaled by `R^2` to stay conservative under the length change -- a nontrivial new
+piece, since nothing in this codebase currently threads a geometric rescale factor through to a
+field's own units/conservation bookkeeping); or (b) refuse by name and require the caller to supply
+pre-scaled input files (the CURRENT behaviour, just not yet reachable for a per-placement Core, so
+this option is "extend `project_onto_unit_sphere` to take a placement, keep the manual-call
+contract otherwise"). No test row claims this is fixed; `test/parallel/moab_placed_weights_mpi_
+test.cpp`'s own test (2) was adjusted (see D5's own round-5 paragraph) to assert the DELEGATION
+property that is actually measurable today -- the overload and the single-placement path reach
+the IDENTICAL outcome, refusal included -- rather than assuming the halo build itself succeeds.
+
+
+**Host run (lead, 2026-10-19, `build-all` at `259c547` + round 5):** `parallel.moab_placed_weights_mpi.{2,3}`
+PASS (0.91 s, 0.32 s), because test 2 now asserts that the overload and the single-placement path reach the
+same outcome and both refuse `E-REMAP-GEOMETRY`; the row measures delegation, not a built halo, until this
+item is fixed. **Owner decision 2026-10-19:** a placement-aware rescale invoked EXPLICITLY by the driver (the
+driver checks whether a mesh is on the unit sphere, or forces the rescale for every mesh); the library must
+not assume or apply a rescale on its own.
