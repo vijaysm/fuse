@@ -221,9 +221,12 @@ int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);
 
     auto& listeners = ::testing::UnitTest::GetInstance()->listeners();
-    if (fuse::testing::rank() != 0) {
+    if (fuse::testing::rank() != 0 && std::getenv("FUSE_TEST_PRINT_ALL_RANKS") == nullptr) {
       // Silence progress on non-zero ranks; failures still surface through the
-      // reducer and through this rank's own non-zero exit status.
+      // reducer and through this rank's own non-zero exit status. The reducer
+      // carries only the verdict, not the message, so a non-zero rank's own
+      // failure text is lost unless FUSE_TEST_PRINT_ALL_RANKS is set (use it
+      // with mpiexec's -outfile-pattern/-errfile-pattern to keep ranks apart).
       delete listeners.Release(listeners.default_result_printer());
     }
     listeners.Append(new fuse::testing::MpiFailureReducer);
