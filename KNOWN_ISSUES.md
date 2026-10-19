@@ -10958,6 +10958,150 @@ type, in `key()`) is the one both halves read, and `None` is Intensive in `norma
 partition effect (the reversed direction's halo, and the MOAB path's coverage still judged from this rank's
 intersections alone, D73 round 8's defect on the other backend), not a tolerance matter. Round 12; the tolerance
 is not widened.
+
+### D82 FIX, ROUND 12 (MoabHalo track, 2026-10-19): the MOAB path's per-rank
+coverage fold had the exact D27/round-7 collective-agreement bug, decided
+locally instead of agreed; fixed, host-measurement host_pending
+
+**HOST measurement that opened this round (lead, `build-all`, MPICH 5.0.0a1):**
+`RemapHaloMpiSphere.ExtensiveChannelConservesTheDeliveredTotalAcrossTheSpherePair`
+FAILS at 2 and 3 ranks -- `min_src_coverage=0`, delivered total 7071.7313770552337
+(2 ranks) / 7083.1195621762208 (3 ranks) against a source total of 7153, a loss
+that CHANGES with the rank count and is 28x the round-11 derived tolerance -- a
+partition effect, not a tolerance matter. `IntensiveChannelPreservesAConstantFieldAcrossTheSpherePair`,
+`backend.remap_weight_normalize`, `parallel.remap_halo_mpi.1`, and
+`moab_placed_weights_mpi.{2,3,4}` all PASS.
+
+**Read, not guessed.** Two candidates were named at dispatch: (a) the reversed
+direction's own halo missing cells, or (b) the MOAB path's coverage computed
+from this rank's own intersections only, the same defect D73 round 8 fixed for
+the native path (`fuse::native::fold_and_reduce_source_coverage`,
+`native_halo.cpp`). Reading `assemble()`'s own `fold_halo_contributions`
+(`intx_weights.cpp`) -- the function that is SUPPOSED to be the MOAB path's own
+equivalent of that native fold -- found it already exists, and already runs
+immediately before the per-cell coverage loop. Its own early return is:
+
+```
+if (src.not_owned == 0 || src.backend == nullptr) return Result<void>::success();
+```
+
+`src.not_owned` is a per-rank count (`Side::measure`'s own assembly loop,
+counting local cells this rank does NOT own). `accumulate_remap_halo`
+(`moab_backend.cpp`) is documented COLLECTIVE -- it delegates to
+`run_halo_exchange`, which runs `MPI_Alltoallv` over the halo's own
+communicator. An early return gated on `src.not_owned` is gated on a quantity
+that is NOT the same on every rank in a genuinely partitioned halo: it is
+entirely consistent for rank A (interior to its own partition, adopting no
+halo copies at all, `not_owned == 0`) to skip the call while rank B (adopting
+copies of cells A owns, `not_owned > 0`) makes it -- B's `MPI_Alltoallv`
+genuinely sends A its owned cells' folded contribution, but A, having never
+entered the collective, never reads it. A's own `covered_src[i]` for that cell
+stays at whatever A's LOCAL intersection computed -- zero, for a source cell
+whose only intersection happened on B's adopted copy -- which is EXACTLY
+`min_src_coverage=0`, "a source cell on this rank whose covering target cells
+all live on another rank" (the dispatch's own phrasing for candidate (b)). This
+is the SAME bug class as D27 (`accumulate_remap_halo`'s own, since-fixed,
+`ghost_n==0` internal skip, round 3) and round 7 (`adopt_remap_halo`'s
+collective-agreement branch): a condition evaluated PER RANK, not agreed,
+deciding whether to enter a collective that every OTHER rank in the
+communicator may still be entering.
+
+Whether `MPI_Alltoallv` with a skipped participant HANGS (if the communicator
+genuinely requires every member's call) or silently loses the data depends on
+MPICH's own internal buffering/matching for this specific collective and
+message sizes -- not reasoned through further here, because it does not change
+the fix: `run_halo_exchange` ALREADY has its own, collectively-consistent,
+safe-to-call-unconditionally short-circuits (`halo(mesh,dim,placement) ==
+nullptr`, `ex.req_counts.empty()`, `!pr.participates`), each a value every
+rank in the SAME communicator necessarily agrees on, because the halo was
+built -- or not -- by the SAME earlier collective (`build_remap_halo`). The
+fix is to remove `fold_halo_contributions`'s own, redundant, and
+collectively-unsafe pre-check and let the callee's own safe one govern,
+exactly mirroring `fold_and_reduce_source_coverage`'s own documented reasoning
+("`communicator_size() <= 1`/`kNullComm`, NOT `ghost_n == 0`... skipping the
+collective here because this rank's own pattern is empty would desynchronise
+it from a peer that is NOT empty").
+
+**Candidate (a) was not ruled out by reading alone** (MOAB's own
+`construct_covering_set`/`FindMaxEdges` geometry was re-read and appears
+direction-agnostic -- it adopts source cells into THIS rank's covering set
+based on the processor-wide target bounding boxes, built collectively via
+`build_processor_euler_boxes(b.file_set, ...)`, with nothing in the call that
+privileges one naming of "source" over "target" -- but this is a geometric
+claim about a library this sandbox cannot run, not a measured one). Build
+item (1) below makes the halo's own existence an explicit, host-checked fact
+rather than an assumption the weight build silently inherits.
+
+**The fix.** `fold_halo_contributions`'s pre-check narrowed to `src.backend ==
+nullptr` only (`intx_weights.cpp`) -- `accumulate_remap_halo` is now called
+unconditionally whenever a MOAB backend exists, relying on its own internal,
+collectively-agreed short-circuits for the serial/no-halo case (which the
+function's own header comment already promised stays "bit-for-bit what it
+was"). No other call site in this file or `moab_backend.cpp` shares this
+exact pattern (`grep`-confirmed: `not_owned == 0` occurs exactly once in the
+tree).
+
+**Build items, as given:**
+1. Both `RemapHaloMpiSphere.*` tests now `ASSERT_TRUE(has_remap_halo(...))`
+   for the EXACT (source, target, dim) triple under test, immediately after
+   `build_remap_halo`'s own success check -- a silently missing or
+   wrong-direction halo now fails there, not as an unattributed coverage gap
+   three lines later.
+2. `fold_halo_contributions` fixed, above -- this IS the MOAB-side
+   equivalent of `fold_and_reduce_source_coverage`; MOAB's own
+   `accumulate_remap_halo` already plays the exact role
+   `make_mpi_exchanger`/`exchange_packed_adjoint` plays for the native path,
+   so no new exchanger was needed, only removing the caller-side check that
+   was bypassing it unsafely.
+3. Both tests now print per-rank, UNCONDITIONALLY (every rank, to `stderr`,
+   not gated on `rank==0`): local source-cell count, local target-cell
+   count, adopted (halo) source-cell count, and (Extensive) local
+   source-mass/local-delivered-mass, or (Intensive) the REDUCED
+   min_src_coverage/min_tgt_coverage/max_row_defect -- so a host run can
+   attribute any remaining gap to a specific rank rather than only the
+   already-reduced global numbers.
+4. The round-11 derived tolerances (`kDerivedRelTol = 4e-4`,
+   `kDerivedRowTol = 1.2e-2`) are UNCHANGED -- not widened. If the fold fix
+   above closes the gap, both rows should PASS at those values; if it does
+   not fully close it, the host's own per-rank printout is what the next
+   round reads to tell candidate (a) apart from a residual the fold fix
+   does not reach.
+
+**Verification in this sandbox** (unchanged constraint: no MOAB-linked
+binary can be RUN here -- `moab::Core`'s constructor calls `MPI_Init_thread`,
+which aborts). Built, not run: the full MOAB/MPI tree (514/514 targets,
+including `fuse_parallel_remap_halo_mpi_test` with both updated tests) and
+tier-0 (219 tests, 217 PASS, same 2 pre-existing unrelated failures every
+round). `grep -c "not_owned == 0" src/backend/*.cpp` confirms the removed
+check does not recur elsewhere. All 5 gates clean on the final tree.
+
+**Deviation, named rather than silently decided:** the Intensive test's own
+direction (ATM source, OCN target) already PASSED on the host before this
+fix, so `fold_halo_contributions`'s old check was apparently not actually
+triggering a skip for THAT direction/rank-count on the host's own partition
+-- consistent with the fix being necessary but this round having no direct
+host evidence that it alone, without also investigating (a), closes the
+Extensive failure. Reported as the most defensible READ fix available, not
+as a certainty.
+
+**host_pending**: `RemapHaloMpiSphere.ExtensiveChannelConservesTheDeliveredTotalAcrossTheSpherePair`
+at 2 and 3 ranks, against the SAME, unwidened tolerances -- and, regardless of
+outcome, the new per-rank printout, which should narrow or close this entry
+either way.
+
+
+**Host run of round 12 (lead, 2026-10-19, `build-all` at `3f87194` + round 12):** no measurable effect. The
+Extensive sphere row's delivered totals are identical to the last digit (2 ranks 7071.7313770552337, 3 ranks
+7083.1195621762208, `min_src_coverage=0` in both), so the removed `src.not_owned == 0` entry condition was not a
+skipped collective (a skipped `MPI_Alltoallv` would have hung; the host returned a finite number both times). The
+removal stays as a collective-rule cleanup; it is not a fix. The per-rank printout: 2 ranks, rank 0
+`local_src_cells=6019 local_tgt_cells=363 adopted_src_halo_cells=2443 local_source_mass=3576
+local_delivered_mass=4113.3035465820722`, rank 1 `5399/363/1822`, mass 3577, delivered 2958.4278304731611; 3 ranks
+`4263/243/1861` 2402 -> 2818.6174796458454, `5944/244/3541` 2403 -> 2665.0007916663349, `3568/239/1220` 2348 ->
+1599.5012908640408. `parallel.remap_halo_mpi.1` (the same test at one rank) passes with full coverage, so the
+intersection geometry on the rescaled pair is complete and the 1.14% / 0.98% loss is a partition effect. Round 13
+is an instrumentation round (uncovered cells before and after the fold, their centroids against the processor
+boxes, adopted cells with no intersection, folded contributions received); no further fix from reading alone.
 ### ~~D83. `MoabMeshBackend::adopt_remap_halo` (and `regather_with_halo`/`plan_halo_exchange`, the
 covering-cell adoption subsystem behind the remap halo, R3) is hardwired to the backend's DEFAULT
 Core and base communicator, so the 4-argument `build_remap_halo`'s own "same Core, delegate"
