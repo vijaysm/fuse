@@ -250,3 +250,44 @@ corner counts.
   buffers regardless, per the standing priority" policy sentence is
   UNCHANGED; its device-residency belongs to the separate Migration
   track's own worktree, not this one.
+
+## The automatic remap halo (D73, RemapHalo track, 2026-10-18; execution point moved in round 2)
+
+Every caller of this backend's halo had, before this track, to identify by hand which
+`(source, target, dimension)` triples needed `build_native_remap_halo()` called on them, and to call it
+at exactly the right point (`remap_plan.hpp`'s own "ORDER MATTERS" note: before `make_region_sizes`,
+`plan_buffers`, `schedule()`, or a component registering storage). `fuse::channel_needs_remap_halo()`
+(src/ir/rules_channel.cpp) now makes that identification automatic: the lowering (`lower()`,
+src/ir/lowering.cpp) emits one collective `OpKind::BuildRemapHalo` instruction (fuse/ir/op.hpp) per
+cross-rank weighted (non-nodal, non-consistent) channel, at the front of the compiled instruction
+stream, carrying both arcs' owning components in its own `attrs` (`src_rank_set`/`dst_rank_set`, the
+same fields `Transport`/`Epoch` nodes already use for this). `fuse::execute_remap_halo_instructions()`
+(fuse/backend/remap_halo_instructions.hpp) gives the instruction its real effect -- round 1 had
+application code call this directly, between loading the mesh backend and calling `schedule()`; round 2
+(2026-10-18) moved the call INSIDE `fuse::make_region_sizes()` (fuse/backend/mesh_view.hpp) itself, so a
+caller no longer makes this call by hand at all -- `make_region_sizes(graph, dag, backend)` builds every
+halo `dag` carries before it ever reads an entity count, as the first thing it does.
+
+**The halo slots are COUPLER-OWNED ghost storage.** A cell `build_native_remap_halo` adopts is a
+non-owned local entity exactly like any other ghost cell this backend already has vocabulary for
+(`MeshView`'s own "owned AND ghost" local entity set) -- its field VALUE is filled by the coupler (the
+same forward exchange `remap_halo_pattern()`'s own `GhostPattern` already drives through
+`fuse::linalg::make_mpi_exchanger`, the identical mechanism a `Transport` instruction uses), never
+written by the component whose mesh it belongs to. A component's own `register_fields()` binds exactly
+its OWNED entities' storage (`placed_region_size`'s own count, unchanged by a halo build on a region the
+component does not itself read); the halo's EXTRA slots are additional coupler-side bookkeeping the
+component never sees through its own registered pointer.
+
+**Why `Runner::initialize()` is still not the one to build it (KNOWN_ISSUES.md D77, closed).**
+`schedule()`'s own `RegionSizes` callback, now returned BY `make_region_sizes()` only after the halo
+build above completes, is invoked once, synchronously, inside `schedule()` itself, to size every
+`BufferDecl` in the resulting `ExecutionPlan` (fuse/schedule/buffers.hpp) -- and a caller builds that
+`ExecutionPlan` and passes it to `Runner`'s own constructor BEFORE `Runner::initialize()` ever runs.
+By the time `initialize()` could call `execute_remap_halo_instructions()` itself, `schedule()`'s own
+buffer sizes are already frozen; growing the backend's halo at that point cannot retroactively widen
+them. Moving the call into `make_region_sizes()` (round 2) removes the LAST point at which a caller
+could place the call incorrectly by hand; `Runner::Impl::resolve_remap_halo()` still VERIFIES, at
+`initialize()` time, that every `BuildRemapHalo` instruction was already satisfied (a local
+`has_remap_halo()` lookup, no MPI call), and refuses `E-RT-REMAP-HALO-NOT-BUILT` by name when it was
+not -- now the gate for a caller that bypassed `make_region_sizes()` entirely, rather than one that
+merely called two separate steps in the wrong order.

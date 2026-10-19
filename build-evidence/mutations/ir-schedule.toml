@@ -290,3 +290,101 @@ test = "runtime.window_runner_multirate"
 # every OTHER test in this file still passes unaffected. Reverting the
 # one-line fix and re-running makes it pass again; file restored and
 # re-verified byte-identical afterward (all 7 tests in this binary pass).
+
+[[mutation]]
+id = "lowering-never-emits-build-remap-halo"
+area = "compiler"
+describes = "D73 (automatic remap halo, owner decision 2026-10-18): channel_needs_remap_halo() (src/ir/rules_channel.cpp) unconditionally answers false, so emit_remap_halo_instructions() never emits a single BuildRemapHalo node for any channel -- reproducing D73's own pre-fix defect (a cross-rank general weighted Remap with no halo, which used to build a silently empty matrix and, after round 1's interim fix, refused E-RT-REMAP-NO-HALO; round 2's own automatic-halo fix depends on this predicate firing at all)."
+file = "src/ir/rules_channel.cpp"
+old = """  const bool region_changes = source_field.region != target_field.region;
+  return ch.remap.flags != RemapFlags::None || region_changes;
+}"""
+new = """  const bool region_changes = source_field.region != target_field.region;
+  return false && (ch.remap.flags != RemapFlags::None || region_changes);  // MUTATED: never emits
+}"""
+target = "fuse_ir_golden_ir_test"
+test = "ir.golden_ir"
+# Expected kill: GoldenIr.PairExplicit, GoldenIr.PairAccumulateRemapRelax,
+# GoldenIr.PairIterated -- each fixture's own channel is a cross-rank
+# weighted (disjoint {first:0,count:1}/{first:1,count:1}) transfer with no
+# `.remap_method()` override, so each golden file (test/golden/*.ir, this
+# round's own update) now has one `BuildRemapHalo` node at the front; with
+# the predicate mutated to always answer false, dump_text(lower(graph).dag)
+# drops that node and the byte comparison fails. VERIFIED 2026-10-18 (this
+# track's own session): applied by hand, `fuse_ir_golden_ir_test` rebuilt,
+# re-run -- PairExplicit/PairAccumulateRemapRelax/PairIterated fail exactly
+# as described (PairLowFiveBound and OperatorOrderIsObservable, which this
+# predicate does not touch, still pass); file restored and re-verified
+# byte-identical to the pre-mutation source, full suite green again.
+
+[[mutation]]
+id = "make-region-sizes-skips-halo-build"
+area = "runtime"
+describes = "D73 ROUND 2 (owner decision 2026-10-18): make_region_sizes() (src/backend/serial_backend.cpp) is mutated to skip its own new halo-build call entirely, as if round 2's own change had never been made -- a caller back to behaving exactly like round 1's two-argument overload used to, silently reading pre-halo entity counts."
+file = "src/backend/serial_backend.cpp"
+old = """  const Result<std::size_t> halo = execute_remap_halo_instructions(g, dag, backend);
+  if (!halo.ok()) {
+    FUSE_THROW(InvariantViolation, "{}",
+               "make_region_sizes: automatic remap halo build failed: " +
+                   halo.error().code + ": " + halo.error().message);
+  }
+  return [&g, &backend](RegionId id, int placement) -> std::size_t {"""
+new = """  // MUTATED: the halo-build call below is removed entirely.
+  return [&g, &backend](RegionId id, int placement) -> std::size_t {"""
+target = "fuse_parallel_native_remap_halo_runner_test"
+test = "parallel.native_remap_halo_runner"
+# Expected kill: NativeRemapHalo.DisjointGeneralWeightedRemapConservesOnceThe
+# HaloIsBuilt (the GREEN row) -- its own build(true) now routes through a
+# make_region_sizes() that no longer builds the halo, so Runner::Impl::
+# resolve_remap_halo()'s has_remap_halo() lookup finds nothing and refuses
+# E-RT-REMAP-HALO-NOT-BUILT where the test asserts init.ok(). MEASURED
+# which gate actually fires (not merely "a mismatch is caught" asserted
+# without naming it): make_region_sizes()'s own RegionSizes callback still
+# answers with the SAME pre-halo entity count it always would have (the
+# halo was never built, so there is no larger mesh to size FROM) -- there
+# is no buffer-size mismatch for E-RT-REMAP-SIZE to catch, only a missing
+# halo for E-RT-REMAP-HALO-NOT-BUILT to catch. This row's own named target
+# needs MPI to execute, which this sandbox cannot start; MEASURED instead
+# (2026-10-18, this track's round-2 session) via a single-process scratch
+# harness (not a committed test) exercising the SAME production code path
+# -- a CouplingGraph with provider/consumer components declared on
+# disjoint RankSets (owner_of/remap_placement only read this declared
+# metadata, never the real MPI world size), make_region_sizes(), Runner::
+# initialize() -- built and linked against this round's own tier-0
+# libraries. With the halo-build call present: initialize() reaches a
+# LATER, unrelated refusal (E-RT-SIZE, a Transport/CommGraph setup
+# question this single-process harness's own simplified RunnerConfig does
+# not resolve -- an artifact of the harness, not of this mutation). With
+# the halo-build call removed (the mutation applied by hand to this
+# file's own serial_backend.cpp): initialize() refuses
+# "E-RT-REMAP-HALO-NOT-BUILT: channel 'link' is a cross-rank weighted
+# (non-nodal, non-consistent) Remap ... needs a remap halo ... but none
+# has been built for it at this placement" -- confirming E-RT-REMAP-HALO-
+# NOT-BUILT, not E-RT-REMAP-SIZE, is what actually catches this mutation.
+
+[[mutation]]
+id = "regions-includes-build-remap-halo-in-body"
+area = "compiler"
+describes = "Round 1's own regions.cpp fix (D73 FIX, ROUND 2 in KNOWN_ISSUES.md) is reverted: build_iteration_regions() sweeps a window-scoped region's own BuildRemapHalo instruction back into IterationRegion::body, the same defect round 1 found and fixed during its own verification."
+file = "src/ir/regions.cpp"
+old = """      if (node.kind == OpKind::BuildRemapHalo) continue;
+      if (node.origin.valid() && member_channels.count(node.origin.value())) {"""
+new = """      // MUTATED: the BuildRemapHalo exclusion above is removed.
+      if (node.origin.valid() && member_channels.count(node.origin.value())) {"""
+target = "fuse_schedule_window_region_golden_test"
+test = "schedule.window_region_golden"
+# Expected kill: the byte-exact dump of window_two_member/window_two_
+# member_jacobi's own region body moves region_enter onto the
+# BuildRemapHalo node (origin-channel match now sweeps it back into
+# region.body) instead of the real first chain node -- test/golden/
+# window_two_member*.{ir,plan} no longer match. VERIFIED 2026-10-18 (this
+# track's own round-2 session, isolated build tree to avoid racing a
+# concurrent full-tree build): baseline green (8/8) recorded with an md5
+# of this file; mutation applied by hand, fuse_schedule_window_region_
+# golden_test rebuilt, re-run -- WindowRegionGolden.TwoMemberWindow
+# CompilesThroughScheduleAndMatchesTheGolden and ...SchedulesUnderJacobi
+# fail exactly as described (enter=0 moves from the BuildRemapHalo node
+# onto the real first chain node, measured via the test's own printed
+# diff); the other 6 cases, unaffected by this exclusion, still pass.
+# File restored, md5 compared byte-identical to the pre-mutation
+# recording, full 8-test suite green again afterward.
