@@ -7583,12 +7583,14 @@ branch is UNVERIFIED, not failing.
 ranks, and `fuse::linalg::mpi_is_gpu_aware()` is therefore true at run time, so every device-direct
 branch above is now the branch actually taken under `FUSE_EXECUTION_SPACE=device` unless
 `FUSE_TRANSPORT_HOST_STAGING=1` forces the fallback. Measured on main 01a6d25 (Debug, Kokkos Cuda,
-`ctest -L device -LE bench`, 39 rows): `parallel.device_ghost_exchange.{2,3,4}.device` passed with
+`ctest -L device -LE bench`, 39 rows): `parallel.device_ghost_exchange.{2,3}.device` passed with
 their `last_update_took_device_direct_path()` assertion now on its TRUE branch;
-`parallel.nodal_remap_distributed.{2,3,4}.device`, `parallel.nodal_remap_runner.{2,3,4}.device` and
-`backend.native_migration_mpi.{2,3,4}.device` passed (the 5-rank twins of each ran once Open MPI 5's
-launcher was given `PRTE_MCA_rmaps_default_mapping_policy=:oversubscribe`, see the test CMake); the
-one device-direct branch that FAILED was the Runner's `Transport` case, which handed
+`parallel.nodal_remap_runner.{2,3}.device` and `backend.native_migration_mpi.{2,3}.device` passed
+(those are the only rank counts registered as `.device` twins; the host rows of the same suites,
+`parallel.device_ghost_exchange.{2,3,4,5}`, `parallel.nodal_remap_distributed.{2,3,4,5}` and
+`backend.native_migration_mpi.{2,3,4,5}`, passed too once Open MPI 5's launcher was given
+`PRTE_MCA_rmaps_default_mapping_policy=:oversubscribe`, see the test CMake, but a host row never
+reaches the device-direct branch); the one device-direct branch that FAILED was the Runner's `Transport` case, which handed
 `MpiTransport::move()` -- a host routine -- a device pointer and segfaulted in `std::memcpy`
 (`parallel.window_runner_mpi.{2,3}.device`). That defect and its fix (`Transport::packed_layout()` /
 `move_packed()`, pack and unpack on `Space` in the Runner) are D77. Both legs of every exchange are
