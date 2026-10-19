@@ -128,3 +128,72 @@ requires = "mpi"
 # message); with it reverted (this round's own committed fix), that same
 # row is expected to go GREEN for the first time -- the one measurement
 # this round's own patch cannot make for itself.
+
+# ---------------------------------------------------------------------------
+# KNOWN_ISSUES.md D73 ROUND 5 (owner's host measurement, 2026-10-19): the
+# empty-local-mesh CSR-copy defect in `device::merge_halo_cells_device`
+# (mesh_merge_device.hpp) and the exception-safety gap this exposed in
+# `build_native_remap_halo`'s own collective structure (native_halo.cpp).
+# One row below is tier-0 testable with NO MPI at all (merge_halo_cells is
+# the HostSpace instantiation of the same templated device function the
+# real failure went through); the other needs a real multi-rank exchange
+# to reach the code path it targets, `requires = "mpi"`, host_pending.
+# ---------------------------------------------------------------------------
+
+[[mutation]]
+id = "merge-halo-cells-empty-local-mesh-cell-vertex-offsets-not-guarded"
+area = "backend"
+describes = "The E_cells > 0 guard around merge_halo_cells_device's own cell_vertex_offsets deep_copy is removed, reproducing the exact Kokkos deep_copy shape-mismatch the owner's host measured ('merge_cvo(1) (0)') when a rank whose local mesh genuinely has zero cells (the 'rank hosts only the target' case every disjoint-placement run has) receives its first halo copies from a peer."
+file = "include/fuse/backend/native/mesh_merge_device.hpp"
+old = """  if (E_cells > 0) {
+    Kokkos::deep_copy(Kokkos::subview(out.cell_vertex_offsets, Kokkos::make_pair(0, E_cells + 1)),
+                      source.cell_vertex_offsets);
+  }"""
+new = """  Kokkos::deep_copy(Kokkos::subview(out.cell_vertex_offsets, Kokkos::make_pair(0, E_cells + 1)),
+                    source.cell_vertex_offsets);"""
+target = "fuse_backend_native_halo_test"
+test = "backend.native_halo"
+# Expected kill: NativeHaloPackMerge.RoundTripIntoAnEmptyLocalMeshAdopts
+# TheReceivedCellsWithoutThrowing (new this round) -- calls merge_halo_
+# cells (the HostSpace instantiation) directly with a hand-built, all-
+# default (0-extent) local MeshArrays receiving a real 4-cell packed
+# buffer, no MPI needed at all. VERIFIED 2026-10-19 (this track's own
+# round-5 session): applied by hand (reverted the guard, restoring the
+# unconditional deep_copy), rebuilt fuse_backend_native_halo_test, ran --
+# the new test's own EXPECT_NO_THROW fires and reports the EXACT error
+# text the owner's host measured ("Deprecation Error: Kokkos::deep_copy
+# extents of views don't match: fuse::native::device::merge_cvo(1) (0)"),
+# character for character; every other test in the binary unaffected
+# (23/24 pass, only the new test fails as expected). File restored by
+# hand and re-verified byte-identical (md5 d004596548ab96f72309fd8089
+# eee85c), full suite green again (24/24).
+
+[[mutation]]
+id = "build-native-remap-halo-merge-not-exception-safe"
+area = "backend"
+describes = "The catch clause build_native_remap_halo's own merge-and-view-creation segment uses to turn a local exception into post_check (rather than letting it unwind out of the function, past the post-exchange verdict Allreduce its peers are waiting inside) is defeated by rethrowing instead of recording the Failure -- reproducing the exact hang the owner's host measured (rank 0 blocked in MPI_Allreduce forever once rank 1's exception skipped its own call) whenever the segment genuinely throws (the empty-local-mesh defect above is one concrete trigger, but any other throw in device::merge_halo_cells_device or NativeMeshView::create would do the same)."
+file = "src/backend/native_halo.cpp"
+old = """  } catch (const std::exception& e) {
+    post_check = Failure{"E-MESH-HALO-MERGE","""
+new = """  } catch (const std::exception& e) {
+    throw;
+    post_check = Failure{"E-MESH-HALO-MERGE","""
+target = "fuse_parallel_native_remap_halo_runner_test"
+test = "parallel.native_remap_halo_runner"
+requires = "mpi"
+# NOT ASSESSED in this sandbox (cannot start MPI, build_native_remap_
+# halo's own ranks<=1 short-circuit means this try/catch is unreachable
+# at any rank count this sandbox can run) -- host_pending. On the
+# owner's host, expect: applying this mutation TOGETHER WITH the
+# "merge-halo-cells-empty-local-mesh-cell-vertex-offsets-not-guarded"
+# row above (so the merge genuinely throws again) reproduces the exact
+# hang measured 2026-10-18/19 (rank 0 blocked in MPI_Allreduce inside
+# build_native_remap_halo ~638, rank 1 already past its own test body
+# with an uncaught Kokkos deep_copy exception, now rethrown instead of
+# caught) -- this mutation alone, without reverting the CSR-offset fix,
+# should make no observable difference (nothing throws inside the try
+# block any more, so this catch clause is never entered, `throw;` never
+# executes, and the unreachable line after it is a compiler warning,
+# not a defect -- the row's own kill depends on BOTH mutations applied
+# together, exactly as the empty-local-mesh row's own "VERIFIED" account
+# shows the first one alone compiles and passes clean).

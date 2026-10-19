@@ -332,3 +332,21 @@ mpiexec -n 2 env FUSE_REMAP_HALO_TRACE=1 \
     --gtest_filter=NativeRemapHalo.DisjointGeneralWeightedRemapConservesOnceTheHaloIsBuilt
 ```
 
+**The merge into an empty local mesh (round 5, 2026-10-19).** `device::merge_halo_cells_device<Space>`
+(mesh_merge_device.hpp) copies the EXISTING part of its own CSR offset arrays
+(`cell_vertex_offsets`/`cell_face_offsets`/`face_vertex_offsets`) assuming at least `E_cells + 1` (or
+`E_faces + 1`) elements are present -- the canonical "ncells + 1" size a non-empty mesh always carries.
+A rank whose own local mesh genuinely has zero cells (the "rank hosts only the target" case every
+disjoint-placement run has) reports these arrays at extent 0, not the 1-element `{0}` the "+1"
+convention implies -- `MeshArrays::cell_count()`'s own formula already treats extent 0 as a valid,
+distinct empty-mesh representation, but the copy never checked for it. Each of the three copies is now
+guarded on `E_cells > 0`/`E_faces > 0`; every destination position is still written unconditionally by
+the existing new-cells scan or its own trailing single-element write either way. `build_native_remap_
+halo`'s own merge-and-view-creation segment (between the exchange collective and the post-exchange
+verdict `MPI_Allreduce`) is now wrapped in a `try`/`catch` that folds any exception into the same
+`post_check` its own pre-existing refusal paths use, so a local throw on one rank still reaches the
+Allreduce every rank agrees through, rather than leaving a peer blocked forever. See KNOWN_ISSUES.md
+D73's own "FIX, ROUND 6" account for the full host measurement and the tier-0 reproduction
+(`NativeHaloPackMerge.RoundTripIntoAnEmptyLocalMeshAdoptsTheReceivedCellsWithoutThrowing`,
+native_halo_test.cpp, no MPI needed).
+

@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
@@ -583,53 +584,91 @@ Result<std::size_t> build_native_remap_halo(NativeMeshBackend& backend, MeshId s
   const std::vector<Kokkos::View<std::byte*, Space>> received =
       exchange_migration_buffers<Space>(send, comm);
 
-  Kokkos::View<std::int32_t*, Space> owner_rank_d;
-  Kokkos::View<std::int64_t*, Space> owned_idx_d;
-  MeshArrays<Space> merged_arrays = device::merge_halo_cells_device<Space>(
-      src.device_arrays(), received, my_rank, &owner_rank_d, &owned_idx_d);
-  auto owner_rank_h = Kokkos::create_mirror_view(owner_rank_d);
-  Kokkos::deep_copy(owner_rank_h, owner_rank_d);
-  auto owned_idx_h = Kokkos::create_mirror_view(owned_idx_d);
-  Kokkos::deep_copy(owned_idx_h, owned_idx_d);
-  const std::size_t n_new = owner_rank_h.extent(0);
-  std::vector<int> owner_rank(n_new);
-  std::vector<std::int64_t> owner_owned_index(n_new);
-  for (std::size_t i = 0; i < n_new; ++i) {
-    owner_rank[i] = static_cast<int>(owner_rank_h(i));
-    owner_owned_index[i] = owned_idx_h(i);
-  }
-
-  // POST-EXCHANGE verdict: `create<Space>` can still fail on data this
-  // rank alone received (a connectivity refusal from the rebuilt view) --
-  // reconciled here, BEFORE returning, the same way the pre-exchange
-  // verdict above was: the caller of `build_native_remap_halo`
-  // (`build_weights`, ultimately) performs its own collectives against
-  // the triple this call just committed, and a rank that returned success
-  // here while a peer returned failure would desync that caller's next
-  // collective. `device::merge_halo_cells_device` itself has no refusal
-  // path of its own (this track's report names the one case it does not
-  // validate -- a Polyhedron's cross-cell face sharing, not attempted on
-  // this path either way), but it also does not reproduce
-  // `NativeMeshBuilder::build()`'s own `E-MESH-DIM` check (a received
-  // cell's topological dimension against the mesh's own) the way
-  // `merge_halo_cells` used to get for free by routing through the
-  // builder -- `all_cells_match_dimension` (mesh_merge_device.hpp) is
-  // that one check, folded into this same post-exchange verdict alongside
-  // `create<Space>`'s own.
+  // KNOWN_ISSUES.md D73 (RemapHalo track round 5, host measurement
+  // 2026-10-19): everything from here through the post-exchange verdict
+  // Allreduce below is LOCAL, not collective (`exchange_migration_buffers`
+  // just above is the last real MPI call before it) -- but it was not
+  // EXCEPTION-safe across that gap: a C++ exception thrown by the merge
+  // or the rebuilt view's own construction unwinds straight out of this
+  // function, skipping the post-exchange Allreduce entirely. Measured on
+  // the owner's host: rank 1 (zero owned source cells, receiving 4 from
+  // rank 0 -- the "rank hosts only the target" case every disjoint-
+  // placement run has) threw inside `device::merge_halo_cells_device`
+  // (the `cell_vertex_offsets` empty-mesh defect fixed in mesh_merge_
+  // device.hpp this same round) and never reached its own Allreduce call,
+  // while rank 0 (which merged cleanly) reached ITS OWN call and blocked
+  // forever waiting for a peer that had already exited the function --
+  // exactly the standing rule this violates ("a collective path never
+  // returns on a locally computed condition"), here by an uncaught
+  // exception rather than an early return. Caught here, between the two
+  // Allreduces, and folded into `post_check` so the EXISTING post-exchange
+  // Allreduce below still runs on every rank regardless of which (if any)
+  // threw locally.
   std::unique_ptr<NativeMeshView> new_source_view;
   Result<void> post_check = Result<void>::success();
-  if (!device::all_cells_match_dimension<Space>(merged_arrays)) {
-    post_check = Failure{"E-MESH-DIM",
-                        fmt::format("rank {}: a halo cell's topological dimension disagrees "
-                                   "with this rank's own mesh dimension {}",
-                                   my_rank, dim)};
-  } else {
-    auto new_view = NativeMeshView::create<Space>(merged_arrays, my_rank);
-    if (!new_view.ok()) {
-      post_check = new_view.error();
-    } else {
-      new_source_view = std::move(new_view.value());
+  std::vector<int> owner_rank;
+  std::vector<std::int64_t> owner_owned_index;
+  try {
+    Kokkos::View<std::int32_t*, Space> owner_rank_d;
+    Kokkos::View<std::int64_t*, Space> owned_idx_d;
+    MeshArrays<Space> merged_arrays = device::merge_halo_cells_device<Space>(
+        src.device_arrays(), received, my_rank, &owner_rank_d, &owned_idx_d);
+    auto owner_rank_h = Kokkos::create_mirror_view(owner_rank_d);
+    Kokkos::deep_copy(owner_rank_h, owner_rank_d);
+    auto owned_idx_h = Kokkos::create_mirror_view(owned_idx_d);
+    Kokkos::deep_copy(owned_idx_h, owned_idx_d);
+    const std::size_t n_new = owner_rank_h.extent(0);
+    owner_rank.resize(n_new);
+    owner_owned_index.resize(n_new);
+    for (std::size_t i = 0; i < n_new; ++i) {
+      owner_rank[i] = static_cast<int>(owner_rank_h(i));
+      owner_owned_index[i] = owned_idx_h(i);
     }
+
+    // POST-EXCHANGE verdict: `create<Space>` can still fail on data this
+    // rank alone received (a connectivity refusal from the rebuilt view) --
+    // reconciled here, BEFORE returning, the same way the pre-exchange
+    // verdict above was: the caller of `build_native_remap_halo`
+    // (`build_weights`, ultimately) performs its own collectives against
+    // the triple this call just committed, and a rank that returned success
+    // here while a peer returned failure would desync that caller's next
+    // collective. `device::merge_halo_cells_device` itself has no refusal
+    // path of its own (this track's report names the one case it does not
+    // validate -- a Polyhedron's cross-cell face sharing, not attempted on
+    // this path either way), but it also does not reproduce
+    // `NativeMeshBuilder::build()`'s own `E-MESH-DIM` check (a received
+    // cell's topological dimension against the mesh's own) the way
+    // `merge_halo_cells` used to get for free by routing through the
+    // builder -- `all_cells_match_dimension` (mesh_merge_device.hpp) is
+    // that one check, folded into this same post-exchange verdict alongside
+    // `create<Space>`'s own.
+    if (!device::all_cells_match_dimension<Space>(merged_arrays)) {
+      post_check = Failure{"E-MESH-DIM",
+                          fmt::format("rank {}: a halo cell's topological dimension disagrees "
+                                     "with this rank's own mesh dimension {}",
+                                     my_rank, dim)};
+    } else {
+      auto new_view = NativeMeshView::create<Space>(merged_arrays, my_rank);
+      if (!new_view.ok()) {
+        post_check = new_view.error();
+      } else {
+        new_source_view = std::move(new_view.value());
+      }
+    }
+  } catch (const std::exception& e) {
+    post_check = Failure{"E-MESH-HALO-MERGE",
+                        fmt::format("rank {}: merging the received halo cells into this "
+                                   "rank's own mesh threw ({}); refusing rather than "
+                                   "propagating the exception past the post-exchange "
+                                   "agreement every peer waits in",
+                                   my_rank, e.what())};
+  } catch (...) {
+    post_check = Failure{"E-MESH-HALO-MERGE",
+                        fmt::format("rank {}: merging the received halo cells into this "
+                                   "rank's own mesh threw a non-std::exception value; "
+                                   "refusing rather than propagating it past the "
+                                   "post-exchange agreement every peer waits in",
+                                   my_rank)};
   }
   {
     const int locally_ok = post_check.ok() ? 1 : 0;
