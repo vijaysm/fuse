@@ -8054,6 +8054,57 @@ written file shows the five file attributes and the seven type attributes). Less
 a host row that cannot run in the sandbox must be run on the host BEFORE its code is described as
 delivered; slice 2's report said "built but not run", and all three defects sat behind that.
 
+### D76. `fuse_setup_options::communicator`'s "0 means none supplied" sentinel collides with Open MPI's own Fortran handle for MPI_COMM_WORLD, which is 0 -- FIXED 2026-10-18 (found 2026-10-18, abi-communicator track)
+
+**Measured** on higgs (Open MPI 5.0.9, spack build): `MPI_Comm_c2f(MPI_COMM_WORLD)` is 0
+(`mpif.h`: `MPI_COMM_WORLD=0`, `MPI_COMM_SELF=1`, `MPI_COMM_NULL=2`). `fuse_setup_options::
+communicator`'s own original contract (entries.def) reads `communicator == 0` as "no
+communicator supplied" -- correct on MPICH, whose own `MPI_COMM_WORLD` handle is `0x44000000`
+and never collides, but wrong on any Open MPI build, where a participant that genuinely wants
+to couple on its own `MPI_COMM_WORLD` passes exactly the sentinel value this ABI reads as
+"none". `examples/brusselator/participants/{u_main.c,v_main.f90,coupler_main.c}` all pass
+`MPI_Comm_c2f(MPI_COMM_WORLD)` as `communicator` and name an `Mpmd`-launched `my_component`;
+on higgs's Open MPI stack this made `fuse_setup()` refuse every one of them with
+`E-ABI-SETUP-COMPONENT` ("... requires a non-zero communicator ... (communicator == 0 was
+supplied)"), failing `verification.brusselator.participants.mpmd.{3,5}` outright. Before
+commit `25e4917` added that refusal, the identical collision was silent: the same callers
+fell through `fuse_setup()`'s old `if (in->communicator != 0)` gate entirely and ran
+single-process, never forming a base communicator at all, never printing a word about it.
+
+**Fix.** Appended `int32_t has_communicator` to `fuse_setup_options` (append-only, per
+abi-design.md rule 1/3 -- `sizeof(fuse_setup_options)` grows from 48 to 56, `test/abi/
+struct_sizes.golden` updated, `tools/gen-abi.py --write` regenerated `include/fuse/abi/
+types.h` and `fortran/ffuse.f90`). `impl_setup()` (`src/abi/participant.cpp`) now computes
+`communicator_supplied = (in->communicator != 0) || has_communicator`, read under the same
+`struct_size_covers()` discipline `my_component` already uses, and gates the whole
+communicator-adopting branch (including `my_component`'s own Mpmd/Connect `connect()` call)
+on `communicator_supplied` rather than the bare nonzero test. An old caller whose
+`struct_size` predates `has_communicator` is read exactly as before -- `communicator == 0`
+still means none supplied, unchanged. A new caller sets `has_communicator = 1` to supply
+`communicator == 0` deliberately; the three Brusselator participants now do this. The
+Mpmd/Connect refusal (`E-ABI-SETUP-COMPONENT`, "requires a non-zero communicator") now fires
+only when `communicator_supplied` is false -- neither a nonzero handle nor the flag was given.
+`fuse_base_communicator_info::formed`'s own comment (entries.def) is updated to match: 1 when
+`communicator_set`, which now includes the flagged-zero case.
+
+RED/GREEN:
+  * `AbiRefusalSweep.SetupAcceptsAnMpmdComponentWithACommunicatorHandleOfZeroWhenFlagged`
+    (new, `test/abi/refusal_sweep_test.cpp`, `FUSE_HAVE_MPI` build, no `mpiexec` needed --
+    Open MPI's own singleton `MPI_Init` already sets `MPI_APPNUM=0` for a one-process job,
+    measured on higgs 2026-10-18): a one-component `Mpmd`-launched graph (`RankSet{0, 1}`,
+    `appnum=0`), `setup()` called with `communicator = 0` and `has_communicator = 1`. Confirmed
+    RED first (fix reverted to the bare `in->communicator != 0` test): `setup()` returned
+    `FUSE_ERR_INVALID`/`E-ABI-SETUP-COMPONENT`, reproducing the refusal. Confirmed GREEN (fix
+    restored): `setup()` returns `FUSE_OK`, `fuse_base_communicator_info.formed == 1` after a
+    real `fuse::transport::connect()` call (`MPI_Comm_f2c(0)` resolves to the real
+    `MPI_COMM_WORLD` on Open MPI, confirmed by a standalone probe, so the Mpmd handshake's own
+    `MPI_Comm_get_attr(MPI_APPNUM)`/`MPI_Comm_dup` run for real, not stubbed).
+  * `AbiRefusalSweep.SetupRefusesAnMpmdComponentWithNoCommunicator` (pre-existing, unchanged):
+    `communicator = 0` with `has_communicator` left at its zero default is still refused
+    `E-ABI-SETUP-COMPONENT` -- the "neither supplied" case this fix must not loosen.
+  * `verification.brusselator.participants.mpmd.{3,5}` and the accept rows (host-run on
+    higgs, this track's own gate): see report-abi-communicator.md for the full ctest counts.
+
 ### D77. Transport-direct track: the device-direct Transport branch (D66's own unverified GPU-aware path) was handing MpiTransport::move() a device pointer directly, and a second, masked race condition in the fix's own first draft -- FOUND AND FIXED 2026-10-18 (transport-direct track)
 
 **What was found (defect 1, the one this track was dispatched to fix).** D66 recorded
