@@ -1133,7 +1133,27 @@ Result<CommGraph> CommGraph::build(int base_comm_handle,
   const auto emit = [&](std::map<int, std::vector<Entry>>& from,
                         std::vector<CommGraphPeer>* peers,
                         std::vector<std::size_t>*    ids,
-                        std::vector<std::size_t>*    idxs) {
+                        std::vector<std::size_t>*    idxs,
+                        bool                          dedupe_flat) {
+    // The per-peer `CommGraphPeer` lists (`peers`) are keyed by destination
+    // and MUST keep one entry per (peer, entity) pair -- the peer-wise
+    // transport path (R31, `peer_plan_needed` above) gathers/scatters each
+    // peer's own block through them. `ids`/`idxs` are a DIFFERENT, FLAT
+    // thing: `TransportSpec::global_ids`, one rank's own declared offer
+    // list, fed to `MpiTransport::build_plan`'s from-scratch id matching,
+    // which requires exactly one entry per UNIQUE entity on a SOURCE rank
+    // (its own "mine" map construction refuses a repeat as ambiguous
+    // ownership) -- see `dedupe_flat_source_offers`'s own doc comment
+    // (transport.hpp) for why the fan-out this exists to express does not
+    // need the declaration itself repeated. `dedupe_flat` selects which
+    // contract `ids`/`idxs` must satisfy: true for the SEND side (SOURCE,
+    // where a single owned entity routinely has more than one destination
+    // peer wanting it -- KNOWN_ISSUES.md D73 round 9), false for the RECV
+    // side (DESTINATION, where a genuine repeat means this rank itself
+    // wants the same remote entity written into two different local slots,
+    // which `idxs`' own per-occurrence local index must keep distinct).
+    std::map<int, std::vector<std::pair<std::uint64_t, std::size_t>>>
+        flat_by_peer;
     for (auto& [peer, entries] : from) {
       // Both ends of an exchange sort on the same key -- the source id, then
       // the DESTINATION's local index -- which is what makes the two lists
@@ -1148,17 +1168,30 @@ Result<CommGraph> CommGraph::build(int base_comm_handle,
       p.base_rank = union_ranks[static_cast<std::size_t>(peer)];
       p.local_indices.reserve(entries.size());
       p.global_ids.reserve(entries.size());
+      std::vector<std::pair<std::uint64_t, std::size_t>>& flat =
+          flat_by_peer[peer];
+      flat.reserve(entries.size());
       for (const Entry& e : entries) {
         p.local_indices.push_back(e.own_idx);
         p.global_ids.push_back(static_cast<std::size_t>(e.gid));
-        ids->push_back(static_cast<std::size_t>(e.gid));
-        idxs->push_back(e.own_idx);
+        flat.emplace_back(e.gid, e.own_idx);
       }
       peers->push_back(std::move(p));
     }
+    if (dedupe_flat) {
+      dedupe_flat_source_offers(flat_by_peer, ids, idxs);
+    } else {
+      for (auto& [peer, offers] : flat_by_peer) {
+        (void)peer;
+        for (auto& [gid, idx] : offers) {
+          ids->push_back(static_cast<std::size_t>(gid));
+          idxs->push_back(idx);
+        }
+      }
+    }
   };
-  emit(acc.send, &g.send_, &g.send_ids_, &g.send_idx_);
-  emit(acc.recv, &g.recv_, &g.recv_ids_, &g.recv_idx_);
+  emit(acc.send, &g.send_, &g.send_ids_, &g.send_idx_, /*dedupe_flat=*/true);
+  emit(acc.recv, &g.recv_, &g.recv_ids_, &g.recv_idx_, /*dedupe_flat=*/false);
   g.local_ = std::move(acc.local);
 
   g.stats_.bucket_records = bucket_records;

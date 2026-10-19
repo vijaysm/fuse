@@ -6,6 +6,8 @@
 #include <fuse/transport/transport.hpp>
 
 #include <algorithm>
+#include <cstdint>
+#include <map>
 #include <memory>
 #include <vector>
 
@@ -142,6 +144,79 @@ TEST(Tags, AreDistinctAndWithinTheGuaranteedBound) {
          "largest tag actually used";
 }
 
+
+// ---- flat source-offer deduplication (pure rule, no MPI) --------------
+
+// The 3-rank shape KNOWN_ISSUES.md D73 round 9 measured: rank 0 owns 4
+// source cells (global ids 0-3); two different adopting ranks (destination
+// peers 1 and 2) each independently committed a remap halo over cell 2,
+// so rank 0's own per-peer want records both name cell 2, each under its
+// OWN local index (2, the SAME physical entity, since rank 0 holds exactly
+// one copy). `CommGraph::build`'s own `emit()` (comm_graph.cpp) builds
+// EXACTLY this per-peer shape before calling this function.
+TEST(DedupeFlatSourceOffers, TwoDifferentPeersWantingTheSameOwnedCellCollapseToOneDeclaration) {
+  const std::map<int, std::vector<std::pair<std::uint64_t, std::size_t>>>
+      by_peer{
+          {1, {{0, 0}, {1, 1}, {2, 2}, {3, 3}}},  // peer 1 (6 target cells) wants all 4
+          {2, {{2, 2}, {3, 3}}},                  // peer 2 (3 target cells) wants 2 of them
+      };
+  std::vector<std::size_t> ids;
+  std::vector<std::size_t> idxs;
+  fuse::dedupe_flat_source_offers(by_peer, &ids, &idxs);
+
+  // Each of the 4 owned cells is declared EXACTLY once, however many peers
+  // want it -- not once per (peer, cell) pair (which would be 6, the total
+  // number of individual offers above).
+  EXPECT_EQ(ids.size(), 4u);
+  EXPECT_EQ(idxs.size(), 4u);
+  EXPECT_EQ(ids, (std::vector<std::size_t>{0, 1, 2, 3}));
+  EXPECT_EQ(idxs, (std::vector<std::size_t>{0, 1, 2, 3}));
+}
+
+// Without this function (the pre-fix behaviour: flatten every peer's own
+// entries unconditionally, as the RECV side still correctly does), the SAME
+// input reproduces the exact duplicate MpiTransport::build_plan's own Phase
+// D refuses: global id 2 appears twice in rank 0's own declared list.
+TEST(DedupeFlatSourceOffers, WithoutDedupingTheSameInputWouldDeclareTheSharedCellTwice) {
+  const std::map<int, std::vector<std::pair<std::uint64_t, std::size_t>>>
+      by_peer{
+          {1, {{0, 0}, {1, 1}, {2, 2}, {3, 3}}},
+          {2, {{2, 2}, {3, 3}}},
+      };
+  std::vector<std::size_t> undeduped_ids;
+  for (const auto& [peer, offers] : by_peer) {
+    (void)peer;
+    for (const auto& [gid, idx] : offers) {
+      undeduped_ids.push_back(static_cast<std::size_t>(gid));
+      (void)idx;
+    }
+  }
+  EXPECT_EQ(undeduped_ids.size(), 6u);
+  EXPECT_EQ(std::count(undeduped_ids.begin(), undeduped_ids.end(), 2u), 2)
+      << "global id 2, wanted by two different peers, appears twice without "
+         "deduplication -- the exact shape MpiTransport::build_plan's Phase "
+         "D rejects as \"held by source rank 0 and again by source rank 0\"";
+}
+
+// A cell wanted by only ONE peer is unaffected: no duplicate to collapse.
+TEST(DedupeFlatSourceOffers, NoFanOutIsAPureFlatten) {
+  const std::map<int, std::vector<std::pair<std::uint64_t, std::size_t>>>
+      by_peer{{1, {{10, 0}, {11, 1}}}};
+  std::vector<std::size_t> ids, idxs;
+  fuse::dedupe_flat_source_offers(by_peer, &ids, &idxs);
+  EXPECT_EQ(ids, (std::vector<std::size_t>{10, 11}));
+  EXPECT_EQ(idxs, (std::vector<std::size_t>{0, 1}));
+}
+
+// No peers at all: an empty list, not a crash.
+TEST(DedupeFlatSourceOffers, EmptyInputIsEmptyOutput) {
+  const std::map<int, std::vector<std::pair<std::uint64_t, std::size_t>>>
+      by_peer;
+  std::vector<std::size_t> ids, idxs;
+  fuse::dedupe_flat_source_offers(by_peer, &ids, &idxs);
+  EXPECT_TRUE(ids.empty());
+  EXPECT_TRUE(idxs.empty());
+}
 
 // ---- component agreement (pure rule, no MPI) ---------------------------
 

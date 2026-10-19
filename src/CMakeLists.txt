@@ -244,6 +244,7 @@ set_target_properties(fuse-coupler-num PROPERTIES
 # router and the rank-matching graph are compiled only in an MPI build, because
 # they are the parts that name MPI types.
 add_library(fuse-coupler-transport
+  transport/comm_graph_support.cpp
   transport/copy_transport.cpp
   transport/lowfive_transport.cpp
 )

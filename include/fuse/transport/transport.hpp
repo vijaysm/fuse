@@ -1,7 +1,9 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <string>
 #include <utility>
@@ -93,6 +95,35 @@ class CopyTransport final : public Transport {
   std::size_t elements_ = 0;
   int         components_ = 1;
 };
+
+/// Flattens one rank's own per-destination-peer source offers (each a
+/// (global id, this rank's own local index) pair, already grouped by which
+/// peer wants it) into the single, DEDUPLICATED list `TransportSpec::
+/// global_ids` requires for a SOURCE rank: `MpiTransport::build_plan`
+/// matches each declared id against exactly one owner and REFUSES a repeat
+/// within one rank's own list as ambiguous (KNOWN_ISSUES.md D73 round 9's
+/// own measurement: two different destination ranks independently adopting
+/// the SAME source entity through the remap halo each ask for it, so the
+/// owner's naive per-peer concatenation declared that entity twice). Fan-out
+/// to every peer that wants it does not need the declaration repeated --
+/// `build_plan`'s own per-destination loop looks an id up once per peer BY
+/// VALUE, not by walking `global_ids`'s own length -- so keeping the FIRST
+/// occurrence (lowest peer first, matching `by_peer`'s own map order) is
+/// correct: every occurrence of a given global id carries the SAME local
+/// index, since it names the SAME physical entity on this rank.
+///
+/// `by_peer` is walked in key (peer) order; within a peer, callers already
+/// sort by (global id, destination local index) before inserting (the same
+/// convention `CommGraph::build`'s own `emit()` uses), so a deterministic,
+/// reproducible first-occurrence choice does not depend on anything beyond
+/// ascending peer rank order. Declared here (not comm_graph.hpp, which is
+/// compiled only under FUSE_HAVE_MPI) so this pure, no-MPI data transform is
+/// unit-testable in a build with no MPI at all; `CommGraph::build`'s own
+/// `emit()` (comm_graph.cpp) is this function's only production caller.
+void dedupe_flat_source_offers(
+    const std::map<int, std::vector<std::pair<std::uint64_t, std::size_t>>>&
+        by_peer,
+    std::vector<std::size_t>* ids, std::vector<std::size_t>* idxs);
 
 #if FUSE_HAVE_MPI
 /// n->m redistribution across two disjoint rank sets (spec Section 4.1, Section 6 mode 1).
