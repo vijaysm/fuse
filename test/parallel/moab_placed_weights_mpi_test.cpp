@@ -146,6 +146,8 @@ struct DisjointPlacementFixture {
 
   explicit DisjointPlacementFixture(int size) {
     const DisjointRankSets sets(size);
+    int rank = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     EXPECT_TRUE(backend.set_communicator(world_handle()).ok());
     EXPECT_TRUE(backend.set_placements({sets.a, sets.b}).ok());
 
@@ -155,6 +157,28 @@ struct DisjointPlacementFixture {
     EXPECT_TRUE(backend.load({.name = "t", .source = tgt}).ok());
     smid = graph.add_mesh({.name = "s", .source = src});
     tmid = graph.add_mesh({.name = "t", .source = tgt});
+
+    // KNOWN_ISSUES D81, owner ruling 2026-10-19: rescaling is the DRIVER's
+    // explicit responsibility, never the library's. `set_placements`
+    // gives placements A and B their own, independently-read Core copies
+    // of BOTH meshes, so each copy that this file's own three tests
+    // resolve a halo through needs its OWN call: the source ("s", ATM)
+    // through A -- every test below resolves `source_placement` as A --
+    // and the target ("t", OCN) through BOTH A (test 2's own same-Core
+    // case) and B (test 1/3's own target placement). Each call is
+    // COLLECTIVE over that placement's own split communicator, so only
+    // the ranks that participate in a given placement make it.
+    if (sets.a.contains(rank)) {
+      const auto pa = backend.project_onto_unit_sphere(smid, fuse::ComponentId{0});
+      EXPECT_TRUE(pa.ok()) << pa.error().code << ": " << pa.error().message;
+      const auto pt_a = backend.project_onto_unit_sphere(tmid, fuse::ComponentId{0});
+      EXPECT_TRUE(pt_a.ok()) << pt_a.error().code << ": " << pt_a.error().message;
+    }
+    if (sets.b.contains(rank)) {
+      const auto pt_b = backend.project_onto_unit_sphere(tmid, fuse::ComponentId{1});
+      EXPECT_TRUE(pt_b.ok()) << pt_b.error().code << ": " << pt_b.error().message;
+    }
+
     const fuse::RegionId srid =
         graph.add_region({.name = "s_all", .mesh = smid, .dimension = 2});
     const fuse::RegionId trid =
@@ -217,25 +241,16 @@ TEST(MoabPlacedWeightsMpi, ARankOutsideTheTargetPlacementIsASuccessfulNoOp) {
 // 2026-09-25, checked here as a regression guard on the new overload's
 // own "same Core" branch.
 //
-// ROUND 5: "reproduce exactly" is checked on the OUTCOME, not assumed to be
-// a success. Host-measured (2026-10-19): the real ATM/OCN pair's own
-// radius mismatch (1.0 vs 6371229.0, Earth radius in metres -- the same
-// files this file's own header documents) refuses E-REMAP-GEOMETRY on the
-// in-A rank through BOTH via_overload (which delegates to the
-// single-placement path once source and target resolve to the SAME Core)
-// AND via_single directly -- `MoabMeshBackend::project_onto_unit_sphere`,
-// the sibling fixture's (`SpherePairMpi`, remap_halo_mpi_test.cpp) own
-// rescale, has no placement-aware form (KNOWN_ISSUES.md D81, opened this
-// round) and so cannot reach either placement's own Core here. A prior
-// revision of this row asserted `via_overload.ok()` unconditionally for
-// every in-A rank, assuming the delegated build would succeed -- wrong
-// given D81's gap, not a sign the overload answers incorrectly. The
-// property this row actually needs -- "the new overload's same-Core
-// branch changes nothing about what the single-placement path itself
-// would have answered" -- holds exactly as well when both paths refuse
-// with the IDENTICAL error as when both succeed with the IDENTICAL cell
-// count, so that is what is checked: compute BOTH calls unconditionally,
-// then compare their outcomes.
+// ROUND 6 (KNOWN_ISSUES D81, owner ruling 2026-10-19): a SUCCESSFUL
+// delegated halo build, asserted on the ADOPTED CELL COUNT -- this is
+// what round 5's own outcome-identity assertion (both paths refuse
+// identically) stood in for while the fixture's own radius mismatch
+// (wholeATM_T.h5m = 1.0, recMeshOcn.h5m = 6371229.0, Earth radius in
+// metres) had no placement-aware rescale available. The fixture's own
+// constructor now calls the new `project_onto_unit_sphere(MeshId,
+// ComponentId)` overload on placement A's own copy of BOTH meshes before
+// either test in this file runs a geometry-sensitive call, so this row
+// goes back to its original intent.
 // ---------------------------------------------------------------------------
 TEST(MoabPlacedWeightsMpi, SamePlacementOnBothSidesDelegatesToTheSinglePlacementPath) {
   int size = 1, rank = 0;
@@ -267,36 +282,15 @@ TEST(MoabPlacedWeightsMpi, SamePlacementOnBothSidesDelegatesToTheSinglePlacement
     EXPECT_EQ(via_overload.value(), 0u) << "rank " << rank << ": outside A, nothing to adopt";
     return;
   }
-  // An in-A rank: compute via_single UNCONDITIONALLY (not gated on
-  // via_overload.ok()) -- D81's gap means neither call is expected to
-  // succeed with this real, radius-mismatched mesh pair through a
-  // declared placement, and the delegation property under test is about
-  // the two calls AGREEING, not about either one succeeding.
+  ASSERT_TRUE(via_overload.ok()) << via_overload.error().code << ": "
+                                 << via_overload.error().message;
   const auto via_single = fuse::build_remap_halo(f.plan, f.graph, f.backend);
-  std::fprintf(stderr, "rank %d: via_overload ok=%d%s%s via_single ok=%d%s%s\n", rank,
-              via_overload.ok() ? 1 : 0, via_overload.ok() ? "" : " code=",
-              via_overload.ok() ? "" : via_overload.error().code.c_str(), via_single.ok() ? 1 : 0,
+  std::fprintf(stderr, "rank %d: via_single ok=%d%s%s\n", rank, via_single.ok() ? 1 : 0,
               via_single.ok() ? "" : " code=",
               via_single.ok() ? "" : via_single.error().code.c_str());
-  ASSERT_EQ(via_overload.ok(), via_single.ok())
-      << "rank " << rank
-      << ": the same-Core delegation must reproduce the single-placement path's own SUCCESS OR "
-         "FAILURE exactly, whichever it is";
-  if (via_overload.ok()) {
-    EXPECT_EQ(via_overload.value(), via_single.value())
-        << "the same-Core delegation must reproduce the single-placement answer exactly";
-  } else {
-    // D81 (opened this round): with the real ATM/OCN pair's radius
-    // mismatch and no placement-aware project_onto_unit_sphere, this is
-    // the expected branch today -- both refuse, and with the SAME named
-    // cause, since both reach the identical geometry check inside the
-    // (now shared) single-placement machinery.
-    EXPECT_EQ(via_overload.error().code, via_single.error().code)
-        << "rank " << rank
-        << ": the same-Core delegation must refuse with the IDENTICAL named cause the "
-           "single-placement path itself would -- via_overload: "
-        << via_overload.error().message << " -- via_single: " << via_single.error().message;
-  }
+  ASSERT_TRUE(via_single.ok()) << via_single.error().code << ": " << via_single.error().message;
+  EXPECT_EQ(via_overload.value(), via_single.value())
+      << "the same-Core delegation must reproduce the single-placement answer exactly";
 }
 
 // ---------------------------------------------------------------------------
@@ -327,6 +321,62 @@ TEST(MoabPlacedWeightsMpi, DisjointSourceAndTargetPlacementsRefuseWithTheNamedCr
     ASSERT_TRUE(r.ok()) << "rank " << rank << ": outside the target placement, this call is a "
                                               "no-op -- " << r.error().code << ": "
                        << r.error().message;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// (4) KNOWN_ISSUES D81's own mutation target "the placement selection":
+// rescaling the backend's DEFAULT Core (the MeshId-only overload) must NOT
+// make a DECLARED placement's own, independently-read Core copy of the
+// SAME mesh pass -- `set_placements` gives each one a genuinely separate
+// read, and `project_onto_unit_sphere(id, placement)`/`sphere_radius(id,
+// placement)` must resolve THAT placement's own Core
+// (`native_mesh(id, placement)`'s own target), never silently fall back to
+// the default one. A mutation that swapped the placement overload's own
+// resolution for the default-Core one would make this row's own measured
+// radius agree with the rescale it never should have seen.
+// ---------------------------------------------------------------------------
+TEST(MoabPlacedWeightsMpi, RescalingTheDefaultCoreDoesNotAffectAPlacementsOwnCopy) {
+  int size = 1, rank = 0;
+  MPI_Comm_size(MPI_COMM_WORLD, &size);
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+  ASSERT_GE(size, 2) << "this row is only meaningful with more than one rank";
+  const DisjointRankSets sets(size);
+
+  fuse::MoabMeshBackend backend;
+  ASSERT_TRUE(backend.set_communicator(world_handle()).ok());
+  ASSERT_TRUE(backend.set_placements({sets.a, sets.b}).ok());
+  ASSERT_TRUE(backend.load({.name = "t", .source = FUSE_SPHERE_OCN}).ok());
+  const fuse::MeshId tmid = backend.mesh_id("t").value();
+
+  // Rescale the DEFAULT Core's own copy ONLY -- every rank participates in
+  // the base communicator this overload resolves through, regardless of
+  // placement membership.
+  const auto rescaled_default = backend.project_onto_unit_sphere(tmid);
+  ASSERT_TRUE(rescaled_default.ok()) << rescaled_default.error().code << ": "
+                                     << rescaled_default.error().message;
+  EXPECT_FALSE(rescaled_default.value().already_unit)
+      << "recMeshOcn.h5m is at Earth radius, not the unit sphere, before any rescale";
+
+  // Placement A's OWN copy must be UNTOUCHED by the default-Core rescale
+  // above -- still measuring the file's own, un-rescaled Earth radius.
+  if (sets.a.contains(rank)) {
+    const auto ra = backend.sphere_radius(tmid, fuse::ComponentId{0});
+    ASSERT_TRUE(ra.ok()) << ra.error().code << ": " << ra.error().message;
+    EXPECT_NEAR(ra.value().mean_radius, 6371229.0, 1.0)
+        << "rank " << rank
+        << ": rescaling the DEFAULT Core must not touch placement A's own, "
+           "independently-read copy -- if this now measures ~1.0, the "
+           "placement overload resolved the wrong Core";
+  }
+  // Symmetrically for B.
+  if (sets.b.contains(rank)) {
+    const auto rb = backend.sphere_radius(tmid, fuse::ComponentId{1});
+    ASSERT_TRUE(rb.ok()) << rb.error().code << ": " << rb.error().message;
+    EXPECT_NEAR(rb.value().mean_radius, 6371229.0, 1.0)
+        << "rank " << rank
+        << ": rescaling the DEFAULT Core must not touch placement B's own, "
+           "independently-read copy either";
   }
 }
 

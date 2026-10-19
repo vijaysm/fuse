@@ -249,10 +249,33 @@ struct SpherePairMpi {
 
     // Every rank, in the same order (both calls are collective): project
     // ATM (already ~unit) and OCN (Earth-radius) onto the SAME unit sphere.
+    // Round 6 (KNOWN_ISSUES D81): the no-op branch and the rescale formula
+    // are BOTH distinguishable on this one real pair -- ATM measures
+    // already_unit (its own mean radius is ~1, well inside kUnitSphereTol),
+    // OCN does not (it measures ~6371229, Earth radius in metres) and its
+    // own applied_factor must be the measured 1/mean_radius, not merely
+    // "close to a no-op".
     const auto pa = backend.project_onto_unit_sphere(amid);
     EXPECT_TRUE(pa.ok()) << pa.error().code << ": " << pa.error().message;
+    if (pa.ok()) {
+      EXPECT_TRUE(pa.value().already_unit)
+          << "ATM (wholeATM_T.h5m) is already on the unit sphere to within "
+             "kUnitSphereTol";
+    }
     const auto po = backend.project_onto_unit_sphere(omid);
     EXPECT_TRUE(po.ok()) << po.error().code << ": " << po.error().message;
+    if (po.ok()) {
+      EXPECT_FALSE(po.value().already_unit)
+          << "OCN (recMeshOcn.h5m) is at Earth radius, not the unit sphere";
+      EXPECT_GT(po.value().mean_radius, 0.0);
+      EXPECT_NEAR(po.value().applied_factor, 1.0 / po.value().mean_radius,
+                  1e-6 * (1.0 / po.value().mean_radius))
+          << "the applied factor must be exactly 1/mean_radius, the measured "
+             "rescale formula, not merely some nonzero factor";
+      EXPECT_NEAR(po.value().mean_radius, 6371229.0, 1.0)
+          << "recMeshOcn.h5m's own measured mean radius, read directly off "
+             "its vertex coordinates";
+    }
 
     const fuse::RegionId arid =
         graph.add_region({.name = "a_all", .mesh = amid, .dimension = 2});
@@ -277,7 +300,14 @@ TEST(RemapHaloMpiSphere, TheNonMatchingPairLoadsProjectsAndIsSphericalAtEveryRan
   const auto reproject = f.backend.project_onto_unit_sphere(f.amid);
   ASSERT_TRUE(reproject.ok()) << reproject.error().code << ": "
                              << reproject.error().message;
-  EXPECT_NEAR(reproject.value(), 1.0, 1e-6)
+  // Round 6 (KNOWN_ISSUES D81): project_onto_unit_sphere now reports a
+  // MEASURED no-op explicitly (already_unit) rather than only a factor
+  // numerically close to one -- re-projecting an already-unit mesh a
+  // second time must be detected as exactly that.
+  EXPECT_TRUE(reproject.value().already_unit)
+      << "projecting an already-unit-sphere mesh a second time must be "
+         "detected as a no-op, not merely close to one";
+  EXPECT_NEAR(reproject.value().applied_factor, 1.0, 1e-6)
       << "projecting an already-unit-sphere mesh a second time must be "
          "very close to a no-op";
 
