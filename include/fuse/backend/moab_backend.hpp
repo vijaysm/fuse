@@ -9,6 +9,42 @@
 
 namespace fuse {
 
+/// What `MoabMeshBackend::sphere_radius` measured about one mesh's vertices,
+/// read as a sphere about the origin -- the two numbers a DRIVER needs to
+/// decide whether (and how) to rescale it before a geometry-sensitive call
+/// (`build_remap_halo`/`build_weights`) reaches `E-REMAP-GEOMETRY`. See
+/// `MoabMeshBackend::sphere_radius`'s own doc for how both are derived.
+struct SphereRadiusReport {
+  /// `0.5 * (rmin + rmax)` over every vertex's distance from the origin,
+  /// reduced across every rank holding a piece of the mesh.
+  double mean_radius = 0.0;
+  /// `0.5 * (rmax - rmin)` -- the largest distance any single vertex's
+  /// radius is from `mean_radius`, the same reduced extent. Zero for a
+  /// mathematically perfect sphere; a few times `1e-16 * mean_radius` for
+  /// a real mesh file's own floating-point round-off (measured on
+  /// `wholeATM_T.h5m`/`recMeshOcn.h5m`, 2026-09-28).
+  double max_deviation = 0.0;
+};
+
+/// What `MoabMeshBackend::project_onto_unit_sphere` did to one mesh's
+/// vertices. See that function's own doc for the no-op rule and the
+/// tolerance that decides it.
+struct SphereProjectionReport {
+  /// The mesh's own `SphereRadiusReport::mean_radius`, measured BEFORE any
+  /// rescale -- `1.0` exactly when `already_unit` (see below), since no
+  /// measurement is needed to confirm a mesh already reporting a mean
+  /// radius of~1 within tolerance is the one being normalised onto.
+  double mean_radius = 0.0;
+  /// The scalar factor actually multiplied into every vertex coordinate:
+  /// `1.0` when `already_unit` (a true no-op, coordinates untouched), else
+  /// `1.0 / mean_radius`.
+  double applied_factor = 1.0;
+  /// `true` when `mean_radius` was already within `kUnitSphereTol` of 1.0
+  /// -- no vertex coordinate was read back or rewritten in that case, only
+  /// measured.
+  bool already_unit = false;
+};
+
 /// The MOAB objects behind one loaded mesh, as opaque integers so this header
 /// still names no MOAB type. See `MoabMeshBackend::native_mesh`.
 struct MoabNativeMesh {
@@ -236,42 +272,80 @@ class MoabMeshBackend final : public MeshBackend {
   [[nodiscard]] Result<int> partition_rank_of(const Region& r,
                                               std::size_t local_index) const;
 
-  /// FIXTURE-PREP SEAM, added for the `A-PARTITIONED` parallel-matrix cell
-  /// (`build-evidence/parallel-matrix.toml`), used from test code only.
+  /// DRIVER-SIDE GEOMETRY SEAM (KNOWN_ISSUES D81, owner ruling 2026-10-19:
+  /// "this should not be assumed at the library level and the driver needs
+  /// to explicitly invoke it"). `build_remap_halo`'s covering-set
+  /// construction rejects a spherical pair whose two meshes fit to
+  /// DIFFERENT radii (`E-REMAP-GEOMETRY`, "not the same domain") --
+  /// correctly, and this library-level refusal is NEVER bypassed by
+  /// anything below: grep `src/` for `project_onto_unit_sphere` finds no
+  /// call outside a driver (`examples/`) or test fixture. MOAB's own
+  /// non-matching spherical fixture pair (`wholeATM_T.h5m`, radius 1;
+  /// `recMeshOcn.h5m`, radius 6371229, i.e. Earth radius in metres) is
+  /// exactly the case this seam exists for: two REAL meshes, each
+  /// individually a well-formed sphere, at two different nominal radii
+  /// that a DRIVER -- not the library -- knows are meant to be the same
+  /// domain in different units.
   ///
-  /// `build_remap_halo`'s covering-set construction rejects a spherical pair
-  /// whose two meshes fit to DIFFERENT radii (`E-REMAP-GEOMETRY`, "not the
-  /// same domain") -- correctly, because in general two different radii ARE
-  /// two different domains and the library cannot know they are meant to be
-  /// the same sphere in different units. MOAB's own non-matching spherical
-  /// fixture pair (`wholeATM_T.h5m`, radius 1; `recMeshOcn.h5m`, radius
-  /// 6371229, i.e. Earth radius in metres) is exactly that case: two REAL
-  /// meshes, each individually a well-formed sphere, at two different
-  /// nominal radii. This rescales mesh `id`'s vertices by a single scalar
-  /// factor -- `1 / fitted_radius` -- so that calling it on both meshes of
-  /// such a pair puts them on a common (unit) sphere before
-  /// `build_remap_halo`/`build_weights` ever sees them. It does not attempt
-  /// to reconcile two meshes that are NOT individually spherical; that
-  /// remains `E-MESH-GEOMETRY`, the same failure mode `build_remap_halo`
-  /// itself would reach, reported earlier and by name.
+  /// `sphere_radius` MEASURES; `project_onto_unit_sphere` MEASURES THEN,
+  /// UNLESS ALREADY ON THE UNIT SPHERE, RESCALES. Both exist in two forms:
+  /// a `MeshId`-only overload resolving the backend's own DEFAULT
+  /// `moab::Core` (`native_mesh(id)`'s own target), and a `(MeshId,
+  /// ComponentId)` overload resolving the NAMED placement's own Core
+  /// (`native_mesh(id, placement)`'s own target, `moab_backend.cpp`) --
+  /// `set_placements()` gives every declared processor set its own,
+  /// SEPARATE Core, with its own independently-read copy of every loaded
+  /// mesh, so rescaling the default Core's copy does nothing to any
+  /// placement's own copy and vice versa. Both overloads of both functions
+  /// share ONE measurement implementation (`moab_backend.cpp`'s file-local
+  /// `measure_sphere_radius()`), so they can never disagree about the
+  /// formula. The placement overload refuses `E-MESH-PLACEMENT` on a rank
+  /// that does not participate in the named placement -- the identical
+  /// refusal `native_mesh(id, placement)` itself already gives there,
+  /// since there is no Core on that rank to measure.
   ///
-  /// COLLECTIVE over the backend's communicator when one is set: on a
-  /// partitioned read this rank may hold only a subset of the mesh's
-  /// vertices, so the min/max radius used to decide "is this a sphere" and
-  /// to compute the rescale factor is reduced over every rank holding a
-  /// piece of it, the same reconciliation discipline `build_remap_halo`
-  /// itself uses for `fit_surface`. Every rank holding this mesh must call
-  /// this for the same mesh, in the same order, exactly once before the
-  /// first geometry-sensitive call (`build_remap_halo`, `build_weights`).
+  /// `sphere_radius` returns `SphereRadiusReport{mean_radius,
+  /// max_deviation}` (see that struct's own doc) after checking the mesh
+  /// is a well-formed sphere AT ALL (a generous RELATIVE tolerance, the
+  /// same `kProjectSphereTol` the rescale below uses: `E-MESH-GEOMETRY`
+  /// if not) -- a pure query, no vertex coordinate is ever read back.
   ///
-  /// Returns the applied scale factor (1 for a mesh already on the unit
-  /// sphere, to the same `E-REMAP-GEOMETRY`-style tolerance `fit_surface`
-  /// uses). Errors, never throws: `E-MESH-MOVED`, `E-MESH-ID`,
-  /// `E-MESH-GEOMETRY` (the mesh's vertices are not at one common radius
-  /// about the origin, so there is no single sphere to project it onto),
-  /// `E-MESH-HALO` (the collective reduction of the radius failed), and
-  /// MOAB read/write failures as `E-MOAB-QUERY`.
-  [[nodiscard]] Result<double> project_onto_unit_sphere(MeshId id);
+  /// `project_onto_unit_sphere` additionally decides whether `mean_radius`
+  /// is "ALREADY the unit sphere": `max(|rmax - 1|, |rmin - 1|) <=
+  /// kUnitSphereTol`, where `kUnitSphereTol = 1e-9` -- derived beside the
+  /// constant (`moab_backend.cpp`) as roughly `4e6` times IEEE double's
+  /// machine epsilon (`~2.22e-16`), enough headroom to absorb round-off
+  /// accumulated summing millions of vertex coordinates while remaining
+  /// many orders of magnitude below any real sphere's genuine eccentricity
+  /// (Earth's own flattening is `~3e-3`). When already unit, NO vertex
+  /// coordinate is read back or rewritten -- a measured, reported no-op
+  /// (`SphereProjectionReport::already_unit == true`,
+  /// `applied_factor == 1.0`), not merely a factor numerically close to
+  /// one. Otherwise every vertex is rescaled by `1.0 / mean_radius`,
+  /// reported in `applied_factor`, and `already_unit == false`.
+  ///
+  /// COLLECTIVE over the backend's communicator when one is set (for the
+  /// placement overload, over THAT placement's own split communicator):
+  /// a partitioned read may leave this rank holding only a subset of the
+  /// mesh's vertices, so `mean_radius`/`max_deviation` and the decision to
+  /// rescale are reduced over every rank holding a piece of it, the same
+  /// reconciliation discipline `build_remap_halo` itself uses for
+  /// `fit_surface`. Every rank holding this mesh (or this placement's own
+  /// share of it) must call the same one of these functions for the same
+  /// mesh, in the same order, exactly once before the first geometry-
+  /// sensitive call (`build_remap_halo`, `build_weights`).
+  ///
+  /// Errors, never throws: `E-MESH-MOVED`, `E-MESH-ID`, `E-MESH-PLACEMENT`
+  /// (placement overload, unknown or non-participating), `E-MESH-GEOMETRY`
+  /// (the mesh's vertices are not at one common radius about the origin,
+  /// so there is no single sphere to measure or project), `E-MESH-HALO`
+  /// (the collective reduction failed), and MOAB read/write failures as
+  /// `E-MOAB-QUERY`.
+  [[nodiscard]] Result<SphereRadiusReport> sphere_radius(MeshId id) const;
+  [[nodiscard]] Result<SphereRadiusReport> sphere_radius(MeshId id, ComponentId placement) const;
+  [[nodiscard]] Result<SphereProjectionReport> project_onto_unit_sphere(MeshId id);
+  [[nodiscard]] Result<SphereProjectionReport> project_onto_unit_sphere(MeshId id,
+                                                                        ComponentId placement);
 
   // =========================================================================
   // THE REMAP HALO (R3).

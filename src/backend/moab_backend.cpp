@@ -2206,39 +2206,60 @@ Result<int> MoabMeshBackend::partition_rank_of(const Region& r,
 }
 
 // ===========================================================================
-// project_onto_unit_sphere (moab_backend.hpp: fixture-prep seam for
-// A-PARTITIONED). See the header for why this exists rather than being done
-// implicitly inside build_remap_halo.
+// sphere_radius / project_onto_unit_sphere (moab_backend.hpp: DRIVER-SIDE
+// geometry seam for KNOWN_ISSUES D81). See the header for the full design;
+// this is ONE shared measurement, used by all four overloads, so a
+// placement-aware call and the default-Core call can never disagree about
+// the formula.
 // ===========================================================================
 
-Result<double> MoabMeshBackend::project_onto_unit_sphere(MeshId id) {
-  if (impl_ == nullptr) {
-    return Failure{"E-MESH-MOVED",
-                 "project_onto_unit_sphere() on a moved-from backend"};
-  }
-  if (!id.valid() || id.value() >= impl_->meshes.size()) {
-    return Failure{"E-MESH-ID", "project_onto_unit_sphere(): unknown mesh id"};
-  }
-  MoabMeshView& view = *impl_->meshes[id.value()];
+namespace {
+
+/// `kUnitSphereTol`'s own derivation (moab_backend.hpp's own doc restates
+/// this beside the constant, per the owner's round-6 instruction): IEEE
+/// double's machine epsilon is ~2.22e-16; this tolerance is roughly 4e6
+/// times that, enough headroom to absorb round-off accumulated summing
+/// millions of vertex coordinates (measured on wholeATM_T.h5m/recMeshOcn.h5m,
+/// 2026-09-28: std/mean radius deviation a few times 1e-17 to 1e-16) while
+/// remaining many orders of magnitude below any real sphere's genuine
+/// eccentricity (Earth's own flattening is ~3e-3).
+constexpr double kUnitSphereTol = 1e-9;
+
+/// Same shape of check as intx_weights.cpp's fit_surface(): a common radius
+/// to within a generous RELATIVE tolerance. Generous on purpose -- this
+/// decides only "is this one mesh a sphere at all", not whether it agrees
+/// with another one (that is build_remap_halo's own kGeomTol, 1e-9
+/// relative between TWO meshes' own fitted radii, a different question).
+constexpr double kProjectSphereTol = 1e-6;
+
+/// Shared by every overload of `sphere_radius`/`project_onto_unit_sphere`:
+/// measures a mesh's vertex radii about the origin in an ALREADY-RESOLVED
+/// `moab::Interface`/file set/optional communicator (the same triple
+/// `native_mesh(id)`/`native_mesh(id, placement)` resolve, so the caller
+/// does the placement selection, not this function). Returns
+/// `{mean_radius, max_deviation}` after the collective reduction and the
+/// well-formed-sphere check; `who` names the caller for its own error
+/// messages (so a refusal from the placement overload reads the same way
+/// the default-Core one does, modulo the function name).
+Result<SphereRadiusReport> measure_sphere_radius(moab::Interface& mb,
+                                                  moab::EntityHandle file_set,
+                                                  moab::ParallelComm* pcomm,
+                                                  const char* who) {
   moab::Range verts;
-  moab::ErrorCode rval = impl_->mb.get_entities_by_dimension(
-      view.file_set(), 0, verts, /*recursive=*/true);
+  moab::ErrorCode rval =
+      mb.get_entities_by_dimension(file_set, 0, verts, /*recursive=*/true);
   if (rval != moab::MB_SUCCESS) {
-    return impl_->moab_error(
-        "E-MOAB-QUERY", "project_onto_unit_sphere(): could not list vertices",
-        rval);
+    return Failure{"E-MOAB-QUERY",
+                 std::string(who) + "(): could not list vertices"};
   }
 
   std::vector<moab::EntityHandle> vh(verts.begin(), verts.end());
   std::vector<double> xyz(vh.size() * 3, 0.0);
   if (!vh.empty()) {
-    rval = impl_->mb.get_coords(vh.data(), static_cast<int>(vh.size()),
-                                xyz.data());
+    rval = mb.get_coords(vh.data(), static_cast<int>(vh.size()), xyz.data());
     if (rval != moab::MB_SUCCESS) {
-      return impl_->moab_error(
-          "E-MOAB-QUERY",
-          "project_onto_unit_sphere(): could not read vertex coordinates",
-          rval);
+      return Failure{"E-MOAB-QUERY",
+                   std::string(who) + "(): could not read vertex coordinates"};
     }
   }
 
@@ -2250,16 +2271,14 @@ Result<double> MoabMeshBackend::project_onto_unit_sphere(MeshId id) {
     rmax = std::max(rmax, r);
   }
 
-#ifdef FUSE_MOAB_PARALLEL
-  if (impl_->pcomm != nullptr) {
+  if (pcomm != nullptr) {
     // A partitioned read may leave this rank holding only a piece of the
     // mesh's vertices (or none at all, if vh is empty -- rmin/rmax then sit
-    // at their sentinel/zero initialisers, which MUST NOT win the reduction).
-    // Reconciled the same way build_remap_halo's own fit_surface() is
-    // (REVIEW.md R-01): every rank needs the GLOBAL radius, not its own
-    // local slice's, both to decide whether this really is one sphere and to
-    // compute the one scale factor every rank then applies identically.
-    const MPI_Comm comm = impl_->pcomm->comm();
+    // at their sentinel/zero initialisers, which MUST NOT win the
+    // reduction). Reconciled the same way build_remap_halo's own
+    // fit_surface() is (REVIEW.md R-01): every rank needs the GLOBAL
+    // radius, not its own local slice's.
+    const MPI_Comm comm = pcomm->comm();
     const double local_min = vh.empty() ? 1e300 : rmin;
     const double local_max = vh.empty() ? 0.0 : rmax;
     double global_min = local_min, global_max = local_max;
@@ -2267,54 +2286,126 @@ Result<double> MoabMeshBackend::project_onto_unit_sphere(MeshId id) {
                       comm) != MPI_SUCCESS ||
         MPI_Allreduce(&local_max, &global_max, 1, MPI_DOUBLE, MPI_MAX,
                       comm) != MPI_SUCCESS) {
-      return Failure{
-          "E-MESH-HALO",
-          "project_onto_unit_sphere(): the collective reduction of the "
-          "mesh's radius across the communicator failed"};
+      return Failure{std::string("E-MESH-HALO"),
+                   std::string(who) +
+                       "(): the collective reduction of the mesh's radius "
+                       "across the communicator failed"};
     }
     rmin = global_min;
     rmax = global_max;
   }
-#endif
 
-  // Same shape of check as intx_weights.cpp's fit_surface(): a common radius
-  // to within a generous relative tolerance. Generous on purpose -- this is
-  // fixture prep for a REAL data file, not the tight kGeomTol (1e-9) that
-  // decides whether two ALREADY-a-priori-spherical meshes agree with EACH
-  // OTHER; here the question is only "is this one mesh a sphere at all",
-  // and wholeATM_T.h5m / recMeshOcn.h5m each measure a std/mean radius of a
-  // few times 1e-17 to a few times 1e-16 (h5dump on the raw files,
-  // 2026-09-28) -- floating-point noise, not a real deviation from a
-  // sphere -- comfortably inside even this tolerance.
-  constexpr double kProjectSphereTol = 1e-6;
   if (!(rmax > 0.0) || (rmax - rmin) > kProjectSphereTol * rmax) {
     return Failure{
         "E-MESH-GEOMETRY",
-        "project_onto_unit_sphere(): this mesh's vertices are not at one "
-        "common radius about the origin (min " + std::to_string(rmin) +
-            ", max " + std::to_string(rmax) +
-            "), so there is no single sphere to project it onto"};
+        std::string(who) +
+            "(): this mesh's vertices are not at one common radius about "
+            "the origin (min " +
+            std::to_string(rmin) + ", max " + std::to_string(rmax) +
+            "), so there is no single sphere to measure or project"};
   }
-  const double radius = 0.5 * (rmin + rmax);
-  const double factor = 1.0 / radius;
 
+  SphereRadiusReport report;
+  report.mean_radius = 0.5 * (rmin + rmax);
+  report.max_deviation = 0.5 * (rmax - rmin);
+  return report;
+}
+
+/// Shared rescale, built on `measure_sphere_radius` above: resolves the
+/// unit-sphere no-op decision and, when not already unit, reads back and
+/// rewrites every vertex in the SAME `moab::Interface`/file set
+/// `measure_sphere_radius` just measured. `who` is threaded through for
+/// the identical reason.
+Result<SphereProjectionReport> project_sphere(moab::Interface& mb, moab::EntityHandle file_set,
+                                               moab::ParallelComm* pcomm, const char* who) {
+  const Result<SphereRadiusReport> measured = measure_sphere_radius(mb, file_set, pcomm, who);
+  if (!measured.ok()) return measured.error();
+
+  SphereProjectionReport report;
+  report.mean_radius = measured.value().mean_radius;
+  const double deviation_from_unit =
+      std::max(std::fabs(report.mean_radius + measured.value().max_deviation - 1.0),
+               std::fabs(report.mean_radius - measured.value().max_deviation - 1.0));
+  if (deviation_from_unit <= kUnitSphereTol) {
+    // Already the unit sphere, to this tolerance: a MEASURED no-op, not a
+    // coordinate read-back that merely happens to produce ~1.0. No vertex
+    // is touched.
+    report.already_unit = true;
+    report.applied_factor = 1.0;
+    return report;
+  }
+
+  report.already_unit = false;
+  report.applied_factor = 1.0 / report.mean_radius;
+
+  moab::Range verts;
+  moab::ErrorCode rval =
+      mb.get_entities_by_dimension(file_set, 0, verts, /*recursive=*/true);
+  if (rval != moab::MB_SUCCESS) {
+    return Failure{"E-MOAB-QUERY",
+                 std::string(who) + "(): could not list vertices to rescale"};
+  }
+  std::vector<moab::EntityHandle> vh(verts.begin(), verts.end());
   if (!vh.empty()) {
-    for (std::size_t i = 0; i < vh.size(); ++i) {
-      xyz[3 * i] *= factor;
-      xyz[3 * i + 1] *= factor;
-      xyz[3 * i + 2] *= factor;
-    }
-    rval = impl_->mb.set_coords(vh.data(), static_cast<int>(vh.size()),
-                                xyz.data());
+    std::vector<double> xyz(vh.size() * 3, 0.0);
+    rval = mb.get_coords(vh.data(), static_cast<int>(vh.size()), xyz.data());
     if (rval != moab::MB_SUCCESS) {
-      return impl_->moab_error(
-          "E-MOAB-QUERY",
-          "project_onto_unit_sphere(): could not write rescaled vertex "
-          "coordinates",
-          rval);
+      return Failure{"E-MOAB-QUERY",
+                   std::string(who) +
+                       "(): could not read vertex coordinates to rescale"};
+    }
+    for (std::size_t i = 0; i < vh.size(); ++i) {
+      xyz[3 * i] *= report.applied_factor;
+      xyz[3 * i + 1] *= report.applied_factor;
+      xyz[3 * i + 2] *= report.applied_factor;
+    }
+    rval = mb.set_coords(vh.data(), static_cast<int>(vh.size()), xyz.data());
+    if (rval != moab::MB_SUCCESS) {
+      return Failure{"E-MOAB-QUERY",
+                   std::string(who) +
+                       "(): could not write rescaled vertex coordinates"};
     }
   }
-  return factor;
+  return report;
+}
+
+}  // namespace
+
+Result<SphereRadiusReport> MoabMeshBackend::sphere_radius(MeshId id) const {
+  const Result<MoabNativeMesh> nm = native_mesh(id);
+  if (!nm.ok()) return nm.error();
+  return measure_sphere_radius(*static_cast<moab::Interface*>(nm.value().interface),
+                               static_cast<moab::EntityHandle>(nm.value().file_set),
+                               static_cast<moab::ParallelComm*>(nm.value().parallel_comm),
+                               "sphere_radius");
+}
+
+Result<SphereRadiusReport> MoabMeshBackend::sphere_radius(MeshId id, ComponentId placement) const {
+  const Result<MoabNativeMesh> nm = native_mesh(id, placement);
+  if (!nm.ok()) return nm.error();
+  return measure_sphere_radius(*static_cast<moab::Interface*>(nm.value().interface),
+                               static_cast<moab::EntityHandle>(nm.value().file_set),
+                               static_cast<moab::ParallelComm*>(nm.value().parallel_comm),
+                               "sphere_radius");
+}
+
+Result<SphereProjectionReport> MoabMeshBackend::project_onto_unit_sphere(MeshId id) {
+  const Result<MoabNativeMesh> nm = native_mesh(id);
+  if (!nm.ok()) return nm.error();
+  return project_sphere(*static_cast<moab::Interface*>(nm.value().interface),
+                        static_cast<moab::EntityHandle>(nm.value().file_set),
+                        static_cast<moab::ParallelComm*>(nm.value().parallel_comm),
+                        "project_onto_unit_sphere");
+}
+
+Result<SphereProjectionReport> MoabMeshBackend::project_onto_unit_sphere(MeshId id,
+                                                                         ComponentId placement) {
+  const Result<MoabNativeMesh> nm = native_mesh(id, placement);
+  if (!nm.ok()) return nm.error();
+  return project_sphere(*static_cast<moab::Interface*>(nm.value().interface),
+                        static_cast<moab::EntityHandle>(nm.value().file_set),
+                        static_cast<moab::ParallelComm*>(nm.value().parallel_comm),
+                        "project_onto_unit_sphere");
 }
 
 int MoabMeshBackend::communicator_size() const noexcept {

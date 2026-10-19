@@ -1,0 +1,50 @@
+# KNOWN_ISSUES D81 (owner ruling 2026-10-19): MoabMeshBackend::sphere_radius
+# / project_onto_unit_sphere (src/backend/moab_backend.cpp,
+# include/fuse/backend/moab_backend.hpp). Own file per the review-fix
+# protocol: do not edit build-evidence/mutations.toml or
+# moab-placement.toml directly while other fixers hold them dirty.
+#
+# NOT HAND-VERIFIED THIS ROUND, for the same sandbox-wide reason
+# moab-placement.toml's own header already states: ANY MOAB-linked binary
+# aborts on construction here (moab::Core's constructor calls
+# MPI_Init_thread; this sandbox cannot initialise MPI at all, not even at
+# one rank, and FUSE's own CMakeLists.txt requires FUSE_ENABLE_MPI
+# whenever FUSE_ENABLE_MOAB is on -- confirmed by configure error, not
+# assumed -- so there is no MOAB-without-MPI tier-0 configuration to fall
+# back to either). Every row below is written and reasoned through by
+# hand; all three are `requires = "mpi"`, the same NOT-ASSESSED courtesy
+# D27/D73's own MPI-only rows already use, rather than a falsely claimed
+# kill.
+
+[[mutation]]
+id = "sphere-no-op-branch-skipped"
+area = "backend"
+describes = "The already-on-the-unit-sphere no-op check is disabled, so project_onto_unit_sphere ALWAYS reads back and rewrites every vertex, even when the mesh is already unit to within kUnitSphereTol -- a measured no-op silently becomes an unconditional (if numerically near-identity) rescale, and SphereProjectionReport::already_unit is never true. Killed by remap_halo_mpi_test.cpp's own SpherePairMpi fixture (RemapHaloMpiSphere.*): EXPECT_TRUE(pa.value().already_unit) on wholeATM_T.h5m (already ~unit) and TheNonMatchingPairLoadsProjectsAndIsSphericalAtEveryRankCount's own EXPECT_TRUE(reproject.value().already_unit) on a re-projection."
+file = "src/backend/moab_backend.cpp"
+old = "  if (deviation_from_unit <= kUnitSphereTol) {"
+new = "  if (false) {"
+target = "fuse_parallel_remap_halo_mpi_test"
+test = "parallel.remap_halo_mpi"
+requires = "mpi"
+
+[[mutation]]
+id = "sphere-rescale-formula-wrong"
+area = "backend"
+describes = "The rescale factor is computed as mean_radius instead of 1/mean_radius -- every vertex would be scaled AWAY from the unit sphere instead of onto it (a mesh at Earth radius would be rescaled to ~4e13 instead of ~1). Killed by remap_halo_mpi_test.cpp's own SpherePairMpi fixture: EXPECT_NEAR(po.value().applied_factor, 1.0 / po.value().mean_radius, ...) on recMeshOcn.h5m (Earth radius, genuinely rescaled, not the no-op branch) directly recomputes the expected factor from the independently-measured mean_radius, so a wrong formula in production code cannot agree with it by construction."
+file = "src/backend/moab_backend.cpp"
+old = "  report.applied_factor = 1.0 / report.mean_radius;"
+new = "  report.applied_factor = report.mean_radius;"
+target = "fuse_parallel_remap_halo_mpi_test"
+test = "parallel.remap_halo_mpi"
+requires = "mpi"
+
+[[mutation]]
+id = "sphere-radius-placement-selection-ignored"
+area = "backend"
+describes = "sphere_radius(MeshId, ComponentId)'s own placement-aware resolution is replaced by the default-Core one (native_mesh(id) instead of native_mesh(id, placement)) -- a query against a DECLARED placement's own, independently-read Core copy of a mesh would silently answer the DEFAULT Core's own radius instead, so rescaling the default Core (moab_placed_weights_mpi_test.cpp's own RescalingTheDefaultCoreDoesNotAffectAPlacementsOwnCopy) would make a placement's own, never-rescaled copy falsely APPEAR rescaled too. Killed by that exact row: EXPECT_NEAR(ra.value().mean_radius, 6371229.0, 1.0) on placement A's own copy, taken AFTER rescaling only the default Core -- a mutated sphere_radius would report ~1.0 instead, since it would be reading the just-rescaled default Core by mistake."
+file = "src/backend/moab_backend.cpp"
+old = "Result<SphereRadiusReport> MoabMeshBackend::sphere_radius(MeshId id, ComponentId placement) const {\n  const Result<MoabNativeMesh> nm = native_mesh(id, placement);"
+new = "Result<SphereRadiusReport> MoabMeshBackend::sphere_radius(MeshId id, ComponentId placement) const {\n  const Result<MoabNativeMesh> nm = native_mesh(id);"
+target = "fuse_parallel_moab_placed_weights_mpi_test"
+test = "parallel.moab_placed_weights_mpi"
+requires = "mpi"

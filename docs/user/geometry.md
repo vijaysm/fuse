@@ -114,6 +114,44 @@ the MOAB-enabled build configuration provides via TempestRemap.
 Asking for high order without MOAB is rejected by name rather than quietly
 served at order 1.
 
+### Meshes at different radii
+
+A spherical covering-set construction (MOAB's, above) needs its two meshes on
+the SAME sphere. Two real files at genuinely different nominal radii -- an
+atmosphere mesh at a unit radius and an ocean mesh at Earth radius in metres,
+say -- are refused outright, `E-REMAP-GEOMETRY`, "not the same domain": the
+library cannot know two different radii are meant to be the same sphere in
+different units, so it never guesses.
+
+**Rescaling is the driver's job, never the library's** (KNOWN_ISSUES D81).
+`MoabMeshBackend::sphere_radius(MeshId[, ComponentId])` measures a mesh's
+vertices as a sphere about the origin and reports the mean radius and the
+largest single vertex's deviation from it, so a driver can decide what, if
+anything, needs doing. `MoabMeshBackend::project_onto_unit_sphere(MeshId[,
+ComponentId])` measures the same way, then -- unless the mesh is ALREADY on
+the unit sphere to within its own tolerance -- rescales every vertex by
+`1 / mean_radius` and reports what it did (`SphereProjectionReport`:
+`mean_radius`, `applied_factor`, `already_unit`). Already-unit is a measured
+no-op: no vertex coordinate is read back or rewritten.
+
+Both come in two forms: a `MeshId`-only overload for the backend's default
+decomposition, and a `(MeshId, ComponentId)` overload for a NAMED placement's
+own, independently-decomposed copy (`docs/user/placement.md`'s own
+per-placement model) -- `set_placements()` gives every declared processor set
+its own Core with its own independently-read copy of every loaded mesh, so
+rescaling one placement's copy does nothing to another's, and a driver
+coupling two independently placed components over real files must call the
+placement-aware overload on EACH placement whose copy it will use.
+
+The library itself never calls either function: `build_remap_halo` keeps
+refusing `E-REMAP-GEOMETRY` exactly as before on a mismatched pair, whether or
+not a rescale was available. A driver loading real, differently-scaled
+spherical files -- grep for `FUSE_SPHERE_ATM`/`FUSE_SPHERE_OCN` in this
+tree's own test suite for a worked example -- queries or rescales explicitly,
+after `load()` and before the first `build_remap_halo`/`build_weights` call,
+collectively (every rank holding a piece of the mesh, or of that placement's
+own share of it, in the same order).
+
 ### A note on negligible overlaps
 
 Two cells that merely share a face have an intersection of measure zero, but
