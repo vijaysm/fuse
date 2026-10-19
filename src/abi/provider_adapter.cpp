@@ -212,6 +212,13 @@ fuse::Result<void> ProviderAdapter::register_fields(fuse::FieldRegistry& registr
     storage_.clear();
     storage_.resize(fields.size());
 
+    // KNOWN_ISSUES.md D15 round 3: whether THIS process actually hosts
+    // this component on the REAL base communicator -- hosting_rank_ is
+    // nullopt (treat as hosted) for every single-process caller, exactly
+    // the behaviour this adapter always had before this round.
+    const bool hosted =
+        !hosting_rank_.has_value() || graph.component(*cid).ranks.contains(*hosting_rank_);
+
     // Review 2026-10-11 AB-6(b): the cross-check below only walked the
     // graph's OWN fields, asking "does describe() report this one" -- a
     // plugin reporting a SUPERSET (an extra row the graph never declared
@@ -272,10 +279,36 @@ fuse::Result<void> ProviderAdapter::register_fields(fuse::FieldRegistry& registr
                                  "' is not FUSE_ELEMENT_F64, the only element type this host supports"};
       }
 
+      // D24 (KNOWN_ISSUES.md, closed 2026-10-09): "a component that does
+      // not live on this rank gets an empty view of the right dimension
+      // ... rather than a failure, because every rank resolves every
+      // placement (the exchange plan is collective) while only hosting
+      // ranks read one." The REAL plan (built from fuse_ctx::backend, a
+      // rank-aware fuse::native::NativeMeshBackend) already follows this
+      // rule; this adapter's own private backend_ (fuse::SerialMeshBackend,
+      // this class's own header comment: a single-address-space backend
+      // with no concept of a rank or a RankSet at all) cannot -- it always
+      // reports the region's FULL size, on every rank, regardless of
+      // whether this component is even placed there. Measured on the
+      // host (KNOWN_ISSUES.md D15, round 3): a Plugin component mounted
+      // on a rank SUBSET registered the full size on a NON-hosting rank,
+      // disagreeing with the plan's own 0-entry expectation there --
+      // "a short registration is a heap overflow in the hot loop" is the
+      // Runner's own refusal for the OPPOSITE direction; this is that
+      // same contract, violated from the adapter's side instead. Decided
+      // here: `hosted` (above), not backend_.region_size(), decides
+      // whether this rank registers the region's real size or an empty
+      // view -- the D24 rule applied at the one place in this file that
+      // did not yet follow it, rather than teaching backend_ itself to
+      // understand a RankSet (SerialMeshBackend's whole point, this
+      // class's own header comment, is NOT to).
       const fuse::Region& region = graph.region(spec.region);
-      const fuse::Result<std::size_t> sz = backend_.region_size(region);
-      if (!sz.ok()) return fuse::Result<void>{sz.error()};
-      const std::size_t count = sz.value();
+      std::size_t count = 0;
+      if (hosted) {
+        const fuse::Result<std::size_t> sz = backend_.region_size(region);
+        if (!sz.ok()) return fuse::Result<void>{sz.error()};
+        count = sz.value();
+      }
 
       storage_[i].assign(count * static_cast<std::size_t>(spec.components), 0.0);
       double* base = storage_[i].data();
@@ -288,23 +321,37 @@ fuse::Result<void> ProviderAdapter::register_fields(fuse::FieldRegistry& registr
           registry.bind(fid, fuse::FieldRef{base, layout, fuse::MemorySpace::Host});
       if (!bound.ok()) return bound;
 
-      fuse_field_view view{sizeof(fuse_field_view)};
-      view.handle            = static_cast<std::int32_t>(fid.value());
-      view.element_type      = FUSE_ELEMENT_F64;
-      view.memspace          = FUSE_MEMSPACE_HOST;
-      view.ownership         = FUSE_OWNERSHIP_OWNED;
-      view.components        = spec.components;
-      view.count             = count;
-      view.owned_count       = count;
-      view.stride             = static_cast<std::int64_t>(spec.components);
-      view.component_stride    = 1;
-      view.data               = base;
-      fuse_null bout{sizeof(fuse_null)};
-      const fuse_status br = table_->bind(self_, &view, &bout);
-      if (br != FUSE_OK) {
-        return fuse::Failure{"E-ABI-PROVIDER-BIND",
-                             "provider '" + name_ + "': bind() of field '" + spec.name +
-                                 "' returned " + std::to_string(br)};
+      // D24/D15 round 3: the PLUGIN's own bind() is skipped entirely when
+      // this rank does not host the component -- `count == 0` here means
+      // `base` (storage_[i].data() on a just-.assign(0, ...)'d, possibly
+      // EMPTY vector) is not guaranteed non-null by the standard, and
+      // linear_provider.c's own p_bind() (this track's own reference
+      // plugin) refuses any bind() whose `data` is NULL, by design (a
+      // defensive check every well-behaved provider is entitled to make).
+      // FUSE's own registry.bind() above already recorded the empty view
+      // -- every rank still resolves this field's own placement, D24's
+      // own rule -- so the plugin loses nothing it was ever going to read
+      // from (Runner::hosts_component() never calls advance() for this
+      // component on a non-hosting rank either).
+      if (hosted) {
+        fuse_field_view view{sizeof(fuse_field_view)};
+        view.handle            = static_cast<std::int32_t>(fid.value());
+        view.element_type      = FUSE_ELEMENT_F64;
+        view.memspace          = FUSE_MEMSPACE_HOST;
+        view.ownership         = FUSE_OWNERSHIP_OWNED;
+        view.components        = spec.components;
+        view.count             = count;
+        view.owned_count       = count;
+        view.stride             = static_cast<std::int64_t>(spec.components);
+        view.component_stride    = 1;
+        view.data               = base;
+        fuse_null bout{sizeof(fuse_null)};
+        const fuse_status br = table_->bind(self_, &view, &bout);
+        if (br != FUSE_OK) {
+          return fuse::Failure{"E-ABI-PROVIDER-BIND",
+                               "provider '" + name_ + "': bind() of field '" + spec.name +
+                                   "' returned " + std::to_string(br)};
+        }
       }
     }
     return fuse::Result<void>::success();

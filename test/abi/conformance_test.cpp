@@ -741,6 +741,48 @@ TEST(ConformanceTest, ProviderAdapterRefusesATableMissingARequiredEntry) {
   EXPECT_EQ(rf.error().code, "E-ABI-PROVIDER-TABLE");
 }
 
+TEST(ConformanceTest, ProviderAdapterRegistersAnEmptyViewWhenThisRankDoesNotHostIt) {
+  // KNOWN_ISSUES.md D15, round 3 (host measurement): a Plugin component
+  // placed on a rank SUBSET registered its own field's FULL region size
+  // (from this adapter's own private, rank-unaware fuse::SerialMeshBackend
+  // -- this class's own header comment) on a NON-hosting rank, where the
+  // real plan (built from the rank-aware fuse::native::NativeMeshBackend)
+  // correctly expects an EMPTY view there -- "field 'upstream.out' is
+  // registered with 1x1 values but the plan sizes its region at 0x1".
+  // D24 (KNOWN_ISSUES.md, closed 2026-10-09): "a component that does not
+  // live on this rank gets an empty view of the right dimension ...
+  // because every rank resolves every placement ... while only hosting
+  // ranks read one." This pins the fix: set_hosting_rank() to a rank
+  // OUTSIDE the component's own declared RankSet ({0,1} here --
+  // build_two_component_lag1_graph()'s own "upstream" placement,
+  // test/abi/graph_fixture.hpp), and register_fields() must bind a
+  // ZERO-count view instead of asking backend_ for the region's full
+  // size at all -- never a refusal, matching every other non-hosting
+  // rank's own silent "nothing to do here" posture in this codebase.
+  fuse::abi_detail::Registry registry;
+  ASSERT_TRUE(registry.mount_dynamic("upstream", FUSE_TEST_C_PROVIDER_PLUGIN).ok());
+  fuse::Result<std::unique_ptr<fuse::Component>> extracted = registry.extract("upstream");
+  ASSERT_TRUE(extracted.ok());
+  std::unique_ptr<fuse::Component> comp = std::move(extracted).value();
+  auto* adapter = dynamic_cast<fuse::abi_detail::ProviderAdapter*>(comp.get());
+  ASSERT_NE(adapter, nullptr);
+  adapter->set_hosting_rank(1);  // "upstream"'s own RankSet is {0, 1} -- rank 0 only
+
+  fuse::FieldRegistry freg;
+  const fuse::CouplingGraph graph =
+      fuse::abi_test::build_two_component_lag1_graph(fuse::Rational{1}, /*cells=*/1);
+  const fuse::Result<void> rf = comp->register_fields(freg, graph);
+  ASSERT_TRUE(rf.ok()) << (rf.ok() ? "" : rf.error().message);
+
+  const std::optional<fuse::FieldId> fid =
+      graph.find_field(graph.find_component("upstream").value(), "out");
+  ASSERT_TRUE(fid.has_value());
+  const fuse::Result<fuse::FieldRef> bound = freg.get(*fid);
+  ASSERT_TRUE(bound.ok()) << (bound.ok() ? "" : bound.error().message);
+  EXPECT_EQ(bound.value().size(), 0u)
+      << "a non-hosting rank must register an EMPTY view, not the region's full size";
+}
+
 TEST(ConformanceTest, ProviderAdapterRegisterFieldsExceptionBecomesAFailure) {
   // register_fields()'s own try/catch (E-ABI-PROVIDER-EXCEPTION) guards
   // against anything FUSE's own backend/graph calls can throw, not just

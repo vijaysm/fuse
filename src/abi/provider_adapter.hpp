@@ -23,6 +23,7 @@
 /// ABI's own `fuse_ctx::backend` does.
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -48,6 +49,17 @@ class ProviderAdapter final : public fuse::Component {
   ProviderAdapter& operator=(const ProviderAdapter&) = delete;
   ProviderAdapter(ProviderAdapter&&) = delete;
   ProviderAdapter& operator=(ProviderAdapter&&) = delete;
+
+  /// KNOWN_ISSUES.md D15 round 3: this process's own base-communicator
+  /// rank, so register_fields() (below) can tell whether THIS process
+  /// actually hosts the component `table` was mounted for. `std::nullopt`
+  /// (the default -- every existing, single-process caller never calls
+  /// this) means "assume hosted everywhere", which is what register_
+  /// fields() always did before this round and is exactly right when
+  /// there is only one rank. Set once, before register_fields() runs
+  /// (participant.cpp's impl_initialize_local(), right after extracting
+  /// this adapter from the plugin registry) -- never again after.
+  void set_hosting_rank(std::optional<int> rank) { hosting_rank_ = rank; }
 
   [[nodiscard]] std::string name() const override { return name_; }
 
@@ -83,6 +95,8 @@ class ProviderAdapter final : public fuse::Component {
   /// caching is correct, not a race.
   std::uint32_t                last_blob_version_ = 0;
   fuse::SerialMeshBackend      backend_;
+  /// See set_hosting_rank()'s own comment above.
+  std::optional<int>           hosting_rank_;
   /// Owns the storage every field this component declares reads and writes;
   /// indexed the same order as `graph.component(id).fields` at
   /// `register_fields()` time, which is the order every later call

@@ -1,0 +1,20 @@
+# Mutation for KNOWN_ISSUES.md D15, round 3: ProviderAdapter::register_
+# fields() sizing a field from the D24 per-rank hosting rule, not its own
+# private SerialMeshBackend's always-full-region answer. Own file per
+# the review-fix protocol.
+#
+# Applied by hand, rebuilt, run, confirmed to fail EXACTLY the named
+# row, then restored byte-for-byte (cmp against the pre-mutation file
+# showed no difference; md5 recorded below).
+
+[[mutation]]
+id = "provider-adapter-hosting-check-removed"
+area = "abi-provider-hosting-rank"
+describes = "register_fields()'s own D24 hosting check (hosted = !hosting_rank_.has_value() || graph.component(*cid).ranks.contains(*hosting_rank_)) is replaced with a constant true, so a Plugin component registers the region's FULL size (from backend_'s own rank-unaware SerialMeshBackend) even on a rank its own declared RankSet does not name -- the exact host failure KNOWN_ISSUES.md D15 round 3 measured (\"field 'upstream.out' is registered with 1x1 values but the plan sizes its region at 0x1\")"
+file = "src/abi/provider_adapter.cpp"
+old = """    const bool hosted =
+        !hosting_rank_.has_value() || graph.component(*cid).ranks.contains(*hosting_rank_);"""
+new = """    const bool hosted = true;  // MUTATION: hosting check removed"""
+target = "fuse_abi_conformance_test"
+test = "abi.conformance"
+result = "CONFIRMED 2026-10-19: ConformanceTest.ProviderAdapterRegistersAnEmptyViewWhenThisRankDoesNotHostIt (this round's new test) failed -- register_fields() registered a 1-entry view (bound.value().size() == 1) instead of the expected 0 on a rank outside the component's own RankSet. All other 25 tests in the 26-test binary, including every other ProviderAdapter* case, still passed. Restored; cmp against the pre-mutation file reported no difference, md5 11d737155553c2cbf9e0ddee9232552e matches the restored file."
