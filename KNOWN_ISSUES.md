@@ -8053,3 +8053,108 @@ pass, and the two-invocation write-at-3/restore-at-2 protocol passes both invoca
 written file shows the five file attributes and the seven type attributes). Lesson recorded with D23/D38:
 a host row that cannot run in the sandbox must be run on the host BEFORE its code is described as
 delivered; slice 2's report said "built but not run", and all three defects sat behind that.
+
+### D77. Transport-direct track: the device-direct Transport branch (D66's own unverified GPU-aware path) was handing MpiTransport::move() a device pointer directly, and a second, masked race condition in the fix's own first draft -- FOUND AND FIXED 2026-10-18 (transport-direct track)
+
+**What was found (defect 1, the one this track was dispatched to fix).** D66 recorded
+higgs's device-direct exchange paths as implemented, compiling, and UNVERIFIED on real
+hardware, because the Open MPI available there at the time (4.1.5) was not CUDA-aware.
+Per the host inventory as of this track (STACK CHANGE 2026-10-17), higgs's Open MPI is
+now 5.0.9, CUDA-aware (`MPIX_Query_cuda_support()` returns 1), so
+`fuse::linalg::mpi_is_gpu_aware()` is true here for the first time and the device-direct
+branch of every exchange is reachable. **Measured RED**, before any change:
+`ctest -j1 -R 'parallel.window_runner_mpi.2.device|parallel.window_runner_mpi.3.device'`
+on this track's own `transport-direct` build -- both rows segfaulted in `std::memcpy`
+inside `MpiTransport::move()` (`src/transport/mpi_transport.cpp`), called from
+`Runner::Impl::execute_on<Kokkos::Cuda>`'s both-arcs-device `Transport` case
+(`src/runtime/runner.cpp`). Root cause: `MpiTransport::move(src, dst, n)` is a HOST
+routine -- it packs `src` into its own host `send_buf` through `send_index`, runs
+`MPI_Alltoallv` on its host buffers, unpacks `recv_buf` into `dst` through
+`recv_index`, and applies the same-rank `local_copy` pairs with `memcpy`. The
+`Transport` case's gpu-aware branch had been calling it with `d->send`/`d->recv`,
+Kokkos device views -- valid only once `is_gpu_aware()` is true, which on the old,
+non-CUDA-aware higgs it never was, so the defect had no host run that could expose it
+until now. Symbolised backtrace: `MpiTransport::move` (mpi_transport.cpp:1191) <-
+`execute_on<Kokkos::Cuda>` (runner.cpp:4711) <- `Impl::execute` (runner.cpp:3998) <-
+`run_region` (iteration.cpp:3397) <- `advance_window` (iteration.cpp:4579) <-
+`step_period` (runner.cpp:5116).
+
+**Fix for defect 1.** `fuse::Transport` (`include/fuse/transport/transport.hpp`) gained
+two members: `packed_layout()`, returning a `TransportPackedLayout` (the planned
+`send_index`/`recv_index`/`local_copy`/`components` -- copies of exactly the arrays
+`move()` itself packs and unpacks with), and `move_packed(packed_send, packed_recv)`,
+performing ONLY the `MPI_Alltoallv` on the buffers it is given. The default
+implementation of both reports `E-TRANSPORT-NOPACKED`, so `CopyTransport` and
+`LowFiveTransport` are unaffected. `MpiTransport` implements both; `move_packed()` is a
+direct `MPI_Alltoallv` against `Impl::sendcounts`/`sdispls`/`recvcounts`/`rdispls`, with
+no pack, no unpack, no `local_copy` application. `Runner::Impl`
+(`src/runtime/runner_impl.hpp`, `src/runtime/runner.cpp`) mirrors a GPU-aware plan's
+packed layout to the device once, in `build_transport_device_buffers()`
+(`detail::TransportDeviceOf::mpi_send_index`/`mpi_recv_index`/`mpi_local_src`/
+`mpi_local_dst`/`mpi_send`/`mpi_recv`/`mpi_local_scratch`, set by the new
+`detail::mirror_transport_packed_layout()`, guarded by `has_packed_layout`). The
+`Transport` case's both-arcs-device branch now takes a `run_device_direct_move()` path
+whenever `is_gpu_aware() && has_packed_layout`: gather `d->send` into the packed send
+buffer through `mpi_send_index`, call `move_packed()` with device pointers, scatter the
+packed receive buffer into `d->recv` through `mpi_recv_index`, then apply `local_copy`
+as a device gather-then-scatter -- never `Transport::move()`. The pre-existing
+host-staged fallback branch (`FUSE_TRANSPORT_HOST_STAGING=1`, or any backend that
+answers `is_gpu_aware()` without a packed layout) is unchanged byte for byte.
+
+**What was found (defect 2, in this track's OWN first draft of the fix above).** The
+first build of the fix above made `parallel.window_runner_mpi.2.device` pass, but
+`parallel.window_runner_mpi.3.device` failed `WindowRunnerMpi.
+TwoDisjointRanksMatchTheSingleProcessReference` -- not a crash, a silent numerical
+divergence (window 0's own `x_a` already off by ~5e-5 relative, and the agreed
+iteration count disagreeing with the reference, e.g. 26 vs 37). Isolated with
+`FUSE_TRANSPORT_HOST_STAGING=1` forced on the SAME 3-rank row: that passed, proving the
+bug was in the new device-direct code, not in anything it shares with the host-staged
+path. Root cause: `run_device_direct_move()`'s pack step (`fuse::num::gather<Space>`,
+a Kokkos kernel) wrote the packed send buffer and the code immediately called
+`Transport::move_packed()` -- handing MPI the SAME device pointer with no
+synchronization in between. Kokkos does not fence between a kernel launch and a
+foreign API call that reads its output; `MPI_Alltoallv` reading a device buffer whose
+writing kernel had not yet completed is exactly the shape of a race, and three ranks
+is an unsurprising place for timing to flip it (two ranks had already happened to work
+by luck, not by correctness). Every other device-resident exchange in this codebase
+that hands a buffer to MPI already fences first (`nodal_dist_gather_reduce_kernel`,
+`src/runtime/runner.cpp`'s own `Kokkos::fence("nodal_dist_gather_reduce_fence")`,
+runtime-exchange track); the original fix for defect 1 omitted the equivalent fence
+because every PRIOR crossing from device to `Transport::move()` went through a
+`Kokkos::deep_copy` into host memory, which already synchronizes implicitly, and the
+first draft did not replace that implicit synchronization when it removed the
+`deep_copy`.
+
+**Fix for defect 2.** One added line in `run_device_direct_move()`: `Kokkos::fence(
+"fuse::transport_direct_pack_fence")` between the pack gather and the
+`move_packed()` call.
+
+**GREEN, measured on higgs (Open MPI 5.0.9, CUDA-aware, GTX 1050 Ti).** After the
+fence fix: `ctest -j1 -R
+'parallel.window_runner_mpi.2.device|parallel.window_runner_mpi.3.device'` passes both
+rows, repeated 3 times in a row with no failure (the race this fence closes is exactly
+the kind that can pass by chance, so a single green run was not treated as sufficient).
+The new unit tests `WindowRunnerMpi.DeviceDirectTransportMatchesHostAndSetsMovesCounter`
+and `WindowRunnerMpi.DeviceDirectTransportHostStagedFallbackForced`
+(`test/parallel/window_runner_mpi_test.cpp`) were run directly (`mpirun -n 2` and
+`mpirun -n 3`) and both pass at both rank counts: the first confirms
+`RunStats::device_transport_moves > 0` summed across the job on this GPU-aware host and
+bitwise-identical delivered values against the no-MPI single-process reference; the
+second confirms the opposite (`device_transport_moves == 0`, `device_boundary_copies >
+0`) under `FUSE_TRANSPORT_HOST_STAGING=1`, i.e. the pre-existing fallback is untouched.
+Full gate counts are in report-transport-direct.md.
+
+**Scope relative to D66.** D66 also covers the ghost-exchange, nodal-remap and
+migration device-direct branches (`fuse::backend::DeviceGhostExchanger`, the
+nodal-distributed-remap plan, `fuse::native::exchange_migration_buffers()`), owned by
+other tracks and outside this track's own commits; this entry speaks only to the
+`Transport` slice D66 also names. D66's own status word is left for the lead to set.
+
+**Lesson.** A device pointer crossing into a foreign, non-Kokkos API is a
+synchronization boundary Kokkos does not manage for you -- `Kokkos::deep_copy` into
+host memory happens to provide it as a side effect, which is why removing the last
+`deep_copy` on a path removes a fence nobody wrote down as one. Grep for the pattern
+this track used to find its own sibling precedent
+(`Kokkos::fence(".*"); *$` immediately preceding an MPI call) before trusting a
+"handed MPI a device pointer" change that compiles and runs once.
+
