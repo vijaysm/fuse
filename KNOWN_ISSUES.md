@@ -3305,7 +3305,7 @@ rendezvous still runs only on a rank whose own first HDF5 call loads the plugin,
 touches HDF5 never reaches it — moving the rendezvous into an explicit step every participant calls
 (`connect()`'s MPMD choreography is the natural site) is the larger fix, left open here.
 
-### D15. The provider direction (S6 phase 4, "Adapter host" track) is implemented and conformance-tested on one process; device fields and mixed checkpoint/restore still are not -- a plugin on a rank subset is tested, FIXED 2026-10-19 (round 3) for one real host failure and AGAIN (round 4) for a second, independent one found alongside it; awaiting the host re-run
+### D15. The provider direction (S6 phase 4, "Adapter host" track) is implemented and conformance-tested on one process; device fields and mixed checkpoint/restore still are not -- a plugin on a rank subset is tested, FIXED 2026-10-19 across three rounds (3, 4, 5) for three independent bugs the 2-, then 3-rank host rows exposed one at a time; awaiting the host re-run at 3 ranks
 
 **What is done, measured 2026-10-02.** `include/fuse/abi/provider.h` (generated from a second
 `entries.def` entry list, `FUSE_ABI_PROVIDER_ENTRY`, sharing the participant direction's own
@@ -3507,6 +3507,80 @@ A pass means both rows succeed with no `E-RT-SETUP-PEER`; if either still fails,
 line now names which rank and which message, closing the diagnostic gap this round found regardless
 of whether the underlying fix was complete.
 
+**Measured on the owner's machine (round 4's fix): `parallel.provider_subset_mpi.2` PASSED;
+`parallel.provider_subset_mpi.3` STILL FAILED, a third independent bug.** The round-4 `stderr` fix
+worked exactly as intended: rank 2's own message was now visible, reading "field 'upstream.out' is
+registered with 1x1 values but the plan sizes its region at 0x1"; ranks 0 and 1 showed the
+`E-RT-SETUP-PEER` follow-on. At 3 ranks, "upstream" (`RankSet{1, world_size - 1}` = `{1, 2}`, TWO
+ranks) hosts a region whose mesh ("generated:line:1", ONE cell total) does not divide evenly over
+those two ranks: rank 1 (position 0 of 2) owns the one cell, rank 2 (position 1 of 2) owns NONE of
+it -- D24's own rule, applied PER POSITION within a multi-rank component, not merely "is this rank a
+RankSet member at all".
+
+**Explained and fixed 2026-10-19 (ABI track, round 5): round 3's `hosted` rule was still too coarse
+for a component spanning MORE than one rank.** `ProviderAdapter::register_fields()`'s own `hosted`
+flag answers RankSet MEMBERSHIP -- a binary question that happens to be the WHOLE answer for a
+ONE-rank component (every fixture before round 5, including `parallel.provider_subset_mpi.2`'s own
+2-rank world, where "upstream" has exactly one rank). At 3 ranks, "upstream" spans TWO ranks, and
+`hosted` is `true` for BOTH of them (both are RankSet members), so round 3's rule registered the
+region's FULL size (via `backend_.region_size()`, this adapter's own rank-unaware private
+`SerialMeshBackend`) on BOTH -- correct for rank 1 (which really does own the whole one-cell region
+at its own position), wrong for rank 2 (which owns none of it at its position). This is NOT the
+`dlopen()`-everywhere design question round 3 left open (`Registry::mount_dynamic()` mounting a
+Plugin component's shared object on every rank regardless of `RankSet`): that question is about
+whether a NON-hosting rank's own `ProviderAdapter` is even constructed, not about what a rank that
+genuinely IS a RankSet member registers -- rank 2 is squarely a RankSet member here, and the bug is
+in sizing a HOSTING rank's own share, not in deciding who hosts.
+
+Fixed by computing each hosting rank's own SHARE of the region, via the same per-position even split
+`fuse::native::rank_slice` (src/backend/native_generators.cpp) applies to a real multi-rank mesh
+decomposition -- reproduced, not called directly, as a new pure function
+(`fuse::abi_detail::even_rank_share()`, `include/fuse/abi/rank_share.hpp`), because
+`native_backend.hpp` pulls in Kokkos (a dependency `provider_adapter.cpp` has never needed) and this
+round's own task explicitly excludes touching `src/backend` to factor a shared, Kokkos-free primitive
+out of `rank_slice` instead -- left as an open question for a future round (below). `register_fields()`
+now computes `full = backend_.region_size(region)` as before, then, when `hosting_rank_` is set,
+`count = even_rank_share(full, position, ranks.size())`'s own slice width, where `position =
+ranks.index_of(*hosting_rank_)`; a single-process caller (`hosting_rank_` unset) is UNCHANGED
+(`count = full`, the round-3 behaviour exactly). A SECOND bug surfaced fixing the first: the PLUGIN's
+own `bind()` call was gated on `hosted` alone (round 3), which is now insufficient -- a hosted rank at
+a zero-share POSITION still has `hosted == true`, and calling the plugin's own `bind()` with a NULL
+`base` (an empty `storage_[i]`) hit the SAME `p_bind()` refusal round 3's own fix for the NOT-hosted
+case was written to avoid, from a different angle. Gated on `count > 0` instead, which subsumes the
+not-hosted case (`count` stays `0` there too) and additionally covers a hosted-but-zero-share
+position.
+
+Pinned at tier 0 two ways: `fuse_abi_rank_share_test` (`test/abi/rank_share_test.cpp`, 6 cases:
+the exact measured one-cell-over-two-positions case, an evenly divisible total, a remainder over
+three positions, group size 1, group size 0 (degenerate), and an empty total) exercises
+`even_rank_share()` directly with no MPI; `ConformanceTest.
+ProviderAdapterSplitsAMultiRankComponentsRegionByPosition` (`test/abi/conformance_test.cpp`)
+constructs a real `ProviderAdapter` with "upstream" on `RankSet{1, 2}` and a one-cell region, calls
+`register_fields()` once with `set_hosting_rank(1)` (expects the one cell) and once with
+`set_hosting_rank(2)` (expects an empty view, where round 3's own rule would have registered the
+full size) -- two mutations (`build-evidence/mutations/abi-rank-share.toml`,
+`build-evidence/mutations/abi-provider-rank-position.toml`) each confirm a different one of the two
+bugs above reproduces under the matching reverted code. Built clean under `FUSE_ENABLE_MPI=ON`.
+Built, never run (C1 above). **Host-pending:**
+
+```
+ctest --test-dir <build> -R 'parallel\.provider_subset_mpi\.(2|3)' -V
+```
+
+A pass means `.2` still passes (unchanged behaviour for a one-rank component) and `.3` now also
+passes (rank 2 registers an empty view, matching the plan). A FOURTH failure here, after three
+rounds each closing one independently-measured bug in this same test, would mean another class of
+sizing assumption this track has not yet named.
+
+**Open question, not decided this round.** `include/fuse/abi/rank_share.hpp`'s own
+`even_rank_share()` duplicates `fuse::native::rank_slice`'s exact formula rather than calling it, to
+avoid giving `src/abi/provider_adapter.cpp` a transitive Kokkos dependency and because this round's
+task explicitly excludes touching `src/backend`. The two formulas cannot drift apart only as long as
+nobody edits one without the other -- a future round should consider factoring the formula into a
+shared, dependency-free location (or extracting a Kokkos-free kernel from `rank_slice` itself) so a
+single source of truth exists; left open rather than resolved here, since it is a maintainability risk
+rather than a measured defect.
+
 
 ## C. Not defects — do not fix these
 
@@ -3589,6 +3663,8 @@ Also check whether any carried state is determined only through an average, as p
 a_n under the midpoint load is the candidate, since the eigenvector carries 14% of its mass in the
 beam acceleration.
 
+
+**Host run of round 5 (lead, 2026-10-19):** `parallel.provider_subset_mpi.{2,3}` PASS (0.86 s, 0.09 s). D15's three test-side defects are closed on the host; the mount-everywhere design question stays open.
 ### D16. A window member's cold-start priming over-read a smaller provider buffer — FIXED 2026-10-03
 
 Found by ASan on a two-member window-scoped region whose members export fields of different
@@ -6515,7 +6591,7 @@ No descriptor version bump: the launch record was already part of every componen
 canonical bytes) and `YamlIo.AnInProcessCouplerWritesNoLaunchBlock`, with the mutation
 `a-couplers-launch-mode-is-dropped-by-the-writer`. The hang itself is host-only.
 
-### D18. `fuse::transport::connect()`'s `Connect`-mode path supports exactly two components; a third refuses `E-CONNECT-SPEC` -- GENERALISED 2026-10-18 (tier-0); host executables built, HUNG on the host 2026-10-18, a diagnostic trace added round 3, PRINTED NOTHING on the round-3 host run, env forwarding fixed round 4, awaiting a re-run
+### D18. `fuse::transport::connect()`'s `Connect`-mode path supports exactly two components; a third refuses `E-CONNECT-SPEC` -- GENERALISED 2026-10-18 (tier-0); the chain rendezvous itself now completes on the host (round 4's trace fix), but the DELIVERED CONTENT check failed on a mismatched golden, fixed round 5; awaiting a re-run
 
 `connect_pairwise()` (`src/transport/connect.cpp`) reads, verbatim:
 
@@ -6784,6 +6860,103 @@ inside `connect.cpp`'s own `ParseConnectChainTraceEnabledEnv`/`ChainTraceEnabled
 individually re-verified against a real multi-process run) or the failure happens before the first
 traced step is ever reached -- both still open.
 
+**Measured on the owner's machine (round 4's forwarding fix): the rendezvous itself now completes.**
+With `-genv` forwarding, the trace printed on every rank and `parallel.connect.chain.3` completed its
+rendezvous in about 1.5 s (a, b: connect returned; c: accept, merge done) -- the forwarding gap this
+round's own task opened with is closed, and D23/D65's accept intermittency is not implicated here.
+The row still FAILED, on CONTENT: `run_chain.sh`'s own diff against `golden-1+1.txt` (expected: one
+line, "rank=1 i=0 value=0x0p+0") did not match the delivered values (actual: four lines, "rank=2
+i=0..3 value=0x0p+0") -- disagreeing on which merged rank prints, how many values, AND (suspiciously,
+since both sides showed zero) whether the test ever delivers a non-trivial value at all.
+
+**Explained and fixed 2026-10-19 (ABI track, round 5): the golden file was for a DIFFERENT test,
+reused on a false assumption; and the default period count was too few to rule out a lag.**
+1. **Wrong golden.** `golden-1+1.txt` is `connect_common.hpp`'s own PAIR-test golden (`na=1`, ONE
+   entity, global id 0 -- `value=0` is CORRECT for it). `connect_chain_common.hpp`'s own chain test
+   uses a DIFFERENT, hardcoded `kEntities = 4` (not parameterised by `na` at all) and its LAST
+   component sits at merged rank `count - 1` (CONFIRMED by `connect_chain()`'s own code comment:
+   "the chain formed so far is always low (0) and the joining component is always high (1) ...
+   preserving the graph's own component order across every step" -- not an inference, the function's
+   own documented contract), not always rank `1`. The file's own header comment claiming "the chain's
+   own output matches golden-1+1.txt unchanged regardless of chain length" was simply WRONG (written
+   before `kEntities` was set to 4, never corrected). Fixed by giving `connect_golden.cpp` (the
+   existing tier-0, MPI-free golden generator for the PAIR test) a new `--chain <count>` mode that
+   computes the chain's OWN golden from the SAME `partition_block()` call the chain itself makes ("a"
+   is a one-rank component owning the WHOLE `kChainEntities`-sized mesh, so `partition_block()` is the
+   identity split -- the chain's own header comment on why), generating `golden-chain-3.txt` and
+   `golden-chain-4.txt` (checked in, same convention as the other `golden-*.txt` files). `test/
+   CMakeLists.txt` now points each chain row at its own golden instead of the reused pair one.
+2. **Possibly too few periods -- fixed defensively, not conclusively diagnosed.** Every value on both
+   sides read ZERO, which the task's own instruction flagged as suspicious for a delivery test. "a"'s
+   own producer writes real, non-zero global ids (`partition_block({0,1}, 0, 4)` = `{3, 2, 1, 0}`,
+   reversed per that function's own documented local-index convention) -- `connect_chain_common.hpp`'s
+   middle links do an identity passthrough with NO further repartitioning, so a working chain should
+   deliver those SAME four values to the last component unchanged, regardless of how many hops away
+   it is. This sandbox cannot run MPI (C1) to determine empirically whether a Connect-mode chain
+   delivers within the SAME period it is written or needs one additional period PER HOP (this
+   project's own "lag" convention is documented for FEEDBACK coupling elsewhere, never confirmed
+   either way for a one-way Connect chain) -- the all-zero result is consistent with either a
+   genuine delivery defect or an under-provisioned period count, and this round could not
+   distinguish them from code alone. Fixed defensively: `run_chain.sh` gained a `[periods]` positional
+   argument (default `1`, unchanged for any caller that omits it), and `test/CMakeLists.txt` now
+   passes `periods = count` for each chain row -- a SAFE choice either way, since "a"'s own value is
+   a fixed function of a static mesh, recomputed identically every period, so extra periods beyond
+   whatever is actually needed just re-deliver the SAME steady-state value; they cannot make a
+   correct chain wrong, only prevent an under-provisioned one from looking like a failure.
+Built clean under `FUSE_ENABLE_MPI=ON` (the four chain executables, unchanged) and at tier 0 (`fuse_
+parallel_connect_golden`, rebuilt with the new `--chain` mode, confirmed to reproduce `golden-1+1.txt`
+byte-for-byte for `--na 1 --nb 1` before being trusted for `--chain`). Built, never run under MPI (C1
+above; the golden tool itself IS run, tier 0, to generate the committed files). **Host-pending:**
+
+```
+FUSE_CONNECT_CHAIN_TRACE=1 ctest --test-dir <build> -R 'parallel\.connect\.chain\.(3|4)' -V
+```
+
+A pass means both rows now match their own chain-specific golden. If `.3` still fails on content with
+`periods = 3`, the periods hypothesis is ruled out and the defect is a genuine delivery problem (check
+whether "a"'s own `advance()` runs before or after the first `Transport` instruction for `link0` in the
+compiled schedule); if it passes, the lag hypothesis was correct and worth documenting as a real
+Connect-mode property rather than leaving it to coincidence that `periods = count` happens to be
+enough.
+
+**`parallel.connect.chain.4`, not re-run this round (host-pending only): exact command and the trace
+sequence a correct 4-component chain should show.**
+
+```
+FUSE_CONNECT_CHAIN_TRACE=1 ctest --test-dir <build> -R 'parallel\.connect\.chain\.4' -V
+```
+
+`connect_chain_plan()`'s own numbering (`step_index` 1-based through `order.size() - 1` = 3 for four
+components) and `connect.cpp`'s own trace call sites give this exact sequence, interleaved across
+ranks by real timing but always in THIS order per rank:
+- Step "1" (the pairwise merge, traced with the literal placeholder `step=0 rank=-1`, not yet a
+  resolved rank -- `connect.cpp`'s own hardcoded call): "a" and "b" each print "entering step 1
+  (connect_pairwise)", then (after `connect_pairwise()`'s own un-instrumented accept/connect/merge)
+  "step 1 (connect_pairwise) returned". Only these two bookend lines; nothing inside
+  `connect_pairwise()` itself is traced.
+- Step "2" ("c" joins the a+b chain): "a" and "b" (now ranks 0 and 1 of the 2-rank merged
+  communicator) print "entering step as the CHAIN-SO-FAR (connector) side"; "c" (rank 0 of its own
+  local world) prints "entering step as the JOINING (acceptor) side", then "opened and published port
+  file <port_c>", then "calling MPI_Comm_accept -- blocks until the connector side arrives"; "a" and
+  "b" print "polling for port file <port_c>", then "found the port file -- calling MPI_Comm_connect",
+  then "MPI_Comm_connect returned"; "c" prints "MPI_Comm_accept returned"; all three (now ranks 0, 1, 2
+  of the new 3-rank merged communicator) print "MPI_Intercomm_merge done for this step".
+- Step "3" ("d" joins the a+b+c chain): the SAME shape as step 2, one rank wider -- "a", "b", "c" (now
+  ranks 0, 1, 2 of the 3-rank chain) each print "entering step as the CHAIN-SO-FAR (connector) side"
+  then the polling/connect/returned trio; "d" (rank 0 of its own local world) prints "entering step as
+  the JOINING (acceptor) side", opens and publishes `<port_d>`, accepts; all four (now ranks 0, 1, 2, 3
+  of the final 4-rank merged communicator) print "MPI_Intercomm_merge done for this step".
+A trace that stops cleanly after step 3's own "calling MPI_Comm_accept" (on "d") with no matching
+"found the port file" from a, b, or c points at the SAME rendezvous question D23/D65 already names for
+the 2-component rows, now one step later in a longer chain; a trace where every line above appears but
+the row still fails is this entry's OWN content check (above), not a rendezvous defect.
+
+
+**Host run of round 5 (lead, 2026-10-19):** `parallel.connect.chain.3` PASSES 7 of 7 reruns (0.18-0.21 s) with
+and without `FUSE_CONNECT_CHAIN_TRACE`, delivering non-zero values (`rank=2 i=1 value=0x1p+1`, `i=2 value=0x1p+0`),
+against its own `golden-chain-3.txt`. In the first batch after the rebuild both `chain.3` and `chain.4` timed out
+at 120 s (the sampled processes had gone by the time the sampler ran); not reproduced in the seven reruns. The
+periods hypothesis is not separated by this (the row passes with `periods=count`). `chain.4` reruns are below.
 ### ~~D19. The coupling-window path (`src/runtime/iteration.cpp`) has never run across more than one process~~ — CLOSED 2026-10-09: `parallel.window_runner_mpi.{2,3}` pass on the host (2026-10-08) and the three-executable Brusselator runs through it (D25)
 
 **Found this session**, reviewing Conformance Unit 2's own host rows before they can be run: every
@@ -8185,7 +8358,7 @@ package config recreates `fuse-lowfive` from them when `FUSE_ENABLE_LOWFIVE` was
 `build-lowfive` and `build-all`, and `example.demo_b` still passes. No configure-time refusal was added: nothing
 could make one fire, and the two install-consumer rows are the test that does.
 
-### D61. The participant ABI's refusals are decided rank-locally and never reconciled across a component's ranks — FIXED A THIRD TIME 2026-10-19 (round 4, tier-0), after round 3's own component-local split was found to still land every component in ONE communicator; host row re-derived, awaiting the host run
+### ~~D61. The participant ABI's refusals are decided rank-locally and never reconciled across a component's ranks~~ -- CLOSED 2026-10-19 (round 5), host-verified: `parallel.abi_reconcile_mpi.{2,3}`, `parallel.abi_reconcile_disjoint_mpi.3` and `verification.brusselator.participants.mpmd.{3,5}` all PASS on the owner's machine at round 4's own fix
 
 `begin_step`/`end_step`/`setup`/`initialize`/`run` return codes such as `E-ABI-STEP-ORDER` or
 `E-ABI-STEP-ALREADY-OPEN` from local state only; an out-of-turn or omitted call on one rank of a
@@ -9428,6 +9601,108 @@ registration: `bench.scaled_device_benchmark.{2,3}` and their `.device` twins ar
 `example.scaled_device_benchmark[.device]` correctness row (world size 1, same reason) are
 unaffected and pass. Re-enabling the two disabled rows is the right acceptance test for whoever
 fixes D67/D74's shared root cause.
+### D73 FIX, ROUND 5 (RemapHalo track round 4, 2026-10-19): the test never ran the real covering-set exchange at all -- found the actual reason, fixed the test, and found a SEPARATE, pre-existing conservation defect (D82) the host's 63-vs-28 numbers were really showing
+
+**Host run (owner's machine, build-all at `632d9ba`, 2 ranks, `FUSE_REMAP_HALO_TRACE=1`,
+`--gtest_filter=NativeRemapHalo.DisjointGeneralWeightedRemapConservesOnceTheHaloIsBuilt`):** rank 0 printed
+only `remap_weight_nonzeros=0 remap_weight_builds=1`; rank 1 printed only `remap_weight_nonzeros=16
+remap_weight_builds=1`. NEITHER rank printed either of `native_halo.cpp`'s own two trace lines (owned/
+target cell counts before the exchange, adopted cell count after) -- only `runner.cpp`'s per-channel
+nonzero line, added round 3. Rank 0 failed `:352` (`remap_weight_nonzeros > 0`, actual 0) and `:393`
+(conservation: `global_source_sum=28`, `global_target_sum=62.999999999999986`, tolerance `9.09e-14`).
+
+**Root cause of the missing trace lines: `test/parallel/native_remap_halo_runner_test.cpp`'s own `build()`
+never called `h->backend.set_communicator()` at all.** `cfg.transport_setup` (set at `Runner` construction,
+well after `build()` already ran `make_region_sizes()`/`schedule()`) adopts a real communicator for the
+MPI TRANSPORT Runner uses for `Transport`/`Epoch` -- a DIFFERENT object from `h->backend`, the
+`NativeMeshBackend` `make_region_sizes()` calls to build every `BuildRemapHalo` instruction. Without a
+call to `h->backend.set_communicator()`, `h->backend.communicator()` stayed `kNullComm` for the whole
+`build()` call (`native_backend.hpp`'s own doc on `set_communicator`: "`kNullComm` ... means no
+covering-set exchange is possible ... treats every mesh here as serial"), so
+`fuse::native::build_native_remap_halo`'s own `ranks <= 1 || backend.communicator() == kNullComm`
+short-circuit (`native_halo.cpp`) fired UNCONDITIONALLY, regardless of how many real MPI ranks this row
+ran under -- the real exchange this test exists to exercise, and every trace line inside it, never ran.
+`test/parallel/native_halo_mpi_test.cpp:63` already calls `backend.set_communicator()` right after
+construction; this test's own `Harness` never did. **Fixed**: added the identical call, right after
+the mesh-load loop in `build()`, before `lower()`/`schedule()`.
+
+**Why the test nonetheless produced a NON-empty, geometrically-plausible 16-nonzero matrix on rank 1
+despite the halo never actually building:** `NativeMeshBackend::register_default_placements()` generates,
+for EVERY component, a placed view of EVERY mesh decomposed over THAT component's OWN `RankSet` SIZE,
+independent of `communicator_`. This fixture's own `placement_for(2)` gives BOTH `provider` and `consumer`
+a `RankSet` of SIZE 1 -- so on a hosting rank, "decomposed over a RankSet of size 1" means NO decomposition
+at all: that rank's own default (pre-halo) view of EVERY mesh is the WHOLE mesh, by the documented "one
+process IS every placement" rule for a one-rank component. Rank 1 (consumer) therefore saw the FULL
+4-cell provider mesh under consumer's OWN placement by DEFAULT, with no halo needed at all -- a
+coincidence of this specific 50/50, one-rank-per-component split, not evidence the cross-rank exchange
+mechanism engaged. A genuinely multi-rank-per-component split (`RANKS 3` with an uneven provider/consumer
+rank count, say) would not have this masking property.
+
+**Separated the `:352` nonzeros assertion by placement, not globally, per the owner's own question.** The
+weight matrix's rows are the TARGET region's own entities; a rank outside the target component's own
+`RankSet` owns zero target cells by construction (`register_default_placements`'s own documented "outside
+the processor set: an EMPTY view" rule) and so correctly builds zero rows -- not a defect. The row
+asserted `remap_weight_nonzeros > 0` unconditionally on EVERY rank through round 3; fixed to assert `> 0`
+only on a rank inside the target placement's own `RankSet`, and `== 0` (with an explanatory message)
+otherwise. This fixture's own even 50/50 split at `RANKS 2` happened not to trip the old, wrong assertion
+(because `world_size()==2` never puts the "hosts neither" case in play for either role here), but the
+gap was real.
+
+**Confirmed (and quantified) the SAME two trace lines this track added are placed correctly and will fire
+once the halo actually builds** -- not measurable without a live `mpiexec`, so this remains `host_pending`
+below, now joined by the weight-matrix-triplet tracing the owner asked for (`FUSE_REMAP_HALO_TRACE=1`'s
+`runner.cpp` half now prints every `(row, col, val)` triplet of the built matrix, not just its count).
+
+**The 63-vs-28 discrepancy itself is NOT a halo/placement defect -- it is a separate, pre-existing gap in
+the weight BUILDER, confirmed on a single process with no MPI at all: KNOWN_ISSUES.md D82, opened below.**
+`fuse::build_supermesh_weights` (`src/backend/supermesh.cpp`) always builds a ROW-normalized-by-TARGET-
+measure matrix (`val = overlap_measure / target_cell_measure`; that function's own "Constant preservation"
+check sums each row to 1.0) -- the correct convention for an INTENSIVE (density) field, confirmed exactly
+by `test/backend/supermesh_test.cpp`'s own `AConstantSurvivesAndTotalMassIsPreserved` acceptance test,
+which verifies conservation by MULTIPLYING the delivered value by each cell's own measure. This fixture's
+own channel is `Conservation::Extensive` and its own conservation check (`:393`/`local_source_sum`,
+`local_target_sum`) sums raw field VALUES directly, with NO measure weighting at all -- the Extensive
+("value IS the amount") convention. `RemapPlan` carries no `Conservation` field at all, and neither
+`build_weights`/`build_supermesh_weights`/`supermesh_side` (`src/backend/intx_weights.cpp`,
+`src/backend/supermesh.cpp`) nor `apply_weights` (`fuse/backend/remap_plan.hpp`) nor the Remap instruction's
+own runtime execution (`Runner::Impl::execute()`'s `OpKind::Remap` case, `runner.cpp` -- "Spec Section 5.4:
+`g = W f`") ever reads `Conservation::Extensive`/`Intensive` or converts between a per-cell amount and a
+per-cell density anywhere in this call chain (`Conservation` is read only to choose the nodal-vs-general
+dispatch branch and for the vertex-measure refusal inside `Constrain`). `OpKind::Constrain`
+(`resolve_constrain`/its own execute-time case) only REPORTS this mismatch ("Phase 4 reports; it does not
+correct") and does not abort by default (`RunnerConfig::abort_on_violation` defaults to `false`, and this
+fixture does not override it) -- so the period "succeeds" with the wrong numbers, and only the test's own
+stricter, redundant `:393` check catches it.
+
+**Measured, in-sandbox, with no MPI and no disjoint rank sets at all** (a scratch harness calling
+`fuse::build_supermesh_weights` directly on the SAME mesh pair, `generated:quad:2x2` onto
+`generated:quad:3x3`, single process): the matrix is `n_rows=9 n_cols=4 nnz=16`, `max_row_defect=5.6e-16`
+(rows sum to 1.0, confirming the density/Intensive convention). Applying it to a uniform field of 7.0
+(`Side::fill`) under the EXTENSIVE convention (raw value sum, no measure weighting) gives
+`source_sum=28`, `target_sum=63` -- the EXACT numbers the host measured. Applying the SAME matrix under
+the INTENSIVE convention (value=density, amount=value*measure) gives `source_integral=7`,
+`target_integral=7` -- exactly conserved. This reproduces the host's own 28-vs-63 defect on ONE process
+with no partitioning at all, confirming it is unrelated to D73's own halo-bridging work: it would occur
+for ANY `Conservation::Extensive`, general-weighted (non-nodal), non-matching-resolution FV<->FV channel,
+through the native OR the no-MOAB supermesh path (the affected functions are compiled unconditionally,
+outside any `FUSE_HAVE_MOAB` guard) -- masked only when every overlapping source/target cell pair happens
+to share the same measure (an identical or uniformly-resolved mesh pair), which is why no prior test
+caught it. NOT fixed by this round -- the fix requires threading `Conservation` through `RemapPlan` (it
+currently carries none at all) and choosing a different weight normalisation or an explicit amount/density
+conversion at the call site, a change with a blast radius spanning every conservative-channel test in the
+tree; left for the owner's own decision as KNOWN_ISSUES.md D82, below.
+
+
+**Host run of round 5 (lead, 2026-10-19, `build-all` at `e9ac0b2` + round 5, 2 ranks, `FUSE_REMAP_HALO_TRACE=1`
+`FUSE_TEST_PRINT_ALL_RANKS=1`):** the `set_communicator()` fix took: rank 0 prints `owned_source_cells=4 ...
+target_cells=0`, rank 1 `owned_source_cells=0 ... target_cells=9`, so the real covering-set exchange runs. The row
+then hangs to the timeout: rank 0 sampled in the post-merge `MPI_Allreduce`, rank 1 already in the harness's
+`OnTestEnd` Allgather because its test body ended with `C++ exception with description "Deprecation Error:
+Kokkos::deep_copy extents of views don't match: fuse::native::device::merge_cvo(1) (0) "`. On a rank with no
+local source cells, `merge_halo_cells_device` copies a 1-element offsets view into a 0-element one and throws,
+and the exception unwinds past the collective. Round 6 fixes the empty-local-mesh merge and makes the merge
+exception-safe across the two agreement Allreduces. The harness switch `FUSE_TEST_PRINT_ALL_RANKS` (lead) keeps
+a non-zero rank's gtest printer so its failure text is visible; without it rank 1's message was lost.
 ### D74 FIX (scaled-bench track, follow-up round, 2026-10-16)
 
 **Root cause, directly diagnosed (not the corner-precision theory originally suspected).**
@@ -9784,3 +10059,74 @@ same outcome and both refuse `E-REMAP-GEOMETRY`; the row measures delegation, no
 item is fixed. **Owner decision 2026-10-19:** a placement-aware rescale invoked EXPLICITLY by the driver (the
 driver checks whether a mesh is on the unit sphere, or forces the rescale for every mesh); the library must
 not assume or apply a rescale on its own.
+
+### D82. A general (non-nodal) FV<->FV weighted Remap on a `Conservation::Extensive` channel does not conserve the delivered total when source and target cells have different measures -- OPEN, found 2026-10-19 (RemapHalo track, round 4, while separating causes for D73's own host-measured conservation failure)
+
+**Not a halo or placement defect.** Reproduced on ONE process, no MPI, no partitioned rank sets at all --
+unrelated to D73's own cross-rank geometry-exchange work, which this entry's own discovery was a
+byproduct of (see D73 FIX, ROUND 5, above, for the host measurement and how the two were separated).
+
+**The mechanism.** `fuse::build_supermesh_weights` (`src/backend/supermesh.cpp`) always builds a matrix
+with `val = overlap_measure / target_cell_measure` -- ROW-normalized by the TARGET cell's own measure, so
+every row sums to 1.0 (`max_row_defect`, that function's own "Constant preservation" audit). This is the
+correct convention for an INTENSIVE (density) field: `test/backend/supermesh_test.cpp`'s own
+`AConstantSurvivesAndTotalMassIsPreserved` test confirms conservation for exactly this matrix by
+multiplying the delivered field value by EACH CELL'S OWN MEASURE before comparing sums (`m_in += ramp[i] *
+src->measure(...)`, `m_out += out[j] * tgt->measure(...)`) -- i.e., it treats the field value as a density
+and the "amount" as a derived quantity (`value * measure`).
+
+A `Conservation::Extensive` field (this library's own convention: the field's VALUE directly IS the
+conserved amount, not a density -- confirmed by every Extensive conservation check in this tree summing
+raw values with no measure weighting, e.g. `native_remap_halo_runner_test.cpp`'s own `local_source_sum`/
+`local_target_sum`) needs a DIFFERENT weight convention (column-normalized by the SOURCE cell's own
+measure, `val = overlap_measure / source_cell_measure`, so that `sum_j val[j,i] = 1` for each source
+column `i` and the AMOUNT in cell `i` is fully redistributed, not reinterpreted as a density) -- or an
+explicit amount<->density conversion (divide by the source cell's own measure before the matvec, multiply
+by the target cell's own measure after) around whichever matrix convention is used.
+
+**Neither exists anywhere in this call chain.** `RemapPlan` (`fuse/backend/remap_plan.hpp`) carries NO
+`Conservation` field at all. `build_weights`/`build_weights_via_supermesh`/`supermesh_side`
+(`src/backend/intx_weights.cpp`) and `build_supermesh_weights` (`src/backend/supermesh.cpp`) never read
+`Conservation::Extensive`/`Intensive`. `apply_weights` (`fuse/backend/remap_plan.hpp`) is a pure,
+convention-agnostic sparse matvec (`dst = W * src`). `Runner::Impl::execute()`'s `OpKind::Remap` case
+(`runner.cpp`, "Spec Section 5.4: `g = W f`") calls it directly on whatever is in the slot, with no
+density/amount conversion either side. `Runner::Impl::resolve_remap()` DOES read the channel's
+`Conservation` (via `sf_ptr`/`tf_ptr`), but only to decide the nodal-vs-general dispatch branch -- never to
+choose a weight-matrix convention for the general FV<->FV path. `OpKind::Constrain` (`resolve_constrain`,
+and its own execute-time case) computes the TRUE measure-weighted integral on both sides and compares
+them, but "Phase 4 reports; it does not correct" (that case's own comment) -- it only flags the mismatch
+(`stats.conservation_violations`), and does not abort unless `RunnerConfig::abort_on_violation` is set
+(default `false`).
+
+**Measured, in-sandbox** (a scratch harness calling `fuse::build_supermesh_weights` directly, no MPI, one
+process, on `generated:quad:2x2` onto `generated:quad:3x3` -- the same mesh pair `native_remap_halo_
+runner_test.cpp` uses): `n_rows=9 n_cols=4 nnz=16`, every row sums to 1.0 within rounding
+(`max_row_defect=5.6e-16`). A uniform field of 7.0 applied under the EXTENSIVE (raw value=amount)
+convention gives `source_sum=28`, `target_sum=63` -- not conserved, and exactly the numbers the owner's
+host measured through the full Runner pipeline. The SAME matrix applied under the INTENSIVE
+(value=density, amount=value*measure) convention gives `source_integral=7`, `target_integral=7` --
+exactly conserved.
+
+**Why no prior test caught this**: it is masked whenever every overlapping source/target cell pair shares
+the same measure -- an identical mesh pair (the `RemappingOntoTheSameMeshIsTheIdentity` supermesh test),
+or any uniformly-resolved pair where the ratio happens to cancel. `generated:quad:2x2` onto
+`generated:quad:3x3` is the first Extensive, non-matching-resolution, general-weighted FV<->FV pair this
+tree's own test suite built (this track's own round-1 GREEN row, written to exercise D73's halo, not
+designed to probe this).
+
+**Scope, and why this round did not fix it.** The affected functions
+(`build_weights_via_supermesh`/`supermesh_side`/`build_supermesh_weights`) are compiled unconditionally,
+outside any `FUSE_HAVE_MOAB` guard, so this is NOT specific to the native backend or to the MOAB-absent
+build -- every conservative general-weighted channel in the tree, on EITHER backend, that lacks matching
+cell measures on both sides is affected the same way. A real fix needs `RemapPlan` to carry the channel's
+own `Conservation` (a new field, touching its `key()` and every existing cache entry) and either a second
+weight-normalization branch or an amount/density conversion applied consistently at every call site that
+builds or applies these weights (`resolve_remap()`'s setup half, `OpKind::Remap`'s execute-time half,
+and the MOAB-specific high-order/order>1 path this track did not re-derive the formula for) -- a change
+whose correctness needs re-verifying against every existing conservative-channel test in this tree, not a
+contained, single-file patch. Left open for the owner's own decision on scope and which track takes it.
+
+**host_pending**: none specific to this entry -- it was measured completely in-sandbox, with no MPI
+needed at all. D73's own `host_pending` row (above) is expected to still show a DIFFERENT value from 63
+once D73's own fix is confirmed on the host (the real multi-rank exchange adopting the correct cells),
+but will not show 28 either, until D82 is separately fixed.
