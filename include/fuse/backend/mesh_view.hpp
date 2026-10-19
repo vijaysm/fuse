@@ -457,6 +457,41 @@ enum class RegionExtentKind { Cell, Vertex };
 
 /// Adapt a backend to the callback Phase 3 Task 3.5 defined.
 ///
+/// D73 ROUND 2 (owner decision 2026-10-18): BEFORE doing anything else,
+/// this function executes every `OpKind::BuildRemapHalo` instruction
+/// `dag` carries (`fuse::execute_remap_halo_instructions()`,
+/// fuse/backend/remap_halo_instructions.hpp) -- COLLECTIVELY, structural
+/// conditions only (every rank compiles the identical `dag` from the
+/// identical `CouplingGraph`, so the set and order of instructions
+/// already agree without any data-dependent branch) -- and only THEN
+/// reads the entity counts the returned callback reports. This is the
+/// ONE call site a remap halo's real geometry exchange can run from: the
+/// returned `RegionSizes` callback is invoked once, synchronously, inside
+/// `schedule()` itself (fuse/schedule/buffers.hpp), to freeze every
+/// `BufferDecl::elements` into the `ExecutionPlan` -- which happens
+/// BEFORE the `Runner` that will eventually read those buffers is even
+/// constructed (`Runner`'s constructor takes the already-built
+/// `ExecutionPlan`). Round 1 of this track had application code call
+/// `execute_remap_halo_instructions()` directly, between loading the
+/// backend and calling `schedule()`; round 2 moves that call here so a
+/// caller cannot forget it or place it too late by hand -- `make_region_
+/// sizes()` was already the one function EVERY caller passes `dag` to
+/// before `schedule()` runs, so it is the one place the halo build and
+/// the sizing it feeds cannot drift apart. KNOWN_ISSUES.md D77 (closed)
+/// records the measured ordering constraint this decision answers.
+///
+/// A graph with no cross-rank weighted channel at all makes this an
+/// unconditional no-op (zero instructions, zero cells) -- exactly as
+/// `execute_remap_halo_instructions()`'s own doc says -- so calling this
+/// unconditionally, as every existing caller already does, changes
+/// nothing for a graph that never needed a halo.
+///
+/// `backend` is a non-const reference, unlike earlier revisions of this
+/// declaration: building a remap halo mutates the backend's own mesh
+/// state (ghost entities adopted as ordinary non-owned local ones), and
+/// that mutation must be visible to the `placed_region_size`/
+/// `placed_view` calls the returned callback makes later.
+///
 /// MESH IDS ARE RESOLVED BY NAME, NOT BY POSITION. A `Region` carries the
 /// GRAPH's `MeshId`, which indexes `g`'s meshes. The backend has its own,
 /// independent, also-positional id space. Passing one to the other works
@@ -481,14 +516,27 @@ enum class RegionExtentKind { Cell, Vertex };
 ///   * `std::runtime_error`, carrying the backend's error code and message, if
 ///     the mesh entity set cannot be sized -- a mesh name the backend never loaded, an
 ///     ambiguous mesh name, an unknown entity set, a dimension the mesh does
-///     not represent.
+///     not represent -- OR if the collective halo build above itself
+///     refuses (the same exception type, carrying THAT error's own code
+///     and message, thrown before the callback is even built).
 ///
 /// Returning 0 instead, as a size-returning callback naturally tempts one to
 /// do, would allocate an empty buffer for a real mesh entity set and let the run
 /// proceed to produce silently empty exchanges. `plan_buffers` returns a plain
 /// value and is documented to throw, so an exception propagates to the caller
 /// intact.
+///
+/// NO TWO-ARGUMENT OVERLOAD. Every caller in this tree already has `dag`
+/// in hand at this call site (it is `schedule()`'s own next argument, a
+/// few tokens away) -- `examples/*/main.cpp`, `src/abi/participant.cpp`,
+/// `python/src/component_bindings.cpp` were all checked. A two-argument
+/// form with no instruction stream to build the halo from would have to
+/// either silently skip the halo (reintroducing D73) or refuse
+/// unconditionally for every graph regardless of whether it actually
+/// has a qualifying channel, which is worse than not offering it: there
+/// is no caller this track found that needs it.
 [[nodiscard]] RegionSizes make_region_sizes(const CouplingGraph& g,
-                                            const MeshBackend& backend);
+                                            const OperatorDAG& dag,
+                                            MeshBackend& backend);
 
 }  // namespace fuse

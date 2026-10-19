@@ -474,6 +474,15 @@ add_library(fuse-coupler-backend
   # #if FUSE_HAVE_MPI, so it compiles to an empty translation unit without
   # MPI, exactly like transport/comm_graph.cpp.
   backend/nodal_remap_distributed.cpp
+  # D73 (automatic remap halo, owner decision 2026-10-18): the caller-driven
+  # step that gives every `OpKind::BuildRemapHalo` instruction `lower()`
+  # emitted (fuse::ir, below this layer) its real effect, by calling
+  # `fuse::build_remap_halo()` (this same library, backend/intx_weights.cpp)
+  # for each. Needs `fuse::OperatorDAG`/`fuse::Node`/`fuse::OpKind`
+  # (fuse::ir) in addition to this layer's own `fuse::MeshBackend`/
+  # `fuse::RemapPlan` -- an ordinary downward dependency this layer already
+  # has PUBLICLY through fuse::schedule -> fuse::ir (docs/dev/layering.md).
+  backend/remap_halo_instructions.cpp
 )
 add_library(fuse::backend ALIAS fuse-coupler-backend)
 target_compile_features(fuse-coupler-backend PUBLIC cxx_std_20)

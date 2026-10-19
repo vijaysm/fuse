@@ -1,4 +1,5 @@
 #include "fuse/backend/serial_backend.hpp"
+#include "fuse/backend/remap_halo_instructions.hpp"  // D73 round 2
 #include "fuse/base/error.hpp"
 
 #include <array>
@@ -650,7 +651,23 @@ Result<std::size_t> SerialMeshBackend::region_size(const Region& r) const {
 }
 
 RegionSizes make_region_sizes(const CouplingGraph& g,
-                              const MeshBackend& backend) {
+                              const OperatorDAG& dag,
+                              MeshBackend& backend) {
+  // D73 ROUND 2 (owner decision 2026-10-18). Collective, structural-only
+  // (see mesh_view.hpp's own doc on this function): build every remap
+  // halo `dag` carries BEFORE the lambda below ever reads an entity
+  // count from `backend`, so a cross-rank weighted channel's buffers are
+  // sized from the WIDENED mesh, not the pre-halo one. `RegionSizes` has
+  // no error channel of its own (this function's own "FAILURE IS LOUD"
+  // contract, mesh_view.hpp) -- a refusal here throws the same way a
+  // `placed_region_size`/`placed_view` refusal already does below,
+  // before the callback this function returns is ever constructed.
+  const Result<std::size_t> halo = execute_remap_halo_instructions(g, dag, backend);
+  if (!halo.ok()) {
+    FUSE_THROW(InvariantViolation, "{}",
+               "make_region_sizes: automatic remap halo build failed: " +
+                   halo.error().code + ": " + halo.error().message);
+  }
   return [&g, &backend](RegionId id, int placement) -> std::size_t {
     if (!id.valid() || id.value() >= g.region_count()) {
       FUSE_THROW(InvalidArgument, "{}", 

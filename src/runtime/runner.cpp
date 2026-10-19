@@ -834,6 +834,82 @@ Result<void> Runner::Impl::resolve_constrain(const Instruction& ins,
 }
 
 // ---------------------------------------------------------------------------
+// D73 (automatic remap halo, owner decision 2026-10-18)
+// ---------------------------------------------------------------------------
+
+Result<void> Runner::Impl::resolve_remap_halo(const Instruction& ins, std::size_t index) {
+  // Defensive: `emit_remap_halo_instructions()` (src/ir/lowering.cpp)
+  // always gives this kind a valid origin node whose own `origin` is the
+  // qualifying channel; a plan not produced by `lower()`/`schedule()` is
+  // the only way either lookup below could fail.
+  if (!ins.origin_node.valid() || ins.origin_node.value() >= dag.node_count()) {
+    return Failure{"E-RT-REMAP-HALO-NOT-BUILT",
+                 "instruction " + std::to_string(index) +
+                     " (BuildRemapHalo) carries no origin node"};
+  }
+  const Node& node = dag.node(ins.origin_node);
+  if (!node.origin.valid() || node.origin.value() >= graph.channel_count()) {
+    return Failure{"E-RT-REMAP-HALO-NOT-BUILT",
+                 "instruction " + std::to_string(index) +
+                     " (BuildRemapHalo) carries no channel origin"};
+  }
+
+  const Channel& ch = graph.channel_at(node.origin);
+  const ComponentId placement = remap_placement(graph, ch);
+  const Region& sr = graph.region(graph.field(ch.source).region);
+  const Region& tr = graph.region(graph.field(ch.target).region);
+
+  bool built = false;
+  if (const auto* native = dynamic_cast<const fuse::native::NativeMeshBackend*>(&backend)) {
+    const Result<MeshId> smid = native->mesh_id(graph.mesh(sr.mesh).name);
+    const Result<MeshId> tmid = native->mesh_id(graph.mesh(tr.mesh).name);
+    if (smid.ok() && tmid.ok()) {
+      const Result<const MeshView*> sview = native->view(smid.value());
+      const int sdim =
+          sr.dimension >= 0 ? sr.dimension : (sview.ok() ? sview.value()->dimension() : -1);
+      if (sdim >= 0) {
+        built = native->has_remap_halo(smid.value(), tmid.value(), sdim, placement);
+      }
+    }
+#if FUSE_HAVE_MOAB
+  } else if (const auto* moab = dynamic_cast<const MoabMeshBackend*>(&backend)) {
+    const Result<MeshId> smid = moab->mesh_id(graph.mesh(sr.mesh).name);
+    const Result<MeshId> tmid = moab->mesh_id(graph.mesh(tr.mesh).name);
+    if (smid.ok() && tmid.ok()) {
+      const Result<const MeshView*> sview = moab->view(smid.value());
+      const int sdim =
+          sr.dimension >= 0 ? sr.dimension : (sview.ok() ? sview.value()->dimension() : -1);
+      if (sdim >= 0) {
+        built = moab->has_remap_halo(smid.value(), tmid.value(), sdim);
+      }
+    }
+#endif
+  } else {
+    // Neither backend this track's own halo bookkeeping covers (the
+    // serial/test backend, say) ever reaches `channel_needs_remap_halo()`'s
+    // own emission gate on a real run -- that predicate exists precisely
+    // because only a backend with a per-placement decomposition can have
+    // this problem at all. Nothing to verify; a successful no-op.
+    return Result<void>::success();
+  }
+
+  if (!built) {
+    return Failure{
+        "E-RT-REMAP-HALO-NOT-BUILT",
+        "channel '" + ch.name +
+            "' is a cross-rank weighted (non-nodal, non-consistent) Remap "
+            "(KNOWN_ISSUES.md D73) and needs a remap halo on its (source, "
+            "target) mesh pair before this Runner's instruction stream can "
+            "run, but none has been built for it at this placement. Call "
+            "fuse::execute_remap_halo_instructions(graph, dag, backend) "
+            "once, between loading the mesh backend and calling schedule() "
+            "-- see fuse/backend/remap_halo_instructions.hpp for why the "
+            "exchange cannot run any later than that."};
+  }
+  return Result<void>::success();
+}
+
+// ---------------------------------------------------------------------------
 // Spec Section 5.4: the spatial remap (Task 5.5)
 // ---------------------------------------------------------------------------
 
@@ -2519,6 +2595,15 @@ Result<void> Runner::Impl::resolve_instructions() {
                          std::to_string(ins.in[k].value()) +
                          ", whose buffer was never resolved"};
       }
+    }
+
+    // D73: checked before `!ins.out.valid()` below, which this kind always
+    // takes (it carries no output arc at all, op.hpp's own doc comment) --
+    // skipping straight past it would mean this verification never runs.
+    if (ins.kind == OpKind::BuildRemapHalo) {
+      const Result<void> h = resolve_remap_halo(ins, i);
+      if (!h.ok()) return h;
+      continue;
     }
     if (!ins.out.valid()) continue;
 
@@ -4211,6 +4296,15 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
       // docs/user/lowfive.md, Unit 3. The application wrote the buffer, so
       // a device mirror of it is stale (Impl::component_epoch).
       note_component_ran();
+      break;
+
+    case OpKind::BuildRemapHalo:
+      // D73: carries no SSA value at all (op.hpp's own doc comment) and
+      // its real work -- `fuse::execute_remap_halo_instructions()`,
+      // fuse/backend/remap_halo_instructions.hpp -- already ran (or was
+      // refused) once, at `Runner::initialize()` time, in `resolve_
+      // instructions()`'s own `resolve_remap_halo()` check. Nothing to do
+      // on the per-period hot path this `switch` serves.
       break;
 
     case OpKind::Sink:

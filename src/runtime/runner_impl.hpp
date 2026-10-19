@@ -1604,6 +1604,25 @@ struct Runner::Impl {
   /// copy between meshes that merely agree on a count, which is silently
   /// wrong rather than loudly wrong.
   Result<void> resolve_remap(const Instruction& ins, detail::Resolved& r);
+  /// D73 (automatic remap halo, owner decision 2026-10-18). Called from
+  /// `resolve_instructions()` for every `OpKind::BuildRemapHalo`
+  /// instruction, BEFORE the corresponding channel's own `Remap`
+  /// instruction is resolved (program order: `OpKind::BuildRemapHalo`'s
+  /// own doc comment, fuse/ir/op.hpp, is why it is always earlier in
+  /// `plan.instructions()`). VERIFIES, never builds: `fuse::execute_
+  /// remap_halo_instructions()` (fuse/backend/remap_halo_instructions.hpp)
+  /// is the only place the real geometry exchange may run, and that must
+  /// happen before `schedule()`, which has already run by the time this
+  /// does. Refuses `E-RT-REMAP-HALO-NOT-BUILT` by name when the backend's
+  /// own bookkeeping (`has_remap_halo()`, a local lookup, no MPI call)
+  /// says the channel's (source, target) mesh pair carries none at this
+  /// placement -- a local check that is safe because every rank of the
+  /// base communicator compiled the identical instruction and either all
+  /// of them had `execute_remap_halo_instructions()` run against the
+  /// identical graph (consistently satisfied everywhere) or none of them
+  /// did (consistently refused everywhere); no agreement collective is
+  /// needed on top of that static fact.
+  Result<void> resolve_remap_halo(const Instruction& ins, std::size_t index);
   /// KNOWN_ISSUES.md D11 (closing). Builds the CSR conversion of `weights`'
   /// COO triplets -- see `detail::RemapCsr`'s own comment for the layout --
   /// called from `resolve_remap()` at the point it is about to push a new
