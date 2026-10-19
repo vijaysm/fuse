@@ -22,7 +22,10 @@
 #include <gtest/gtest.h>
 
 #include "fuse/backend/moab_backend.hpp"
+#include "fuse/backend/remap_halo_instructions.hpp"
 #include "fuse/backend/remap_plan.hpp"
+#include "fuse/backend/serial_backend.hpp"
+#include "fuse/ir/lowering.hpp"
 #include "fuse/model/coupling_graph.hpp"
 
 namespace {
@@ -53,6 +56,62 @@ struct BoxPair {
     plan.tgt = trid;
   }
 };
+
+// 420b95c (2026-10-19, KNOWN_ISSUES.md D73 round 8 host run): with MOAB
+// compiled in, `execute_remap_halo_instructions` handed EVERY non-native
+// backend to the MOAB cross-placement overload, which refuses
+// `E-REMAP-BACKEND` for a backend that is neither this nor Native -- true
+// of `SerialMeshBackend`, invisible in a no-MOAB tier-0 build (where this
+// branch does not exist at all), and the reason 30 serial rows went red on
+// the owner's MOAB-enabled host. A backend that is neither native nor MOAB
+// has no partitioned read and nothing to adopt, so the fix makes this a
+// successful no-op, the SAME answer the no-MOAB build's own `#else` branch
+// already gives -- the two configurations now agree. Pinned at the level
+// the host measured: a graph with a Conservative, cross-placement channel
+// (so `lower()` emits a real `BuildRemapHalo` node, `plan_test.cpp`'s own
+// `pair()` convention) must not refuse when the backend behind it is
+// serial.
+TEST(RemapHalo, ASerialBackendGraphWithABuildRemapHaloNodeIsASuccessfulNoOp) {
+  fuse::SerialMeshBackend backend;
+  ASSERT_TRUE(backend.load({.name = "s", .source = "generated:box:2x2x2"}).ok());
+  ASSERT_TRUE(backend.load({.name = "t", .source = "generated:box:2x2x2"}).ok());
+
+  fuse::CouplingGraph g;
+  const auto ms = g.add_mesh(fuse::MeshDecl{.name = "s", .source = "generated:box:2x2x2"});
+  const auto mt = g.add_mesh(fuse::MeshDecl{.name = "t", .source = "generated:box:2x2x2"});
+  const auto rs = g.add_region(fuse::Region{.name = "rs", .mesh = ms, .dimension = 3});
+  const auto rt = g.add_region(fuse::Region{.name = "rt", .mesh = mt, .dimension = 3});
+  // Two DIFFERENT RankSets: `channel_needs_remap_halo()` (rules_channel.cpp)
+  // gates on the GRAPH's own declared rank sets disagreeing, not on how
+  // many real processes this test actually runs under -- the same
+  // single-process-but-graph-declares-two-placements convention
+  // plan_test.cpp's own `pair()` helper already relies on.
+  const auto a = g.add_component(fuse::ComponentDecl{
+      .name = "a", .ranks = fuse::RankSet{0, 1}, .interval = fuse::Rational{1}});
+  const auto b = g.add_component(fuse::ComponentDecl{
+      .name = "b", .ranks = fuse::RankSet{1, 1}, .interval = fuse::Rational{1}});
+  const auto sf = g.add_field(
+      a, fuse::FieldSpec{.name = "f", .region = rs, .units = fuse::units::kDimensionless,
+                        .conservation = fuse::Conservation::Extensive,
+                        .intent = fuse::Intent::Provides});
+  const auto tf = g.add_field(
+      b, fuse::FieldSpec{.name = "f_in", .region = rt, .units = fuse::units::kDimensionless,
+                        .conservation = fuse::Conservation::Extensive,
+                        .intent = fuse::Intent::Requires});
+  const auto ch = g.add_channel("c", sf, tf);
+  g.channel(ch).remap(fuse::RemapFlags::Conservative);
+
+  const auto lowered = fuse::lower(g);
+  ASSERT_TRUE(lowered.ok()) << lowered.diags.to_string();
+
+  const auto r = fuse::execute_remap_halo_instructions(g, lowered.dag, backend);
+  ASSERT_TRUE(r.ok())
+      << r.error().code << ": " << r.error().message
+      << " -- a serial (neither native nor MOAB) backend with a cross-"
+         "placement Conservative channel must be a successful no-op, the "
+         "same answer a no-MOAB build already gives for this backend";
+  EXPECT_EQ(r.value(), 0u) << "a serial backend adopts nothing";
+}
 
 TEST(RemapHalo, ASerialCallIsASuccessfulNoOpAndIsIdempotent) {
   BoxPair f;  // no communicator set: one rank by construction
