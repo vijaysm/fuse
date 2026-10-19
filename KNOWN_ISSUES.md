@@ -3306,7 +3306,7 @@ rendezvous still runs only on a rank whose own first HDF5 call loads the plugin,
 touches HDF5 never reaches it — moving the rendezvous into an explicit step every participant calls
 (`connect()`'s MPMD choreography is the natural site) is the larger fix, left open here.
 
-### D15. The provider direction (S6 phase 4, "Adapter host" track) is implemented and conformance-tested on one process; device fields and mixed checkpoint/restore still are not -- a plugin on a rank subset is tested, built and now FIXED 2026-10-19 (round 3) for a real host failure, awaiting the host re-run
+### D15. The provider direction (S6 phase 4, "Adapter host" track) is implemented and conformance-tested on one process; device fields and mixed checkpoint/restore still are not -- a plugin on a rank subset is tested, FIXED 2026-10-19 (round 3) for one real host failure and AGAIN (round 4) for a second, independent one found alongside it; awaiting the host re-run
 
 **What is done, measured 2026-10-02.** `include/fuse/abi/provider.h` (generated from a second
 `entries.def` entry list, `FUSE_ABI_PROVIDER_ENTRY`, sharing the participant direction's own
@@ -3460,6 +3460,53 @@ pending:**
 ```
 ctest --test-dir <build> -R 'parallel\.provider_subset_mpi\.(2|3)' -V
 ```
+
+**Measured on the owner's machine at `512ab69` (round 3's own fix): `parallel.provider_subset_mpi.{2,3}`
+still failed.** Rank 0 (non-hosting) reported `E-RT-SETUP-PEER` ("another rank of the base communicator
+failed to resolve its buffers or instructions ... see that rank's own error") from the `MPI_Allreduce
+(MIN)` agreement check `Runner::initialize()` runs after every rank's own local setup steps
+(`src/runtime/runner.cpp`). Rank 1's own actual error -- the one `E-RT-SETUP-PEER` points at -- never
+appeared in the host's own log at all.
+
+**Explained and fixed 2026-10-19 (ABI track, round 4): two independent bugs, not one.**
+1. **The error was never printed, by design, for the wrong reason.** `test/support/fuse_test_main.cpp`'s
+   `main()` removes GoogleTest's own default result printer on every NON-ZERO rank of an MPI test
+   binary, so the SAME test name and PASS/FAIL line is not printed once per rank -- but that removal
+   also silently drops every `FAIL()` MESSAGE on those ranks, not only the printer's own summary line.
+   "downstream" (this test's own native sink component) is placed at `RankSet{0, 1}` (rank 0 only);
+   rank 1 hosts "upstream" (the plugin), never "downstream" -- exactly the rank whose own `FAIL()`
+   text (if this test's local checks ever produced one) would never reach the host's log. Fixed by
+   adding an explicit, unconditional `std::fprintf(stderr, ...)` immediately before the existing
+   `FAIL()` call in `provider_subset_mpi_test.cpp`'s own setup helper, printing the rank number and the
+   `fuse_initialize()` error message BEFORE GoogleTest's own (possibly-suppressed) machinery ever sees
+   it -- `stderr` reaches ctest's own `-V` log on every rank, printer or no printer.
+2. **Rank 1's own actual local failure, found making the message visible: the test's OWN
+   `DownstreamSink` had the IDENTICAL D24-class sizing bug round 3 fixed in `ProviderAdapter`, this time
+   in the test's own fixture.** `DownstreamSink::register_fields()` (this test's own native sink class,
+   not `ProviderAdapter`) always registered a FULL one-entry view, on every rank, regardless of whether
+   THIS rank is a member of "downstream"'s own `RankSet{0, 1}`. On rank 1 (hosting "upstream", not
+   "downstream"), that registered `count = 1` where the real plan expects `0` -- the same
+   `E-RT-SIZE`-class local mismatch D24 closed for `NativeMeshBackend` and round 3 closed for
+   `ProviderAdapter`, reappearing a third time in a different class that happened to duplicate the same
+   assumption. Fixed by giving `DownstreamSink` an explicit `hosted` constructor argument (set at the
+   call site to `rank == 0`, matching "downstream"'s own declared `RankSet`) and sizing `register_
+   fields()`'s own storage to `0` or `1` accordingly -- the same "ask whether this rank is a member
+   before sizing anything" rule `ProviderAdapter::set_hosting_rank()` already applies, applied here to
+   the test's own code rather than to library code under test. This is almost certainly rank 1's own
+   actual `E-RT-SETUP-PEER`-triggering local failure: with it fixed, rank 1's own local registration
+   now matches the plan's own expectation for a rank that does not host "downstream".
+Both fixes are needed together: (1) alone would have made rank 1's error message visible without
+curing it; (2) alone would have cured the failure but left any FUTURE rank-1-only local failure in
+this test silently unexplained again. Built clean under `FUSE_ENABLE_MPI=ON`. Built, never run (C1
+above). **Host-pending:**
+
+```
+ctest --test-dir <build> -R 'parallel\.provider_subset_mpi\.(2|3)' -V
+```
+
+A pass means both rows succeed with no `E-RT-SETUP-PEER`; if either still fails, the new `stderr`
+line now names which rank and which message, closing the diagnostic gap this round found regardless
+of whether the underlying fix was complete.
 
 
 ## C. Not defects — do not fix these
@@ -6469,7 +6516,7 @@ No descriptor version bump: the launch record was already part of every componen
 canonical bytes) and `YamlIo.AnInProcessCouplerWritesNoLaunchBlock`, with the mutation
 `a-couplers-launch-mode-is-dropped-by-the-writer`. The hang itself is host-only.
 
-### D18. `fuse::transport::connect()`'s `Connect`-mode path supports exactly two components; a third refuses `E-CONNECT-SPEC` -- GENERALISED 2026-10-18 (tier-0); host executables built, HUNG on the host 2026-10-18, a diagnostic trace added 2026-10-19 (round 3), awaiting a re-run with it on
+### D18. `fuse::transport::connect()`'s `Connect`-mode path supports exactly two components; a third refuses `E-CONNECT-SPEC` -- GENERALISED 2026-10-18 (tier-0); host executables built, HUNG on the host 2026-10-18, a diagnostic trace added round 3, PRINTED NOTHING on the round-3 host run, env forwarding fixed round 4, awaiting a re-run
 
 `connect_pairwise()` (`src/transport/connect.cpp`) reads, verbatim:
 
@@ -6697,6 +6744,46 @@ connector's own "polling for port file" line never appearing, points at THIS cha
 (a port file never written, or written to the wrong path); a trace where every expected line appears
 in order but the test still hangs or is killed points at the SAME accept/connect intermittency the
 2-component rows already show (D23/D65), not a defect in the chain's own step ordering.
+
+**Measured on the owner's machine at `512ab69` (round 3's own trace): `parallel.connect.chain.3`
+failed in 1.45s (a different, faster signature than round 2's 10.7s kill); `parallel.connect.chain.4`
+ran the full timeout again; and `FUSE_CONNECT_CHAIN_TRACE=1` printed NOTHING in any of the four
+per-rank log files.** Investigated where the variable was lost, not yet whether the chain itself still
+has a defect:
+- `run_participants.sh`'s own `FUSE_LOWFIVE_ATTACH_TRACE` handling (the pattern this round's trace
+  was modelled on) does nothing special either -- it is a plain user-set shell variable, relied on to
+  reach every launched rank through `mpiexec`'s own DEFAULT environment inheritance; nothing in
+  `test/CMakeLists.txt` sets it through CMake's own `ENVIRONMENT` test property, confirmed by `grep -n
+  FUSE_LOWFIVE_ATTACH_TRACE` across the whole tree finding only its two reads in `connect.cpp` and the
+  decision header, never a setter. `run_chain.sh` relied on the SAME ambient inheritance for `
+  FUSE_CONNECT_CHAIN_TRACE`, with no mechanism of its own to guarantee it crosses the ctest ->
+  shell-script -> `mpiexec` -> rank boundary.
+- **Fixed 2026-10-19 (ABI track, round 4): forward the variable explicitly, and say so on the
+  script's own stderr.** `run_chain.sh` now builds a `GENV_ARGS` array and passes `-genv
+  FUSE_CONNECT_CHAIN_TRACE "$FUSE_CONNECT_CHAIN_TRACE"` to all four `mpiexec` launch lines (a, b, c,
+  d), removing ambient-environment inheritance as a variable entirely -- whatever the script's own
+  environment holds for this name is now handed to every rank by construction, not by whatever the
+  calling shell happened to propagate. The script also now echoes, to its OWN stderr (captured by
+  `ctest -V`, distinct from the per-rank `a.log`/`b.log`/`c.log`/`d.log` files the trace lines
+  themselves land in), whether `FUSE_CONNECT_CHAIN_TRACE` was set in its own environment at invocation
+  time -- directly answering "where does it land" independent of whether the per-rank logs end up with
+  any trace lines in them at all.
+
+This closes the FORWARDING gap but does not, by itself, confirm or rule out a defect in the chain's
+own rendezvous: the 1.45s failure is a different signature than round 2 measured, and this round
+could not reproduce it (C1). Built clean under `FUSE_ENABLE_MPI=ON`. Built, never run. **Host-
+pending, re-run with the fixed forwarding:**
+
+```
+FUSE_CONNECT_CHAIN_TRACE=1 ctest --test-dir <build> -R 'parallel\.connect\.chain\.(3|4)' -V
+```
+
+If trace lines now appear in the per-rank logs, read them per this entry's own round-3 rule above
+(where the trace stops names which rendezvous step failed). If they STILL do not appear with explicit
+`-genv` forwarding and the script's own stderr confirms the variable WAS set at invocation, the gap is
+inside `connect.cpp`'s own `ParseConnectChainTraceEnabledEnv`/`ChainTraceEnabled` (not yet
+individually re-verified against a real multi-process run) or the failure happens before the first
+traced step is ever reached -- both still open.
 
 ### ~~D19. The coupling-window path (`src/runtime/iteration.cpp`) has never run across more than one process~~ — CLOSED 2026-10-09: `parallel.window_runner_mpi.{2,3}` pass on the host (2026-10-08) and the three-executable Brusselator runs through it (D25)
 
@@ -8099,7 +8186,7 @@ package config recreates `fuse-lowfive` from them when `FUSE_ENABLE_LOWFIVE` was
 `build-lowfive` and `build-all`, and `example.demo_b` still passes. No configure-time refusal was added: nothing
 could make one fire, and the two install-consumer rows are the test that does.
 
-### D61. The participant ABI's refusals are decided rank-locally and never reconciled across a component's ranks — FIXED AGAIN 2026-10-19 (round 3, tier-0), after the first fix was REVERTED 2026-10-18 (see the REVERTED paragraph); host row re-derived, awaiting the host run
+### D61. The participant ABI's refusals are decided rank-locally and never reconciled across a component's ranks — FIXED A THIRD TIME 2026-10-19 (round 4, tier-0), after round 3's own component-local split was found to still land every component in ONE communicator; host row re-derived, awaiting the host run
 
 `begin_step`/`end_step`/`setup`/`initialize`/`run` return codes such as `E-ABI-STEP-ORDER` or
 `E-ABI-STEP-ALREADY-OPEN` from local state only; an out-of-turn or omitted call on one rank of a
@@ -8269,6 +8356,87 @@ A pass means every rank returns `FUSE_ERR_VERSION` with no hang; a hang here, th
 `key` ordering); a per-rank MISMATCH in the gathered codes would mean `reconcile_collective_status()`'s
 own gate (`c.collective_comm_f == 0` skipping reconciliation) fired when it should not have.
 
+**Measured on the owner's machine at `512ab69` (round 3's own fix, the lead's host run): round 3's
+split was STILL wrong, by a different mechanism than either round-2 bug.** `verification.brusselator.
+participants.{mpmd,accept}.{3,5}` all deadlocked again (120 s timeout); stack samples showed U inside
+`begin_step` -> `reconcile_collective_status()` -> `MPI_Allreduce`, while V and the coupler were already
+past that point, inside `MpiTransport::move` -> `MPI_Alltoallv`. Cause: `fuse::linalg::make_
+participant_set_reducer()` (`src/linalg/comm_mpi.cpp`) was written for a caller where EVERY rank of a
+shared base communicator passes the SAME participant set and asks "is MY rank in it" -- its own colour
+rule is `participating ? 0 : MPI_UNDEFINED`. Round 3's `impl_initialize_local()` instead called it with
+EACH rank's OWN component's `RankSet::ranks()` as the participant list -- so every rank, on every
+component, scored itself "participating" in its OWN call (colour 0, uniformly), and the reducer placed
+every one of them on ONE shared communicator of the full base communicator's size. That is the
+round-2 bug again, reached by a different route: once every component shares one communicator, a
+component that calls `begin_step`/`end_step` a different number of times per window than another
+(U calls both `begin_step` and the plain `assign` path a brusselator window needs; V and the coupler
+reach their own matching collective fewer or more times) leaves some rank's `MPI_Allreduce` without a
+partner, forever.
+
+**Fixed a third time 2026-10-19 (ABI track, round 4), per the lead's own settled design: split
+directly, never through the shared-participant-set reducer.** `impl_initialize_local()` no longer calls
+`fuse::linalg::make_participant_set_reducer()` at all (the `#include "fuse/linalg/comm.hpp"` it needed
+is removed along with it -- this fix has no dependency on `fuse::linalg` any more). In its place, still
+inside the same `if (c.communicator_set)` block, it calls `MPI_Comm_split(base, colour, key, &sub)`
+directly: `colour` is `my_component`'s own `ComponentId` value (a distinct integer PER COMPONENT, never
+the same 0 two different components would both compute) when `my_component` is set, or
+`MPI_UNDEFINED` when it is not (a rank hosting no component here); `key` is this rank's own position in
+its component's `RankSet` (`RankSet::index_of`), falling back to `MPI_UNDEFINED` colour defensively if
+that somehow returns negative on the real path. Every rank enters this SAME collective call together,
+regardless of whether it ends up with a real colour or `MPI_UNDEFINED` -- `MPI_Comm_split` is collective
+over the WHOLE base communicator, so a rank that skipped the call entirely (round 3's gate was
+`c.communicator_set && c.my_component.has_value()`, excluding componentless ranks from the call itself)
+would strand every other rank waiting inside it; round 4 drops the second half of that gate; only the
+COLOUR differs for a componentless rank, not whether the call happens. The result: `u` and `v` (or U,
+V, and the coupler in the real brusselator graph) each land on their OWN communicator, sized to their
+OWN component's own rank count, independent of every other component's own call sequence -- which is
+exactly what the per-component split was always supposed to mean, and what `make_participant_set_
+reducer`'s own single-shared-set colour rule could never deliver here. `MPI_Comm_set_errhandler(sub,
+MPI_ERRORS_RETURN)` is additionally set on the newly split communicator, as a DEFENSIVE measure for the
+`abi_reconcile_mpi.{2,3}` crash below -- not claimed as a fix for it, since this round could not confirm
+that crash's exact trigger (see that paragraph).
+
+**Built this round: the minimal model the lead asked for.** `test/parallel/abi_reconcile_disjoint_mpi_
+test.cpp` (new file) declares TWO components on DISJOINT rank sets -- `u` at `RankSet{0, 1}` (rank 0
+alone), `v` at `RankSet{1, 2}` (ranks 1 and 2) -- and drives rank 0 through TWO `begin_step`/`end_step`
+pairs while ranks 1 and 2 drive exactly ONE, the smallest sequence that reproduces round 3's bug (rank
+0's second collective call has no partner once every component shares one communicator) without the
+brusselator's own participant executables or LowFive plumbing. `abi_reconcile_mpi_test.cpp` (the
+single-spanning-component row) is UNCHANGED, kept alongside it per the lead's own instruction. Registered
+as `parallel.abi_reconcile_disjoint_mpi.3` (`test/CMakeLists.txt`, `RANKS 3` only -- the graph is built
+for exactly three ranks in this shape and the test's own first assertion refuses any other count). Built
+clean under a real `FUSE_ENABLE_MPI=ON` configure. Built, never run (C1 above). **Host-pending:**
+
+```
+ctest --test-dir <build> -R 'parallel\.abi_reconcile_disjoint_mpi\.3' -V
+```
+
+A pass means `u`'s two calls and `v`'s one call both complete with `FUSE_OK` and no hang; a hang would
+mean the per-component split still does not isolate each component's own collectives from the others.
+
+**`parallel.abi_reconcile_mpi.{2,3}`, measured on the host at `512ab69`: both ranks aborted with
+`libc++abi: terminating due to uncaught exception of type std::system_error: mutex lock failed: Invalid
+argument`, exit 6, no GoogleTest output at all.** This round could not pin the exact trigger by static
+analysis alone: `fuse::linalg::resolve()` is confirmed a plain `MPI_Comm_f2c` wrapper with no registry of
+its own; `test/support/fuse_test_main.cpp` installs no `MPI_Comm_set_errhandler` override, so MPI's
+default `MPI_ERRORS_ARE_FATAL` is what is active on every communicator this test touches unless this
+round's own new `MPI_ERRORS_RETURN` call (above) reaches it first; and the symptom (an uncaught
+`std::system_error` from a mutex, not an MPI error message) reads as a SECONDARY effect of an abrupt
+process-wide abort during static or thread-local teardown, the same symptom class `abi.struct_size`
+showed on the host in round 2 before that round's own fake-handle bug was found and fixed. Given the
+lead's own primary suspect for this round (`make_participant_set_reducer`, removed above) and the
+defensive `MPI_ERRORS_RETURN` addition, this is reported honestly as NOT a confirmed root-cause fix:
+if the crash recurs on the next host run, the next round needs the host's own stack trace (not
+available in this sandbox, C1) to go further.
+
+
+**Host run of round 4 (lead, 2026-10-19, `build-all` at `90d98ee` + round 4):** `verification.brusselator.
+participants.mpmd.{3,5}` PASS (2.68 s, 1.55 s), `parallel.abi_reconcile_mpi.{2,3}` PASS (the mutex abort is
+gone with the reducer call), `parallel.abi_reconcile_disjoint_mpi.3` PASS (0.37 s), `parallel.abi_participant_
+mpi.{1..5}` PASS, the four tier-0 rows that aborted under round 2 PASS. `participants.accept.{3,5}` timed out,
+but every rank was sampled inside `MPI_Intercomm_merge` in `connect_pairwise` during setup, before any
+reconcile code runs: that is D23/D65's accept intermittency (`parallel.connect.accept.2+3` timed out the same
+way in the same session), not this item. D61 is CLOSED on the mpmd measurement; the accept rows belong to D23.
 ### ~~D62. The graph descriptor is host-endian while `bytes.hpp`'s canonical rules are little-endian~~ -- FIXED 2026-10-18 (Descriptor track)
 
 **Fixed.** `detail::Writer::pod`/`detail::Reader::pod` (`include/fuse/model/descriptor.hpp`) now route

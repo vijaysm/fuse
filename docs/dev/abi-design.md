@@ -225,28 +225,57 @@ force_fake_collective_peers()`, `test/abi/participant_test.cpp`) and
 calls the real `MPI_Allreduce(MPI_2INT, MPI_MINLOC, ...)` otherwise, so
 the two paths cannot disagree about what "agreed" means.
 
-**Which communicator (round 3, corrected).** `initialize`/`begin_step`/
-`end_step`/`run` reconcile over `fuse_ctx::collective_comm_f` -- a
-COMPONENT-LOCAL communicator, split exactly once, inside `initialize()`'s
-own already-existing `if (c.communicator_set)` block, by `fuse_setup_
-options::my_component`'s own `RankSet` (`fuse::linalg::
-make_participant_set_reducer()`, the SAME `MPI_Comm_split` the Runner's
-own window-region reduction already trusts, D32 -- reused, not
-reimplemented). `0` means "nothing to reconcile": the default; whenever
-`my_component` was never named (no component to split by); and, BY
-CONSTRUCTION, for every context `fuse::abi_test::force_communicator_set()`
-touches, since that seam sets `communicator`/`communicator_set` directly
-and never re-runs the real split path (its own doc comment: deliberately
-callable AFTER a successful `initialize()`, to reach a LATER gate in
-isolation). `setup()` is NOT reconciled at all, this round -- `my_
-component` is itself an ARGUMENT to `setup()`, not yet resolved when its
-own local checks (`struct_size`, `reserved`, an unknown `my_component`
-name) can fail, so there is no component-local communicator for `setup()`
-to reconcile over yet, and reconciling it over anything ELSE (the base
-communicator, round 2's own choice) is exactly the mistake the lesson
-above names. `setup()`'s own refusals are structural, decided from the
-same bytes on every rank that is meant to agree, independent of
+**Which communicator (round 4, corrected again).** `initialize`/
+`begin_step`/`end_step`/`run` reconcile over `fuse_ctx::collective_comm_f`
+-- a COMPONENT-LOCAL communicator, split exactly once, inside
+`initialize()`'s own already-existing `if (c.communicator_set)` block, by
+a direct `MPI_Comm_split(base, colour, key, &sub)` call: `colour` is this
+rank's own `my_component`'s `ComponentId::value()` (a distinct integer
+PER COMPONENT) when `my_component` is set, `MPI_UNDEFINED` otherwise;
+`key` is this rank's own position in that component's declared `RankSet`
+(`fuse::abi_detail::decide_split_colour_key`, `include/fuse/abi/
+collective_reconcile.hpp` -- the pure half, tested at tier 0 with no MPI
+dependency, the same split this header's other half already gets for the
+reconciliation arithmetic). Round 3's version of this call went through
+`fuse::linalg::make_participant_set_reducer()` instead (D32's own
+`MPI_Comm_split`, reused rather than reimplemented) -- wrong, for a
+reason the round-4 lesson below explains, not reused as of this round.
+`0` means "nothing to reconcile": the default; whenever `my_component`
+was never named (no component to split by); and, BY CONSTRUCTION, for
+every context `fuse::abi_test::force_communicator_set()` touches, since
+that seam sets `communicator`/`communicator_set` directly and never
+re-runs the real split path (its own doc comment: deliberately callable
+AFTER a successful `initialize()`, to reach a LATER gate in isolation).
+`setup()` is NOT reconciled at all, this round -- `my_component` is
+itself an ARGUMENT to `setup()`, not yet resolved when its own local
+checks (`struct_size`, `reserved`, an unknown `my_component` name) can
+fail, so there is no component-local communicator for `setup()` to
+reconcile over yet, and reconciling it over anything ELSE (the base
+communicator, round 2's own choice) is exactly the mistake the round-3
+lesson above names. `setup()`'s own refusals are structural, decided from
+the same bytes on every rank that is meant to agree, independent of
 reconciliation.
+
+**LESSON (round 4, the same mistake one layer down).** Round 3's own
+colour decision called `make_participant_set_reducer()` with THIS rank's
+OWN component's `RankSet::ranks()` as the "participant set" -- a function
+written for a caller where every rank of a SHARED base communicator
+passes the IDENTICAL set and asks "is my rank a member" (colour `0` if
+yes, `MPI_UNDEFINED` if no). Every rank here passes a DIFFERENT
+component's own set, so every rank trivially answers "yes" about its OWN
+component and computes the SAME colour `0` -- landing every component of
+a multi-component graph on ONE shared communicator, the identical failure
+mode round 3's own fix was written to prevent, reached by a different
+route: the round-3 lesson ("a collective that pairs calls across
+components can only run on a communicator whose every member makes the
+same sequence of calls") is true of the SPLIT CALL that BUILDS the
+communicator, not only of the reconciliation call that later runs on it.
+A colour that is the same constant for every caller, regardless of which
+set that caller passed, cannot separate anything -- `MPI_Comm_split`
+needs a colour that VARIES with which group a rank belongs to, which is
+why round 4 colours by the component's own identity (`ComponentId::
+value()`, distinct per component by construction) rather than by a
+yes/no answer that is always yes about one's own set.
 
 **What is not reconciled, and why.** `setup()` (above, round 3), and the
 other ten participant-table entries (`version`, `capabilities`, `create`,
