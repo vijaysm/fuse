@@ -1390,6 +1390,8 @@ is recorded alongside each row in `transport-runtime.toml`.
 
 ---
 
+
+---
 ### D7. `WindowCoupler` supports at most one straddling member per window, and no Fixed step longer than the window — REJECTED 2026-09-24, support is design work
 
 Found 2026-09-24 while testing an explicit window
@@ -9916,6 +9918,193 @@ communicator failed to resolve its buffers"). The coverage check sums the inters
 intersections covering rank 0's source cells are on rank 1 (which adopted them): the per-source-cell coverage
 must be reduced across the ranks before the worst cell is judged, agreed first and then refused by every rank
 together. Round 8.
+
+### D73 FIX, ROUND 8 (RemapHalo track round 7, 2026-10-19): the conservative coverage check, DISTRIBUTED
+
+**Root cause.** `min_src_coverage` (`build_supermesh_weights`'s own per-cell audit, supermesh.cpp) is computed
+from the intersections THIS RANK's own merged source/target views produced -- correct on a single rank, wrong on
+a partitioned read whenever a source cell this rank OWNS has every one of its intersections on a PEER, which
+adopted that cell through the halo. The owner's own host measurement is the exact shape: rank 0 owns all 4
+source cells and no target cells of its own, so its LOCAL supermesh intersects 4 cells against 0 and finds
+nothing -- `min_src_coverage = 0` -- even though those same 4 cells are fully covered once rank 1's own
+(adopted-copy) intersections against its 9 target cells are counted.
+
+**The fix.** `fuse::native::fold_and_reduce_source_coverage` (`native_halo.cpp`, declared in `native_halo.hpp`)
+does two things, in order. (1) Folds each halo copy's own share of the per-cell coverage back to its OWNER,
+the reverse of the forward fill `GhostExchanger::update()` already performs -- `fuse::native::accumulate_remap_
+halo` (KNOWN_ISSUES D27, already existed) is exactly this reverse exchange, reused rather than rebuilt: ghost
+`g`'s own value is ADDED to `owned[pattern.remote_local_index[g]]` on rank `pattern.owner_rank[g]`, the SAME
+bookkeeping the halo's own commit already recorded (`remap_halo_pattern`/`remap_halo_ghost_offset`). A cell
+adopted by MULTIPLE different ranks (a boundary cell split across more than one consumer partition) is handled
+by the SAME mechanism without any special case: each adopting rank's own ghost entry independently ADDS its own
+share to the owner's slot, so the owner's total is the SUM over however many ranks hold a copy, not just one.
+(2) Reduces the resulting per-owned-cell minimum to ONE number over the WHOLE base communicator (a plain
+`MPI_Allreduce(MIN)`) -- "agree first": a rank owning none of the affected source cells contributes the
+NEUTRAL value `1.0`, never a stray `0` that would make an empty set look uncovered, and the final Conservative
+decision reads the SAME, agreed number on every rank, never a condition one rank computed alone. `build_weights_
+via_supermesh`'s own native branch (`intx_weights.cpp`) calls this between `build_supermesh_weights` and the
+existing `RemapFlags::Conservative` check, reconstructing the per-cell `src_covered` it needs from the
+`RemapWeights` triplets `build_supermesh_weights` already returned (`val[k] * tgt.measure(dim, row[k])`, summed
+by `col[k]`) -- no change to `supermesh.cpp`'s own geometry kernel at all.
+
+**Why rank 1's own refusal needed no separate fix.** Rank 1's own local coverage (the adopted copies against
+its real 9 target cells) was ALREADY correct before this round -- it is rank 0's own judgement, made from cells
+it owns but cannot see the intersections of, that was wrong. The fold corrects it at the source: ONE fix, read
+by the SAME Conservative check already in place.
+
+**Ruled out as unnecessary: a separate "zero target cells is a valid no-op" carve-out.** A rank with no target
+cells of its own (rank 0) still OWNS source cells that need judging -- the fold is what makes that judgement
+correct, not a bypass of it. The existing E-REMAP-PARALLEL check (round 7's own fix) already lets a
+zero-target-cell rank THROUGH to this point; nothing here needed to change for that case specifically.
+
+**Scope, the MOAB half excluded by instruction.** This round touches `intx_weights.cpp`'s UNCONDITIONAL section
+only (`build_weights_via_supermesh`, lines 199-224 hoisting the existing `dynamic_cast`, 268-289 the new fold
+call) -- never the `#if FUSE_HAVE_MOAB`/`#else` split starting at line 344, which is the MoabHalo track's own
+territory (its own `Audit`/`reduce_audit`/`fold_halo_contributions` already perform the ANALOGOUS fold for
+`MoabMeshBackend`, by a different mechanism -- `moab::ParallelComm`/raw MPI inside that file's own MOAB-gated
+half). `src/backend/native_halo.hpp`/`.cpp` carry the new `fold_and_reduce_source_coverage` function and its
+own `<mpi.h>` use (guarded `#if FUSE_HAVE_MPI`, the SAME convention this file's `resolve()` already uses) --
+`src/backend/moab_backend.*` and `test/parallel/moab_*` are untouched.
+
+**Verified, tier-0, no MPI needed, for two of the three shapes.** New tests in
+`test/backend/native_halo_test.cpp`: (1) `FoldRefusesRatherThanGuessWithoutMpiWhenAHaloHasGhosts` -- a real
+committed halo with one ghost, a FAKE multi-rank communicator (`set_communicator()` on a placeholder handle,
+no real MPI); confirms `fold_and_reduce_source_coverage` refuses `E-REMAP-PARALLEL` rather than guess.
+(2) `FoldIsANoOpPassThroughAtOneRank` -- `communicator_size() <= 1`, the genuine single-process case; confirms
+the function returns the LOCAL minimum unchanged (no MPI needed at all, the SAME `make_serial_exchanger()`
+no-op path the forward fill's own short-circuit uses). (3)
+`FoldingAPeersGhostCoverageTurnsALocalZeroIntoTheTrueAnswer` -- THE CORE INSIGHT, by hand: builds rank 0's own
+local supermesh (4 cells against an EMPTY target view, `fuse::build_supermesh_weights`, the REAL production
+geometry kernel) showing 0% coverage, builds rank 1's own local supermesh (the SAME 4 cells, adopted via
+`merge_halo_cells`, against a REAL 9-cell target) showing full coverage, then hand-applies `accumulate_remap_
+halo`'s own documented contract (`owned[remote_local_index[g]] += ghosts[g]`) to fold rank 1's own share into
+rank 0's owned slots -- confirms the folded minimum is 1.0 where the unfolded one was 0.0, the EXACT shape the
+owner's host measured. (4)
+`BuildWeightsAttemptsTheFoldRatherThanJudgingFromLocalCoverageAlone` -- through the REAL `fuse::build_weights`
+entry point: a disjoint provider/consumer 2-rank fixture (`generated:quad:2x2` -> `generated:quad:3x3`,
+CrossPlacement's own convention), `RemapFlags::Conservative` requested, communicator faked to 2 ranks; confirms
+`build_weights` refuses `E-REMAP-PARALLEL` (the fold was attempted and correctly could not complete without
+MPI) rather than silently reproducing the pre-fix `E-REMAP-COVERAGE` "0.000000% of the worst source cell"
+refusal a skipped fold would give. All four pass; every other test in the binary unaffected (29/29 total).
+
+**The third shape -- agreeing the folded minimum across the WHOLE base communicator -- is `requires = "mpi"`,
+host_pending.** Reachable only past the first no-MPI refusal above (confirmed by reading: `communicator_size()
+> 1` with no MPI returns several lines earlier in the SAME function), so no tier-0 build ever reaches it. Two
+mutation rows are tier-0-verified in `build-evidence/mutations/native_halo.toml`
+(`build-weights-via-supermesh-skips-the-distributed-coverage-fold`,
+`fold-and-reduce-source-coverage-silently-substitutes-serial-exchanger-without-mpi`); the third
+(`fold-and-reduce-source-coverage-skips-the-cross-rank-agreement`) is `requires = "mpi"`.
+
+**The 3-rank case: checked by reading, not by running.** `GhostPattern::owner_rank`/`remote_local_index` name
+ANY rank as a ghost's owner, not just rank 0 -- `accumulate_remap_halo`'s own Alltoallv-based fold already
+handles multiple distinct owners (and multiple distinct ranks each holding their own copy of the SAME cell,
+each independently adding their own share) without any 2-rank-specific assumption anywhere in this round's own
+code. The final `MPI_Allreduce(MIN)` is a collective over the WHOLE base communicator regardless of rank count.
+The fix generalizes to `placement_for(3)` (`provider = [0, 1)`, `consumer = [1, 3)`, round 5's own layout) and
+any other split without further code change.
+
+**D82 (the Extensive/Intensive normalisation gap), precisely -- sourcing, then FIXED this round on the
+owner's own decision (addendum, 2026-10-19), same patch.** `build_supermesh_weights` (supermesh.cpp) used to
+always compute `val = overlap_measure / tgt.measure(dim, j)` -- row-normalized by the TARGET cell's own
+measure. This is the INTENSIVE convention; the EXTENSIVE form is `val = overlap_measure / src.measure(dim,
+i)` (column-normalized by the SOURCE cell's own measure, so `sum_j val[j,i] = 1` for each source column `i`
+-- the source cell's own amount fully redistributed, not reinterpreted as a density). Before this round,
+`RemapPlan` (`fuse/backend/remap_plan.hpp`) carried NO `Conservation` field to select between them. The ONE
+place in this call chain that DOES have the channel's own `Conservation` in scope is `Runner::Impl::
+resolve_remap()` (`runner.cpp`): the source/target arc type (`dag.arc(ins.out).type.conservation`) is read at
+the EXACT point `RemapPlan p` is constructed, the SAME place `p.placement = placement` already reads the
+channel's own placement -- confirmed by reading `source_type()` (`ir/lowering.cpp`) and every subsequent
+`ValueType` copy in `ir/rules_channel.cpp`: `.conservation` is set once from the channel's own `FieldSpec::
+conservation` at lowering time and never overwritten afterward, so it survives unchanged to the Remap's own
+output arc.
+
+**The fix.** A `Conservation conservation = Conservation::None;` field was added to `RemapPlan`, included in
+its own `key()` (so plan identity, and so caching, now depends on it too); `resolve_remap()` sets it right
+after `p.placement = placement`. `build_supermesh_weights` (`supermesh.hpp`/`.cpp`) takes a new `Conservation
+conservation = Conservation::None` parameter (defaulted so the ~6 existing call sites with the old 3-argument
+signature keep compiling and keep the OLD, Intensive behaviour -- `None` and `Intensive` both take the
+target-measure branch); the ONE caller that now has a real answer (`intx_weights.cpp`'s native branch) passes
+`plan.conservation`. Inside `build_supermesh_weights`: `const bool extensive = conservation ==
+Conservation::Extensive;` selects the divisor (`extensive ? src.measure(dim, i) : tgt.measure(dim, j)`); the
+raw-measure reconstruction `min_src_coverage`/`min_tgt_coverage`/R-12/R-13's own audits use (and this round's
+own `fold_and_reduce_source_coverage` call, above, which was updated to match) is convention-aware the same
+way; `max_col_defect` branches to a direct `|col_sum[i] - 1|` for Extensive (its own contract IS columns-sum-
+to-1, no measure multiply needed) while keeping the ORIGINAL measure-based `col_mass` computation for
+Intensive; `max_row_defect`/`monotone` are unchanged and documented as Intensive-only diagnostics (a row-sum
+guarantee is not what Extensive promises).
+
+**A real, pre-existing test was wrong, and this fix exposed it.**
+`InterfaceTransfer.ConservativeTransferPreservesTotalForce` (`test/verification/interface_transfer_test.cpp`)
+declares `fluid_force`/`beam_force_in` `Conservation::Extensive`, but its own comparison multiplied both sides
+by `measure_of(...)` before summing, with a comment claiming "Extensive fields are densities ... confirmed
+empirically" -- a test-side workaround written to compensate for the library's OLD, unconditional-Intensive
+bug (the unweighted sums disagreed by exactly the fluid/beam cell-count ratio, and the test's own prior author
+read that as the field's semantics rather than the library's defect). This directly contradicts the owner's
+own D82 decision: Extensive's value directly IS the amount, no measure weighting. Fixed by removing the
+measure multiply from both sum loops and rewriting both comment blocks (the file-level one and the in-test
+one) to state the correct, D82-consistent convention. Confirmed 16/16 pass in that binary after the fix.
+Searched the rest of the tree for the same pattern (`grep -rl "Extensive" test/`, 57 files, narrowed to the 26
+that also mention `measure`): the only other measure-weighted-sum-near-Extensive hit
+(`test/verification/nodal_remap_runner_serial_test.cpp:93`) is `build_consistent_interp_weights`'s own
+nodal-to-FV H-matrix (a density-to-load conversion for a DIFFERENT, Galerkin-type transfer method, not
+`build_supermesh_weights`'s general FV<->FV path) -- legitimate for that method, not a compensating
+workaround, and unaffected by this fix. The full tier-0 sweep (218 tests) after every change in this round's
+patch shows exactly one failure, `abi.conformance` (`FortranPlugin: E-ABI-LOAD`, a Fortran-plugin dlopen
+failure independently reproduced the same way in round 5 and other prior rounds, unrelated to this round's
+`src/abi`-excluded scope).
+
+**New tests, tier-0.** `Supermesh.ExtensiveConservesTheTotalAmountNotTheConstant` and
+`Supermesh.IntensiveReproducesTheConstantNotJustTheTotal` (`test/backend/supermesh_test.cpp`, `pair_of
+("generated:box:2x2x2", "generated:box:3x3x3")` -- `SerialMeshBackend` only generates `line`/`box`, not
+`quad`): confirm the two conventions directly from `build_supermesh_weights`, one process, no MPI. A new
+mutation row, `supermesh-normalises-extensive-the-same-as-intensive`
+(`build-evidence/mutations/backend-supermesh.toml`, flips `conservation == Conservation::Extensive` to `!=`),
+is RED/GREEN-verified: RED kills both new tests on the CONSERVED-QUANTITY assertion itself (source_sum !=
+target_sum for Extensive; a constant field not reproduced for Intensive), not a tolerance on an unrelated
+diagnostic; GREEN restore confirmed byte-identical (md5 `40cf9af8754acbcef41374b1ead5b8dd`). A second,
+pre-existing mutation row in `build-evidence/mutations.toml`, `supermesh-divides-by-the-source-measure`, had
+gone stale against this round's refactor (its own anchor text, `measure / mj`, no longer exists) and is
+updated in place to the current line (`src/backend/supermesh.cpp`'s `divisor` computation) with its own
+`describes` re-stated in D82's own terms; `tools/mutate.py --check-anchors` now reports 404 valid, 0 stale.
+
+**New test, real MPI, host_pending.** `NativeRemapHalo.
+DisjointGeneralWeightedRemapPreservesAConstantFieldExactlyUnderIntensiveConservation`
+(`test/parallel/native_remap_halo_runner_test.cpp`) parameterizes the existing halo-runner fixture's `build()`
+on `Conservation` and asserts the consumer's own received field equals the fill constant (7.0) to `1e-12`
+everywhere under Intensive, alongside the EXISTING Extensive row's own `28 == 28` total-amount assertion
+(unchanged by this round, now additionally exercising the SAME `plan.conservation` plumbing in the real
+multi-rank path).
+
+**One combined patch, not two.** The owner's addendum asked this stated explicitly: the `RemapPlan` field
+addition is one field plus one `key()` line, small enough that this round's patch carries BOTH the
+distributed-coverage fix (above) and the D82 fix in the SAME patch, not a follow-up.
+
+**The 3-rank case for D82: checked by reading, not by running.** The normalisation branch inside
+`build_supermesh_weights` is a PURELY LOCAL per-intersection computation (no cross-rank communication of any
+kind in the divisor itself) -- it reads `conservation` once per call and applies the same `extensive ? ... :
+...` choice to every triplet this rank's own local geometry kernel produced. Nothing in the branch depends on
+how many ranks exist or which rank is running it, so it generalizes to any rank count, and to any placement
+split, without further code change.
+
+**MOAB path: out of scope, by instruction.** The owner's addendum named the MOAB intersection path's own
+high-order weight formula as the MoabHalo track's own territory; `src/backend/intx_weights.cpp`'s `#if
+FUSE_HAVE_MOAB` half is untouched by this round's patch.
+
+**Host run of round 8 (lead, 2026-10-19, `build-all` at `68104aa` + this round, MPICH 5.0.0a1):** two further
+defects before the row could pass, both the lead's own fixes. (1) `execute_remap_halo_instructions` handed every
+non-native backend to the MOAB cross-placement overload under `FUSE_HAVE_MOAB`, which refuses `E-REMAP-BACKEND` for
+the serial backend; invisible in the no-MOAB tier-0 build, it turned 30 serial rows red on the MOAB-enabled host
+(`runtime.runner`, `example.dn_heat`, `verification.interface_transfer`, ...). A non-MOAB, non-native backend is now
+a successful no-op in both configurations. (2) `accumulate_remap_halo` refused "null buffer with 4 ghost(s)
+outstanding" on the consumer rank, whose `owned_covered` vector is empty (0 owned source cells, so `data()` is
+null), a local return in front of the fold's `MPI_Alltoallv`; the provider rank sat in that collective to the
+timeout. The null checks are now conditioned on the buffer this rank touches (`ghosts` when `ghost_n > 0`,
+`owned` when `owned_n > 0`); three tier-0 tests pin the rule. With both: `parallel.native_remap_halo_runner.2`
+PASS (0.52 s); rank 1's 16 weights are column-normalised (source 0: 0.444 + 0.222 + 0.222 + 0.111 = 1), so D82
+is measured on the host at 2 ranks. `parallel.native_remap_halo_runner.3` FAILS one stage later, in both tests,
+with `global id 2 is held by source rank 0 and again by source rank 0; pass owned entities only`: rank 1 adopts 4
+cells and rank 2 adopts 2 (trace), both copies of source cell 2 carry owner rank 0, and the communication-graph
+construction is handed the merged view's ghost copies as if owned. Round 9.
 ### D74 FIX (scaled-bench track, follow-up round, 2026-10-16)
 
 **Root cause, directly diagnosed (not the corner-precision theory originally suspected).**
@@ -10435,7 +10624,7 @@ NOT MEASURED; round 7's refusal was reached only through the wrong guard. Round 
 
 **CLOSED on the host (lead, 2026-10-19):** with D83's placement-aware adoption the 4-rank row builds the halo on
 the rescaled pair; see D83. The driver-side explicit rescale is the contract (owner decision 2026-10-19).
-### D82. A general (non-nodal) FV<->FV weighted Remap on a `Conservation::Extensive` channel does not conserve the delivered total when source and target cells have different measures -- OPEN, found 2026-10-19 (RemapHalo track, round 4, while separating causes for D73's own host-measured conservation failure)
+### D82. A general (non-nodal) FV<->FV weighted Remap on a `Conservation::Extensive` channel does not conserve the delivered total when source and target cells have different measures~~ -- FIXED 2026-10-19 (RemapHalo track, round 7, owner decision addendum; native supermesh path and `RemapPlan` field only -- MOAB high-order path is MoabHalo track's own scope)
 
 **Not a halo or placement defect.** Reproduced on ONE process, no MPI, no partitioned rank sets at all --
 unrelated to D73's own cross-rank geometry-exchange work, which this entry's own discovery was a
@@ -10489,23 +10678,29 @@ or any uniformly-resolved pair where the ratio happens to cancel. `generated:qua
 tree's own test suite built (this track's own round-1 GREEN row, written to exercise D73's halo, not
 designed to probe this).
 
-**Scope, and why this round did not fix it.** The affected functions
+**Scope, and what this round fixed.** The affected functions
 (`build_weights_via_supermesh`/`supermesh_side`/`build_supermesh_weights`) are compiled unconditionally,
-outside any `FUSE_HAVE_MOAB` guard, so this is NOT specific to the native backend or to the MOAB-absent
-build -- every conservative general-weighted channel in the tree, on EITHER backend, that lacks matching
-cell measures on both sides is affected the same way. A real fix needs `RemapPlan` to carry the channel's
-own `Conservation` (a new field, touching its `key()` and every existing cache entry) and either a second
-weight-normalization branch or an amount/density conversion applied consistently at every call site that
-builds or applies these weights (`resolve_remap()`'s setup half, `OpKind::Remap`'s execute-time half,
-and the MOAB-specific high-order/order>1 path this track did not re-derive the formula for) -- a change
-whose correctness needs re-verifying against every existing conservative-channel test in this tree, not a
-contained, single-file patch. Left open for the owner's own decision on scope and which track takes it.
+outside any `FUSE_HAVE_MOAB` guard, so this was NOT specific to the native backend or to the MOAB-absent
+build -- every conservative general-weighted channel in the tree, on EITHER backend, that lacked matching
+cell measures on both sides was affected the same way. See "D73 FIX, ROUND 8" above for the full writeup:
+`RemapPlan` now carries the channel's own `Conservation` (a new field, `key()` updated), set at
+`resolve_remap()`'s own construction site from the arc type, and `build_supermesh_weights` branches its
+normalisation on it. The MOAB-specific high-order/order>1 path's own formula is explicitly OUT of this
+round's scope (the owner's addendum names it as the MoabHalo track's own territory) and is UNCHANGED --
+any conservative Extensive channel routed through `MoabMeshBackend`'s intersection path remains affected
+until that track's own fix lands.
 
-**host_pending**: none specific to this entry -- it was measured completely in-sandbox, with no MPI
-needed at all. D73's own `host_pending` row (above) is expected to still show a DIFFERENT value from 63
-once D73's own fix is confirmed on the host (the real multi-rank exchange adopting the correct cells),
-but will not show 28 either, until D82 is separately fixed.
+**host_pending**: the native-path fix itself was verified completely in-sandbox (tier-0, no MPI needed) --
+see "D73 FIX, ROUND 8" above for the new tests and the RED/GREEN-verified mutation row. D73's own
+`host_pending` row (above) is expected to show the conserved total (28, not 63) once this fix is confirmed
+on the host alongside D73's own distributed-coverage fix.
 
+**Not yet host-verified (lead, 2026-10-19):** the heading stays open until the halo runner row delivers 28 for 28 on the owner's machine.
+
+
+**Host measurement (lead, 2026-10-19):** with round 7's normalisation, `parallel.native_remap_halo_runner.2` passes
+and rank 1's weight columns each sum to 1 (trace above, D73 round 8). The MOAB half (MoabHalo round 11) is landing
+separately; the heading closes when both halves have passed on the host, including the 3-rank native row.
 ### ~~D83. `MoabMeshBackend::adopt_remap_halo` (and `regather_with_halo`/`plan_halo_exchange`, the
 covering-cell adoption subsystem behind the remap halo, R3) is hardwired to the backend's DEFAULT
 Core and base communicator, so the 4-argument `build_remap_halo`'s own "same Core, delegate"
@@ -10699,3 +10894,76 @@ PASS (0.76 s): placement A = {0, 1} builds a real covering-set halo through the 
 `parallel.moab_placed_weights_mpi.{2,3}` PASS (0.74 s, 0.57 s), `parallel.remap_halo_mpi.{1..5}` PASS. The
 GLOBAL_ID refusal of rounds 7 and 9 was the wrong-Interface read, as the round-10 reading said; no extra
 global-id step was needed.
+
+### D84. `backend.supermesh` and `model.bfloat16` each failed once in the full tier-0 mutation sweep and passed in 7 re-runs -- OPEN, not reproduced in 50 repeats, 2026-10-19 (Survivors track)
+
+**What the sweep recorded.** `build-evidence/mutations.toml`'s full tier-0 sweep at `90d98ee`
+flagged these two rows nondeterministic: each failed once across the sweep's re-runs and passed
+the other seven. Both are gtest binaries with no fixture of their own that reads the clock, a
+random generator, or an environment variable the test itself sets.
+
+**Static reading, looking for the four named sources (uninitialised memory, unordered-container
+iteration, thread count, a tolerance at the edge).**
+
+1. **`model.bfloat16`** (`test/model/bfloat16_test.cpp`). Read in full: every one of the four
+   `TEST`s is pure bit manipulation -- `from_bits()`/`to_float()`/`from_float()` over explicit
+   `std::uint16_t`/`std::uint32_t` patterns, `std::memcpy` into a `float`, no loop bound or
+   branch that reads anything but the test's own literal input. No `std::unordered_map`/`_set`,
+   no thread, no random generator, no floating-point comparison near a tolerance (the two
+   tie/overflow cases assert exact bit patterns with `EXPECT_EQ`, not `EXPECT_NEAR`). This file
+   has no candidate mechanism for its own nondeterminism; if the one observed failure is real, its
+   cause is outside this translation unit (`fuse_test_main`'s shared `Kokkos::initialize()`/
+   `finalize()` runs once per BINARY, not per `TEST` -- this suite links it only because every
+   tier-0 test binary does, per `fuse_add_gtest()`, not because any `BFloat16.*` case touches
+   Kokkos; a thread-pool start/stop race there, if one exists, would misattribute to whichever
+   test happened to be running when it fired, this one included).
+2. **`backend.supermesh`** (`test/backend/supermesh_test.cpp`, `src/backend/supermesh.cpp`).
+   `build_supermesh_weights()` accumulates into `std::map<std::pair<size_t,size_t>, double> acc`
+   (ORDERED, not `unordered_map` -- iteration order is the sorted key order regardless of
+   insertion order) and keeps the candidate-pair broad phase on the device path
+   (`fuse::device::candidate_pairs`, `include/fuse/backend/supermesh_candidates_device.hpp`) only
+   when `fuse::search::resolve_execution_space() == ExecutionSpace::Device` -- which on this
+   machine (no CUDA/HIP/SYCL backend compiled into Kokkos) requires the test to ask for it
+   explicitly (`FUSE_EXECUTION_SPACE=device` or the equivalent in-process env guard;
+   `test/backend/supermesh_test.cpp`'s own `SupermeshDevice` suite is the only caller that does).
+   Read `candidate_pairs()` in full: both the `Kokkos::parallel_scan` (an exact integer prefix
+   sum, not an associativity-sensitive floating-point reduction) and the fill
+   `Kokkos::parallel_for` write to a slot that is a pure function of `t` alone (`offsets(t)`,
+   fixed before the fill kernel runs) -- no two iterations of either kernel write the same
+   location, so the resulting CSR is bit-identical regardless of `Kokkos::OpenMP`'s thread count
+   or scheduling. The tests NOT in `SupermeshDevice` -- including whichever ones this ctest row's
+   own binary runs by default -- take the brute-force double loop
+   (`for (const Simplex& t : ts) for (const Simplex& s : ss) ...`) unconditionally, which has no
+   parallelism at all. Several assertions sit at `1e-13`/`1e-14` (`EXPECT_NEAR`/`EXPECT_LT`
+   against a closed form), which is a genuine "tolerance at the edge" CANDIDATE, but every one of
+   those is against a value this file's own comments derive from rounding in the clip
+   (`r3d`/`r2d`), not from summation order -- no code path here sums the same set of terms in two
+   different orders between one run and the next.
+
+**No fix applied.** Neither file shows a mechanism this reading can point to with the same
+confidence the five SURVIVED rows above were diagnosed with -- both read as deterministic code
+given a fixed input, a fixed (non-device) execution space, and a fixed build.
+
+**Reproduction attempted, not reproduced.** `ctest -R '^backend.supermesh$' --repeat
+until-fail:50` and `ctest -R '^model.bfloat16$' --repeat until-fail:50`, this session's tier-0
+build (`90d98ee` export, `-DFUSE_ENABLE_HDF5=ON`, system `/usr/bin/c++`): both ran the full 50
+repeats and passed every one (`100% tests passed`, exit 0; `backend.supermesh` 50/50 at ~0.2s
+each, `model.bfloat16` 50/50 at ~0.01s each). This is a single machine, a single build, and 50
+repeats, not the sweep's own host or its 8-run sample -- a cause tied to that host's own core
+count, OS scheduler, or a build configuration this session's tier-0 does not share (Release vs
+Debug, a different compiler, MOAB/PETSc linked in) is not ruled out by this result, so treat the
+non-reproduction as provisional, not as evidence the sweep's own observation was a fluke.
+
+**To finish this.** Re-run both under repetition on the host that produced the original sweep, at
+higher repeat counts (`until-fail:200` or more, since a true 1-in-8 rate needs more than 50 tries
+to bound with confidence) and, if it recurs, capture `--output-on-failure` and compare the exact
+assertion that failed against the two candidates named above (an `EXPECT_NEAR` tolerance miss
+points at the clip's own rounding; anything else points at a mechanism this reading did not find).
+If `model.bfloat16` recurs, capture whether `fuse_test_main`'s global Kokkos setup logged a warning
+on that run -- the shared-binary hypothesis above is otherwise unfalsifiable from this test's own
+output.
+
+```sh
+ctest --test-dir <build-dir> -R '^backend.supermesh$' --repeat until-fail:200 --output-on-failure
+ctest --test-dir <build-dir> -R '^model.bfloat16$' --repeat until-fail:200 --output-on-failure
+```

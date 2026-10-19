@@ -365,3 +365,32 @@ measurement, why rank 0's own zero-target-cells refusal was the SAME defect and 
 the tier-0 reproduction (`NativeHaloBuildWeights.BuildWeightsFindsAHaloCommittedUnderAnActualComponent
 Placement`, native_halo_test.cpp, no MPI needed).
 
+**The conservative coverage check, distributed (round 7, 2026-10-19).** `min_src_coverage`
+(`build_supermesh_weights`'s own per-cell audit, supermesh.cpp) is computed from the intersections THIS
+RANK's own merged views produced -- wrong whenever a source cell this rank OWNS has every one of its
+intersections on a PEER that adopted it through the halo (a provider rank with no target cells of its
+own is the sharpest case: its own local supermesh intersects its source cells against zero target
+cells and finds nothing, however fully those same cells are covered once the adopting peer's own
+intersections are counted). `fuse::native::fold_and_reduce_source_coverage` (native_halo.hpp/.cpp)
+folds each halo copy's own share back to its owner -- `accumulate_remap_halo` (KNOWN_ISSUES D27), the
+reverse of the forward fill, reused rather than rebuilt -- and then reduces the resulting per-owned-cell
+minimum to one number over the WHOLE base communicator (`MPI_Allreduce(MIN)`, "agree first"), so every
+rank's Conservative check reads the SAME, now-correct value. `build_weights_via_supermesh`'s own native
+branch (intx_weights.cpp) calls it between `build_supermesh_weights` and the existing `RemapFlags::
+Conservative` check, reconstructing the per-cell coverage it needs from the `RemapWeights` triplets
+already returned -- no change to this file's own geometry kernel. See KNOWN_ISSUES.md D73's own "FIX,
+ROUND 8" account for the full host measurement, the three-shapes tier-0/requires-mpi verification split,
+and D82's own precise normalisation sourcing for the owner's decision.
+
+**The Extensive/Intensive normalisation convention, D82 (round 7, 2026-10-19).**
+`build_supermesh_weights` now takes a `Conservation` parameter (defaulted to `None`, behaviourally
+identical to the old always-Intensive behaviour, so existing 3-argument call sites are unaffected): a
+Extensive channel normalises each weight by the SOURCE cell's own measure (`sum_j val[j,i] = 1` for
+source column `i`, the delivered TOTAL conserves); an Intensive channel keeps the original target-measure
+normalisation (`sum_i val[j,i] = 1` for target row `j`, a constant field reproduces exactly). `RemapPlan`
+carries the channel's own `Conservation`, read at `resolve_remap()` from the arc type at lowering time (the
+same place `placement` is read) and threaded through to this call. See KNOWN_ISSUES.md D82's own entry
+and its "FIX, ROUND 8" account above for the mechanism, the pre-existing test this fix exposed as wrong
+(`interface_transfer_test.cpp`), and the RED/GREEN-verified mutation row. The MOAB intersection path's own
+high-order weight formula is UNCHANGED by this round (MoabHalo track's own scope).
+
