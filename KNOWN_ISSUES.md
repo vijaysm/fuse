@@ -10757,7 +10757,7 @@ NOT MEASURED; round 7's refusal was reached only through the wrong guard. Round 
 
 **CLOSED on the host (lead, 2026-10-19):** with D83's placement-aware adoption the 4-rank row builds the halo on
 the rescaled pair; see D83. The driver-side explicit rescale is the contract (owner decision 2026-10-19).
-### D82. A general (non-nodal) FV<->FV weighted Remap on a `Conservation::Extensive` channel does not conserve the delivered total when source and target cells have different measures~~ -- FIXED 2026-10-19 (RemapHalo track, round 7, owner decision addendum; native supermesh path and `RemapPlan` field only -- MOAB high-order path is MoabHalo track's own scope)
+### ~~D82. A general (non-nodal) FV<->FV weighted Remap on a `Conservation::Extensive` channel does not conserve the delivered total when source and target cells have different measures~~ -- FIXED 2026-10-19 (RemapHalo track, round 7, owner decision addendum; native supermesh path and `RemapPlan` field only -- MOAB high-order path is MoabHalo track's own scope)
 
 **Not a halo or placement defect.** Reproduced on ONE process, no MPI, no partitioned rank sets at all --
 unrelated to D73's own cross-rank geometry-exchange work, which this entry's own discovery was a
@@ -11445,6 +11445,147 @@ unintersected on the other. The covering set and the fold are right; `Intx2MeshO
 over the partitioned local pair, does not visit source/target pairs that the same call visits at one rank. Round
 15 reads the kernel's front propagation (advancing front from a seed through local adjacency, which a partition
 boundary or a ragged regional mesh can disconnect) and the k-d-tree variant `intersect_meshes_kdtree`.
+
+### D82 FIX, ROUND 15 (MoabHalo track, 2026-10-20): the mechanism the probe
+pointed at, confirmed by reading MOAB's own intersection driver, and
+fixed by switching drivers, not by patching the one that drops cells
+
+**The probe decided it, not a guess.** Round 14's `trace_remap_halo_probe`
+output, reported verbatim by the host (2 ranks, MPICH 5.0.0a1, `build-all`
+at `d6a4100` + round 14 applied): every zero-coverage cell is held on the
+rank whose own LOCAL target cells geometrically contain its centroid
+(`independent_overlap_here=true`) -- gid 793 is the owner (rank 0)'s own
+cell, covered by rank 0's own targets with no halo involved at all; gids
+1357/1358/2024 (owner 0) and 402/571/1230/1738/1918/1919/1920 (owner 1)
+are adopted copies held by rank 1, whose targets cover them -- yet
+`intersected_area_here=0` on every one of these, on every rank that holds
+them. No probed cell is ever absent from the rank that geometrically
+covers it, ruling out (A); the partially-covered cells (255, 731, 1532,
+23, 862, 960, ...) show nonzero area on one rank and zero on the other,
+consistent with the SAME mechanism acting on a cell that straddles a
+partition boundary rather than a coordinate/rescale problem. The verdict
+is (B): `Intx2MeshOnSphere::intersect_meshes`, run on the partitioned
+local pair, computes zero overlap for (source, target) pairs it visits
+and intersects correctly at one rank.
+
+**Read to confirm the mechanism, not just the symptom.**
+`Intx2Mesh::intersect_meshes` (`moab-release/src/IntxMesh/Intx2Mesh.cpp`,
+defined at line 580, preceded by its own comment "main interface; this
+will do the advancing front trick") is an ADVANCING-FRONT algorithm: an
+outer `while (!rs22.empty())` loop re-seeds, once per disconnected
+"island" of the remaining TARGET range `rs22`, via an `AdaptiveKDTree`
+proximity search that finds one CONFIRMED intersecting (source, target)
+pair; an inner `while (!tgtQueue.empty())` / `while (!localSrc.empty())`
+pair of loops then walks outward from that seed through TARGET adjacency
+(`tgtNeighTag`) and SOURCE adjacency (`srcNeighTag`, read via
+`mb->tag_get_data(srcNeighTag, &srcT, 1, neighbors)`), expanding the
+front only to source cells ADJACENT -- sharing a side -- to a cell
+already confirmed to intersect something. MOAB's own adjacency tags are
+built from shared VERTEX HANDLES, not from geometric coincidence: a
+source cell adopted into the local covering set through MOAB's parallel
+exchange is not guaranteed to share vertex handles with a cell already
+resident on the rank even when it sits at the identical geometric
+location, so the front may never reach it through adjacency, no matter
+how it is seeded elsewhere (INFERRED: where `srcNeighTag` is populated
+for adopted cells was not read to the end; the host run is the test). The outer loop's own KD-tree reseed does not
+rescue this: a TARGET cell is marked resolved (`TgtFlagTag`) the moment
+ANY intersecting source cell is found for it, not when its full area is
+accounted for, so a target cell satisfied in PART by a front-reachable
+source cell never gets re-seeded for the remaining, adjacency-
+unreachable, adopted source cell that would complete its coverage --
+exactly the "zero for a fully adopted-only cell, nonzero-but-partial for
+a straddling one" shape the probe reported.
+
+**The remedy MOAB itself already ships for this.**
+`Intx2Mesh::intersect_meshes_kdtree` (same file, line 343) is an
+alternative DRIVER over the identical underlying cell-pair intersection
+math (`computeIntersectionBetweenTgtAndSrc`, `setup_tgt_cell`,
+`findNodes`, the same `SourceParent`/`TargetParent`/`Counting` output
+tags) that builds ONE `AdaptiveKDTree` over the full covering set
+(`rs1`) and, for EVERY target cell, queries it directly by spatial
+proximity -- no adjacency walk, so no dependency on vertex-handle
+identity between owned and adopted cells. It needs nothing `assemble()`
+does not already provide: `FindMaxEdges` (already called, sets
+`max_edges_1`/`max_edges_2`) and `set_error_tolerance` (already called,
+sets `epsilon_1`); it builds its own tags internally and does not call
+`createTags()`. `Intx2MeshOnSphere` does not override either
+`intersect_meshes` or `intersect_meshes_kdtree` -- both are inherited
+unchanged from the base `Intx2Mesh`, dispatched correctly through FUSE's
+existing `std::unique_ptr<moab::Intx2Mesh> worker` base pointer regardless
+of whether the concrete object is `Intx2MeshOnSphere` or
+`Intx2MeshInPlane`. This is not a new or untested path: MOAB's own
+parallel remapper (`src/Remapping/TempestRemapper.cpp:1722-1734`) offers
+exactly this choice for covering-set/target-set intersection on the
+sphere, naming the two "the advancing-front propagation algorithm" and
+"the Kd-tree search algorithm"; MOAB's own sphere intersection test
+(`test/intx_on_sphere_test.cpp:204-208`) uses the kd-tree path as its
+"slow method" / brute-force fallback.
+
+**Fix applied:** `assemble()`'s single call site
+(`src/backend/intx_weights.cpp`) now calls `worker->intersect_meshes_
+kdtree(src.file_set, tgt.file_set, out_set)` unconditionally, in place of
+`worker->intersect_meshes(...)`. No other code changed: the output tags,
+the fold, and `normalize_remap_weight` all read the SAME supermesh shape
+either driver produces. Per the owner's own standing preference
+(conservation correctness over an efficiency difference that has not
+been measured either way), this is an unconditional switch, not a
+fallback or a flag.
+
+**Verification in this sandbox** (unchanged constraint: no MOAB-linked
+binary can be RUN here, `moab::Core`'s constructor calls
+`MPI_Init_thread`). Built, not run: the full MOAB/MPI tree. Tier-0: 219
+tests, 217 PASS, the same 2 pre-existing unrelated failures every round.
+All 5 gates clean. New mutation
+`moab-halo-intersection-kernel.toml`/`moab-intersection-reverts-to-
+advancing-front` reverts the one changed line back to `intersect_meshes`
+and names `RemapHaloMpiSphere.ExtensiveChannelConservesTheDeliveredTotal
+AcrossTheSpherePair`'s own `EXPECT_NEAR(min_src_coverage, 1.0, 1e-6)`/
+`EXPECT_NEAR(global_target_total, global_source_total,
+kDerivedRelTol*global_source_total)` as the kill, `requires="mpi"` since
+only the host can run it.
+
+**No test-assertion changes were needed.** Both sphere-pair tests
+(`ExtensiveChannelConservesTheDeliveredTotalAcrossTheSpherePair`,
+`IntensiveChannelPreservesAConstantFieldAcrossTheSpherePair`) already
+assert `EXPECT_NEAR(min_src_coverage`/`min_tgt_coverage, 1.0, 1e-6)`
+before the conservation check, from rounds 11-13 -- and `min_src_
+coverage` is the REDUCED (Allreduce-MIN) minimum coverage ratio over
+every owned cell on every rank, so a single zero-coverage cell anywhere
+fails that assertion by far more than 1e-6; this already structurally IS
+"`zero_coverage_after_fold` is 0 on every rank," expressed through the
+field `assemble()` already computes and reports rather than a new,
+separate count. The Extensive total check's own `kDerivedRelTol = 4e-4`
+is UNCHANGED.
+
+**host_pending (host rebuilding against MPICH 5.0.2rc3 as of this
+round's dispatch):**
+
+```
+cd build-all
+FUSE_TEST_PRINT_ALL_RANKS=1 mpiexec -n 2 \
+  -outfile-pattern=/tmp/d82_r15_2rank-%r.out \
+  -errfile-pattern=/tmp/d82_r15_2rank-%r.err \
+  ./test/fuse_parallel_remap_halo_mpi_test \
+  --gtest_filter=RemapHaloMpiSphere.ExtensiveChannelConservesTheDeliveredTotalAcrossTheSpherePair:RemapHaloMpiSphere.IntensiveChannelPreservesAConstantFieldAcrossTheSpherePair
+```
+
+and identically at `-n 3` with a `3rank` file pattern; `ctest
+--output-on-failure` for the full MPI suite confirms no other MOAB row
+regressed. Expect `min_src_coverage`/`min_tgt_coverage` within `1e-6` of
+`1.0` and the Extensive total within `4e-4` relative, at both 2 and 3
+ranks -- report the actual numbers either way, this has been wrong by a
+confidently-measured 28x before.
+
+
+**CLOSED on the host (lead, 2026-10-20, `build-all` at `a142c8b` + round 15, MPICH 5.0.2rc3):** with
+`intersect_meshes_kdtree`, `parallel.remap_halo_mpi.{1,2,3,4,5}` all pass (0.67, 1.61, 2.66, 2.15, 5.60 s) and
+`moab_placed_weights_mpi.{2,3,4}` pass (4.75, 4.57, 10.35 s). Run directly at 2 and 3 ranks, both sphere-pair
+tests pass on every rank (`ExtensiveChannelConservesTheDeliveredTotalAcrossTheSpherePair` 585 ms at 2 ranks,
+2957 ms at 3; `IntensiveChannelPreservesAConstantFieldAcrossTheSpherePair` 771 ms, 355 ms), under the unchanged
+derived tolerance `kDerivedRelTol = 4e-4` and the unchanged `min_src_coverage` / `min_tgt_coverage` assertions
+at `1e-6`. The row times grew (`remap_halo_mpi.5` 0.42 s -> 5.60 s, `moab_placed_weights_mpi.4` 0.54 s -> 10.35 s):
+the k-d-tree search is the accepted cost of a complete intersection, per the standing rule; the front kernel's
+adjacency mechanism stays recorded as inferred. D82 is closed in both halves.
 ### ~~D83. `MoabMeshBackend::adopt_remap_halo` (and `regather_with_halo`/`plan_halo_exchange`, the
 covering-cell adoption subsystem behind the remap halo, R3) is hardwired to the backend's DEFAULT
 Core and base communicator, so the 4-argument `build_remap_halo`'s own "same Core, delegate"
