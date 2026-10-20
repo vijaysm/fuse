@@ -742,7 +742,7 @@ rather than the primary diagnosis.
 
 ---
 
-### D5. Partial rank-set overlap through the Runner — FIXED AND HOST-VERIFIED 2026-09-23; MOAB view layer written 2026-09-28, awaiting the host
+### ~~D5. Partial rank-set overlap through the Runner — FIXED AND HOST-VERIFIED 2026-09-23; MOAB view layer written 2026-09-28, awaiting the host
 
 **MOAB per-component decomposition (`8cf2dfe`, `0e290ab`).** `MoabMeshBackend::set_placements(placements)`,
 one `RankSet` per graph component (couplers included, read from `graph.component_count()`),
@@ -1043,6 +1043,8 @@ layer further, at test 2's same-Core delegation (line 252): `E-REMAP-GEOMETRY: t
 spheres of different radius (1.000000 and 6371229.000000); they are not the same domain`. `wholeATM_T.h5m`
 is a unit sphere and `recMeshOcn.h5m` is at Earth radius. Round 5 reads how the sibling sphere rows make
 this pair usable, without weakening the geometry refusal.
+
+**Closed (record pass, 2026-10-20):** the Runner-side fix was host-verified 2026-09-23; the MOAB view layer's own rows, `parallel.moab_placed_weights_mpi.{2,3,4}`, pass on the host (2026-10-20, with D81/D82/D83 closed).
 ### ~~D4. Two axes of the parallel matrix have no coverage~~ — CLOSED 2026-09-28, host-verified
 
 **Host run 2026-09-28:** `ctest -R 'layout.coupler|parallel.runner_transport|parallel.remap_halo|backend.remap_halo'`
@@ -1179,7 +1181,7 @@ its `FUSE_REQUIRE_AT_LEAST_RANKS` guard — will only show up on a host run.
 
 ---
 
-### D3. ~~Four behaviours no test detects~~ -- two runtime mutations survive on the host; FIXED, awaiting host run (tests written, both confirmed MPI-only and build-verified 2026-10-18/19)
+### ~~D3. ~~Four behaviours no test detects~~ -- two runtime mutations survive on the host; FIXED, awaiting host run (tests written, both confirmed MPI-only and build-verified 2026-10-18/19)
 
 **State on 2026-10-02 (host runs on `ba0892e` and `ca7f7a5`).** The hang the first host run of
 `StillRunsASecondChannelAfterARegionFailsUnderMpi` hit was a real runtime defect, fixed in
@@ -1392,6 +1394,8 @@ is recorded alongside each row in `transport-runtime.toml`.
 
 
 ---
+
+**Closed (record pass, 2026-10-20):** the two surviving runtime mutations were killed in a clean tree (14 of 14 ABI rows, `eff184a`); the two nondeterministic tier-0 rows live on as D84.
 ### D7. `WindowCoupler` supports at most one straddling member per window, and no Fixed step longer than the window — REJECTED 2026-09-24, support is design work
 
 Found 2026-09-24 while testing an explicit window
@@ -1728,7 +1732,7 @@ available.
 
 ---
 
-### D8. A Remap into a nodal field on more than one rank is rejected -- FIXED for the consistent/consistent-transpose methods, HOST-VERIFIED 2026-10-18 at 1 to 5 ranks (round 5): the S5.5 matrix row is closed; every other method's rejection is unchanged
+### ~~D8. A Remap into a nodal field on more than one rank is rejected -- FIXED for the consistent/consistent-transpose methods, HOST-VERIFIED 2026-10-18 at 1 to 5 ranks (round 5): the S5.5 matrix row is closed; every other method's rejection is unchanged
 
 `E-RT-REMAP-NODAL-PARALLEL` (`resolve_remap`, `src/runtime/runner.cpp`)
 rejects any Remap whose target is a nodal field (ContinuousGLL order 1) on a
@@ -2206,6 +2210,7 @@ same run, 35/35. The multi-process run this entry asked for has happened; what s
 non-consistent methods' `E-RT-REMAP-NODAL-PARALLEL` refusal (pending D5 item 3), the three NOT-ASSESSED
 mutations and `ClampToBoundary`, exactly as the paragraph above lists them.
 
+**Closed (record pass, 2026-10-20):** host-verified at 1 to 5 ranks 2026-10-18. The remaining rejection of the non-consistent nodal methods on more than one rank is a scope limit, not this defect.
 ### ~~D9. The coupled channel-beam FSI gains energy over many periods~~ — FIXED 2026-09-25: the traction had the sign of the force on the fluid
 
 **Root cause.** `StokesSolver::step()` delivered `-p + 2 mu dv/dy` as the wall
@@ -3667,7 +3672,7 @@ beam acceleration.
 
 
 **Host run of round 5 (lead, 2026-10-19):** `parallel.provider_subset_mpi.{2,3}` PASS (0.86 s, 0.09 s). D15's three test-side defects are closed on the host; the mount-everywhere design question stays open.
-### D16. A window member's cold-start priming over-read a smaller provider buffer — FIXED 2026-10-03
+### ~~D16. A window member's cold-start priming over-read a smaller provider buffer — FIXED 2026-10-03
 
 Found by ASan on a two-member window-scoped region whose members export fields of different
 lengths (Conformance Unit 2, the coupler-placement track's own cross-resolution U/V box graph).
@@ -3708,6 +3713,7 @@ then fully reverted) separately confirmed the generator and supermesh builder ar
 identical 3x3x1 pair (exact identity matrix, `min_src_coverage=min_tgt_coverage=1`). The
 uniform-collapse finding's own root cause remains open.
 
+**Closed (record pass, 2026-10-20):** fixed 2026-10-03; the unrelated same-resolution finding in the last paragraph was never reproduced and has no entry.
 ### D17. `--accel aitken` converges through `--driver runner` but not through `--driver window`, on the identical `AccelConfig` — OPEN, not pursued (Conformance Unit 2's own scope needs no accelerator)
 
 Measured on the Brusselator example (`examples/brusselator/main.cpp`) at its own default
@@ -3851,7 +3857,7 @@ skips and a `fuse_tests_gated_by` entry so the registration audit stays honest. 
 direct factorisation), and that refusal is now fired by `test/linalg/schur_slab_unavailable_test.cpp`
 (NL-5), registered only in that configuration. The CI matrix's `builtin` legs can therefore go green.
 
-### D30. Two bit-for-bit tests fail by one ulp in a Release build — a decision on floating-point contraction — DECIDED AND CLOSED 2026-10-12
+### ~~D30. Two bit-for-bit tests fail by one ulp in a Release build — a decision on floating-point contraction — DECIDED AND CLOSED 2026-10-12
 
 **Measured 2026-10-10 on a clean export of `cd26801`, `-DCMAKE_BUILD_TYPE=Release`, otherwise the
 tier-0 configuration** (found by the example-documentation pass, which built the `tier0-release`
@@ -3898,7 +3904,8 @@ found and fixed (the test's own step rounding, not the contraction policy).
 Verified 2026-10-12 from a clean export: Debug (policy ON), 179 of 179 quick rows and 16 of 16 slow
 rows; Release ON and OFF, the 5 touched rows (OFF passes after D34's fix).
 
-### D33. The omp legs and the `omp_identical` rows were registered with one thread whenever configure ran under `OMP_NUM_THREADS=1` — CLOSED 2026-10-12
+**Closed (record pass, 2026-10-20):** decided by the owner 2026-10-12 and verified from a clean export in both policies.
+### ~~D33. The omp legs and the `omp_identical` rows were registered with one thread whenever configure ran under `OMP_NUM_THREADS=1` — CLOSED 2026-10-12
 
 `test/CMakeLists.txt` took the host core count from CMake's `ProcessorCount()`, and registered each
 `*.omp<N>` leg and each `example.*.omp_identical` row with it. `ProcessorCount()` asks `sysctl -n
@@ -3923,6 +3930,7 @@ gives the same 194 rows and `THREADS_HI=12`. Configure now also states when the 
 because the omp legs then compare one thread with one thread whatever the registration does.
 Not covered: Windows (the check is skipped; `ProcessorCount()` reads `NUMBER_OF_PROCESSORS` there).
 
+**Closed (record pass, 2026-10-20):** fixed by `fuse_host_core_count()` with the row `build.host_core_count_ignores_omp_threads`.
 ### D34. The FSI beam-side energy identity compared a quantity built with the literal step against a run that took the rounded one — CLOSED 2026-10-12
 
 **Cause (measured).** `build_fsi_graph()` in `test/verification/fsi_energy_diag_test.cpp` does not hand
@@ -3981,7 +3989,7 @@ round-tripped bitwise through all 16 restores).
   that the simulated end time and the time axis carry the rounding error: zero for the default
   `--dt 0.01`, about 1.22e-4 for a value that is not on the grid.
 
-### D35. The accept/connect probe's verdict was cached once and never measured again — CLOSED 2026-10-12
+### ~~D35. The accept/connect probe's verdict was cached once and never measured again — CLOSED 2026-10-12
 
 `cmake/FuseDependencies.cmake` ran `tools/probe-mpi-dynamic.sh` only when `FUSE_MPI_DYNAMIC_PROBED` was not in
 the cache, and cached whatever it returned, including "not tested", which records that nothing was measured.
@@ -4007,7 +4015,8 @@ option set to OFF by hand while the probe default was ON stayed OFF through that
 measured here: a re-probe that returns "measured working" or "measured broken", because the sandbox cannot launch;
 the owner's reconfigure of `build-all` is where that shows.
 
-### D36. Accept mode's bundled coupler rank was declared as part of U's own RankSet, so D24's fix mis-sized U's field
+**Closed (record pass, 2026-10-20):** closed 2026-10-12; the re-probe fired on the reinstalled MPI on 2026-10-20 exactly as designed (D23).
+### ~~D36. Accept mode's bundled coupler rank was declared as part of U's own RankSet, so D24's fix mis-sized U's field
 
 **Status: FIXED at the library and example levels; `verification.brusselator.participants.accept.3` (and
 `.accept.5`, built but never run per D18's own ruling) are the host's rows to confirm.**
@@ -4144,6 +4153,7 @@ unaffected by this confirmation. D14's own account (its "what remains" item 3) c
 reason its own accept-mode ABI gap, not this entry's layout bug, is now the only thing standing between
 `verification.brusselator.participants.lowfive.accept.3` and a pass.
 
+**Closed (record pass, 2026-10-20):** `participants.accept.3` passes on the host (2026-10-13, and 3 of 3 on 2026-10-20).
 ### D37. `pfuse` v1 (the pybind11 bindings) does not expose Newton, MPI, or either non-serial mesh backend to Python, and inherited one pre-existing naming bug in `dump_graphviz()` — OPEN, scope decision for v2
 
 **What this track built.** `python/` (gated by `FUSE_ENABLE_PYTHON`, default OFF) binds `fuse::CouplingGraph`,
@@ -4187,7 +4197,7 @@ above); a Python-side MPI story (`mpi4py`, communicator passing into `RunnerConf
 bindings. None of the three has a design in `docs/dev/python-surface.md` beyond the "what this does not
 expose" list — a v2 scope decision, not a defect in v1.
 
-### D38. The Runner's generic size reconciliation held an `ExternalDelivery` instruction to the same equal-size rule as an ordinary data-moving kind
+### ~~D38. The Runner's generic size reconciliation held an `ExternalDelivery` instruction to the same equal-size rule as an ordinary data-moving kind
 
 **What it was.** `src/runtime/runner.cpp`'s per-instruction buffer-size reconciliation (`resolve_instructions()`) reads
 `out_total` doubles from every input arc for any instruction kind it does not name as an exception — `Remap` and
@@ -4279,7 +4289,9 @@ LowFive row this fixes was never blocked by D14 on the owner's own `build-lowfiv
 whether the VOL plugin's own accept-mode intercommunicator (D14) lets `...lowfive.accept.3` complete the
 handshake at all, are separate, unmeasured questions this entry makes no claim about — see this round's own
 report for what the sources show and do not show about them.
-### D39. The participants' own `lowfive.mpmd.3` row now attaches LowFive programmatically, sidestepping the env route's own null dereference rather than explaining it
+
+**Closed (record pass, 2026-10-20):** `participants.lowfive.mpmd.3` and `lowfive.accept.3` both pass on the host (2026-10-20, 1.27 s and 1.37 s), so every rank passes `fuse_initialize()`'s `ExternalDelivery` check.
+### ~~D39. The participants' own `lowfive.mpmd.3` row now attaches LowFive programmatically, sidestepping the env route's own null dereference rather than explaining it
 
 **Status: FIXED at the library/example level for the MPMD row's own attach step; the distributed serve/receive
 choreography and the row itself are UNEXECUTED (no MPI in this sandbox); accept mode is refused by design, not
@@ -5795,6 +5807,7 @@ communicator required; at most two Connect-mode components, D18) now that the ac
 itself is closed by a new ABI entry; the row Passed on its first host run after that stage (1.26 s) — see D14's
 own "what remains" item 3 for the measurement.
 
+**Closed (record pass, 2026-10-20):** `participants.lowfive.mpmd.3` passes on the host since 2026-10-13 and `lowfive.accept.3` since 2026-10-14 (both again 2026-10-20). The LowFive teardown defect named in the last paragraph is upstream and unpatched here.
 ### ~~D40. This host's Open MPI (4.1.5) hangs in `MPI_Alltoallv` on any communicator but `MPI_COMM_WORLD`~~ — WORKED AROUND 2026-10-10
 
 **Measured 2026-10-10**, tracking down a hang in `parallel.mpi_transport.{4,5}`, `parallel.comm_graph.{4,5}`
@@ -7443,7 +7456,7 @@ residual histories `5.680512e+01 4.311954e+00 1.765836e-02 1.484199e-09` (native
 sharp_bound=5.888415e-07 K ratio=6.067182e-04`, exit 0. The per-region substrate selection is
 host-verified; this entry's remaining item is the communicator statement in its heading, unchanged.
 
-### D48. A `Transport` instruction can have one arc device-resident and the other host, even in Device mode — FOUND AND FIXED 2026-10-13
+### ~~D48. A `Transport` instruction can have one arc device-resident and the other host, even in Device mode — FOUND AND FIXED 2026-10-13
 
 **What was found.** docs/dev/device-resident-arcs.md Phase 3 made `Transport` space-aware in
 `place_arcs_on_device()`, on the assumption that a Transport's two arcs -- ordinary,
@@ -7481,6 +7494,7 @@ anything specific to the mixed-pair scenario itself.
 rows) and `abi.device_binding` both green after the fix; see report-transport.md for the full
 ctest counts of this track's own build.
 
+**Closed (record pass, 2026-10-20):** fixed and verified (`runtime.runner_device` 11 of 11, `abi.device_binding`).
 ### ~~D49. `TheTransportPathAllocatesNothingWhileRunning`'s `.device` twin fails on the rank with a mixed device/host Transport arc pair~~ — CLOSED 2026-10-14 (runtime-exchange track): confirmed Kokkos-internal, skip-with-reason kept
 
 **What is actually confirmed.** `test/parallel/runner_transport_test.cpp`'s `RunnerTransport.
@@ -7924,7 +7938,7 @@ error in the extracted inputs, scaled by |u_raw|) is missing a term on this tool
 `cn_step` solves' own forward-error difference is the candidate. The `.device` twin of the row passes
 (its energy budget runs on the selected oscillatory mode exactly as the host leg does).
 
-### D57. The ABI's own period-rollover eagerly started an extra period `Runner::run()` never requests, and both sides hit a base-communicator collective the other side had already left
+### ~~D57. The ABI's own period-rollover eagerly started an extra period `Runner::run()` never requests, and both sides hit a base-communicator collective the other side had already left
 
 **What it was.** `src/abi/participant.cpp`'s `prime_next_request()` (called from `impl_begin_step()`/
 `fuse_begin_step()`) resolves the next coupling request for a caller driving the Runner through the public ABI.
@@ -8312,6 +8326,7 @@ of `next_component`) has never been run on the real multi-rank host row; "What t
 verify (Round 2)" above is still the host's own next step, and this round added no new host-run
 requirement beyond it.
 
+**Closed (record pass, 2026-10-20):** the named host check, `participants.lowfive.mpmd.3` with round 2's `u_loop.c`/`v_loop.f90`, passes on the host (2026-10-13 onward, 2026-10-20 again); `verification.brusselator_period_rollover` and `abi_period_boundary` pass there too (2026-10-19).
 ### D58. `tools/probe-hdf5-images.c` counts distinct dylib paths matching `libhdf5`/`libhdf5_hl`, and cannot see an HDF5 implementation embedded inside another library's own binary; OPEN, doc-only, the probe is NOT changed
 
 **Measured 2026-10-13**, as part of the LowFive-attach track's own round 10 investigation (D39), on the owner's
@@ -10421,7 +10436,7 @@ overload for; see `KNOWN_ISSUES.md`'s own D73 ROUND 3 paragraph below for the me
 D5's disjoint-placement halo-bridging second-placement argument remains open, unaffected by this
 decision -- see D73 ROUND 3 below for its current status.
 
-### D80. `FsiEnergyDiag.FullBudgetOnTheDominantModeCloses`'s mass-correction isolation check compared a `cn_step` call on the literal `c.dt` against production's own `dt_delivered` -- FOUND AND FIXED 2026-10-19 (FsiMassCorr track)
+### ~~D80. `FsiEnergyDiag.FullBudgetOnTheDominantModeCloses`'s mass-correction isolation check compared a `cn_step` call on the literal `c.dt` against production's own `dt_delivered` -- FOUND AND FIXED 2026-10-19 (FsiMassCorr track)
 
 **Measured on this machine (2026-10-18/19, first local run of the CI legs).** Test
 `FsiEnergyDiag.FullBudgetOnTheDominantModeCloses`
@@ -10531,6 +10546,7 @@ substitution does not weaken the finding -- but the "Kokkos AND ArborX both fetc
 not reproduced bit-for-bit in this sandbox, and the ArborX/Kokkos version-pin incompatibility above
 is itself a new, OPEN finding worth the owner's attention independent of this entry.
 
+**Closed (record pass, 2026-10-20):** fixed and green on the host 2026-10-19 (`verification.fsi_energy_diag`).
 ### ~~D81. `MoabMeshBackend::project_onto_unit_sphere` has no placement-aware form, so a per-placement Core cannot rescale a real, differently-scaled spherical mesh pair before a halo build -- FOUND 2026-10-19 (MoabHalo track, round 5), OPEN, owner decision needed
 
 **Measured, by reading, not re-guessing (round 5):** the real, non-matching ATM/OCN sphere pair
