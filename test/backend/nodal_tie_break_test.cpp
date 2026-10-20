@@ -137,6 +137,63 @@ class OnePoint final : public MeshView {
   Point p_;
 };
 
+/// A hand-built, irregular Quad mesh (not a structured grid, unlike
+/// `StructuredQuadMesh` above): used below to build ONE genuinely degenerate
+/// cell (a rank-deficient Jacobian for every natural coordinate, collapsed
+/// along an off-axis diagonal so its own bounding box still varies in both
+/// x and y, exactly like `nodal_remap_distributed_nullcomm_test.cpp`'s own
+/// `ManualQuadMesh`/decoy construction for D74's distributed-side
+/// regression, `DegenerateDecoyCellDoesNotAbortAnAlreadyFoundMatch`) next to
+/// two genuine unit-square cells. `StructuredQuadMesh` cannot express this:
+/// every one of its own cells is axis-aligned and non-degenerate by
+/// construction.
+class IrregularQuadMesh final : public MeshView {
+ public:
+  IrregularQuadMesh(std::vector<Point> verts, std::vector<std::array<std::size_t, 4>> cells)
+      : verts_(std::move(verts)), cells_(std::move(cells)) {}
+  int dimension() const override { return 2; }
+  std::size_t entity_count(int dim) const override {
+    if (dim == 0) return verts_.size();
+    if (dim == 2) return cells_.size();
+    return 0;
+  }
+  std::size_t owned_count(int dim) const override { return entity_count(dim); }
+  bool is_owned(int, std::size_t) const override { return true; }
+  Point centroid(int dim, std::size_t i) const override {
+    if (dim == 0) return verts_.at(i);
+    Point c{0, 0, 0};
+    for (const std::size_t v : cells_.at(i)) { c.x += verts_[v].x; c.y += verts_[v].y; }
+    return Point{c.x / 4.0, c.y / 4.0, 0.0};
+  }
+  double measure(int dim, std::size_t) const override {
+    if (dim == 0) throw std::out_of_range("IrregularQuadMesh: no vertex measure");
+    return 1.0;  // unused by this test
+  }
+  std::size_t global_id(int, std::size_t i) const override { return i; }
+  std::size_t simplex_count(int dim, std::size_t) const override {
+    return dim == 2 ? fuse::cell_simplex_count(CellShape::Quad, 4) : 0;
+  }
+  void simplex_points(int dim, std::size_t i, std::size_t s, Point* out) const override {
+    if (dim != 2) throw std::out_of_range("IrregularQuadMesh: wrong dimension");
+    int corners[4] = {0, 0, 0, 0};
+    if (!fuse::simplex_corners(CellShape::Quad, 4, s, corners)) {
+      throw std::out_of_range("IrregularQuadMesh::simplex_points: simplex out of range");
+    }
+    for (int k = 0; k < 3; ++k) out[k] = verts_.at(cells_.at(i)[static_cast<std::size_t>(corners[k])]);
+  }
+  Result<CellVertices> cell_vertices(int dim, std::size_t i) const override {
+    if (dim != 2) return fuse::Failure{"E-MESH-NO-CELL-VERTICES", "IrregularQuadMesh: wrong dimension"};
+    CellVertices out;
+    out.shape = CellShape::Quad;
+    out.vertices.assign(cells_.at(i).begin(), cells_.at(i).end());
+    return out;
+  }
+
+ private:
+  std::vector<Point> verts_;
+  std::vector<std::array<std::size_t, 4>> cells_;
+};
+
 /// The set of GLOBAL cell ids genuinely containing a point, by brute-force
 /// geometric inspection (independent of either builder under test): a
 /// quad `[i, i+1] x [j, j+1]` contains `(x, y)` within `eps` of its own
@@ -316,4 +373,64 @@ TEST(NodalTieBreak, OneUlpPerturbationOfASharedInteriorVertexStillResolvesConsis
     EXPECT_EQ(w.serial_gid, expected_gid)
         << "perturbed (" << px << ", " << py << "): winner changed under a 1-ULP nudge";
   }
+}
+
+
+// KNOWN_ISSUES.md D74 sibling (Stage B, Nodal corner track): D74's own fix
+// (nodal_remap_distributed.cpp, build_distributed_interp_rows) made a
+// per-candidate invert_reference_map failure SKIP just that candidate
+// instead of aborting the whole evaluation point, once a broad-phase box
+// query has already narrowed the candidate set to the genuinely nearby
+// cells. The SAME fix is mirrored here for this file's other builder under
+// test, fuse::build_general_interp_weights (general_interp.hpp): its own
+// per-candidate loop, just below its own IDENTICAL box-index broad phase,
+// used to do `if (!inv.ok()) return Failure{...};` UNCONDITIONALLY -- so a
+// candidate that merely FAILS TO CONVERGE, however irrelevant, aborted the
+// whole point even after a genuine tight match was already found earlier in
+// the SAME candidate list, exactly D74's own failure mode, just triggered by
+// a NEARBY degenerate cell (one the broad phase cannot exclude, by
+// construction -- see IrregularQuadMesh's own comment above) rather than
+// D74's own FAR, unfiltered one.
+//
+// RED (pre-fix, Stage A's own finding, confirmed again at the top of Stage B
+// before the fix below was applied): refuses --
+//   E-INTERP-DEGENERATE: build_general_interp_weights: target point 0,
+//   candidate cell 2: invert_reference_map: the cell's Jacobian is
+//   singular to working precision (a zero-measure or degenerate cell);
+//   the reference map cannot be inverted
+// even though candidate cell 0 (the genuine tight match, the target
+// point's own centroid) is tested first and already satisfies tier (a).
+//
+// GREEN (post-fix): the degenerate decoy is silently skipped, exactly as
+// D74's own fix already does for build_distributed_interp_rows, and the
+// genuine tight match (cell 0) decides the row.
+TEST(NodalTieBreak, DegenerateNearbyCandidateAbortsAnAlreadyFoundTightMatch) {
+  // The EXACT construction nodal_remap_distributed_nullcomm_test.cpp's own
+  // DegenerateDecoyCellDoesNotAbortAnAlreadyFoundMatch uses on the
+  // distributed builder, fed here to the serial one instead.
+  const std::vector<Point> verts = {
+      {0.0, 0.0, 0.0},  // v0
+      {1.0, 0.0, 0.0},  // v1
+      {1.0, 1.0, 0.0},  // v2
+      {0.0, 1.0, 0.0},  // v3
+      {2.0, 0.0, 0.0},  // v4
+      {2.0, 1.0, 0.0},  // v5
+  };
+  const std::vector<std::array<std::size_t, 4>> cells = {
+      {0, 1, 2, 3},  // gid 0: unit square [0, 1] x [0, 1] -- the genuine tight match below
+      {1, 4, 5, 2},  // gid 1: unit square [1, 2] x [0, 1]
+      {0, 5, 5, 0},  // gid 2: the degenerate decoy, collapsed along the (0,0)-(2,1) diagonal
+  };
+  IrregularQuadMesh src(verts, cells);
+  OnePoint tgt(Point{0.5, 0.5, 0.0});  // the centroid of cell 0, a genuine tight match
+
+  const auto rows_r = fuse::build_general_interp_weights(src, tgt, /*tgt_dim=*/0);
+  ASSERT_TRUE(rows_r.ok()) << rows_r.error().message;
+  ASSERT_EQ(rows_r.value().col.size(), 4u);
+  // The winning cell must be the genuine tight match (cell 0's own four
+  // corner vertices, gids 0-3), never the degenerate decoy (gids 0, 5) --
+  // same assertion nodal_remap_distributed_nullcomm_test.cpp's own sibling
+  // case makes for the distributed builder.
+  std::set<std::int32_t> cols(rows_r.value().col.begin(), rows_r.value().col.end());
+  EXPECT_EQ(cols, (std::set<std::int32_t>{0, 1, 2, 3}));
 }

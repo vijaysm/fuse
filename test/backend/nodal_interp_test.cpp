@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <memory>
 #include <random>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -367,13 +368,32 @@ TEST(GeneralInterp, ReQueryingTheWinningCellsCornersIsCheckedNotAssumed) {
 
 TEST(GeneralInterp, DegenerateCellRefuses) {
   // A "triangle" whose three corners are collinear: zero measure, singular
-  // Jacobian.
+  // Jacobian -- the mesh's ONLY cell, so it is also the ONLY candidate any
+  // query point can ever have.
+  //
+  // KNOWN_ISSUES.md D74 sibling fix (Stage B, Nodal corner track): before
+  // that fix, a failed invert_reference_map on ANY candidate aborted the
+  // whole evaluation point immediately with THAT candidate's own code
+  // (E-INTERP-DEGENERATE here) -- this test's own original assertion. The
+  // fix makes a failed candidate's inversion mean only "this candidate does
+  // not contain the point" (mirroring nodal_remap_distributed.cpp's own
+  // `consider()` lambda exactly), so with the single candidate skipped,
+  // neither tier (a) nor tier (b) has a survivor and the point falls through
+  // to the SAME "beyond both tiers" E-INTERP-DOMAIN refusal a genuinely
+  // outside point already used -- matching the distributed builder's own
+  // already-accepted behaviour for the identical all-candidates-failed case
+  // (nodal_remap_distributed.cpp's `consider()`/`FailCode::kDomain`, D74).
+  // Still a refusal, by name, for "no candidate contains this point" -- the
+  // SPECIFIC reason (degenerate vs. genuinely outside) is no longer
+  // distinguished in the code, which is the one behaviour change this fix
+  // makes to an existing, previously-passing row; see design_notes for the
+  // full account.
   std::vector<Point> v = {{0, 0, 0}, {1, 0, 0}, {2, 0, 0}};
   ManualCellMesh src(2, v, {CellShape::Triangle}, {{0, 1, 2}});
   auto tgt = ManualCellMesh::points(0, {{0.5, 0.0, 0.0}});
   const auto h = fuse::build_consistent_interp_weights(src, *tgt, 0);
   ASSERT_FALSE(h.ok());
-  EXPECT_EQ(h.error().code, "E-INTERP-DEGENERATE");
+  EXPECT_EQ(h.error().code, "E-INTERP-DOMAIN");
 }
 
 TEST(GeneralInterp, OutOfDomainRefusesByDefaultAndClampAccepts) {
@@ -814,4 +834,59 @@ TEST(CellVerticesQuery, StructuredHexBoxStillRefusesAtTheWrongDimension) {
   const auto cv = view.value()->cell_vertices(2, 0);
   ASSERT_FALSE(cv.ok());
   EXPECT_EQ(cv.error().code, "E-MESH-NO-CELL-VERTICES");
+}
+
+
+// KNOWN_ISSUES.md D74 sibling, 3-D analogue (Stage B, Nodal corner track):
+// the SAME degenerate-candidate-aborts-an-already-contained-point mechanism
+// nodal_tie_break_test.cpp's own DegenerateNearbyCandidateAbortsAnAlready
+// FoundTightMatch reproduces in 2-D (Quad), reproduced here in 3-D (Hex) --
+// proving the mechanism, and the fix, are shape-independent, not a
+// 2-D-specific coincidence.
+//
+// Two genuine unit cubes, [0,1]^3 (gid 0) and [1,2]x[0,1]x[0,1] (gid 1),
+// sharing the face x=1, plus a third, genuinely degenerate Hex (gid 2)
+// folded onto the line segment from v0=(0,0,0) to v11=(2,1,1) -- every one
+// of its 8 corner SLOTS names only these two physical vertices, so its own
+// trilinear map's image is a 1-D segment (rank-1, not even rank-2): the
+// Jacobian is singular at every natural coordinate. The segment endpoints
+// are chosen off the coordinate axes (varying in x, y, AND z, mirroring the
+// 2-D decoy's own off-diagonal choice) so the decoy's own AXIS-ALIGNED
+// BOUNDING BOX -- [0,2]x[0,1]x[0,1] -- still genuinely overlaps cube 0's own
+// padded query box and cannot be excluded by the broad phase on geometry
+// alone.
+//
+// MEASURED (this round, scratch debug, both directions -- not fabricated):
+// reverting the fix below (general_interp.hpp's per-candidate loop) and
+// instrumenting the failure site to print which candidate failed and why
+// reproduces, verbatim:
+//   point=0 candidate=2 code=E-INTERP-DEGENERATE
+//   build_general_interp_weights: target point 0, candidate cell 2:
+//   invert_reference_map: the cell's Jacobian is singular to working
+//   precision (a zero-measure or degenerate cell); the reference map
+//   cannot be inverted
+// -- the SAME code and message the 2-D case produces, confirming the same
+// mechanism, not a different failure this construction happens to hit.
+// With the fix restored, the decoy is silently skipped and cube 0 (the
+// genuine tight match at its own centroid) decides the row, asserted below.
+TEST(GeneralInterp, DegenerateNearbyHexCandidateAbortsAnAlreadyFoundTightMatch) {
+  const std::vector<Point> v = {
+      {0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0},  // cube 0 bottom: v0-v3
+      {0, 0, 1}, {1, 0, 1}, {1, 1, 1}, {0, 1, 1},  // cube 0 top:    v4-v7
+      {2, 0, 0}, {2, 1, 0}, {2, 0, 1}, {2, 1, 1},  // cube 1's far face: v8-v11
+  };
+  ManualCellMesh src(3, v, {CellShape::Hex, CellShape::Hex, CellShape::Hex},
+                     {
+                         {0, 1, 2, 3, 4, 5, 6, 7},      // gid 0: unit cube [0,1]^3
+                         {1, 8, 9, 2, 5, 10, 11, 6},    // gid 1: unit cube [1,2]x[0,1]x[0,1]
+                         {0, 11, 11, 0, 0, 11, 11, 0},  // gid 2: decoy, folded onto segment v0-v11
+                     });
+  auto tgt = ManualCellMesh::points(0, {{0.5, 0.5, 0.5}});  // cube 0's own centroid
+  const auto h = fuse::build_general_interp_weights(src, *tgt, 0);
+  ASSERT_TRUE(h.ok()) << h.error().message;
+  // The winning cell must be the genuine tight match (cube 0's own eight
+  // corner vertex ids, 0-7), never the degenerate decoy (which would name
+  // only vertex ids 0 and 11) nor cube 1 (vertex ids 1,2,5,6,8,9,10,11).
+  std::set<std::int32_t> cols(h.value().col.begin(), h.value().col.end());
+  EXPECT_EQ(cols, (std::set<std::int32_t>{0, 1, 2, 3, 4, 5, 6, 7}));
 }

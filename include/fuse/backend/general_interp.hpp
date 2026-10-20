@@ -844,10 +844,30 @@ inline constexpr double kRefEpsLoose = kSurfaceTol;
     for (const std::size_t ci : candidates) {
       const auto inv = invert_reference_map(cells[ci], target);
       if (!inv.ok()) {
-        return Failure{inv.error().code,
-                       fmt::format("build_general_interp_weights: target point "
-                                   "{}, candidate cell {}: {}",
-                                   j, ci, inv.error().message)};
+        // Skip just this candidate (the D74 sibling fix -- KNOWN_ISSUES.md):
+        // a failed inversion means THIS candidate does not contain the
+        // point, exactly like a candidate that converges but lands outside
+        // the reference domain -- it must never abort the whole evaluation
+        // point while another candidate in this same list already contains
+        // it (or still might, later in the loop). Mirrors
+        // nodal_remap_distributed.cpp's own `consider()` lambda (D74's own
+        // fix, same file header) byte-for-byte in intent: an unconditional
+        // `return Failure{...}` here previously discarded an
+        // ALREADY-FOUND tight match whenever a LATER candidate in the same
+        // broad-phase set merely failed to converge or was geometrically
+        // degenerate -- see `NodalTieBreak.DegenerateNearbyCandidate
+        // AbortsAnAlreadyFoundTightMatch` (nodal_tie_break_test.cpp) for the
+        // RED/GREEN proof. A point NO candidate contains -- whether because
+        // every candidate genuinely fails to contain it, or because every
+        // candidate's own inversion is itself degenerate/non-convergent --
+        // still refuses by E-INTERP-DOMAIN below, unchanged from the
+        // existing "beyond both tiers" branch; see that branch's own
+        // GeneralInterp.DegenerateCellRefuses for the one existing case
+        // whose own refusal CODE this collapses into (previously
+        // E-INTERP-DEGENERATE, now E-INTERP-DOMAIN), matching the
+        // distributed builder's own already-established behaviour for the
+        // identical all-candidates-failed case.
+        continue;
       }
       const double diam = std::max(cell_diameter(cells[ci]), 1.0);
       const bool surface_ok = inv.value().residual <= kSurfaceTol * diam;

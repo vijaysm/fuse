@@ -112,3 +112,82 @@ test = "backend.nodal_interp"
 # field that were affine across the shared A/B edge this mutation would be
 # invisible (A's extrapolation would reproduce the correct value by
 # construction), which is why the test uses a field with v11 != v10+v01-v00.
+
+# Round 3 (Stage B, Nodal corner track, 2026-10-20): D74's own sibling defect
+# (KNOWN_ISSUES.md addendum under D74) -- a failed invert_reference_map on
+# ANY candidate used to abort the whole evaluation point immediately, even
+# after an earlier candidate in the SAME broad-phase set already satisfied
+# tier (a). Fixed by skipping just the failing candidate, mirroring
+# nodal_remap_distributed.cpp's own `consider()` lambda (D74's own fix)
+# exactly. The mutation below reverts that one change (skip-on-failure back
+# to return-on-failure) and is KILLED by THREE rows, not one: the two new
+# regression tests this round added (2-D and 3-D decoy constructions) and
+# one EXISTING row whose own expected error code changes under the fix
+# (GeneralInterp.DegenerateCellRefuses: E-INTERP-DEGENERATE -> E-INTERP-DOMAIN,
+# since its mesh's one and only candidate is itself the degenerate cell, so
+# skipping it leaves no survivor at either tier -- the same "beyond both
+# tiers" E-INTERP-DOMAIN refusal a genuinely-outside point already used,
+# matching the distributed builder's own established behaviour for the
+# identical all-candidates-failed case).
+
+[[mutation]]
+id = "nodal-interp-skip-on-failure-reverted-to-return-on-failure"
+area = "backend"
+describes = "the D74 sibling fix's per-candidate loop (mirroring nodal_remap_distributed.cpp's consider() lambda) is reverted: a candidate whose invert_reference_map fails once again aborts the whole evaluation point immediately with that candidate's own error, rather than being skipped so another candidate in the same broad-phase set -- including one already found, earlier in the same scan -- can still decide the row"
+file = "include/fuse/backend/general_interp.hpp"
+old = '''      if (!inv.ok()) {
+        // Skip just this candidate (the D74 sibling fix -- KNOWN_ISSUES.md):
+        // a failed inversion means THIS candidate does not contain the
+        // point, exactly like a candidate that converges but lands outside
+        // the reference domain -- it must never abort the whole evaluation
+        // point while another candidate in this same list already contains
+        // it (or still might, later in the loop). Mirrors
+        // nodal_remap_distributed.cpp's own `consider()` lambda (D74's own
+        // fix, same file header) byte-for-byte in intent: an unconditional
+        // `return Failure{...}` here previously discarded an
+        // ALREADY-FOUND tight match whenever a LATER candidate in the same
+        // broad-phase set merely failed to converge or was geometrically
+        // degenerate -- see `NodalTieBreak.DegenerateNearbyCandidate
+        // AbortsAnAlreadyFoundTightMatch` (nodal_tie_break_test.cpp) for the
+        // RED/GREEN proof. A point NO candidate contains -- whether because
+        // every candidate genuinely fails to contain it, or because every
+        // candidate's own inversion is itself degenerate/non-convergent --
+        // still refuses by E-INTERP-DOMAIN below, unchanged from the
+        // existing "beyond both tiers" branch; see that branch's own
+        // GeneralInterp.DegenerateCellRefuses for the one existing case
+        // whose own refusal CODE this collapses into (previously
+        // E-INTERP-DEGENERATE, now E-INTERP-DOMAIN), matching the
+        // distributed builder's own already-established behaviour for the
+        // identical all-candidates-failed case.
+        continue;
+      }'''
+new = '''      if (!inv.ok()) {
+        return Failure{inv.error().code,
+                       fmt::format("build_general_interp_weights: target point "
+                                   "{}, candidate cell {}: {}",
+                                   j, ci, inv.error().message)};
+      }'''
+target = "fuse_backend_nodal_tie_break_test"
+test = "backend.nodal_tie_break"
+# KILLED, observed directly in this sandbox (Tier 0, no MPI needed): applied
+# by hand, rebuilt, and confirmed to turn THREE cases from passing to
+# failing, across BOTH binaries that link this header, not just one:
+#   NodalTieBreak.DegenerateNearbyCandidateAbortsAnAlreadyFoundTightMatch
+#     (fuse_backend_nodal_tie_break_test) -- fails exactly as pre-fix:
+#     E-INTERP-DEGENERATE, "target point 0, candidate cell 2: ... the cell's
+#     Jacobian is singular to working precision".
+#   GeneralInterp.DegenerateNearbyHexCandidateAbortsAnAlreadyFoundTightMatch
+#     (fuse_backend_nodal_interp_test, the 3-D analogue) -- fails with the
+#     IDENTICAL code and message, point 0 candidate 2.
+#   GeneralInterp.DegenerateCellRefuses (fuse_backend_nodal_interp_test) --
+#     fails on the UPDATED assertion (expects E-INTERP-DOMAIN, the mutation
+#     reverts to E-INTERP-DEGENERATE): `Expected equality of these values:
+#     h.error().code Which is: "E-INTERP-DEGENERATE" "E-INTERP-DOMAIN"`.
+# Every other case in both binaries (21/23 GeneralInterp, 3/3
+# CellVerticesQuery, 3/4 NodalTieBreak) stayed green under the mutation --
+# the kill is exactly as targeted, nothing collateral. The mutated source was
+# then restored byte-for-byte (`cmp` against a pre-mutation backup, exit 0,
+# identical md5 5f819d7866541db47cb97c0972bb4cb0) and both binaries rebuilt
+# and reconfirmed passing (26/26 and 4/4) before moving on. See
+# docs/dev/nodal-fields.md's "Mutation coverage" addendum for the same
+# account, and KNOWN_ISSUES.md's D74 addendum for the root cause and fix.
