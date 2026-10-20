@@ -1430,10 +1430,49 @@ void discard_supermesh(moab::Interface& mb, moab::EntityHandle set) {
     discard_supermesh(mb, out_set);
     return intx_error(mb, "Intx2Mesh::FindMaxEdges failed", rval);
   }
-  rval = worker->intersect_meshes(src.file_set, tgt.file_set, out_set);
+  // D82 round 15: `Intx2Mesh::intersect_meshes` is an advancing-front
+  // algorithm -- it discovers (source, target) intersecting pairs by
+  // walking cell adjacency (MOAB's `srcNeighTag`/`tgtNeighTag`, populated
+  // from shared vertex handles) outward from a small number of KD-tree
+  // seed pairs, re-seeding once per disconnected island of unresolved
+  // target cells (confirmed by reading
+  // moab-release/src/IntxMesh/Intx2Mesh.cpp, the `intersect_meshes`
+  // definition). On a genuinely partitioned (multi-rank) source mesh, a
+  // source cell adopted into the local covering set through MOAB's
+  // parallel exchange does not always share vertex handles with the
+  // cells already resident on this rank even when it is geometrically
+  // coincident with them (INFERRED from the kernel's adjacency source and
+  // the probe's evidence, not read to the end: where srcNeighTag is
+  // populated for adopted cells was not traced), so the adjacency walk
+  // may never reach it: a
+  // target cell that overlaps ONLY such an adopted cell is marked
+  // resolved (`TgtFlagTag`) the moment any other, reachable, source cell
+  // satisfies it, and the adopted cell's own contribution is silently
+  // dropped. The round-14/15 probes (`trace_remap_halo_probe`,
+  // `point_in_convex_spherical_polygon`) confirmed this directly: every
+  // zero-coverage cell was present on its covering rank and geometrically
+  // contained by a local target cell there, yet
+  // `Intx2Mesh::intersect_meshes` computed zero overlap area for it.
+  //
+  // `Intx2Mesh::intersect_meshes_kdtree` is MOAB's own alternative driver
+  // for the same underlying cell-pair intersection math
+  // (`computeIntersectionBetweenTgtAndSrc`, `findNodes`, the same output
+  // tags): it builds a single KD-tree over the full covering set and, for
+  // every target cell, queries it directly by spatial proximity, with no
+  // adjacency walk and therefore no dependency on vertex-handle identity
+  // between owned and adopted cells. MOAB's own parallel remapper
+  // (src/Remapping/TempestRemapper.cpp) offers exactly this choice for
+  // covering-set/target-set intersection on the sphere, labelling the two
+  // as "the advancing-front propagation algorithm" and "the Kd-tree
+  // search algorithm"; its own sphere intersection test
+  // (test/intx_on_sphere_test.cpp) uses the KD-tree path as the
+  // brute-force fallback. We take the KD-tree path unconditionally:
+  // FUSE's own standing preference is conservation correctness over the
+  // (here, unmeasured) efficiency difference between the two kernels.
+  rval = worker->intersect_meshes_kdtree(src.file_set, tgt.file_set, out_set);
   if (rval != moab::MB_SUCCESS) {
     discard_supermesh(mb, out_set);
-    return intx_error(mb, "Intx2Mesh::intersect_meshes failed", rval);
+    return intx_error(mb, "Intx2Mesh::intersect_meshes_kdtree failed", rval);
   }
 
   moab::Tag src_parent = nullptr;
