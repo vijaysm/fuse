@@ -152,6 +152,25 @@ after `load()` and before the first `build_remap_halo`/`build_weights` call,
 collectively (every rank holding a piece of the mesh, or of that placement's
 own share of it, in the same order).
 
+### The covering set is intersected with a k-d-tree search, not an advancing front
+
+MOAB offers two different algorithms for deciding which source and target cells in the covering
+set actually overlap: an advancing front that walks cell adjacency outward from a small number of
+seed pairs, and a k-d-tree search that tests every target cell against the covering set directly
+by spatial proximity. FUSE's own `assemble()` always uses the k-d-tree search (KNOWN_ISSUES D82):
+on a genuinely partitioned (multi-rank) mesh, the advancing front left source cells that were
+present on a rank, and geometrically covered by that rank's own target cells, with no intersection
+at all, while the same pair at one rank was covered completely; a target cell such a cell alone
+would have covered is silently left short, with no error, only a lower delivered total than the
+true one. The likely cause is adjacency: the front expands only through cells that share MOAB's
+own vertex identity, which a cell adopted through the parallel exchange need not share with the
+resident cells (inferred, see `docs/dev/moab-intersection.md`). The k-d-tree search walks no
+adjacency and has no such dependency. This was measured directly on a real, partitioned sphere pair before the fix (the
+delivered total low by roughly 28 times the derived tolerance) and is why a driver should always
+trust `RemapWeights::min_src_coverage`/`min_tgt_coverage` -- not just whether `build_weights`
+returned -- before relying on a conservative channel's own total. See `docs/dev/moab-intersection.md`
+for the mechanism in full.
+
 ### A remap halo on a placement is adopted into THAT placement's own Core
 
 `build_remap_halo`'s covering-set construction (above) runs inside whichever

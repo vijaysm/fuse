@@ -72,6 +72,7 @@ dev/restart
 dev/partitioning
 dev/native-mesh
 dev/native-halo
+dev/moab-intersection
 dev/search
 dev/linalg-distributed
 dev/linalg-krylov

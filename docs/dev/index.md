@@ -41,6 +41,10 @@ breaking a caller built against an older one.
 implements. [](partitioning.md) is the Kokkos-view RCB partitioner. [](native-mesh.md) is the
 native, MOAB-free distributed mesh; [](native-halo.md) is its remap halo (the off-rank source
 cells a partitioned read needs adopted locally before a conservative remap can run).
+[](moab-intersection.md) is the MOAB-backed counterpart: the two cell-pair intersection
+drivers MOAB itself offers (an advancing front, and a KD-tree search), why the front alone
+drops cells on a genuinely partitioned sphere pair, and the coverage diagnostics behind
+`FUSE_REMAP_HALO_TRACE`.
 [](search.md) is the ArborX-backed spatial index backends query, and why it sits below `backend`
 in the layering rather than above it. [](linalg-distributed.md) is the row-distributed dense
 vector and sparse matrix (`DistVector`/`DistSparseMatrix`) every native parallel solver is built
