@@ -597,6 +597,33 @@ if(FUSE_ENABLE_TESTS AND FUSE_ENABLE_MPI AND TARGET brusselator_u_main AND TARGE
       set_tests_properties(${_name} PROPERTIES
         LABELS "parallel;mpi;verification;brusselator" TIMEOUT 120
         ENVIRONMENT "OMPI_MCA_coll_tuned_use_dynamic_rules=1;OMPI_MCA_coll_tuned_alltoallv_algorithm=2;OMPI_MCA_rmaps_base_oversubscribe=1")
+      # KNOWN_ISSUES.md D23's final account: U bundles the coupler's own
+      # ranks and is the Connect-mode acceptor (brusselator_graph_tool.cpp's
+      # own accept branch), so this row's real layout is (ranks_u +
+      # ranks_coupler) accepting against ranks_v connecting -- not
+      # necessarily the same rank counts the pair rows above measured, and
+      # checked against the SAME per-layout probe record they read. MPMD is
+      # never gated by this (cmake/FuseMpiDynamic.cmake only probes
+      # accept/connect).
+      if(_mode STREQUAL "accept")
+        math(EXPR _fuse_bp_na "${_fuse_bp_world_${_world}_u} + ${_fuse_bp_world_${_world}_c}")
+        set(_fuse_bp_nb "${_fuse_bp_world_${_world}_v}")
+        fuse_mpi_dynamic_layout_record("${FUSE_MPI_DYNAMIC_LAYOUTS}" "${_fuse_bp_na}+${_fuse_bp_nb}" _fuse_row_record)
+        fuse_mpi_dynamic_layout_working("${_fuse_row_record}" _fuse_row_working)
+        if(NOT _fuse_row_working)
+          if("${_fuse_row_record}" STREQUAL "")
+            set(_fuse_row_reason
+                "accept/connect layout ${_fuse_bp_na}+${_fuse_bp_nb} has no measurement on this MPI (KNOWN_ISSUES.md D23)")
+          else()
+            set(_fuse_row_reason
+                "accept/connect layout ${_fuse_bp_na}+${_fuse_bp_nb} measured ${_fuse_row_record} on this MPI (KNOWN_ISSUES.md D23)")
+          endif()
+          set_tests_properties(${_name} PROPERTIES
+            LABELS "parallel;mpi;verification;brusselator;accept-unreliable-on-this-mpi"
+            DISABLED TRUE
+            FUSE_ACCEPT_LAYOUT_REASON "${_fuse_row_reason}")
+        endif()
+      endif()
     endforeach()
   endforeach()
 endif()
@@ -656,6 +683,24 @@ if(FUSE_ENABLE_TESTS AND FUSE_ENABLE_MPI AND FUSE_ENABLE_LOWFIVE
       LABELS "parallel;mpi;lowfive;verification;brusselator"
       TIMEOUT 120
       ENVIRONMENT "OMPI_MCA_coll_tuned_use_dynamic_rules=1;OMPI_MCA_coll_tuned_alltoallv_algorithm=2;OMPI_MCA_rmaps_base_oversubscribe=1")
+    # KNOWN_ISSUES.md D23's final account, same check as the non-LowFive
+    # participants rows above: ranks_u=1, ranks_coupler=1 bundled onto U
+    # (the acceptor), ranks_v=1 connecting -- layout 2+1.
+    if(_mode STREQUAL "accept")
+      fuse_mpi_dynamic_layout_record("${FUSE_MPI_DYNAMIC_LAYOUTS}" "2+1" _fuse_row_record)
+      fuse_mpi_dynamic_layout_working("${_fuse_row_record}" _fuse_row_working)
+      if(NOT _fuse_row_working)
+        if("${_fuse_row_record}" STREQUAL "")
+          set(_fuse_row_reason "accept/connect layout 2+1 has no measurement on this MPI (KNOWN_ISSUES.md D23)")
+        else()
+          set(_fuse_row_reason "accept/connect layout 2+1 measured ${_fuse_row_record} on this MPI (KNOWN_ISSUES.md D23)")
+        endif()
+        set_tests_properties(${_name} PROPERTIES
+          LABELS "parallel;mpi;lowfive;verification;brusselator;accept-unreliable-on-this-mpi"
+          DISABLED TRUE
+          FUSE_ACCEPT_LAYOUT_REASON "${_fuse_row_reason}")
+      endif()
+    endif()
   endforeach()
 endif()
 # ---- S6 phase 3 Unit 3b host rows: end ---------------------------------

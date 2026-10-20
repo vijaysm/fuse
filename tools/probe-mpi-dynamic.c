@@ -10,18 +10,38 @@
  *   2. a merge of the resulting intercommunicator into one intracommunicator,
  *      which is how a coupled run gets a single base communicator with one
  *      rank numbering across every program.
- *   3. both of those between two jobs that happen to share a NODE. This is
- *      the one that fails in practice: MPICH's ch3:nemesis device takes its
- *      shared-memory send path while merging, and a peer in another job has
- *      no shared-memory segment in common with this one even on the same
- *      machine (KNOWN_ISSUES.md D23).
+ *   3. both of those between two jobs that happen to share a NODE, AT EVERY
+ *      RANK COUNT a registered row actually launches -- not just one rank a
+ *      side. KNOWN_ISSUES.md D23's final account: a device whose context-id
+ *      agreement for the merged communicator is intermittent under load (not
+ *      the ch3:nemesis defect this file's comment originally described, which
+ *      cleared with a device change) can pass a 1+1 run reliably while the
+ *      3+2/2+3/chain layouts the real rows use still time out.
  *
  * So this probe does the real thing rather than reading a version string: it
- * is launched twice, as two separate jobs on this machine, and performs the
- * exact sequence src/transport/connect.cpp performs. Nothing is inferred from
- * the implementation's name.
+ * is launched twice, as two separate jobs on this machine -- at whatever rank
+ * counts the caller gives each side (tools/probe-mpi-dynamic.sh's own
+ * <na>+<nb> argument), repeated several times -- and performs the exact
+ * sequence src/transport/connect.cpp performs. Nothing is inferred from the
+ * implementation's name.
  *
- * Usage: probe-mpi-dynamic {accept|connect} <port-file>
+ * tools/probe-intercomm-merge.c is a SEPARATE, FUSE-free program with the
+ * same shape (accept/connect over a port file, then MPI_Intercomm_merge),
+ * kept for its own reason: it is the exact reproducer KNOWN_ISSUES.md D23
+ * names for the ad hoc multi-rank measurements recorded there, run and
+ * re-run by hand outside any build, with no cmake, no shell driver, and no
+ * dependence on this file's own CLI or exit-code conventions. This file is
+ * the one cmake/FuseDependencies.cmake actually compiles and launches at
+ * configure time (via tools/probe-mpi-dynamic.sh); that one is a manual
+ * diagnostic tool whose own measurements this file's own multi-layout
+ * probing was built to stop needing. They are not interchangeable: this one
+ * distinguishes "could not test" from "measured broken" (the `selftest`
+ * mode below) and is driven entirely by command-line argument and exit
+ * code, which the configure-time caller depends on; the other takes its
+ * acceptor/connector role as an explicit argument and reports only to
+ * stderr, which is what a human re-running it by hand wants.
+ *
+ * Usage: probe-mpi-dynamic {accept|connect} <port-file> | probe-mpi-dynamic selftest
  * Exit:  0 the sequence completed; non-zero or a signal, it did not.
  */
 

@@ -1198,6 +1198,30 @@ if(FUSE_ENABLE_MPI)
       set_tests_properties(${_name} PROPERTIES
         LABELS "parallel;mpi;connect" TIMEOUT 120
         ENVIRONMENT "OMPI_MCA_coll_tuned_use_dynamic_rules=1;OMPI_MCA_coll_tuned_alltoallv_algorithm=2;OMPI_MCA_rmaps_base_oversubscribe=1")
+      # KNOWN_ISSUES.md D23's final account: the configure-time probe now
+      # measures THIS row's own (accept, connect) rank layout, not just
+      # 1+1. A layout that did not measure N of N is registered but marked
+      # DISABLED, with the measured count recorded on the test itself, so
+      # `ctest -L accept-unreliable-on-this-mpi` or removing DISABLED runs
+      # it by hand; MPMD is never gated by this (cmake/FuseMpiDynamic.cmake
+      # only probes accept/connect).
+      if(_mode STREQUAL "accept")
+        fuse_mpi_dynamic_layout_record("${FUSE_MPI_DYNAMIC_LAYOUTS}" "${_na}+${_nb}" _fuse_row_record)
+        fuse_mpi_dynamic_layout_working("${_fuse_row_record}" _fuse_row_working)
+        if(NOT _fuse_row_working)
+          if("${_fuse_row_record}" STREQUAL "")
+            set(_fuse_row_reason
+                "accept/connect layout ${_na}+${_nb} has no measurement on this MPI (KNOWN_ISSUES.md D23)")
+          else()
+            set(_fuse_row_reason
+                "accept/connect layout ${_na}+${_nb} measured ${_fuse_row_record} on this MPI (KNOWN_ISSUES.md D23)")
+          endif()
+          set_tests_properties(${_name} PROPERTIES
+            LABELS "parallel;mpi;connect;accept-unreliable-on-this-mpi"
+            DISABLED TRUE
+            FUSE_ACCEPT_LAYOUT_REASON "${_fuse_row_reason}")
+        endif()
+      endif()
     endforeach()
   endforeach()
 endif()
@@ -1235,6 +1259,18 @@ if(FUSE_ENABLE_MPI)
   # fewer periods than links, so even a worst-case one-period-per-hop
   # lag has time to fully propagate "a"'s own value to the last
   # component before this row inspects it.
+  # Every layout this chain's own steps actually use: step 1 is the plain
+  # 1+1 pair handshake (a accepts, b connects); every later step has the
+  # NEW single link as the acceptor and the already-merged chain so far as
+  # the connector (src/transport/connect.cpp's own "the joining component
+  # is always the acceptor for its own step" rule) -- so a 3-link chain
+  # also needs 1+2 (c joins the 2-rank ab chain), and a 4-link chain needs
+  # 1+3 as well (d joins the 3-rank abc chain). KNOWN_ISSUES.md D23's final
+  # account: the row is registered only when EVERY layout its own steps
+  # use measured N of N; one unreliable step layout is enough to disable
+  # the whole row, the same as the pair rows above.
+  set(_fuse_chain_layouts_3 1+1 1+2)
+  set(_fuse_chain_layouts_4 1+1 1+2 1+3)
   foreach(_count 3 4)
     if(NOT FUSE_ENABLE_CONNECT_ACCEPT)
       continue()
@@ -1253,6 +1289,29 @@ if(FUSE_ENABLE_MPI)
     set_tests_properties(${_name} PROPERTIES
       LABELS "parallel;mpi;connect" TIMEOUT 120
       ENVIRONMENT "OMPI_MCA_coll_tuned_use_dynamic_rules=1;OMPI_MCA_coll_tuned_alltoallv_algorithm=2;OMPI_MCA_rmaps_base_oversubscribe=1")
+    set(_fuse_chain_all_working TRUE)
+    set(_fuse_chain_reasons "")
+    foreach(_fuse_chain_layout IN LISTS _fuse_chain_layouts_${_count})
+      fuse_mpi_dynamic_layout_record("${FUSE_MPI_DYNAMIC_LAYOUTS}" "${_fuse_chain_layout}" _fuse_row_record)
+      fuse_mpi_dynamic_layout_working("${_fuse_row_record}" _fuse_row_working)
+      if(NOT _fuse_row_working)
+        set(_fuse_chain_all_working FALSE)
+        if("${_fuse_row_record}" STREQUAL "")
+          list(APPEND _fuse_chain_reasons
+               "layout ${_fuse_chain_layout} has no measurement on this MPI")
+        else()
+          list(APPEND _fuse_chain_reasons
+               "layout ${_fuse_chain_layout} measured ${_fuse_row_record} on this MPI")
+        endif()
+      endif()
+    endforeach()
+    if(NOT _fuse_chain_all_working)
+      list(JOIN _fuse_chain_reasons "; " _fuse_chain_reason_joined)
+      set_tests_properties(${_name} PROPERTIES
+        LABELS "parallel;mpi;connect;accept-unreliable-on-this-mpi"
+        DISABLED TRUE
+        FUSE_ACCEPT_LAYOUT_REASON "${_fuse_chain_reason_joined} (KNOWN_ISSUES.md D23)")
+    endif()
   endforeach()
 endif()
 # ---- S6 phase 3, "MPI connect" track: end ---------------------------------

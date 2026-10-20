@@ -728,52 +728,112 @@ macro(fuse_resolve_dependencies)
     set(_fuse_dyn_script "${PROJECT_SOURCE_DIR}/tools/probe-mpi-dynamic.sh")
     set(_fuse_dyn_default ON)
     set(_fuse_dyn_verdict "assumed (probe not run)")
+
+    # How many times EACH layout is run, and how long one run of one layout
+    # is allowed before it counts as failed. KNOWN_ISSUES.md D23's final
+    # account measured this host's intermittency only shows up across
+    # several runs of a multi-rank layout (a single 1+1 run told it nothing
+    # about the 3+2/2+3/chain rows, which then timed out six of six times
+    # in the next full suite) -- cache variables so a noisier MPI can be
+    # probed harder without editing this file.
+    set(FUSE_MPI_DYNAMIC_PROBE_RUNS 6 CACHE STRING
+        "How many times tools/probe-mpi-dynamic.sh repeats EACH accept/connect layout at configure time")
+    set(FUSE_MPI_DYNAMIC_PROBE_TIMEOUT 20 CACHE STRING
+        "Seconds one run of one accept/connect layout is allowed before it counts as failed")
+
+    # Every rank layout a registered accept/chain row actually uses: the
+    # three parallel.connect.accept.* pairs (test/CMakeLists.txt), the last
+    # step of each parallel.connect.chain.* row (connect_chain()'s own
+    # "joining component is always the acceptor for its own step" rule,
+    # src/transport/connect.cpp), and the two verification.brusselator.
+    # participants.accept.* rows (examples/CMakeLists.txt, U bundles the
+    # coupler's own ranks and is the acceptor). "1+1" is listed FIRST so its
+    # own N-of-N record is also the single legacy verdict
+    # FUSE_ENABLE_CONNECT_ACCEPT keeps following -- nothing downstream of
+    # that option changes (KNOWN_ISSUES.md D23's final account).
+    set(_fuse_dyn_layouts 1+1 2+1 3+2 2+3 1+2 1+3)
+
     # A cached verdict is reused only if it is a measurement taken on THIS MPI
     # (cmake/FuseMpiDynamic.cmake, KNOWN_ISSUES.md D35): "not tested" is not a
-    # measurement, and a reinstalled MPI is a different one.
+    # measurement, and a reinstalled MPI is a different one. A verdict from
+    # before the per-layout record existed is ALSO not a measurement of any
+    # layout, even when it is a measurement of 1+1 and the fingerprint still
+    # matches -- D23's final account: the old single-layout probe reported
+    # "measured working" on an MPI whose multi-rank layouts were not usable,
+    # so a cache carrying that verdict but no layout record must re-probe.
     fuse_mpi_fingerprint(_fuse_dyn_fingerprint)
     set(_fuse_dyn_previous_verdict "${FUSE_MPI_DYNAMIC_PROBED}")
     fuse_mpi_dynamic_should_probe("${FUSE_MPI_DYNAMIC_PROBED}"
                                   "${FUSE_MPI_DYNAMIC_FINGERPRINT}"
                                   "${_fuse_dyn_fingerprint}" _fuse_dyn_probe)
-    if(_fuse_dyn_probe AND EXISTS "${_fuse_dyn_script}")
-      if(NOT "${FUSE_MPI_DYNAMIC_PROBED}" STREQUAL "")
+    fuse_mpi_dynamic_layouts_missing("${FUSE_MPI_DYNAMIC_LAYOUTS}" _fuse_dyn_layouts_missing)
+    if(_fuse_dyn_layouts_missing AND NOT _fuse_dyn_probe)
+      message(STATUS "fuse: re-probing accept/connect: the cached verdict has no "
+                     "per-layout record (KNOWN_ISSUES.md D23)")
+    endif()
+    if((_fuse_dyn_probe OR _fuse_dyn_layouts_missing) AND EXISTS "${_fuse_dyn_script}")
+      if(_fuse_dyn_probe AND NOT "${FUSE_MPI_DYNAMIC_PROBED}" STREQUAL "")
         message(STATUS "fuse: re-probing accept/connect: the recorded verdict "
                        "'${FUSE_MPI_DYNAMIC_PROBED}' is not a measurement of this MPI")
       endif()
-      message(STATUS "fuse: probing whether this MPI can connect two same-node jobs ...")
+      message(STATUS "fuse: probing whether this MPI can connect two same-node jobs, "
+                     "at layouts ${_fuse_dyn_layouts} (${FUSE_MPI_DYNAMIC_PROBE_RUNS} "
+                     "runs each) ...")
       execute_process(
         COMMAND "${CMAKE_COMMAND}" -E env
           "FUSE_PROBE_MPICC=${MPI_C_COMPILER}"
           "FUSE_PROBE_MPIEXEC=${MPIEXEC_EXECUTABLE}"
           "FUSE_PROBE_BUILD_DIR=${CMAKE_BINARY_DIR}/fuse-probe-mpi-dynamic"
-          "${_fuse_dyn_script}"
+          "FUSE_PROBE_RUNS=${FUSE_MPI_DYNAMIC_PROBE_RUNS}"
+          "FUSE_PROBE_TIMEOUT=${FUSE_MPI_DYNAMIC_PROBE_TIMEOUT}"
+          "${_fuse_dyn_script}" ${_fuse_dyn_layouts}
         RESULT_VARIABLE _fuse_dyn_result
         OUTPUT_VARIABLE _fuse_dyn_output
         ERROR_VARIABLE  _fuse_dyn_error)
-      if(_fuse_dyn_result EQUAL 0)
-        set(_fuse_dyn_default ON)
-        set(_fuse_dyn_verdict "measured working")
-        message(STATUS "fuse: accept/connect works on this MPI")
-      elseif(_fuse_dyn_result EQUAL 1)
-        set(_fuse_dyn_default OFF)
-        set(_fuse_dyn_verdict "measured broken")
-        message(STATUS
-          "fuse: this MPI cannot connect two same-node jobs, so the "
-          "accept/connect launch mode is DISABLED (KNOWN_ISSUES.md D23). "
-          "MPMD is unaffected. Probe output:\n${_fuse_dyn_output}${_fuse_dyn_error}")
-      else()
+      fuse_mpi_dynamic_parse_probe_output("${_fuse_dyn_output}" _fuse_dyn_new_layouts)
+      if(_fuse_dyn_result EQUAL 2)
         set(_fuse_dyn_default ON)
         set(_fuse_dyn_verdict "not tested")
+        set(_fuse_dyn_new_layouts "")
         message(STATUS
           "fuse: could not test accept/connect here (the probe could not "
           "build or launch), so the mode is left enabled and its rows will "
           "report for themselves. Reason:\n${_fuse_dyn_error}")
+      else()
+        fuse_mpi_dynamic_layout_record("${_fuse_dyn_new_layouts}" "1+1" _fuse_dyn_1x1_record)
+        fuse_mpi_dynamic_layout_working("${_fuse_dyn_1x1_record}" _fuse_dyn_1x1_working)
+        if(_fuse_dyn_1x1_working)
+          set(_fuse_dyn_default ON)
+          set(_fuse_dyn_verdict "measured working")
+          message(STATUS "fuse: accept/connect works on this MPI at 1 rank a side "
+                         "(${FUSE_MPI_DYNAMIC_PROBE_RUNS} of ${FUSE_MPI_DYNAMIC_PROBE_RUNS})")
+        else()
+          set(_fuse_dyn_default OFF)
+          set(_fuse_dyn_verdict "measured broken")
+          message(STATUS
+            "fuse: this MPI cannot reliably connect two same-node jobs even at 1 "
+            "rank a side (${_fuse_dyn_1x1_record} of ${FUSE_MPI_DYNAMIC_PROBE_RUNS}), "
+            "so the accept/connect launch mode is DISABLED (KNOWN_ISSUES.md D23). "
+            "MPMD is unaffected. Probe output:\n${_fuse_dyn_output}${_fuse_dyn_error}")
+        endif()
+        message(STATUS "fuse: accept/connect layouts measured: ${_fuse_dyn_new_layouts}")
       endif()
       set(FUSE_MPI_DYNAMIC_PROBED "${_fuse_dyn_verdict}" CACHE INTERNAL
-          "Verdict of tools/probe-mpi-dynamic.sh")
+          "Verdict of tools/probe-mpi-dynamic.sh at 1 rank a side")
       set(FUSE_MPI_DYNAMIC_FINGERPRINT "${_fuse_dyn_fingerprint}" CACHE INTERNAL
           "The MPI that verdict was measured on")
+      fuse_mpi_dynamic_layouts_value("${FUSE_MPI_DYNAMIC_LAYOUTS}" "${FUSE_MPI_DYNAMIC_LAYOUTS_AUTO}"
+                                     "${_fuse_dyn_new_layouts}" _fuse_dyn_layouts_value)
+      if(DEFINED CACHE{FUSE_MPI_DYNAMIC_LAYOUTS}
+         AND NOT "${FUSE_MPI_DYNAMIC_LAYOUTS}" STREQUAL "${_fuse_dyn_layouts_value}")
+        message(STATUS "fuse: FUSE_MPI_DYNAMIC_LAYOUTS changes from "
+                       "'${FUSE_MPI_DYNAMIC_LAYOUTS}' to '${_fuse_dyn_layouts_value}', "
+                       "following the probe; it was not set by hand")
+      endif()
+      set(FUSE_MPI_DYNAMIC_LAYOUTS "${_fuse_dyn_layouts_value}" CACHE STRING
+          "Per-layout accept/connect probe record, 'na+nb:passed/total' tokens (KNOWN_ISSUES.md D23)" FORCE)
+      set(FUSE_MPI_DYNAMIC_LAYOUTS_AUTO "${_fuse_dyn_new_layouts}" CACHE INTERNAL
+          "What the probe itself set FUSE_MPI_DYNAMIC_LAYOUTS to")
     elseif(DEFINED FUSE_MPI_DYNAMIC_PROBED)
       set(_fuse_dyn_verdict "${FUSE_MPI_DYNAMIC_PROBED}")
       if(_fuse_dyn_verdict STREQUAL "measured broken")

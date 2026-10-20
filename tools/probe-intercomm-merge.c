@@ -8,7 +8,24 @@
  * "merged rank" after the merge; a run that prints neither on some rank hung
  * in connect/accept, one that prints "formed" everywhere but not "merged
  * rank" hung in the merge. Measured rates (OK of 6): 1+1: 5, 2+1: 3, 2+3: 2,
- * 3+2: 1. With the default libfabric provider connect never completes. */
+ * 3+2: 1. With the default libfabric provider connect never completes.
+ *
+ * KNOWN_ISSUES.md D23's final account: tools/probe-mpi-dynamic.c (the
+ * program cmake/FuseDependencies.cmake actually compiles and launches at
+ * configure time, via tools/probe-mpi-dynamic.sh) now repeats the SAME
+ * accept/connect/merge sequence at every rank layout a registered row
+ * uses, several times each, so the ad hoc by-hand measurements this file
+ * was built for are no longer the only record of the intermittency -- the
+ * configure-time probe's own per-layout record (FUSE_MPI_DYNAMIC_LAYOUTS)
+ * is. This file stays: it is the exact reproducer the measurements already
+ * written into this entry name, with no cmake, no shell driver, and no
+ * dependence on the other file's CLI or exit-code conventions -- a human
+ * re-running ONE specific layout by hand, with a debugger attached, wants
+ * exactly this, not a six-layout probe that also decides a cmake cache
+ * entry. They are not merged into one program: this one takes its
+ * acceptor/connector role as an explicit argument (the `high` parameter)
+ * and never distinguishes "could not test" from "measured broken", which
+ * is fine for a by-hand tool and wrong for a configure-time one. */
 #include <mpi.h>
 #include <stdio.h>
 #include <stdlib.h>
