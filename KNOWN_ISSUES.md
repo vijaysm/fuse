@@ -6695,7 +6695,7 @@ No descriptor version bump: the launch record was already part of every componen
 canonical bytes) and `YamlIo.AnInProcessCouplerWritesNoLaunchBlock`, with the mutation
 `a-couplers-launch-mode-is-dropped-by-the-writer`. The hang itself is host-only.
 
-### D18. `fuse::transport::connect()`'s `Connect`-mode path supports exactly two components; a third refuses `E-CONNECT-SPEC` -- GENERALISED 2026-10-18 (tier-0); the chain rendezvous itself now completes on the host (round 4's trace fix), but the DELIVERED CONTENT check failed on a mismatched golden, fixed round 5; awaiting a re-run
+### D18. `fuse::transport::connect()`'s `Connect`-mode path supports N components through a chain of pairwise merges -- BUILT 2026-10-18; `parallel.connect.chain.3` host-verified 7 of 7 (2026-10-19); the four-component row completes only when the MPI rendezvous does (D23)
 
 `connect_pairwise()` (`src/transport/connect.cpp`) reads, verbatim:
 
@@ -7061,6 +7061,14 @@ and without `FUSE_CONNECT_CHAIN_TRACE`, delivering non-zero values (`rank=2 i=1 
 against its own `golden-chain-3.txt`. In the first batch after the rebuild both `chain.3` and `chain.4` timed out
 at 120 s (the sampled processes had gone by the time the sampler ran); not reproduced in the seven reruns. The
 periods hypothesis is not separated by this (the row passes with `periods=count`). `chain.4` reruns are below.
+
+**Status (lead, 2026-10-20):** this entry's own title still said a third component refuses; that was the
+state before the chain was built. `parallel.connect.chain.3` passed 7 of 7 reruns on the host (2026-10-19) with
+non-zero delivered values against `golden-chain-3.txt`. `parallel.connect.chain.4` passed 1 of 3 on the reinstalled
+MPICH 5.0.2rc3 (2026-10-20): when the rendezvous completes the delivered content is right, and when it does not the
+row times out inside `MPI_Comm_connect`/`MPI_Intercomm_merge`, which the FUSE-free reproducer shows without any FUSE
+code (D23). The configure probe now measures the layout this row needs (`1+3`) and registers the row DISABLED when
+it does not complete every run. Remaining work on D18 is therefore environmental (D23), not a missing feature.
 ### ~~D19. The coupling-window path (`src/runtime/iteration.cpp`) has never run across more than one process~~ — CLOSED 2026-10-09: `parallel.window_runner_mpi.{2,3}` pass on the host (2026-10-08) and the three-executable Brusselator runs through it (D25)
 
 **Found this session**, reviewing Conformance Unit 2's own host rows before they can be run: every
@@ -10516,6 +10524,31 @@ should trace `R.x_old`'s own pre-loop value against `WindowCoupler`'s own `y_fed
 element at the window 0 -> window 1 boundary specifically, the same technique used to trace
 defects (a)-(d) in `test/verification/brusselator_runner_test.cpp`'s own header.
 
+**Round 3 root cause (lead, 2026-10-20; Window seed track, stages B and C, sandbox tier 0 with the system compiler;
+the Stage B patch is NOT landed, awaiting an owner decision).**
+1. The Runner's pre-loop seed `R.x_old` (`iteration.cpp`, `run_region()`, `k == 0` block) was a raw buffer read past
+   a member's first window, where `WindowCoupler`'s `y_fed` always applies `extrapolate_boundary_value()`. A tier-0
+   test with `AccelKind::Aitken` (`...MatchesDriverUnderAitken`, zero tolerance) was RED before the fix (17 against
+   15 iterations, `xA` differing at the 9th significant digit) and is GREEN after it, with the two seeds agreeing bit
+   for bit. The existing parity suite could not see this because `AccelKind::None` ignores `x_old`; the class comment's
+   "verified bit-for-bit" was true only under `None`.
+2. The fix exposes a second defect and does not land alone. On D17's configuration (`--dt-u 0.002 --dt-v 0.003
+   --window 0.02`) `--driver runner --accel aitken` converged in 31 iterations before the fix and fails at window 3
+   after it; `--driver window --accel aitken` failed at the same window before any change. So D17 had the two
+   drivers backwards: the window driver ran the documented algorithm, and the Runner converged because of an
+   accidental persistence seed. Windows 3, 6 and 9 (starts 0.06, 0.12, 0.18, multiples of lcm(0.002, 0.003) =
+   0.006) exhaust the sweep cap; window 0 and every other window converge. That the failing windows are the
+   step-aligned ones is an arithmetic observation; whether alignment matters has not been tested.
+3. Not the map, not the seed (measured): plain Picard (omega = 1) from the same seed converges window 3 to zero
+   residual in 14 sweeps; a perturbation at the fixed point decays to machine zero; the six eigenvalues of G' at
+   window 3 all have |lambda| < 0.05; the post-fix seed is 44 times closer to the fixed point than the old one.
+4. Cause: `AitkenAccel::update()` (`accel_relaxation.cpp`) accepts any finite nonzero omega. At window 3, sweep 3 it
+   produces omega = -0.031 and then -0.18, the residual plateaus at 0.01616 from sweep 4 on, and omega random-walks
+   toward zero. For a spectrum with Re(lambda) < 1 a convergent real relaxation factor lies in (0, 2(1 - Re lambda) /
+   |1 - lambda|^2), so a non-positive omega is never valid. The Stage C account of the secant denominator as
+   rounding noise is INFERRED and not supported by its own numbers (denominator 3e-7 against ||r||^2 of 2.6e-4);
+   the negative omega, the plateau and the Picard contrast are what was measured.
+5. Open: which safeguard, if any (owner decision); whether Steffensen has the same gap (same family, not measured).
 ### ~~D77. The automatic remap halo (D73) is driven by a NEW free function the caller runs before `schedule()`, not by `Runner::initialize()`~~ -- CLOSED 2026-10-18: the build moved into `make_region_sizes()` (owner decision) 2026-10-18, owner decided (RemapHalo track)
 
 The owner's 2026-10-18 decision for D73 described the contract as "the Runner executes [`BuildRemapHalo`]
