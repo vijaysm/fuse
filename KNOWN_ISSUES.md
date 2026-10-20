@@ -4016,6 +4016,8 @@ measured here: a re-probe that returns "measured working" or "measured broken", 
 the owner's reconfigure of `build-all` is where that shows.
 
 **Closed (record pass, 2026-10-20):** closed 2026-10-12; the re-probe fired on the reinstalled MPI on 2026-10-20 exactly as designed (D23).
+
+**Cross-reference (2026-10-20):** D23's own final treatment extends this entry's caching machinery from one verdict about one layout (one rank a side) to a per-layout record, `FUSE_MPI_DYNAMIC_LAYOUTS` -- the same re-probe-on-fingerprint-change and owner's-hand-edit-is-kept rules this entry fixed, applied to every layout a registered accept/chain row uses, not only `1+1`. `cmake/FuseMpiDynamic.cmake`'s `fuse_mpi_dynamic_should_probe()`, `fuse_mpi_dynamic_option_value()`, and `fuse_mpi_fingerprint()` are unchanged by it; the new functions (`fuse_mpi_dynamic_layouts_missing()`, `fuse_mpi_dynamic_parse_probe_output()`, `fuse_mpi_dynamic_layout_record()`, `fuse_mpi_dynamic_layout_working()`, `fuse_mpi_dynamic_layouts_value()`) sit beside them and are tested the same way, in the same tier-0 row.
 ### ~~D36. Accept mode's bundled coupler rank was declared as part of U's own RankSet, so D24's fix mis-sized U's field
 
 **Status: FIXED at the library and example levels; `verification.brusselator.participants.accept.3` (and
@@ -6469,7 +6471,7 @@ conservation check within its thresholds.
 
 The accept rows remain blocked by D23.
 
-### D23. Accept/connect cannot complete on MPICH's `ch3:nemesis` device when both programs share a node
+### D23. Accept/connect is unreliable at multi-rank layouts on this MPI's `ch4:ofi` device (was: cannot complete at all, on `ch3:nemesis`)
 
 **Status: not a defect in this library; it needs a different MPI build.** Every
 `parallel.connect.accept.*` row, and the `verification.brusselator.participants.accept.*`
@@ -6594,6 +6596,42 @@ individually (1.27 s, 1.37 s; the accept run writes non-zero `exchange_out`/`exc
 `transport.lowfive*`, `brusselator_lowfive_*`, `example.demo_b` -- the one `lowfive.mpmd.3` timeout in the full
 run did not reproduce. Each participant's stdout ends with MPICH's own allocation-tracing report
 (`[0] 360 at [...] csel.c[693]`), which a development build prints at finalize; it is not FUSE output.
+
+**Final treatment (2026-10-20) -- stays OPEN, as an environment limitation, retitled.** The original
+defect this entry recorded -- `ch3:nemesis` taking a shared-memory send path for a peer it has no
+shared-memory segment with, measured on the host 2026-10-09 -- is gone: the reinstalled MPI is
+`ch4:ofi` (`mpichversion` reports `5.0.2rc3`, "unreleased development copy"), and that assertion does
+not fire on it. What replaces it, measured the same reinstall (numbers repeated from the entries
+immediately above, gathered here as the record this title now describes): `tools/probe-
+intercomm-merge.c`, FUSE-free, `FI_PROVIDER="tcp;ofi_rxm" FI_TCP_IFACE=en0`, 6 runs per layout on
+`5.0.2rc3` -- `1+1`, `2+1`, `2+2`, `3+2` all 6 OK; `2+3` 2 OK, 4 with zero merged ranks (hung to the
+12 s timeout inside `MPI_Comm_connect`/`MPI_Intercomm_merge`'s context-id agreement). The SAME
+reproducer on `5.0.0a1` lost 1 of 6 `1+1` runs too -- the intermittency is smaller on `5.0.2rc3`, not
+absent. FUSE's own rows, 3 runs each, same MPI: `connect.accept.1+1` 3/3, `participants.accept.3`
+3/3, `connect.accept.3+2` 2/3, `connect.chain.3` 1/3, `connect.chain.4` 1/3, `participants.accept.5`
+1/3.
+
+The configure-time probe used to measure ONE layout (one rank a side) once, and that single
+"measured working" verdict left every multi-rank accept/chain row registered -- `FUSE_ENABLE_
+CONNECT_ACCEPT` is a correct verdict about `1+1` and was never a verdict about `3+2`, a 3-rank
+chain, or a 5-task participants row, but nothing before this round of work said so, and the full
+suite paid for it: six rows, each timing out at its own 120 s `TIMEOUT`, about 12 of a 17-minute run.
+`tools/probe-mpi-dynamic.sh` (`cmake/FuseMpiDynamic.cmake`) now probes every layout a registered row
+actually uses -- `1+1`, `2+1`, `3+2`, `2+3`, `1+2`, `1+3` -- `FUSE_MPI_DYNAMIC_PROBE_RUNS` times each
+(default 3), and caches the per-layout record as `FUSE_MPI_DYNAMIC_LAYOUTS`. A row whose own layout
+did not measure N of N is still registered (so `ctest -N` still names it) but carries `DISABLED
+TRUE` and the label `accept-unreliable-on-this-mpi`; `ctest -L accept-unreliable-on-this-mpi` or
+removing `DISABLED` runs it by hand. The single-rank verdict `FUSE_ENABLE_CONNECT_ACCEPT` keeps
+its original meaning (ON iff `1+1` measures N of N) -- nothing downstream of that option changes.
+
+Why this entry does not close: the probe's own per-layout record IS the measurement now, not a
+proxy argued around it, and that record says several layouts this host's own rows use are
+unreliable on this MPI (`3+2` at 2/3, the chain's own later-step layouts at 1/3). D23 was always
+about whether accept/connect can complete reliably on this host's MPI, at the layouts the rows
+actually launch; it still cannot, at several of them, so the title now says `ch4:ofi`, not
+`ch3:nemesis` -- the device changed, the open question (is this MPI's dynamic process management
+reliable here) did not. See D35 for the caching machinery (re-probe on fingerprint change, the
+owner's-hand-edit rule) this entry's per-layout record now also follows.
 ### ~~D22. A shared Kokkos aborts the process at exit~~ — CLOSED 2026-10-09
 
 **What it was.** `Kokkos::initialize()` registers its own exit hook, and that hook ran

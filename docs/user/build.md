@@ -156,24 +156,47 @@ was **found** (with version and config directory) or **fetched**.
 ### The accept/connect launch mode is probed, not assumed
 
 With `FUSE_ENABLE_MPI=ON`, configuring also runs `tools/probe-mpi-dynamic.sh`: it compiles a small
-program, launches it twice as two separate jobs — one accepting, one connecting — and performs the
+program and launches it twice as two separate jobs -- one accepting, one connecting -- performing the
 same `MPI_Open_port`/`MPI_Comm_accept`/`MPI_Comm_connect`/`MPI_Intercomm_merge` sequence
 `fuse::transport::connect()` performs for a genuinely separate-executable coupling
-([](multiple-executables.md)). The verdict sets the `FUSE_ENABLE_CONNECT_ACCEPT` option, which can
-be overridden directly:
+([](multiple-executables.md)). The single-rank-a-side result of that run (`1+1`) sets the
+`FUSE_ENABLE_CONNECT_ACCEPT` option, which can be overridden directly:
 
 ```bash
 cmake -S . -B build -DFUSE_ENABLE_MPI=ON -DFUSE_ENABLE_CONNECT_ACCEPT=OFF
 ```
 
-When the probe measures the mode broken on this MPI build (MPICH's `ch3:nemesis` device aborts
-merging an intercommunicator between two same-node jobs it has no shared memory for —
-KNOWN_ISSUES.md D23), the accept/connect test rows are not registered and a `Connect`-mode
-component is refused at `connect()` with `E-CONNECT-ACCEPT-UNAVAILABLE` rather than aborting inside
-MPI. When the probe cannot run at all (a login node where `mpiexec` needs an allocation, the
-ordinary case on a cluster), the mode is left enabled and its own rows report for themselves — the
-probe only refuses what it has actually measured broken. The launcher-style MPMD launch mode needs
-only `MPI_APPNUM`, which every MPI provides, and is never gated by this probe.
+**One rank a side is not a measurement of a three-rank row (KNOWN_ISSUES.md D23's final account).**
+An MPI whose context-id agreement for a merged communicator is intermittent under load can pass
+`1+1` reliably while a `3+2` or chain-of-four layout still times out. So the probe actually tries
+every rank layout a registered `parallel.connect.accept.*`, `parallel.connect.chain.*`, or
+`verification.brusselator.participants.accept.*` row uses -- `1+1`, `2+1`, `3+2`, `2+3`, `1+2`,
+`1+3` -- each `FUSE_MPI_DYNAMIC_PROBE_RUNS` times (default 6, the count the D23 measurements used), with
+`FUSE_MPI_DYNAMIC_PROBE_TIMEOUT` seconds per run (default 20):
+
+```bash
+cmake -S . -B build -DFUSE_ENABLE_MPI=ON -DFUSE_MPI_DYNAMIC_PROBE_RUNS=3 -DFUSE_MPI_DYNAMIC_PROBE_TIMEOUT=30
+```
+
+The per-layout result is cached as `FUSE_MPI_DYNAMIC_LAYOUTS`, a list of `na+nb:passed/total`
+tokens (one per layout probed). A registered row whose own layout measured fewer than
+`passed == total` ("N of N") is still registered, so it shows up in `ctest -N`, but with
+`DISABLED TRUE` and the label `accept-unreliable-on-this-mpi`:
+
+```bash
+ctest --test-dir build -L accept-unreliable-on-this-mpi    # run the unreliable rows anyway
+ctest --test-dir build -R parallel.connect.accept.3\+2      # same, by name
+```
+
+When the probe measures the mode broken even at `1+1` (MPICH's `ch3:nemesis` device aborts merging
+an intercommunicator between two same-node jobs it has no shared memory for is the ORIGINAL defect
+this entry recorded; an MPI whose device has since moved on can still fail this way under a
+different cause), no accept-mode row is registered at all and a `Connect`-mode component is
+refused at `connect()` with `E-CONNECT-ACCEPT-UNAVAILABLE` rather than aborting inside MPI. When
+the probe cannot run at all (a login node where `mpiexec` needs an allocation, the ordinary case on
+a cluster), the mode is left enabled and every row reports for itself -- the probe only disables
+what it has actually measured unreliable. The launcher-style MPMD launch mode needs only
+`MPI_APPNUM`, which every MPI provides, and is never gated by this probe.
 
 ### Two Kokkos installs on one machine
 
