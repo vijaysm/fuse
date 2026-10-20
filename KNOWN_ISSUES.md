@@ -6565,6 +6565,22 @@ released build fails outright in `MPIDI_OFI_dynamic_send`: "default nic=bridge10
 D65's interface choice. Conclusion: the development copy 5.0.0a1 at `/opt/mpich` loses messages in the merged
 communicator's context-id agreement; the released 5.0.2 does not on this machine. The provider pinning is
 still required with either.
+
+**Reinstalled stack, 2026-10-20 (lead; owner rebuilt `/opt/mpich` and relinked HDF5, MOAB `cmake-all` and LowFive
+against it on 2026-10-19 17:15-17:31).** `mpichversion` reports `5.0.2rc3`, "unreleased development copy", not the
+5.0.2 release that passed the reproducer 18/18 in the conda-forge environment above. The configure step re-probed
+(`the recorded verdict 'measured working' is not a measurement of this MPI`) and measured working; `build-all` and
+`build-lowfive` built with 0 errors. Full ctest, `build-all` at `438bf7d`: 378 of 388 pass in 1031 s; the four
+`parallel.remap_halo_mpi.{2..5}` rows are D82 (MOAB half); the other six are accept/connect rows that timed out.
+Rerun three times each: `connect.accept.1+1` 3/3 pass, `participants.accept.3` 3/3, `connect.accept.3+2` 2/3,
+`connect.chain.3` 1/3, `connect.chain.4` 1/3, `participants.accept.5` 1/3. `tools/probe-intercomm-merge.c` on this
+MPICH, 6 runs per layout: 1+1, 2+1, 2+2, 3+2 all 6 OK; 2+3 2 OK, 4 with zero merged ranks. The intermittency is
+still in the MPI and still FUSE-free; it is smaller than on 5.0.0a1 (which lost 1+1 runs too) and absent at
+two ranks. LowFive rows in `build-lowfive`: `participants.lowfive.mpmd.3` and `lowfive.accept.3` both pass
+individually (1.27 s, 1.37 s; the accept run writes non-zero `exchange_out`/`exchange_in` in every window), with
+`transport.lowfive*`, `brusselator_lowfive_*`, `example.demo_b` -- the one `lowfive.mpmd.3` timeout in the full
+run did not reproduce. Each participant's stdout ends with MPICH's own allocation-tracing report
+(`[0] 360 at [...] csel.c[693]`), which a development build prints at finalize; it is not FUSE output.
 ### ~~D22. A shared Kokkos aborts the process at exit~~ — CLOSED 2026-10-09
 
 **What it was.** `Kokkos::initialize()` registers its own exit hook, and that hook ran
