@@ -1802,6 +1802,208 @@ void trace_remap_halo_coverage(const Side& src, const Side& tgt,
   }
 }
 
+/// KNOWN_ISSUES D82 round 14: a point is INSIDE a CONVEX spherical polygon
+/// (CCW as seen from outside the sphere -- the orientation `orient()`
+/// already established on both sides before any covering-set construction
+/// ran, not re-derived here) when it sits on the inner side of every one
+/// of the polygon's own great-circle edges: for edge (v_i, v_i+1), the
+/// great circle through them has normal `cross(v_i, v_i+1)`, and a
+/// correctly-oriented convex polygon has its own interior on the side
+/// where `dot(cross(v_i, v_i+1), p) >= 0` for EVERY edge simultaneously.
+/// `kInsideTol` is generous (not the usual `kGeomTol`/`kIntxTol` scale)
+/// because this is a diagnostic-only classification, not a quantity any
+/// production result depends on -- a point within this margin of an edge
+/// reads as "inside" rather than risking a false "outside" from rounding.
+[[nodiscard]] bool point_in_convex_spherical_polygon(
+    const std::vector<double>& xyz, const V3& p) {
+  const std::size_t n = xyz.size() / 3;
+  if (n < 3) return false;
+  constexpr double kInsideTol = -1e-6;
+  for (std::size_t i = 0; i < n; ++i) {
+    const V3 vi{xyz[3 * i], xyz[3 * i + 1], xyz[3 * i + 2]};
+    const std::size_t jn = (i + 1) % n;
+    const V3 vj{xyz[3 * jn], xyz[3 * jn + 1], xyz[3 * jn + 2]};
+    if (dot(cross(vi, vj), p) < kInsideTol) return false;
+  }
+  return true;
+}
+
+/// KNOWN_ISSUES D82 round 14 (owner's own per-cell probe request,
+/// 2026-10-19): behind the SAME FUSE_REMAP_HALO_TRACE=1 switch, separates
+/// hypotheses (A)/(B)/(C) for each of round 13's own uncovered/partially-
+/// covered owned cells. Every rank answers, for every probed cell (gid +
+/// owner rank + centroid, exchanged via one Allgatherv every rank in the
+/// communicator joins UNCONDITIONALLY, round 12's own lesson applied
+/// rather than relearned a third time):
+///
+///   present_locally          a local cell (owned OR an adopted halo copy)
+///                             carries this gid at all.
+///   intersected_area_here    the sum of THIS rank's own intersection
+///                             entries (`sm.entries`) for that local
+///                             index, if present -- 0 if absent or if
+///                             present but never intersected.
+///   independent_overlap_here a point-in-convex-spherical-polygon test of
+///                             the probed cell's own centroid against
+///                             EVERY local (owned+halo) target cell,
+///                             computed OUTSIDE the covering-set machinery
+///                             entirely -- no Intx2MeshOnSphere call, no
+///                             shared state with the production path
+///                             except the already-established orientation
+///                             and the (read-only) target cell geometry.
+///
+/// Verdict, per the owner's own framing: `independent_overlap_here` true
+/// and `present_locally` false on a rank is hypothesis (A) (the covering
+/// set should have sent this cell here and did not); `present_locally`
+/// true (and not the owner) with `intersected_area_here == 0` while
+/// `independent_overlap_here` is true is (B) (the adopted copy sits here
+/// but never intersected anything, despite genuinely overlapping);
+/// `independent_overlap_here` false on EVERY rank that answers is the
+/// "genuinely uncovered by the geometry itself" case the owner named as
+/// impossible given the 1-rank pass.
+void trace_remap_halo_probe(const Side& src, const Side& tgt,
+                            const Supermesh& sm,
+                            const std::vector<double>& covered_after_fold) {
+  if (!remap_halo_trace_enabled()) return;
+  try {
+    int my_rank = 0;
+    int nproc = 1;
+    bool parallel = false;
+    MPI_Comm comm = MPI_COMM_NULL;
+#ifdef FUSE_REMAP_PARALLEL
+    if (src.pcomm != nullptr) {
+      auto* pc = static_cast<moab::ParallelComm*>(src.pcomm);
+      comm = pc->comm();
+      if (MPI_Comm_size(comm, &nproc) == MPI_SUCCESS && nproc > 1) {
+        parallel = true;
+        static_cast<void>(MPI_Comm_rank(comm, &my_rank));
+      }
+    }
+#endif
+    if (!parallel) return;  // nothing cross-rank to probe at one rank
+
+    const std::size_t n_src = src.cells.size();
+
+    // gid -> local index, every local cell (owned or halo copy), built
+    // once per call -- O(n_src), acceptable for a capped diagnostic probe.
+    std::unordered_map<std::size_t, std::size_t> gid_to_local;
+    gid_to_local.reserve(n_src);
+    for (std::size_t i = 0; i < n_src; ++i) {
+      try {
+        gid_to_local.emplace(src.view->global_id(src.dim, i), i);
+      } catch (const std::exception&) {
+        // no usable global numbering at this index -- it cannot be probed
+        // by gid, same tolerance the rest of this file already has for a
+        // local index with no global id.
+      }
+    }
+
+    // This rank's own candidates: owned cells uncovered or partially
+    // covered after the fold, capped at 20 (owner's own instruction).
+    struct Candidate {
+      std::size_t gid;
+      double x, y, z;
+    };
+    std::vector<Candidate> mine;
+    for (std::size_t i = 0; i < n_src && mine.size() < 20; ++i) {
+      if (!src.view->is_owned(src.dim, i)) continue;
+      const double c = covered_after_fold[i] / sm.src_parent[i];
+      if (c >= 0.99) continue;
+      std::size_t gid = 0;
+      try {
+        gid = src.view->global_id(src.dim, i);
+      } catch (const std::exception&) {
+        continue;  // cannot be named/probed without one
+      }
+      const Point p = src.view->centroid(src.dim, i);
+      mine.push_back({gid, p.x, p.y, p.z});
+    }
+
+    // Packed as 5 doubles per candidate -- gid and owner rank as doubles
+    // are exact for any value this project's own meshes use (well under
+    // 2^53), and MPI_Allgatherv needs one element type.
+    std::vector<double> my_packed(mine.size() * 5);
+    for (std::size_t k = 0; k < mine.size(); ++k) {
+      my_packed[5 * k + 0] = static_cast<double>(mine[k].gid);
+      my_packed[5 * k + 1] = static_cast<double>(my_rank);
+      my_packed[5 * k + 2] = mine[k].x;
+      my_packed[5 * k + 3] = mine[k].y;
+      my_packed[5 * k + 4] = mine[k].z;
+    }
+
+    std::vector<int> counts(static_cast<std::size_t>(nproc), 0);
+    const int my_count = static_cast<int>(my_packed.size());
+    if (MPI_Allgather(&my_count, 1, MPI_INT, counts.data(), 1, MPI_INT,
+                      comm) != MPI_SUCCESS) {
+      fmt::print(stderr,
+                "FUSE_REMAP_HALO_TRACE rank={} probe: Allgather of counts "
+                "failed\n",
+                my_rank);
+      return;
+    }
+    std::vector<int> displs(static_cast<std::size_t>(nproc) + 1, 0);
+    for (int r = 0; r < nproc; ++r) {
+      displs[static_cast<std::size_t>(r) + 1] =
+          displs[static_cast<std::size_t>(r)] + counts[static_cast<std::size_t>(r)];
+    }
+    std::vector<double> all_packed(
+        static_cast<std::size_t>(displs[static_cast<std::size_t>(nproc)]), 0.0);
+    if (MPI_Allgatherv(my_packed.data(), my_count, MPI_DOUBLE,
+                       all_packed.data(), counts.data(), displs.data(),
+                       MPI_DOUBLE, comm) != MPI_SUCCESS) {
+      fmt::print(stderr,
+                "FUSE_REMAP_HALO_TRACE rank={} probe: Allgatherv of "
+                "candidates failed\n",
+                my_rank);
+      return;
+    }
+    const std::size_t n_probe = all_packed.size() / 5;
+
+    for (std::size_t k = 0; k < n_probe; ++k) {
+      const std::size_t gid =
+          static_cast<std::size_t>(all_packed[5 * k + 0]);
+      const int owner_rank = static_cast<int>(all_packed[5 * k + 1]);
+      const V3 p{all_packed[5 * k + 2], all_packed[5 * k + 3],
+                all_packed[5 * k + 4]};
+
+      bool present_locally = false;
+      double intersected_area_here = 0.0;
+      const auto it = gid_to_local.find(gid);
+      if (it != gid_to_local.end()) {
+        present_locally = true;
+        const std::size_t li = it->second;
+        for (const Overlap& ov : sm.entries) {
+          if (static_cast<std::size_t>(ov.col) == li) {
+            intersected_area_here += ov.area;
+          }
+        }
+      }
+
+      bool independent_overlap_here = false;
+      std::vector<double> scratch;
+      for (std::size_t j = 0;
+          j < tgt.cells.size() && !independent_overlap_here; ++j) {
+        auto xyz = corner_coords(*tgt.mb, tgt.cells[j], scratch);
+        if (!xyz.ok()) continue;
+        if (point_in_convex_spherical_polygon(xyz.value(), p)) {
+          independent_overlap_here = true;
+        }
+      }
+
+      fmt::print(stderr,
+                "FUSE_REMAP_HALO_TRACE rank={} probe gid={} owner_rank={} "
+                "present_locally={} intersected_area_here={:.17g} "
+                "independent_overlap_here={}\n",
+                my_rank, gid, owner_rank, present_locally,
+                intersected_area_here, independent_overlap_here);
+    }
+  } catch (const std::exception& e) {
+    fmt::print(stderr,
+              "FUSE_REMAP_HALO_TRACE: probe itself threw: {} (diagnostic "
+              "only)\n",
+              e.what());
+  }
+}
+
 /// Reduce the audit over the communicator, so every rank reports the same
 /// numbers and, above all, reaches the same accept/reject outcome.
 [[nodiscard]] Result<void> reduce_audit([[maybe_unused]] const Side& src,
@@ -1992,6 +2194,7 @@ void trace_remap_halo_coverage(const Side& src, const Side& tgt,
 
   trace_remap_halo_coverage(src, tgt, sm, covered_src_before_fold, covered_src,
                             intersected_src);
+  trace_remap_halo_probe(src, tgt, sm, covered_src);
 
   Audit audit;
   for (std::size_t i = 0; i < w.n_cols; ++i) {
