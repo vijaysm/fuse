@@ -11258,6 +11258,177 @@ latitudes from -73 to 78 and near the equator alike. The chord-box proxy does no
 missed the cell on the rank whose target cells cover it) and B (adopted there, intersected nothing). Round 14 is a
 per-cell probe: for each uncovered or partially covered owned cell, every rank reports adopted-here,
 intersected-area-here and an independent single-pair overlap with its local target cells.
+
+### D82 ROUND 14 (MoabHalo track, 2026-10-19): per-cell probe, separating
+(A)/(B)/(C) empirically; reading of MOAB's own covering-set source narrows
+the suspect lines but does not settle it -- the probe's own output is what
+decides
+
+**HOST trace, read.** (C) is ruled out by the trace itself, exactly as the
+owner's own reading says: the fold DOES work (zero_coverage_before_fold
+1583 -> 17 after, at 2 ranks rank 0; 2142 -> 28 rank 1), so `fold_halo_
+contributions` genuinely receives and applies cross-rank contributions.
+What remains is 45 cells at exactly zero coverage plus roughly 88 more only
+partially covered (2 ranks), identical gids recurring at 2 AND 3 ranks, all
+passing cleanly at 1 rank. That shape -- specific cells, independent of how
+many ranks split the problem, gone the moment there is only one partition
+-- is a partition-boundary covering-set effect, not a fold or a formula
+effect.
+
+**Read, to find which MOAB call to indict.** `MoabMeshBackend::adopt_remap_
+halo` itself does not decide WHICH cells travel -- it only adopts handles
+`build_remap_halo`'s own geometry half already chose (`intx_weights.cpp`).
+That half calls, in order: `Intx2MeshOnSphere::FindMaxEdges`, then
+`build_processor_euler_boxes(b.file_set, local_verts)` (default
+`gnomonic=true`, FUSE passes no third argument), then `construct_covering_
+set(a.file_set, covering, /*gnomonic=*/true, /*nb_ghost_layers=*/0,
+/*include_edges=*/false)`.
+
+  * First hypothesis, INVESTIGATED AND REFUTED: `Intx2Mesh::build_
+    processor_euler_boxes` (the BASE class, `src/IntxMesh/Intx2Mesh.cpp:
+    1078`) unconditionally forces `gnomonic = false` on entry and builds a
+    plain 6-double-per-rank 3D box -- while `Intx2MeshOnSphere::construct_
+    covering_set`'s own gnomonic branch (`Intx2MeshOnSphere.cpp:1272-1278`)
+    reads `allBoxes[24*p + 4*(pl-1)]`, a 24-double-per-rank, 6-gnomonic-
+    plane layout. Read far enough to suspect a layout mismatch (the base
+    class's array is sized `6*numprocs`; the derived reader indexes past
+    `24*numprocs`) -- but `Intx2MeshOnSphere` OVERRIDES `build_processor_
+    euler_boxes` (`Intx2MeshOnSphere.cpp:842`), and since FUSE's `worker`
+    is statically typed `Intx2MeshOnSphere` (not called through a base
+    pointer), the call resolves to the override, whose OWN default
+    (`gnomonic = true`, matching the base's default but NOT overridden to
+    false) takes the `!gnomonic` branch false and builds the CORRECT
+    24-double, per-gnomonic-plane layout (`Intx2MeshOnSphere.cpp:944`,
+    `allBoxes.resize(24 * numprocs)`) that `construct_covering_set` later
+    reads. No layout mismatch. Recorded here so the next round does not
+    re-investigate the same, already-closed, lead.
+
+  * What the OnSphere override of `build_processor_euler_boxes` DOES do
+    (`Intx2MeshOnSphere.cpp:887-932`): project EVERY TARGET VERTEX onto
+    whichever of 6 gnomonic (cube-face) planes `IntxUtils::decide_gnomonic_
+    plane` assigns it to, and take the min/max of those PROJECTED 2D
+    coordinates per plane -- confirming the owner's own suspicion in
+    substance, if not in the exact mechanism first suspected: this box is
+    built from VERTICES ONLY, in a PROJECTED plane, with NO curvature or
+    distortion margin of its own.
+
+  * The margin lives entirely in `construct_covering_set`
+    (`Intx2MeshOnSphere.cpp:1192-1203`): `box_error += global_diag *
+    max(nb_ghost_layers, 1)`, further `*= sqrt(3)` for gnomonic, where
+    `global_diag` is the MAXIMUM diagonal among ALL of the SOURCE mesh's
+    (OCN's) cells, Allreduce-MAXed across every rank -- a full cell's own
+    diagonal, not a small sag correction, generous in MAGNITUDE. It is
+    applied to the box-overlap TEST (`Intx2MeshOnSphere.cpp:1280-1281`:
+    `if (procMin1 > qmax[0] + box_error || ...) continue;`), not to the box
+    ITSELF -- so the margin is a SYMMETRIC comparison slack, not a
+    per-cell expansion tailored to how distorted THAT cell's own gnomonic
+    projection happens to be.
+
+  * BEST-SUPPORTED REMAINING HYPOTHESIS, NOT CONFIRMED: gnomonic projection
+    magnifies distortion away from a plane's own center and most severely
+    near a cube-face boundary -- a hexagon cell whose own shape is only
+    mildly irregular in true spherical measure can project to a visibly
+    MORE elongated 2D footprint near a plane edge than the SAME cell would
+    near a plane's center. A fixed, global `box_error` (one typical cell
+    diagonal) sized by the mesh's own MAXIMUM cell diagonal (the same global_diag above) could be
+    insufficient specifically for a boundary-straddling cell's own
+    plane-local distortion, independent of the margin being "generous" in
+    the typical case. A quick, independent cross-check (this round, via
+    direct HDF5 read of `recMeshOcn.h5m`, no MOAB): NONE of the 16
+    host-reported uncovered gids are pentagons (the mesh's 6 Polygon5 cells, gids 1-6, read from the file) -- ruling out a
+    pentagon-specific defect, but their longitudes do not cleanly cluster
+    on the standard cube-face boundary bands either (some within ~3-9
+    degrees of a nominal +-45/+-135 boundary, others 20+ degrees away) --
+    inconclusive by eye, which is exactly why this round builds the probe
+    rather than reasoning further from reading alone.
+
+**The probe, behind the SAME `FUSE_REMAP_HALO_TRACE=1` switch** (new
+`trace_remap_halo_probe`, `intx_weights.cpp`, called from `assemble()`
+right after round 13's own `trace_remap_halo_coverage`): every rank that
+has an uncovered or partially-covered (ratio `< 0.99`) OWNED source cell,
+up to 20, contributes `(gid, owner_rank, centroid_xyz)` to one Allgatherv
+EVERY rank in the communicator joins unconditionally (round 12's lesson).
+Every rank then answers, for every probed cell:
+
+  * `present_locally` -- a local cell (owned or an adopted halo copy)
+    carries this gid, found via a one-shot gid-to-local-index map built
+    from `MeshView::global_id` over every local entity.
+  * `intersected_area_here` -- the sum of this rank's own `sm.entries`
+    (the raw Intx2MeshOnSphere overlaps, already in hand at the fold call
+    site) for that local index, 0 if absent or never intersected.
+  * `independent_overlap_here` -- a point-in-convex-spherical-polygon test
+    (new `point_in_convex_spherical_polygon`: a point is inside a
+    correctly-oriented convex spherical polygon when it sits on the inner
+    side of every edge's own great-circle plane, `dot(cross(v_i, v_i+1),
+    p) >= 0` for every edge) of the probed centroid against EVERY local
+    target cell -- computed with NO Intx2MeshOnSphere call, independent of
+    the covering-set machinery entirely, relying only on the orientation
+    `build_remap_halo`'s own `orient()` already established on both sides
+    before any of this ran.
+
+**Verdict rule, as given:** `independent_overlap_here` true and `present_
+locally` false on a rank is (A) (the covering set should have sent it
+here and did not -- if that rank's own geographic target region is where
+the probed centroid actually sits, per this test, independent of
+Intx2MeshOnSphere's own covering-set decision). `present_locally` true
+(not the owner) with `intersected_area_here == 0` while `independent_
+overlap_here` is true is (B) (the adopted copy sits here but never
+intersected anything, despite genuinely overlapping -- check next whether
+its coordinates read back as rescaled, per the owner's own suspicion).
+`independent_overlap_here` false on every rank that answers for a gid
+would mean the geometry itself leaves it uncovered -- stated by the owner
+as impossible given the 1-rank pass, and if the probe shows this anyway,
+that contradiction is itself the finding (most likely a partition that
+changed vertex coordinates, e.g. a halo copy carrying stale,
+pre-`project_onto_unit_sphere` coordinates).
+
+**Exact host command, 2 ranks** (unchanged convention from round 13):
+
+```
+cd build-all
+FUSE_REMAP_HALO_TRACE=1 FUSE_TEST_PRINT_ALL_RANKS=1 mpiexec -n 2 \
+  -outfile-pattern=/tmp/d82_r14_2rank-%r.out \
+  -errfile-pattern=/tmp/d82_r14_2rank-%r.err \
+  ./test/fuse_parallel_remap_halo_mpi_test \
+  --gtest_filter=RemapHaloMpiSphere.ExtensiveChannelConservesTheDeliveredTotalAcrossTheSpherePair
+```
+
+and identically at `-n 3` with a `3rank` file pattern. The probe's own
+lines interleave with round 13's own trace lines in the `.err` files
+(`FUSE_REMAP_HALO_TRACE rank=... probe gid=...` is the new prefix to grep
+for).
+
+**Verification in this sandbox** (unchanged constraint: no MOAB-linked
+binary can be RUN here). Built, not run: the full MOAB/MPI tree (503/503
+targets), including the new probe call compiled in. Tier-0: 219 tests, 217
+PASS, the same 2 pre-existing unrelated failures every round. All 5 gates
+clean.
+
+**Deviation, named rather than silently decided:** `point_in_convex_
+spherical_polygon`'s own `kInsideTol = -1e-6` is a diagnostic-only, loose
+margin -- chosen generously so a point near an edge reads "inside" rather
+than risking a false "outside," since this classification feeds a
+probe's verdict, not a production result. If the probe's own numbers look
+inconsistent near a cell's true boundary, this tolerance is the first
+place to revisit, not the covering-set code.
+
+**No fix this round**, per explicit instruction -- the probe's own output
+(next round) is what names the line to change, not this round's reading.
+
+**host_pending**: the probe's own per-(gid, rank) lines, at 2 and 3 ranks.
+
+
+**Host probe (lead, 2026-10-20, `build-all` at `d6a4100` + round 14, 2 ranks, MPICH 5.0.0a1; the command above):**
+hypothesis B. Every zero-coverage cell is held on the rank whose own target cells contain its centroid
+(`independent_overlap_here=true`) and intersected nothing there (`intersected_area_here=0`): gid 793, owned by
+rank 0, is covered by rank 0's own targets and not held by rank 1 at all; gids 1357, 1358, 2024 (owner 0) are
+adopted by rank 1, whose targets cover them, `intersected_area_here=0` on both ranks; gids 402, 571, 1230, 1738,
+1918, 1919, 1920 (owner 1) the same on rank 1. No probed cell is absent from the rank that covers it (hypothesis A
+out); the partially covered cells (255, 731, 1532, 23, 862, 960, ...) are intersected on one rank and absent or
+unintersected on the other. The covering set and the fold are right; `Intx2MeshOnSphere::intersect_meshes`, run
+over the partitioned local pair, does not visit source/target pairs that the same call visits at one rank. Round
+15 reads the kernel's front propagation (advancing front from a seed through local adjacency, which a partition
+boundary or a ragged regional mesh can disconnect) and the k-d-tree variant `intersect_meshes_kdtree`.
 ### ~~D83. `MoabMeshBackend::adopt_remap_halo` (and `regather_with_halo`/`plan_halo_exchange`, the
 covering-cell adoption subsystem behind the remap halo, R3) is hardwired to the backend's DEFAULT
 Core and base communicator, so the 4-argument `build_remap_halo`'s own "same Core, delegate"
