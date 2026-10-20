@@ -250,3 +250,26 @@ where `10` (vertices) is expected on the 9-cell line mesh, and the box/
 quad-triangle/hex-tet cases fail the same way. The mutated source was then
 restored byte-for-byte (`cmp` against a pre-mutation backup) and the suite
 rebuilt and reconfirmed passing (14/14) before moving on.
+
+**Addendum (Stage B, Nodal corner track, 2026-10-20): the two interpolation
+builders' own parity, and the D74 sibling fix.** `build_general_interp_weights`
+(general_interp.hpp, serial) and `build_distributed_interp_rows`
+(nodal_remap_distributed.hpp, this track's own distributed primitive) are
+INTENTIONALLY built to the same contract -- `nodal_tie_break_test.cpp`'s own
+header states it directly: "the deterministic, global-id tie-break ... exercised
+... cross-checked between the two code paths that must agree on it." KNOWN_
+ISSUES.md D74 found and fixed a defect in the distributed side only: a failed
+`invert_reference_map` on any candidate aborted the whole evaluation point,
+even after an earlier candidate in the same broad-phase set already decided
+it. This round found the IDENTICAL defect, never fixed, in the serial side --
+`build_general_interp_weights`'s own per-candidate loop still returned
+`Failure` unconditionally on the first failing candidate. Fixed by mirroring
+`nodal_remap_distributed.cpp`'s own `consider()` lambda exactly (skip, don't
+abort); `build-evidence/mutations/nodal-remap.toml`'s new row records the
+mutation test (reverting the skip back to a return) and its triple kill
+(`NodalTieBreak.DegenerateNearbyCandidateAbortsAnAlreadyFoundTightMatch`, its
+3-D Hex analogue, and `GeneralInterp.DegenerateCellRefuses`'s own updated
+expectation). See KNOWN_ISSUES.md's "D74 SIBLING FIX" addendum for the full
+measured account, including the one existing row whose refusal CODE (not its
+pass/fail) changes, and why that specific change restores -- rather than
+breaks -- parity between the two builders.

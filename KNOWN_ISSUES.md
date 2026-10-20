@@ -9709,6 +9709,90 @@ unaffected and pass. Re-enabling the two disabled rows is the right acceptance t
 fixes D67/D74's shared root cause.
 
 **Closed (record pass, 2026-10-20):** fixed 2026-10-16 (`356f738`, broad-phase box index and skip-on-failure in `build_distributed_interp_rows`); `bench.scaled_device_benchmark.{1,2,3}[.device]` re-enabled and green at N=1000 (see D74 FIX below), and `parallel.nodal_remap_distributed.{1..5}` and `parallel.nodal_remap_runner.{1..5}` pass in the 2026-10-20 full host run. An earlier paragraph of this entry that says the bench rows are disabled is the pre-fix state. A distinct sibling in the serial `build_general_interp_weights` is tracked by a DISABLED tier-0 test (`NodalTieBreak.DISABLED_DegenerateNearbyCandidateAbortsAnAlreadyFoundTightMatch`).
+
+### D74 SIBLING FIX (Stage B, Nodal corner track, 2026-10-20): the serial `build_general_interp_weights` had the identical defect, fixed the same way
+
+**Root cause, read directly from the distributed builder's own fix before touching anything (as asked):**
+`build_general_interp_weights`'s (general_interp.hpp) per-candidate loop, immediately below its OWN
+pre-existing broad-phase `search::BoxIndex` query -- the same kind of box index D74's own fix added to
+`build_distributed_interp_rows` -- still did `if (!inv.ok()) { return Failure{...}; }` UNCONDITIONALLY on
+ANY candidate's `invert_reference_map` failure, aborting the whole evaluation point even when an EARLIER
+candidate in the SAME broad-phase candidate list had already satisfied tier (a) (genuine containment). The
+broad phase protects this builder from D74's own FAR-candidate scenario (a cell nowhere near the query
+point is never even tested), but not from a NEARBY one whose own box legitimately overlaps the query box
+and whose own reference-map inversion is genuinely degenerate -- exactly the construction D74's own
+regression test (`NodalRemapDistributedNullComm.DegenerateDecoyCellDoesNotAbortAnAlreadyFoundMatch`)
+already proves the distributed builder needed fixing against.
+
+**Measured, both directions, before registering anything (tier 0, no MPI needed, system `/usr/bin/c++`):**
+feeding the IDENTICAL two-good-cells-plus-degenerate-decoy construction to `build_general_interp_weights`
+instead of `build_distributed_interp_rows` refuses --
+
+    build_general_interp_weights: target point 0, candidate cell 2: invert_reference_map: the cell's
+    Jacobian is singular to working precision (a zero-measure or degenerate cell); the reference map
+    cannot be inverted
+
+-- even though candidate cell 0 (the genuine tight match, at the query point's own centroid) is tested
+first in the same candidate list. A 3-D (Hex) analogue of the SAME construction (two unit cubes sharing a
+face, plus a third Hex folded onto a single off-axis line segment between two of the mesh's own vertices,
+so its trilinear map's image is 1-D and its Jacobian is singular everywhere) fails for the IDENTICAL code
+and message, proving the mechanism is shape-independent, not a 2-D coincidence.
+
+**The fix.** `general_interp.hpp`'s per-candidate loop now mirrors `nodal_remap_distributed.cpp`'s own
+`consider()` lambda exactly: a failed inversion means only "this candidate does not contain the point" and
+the loop continues to the next candidate, never aborting the whole point while another candidate already
+does (or still might) contain it. No tolerance was added, widened, or changed; `kRefEpsTight`/`kRefEpsLoose`
+are read, not touched. A point no candidate contains still refuses, by `E-INTERP-DOMAIN`, exactly as the
+pre-existing "beyond both tiers" branch already did for a genuinely-outside point.
+
+**The one existing row whose OUTPUT changes, found and handled, not hidden.**
+`GeneralInterp.DegenerateCellRefuses`'s mesh has exactly ONE cell, the degenerate one itself -- its only
+candidate. Skipping it leaves neither tier with a survivor, so the point now falls through to the SAME
+`E-INTERP-DOMAIN` branch a genuinely-outside point uses, where before the fix it returned that single
+candidate's own `E-INTERP-DEGENERATE`. This is not a loss of correctness (both are refusals, "no candidate
+decided this point," for a point with no candidate that both exists and converges) -- it is the EXACT
+parity the distributed builder already established: `build_distributed_interp_rows`'s own
+`consider()`/`agree_on_local_failure` path collapses an all-candidates-failed point to the SAME
+`FailCode::kDomain`, never a per-candidate code, so the two builders now agree here too. The test's own
+expectation was updated to `E-INTERP-DOMAIN` with a comment explaining why; every other row that calls
+`build_general_interp_weights` (by grep: `test/backend/nodal_interp_test.cpp`, every remaining case, and
+`test/backend/nodal_tie_break_test.cpp`'s three pre-existing cases) is unaffected -- confirmed by
+instrumenting the pre-fix failure site with a one-line debug print (removed before this fix was finalized)
+and running the full existing suite: the print fired exactly once, on `DegenerateCellRefuses`, and nowhere
+else, so every OTHER row's candidate set never has a failing inversion at all and therefore takes an
+IDENTICAL code path, old or new -- byte-identical output, not merely unchanged pass/fail, by construction.
+
+**RED/GREEN, both new tests, same binaries, before and after, verbatim:**
+  * `NodalTieBreak.DegenerateNearbyCandidateAbortsAnAlreadyFoundTightMatch` (new,
+    `test/backend/nodal_tie_break_test.cpp`, no MPI needed): RED before the fix --
+    `Value of: rows_r.ok() / Actual: false / Expected: true / build_general_interp_weights: target point 0,
+    candidate cell 2: ... Jacobian is singular ...` -- GREEN after (the genuine tight match wins, decoy
+    silently skipped, asserted by its own corner-vertex-id set).
+  * `GeneralInterp.DegenerateNearbyHexCandidateAbortsAnAlreadyFoundTightMatch` (new,
+    `test/backend/nodal_interp_test.cpp`, the 3-D analogue, no MPI needed): identical RED/GREEN pair,
+    identical code and message, candidate 2.
+  * Full tier-0 suite (`ctest -j3`, this round's final tree): **228/228 passing**, including both new
+    rows and the updated `DegenerateCellRefuses`.
+
+**Mutation testing (`build-evidence/mutations/nodal-remap.toml`'s new row,
+`nodal-interp-skip-on-failure-reverted-to-return-on-failure`): KILLED by THREE rows for ONE reverted
+line**, not one -- the two new tests above AND `GeneralInterp.DegenerateCellRefuses` (which reverts to
+expecting the OLD code under the mutation, so the UPDATED test's own new expectation fails too). Every
+other case in both affected binaries (21 of 23 remaining `GeneralInterp` cases, all 3 `CellVerticesQuery`
+cases, 3 of 4 `NodalTieBreak` cases) stayed green under the mutation -- the kill is exactly as targeted.
+Source restored byte-for-byte (`cmp`, exit 0, identical md5 `5f819d7866541db47cb97c0972bb4cb0`) and both
+binaries rebuilt and reconfirmed passing before moving on.
+
+**Not touched, read and deliberately left alone:** the tier-(b) fallback tie-break's own asymmetry between
+the two builders (the distributed builder breaks an exact fallback-score tie by lowest global id,
+REVIEW.md TF-13; the serial builder does not) is a SEPARATE, already-reviewed difference
+(`docs/dev/reviews/2026-10-11/backend-transfer.md` TF-13: the serial builder's own box-index iteration
+order is already deterministic on one process, unlike the distributed builder's rank-count-dependent
+Allgatherv concatenation order, which is why TF-13 was fixed there and not here) -- outside "mirror the
+skip-on-failure semantics exactly," and changing it was not this round's task.
+
+See `docs/dev/nodal-fields.md`'s "Mutation coverage" section for the matching account from the design-
+history side, and `build-evidence/mutations/nodal-remap.toml` for the mutation row itself.
 ### D73 FIX, ROUND 5 (RemapHalo track round 4, 2026-10-19): the test never ran the real covering-set exchange at all -- found the actual reason, fixed the test, and found a SEPARATE, pre-existing conservation defect (D82) the host's 63-vs-28 numbers were really showing
 
 **Host run (owner's machine, build-all at `632d9ba`, 2 ranks, `FUSE_REMAP_HALO_TRACE=1`,
