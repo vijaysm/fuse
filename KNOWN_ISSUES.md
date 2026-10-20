@@ -9637,7 +9637,7 @@ is non-zero but the conservation check at `:393` still fails, that is evidence t
 exchange into the halo-adopted cells (the open question this track's own round 1 first raised, still
 unresolved) is the NEXT defect, and D73 stays open until the row is green on the host.
 
-### D74. A nodal "consistent" Remap's distributed point-location search refuses at the domain's own corner vertex (global id 0) at some multi-rank splits -- FIXED 2026-10-16 (found 2026-10-15, scaled-bench track)
+### ~~D74. A nodal "consistent" Remap's distributed point-location search refuses at the domain's own corner vertex (global id 0) at some multi-rank splits -- FIXED 2026-10-16 (found 2026-10-15, scaled-bench track)
 
 Found while registering `bench.scaled_device_benchmark.{2,3}[.device]` (`test/bench/scaled_device_benchmark.cpp`):
 a nodal "consistent" channel between a provider's (N+1)^2 vertices and a consumer's N^2 cells, both
@@ -9669,6 +9669,8 @@ registration: `bench.scaled_device_benchmark.{2,3}` and their `.device` twins ar
 `example.scaled_device_benchmark[.device]` correctness row (world size 1, same reason) are
 unaffected and pass. Re-enabling the two disabled rows is the right acceptance test for whoever
 fixes D67/D74's shared root cause.
+
+**Closed (record pass, 2026-10-20):** fixed 2026-10-16 (`356f738`, broad-phase box index and skip-on-failure in `build_distributed_interp_rows`); `bench.scaled_device_benchmark.{1,2,3}[.device]` re-enabled and green at N=1000 (see D74 FIX below), and `parallel.nodal_remap_distributed.{1..5}` and `parallel.nodal_remap_runner.{1..5}` pass in the 2026-10-20 full host run. An earlier paragraph of this entry that says the bench rows are disabled is the pre-fix state. A distinct sibling in the serial `build_general_interp_weights` is tracked by a DISABLED tier-0 test (`NodalTieBreak.DISABLED_DegenerateNearbyCandidateAbortsAnAlreadyFoundTightMatch`).
 ### D73 FIX, ROUND 5 (RemapHalo track round 4, 2026-10-19): the test never ran the real covering-set exchange at all -- found the actual reason, fixed the test, and found a SEPARATE, pre-existing conservation defect (D82) the host's 63-vs-28 numbers were really showing
 
 **Host run (owner's machine, build-all at `632d9ba`, 2 ranks, `FUSE_REMAP_HALO_TRACE=1`,
