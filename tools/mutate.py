@@ -296,8 +296,22 @@ def main() -> int:
                 else:
                     verdict, note = "INCONCLUSIVE", "mutant does not compile; rewrite it"
             else:
-                run = sh(["ctest", "--test-dir", str(args.build_dir),
-                          "--no-tests=error", "-R", f"^{m['test']}$"])
+                # FUSE_MUTATE_LOGDIR (opt-in): keep this row's build log and
+                # the ctest output. Added 2026-10-21 because one run reported
+                # a PETSc row SURVIVED whose mutated binary, built and run by
+                # hand on the same machine, fails its test; the tool threw the
+                # output away, so the disagreement could not be examined.
+                ctest_run = subprocess.run(
+                    ["ctest", "--test-dir", str(args.build_dir), "--no-tests=error",
+                     "--output-on-failure", "-R", f"^{m['test']}$"],
+                    capture_output=True, text=True)
+                run = ctest_run.returncode
+                logdir = os.environ.get("FUSE_MUTATE_LOGDIR", "")
+                if logdir:
+                    Path(logdir).mkdir(parents=True, exist_ok=True)
+                    (Path(logdir) / f"{m['id']}.build.log").write_text(log)
+                    (Path(logdir) / f"{m['id']}.test.log").write_text(
+                        ctest_run.stdout + ctest_run.stderr)
                 verdict, note = ("KILLED", "test fails") if run != 0 else ("SURVIVED", "suite still green")
                 # A mutation may be declared EQUIVALENT: the mutated code has
                 # the same observable behaviour as the original, so no test
