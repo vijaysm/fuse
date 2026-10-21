@@ -422,19 +422,18 @@ endmacro()
 
 # Eigen3. Hand-written like r3d/yaml-cpp/ArborX rather than going through the
 # generic fuse_require() because the FETCH path needs CACHE variables set
-# BEFORE FetchContent_MakeAvailable(Eigen3) runs. Eigen's standalone
-# CMakeLists unconditionally registers an `uninstall` custom target and the
-# whole CMake-package/testing machinery; yaml-cpp (resolved just above on the
-# same fetch path) ALSO registers a target literally named `uninstall`, so the
-# second one to configure died with "add_custom_target cannot create target
-# 'uninstall' because another target with the same name already exists"
-# (CMP0002), failing every eigen-backend configure on CI. Turning Eigen's
-# package machinery OFF (EIGEN_BUILD_CMAKE_PACKAGE, plus the doc/testing knobs)
-# stops it registering that target while still exporting the header-only
-# Eigen3::Eigen interface target the facade and the examples link against.
-# BUILD_TESTING is saved/forced-OFF/restored for the same reason the generic
-# fetch path in fuse_require() does it: Eigen would otherwise register ~830 of
-# its own CTest entries into this project's suite.
+# BEFORE FetchContent_MakeAvailable(Eigen3) runs. Eigen 3.4.0's standalone
+# CMakeLists registers an `uninstall` custom target UNCONDITIONALLY (unlike
+# later Eigen it does not gate that target behind EIGEN_BUILD_CMAKE_PACKAGE),
+# which used to collide with yaml-cpp's own `uninstall` target under CMP0002
+# and fail every eigen-backend configure on CI. That collision is now fixed on
+# the yaml-cpp side (YAML_CPP_INSTALL=OFF in fuse_resolve_yaml above), leaving
+# Eigen's single uninstall target to register alone. The package/doc/pkgconfig/
+# BLAS/LAPACK knobs below are still turned off so Eigen only exports the
+# header-only Eigen3::Eigen interface target the facade and the examples link
+# against. BUILD_TESTING is saved/forced-OFF/restored for the same reason the
+# generic fetch path in fuse_require() does it: Eigen would otherwise register
+# ~830 of its own CTest entries into this project's suite.
 macro(fuse_resolve_eigen)
   # No version constraint: Eigen3Config is SameMajorVersion, so asking for 3.4
   # rejects an installed 5.x outright. The facade uses dense QR, small
@@ -636,6 +635,7 @@ macro(fuse_resolve_dependencies)
   # configured against; the rest are listed so a different install's stale entry is
   # caught the same way.
   fuse_resolve_r3d()
+  fuse_resolve_eigen()   # BEFORE yaml-cpp: see the Eigen `uninstall` note below
   fuse_resolve_yaml()
   fuse_resolve_arborx()
 
@@ -653,17 +653,26 @@ macro(fuse_resolve_dependencies)
   get_target_property(FUSE_KOKKOS_INCLUDE_DIRS Kokkos::kokkoscore INTERFACE_INCLUDE_DIRECTORIES)
   set(FUSE_KOKKOS_INCLUDE_DIRS "${FUSE_KOKKOS_INCLUDE_DIRS}" CACHE INTERNAL "chosen Kokkos include dirs")
 
-  # Eigen3 is resolved UNCONDITIONALLY, not only when FUSE_LINALG_BACKEND=eigen.
-  # The facade's backend choice (builtin vs eigen) selects which code path the
-  # LIBRARY compiles, but several tests and examples (gray_scott, brusselator,
-  # fsi_channel, the verification isolation test) use Eigen DIRECTLY -- their
-  # Newton/implicit solves call Eigen::SparseLU -- and link Eigen3::Eigen
-  # whatever the facade backend is. Resolving Eigen only on the eigen backend
-  # left Eigen3::Eigen undefined on a builtin-backend configure, so every such
-  # target failed generate with "Target ... links to Eigen3::Eigen but the
-  # target was not found". Eigen is header-only, so always providing it costs a
-  # fetch/find, not a compile.
-  fuse_resolve_eigen()
+  # NOTE on fuse_resolve_eigen() (called in the r3d/eigen/yaml/arborx block
+  # above): Eigen3 is resolved UNCONDITIONALLY, not only when
+  # FUSE_LINALG_BACKEND=eigen. The facade's backend choice (builtin vs eigen)
+  # selects which code path the LIBRARY compiles, but several tests and examples
+  # (gray_scott, brusselator, fsi_channel, the verification isolation test) use
+  # Eigen DIRECTLY -- their Newton/implicit solves call Eigen::SparseLU -- and
+  # link Eigen3::Eigen whatever the facade backend is. Resolving Eigen only on
+  # the eigen backend left Eigen3::Eigen undefined on a builtin-backend
+  # configure, so every such target failed generate with "Target ... links to
+  # Eigen3::Eigen but the target was not found". Eigen is header-only, so always
+  # providing it costs a fetch/find, not a compile.
+  #
+  # It is resolved BEFORE fuse_resolve_yaml(): Eigen 3.4.0's standalone
+  # CMakeLists registers an `uninstall` custom target UNCONDITIONALLY (the
+  # EIGEN_BUILD_CMAKE_PACKAGE guard was only added after 3.4.0 -- libeigen
+  # issue #1892), whereas yaml-cpp 0.8.0 wraps its own `uninstall` target in
+  # `if(NOT TARGET uninstall)`. Populating Eigen first therefore lets Eigen
+  # claim the target and yaml-cpp's guarded block skip it; the reverse order
+  # made the second (Eigen) die with CMP0002 "add_custom_target cannot create
+  # target 'uninstall'", failing every fetched configure on CI.
 
   if(FUSE_ENABLE_TESTS)
     fuse_require(GTest VERSION ${FUSE_GTEST_VERSION} NAMES GTest FETCH_AS googletest
