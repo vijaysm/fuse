@@ -104,3 +104,69 @@ new = """      inst->out_ptr[i] = (double)FUSE_TEST_AFFINE_OFFSET -
 target = "fuse_abi_conformance_test"
 test = "abi.conformance"
 result = "CONFIRMED 2026-10-21: ConformanceTest.PluginBackedComponentInAnIterationRegionConvergesLikeAllNative failed on EXPECT_EQ(mixed_runner->iteration_stats()[0].iterations, ref_iterations) -- the mutated run hit kMaxIterations (60) without converging (iteration_stats()[0].converged == false) against the reference's measured 42 sweeps, and every one of the four final-value comparisons (a_out/a_in/b_out/b_in, all 4 cells) disagreed by order-10 magnitudes (e.g. a_out[0] = 19.9999988... vs the reference's 6.6666666...), consistent with the sign flip turning the 2x2 Jacobi iteration matrix's spectral radius unstable instead of the correct ~0.592 (this test's own header comment). The other 27 cases, none of which mounts a provider with wrong physics, still passed. Restored; cmp against the pre-mutation file reported no difference."
+
+[[mutation]]
+id = "provider-device-capability-gate-removed"
+area = "abi-provider"
+describes = "ProviderAdapter::register_fields()'s capability gate (device_fields_capability_ check) is removed, so a plugin whose describe() requests FUSE_MEMSPACE_DEVICE for a field while its capabilities() did not report FUSE_CAP_DEVICE_FIELDS is accepted instead of refused with E-ABI-PROVIDER-DEVICE-UNDECLARED"
+file = "src/abi/provider_adapter.cpp"
+old = """        if (!device_fields_capability_) {
+          return fuse::Failure{
+              "E-ABI-PROVIDER-DEVICE-UNDECLARED",
+              "provider '" + name_ + "': field '" + spec.name +
+                  "' describe() reports FUSE_MEMSPACE_DEVICE, but this provider's own "
+                  "capabilities() did not report FUSE_CAP_DEVICE_FIELDS"};
+        }"""
+new = """        /* mutation: capability gate removed. */"""
+target = "fuse_abi_conformance_test"
+test = "abi.conformance"
+result = """CONFIRMED 2026-10-21 (hand-applied to a scratch tree, re-captured with the gtest binary run directly rather than through mutate.py's own output-suppressed sweep, after an earlier round of this same row was found to have invented its own failure text without a captured run): ConformanceTest.PluginDeviceFieldWithoutCapabilityIsRefused still FAILS with this mutation applied, but not the way first guessed -- initialize() still returns FUSE_ERR_RUNTIME (removing gate 1 does not make the request succeed), and the test's own EXPECT_STREQ(err.code, "E-ABI-PROVIDER-DEVICE-UNDECLARED") (conformance_test.cpp:1394) is what fails, because err.code reads "E-ABI-PROVIDER-NO-DEVICE" instead: with gate 1 removed, the request falls through to gate 2 (the host-only-build refusal), which independently also refuses it on this tier-0 build with no CUDA/HIP/SYCL backend. This mutation is therefore KILLED by the error-CODE assertion, not by acceptance -- the same defense-in-depth pattern this file's own provider-adapter-advance-ignores-error row already documents (removing one check does not make a misbehaving case invisible, it only changes which of the adapter's own checks reports it). Verbatim captured output: "test/abi/conformance_test.cpp:1394: Failure / Expected equality of these values: / err.code / Which is: \"E-ABI-PROVIDER-NO-DEVICE\" / \"E-ABI-PROVIDER-DEVICE-UNDECLARED\"". The other 30 ConformanceTest cases, none of which mounts a plugin whose describe() asks for a device field its own capabilities() did not declare, still passed. Restored; cmp against the pre-mutation file reported no difference."""
+
+[[mutation]]
+id = "provider-device-host-only-refusal-removed"
+area = "abi-provider"
+describes = "ProviderAdapter::register_fields()'s host-only-build refusal (the #else arm that returns E-ABI-PROVIDER-NO-DEVICE on a build with no CUDA/HIP/SYCL backend) is replaced with a no-op, so a device-field request on this tier-0 build with NO real device backend is silently accepted instead of refused by name -- the owner's explicit instruction this row exists to enforce (never silently allocate host memory under the device label)"
+file = "src/abi/provider_adapter.cpp"
+old = """#if defined(KOKKOS_ENABLE_CUDA) || defined(KOKKOS_ENABLE_HIP) || defined(KOKKOS_ENABLE_SYCL)
+        // (allocation happens below, in the per-field storage block)
+#else
+        return fuse::Failure{
+            "E-ABI-PROVIDER-NO-DEVICE","""
+new = """#if defined(KOKKOS_ENABLE_CUDA) || defined(KOKKOS_ENABLE_HIP) || defined(KOKKOS_ENABLE_SYCL)
+        // (allocation happens below, in the per-field storage block)
+#elif 0
+        return fuse::Failure{
+            "E-ABI-PROVIDER-NO-DEVICE","""
+target = "fuse_abi_conformance_test"
+test = "abi.conformance"
+result = """CONFIRMED 2026-10-21 (hand-applied to a scratch tree, re-captured with the gtest binary run directly rather than through mutate.py's own output-suppressed sweep, after an earlier round of this same row was found to have invented its own failure text without a captured run): ConformanceTest.PluginDeviceFieldOnAHostOnlyBuildIsRefused still FAILS with this mutation applied (the refusal arm replaced with #elif 0, dead code on this tier-0 build with no CUDA/HIP/SYCL backend), but by a DIFFERENT, pre-existing check than the one this row names: initialize() still returns FUSE_ERR_RUNTIME, and the test's own EXPECT_STREQ(err.code, "E-ABI-PROVIDER-NO-DEVICE") (conformance_test.cpp:1501) fails because err.code reads "E-RT-SPACE" instead -- with this gate compiled out, register_fields() incorrectly accepts device_out as Device-memspace, and src/runtime/runner.cpp:341's own PRE-EXISTING, unrelated space-consistency check (view.space() != MemorySpace::Host && RunnerConfig::execution_space != Device) refuses it later, at region-binding time, because this fixture never sets execution_space to Device. This mutation is KILLED, but by a Runner-level check this round did not write, not by the E-ABI-PROVIDER-NO-DEVICE gate this row names -- recorded honestly rather than left as the originally-assumed mechanism. Verbatim captured output: "test/abi/conformance_test.cpp:1501: Failure / Expected equality of these values: / err.code / Which is: \"E-RT-SPACE\" / \"E-ABI-PROVIDER-NO-DEVICE\"". The other 30 ConformanceTest cases still passed. Restored; cmp against the pre-mutation file reported no difference."""
+
+[[mutation]]
+id = "provider-device-allocation-memspace-forced-host"
+area = "abi-provider"
+describes = "ProviderAdapter::register_fields()'s per-field storage block is forced to allocate host-resident storage (fuse::MemorySpace::Host) even for a field whose describe() asked for FUSE_MEMSPACE_DEVICE, instead of the Kokkos::View device_storage_[i] allocation Option A specifies -- this branch is reached only past BOTH refusal gates above, which on a build with no CUDA/HIP/SYCL backend (every tier-0 build in this tree) are unconditional: wants_device can never be true when this line runs here, so this row is reported NOT KILLABLE ON THIS BUILD rather than silently declared equivalent (see result)"
+file = "src/abi/provider_adapter.cpp"
+old = """        field_space = fuse::MemorySpace::Device;
+        has_device_fields_ = true;"""
+new = """        field_space = fuse::MemorySpace::Host;
+        has_device_fields_ = true;"""
+target = "fuse_abi_conformance_test"
+test = "abi.conformance"
+requires = "device"
+result = "NOT ASSESSED ON A HOST-ONLY BUILD (requires = \"device\"; the track measured it not killed on tier 0, 2026-10-21, and did not declare it equivalent): ctest ^abi.conformance$ stayed green (31/31, 1 disabled) with this mutation applied. Traced, not assumed: on this tier-0 build (no CUDA/HIP/SYCL), register_fields()'s own two refusal gates above this line are unconditional for wants_device==true, so no describe() request for FUSE_MEMSPACE_DEVICE can ever reach this line without first being refused E-ABI-PROVIDER-DEVICE-UNDECLARED or E-ABI-PROVIDER-NO-DEVICE -- the line is live code (it runs on a CUDA/HIP/SYCL build, where wants_device can be true past both gates), not equivalent code, and the only build that can exercise it is the owner's own device-enabled build (host_pending). Recorded as its own distinct, honest verdict rather than EQUIVALENT, which would claim no test anywhere could ever distinguish the two branches -- a real device build can."
+
+[[mutation]]
+id = "provider-device-advance-fence-removed"
+area = "abi-provider"
+describes = "ProviderAdapter::advance()'s unconditional post-advance fence (Kokkos::fence(\"provider_adapter_advance_fence\"), gated only on has_device_fields_) is removed, so a provider with at least one device-resident field returns from advance() without the runtime ever waiting for its own queued device work to finish -- has_device_fields_ can only become true past both refusal gates above, which are unconditional on a build with no CUDA/HIP/SYCL backend, so this row too is reported NOT KILLABLE ON THIS BUILD (see result), the same structural consequence as the allocation-memspace row"
+file = "src/abi/provider_adapter.cpp"
+old = """    if (has_device_fields_) {
+      Kokkos::fence("provider_adapter_advance_fence");
+    }"""
+new = """    if (false && has_device_fields_) {
+      Kokkos::fence("provider_adapter_advance_fence");
+    }"""
+target = "fuse_abi_conformance_test"
+test = "abi.conformance"
+requires = "device"
+result = "NOT ASSESSED ON A HOST-ONLY BUILD (requires = \"device\"; the track measured it not killed on tier 0, 2026-10-21, and did not declare it equivalent): ctest ^abi.conformance$ stayed green (31/31, 1 disabled) with this mutation applied. Traced, not assumed: has_device_fields_ is set true only inside the same wants_device branch the allocation-memspace row's line sits in, which (as that row's own result records) is unreachable on a build with no CUDA/HIP/SYCL backend -- no provider in this tree's tier-0 test suite can ever make has_device_fields_ true here, so the fence call this mutation disables never runs on this build either way. Live code on a device-enabled build (the only build where a provider can legitimately register a device field and reach this fence), not equivalent code; proving this row needs the owner's own device-enabled build (host_pending), the same as the allocation-memspace row."
