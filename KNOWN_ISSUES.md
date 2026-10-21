@@ -6818,6 +6818,14 @@ actually launch; it still cannot, at several of them, so the title now says `ch4
 `ch3:nemesis` -- the device changed, the open question (is this MPI's dynamic process management
 reliable here) did not. See D35 for the caching machinery (re-probe on fingerprint change, the
 owner's-hand-edit rule) this entry's per-layout record now also follows.
+
+**Host run of the whole quick tier (lead, 2026-10-21, `build-all` at `3b982f5`, MPICH 5.0.2rc3, `-j1`):**
+`parallel.connect.accept.1+1` timed out at 120 s once. The probe had measured the 1+1 layout 6/6 and a repeat run of that row
+had passed 6/6, so 12 of 13 runs on that layout completed. A layout that fails with probability p passes six runs in six with
+probability (1 - p)^6, which is 0.61 at p = 0.08: a six-run probe screens out frequently failing layouts and does not certify
+the rest. The rows the probe disabled stayed disabled (`accept.3+2`, `chain.4`, `participants.accept.5`). The same run also
+timed out `verification.gray_scott_reference` and `example.brusselator.omp_identical`, which are slow-labelled rows the
+script had not excluded (a script defect, corrected with `-LE slow`), not failures.
 ### ~~D22. A shared Kokkos aborts the process at exit~~ — CLOSED 2026-10-09
 
 **What it was.** `Kokkos::initialize()` registers its own exit hook, and that hook ran
@@ -7718,6 +7726,19 @@ as `solve.cpp` and `token.cpp` do. The two PETSc mutation rows carried `requires
 assessed on every MPI build; they are now `requires = "petsc"`, and a third row removes the new call. The earlier
 statement that this failure was a segmentation fault was a sandbox report and was never measured on the host. Pending:
 the host rerun of `petsc.reaction_diffusion` and the three rows' kill runs with `FUSE_MUTATE_PETSC=1`.
+
+**Host run after the initialization fix (lead, 2026-10-21, `build-all` at `424f596`, MPICH 5.0.2rc3):** all 13 rows
+whose name contains `petsc` pass, including both cases of `petsc.reaction_diffusion` and `petsc.window_newton_mpi.{2,3}`.
+Mutation kill runs with `FUSE_MUTATE_PETSC=1`: area `petsc` 4 killed, 1 not assessed (needs a no-MPI build); area
+`petsc-reaction-diffusion` 2 killed, 2 survived. The survivor `...ownership-local-write-replaced-by-global-setvalues` is
+declared equivalent with a verified reason (the function builds everything on `PETSC_COMM_SELF`). The survivor
+`...assembly-no-zero-before-reassembly` is NOT equivalent: run by hand on the host, the unmutated code converges in 4
+Newton iterations to `dG_dq_I = 4.592106385435e-01`, and with `MatZeroEntries` removed the loop hits its 40-iteration cap
+and `dG_dq_I = 4.293374124325e-01`, which fails `PetscInnerSolveAgreesWithNativeAtOnePoint` against its 1e-6 bound. So the
+test kills the mutant, while `tools/mutate.py` reported SURVIVED for it. That disagreement is unexplained: one-second
+timestamp resolution in `make` was tested and ruled out (GNU Make 4.4.1 rebuilt in 8 of 8 same-second trials). The tool
+now keeps each row's build log and ctest output under `FUSE_MUTATE_LOGDIR`, and the area is to be rerun with it before
+the verdict for that row is relied on in either direction.
 ### ~~D48. A `Transport` instruction can have one arc device-resident and the other host, even in Device mode — FOUND AND FIXED 2026-10-13
 
 **What was found.** docs/dev/device-resident-arcs.md Phase 3 made `Transport` space-aware in
