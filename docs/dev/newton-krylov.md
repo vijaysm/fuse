@@ -1620,7 +1620,8 @@ whichever communicator it is handed (`VecCreate`+`VecSetSizes`+
 `VecSetType(VECSTANDARD)`, not `VecCreateSeq`), so a multi-rank region's
 own PETSc solve reduces for real across its own participants, not just
 the native substrate's. See Sec. 9.10 for the full account, including
-what remains build-verified only (no host MPI run yet) -- this section's
+the host verification (`petsc.window_newton_mpi.{2,3}` passed on the owner's
+machine 2026-10-18, KNOWN_ISSUES.md D31) -- this section's
 own history, unchanged below, explains WHY `MPI_COMM_SELF` was the
 correct and complete answer before that lift, not merely the easy one.
 

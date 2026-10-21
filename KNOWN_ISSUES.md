@@ -7307,7 +7307,7 @@ quick tier at `cb127c5`): `parallel.participant_reducer_mpi.{2,3}`, `parallel.wi
 `petsc.window_newton_mpi.{2,3}` all Passed. The 3-rank reducer leg is the non-contiguous participant subset
 {0,2}. D55 (the same `window_newton_mpi.3` row hanging under Open MPI 4.1.5 on higgs) stays open on its own.
 
-### D32. The PETSc solver plugin is the second substrate behind the S7 seam — BUILT AND MEASURED 2026-10-11; the communicator remains
+### D32. The PETSc solver plugin is the second substrate behind the S7 seam — BUILT AND MEASURED 2026-10-11; the region communicator was lifted 2026-10-12 and `petsc.window_newton_mpi.{2,3}` passed on the host 2026-10-18
 
 S7 was built on the library's own linear algebra first, by the user's decision of 2026-10-10: a
 native Jacobian-free Newton-Krylov coupler (`fuse::num::solve()`, `docs/dev/newton-krylov.md`)
@@ -7438,9 +7438,10 @@ examples agree with the native path (dn_heat to 2.7e-10 K against Picard, the Br
 printed digit of the final means over 50 windows). The `forcing.eta_min` gap is **closed**: the
 Brusselator did stall on PETSc without a floor, and `fuse::petsc::solve()` now applies
 `NewtonConfig::eta_min` through a KSP convergence test (`docs/dev/newton-krylov.md` §10.4(1)), proved
-by the `petsc-forcing-floor-not-applied` mutation. **Still open under D32:** the PETSc substrate
-solves on `MPI_COMM_SELF` (correct while D31 restricts Newton regions to one participant; the
-communicator plumbing is D31's). The 20× margin the agreement bounds once carried is gone: they are
+by the `petsc-forcing-floor-not-applied` mutation. **Superseded 2026-10-21 (lead):** the paragraph used to say the PETSc substrate
+solves on `MPI_COMM_SELF`. That held until D31's lift (2026-10-12: `NewtonSolveFn` gained a communicator
+argument and `fuse::petsc::solve()` builds its `Vec`/`Mat`/`SNES` on the region's own communicator), and D31
+records `petsc.window_newton_mpi.{2,3}` as passed on the owner's machine on 2026-10-18. The 20× margin the agreement bounds once carried is gone: they are
 built from each substrate's own terminal residuals (dn_heat: an exact bound, ‖J⁻¹‖∞ = 4/3 times the
 sum over its 20 periods; the Brusselator: a calibrated reference error times one plus the residual
 ratio), and both held on the owner's machine on 2026-10-12 (dn_heat: observed 3.572609e-10 K against
