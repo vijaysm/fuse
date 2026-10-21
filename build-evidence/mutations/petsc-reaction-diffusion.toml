@@ -62,10 +62,10 @@ old = """    MatZeroEntries(J);
     for (PetscInt i = 0; i < m; ++i) {"""
 new = """    // MatZeroEntries(J);  -- MUTATION: removed, not kept
     for (PetscInt i = 0; i < m; ++i) {"""
-target = "fuse_example_petsc_reaction_diffusion"
-test = "example.petsc_reaction_diffusion.petsc"
+target = "fuse_petsc_reaction_diffusion_test"
+test = "petsc.reaction_diffusion"
 requires = "petsc"
-result = "MEASURED ON THE HOST 2026-10-21 (lead), by hand, with a temporary stderr print removed afterwards: the unmutated code converges in 4 Newton iterations to dG_dq_I = 4.592106385435e-01 (the native value); with MatZeroEntries removed the loop runs to its 40-iteration cap (it=41) and dG_dq_I = 4.293374124325e-01, and PetscReactionDiffusion.PetscInnerSolveAgreesWithNativeAtOnePoint FAILS at reaction_diffusion_test.cpp:49 against the 1e-6 bound. So this row is killed by that test. tools/mutate.py reported SURVIVED for the same row in one earlier run on the same machine and the disagreement is UNEXPLAINED (a one-second timestamp resolution in make was tested and ruled out: GNU Make 4.4.1 rebuilt in 8 of 8 same-second trials); the tool now keeps each row's logs under FUSE_MUTATE_LOGDIR and the row is to be rerun with it."
+result = "MEASURED ON THE HOST 2026-10-21 (lead). Unmutated: 4 Newton iterations, dG_dq_I = 4.592106385435e-01. With MatZeroEntries removed: the loop hits its 40-iteration cap and dG_dq_I = 4.293374124325e-01, so petsc.reaction_diffusion FAILS at reaction_diffusion_test.cpp:49 against its 1e-6 bound; the converged solution u is unchanged to 1e-8 (u0 = 1.306213895455 against 1.306213874354), which is why the example row example.petsc_reaction_diffusion.petsc, whose check compares u only, cannot kill it. The row was first wired to that example row and tools/mutate.py correctly reported SURVIVED in two logged runs; it is now wired to the gtest that compares dG_dq_I. Its kill run through the tool is pending."
 
 [[mutation]]
 id = "reaction-diffusion-petsc-free-solve-without-ensure-initialized"
