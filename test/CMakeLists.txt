@@ -2522,6 +2522,26 @@ target_compile_definitions(fuse_test_provider_linear_old_step_report PRIVATE FUS
 add_library(fuse_test_provider_affine SHARED abi/plugins/affine_provider.c)
 target_include_directories(fuse_test_provider_affine PRIVATE ${CMAKE_SOURCE_DIR}/include)
 
+# KNOWN_ISSUES.md D15 item 1 ("Provider parity" track, Stage B-2, Option
+# A): test/abi/plugins/mixed_memspace_provider.c, one host-resident and
+# one device-resident field on the SAME provider instance. The _NO_
+# DEVICE_CAPABILITY variant is its own target, the same "behaviours
+# selected at compile time, each its own CMake target" convention
+# linear_provider.c's own header comment states -- describe() still asks
+# for FUSE_MEMSPACE_DEVICE on "device_out" but capabilities() no longer
+# grants FUSE_CAP_DEVICE_FIELDS, so ProviderAdapter's own capability gate
+# must refuse it by name.
+add_library(fuse_test_provider_mixed_memspace SHARED abi/plugins/mixed_memspace_provider.c)
+target_include_directories(fuse_test_provider_mixed_memspace PRIVATE ${CMAKE_SOURCE_DIR}/include)
+add_library(fuse_test_provider_mixed_memspace_no_device_cap SHARED abi/plugins/mixed_memspace_provider.c)
+target_include_directories(fuse_test_provider_mixed_memspace_no_device_cap PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_compile_definitions(fuse_test_provider_mixed_memspace_no_device_cap PRIVATE FUSE_TEST_NO_DEVICE_CAPABILITY)
+# The "opposite" direction the owner's own task names explicitly: capabilities()
+# sets FUSE_CAP_DEVICE_FIELDS but describe() reports no device field at all.
+add_library(fuse_test_provider_mixed_memspace_host_only_fields SHARED abi/plugins/mixed_memspace_provider.c)
+target_include_directories(fuse_test_provider_mixed_memspace_host_only_fields PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_compile_definitions(fuse_test_provider_mixed_memspace_host_only_fields PRIVATE FUSE_TEST_HOST_ONLY_FIELDS)
+
 # fuse-abi-fortran (ffuse + ffuse_provider + the shim) is a STATIC archive
 # whose only undefined symbol is fuse_coupler_abi -- resolved here because
 # THIS target is the first thing that actually needs it resolved (fortran/
@@ -2554,10 +2574,15 @@ add_dependencies(fuse_abi_conformance_test
   fuse_test_provider_linear_bad_capabilities fuse_test_provider_linear_bad_describe_extra
   fuse_test_provider_linear_bad_save fuse_test_provider_linear_bad_restore
   fuse_test_provider_linear_old_step_report
-  fuse_test_provider_affine)
+  fuse_test_provider_affine
+  fuse_test_provider_mixed_memspace fuse_test_provider_mixed_memspace_no_device_cap
+  fuse_test_provider_mixed_memspace_host_only_fields)
 target_compile_definitions(fuse_abi_conformance_test PRIVATE
   FUSE_TEST_C_PROVIDER_PLUGIN="$<TARGET_FILE:fuse_test_provider_linear>"
   FUSE_TEST_AFFINE_PROVIDER_PLUGIN="$<TARGET_FILE:fuse_test_provider_affine>"
+  FUSE_TEST_MIXED_MEMSPACE_PROVIDER_PLUGIN="$<TARGET_FILE:fuse_test_provider_mixed_memspace>"
+  FUSE_TEST_MIXED_MEMSPACE_PROVIDER_PLUGIN_NO_DEVICE_CAP="$<TARGET_FILE:fuse_test_provider_mixed_memspace_no_device_cap>"
+  FUSE_TEST_MIXED_MEMSPACE_PROVIDER_PLUGIN_HOST_ONLY_FIELDS="$<TARGET_FILE:fuse_test_provider_mixed_memspace_host_only_fields>"
   FUSE_TEST_C_PROVIDER_PLUGIN_BAD_VERSION="$<TARGET_FILE:fuse_test_provider_linear_bad_version>"
   FUSE_TEST_C_PROVIDER_PLUGIN_BAD_DESCRIBE="$<TARGET_FILE:fuse_test_provider_linear_bad_describe>"
   FUSE_TEST_C_PROVIDER_PLUGIN_BAD_ADVANCE="$<TARGET_FILE:fuse_test_provider_linear_bad_advance>"

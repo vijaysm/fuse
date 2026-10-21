@@ -172,6 +172,16 @@ fuse::Result<void> ProviderAdapter::register_fields(fuse::FieldRegistry& registr
                       // state the plugin keeps that was never described and
                       // bound (component.hpp's own caveat on carries_hidden_state()).
                       fuse::kCapabilityHiddenState;
+      // KNOWN_ISSUES.md D15 item 1 (Stage B-2, Option A): FUSE_CAP_DEVICE_FIELDS
+      // has no fuse::Component-side bit of its own (unlike FUSE_CAP_CHECKPOINT/
+      // FUSE_CAP_RESTART_FORM_B above) -- nothing else in the runtime queries
+      // "does this component support device fields" as a general capability
+      // the way it queries rollback/determinism/hidden-state; this is purely
+      // an internal consistency check register_fields() (below) makes between
+      // TWO values this SAME plugin reported (this flag, and each field's own
+      // describe()-row memspace), so it is kept as its own raw bool rather
+      // than folded into capabilities_'s fuse::Component bitmask.
+      device_fields_capability_ = (caps.flags & FUSE_CAP_DEVICE_FIELDS) != 0;
     }
 
     // ---- describe() ---------------------------------------------------
@@ -212,6 +222,9 @@ fuse::Result<void> ProviderAdapter::register_fields(fuse::FieldRegistry& registr
     const auto& fields = graph.component(*cid).fields;
     storage_.clear();
     storage_.resize(fields.size());
+    device_storage_.clear();
+    device_storage_.resize(fields.size());
+    has_device_fields_ = false;
 
     // KNOWN_ISSUES.md D15 round 3: whether THIS process actually hosts
     // this component on the REAL base communicator -- hosting_rank_ is
@@ -278,6 +291,67 @@ fuse::Result<void> ProviderAdapter::register_fields(fuse::FieldRegistry& registr
         return fuse::Failure{"E-ABI-PROVIDER-ELEMENT",
                              "provider '" + name_ + "': field '" + spec.name +
                                  "' is not FUSE_ELEMENT_F64, the only element type this host supports"};
+      }
+
+      // KNOWN_ISSUES.md D15 item 1 (Stage B-2, Option A): a field whose
+      // describe() row requests FUSE_MEMSPACE_DEVICE needs BOTH gates
+      // below to pass before this adapter allocates it device-resident --
+      // neither one alone is trusted. `row.memspace` defaults to
+      // FUSE_MEMSPACE_HOST (0) for a struct_size an old caller set
+      // before this field existed (abi-design.md rule 2's documented
+      // default), so an old plugin recompiled against this header but
+      // never touching the new field behaves exactly as it always did.
+      const bool wants_device = row.memspace == FUSE_MEMSPACE_DEVICE;
+      // A value neither HOST nor DEVICE is a request this host's
+      // FUSE_MEMSPACE_* enum does not recognise -- refused by name
+      // rather than silently treated as host, the same "no silent
+      // fallback" posture the two gates below apply to a device request.
+      if (row.memspace != FUSE_MEMSPACE_HOST && row.memspace != FUSE_MEMSPACE_DEVICE) {
+        return fuse::Failure{"E-ABI-PROVIDER-MEMSPACE",
+                             "provider '" + name_ + "': field '" + spec.name +
+                                 "' describe() reports memspace=" + std::to_string(row.memspace) +
+                                 ", which is neither FUSE_MEMSPACE_HOST nor FUSE_MEMSPACE_DEVICE"};
+      }
+      if (wants_device) {
+        // Gate 1: the plugin's OWN capabilities() must have granted this
+        // BEFORE describe() is trusted to ask for it -- a plugin that
+        // asks for device storage without declaring the capability is an
+        // internally inconsistent plugin, refused by name rather than
+        // silently downgraded to host (this project's own "no silent
+        // fallback" convention, named repeatedly elsewhere in this tree,
+        // e.g. lowfive_attach_decision.hpp's own E-LOWFIVE-ATTACH-
+        // NOCHANNELS). The opposite -- capabilities() sets the bit but no
+        // field ever asks for FUSE_MEMSPACE_DEVICE -- is unremarkable: a
+        // provider is always free to offer more than any one graph uses.
+        if (!device_fields_capability_) {
+          return fuse::Failure{
+              "E-ABI-PROVIDER-DEVICE-UNDECLARED",
+              "provider '" + name_ + "': field '" + spec.name +
+                  "' describe() reports FUSE_MEMSPACE_DEVICE, but this provider's own "
+                  "capabilities() did not report FUSE_CAP_DEVICE_FIELDS"};
+        }
+        // Gate 2: this BUILD must compile in a real device backend. The
+        // owner's own explicit instruction (not this track's own Stage A
+        // recommendation, which this corrects): a host-only build must
+        // refuse a device-field request by name, never silently hand
+        // back host-addressable memory under the device label, even
+        // though Kokkos::DefaultExecutionSpace::memory_space legally
+        // equals Kokkos::HostSpace on such a build and nothing would
+        // crash if it did. Compiled out cleanly, not a runtime branch
+        // that happens to always take the refusal arm: on a build with
+        // no CUDA/HIP/SYCL, the #else arm below is the ONLY code that
+        // exists for this condition.
+#if defined(KOKKOS_ENABLE_CUDA) || defined(KOKKOS_ENABLE_HIP) || defined(KOKKOS_ENABLE_SYCL)
+        // (allocation happens below, in the per-field storage block)
+#else
+        return fuse::Failure{
+            "E-ABI-PROVIDER-NO-DEVICE",
+            "provider '" + name_ + "': field '" + spec.name +
+                "' describe() reports FUSE_MEMSPACE_DEVICE, but this build has no device "
+                "backend (Kokkos was compiled without CUDA, HIP or SYCL) -- a device-resident "
+                "field cannot be honoured here, and this host never silently allocates one on "
+                "the CPU under the device label"};
+#endif
       }
 
       // D24 (KNOWN_ISSUES.md, closed 2026-10-09): "a component that does
@@ -353,15 +427,30 @@ fuse::Result<void> ProviderAdapter::register_fields(fuse::FieldRegistry& registr
         }
       }
 
-      storage_[i].assign(count * static_cast<std::size_t>(spec.components), 0.0);
-      double* base = storage_[i].data();
+      // KNOWN_ISSUES.md D15 item 1 (Stage B-2, Option A): `base` and the
+      // MemorySpace FUSE's own FieldRegistry is told about both depend on
+      // `wants_device` (validated above, by this point either impossible
+      // or already proven to pass both gates) -- exactly ONE of
+      // `storage_[i]`/`device_storage_[i]` is ever populated for a given
+      // field; the other stays default-constructed and empty.
+      double* base = nullptr;
+      fuse::MemorySpace field_space = fuse::MemorySpace::Host;
+      if (wants_device) {
+        Kokkos::resize(device_storage_[i], count * static_cast<std::size_t>(spec.components));
+        base = device_storage_[i].data();
+        field_space = fuse::MemorySpace::Device;
+        has_device_fields_ = true;
+      } else {
+        storage_[i].assign(count * static_cast<std::size_t>(spec.components), 0.0);
+        base = storage_[i].data();
+      }
 
       const fuse::Layout layout{.stride = static_cast<std::size_t>(spec.components),
                                 .component_stride = 1,
                                 .count = count,
                                 .components = spec.components};
       fuse::Result<void> bound =
-          registry.bind(fid, fuse::FieldRef{base, layout, fuse::MemorySpace::Host});
+          registry.bind(fid, fuse::FieldRef{base, layout, field_space});
       if (!bound.ok()) return bound;
 
       // D24/D15 round 3: the PLUGIN's own bind() is skipped entirely when
@@ -394,7 +483,7 @@ fuse::Result<void> ProviderAdapter::register_fields(fuse::FieldRegistry& registr
         fuse_field_view view{sizeof(fuse_field_view)};
         view.handle            = static_cast<std::int32_t>(fid.value());
         view.element_type      = FUSE_ELEMENT_F64;
-        view.memspace          = FUSE_MEMSPACE_HOST;
+        view.memspace          = wants_device ? FUSE_MEMSPACE_DEVICE : FUSE_MEMSPACE_HOST;
         view.ownership         = FUSE_OWNERSHIP_OWNED;
         view.components        = spec.components;
         view.count             = count;
@@ -448,6 +537,24 @@ fuse::Result<void> ProviderAdapter::advance(const fuse::StepContext& ctx) {
     if (!same_time(rep.t_begin, req.t_begin) || !same_time(rep.t_end, req.t_end)) {
       return fuse::Failure{"E-ABI-PROVIDER-WINDOW",
                            "provider '" + name_ + "': advance() echoed a different window than it was asked to run"};
+    }
+    // KNOWN_ISSUES.md D15 item 1 (Stage B-2, Option A): a device-touching
+    // provider's own advance() may have launched an ASYNCHRONOUS device
+    // kernel through whichever device pointer bind() handed it -- the
+    // table's own fuse_status return says the LAUNCH succeeded, never
+    // that the kernel has FINISHED. Without this fence, the Runner's own
+    // very next read of that same registered storage (a native kernel,
+    // a Transport pack, a Remap) could race the plugin's own kernel.
+    // Unconditional for ANY provider with at least one device field --
+    // the owner's own instruction, no escape hatch, not even for a
+    // provider that claims to fence internally (a redundant fence from
+    // an already-quiescent device costs one no-op call, not a measurable
+    // regression; see docs/dev/abi-design.md's own device-fields
+    // subsection for the host_pending measurement this sandbox cannot
+    // take). Never paid by a host-only provider (has_device_fields_
+    // stays false for every provider in this tree before this round).
+    if (has_device_fields_) {
+      Kokkos::fence("provider_adapter_advance_fence");
     }
     return fuse::Result<void>::success();
   } catch (const std::exception& e) {

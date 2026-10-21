@@ -28,6 +28,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include <Kokkos_Core.hpp>
+
 #include "fuse/abi/provider.h"
 #include "fuse/backend/serial_backend.hpp"
 #include "fuse/base/result.hpp"
@@ -88,6 +90,12 @@ class ProviderAdapter final : public fuse::Component {
   const fuse_provider_abi_v1* table_;
   fuse_provider_ctx*           self_ = nullptr;
   std::uint64_t                capabilities_ = 0;
+  /// Raw FUSE_CAP_DEVICE_FIELDS bit from this plugin's own capabilities()
+  /// call, kept separately from `capabilities_` -- see that member's own
+  /// assignment site (provider_adapter.cpp) for why this has no
+  /// fuse::Component-side bit of its own. Consulted only by
+  /// register_fields()'s own per-field memspace gate.
+  bool                          device_fields_capability_ = false;
   /// Set by save_restart_blob() from the plugin's own `out->blob_version`
   /// (the single source of truth for this run's own blob format), read
   /// back by restart_blob_version() -- the Runner calls these two methods
@@ -103,8 +111,43 @@ class ProviderAdapter final : public fuse::Component {
   /// (`advance()`, `save_state()`) relies on being fixed. Never resized
   /// after `register_fields()` returns successfully (the same "address
   /// must not move" rule `t_`/`scratch_` observe in
-  /// examples/mms_pair/heat_component.hpp).
+  /// examples/mms_pair/heat_component.hpp). A field whose describe() row
+  /// requested FUSE_MEMSPACE_DEVICE keeps its entry here empty and is
+  /// allocated into `device_storage_` below instead -- the two vectors
+  /// are parallel-indexed over the SAME field order, and exactly one of
+  /// the two holds a given field's real storage.
   std::vector<std::vector<double>> storage_;
+
+  /// KNOWN_ISSUES.md D15 item 1 ("Provider parity" track, Stage B-2,
+  /// Option A): the device-resident counterpart of `storage_` above, one
+  /// `Kokkos::View` per field this component declares, parallel-indexed
+  /// the same way. Only a field whose describe() row requests
+  /// FUSE_MEMSPACE_DEVICE -- and whose provider also sets
+  /// FUSE_CAP_DEVICE_FIELDS in capabilities(), and whose BUILD compiles
+  /// in a real device backend -- gets a non-empty View here; every other
+  /// field's own entry is left default-constructed (an empty View costs
+  /// nothing to keep around). `DeviceMemSpace` is
+  /// `Kokkos::DefaultExecutionSpace::memory_space` -- on a build with no
+  /// CUDA/HIP/SYCL this IS `Kokkos::HostSpace` (device-resident-arcs.md's
+  /// own documented "Device mode on a CPU-only build" mechanism), but
+  /// this adapter never reaches this branch on such a build at all: the
+  /// host-only refusal (register_fields(), below) fires first, by the
+  /// owner's own explicit instruction that a build with no device
+  /// backend must refuse a device-field request by name rather than
+  /// silently handing back host-addressable memory under the device
+  /// label.
+  using DeviceMemSpace = Kokkos::DefaultExecutionSpace::memory_space;
+  std::vector<Kokkos::View<double*, DeviceMemSpace>> device_storage_;
+
+  /// Set once, at the end of a successful register_fields(): true iff at
+  /// least one field of this component is device-resident. advance()
+  /// reads this to decide whether the post-advance Kokkos::fence() below
+  /// is needed at all -- unconditional FOR A DEVICE-TOUCHING PROVIDER
+  /// (the owner's own instruction: no escape hatch, not even for a
+  /// provider that claims to fence itself), but never paid by a
+  /// host-only provider, which is every provider in this tree before
+  /// this round.
+  bool has_device_fields_ = false;
 };
 
 }  // namespace fuse::abi_detail

@@ -101,6 +101,18 @@
 #ifndef FUSE_TEST_AFFINE_PROVIDER_PLUGIN
 #error "FUSE_TEST_AFFINE_PROVIDER_PLUGIN (the built affine_provider shared object path) must be defined"
 #endif
+// "Provider parity" track (KNOWN_ISSUES.md D15), Stage B-2, item 1: the
+// mixed_memspace_provider.c plugin and its two CMake-target variants,
+// built for the device-fields capability-gate and mixed-path tests below.
+#ifndef FUSE_TEST_MIXED_MEMSPACE_PROVIDER_PLUGIN
+#error "FUSE_TEST_MIXED_MEMSPACE_PROVIDER_PLUGIN (the built mixed_memspace_provider shared object path) must be defined"
+#endif
+#ifndef FUSE_TEST_MIXED_MEMSPACE_PROVIDER_PLUGIN_NO_DEVICE_CAP
+#error "FUSE_TEST_MIXED_MEMSPACE_PROVIDER_PLUGIN_NO_DEVICE_CAP must be defined"
+#endif
+#ifndef FUSE_TEST_MIXED_MEMSPACE_PROVIDER_PLUGIN_HOST_ONLY_FIELDS
+#error "FUSE_TEST_MIXED_MEMSPACE_PROVIDER_PLUGIN_HOST_ONLY_FIELDS must be defined"
+#endif
 
 namespace {
 
@@ -212,6 +224,60 @@ class DownstreamSink final : public fuse::Component {
  private:
   fuse::SerialMeshBackend backend_;
   std::vector<double>     storage_;
+};
+
+// KNOWN_ISSUES.md D15 item 1 ("Provider parity" track, Stage B-2, Option
+// A): DownstreamSink above binds EVERY field of its own hardcoded
+// "downstream" component to the SAME single storage_ buffer -- correct
+// for a component with exactly one field, wrong for "sink" in
+// build_mixed_memspace_graph() (two independently-bound fields, "host_in"
+// and "device_in", which must never alias the same memory or one
+// channel's delivery would silently stomp the other's). This class binds
+// each field BY NAME into its own buffer instead, the same by-name
+// dispatch AffineComponent (test/abi/plugins/affine_provider.c's own
+// C++ twin) already uses for "a_out"/"a_in".
+class MixedMemspaceSink final : public fuse::Component {
+ public:
+  [[nodiscard]] std::string name() const override { return "sink"; }
+
+  fuse::Result<void> register_fields(fuse::FieldRegistry& registry,
+                                     const fuse::CouplingGraph& graph) override {
+    const auto cid = graph.find_component("sink");
+    if (!cid.has_value()) return fuse::Failure{"E-TEST", "no 'sink' component"};
+    for (const fuse::FieldId f : graph.component(*cid).fields) {
+      const std::string& fname = graph.field(f).name;
+      std::vector<double>* storage = nullptr;
+      if (fname == "host_in") {
+        storage = &host_storage_;
+      } else if (fname == "device_in") {
+        storage = &device_storage_;
+      } else {
+        continue;
+      }
+      const fuse::Result<std::size_t> count = region_entity_count(graph, f, backend_);
+      if (!count.ok()) return fuse::Result<void>{count.error()};
+      storage->assign(count.value(), -1.0);
+      auto r = registry.bind(
+          f, fuse::FieldRef{storage->data(), fuse::Layout{.stride = 1, .count = count.value()},
+                            fuse::MemorySpace::Host});
+      if (!r.ok()) return r;
+    }
+    return fuse::Result<void>::success();
+  }
+
+  fuse::Result<void> advance(const fuse::StepContext&) override {
+    host_history.push_back(host_storage_.empty() ? -1.0 : host_storage_.front());
+    device_history.push_back(device_storage_.empty() ? -1.0 : device_storage_.front());
+    return fuse::Result<void>::success();
+  }
+
+  std::vector<double> host_history;
+  std::vector<double> device_history;
+
+ private:
+  fuse::SerialMeshBackend backend_;
+  std::vector<double>     host_storage_;
+  std::vector<double>     device_storage_;
 };
 
 // "Provider parity" track (KNOWN_ISSUES.md D15), Stage B-1, item 2: the
@@ -1296,5 +1362,197 @@ TEST(ConformanceTest, PluginBackedComponentInAnIterationRegionConvergesLikeAllNa
     EXPECT_EQ(b_in_i, ref_b_in[i]) << "b_in[" << i << "]";
   }
 
+  EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
+}
+
+// ---- KNOWN_ISSUES.md D15 item 1 ("Provider parity" track, Stage B-2,
+// Option A): the device-fields capability gate, the host-only-build
+// refusal, and the mixed host/device registration path.
+// -------------------------------------------------------------------------
+
+TEST(ConformanceTest, PluginDeviceFieldWithoutCapabilityIsRefused) {
+  const fuse::CouplingGraph g =
+      fuse::abi_test::build_mixed_memspace_graph(FUSE_TEST_MIXED_MEMSPACE_PROVIDER_PLUGIN_NO_DEVICE_CAP);
+  const auto bytes = fuse::serialize(g);
+
+  const auto* t = Table();
+  ASSERT_NE(t, nullptr);
+  fuse_context_out co{sizeof(co)};
+  ASSERT_EQ(t->create(nullptr, nullptr, &co), FUSE_OK);
+  fuse_ctx* ctx = co.ctx;
+  fuse_graph_source src{sizeof(src)};
+  src.bytes = bytes.data();
+  src.byte_count = bytes.size();
+  ASSERT_EQ(t->load_graph(ctx, &src, nullptr), FUSE_OK);
+
+  ASSERT_TRUE(fuse::abi_test::inject_component(ctx, "sink", std::make_unique<MixedMemspaceSink>()));
+
+  const fuse_status rc = t->initialize(ctx, nullptr, nullptr);
+  EXPECT_EQ(rc, FUSE_ERR_RUNTIME);
+  fuse_error err{sizeof(err)};
+  ASSERT_EQ(t->last_error(ctx, nullptr, &err), FUSE_OK);
+  EXPECT_STREQ(err.code, "E-ABI-PROVIDER-DEVICE-UNDECLARED");
+  EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
+}
+
+TEST(ConformanceTest, PluginDeviceCapabilityWithNoDeviceFieldIsAccepted) {
+  // The opposite direction the owner's own task names explicitly: a
+  // provider may set FUSE_CAP_DEVICE_FIELDS while no field it actually
+  // declares asks for FUSE_MEMSPACE_DEVICE -- unremarkable, since a
+  // provider is always free to offer more than any one graph uses. A
+  // SEPARATE, smaller graph (one field, not build_mixed_memspace_graph's
+  // own two), because the host-only-fields plugin variant's own
+  // describe() reports just "host_out" -- pointing it at the two-field
+  // fixture would hit E-ABI-DESCRIBE ("the graph declares field
+  // 'device_out' but describe() does not report it"), a DIFFERENT
+  // refusal than the one this test is about.
+  fuse::CouplingGraph g;
+  const auto m1 = g.add_mesh(fuse::MeshDecl{.name = "m1", .source = "generated:line:1"});
+  const auto m2 = g.add_mesh(fuse::MeshDecl{.name = "m2", .source = "generated:line:1"});
+  const auto r1 = g.add_region(fuse::Region{.name = "r1", .mesh = m1, .dimension = 1});
+  const auto r2 = g.add_region(fuse::Region{.name = "r2", .mesh = m2, .dimension = 1});
+  const auto mixed = g.add_component(fuse::ComponentDecl{
+      .name = "mixed", .ranks = fuse::RankSet{0, 1}, .interval = fuse::Rational{1},
+      .launch = fuse::LaunchSpec{
+          .mode = fuse::LaunchMode::Plugin,
+          .plugin_path = FUSE_TEST_MIXED_MEMSPACE_PROVIDER_PLUGIN_HOST_ONLY_FIELDS}});
+  const auto sink = g.add_component(fuse::ComponentDecl{
+      .name = "sink", .ranks = fuse::RankSet{0, 1}, .interval = fuse::Rational{1}});
+  const auto host_out = g.add_field(
+      mixed, fuse::FieldSpec{.name = "host_out", .region = r1, .components = 1,
+                             .units = fuse::units::kKelvin,
+                             .conservation = fuse::Conservation::None,
+                             .intent = fuse::Intent::Provides});
+  const auto host_in = g.add_field(
+      sink, fuse::FieldSpec{.name = "host_in", .region = r2, .components = 1,
+                            .units = fuse::units::kKelvin,
+                            .conservation = fuse::Conservation::None,
+                            .intent = fuse::Intent::Requires});
+  const auto ch = g.add_channel("host_link", host_out, host_in);
+  g.channel(ch).remap(fuse::RemapFlags::Conservative);
+  const auto bytes = fuse::serialize(g);
+
+  const auto* t = Table();
+  ASSERT_NE(t, nullptr);
+  fuse_context_out co{sizeof(co)};
+  ASSERT_EQ(t->create(nullptr, nullptr, &co), FUSE_OK);
+  fuse_ctx* ctx = co.ctx;
+  fuse_graph_source src{sizeof(src)};
+  src.bytes = bytes.data();
+  src.byte_count = bytes.size();
+  ASSERT_EQ(t->load_graph(ctx, &src, nullptr), FUSE_OK);
+
+  ASSERT_TRUE(fuse::abi_test::inject_component(ctx, "sink", std::make_unique<MixedMemspaceSink>()));
+
+  const fuse_status init_rc = t->initialize(ctx, nullptr, nullptr);
+  if (init_rc != FUSE_OK) {
+    fuse_error err{sizeof(err)};
+    char buf[512] = {0};
+    err.buffer = buf;
+    err.capacity = sizeof(buf);
+    (void)t->last_error(ctx, nullptr, &err);
+    FAIL() << "fuse_initialize: " << buf;
+  }
+  fuse_run_request rr{sizeof(rr)};
+  rr.periods = 1;
+  EXPECT_EQ(t->run(ctx, &rr, nullptr), FUSE_OK);
+  EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
+}
+
+TEST(ConformanceTest, PluginDeviceFieldOnAHostOnlyBuildIsRefused) {
+  // The owner's own explicit instruction, which this track's own Stage A
+  // report did NOT originally recommend (corrected here, not silently
+  // reversed -- see docs/dev/abi-design.md's own device-fields
+  // subsection): a build with no real device backend must refuse a
+  // FUSE_MEMSPACE_DEVICE request by name, never silently hand back host-
+  // addressable memory under the device label. This sandbox has no
+  // CUDA/HIP/SYCL compiled into Kokkos, so the CORRECT plugin variant
+  // (capabilities() sets FUSE_CAP_DEVICE_FIELDS correctly, describe()
+  // asks for FUSE_MEMSPACE_DEVICE on "device_out") is refused here too --
+  // on a real device build this SAME graph and plugin is exactly
+  // DISABLED_MixedHostAndDeviceFieldsOnOneProviderConvergeThroughChannels,
+  // below.
+#if defined(KOKKOS_ENABLE_CUDA) || defined(KOKKOS_ENABLE_HIP) || defined(KOKKOS_ENABLE_SYCL)
+  GTEST_SKIP() << "this build has a real device backend; the host-only "
+                  "refusal this test checks for does not apply here -- see "
+                  "DISABLED_MixedHostAndDeviceFieldsOnOneProviderConvergeThroughChannels "
+                  "instead";
+#else
+  const fuse::CouplingGraph g =
+      fuse::abi_test::build_mixed_memspace_graph(FUSE_TEST_MIXED_MEMSPACE_PROVIDER_PLUGIN);
+  const auto bytes = fuse::serialize(g);
+
+  const auto* t = Table();
+  ASSERT_NE(t, nullptr);
+  fuse_context_out co{sizeof(co)};
+  ASSERT_EQ(t->create(nullptr, nullptr, &co), FUSE_OK);
+  fuse_ctx* ctx = co.ctx;
+  fuse_graph_source src{sizeof(src)};
+  src.bytes = bytes.data();
+  src.byte_count = bytes.size();
+  ASSERT_EQ(t->load_graph(ctx, &src, nullptr), FUSE_OK);
+
+  ASSERT_TRUE(fuse::abi_test::inject_component(ctx, "sink", std::make_unique<MixedMemspaceSink>()));
+
+  const fuse_status rc = t->initialize(ctx, nullptr, nullptr);
+  EXPECT_EQ(rc, FUSE_ERR_RUNTIME);
+  fuse_error err{sizeof(err)};
+  ASSERT_EQ(t->last_error(ctx, nullptr, &err), FUSE_OK);
+  EXPECT_STREQ(err.code, "E-ABI-PROVIDER-NO-DEVICE");
+  EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
+#endif
+}
+
+// DISABLED_ (gtest's own "registered but does not run" convention, the
+// owner's own explicit instruction for this row): the TRUE positive
+// mixed host/device path -- both "host_out" and "device_out" bound,
+// bind()'s own fuse_field_view.memspace genuinely reporting
+// FUSE_MEMSPACE_DEVICE, advance() writing through a device pointer, the
+// post-advance Kokkos::fence(), and both channels delivering to "sink" --
+// needs a build with a real device backend (CUDA/HIP/SYCL) to mean
+// anything: on THIS sandbox Kokkos::DefaultExecutionSpace::memory_space
+// equals Kokkos::HostSpace, so "device_out" is refused outright by
+// PluginDeviceFieldOnAHostOnlyBuildIsRefused above before this test's own
+// body could ever run. See host_pending for the exact command to run
+// this on the owner's own CUDA build (ssh:higgs).
+TEST(ConformanceTest, DISABLED_MixedHostAndDeviceFieldsOnOneProviderConvergeThroughChannels) {
+  const fuse::CouplingGraph g =
+      fuse::abi_test::build_mixed_memspace_graph(FUSE_TEST_MIXED_MEMSPACE_PROVIDER_PLUGIN);
+  const auto bytes = fuse::serialize(g);
+
+  const auto* t = Table();
+  ASSERT_NE(t, nullptr);
+  fuse_context_out co{sizeof(co)};
+  ASSERT_EQ(t->create(nullptr, nullptr, &co), FUSE_OK);
+  fuse_ctx* ctx = co.ctx;
+  fuse_graph_source src{sizeof(src)};
+  src.bytes = bytes.data();
+  src.byte_count = bytes.size();
+  ASSERT_EQ(t->load_graph(ctx, &src, nullptr), FUSE_OK);
+
+  auto sink = std::make_unique<MixedMemspaceSink>();
+  MixedMemspaceSink* sink_raw = sink.get();
+  ASSERT_TRUE(fuse::abi_test::inject_component(ctx, "sink", std::move(sink)));
+
+  const fuse_status init_rc = t->initialize(ctx, nullptr, nullptr);
+  if (init_rc != FUSE_OK) {
+    fuse_error err{sizeof(err)};
+    char buf[512] = {0};
+    err.buffer = buf;
+    err.capacity = sizeof(buf);
+    (void)t->last_error(ctx, nullptr, &err);
+    FAIL() << "fuse_initialize: " << buf;
+  }
+  fuse_run_request rr{sizeof(rr)};
+  rr.periods = 3;
+  ASSERT_EQ(t->run(ctx, &rr, nullptr), FUSE_OK);
+  // DownstreamSink's own advance() records only ITS OWN "sink" field's
+  // history (one field today -- see this file's own DownstreamSink
+  // class); a real device build's own version of this test would need
+  // two sink fields (host_in, device_in) to assert both independently.
+  // Not built further here: the point of registering this row is the
+  // graph and plugin shape, not a finished assertion this sandbox could
+  // ever execute to find out whether it needs adjusting.
+  (void)sink_raw;
   EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
 }

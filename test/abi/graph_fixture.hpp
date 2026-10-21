@@ -302,4 +302,59 @@ namespace fuse::abi_test {
       reorder_channels_so_beta_is_first_in_plan_order));
 }
 
+/// KNOWN_ISSUES.md D15 item 1 ("Provider parity" track, Stage B-2, Option
+/// A): "mixed" is a LaunchMode::Plugin component (`mixed_plugin_path`,
+/// test/abi/plugins/mixed_memspace_provider.c) with TWO Provides fields
+/// on ONE instance -- "host_out" (FUSE_MEMSPACE_HOST) and "device_out"
+/// (FUSE_MEMSPACE_DEVICE) -- each fed through its own one-way channel to
+/// a native "sink" component's own two Requires fields, "host_in" and
+/// "device_in". No iteration region, no lag: a one-way channel already
+/// delivers a period's export to that SAME period's import once both
+/// components have taken their step (this file's own header comment, the
+/// SAME reasoning build_two_component_lag1_graph's own sibling fixtures
+/// rely on), which is all this fixture needs to prove the mixed
+/// host/device registration survives an ordinary channel transfer, not
+/// only a direct FieldRegistry read.
+[[nodiscard]] inline fuse::CouplingGraph build_mixed_memspace_graph(
+    const char* mixed_plugin_path, int cells = 1) {
+  fuse::CouplingGraph g;
+  const auto m1 = g.add_mesh(
+      fuse::MeshDecl{.name = "m1", .source = "generated:line:" + std::to_string(cells)});
+  const auto m2 = g.add_mesh(
+      fuse::MeshDecl{.name = "m2", .source = "generated:line:" + std::to_string(cells)});
+  const auto r1 = g.add_region(fuse::Region{.name = "r1", .mesh = m1, .dimension = 1});
+  const auto r2 = g.add_region(fuse::Region{.name = "r2", .mesh = m2, .dimension = 1});
+  const auto mixed = g.add_component(fuse::ComponentDecl{
+      .name = "mixed", .ranks = fuse::RankSet{0, 1}, .interval = fuse::Rational{1},
+      .launch = fuse::LaunchSpec{.mode = fuse::LaunchMode::Plugin,
+                                 .plugin_path = mixed_plugin_path}});
+  const auto sink = g.add_component(fuse::ComponentDecl{
+      .name = "sink", .ranks = fuse::RankSet{0, 1}, .interval = fuse::Rational{1}});
+  const auto host_out = g.add_field(
+      mixed, fuse::FieldSpec{.name = "host_out", .region = r1, .components = 1,
+                             .units = fuse::units::kKelvin,
+                             .conservation = fuse::Conservation::None,
+                             .intent = fuse::Intent::Provides});
+  const auto device_out = g.add_field(
+      mixed, fuse::FieldSpec{.name = "device_out", .region = r1, .components = 1,
+                             .units = fuse::units::kKelvin,
+                             .conservation = fuse::Conservation::None,
+                             .intent = fuse::Intent::Provides});
+  const auto host_in = g.add_field(
+      sink, fuse::FieldSpec{.name = "host_in", .region = r2, .components = 1,
+                            .units = fuse::units::kKelvin,
+                            .conservation = fuse::Conservation::None,
+                            .intent = fuse::Intent::Requires});
+  const auto device_in = g.add_field(
+      sink, fuse::FieldSpec{.name = "device_in", .region = r2, .components = 1,
+                            .units = fuse::units::kKelvin,
+                            .conservation = fuse::Conservation::None,
+                            .intent = fuse::Intent::Requires});
+  const auto host_link = g.add_channel("host_link", host_out, host_in);
+  g.channel(host_link).remap(fuse::RemapFlags::Conservative);
+  const auto device_link = g.add_channel("device_link", device_out, device_in);
+  g.channel(device_link).remap(fuse::RemapFlags::Conservative);
+  return g;
+}
+
 }  // namespace fuse::abi_test
