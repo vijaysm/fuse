@@ -2277,3 +2277,110 @@ registry, the eager refusal, the YAML key, and the communicator decision
 are all exactly as Sections 11.1-11.3 describe; this section adds
 coverage of a case those sections' own tests did not build, not a new
 mechanism.
+
+## 14. A real PETSc-object LinearizationToken: single-variable reaction-diffusion (S7.4 retitled, owner decision 2026-10-21)
+
+**What S7.4 used to name, and what this section closes instead.** The parent plan's own S7.4
+("The first implicit participant: KARMA's PETSc-backed native component (today unregistered)")
+asked for KARMA's FEM component to be wired into the S7 Newton seam. A read-first design pass
+(this track's own Stage A, not reproduced here) found that KARMA's own field-commit hazard the
+plan's parenthetical names is already narrowed in KARMA's current code (`KARMAField::commit_
+petsc_values` routes through `PetscVectorStorage`, which REFUSES rather than races on an
+off-process index), and that FEM elements/quadrature/assembly/DOF-maps are plan Section 8's own
+S8.1 scope, not S7's. The owner's decision (2026-10-21): retitle S7.4 to the smaller, concrete
+thing below -- a real PETSc `Mat`/`Vec`-backed `fuse::LinearizationToken` (never `MATMFFD`),
+paired with a native-substrate implementation of the SAME physics, demonstrating the seam's
+PETSc-object path end to end without importing a FEM mesh kit. KARMA's FEM import stays S8.1,
+untouched by this section.
+
+### 14.1 The problem, and the two substrates
+
+`examples/petsc_reaction_diffusion/`: a single-variable nonlinear reaction-diffusion equation,
+`u_t = D u_xx - k u^3 + f(x,t)`, on a 1-D domain split at one interface into two half-domains,
+Dirichlet-Neumann coupled exactly as `dn_heat`'s own `DirichletSlab`/`NeumannSlab` pair (this file's
+own Sec. 1-9) -- generalised from dn_heat's quasi-steady, closed-form, affine slab to a genuinely
+time-dependent, discretised (`m` interior backward-Euler grid points per half), NONLINEAR one.
+`DirichletHalf` (always native, plain arrays, a hand-rolled Thomas-algorithm Newton solve) is the
+"existing native `ImplicitComponent`" half of the pair. `NeumannHalfNative`/`NeumannHalfPetsc`
+implement the SAME physics on the OTHER half, one per substrate: the native twin (Thomas algorithm)
+and the PETSc one (a real `Vec`/`Mat`/`KSP` Newton solve, `MatCreateAIJ` with this half's own
+tridiagonal nonzero count, `KSPPREONLY`+`PCLU` direct factorisation). Both the native-twin region
+(`DirichletHalf` + `NeumannHalfNative`) and the mixed region (`DirichletHalf` + `NeumannHalfPetsc`)
+run through the SAME native `fuse::num::solve()` outer Newton-Krylov driver this file's own Sec. 6-9
+already describe -- `NewtonConfig::substrate` (Sec. 11) is NOT used by this track at all, because the
+PETSc-ness here is a COMPONENT-level implementation choice (which concrete class a region
+instantiates), never a region-level "which solver drives the outer loop" choice. This is a
+deliberate correction of an earlier, wrong assumption this track's own design notes recorded before
+writing any component code (design_notes.md Section 3).
+
+### 14.2 The outer `LinearizationToken`: `dG/d(interface datum)` by implicit differentiation
+
+Each half's own residual, given the OTHER half's interface datum, is the solution of an `m`-point
+backward-Euler Newton system; the OUTER sensitivity `linearization()` returns
+(`dG_Left/du_interface`, `dG_Right/dq_interface`) is obtained by implicit differentiation of that
+converged inner solve: ONE more linear solve, `J v = b`, against the SAME (already factored) inner
+Jacobian `J`, `b` the one nonzero partial derivative of the inner residual with respect to the
+received datum. This is exact, not a finite difference, and costs one more Thomas-algorithm/`KSPSolve`
+call the last Newton step already paid the factorisation for. `DirichletHalf`/`NeumannHalfNative`'s
+own token wraps this scalar directly (`rows() == cols() == 1`: one shared interface, no lateral
+station parallelism, dn_heat's own per-station convention collapsed to one station);
+`NeumannHalfPetsc`'s own token reuses `fuse::petsc::make_assembled_token()` (Sec. 10.1) verbatim on a
+freshly built 1x1 triplet list -- the smallest-footprint reuse of an already-reviewed library
+primitive for exactly this shape, rather than hand-rolling a second `Mat`. MEASURED (a throwaway
+Python/C++ prototype of this exact discretisation, design_notes.md Section 5): the analytic
+sensitivity agrees with a central finite difference of the composed solve to 9+ significant digits,
+PROVIDED the ghost boundary value's own self-dependence is correctly folded into the inner Jacobian's
+row-0 diagonal -- a bug the prototype caught (the first draft used the generic interior-row diagonal
+unconditionally, which left the inner Newton solve converging only linearly, not quadratically, and
+the implicit-differentiation sensitivity off by about 0.4%) before any component code existed.
+`test/linalg/reaction_diffusion_derivative_gate_test.cpp`'s own
+`UncorrectedGhostJacobianMeasuresOrderOneNotTwo` reproduces this exact historical bug as a permanent
+regression control.
+
+### 14.3 A second numerical finding, independent of the first: `NewtonConfig::eta_min`
+
+Running the native-twin region end to end (no PETSc) the FIRST time produced `DivergedLinearSolve`
+after exactly one accepted Newton step, with `residual_history = [4.02e-2, 5.96e-8, 5.96e-8]` --
+the step had ALREADY driven `||F||` to the matrix-free Jacobian action's own noise floor, but the
+region's `Converged::Relative` criterion (measuring the NAMED FIELD's own relative change between
+sweeps, not `||F||` itself) could not be satisfied by the FIRST sweep alone (the field starts at its
+default 0.0, so sweep 0 -> sweep 1 is a 100% relative change by construction), forcing a second
+sweep whose own linear solve then had nothing left to resolve past round-off -- precisely the
+`forcing.eta_min` gap Sec. 9.9.2 already measured and fixed for the Brusselator's own window
+(`eta_min = 1e-4`, two orders of headroom above the noise floor that measurement found, EVERY window
+tried). `examples/petsc_reaction_diffusion/main.cpp` reuses that SAME value, for the SAME reason,
+verbatim -- not a new tolerance invented for this track; with it, the native-twin region converges in
+3 Newton iterations per period (matching the prototype's own measured count, design_notes.md Section
+6), for every one of the 20 periods run.
+
+### 14.4 What is measured in this sandbox, and what is host-pending
+
+This sandbox builds `FUSE_ENABLE_PETSC=ON` tier-0 trees cleanly (PETSc 3.25.99 via `pkg-config`,
+`/opt/petsc/download-moab`) and links every `petsc.*` target, including this track's own new ones,
+with zero compiler errors -- the FIRST CHECK this track's own task brief required before writing any
+component code. Running a PETSc-initialised binary SEGFAULTS the instant `PetscInitialize()` calls
+`MPI_Init()` (KNOWN_ISSUES.md D32's own already-documented, already-measured constraint, reproduced
+directly by this track before design began: `fuse_petsc_init_test` run standalone, no `mpiexec`,
+aborts with MPICH's `dbginit.c` assertion). `NeumannHalfPetsc`'s own constructor calls `fuse::petsc::
+ensure_initialized()`, so EVERY path through it carries this SAME, pre-existing barrier -- not a new
+one. `example.petsc_reaction_diffusion` (the native-twin run, no PETSc) is MEASURED in this sandbox:
+20 periods, `t_final = 0.2`, max|error| against the manufactured solution 7.31e-2 (Left) / 5.34e-2
+(Right) / 1.18e-1 (interface), against a derived bound of 2.37e-1 (2x the largest measured figure).
+`example.petsc_reaction_diffusion.petsc` and `petsc.reaction_diffusion` (the structural PETSc-object
+test) are BUILT and ctest-REGISTERED here, never RUN here -- a host run (mirroring how D32's own
+`petsc.window_newton_mpi.{2,3}` and every other `petsc.*` row were measured) is what would show the
+native-vs-PETSc-substrate agreement this track's own `main.cpp` checks against a derived bound
+(`kSubstrateAgreementBound = 100 * 1e-8`, the Newton `rtol` default times a conditioning headroom of
+100 -- both substrates solve the IDENTICAL discrete system by a DIRECT linear solve, so the only
+disagreement possible is round-off, the same reasoning D32 Sec. "Measured on the host 2026-10-11"
+used for dn_heat/Brusselator's own native-vs-petsc comparison).
+
+### 14.5 What this section does not change
+
+`fuse::petsc::MffdToken`/`make_assembled_token`/`solve()` (Sec. 10), the per-region substrate
+registry and communicator decision (Sec. 11), `NewtonNorm`/`NewtonResidualPath` (Sec. 12), and the
+two-substrates-one-graph test (Sec. 13) are all unchanged -- this section adds a NEW consumer of
+`make_assembled_token()` and a NEW, independently-discovered `eta_min` finding for a DIFFERENT
+problem (reaction-diffusion, not dn_heat's affine map or the Brusselator's window), not a new
+mechanism in `fuse::petsc` or `fuse::num` itself. `kGraphVersion` stays at 14: this track's own
+`NewtonConfig` usage sets no field beyond what Sec. 12.4's own descriptor already carries.

@@ -7557,6 +7557,26 @@ residual histories `5.680512e+01 4.311954e+00 1.765836e-02 1.484199e-09` (native
 sharp_bound=5.888415e-07 K ratio=6.067182e-04`, exit 0. The per-region substrate selection is
 host-verified; this entry's remaining item is the communicator statement in its heading, unchanged.
 
+**Addendum 2026-10-21 (S7.4 retitled, Option C track):** this track's own FIRST CHECK (before writing
+a line of `examples/petsc_reaction_diffusion/`) reproduced this entry's own "sandbox cannot complete a
+bare `MPI_Init()`" constraint directly, one more time, against the CURRENT `ensure_initialized()`
+(`src/petsc/init.cpp`, unchanged by this track): a plain `fuse_petsc_init_test` run, no `mpiexec`,
+SEGFAULTs identically (MPICH's `dbginit.c` mutex assertion), confirming this entry's own standing
+account is still accurate and this track adds no new sandbox limitation. One STALE sub-claim found
+and worth flagging for a separate correction: `build-evidence/mutations/petsc.toml`'s own header
+disclosure says every `petsc.*` test binary "fails cleanly with `PETSC_ERR_SUP` (56)" at
+`ensure_initialized()` -- that described the FIRST DRAFT of that function (which set
+`PETSC_COMM_WORLD` before `PetscInitialize` even without MPI up); `init.cpp`'s own comment records
+that draft was superseded THE SAME DAY (2026-10-11) by the current one, which deliberately lets
+`PetscInitialize()` call `MPI_Init()` itself -- so every `petsc.*` binary SEGFAULTs today, the same way
+a bare `MPI_Init()` does, not the clean `PETSC_ERR_SUP` `petsc.toml`'s own header still describes. The
+OUTCOME (every `petsc.*` row is host-pending, build-only here) is unchanged either way; only
+`petsc.toml`'s own prose about the FAILURE MODE is stale. Not corrected in this track (out of this
+track's own scope: it did not touch `petsc.toml`), named here so the next track that opens
+`petsc.toml` does not re-derive it. New, real PETSc-object consumer added by this track:
+`fuse::petsc::make_assembled_token()` (Sec. 10.1) reused for a 1x1 region-level sensitivity token;
+see `docs/dev/newton-krylov.md` sec. 14 and `docs/user/petsc-reaction-diffusion.md` for the rest.
+
 ### ~~D48. A `Transport` instruction can have one arc device-resident and the other host, even in Device mode — FOUND AND FIXED 2026-10-13
 
 **What was found.** docs/dev/device-resident-arcs.md Phase 3 made `Transport` space-aware in
