@@ -1,0 +1,67 @@
+# Mutation evidence for S7.4 (owner decision 2026-10-21, Option C): the
+# PETSc-object-backed reaction-diffusion component
+# (examples/petsc_reaction_diffusion/).
+#
+# HONEST DISCLOSURE, read before the rows below -- the SAME sandbox
+# limitation build-evidence/mutations/petsc.toml's own header already
+# documents, reproduced directly by THIS track before writing a line of
+# reaction_diffusion_component_petsc.hpp (design_notes.md Section 1): this
+# sandbox's /opt/mpich cannot complete a bare MPI_Init() (MPICH's
+# debugger-attach mutex assertion in dbginit.c), and
+# fuse::petsc::ensure_initialized() (src/petsc/init.cpp, as of commit
+# 70b3d16) deliberately lets MPI_Init() run rather than skip it -- so
+# EVERY path through reaction_diffusion_component_petsc.hpp fails in this
+# sandbox before reaching any code a mutation row below touches. The
+# failure's exact signature (a signal versus an MPICH assertion abort) was
+# reported inconsistently by the track and was not re-measured by the lead. The two PETSc-specific
+# rows below are therefore ARGUED BY CODE INSPECTION ONLY, exactly
+# petsc.toml's own convention for the identical reason, not a new gap this
+# track introduces. The THIRD row (transpose action, on the NATIVE
+# DirichletHalf::Token -- reaction_diffusion_component.hpp, no PETSc
+# involved) IS hand-proved, in this sandbox, this session: see its own
+# `result` field.
+
+[[mutation]]
+id = "reaction-diffusion-native-token-transpose-sign-flipped"
+area = "petsc-reaction-diffusion"
+describes = "DirichletHalf::Token::apply_jacobian_transpose returns -slope_*x[0] instead of slope_*x[0] -- a 1x1 operator's transpose must equal itself (apply_jacobian and apply_jacobian_transpose must agree), so this is the smallest possible transpose-direction bug for a region whose LinearizationToken is 1x1."
+file = "examples/petsc_reaction_diffusion/reaction_diffusion_component.hpp"
+old = "      y[0] = slope_ * x[0];  // 1x1: transpose is itself"
+new = "      y[0] = -slope_ * x[0];  // MUTATION: sign flipped, not kept"
+target = "fuse_runtime_petsc_reaction_diffusion_component_test"
+test = "runtime.petsc_reaction_diffusion_component"
+result = "Hand-proved this session (sandbox tier-0, no PETSc, no MPI needed -- DirichletHalf is native-only): under the mutation, PetscReactionDiffusionComponent.DirichletHalfTokenApplyJacobianMatchesSensitivity FAILED (apply_jacobian/apply_jacobian_transpose disagreed, EXPECT_DOUBLE_EQ fired), 4/5 PASSED; clean tree 5/5. File restored byte-identically (md5 5c83c9c28062ceb3696781cdfee30ceb before and after)."
+
+[[mutation]]
+id = "reaction-diffusion-petsc-ownership-local-write-replaced-by-global-setvalues"
+area = "petsc-reaction-diffusion"
+describes = "right_newton_solve_petsc's own residual assembly (VecGetArray into this rank's OWNED portion only) replaced by a global-index VecSetValues call -- on a communicator with more than one rank, VecSetValues with a GLOBAL row index not owned by the calling rank either refuses (PETSC_ERR_ARG_OUTOFRANGE, with -vecscatter_alltoall-style checking on) or silently routes the write to whichever rank DOES own that index, overwriting a value the owning rank itself is concurrently computing -- the exact off-process-write hazard this track's own header comment (reaction_diffusion_component_petsc.hpp) and the owner's own Stage B correction (src/petsc/token.cpp:340's MatSetValues, into a SEQUENTIAL MatCreateSeqAIJ, cannot do this) both name."
+file = "examples/petsc_reaction_diffusion/reaction_diffusion_component_petsc.hpp"
+old = """    ierr = VecGetArray(r_vec, &rarr);
+    if (auto r = check_petsc(ierr, "VecGetArray(r)"); !r.ok()) { cleanup(); return r.error(); }
+    for (PetscInt i = 0; i < m; ++i) rarr[i] = -rj.R[static_cast<std::size_t>(i)];
+    VecRestoreArray(r_vec, &rarr);"""
+new = """    for (PetscInt i = 0; i < m; ++i) {
+      PetscScalar val = -rj.R[static_cast<std::size_t>(i)];
+      VecSetValues(r_vec, 1, &i, &val, INSERT_VALUES);  // MUTATION: global-index write, not kept
+    }
+    VecAssemblyBegin(r_vec);
+    VecAssemblyEnd(r_vec);"""
+target = "fuse_petsc_reaction_diffusion_test"
+test = "petsc.reaction_diffusion"
+requires = "no-mpi"
+result = "ARGUED BY CODE INSPECTION ONLY (this sandbox cannot run ANY petsc.* row -- NeumannHalfPetsc's own constructor calls ensure_initialized(), which segfaults on MPI_Init() before this line is ever reached, the SAME barrier petsc.toml's own header documents for every row there). On a single-rank communicator (this component's own region, per D31's single-rank-per-participant restriction) VecSetValues with a LOCAL-and-global-identical index would not visibly misbehave either -- the mutation's hazard is specifically the multi-rank case this track's own header comment names as the reason the real code never does this; a host run with FUSE_ENABLE_MPI and more than one rank per participant (not possible under D31's current restriction for this track's own single-participant-per-rank region) would be needed to exercise the differential this row describes for real."
+
+[[mutation]]
+id = "reaction-diffusion-petsc-assembly-no-zero-before-reassembly"
+area = "petsc-reaction-diffusion"
+describes = "right_newton_solve_petsc's own per-Newton-iteration MatZeroEntries(J) call (before the fresh MatSetValues/ADD_VALUES pass) removed -- the SAME convention src/petsc/token.cpp's own make_assembled_token relies on ADD_VALUES for a ONE-TIME assembly, reused here for a MATRIX THAT IS REASSEMBLED EVERY NEWTON ITERATION: without zeroing first, iteration k's own entries accumulate ON TOP of iteration k-1's (ADD_VALUES, not INSERT_VALUES), so the Jacobian used for the linear solve is wrong from the SECOND Newton iteration onward -- the Newton step itself would still run (no PETSc error), just converge to the wrong answer or fail to converge at all."
+file = "examples/petsc_reaction_diffusion/reaction_diffusion_component_petsc.hpp"
+old = """    MatZeroEntries(J);
+    for (PetscInt i = 0; i < m; ++i) {"""
+new = """    // MatZeroEntries(J);  -- MUTATION: removed, not kept
+    for (PetscInt i = 0; i < m; ++i) {"""
+target = "fuse_example_petsc_reaction_diffusion"
+test = "example.petsc_reaction_diffusion.petsc"
+requires = "no-mpi"
+result = "ARGUED BY CODE INSPECTION ONLY, the SAME sandbox barrier as the row above (NeumannHalfPetsc's own constructor segfaults before any Newton iteration runs, here or on the host-pending example.petsc_reaction_diffusion.petsc row). Argued to be caught by that row's own native-vs-petsc agreement check (main.cpp's kSubstrateAgreementBound): the SECOND Newton iteration's accumulated-not-reset Jacobian would either fail KSPSolve outright (a non-diagonally-dominant or singular accumulated matrix) or converge the inner Newton loop to a point that does not satisfy the TRUE residual, producing a profile that disagrees with the native (Thomas-algorithm) twin by vastly more than the derived round-off-scale bound -- a host run is what would measure the actual defect."
