@@ -212,6 +212,8 @@ module ffuse
     integer(c_int32_t) :: components = 0_c_int32_t
     integer(c_int32_t) :: intent = 0_c_int32_t
     integer(c_int32_t) :: element_type = 0_c_int32_t
+    integer(c_int32_t) :: memspace = 0_c_int32_t
+    integer(c_int32_t) :: reserved = 0_c_int32_t
   end type fuse_field_spec
 
   type, bind(C), public :: fuse_field_table
