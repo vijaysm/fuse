@@ -34,6 +34,8 @@ typedef struct fuse_provider_abi_v1 {
   fuse_status (*save_state)(fuse_provider_ctx* self, const fuse_null* in, fuse_null* out);
   fuse_status (*restore_state)(fuse_provider_ctx* self, const fuse_null* in, fuse_null* out);
   fuse_status (*capabilities)(fuse_provider_ctx* self, const fuse_null* in, fuse_capability_set* out);
+  fuse_status (*save_restart_blob)(fuse_provider_ctx* self, const fuse_null* in, fuse_restart_blob_sink* out);
+  fuse_status (*load_restart_blob)(fuse_provider_ctx* self, const fuse_restart_blob_source* in, fuse_null* out);
 } fuse_provider_abi_v1;
 ```
 
@@ -42,6 +44,13 @@ ONE RULE, same as the participant table, with `self` (your own opaque instance, 
 output) taking the `ctx` slot. `self` is a *different* C type from the participant direction's
 `fuse_ctx*`, so the two tables' handles cannot be passed to each other by accident even though both
 are plain pointers.
+
+The last two entries, `save_restart_blob`/`load_restart_blob` (appended per this table's own
+append-only rule, never inserted earlier), are the provider-direction counterpart of restart-to-disk
+Option B (`docs/dev/restart.md`) -- an opaque, versioned byte record for whatever `save_state()`'s
+in-memory rollback cannot reach. A provider that does not implement them reports `written = 0` and
+`blob_version = 0` from `save_restart_blob()`, which the caller treats as "nothing to capture", not
+as an error, exactly as the C++ `Component::save_restart_blob()` default already does.
 
 **The struct catalogue is shared.** `fuse_field_view` (what `bind()` hands you — a pointer, element
 type, and layout, identical to what `register_field` takes on the participant side) and the window
@@ -53,6 +62,16 @@ FUSE calls your table in this order, once per instance: `create()`, then `descri
 field count with `out->buffer = NULL`, then fill it), then `bind()` once per field `describe()`
 reported, then `advance()` repeatedly (and `save_state()`/`restore_state()` if your component is
 inside an iteration region), then `destroy()`.
+
+**`bind()`'s own call order, for a plugin with more than one field, follows the GRAPH's declared
+field order for your component (the order its `add_field()` calls were made in), not the order
+your own `describe()` rows happen to list them in.** `describe()`'s rows are matched against the
+graph by NAME, never by position, so they may list fields in any order you like; `bind()` is
+called once per field in the order the GRAPH declares them, and `fuse_field_view` carries no field
+name for you to tell them apart at that point. A plugin with only one field (`test/abi/plugins/
+linear_provider.c`) never has to care; a plugin with more than one does
+(`test/abi/plugins/affine_provider.c`'s own header comment measures this against
+`src/abi/provider_adapter.cpp`'s `register_fields()`).
 
 ## Writing a plugin in C
 
@@ -218,9 +237,26 @@ substituted.
 
 ## Open questions
 
-Device fields (`FUSE_MEMSPACE_DEVICE`), checkpoint/restore through an iteration region driven by a
-mix of native and plugin components, and a plugin launched on a *subset* of a component's ranks
-are not yet exercised by any test.
+**Device fields (`FUSE_MEMSPACE_DEVICE`).** Not yet exercised by any test, and not yet a design
+decision: `register_field`'s own `FUSE_MEMSPACE_DEVICE` refusal (`E-ABI-REGISTER-MEMSPACE`) has no
+provider-direction counterpart, `ProviderAdapter` only ever allocates host storage, and `describe()`'s
+own `fuse_field_spec` has no `memspace` field for a plugin to report one through even if it wanted to
+(KNOWN_ISSUES.md D15, item 1).
+
+**Checkpoint/restore through an iteration region mixing native and plugin components** is now
+tested: `ConformanceTest.PluginBackedComponentInAnIterationRegionConvergesLikeAllNative`
+(`test/abi/conformance_test.cpp`) puts a plugin-backed component (`test/abi/plugins/
+affine_provider.c`) inside an `IterationRegionDecl` alongside a native one and confirms the sweep
+converges to bit-identical values, in the same number of sweeps, as an all-native reference -- and
+that the runtime's own byte-level rollback verification (`RunStats::checkpoint_verifications`) ran
+against the plugin's own registered storage, not merely that `fuse_run()` returned `FUSE_OK`.
+
+**A plugin launched on a *subset* of a component's ranks** is tested (KNOWN_ISSUES.md D15, item 3,
+closed 2026-10-19 across rounds 3-5 and confirmed on an MPI host); a SEPARATE question is still
+open, not about test coverage but about design: `fuse::abi_detail::Registry::mount_dynamic()` loads
+a `LaunchMode::Plugin` component's shared object on EVERY rank of the process set, whether or not
+that rank hosts the component, and whether mounting it only on hosting ranks is worth the added
+coupling to the graph's own placement model remains undecided.
 
 ## A note on exported symbols
 

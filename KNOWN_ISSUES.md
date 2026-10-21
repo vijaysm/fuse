@@ -3312,7 +3312,7 @@ rendezvous still runs only on a rank whose own first HDF5 call loads the plugin,
 touches HDF5 never reaches it — moving the rendezvous into an explicit step every participant calls
 (`connect()`'s MPMD choreography is the natural site) is the larger fix, left open here.
 
-### D15. The provider direction (S6 phase 4, "Adapter host" track) is implemented and conformance-tested on one process; device fields and mixed checkpoint/restore still are not -- a plugin on a rank subset is tested, FIXED 2026-10-19 across three rounds (3, 4, 5) for three independent bugs the 2-, then 3-rank host rows exposed one at a time; awaiting the host re-run at 3 ranks
+### D15. The provider direction (S6 phase 4, "Adapter host" track) is implemented and conformance-tested on one process; device fields still are not -- mixed checkpoint/restore and a plugin on a rank subset are now both tested, FIXED 2026-10-19 (rank subset, three rounds) and 2026-10-21 (mixed checkpoint/restore, Stage B-1)
 
 **What is done, measured 2026-10-02.** `include/fuse/abi/provider.h` (generated from a second
 `entries.def` entry list, `FUSE_ABI_PROVIDER_ENTRY`, sharing the participant direction's own
@@ -3343,12 +3343,13 @@ this ordering at all).
 - **Device fields.** `register_field`'s own `FUSE_MEMSPACE_DEVICE` refusal
   (`E-ABI-REGISTER-MEMSPACE`) has a provider-direction counterpart nowhere in this track:
   `ProviderAdapter` only ever allocates host storage, and a plugin that wanted a device pointer
-  would have no way to ask for one.
-- **Checkpoint/restore through an iteration region mixing native and plugin components.**
-  `ProviderAdapter::save_state()`/`restore_state()` forward to the plugin's own entries when
-  present, but no test puts a plugin-backed component inside an `IterationRegionDecl` alongside a
-  native one and checks the sweep converges identically to an all-native run — the conformance
-  harness's two fixtures are both non-iterated.
+  would have no way to ask for one. Still open (Stage A's own design report, three options, not
+  yet decided by the owner).
+- ~~Checkpoint/restore through an iteration region mixing native and plugin components~~ --
+  CLOSED 2026-10-21 (Stage B-1, below): `ConformanceTest.
+  PluginBackedComponentInAnIterationRegionConvergesLikeAllNative` puts a plugin-backed component
+  inside an `IterationRegionDecl` alongside a native one and confirms the sweep converges
+  identically to an all-native reference.
 - **A plugin launched on a subset of a component's ranks**, or the interaction between
   `LaunchMode::Plugin` and `LaunchMode::Mpmd`/`Connect` on different components of the same
   multi-rank graph, is untested: every fixture here runs single-process, and
@@ -3672,6 +3673,41 @@ beam acceleration.
 
 
 **Host run of round 5 (lead, 2026-10-19):** `parallel.provider_subset_mpi.{2,3}` PASS (0.86 s, 0.09 s). D15's three test-side defects are closed on the host; the mount-everywhere design question stays open.
+
+**Built 2026-10-21 ("Provider parity" track, Stage B-1): item 2 closed, item 1 still open pending a
+design decision.** The owner reviewed this entry's own design report (three options for item 1, not
+built) and decided "implement them all" -- but this round builds item 2 only; item 1 (device fields)
+stays completely unbuilt, awaiting the owner's choice among the design report's options A/B/C.
+`test/abi/plugins/affine_provider.c` (new): a faithful C reimplementation of
+`test/abi/participant_test.cpp`'s own `AffineComponent` (same coefficients, same real
+malloc()'d save_state()/restore_state() snapshot round trip, not `linear_provider.c`'s stateless
+single-field no-op), with its own `fuse_test_provider_affine` CMake target mirroring
+`linear_provider`'s. `test/abi/graph_fixture.hpp`'s new `build_implicit_coupling_graph_with_plugin_
+beta()` is `build_implicit_coupling_graph()`'s own shape unchanged, except "beta" is declared
+`LaunchMode::Plugin` instead of native. `ConformanceTest.
+PluginBackedComponentInAnIterationRegionConvergesLikeAllNative` (`test/abi/conformance_test.cpp`)
+mounts "beta" as that plugin (auto-mounted at `fuse_initialize()`, the same mechanism
+`GraphDeclaredPluginIsAutoMountedAndRun` already exercises) alongside "alpha" native and
+test-injected, and confirms EXACT equality (`EXPECT_EQ`, not a tolerance) of the converged `a_out`/
+`a_in`/`b_out`/`b_in` values AND the measured sweep count against an all-native reference, plus
+`RunStats::checkpoint_verifications > 0` -- the runtime's own existing rollback-verification
+machinery (`src/runtime/iteration.cpp`'s "THE RUNTIME VERIFIES THE ROLLBACK RATHER THAN TRUSTING
+IT") needed no new assertion machinery to prove this; only the fixture, the plugin, and the test
+were new. Two findings surfaced building this: (a) `ProviderAdapter::register_fields()`
+(`src/abi/provider_adapter.cpp`) calls a plugin's `bind()` once per field in the GRAPH's own
+declared field order, not `describe()`'s row order -- undocumented in `entries.def` or
+`docs/user/providers.md`, and invisible until a plugin had more than one field (`linear_provider.c`
+never did); (b) a provider's `capabilities()` must set `FUSE_CAP_CHECKPOINT` or
+`fuse_initialize()` refuses outright with `E-ITER-NOROLLBACK` before any sweep runs, confirming
+`src/abi/provider_adapter.cpp`'s own mapping from that bit to `fuse::kCapabilityRollback`. Mutation
+rows in `build-evidence/mutations/abi-provider.toml`: `affine-provider-restore-state-no-copy-back`
+and `affine-provider-advance-wrong-sign` both KILLED (confirmed by hand); `affine-provider-save-
+state-no-copy` SURVIVED and is left as an honestly-reported gap, NOT declared equivalent -- traced
+to a coincidence specific to this fixture (the one checkpoint for this period lands while `b_out` is
+genuinely still zero, and this platform's fresh `malloc()` happens to also read back zero), not a
+structural guarantee that no test could ever catch it. Tier 0 fully covers item 2: no host-only
+(MPI) part remains for it, unlike item 3's own rank-count row above. `docs/user/providers.md`'s own
+"Open questions" section is updated to match; item 1 (device fields) is unchanged and still open.
 ### ~~D16. A window member's cold-start priming over-read a smaller provider buffer — FIXED 2026-10-03
 
 Found by ASan on a two-member window-scoped region whose members export fields of different
