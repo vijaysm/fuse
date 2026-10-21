@@ -39,6 +39,7 @@ set(FUSE_SLOW_TESTS
   example.brusselator.newton                           #   12.7 s
   verification.brusselator_runner                      #   10.4 s
   verification.gray_scott_multirate                    #   10.0 s
+  verification.brusselator_restart                     #   over the 10 s tier-0 threshold once the D17/D76 windows 3 and 6 row was added (tools/check-test-cost.py; duration recorded by the clean-export run, KNOWN_ISSUES.md D76 Round 5)
 )
 
 # Appends the label to each listed row that exists in the CURRENT directory:

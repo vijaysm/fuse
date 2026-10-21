@@ -461,6 +461,13 @@ endforeach()
 # Clang toolchain need no separate -lpthread for <thread>.
 fuse_add_gtest(num line_search)
 fuse_add_gtest(num newton_krylov LIBS fuse::linalg)
+# Window seed track, Stage E (KNOWN_ISSUES.md D76): dense Anderson
+# Type-II reference, checked against QuasiNewtonAccel's own IQN_ILS
+# path. Needs Eigen directly (ColPivHouseholderQR/JacobiSVD), same
+# precedent as the petsc/brusselator_newton test above.
+if(FUSE_LINALG_BACKEND_IS_EIGEN)
+  fuse_add_gtest(num anderson_reference LIBS fuse::linalg Eigen3::Eigen)
+endif()
 
 # ---------------------------------------------------------------- petsc
 # S7's Newton seam, second substrate (PetscToken track, 2026-10-11). Every
