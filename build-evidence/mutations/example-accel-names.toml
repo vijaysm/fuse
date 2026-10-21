@@ -1,0 +1,63 @@
+# Mutations for the examples' shared `--accel` name table
+# (examples/common/accel_names.hpp), written 2026-10-20. The `result` lines
+# are added after tools/mutate.py has run these rows in a clean export.
+
+[[mutation]]
+id = "accel-names-unknown-falls-back-to-none"
+area = "example-accel-names"
+describes = "an unrecognised name returns AccelKind::None instead of std::nullopt -- the exact behaviour examples/brusselator had, where a misspelled --accel ran with no acceleration without a word"
+file = "examples/common/accel_names.hpp"
+old = """  if (s == "iqn-imvj") return fuse::AccelKind::IQN_IMVJ;
+  return std::nullopt;"""
+new = """  if (s == "iqn-imvj") return fuse::AccelKind::IQN_IMVJ;
+  return fuse::AccelKind::None;  // MUTATION: unknown name silently becomes None"""
+target = "fuse_verification_accel_names_test"
+test = "verification.accel_names"
+result = "KILLED by tools/mutate.py --area example-accel-names on a tier-0 tree exported from the working files (2026-10-21): 5 killed, 0 declared equivalent, 0 not assessed, 0 without a baseline, 0 not killed, of 5; verification.accel_names fails."
+
+[[mutation]]
+id = "accel-names-unknown-falls-back-to-aitken"
+area = "example-accel-names"
+describes = "an unrecognised name returns AccelKind::Aitken -- the behaviour examples/gray_scott had"
+file = "examples/common/accel_names.hpp"
+old = """  if (s == "iqn-imvj") return fuse::AccelKind::IQN_IMVJ;
+  return std::nullopt;"""
+new = """  if (s == "iqn-imvj") return fuse::AccelKind::IQN_IMVJ;
+  return fuse::AccelKind::Aitken;  // MUTATION: unknown name silently becomes Aitken"""
+target = "fuse_verification_accel_names_test"
+test = "verification.accel_names"
+result = "KILLED by tools/mutate.py --area example-accel-names on a tier-0 tree exported from the working files (2026-10-21): 5 killed, 0 declared equivalent, 0 not assessed, 0 without a baseline, 0 not killed, of 5; verification.accel_names fails."
+
+[[mutation]]
+id = "accel-names-steffensen-selects-secant"
+area = "example-accel-names"
+describes = "a name selects a different method than it names (steffensen maps to Secant): a transposition the printed usage line would not reveal"
+file = "examples/common/accel_names.hpp"
+old = """  if (s == "steffensen") return fuse::AccelKind::Steffensen;"""
+new = """  if (s == "steffensen") return fuse::AccelKind::Secant;  // MUTATION: wrong kind"""
+target = "fuse_verification_accel_names_test"
+test = "verification.accel_names"
+result = "KILLED by tools/mutate.py --area example-accel-names on a tier-0 tree exported from the working files (2026-10-21): 5 killed, 0 declared equivalent, 0 not assessed, 0 without a baseline, 0 not killed, of 5; verification.accel_names fails."
+
+[[mutation]]
+id = "accel-names-iqn-alias-dropped"
+area = "example-accel-names"
+describes = "the `iqn` alias the examples already accepted stops working, which breaks every command line and doc that uses it"
+file = "examples/common/accel_names.hpp"
+old = """  if (s == "iqn-ils" || s == "iqn") return fuse::AccelKind::IQN_ILS;"""
+new = """  if (s == "iqn-ils") return fuse::AccelKind::IQN_ILS;  // MUTATION: alias dropped"""
+target = "fuse_verification_accel_names_test"
+test = "verification.accel_names"
+result = "KILLED by tools/mutate.py --area example-accel-names on a tier-0 tree exported from the working files (2026-10-21): 5 killed, 0 declared equivalent, 0 not assessed, 0 without a baseline, 0 not killed, of 5; verification.accel_names fails."
+
+[[mutation]]
+id = "accel-names-printed-list-hides-a-name"
+area = "example-accel-names"
+describes = "the usage list stops printing a name the table accepts, so a user is never told iqn-imvj exists"
+file = "examples/common/accel_names.hpp"
+old = """    "none|constant|aitken|secant|steffensen|iqn-ils|iqn-imvj";"""
+new = """    "none|constant|aitken|secant|steffensen|iqn-ils";  // MUTATION: iqn-imvj not printed"""
+target = "fuse_verification_accel_names_test"
+test = "verification.accel_names"
+result = "KILLED by tools/mutate.py --area example-accel-names on a tier-0 tree exported from the working files (2026-10-21): 5 killed, 0 declared equivalent, 0 not assessed, 0 without a baseline, 0 not killed, of 5; verification.accel_names fails."
+

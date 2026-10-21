@@ -1615,6 +1615,13 @@ fuse_add_device_twin(verification.nodal_remap_runner_serial fuse_verification_no
 # whose own INTERFACE link carries Eigen3::Eigen (examples/CMakeLists.txt) --
 # the whole section is gated on the eigen backend as one block.
 if(FUSE_LINALG_BACKEND_IS_EIGEN)
+  # The examples' shared `--accel` name table (examples/common/accel_names.hpp):
+  # a name outside the table is refused, never mapped to a default. Gated with
+  # this section only because fuse::examples_common carries Eigen3::Eigen; the
+  # header itself needs no Eigen.
+  fuse_add_gtest(verification accel_names NO_LAYER_LIB
+                 LIBS fuse::model fuse::examples_common)
+
   # FSI channel (FSI track): fsi_stokes_mms and fsi_beam exercise the two
   # standalone solvers (examples/fsi_channel/{stokes,beam}_solver.hpp) with no
   # FUSE graph involved; fsi_coupled and fsi_transient drive the real two-
