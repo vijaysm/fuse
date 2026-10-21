@@ -12025,3 +12025,74 @@ output.
 ctest --test-dir <build-dir> -R '^backend.supermesh$' --repeat until-fail:200 --output-on-failure
 ctest --test-dir <build-dir> -R '^model.bfloat16$' --repeat until-fail:200 --output-on-failure
 ```
+
+
+### D85. `example.dn_heat` (and its `.dump`/`.omp_identical` rows) livelock under `ctest -j`: the Runner's host kernels are fork/join-bound and libgomp's join barrier spins -- MITIGATED 2026-10-21 (the rows run `RUN_SERIAL`); the cause is not fixed
+
+**Reported** (Ubuntu 24.04, GCC 13, 4 cores, Debug, Kokkos 5.1.0 OpenMP+Serial,
+`FUSE_LINALG_BACKEND=builtin`): one `fuse_example_dn_heat` alone passes in 2.9 s; three started at once
+did not finish in 120 s with every CPU at 100% user time; the same three under `OMP_WAIT_POLICY=passive`
+passed in 44 s; `ctest -j4 -LE bench` timed out `example.dn_heat` and `example.dn_heat.dump` at 1500 s
+and took 1480 s for `example.dn_heat.omp_identical` (13.9 s in `cmake/FuseSlowTests.cmake`). CI runs
+ctest serially and never sees it.
+
+**There is no busy-wait between dn_heat's two components.** Both run on the main thread: the
+`Runner::Impl::run_region()` / `Runner::Impl::advance()` frames in `src/runtime/iteration.cpp` and
+`src/runtime/runner.cpp` are coroutine frames that hand control to each other, and `src/runtime/` has
+no `std::thread`, no atomic flag and no poll loop. Five `gdb` stack samples of one of three concurrent
+copies, taken 20 s in, all show the same picture: the main thread inside libgomp's end-of-region barrier
+under `Kokkos::parallel_for` for a `fuse::num` kernel from `Runner::Impl::execute_on<Kokkos::OpenMP>()`
+(`fuse::copy` twice, `fuse::residual` twice, `fuse::deterministic_norm_squared_diff` once), and the other
+three threads inside libgomp's worker wait. The spinning is libgomp's, not fuse's.
+
+**Why it is so severe for this example.** dn_heat's slabs are a few dozen cells and its iteration
+does almost nothing per region but launch `include/fuse/num/space_kernels.hpp` kernels on them. A
+Kokkos tools hook counting `kokkosp_begin_parallel_for` measured **403,430 parallel regions in one
+dn_heat run** (2.2 s at 4 threads, about 5 us per region; 8.4 s user time, i.e. all four threads busy;
+1.4 s at `OMP_NUM_THREADS=1`) and 900 in one mms_pair run. libgomp's default wait policy spins at the
+join barrier before sleeping, which is the right trade only while every team member owns a core. When
+anything else is runnable, one member is descheduled, the other three spin through their own slices
+waiting for it, and each of the 403,430 joins costs on the order of a scheduler timeslice instead of
+microseconds (the reported 1480 s `.omp_identical` row is about 3.7 ms per join). Measured on a 4-core sandbox (Kokkos 5.1.0 OpenMP+Serial, Debug, builtin):
+
+| run | wall |
+|---|---|
+| `fuse_example_dn_heat` alone | 2.2 s |
+| alone, `OMP_WAIT_POLICY=passive` | 24.5 s |
+| alone, next to ONE `while :; do :; done` | 23.3 s |
+| three copies at once | none finished in 150 s |
+| `fuse_example_mms_pair` alone / three at once | 0.01 s / 9.8 s |
+| `ctest -j4 -L example`, before | `dn_heat`, `dn_heat.dump` Timeout at 300 s; `dn_heat.omp_identical` 285 s; `mms_pair` 18 s |
+| `ctest -j4 -L example`, after | all six pass, 6.7 s total (`dn_heat` 2.16 s) |
+
+So `OMP_WAIT_POLICY=passive` is not a fix: it removes the spin but makes every one of the 403,430
+joins a futex wake, ten times slower alone. And `PROCESSORS` is not enough: one single-threaded
+neighbour costs 10x, so a `-j` above the core count, or any other row on any core, still lands on a
+core the team needs.
+
+**Mitigation, `examples/CMakeLists.txt`.** `example.mms_pair`, `example.dn_heat`, their `.dump` rows,
+`example.dn_heat.newton_petsc` and both `.omp_identical` rows carry `RUN_SERIAL TRUE`, each guarded by
+`if(TEST ...)` because the PETSc and OpenMP rows exist only in some configurations. ctest then starts
+each one with nothing else running and the rows take their serial time; the cost is about 7 s of
+otherwise-parallel wall time.
+
+**Not fixed, and why.** The cause is a Runner that dispatches every elementwise op of a tiny graph as
+its own host parallel region. Running small extents inline (a size threshold in
+`Runner::Impl::execute_on<HostExecSpace>()`) would make dn_heat faster everywhere and immune to this,
+but it would also make `example.dn_heat.omp_identical` compare a serial loop with itself at both
+thread counts, which is exactly the vacuous coverage D11 was closed to remove. That trade is a design
+decision, not a test fix. Other OpenMP rows (`*.omp<N>` legs, the Gray-Scott/Brusselator/FSI
+examples) share the mechanism but launch far fewer, larger regions; none timed out in the report, and
+they are not marked.
+
+**Reproducing.** In this sandbox an installed Kokkos registered NO `omp` row at all:
+`FUSE_KOKKOS_HAS_OPENMP` (`test/CMakeLists.txt`) reads `Kokkos_ENABLE_OPENMP` / `Kokkos_DEVICES`, and
+`fuse_require()` (`cmake/FuseDependencies.cmake`) is a function, so the `Kokkos_DEVICES` an installed
+Kokkos's `KokkosConfigCommon.cmake` sets stays inside it. A fetched Kokkos sets `Kokkos_ENABLE_OPENMP`
+as a cache option and does not hit this. Pass `-DKokkos_ENABLE_OPENMP=ON` to see the `.omp_identical`
+rows with an installed Kokkos.
+
+```sh
+ctest --test-dir <build-dir> -j4 -L example --timeout 300
+for i in 1 2 3; do timeout 150 <build-dir>/examples/fuse_example_dn_heat > /dev/null & done; wait
+```

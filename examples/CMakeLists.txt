@@ -104,6 +104,28 @@ if(FUSE_ENABLE_TESTS)
       set_tests_properties(example.${ex}.omp_identical PROPERTIES LABELS "example;omp")
     endforeach()
   endif()
+
+  # KNOWN_ISSUES.md D85: these rows run alone under `ctest -j`. Each one is
+  # a Runner driving Kokkos::OpenMP kernels on arrays of a few dozen
+  # entries at every core -- 403,430 parallel regions in one dn_heat run,
+  # about 5 us each -- so its wall time is libgomp's fork/join barrier, and
+  # that barrier spins. One other busy process on the machine is enough to
+  # deschedule a team member and turn every join into a scheduler
+  # timeslice: dn_heat went from 2.2 s to 23.3 s next to ONE busy loop on a
+  # 4-core host, and three copies at once did not finish in 150 s.
+  # PROCESSORS cannot express this (a -j above the core count, or any
+  # single-threaded neighbour, still lands on a core the team needs), and
+  # OMP_WAIT_POLICY=passive is no fix (dn_heat alone: 2.2 s -> 24.5 s).
+  # if(TEST): .newton_petsc and the .omp_identical rows exist only in some
+  # configurations.
+  foreach(_fuse_serial_row example.mms_pair example.dn_heat
+          example.mms_pair.dump example.dn_heat.dump
+          example.dn_heat.newton_petsc
+          example.mms_pair.omp_identical example.dn_heat.omp_identical)
+    if(TEST ${_fuse_serial_row})
+      set_tests_properties(${_fuse_serial_row} PROPERTIES RUN_SERIAL TRUE)
+    endif()
+  endforeach()
 endif()
 
 # ---------------------------------------------------------------------------
