@@ -435,9 +435,12 @@ cmake --preset tier0-release && cmake --build --preset tier0-release
 Outputs `u.csv`, `v.csv` (final fields, `time,x,y,value`, the Toy's own format) and
 `diagnostics.txt` (parameters and the measured residuals above, in the Toy's own key names) under
 `--out`. `--save-history` additionally writes `windows.csv` (`t0,t1,mean_u,mean_v,iterations` per
-window). `--accel none|aitken|iqn-ils|newton` selects `fuse::WindowCouplerConfig::acceleration` (the Toy is
-unrelaxed Picard, its only option); `newton` is `--driver runner`-only (see "Newton acceleration"
-above). `--iteration-mode jacobi|gauss-seidel`, `--no-block-jacobi` (the per-species
+window). `--accel none|constant|aitken|secant|steffensen|iqn-ils|iqn-imvj|newton` selects
+`fuse::WindowCouplerConfig::acceleration` (the Toy is unrelaxed Picard, its only option); `iqn` is an
+alias of `iqn-ils`. An unknown name is refused with `E-EXAMPLE-ACCEL` before any setup (until
+2026-10-20 it silently ran with no acceleration). `newton` is `--driver runner`-only (see "Newton
+acceleration" above). `constant`, `secant`, `steffensen` and `iqn-imvj` use the library's default
+settings for that kind and are exposed for use, not tuned on this problem. `--iteration-mode jacobi|gauss-seidel`, `--no-block-jacobi` (the per-species
 block-Jacobi preconditioner, default ON) and `--substrate native|petsc` (see "The PETSc
 substrate" above) apply under any `--accel` value, read only when `newton` is selected. `--driver window|runner`
 selects `fuse::WindowCoupler` (default) or `fuse::Runner` directly — both pass `--check`
