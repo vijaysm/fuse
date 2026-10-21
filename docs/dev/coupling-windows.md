@@ -147,6 +147,85 @@ straddles needs a joint replay over a consistent snapshot of every member,
 and supporting long Fixed steps needs a commit path that can record "no new
 data this window"; see `KNOWN_ISSUES.md` D7.
 
+## The window-to-window seed (KNOWN_ISSUES.md D17/D76, Window seed track)
+
+`WindowCoupler::sweep_window()` seeds `y_fed` (sweep 0's "what was fed") from
+`fuse::extrapolate_boundary_value()`: a polynomial fit of degree
+`min(max(order, 2), history.size()) - 1` through the last `max(order, 2)`
+converged window-end values, evaluated at the new window's own sample times.
+With a single history point (a member's first-ever window) this reduces to
+persistence (degree 0); from the second window on it is a genuine forward
+extrapolation. An earlier attempt to seed `y_fed` by shifting the previous
+window's own fine-grained waveform back one window length -- persistence,
+not extrapolation -- was measured and reverted on 2026-09-29: it needed MORE
+sweeps to converge (`gray_scott_multirate`'s pinned totals rose 9/13/12 ->
+12/16/15).
+
+The Runner compiles a window-scoped region's own window-to-window seed as
+TWO separate quantities, not one:
+
+1. `Runner::Impl::advance_window()`'s own import trajectory, for a lagged
+   member's substep computation this sweep (`src/runtime/iteration.cpp`,
+   the `use_predictor` branch) -- applies the SAME `extrapolate_boundary_
+   value()` predictor, over the consuming member's own
+   `WindowMemberState::history`, and is what `test/runtime/window_runner_
+   straddle_test.cpp`'s own bit-for-bit parity cases against `WindowCoupler`
+   check.
+2. `Runner::Impl::run_region()`'s own `R.x_old` pre-loop seed -- the ONLY
+   value the region's generic Picard/accelerator machinery (the residual
+   norm, `R.accel->update()`) ever sees as "the previous iterate". Before
+   2026-10-20 this was a raw read of the live, already-delivered buffer
+   for every window instance past a member's first-ever one: the SAME
+   zeroth-order/persistence predictor the paragraph above records
+   reverting for `y_fed`, left in place here by omission rather than by
+   design (D17/D76's own trace). `AccelKind::None`'s `update()` ignores
+   `x_old` entirely, so no test built against it could ever have noticed;
+   `AccelKind::Aitken`/`SteffensenAccel`/`QuasiNewtonAccel` all read
+   `x_old` directly (the relaxed output itself, and the residual
+   difference a history-dependent relaxation weight is computed from),
+   which is where D17/D76 measured the two drivers disagree, starting
+   exactly at the window-0/window-1 boundary. Fixed (2026-10-20) by
+   applying the identical predictor to `R.x_old`'s own seed, gated the
+   same way `advance_window()`'s own `use_predictor` branch is
+   (`cfg.import_lagged`), reusing the SAME `window_member_config`/
+   `window_member_state` lookup the pre-existing first-window bootstrap
+   already performed narrowly (`history.size() == 1` only). Verified
+   bit-for-bit against `y_fed`, element for element, for the two-member
+   `LinearOdeComponent` fixture `test/runtime/window_runner_straddle_
+   test.cpp` already uses, and against a new `AccelKind::Aitken` parity
+   case in that same file.
+
+**Fixed (KNOWN_ISSUES.md D17/D76 ROUND 5, 2026-10-20), after an open
+window through ROUND 2-4.** Applying the seed fix above to the
+Brusselator's own `examples/brusselator` configuration (Jacobi,
+`AccelKind::Aitken`, `max_iterations = 100`) made one window (window 3 of
+6, in `test/verification/brusselator_restart_test.cpp`'s own
+`SeparateLayoutJacobiAitken`/`GrowingLayoutJacobiAitken`) run the FULL
+100-sweep cap without converging, where it converged in 25 sweeps before
+the fix -- confirmed genuine non-convergence (not merely slower
+convergence) by raising the cap to 2000 sweeps and measuring the SAME
+window still exhaust it. `AccelKind::IQN_ILS` on the identical
+configuration showed no such regression. The mechanism, traced (ROUND 3):
+`AitkenAccel::update()` (`src/num/accel_relaxation.cpp`) accepted any
+finite, nonzero relaxation factor `omega`, including a negative one; at the
+Brusselator's own window 3, `omega` goes negative at sweep 3 and then
+random-walks toward zero, and the residual plateaus rather than
+contracting. A stationary scalar relaxation only contracts for `omega` in
+`(0, 2(1 - Re(lambda)) / |1 - lambda|^2)` -- never for a non-positive
+value -- which is this fix's RATIONALE, not a convergence proof for
+Aitken's own dynamic, history-dependent `omega` recursion. `AitkenAccel::
+update()` now rejects a non-positive candidate and restarts to `omega0_`
+(the configured initial relaxation) instead of accepting it; of three
+measured rejection strategies (ROUND 4: keep the last accepted positive
+value; this restart; a noise-perturbed restart), this is the only one that
+converges the Brusselator's own windows 3, 6 AND 9 without breaking the
+two bit-identical round-trip tests above, because it carries no
+epsilon-scaled threshold to be round-off-sensitive about. `--driver
+window --accel aitken` and `--driver runner`, same configuration, now both
+report `--check: OK` with identical `final_mean_u`/`final_mean_v` and no
+cap hit on either side -- see KNOWN_ISSUES.md D76 ROUND 5 FIX for the full
+measurement, the unit and integration tests, and the mutation.
+
 ## What is NOT built here
 
 - `Runner` resolving `WindowMember` fields from a `CouplingGraph`/

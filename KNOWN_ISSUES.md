@@ -3714,7 +3714,7 @@ identical 3x3x1 pair (exact identity matrix, `min_src_coverage=min_tgt_coverage=
 uniform-collapse finding's own root cause remains open.
 
 **Closed (record pass, 2026-10-20):** fixed 2026-10-03; the unrelated same-resolution finding in the last paragraph was never reproduced and has no entry.
-### D17. `--accel aitken` converges through `--driver runner` but not through `--driver window`, on the identical `AccelConfig` — OPEN, not pursued (Conformance Unit 2's own scope needs no accelerator)
+### ~~D17. `--accel aitken` converges through `--driver runner` but not through `--driver window`, on the identical `AccelConfig`~~ -- FIXED 2026-10-20 (Window seed track, Stage E; OPEN, not pursued, since 2026-10-15; root-caused by D76, below)
 
 Measured on the Brusselator example (`examples/brusselator/main.cpp`) at its own default
 parameters (`--dt-u 0.002 --dt-v 0.003 --window 0.02`, `A=3.4 B=1 alpha=10`):
@@ -3753,6 +3753,24 @@ history-dependent formula runs even once that window -- narrowing this from "not
 "root-caused to a specific window-boundary seed disagreement, mechanism not yet traced to a
 write site." D76 has the full measurement and the next trace this entry's own "not root-caused"
 note was asking for.
+
+**Fixed 2026-10-20 (Window seed track, Stage E; see D76 Round 4 FIX for the measurement and the
+landed change).** Both halves of this entry's own asymmetry are corrected: the Runner's `R.x_old`
+pre-loop seed now applies the same `extrapolate_boundary_value()` predictor `WindowCoupler`'s own
+`y_fed` always did (Stage B), and `AitkenAccel::update()` now rejects a non-positive omega
+candidate rather than accepting it (Stage E). `--driver window --accel aitken --end 0.5 --check`
+and `--driver runner --accel aitken --end 0.5 --check`, same config this entry opened with, now
+both report `--check: OK` with IDENTICAL `final_mean_u`/`final_mean_v` to the printed digits
+(`1.10791238505`/`2.31637697544`) and `max_iterations=33`, no cap hit on either side. The framing
+this entry and D76 Round 3 both carried -- that the Runner was the one converging correctly and
+the window driver the one failing -- had it backwards in the sense that matters for which
+behaviour was correct: the window driver ran `WindowCoupler::sweep_window()`'s own documented
+predictor the whole time, and it was the Runner's pre-fix seed that was non-conforming code
+reaching a passing number by an accidental, undocumented persistence read, not a deliberate
+zeroth-order choice. Fixing the Runner's seed to match the documented driver is what EXPOSED
+Aitken's own missing safeguard (D76 Round 3 item 4) as a second, independent defect; both are now
+fixed together, since the seed fix alone does not converge window 3 without it (D76 Round 3 item
+2, Round 4 below).
 
 
 ### ~~D20. `connect()` never released its base communicator, so an accept-mode run crashed in `MPI_Finalize`~~ — FIXED 2026-10-08, awaiting the host
@@ -10479,7 +10497,7 @@ a host row that cannot run in the sandbox must be run on the host BEFORE its cod
 delivered; slice 2's report said "built but not run", and all three defects sat behind that.
 
 
-### D76. D17's own Jacobi-plus-Aitken driver discrepancy traced to a seed disagreement at the SECOND window, not an accelerator instability -- OPEN, measured 2026-10-18 (Windows track)
+### ~~D76. D17's own Jacobi-plus-Aitken driver discrepancy traced to a seed disagreement at the SECOND window, not an accelerator instability~~ -- FIXED 2026-10-20 (Window seed track, Stage E; OPEN, measured 2026-10-18, Windows track)
 
 D17 (above) names `--accel aitken` converging through `--driver runner` but not `--driver
 window`, on the Brusselator's own default parameters. Measured this round, by a temporary
@@ -10573,6 +10591,103 @@ implementation (Stage E), not assumed. On this strongly contracting problem no a
 what a contraction factor below 0.05 predicts; the FSI channel is the opposite regime (see
 `docs/user/fsi-channel.md`: `iqn-imvj` 81 sweeps and `iqn-ils` 218 converge, `constant`, `steffensen` and `secant`
 do not). `--driver`, `--iteration-mode` and `--substrate` still fall back to a default on an unrecognised value.
+
+**Round 4 measurement (Window seed track, Stage D, 2026-10-20; sandbox tier 0, Stage B's seed fix
+applied, not yet landed).**
+1. Alignment vs. early-transient dependence, five configs (D17 itself; window 0.018; window
+   0.022; dt_u = dt_v = 0.002; dt_v = 0.0025), 124 windows total, step alignment tested by exact
+   rational `lcm(dt_u, dt_v)` arithmetic (`fractions.Fraction`), not float comparison: 94 of 124
+   windows are step-aligned, 14 hit the sweep cap, and every cap-hit is on an aligned window --
+   but 80 of the 94 aligned windows still converge normally. Alignment is NECESSARY for a cap hit
+   in this data but not SUFFICIENT; which aligned windows fail depends on the early-transient
+   state the seed carries in, not on alignment alone.
+2. Steffensen (`SteffensenAccel::update()`, same file) has no analogous gap: its own existing
+   per-component denominator guard (`kDenomRel = 1e-12`) visibly engages going from 0% to 53% of
+   components falling back exactly at the windows where Aitken stalls, and Steffensen converges
+   every window in this round's data. Aitken's defect (Round 3 item 4) is that it has no
+   comparable guard at all, not that the guard family is wrong.
+3. Three candidate rejection-fallbacks for a non-positive Aitken omega were measured against ALL
+   three failing windows (3, 6, 9) of D17 by a scratch env-switch inside `AitkenAccel::update()`,
+   not by argument: (i) keep the last accepted positive omega -- fixes 3 and 6, not 9; (ii) (i)
+   plus a machine-epsilon-scaled noise restart when the state has stalled -- fixes all three, but
+   breaks two existing bit-identical round-trip tests
+   (`WindowRunnerStraddle.SeparateLayoutJacobiAitken`/`GrowingLayoutJacobiAitken`) through its own
+   round-off sensitivity, so it does not land; (iii) restart unconditionally to `omega0` on any
+   non-positive candidate -- fixes all three windows including 9, and (Round 5, below) breaks
+   neither round-trip test, because it carries no epsilon threshold to be round-off-sensitive
+   about.
+
+**Round 5 FIX (Window seed track, Stage E, 2026-10-20; owner decision this date: "Implement them
+all" -- lands Stage B's seed fix together with an Aitken safeguard, against fresh HEAD
+`0b98420f6ea767f6336d1a67e491b3e575db8f05`).**
+1. `AitkenAccel::update()` now rejects a candidate omega that is non-positive (covers the
+   non-finite case already handled) and restarts to `omega0_` instead of accepting it -- Round 4's
+   measured variant (iii), the only one of the three that fixes window 9 without the round-off
+   regression variant (ii) introduces. The `(0, 2(1 - Re lambda) / |1 - lambda|^2)` bound Round 3
+   item 4 cites is this choice's RATIONALE (a stationary scalar relaxation must lie in that
+   interval to contract; a non-positive value never does), not a proof for Aitken's own dynamic,
+   history-dependent omega -- recorded as such in the landed comment, since the dynamic scheme's
+   own convergence is not established by the stationary bound alone.
+2. Unit test `Accelerator.AitkenRejectsANonPositiveCandidateAndRestartsToOmega0`
+   (`test/num/accelerator_test.cpp`) is a crafted, exact (zero-tolerance) two-sweep scalar sequence
+   whose second sweep produces a negative candidate (-0.5); RED under the unguarded formula
+   (predicted and confirmed: `x_out = 4.0`), GREEN under the guard (`x_out = 6.0`, restarting to
+   `omega0 = 0.5`). One pre-existing test in the same file
+   (`DivergenceFallsBackToTheUnderRelaxedStepWhenItSurvives`) relied on an upward 1-ulp
+   perturbation that produced a huge NEGATIVE candidate the new guard now correctly rejects before
+   it overflows; changed to a downward perturbation, which produces a huge POSITIVE candidate
+   (6.1e295) the guard accepts, still overflowing and still exercising the same fallback path it
+   was written to cover. Full suite: 55/55.
+3. Integration test `BrusselatorRestart.D17ConfigurationWindows3And6ConvergeUnderTheGuardedAitken`
+   (`test/verification/brusselator_restart_test.cpp`) runs the file's own existing
+   `make_setup`/`run_n_periods` fixture, whose `kDtU`/`kDtV`/`kWindow` already equal D17's own
+   configuration, through 7 periods (windows 0-6) and asserts every sweep count is under the
+   fixture's 100-iteration cap. 0.8 s on its own; the file's own ctest entry crossed 10 s with it
+   added (9.6 s without), so `verification.brusselator_restart` is now in
+   `cmake/FuseSlowTests.cmake` -- the new test is tier-0 speed by this round's own standard, the
+   file as a whole is not.
+4. Mutation `d76-aitken-reject-nonpositive-omega-removed`
+   (`build-evidence/mutations/window-seed.toml`) reverts the guard to the pre-fix formula: KILLED
+   (`tools/mutate.py --area "num/accel_relaxation (AitkenAccel::update(), reject-a-non-positive-
+   candidate guard)"`).
+5. Gauss-Seidel rows: `GaussSeidelAitkenConvergesAndMatchesJacobi` and
+   `GaussSeidelIqnIlsConvergesAndMatchesJacobi`'s own pinned `expected_gs_iterations` moved under
+   Stage B's seed fix alone (Aitken: `{7,8,9,9,9,9}` -> `{7,7,7,7,7,7}`; IQN-ILS: `{7,8,8,8,8,8}`
+   -> `{7,7,6,6,6,6}`); the Stage E safeguard changes neither row further (measured identical with
+   and without it). Every moved count DECREASED or held; the file's own separate `EXPECT_LE`
+   "never worse than Jacobi" bound and the `EXPECT_NEAR(1e-8)` U/V cross-checks hold unchanged
+   throughout. Re-pinned to the new counts with the measurement recorded in each test's own
+   comment, rather than left open, because every moved count is explained by the strictly better
+   seed Stage B's fix provides and nothing is left unaccounted for.
+6. `--driver window --accel aitken --end 0.5 --check` and `--driver runner`, same config,
+   D17/D76's own running example: both now report `--check: OK`,
+   `final_mean_u=1.10791238505`, `final_mean_v=2.31637697544`, `max_iterations=33`, no cap hit.
+7. IQN-ILS, IQN-IMVJ and Secant were measured on the same 25-window D17 run (sequential, forced
+   past a non-convergent window to see every window rather than stopping at the first) and show
+   ZERO cap hits across all 25 windows under their own library defaults, before any Aitken-
+   specific change -- Aitken is the one method in this family that needed a safeguard, not a
+   symptom common to the whole accelerator set.
+8. An independent Anderson Type II reference (least-squares QR on the secant-difference matrix,
+   no filter) was checked against the library's own `IQN_ILS(FilterKind::None, reuse=m)` two ways:
+   on a stated small nonlinear contraction (n=3) with `initial_relaxation` matched to 1.0 so the
+   bootstrap sweep is plain Picard on both sides, the two agree to within a conditioning-derived
+   backward-error bound (`max(n,k) * cond(V) * eps_machine`, no hand-picked constant) whenever the
+   secant window does not exceed the state dimension (window <= 3); once the window exceeds the
+   state dimension (window = 8, so `k > n` from sweep 4 on) the two diverge by up to ~9e8 times
+   that bound, narrowing to ~2.6x by sweep 12 but never vanishing -- NOT a disagreement about the
+   Anderson/IQN-ILS formula (confirmed identical and derivable from `accel_quasi_newton.cpp`'s own
+   header comment wherever the least-squares problem has a unique solution), but a property of any
+   QR solver once `V` is rank-deficient and the minimiser is non-unique; this library's own
+   rank-truncated, column-pivoted Householder QR and this reference's untruncated one are free to
+   -- and do -- pick different members of that solution set. On the REAL D17 window-3 map
+   (n=4352, reuse=8, so `k <= 8 << n` always) the two agree to within ~1e-14 at every sweep of the
+   real 14-sweep trajectory, consistent with the well-posed regime the synthetic problem
+   identifies and with finding 7's zero-cap-hit measurement. Landed as
+   `test/num/anderson_reference_test.cpp` with window = 3 (the largest window with a guaranteed-
+   unique minimiser for that problem), 0.035 s wall; the window > n finding is recorded in that
+   test's own comment, not asserted, since neither this reference nor the library's own header
+   comment defines a tie-break for the rank-deficient case precisely enough to pin one without
+   inventing it.
 ### ~~D77. The automatic remap halo (D73) is driven by a NEW free function the caller runs before `schedule()`, not by `Runner::initialize()`~~ -- CLOSED 2026-10-18: the build moved into `make_region_sizes()` (owner decision) 2026-10-18, owner decided (RemapHalo track)
 
 The owner's 2026-10-18 decision for D73 described the contract as "the Runner executes [`BuildRemapHalo`]
