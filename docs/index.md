@@ -37,6 +37,7 @@ user/field-pipeline
 user/examples
 user/mms-pair
 user/dn-heat
+user/petsc-reaction-diffusion
 user/restart
 user/convergence
 user/coupling-windows
