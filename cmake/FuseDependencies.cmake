@@ -565,7 +565,34 @@ macro(fuse_resolve_dependencies)
     endforeach()
   endif()
 
+  # A FETCHED Kokkos is built SHARED, like the installed one this policy
+  # expects. Kokkos is a process-wide runtime: libfuse-abi.so links it into
+  # itself and exports only fuse_coupler_abi, so with a STATIC libkokkoscore.a
+  # a participant executable that also links Kokkos::kokkos (examples/
+  # brusselator/participants/*_main) carries a SECOND, private copy.
+  # fuse_initialize() then initializes the library's copy and the executable's
+  # own Views hit the other: "Kokkos ERROR: View (label=\"native_mesh.
+  # vertex_coords\") is being constructed before initialize() has been called",
+  # every verification.brusselator.participants.mpmd.* row on a fetch build
+  # (KNOWN_ISSUES.md D85). Scoped to this one fetch, saved and restored like
+  # BUILD_TESTING in fuse_require(), so fmt/yaml-cpp/googletest and this
+  # project's own libraries keep their types. FUSE_FETCHED_KOKKOS_SHARED=OFF
+  # restores the static build.
+  option(FUSE_FETCHED_KOKKOS_SHARED "Build a fetched (FUSE_ALLOW_FETCH) Kokkos as shared libraries" ON)
+  set(_fuse_saved_build_shared_libs_defined FALSE)
+  if(DEFINED BUILD_SHARED_LIBS)
+    set(_fuse_saved_build_shared_libs_defined TRUE)
+    set(_fuse_saved_build_shared_libs "${BUILD_SHARED_LIBS}")
+  endif()
+  set(BUILD_SHARED_LIBS ${FUSE_FETCHED_KOKKOS_SHARED})
   fuse_require(Kokkos HINT "Kokkos is required at every tier; /opt/kokkos on this machine. If it was built with OpenMP and this fails on OpenMP_CXX, install libomp (brew install libomp) or pass -DOpenMP_ROOT.")
+  if(_fuse_saved_build_shared_libs_defined)
+    set(BUILD_SHARED_LIBS "${_fuse_saved_build_shared_libs}")
+  else()
+    unset(BUILD_SHARED_LIBS)
+  endif()
+  unset(_fuse_saved_build_shared_libs)
+  unset(_fuse_saved_build_shared_libs_defined)
   # ArborX's own CMakeLists calls find_package(Kokkos 4.5 REQUIRED CONFIG).
   # An installed Kokkos satisfies that the ordinary way; a FETCHED one does
   # not: its targets exist in this configure, but find_package searches the
