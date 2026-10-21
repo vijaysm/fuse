@@ -3778,6 +3778,68 @@ end to end on the owner's own CUDA/HIP/SYCL-enabled build:
 
 D15 stays OPEN (heading above) until that host run confirms the positive path; every refusal path is
 already tier-0 confirmed and does not depend on it.
+
+**Round 6 (this track, "Device layout", 2026-10-21): the host run happened (ssh:higgs, GTX 1050 Ti,
+sm_61, Kokkos 4.4.01 with KOKKOS_ENABLE_CUDA). Measured in two parts, with two different findings.**
+
+*Part 1, the existing DISABLED_ row, exactly as documented above.* The host-pending command above
+reproduces `E-RT-SPACE` verbatim ("field 'mixed.device_out' is registered in Device memory, but
+RunnerConfig::execution_space is Host"), confirming `RunnerConfig::execution_space` is left at its
+`Default` and nothing in `fuse_initialize()`'s own ABI path ever assigns it -- the one way a C ABI
+caller selects `Device` is the process-environment convention this tree already documents and uses
+throughout (`FUSE_EXECUTION_SPACE=device`, `RunnerConfig::resolved_execution_space()`,
+src/runtime/runner.cpp), not a struct field; no ABI growth is needed or was added. Setting
+`FUSE_EXECUTION_SPACE=device` and re-running the SAME binary does not reach a green result either: it
+SEGFAULTS (exit code 139; `dmesg`: "segfault ... in libfuse_test_provider_mixed_memspace.so"). Root
+cause, read directly from the plugin: `test/abi/plugins/mixed_memspace_provider.c`'s own `p_advance()`
+writes "device_out" with an ordinary C store (`*inst->device_ptr = t_end;`), valid only on the tier-0
+build this plugin was written for, where a "device" pointer is secretly host-dereferenceable
+(`Kokkos::DefaultExecutionSpace::memory_space == Kokkos::HostSpace`); on a real CUDA backend the SAME
+pointer is a genuine device address, and that plugin's own header comment already names the gap
+("this plugin's own advance() would need a device kernel launch to touch that pointer instead").
+This is a defect in the TEST FIXTURE, not in library code (`src/abi/provider_adapter.cpp`'s own two
+refusal gates and the Runner's E-RT-SPACE check both behaved exactly as designed) -- not changed here;
+see this round's own track report, open_questions.
+
+*Part 2, new tests (`test/abi/device_layout_test.cpp`, `test/abi/plugins/device_layout_provider.cpp`,
+a NEW C++ provider plugin that genuinely launches a Kokkos kernel instead of the raw store above).*
+`DeviceLayoutAndCopies.DeviceOutLayoutMatchesDerivedAoSAndEveryElementIsExact` writes an injective
+f(entity, component) through a 3-component device field using `fuse_field_view`'s own reported
+stride/component_stride, and asserts the exact value the Runner delivers at every (entity, component)
+pair after a device -> host channel copy; GREEN, with a hand-verified RED (an AoS/SoA index swap in
+the write kernel fails every off-diagonal (entity, component) pair, restored byte-identically).
+`DeviceLayoutAndCopies.HostDeviceHostRoundTripMatchesHostReferenceExactly` round-trips a
+host-registered field through a device-resident Requires field and back, bit-for-bit against an
+all-host reference build of the IDENTICAL plugin source (`FUSE_TEST_DEVICE_LAYOUT_FORCE_HOST`); GREEN,
+with a hand-verified RED (skip the `Kokkos::deep_copy` read of the device field, echo zero instead;
+restored byte-identically). `RunStats::device_boundary_copies` measured 4 per period (2 host-registered
+fields mirrored into device-space reads, 2 host-registered Sink deliveries), not the naively-derived 2
+-- `FUSE_DEVICE_DEBUG=1`'s own instruction trace shows a host-registered field is mirrored whenever a
+device-space instruction reads it, REGARDLESS of the channel's other endpoint's own memspace: a channel
+between two fields BOTH declared host-memory (`echo_out` -> `echo_in` here) still crosses twice once
+FUSE's own execution_space is Device, because the Remap/Diagnose instructions between them run in
+device space like everything else in that mode. docs/dev/device-resident-arcs.md's own boundary rule
+is confirmed correct; this track's own FIRST derivation of the count from the rule's prose alone,
+without the trace, was not.
+
+The two `requires = "device"` mutation rows (`provider-device-allocation-memspace-forced-host`,
+`provider-device-advance-fence-removed`, `build-evidence/mutations/abi-provider.toml`) are now
+assessable on this build (`build_has_device` is true) and BOTH report SURVIVED: `ctest -R
+'^abi\\.conformance$'`, the row's own designated test, never reaches either mutated line, because the
+only live path that reaches `wants_device == true` past both refusal gates on a device build is the
+DISABLED_ row, which plain `ctest` does not run and which (Part 1, above) cannot pass on this plugin
+regardless. Not declared EQUIVALENT (a surviving mutant without that declaration is a gap, not a
+pass): a real device build with a sound plugin DOES distinguish both mutations, which is exactly
+`DeviceLayoutAndCopies.*`'s own two hand-verified RED runs above, through a different test than the
+row's own `test = "abi.conformance"` names. See this round's own track report, open_questions, for
+whether `abi-provider.toml`'s own `test` field should be widened to include `abi.device_layout` for
+these two rows, which only this test, not `abi.conformance`, can kill.
+
+D15 stays OPEN: the positive device-resident path through the ORIGINAL DISABLED_ row is now known
+unreachable on a real device build (a test-fixture defect, not a library one), while the Runner/ABI's
+own device-field layout and host/device copy behaviour is independently confirmed sound through a
+different, new test. Closing D15 on the strength of the new test alone, leaving the DISABLED_ row's own
+plugin unfixed and undocumented beyond this entry, is a decision for the owner (see open_questions).
 ### ~~D16. A window member's cold-start priming over-read a smaller provider buffer — FIXED 2026-10-03
 
 Found by ASan on a two-member window-scoped region whose members export fields of different
