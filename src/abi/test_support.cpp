@@ -63,6 +63,12 @@ fuse::Runner* runner_of(fuse_ctx* ctx) {
   return &*ctx->runner;
 }
 
+fuse::FieldRegistry* field_registry_of(fuse_ctx* ctx) {
+  if (ctx == nullptr) return nullptr;
+  if (ctx->state == fuse_ctx::State::Empty) return nullptr;
+  return &ctx->fields;
+}
+
 // D61 (KNOWN_ISSUES.md): see this function's own declaration
 // (test_support.hpp) for what this sets and why reconcile_collective_
 // status() (participant.cpp) treats it as a stand-in for a real

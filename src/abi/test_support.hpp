@@ -124,6 +124,25 @@ bool force_communicator_set(fuse_ctx* ctx, std::int64_t value);
 /// Runner exists yet).
 fuse::Runner* runner_of(fuse_ctx* ctx);
 
+/// "Provider parity" track (KNOWN_ISSUES.md D15), Stage B-1, item 2: a
+/// mixed-component iteration region's own converged field values, read
+/// directly off the context's own FieldRegistry -- the same reason
+/// run_stats()/runner_of() above reach past the ABI, and for the same
+/// kind of consumer: a conformance test comparing a fuse_initialize()-
+/// mounted plugin's exported field storage against an all-native
+/// fuse::Runner reference has no ABI entry to read it through (the
+/// frozen participant ABI exposes a field's CURRENT VALUE only to the
+/// component that owns it, never back out to the host once bound --
+/// docs/user/providers.md's own "Provider direction" section), so this
+/// is the only way to confirm a plugin-backed component converged to
+/// the same numbers as its native twin, not merely that fuse_run()
+/// returned FUSE_OK.
+///
+/// Returns nullptr if `ctx` is null or the context has not reached
+/// `Loaded` (no FieldRegistry has been constructed yet) -- the same
+/// defensive posture every other accessor in this header takes.
+fuse::FieldRegistry* field_registry_of(fuse_ctx* ctx);
+
 /// D61 (KNOWN_ISSUES.md), "Collectives" track. Stub reducer for
 /// reconcile_collective_status() (participant.cpp): makes a tier-0 test
 /// (no MPI runtime, C1) exercise the FULL reconciliation path a real

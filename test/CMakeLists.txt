@@ -2472,6 +2472,26 @@ add_library(fuse_test_provider_linear_old_step_report SHARED abi/plugins/linear_
 target_include_directories(fuse_test_provider_linear_old_step_report PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_compile_definitions(fuse_test_provider_linear_old_step_report PRIVATE FUSE_TEST_OLD_STEP_REPORT)
 
+# KNOWN_ISSUES.md D15 ("Provider parity" track, Stage B-1, item 2): a
+# faithful C reimplementation of test/abi/participant_test.cpp's own
+# AffineComponent (abi/plugins/affine_provider.c's own header comment has
+# the full account), used so a plugin-backed component can stand in for
+# the native "beta" half of build_implicit_coupling_graph()'s own
+# iteration region. Default coefficients match "beta" exactly
+# (scale=0.5, offset=0.0). No separate BAD_* CMake targets, unlike
+# linear_provider.c's own refusal-sweep variants: this plugin's own
+# mutation rows (build-evidence/mutations/abi-provider.toml) follow
+# every OTHER row in this file's own established protocol instead --
+# tools/mutate.py hand-edits affine_provider.c's own source text in
+# place, rebuilds fuse_abi_conformance_test (which depends on this
+# target below, so the edit is picked up), runs, and restores -- the
+# same mechanism already used for src/abi/provider_adapter.cpp and
+# src/abi/registry.cpp in this same manifest, extended here to a C
+# source file rather than a C++ one (mutate.py's own `old`/`new` string
+# replacement does not care which language the file is written in).
+add_library(fuse_test_provider_affine SHARED abi/plugins/affine_provider.c)
+target_include_directories(fuse_test_provider_affine PRIVATE ${CMAKE_SOURCE_DIR}/include)
+
 # fuse-abi-fortran (ffuse + ffuse_provider + the shim) is a STATIC archive
 # whose only undefined symbol is fuse_coupler_abi -- resolved here because
 # THIS target is the first thing that actually needs it resolved (fortran/
@@ -2503,9 +2523,11 @@ add_dependencies(fuse_abi_conformance_test
   fuse_test_provider_linear_bad_window fuse_test_provider_linear_bad_element
   fuse_test_provider_linear_bad_capabilities fuse_test_provider_linear_bad_describe_extra
   fuse_test_provider_linear_bad_save fuse_test_provider_linear_bad_restore
-  fuse_test_provider_linear_old_step_report)
+  fuse_test_provider_linear_old_step_report
+  fuse_test_provider_affine)
 target_compile_definitions(fuse_abi_conformance_test PRIVATE
   FUSE_TEST_C_PROVIDER_PLUGIN="$<TARGET_FILE:fuse_test_provider_linear>"
+  FUSE_TEST_AFFINE_PROVIDER_PLUGIN="$<TARGET_FILE:fuse_test_provider_affine>"
   FUSE_TEST_C_PROVIDER_PLUGIN_BAD_VERSION="$<TARGET_FILE:fuse_test_provider_linear_bad_version>"
   FUSE_TEST_C_PROVIDER_PLUGIN_BAD_DESCRIBE="$<TARGET_FILE:fuse_test_provider_linear_bad_describe>"
   FUSE_TEST_C_PROVIDER_PLUGIN_BAD_ADVANCE="$<TARGET_FILE:fuse_test_provider_linear_bad_advance>"

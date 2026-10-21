@@ -28,6 +28,7 @@
 #include "fuse/model/coupling_graph.hpp"
 #include "fuse/model/descriptor.hpp"
 #include "fuse/model/iteration.hpp"
+#include "fuse/model/launch.hpp"
 
 namespace fuse::abi_test {
 
@@ -140,6 +141,65 @@ namespace fuse::abi_test {
 [[nodiscard]] inline std::vector<std::byte> build_implicit_coupling_bytes(
     int cells = 4, int max_iterations = 30) {
   return fuse::serialize(build_implicit_coupling_graph(cells, max_iterations));
+}
+
+/// KNOWN_ISSUES.md D15 ("Provider parity" track, Stage B-1, item 2):
+/// build_implicit_coupling_graph()'s own shape above, UNCHANGED except for
+/// "beta"'s own launch mode -- LaunchMode::Plugin naming `beta_plugin_path`
+/// instead of the default (InProcess, test-injected) -- so "beta" is
+/// auto-mounted at fuse_initialize() the same way ConformanceTest.
+/// GraphDeclaredPluginIsAutoMountedAndRun's own "upstream" already is,
+/// while "alpha" stays native and test-injected exactly as before. "beta"
+/// keeps RankSet{0, 1} and interval 1 -- a Plugin component needs no rank
+/// block of its own (fuse::transport::validate_launch_layout() treats it
+/// like InProcess, docs/dev/abi-design.md's own "Provider direction"
+/// section), so this field is unused by the mounting mechanism but kept
+/// for ComponentDecl's own required shape.
+[[nodiscard]] inline fuse::CouplingGraph build_implicit_coupling_graph_with_plugin_beta(
+    const char* beta_plugin_path, int cells = 4, int max_iterations = 30) {
+  fuse::CouplingGraph g;
+  const auto ma = g.add_mesh(
+      fuse::MeshDecl{.name = "ma", .source = "generated:line:" + std::to_string(cells)});
+  const auto mb = g.add_mesh(
+      fuse::MeshDecl{.name = "mb", .source = "generated:line:" + std::to_string(cells)});
+  const auto ra = g.add_region(fuse::Region{.name = "ra", .mesh = ma, .dimension = 1});
+  const auto rb = g.add_region(fuse::Region{.name = "rb", .mesh = mb, .dimension = 1});
+  const auto a = g.add_component(fuse::ComponentDecl{
+      .name = "alpha", .ranks = fuse::RankSet{0, 1}, .interval = fuse::Rational{1}});
+  const auto b = g.add_component(fuse::ComponentDecl{
+      .name = "beta", .ranks = fuse::RankSet{0, 1}, .interval = fuse::Rational{1},
+      .launch = fuse::LaunchSpec{.mode = fuse::LaunchMode::Plugin,
+                                 .plugin_path = beta_plugin_path}});
+
+  const auto a_out = g.add_field(
+      a, fuse::FieldSpec{.name = "a_out", .region = ra, .components = 1,
+                        .units = fuse::units::kKelvin,
+                        .intent = fuse::Intent::Provides});
+  const auto b_in = g.add_field(
+      b, fuse::FieldSpec{.name = "b_in", .region = rb, .components = 1,
+                        .units = fuse::units::kKelvin,
+                        .intent = fuse::Intent::Requires});
+  const auto b_out = g.add_field(
+      b, fuse::FieldSpec{.name = "b_out", .region = rb, .components = 1,
+                        .units = fuse::units::kHeatFluxDensity,
+                        .intent = fuse::Intent::Provides});
+  const auto a_in = g.add_field(
+      a, fuse::FieldSpec{.name = "a_in", .region = ra, .components = 1,
+                        .units = fuse::units::kHeatFluxDensity,
+                        .intent = fuse::Intent::Requires});
+
+  const auto fwd = g.add_channel("a2b", a_out, b_in);
+  const auto back = g.add_channel("b2a", b_out, a_in);
+  g.channel(back).lag(1).allow_time_level_mismatch("iterated scheme");
+  g.channel(back).relax(0.7);
+
+  fuse::ConvergenceCriterion convergence;
+  convergence.add(fuse::Converged::Relative(1e-9, "a_out"));
+  convergence.add(fuse::Converged::Relative(1e-9, "a_in"));
+  g.add_iteration_region(fuse::IterationRegionDecl{
+      .name = "fsi", .channels = {fwd, back}, .max_iterations = max_iterations,
+      .convergence = convergence});
+  return g;
 }
 
 /// Time windows track (Conformance, Unit 2): the FIRST graph to put an

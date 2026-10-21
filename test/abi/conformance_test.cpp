@@ -27,17 +27,24 @@
 #include <gtest/gtest.h>
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
 
 #include "fuse/abi/participant.h"
 #include "fuse/abi/provider.h"
+#include "fuse/backend/serial_backend.hpp"
 #include "fuse/base/rational.hpp"
 #include "fuse/field/field_ref.hpp"
 #include "fuse/field/registry.hpp"
+#include "fuse/ir/lowering.hpp"
+#include "fuse/model/capabilities.hpp"
 #include "fuse/model/coupling_graph.hpp"
 #include "fuse/runtime/component.hpp"
+#include "fuse/runtime/runner.hpp"
+#include "fuse/schedule/clock.hpp"
+#include "fuse/schedule/plan.hpp"
 
 #include "graph_fixture.hpp"
 #include "provider_adapter.hpp"
@@ -86,6 +93,13 @@
 #endif
 #ifndef FUSE_TEST_FORTRAN_PROVIDER_PLUGIN
 #error "FUSE_TEST_FORTRAN_PROVIDER_PLUGIN (the built linear_provider_f shared object path) must be defined"
+#endif
+// "Provider parity" track (KNOWN_ISSUES.md D15), Stage B-1, item 2: the
+// affine_provider.c plugin built for
+// ConformanceTest.PluginBackedComponentInAnIterationRegionConvergesLikeAllNative,
+// below.
+#ifndef FUSE_TEST_AFFINE_PROVIDER_PLUGIN
+#error "FUSE_TEST_AFFINE_PROVIDER_PLUGIN (the built affine_provider shared object path) must be defined"
 #endif
 
 namespace {
@@ -198,6 +212,92 @@ class DownstreamSink final : public fuse::Component {
  private:
   fuse::SerialMeshBackend backend_;
   std::vector<double>     storage_;
+};
+
+// "Provider parity" track (KNOWN_ISSUES.md D15), Stage B-1, item 2: the
+// SAME affine component test/abi/participant_test.cpp's own AffineComponent
+// implements (that file's own class, not shared here: every conformance/
+// participant test file in this tree defines its own native test
+// components locally, DownstreamSink above being this file's own
+// precedent, rather than through a common header) -- `provides[i] =
+// offset + scale * requires[i]`, with a REAL save_state()/restore_state()
+// snapshot of its own Provides output, so it may legally sit inside an
+// iteration region. test/abi/plugins/affine_provider.c is the C provider
+// plugin built to the SAME formula, so a graph with "alpha" native (this
+// class) and "beta" mounted as that plugin converges to the same numbers
+// as a graph with both sides native -- the comparison
+// ConformanceTest.PluginBackedComponentInAnIterationRegionConvergesLikeAllNative,
+// below, makes.
+class AffineComponent final : public fuse::Component {
+ public:
+  AffineComponent(std::string name, std::string provides_field,
+                  std::string requires_field, double scale, double offset,
+                  std::size_t n)
+      : name_(std::move(name)),
+        provides_field_(std::move(provides_field)),
+        requires_field_(std::move(requires_field)),
+        scale_(scale),
+        offset_(offset),
+        provides_(n, 0.0),
+        requires_(n, 0.0) {}
+
+  [[nodiscard]] std::string name() const override { return name_; }
+
+  fuse::Result<void> register_fields(fuse::FieldRegistry& reg,
+                                      const fuse::CouplingGraph& g) override {
+    const auto cid = g.find_component(name_);
+    for (const fuse::FieldId f : g.component(*cid).fields) {
+      const std::string& fname = g.field(f).name;
+      double* data = nullptr;
+      std::size_t n = 0;
+      if (fname == provides_field_) {
+        data = provides_.data();
+        n = provides_.size();
+      } else if (fname == requires_field_) {
+        data = requires_.data();
+        n = requires_.size();
+      } else {
+        continue;
+      }
+      const auto r = reg.bind(
+          f, fuse::FieldRef{data, fuse::Layout{.stride = 1, .count = n},
+                            fuse::MemorySpace::Host});
+      if (!r.ok()) return r;
+    }
+    return fuse::Result<void>::success();
+  }
+
+  fuse::Result<void> advance(const fuse::StepContext&) override {
+    for (std::size_t i = 0; i < provides_.size(); ++i) {
+      provides_[i] = offset_ + scale_ * requires_[i];
+    }
+    return fuse::Result<void>::success();
+  }
+
+  fuse::Result<void> save_state() override {
+    saved_ = provides_;
+    return fuse::Result<void>::success();
+  }
+  fuse::Result<void> restore_state() override {
+    if (saved_.size() != provides_.size()) {
+      return fuse::Failure{"E-TEST-RESTORE",
+                           "AffineComponent: restore_state() called with no "
+                           "matching save_state()"};
+    }
+    provides_ = saved_;
+    return fuse::Result<void>::success();
+  }
+  [[nodiscard]] std::uint64_t capabilities() const override {
+    return fuse::make_capabilities(/*rollback=*/true,
+                                   fuse::DeterminismLevel::Bitwise,
+                                   /*hidden_state=*/false);
+  }
+
+ private:
+  std::string name_, provides_field_, requires_field_;
+  double scale_, offset_;
+  std::vector<double> provides_, requires_;
+  std::vector<double> saved_;
 };
 
 // ------------------------------------------------------ the run harness ----
@@ -1011,4 +1111,190 @@ TEST(ConformanceTest, DlopenFailureIsRefusedWithDlerrorText) {
   ASSERT_FALSE(mounted.ok());
   EXPECT_EQ(mounted.error().code, "E-ABI-LOAD");
   EXPECT_FALSE(mounted.error().message.empty());
+}
+
+// ---- "Provider parity" track (KNOWN_ISSUES.md D15), Stage B-1, item 2:
+// checkpoint/restore through an iteration region driven by a MIX of a
+// native component and a plugin-backed one. Mirrors
+// AbiParticipant.ImplicitCouplingConvergesLikeInProcess's own reference
+// construction (test/abi/participant_test.cpp) exactly, but drives the
+// comparison run through fuse_initialize()/fuse_run() with "alpha" test-
+// injected (fuse::abi_test::inject_component(), the same seam
+// ConformanceTest.GraphDeclaredPluginIsAutoMountedAndRun above uses) and
+// "beta" mounted as the REAL affine_provider.c shared object instead of
+// the hand-rolled externally-driven loop that test uses for both sides.
+// -------------------------------------------------------------------------
+
+TEST(ConformanceTest, PluginBackedComponentInAnIterationRegionConvergesLikeAllNative) {
+  constexpr int kCells = 4;
+  // MEASURED in AbiParticipant.ImplicitCouplingConvergesLikeInProcess
+  // (participant_test.cpp): the SAME affine/relaxation coefficients used
+  // below give a 2x2 Jacobi iteration matrix needing ~39 sweeps to reach
+  // a 1e-9 relative tolerance; 60 leaves headroom without masking a
+  // regression.
+  constexpr int kMaxIterations = 60;
+
+  // --- Reference: fuse::Runner driven directly, both components native,
+  // bypassing the ABI and the plugin entirely. ---
+  const fuse::CouplingGraph ref_g =
+      fuse::abi_test::build_implicit_coupling_graph(kCells, kMaxIterations);
+  fuse::SerialMeshBackend ref_backend;
+  for (std::uint32_t i = 0; i < ref_g.mesh_count(); ++i) {
+    ASSERT_TRUE(ref_backend.load(ref_g.mesh(fuse::MeshId{i})).ok());
+  }
+  const fuse::LoweringResult ref_lowered = fuse::lower(ref_g);
+  ASSERT_TRUE(ref_lowered.ok()) << ref_lowered.diags.to_string();
+  const fuse::ClockSet ref_clocks{ref_g};
+  const fuse::ScheduleResult ref_sched = fuse::schedule(
+      ref_g, ref_lowered.dag, ref_clocks,
+      fuse::make_region_sizes(ref_g, ref_lowered.dag, ref_backend));
+  ASSERT_TRUE(ref_sched.ok()) << ref_sched.diags.to_string();
+
+  fuse::ComponentSet ref_components;
+  ref_components.add(std::make_unique<AffineComponent>(
+      "alpha", "a_out", "a_in", /*scale=*/-1.0, /*offset=*/10.0, kCells));
+  ref_components.add(std::make_unique<AffineComponent>(
+      "beta", "b_out", "b_in", /*scale=*/0.5, /*offset=*/0.0, kCells));
+  fuse::FieldRegistry ref_registry;
+  for (auto& comp : ref_components) {
+    ASSERT_TRUE(comp.register_fields(ref_registry, ref_g).ok());
+  }
+  fuse::Runner ref_runner{ref_g, ref_lowered.dag, ref_sched.plan, ref_backend};
+  {
+    const fuse::Result<void> init_r = ref_runner.initialize(ref_components, ref_registry);
+    ASSERT_TRUE(init_r.ok()) << init_r.error().code << ": " << init_r.error().message;
+  }
+  ASSERT_TRUE(ref_runner.run_period(ref_components).ok());
+  ASSERT_EQ(ref_runner.iteration_stats().size(), 1u);
+  const int ref_iterations = ref_runner.iteration_stats()[0].iterations;
+  ASSERT_GT(ref_iterations, 0);
+  ASSERT_TRUE(ref_runner.iteration_stats()[0].converged)
+      << "reference run must converge within " << kMaxIterations
+      << " sweeps for this comparison to mean anything";
+
+  double ref_a_out[kCells], ref_a_in[kCells], ref_b_out[kCells], ref_b_in[kCells];
+  {
+    const auto a_f = ref_g.find_component("alpha");
+    ASSERT_TRUE(a_f.has_value());
+    for (int i = 0; i < kCells; ++i) {
+      ref_a_out[i] = ref_registry.get(ref_g.component(*a_f).fields[0]).value().at(
+          static_cast<std::size_t>(i));
+      ref_a_in[i] = ref_registry.get(ref_g.component(*a_f).fields[1]).value().at(
+          static_cast<std::size_t>(i));
+    }
+    const auto b_f = ref_g.find_component("beta");
+    ASSERT_TRUE(b_f.has_value());
+    for (int i = 0; i < kCells; ++i) {
+      ref_b_in[i] = ref_registry.get(ref_g.component(*b_f).fields[0]).value().at(
+          static_cast<std::size_t>(i));
+      ref_b_out[i] = ref_registry.get(ref_g.component(*b_f).fields[1]).value().at(
+          static_cast<std::size_t>(i));
+    }
+  }
+
+  // --- Same graph, "alpha" native and test-injected, "beta" named
+  // `plugin` IN THE GRAPH and mounted automatically at fuse_initialize()
+  // (src/abi/participant.cpp, fuse::abi_detail::Registry::mount_dynamic)
+  // against the built affine_provider.c shared object. ---
+  const fuse::CouplingGraph mixed_g =
+      fuse::abi_test::build_implicit_coupling_graph_with_plugin_beta(
+          FUSE_TEST_AFFINE_PROVIDER_PLUGIN, kCells, kMaxIterations);
+  const auto bytes = fuse::serialize(mixed_g);
+
+  const auto* t = Table();
+  ASSERT_NE(t, nullptr);
+  fuse_context_out co{sizeof(co)};
+  ASSERT_EQ(t->create(nullptr, nullptr, &co), FUSE_OK);
+  fuse_ctx* ctx = co.ctx;
+  fuse_graph_source src{sizeof(src)};
+  src.bytes = bytes.data();
+  src.byte_count = bytes.size();
+  ASSERT_EQ(t->load_graph(ctx, &src, nullptr), FUSE_OK);
+
+  ASSERT_TRUE(fuse::abi_test::inject_component(
+      ctx, "alpha",
+      std::make_unique<AffineComponent>("alpha", "a_out", "a_in",
+                                        /*scale=*/-1.0, /*offset=*/10.0, kCells)));
+
+  {
+    const fuse_status init_rc = t->initialize(ctx, nullptr, nullptr);
+    if (init_rc != FUSE_OK) {
+      fuse_error err{sizeof(err)};
+      char buf[512] = {0};
+      err.buffer = buf;
+      err.capacity = sizeof(buf);
+      (void)t->last_error(ctx, nullptr, &err);
+      FAIL() << "fuse_initialize: " << buf;
+    }
+  }
+
+  fuse_run_request rr{sizeof(rr)};
+  rr.periods = 1;
+  {
+    const fuse_status run_rc = t->run(ctx, &rr, nullptr);
+    if (run_rc != FUSE_OK) {
+      fuse_error err{sizeof(err)};
+      char buf[512] = {0};
+      err.buffer = buf;
+      err.capacity = sizeof(buf);
+      (void)t->last_error(ctx, nullptr, &err);
+      FAIL() << "fuse_run: " << buf
+             << " -- a non-FUSE_OK status here means the runtime's own "
+                "rollback verification (src/runtime/iteration.cpp) rejected "
+                "a restore_state() mismatch (E-ITER-ROLLBACK) or some other "
+                "failure, not that the mixed native/plugin pair converged "
+                "to different numbers silently";
+    }
+  }
+
+  // The runtime verifies the rollback rather than trusting it
+  // (src/runtime/iteration.cpp's own header comment): after every
+  // restore_state(), registered Provides storage is compared byte-for-
+  // byte against the save_state()-time snapshot. A strictly positive
+  // count here confirms that check actually ran against the plugin-
+  // backed "beta", not merely that fuse_run() happened to return FUSE_OK.
+  const fuse::RunStats mixed_stats = fuse::abi_test::run_stats(ctx);
+  EXPECT_GT(mixed_stats.checkpoint_verifications, 0);
+
+  // The measured sweep count must match the all-native reference
+  // exactly: a mixed run that converges in a different number of
+  // iterations is not "converging like all-native", whatever its final
+  // values are.
+  const fuse::Runner* mixed_runner = fuse::abi_test::runner_of(ctx);
+  ASSERT_NE(mixed_runner, nullptr);
+  ASSERT_EQ(mixed_runner->iteration_stats().size(), 1u);
+  EXPECT_EQ(mixed_runner->iteration_stats()[0].iterations, ref_iterations);
+  EXPECT_TRUE(mixed_runner->iteration_stats()[0].converged);
+
+  fuse::FieldRegistry* mixed_registry = fuse::abi_test::field_registry_of(ctx);
+  ASSERT_NE(mixed_registry, nullptr);
+  const auto a_f = mixed_g.find_component("alpha");
+  const auto b_f = mixed_g.find_component("beta");
+  ASSERT_TRUE(a_f.has_value());
+  ASSERT_TRUE(b_f.has_value());
+
+  for (int i = 0; i < kCells; ++i) {
+    const double a_out_i = mixed_registry->get(mixed_g.component(*a_f).fields[0])
+                              .value().at(static_cast<std::size_t>(i));
+    const double a_in_i = mixed_registry->get(mixed_g.component(*a_f).fields[1])
+                             .value().at(static_cast<std::size_t>(i));
+    const double b_in_i = mixed_registry->get(mixed_g.component(*b_f).fields[0])
+                             .value().at(static_cast<std::size_t>(i));
+    const double b_out_i = mixed_registry->get(mixed_g.component(*b_f).fields[1])
+                              .value().at(static_cast<std::size_t>(i));
+    // Zero tolerance, not EXPECT_DOUBLE_EQ's 4-ULP allowance: the owner's
+    // own Stage B-1 instruction for this comparison is bit-identical
+    // equality, the same standard ImplicitCouplingConvergesLikeInProcess's
+    // own EXPECT_DOUBLE_EQ relaxes slightly, deliberately not followed
+    // here -- every value compared below is a direct copy out of a bound
+    // double[], with no reduction or intermediate re-rounding on either
+    // side of the comparison, so there is no accumulation path a 4-ULP
+    // allowance would ever legitimately be covering.
+    EXPECT_EQ(a_out_i, ref_a_out[i]) << "a_out[" << i << "]";
+    EXPECT_EQ(a_in_i, ref_a_in[i]) << "a_in[" << i << "]";
+    EXPECT_EQ(b_out_i, ref_b_out[i]) << "b_out[" << i << "]";
+    EXPECT_EQ(b_in_i, ref_b_in[i]) << "b_in[" << i << "]";
+  }
+
+  EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
 }
