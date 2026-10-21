@@ -80,7 +80,11 @@ jobs:
         linalg: [eigen, builtin]
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y ninja-build libomp-dev
+      # gfortran: with no Fortran compiler the ffuse binding is not built and
+      # abi.conformance's FortranPlugin rows refuse with E-ABI-LOAD by design
+      # (test/CMakeLists.txt, "No Fortran compiler in this configure"), so the
+      # leg would be red for a missing package rather than for a defect.
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build libomp-dev gfortran
       # fmt, googletest and the linalg backend come through FetchContent at the pinned
       # tags (cmake/FuseDependencies.cmake); the system is not consulted for them (the
       # CMAKE_DISABLE_FIND_PACKAGE_* flags below) and FUSE_ALLOW_FETCH=ON lets
@@ -109,7 +113,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y ninja-build libomp-dev
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build libomp-dev gfortran
       # Kokkos is deliberately not disabled for find_package -- see the tier0 leg's
       # comment above; disabling it breaks ArborX's own REQUIRED find_package(Kokkos).
       - run: >
