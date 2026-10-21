@@ -167,6 +167,12 @@ if(FUSE_LINALG_BACKEND_IS_EIGEN)
     # measured AT THIS EXACT COMMAND LINE: diff 3.022e-08, bound 1.0e-6.
     add_test(NAME example.gray_scott COMMAND fuse_example_gray_scott --n 24 --ratio 2 --t-end 4 --dt 0.1 --check)
     set_tests_properties(example.gray_scott PROPERTIES LABELS "example")
+    # An unknown --accel name is refused before any setup (examples/common/
+    # accel_names.hpp). Until 2026-10-20 this program ran Aitken for it.
+    add_test(NAME example.gray_scott.accel_refused
+             COMMAND fuse_example_gray_scott --accel no-such-method)
+    set_tests_properties(example.gray_scott.accel_refused PROPERTIES
+      LABELS "example" PASS_REGULAR_EXPRESSION "E-EXAMPLE-ACCEL: unknown --accel 'no-such-method'")
     if(COMMAND fuse_add_device_twin)
       fuse_add_device_twin(example.gray_scott fuse_example_gray_scott LABELS example
                            ARGS --n 24 --ratio 2 --t-end 4 --dt 0.1 --check)
@@ -209,7 +215,8 @@ if(FUSE_LINALG_BACKEND_IS_EIGEN)
   add_executable(fuse_example_brusselator
     brusselator/main.cpp)
   target_link_libraries(fuse_example_brusselator PRIVATE
-    fuse::runtime fuse::backend Eigen3::Eigen Kokkos::kokkos)
+    fuse::runtime fuse::backend Eigen3::Eigen Kokkos::kokkos
+    fuse::examples_common)
   target_include_directories(fuse_example_brusselator PRIVATE brusselator)
   # S7.2b (PetscSelect track): main.cpp's own unconditional (guarded by #if
   # FUSE_HAVE_PETSC) fuse::petsc::install() call -- same reasoning as
@@ -231,6 +238,12 @@ if(FUSE_LINALG_BACKEND_IS_EIGEN)
     # test/verification/brusselator_*_test.cpp.
     add_test(NAME example.brusselator COMMAND fuse_example_brusselator --end 0.5 --check)
     set_tests_properties(example.brusselator PROPERTIES LABELS "example")
+    # An unknown --accel name is refused before any setup. Until 2026-10-20
+    # this program ran with no acceleration for it.
+    add_test(NAME example.brusselator.accel_refused
+             COMMAND fuse_example_brusselator --accel no-such-method)
+    set_tests_properties(example.brusselator.accel_refused PROPERTIES
+      LABELS "example" PASS_REGULAR_EXPRESSION "E-EXAMPLE-ACCEL: unknown --accel 'no-such-method'")
 
     # Time windows track (Conformance, Unit 1): `--driver runner` (main.cpp)
     # runs the SAME graph through fuse::Runner instead of fuse::WindowCoupler
@@ -750,6 +763,12 @@ if(FUSE_LINALG_BACKEND_IS_EIGEN)
                      --nx-beam 12 --mass-ratio 1.0 --accel iqn-ils --dt 0.01
                      --t-end 0.1 --check)
     set_tests_properties(example.fsi_channel PROPERTIES LABELS "example")
+    # An unknown --accel name is refused before any output (it already was,
+    # after the header line; the shared table now owns the list).
+    add_test(NAME example.fsi_channel.accel_refused
+             COMMAND fuse_example_fsi_channel --accel no-such-method)
+    set_tests_properties(example.fsi_channel.accel_refused PROPERTIES
+      LABELS "example" PASS_REGULAR_EXPRESSION "E-EXAMPLE-ACCEL: unknown --accel 'no-such-method'")
     # Same command line at one thread and at every core, bit for bit. IQN-ILS
     # goes through the Runner's reductions, so this is the example most exposed
     # to a non-deterministic sum; both FSI components declare Bitwise on it.

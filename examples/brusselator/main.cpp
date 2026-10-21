@@ -42,6 +42,7 @@
 #include <fuse/petsc/solve.hpp>
 #endif
 
+#include "accel_names.hpp"
 #include "brusselator_graph.hpp"
 #include "brusselator_physics.hpp"
 #include "species_component.hpp"
@@ -137,7 +138,9 @@ struct Args {
                    "--nx-u 16 --ny-u 16 --nx-v 24 --ny-v 24\n"
                    "--dt-u 0.002 --dt-v 0.003 --window 0.02 --end 11.5 --alpha 10\n"
                    "--tolerance 1e-11 --max-iterations 60 --out results\n"
-                   "--accel none|aitken|iqn-ils|newton --no-forcing --save-history --check\n"
+                   "--accel none|constant|aitken|secant|steffensen|iqn-ils|iqn-imvj|newton "
+                   "(default none; an unknown name is refused)\n"
+                   "--no-forcing --save-history --check\n"
                    "--driver window|runner (default window; runner requires every "
                    "window the same length)\n"
                    "--iteration-mode jacobi|gauss-seidel (default jacobi)\n"
@@ -153,15 +156,25 @@ struct Args {
   return a;
 }
 
-[[nodiscard]] AccelKind parse_accel(const std::string& s) {
-  if (s == "aitken") return AccelKind::Aitken;
-  if (s == "iqn-ils" || s == "iqn") return AccelKind::IQN_ILS;
+/// `--accel`'s names: the shared table (examples/common/accel_names.hpp)
+/// plus `newton`. A name in neither is `std::nullopt`; main() refuses it
+/// before any mesh is built (E-EXAMPLE-ACCEL). Until 2026-10-20 an
+/// unrecognised name silently ran with no acceleration.
+[[nodiscard]] std::optional<AccelKind> try_parse_accel(const std::string& s) {
   // S7.2 WindowNewton (newton-krylov.md Sec. 7): `AccelKind::Newton`,
   // never routed through `make_accelerator()` -- `resolve_regions()`'s
   // own `if (decl.acceleration.kind == AccelKind::Newton)` branch takes
   // the Newton path before `R.accel` is ever touched (iteration.cpp).
   if (s == "newton") return AccelKind::Newton;
-  return AccelKind::None;
+  return fuse_examples::accel_kind_from_name(s);
+}
+
+/// The validated form: every call site runs after main()'s check, so the
+/// fallback below is unreachable and is a refusal rather than a default.
+[[nodiscard]] AccelKind parse_accel(const std::string& s) {
+  if (const auto k = try_parse_accel(s)) return *k;
+  std::fprintf(stderr, "FAIL: E-EXAMPLE-ACCEL: unknown --accel '%s'\n", s.c_str());
+  std::exit(1);
 }
 
 /// S7.2 WindowNewton (newton-krylov.md Sec. 9.6): the `--iteration-mode`
@@ -232,6 +245,13 @@ void write_field_csv(const std::string& path, const brusselator::NativeGrid& gri
 
 int main(int argc, char** argv) {
   const Args args = parse_args(argc, argv);
+  if (!try_parse_accel(args.accel)) {
+    std::fprintf(stderr,
+                 "FAIL: E-EXAMPLE-ACCEL: unknown --accel '%s'; use one of %.*s|newton\n",
+                 args.accel.c_str(), static_cast<int>(fuse_examples::kAccelNames.size()),
+                 fuse_examples::kAccelNames.data());
+    return 1;
+  }
   if (args.driver != "window" && args.driver != "runner") {
     std::fprintf(stderr, "FAIL: --driver must be 'window' or 'runner', got '%s'\n",
                  args.driver.c_str());
@@ -469,9 +489,9 @@ int main(int argc, char** argv) {
       // Runner-only (make_accelerator() has no case for it, and
       // WindowCoupler never gained a Newton solve of its own) -- a
       // caller asking for both refuses cleanly, with E-ACCEL-KIND, from
-      // inside WindowCoupler::create() below, the same existing refusal
-      // this CLI already relies on for every other mistyped --accel
-      // value; nothing added here makes that combination succeed.
+      // inside WindowCoupler::create() below; nothing added here makes
+      // that combination succeed. (An unknown --accel name never gets this
+      // far: main() refuses it with E-EXAMPLE-ACCEL.)
       const fuse::WaveformIteration iteration_mode = parse_iteration_mode(args.iteration_mode);
       cfg.iteration = iteration_mode;
       // The user's decision (relayed 2026-09-29): a convergence measure
