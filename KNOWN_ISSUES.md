@@ -7647,6 +7647,15 @@ track's own scope: it did not touch `petsc.toml`), named here so the next track 
 `fuse::petsc::make_assembled_token()` (Sec. 10.1) reused for a 1x1 region-level sensitivity token;
 see `docs/dev/newton-krylov.md` sec. 14 and `docs/user/petsc-reaction-diffusion.md` for the rest.
 
+**Host run of S7.4 (lead, 2026-10-21, `build-all` at `3b982f5`, MPICH 5.0.2rc3):** `example.petsc_reaction_diffusion.petsc`
+passed (0.60 s), the first PETSc-object component run on any machine. `petsc.reaction_diffusion` aborted in its first
+case, `PetscInnerSolveAgreesWithNativeAtOnePoint`: `MPI_Comm_get_attr` with `MPI_KEYVAL_INVALID` from the first
+`VecCreate`, because `right_newton_solve_petsc` called PETSc before `ensure_initialized()`; only the component
+constructor did, which is why the example passed. Fixed by calling `ensure_initialized()` at the function's entry,
+as `solve.cpp` and `token.cpp` do. The two PETSc mutation rows carried `requires = "no-mpi"`, which reports them not
+assessed on every MPI build; they are now `requires = "petsc"`, and a third row removes the new call. The earlier
+statement that this failure was a segmentation fault was a sandbox report and was never measured on the host. Pending:
+the host rerun of `petsc.reaction_diffusion` and the three rows' kill runs with `FUSE_MUTATE_PETSC=1`.
 ### ~~D48. A `Transport` instruction can have one arc device-resident and the other host, even in Device mode — FOUND AND FIXED 2026-10-13
 
 **What was found.** docs/dev/device-resident-arcs.md Phase 3 made `Transport` space-aware in
