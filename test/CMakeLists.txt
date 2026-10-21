@@ -487,6 +487,14 @@ if(FUSE_ENABLE_PETSC)
   fuse_add_gtest(petsc token LIBS fuse::linalg)
   fuse_add_gtest(petsc derivative_gate LIBS fuse::linalg)
   fuse_add_gtest(petsc snes LIBS fuse::linalg)
+  # S7.4 (owner decision 2026-10-21, Option C): the structural analogue of
+  # runtime.petsc_reaction_diffusion_component for NeumannHalfPetsc --
+  # BUILT and registered here, never RUN in this sandbox (the SAME
+  # ensure_initialized()/MPI_Init() barrier every petsc.* row above
+  # carries); a host run measures it. No Eigen, no Brusselator headers.
+  fuse_add_gtest(petsc reaction_diffusion LIBS fuse::linalg PkgConfig::PETSc MPI::MPI_C)
+  target_include_directories(fuse_petsc_reaction_diffusion_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/examples/petsc_reaction_diffusion)
   # S7.2b (PetscSelect track): the Brusselator's own window-Newton region,
   # solved by this substrate -- its own DEDICATED binary, not one more
   # TEST() in test/verification/brusselator_runner_test.cpp, for the
@@ -531,7 +539,7 @@ else()
   fuse_tests_gated_by(FUSE_ENABLE_PETSC
     petsc/init_test.cpp petsc/token_test.cpp petsc/derivative_gate_test.cpp
     petsc/snes_test.cpp petsc/brusselator_newton_test.cpp
-    petsc/window_newton_mpi_test.cpp)
+    petsc/window_newton_mpi_test.cpp petsc/reaction_diffusion_test.cpp)
 endif()
 
 # ---------------------------------------------------------------- field
@@ -844,6 +852,15 @@ fuse_add_gtest(runtime component_iface THROWS)
 # fuse::LinearizationToken and Component::implicit() themselves (header-
 # only; the model-level capability refusal is model.newton_capability).
 fuse_add_gtest(runtime implicit_component)
+# S7.4 (owner decision 2026-10-21, Option C): DirichletHalf/
+# NeumannHalfNative's own ImplicitComponent/LinearizationToken wiring
+# (examples/petsc_reaction_diffusion/reaction_diffusion_component.hpp) --
+# purity, token shape/signature, save/restore round trip. The PETSc
+# analogue's structural counterpart is test/petsc/reaction_diffusion_
+# test.cpp, gated FUSE_ENABLE_PETSC.
+fuse_add_gtest(runtime petsc_reaction_diffusion_component)
+target_include_directories(fuse_runtime_petsc_reaction_diffusion_component_test PRIVATE
+  ${CMAKE_SOURCE_DIR}/examples/petsc_reaction_diffusion)
 # S7.1's Newton-Krylov seam: the fixed-point residual F(x) = x - G(x) over
 # the Runner. Reuses examples/dn_heat's Dirichlet-Neumann pair for the
 # contraction-factor test, so it needs that example's own header on its
@@ -1382,6 +1399,19 @@ else()
   list(APPEND _fuse_eigen_gated_tests
     linalg.pcg linalg.gmres linalg.schur_slab linalg.derivative_gate)
 endif()
+
+# S7.4 (owner decision 2026-10-21, Option C): the derivative gate applied
+# to examples/petsc_reaction_diffusion/reaction_diffusion_physics.hpp's
+# own inner Jacobian (adjoint identity, Taylor-remainder order, and a
+# permanent regression control reproducing this track's own historical
+# ghost-Jacobian bug -- design_notes.md Section 5). Pure fuse::linalg +
+# the shared physics header, no Eigen, no fuse::backend/fuse::model, no
+# PETSc -- unconditional, UNLIKE the Eigen-gated block above, because
+# nothing here needs the Brusselator diffusion operator or Eigen3::Eigen
+# at all.
+fuse_add_gtest(linalg reaction_diffusion_derivative_gate)
+target_include_directories(fuse_linalg_reaction_diffusion_derivative_gate_test PRIVATE
+  ${CMAKE_SOURCE_DIR}/examples/petsc_reaction_diffusion)
 # review-2026-10-11 NL-5: schur_slab_unavailable_test.cpp is the mirror
 # image of the gate just above -- registered only when this library
 # compiles src/linalg/schur_slab_unavailable.cpp (FUSE_LINALG_BACKEND !=

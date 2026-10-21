@@ -43,6 +43,33 @@ if(FUSE_ENABLE_PETSC)
   target_link_libraries(fuse_example_dn_heat PRIVATE fuse::petsc)
 endif()
 
+# S7.4 (owner decision 2026-10-21, Option C): the smallest real port of an
+# ImplicitComponent onto a PETSc-object-backed LinearizationToken (real
+# Mat/Vec, MatMult/MatMultTranspose, never MATMFFD), paired with an
+# existing native-substrate implementation of the SAME physics in one
+# Newton-coupled region -- examples/petsc_reaction_diffusion/. The native
+# half of the pair needs nothing from fuse::petsc; the executable always
+# links fuse::runtime/fuse::backend, and fuse::petsc only when
+# FUSE_ENABLE_PETSC, the SAME conditional fuse_example_dn_heat uses just
+# above (reaction_diffusion_component_petsc.hpp is never #included
+# otherwise, guarded by #if FUSE_HAVE_PETSC in main.cpp).
+add_executable(fuse_example_petsc_reaction_diffusion petsc_reaction_diffusion/main.cpp)
+target_link_libraries(fuse_example_petsc_reaction_diffusion PRIVATE fuse::runtime fuse::backend)
+target_include_directories(fuse_example_petsc_reaction_diffusion PRIVATE petsc_reaction_diffusion)
+if(FUSE_ENABLE_PETSC)
+  # fuse::petsc's own <petsc.h>/MPI include path is PRIVATE
+  # (src/CMakeLists.txt's own comment: "<petsc.h> appears only in this
+  # library's own .cpp files, never in a public fuse/petsc/*.hpp") --
+  # unlike fuse_example_dn_heat, this example's OWN header
+  # (reaction_diffusion_component_petsc.hpp) includes <petsc.h> directly
+  # (examples/ is not subject to tools/check-layering.py's PETSc-type-
+  # free rule, which applies only to include/fuse/ public headers), so
+  # it needs PkgConfig::PETSc/MPI::MPI_C linked here too, not only
+  # fuse::petsc.
+  target_link_libraries(fuse_example_petsc_reaction_diffusion PRIVATE
+    fuse::petsc PkgConfig::PETSc MPI::MPI_C)
+endif()
+
 if(FUSE_ENABLE_TESTS)
   # Gated on the PHYSICS, not on "did not crash". mms_pair exits non-zero when
   # the coupled answer misses its analytic gate, when no conservation check
@@ -82,6 +109,26 @@ if(FUSE_ENABLE_TESTS)
     add_test(NAME example.dn_heat.newton_petsc
              COMMAND fuse_example_dn_heat --newton-petsc)
     set_tests_properties(example.dn_heat.newton_petsc PROPERTIES LABELS "example;petsc")
+  endif()
+
+  # S7.4: the native-twin leg always runs (no PETSc, no MPI) and is gated
+  # on the physics the SAME way dn_heat/mms_pair are -- exits non-zero if
+  # the converged answer misses the manufactured solution by more than
+  # the track's own derived bound (main.cpp's own kAgreementBound
+  # comment). The --petsc leg additionally builds AND RUNS the PETSc-
+  # substrate half; registered ONLY when FUSE_ENABLE_PETSC, for the exact
+  # reason example.dn_heat.newton_petsc is gated just above, and expected
+  # to FAIL in a sandbox that cannot complete a bare MPI_Init()
+  # (KNOWN_ISSUES.md D32) -- the SAME already-documented, host-pending
+  # status every other petsc.*/example.dn_heat.newton_petsc row carries,
+  # not a new one this track introduces.
+  add_test(NAME example.petsc_reaction_diffusion
+           COMMAND fuse_example_petsc_reaction_diffusion)
+  set_tests_properties(example.petsc_reaction_diffusion PROPERTIES LABELS "example")
+  if(FUSE_ENABLE_PETSC)
+    add_test(NAME example.petsc_reaction_diffusion.petsc
+             COMMAND fuse_example_petsc_reaction_diffusion --petsc)
+    set_tests_properties(example.petsc_reaction_diffusion.petsc PROPERTIES LABELS "example;petsc")
   endif()
 
   # Thread-count determinism of the two physics examples, bit for bit: each is
