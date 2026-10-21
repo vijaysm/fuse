@@ -570,6 +570,45 @@ TEST(WindowRunnerStraddle, SevenThirteenAdjustableAdjustableThroughWindowCompone
   EXPECT_EQ(via_runner.advance_count_b, 2 * via_runner.advance_count_a);
 }
 
+// Stage B, Window seed track (KNOWN_ISSUES.md D17/D76): the SAME fixture,
+// physics and assertions as
+// SevenThirteenAdjustableAdjustableThroughWindowComponentMatchesDriver
+// above, with AccelKind::None replaced by AccelKind::Aitken -- the one
+// parameter this file never exercised in that combination (grepped,
+// Stage A: zero AccelKind::Aitken hits in this file before this test).
+// Stage A's own hypothesis: Runner::Impl::run_region()'s pre-loop seed of
+// R.x_old (src/runtime/iteration.cpp, "slot_to_host(slots[b.feed_arc],
+// R.x_old.data()+b.offset, b.length)") is a raw read of the previous
+// window's own converged trajectory (a zeroth-order/persistence
+// predictor) for every window instance after the member's first, where
+// WindowCoupler::sweep_window()'s own y_fed seed always goes through
+// fuse::extrapolate_boundary_value() (a genuine, higher-order
+// extrapolation once history holds 2+ points). AccelKind::None cannot
+// see this (NoneAccel::update() ignores x_old entirely); AccelKind::
+// Aitken's own omega recursion and relaxed output both read x_old
+// directly, so a seed mismatch at a window boundary is expected to show
+// up here as a disagreement in the final xA/xB/iterations after 7
+// window instances. Zero tolerance (EXPECT_EQ): the same bar every
+// other parity case in this file already uses for comparing these two
+// drivers, not a tolerance invented for this test.
+TEST(WindowRunnerStraddle, SevenThirteenAdjustableAdjustableThroughWindowComponentMatchesDriverUnderAitken) {
+  const RunnerResult via_runner = run_via_runner(
+      WaveformIteration::Jacobi, DtPolicy::Adjustable, DtPolicy::Adjustable,
+      AccelKind::Aitken);
+  ASSERT_TRUE(via_runner.ok) << via_runner.error;
+  EXPECT_TRUE(via_runner.converged);
+
+  const RunnerResult via_driver = run_via_driver(
+      WaveformIteration::Jacobi, DtPolicy::Adjustable, DtPolicy::Adjustable,
+      AccelKind::Aitken);
+  ASSERT_TRUE(via_driver.ok) << via_driver.error;
+  EXPECT_TRUE(via_driver.converged);
+
+  EXPECT_EQ(via_runner.xA, via_driver.xA);
+  EXPECT_EQ(via_runner.xB, via_driver.xB);
+  EXPECT_EQ(via_runner.iterations, via_driver.iterations);
+}
+
 // B (interval 7) does NOT divide the window (A's own interval, 13): under
 // DtPolicy::Fixed, B's own last substep of every window instance crosses
 // the window end. The self-straddle split-advance (this member's OWN

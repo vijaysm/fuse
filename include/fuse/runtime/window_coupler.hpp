@@ -55,7 +55,45 @@
 ///     below, over a consumer's own `WindowMemberState::history`, which
 ///     needs no partner state because what arrived through the field
 ///     transfer at every earlier window's own end IS the provider's own
-///     committed trajectory there);
+///     committed trajectory there).
+///
+///     CORRECTION (2026-10-20, Window seed track, KNOWN_ISSUES.md D17/
+///     D76): the "new-window seed" the paragraph above names and the
+///     `test/runtime/window_runner_straddle_test.cpp` cases it cites were
+///     BOTH about `Runner::Impl::advance_window()`'s own import
+///     trajectory for a lagged member's substep computation, never about
+///     `Runner::Impl::run_region()`'s own SEPARATE `R.x_old` pre-loop
+///     seed -- the one value the generic Picard/accelerator machinery
+///     (residual norm, `R.accel->update()`) actually reads as "the
+///     previous iterate". That second seed was NOT put through this
+///     predictor for any window instance past a member's first-ever one;
+///     it read the raw, already-delivered buffer instead (a zeroth-order/
+///     persistence predictor, the one this class's own `sweep_window()`
+///     comment records trying and reverting for `y_fed` on 2026-09-29).
+///     Every case `test/runtime/window_runner_straddle_test.cpp` ran
+///     before this date used `AccelKind::None` or the refusal-only
+///     `AccelKind::Constant`, under which `R.x_old`'s own value never
+///     reaches `x_out` at all (`NoneAccel::update()` ignores it
+///     outright), so the "bit-for-bit" claim above was true for the
+///     quantity those cases exercise and never exercised `R.x_old`'s own
+///     seed at all. `AccelKind::Aitken`/`SteffensenAccel`/
+///     `QuasiNewtonAccel` all read `x_old` directly (the relaxed output
+///     `x_old + w*(x_new-x_old)`, and the residual difference `x_old`
+///     enters a history-dependent `omega`/weight recursion from), which
+///     is exactly where KNOWN_ISSUES.md D17/D76 measured the two drivers
+///     disagree starting at window 1. `R.x_old`'s own seed now applies
+///     the identical predictor for every window instance after a
+///     member's first (this file's own sibling, `src/runtime/
+///     iteration.cpp`, `Runner::Impl::run_region()`'s `k == 0` block) --
+///     verified bit-for-bit against this class's own `y_fed`, element for
+///     element, and against a direct `AccelKind::Aitken` parity case
+///     added to `test/runtime/window_runner_straddle_test.cpp` this round
+///     -- but see KNOWN_ISSUES.md D17/D76's own ROUND 2 entry for a
+///     measured, UNRESOLVED regression this same fix produces on the
+///     Brusselator's own Aitken configuration (a window that converged in
+///     25 sweeps before the fix runs the full 100-sweep cap after it,
+///     without a raised cap resolving it either) before treating this
+///     predictor as settled for every accelerator;
 ///   * the sweep loop below is driven through `WindowChannelIO`
 ///     (immediately below `WindowChannel`), an exchange seam a future
 ///     front end can override to route a channel's provider->consumer

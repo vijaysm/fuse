@@ -17,6 +17,7 @@
 /// checks, `verify_newton_capability_support()`, src/runtime/checkpoint_
 /// support.cpp).
 #include <gtest/gtest.h>
+#include <fmt/core.h>
 #include <fuse/backend/serial_backend.hpp>
 #include <fuse/ir/lowering.hpp>
 #include <fuse/runtime/runner.hpp>
@@ -498,4 +499,54 @@ TEST(WindowFixedPointResidual, AWindowThatExhaustsTheNewtonBudgetIsCountedNotCon
   ASSERT_EQ(s.runner->iteration_stats().size(), 1u);
   EXPECT_FALSE(s.runner->iteration_stats().front().converged);
   EXPECT_EQ(s.runner->stats().windows_not_converged, 1);
+}
+
+// Stage B, Window seed track (KNOWN_ISSUES.md D17/D76): `run_region()`'s
+// own window-scoped Picard/accelerator seed fix (`R.x_old`'s pre-loop
+// read, src/runtime/iteration.cpp) sits textually AFTER the early
+// `if (R.newton) { ... co_return run_region_newton_window(...); }`
+// dispatch at that same function's own top -- a Newton-selected region
+// never reaches the modified lines at all. `WindowCoupler` has no
+// Newton solve of its own (zero occurrences of "Newton" in window_
+// coupler.cpp; examples/brusselator/main.cpp's own "window" driver
+// branch refuses `--accel newton` outright), so there is no second
+// DRIVER to compare against the way D17/D76's own Aitken parity tests
+// do -- the claim this test makes instead, and the only one that is
+// both true and checkable, is FIX-INVARIANCE: this exact (seed,
+// iteration count, final state) triple, across TWO window instances
+// (the same boundary the seed bug's own window-0/window-1 transition
+// lives at), does not move at all between a build with the Stage A
+// read-first report's hypothesis unconfirmed and a build with the
+// Stage B fix applied. Printed with EXPECT_EQ (bit-for-bit, no
+// tolerance) so a diff between two builds' own stdout for this one
+// test is the entire comparison; this round's own report records that
+// diff verbatim rather than asserting it.
+TEST(WindowFixedPointResidual, TwoWindowInstancesNewtonResultIsFixInvariant) {
+  Fixture s = make_fixture(AccelKind::Newton, WaveformIteration::Jacobi);
+  ASSERT_TRUE(s.init.ok()) << s.init.error().message;
+
+  ASSERT_TRUE(s.runner->run_period(s.components).ok());
+  ASSERT_EQ(s.runner->iteration_stats().size(), 1u);
+  const bool converged0 = s.runner->iteration_stats().front().converged;
+  const int iterations0 = s.runner->iteration_stats().front().iterations;
+  const double a0 = s.a->x();
+  const double b0 = s.b->x();
+
+  ASSERT_TRUE(s.runner->run_period(s.components).ok());
+  ASSERT_EQ(s.runner->iteration_stats().size(), 1u);
+  const bool converged1 = s.runner->iteration_stats().front().converged;
+  const int iterations1 = s.runner->iteration_stats().front().iterations;
+  const double a1 = s.a->x();
+  const double b1 = s.b->x();
+
+  EXPECT_TRUE(converged0);
+  EXPECT_TRUE(converged1);
+  fmt::print(stderr,
+             "[newton-fix-invariance] window0: converged={} iterations={} "
+             "a={:.17g} b={:.17g}\n",
+             converged0, iterations0, a0, b0);
+  fmt::print(stderr,
+             "[newton-fix-invariance] window1: converged={} iterations={} "
+             "a={:.17g} b={:.17g}\n",
+             converged1, iterations1, a1, b1);
 }

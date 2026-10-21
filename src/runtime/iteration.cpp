@@ -3422,6 +3422,8 @@ detail::Task<Result<void>> Runner::Impl::run_region(
     if (k == 0) {
       for (const detail::RegionBlock& b : R.blocks) {
         const detail::WindowMemberState* seed_state = nullptr;
+        const WindowMemberConfig* seed_cfg = nullptr;
+        std::uint32_t seed_node = 0;
         std::size_t seed_length = 0;
         std::size_t seed_capacity = 1;
         for (const auto& [node, cfg] : window_member_config) {
@@ -3430,6 +3432,8 @@ detail::Task<Result<void>> Runner::Impl::run_region(
             const auto st_it = window_member_state.find(node);
             if (st_it != window_member_state.end()) {
               seed_state = &st_it->second;
+              seed_cfg = &cfg;
+              seed_node = node;
               seed_length = cfg.length;
               seed_capacity = cfg.provider_capacity;
             }
@@ -3444,31 +3448,92 @@ detail::Task<Result<void>> Runner::Impl::run_region(
             use_history = false;
           }
         }
-        if (!use_history) continue;
-        // `b.length` is NOT `seed_length` (this member's own count of
-        // SPATIAL elements, `cfg.length` -- the same count `history` is
-        // indexed by): it is that same count TIMES `cfg.provider_capacity`
-        // (`b.feed_arc`'s own full buffer stride, same layout
-        // `resolve_regions()`'s own cold-start seed reads with `e *
-        // cfg.provider_capacity`, above in this file). Replicating each
-        // element's own t=0 value across its own `provider_capacity`
-        // slots -- not writing just the first `seed_length` entries,
-        // leaving the rest at whatever `b.feed_arc`'s pre-loop seed left
-        // them (a LowFive channel's own zero, for every slot past the
-        // first `seed_length`) -- is what a cold-start buffer actually
-        // looks like: every sample constant, nothing yet diverged between
-        // them (the SAME invariant resolve_regions()'s own comment names
-        // for the ordinary case).
+        if (use_history) {
+          // `b.length` is NOT `seed_length` (this member's own count of
+          // SPATIAL elements, `cfg.length` -- the same count `history` is
+          // indexed by): it is that same count TIMES `cfg.provider_capacity`
+          // (`b.feed_arc`'s own full buffer stride, same layout
+          // `resolve_regions()`'s own cold-start seed reads with `e *
+          // cfg.provider_capacity`, above in this file). Replicating each
+          // element's own t=0 value across its own `provider_capacity`
+          // slots -- not writing just the first `seed_length` entries,
+          // leaving the rest at whatever `b.feed_arc`'s pre-loop seed left
+          // them (a LowFive channel's own zero, for every slot past the
+          // first `seed_length`) -- is what a cold-start buffer actually
+          // looks like: every sample constant, nothing yet diverged between
+          // them (the SAME invariant resolve_regions()'s own comment names
+          // for the ordinary case).
+          double* x_old_block = R.x_old.data() + b.offset;
+          for (std::size_t e = 0; e < seed_length; ++e) {
+            const double v = seed_state->history[e].front().second;
+            for (std::size_t s = 0; s < seed_capacity; ++s) {
+              const std::size_t idx = e * seed_capacity + s;
+              if (idx < b.length) x_old_block[idx] = v;
+            }
+          }
+          continue;
+        }
+        // KNOWN_ISSUES.md D17/D76 (Window seed track, Stage B fix): every
+        // window instance AFTER the member's first-ever one (the branch
+        // just above) reached here with `R.x_old`'s pre-loop seed left at
+        // whatever `slot_to_host(slots[b.feed_arc], ...)` (this function's
+        // own top) read -- the PREVIOUS window's own converged delivery,
+        // reused verbatim. That is a zeroth-order (persistence) predictor:
+        // EXACTLY the one `WindowCoupler::sweep_window()`'s own comment
+        // (window_coupler.cpp, next to its `y_fed` seed) records trying
+        // and reverting on 2026-09-29 for needing MORE sweeps than the
+        // genuine `extrapolate_boundary_value()` fit that file always
+        // uses. This block applies that SAME predictor -- the one
+        // `advance_window()`'s own `use_predictor` branch (this file's
+        // sibling) already applies to a lagged member's own IMPORT
+        // TRAJECTORY -- to `R.x_old`'s own seed as well, gated the same
+        // way: `cfg.import_lagged` (Jacobi forces this true both
+        // directions; GaussSeidel's own UNLAGGED direction is read live
+        // every sweep and is deliberately left untouched here, matching
+        // `advance_window()`'s own gate).
+        if (seed_cfg == nullptr || !seed_cfg->import_lagged) continue;
+        const auto dst_it = window_last_dst_step.find(seed_node);
+        if (dst_it == window_last_dst_step.end()) continue;
+        // `window_last_dst_step[seed_node]` is set unconditionally by
+        // `advance_window()`'s own "window_last_dst_step[node] =
+        // absolute_instance;" on EVERY call for this node, including THIS
+        // sweep's: by this point in the pass (after the instruction
+        // stream above, which already dispatched this member's own
+        // WindowAdvance this sweep), it already names THIS window's own
+        // absolute instance, not the previous one -- measured directly
+        // (temporary trace, this round) rather than assumed from
+        // `refresh_window_member_history()`'s own read of the same map,
+        // which runs at a DIFFERENT point (the previous pass's own exit,
+        // before this pass started) and would be one behind here.
+        const std::int64_t absolute_instance = dst_it->second;
+        const std::vector<Rational> times = window_sample_times(
+            seed_cfg->provider_interval, seed_cfg->provider_policy,
+            Rational{0}, seed_cfg->window_length, absolute_instance);
+        const int shift = window_sample_shift(
+            seed_cfg->provider_interval, seed_cfg->provider_policy,
+            Rational{0}, Rational(absolute_instance) * seed_cfg->window_length);
         double* x_old_block = R.x_old.data() + b.offset;
         for (std::size_t e = 0; e < seed_length; ++e) {
-          const double v = seed_state->history[e].front().second;
-          for (std::size_t s = 0; s < seed_capacity; ++s) {
-            const std::size_t idx = e * seed_capacity + s;
+          if (e >= seed_state->history.size() || seed_state->history[e].empty()) {
+            continue;
+          }
+          for (std::size_t t = static_cast<std::size_t>(shift); t < times.size(); ++t) {
+            // `times[shift]` (when `shift == 1`) already has a real,
+            // non-extrapolated value sitting in the buffer from an
+            // earlier straddle's own republish (advance_window()'s own
+            // comment on `k == shift`); this predictor, like
+            // `WindowCoupler`'s own `y_fed` seed loop, does not special-
+            // case it, so that slot is left untouched here -- matching
+            // this function's own pre-loop raw read for it, not
+            // overwritten with a second, needless extrapolation.
+            if (t == static_cast<std::size_t>(shift) && shift == 1) continue;
+            const double v = fuse::extrapolate_boundary_value(
+                seed_state->history[e], times[t], seed_cfg->order);
+            const std::size_t idx = e * seed_capacity + (t - static_cast<std::size_t>(shift));
             if (idx < b.length) x_old_block[idx] = v;
           }
         }
-      }
-    }
+      }    }
 
     // G(y), and the residual G(y) - y. Computed unconditionally, even after
     // a local failure earlier in this same sweep: R-10 (REVIEW.md)'s
