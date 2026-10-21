@@ -7740,7 +7740,9 @@ gtest kills the mutant. `tools/mutate.py` reported SURVIVED because the row was 
 converged `u` is unchanged to 1e-8 and only `dG_dq_I` moves. Two logged reruns (`FUSE_MUTATE_LOGDIR`) showed that row's
 test passing in both. This was a wiring defect in the row, not an unexplained tool disagreement (the earlier note that
 called it unexplained, and the timestamp test that ruled out `make`, are kept as the record of what was ruled out); the
-row now names `petsc.reaction_diffusion`, and its kill run through the tool is pending.
+row now names `petsc.reaction_diffusion`. Kill run through the tool on the host (2026-10-21, two logged runs): the row is
+KILLED both times, at `reaction_diffusion_test.cpp:49`, `dG_dq_I` 0.42933741243245555 against 0.45921063854352084 with the bound at
+9.9999999999999995e-07; the area gate reads 3 killed, 1 declared equivalent, 0 not killed, of 4.
 ### ~~D48. A `Transport` instruction can have one arc device-resident and the other host, even in Device mode — FOUND AND FIXED 2026-10-13
 
 **What was found.** docs/dev/device-resident-arcs.md Phase 3 made `Transport` space-aware in
