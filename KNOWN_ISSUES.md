@@ -8211,7 +8211,19 @@ the participants then enter on the shared transport communicator is what the bys
 the first thing to check. Not diagnosed further: higgs has no `gdb` on the job shell's PATH to capture
 per-rank stacks. The row is registered and times out (120 s) on that host until this is understood.
 
-### D56. `FsiEnergyDiag.FullBudgetOnTheDominantModeCloses`'s mass-correction gate fails on higgs's toolchain by 1.5x — OPEN, found by the device-merge gate 2026-10-13
+**Not reproduced on higgs's current toolchain (lead, 2026-10-21; Higgs MPI track, `HEAD 96ecdb5`, Debug, Kokkos CUDA):** the entry stays
+OPEN because its cause was never found and the toolchain it names is gone. `/opt/openmpi` was replaced on 2026-10-17 by a spack-built
+Open MPI 5.0.9 (PRRTE 4.0.0), so Open MPI 4.1.5 is no longer installed on this host. On 5.0.9, `parallel.window_newton_mpi` at three
+ranks under `timeout 60` passed in 5 of 5 runs, each 153 to 323 ms in total: the filtered case (twice, the first job exit of 1 came
+from the track's own script aborting after the test had printed PASSED, and a rerun with a script keyed to the binary's exit code
+exited 0), the full binary, the full binary with `OMPI_MCA_coll=^tuned`, and a plain repeat; the two-rank row also passed. No hang
+occurred, so the planned per-rank trace was not taken and no stack was captured. `gdb` is present at `/usr/bin/gdb` on the host
+(contradicting this entry's note that it was not). The track read the bystander's early return (`src/runtime/iteration.cpp`
+near line 2897) and judged, from source alone, that the split-communicator layout does not match the unguarded-collective pattern;
+that reading is NOT a measurement and does not separate a FUSE defect that Open MPI 4.1.5 exposed and 5.0.9 tolerates from an
+Open MPI 4.1.5 defect. Separating them needs 4.1.5 built side by side, which is heavier than a build and a short test run and is the
+owner's call.
+### ~~D56. `FsiEnergyDiag.FullBudgetOnTheDominantModeCloses`'s mass-correction gate fails on higgs's toolchain by 1.5x — OPEN, found by the device-merge gate 2026-10-13
 
 The gate `max_abs_diff_non_outflow < 0.5 * eig_quality * max|u_raw|` (test/verification/
 fsi_energy_diag_test.cpp, "MASS-CORRECTION ISOLATION") measured 1.720e-10 against a tolerance of
@@ -8223,6 +8235,12 @@ error in the extracted inputs, scaled by |u_raw|) is missing a term on this tool
 `cn_step` solves' own forward-error difference is the candidate. The `.device` twin of the row passes
 (its energy budget runs on the selected oscillatory mode exactly as the host leg does).
 
+**Closed (lead, 2026-10-21; measured by the Higgs MPI track on ssh:higgs, `HEAD 96ecdb5`, Debug, Kokkos CUDA, Open MPI 5.0.9):**
+`verification.fsi_energy_diag` passes on the host leg (11.93 s) and its `.device` twin (12.89 s). The mass-correction isolation
+check now reads `4*kappa_2(A_fluid)*u*max|u_raw|`: tolerance 9.809e-12 against a measured `max|u1-u_raw|` of 1.196e-14 on the host
+leg (ratio 0.001), and 6.429e-12 against 5.435e-15 on the device leg (ratio 0.001). D80's change of the comparison and of the tolerance
+is what resolved this; the 1.720e-10 against 1.183e-10 recorded above was measured before it. No tolerance or assertion was touched by
+the track. One toolchain is covered here (GCC 13.3 through `nvcc_wrapper`, the one the entry named).
 ### ~~D57. The ABI's own period-rollover eagerly started an extra period `Runner::run()` never requests, and both sides hit a base-communicator collective the other side had already left
 
 **What it was.** `src/abi/participant.cpp`'s `prime_next_request()` (called from `impl_begin_step()`/
