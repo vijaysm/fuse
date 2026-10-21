@@ -7501,7 +7501,7 @@ quick tier at `cb127c5`): `parallel.participant_reducer_mpi.{2,3}`, `parallel.wi
 `petsc.window_newton_mpi.{2,3}` all Passed. The 3-rank reducer leg is the non-contiguous participant subset
 {0,2}. D55 (the same `window_newton_mpi.3` row hanging under Open MPI 4.1.5 on higgs) stays open on its own.
 
-### D32. The PETSc solver plugin is the second substrate behind the S7 seam — BUILT AND MEASURED 2026-10-11; the region communicator was lifted 2026-10-12 and `petsc.window_newton_mpi.{2,3}` passed on the host 2026-10-18
+### ~~D32. The PETSc solver plugin is the second substrate behind the S7 seam — BUILT AND MEASURED 2026-10-11; the region communicator was lifted 2026-10-12 and `petsc.window_newton_mpi.{2,3}` passed on the host 2026-10-18
 
 S7 was built on the library's own linear algebra first, by the user's decision of 2026-10-10: a
 native Jacobian-free Newton-Krylov coupler (`fuse::num::solve()`, `docs/dev/newton-krylov.md`)
@@ -7743,6 +7743,15 @@ called it unexplained, and the timestamp test that ruled out `make`, are kept as
 row now names `petsc.reaction_diffusion`. Kill run through the tool on the host (2026-10-21, two logged runs): the row is
 KILLED both times, at `reaction_diffusion_test.cpp:49`, `dG_dq_I` 0.42933741243245555 against 0.45921063854352084 with the bound at
 9.9999999999999995e-07; the area gate reads 3 killed, 1 declared equivalent, 0 not killed, of 4.
+
+**Closed (record pass, lead, 2026-10-21):** the three conditions this entry named are met in the tree. Per-region substrate
+selection through the descriptor exists and `E-NEWTON-PETSC-UNAVAILABLE` is fired at tier 0 without PETSc by
+`test/runtime/newton_region_test.cpp` (two cases). `example.dn_heat.newton_petsc` and `petsc.brusselator_newton` are
+registered and recorded beside the native results (this entry's own host-run paragraphs), `example.brusselator.newton_petsc` passed
+on the host 2026-10-21, and `petsc.window_newton_mpi.{2,3}` and every other row whose name contains `petsc` (13 of 13) passed on the
+host 2026-10-21. The `eta_min` floor is handled in the Brusselator path (`examples/brusselator/main.cpp`). What stays open is
+outside this entry: the PETSc half has run on one machine and one MPI only (MPICH 5.0.2rc3), and the kill run of the `petsc` area's
+one not-assessed row needs a build with no MPI.
 ### ~~D48. A `Transport` instruction can have one arc device-resident and the other host, even in Device mode — FOUND AND FIXED 2026-10-13
 
 **What was found.** docs/dev/device-resident-arcs.md Phase 3 made `Transport` space-aware in
@@ -9294,7 +9303,7 @@ MPI-gated and only compiled, never run, in this sandbox (host_pending: `ctest --
 multi-rank launch, though the mechanism and the fix are already proven, without MPI, by the two
 tests above).
 
-### D68. `BoxIndex::build_device_resident` tied its tree-routing flag to `kHasDeviceBackend`, reading `size()`/`empty()`/every query from the untouched host tree on a build with no device backend -- FOUND AND FIXED 2026-10-15 (MeshAdapter track)
+### ~~D68. `BoxIndex::build_device_resident` tied its tree-routing flag to `kHasDeviceBackend`, reading `size()`/`empty()`/every query from the untouched host tree on a build with no device backend -- FOUND AND FIXED 2026-10-15 (MeshAdapter track)
 
 **What was found.** `search.mesh_adapter`'s `MeshAdapter.DeviceElementBoxesMatchHostElementBoxesForANativeMesh`
 (added in 98be06b, 2026-10-14, "search: element_boxes_device_resident over a device-resident
@@ -9397,6 +9406,9 @@ data actually in" is easy to let drift apart, because nothing observable breaks 
 caller reads the GENUINELY device-resident member (`size()`/`empty()`/a query) rather than a
 CPU-computed one (`dimension()`).
 
+**Closed (record pass, lead, 2026-10-21):** the title already records the fix (2026-10-15). The cross-references above to D49, D51,
+D66 and D67 are other device-resident entries and are not part of this one. The device branch was run for the first time on a real
+CUDA backend on 2026-10-21 for provider fields (D15); this entry's own routing flag was not re-measured there.
 ### ~~D69. A window-scoped region's own accelerator restart state is not implemented~~ -- CLOSED 2026-10-15 (Restart track, Stage B Slice 2, round 2; renumbered from round 1's own D68, which this track's main branch took for the BoxIndex fix, D68 above)
 
 Found while wiring the Brusselator (`examples/brusselator`) into restart-to-disk, the one example
