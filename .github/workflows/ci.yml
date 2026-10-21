@@ -29,74 +29,122 @@ jobs:
       # A warning in the docs is a defect in the docs.
       - run: sphinx-build -W --keep-going -b html docs docs/_build/html
 
-  # The upstream-soma leg (imported coupler suite, standalone build) was
-  # removed 2026-10-12 (soma-import track): FUSE_BUILD_UPSTREAM_SOMA no longer
-  # exists (see CMakeLists.txt), so there is nothing for this leg to configure
-  # against. UPSTREAMS.lock's [soma].retired field and docs/dev/soma-import.md
-  # record the detachment and what fuse:: still needs from the subtree.
-
-  # Remaining legs arrive with the first fuse:: source at S1: tier 0 across both
-  # linear-algebra backends and both host execution spaces, tier 1 at 2/3/4/5
-  # ranks, tier 2, tier 3, Release, ASan+UBSan, no-exceptions, and the
-  # mutation-evidence gate. The imported spine tree needs MOAB and PETSc and is
-  # built on a host, not here -- see UPSTREAMS.lock.
-
-  tier0:
-    name: tier 0 (${{ matrix.build }}, ${{ matrix.linalg }})
+  # Serial / threaded build matrix. Replaces the old "tier 0 / tier 1 / ..."
+  # legs with a single matrix that varies the three axes that actually change
+  # what compiles: the C/C++ compiler (gcc and clang, the two toolchains the
+  # project supports), the CMAKE_BUILD_TYPE (Debug and Release -- FUSE_ASSERT
+  # is checked live under NDEBUG on Release), and the linalg facade backend
+  # (builtin, the coupler's own QR, and eigen, the second opinion). Every
+  # combination resolves Kokkos + ArborX + fmt + Eigen through FetchContent at
+  # the pinned tags, so each leg reproduces identically on every runner.
+  build:
+    name: build (${{ matrix.cc }}, ${{ matrix.build }}, ${{ matrix.linalg }})
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
+        cc: [gcc, clang]
         build: [Debug, Release]
-        # `kokkoskernels` is not one of FUSE_LINALG_BACKEND's implemented values
-        # (cmake/FuseDependencies.cmake's STRINGS property is builtin|eigen) and
-        # this leg's configure step would FATAL_ERROR on every run (REVIEW.md
-        # R-05). `builtin` is the coupler's own backend and the second leg
-        # `docs/dev/testing.md` names as "tier 0 across both linear-algebra
-        # backends".
-        linalg: [eigen, builtin]
+        linalg: [builtin, eigen]
+        include:
+          - cc: gcc
+            cxx: g++
+          - cc: clang
+            cxx: clang++
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y ninja-build libomp-dev
-      # fmt, googletest and the linalg backend come through FetchContent at the pinned
-      # tags (cmake/FuseDependencies.cmake); the system is not consulted for them (the
-      # CMAKE_DISABLE_FIND_PACKAGE_* flags below) and FUSE_ALLOW_FETCH=ON lets
-      # fuse_require() build the pinned copy instead of hard-failing, so the leg
-      # reproduces the same way on every runner. Kokkos is deliberately NOT disabled:
-      # the runner has no system Kokkos to consult anyway, and ArborX's own
-      # find_package(Kokkos REQUIRED CONFIG) call (fuse_resolve_arborx(), meant to
-      # transparently reuse the Kokkos this configure already fetched) is a hard
-      # configure error when CMAKE_DISABLE_FIND_PACKAGE_Kokkos is set on a REQUIRED
-      # call -- CMake refuses to disable a REQUIRED find_package.
+      # fmt, googletest, Kokkos, ArborX and Eigen come through FetchContent at
+      # the pinned tags (cmake/FuseDependencies.cmake); the system is not
+      # consulted for fmt/GTest (the CMAKE_DISABLE_FIND_PACKAGE_* flags below)
+      # and FUSE_ALLOW_FETCH=ON lets the pinned copy build instead of hard-
+      # failing. Kokkos is deliberately NOT disabled for find_package: ArborX's
+      # own find_package(Kokkos REQUIRED CONFIG) is a hard configure error when
+      # CMAKE_DISABLE_FIND_PACKAGE_Kokkos is set on a REQUIRED call. Eigen is
+      # likewise NOT disabled: it is resolved unconditionally now (several tests
+      # and examples link Eigen3::Eigen directly regardless of the facade
+      # backend), so find_package is allowed to reuse an installed copy.
       - run: >
           cmake -S . -B build -G Ninja
+          -DCMAKE_C_COMPILER=${{ matrix.cc }} -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
           -DCMAKE_BUILD_TYPE=${{ matrix.build }}
           -DFUSE_LINALG_BACKEND=${{ matrix.linalg }}
           -DFUSE_ALLOW_FETCH=ON
           -DFUSE_BUILD_UPSTREAM_KARMA=OFF
           -DKokkos_ENABLE_SERIAL=ON -DKokkos_ENABLE_OPENMP=ON
           -DCMAKE_DISABLE_FIND_PACKAGE_fmt=ON
-          -DCMAKE_DISABLE_FIND_PACKAGE_GTest=ON -DCMAKE_DISABLE_FIND_PACKAGE_Eigen3=ON
+          -DCMAKE_DISABLE_FIND_PACKAGE_GTest=ON
       - run: cmake --build build -j
       - run: ctest --test-dir build --output-on-failure
       - run: cat build/fuse-resolved-dependencies.txt
 
-  tier0-no-exceptions:
-    name: tier 0 (no exceptions)
+  # Exceptions-off leg: every FUSE_THROW/ASSERT/REFUSE aborts after its on-error
+  # policy instead of unwinding. Kept as its own leg (not a matrix axis) because
+  # tests that assert a throw cannot run here by design and are excluded with
+  # -LE throws.
+  no-exceptions:
+    name: build (no exceptions)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y ninja-build libomp-dev
-      # Kokkos is deliberately not disabled for find_package -- see the tier0 leg's
-      # comment above; disabling it breaks ArborX's own REQUIRED find_package(Kokkos).
       - run: >
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
           -DFUSE_ENABLE_EXCEPTIONS=OFF -DFUSE_ALLOW_FETCH=ON
           -DFUSE_BUILD_UPSTREAM_KARMA=OFF
           -DKokkos_ENABLE_SERIAL=ON
           -DCMAKE_DISABLE_FIND_PACKAGE_fmt=ON -DCMAKE_DISABLE_FIND_PACKAGE_GTest=ON
-          -DCMAKE_DISABLE_FIND_PACKAGE_Eigen3=ON
       - run: cmake --build build -j
-      # Tests that assert a throw cannot run here by design; the leg proves the
-      # library and the non-throwing tests build and pass with the option off.
       - run: ctest --test-dir build --output-on-failure -LE throws
+
+  # Sanitizer leg: AddressSanitizer + UndefinedBehaviorSanitizer on a Debug
+  # build with the eigen backend (the backend that pulls in the most third-party
+  # code to sanitize). gcc is used because its ASan/UBSan runtime ships with the
+  # Ubuntu toolchain and needs no extra package.
+  sanitizers:
+    name: build (asan+ubsan)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build libomp-dev
+      - run: >
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+          -DFUSE_LINALG_BACKEND=eigen
+          -DFUSE_ALLOW_FETCH=ON
+          -DFUSE_BUILD_UPSTREAM_KARMA=OFF
+          -DKokkos_ENABLE_SERIAL=ON
+          -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+          -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+          -DCMAKE_DISABLE_FIND_PACKAGE_fmt=ON -DCMAKE_DISABLE_FIND_PACKAGE_GTest=ON
+      - run: cmake --build build -j
+      - run: ctest --test-dir build --output-on-failure
+        env:
+          ASAN_OPTIONS: detect_leaks=0
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+
+  # MPI leg (tier 1): the transport, CommGraph and epoch machinery across
+  # ranks. MPICH is installed from apt so find_package(MPI) resolves; the suite
+  # is run at several rank counts the same way a host build would.
+  mpi:
+    name: build (mpi)
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        build: [Debug, Release]
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build libomp-dev mpich libmpich-dev
+      - run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=${{ matrix.build }}
+          -DFUSE_ENABLE_MPI=ON
+          -DFUSE_LINALG_BACKEND=eigen
+          -DFUSE_ALLOW_FETCH=ON
+          -DFUSE_BUILD_UPSTREAM_KARMA=OFF
+          -DKokkos_ENABLE_SERIAL=ON -DKokkos_ENABLE_OPENMP=ON
+          -DCMAKE_DISABLE_FIND_PACKAGE_fmt=ON
+          -DCMAKE_DISABLE_FIND_PACKAGE_GTest=ON
+      - run: cmake --build build -j
+      - run: ctest --test-dir build --output-on-failure
+      - run: cat build/fuse-resolved-dependencies.txt

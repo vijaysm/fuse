@@ -94,13 +94,14 @@ set(FUSE_R3D_TAG "58dfbfb2fd2a89e36e3c7ceb5ca6aef3f9c4c4e6" CACHE STRING "r3d co
 set(FUSE_YAMLCPP_TAG     "0.8.0")
 set(FUSE_GTEST_TAG       "v1.15.2")   # git tag; the find_package version below is the same number without the v
 set(FUSE_GTEST_VERSION   "1.15.2")
-# Floor is ArborX 2.1's own find_package(Kokkos 4.5 REQUIRED CONFIG)
-# (UPSTREAMS.lock [arborx].kokkos_required); the previous 4.4.01 pin was below
-# it, so a fetch build (no installed Kokkos, as on CI) made ArborX's configure
-# fail with "Could not find a package configuration file provided by Kokkos
-# (requested version 4.5)". 4.5.01 is the lowest 4.5 patch release ArborX 2.1
-# builds against.
-set(FUSE_KOKKOS_TAG     "4.5.01")
+# Default is Kokkos 5.0 (5.0.2, the latest 5.0 patch). ArborX 2.1's own
+# find_package(Kokkos 4.5 REQUIRED CONFIG) (UPSTREAMS.lock
+# [arborx].kokkos_required) sets the FLOOR at 4.5, and a 5.0 install satisfies
+# that ">= 4.5" request (ArborX is proven to compile against 5.1.0 per
+# docs/dev/search.md, so 5.0.2 is well within its supported range). The
+# previous 4.5.01 pin was the lowest release that merely cleared ArborX's
+# floor; 5.0 is the current stable line and is made the default here.
+set(FUSE_KOKKOS_TAG     "5.0.2")
 set(FUSE_EIGEN_TAG      "3.4.0")
 # ArborX: the scalable BVH tree and point-cloud interpolants fuse::search
 # wraps (docs/dev/search.md) -- required at every tier, like Kokkos and fmt,
@@ -226,6 +227,10 @@ FetchContent_Declare(r3d
   GIT_REPOSITORY https://github.com/devonmpowell/r3d.git GIT_TAG ${FUSE_R3D_TAG}
   FIND_PACKAGE_ARGS NAMES r3d)
 
+# Eigen lives on GitLab (there is no official GitHub mirror). GitLab
+# occasionally returns "GitLab is currently unable to handle this request due
+# to load" mid-clone; that is a transient upstream outage, not a defect here,
+# and FetchContent already retries the clone before giving up.
 FetchContent_Declare(Eigen3
   GIT_REPOSITORY https://gitlab.com/libeigen/eigen.git GIT_TAG ${FUSE_EIGEN_TAG} GIT_SHALLOW ON)
 
@@ -415,6 +420,53 @@ macro(fuse_resolve_yaml)
   endif()
 endmacro()
 
+# Eigen3. Hand-written like r3d/yaml-cpp/ArborX rather than going through the
+# generic fuse_require() because the FETCH path needs CACHE variables set
+# BEFORE FetchContent_MakeAvailable(Eigen3) runs. Eigen's standalone
+# CMakeLists unconditionally registers an `uninstall` custom target and the
+# whole CMake-package/testing machinery; yaml-cpp (resolved just above on the
+# same fetch path) ALSO registers a target literally named `uninstall`, so the
+# second one to configure died with "add_custom_target cannot create target
+# 'uninstall' because another target with the same name already exists"
+# (CMP0002), failing every eigen-backend configure on CI. Turning Eigen's
+# package machinery OFF (EIGEN_BUILD_CMAKE_PACKAGE, plus the doc/testing knobs)
+# stops it registering that target while still exporting the header-only
+# Eigen3::Eigen interface target the facade and the examples link against.
+# BUILD_TESTING is saved/forced-OFF/restored for the same reason the generic
+# fetch path in fuse_require() does it: Eigen would otherwise register ~830 of
+# its own CTest entries into this project's suite.
+macro(fuse_resolve_eigen)
+  # No version constraint: Eigen3Config is SameMajorVersion, so asking for 3.4
+  # rejects an installed 5.x outright. The facade uses dense QR, small
+  # least-squares and sparse products, whose API is identical across both.
+  find_package(Eigen3 QUIET CONFIG NAMES Eigen3)
+  if(Eigen3_FOUND)
+    file(APPEND "${FUSE_RESOLUTION_FILE}" "Eigen3=found ${Eigen3_VERSION} ${Eigen3_DIR}\n")
+    message(STATUS "fuse: Eigen3 ${Eigen3_VERSION} found at ${Eigen3_DIR}")
+  else()
+    if(NOT FUSE_ALLOW_FETCH)
+      message(FATAL_ERROR
+        "fuse: Eigen3 not found.\n"
+        "  Set FUSE_LINALG_BACKEND=builtin to use the built-in factorisation instead.\n"
+        "  Point CMAKE_PREFIX_PATH at its prefix, or configure with -DFUSE_ALLOW_FETCH=ON "
+        "to build a pinned copy (which will NOT be tuned for this machine).")
+    endif()
+    set(EIGEN_BUILD_CMAKE_PACKAGE OFF CACHE BOOL "" FORCE)
+    set(EIGEN_BUILD_DOC OFF CACHE BOOL "" FORCE)
+    set(EIGEN_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+    set(EIGEN_BUILD_PKGCONFIG OFF CACHE BOOL "" FORCE)
+    set(EIGEN_BUILD_BLAS OFF CACHE BOOL "" FORCE)
+    set(EIGEN_BUILD_LAPACK OFF CACHE BOOL "" FORCE)
+    set(_fuse_saved_build_testing "${BUILD_TESTING}")
+    set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(Eigen3)
+    set(BUILD_TESTING "${_fuse_saved_build_testing}" CACHE BOOL "" FORCE)
+    unset(_fuse_saved_build_testing)
+    file(APPEND "${FUSE_RESOLUTION_FILE}" "Eigen3=fetched ${FUSE_EIGEN_TAG}\n")
+    message(STATUS "fuse: Eigen3 ${FUSE_EIGEN_TAG} built from source (pinned)")
+  endif()
+endmacro()
+
 # ArborX. Found first, otherwise always fetched (never gated on
 # FUSE_ALLOW_FETCH), and written by
 # hand rather than calling fuse_require() itself, because the fetch path needs
@@ -601,13 +653,17 @@ macro(fuse_resolve_dependencies)
   get_target_property(FUSE_KOKKOS_INCLUDE_DIRS Kokkos::kokkoscore INTERFACE_INCLUDE_DIRECTORIES)
   set(FUSE_KOKKOS_INCLUDE_DIRS "${FUSE_KOKKOS_INCLUDE_DIRS}" CACHE INTERNAL "chosen Kokkos include dirs")
 
-  if(FUSE_LINALG_BACKEND STREQUAL "eigen")
-    # No version constraint: Eigen3Config is SameMajorVersion, so asking for 3.4
-    # rejects an installed 5.x outright. The facade uses dense QR, small
-    # least-squares and sparse products, whose API is identical across both.
-    fuse_require(Eigen3 NAMES Eigen3 HINT "Set FUSE_LINALG_BACKEND=builtin to use the built-in factorisation instead.")
-  endif()
-  # `builtin` resolves nothing: that is the point of having it.
+  # Eigen3 is resolved UNCONDITIONALLY, not only when FUSE_LINALG_BACKEND=eigen.
+  # The facade's backend choice (builtin vs eigen) selects which code path the
+  # LIBRARY compiles, but several tests and examples (gray_scott, brusselator,
+  # fsi_channel, the verification isolation test) use Eigen DIRECTLY -- their
+  # Newton/implicit solves call Eigen::SparseLU -- and link Eigen3::Eigen
+  # whatever the facade backend is. Resolving Eigen only on the eigen backend
+  # left Eigen3::Eigen undefined on a builtin-backend configure, so every such
+  # target failed generate with "Target ... links to Eigen3::Eigen but the
+  # target was not found". Eigen is header-only, so always providing it costs a
+  # fetch/find, not a compile.
+  fuse_resolve_eigen()
 
   if(FUSE_ENABLE_TESTS)
     fuse_require(GTest VERSION ${FUSE_GTEST_VERSION} NAMES GTest FETCH_AS googletest
