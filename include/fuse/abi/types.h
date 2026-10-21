@@ -270,6 +270,8 @@ typedef struct fuse_field_spec {
   int32_t     components;  /* values per entity this provider declares */
   int32_t     intent;  /* 0 export (Provides), 1 import (Requires), 2 both -- same convention as fuse_field_ref.intent */
   int32_t     element_type;  /* FUSE_ELEMENT_* */
+  int32_t     memspace;  /* FUSE_MEMSPACE_*; defaults to FUSE_MEMSPACE_HOST for a struct_size an old caller set before this member existed (abi-design.md rule 2's documented default). FUSE_MEMSPACE_DEVICE here is refused at registration (a new E-code) unless this provider's own capabilities() also reports FUSE_CAP_DEVICE_FIELDS -- the two together, not this field alone, is what the library trusts. */
+  int32_t     reserved;  /* zero; abi-design.md rule 3 -- memspace alone (28 -> 32 bytes) would land in this struct's own existing trailing padding and change nothing a struct_size check could see, so it is paired with this member to push sizeof from 32 to 40 */
 } fuse_field_spec;
 
 /* caller-owned buffer of fuse_field_spec rows; the query-size pattern */

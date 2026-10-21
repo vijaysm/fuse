@@ -139,7 +139,7 @@ TEST(AbiGolden, NoStructHasTrailingPaddingALaterMemberCouldHide) {
   FUSE_NO_TRAILING_PADDING(fuse_run_request, periods);
   FUSE_NO_TRAILING_PADDING(fuse_base_communicator_info, reserved);
   FUSE_NO_TRAILING_PADDING(fuse_participant_abi_v1, request_restart_point);
-  FUSE_NO_TRAILING_PADDING(fuse_field_spec, element_type);
+  FUSE_NO_TRAILING_PADDING(fuse_field_spec, reserved);
   FUSE_NO_TRAILING_PADDING(fuse_field_table, written);
   FUSE_NO_TRAILING_PADDING(fuse_provider_instance, self);
   FUSE_NO_TRAILING_PADDING(fuse_provider_abi_v1, load_restart_blob);
