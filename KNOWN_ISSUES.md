@@ -7735,10 +7735,12 @@ declared equivalent with a verified reason (the function builds everything on `P
 `...assembly-no-zero-before-reassembly` is NOT equivalent: run by hand on the host, the unmutated code converges in 4
 Newton iterations to `dG_dq_I = 4.592106385435e-01`, and with `MatZeroEntries` removed the loop hits its 40-iteration cap
 and `dG_dq_I = 4.293374124325e-01`, which fails `PetscInnerSolveAgreesWithNativeAtOnePoint` against its 1e-6 bound. So the
-test kills the mutant, while `tools/mutate.py` reported SURVIVED for it. That disagreement is unexplained: one-second
-timestamp resolution in `make` was tested and ruled out (GNU Make 4.4.1 rebuilt in 8 of 8 same-second trials). The tool
-now keeps each row's build log and ctest output under `FUSE_MUTATE_LOGDIR`, and the area is to be rerun with it before
-the verdict for that row is relied on in either direction.
+gtest kills the mutant. `tools/mutate.py` reported SURVIVED because the row was wired to the example row
+`example.petsc_reaction_diffusion.petsc`, whose check compares the solution `u` only: with the Jacobian accumulating, the
+converged `u` is unchanged to 1e-8 and only `dG_dq_I` moves. Two logged reruns (`FUSE_MUTATE_LOGDIR`) showed that row's
+test passing in both. This was a wiring defect in the row, not an unexplained tool disagreement (the earlier note that
+called it unexplained, and the timestamp test that ruled out `make`, are kept as the record of what was ruled out); the
+row now names `petsc.reaction_diffusion`, and its kill run through the tool is pending.
 ### ~~D48. A `Transport` instruction can have one arc device-resident and the other host, even in Device mode — FOUND AND FIXED 2026-10-13
 
 **What was found.** docs/dev/device-resident-arcs.md Phase 3 made `Transport` space-aware in
