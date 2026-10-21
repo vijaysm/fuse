@@ -214,6 +214,35 @@ that disagrees with the graph's own field declaration are refused at `fuse_initi
 `E-ABI-LOAD`, `E-ABI-VERSION`, `E-ABI-DESCRIBE` respectively) — never silently skipped or
 substituted.
 
+## Device fields
+
+`fuse_field_spec`'s `memspace` entry (`FUSE_MEMSPACE_HOST` or `FUSE_MEMSPACE_DEVICE`, the same enum
+`fuse_register_field` already uses on the participant direction) lets a field's `describe()` row ask
+for device-resident storage instead of the host storage every field got before this entry existed.
+Defaulted to `FUSE_MEMSPACE_HOST` (value 0) for a plugin compiled before this entry was added, so an
+old plugin's behaviour does not change.
+
+Asking for `FUSE_MEMSPACE_DEVICE` needs two things to both be true, checked in this order:
+
+1. Your plugin's own `capabilities()` entry must report `FUSE_CAP_DEVICE_FIELDS` in its `flags`. A
+   field that asks for a device space your own `capabilities()` did not declare is refused by name
+   (`E-ABI-PROVIDER-DEVICE-UNDECLARED`) before FUSE ever looks at whether a device backend exists.
+   The opposite -- `capabilities()` sets the bit but no field ever asks for `FUSE_MEMSPACE_DEVICE` --
+   is unremarkable: a provider is always free to offer more than a graph uses.
+2. This FUSE build must have been compiled with a real device backend (Kokkos configured with CUDA,
+   HIP, or SYCL). A correctly-declared device field on a build with none of those is refused by name
+   (`E-ABI-PROVIDER-NO-DEVICE`) rather than silently handed host-addressable memory under the device
+   label -- `Kokkos::DefaultExecutionSpace::memory_space` legally equals `Kokkos::HostSpace` on such a
+   build, and nothing would crash if the library used it anyway, but that is not what the field asked
+   for.
+
+An accepted device field is allocated and owned by FUSE, the same as a host field: your plugin's own
+`bind()` entry still receives a `fuse_field_view` whose `data` pointer it writes through, except that
+pointer now addresses `Kokkos::DefaultExecutionSpace::memory_space` rather than host memory, and
+`view->memspace` reports which. After a successful `advance()` on a provider with at least one
+accepted device field, FUSE fences the default execution space before returning -- unconditionally,
+never left to the plugin's own discretion, and at zero cost to a provider with no device fields.
+
 ## Error codes
 
 | Code | Meaning |
@@ -225,6 +254,9 @@ substituted.
 | `E-ABI-PROVIDER-CAPABILITIES` | the optional `capabilities()` entry exists but returned a non-`FUSE_OK` status (absence, not failure, is what "no checkpoint" means) |
 | `E-ABI-PROVIDER-WINDOW` | `advance()` echoed a different window than the one it was asked to run (rule 6) |
 | `E-ABI-PROVIDER-ELEMENT` | a field is not `FUSE_ELEMENT_F64`, the only element type this host supports through this ABI |
+| `E-ABI-PROVIDER-MEMSPACE` | a field's `memspace` is neither `FUSE_MEMSPACE_HOST` nor `FUSE_MEMSPACE_DEVICE` |
+| `E-ABI-PROVIDER-DEVICE-UNDECLARED` | a field's `describe()` row asks for `FUSE_MEMSPACE_DEVICE` but this provider's own `capabilities()` did not report `FUSE_CAP_DEVICE_FIELDS` |
+| `E-ABI-PROVIDER-NO-DEVICE` | a field correctly declared and capability-granted for `FUSE_MEMSPACE_DEVICE`, but this FUSE build has no CUDA/HIP/SYCL backend to honour it |
 | `E-ABI-PROVIDER-TABLE` | the provider's table is absent, or missing one of `create`/`destroy`/`describe`/`bind`/`advance` |
 | `E-ABI-PROVIDER-DESCRIBE` | the `describe()` call itself (the size query or the fill) returned a non-`FUSE_OK` status — distinct from `E-ABI-DESCRIBE`, which is the cross-check against the graph's own declaration |
 | `E-ABI-PROVIDER-GRAPH` | the provider's own component name is not a component of the loaded graph |
@@ -237,11 +269,14 @@ substituted.
 
 ## Open questions
 
-**Device fields (`FUSE_MEMSPACE_DEVICE`).** Not yet exercised by any test, and not yet a design
-decision: `register_field`'s own `FUSE_MEMSPACE_DEVICE` refusal (`E-ABI-REGISTER-MEMSPACE`) has no
-provider-direction counterpart, `ProviderAdapter` only ever allocates host storage, and `describe()`'s
-own `fuse_field_spec` has no `memspace` field for a plugin to report one through even if it wanted to
-(KNOWN_ISSUES.md D15, item 1).
+**Device fields (`FUSE_MEMSPACE_DEVICE`)** are built and tested at tier 0 (KNOWN_ISSUES.md D15,
+item 1; see the "Device fields" section above for the mechanism). The positive, both-a-host-and-a-
+device-field-really-work path is registered as a test but not run on a build with no CUDA/HIP/SYCL
+backend -- it needs the owner's own device-enabled build to actually execute, named in that entry's
+own host-pending commands. `register_field`'s own `FUSE_MEMSPACE_DEVICE` refusal
+(`E-ABI-REGISTER-MEMSPACE`) is the PARTICIPANT direction's separate, still-open gap (a C or Fortran
+caller invoking `fuse_register_field()` itself has no way to ask for a device field at all); this
+item was the PROVIDER direction only.
 
 **Checkpoint/restore through an iteration region mixing native and plugin components** is now
 tested: `ConformanceTest.PluginBackedComponentInAnIterationRegionConvergesLikeAllNative`

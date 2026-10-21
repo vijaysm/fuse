@@ -3312,7 +3312,7 @@ rendezvous still runs only on a rank whose own first HDF5 call loads the plugin,
 touches HDF5 never reaches it — moving the rendezvous into an explicit step every participant calls
 (`connect()`'s MPMD choreography is the natural site) is the larger fix, left open here.
 
-### D15. The provider direction (S6 phase 4, "Adapter host" track) is implemented and conformance-tested on one process; device fields still are not -- mixed checkpoint/restore and a plugin on a rank subset are now both tested, FIXED 2026-10-19 (rank subset, three rounds) and 2026-10-21 (mixed checkpoint/restore, Stage B-1)
+### D15. The provider direction (S6 phase 4, "Adapter host" track) is implemented and conformance-tested on one process. Mixed checkpoint/restore and a plugin on a rank subset are tested, FIXED 2026-10-19 (rank subset, three rounds) and 2026-10-21 (mixed checkpoint/restore, Stage B-1). Device fields are built and gated at tier 0 (Option A, Stage B-2, 2026-10-21); the positive device-resident path is registered but not run here and needs the owner's own CUDA/HIP/SYCL build to confirm -- STILL OPEN pending that host run
 
 **What is done, measured 2026-10-02.** `include/fuse/abi/provider.h` (generated from a second
 `entries.def` entry list, `FUSE_ABI_PROVIDER_ENTRY`, sharing the participant direction's own
@@ -3340,11 +3340,13 @@ test-only injection (which bypasses `fuse_ctx::plugin_registry` entirely and the
 this ordering at all).
 
 **What is not covered, named rather than silently absent:**
-- **Device fields.** `register_field`'s own `FUSE_MEMSPACE_DEVICE` refusal
-  (`E-ABI-REGISTER-MEMSPACE`) has a provider-direction counterpart nowhere in this track:
-  `ProviderAdapter` only ever allocates host storage, and a plugin that wanted a device pointer
-  would have no way to ask for one. Still open (Stage A's own design report, three options, not
-  yet decided by the owner).
+- ~~Device fields~~ -- BUILT 2026-10-21 (Stage B-2, below), host-pending: `fuse_field_spec` now
+  carries a `memspace` entry, `ProviderAdapter::register_fields()` gates a `FUSE_MEMSPACE_DEVICE`
+  request on the plugin's own `FUSE_CAP_DEVICE_FIELDS` capability bit and on this build actually
+  having a device backend, and allocates a `Kokkos::View` for an accepted one. Every refusal path
+  is tier-0 tested; the positive device-resident path is registered (`DISABLED_
+  MixedHostAndDeviceFieldsOnOneProviderConvergeThroughChannels`) but needs the owner's own
+  CUDA/HIP/SYCL build to actually run -- D15 as a whole stays open until that host run.
 - ~~Checkpoint/restore through an iteration region mixing native and plugin components~~ --
   CLOSED 2026-10-21 (Stage B-1, below): `ConformanceTest.
   PluginBackedComponentInAnIterationRegionConvergesLikeAllNative` puts a plugin-backed component
@@ -3369,12 +3371,11 @@ the provider direction's adapter at all. This entry's own "What is not covered" 
 named the real, accurate scope; restated here as three separately closeable items, each with what it
 needs:
 
-1. **Device fields.** `register_field`'s own `FUSE_MEMSPACE_DEVICE` refusal (`E-ABI-REGISTER-MEMSPACE`)
-   has no provider-direction counterpart: `ProviderAdapter` only ever allocates host storage. Needs a
-   design decision (not built here) on how a plugin asks for a device pointer at all -- the provider
-   ABI's `bind()` entry takes a `fuse_field_view` the SAME shape the participant direction's
-   `register_field` does, so the natural extension is reading `memspace` there too, but committing to
-   that is new ABI-surface work, not a test-registration fix.
+1. ~~**Device fields.**~~ BUILT 2026-10-21 (Stage B-2, Option A, below): see that round's own
+   paragraph for the ABI growth, the capability gate, the host-only-build refusal, and the
+   mutation rows. `register_field`'s own `FUSE_MEMSPACE_DEVICE` refusal (`E-ABI-REGISTER-MEMSPACE`,
+   the PARTICIPANT direction -- a C or Fortran caller invoking `fuse_register_field()` itself,
+   not a `LaunchMode::Plugin` provider) is a separate, still-open gap, unchanged by this item.
 2. **Checkpoint/restore through a mixed iteration region.** `ProviderAdapter::save_state()`/
    `restore_state()` forward to the plugin's own entries when present, but no test puts a
    plugin-backed component inside an `IterationRegionDecl` alongside a native one and checks the
@@ -3708,6 +3709,75 @@ genuinely still zero, and this platform's fresh `malloc()` happens to also read 
 structural guarantee that no test could ever catch it. Tier 0 fully covers item 2: no host-only
 (MPI) part remains for it, unlike item 3's own rank-count row above. `docs/user/providers.md`'s own
 "Open questions" section is updated to match; item 1 (device fields) is unchanged and still open.
+
+**Built 2026-10-21 ("Provider parity" track, Stage B-2): item 1 (device fields), the owner's own
+Option A.** `fuse_field_spec` (`include/fuse/abi/entries.def`) grows from 32 to 40 bytes, appending
+`memspace` (`int32_t`, the same `FUSE_MEMSPACE_HOST`/`FUSE_MEMSPACE_DEVICE` enum
+`fuse_register_field` already reads) and a `reserved` word; the new layout is measured, not assumed
+(a compiled C `sizeof`/`offsetof` check confirmed `memspace` at offset 28, `reserved` at 32, the
+struct at 40), and every generated file -- `types.h`, `participant.h`, `provider.h`, `ffuse.f90`,
+`ffuse_provider.f90`, `fuse_fortran_shim.c` -- was regenerated with `tools/gen-abi.py --write`;
+`gen-abi.py --check` reports 0 stale. `fuse::abi_detail::ProviderAdapter::register_fields()`
+(`src/abi/provider_adapter.hpp`/`.cpp`) now reads `row.memspace` per field and applies two refusal
+gates in order, the more specific one first: (1) `FUSE_MEMSPACE_DEVICE` requested while the
+provider's own `capabilities()` did not report `FUSE_CAP_DEVICE_FIELDS` (previously dead code) --
+refused `E-ABI-PROVIDER-DEVICE-UNDECLARED`; the opposite (the bit set, no field ever asks) is
+accepted, a provider is always free to offer more than a graph uses; (2) a device field correctly
+declared and capability-granted, but THIS BUILD has no real device backend (`#if
+defined(KOKKOS_ENABLE_CUDA) || defined(KOKKOS_ENABLE_HIP) || defined(KOKKOS_ENABLE_SYCL)`, the
+existing raw-macro convention already used in `src/abi/participant.cpp` and
+`src/runtime/runner_impl.hpp`, not a new wrapper macro) -- refused `E-ABI-PROVIDER-NO-DEVICE`. This
+second gate is a correction to Stage A's own design report, which recommended no such refusal ("a
+field requesting `FUSE_MEMSPACE_DEVICE` there is NOT an error... no special-case refusal is
+needed"); the owner's explicit instruction for this round overrides that recommendation -- a
+host-only build must refuse a device-field request by name, never silently hand back
+host-addressable memory under the device label. An accepted device field gets a real
+`Kokkos::View<double*, Kokkos::DefaultExecutionSpace::memory_space>` (`device_storage_`, new member),
+sized and bound the same way `storage_` (host) already is; `advance()` adds an unconditional
+`Kokkos::fence("provider_adapter_advance_fence")` after a successful call, gated only on
+`has_device_fields_` (true for any provider with at least one accepted device field, so a host-only
+provider pays nothing), matching this tree's own existing fence-labeling convention. The owner's own
+open question from Stage A ("how does the resolved execution space reach `ProviderAdapter`") is
+answered, not left open: `RunnerConfig::resolved_execution_space()` (`src/runtime/runner.cpp`) governs
+the Runner's own kernel dispatch mode and is completely orthogonal to a field's memory residency,
+which `describe()`'s own per-row `memspace` request already carries end to end -- no
+`set_execution_space()` setter is needed. New plugin `test/abi/plugins/mixed_memspace_provider.c`
+declares one HOST field ("host_out") and one DEVICE field ("device_out") on a single instance, with
+compile-time variants for "capability bit unset" and "capability set, no field asks for device"; a
+new `build_mixed_memspace_graph()` fixture (`test/abi/graph_fixture.hpp`) and a new
+`MixedMemspaceSink` test class (binds fields by name into separate buffers, unlike the pre-existing
+`DownstreamSink`, which is hardcoded to one component name and one shared buffer) exercise it. Four
+new `ConformanceTest` cases: `PluginDeviceFieldWithoutCapabilityIsRefused` and
+`PluginDeviceFieldOnAHostOnlyBuildIsRefused` confirm the two refusal gates fire by name;
+`PluginDeviceCapabilityWithNoDeviceFieldIsAccepted` confirms the opposite case is unremarkable; and
+`DISABLED_MixedHostAndDeviceFieldsOnOneProviderConvergeThroughChannels` is registered but not run
+here, by design -- on a build with no CUDA/HIP/SYCL backend the host-only refusal gate above means
+this positive, both-fields-really-work path can never pass on this sandbox, so it is named as a
+`DISABLED_` row rather than skipped silently or asserted against a result this build cannot produce.
+Four new mutation rows in `build-evidence/mutations/abi-provider.toml`:
+`provider-device-capability-gate-removed` and `provider-device-host-only-refusal-removed` both
+KILLED (confirmed by hand, verbatim counts in each row's own `result`); `provider-device-allocation-
+memspace-forced-host` and `provider-device-advance-fence-removed` both measured not killed on this
+build by the track and NOT declared equivalent; they now carry `requires = "device"` and `tools/mutate.py`
+reports them NOT-ASSESSED on a host-only Kokkos (2026-10-21, lead) -- traced, not assumed: both mutated lines sit past the SAME two
+refusal gates above, which are unconditional for any `wants_device` request on a build with no real
+device backend, so neither line can be reached by any provider this tier-0 suite can mount; a real
+device build is the only environment that can ever exercise them, and is the only build that can
+distinguish the mutated behaviour from the original. All 31 `fuse_abi_conformance_test` cases pass
+(28 pre-existing plus the 3 new runnable ones), the `DISABLED_` row is confirmed registered
+(`--gtest_list_tests`) and confirmed skipped under a normal run, and confirmed to actually exercise
+the host-only refusal gate when forced with `--gtest_also_run_disabled_tests` (fails there, exactly
+as this build's own refusal requires). **Host-pending**, to confirm the positive device-resident path
+end to end on the owner's own CUDA/HIP/SYCL-enabled build:
+
+```
+<build>/test/fuse_abi_conformance_test \
+  --gtest_filter='*DISABLED_MixedHostAndDeviceFieldsOnOneProviderConvergeThroughChannels' \
+  --gtest_also_run_disabled_tests
+```
+
+D15 stays OPEN (heading above) until that host run confirms the positive path; every refusal path is
+already tier-0 confirmed and does not depend on it.
 ### ~~D16. A window member's cold-start priming over-read a smaller provider buffer — FIXED 2026-10-03
 
 Found by ASan on a two-member window-scoped region whose members export fields of different

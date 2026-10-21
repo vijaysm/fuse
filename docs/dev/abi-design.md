@@ -455,3 +455,33 @@ it via `c_funloc`. This is the INVERSE of `ffuse`'s own exception (Fortran keeps
 symbols because a function-pointer struct is unergonomic there): a provider-direction Fortran
 plugin builds and exports the struct itself, since the struct's CONTENT is the plugin's own code,
 not a table a Fortran caller merely dereferences.
+
+### Device fields: a worked growth, rule 3 (Stage B-2, 2026-10-21)
+
+`fuse_field_spec` (the `describe()` OUT row, `entries.def`) is the struct this round's device-fields
+work grew, and it is a clean worked example of rule 3 above: measured first, not assumed.
+`fuse_field_spec` has `name`, `components`, `intent`, `element_type`, `struct_size` -- 28 bytes of
+members in a struct whose compiled `sizeof` was already 32, so a naive 4-byte append (just
+`memspace`, nothing else) would have landed entirely inside the existing trailing padding, changing
+the layout an old caller's `struct_size` could not see, exactly the hazard `fuse_version_info` is
+cited for above. Confirmed by a standalone compiled C `sizeof`/`offsetof` check against the
+pre-change struct before writing anything: `memspace` at offset 28 if appended alone would sit in
+padding bytes 28-31 of a 32-byte struct. Rule 3's own remedy applied: `memspace` (`int32_t`, the new
+`FUSE_MEMSPACE_HOST`/`FUSE_MEMSPACE_DEVICE` value) is appended together with an explicit `reserved`
+(`int32_t`) word, pushing `sizeof(fuse_field_spec)` from 32 to 40 -- a real, test-visible growth in
+`struct_size`, re-measured the same way after the change: `memspace` at offset 28, `reserved` at
+offset 32, struct size 40. `test/abi/struct_sizes.golden`'s `fuse_field_spec` line and
+`test/abi/entries_golden_test.cpp`'s `FUSE_NO_TRAILING_PADDING` check were both updated to the new
+last member (`reserved`); every generated file (`types.h`, `participant.h`, `provider.h`,
+`ffuse.f90`, `ffuse_provider.f90`, `fuse_fortran_shim.c`) came from `tools/gen-abi.py --write`, not
+a hand edit, and `tools/gen-abi.py --check` reports 0 stale.
+
+`memspace` defaults to `FUSE_MEMSPACE_HOST` (value 0) for a `struct_size` an old caller set before
+this member existed, the backward-compatible default rule 2 already requires for any new member --
+an existing plugin's `describe()` that never touches `memspace` at all gets a host field, the same
+behaviour it had before this round. The new capability bit, `FUSE_CAP_DEVICE_FIELDS`, and the two
+refusal gates `fuse::abi_detail::ProviderAdapter::register_fields()` applies to a
+`FUSE_MEMSPACE_DEVICE` request are documented for plugin authors in
+[](../user/providers.md#device-fields); KNOWN_ISSUES.md D15 (item 1) carries the full round record,
+the mutation rows, and the host-pending commands for the positive device-resident path this build
+cannot run.
