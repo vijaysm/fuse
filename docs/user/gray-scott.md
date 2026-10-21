@@ -70,7 +70,8 @@ Tier 0 is enough — no MPI, no MOAB:
 ```sh
 cmake --preset tier0-release && cmake --build --preset tier0-release
 <build-dir>/examples/fuse_example_gray_scott --n 64 --dt 0.5 --ratio 1|m|"p:q" \
-    --policy fixed|adjustable --accel none|aitken|iqn-ils \
+    --policy fixed|adjustable \
+    --accel none|constant|aitken|secant|steffensen|iqn-ils|iqn-imvj \
     --t-end 50 --check --output snapshot.csv
 ```
 

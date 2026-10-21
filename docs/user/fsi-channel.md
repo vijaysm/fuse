@@ -114,7 +114,15 @@ transfers (velocity, force) form a cyclic dependency within one coupling cycle, 
 (`wall_force`) carries `.lag(1).allow_time_level_mismatch(...)` — the same pattern
 [dn_heat](dn-heat.md) uses for its Dirichlet-Neumann pair — so the graph is schedulable at all; the
 implicit coupling group resolves that lag every sweep. Acceleration: `AccelKind::None` (plain
-Gauss-Seidel), `Aitken`, or `IQN_ILS`, selected by `--accel`.
+Gauss-Seidel), `Aitken`, or `IQN_ILS`, selected by `--accel`. `--accel` also accepts `constant`, `secant`, `steffensen` and
+`iqn-imvj` (the same names every example takes, examples/common/accel_names.hpp), and an unknown name is
+refused with `E-EXAMPLE-ACCEL`. Measured 2026-10-20 at the command line above (mass ratio 1, `--dt 0.01`,
+`--t-end 0.1`, sandbox tier-0 build, system compiler): `iqn-imvj` converges every window in 81 total
+sweeps and `iqn-ils` in 218, both ending at mid-span deflection 1.063803e-02 m. `constant` and
+`steffensen` exhaust the 200-sweep cap in all 10 windows with a diverging deflection (of order 1e289 and
+1e256 m), and `secant` stops after 6 periods with a named refusal (`run_period: non-finite value detected`);
+all three exit 1 under `--check`. `constant`, `secant`, `steffensen` and `iqn-imvj` use the same initial
+relaxation (0.5) and, for `iqn-imvj`, the same history and filter as `iqn-ils`; none was tuned.
 
 **Added-mass instability.** At `mass_ratio = rho_s h_s / (rho_f H) = 1`, plain Gauss-Seidel diverges
 (`--accel none --check` fails: mid-span deflection runs away within a handful of sweeps). `IQN_ILS`

@@ -10549,6 +10549,29 @@ the Stage B patch is NOT landed, awaiting an owner decision).**
    rounding noise is INFERRED and not supported by its own numbers (denominator 3e-7 against ||r||^2 of 2.6e-4);
    the negative omega, the plateau and the Picard contrast are what was measured.
 5. Open: which safeguard, if any (owner decision); whether Steffensen has the same gap (same family, not measured).
+
+**Stage D, accelerator exposure and a first cross-accelerator measurement (lead, 2026-10-20/21; sandbox tier-0 build,
+system compiler, `HEAD` 0b98420 plus the shared name table).** Brusselator `--end 0.1 --check` (5 windows, D17's
+steps and window), printed `max_iterations` per run:
+
+| accel | `--driver window` | `--driver runner` |
+|---|---|---|
+| none (Picard) | 12 | 12 |
+| constant | 43 | 44 |
+| aitken | FAIL at t = 0.06 (cap 60) | 31 |
+| secant | 13 | 13 |
+| steffensen | 32 | 34 |
+| iqn-ils | 12 | 15 |
+| iqn-imvj | 12 | 12 |
+
+`--accel` now takes the same seven names in every example (`examples/common/accel_names.hpp`) and refuses any other
+with `E-EXAMPLE-ACCEL`; before, `brusselator` ran unaccelerated and `gray_scott` ran Aitken for an unknown name, and
+no example reached `secant`, `steffensen` or `iqn-imvj`. No `anderson` alias is provided: that `iqn-ils` equals
+Anderson acceleration (type II) is the literature's statement and is being checked against a reference
+implementation (Stage E), not assumed. On this strongly contracting problem no accelerator beats Picard, which is
+what a contraction factor below 0.05 predicts; the FSI channel is the opposite regime (see
+`docs/user/fsi-channel.md`: `iqn-imvj` 81 sweeps and `iqn-ils` 218 converge, `constant`, `steffensen` and `secant`
+do not). `--driver`, `--iteration-mode` and `--substrate` still fall back to a default on an unrecognised value.
 ### ~~D77. The automatic remap halo (D73) is driven by a NEW free function the caller runs before `schedule()`, not by `Runner::initialize()`~~ -- CLOSED 2026-10-18: the build moved into `make_region_sizes()` (owner decision) 2026-10-18, owner decided (RemapHalo track)
 
 The owner's 2026-10-18 decision for D73 described the contract as "the Runner executes [`BuildRemapHalo`]
