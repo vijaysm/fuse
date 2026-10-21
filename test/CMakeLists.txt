@@ -2542,6 +2542,31 @@ add_library(fuse_test_provider_mixed_memspace_host_only_fields SHARED abi/plugin
 target_include_directories(fuse_test_provider_mixed_memspace_host_only_fields PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_compile_definitions(fuse_test_provider_mixed_memspace_host_only_fields PRIVATE FUSE_TEST_HOST_ONLY_FIELDS)
 
+# D15 item 1 ("Device layout" track, 2026-10-21): test/abi/plugins/
+# device_layout_provider.cpp, a C++ provider plugin that genuinely
+# launches a Kokkos kernel to touch its device-resident fields (unlike
+# mixed_memspace_provider.c above, measured on ssh:higgs to segfault on
+# a real device backend for exactly that reason -- its own advance()
+# dereferences a device pointer with an ordinary C store). Two CMake
+# targets off the SAME source, the same "behaviours selected at compile
+# time" convention linear_provider.c's own header comment states: the
+# plain target reports FUSE_MEMSPACE_DEVICE and runs its kernels on
+# Kokkos::DefaultExecutionSpace; the _HOST_REF target
+# (FUSE_TEST_DEVICE_LAYOUT_FORCE_HOST) reports FUSE_MEMSPACE_HOST and
+# runs the IDENTICAL kernel code on Kokkos::DefaultHostExecutionSpace
+# explicitly, as test/abi/device_layout_test.cpp's own all-host
+# reference run of the same arithmetic.
+add_library(fuse_test_provider_device_layout SHARED abi/plugins/device_layout_provider.cpp)
+target_include_directories(fuse_test_provider_device_layout PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(fuse_test_provider_device_layout PRIVATE Kokkos::kokkos)
+
+add_library(fuse_test_provider_device_layout_host_ref SHARED abi/plugins/device_layout_provider.cpp)
+target_include_directories(fuse_test_provider_device_layout_host_ref PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(fuse_test_provider_device_layout_host_ref PRIVATE Kokkos::kokkos)
+target_compile_definitions(fuse_test_provider_device_layout_host_ref PRIVATE
+  FUSE_TEST_DEVICE_LAYOUT_FORCE_HOST)
+
+
 # fuse-abi-fortran (ffuse + ffuse_provider + the shim) is a STATIC archive
 # whose only undefined symbol is fuse_coupler_abi -- resolved here because
 # THIS target is the first thing that actually needs it resolved (fortran/
@@ -2611,6 +2636,23 @@ else()
   target_compile_definitions(fuse_abi_conformance_test PRIVATE
     FUSE_TEST_FORTRAN_PROVIDER_PLUGIN="")
 endif()
+
+# D15 item 1 ("Device layout" track, 2026-10-21): the new layout/copies
+# test, its own graph-declared plugin (mounted automatically at
+# fuse_initialize(), never dlopen()'d directly by this test itself --
+# the SAME convention ConformanceTest.GraphDeclaredPluginIsAutoMountedAndRun
+# above uses) plus its host-reference twin. Needs fuse::abi-static +
+# fuse_abi_test_support for the same test-only seams (inject_component(),
+# run_stats()) conformance_test.cpp already links directly.
+fuse_add_gtest(abi device_layout NO_LAYER_LIB LIBS fuse::abi-static fuse_abi_test_support
+  LABELS device)
+target_include_directories(fuse_abi_device_layout_test PRIVATE ${CMAKE_SOURCE_DIR}/src/abi)
+add_dependencies(fuse_abi_device_layout_test
+  fuse_test_provider_device_layout fuse_test_provider_device_layout_host_ref)
+target_compile_definitions(fuse_abi_device_layout_test PRIVATE
+  FUSE_TEST_DEVICE_LAYOUT_PROVIDER_PLUGIN="$<TARGET_FILE:fuse_test_provider_device_layout>"
+  FUSE_TEST_DEVICE_LAYOUT_PROVIDER_PLUGIN_HOST_REF="$<TARGET_FILE:fuse_test_provider_device_layout_host_ref>")
+target_link_libraries(fuse_abi_device_layout_test PRIVATE ${CMAKE_DL_LIBS})
 
 # KNOWN_ISSUES.md D15, round 2, item 3 (the lead's own instruction): "a
 # plugin on a rank subset" -- the real C provider plugin
