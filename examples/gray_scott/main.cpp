@@ -32,6 +32,7 @@
 
 #include <fuse/runtime/window_coupler.hpp>
 
+#include "accel_names.hpp"
 #include "gray_scott_physics.hpp"
 #include "monolithic_reference.hpp"
 #include "species_component.hpp"
@@ -98,10 +99,14 @@ struct Args {
   return (s == "fixed") ? DtPolicy::Fixed : DtPolicy::Adjustable;
 }
 
+/// `--accel`'s names come from the shared table
+/// (examples/common/accel_names.hpp). Until 2026-10-20 any name other than
+/// `none` and `iqn-ils` silently ran with Aitken; main() now refuses an
+/// unknown name (E-EXAMPLE-ACCEL) before any setup.
 [[nodiscard]] AccelKind parse_accel(const std::string& s) {
-  if (s == "none") return AccelKind::None;
-  if (s == "iqn-ils" || s == "iqn") return AccelKind::IQN_ILS;
-  return AccelKind::Aitken;
+  if (const auto k = fuse_examples::accel_kind_from_name(s)) return *k;
+  std::fprintf(stderr, "FAIL: E-EXAMPLE-ACCEL: unknown --accel '%s'\n", s.c_str());
+  std::exit(1);
 }
 
 /// Window length (U's own interval) and V's interval, from --ratio.
@@ -165,6 +170,12 @@ int main(int argc, char** argv) {
   Kokkos::ScopeGuard kokkos_guard(argc, argv);
 
   const Args args = parse_args(argc, argv);
+  if (!fuse_examples::accel_kind_from_name(args.accel)) {
+    std::fprintf(stderr, "FAIL: E-EXAMPLE-ACCEL: unknown --accel '%s'; use one of %.*s\n",
+                 args.accel.c_str(), static_cast<int>(fuse_examples::kAccelNames.size()),
+                 fuse_examples::kAccelNames.data());
+    return 1;
+  }
 
   const gray_scott::Grid grid{args.n, args.L};
   gray_scott::Kinetics kin{args.F, args.k};

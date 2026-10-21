@@ -27,6 +27,7 @@
 #include <fuse/backend/serial_backend.hpp>
 #include <fuse/runtime/runner.hpp>
 
+#include "accel_names.hpp"
 #include "beam_solver.hpp"
 #include "fsi_components.hpp"
 #include "stokes_solver.hpp"
@@ -81,19 +82,31 @@ constexpr double kEI = 2.0;      // beam flexural rigidity [N m^2] -- sized so
                                   // assumption (docs/user/fsi-channel.md)
 constexpr double kRhoS = 1.0;    // beam material density [kg/m^3] (nominal)
 
+/// Names come from the shared table (examples/common/accel_names.hpp); the
+/// settings stay this example's. `none`, `aitken` and `iqn-ils` keep exactly
+/// the settings they had. `constant`, `secant` and `steffensen` use the same
+/// initial relaxation as `aitken`, and `iqn-imvj` the same history and filter
+/// as `iqn-ils`; none was tuned. Measured 2026-10-20 at the registered command
+/// line: iqn-imvj and iqn-ils converge, constant, steffensen and secant do not
+/// (docs/user/fsi-channel.md).
 fuse::AccelConfig accel_config(const std::string& name) {
-  if (name == "none") return fuse::AccelConfig{.kind = fuse::AccelKind::None};
-  if (name == "aitken") {
-    return fuse::AccelConfig{.kind = fuse::AccelKind::Aitken,
-                             .initial_relaxation = 0.5};
+  const auto kind = fuse_examples::accel_kind_from_name(name);
+  if (!kind) {
+    throw std::invalid_argument("E-EXAMPLE-ACCEL: unknown --accel '" + name +
+                                "'; use one of " + std::string(fuse_examples::kAccelNames));
   }
-  if (name == "iqn-ils") {
-    return fuse::AccelConfig{.kind = fuse::AccelKind::IQN_ILS,
-                             .initial_relaxation = 0.5,
-                             .reuse = 8,
-                             .filter = fuse::FilterKind::None};
+  switch (*kind) {
+    case fuse::AccelKind::None:
+      return fuse::AccelConfig{.kind = fuse::AccelKind::None};
+    case fuse::AccelKind::IQN_ILS:
+    case fuse::AccelKind::IQN_IMVJ:
+      return fuse::AccelConfig{.kind = *kind,
+                               .initial_relaxation = 0.5,
+                               .reuse = 8,
+                               .filter = fuse::FilterKind::None};
+    default:
+      return fuse::AccelConfig{.kind = *kind, .initial_relaxation = 0.5};
   }
-  throw std::invalid_argument("--accel must be one of: none, aitken, iqn-ils");
 }
 
 fuse::Rational rationalize_dt(double dt) {
@@ -179,6 +192,7 @@ int main(int argc, char** argv) {
   Args args;
   try {
     args = parse(argc, argv);
+    (void)accel_config(args.accel);  // refuse an unknown name before any output
   } catch (const std::exception& e) {
     std::fprintf(stderr, "argument error: %s\n", e.what());
     return 2;
