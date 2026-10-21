@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -158,6 +159,27 @@ def main() -> int:
         line.startswith("FUSE_ENABLE_LOWFIVE:") and line.rstrip().endswith("=ON")
         for line in cache.read_text(errors="replace").splitlines())
 
+    # `requires = "device"` (D15 item 1): ProviderAdapter's device-field
+    # allocation and its post-advance fence sit behind `#if
+    # defined(KOKKOS_ENABLE_CUDA) || defined(KOKKOS_ENABLE_HIP) ||
+    # defined(KOKKOS_ENABLE_SYCL)`; on a host-only Kokkos the `#else` arm
+    # refuses a device request first, so no test can reach the mutated
+    # line and a verdict of "not killed" would say nothing about it. The
+    # macros are read from the KokkosCore_config.h the build compiled
+    # against (FUSE_KOKKOS_INCLUDE_DIRS in its cache). When the header
+    # cannot be found the build is treated as having no device backend:
+    # the row is then reported NOT-ASSESSED, never as killed.
+    build_has_device = False
+    for line in cache.read_text(errors="replace").splitlines():
+        if line.startswith("FUSE_KOKKOS_INCLUDE_DIRS:"):
+            for inc in line.split("=", 1)[1].strip().split(";"):
+                cfg = Path(inc) / "KokkosCore_config.h"
+                if cfg.is_file() and re.search(
+                        r"(?m)^\s*#\s*define\s+KOKKOS_ENABLE_(CUDA|HIP|SYCL)\b",
+                        cfg.read_text(errors="replace")):
+                    build_has_device = True
+            break
+
     # FpPolicy track, KNOWN_ISSUES.md D30: a `requires = "release"` gate
     # (read from CMAKE_BUILD_TYPE, the same courtesy "mpi"/"petsc" get) was
     # added here for base.fp_policy's probe on the premise that Debug
@@ -224,6 +246,13 @@ def main() -> int:
                             "MPI build, which exits 0 either way; assess it against a "
                             "build configured with -DFUSE_ENABLE_MPI=OFF"))
             print(f"NOT-ASSESSED  {m['id']}  (needs a build with NO MPI)")
+            continue
+        if m.get("requires") == "device" and not build_has_device:
+            results.append((m, "NOT-ASSESSED",
+                            "needs a build whose Kokkos has a CUDA, HIP or SYCL backend; "
+                            "the mutated line is behind #if KOKKOS_ENABLE_CUDA/HIP/SYCL "
+                            "and a host-only build refuses a device request before it"))
+            print(f"NOT-ASSESSED  {m['id']}  (needs a Kokkos device backend)")
             continue
         if m.get("requires") == "lowfive" and not build_has_lowfive:
             results.append((m, "NOT-ASSESSED",
