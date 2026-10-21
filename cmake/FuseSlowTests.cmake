@@ -39,6 +39,7 @@ set(FUSE_SLOW_TESTS
   example.brusselator.newton                           #   12.7 s
   verification.brusselator_runner                      #   10.4 s
   verification.gray_scott_multirate                    #   10.0 s
+  verification.brusselator_restart                     #   over the 10 s tier-0 threshold once the windows 3 and 6 row was added
 )
 
 # Appends the label to each listed row that exists in the CURRENT directory:
