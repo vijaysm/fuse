@@ -8675,6 +8675,24 @@ owner's call.
 is to be tested on a different machine or on GitHub CI with Open MPI from conda, at three ranks, the layout that hung. Nothing in the
 tree is expected to change before that run.
 
+**Reproduced, diagnosed and fixed (2026-10-21, CI track, PR vijaysm/fuse#3; Ubuntu 24.04's Open MPI 4.1.6, Release, fetched
+Kokkos 5.1.0 OpenMP+Serial, three ranks -- the run the owner decision above asked for).** The hang reproduced on every run.
+Per-rank stacks (`gdb -batch -ex "thread apply all bt"`, `OMP_NUM_THREADS=1`) settle the question left open above: it is a FUSE
+defect that 4.1.x exposes, not an Open MPI one. The two participants were inside `run_region_newton_window()` ->
+`evaluate_window_region_residual()` -> `execute()` -> `MpiTransport::move()` -> `MPI_Alltoallv`; the bystander, having taken the
+early return, was already in `checkpoint_regions()` -> `agree_checkpoint_status()` -> `MPI_Allreduce`. Window Newton's own
+reductions do run over the participants' split communicator, but the region's Transport ops still move over the ONE shared
+transport communicator, so every rank must enter every `MPI_Alltoallv`, zero counts or not (the convention D42 keeps the Picard
+window sweep's bystander in step for). MPICH's and Open MPI 5's zero-count exchanges happen to complete without the bystander;
+4.x's pairwise algorithm does not. The fix (`src/runtime/iteration.cpp`, `run_region_newton_window()`): the first participant
+broadcasts over the base communicator, before each evaluation, which kind it is (predictor seed, Newton probe, committing sweep),
+and a stop code on every way out (an RAII guard); the bystander, instead of returning, runs the SAME
+`evaluate_window_region_residual()` with empty spans (its `newton_n` is 0: it hosts no block) until it hears stop. Measured:
+`parallel.window_newton_mpi.3` passes in 0.47 s (was a 120 s timeout) and still matches its single-process reference; the full
+Open MPI suite passed 347/347 locally and the new `tier 1 (MPI)` CI leg is green. Not changed: the ordinary (non-window)
+`run_region_newton()` has the identical early return; no current row puts a bystander beside a non-window Newton region, so
+whether it needs the same lockstep is unmeasured.
+
 ### ~~D56. `FsiEnergyDiag.FullBudgetOnTheDominantModeCloses`'s mass-correction gate fails on higgs's toolchain by 1.5x (host leg), by 5x in the device twin on the 2026-10-18 stack~~ -- CLOSED 2026-10-21 (found by the device-merge gate 2026-10-13)
 
 The gate `max_abs_diff_non_outflow < 0.5 * eig_quality * max|u_raw|` (test/verification/
@@ -13093,4 +13111,21 @@ host memory happens to provide it as a side effect, which is why removing the la
 this track used to find its own sibling precedent
 (`Kokkos::fence(".*"); *$` immediately preceding an MPI call) before trusting a
 "handed MPI a device pointer" change that compiles and runs once.
+
+### D88. A fetched (static) Kokkos gave `libfuse-abi.so` and a participant executable two Kokkos runtimes in one process -- FIXED 2026-10-21 (CI track), host run not needed (installed Kokkos is shared)
+
+**Found by the first Open MPI CI leg, after D86's `has_communicator` let the MPMD rows reach `fuse_initialize()`.**
+`verification.brusselator.participants.mpmd.{3,5}` aborted in both U and V with "Kokkos ERROR: View
+(label="native_mesh.vertex_coords") is being constructed before initialize() has been called", although Kokkos had printed
+its own OpenMP initialization banner in the same process. A FETCHED Kokkos (`FUSE_ALLOW_FETCH=ON`, every CI leg) was a static
+archive: `libfuse-abi.so`, whose version script exports only `fuse_coupler_abi`, linked a private copy into itself, and
+`brusselator_{u,v}_main`, which also link `Kokkos::kokkos`, carried a second (measured: `nm` shows `Kokkos::initialize` defined
+in both). `fuse_initialize()` initialized the library's copy; the executable's own Views hit the other. An installed Kokkos
+(`/opt/kokkos`, higgs) is a shared library with one runtime per process, which is why no host ever saw this.
+
+**Fix.** `cmake/FuseDependencies.cmake` builds a fetched Kokkos shared (`FUSE_FETCHED_KOKKOS_SHARED`, default ON), scoped to
+that one fetch by saving and restoring `BUILD_SHARED_LIBS` around `fuse_require(Kokkos)` like `BUILD_TESTING` is around every
+fetch, so fmt, yaml-cpp, googletest and this project's own libraries keep their types. Measured: both executables and
+`libfuse-abi.so` now resolve the one `libkokkoscore.so.5.1`, the two MPMD rows pass, and tier 0 (189/189, Debug, builtin) and
+the Open MPI suite (347/347, Release, eigen) pass with it.
 

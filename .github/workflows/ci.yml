@@ -127,3 +127,36 @@ jobs:
       # Tests that assert a throw cannot run here by design; the leg proves the
       # library and the non-throwing tests build and pass with the option off.
       - run: ctest --test-dir build --output-on-failure -LE 'throws|bench'
+
+  # Tier 1: the MPI transport, CommGraph, epochs, the participant ABI across
+  # ranks, and the multi-executable Brusselator rows, each registered at 1-5
+  # ranks. Open MPI, not MPICH: Ubuntu 24.04's MPICH 4.2.0 starts every rank
+  # under mpiexec as a singleton ("rank 0 of 1" twice for -n 2, measured), so
+  # no multi-rank row could pass, and its wrappers leak the package's own
+  # -flto=auto into every MPI target through FindMPI. Release only: the Debug
+  # matrix above already covers assertions. Configure takes ~12 minutes of
+  # this leg: the accept/connect probe (KNOWN_ISSUES.md D23) times out each of
+  # its runs on this MPI and then disables that launch mode's rows.
+  tier1-mpi:
+    name: tier 1 (MPI)
+    runs-on: ubuntu-24.04
+    env:
+      # 5-rank rows on a 4-core runner; most rows already set this themselves.
+      OMPI_MCA_rmaps_base_oversubscribe: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - run: >
+          sudo apt-get update && sudo apt-get install -y ninja-build libomp-dev gfortran
+          openmpi-bin libopenmpi-dev
+      - run: >
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DFUSE_ENABLE_MPI=ON
+          -DFUSE_LINALG_BACKEND=eigen
+          -DFUSE_ALLOW_FETCH=ON
+          -DFUSE_BUILD_UPSTREAM_KARMA=OFF
+          -DKokkos_ENABLE_SERIAL=ON -DKokkos_ENABLE_OPENMP=ON
+          -DCMAKE_DISABLE_FIND_PACKAGE_fmt=ON
+          -DCMAKE_DISABLE_FIND_PACKAGE_GTest=ON -DCMAKE_DISABLE_FIND_PACKAGE_Eigen3=ON
+      - run: cmake --build build -j
+      - run: ctest --test-dir build --output-on-failure -LE bench
+      - run: cat build/fuse-resolved-dependencies.txt

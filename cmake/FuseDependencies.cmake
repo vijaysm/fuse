@@ -574,7 +574,7 @@ macro(fuse_resolve_dependencies)
   # own Views hit the other: "Kokkos ERROR: View (label=\"native_mesh.
   # vertex_coords\") is being constructed before initialize() has been called",
   # every verification.brusselator.participants.mpmd.* row on a fetch build
-  # (KNOWN_ISSUES.md D85). Scoped to this one fetch, saved and restored like
+  # (KNOWN_ISSUES.md D88). Scoped to this one fetch, saved and restored like
   # BUILD_TESTING in fuse_require(), so fmt/yaml-cpp/googletest and this
   # project's own libraries keep their types. FUSE_FETCHED_KOKKOS_SHARED=OFF
   # restores the static build.
