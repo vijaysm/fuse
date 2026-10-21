@@ -69,3 +69,38 @@ new = """    const fuse_status rc = table_->advance(self_, &req, &rep);
 target = "fuse_abi_conformance_test"
 test = "abi.conformance"
 result = "CONFIRMED 2026-10-02: ConformanceTest.PluginAdvanceErrorSurfacesAsComponentFailure failed on EXPECT_STREQ(err.code, \"E-ABI-PROVIDER-ADVANCE\") -- the bad-advance plugin's FUSE_ERR_RUNTIME return was no longer read, so run() did not fail on the dropped status code itself. The failure still surfaced (run() still returned FUSE_ERR_RUNTIME, just with err.code == \"E-ABI-PROVIDER-WINDOW\" instead): with the error check gone, the adapter fell through to the window-equality check (rule 6) against `rep`, which the bad-advance plugin never touches (it returns immediately), so rep's zero-initialized t_begin/t_end disagreed with the request's and were caught there instead -- a DIFFERENT refusal than the one this row names, which is itself the finding: removing the error check does not make a misbehaving provider's failure invisible, it only changes which of the adapter's own checks catches it, and this mutation would go undetected only if BOTH checks were removed together. The other 11 ConformanceTest cases, none of which mounts a provider whose advance() fails, still passed. Restored; cmp against the pre-mutation file reported no difference."
+
+[[mutation]]
+id = "affine-provider-restore-state-no-copy-back"
+area = "abi-provider"
+describes = "affine_provider.c's p_restore_state() keeps every size/presence check but drops the memcpy that actually copies the saved snapshot back over the bound 'b_out' storage, so a restore leaves 'beta's Provides output at whatever the previous sweep's advance() wrote instead of rolling it back -- the runtime's own byte-for-byte rollback verification (src/runtime/iteration.cpp, 'THE RUNTIME VERIFIES THE ROLLBACK RATHER THAN TRUSTING IT') must catch this, not merely the plugin's own bookkeeping"
+file = "test/abi/plugins/affine_provider.c"
+old = """    memcpy(inst->out_ptr, inst->saved, inst->out_count * sizeof(double));"""
+new = """    /* mutation: restore_state() no longer copies the saved snapshot back. */"""
+target = "fuse_abi_conformance_test"
+test = "abi.conformance"
+result = "CONFIRMED 2026-10-21: ConformanceTest.PluginBackedComponentInAnIterationRegionConvergesLikeAllNative failed on fuse_run() returning non-FUSE_OK -- last_error() read \"component 'beta' is in the derived checkpoint set of iteration region 'fsi', its supports_rollback() returned true, and its restore_state() returned success -- but the storage it registered for arc %1 does not hold the values it held when save_state() was called\" (E-ITER-ROLLBACK, src/runtime/iteration.cpp's own byte-level memcmp). Confirms the runtime's own rollback verification reaches a plugin-backed component's registered storage exactly as it does a native one's. The other 27 cases in fuse_abi_conformance_test, none of which drives a provider whose restore_state() silently fails to copy back, still passed. Restored; cmp against the pre-mutation file reported no difference."
+
+[[mutation]]
+id = "affine-provider-save-state-no-copy"
+area = "abi-provider"
+describes = "affine_provider.c's p_save_state() still sizes and allocates its own 'saved' snapshot buffer but drops the memcpy that actually captures the current 'b_out' contents into it, so every restore_state() afterward copies back a snapshot that was never refreshed past its one-time, NaN-poisoned allocation (round 2: the buffer is now poisoned with NAN right after malloc(), before the memcpy this mutation removes, so a skipped capture can never coincide with a real value FUSE_TEST_AFFINE_OFFSET + FUSE_TEST_AFFINE_SCALE * b_in produces)"
+file = "test/abi/plugins/affine_provider.c"
+old = """    memcpy(inst->saved, inst->out_ptr, inst->out_count * sizeof(double));"""
+new = """    /* mutation: save_state() no longer captures the current contents. */"""
+target = "fuse_abi_conformance_test"
+test = "abi.conformance"
+result = "CONFIRMED 2026-10-21 (round 2, after fixing the fixture): ConformanceTest.PluginBackedComponentInAnIterationRegionConvergesLikeAllNative failed on fuse_run() returning non-FUSE_OK -- last_error() read \"component 'beta' is in the derived checkpoint set of iteration region 'fsi', its supports_rollback() returned true, and its restore_state() returned success -- but the storage it registered for arc %1 does not hold the values it held when save_state() was called\" (E-ITER-ROLLBACK, src/runtime/iteration.cpp's own byte-level memcmp). Round 1 measured this SAME mutation SURVIVING, traced to a coincidence (this fixture's own 'beta' provides field is genuinely 0.0 at its one checkpoint, and a fresh malloc() on that run's platform happened to also read back as zero); fixed not by widening the test but by poisoning the plugin's own snapshot buffer with a quiet NaN right after allocation (affine_provider.c's own p_save_state(), this file's own header comment on the fix), so a skipped capture can never again coincide with any value the affine formula can produce. The other 27 cases in fuse_abi_conformance_test, none of which drives a provider whose restore_state() silently fails to copy back, still passed. Restored; cmp against the pre-mutation file reported no difference."
+
+[[mutation]]
+id = "affine-provider-advance-wrong-sign"
+area = "abi-provider"
+describes = "affine_provider.c's p_advance() computes b_out[i] = offset - scale * b_in[i] instead of the documented offset + scale * b_in[i] (this file's own header comment, and AffineComponent::advance()'s identical formula in test/abi/participant_test.cpp and conformance_test.cpp) -- a wrong-physics mutant ConformanceTest.PluginBackedComponentInAnIterationRegionConvergesLikeAllNative's own EXPECT_EQ zero-tolerance comparison against the all-native reference must catch, proving that comparison is sensitive to the plugin's actual arithmetic and not merely to whether fuse_run() returns FUSE_OK"
+file = "test/abi/plugins/affine_provider.c"
+old = """      inst->out_ptr[i] = (double)FUSE_TEST_AFFINE_OFFSET +
+                         (double)FUSE_TEST_AFFINE_SCALE * inst->in_ptr[i];"""
+new = """      inst->out_ptr[i] = (double)FUSE_TEST_AFFINE_OFFSET -
+                         (double)FUSE_TEST_AFFINE_SCALE * inst->in_ptr[i];"""
+target = "fuse_abi_conformance_test"
+test = "abi.conformance"
+result = "CONFIRMED 2026-10-21: ConformanceTest.PluginBackedComponentInAnIterationRegionConvergesLikeAllNative failed on EXPECT_EQ(mixed_runner->iteration_stats()[0].iterations, ref_iterations) -- the mutated run hit kMaxIterations (60) without converging (iteration_stats()[0].converged == false) against the reference's measured 42 sweeps, and every one of the four final-value comparisons (a_out/a_in/b_out/b_in, all 4 cells) disagreed by order-10 magnitudes (e.g. a_out[0] = 19.9999988... vs the reference's 6.6666666...), consistent with the sign flip turning the 2x2 Jacobi iteration matrix's spectral radius unstable instead of the correct ~0.592 (this test's own header comment). The other 27 cases, none of which mounts a provider with wrong physics, still passed. Restored; cmp against the pre-mutation file reported no difference."
