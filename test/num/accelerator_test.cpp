@@ -300,6 +300,37 @@ TEST(Accelerator, AitkenBeatsConstantRelaxation) {
       << "aitken " << n_aitken << " vs constant " << n_const;
 }
 
+TEST(Accelerator, AitkenRejectsANonPositiveCandidateAndRestartsToOmega0) {
+  // Window seed track, Stage E (KNOWN_ISSUES.md D76): a crafted 2-sweep
+  // scalar sequence whose UNGUARDED secant candidate is negative.
+  // Sweep 0: no history, w = initial_relaxation = 0.5, r_prev = 1 - 0 = 1.
+  // Sweep 1: r = 7 - 5 = 2, d = r - r_prev = 1, num = r_prev*d = 1,
+  // den = d*d = 1, candidate = -omega_*num/den = -0.5*1/1 = -0.5 -- the
+  // formula this track's own D76 entry measured AitkenAccel::update()
+  // used to accept outright (the window-3 stagnation: a negative omega
+  // at sweep 3, never recovering). The guarded formula rejects a
+  // non-positive candidate and restarts to omega0_, so sweep 1's own
+  // output is 5 + 0.5*2 = 6, not 5 + (-0.5)*2 = 4. Every value here is
+  // exactly representable and every operation a multiply or divide by a
+  // power of two, so this is checked bit-for-bit (EXPECT_EQ), not to a
+  // tolerance.
+  auto a = must_make(
+      AccelConfig{.kind = AccelKind::Aitken, .initial_relaxation = 0.5});
+
+  const double old0 = 0.0, new0 = 1.0;
+  double out0 = 0.0;
+  ASSERT_TRUE(a->update(&old0, &new0, &out0, 1, 0).ok());
+  EXPECT_EQ(out0, 0.5);
+
+  const double old1 = 5.0, new1 = 7.0;
+  double out1 = 0.0;
+  ASSERT_TRUE(a->update(&old1, &new1, &out1, 1, 1).ok());
+  EXPECT_EQ(out1, 6.0)
+      << "unguarded formula would give 5 + (-0.5)*2 = 4; guarded must "
+         "reject the negative candidate and restart to omega0_ = 0.5, "
+         "giving 5 + 0.5*2 = 6";
+}
+
 TEST(Accelerator, IqnIlsConvergesFastOnALinearProblem) {
   const Contraction g{.factor = 0.95, .fixed_point = {1.0, 2.0, 3.0, 4.0}};
   auto a = must_make(AccelConfig{.kind = AccelKind::IQN_ILS,
@@ -1416,9 +1447,15 @@ TEST(Accelerator, DivergenceFallsBackToTheUnderRelaxedStepWhenItSurvives) {
   // step, not the blown-up one. Both kinds below reach it through their own
   // dynamic factor rather than through initial_relaxation.
   {
-    // Aitken. omega0 = 1e280, and one secant pair whose residual moves by a
-    // single ulp, so the Irons-Tuck factor is amplified by ~1/eps to 6e295 and
-    // 6e295 * 1e20 overflows -- while 1e280 * 1e20 is a finite 1e300.
+    // Aitken. omega0 = 1e280, and one secant pair whose residual moves
+    // DOWN by a single ulp (window seed track Stage E's own D76
+    // safeguard rejects a non-positive candidate and restarts to
+    // omega0_, so an UPWARD ulp here -- making num = r_prev*d > 0,
+    // candidate = -omega_*num/den < 0 -- is rejected and never reaches
+    // relax_into at all; a DOWNWARD ulp makes num < 0, candidate =
+    // -omega_*num/den > 0, so the guard accepts it and the Irons-Tuck
+    // factor is still amplified by ~1/eps to 6e295, and 6e295 * 1e20
+    // overflows -- while 1e280 * 1e20 is a finite 1e300).
     auto a = must_make(
         AccelConfig{.kind = AccelKind::Aitken, .initial_relaxation = 1e280});
     std::vector<double> out(1, 0.0);
@@ -1426,7 +1463,7 @@ TEST(Accelerator, DivergenceFallsBackToTheUnderRelaxedStepWhenItSurvives) {
     ASSERT_TRUE(a->update(o0.data(), n0.data(), out.data(), 1, 0).ok());
     ASSERT_DOUBLE_EQ(out[0], 1e280 * 1e20);
 
-    const std::vector<double> o1{0.0}, n1{1e20 + 16384.0};  // +1 ulp of 1e20
+    const std::vector<double> o1{0.0}, n1{1e20 - 16384.0};  // -1 ulp of 1e20
     ASSERT_NE(n1[0], n0[0]) << "the perturbation must be representable";
     const auto r = a->update(o1.data(), n1.data(), out.data(), 1, 1);
     ASSERT_FALSE(r.ok());

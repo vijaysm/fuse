@@ -519,6 +519,36 @@ class AitkenAccel final : public Accelerator {
 
     for (std::size_t i = 0; i < n; ++i) r_[i] = x_new[i] - x_old[i];
 
+    // Window seed track, Stage D/E (KNOWN_ISSUES.md D76): the unguarded
+    // formula below accepted any finite, nonzero omega, including a
+    // negative one -- measured (Stage C/D): at D17's window 3 the second
+    // omega is negative (-0.031, then -0.18), the residual then stops
+    // decreasing (frozen at 0.0162 from sweep 4 on, 59 sweeps burned) and
+    // omega drifts toward zero. WHY the secant denominator collapses there
+    // is INFERRED, not measured: Stage C called it rounding noise, but its
+    // own numbers (denominator 3e-7 against ||r||^2 of 2.6e-4) are not at
+    // rounding level. A convergent real relaxation factor for a STATIONARY scalar
+    // iteration with spectrum lambda must lie in (0, 2(1 - Re lambda) /
+    // |1 - lambda|^2) (rationale for the RULE, not a proof for this
+    // dynamic, nonlinear scheme): a non-positive omega is never in that
+    // interval, so rejecting one outright is sound. Stage E measured three
+    // candidate fallbacks for a rejected candidate, on D17's configuration,
+    // all 25 windows including the one (window 9) the other two do not
+    // fix: keep the last accepted positive omega (fixes windows 3, 6; not
+    // 9), the residual-minimising scalar -<r_prev,dr>/||dr||^2 for the
+    // same two residuals, without the recursive omega_ factor (same
+    // result: fixes 3, 6; not 9), and restart to omega0_ (fixes all
+    // three, 3/6/9, and leaves every other window's sweep count changed by
+    // at most a few sweeps). Restart to omega0_ is implemented below;
+    // measured to disturb neither of the two bit-identical restart
+    // round-trip tests the other candidates were also checked against
+    // (test/verification/brusselator_restart_test.cpp
+    // SeparateLayoutJacobiAitken, GrowingLayoutJacobiAitken) -- unlike a
+    // noise-threshold-triggered restart variant also measured this round,
+    // which fixes window 9 too but breaks both of those tests by making
+    // the restart decision sensitive to ordinary round-off differences
+    // between two code paths meant to agree only bit-for-bit, not to a
+    // tolerance; this rule takes no such threshold and needs none.
     double w = omega0_;
     if (have_prev_) {
       double num = 0.0;
@@ -530,7 +560,14 @@ class AitkenAccel final : public Accelerator {
       }
       if (den > 0.0 && std::isfinite(den) && std::isfinite(num)) {
         const double candidate = -omega_ * num / den;
-        if (std::isfinite(candidate) && candidate != 0.0) w = candidate;
+        if (std::isfinite(candidate) && candidate > 0.0) {
+          w = candidate;
+        } else {
+          // Reject a non-positive (or non-finite) candidate: restart to
+          // omega0_ rather than keep using a value no convergent
+          // stationary relaxation could ever equal.
+          w = omega0_;
+        }
       }
     }
     omega_ = w;

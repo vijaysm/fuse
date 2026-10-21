@@ -326,6 +326,29 @@ TEST(BrusselatorRestart, GrowingLayoutJacobiAitken) {
                 "growing_jacobi_aitken.h5");
 }
 
+TEST(BrusselatorRestart, D17ConfigurationWindows3And6ConvergeUnderTheGuardedAitken) {
+  // Window seed track, Stage E (KNOWN_ISSUES.md D76). This fixture's own
+  // kDtU/kDtV/kWindow (0.002, 0.003, 0.02) already IS D17's own CLI
+  // configuration. Before Stage B's seed fix, Jacobi+Aitken's own
+  // iterations_per_window measured [15,16,18,25,25,25] over 6 periods;
+  // after Stage B's seed fix alone (Runner adopts WindowCoupler's own
+  // predictor; Aitken's own omega update still unguarded), window 3 (the
+  // 4th entry) exhausted the full kMaxIterations=100 sweep cap instead --
+  // this track's own D76 round 3 measurement. The guarded Aitken (this
+  // round) must converge every one of the first 7 windows (0-6) strictly
+  // under the cap; windows 3 and 6 are the two this track named
+  // explicitly as failing before this fix.
+  auto s = make_setup(WaveformIteration::Jacobi, AccelKind::Aitken);
+  ASSERT_TRUE(s != nullptr);
+  const RunResult r = run_n_periods(*s, 7);
+  ASSERT_EQ(r.iterations_per_window.size(), 7u);
+  for (std::size_t w = 0; w < r.iterations_per_window.size(); ++w) {
+    EXPECT_LT(r.iterations_per_window[w], kMaxIterations)
+        << "window " << w << " measured " << r.iterations_per_window[w]
+        << " iterations (cap " << kMaxIterations << ") -- D76";
+  }
+}
+
 TEST(BrusselatorRestart, SeparateLayoutJacobiIqnIls) {
   run_round_trip(WaveformIteration::Jacobi, AccelKind::IQN_ILS,
                 fuse::restart_io::FileLayout::SeparateMeshAndPoints,
@@ -632,13 +655,31 @@ TEST(BrusselatorRestart, GaussSeidelAitkenConvergesAndMatchesJacobi) {
   // Pinned, not just bounded: MEASURED on the fixed build, this exact
   // sequence (mutation testing found the weaker "GS <= Jacobi" bound
   // below passes even with the GaussSeidel exclusion (D71's own fix)
-  // disabled entirely on THIS rig -- Jacobi itself grows close to its
-  // own iteration cap here, 15,16,18,25,25,25, which the undifferentiated
-  // full-vector mutation's own 15,16,16,18,19,21 still clears). Pinning
-  // the real count is what actually exercises the fix; re-measure and
-  // update this vector, with a comment naming the measurement, if a
-  // future change to the accelerator or the problem genuinely moves it.
-  const std::vector<int> expected_gs_iterations = {7, 8, 9, 9, 9, 9};
+  // disabled entirely on THIS rig). Pinning the real count is what
+  // actually exercises the fix; re-measure and update this vector, with
+  // a comment naming the measurement, if a future change to the
+  // accelerator or the problem genuinely moves it.
+  //
+  // RE-PINNED, Window seed track Stage E (KNOWN_ISSUES.md D76): was
+  // {7, 8, 9, 9, 9, 9} (measured against the pre-Stage-B Runner seed,
+  // a persistence predictor past a member's first window). Stage B's
+  // Runner seed fix (adopts WindowCoupler's own extrapolation predictor
+  // for every window instance) moves every seed closer to the window's
+  // own fixed point; GaussSeidel's own D71 exclusion already keeps the
+  // accelerated vector to the single lagged channel here, so a strictly
+  // better seed converges that one channel in the measured minimum of 7
+  // sweeps on every window rather than 8-9 -- every moved entry is a
+  // DECREASE, consistent with "a more accurate seed needs no more
+  // sweeps, usually fewer," never an increase. The Aitken safeguard
+  // (reject a non-positive omega) added the same round does not move
+  // this row at all: measured identically {7,7,7,7,7,7} with the seed
+  // fix alone and with the seed fix plus the safeguard, so this rig's
+  // own GaussSeidel+Aitken sequence never hits the unguarded formula's
+  // negative-omega case. The "matches Jacobi" assertions below (the LE
+  // bound and the U/V EXPECT_NEAR cross-check) are unchanged by the
+  // re-pin: both still hold against the new numbers exactly as they did
+  // against the old ones.
+  const std::vector<int> expected_gs_iterations = {7, 7, 7, 7, 7, 7};
   ASSERT_EQ(gs_result.iterations_per_window.size(), expected_gs_iterations.size());
   for (std::size_t w = 0; w < expected_gs_iterations.size(); ++w) {
     EXPECT_EQ(gs_result.iterations_per_window[w], expected_gs_iterations[w])
@@ -681,7 +722,17 @@ TEST(BrusselatorRestart, GaussSeidelIqnIlsConvergesAndMatchesJacobi) {
   // Pinned, not just bounded -- see GaussSeidelAitkenConvergesAndMatches
   // Jacobi's own comment above for why the weaker bound alone is not
   // enough to exercise this fix. MEASURED on the fixed build.
-  const std::vector<int> expected_gs_iterations = {7, 8, 8, 8, 8, 8};
+  //
+  // RE-PINNED, Window seed track Stage E (KNOWN_ISSUES.md D76): was
+  // {7, 8, 8, 8, 8, 8} (pre-Stage-B Runner seed). Stage B's Runner seed
+  // fix moves every seed closer to the window's own fixed point, the
+  // same mechanism GaussSeidelAitkenConvergesAndMatchesJacobi's own
+  // comment names; IQN_ILS is not touched by the Aitken safeguard added
+  // the same round, and measured identically {7,7,6,6,6,6} with the
+  // seed fix alone and with the seed fix plus the safeguard. Every
+  // moved entry is a DECREASE or unchanged, never an increase. The
+  // "matches Jacobi" assertions below are unchanged by the re-pin.
+  const std::vector<int> expected_gs_iterations = {7, 7, 6, 6, 6, 6};
   ASSERT_EQ(gs_result.iterations_per_window.size(), expected_gs_iterations.size());
   for (std::size_t w = 0; w < expected_gs_iterations.size(); ++w) {
     EXPECT_EQ(gs_result.iterations_per_window[w], expected_gs_iterations[w])
