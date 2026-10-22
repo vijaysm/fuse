@@ -4233,6 +4233,58 @@ round-tripped bitwise through all 16 restores).
   that the simulated end time and the time axis carry the rounding error: zero for the default
   `--dt 0.01`, about 1.22e-4 for a value that is not on the grid.
 
+**2026-10-22 (track FsiAdjointness): the three items above, measured.**
+
+- Item (A), FIXED. The fluid-side budget's own literal `const double dt = c.dt;` (distinct from the
+  single call-site D80 already fixed) was still present a few lines below, feeding `bulk_dissipation`
+  and `dE_fluid_predicted`. Measured directly: it contributes `|c.dt-dt_delivered|*|interior_viscous_power
+  +pressure_div_power-boundary_bt_term|` = 6.361e-13 to the identity's mismatch under the default
+  (FP_REPRODUCIBLE=ON) policy -- 99% of the identity's own measured mismatch (6.444e-13) and 59% of the
+  existing `1e-9*|E0|+1e-12` tolerance budget (1.077e-12); under OFF it is 1.6e-14, 100% of that run's own
+  mismatch but only 1.2% of its tolerance. The tolerance was never breached in either policy -- this was
+  not a failing test -- but it was absorbing a real, non-round-off bookkeeping error, not the round-off its
+  own comment implied. Fixed by reusing `dt_delivered` (already computed above for the beam section);
+  mismatch collapses to 8.26e-15 (ON) / 4.51e-17 (OFF), both round-off scale against the SAME, UNCHANGED
+  tolerance. No tolerance was altered.
+- Item (B), EXPLAINED, not a defect. Three hypotheses tested directly. (h1) non-adjoint H/H^T D under
+  `nx_beam=6 != nx_fluid=5`: FALSIFIED -- a standalone program built both matrices
+  (`fuse::build_consistent_interp_weights` for H, `build_consistent_weights_for_plan`'s own
+  "consistent-transpose" formula reproduced by hand for H^T D) for this pair and 8 further matched/
+  mismatched pairs up to nx=10; the documented identity (`docs/user/interface-transfer.md`: "(H v)^T
+  (D rho) == v^T (H^T D rho)... bit for bit") held to round-off (relative defect <=1.75e-16) in every case.
+  (h2) dt bookkeeping, same class as (A): FALSIFIED -- both sides already use `dt_delivered`; moving
+  `c.dt` exactly onto the 1e-8 grid left the mismatch bit-for-bit unchanged. (h3) CONFIRMED: the test's own
+  `W_wall_current` is signed as power flowing INTO the fluid (the file's own header derivation, needed for
+  `bulk_dissipation`'s "should be POSITIVE" comment to hold), the NEGATIVE of "power fluid delivers" as the
+  removed printf label claimed; the correct identity is `dE_beam_naive + gen.id.W_wall_current == 0`, not
+  their difference. That sum is round-off scale in both policies (-5.99e-17 ON, +1.80e-16 OFF, against
+  operands of 5.14e-7/4.68e-9). The historical "4.75e-6, about the same in both policies" this entry
+  originally reported does not reproduce at this HEAD under either reading (measured difference:
+  1.027e-6 ON / 9.37e-9 OFF, two orders of magnitude apart, not "about the same") -- most likely a
+  pre-D80 number, since D80's own fix to `W_wall_current`'s `dt` argument moved it; not independently
+  re-derived at the pre-D80 revision. The test's comment and printf labels were corrected to state the
+  sign convention and the falsified/confirmed hypotheses; the corrected sum is printed as a RECORDED
+  diagnostic, deliberately NOT asserted -- a first Higham-style tolerance attempt (same construction as
+  the beam identity tolerance above) came out smaller than the measured round-off residual under OFF
+  (3.7e-19 vs 1.80e-16), i.e. it would have failed a correct result, and widening it without a genuine
+  derivation of the fluid solve's own forward-error propagation through the traction formula would be
+  choosing a tolerance after seeing it fail. STILL OPEN: a gated assertion on the corrected interface balance
+  needs a derived bound (a Lipschitz-type propagation of the fluid solve's forward error,
+  `4*kappa_2(A_fluid)*u*max|u_raw|` as in D80, through the wall-traction formula's sensitivity to v1 and p1).
+  The interface check was print-only before this round as well, so no assertion was weakened. The per-term
+  cancellation figure quoted in the test comment (sum of absolute terms 1.00 to 2.12 times the signed result)
+  was measured once with temporary instrumentation that was removed, and is not reproducible from the tree.
+- Item (C), left unchanged, three options costed (no behavior change made). Verified directly: for the
+  default `--dt 0.01` the 1e-6 rounding is exact (diff=0.0), matching the "zero" this entry already
+  reported; for the T1/40-derived dt used throughout this investigation (3.510428e-3), rationalize_dt's
+  1e-6 grid gives dt_delivered=0.00351, and `n_steps*(dt-dt_delivered)` at `--t-end 1.0`'s last row is
+  1.2209e-4, matching the "about 1.22e-4" this entry already reported. OPEN, an owner decision, three options:
+  (1) refuse an off-grid `--dt` by name at startup (loud and immediate; breaks any workflow that feeds a
+  computed dt without pre-rounding it to 1e-6); (2) step on `dt_delivered` for both the step count and the CSV
+  time column (an honest time axis; the reported dt can then differ from the typed `--dt` by up to the grid's
+  precision); (3) leave the behaviour and document the grid and the drift bound (no code risk; the silent drift
+  persists for a computed dt).
+
 ### ~~D35. The accept/connect probe's verdict was cached once and never measured again — CLOSED 2026-10-12
 
 `cmake/FuseDependencies.cmake` ran `tools/probe-mpi-dynamic.sh` only when `FUSE_MPI_DYNAMIC_PROBED` was not in
