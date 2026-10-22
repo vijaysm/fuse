@@ -1,21 +1,27 @@
 /* A provider plugin for test/abi/device_layout_test.cpp (D15 item 1,
  * "Device layout" track, 2026-10-21): unlike test/abi/plugins/
- * mixed_memspace_provider.c, this plugin genuinely launches a Kokkos
- * kernel to touch a device-resident field instead of dereferencing the
- * pointer with an ordinary C store. That distinction matters only on a
- * real CUDA/HIP/SYCL backend: a plain store through a device pointer is
- * undefined behaviour there (measured directly on this track: the
- * EXISTING DISABLED_MixedHostAndDeviceFieldsOnOneProviderConverge-
- * ThroughChannels row segfaults inside mixed_memspace_provider.c's own
- * advance() on ssh:higgs, exit code 139, because that plugin's own
- * header comment already names the gap -- "a build with a REAL device
- * backend ... would need a device kernel launch to touch that pointer
- * instead"). This file is that device kernel launch, so it is C++, not
- * C: Kokkos has no C binding. include/fuse/abi/provider.h already
- * wraps its declarations in `#ifdef __cplusplus extern "C"`, so a
- * plugin written in C++ speaks the exact same ABI table as every other
- * plugin in this directory; nothing about the dlopen()/fuse_provider_abi
- * mechanism changes.
+ * mixed_memspace_provider.c AS IT STOOD AT THE TIME, this plugin
+ * genuinely launches a Kokkos kernel to touch a device-resident field
+ * instead of dereferencing the pointer with an ordinary C store. That
+ * distinction matters only on a real CUDA/HIP/SYCL backend: a plain
+ * store through a device pointer is undefined behaviour there (measured
+ * directly on this track: the then-DISABLED_
+ * MixedHostAndDeviceFieldsOnOneProviderConvergeThroughChannels row
+ * segfaulted inside mixed_memspace_provider.c's own advance() on
+ * ssh:higgs, exit code 139, because that plugin's own header comment
+ * already named the gap -- "a build with a REAL device backend ... would
+ * need a device kernel launch to touch that pointer instead"). The
+ * "Mixed plugin" track (2026-10-21) later fixed that plugin the same
+ * way (mixed_memspace_device_write.cpp, a separate C++ translation unit
+ * exporting a C-callable Kokkos kernel launch) and dropped the
+ * DISABLED_ prefix from that row's name; this file predates that fix
+ * and remains its own, separate test, covering 3-component layout and
+ * bidirectional host/device copies the renamed row does not. This file
+ * is a device kernel launch, so it is C++, not C: Kokkos has no C
+ * binding. include/fuse/abi/provider.h already wraps its declarations
+ * in `#ifdef __cplusplus extern "C"`, so a plugin written in C++ speaks
+ * the exact same ABI table as every other plugin in this directory;
+ * nothing about the dlopen()/fuse_provider_abi mechanism changes.
  *
  * Three fields on one component ("mixed"), to exercise both the layout
  * question (3a) and both copy directions (3b) with one provider:
@@ -217,9 +223,10 @@ static fuse_status p_advance(fuse_provider_ctx* self, const fuse_step_request* i
     const int64_t n = static_cast<int64_t>(inst->device_in.count);
     // Kokkos::deep_copy, never a raw host dereference of a device
     // pointer: that raw-dereference mistake is exactly what the existing
-    // DISABLED_MixedHostAndDeviceFieldsOnOneProviderConvergeThrough-
-    // Channels row's own plugin makes, and it segfaults for it on a real
-    // device backend (host_pending in this track's own report).
+    // then-DISABLED_MixedHostAndDeviceFieldsOnOneProviderConvergeThrough-
+    // Channels row's own plugin made, and it segfaulted for it on a real
+    // device backend -- fixed in that row by the "Mixed plugin" track
+    // (2026-10-21), after this file was written.
     using UnmanagedDevice =
         Kokkos::View<const double*, typename KernelExecSpace::memory_space,
                      Kokkos::MemoryTraits<Kokkos::Unmanaged>>;

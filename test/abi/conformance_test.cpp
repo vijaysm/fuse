@@ -1470,12 +1470,14 @@ TEST(ConformanceTest, PluginDeviceFieldOnAHostOnlyBuildIsRefused) {
   // (capabilities() sets FUSE_CAP_DEVICE_FIELDS correctly, describe()
   // asks for FUSE_MEMSPACE_DEVICE on "device_out") is refused here too --
   // on a real device build this SAME graph and plugin is exactly
-  // DISABLED_MixedHostAndDeviceFieldsOnOneProviderConvergeThroughChannels,
-  // below.
+  // MixedHostAndDeviceFieldsOnOneProviderConvergeThroughChannels, below
+  // (renamed from DISABLED_MixedHostAndDeviceFieldsOnOneProviderConverge-
+  // ThroughChannels by the "Mixed plugin" track, 2026-10-21, once it
+  // could pass for real on a device build).
 #if defined(KOKKOS_ENABLE_CUDA) || defined(KOKKOS_ENABLE_HIP) || defined(KOKKOS_ENABLE_SYCL)
   GTEST_SKIP() << "this build has a real device backend; the host-only "
                   "refusal this test checks for does not apply here -- see "
-                  "DISABLED_MixedHostAndDeviceFieldsOnOneProviderConvergeThroughChannels "
+                  "MixedHostAndDeviceFieldsOnOneProviderConvergeThroughChannels "
                   "instead";
 #else
   const fuse::CouplingGraph g =
@@ -1503,19 +1505,28 @@ TEST(ConformanceTest, PluginDeviceFieldOnAHostOnlyBuildIsRefused) {
 #endif
 }
 
-// DISABLED_ (gtest's own "registered but does not run" convention, the
-// owner's own explicit instruction for this row): the TRUE positive
-// mixed host/device path -- both "host_out" and "device_out" bound,
-// bind()'s own fuse_field_view.memspace genuinely reporting
-// FUSE_MEMSPACE_DEVICE, advance() writing through a device pointer, the
-// post-advance Kokkos::fence(), and both channels delivering to "sink" --
-// needs a build with a real device backend (CUDA/HIP/SYCL) to mean
-// anything: on THIS sandbox Kokkos::DefaultExecutionSpace::memory_space
-// equals Kokkos::HostSpace, so "device_out" is refused outright by
-// PluginDeviceFieldOnAHostOnlyBuildIsRefused above before this test's own
-// body could ever run. See host_pending for the exact command to run
-// this on the owner's own CUDA build (ssh:higgs).
-TEST(ConformanceTest, DISABLED_MixedHostAndDeviceFieldsOnOneProviderConvergeThroughChannels) {
+// Fixed by the "Mixed plugin" track (2026-10-21), renamed from
+// DISABLED_MixedHostAndDeviceFieldsOnOneProviderConvergeThroughChannels to
+// drop that prefix: the TRUE positive mixed host/device path -- both
+// "host_out" and "device_out" bound, bind()'s own fuse_field_view.memspace
+// genuinely reporting FUSE_MEMSPACE_DEVICE, advance() writing through a
+// device pointer (mixed_memspace_provider.c's own p_advance(), through
+// mixed_memspace_device_write.cpp's Kokkos kernel launch for "device_out"),
+// the post-advance Kokkos::fence() in src/abi/provider_adapter.cpp, and
+// both channels delivering to "sink" -- needs a build with a real device
+// backend (CUDA/HIP/SYCL) to mean anything: on a host-only build
+// "device_out" is refused outright by PluginDeviceFieldOnAHostOnlyBuildIs-
+// Refused above before this test's own body could ever run, so this test
+// skips there by the same #if this file's own device-field tests already
+// use. On a real device build (measured on ssh:higgs, GTX 1050 Ti, sm_61,
+// this track): PASSES -- see this track's own measured_results for the
+// verbatim ctest output and the RED-first scratch break that confirms the
+// row can fail.
+TEST(ConformanceTest, MixedHostAndDeviceFieldsOnOneProviderConvergeThroughChannels) {
+#if !(defined(KOKKOS_ENABLE_CUDA) || defined(KOKKOS_ENABLE_HIP) || defined(KOKKOS_ENABLE_SYCL))
+  GTEST_SKIP() << "no device backend on this build; see "
+                  "PluginDeviceFieldOnAHostOnlyBuildIsRefused instead";
+#else
   const fuse::CouplingGraph g =
       fuse::abi_test::build_mixed_memspace_graph(FUSE_TEST_MIXED_MEMSPACE_PROVIDER_PLUGIN);
   const auto bytes = fuse::serialize(g);
@@ -1543,16 +1554,34 @@ TEST(ConformanceTest, DISABLED_MixedHostAndDeviceFieldsOnOneProviderConvergeThro
     (void)t->last_error(ctx, nullptr, &err);
     FAIL() << "fuse_initialize: " << buf;
   }
+  constexpr int kPeriods = 3;
   fuse_run_request rr{sizeof(rr)};
-  rr.periods = 3;
+  rr.periods = kPeriods;
   ASSERT_EQ(t->run(ctx, &rr, nullptr), FUSE_OK);
-  // DownstreamSink's own advance() records only ITS OWN "sink" field's
-  // history (one field today -- see this file's own DownstreamSink
-  // class); a real device build's own version of this test would need
-  // two sink fields (host_in, device_in) to assert both independently.
-  // Not built further here: the point of registering this row is the
-  // graph and plugin shape, not a finished assertion this sandbox could
-  // ever execute to find out whether it needs adjusting.
-  (void)sink_raw;
+  // MixedMemspaceSink's own advance() records "host_in" and "device_in"
+  // separately (host_history, device_history), one entry per period. Both
+  // channels in build_mixed_memspace_graph() are one hop (producer ->
+  // sink, no intermediate component), and this tree's own channel
+  // delivery is lagged by one period per hop (measured by the "Device
+  // layout" track on a different graph; re-measured here, not assumed,
+  // because this graph's resolution and plugin differ): history[0] is the
+  // Sink's own cold-start default (-1.0, register_fields()'s own initial
+  // fill); history[period] for period >= 1 is the mixed provider's own
+  // t_end from period `period` (t_begin = period - 1, t_end = period,
+  // Rational{1} intervals, so t_end as a double is exactly
+  // static_cast<double>(period)) -- the SAME exact rational-to-double
+  // value on both the plugin's own write and this test's own comparison,
+  // so EXPECT_EQ (not a tolerance) is the correct comparison.
+  ASSERT_EQ(sink_raw->host_history.size(), static_cast<std::size_t>(kPeriods));
+  ASSERT_EQ(sink_raw->device_history.size(), static_cast<std::size_t>(kPeriods));
+  EXPECT_EQ(sink_raw->host_history[0], -1.0);
+  EXPECT_EQ(sink_raw->device_history[0], -1.0);
+  for (std::size_t period = 1; period < sink_raw->host_history.size(); ++period) {
+    const double expected = static_cast<double>(period);
+    EXPECT_EQ(sink_raw->host_history[period], expected) << "period " << period;
+    EXPECT_EQ(sink_raw->device_history[period], expected) << "period " << period;
+  }
   EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
+#endif
 }
+
