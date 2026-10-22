@@ -2522,6 +2522,16 @@ target_compile_definitions(fuse_test_provider_linear_old_step_report PRIVATE FUS
 add_library(fuse_test_provider_affine SHARED abi/plugins/affine_provider.c)
 target_include_directories(fuse_test_provider_affine PRIVATE ${CMAKE_SOURCE_DIR}/include)
 
+# KNOWN_ISSUES.md D15 ("Registry hosting" track, 2026-10-22): test/abi/
+# plugins/hosting_probe_provider.c, a minimal provider whose entries each
+# increment a file-static counter read back through this file's own
+# fuse_test_hosting_probe_calls() probe (not part of the frozen provider
+# ABI) -- the independent, call-count evidence that a non-hosting rank's
+# own ProviderAdapter never dlopen()'d it at all, alongside the direct
+# dlopen(path, RTLD_NOLOAD) check the same test also makes.
+add_library(fuse_test_provider_hosting_probe SHARED abi/plugins/hosting_probe_provider.c)
+target_include_directories(fuse_test_provider_hosting_probe PRIVATE ${CMAKE_SOURCE_DIR}/include)
+
 # KNOWN_ISSUES.md D15 item 1 ("Provider parity" track, Stage B-2, Option
 # A): test/abi/plugins/mixed_memspace_provider.c, one host-resident and
 # one device-resident field on the SAME provider instance. The _NO_
@@ -2615,11 +2625,13 @@ add_dependencies(fuse_abi_conformance_test
   fuse_test_provider_linear_bad_save fuse_test_provider_linear_bad_restore
   fuse_test_provider_linear_old_step_report
   fuse_test_provider_affine
+  fuse_test_provider_hosting_probe
   fuse_test_provider_mixed_memspace fuse_test_provider_mixed_memspace_no_device_cap
   fuse_test_provider_mixed_memspace_host_only_fields)
 target_compile_definitions(fuse_abi_conformance_test PRIVATE
   FUSE_TEST_C_PROVIDER_PLUGIN="$<TARGET_FILE:fuse_test_provider_linear>"
   FUSE_TEST_AFFINE_PROVIDER_PLUGIN="$<TARGET_FILE:fuse_test_provider_affine>"
+  FUSE_TEST_HOSTING_PROBE_PROVIDER_PLUGIN="$<TARGET_FILE:fuse_test_provider_hosting_probe>"
   FUSE_TEST_MIXED_MEMSPACE_PROVIDER_PLUGIN="$<TARGET_FILE:fuse_test_provider_mixed_memspace>"
   FUSE_TEST_MIXED_MEMSPACE_PROVIDER_PLUGIN_NO_DEVICE_CAP="$<TARGET_FILE:fuse_test_provider_mixed_memspace_no_device_cap>"
   FUSE_TEST_MIXED_MEMSPACE_PROVIDER_PLUGIN_HOST_ONLY_FIELDS="$<TARGET_FILE:fuse_test_provider_mixed_memspace_host_only_fields>"

@@ -24,6 +24,7 @@
 /// for the participant direction).
 #include "fuse/base/config.hpp"
 
+#include <dlfcn.h>
 #include <gtest/gtest.h>
 
 #include <cstddef>
@@ -100,6 +101,9 @@
 // below.
 #ifndef FUSE_TEST_AFFINE_PROVIDER_PLUGIN
 #error "FUSE_TEST_AFFINE_PROVIDER_PLUGIN (the built affine_provider shared object path) must be defined"
+#endif
+#ifndef FUSE_TEST_HOSTING_PROBE_PROVIDER_PLUGIN
+#error "FUSE_TEST_HOSTING_PROBE_PROVIDER_PLUGIN (the built hosting_probe_provider shared object path) must be defined"
 #endif
 // "Provider parity" track (KNOWN_ISSUES.md D15), Stage B-2, item 1: the
 // mixed_memspace_provider.c plugin and its two CMake-target variants,
@@ -1585,3 +1589,202 @@ TEST(ConformanceTest, MixedHostAndDeviceFieldsOnOneProviderConvergeThroughChanne
 #endif
 }
 
+
+
+namespace {
+/// test/abi/plugins/hosting_probe_provider.c's own probe entry (NOT part
+/// of the frozen provider ABI, that file's own header comment): reads
+/// back its five file-static call counters. Any argument may be null.
+using HostingProbeFn = int (*)(int*, int*, int*, int*, int*);
+
+struct HostingProbeCounts {
+  int create = -1, describe = -1, bind = -1, advance = -1, destroy = -1;
+};
+
+/// Builds a ONE-field, ONE-component graph with "upstream" (the hosting-
+/// probe plugin) placed at `ranks`, so the only variable between the two
+/// tests below is which ranks the SAME graph shape declares -- the
+/// smallest fixture that exercises src/abi/participant.cpp's own
+/// impl_initialize_local() component-wiring loop (KNOWN_ISSUES.md D15,
+/// "Registry hosting" track) without a second component or a channel,
+/// which this round's own test needs none of.
+fuse::CouplingGraph build_hosting_probe_graph(fuse::RankSet ranks) {
+  fuse::CouplingGraph g;
+  const auto m1 = g.add_mesh(fuse::MeshDecl{.name = "m1", .source = "generated:line:1"});
+  const auto r1 = g.add_region(fuse::Region{.name = "r1", .mesh = m1, .dimension = 1});
+  const auto up = g.add_component(fuse::ComponentDecl{
+      .name = "upstream", .ranks = ranks, .interval = fuse::Rational{1},
+      .launch = fuse::LaunchSpec{.mode = fuse::LaunchMode::Plugin,
+                                 .plugin_path = FUSE_TEST_HOSTING_PROBE_PROVIDER_PLUGIN}});
+  (void)g.add_field(up, fuse::FieldSpec{.name = "out", .region = r1, .components = 1,
+                                        .conservation = fuse::Conservation::None,
+                                        .intent = fuse::Intent::Provides});
+  return g;
+}
+}  // namespace
+
+TEST(ConformanceTest, NonHostingRankNeverDlopensThePluginOrCallsAnyOfItsEntries) {
+  // KNOWN_ISSUES.md D15 ("Registry hosting" track, owner decision
+  // 2026-10-22, verbatim: "NO. This should not happen."): "upstream" is
+  // placed at RankSet{1, 1} -- rank 1 only. A build with no MPI
+  // (FUSE_HAVE_MPI off, this sandbox: KNOWN_ISSUES.md C1) hardcodes this
+  // process's own rank to 0 (src/abi/participant.cpp's impl_initialize_
+  // local(), the `#if FUSE_HAVE_MPI` block that would read a REAL rank
+  // from the communicator is compiled out), so this process is ALWAYS
+  // the non-hosting case for this fixture, exactly as needed, with no
+  // MPI runtime at all. `force_communicator_set()` (test-only seam,
+  // src/abi/test_support.hpp) is what makes `rank`/RankSet containment
+  // the operative check at all: left at its default (communicator_set
+  // == false), this adapter's own "assume hosted everywhere" rule would
+  // make EVERY rank host EVERY component, hiding the very question this
+  // test exists to answer.
+  const auto* t = fuse_coupler_abi(FUSE_ABI_VERSION);
+  ASSERT_NE(t, nullptr);
+
+  const fuse::CouplingGraph g = build_hosting_probe_graph(fuse::RankSet{1, 1});
+  const auto bytes = fuse::serialize(g);
+
+  fuse_context_out co{sizeof(co)};
+  ASSERT_EQ(t->create(nullptr, nullptr, &co), FUSE_OK);
+  fuse_ctx* ctx = co.ctx;
+  fuse_graph_source src{sizeof(src)};
+  src.bytes = bytes.data();
+  src.byte_count = bytes.size();
+  ASSERT_EQ(t->load_graph(ctx, &src, nullptr), FUSE_OK);
+
+  fuse_setup_options opts{sizeof(opts)};
+  ASSERT_EQ(t->setup(ctx, &opts, nullptr), FUSE_OK);
+  ASSERT_TRUE(fuse::abi_test::force_communicator_set(ctx, 1234));
+
+  const fuse_status init_rc = t->initialize(ctx, nullptr, nullptr);
+  // NOT asserted FUSE_OK: forcing communicator_set at tier 0 (no MPI)
+  // makes fuse_initialize() itself pick the "mpi" transport
+  // (src/abi/participant.cpp, right after this round's own component-
+  // wiring loop) and then refuse E-TRANSPORT-BACKEND ("no transport
+  // backend named 'mpi'") -- a PRE-EXISTING, unrelated tier-0 limitation
+  // this round neither introduces nor can work around (open_questions),
+  // confirmed identical on the HOSTING twin below. The component-wiring
+  // loop this test is actually about already ran to completion, and its
+  // side effects (dlopen'd or not, each entry called or not) are already
+  // final by the time this LATER, unrelated failure happens.
+  fuse_error err{sizeof(err)};
+  char buf[512] = {0};
+  err.buffer = buf;
+  err.capacity = sizeof(buf);
+  ASSERT_EQ(t->last_error(ctx, nullptr, &err), FUSE_OK);
+  EXPECT_EQ(init_rc, FUSE_ERR_RUNTIME);
+  EXPECT_STREQ(err.code, "E-TRANSPORT-BACKEND");
+
+  // THE assertion this test exists for: dlopen(RTLD_NOLOAD) returns a
+  // null handle only when this exact path was never successfully loaded
+  // by THIS process -- the direct, OS-level evidence that src/abi/
+  // registry.cpp's own mount_dynamic() (dlopen() + dlsym() +
+  // fuse_provider_abi()) was never reached for this rank.
+  void* resident = dlopen(FUSE_TEST_HOSTING_PROBE_PROVIDER_PLUGIN, RTLD_NOLOAD | RTLD_LAZY);
+  EXPECT_EQ(resident, nullptr)
+      << "a non-hosting rank must never dlopen() the plugin's shared object";
+
+  // Independent, call-count evidence (belt and suspenders: immune to any
+  // dlopen() reference-counting surprise the check above alone would
+  // miss): a FRESH load (this test's own, not FUSE's) of the identical
+  // .so starts every one of its five counters at 0, since nothing has
+  // ever called into ANY of its entries in this process before now --
+  // this is the FIRST test in this binary to touch this dedicated
+  // plugin file at all.
+  void* probe = dlopen(FUSE_TEST_HOSTING_PROBE_PROVIDER_PLUGIN, RTLD_NOW | RTLD_LOCAL);
+  ASSERT_NE(probe, nullptr);
+  auto fn = reinterpret_cast<HostingProbeFn>(dlsym(probe, "fuse_test_hosting_probe_calls"));
+  ASSERT_NE(fn, nullptr);
+  HostingProbeCounts counts;
+  fn(&counts.create, &counts.describe, &counts.bind, &counts.advance, &counts.destroy);
+  EXPECT_EQ(counts.create, 0);
+  EXPECT_EQ(counts.describe, 0);
+  EXPECT_EQ(counts.bind, 0);
+  EXPECT_EQ(counts.advance, 0);
+  EXPECT_EQ(counts.destroy, 0);
+  dlclose(probe);
+
+  EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
+}
+
+TEST(ConformanceTest, HostingTwin_HostingRankDlopensThePluginAndCallsItsEntries) {
+  // The contrasting twin to the test above: the IDENTICAL one-field
+  // graph shape, except "upstream" is placed at RankSet{0, 1} -- rank 0
+  // only, which this tier-0 process always is -- so this run IS the
+  // hosting case. Confirms this round's fix did not also stop mounting
+  // the plugin on a rank that DOES host it.
+  //
+  // Counts are read as a DELTA (before this test's own fuse_initialize()
+  // call vs after), not an absolute value: this plugin's own file-static
+  // counters live in the SAME loaded instance of this .so across every
+  // gtest case in this binary that ever touches it (dlclose() does not
+  // guarantee this process actually unmaps it the moment the refcount
+  // looks like it should reach zero), so an absolute "== 0"/"== 1"
+  // check would depend on gtest's own run order relative to the
+  // non-hosting test above. A delta does not.
+  const auto* t = fuse_coupler_abi(FUSE_ABI_VERSION);
+  ASSERT_NE(t, nullptr);
+
+  void* probe_before = dlopen(FUSE_TEST_HOSTING_PROBE_PROVIDER_PLUGIN, RTLD_NOW | RTLD_LOCAL);
+  ASSERT_NE(probe_before, nullptr);
+  auto fn = reinterpret_cast<HostingProbeFn>(dlsym(probe_before, "fuse_test_hosting_probe_calls"));
+  ASSERT_NE(fn, nullptr);
+  HostingProbeCounts before;
+  fn(&before.create, &before.describe, &before.bind, &before.advance, &before.destroy);
+
+  const fuse::CouplingGraph g = build_hosting_probe_graph(fuse::RankSet{0, 1});
+  const auto bytes = fuse::serialize(g);
+
+  fuse_context_out co{sizeof(co)};
+  ASSERT_EQ(t->create(nullptr, nullptr, &co), FUSE_OK);
+  fuse_ctx* ctx = co.ctx;
+  fuse_graph_source src{sizeof(src)};
+  src.bytes = bytes.data();
+  src.byte_count = bytes.size();
+  ASSERT_EQ(t->load_graph(ctx, &src, nullptr), FUSE_OK);
+
+  fuse_setup_options opts{sizeof(opts)};
+  ASSERT_EQ(t->setup(ctx, &opts, nullptr), FUSE_OK);
+  ASSERT_TRUE(fuse::abi_test::force_communicator_set(ctx, 1234));
+
+  const fuse_status init_rc = t->initialize(ctx, nullptr, nullptr);
+  // The SAME unrelated tier-0 limitation as the non-hosting test above
+  // (no "mpi" transport backend) -- confirmed identical here, which is
+  // the point: this failure does not depend on hosting vs non-hosting
+  // at all, only on communicator_set being forced on a build with no
+  // MPI, so it is not evidence either way about this round's own fix.
+  fuse_error err{sizeof(err)};
+  char buf[512] = {0};
+  err.buffer = buf;
+  err.capacity = sizeof(buf);
+  ASSERT_EQ(t->last_error(ctx, nullptr, &err), FUSE_OK);
+  EXPECT_EQ(init_rc, FUSE_ERR_RUNTIME);
+  EXPECT_STREQ(err.code, "E-TRANSPORT-BACKEND");
+
+  // THE assertion this twin exists for: the plugin IS resident (FUSE's
+  // own Registry, owned by `ctx`, still holds it open -- `destroy()`
+  // has not run yet) and its own create()/describe()/bind() entries
+  // WERE called at least once MORE than before this test's own
+  // fuse_initialize() (advance() was not: fuse_run() is never called in
+  // this test, and destroy() was not either, both checked for
+  // completeness -- their own delta must be exactly 0).
+  void* resident = dlopen(FUSE_TEST_HOSTING_PROBE_PROVIDER_PLUGIN, RTLD_NOLOAD | RTLD_LAZY);
+  ASSERT_NE(resident, nullptr)
+      << "a hosting rank must dlopen() the plugin's shared object";
+  HostingProbeCounts after;
+  fn(&after.create, &after.describe, &after.bind, &after.advance, &after.destroy);
+  EXPECT_GE(after.create - before.create, 1);
+  EXPECT_GE(after.describe - before.describe, 1);
+  EXPECT_GE(after.bind - before.bind, 1);
+  EXPECT_EQ(after.advance - before.advance, 0);
+  EXPECT_EQ(after.destroy - before.destroy, 0);
+  // Two references acquired above (the pre-initialize probe_before, and
+  // this post-initialize RTLD_NOLOAD query) beyond the Registry's own
+  // real one (acquired through mount_dynamic(), closed by t->destroy()
+  // below as it always was) -- give both back so this test leaves the
+  // process's dlopen refcounting exactly as it found it.
+  dlclose(resident);
+  dlclose(probe_before);
+
+  EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
+}
