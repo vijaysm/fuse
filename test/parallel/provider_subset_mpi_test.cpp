@@ -10,13 +10,20 @@
 // rank runs `fuse_run()` to completion without ever touching it.
 //
 // Compiled under FUSE_ENABLE_MPI only; MPI cannot start in this sandbox
-// (KNOWN_ISSUES.md C1), so this row is BUILT, never run here. See
-// KNOWN_ISSUES.md D15's own updated entry for the design question this
-// row's own existence surfaced (Registry::mount_dynamic() dlopen()s the
-// plugin on every rank, not only the hosting ones) and for why that
-// question is NOT decided by this file.
+// (KNOWN_ISSUES.md C1), so this row is BUILT, never run here. This
+// file's own existence surfaced a design question (Registry::
+// mount_dynamic() dlopen()s the plugin on every rank, not only the
+// hosting ones) that was NOT decided when this file was first written
+// -- it is decided and fixed now (KNOWN_ISSUES.md D15, "Registry
+// hosting" track, owner decision 2026-10-22: "NO. This should not
+// happen."): only a hosting rank dlopen()s the plugin's shared object.
+// The `dlopen(..., RTLD_NOLOAD)` check below pins that, for rank 0,
+// never a member of "upstream"'s own RankSet in this fixture; the
+// tier-0 twin with no MPI is test/abi/conformance_test.cpp's own
+// ConformanceTest.NonHostingRankNeverDlopensThePluginOrCallsAnyOfItsEntries.
 #include "fuse/base/config.hpp"
 
+#include <dlfcn.h>
 #include <gtest/gtest.h>
 #include <mpi.h>
 
@@ -179,6 +186,23 @@ TEST(ProviderSubsetMpi, APluginOnARankSubsetRunsOnlyOnItsOwnHostingRanksWithNoHa
     std::fprintf(stderr, "rank %d: fuse_initialize failed: %s\n", rank, buf);
     std::fflush(stderr);
     FAIL() << "rank " << rank << ": fuse_initialize failed: " << buf;
+  }
+
+  // KNOWN_ISSUES.md D15 ("Registry hosting" track, owner decision
+  // 2026-10-22): "upstream"'s own RankSet is {1, world_size - 1} --
+  // rank 0 is NEVER a member of it, on either a 2- or a 3-rank world,
+  // so rank 0 is ALWAYS the non-hosting case for this fixture. Direct,
+  // OS-level evidence that this rank's own ProviderAdapter never
+  // dlopen()'d "upstream"'s shared object at all -- the tier-0
+  // conformance test (test/abi/conformance_test.cpp's own
+  // NonHostingRankNeverDlopensThePluginOrCallsAnyOfItsEntries) pins the
+  // identical check with no MPI; this is its real-multi-process twin,
+  // built here but never run (KNOWN_ISSUES.md C1 -- see host_pending).
+  if (rank == 0) {
+    void* resident = dlopen(FUSE_TEST_C_PROVIDER_PLUGIN, RTLD_NOLOAD | RTLD_LAZY);
+    EXPECT_EQ(resident, nullptr)
+        << "rank 0 is never a member of \"upstream\"'s own RankSet and must "
+           "never dlopen() its shared object";
   }
 
   // Every rank -- hosting the plugin or not -- calls fuse_run() with the

@@ -3429,6 +3429,11 @@ model, or is paying the `dlopen()` cost everywhere an acceptable simplification 
 shared object is typically small compared to the physics it wraps? **Still open after round 3** (not
 addressed by the fix below, which is orthogonal: whether the plugin is mounted everywhere or only on
 hosting ranks, the sizing bug below applied to any rank that WAS mounted but did not host the field).
+**CLOSED 2026-10-22 ("Registry hosting" track, owner decision verbatim: "NO. This should not
+happen."): see this entry's own later round record (below, after the owner decisions paragraph) for
+the fix, what it costs (the `E-ABI-DESCRIBE`/`memspace` loss on a non-hosting rank), and the
+collective-discipline question it opens in turn, left for the owner in this round's own
+`open_questions`.**
 
 **Fixed 2026-10-19 (ABI track, round 3), measured on the host.** `parallel.provider_subset_mpi.2`
 failed at `fuse_initialize()`, rank 0 (the non-hosting rank): `field 'upstream.out' is registered with
@@ -3898,6 +3903,93 @@ it or on a device pointer being visible across streams. The plugin now fences it
 defensive measure with a comment saying so, and `provider-device-advance-fence-removed` survives BY THIS DECISION and is not
 declared equivalent. The hypothesis recorded above about `Kokkos::deep_copy` fencing stays INFERRED and is no longer needed: no test is to
 pin the fence.
+
+**Mount-everywhere FIXED ("Registry hosting" track, 2026-10-22), per the owner decision above.**
+`src/abi/participant.cpp`'s `impl_initialize_local()` (the component-wiring loop above this entry's
+own round 3 text) now computes `hosted = !c.communicator_set || decl.ranks.contains(rank)` BEFORE
+deciding what to do with a `LaunchMode::Plugin` component, instead of calling
+`Registry::mount_dynamic()` unconditionally: a hosting rank does exactly what it always did
+(`mount_dynamic()`, `extract()`, `set_hosting_rank()`); a non-hosting rank builds a NEW, table-less
+`fuse::abi_detail::ProviderAdapter` "unhosted shell" (new single-argument constructor,
+`src/abi/provider_adapter.hpp`/`.cpp`) directly, with no `dlopen()`, no `dlsym()`, no
+`fuse_provider_abi()` call, and none of `create()`/`describe()`/`bind()`/`advance()`/`destroy()`
+ever reaching the plugin's shared object. `ProviderAdapter::register_fields()` recognises the shell
+(`table_ == nullptr` AND a new `unhosted_shell_` flag -- kept SEPARATE from the pre-existing
+"table_ == nullptr means a failed mount" state the two-argument constructor still produces, which
+`ConformanceTest.ProviderAdapterRefusesATableMissingARequiredEntry` pins unchanged) and registers
+exactly the empty views the OLD mount-everywhere path already produced for a non-hosting rank -- same
+fields, same order, same zero count -- reading each field's shape from the GRAPH's own `FieldSpec`
+instead of the plugin's own `describe()` response, which this rank no longer calls at all.
+
+**What this loses, stated (the task's own question).** The `E-ABI-DESCRIBE` cross-check against the
+graph never runs on a non-hosting rank now, since that rank never asks the plugin anything -- but this
+is not a coverage gap for the check itself: at least one rank MUST host the component (`RankSet`'s own
+`E-PLACEMENT-EMPTY` rule), and that rank runs the identical check against the identical compiled
+plugin and the identical graph, neither of which varies by rank. A field's `memspace`
+(`FUSE_MEMSPACE_HOST`/`_DEVICE`) is similarly unavailable on a non-hosting rank (it is reported by
+`describe()`, not declared in the graph's own `FieldSpec`), so every field an unhosted shell registers
+is Host-memspace regardless of what a hosting rank's own `describe()` would report for the identical
+field -- harmless for an empty, zero-count view that nothing ever reads, and it can only make
+`src/runtime/runner.cpp`'s own `E-RT-SPACE` check stricter in this rank's favour, never looser.
+
+**Collective discipline, NOT fixed here (the owner's own standing rule, this round's own stop
+condition).** Before this round, a plugin/graph mismatch (`E-ABI-VERSION`, `E-ABI-DESCRIBE`, a device
+refusal) was independently re-derived by EVERY rank against the identical shared object, so every rank
+happened to agree without any real collective underneath -- after this round, only a HOSTING rank can
+ever see such a refusal; a non-hosting rank sails through with no complaint at all, which is exactly
+the "rank-local refusal ahead of a collective" the owner's rule forbids. Searched for an existing
+agreement point that could be reused: `reconcile_collective_status()` (`src/abi/participant.cpp`)
+wraps `fuse_initialize()`'s own local verdict, but only reconciles over `c.collective_comm_f`, which is
+split from the base communicator by `my_component`'s own `RankSet` POSITION
+(`decide_split_colour_key()`, `include/fuse/abi/collective_reconcile.hpp`) -- and `my_component` is
+documented (`entries.def`) to behave as unset for `LaunchMode::Plugin`/`InProcess` (there is nothing
+for `fuse::transport::connect()` to do for either), so `collective_comm_f` stays 0 for exactly the
+"InProcess/Plugin-only graph handed a real communicator directly" scenario this round's own fixture
+is -- confirmed empirically, not merely read: `test/parallel/provider_subset_mpi_test.cpp`'s own
+`setup()` call never names `my_component`, and this round's own tier-0 fixture (forced
+`communicator_set`, no MPI) measured `reconcile_collective_status()` as a pure pass-through in this
+shape. No new collective is invented (the owner's own explicit instruction); the options, with their
+costs, are in this round's own `open_questions`, for the owner to choose among.
+
+**Tests.** `ConformanceTest.NonHostingRankNeverDlopensThePluginOrCallsAnyOfItsEntries` (tier 0, new):
+a one-field, one-component graph with "upstream" at `RankSet{1, 1}` -- rank 1 only, while a build with
+no MPI hardcodes this process's own rank to 0 (`FUSE_HAVE_MPI` off, C1), so this run is always the
+non-hosting case, with `force_communicator_set()` (test-only seam) making `RankSet` containment the
+operative check at all. RED against the unmodified code: `dlopen(..., RTLD_NOLOAD)` returned a
+resident, non-null handle, and the new `test/abi/plugins/hosting_probe_provider.c`'s own call
+counters read `create=1`, `describe=2` -- both expected 0. GREEN with the fix: both checks pass.
+`ConformanceTest.HostingTwin_HostingRankDlopensThePluginAndCallsItsEntries` (tier 0, new): the
+identical graph at `RankSet{0, 1}` -- confirms the fix does not also stop a hosting rank. Mutation row
+`participant-plugin-hosted-check-removed` (`build-evidence/mutations/abi-registry-hosting.toml`, new
+file): forcing `hosted = true` unconditionally is KILLED by the non-hosting test alone (the hosting
+twin is unaffected, confirming the mutation's effect is isolated to the non-hosting branch), counts
+verbatim via `tools/mutate.py`: "1 killed, 0 declared equivalent, 0 not assessed here, 0 without a
+baseline, 0 not killed, of 1"; restored, `cmp` against the pre-mutation file reported no difference.
+`test/parallel/provider_subset_mpi_test.cpp` gets the identical `dlopen(..., RTLD_NOLOAD)` assertion
+for rank 0 (never a member of "upstream"'s own `RankSet` in that fixture, on either a 2- or 3-rank
+world); built and compile-checked under `-DFUSE_ENABLE_MPI=ON`, never run here (C1) -- host-pending,
+this entry's own updated commands below.
+
+```
+ctest --test-dir <build> -R 'parallel\.provider_subset_mpi\.(2|3)' -V
+```
+
+Full tier-0 `ctest`: 237/237 (100%). `tools/mutate.py --check-anchors`: 439 valid, 0 stale, of 439.
+The mount-everywhere design question (`docs/user/providers.md`, "Open questions") is CLOSED by this
+fix; see that document's own updated text.
+
+**Open after the mount-everywhere fix (lead, 2026-10-22).** (1) A plugin-side refusal (bad path, `E-ABI-VERSION`, `E-ABI-DESCRIBE`, a device
+gate) is now seen only by a rank that hosts the component. Before the fix every rank repeated the same refusal; now a non-hosting rank of
+the same base communicator proceeds, so a hosting rank's refusal sits ahead of the next collective, which is what the standing rule
+("agree first, then every rank refuses with the same code") forbids. No existing agreement point covers it: `my_component` is documented
+to behave as unset for `Plugin` and `InProcess`, so the component-local communicator stays 0 in exactly this scenario (confirmed in
+a tier-0 fixture, not only read). Three options, none built: (a) give a graph with Plugin components a communicator split by a key
+derived from the graph; (b) one `MPI_Allreduce(MPI_MINLOC)` over the base communicator, run only when the graph has a Plugin
+component, reconciling the plugin-mount verdict; (c) leave it and document the narrower risk. Recommendation: (b), with the open
+point that a multi-executable launch has no base communicator spanning all executables before `connect()`. (2) UNTESTED and INFERRED:
+the unhosted shell registers `MemorySpace::Host` for every field because it has no `describe()` to ask, while a hosting rank registers
+Device for a device-resident field; a device-resident plugin field on a rank SUBSET has never run (the device rows are single-process),
+and any consequence for the Runner's boundary copies on the non-hosting rank is unmeasured.
 ### ~~D16. A window member's cold-start priming over-read a smaller provider buffer — FIXED 2026-10-03
 
 Found by ASan on a two-member window-scoped region whose members export fields of different

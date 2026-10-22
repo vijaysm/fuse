@@ -214,6 +214,15 @@ that disagrees with the graph's own field declaration are refused at `fuse_initi
 `E-ABI-LOAD`, `E-ABI-VERSION`, `E-ABI-DESCRIBE` respectively) — never silently skipped or
 substituted.
 
+Only a rank that is a member of the component's own `ranks` actually loads the shared object
+(`dlopen()`/`dlsym()`/`fuse_provider_abi()`) and calls into it at all; a non-hosting rank of a
+multi-rank base communicator never touches it (KNOWN_ISSUES.md D15, "Registry hosting" track), and
+still registers every field that component declares, as an empty view, so field ordering and the
+runtime's own rank agreement are unaffected by which ranks actually host the plugin. A refusal from
+the plugin itself (`E-ABI-LOAD`, `E-ABI-VERSION`, `E-ABI-DESCRIBE`, or a device gate) is therefore
+now visible only on a hosting rank -- see "Open questions" below for the collective-agreement
+consequence this has, which this release does not close.
+
 ## Device fields
 
 `fuse_field_spec`'s `memspace` entry (`FUSE_MEMSPACE_HOST` or `FUSE_MEMSPACE_DEVICE`, the same enum
@@ -294,11 +303,18 @@ that the runtime's own byte-level rollback verification (`RunStats::checkpoint_v
 against the plugin's own registered storage, not merely that `fuse_run()` returned `FUSE_OK`.
 
 **A plugin launched on a *subset* of a component's ranks** is tested (KNOWN_ISSUES.md D15, item 3,
-closed 2026-10-19 across rounds 3-5 and confirmed on an MPI host); a SEPARATE question is still
-open, not about test coverage but about design: `fuse::abi_detail::Registry::mount_dynamic()` loads
-a `LaunchMode::Plugin` component's shared object on EVERY rank of the process set, whether or not
-that rank hosts the component, and whether mounting it only on hosting ranks is worth the added
-coupling to the graph's own placement model remains undecided.
+closed 2026-10-19 across rounds 3-5 and confirmed on an MPI host). The SEPARATE design question this
+raised -- whether `fuse::abi_detail::Registry::mount_dynamic()` should load a `LaunchMode::Plugin`
+component's shared object on every rank regardless of placement, or only on hosting ranks -- is
+CLOSED (owner decision 2026-10-22, verbatim: "NO. This should not happen."; "Registry hosting"
+track): only a hosting rank loads it now (see "Naming your plugin in the graph" above). This has a
+cost the owner's own standing collective-discipline rule flags and this release does not close: a
+plugin-side refusal (`E-ABI-LOAD`, `E-ABI-VERSION`, `E-ABI-DESCRIBE`, a device gate) used to be
+re-derived identically by every rank against the same shared object, so every rank happened to agree
+with no real collective underneath; now only a hosting rank can ever see one, and no existing
+agreement point in `fuse_initialize()` covers an `InProcess`/`Plugin`-only graph handed a
+communicator directly without `fuse::transport::connect()` (KNOWN_ISSUES.md D15's own "Registry
+hosting" round record has the full account and the options left for the owner).
 
 ## A note on exported symbols
 
