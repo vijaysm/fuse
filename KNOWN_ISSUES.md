@@ -7852,7 +7852,7 @@ quick tier at `cb127c5`): `parallel.participant_reducer_mpi.{2,3}`, `parallel.wi
 `petsc.window_newton_mpi.{2,3}` all Passed. The 3-rank reducer leg is the non-contiguous participant subset
 {0,2}. D55 (the same `window_newton_mpi.3` row hanging under Open MPI 4.1.5 on higgs) stays open on its own.
 
-### D32. The PETSc solver plugin is the second substrate behind the S7 seam — BUILT AND MEASURED 2026-10-11; the region communicator was lifted 2026-10-12 and `petsc.window_newton_mpi.{2,3}` passed on the host 2026-10-18
+### ~~D32. The PETSc solver plugin is the second substrate behind the S7 seam — BUILT AND MEASURED 2026-10-11; the region communicator was lifted 2026-10-12 and `petsc.window_newton_mpi.{2,3}` passed on the host 2026-10-18~~ -- CLOSED 2026-10-22 by owner decision (unreproduced)
 
 S7 was built on the library's own linear algebra first, by the user's decision of 2026-10-10: a
 native Jacobian-free Newton-Krylov coupler (`fuse::num::solve()`, `docs/dev/newton-krylov.md`)
@@ -8122,6 +8122,12 @@ sibling PETSc row; `hostrun/run-22oct-b.sh`, results in `hostrun/out7`). No hypo
 `MPI_COMM_SELF`, 0.06 s) came in the first targeted `ctest -R` run after a rebuild at `ffa6a0e`; no cause is established and none is
 claimed. The heading stays unstruck, as unreproduced, like D84. If it recurs, capture the first 40 lines of the row's output before
 anything else changes.
+
+**Closed (owner decision, 2026-10-22):** the heading is struck as complete: "Its probably fixed." The record behind that judgement, so it is not
+mistaken for a measurement of a fix: the `ensure_initialized()` call at the entry of `right_newton_solve_petsc` removed the cause measured on
+2026-10-21, and the one later abort (first targeted `ctest -R` after a rebuild at `ffa6a0e`) did not recur in 80 runs on the host (rate below
+about 3.7% at 95% confidence). The cause of that one abort was never established. If it recurs, reopen and capture the first 40 lines of the
+row's output before anything else changes.
 ### ~~D48. A `Transport` instruction can have one arc device-resident and the other host, even in Device mode — FOUND AND FIXED 2026-10-13
 
 **What was found.** docs/dev/device-resident-arcs.md Phase 3 made `Transport` space-aware in
