@@ -34,4 +34,4 @@ new = """        const bool hosted = true;  // MUTATION: restores unconditional 
 target = "fuse_parallel_provider_subset_mpi_test"
 test = "parallel.provider_subset_mpi.2"
 requires = "mpi"
-result = "PENDING a host kill run with FUSE_MUTATE_MPI=1 (2026-10-22). Not yet assessed: the sandbox cannot start MPI."
+result = "KILLED on the host 2026-10-22 (build-all at 88f9fb4, MPICH 5.0.2rc3, FUSE_MUTATE_MPI=1, tools/mutate.py --area abi-registry-hosting): 'KILLED participant-plugin-hosted-check-removed-mpi test fails'; area gate 1 killed, 0 declared equivalent, 1 not assessed here (the no-mpi row, by design on an MPI build), 0 without a baseline, 0 not killed, of 2; checkout clean afterwards."

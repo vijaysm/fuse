@@ -3990,6 +3990,12 @@ point that a multi-executable launch has no base communicator spanning all execu
 the unhosted shell registers `MemorySpace::Host` for every field because it has no `describe()` to ask, while a hosting rank registers
 Device for a device-resident field; a device-resident plugin field on a rank SUBSET has never run (the device rows are single-process),
 and any consequence for the Runner's boundary copies on the non-hosting rank is unmeasured.
+
+**Host run of the mount-everywhere fix (lead, 2026-10-22, `build-all` at `88f9fb4`):** `parallel.provider_subset_mpi.{2,3}` pass with the
+new `dlopen(RTLD_NOLOAD)` assertion; `abi.conformance` aborted at `ffa6a0e` in `MPI_Comm_rank` because two new tier-0 cases hand
+`fuse_initialize()` a placeholder communicator (1234), which an MPI build dereferences; they now skip under `FUSE_HAVE_MPI` (`4bacc2a`)
+and `abi.conformance` passes on the host. The mutation `participant-plugin-hosted-check-removed-mpi` is KILLED on the host by
+`parallel.provider_subset_mpi.2` (the no-MPI twin is not assessable on an MPI build, by design).
 ### ~~D16. A window member's cold-start priming over-read a smaller provider buffer — FIXED 2026-10-03
 
 Found by ASan on a two-member window-scoped region whose members export fields of different
@@ -7971,6 +7977,14 @@ run minutes later, from the same build. So the 2026-10-21 fix (`ensure_initializ
 remove the cause, or the row has a second, intermittent one; the earlier "13 of 13 pass" stands as a record of that day only. The
 failure rate and whether it is specific to this row are being measured on the host (40 direct runs, 40 runs under ctest, 20 runs of each
 sibling PETSc row; `hostrun/run-22oct-b.sh`, results in `hostrun/out7`). No hypothesis is recorded here: it was not separated by reading.
+
+**Host measurement of the abort (lead, 2026-10-22, `build-all` at `88f9fb4`, MPICH 5.0.2rc3, `hostrun/out7`):** it did NOT recur.
+`petsc.reaction_diffusion`: 40 of 40 passed run directly and 40 of 40 passed under `ctest`; `petsc.init`, `petsc.token`, `petsc.snes` and
+`petsc.derivative_gate`: 20 of 20 each. With zero failures in 80 runs of the row, the failure rate is below about 3.7% at 95% confidence
+(3/80, the rule of three); that bounds it, it does not show it absent. The one abort (invalid keyval from `MPI_Comm_get_attr` on
+`MPI_COMM_SELF`, 0.06 s) came in the first targeted `ctest -R` run after a rebuild at `ffa6a0e`; no cause is established and none is
+claimed. The heading stays unstruck, as unreproduced, like D84. If it recurs, capture the first 40 lines of the row's output before
+anything else changes.
 ### ~~D48. A `Transport` instruction can have one arc device-resident and the other host, even in Device mode — FOUND AND FIXED 2026-10-13
 
 **What was found.** docs/dev/device-resident-arcs.md Phase 3 made `Transport` space-aware in
