@@ -19,4 +19,19 @@ old = """        const bool hosted = !c.communicator_set || decl.ranks.contains(
 new = """        const bool hosted = true;  // MUTATION: restores unconditional mounting"""
 target = "fuse_abi_conformance_test"
 test = "abi.conformance"
+requires = "no-mpi"
 result = "CONFIRMED 2026-10-22: ConformanceTest.NonHostingRankNeverDlopensThePluginOrCallsAnyOfItsEntries failed three ways -- dlopen(FUSE_TEST_HOSTING_PROBE_PROVIDER_PLUGIN, RTLD_NOLOAD) returned a non-null handle (0x7d483250) instead of nullptr; counts.create read 1 instead of 0; counts.describe read 2 instead of 0 -- all three confirming the plugin was dlopen()'d and its create()/describe() entries were called even though \"upstream\"'s own RankSet ({1,1}) never includes this process's (hardcoded tier-0) rank 0. The other 32 runnable cases in the 34-test binary, including the contrasting ConformanceTest.HostingTwin_HostingRankDlopensThePluginAndCallsItsEntries (unaffected: it already expected hosted==true, which this mutation does not change for a component whose own RankSet DOES contain this rank), still passed. Restored; cmp against the pre-mutation file reported no difference."
+
+# The same mutation, killed on an MPI build by the real-communicator row. The tier-0 case above is skipped
+# on an MPI build (it hands fuse_initialize() a placeholder handle), so on such a build this row is the evidence.
+[[mutation]]
+id = "participant-plugin-hosted-check-removed-mpi"
+area = "abi-registry-hosting"
+describes = "the same unconditional mounting as participant-plugin-hosted-check-removed, assessed against parallel.provider_subset_mpi, whose rank 0 is never a member of the plugin component's RankSet and asserts dlopen(RTLD_NOLOAD) returns null there"
+file = "src/abi/participant.cpp"
+old = """        const bool hosted = !c.communicator_set || decl.ranks.contains(rank);"""
+new = """        const bool hosted = true;  // MUTATION: restores unconditional mounting"""
+target = "fuse_parallel_provider_subset_mpi_test"
+test = "parallel.provider_subset_mpi.2"
+requires = "mpi"
+result = "PENDING a host kill run with FUSE_MUTATE_MPI=1 (2026-10-22). Not yet assessed: the sandbox cannot start MPI."
