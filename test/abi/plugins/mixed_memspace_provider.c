@@ -1,10 +1,11 @@
 /* A provider plugin for test/abi/conformance_test.cpp: KNOWN_ISSUES.md D15
- * item 1 ("Provider parity" track, Stage B-2, Option A). Declares TWO
- * Provides fields -- "host_out" (FUSE_MEMSPACE_HOST) and "device_out"
- * (FUSE_MEMSPACE_DEVICE) -- on the SAME provider instance, to exercise the
- * mixed host/device path fuse::abi_detail::ProviderAdapter::register_
- * fields() now supports: each field's own describe() row decides its own
- * memory space independently, with no uniform, provider-wide choice.
+ * item 1 ("Provider parity" track, Stage B-2, Option A; fixed by the
+ * "Mixed plugin" track, 2026-10-21). Declares TWO Provides fields --
+ * "host_out" (FUSE_MEMSPACE_HOST) and "device_out" (FUSE_MEMSPACE_DEVICE)
+ * -- on the SAME provider instance, to exercise the mixed host/device
+ * path fuse::abi_detail::ProviderAdapter::register_fields() supports:
+ * each field's own describe() row decides its own memory space
+ * independently, with no uniform, provider-wide choice.
  *
  * Physics: identical to test/abi/plugins/linear_provider.c's own single
  * field, applied to BOTH fields -- advance() writes t_end (the exact
@@ -14,22 +15,29 @@
  * fields hold the identical, predictable value after advance() with no
  * new arithmetic to reason about.
  *
- * ON THIS BUILD (tier 0, no CUDA/HIP/SYCL compiled into Kokkos):
+ * ON A TIER-0 BUILD (no CUDA/HIP/SYCL compiled into Kokkos):
  * Kokkos::DefaultExecutionSpace::memory_space legally equals
  * Kokkos::HostSpace (device-resident-arcs.md's own documented "Device mode
  * on a CPU-only build" mechanism, the SAME one runtime.runner_device/
- * backend.supermesh.device's own ctest twins already rely on) -- so the
- * pointer bind() hands this plugin for "device_out" genuinely IS host-
- * dereferenceable here, and this advance() writes through it with an
- * ordinary C assignment, exactly as it does for "host_out". On a build
- * with a REAL device backend, this plugin's own advance() would need a
- * device kernel launch to touch that pointer instead -- proving THAT half
- * is this track's own host_pending item (ssh:higgs, the owner's CUDA
- * build, not available in this sandbox). What tier 0 CAN prove, and what
- * this plugin exists for: the describe()/capabilities()/bind()/fence
- * MACHINERY around a device-resident field is wired correctly end to end,
- * independent of whether the pointer it hands out is a real accelerator
- * address or (as here) a host stand-in.
+ * backend.supermesh.device's own ctest twins already rely on). ON A REAL
+ * DEVICE BUILD, the pointer bind() hands this plugin for "device_out" is
+ * a genuine accelerator address: it is written through a Kokkos kernel
+ * launch, not an ordinary C store (mixed_memspace_device_write.cpp, this
+ * same directory -- Kokkos has no C binding, so that one function is its
+ * own C++ translation unit, exported as a plain C-callable function and
+ * compiled into this plugin's shared object alongside this file; see that
+ * file's own header comment for why the fence this write relies on lives
+ * in src/abi/provider_adapter.cpp and not here). Measured on ssh:higgs
+ * (GTX 1050 Ti, sm_61): this is the fix for a defect the "Device layout"
+ * track found by running the ORIGINAL version of this file's own
+ * advance() (an ordinary C store through the device pointer) on that
+ * hardware -- it segfaulted (exit code 139), because that store is valid
+ * only on tier 0, where the pointer is secretly host-dereferenceable; see
+ * KNOWN_ISSUES.md D15 for that measurement. What this plugin now proves,
+ * on either tier 0 or a real device build: the describe()/capabilities()/
+ * bind()/fence MACHINERY around a device-resident field is wired
+ * correctly end to end, AND the field is actually touched through a
+ * kernel launch appropriate to wherever it really resides.
  *
  * capabilities() reports FUSE_CAP_DEVICE_FIELDS, required before
  * ProviderAdapter will honour "device_out"'s own describe()-row request
@@ -145,18 +153,26 @@ static fuse_status p_bind(fuse_provider_ctx* self, const fuse_field_view* in, fu
   return FUSE_OK;
 }
 
+/* Declared here, defined in mixed_memspace_device_write.cpp (this same
+ * directory): Kokkos has no C binding, so the one line that must launch
+ * a Kokkos kernel cannot live in this C translation unit. Plain
+ * `extern` is enough for C linkage (C itself has no name mangling to
+ * disambiguate); the defining file exports it as `extern "C"` so both
+ * sides agree on the symbol name. */
+extern void fuse_test_mixed_memspace_write_device(double* ptr, double value);
+
 static fuse_status p_advance(fuse_provider_ctx* self, const fuse_step_request* in, fuse_step_report* out) {
   instance_t* inst = (instance_t*)self;
   if (inst == NULL || in == NULL || out == NULL) return FUSE_ERR_INVALID;
   const double t_end = (double)in->t_end.numerator / (double)in->t_end.denominator;
   if (inst->host_ptr != NULL) *inst->host_ptr = t_end;
-  /* See this file's own header comment: on tier 0 (no real device
-   * backend), this pointer is host-dereferenceable, so this ordinary C
-   * write is exactly as valid as the host_ptr write above. The sentinel
-   * value p_bind() may have stored for an UNBOUND (count==0) device
-   * field is never dereferenced. */
+  /* See this file's own header comment and mixed_memspace_device_
+   * write.cpp's own: this pointer may be a genuine accelerator address,
+   * so it is written through a Kokkos kernel launch, never an ordinary
+   * C store. The sentinel value p_bind() may have stored for an
+   * UNBOUND (count==0) device field is never dereferenced. */
   if (inst->device_ptr != NULL && inst->device_ptr != (double*)(void*)1) {
-    *inst->device_ptr = t_end;
+    fuse_test_mixed_memspace_write_device(inst->device_ptr, t_end);
   }
   out->struct_size = sizeof(fuse_step_report);
   out->requires_checkpoint = 0;

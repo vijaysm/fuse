@@ -2531,15 +2531,30 @@ target_include_directories(fuse_test_provider_affine PRIVATE ${CMAKE_SOURCE_DIR}
 # for FUSE_MEMSPACE_DEVICE on "device_out" but capabilities() no longer
 # grants FUSE_CAP_DEVICE_FIELDS, so ProviderAdapter's own capability gate
 # must refuse it by name.
-add_library(fuse_test_provider_mixed_memspace SHARED abi/plugins/mixed_memspace_provider.c)
+# mixed_memspace_device_write.cpp (D15 item 1, "Mixed plugin" track,
+# 2026-10-21): the one Kokkos kernel launch mixed_memspace_provider.c's
+# own advance() needs for its device-resident field, kept as its own
+# C++ translation unit (Kokkos has no C binding) and compiled into all
+# three targets below alongside the .c file itself -- see that file's
+# own header comment and mixed_memspace_device_write.cpp's own for why.
+add_library(fuse_test_provider_mixed_memspace SHARED
+  abi/plugins/mixed_memspace_provider.c
+  abi/plugins/mixed_memspace_device_write.cpp)
 target_include_directories(fuse_test_provider_mixed_memspace PRIVATE ${CMAKE_SOURCE_DIR}/include)
-add_library(fuse_test_provider_mixed_memspace_no_device_cap SHARED abi/plugins/mixed_memspace_provider.c)
+target_link_libraries(fuse_test_provider_mixed_memspace PRIVATE Kokkos::kokkos)
+add_library(fuse_test_provider_mixed_memspace_no_device_cap SHARED
+  abi/plugins/mixed_memspace_provider.c
+  abi/plugins/mixed_memspace_device_write.cpp)
 target_include_directories(fuse_test_provider_mixed_memspace_no_device_cap PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(fuse_test_provider_mixed_memspace_no_device_cap PRIVATE Kokkos::kokkos)
 target_compile_definitions(fuse_test_provider_mixed_memspace_no_device_cap PRIVATE FUSE_TEST_NO_DEVICE_CAPABILITY)
 # The "opposite" direction the owner's own task names explicitly: capabilities()
 # sets FUSE_CAP_DEVICE_FIELDS but describe() reports no device field at all.
-add_library(fuse_test_provider_mixed_memspace_host_only_fields SHARED abi/plugins/mixed_memspace_provider.c)
+add_library(fuse_test_provider_mixed_memspace_host_only_fields SHARED
+  abi/plugins/mixed_memspace_provider.c
+  abi/plugins/mixed_memspace_device_write.cpp)
 target_include_directories(fuse_test_provider_mixed_memspace_host_only_fields PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(fuse_test_provider_mixed_memspace_host_only_fields PRIVATE Kokkos::kokkos)
 target_compile_definitions(fuse_test_provider_mixed_memspace_host_only_fields PRIVATE FUSE_TEST_HOST_ONLY_FIELDS)
 
 # D15 item 1 ("Device layout" track, 2026-10-21): test/abi/plugins/
