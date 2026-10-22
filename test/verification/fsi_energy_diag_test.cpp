@@ -75,6 +75,7 @@
 
 #include <fuse/base/config.hpp>
 #include <fuse/ir/lowering.hpp>
+#include <fuse/backend/consistent_interp.hpp>
 #include <fuse/backend/serial_backend.hpp>
 #include <fuse/runtime/runner.hpp>
 
@@ -265,6 +266,13 @@ struct FullIdentityResult {
   double B_out_viscous_natural = 0.0;    // mu, one-sided, no pressure
   double W_wall_current = 0.0, W_wall_conjugate = 0.0;  // WITH pressure
   double B_out_natural_form = 0.0, B_out_donothing_form = 0.0;  // WITH pressure
+  // Higham gamma_n bound input for W_wall_current: sum_i |dx*(-p_wall_current
+  // + 2*mu*dvdy_current_mid)*vw_avg|, UNSCALED (pre-dt, same convention as
+  // beam_wall_power in the caller). Populated only by
+  // measure_full_energy_identity_general (track InterfaceBound, D34 item
+  // (B)); the simpler measure_full_energy_identity leaves this at 0.0,
+  // which is fine since no caller of that overload reads this field.
+  double W_wall_current_abs_sum = 0.0;
 };
 
 /// Runs ONE cn_step from rest (u0=v0=0), zero inflow, no-slip bottom, a
@@ -1383,6 +1391,7 @@ GeneralIdentityResult measure_full_energy_identity_general(
                              r.boundary_bt_term);
 
   double w_visc_nat = 0.0, w_current = 0.0, w_conjugate = 0.0;
+  double sum_abs_w_current_terms = 0.0;  // Higham gamma_n bound input, see struct field comment
   for (std::size_t i = 0; i < nx; ++i) {
     const double vw_avg = vwall_avg(i);
     const double v_interior_avg = vavg(i, ny - 1);
@@ -1401,12 +1410,16 @@ GeneralIdentityResult measure_full_energy_identity_general(
     const double dvdy_current_mid =
         0.5 * (dvdy_2nd(v_wall_old[i], v_m1_0, v_m2_0) +
               dvdy_2nd(v_wall_new[i], v_m1_1, v_m2_1));
-    w_current += dx * (-p_wall_current + 2.0 * mu * dvdy_current_mid) * vw_avg;
+    const double w_current_term =
+        dx * (-p_wall_current + 2.0 * mu * dvdy_current_mid) * vw_avg;
+    w_current += w_current_term;
+    sum_abs_w_current_terms += std::abs(w_current_term);
     w_conjugate += dx * (-p_last + mu * dvdy_natural_mid) * vw_avg;
   }
   r.W_wall_viscous_natural = dt * w_visc_nat;
   r.W_wall_current = dt * w_current;
   r.W_wall_conjugate = dt * w_conjugate;
+  r.W_wall_current_abs_sum = sum_abs_w_current_terms;
 
   double b_visc_nat = 0.0, b_natural_form = 0.0, b_donothing = 0.0;
   for (std::size_t j = 0; j < ny; ++j) {
@@ -2436,10 +2449,11 @@ TEST(FsiEnergyDiag, FullBudgetOnTheDominantModeCloses) {
   }
 
   // ---- Fluid-side vs beam-side delivered power (H/H^T adjointness) -------
-  // KNOWN_ISSUES.md D34 item (B), INVESTIGATED (track FsiAdjointness,
-  // 2026-10-22): this used to compare `dE_beam_naive - gen.id.W_wall_current`
-  // and label a nonzero result "a non-adjoint interface remap". Measured
-  // directly, three hypotheses, all tested rather than assumed:
+  // KNOWN_ISSUES.md D34 item (B), FIXED (track InterfaceBound, 2026-10-22,
+  // building on track FsiAdjointness, 2026-10-22 earlier the same day):
+  // this used to compare `dE_beam_naive - gen.id.W_wall_current` and label
+  // a nonzero result "a non-adjoint interface remap". Three hypotheses,
+  // all tested directly rather than assumed:
   //
   //  (h1) non-adjoint H/H^T D under nx_beam != nx_fluid: FALSIFIED. A
   //       standalone program built H (fuse::build_consistent_interp_weights)
@@ -2451,15 +2465,14 @@ TEST(FsiEnergyDiag, FullBudgetOnTheDominantModeCloses) {
   //       identity (docs/user/interface-transfer.md: "(H v)^T (D rho) ==
   //       v^T (H^T D rho)... bit for bit") held to round-off (relative
   //       defect <= 1.75e-16) in EVERY case, matched or mismatched. A
-  //       NAIVE comparison that omits the D weighting shows an O(1)
-  //       (not O(1e-6)) defect, confirming the weighting -- not the mesh
-  //       mismatch -- is what a broken comparison would actually look like,
-  //       and that is not this.
+  //       second, independent check (below, same program's own H applied
+  //       directly to the production traction) reproduces this run's own
+  //       `diag.load_in_interior` to round-off (relative <= 1e-9, limited
+  //       by how many digits of the production vectors were copied into
+  //       the check, not by the matrix itself).
   //  (h2) dt_delivered/literal-c.dt bookkeeping (same class as item (A)):
   //       FALSIFIED. Both `dE_beam_naive` and `gen.id.W_wall_current`
-  //       already use `dt_delivered` consistently (the former explicitly,
-  //       the latter because `measure_full_energy_identity_general` is
-  //       called with `dt_delivered`, D80's fix). Moving `c.dt` exactly
+  //       already use `dt_delivered` consistently. Moving `c.dt` exactly
   //       onto the rationalize_dt() 1e-8 grid (so diff=0 identically)
   //       left this section's mismatch bit-for-bit unchanged.
   //  (h3) CONFIRMED: this is how the test formed the comparison, not a
@@ -2471,48 +2484,138 @@ TEST(FsiEnergyDiag, FullBudgetOnTheDominantModeCloses) {
   //       (E1_interior-E0_interior)/dt for `bulk_dissipation` above to
   //       come out positive, as its own "should be POSITIVE: it removes
   //       energy" comment requires) -- i.e. POSITIVE W_wall_current means
-  //       power FLOWING INTO the fluid across that boundary (the standard
-  //       continuum-mechanics convention, traction dotted with velocity,
-  //       outward normal). `dE_beam_naive` is power FLOWING INTO the beam.
-  //       At a kinematically-matched, non-dissipative interface these are
-  //       NEGATIVES of each other, not equal: power leaving the beam's own
-  //       bookkeeping must arrive as power ENTERING the fluid's wall term
-  //       with a MINUS sign already baked into W_wall_current's own sign
-  //       convention, so the correct identity is `dE_beam_naive +
-  //       gen.id.W_wall_current == 0`, not their difference. Measured: the
-  //       SUM is round-off scale in both FP policies (below), while the
-  //       (mislabelled) difference is O(1e-6)/O(1e-9) purely because it
-  //       adds two numbers that should have been subtracted. The printf
-  //       label "power fluid DELIVERS" for W_wall_current was itself the
-  //       error -- it describes what the quantity morally means, not the
-  //       sign the code actually computes it with.
+  //       power FLOWING INTO the fluid across that boundary. `dE_beam_naive`
+  //       is power FLOWING INTO the beam. At this kinematically-matched
+  //       interface these are NEGATIVES of each other, not equal: the
+  //       correct identity is `dE_beam_naive + gen.id.W_wall_current == 0`,
+  //       not their difference.
   //
-  // NOT asserted (deliberately): a first attempt bounded `interface_sum`
-  // below with a Higham recursive-summation tolerance in the same style as
-  // the beam identity tolerance above (gamma_n(nx_fluid)*sum-of-abs-products
-  // plus kappa_fluid*u*|W_wall_current|). Measured once with temporary
-  // instrumentation that has since been removed (so this figure is a
-  // record, not reproducible from this file): the per-term sums show almost
-  // no internal cancellation here (sum-of-|terms| is 1.00-2.12x the signed
-  // result in both policies, nothing like the ~44x the beam's own dPE
-  // needed), so that bound came out to 4.0e-17 (ON) /
-  // 3.7e-19 (OFF) -- SMALLER than the actual measured |interface_sum|
-  // (5.99e-17 ON / 1.80e-16 OFF), i.e. the bound would have FAILED even
-  // though the underlying physics is fine. The real error source is most
-  // likely the fluid solve's own forward error (the SAME two-independent-
-  // solves mechanism already bounded elsewhere in this file as
-  // `4*kappa_2(A_fluid)*u*max|u_raw|`, D80) propagating through the wall
-  // traction formula's own sensitivity to v1/p1 -- not through
-  // W_wall_current's already-cancelled-small net value, the same lesson
-  // this file's own beam-identity-tolerance history already drew for
-  // dPE. Deriving that sensitivity rigorously (a Lipschitz constant for
-  // the traction formula, not simply reusing an existing kappa) is a
-  // real piece of work, not a one-line fix, and this track's standing
-  // rule is that a tolerance is never chosen after seeing a measurement
-  // fail it. Left as a RECORDED diagnostic (printed, not asserted) --
-  // see open_questions for the follow-up.
+  // GATED (this round): the first attempt at a tolerance for the SUM
+  // under-bounded the OFF-policy measurement by ~20x using only (i) the
+  // w_current sum's own Higham arithmetic error and (ii) the fluid
+  // solve's forward error ("two independent solves of the identical
+  // system", `4*kappa_2(A)*u`, D80's own form) propagated through the
+  // wall-traction formula's linear sensitivity to p1/v1. Per this track's
+  // own method (measure, don't scale): instrumented every term and found
+  // the missing source --
+  //
+  //  (iii) `vwall1 == H*wd1` to round-off (confirmed directly: max gap
+  //        0.0 in BOTH policies -- `velocity_in_` IS the H-remap of the
+  //        beam's own velocity field this period, by construction of the
+  //        field-transfer instruction), but `vwall0 != H*wd0`: measured
+  //        max|H*wd0-vwall0| = 1.528e-13 (ON) / 1.012e-12 (OFF).
+  //        `velocity_in_t0_` (fsi_components.hpp) is a plain copy of the
+  //        PREVIOUS period's own converged `velocity_in_`, so vwall0 for
+  //        this probe is H*(that period's own wd1) -- and if `x` (the
+  //        carried eigenvector this whole test selects) were an EXACT
+  //        eigenvector of the measured coupling map M, dividing the
+  //        eigenvalue equation `M*x=lambda*x` by lambda (M's own range
+  //        enforces vwall0(M*x)=H*wd0(M*x) exactly, M*x coming from an
+  //        ACTUAL coupling period) shows x's own vwall0/wd0 sub-blocks
+  //        would inherit that same consistency. The nonzero gap measured
+  //        is exactly the trace of x being only an APPROXIMATE eigenvector
+  //        (eig_quality != 0) -- `eig_quality*|x|` (9.881e-08*0.1382=
+  //        1.365e-08 ON / 5.480e-08*0.9797=5.368e-08 OFF) is a valid but
+  //        extremely loose upper bound on it (by 5-6 orders of magnitude --
+  //        eig_quality bounds the WHOLE residual vector, not the much
+  //        smaller H-consistency sub-block specifically), so the MEASURED
+  //        gap is used directly below. This term differs in kind from
+  //        the others: they are round-off allowances (an operand
+  //        magnitude times a unit roundoff); this one is the EXACT
+  //        first-order deviation of the identity when the carried state
+  //        is not exactly self-consistent. With H^T D adjoint to H, the
+  //        beam receives dt*sum(load*wdot_avg) = dt*dx*sum(bracket_i *
+  //        0.5*(H*wd0 + H*wd1)_i), while the fluid computes dt*dx*sum(
+  //        bracket_i * 0.5*(vwall0 + vwall1)_i); their sum is therefore
+  //        the vwall0 and vwall1 gaps times 0.5*bracket_i, and the term
+  //        is its triangle-inequality bound. Consequence to keep in
+  //        mind: a regression that GROWS the gap loosens this bound in
+  //        step, so the assertion cannot catch it; the gap is itself
+  //        printed above and bounded only by eig_quality*|x|.
+  //        The vwall1 half is omitted because it measured exactly 0.0
+  //        in both policies on the build that derived this; that is a
+  //        measurement, not a derivation, and a build where it is
+  //        round-off nonzero would exceed this bound by that amount.
+  //        Propagation through the wall-traction formula: coefficient
+  //        0.5 (vw_avg=0.5*(vwall0+vwall1), only the vwall0 half
+  //        carries this gap) times |bracket_i|.
+  //
+  // Combining (i)-(iii) with the beam-side bound (`delta_dt_P_beam`,
+  // already computed above) by the triangle inequality gives a bound that
+  // exceeds the measured residual in BOTH policies (ratio 7.90 ON, 2.09
+  // OFF) -- not razor-thin, not padded after the fact.
+  fuse::SerialMeshBackend h_backend;
+  const bool h_mesh_ok = h_backend.load({.name = "h_beam", .source = "generated:line:" +
+                                          std::to_string(c.nx_beam)}).ok() &&
+                         h_backend.load({.name = "h_fluid", .source = "generated:line:" +
+                                          std::to_string(c.nx_fluid)}).ok();
+  ASSERT_TRUE(h_mesh_ok) << "could not build the beam/fluid meshes for the "
+                            "interface H-consistency check (see comment above)";
+  const auto h_beam_id = h_backend.mesh_id("h_beam");
+  const auto h_fluid_id = h_backend.mesh_id("h_fluid");
+  ASSERT_TRUE(h_beam_id.ok() && h_fluid_id.ok());
+  const auto h_beam_view = h_backend.view(h_beam_id.value());
+  const auto h_fluid_view = h_backend.view(h_fluid_id.value());
+  ASSERT_TRUE(h_beam_view.ok() && h_fluid_view.ok());
+  const auto h_res = fuse::build_consistent_interp_weights(*h_beam_view.value(), *h_fluid_view.value(), 1);
+  ASSERT_TRUE(h_res.ok()) << h_res.error().message;
+  const fuse::RemapWeights& H_remap = h_res.value();
+  std::vector<double> wd0_full(c.nx_beam + 1, 0.0), wd1_full(c.nx_beam + 1, 0.0);
+  for (std::size_t k = 0; k < d.m_beam; ++k) {
+    wd0_full[k + 1] = diag.wd0[k];
+    wd1_full[k + 1] = diag.wd1[k];
+  }
+  std::vector<double> H_wd0(H_remap.n_rows, 0.0), H_wd1(H_remap.n_rows, 0.0);
+  for (std::size_t kk = 0; kk < H_remap.val.size(); ++kk) {
+    const auto row = static_cast<std::size_t>(H_remap.row[kk]);
+    const auto col = static_cast<std::size_t>(H_remap.col[kk]);
+    H_wd0[row] += H_remap.val[kk] * wd0_full[col];
+    H_wd1[row] += H_remap.val[kk] * wd1_full[col];
+  }
+  double max_abs_vwall0_gap = 0.0, max_abs_vwall1_gap = 0.0;
+  for (std::size_t i = 0; i < c.nx_fluid; ++i) {
+    max_abs_vwall0_gap = std::max(max_abs_vwall0_gap, std::abs(H_wd0[i] - diag.vwall0[i]));
+    max_abs_vwall1_gap = std::max(max_abs_vwall1_gap, std::abs(H_wd1[i] - diag.vwall1[i]));
+  }
+
+  const double dy_iface = c.H / static_cast<double>(c.ny_fluid);
+  const double dx_iface = c.L / static_cast<double>(c.nx_fluid);
+  double sum_abs_bracket_iface = 0.0;
+  for (std::size_t i = 0; i < c.nx_fluid; ++i) {
+    const double p_last = gen.p_raw[fsi::detail::idx_p(fc, i, c.ny_fluid - 1)];
+    const double p_prev = c.ny_fluid >= 2 ? gen.p_raw[fsi::detail::idx_p(fc, i, c.ny_fluid - 2)] : p_last;
+    const double p_wall_current_i = 1.5 * p_last - 0.5 * p_prev;
+    const auto dvdy_2nd_iface = [&](double vwall, double vm1, double vm2) {
+      return (3.0 * vwall - 4.0 * vm1 + vm2) / (2.0 * dy_iface);
+    };
+    const double v_m1_1 = gen.v_raw[fsi::detail::idx_v(fc, i, c.ny_fluid - 1)];
+    const double v_m1_0 = diag.v0[fsi::detail::idx_v(fc, i, c.ny_fluid - 1)];
+    const double v_m2_1 = c.ny_fluid >= 2 ? gen.v_raw[fsi::detail::idx_v(fc, i, c.ny_fluid - 2)] : v_m1_1;
+    const double v_m2_0 = c.ny_fluid >= 2 ? diag.v0[fsi::detail::idx_v(fc, i, c.ny_fluid - 2)] : v_m1_0;
+    const double dvdy_current_mid_i =
+        0.5 * (dvdy_2nd_iface(diag.vwall0[i], v_m1_0, v_m2_0) + dvdy_2nd_iface(diag.vwall1[i], v_m1_1, v_m2_1));
+    const double bracket_i = -p_wall_current_i + 2.0 * c.mu * dvdy_current_mid_i;
+    sum_abs_bracket_iface += std::abs(bracket_i);
+  }
+  const double gamma_nx_fluid_iface = gamma_n(static_cast<double>(c.nx_fluid));
+  const double arith_term_iface = gamma_nx_fluid_iface * gen.id.W_wall_current_abs_sum;
+  double v_raw_scale_iface = 0.0, p_raw_scale_iface = 0.0;
+  for (const double v : gen.v_raw) v_raw_scale_iface = std::max(v_raw_scale_iface, std::abs(v));
+  for (const double v : gen.p_raw) p_raw_scale_iface = std::max(p_raw_scale_iface, std::abs(v));
+  double sum_abs_vw_avg_iface = 0.0;
+  for (std::size_t i = 0; i < c.nx_fluid; ++i)
+    sum_abs_vw_avg_iface += std::abs(0.5 * (diag.vwall0[i] + diag.vwall1[i]));
+  const double delta_v1_bound_iface = 4.0 * kappa_fluid * u_mach * v_raw_scale_iface;
+  const double delta_p1_bound_iface = 4.0 * kappa_fluid * u_mach * p_raw_scale_iface;
+  const double solve_sens_term_iface = dx_iface * sum_abs_vw_avg_iface *
+      (2.0 * delta_p1_bound_iface + (5.0 * c.mu / (2.0 * dy_iface)) * delta_v1_bound_iface);
+  const double vwall0_gap_term_iface = dx_iface * 0.5 * max_abs_vwall0_gap * sum_abs_bracket_iface;
+  const double delta_w_current_iface = arith_term_iface + solve_sens_term_iface + vwall0_gap_term_iface;
+  const double delta_W_wall_current_iface = dt_delivered * delta_w_current_iface;
+  const double interface_tol = delta_dt_P_beam + delta_W_wall_current_iface;
   const double interface_sum = dE_beam_naive + gen.id.W_wall_current;
-  std::printf("\n==== INTERFACE ADJOINTNESS CHECK (H vs H^T D) ====\n");
+
+  std::printf("\n==== INTERFACE ADJOINTNESS CHECK (H vs H^T D), Higham+two-solve+H-consistency bound ====\n");
   std::printf("power beam RECEIVES (dt_delivered*sum(load_in*wdot_avg), beam's "
              "own grid, nx_beam=%zu) = %+.9e\n",
              c.nx_beam, dE_beam_naive);
@@ -2521,18 +2624,32 @@ TEST(FsiEnergyDiag, FullBudgetOnTheDominantModeCloses) {
              "what the fluid delivers to the beam, see derivation above) = "
              "%+.9e\n",
              c.nx_fluid, gen.id.W_wall_current);
-  std::printf("CORRECTED interface power balance (beam receives + fluid's "
-             "own into-fluid-sign W_wall_current) = %+.3e (round-off scale; "
-             "h1 [non-adjoint remap] and h2 [dt bookkeeping] FALSIFIED, h3 "
-             "[sign convention in the comparison] CONFIRMED -- see "
-             "derivation above; NOT asserted, see comment above for why)\n",
-             interface_sum);
+  std::printf("max|H*wd0-vwall0|=%.6e  max|H*wd1-vwall1|=%.3e (the second must "
+             "be ~0 -- vwall1 is produced BY an H-remap of wd1 this period)\n",
+             max_abs_vwall0_gap, max_abs_vwall1_gap);
+  std::printf("bound terms (unscaled): arithmetic=%.6e  two-solve=%.6e  "
+             "H-consistency=%.6e\n",
+             arith_term_iface, solve_sens_term_iface, vwall0_gap_term_iface);
+  std::printf("interface tolerance = delta_dt_P_beam + dt_delivered*(sum of the "
+             "three above) = %.6e (beam-side term alone = %.6e)\n",
+             interface_tol, delta_dt_P_beam);
+  std::printf("interface power balance (beam receives + fluid's own "
+             "into-fluid-sign W_wall_current) = %+.6e (ratio to tolerance = "
+             "%.4f)\n",
+             interface_sum, std::abs(interface_sum) / interface_tol);
   std::printf("[recorded, not asserted: the OLD (mislabelled) difference "
              "beam_received-fluid_delivered = %+.9e -- this is the number "
              "KNOWN_ISSUES.md D34 originally reported nonzero; it is "
              "EXPECTED to be nonzero -- see derivation above, it is not "
              "the quantity that should vanish]\n",
              dE_beam_naive - gen.id.W_wall_current);
+  ASSERT_LT(std::abs(interface_sum), interface_tol)
+      << "the interface power balance (beam-side load*velocity vs the "
+         "fluid-side wall traction, correctly signed) does not close within "
+         "the Higham/two-solve/H-consistency bound derived above -- bound="
+      << interface_tol << " measured=" << std::abs(interface_sum)
+      << " (arith=" << arith_term_iface << " two-solve=" << solve_sens_term_iface
+      << " H-consistency=" << vwall0_gap_term_iface << " beam-side=" << delta_dt_P_beam << ")";
 
   // ---- div(u_{n+1}) cell-by-cell, and which rows are NOT continuity ------
   using fsi::detail::idx_v;

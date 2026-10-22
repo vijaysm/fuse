@@ -187,3 +187,41 @@ old = "        traction[i] = p_wall_mid - 2.0 * p_.mu * dvdy_mid;"
 new = "        traction[i] = -p_wall_mid + 2.0 * p_.mu * dvdy_mid;"
 target = "fuse_verification_fsi_coupled_test"
 test = "verification.fsi_coupled"
+
+[[mutation]]
+id = "fsi-energy-diag-interface-balance-sign-flip"
+area = "test/verification"
+describes = "flips the interface power balance's own comparison back to the pre-fix subtraction (dE_beam_naive - W_wall_current instead of +) -- the exact sign-convention defect KNOWN_ISSUES.md D34 item (B) traced and this round's own gated assertion exists to catch: W_wall_current is signed as power flowing INTO the fluid (this file's own energy-identity derivation), the NEGATIVE of what the beam receives at a kinematically-matched interface, so the two terms must be added, not subtracted, for the identity to close."
+file = "test/verification/fsi_energy_diag_test.cpp"
+old = "  const double interface_sum = dE_beam_naive + gen.id.W_wall_current;"
+new = "  const double interface_sum = dE_beam_naive - gen.id.W_wall_current;"
+target = "fuse_verification_fsi_energy_diag_test"
+test = "verification.fsi_energy_diag"
+# PROVED (track InterfaceBound, 2026-10-22, Debug build, both policies;
+#   cmake/FuseSlowTests.cmake's own Release-build average for this target
+#   is 123.9 s -- this sandbox's Debug run of the full 6-test target took
+#   28.7 s (ON) / 19.6 s (OFF), itself a "slow"-labelled row):
+#   FsiEnergyDiag.FullBudgetOnTheDominantModeCloses FAILS under the
+#   default (ON) policy -- measured |interface_sum|=1.027117366e-06 vs
+#   the derived tolerance 4.735389e-16, a ratio of 2.169e9, printed in the
+#   assertion's own failure message along with every term of the bound
+#   (arith=1.632e-19 two-solve=1.334e-13 H-consistency=1.513e-15
+#   beam-side=7.096e-22). Restored and confirmed byte-identical with cmp
+#   before moving on.
+
+[[mutation]]
+id = "fsi-energy-diag-interface-balance-beam-side-literal-dt"
+area = "test/verification"
+describes = "reintroduces the literal-c.dt bookkeeping defect (KNOWN_ISSUES.md D34 item (A)'s own class) specifically into dE_beam_naive -- the quantity the NEW interface balance assertion (item (B)) also depends on -- to confirm that assertion independently detects a dt regression on the beam side, not only the sign-convention defect it was written for. (The earlier, pre-existing beam-identity assertion ALSO fires on this same mutation and would normally mask this one; it was EXPECT_NEAR'd instead of ASSERT_NEAR'd for this ONE proof run only, then restored, so this row's own target test could be observed independently.)"
+file = "test/verification/fsi_energy_diag_test.cpp"
+old = "  const double dE_beam_naive = dt_delivered * beam_wall_power;"
+new = "  const double dE_beam_naive = c.dt * beam_wall_power;"
+target = "fuse_verification_fsi_energy_diag_test"
+test = "verification.fsi_energy_diag"
+# PROVED (track InterfaceBound, 2026-10-22, Debug build, ON policy):
+#   FsiEnergyDiag.FullBudgetOnTheDominantModeCloses FAILS at the
+#   interface-balance assertion -- measured |interface_sum|=
+#   2.360835e-13 vs the SAME derived tolerance 4.735389e-16, a ratio of
+#   498.6. Restored (both the mutation and the temporary EXPECT_NEAR
+#   downgrade on the earlier assertion) and confirmed byte-identical with
+#   cmp before moving on.
