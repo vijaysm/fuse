@@ -1,0 +1,34 @@
+# KNOWN_ISSUES.md D34 item C (owner decision 2026-10-22: step on the delivered dt and write the delivered
+# time axis). examples/fsi_channel/main.cpp. The rows are killed by example.fsi_channel.off_grid_dt (the step
+# count 29 against 28 and the last time 0.10179) and example.fsi_channel.dt_refused. `result` lines are added
+# after tools/mutate.py has run them in a clean export.
+
+[[mutation]]
+id = "fsi-dt-step-count-from-the-literal-dt"
+area = "example-fsi-dt"
+describes = "the step count is computed from the typed --dt, not the delivered one: 28 steps instead of 29 at t_end = 0.10004"
+file = "examples/fsi_channel/main.cpp"
+old = """static_cast<std::size_t>(std::llround(args.t_end / dt_delivered));"""
+new = """static_cast<std::size_t>(std::llround(args.t_end / args.dt));  // MUTATION"""
+target = "fuse_example_fsi_channel"
+test = "example.fsi_channel.off_grid_dt"
+
+[[mutation]]
+id = "fsi-dt-time-column-from-the-literal-dt"
+area = "example-fsi-dt"
+describes = "the CSV time column is built from the typed --dt, not the delivered one"
+file = "examples/fsi_channel/main.cpp"
+old = """    const double t = static_cast<double>(step + 1) * dt_delivered;"""
+new = """    const double t = static_cast<double>(step + 1) * args.dt;  // MUTATION"""
+target = "fuse_example_fsi_channel"
+test = "example.fsi_channel.off_grid_dt"
+
+[[mutation]]
+id = "fsi-dt-zero-after-rounding-not-refused"
+area = "example-fsi-dt"
+describes = "a --dt that rounds to zero on the 1e-6 grid is no longer refused by name"
+file = "examples/fsi_channel/main.cpp"
+old = """  if (!(dt_delivered > 0.0)) {"""
+new = """  if (false) {  // MUTATION"""
+target = "fuse_example_fsi_channel"
+test = "example.fsi_channel.dt_refused"

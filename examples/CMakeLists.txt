@@ -816,6 +816,25 @@ if(FUSE_LINALG_BACKEND_IS_EIGEN)
              COMMAND fuse_example_fsi_channel --accel no-such-method)
     set_tests_properties(example.fsi_channel.accel_refused PROPERTIES
       LABELS "example" PASS_REGULAR_EXPRESSION "E-EXAMPLE-ACCEL: unknown --accel 'no-such-method'")
+    # An off-grid --dt is stepped as the delivered value (D34 item C). With
+    # t_end = 0.10004 the step count itself differs: 0.10004 / 0.00351 = 28.5014
+    # rounds to 29 steps, 0.10004 / 0.0035104283866 = 28.4979 rounds to 28, and
+    # the last time is 29 x 0.00351 = 0.10179. The regular expression pins both
+    # the count and the time written to the CSV column (printed from the loop's
+    # own last value); the row asserts the time axis only, not the physics.
+    add_test(NAME example.fsi_channel.off_grid_dt
+             COMMAND fuse_example_fsi_channel --nx-fluid 16 --ny-fluid 8
+                     --nx-beam 12 --mass-ratio 1.0 --accel iqn-ils
+                     --dt 0.0035104283866 --t-end 0.10004
+                     --csv ${CMAKE_CURRENT_BINARY_DIR}/fsi_channel_off_grid_dt.csv)
+    set_tests_properties(example.fsi_channel.off_grid_dt PROPERTIES
+      LABELS "example"
+      PASS_REGULAR_EXPRESSION "time axis: last time 0\\.10179 \\(delivered dt 0\\.00351 x 29 steps\\)")
+    # A --dt that rounds to zero on the 1e-6 grid is refused by name.
+    add_test(NAME example.fsi_channel.dt_refused
+             COMMAND fuse_example_fsi_channel --dt 1e-7)
+    set_tests_properties(example.fsi_channel.dt_refused PROPERTIES
+      LABELS "example" PASS_REGULAR_EXPRESSION "E-EXAMPLE-DT")
     # Same command line at one thread and at every core, bit for bit. IQN-ILS
     # goes through the Runner's reductions, so this is the example most exposed
     # to a non-deterministic sum; both FSI components declare Bitwise on it.
@@ -845,6 +864,7 @@ if(FUSE_LINALG_BACKEND_IS_EIGEN)
     # under the flag and pass.
     if(FUSE_ENABLE_CUSPARSE)
       set_tests_properties(example.fsi_channel PROPERTIES DISABLED TRUE)
+      set_tests_properties(example.fsi_channel.off_grid_dt PROPERTIES DISABLED TRUE)
       if(TEST example.fsi_channel.omp_identical)
         set_tests_properties(example.fsi_channel.omp_identical PROPERTIES DISABLED TRUE)
       endif()

@@ -198,6 +198,21 @@ int main(int argc, char** argv) {
     return 2;
   }
 
+  // The exact-time scheduler steps on `rationalize_dt(args.dt)`, a 1e-6 grid.
+  // Until 2026-10-22 the step count and the CSV time column used the literal
+  // `--dt` instead, so an off-grid value (1.2209e-4 over a run of 285 steps at
+  // 3.5104284e-3) put the reported time axis and the simulated end time off from
+  // what the components actually advanced (KNOWN_ISSUES.md D34 item C, owner
+  // decision 2026-10-22: step on the delivered dt and write the delivered
+  // time axis).
+  const double dt_delivered = rationalize_dt(args.dt).to_double();
+  if (!(dt_delivered > 0.0)) {
+    std::fprintf(stderr,
+                 "argument error: E-EXAMPLE-DT: --dt %.9g rounds to %.9g on the 1e-6 "
+                 "grid the exact-time scheduler uses; give a --dt of at least 1e-6\n",
+                 args.dt, dt_delivered);
+    return 2;
+  }
   const double h_s = args.mass_ratio * kRhoF * kH / kRhoS;
   const double omega1 =
       fsi::clamped_beam_first_frequency(kL, kEI, kRhoS, h_s);
@@ -207,6 +222,13 @@ int main(int argc, char** argv) {
       "  beam first natural frequency: %.4g rad/s (period %.4g s)\n",
       args.nx_fluid, args.ny_fluid, args.nx_beam, args.mass_ratio, h_s,
       args.accel.c_str(), args.dt, args.t_end, omega1, 2.0 * M_PI / omega1);
+
+  if (dt_delivered != args.dt) {
+    std::printf(
+        "NOTE: --dt %.9g is stepped as %.9g (the 1e-6 grid of the exact-time "
+        "scheduler); the step count and the time column use %.9g\n",
+        args.dt, dt_delivered, dt_delivered);
+  }
 
   const int max_iterations = args.accel == "none" ? 50 : 200;
   fuse::CouplingGraph graph = build_graph(args.nx_beam, args.nx_fluid,
@@ -270,11 +292,12 @@ int main(int argc, char** argv) {
   }
 
   const std::size_t n_steps =
-      static_cast<std::size_t>(std::llround(args.t_end / args.dt));
+      static_cast<std::size_t>(std::llround(args.t_end / dt_delivered));
   std::ofstream csv(args.csv_path);
   csv << "step,time,sweeps,converged,beam_mid_deflection,beam_max_deflection\n";
 
   std::int64_t not_converged_total = 0;
+  double t_last = 0.0;  // the last value written to the CSV time column
   for (std::size_t step = 0; step < n_steps; ++step) {
     if (const auto r = runner.run_period(components); !r.ok()) {
       std::fprintf(stderr, "run_period: %s\n", r.error().message.c_str());
@@ -290,7 +313,8 @@ int main(int argc, char** argv) {
     double wmax = 0.0;
     for (const double v : w) wmax = std::max(wmax, std::abs(v));
 
-    const double t = static_cast<double>(step + 1) * args.dt;
+    const double t = static_cast<double>(step + 1) * dt_delivered;
+    t_last = t;
     csv << step << ',' << t << ',' << sweeps << ',' << (converged ? 1 : 0)
         << ',' << mid << ',' << wmax << '\n';
   }
@@ -299,10 +323,12 @@ int main(int argc, char** argv) {
   const std::vector<double>& w_final = beam_ptr->solver().displacement();
   std::printf(
       "ran %zu steps; total sweeps %lld, windows not converged %lld\n"
+      "time axis: last time %.9g (delivered dt %.9g x %zu steps)\n"
       "final beam mid-span deflection: %.6e m\n"
       "wrote %s\n",
       n_steps, static_cast<long long>(runner.stats().total_iterations),
       static_cast<long long>(not_converged_total),
+      t_last, dt_delivered, n_steps,
       w_final[w_final.size() / 2], args.csv_path.c_str());
   (void)fluid_ptr;
 
