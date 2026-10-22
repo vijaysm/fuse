@@ -7709,7 +7709,7 @@ quick tier at `cb127c5`): `parallel.participant_reducer_mpi.{2,3}`, `parallel.wi
 `petsc.window_newton_mpi.{2,3}` all Passed. The 3-rank reducer leg is the non-contiguous participant subset
 {0,2}. D55 (the same `window_newton_mpi.3` row hanging under Open MPI 4.1.5 on higgs) stays open on its own.
 
-### ~~D32. The PETSc solver plugin is the second substrate behind the S7 seam — BUILT AND MEASURED 2026-10-11; the region communicator was lifted 2026-10-12 and `petsc.window_newton_mpi.{2,3}` passed on the host 2026-10-18
+### D32. The PETSc solver plugin is the second substrate behind the S7 seam — BUILT AND MEASURED 2026-10-11; the region communicator was lifted 2026-10-12 and `petsc.window_newton_mpi.{2,3}` passed on the host 2026-10-18
 
 S7 was built on the library's own linear algebra first, by the user's decision of 2026-10-10: a
 native Jacobian-free Newton-Krylov coupler (`fuse::num::solve()`, `docs/dev/newton-krylov.md`)
@@ -7963,6 +7963,14 @@ one not-assessed row needs a build with no MPI.
 
 **Owner confirmation (2026-10-21):** the S7.4 native-twin tolerance, 2x the largest measured error (bound 2.37e-1 against
 errors up to 1.18e-1), is accepted.
+
+**REOPENED (lead, 2026-10-22).** On the host (`build-all` at `ffa6a0e`, MPICH 5.0.2rc3) `petsc.reaction_diffusion` ABORTED in its first
+case, `PetscInnerSolveAgreesWithNativeAtOnePoint`, with the same signature as the defect fixed on 2026-10-21 (`MPI_Comm_get_attr` on
+`MPI_COMM_SELF` with `MPI_KEYVAL_INVALID`, 0.06 s), in a targeted `ctest -R` run; the same row PASSED (0.32 s) in the full quick-tier
+run minutes later, from the same build. So the 2026-10-21 fix (`ensure_initialized()` at the entry of `right_newton_solve_petsc`) did not
+remove the cause, or the row has a second, intermittent one; the earlier "13 of 13 pass" stands as a record of that day only. The
+failure rate and whether it is specific to this row are being measured on the host (40 direct runs, 40 runs under ctest, 20 runs of each
+sibling PETSc row; `hostrun/run-22oct-b.sh`, results in `hostrun/out7`). No hypothesis is recorded here: it was not separated by reading.
 ### ~~D48. A `Transport` instruction can have one arc device-resident and the other host, even in Device mode — FOUND AND FIXED 2026-10-13
 
 **What was found.** docs/dev/device-resident-arcs.md Phase 3 made `Transport` space-aware in
