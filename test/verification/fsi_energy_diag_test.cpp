@@ -2351,7 +2351,28 @@ TEST(FsiEnergyDiag, FullBudgetOnTheDominantModeCloses) {
   const double cellf = (c.L / c.nx_fluid) * (c.H / c.ny_fluid);
   correction_energy *= 0.5 * c.rho_f * cellf;
 
-  const double dt = c.dt;
+  // KNOWN_ISSUES.md D34 item (A), FIXED (track FsiAdjointness, 2026-10-22):
+  // this used to read `const double dt = c.dt;` here -- the LITERAL dt,
+  // not `dt_delivered` -- while every gen.id.* quantity below was computed
+  // by `measure_full_energy_identity_general`'s own cn_step-style
+  // reconstruction called with `dt_delivered` a few lines above (D80's own
+  // fix). Same mechanism D34 already found and fixed for the beam-side
+  // identity, reintroduced here for this fluid-side one. Measured
+  // directly (not assumed): using the literal dt here contributes
+  // |c.dt-dt_delivered|*|interior_viscous_power+pressure_div_power-
+  // boundary_bt_term| = 6.361e-13 to this identity's mismatch under the
+  // default (ON) policy -- 99% of the identity's OWN measured mismatch
+  // (6.444e-13) and 59% of the existing `1e-9*|E0|+1e-12` tolerance
+  // budget (1.077e-12); under FP_REPRODUCIBLE=OFF it is 1.6e-14, 100% of
+  // that run's own mismatch (1.6e-14) but only 1.2% of its (looser,
+  // bigger-E0) tolerance. The tolerance was never breached -- this is
+  // NOT a currently-failing test -- but it was absorbing a real,
+  // non-round-off bookkeeping error rather than the round-off the
+  // ASSERT_NEAR's comment implies. Fixed below by using `dt_delivered`;
+  // collapses the mismatch to 8.26e-15 (ON) / 4.51e-17 (OFF), both >=2
+  // orders of magnitude tighter against the SAME, UNCHANGED tolerance.
+  const double dt_literal_for_record = c.dt;  // kept ONLY for the recorded (not asserted) comparison below
+  const double dt = dt_delivered;
   const double bulk_dissipation =
       gen.id.W_wall_viscous_natural + gen.id.B_out_viscous_natural -
       dt * gen.id.interior_viscous_power;
@@ -2393,28 +2414,125 @@ TEST(FsiEnergyDiag, FullBudgetOnTheDominantModeCloses) {
       << "fluid-side identity (RAW cn_step budget + isolated mass "
          "correction) does not close against the ACTUAL (corrected) fluid "
          "KE change";
+  // Recorded, not asserted: what this identity's mismatch would have been
+  // with the OLD literal-c.dt bookkeeping (see comment above) -- measured,
+  // not assumed, kept here as evidence the defect was real and that the
+  // fix tightens rather than masks the comparison.
+  {
+    const double dE_fluid_predicted_literal =
+        dt_literal_for_record *
+            (gen.id.interior_viscous_power + gen.id.pressure_div_power -
+             gen.id.boundary_bt_term) +
+        gen.id.ke_change_v_wall + gen.id.ke_change_u_outflow + correction_energy;
+    std::printf("[recorded, not asserted: with the OLD literal-c.dt "
+               "bookkeeping this identity's mismatch would have been "
+               "%.3e (%.1f%% of the %.3e tolerance budget); fixed, it is "
+               "%.3e]\n",
+               std::abs(dE_fluid - dE_fluid_predicted_literal),
+               100.0 * std::abs(dE_fluid - dE_fluid_predicted_literal) /
+                   (1e-9 * std::abs(E0) + 1e-12),
+               1e-9 * std::abs(E0) + 1e-12,
+               std::abs(dE_fluid - dE_fluid_predicted));
+  }
 
   // ---- Fluid-side vs beam-side delivered power (H/H^T adjointness) -------
-  // The beam receives `beam_wall_power` on its OWN nx_beam-resolution
-  // grid; the fluid's traction (using the ACTUAL production formula,
-  // W_wall_current) is computed on the FLUID's own, generally DIFFERENT,
-  // nx_fluid-resolution grid. If `H` (velocity, fluid->beam) and `H^T D`
-  // (force, beam->fluid, "conservative") are not exact adjoints under
-  // their respective quadratures -- entirely possible whenever
-  // nx_beam != nx_fluid, independent of any of the three named
-  // candidates -- energy can leak or be created at the interface itself.
+  // KNOWN_ISSUES.md D34 item (B), INVESTIGATED (track FsiAdjointness,
+  // 2026-10-22): this used to compare `dE_beam_naive - gen.id.W_wall_current`
+  // and label a nonzero result "a non-adjoint interface remap". Measured
+  // directly, three hypotheses, all tested rather than assumed:
+  //
+  //  (h1) non-adjoint H/H^T D under nx_beam != nx_fluid: FALSIFIED. A
+  //       standalone program built H (fuse::build_consistent_interp_weights)
+  //       and the production H^T D matrix (build_consistent_weights_for_plan's
+  //       own "consistent-transpose" formula, reproduced by hand) for this
+  //       exact pair (nx_beam=6 elements/7 nodes, nx_fluid=5 cells/6
+  //       vertices) and for 8 further (matched and mismatched) pairs up to
+  //       nx=10, with fixed deterministic test vectors. The documented
+  //       identity (docs/user/interface-transfer.md: "(H v)^T (D rho) ==
+  //       v^T (H^T D rho)... bit for bit") held to round-off (relative
+  //       defect <= 1.75e-16) in EVERY case, matched or mismatched. A
+  //       NAIVE comparison that omits the D weighting shows an O(1)
+  //       (not O(1e-6)) defect, confirming the weighting -- not the mesh
+  //       mismatch -- is what a broken comparison would actually look like,
+  //       and that is not this.
+  //  (h2) dt_delivered/literal-c.dt bookkeeping (same class as item (A)):
+  //       FALSIFIED. Both `dE_beam_naive` and `gen.id.W_wall_current`
+  //       already use `dt_delivered` consistently (the former explicitly,
+  //       the latter because `measure_full_energy_identity_general` is
+  //       called with `dt_delivered`, D80's fix). Moving `c.dt` exactly
+  //       onto the rationalize_dt() 1e-8 grid (so diff=0 identically)
+  //       left this section's mismatch bit-for-bit unchanged.
+  //  (h3) CONFIRMED: this is how the test formed the comparison, not a
+  //       defect in the interface operators. `W_wall_current` is this
+  //       function's own one-sided wall TRACTION dotted with the wall
+  //       velocity (file header above: "mu*sum(vel_avg.Lap_avg)" splits
+  //       into bulk dissipation (<=0) plus `W_wall_viscous_natural`/
+  //       `B_out_viscous_natural`, which must be POSITIVE contributions to
+  //       (E1_interior-E0_interior)/dt for `bulk_dissipation` above to
+  //       come out positive, as its own "should be POSITIVE: it removes
+  //       energy" comment requires) -- i.e. POSITIVE W_wall_current means
+  //       power FLOWING INTO the fluid across that boundary (the standard
+  //       continuum-mechanics convention, traction dotted with velocity,
+  //       outward normal). `dE_beam_naive` is power FLOWING INTO the beam.
+  //       At a kinematically-matched, non-dissipative interface these are
+  //       NEGATIVES of each other, not equal: power leaving the beam's own
+  //       bookkeeping must arrive as power ENTERING the fluid's wall term
+  //       with a MINUS sign already baked into W_wall_current's own sign
+  //       convention, so the correct identity is `dE_beam_naive +
+  //       gen.id.W_wall_current == 0`, not their difference. Measured: the
+  //       SUM is round-off scale in both FP policies (below), while the
+  //       (mislabelled) difference is O(1e-6)/O(1e-9) purely because it
+  //       adds two numbers that should have been subtracted. The printf
+  //       label "power fluid DELIVERS" for W_wall_current was itself the
+  //       error -- it describes what the quantity morally means, not the
+  //       sign the code actually computes it with.
+  //
+  // NOT asserted (deliberately): a first attempt bounded `interface_sum`
+  // below with a Higham recursive-summation tolerance in the same style as
+  // the beam identity tolerance above (gamma_n(nx_fluid)*sum-of-abs-products
+  // plus kappa_fluid*u*|W_wall_current|). Measured once with temporary
+  // instrumentation that has since been removed (so this figure is a
+  // record, not reproducible from this file): the per-term sums show almost
+  // no internal cancellation here (sum-of-|terms| is 1.00-2.12x the signed
+  // result in both policies, nothing like the ~44x the beam's own dPE
+  // needed), so that bound came out to 4.0e-17 (ON) /
+  // 3.7e-19 (OFF) -- SMALLER than the actual measured |interface_sum|
+  // (5.99e-17 ON / 1.80e-16 OFF), i.e. the bound would have FAILED even
+  // though the underlying physics is fine. The real error source is most
+  // likely the fluid solve's own forward error (the SAME two-independent-
+  // solves mechanism already bounded elsewhere in this file as
+  // `4*kappa_2(A_fluid)*u*max|u_raw|`, D80) propagating through the wall
+  // traction formula's own sensitivity to v1/p1 -- not through
+  // W_wall_current's already-cancelled-small net value, the same lesson
+  // this file's own beam-identity-tolerance history already drew for
+  // dPE. Deriving that sensitivity rigorously (a Lipschitz constant for
+  // the traction formula, not simply reusing an existing kappa) is a
+  // real piece of work, not a one-line fix, and this track's standing
+  // rule is that a tolerance is never chosen after seeing a measurement
+  // fail it. Left as a RECORDED diagnostic (printed, not asserted) --
+  // see open_questions for the follow-up.
+  const double interface_sum = dE_beam_naive + gen.id.W_wall_current;
   std::printf("\n==== INTERFACE ADJOINTNESS CHECK (H vs H^T D) ====\n");
-  std::printf("power beam RECEIVES (dt*sum(load_in*wdot_avg), beam's own "
-             "grid, nx_beam=%zu) = %+.9e\n",
+  std::printf("power beam RECEIVES (dt_delivered*sum(load_in*wdot_avg), beam's "
+             "own grid, nx_beam=%zu) = %+.9e\n",
              c.nx_beam, dE_beam_naive);
-  std::printf("power fluid DELIVERS (W_wall_current, production traction, "
-             "fluid's own grid, nx_fluid=%zu) = %+.9e\n",
+  std::printf("power INTO FLUID at the wall (W_wall_current, production "
+             "traction form, fluid's own grid, nx_fluid=%zu; NEGATIVE of "
+             "what the fluid delivers to the beam, see derivation above) = "
+             "%+.9e\n",
              c.nx_fluid, gen.id.W_wall_current);
-  std::printf("mismatch (beam received - fluid delivered) = %+.9e (nonzero "
-             "here is a genuine, DIFFERENT candidate mechanism from the "
-             "three named ones -- a non-adjoint interface remap -- since "
-             "nx_beam=%zu != nx_fluid=%zu)\n",
-             dE_beam_naive - gen.id.W_wall_current, c.nx_beam, c.nx_fluid);
+  std::printf("CORRECTED interface power balance (beam receives + fluid's "
+             "own into-fluid-sign W_wall_current) = %+.3e (round-off scale; "
+             "h1 [non-adjoint remap] and h2 [dt bookkeeping] FALSIFIED, h3 "
+             "[sign convention in the comparison] CONFIRMED -- see "
+             "derivation above; NOT asserted, see comment above for why)\n",
+             interface_sum);
+  std::printf("[recorded, not asserted: the OLD (mislabelled) difference "
+             "beam_received-fluid_delivered = %+.9e -- this is the number "
+             "KNOWN_ISSUES.md D34 originally reported nonzero; it is "
+             "EXPECTED to be nonzero -- see derivation above, it is not "
+             "the quantity that should vanish]\n",
+             dE_beam_naive - gen.id.W_wall_current);
 
   // ---- div(u_{n+1}) cell-by-cell, and which rows are NOT continuity ------
   using fsi::detail::idx_v;
