@@ -54,4 +54,4 @@ new = """  if (MPI_Allreduce(&in, &out, 1, MPI_2INT, MPI_MAXLOC, comm) != MPI_SU
 target = "fuse_parallel_provider_subset_mpi_test"
 test = "parallel.provider_subset_mpi.2"
 requires = "mpi"
-result = "PENDING a host kill run with FUSE_MUTATE_MPI=1 (2026-10-22). Compile-checked clean under a real FUSE_ENABLE_MPI=ON configure (this file's own real MPI_Allreduce branch, #if FUSE_HAVE_MPI, only exists in that build); not run -- the sandbox cannot start MPI (KNOWN_ISSUES.md C1). Expected kill: AHostingRanksPluginMountFailureIsAgreedByEveryRankNotOnlyTheHostingOnes's own all_rc == FUSE_ERR_RUNTIME assertion on every rank, since MPI_MAXLOC would instead propagate FUSE_OK (0, the least negative) from a non-hosting rank over a hosting rank's own negative FUSE_ERR_RUNTIME."
+result = "KILLED on the host 2026-10-22 (build-all at 8e88f9c, MPICH 5.0.2rc3, FUSE_MUTATE_MPI=1, tools/mutate.py --area abi-registry-agreement): 'KILLED participant-plugin-agreement-minloc-to-maxloc-mpi test fails'; area gate 1 killed, 0 declared equivalent, 2 not assessed here (the two no-mpi rows, by design on an MPI build), 0 without a baseline, 0 not killed, of 3; checkout clean afterwards."

@@ -4081,6 +4081,12 @@ D23 makes unreliable. This is recorded as a known failure case, as decided. (2) 
 others carry `E-ABI-PLUGIN-AGREEMENT-REFUSED` naming the originating rank; with more than one Plugin component a non-originating rank is
 not told WHICH component failed. The decision's wording was "the same code"; the status is the same, the string is not. Not changed.
 Host-pending: `parallel.provider_subset_mpi.{2,3}` (the new agreement case) and the MPI mutation row `participant-plugin-agreement-minloc-to-maxloc-mpi`.
+
+**Host run of the plugin agreement (lead, 2026-10-22, `build-all` at `8e88f9c`, MPICH 5.0.2rc3, `hostrun/out8`):** `parallel.provider_subset_mpi.2`
+and `.3` pass, including `AHostingRanksPluginMountFailureIsAgreedByEveryRankNotOnlyTheHostingOnes` (every rank, including rank 0 which never
+hosts the plugin in that fixture, returned the same non-OK status with no hang); `abi.conformance`, `abi.plugin_agreement`, `abi.struct_size`
+and `abi.device_layout` pass. The MPI mutation row `participant-plugin-agreement-minloc-to-maxloc-mpi` is KILLED on the host. D15 stays open
+for the two limits recorded above and for a device-resident plugin field on a rank subset, which has never run.
 ### ~~D16. A window member's cold-start priming over-read a smaller provider buffer — FIXED 2026-10-03
 
 Found by ASan on a two-member window-scoped region whose members export fields of different
@@ -4358,7 +4364,7 @@ because the omp legs then compare one thread with one thread whatever the regist
 Not covered: Windows (the check is skipped; `ProcessorCount()` reads `NUMBER_OF_PROCESSORS` there).
 
 **Closed (record pass, 2026-10-20):** fixed by `fuse_host_core_count()` with the row `build.host_core_count_ignores_omp_threads`.
-### D34. The FSI beam-side energy identity compared a quantity built with the literal step against a run that took the rounded one — items (A), (B) and (C) resolved 2026-10-22 in the sandbox; strike after the host run of `verification.fsi_energy_diag`
+### ~~D34. The FSI beam-side energy identity compared a quantity built with the literal step against a run that took the rounded one~~ — CLOSED 2026-10-22, items (A), (B) and (C) resolved and host-run (default policy)
 
 **Cause (measured).** `build_fsi_graph()` in `test/verification/fsi_energy_diag_test.cpp` does not hand
 the coupling graph `c.dt`: it first rounds it through the file's own `rationalize_dt()`,
@@ -4502,6 +4508,13 @@ owner decision) all resolved, nothing in this entry remains open.
   precision); (3) leave the behaviour and document the grid and the drift bound (no code risk; the silent drift
   persists for a computed dt).
 
+**Host run (lead, 2026-10-22, `build-all` at `8e88f9c`, MPICH 5.0.2rc3, `hostrun/out8`):** `verification.fsi_energy_diag` passes (14.98 s);
+the gated interface bound prints the same digits as the sandbox, tolerance 4.735389e-16 against a measured -5.993531e-17 (ratio 0.1266, margin
+7.90). The sandbox is the same darwin toolchain, so this is a confirmation of the run, not an independent toolchain. NOT measured on any machine
+outside the sandbox: the `FUSE_FP_REPRODUCIBLE=OFF` policy (sandbox margin 2.09, the thin one) and the higgs GCC toolchain, where D56 showed
+tolerances moving across builds; a failure of this assertion there is to be read against the derivation, not widened. The bound includes the
+measured `vwall0` gap, so a regression that grows the gap loosens it (stated in the test). The example rows `example.fsi_channel.off_grid_dt` and
+`.dt_refused` pass on the host.
 ### ~~D35. The accept/connect probe's verdict was cached once and never measured again — CLOSED 2026-10-12
 
 `cmake/FuseDependencies.cmake` ran `tools/probe-mpi-dynamic.sh` only when `FUSE_MPI_DYNAMIC_PROBED` was not in
@@ -7159,6 +7172,11 @@ script had not excluded (a script defect, corrected with `-LE slow`), not failur
 n certifies a layout; a larger `FUSE_MPI_DYNAMIC_PROBE_RUNS` (cache variable, default 6) only screens out lower failure rates and
 costs configure time linearly. The default is left at 6, the count the D23 measurements used, and the accept rows that stay enabled
 are to be read as probabilistic. This is arithmetic, not a measurement of the installed MPICH.
+
+**Another enabled layout failed (lead, 2026-10-22, `hostrun/out8`):** `parallel.connect.accept.2+3` was enabled by the configure-time probe and timed
+out (120.59 s) in the whole-tier run, with `accept.3+2`, `chain.4` and `participants.accept.5` disabled by the same probe. This is the
+behaviour the probe's arithmetic predicts (a finite run count cannot certify a layout); it adds a second observed failure of an enabled
+layout after `accept.1+1`. No change made.
 ### ~~D22. A shared Kokkos aborts the process at exit~~ — CLOSED 2026-10-09
 
 **What it was.** `Kokkos::initialize()` registers its own exit hook, and that hook ran
