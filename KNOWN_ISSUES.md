@@ -7801,6 +7801,9 @@ on the host 2026-10-21, and `petsc.window_newton_mpi.{2,3}` and every other row 
 host 2026-10-21. The `eta_min` floor is handled in the Brusselator path (`examples/brusselator/main.cpp`). What stays open is
 outside this entry: the PETSc half has run on one machine and one MPI only (MPICH 5.0.2rc3), and the kill run of the `petsc` area's
 one not-assessed row needs a build with no MPI.
+
+**Owner confirmation (2026-10-21):** the S7.4 native-twin tolerance, 2x the largest measured error (bound 2.37e-1 against
+errors up to 1.18e-1), is accepted.
 ### ~~D48. A `Transport` instruction can have one arc device-resident and the other host, even in Device mode — FOUND AND FIXED 2026-10-13
 
 **What was found.** docs/dev/device-resident-arcs.md Phase 3 made `Transport` space-aware in
@@ -8283,6 +8286,10 @@ near line 2897) and judged, from source alone, that the split-communicator layou
 that reading is NOT a measurement and does not separate a FUSE defect that Open MPI 4.1.5 exposed and 5.0.9 tolerates from an
 Open MPI 4.1.5 defect. Separating them needs 4.1.5 built side by side, which is heavier than a build and a short test run and is the
 owner's call.
+
+**Owner decision (2026-10-21):** do not build Open MPI 4.1.5 side by side on higgs. The entry stays OPEN as unreproduced and
+is to be tested on a different machine or on GitHub CI with Open MPI from conda, at three ranks, the layout that hung. Nothing in the
+tree is expected to change before that run.
 ### ~~D56. `FsiEnergyDiag.FullBudgetOnTheDominantModeCloses`'s mass-correction gate fails on higgs's toolchain by 1.5x — OPEN, found by the device-merge gate 2026-10-13
 
 The gate `max_abs_diff_non_outflow < 0.5 * eig_quality * max|u_raw|` (test/verification/
