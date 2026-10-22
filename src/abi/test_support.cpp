@@ -81,4 +81,22 @@ bool force_fake_collective_peers(fuse_ctx* ctx, int self_rank,
   return true;
 }
 
+// KNOWN_ISSUES.md D15 ("Registry agreement" track): see this function's
+// own declaration (test_support.hpp) for what this sets and why
+// reconcile_plugin_agreement() (participant.cpp) treats it as a stand-in
+// for a real MPI_Allreduce, kept separate from force_fake_collective_
+// peers() above.
+bool force_fake_plugin_agreement_peers(fuse_ctx* ctx, int self_rank,
+                                       std::vector<std::int32_t> peer_statuses) {
+  if (ctx == nullptr) return false;
+  ctx->test_fake_plugin_agreement_self_rank = self_rank;
+  ctx->test_fake_plugin_agreement_peer_statuses = std::move(peer_statuses);
+  return true;
+}
+
+std::int64_t plugin_agreement_reconcile_call_count(const fuse_ctx* ctx) {
+  if (ctx == nullptr) return 0;
+  return ctx->test_plugin_agreement_reconcile_calls;
+}
+
 }  // namespace fuse::abi_test

@@ -46,6 +46,7 @@
 
 #include "fuse/abi/collective_reconcile.hpp"
 #include "fuse/abi/device_binding.hpp"
+#include "fuse/abi/plugin_agreement.hpp"
 #include "fuse/backend/mesh_view.hpp"
 #include "fuse/base/error.hpp"
 #include "fuse/base/rational.hpp"
@@ -952,6 +953,14 @@ fuse_status impl_view_field(fuse_ctx* ctx, const fuse_field_ref* in,
   });
 }
 
+// Forward declaration: defined further down, grouped with reconcile_
+// collective_status() (both are "agree a verdict across the base or a
+// component-local communicator" glue, KNOWN_ISSUES.md D61 and D15), but
+// needed here because impl_initialize_local() calls it before that
+// point in the file.
+fuse_status reconcile_plugin_agreement(fuse_ctx& c, int rank, fuse_status local_status,
+                                       const char* fn) noexcept;
+
 fuse_status impl_initialize_local(fuse_ctx* ctx, const fuse_null*, fuse_null*) {
   return with_ctx(ctx, [&](fuse_ctx& c) -> fuse_status {
     if (c.state != fuse_ctx::State::Loaded) {
@@ -964,6 +973,53 @@ fuse_status impl_initialize_local(fuse_ctx* ctx, const fuse_null*, fuse_null*) {
       return fail(&c, FUSE_ERR_RUNTIME, "E-ABI-INIT-VALIDATE",
                  "fuse_initialize: the graph does not validate:\n" +
                      diags.to_string());
+    }
+    // KNOWN_ISSUES.md D15 ("Registry agreement" track, owner decision
+    // 2026-10-22): a priori, before any of the work below runs at all --
+    // fuse::abi_detail::plugin_mount_agreement_needs_a_missing_spanning_
+    // communicator() (include/fuse/abi/plugin_agreement.hpp) is a pure
+    // function of this process's own already-loaded graph and its own
+    // my_component (set at setup() time, read here, never recomputed),
+    // so every process that will ever call fuse_initialize() on this
+    // graph decides the SAME refusal, from the SAME bytes, with nothing
+    // to reconcile and no rank left to hang waiting for a peer -- see
+    // that header's own module comment for why a collective check cannot
+    // do this job at all (there is, by construction, no communicator
+    // that spans everyone to be collective OVER).
+    {
+      std::optional<fuse::LaunchMode> my_component_mode;
+      if (c.my_component.has_value()) {
+        my_component_mode = c.graph.component(*c.my_component).launch.mode;
+      }
+      if (fuse::abi_detail::plugin_mount_agreement_needs_a_missing_spanning_communicator(
+              c.graph, my_component_mode, c.communicator_set)) {
+        std::string plugin_name;
+        std::string connect_name;
+        for (std::uint32_t i = 0; i < c.graph.component_count(); ++i) {
+          const fuse::ComponentDecl& decl = c.graph.component(fuse::ComponentId{i});
+          if (plugin_name.empty() && decl.launch.mode == fuse::LaunchMode::Plugin) {
+            plugin_name = decl.name;
+          }
+          if (connect_name.empty() && decl.launch.mode == fuse::LaunchMode::Connect) {
+            connect_name = decl.name;
+          }
+        }
+        return fail(&c, FUSE_ERR_UNSUPPORTED, "E-ABI-PLUGIN-NO-SPANNING-COMM",
+                   "fuse_initialize: component '" + plugin_name +
+                       "' is launched as Plugin, and this graph also declares component '" +
+                       connect_name + "' launched as Connect (a separate-executable MPMD with "
+                       "no common parent communicator until its own handshake); this process's "
+                       "own my_component does not call fuse::transport::connect(), so there is "
+                       "no way to confirm its base communicator spans the Connect-launched "
+                       "executable, and the plugin-mount agreement (KNOWN_ISSUES.md D15) cannot "
+                       "be reconciled across executables that have never shared a communicator. "
+                       "Workaround: host the plugin component in a process that is itself "
+                       "Connect-launched (so its own connect() call forms the spanning "
+                       "communicator), or declare the multi-executable component as Mpmd instead "
+                       "of Connect (Mpmd's MPI_COMM_WORLD already spans every program before "
+                       "fuse_setup() is ever called, docs/user/providers.md's own known failure "
+                       "case).");
+      }
     }
     // This process's own (rank, num_ranks) -- NativeMeshBackend's own
     // construction argument, needed before the mesh-loading loop below
@@ -1021,6 +1077,21 @@ fuse_status impl_initialize_local(fuse_ctx* ctx, const fuse_null*, fuse_null*) {
     // header comment.
     c.ext.assign(c.graph.component_count(), ExternalState{});
     c.external_count = 0;
+    // KNOWN_ISSUES.md D15 ("Registry agreement" track, owner decision
+    // 2026-10-22, option (b)): the Plugin branch below no longer
+    // `return fail(...)`s immediately on a hosting rank's own mount/
+    // extract/register failure -- every such early return is
+    // restructured to record its verdict here and `break` the loop
+    // instead, so that EVERY rank (hosting or not) still reaches the
+    // one-collective reconciliation after the loop, reconcile_plugin_
+    // agreement() below. Without this restructuring, a hosting rank that
+    // failed would return from inside the loop before a non-hosting rank
+    // (which never fails locally -- there is nothing for it to fail on)
+    // ever learned about it, exactly the gap this round closes
+    // (KNOWN_ISSUES.md D15's own "Open after the mount-everywhere fix"
+    // paragraph).
+    fuse_status plugin_mount_status = FUSE_OK;
+    bool saw_plugin_component = false;
     for (std::uint32_t i = 0; i < c.graph.component_count(); ++i) {
       const fuse::ComponentId id{i};
       const fuse::ComponentDecl& decl = c.graph.component(id);
@@ -1064,20 +1135,27 @@ fuse_status impl_initialize_local(fuse_ctx* ctx, const fuse_null*, fuse_null*) {
         // the SAME "assume hosted everywhere" rule provider_adapter.
         // cpp's own `hosted` local variable already documents, for the
         // identical reason.
+        saw_plugin_component = true;
         const bool hosted = !c.communicator_set || decl.ranks.contains(rank);
         std::unique_ptr<fuse::Component> comp;
         if (hosted) {
           const fuse::Result<void> mounted =
               c.plugin_registry.mount_dynamic(name, decl.launch.plugin_path);
           if (!mounted.ok()) {
-            return fail(&c, FUSE_ERR_RUNTIME, std::string(mounted.error().code),
-                       mounted.error().message);
+            // KNOWN_ISSUES.md D15 ("Registry agreement" track): recorded,
+            // not returned -- see the `break` right after for why, and
+            // this loop's own header comment above for the rule every
+            // one of this branch's four early-return sites now follows.
+            plugin_mount_status = fail(&c, FUSE_ERR_RUNTIME, std::string(mounted.error().code),
+                                       mounted.error().message);
+            break;
           }
           fuse::Result<std::unique_ptr<fuse::Component>> extracted =
               c.plugin_registry.extract(name);
           if (!extracted.ok()) {
-            return fail(&c, FUSE_ERR_RUNTIME, std::string(extracted.error().code),
-                       extracted.error().message);
+            plugin_mount_status = fail(&c, FUSE_ERR_RUNTIME, std::string(extracted.error().code),
+                                       extracted.error().message);
+            break;
           }
           comp = std::move(extracted).value();
           // KNOWN_ISSUES.md D15 round 3: tell the adapter which rank it is
@@ -1090,10 +1168,11 @@ fuse_status impl_initialize_local(fuse_ctx* ctx, const fuse_null*, fuse_null*) {
           if (c.communicator_set) {
             auto* adapter = dynamic_cast<fuse::abi_detail::ProviderAdapter*>(comp.get());
             if (adapter == nullptr) {
-              return fail(&c, FUSE_ERR_RUNTIME, "E-ABI-PROVIDER-TYPE",
-                         "fuse_initialize: component '" + name +
-                             "' was mounted via mount_dynamic() but is not a "
-                             "ProviderAdapter");
+              plugin_mount_status = fail(&c, FUSE_ERR_RUNTIME, "E-ABI-PROVIDER-TYPE",
+                                         "fuse_initialize: component '" + name +
+                                             "' was mounted via mount_dynamic() but is not a "
+                                             "ProviderAdapter");
+              break;
             }
             adapter->set_hosting_rank(rank);
           }
@@ -1113,8 +1192,9 @@ fuse_status impl_initialize_local(fuse_ctx* ctx, const fuse_null*, fuse_null*) {
         }
         const fuse::Result<void> r = comp->register_fields(c.fields, c.graph);
         if (!r.ok()) {
-          return fail(&c, FUSE_ERR_RUNTIME, std::string(r.error().code),
-                     r.error().message);
+          plugin_mount_status = fail(&c, FUSE_ERR_RUNTIME, std::string(r.error().code),
+                                     r.error().message);
+          break;
         }
         c.components.add(std::move(comp));
         c.ext[i].in_process = true;
@@ -1136,6 +1216,31 @@ fuse_status impl_initialize_local(fuse_ctx* ctx, const fuse_null*, fuse_null*) {
         // validate that the real scheduler has not already checked itself
         // when it built the plan above.
       }
+    }
+
+    // KNOWN_ISSUES.md D15 ("Registry agreement" track, owner decision
+    // 2026-10-22, option (b)): the ONE collective this round adds, run
+    // exactly once per fuse_initialize() call and ONLY when the graph
+    // declares a Plugin component -- `saw_plugin_component` is set above
+    // inside the loop's own Plugin branch and nowhere else, so a graph
+    // with none triggers NO extra collective at all, satisfying this
+    // round's own requirement. See reconcile_plugin_agreement()'s own
+    // doc comment (below) for why this cannot deadlock the way
+    // KNOWN_ISSUES.md D61's REVERTED round did: fuse_initialize() has no
+    // per-step cadence to mismatch, and every early return the Plugin
+    // branch above used to take was restructured (this loop's own header
+    // comment) so every rank that reaches this point has finished the
+    // SAME wiring loop over the SAME graph.
+    if (saw_plugin_component) {
+      const fuse_status reconciled =
+          reconcile_plugin_agreement(c, rank, plugin_mount_status, "fuse_initialize");
+      if (reconciled != FUSE_OK) return reconciled;
+    } else if (plugin_mount_status != FUSE_OK) {
+      // Defensive only: plugin_mount_status can only be set inside the
+      // Plugin branch above, which also sets saw_plugin_component in the
+      // SAME iteration before it can fail -- this should never run on
+      // the real setup()->initialize() path.
+      return plugin_mount_status;
     }
 
     // Unit 3 (S6 phase 3, Conformance): a LowFive-bound channel's own
@@ -2473,6 +2578,115 @@ fuse_status reconcile_collective_status(fuse_ctx& c, fuse_status local_status,
                  "); reconciled across every rank of the component's own "
                  "communicator so every rank returns the same code "
                  "(docs/dev/abi-design.md)");
+#else
+  return local_status;
+#endif
+}
+
+// KNOWN_ISSUES.md D15 ("Registry agreement" track, owner decision
+// 2026-10-22, option (b)). Reconciles the plugin-mount verdict
+// impl_initialize_local()'s own component-wiring loop (Plugin branch,
+// above) computes, across EVERY rank of the BASE communicator
+// (c.communicator) -- NOT the per-component collective_comm_f
+// reconcile_collective_status() above uses, because collective_comm_f
+// never forms for a graph whose my_component is unset (Plugin/InProcess
+// launch never resolves my_component to anything Mpmd/Connect --
+// entries.def's own my_component comment), which is exactly the shape a
+// Plugin-only, direct-communicator graph takes -- the gap KNOWN_ISSUES.md
+// D15's own "Open after the mount-everywhere fix" paragraph names and
+// this function closes.
+//
+// CANNOT DEADLOCK THE WAY D61's ROUND-2 FIX DID (abi-design.md's own "How
+// the participant ABI reconciles a collective refusal", "LESSON (round
+// 3, the hard way)"): that fix reconciled begin_step()/end_step()/run()
+// -- PER-STEP entries a multi-component graph's different components
+// call a DIFFERENT NUMBER OF TIMES -- over the base communicator, so two
+// ranks hosting different components never paired the same Allreduce
+// call. fuse_initialize() has no such cadence to mismatch: it is called
+// EXACTLY ONCE, synchronously, by every rank of the base communicator,
+// before any step boundary exists at all -- there is no "which call
+// number is this" question for two ranks to disagree about. The other
+// half of what made D61's round 2 unsafe -- touching a FAKED
+// (fuse::abi_test::force_communicator_set()) communicator handle with a
+// real MPI_Comm_rank/MPI_Allreduce under FUSE_HAVE_MPI, which aborted
+// three host rows -- is avoided the same way the pre-existing rank/
+// num_ranks derivation at the top of impl_initialize_local() already
+// relies on: every test that fakes a communicator with no real MPI
+// behind it is, by established convention, excluded from MPI-enabled
+// test binaries (test/abi/conformance_test.cpp's own
+// NonHostingRankNeverDlopensThePluginOrCallsAnyOfItsEntries, "Registry
+// hosting" track, is the precedent).
+//
+// Reuses fuse::abi_detail::reconcile_local_statuses (include/fuse/abi/
+// collective_reconcile.hpp) for the MIN-with-origin-rank decision -- the
+// SAME pure arithmetic reconcile_collective_status() above uses -- so the
+// two reconciliations cannot disagree about what "agreed" means, only
+// about which communicator and which local verdict they reconcile.
+// `rank` is this rank's own position on `c.communicator`, ALREADY derived
+// by impl_initialize_local() (the identical MPI_Comm_f2c/MPI_Comm_rank
+// call this function would otherwise have to repeat) and passed in
+// rather than re-read.
+//
+// Test-only seam: fuse::abi_test::force_fake_plugin_agreement_peers() --
+// a DEDICATED pair of fields (context.hpp's own comment on
+// test_fake_plugin_agreement_self_rank explains why this is not a reuse
+// of force_fake_collective_peers()). test_plugin_agreement_reconcile_
+// calls (context.hpp) is incremented on EVERY call, real or faked,
+// before any early return below -- the white-box signal a tier-0 test
+// uses to confirm this function was actually reached (impl_initialize_
+// local()'s own restructuring did its job) versus merely that the
+// outcome would have looked the same either way.
+fuse_status reconcile_plugin_agreement(fuse_ctx& c, int rank, fuse_status local_status,
+                                       const char* fn) noexcept {
+  ++c.test_plugin_agreement_reconcile_calls;
+  if (!c.communicator_set) return local_status;  // single process: nothing to reconcile
+
+  if (c.test_fake_plugin_agreement_self_rank.has_value()) {
+    const int self = *c.test_fake_plugin_agreement_self_rank;
+    std::vector<std::int32_t> all;
+    all.reserve(c.test_fake_plugin_agreement_peer_statuses.size() + 1);
+    for (std::size_t i = 0; i < c.test_fake_plugin_agreement_peer_statuses.size() + 1; ++i) {
+      if (static_cast<int>(i) == self) {
+        all.push_back(local_status);
+      } else {
+        const std::size_t peer_index =
+            i < static_cast<std::size_t>(self) ? i : i - 1;
+        all.push_back(c.test_fake_plugin_agreement_peer_statuses.at(peer_index));
+      }
+    }
+    const fuse::abi_detail::ReconciledStatus agreed = fuse::abi_detail::reconcile_local_statuses(all);
+    if (agreed.origin_rank == self) return local_status;  // this rank's own message stands
+    if (agreed.status == FUSE_OK) return FUSE_OK;
+    return fail(&c, static_cast<fuse_status>(agreed.status), "E-ABI-PLUGIN-AGREEMENT-REFUSED",
+               std::string(fn) + ": rank " + std::to_string(agreed.origin_rank) +
+                   " refused the plugin-mount agreement (status " +
+                   std::to_string(agreed.status) +
+                   "); reconciled across every rank of the base communicator because the "
+                   "graph declares a Plugin component (docs/dev/abi-design.md, "
+                   "KNOWN_ISSUES.md D15)");
+  }
+
+#if FUSE_HAVE_MPI
+  const MPI_Comm comm = MPI_Comm_f2c(static_cast<MPI_Fint>(c.communicator));
+  if (comm == MPI_COMM_NULL) return local_status;  // defensive: impl_initialize_local()'s
+                                                   // own derivation above already refused
+                                                   // E-ABI-INIT-COMM before this point if so
+  static_assert(sizeof(int) == sizeof(std::int32_t),
+               "MPI_2INT packs two `int`s; fuse_status is int32_t -- the two must agree");
+  struct { std::int32_t status; int rank; } in{local_status, rank}, out{0, 0};
+  if (MPI_Allreduce(&in, &out, 1, MPI_2INT, MPI_MINLOC, comm) != MPI_SUCCESS) {
+    return fail(&c, FUSE_ERR_RUNTIME, "E-ABI-PLUGIN-AGREEMENT-COMM",
+               std::string(fn) + ": MPI_Allreduce(MPI_MINLOC) failed while reconciling the "
+                                  "plugin-mount agreement across the base communicator");
+  }
+  if (out.rank == rank) return local_status;  // this rank's own message stands (incl. FUSE_OK)
+  if (out.status == FUSE_OK) return FUSE_OK;
+  return fail(&c, static_cast<fuse_status>(out.status), "E-ABI-PLUGIN-AGREEMENT-REFUSED",
+             std::string(fn) + ": rank " + std::to_string(out.rank) +
+                 " refused the plugin-mount agreement (status " + std::to_string(out.status) +
+                 "); reconciled across every rank of the base communicator because the "
+                 "graph declares a Plugin component (docs/dev/abi-design.md, "
+                 "KNOWN_ISSUES.md D15)");
 #else
   return local_status;
 #endif

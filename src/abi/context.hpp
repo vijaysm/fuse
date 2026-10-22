@@ -223,6 +223,43 @@ struct fuse_ctx {
   std::optional<int>            test_fake_collective_self_rank;
   std::vector<std::int32_t>     test_fake_collective_peer_statuses;
 
+  // --- D15 ("Registry agreement" track) test-only seam ---
+  /// fuse::abi_test::force_fake_plugin_agreement_peers(): the SAME idea
+  /// as test_fake_collective_self_rank/test_fake_collective_peer_statuses
+  /// above, but DELIBERATELY SEPARATE fields, not a reuse of those two --
+  /// reconcile_plugin_agreement() (participant.cpp) reconciles over the
+  /// BASE communicator (c.communicator), never over collective_comm_f, so
+  /// a test that wants to fake ONE of the two reconciliations without
+  /// also perturbing the other (e.g. a plugin-only graph, where
+  /// collective_comm_f never forms at all -- KNOWN_ISSUES.md D15's own
+  /// "Open after the mount-everywhere fix" paragraph) needs its own knob.
+  /// Reusing the D61 pair would make setting it fire BOTH reconciliations
+  /// off the SAME fake data on every call that sets it, an unrelated
+  /// coupling neither function's own tests should have to reason about.
+  /// `std::nullopt` (the default) changes nothing: every context that
+  /// never calls this seam reconciles for real (over `communicator` when
+  /// `communicator_set` and a Plugin component is in the graph, or not at
+  /// all). Gated identically to the real path by `communicator_set`.
+  std::optional<int>            test_fake_plugin_agreement_self_rank;
+  std::vector<std::int32_t>     test_fake_plugin_agreement_peer_statuses;
+
+  /// White-box observability (fuse::abi_test::
+  /// plugin_agreement_reconcile_call_count(), the SAME reason run_stats()/
+  /// runner_of() above reach past the ABI): incremented once, by
+  /// reconcile_plugin_agreement() itself, every time it is actually
+  /// CALLED -- not every time it changes the outcome. The only way a
+  /// tier-0 test can confirm two things no return-value check alone can
+  /// tell apart: (1) that a graph with NO Plugin component triggers NO
+  /// extra collective at all (the count stays exactly what it was), which
+  /// is this round's own explicit requirement, and (2) that a hosting
+  /// rank's OWN mount/extract/register failure, inside the component-
+  /// wiring loop's Plugin branch, is restructured to REACH this call
+  /// rather than returning immediately from inside the loop (count
+  /// becomes 1, not 0), even on a run where the reconciled outcome would
+  /// have been identical to an immediate return either way (this rank's
+  /// own status already is the agreed minimum).
+  std::int64_t test_plugin_agreement_reconcile_calls = 0;
+
   // --- setup() state, consumed at initialize() ---
   bool               communicator_set = false;
   std::int64_t       communicator = 0;

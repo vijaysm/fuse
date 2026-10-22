@@ -168,4 +168,26 @@ fuse::FieldRegistry* field_registry_of(fuse_ctx* ctx);
 bool force_fake_collective_peers(fuse_ctx* ctx, int self_rank,
                                  std::vector<std::int32_t> peer_statuses);
 
+/// KNOWN_ISSUES.md D15 ("Registry agreement" track). The SAME stub-reducer
+/// idea force_fake_collective_peers() documents above, for
+/// reconcile_plugin_agreement()'s own reconciliation over the BASE
+/// communicator (c.communicator) instead of the per-component
+/// collective_comm_f -- see context.hpp's own comment on
+/// test_fake_plugin_agreement_self_rank for why this is a DEDICATED seam,
+/// not a reuse of force_fake_collective_peers(). Also requires a
+/// communicator to be configured (force_communicator_set(), above):
+/// reconcile_plugin_agreement() treats "no communicator" as "nothing to
+/// reconcile", exactly like reconcile_collective_status() does. Returns
+/// false (and leaves `ctx` unchanged) when `ctx` is null.
+bool force_fake_plugin_agreement_peers(fuse_ctx* ctx, int self_rank,
+                                       std::vector<std::int32_t> peer_statuses);
+
+/// KNOWN_ISSUES.md D15 ("Registry agreement" track): how many times
+/// reconcile_plugin_agreement() (participant.cpp) has actually run on
+/// this context so far -- see context.hpp's own comment on
+/// test_plugin_agreement_reconcile_calls for what this lets a tier-0 test
+/// prove that a return-value check alone cannot. Returns 0 if `ctx` is
+/// null (the same defensive posture run_stats() takes), never a crash.
+std::int64_t plugin_agreement_reconcile_call_count(const fuse_ctx* ctx);
+
 }  // namespace fuse::abi_test
