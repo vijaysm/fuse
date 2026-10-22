@@ -1052,35 +1052,64 @@ fuse_status impl_initialize_local(fuse_ctx* ctx, const fuse_null*, fuse_null*) {
         c.components.add(std::move(comp));
         c.ext[i].in_process = true;
       } else if (decl.launch.mode == fuse::LaunchMode::Plugin) {
-        const fuse::Result<void> mounted =
-            c.plugin_registry.mount_dynamic(name, decl.launch.plugin_path);
-        if (!mounted.ok()) {
-          return fail(&c, FUSE_ERR_RUNTIME, std::string(mounted.error().code),
-                     mounted.error().message);
-        }
-        fuse::Result<std::unique_ptr<fuse::Component>> extracted =
-            c.plugin_registry.extract(name);
-        if (!extracted.ok()) {
-          return fail(&c, FUSE_ERR_RUNTIME, std::string(extracted.error().code),
-                     extracted.error().message);
-        }
-        std::unique_ptr<fuse::Component> comp = std::move(extracted).value();
-        // KNOWN_ISSUES.md D15 round 3: tell the adapter which rank it is
-        // on the REAL base communicator, if any -- see provider_adapter.
-        // hpp's own comment on set_hosting_rank() and D24 (this file's
-        // own `rank` above, the SAME value backend construction used).
-        // Always a ProviderAdapter here (mount_dynamic() above only ever
-        // constructs one); the dynamic_cast exists so a future second
-        // concrete type mounted the same way fails loudly, not silently.
-        if (c.communicator_set) {
-          auto* adapter = dynamic_cast<fuse::abi_detail::ProviderAdapter*>(comp.get());
-          if (adapter == nullptr) {
-            return fail(&c, FUSE_ERR_RUNTIME, "E-ABI-PROVIDER-TYPE",
-                       "fuse_initialize: component '" + name +
-                           "' was mounted via mount_dynamic() but is not a "
-                           "ProviderAdapter");
+        // KNOWN_ISSUES.md D15 ("Registry hosting" track, owner decision
+        // 2026-10-22, verbatim: "NO. This should not happen."): a rank
+        // that is not a member of this component's own RankSet must
+        // never dlopen() its shared object at all -- not even to
+        // immediately discard the result, which is what EVERY rank did
+        // before this round (Registry::mount_dynamic() below was called
+        // unconditionally). `!c.communicator_set` keeps every single-
+        // process caller's own behaviour exactly unchanged: there is
+        // only one rank, and it always hosts whatever it is handed --
+        // the SAME "assume hosted everywhere" rule provider_adapter.
+        // cpp's own `hosted` local variable already documents, for the
+        // identical reason.
+        const bool hosted = !c.communicator_set || decl.ranks.contains(rank);
+        std::unique_ptr<fuse::Component> comp;
+        if (hosted) {
+          const fuse::Result<void> mounted =
+              c.plugin_registry.mount_dynamic(name, decl.launch.plugin_path);
+          if (!mounted.ok()) {
+            return fail(&c, FUSE_ERR_RUNTIME, std::string(mounted.error().code),
+                       mounted.error().message);
           }
-          adapter->set_hosting_rank(rank);
+          fuse::Result<std::unique_ptr<fuse::Component>> extracted =
+              c.plugin_registry.extract(name);
+          if (!extracted.ok()) {
+            return fail(&c, FUSE_ERR_RUNTIME, std::string(extracted.error().code),
+                       extracted.error().message);
+          }
+          comp = std::move(extracted).value();
+          // KNOWN_ISSUES.md D15 round 3: tell the adapter which rank it is
+          // on the REAL base communicator, if any -- see provider_adapter.
+          // hpp's own comment on set_hosting_rank() and D24 (this file's
+          // own `rank` above, the SAME value backend construction used).
+          // Always a ProviderAdapter here (mount_dynamic() above only ever
+          // constructs one); the dynamic_cast exists so a future second
+          // concrete type mounted the same way fails loudly, not silently.
+          if (c.communicator_set) {
+            auto* adapter = dynamic_cast<fuse::abi_detail::ProviderAdapter*>(comp.get());
+            if (adapter == nullptr) {
+              return fail(&c, FUSE_ERR_RUNTIME, "E-ABI-PROVIDER-TYPE",
+                         "fuse_initialize: component '" + name +
+                             "' was mounted via mount_dynamic() but is not a "
+                             "ProviderAdapter");
+            }
+            adapter->set_hosting_rank(rank);
+          }
+        } else {
+          // KNOWN_ISSUES.md D15 ("Registry hosting"): build an UNHOSTED
+          // ProviderAdapter shell directly, bypassing Registry::
+          // mount_dynamic() entirely -- no dlopen(), no dlsym(), no
+          // fuse_provider_abi() call, and create()/describe()/bind()/
+          // advance()/destroy() never reach the plugin's own shared
+          // object from this rank. register_fields() (called the same
+          // way below for every branch) recognises the shell and
+          // registers exactly the empty views the OLD, mount-everywhere
+          // path already produced -- see that function's own comment
+          // for the one thing this loses (docs/user/providers.md, "A
+          // plugin launched on a subset").
+          comp = std::make_unique<fuse::abi_detail::ProviderAdapter>(name);
         }
         const fuse::Result<void> r = comp->register_fields(c.fields, c.graph);
         if (!r.ok()) {

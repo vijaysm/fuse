@@ -89,6 +89,9 @@ ProviderAdapter::ProviderAdapter(std::string component_name,
                                  const fuse_provider_abi_v1* table)
     : name_(std::move(component_name)), table_(table) {}
 
+ProviderAdapter::ProviderAdapter(std::string component_name)
+    : name_(std::move(component_name)), table_(nullptr), unhosted_shell_(true) {}
+
 ProviderAdapter::~ProviderAdapter() {
   if (self_ != nullptr && table_ != nullptr && table_->destroy != nullptr) {
     fuse_null in{sizeof(fuse_null)};
@@ -100,8 +103,71 @@ ProviderAdapter::~ProviderAdapter() {
 fuse::Result<void> ProviderAdapter::register_fields(fuse::FieldRegistry& registry,
                                                      const fuse::CouplingGraph& graph) {
   if (table_ == nullptr) {
-    return fuse::Failure{"E-ABI-PROVIDER-TABLE",
-                         "provider '" + name_ + "': no table (dlopen or version negotiation failed earlier)"};
+    if (!unhosted_shell_) {
+      return fuse::Failure{"E-ABI-PROVIDER-TABLE",
+                           "provider '" + name_ + "': no table (dlopen or version negotiation failed earlier)"};
+    }
+    // KNOWN_ISSUES.md D15 ("Registry hosting" track): this shell was
+    // built for a rank that does NOT host the component (src/abi/
+    // participant.cpp's own impl_initialize_local(), the caller of this
+    // constructor) -- there is no table to describe()/bind() through,
+    // by construction, so this branch never reaches the plugin's own
+    // shared object at all. It registers exactly what the OLD
+    // "mount everywhere, then discover count == 0" path already
+    // produced for a non-hosting rank: the SAME fields, in the SAME
+    // graph-declared order, each an EMPTY (zero-count) Host view --
+    // reading each field's shape (components) from the GRAPH's own
+    // FieldSpec, the only source of it available here, instead of from
+    // the plugin's own describe() response.
+    //
+    // WHAT THIS LOSES, STATED (the task's own question): the E-ABI-
+    // DESCRIBE cross-check against the graph (does the plugin's own
+    // describe() agree with what the graph declares for this
+    // component) never runs on this rank, because this rank never asks
+    // the plugin anything. This does not weaken the check itself: EVERY
+    // rank that DOES host this component (there must be at least one --
+    // RankSet validate()'s own E-PLACEMENT-EMPTY refuses a component
+    // with channels and no placement at all) still calls the real
+    // describe() and runs the identical cross-check, against the
+    // identical graph, against the identical compiled plugin -- the
+    // mismatch this check exists to catch is a property of the PLUGIN
+    // BINARY and the GRAPH, neither of which varies by rank, so a
+    // hosting rank catches it exactly as it always did. What DOES
+    // change: a plugin/graph mismatch is now a RANK-LOCAL refusal
+    // (only hosting ranks ever see it) rather than one every rank
+    // independently re-derived and agreed on by construction -- see
+    // KNOWN_ISSUES.md D15's own "Registry hosting" entry and this
+    // round's open_questions for why no fix for THAT is attempted here.
+    //
+    // The SAME field's own `memspace` (FUSE_MEMSPACE_HOST/_DEVICE) is
+    // also unavailable here for the identical reason: it is reported by
+    // describe(), not declared anywhere in the GRAPH's own FieldSpec.
+    // Every field this shell registers is therefore Host-memspace,
+    // regardless of what a hosting rank's own describe() would report
+    // for the SAME field name -- harmless for an empty, zero-count
+    // view (nothing is ever read through it: Runner::hosts_component()
+    // never calls advance() for a component this rank does not host,
+    // the same existing gate that already made the plugin's own bind()
+    // a no-op for any zero-count field before this round), and it can
+    // only ever make src/runtime/runner.cpp's own E-RT-SPACE check
+    // STRICTER in this rank's favour (Host never trips that check),
+    // never looser.
+    const auto cid = graph.find_component(name_);
+    if (!cid.has_value()) {
+      return fuse::Failure{"E-ABI-PROVIDER-GRAPH",
+                           "provider '" + name_ + "' is not a component of the loaded graph"};
+    }
+    for (const fuse::FieldId fid : graph.component(*cid).fields) {
+      const fuse::FieldSpec& spec = graph.field(fid);
+      const fuse::Layout layout{.stride = static_cast<std::size_t>(spec.components),
+                                  .component_stride = 1,
+                                  .count = 0,
+                                  .components = spec.components};
+      fuse::Result<void> bound =
+          registry.bind(fid, fuse::FieldRef{nullptr, layout, fuse::MemorySpace::Host});
+      if (!bound.ok()) return bound;
+    }
+    return fuse::Result<void>::success();
   }
   if (table_->create == nullptr || table_->destroy == nullptr ||
       table_->describe == nullptr || table_->bind == nullptr ||

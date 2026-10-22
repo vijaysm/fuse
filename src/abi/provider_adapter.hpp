@@ -45,6 +45,26 @@ class ProviderAdapter final : public fuse::Component {
   /// will be called with (the same contract every `fuse::Component`
   /// carries -- component.hpp's own doc on `name()`).
   ProviderAdapter(std::string component_name, const fuse_provider_abi_v1* table);
+
+  /// KNOWN_ISSUES.md D15 ("Registry hosting" track, owner decision
+  /// 2026-10-22: the plugin must load only on ranks that host the
+  /// component). Builds an UNHOSTED SHELL for a LaunchMode::Plugin
+  /// component this process does NOT host: no table, no dlopen(), no
+  /// plugin entry point ever reached -- register_fields() (below)
+  /// recognises this shape and registers exactly the empty views the
+  /// OLD "mount everywhere, then discover count==0" path already
+  /// produced for a non-hosting rank, reading field shape from the
+  /// GRAPH alone. Deliberately a SEPARATE overload from the two-argument
+  /// constructor above, not that constructor called with `nullptr`:
+  /// passing `nullptr` there remains what it always was (a defensive
+  /// state test/abi/conformance_test.cpp's own
+  /// ProviderAdapterRefusesATableMissingARequiredEntry pins), a
+  /// genuinely failed mount that must still refuse loudly -- conflating
+  /// the two would make a real bug (a caller that forgot to check
+  /// mount_dynamic()'s own Result) silently look like an intentional
+  /// non-hosting rank instead of failing loudly.
+  explicit ProviderAdapter(std::string component_name);
+
   ~ProviderAdapter() override;
 
   ProviderAdapter(const ProviderAdapter&) = delete;
@@ -88,6 +108,11 @@ class ProviderAdapter final : public fuse::Component {
  private:
   std::string                 name_;
   const fuse_provider_abi_v1* table_;
+  /// True only for the unhosted-shell constructor above; false (default)
+  /// for every existing caller, including one that (incorrectly) passes
+  /// `nullptr` to the two-argument constructor -- see that overload's own
+  /// doc comment for why the two must stay distinguishable.
+  bool                          unhosted_shell_ = false;
   fuse_provider_ctx*           self_ = nullptr;
   std::uint64_t                capabilities_ = 0;
   /// Raw FUSE_CAP_DEVICE_FIELDS bit from this plugin's own capabilities()
