@@ -2,15 +2,18 @@
 /// instruction was to test field layout and host/device copies on a real
 /// CUDA/HIP/SYCL backend, something nothing in this tree had run before
 /// this track (ssh:higgs, the owner's own GPU host). The existing
-/// DISABLED_MixedHostAndDeviceFieldsOnOneProviderConvergeThroughChannels
-/// row (test/abi/conformance_test.cpp) is NOT extended here: measured on
-/// higgs, that row's own plugin (test/abi/plugins/mixed_memspace_
-/// provider.c) dereferences a device pointer with an ordinary C store,
-/// which segfaults on a real device backend (exit code 139; that
-/// plugin's own header comment already names the gap as unresolved).
-/// This file's own plugin (test/abi/plugins/device_layout_provider.cpp)
-/// is new, and genuinely launches a Kokkos kernel to touch its
-/// device-resident fields instead.
+/// MixedHostAndDeviceFieldsOnOneProviderConvergeThroughChannels row
+/// (test/abi/conformance_test.cpp, DISABLED_ at the time this file was
+/// written) is NOT extended here: measured on higgs, that row's own
+/// plugin (test/abi/plugins/mixed_memspace_provider.c) dereferenced a
+/// device pointer with an ordinary C store, which segfaulted on a real
+/// device backend (exit code 139). The "Mixed plugin" track
+/// (2026-10-21) later fixed that plugin (mixed_memspace_device_write.cpp,
+/// the same Kokkos-kernel-launch technique this file's own plugin uses)
+/// and dropped the DISABLED_ prefix; this file's own plugin
+/// (test/abi/plugins/device_layout_provider.cpp) predates that fix and
+/// stays as its own, separate test -- it covers 3-component layout and
+/// bidirectional host/device copies the renamed row does not.
 ///
 /// THE GRAPH, one component "mixed" (device_layout_provider.cpp, mounted
 /// as a graph-declared LaunchMode::Plugin, never dlopen()'d by this file
@@ -480,7 +483,7 @@ struct RunOutcome {
 TEST(DeviceLayoutAndCopies, DeviceOutLayoutMatchesDerivedAoSAndEveryElementIsExact) {
 #if !(defined(KOKKOS_ENABLE_CUDA) || defined(KOKKOS_ENABLE_HIP) || defined(KOKKOS_ENABLE_SYCL))
   GTEST_SKIP() << "no device backend on this build; see "
-                  "DISABLED_MixedHostAndDeviceFieldsOnOneProviderConvergeThroughChannels and "
+                  "MixedHostAndDeviceFieldsOnOneProviderConvergeThroughChannels and "
                   "this track's own host_pending for the device-build run";
 #else
   const RunOutcome outcome =
