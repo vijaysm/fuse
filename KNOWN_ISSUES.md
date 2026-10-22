@@ -4366,7 +4366,7 @@ round-tripped bitwise through all 16 restores).
   The interface check was print-only before this round as well, so no assertion was weakened. The per-term
   cancellation figure quoted in the test comment (sum of absolute terms 1.00 to 2.12 times the signed result)
   was measured once with temporary instrumentation that was removed, and is not reproducible from the tree.
-- Item (C), left unchanged, three options costed (no behavior change made). Verified directly: for the
+- Item (C), FIXED 2026-10-22 by owner decision (option 2 below: step on the delivered dt and write the delivered time axis; the NOTE line, the refusal `E-EXAMPLE-DT` for a dt that rounds to zero, rows `example.fsi_channel.off_grid_dt` and `example.fsi_channel.dt_refused`, three mutation rows killed). As originally costed, three options were: Verified directly: for the
   default `--dt 0.01` the 1e-6 rounding is exact (diff=0.0), matching the "zero" this entry already
   reported; for the T1/40-derived dt used throughout this investigation (3.510428e-3), rationalize_dt's
   1e-6 grid gives dt_delivered=0.00351, and `n_steps*(dt-dt_delivered)` at `--t-end 1.0`'s last row is

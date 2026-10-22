@@ -145,6 +145,13 @@ cmake --preset tier0-release && cmake --build --preset tier0-release
     --mass-ratio 1.0 --accel iqn-ils --dt 0.01 --t-end 0.1 --check
 ```
 
+The exact-time scheduler steps on `--dt` rounded to a grid of 1e-6 (`rationalize_dt`). The example steps
+on that delivered value for both the step count and the `time` column of the CSV, and prints a `NOTE` line
+when the two differ, so a typed `--dt 0.0035104283866` runs as `0.00351`; a `--dt` that rounds to zero is
+refused with `E-EXAMPLE-DT`. (Until 2026-10-22 the step count and the time column used the typed value, and the
+reported time axis drifted from what the components advanced by up to `n_steps * 5e-7`; KNOWN_ISSUES.md D34 item C.)
+
+
 Writes a CSV (`--csv path.csv`) of `step,time,sweeps,converged,beam_mid_deflection,
 beam_max_deflection`. `--check` fails if any window does not converge under acceleration, if the
 beam deflection is ever non-finite, or if the beam never moved.
