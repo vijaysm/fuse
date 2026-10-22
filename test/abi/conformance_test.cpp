@@ -1608,14 +1608,34 @@ struct HostingProbeCounts {
 /// impl_initialize_local() component-wiring loop (KNOWN_ISSUES.md D15,
 /// "Registry hosting" track) without a second component or a channel,
 /// which this round's own test needs none of.
-fuse::CouplingGraph build_hosting_probe_graph(fuse::RankSet ranks) {
+fuse::CouplingGraph build_hosting_probe_graph(
+    fuse::RankSet ranks, const char* plugin_path = FUSE_TEST_HOSTING_PROBE_PROVIDER_PLUGIN) {
   fuse::CouplingGraph g;
   const auto m1 = g.add_mesh(fuse::MeshDecl{.name = "m1", .source = "generated:line:1"});
   const auto r1 = g.add_region(fuse::Region{.name = "r1", .mesh = m1, .dimension = 1});
   const auto up = g.add_component(fuse::ComponentDecl{
       .name = "upstream", .ranks = ranks, .interval = fuse::Rational{1},
       .launch = fuse::LaunchSpec{.mode = fuse::LaunchMode::Plugin,
-                                 .plugin_path = FUSE_TEST_HOSTING_PROBE_PROVIDER_PLUGIN}});
+                                 .plugin_path = plugin_path}});
+  (void)g.add_field(up, fuse::FieldSpec{.name = "out", .region = r1, .components = 1,
+                                        .conservation = fuse::Conservation::None,
+                                        .intent = fuse::Intent::Provides});
+  return g;
+}
+
+/// KNOWN_ISSUES.md D15 ("Registry agreement" track): the SAME one-field
+/// shape as build_hosting_probe_graph() above, but with NO Plugin
+/// component at all -- "upstream" defaults to LaunchMode::InProcess and
+/// is driven as a plain ExternalStepComponent, never touching Registry::
+/// mount_dynamic() or reconcile_plugin_agreement() at all. Exists so a
+/// test can confirm the one new collective this round adds truly never
+/// runs for a graph that does not declare a Plugin component.
+fuse::CouplingGraph build_no_plugin_graph() {
+  fuse::CouplingGraph g;
+  const auto m1 = g.add_mesh(fuse::MeshDecl{.name = "m1", .source = "generated:line:1"});
+  const auto r1 = g.add_region(fuse::Region{.name = "r1", .mesh = m1, .dimension = 1});
+  const auto up = g.add_component(fuse::ComponentDecl{
+      .name = "upstream", .ranks = fuse::RankSet{0, 1}, .interval = fuse::Rational{1}});
   (void)g.add_field(up, fuse::FieldSpec{.name = "out", .region = r1, .components = 1,
                                         .conservation = fuse::Conservation::None,
                                         .intent = fuse::Intent::Provides});
@@ -1797,6 +1817,243 @@ TEST(ConformanceTest, HostingTwin_HostingRankDlopensThePluginAndCallsItsEntries)
   // process's dlopen refcounting exactly as it found it.
   dlclose(resident);
   dlclose(probe_before);
+
+  EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
+}
+
+
+// KNOWN_ISSUES.md D15 ("Registry agreement" track, owner decision
+// 2026-10-22, option (b)). Three tests below pin reconcile_plugin_
+// agreement() (src/abi/participant.cpp): the ONE collective this round
+// adds never runs for a graph with no Plugin component; a non-hosting
+// rank's own trivially-successful local verdict is overridden by a
+// (faked) hosting peer's failure, closing the EXACT gap KNOWN_ISSUES.md
+// D15's own "Open after the mount-everywhere fix" paragraph names; and a
+// hosting rank's OWN real mount failure still reaches the reduction
+// (the restructuring impl_initialize_local()'s own component-wiring
+// loop needed), not merely produces the same answer an immediate return
+// would have.
+//
+// All three use force_communicator_set() -- see NonHostingRankNeverDl
+// opensThePluginOrCallsAnyOfItsEntries above for why that seam is
+// incompatible with a real MPI build (GTEST_SKIP under FUSE_HAVE_MPI).
+
+TEST(ConformanceTest, PluginAgreementReconciliationNeverRunsForAGraphWithNoPluginComponent) {
+#if FUSE_HAVE_MPI
+  GTEST_SKIP() << "force_communicator_set() fakes a placeholder communicator handle; see "
+                  "NonHostingRankNeverDlopensThePluginOrCallsAnyOfItsEntries above.";
+#endif
+  const auto* t = fuse_coupler_abi(FUSE_ABI_VERSION);
+  ASSERT_NE(t, nullptr);
+
+  const fuse::CouplingGraph g = build_no_plugin_graph();
+  const auto bytes = fuse::serialize(g);
+
+  fuse_context_out co{sizeof(co)};
+  ASSERT_EQ(t->create(nullptr, nullptr, &co), FUSE_OK);
+  fuse_ctx* ctx = co.ctx;
+  fuse_graph_source src{sizeof(src)};
+  src.bytes = bytes.data();
+  src.byte_count = bytes.size();
+  ASSERT_EQ(t->load_graph(ctx, &src, nullptr), FUSE_OK);
+
+  fuse_setup_options opts{sizeof(opts)};
+  ASSERT_EQ(t->setup(ctx, &opts, nullptr), FUSE_OK);
+  ASSERT_TRUE(fuse::abi_test::force_communicator_set(ctx, 1234));
+  // A fake peer reporting a failure -- if reconcile_plugin_agreement()
+  // ran at all and consulted it, fuse_initialize() would return THIS
+  // code instead of the pre-existing E-TRANSPORT-BACKEND limitation
+  // below.
+  ASSERT_TRUE(fuse::abi_test::force_fake_plugin_agreement_peers(ctx, 0, {FUSE_ERR_INVALID}));
+
+  ASSERT_EQ(fuse::abi_test::plugin_agreement_reconcile_call_count(ctx), 0);
+  const fuse_status init_rc = t->initialize(ctx, nullptr, nullptr);
+  // Same pre-existing, unrelated tier-0 limitation as the hosting-probe
+  // tests above (forcing communicator_set with no "mpi" transport
+  // backend registered): reaching it, rather than the fake peer's
+  // FUSE_ERR_INVALID, is itself the proof the reduction never ran.
+  fuse_error err{sizeof(err)};
+  char buf[512] = {0};
+  err.buffer = buf;
+  err.capacity = sizeof(buf);
+  ASSERT_EQ(t->last_error(ctx, nullptr, &err), FUSE_OK);
+  EXPECT_EQ(init_rc, FUSE_ERR_RUNTIME);
+  EXPECT_STREQ(err.code, "E-TRANSPORT-BACKEND");
+  EXPECT_EQ(fuse::abi_test::plugin_agreement_reconcile_call_count(ctx), 0)
+      << "a graph with no Plugin component must trigger no extra collective at all";
+
+  EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
+}
+
+TEST(ConformanceTest,
+    NonHostingRankAdoptsAHostingPeersPluginMountFailureThroughTheBaseCommunicatorReduction) {
+#if FUSE_HAVE_MPI
+  GTEST_SKIP() << "force_communicator_set() fakes a placeholder communicator handle; see "
+                  "NonHostingRankNeverDlopensThePluginOrCallsAnyOfItsEntries above.";
+#endif
+  // "upstream" at RankSet{1, 1}: rank 0 (this process, hardcoded at tier
+  // 0) is the NON-hosting case, exactly as NonHostingRankNeverDlopens...
+  // above establishes -- its own local plugin_mount_status is
+  // trivially FUSE_OK (nothing to mount, nothing to fail on). The fake
+  // peer at index 1 (self_rank = 0, one peer) stands in for the hosting
+  // rank, reporting a real mount failure it never actually ran.
+  const auto* t = fuse_coupler_abi(FUSE_ABI_VERSION);
+  ASSERT_NE(t, nullptr);
+
+  const fuse::CouplingGraph g = build_hosting_probe_graph(fuse::RankSet{1, 1});
+  const auto bytes = fuse::serialize(g);
+
+  fuse_context_out co{sizeof(co)};
+  ASSERT_EQ(t->create(nullptr, nullptr, &co), FUSE_OK);
+  fuse_ctx* ctx = co.ctx;
+  fuse_graph_source src{sizeof(src)};
+  src.bytes = bytes.data();
+  src.byte_count = bytes.size();
+  ASSERT_EQ(t->load_graph(ctx, &src, nullptr), FUSE_OK);
+
+  fuse_setup_options opts{sizeof(opts)};
+  ASSERT_EQ(t->setup(ctx, &opts, nullptr), FUSE_OK);
+  ASSERT_TRUE(fuse::abi_test::force_communicator_set(ctx, 1234));
+  ASSERT_TRUE(fuse::abi_test::force_fake_plugin_agreement_peers(ctx, 0, {FUSE_ERR_RUNTIME}));
+
+  const fuse_status init_rc = t->initialize(ctx, nullptr, nullptr);
+  fuse_error err{sizeof(err)};
+  char buf[512] = {0};
+  err.buffer = buf;
+  err.capacity = sizeof(buf);
+  ASSERT_EQ(t->last_error(ctx, nullptr, &err), FUSE_OK);
+  // THE assertion this test exists for: this rank's own local verdict
+  // was FUSE_OK (nothing failed here), yet fuse_initialize() returns the
+  // FAKE hosting peer's failure -- "a non-hosting rank's own success
+  // never masks a hosting rank's own refusal", the standing collective-
+  // discipline rule the "Registry hosting" round's own fix had left
+  // unmet for exactly this scenario.
+  EXPECT_EQ(init_rc, FUSE_ERR_RUNTIME);
+  EXPECT_STREQ(err.code, "E-ABI-PLUGIN-AGREEMENT-REFUSED");
+  EXPECT_NE(std::string(buf).find("rank 1"), std::string::npos)
+      << "the rewritten message must name the refusing rank: " << buf;
+  EXPECT_EQ(fuse::abi_test::plugin_agreement_reconcile_call_count(ctx), 1);
+
+  EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
+}
+
+TEST(ConformanceTest, HostingRanksOwnPluginMountFailureStillReachesTheBaseCommunicatorReduction) {
+#if FUSE_HAVE_MPI
+  GTEST_SKIP() << "force_communicator_set() fakes a placeholder communicator handle; see "
+                  "NonHostingRankNeverDlopensThePluginOrCallsAnyOfItsEntries above.";
+#endif
+  // "upstream" at RankSet{0, 1}: rank 0 (this process, hardcoded at tier
+  // 0) is the HOSTING case this time, and its own plugin_path is the
+  // real, already-built BAD_VERSION plugin (test/CMakeLists.txt), so
+  // mount_dynamic() fails for REAL -- no fake peer at all. Before this
+  // round's own restructuring, that failure would `return fail(...)`
+  // immediately, from inside the component-wiring loop, never reaching
+  // reconcile_plugin_agreement() -- indistinguishable from the fix by
+  // this rank's own return code alone (its status already IS the
+  // agreed minimum, with only one rank in play), which is exactly why
+  // this test reads the white-box call counter instead.
+  const auto* t = fuse_coupler_abi(FUSE_ABI_VERSION);
+  ASSERT_NE(t, nullptr);
+
+  const fuse::CouplingGraph g =
+      build_hosting_probe_graph(fuse::RankSet{0, 1}, FUSE_TEST_C_PROVIDER_PLUGIN_BAD_VERSION);
+  const auto bytes = fuse::serialize(g);
+
+  fuse_context_out co{sizeof(co)};
+  ASSERT_EQ(t->create(nullptr, nullptr, &co), FUSE_OK);
+  fuse_ctx* ctx = co.ctx;
+  fuse_graph_source src{sizeof(src)};
+  src.bytes = bytes.data();
+  src.byte_count = bytes.size();
+  ASSERT_EQ(t->load_graph(ctx, &src, nullptr), FUSE_OK);
+
+  fuse_setup_options opts{sizeof(opts)};
+  ASSERT_EQ(t->setup(ctx, &opts, nullptr), FUSE_OK);
+  ASSERT_TRUE(fuse::abi_test::force_communicator_set(ctx, 1234));
+
+  ASSERT_EQ(fuse::abi_test::plugin_agreement_reconcile_call_count(ctx), 0);
+  const fuse_status init_rc = t->initialize(ctx, nullptr, nullptr);
+  fuse_error err{sizeof(err)};
+  char buf[512] = {0};
+  err.buffer = buf;
+  err.capacity = sizeof(buf);
+  ASSERT_EQ(t->last_error(ctx, nullptr, &err), FUSE_OK);
+  // This rank IS the origin of the agreed status (the only rank in
+  // play), so its own message survives unchanged: the REAL mount_
+  // dynamic() failure's own code, not the rewritten E-ABI-PLUGIN-
+  // AGREEMENT-REFUSED the non-hosting test above sees.
+  EXPECT_EQ(init_rc, FUSE_ERR_RUNTIME);
+  EXPECT_STREQ(err.code, "E-ABI-VERSION");
+  EXPECT_EQ(fuse::abi_test::plugin_agreement_reconcile_call_count(ctx), 1)
+      << "the restructured early return must still reach reconcile_plugin_agreement()";
+
+  EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
+}
+
+
+// KNOWN_ISSUES.md D15 ("Registry agreement" track, owner decision
+// 2026-10-22): the real-ABI integration twin of test/abi/plugin_
+// agreement_test.cpp's own pure-predicate unit tests -- confirms
+// src/abi/participant.cpp's impl_initialize_local() actually WIRES
+// fuse::abi_detail::plugin_mount_agreement_needs_a_missing_spanning_
+// communicator() into fuse_initialize() itself, refusing before the
+// component-wiring loop (and therefore before ever touching "upstream"'s
+// own, deliberately bogus plugin_path) rather than merely existing as an
+// unused pure function.
+TEST(ConformanceTest, APluginAlongsideAConnectComponentWithNoSpanningCommunicatorIsRefusedAPriori) {
+#if FUSE_HAVE_MPI
+  GTEST_SKIP() << "force_communicator_set() fakes a placeholder communicator handle; see "
+                  "NonHostingRankNeverDlopensThePluginOrCallsAnyOfItsEntries above.";
+#endif
+  const auto* t = fuse_coupler_abi(FUSE_ABI_VERSION);
+  ASSERT_NE(t, nullptr);
+
+  fuse::CouplingGraph g;
+  const auto m1 = g.add_mesh(fuse::MeshDecl{.name = "m1", .source = "generated:line:1"});
+  const auto r1 = g.add_region(fuse::Region{.name = "r1", .mesh = m1, .dimension = 1});
+  const auto up = g.add_component(fuse::ComponentDecl{
+      .name = "upstream", .ranks = fuse::RankSet{0, 1}, .interval = fuse::Rational{1},
+      .launch = fuse::LaunchSpec{.mode = fuse::LaunchMode::Plugin,
+                                 // Deliberately bogus: this test's whole point is that
+                                 // mount_dynamic() must never be reached to notice.
+                                 .plugin_path = "/does/not/exist/never-dlopened.so"}});
+  (void)g.add_field(up, fuse::FieldSpec{.name = "out", .region = r1, .components = 1,
+                                        .conservation = fuse::Conservation::None,
+                                        .intent = fuse::Intent::Provides});
+  const auto farside = g.add_component(fuse::ComponentDecl{
+      .name = "farside", .ranks = fuse::RankSet{0, 1}, .interval = fuse::Rational{1},
+      .launch = fuse::LaunchSpec{.mode = fuse::LaunchMode::Connect,
+                                 .port_file = "irrelevant-to-this-test.port"}});
+  (void)g.add_field(farside, fuse::FieldSpec{.name = "in", .region = r1, .components = 1,
+                                             .conservation = fuse::Conservation::None,
+                                             .intent = fuse::Intent::Requires});
+  const auto bytes = fuse::serialize(g);
+
+  fuse_context_out co{sizeof(co)};
+  ASSERT_EQ(t->create(nullptr, nullptr, &co), FUSE_OK);
+  fuse_ctx* ctx = co.ctx;
+  fuse_graph_source src{sizeof(src)};
+  src.bytes = bytes.data();
+  src.byte_count = bytes.size();
+  ASSERT_EQ(t->load_graph(ctx, &src, nullptr), FUSE_OK);
+
+  // my_component left unset (NULL, the default): this process never
+  // calls fuse::transport::connect() for either component -- exactly
+  // the shape this round's own task names.
+  fuse_setup_options opts{sizeof(opts)};
+  ASSERT_EQ(t->setup(ctx, &opts, nullptr), FUSE_OK);
+  ASSERT_TRUE(fuse::abi_test::force_communicator_set(ctx, 1234));
+
+  const fuse_status init_rc = t->initialize(ctx, nullptr, nullptr);
+  fuse_error err{sizeof(err)};
+  char buf[1024] = {0};
+  err.buffer = buf;
+  err.capacity = sizeof(buf);
+  ASSERT_EQ(t->last_error(ctx, nullptr, &err), FUSE_OK);
+  EXPECT_EQ(init_rc, FUSE_ERR_UNSUPPORTED);
+  EXPECT_STREQ(err.code, "E-ABI-PLUGIN-NO-SPANNING-COMM");
+  EXPECT_NE(std::string(buf).find("upstream"), std::string::npos) << buf;
+  EXPECT_NE(std::string(buf).find("farside"), std::string::npos) << buf;
 
   EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
 }

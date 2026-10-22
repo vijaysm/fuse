@@ -2338,6 +2338,12 @@ fuse_add_gtest(abi struct_size)
 # directly with no MPI and no fuse_ctx at all -- include/fuse/abi/
 # collective_reconcile.hpp's own header comment has the full account.
 fuse_add_gtest(abi collective_reconcile)
+
+# KNOWN_ISSUES.md D15 ("Registry agreement" track): the pure, graph-shape
+# predicate src/abi/participant.cpp's impl_initialize_local() consults a
+# priori, before any Plugin-mount work runs -- include/fuse/abi/
+# plugin_agreement.hpp's own header comment has the full account.
+fuse_add_gtest(abi plugin_agreement)
 fuse_add_gtest(abi rank_share)
 
 # Soma-import port (docs/dev/soma-import.md, test/unit/capi_test.c row): the
@@ -2698,6 +2704,15 @@ if(FUSE_ENABLE_MPI)
   add_dependencies(fuse_parallel_provider_subset_mpi_test fuse_test_provider_linear)
   target_include_directories(fuse_parallel_provider_subset_mpi_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/abi)
+
+  # KNOWN_ISSUES.md D15 ("Registry agreement" track): AHostingRanksPlugin
+  # MountFailureIsAgreedByEveryRankNotOnlyTheHostingOnes (this file) needs
+  # a plugin that genuinely fails to mount -- the already-built BAD_VERSION
+  # variant (fuse_test_provider_linear_bad_version, defined above in this
+  # same section for test/abi/conformance_test.cpp's own use).
+  target_compile_definitions(fuse_parallel_provider_subset_mpi_test PRIVATE
+    FUSE_TEST_C_PROVIDER_PLUGIN_BAD_VERSION="$<TARGET_FILE:fuse_test_provider_linear_bad_version>")
+  add_dependencies(fuse_parallel_provider_subset_mpi_test fuse_test_provider_linear_bad_version)
 endif()
 
 # ---------------------------------------------------------------- bench

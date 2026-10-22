@@ -21,6 +21,24 @@
 // never a member of "upstream"'s own RankSet in this fixture; the
 // tier-0 twin with no MPI is test/abi/conformance_test.cpp's own
 // ConformanceTest.NonHostingRankNeverDlopensThePluginOrCallsAnyOfItsEntries.
+//
+// The "Registry hosting" fix above left one gap open, recorded in its
+// own KNOWN_ISSUES.md D15 paragraph ("Open after the mount-everywhere
+// fix"): a plugin-side refusal became visible only to a hosting rank,
+// so a non-hosting rank of the SAME base communicator proceeded past
+// it, violating the project's standing "agree first, then every rank
+// refuses with the same code" rule. Closed now ("Registry agreement"
+// track, owner decision 2026-10-22, option (b)):
+// AHostingRanksPluginMountFailureIsAgreedByEveryRankNotOnlyTheHostingOnes
+// below places a deliberately BROKEN plugin (the BAD_VERSION variant)
+// on every hosting rank and confirms EVERY rank -- hosting or not --
+// agrees on the SAME failure, through one MPI_Allreduce(MPI_MINLOC)
+// over the base communicator (src/abi/participant.cpp's reconcile_
+// plugin_agreement()); the tier-0 twin with no MPI is test/abi/
+// conformance_test.cpp's own NonHostingRankAdoptsAHostingPeersPlugin
+// MountFailureThroughTheBaseCommunicatorReduction (faked peers) and
+// HostingRanksOwnPluginMountFailureStillReachesTheBaseCommunicatorRed
+// uction (a real local failure, white-box call-count check).
 #include "fuse/base/config.hpp"
 
 #include <dlfcn.h>
@@ -231,6 +249,92 @@ TEST(ProviderSubsetMpi, APluginOnARankSubsetRunsOnlyOnItsOwnHostingRanksWithNoHa
     // independent evidence that values actually crossed from the
     // plugin, hosted entirely on OTHER ranks, to here.
     EXPECT_EQ(sink_ptr->history.size(), 3u);
+  }
+
+  EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
+}
+
+
+// KNOWN_ISSUES.md D15 ("Registry agreement" track, owner decision
+// 2026-10-22, option (b)): the real multi-process twin of test/abi/
+// conformance_test.cpp's own NonHostingRankAdoptsAHostingPeersPluginMount
+// FailureThroughTheBaseCommunicatorReduction and HostingRanksOwnPlugin
+// MountFailureStillReachesTheBaseCommunicatorReduction -- no fake peers
+// here, a REAL MPI_Allreduce(MPI_MINLOC) over MPI_COMM_WORLD. "upstream"
+// (the plugin) is placed on every rank EXCEPT rank 0, exactly as the
+// happy-path row above, but its own plugin_path is the already-built
+// BAD_VERSION variant (test/CMakeLists.txt), so EVERY hosting rank's own
+// mount_dynamic() fails for real. Built, never run (KNOWN_ISSUES.md C1
+// -- see host_pending).
+TEST(ProviderSubsetMpi,
+    AHostingRanksPluginMountFailureIsAgreedByEveryRankNotOnlyTheHostingOnes) {
+  const auto* t = Table();
+  ASSERT_NE(t, nullptr);
+
+  int rank = 0, world_size = 0;
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+  MPI_Comm_size(MPI_COMM_WORLD, &world_size);
+  ASSERT_GE(world_size, 2) << "this row needs at least 2 ranks (RANKS 2 3)";
+
+  fuse::CouplingGraph g;
+  const auto m1 = g.add_mesh(fuse::MeshDecl{.name = "m1", .source = "generated:line:1"});
+  const auto r1 = g.add_region(fuse::Region{.name = "r1", .mesh = m1, .dimension = 1});
+  const auto up = g.add_component(fuse::ComponentDecl{
+      .name = "upstream", .ranks = fuse::RankSet{1, world_size - 1}, .interval = fuse::Rational{1},
+      .launch = fuse::LaunchSpec{.mode = fuse::LaunchMode::Plugin,
+                                 .plugin_path = FUSE_TEST_C_PROVIDER_PLUGIN_BAD_VERSION}});
+  const auto out_f = g.add_field(
+      up, fuse::FieldSpec{.name = "out", .region = r1, .components = 1,
+                          .units = fuse::units::kKelvin,
+                          .conservation = fuse::Conservation::None,
+                          .intent = fuse::Intent::Provides});
+  (void)out_f;
+  const auto bytes = fuse::serialize(g);
+
+  fuse_context_out co{.struct_size = sizeof(co)};
+  ASSERT_EQ(t->create(nullptr, nullptr, &co), FUSE_OK);
+  fuse_ctx* ctx = co.ctx;
+  fuse_graph_source src{.struct_size = sizeof(src)};
+  src.bytes = bytes.data();
+  src.byte_count = bytes.size();
+  ASSERT_EQ(t->load_graph(ctx, &src, nullptr), FUSE_OK);
+
+  fuse_setup_options opts{.struct_size = sizeof(opts)};
+  opts.communicator = static_cast<std::int64_t>(MPI_Comm_c2f(MPI_COMM_WORLD));
+  ASSERT_EQ(t->setup(ctx, &opts, nullptr), FUSE_OK);
+
+  const fuse_status init_rc = t->initialize(ctx, nullptr, nullptr);
+
+  // THE assertion this row exists for: rank 0 (never a member of
+  // "upstream"'s own RankSet, so its own local plugin_mount_status is
+  // trivially FUSE_OK) must NOT return FUSE_OK -- it must agree with
+  // every hosting rank's own real E-ABI-VERSION failure, through the
+  // base-communicator MPI_Allreduce(MPI_MINLOC) reconcile_plugin_
+  // agreement() runs, never through collective_comm_f (which stays 0
+  // for this plugin-only, my_component-unset graph, D15's own "Open
+  // after the mount-everywhere fix" paragraph).
+  std::vector<std::int32_t> all_rc(static_cast<std::size_t>(world_size));
+  const std::int32_t mine = init_rc;
+  MPI_Allgather(&mine, 1, MPI_INT32_T, all_rc.data(), 1, MPI_INT32_T, MPI_COMM_WORLD);
+  for (int r = 0; r < world_size; ++r) {
+    EXPECT_EQ(all_rc[static_cast<std::size_t>(r)], FUSE_ERR_RUNTIME)
+        << "rank " << r << " did not agree on FUSE_ERR_RUNTIME for the plugin-mount failure "
+           "(rank " << rank << " observing)";
+  }
+
+  // Rank 0 is the non-originating rank here (its own local status was
+  // FUSE_OK, not the agreed minimum), so its own message is rewritten --
+  // E-ABI-PLUGIN-AGREEMENT-REFUSED, naming a hosting rank, not the raw
+  // E-ABI-VERSION a hosting rank's own last_error() carries (checked only
+  // on rank 0, where the distinction is unambiguous: every OTHER rank
+  // here hosts "upstream" and is itself an origin candidate).
+  if (rank == 0) {
+    fuse_error err{.struct_size = sizeof(err)};
+    char buf[512] = {0};
+    err.buffer = buf;
+    err.capacity = sizeof(buf);
+    ASSERT_EQ(t->last_error(ctx, nullptr, &err), FUSE_OK);
+    EXPECT_STREQ(err.code, "E-ABI-PLUGIN-AGREEMENT-REFUSED");
   }
 
   EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);

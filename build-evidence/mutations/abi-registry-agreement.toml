@@ -1,0 +1,57 @@
+# KNOWN_ISSUES.md D15 ("Registry agreement" track, owner decision
+# 2026-10-22, option (b)): the plugin-mount verdict is reconciled across
+# every rank of the base communicator, and a multi-executable launch with
+# a Plugin component but no spanning communicator is refused a priori.
+# Own file per the review-fix protocol (same convention as abi-registry-
+# hosting.toml, the prior round in this same track).
+#
+# Rows 1-2 applied by hand against this round's own new/changed code,
+# rebuilt, run, confirmed to fail EXACTLY the named test(s) (and no other
+# runnable case in the same binary), then restored byte-for-byte (cmp
+# against the pre-mutation file showed no difference). Row 3 is
+# compile-checked only under a real FUSE_ENABLE_MPI=ON configure --
+# MPI cannot start in this sandbox (KNOWN_ISSUES.md C1) -- so it is
+# PENDING a host kill run, the same posture abi-registry-hosting.toml's
+# own second row took for its MPI-only mutation.
+
+[[mutation]]
+id = "participant-plugin-agreement-reduction-bypassed"
+area = "abi-registry-agreement"
+describes = "src/abi/participant.cpp's impl_initialize_local() calls reconcile_plugin_agreement() exactly when `saw_plugin_component` is true, after the component-wiring loop; forcing that guard to `false` restores the OLD, rank-local-only behaviour this round's own task fixes -- a non-hosting rank's own locally-successful verdict is never reconciled against a hosting peer's own failure, and a hosting rank's own real failure never reaches the reduction at all"
+file = "src/abi/participant.cpp"
+old = """    if (saw_plugin_component) {
+      const fuse_status reconciled ="""
+new = """    if (false) {  // MUTATION: reduction bypassed, verdict stays rank-local
+      const fuse_status reconciled ="""
+target = "fuse_abi_conformance_test"
+test = "abi.conformance"
+requires = "no-mpi"
+result = "CONFIRMED 2026-10-22: killed two tests, both expected -- ConformanceTest.NonHostingRankAdoptsAHostingPeersPluginMountFailureThroughTheBaseCommunicatorReduction (this rank's own fuse_initialize() returned FUSE_OK, the local, un-reconciled verdict, never adopting the faked hosting peer's FUSE_ERR_RUNTIME) and ConformanceTest.HostingRanksOwnPluginMountFailureStillReachesTheBaseCommunicatorReduction (fuse::abi_test::plugin_agreement_reconcile_call_count(ctx) read 0 instead of 1, since the reduction is never reached from either branch of the bypassed guard). The other 35 runnable cases in the 38-test binary, including ConformanceTest.PluginAgreementReconciliationNeverRunsForAGraphWithNoPluginComponent (unaffected: that graph never sets saw_plugin_component true, so the mutated guard is never exercised either way), still passed. Restored; cmp against the pre-mutation file reported no difference."
+
+[[mutation]]
+id = "plugin-agreement-a-priori-condition-inverted"
+area = "abi-registry-agreement"
+describes = "include/fuse/abi/plugin_agreement.hpp's plugin_mount_agreement_needs_a_missing_spanning_communicator() returns graph_has_launch_mode(Plugin) && graph_has_launch_mode(Connect) once my_component's own connect()-triggering check has passed; negating that return value refuses every graph shape this round's own task says must NOT be refused (Plugin alone, Plugin+Mpmd, Connect alone with no Plugin) while silently ALLOWING the one shape that must be refused (Plugin+Connect with my_component unset) to proceed and actually dlopen() the Plugin component's shared object"
+file = "include/fuse/abi/plugin_agreement.hpp"
+old = """  return graph_has_launch_mode(graph, fuse::LaunchMode::Plugin) &&
+         graph_has_launch_mode(graph, fuse::LaunchMode::Connect);"""
+new = """  return !(graph_has_launch_mode(graph, fuse::LaunchMode::Plugin) &&
+         graph_has_launch_mode(graph, fuse::LaunchMode::Connect));  // MUTATION: inverted"""
+target = "fuse_abi_plugin_agreement_test"
+test = "abi.plugin_agreement"
+requires = "no-mpi"
+result = "CONFIRMED 2026-10-22: killed 5 of 9 cases in fuse_abi_plugin_agreement_test -- RefusesPluginPlusConnectWhenMyComponentIsUnset, RefusesPluginPlusConnectWhenMyComponentIsPluginOrInProcess, DoesNotRefusePluginPlusMpmdEvenWhenMyComponentIsUnset, DoesNotRefusePluginAlone, and DoesNotRefuseConnectAloneWithNoPluginComponent all flipped (each asserted the opposite boolean). The 2 cases gated on the earlier `!communicator_set`/`my_component_connects` returns (DoesNotRefuseWhenMyComponentIsTheConnectHalfItself, DoesNotRefuseWhenNoCommunicatorIsConfiguredAtAll) and the 2 GraphHasLaunchMode cases (a different function entirely) still passed, as expected -- the mutation is downstream of both early-return gates. test/abi/conformance_test.cpp's own ConformanceTest.APluginAlongsideAConnectComponentWithNoSpanningCommunicatorIsRefusedAPriori was ALSO checked and failed the same way (the bogus plugin path was actually dlopen()'d, producing E-ABI-LOAD instead of the expected a-priori refusal), confirming the wiring into the real ABI is exercised too, not only the pure predicate. Restored; compared the restored file's full text against this round's own authored original (held separately) and confirmed an exact match, character for character."
+
+[[mutation]]
+id = "participant-plugin-agreement-minloc-to-maxloc-mpi"
+area = "abi-registry-agreement"
+describes = "the real MPI_Allreduce(MPI_MINLOC) reconcile_plugin_agreement() runs when FUSE_HAVE_MPI (src/abi/participant.cpp), replaced by MPI_MAXLOC -- the largest (least negative) status would win instead of the smallest, so a hosting rank's own real refusal (a negative FUSE_ERR_* code) would lose to any OTHER rank's FUSE_OK (0) rather than propagating, the exact inverse of entries.def's own \"FUSE_OK is 0 and every FUSE_ERR_* code is negative, so the plain minimum already propagates any refusal\" rule reconcile_plugin_agreement()'s own doc comment restates"
+file = "src/abi/participant.cpp"
+old = """  if (MPI_Allreduce(&in, &out, 1, MPI_2INT, MPI_MINLOC, comm) != MPI_SUCCESS) {
+    return fail(&c, FUSE_ERR_RUNTIME, "E-ABI-PLUGIN-AGREEMENT-COMM","""
+new = """  if (MPI_Allreduce(&in, &out, 1, MPI_2INT, MPI_MAXLOC, comm) != MPI_SUCCESS) {  // MUTATION: MAXLOC
+    return fail(&c, FUSE_ERR_RUNTIME, "E-ABI-PLUGIN-AGREEMENT-COMM","""
+target = "fuse_parallel_provider_subset_mpi_test"
+test = "parallel.provider_subset_mpi.2"
+requires = "mpi"
+result = "PENDING a host kill run with FUSE_MUTATE_MPI=1 (2026-10-22). Compile-checked clean under a real FUSE_ENABLE_MPI=ON configure (this file's own real MPI_Allreduce branch, #if FUSE_HAVE_MPI, only exists in that build); not run -- the sandbox cannot start MPI (KNOWN_ISSUES.md C1). Expected kill: AHostingRanksPluginMountFailureIsAgreedByEveryRankNotOnlyTheHostingOnes's own all_rc == FUSE_ERR_RUNTIME assertion on every rank, since MPI_MAXLOC would instead propagate FUSE_OK (0, the least negative) from a non-hosting rank over a hosting rank's own negative FUSE_ERR_RUNTIME."
