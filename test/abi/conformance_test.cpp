@@ -1624,6 +1624,12 @@ fuse::CouplingGraph build_hosting_probe_graph(fuse::RankSet ranks) {
 }  // namespace
 
 TEST(ConformanceTest, NonHostingRankNeverDlopensThePluginOrCallsAnyOfItsEntries) {
+#if FUSE_HAVE_MPI
+  GTEST_SKIP() << "this case hands fuse_initialize() a placeholder communicator handle (force_communicator_set, "
+                  "1234), which a no-MPI build never dereferences but an MPI build passes to MPI_Comm_rank and "
+                  "aborts (measured on the host, MPICH 5.0.2rc3, 2026-10-22). The same property is asserted on a "
+                  "real communicator by parallel.provider_subset_mpi.{2,3}.";
+#endif
   // KNOWN_ISSUES.md D15 ("Registry hosting" track, owner decision
   // 2026-10-22, verbatim: "NO. This should not happen."): "upstream" is
   // placed at RankSet{1, 1} -- rank 1 only. A build with no MPI
@@ -1708,6 +1714,12 @@ TEST(ConformanceTest, NonHostingRankNeverDlopensThePluginOrCallsAnyOfItsEntries)
 }
 
 TEST(ConformanceTest, HostingTwin_HostingRankDlopensThePluginAndCallsItsEntries) {
+#if FUSE_HAVE_MPI
+  GTEST_SKIP() << "this case hands fuse_initialize() a placeholder communicator handle (force_communicator_set, "
+                  "1234), which a no-MPI build never dereferences but an MPI build passes to MPI_Comm_rank and "
+                  "aborts (measured on the host, MPICH 5.0.2rc3, 2026-10-22). The same property is asserted on a "
+                  "real communicator by parallel.provider_subset_mpi.{2,3}.";
+#endif
   // The contrasting twin to the test above: the IDENTICAL one-field
   // graph shape, except "upstream" is placed at RankSet{0, 1} -- rank 0
   // only, which this tier-0 process always is -- so this run IS the
