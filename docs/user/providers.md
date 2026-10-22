@@ -219,9 +219,14 @@ Only a rank that is a member of the component's own `ranks` actually loads the s
 multi-rank base communicator never touches it (KNOWN_ISSUES.md D15, "Registry hosting" track), and
 still registers every field that component declares, as an empty view, so field ordering and the
 runtime's own rank agreement are unaffected by which ranks actually host the plugin. A refusal from
-the plugin itself (`E-ABI-LOAD`, `E-ABI-VERSION`, `E-ABI-DESCRIBE`, or a device gate) is therefore
-now visible only on a hosting rank -- see "Open questions" below for the collective-agreement
-consequence this has, which this release does not close.
+the plugin itself (`E-ABI-LOAD`, `E-ABI-VERSION`, `E-ABI-DESCRIBE`, or a device gate) is seen first
+by a hosting rank alone, but `fuse_initialize()` agrees it across every rank of the base
+communicator before any rank's own call returns (KNOWN_ISSUES.md D15, "Registry agreement" track):
+one `MPI_Allreduce(MPI_MINLOC)`, run exactly once per `fuse_initialize()` call and only when the
+graph declares a Plugin component, so every rank -- hosting the plugin or not -- returns the SAME
+code, with a non-originating rank's own message rewritten to name the rank that actually refused.
+See "A known failure case" below for the one launch shape this agreement cannot be formed for, and
+which is refused outright, before any plugin is touched, instead.
 
 ## Device fields
 
@@ -275,6 +280,8 @@ never left to the plugin's own discretion, and at zero cost to a provider with n
 | `E-ABI-REGISTRY-INSTALL` | `ComponentSet::add()` threw while installing a mounted provider |
 | `E-ABI-REGISTRY-NOTFOUND` | `extract()` was asked for a name no provider is mounted under |
 | `E-LAUNCH-PLUGIN-PATH` | a `plugin`-launched component declares an empty `plugin_path` |
+| `E-ABI-PLUGIN-AGREEMENT-REFUSED` | a DIFFERENT rank's plugin-mount refusal was agreed across the base communicator (the message names which rank and which status; see "Naming your plugin in the graph") |
+| `E-ABI-PLUGIN-NO-SPANNING-COMM` | a `Plugin` component and a `Connect`-launched one share a graph, and this process's own `my_component` does not itself span them -- see "A known failure case" |
 
 ## Open questions
 
@@ -307,14 +314,32 @@ closed 2026-10-19 across rounds 3-5 and confirmed on an MPI host). The SEPARATE 
 raised -- whether `fuse::abi_detail::Registry::mount_dynamic()` should load a `LaunchMode::Plugin`
 component's shared object on every rank regardless of placement, or only on hosting ranks -- is
 CLOSED (owner decision 2026-10-22, verbatim: "NO. This should not happen."; "Registry hosting"
-track): only a hosting rank loads it now (see "Naming your plugin in the graph" above). This has a
-cost the owner's own standing collective-discipline rule flags and this release does not close: a
-plugin-side refusal (`E-ABI-LOAD`, `E-ABI-VERSION`, `E-ABI-DESCRIBE`, a device gate) used to be
-re-derived identically by every rank against the same shared object, so every rank happened to agree
-with no real collective underneath; now only a hosting rank can ever see one, and no existing
-agreement point in `fuse_initialize()` covers an `InProcess`/`Plugin`-only graph handed a
-communicator directly without `fuse::transport::connect()` (KNOWN_ISSUES.md D15's own "Registry
-hosting" round record has the full account and the options left for the owner).
+track): only a hosting rank loads it now (see "Naming your plugin in the graph" above). The
+collective-discipline cost this introduced (a plugin-side refusal visible only to a hosting rank)
+is ALSO CLOSED (owner decision 2026-10-22, option (b); "Registry agreement" track): see "Naming
+your plugin in the graph" above for the one-collective agreement this adds, and "A known failure
+case" immediately below for the one launch shape it cannot cover.
+
+## A known failure case
+
+A graph that declares a `Plugin` component AND a `Connect`-launched one (true separate-executable
+MPMD -- independent MPI universes, no common parent communicator until `fuse::transport::connect()`
+itself performs its own `MPI_Open_port`/`MPI_Comm_accept`/`MPI_Comm_connect` handshake) is refused
+at `fuse_initialize()`, before the plugin is ever touched, whenever the CALLING process's own
+`my_component` is not itself the `Connect` half of that handshake (unset, or naming the `Plugin`
+component, or any other non-`Mpmd`/non-`Connect` component): `E-ABI-PLUGIN-NO-SPANNING-COMM`. The
+reason is the same one that makes the one-collective agreement above possible at all: agreeing a
+plugin-mount verdict needs a communicator that spans every rank with an opinion on it, and a process
+whose own `my_component` never calls `connect()` never gains one -- its own `communicator` is
+exactly what `fuse_setup_options` was handed, unchanged. `Mpmd` does not have this problem
+(`MPI_COMM_WORLD` already spans every program before `fuse_setup()` is ever called, launcher-style),
+so a `Plugin` component alongside an `Mpmd` one is never refused this way, regardless of
+`my_component`.
+
+Workaround: host the plugin component in a process that is itself `Connect`-launched (so its own
+`connect()` call forms the spanning communicator before `fuse_initialize()` needs one), or declare
+the multi-executable component `Mpmd` instead of `Connect` if your launcher supports it (a single
+`mpiexec ... : ...` invocation, not two separately launched programs).
 
 ## A note on exported symbols
 

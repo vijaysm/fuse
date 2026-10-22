@@ -315,6 +315,90 @@ onto a collective the step already performs instead of a separate
 
 ## The period contract (what a window-per-period boundary must not do)
 
+## How a plugin's mount is agreed across the base communicator
+
+KNOWN_ISSUES.md D15 ("Registry agreement" track, owner decision 2026-10-22, option (b)). The
+"Registry hosting" track fixed a DIFFERENT problem -- `fuse::abi_detail::Registry::mount_dynamic()`
+dlopen()ing a `LaunchMode::Plugin` component's shared object on every rank, not only the ones that
+host it -- but introduced a consequence of its own: a plugin-side refusal (`E-ABI-LOAD`,
+`E-ABI-VERSION`, `E-ABI-DESCRIBE`, a device gate) became visible only to a hosting rank, where it
+used to be re-derived identically everywhere. This violates the SAME standing rule the section above
+states ("agree first, then every rank refuses with the same code"), for a reason that section's own
+mechanism cannot reach: `reconcile_collective_status()` reconciles over `fuse_ctx::
+collective_comm_f`, a communicator split by `my_component`, and `my_component` is documented
+(`entries.def`) to behave as unset for `InProcess`/`Plugin` launch -- so `collective_comm_f` never
+forms at all for a Plugin-only, direct-communicator graph, the exact shape this problem occurs in.
+
+**The fix.** `src/abi/participant.cpp`'s `reconcile_plugin_agreement()` reconciles the plugin-mount
+verdict `impl_initialize_local()`'s own component-wiring loop computes (a hosting rank's own
+mount/extract/register-fields result, or a non-hosting rank's trivial success) across every rank of
+the BASE communicator (`fuse_ctx::communicator`) -- not `collective_comm_f` -- with one
+`MPI_Allreduce(MPI_2INT, MPI_MINLOC, ...)`, run exactly once per `fuse_initialize()` call and ONLY
+when the loaded graph declares at least one `Plugin` component (a graph with none never pays this
+cost at all). It reuses the identical pure arithmetic (`fuse::abi_detail::
+reconcile_local_statuses`) the section above's own glue calls, so the two reconciliations -- over
+two different communicators, for two different questions -- cannot disagree about what "agreed"
+means.
+
+Every early `return fail(...)` the component-wiring loop's `Plugin` branch took on a hosting rank's
+own mount/extract/register failure was restructured to record its verdict and `break` the loop
+instead, so every rank -- hosting or not -- still reaches this one reduction point before
+`impl_initialize_local()` returns; without that restructuring, a hosting rank that failed would
+return before a non-hosting rank (which has nothing to fail on locally) ever learned about it,
+reproducing the exact gap this round closes.
+
+**Why this cannot deadlock the way the round-2 REVERTED fix above did.** That fix's own lesson
+("a collective that pairs calls ACROSS components can only run on a communicator whose every
+member makes the SAME sequence of calls") is about `begin_step`/`end_step`/`run` -- entries a
+multi-component graph's different components call a DIFFERENT NUMBER OF TIMES, so an
+`MPI_Allreduce` keyed to "all ranks of the base communicator" never finds the same number of
+contributions on every side. `fuse_initialize()` has no such cadence: it is called EXACTLY ONCE,
+synchronously, by every rank of the base communicator, before any step boundary exists at all --
+there is no "which call number is this" question for two ranks to disagree about. The other half of
+what made that same REVERTED fix unsafe -- touching a communicator handle `fuse::abi_test::
+force_communicator_set()` faked, with no real MPI behind it, under a real `FUSE_HAVE_MPI` build --
+is avoided the same way the pre-existing `rank`/`num_ranks` derivation at the top of
+`impl_initialize_local()` already relies on: every test that fakes a communicator this way is
+excluded from MPI-enabled test binaries by convention (`test/abi/conformance_test.cpp`'s own
+`NonHostingRankNeverDlopensThePluginOrCallsAnyOfItsEntries`, "Registry hosting" track, is the
+precedent this round's own new tests follow).
+
+**A priori refusal for the one launch shape this cannot cover.** Agreeing a plugin-mount verdict
+needs a communicator that spans every rank with an opinion on it. A multi-executable launch where
+one component is `Plugin` and another is `Connect` (true separate-executable MPMD -- independent
+MPI universes until `fuse::transport::connect()`'s own handshake runs) asks a process whose own
+`my_component` never calls `connect()` (unset, or `Plugin`/`InProcess`/`LowFive`) to reconcile over
+a communicator that was never grown to include the `Connect`-launched executable -- `communicator`
+is exactly what `fuse_setup_options` handed it, unmodified. `include/fuse/abi/plugin_agreement.hpp`'s
+`plugin_mount_agreement_needs_a_missing_spanning_communicator()` is a PURE function of the loaded
+graph and this process's own `my_component` (no MPI call, no collective: every process decides the
+SAME refusal from the SAME graph bytes, so there is nothing to reconcile and no rank left to hang
+waiting for a peer) that `impl_initialize_local()` consults before any of the component-wiring loop's
+work runs, refusing `E-ABI-PLUGIN-NO-SPANNING-COMM` a priori rather than letting the plugin be
+dlopen()'d first. `Mpmd` is exempt (`MPI_COMM_WORLD` already spans every program before
+`fuse_setup()` is called, with no `connect()` needed for that to be true); `communicator_set ==
+false` is exempt (single process by construction, nothing else to span). NOT fully modelled,
+recorded rather than guessed past: a graph with more than one independent `Connect` pairing, where
+this process's own `my_component` connects to one pairing while the `Plugin` component is hosted in
+a DIFFERENT one, is not distinguished from the safe case -- the fully general version would need
+`fuse::transport::validate_launch_layout()`'s own topology check consulted before this point, which
+this round's own function deliberately does not attempt (KNOWN_ISSUES.md D15's own round record has
+the open question).
+
+Tested at tier 0 with no MPI runtime (`test/abi/plugin_agreement_test.cpp` for the pure predicate;
+`test/abi/conformance_test.cpp`'s own `PluginAgreementReconciliationNeverRunsForAGraphWithNoPlugin
+Component`, `NonHostingRankAdoptsAHostingPeersPluginMountFailureThroughTheBaseCommunicatorReduction`,
+`HostingRanksOwnPluginMountFailureStillReachesTheBaseCommunicatorReduction`, and
+`APluginAlongsideAConnectComponentWithNoSpanningCommunicatorIsRefusedAPriori` for the real-ABI
+wiring, the last two via a DEDICATED fake-peer seam, `fuse::abi_test::
+force_fake_plugin_agreement_peers()`, kept separate from the D61 one above so the two
+reconciliations can be faked independently); the real multi-process row,
+`parallel.provider_subset_mpi`'s own `AHostingRanksPluginMountFailureIsAgreedByEveryRankNotOnlyThe
+HostingOnes`, is built under a real `FUSE_ENABLE_MPI=ON` configure and never run (KNOWN_ISSUES.md
+C1).
+
+## The period contract (what a window-per-period boundary must not do)
+
 KNOWN_ISSUES.md D57. A caller of the participant ABI, or of `fuse::
 Runner::run()` directly, is entitled to ask for a COUNT of coupling
 periods -- never a promise that state has "settled" past that count, even
