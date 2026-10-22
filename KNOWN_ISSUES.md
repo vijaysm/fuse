@@ -3312,7 +3312,7 @@ rendezvous still runs only on a rank whose own first HDF5 call loads the plugin,
 touches HDF5 never reaches it — moving the rendezvous into an explicit step every participant calls
 (`connect()`'s MPMD choreography is the natural site) is the larger fix, left open here.
 
-### D15. The provider direction (S6 phase 4, "Adapter host" track) is implemented and conformance-tested on one process. Mixed checkpoint/restore and a plugin on a rank subset are tested, FIXED 2026-10-19 (rank subset, three rounds) and 2026-10-21 (mixed checkpoint/restore, Stage B-1). Device fields are built and gated at tier 0 (Option A, Stage B-2, 2026-10-21); the positive device-resident path is registered but not run here and needs the owner's own CUDA/HIP/SYCL build to confirm -- STILL OPEN pending that host run
+### D15. The provider direction (S6 phase 4, "Adapter host" track) is implemented and conformance-tested on one process. Mixed checkpoint/restore and a plugin on a rank subset are tested, FIXED 2026-10-19 (rank subset, three rounds) and 2026-10-21 (mixed checkpoint/restore, Stage B-1). Device fields are built and gated at tier 0 (Option A, Stage B-2, 2026-10-21); the positive device-resident path ran on CUDA (ssh:higgs, 2026-10-21) -- OPEN for the mount-everywhere design question and one surviving mutation row
 
 **What is done, measured 2026-10-02.** `include/fuse/abi/provider.h` (generated from a second
 `entries.def` entry list, `FUSE_ABI_PROVIDER_ENTRY`, sharing the participant direction's own
@@ -3840,6 +3840,55 @@ unreachable on a real device build (a test-fixture defect, not a library one), w
 own device-field layout and host/device copy behaviour is independently confirmed sound through a
 different, new test. Closing D15 on the strength of the new test alone, leaving the DISABLED_ row's own
 plugin unfixed and undocumented beyond this entry, is a decision for the owner (see open_questions).
+**Round 7 (this track, "Mixed plugin", 2026-10-21): the DISABLED_ row's own plugin is fixed; the row
+passes on CUDA, renamed to drop DISABLED_.** Re-measured the exact segfault Round 6 found, this time
+under gdb (ssh:higgs, GTX 1050 Ti, sm_61, same tier-0 CUDA/MPI-OFF/Debug configuration): the crash is
+confirmed at `mixed_memspace_provider.c:159`, `*inst->device_ptr = t_end;`, called from
+`ProviderAdapter::advance()` (`src/abi/provider_adapter.cpp:526`) through `Runner::Impl::advance()`
+(`src/runtime/runner.cpp:5250`) down to the test body itself -- an ordinary C store through a genuine
+CUDA device pointer, exactly as Round 6 diagnosed by reading the source, now confirmed by the crashing
+frame directly. Fixed by shape (a) of the owner's own two options: `mixed_memspace_provider.c` stays a
+C plugin (preserving its own documented purpose -- the one plugin in this suite that exercises a
+mixed host/device provider from a plain C translation unit); the one line that must launch a Kokkos
+kernel is moved into a new file, `test/abi/plugins/mixed_memspace_device_write.cpp`, a C++ translation
+unit exporting a single `extern "C" void fuse_test_mixed_memspace_write_device(double*, double)`
+function, compiled into all three existing `fuse_test_provider_mixed_memspace*` CMake targets
+alongside the .c file itself -- the same `#ifdef __cplusplus extern "C"` mechanism
+`include/fuse/abi/provider.h` already relies on, applied to one function instead of a whole plugin.
+No fence was added inside the new function: `src/abi/provider_adapter.cpp`'s own unconditional
+post-advance `Kokkos::fence("provider_adapter_advance_fence")` (gated on `has_device_fields_`) already
+covers it, and exercising that existing fence rather than adding a redundant second one is the point
+of this row. The row itself is renamed 
+`ConformanceTest.MixedHostAndDeviceFieldsOnOneProviderConvergeThroughChannels` (DISABLED_ dropped), gated by the same `#if defined(KOKKOS_ENABLE_CUDA) ||
+defined(KOKKOS_ENABLE_HIP) || defined(KOKKOS_ENABLE_SYCL))` convention its host-only twin,
+`PluginDeviceFieldOnAHostOnlyBuildIsRefused`, already uses (inverted: this row now runs on a device
+build and skips on a host-only one), and its body now asserts real values (`MixedMemspaceSink`'s own
+`host_history`/`device_history`) instead of the previous placeholder comment. Measured GREEN
+(ssh:higgs, `--gtest_filter='*MixedHostAndDeviceFieldsOnOneProviderConvergeThroughChannels'`, PASSED,
+15 ms), confirmed by a hand-verified RED (skipping the device-field write inside `p_advance()` fails
+both post-lag periods with the predicted wrong value, 0 instead of 1 and 2; restored byte-identical,
+confirmed by `cmp`), and `abi.conformance` (32 registered cases, 31 run, 1 correctly skipped,
+0 DISABLED, 100% of the run cases pass) and `abi.device_layout` both re-confirmed passing on the same
+tree. Re-measured both `requires = "device"` mutation rows from Round 6
+(`build-evidence/mutations/abi-provider.toml`) now that the row actually runs: both still SURVIVE,
+for reasons now fully diagnosed rather than "the row never ran" (see that file's own updated
+`result` fields) -- closing D15 on this evidence, or leaving these two gaps open, is the owner's call
+(see this round's own open_questions).
+
+**Record pass after round 7 (lead, 2026-10-21).** The row's own clean-export check: on a host-only build it skips by name and
+the other 31 `abi.conformance` cases pass (223 of 223 tier-0 rows), including the three refusal cases, so the tier-0 refusals still
+fire with the fixed plugin. Two things keep this entry open. (1) The mount-everywhere design question
+(`docs/user/providers.md`, "Open questions"): `Registry::mount_dynamic()` loads a `Plugin` component's shared object on every rank of
+the process set, whether or not the component is placed there. (2) `provider-device-advance-fence-removed` survives every test
+that exists: the track removed the adapter's post-advance `Kokkos::fence` by hand and the renamed row passed 10 of 10 runs, and
+`abi.device_layout` also passed (`abi.device_layout` was reported in round 6 to distinguish both device rows by a hand check;
+round 7's measurement does not support that for this row, so the earlier statement stands corrected). It is NOT declared equivalent.
+One hypothesis, INFERRED and not measured here: `Kokkos::deep_copy` of a device view to a host view fences the execution space
+first, and the sink reads by that path, so a missing adapter fence would be invisible to any consumer that reads by `deep_copy`;
+it would matter to a consumer that reads a device pointer on another stream or through unified memory. Separating that needs a
+consumer of that kind on a device build, which is a decision about what the adapter's fence promises, not a test-only change.
+The other device row, `provider-device-allocation-memspace-forced-host`, is killed by `abi.device_layout` through its
+`view.memspace` assertion and survives the mixed row, whose assertions compare delivered values only.
 ### ~~D16. A window member's cold-start priming over-read a smaller provider buffer — FIXED 2026-10-03
 
 Found by ASan on a two-member window-scoped region whose members export fields of different

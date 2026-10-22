@@ -270,10 +270,14 @@ never left to the plugin's own discretion, and at zero cost to a provider with n
 ## Open questions
 
 **Device fields (`FUSE_MEMSPACE_DEVICE`)** are built and tested at tier 0 (KNOWN_ISSUES.md D15,
-item 1; see the "Device fields" section above for the mechanism). The positive, both-a-host-and-a-
-device-field-really-work path is registered as a test but not run on a build with no CUDA/HIP/SYCL
-backend -- it needs the owner's own device-enabled build to actually execute, named in that entry's
-own host-pending commands. `register_field`'s own `FUSE_MEMSPACE_DEVICE` refusal
+item 1; see the "Device fields" section above for the mechanism). The positive path, a host field
+and a device field on one provider, ran on a real CUDA backend on 2026-10-21 (ssh:higgs, GTX 1050 Ti,
+Kokkos CUDA): `ConformanceTest.MixedHostAndDeviceFieldsOnOneProviderConvergeThroughChannels` passes
+there and skips by name on a build with no CUDA/HIP/SYCL backend, and `abi.device_layout` checks the
+array-of-structures layout element by element and both copy directions bit for bit. One property is
+not yet distinguished by any test: removing the adapter's post-advance fence changes no result (D15).
+A plugin that writes a device field must do it through a kernel launch, not a host store.
+`register_field`'s own `FUSE_MEMSPACE_DEVICE` refusal
 (`E-ABI-REGISTER-MEMSPACE`) is the PARTICIPANT direction's separate, still-open gap (a C or Fortran
 caller invoking `fuse_register_field()` itself has no way to ask for a device field at all); this
 item was the PROVIDER direction only.

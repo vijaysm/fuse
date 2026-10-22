@@ -44,8 +44,9 @@ removing contraction measurably changes an ill-conditioned iteration's own conve
 `remap_halo_pattern`/`make_mpi_exchanger`, but no `accumulate_remap_halo` — the reverse exchange a
 future native conservation-audit tool would want; nothing in the tree needs it yet); D15 (the
 provider direction is conformance-tested on one process; mixed checkpoint/restore and a plugin on a
-rank subset are tested, and device fields are built and gated at tier 0 (Option A, Stage B-2) with
-the positive device-resident path host-pending on a CUDA/HIP/SYCL build); D14 (LowFive's fmt rebuild is done and the distributed transport
+rank subset are tested, and device fields are built and gated at tier 0 (Option A, Stage B-2) and the
+positive device-resident path ran on CUDA on 2026-10-21; open: the mount-everywhere question and one
+surviving mutation row); D14 (LowFive's fmt rebuild is done and the distributed transport
 now RUNS for MPMD launch — `lowfive.mpmd.3` passes, D39 — Demo B passes as the ctest row `example.demo_b` (2026-10-14), and the
 accept-mode participants row passes since D14 Stage B (2026-10-13); D14 is closed).
 

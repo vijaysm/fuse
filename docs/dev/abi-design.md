@@ -483,5 +483,4 @@ behaviour it had before this round. The new capability bit, `FUSE_CAP_DEVICE_FIE
 refusal gates `fuse::abi_detail::ProviderAdapter::register_fields()` applies to a
 `FUSE_MEMSPACE_DEVICE` request are documented for plugin authors in
 [](../user/providers.md#device-fields); KNOWN_ISSUES.md D15 (item 1) carries the full round record,
-the mutation rows, and the host-pending commands for the positive device-resident path this build
-cannot run.
+the mutation rows, and the CUDA run (ssh:higgs, 2026-10-21) of the positive device-resident path.
