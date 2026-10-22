@@ -545,6 +545,11 @@ fuse::Result<void> ProviderAdapter::advance(const fuse::StepContext& ctx) {
     // that the kernel has FINISHED. Without this fence, the Runner's own
     // very next read of that same registered storage (a native kernel,
     // a Transport pack, a Remap) could race the plugin's own kernel.
+    // OWNER DECISION 2026-10-22 (D15): this fence is DEFENSIVE. The design
+    // never depends on it, nor on a device pointer being visible across
+    // streams; a plugin completes its own device work before advance()
+    // returns, and no test, row or doc states a property in terms of this
+    // fence. It stays (robustness over efficiency).
     // Unconditional for ANY provider with at least one device field --
     // the owner's own instruction, no escape hatch, not even for a
     // provider that claims to fence internally (a redundant fence from

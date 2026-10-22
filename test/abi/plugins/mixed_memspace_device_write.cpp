@@ -23,17 +23,15 @@
  * write kernel uses for its own device-resident field, applied here to
  * a single double instead of a multi-component view.
  *
- * No Kokkos::fence() in this file: src/abi/provider_adapter.cpp's own
- * ProviderAdapter::advance() already issues an unconditional
- * Kokkos::fence("provider_adapter_advance_fence") immediately after
- * this plugin's own p_advance() returns, gated only on
- * has_device_fields_ (true whenever a device field was accepted).
- * Ordering this kernel's own completion before the Runner next reads
- * the field is exactly the property that existing fence exists to
- * guarantee; exercising it, rather than adding a second, redundant
- * fence here, is the point of the row this plugin serves -- see this
- * track's own measured_results for the host run that confirms a single
- * post-advance fence is sufficient (no fence added here, row passes).
+ * The kernel is fenced HERE, before this function returns (owner
+ * decision 2026-10-22, KNOWN_ISSUES.md D15: the design must never depend
+ * on a device pointer's visibility across streams or on the adapter's
+ * own fence). src/abi/provider_adapter.cpp's ProviderAdapter::advance()
+ * still issues an unconditional Kokkos::fence after advance() returns,
+ * as a defensive measure; nothing in this library, and no row, is
+ * specified in terms of it. Until 2026-10-22 this file relied on that
+ * adapter fence and the row passed 10 of 10 on CUDA with it removed, so
+ * the row never distinguished the two designs.
  */
 #include <Kokkos_Core.hpp>
 
@@ -42,4 +40,5 @@ extern "C" void fuse_test_mixed_memspace_write_device(double* ptr, double value)
       "mixed_memspace_provider.device_write",
       Kokkos::RangePolicy<Kokkos::DefaultExecutionSpace>(0, 1),
       KOKKOS_LAMBDA(int) { *ptr = value; });
+  Kokkos::fence("mixed_memspace_provider.device_write_fence");
 }
