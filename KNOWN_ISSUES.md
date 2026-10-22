@@ -4273,7 +4273,7 @@ because the omp legs then compare one thread with one thread whatever the regist
 Not covered: Windows (the check is skipped; `ProcessorCount()` reads `NUMBER_OF_PROCESSORS` there).
 
 **Closed (record pass, 2026-10-20):** fixed by `fuse_host_core_count()` with the row `build.host_core_count_ignores_omp_threads`.
-### D34. The FSI beam-side energy identity compared a quantity built with the literal step against a run that took the rounded one — CLOSED 2026-10-12
+### D34. The FSI beam-side energy identity compared a quantity built with the literal step against a run that took the rounded one — items (A), (B) and (C) resolved 2026-10-22 in the sandbox; strike after the host run of `verification.fsi_energy_diag`
 
 **Cause (measured).** `build_fsi_graph()` in `test/verification/fsi_energy_diag_test.cpp` does not hand
 the coupling graph `c.dt`: it first rounds it through the file's own `rationalize_dt()`,
@@ -4372,6 +4372,40 @@ round-tripped bitwise through all 16 restores).
   The interface check was print-only before this round as well, so no assertion was weakened. The per-term
   cancellation figure quoted in the test comment (sum of absolute terms 1.00 to 2.12 times the signed result)
   was measured once with temporary instrumentation that was removed, and is not reproducible from the tree.
+
+**2026-10-22 (track InterfaceBound): item (B)'s gated assertion, built.** The "STILL OPEN" note directly
+above (same day, track FsiAdjointness, earlier) is now resolved. A first bound attempt (the fluid solve's
+`4*kappa_2(A_fluid)*u` forward error, propagated through the wall-traction formula's own linear
+sensitivity to p1/v1) under-bounded the OFF-policy measurement by about 20x. Per this track's own
+instructions (measure, don't scale), every term was instrumented to find the missing source rather than
+widening the existing one: a standalone program's own independent H^T D application, applied to this
+run's own reconstructed traction, reproduces `load_in_interior` to round-off (ruling out the remap's own
+construction); recomputing `w_current` from PRODUCTION's own v1/p1 instead of the fresh solve barely
+changes it (ruling out the "two independent solves" mechanism as the dominant one, though it is kept as a
+genuine, smaller, independently-sourced contributor); within-term cancellation between the pressure and
+viscous parts of the traction is negligible (ratio 1.00-1.08, nothing like the beam's own dPE). What
+remained: `vwall1 == H*wd1` to round-off in both policies (confirmed directly -- `velocity_in_` IS the
+H-remap of the beam's own velocity field this period, by construction of the field-transfer instruction),
+but `vwall0 != H*wd0` -- measured max|H*wd0-vwall0| = 1.528e-13 (ON) / 1.012e-12 (OFF). `velocity_in_t0_`
+is a plain copy of the PREVIOUS period's own converged `velocity_in_`, and dividing the eigenvalue
+equation `M*x=lambda*x` by lambda shows a TRUE eigenvector's own vwall0/wd0 sub-blocks would inherit the
+same H-consistency M's range enforces for M*x itself -- so this gap is the trace of `x` (the carried
+eigenvector every test in this file selects) being only an APPROXIMATE eigenvector of the measured
+coupling map. `eig_quality*|x|` is a valid but 5-6-orders-of-magnitude-too-loose upper bound on it (it
+bounds the whole residual vector, not this one sub-block), so the measured gap is used directly --
+the same standing as `sum_abs_load_wdot`/`kappa_beam`/`kappa_fluid` elsewhere in this file, a measured
+property of the current state, not a tolerance chosen after a failure. Combining this term with the
+arithmetic (Higham gamma_n) and two-independent-solves terms by the triangle inequality gives a bound
+that exceeds the measured residual in BOTH policies: ratio 7.90 (ON), 2.09 (OFF) -- not razor-thin, not
+padded after the fact. `ASSERT_LT(|interface_sum|, interface_tol)` replaces the print-only diagnostic;
+its failure message prints the bound, every term, and the measured value. RED-FIRST, both proven by hand
+and restored byte-identical (`build-evidence/mutations/fsi.toml`'s two new rows): reverting to the OLD
+subtraction fails at ratio 2.17e9 (ON); reintroducing a literal-c.dt bookkeeping defect into
+`dE_beam_naive` specifically (with the EARLIER, pre-existing beam-identity assertion temporarily
+downgraded to EXPECT_NEAR for that one proof run only, so it wouldn't mask this one) fails at ratio
+498.6, confirming the new assertion independently catches a dt regression on the beam side too, not only
+the sign-convention defect it was written for. With items (A), (B) and (C) (fixed earlier the same day by
+owner decision) all resolved, nothing in this entry remains open.
 - Item (C), FIXED 2026-10-22 by owner decision (option 2 below: step on the delivered dt and write the delivered time axis; the NOTE line, the refusal `E-EXAMPLE-DT` for a dt that rounds to zero, rows `example.fsi_channel.off_grid_dt` and `example.fsi_channel.dt_refused`, three mutation rows killed). As originally costed, three options were: Verified directly: for the
   default `--dt 0.01` the 1e-6 rounding is exact (diff=0.0), matching the "zero" this entry already
   reported; for the T1/40-derived dt used throughout this investigation (3.510428e-3), rationalize_dt's
