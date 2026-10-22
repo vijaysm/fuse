@@ -274,9 +274,12 @@ item 1; see the "Device fields" section above for the mechanism). The positive p
 and a device field on one provider, ran on a real CUDA backend on 2026-10-21 (ssh:higgs, GTX 1050 Ti,
 Kokkos CUDA): `ConformanceTest.MixedHostAndDeviceFieldsOnOneProviderConvergeThroughChannels` passes
 there and skips by name on a build with no CUDA/HIP/SYCL backend, and `abi.device_layout` checks the
-array-of-structures layout element by element and both copy directions bit for bit. One property is
-not yet distinguished by any test: removing the adapter's post-advance fence changes no result (D15).
-A plugin that writes a device field must do it through a kernel launch, not a host store.
+array-of-structures layout element by element and both copy directions bit for bit. A plugin that writes a
+device field must do it through a kernel launch, not a host store, and must complete that device work
+(fence its own execution space) before `advance()` returns. The adapter also fences after every
+`advance()` of a provider that has a device field, as a defensive measure: this library never depends on
+that fence, or on a device pointer being visible across streams, and no behaviour is specified in terms
+of either.
 `register_field`'s own `FUSE_MEMSPACE_DEVICE` refusal
 (`E-ABI-REGISTER-MEMSPACE`) is the PARTICIPANT direction's separate, still-open gap (a C or Fortran
 caller invoking `fuse_register_field()` itself has no way to ask for a device field at all); this

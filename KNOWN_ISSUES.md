@@ -3889,6 +3889,15 @@ it would matter to a consumer that reads a device pointer on another stream or t
 consumer of that kind on a device build, which is a decision about what the adapter's fence promises, not a test-only change.
 The other device row, `provider-device-allocation-memspace-forced-host`, is killed by `abi.device_layout` through its
 `view.memspace` assertion and survives the mixed row, whose assertions compare delivered values only.
+
+**Owner decisions (2026-10-22).** (1) Mount-everywhere: loading a `Plugin` component's shared object on every rank, whether
+or not the component is placed there, is NOT intended and is to be removed; only a rank that hosts the component loads it. The fix
+is assigned (see the round record that follows it when it lands). (2) The adapter's post-advance fence: the design never depends on
+it or on a device pointer being visible across streams. The plugin now fences its own device work
+(`test/abi/plugins/mixed_memspace_device_write.cpp`, as `device_layout_provider.cpp` already did), the adapter keeps its fence as a
+defensive measure with a comment saying so, and `provider-device-advance-fence-removed` survives BY THIS DECISION and is not
+declared equivalent. The hypothesis recorded above about `Kokkos::deep_copy` fencing stays INFERRED and is no longer needed: no test is to
+pin the fence.
 ### ~~D16. A window member's cold-start priming over-read a smaller provider buffer — FIXED 2026-10-03
 
 Found by ASan on a two-member window-scoped region whose members export fields of different
@@ -6875,6 +6884,12 @@ probability (1 - p)^6, which is 0.61 at p = 0.08: a six-run probe screens out fr
 the rest. The rows the probe disabled stayed disabled (`accept.3+2`, `chain.4`, `participants.accept.5`). The same run also
 timed out `verification.gray_scott_reference` and `example.brusselator.omp_identical`, which are slow-labelled rows the
 script had not excluded (a script defect, corrected with `-LE slow`), not failures.
+
+**Probe confidence (lead, 2026-10-22).** A layout that fails with probability p per run passes an n-run probe with probability
+(1 - p)^n: at p = 0.08 (the 1+1 layout's 1 in 13) that is 0.61 for n = 6, 0.37 for n = 12 and 0.13 for n = 24. No finite
+n certifies a layout; a larger `FUSE_MPI_DYNAMIC_PROBE_RUNS` (cache variable, default 6) only screens out lower failure rates and
+costs configure time linearly. The default is left at 6, the count the D23 measurements used, and the accept rows that stay enabled
+are to be read as probabilistic. This is arithmetic, not a measurement of the installed MPICH.
 ### ~~D22. A shared Kokkos aborts the process at exit~~ — CLOSED 2026-10-09
 
 **What it was.** `Kokkos::initialize()` registers its own exit hook, and that hook ran
