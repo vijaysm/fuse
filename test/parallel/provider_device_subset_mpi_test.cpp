@@ -292,7 +292,7 @@ TEST(ProviderDeviceSubsetMpi,
   err.buffer = buf;
   err.capacity = sizeof(buf);
   t->last_error(ctx, nullptr, &err);
-  std::fprintf(stdout, "XCHECK3 rank=%d init_rc=%d err.code=%s\n", rank, init_rc,
+  std::fprintf(stdout, "XCHECK3 rank=%d init_rc=%d msg=%s\n", rank, init_rc,
               buf[0] != '\0' ? buf : "<none>");
   std::fflush(stdout);
 
@@ -326,9 +326,15 @@ TEST(ProviderDeviceSubsetMpi,
               memspace_name, out_view.layout().count, out_view.layout().components);
   std::fflush(stdout);
 
-  const fuse_status run_rc = t->run(ctx, nullptr, nullptr);
+  // fuse_run() takes a request, never a null pointer (check_struct_size refuses
+  // it before storing any message; measured on higgs 2026-10-23). Three periods:
+  // delivery lags one period, so the consumer sees the plugin's value from
+  // period 1 on, which is what the assertion below reads.
+  fuse_run_request rr{.struct_size = sizeof(rr)};
+  rr.periods = 3;
+  const fuse_status run_rc = t->run(ctx, &rr, nullptr);
   t->last_error(ctx, nullptr, &err);
-  std::fprintf(stdout, "XCHECK3 rank=%d run_rc=%d err.code=%s\n", rank, run_rc,
+  std::fprintf(stdout, "XCHECK3 rank=%d run_rc=%d msg=%s\n", rank, run_rc,
               buf[0] != '\0' ? buf : "<none>");
   std::fflush(stdout);
   if (run_rc != FUSE_OK) {
