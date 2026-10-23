@@ -666,10 +666,24 @@ fuse_status impl_setup(fuse_ctx* ctx, const fuse_setup_options* in, fuse_null*) 
                                                 sizeof(in->my_component))
             ? in->my_component
             : nullptr;
-    if (in->communicator != 0) {
+    // KNOWN_ISSUES.md D76: an old caller's smaller struct_size never
+    // allocated has_communicator either, so it is read under the same
+    // struct_size_covers() guard as my_component just above, and an old
+    // caller keeps the original sentinel (communicator == 0 means none
+    // supplied). A new caller that sets has_communicator=1 may legally
+    // supply communicator == 0 -- Open MPI's own Fortran handle for
+    // MPI_COMM_WORLD, which the plain `in->communicator != 0` test below
+    // used to treat as "no communicator" on exactly that build.
+    const bool has_communicator =
+        struct_size_covers(in->struct_size, offsetof(fuse_setup_options, has_communicator) +
+                                                sizeof(in->has_communicator))
+            ? (in->has_communicator != 0)
+            : false;
+    const bool communicator_supplied = (in->communicator != 0) || has_communicator;
+    if (communicator_supplied) {
 #if !FUSE_HAVE_MPI
       return fail(&c, FUSE_ERR_UNSUPPORTED, "E-ABI-SETUP-NOMPI",
-                 "fuse_setup_options: a non-zero communicator was supplied, but this "
+                 "fuse_setup_options: a communicator was supplied, but this "
                  "build has no MPI");
 #endif
       c.communicator = in->communicator;
@@ -734,6 +748,14 @@ fuse_status impl_setup(fuse_ctx* ctx, const fuse_setup_options* in, fuse_null*) 
       // communicator for exactly these two LaunchModes, to form the real
       // base communicator from; InProcess/Plugin need no communicator at
       // all, so only Mpmd/Connect are refused here.
+      //
+      // KNOWN_ISSUES.md D76: this branch is reached only when
+      // communicator_supplied is false, i.e. neither a nonzero handle
+      // NOR has_communicator=1 was given -- a caller on an Open MPI
+      // build that legitimately owns communicator handle 0
+      // (MPI_COMM_WORLD) and sets has_communicator=1 takes the
+      // `if (communicator_supplied)` branch above instead, and is never
+      // refused here.
       const auto cid = c.graph.find_component(my_component);
       if (cid.has_value()) {
         // D61 round 3: stored even on this no-communicator path -- see

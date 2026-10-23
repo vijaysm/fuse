@@ -173,6 +173,9 @@ TEST(ProviderSubsetMpi, APluginOnARankSubsetRunsOnlyOnItsOwnHostingRanksWithNoHa
   // single-process runs.
   fuse_setup_options opts{.struct_size = sizeof(opts)};
   opts.communicator = static_cast<std::int64_t>(MPI_Comm_c2f(MPI_COMM_WORLD));
+  // Open MPI's Fortran handle for MPI_COMM_WORLD is 0, which the ABI reads as
+  // "none" unless has_communicator says the handle is deliberate (KNOWN_ISSUES.md D86, D85).
+  opts.has_communicator = 1;
   ASSERT_EQ(t->setup(ctx, &opts, nullptr), FUSE_OK);
 
   // "downstream" is placed at RankSet{0, 1} -- rank 0 only (see `down`
@@ -301,6 +304,9 @@ TEST(ProviderSubsetMpi,
 
   fuse_setup_options opts{.struct_size = sizeof(opts)};
   opts.communicator = static_cast<std::int64_t>(MPI_Comm_c2f(MPI_COMM_WORLD));
+  // Open MPI's Fortran handle for MPI_COMM_WORLD is 0, which the ABI reads as
+  // "none" unless has_communicator says the handle is deliberate (KNOWN_ISSUES.md D86, D85).
+  opts.has_communicator = 1;
   ASSERT_EQ(t->setup(ctx, &opts, nullptr), FUSE_OK);
 
   const fuse_status init_rc = t->initialize(ctx, nullptr, nullptr);

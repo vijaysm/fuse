@@ -189,19 +189,17 @@ class HostConsumer final : public fuse::Component {
 // ranks fail identically with E-RT-SIZE, "field 'mixed.device_out' is
 // registered with 1x3 values but the plan sizes its region at 0x3"
 // (fuse::Runner::Impl::resolve_buffers, src/runtime/runner.cpp:361).
-// CAUSE, partly measured and partly inferred (KNOWN_ISSUES.md D85): the
-// setup call below passes MPI_Comm_c2f(MPI_COMM_WORLD). MEASURED on higgs
-// (lead, 2026-10-23): that value is 0 under Open MPI 5.0.9; under MPICH it is
-// 0x44000000. READ in src/abi/participant.cpp: a communicator of 0 means "no
-// communicator" (communicator_set stays false), so each rank takes
-// rank = 0 of num_ranks = 1. INFERRED, not yet measured: a plugin placed at
-// RankSet{1, 1} then excludes every rank from the region's sizing, which gives
-// the 0x3 above. To measure the device-memspace question this test was
-// written for, give setup() a nonzero handle (for example a
-// MPI_Comm_dup of MPI_COMM_WORLD, freed before MPI_Finalize), confirm D85's
-// inference, and remove the DISABLED_ prefix. Until then the lead's own
-// concern (unhosted_shell_'s Host, count-0 view on a non-hosting rank under a
-// real device backend) remains UNMEASURED.
+// CAUSE (KNOWN_ISSUES.md D85): the setup call below passed
+// MPI_Comm_c2f(MPI_COMM_WORLD) without has_communicator. MEASURED on higgs
+// (lead, 2026-10-23): that handle is 0 under Open MPI 5.0.9 (0x44000000 under
+// MPICH). READ in src/abi/participant.cpp: a handle of 0 without
+// has_communicator=1 means "no communicator", so each rank took rank 0 of 1.
+// INFERRED, not yet measured: a plugin at RankSet{1, 1} was then excluded from
+// the region's sizing, giving the 0x3 above. The setup call now sets
+// has_communicator = 1 (D86's field). NOT YET RUN on higgs: remove the
+// DISABLED_ prefix only after that run shows the row reaches the
+// device-memspace question; if it fails differently, D85's inference was
+// incomplete and the new failure is the finding.
 TEST(ProviderDeviceSubsetMpi,
     DISABLED_ADeviceResidentPluginFieldOnARankSubsetIsSeenCorrectlyByTheNonHostingRank) {
   if constexpr (!kHasDeviceBackend) GTEST_SKIP() << "no device backend";
@@ -275,6 +273,9 @@ TEST(ProviderDeviceSubsetMpi,
   // provider_subset_mpi_test.cpp's own setup() call.
   fuse_setup_options opts{.struct_size = sizeof(opts)};
   opts.communicator = static_cast<std::int64_t>(MPI_Comm_c2f(MPI_COMM_WORLD));
+  // Open MPI's Fortran handle for MPI_COMM_WORLD is 0, which the ABI reads as
+  // "none" unless has_communicator says the handle is deliberate (KNOWN_ISSUES.md D86, D85).
+  opts.has_communicator = 1;
   const fuse_status setup_rc = t->setup(ctx, &opts, nullptr);
   std::fprintf(stdout, "XCHECK3 rank=%d world_size=%d setup_rc=%d\n", rank, world_size,
               setup_rc);

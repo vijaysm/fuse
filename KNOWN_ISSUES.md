@@ -4097,7 +4097,7 @@ device-memspace question this test was written to measure is ever reached: `E-RT
 1x3 values but the plan sizes its region at 0x3" (`fuse::Runner::Impl::resolve_buffers`, `src/runtime/runner.cpp:361`, reached from
 `Runner::Impl::setup` (runner.cpp:3410) <- `Runner::initialize` (runner.cpp:5584) <- `impl_initialize_local`
 (participant.cpp:965) <- `impl_initialize` (participant.cpp:2696); gdb backtrace confirms this chain on ssh:higgs). The same message appears in `provider_subset_mpi_test.cpp`'s own `APluginOnARankSubsetRunsOnlyOnItsOwnHostingRanksWithNoHang` on the same machine (same `RankSet{1, world_size - 1}` shape). The track read both as one region-sizing defect for a RankSet not starting at rank 0; the lead's measurement of the communicator handle (D85) supersedes that reading, and the cause is recorded there. Registered `DISABLED_` (this round's own
-instruction: measure, do not fix) so a future fix to that upstream defect flips both rows back on together. The lead's own device-memspace concern (`unhosted_shell_`'s Host, count-0 view on a non-hosting rank under a real device backend) remains UNMEASURED, blocked by D85 and neither confirmed nor refuted. To measure it, give the test a nonzero communicator handle (D85).
+instruction: measure, do not fix); D85 records the cause (the setup call did not set `has_communicator`) and the fix, so the row is to be re-enabled after a higgs run with the flag set. The lead's own device-memspace concern (`unhosted_shell_`'s Host, count-0 view on a non-hosting rank under a real device backend) remains UNMEASURED, blocked by D85 and neither confirmed nor refuted. The test's setup call now sets `has_communicator = 1` (D85); its higgs run is pending.
 ### ~~D16. A window member's cold-start priming over-read a smaller provider buffer — FIXED 2026-10-03
 
 Found by ASan on a two-member window-scoped region whose members export fields of different
@@ -6587,6 +6587,17 @@ deterministic by construction and, at these sizes, no slower than the launch-bou
 solve) or the D43 coupling fix. The determinism contract D45 established for reductions
 applies to any device solver fuse adopts; this is the measured reason.
 
+**2026-10-18 addendum (cuSPARSE tree on higgs's rebuilt stack, Open MPI 5.0.9, CUDA 12.5.82).** The
+tier-0 + `FUSE_ENABLE_CUSPARSE=ON` tree's gate had until now excluded the `.device` twins (`-LE
+device`); running them for the first time, `verification.fsi_coupled.device`
+(`FsiCoupled.SteadyStateBeamDeflectionMatchesTheAnalyticLinearLoad`, fsi_coupled_test.cpp:441) diverged
+outright under the cusolverRf backend: errors 2.4e+49, 2.0e+51, 3.1e+52 over the three resolutions
+(observed order -5.16), while the same row passes in the same tree on the host leg and both legs pass
+in the Eigen-SparseLU build-all tree. `verification.fsi_transient.device` passed in the same run. This
+is the cusolverRf fluid solve under the device execution space, the combination this entry already
+names for `example.fsi_channel`; recorded here, not diagnosed, and not a regression of any earlier
+gate since no earlier gate ran the row.
+
 ### ~~D45. The deterministic dot and norm reductions differed from the host by one ulp on the Cuda leg~~ — CLOSED 2026-10-10
 
 **Measured 2026-10-10** as `num.space_kernels`'s `DeterministicReductionsMatchTheChunkedReferenceExactly`
@@ -8612,7 +8623,7 @@ Host-mode rows (which do not cross this path) are unaffected and green.
 
 **Fixed.** `MeshArrays::vertex_coords` is declared `Kokkos::LayoutRight` in every memory space (`include/fuse/backend/native_mesh.hpp`), so the host arrays keep the layout they always had and the device copy in `to_memory_space<Target>()` is a contiguous copy; `NativeMeshView::create_from_host`'s local pinning of the same layout stands. The two `backend.native_mesh_pack_device` cases that skipped on the throw now run the copy.
 
-### D55. `parallel.window_newton_mpi.3` hangs on higgs's Open MPI 4.1.5 — OPEN, found by the device-merge gate 2026-10-13
+### D55. `parallel.window_newton_mpi.3` hangs on higgs's Open MPI 4.1.5 — CLOSED 2026-10-18 (does not reproduce on Open MPI 5.0.9), found by the device-merge gate 2026-10-13
 
 `WindowNewtonMpi.TwoDisjointRanksMatchTheSingleProcessReference` at three ranks (two participants, one
 bystander) never returns on higgs (Open MPI 4.1.5, Kokkos Cuda build); the two-rank row passes, and the
@@ -8625,6 +8636,14 @@ bystander sweeps and is kept in step by `broadcast_window_convergence()` (D42) -
 the participants then enter on the shared transport communicator is what the bystander never joins is
 the first thing to check. Not diagnosed further: higgs has no `gdb` on the job shell's PATH to capture
 per-rank stacks. The row is registered and times out (120 s) on that host until this is understood.
+
+**2026-10-18.** higgs's MPI was replaced by a spack-built Open MPI 5.0.9 (CUDA-aware). On the first
+full gate against it (main 01a6d25, build-all, Kokkos Cuda build) `parallel.window_newton_mpi.3`
+passed in the ordinary time (0.82 s; 2.57 s on a standalone rerun), as did `.2` (the row has no
+`.device` twin); the hang was never reproduced
+anywhere but Open MPI 4.1.5, so it is closed as an artifact of that MPI without a FUSE change. The
+bystander-rank observation above stands as a reading of the code, not as a measured cause.
+
 
 **Not reproduced on higgs's current toolchain (lead, 2026-10-21; Higgs MPI track, `HEAD 96ecdb5`, Debug, Kokkos CUDA):** the entry stays
 OPEN because its cause was never found and the toolchain it names is gone. `/opt/openmpi` was replaced on 2026-10-17 by a spack-built
@@ -8642,7 +8661,8 @@ owner's call.
 **Owner decision (2026-10-21):** do not build Open MPI 4.1.5 side by side on higgs. The entry stays OPEN as unreproduced and
 is to be tested on a different machine or on GitHub CI with Open MPI from conda, at three ranks, the layout that hung. Nothing in the
 tree is expected to change before that run.
-### ~~D56. `FsiEnergyDiag.FullBudgetOnTheDominantModeCloses`'s mass-correction gate fails on higgs's toolchain by 1.5x — OPEN, found by the device-merge gate 2026-10-13
+
+### ~~D56. `FsiEnergyDiag.FullBudgetOnTheDominantModeCloses`'s mass-correction gate fails on higgs's toolchain by 1.5x (host leg), by 5x in the device twin on the 2026-10-18 stack~~ -- CLOSED 2026-10-21 (found by the device-merge gate 2026-10-13)
 
 The gate `max_abs_diff_non_outflow < 0.5 * eig_quality * max|u_raw|` (test/verification/
 fsi_energy_diag_test.cpp, "MASS-CORRECTION ISOLATION") measured 1.720e-10 against a tolerance of
@@ -8654,12 +8674,22 @@ error in the extracted inputs, scaled by |u_raw|) is missing a term on this tool
 `cn_step` solves' own forward-error difference is the candidate. The `.device` twin of the row passes
 (its energy budget runs on the selected oscillatory mode exactly as the host leg does).
 
+**2026-10-18.** On higgs's rebuilt stack (Open MPI 5.0.9, Eigen 5.0.0, the same GCC 13.3 host pass
+through nvcc_wrapper) the picture inverted: the host row `verification.fsi_energy_diag` PASSED in both
+the build-all tree and the tier-0+cuSPARSE tree, while the `.device` twin failed the same gate at
+`fsi_energy_diag_test.cpp:2224` with `max_abs_diff_non_outflow` = 1.632e-10 against a tolerance of
+3.278e-11 (5x). Which row fails therefore depends on the toolchain and the execution space while the
+gate's own derivation is unchanged, which supports the reading above that the derivation is missing a
+term rather than that any one build is wrong; the factor is still not to be widened.
+
+
 **Closed (lead, 2026-10-21; measured by the Higgs MPI track on ssh:higgs, `HEAD 96ecdb5`, Debug, Kokkos CUDA, Open MPI 5.0.9):**
 `verification.fsi_energy_diag` passes on the host leg (11.93 s) and its `.device` twin (12.89 s). The mass-correction isolation
 check now reads `4*kappa_2(A_fluid)*u*max|u_raw|`: tolerance 9.809e-12 against a measured `max|u1-u_raw|` of 1.196e-14 on the host
 leg (ratio 0.001), and 6.429e-12 against 5.435e-15 on the device leg (ratio 0.001). D80's change of the comparison and of the tolerance
 is what resolved this; the 1.720e-10 against 1.183e-10 recorded above was measured before it. No tolerance or assertion was touched by
 the track. One toolchain is covered here (GCC 13.3 through `nvcc_wrapper`, the one the entry named).
+
 ### ~~D57. The ABI's own period-rollover eagerly started an extra period `Runner::run()` never requests, and both sides hit a base-communicator collective the other side had already left
 
 **What it was.** `src/abi/participant.cpp`'s `prime_next_request()` (called from `impl_begin_step()`/
@@ -9572,7 +9602,7 @@ provider). No commit since `d622b50`, where all accept rows passed on 2026-10-16
 connect/accept path, so this is the same libfabric state, not a code change; D23 holds the open item. Recommended host setting until MPICH's NIC selection is fixed or the bridge is gone:
 `export FI_PROVIDER="tcp;ofi_rxm" FI_TCP_IFACE=en0`. Nothing in FUSE sets the provider.
 
-### D66. The device-direct (GPU-aware, zero host round trip) exchange path this round adds to the ghost and nodal-remap exchanges cannot be exercised for real on higgs — OPEN, measured 2026-10-15 (runtime-exchange track, follow-up round)
+### D66. The device-direct (GPU-aware, zero host round trip) exchange path this round adds to the ghost and nodal-remap exchanges cannot be exercised for real on higgs — CLOSED 2026-10-18 (exercised on Open MPI 5.0.9: ghost/nodal-remap/migration branches pass, the Transport branch failed and is D77), measured 2026-10-15 (runtime-exchange track, follow-up round)
 
 `fuse::linalg::mpi_is_gpu_aware()` (comm.hpp, this round's own shared probe, moved from
 `fuse::transport::MpiTransport`'s former private copy) is measured to return `false` unconditionally on
@@ -9598,6 +9628,25 @@ device-direct branch itself has no host run that reaches it: nothing on higgs ca
 correctly with real device pointers in MPI's hands, as opposed to merely compiling. A host with a
 genuinely CUDA-aware OpenMPI (or MPICH built against UCX/CUDA) is what this needs; until then this
 branch is UNVERIFIED, not failing.
+
+**2026-10-18, closed.** higgs's MPI was replaced by a spack-built Open MPI 5.0.9 that IS CUDA-aware:
+`MPIX_Query_cuda_support()` returns 1, a standalone device-pointer `MPI_Sendrecv` ring passed at 1-3
+ranks, and `fuse::linalg::mpi_is_gpu_aware()` is therefore true at run time, so every device-direct
+branch above is now the branch actually taken under `FUSE_EXECUTION_SPACE=device` unless
+`FUSE_TRANSPORT_HOST_STAGING=1` forces the fallback. Measured on main 01a6d25 (Debug, Kokkos Cuda,
+`ctest -L device -LE bench`, 39 rows): `parallel.device_ghost_exchange.{2,3}.device` passed with
+their `last_update_took_device_direct_path()` assertion now on its TRUE branch;
+`parallel.nodal_remap_runner.{2,3}.device` and `backend.native_migration_mpi.{2,3}.device` passed
+(those are the only rank counts registered as `.device` twins; the host rows of the same suites,
+`parallel.device_ghost_exchange.{2,3,4,5}`, `parallel.nodal_remap_distributed.{2,3,4,5}` and
+`backend.native_migration_mpi.{2,3,4,5}`, passed too once Open MPI 5's launcher was given
+`PRTE_MCA_rmaps_default_mapping_policy=:oversubscribe`, see the test CMake, but a host row never
+reaches the device-direct branch); the one device-direct branch that FAILED was the Runner's `Transport` case, which handed
+`MpiTransport::move()` -- a host routine -- a device pointer and segfaulted in `std::memcpy`
+(`parallel.window_runner_mpi.{2,3}.device`). That defect and its fix (`Transport::packed_layout()` /
+`move_packed()`, pack and unpack on `Space` in the Runner) are D87. Both legs of every exchange are
+therefore now measured on real hardware: the device-direct branch under the natural probe value and
+the host-staged branch under the forced one.
 
 ### ~~D67. `build_distributed_interp_rows`'s per-cell containment search disagrees by 1 ULP at the domain's own boundary vertex between an exactly-one-rank replica and a real multi-rank one~~ -- FIXED 2026-10-18 (found 2026-10-15, runtime-exchange track; closed, PointLocation track)
 
@@ -12825,35 +12874,186 @@ ctest --test-dir <build-dir> -R '^backend.supermesh$' --repeat until-fail:200 --
 ctest --test-dir <build-dir> -R '^model.bfloat16$' --repeat until-fail:200 --output-on-failure
 ```
 
-### D85. The ABI reads a communicator handle of 0 as "no communicator", and Open MPI's Fortran handle for MPI_COMM_WORLD is 0 -- OPEN, found 2026-10-23 by the higgs cross-check
+### D85. Five MPI test sites passed MPI_COMM_WORLD's Fortran handle without `has_communicator`, which Open MPI reads as "no communicator" -- FIXED 2026-10-23 in the sandbox, host run pending (found 2026-10-23 by the higgs cross-check)
 
 **What was measured, read and inferred.** MEASURED (higgs, Open MPI 5.0.9, 2026-10-23, a 10-line program removed afterwards): `MPI_Comm_c2f(MPI_COMM_WORLD)` is 0
-on both ranks; MPICH's `MPI_COMM_WORLD` is `0x44000000` (1140850688, read from `/opt/mpich/include/mpi.h`). READ: `include/fuse/abi/entries.def` documents
-`fuse_setup_options::communicator` as "or 0 for none", and `src/abi/participant.cpp` sets `communicator_set = true` only inside `if (in->communicator != 0)`;
-without it `impl_initialize_local()` takes `rank = 0, num_ranks = 1` and `reconcile_plugin_agreement()` returns its local status unreconciled. MEASURED by the
-track (higgs, Open MPI 5.0.9, Kokkos CUDA, HEAD `3357eb6`, `FUSE_ENABLE_FORTRAN=OFF`): `parallel.provider_subset_mpi.{2,3}` FAIL on both of their tests, which passed
-on the darwin/MPICH host at `8e88f9c` (the commits since then change KNOWN_ISSUES.md and a mutation row only). `APluginOnARankSubsetRunsOnlyOnItsOwnHostingRanksWithNoHang`:
-`E-RT-SIZE`, "field 'upstream.out' is registered with 1x1 values but the plan sizes its region at 0x1" on every rank. `AHostingRanksPluginMountFailureIsAgreedByEveryRankNotOnlyTheHostingOnes`:
-`init_rc = -4` on every rank (the status half holds), but every rank including rank 0 carries `E-ABI-VERSION` (the designed rewrite `E-ABI-PLUGIN-AGREEMENT-REFUSED` never
-appears); the new `provider_device_subset_mpi_test` fails with the same `E-RT-SIZE` pattern. INFERRED, not yet measured: all three follow from the first two facts (each rank
-believes it is rank 0 of 1, so the plugin's `RankSet{1, N-1}` excludes it from the region's sizing, and nothing is reconciled). The agreement result on MPICH (D15) is
-unaffected: the handle there is nonzero.
+on both ranks; MPICH's `MPI_COMM_WORLD` is `0x44000000` (1140850688, read from `/opt/mpich/include/mpi.h`). READ: a handle of 0 without `has_communicator = 1` is
+"none supplied" (`src/abi/participant.cpp`; the field is D86's, added on the higgs branch on 2026-10-18 and merged here on 2026-10-23), so a rank that passes
+`MPI_Comm_c2f(MPI_COMM_WORLD)` on Open MPI takes `rank = 0, num_ranks = 1`. MEASURED by the cross-check track (higgs, Open MPI 5.0.9, Kokkos CUDA, HEAD `3357eb6`,
+which did not yet contain D86's field): `parallel.provider_subset_mpi.{2,3}` failed on both tests (`E-RT-SIZE` "registered 1x1, plan sizes its region at 0x1"; and
+every rank, rank 0 included, carrying `E-ABI-VERSION` where the designed rewrite is `E-ABI-PLUGIN-AGREEMENT-REFUSED`); they passed on darwin/MPICH at `8e88f9c`.
+INFERRED, not yet measured: both failures follow from the handle. The agreement result on MPICH (D15) is unaffected: the handle there is nonzero.
 
-**Why it matters beyond the tests.** Any caller that passes `MPI_Comm_c2f(MPI_COMM_WORLD)` through the C or Fortran ABI on Open MPI is silently treated as a single process:
-no refusal, no message. Callers that pass a split or duplicated communicator (the Brusselator participants pass their own split communicators) are unaffected. This is a
-silent wrong behaviour on a supported MPI, which the project's own rule (a refusal counts as verified only when a test makes it fire) does not allow to stand.
+**The fix and why no new ABI field was added.** The owner asked for a `communicator_given` field. `has_communicator` is that field, already in the append-only ABI (D86), with
+the old-caller guard (`struct_size_covers`) and the golden and Fortran mappings; a second field with the same meaning would be a duplicate. The defect was that five test sites
+never set it: `abi_reconcile_mpi_test.cpp`, `abi_reconcile_disjoint_mpi_test.cpp`, `provider_subset_mpi_test.cpp` (two sites) and `provider_device_subset_mpi_test.cpp`. Each now
+sets `opts.has_communicator = 1`. The Brusselator participants already did (D86).
 
-**Options (a decision for the owner; none implemented).**
-1. Append a field to `fuse_setup_options` (for example `communicator_given`, 0 by default) that says the `communicator` member is a handle even when it is 0. Old callers
-   keep the current meaning, zero-initialised structs stay valid, and the C and Fortran bindings pass a simple struct as before. Cost: every Open MPI caller must set it; a
-   caller who forgets still gets the silent behaviour.
-2. Refuse by name when `communicator == 0`, MPI is initialised, and `MPI_COMM_WORLD` has more than one rank, unless the caller set an explicit single-process flag. Closes the
-   silent case. Cost: breaks a legitimate "N independent processes, none coupled" launch, which would have to say so.
-3. Document that a communicator must be a duplicate or split (never `MPI_COMM_WORLD`'s own handle) and make the tests and the bindings' examples do so. No ABI change. Cost: the
-   silent case remains for anyone who does not read it.
-Option 1 plus a test that passes `MPI_COMM_WORLD` itself (red on Open MPI until the caller sets the flag) is the one the lead would recommend; it changes the append-only ABI, so it
-needs the owner's approval first.
+**Why not choose by MPI flavour at configure time (owner question, 2026-10-23).** The ABI is a binary interface used from C and Fortran callers that may be compiled against a
+different MPI than the library (an MPICH-built `libfuse` with an Open MPI caller, or the reverse), so the handle's meaning cannot be fixed when the library is configured.
+A run-time test (`MPI_Comm_f2c(0) == MPI_COMM_WORLD`) would identify Open MPI, but it would make a deliberate "no communicator" (0) indistinguishable from a deliberate
+"MPI_COMM_WORLD" (0) on that MPI: a single-process caller on Open MPI would silently join a coupled run, or deadlock. An explicit flag keeps both meanings and costs one
+field, which is why D86 chose it.
 
-**To confirm the inference (host_pending, higgs).** Change `provider_subset_mpi_test.cpp`'s setup call to pass `MPI_Comm_c2f` of an `MPI_Comm_dup(MPI_COMM_WORLD)` (freed before
-`MPI_Finalize`) in a scratch copy and run both rows at 2 and 3 ranks under Open MPI 5.0.9: if they pass, the whole of D85 is the handle and nothing else. Then do the same in
-`provider_device_subset_mpi_test.cpp` to measure the device-memspace question D15 still carries. The macbook cannot run the device test (no device backend).
+**Still open.** (1) A host run on higgs (Open MPI 5.0.9) of `parallel.provider_subset_mpi.{2,3}`, `parallel.abi_reconcile_mpi`, `parallel.abi_reconcile_disjoint_mpi.3` and
+`provider_device_subset_mpi.2` with the flag set; D85 is struck only when that shows the inference holds. If any row still fails, the failure is a separate finding and this
+entry's inference was incomplete. (2) `provider_device_subset_mpi_test.cpp` stays `DISABLED_` until that run shows it reaches the device-memspace question.
+(3) The ABI still permits the silent case for a caller that passes handle 0 on Open MPI and omits the flag; whether to refuse a handle of 0 when MPI is initialised and
+`MPI_COMM_WORLD` has several ranks, unless the caller declares a single-process run, is an owner decision (it would break a legitimate "N independent processes" launch that
+does not say so).
+
+### D86. `fuse_setup_options::communicator`'s "0 means none supplied" sentinel collides with Open MPI's own Fortran handle for MPI_COMM_WORLD, which is 0 -- FIXED 2026-10-18 (found 2026-10-18, abi-communicator track)
+
+**Measured** on higgs (Open MPI 5.0.9, spack build): `MPI_Comm_c2f(MPI_COMM_WORLD)` is 0
+(`mpif.h`: `MPI_COMM_WORLD=0`, `MPI_COMM_SELF=1`, `MPI_COMM_NULL=2`). `fuse_setup_options::
+communicator`'s own original contract (entries.def) reads `communicator == 0` as "no
+communicator supplied" -- correct on MPICH, whose own `MPI_COMM_WORLD` handle is `0x44000000`
+and never collides, but wrong on any Open MPI build, where a participant that genuinely wants
+to couple on its own `MPI_COMM_WORLD` passes exactly the sentinel value this ABI reads as
+"none". `examples/brusselator/participants/{u_main.c,v_main.f90,coupler_main.c}` all pass
+`MPI_Comm_c2f(MPI_COMM_WORLD)` as `communicator` and name an `Mpmd`-launched `my_component`;
+on higgs's Open MPI stack this made `fuse_setup()` refuse every one of them with
+`E-ABI-SETUP-COMPONENT` ("... requires a non-zero communicator ... (communicator == 0 was
+supplied)"), failing `verification.brusselator.participants.mpmd.{3,5}` outright. Before
+commit `25e4917` added that refusal, the identical collision was silent: the same callers
+fell through `fuse_setup()`'s old `if (in->communicator != 0)` gate entirely and ran
+single-process, never forming a base communicator at all, never printing a word about it.
+
+**Fix.** Appended `int32_t has_communicator` to `fuse_setup_options` (append-only, per
+abi-design.md rule 1/3 -- `sizeof(fuse_setup_options)` grows from 48 to 56, `test/abi/
+struct_sizes.golden` updated, `tools/gen-abi.py --write` regenerated `include/fuse/abi/
+types.h` and `fortran/ffuse.f90`). `impl_setup()` (`src/abi/participant.cpp`) now computes
+`communicator_supplied = (in->communicator != 0) || has_communicator`, read under the same
+`struct_size_covers()` discipline `my_component` already uses, and gates the whole
+communicator-adopting branch (including `my_component`'s own Mpmd/Connect `connect()` call)
+on `communicator_supplied` rather than the bare nonzero test. An old caller whose
+`struct_size` predates `has_communicator` is read exactly as before -- `communicator == 0`
+still means none supplied, unchanged. A new caller sets `has_communicator = 1` to supply
+`communicator == 0` deliberately; the three Brusselator participants now do this. The
+Mpmd/Connect refusal (`E-ABI-SETUP-COMPONENT`, "requires a non-zero communicator") now fires
+only when `communicator_supplied` is false -- neither a nonzero handle nor the flag was given.
+`fuse_base_communicator_info::formed`'s own comment (entries.def) is updated to match: 1 when
+`communicator_set`, which now includes the flagged-zero case.
+
+RED/GREEN:
+  * `AbiRefusalSweep.SetupAcceptsAnMpmdComponentWithACommunicatorHandleOfZeroWhenFlagged`
+    (new, `test/abi/refusal_sweep_test.cpp`, `FUSE_HAVE_MPI` build, no `mpiexec` needed --
+    Open MPI's own singleton `MPI_Init` already sets `MPI_APPNUM=0` for a one-process job,
+    measured on higgs 2026-10-18): a one-component `Mpmd`-launched graph (`RankSet{0, 1}`,
+    `appnum=0`), `setup()` called with `communicator = 0` and `has_communicator = 1`. Confirmed
+    RED first (fix reverted to the bare `in->communicator != 0` test): `setup()` returned
+    `FUSE_ERR_INVALID`/`E-ABI-SETUP-COMPONENT`, reproducing the refusal. Confirmed GREEN (fix
+    restored): `setup()` returns `FUSE_OK`, `fuse_base_communicator_info.formed == 1` after a
+    real `fuse::transport::connect()` call (`MPI_Comm_f2c(0)` resolves to the real
+    `MPI_COMM_WORLD` on Open MPI, confirmed by a standalone probe, so the Mpmd handshake's own
+    `MPI_Comm_get_attr(MPI_APPNUM)`/`MPI_Comm_dup` run for real, not stubbed).
+  * `AbiRefusalSweep.SetupRefusesAnMpmdComponentWithNoCommunicator` (pre-existing, unchanged):
+    `communicator = 0` with `has_communicator` left at its zero default is still refused
+    `E-ABI-SETUP-COMPONENT` -- the "neither supplied" case this fix must not loosen.
+  * `verification.brusselator.participants.mpmd.{3,5}` and the accept rows (host-run on
+    higgs, this track's own gate): see report-abi-communicator.md for the full ctest counts.
+
+### D87. Transport-direct track: the device-direct Transport branch (D66's own unverified GPU-aware path) was handing MpiTransport::move() a device pointer directly, and a second, masked race condition in the fix's own first draft -- FOUND AND FIXED 2026-10-18 (transport-direct track)
+
+**What was found (defect 1, the one this track was dispatched to fix).** D66 recorded
+higgs's device-direct exchange paths as implemented, compiling, and UNVERIFIED on real
+hardware, because the Open MPI available there at the time (4.1.5) was not CUDA-aware.
+Per the host inventory as of this track (STACK CHANGE 2026-10-17), higgs's Open MPI is
+now 5.0.9, CUDA-aware (`MPIX_Query_cuda_support()` returns 1), so
+`fuse::linalg::mpi_is_gpu_aware()` is true here for the first time and the device-direct
+branch of every exchange is reachable. **Measured RED**, before any change:
+`ctest -j1 -R 'parallel.window_runner_mpi.2.device|parallel.window_runner_mpi.3.device'`
+on this track's own `transport-direct` build -- both rows segfaulted in `std::memcpy`
+inside `MpiTransport::move()` (`src/transport/mpi_transport.cpp`), called from
+`Runner::Impl::execute_on<Kokkos::Cuda>`'s both-arcs-device `Transport` case
+(`src/runtime/runner.cpp`). Root cause: `MpiTransport::move(src, dst, n)` is a HOST
+routine -- it packs `src` into its own host `send_buf` through `send_index`, runs
+`MPI_Alltoallv` on its host buffers, unpacks `recv_buf` into `dst` through
+`recv_index`, and applies the same-rank `local_copy` pairs with `memcpy`. The
+`Transport` case's gpu-aware branch had been calling it with `d->send`/`d->recv`,
+Kokkos device views -- valid only once `is_gpu_aware()` is true, which on the old,
+non-CUDA-aware higgs it never was, so the defect had no host run that could expose it
+until now. Symbolised backtrace: `MpiTransport::move` (mpi_transport.cpp:1191) <-
+`execute_on<Kokkos::Cuda>` (runner.cpp:4711) <- `Impl::execute` (runner.cpp:3998) <-
+`run_region` (iteration.cpp:3397) <- `advance_window` (iteration.cpp:4579) <-
+`step_period` (runner.cpp:5116).
+
+**Fix for defect 1.** `fuse::Transport` (`include/fuse/transport/transport.hpp`) gained
+two members: `packed_layout()`, returning a `TransportPackedLayout` (the planned
+`send_index`/`recv_index`/`local_copy`/`components` -- copies of exactly the arrays
+`move()` itself packs and unpacks with), and `move_packed(packed_send, packed_recv)`,
+performing ONLY the `MPI_Alltoallv` on the buffers it is given. The default
+implementation of both reports `E-TRANSPORT-NOPACKED`, so `CopyTransport` and
+`LowFiveTransport` are unaffected. `MpiTransport` implements both; `move_packed()` is a
+direct `MPI_Alltoallv` against `Impl::sendcounts`/`sdispls`/`recvcounts`/`rdispls`, with
+no pack, no unpack, no `local_copy` application. `Runner::Impl`
+(`src/runtime/runner_impl.hpp`, `src/runtime/runner.cpp`) mirrors a GPU-aware plan's
+packed layout to the device once, in `build_transport_device_buffers()`
+(`detail::TransportDeviceOf::mpi_send_index`/`mpi_recv_index`/`mpi_local_src`/
+`mpi_local_dst`/`mpi_send`/`mpi_recv`/`mpi_local_scratch`, set by the new
+`detail::mirror_transport_packed_layout()`, guarded by `has_packed_layout`). The
+`Transport` case's both-arcs-device branch now takes a `run_device_direct_move()` path
+whenever `is_gpu_aware() && has_packed_layout`: gather `d->send` into the packed send
+buffer through `mpi_send_index`, call `move_packed()` with device pointers, scatter the
+packed receive buffer into `d->recv` through `mpi_recv_index`, then apply `local_copy`
+as a device gather-then-scatter -- never `Transport::move()`. The pre-existing
+host-staged fallback branch (`FUSE_TRANSPORT_HOST_STAGING=1`, or any backend that
+answers `is_gpu_aware()` without a packed layout) is unchanged byte for byte.
+
+**What was found (defect 2, in this track's OWN first draft of the fix above).** The
+first build of the fix above made `parallel.window_runner_mpi.2.device` pass, but
+`parallel.window_runner_mpi.3.device` failed `WindowRunnerMpi.
+TwoDisjointRanksMatchTheSingleProcessReference` -- not a crash, a silent numerical
+divergence (window 0's own `x_a` already off by ~5e-5 relative, and the agreed
+iteration count disagreeing with the reference, e.g. 26 vs 37). Isolated with
+`FUSE_TRANSPORT_HOST_STAGING=1` forced on the SAME 3-rank row: that passed, proving the
+bug was in the new device-direct code, not in anything it shares with the host-staged
+path. Root cause: `run_device_direct_move()`'s pack step (`fuse::num::gather<Space>`,
+a Kokkos kernel) wrote the packed send buffer and the code immediately called
+`Transport::move_packed()` -- handing MPI the SAME device pointer with no
+synchronization in between. Kokkos does not fence between a kernel launch and a
+foreign API call that reads its output; `MPI_Alltoallv` reading a device buffer whose
+writing kernel had not yet completed is exactly the shape of a race, and three ranks
+is an unsurprising place for timing to flip it (two ranks had already happened to work
+by luck, not by correctness). Every other device-resident exchange in this codebase
+that hands a buffer to MPI already fences first (`nodal_dist_gather_reduce_kernel`,
+`src/runtime/runner.cpp`'s own `Kokkos::fence("nodal_dist_gather_reduce_fence")`,
+runtime-exchange track); the original fix for defect 1 omitted the equivalent fence
+because every PRIOR crossing from device to `Transport::move()` went through a
+`Kokkos::deep_copy` into host memory, which already synchronizes implicitly, and the
+first draft did not replace that implicit synchronization when it removed the
+`deep_copy`.
+
+**Fix for defect 2.** One added line in `run_device_direct_move()`: `Kokkos::fence(
+"fuse::transport_direct_pack_fence")` between the pack gather and the
+`move_packed()` call.
+
+**GREEN, measured on higgs (Open MPI 5.0.9, CUDA-aware, GTX 1050 Ti).** After the
+fence fix: `ctest -j1 -R
+'parallel.window_runner_mpi.2.device|parallel.window_runner_mpi.3.device'` passes both
+rows, repeated 3 times in a row with no failure (the race this fence closes is exactly
+the kind that can pass by chance, so a single green run was not treated as sufficient).
+The new unit tests `WindowRunnerMpi.DeviceDirectTransportMatchesHostAndSetsMovesCounter`
+and `WindowRunnerMpi.DeviceDirectTransportHostStagedFallbackForced`
+(`test/parallel/window_runner_mpi_test.cpp`) were run directly (`mpirun -n 2` and
+`mpirun -n 3`) and both pass at both rank counts: the first confirms
+`RunStats::device_transport_moves > 0` summed across the job on this GPU-aware host and
+bitwise-identical delivered values against the no-MPI single-process reference; the
+second confirms the opposite (`device_transport_moves == 0`, `device_boundary_copies >
+0`) under `FUSE_TRANSPORT_HOST_STAGING=1`, i.e. the pre-existing fallback is untouched.
+Full gate counts are in report-transport-direct.md.
+
+**Scope relative to D66.** D66 also covers the ghost-exchange, nodal-remap and
+migration device-direct branches (`fuse::backend::DeviceGhostExchanger`, the
+nodal-distributed-remap plan, `fuse::native::exchange_migration_buffers()`), owned by
+other tracks and outside this track's own commits; this entry speaks only to the
+`Transport` slice D66 also names. D66's own status word is left for the lead to set.
+
+**Lesson.** A device pointer crossing into a foreign, non-Kokkos API is a
+synchronization boundary Kokkos does not manage for you -- `Kokkos::deep_copy` into
+host memory happens to provide it as a side effect, which is why removing the last
+`deep_copy` on a path removes a fence nobody wrote down as one. Grep for the pattern
+this track used to find its own sibling precedent
+(`Kokkos::fence(".*"); *$` immediately preceding an MPI call) before trusting a
+"handed MPI a device pointer" change that compiles and runs once.
+

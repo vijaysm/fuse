@@ -12,6 +12,7 @@
 /// library directly to construct a white-box fixture.
 #include <hdf5.h>
 
+#include <cfloat>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -257,6 +258,40 @@ TEST(TypedRestartHdf5, HandBuiltX86LongDoubleExactAndWideningRefuseAllowNarrowin
       fuse::restart_io::FileLayout::SeparateMeshAndPoints, path, "");
   ASSERT_TRUE(pr.ok());
 
+#if LDBL_MANT_DIG == 64
+  // This build's own `long double` IS the x86 80-bit extended type the
+  // dataset was hand-built as (x86-64 Linux: 64-bit significand, 15-bit
+  // exponent, explicit leading bit) -- so the three conversion policies
+  // all see the SAME type and every read is exact: the value 1 + 2^-63
+  // is representable and comes back unchanged, and AllowNarrowing has
+  // nothing to narrow (converted_any false, zero reported change). The
+  // 53-bit branch below is the owner's original scenario on arm64 macOS;
+  // this one was added when the test first ran on an x86-64 host
+  // (higgs, 2026-10-18) and refused a read it had no reason to refuse.
+  const long double expected = 1.0L + std::ldexp(1.0L, -63);
+  {
+    long double restored = 0.0L;
+    const auto rr = pr.value()->reader().get_scalar("x86ld", restored);
+    ASSERT_TRUE(rr.ok()) << rr.error().code << ": " << rr.error().message;
+    EXPECT_EQ(restored, expected);
+  }
+  {
+    long double restored = 0.0L;
+    const auto rr = pr.value()->reader().get_scalar(
+        "x86ld", restored, fuse::ReadConversion::Widening);
+    ASSERT_TRUE(rr.ok()) << rr.error().code << ": " << rr.error().message;
+    EXPECT_EQ(restored, expected);
+  }
+  {
+    long double restored = 0.0L;
+    const auto rr = pr.value()->reader().get_scalar(
+        "x86ld", restored, fuse::ReadConversion::AllowNarrowing);
+    ASSERT_TRUE(rr.ok()) << rr.error().code << ": " << rr.error().message;
+    EXPECT_FALSE(rr.value().converted_any);
+    EXPECT_EQ(rr.value().max_absolute_change, 0.0);
+    EXPECT_EQ(restored, expected);
+  }
+#else
   // Exact: this build's own `long double` (53-bit) is not the SAME type
   // as the file's own hand-built 80-bit one, by every one of the width
   // checks `convert_one_element()` makes before it ever reaches
@@ -291,5 +326,6 @@ TEST(TypedRestartHdf5, HandBuiltX86LongDoubleExactAndWideningRefuseAllowNarrowin
     EXPECT_EQ(rr.value().max_absolute_change, independently_computed_delta);
     EXPECT_EQ(static_cast<double>(restored), 1.0);  // rounds down
   }
+#endif
   std::remove(path.c_str());
 }

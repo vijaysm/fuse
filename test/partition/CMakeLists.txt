@@ -55,7 +55,7 @@ function(fuse_partition_add_mpi_test name)
     endif()
     set_tests_properties(partition.${name}.${n} PROPERTIES TIMEOUT 120
                          LABELS "partition;mpi;parallel"
-                         ENVIRONMENT "OMP_NUM_THREADS=${_fuse_partition_mpi_threads};OMP_PROC_BIND=false;OMPI_MCA_coll_tuned_use_dynamic_rules=1;OMPI_MCA_coll_tuned_alltoallv_algorithm=2;OMPI_MCA_rmaps_base_oversubscribe=1")
+                         ENVIRONMENT "OMP_NUM_THREADS=${_fuse_partition_mpi_threads};OMP_PROC_BIND=false;OMPI_MCA_coll_tuned_use_dynamic_rules=1;OMPI_MCA_coll_tuned_alltoallv_algorithm=2;OMPI_MCA_rmaps_base_oversubscribe=1;PRTE_MCA_rmaps_default_mapping_policy=:oversubscribe")
   endforeach()
 endfunction()
 

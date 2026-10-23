@@ -595,15 +595,40 @@ void Runner::Impl::build_transport_device_buffers() {
     if (in_slot.device && out_slot.device) {
       transport_device[pi] =
           detail::mirror_transport_plan<DeviceMemSpace>(transport_plans[pi]);
+      // Transport-direct track (KNOWN_ISSUES.md D66/D77): a GPU-aware
+      // backend additionally gets its own packed layout mirrored to the
+      // device here, once, alongside the plan itself -- what lets
+      // execute_on()'s Transport case hand MPI a device pointer through
+      // Transport::move_packed() instead of Transport::move(), which is a
+      // host routine and segfaults on one. Built only when both is_gpu_
+      // aware() is true AND the backend actually has a packed layout to
+      // report (packed_layout().ok()) -- a backend that answers gpu-aware
+      // without one (none does today) simply leaves has_packed_layout
+      // false, and the hot loop falls back to the pre-existing
+      // host-staged path rather than ever constructing the device-direct
+      // one from an incomplete mirror.
+      const bool gpu_aware = transport_plans[pi].has_graph &&
+                             graph_transports[pi] != nullptr &&
+                             graph_transports[pi]->is_gpu_aware();
+      if (gpu_aware) {
+        const Result<TransportPackedLayout> pl =
+            graph_transports[pi]->packed_layout();
+        if (pl.ok()) {
+          detail::mirror_transport_packed_layout<DeviceMemSpace>(
+              transport_device[pi], pl.value());
+        } else if (trace) {
+          fmt::print(stderr,
+                     "[device-place] transport plan {:<3} is GPU-aware but "
+                     "reported no packed layout ({}); falling back to the "
+                     "host-staged path\n",
+                     pi, pl.error().code);
+        }
+      }
       if (trace) {
         fmt::print(stderr,
                    "[device-place] transport plan {:<3} mirrored to device "
-                   "(gpu_aware={})\n",
-                   pi,
-                   (!transport_plans[pi].has_graph ||
-                    graph_transports[pi] == nullptr)
-                       ? false
-                       : graph_transports[pi]->is_gpu_aware());
+                   "(gpu_aware={}, packed_layout={})\n",
+                   pi, gpu_aware, transport_device[pi].has_packed_layout);
       }
       continue;
     }
@@ -4753,15 +4778,76 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
       const std::size_t nc =
           static_cast<std::size_t>(p.spec.components < 1 ? 1 : p.spec.components);
 
+      // Transport-direct track (KNOWN_ISSUES.md D66/D77). The device-direct
+      // exchange itself, shared by the peer-wise and matched branches below:
+      // both call `tp->move(dd.send.data(), dd.recv.data(), p.total())`
+      // identically (move() packs `dd.send` via its own send_index, runs
+      // MPI_Alltoallv, unpacks into `dd.recv` via recv_index, then applies
+      // local_copy directly -- the SAME two buffers and the SAME contract
+      // either way), which is exactly why one function replaces that one
+      // call in both places. Pack/unpack run here as Kokkos kernels on
+      // `Space`, using the device mirror `mirror_transport_packed_layout()`
+      // built once at setup, so `move_packed()` below -- unlike `move()` --
+      // is handed a device pointer that is actually valid to dereference.
+      const auto run_device_direct_move =
+          [&](detail::TransportDeviceOf<DeviceMemSpace>& dd) -> Result<void> {
+        if (dd.mpi_send_index.extent(0) > 0) {
+          num::gather<Space>(
+              num::ConstSpanOf<Space>(dd.send.data(), dd.send.extent(0)),
+              num::IndexSpanOf<Space>(dd.mpi_send_index.data(),
+                                      dd.mpi_send_index.extent(0)),
+              num::SpanOf<Space>(dd.mpi_send.data(), dd.mpi_send_index.extent(0)));
+        }
+        // `move_packed()` hands `dd.mpi_send.data()` to a foreign API
+        // (MPI_Alltoallv) outside Kokkos's own stream-ordering guarantees --
+        // the gather above may still be in flight on the device. The same
+        // fence-before-handing-a-device-buffer-to-MPI discipline
+        // `nodal_dist_gather_reduce_kernel` already uses (this file, above)
+        // applies here for the identical reason.
+        Kokkos::fence("fuse::transport_direct_pack_fence");
+        const Result<void> mv =
+            tp->move_packed(dd.mpi_send.data(), dd.mpi_recv.data());
+        if (!mv.ok()) return mv;
+        if (dd.mpi_recv_index.extent(0) > 0) {
+          num::scatter<Space>(
+              num::ConstSpanOf<Space>(dd.mpi_recv.data(), dd.mpi_recv_index.extent(0)),
+              num::IndexSpanOf<Space>(dd.mpi_recv_index.data(),
+                                      dd.mpi_recv_index.extent(0)),
+              num::SpanOf<Space>(dd.recv.data(), dd.recv.extent(0)));
+        }
+        if (dd.mpi_local_src.extent(0) > 0) {
+          num::gather<Space>(
+              num::ConstSpanOf<Space>(dd.send.data(), dd.send.extent(0)),
+              num::IndexSpanOf<Space>(dd.mpi_local_src.data(),
+                                      dd.mpi_local_src.extent(0)),
+              num::SpanOf<Space>(dd.mpi_local_scratch.data(),
+                                 dd.mpi_local_src.extent(0)));
+          num::scatter<Space>(
+              num::ConstSpanOf<Space>(dd.mpi_local_scratch.data(),
+                                      dd.mpi_local_src.extent(0)),
+              num::IndexSpanOf<Space>(dd.mpi_local_dst.data(),
+                                      dd.mpi_local_dst.extent(0)),
+              num::SpanOf<Space>(dd.recv.data(), dd.recv.extent(0)));
+        }
+        return Result<void>::success();
+      };
+
       if (d != nullptr) {
         // Both arcs are device-resident: pack and unpack with Kokkos
         // kernels on `Space` (fuse::num::gather/scatter -- the same
         // primitives the elementwise operators and the remap matvec
-        // already use), and hand MPI a device pointer when the backend is
-        // GPU-aware right now (`Transport::is_gpu_aware()`, a run-time
-        // probe -- not a configure-time constant); otherwise deep_copy the
-        // packed buffer to the plan's existing host `send`/`recv` and
-        // exchange through those, exactly as the host path always has,
+        // already use). When the backend is GPU-aware right now
+        // (`Transport::is_gpu_aware()`, a run-time probe -- not a
+        // configure-time constant) AND it reported a packed layout at
+        // setup (`d->has_packed_layout`), `run_device_direct_move()` above
+        // packs/unpacks the MPI-ordered layer ITSELF on `Space` too and
+        // hands `Transport::move_packed()` a device pointer with zero host
+        // round trip -- `Transport::move()` is a host routine (its own
+        // pack/unpack is `std::memcpy`) and handing IT a device pointer is
+        // exactly KNOWN_ISSUES.md D66/D77's segfault, which is why that
+        // call never happens on this path. Otherwise, deep_copy the packed
+        // buffer to the plan's existing host `send`/`recv` and exchange
+        // through those via `move()`, exactly as the host path always has,
         // then deep_copy the result back before unpacking on the device.
         // `FUSE_TRANSPORT_HOST_STAGING=1` forces this second branch even
         // on a GPU-aware MPI, so the fallback has a test on every machine.
@@ -4782,9 +4868,9 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
           const Result<void> prep = tp->prepare(p.spec);
           if (!prep.ok()) return prep;
           Result<void> mv = Result<void>::success();
-          if (gpu_aware) {
+          if (gpu_aware && d->has_packed_layout) {
             ++stats.device_transport_moves;
-            mv = tp->move(d->send.data(), d->recv.data(), p.total());
+            mv = run_device_direct_move(*d);
           } else {
             Kokkos::deep_copy(num::SpanOf<HostExecSpace>(p.send.data(), p.total()),
                               num::ConstSpanOf<Space>(d->send.data(), p.total()));
@@ -4845,9 +4931,9 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
         // p.total(), NOT the arc's n: move() requires exactly elements *
         // components OF THE PLANNED SPEC, and the planned spec is the
         // subset this rank actually exchanges.
-        if (gpu_aware) {
+        if (gpu_aware && d->has_packed_layout) {
           ++stats.device_transport_moves;
-          mv = tp->move(d->send.data(), d->recv.data(), p.total());
+          mv = run_device_direct_move(*d);
         } else {
           Kokkos::deep_copy(num::SpanOf<HostExecSpace>(p.send.data(), p.total()),
                             num::ConstSpanOf<Space>(d->send.data(), p.total()));

@@ -656,7 +656,7 @@ if(FUSE_ENABLE_TESTS AND FUSE_ENABLE_MPI AND TARGET brusselator_u_main AND TARGE
       # MPI_Comm_dup'd communicator exactly like MpiTransport's own tests do.
       set_tests_properties(${_name} PROPERTIES
         LABELS "parallel;mpi;verification;brusselator" TIMEOUT 120
-        ENVIRONMENT "OMPI_MCA_coll_tuned_use_dynamic_rules=1;OMPI_MCA_coll_tuned_alltoallv_algorithm=2;OMPI_MCA_rmaps_base_oversubscribe=1")
+        ENVIRONMENT "OMPI_MCA_coll_tuned_use_dynamic_rules=1;OMPI_MCA_coll_tuned_alltoallv_algorithm=2;OMPI_MCA_rmaps_base_oversubscribe=1;PRTE_MCA_rmaps_default_mapping_policy=:oversubscribe")
       # KNOWN_ISSUES.md D23's final account: U bundles the coupler's own
       # ranks and is the Connect-mode acceptor (brusselator_graph_tool.cpp's
       # own accept branch), so this row's real layout is (ranks_u +
@@ -742,7 +742,7 @@ if(FUSE_ENABLE_TESTS AND FUSE_ENABLE_MPI AND FUSE_ENABLE_LOWFIVE
     set_tests_properties(${_name} PROPERTIES
       LABELS "parallel;mpi;lowfive;verification;brusselator"
       TIMEOUT 120
-      ENVIRONMENT "OMPI_MCA_coll_tuned_use_dynamic_rules=1;OMPI_MCA_coll_tuned_alltoallv_algorithm=2;OMPI_MCA_rmaps_base_oversubscribe=1")
+      ENVIRONMENT "OMPI_MCA_coll_tuned_use_dynamic_rules=1;OMPI_MCA_coll_tuned_alltoallv_algorithm=2;OMPI_MCA_rmaps_base_oversubscribe=1;PRTE_MCA_rmaps_default_mapping_policy=:oversubscribe")
     # KNOWN_ISSUES.md D23's final account, same check as the non-LowFive
     # participants rows above: ranks_u=1, ranks_coupler=1 bundled onto U
     # (the acceptor), ranks_v=1 connecting -- layout 2+1.

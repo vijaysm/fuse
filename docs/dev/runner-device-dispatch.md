@@ -98,7 +98,17 @@ that:
    the device and hands MPI a device pointer when the backend answers
    GPU-aware, staging through host memory otherwise — it moved from this
    paragraph's "host-only, read raw pointers directly" group into a new
-   third group, space-AWARE, alongside none of the others here), `Remap`'s
+   third group, space-AWARE, alongside none of the others here.
+   **Update, transport-direct track (2026-10-18, KNOWN_ISSUES.md D66/D77):**
+   "hands MPI a device pointer" was correct about the outcome but wrong
+   about which call received it -- `Transport::move()` itself, a host
+   routine (`std::memcpy` pack/unpack), which segfaulted the first time a
+   genuinely CUDA-aware MPI reached it (higgs's Open MPI 5.0.9). The
+   `Transport` case now packs/unpacks the MPI-ordered layer on `Space`
+   itself (`Transport::packed_layout()`'s index arrays, mirrored to the
+   device once at setup) and calls `Transport::move_packed()` -- the bare
+   exchange alone -- with the device pointer; `move()` is never handed one),
+   `Remap`'s
    distributed-nodal branch (`r.nodal_dist >= 0`,
    `apply_nodal_dist_remap()` — an MPI exchange over host buffers, so it
    stays host-only even though the other two `Remap` branches move —

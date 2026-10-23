@@ -192,6 +192,45 @@ TEST(AbiStructSize, OldCallerStructSizeNeverReadsPastItsOwnAllocation) {
   ::munmap(region, static_cast<std::size_t>(2) * static_cast<std::size_t>(page));
 }
 
+// KNOWN_ISSUES.md D76: has_communicator's own growth, same discipline as
+// OldCallerStructSizeNeverReadsMyComponent just above, one field later.
+// Heap-allocates EXACTLY the pre-D76 byte count (my_component's own last
+// pre-growth member, the same expression participant.cpp reads
+// has_communicator under via struct_size_covers()) -- a caller built
+// before D76 never allocated has_communicator, so fuse_setup() must never
+// read the bytes where it would live, and must fall back to the ORIGINAL
+// sentinel (communicator == 0 means none supplied).
+TEST(AbiStructSize, OldCallerStructSizeNeverReadsHasCommunicator) {
+  constexpr std::size_t kOldSize =
+      offsetof(fuse_setup_options, my_component) + sizeof(const char*);
+  static_assert(kOldSize < sizeof(fuse_setup_options),
+               "has_communicator must have grown fuse_setup_options (rule 3)");
+
+  const auto* t = Table();
+  ASSERT_NE(t, nullptr);
+  fuse_ctx* ctx = LoadedContext(t);
+
+  auto buf = std::make_unique<std::byte[]>(kOldSize);
+  auto* old_opts = reinterpret_cast<fuse_setup_options*>(buf.get());
+  old_opts->struct_size  = static_cast<std::uint32_t>(kOldSize);
+  old_opts->communicator = 0;
+  old_opts->has_end_time = 0;
+  old_opts->reserved     = 0;
+  old_opts->end_time     = fuse_exact_time{.numerator = 0, .denominator = 1};
+  old_opts->my_component = nullptr;
+  // communicator == 0, has_communicator never allocated: setup() must read
+  // this exactly as it did before D76 -- no communicator supplied, no
+  // refusal, no read past kOldSize.
+  EXPECT_EQ(t->setup(ctx, old_opts, nullptr), FUSE_OK);
+
+  fuse_base_communicator_info info{.struct_size = sizeof(info)};
+  EXPECT_EQ(t->base_communicator(ctx, nullptr, &info), FUSE_OK);
+  EXPECT_EQ(info.formed, 0) << "an old caller's communicator == 0 must still mean "
+                               "\"none supplied\", not D76's new flagged-zero case";
+
+  EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
+}
+
 
 // D14 Stage B (KNOWN_ISSUES.md): base_communicator(), appended after
 // view_field (entries.def) -- a local, non-collective read of

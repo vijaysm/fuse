@@ -404,6 +404,30 @@ struct TransportDeviceOf {
   /// instead of a third bespoke kernel. Sized once to `peer_written`'s own
   /// extent.
   Kokkos::View<double*, MemSpace>      peer_scratch;
+
+  /// Transport-direct track (KNOWN_ISSUES.md D66/D77). The MPI-packed
+  /// layer BEHIND `Transport::move()`, device-resident so the hot loop can
+  /// pack/unpack it on `Space` and hand `Transport::move_packed()` a
+  /// device pointer directly, instead of `move()`'s own host-only
+  /// `std::memcpy` pack/unpack -- handing THAT a device pointer is exactly
+  /// the segfault this track fixes. `mpi_send_index`/`mpi_recv_index` are
+  /// `Transport::packed_layout()`'s `send_index`/`recv_index`, expanded to
+  /// double granularity like every other index view here; `mpi_local_src`/
+  /// `mpi_local_dst` are `packed_layout()`'s `local_copy`, split into two
+  /// parallel arrays the same way `TransportPlan::local_src`/`local_dst`
+  /// already are. `mpi_send`/`mpi_recv` are the packed buffers handed to
+  /// `move_packed()`; `mpi_local_scratch` is the same-rank permutation's
+  /// scratch, gather-then-scatter exactly like `local_scratch` above.
+  /// Populated only when `build_transport_device_buffers()` found a
+  /// packed layout (`has_packed_layout`); a Transport backend with no
+  /// packed layout (every one but `MpiTransport`) leaves these at their
+  /// default-constructed, zero-extent state and the hot loop falls back
+  /// to `move()` through the pre-existing host-staged path.
+  Kokkos::View<std::size_t*, MemSpace> mpi_send_index, mpi_recv_index;
+  Kokkos::View<std::size_t*, MemSpace> mpi_local_src, mpi_local_dst;
+  Kokkos::View<double*, MemSpace>      mpi_send, mpi_recv;
+  Kokkos::View<double*, MemSpace>      mpi_local_scratch;
+  bool has_packed_layout = false;
 };
 
 /// Builds `TransportDeviceOf<MemSpace>` from one host `TransportPlan`,
@@ -453,6 +477,71 @@ template <class MemSpace>
                          Kokkos::WithoutInitializing),
       p.peer_written.size() * nc);
   return d;
+}
+
+/// Transport-direct track. Fills in `d`'s `mpi_*` fields from one
+/// `Transport::packed_layout()` result, mirroring `mirror_transport_plan`'s
+/// own expand-then-deep_copy shape for the index arrays. Called once, at
+/// setup, right after `mirror_transport_plan` builds `d` itself --
+/// `d.has_packed_layout` is what the hot loop checks before taking the
+/// device-direct path over the pre-existing host-staged one.
+template <class MemSpace>
+void mirror_transport_packed_layout(TransportDeviceOf<MemSpace>& d,
+                                    const TransportPackedLayout& pl) {
+  const std::size_t nc =
+      static_cast<std::size_t>(std::max(pl.components, 1));
+  const auto expand = [nc](const std::vector<std::size_t>& entity) {
+    std::vector<std::size_t> out(entity.size() * nc);
+    for (std::size_t k = 0; k < entity.size(); ++k) {
+      for (std::size_t c = 0; c < nc; ++c) out[k * nc + c] = entity[k] * nc + c;
+    }
+    return out;
+  };
+  const auto to_device_idx = [](const std::vector<std::size_t>& host_idx) {
+    Kokkos::View<std::size_t*, MemSpace> dv(
+        Kokkos::view_alloc("fuse::transport_mpi_idx_dev",
+                           Kokkos::WithoutInitializing),
+        host_idx.size());
+    Kokkos::View<const std::size_t*, Kokkos::HostSpace,
+                Kokkos::MemoryTraits<Kokkos::Unmanaged>>
+        h(host_idx.data(), host_idx.size());
+    Kokkos::deep_copy(dv, h);
+    return dv;
+  };
+
+  std::vector<std::size_t> local_src, local_dst;
+  local_src.reserve(pl.local_copy.size());
+  local_dst.reserve(pl.local_copy.size());
+  for (const auto& [from, to] : pl.local_copy) {
+    local_src.push_back(from);
+    local_dst.push_back(to);
+  }
+
+  d.mpi_send_index = to_device_idx(expand(pl.send_index));
+  d.mpi_recv_index = to_device_idx(expand(pl.recv_index));
+  d.mpi_local_src  = to_device_idx(expand(local_src));
+  d.mpi_local_dst  = to_device_idx(expand(local_dst));
+
+  const std::size_t send_n = pl.send_index.size() * nc;
+  const std::size_t recv_n = pl.recv_index.size() * nc;
+  const std::size_t local_n = local_src.size() * nc;
+  // Sized to at least one element, exactly like MpiTransport's own
+  // send_buf/recv_buf (mpi_transport.cpp): several MPI implementations
+  // dislike a null buffer even with a zero count, and move_packed()'s own
+  // contract holds the caller to the same rule.
+  d.mpi_send = Kokkos::View<double*, MemSpace>(
+      Kokkos::view_alloc("fuse::transport_mpi_send_dev",
+                         Kokkos::WithoutInitializing),
+      send_n == 0 ? 1 : send_n);
+  d.mpi_recv = Kokkos::View<double*, MemSpace>(
+      Kokkos::view_alloc("fuse::transport_mpi_recv_dev",
+                         Kokkos::WithoutInitializing),
+      recv_n == 0 ? 1 : recv_n);
+  d.mpi_local_scratch = Kokkos::View<double*, MemSpace>(
+      Kokkos::view_alloc("fuse::transport_mpi_local_scratch_dev",
+                         Kokkos::WithoutInitializing),
+      local_n == 0 ? 1 : local_n);
+  d.has_packed_layout = true;
 }
 
 /// Everything an instruction needs that can be worked out at setup, so the

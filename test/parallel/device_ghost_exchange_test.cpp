@@ -109,13 +109,13 @@ void run_ring_check(bool force_host_staging, bool expect_device_direct_possible)
   }
 
   // The device-direct path is reachable only under Device space, with no
-  // forced host staging, and a genuinely GPU-aware MPI. `mpi_is_gpu_aware()`
-  // on this host was measured false (OpenMPI 4.1.5 here configured
-  // --without-cuda: `MPIX_Query_cuda_support()` returns 0 at run time even
-  // though the extension macro itself is declared) -- so this assertion is
-  // written to hold on hardware where it WOULD be true, and is reported as
-  // unverified-on-higgs in report-exchange-2.md rather than skipped
-  // silently.
+  // forced host staging, and a genuinely GPU-aware MPI. On higgs's original
+  // Open MPI 4.1.5 (configured --without-cuda) `mpi_is_gpu_aware()` was
+  // false and only the else-branch below ever ran (KNOWN_ISSUES.md D66);
+  // since its Open MPI 5.0.9 (CUDA-aware, 2026-10-18) the probe is true
+  // there and the TRUE branch is the one measured by the .device twins of
+  // this row -- the same test exercises whichever branch the host's MPI
+  // makes reachable, never skipping silently.
   if (expect_device_direct_possible && fuse::linalg::mpi_is_gpu_aware() && !force_host_staging) {
     EXPECT_TRUE(dge.last_update_took_device_direct_path())
         << "GPU-aware MPI did not take the device-direct exchange path";

@@ -129,7 +129,7 @@ TEST(AbiGolden, NoStructHasTrailingPaddingALaterMemberCouldHide) {
   FUSE_NO_TRAILING_PADDING(fuse_error, code);
   FUSE_NO_TRAILING_PADDING(fuse_graph_source, byte_count);
   FUSE_NO_TRAILING_PADDING(fuse_graph_sink, written);
-  FUSE_NO_TRAILING_PADDING(fuse_setup_options, my_component);
+  FUSE_NO_TRAILING_PADDING(fuse_setup_options, has_communicator);  // D76: now the last member
   FUSE_NO_TRAILING_PADDING(fuse_field_name, field);
   FUSE_NO_TRAILING_PADDING(fuse_field_ref, conservation);
   FUSE_NO_TRAILING_PADDING(fuse_field_view, window_samples);

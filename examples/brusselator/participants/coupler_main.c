@@ -185,6 +185,11 @@ int main(int argc, char** argv) {
   memset(&setup, 0, sizeof(setup));
   setup.struct_size = sizeof(setup);
   setup.communicator = (int64_t)MPI_Comm_c2f(MPI_COMM_WORLD);
+  /* KNOWN_ISSUES.md D76: MPI_Comm_c2f(MPI_COMM_WORLD) is 0 under Open MPI,
+   * which this struct's older sentinel read as "no communicator" -- set
+   * has_communicator so fuse_setup() knows 0 really is this process's own
+   * world, not an absent one. */
+  setup.has_communicator = 1;
   setup.my_component = "coupler";
   rc = t->setup(ctx, &setup, NULL);
   if (rc != FUSE_OK) fail(ctx, "setup", rc);

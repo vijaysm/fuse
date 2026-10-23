@@ -103,6 +103,9 @@ fuse_ctx* SetupSpanningComponent(const fuse_participant_abi_v1* t, int world_siz
 
   fuse_setup_options opts{.struct_size = sizeof(opts)};
   opts.communicator = static_cast<std::int64_t>(MPI_Comm_c2f(MPI_COMM_WORLD));
+  // Open MPI's Fortran handle for MPI_COMM_WORLD is 0, which the ABI reads as
+  // "none" unless has_communicator says the handle is deliberate (KNOWN_ISSUES.md D86, D85).
+  opts.has_communicator = 1;
   opts.my_component = "p";
   if (t->setup(co.ctx, &opts, nullptr) != FUSE_OK) return nullptr;
 

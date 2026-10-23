@@ -26,7 +26,7 @@ multi-rank device runs in place before a multi-GPU machine is available.
 | `SpacetimeInfo::history` | host vector | `ArcMemSpace` view (Sample's spacetime branch is already Space-generic) |
 | `reduction_scratch` | `HostSpace` view, norms in `iteration.cpp` on `HostExecSpace` | `ArcMemSpace` companion; the deterministic norms dispatch on the arc space (kernels already Space-generic, D11) |
 | `RegionRuntime::x_old/x_new/x_out`, accelerator state | host vectors, `Accelerator` host-only | stay host; the gather `slots[b.feed_arc] → x_old` and scatter back become `deep_copy`s per sweep over the Newton/Picard interface vector (small by construction: interface dofs, not fields) |
-| transport `send_buf/recv_buf` | host vectors, `MPI_Alltoallv` | **done (transport track, 2026-10-13):** `Impl::transport_device` (device views, built once when both of a Transport instruction's arcs land on the device) when `Transport::is_gpu_aware()` is true at run time; otherwise the pack/unpack kernels still run on the device and only the already-existing host `send`/`recv` buffers stage the `MPI_Alltoallv` itself. A mixed device/host arc pair (found to occur for real -- KNOWN_ISSUES D48 -- not a hypothetical) stages the device side through `Impl::transport_in_scratch`/`transport_out_scratch` and runs the ordinary host loop. |
+| transport `send_buf/recv_buf` | host vectors, `MPI_Alltoallv` | **done (transport track, 2026-10-13):** `Impl::transport_device` (device views, built once when both of a Transport instruction's arcs land on the device) when `Transport::is_gpu_aware()` is true at run time; otherwise the pack/unpack kernels still run on the device and only the already-existing host `send`/`recv` buffers stage the `MPI_Alltoallv` itself. A mixed device/host arc pair (found to occur for real -- KNOWN_ISSUES D48 -- not a hypothetical) stages the device side through `Impl::transport_in_scratch`/`transport_out_scratch` and runs the ordinary host loop. **Fixed (transport-direct track, 2026-10-18, KNOWN_ISSUES.md D66/D77):** the 2026-10-13 entry above was wrong about WHERE the GPU-aware path's own `MPI_Alltoallv` buffers came from -- it handed `Transport::move()` a device pointer directly, and `move()` is a host routine (its pack/unpack is `std::memcpy`), so a genuinely CUDA-aware MPI segfaulted inside it the first time one was exercised for real (higgs's Open MPI 5.0.9, `parallel.window_runner_mpi.{2,3}.device`). The Transport interface now separates the two: `Transport::packed_layout()` reports the same `send_index`/`recv_index`/`local_copy` arrays `move()` itself packs and unpacks with, mirrored to the device once at setup (`Impl::transport_device`'s own `mpi_*` fields, `mirror_transport_packed_layout()`); `Transport::move_packed()` is the bare `MPI_Alltoallv`, handed already-packed buffers -- host or device, the caller's choice. The hot loop now packs/unpacks the MPI-ordered layer itself on `Space` and calls `move_packed()`, never `move()`, whenever `is_gpu_aware() && has_packed_layout`. |
 | `RemapCsr` / `remap_csr_device` | host triplets + device twin built at resolve | device CSR is the primary in Device mode; builders may produce it directly (Phase 2) |
 | `weight_sets` (Constrain measures) | host vectors | **done (runtime-exchange track, 2026-10-14):** host (`weight_sets` never changes after setup); `weight_sets_device` is a device-resident mirror, built once in `build_constrain_device_buffers()`, and `Constrain` integrates on the arc's own space via `fuse::num::deterministic_dot` into `constrain_reduction_scratch`, result to host |
 | `NodalDistRemap` buffers | host, MPI exchange | **done (runtime-exchange track, 2026-10-14):** host; `apply_nodal_dist_remap()` stages its arcs explicitly (it is an MPI exchange like Transport) -- the arcs may now be device-resident (`place_arcs_on_device()` no longer pins them), but `apply_distributed_H`/`apply_distributed_HT`'s own `MPI_Allgatherv` calls stay on host buffers regardless of GPU-aware MPI (see the new "Runtime-exchange track" section below for why) |
@@ -328,6 +328,34 @@ the next step starts. Host mode byte-identity is the standing invariant.
    rank (`fuse::abi::resolve_device_id()`); `fuse_add_mpi_test(...
    DEVICE_TWIN)` registers 1/2/3-rank `.device` rows. Open: D49
    (allocation count of the mixed-pair transport row under the device leg).
+   **Fixed (transport-direct track, 2026-10-18, KNOWN_ISSUES.md D66/D77):**
+   "hands MPI a device pointer" above described the OUTCOME correctly but
+   not the mechanism -- it was `Transport::move()` itself receiving the
+   device pointer, and `move()`'s own pack/unpack is a host `std::memcpy`,
+   which segfaults on one. `Transport::move()` is never handed a device
+   pointer now; `Transport::move_packed()` (the bare `MPI_Alltoallv` alone,
+   on buffers the caller already packed) is, via a new `packed_layout()`
+   query the hot loop mirrors to the device once at setup. Measured on
+   higgs's Open MPI 5.0.9 (CUDA-aware as of 2026-10-17): RED before this
+   fix (`parallel.window_runner_mpi.{2,3}.device` segfault in
+   `MpiTransport::move`'s `memcpy`). The first build of the fix made the
+   2-rank row pass but the 3-rank row fail with a silent numerical
+   divergence, not a crash -- a second defect in the fix's own first draft,
+   a missing `Kokkos::fence()` between the device pack kernel and the
+   `move_packed()` call that reads its output (every other exchange in
+   this file that hands MPI a device buffer already fences first,
+   e.g. `nodal_dist_gather_reduce_kernel`'s own
+   `Kokkos::fence("nodal_dist_gather_reduce_fence")`; the earlier
+   `Transport` code never needed one because every prior device-to-move()
+   crossing went through a `Kokkos::deep_copy`, which synchronizes
+   implicitly). One added fence closed it. GREEN after, repeated three
+   times to guard against exactly the kind of race that can pass by
+   chance: both rows pass, `RunStats::device_transport_moves > 0`
+   confirmed on the GPU-aware path and bitwise-identical delivery against
+   the host twin
+   (`WindowRunnerMpi.DeviceDirectTransportMatchesHostAndSetsMovesCounter`,
+   `test/parallel/window_runner_mpi_test.cpp`, run directly at 2 and 3
+   ranks). Full account: KNOWN_ISSUES.md D77.
 6. Measured on higgs (Debug, GTX 1050 Ti, OpenMPI 4.1.5 -- built without
    CUDA support, so every GPU-aware MPI path ran its host-staged fallback;
    see D66), integrated gate 2026-10-13: host suite 295/296 (`-LE
@@ -574,6 +602,27 @@ the next step starts. Host mode byte-identity is the standing invariant.
     is kernel launch latency, which the scaled benchmark above shows
     disappearing at 1e6 cells.
 
+11. Measured on higgs after its 2026-10-17 stack change (Open MPI 5.0.9,
+   CUDA-aware; MOAB 5.6.0 rebuilt against it; Eigen 5.0.0; HDF5 on), gate
+   2026-10-18 on main 01a6d25 plus the fixes it forced: build-all host leg
+   332/353 before the Open MPI 5 launcher was told to oversubscribe
+   (every 5-rank and MPMD row refused with "not enough slots"; fixed by
+   adding `PRTE_MCA_rmaps_default_mapping_policy=:oversubscribe` next to
+   the Open MPI 4 variable in every MPI row's ENVIRONMENT), device leg
+   36/39, cuSPARSE tree 19/21. `fuse::linalg::mpi_is_gpu_aware()` is TRUE
+   here now, so this gate is the first in which the device-direct branch
+   of every exchange ran: ghost exchange, nodal remap and migration passed
+   (D66 closed); the Runner's `Transport` case segfaulted and is fixed by
+   `Transport::packed_layout()`/`move_packed()` (step 10, D77). Also
+   found: `parallel.window_newton_mpi.3` no longer hangs (D55 closed, an
+   Open MPI 4.1.5 artifact); `verification.fsi_energy_diag` now passes on
+   the host leg and fails the same gate in its `.device` twin (D56 moved,
+   still open); the participant ABI's `communicator == 0` sentinel
+   collides with Open MPI's Fortran handle for MPI_COMM_WORLD (D76, fixed
+   with `has_communicator`); `verification.fsi_coupled.device` in the
+   cuSPARSE tree (a row no earlier gate had run) diverges under the
+   cusolverRf backend, recorded under D44 rather than fixed.
+
 ## What the placement trace shows today
 
 `FUSE_DEVICE_DEBUG=1 ./fuse_runtime_runner_device_test` on the mean-over-four-
@@ -776,6 +825,19 @@ taken on this hardware) under both the natural and forced
 reachable in the code, but no host run here can confirm it moves data
 correctly with a real device pointer in MPI's own hands.
 
+**Update (transport-direct track, 2026-10-18).** higgs's stack changed
+2026-10-17: Open MPI 5.0.9 is CUDA-aware (`MPIX_Query_cuda_support()`
+returns 1), so the device-direct branch is reachable for real here now.
+For the `Transport` case specifically (this paragraph's own scope; the
+ghost/nodal-remap/migration exchanges are the separate backend tracks
+KNOWN_ISSUES.md D66/D77 also covers), the first real exercise segfaulted:
+`Transport::move()` was being handed a device pointer directly, and
+`move()`'s own pack/unpack is a host `std::memcpy`. Fixed by splitting
+`move()` into `packed_layout()` (the planned index arrays) and
+`move_packed()` (the bare `MPI_Alltoallv`, which a caller may legally hand
+device pointers) -- see the Transport row in the buffer table above and
+KNOWN_ISSUES.md D77 for the measured RED/GREEN evidence.
+
 **The reproducibility trade above, recovered (2026-10-15 follow-up).**
 The original nodal-remap exchange's own design (nodal_remap_distributed.hpp's
 header comment) proves its H^T total "bit-identical across rank counts" by
@@ -810,3 +872,42 @@ claim does not inherit that caveat). `apply_distributed_H`/
 `apply_distributed_HT` themselves, used at `comm_handle ==
 fuse::search::kNullComm`, were never affected (they keep their own
 original guarantee throughout).
+
+## TODO: remaining device work (as of 2026-10-19)
+
+Host-only or open from earlier rounds (marked TODO by the owner, 2026-10-19):
+
+- TODO D53: the supermesh (r3d/r2d) clip stays host-only; the device
+  feasibility measurement is blocked on three build-system items, not on the
+  algorithm (KNOWN_ISSUES.md D53).
+- TODO D67: the 1-ULP boundary-vertex weight-build difference. Main struck it
+  on 2026-10-18 (b49a1ef, 1D hat weights through the shared reference-map
+  inversion), after the base this branch was cut from. Left as a TODO until
+  the device twin of `build_distributed_interp_rows` is re-measured on higgs
+  at multi-rank splits.
+- TODO D73: the automatic remap halo. The RemapHalo track on main (rounds 1-4,
+  caller-driven `execute_remap_halo_instructions`, then `make_region_sizes()`)
+  owns the host path and was still waiting on its host measurement; the device
+  path of the halo build (`accumulate_remap_halo` and the halo exchange on
+  `Space`) has not been exercised. Re-run `parallel.native_remap_halo_runner.*`
+  and its `.device` twins on higgs once that lands.
+- TODO `MeshView::measure()` has no device-callable form: the distributed
+  nodal remap's H^T input gather (eval-side value times the eval cell measure)
+  still runs on the host regardless of `Space`.
+- TODO DistVector, the accelerators (Aitken, IQN-ILS, IQN-IMVJ) and the Newton
+  solves are host-only: arcs they touch are staged at the boundary, not kept
+  on the device.
+
+Open from the 2026-10-18 gate on higgs's rebuilt stack (each already recorded
+in KNOWN_ISSUES.md):
+
+- TODO D56: `verification.fsi_energy_diag.device` fails the mass-correction
+  gate on higgs (1.63e-10 vs 3.28e-11); main's D80 fix should cure it and has
+  not been measured on that host.
+- TODO D44: `verification.fsi_coupled.device` diverges under the cusolverRf
+  backend in the FUSE_ENABLE_CUSPARSE tree (not diagnosed).
+- TODO quiet timings: the scaled benchmark and `tools/bench-device.py` have
+  not been re-measured with the device-direct Transport path (the published
+  numbers in rollout step 10 are from the host-staged path).
+- TODO other backends: only Kokkos CUDA (sm_61) with Open MPI has been run;
+  HIP and SYCL builds, and MPICH with a CUDA-aware build, are untested.

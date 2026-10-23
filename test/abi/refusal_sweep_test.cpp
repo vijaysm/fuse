@@ -9,6 +9,10 @@
 
 #include <gtest/gtest.h>
 
+#if FUSE_HAVE_MPI
+#include <mpi.h>
+#endif
+
 #include <memory>
 #include <string>
 #include <vector>
@@ -165,6 +169,74 @@ TEST(AbiRefusalSweep, SetupRefusesAnMpmdComponentWithNoCommunicator) {
   ExpectLastErrorCode(t, ctx, "E-ABI-SETUP-COMPONENT");
   EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
 }
+
+// KNOWN_ISSUES.md D76: the Fortran handle of MPI_COMM_WORLD is 0 under Open
+// MPI (mpif.h: MPI_COMM_WORLD=0), which collided with this struct's own
+// sentinel for "no communicator supplied" -- examples/brusselator/
+// participants/{u_main.c,v_main.f90,coupler_main.c} pass exactly this
+// handle and were refused by SetupRefusesAnMpmdComponentWithNoCommunicator's
+// own check, above, on every Open MPI build (MPICH's own MPI_COMM_WORLD
+// handle, 0x44000000, never collided, so the defect was invisible there).
+// Guarded on FUSE_HAVE_MPI, like BaseCommunicatorReadsBackAFormedCommunicator
+// WhenMpiIsAvailable (struct_size_test.cpp): unlike that test, my_component
+// here IS set, so impl_setup() really does call fuse::transport::connect()
+// for this Mpmd-launched component -- safe even outside mpiexec because
+// Open MPI's singleton MPI_Init already sets MPI_APPNUM=0 for a one-process
+// job (measured on higgs, 2026-10-18: both a bare singleton MPI_Init and
+// `mpiexec -n 1` report MPI_APPNUM flag=1, appnum=0), matching the single
+// rank this graph's own RankSet{0, 1} and LaunchSpec::appnum=0 declare.
+#if FUSE_HAVE_MPI
+TEST(AbiRefusalSweep, SetupAcceptsAnMpmdComponentWithACommunicatorHandleOfZeroWhenFlagged) {
+  // connect()'s Mpmd branch reads MPI_APPNUM, which a launcher sets. Open MPI
+  // sets it (to 0) even for a singleton MPI_Init; MPICH sets nothing without
+  // mpiexec (measured on MPICH 5.0.0a1, 2026-10-19: this row run plain is
+  // refused with status -4, run under `mpiexec -n 1` it passes). The graph
+  // below also declares exactly one rank.
+  {
+    int world_size = 0;
+    int has_appnum = 0;
+    int* appnum = nullptr;
+    MPI_Comm_size(MPI_COMM_WORLD, &world_size);
+    MPI_Comm_get_attr(MPI_COMM_WORLD, MPI_APPNUM, &appnum, &has_appnum);
+    if (world_size != 1 || has_appnum == 0 || appnum == nullptr || *appnum != 0) {
+      GTEST_SKIP() << "needs one rank with MPI_APPNUM == 0 (Open MPI singleton, or "
+                      "`mpiexec -n 1`); world size " << world_size << ", MPI_APPNUM "
+                   << (has_appnum != 0 && appnum != nullptr ? std::to_string(*appnum)
+                                                             : std::string{"unset"});
+    }
+  }
+  fuse::CouplingGraph g;
+  fuse::ComponentDecl decl{
+      .name = "upstream", .ranks = fuse::RankSet{0, 1}, .interval = fuse::Rational{1}};
+  decl.launch.mode = fuse::LaunchMode::Mpmd;
+  decl.launch.appnum = 0;
+  g.add_component(decl);
+  const auto bytes = fuse::serialize(g);
+
+  const auto* t = Table();
+  ASSERT_NE(t, nullptr);
+  fuse_ctx* ctx = CreateAndLoad(t, bytes);
+
+  fuse_setup_options opts{.struct_size = sizeof(opts)};
+  // This process's REAL MPI_COMM_WORLD Fortran handle: 0 under Open MPI (the
+  // collision D76 fixes -- the flag below is what keeps it from reading as
+  // "none supplied"), nonzero under MPICH (0x44000000). A literal 0 would be
+  // an invalid handle for connect() to dereference under MPICH.
+  opts.communicator = static_cast<int64_t>(MPI_Comm_c2f(MPI_COMM_WORLD));
+  opts.has_end_time = 0;
+  opts.my_component = "upstream";
+  opts.has_communicator = 1;  // D76: a handle of 0 is deliberately supplied.
+  EXPECT_EQ(t->setup(ctx, &opts, nullptr), FUSE_OK);
+
+  fuse_base_communicator_info info{.struct_size = sizeof(info)};
+  EXPECT_EQ(t->base_communicator(ctx, nullptr, &info), FUSE_OK);
+  EXPECT_EQ(info.formed, 1)
+      << "a flagged communicator == 0 must form the base communicator, "
+         "exactly like any other nonzero handle";
+
+  EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
+}
+#endif  // FUSE_HAVE_MPI
 
 TEST(AbiRefusalSweep, SetupRefusesANonZeroReservedField) {
   // Review 2026-10-11 AB-11: entries.def documents fuse_setup_options::

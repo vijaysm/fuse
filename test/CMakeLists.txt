@@ -342,9 +342,14 @@ function(fuse_add_mpi_test layer name)
     # them on. The equivalent of passing `--oversubscribe` on the `mpiexec`
     # command line; these are correctness tests at a handful of ranks, not a
     # throughput benchmark, so running more ranks than physical cores is
-    # exactly the point at n=5.
+    # exactly the point at n=5. Open MPI 5 launches through PRRTE, which
+    # ignores the OMPI_MCA_rmaps_* spelling and reads its own
+    # PRTE_MCA_rmaps_default_mapping_policy instead (measured 2026-10-18 on
+    # the same host after its Open MPI 5.0.9 install: every n=5 row failed
+    # with "not enough slots" until the PRTE variable was added); both
+    # spellings are set so the rows run under either major version.
     set_tests_properties(${layer}.${name}.${n} PROPERTIES TIMEOUT 120 LABELS "${_fuse_mpi_labels}"
-      ENVIRONMENT "OMP_NUM_THREADS=${_fuse_mpi_threads};OMP_PROC_BIND=false;OMPI_MCA_coll_tuned_use_dynamic_rules=1;OMPI_MCA_coll_tuned_alltoallv_algorithm=2;OMPI_MCA_rmaps_base_oversubscribe=1")
+      ENVIRONMENT "OMP_NUM_THREADS=${_fuse_mpi_threads};OMP_PROC_BIND=false;OMPI_MCA_coll_tuned_use_dynamic_rules=1;OMPI_MCA_coll_tuned_alltoallv_algorithm=2;OMPI_MCA_rmaps_base_oversubscribe=1;PRTE_MCA_rmaps_default_mapping_policy=:oversubscribe")
   endforeach()
   # DEVICE_TWIN (docs/dev/device-resident-arcs.md Phase 3): re-registers
   # this row under FUSE_EXECUTION_SPACE=device at 1, 2 and 3 ranks --
@@ -372,7 +377,7 @@ function(fuse_add_mpi_test layer name)
                COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${n} $<TARGET_FILE:${target}>)
       set_tests_properties(${layer}.${name}.${n}.device PROPERTIES TIMEOUT 120
         LABELS "${_fuse_mpi_labels};device"
-        ENVIRONMENT "FUSE_EXECUTION_SPACE=device;OMP_NUM_THREADS=${_fuse_mpi_threads};OMP_PROC_BIND=false;OMPI_MCA_coll_tuned_use_dynamic_rules=1;OMPI_MCA_coll_tuned_alltoallv_algorithm=2;OMPI_MCA_rmaps_base_oversubscribe=1")
+        ENVIRONMENT "FUSE_EXECUTION_SPACE=device;OMP_NUM_THREADS=${_fuse_mpi_threads};OMP_PROC_BIND=false;OMPI_MCA_coll_tuned_use_dynamic_rules=1;OMPI_MCA_coll_tuned_alltoallv_algorithm=2;OMPI_MCA_rmaps_base_oversubscribe=1;PRTE_MCA_rmaps_default_mapping_policy=:oversubscribe")
     endforeach()
   endif()
 endfunction()
@@ -1221,7 +1226,7 @@ if(FUSE_ENABLE_MPI)
       # inherit it from this test process's environment.
       set_tests_properties(${_name} PROPERTIES
         LABELS "parallel;mpi;connect" TIMEOUT 120
-        ENVIRONMENT "OMPI_MCA_coll_tuned_use_dynamic_rules=1;OMPI_MCA_coll_tuned_alltoallv_algorithm=2;OMPI_MCA_rmaps_base_oversubscribe=1")
+        ENVIRONMENT "OMPI_MCA_coll_tuned_use_dynamic_rules=1;OMPI_MCA_coll_tuned_alltoallv_algorithm=2;OMPI_MCA_rmaps_base_oversubscribe=1;PRTE_MCA_rmaps_default_mapping_policy=:oversubscribe")
       # KNOWN_ISSUES.md D23's final account: the configure-time probe now
       # measures THIS row's own (accept, connect) rank layout, not just
       # 1+1. A layout that did not measure N of N is registered but marked
