@@ -4087,6 +4087,17 @@ and `.3` pass, including `AHostingRanksPluginMountFailureIsAgreedByEveryRankNotO
 hosts the plugin in that fixture, returned the same non-OK status with no hang); `abi.conformance`, `abi.plugin_agreement`, `abi.struct_size`
 and `abi.device_layout` pass. The MPI mutation row `participant-plugin-agreement-minloc-to-maxloc-mpi` is KILLED on the host. D15 stays open
 for the two limits recorded above and for a device-resident plugin field on a rank subset, which has never run.
+
+**Cross check (2026-10-22, "Cross check" track, Stage 3, ssh:higgs, Open MPI 5.0.9 + Kokkos CUDA, GTX 1050 Ti): the device-resident
+plugin field on a rank subset above still has never run -- measured, not closed.** `test/parallel/provider_device_subset_mpi_test.cpp`
+(new, this round) places the existing `device_layout_provider.cpp` plugin at `RankSet{1, 1}` (rank 1 only, a 2-rank world) with a
+host-resident native consumer, under `FUSE_EXECUTION_SPACE=device`, modelled on `provider_subset_mpi_test.cpp`'s own
+`APluginOnARankSubsetRunsOnlyOnItsOwnHostingRanksWithNoHang` shape. `fuse_initialize()` fails identically on both ranks before the
+device-memspace question this test was written to measure is ever reached: `E-RT-SIZE`, "field 'mixed.device_out' is registered with
+1x3 values but the plan sizes its region at 0x3" (`fuse::Runner::Impl::resolve_buffers`, `src/runtime/runner.cpp:361`, reached from
+`Runner::Impl::setup` (runner.cpp:3410) <- `Runner::initialize` (runner.cpp:5584) <- `impl_initialize_local`
+(participant.cpp:965) <- `impl_initialize` (participant.cpp:2696); gdb backtrace confirms this chain on ssh:higgs). The same message appears in `provider_subset_mpi_test.cpp`'s own `APluginOnARankSubsetRunsOnlyOnItsOwnHostingRanksWithNoHang` on the same machine (same `RankSet{1, world_size - 1}` shape). The track read both as one region-sizing defect for a RankSet not starting at rank 0; the lead's measurement of the communicator handle (D85) supersedes that reading, and the cause is recorded there. Registered `DISABLED_` (this round's own
+instruction: measure, do not fix) so a future fix to that upstream defect flips both rows back on together. The lead's own device-memspace concern (`unhosted_shell_`'s Host, count-0 view on a non-hosting rank under a real device backend) remains UNMEASURED, blocked by D85 and neither confirmed nor refuted. To measure it, give the test a nonzero communicator handle (D85).
 ### ~~D16. A window member's cold-start priming over-read a smaller provider buffer — FIXED 2026-10-03
 
 Found by ASan on a two-member window-scoped region whose members export fields of different
@@ -4515,6 +4526,23 @@ outside the sandbox: the `FUSE_FP_REPRODUCIBLE=OFF` policy (sandbox margin 2.09,
 tolerances moving across builds; a failure of this assertion there is to be read against the derivation, not widened. The bound includes the
 measured `vwall0` gap, so a regression that grows the gap loosens it (stated in the test). The example rows `example.fsi_channel.off_grid_dt` and
 `.dt_refused` pass on the host.
+
+**Cross check (2026-10-22, "Cross check" track, Stage 2, ssh:higgs, GCC, Debug, MPI OFF for this row): the higgs GCC toolchain,
+named above as unmeasured, is measured now, both FP policies.** `verification.fsi_energy_diag` PASSES on ssh:higgs under both
+`FUSE_FP_REPRODUCIBLE` policies (ON: 35.92 s; OFF, a separate tree configured `-DFUSE_FP_REPRODUCIBLE=OFF`: 35.35 s). The gated
+interface bound (this entry's own 2026-10-22 InterfaceBound paragraph above) holds in both: ON tolerance 6.874573e-16, measured
+interface power balance +1.027652e-17, ratio to tolerance 0.0149; OFF tolerance 6.874573e-16, measured +1.027652e-17, ratio
+0.0149 -- bit-identical between the two policies on this toolchain, confirmed by the build's own `flags.make`
+(`-ffp-contract=off` present under ON, absent under OFF, so the two trees genuinely differ in what was compiled). This
+contrasts with the darwin/AppleClang reference (ON tolerance 4.735389e-16, measured -5.993531e-17, ratio 0.1266; OFF tolerance
+3.771e-16, measured +1.803e-16, ratio 0.4782), where contraction visibly changes the term-by-term cancellation and the sign of
+the measured residual: on GCC/x86_64 for this specific graph, `-ffp-contract=off` does not change the computed bound or
+residual at all, while on AppleClang it does. Both toolchains' measured ratios stay well under 1 (margin 67x on
+higgs; 2.09 to 7.90 on darwin per the InterfaceBound paragraph above) -- the assertion's own standing is unaffected on either machine. The two policies giving bit-identical digits on higgs is MEASURED; why is
+NOT: it is consistent with that x86-64 build emitting no fused multiply-add instructions at all (the compile flags for `-march` were not
+reported), in which case `-ffp-contract` cannot change anything and this run does NOT exercise the FP-policy difference. If that holds, the
+only machine on which the thin FP-OFF margin (2.09) has been measured is the darwin arm64 one, and higgs confirms that the bound passes on a
+second toolchain, not on a second contracting one. To settle it: print the `-march` and `-mfma` state of that build.
 ### ~~D35. The accept/connect probe's verdict was cached once and never measured again — CLOSED 2026-10-12
 
 `cmake/FuseDependencies.cmake` ran `tools/probe-mpi-dynamic.sh` only when `FUSE_MPI_DYNAMIC_PROBED` was not in
@@ -12796,3 +12824,36 @@ output.
 ctest --test-dir <build-dir> -R '^backend.supermesh$' --repeat until-fail:200 --output-on-failure
 ctest --test-dir <build-dir> -R '^model.bfloat16$' --repeat until-fail:200 --output-on-failure
 ```
+
+### D85. The ABI reads a communicator handle of 0 as "no communicator", and Open MPI's Fortran handle for MPI_COMM_WORLD is 0 -- OPEN, found 2026-10-23 by the higgs cross-check
+
+**What was measured, read and inferred.** MEASURED (higgs, Open MPI 5.0.9, 2026-10-23, a 10-line program removed afterwards): `MPI_Comm_c2f(MPI_COMM_WORLD)` is 0
+on both ranks; MPICH's `MPI_COMM_WORLD` is `0x44000000` (1140850688, read from `/opt/mpich/include/mpi.h`). READ: `include/fuse/abi/entries.def` documents
+`fuse_setup_options::communicator` as "or 0 for none", and `src/abi/participant.cpp` sets `communicator_set = true` only inside `if (in->communicator != 0)`;
+without it `impl_initialize_local()` takes `rank = 0, num_ranks = 1` and `reconcile_plugin_agreement()` returns its local status unreconciled. MEASURED by the
+track (higgs, Open MPI 5.0.9, Kokkos CUDA, HEAD `3357eb6`, `FUSE_ENABLE_FORTRAN=OFF`): `parallel.provider_subset_mpi.{2,3}` FAIL on both of their tests, which passed
+on the darwin/MPICH host at `8e88f9c` (the commits since then change KNOWN_ISSUES.md and a mutation row only). `APluginOnARankSubsetRunsOnlyOnItsOwnHostingRanksWithNoHang`:
+`E-RT-SIZE`, "field 'upstream.out' is registered with 1x1 values but the plan sizes its region at 0x1" on every rank. `AHostingRanksPluginMountFailureIsAgreedByEveryRankNotOnlyTheHostingOnes`:
+`init_rc = -4` on every rank (the status half holds), but every rank including rank 0 carries `E-ABI-VERSION` (the designed rewrite `E-ABI-PLUGIN-AGREEMENT-REFUSED` never
+appears); the new `provider_device_subset_mpi_test` fails with the same `E-RT-SIZE` pattern. INFERRED, not yet measured: all three follow from the first two facts (each rank
+believes it is rank 0 of 1, so the plugin's `RankSet{1, N-1}` excludes it from the region's sizing, and nothing is reconciled). The agreement result on MPICH (D15) is
+unaffected: the handle there is nonzero.
+
+**Why it matters beyond the tests.** Any caller that passes `MPI_Comm_c2f(MPI_COMM_WORLD)` through the C or Fortran ABI on Open MPI is silently treated as a single process:
+no refusal, no message. Callers that pass a split or duplicated communicator (the Brusselator participants pass their own split communicators) are unaffected. This is a
+silent wrong behaviour on a supported MPI, which the project's own rule (a refusal counts as verified only when a test makes it fire) does not allow to stand.
+
+**Options (a decision for the owner; none implemented).**
+1. Append a field to `fuse_setup_options` (for example `communicator_given`, 0 by default) that says the `communicator` member is a handle even when it is 0. Old callers
+   keep the current meaning, zero-initialised structs stay valid, and the C and Fortran bindings pass a simple struct as before. Cost: every Open MPI caller must set it; a
+   caller who forgets still gets the silent behaviour.
+2. Refuse by name when `communicator == 0`, MPI is initialised, and `MPI_COMM_WORLD` has more than one rank, unless the caller set an explicit single-process flag. Closes the
+   silent case. Cost: breaks a legitimate "N independent processes, none coupled" launch, which would have to say so.
+3. Document that a communicator must be a duplicate or split (never `MPI_COMM_WORLD`'s own handle) and make the tests and the bindings' examples do so. No ABI change. Cost: the
+   silent case remains for anyone who does not read it.
+Option 1 plus a test that passes `MPI_COMM_WORLD` itself (red on Open MPI until the caller sets the flag) is the one the lead would recommend; it changes the append-only ABI, so it
+needs the owner's approval first.
+
+**To confirm the inference (host_pending, higgs).** Change `provider_subset_mpi_test.cpp`'s setup call to pass `MPI_Comm_c2f` of an `MPI_Comm_dup(MPI_COMM_WORLD)` (freed before
+`MPI_Finalize`) in a scratch copy and run both rows at 2 and 3 ranks under Open MPI 5.0.9: if they pass, the whole of D85 is the handle and nothing else. Then do the same in
+`provider_device_subset_mpi_test.cpp` to measure the device-memspace question D15 still carries. The macbook cannot run the device test (no device backend).
