@@ -96,6 +96,8 @@ Keep it current with the code:
 - Prefer a short, runnable example to a description. Include real source with `literalinclude`.
 - State limitations plainly where a user would hit them.
 - Say what the automated tests cover and what they do not.
+- Edit `docs/`, never the wiki. The wiki is generated from `docs/` by `tools/docs-to-wiki.py`
+  and republished when `main` changes. Run the script locally to preview it.
 
 ## Submitting a change
 

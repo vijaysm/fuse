@@ -9,7 +9,7 @@ You describe a coupled simulation as a graph of components, the fields they exch
 transfers between them. FUSE checks the graph, compiles it into an inspectable schedule, and runs it,
 on one process or across many MPI ranks, in one executable or several.
 
-- [CI](https://github.com/vijaysm/fuse/actions/workflows/ci.yml) · [Documentation](docs/index.md) ·
+- [CI](https://github.com/vijaysm/fuse/actions/workflows/ci.yml) · [Documentation](docs/index.md) · [Wiki](https://github.com/vijaysm/fuse/wiki) ·
   [Contributing](CONTRIBUTING.md) · [License](LICENSE)
 
 ## Why FUSE
@@ -143,7 +143,9 @@ pip install -r docs/requirements.txt
 sphinx-build -W -b html docs docs/_build/html
 ```
 
-Start with `docs/user/getting-started.md`, which takes you from a fresh clone to a running coupling.
+The same pages are published to the [project wiki](https://github.com/vijaysm/fuse/wiki), generated
+by `tools/docs-to-wiki.py`. Start with `docs/user/getting-started.md`, which takes you from a fresh
+clone to a running coupling.
 
 ## Planned
 

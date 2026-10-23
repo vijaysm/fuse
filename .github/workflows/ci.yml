@@ -40,6 +40,8 @@ jobs:
       - run: pip install -r docs/requirements.txt
       # A warning in the docs is a defect in the docs.
       - run: sphinx-build -W --keep-going -b html docs docs/_build/html
+      # The wiki pages are generated from docs/; make sure they still convert.
+      - run: python3 tools/docs-to-wiki.py "$RUNNER_TEMP/wiki-out"
 
   # The upstream-soma leg (imported coupler suite, standalone build) was
   # removed 2026-10-12 (soma-import track): FUSE_BUILD_UPSTREAM_SOMA no longer

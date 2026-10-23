@@ -1,0 +1,31 @@
+name: wiki
+
+# Publishes docs/ to the GitHub wiki whenever it changes on the default branch.
+# The wiki repository must exist: create any first page once in the web UI.
+
+on:
+  push:
+    branches: [main]
+    paths: ["docs/**", "tools/docs-to-wiki.py", "examples/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: python3 tools/docs-to-wiki.py "$RUNNER_TEMP/wiki-out"
+      - name: Push to the wiki
+        run: |
+          git clone "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.wiki.git" "$RUNNER_TEMP/wiki"
+          rsync -a --delete --exclude .git "$RUNNER_TEMP/wiki-out/" "$RUNNER_TEMP/wiki/"
+          cd "$RUNNER_TEMP/wiki"
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet || { git commit -m "Sync docs from ${{ github.sha }}"; git push; }
