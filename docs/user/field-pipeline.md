@@ -197,6 +197,64 @@ graph-authoring types (`CouplingGraph`, `ChannelBuilder`) have none; the two
 kinds of chain never mix. [](fluent-api.md) explains the distinction.
 :::
 
+## Value types
+
+A field view is templated on the type of its values. `fuse::FieldRef` and
+`fuse::FieldSpan<>` are the binary64 (`double`) views; any other value type is
+named explicitly:
+
+```cpp
+fuse::BasicFieldRef<float> ref(data, layout, fuse::MemorySpace::Host);
+registry.bind(id, ref);                       // the field remembers binary32
+auto f = registry.get<float>(id);             // succeeds
+auto g = registry.get(id);                    // get<double>(): refused
+auto s = fuse::FieldSpan<float>::from(f.value()).component(0);
+double total = s.local_sum();                 // accumulated in binary64
+```
+
+A field keeps the value type it was bound with. Reading it as another type is
+refused with `E-FIELD-VALUE-TYPE`, naming both types; nothing converts on
+read. `local_sum()` accumulates in binary64 for every value type, so a binary32
+field of 2^24, 1 and 1 sums to 2^24 + 2, where a binary32 accumulator would
+give 2^24.
+
+A type can be a field value type when it is trivially copyable and has a
+`fuse::value_traits<T>` specialization (`fuse/model/value_traits.hpp`). FUSE
+provides binary64, binary32 and `fuse::bfloat16`; you can add your own:
+
+```cpp
+struct Dual3 { double v[4]; };   // a value and three tangents
+
+template <>
+struct fuse::value_traits<Dual3> {
+  static constexpr std::string_view name = "myapp:dual3";
+  static constexpr fuse::FieldValueKind kind = fuse::FieldValueKind::LaneLinear;
+  using lane_type = double;
+  static constexpr int lanes = 4;
+  static double to_binary64(const Dual3& d) noexcept { return d.v[0]; }
+  static Dual3 from_binary64(double x) noexcept { return {{x, 0, 0, 0}}; }
+};
+```
+
+`kind` states how the type crosses the parts of FUSE that are not templates:
+
+| Kind | Meaning | Examples |
+|---|---|---|
+| `LaneLinear` | `lanes` values of `lane_type`, and every field operation acts on each lane separately | binary64, forward-mode dual numbers, complex values |
+| `Arithmetic` | needs its own arithmetic inside an operator | double-double, quad-double |
+| `Storage` | a compact format, widened exactly to binary64 and rounded once on return | binary32, bfloat16 |
+
+`fuse::CoupledValue<T>` checks these requirements at compile time, including
+that a `LaneLinear` type's lanes tile it exactly. A type without
+`value_traits` does not compile as a field value type. The conversion
+`value_traits<fuse::bfloat16>::from_binary64` is correctly rounded (to
+nearest, ties to even): it rounds the intermediate binary32 value to odd,
+because rounding to nearest twice is not correctly rounded.
+
+At this stage only the C++ field views and the registry take a value type. The
+C ABI, transport, remap and solver interfaces still carry binary64 fields;
+extending them is the next stage of the plan.
+
 ## Portable kernels
 
 The operations a coupled step spends its time in are templated on a Kokkos
