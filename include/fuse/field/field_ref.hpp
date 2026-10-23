@@ -3,6 +3,8 @@
 #include <cstddef>
 
 #include "fuse/base/error.hpp"
+#include "fuse/base/result.hpp"
+#include "fuse/model/value_traits.hpp"
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -42,7 +44,8 @@ inline constexpr std::size_t kSizeMax = std::numeric_limits<std::size_t>::max();
 
 }  // namespace detail
 
-/// Element and component strides, in units of `double` (not bytes).
+/// Element and component strides, in units of the field's value type `T`
+/// (not bytes; for the binary64 `FieldRef`, in units of `double`).
 ///
 ///   - `stride`           step from element `i` to element `i + 1`.
 ///   - `component_stride` step from component `c` to component `c + 1`;
@@ -67,7 +70,7 @@ struct Layout {
   int         components = 1;
 
   /// The component step actually used by the accessors: 0 means interleaved,
-  /// which is a step of one `double`.
+  /// which is a step of one value.
   [[nodiscard]] constexpr std::size_t effective_component_stride()
       const noexcept {
     return component_stride == 0 ? 1 : component_stride;
@@ -78,7 +81,7 @@ struct Layout {
   ///
   /// This is a correctness property, not a stylistic one: an aliasing layout
   /// does not crash, it silently makes two logically distinct degrees of
-  /// freedom the same `double`, which shows up much later as wrong physics.
+  /// freedom the same value, which shows up much later as wrong physics.
   /// FieldRegistry::bind() therefore rejects a layout that fails this, in
   /// every build configuration.
   [[nodiscard]] constexpr bool well_formed() const noexcept {
@@ -115,10 +118,12 @@ struct Layout {
   }
 };
 
-/// Non-owning view over component-owned storage (spec 4.2).
+/// Non-owning view over component-owned storage (spec 4.2), templated on the
+/// field's value type `T` (fuse/model/value_traits.hpp). `FieldRef` is the
+/// binary64 instance, and every interface that predates value types uses it.
 ///
 /// LIFETIME CONTRACT. `FieldRef` never allocates, never copies the data, and
-/// never takes ownership. It holds a raw `double*` supplied by the component
+/// never takes ownership. It holds a raw `T*` supplied by the component
 /// that owns the array, plus a layout describing how to walk it. Copying a
 /// `FieldRef` copies the pointer, not the data, and every copy writes through
 /// to the same owner storage.
@@ -132,14 +137,17 @@ struct Layout {
 ///
 /// A default-constructed `FieldRef` is the "unbound" state: `valid()` is
 /// false, `data()` is null, and `at()` throws.
-class FieldRef {
+template <CoupledValue T>
+class BasicFieldRef {
  public:
-  FieldRef() = default;
-  FieldRef(double* data, Layout layout, MemorySpace space)
+  using value_type = T;
+
+  BasicFieldRef() = default;
+  BasicFieldRef(T* data, Layout layout, MemorySpace space)
       : data_(data), layout_(layout), space_(space) {}
 
-  [[nodiscard]] double*       data() noexcept { return data_; }
-  [[nodiscard]] const double* data() const noexcept { return data_; }
+  [[nodiscard]] T*       data() noexcept { return data_; }
+  [[nodiscard]] const T* data() const noexcept { return data_; }
   [[nodiscard]] const Layout& layout() const noexcept { return layout_; }
   [[nodiscard]] MemorySpace   space() const noexcept { return space_; }
   [[nodiscard]] bool valid() const noexcept { return data_ != nullptr; }
@@ -161,10 +169,10 @@ class FieldRef {
   /// an assert compiles out and a bad index becomes a silent heap overflow.
   /// A negative `c` is the sharpest case -- `static_cast<std::size_t>(-1)`
   /// turns into an enormous positive offset.
-  [[nodiscard]] double& at(std::size_t i, int c = 0) {
+  [[nodiscard]] T& at(std::size_t i, int c = 0) {
     return data_[checked_offset(i, c)];
   }
-  [[nodiscard]] double at(std::size_t i, int c = 0) const {
+  [[nodiscard]] T at(std::size_t i, int c = 0) const {
     return data_[checked_offset(i, c)];
   }
 
@@ -186,14 +194,69 @@ class FieldRef {
     return offset(i, c);
   }
 
-  double*     data_ = nullptr;
+  T*          data_ = nullptr;
   Layout      layout_{};
   MemorySpace space_ = MemorySpace::Host;
 };
+
+/// The binary64 field view: every interface that predates value types.
+using FieldRef = BasicFieldRef<double>;
 
 // Spec 4.2, mechanically enforced: a view that owned anything could not be
 // trivially copyable or trivially destructible.
 static_assert(std::is_trivially_copyable_v<FieldRef>);
 static_assert(std::is_trivially_destructible_v<FieldRef>);
+
+/// A field view with its value type erased, so that one registry can hold
+/// fields of different value types. It keeps the `FieldValueType` it was made from
+/// and hands back a typed view only for that same type: a request for another
+/// type is refused (`E-FIELD-VALUE-TYPE`) rather than reinterpreting the bytes,
+/// and no conversion ever happens here. Converting a field's values is a
+/// pipeline stage with a named rounding, never a side effect of reading it.
+class AnyFieldRef {
+ public:
+  AnyFieldRef() = default;
+  template <CoupledValue T>
+  explicit AnyFieldRef(BasicFieldRef<T> ref) noexcept
+      : data_(ref.data()),
+        layout_(ref.layout()),
+        space_(ref.space()),
+        type_(field_value_type_of<T>()) {}
+
+  [[nodiscard]] const FieldValueType& value_type() const noexcept { return type_; }
+  [[nodiscard]] const Layout& layout() const noexcept { return layout_; }
+  [[nodiscard]] MemorySpace space() const noexcept { return space_; }
+  [[nodiscard]] bool valid() const noexcept { return data_ != nullptr; }
+
+  /// True when `as<T>()` would succeed.
+  template <CoupledValue T>
+  [[nodiscard]] bool holds() const noexcept {
+    return type_ == field_value_type_of<T>();
+  }
+
+  template <CoupledValue T>
+  [[nodiscard]] Result<BasicFieldRef<T>> as() const {
+    if (!holds<T>()) {
+      const FieldValueType want = field_value_type_of<T>();
+      return Failure{"E-FIELD-VALUE-TYPE",
+                     "the field holds " + std::string(type_.name) + " values (" +
+                         std::to_string(type_.size) + " bytes), but " +
+                         std::string(want.name) + " (" +
+                         std::to_string(want.size) +
+                         " bytes) was requested; a field's value type is fixed "
+                         "when it is bound and reading it never converts"};
+    }
+    return BasicFieldRef<T>(static_cast<T*>(data_), layout_, space_);
+  }
+
+ private:
+  void*       data_ = nullptr;
+  Layout      layout_{};
+  MemorySpace space_ = MemorySpace::Host;
+  FieldValueType   type_ = field_value_type_of<double>();
+};
+
+static_assert(std::is_trivially_copyable_v<AnyFieldRef>);
+static_assert(std::is_trivially_destructible_v<AnyFieldRef>);
 
 }  // namespace fuse
