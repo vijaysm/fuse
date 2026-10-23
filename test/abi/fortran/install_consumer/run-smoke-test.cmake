@@ -31,12 +31,21 @@ if(NOT _fuse_rc EQUAL 0)
   message(FATAL_ERROR "cmake --install failed (${_fuse_rc})")
 endif()
 
+# The install prefix itself goes first on the consumer's search path: a
+# dependency this build FETCHED (Kokkos, fmt, ... on a FUSE_ALLOW_FETCH=ON
+# configure, every CI leg) has no prefix of its own to forward, but
+# `cmake --install` above put its package config into this same prefix, so
+# the consumer finds that copy -- the one fuse-coupler was built against.
+# An installed dependency still resolves through the <pkg>_DIR forwarded in
+# FUSE_CONSUMER_DEP_ARGS, which find_package consults before any prefix.
+set(_fuse_consumer_prefix_path "${FUSE_INSTALL_PREFIX}" ${CMAKE_PREFIX_PATH})
+
 message(STATUS "abi.install_consumer_fortran: configuring the consumer against the install prefix")
 execute_process(
   COMMAND "${CMAKE_COMMAND}" -S "${CONSUMER_SRC_DIR}" -B "${CONSUMER_BUILD_DIR}"
           -G "${CMAKE_GENERATOR}"
           "-Dfuse-coupler_DIR=${FUSE_INSTALL_PREFIX}/lib/cmake/fuse-coupler"
-          "-DCMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}"
+          "-DCMAKE_PREFIX_PATH=${_fuse_consumer_prefix_path}"
           # <pkg>_DIR for every package this build's configure found, so the
           # consumer resolves the same ones (test/CMakeLists.txt, optional).
           ${FUSE_CONSUMER_DEP_ARGS}

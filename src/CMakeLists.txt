@@ -185,9 +185,15 @@ add_library(fuse::linalg ALIAS fuse-coupler-linalg)
 target_compile_features(fuse-coupler-linalg PUBLIC cxx_std_20)
 target_link_libraries(fuse-coupler-linalg PUBLIC fuse::base)
 # PRIVATE: which factorisation is inside is not part of the interface, and
-# Eigen must not land on a consumer's include path.
+# Eigen must not land on a consumer's include path. $<BUILD_LOCAL_INTERFACE:...>
+# for the same reason fuse-coupler-search's ArborX link uses it: Eigen is
+# header-only and only src/linalg/*.cpp include it, so the installed static
+# archive needs nothing from it at link time, and a FETCHED Eigen (the CI
+# legs: header-only, no subdirectory, nothing installed) has no package for
+# fuse-couplerConfig.cmake to find_dependency() -- every install consumer on
+# an eigen-backend fetch build failed configure on exactly that.
 if(FUSE_LINALG_BACKEND STREQUAL "eigen")
-  target_link_libraries(fuse-coupler-linalg PRIVATE Eigen3::Eigen)
+  target_link_libraries(fuse-coupler-linalg PRIVATE $<BUILD_LOCAL_INTERFACE:Eigen3::Eigen>)
   # The exact distributed direct solver for the backward-Euler periodic
   # Laplacian on row bands (docs/dev/schur-slab-solver.md) factors with
   # Eigen's SimplicialLDLT and dense LDLT and has no built-in alternative,

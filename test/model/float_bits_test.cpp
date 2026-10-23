@@ -124,6 +124,11 @@ TEST(FloatBits, X86ExtendedAllOnesMantissaRoundsUpThroughExponentCarry) {
                                  buf.size());
   const fd::NarrowingResult nr = fd::narrow_float(raw, x86ld, mac_double);
   ASSERT_TRUE(nr.changed);
+  // 2 - 2^-63 -> 2: the change is one unit of the source's last place.
+  // The carry branch once formed 2^64 as `uint64_t{1} << 64` -- undefined
+  // (UBSan: "shift exponent 64 is too large"), and on x86 the masked shift
+  // gave 1, so this read 2^-62.
+  EXPECT_EQ(nr.absolute_change, std::ldexp(1.0, -63));
   std::array<unsigned char, 8> outbuf{};
   fd::encode_float_bits(
       nr.decoded, mac_double,

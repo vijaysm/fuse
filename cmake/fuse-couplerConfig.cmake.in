@@ -26,15 +26,14 @@
 # PUBLIC/INTERFACE property, so install(EXPORT) never emitted a reference to
 # it and there is nothing here for a consumer to hit at configure time.
 #
-# Eigen3 is different -- CMake's install(EXPORT) DOES re-export a STATIC
-# library's PRIVATE link dependency (fuse::linalg PRIVATE-links Eigen3::Eigen
-# in src/CMakeLists.txt), as $<LINK_ONLY:Eigen3::Eigen> in
-# fuse-coupler-targets.cmake: a static archive carries no dependency
-# information of its own, so a consumer's link line needs it even though
-# Eigen contributes no symbols and no include path. Without find_dependency()
-# here, that generated file's own target existence check fails
-# fuse-coupler_FOUND for every consumer, unconditionally -- caught by
-# test/install_consumer's smoke test (CI run 36124149902, 2026-09-25).
+# Eigen3 is the same, but only since src/CMakeLists.txt wraps fuse::linalg's
+# link in $<BUILD_LOCAL_INTERFACE:Eigen3::Eigen>. Before that, install(EXPORT)
+# re-exported the STATIC library's PRIVATE link as $<LINK_ONLY:Eigen3::Eigen>
+# and this file had to find_dependency(Eigen3) for it (CI run 36124149902,
+# 2026-09-25) -- which no consumer of a build that FETCHED Eigen could satisfy,
+# since a fetched Eigen installs nothing. Eigen is header-only and only
+# src/linalg/*.cpp include it, so the archive needs nothing from it at link
+# time and the reference is gone.
 @PACKAGE_INIT@
 
 include(CMakeFindDependencyMacro)
@@ -61,11 +60,6 @@ endif()
 
 find_dependency(Kokkos)
 find_dependency(fmt)
-
-set(FUSE_LINALG_BACKEND "@FUSE_LINALG_BACKEND@")
-if(FUSE_LINALG_BACKEND STREQUAL "eigen")
-  find_dependency(Eigen3)
-endif()
 
 set(FUSE_ENABLE_MPI @FUSE_ENABLE_MPI@)
 set(FUSE_ENABLE_MOAB @FUSE_ENABLE_MOAB@)

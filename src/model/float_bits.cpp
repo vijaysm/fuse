@@ -284,14 +284,20 @@ NarrowingResult narrow_float(std::span<const std::byte> raw,
   // shifted back up by `drop` bits, equals 2^from_bits in the original
   // significand's own units) -- both cases reduce to one integer
   // subtraction at a single shared scale.
+  //
+  // Computed modulo 2^64, then read as signed: a source significand can be
+  // the full 64 bits (x86's 80-bit extended), where 2^from_bits does not fit
+  // -- `uint64_t{1} << 64` is undefined, and on x86 the masked shift gave 1
+  // and a delta twice the true one. The true delta is at most 2^drop in
+  // magnitude, so the wrapped difference is exact once read back as int64.
   const int drop = from_bits - to_bits;
   const std::uint64_t rounded_at_source_scale =
       (rounded.exponent_increment == 0)
           ? (rounded.significand << drop)
-          : (std::uint64_t{1} << from_bits);
-  const std::int64_t delta_units =
-      static_cast<std::int64_t>(rounded_at_source_scale) -
-      static_cast<std::int64_t>(src.significand);
+          : (from_bits >= 64 ? std::uint64_t{0}  // 2^64 == 0 (mod 2^64)
+                             : (std::uint64_t{1} << from_bits));
+  const auto delta_units =
+      static_cast<std::int64_t>(rounded_at_source_scale - src.significand);
   if (delta_units != 0) {
     result.changed = true;
     // value = delta_units * 2^(unbiased_exponent - (from_bits - 1)) --

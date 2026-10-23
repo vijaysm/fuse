@@ -571,8 +571,14 @@ if(FUSE_ENABLE_MPI)
         brusselator/participants/v_main.f90
         brusselator/participants/v_loop.f90
         brusselator/participants/shim.cpp)
+      # fuse::abi-fortran BEFORE fuse::abi: the archive's shim is the only
+      # reference to fuse_coupler_abi in this program, and a GNU ld that
+      # links with --as-needed (Ubuntu's default) drops libfuse-abi.so when
+      # it comes first and nothing before it needs it, then fails on the
+      # archive with "undefined reference to `fuse_coupler_abi'". Same order
+      # as test/abi/fortran/install_consumer and fuse_test_provider_linear_fortran.
       target_link_libraries(brusselator_v_main PRIVATE
-        fuse::abi fuse::abi-fortran MPI::MPI_Fortran MPI::MPI_C Eigen3::Eigen Kokkos::kokkos)
+        fuse::abi-fortran fuse::abi MPI::MPI_Fortran MPI::MPI_C Eigen3::Eigen Kokkos::kokkos)
       target_include_directories(brusselator_v_main PRIVATE brusselator)
       if(TARGET fuse::lowfive)
         fuse_link_lowfive_with_fmt_fix(brusselator_v_main)
