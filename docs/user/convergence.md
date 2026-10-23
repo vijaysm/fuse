@@ -1,5 +1,9 @@
 # Deciding when a coupled iteration has converged
 
+This page is for anyone setting a tolerance on an implicit coupling: it
+explains the two residual norms FUSE offers, when to choose each, and how the
+choice applies to Newton regions.
+
 An implicit coupling iterates until the residual over the exchanged interface
 values is small. What "small" means is a choice, and the default choice most
 couplers make is worth understanding before you rely on it.
@@ -7,8 +11,8 @@ couplers make is worth understanding before you rely on it.
 ## The plain norm and what it depends on
 
 The usual measure is the Euclidean norm over the array of interface values:
-`sqrt(sum r_i^2)`. It is cheap and it is what the inherited iteration-count
-regressions in this repository were recorded with, so it remains available. But
+`sqrt(sum r_i^2)`. It is cheap, and it is what published iteration counts are usually quoted
+with, so it remains available (`NormKind::Euclidean`). But
 it depends on four things that are not physics:
 
 | It changes when | Because |
@@ -56,118 +60,91 @@ yourself — so that the scaling is visible and reviewable.
 
 Use the weighted norm for new work, especially if you will change resolution or
 rank count. Use the plain norm when you are reproducing a published iteration
-count that was obtained with it. The choice is declared per implicit coupling group, so a setup
-records which one its tolerance refers to.
+count that was obtained with it.
 
-## Newton's own convergence tests
+## Newton regions
 
-A region selecting `AccelKind::Newton` does not go through
-`ConvergenceCriterion`/`NormKind` at all: `fuse::num::solve()`'s own
-`atol`/`rtol`/`stol` (`NewtonConfig`, the model-level mirror of `fuse::num::
-NewtonKrylovOptions`) test a norm over the region's whole stacked residual
-vector, chosen by `NewtonConfig::norm`:
+A region selecting `AccelKind::Newton` tests convergence on its own: `atol`,
+`rtol` and `stol` in `NewtonConfig` (`include/fuse/model/iteration.hpp`) are
+applied to a norm over the region's whole stacked residual vector, which
+concatenates every exchanged field. `NewtonConfig::norm` chooses that norm:
 
-| `NewtonConfig::norm` | tests |
+```cpp
+fuse::NewtonConfig cfg;
+cfg.rtol = 1e-8;
+cfg.norm = fuse::NewtonNorm::MeasureWeighted;   // default: fuse::NewtonNorm::Plain
+g.iterate({/* ... */}).until(/* per-field tolerances */).newton(cfg);
+```
+
+| `NewtonConfig::norm` | The `atol`/`rtol` test is applied to |
 |---|---|
-| `Plain` (default) | the PLAIN Euclidean 2-norm, `DistVector::norm2()` -- unchanged from every region declared before this option existed |
-| `MeasureWeighted` | `D * F(x)`, `F` scaled entry by entry before the SAME `atol`/`rtol`/`stol` test runs |
+| `Plain` (default) | the Euclidean 2-norm of the stacked residual `F(x)` |
+| `MeasureWeighted` | `D * F(x)`, where `D` is a fixed diagonal scaling built once per solve |
 
-**`Plain`** has the identical four dependencies the table at the top of this
-page names, with one further consequence worth naming explicitly: every
-field transfer the region measures is concatenated into ONE vector before
-Newton's own norm is taken, so a region mixing fields of different units
-(dn_heat's own `u_wall`, kelvin, and `q_wall`, W/m^2) is tested by a single
-number with no unit of its own, computed the same way `field_norm()`'s
-`E-NORM-UNITS` check exists specifically to refuse. `rtol`'s own RELATIVE
-form (`||F_k|| <= rtol * ||F_0||`) keeps this from being as unit-dependent
-as it looks (both numerator and denominator mix the same two fields in the
-same proportion, so a global rescaling of either field cancels), but it does
-not make the two fields' own convergence independently legible the way two
-separate `ConvergenceCriterion` measures do for a Picard-accelerated
-region: a field whose own error happens to dominate the concatenated norm's
-magnitude can mask slower convergence in the other.
+### When to choose which
 
-**`MeasureWeighted`** is the fix: each block of the stacked vector (one per
-exchanged field) is scaled by `D_i = sqrt(w_i / sum_block_w) / s_b` before
-the stacked norm is taken -- `w_i` the entity measure (length, area or
-volume) each entry lives on, normalised within its own block (the SAME
-root-mean-square weighting `NormKind::MeasureWeightedRms` above uses,
-applied per block rather than to one field in isolation), `s_b` the
-tolerance that block's own `ConvergenceCriterion` measure declares (matched
-by the channel's name, its provider's source field, or its consumer's
-target field -- whichever one a measure actually names). `1` in this scaled
-space means "at this block's own declared tolerance", in that block's own
-units, regardless of how the OTHER block's own units or magnitude compare:
-a block whose own physical magnitude is three orders larger than another's
-no longer dominates the combined norm just by being larger, since each
-block is normalised against its OWN tolerance before being combined with
-anything else. `NewtonConfig::stol` (the step-length test) is left
-unscaled either way -- it tests the Newton STEP, `x_{k+1} - x_k`, which has
-no declared tolerance of its own to normalise against.
+**`Plain`** has the four dependencies listed at the top of this page. Because
+all exchanged fields are concatenated into one vector, a region mixing fields
+of different units (a wall temperature in kelvin and a heat flux in W/m^2) is
+tested by a single number with no unit. The relative test
+(`||F_k|| <= rtol * ||F_0||`) softens this, since a global rescaling of either
+field cancels, but a field whose error dominates the concatenated norm can
+still mask slower convergence in another.
 
-A block this track's own setup cannot derive a tolerance scale for refuses
-eagerly, at `initialize()`, with `E-NEWTON-NORM-SCALE`: either no
-convergence measure names that block's channel, source field, or target
-field at all, or more than one does with DIFFERING tolerances (this
-project's own `ConvergenceCriterion` allows a measure to name any of the
-three, so two measures naming different ones of them for the same block,
-with different tolerances, is a genuine ambiguity this option will not
-silently resolve by picking one). Name the block with a single, consistent
-tolerance, or select `NewtonConfig::norm: Plain`.
+**`MeasureWeighted`** puts every block on a common footing. Each block of the
+stacked vector (one per exchanged field transfer) is scaled by
+`D_i = sqrt(w_i / sum_block_w) / s_b`, where `w_i` is the measure (length, area
+or volume) of the entity the entry lives on, normalised within its own block,
+and `s_b` is the tolerance declared for that block by the region's
+`ConvergenceCriterion`. A value of 1 in the scaled space therefore means "at
+this block's own tolerance, in its own units", and a block that is simply larger
+in magnitude no longer dominates. Choose it when the region mixes fields with
+different units or magnitudes, or when you will change resolution or partition.
 
-**The preconditioner.** A region additionally requesting
-`NewtonConfig::use_block_jacobi_preconditioner` under `MeasureWeighted`
-needs its own right preconditioner composed with `D^-1`
-(`(D*J)^-1 = J^-1 * D^-1`), not applied bare -- `docs/dev/newton-krylov.md`'s
-own new section on `NewtonNorm` has the derivation and the measured effect
-of getting this wrong.
+`stol` (the step-length test) is not scaled under either choice.
 
-**Window-scoped regions.** `decide_window_convergence()`, the agreement
-rule a window-scoped region's own Newton solve uses, is an UNWEIGHTED flat
-sum of squared per-block samples -- no spatial measure weighting of its
-own, and no weighting by which substep within the window a sample belongs
-to either. `MeasureWeighted` on a window-scoped region repeats each
-element's own spatial measure uniformly across every sample in its own
-window, matching that existing lack of time weighting rather than inventing
-one `decide_window_convergence()` itself does not use. Verified against
-the real Brusselator example (not just a synthetic fixture): every window
-converges under both norms, and the production diagonal matches this
-formula entry for entry at the example's own real grid; see
-`docs/dev/newton-krylov.md`'s own new section for the derivation and the
-measured results, including a window-specific weight-derivation defect
-this verification found and fixed (every window with more than one
-sample per transfer was refused before the fix).
+### Declaring per-block tolerances
 
-`fuse::num::solve()` remains a general Newton-Krylov solver over an
-arbitrary stacked residual either way, not specific to a coupling region's
-own named fields -- `MeasureWeighted` is this track's own answer to "scale
-the stacked vector so a region's own fields read on a common footing", not
-a change to `fuse::num::solve()`'s own algorithm.
+`MeasureWeighted` needs exactly one tolerance per block. A block's tolerance is
+taken from the convergence measure that names its channel, its provider's
+source field, or its consumer's target field.
 
-`NewtonConfig::substrate` (`Native` by default, `Petsc` selecting PETSc's
-own `SNESNEWTONLS` -- `docs/dev/newton-krylov.md` §10/§11) changes WHICH
-code evaluates this same test, never the test itself: both substrates read
-the identical `atol`/`rtol`/`stol`/`divergence_tolerance` from the SAME
-`NewtonConfig`, so a region's own convergence behaviour under this section
-is substrate-independent by construction -- the two can differ only in HOW
-closely each one's own GMRES/line-search implementation reaches the shared
-target (docs/dev/newton-krylov.md §10.3's own measured step-1 difference),
-never in what counts as converged.
+:::{warning}
+If no measure names a block, or several measures name it with differing
+tolerances, `initialize()` refuses with `E-NEWTON-NORM-SCALE`. Fix it by naming
+the block (by channel, source field or target field) in exactly one measure, or
+in several measures that agree on the tolerance; or select
+`NewtonNorm::Plain`.
+:::
 
-## Across more than one rank (KNOWN_ISSUES.md D31/D32)
+### Preconditioner
 
-A Newton-selected region -- window-scoped or ordinary -- whose own
-checkpointed components span more than one rank tests `atol`/`rtol`/
-`stol` against a norm AGREED across exactly that region's own
-participant ranks, never a locally computed one: the outer convergence
-test above, every GMRES inner product that decides the forcing-term-
-selected iteration count, and the line search's own step-length test
-all read through `RegionRuntime::newton_reducer`, a real `fuse::linalg::
-ParticipantSetReducer` built once at setup over the region's own
-participant set (`docs/dev/newton-krylov.md` §9.10). A rank outside
-that participant set takes no part in the test at all and reports no
-local iterate for the region. The SAME `NewtonConfig` fields this
-section already describes apply unchanged on either substrate (`Native`
-or `Petsc`) regardless of rank count -- what changes with rank count is
-only WHO contributes to the norm being tested, never which norm or
-which tolerance.
+A region that sets `use_block_jacobi_preconditioner` together with
+`MeasureWeighted` is handled for you: the preconditioner is composed with
+`D^-1` (`(D*J)^-1 = J^-1 * D^-1`). See [](../dev/newton-krylov.md) for the
+derivation.
+
+### Window-scoped regions
+
+For a window-scoped region ([](coupling-windows.md)), `MeasureWeighted` repeats
+each element's spatial weight uniformly across every sample in its window. The
+window agreement rule itself is an unweighted sum of squared per-block samples,
+with no weighting by substep, and `MeasureWeighted` does not add any.
+
+### Substrate and ranks
+
+`NewtonConfig::substrate` (`Native` by default, or `Petsc` when built with
+PETSc) changes which code evaluates these tests, never the tests: both read the
+same `atol`/`rtol`/`stol`/`divergence_tolerance`.
+
+When a Newton region's components span more than one rank, the norm is agreed
+across exactly that region's participant ranks: the outer convergence test,
+every GMRES inner product that selects the iteration count, and the line
+search's step-length test all use the same agreed value. Ranks outside the
+region take no part. Rank count changes who contributes to the norm, never
+which norm or tolerance applies.
+
+## See also
+
+- [](coupling-windows.md) for convergence across a window
+- [](../dev/newton-krylov.md) for the Newton-Krylov implementation

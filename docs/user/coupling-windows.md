@@ -2,8 +2,9 @@
 
 An iteration region's default form couples components on ONE clock: every
 member advances by the same interval, and the region's sweep loop rolls
-everyone back to the same instant. That default is unchanged and is what you
-get unless you opt in to what this page describes.
+everyone back to the same instant. That is what you get unless you opt in to
+what this page describes. This page is for anyone coupling components whose
+steps do not divide one another.
 
 Two components rarely share a clock in practice. A structural solver
 stepping every 13 s and a thermal solver stepping every 7 s do not
@@ -36,8 +37,8 @@ check, independent of the runtime driver:
 const auto ok = fuse::validate_coupling_window(graph, region, scope);
 ```
 
-Without this opt-in, a two-clock region is refused today exactly as it
-always has been (`E-SCHED-REGION`) — see
+Without this opt-in, a two-clock region is refused with
+`E-SCHED-REGION` — see
 `test/schedule/multirate_region_test.cpp`.
 
 ## Fixed or Adjustable, per component
@@ -103,57 +104,47 @@ above — no separate driver object to construct. `window_component`/
 thing either way; add the region as usual
 (`CouplingGraph::add_iteration_region`) with `decl.window_scope` set.
 
-This path is verified bit-for-bit against `WindowCoupler` itself, both
-waveform-relaxation modes, for a genuinely multirate (incommensurate)
-pair — `test/runtime/window_runner_straddle_test.cpp`. It is also
-host-verified across more than one MPI rank (`parallel.window_runner_mpi.{2,3}`,
-KNOWN_ISSUES.md D19) and across separately launched, separately compiled
-executables — the window a member of the Brusselator example runs
-([](multiple-executables.md)) is this same compiled path, not a second
-implementation.
+This path produces results bit-for-bit identical to `WindowCoupler` itself,
+in both waveform-relaxation modes, for a genuinely multirate (incommensurate)
+pair (`test/runtime/window_runner_straddle_test.cpp`). It also runs across
+more than one MPI rank (`parallel.window_runner_mpi.{2,3}`) and across
+separately launched, separately compiled executables: the window a member of
+the Brusselator example runs ([](multiple-executables.md)) is this same
+compiled path, not a second implementation.
 
-## What this does not do yet
+## Straddling steps and limitations
 
 A `DtPolicy::Fixed` member whose own step crosses the window end (the
 *straddling* step, above) is replayed by the Runner the same way
-`WindowCoupler::resolve_pending_straddles()` replays it for a directly-
-driven `WindowMember` — both a member straddling against its own later
-substeps and a straddling member's role as *another* member's import
-provider are wired in and checked bit-for-bit against the driver
-(`test/runtime/window_runner_straddle_test.cpp`). `DtPolicy::Adjustable`
-never straddles, so this does not apply to it.
+`WindowCoupler::resolve_pending_straddles()` replays it for a directly-driven
+`WindowMember`. This covers both a member straddling against its own later
+substeps and a straddling member acting as *another* member's import provider.
+`DtPolicy::Adjustable` never straddles, so this does not apply to it.
 
-A `DtPolicy::Fixed` member whose own interval *exceeds* the window
-length — a single step that spans past the window end rather than
-merely failing to divide it — is also handled by this same replay, not
-rejected: `test/runtime/window_runner_test.cpp`'s
-`WindowRunner.FixedPolicyStraddleNowSucceeds` runs exactly that shape
-(interval 1 on a 1/2-length window) to convergence. `WindowCoupler::
-create()` refuses this configuration outright on the driver path
-(`E-RT-WINDOW-LONGSTEP`, KNOWN_ISSUES.md D7, "a Fixed step may not span
-a window end it cannot replay") because the driver does not have this
-path's replay available to it; this compiled path's own
-`resolve_regions()` (`src/runtime/iteration.cpp`) deliberately does not
-mirror that refusal (review 2026-10-11, RT-3) — the divergence from the
-driver is intentional, not an oversight, and is covered by the test
-above rather than a runner-side refusal.
+A `DtPolicy::Fixed` member whose own interval *exceeds* the window length -- a
+single step that spans past the window end rather than merely failing to
+divide it -- is handled by the same replay on the Runner path
+(`test/runtime/window_runner_test.cpp`'s `WindowRunner.FixedPolicyStraddleNowSucceeds`
+runs interval 1 on a 1/2-length window to convergence). The directly driven
+`WindowCoupler::create()` has no such replay and refuses this configuration
+with `E-RT-WINDOW-LONGSTEP` ("a Fixed step may not span a window end it cannot
+replay").
 
-Three narrower combinations remain unsupported, all still rejected
-outright rather than silently wrong:
+Three combinations are unsupported and are rejected outright rather than
+silently wrong:
 
 - Two `DtPolicy::Fixed` members straddling the *same* window together
-  (`E-RT-WINDOW-STRADDLE`, KNOWN_ISSUES.md D7) — the replay above
-  handles exactly one straddling member per window, never two members
-  replaying against each other's own not-yet-resolved trajectories at
-  once.
-- `WaveformIteration::GaussSeidel` together with a real accelerator on
-  a window region (`E-RT-WINDOW-ACCEL`) — out of scope for this track.
-- A straddling `DtPolicy::Fixed` provider whose channel to its own
-  consumer crosses a genuine (non-identity) `Remap`, or whose provider
-  and consumer are declared on different ranks (`E-RT-WINDOW-STRADDLE-
-  REPUBLISH`) — the replay publishes its own corrected value straight
-  into the consumer's own import storage, which is only exact when
-  that channel moves no data at all (same ranks, same mesh/region);
-  running the publish through the channel's own compiled Transport/
-  Remap chain instead, so a genuine remap or cross-rank transfer is
-  handled rather than refused, is future work.
+  (`E-RT-WINDOW-STRADDLE`). The replay handles exactly one straddling member
+  per window.
+- `WaveformIteration::GaussSeidel` together with a real accelerator on a window
+  region (`E-RT-WINDOW-ACCEL`).
+- A straddling `DtPolicy::Fixed` provider whose channel to its consumer crosses
+  a genuine (non-identity) `Remap`, or whose provider and consumer are declared
+  on different ranks (`E-RT-WINDOW-STRADDLE-REPUBLISH`). The replay publishes
+  its corrected value straight into the consumer's import storage, which is
+  exact only when that channel moves no data (same ranks, same mesh/region).
+
+## See also
+
+- [](convergence.md) for convergence and acceleration across a window
+- [](multiple-executables.md) for splitting a windowed coupling across executables

@@ -3,25 +3,43 @@
 **F**lexible, **U**nified, **S**calable **E**xchange — a C++20 library for coupling multiphysics
 and multiscale simulations. Portable by construction, performant by measurement.
 
-A coupled simulation is authored as a graph, compiled to an inspectable operator IR, scheduled with
-exact rational time and an initialisation-time deadlock proof, and executed by an allocation-free
-runtime on Kokkos — over a native distributed unstructured mesh or MOAB, with collective failure
-reconciliation, conservative non-matching remap, waveform and space-time coupling, quasi-Newton
-acceleration, distributed Krylov and direct linear solvers, two C ABIs (participant and provider, C
-and Fortran) over one canonical serialised coupling specification, and a coupling split across more
-than one separately built executable.
+You describe a coupled simulation as a graph of components, the fields they exchange and the
+transfers between them. FUSE checks the graph, compiles it into an inspectable schedule with exact
+rational time and a start-up proof that it cannot deadlock, and runs it on Kokkos: on one process or
+many MPI ranks, in one executable or several.
 
-:::{note}
-FUSE is under construction. Pages marked **planned** describe an interface that is specified and
-scheduled but not yet built; pages describe only what exists unless they say otherwise. The
-distinction is deliberate — see [](dev/testing.md#the-five-states).
+::::{grid} 1 1 3 3
+:gutter: 3
+
+:::{grid-item-card} New to FUSE
+Build it, run a coupling, learn to read what it prints.
+
+[](user/getting-started.md), then [](user/quickstart.md) and [](user/concepts.md).
 :::
+
+:::{grid-item-card} Doing a task
+Find a recipe, then the page and example behind it.
+
+[](user/cookbook.md), [](user/examples.md), [](user/troubleshooting.md).
+:::
+
+:::{grid-item-card} Running at scale
+Placement, reproducibility, launch modes, diagnostics.
+
+[](user/power-users.md), [](user/placement.md), [](user/build.md).
+:::
+::::
 
 ```{toctree}
 :caption: User guide
 :maxdepth: 2
 
 user/index
+user/getting-started
+user/concepts
+user/cookbook
+user/power-users
+user/troubleshooting
 user/glossary
 user/build
 user/quickstart

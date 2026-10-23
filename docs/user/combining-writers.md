@@ -47,7 +47,7 @@ merges:
 `Mean` is unweighted. If the sources cover very different extents, it is
 probably not what you want; weighted merges are not implemented, and the
 absence is deliberate — the weights would have to come from coverage
-information the model does not yet carry.
+information the model does not carry.
 
 Every field transfer targeting the field participates. The rule does not list them,
 because a list is something a later field transfer can be left out of, and a
@@ -76,3 +76,7 @@ before the field is delivered. You can see it in the plan:
 The combined value is timed at its most recent contribution: if one field transfer is
 lagged and another is not, the result is available at the unlagged field transfer's
 step, and the dependence on that field transfer is preserved in the schedule.
+
+## See also
+
+- [](transfer-maps.md) for field transfers and remap weights

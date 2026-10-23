@@ -50,6 +50,6 @@ rst_prolog = """
    :language: cpp
 """
 
-# The API reference arrives at S1, when there is a public header to extract from.
+# Optional API reference from Doxygen XML (requires breathe).
 # breathe_projects = {"fuse": "_doxygen/xml"}
 # breathe_default_project = "fuse"

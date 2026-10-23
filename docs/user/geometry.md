@@ -123,7 +123,7 @@ say -- are refused outright, `E-REMAP-GEOMETRY`, "not the same domain": the
 library cannot know two different radii are meant to be the same sphere in
 different units, so it never guesses.
 
-**Rescaling is the driver's job, never the library's** (KNOWN_ISSUES D81).
+**Rescaling is the driver's job, never the library's.**
 `MoabMeshBackend::sphere_radius(MeshId[, ComponentId])` measures a mesh's
 vertices as a sphere about the origin and reports the mean radius and the
 largest single vertex's deviation from it, so a driver can decide what, if
@@ -136,18 +136,17 @@ no-op: no vertex coordinate is read back or rewritten.
 
 Both come in two forms: a `MeshId`-only overload for the backend's default
 decomposition, and a `(MeshId, ComponentId)` overload for a NAMED placement's
-own, independently-decomposed copy (`docs/user/placement.md`'s own
+own, independently-decomposed copy ([](placement.md)'s
 per-placement model) -- `set_placements()` gives every declared processor set
 its own Core with its own independently-read copy of every loaded mesh, so
 rescaling one placement's copy does nothing to another's, and a driver
 coupling two independently placed components over real files must call the
 placement-aware overload on EACH placement whose copy it will use.
 
-The library itself never calls either function: `build_remap_halo` keeps
-refusing `E-REMAP-GEOMETRY` exactly as before on a mismatched pair, whether or
-not a rescale was available. A driver loading real, differently-scaled
-spherical files -- grep for `FUSE_SPHERE_ATM`/`FUSE_SPHERE_OCN` in this
-tree's own test suite for a worked example -- queries or rescales explicitly,
+The library itself never calls either function: `build_remap_halo` refuses
+`E-REMAP-GEOMETRY` on a mismatched pair, whether or not a rescale was available. A driver loading real, differently-scaled
+spherical files -- see `FUSE_SPHERE_ATM`/`FUSE_SPHERE_OCN` in the
+test suite for a worked example -- queries or rescales explicitly,
 after `load()` and before the first `build_remap_halo`/`build_weights` call,
 collectively (every rank holding a piece of the mesh, or of that placement's
 own share of it, in the same order).
@@ -157,19 +156,16 @@ own share of it, in the same order).
 MOAB offers two different algorithms for deciding which source and target cells in the covering
 set actually overlap: an advancing front that walks cell adjacency outward from a small number of
 seed pairs, and a k-d-tree search that tests every target cell against the covering set directly
-by spatial proximity. FUSE's own `assemble()` always uses the k-d-tree search (KNOWN_ISSUES D82):
-on a genuinely partitioned (multi-rank) mesh, the advancing front left source cells that were
-present on a rank, and geometrically covered by that rank's own target cells, with no intersection
-at all, while the same pair at one rank was covered completely; a target cell such a cell alone
-would have covered is silently left short, with no error, only a lower delivered total than the
-true one. The likely cause is adjacency: the front expands only through cells that share MOAB's
-own vertex identity, which a cell adopted through the parallel exchange need not share with the
-resident cells (inferred, see `docs/dev/moab-intersection.md`). The k-d-tree search walks no
-adjacency and has no such dependency. This was measured directly on a real, partitioned sphere pair before the fix (the
-delivered total low by roughly 28 times the derived tolerance) and is why a driver should always
-trust `RemapWeights::min_src_coverage`/`min_tgt_coverage` -- not just whether `build_weights`
-returned -- before relying on a conservative channel's own total. See `docs/dev/moab-intersection.md`
-for the mechanism in full.
+by spatial proximity. FUSE's own `assemble()` always uses the k-d-tree search. On a partitioned (multi-rank) mesh the
+advancing front can leave source cells that are present on a rank, and geometrically covered by that
+rank's own target cells, with no intersection at all; a target cell such a cell alone would have
+covered is then silently left short, with no error, only a lower delivered total than the true one.
+The likely cause is adjacency: the front expands only through cells that share MOAB's own vertex
+identity, which a cell adopted through the parallel exchange need not share with the resident cells.
+The k-d-tree search walks no adjacency and has no such dependency. Regardless of algorithm, a driver
+should always check `RemapWeights::min_src_coverage`/`min_tgt_coverage` -- not just whether
+`build_weights` returned -- before relying on a conservative channel's own total. See
+`docs/dev/moab-intersection.md` for the mechanism in full.
 
 ### A remap halo on a placement is adopted into THAT placement's own Core
 
@@ -177,8 +173,8 @@ for the mechanism in full.
 `moab::Interface` the two meshes were resolved through -- the backend's
 default Core when no placement is named, or a DECLARED placement's own,
 independently-read Core (`set_placements()`, `docs/user/placement.md`)
-otherwise. KNOWN_ISSUES D83 (owner decision 2026-10-19): the covering cells
-that construction finds are adopted back into THAT SAME Core --
+otherwise. The covering cells that construction finds are adopted back into
+THAT SAME Core --
 `MoabMeshBackend::adopt_remap_halo`, `has_remap_halo`, `remap_halo_size`,
 `exchange_remap_halo` and `accumulate_remap_halo` all take an optional
 trailing `ComponentId placement` (default: the unplaced decomposition,
@@ -187,11 +183,8 @@ MOAB call -- the GLOBAL_ID tag read, `add_entities`, the gather/scatter
 exchange -- through that placement's own Core and communicator, never the
 default Core's unconditionally. A `moab::EntityHandle` is only ever
 meaningful within the ONE Core that allocated it; reading one back through
-a DIFFERENT Core (what an earlier revision of this library did whenever the
-delegated single-placement path happened to resolve through a NAMED
-placement rather than the default) is undefined by MOAB's own contract, not
-merely a bookkeeping slip, and is what the "no positive GLOBAL_ID" refusal
-in KNOWN_ISSUES D81's own round 7/8/9 history was actually measuring.
+a DIFFERENT Core is undefined by MOAB's own contract, which is why every call
+above is routed through the placement's own Core.
 
 The bookkeeping this adopts into (`has_remap_halo`'s own cache) is keyed by
 `(source, target, dim, placement)`, not `(source, target, dim)` alone: the
@@ -247,11 +240,10 @@ overlaps, so every individual weight has a reference value rather than only the
 row and column sums.
 
 The refinement study is one-dimensional, deliberately. The candidate search is
-currently a brute-force box test, and a five-level 3D study would take hours —
+a brute-force box test, and a five-level 3D study would take hours —
 the 5×5×5 → 7×7×7 case alone is about 1.5 million clip calls. In 3D the kernel
 is pinned against closed form instead, which says more about the geometry than
-a convergence slope does. A 3D study becomes affordable when a spatial index
-replaces the brute-force search.
+a convergence slope does.
 
 ## How a cell becomes simplices
 
@@ -275,3 +267,8 @@ records the fact.
 
 The tables are `constexpr` and device-callable, so a kernel can decompose a
 cell in place instead of asking the host for its corner list.
+
+## See also
+
+- [](placement.md) for per-placement meshes and Cores
+- [](transfer-maps.md) and [](point-cloud-remap.md) for the maps built on this geometry
