@@ -661,6 +661,19 @@ macro(fuse_resolve_dependencies)
   if(TARGET Kokkos::CUDA)
     target_compile_options(Kokkos::kokkoscore INTERFACE
       $<$<COMPILE_LANGUAGE:CXX>:-extended-lambda -Wext-lambda-captures-this -expt-relaxed-constexpr>)
+    # nvcc reports a host function called from device code (diagnostics
+    # #20011 and #20014, nvcc's "cross-execution-space-call" class) as a
+    # WARNING and still emits a binary. On the device that call does not do
+    # what the source says: measured on higgs (GTX 1050 Ti, CUDA 12.5), a
+    # kernel calling a host-only sqrt/abs returned wrong values for 4096 of
+    # 4096 inputs, and one calling a host-only conversion never returned
+    # (plans/2026-10-22-universal-number-types.md, section 2.3). Both are made
+    # errors here, for every CXX translation unit nvcc compiles. nvcc_wrapper
+    # forwards `--Werror=<kind>` to nvcc (a plain `--diag-error` would be
+    # handed to the host compiler instead). base.compile_fail.device_host_call
+    # is the test that this is in force.
+    target_compile_options(Kokkos::kokkoscore INTERFACE
+      $<$<COMPILE_LANGUAGE:CXX>:--Werror=cross-execution-space-call>)
     # Same gap, same reason, for the GPU architecture itself: a project using
     # CMake's native CUDA language gets -arch=sm_NN from CMAKE_CUDA_ARCHITECTURES
     # (which KokkosConfigCommon.cmake's own Kokkos_CUDA_ARCHITECTURES, set from

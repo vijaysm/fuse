@@ -1680,6 +1680,34 @@ if(_fuse_nested_build_env_mods)
     ENVIRONMENT_MODIFICATION "${_fuse_nested_build_env_mods}")
 endif()
 
+# A device kernel that calls a host-only function must not compile
+# (cmake/FuseDependencies.cmake, --Werror=cross-execution-space-call): nvcc
+# would otherwise warn and emit a binary whose call does the wrong thing on the
+# device. nvcc-specific, so registered only when Kokkos has the CUDA backend.
+# The pair has the same shape as field.compile_fail.dangling_span: the control
+# is the same kernel calling a KOKKOS_INLINE_FUNCTION and MUST build.
+if(TARGET Kokkos::CUDA)
+  foreach(case compile_fail_device_host_call compile_ok_device_host_call)
+    add_executable(fuse_base_${case} EXCLUDE_FROM_ALL base/${case}.cpp)
+    target_link_libraries(fuse_base_${case} PRIVATE fuse::base)
+  endforeach()
+  add_test(NAME base.compile_fail.device_host_call
+    COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
+            --target fuse_base_compile_fail_device_host_call)
+  set_tests_properties(base.compile_fail.device_host_call PROPERTIES
+    WILL_FAIL TRUE LABELS "compile_fail;device" RESOURCE_LOCK fuse_build_tree)
+  add_test(NAME base.compile_ok.device_host_call
+    COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
+            --target fuse_base_compile_ok_device_host_call)
+  set_tests_properties(base.compile_ok.device_host_call PROPERTIES
+    LABELS "compile_fail;device" RESOURCE_LOCK fuse_build_tree)
+  if(_fuse_nested_build_env_mods)
+    set_tests_properties(base.compile_fail.device_host_call
+                         base.compile_ok.device_host_call PROPERTIES
+      ENVIRONMENT_MODIFICATION "${_fuse_nested_build_env_mods}")
+  endif()
+endif()
+
 # ---------------------------------------------------------------- verification
 # AgreementBounds track: a tier-0 unit test of examples/dn_heat/
 # agreement_bound.hpp's own free function, with hand-built numbers (no
