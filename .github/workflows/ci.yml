@@ -66,37 +66,34 @@ jobs:
   # minutes in configure: the accept/connect probe (KNOWN_ISSUES.md D23) times
   # out each of its runs on this MPI and then disables that launch mode's rows.
   build:
-    name: ${{ matrix.name }}
+    name: ${{ matrix.family }}+gnu (${{ matrix.linalg }}, ${{ matrix.build }})
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
+      # A push runs the Release legs only, for a fast signal; a pull request
+      # runs Debug and Release. Built from axes plus `exclude` alone, with no
+      # `include`: an include entry that matches no remaining row becomes a
+      # job of its own, which would bring the Debug legs back on a push. Each
+      # family's own settings are derived from `matrix.family` below.
+      #   serial       -- builtin and eigen, Debug (PR only) and Release
+      #   mpi          -- Open MPI, builtin and eigen, Release
+      #   ubsan        -- UndefinedBehaviorSanitizer over the whole build,
+      #                   fetched dependencies included, builtin, Debug (PR only);
+      #                   -fno-sanitize-recover turns any report into a failure
+      #   noexceptions -- FUSE_ENABLE_EXCEPTIONS=OFF: every FUSE_THROW/ASSERT/
+      #                   REFUSE aborts after its on-error policy instead of
+      #                   unwinding, so the throw-asserting tests cannot run
+      #                   (-LE throws); eigen, Release
       matrix:
-        include:
-          - { name: "serial+gnu (builtin, Debug)",   linalg: builtin, build: Debug,   mpi: "OFF" }
-          - { name: "serial+gnu (builtin, Release)", linalg: builtin, build: Release, mpi: "OFF" }
-          - { name: "serial+gnu (eigen, Debug)",     linalg: eigen,   build: Debug,   mpi: "OFF" }
-          - { name: "serial+gnu (eigen, Release)",   linalg: eigen,   build: Release, mpi: "OFF" }
-          - { name: "mpi+gnu (builtin, Release)",    linalg: builtin, build: Release, mpi: "ON" }
-          - { name: "mpi+gnu (eigen, Release)",      linalg: eigen,   build: Release, mpi: "ON" }
-          # UndefinedBehaviorSanitizer over the whole build, fetched
-          # dependencies included; -fno-sanitize-recover turns any report into
-          # a failing test rather than a line in its log.
-          - name: "ubsan+gnu (builtin, Debug)"
-            linalg: builtin
-            build: Debug
-            mpi: "OFF"
-            flags: "-fsanitize=undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer"
-          # FUSE_ENABLE_EXCEPTIONS=OFF: every FUSE_THROW/ASSERT/REFUSE aborts
-          # after its on-error policy instead of unwinding, so the tests that
-          # assert a throw cannot run here by design (-LE throws); the leg
-          # proves the library and every other test build and pass with it.
-          - name: "noexceptions+gnu (eigen, Release)"
-            linalg: eigen
-            build: Release
-            mpi: "OFF"
-            exceptions: "OFF"
-            openmp: "OFF"
-            ctest_exclude: "throws|bench"
+        family: [serial, mpi, ubsan, noexceptions]
+        linalg: [builtin, eigen]
+        build: ${{ fromJSON(github.event_name == 'pull_request' && '["Debug", "Release"]' || '["Release"]') }}
+        exclude:
+          - { family: mpi, build: Debug }
+          - { family: ubsan, linalg: eigen }
+          - { family: ubsan, build: Release }
+          - { family: noexceptions, linalg: builtin }
+          - { family: noexceptions, build: Debug }
     env:
       # 5-rank rows on a 4-core runner; most mpi rows already set this themselves.
       OMPI_MCA_rmaps_base_oversubscribe: "1"
@@ -107,9 +104,13 @@ jobs:
       # standalone project from inside ctest, which only the environment
       # reaches -- without them it links the sanitized libraries without
       # libubsan ("DSO missing from command line"). Empty on every other leg.
-      CFLAGS: ${{ matrix.flags }}
-      CXXFLAGS: ${{ matrix.flags }}
-      FFLAGS: ${{ matrix.flags }}
+      CFLAGS: ${{ matrix.family == 'ubsan' && '-fsanitize=undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer' || '' }}
+      CXXFLAGS: ${{ matrix.family == 'ubsan' && '-fsanitize=undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer' || '' }}
+      FFLAGS: ${{ matrix.family == 'ubsan' && '-fsanitize=undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer' || '' }}
+      FUSE_CI_MPI: ${{ matrix.family == 'mpi' && 'ON' || 'OFF' }}
+      FUSE_CI_EXCEPTIONS: ${{ matrix.family == 'noexceptions' && 'OFF' || 'ON' }}
+      FUSE_CI_OPENMP: ${{ matrix.family == 'noexceptions' && 'OFF' || 'ON' }}
+      FUSE_CI_CTEST_EXCLUDE: ${{ matrix.family == 'noexceptions' && 'throws|bench' || 'bench' }}
     steps:
       - uses: actions/checkout@v4
       # gfortran: with no Fortran compiler the ffuse binding is not built and
@@ -118,7 +119,7 @@ jobs:
       # leg would be red for a missing package rather than for a defect.
       - run: >
           sudo apt-get update && sudo apt-get install -y ninja-build libomp-dev gfortran
-          ${{ matrix.mpi == 'ON' && 'openmpi-bin libopenmpi-dev' || '' }}
+          ${{ matrix.family == 'mpi' && 'openmpi-bin libopenmpi-dev' || '' }}
       # fmt and googletest are never taken from the system (the
       # CMAKE_DISABLE_FIND_PACKAGE_* flags), and FUSE_ALLOW_FETCH=ON builds the
       # pinned copy of whatever is missing instead of hard-failing. Kokkos is
@@ -130,13 +131,13 @@ jobs:
           cmake -S . -B build -G Ninja
           -DCMAKE_BUILD_TYPE=${{ matrix.build }}
           -DFUSE_LINALG_BACKEND=${{ matrix.linalg }}
-          -DFUSE_ENABLE_MPI=${{ matrix.mpi }}
-          -DFUSE_ENABLE_EXCEPTIONS=${{ matrix.exceptions || 'ON' }}
+          -DFUSE_ENABLE_MPI=$FUSE_CI_MPI
+          -DFUSE_ENABLE_EXCEPTIONS=$FUSE_CI_EXCEPTIONS
           -DFUSE_ALLOW_FETCH=ON
           -DFUSE_BUILD_UPSTREAM_KARMA=OFF
-          -DKokkos_ENABLE_SERIAL=ON -DKokkos_ENABLE_OPENMP=${{ matrix.openmp || 'ON' }}
+          -DKokkos_ENABLE_SERIAL=ON -DKokkos_ENABLE_OPENMP=$FUSE_CI_OPENMP
           -DCMAKE_DISABLE_FIND_PACKAGE_fmt=ON
           -DCMAKE_DISABLE_FIND_PACKAGE_GTest=ON -DCMAKE_DISABLE_FIND_PACKAGE_Eigen3=ON
       - run: cmake --build build -j
-      - run: ctest --test-dir build --output-on-failure -LE '${{ matrix.ctest_exclude || 'bench' }}'
+      - run: ctest --test-dir build --output-on-failure -LE "$FUSE_CI_CTEST_EXCLUDE"
       - run: cat build/fuse-resolved-dependencies.txt
