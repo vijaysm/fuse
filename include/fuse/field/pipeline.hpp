@@ -41,6 +41,14 @@
 /// temporary without a copy. The dangling spelling -- taking a borrowed view
 /// out of a temporary -- is `= delete`d, so it is a compile error rather than
 /// a use-after-free (there is a compile-fail test for it).
+///
+/// VALUE TYPES. Both classes take the field's value type first
+/// (fuse/model/value_traits.hpp); `FieldSpan<>` and `OwnedField<>` are the
+/// binary64 views every caller that predates value types uses. The stages are
+/// the same for every value type, because they only select elements and
+/// components. `local_sum()` accumulates in binary64 through
+/// `value_traits<T>::to_binary64`, which for binary64 itself is the identity,
+/// so a binary64 view sums exactly as it did before.
 
 #include <cstddef>
 #include <string>
@@ -80,11 +88,12 @@ namespace fuse {
 /// A borrowed, strided, two-dimensional view of a field: elements by
 /// components. Unmanaged, so constructing one and taking subviews of it cannot
 /// allocate -- which is the property the fence test pins.
-template <class MemSpace = Kokkos::HostSpace>
+template <CoupledValue T = double, class MemSpace = Kokkos::HostSpace>
 class FieldSpan {
  public:
+  using value_type = T;
   using view_type =
-      Kokkos::View<double**, Kokkos::LayoutStride, MemSpace,
+      Kokkos::View<T**, Kokkos::LayoutStride, MemSpace,
                    Kokkos::MemoryTraits<Kokkos::Unmanaged>>;
 
   explicit FieldSpan(view_type v) noexcept : v_(v) {}
@@ -92,7 +101,7 @@ class FieldSpan {
   /// Wraps a registered field. `FieldRef`'s two strides map exactly onto a
   /// `LayoutStride`, which is why the pipeline needs no separate layout
   /// notion: interleaved and blocked storage are both just stride pairs.
-  static FieldSpan from(const FieldRef& f) {
+  static FieldSpan from(const BasicFieldRef<T>& f) {
     // Mirror FieldRegistry::bind()'s own allowance exactly (REVIEW.md R-08):
     // null is rejected only when there is something to point AT. A rank that
     // legitimately owns zero elements of a mesh entity set binds a null pointer with
@@ -108,7 +117,7 @@ class FieldSpan {
     Kokkos::LayoutStride ls(l.count, l.stride,
                             static_cast<std::size_t>(l.components),
                             l.effective_component_stride());
-    return FieldSpan(view_type(const_cast<double*>(f.data()), ls));
+    return FieldSpan(view_type(const_cast<T*>(f.data()), ls));
   }
 
   // --- non-terminal stages: lazy, allocation-free, [[nodiscard]] -----------
@@ -150,7 +159,7 @@ class FieldSpan {
   }
   [[nodiscard]] const view_type& kokkos_view() const noexcept { return v_; }
 
-  [[nodiscard]] double at(std::size_t i, std::size_t c = 0) const {
+  [[nodiscard]] T at(std::size_t i, std::size_t c = 0) const {
     if (i >= v_.extent(0) || c >= v_.extent(1)) {
       FUSE_REFUSE("E-FIELD-EXTENT-RANGE",
                   "({}, {}) is outside this view's {} x {}", i, c,
@@ -159,7 +168,7 @@ class FieldSpan {
     return v_(i, c);
   }
 
-  void fill(double value) const {
+  void fill(T value) const {
     for (std::size_t i = 0; i < v_.extent(0); ++i) {
       for (std::size_t c = 0; c < v_.extent(1); ++c) v_(i, c) = value;
     }
@@ -173,7 +182,9 @@ class FieldSpan {
   [[nodiscard]] double local_sum() const {
     double s = 0.0;
     for (std::size_t i = 0; i < v_.extent(0); ++i) {
-      for (std::size_t c = 0; c < v_.extent(1); ++c) s += v_(i, c);
+      for (std::size_t c = 0; c < v_.extent(1); ++c) {
+        s += value_traits<T>::to_binary64(v_(i, c));
+      }
     }
     return s;
   }
@@ -185,16 +196,17 @@ class FieldSpan {
 /// A field that owns its storage. The pipeline needs one so that the rvalue
 /// lifetime rule has something to be about: a `FieldSpan` always borrows, and
 /// borrowing from a temporary is the bug U6 exists to prevent.
-template <class MemSpace = Kokkos::HostSpace>
+template <CoupledValue T = double, class MemSpace = Kokkos::HostSpace>
 class OwnedField {
  public:
-  using view_type = Kokkos::View<double**, Kokkos::LayoutStride, MemSpace>;
+  using value_type = T;
+  using view_type = Kokkos::View<T**, Kokkos::LayoutStride, MemSpace>;
 
   OwnedField(const std::string& label, std::size_t elements,
              std::size_t components)
       : v_(Kokkos::view_alloc(label, Kokkos::WithoutInitializing),
            Kokkos::LayoutStride(elements, components, components, 1)) {
-    Kokkos::deep_copy(v_, 0.0);
+    Kokkos::deep_copy(v_, value_traits<T>::from_binary64(0.0));
   }
   explicit OwnedField(view_type v) noexcept : v_(v) {}
 
@@ -202,11 +214,11 @@ class OwnedField {
   /// `make_field().span()` a compile error instead of a dangling view. This
   /// deletion is the whole of U6's enforcement and there is a compile-fail
   /// test for it.
-  [[nodiscard]] FieldSpan<MemSpace> span() const& {
-    return FieldSpan<MemSpace>(typename FieldSpan<MemSpace>::view_type(
+  [[nodiscard]] FieldSpan<T, MemSpace> span() const& {
+    return FieldSpan<T, MemSpace>(typename FieldSpan<T, MemSpace>::view_type(
         v_.data(), v_.layout()));
   }
-  [[nodiscard]] FieldSpan<MemSpace> span() const&& = delete;
+  [[nodiscard]] FieldSpan<T, MemSpace> span() const&& = delete;
 
   /// Chaining on an rvalue yields an OWNING value. `Kokkos::subview` of a
   /// managed view is managed and shares the reference count, so the buffer
@@ -221,8 +233,8 @@ class OwnedField {
         Kokkos::make_pair(components.lo, c_hi)));
   }
   /// On an lvalue the same call borrows, because the field outlives the chain.
-  [[nodiscard]] FieldSpan<MemSpace> slice(const Extent& elements,
-                                          const Extent& components) const& {
+  [[nodiscard]] FieldSpan<T, MemSpace> slice(const Extent& elements,
+                                             const Extent& components) const& {
     return span().slice(elements, components);
   }
 

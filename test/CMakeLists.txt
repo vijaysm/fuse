@@ -1600,6 +1600,10 @@ fuse_tests_gated_by(FUSE_ENABLE_MPI parallel/field_transaction_mpi_test.cpp)
 if(FUSE_ENABLE_MPI)
   fuse_add_mpi_test(parallel field_transaction_mpi LIBS fuse::field RANKS 2 3)
 endif()
+# Field value types (plans/2026-10-22-universal-number-types.md, U1): the
+# value_traits/CoupledValue concept, the type-erased registry, typed pipeline
+# views and the correctly rounded binary64 -> bfloat16 conversion.
+fuse_add_gtest(field value_type NO_LAYER_LIB LIBS fuse::model fuse::base)
 fuse_add_gtest(num space_kernels)
 fuse_add_omp_legs(num.space_kernels fuse_num_space_kernels_test)
 
