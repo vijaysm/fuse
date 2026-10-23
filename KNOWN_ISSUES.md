@@ -4097,7 +4097,7 @@ device-memspace question this test was written to measure is ever reached: `E-RT
 1x3 values but the plan sizes its region at 0x3" (`fuse::Runner::Impl::resolve_buffers`, `src/runtime/runner.cpp:361`, reached from
 `Runner::Impl::setup` (runner.cpp:3410) <- `Runner::initialize` (runner.cpp:5584) <- `impl_initialize_local`
 (participant.cpp:965) <- `impl_initialize` (participant.cpp:2696); gdb backtrace confirms this chain on ssh:higgs). The same message appears in `provider_subset_mpi_test.cpp`'s own `APluginOnARankSubsetRunsOnlyOnItsOwnHostingRanksWithNoHang` on the same machine (same `RankSet{1, world_size - 1}` shape). The track read both as one region-sizing defect for a RankSet not starting at rank 0; the lead's measurement of the communicator handle (D85) supersedes that reading, and the cause is recorded there. Registered `DISABLED_` (this round's own
-instruction: measure, do not fix); D85 records the cause (the setup call did not set `has_communicator`) and the fix, so the row is to be re-enabled after a higgs run with the flag set. The lead's own device-memspace concern (`unhosted_shell_`'s Host, count-0 view on a non-hosting rank under a real device backend) remains UNMEASURED, blocked by D85 and neither confirmed nor refuted. The test's setup call now sets `has_communicator = 1` (D85); its higgs run is pending.
+instruction: measure, do not fix); D85 records the cause (the setup call did not set `has_communicator`) and the fix, so the row is to be re-enabled after a higgs run with the flag set. The lead's own device-memspace concern (`unhosted_shell_`'s Host, count-0 view on a non-hosting rank under a real device backend) remains UNMEASURED end to end. The higgs run of 2026-10-23 reached it (rank 1 registers `device_out` as Device, count 1; rank 0 as Host, count 0, the expected asymmetry); the row's own `fuse_run` call then failed on a null request, now fixed in the test (D85), and the delivered-value comparison has not run.
 ### ~~D16. A window member's cold-start priming over-read a smaller provider buffer — FIXED 2026-10-03
 
 Found by ASan on a two-member window-scoped region whose members export fields of different
@@ -4543,6 +4543,19 @@ NOT: it is consistent with that x86-64 build emitting no fused multiply-add inst
 reported), in which case `-ffp-contract` cannot change anything and this run does NOT exercise the FP-policy difference. If that holds, the
 only machine on which the thin FP-OFF margin (2.09) has been measured is the darwin arm64 one, and higgs confirms that the bound passes on a
 second toolchain, not on a second contracting one. To settle it: print the `-march` and `-mfma` state of that build.
+
+
+**Cross check 2 (2026-10-23, "Cross check 2" track, ssh:higgs, HEAD `26e7264`): settled -- no FMA is emitted, confirming the hypothesis directly above.**
+The exact compile command for `test/verification/fsi_energy_diag_test.cpp` (captured from a `VERBOSE=1` build, not inferred): `-g -std=c++20 -fPIE
+-ffp-contract=off -extended-lambda -Wext-lambda-captures-this -expt-relaxed-constexpr -arch=sm_61 -fopenmp` -- no `-march`, `-mtune` or `-mfma` flag anywhere
+in it (`-arch=sm_61` is `nvcc_wrapper`'s own GPU target flag, unrelated to the x86 host ISA). `objdump -d fuse_verification_fsi_energy_diag_test | grep -ci
+vfmadd` (and `vfnmadd`, `vfmsub`) all report 0: the binary contains no fused-multiply-add instruction of any kind. `g++ -march=native -E -v -xc /dev/null`
+on this same host reports `-march=nehalem` -- a microarchitecture that predates AVX2/FMA3 entirely, so even an explicit `-march=native` build here could not
+emit one. This settles the open question above: the higgs GCC build's bit-identical digits under both `FUSE_FP_REPRODUCIBLE` policies are not evidence the
+bound is contraction-independent in general -- this specific build and this specific host never had an FMA to contract in the first place, so
+`-ffp-contract=off` had nothing to suppress. The thin FP-OFF margin (2.09, darwin/AppleClang/arm64) remains the only measurement of this bound under real
+contraction; higgs confirms a second, non-contracting toolchain passes, not a second contracting one.
+
 ### ~~D35. The accept/connect probe's verdict was cached once and never measured again — CLOSED 2026-10-12
 
 `cmake/FuseDependencies.cmake` ran `tools/probe-mpi-dynamic.sh` only when `FUSE_MPI_DYNAMIC_PROBED` was not in
@@ -12874,7 +12887,7 @@ ctest --test-dir <build-dir> -R '^backend.supermesh$' --repeat until-fail:200 --
 ctest --test-dir <build-dir> -R '^model.bfloat16$' --repeat until-fail:200 --output-on-failure
 ```
 
-### D85. Five MPI test sites passed MPI_COMM_WORLD's Fortran handle without `has_communicator`, which Open MPI reads as "no communicator" -- FIXED 2026-10-23 in the sandbox, host run pending (found 2026-10-23 by the higgs cross-check)
+### D85. Five MPI test sites passed MPI_COMM_WORLD's Fortran handle without `has_communicator`, which Open MPI reads as "no communicator" -- FIXED 2026-10-23 and host-verified on Open MPI 5.0.9 for all five ctest rows; the sixth, the device-subset row, and one owner decision stay open (found 2026-10-23 by the higgs cross-check)
 
 **What was measured, read and inferred.** MEASURED (higgs, Open MPI 5.0.9, 2026-10-23, a 10-line program removed afterwards): `MPI_Comm_c2f(MPI_COMM_WORLD)` is 0
 on both ranks; MPICH's `MPI_COMM_WORLD` is `0x44000000` (1140850688, read from `/opt/mpich/include/mpi.h`). READ: a handle of 0 without `has_communicator = 1` is
@@ -12895,12 +12908,36 @@ A run-time test (`MPI_Comm_f2c(0) == MPI_COMM_WORLD`) would identify Open MPI, b
 "MPI_COMM_WORLD" (0) on that MPI: a single-process caller on Open MPI would silently join a coupled run, or deadlock. An explicit flag keeps both meanings and costs one
 field, which is why D86 chose it.
 
-**Still open.** (1) A host run on higgs (Open MPI 5.0.9) of `parallel.provider_subset_mpi.{2,3}`, `parallel.abi_reconcile_mpi`, `parallel.abi_reconcile_disjoint_mpi.3` and
-`provider_device_subset_mpi.2` with the flag set; D85 is struck only when that shows the inference holds. If any row still fails, the failure is a separate finding and this
-entry's inference was incomplete. (2) `provider_device_subset_mpi_test.cpp` stays `DISABLED_` until that run shows it reaches the device-memspace question.
-(3) The ABI still permits the silent case for a caller that passes handle 0 on Open MPI and omits the flag; whether to refuse a handle of 0 when MPI is initialised and
-`MPI_COMM_WORLD` has several ranks, unless the caller declares a single-process run, is an owner decision (it would break a legitimate "N independent processes" launch that
-does not say so).
+**Still open (updated 2026-10-23, after the second higgs cross-check).** (1) DONE: the host run on higgs (Open MPI 5.0.9, HEAD `26e7264`) passed
+`parallel.provider_subset_mpi.{2,3}`, `parallel.abi_reconcile_mpi.{2,3}` and `parallel.abi_reconcile_disjoint_mpi.3`, so the inference holds for those rows (see the
+"Cross check 2" paragraph below). (2) `provider_device_subset_mpi_test.cpp` stays `DISABLED_`: that run reached the device-memspace question (rank 1 registers
+`device_out` as Device, count 1; rank 0 as Host, count 0) and then failed because the test passed a null `fuse_run_request`. The lead fixed that in the test on
+2026-10-23 (a real request, `periods = 3`; the mislabelled `err.code=` prints now say `msg=`); the fixed row has NOT been run, so the `DISABLED_` prefix is removed only after
+a higgs run shows it passes and its delivered values equal the expected `1000*(e+1) + (c+1)` exactly. (3) Unchanged, an owner decision: the ABI still permits the silent
+case for a caller that passes handle 0 on Open MPI and omits the flag; whether to refuse a handle of 0 when MPI is initialised and `MPI_COMM_WORLD` has several ranks,
+unless the caller declares a single-process run, would break a legitimate "N independent processes" launch that does not say so.
+
+**Cross check 2 (2026-10-23, "Cross check 2" track, ssh:higgs, HEAD `26e7264`, Open MPI 5.0.9 + Kokkos CUDA, GTX 1050 Ti): the inference holds for
+all five ctest rows; the device-subset row reaches the point this entry's own item (2) asks for, then fails for an unrelated, test-only reason.** `parallel.provider_subset_mpi.{2,3}`,
+`parallel.abi_reconcile_mpi.{2,3}` and `parallel.abi_reconcile_disjoint_mpi.3` all PASS on the host, with `has_communicator = 1` set at each site. Per-rank values for
+`AHostingRanksPluginMountFailureIsAgreedByEveryRankNotOnlyTheHostingOnes` (via a scratch print, never in any patch, removed before this report): at 2 ranks,
+rank 0 (non-hosting) now carries `E-ABI-PLUGIN-AGREEMENT-REFUSED` and rank 1 (hosting) carries its own raw `E-ABI-VERSION`; at 3 ranks, rank 0 and rank 2
+(both non-originating under the base communicator's own `MPI_MINLOC` tie-break, rank 2 hosting but not winning it) both carry the rewrite, and rank 1 (the winner)
+keeps its own raw code -- exactly this entry's own design, now measured working on Open MPI 5.0.9. `APluginOnARankSubsetRunsOnlyOnItsOwnHostingRanksWithNoHang`
+also passes at both rank counts (no further `E-RT-SIZE` region-size failure), confirming the earlier cross-check's own region-size defect was the SAME handle-zero
+collision this entry fixes, not a second, unrelated bug. `provider_device_subset_mpi_test.cpp`'s `DISABLED_` row, run with
+`--gtest_also_run_disabled_tests` (no source edit) at 2 ranks: `fuse_initialize()` now succeeds on both ranks (`init_rc = 0`), and the row reaches the
+device-memspace question item (2) above asks for -- rank 1 (hosting) registers `device_out` as `Device`, count 1, components 3; rank 0 (non-hosting) registers it
+as `Host`, count 0, components 3, exactly the asymmetry the lead's own concern named. The row then fails at `fuse_run()`, `FUSE_ERR_INVALID` on both ranks, with an
+EMPTY stored message -- NOT a library defect: a gdb backtrace (breakpoint on `check_struct_size<fuse_run_request>`'s own null check, `participant.cpp:144`)
+shows the call chain `impl_run` (participant.cpp:2744) <- `impl_run_local` (participant.cpp:2261) <- the test's own `TestBody`
+(`provider_device_subset_mpi_test.cpp:329`), where the test passes `nullptr` for `fuse_run()`'s own required `fuse_run_request*` argument -- every other call site
+in this tree passes a real one. `check_struct_size()` returns `FUSE_ERR_INVALID` on a null pointer before any message is ever stored
+(`participant.cpp:144`), which is why both the message and `err.code` are empty. Per this round's own "no source edit" instruction for this measurement,
+the row's own bug was not fixed and the `DISABLED_` prefix was not removed; item (2) above is PARTIALLY settled (the device-memspace question IS reached and
+shows the expected asymmetry) but the row itself still does not pass end to end, for a reason unrelated to the handle-zero collision this entry is about.
+
+**Lead's follow-up (2026-10-23):** the test's null request is fixed in the test file (`periods = 3`, chosen from the one-period delivery lag, not from a result), and the row remains `DISABLED_` until a higgs run shows it passes; nothing under `src/` or `include/` changed.
 
 ### D86. `fuse_setup_options::communicator`'s "0 means none supplied" sentinel collides with Open MPI's own Fortran handle for MPI_COMM_WORLD, which is 0 -- FIXED 2026-10-18 (found 2026-10-18, abi-communicator track)
 
