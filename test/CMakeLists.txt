@@ -2715,6 +2715,29 @@ if(FUSE_ENABLE_MPI)
   add_dependencies(fuse_parallel_provider_subset_mpi_test fuse_test_provider_linear_bad_version)
 endif()
 
+# KNOWN_ISSUES.md D15 ("Cross check" track, Stage 3, 2026-10-22): a
+# device-resident Plugin field on a rank SUBSET, cross-measured against the
+# lead's own darwin/MPICH judgement calls. Needs fuse::abi-static +
+# fuse_abi_test_support for the same test-only seams (inject_component(),
+# field_registry_of(), run_stats()) provider_subset_mpi_test.cpp above
+# already links directly, plus the existing device_layout_provider plugin
+# (fuse_test_provider_device_layout, defined earlier in this same file for
+# test/abi/device_layout_test.cpp's own use) -- registered here, after that
+# target, so add_dependencies() below can name it. RANKS 2 only: the graph
+# this file's own test builds is hardcoded for a 2-rank world (RankSet{1, 1}
+# for the plugin, RankSet{0, 1} for the native consumer).
+fuse_tests_gated_by(FUSE_ENABLE_MPI parallel/provider_device_subset_mpi_test.cpp)
+if(FUSE_ENABLE_MPI)
+  fuse_add_mpi_test(parallel provider_device_subset_mpi LIBS fuse::abi-static
+                     fuse_abi_test_support RANKS 2)
+  target_compile_definitions(fuse_parallel_provider_device_subset_mpi_test PRIVATE
+    FUSE_TEST_DEVICE_LAYOUT_PROVIDER_PLUGIN="$<TARGET_FILE:fuse_test_provider_device_layout>")
+  add_dependencies(fuse_parallel_provider_device_subset_mpi_test fuse_test_provider_device_layout)
+  target_include_directories(fuse_parallel_provider_device_subset_mpi_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/abi)
+  target_link_libraries(fuse_parallel_provider_device_subset_mpi_test PRIVATE ${CMAKE_DL_LIBS})
+endif()
+
 # ---------------------------------------------------------------- bench
 # Scaled device benchmark (docs/dev/device-resident-arcs.md rollout step 6
 # follow-up, scaled-bench track): a native quad-mesh Remap/Transport chain
