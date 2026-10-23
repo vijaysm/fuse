@@ -472,6 +472,9 @@ fuse_add_gtest(num newton_krylov LIBS fuse::linalg)
 # precedent as the petsc/brusselator_newton test above.
 if(FUSE_LINALG_BACKEND_IS_EIGEN)
   fuse_add_gtest(num anderson_reference LIBS fuse::linalg Eigen3::Eigen)
+else()
+  fuse_tests_gated_by(FUSE_LINALG_BACKEND_IS_EIGEN num/anderson_reference_test.cpp)
+  list(APPEND _fuse_eigen_gated_tests num.anderson_reference)
 endif()
 
 # ---------------------------------------------------------------- petsc
@@ -1796,7 +1799,8 @@ else()
     verification/brusselator_external_delivery_size_test.cpp
     verification/brusselator_restart_test.cpp
     verification/brusselator_diffusion_solver_cache_test.cpp
-    verification/brusselator_refusal_coverage_test.cpp)
+    verification/brusselator_refusal_coverage_test.cpp
+    verification/accel_names_test.cpp)
   list(APPEND _fuse_eigen_gated_tests
     verification.fsi_stokes_mms verification.fsi_beam verification.fsi_coupled
     verification.fsi_transient verification.fsi_energy_diag
@@ -1808,7 +1812,8 @@ else()
     verification.brusselator_newton_norm verification.brusselator_accept_layout
     verification.brusselator_external_delivery_size
     verification.brusselator_diffusion_solver_cache
-    verification.brusselator_refusal_coverage)
+    verification.brusselator_refusal_coverage
+    verification.accel_names)
 endif()
 
 # KNOWN_ISSUES.md D57 ("Collectives" track): the period-rollover-past-

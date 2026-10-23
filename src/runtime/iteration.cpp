@@ -2889,17 +2889,69 @@ LinearizationToken* Runner::Impl::window_block_provider_token(
 Result<void> Runner::Impl::run_region_newton_window(
     ComponentSet& components, detail::RegionRuntime& R, std::size_t enter,
     std::size_t exit) {
-  // KNOWN_ISSUES.md D31: see `run_region_newton()`'s own identical check,
-  // this file's sibling, for the full account -- the window-scoped
-  // Newton seam needs the SAME early return, for the SAME reason (a
-  // rank outside `R.participants` has none of the local state any of
-  // `evaluate_window_region_residual()`'s own per-block work reads).
+  // KNOWN_ISSUES.md D55: every residual evaluation below executes this
+  // region's instruction range, whose Transport ops move() over the run's
+  // ONE shared transport communicator -- MPI_Alltoallv over every rank of
+  // the base communicator, a bystander outside `R.participants` included
+  // (mpi_transport.cpp's "rank in neither rank set still enters
+  // MPI_Alltoallv with zero counts" convention, the same one D42 keeps the
+  // Picard window sweep's bystander in step for). D31 had the bystander
+  // return here instead, so the participants' Alltoallv calls were missing
+  // a rank: MPICH's zero-count exchange happened to complete without it,
+  // Open MPI's pairwise algorithm does not (measured: participants in
+  // MpiTransport::move(), the bystander already in agree_checkpoint_
+  // status()'s MPI_Allreduce, parallel.window_newton_mpi.3). The number of
+  // evaluations is Newton's own, data-dependent, so the first participant
+  // broadcasts, before EACH one, which kind it is, and kStop on every way
+  // out; the bystander runs the SAME evaluation (newton_n is 0 there: it
+  // hosts no block, so every span is empty and only the stream, with its
+  // zero-count move()s, runs) until it hears kStop.
+  enum : int { kNewtonStop = 0, kNewtonSeed = 1, kNewtonProbe = 2, kNewtonCommit = 3 };
+  const bool lockstep = R.participants.size() > 1;
+  const auto announce = [this, &R, lockstep](int& code) -> Result<void> {
+    if (!lockstep) return Result<void>::success();
+#if FUSE_HAVE_MPI
+    const MPI_Comm base =
+        MPI_Comm_f2c(static_cast<MPI_Fint>(*config.base_communicator));
+    if (MPI_Bcast(&code, 1, MPI_INT, R.participants.front(), base) != MPI_SUCCESS) {
+      return Failure{"E-RT-WINDOW-COMM",
+                     "MPI_Bcast failed while keeping iteration region '" + R.name +
+                         "'s bystander ranks in step with its window-Newton "
+                         "evaluations"};
+    }
+#else
+    (void)code;
+#endif
+    return Result<void>::success();
+  };
+
   if (const Result<bool> participating = region_is_local_participant(R);
       !participating.ok()) {
     return participating.error();
   } else if (!participating.value()) {
-    return Result<void>::success();
+    // A failed evaluation here is remembered, not returned at once: the
+    // participants keep announcing, and a bystander that stopped listening
+    // would leave them waiting on the broadcast instead of on move().
+    Result<void> first_err = Result<void>::success();
+    for (;;) {
+      int code = kNewtonStop;
+      if (const Result<void> a = announce(code); !a.ok()) return a;
+      if (code == kNewtonStop) return first_err;
+      const Result<void> r = evaluate_window_region_residual(
+          components, R.index, enter, exit,
+          /*iteration=*/code == kNewtonSeed ? 0 : 1, std::span<const double>(),
+          std::span<double>(), std::span<double>(),
+          /*commit=*/code == kNewtonCommit);
+      if (!r.ok() && first_err.ok()) first_err = r;
+    }
   }
+  struct AnnounceStopOnExit {
+    const decltype(announce)& announce_fn;
+    ~AnnounceStopOnExit() {
+      int code = kNewtonStop;
+      (void)announce_fn(code);
+    }
+  } announce_stop_on_exit{announce};
 
   IterationStats& st = region_stats[R.index];
   st.iterations = 0;
@@ -2923,8 +2975,10 @@ Result<void> Runner::Impl::run_region_newton_window(
 
   const std::size_t region_index = R.index;
   ComponentSet* comps = &components;
-  const num::ResidualFn f_raw = [this, region_index, comps, enter, exit](
+  const num::ResidualFn f_raw = [this, region_index, comps, enter, exit, &announce](
                                     linalg::DistVector& in, linalg::DistVector& out) {
+    int code = kNewtonProbe;
+    if (const Result<void> a = announce(code); !a.ok()) return a;
     return evaluate_window_region_residual(
         *comps, region_index, enter, exit, /*iteration=*/1,
         std::span<const double>(in.data(), in.owned_size()),
@@ -2958,6 +3012,8 @@ Result<void> Runner::Impl::run_region_newton_window(
   {
     std::vector<double> x_seed_unused(R.newton_n, 0.0);
     std::vector<double> f_seed_unused(R.newton_n, 0.0);
+    int code = kNewtonSeed;
+    if (const Result<void> a = announce(code); !a.ok()) return a;
     const Result<void> seed_r = evaluate_window_region_residual(
         components, region_index, enter, exit, /*iteration=*/0,
         std::span<const double>(x_seed_unused.data(), x_seed_unused.size()),
@@ -3101,6 +3157,8 @@ Result<void> Runner::Impl::run_region_newton_window(
   // region_residual()`'s own `skip_restore` branch) rather than one more
   // side-effect-free probe.
   std::vector<double> f_commit(R.newton_n, 0.0);
+  int commit_code = kNewtonCommit;
+  if (const Result<void> a = announce(commit_code); !a.ok()) return a;
   const Result<void> commit_r = evaluate_window_region_residual(
       components, region_index, enter, exit, /*iteration=*/1,
       std::span<const double>(x.data(), x.owned_size()),

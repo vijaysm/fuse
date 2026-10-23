@@ -122,7 +122,9 @@ form is still there if you want it).
 **Communicators** are the Fortran MPI handle — `fuse_setup_options%communicator`, `integer(c_int64_t)`,
 built from `MPI_Comm_c2f` on your side; FUSE recovers it with `MPI_Comm_f2c`, the same convention
 `MoabMeshBackend::set_communicator` uses everywhere else in this library. Leave it `0` (the default)
-to run with no communicator at all.
+to run with no communicator at all. When you do pass one, also set
+`fuse_setup_options%has_communicator = 1`: under Open MPI the handle of `MPI_COMM_WORLD` itself is
+`0`, which without the flag reads as "no communicator" (KNOWN_ISSUES.md D86).
 
 ## Building
 
