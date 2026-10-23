@@ -47,116 +47,96 @@ jobs:
   # against. UPSTREAMS.lock's [soma].retired field and docs/dev/soma-import.md
   # record the detachment and what fuse:: still needs from the subtree.
 
-  # Remaining legs arrive with the first fuse:: source at S1: tier 0 across both
-  # linear-algebra backends and both host execution spaces, tier 1 at 2/3/4/5
-  # ranks, tier 2, tier 3, Release, ASan+UBSan, no-exceptions, and the
-  # mutation-evidence gate. The imported spine tree needs MOAB and PETSc and is
+  # One matrix, one leg per row, each named for what it builds:
+  # <parallelism>+<compiler> (<linalg backend>, <build type>). Every leg
+  # resolves Kokkos (Serial, plus OpenMP where noted), ArborX, fmt, googletest
+  # and, for eigen, Eigen through FetchContent at the pinned tags
+  # (cmake/FuseDependencies.cmake), so each reproduces the same way on every
+  # runner. The imported spine tree needs MOAB and PETSc (tiers 2 and 3) and is
   # built on a host, not here -- see UPSTREAMS.lock.
-
-  tier0:
-    name: tier 0 (${{ matrix.build }}, ${{ matrix.linalg }})
+  #
+  # Linear-algebra backends: FUSE_LINALG_BACKEND is builtin|eigen. There is no
+  # Kokkos(Kernels) backend to build (REVIEW.md R-05/R-24); Kokkos itself, the
+  # execution layer, is in every leg.
+  #
+  # MPI is Open MPI, not MPICH: Ubuntu 24.04's MPICH 4.2.0 starts every rank
+  # under mpiexec as a singleton ("rank 0 of 1" twice for -n 2, measured), so no
+  # multi-rank row could pass, and its wrappers leak the package's own
+  # -flto=auto into every MPI target through FindMPI. An mpi leg spends ~12
+  # minutes in configure: the accept/connect probe (KNOWN_ISSUES.md D23) times
+  # out each of its runs on this MPI and then disables that launch mode's rows.
+  build:
+    name: ${{ matrix.name }}
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
-        build: [Debug, Release]
-        # `kokkoskernels` is not one of FUSE_LINALG_BACKEND's implemented values
-        # (cmake/FuseDependencies.cmake's STRINGS property is builtin|eigen) and
-        # this leg's configure step would FATAL_ERROR on every run (REVIEW.md
-        # R-05). `builtin` is the coupler's own backend and the second leg
-        # `docs/dev/testing.md` names as "tier 0 across both linear-algebra
-        # backends". review-2026-10-11 BC-1: until this fix, `*+builtin` could
-        # not configure at all -- 23 call sites (17 in test/CMakeLists.txt,
-        # 6 in examples/CMakeLists.txt; 28 targets once the foreach loops
-        # several of those sites share are expanded) linked Eigen3::Eigen
-        # unconditionally while cmake/FuseDependencies.cmake creates that
-        # target only for the eigen backend (D26 recorded the configure
-        # failure; the matrix above predates that record by two days and
-        # never recorded the CI consequence). Every Eigen-linked target is
-        # now gated behind FUSE_LINALG_BACKEND_IS_EIGEN
-        # (test/CMakeLists.txt, examples/CMakeLists.txt), so `*+builtin`
-        # configures and runs the rest of the suite; the gated rows'
-        # coverage under eigen is unchanged.
-        linalg: [eigen, builtin]
+        include:
+          - { name: "serial+gnu (builtin, Debug)",   linalg: builtin, build: Debug,   mpi: "OFF" }
+          - { name: "serial+gnu (builtin, Release)", linalg: builtin, build: Release, mpi: "OFF" }
+          - { name: "serial+gnu (eigen, Debug)",     linalg: eigen,   build: Debug,   mpi: "OFF" }
+          - { name: "serial+gnu (eigen, Release)",   linalg: eigen,   build: Release, mpi: "OFF" }
+          - { name: "mpi+gnu (builtin, Release)",    linalg: builtin, build: Release, mpi: "ON" }
+          - { name: "mpi+gnu (eigen, Release)",      linalg: eigen,   build: Release, mpi: "ON" }
+          # UndefinedBehaviorSanitizer over the whole build, fetched
+          # dependencies included; -fno-sanitize-recover turns any report into
+          # a failing test rather than a line in its log.
+          - name: "ubsan+gnu (builtin, Debug)"
+            linalg: builtin
+            build: Debug
+            mpi: "OFF"
+            flags: "-fsanitize=undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer"
+          # FUSE_ENABLE_EXCEPTIONS=OFF: every FUSE_THROW/ASSERT/REFUSE aborts
+          # after its on-error policy instead of unwinding, so the tests that
+          # assert a throw cannot run here by design (-LE throws); the leg
+          # proves the library and every other test build and pass with it.
+          - name: "noexceptions+gnu (eigen, Release)"
+            linalg: eigen
+            build: Release
+            mpi: "OFF"
+            exceptions: "OFF"
+            openmp: "OFF"
+            ctest_exclude: "throws|bench"
+    env:
+      # 5-rank rows on a 4-core runner; most mpi rows already set this themselves.
+      OMPI_MCA_rmaps_base_oversubscribe: "1"
+      UBSAN_OPTIONS: print_stacktrace=1
+      # The ubsan leg's flags go in through the environment, not
+      # -DCMAKE_<LANG>_FLAGS: CMake seeds each language's flags from these on
+      # the first configure, and the install-consumer rows configure a SECOND,
+      # standalone project from inside ctest, which only the environment
+      # reaches -- without them it links the sanitized libraries without
+      # libubsan ("DSO missing from command line"). Empty on every other leg.
+      CFLAGS: ${{ matrix.flags }}
+      CXXFLAGS: ${{ matrix.flags }}
+      FFLAGS: ${{ matrix.flags }}
     steps:
       - uses: actions/checkout@v4
       # gfortran: with no Fortran compiler the ffuse binding is not built and
       # abi.conformance's FortranPlugin rows refuse with E-ABI-LOAD by design
       # (test/CMakeLists.txt, "No Fortran compiler in this configure"), so the
       # leg would be red for a missing package rather than for a defect.
-      - run: sudo apt-get update && sudo apt-get install -y ninja-build libomp-dev gfortran
-      # fmt, googletest and the linalg backend come through FetchContent at the pinned
-      # tags (cmake/FuseDependencies.cmake); the system is not consulted for them (the
-      # CMAKE_DISABLE_FIND_PACKAGE_* flags below) and FUSE_ALLOW_FETCH=ON lets
-      # fuse_require() build the pinned copy instead of hard-failing, so the leg
-      # reproduces the same way on every runner. Kokkos is deliberately NOT disabled:
-      # the runner has no system Kokkos to consult anyway, and ArborX's own
-      # find_package(Kokkos REQUIRED CONFIG) call (fuse_resolve_arborx(), meant to
-      # transparently reuse the Kokkos this configure already fetched) is a hard
-      # configure error when CMAKE_DISABLE_FIND_PACKAGE_Kokkos is set on a REQUIRED
-      # call -- CMake refuses to disable a REQUIRED find_package.
+      - run: >
+          sudo apt-get update && sudo apt-get install -y ninja-build libomp-dev gfortran
+          ${{ matrix.mpi == 'ON' && 'openmpi-bin libopenmpi-dev' || '' }}
+      # fmt and googletest are never taken from the system (the
+      # CMAKE_DISABLE_FIND_PACKAGE_* flags), and FUSE_ALLOW_FETCH=ON builds the
+      # pinned copy of whatever is missing instead of hard-failing. Kokkos is
+      # deliberately NOT disabled: ArborX's own find_package(Kokkos REQUIRED
+      # CONFIG) is satisfied by the fetched Kokkos through the redirect
+      # fuse_resolve_dependencies() writes, and CMake refuses to disable a
+      # REQUIRED find_package.
       - run: >
           cmake -S . -B build -G Ninja
           -DCMAKE_BUILD_TYPE=${{ matrix.build }}
           -DFUSE_LINALG_BACKEND=${{ matrix.linalg }}
+          -DFUSE_ENABLE_MPI=${{ matrix.mpi }}
+          -DFUSE_ENABLE_EXCEPTIONS=${{ matrix.exceptions || 'ON' }}
           -DFUSE_ALLOW_FETCH=ON
           -DFUSE_BUILD_UPSTREAM_KARMA=OFF
-          -DKokkos_ENABLE_SERIAL=ON -DKokkos_ENABLE_OPENMP=ON
+          -DKokkos_ENABLE_SERIAL=ON -DKokkos_ENABLE_OPENMP=${{ matrix.openmp || 'ON' }}
           -DCMAKE_DISABLE_FIND_PACKAGE_fmt=ON
           -DCMAKE_DISABLE_FIND_PACKAGE_GTest=ON -DCMAKE_DISABLE_FIND_PACKAGE_Eigen3=ON
       - run: cmake --build build -j
-      - run: ctest --test-dir build --output-on-failure -LE bench
-      - run: cat build/fuse-resolved-dependencies.txt
-
-  tier0-no-exceptions:
-    name: tier 0 (no exceptions)
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y ninja-build libomp-dev gfortran
-      # Kokkos is deliberately not disabled for find_package -- see the tier0 leg's
-      # comment above; disabling it breaks ArborX's own REQUIRED find_package(Kokkos).
-      - run: >
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-          -DFUSE_ENABLE_EXCEPTIONS=OFF -DFUSE_ALLOW_FETCH=ON
-          -DFUSE_BUILD_UPSTREAM_KARMA=OFF
-          -DKokkos_ENABLE_SERIAL=ON
-          -DCMAKE_DISABLE_FIND_PACKAGE_fmt=ON -DCMAKE_DISABLE_FIND_PACKAGE_GTest=ON
-          -DCMAKE_DISABLE_FIND_PACKAGE_Eigen3=ON
-      - run: cmake --build build -j
-      # Tests that assert a throw cannot run here by design; the leg proves the
-      # library and the non-throwing tests build and pass with the option off.
-      - run: ctest --test-dir build --output-on-failure -LE 'throws|bench'
-
-  # Tier 1: the MPI transport, CommGraph, epochs, the participant ABI across
-  # ranks, and the multi-executable Brusselator rows, each registered at 1-5
-  # ranks. Open MPI, not MPICH: Ubuntu 24.04's MPICH 4.2.0 starts every rank
-  # under mpiexec as a singleton ("rank 0 of 1" twice for -n 2, measured), so
-  # no multi-rank row could pass, and its wrappers leak the package's own
-  # -flto=auto into every MPI target through FindMPI. Release only: the Debug
-  # matrix above already covers assertions. Configure takes ~12 minutes of
-  # this leg: the accept/connect probe (KNOWN_ISSUES.md D23) times out each of
-  # its runs on this MPI and then disables that launch mode's rows.
-  tier1-mpi:
-    name: tier 1 (MPI)
-    runs-on: ubuntu-24.04
-    env:
-      # 5-rank rows on a 4-core runner; most rows already set this themselves.
-      OMPI_MCA_rmaps_base_oversubscribe: "1"
-    steps:
-      - uses: actions/checkout@v4
-      - run: >
-          sudo apt-get update && sudo apt-get install -y ninja-build libomp-dev gfortran
-          openmpi-bin libopenmpi-dev
-      - run: >
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-          -DFUSE_ENABLE_MPI=ON
-          -DFUSE_LINALG_BACKEND=eigen
-          -DFUSE_ALLOW_FETCH=ON
-          -DFUSE_BUILD_UPSTREAM_KARMA=OFF
-          -DKokkos_ENABLE_SERIAL=ON -DKokkos_ENABLE_OPENMP=ON
-          -DCMAKE_DISABLE_FIND_PACKAGE_fmt=ON
-          -DCMAKE_DISABLE_FIND_PACKAGE_GTest=ON -DCMAKE_DISABLE_FIND_PACKAGE_Eigen3=ON
-      - run: cmake --build build -j
-      - run: ctest --test-dir build --output-on-failure -LE bench
+      - run: ctest --test-dir build --output-on-failure -LE '${{ matrix.ctest_exclude || 'bench' }}'
       - run: cat build/fuse-resolved-dependencies.txt
