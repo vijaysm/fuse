@@ -13,7 +13,7 @@ many MPI ranks, in one executable or several.
 | You want to | Read |
 |---|---|
 | Build FUSE, run a coupling and learn to read what it prints | [Getting started](user/getting-started.md), then [Quickstart](user/quickstart.md) and [Concepts](user/concepts.md) |
-| Do a specific task | [Cookbook](user/cookbook.md), [Examples](user/examples.md), [Troubleshooting](user/troubleshooting.md) |
+| Do a specific task | [Cookbook](user/cookbook.md), [Examples](user/examples.md), [Portfolio](user/portfolio.md), [Troubleshooting](user/troubleshooting.md) |
 | Run at scale or reproducibly | [Power-user guide](user/power-users.md), [Placement](user/placement.md), [Build guide](user/build.md) |
 | Write your own coupled problem | [Graph programming](user/graph-programming.md), [Writing a component](user/component-interface.md), [Drivers](user/drivers.md), [YAML reference](user/yaml.md) |
 | Understand what FUSE compiles and runs | [IR and execution plan](user/ir.md), [Runtime](user/runtime.md), [Environment variables](user/environment.md) |

@@ -107,6 +107,7 @@ Rows that need PETSc carry the additional label `petsc` (`ctest -L petsc`).
 
 ## See also
 
+- [](portfolio.md) for a curated reading order, a capability matrix and a "learn X, read Y" index.
 - [](getting-started.md) and [](quickstart.md) for a first coupling.
 - [](cookbook.md) for short recipes.
 - [](build.md) for build options and presets.
