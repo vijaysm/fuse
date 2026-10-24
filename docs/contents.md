@@ -16,15 +16,23 @@ user/index
 user/getting-started
 user/concepts
 user/cookbook
+user/quickstart
+user/build
+user/graph-programming
+user/yaml
+user/component-interface
+user/runtime
+user/ir
+user/drivers
+user/environment
 user/power-users
 user/troubleshooting
 user/glossary
-user/build
-user/quickstart
 user/api-overview
 user/fluent-api
 user/placement
 user/layouts
+user/meshes
 user/geometry
 user/transfer-maps
 user/point-cloud-remap
@@ -37,6 +45,9 @@ user/petsc-reaction-diffusion
 user/restart
 user/convergence
 user/coupling-windows
+user/multiscale
+user/surrogates
+user/linear-algebra
 user/interface-transfer
 user/gray-scott
 user/brusselator
@@ -49,6 +60,7 @@ user/python
 user/providers
 user/lowfive
 user/multiple-executables
+user/mixing-languages
 ```
 
 ```{toctree}

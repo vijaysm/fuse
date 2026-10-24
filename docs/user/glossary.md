@@ -1,9 +1,10 @@
 # Glossary
 
-This page defines the terms used in this documentation, and gives for each one the term used in the
-scientific-computing literature. The literature term is the one to use in prose. Where the code uses a
-different identifier, the table lists it in the first column so that you can map what you read in a
-header or an error message to the concept.
+This page is for anyone meeting a term in a header, an error message or another page of this
+guide and wanting its meaning. It defines the terms used in this documentation and gives for each
+one the term used in the scientific-computing literature. Where the code uses a different
+identifier, the table lists it in the first column so that you can map what you read in a header
+or an error message to the concept.
 
 References are listed at the end; a bracketed number points into that list.
 
@@ -17,8 +18,12 @@ References are listed at the end; a bracketed number points into that list.
 | `Discretization`, nodal / cell | vertex-centred / cell-centred field | Where the degrees of freedom sit. |
 | `SemanticRole::Prognostic`, `Diagnostic` | prognostic / diagnostic variable | A variable advanced in time by the component, or one computed from the prognostic state. |
 | `SemanticOwnership::Owned`, `Ghosted`, `Replicated` | owned / ghost / replicated entity | Standard domain-decomposition terms: an entity whose value this process is responsible for, a copy of a neighbour's owned entity, or an entity every process holds. |
-| `OpKind::BuildRemapHalo`, `build_remap_halo`/`build_native_remap_halo` | remap halo | The off-rank source-mesh cells a partitioned conservative (or MLS/tempest/intx) remap needs locally to intersect against this rank's own target cells, adopted as ordinary ghost entities before weights are built. COUPLER-OWNED: a component's own registered field storage covers only its OWNED entities; the halo's ghost slots are filled by the coupler (the same forward exchange a `Transport` instruction uses), never written by the component. |
-| `capabilities()`: rollback, determinism level, hidden state | checkpoint–restart support, reproducibility level, unregistered state | Whether a component can restore its state to the start of a step (needed for iterative coupling), whether its results are bit-reproducible, and whether it carries state not exposed to the coupler. |
+| `OpKind::BuildRemapHalo`, `build_remap_halo`/`build_native_remap_halo` | remap halo | The off-rank source-mesh cells a partitioned conservative (or MLS/tempest/intx) remap needs locally to intersect against this rank's own target cells, adopted as ordinary ghost entities before weights are built. The halo is coupler-owned: a component's own registered field storage covers only its owned entities; the halo's ghost slots are filled by the coupler (the same forward exchange a `Transport` instruction uses), never written by the component. |
+| `capabilities()`: `kCapabilityRollback`, `DeterminismLevel`, `kCapabilityHiddenState`, `kCapabilityResidual`, `kCapabilityLinearization`, `kCapabilityRestartFormA`/`B` | capability bits | What a component declares it can do: restore its state to the start of a step (needed for iterative coupling), how reproducible its results are, whether it carries state not exposed to the coupler, whether it can evaluate a residual or supply a linearisation (Newton), and which restart form it implements. |
+| `save_state()` / `restore_state()` | rollback checkpoint | The in-memory, single-slot checkpoint an iteration region uses to re-advance a component from the same starting state on every sweep. Distinct from a restart point (below). |
+| `write_restart()` / `read_restart()`, `save_restart_blob()` / `load_restart_blob()` | restart point, form A / form B | State written to a file at a period boundary so a later process can resume: form A as typed arrays keyed by global id (restartable at another rank count), form B as an opaque per-rank byte record. |
+| participant (`fuse_participant_abi_v1`, `fuse_coupler_abi()`) | participant (externally driven component) | A C, Fortran or Python code that keeps its own main loop and calls FUSE at the start and end of each step. Inside FUSE it is an externally driven component; the Runner suspends at its `advance()` point until the code calls back in. |
+| provider (`fuse_provider_abi_v1`, `fuse_provider_abi()`) | provider (plugin component) | A C or Fortran model compiled as a plugin whose entry table FUSE calls; FUSE owns the main loop and drives the plugin like an in-process component. |
 | `ImplicitComponent::evaluate_residual()` | residual | A component's own contribution to the coupled residual at a frozen time level, given the interface values it imports, without advancing its state [4, 5]. The quantity a Newton iteration drives to zero, as opposed to `Residual` (below), the *coupling* residual `r = x̃ − x` a fixed-point iteration measures. |
 | `LinearizationToken` | linearisation | A component's own local approximation of how its residual changes with its interface inputs, about one evaluation point — what a Newton step needs from each participant instead of the whole coupled problem's exact Jacobian. |
 
@@ -35,8 +40,16 @@ References are listed at the end; a bracketed number points into that list.
 | `Relax` | under-relaxation | x ← ω x̃ + (1 − ω) x, applied to the interface value between iterations [4]. |
 | `Residual` | interface residual | r = x̃ − x, the change of the interface value over one fixed-point iteration, which the convergence criterion measures [4, 5]. |
 | `Accelerate`, `AccelKind::Aitken`, IQN-ILS | convergence acceleration | Aitken's dynamic relaxation [4], or interface quasi-Newton with inverse least squares [5]. |
+| `ConvergenceMeasure`, `MeasureKind`, `fuse::Converged::Relative/Absolute/AbsoluteOrRelative/ResidualRelative` | convergence criterion | One tolerance per exchanged field, combined with `&` into a `ConvergenceCriterion`; every channel of an iteration region must be named by a measure. |
+| `AccelConfig`, `AccelKind::None/Constant/Aitken/Secant/Steffensen/IQN_ILS/IQN_IMVJ/Newton` | accelerator | How the next iterate of an implicit coupling group is built from the residual history; `Newton` replaces the fixed-point sweep by a Newton-Krylov solve. |
 | `Constrain` | conservation check | A check that a transferred integral is preserved to a stated tolerance; it reports, and aborts only when configured to. |
 | `Diagnose` | diagnostic output | Values computed for inspection only; they do not feed back into the coupling. |
+| `CouplingGraph::merge()`, `MergeOp::Sum/Mean/First` | merge rule | The declared way several channels writing one import field are combined. Required whenever a field has more than one writer. |
+| `ComponentKind::Coupler`, `add_coupler()` | coupler (processor set) | A component with no fields and no time grid whose only role is to host remapping between two other components; see "coupler processor set" below. |
+| `RemapFlags::Conservative/Monotone/HighOrder`, `remap_method()` | remap request | What a channel asks of the remap between its two meshes; the flags select a method family, `remap_method()` names one explicitly. |
+| `Window::coupling_period()`, `Window::from(component)`, `Window::explicit_length(T)` | accumulation window | The time span a channel's `accumulate()` integrates or averages over. |
+| `MeshDecl`, `"generated:<spec>"` | mesh source | Where a mesh comes from: a file path, or a generated specification such as `generated:line:32` or `generated:box:4x4x4`. |
+| `LaunchSpec`, `LaunchMode::InProcess/Mpmd/Connect/Plugin/LowFive` | launch mode | How a component's process comes to exist: in this process, as an MPMD application segment, by connect/accept rendezvous, as a loaded plugin, or as a LowFive-coupled executable. |
 
 ## Time
 
@@ -51,7 +64,9 @@ References are listed at the end; a bracketed number points into that list.
 | `Sample` | point evaluation in time | The source value at one instant. |
 | `Accumulate` | time integration (time averaging) | The integral, or mean, of a source quantity over the target's step. Used for fluxes, so that what one component loses the other gains over the same interval. |
 | `Interpolate` / `Extrapolate` | temporal interpolation / extrapolation | Reconstruction of a source value at a time between, or beyond, its known values. Extrapolation is the predictor of a predictor–corrector coupling. |
-| `CouplingWindowScope`, "coupling window", "window-scoped region" | time window of a waveform iteration | A time interval over which an implicit coupling group of components with different time steps is iterated as a whole: each component advances across the whole window against its partners' interface values from the previous iteration, and the iteration repeats until they agree. This is waveform relaxation [1, 2], and in quasi-Newton form waveform iteration [3]. |
+| `IterationRegionDecl::window_scope`, `CouplingWindowScope`, "coupling window", "window-scoped region" | time window of a waveform iteration | A time interval over which an implicit coupling group of components with different time steps is iterated as a whole: each component advances across the whole window against its partners' interface values from the previous iteration, and the iteration repeats until they agree. This is waveform relaxation [1, 2], and in quasi-Newton form waveform iteration [3]. |
+| `WaveformIteration::Jacobi` / `GaussSeidel` | Jacobi / Gauss-Seidel waveform iteration | Which classical scheme a window's sweep runs: with `Jacobi` every member reads every partner's previous iterate (no `lag()` needed); with `GaussSeidel` only the channels declared `lag()` are loop-carried and the rest must be delivered earlier in the same sweep. Chosen per region. |
+| `window_component`, `explicit_interval` (of `CouplingWindowScope`) | window length | The window is either one step of a named component or an explicit rational length. |
 | "trajectory", K samples | waveform | The interface data of one component as a function of time over one time window, represented by its values at the component's step times within the window and a temporal interpolant between them. |
 | "substeps", `WindowAdvance` | subcycling | Taking several of a component's own time steps inside one time window [8, 11]. |
 | "straddling step" | step not aligned with the window end | A time step that begins inside a time window and ends after it. |
@@ -82,6 +97,7 @@ References are listed at the end; a bracketed number points into that list.
 | `CommGraph` | communication graph | For a pair of partitions, which process sends which entities to which process [14]. |
 | "hop elided" | redistribution omitted | No data is moved when the source and destination processor sets and partitions coincide. |
 | halo | halo (ghost layer) | Copies of neighbouring processes' entities kept locally so that a local computation can read them. |
+| `RunnerConfig::base_communicator`, `transport`, `transport_setup` | base communicator, transport | The communicator spanning every component's ranks, the named transport (`copy`, `mpi`, `lowfive`) that moves data between processor sets, and the one-time backend setup hook. |
 | `Epoch`, "rank-agreement point" | synchronisation point with error agreement | A point every process of a transfer reaches in the same order, at which all of them learn whether any failed. A failure on one process then stops all of them instead of leaving the rest blocked in the next communication. |
 | "layout driver", `--coupler e:f` | processor-layout test driver | The example that runs a coupling specification on processor sets given on the command line. |
 
@@ -89,7 +105,8 @@ References are listed at the end; a bracketed number points into that list.
 
 | Identifier in the code | Term | Definition |
 |---|---|---|
-| "lowering", `lower()` | compilation into a dataflow graph | Translation of the coupling specification into a directed graph of the operators above (`Sample`, `Accumulate`, `Remap`, `Transport`, …) connected by the values they pass. |
+| "lowering", `lower()` | compilation into a dataflow graph | Translation of the coupling specification into a directed graph of operators connected by the values they pass. |
+| `OpKind` | operator | The vocabulary of that graph: `Sample`, `Accumulate`, `Interpolate`, `Extrapolate`, `Remap`, `Merge`, `Relax`, `Transport`, `Residual`, `Accelerate`, `Constrain`, `Diagnose`, `Source`, `Sink`, `Scale`, `Epoch`, `WindowAdvance`, `BuildRemapHalo`, and the reserved multiscale opcodes `Map`, `Reduce`, `Closure`. |
 | IR, `OperatorDAG` | dataflow graph (intermediate representation) | That graph. It is printed in a fixed text format, which the reference outputs record. |
 | "arc" | edge of the dataflow graph | One value passed from one operator to another. |
 | `Source` / `Sink` | read from / write into a component | The operators at which the graph reads a component's export field and writes a component's import field. |
@@ -97,7 +114,24 @@ References are listed at the end; a bracketed number points into that list.
 | `schedule()`, `ExecutionPlan` | static schedule | A fixed linear order of every operator instance over one coupling cycle, identical on every process. |
 | "instant", `TickPhase` | time level, and before/after the component steps | Operators at the same time are ordered relative to the component steps that begin at that time. |
 | `Runner` | runtime | The part of FUSE that executes the schedule. |
-| descriptor, "narrow waist" | serialised coupling specification | The versioned binary encoding of the coupling specification shared by the C++, C/Fortran and YAML front ends. |
+| descriptor, `fuse::serialize()`/`deserialize()`, `kGraphVersion` | serialised coupling specification | The versioned binary encoding of the coupling specification shared by the C++, C/Fortran, Python and YAML front ends. Its hash (`restart_descriptor_hash()`) is what a restart point is checked against. |
+| `RunStats`, `IterationStats` | run statistics | What the Runner reports after each period: counters over the whole run, and per iteration region the sweep count, whether it converged, and the residual history. |
+
+## Multiscale and surrogates (declared contracts)
+
+These types (`include/fuse/model/multiscale.hpp`) fix the vocabulary and the descriptor layout of
+a micro-macro coupling. `review_surrogate_contract()` is a working reviewer; the declaring
+functions refuse with `E-MULTISCALE-NOT-IMPLEMENTED` / `E-SURROGATE-NOT-IMPLEMENTED`, and
+`schedule()` refuses the reserved opcodes with `E-SCHED-MULTISCALE`. See [](multiscale.md) and
+[](surrogates.md).
+
+| Identifier in the code | Term | Definition |
+|---|---|---|
+| `InstanceSetSpec`, `declare_instance_set()` | instance set | N independent instances of one component description (representative volume elements, subgrid columns, particles); the macro scale sees an aggregate, each instance runs its own time loop. The count is static. |
+| `ClosureSpec`, `ClosureKind`, `declare_closure()` | closure | The reduction from instance results to the macro quantity, and the distribution of macro state back down. |
+| `OverlapSpec`, `check_overlap()` | overlap (coverage) | How much of the macro cell each instance accounts for; coverage that does not sum to one is the multiscale analogue of a non-conservative remap. |
+| `SamplePoolSpec`, `declare_sample_pool()` | sample pool | The instance results kept for reuse, which an emulator is trained on and validated against. |
+| `SurrogateContract`, `review_surrogate_contract()`, `substitute_surrogate()` | surrogate contract | What a learned model must state before it may stand in for a component: applicability domain, out-of-distribution detection, hidden state, determinism, and what derivative it can supply. |
 
 ## Linear algebra
 
@@ -109,31 +143,31 @@ References are listed at the end; a bracketed number points into that list.
 | `fuse::linalg::LinearOperator`, `MatrixFreeOperator` | matrix, Jacobian-free operator | The structural (duck-typed) concept a Krylov solver needs from "a matrix": `apply(x, y)` computing `y = A x`. A `MatrixFreeOperator` wraps a caller-supplied callable computing a Jacobian-vector product without ever assembling the Jacobian. |
 | `LinearizationToken::apply_jacobian()` | Jacobian action | The product `J x` of a residual's Jacobian with a vector, computed without ever forming `J` itself — one component's own contribution to a matrix-free (Jacobian-free) Newton-Krylov step. |
 | `LinearizationToken::apply_preconditioner()` | physics-based preconditioner | A component's own approximate inverse of its diagonal block, built from the physics it knows (a lagged operator, a multigrid cycle, a lower-fidelity model) rather than from the matrix's entries alone — the kind of preconditioner a generic algebraic one (such as the Jacobi preconditioner, below) cannot construct. |
-| `fuse::linalg::pcg` | preconditioned conjugate gradient (PCG) | An iterative solver for a symmetric positive-definite system, right-preconditioned by the Hestenes–Stiefel recurrence [17]. |
-| `fuse::linalg::gmres` | restarted GMRES, GMRES(*m*) | An iterative solver for a general (non-symmetric) system by minimising the residual over a Krylov subspace, restarted every *m* steps [18]. |
+| `fuse::linalg::pcg` | preconditioned conjugate gradient (PCG) | An iterative solver for a symmetric positive-definite system, right-preconditioned by the Hestenes–Stiefel recurrence [16]. |
+| `fuse::linalg::gmres` | restarted GMRES, GMRES(*m*) | An iterative solver for a general (non-symmetric) system by minimising the residual over a Krylov subspace, restarted every *m* steps [17]. |
 | `fuse::linalg::Preconditioner`, `JacobiPreconditioner` | preconditioner, Jacobi (diagonal) preconditioner | An approximate solve, `apply(x, y)` computing `y = M⁻¹x`, substituted for the exact inverse to accelerate a Krylov iteration. The Jacobi preconditioner uses the matrix's own diagonal. |
-| `fuse::linalg::SchurSlabSolver` | Schur-complement direct solver | An exact distributed direct solver for a banded system, by eliminating each participant's interior unknowns locally and solving the much smaller Schur complement system over the interface unknowns alone [19]. |
-| "row band" (`fuse::native::rank_slice`) | subdomain | One participant's contiguous range of rows of a row-partitioned grid — the domain-decomposition literature's term is *subdomain* [19]; this project keeps "row band" in code and prose to avoid colliding with "slab", the unrelated time-domain term above. |
+| `fuse::linalg::SchurSlabSolver` | Schur-complement direct solver | An exact distributed direct solver for a banded system, by eliminating each participant's interior unknowns locally and solving the much smaller Schur complement system over the interface unknowns alone [18]. |
+| "row band" (`fuse::native::rank_slice`) | subdomain | One participant's contiguous range of rows of a row-partitioned grid; the domain-decomposition literature's term is *subdomain* [18]. "Row band" is kept in code and prose to avoid colliding with "slab", the unrelated time-domain term above. |
 
 ## Element types (restart typed fields)
 
 | Identifier in the code | Term | Definition |
 |---|---|---|
 | `fuse::ElementType` | element type | A closed enumeration naming the scalar storage format a restart field is written/read as: `Int8`..`Int64`, `UInt8`..`UInt64`, `Binary16`, `BFloat16`, `Binary32`, `Binary64`, `LongDouble`, `Bool`. Stored in the restart file as per-field metadata (`element_type`, `byte_size`, `significand_bits`, `exponent_bits`, `exponent_bias`, `byte_order`, `is_signed`), never inferred from the reading process's own type. |
-| `Binary16`, `Binary32`, `Binary64` | binary16 / binary32 / binary64 | The IEEE 754-2019 names [20] for the formats C++ calls `_Float16`/`float`/`double`: 1 sign bit, an implicit leading significand bit, and 5/8/11 exponent bits respectively (`Binary16`: 10 explicit significand bits; `Binary32`: 23; `Binary64`: 52). |
+| `Binary16`, `Binary32`, `Binary64` | binary16 / binary32 / binary64 | The IEEE 754-2019 names [19] for the formats C++ calls `_Float16`/`float`/`double`: 1 sign bit, an implicit leading significand bit, and 5/8/11 exponent bits respectively (`Binary16`: 10 explicit significand bits; `Binary32`: 23; `Binary64`: 52). |
 | `fuse::bfloat16` | bfloat16 | A FUSE-defined storage type (there is no standard C++ type for it on every platform): 1 sign bit, 8 exponent bits (the same width and bias as `Binary32`), 7 explicit significand bits. `to_float()` is always an exact widening; `from_float()` rounds to nearest, ties to even, and preserves quiet-NaN payloads. |
-| `fuse::ElementType::LongDouble` | long double / x86 extended precision | The platform's native `long double`. On Apple Silicon (this project's primary development target) it is bit-identical to `Binary64` (53-bit significand); on x86-64 it is typically the 80-bit extended format with an EXPLICIT (not implicit) leading significand bit -- HDF5 calls this `H5T_NORM_MSBSET` as opposed to `Binary16`/`32`/`64`'s `H5T_NORM_IMPLIED`. A restart field written as `LongDouble` on one platform and read on another goes through the same `ReadConversion` machinery as any other type pair; it is never assumed to match. |
+| `fuse::ElementType::LongDouble` | long double / x86 extended precision | The platform's native `long double`. On AArch64 macOS it is bit-identical to `Binary64` (53-bit significand); on x86-64 it is typically the 80-bit extended format with an explicit (not implicit) leading significand bit, which HDF5 calls `H5T_NORM_MSBSET` as opposed to `Binary16`/`32`/`64`'s `H5T_NORM_IMPLIED`. A restart field written as `LongDouble` on one platform and read on another goes through the same `ReadConversion` machinery as any other type pair; it is never assumed to match. |
 | `fuse::ReadConversion::Exact`, `Widening`, `AllowNarrowing` | read-conversion mode | The caller's declared tolerance for a stored field's element type differing from the type it is read back as. `Exact` (the default) refuses by name on any mismatch. `Widening` additionally permits a conversion that is proven lossless from the two types' own metadata (significand/exponent coverage for floats, bit-width/signedness rules for integers) -- a float narrowing or a signed-to-unsigned conversion is never "widening" and always refuses. `AllowNarrowing` additionally permits a conversion that may lose information, and reports the largest change actually measured over the values read (`fuse::ReadConversionReport::max_absolute_change`); integer overflow refuses (`E-RESTART-INTEGER-OVERFLOW`) even under `AllowNarrowing` -- this mode bounds silent error, it does not disable the overflow check. |
 
-## Verification and testing
+## Errors and verification
 
 | Identifier in the code | Term | Definition |
 |---|---|---|
-| "tier 0 / 1 / 2" | build configuration | Tier 0 is serial, tier 1 adds MPI, tier 2 adds MOAB. |
-| "golden" files | reference outputs | Files a regression test compares against byte for byte. |
-| "refusal", "refuses", `E-…` codes | rejected configuration, with an error code | An input FUSE declines to compute rather than compute incorrectly. A rejection counts as tested only when a test triggers it. |
-| mutation, `KILLED`, `SURVIVED`, `NOT-ASSESSED` | mutation testing | A deliberate defect is put into the code; a test suite that then fails has *killed* it, one that still passes lets it *survive*, and a mutant that cannot be run in a given build configuration is *not assessed* [16]. |
-| "five states" | verification status | Designed, implemented, implemented and untested, tested, verified: how far a feature's claims are supported by evidence. |
+| "refusal", "refuses", `E-…` codes | rejected configuration, with an error code | An input FUSE declines to compute rather than compute incorrectly. `W-…` codes are warnings: the graph still runs. |
+| `Diagnostics`, `validate()` | accumulated diagnostics | Every problem a check finds, reported together rather than stopping at the first ([](fluent-api.md#diagnostics-accumulate)). |
+| `Result<T>`, `Failure` | result, failure | The return type of every runtime call that can fail: a value or a `Failure{code, message}`, never an exception. |
+| `FUSE_REFUSE`, `fuse::Refusal` | refusal exception | A deliberate rejection raised from inside a call that has no `Result` to return (for example a bad slice extent); it carries the same `E-…` code. |
+| "tier 0 / 1 / 2 / 3" presets | build configuration | Tier 0 is serial, tier 1 adds MPI, tier 2 adds MOAB, tier 3 adds PETSc ([](build.md)). |
 | MMS | method of manufactured solutions | Verification against an exact solution constructed by adding a source term. |
 
 ## References
@@ -153,8 +187,7 @@ References are listed at the end; a bracketed number points into that list.
 13. P. A. Ullrich and M. A. Taylor. Arbitrary-order conservative and consistent remapping and a theory of linear maps: Part I. *Mon. Weather Rev.* 143:2419–2440, 2015.
 14. V. S. Mahadevan, I. Grindeanu, R. Jacob and J. Sarich. Improving climate model coupling through a complete mesh representation: a case study with E3SM (v1) and MOAB (v5.x). *Geosci. Model Dev.* 13:2355–2377, 2020.
 15. J. Larson, R. Jacob and E. Ong. The Model Coupling Toolkit: a new Fortran90 toolkit for building multiphysics parallel coupled models. *Int. J. High Perform. Comput. Appl.* 19(3):277–292, 2005.
-16. R. A. DeMillo, R. J. Lipton and F. G. Sayward. Hints on test data selection: help for the practicing programmer. *Computer* 11(4):34–41, 1978.
-17. M. R. Hestenes and E. Stiefel. Methods of conjugate gradients for solving linear systems. *J. Res. Natl. Bur. Stand.* 49(6):409–436, 1952.
-18. Y. Saad and M. H. Schultz. GMRES: a generalized minimal residual algorithm for solving nonsymmetric linear systems. *SIAM J. Sci. Stat. Comput.* 7(3):856–869, 1986.
-19. B. Smith, P. Bjørstad and W. Gropp. *Domain Decomposition: Parallel Multilevel Methods for Elliptic Partial Differential Equations*. Cambridge University Press, 1996.
-20. IEEE Std 754-2019 (Revision of IEEE Std 754-2008). *IEEE Standard for Floating-Point Arithmetic*. IEEE, 2019.
+16. M. R. Hestenes and E. Stiefel. Methods of conjugate gradients for solving linear systems. *J. Res. Natl. Bur. Stand.* 49(6):409–436, 1952.
+17. Y. Saad and M. H. Schultz. GMRES: a generalized minimal residual algorithm for solving nonsymmetric linear systems. *SIAM J. Sci. Stat. Comput.* 7(3):856–869, 1986.
+18. B. Smith, P. Bjørstad and W. Gropp. *Domain Decomposition: Parallel Multilevel Methods for Elliptic Partial Differential Equations*. Cambridge University Press, 1996.
+19. IEEE Std 754-2019 (Revision of IEEE Std 754-2008). *IEEE Standard for Floating-Point Arithmetic*. IEEE, 2019.

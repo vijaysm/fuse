@@ -81,6 +81,167 @@ g.channel(vel_channel).remap_method("consistent");
 g.channel(force_channel).remap_method("consistent-transpose").conservative();
 ```
 
+### The complete graph for the pair
+
+The two channels below are the whole declaration: a nodal field is
+`Discretization::ContinuousGLL` at `order = 1`; a cell field is
+`Discretization::FV` (the default). The velocity is a density-like pointwise
+quantity (`Intensive`); the force is an amount (`Extensive`), which is what
+makes the lowering emit a conservation check on that channel. Because the two
+channels run in opposite directions between the same two components, they
+close a cycle inside one coupling period, and one of them must carry a lag
+(`E-SCHED-CYCLE` otherwise); inside an implicit coupling group the sweep is
+what resolves that lag ([](fsi-channel.md)).
+
+```cpp
+fuse::CouplingGraph g;
+const auto m_beam  = g.add_mesh(fuse::MeshDecl{.name = "beam_mesh",  .source = "generated:line:7"});
+const auto m_fluid = g.add_mesh(fuse::MeshDecl{.name = "fluid_mesh", .source = "generated:line:11"});
+const auto r_beam  = g.add_region(fuse::Region{.name = "r_beam",  .mesh = m_beam,  .dimension = 1});
+const auto r_fluid = g.add_region(fuse::Region{.name = "r_fluid", .mesh = m_fluid, .dimension = 1});
+const auto beam  = g.add_component(fuse::ComponentDecl{
+    .name = "beam",  .ranks = fuse::RankSet{0, 1}, .interval = fuse::Rational{1}});
+const auto fluid = g.add_component(fuse::ComponentDecl{
+    .name = "fluid", .ranks = fuse::RankSet{0, 1}, .interval = fuse::Rational{1}});
+
+constexpr fuse::Units kMetersPerSecond{.length = 1, .time = -1};
+
+// Values one way: nodal velocity -> FV wall, pointwise (H).
+const auto vel_out = g.add_field(beam, fuse::FieldSpec{
+    .name = "beam_velocity", .region = r_beam,
+    .disc = fuse::Discretization::ContinuousGLL, .order = 1,
+    .units = kMetersPerSecond, .conservation = fuse::Conservation::Intensive,
+    .intent = fuse::Intent::Provides});
+const auto vel_in = g.add_field(fluid, fuse::FieldSpec{
+    .name = "fluid_velocity_in", .region = r_fluid,
+    .disc = fuse::Discretization::FV,
+    .units = kMetersPerSecond, .conservation = fuse::Conservation::Intensive,
+    .intent = fuse::Intent::Requires});
+const auto vch = g.add_channel("wall_velocity", vel_out, vel_in);
+g.channel(vch).remap_method("consistent");
+
+// Loads back: FV force density -> nodal load, conservative (H^T D).
+const auto force_out = g.add_field(fluid, fuse::FieldSpec{
+    .name = "fluid_force", .region = r_fluid,
+    .disc = fuse::Discretization::FV,
+    .units = fuse::units::kNewton, .conservation = fuse::Conservation::Extensive,
+    .intent = fuse::Intent::Provides});
+const auto force_in = g.add_field(beam, fuse::FieldSpec{
+    .name = "beam_load", .region = r_beam,
+    .disc = fuse::Discretization::ContinuousGLL, .order = 1,
+    .units = fuse::units::kNewton, .conservation = fuse::Conservation::Extensive,
+    .intent = fuse::Intent::Requires});
+const auto fch = g.add_channel("wall_force", force_out, force_in);
+g.channel(fch).remap_method("consistent-transpose").conservative()
+    .lag(1).allow_time_level_mismatch("explicit coupling: the load lags the velocity by one period");
+```
+
+What the lowering emits (`dump_text(lowered.dag)`): a `Remap` per channel
+carrying the method string, a `Constrain` only after the conservative load
+transfer, and the one-period lag on the force (`[WindowEnd-1, k]`). The
+pointwise channel gets no `Constrain`: a vertex sum against a cell integral
+is not a conservation statement, so none is checked.
+
+```text
+node 0   Source                    -> %0 : Instant<r0, m*s^-1, Intensive, [WindowEnd, k], ranks=0>  "beam.beam_velocity"
+node 1   Source                    -> %1 : Instant<r1, kg*m*s^-2, Extensive, [WindowEnd, k], ranks=1>  "fluid.fluid_force"
+node 2   Remap        %0           -> %2 : Instant<r1, m*s^-1, Intensive, [WindowEnd, k], ranks=0>  "wall_velocity/remap" {method=consistent}
+node 3   Diagnose     %2           -> %3 : Instant<r1, m*s^-1, Intensive, [WindowEnd, k], ranks=0>  "wall_velocity/diagnose"
+node 4   Remap        %1           -> %4 : Instant<r0, kg*m*s^-2, Extensive, [WindowEnd-1, k], ranks=1>  "wall_force/remap" {remap=C, method=consistent-transpose}
+node 5   Constrain    %4           -> %5 : Instant<r0, kg*m*s^-2, Extensive, [WindowEnd-1, k], ranks=1>  "wall_force/constrain"
+node 6   Diagnose     %5           -> %6 : Instant<r0, kg*m*s^-2, Extensive, [WindowEnd-1, k], ranks=1>  "wall_force/diagnose"
+node 7   Sink         %3           -> %7 : Instant<r1, m*s^-1, Intensive, [WindowEnd, k], ranks=1>  "fluid.fluid_velocity_in"
+node 8   Sink         %6           -> %8 : Instant<r0, kg*m*s^-2, Extensive, [WindowEnd, k], ranks=0>  "beam.beam_load"
+```
+
+### A compiled check
+
+The graph above, loaded into a `SerialMeshBackend`, lowered, scheduled and
+run for two periods with a beam writing the linear velocity `0.3 + 2x` at its
+8 nodes and a fluid writing the traction `1 + sin(3x)` at its 11 cell
+centroids. The component binds `n + 1` values for a `ContinuousGLL` order-1
+field and `n` for an FV field:
+
+```cpp
+class Side final : public fuse::Component {
+ public:
+  Side(std::string name, std::function<void(Side&)> fill)
+      : name_(std::move(name)), fill_(std::move(fill)) {}
+  [[nodiscard]] std::string name() const override { return name_; }
+
+  fuse::Result<void> register_fields(fuse::FieldRegistry& reg,
+                                     const fuse::CouplingGraph& g) override {
+    for (const fuse::FieldId f : g.component(*g.find_component(name_)).fields) {
+      const fuse::FieldSpec& fs = g.field(f);
+      // A ContinuousGLL order-1 field on n line cells holds n + 1 values.
+      const std::size_t cells = g.region(fs.region).name == "r_beam" ? kBeamCells : kFluidCells;
+      const std::size_t n = fs.disc == fuse::Discretization::ContinuousGLL ? cells + 1 : cells;
+      auto& buf = bufs[fs.name];
+      buf.assign(n, 0.0);
+      auto r = reg.bind(f, fuse::FieldRef{buf.data(), fuse::Layout{.stride = 1, .count = n},
+                                          fuse::MemorySpace::Host});
+      if (!r.ok()) return r;
+    }
+    return fuse::Result<void>::success();
+  }
+  fuse::Result<void> advance(const fuse::StepContext&) override {
+    fill_(*this);
+    return fuse::Result<void>::success();
+  }
+  std::map<std::string, std::vector<double>> bufs;
+
+ private:
+  std::string                name_;
+  std::function<void(Side&)> fill_;
+};
+```
+
+After `runner.run(components, 2)`, the three properties are read straight
+off the bound buffers:
+
+```cpp
+const double h_f = 1.0 / kFluidCells;
+double worst = 0.0, sent = 0.0, got = 0.0, p_fluid = 0.0, p_beam = 0.0;
+for (std::size_t j = 0; j < kFluidCells; ++j) {
+  const double x = (static_cast<double>(j) + 0.5) / kFluidCells;
+  worst = std::max(worst, std::abs(v_in[j] - (0.3 + 2.0 * x)));
+  sent += force[j] * h_f;               // density times cell measure
+  p_fluid += v_in[j] * force[j] * h_f;
+}
+for (std::size_t i = 0; i < kBeamCells + 1; ++i) {
+  got += load[i];                       // a nodal load is already an amount
+  p_beam += v_nodes[i] * load[i];
+}
+```
+
+Expected output (exact digits can vary by platform):
+
+```text
+remap_weight_builds     : 2
+remap_weight_nonzeros   : 44
+conservation_checks     : 2
+conservation_violations : 0
+H worst linear error    : 4.44089e-16
+force sent / received   : 1.66539 / 1.66539
+power fluid / beam      : 2.19292 / 2.19292
+```
+
+Two matrices (22 entries each: at most two bracketing nodes per fluid cell),
+`H` exact for the linear field, the total load conserved to round-off, and
+the discrete interface power equal on both sides. The conservation check the
+Runner runs on the force channel integrates the FV density against its cell
+measures on the way in and sums the nodal loads on the way out, which is the
+same identity.
+
+The strongly coupled version of this pair, with the two channels inside an
+implicit coupling group and an accelerator, is `examples/fsi_channel`
+([](fsi-channel.md)); its channel declarations are:
+
+```{literalinclude} ../../examples/fsi_channel/main.cpp
+:language: cpp
+:lines: 139-168
+```
+
 `build_weights()` (`src/backend/intx_weights.cpp`) recognises both method
 strings ahead of its usual FV-only check, in both the MOAB and non-MOAB
 translation units, and dispatches to `build_consistent_weights_for_plan`,
@@ -201,6 +362,49 @@ field transfer where BOTH sides are nodal, all reject
 `E-RT-REMAP-NODAL-PARALLEL` by name. `ClampToBoundary` is not supported on
 the distributed path.
 
+## Calling the builders directly
+
+The Runner reaches these operators through `build_weights()`, but both are
+ordinary functions in `fuse/backend/consistent_interp.hpp` (header-only) and
+take `MeshView`s, so a driver can build `H` without a graph:
+
+```cpp
+// H: rows = target evaluation entities at `tgt_dim` (0 for node-to-node,
+// the cell dimension for centroids), columns = source vertices.
+Result<RemapWeights> build_consistent_interp_weights(
+    const MeshView& src_nodes, const MeshView& tgt_points, int tgt_dim,
+    InterfaceDomainPolicy policy = InterfaceDomainPolicy::Refuse);
+
+// The build_weights() entry point for "consistent" / "consistent-transpose":
+// returns H or H^T D according to plan.method and the two (disc, order) pairs.
+Result<RemapWeights> build_consistent_weights_for_plan(
+    const RemapPlan& plan, const CouplingGraph& graph, const MeshBackend& backend);
+```
+
+`build_consistent_interp_weights` dispatches on `src_nodes.dimension()`: 1
+takes the coordinate-sorted curve algorithm (`build_consistent_interp_weights_1d`),
+2 or 3 take `build_general_interp_weights` (`fuse/backend/general_interp.hpp`).
+The result is a `RemapWeights` with `order = 2`, `monotone` true (every row is
+a convex combination of at most two nodes), and
+`col_defect_is_measure_weighted = false`, so `WeightsOperator::claims()` never
+reports it as conservative in the measure-weighted sense.
+
+## Errors
+
+| Code | Raised when | Fix |
+|---|---|---|
+| `E-INTERP-DISC` | `"consistent"` with a source, or `"consistent-transpose"` with a target, that is not `ContinuousGLL` order ≤ 1 | declare the nodal side as `ContinuousGLL`, `order = 1`, or swap the method to match the orientation |
+| `E-INTERP-REGION` | a region id is invalid, names no mesh, or names an `entity_set` other than empty or `"all"` | interpolate over whole meshes |
+| `E-INTERP-NOGEOMETRY` | the source has no vertices, or the target has no entities at the evaluation dimension | check the mesh and the region dimension |
+| `E-INTERP-DEGENERATE` | two source vertices coincide along the interface axis | remove the duplicate node |
+| `E-INTERP-DOMAIN` | a target point lies outside the source span (policy `Refuse`) | extend the source, or pass `InterfaceDomainPolicy::ClampToBoundary` to the direct builder |
+| `E-INTERP-SHAPE` | a 2D/3D source cell has no standard nodal basis (pyramid, general polygon or polyhedron) | use tri/quad/tet/hex/prism source cells |
+| `E-INTERP-METHOD` | `build_consistent_weights_for_plan` was handed another method string | one of the two names |
+| `E-MESH-NO-CELL-VERTICES` | a 2D/3D source whose view does not implement `MeshView::cell_vertices` (the base-class default), or a cell type the backend cannot express as a `CellShape` | the serial, native and MOAB backends all implement it for the standard shapes |
+| `E-EXTENT-DISC` | a field whose `(disc, order)` has no extent (`ContinuousGLL` order ≠ 1, `DiscontinuousGLL` order ≥ 1, `PointCloud`) | the two supported shapes |
+| `E-RT-SIZE` | the component bound a buffer of the wrong length for a nodal field | bind `n + 1` values for `n` line cells |
+| `E-RT-REMAP-NODAL-PARALLEL` | a nodal side on more than one rank through any method but the matching orientation of `"consistent"` / `"consistent-transpose"`, or both sides nodal | see "Distributed" above |
+
 ## What this is not
 
 Neither algorithm attempts anything above piecewise-linear (P1) or bilinear/
@@ -212,6 +416,8 @@ more than one tangential direction.
 
 ## See also
 
-- [](transfer-maps.md) for the conservative first-order maps
-- [](geometry.md) for the supermesh geometry
+- [](geometry.md) for the supermesh geometry, the method strings and the remap error codes
+- [](transfer-maps.md) for the conservative first-order maps and how to persist weights
+- [](fsi-channel.md) for the strongly coupled example built on this pair
+- [](point-cloud-remap.md) for the other pointwise method
 - [](../dev/nodal-fields.md) for nodal field extents and ownership
