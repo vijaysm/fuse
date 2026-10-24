@@ -7,6 +7,8 @@ run in `ctest`.
 ## Describe a coupling
 
 **Two components exchanging one field.** [](quickstart.md) and `examples/mms_pair/main.cpp`.
+Every declaration and treatment, with its validation codes: [](graph-programming.md). The same graph
+as a file: [](yaml.md).
 
 **Convert units on the way.** Declare each field's unit. If the two are compatible (for example `K`
 and `degC`, or `W` and `kW`) FUSE inserts the scale conversion; if they are not, `validate()` refuses
@@ -34,9 +36,13 @@ the fast side is reduced with `.accumulate(...)`: `Mean` for a state, `Integral`
 **Keep the description in a file.**
 
 ```cpp
-const std::string text = fuse::to_yaml(g);
-auto loaded = fuse::from_yaml(text);              // or fuse::load_yaml_file(path)
+const fuse::Result<std::string> text = fuse::to_yaml(g);
+if (!text.ok()) { std::cerr << text.error().message << "\n"; return 1; }
+auto loaded = fuse::from_yaml(text.value());      // or fuse::load_yaml_file(path)
 ```
+
+Both return a `fuse::Result`; `loaded.value()` is the graph once `loaded.ok()`. Building and
+editing graphs in code is covered in [](graph-programming.md).
 
 ## See what FUSE built
 
@@ -46,7 +52,8 @@ std::cout << sched.plan.to_string();              // the instructions that run
 ```
 
 Or run an example with `--dump`. Diff the output across a change to see exactly what the change did
-to the coupling ([](getting-started.md#3-look-at-what-fuse-built)).
+to the coupling ([](getting-started.md#3-look-at-what-fuse-built)). [](ir.md) explains every line of
+both dumps and how to walk the compiled structures from code.
 
 ## Iterate to convergence
 
@@ -89,6 +96,17 @@ build. A coupling in separately built executables: [](multiple-executables.md).
 
 Write state to disk and resume, even on a different number of ranks: [](restart.md).
 
+## Write your own executable
+
+A driver that loads a YAML file, takes command-line options, installs the environment error policy
+and runs: [](drivers.md). Every environment variable and `RunnerConfig` field: [](environment.md).
+The full component contract: [](component-interface.md); the Runner API: [](runtime.md).
+
+## Couple scales, or a learned model
+
+Macro-micro coupling with the features that exist today: [](multiscale.md). A PyTorch,
+scikit-learn or any callable model as a component: [](surrogates.md).
+
 ## Bring your own code
 
 | Your code is | Use |
@@ -99,6 +117,7 @@ Write state to disk and resume, even on a different number of ranks: [](restart.
 | A plugin FUSE should drive | [](providers.md) |
 | Python | [](python.md) |
 | Unmodified HDF5 codes | [](lowfive.md) |
+| Several of the above together | [](mixing-languages.md) |
 
 ## Study a full application
 

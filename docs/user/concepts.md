@@ -161,15 +161,16 @@ Nothing fails silently. FUSE reports problems in three ways, and they are meant 
   weaker behaviour.
 - Internal invariants are checked in every build type, including Release.
 
-Set `FUSE_ON_ERROR=debugger` to open a debugger on the failing rank at the moment it fails
-([](troubleshooting.md#debugging-a-failure)).
+A program that installs the environment error policy (`fuse::set_error_policy(fuse::error_policy_from_environment())`)
+can be told with `FUSE_ON_ERROR=debugger` to open a debugger on the failing rank at the moment it
+fails ([](environment.md), [](troubleshooting.md#debugging-a-failure)).
 
 ## Ways in
 
 | You have | Use |
 |---|---|
 | A C++ code you control | The fluent API and `fuse::Component` ([](quickstart.md)) |
-| A coupling you want to keep as a file | YAML: `fuse::to_yaml(g)`, `fuse::from_yaml(text)`, `fuse::load_yaml_file(path)` |
+| A coupling you want to keep as a file | YAML ([](yaml.md)): `fuse::to_yaml(g)`, `fuse::from_yaml(text)`, `fuse::load_yaml_file(path)` |
 | An existing C or Fortran code with its own time loop | The participant ABI ([](c-abi.md), [](fortran.md)) |
 | A plugin FUSE should call | The provider ABI ([](providers.md)) |
 | Python physics | `pfuse` ([](python.md)) |
@@ -181,4 +182,8 @@ run in another executable, because every front end shares one versioned binary d
 ## See also
 
 - [](getting-started.md), [](cookbook.md), [](api-overview.md).
+- [](graph-programming.md) for every declaration, [](ir.md) for what FUSE compiles them into, and
+  [](runtime.md) for running the result.
+- [](drivers.md) and [](environment.md) for command-line and environment control.
+- [](mixing-languages.md) for which language entry points work together.
 - [](power-users.md) for performance, scale and reproducibility.

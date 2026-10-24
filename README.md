@@ -145,15 +145,21 @@ sphinx-build -W -b html docs docs/_build/html
 
 The same pages are published to the [project wiki](https://github.com/vijaysm/fuse/wiki), generated
 by `tools/docs-to-wiki.py`. Start with `docs/user/getting-started.md`, which takes you from a fresh
-clone to a running coupling.
+clone to a running coupling; `docs/user/index.md` lists every page by task.
 
 ## Planned
 
+- Multiscale coupling: instance sets of a micro model, closures that aggregate them for the macro
+  scale with exact coverage accounting, and sample pools for training emulators. The contracts are
+  declared today (and refused rather than silently ignored); the [multiscale guide](docs/user/multiscale.md)
+  shows what you can do now with existing features.
+- Surrogate substitution: swapping a learned model for a declared component under a reviewed
+  contract (applicability, out-of-distribution detection, determinism, derivatives). Learned models
+  already run as ordinary components, see [surrogates](docs/user/surrogates.md).
 - `physics-kit`: an optional finite-element component library built on FUSE.
-- Broader GPU support through Kokkos device backends, with performance and scaling measurements.
-- A device-capable linear-algebra backend.
+- Broader GPU support through Kokkos device backends, with performance and scaling measurements,
+  and a device-capable linear-algebra backend.
 - Newton-Krylov iteration over coupling windows on more than one rank.
-- Diagrams of a coupled setup generated from the graph and compiled plan.
 - Cross-rank reductions in the field pipeline.
 
 ## Contributing and support

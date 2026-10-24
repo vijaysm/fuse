@@ -1,5 +1,11 @@
 # Geometry and the remap ladder
 
+This page is for anyone coupling two components whose fields live on
+different meshes: how to declare the two meshes and a conservative channel,
+how the remap kind is selected, what the run reports, and what the
+conservative map is built from and checked against. Mesh backends and the
+generated-mesh grammar are covered in [](meshes.md).
+
 FUSE represents geometry natively, and what it can do with it depends on which
 optional libraries the build found. The floor is deliberately useful on its
 own: **arbitrary unstructured geometry with lowest-order conservative
@@ -14,6 +20,366 @@ projection, in the default build, with no optional dependency at all.**
 The lowest-order path is not a fallback that merely compiles. Because it is
 always present, it is also the **differential oracle** for the other two: on a
 problem all three can express, they are required to agree.
+
+## Remap a field between two meshes
+
+A remap is never requested directly. You declare two meshes, a region on
+each, a field on each region, and a channel between the fields; the lowering
+emits a `Remap` operator whenever the two regions differ or a remap flag is
+set, and the Runner builds the weights at `initialize()`.
+
+```cpp
+#include <fuse/backend/serial_backend.hpp>
+#include <fuse/ir/lowering.hpp>
+#include <fuse/runtime/runner.hpp>
+
+fuse::CouplingGraph g;
+const auto m_src = g.add_mesh(fuse::MeshDecl{.name = "fine",   .source = "generated:line:8"});
+const auto m_dst = g.add_mesh(fuse::MeshDecl{.name = "coarse", .source = "generated:line:5"});
+const auto r_src = g.add_region(fuse::Region{.name = "fine_cells",   .mesh = m_src, .dimension = 1});
+const auto r_dst = g.add_region(fuse::Region{.name = "coarse_cells", .mesh = m_dst, .dimension = 1});
+
+const auto a = g.add_component(fuse::ComponentDecl{
+    .name = "source", .ranks = fuse::RankSet{0, 1}, .interval = fuse::Rational{1}});
+const auto b = g.add_component(fuse::ComponentDecl{
+    .name = "target", .ranks = fuse::RankSet{0, 1}, .interval = fuse::Rational{1}});
+
+// One value per cell (FV is the default discretisation); the value is a density.
+const auto f_out = g.add_field(a, fuse::FieldSpec{
+    .name = "rho", .region = r_src, .disc = fuse::Discretization::FV,
+    .units = fuse::units::kKelvin, .conservation = fuse::Conservation::Intensive,
+    .intent = fuse::Intent::Provides});
+const auto f_in = g.add_field(b, fuse::FieldSpec{
+    .name = "rho_in", .region = r_dst, .disc = fuse::Discretization::FV,
+    .units = fuse::units::kKelvin, .conservation = fuse::Conservation::Intensive,
+    .intent = fuse::Intent::Requires});
+
+const auto ch = g.add_channel("rho_link", f_out, f_in);
+g.channel(ch).conservative();   // RemapFlags::Conservative; method left empty
+```
+
+Three things decide which map is built:
+
+- the **flags**: `ChannelBuilder::remap(RemapFlags)` ORs bits into the
+  channel; `conservative()` is `remap(RemapFlags::Conservative)`. The bits are
+  `Conservative`, `Monotone` and `HighOrder`;
+- the **discretisation pair** `(disc, order)` of the two fields, read from
+  their `FieldSpec`s (`FV`, `ContinuousGLL`, `DiscontinuousGLL`, `PointCloud`);
+- the **method string**, `ChannelBuilder::remap_method(std::string)`. Empty
+  (the default) means "derive from the discretisation pair and the
+  conservation kind".
+
+`Conservation` on the two fields also chooses the normalisation of the
+first-order supermesh map: `Intensive` (the value is a density) gives
+`W_ji = |T_j ∩ S_i| / m_j` with every target row summing to one;
+`Extensive` (the value itself is the amount) gives `W_ji = |T_j ∩ S_i| / n_i`
+with every source column summing to one. `None` behaves as `Intensive`.
+The two fields of a channel must agree (`validate()` reports `E-CONSERV`
+otherwise).
+
+### Method override strings
+
+The strings `build_weights()` (`fuse/backend/remap_plan.hpp`) recognises:
+
+| `remap_method(...)` | Builder | Needs |
+|---|---|---|
+| `""` (default) | supermesh at order 1; TempestRemap when the fields ask for an order above 1 or `HighOrder` is set | nothing; MOAB with TempestRemap for the high-order case |
+| `"intx"`, `"conservative"` | the first-order conservative supermesh builder, by name | nothing |
+| `"tempest"` | the high-order TempestRemap builder (orders 1 to 4) | `FUSE_ENABLE_MOAB=ON`, MOAB built with TempestRemap, a `MoabMeshBackend` |
+| `"consistent"` | piecewise-linear interpolation `H` **from** a nodal source ([](interface-transfer.md)) | nothing |
+| `"consistent-transpose"` | the load transfer `H^T D` **to** a nodal target ([](interface-transfer.md)) | nothing |
+| `"mls:degree=<d>,k=<k>,radial=<wendlandN>"` | moving least squares ([](point-cloud-remap.md)) | nothing |
+
+`"consistent"`, `"consistent-transpose"` and `"mls:..."` are dispatched on the
+string alone, before any discretisation check, in every build. Everything
+else must be an FV-to-FV pair (`E-REMAP-UNSUPPORTED` otherwise). Against a
+`MoabMeshBackend`, a string not in this table is `E-REMAP-UNSUPPORTED`,
+naming the known methods; the dependency-free supermesh path, which every
+non-MOAB backend takes, does not inspect the string and builds the order-1
+supermesh for any FV pair.
+
+### Where the remap runs
+
+By default a channel's `Remap` runs on the target component's ranks. To run
+it on a separately placed coupler component instead:
+
+```cpp
+const auto coupler = g.add_coupler({.name = "C", .ranks = {2, 1}});
+g.channel(ch).conservative().remap_on(coupler);
+```
+
+`remap_on` must name a `ComponentKind::Coupler` component or the channel's
+own source or target component; anything else is `E-CHANNEL-REMAP-ON` from
+`validate()`. A `remap_on` on a channel that can never emit a `Remap` (no
+flags, same region on both ends, no placement-moving method) is reported as
+`W-CHANNEL-REMAP-ON-UNUSED`. See [](placement.md).
+
+### Run it and read the counters
+
+The rest is the ordinary load, lower, schedule, run sequence. `RunStats`
+(`fuse/runtime/runner.hpp`) reports what the remap did:
+
+- `remap_weight_builds`: how many weight matrices were built at
+  `initialize()`. Two provably coincident regions take the identity path and
+  build none; identical plans share one matrix through `RemapCache`.
+- `remap_weight_nonzeros`: the total number of entries in those matrices.
+- `conservation_checks` / `conservation_violations` /
+  `worst_conservation_error`: the `Constrain` operator the lowering emits after
+  a `Remap` whose fields declare a `Conservation`. It integrates the field
+  against each region's own cell measures before and after the remap and
+  compares the two (relative tolerance `RunnerConfig::conservation_tolerance`,
+  default 1e-12; `abort_on_violation` turns a violation into `E-RT-CONSERVATION`).
+
+The complete program below (serial build, no optional library) runs the graph
+above for three periods with a source that writes a ramp each step:
+
+```cpp
+#include <fuse/backend/serial_backend.hpp>
+#include <fuse/ir/lowering.hpp>
+#include <fuse/runtime/runner.hpp>
+
+#include <Kokkos_Core.hpp>
+#include <iostream>
+#include <memory>
+#include <string>
+#include <vector>
+
+namespace {
+
+// A component that owns one double per cell and binds it as one field.
+class CellField : public fuse::Component {
+ public:
+  CellField(std::string name, std::size_t cells, bool producer)
+      : name_(std::move(name)), data_(cells, 0.0), producer_(producer) {}
+
+  [[nodiscard]] std::string name() const override { return name_; }
+
+  fuse::Result<void> register_fields(fuse::FieldRegistry& reg,
+                                     const fuse::CouplingGraph& g) override {
+    const auto cid = g.find_component(name_);
+    for (const fuse::FieldId f : g.component(*cid).fields) {
+      auto r = reg.bind(f, fuse::FieldRef{data_.data(),
+                                          fuse::Layout{.stride = 1, .count = data_.size()},
+                                          fuse::MemorySpace::Host});
+      if (!r.ok()) return r;
+    }
+    return fuse::Result<void>::success();
+  }
+
+  fuse::Result<void> advance(const fuse::StepContext&) override {
+    if (producer_) {
+      ++steps_;
+      for (std::size_t i = 0; i < data_.size(); ++i) {
+        data_[i] = 1.0 + 0.25 * static_cast<double>(i) + static_cast<double>(steps_);
+      }
+    }
+    return fuse::Result<void>::success();
+  }
+
+  [[nodiscard]] const std::vector<double>& data() const { return data_; }
+
+ private:
+  std::string         name_;
+  std::vector<double> data_;
+  bool                producer_;
+  int                 steps_ = 0;
+};
+
+}  // namespace
+
+int main(int argc, char** argv) {
+  Kokkos::ScopeGuard kokkos(argc, argv);
+
+  constexpr std::size_t kSrcCells = 8;
+  constexpr std::size_t kDstCells = 5;
+
+  // ---- 1. Two meshes, two regions, two components, one conservative channel.
+  fuse::CouplingGraph g;
+  const auto m_src = g.add_mesh(fuse::MeshDecl{.name = "fine", .source = "generated:line:8"});
+  const auto m_dst = g.add_mesh(fuse::MeshDecl{.name = "coarse", .source = "generated:line:5"});
+  const auto r_src = g.add_region(fuse::Region{.name = "fine_cells", .mesh = m_src, .dimension = 1});
+  const auto r_dst = g.add_region(fuse::Region{.name = "coarse_cells", .mesh = m_dst, .dimension = 1});
+
+  const auto a = g.add_component(fuse::ComponentDecl{
+      .name = "source", .ranks = fuse::RankSet{0, 1}, .interval = fuse::Rational{1}});
+  const auto b = g.add_component(fuse::ComponentDecl{
+      .name = "target", .ranks = fuse::RankSet{0, 1}, .interval = fuse::Rational{1}});
+
+  const auto f_out = g.add_field(a, fuse::FieldSpec{
+      .name = "rho", .region = r_src,
+      .disc = fuse::Discretization::FV,
+      .units = fuse::units::kKelvin,
+      .conservation = fuse::Conservation::Intensive,
+      .intent = fuse::Intent::Provides});
+  const auto f_in = g.add_field(b, fuse::FieldSpec{
+      .name = "rho_in", .region = r_dst,
+      .disc = fuse::Discretization::FV,
+      .units = fuse::units::kKelvin,
+      .conservation = fuse::Conservation::Intensive,
+      .intent = fuse::Intent::Requires});
+
+  const auto ch = g.add_channel("rho_link", f_out, f_in);
+  g.channel(ch).conservative();   // RemapFlags::Conservative; method "" = supermesh
+
+  // ---- 2. Load the meshes, lower, schedule.
+  fuse::SerialMeshBackend backend;
+  for (std::uint32_t i = 0; i < g.mesh_count(); ++i) {
+    if (const auto r = backend.load(g.mesh(fuse::MeshId{i})); !r.ok()) {
+      std::cerr << r.error().code << ": " << r.error().message << "\n";
+      return 1;
+    }
+  }
+  const auto lowered = lower(g);
+  if (!lowered.ok()) { std::cerr << lowered.diags.to_string(); return 1; }
+  const fuse::ClockSet clocks{g};
+  const auto sched = schedule(g, lowered.dag, clocks,
+                              fuse::make_region_sizes(g, lowered.dag, backend));
+  if (!sched.ok()) { std::cerr << sched.diags.to_string(); return 1; }
+
+  // ---- 3. Components, registry, Runner.
+  fuse::ComponentSet components;
+  components.add(std::make_unique<CellField>("source", kSrcCells, true));
+  components.add(std::make_unique<CellField>("target", kDstCells, false));
+  fuse::FieldRegistry registry;
+  for (auto& c : components) {
+    if (const auto r = c.register_fields(registry, g); !r.ok()) {
+      std::cerr << r.error().message << "\n";
+      return 1;
+    }
+  }
+
+  fuse::Runner runner{g, lowered.dag, sched.plan, backend};
+  if (const auto r = runner.initialize(components, registry); !r.ok()) {
+    std::cerr << r.error().code << ": " << r.error().message << "\n";
+    return 1;
+  }
+  if (const auto r = runner.run(components, 3); !r.ok()) {
+    std::cerr << r.error().code << ": " << r.error().message << "\n";
+    return 1;
+  }
+
+  // ---- 4. What the run did.
+  const fuse::RunStats& s = runner.stats();
+  std::cout << "periods                  : " << s.periods << "\n"
+            << "remap_weight_builds      : " << s.remap_weight_builds << "\n"
+            << "remap_weight_nonzeros    : " << s.remap_weight_nonzeros << "\n"
+            << "conservation_checks      : " << s.conservation_checks << "\n"
+            << "conservation_violations  : " << s.conservation_violations << "\n"
+            << "worst_conservation_error : " << s.worst_conservation_error << "\n";
+
+  const auto* src = dynamic_cast<const CellField*>(components.find("source"));
+  const auto* dst = dynamic_cast<const CellField*>(components.find("target"));
+  double sum_src = 0.0, sum_dst = 0.0;
+  for (double v : src->data()) sum_src += v;
+  for (double v : dst->data()) sum_dst += v;
+  std::cout << "sum over source cells    : " << sum_src << "\n"
+            << "sum over target cells    : " << sum_dst << "\n"
+            << "sum*measure source       : " << sum_src / kSrcCells << "\n"
+            << "sum*measure target       : " << sum_dst / kDstCells << "\n";
+  return s.conservation_violations == 0 ? 0 : 2;
+}
+```
+
+Expected output (exact digits can vary by platform):
+
+```text
+periods                  : 3
+remap_weight_builds      : 1
+remap_weight_nonzeros    : 12
+conservation_checks      : 3
+conservation_violations  : 0
+worst_conservation_error : 0
+sum over source cells    : 39
+sum over target cells    : 24.375
+sum*measure source       : 4.875
+sum*measure target       : 4.875
+```
+
+Eight cells onto five give 12 overlaps (each coarse cell overlaps two or
+three fine cells), built once and applied three times. The
+integral `sum_i f_i m_i` is the same on both sides; the plain sum of values is
+not, because the values are densities.
+
+What the lowering emitted for this channel (`dump_text(lowered.dag)`,
+`fuse/ir/dump.hpp`; see [](graph-programming.md)):
+
+```text
+node 0   Source                    -> %0 : Instant<r0, K, Intensive, [WindowEnd, k], ranks=0>  "source.rho"
+node 1   Remap        %0           -> %1 : Instant<r1, K, Intensive, [WindowEnd, k], ranks=0>  "rho_link/remap" {remap=C}
+node 2   Constrain    %1           -> %2 : Instant<r1, K, Intensive, [WindowEnd, k], ranks=0>  "rho_link/constrain"
+node 3   Diagnose     %2           -> %3 : Instant<r1, K, Intensive, [WindowEnd, k], ranks=0>  "rho_link/diagnose"
+node 4   Sink         %3           -> %4 : Instant<r1, K, Intensive, [WindowEnd, k], ranks=1>  "target.rho_in"
+```
+
+`{remap=C}` is the `Conservative` flag (`M` and `H` are `Monotone` and
+`HighOrder`); a method override prints as `{method=...}`.
+
+:::{warning}
+With `Conservation::Extensive` on both fields the supermesh map is
+column-normalised and conserves the plain sum of the values (the program above
+prints 39 on both sides), but the runtime's `Constrain` check compares the
+measure-weighted integrals, so on cells of unequal size it reports a violation
+that is not one: the same run with `Extensive` prints
+`conservation_violations : 3` and `worst_conservation_error : 0.6` (8/5 − 1).
+Declare a cell field whose value is a density as `Intensive`; for an
+`Extensive` cell field on non-matching meshes, set
+`RunnerConfig::check_conservation = false` or check the totals yourself.
+The nodal load transfer in [](interface-transfer.md) is the case where
+`Extensive` and the check agree.
+:::
+
+### The MOAB and TempestRemap path
+
+Nothing in the graph changes. The flags, the discretisation pair and the
+method string are the whole of the request; what changes is the **mesh
+backend** handed to `Runner` and the **build**:
+
+- configure with `-DFUSE_ENABLE_MOAB=ON` (which requires
+  `-DFUSE_ENABLE_MPI=ON`) and load the meshes through
+  `fuse::MoabMeshBackend` (`fuse/backend/moab_backend.hpp`) instead of
+  `SerialMeshBackend` or `NativeMeshBackend`;
+- `build_weights()` dispatches on the backend object it is handed, so a
+  `SerialMeshBackend` pair takes the dependency-free supermesh path even in a
+  MOAB-enabled build;
+- the high-order builder is selected by `remap_method("tempest")`, by an
+  `order` above 1 on the FV fields, or by `RemapFlags::HighOrder` (order 2
+  when no order is given). It needs the MOAB that FUSE was built against to
+  have been built with TempestRemap; otherwise `E-REMAP-NOTEMPEST`. Without
+  MOAB at all the same request is `E-REMAP-NOHIGHORDER`;
+- `Monotone` together with an order above 1 is `E-REMAP-UNSUPPORTED`: bound
+  preservation and an order above 1 are not simultaneously available, and the
+  first-order map is not returned under the high-order name.
+
+### Errors at `initialize()` and what to do
+
+The Runner forwards the builder's own code and prepends which two regions it
+was trying to connect.
+
+| Code | Meaning | Fix |
+|---|---|---|
+| `E-MESH-SOURCE` | the backend cannot parse `MeshDecl::source` (`SerialMeshBackend` accepts only `generated:line:N` and `generated:box:NxMxP`) | use a source the backend reads; see [](meshes.md) |
+| `E-MESH-SIZE` | the generated entity counts overflow | smaller counts |
+| `E-MESH-MOVED` | a moved-from backend was used | keep the backend alive for the Runner's lifetime |
+| `E-MESH-PLACEMENT` | a remap asked for a processor set the backend was never told about | register the placement first ([](placement.md)) |
+| `E-REMAP-REGION` | a region names an `entity_set` other than empty or `"all"` | remap whole meshes; a sub-set region has no index space for the matrix |
+| `E-REMAP-DIM` | the two regions have different topological dimension | both sides must be cells of the same dimension |
+| `E-REMAP-UNSUPPORTED` | a non-FV pair on an FV-only method, mismatched source and target orders, `Monotone` with order above 1, an unknown method on the MOAB path | see the method table above |
+| `E-REMAP-NOHIGHORDER` | an order above 1 or `HighOrder` without MOAB/TempestRemap | drop the request or build with MOAB |
+| `E-REMAP-NOTEMPEST` | the high-order builder in a MOAB build whose MOAB lacks TempestRemap | rebuild MOAB with TempestRemap |
+| `E-REMAP-NONPLANAR` | the dependency-free kernel was handed a surface in 3D (or a 1D curve varying along more than one axis) | a surface pair needs the TempestRemap tier |
+| `E-REMAP-NOGEOMETRY` | a view reports no simplices for an entity | the mesh carries no geometry to intersect |
+| `E-REMAP-COVERAGE` | `Conservative` was set and the target domain does not cover every source cell | make the domains coincide, or clear the flag and read `min_src_coverage` |
+| `E-REMAP-MONOTONE` | `Monotone` was set and the built matrix is not bound preserving | order 1 only |
+| `E-REMAP-PARALLEL` | a partitioned read with no remap halo built for the pair | call `build_remap_halo` after `load()` and before anything sizes a buffer |
+| `E-REMAP-GEOMETRY` | the two spherical meshes are not on the same sphere | rescale (below) |
+| `E-RT-REMAP-SIZE` | the buffer plan and the backend disagree about a region's size | the mesh changed after `schedule()`, typically a halo built too late |
+| `E-RT-REMAP-HALO`, `E-RT-REMAP-NO-HALO` | a remap halo exists but the Runner does not exchange it, or a disjoint-placement native pair has none | drive the remap directly, or place both components on one rank |
+| `E-RT-REMAP-NODAL-PARALLEL`, `E-RT-REMAP-MLS-PARALLEL` | a nodal or MLS remap on more than one rank outside the supported orientation | see [](interface-transfer.md) and [](point-cloud-remap.md) |
+
+Applying weights by hand (`apply_weights` in `remap_plan.hpp`) adds
+`E-REMAP-ARG` (null buffer or `components < 1`), `E-REMAP-COO` (triplet
+arrays disagree or an index is out of range) and `E-REMAP-SIZE` (buffer
+length overflow).
 
 ## The two dimensions
 
@@ -69,8 +435,8 @@ itself, while a zero is visible as a cell that received nothing.
 
 ## What the mesh does not carry
 
-Fields. The reference model this follows bundles point, cell and global data
-into the mesh; FUSE already has a field layer carrying units, intent and
+Fields. Many mesh libraries bundle point, cell and global data into the
+mesh; FUSE already has a field layer carrying units, intent and
 semantic shape, and a second home for a field would be two places to look for
 one and two places for its units to disagree. The mesh carries geometry only.
 
@@ -270,5 +636,8 @@ cell in place instead of asking the host for its corner list.
 
 ## See also
 
+- [](meshes.md) for the mesh backends, the generated-mesh grammar and partitioning
 - [](placement.md) for per-placement meshes and Cores
 - [](transfer-maps.md) and [](point-cloud-remap.md) for the maps built on this geometry
+- [](interface-transfer.md) for the nodal interpolation and load-transfer pair
+- [](runtime.md) for `RunStats` and `RunnerConfig`

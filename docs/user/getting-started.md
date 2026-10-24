@@ -161,6 +161,9 @@ advance them in place. [](quickstart.md) walks through the five stages with the 
 |---|---|
 | Understand the model before writing code | [](concepts.md) |
 | Copy a working snippet for a task | [](cookbook.md) |
+| Write your own component and driver | [](component-interface.md), [](drivers.md) |
+| Keep the coupling as a YAML file | [](yaml.md) |
+| Read or extend the compiled IR and plan | [](ir.md) |
 | Look up a word | [](glossary.md) |
 | Couple an existing C or Fortran code | [](c-abi.md), [](fortran.md) |
 | Run on many ranks or across executables | [](placement.md), [](multiple-executables.md), [](power-users.md) |

@@ -4,7 +4,7 @@
     python3 tools/docs-to-wiki.py OUTDIR
 
 Writes OUTDIR/Home.md, OUTDIR/_Sidebar.md and one page per Markdown file under
-docs/user and docs/dev (docs/dev/reviews and docs/history are not published).
+docs/user. The developer guide (docs/dev) and docs/history stay in the repository.
 Sphinx/MyST constructs that GitHub does not render are rewritten: literalinclude
 becomes a code block holding the included source, admonitions become block
 quotes, toctree directives become the sidebar, and links between pages become
@@ -28,7 +28,7 @@ REPO = "https://github.com/vijaysm/fuse"
 BRANCH = "main"
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DOCS = os.path.join(ROOT, "docs")
-SECTIONS = ("user", "dev")
+SECTIONS = ("user",)
 SKIP_PARTS = ("reviews",)
 
 LINK = re.compile(r"\[([^\]]*)\]\(([^)\s]+)\)")
@@ -140,27 +140,27 @@ class Converter:
             if LABEL.match(line):
                 i += 1
                 continue
-            m = FENCE.match(line)
+            indent = line[:len(line) - len(line.lstrip(" "))]
+            m = FENCE.match(line.lstrip(" "))
             if m:
                 fence, _, directive, arg = m.groups()
                 j = i + 1
                 body = []
-                while j < len(lines) and not (
-                        lines[j].startswith(fence) and lines[j].strip() == fence):
-                    body.append(lines[j])
+                while j < len(lines) and lines[j].strip() != fence:
+                    body.append(lines[j][len(indent):] if lines[j].startswith(indent) else lines[j])
                     j += 1
                 i = j + 1
                 if not directive:
                     out.append(line)
-                    out.extend(body)
-                    out.append(fence)
+                    out.extend(indent + b if b else b for b in body)
+                    out.append(indent + fence)
                     continue
                 opts = {}
                 while body and body[0].startswith(":"):
                     k, _, v = body.pop(0)[1:].partition(":")
                     opts[k.strip()] = unquote(v.strip())
                 if directive == "literalinclude":
-                    out.extend(self.literalinclude(src, arg, opts))
+                    out.extend(indent + b if b else b for b in self.literalinclude(src, arg, opts))
                 elif directive == "toctree":
                     pass
                 else:

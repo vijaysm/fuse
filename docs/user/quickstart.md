@@ -63,7 +63,7 @@ What this declares:
 
 Every `add_*` call takes a designated-initialiser struct and returns an id. `g.channel(ch)` returns a
 builder you chain; none of those calls can fail. To catch defects early, check the whole graph before
-compiling:
+compiling. Nothing calls `validate()` for you:
 
 ```cpp
 #include <fuse/model/validate.hpp>
@@ -73,6 +73,14 @@ if (fuse::Diagnostics d = fuse::validate(graph); d.has_errors()) {
   return 1;
 }
 ```
+
+:::{note}
+`mms_pair` itself skips this call, and `validate()` does have something to say about its graph: both
+fields are `Extensive` but the channel does not declare `.conservative()`, so it reports
+`E-CONN-CONSERVATION`. Your own graphs should pass `validate()` cleanly: add `.conservative()` to a
+channel whose transfer must conserve the field, or mark the fields `Intensive` if it need not.
+[](graph-programming.md) lists every validation code and its fix.
+:::
 
 ## 2. Write the components
 
@@ -151,6 +159,8 @@ data you can print, diff and keep as a golden file.
 ## Where next
 
 - [](mms-pair.md): this example in full, with its problem statement, expected output and checks.
+- [](graph-programming.md): every declaration and treatment; [](component-interface.md): the full
+  component contract; [](drivers.md): turning this into an executable you control.
 - [](cookbook.md): recipes for iteration, remapping, windows, restart and more.
 - [](dn-heat.md): the same pipeline with an iteration region and an accelerator.
 - [](concepts.md): the model behind the five stages.
