@@ -89,8 +89,7 @@ guarantee.
 
 The driver needs a `MeshBackend` that decomposes the shared mesh independently for each component
 (`MeshBackend::placed_view`) — without that, a partially overlapping pair cannot both cover the
-mesh entity set, because the runtime would hand them the same single decomposition. The only such backend in
-the tree today is `PartitionedTestBackend`
+mesh entity set, because the runtime would hand them the same single decomposition. The backend provided for this is `PartitionedTestBackend`
 (`test/support/partitioned_test_backend.hpp`), shared verbatim between
 `test/parallel/runner_transport_test.cpp` and this driver rather than duplicated.
 
@@ -129,8 +128,13 @@ sweep before spending any wall time on it. Without `--dry-run` it needs `--drive
 built `fuse_example_layout_driver` and an `mpiexec` on `PATH` or given via `--mpiexec`.
 
 :::{important}
-**This machine has 12 cores.** A sweep that asks for more ranks than that is oversubscribed —
+**Do not oversubscribe cores.** A sweep that asks for more ranks than the machine has cores is oversubscribed —
 `mpiexec` may still run it, but the timing numbers measure contention, not scaling. Real strong- or
 weak-scaling numbers past a handful of ranks need a cluster; this script only shapes the sweep and
 the CSV, it does not manufacture cores.
 :::
+
+## See also
+
+- [](placement.md) for processor sets and couplers
+- [](../dev/testing.md) for the parallel test matrix

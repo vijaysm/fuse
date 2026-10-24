@@ -22,8 +22,7 @@ if (!w.ok()) { /* E-MLS-OPTIONS, -REGION, -DISC, -NEIGHBORS, -RANK, -MONOTONE, -
 
 The result is an ordinary `RemapWeights`: `apply_weights`, `WeightsOperator`, and every audit field
 (`order`, `monotone`, `min_weight`, `max_row_defect`) work exactly as they do for the supermesh or
-TempestRemap builders. `intx_weights.cpp`'s dispatch adds one line for this (below); nothing else in
-the remap path needs to know MLS exists.
+TempestRemap builders. Selecting method `"mls"` (or `"mls:..."`) on a field transfer routes it to this builder.
 
 ## Declaring the fit -- never a default
 
@@ -147,7 +146,7 @@ message. `AllCoincidentNeighboursIsRankDeficient` pins this for a fit whose basi
 one independent direction; `DuplicateSourcePointsDoNotCrashAndDegreeZeroStillReproducesAConstant`
 pins the case where duplicates are present but the fit (degree 0) still succeeds.
 
-## What is verified
+## Accuracy
 
 - **Exactness.** A degree-`D` polynomial is reproduced to round-off in 1D, 2D, 3D, and on points
   scattered on a sphere (`ExactForDegree2Polynomial1D`/`ExactForDegree1Polynomial2D`/
@@ -165,8 +164,6 @@ pins the case where duplicates are present but the fit (degree 0) still succeeds
   `(disc, order)`, `k` below the basis size, a source side with too few points, a rank-deficient
   local fit (with the condition estimate present in the message), the `Conservative` flag, a
   detectably multi-rank backend, and the `Monotone` flag on a fit that is not bound preserving.
-- **Mutation evidence** for the neighbour-count rejection and the polynomial basis construction:
-  `build-evidence/mutations/mls.toml`.
 
 ## Serial only
 
@@ -174,23 +171,23 @@ This builder searches for a target's `k` nearest neighbours only among the sourc
 rank's `MeshView` reports -- no halo. On a genuinely partitioned read, a target near a partition
 boundary could have its true nearest neighbours on another rank, and this builder would never see
 them: a silently locally-correct, globally-wrong answer, the same failure mode `build_remap_halo`
-exists to close for the supermesh path. **Distributed MLS is a follow-on**, not attempted here. Where
+exists to close for the supermesh path. Distributed MLS is not supported. Where
 this builder can detect the multi-rank case (a `fuse::native::NativeMeshBackend` reporting
 `num_ranks() > 1`) it rejects the configuration with `E-MLS-UNSUPPORTED`, naming the reason; against an opaque `MeshBackend`
 it cannot recognise, it has no way to detect the case at all, and returns an answer computed only
 from what that rank can see.
 
-## Dispatch (for the lead: the one line `intx_weights.cpp` needs)
+## Selecting it on a field transfer
 
-`build_mls_weights` needs no MOAB and no mesh geometry (no simplex decomposition), so it dispatches
-on the method string alone, the same way `intx_weights.cpp` already dispatches `"consistent"` /
-`"consistent-transpose"` before the FV<->FV-only check -- in BOTH the `!FUSE_HAVE_MOAB` and
-`FUSE_HAVE_MOAB` `build_weights()` bodies, before either body's own discretisation check:
+`build_mls_weights` needs no MOAB and no mesh geometry, so `build_weights()`
+dispatches to it on the method string alone, in builds with and without MOAB, ahead of
+the discretisation check that restricts other methods to finite-volume fields:
 
 ```cpp
-if (plan.method == "mls" || plan.method.rfind("mls:", 0) == 0) {
-  return build_mls_weights(plan, graph, backend);
-}
+g.channel(ch).remap_method("mls:degree=2,k=12,radial=wendland2");
 ```
 
-`#include "fuse/backend/mls_weights.hpp"` at the top of `intx_weights.cpp`.
+## See also
+
+- [](transfer-maps.md) for persisting the resulting weights
+- [](geometry.md) for the supermesh alternative

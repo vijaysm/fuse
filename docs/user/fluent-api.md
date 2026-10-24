@@ -98,13 +98,11 @@ Ranges are half-open, like every other range in C++. A reversed or out-of-range 
 never a silent clamp: a clamp would turn a caller's arithmetic mistake into a shorter loop that
 still produces numbers.
 
-**A true cross-rank reduction is not yet part of this header.** `FieldSpan::local_sum()` is named
-`local_sum`, not `sum`, precisely because a sum over a distributed field's owned entries is a
-collective, and a method named `sum` that silently returned one rank's partial answer would be
-wrong without anyone noticing. A collective counterpart is referenced in the header's own comment
-(`fuse/field/collective.hpp`, taking a communicator) but that header does not exist yet — a caller
-who needs a global sum today composes `local_sum()` with the reduction facilities in
-[](../dev/linalg-distributed.md) (`fuse::linalg::Reducer`) directly.
+**There is no collective reduction on `FieldSpan`.** `FieldSpan::local_sum()` is named
+`local_sum`, not `sum`, because a sum over a distributed field's owned entries is a collective, and
+a method named `sum` that silently returned one rank's partial answer would be wrong without anyone
+noticing. For a global sum, compose `local_sum()` with `fuse::linalg::Reducer`
+(`include/fuse/linalg/comm.hpp`; see [](../dev/linalg-distributed.md)).
 
 ## Chains cannot dangle
 
@@ -122,3 +120,9 @@ outlives the temporary with no copy); called on an lvalue they return a borrowed
 a borrowed view out of a temporary is therefore a compile error (`test/field/compile_fail_dangling_
 span.cpp`) rather than a use-after-free — the same bug class `auto x = a + b` made famous in Eigen,
 removed by the overload set rather than documented around.
+
+## See also
+
+- [](quickstart.md) for the authoring chain in a complete program.
+- [](field-pipeline.md) for field views in the coupling hot loop.
+- [](geometry.md) and [](../dev/invariants.md) for the compatibility checks `validate()` runs.

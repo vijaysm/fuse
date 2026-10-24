@@ -1,10 +1,9 @@
 # Glossary
 
 This page defines the terms used in this documentation, and gives for each one the term used in the
-scientific-computing literature. The literature term is the one to use in prose. Where the code still
-uses an older identifier, the table lists it in the first column so that you can map what you read in
-a header or an error message to the concept. Identifiers are renamed to the literature terms in a
-single pass later; until then, this page is the translation.
+scientific-computing literature. The literature term is the one to use in prose. Where the code uses a
+different identifier, the table lists it in the first column so that you can map what you read in a
+header or an error message to the concept.
 
 References are listed at the end; a bracketed number points into that list.
 
