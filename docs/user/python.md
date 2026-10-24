@@ -1,33 +1,33 @@
 # Coupling from Python (`pfuse`)
 
 `pfuse` is a `pybind11` binding directly over `fuse::CouplingGraph`, `fuse::Component` and
-`fuse::Runner` — the C++ model and runtime, not the participant ABI ([](c-abi.md)/
-[](fortran.md)'s `fuse_coupler_abi()`). It is for a process that authors or drives a coupling
-*in* Python — a Python physics component exchanging fields with other components through a
-real `fuse::Runner` — not for calling an existing coupled run's step functions from outside the
-process. The binding's own design rationale, per-file layout, and the evidence behind every
-choice below live in [](../dev/python-surface.md); this page is the shorter, task-oriented
-version.
+`fuse::Runner`, the C++ model and runtime, not the participant ABI ([](c-abi.md), [](fortran.md)).
+Use it when you want to author or drive a coupling *in* Python, for example a Python physics
+component exchanging fields with other components through a real `fuse::Runner`. It is not a way to
+call an existing coupled run's step functions from outside the process. The binding's design and
+per-file layout are in [](../dev/python-surface.md); this page is the task-oriented version.
 
-## Installing from a build tree
+## Build it
 
-`pfuse` is not published (`pip index versions pfuse` returns nothing, confirmed, not a network
-artefact — see [](../dev/python-surface.md)) and is not installed anywhere; it is built in-tree
-under `FUSE_ENABLE_PYTHON`:
+`pfuse` is built from a FUSE build tree, behind the `FUSE_ENABLE_PYTHON` option (default `OFF`; see
+[](build.md)). It requires `pybind11` to be discoverable by CMake's `find_package(pybind11)`:
 
 ```bash
 cmake -S . -B build -DFUSE_ENABLE_PYTHON=ON \
-  -DPython3_EXECUTABLE=/path/to/your/python3   # the interpreter pfuse will import into
+  -DPython3_EXECUTABLE=/path/to/your/python3 \
+  -Dpybind11_DIR="$(/path/to/your/python3 -m pybind11 --cmakedir)"
 cmake --build build --target _pfuse
 
 PYTHONPATH=build/python python3 -c "import pfuse; print(pfuse.version())"
 ```
 
-`cmake --build`'s own `_pfuse` target copies the built extension next to `pfuse/__init__.py`
-under `<build>/python/pfuse/`, so `PYTHONPATH=<build>/python` is everything a working tree
-needs — no `pip install`, no separate staging step. The interpreter named by
-`-DPython3_EXECUTABLE` must be the one `PYTHONPATH` points `import pfuse` at afterward: the
-extension is built against that interpreter's ABI and will not import under a different one.
+The `_pfuse` target copies the built extension next to `pfuse/__init__.py` under
+`<build>/python/pfuse/`, so `PYTHONPATH=<build>/python` is all a working tree needs; there is no
+install step. The extension is built against one interpreter's ABI and imports only under that
+interpreter, so use the same `python3` for the build and for `import pfuse`.
+
+With `FUSE_ENABLE_TESTS` on, the Python tests are registered as `ctest` rows labelled `python`
+(`ctest --test-dir build -L python`); they need `pytest` in that interpreter.
 
 ## A first coupled run
 
@@ -125,9 +125,7 @@ session.initialize()
 session.run(1)
 
 print(session.stats.total_iterations, session.stats.windows_not_converged == 0)
-# -> 31 True (this exact count depends on the AccelKind/tolerance above, not on anything
-#    platform-specific; it is printed here because it was MEASURED running this file, not
-#    guessed)
+# Expected output (exact digits can vary by platform): 31 True
 ```
 
 Every `Component` subclass implements the same four methods `fuse::Component`'s C++ interface
@@ -158,11 +156,9 @@ determinism level, or claim hidden state outside its registered fields) sets a `
 class attribute, an `int` built from `pfuse.CAP_ROLLBACK`/`CAP_HIDDEN_STATE`. `pfuse.
 CAP_RESIDUAL`/`CAP_LINEARIZATION` are also bound, but only so that *claiming* either from Python
 is refused immediately, at `add_component()` time: a Newton-solved region's residual/Jacobian
-calls need `fuse::ImplicitComponent`'s C++ hooks, which no Python subclass can provide in this
-version — see [](../dev/python-surface.md)'s "Components implemented in Python" for the two
+calls need `fuse::ImplicitComponent`'s C++ hooks, which no Python subclass can provide — see [](../dev/python-surface.md)'s "Components implemented in Python" for the two
 distinct refusals this produces (one for a component that is honest about lacking the
-capability, one for a component that wrongly claims it) and `KNOWN_ISSUES.md` D37 for the scope
-this leaves out.
+capability, one for a component that wrongly claims it).
 
 Every failure crosses into Python as an exception, never a return code: `pfuse.FuseError` is
 the common base, with six subclasses mirroring `fuse::Error`'s own C++ hierarchy
@@ -174,10 +170,29 @@ flat design; see [](../dev/python-surface.md#errors-two-sources-one-python-hiera
 `Session.initialize()` additionally sets `.diagnostics` (a `fuse::Diagnostics`) when the failure
 came from `validate()`/`lower()`/`schedule()`, and leaves it `None` otherwise.
 
-## What is not exposed
+## Limitations
 
-No Newton execution (a Newton-solved region's *members* must be native; a Python-authored graph
-may still configure and run Newton over native components), no MPI, and only
-`fuse::SerialMeshBackend` — `"generated:line:N"`/`"generated:box:NxMxP"` mesh sources, not the
-native or MOAB backends. The full list, with the reasoning behind each item, is
-[](../dev/python-surface.md#what-this-does-not-expose-and-why) and `KNOWN_ISSUES.md` D37.
+- Newton execution is not available for Python components: a Newton-solved region's members must
+  be native. A Python-authored graph can still configure and run Newton over native components.
+- Python components cannot claim `CAP_RESIDUAL` or `CAP_LINEARIZATION`; `add_component()` refuses.
+- MPI is not exposed (`RunnerConfig`'s communicator and transport-setup fields are not bound); a
+  `Session` runs in one process with the default `"copy"` transport.
+- Only `fuse::SerialMeshBackend` is bound: use `"generated:line:N"` or `"generated:box:NxMxP"` mesh
+  sources. The native and MOAB backends are not available.
+- `FieldSpec::hdf5_path` and LowFive launch modes are not exposed.
+- `validate()` is bound with its default `ConnectPolicy`; a non-default policy cannot be passed.
+
+The reasoning behind each item is in
+[](../dev/python-surface.md#what-this-does-not-expose-and-why).
+
+## Maturity
+
+Covered by the automated test suite (the `python` `ctest` label), including a reproduction of the
+`dn_heat` example's non-Newton rows from a Python-authored graph.
+
+## See also
+
+- [](build.md) for the build options.
+- [](dn-heat.md) for the example the Python tests reproduce.
+- [](fluent-api.md) for the C++ authoring chains the Python graph API mirrors.
+- [](../dev/python-surface.md) for the binding's design.

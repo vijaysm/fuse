@@ -1,15 +1,14 @@
 # Coupling across separately built executables
 
-:::{note}
-`fuse::transport::connect()` (`include/fuse/transport/connect.hpp`) is implemented and tested
-(`build-evidence/mutations/transport-connect.toml`). It needs a real multi-process launch to
-execute, so the executable-pair test under `test/parallel/connect/` is compiled here and run on
-the host; see [](../dev/testing.md#the-five-states) for what "implemented" means while a claim is
-still a host-run item rather than a measured one.
-:::
+Use this page when the components of one coupling live in different executables: for example a
+Fortran ocean model and a C++ atmosphere model that each have their own build. It shows the two ways
+to launch them (one `mpiexec` with several programs, or independently launched programs that find
+each other at run time), the graph declarations each needs, and what `connect()` checks.
 
 Every other page in this guide assumes one `mpiexec` launches one executable that contains every
-component of the graph. Two further cases put more than one *executable* into the same coupled run.
+component of the graph. `fuse::transport::connect()` (`include/fuse/transport/connect.hpp`) is for
+the two cases that put more than one *executable* into the same coupled run. Both need MPI; see
+[](build.md). The worked example is [](brusselator.md).
 
 ## Launcher-style MPMD: one `mpiexec`, several programs
 
@@ -87,17 +86,14 @@ directory a job script creates before either launches). The acceptor's rank 0 ca
 `connect()`'s call is otherwise identical to the MPMD case above — same `ConnectOptions`, same
 return type, same way of handing the result to `RunnerConfig`.
 
-**A partner that never launches is a timeout, not a hang -- on the non-acceptor side only.**
-`ConnectOptions::timeout_s` (default 30 seconds) bounds how long the non-acceptor side polls for
-the port file before refusing with `E-CONNECT-TIMEOUT`; that side alone can give up and exit. The
-acceptor side has no analogous bound: once its own rank 0 has published the port name, every rank
-of its world calls `MPI_Comm_accept` and blocks there with no timeout at all, so a connector that
-times out and exits leaves the acceptor waiting forever for a connection that is never coming --
-job control (a wall-clock limit on the launching script or scheduler) is the only thing that ends
-that wait. The one further blocking window this does not cover either is `MPI_Comm_connect`
-itself, once the port file is found: that call is a synchronous MPI handshake with the acceptor's
-own `MPI_Comm_accept`, and neither this library nor the MPI standard offers a way to bound it from
-one side alone.
+:::{warning}
+`ConnectOptions::timeout_s` (default 30 seconds) bounds how long the non-acceptor side polls for the
+port file before refusing with `E-CONNECT-TIMEOUT`; that side can give up and exit. The acceptor has
+no such bound: once its rank 0 has published the port name, every rank of its world blocks in
+`MPI_Comm_accept`, so a connector that times out and exits leaves the acceptor waiting. End that wait
+with job control (a wall-clock limit on the launching script or scheduler). The `MPI_Comm_connect`
+handshake itself, once the port file is found, cannot be bounded from one side either.
+:::
 
 ## What `connect()` checks, and what it refuses
 
@@ -111,25 +107,25 @@ graph that declares an `Mpmd` or `Connect` component on an empty, strided, or ou
 `RankSet` is refused with `E-CONNECT-SPEC` before any process even calls `MPI_Open_port` or reads
 `MPI_APPNUM`.
 
-**A gap between two launched blocks is legal exactly when an in-process component fills it exactly**
-(KNOWN_ISSUES.md D36) -- an `InProcess`/`Plugin` component whose own `RankSet` covers every rank of
-the gap and none outside it. This is accept mode's own bundled coupler: U's executable carries the
-coupler's ranks too (`connect_pairwise()` supports exactly two `Connect`-mode components, D18), but
-since D36 U's own declared `RankSet` is only its physics ranks, the coupler's is the ranks between
-U's declared block and V's, and that gap -- not a third block of U's own -- is what the coupler's
-declaration fills. The OLDER shape (U's own declared range spanning the coupler's bundled ranks too,
-with no gap at all) still validates unchanged: it never reaches the gap check, since nothing is
-missing between U's block and V's. An in-process component may also simply share ranks with one
-launched block (`RankSet`'s own documented "overlap is legal") -- what it may not do is straddle the
-boundary between a gap and a block, or between two gaps: its own ranks must sit entirely on one side.
+**A gap between two launched blocks is legal exactly when an in-process component fills it exactly**:
+an `InProcess`/`Plugin` component whose `RankSet` covers every rank of the gap and none outside it.
+This is how a coupler bundled into one of the two executables is declared. For example, the
+acceptor executable carries the coupler's ranks as well as its own (only two `Connect`-mode
+components are supported, see `E-CONNECT-SPEC`); the acceptor's declared `RankSet` is just its
+physics ranks, and the coupler's `RankSet` is the gap between that block and the connector's. A
+declaration where the acceptor's range spans the coupler's ranks too, with no gap, also validates. An
+in-process component may share ranks with one launched block (overlap is legal), but it may not
+straddle the boundary between a gap and a block, or between two gaps: its ranks must sit entirely on
+one side.
 
 | Code | When |
 |---|---|
 | `E-LAUNCH-APPNUM` | (graph build) an `Mpmd` component has no `appnum` set |
 | `E-LAUNCH-CONNECT-TARGET` | (graph build) a `Connect` component has neither `port_file` nor `service_name` |
-| `E-CONNECT-SPEC` | the launched components' `RankSet`s are not consecutive blocks (with in-process-covered gaps, D36) in graph order; a gap between two launched blocks has a rank no in-process/plugin component covers, or one an in-process component's own ranks straddle the boundary of; two `Mpmd` components share one `appnum`; a non-`Mpmd`/`Connect` component was handed to `connect()`; or more than TWO components declare `Connect` (KNOWN_ISSUES.md D18 -- `Mpmd` has no such limit, only true separate-executable `Connect` launches) |
+| `E-CONNECT-SPEC` | the launched components' `RankSet`s are not consecutive blocks (with in-process-covered gaps) in graph order; a gap between two launched blocks has a rank no in-process/plugin component covers, or one an in-process component's own ranks straddle the boundary of; two `Mpmd` components share one `appnum`; a non-`Mpmd`/`Connect` component was handed to `connect()`; or more than two components declare `Connect` (`Mpmd` has no such limit) |
 | `E-CONNECT-APPNUM` | the real `MPI_APPNUM` layout at runtime disagrees with the graph (an undeclared appnum, or a declared one whose ranks do not match) |
 | `E-CONNECT-TIMEOUT` | the non-acceptor side waited longer than `timeout_s` for the port file |
+| `E-CONNECT-ACCEPT-UNAVAILABLE` | a `Connect`-mode component was declared but this build has accept/connect disabled (see [Which launch modes this build offers](#which-launch-modes-this-build-offers)) |
 
 See [](placement.md) for `RankSet` itself, and [](c-abi.md) if the other executable is not written
 against this library's own `CouplingGraph` API at all — a participant driven through the C or
@@ -138,76 +134,68 @@ Fortran ABI declares its launch style the same way, through the descriptor it wa
 ## A C or Fortran participant never calls `connect()` itself
 
 Everything above is a C++ call against a `fuse::CouplingGraph` the executable built or loaded
-itself. A participant written in C or Fortran has neither: it loads a graph someone else authored
-(`fuse_load_graph`) and never touches `fuse::transport::connect()`, or any other C++, at all —
-`fuse_setup_options::my_component` is the one field that makes this possible. Set it to the name of
-the component THIS process plays, with `communicator` holding this executable's own
-`MPI_COMM_WORLD` (as a Fortran handle, `MPI_Comm_c2f`). On Open MPI, that handle IS 0
-(KNOWN_ISSUES.md D76 -- Open MPI's own `mpif.h` numbers `MPI_COMM_WORLD` as 0, unlike MPICH's
-`0x44000000`), which collides with this struct's own original sentinel for "no communicator
-supplied"; set `has_communicator = 1` so `fuse_setup()` reads a `communicator` of 0 as this
-process's own world, not an absent one. An old caller whose `struct_size` predates
-`has_communicator` keeps the original sentinel (`communicator == 0` means none) unchanged:
+itself. A participant written in C or Fortran loads a graph someone else authored
+(`fuse_load_graph`) and never touches `fuse::transport::connect()` or any other C++.
+`fuse_setup_options::my_component` makes this possible: set it to the name of the component THIS
+process plays, with `communicator` holding this executable's own `MPI_COMM_WORLD` (as a Fortran
+handle, `MPI_Comm_c2f`).
+
+:::{warning}
+On Open MPI, the Fortran handle of `MPI_COMM_WORLD` is 0, which is also the original "no
+communicator supplied" sentinel of this struct. Set `has_communicator = 1` so `fuse_setup()` reads a
+`communicator` of 0 as this process's own world. A caller whose `struct_size` predates
+`has_communicator` keeps the original sentinel (`communicator == 0` means none).
+:::
 
 ```c
 fuse_setup_options opts = {.struct_size = sizeof(opts)};
 opts.communicator      = MPI_Comm_c2f(MPI_COMM_WORLD);
-opts.has_communicator  = 1;  /* D76: 0 is a real handle on Open MPI */
+opts.has_communicator  = 1;  /* 0 is a real handle on Open MPI */
 opts.my_component      = "ocean";
 fuse_coupler_abi(FUSE_ABI_VERSION)->setup(ctx, &opts, NULL);
 ```
 
-`fuse_setup()` reads `my_component`'s own `LaunchSpec` straight off the already-loaded graph and
-does exactly what the C++ call above does: nothing extra for `InProcess`/`Plugin` (`communicator`
-is already the base communicator); `MPI_APPNUM` checking for `Mpmd`; the full accept/connect/merge
-handshake for `Connect`. Either way, `communicator` as GIVEN is the WORLD communicator this
-executable started with, and what `fuse_setup()` stores internally afterward is the real base one
-— the caller never sees the difference, or the intercommunicator machinery, at all.
-`examples/brusselator/participants/{u_main.c,v_main.f90,coupler_main.c}` (Conformance Unit 2) are the
-worked example: the same three-component graph (the coupler included) as every other page in this
-guide, authored once by a small C++ tool (`brusselator_graph_tool --ranks-u N --ranks-v N
---ranks-coupler N --launch mpmd|accept --out graph.yaml`) and loaded by `u_main.c`/`v_main.f90`/
-`coupler_main.c`, none of which link any C++ of their own (`shim.cpp`, the Brusselator physics
-itself, is the one C++ translation unit either participant's own loop body calls into, through a
-plain C-ABI wrapper — [](../dev/abi-design.md) distinguishes this from the ABI's own ban on a
-foreign caller touching `fuse::` C++ directly). `--launch accept` bundles the coupler's own ranks
-into the acceptor executable's (`u_main.c`'s) own `MPI_COMM_WORLD` rather than giving it a third
-`Connect`-mode executable of its own — see `E-CONNECT-SPEC`'s row below and KNOWN_ISSUES.md D18 for
-why. U's own declared `RankSet` is exactly its physics ranks, not the whole of that bundled
-executable (KNOWN_ISSUES.md D36 — a component's `RankSet` must be the ranks that HOST it, which
-`NativeMeshBackend`'s own per-placement decomposition, D24, decomposes a mesh field over); the
-coupler's own declared `RankSet` is the gap this leaves between U's declared block and V's, which
-the gap rule above accepts.
+`fuse_setup()` reads `my_component`'s `LaunchSpec` from the loaded graph and does what the C++ call
+above does: nothing extra for `InProcess`/`Plugin`; `MPI_APPNUM` checking for `Mpmd`; the full
+accept/connect/merge handshake for `Connect`. The `communicator` you pass is the world communicator
+the executable started with; what `fuse_setup()` stores internally is the real base communicator.
+See [](c-abi.md) and [](fortran.md).
 
-`brusselator_check` (same directory) reads both executables' own printed per-window logs and
-reproduces `examples/brusselator/main.cpp`'s own `--check` verdict from them.
-`test/parallel/brusselator_participants/run_participants.sh` is the host driver
-(`verification.brusselator.participants.{mpmd,accept}.{3,5}`). MPI cannot start in this sandbox
-(KNOWN_ISSUES.md C1), so every row is compile-verified here and **run on the host**: the `mpmd.3`
-and `mpmd.5` rows passed there 2026-10-09/2026-10-10 (KNOWN_ISSUES.md D25) — `mpmd.3`'s final means
-match the single-process `examples/brusselator` reference bit-for-bit (0 ulp in both `mean_u` and
-`mean_v`), and `mpmd.5` (U on two ranks, V on two, the coupler on one — the first row where a
-participant genuinely spans more than one rank) differs from that same reference by 8.9e-14 in
-`mean_u` and 9.4e-14 in `mean_v`, consistent with the decomposed Schur solve's own round-off bound.
-The `accept.{3,5}` rows remain unrun — D23, below, blocks every accept/connect row on this host's
-MPI build regardless of this track. What that script's own `mpiexec` lines actually are, exactly as `ctest` runs them (the
-world-size-3 case; `{3,5}`'s own `ranks_u`/`ranks_v`/`ranks_coupler` are `1/1/1` and `2/2/1`):
+### Worked example
+
+`examples/brusselator/participants/{u_main.c,v_main.f90,coupler_main.c}` are the worked example: a
+three-component graph authored once by a small C++ tool and loaded by three executables that link no
+C++ of their own (only the physics, `shim.cpp`, is C++, behind a plain C wrapper).
+
+```sh
+brusselator_graph_tool --ranks-u N --ranks-v N --ranks-coupler N --launch mpmd|accept --out graph.yaml
+```
+
+`--launch accept` bundles the coupler's ranks into the acceptor executable (`u_main.c`) rather than
+giving it a third `Connect`-mode executable. The exact `mpiexec` lines, as `ctest` runs them (world
+size 3):
 
 ```
-# mpmd.3: one mpiexec, three ':'-separated app segments
+# mpmd: one mpiexec, three ':'-separated app segments
 mpiexec -n 1 brusselator_u_main --graph graph.yaml --log u.log --periods 2 \
     : -n 1 brusselator_v_main --graph graph.yaml --log v.log --periods 2 \
     : -n 1 brusselator_coupler_main --graph graph.yaml
 
-# accept.3: two mpiexec invocations -- U's executable is the acceptor and
-# carries the coupler's own bundled rank in its local MPI_COMM_WORLD
+# accept: two mpiexec invocations; U's executable is the acceptor and
+# carries the coupler's bundled rank in its local MPI_COMM_WORLD
 mpiexec -n 2 brusselator_u_main --graph graph.yaml --log u.log --ranks-u 1 --periods 2 &
 mpiexec -n 1 brusselator_v_main --graph graph.yaml --log v.log --periods 2 &
 wait
 
-# both modes, every row
+# both modes
 brusselator_check --u-log u.log --v-log v.log
 ```
+
+`brusselator_check` reads both executables' per-window logs and reproduces the in-process example's
+`--check` verdict. `test/parallel/brusselator_participants/run_participants.sh` runs the whole
+sequence. Expected agreement with the single-process example: the 3-rank MPMD run matches
+bit-for-bit; the 5-rank run (U on two ranks, V on two, coupler on one) differs by about 9e-14 in
+each mean. See [](brusselator.md) for the details.
 
 ## Releasing the base communicator
 
@@ -237,41 +225,43 @@ releases the connection the same way, after the runner it owns is gone.
 
 ## Which launch modes this build offers
 
-The two modes do not ask the same things of an MPI. **MPMD** needs only
-`MPI_APPNUM`, which every launcher provides. **Accept/connect** needs dynamic
-process management *and* needs it to work between two jobs that share a node,
-which not every installation can do.
+The two modes do not ask the same things of an MPI. **MPMD** needs only `MPI_APPNUM`, which every
+launcher provides, and is never gated. **Accept/connect** needs dynamic process management *and*
+needs it to work between two jobs that share a node, which not every installation can do.
 
-So the build measures it rather than assuming. At configure time, with MPI
-enabled, `tools/probe-mpi-dynamic.sh` compiles a small program and launches it
-twice -- one job accepting, one connecting -- and performs the same sequence
-`connect()` performs: open a port, accept, connect, merge, collective,
-disconnect. The verdict sets `FUSE_ENABLE_CONNECT_ACCEPT`, which you can
-override on the command line:
+At configure time, with MPI enabled, `tools/probe-mpi-dynamic.sh` compiles a small program and
+launches it twice (one job accepting, one connecting), performing the same sequence `connect()`
+performs: open a port, accept, connect, merge, collective, disconnect. The verdict sets
+`FUSE_ENABLE_CONNECT_ACCEPT`, which you can force on the command line:
 
 ```sh
 cmake -S . -B build -DFUSE_ENABLE_MPI=ON -DFUSE_ENABLE_CONNECT_ACCEPT=OFF
 ```
 
-There are three verdicts, not two, and the third matters:
-
 | probe says | `FUSE_ENABLE_CONNECT_ACCEPT` | what you see |
 |---|---|---|
-| the two jobs connected | `ON` | the accept rows are registered and run |
-| they did not | `OFF` | the accept rows are not registered, and a `connect`-mode component is refused at `connect()` with `E-CONNECT-ACCEPT-UNAVAILABLE` |
-| could not be tested | `ON` | a configure message says so; the rows run and report for themselves |
+| the two jobs connected | `ON` | the accept tests are registered and run |
+| they did not | `OFF` | the accept tests are not registered, and a `connect`-mode component is refused at `connect()` with `E-CONNECT-ACCEPT-UNAVAILABLE` |
+| could not be tested | `ON` | a configure message says so; the tests run and report for themselves |
 
-The third case is the ordinary one on a cluster login node, where `mpiexec`
-cannot start a job without an allocation. Disabling a working capability there
-would be the worse error, so an untested probe leaves the mode enabled.
+The third case is the ordinary one on a cluster login node, where `mpiexec` cannot start a job
+without an allocation; an untested probe leaves the mode enabled.
 
-MPMD is never gated on any of this.
+If you see `E-CONNECT-ACCEPT-UNAVAILABLE`, either switch to MPMD launch (one `mpiexec`), or rebuild
+against an MPI whose dynamic process management works between two jobs and reconfigure without
+forcing `FUSE_ENABLE_CONNECT_ACCEPT=OFF`.
 
-## A note on the MPI implementation
+### MPI implementation
 
-Accept/connect needs an MPI whose dynamic process management works between two jobs on
-the same node. MPICH's `ch3:nemesis` device does not: it takes its shared-memory send
-path when merging the intercommunicator, and a peer in another job has no shared memory
-to take it over, so both programs abort inside `MPI_Intercomm_merge` (`KNOWN_ISSUES`
-D23). Use an MPICH built with `--with-device=ch4` -- the default since MPICH 4.0 -- or
-Open MPI. The MPMD launch mode is unaffected, since there every rank belongs to one job.
+Accept/connect needs an MPI whose dynamic process management works between two jobs on the same
+node. MPICH's `ch3:nemesis` device does not: both programs abort inside `MPI_Intercomm_merge`. Use
+an MPICH built with `--with-device=ch4` (the default since MPICH 4.0) or Open MPI. MPMD is
+unaffected, since every rank belongs to one job.
+
+## See also
+
+- [](placement.md): `RankSet` and processor-set placement
+- [](c-abi.md), [](fortran.md): driving a participant through the C or Fortran interface
+- [](lowfive.md): file-based coupling between executables through HDF5 interception
+- [](brusselator.md): the worked example
+- [](build.md): enabling MPI and the configure-time probes

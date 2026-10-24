@@ -1,5 +1,7 @@
 # Where a component runs
 
+This page is for anyone placing components on specific MPI ranks: how to declare a processor set, what the library does with it, and how to route remapping through a separate coupler.
+
 A component declares the ranks it runs on. That declaration is an explicit set,
 not a range, because real coupled jobs are laid out in ways a range cannot
 describe.
@@ -64,7 +66,7 @@ appears in yours; declaring it with no ranks says "not here, this run".
   the component's own processor set. A process outside it still constructs the
   `Component` object (every process holds the same graph), but never steps it,
   and a component placed on no processes is never stepped at all. Without a
-  base communicator all components run in the one process, as before.
+  base communicator all components run in the one process.
 - **Deciding whether a move is needed** — identical processor sets, no move.
 - **Forming the exchange's communicator** — the union of the two processor sets,
   built collectively over that union only, never over the whole job. Ranks in
@@ -87,10 +89,8 @@ naming the component and the field transfer. So when you switch a component off,
 remove its field transfers for that run too.
 
 The rejection is a modelling check, not a transport limitation: it fires for
-every transport, before any communicator exists. Previously the same mistake
-surfaced two layers down as `MpiTransport::build_plan` rejecting an empty rank
-set — correct, but it told you about a rank set when the error was in the
-graph, and only when you were running under MPI.
+every transport, before any communicator exists. The error names the graph
+problem, not a transport-level rank set, and appears even without MPI.
 
 ## Each component has its own decomposition of a shared mesh
 
@@ -124,14 +124,14 @@ communicator, "this rank" is rank 0 of an effective one-rank job, so a
 processor set that names it IS the default view and one that does not is empty
 -- exercised without MPI at all.
 
-**What is not yet built**: this closes KNOWN_ISSUES D5's view-layer half.
-Weight builders already resolve every side through `placed_view`
-(unchanged since the remap-weights work built on each component's own
-partition of the mesh), so a weight build
-issued against a MOAB processor set's own decomposition uses it automatically
--- but assembling and comparing a conservative weight matrix between two
-independently-partitioned MOAB processor sets has not been exercised end to
-end; that remains open.
+Weight builders resolve every side through `placed_view`, so a weight build
+issued against a MOAB processor set's own decomposition uses it automatically.
+
+:::{note}
+Limitation: assembling and comparing a conservative weight matrix between two
+independently-partitioned MOAB processor sets is not covered by the test suite;
+check the weights' coverage fields (see [](geometry.md)) before relying on one.
+:::
 
 ## A separately placed coupler
 
@@ -176,7 +176,7 @@ exactly like the identical/disjoint table above.
 
 | `remap_on` | What it costs over the default |
 |---|---|
-| unset, or the target's own component | nothing — today's default, unchanged |
+| unset, or the target's own component | nothing — the default |
 | a coupler with the SAME ranks as the target | no extra move (the second hop is `same_as`), but the Remap runs under the coupler's own processor-set identity, not the target's |
 | the field transfer's own source component | the second hop only: remap on the source's decomposition, then one move to the target |
 | any other processor set | two moves: source -> C, then C -> target |
@@ -191,3 +191,9 @@ A coupler placed on no ranks is legal on its own, by the same rule as any
 other empty processor set above -- until a field transfer's `remap_on` actually routes
 through it, at which point `E-PLACEMENT-EMPTY` applies exactly as it does for
 a field transfer's source or target.
+
+## See also
+
+- [](geometry.md) for per-placement meshes and remap halos
+- [](transfer-maps.md) for how weights are built and applied
+- [](multiple-executables.md) for launching components as separate programs

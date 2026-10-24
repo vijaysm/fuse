@@ -1,5 +1,9 @@
 # Consistent interpolation and conservative load transfer on 1D interfaces
 
+This page is for coupling two solvers across an interface (fluid and beam,
+say) where one side is nodal and the two meshes do not match: how to get
+accurate pointwise interpolation one way and exactly conserved loads the other.
+
 A strongly-coupled interface between two different solvers -- a 2D Stokes
 channel and a 1D Euler-Bernoulli beam forming its wall, say -- needs two
 different things from its two directions, on meshes that do not share a
@@ -84,7 +88,7 @@ which resolves the two mesh entity sets through the graph exactly as the superme
 path does and rejects with `E-INTERP-DISC` if the side that must be nodal is not
 `Discretization::ContinuousGLL` at order `<= 1`.
 
-**Verified end to end.** A field transfer between a nodal field
+**End to end.** A field transfer between a nodal field
 (`SemanticLocation::Vertex`) and an FV field (`SemanticLocation::Element`)
 compiles into the dataflow graph, schedules and runs through a real, two-component `Runner` graph:
 `InterfaceTransfer.ConsistentPairRunsThroughTheRunnerExactlyAndBalancesPower`
@@ -92,17 +96,12 @@ compiles into the dataflow graph, schedules and runs through a real, two-compone
 -- a nodal beam velocity through `H` to an FV fluid wall, and the fluid's
 per-cell force back through `H^T D` to a nodal beam load -- and checks `H`
 exact for a linear field, the delivered force equal to the sent force to
-round-off, and discrete interface power balanced to round-off. An earlier
-draft of this page reported a `lower()`-time rejection here; it did not
-reproduce, and the paragraph was wrong on this point.
+round-off, and discrete interface power balanced to round-off.
 
-What made that end-to-end run possible is a separate fix, not to this
-operator: until now, every field's buffer was sized by its mesh entity set's CELL
-count regardless of discretization, so a genuinely nodal field's `n + 1`
-values never fit the `n`-cell buffer `Runner::initialize` expected. See
-[](../dev/nodal-fields.md) for where a field's extent is now decided from
-`(disc, order, region)`, and for parallel nodal fields (lowest-rank vertex
-ownership, and what remains open for a distributed `H^T` interface).
+A nodal field's buffer holds `n + 1` values, not the `n` of its mesh entity
+set's cells; the extent is decided from `(disc, order, region)` (see
+[](../dev/nodal-fields.md), which also covers parallel nodal fields and
+lowest-rank vertex ownership).
 
 ## Domain edges
 
@@ -117,15 +116,15 @@ instead extrapolates with a constant (the nearest boundary node's value),
 which keeps every conservation and power-balance property above intact --
 they only depend on every row summing to one, which a clamped row still
 does -- at the cost of reverting to zeroth-order accuracy near the
-uncovered edge. `ClampToBoundary` is not yet reachable through the field-transfer
-API; see `open_questions`.
+uncovered edge. `ClampToBoundary` is not selectable through the field-transfer
+API; it is available when calling the weight builders directly.
 
 ## Nodal fields through the Runner
 
 A field declared `Discretization::ContinuousGLL, order = 1` is genuinely
 nodal: `n` line elements carry `n + 1` values, not `n`. Every buffer-sizing
 and conservation-measure call site in `include/fuse/backend/**`,
-`src/backend/**` and `src/runtime/runner.cpp` now reads that from one place
+`src/backend/**` and `src/runtime/runner.cpp` reads that from one place
 -- `field_extent`/`region_extent_kind` in `mesh_view.hpp` -- rather than
 assuming a field's extent equals its mesh entity set's cell count:
 
@@ -153,13 +152,13 @@ An `H`/`H^T` field transfer whose nodal SIDE (source or target) is itself
 distributed across more than one rank is wired into `Runner` for methods
 `"consistent"`/`"consistent-transpose"` specifically -- see "Beyond 1D"
 below and [](../dev/nodal-fields.md)'s "H^T on a distributed interface"
-for exactly how and what remains a host-verification action.
+for how it works.
 
-## Beyond 1D: any supported cell (the "nodal remap" track)
+## Beyond 1D: any supported cell
 
-The description above is `H`'s original 1D-curve algorithm (node ordering by
-a single coordinate), which `build_consistent_interp_weights` still uses,
-unchanged, whenever the source's topological dimension is 1. When the source
+The description above is `H`'s 1D-curve algorithm (node ordering by
+a single coordinate), which `build_consistent_interp_weights` uses
+whenever the source's topological dimension is 1. When the source
 is 2D or 3D — triangles, quadrilaterals (including a curved surface mesh
 embedded in R^3, e.g. a cubed sphere), tetrahedra, hexahedra, or triangular
 prisms — the SAME public entry point dispatches instead to
@@ -191,28 +190,28 @@ built only by the rank that owns it, against an assembled replica of the
 source mesh (see that header for the explicit trade this makes and why the
 result is bit-identical across rank counts). A field transfer using method
 `"consistent"` (H, interpolating FROM a nodal source) or
-`"consistent-transpose"` (H^T D, delivering a load TO a nodal target) now
-reaches this automatically through the Runner whenever the NODAL side of
+`"consistent-transpose"` (H^T D, delivering a load TO a nodal target) reaches this automatically through the Runner whenever the NODAL side of
 that orientation, or its evaluation partner, is on more than one declared
 rank — no change needed on the caller's side beyond
 `Channel::remap_method(...)`, exactly as for a single-rank nodal side.
 A method paired with the WRONG orientation for its nodal side, any OTHER
-method (supermesh weights built from a component's own partition of the mesh remain
-unimplemented), or a
-field transfer where BOTH sides are nodal, all still reject
-`E-RT-REMAP-NODAL-PARALLEL` by name rather than attempting an unverified
-shape. `KNOWN_ISSUES.md` D8 records what is, and is not yet, verified
-about this wiring under a genuinely partitioned multi-process run — read
-it before relying on this at more than one real rank in production; a
-real host MPI run (round 4) found and fixed two correctness defects in
-this wiring, and the exact `ctest` commands still needed on a host are
-named there.
+method (supermesh weights built from a component's own partition of the mesh are
+not supported), or a
+field transfer where BOTH sides are nodal, all reject
+`E-RT-REMAP-NODAL-PARALLEL` by name. `ClampToBoundary` is not supported on
+the distributed path.
 
 ## What this is not
 
 Neither algorithm attempts anything above piecewise-linear (P1) or bilinear/
-trilinear (Q1) order; a higher-order nodal basis is a different,
-not-yet-written kernel. The 1D algorithm specifically still relies on
+trilinear (Q1) order; a higher-order nodal basis is not supported. The 1D algorithm
+relies on
 coordinate-sort node ordering, correct only for a genuine 1D interface
 curve — the general algorithm above is what replaces it for anything with
 more than one tangential direction.
+
+## See also
+
+- [](transfer-maps.md) for the conservative first-order maps
+- [](geometry.md) for the supermesh geometry
+- [](../dev/nodal-fields.md) for nodal field extents and ownership

@@ -85,17 +85,12 @@ column index — local indices depend on how many entities a rank holds and in
 what order its halo arrived, so summing in that order would make the last bits
 of the answer a function of the decomposition.
 
-If you extend this, note what it cost to test. Two earlier versions of that
-test passed while proving nothing, and the mutation
-`map-accumulates-in-local-column-order` survived both:
+The test that pins this uses weights of very different magnitude (one of 1 and
+three of 6e-17) so that summation order changes the bits, and gives each rank its
+own source numbering, as a halo gather does. A test with similar-magnitude weights
+or a replicated source cannot distinguish accumulation orders.
 
-1. The weights were four values of similar magnitude. Summation is
-   non-associative only when magnitudes differ enough for absorption, so
-   reversing the order gave identical bits. The map now uses one weight of 1
-   and three of 6e-17, where ascending accumulates 1.8e-16 and then moves 1 by
-   one ulp while descending absorbs each term into 1.
-2. Every reader was given the *same* source view. A replicated source numbered
-   identically everywhere makes local-column order partition-independent as
-   well, so the two orders could not be distinguished by a test that only
-   compares rank counts against each other. Each rank now numbers the source
-   its own way, which is what a halo gather produces.
+## See also
+
+- [](geometry.md) for how the weights are built
+- [](point-cloud-remap.md) for the point-cloud builder

@@ -76,3 +76,7 @@ Reductions agree with the sequential sum *to rounding* rather than bitwise,
 because a parallel reduction associates differently — the tolerance is stated
 as accumulated rounding rather than tightened until it passes.
 :::
+
+## See also
+
+- [](combining-writers.md) for several sources writing one field

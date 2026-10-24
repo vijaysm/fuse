@@ -1,85 +1,168 @@
 # FUSE
 
-**F**lexible, **U**nified, **S**calable **E**xchange — a C++20 library for coupling multiphysics and
-multiscale simulations. Portable by construction, performant by measurement.
+[![CI](https://github.com/vijaysm/fuse/actions/workflows/ci.yml/badge.svg)](https://github.com/vijaysm/fuse/actions/workflows/ci.yml)
 
-A coupled simulation is authored as a graph, compiled to an inspectable operator IR, scheduled with
-exact rational time and an initialisation-time deadlock proof, and executed by an allocation-free
-runtime on Kokkos — over a native distributed unstructured mesh or MOAB, with collective failure
-reconciliation, conservative non-matching remap, waveform and space-time coupling, quasi-Newton
-acceleration, distributed Krylov and direct linear solvers, two C ABIs (participant and provider,
-C and Fortran) over one canonical descriptor, and a coupling split across more than one separately
-built executable.
+**F**lexible, **U**nified, **S**calable **E**xchange: a C++20 library for coupling multiphysics and
+multiscale simulations.
 
-FUSE unifies two verified code bases: a coupling compiler and runtime, and a coupling spine
-contributing the semantic model, compatibility inference, collective reconciliation and provider ABI.
-Import baselines are pinned in [`UPSTREAMS.lock`](UPSTREAMS.lock).
+You describe a coupled simulation as a graph of components, the fields they exchange and the
+transfers between them. FUSE checks the graph, compiles it into an inspectable schedule, and runs it,
+on one process or across many MPI ranks, in one executable or several.
 
-## Documentation
+- [CI](https://github.com/vijaysm/fuse/actions/workflows/ci.yml) · [Documentation](docs/index.md) · [Wiki](https://github.com/vijaysm/fuse/wiki) ·
+  [Contributing](CONTRIBUTING.md) · [License](LICENSE)
 
-Built with Sphinx and MyST; the sources are in [`docs/`](docs/).
+## Why FUSE
+
+Coupling two solvers is easy to get almost right. The time steps do not line up, a flux is not
+conserved across non-matching meshes, one rank fails while its peers wait in a collective, or a
+result changes with the thread count. FUSE exists to make those problems visible, or impossible:
+
+- **Describe once, check everything.** A coupling is a graph. `validate()` reports every defect in it
+  in one pass, not the first one it trips over.
+- **Exact time.** Time steps are rational numbers, so a schedule stays in step after millions of
+  steps, and the scheduler can prove at start-up that the coupling cannot deadlock.
+- **No surprises at run time.** The compiled plan can be printed, including every operator FUSE
+  inserted that you did not write (unit conversion, time interpolation, remap).
+- **Failures do not hang.** A rank that fails agrees the failure with its peers instead of leaving
+  them waiting in a collective.
+- **Portable and reproducible.** Kernels run on Kokkos execution spaces. Results can be made
+  bit-for-bit identical across thread counts, and the build records exactly which dependency
+  versions it used.
+- **Bring your own physics.** Your solver stays yours: implement one small C++ interface, call FUSE
+  from C or Fortran, drive it from Python, or let FUSE load your code as a plugin.
+
+## Capabilities
+
+**Describing a coupling**
+- A fluent C++ API, a YAML front end, and a versioned binary descriptor shared by all language
+  bindings.
+- Components with independent time steps (multirate coupling), explicit placement on any set of MPI
+  ranks, and coupler ranks that do the remapping.
+- Unit checking, with automatic scale conversion between compatible units.
+- Several sources writing one field (merging), lagged and extrapolated transfers.
+
+**Moving data**
+- Meshes: a serial structured mesh, a native distributed unstructured mesh with its own halo exchange
+  and repartitioning, and MOAB.
+- Conservative remapping between non-matching meshes (exact supermesh intersection, or MOAB with
+  TempestRemap), consistent interpolation and its conservative transpose for fluid-structure
+  interaction, and moving-least-squares remap for point clouds.
+- Persisted transfer maps, so expensive weights are built once.
+- Transports: in-process copy, MPI, and intercepted HDF5 (LowFive) for coupling unmodified codes.
+
+**Iterating to convergence**
+- Implicit coupling groups with fixed-point iteration, Aitken relaxation, interface quasi-Newton
+  (IQN-ILS, IQN-IMVJ) and a Jacobian-free Newton-Krylov solver (native, with an optional PETSc
+  substrate).
+- Waveform iteration over coupling windows for components with incommensurate time steps, including
+  subcycling.
+- Resolution- and partition-independent convergence measures.
+- In-memory rollback within an iteration, and restart to disk (HDF5) that can resume on a different
+  number of ranks.
+
+**Linear algebra**
+- Row-distributed vectors and sparse matrices, preconditioned CG and GMRES(*m*), and an exact
+  distributed direct solver for periodic banded systems. A derivative-checking toolkit (adjoint
+  identity, Taylor remainder) for any operator that claims a Jacobian or a transpose.
+
+**Language bindings and launch modes**
+- C and Fortran participant interfaces (your code drives FUSE) and provider interfaces (FUSE drives
+  your plugin), generated from one list so they cannot disagree.
+- Python bindings (`pfuse`) over the model and runtime.
+- A coupling split across several separately built executables, launched together under one
+  `mpiexec` or started independently and joined over MPI.
+
+Each page of the [documentation](docs/index.md) says what is covered by the automated tests and what
+is not.
+
+## Building
+
+### Requirements
+
+- CMake 3.24 or newer and a C++20 compiler (GCC and Clang are both used for development).
+- A build tool such as Ninja or Make, and Git.
+- Python 3 for the repository's static checks and to build the documentation.
+
+Everything else is found on your system or, with `-DFUSE_ALLOW_FETCH=ON`, built from a pinned
+version: Kokkos, fmt, GoogleTest, ArborX and, for the default linear-algebra backend, Eigen. yaml-cpp
+is fetched when it is not installed. MPI, MOAB, PETSc, HDF5, a Fortran compiler and pybind11 are
+optional.
+
+### Quick start
+
+```bash
+git clone https://github.com/vijaysm/fuse.git
+cd fuse
+
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DFUSE_ALLOW_FETCH=ON
+cmake --build build -j
+ctest --test-dir build --output-on-failure -LE bench
+```
+
+On a machine that already has Kokkos installed, leave `FUSE_ALLOW_FETCH` off and point CMake at it
+with `-DCMAKE_PREFIX_PATH=/path/to/kokkos`. Installed copies are always preferred: a generic fetched
+Kokkos should not silently replace one tuned for your machine. Every configure writes
+`fuse-resolved-dependencies.txt` into the build directory, recording which dependencies were found
+and which were fetched.
+
+Run the smallest complete example:
+
+```bash
+./build/examples/fuse_example_mms_pair
+./build/examples/fuse_example_mms_pair --dump    # print the compiled coupling without running it
+```
+
+### Choosing features
+
+Features are added one dependency family at a time, so the minimal build stays small.
+
+| Configure with | Adds |
+|---|---|
+| *(nothing)* | The compiler, scheduler and runtime, a complete single-process coupled run, serial and native meshes, YAML input |
+| `-DFUSE_ENABLE_MPI=ON` | Distributed transport, multi-rank runs, multi-executable coupling |
+| `-DFUSE_ENABLE_MOAB=ON` | MOAB mesh backend and conservative remap with TempestRemap (requires MPI) |
+| `-DFUSE_ENABLE_PETSC=ON` | PETSc as a Newton solver substrate |
+| `-DFUSE_ENABLE_LOWFIVE=ON` | Coupling unmodified HDF5 codes through intercepted I/O |
+| `-DFUSE_ENABLE_HDF5=ON` | Restart to disk |
+| `-DFUSE_ENABLE_PYTHON=ON` | The `pfuse` Python module (needs pybind11) |
+| `-DFUSE_LINALG_BACKEND=builtin` | Replace Eigen with the built-in dense kernels (some examples need Eigen and are skipped) |
+| `-DKokkos_ENABLE_OPENMP=ON` | Threaded kernels (when Kokkos is fetched) |
+
+`CMakePresets.json` defines the same ladder as presets (`tier0` through `tier3`, `all`). Its hidden
+`_machine` preset holds the install prefixes for one machine; edit that one entry for yours. The
+[build guide](docs/user/build.md) covers every option, floating-point reproducibility, and how
+dependencies are resolved.
+
+### Documentation
+
+The documentation is Sphinx with MyST, under [`docs/`](docs/):
 
 ```bash
 pip install -r docs/requirements.txt
 sphinx-build -W -b html docs docs/_build/html
 ```
 
-- **User guide** — building (dependency-tiered build configurations), quickstart, a map of every
-  public namespace, the fluent API, coupling an existing code through C or Fortran, coupling across
-  separately launched executables
-- **Developer guide** — design invariants, layering, conventions, testing, ABI rationale, roadmap
+The same pages are published to the [project wiki](https://github.com/vijaysm/fuse/wiki), generated
+by `tools/docs-to-wiki.py`. Start with `docs/user/getting-started.md`, which takes you from a fresh
+clone to a running coupling.
 
-## Status
+## Planned
 
-**S0 through S6: the conformance case is closed** (2026-10-07; of its planned legs only the
-Python front end and Python provider kind are absent — `FUSE_ENABLE_PYTHON` exists as an option with
-nothing behind it). S6's own exit condition also names retiring `upstream/soma` whole once every
-path is superseded (`UPSTREAMS.lock`'s `retire_at = "S6"`); that is still outstanding — a handful
-of parallel-test and order-study paths are not yet superseded, so `retired` there is still `""` —
-and is tracked separately from the conformance case. `fuse::` now spans all thirteen
-of its public namespaces — `base`, `model`, `ir`, `schedule`, `runtime`, `num`, `backend` (the
-serial mesh, MOAB, and a native distributed unstructured mesh with its own halo exchange and
-repartition/migration), `linalg` (a row-distributed vector and sparse matrix, preconditioned PCG
-and GMRES(*m*), and an exact Schur-complement direct solver), `partition`, `search`, `transport`,
-`field` and `abi` — and both C ABIs (participant and provider, each with a Fortran binding) are
-implemented and tested. A coupled run can also be split across more than one separately built
-executable, launched together under one `mpiexec` (MPMD) or as independently started programs that
-rendezvous over MPI's dynamic process management; see
-[`docs/user/multiple-executables.md`](docs/user/multiple-executables.md).
+- `physics-kit`: an optional finite-element component library built on FUSE.
+- Broader GPU support through Kokkos device backends, with performance and scaling measurements.
+- A device-capable linear-algebra backend.
+- Newton-Krylov iteration over coupling windows on more than one rank.
+- Diagrams of a coupled setup generated from the graph and compiled plan.
+- Cross-rank reductions in the field pipeline.
 
-**Host-verified this cycle** (this sandbox cannot start MPI at all; every parallel capability is
-compile-checked here and run on the user's own machine, recorded by date in
-[`KNOWN_ISSUES.md`](KNOWN_ISSUES.md)): the MOAB mesh backend's full parallel suite (12/12 rows,
-2026-10-08); the coupling-window runtime across more than one rank; and, for the first time, a
-genuine multi-executable run of the Brusselator example at 3 and 5 ranks
-(`verification.brusselator.participants.mpmd.{3,5}`) — `KNOWN_ISSUES.md` records the 3-rank row's
-reported means as bit-identical to the single-process reference, and the 5-rank row, where one
-participant's own physics is itself decomposed across two ranks through the new distributed
-Krylov/Schur solvers, as agreeing to 8.9e-14 / 9.4e-14, consistent with that solve's own round-off.
-**Blocked by this host's own MPI, not by a defect in the library:** the accept/connect launch mode
-for a truly independent multi-executable launch (`KNOWN_ISSUES.md` D23 — this host's MPICH cannot
-merge an intercommunicator between two same-node jobs; a configure-time probe detects this and
-disables the mode rather than let it abort inside MPI) and LowFive's distributed, cross-process
-transport (`KNOWN_ISSUES.md` D14 — the installed LowFive library needs rebuilding against a newer
-`fmt`). LowFive's single-process interception path is implemented and measured.
+## Contributing and support
 
-**Open, and recorded:** `FUSE_LINALG_BACKEND=builtin` does not currently configure a full build —
-several tests and examples link Eigen directly regardless of the chosen backend (D26); the native
-mesh backend's remap halo has no reverse-exchange counterpart yet, needed only for a
-conservation-audit tool nothing in the tree currently calls (D27). `S7` has the native linear
-solvers above but no PETSc-based monolithic/implicit solver plugin or adjoint verification; `S8`
-(`physics-kit`) and `S9` (portability, scale, an adversarial suite) have not started.
-Checkpoint/restart to disk does not exist — only in-memory rollback within an iteration region.
-Both parent trees ([`upstream/soma`](upstream/soma), [`upstream/karma`](upstream/karma)) are still
-present — retiring them is S6's and S8's own exit condition and has not been done.
-
-The [roadmap](docs/dev/roadmap.md) lists every stage and its exit condition, and every page marks
-whether a capability is verified, implemented, designed only, a deliberately rejected configuration,
-or absent.
+Bug reports and feature requests go to the
+[issue tracker](https://github.com/vijaysm/fuse/issues). To contribute code or documentation, read
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-BSD 3-Clause. © 2006–2026 Vijay Mahadevan. See [`LICENSE`](LICENSE).
-
-Open items, and which of them need the repository owner rather than a
-contributor, are in [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
+BSD 3-Clause. © 2006–2026 Vijay Mahadevan. See [`LICENSE`](LICENSE). Third-party components are
+listed in [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).
