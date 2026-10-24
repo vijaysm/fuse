@@ -1,5 +1,10 @@
 # MOAB-free remap for point clouds
 
+This page is for remapping scattered points (gauges, buoys, a LIDAR return)
+or sampled mesh values with a smooth local polynomial fit instead of a
+cell-overlap map: how to declare the fit, what it guarantees, and where it
+stops.
+
 ArborX (already a required dependency behind `fuse::search`, for its BVH) also ships a
 moving-least-squares point-cloud interpolant. `fuse::build_mls_weights`
 (`fuse/backend/mls_weights.hpp`) is a `RemapWeights` builder around the same idea, usable without
@@ -23,6 +28,163 @@ if (!w.ok()) { /* E-MLS-OPTIONS, -REGION, -DISC, -NEIGHBORS, -RANK, -MONOTONE, -
 The result is an ordinary `RemapWeights`: `apply_weights`, `WeightsOperator`, and every audit field
 (`order`, `monotone`, `min_weight`, `max_row_defect`) work exactly as they do for the supermesh or
 TempestRemap builders. Selecting method `"mls"` (or `"mls:..."`) on a field transfer routes it to this builder.
+
+## Declaring a point cloud
+
+A point cloud is a field whose discretisation is `Discretization::PointCloud`
+on a region whose mesh exposes the points as dimension-0 entities
+(`MeshView::centroid(0, i)` is the point, `global_id(0, i)` its id):
+
+```cpp
+const auto buoys = g.add_region(fuse::Region{.name = "buoys", .mesh = m_buoys, .dimension = 0});
+const auto sst = g.add_field(ocean_obs, fuse::FieldSpec{
+    .name = "sst_obs", .region = buoys,
+    .disc = fuse::Discretization::PointCloud,
+    .units = fuse::units::kKelvin,
+    .intent = fuse::Intent::Provides});
+```
+
+Such a field is built into weights through `RemapPlan` and
+`build_mls_weights` directly, as in the snippet above. It cannot be run
+through the `Runner`: a field buffer is sized by `field_extent`, which has no
+definition for `PointCloud` and refuses it with `E-EXTENT-DISC` at
+`make_region_sizes`. Through a coupler, MLS is available for the mesh
+discretisations in the table below (FV cell centroids, or `ContinuousGLL`
+order-1 vertices), selected with `remap_method("mls:...")` on the channel.
+
+## The API
+
+```cpp
+enum class MlsRadial { Wendland0, Wendland2, Wendland4, Wendland6 };
+
+struct MlsOptions {
+  int       degree = -1;              // total polynomial degree; -1 = undeclared
+  int       k = 0;                    // neighbour count; 0 = undeclared
+  MlsRadial radial = MlsRadial::Wendland2;
+};
+
+// Parses "mls:degree=<int>,k=<int>,radial=<name>". E-MLS-OPTIONS otherwise.
+Result<MlsOptions> parse_mls_options(std::string_view method);
+
+// C(dim + degree, dim): the basis size k must reach. 0 for dim outside 1..3 or degree < 0.
+std::size_t mls_basis_size(int dim, int degree) noexcept;
+
+// The declared CRBF at x = distance / support_radius, clamped to [0, 1].
+double mls_crbf(MlsRadial r, double x) noexcept;
+
+// The builder build_weights() dispatches to for method "mls" / "mls:...".
+Result<RemapWeights> build_mls_weights(const RemapPlan& plan, const CouplingGraph& graph,
+                                       const MeshBackend& backend);
+```
+
+## A complete example
+
+Two generated line meshes, the fit built between their cell centroids
+directly from a `RemapPlan`, applied to a linear field, and the refusals
+provoked on purpose. Serial build, no optional library:
+
+```cpp
+#include <fuse/backend/mls_weights.hpp>
+#include <fuse/backend/serial_backend.hpp>
+
+#include <Kokkos_Core.hpp>
+#include <cmath>
+#include <iostream>
+#include <vector>
+
+int main(int argc, char** argv) {
+  Kokkos::ScopeGuard kokkos(argc, argv);
+
+  // 1. Two meshes and two regions in a graph; the serial backend loads them.
+  fuse::CouplingGraph g;
+  const auto m_src = g.add_mesh(fuse::MeshDecl{.name = "fine", .source = "generated:line:12"});
+  const auto m_tgt = g.add_mesh(fuse::MeshDecl{.name = "coarse", .source = "generated:line:5"});
+  const auto r_src = g.add_region(fuse::Region{.name = "fine_cells", .mesh = m_src, .dimension = 1});
+  const auto r_tgt = g.add_region(fuse::Region{.name = "coarse_cells", .mesh = m_tgt, .dimension = 1});
+  fuse::SerialMeshBackend backend;
+  (void)backend.load(g.mesh(m_src));
+  (void)backend.load(g.mesh(m_tgt));
+
+  // 2. The plan: FV cell centroids on both sides, degree 1, three neighbours.
+  fuse::RemapPlan plan;
+  plan.src = r_src;
+  plan.tgt = r_tgt;
+  plan.src_disc = fuse::Discretization::FV;   // centroid of each cell
+  plan.tgt_disc = fuse::Discretization::FV;
+  plan.method = "mls:degree=1,k=3,radial=wendland2";
+
+  const auto w = fuse::build_mls_weights(plan, g, backend);
+  if (!w.ok()) { std::cerr << w.error().code << ": " << w.error().message << "\n"; return 1; }
+
+  // 3. A linear field is reproduced exactly at the target centroids.
+  const fuse::MeshView& src = *backend.view(backend.mesh_id("fine").value()).value();
+  const fuse::MeshView& tgt = *backend.view(backend.mesh_id("coarse").value()).value();
+  std::vector<double> f(src.entity_count(1)), out(tgt.entity_count(1));
+  for (std::size_t i = 0; i < f.size(); ++i) f[i] = 3.0 - 2.0 * src.centroid(1, i).x;
+  (void)fuse::apply_weights(w.value(), f.data(), out.data(), 1);
+  double worst = 0.0;
+  for (std::size_t j = 0; j < out.size(); ++j) {
+    worst = std::max(worst, std::abs(out[j] - (3.0 - 2.0 * tgt.centroid(1, j).x)));
+  }
+  std::cout << "nnz              : " << w.value().nnz() << "\n"
+            << "order            : " << w.value().order << "\n"
+            << "max_row_defect   : " << w.value().max_row_defect << "\n"
+            << "min_weight       : " << w.value().min_weight << "\n"
+            << "monotone         : " << w.value().monotone << "\n"
+            << "max_col_defect   : " << w.value().max_col_defect << "\n"
+            << "worst linear err : " << worst << "\n";
+
+  // 4. The options are never defaulted.
+  for (const char* bad : {"mls", "mls:degree=1,k=3", "mls:degree=1,k=3,radial=gaussian"}) {
+    plan.method = bad;
+    const auto r = fuse::build_mls_weights(plan, g, backend);
+    std::cout << bad << " -> " << r.error().code << "\n";
+  }
+  // 5. k below the basis size, and the Conservative flag.
+  plan.method = "mls:degree=2,k=2,radial=wendland2";
+  std::cout << "degree=2,k=2 -> " << fuse::build_mls_weights(plan, g, backend).error().code << "\n";
+  plan.method = "mls:degree=1,k=3,radial=wendland2";
+  plan.flags = fuse::RemapFlags::Conservative;
+  std::cout << "Conservative -> " << fuse::build_mls_weights(plan, g, backend).error().code << "\n";
+  return 0;
+}
+```
+
+Expected output (exact digits can vary by platform):
+
+```text
+nnz              : 15
+order            : 2
+max_row_defect   : 4.44089e-16
+min_weight       : -0.00121992
+monotone         : 0
+max_col_defect   : inf
+worst linear err : 8.88178e-16
+mls -> E-MLS-OPTIONS
+mls:degree=1,k=3 -> E-MLS-OPTIONS
+mls:degree=1,k=3,radial=gaussian -> E-MLS-OPTIONS
+degree=2,k=2 -> E-MLS-NEIGHBORS
+Conservative -> E-MLS-UNSUPPORTED
+```
+
+Five targets times three neighbours is 15 entries. `order` is `degree + 1`.
+The row sums are 1 to rounding because every basis contains the constant;
+the small negative weight is what a degree-1 fit puts on its far neighbour,
+so `monotone` is false. `max_col_defect` is `+inf` on purpose: no
+conservation was measured, so no conservation can be claimed.
+
+The same fit on a channel between the two regions, through the coupler, is
+one line and needs no `RemapPlan`:
+
+```cpp
+g.channel(ch).remap_method("mls:degree=1,k=3,radial=wendland2");
+```
+
+The lowering emits the `Remap` with `{method=mls:degree=1,k=3,radial=wendland2}`
+and no `Constrain` after it (a pointwise interpolation has no conserved
+integral to check), and `RunStats::remap_weight_builds` counts the build.
+Run on the 8-cell to 5-cell pair of [](geometry.md) it reports
+`remap_weight_nonzeros : 15` and `conservation_checks : 0`.
 
 ## Declaring the fit -- never a default
 
@@ -177,6 +339,13 @@ this builder can detect the multi-rank case (a `fuse::native::NativeMeshBackend`
 it cannot recognise, it has no way to detect the case at all, and returns an answer computed only
 from what that rank can see.
 
+Through the `Runner` the check is made from the graph rather than the
+backend: a channel whose method is `"mls"` or `"mls:..."` and whose source or
+target component is declared on more than one rank is refused at
+`initialize()` with `E-RT-REMAP-MLS-PARALLEL`, whatever backend is in use.
+Place both components on one rank, or use `"consistent"` for a nodal source
+([](interface-transfer.md)).
+
 ## Selecting it on a field transfer
 
 `build_mls_weights` needs no MOAB and no mesh geometry, so `build_weights()`
@@ -189,5 +358,7 @@ g.channel(ch).remap_method("mls:degree=2,k=12,radial=wendland2");
 
 ## See also
 
+- [](geometry.md) for the supermesh alternative, the method strings and a complete coupler run
+- [](interface-transfer.md) for the nodal interpolation `H`, the other pointwise method
 - [](transfer-maps.md) for persisting the resulting weights
-- [](geometry.md) for the supermesh alternative
+- [](meshes.md) for the mesh backends that supply the points

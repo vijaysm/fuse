@@ -9,6 +9,8 @@ Before changing code, see how a task is done with FUSE today:
 
 - [Getting started](docs/user/getting-started.md): build and run a first coupling.
 - [Quickstart](docs/user/quickstart.md): the five stages with real code.
+- [Graph programming](docs/user/graph-programming.md), [Writing a component](docs/user/component-interface.md)
+  and [Writing a driver](docs/user/drivers.md): the three things most contributions touch.
 - [Cookbook](docs/user/cookbook.md): a recipe for each common task, with links to full examples.
 - [Examples](docs/user/examples.md) and the programs under [`examples/`](examples/): complete
   couplings that double as tests.
