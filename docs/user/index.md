@@ -53,7 +53,8 @@ built executables, [](mixing-languages.md) says which combinations work together
 
 [](examples.md) lists the complete programs: [](mms-pair.md), [](dn-heat.md), [](gray-scott.md),
 [](brusselator.md), [](fsi-channel.md), [](petsc-reaction-diffusion.md), [](layout-driver.md) and
-[](demo-b.md).
+[](demo-b.md). [](portfolio.md) tours them in a reading order, with a capability matrix and a
+"learn X, read Y" index.
 
 ## For power users
 

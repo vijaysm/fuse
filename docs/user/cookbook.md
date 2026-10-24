@@ -133,4 +133,5 @@ Each example is a complete program with its problem statement, expected output a
 | [](petsc-reaction-diffusion.md) | Newton with PETSc |
 | [](demo-b.md), [](layout-driver.md) | Placement and layout |
 
-[](examples.md) lists them with their ctest names.
+[](examples.md) lists them with their ctest names, and [](portfolio.md) tours them in a reading
+order with a capability matrix.

@@ -39,6 +39,7 @@ user/point-cloud-remap
 user/combining-writers
 user/field-pipeline
 user/examples
+user/portfolio
 user/mms-pair
 user/dn-heat
 user/petsc-reaction-diffusion
