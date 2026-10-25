@@ -86,6 +86,15 @@ This loop runs forever unless `setup()` set an `end_time` (see
 [is_coupling_ongoing and the end time](#is_coupling_ongoing-and-the-end-time)); the real programs
 below bound their loops with a period count instead.
 
+**Element types.** `FUSE_ELEMENT_F64` is a `double` array. `FUSE_ELEMENT_F32` (`float`),
+`FUSE_ELEMENT_BF16` and `FUSE_ELEMENT_F16` (`uint16_t` bit patterns of bfloat16 and IEEE
+binary16) are registered the same way, with the storage you already have. The coupler widens
+such an array to binary64 exactly when your step has run and rounds into it once, to nearest with
+ties to even, when it delivers a value you require; `fuse_view_field` reports the element type you
+registered. See `docs/user/field-pipeline.md`, "Storage types". `FUSE_ELEMENT_I64` is not a coupled
+value and is refused (`E-ABI-REGISTER-ELEMENT`); a provider plugin's fields are still
+`FUSE_ELEMENT_F64` only.
+
 ### A complete program
 
 `test/abi/install_consumer/main.c` is a complete C11 program that links only `libfuse-abi`. It
