@@ -120,7 +120,7 @@ enum class ElementType : std::uint8_t {
 ///   AllowNarrowing  additionally permits a conversion that MAY lose
 ///                   precision for some values: INTEGER narrowing that does
 ///                   not fit still refuses (an integer value change is not
-///                   a rounding -- owner's own words); FLOAT narrowing
+///                   a rounding); FLOAT narrowing
 ///                   (reduced significand and/or exponent range) rounds
 ///                   to nearest, ties to even, and the call reports the
 ///                   largest change it actually made, measured over the
@@ -176,8 +176,7 @@ struct ElementTypeInfo {
 /// The compile-time trait every `put_field<T>()`/`get_field<T>()` call
 /// (fuse/model/restart.hpp) resolves through. Specialised below for every
 /// `T` this project's typed restart interface supports; an UNSUPPORTED `T`
-/// is a `static_assert` at the call site (owner's own instruction: "an
-/// unsupported T is a static_assert, not a runtime error"), via the
+/// is a `static_assert` at the call site, not a runtime error, via the
 /// primary template's own `false` assertion.
 template <class T>
 struct ElementTypeOf {
@@ -185,8 +184,7 @@ struct ElementTypeOf {
                 "fuse::ElementTypeOf<T>: T is not one of the element types "
                 "fuse::put_field<T>()/get_field<T>() support -- see "
                 "fuse/model/element_type.hpp's own specialisation list. "
-                "This is a compile-time refusal, not a runtime one, by the "
-                "owner's own instruction.");
+                "This is a compile-time refusal, not a runtime one.");
 };
 
 template <>
@@ -257,7 +255,7 @@ template <class T>
 inline constexpr ElementType kElementTypeOf = ElementTypeOf<T>::value;
 
 /// Decides, from `from`'s and `to`'s own `ElementTypeInfo` ALONE (never a
-/// per-value probe -- owner's own instruction), whether EVERY value `from`
+/// per-value probe), whether EVERY value `from`
 /// can represent converts to `to` with no change at all. The one function
 /// `ReadConversion::Widening` is defined in terms of; `fuse::restart_io`'s
 /// reader calls this, never re-derives the rule itself.

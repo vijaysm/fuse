@@ -15,8 +15,9 @@
 /// does not care which topological dimension the cells it bounds are.
 ///
 /// WHY SEPARATE FUNCTIONS, NOT ONE OPAQUE ENTRY POINT. MPI cannot start in
-/// this sandbox (docs/dev/testing.md), so `build_native_remap_halo` itself
-/// can only be BUILT here, never RUN past one rank. Everything it does
+/// the base build configuration (docs/dev/testing.md), so
+/// `build_native_remap_halo` itself can only be BUILT there, never RUN past
+/// one rank. Everything it does
 /// beyond the real `MPI_Allgather`/`MPI_Allgatherv`/`exchange_migration_
 /// buffers` calls is a PURE function of its inputs -- box overlap, the wire
 /// packing, the merge-by-global-id -- and those are exposed here so a

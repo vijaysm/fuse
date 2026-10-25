@@ -41,8 +41,8 @@
 /// or zero-gradient), so pressure appears only through its OWN gradient and
 /// the linear system is singular by exactly one degree of freedom (a
 /// constant shift). One continuity row is replaced by a trivial identity
-/// `p(pin) = pin_value` to fix the gauge, exactly as the task's MODEL
-/// section specifies.
+/// `p(pin) = pin_value` to fix the gauge, exactly as the model
+/// specification does.
 ///
 /// THE SADDLE-POINT SYSTEM `[A B^T; B 0] x = rhs` (A the momentum block, B
 /// the discrete divergence) is assembled fresh every `cn_step()` call -- the
@@ -222,8 +222,7 @@ struct CnStepLuCache {
                                       // GRADIENT in the momentum equation is
                                       // TRAPEZOIDAL (0.5*Gp1 + 0.5*Gp0, this
                                       // array supplying Gp0) instead of fully
-                                      // implicit (Gp1 alone). Root-caused and
-                                      // added this session: a fully-implicit
+                                      // implicit (Gp1 alone). A fully-implicit
                                       // pressure gradient, paired with an
                                       // otherwise-trapezoidal (viscous-term-
                                       // averaged) momentum balance, makes the

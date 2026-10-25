@@ -607,8 +607,8 @@ struct CouplingWindowScope {
 
   /// Order of the temporal interpolant/extrapolant at the window boundary
   /// (`WindowCoupler`'s Waveform basis and its extrapolation degree). Must
-  /// be >= 2 per the user's ruling ("interpolation and extrapolation are at
-  /// least second order"); `Adjustable`/`Fixed` do not change this floor.
+  /// be >= 2 (interpolation and extrapolation are at least second order);
+  /// `Adjustable`/`Fixed` do not change this floor.
   int order = 2;
 
   /// Which classical waveform-relaxation scheme this

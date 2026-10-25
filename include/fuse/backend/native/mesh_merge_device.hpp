@@ -143,10 +143,9 @@ template <class Space>
   // INCLUSIVE in `running` (incremented BEFORE the write, not after): a run
   // of several equal keys must all read the SAME slot, which an exclusive
   // scan that increments after writing gets wrong for every member past
-  // the first (measured: a first draft used the exclusive-scan order and
-  // `native_mesh_merge_device` caught it immediately -- a duplicate run's
-  // second-and-later members landed one slot ahead of its first, merging
-  // the WRONG pair of distinct values into one slot). Incrementing first
+  // the first (`native_mesh_merge_device` covers it -- a duplicate run's
+  // second-and-later members would land one slot ahead of its first,
+  // merging the WRONG pair of distinct values into one slot). Incrementing first
   // makes `running` the 1-based count of DISTINCT keys seen through `p`
   // inclusive, so `running - 1` is the right 0-based slot for every member
   // of the run `p` belongs to, including its first.

@@ -18,7 +18,7 @@
 namespace fuse {
 
 /// A common period needing more ticks of the finest interval than this is an
-/// unusable schedule; see ClockSet::checked_common_period() and Task 3.2's
+/// unusable schedule; see ClockSet::checked_common_period() and
 /// E-SCHED-PERIOD.
 inline constexpr std::int64_t kMaxPeriodTicks = 1'000'000;
 

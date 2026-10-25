@@ -59,7 +59,7 @@ struct CycleReport {
 
   /// Independent of `acyclic`: is `TimedDag::nodes`, in the order `expand()`
   /// emitted it, already a valid execution order for the intra-period
-  /// dataflow edges? Task 3.3 emits instructions sorted by (time, NodeId) and
+  /// dataflow edges? Instruction emission sorts by (time, NodeId) and
   /// relies on ascending NodeId being a topological order of the untimed DAG.
   /// That happens to hold because every lowering rule emits producers before
   /// consumers, but nothing enforces it. This field checks it instead of

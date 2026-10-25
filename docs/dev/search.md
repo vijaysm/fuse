@@ -15,7 +15,7 @@ into the boxes it indexes.
 on `FUSE_ALLOW_FETCH`: ArborX is required, and a default configure must not fail for want of it. It
 is hand-written rather than routed through `fuse_require()` because the fetch path needs
 `ARBORX_ENABLE_MPI` set to `FUSE_ENABLE_MPI` *before* `FetchContent_MakeAvailable` runs. The pin is by commit
-(`8f89be60bc3797670b9be8843da7dcdbc5f2333f`, exactly tag `v2.1`; verified by the lead;
+(`8f89be60bc3797670b9be8843da7dcdbc5f2333f`, exactly tag `v2.1`;
 `UPSTREAMS.lock`'s `[arborx]` entry), built against the SAME Kokkos target this build already
 resolved -- ArborX's own `CMakeLists.txt` calls `find_package(Kokkos 4.5 REQUIRED CONFIG)`, which
 reuses the existing imported targets once Kokkos is already resolved rather than fetching a second

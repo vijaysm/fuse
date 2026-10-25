@@ -66,7 +66,7 @@ using fuse::Result;
 /// another PETSc test binary): PETSc's own documented behaviour is that
 /// `PetscInitialize()` calls `MPI_Init()` itself when nothing has called
 /// it yet; that test is what checks `MPI_Initialized()` false-then-true
-/// across the call in THIS sandbox (no `FUSE_ENABLE_MPI` harness, no
+/// across the call (no `FUSE_ENABLE_MPI` harness, no
 /// prior PETSc use in the process) rather than leaving the claim
 /// unverified. `finalize_if_owned()` below relies on PETSc's OWN internal
 /// tracking of that fact (it calls `MPI_Finalize()` from inside

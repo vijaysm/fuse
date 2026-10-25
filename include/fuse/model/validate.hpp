@@ -79,10 +79,10 @@ inline Rational channel_window(const CouplingGraph& g, ChannelId cid,
       return g.component(tgt).interval;
     }
   }
-  // BM-3: there used to be a `default:` here that folded an out-of-range
-  // `Window::Kind` into the `CouplingPeriod` case above, silently
-  // reinterpreting a corrupted value rather than refusing it --
-  // `deserialize()` (fuse/model/descriptor.hpp) now range-checks every
+  // There is deliberately no `default:` above: it would fold an
+  // out-of-range `Window::Kind` into the `CouplingPeriod` case, silently
+  // reinterpreting a corrupted value rather than refusing it.
+  // `deserialize()` (fuse/model/descriptor.hpp) range-checks every
   // byte a `Window::Kind` can be built from, so every graph this
   // function can see has one of the three enumerators above. Reaching
   // here means a `Window` was constructed directly with a `static_cast`
@@ -512,14 +512,14 @@ inline Rational channel_window(const CouplingGraph& g, ChannelId cid,
     // Spec Section 4.3: OASIS documents lag beyond the coupling period as a
     // restartability and deadlock hazard.
     //
-    // BM-8: `ch.lag` is a raw `int32_t` read off the wire with no range
-    // check (descriptor.hpp), so `std::abs(ch.lag)` here was UB for
-    // `ch.lag == INT_MIN` -- widened to `int64_t` before negating, never
-    // UB whatever the corrupted value. The multiply used to be the
-    // throwing `*` operator, which can `FUSE_REFUSE` on overflow and
-    // escape `validate()`, whose whole contract is "every problem is
-    // reported together", never a throw; `try_mul` reports an
-    // unrepresentable span as a diagnostic instead.
+    // `ch.lag` is a raw `int32_t` read off the wire with no range
+    // check (descriptor.hpp), so it is widened to `int64_t` before
+    // negating: `std::abs(ch.lag)` would be UB for `ch.lag == INT_MIN`.
+    // The multiply uses `try_mul` rather than the throwing `*` operator,
+    // which can `FUSE_REFUSE` on overflow and escape `validate()`, whose
+    // whole contract is "every problem is reported together", never a
+    // throw; `try_mul` reports an unrepresentable span as a diagnostic
+    // instead.
     if (ch.lag != 0 && accum_window_ok) {
       const std::int64_t lag_magnitude =
           std::abs(static_cast<std::int64_t>(ch.lag));

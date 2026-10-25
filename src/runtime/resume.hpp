@@ -243,8 +243,7 @@ class Task {
 /// every enclosing `co_await` with no added stack frame. Used exactly
 /// where a component's own `advance()` would otherwise run, so that by
 /// the time this point is reached every instruction that feeds the
-/// component has already executed and its Requires storage is current
-/// .
+/// component has already executed and its Requires storage is current.
 ///
 /// WHY THIS RECORDS ITS OWN HANDLE, AND WHY THAT MATTERS. Symmetric
 /// transfer means a coroutine that merely `co_await`s a child Task is

@@ -211,8 +211,7 @@ RunOutcome run_case(const prd::PhysicsParams& params, const std::string& neumann
 /// A tolerance derived from a MEASUREMENT taken in THIS build, not a
 /// hand-picked constant: at m=4 interior points/half, dt=0.01, over the
 /// kPeriods=20 steps this binary actually runs (t_final=0.2), the
-/// max|error| against the manufactured solution was measured (this
-/// sandbox, this session; design_notes.md Section 6 records the exact
+/// max|error| against the manufactured solution was measured (design_notes.md Section 6 records the exact
 /// run) at 7.306612e-02 (Left) / 5.338220e-02 (Right) / 1.184185e-01
 /// (interface) -- first-order, backward-Euler-dominated accumulation
 /// over 20 steps, consistent with the ~2x-per-halving convergence rate

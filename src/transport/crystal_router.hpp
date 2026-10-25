@@ -63,7 +63,7 @@ struct Envelope {
 /// each rank sends at most `ceil(log2(P))` messages regardless of how many
 /// distinct ranks it addresses. No rank ever holds, or allgathers, the whole
 /// pattern -- which is the property `MpiTransport::build_plan`'s
-/// allgather-everything matching does not have (R24).
+/// allgather-everything matching does not have.
 ///
 /// THE PARTITION, and why the pairing is exact. Round `r` holds a contiguous
 /// rank range `[lo, hi]` (initially `[0, P-1]`), splits it at `mid` with

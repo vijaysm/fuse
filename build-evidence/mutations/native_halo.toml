@@ -263,7 +263,7 @@ test = "backend.native_halo"
 [[mutation]]
 id = "fold-and-reduce-source-coverage-silently-substitutes-serial-exchanger-without-mpi"
 area = "backend"
-describes = "fold_and_reduce_source_coverage's own no-MPI refusal (native_halo.cpp), reached whenever communicator_size() > 1 and this build has no MPI to perform the real collective fold, is replaced with a SILENT fallback to make_serial_exchanger() -- the same exchanger a genuinely single-rank run correctly uses, but here papering over a halo this rank's own pattern says has real ghosts, rather than refusing. accumulate_remap_halo's own ghost_n-must-match-the-exchanger's-own-pattern check (native_halo.cpp, unchanged by this round) catches the resulting mismatch (the serial exchanger's own ghost_size() is always 0) and refuses E-MESH-ARG instead -- a different code from this fix's own honest E-REMAP-PARALLEL, so a caller distinguishing the two sees the wrong one."
+describes = "fold_and_reduce_source_coverage's own no-MPI refusal (native_halo.cpp), reached whenever communicator_size() > 1 and this build has no MPI to perform the real collective fold, is replaced with a SILENT fallback to make_serial_exchanger() -- the same exchanger a genuinely single-rank run correctly uses, but here papering over a halo this rank's own pattern says has real ghosts, rather than refusing. accumulate_remap_halo's own ghost_n-must-match-the-exchanger's-own-pattern check (native_halo.cpp) catches the resulting mismatch (the serial exchanger's own ghost_size() is always 0) and refuses E-MESH-ARG instead -- a different code from this fix's own honest E-REMAP-PARALLEL, so a caller distinguishing the two sees the wrong one."
 file = "src/backend/native_halo.cpp"
 old = """  } else {
 #if FUSE_HAVE_MPI

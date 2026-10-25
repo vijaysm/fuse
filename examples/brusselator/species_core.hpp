@@ -569,23 +569,16 @@ class UCore {
   /// ONCE) for every dt-scaled quantity here, while `t0`/`t1` (also each
   /// rounded once from their own Rationals) were used ONLY for
   /// forcing_active_duration(). Recomputing `dt` as a double subtraction
-  /// of `t_end`/`t_begin` inside this function (this file's own original
-  /// version) adds a THIRD, different rounding -- the two are not always
-  /// bit-equal for a Rational step. VERIFIED after applying this fix to
-  /// BOTH call sites (species_component.hpp's own UComponent::advance()
-  /// and shim.cpp's own bruss_u_step()) and rebuilding: `diff` of the
-  /// full stdout of both drivers at both --end 0.5 and --end 3, pre- vs
-  /// post-refactor, is empty (exit 0) in all four cases -- the pre-
-  /// refactor global_balance_error (2.407e-12 at --end 0.5, 1.266e-11 at
-  /// --end 3) and this fixed version's are the SAME printed figures, not
-  /// just close. Before this specific fix (species_core.hpp's own
-  /// `dt = t_end - t_begin`, with both call sites otherwise already
-  /// ported), the refactor's own global_balance_error was 1.842e-12 and
-  /// 1.038e-11 respectively -- different from the pre-refactor figures,
-  /// though `state()`/`final_mean_u` were already bit-identical either
-  /// way (only round-off-scale diagnostics that sum many steps' worth of
-  /// dt-scaled terms -- external_total_, exchange_out_ -- could even
-  /// show the difference).
+  /// of `t_end`/`t_begin` inside this function adds a THIRD, different
+  /// rounding -- the two are not always bit-equal for a Rational step.
+  /// With the exact dt at both call sites (species_component.hpp's own
+  /// UComponent::advance() and shim.cpp's own bruss_u_step()), the full
+  /// stdout of both drivers is identical. With `dt = t_end - t_begin`
+  /// recomputed here, `state()`/`final_mean_u` are still bit-identical
+  /// either way, but round-off-scale diagnostics that sum many steps'
+  /// worth of dt-scaled terms (external_total_, exchange_out_,
+  /// global_balance_error) can differ (e.g. 1.842e-12 vs 2.407e-12 at
+  /// --end 0.5).
   [[nodiscard]] fuse::Result<void> step(double t_begin, double t_end, double dt,
                                         const Vector& required) {
     required_ = required;

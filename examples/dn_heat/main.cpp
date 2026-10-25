@@ -1,4 +1,4 @@
-// Demo A of spec Section 11 at the Phase 7 milestone: IMPLICIT coupling.
+// Demo A of spec Section 11: IMPLICIT coupling.
 //
 // A classical Dirichlet-Neumann pair of heat conduction domains, iterated to
 // its fixed point inside a `g.iterate({...})` implicit coupling group with a derived checkpoint

@@ -151,11 +151,10 @@ int main(int argc, char** argv) {
    * ORDER MATTERS: this split comes right after MPI_Init and BEFORE
    * load_graph/setup, where u_main.c and v_main.f90 place theirs.
    * setup() runs connect(), itself a collective over the same world
-   * (connect_mpmd's MPI_Allgather of one int per rank); the first host
-   * run of this choreography (2026-10-10) had the coupler split AFTER
-   * setup, so the coupler's 4-byte Allgather met U's 8-byte (color,
-   * key) exchange from inside MPI_Comm_split: "Message from rank 0 and
-   * tag 7 truncated; 8 bytes received but buffer size is 4". Every
+   * (connect_mpmd's MPI_Allgather of one int per rank); a coupler that
+   * split AFTER setup would have its 4-byte Allgather meet U's 8-byte
+   * (color, key) exchange from inside MPI_Comm_split: "Message from
+   * rank 0 and tag 7 truncated; 8 bytes received but buffer size is 4". Every
    * program must enter the same collectives in the same order. */
   MPI_Comm coupler_comm = MPI_COMM_NULL;
   {

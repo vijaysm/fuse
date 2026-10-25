@@ -260,8 +260,8 @@ test = "verification.brusselator_runner"
 # substep per window AND converges in one sweep, which is every existing
 # fixture's own shape -- this is why the defect went undetected until the
 # Brusselator's own first multi-sweep, multi-element window-scoped Runner
-# fixture existed. Verified BY HAND/03 (see this delegation's
-# report to the lead), capturing the mutated run's COMPLETE, untruncated
+# fixture existed. Verified BY HAND,
+# capturing the mutated run's COMPLETE, untruncated
 # stdout (not piped through `tail`): EVERY ONE of the 150 windows fails
 # EXPECT_EQ on via_runner.u0_per_window[w] vs via_driver.u0_per_window[w] --
 # the first failing window printed by the test itself is window 0
@@ -288,8 +288,8 @@ test = "runtime.window_runner_multirate"
 # Expected kill: WindowRunnerMultirate.ThreeConsecutivePeriodsMatchDriverAcrossRepeatedCalls
 # (the only test in this file -- or in window_runner_test.cpp/window_runner_
 # straddle_test.cpp -- that calls run_period() more than once on the SAME
-# Runner). Verified BY HAND (see this delegation's report to the
-# lead): reverting the two-line fix and re-running the test fails it, but
+# Runner). Verified BY HAND:
+# reverting the two-line fix and re-running the test fails it, but
 # NOT via the silently-frozen-state path the pre-fix bug originally showed
 # (that path is now caught earlier): run_period()'s SECOND call itself
 # returns E-RT-WINDOW-SWEEP, "WindowAdvance: iteration==0 (1) disagrees
@@ -324,7 +324,7 @@ test = "verification.brusselator_runner"
 # bisection PerWindowStateMatchesDriverWithStoppingRuleRemoved relies on,
 # which is a confirmed NO-OP against this mutation: with the stopping
 # rule never consulted, inflating the reference norm changes nothing).
-# Verified BY HAND (see this delegation's report to the lead):
+# Verified BY HAND:
 # with the mutation applied, both tests FAIL -- EXPECT_EQ on
 # iterations_per_window[w] (brusselator_runner_test.cpp:363) first
 # disagrees at window 20, exactly where this defect was originally
@@ -347,8 +347,7 @@ test = "runtime.window_runner"
 # to a rank where one window member's own RankSet is absent -- every OTHER
 # existing window fixture leaves this_process unset, where cfg.hosted is
 # unconditionally true per its own formula, and is therefore a confirmed
-# NO-OP against this mutation). Verified BY HAND (see this
-# delegation's report to the lead): with the mutation applied, the test
+# NO-OP against this mutation). Verified BY HAND: with the mutation applied, the test
 # FAILS -- EXPECT_EQ(b->advance_count, 0) (window_runner_test.cpp:897)
 # reports b->advance_count == 3, i.e. B's advance() ran despite B's own
 # RankSet{1,1} excluding the forced this_process == 0. Reverting the
@@ -376,8 +375,7 @@ test = "runtime.window_runner_straddle"
 # at window 0), which coincides with the un-primed default regardless
 # of whether this pass runs -- not evidence the mutation is survived,
 # just that those fixtures cannot distinguish "primed to 0" from
-# "never primed, defaults to 0". Verified BY HAND (see this
-# delegation's report to the lead): with the mutation applied, 7/9
+# "never primed, defaults to 0". Verified BY HAND: with the mutation applied, 7/9
 # WindowRunnerStraddle tests and 7/7 WindowRunnerMultirate tests FAIL
 # (EXPECT_EQ against the WindowCoupler driver's own closed-form/
 # reference values, first disagreeing at window 0's own sweep 0 in
@@ -386,7 +384,7 @@ test = "runtime.window_runner_straddle"
 # tier-0 tests pass again, bit-for-bit; file restored and re-verified
 # byte-identical (sha256) afterward.
 #
-# A NARROWER mutation the lead's own addendum suggested --
+# A NARROWER mutation --
 # specifically reverting THIS pass's own transfer-chain execution back
 # to a direct `registry.get(provider_exported_field)` read (the
 # pre-fix code's own approach), rather than disabling the pass
@@ -397,7 +395,7 @@ test = "runtime.window_runner_straddle"
 # transported value from, so "read the local registry" and "receive
 # the real transport" are reading the IDENTICAL single-process data
 # either way. That specific comparison can only be falsified by a real
-# multi-rank run -- `parallel.window_runner_mpi.{2,3}` (step (e)), a host
+# multi-rank run -- `parallel.window_runner_mpi.{2,3}`, a host
 # row never executed in this sandbox. Recorded here rather than as its
 # own row so a future reader does not mistake "162/162 passed" for
 # "this comparison was proven" -- it demonstrates only that the pass
@@ -417,8 +415,7 @@ new = """    if (false) {  // MUTATED: window convergence agreement disabled
 target = "fuse_runtime_window_runner_test"
 test = "runtime.window_runner"
 # Expected kill: broad and immediate -- every window-scoped test binary in
-# the suite. Verified BY HAND (see this delegation's report to
-# the lead): with the mutation applied, 163-test ctest run reports 7
+# the suite. Verified BY HAND: with the mutation applied, 163-test ctest run reports 7
 # FAILED: runtime.window_runner, runtime.window_runner_multirate,
 # runtime.window_runner_straddle, verification.brusselator_runner,
 # verification.brusselator_participants, abi.participant,
@@ -436,11 +433,11 @@ test = "runtime.window_runner"
 # the pure-function tests in test/runtime/window_convergence_test.cpp
 # (WindowConvergence.EachBlockIsSummedOnlyFromItsOwningRanks and
 # WindowConvergence.MutationDecidingFromOneRanksOwnPairsOnlyDisagrees in
-# particular, the latter built specifically to instantiate the lead's own
+# particular, the latter built specifically to instantiate the
 # "a rank deciding from its local pairs only" mutation as a direct
 # comparison, since decide_window_convergence() is new code with no PRIOR
 # behaviour on this exact line to revert to). The real end-to-end,
-# multi-rank proof is parallel.window_runner_mpi.{2,3} (step (e)), a host row.
+# multi-rank proof is parallel.window_runner_mpi.{2,3} a host row.
 
 [[mutation]]
 id = "window-runner-export-ownership-uses-the-exporter"

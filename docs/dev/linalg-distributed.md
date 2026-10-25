@@ -153,8 +153,8 @@ reduction -- the three mutation rows in
 `build-evidence/mutations/linalg.toml` -- without any MPI symbol in the
 test binary. `test/parallel/linalg_mpi_test.cpp` repeats the same
 properties over a REAL `MPI_COMM_WORLD`, compiled in a tier-1 build and
-run on the host, never here: `parallel.linalg_mpi.2` passed on the host
-2026-10-10 (0.40 s).
+run on the host, never here: `parallel.linalg_mpi.2` passes on the host
+(0.40 s).
 
 ## `Reducer::allgather`
 

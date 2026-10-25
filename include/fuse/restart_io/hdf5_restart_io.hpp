@@ -70,14 +70,12 @@ struct Provenance {
   std::uint32_t descriptor_version = fuse::kGraphVersion;
   std::uint64_t descriptor_hash = 0;
   std::uint32_t written_by_rank_count = 1;
-  /// 0 is the sentinel "no mesh was written for this point" -- Slice 1's
-  /// own scope note (docs/dev/restart.md): none of this slice's test
-  /// coverage (dn_heat) is mesh-backed, so the mesh-once/checksum
-  /// machinery is EXERCISED structurally (a test fixture sets this to a
-  /// synthetic nonzero value and corrupts it to make the mismatch
-  /// refusal fire) without a real `fuse::MeshView` behind it; a real
-  /// mesh writer is Slice 2's own deliverable, alongside the Brusselator
-  /// example this slice's own design doc names as that slice's pilot.
+  /// 0 is the sentinel "no mesh was written for this point"
+  /// (docs/dev/restart.md): the test coverage (dn_heat) is not
+  /// mesh-backed, so the mesh-once/checksum machinery is EXERCISED
+  /// structurally (a test fixture sets this to a synthetic nonzero value
+  /// and corrupts it to make the mismatch refusal fire) without a real
+  /// `fuse::MeshView` behind it.
   std::uint64_t mesh_checksum = 0;
 };
 
@@ -124,8 +122,8 @@ class PointReader {
 
 /// Opens `path` for reading (`GrowingFile`: `point_label` selects which
 /// `/restart_points/<point_label>/` group; empty reads the file's own
-/// `/mesh`-adjacent latest-point marker -- Slice 1 writes exactly one
-/// point per test, so `point_label` is required whenever more than one
+/// `/mesh`-adjacent latest-point marker -- the tests write exactly one
+/// point each, so `point_label` is required whenever more than one
 /// exists). `Failure` (E-RESTART-TRUNCATED) if `path` does not open as a
 /// valid HDF5 file at all, or is missing `@format_version`.
 [[nodiscard]] Result<std::unique_ptr<PointReader>> open_restart_point(

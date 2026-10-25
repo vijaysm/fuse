@@ -54,7 +54,7 @@ target = "fuse_parallel_nodal_remap_runner_test"
 test = "parallel.nodal_remap_runner.2"
 requires = "mpi"
 # SURVIVED explained, verified by hand: Constrain (runner.cpp's OpKind::
-# Constrain case) only REPORTS ("Phase 4 reports; it does not correct" --
+# Constrain case) only REPORTS (it does not correct --
 # the field values downstream are copied through unchanged either way).
 # RunnerConfig::abort_on_violation defaults to FALSE (runner.hpp), and
 # DisjointRankSets never sets it nor reads runner.stats() -- its own

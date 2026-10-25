@@ -293,12 +293,12 @@ inline void solve_polynomial_fit_into(const PolynomialFitPlan& plan,
 [[nodiscard]] inline std::vector<double> fit_polynomial(
     const std::vector<double>& t, const std::vector<double>& f, int degree,
     double t0) {
-  // N-num-linalg-field-1 (pass 2): on a call with two simultaneous errors
+  // On a call with two simultaneous errors
   // (e.g. a wrong `f` length together with a negative degree), the split
   // below runs prepare_polynomial_fit -- which only sees `t`/`degree` -- to
   // completion before solve_polynomial_fit ever sees `f`, so the length
   // check would fire last instead of second. Checking it here, ahead of the
-  // split, restores the pre-split order (empty t, then length, then
+  // split, keeps the check order (empty t, then length, then
   // degree) exactly; prepare_polynomial_fit cannot do this check itself
   // because it never receives `f`.
   if (t.size() == 0) {
@@ -460,10 +460,9 @@ inline void solve_cubic_spline_moments_into(const SplineMomentPlan& plan,
 
 [[nodiscard]] inline std::vector<double> cubic_spline_moments(
     const std::vector<double>& t, const std::vector<double>& f) {
-  // N-num-linalg-field-1 (pass 2): same reasoning as fit_polynomial above --
-  // check the length here, ahead of the split, so a `t` that is both the
-  // wrong length against `f` AND non-monotonic reports the length mismatch
-  // first, matching the pre-split order.
+  // Same reasoning as fit_polynomial above -- check the length here,
+  // ahead of the split, so a `t` that is both the wrong length against `f`
+  // AND non-monotonic reports the length mismatch first.
   if (f.size() != t.size()) {
     FUSE_THROW(InvalidArgument, "{}",
         "fuse::num::cubic_spline_moments: t and f have different lengths");
