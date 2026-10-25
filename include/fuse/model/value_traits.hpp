@@ -21,15 +21,16 @@
 ///
 ///   ScalarArray  `T` is `scalar_count` consecutive scalars of type
 ///               `scalar_type`: std::complex<double> is two doubles, a
-///               forward-mode dual number with N tangents is N+1 doubles. Every
+///               forward-mode dual number whose gradient has N entries is N+1
+///               doubles. Every
 ///               operation the coupler applies to field values (a remap
 ///               y = W x whose weights do not depend on the values, a halo copy,
 ///               a transfer, time interpolation) acts on each scalar
 ///               separately, so a field of such values moves as a field of
-///               scalars with `scalar_count` times as many components, and
-///               tangents travel through a remap exactly: the tangent of W x is
-///               W applied to the tangent. binary64 itself is the case of one
-///               scalar.
+///               scalars with `scalar_count` times as many components, and a
+///               gradient travels through a remap exactly: the gradient of W x
+///               is W applied to the gradient. binary64 itself is the case of
+///               one scalar.
 ///   Arithmetic  `T` needs its own arithmetic inside an operator (double-double,
 ///               quad-double): the operator is instantiated for `T` from a
 ///               closed list (stage U4).
@@ -37,22 +38,23 @@
 ///               widened exactly to binary64 at a boundary and rounded once,
 ///               with round to nearest, ties to even, on the way back.
 ///
-/// WHAT "EACH SCALAR SEPARATELY" LEAVES OUT. `derivative_count` of the scalars
-/// (the last ones) are derivatives of the value, the tangents of a forward-mode
-/// dual number; the first `scalar_count - derivative_count` are the value
-/// itself. Two coupler operations are not independent per scalar and so are not
-/// safe on derivatives:
+/// WHAT "EACH SCALAR SEPARATELY" LEAVES OUT. The last `gradient_size` of the
+/// scalars are the gradient of the value (its derivatives with respect to the N
+/// parameters of a forward-mode dual number); the first
+/// `scalar_count - gradient_size` are the value itself. Two coupler operations
+/// are not independent per scalar and so are not safe on a gradient:
 ///
 ///   * an affine map v -> s v + b (a unit conversion with an offset, such as
-///     degrees Celsius to kelvin) adds b to the value, and its derivative is
-///     s t: the offset must reach the value scalars only;
-///   * an accumulation by minimum or maximum picks one sample, and the tangent
-///     of the result is the tangent of the sample picked, which comparing the
-///     tangents scalar by scalar does not give.
+///     degrees Celsius to kelvin) adds b to the value, and its gradient is
+///     s times the gradient of v: the offset must reach the value scalars
+///     only;
+///   * an accumulation by minimum or maximum picks one sample, and the gradient
+///     of the result is the gradient of the sample picked, which comparing the
+///     gradient scalar by scalar does not give.
 ///
 /// The compiler already refuses an affine step for every field (E-IR-UNLOWERABLE),
 /// so only the second can occur today; the runner refuses it for a field with
-/// derivatives (E-RT-DERIVATIVE-MINMAX). Scaling, remap, interpolation and the
+/// a gradient (E-RT-GRADIENT-MINMAX). Scaling, remap, interpolation and the
 /// accumulations by sum, mean and integral are linear, hence scalar by scalar.
 ///
 /// `to_binary64` and `from_binary64` are the projection every boundary that
@@ -100,7 +102,7 @@ enum class FieldValueKind : std::uint8_t {
 ///   static constexpr FieldValueKind kind;
 ///   using scalar_type = ...;                  // T itself when scalar_count == 1
 ///   static constexpr int scalar_count;        // >= 1
-///   static constexpr int derivative_count;    // 0 <= derivative_count < scalar_count
+///   static constexpr int gradient_size;    // 0 <= gradient_size < scalar_count
 ///   static double to_binary64(const T&);
 ///   static T from_binary64(double);
 ///
@@ -117,7 +119,7 @@ struct value_traits<double> {
   static constexpr FieldValueKind kind = FieldValueKind::ScalarArray;
   using scalar_type = double;
   static constexpr int scalar_count = 1;
-  static constexpr int derivative_count = 0;
+  static constexpr int gradient_size = 0;
   [[nodiscard]] static constexpr double to_binary64(double v) noexcept {
     return v;
   }
@@ -132,7 +134,7 @@ struct value_traits<float> {
   static constexpr FieldValueKind kind = FieldValueKind::Storage;
   using scalar_type = float;
   static constexpr int scalar_count = 1;
-  static constexpr int derivative_count = 0;
+  static constexpr int gradient_size = 0;
   /// Exact: every binary32 value is a binary64 value.
   [[nodiscard]] static constexpr double to_binary64(float v) noexcept {
     return static_cast<double>(v);
@@ -180,7 +182,7 @@ struct value_traits<bfloat16> {
   static constexpr FieldValueKind kind = FieldValueKind::Storage;
   using scalar_type = bfloat16;
   static constexpr int scalar_count = 1;
-  static constexpr int derivative_count = 0;
+  static constexpr int gradient_size = 0;
   /// Exact: bfloat16 -> binary32 is exact (bfloat16.hpp) and so is
   /// binary32 -> binary64.
   [[nodiscard]] static double to_binary64(bfloat16 v) noexcept {
@@ -221,7 +223,7 @@ concept CoupledValue =
       { value_traits<T>::name } -> std::convertible_to<std::string_view>;
       { value_traits<T>::kind } -> std::convertible_to<FieldValueKind>;
       { value_traits<T>::scalar_count } -> std::convertible_to<int>;
-      { value_traits<T>::derivative_count } -> std::convertible_to<int>;
+      { value_traits<T>::gradient_size } -> std::convertible_to<int>;
     } &&
     detail::ScalarTypeNamed<T> &&
     requires(const T& v, double d) {
@@ -229,8 +231,8 @@ concept CoupledValue =
       { value_traits<T>::from_binary64(d) } -> std::same_as<T>;
     } &&
     (value_traits<T>::scalar_count >= 1) &&
-    (value_traits<T>::derivative_count >= 0) &&
-    (value_traits<T>::derivative_count < value_traits<T>::scalar_count) &&
+    (value_traits<T>::gradient_size >= 0) &&
+    (value_traits<T>::gradient_size < value_traits<T>::scalar_count) &&
     (value_traits<T>::kind != FieldValueKind::ScalarArray ||
      sizeof(T) == static_cast<std::size_t>(value_traits<T>::scalar_count) *
                       sizeof(typename value_traits<T>::scalar_type));
@@ -244,10 +246,10 @@ struct FieldValueType {
   std::size_t      alignment = 0;
   FieldValueKind   kind = FieldValueKind::ScalarArray;
   int              scalar_count = 1;
-  /// How many of those scalars are derivatives (tangents), the last ones; 0
-  /// for an ordinary number. A field with any is refused by the operations
+  /// How many of those scalars hold the gradient, the last ones; 0 for an
+  /// ordinary number. A field with a gradient is refused by the operations
   /// listed above.
-  int              derivative_count = 0;
+  int              gradient_size = 0;
   /// The scalar type's name and size, so a view as scalars is checked against
   /// what the storage really holds. For a one-scalar type these are the type's
   /// own.
@@ -272,7 +274,7 @@ template <CoupledValue T>
                         alignof(T),
                         value_traits<T>::kind,
                         value_traits<T>::scalar_count,
-                        value_traits<T>::derivative_count,
+                        value_traits<T>::gradient_size,
                         scalar_name,
                         sizeof(Scalar)};
 }

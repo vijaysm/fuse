@@ -223,7 +223,7 @@ A type can be a field value type when it is trivially copyable and has a
 provides binary64, binary32 and `fuse::bfloat16`; you can add your own:
 
 ```cpp
-struct Dual3 { double v[4]; };   // a value and three tangents
+struct Dual3 { double v[4]; };   // a value and a gradient of three entries
 
 template <>
 struct fuse::value_traits<Dual3> {
@@ -231,7 +231,7 @@ struct fuse::value_traits<Dual3> {
   static constexpr fuse::FieldValueKind kind = fuse::FieldValueKind::ScalarArray;
   using scalar_type = double;            // what one scalar is
   static constexpr int scalar_count = 4;      // scalars in one value
-  static constexpr int derivative_count = 3;  // of which the last 3 are tangents
+  static constexpr int gradient_size = 3;  // of which the last 3 hold the gradient
   static double to_binary64(const Dual3& d) noexcept { return d.v[0]; }
   static Dual3 from_binary64(double x) noexcept { return {{x, 0, 0, 0}}; }
 };
@@ -252,15 +252,15 @@ that a `ScalarArray` type's scalars tile it exactly. A type without
 nearest, ties to even): it rounds the intermediate binary32 value to odd,
 because rounding to nearest twice is not correctly rounded.
 
-### Forward-mode derivatives
+### Forward-mode gradients
 
 `fuse::num::dual<S, N>` (`fuse/num/dual.hpp`) is a forward-mode automatic
-differentiation number: a value and `N` directional derivatives (tangents),
-propagated by the rules of calculus through `+ - * /`, `sqrt`, `exp`, `log`,
+differentiation number: a value and its gradient with respect to `N`
+parameters, propagated by the rules of calculus through `+ - * /`, `sqrt`, `exp`, `log`,
 `sin`, `cos`, `abs` and `pow` with a constant exponent. It runs inside a Kokkos
 kernel on any execution space. In `value_traits` it is a `ScalarArray` of
-`N + 1` scalars of type `S`, the first the value and the last `N` its tangents
-(`derivative_count = N`).
+`N + 1` scalars of type `S`, the first the value and the last `N` its gradient
+(`gradient_size = N`).
 
 Bind a field of them like any typed field. The graph counts scalars per entity,
 so a one-component field of `dual<double, 3>` is declared with `components = 4`.
@@ -274,32 +274,32 @@ auto scalars = registry.get_scalars<double>(id);   // 4 binary64 components
 ```
 
 The runtime moves such a field as scalars (`FieldRegistry::get_scalars`). A remap
-`y = W x` has weights that do not depend on the field, so the tangent of `y` is
-`W` applied to the tangent of `x`. The tests check that bit for bit, both on the
+`y = W x` has weights that do not depend on the field, so the gradient of `y` is
+`W` applied to the gradient of `x`. The tests check that bit for bit, both on the
 remap kernel on every enabled execution space (`num.dual`) and through a
 `Runner` and the backend's own remap (`runtime.dual_field_runner`). They also
-check the Taylor remainder of the Brusselator species residual whose derivative
-action comes from dual numbers pushed through the remap kernel: order 2 for the
-right tangent, order 1 when the tangent is left out of the remap.
+check the Taylor remainder of the Brusselator species residual whose directional
+derivative comes from dual numbers pushed through the remap kernel: order 2 for the
+right gradient, order 1 when the gradient is left out of the remap.
 
 What this does not cover:
 
-- **Minimum and maximum accumulation** of a field with derivatives is refused
-  at `Runner::initialize` with `E-RT-DERIVATIVE-MINMAX`: the derivative of a
-  minimum is that of the sample picked, which comparing the tangents scalar by
+- **Minimum and maximum accumulation** of a field with a gradient is refused
+  at `Runner::initialize` with `E-RT-GRADIENT-MINMAX`: the gradient of a
+  minimum is that of the sample picked, which comparing the gradient scalar by
   scalar does not give. Sum, mean and integral are linear and are accepted.
 - **An affine unit conversion** (an offset, such as degrees Celsius to kelvin)
-  would add the offset to the tangents as well. The compiler refuses that step
+  would add the offset to the gradient as well. The compiler refuses that step
   for every field today (`E-IR-UNLOWERABLE`), so it cannot happen; whoever makes
   it lowerable has to apply the offset to the value scalars only.
 - **The components must be interleaved** (`component_stride` 0 or 1). A blocked
   layout is refused with `E-FIELD-SCALAR-LAYOUT` rather than permuted.
-- **Only typed C++ registration tells the runtime a field has derivatives.** A C
-  or Fortran participant, or a provider plugin, can carry tangents as extra
-  components of a plain binary64 field and they will move correctly, but the
+- **Only typed C++ registration tells the runtime a field has a gradient.** A C
+  or Fortran participant, or a provider plugin, can carry a gradient as extra
+  components of a plain binary64 field and it will move correctly, but the
   runtime cannot tell them from values, so it will not refuse a minimum or
   maximum accumulation of them. Restart files, iteration-region window members
-  and the C ABI's own field description do not know about derivatives yet.
+  and the C ABI's own field description do not know about a gradient yet.
 - **Reverse mode** is not provided. Each coupler operator already has an adjoint
   (`apply_transpose`, checked by the derivative gate); a schedule that runs the
   coupling graph backwards is a later stage.

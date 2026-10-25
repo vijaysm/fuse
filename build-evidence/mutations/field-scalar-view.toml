@@ -1,7 +1,7 @@
 # Mutations for the view of a field as scalars and fuse::num::dual (plans/2026-10-22-
 # universal-number-types.md, stage U2): a field of forward-mode dual numbers reaches
-# the runtime as scalars (the value, then the tangents), and the dual arithmetic
-# carries the derivative.
+# the runtime as scalars (the value, then the gradients), and the dual arithmetic
+# carries the gradient.
 
 [[mutation]]
 id = "scalar-layout-forgets-the-scalar-count-in-the-stride"
@@ -34,19 +34,19 @@ target = "fuse_num_dual_test"
 test = "num.dual"
 
 [[mutation]]
-id = "derivative-test-accepts-a-plain-field"
+id = "gradient-test-accepts-a-plain-field"
 area = "num_dual"
-describes = "has_derivatives() treats every bound field as having derivatives, so the minimum/maximum refusal would fire on ordinary fields"
+describes = "has_gradient() treats every bound field as having gradients, so the minimum/maximum refusal would fire on ordinary fields"
 file = "include/fuse/field/registry.hpp"
-old = "    return it != refs_.end() && it->second.derivative_count() > 0;"
-new = "    return it != refs_.end() && it->second.derivative_count() >= 0;"
+old = "    return it != refs_.end() && it->second.gradient_size() > 0;"
+new = "    return it != refs_.end() && it->second.gradient_size() >= 0;"
 target = "fuse_num_dual_test"
 test = "num.dual"
 
 [[mutation]]
 id = "dual-product-rule-drops-the-second-term"
 area = "num_dual"
-describes = "dual multiplication keeps only a.value * b.tangent, dropping a.tangent * b.value, so every product carries a wrong tangent"
+describes = "dual multiplication keeps only a.value * b.gradient, dropping a.gradient * b.value, so every product carries a wrong gradient"
 file = "include/fuse/num/dual.hpp"
 old = "    for (int k = 1; k <= N; ++k) d[k] = a * o.d[k] + d[k] * b;"
 new = "    for (int k = 1; k <= N; ++k) d[k] = a * o.d[k];"
@@ -54,9 +54,9 @@ target = "fuse_num_dual_test"
 test = "num.dual"
 
 [[mutation]]
-id = "dual-quotient-rule-forgets-the-denominator-tangent"
+id = "dual-quotient-rule-forgets-the-denominator-gradient"
 area = "num_dual"
-describes = "dual division drops the -q * b.tangent term, so the tangent of a quotient ignores the denominator's dependence on the parameter"
+describes = "dual division drops the -q * b.gradient term, so the gradient of a quotient ignores the denominator's dependence on the parameter"
 file = "include/fuse/num/dual.hpp"
 old = "    for (int k = 1; k <= N; ++k) d[k] = (d[k] - q * o.d[k]) / b;"
 new = "    for (int k = 1; k <= N; ++k) d[k] = d[k] / b;"
@@ -64,9 +64,9 @@ target = "fuse_num_dual_test"
 test = "num.dual"
 
 [[mutation]]
-id = "dual-sqrt-tangent-divides-by-the-root-not-twice-the-root"
+id = "dual-sqrt-gradient-divides-by-the-root-not-twice-the-root"
 area = "num_dual"
-describes = "the tangent of sqrt is divided by sqrt(x) instead of 2 sqrt(x)"
+describes = "the gradient of sqrt is divided by sqrt(x) instead of 2 sqrt(x)"
 file = "include/fuse/num/dual.hpp"
 old = "  for (int k = 1; k <= N; ++k) a.d[k] /= two_r;"
 new = "  for (int k = 1; k <= N; ++k) a.d[k] /= r;"
@@ -74,9 +74,9 @@ target = "fuse_num_dual_test"
 test = "num.dual"
 
 [[mutation]]
-id = "dual-cos-tangent-loses-its-sign"
+id = "dual-cos-gradient-loses-its-sign"
 area = "num_dual"
-describes = "the tangent of cos is multiplied by +sin(x) instead of -sin(x)"
+describes = "the gradient of cos is multiplied by +sin(x) instead of -sin(x)"
 file = "include/fuse/num/dual.hpp"
 old = "  const S ms = -Kokkos::sin(x);"
 new = "  const S ms = Kokkos::sin(x);"
@@ -84,9 +84,9 @@ target = "fuse_num_dual_test"
 test = "num.dual"
 
 [[mutation]]
-id = "dual-abs-keeps-the-negative-tangent"
+id = "dual-abs-keeps-the-negative-gradient"
 area = "num_dual"
-describes = "abs of a negative value flips the value but not the tangent"
+describes = "abs of a negative value flips the value but not the gradient"
 file = "include/fuse/num/dual.hpp"
 old = "    for (int i = 0; i <= N; ++i) a.d[i] = -a.d[i];\n  }\n  return a;\n}\n/// a^p for a constant exponent p."
 new = "    a.d[0] = -a.d[0];\n  }\n  return a;\n}\n/// a^p for a constant exponent p."
@@ -94,9 +94,9 @@ target = "fuse_num_dual_test"
 test = "num.dual"
 
 [[mutation]]
-id = "taylor-sweep-cannot-see-a-missing-diffusion-tangent"
+id = "taylor-sweep-cannot-see-a-missing-diffusion-gradient"
 area = "num_dual"
-describes = "the multi-component remap kernel zeroes the second component's result, so the tangent never arrives through the remap and the dual derivative action is wrong by the whole diffusion term"
+describes = "the multi-component remap kernel zeroes the second component's result, so the gradient never arrives through the remap and the dual derivative action is wrong by the whole diffusion term"
 file = "include/fuse/num/space_kernels.hpp"
 old = "            y(base + c) += v * x(cbase + c);"
 new = "            if (c == 0) y(base + c) += v * x(cbase + c);"
