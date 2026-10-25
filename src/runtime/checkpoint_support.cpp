@@ -52,7 +52,7 @@ Diagnostics verify_rollback_support(const CouplingGraph& g,
           "component '" + name + "'");
     }
 
-    // KNOWN_ISSUES.md B3. `capabilities()` can now say more than whether a
+    // `capabilities()` can say more than whether a
     // component rolls back; the determinism bit is the one this region's own
     // mechanism can act on directly, so it is checked here rather than left
     // decorative. This is exactly the refusal
@@ -99,7 +99,7 @@ Diagnostics verify_rollback_support(const CouplingGraph& g,
   return diags;
 }
 
-// S7.1's Newton-Krylov seam. Mirrors verify_rollback_support() immediately
+// The Newton-Krylov seam. Mirrors verify_rollback_support() immediately
 // above: same checkpoint set, same "an unverifiable claim is refused, not
 // assumed" rule for a component the set names that is not registered at
 // all (already reported by verify_rollback_support() over the same set;

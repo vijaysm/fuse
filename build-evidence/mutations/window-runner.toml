@@ -1,20 +1,9 @@
-# Mutations for the multirate-window-on-the-Runner track (the graph-level
+# Mutations for the multirate window on the Runner (the graph-level
 # front end for fuse::WindowCoupler: IterationRegionDecl::window_scope,
-# fuse::WindowChannelIO, and the schedule()/Runner wiring). Own file per the
-# review-fix protocol: do not edit build-evidence/mutations.toml directly
-# while other tracks hold it dirty.
+# fuse::WindowChannelIO, and the schedule()/Runner wiring).
 #
-# STATE OF THIS FILE, HONESTLY: this delegation built and verified three of
-# the track's four pieces (the region declaration's `window_scope` opt-in
-# and its descriptor/YAML round trip; `WindowChannelIO`, the exchange seam
-# WindowCoupler's sweep loop now calls instead of raw pointer arithmetic;
-# and the design for the remaining schedule()/Runner wiring -- see this
-# delegation's design notes) but did NOT build the wiring itself: schedule()
-# does not yet call validate_coupling_window() for a window-scoped region,
-# and no WindowChannelIO override performs a real Remap/Transport or a
-# rank-agreed convergence verdict. Two of the three mutation rows this
-# track's task named are properties of code that consequently does not
-# exist yet:
+# Two properties are NOT recorded as rows because the code they would
+# mutate does not exist yet:
 #   * "routes the exchange around the Remap/Transport ops" -- there is no
 #     Remap/Transport routing in the window path to route around. The
 #     nearest existing analogue, WindowChannelIO's default direct-pointer
@@ -26,25 +15,19 @@
 #     "make it rank-local" presupposes a cross-rank reduction that has not
 #     been written.
 # Recording either as a "row" here without the code it mutates would be
-# exactly what this project's standing rules forbid: a claim not backed by
-# the tool output it derives from. They are left for whoever lands the
-# wiring and the batching Remap/Transport override this design calls for;
-# this file's row below is the one the CURRENT code supports and needed
-# only WindowCoupler's own algorithm to exist.
+# a claim not backed by the tool output it derives from.
 #
-# The rows below were proved BY HAND (tools/mutate.py was not run except
-# --check-anchors, per this delegation's constraints): the edit in
-# `old`/`new` was applied directly to the named file with edit_file, the
-# named target was rebuilt, the named test was run and observed to fail
-# with the message quoted in its own comment, then the file was restored
-# and verified byte-identical to a backup with `cmp` before moving on.
+# The rows below were proved BY HAND (tools/mutate.py was run only with
+# --check-anchors): the edit in `old`/`new` was applied directly to the
+# named file, the named target was rebuilt, the named test was run and
+# observed to fail with the message quoted in its own comment, then the
+# file was restored and verified byte-identical to a backup with `cmp`
+# before moving on.
 #
-# The row immediately below is the FIRST piece of the schedule()/Runner
-# wiring itself (Unit C3, U1 of the follow-on delegation that made the
-# Runner seed a new window exactly as WindowCoupler does): everything
-# else in this file predates that wiring and mutates the driver
-# (src/runtime/window_coupler.cpp) instead, per this file's own "STATE OF
-# THIS FILE" note above.
+# Rows that mutate src/runtime/iteration.cpp are the schedule()/Runner
+# wiring itself (the Runner seeds a new window exactly as WindowCoupler
+# does); the others mutate the driver (src/runtime/window_coupler.cpp)
+# instead.
 
 [[mutation]]
 id = "window-runner-predictor-replaced-by-persistence"
@@ -55,9 +38,9 @@ old = "    const bool use_predictor = cfg.import_lagged && first_sweep_of_pass;"
 new = "    const bool use_predictor = false && cfg.import_lagged && first_sweep_of_pass;  // MUTATED: predictor disabled"
 target = "fuse_runtime_window_runner_straddle_test"
 test = "runtime.window_runner_straddle"
-# PROVED 2026-09-30: 3 of 5 WindowRunnerStraddle tests failed, reproducing
-# EXACTLY the original failure (measured before this
-# session's fix, and again here after reverting it):
+# PROVED: 3 of 5 WindowRunnerStraddle tests failed, reproducing
+# EXACTLY the original failure (measured before the
+# predictor fix, and again after reverting it):
 # SevenThirteenAdjustableAdjustableThroughWindowComponentMatchesDriver
 # (xA/xB off by ~4e-9 relative, advance_count_a 156 vs 154, advance_count_b
 # 312 vs 308), FixedIterationCountMatchesDriverJacobi (xA runner=
@@ -74,14 +57,14 @@ test = "runtime.window_runner_straddle"
 [[mutation]]
 id = "window-runner-consumer-ignores-sample-shift"
 area = "runtime/iteration (advance_window)"
-describes = "a LAGGED consumer's own import-waveform construction always computes buffer index k (times[k]'s own sample position) as if its provider had never straddled a window boundary, instead of calling fuse::window_sample_shift() (fuse/model/coupling_graph.hpp) to detect that an earlier straddle already carried the provider's real clock past this window's own T0 and shift every buffer-index lookup down by one. Once the provider (B, interval 7, DtPolicy::Fixed, against A's own 13-unit window) has straddled even once -- which it does every window in the (13,7) acceptance fixture -- this reads the WRONG entry of the provider's own K-wide sample buffer for every sample from `times[1]` on, the exact 'consumer computes the provider's sample times from T0 instead of window_sample_times()/window_sample_shift()' defect this track's task named."
+describes = "a LAGGED consumer's own import-waveform construction always computes buffer index k (times[k]'s own sample position) as if its provider had never straddled a window boundary, instead of calling fuse::window_sample_shift() (fuse/model/coupling_graph.hpp) to detect that an earlier straddle already carried the provider's real clock past this window's own T0 and shift every buffer-index lookup down by one. Once the provider (B, interval 7, DtPolicy::Fixed, against A's own 13-unit window) has straddled even once -- which it does every window in the (13,7) acceptance fixture -- this reads the WRONG entry of the provider's own K-wide sample buffer for every sample from `times[1]` on, the defect of a consumer computing the provider's sample times from T0 instead of window_sample_times()/window_sample_shift()."
 file = "src/runtime/iteration.cpp"
 old = """    const int shift = window_sample_shift(
         cfg.provider_interval, cfg.provider_policy, Rational{0}, T0);"""
 new = """    const int shift = 0;  // MUTATED: always computed from T0, no shift"""
 target = "fuse_runtime_window_runner_straddle_test"
 test = "runtime.window_runner_straddle"
-# PROVED 2026-10-01, CONTROL THEN MUTANT (both freshly built, md5-
+# PROVED, CONTROL THEN MUTANT (both freshly built, md5-
 # checked before and after each build, no stale object reuse). What was
 # actually run, in order: (1) the full 9-test WindowRunnerStraddle
 # suite, confirmed passing shortly before this mutation, on the SAME
@@ -102,7 +85,7 @@ test = "runtime.window_runner_straddle"
 # unaffected by this mutation, 0x1.c6d2282f01d0cp-15
 # (5.4218879419970929e-05) -- a SIGN flip, not a rounding difference.
 # This value is IDENTICAL, bit for bit, to what this exact test produced
-# earlier in this same delegation round before the fix this mutation
+# before the fix this mutation
 # reverts existed at all -- expected, not a sign of a weak mutation:
 # forcing shift=0 makes the `k == shift` branch this row's fix added
 # unreachable (`shift==1 && k==shift` is false when shift is forced to
@@ -126,7 +109,7 @@ test = "runtime.window_runner_straddle"
 [[mutation]]
 id = "window-runner-point-sample-instead-of-mean"
 area = "runtime/window_coupler"
-describes = "feeds a consumer's non-straddling substep the provider's point sample at the substep END (WindowChannelIO::boundary) instead of the provider's MEAN over the substep (WindowChannelIO::mean) -- the exact 'point samples instead of substep means' defect this track's task named. Second-order accuracy in the exchanged quantity depends specifically on feeding a mean (window_coupler.hpp's own class comment); a point sample is what a naive one-value-per-call reading of Component::advance()'s contract would do instead, and degrades the coupling scheme to first order."
+describes = "feeds a consumer's non-straddling substep the provider's point sample at the substep END (WindowChannelIO::boundary) instead of the provider's MEAN over the substep (WindowChannelIO::mean) -- the 'point samples instead of substep means' defect. Second-order accuracy in the exchanged quantity depends specifically on feeding a mean (window_coupler.hpp's own class comment); a point sample is what a naive one-value-per-call reading of Component::advance()'s contract would do instead, and degrades the coupling scheme to first order."
 file = "src/runtime/window_coupler.cpp"
 old = """        for (std::size_t e = 0; e < m.length; ++e) {
           double mean_val = m.required[e];
@@ -247,7 +230,7 @@ test = "runtime.window_coupler"
 # compares its recorded values against the SAME problem declared in the
 # other order. All 32 other tests -- none of which declares a member out
 # of topological order -- were unaffected, confirming this specific gap
-# (flagged after the identity-rig/closed-form review of this track) had
+# had
 # no other anchor before this test was added. File restored and
 # `cmp`-verified byte-identical to the pre-mutation copy afterward.
 
@@ -352,7 +335,7 @@ test = "verification.brusselator_runner"
 [[mutation]]
 id = "window-runner-hosting-ignored"
 area = "runtime/iteration (advance_window, Unit 2b step (a), D19)"
-describes = "advance_window() has no hosting check at all before this fix: WindowMemberConfig::hosted is computed in resolve_regions() (the SAME !this_process.has_value() || ranks.contains(*this_process) formula build_ticks() already uses for ordinary ticks) but advance_window() never reads it, so a window member not on this process's own rank still takes every substep, calls advance()/save_state()/restore_state(), and raises ExternalSuspend exactly as if it were hosted here -- the certain-deadlock defect (D19) the lead's rebuttal of the prior Unit 2 report identified: on more than one process, every rank runs every window member's full physics, including members whose own inputs/state live only on a DIFFERENT rank."
+describes = "advance_window() has no hosting check at all: WindowMemberConfig::hosted is computed in resolve_regions() (the SAME !this_process.has_value() || ranks.contains(*this_process) formula build_ticks() already uses for ordinary ticks) but advance_window() never reads it, so a window member not on this process's own rank still takes every substep, calls advance()/save_state()/restore_state(), and raises ExternalSuspend exactly as if it were hosted here -- a certain deadlock: on more than one process, every rank runs every window member's full physics, including members whose own inputs/state live only on a DIFFERENT rank."
 file = "src/runtime/iteration.cpp"
 old = """  if (!cfg.hosted) co_return Result<void>::success();"""
 new = """  if (false) co_return Result<void>::success();  // MUTATED: hosting ignored"""
@@ -376,7 +359,7 @@ test = "runtime.window_runner"
 [[mutation]]
 id = "window-runner-priming-through-transfer-disabled"
 area = "runtime/iteration (resolve_regions, Unit 2b step (b), D19)"
-describes = "resolve_regions()'s second pass (Unit 2b step (b)) re-runs each importing member's own compiled delivery chain (Transport/Remap/Epoch/Interpolate/Sink) once, at setup, so a window member's own cfg.window_import arc and straddle-tail history are primed through the real field transfer rather than a direct registry.get(provider_exported_field) read of the provider's own FieldRegistry entry (KNOWN_ISSUES.md D19, evidence 3). Disabling this pass entirely -- skipping every member unconditionally -- removes ALL cold-start priming of a consumer's own import arc and straddle history, leaving both at whatever default the slot/map already holds (zero, an empty history list)."
+describes = "resolve_regions()'s second pass re-runs each importing member's own compiled delivery chain (Transport/Remap/Epoch/Interpolate/Sink) once, at setup, so a window member's own cfg.window_import arc and straddle-tail history are primed through the real field transfer rather than a direct registry.get(provider_exported_field) read of the provider's own FieldRegistry entry. Disabling this pass entirely -- skipping every member unconditionally -- removes ALL cold-start priming of a consumer's own import arc and straddle history, leaving both at whatever default the slot/map already holds (zero, an empty history list)."
 file = "src/runtime/iteration.cpp"
 old = "        if (!cfg.import_channel.valid()) continue;"
 new = "        if (true) continue;  // MUTATED: step (b) pass 2 disabled"
@@ -423,7 +406,7 @@ test = "runtime.window_runner_straddle"
 [[mutation]]
 id = "window-runner-convergence-agreement-disabled"
 area = "runtime/iteration (run_region, Unit 2b step (c), D19)"
-describes = "run_region()'s own per-sweep convergence decision now branches on R.window_scoped: a window-scoped region's own agreement is decide_window_convergence() (fuse/runtime/window_convergence.hpp), gated on WindowMemberConfig::hosted per block rather than the ordinary R-10 path's length>0 gate. Disabling the branch (forcing it to fall through to the ordinary else-if arm, which never recognises a window-scoped region's own blocks the same way) leaves window_converged permanently false -- the region's own measure-mapping/all_satisfied() call, still gated by R.window_scoped further down the SAME function, is the one place that actually sets st.converged for a window region, and it reads window_converged, never recomputing its own verdict."
+describes = "run_region()'s own per-sweep convergence decision now branches on R.window_scoped: a window-scoped region's own agreement is decide_window_convergence() (fuse/runtime/window_convergence.hpp), gated on WindowMemberConfig::hosted per block rather than the ordinary path's length>0 gate. Disabling the branch (forcing it to fall through to the ordinary else-if arm, which never recognises a window-scoped region's own blocks the same way) leaves window_converged permanently false -- the region's own measure-mapping/all_satisfied() call, still gated by R.window_scoped further down the SAME function, is the one place that actually sets st.converged for a window region, and it reads window_converged, never recomputing its own verdict."
 file = "src/runtime/iteration.cpp"
 old = """    if (R.window_scoped) {
       const std::size_t nb = R.blocks.size();
@@ -462,7 +445,7 @@ test = "runtime.window_runner"
 [[mutation]]
 id = "window-runner-export-ownership-uses-the-exporter"
 area = "runtime/iteration (resolve_regions, Unit 2b step (c) correction, D19)"
-describes = "window_export_meta's third field (consulted by RegionBlock::window_hosted, the per-block convergence-ownership gate run_region() reads) must be whether the CONSUMER of this member's own export is hosted here (WindowMemberConfig::export_consumer_hosted), never whether the EXPORTER itself is (WindowMemberConfig::hosted) -- a window block's residual is measured through the compiled delivery chain (Transport/Epoch/Remap/Constrain/Diagnose), which runs on the CONSUMER's own processor set, not the exporter's. This is the defect a real host MPI run of parallel.window_runner_mpi.{2,3} found 2026-10-08: on a disjoint-ranks channel, storing the exporter's own hosted flag here makes the exporting rank wrongly claim a block it never writes, and the consuming rank -- the only rank that does write it -- wrongly disclaim it, so decide_window_convergence() sums a stale 0/0 residual/reference pair and reports converged after exactly one sweep, with the partner's own state never updated (got.iterations_per_window[0] == 1 against a reference of 37; got.x_b_per_window[0] == 0.2, B's own unmodified initial value). Reverting to the exporter's own `cfg.hosted` reproduces exactly that inversion."
+describes = "window_export_meta's third field (consulted by RegionBlock::window_hosted, the per-block convergence-ownership gate run_region() reads) must be whether the CONSUMER of this member's own export is hosted here (WindowMemberConfig::export_consumer_hosted), never whether the EXPORTER itself is (WindowMemberConfig::hosted) -- a window block's residual is measured through the compiled delivery chain (Transport/Epoch/Remap/Constrain/Diagnose), which runs on the CONSUMER's own processor set, not the exporter's. This is the defect a real host MPI run of parallel.window_runner_mpi.{2,3} found: on a disjoint-ranks channel, storing the exporter's own hosted flag here makes the exporting rank wrongly claim a block it never writes, and the consuming rank -- the only rank that does write it -- wrongly disclaim it, so decide_window_convergence() sums a stale 0/0 residual/reference pair and reports converged after exactly one sweep, with the partner's own state never updated (got.iterations_per_window[0] == 1 against a reference of 37; got.x_b_per_window[0] == 0.2, B's own unmodified initial value). Reverting to the exporter's own `cfg.hosted` reproduces exactly that inversion."
 file = "src/runtime/iteration.cpp"
 old = """          window_export_meta[ins.out.value()] = {cfg.capacity, valid_substeps,
                                                   cfg.export_consumer_hosted};"""
@@ -470,10 +453,9 @@ new = """          window_export_meta[ins.out.value()] = {cfg.capacity, valid_su
                                                   cfg.hosted};  // MUTATED: exporter-side flag restored"""
 target = "fuse_runtime_window_hosting_test"
 test = "runtime.window_hosting"
-# RE-ASSESSED 2026-10-19 (Survivors track). This row SURVIVED the full
-# tier-0 sweep at `90d98ee`. Traced the reason to a SECOND, independent
-# computation of the same observable, added after this row and the tests
-# below were written (same date, per the field's own doc comment): read
+# This row SURVIVES the full tier-0 sweep. The reason is a SECOND,
+# independent computation of the same observable, added after this row
+# and the tests below were written: read
 # `src/runtime/iteration.cpp`'s resolve_regions() in full --
 # `window_export_meta[ins.out.value()]` (the map this mutation's `old`/
 # `new` touches) is read into `b.window_hosted` exactly once (the line
@@ -519,9 +501,9 @@ test = "runtime.window_hosting"
 # override, and nothing else, is what makes this mutation unobservable:
 # removing it (not part of the real fix, diagnostic only, reverted) is
 # necessary AND sufficient to restore the kill the row's own comment
-# documents from 2026-10-08, before the override existed.
-equivalent = "window_export_meta's third field (cfg.hosted vs cfg.export_consumer_hosted) has exactly one reader in resolve_regions() (src/runtime/iteration.cpp), and that reader's result is unconditionally overwritten, for every window-scoped residual block, by an independent recomputation of the identical consumer-hosted formula from the block's own channel (graph.owner_of(ch.target)) before resolve_regions() returns -- verified by disabling that later recomputation and observing the SAME existing tests then catch the mutation. No graph can reach window_export_meta's own third field as the final RegionBlock::window_hosted value under the current resolve_regions() structure, so this specific mutation is behaviourally equivalent to no-op as currently written -- the redundant recomputation (added the same day as this row, per RegionBlock::window_hosted's own Unit-2b-step-(c) doc comment) is what should be reviewed, not this test."
-# Expected kill (pre-override, 2026-10-08; no longer reachable -- see equivalent= above): WindowHosting.BlockOwnershipFollowsTheConsumersProcessorSetOnAsRank
+# documents, before the override existed.
+equivalent = "window_export_meta's third field (cfg.hosted vs cfg.export_consumer_hosted) has exactly one reader in resolve_regions() (src/runtime/iteration.cpp), and that reader's result is unconditionally overwritten, for every window-scoped residual block, by an independent recomputation of the identical consumer-hosted formula from the block's own channel (graph.owner_of(ch.target)) before resolve_regions() returns -- verified by disabling that later recomputation and observing the SAME existing tests then catch the mutation. No graph can reach window_export_meta's own third field as the final RegionBlock::window_hosted value under the current resolve_regions() structure, so this specific mutation is behaviourally equivalent to no-op as currently written -- the redundant recomputation (see RegionBlock::window_hosted's doc comment) is what should be reviewed, not this test."
+# Expected kill (pre-override; no longer reachable -- see equivalent= above): WindowHosting.BlockOwnershipFollowsTheConsumersProcessorSetOnAsRank
 # and WindowHosting.BlockOwnershipFollowsTheConsumersProcessorSetOnBsRank (the
 # two tests that force this_process to a rank where the two window members'
 # own RankSets are DISJOINT -- window_hosting_test.cpp's own
@@ -571,7 +553,7 @@ test = "runtime.window_hosting"
 [[mutation]]
 id = "window-member-size-check-dropped"
 area = "runtime"
-describes = "D25 item 3: a window member's export storage read directly from the registry bypasses the ordinary bind's E-RT-SIZE. Two host participants registered 9 values against 256-cell fields and ran on the wrong grid. Dropping the check accepts a 2-value export on a 1-cell field."
+describes = "A window member's export storage read directly from the registry bypasses the ordinary bind's E-RT-SIZE. Two host participants registered 9 values against 256-cell fields and ran on the wrong grid. Dropping the check accepts a 2-value export on a 1-cell field."
 file = "src/runtime/iteration.cpp"
 old = "          if (cfg.capacity > 0 && ins.out.valid() && ins.out.value() < slots.size() &&"
 new = "          if (false && cfg.capacity > 0 && ins.out.valid() && ins.out.value() < slots.size() &&"
@@ -589,7 +571,7 @@ test = "runtime.window_runner"
 [[mutation]]
 id = "seed-chain-selected-per-rank"
 area = "runtime"
-describes = "D25 item 2: the initialize-time seed chain (Transport, Remap, Epoch -- collective) selected on a per-rank storage pointer, so a non-hosting rank skipped a collective the hosting ranks entered. Only observable across processes; the host run that measured it is the oracle."
+describes = "The initialize-time seed chain (Transport, Remap, Epoch -- collective) selected on a per-rank storage pointer, so a non-hosting rank skipped a collective the hosting ranks entered. Only observable across processes; the host run that measured it is the oracle."
 file = "src/runtime/iteration.cpp"
 old = "        if (!cfg.window_import.valid() ||"
 new = "        if (cfg.required == nullptr || !cfg.window_import.valid() ||"
@@ -600,6 +582,6 @@ test = "verification.brusselator.participants.mpmd.3"
 # behind it, and the ctest row launches all three).
 requires = "mpi"
 # Not killable at tier 0: on one process every member is hosted and the
-# two conditions agree. Measured on the host 2026-10-09 BEFORE the fix as a
+# two conditions agree. Measured on the host BEFORE the fix as a
 # hang of all three programs in MPI_Alltoallv (macOS sample); AFTER, the
 # row passes in 1.6 s. A FUSE_MUTATE_MPI=1 run on the host is the gate.

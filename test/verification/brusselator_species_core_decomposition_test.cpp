@@ -1,11 +1,11 @@
-// Physics track (closing the Grid track's own solver seam): UCore/
+// UCore/
 // VDiffusionCore decomposed over a component's own ranks, solver
 // selectable (direct|schur|pcg|gmres), verified against the single-rank
 // (`num_ranks()==1`) reference -- the SAME `UCore`/`VDiffusionCore`
 // classes, not a reimplementation. The in-process N-partition simulation
 // below runs REAL OS THREADS, one per partition, sharing a hand-written
 // barrier-based `fuse::linalg::Reducer`/`GhostExchanger` pair: unlike the
-// Grid track's own tier-0 two-partition tests (test/verification/
+// tier-0 two-partition tests (test/verification/
 // brusselator_grid_decomposition_test.cpp, test/linalg/schur_slab_test.cpp's
 // own "two-pass" replay trick), `UCore::step()` is itself STATEFUL across
 // collectives -- its own reaction fixed-point loop DECIDES how many
@@ -13,9 +13,9 @@
 // a sequential "run every rank once, discard, run again now the cache is
 // warm" replay would let an UNSYNCHRONIZED warm-up-pass value steer one
 // rank's own loop down a DIFFERENT iteration count than the real pass
-// reproduces -- a hazard distinct from, but in the same family as, this
-// track's own standing lesson ("a collective path must never return on a
-// locally computed condition"). Real blocking barriers (one `std::thread`
+// reproduces -- a hazard distinct from, but in the same family as, the
+// rule that a collective path must never return on a locally computed
+// condition. Real blocking barriers (one `std::thread`
 // per partition, `std::condition_variable`-gated) remove the hazard
 // entirely: every participant's `sum`/`max`/`allgather`/ghost-`update`
 // call blocks until every OTHER participant named in it has arrived,
@@ -223,15 +223,13 @@ class BarrierReducer final : public Reducer {
 /// allgather`'s own callers (`SchurSlabSolver`'s boundary/trace exchange is
 /// a FIXED size independent of how many rows a rank owns), but FALSE of a
 /// remap halo's own owned-cell count once a partition's row split is
-/// genuinely uneven (found this session: a 6/5/5-row U split sends 48, 40,
+/// genuinely uneven (a 6/5/5-row U split sends 48, 40,
 /// 40 doubles from its three ranks respectively -- `GatherBarrier`'s fixed-
-/// stride buffer silently mis-assembles that, and since `owned_n` was ALSO
-/// baked into the ghost registry's own key at the time, three DIFFERENT
-/// uneven `owned_n` values classified into three SEPARATE single-rank
+/// stride buffer silently mis-assembles that, and if `owned_n` were ALSO
+/// part of the ghost registry's own key, three DIFFERENT
+/// uneven `owned_n` values would classify into three SEPARATE single-rank
 /// barriers, each waiting forever for the other two ranks that could never
-/// arrive on ITS key -- a real deadlock, not a correctness defect with a
-/// symptom; `ctest`'s own default per-test timeout is what would have
-/// caught it on a clean run instead of hanging the whole build). This
+/// arrive on ITS key -- a deadlock rather than a wrong answer). This
 /// class is the Allgatherv-shaped sibling: every rank's `send_n` can
 /// differ; the combined buffer and a `size()+1` prefix-sum `offsets` array
 /// (so `combined[offsets[owner] + local]` finds owner `owner`'s own
@@ -431,10 +429,9 @@ struct PartitionedGrid {
 
 /// `whole[g.index(i,j)]` restricted to `g`'s own owned band, in LOCAL
 /// canonical order -- what a decomposed `UCore`/`VDiffusionCore`'s own
-/// constructor (its `initial_v_on_u` argument, OWNED-sized per this
-/// track's refactor) and `step()` (its `required` argument) both need, as
+/// constructor (its `initial_v_on_u` argument, OWNED-sized) and `step()` (its `required` argument) both need, as
 /// opposed to the whole-grid-sized vector a caller with no decomposition
-/// of its own (V's remap, out of THIS track's scope) still hands over.
+/// of its own (V's remap) still hands over.
 [[nodiscard]] Vector slice_owned(const Vector& whole, const NativeGrid& g) {
   Vector out(g.owned_size());
   for (int lj = 0; lj < g.owned_rows(); ++lj) {
@@ -446,9 +443,9 @@ struct PartitionedGrid {
 
 /// Runs one `UCore::step()` per partition CONCURRENTLY (one `std::thread`
 /// each), `required` sliced to each partition's own owned band from a
-/// U-grid-shaped (whole) vector -- the correct input shape per this
-/// track's own scope (U is fully decomposed; V's remap, a different
-/// track's work, still hands U-grid-shaped data whole). Returns the
+/// U-grid-shaped (whole) vector -- the correct input shape here
+/// (U is fully decomposed; V's remap still hands U-grid-shaped data
+/// whole). Returns the
 /// reassembled whole-grid `provided()`/`state()` (owned bands
 /// concatenated in row order, which IS canonical order since row bands
 /// are contiguous).
@@ -558,10 +555,9 @@ TEST(BrusselatorSpeciesCoreDecomposition, DirectSolverRefusesWhenDecomposed) {
       fuse::InvalidArgument);
 }
 
-// `E-BRUSS-V-DECOMPOSED-REMAP` (the outright num_ranks()>1 refusal this
-// test used to check) is GONE: the Halo track's own work (docs/dev/
-// native-halo.md) closed exactly the seam that refusal was guarding.
-// What remains true in THIS sandbox is narrower and still worth pinning:
+// There is no outright num_ranks()>1 refusal: the native halo (docs/dev/
+// native-halo.md) closes the seam such a refusal would guard.
+// What is pinned here is narrower:
 // a backend that is actually asked to BUILD a halo over more than one
 // rank (a non-null communicator, no halo pre-installed) hits
 // `fuse::native::build_native_remap_halo`'s own `E-MESH-NO-MPI` --
@@ -569,7 +565,7 @@ TEST(BrusselatorSpeciesCoreDecomposition, DirectSolverRefusesWhenDecomposed) {
 // it, so there is no in-process path for the
 // REAL collective (`test/parallel/native_halo_mpi_test.cpp` is exactly
 // the test that exercises it, build-verified only here). This is the
-// expected, honest failure mode now; the tests below exercise the
+// expected, honest failure mode; the tests below exercise the
 // DECOMPOSED path for real by pre-installing a hand-computed halo, the
 // same `NativeMeshBackend::commit_remap_halo` seam `test/backend/
 // native_halo_test.cpp`'s own `BackendFixture` uses, which is possible
@@ -581,8 +577,8 @@ TEST(BrusselatorSpeciesCoreDecomposition, VParticipantFailsCleanlyWithoutMPIWhen
   // In a build WITH MPI the test harness has already called MPI_Init, so
   // "without MPI" is false here and the communicator handle below (1, a
   // stand-in) would reach a real MPI_Allgather -- which is exactly how
-  // this case aborted ("Invalid communicator") in the user's tier-1 tree
-  // on 2026-10-11. The collective itself is measured by
+  // this case aborted ("Invalid communicator") in a tier-1 tree.
+  // The collective itself is measured by
   // parallel.native_halo_mpi.{2,3} on the host; this case is the no-MPI
   // build's refusal only.
   GTEST_SKIP() << "meaningful only in a build without MPI; the collective is covered by "
@@ -596,9 +592,8 @@ TEST(BrusselatorSpeciesCoreDecomposition, VParticipantFailsCleanlyWithoutMPIWhen
   // Two builds, two honest refusals for the same request: a build without
   // MPI cannot have the collective at all (E-MESH-NO-MPI); a build WITH
   // MPI whose process never called MPI_Init -- this tier-0 binary inside a
-  // tier-1 tree -- must refuse before any MPI call (E-MESH-MPIINIT). The
-  // first run of this case in an MPI build (2026-10-11) aborted inside
-  // MPI_Allgather instead, which is the defect the second code closes.
+  // tier-1 tree -- must refuse before any MPI call (E-MESH-MPIINIT), rather than
+  // aborting inside MPI_Allgather.
   EXPECT_TRUE(made.error().code == "E-MESH-NO-MPI" || made.error().code == "E-MESH-MPIINIT")
       << made.error().code << ": " << made.error().message;
 }
@@ -692,15 +687,12 @@ TEST(BrusselatorSpeciesCoreDecomposition, ThreePartitionSchurMatchesSingleRankUC
   EXPECT_LT(max_abs_diff, 1e-12);
 }
 
-// ---- Restart track round 2, item 3: does Brusselator's own decomposed ----
-// ---- solve depend on decomposition (rank count), at the restart ---------
-// ---- track's own dt/window cadence? -------------------------------------
+// ---- Does Brusselator's own decomposed solve depend on decomposition ----
+// ---- (rank count) at the restart test's own dt/window cadence? ----------
 //
-// MPI cannot start in this sandbox, so the parallel ctest row
-// (brusselator_restart_mpi, test/parallel/brusselator_restart_mpi_test.cpp)
-// is registered build-but-not-run; this serial, thread-barrier-decomposed
-// measurement is what justifies the comparison strategy that row's own
-// host_pending asserts: EXACT bit-identical comparison BY GLOBAL ID for
+// This serial, thread-barrier-decomposed measurement justifies the
+// comparison strategy of the parallel ctest row (brusselator_restart_mpi,
+// test/parallel/brusselator_restart_mpi_test.cpp): EXACT bit-identical comparison BY GLOBAL ID for
 // restored (pre-advance) state -- a restore is a file read, not a
 // recomputation, so it is unaffected by how many ranks wrote or are
 // reading it -- but only a MEASURED tolerance for any state produced by
@@ -712,8 +704,8 @@ TEST(BrusselatorSpeciesCoreDecomposition, ThreePartitionSchurMatchesSingleRankUC
 // itself, not merely for the global_mean()-based diagnostics
 // (external_total_/exchange_out_, species_core.hpp:592-595's own
 // comment). Reuses kNx/kNy=8x8 (this file's own divides-evenly-by-2-
-// and-by-3 grid; the restart track's own 5x5 U-grid does not partition
-// evenly by either 2 or 3) but matches the restart track's own dt
+// and-by-3 grid; the restart test's own 5x5 U-grid does not partition
+// evenly by either 2 or 3) but matches the restart test's own dt
 // (kDtU=0.002, test/verification/brusselator_restart_test.cpp:68) and
 // window length (kWindow=0.02 -> 10 sub-steps,
 // brusselator_restart_test.cpp:68) exactly, since cadence, not grid
@@ -797,16 +789,15 @@ TEST(BrusselatorSpeciesCoreDecomposition, OneWindowAtRestartCadenceMeasuresDecom
               "[OneWindowAtRestartCadenceMeasuresDecompositionOrderSensitivity] "
               "max_abs_diff_two_partition=%.3e max_abs_diff_three_partition=%.3e\n",
               max_abs_diff_two, max_abs_diff_three);
-  // MEASURED, not assumed (restart track round 2, item 3): one restart
+  // MEASURED, not assumed: one restart
   // window's worth of Schur-decomposed solves (10 sub-steps at dt=0.002)
   // disagrees with an undecomposed reference at the SAME ~1e-12 scale the
   // existing TwoPartitionSchurMatchesSingleRankUCore /
   // ThreePartitionSchurMatchesSingleRankUCore measurements already
   // established for a different grid size and sub-step count -- the
   // disagreement is decomposition-order round-off, not a function of
-  // which grid or how many sub-steps. Conclusion recorded in
-  // docs/dev/restart.md's own Round 2 record and in the delivered
-  // report's open_questions: the parallel ctest row's "write at N,
+  // which grid or how many sub-steps. Conclusion (see
+  // docs/dev/restart.md): the parallel ctest row's "write at N,
   // restore at M != N, advance one further window" scenario must NOT
   // assert bit-identical equality on that further window against a
   // same-rank-count reference; it must use a measured tolerance with
@@ -897,7 +888,7 @@ TEST(BrusselatorSpeciesCoreDecomposition, DeriveKrylovSolverTolerance) {
 
 // Thresholds below pin `PhysicsConfig::solver_tolerance`'s own derived
 // default (`1e-13`, species_core.hpp's own comment on that field has the
-// full sweep this session measured): at that tolerance, pcg measured
+// full sweep measured): at that tolerance, pcg measured
 // 5.862e-14 and gmres 5.462e-14 against the single-rank Direct reference
 // -- both within ~2.5x of the EXACT Schur solve's own 2.420e-14 floor
 // (TwoPartitionSchurMatchesSingleRankUCore). 1e-12, roughly 20x the
@@ -906,8 +897,8 @@ TEST(BrusselatorSpeciesCoreDecomposition, DeriveKrylovSolverTolerance) {
 // regression bound: loose enough not to fail on ordinary rebuild-to-
 // rebuild floating-point variation, tight enough that the first-order-
 // worse defect this guards against (a dropped ghost term, a wrong
-// Jacobi diagonal, a wrong assembled sign) -- each of which this track's
-// own mutation rows measure at 1e2-1e4x this bound -- fails it clearly.
+// Jacobi diagonal, a wrong assembled sign) -- each of which the
+// mutation rows measure at 1e2-1e4x this bound -- fails it clearly.
 
 TEST(BrusselatorSpeciesCoreDecomposition, TwoPartitionPcgMatchesSingleRankWithinDerivedTolerance) {
   const double diff = two_partition_krylov_vs_reference(SolverKind::Pcg, 1e-13);
@@ -984,7 +975,7 @@ TEST(BrusselatorSpeciesCoreDecomposition, TwoPartitionVDiffusionCoreMatchesSingl
   EXPECT_LT(max_abs_diff, 1e-13);
 }
 
-// S7.2 WindowNewton (newton-krylov.md Sec. 9.5, the task's own brief):
+// Window Newton (newton-krylov.md Sec. 9.5):
 // `VDiffusionCore::apply_diffusion_preconditioner()` -- the per-sample
 // block-Jacobi preconditioner solve `VComponent::apply_preconditioner()`
 // (species_component.hpp) calls once per window sample -- reuses the
@@ -1057,7 +1048,7 @@ TEST(BrusselatorSpeciesCoreDecomposition, TwoPartitionVDiffusionCoreApplyPrecond
 
 
 // ---- VParticipant: N-partition two-sided remap reproduces the ----------
-// ---- single-rank reference (Halo track) ---------------------------------
+// ---- single-rank reference --------------------------------------------
 //
 // `VParticipant::make_from_grids`'s own `fuse::build_remap_halo` call is
 // skipped (`has_remap_halo` already true) whenever a caller pre-installs
@@ -1083,7 +1074,7 @@ using fuse::native::pack_halo_cells;
 /// One simulated rank's independently-built (source, target) view pair --
 /// `test/backend/native_halo_test.cpp`'s own `RankPieces`, generalised
 /// over the two mesh specs so it serves EITHER remap direction (U->V or
-/// V->U) this track's own `VParticipant` needs a halo for.
+/// V->U) `VParticipant` needs a halo for.
 struct RankMeshPieces {
   std::unique_ptr<NativeMeshView> src, tgt;
 };
@@ -1125,8 +1116,8 @@ struct HaloRunResult {
 /// pipeline, PURE PORT of `test/backend/native_halo_test.cpp`'s own
 /// `run_halo_pipeline` (that file owns the correctness tests for this
 /// pipeline itself -- `NativeHaloQuadGrid.*` -- so this copy is not
-/// re-proving it, only reusing it to set up a REAL halo for THIS track's
-/// own `VParticipant` tests).
+/// re-proving it, only reusing it to set up a REAL halo for the
+/// `VParticipant` tests).
 [[nodiscard]] HaloRunResult run_remap_halo_pipeline(std::vector<RankMeshPieces>& ranks,
                                                     int num_ranks) {
   std::vector<Box3> all_target_boxes;
@@ -1326,11 +1317,11 @@ constexpr int kNxVHalo = 12, kNyVHalo = 12;  // example's own 16x16/24x24, at a 
 constexpr int kNyUHalo3 = 12, kNyVHalo3 = 18;  // 8x12 U / 12x18 V: divides evenly by 3 in
                                                // BOTH meshes (zero adopted cells, like the 2-rank
                                                // case above) -- the ALIGNED 3-way split.
-// KNOWN_ISSUES D29 (CLOSED): the genuinely MISALIGNED 3-way split (16 U rows
+// The genuinely MISALIGNED 3-way split (16 U rows
 // as 6/5/5 against 24 V rows as 8/8/8, so SOME U cell crosses a V partition
-// boundary) that used to measurably disagree with the single-rank reference
-// -- see VParticipant::make_from_grids's own comment for the measured cause
-// and fix. `ThreePartitionVParticipantMatchesSingleRankMisaligned` below now
+// boundary) must agree with the single-rank reference
+// -- see VParticipant::make_from_grids's own comment.
+// `ThreePartitionVParticipantMatchesSingleRankMisaligned` below
 // drives exactly this split end to end.
 constexpr int kNyUMis = 16, kNyVMis = 24;  // 6/5/5 vs 8/8/8 over 3 partitions
 
@@ -1429,21 +1420,21 @@ TEST(BrusselatorSpeciesCoreDecomposition, ThreePartitionVParticipantMatchesSingl
   EXPECT_LT(max_abs_diff, 1e-11);
 }
 
-// KNOWN_ISSUES D29 (CLOSED): the genuinely MISALIGNED 3-way split (U's 16
+// The genuinely MISALIGNED 3-way split (U's 16
 // rows as 6/5/5 against V's 24 as 8/8/8 -- SOME U cell crosses a V
 // partition boundary, adopting cells in BOTH remap halo directions,
 // measured per-rank at make_from_grids time as rank 0 "0 U, 12 V", rank 1
-// "8 U, 12 V", rank 2 "8 U, 0 V" under FUSE_BRUSS_DEBUG=1). This used to
-// diverge from the single-rank reference by ~3.1e-4 in exchange_in from the
-// first sub-step and later crash inside the diffusion solve (an Eigen
-// Block.h bounds assertion) -- a heap buffer overflow in `step()`/
-// `remap_state_to_u()`, not a halo-construction defect (the pipeline itself
+// "8 U, 12 V", rank 2 "8 U, 0 V" under FUSE_BRUSS_DEBUG=1). A mis-sized destination buffer here would
+// diverge from the single-rank reference in exchange_in from the
+// first sub-step and later overflow inside the diffusion solve (an Eigen
+// Block.h bounds assertion) in `step()`/
+// `remap_state_to_u()`; it is not a halo-construction matter (the pipeline itself
 // is independently proven correct at this split by
 // test/backend/native_halo_test.cpp's own `ThreeRanksMisalignedAdoptsExactly
 // WhatTheOracleComputes`/`ThreeRanksMisalignedCompleteWeightsAndLinearField
-// Reproduction`). See VParticipant::make_from_grids's own comment for the
-// measured cause and fix (size the `apply_weights` destination buffer from
-// the weights' own `n_rows`, not the pre-halo owned count).
+// Reproduction`). VParticipant::make_from_grids sizes the
+// `apply_weights` destination buffer from the weights' own `n_rows`, not
+// the pre-halo owned count.
 TEST(BrusselatorSpeciesCoreDecomposition, ThreePartitionVParticipantMatchesSingleRankMisaligned) {
   NativeMeshBackend ref_backend(0, 1);
   auto reference_r = VParticipant::make(std::move(ref_backend), kNxUHalo, kNyUMis, kNxVHalo,
@@ -1485,8 +1476,7 @@ TEST(BrusselatorSpeciesCoreDecomposition, ThreePartitionVParticipantMatchesSingl
   }
   // Measured (this fixture, Schur, 6 sub-steps): 1.732e-14. 1e-11 keeps the
   // same two-orders-of-magnitude margin the ALIGNED 3-way test above uses
-  // over ITS OWN measured 7.994e-15 (KNOWN_ISSUES D29's "Verified correct ON
-  // AN ALIGNED split" note).
+  // over ITS OWN measured 7.994e-15.
   std::fprintf(stderr,
                "[ThreePartitionVParticipantMatchesSingleRankMisaligned] max_abs_diff=%.3e\n",
                max_abs_diff);
@@ -1494,11 +1484,8 @@ TEST(BrusselatorSpeciesCoreDecomposition, ThreePartitionVParticipantMatchesSingl
 }
 
 // Same misaligned split, the Krylov (Pcg) solver instead of Schur -- the
-// OTHER solver kind KNOWN_ISSUES D29 named as independently reproducing the
-// pre-fix defect (ruling out a single solver's own code being the cause),
-// over 20 sub-steps rather than 6 to rule out any slow growth the original
-// "enters once, from the first sub-step" measurement did not have room to
-// see.
+// OTHER solver kind (ruling out a single solver's own code being the
+// cause), over 20 sub-steps rather than 6 to rule out any slow growth.
 TEST(BrusselatorSpeciesCoreDecomposition, ThreePartitionVParticipantMatchesSingleRankMisalignedPcg) {
   NativeMeshBackend ref_backend(0, 1);
   auto reference_r = VParticipant::make(std::move(ref_backend), kNxUHalo, kNyUMis, kNxVHalo,

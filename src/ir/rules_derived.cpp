@@ -81,9 +81,9 @@ void insert_derived_ops(LoweringContext& ctx, ChannelId cid) {
 
   // A conservation check needs a conserved integral. A consistent (pointwise)
   // interpolation has none (fuse::is_pointwise_interpolation), so checking it
-  // reports a violation that is not one: the host found exactly that on
-  // 2026-10-01, a consistent velocity transfer from 8 beam vertices to 11
-  // fluid cells "failing" 10.4 -> 1.3, a vertex sum against a cell integral.
+  // reports a violation that is not one: for example, a consistent velocity
+  // transfer from 8 beam vertices to 11 fluid cells "failing" 10.4 -> 1.3,
+  // a vertex sum against a cell integral.
   if (has_remap && type.conservation != Conservation::None &&
       !is_pointwise_interpolation(ch.remap.method_override)) {
     cur = append(ctx, OpKind::Constrain, cur, type, OpAttrs{}, cid,

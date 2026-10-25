@@ -6,7 +6,7 @@
 /// mid-period, at exactly the point an externally driven component's
 /// advance() would otherwise run, and resume later from
 /// src/abi/participant.cpp's fuse_begin_step()/fuse_end_step() --
-/// see KNOWN_ISSUES.md D13 for why.
+/// so a host program can drive an externally driven component step by step.
 ///
 /// WHY HAND-WRITTEN AND NOT A LIBRARY. The fix is the smallest
 /// symmetric-transfer task type laid over the EXISTING function bodies:
@@ -43,9 +43,8 @@
 ///
 /// NOT THREAD SAFE, deliberately: `Component::advance()` runs on one
 /// thread per rank, never concurrently with itself (component.hpp's own
-/// THREADING contract), and KNOWN_ISSUES.md D13's fix statement makes the
-/// same claim of the suspension itself -- "the suspension happens on the
-/// calling thread; nothing runs concurrently". An unsynchronised free list
+/// THREADING contract), and the suspension itself happens on the calling
+/// thread; nothing runs concurrently. An unsynchronised free list
 /// is correct under that contract and would not be under a looser one.
 
 #include <coroutine>
@@ -245,7 +244,7 @@ class Task {
 /// where a component's own `advance()` would otherwise run, so that by
 /// the time this point is reached every instruction that feeds the
 /// component has already executed and its Requires storage is current
-/// (KNOWN_ISSUES.md D13).
+/// .
 ///
 /// WHY THIS RECORDS ITS OWN HANDLE, AND WHY THAT MATTERS. Symmetric
 /// transfer means a coroutine that merely `co_await`s a child Task is

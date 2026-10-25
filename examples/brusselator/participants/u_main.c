@@ -1,6 +1,6 @@
-/* Time windows track (Conformance, Unit 2): the C participant for
+/* The C participant for
  * component "U". PURE C -- no C++ header, no C++ call, anywhere in this
- * file (the lead's own constraint: "a foreign code never touches C++").
+ * file (a foreign code never touches C++).
  * Links fuse::abi (fuse/abi/participant.h, the one-exported-symbol
  * table), the shim's own C-ABI physics wrapper (shim.h/shim.cpp -- a
  * C++ TRANSLATION UNIT, but its own header is extern "C", so this file
@@ -8,13 +8,13 @@
  * tier-0 harness, test/verification/brusselator_participants_test.cpp,
  * drives).
  *
- * GRAPH AUTHORING vs PARTICIPATING (Q2): this program never builds a
+ * GRAPH AUTHORING vs PARTICIPATING: this program never builds a
  * fuse::CouplingGraph. It calls fuse_load_graph() on a YAML path a
  * SEPARATE tool, brusselator_graph_tool, already wrote (--graph on the
  * command line), and nothing else constructs the graph.
  *
- * LAUNCH MODE FROM THE GRAPH, NOT FROM A FLAG (the brief's own "LaunchSpec
- * from the YAML, connect() per the YAML's launch mode"): this program
+ * LAUNCH MODE FROM THE GRAPH, NOT FROM A FLAG (LaunchSpec comes from the
+ * YAML, connect() per the YAML's launch mode): this program
  * always passes `communicator = MPI_Comm_c2f(MPI_COMM_WORLD)` and
  * `my_component = "U"` to fuse_setup(); fuse_setup() itself resolves "U"'s
  * LaunchSpec from the loaded graph and only calls fuse::transport::
@@ -23,11 +23,11 @@
  * executable's own code is IDENTICAL whether the graph says mpmd, accept,
  * or (for a tier-0 smoke run with no MPI at all) in-process.
  *
- * BUNDLED COUPLER RANKS (accept mode only, KNOWN_ISSUES.md D18 / Q1):
+ * BUNDLED COUPLER RANKS (accept mode only):
  * connect_pairwise() supports exactly two Connect-mode components, so in
  * accept mode the coupler's ranks are NOT a separate executable -- they
  * are EXTRA ranks of this same executable's own MPI_COMM_WORLD, declared
- * in the graph as an overlapping subset of U's own RankSet
+ * in the graph as their own RankSet, separate from U's physics ranks
  * (brusselator_graph_tool.cpp's own header comment has the full
  * rationale). `--ranks-u N` tells this binary how many of ITS OWN local
  * ranks (0..N-1) are real U-physics ranks; any remaining local ranks
@@ -37,31 +37,31 @@
  * world, exactly matching what MPI_Comm_accept/MPI_Intercomm_merge
  * requires of every rank of the local group passed to them) but never
  * create a bruss_u_handle, never register a field, and never call
- * u_loop_step() -- there is no "U" work for them to drive, and the
- * D14 Stage B companion fix: a placeholder rank ALSO calls
+* u_loop_step() -- there is no "U" work for them to drive, and the
+ * coupler itself has no clock, no step, and no user code of its own
+ * (docs/dev/coupler-placement.md's own enumerated call sites).
+ *
+ * A placeholder rank ALSO calls
  * bruss_lowfive_join_local_split() (the collective split of the base
  * communicator every rank must join, see that function's own header
  * comment) but is_physics_rank below gates it OUT of ever calling
- * bruss_lowfive_attach() itself, mirroring coupler_main.c's own,
- * pre-existing, explicit "this process never calls
- * bruss_lowfive_attach()" convention -- before this fix, an unconditional
- * attach call here would have reached decide_attach_mode() with ZERO
- * qualifying channels and refused by name (E-LOWFIVE-ATTACH-ORDER-
- * UNVALIDATED's own size-mismatch branch, not the more legible
- * E-LOWFIVE-ATTACH-NOCHANNELS one -- the static order check runs first),
- * aborting the whole row on this rank alone.
- * coupler itself has no clock, no step, and no user code of its own
- * (docs/dev/coupler-placement.md's own enumerated call sites). In mpmd
- * mode --ranks-u defaults to this executable's own full world size (no
- * bundled coupler at all -- the coupler is coupler_main.c's own separate
- * appnum segment there instead).
+ * bruss_lowfive_attach() itself, mirroring coupler_main.c's own
+ * explicit "this process never calls bruss_lowfive_attach()"
+ * convention -- an unconditional attach call here would reach
+ * decide_attach_mode() with ZERO qualifying channels and refuse by name
+ * (E-LOWFIVE-ATTACH-ORDER-UNVALIDATED's own size-mismatch branch, not
+ * the more legible E-LOWFIVE-ATTACH-NOCHANNELS one -- the static order
+ * check runs first), aborting the whole row on this rank alone.
  *
- * NOT YET HOST-VERIFIED (MPI cannot start in this sandbox, KNOWN_ISSUES.md
- * C1): whether a coupler placeholder rank skipping begin_step/end_step
- * entirely (rather than calling them with no field registered) is what
- * the Runner's own internal remap collectives actually expect. Flagged
- * in the Unit 2 report as the one open mechanical question beyond
- * Q1-Q3; build-verified only.
+ * In mpmd mode --ranks-u defaults to this executable's own full world
+ * size (no bundled coupler at all -- the coupler is coupler_main.c's own
+ * separate appnum segment there instead).
+ *
+ * NOT YET HOST-VERIFIED (MPI cannot start in the sandbox this was
+ * written in): whether a coupler placeholder rank skipping
+ * begin_step/end_step entirely (rather than calling them with no field
+ * registered) is what the Runner's own internal remap collectives
+ * actually expect; build-verified only.
  */
 #include <mpi.h>
 #include <stdint.h>
@@ -75,7 +75,7 @@
 #include "lowfive_attach.h"
 #include "u_loop.h"
 
-/* S6 phase 3 (Conformance, "LowFive" track), Unit 3b. The graph tool's own
+/* The graph tool's own
  * hardcoded choice (brusselator_graph_tool.cpp's own `--transport lowfive`
  * block) -- u_main.c has no ABI query for a field's own hdf5_path, so this
  * mirrors the SAME "reproduce the tool's own build-time constant" pattern
@@ -85,32 +85,26 @@
 #define U_LOWFIVE_PEER_FILE "brusselator_v.h5"
 #define U_LOWFIVE_PEER_DATASET "/grid/v_out"
 
-/* S6 phase 3 (Conformance, "LowFive attach" track): the file-access
+/* The file-access
  * property list bruss_lowfive_attach() hands back, set once in main()
- * -- D14 Stage B moved that call to AFTER fuse_setup() succeeds
- * (decision 5: base_communicator() has nothing to report before
- * setup()'s own collective has run), no longer right after MPI_Init()/
- * the physics-communicator split -- and read by
+ * AFTER fuse_setup() succeeds (base_communicator() has nothing to report
+ * before setup()'s own collective has run) and read by
  * u_lowfive_write_export()/u_lowfive_read_import() on every call
  * thereafter -- a file-scope static, not a parameter threaded through
  * those two functions, for the same reason the U_LOWFIVE_* macros just
  * above are file-scope: both name a single, process-wide attach, not a
  * per-call argument a caller chooses. -1 means "not attached yet" and
  * is refused by bruss_lowfive_write()/bruss_lowfive_read() themselves
- * (shim.h's own updated contract). */
+ * (shim.h's own contract). */
 static long long g_lowfive_fapl_id = -1;
 
-/* Unit 3b, item 2(a): `fuse_step_report::delivery_pending` (entries.def,
- * docs/user/c-abi.md's own new section) replaces this file's own prior
- * window-boundary arithmetic entirely -- the ABI itself now names the
- * exact call at which a real H5Dwrite/H5Dread pair is owed, independent
- * of this binary's own dt/window constants (which item 2(b) of this same
- * round changes to the real example's own values; this file no longer
- * needs to track them at all). A degenerate one-substep-per-window graph
- * made "before every substep" and "before a sweep's first substep"
- * coincide by accident, which is what let the prior version of this file
- * get away with reading unconditionally -- recorded in KNOWN_ISSUES.md
- * D14 as a scope limit now closed. */
+/* `fuse_step_report::delivery_pending` (entries.def,
+ * docs/user/c-abi.md) names the exact call at which a real
+ * H5Dwrite/H5Dread pair is owed, independent of this binary's own
+ * dt/window constants (this file does not need to track them at all).
+ * A degenerate one-substep-per-window graph would make "before every
+ * substep" and "before a sweep's first substep" coincide by accident,
+ * which would let a caller get away with reading unconditionally. */
 
 static void u_lowfive_fail_io(const char* what, int rc, const char* errbuf) {
   fprintf(stderr, "FAIL(u_main): %s: rc=%d %s\n", what, rc, errbuf);
@@ -140,8 +134,7 @@ static void u_lowfive_write_export(const fuse_participant_abi_v1* t, fuse_ctx* c
                             errbuf, (long long)sizeof(errbuf));
     if (io_rc != 0) u_lowfive_fail_io("bruss_lowfive_write(u_out)", io_rc, errbuf);
   } else {
-    /* ROUND 5 (diagnostic trace track), item 3 of the brief: settles
-     * H1 directly for the WRITE side -- if this branch ever fires at
+    /* Skip-guard trace for the WRITE side: if this branch ever fires at
      * the cold-start call site (u_main.c's own comment on that call
      * has the "unconditionally, once, before the loop" account),
      * bruss_lowfive_write() above was never reached at all, and
@@ -153,7 +146,7 @@ static void u_lowfive_write_export(const fuse_participant_abi_v1* t, fuse_ctx* c
 
 /* view_field(u_in), NOT u_in itself -- the window Sink copies from there
  * into u_in as part of the SAME mechanics it already uses for an
- * ordinary channel (docs/user/lowfive.md's own Unit 3 account). */
+ * ordinary channel (see docs/user/lowfive.md). */
 static void u_lowfive_read_import(const fuse_participant_abi_v1* t, fuse_ctx* ctx,
                                   const fuse_field_ref* in_ref) {
   fuse_field_view in_view;
@@ -170,13 +163,12 @@ static void u_lowfive_read_import(const fuse_participant_abi_v1* t, fuse_ctx* ct
                            errbuf, (long long)sizeof(errbuf));
     if (io_rc != 0) u_lowfive_fail_io("bruss_lowfive_read(u_in)", io_rc, errbuf);
   } else {
-    /* ROUND 5 (diagnostic trace track), item 3: the READ side's own
-     * counterpart -- settles H1 for the import guard too (u_main.c's
-     * own host trace showed this call's OWN bruss_lowfive_read()
-     * reaching H5Fopen, so this branch is not expected to fire for
-     * THIS row's own cold-start import at the point the host measured
-     * -- but the general guard applies to every later steady-state
-     * call site too, not just the cold start). */
+    /* Skip-guard trace for the READ side, the WRITE side's own
+     * counterpart: a host trace showed this call's OWN
+     * bruss_lowfive_read() reaching H5Fopen, so this branch is not
+     * expected to fire for THIS row's own cold-start import -- but the
+     * general guard applies to every later steady-state call site too,
+     * not just the cold start). */
     bruss_lowfive_trace_skip("u_lowfive_read_import", (long long)in_view.window_samples,
                              (long long)in_view.count, (long long)in_view.components);
   }
@@ -204,10 +196,10 @@ int main(int argc, char** argv) {
   int ranks_u = -1; /* -1 = "all of my local world" (mpmd default) */
   int periods = 2;
   const char* transport = "fuse";
-  /* Physics track: "auto" resolves to the direct (whole-grid) solver at
+  /* "auto" resolves to the direct (whole-grid) solver at
    * ranks_u==1 and to schur at ranks_u>1 (species_core.hpp's own
-   * SolverKind::Auto doc comment) -- the task's own "--solver flag
-   * defaulting to schur on >1 rank" is exactly this default, with no
+   * SolverKind::Auto doc comment) -- the --solver flag defaults
+   * to schur on >1 rank through exactly this default, with no
    * special-casing needed here. */
   const char* solver = "auto";
 
@@ -252,20 +244,20 @@ int main(int argc, char** argv) {
   int world_rank = 0, world_size = 1;
   MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);
   MPI_Comm_size(MPI_COMM_WORLD, &world_size);
-  /* D14 Stage B: captured BEFORE the "mpmd: every local rank is U"
+  /* Captured BEFORE the "mpmd: every local rank is U"
    * overwrite below, the ONLY existing signal this program's own CLI
    * already carries for "which launch mode is this" -- --ranks-u is
    * left at its -1 default in mpmd mode (every local rank is U, so
    * there is nothing to say) and given a positive value in accept mode
    * (physics ranks only, with ranks_coupler more riding along). Used
    * below to decide which bridge communicator base_communicator()
-   * ought to agree with (decision 5: mpmd keeps passing MPI_COMM_WORLD
-   * literally; accept queries the new accessor). */
+   * ought to agree with (mpmd passes MPI_COMM_WORLD
+   * literally; accept queries the base_communicator() accessor). */
   const int is_mpmd_launch = (ranks_u < 0);
   if (ranks_u < 0) ranks_u = world_size; /* mpmd: every local rank is U */
   const int is_physics_rank = (world_rank < ranks_u);
 
-  /* Physics track: THIS executable's own MPI_COMM_WORLD is NOT "U's own
+  /* THIS executable's own MPI_COMM_WORLD is NOT "U's own
    * world" in mpmd mode -- it is the SHARED world every ':'-separated
    * mpiexec segment's ranks number into one block each (U first, by the
    * graph's own component order, validate_launch_layout()'s own
@@ -278,20 +270,18 @@ int main(int argc, char** argv) {
    * put which ranks into this process's MPI_COMM_WORLD.
    *
    * COLOR = COMPONENT INDEX (U 0, V 1, coupler 2), not "0 or
-   * MPI_UNDEFINED" as an earlier version of this file had it: v_main.f90
-   * and coupler_main.c now call the IDENTICAL split
+   * MPI_UNDEFINED": v_main.f90
+   * and coupler_main.c call the IDENTICAL split
    * (MPI_Comm_split(MPI_COMM_WORLD, <their own fixed color>, world_rank,
    * ...)) at the equivalent point in their own startup, so every rank of
    * every ':'-segment in an mpmd launch names a color exactly once and
    * none ever needs MPI_UNDEFINED -- one uniform call shape across all
-   * three files, rather than "the physics owner's own color plus
-   * everyone else opts out", which was harder to keep synchronized
-   * correctly across three separately-compiled executables (this is
-   * exactly the kind of choreography mismatch this track's own host run
-   * found once already: coupler_main.c's own matching call, placed AFTER
-   * setup() instead of before load_graph(), met U's own split at the
-   * wrong logical point and truncated a later Allgather -- the lead's own
-   * fix, 2026-10-10). A non-physics (bundled coupler placeholder, accept
+   * three files, rather than "the physics ranks' own color plus
+   * everyone else opts out", which is harder to keep synchronized
+   * correctly across three separately-compiled executables (a matching
+   * call placed AFTER setup() instead of before load_graph() meets U's
+   * own split at the wrong logical point and truncates a later
+   * Allgather). A non-physics (bundled coupler placeholder, accept
    * mode only) rank's own color is 2, same as a real coupler_main.c
    * process's in mpmd mode; it reads back a real (if unused)
    * communicator rather than MPI_COMM_NULL, and frees it unconditionally
@@ -300,9 +290,8 @@ int main(int argc, char** argv) {
    * COLLECTIVE: MPI_Comm_split is called by EVERY rank of this
    * executable's own world, physics and non-physics alike (the same
    * "every rank calls every split" discipline src/runtime/runner.cpp's
-   * own base-communicator formation uses, and this track's own standing
-   * lesson: a collective must never be skipped on a locally computed
-   * condition). `key = world_rank` preserves this process's own relative
+   * own base-communicator formation uses, and a collective must never
+   * be skipped on a locally computed condition). `key = world_rank` preserves this process's own relative
    * rank order inside the new communicator, so a physics rank's OWN
    * position within u_comm is identical to its position within
    * MPI_COMM_WORLD's own [0, ranks_u) block -- u_rank below is that

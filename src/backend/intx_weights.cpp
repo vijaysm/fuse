@@ -2730,20 +2730,20 @@ Result<std::size_t> build_remap_halo(const RemapPlan& plan,
                      "impossible. Read the meshes without a communicator, or "
                      "add a volumetric covering construction."};
   }
-  // REVIEW.md R-01: fit_surface() reads only this rank's local vertices, so
-  // a rank whose local partition happens to be non-spherical (or empty)
-  // cannot agree with a peer's answer without reconciling first -- otherwise
-  // that rank rejects here while its peers walk into FindMaxEdges below and
-  // hang waiting for it.
+  // fit_surface() reads only this rank's local vertices, so a rank whose
+  // local partition happens to be non-spherical (or empty) cannot agree
+  // with a peer's answer without reconciling first -- otherwise that rank
+  // rejects here while its peers walk into FindMaxEdges below and hang
+  // waiting for it.
   auto fa = reconcile(a.pcomm, fit_surface(a));
   if (!fa.ok()) return fa.error();
   auto fb = reconcile(b.pcomm, fit_surface(b));
   if (!fb.ok()) return fb.error();
-  // REVIEW.md R-01: the classification below is a value computed from each
-  // rank's own local vertices (the SAME hazard fit_surface() itself has, one
-  // level up in the SurfaceFit::ok/kind/radius payload rather than in
-  // Result's error channel), so it is reconciled too before its radius is
-  // used by any collective below.
+  // The classification below is a value computed from each rank's own
+  // local vertices (the same hazard fit_surface() has, one level up in the
+  // SurfaceFit::ok/kind/radius payload rather than in Result's error
+  // channel), so it is reconciled too before its radius is used by any
+  // collective below.
   const Result<double> radius_result =
       reconcile(a.pcomm, [&]() -> Result<double> {
         if (!fa.value().ok || !fb.value().ok ||
@@ -2778,10 +2778,9 @@ Result<std::size_t> build_remap_halo(const RemapPlan& plan,
   // see orient() -- the covering construction and the intersection that
   // follows reach only 0.80 of the target area. Oriented first, 1.0 to 1e-16.
   {
-    // REVIEW.md R-01: orient() reorients this rank's own local cells only,
-    // and a per-cell connectivity read/write failure is exactly as local as
-    // the checks in resolve() -- reconciled the same way, before
-    // FindMaxEdges below.
+    // orient() reorients this rank's own local cells only, and a per-cell
+    // connectivity read/write failure is exactly as local as the checks in
+    // resolve() -- reconciled the same way, before FindMaxEdges below.
     const auto o1 = reconcile(a.pcomm, orient(a, fa.value()));
     if (!o1.ok()) return o1.error();
     const auto o2 = reconcile(b.pcomm, orient(b, fb.value()));
@@ -2842,24 +2841,22 @@ Result<std::size_t> build_remap_halo(const RemapPlan& plan,
   }
   // The SET goes; the cells do not. The backend keeps the ones it adopts, and
   // the rest -- copies of cells this rank already holds -- stay in the
-  // moab::Core as unreferenced geometry, the same bounded leak Task 5.2's
-  // intersection already has (R27). Bounded because this is idempotent per
+  // moab::Core as unreferenced geometry, the same bounded leak the
+  // intersection already has. Bounded because this is idempotent per
   // (source, target, dimension).
   static_cast<void>(mb.delete_entities(&covering, 1));
 
-  // KNOWN_ISSUES D83 (owner decision 2026-10-19: make the adoption
-  // placement-aware): `handles` are `moab::EntityHandle`s in `mb` (= `a.mb`,
-  // resolved above through `plan.placement`) -- `plan.placement` is passed
-  // through so `adopt_remap_halo` reads them back through the SAME Core
-  // that allocated them, never the backend's default one unconditionally.
+  // `handles` are `moab::EntityHandle`s in `mb` (= `a.mb`, resolved above
+  // through `plan.placement`) -- `plan.placement` is passed through so
+  // `adopt_remap_halo` reads them back through the SAME Core that allocated
+  // them, never the backend's default one unconditionally.
   return moab_backend->adopt_remap_halo(a.mid, b.mid, a.dim, handles.data(),
                                         handles.size(), plan.placement);
 #endif
 }
 
 // ---------------------------------------------------------------------------
-// KNOWN_ISSUES D5's last half, round 2: HALO BRIDGING across two
-// independently decomposed placements (the lead's ruling; see this
+// HALO BRIDGING across two independently decomposed placements (see this
 // function's own declaration in remap_plan.hpp for the full design). The
 // target's processor set is `plan.placement`; the source's is
 // `source_placement`, a DIFFERENT processor set in general.
@@ -2875,30 +2872,25 @@ Result<std::size_t> build_remap_halo(const RemapPlan& plan, const CouplingGraph&
                  "backend; this is the '" + backend.name() + "' backend"};
   }
 
-  // KNOWN_ISSUES D81 round 7 (owner, 2026-10-19): "a collective path never
-  // returns on a locally computed condition: agree first, then every rank
-  // refuses with the same code." The ORIGINAL version of this function
-  // decided "delegate to the single-placement path" vs "refuse, the two
-  // placements genuinely differ" by comparing `a.mb == b.mb` -- the TWO
-  // SIDES' OWN moab::Core pointers, resolved per-rank. That comparison is
-  // NOT collectively consistent: for a rank outside `plan.placement`,
-  // `b.mb` reads nullptr regardless of what `source_placement` resolves
-  // to, so the SAME call can read as "same Core" on one rank and
-  // "different Core" on another, depending only on which of the two
-  // placements that particular rank happens to belong to -- READ AGAINST
-  // this file's own test (1), ARankOutsideTheTargetPlacementIsASuccess
-  // fulNoOp: there, a rank outside B (the target) that IS inside A (the
-  // source) would misread as "same Core" under the pointer test even
-  // though source_placement (A) and plan.placement (B) genuinely differ.
-  // The question this branch actually needs answered is GLOBAL to the
-  // CALL, not local to a rank: do `source_placement` and `plan.placement`
-  // name the SAME declared processor set? That is a plain equality of two
-  // `ComponentId` values (the same way `fuse::native::build_native_remap_
-  // halo` decides its own analogous question once, over the backend's
-  // single shared communicator, before any rank branches on its own
-  // local state -- read 2026-10-19, native_halo.cpp, to confirm the
-  // pattern before reusing it here) -- identical, deterministically, on
-  // every rank, with no MOAB/MPI call at all.
+  // A collective path never returns on a locally computed condition: agree
+  // first, then every rank refuses with the same code. So the choice between
+  // "delegate to the single-placement path" and "refuse, the two placements
+  // genuinely differ" cannot compare `a.mb == b.mb`, the two sides' own
+  // moab::Core pointers resolved per rank. That comparison is not
+  // collectively consistent: for a rank outside `plan.placement`, `b.mb`
+  // reads nullptr regardless of what `source_placement` resolves to, so the
+  // same call could read as "same Core" on one rank and "different Core" on
+  // another, depending only on which of the two placements that rank
+  // belongs to. (A rank outside B, the target, that is inside A, the
+  // source, would misread as "same Core" even though source_placement (A)
+  // and plan.placement (B) genuinely differ.) The question this branch
+  // needs answered is global to the call, not local to a rank: do
+  // `source_placement` and `plan.placement` name the same declared
+  // processor set? That is a plain equality of two `ComponentId` values
+  // (the way `fuse::native::build_native_remap_halo` decides its analogous
+  // question once, over the backend's single shared communicator, before
+  // any rank branches on its own local state) -- identical,
+  // deterministically, on every rank, with no MOAB/MPI call at all.
   const bool same_named_placement = (source_placement == plan.placement);
 
   // The target: resolved through plan.placement, exactly as the
@@ -2929,27 +2921,15 @@ Result<std::size_t> build_remap_halo(const RemapPlan& plan, const CouplingGraph&
     // placements declared at all, or both name the identical processor
     // set).
     //
-    // KNOWN_ISSUES D83 round 10 (owner decision 2026-10-19: make the
-    // adoption placement-aware, not a refusal) SUPERSEDES round 7's own
-    // fix here. Round 7 made an off-placement rank call
-    // `adopt_remap_halo(..., nullptr, 0)` to join a collective inside it
-    // that, at the time, ALWAYS ran over `impl_->pcomm->comm()` -- the
-    // backend's BASE communicator -- regardless of placement, because
-    // `adopt_remap_halo` had no way to resolve a placement's own Core at
-    // all. D83's own fix changes WHICH communicator that collective runs
-    // over: `adopt_remap_halo(..., placement)` now resolves
-    // `reconcile_halo`'s own communicator THROUGH `placement` (its own
+    // A rank outside `plan.placement` has nothing to agree on with the
+    // placement's own members and returns a bare, locally decided
+    // `std::size_t{0}`: `adopt_remap_halo(..., placement)` resolves
+    // `reconcile_halo`'s communicator through `placement` (its own
     // `PlacementContext::pcomm`, `moab_backend.cpp`), so the agreement is
-    // scoped to `plan.placement`'s OWN members -- never the base
-    // communicator, and never a rank outside the placement. A rank
-    // outside `plan.placement` therefore has NOTHING to agree on with
-    // placement A's own members any more, and returns a bare, LOCALLY
-    // decided `std::size_t{0}` again -- round 6's original shape, now
-    // correct again because the collective it used to need to join no
-    // longer includes it. (If the agreement had instead stayed on the
-    // base communicator, this rank would still need to join it here --
-    // stated explicitly per the round-10 brief's own instruction to say
-    // which and why.)
+    // scoped to `plan.placement`'s own members -- never the base
+    // communicator, and never a rank outside the placement. (Had the
+    // agreement stayed on the base communicator, this rank would still need
+    // to join it here.)
     if (!moab_backend->placement_participates(plan.placement)) {
       return std::size_t{0};
     }
@@ -2984,17 +2964,15 @@ Result<std::size_t> build_remap_halo(const RemapPlan& plan, const CouplingGraph&
                      "both sides"};
   }
 
-  // The genuinely cross-placement case this track's round
-  // 2 measured and could not complete in the time available (KNOWN_ISSUES
-  // D5). MOAB's own covering-set construction (Intx2MeshOnSphere,
+  // The genuinely cross-placement case is not implemented. MOAB's own
+  // covering-set construction (Intx2MeshOnSphere,
   // FindMaxEdges, construct_covering_set, all used by the single-placement
   // path above) takes ONE moab::Interface and intersects two file sets
   // WITHIN it; it has no notion of a file set living in a DIFFERENT Core,
   // and there is no MOAB entry point that accepts one. Bridging this pair
   // needs a MIGRATE-BY-GLOBAL-ID exchange -- box overlap over the base
   // communicator (the SAME technique `fuse::native::build_native_remap_
-  // halo`/native_halo.cpp already implements and this track's own D27 work
-  // reused for its reverse exchange), packing each needed source cell's
+  // halo`/native_halo.cpp already implements), packing each needed source cell's
   // vertices/connectivity/GLOBAL_ID on its owning rank (in
   // source_placement) and creating fresh MOAB entities for it inside the
   // TARGET placement's own Core (`create_vertices`/the element-creation
@@ -3009,7 +2987,7 @@ Result<std::size_t> build_remap_halo(const RemapPlan& plan, const CouplingGraph&
                "needs both meshes in the SAME moab::Interface; bridging two independent "
                "Cores needs a migrate-by-global-id exchange (the MOAB analogue of "
                "fuse::native::build_native_remap_halo's box-overlap/pack/merge "
-               "architecture), which is not yet implemented. See KNOWN_ISSUES.md D5."};
+               "architecture), which is not yet implemented."};
 }
 
 Result<RemapWeights> build_weights(const RemapPlan& plan,
@@ -3052,12 +3030,12 @@ Result<RemapWeights> build_weights(const RemapPlan& plan,
             "this needs a DOF map on MeshBackend first."};
   }
 
-  // REVIEW.md N-BACKEND-4: dispatch on the ACTUAL backend the caller handed
-  // us, not on which builders this translation unit was compiled with.
-  // Every check below this point assumes the MOAB backend (`resolve()`'s own
-  // `dynamic_cast` rejects otherwise with E-REMAP-BACKEND) -- so a plan whose
-  // meshes are NOT MoabMeshBackend must take the always-available r3d
-  // supermesh path here, exactly as it would in a build with no MOAB at
+  // Dispatch on the ACTUAL backend the caller handed us, not on which
+  // builders this translation unit was compiled with. Every check below
+  // this point assumes the MOAB backend (`resolve()`'s own `dynamic_cast`
+  // rejects otherwise with E-REMAP-BACKEND) -- so a plan whose meshes are
+  // NOT MoabMeshBackend must take the always-available r3d supermesh path
+  // here, exactly as it would in a build with no MOAB at
   // all. Without this, compiling MOAB in silently took away the capability
   // a base build configuration has for the identical plan and the identical serial mesh
   // pair.
@@ -3177,19 +3155,15 @@ Result<RemapWeights> build_weights(const RemapPlan& plan,
   // ordinary MPI job whose mesh happens to be undivided; every cell is local
   // and the serial construction is exactly right. Rejecting it would take
   // remap away from every single-rank MPI run, and no serial test can see
-  // the difference. REVIEW.md TF-7: this used to say no test runs the one-
-  // rank leg to check that -- stale since
-  // `test/parallel/remap_halo_mpi_test.cpp`'s
-  // `ERemapParallelRefusesAboveOneRankAndNotAtOne` ported (host-verified
-  // per that file's own header): `== 1` must succeed and `> 1` must refuse
-  // `E-REMAP-PARALLEL`, checked at every registered rank count 1..5, both
-  // sides of the boundary this paragraph names.
+  // the difference. `== 1` must succeed and `> 1` must refuse
+  // `E-REMAP-PARALLEL`; `test/parallel/remap_halo_mpi_test.cpp`'s
+  // `ERemapParallelRefusesAboveOneRankAndNotAtOne` checks both sides of
+  // this boundary at every registered rank count 1..5.
   // ==========================================================================
-  // KNOWN_ISSUES D83: `plan.placement` passed through -- `build_weights`
-  // always resolves both sides through `plan.placement` alone (this
-  // function's own design, remap_plan.hpp), so the halo this call checks
-  // for is the one filed under THAT placement's own cache entry, not the
-  // default Core's.
+  // `plan.placement` is passed through -- `build_weights` always resolves
+  // both sides through `plan.placement` alone (this function's own design,
+  // remap_plan.hpp), so the halo this call checks for is the one filed
+  // under THAT placement's own cache entry, not the default Core's.
   if (a.backend != nullptr && a.backend->communicator_size() > 1 &&
       a.file_set != b.file_set &&
       !a.backend->has_remap_halo(a.mid, b.mid, a.dim, plan.placement)) {
@@ -3256,7 +3230,7 @@ Result<RemapWeights> build_weights(const RemapPlan& plan,
     // "E-REMAP-INTX: TempestRemap could not build the overlap mesh ...
     // (return code 0, 1024 overlap faces)" -- it does not merely lose accuracy
     // near the fringe, it fails outright, and it fails by printing while
-    // returning success (which is why Task 5.3 reads its Announce stream at
+    // returning success (which is why the Announce stream is read at
     // all). Rejecting here turns that into one clear sentence at the right
     // level instead of a backend diagnostic about overlap faces.
     if (a.backend != nullptr && a.backend->communicator_size() > 1 &&
@@ -3351,24 +3325,23 @@ Result<RemapWeights> build_weights(const RemapPlan& plan,
   }
 
   // =========================================================================
-  // The first-order supermesh builder, unchanged from Task 5.2.
+  // The first-order supermesh builder, unchanged.
   //
-  // REVIEW.md TF-2: `try_boxes`, `intersect_boxes`, `fit_surface` and the
-  // kind/radius/plane-z match below each run a computation (reading this
-  // rank's own local cell corners, tagging GIDs) that can FAIL outright on
-  // one rank -- a MOAB connectivity read error, an out-of-range tag --
-  // while a peer's identical call succeeds, ahead of `assemble()`'s own
-  // collectives (`accumulate_remap_halo`, `reduce_audit`'s
-  // `MPI_Allreduce`). `reconcile<T>` is exactly `resolve()`'s and
-  // `build_remap_halo`'s own fit_surface/orient fix (R-01): it agrees
-  // whether every rank's call SUCCEEDED, so a one-rank error returns the
-  // SAME Failure everywhere instead of that rank returning alone while its
-  // peers walk into those collectives and hang. It does NOT, and cannot,
-  // agree whether ranks that all succeeded classified their OWN local
-  // partition into the SAME box/surface verdict (`BoxTry::ok`,
-  // `SurfaceFit::kind`) -- that is a different, value-level hazard
-  // `reconcile_dim` exists for elsewhere (Side::dim) and TF-2 does not
-  // claim to close it here.
+  // `try_boxes`, `intersect_boxes`, `fit_surface` and the kind/radius/
+  // plane-z match below each run a computation (reading this rank's own
+  // local cell corners, tagging GIDs) that can FAIL outright on one rank --
+  // a MOAB connectivity read error, an out-of-range tag -- while a peer's
+  // identical call succeeds, ahead of `assemble()`'s own collectives
+  // (`accumulate_remap_halo`, `reduce_audit`'s `MPI_Allreduce`).
+  // `reconcile<T>` is the same fix `resolve()` and `build_remap_halo` apply
+  // to fit_surface/orient: it agrees whether every rank's call SUCCEEDED,
+  // so a one-rank error returns the SAME Failure everywhere instead of that
+  // rank returning alone while its peers walk into those collectives and
+  // hang. It does NOT, and cannot, agree whether ranks that all succeeded
+  // classified their OWN local partition into the SAME box/surface verdict
+  // (`BoxTry::ok`, `SurfaceFit::kind`) -- that is a different, value-level
+  // hazard `reconcile_dim` exists for elsewhere (Side::dim) and is not
+  // closed here.
   // =========================================================================
   auto ba_r = reconcile(a.pcomm, to_result(try_boxes(a)));
   if (!ba_r.ok()) return ba_r.error();

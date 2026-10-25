@@ -14,7 +14,7 @@
 #include "fuse/num/waveform.hpp"
 #include "fuse/runtime/component.hpp"
 
-/// Time windows track: an iteration region whose channels span two (or
+/// Time windows: an iteration region whose channels span two (or
 /// more) clocks, coupled over a macro WINDOW rather than a single tick.
 ///
 /// `WindowCoupler` is the runtime driver. It is written directly against
@@ -26,27 +26,25 @@
 /// test/runtime/window_coupler_test.cpp, `examples/gray_scott` and
 /// `examples/brusselator`.
 ///
-/// STATE OF THE GRAPH-LEVEL FRONT END (multirate-window-on-the-Runner
-/// track), current as of Unit C3 (2026-09-30):
+/// STATE OF THE GRAPH-LEVEL FRONT END (multirate window on the Runner):
 ///   * the opt-in lives on the declaration itself --
 ///     `IterationRegionDecl::window_scope`
 ///     (`fuse::CouplingWindowScope`, `fuse/model/iteration.hpp`), carried
-///     through the descriptor (v7) and the YAML round trip;
+///     through the descriptor and the YAML round trip;
 ///   * `fuse::validate_coupling_window()` (`fuse/schedule/window.hpp`) is
 ///     the legality gate a front end must pass before constructing one of
-///     these, and `schedule()` now calls it for a window-scoped region
+///     these, and `schedule()` calls it for a window-scoped region
 ///     (`mark_regions`/`expand.cpp`, src/schedule/) instead of running its
 ///     unconditional contiguous-run check and refusing every multi-clock
 ///     region with `E-SCHED-REGION`;
-///   * `schedule()`/`Runner` DO now compile and execute a window-scoped
+///   * `schedule()`/`Runner` compile and execute a window-scoped
 ///     region as one window block: a per-member `OpKind::WindowAdvance`
 ///     node with no graph inputs (`src/ir/window_lowering.cpp`), reading
 ///     its import through `OpAttrs::window_import` and driven every sweep
 ///     by `Runner::Impl::advance_window()` (src/runtime/iteration.cpp) --
 ///     resolving `WindowMemberConfig::provided`/`required` from the
 ///     `FieldRegistry` the way `RegionBlock` resolves value/feed arcs for
-///     a single-clock region, exactly as this comment used to say was not
-///     yet built. Verified bit-for-bit against this file's own
+///     a single-clock region. Verified bit-for-bit against this file's own
 ///     `WindowCoupler`, both waveform-relaxation modes, for a genuinely
 ///     multirate (incommensurate 13:7) pair with `window_component`
 ///     naming the slower member (`test/runtime/window_runner_straddle_
@@ -57,43 +55,33 @@
 ///     transfer at every earlier window's own end IS the provider's own
 ///     committed trajectory there).
 ///
-///     CORRECTION (2026-10-20, Window seed track, KNOWN_ISSUES.md D17/
-///     D76): the "new-window seed" the paragraph above names and the
-///     `test/runtime/window_runner_straddle_test.cpp` cases it cites were
-///     BOTH about `Runner::Impl::advance_window()`'s own import
-///     trajectory for a lagged member's substep computation, never about
-///     `Runner::Impl::run_region()`'s own SEPARATE `R.x_old` pre-loop
-///     seed -- the one value the generic Picard/accelerator machinery
-///     (residual norm, `R.accel->update()`) actually reads as "the
-///     previous iterate". That second seed was NOT put through this
-///     predictor for any window instance past a member's first-ever one;
-///     it read the raw, already-delivered buffer instead (a zeroth-order/
-///     persistence predictor, the one this class's own `sweep_window()`
-///     comment records trying and reverting for `y_fed` on 2026-09-29).
-///     Every case `test/runtime/window_runner_straddle_test.cpp` ran
-///     before this date used `AccelKind::None` or the refusal-only
-///     `AccelKind::Constant`, under which `R.x_old`'s own value never
-///     reaches `x_out` at all (`NoneAccel::update()` ignores it
-///     outright), so the "bit-for-bit" claim above was true for the
-///     quantity those cases exercise and never exercised `R.x_old`'s own
-///     seed at all. `AccelKind::Aitken`/`SteffensenAccel`/
+///     That seed is `Runner::Impl::advance_window()`'s own import
+///     trajectory for a lagged member's substep computation. It is distinct
+///     from `Runner::Impl::run_region()`'s `R.x_old` pre-loop seed -- the
+///     one value the generic Picard/accelerator machinery (residual norm,
+///     `R.accel->update()`) reads as "the previous iterate". `R.x_old`'s
+///     seed applies the identical predictor for every window instance
+///     after a member's first (`src/runtime/iteration.cpp`,
+///     `Runner::Impl::run_region()`'s `k == 0` block), verified
+///     bit-for-bit against this class's own `y_fed`, element for element,
+///     and against a direct `AccelKind::Aitken` parity case in
+///     `test/runtime/window_runner_straddle_test.cpp`. The distinction
+///     matters only for accelerators that read `x_old`: under
+///     `AccelKind::None` or the refusal-only `AccelKind::Constant`,
+///     `R.x_old` never reaches `x_out` at all (`NoneAccel::update()`
+///     ignores it outright), whereas `AccelKind::Aitken`/`SteffensenAccel`/
 ///     `QuasiNewtonAccel` all read `x_old` directly (the relaxed output
 ///     `x_old + w*(x_new-x_old)`, and the residual difference `x_old`
-///     enters a history-dependent `omega`/weight recursion from), which
-///     is exactly where KNOWN_ISSUES.md D17/D76 measured the two drivers
-///     disagree starting at window 1. `R.x_old`'s own seed now applies
-///     the identical predictor for every window instance after a
-///     member's first (this file's own sibling, `src/runtime/
-///     iteration.cpp`, `Runner::Impl::run_region()`'s `k == 0` block) --
-///     verified bit-for-bit against this class's own `y_fed`, element for
-///     element, and against a direct `AccelKind::Aitken` parity case
-///     added to `test/runtime/window_runner_straddle_test.cpp` this round
-///     -- but see KNOWN_ISSUES.md D17/D76's own ROUND 2 entry for a
-///     measured, UNRESOLVED regression this same fix produces on the
-///     Brusselator's own Aitken configuration (a window that converged in
-///     25 sweeps before the fix runs the full 100-sweep cap after it,
-///     without a raised cap resolving it either) before treating this
-///     predictor as settled for every accelerator;
+///     enters a history-dependent `omega`/weight recursion from). A
+///     zeroth-order/persistence predictor (the raw, already-delivered
+///     buffer) is the alternative this class's own `sweep_window()`
+///     comment records trying and reverting for `y_fed`.
+///
+///     Known open item: this predictor makes the Brusselator's own Aitken
+///     configuration converge more slowly (a window that converged in 25
+///     sweeps with the persistence seed runs the full 100-sweep cap, and a
+///     raised cap does not resolve it), so it is not settled for every
+///     accelerator;
 ///   * the sweep loop below is driven through `WindowChannelIO`
 ///     (immediately below `WindowChannel`), an exchange seam a future
 ///     front end can override to route a channel's provider->consumer
@@ -180,9 +168,9 @@ namespace fuse {
 namespace detail {
 
 /// One substep of a member's own grid within a time window (docs/user/
-/// glossary.md: subcycling). Shared (Unit A of the multirate-window-on-
-/// the-Runner track) so a future subcycling-node runtime dispatch can plan
-/// the same grid `WindowCoupler` does today, from the identical inputs.
+/// glossary.md: subcycling). Shared so a future subcycling-node runtime
+/// dispatch can plan the same grid `WindowCoupler` does, from the identical
+/// inputs.
 struct WindowSubstep {
   Rational t0, t1;
   bool     straddle = false;  ///< true only for the (at most one) last step
@@ -191,17 +179,15 @@ struct WindowSubstep {
 /// Spec: choose the window so it never waits for the LCM of two intervals.
 /// A member's own substeps march on ITS OWN grid, `Adjustable` truncating
 /// the last one onto `window_end`, `Fixed` taking it in full even past
-/// `window_end` (the straddling step; see the class comment below). Moved
-/// here from window_coupler.cpp's own anonymous namespace (Unit A, step
-/// 1): a pure function of its arguments, unchanged, now callable by
-/// anything else that needs the identical grid.
+/// `window_end` (the straddling step; see the class comment below). A pure
+/// function of its arguments, callable by anything else that needs the
+/// identical grid.
 [[nodiscard]] std::pair<std::vector<WindowSubstep>, Rational> plan_substeps(
     Rational clock, Rational interval, Rational window_end, DtPolicy policy);
 
 /// The mean of `wf` over `[a, b)`, `a < b` required. `wf` must already
-/// cover `[a, b]` (its support, per `Waveform`'s own contract). Moved here
-/// from window_coupler.cpp's own anonymous namespace (Unit A, step 1),
-/// unchanged.
+/// cover `[a, b]` (its support, per `Waveform`'s own contract). Declared
+/// here so any window dispatch code can reuse it.
 [[nodiscard]] Result<double> mean_over(const Waveform& wf, Rational a,
                                        Rational b);
 
@@ -213,8 +199,7 @@ struct WindowSubstep {
 using WindowBoundaryHistory = std::vector<std::pair<Rational, double>>;
 
 /// One member's own subcycling state, tracked across windows (docs/user/
-/// glossary.md: subcycling). Moved here from `WindowCoupler`'s own private
-/// nested `MemberState` (Unit A, step 2): unchanged, now nameable by
+/// glossary.md: subcycling). Nameable by
 /// anything else that needs to hold or advance a member's state the way
 /// `WindowCoupler` does today.
 struct WindowMemberState {
@@ -269,7 +254,7 @@ struct WindowMember {
 struct WindowChannel {
   std::size_t provider = 0;
   std::size_t consumer = 0;
-  /// Time windows track: meaningful only when `WindowCouplerConfig::
+  /// Meaningful only when `WindowCouplerConfig::
   /// iteration == WaveformIteration::GaussSeidel` (silently unused under
   /// the default `Jacobi`, which never reads it -- see that enumerator's
   /// own docstring, fuse/model/iteration.hpp). `false` (the default): this
@@ -281,7 +266,7 @@ struct WindowChannel {
   /// sweep's value all the way through this one, and `provider`'s
   /// outgoing waveform IS accelerated.
   bool        lagged = false;
-  /// The user's decision (relayed 2026-09-29): a `WindowCouplerConfig::
+  /// A `WindowCouplerConfig::
   /// convergence` measure names a field TRANSFER -- this channel -- not
   /// a raw field. Empty (the default) is fine as long as no measure
   /// names it; `create()` rejects any measure whose `.field` does not
@@ -289,11 +274,10 @@ struct WindowChannel {
   std::string name;
 };
 
-/// Time windows track: the exchange seam a graph-level front end needs, so
+/// The exchange seam a graph-level front end needs, so
 /// that a window channel's provider -> consumer data can be routed through
-/// a real `fuse::Remap`/`fuse::Transport` (design notes for this track)
-/// instead of the direct pointer arithmetic `WindowCoupler` used before
-/// this class existed. `WindowCoupler` calls this at every point it needs
+/// a real `fuse::Remap`/`fuse::Transport`
+/// instead of direct pointer arithmetic. `WindowCoupler` calls this at every point it needs
 /// "this channel's provider value for consumer element `e`"; the default
 /// -- what `WindowCoupler` constructs whenever
 /// `WindowCouplerConfig::channel_io` is left null -- is EXACTLY the direct
@@ -314,7 +298,7 @@ struct WindowChannel {
 /// trajectory rather than once per query -- but ONLY an override that
 /// itself memoizes on `provider`'s identity (rebuilt at most once per
 /// sweep by `WindowCoupler::sweep_window()`) turns that legality into the
-/// "one message per exchange" property this track is bound to; the
+/// "one message per exchange" property; the
 /// straightforward reading of this interface -- remap and transport
 /// inside every call -- would send one message per query, which is
 /// exactly what that property forbids.
@@ -362,7 +346,7 @@ struct WindowCouplerConfig {
   /// `validate_coupling_window`'s `E-SCHED-WINDOW-CAPACITY`.
   std::size_t           waveform_capacity = 64;
 
-  /// Time windows track: the exchange seam (`WindowChannelIO` above).
+  /// The exchange seam (`WindowChannelIO` above).
   /// `nullptr` (the default) is every direct caller today -- `create()`
   /// then constructs a plain `WindowChannelIO`, whose direct-read default
   /// behaviour reproduces the pointer arithmetic this class always used.
@@ -401,8 +385,8 @@ namespace detail {
 /// states -- that interpolation does not recover x(t_split) to the
 /// substep's own order, while splitting the call makes the committed
 /// t_split value as accurate as an ordinary substep's own endpoint (see
-/// `WindowCoupler`'s class comment). Moved here (Unit A, step 3) from its
-/// two, previously duplicated, homes: `WindowCoupler::sweep_window()`'s
+/// `WindowCoupler`'s class comment). Shared by
+/// two callers: `WindowCoupler::sweep_window()`'s
 /// per-member substep loop (its `mean_in_window`/`boundary_at_split`/
 /// `extrapolate_tail` read this sweep's live `delivered[]` waveforms) and
 /// `WindowCoupler::resolve_pending_straddles()`'s replay (its callbacks
@@ -519,9 +503,9 @@ class WindowCoupler {
   }
 
  private:
-  /// Unit A, step 2: `BoundaryHistory`/`MemberState` are now
+  /// `BoundaryHistory`/`MemberState` are
   /// `fuse::detail::WindowBoundaryHistory`/`WindowMemberState`
-  /// (declared above, alongside `plan_substeps`/`mean_over`), unchanged,
+  /// (declared above, alongside `plan_substeps`/`mean_over`),
   /// so a future subcycling-node runtime dispatch can hold and advance a
   /// member's state the same way `WindowCoupler` does today. These
   /// aliases keep every existing use in this class (`BoundaryHistory`,

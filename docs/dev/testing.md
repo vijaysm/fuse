@@ -96,8 +96,7 @@ each output element's write touches no other; the per-sweep block value/residual
 (`space_kernels.hpp`'s `deterministic_dot`/`deterministic_norm_squared`(`_diff`)), verified against
 a plain-host reference with `EXPECT_EQ` under `FUSE_FP_REPRODUCIBLE` and against a derived bound
 otherwise (`SpaceKernels.
-DeterministicReductionsMatchTheChunkedReferenceExactlyOrWithinTheFpContractionBound` — renamed from
-`...Exactly`, see "Floating-point contraction policy" below) and, at the Runner level, by a real
+DeterministicReductionsMatchTheChunkedReferenceExactlyOrWithinTheFpContractionBound` — see "Floating-point contraction policy" below) and, at the Runner level, by a real
 2048-element iteration region pinned to measured literals across every `OMP_NUM_THREADS`
 (`runtime.runner_determinism`, `fuse_add_omp_legs`). One label-length allocation trap was found and fixed while
 making the coupling hot loop run over these kernels. Device execution spaces are covered by the
@@ -174,17 +173,18 @@ an acceleration bug presents.
 
 `FUSE_FP_REPRODUCIBLE` (`cmake/FuseFpPolicy.cmake`, default **ON**) decides whether `a*b + c` is
 rounded once (a fused multiply-add) or twice (multiply, round, then add — `-ffp-contract=off`,
-applied to every C, C++ and Fortran target). **Measured** at the stock compiler default (no flag at all, `tier0-release`, Apple clang 21.0.0): exactly
+applied to every C, C++ and Fortran target). **Measured** at the stock compiler default
+(no flag at all, `tier0-release`, Apple clang 21.0.0): exactly
 three named cases fail by one ulp and nothing else does —
 `DistVectorOneRank.ArithmeticMatchesAPlainLoopBitForBit` (`linalg.dist_vector`) and
 `SpaceKernels/{0,1}.DeterministicReductionsMatchTheChunkedReferenceExactly`
-(`num.space_kernels{,.omp1,.omp8}`) — 184 of 188 tier-0 rows passing. Both are renamed below
+(`num.space_kernels{,.omp1,.omp8}`) — 184 of 188 tier-0 rows passing. Both tests are named
 (`...ExactlyOrWithinTheFpContractionBound`) because under `FUSE_FP_REPRODUCIBLE=OFF` they no longer
 claim bit-identity.
 
-**D30's own account of *why* this happens was wrong, and the record is corrected here rather than
-quietly fixed.** D30 said "Apple clang contracts `a*b + c` into a fused multiply-add at `-O2` and
-not at `-O0`." That is false, confirmed directly: `double f(double a,double b,double c){return
+**Contraction is not toggled by the optimization level.** It is tempting to say Apple clang
+contracts `a*b + c` into a fused multiply-add at `-O2` and not at `-O0`. That is false, confirmed
+directly: `double f(double a,double b,double c){return
 a*b+c;}` compiled `-S` emits one `fmadd` (the fused form) at `-O0` with the compiler's **default**
 flags, zero `fmadd` at `-O0 -ffp-contract=off`, and the SAME one `fmadd` at `-O2` with default flags
 — `-ffp-contract`'s default is `on` at every optimization level this compiler has; it is not toggled
@@ -259,7 +259,7 @@ differ on this compiler — then asserts `a*b+c ==` the two-step value under `FU
 and only prints the observed difference, asserting nothing, under `==0`. Because the flag's default
 (`on`, fused) applies at **every** optimization level, not only `-O2`/`-O3` (the corrected premise
 above), this single, unvectorized expression is sensitive to the flag in Debug exactly as it is in
-Release — **hand-proved 2026-10-12** in both: deleting the call that applies the C/CXX half of the
+Release — **hand-proved** in both: deleting the call that applies the C/CXX half of the
 policy (`fuse_apply_fp_contract_policy_c_cxx()`, `CMakeLists.txt`) fails
 `FpPolicy.ContractionIsOffWhenReproducible` in a Release tree (`-4.0672332501391795` vs
 `-4.0672332501391804`) AND in a Debug tree (same two values), while the precondition test still
@@ -292,7 +292,7 @@ this machine: Apple clang 21.0.0 and Homebrew GNU Fortran 16.2.0). Any other C/C
 CMake `WARNING` instead of a silently-assumed flag (MSVC's `/fp:precise` and Intel's `-fp-model=
 precise` are different flags, untested here, not added). **Not covered, by design:** a CUDA device
 build's own contraction (`nvcc`'s `-fmad`, default `ON`) needs the matching `-fmad=false` — documented
-here as follow-up for the device branch (A5), not added, since this machine has no CUDA toolchain to
+here as follow-up for the device branch, not added, since this machine has no CUDA toolchain to
 test it against.
 
 ### Measured run-time cost
@@ -310,13 +310,13 @@ compiled with each build's own flags, `-O3 -DNDEBUG -mcpu=native`:
 | `fuse_example_brusselator --driver runner --end 1.0` (end to end) | — | 1008.3 \[974.2, 1111.5\] ms | 994.7 \[990.1, 1064.9\] ms |
 
 **Caveat, stated rather than hidden: this machine could not be made quiet.** The methodology called
-for `load1 < 3` before each batch, retried up to 10 times at 60 s intervals; two other tracks were
-building concurrently throughout and `load1` never dropped below 6 in ten attempts (range 6.0–13.8
+for `load1 < 3` before each batch, retried up to 10 times at 60 s intervals; other builds were
+running concurrently throughout and `load1` never dropped below 6 in ten attempts (range 6.0–13.8
 across all batches). Every row above is labelled **NOISY**. `deterministic_sum` contains no multiply
 at all (`s += v[i]`) and therefore cannot be affected by a contraction policy either way, yet shows a
 "cost" of the same order as the kernels that do — direct evidence the differences above are
-contention noise, not a measured cost attributable to `-ffp-contract`. **The lead repeats this
-measurement on a quiet machine**; until then, no speedup or slowdown number from this table should be
+contention noise, not a measured cost attributable to `-ffp-contract`. **This
+measurement needs repeating on a quiet machine**; until then, no speedup or slowdown number from this table should be
 cited as a property of the flag.
 
 ### Iteration-sensitive tests assert properties, not counts
@@ -624,7 +624,7 @@ registered in `test/CMakeLists.txt`'s own "bench" section): a native structured-
 provider/consumer mesh pair, a conservative weighted Remap (the two grids differ by one
 cell per side, so they cannot coincide and the Remap is never the identity-copy
 shortcut), an MpiTransport exchange across a disjoint rank split, a Diagnose and a Sink
--- the same instruction shapes [](device-resident-arcs.md) step 6's own gate exercises,
+-- the same instruction shapes [](device-resident-arcs.md)'s device gate exercises,
 at a problem size (`--n`, default 1000: 1e6 provider cells) orders of magnitude larger
 than that gate's few-hundred-to-few-thousand-cell rows, so per-instruction kernel-launch
 and host-stop overhead can be told apart from genuine arithmetic cost. Labelled `bench`
@@ -646,16 +646,13 @@ storage itself is device-resident, not merely the elementwise kernels' dispatch 
 configure time; the binary's own `--n`/`--periods`/`--fields`/`--timing` flags are
 documented in its header comment.
 
-**The 2- and 3-rank rows were `DISABLED TRUE`** (KNOWN_ISSUES.md D74) until the
-scaled-bench track's 2026-10-16 fix (the nodal Remap's distributed point-location search
-had refused to place the domain's own corner vertex at those rank counts and this
-problem size) re-enabled them -- this passage is updated, not current when it still
-read "currently DISABLED". D67, the separate 1-ULP arithmetic-divergence this entry's
-own text once linked to D74 as a shared root cause, was investigated and found NOT to
-share D74's mechanism at all (two different floating-point expressions for the same
-Edge-cell hat weight, picked by which of two code paths a placement's rank count
-routes through -- KNOWN_ISSUES.md D67's own closing entry); it is fixed independently
-and needed no change to this file's bench rows or their registration.
+**The 2- and 3-rank rows are enabled.** The nodal Remap's distributed point-location search
+once refused to place the domain's own corner vertex at those rank counts and this problem
+size; that is fixed. A separate 1-ULP arithmetic divergence between rank counts has a
+different mechanism: two different floating-point expressions for the same Edge-cell hat
+weight, picked by which of two code paths a placement's rank count routes through. It is
+fixed independently of the point-location search and needs nothing in this file's bench rows
+or their registration.
 
 `tools/bench-device.py` is the timing harness: it runs
 `fuse_bench_scaled_device_benchmark` host vs device N times (`FUSE_EXECUTION_SPACE`
@@ -683,5 +680,5 @@ reports "Subprocess aborted". Such a test is registered with `THROWS`
 no-exceptions CI leg excludes with `ctest -LE 'throws|bench'`.
 `tools/check-throws-labels.py` finds a throwing test registered without the
 label statically; it runs with the other static gates in CI. The first run of
-the no-exceptions leg as a leg (2026-10-18) found three unlabelled tests the
+the no-exceptions leg as a leg found three unlabelled tests the
 gate now catches.

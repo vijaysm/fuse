@@ -1,8 +1,8 @@
-/* Time windows track (Conformance, Unit 2): the coupler's OWN MPMD app
+/* The coupler's OWN MPMD app
  * segment. PURE C. Only needed in mpmd mode -- in accept mode the
- * coupler's ranks are bundled into U's own executable instead (Q1's
- * ruling, KNOWN_ISSUES.md D18; u_main.c's own header comment has the
- * full account). A ComponentKind::Coupler placement owns no fields, has
+ * coupler's ranks are bundled into U's own executable instead
+ * (u_main.c's own header comment has the full account). A
+ * ComponentKind::Coupler placement owns no fields, has
  * no clock, and is never advanced (docs/dev/coupler-placement.md's own
  * enumerated call sites), so this program's own job is almost nothing:
  * create the context, load the SAME graph u_main.c/v_main.f90 load,
@@ -13,24 +13,23 @@
  * then fuse_run() for the SAME --periods U's and V's own executables
  * step, then destroy. It registers no field and never calls
  * fuse_begin_step/fuse_end_step at all: there is no step for a coupler
- * to take, but it must still execute the period's own collectives
- * (Unit 2b, D19, step (d)) -- fuse_run() is legal here because this
+ * to take, but it must still execute the period's own collectives.
+ * fuse_run() is legal here because this
  * rank hosts no externally driven component at all (Runner::hosts_
  * component() says so; fuse_run()'s own E-ABI-RUN-EXTERNAL refusal only
  * fires when one IS hosted on THIS process).
  *
- * BEFORE Unit 2b step (d): this rank called neither fuse_run() nor
- * fuse_begin_step()/fuse_end_step() at all between fuse_initialize()
- * and fuse_destroy() -- the Runner's own internal Transport/Remap
+ * A coupler rank that called neither fuse_run() nor
+ * fuse_begin_step()/fuse_end_step() between fuse_initialize()
+ * and fuse_destroy() would leave the Runner's own internal Transport/Remap
  * collectives routed through this rank during U's and V's own
- * begin_step/end_step calls had no partner here, so U's and V's own
+ * begin_step/end_step calls with no partner here, so U's and V's own
  * ranks would block forever in the first Transport that needed this
- * rank's participation (KNOWN_ISSUES.md D19, evidence 4). fuse_run()
- * is the fix: it executes exactly those collectives, with nothing else
- * to drive.
+ * rank's participation. fuse_run() executes exactly those collectives,
+ * with nothing else to drive.
  *
- * NOT YET HOST-VERIFIED (MPI cannot start in this sandbox,
- * KNOWN_ISSUES.md C1): the mechanism is argued (fuse_run() executes
+ * NOT YET HOST-VERIFIED (MPI cannot start in the sandbox this was
+ * written in): the mechanism is argued (fuse_run() executes
  * the period's own instruction stream, which is where the coupler's
  * own Transport/Remap participation lives) and build-verified only;
  * confirming it actually unblocks U's/V's own ranks under real MPI is
@@ -78,8 +77,8 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  /* ROUND 9, task 1(a): this process never calls bruss_lowfive_attach()
-   * (D14 Stage B: lowfive_attach.cpp IS now one of this target's own
+  /* This process never calls bruss_lowfive_attach()
+   * (lowfive_attach.cpp is one of this target's own
    * sources -- examples/CMakeLists.txt -- but ONLY for
    * bruss_lowfive_join_local_split(), the collective split every rank
    * of the bridge must join; this rank never calls bruss_lowfive_
@@ -94,7 +93,7 @@ int main(int argc, char** argv) {
    * env-route default-VOL resolution would otherwise register the
    * "lowfive" connector class here too, with nothing that ever wanted
    * it, the measured cause of this process's own exit-time SIGABRT
-   * (lowfive_attach_decision.hpp's own "ROUND 9, task 1" comment has
+   * (lowfive_attach_decision.hpp's own "EXIT HYGIENE" comment has
    * the full crash trace, root cause, and the ranked alternatives this
    * fix was chosen over). Removing these before MPI_Init, before any
    * native HDF5 call this process might make, prevents the connector
@@ -126,15 +125,14 @@ int main(int argc, char** argv) {
     MPI_Abort(MPI_COMM_WORLD, 1);
   }
 
-  /* Physics track: COLLECTIVE over MPI_COMM_WORLD, matching u_main.c's
+  /* COLLECTIVE over MPI_COMM_WORLD, matching u_main.c's
    * and v_main.f90's own MPI_Comm_split -- MPI_COMM_WORLD here is the
    * SHARED world every ':'-segment of this mpmd mpiexec invocation
    * numbers into (coupler_main is MPMD-only, this file's own header
    * comment), so each program's own split is a collective over every
    * rank of every segment, not just its own; a coupler rank that never
    * called a matching split would strand the other two programs' own
-   * ranks inside theirs (this track's own standing lesson: a collective
-   * must never be skipped).
+   * ranks inside theirs (a collective must never be skipped).
    *
    * COLOR = COMPONENT INDEX (U 0, V 1, coupler 2), key = world rank --
    * ONE uniform split shape across all three programs, each naming its
@@ -185,7 +183,7 @@ int main(int argc, char** argv) {
   memset(&setup, 0, sizeof(setup));
   setup.struct_size = sizeof(setup);
   setup.communicator = (int64_t)MPI_Comm_c2f(MPI_COMM_WORLD);
-  /* KNOWN_ISSUES.md D76: MPI_Comm_c2f(MPI_COMM_WORLD) is 0 under Open MPI,
+  /* MPI_Comm_c2f(MPI_COMM_WORLD) is 0 under Open MPI,
    * which this struct's older sentinel read as "no communicator" -- set
    * has_communicator so fuse_setup() knows 0 really is this process's own
    * world, not an absent one. */
@@ -194,18 +192,17 @@ int main(int argc, char** argv) {
   rc = t->setup(ctx, &setup, NULL);
   if (rc != FUSE_OK) fail(ctx, "setup", rc);
 
-  /* D14 Stage B (KNOWN_ISSUES.md), decision 2/3: this rank joins the
+  /* This rank joins the
    * SAME collective split U's and V's own physics ranks join
    * (bruss_lowfive_join_local_split()'s own header comment in
    * lowfive_attach.h has the full account) -- MPI_Comm_split() is
    * collective over the WHOLE bridge communicator, and this rank is
-   * part of it (it shares MPI_COMM_WORLD with U and V in this track's
-   * own mpmd-only placement -- this file's own header comment), even
+   * part of it (it shares MPI_COMM_WORLD with U and V in this
+   * mpmd-only placement -- this file's own header comment), even
    * though a Coupler-kind component owns no field and is never the
    * writer or reader of any LowFive-bound channel, so its own color is
    * always MPI_UNDEFINED and local_comm_f always comes back 0. This
-   * process still never calls bruss_lowfive_attach() itself (round 9's
-   * own ruling, unchanged) -- only the collective every rank of the
+   * process still never calls bruss_lowfive_attach() itself -- only the collective every rank of the
    * bridge must join, never the VOL registration itself. Safe and cheap
    * even for an ordinary, non-LowFive row: no MPI call at all when the
    * graph carries no hdf5_path field (bruss_lowfive_join_local_split()'s
@@ -230,7 +227,7 @@ int main(int argc, char** argv) {
   /* No field, no step -- a Coupler component is never advanced. But the
    * period's own collectives (the Transport/Remap routed through this
    * rank) still need executing, the SAME --periods U's/V's own
-   * executables step -- Unit 2b (D19), step (d)'s own fix. */
+   * executables step. */
   {
     fuse_run_request req;
     memset(&req, 0, sizeof(req));
@@ -243,7 +240,7 @@ int main(int argc, char** argv) {
   rc = t->destroy(ctx, NULL, NULL);
   if (rc != FUSE_OK) fail(NULL, "destroy", rc);
 
-  /* D14 Stage B: harmless no-op on this rank (bruss_lowfive_attach() is
+  /* Harmless no-op on this rank (bruss_lowfive_attach() is
    * never called here, so there is nothing for this to flush or free --
    * lowfive_attach.h's own doc comment states the "regardless of
    * whether bruss_lowfive_attach() was ever called" contract plainly)

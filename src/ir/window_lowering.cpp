@@ -1,4 +1,4 @@
-// Time windows track: a window-scoped iteration region's field transfers
+// Time windows: a window-scoped iteration region's field transfers
 // compile through the ORDINARY per-channel rule (Remap/Transport/Epoch,
 // src/ir/rules_channel.cpp) at the window's own clock, unchanged, carrying
 // the waveform as K field components -- the user's chosen design. This

@@ -421,7 +421,7 @@ Result<NewtonResult> solve(const ResidualFn& f, DistVector& x,
 }
 
 // ===========================================================================
-// S7.2b (PetscSelect track): the Newton substrate registry.
+// The Newton substrate registry.
 // ===========================================================================
 
 namespace {

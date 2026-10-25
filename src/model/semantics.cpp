@@ -352,14 +352,13 @@ SemanticValidation validate_field_semantics(const FieldSemantics& field, std::st
     if (field.components == 0) diagnostics.push_back({SemanticDiagnosticCode::ZeroComponents, prefix + ".components"});
     if (field.shape == SemanticShape::Scalar && field.components != 1)
         diagnostics.push_back({SemanticDiagnosticCode::ShapeComponentMismatch, prefix + ".shape"});
-    // The spine checked for a zero denominator here; fuse::Rational cannot have
-    // one (its constructor refuses it), so that check was unreachable. The real
-    // defect is a ZERO scale: it is not a unit, it is an annihilator, and it would
+    // No zero-denominator check is needed here: fuse::Rational cannot have one
+    // (its constructor refuses it). The real defect is a ZERO scale: it is not a unit, it is an annihilator, and it would
     // turn every converted value into 0 while passing every dimensional check.
     if (field.units.scale == Rational{0})
         diagnostics.push_back({SemanticDiagnosticCode::NonfiniteScale, prefix + ".units"});
-    // REVIEW.md R-19: a scale's SIGN was never checked here either, and a
-    // unit's scale relative to SI base units is never negative. Left
+    // A scale's SIGN is checked too: a unit's scale relative to SI base
+    // units is never negative. Left
     // unchecked, check_units() (compatibility.cpp) could auto-insert an
     // unrequested UnitScale operator that flips the sign of every value
     // crossing the channel, while reporting the connection as an ordinary

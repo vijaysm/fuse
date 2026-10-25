@@ -38,8 +38,8 @@ constexpr std::size_t kSizeMax = std::numeric_limits<std::size_t>::max();
 Result<BufferPlan> try_plan_buffers(const OperatorDAG& dag, const TimedDag& timed,
                                     const RegionSizes& sizes) {
   if (!sizes) {
-    return Failure{kBuffersCode, "plan_buffers: the RegionSizes callback is empty; a mesh backend (or, "
-        "before Phase 4 Task 4.2, a stub) must supply one"};
+    return Failure{kBuffersCode, "plan_buffers: the RegionSizes callback is empty; a mesh backend (or "
+        "a stub) must supply one"};
   }
 
   const std::size_t n_arcs = dag.arc_count();
@@ -59,7 +59,7 @@ Result<BufferPlan> try_plan_buffers(const OperatorDAG& dag, const TimedDag& time
   // Arcs that alias component storage: Source outputs and Sink outputs
   // (spec Section 4.2). Everything else is a coupler intermediate.
   //
-  // Time windows track (C3): a window-scoped IMPORT's own Sink is the one
+  // Time windows: a window-scoped IMPORT's own Sink is the one
   // exception. Its output is K samples wide (window_import_width(),
   // src/ir/window_lowering.cpp) -- the provider's whole flat waveform for
   // this window, delivered unchanged -- never the SINGLE value the
@@ -77,8 +77,8 @@ Result<BufferPlan> try_plan_buffers(const OperatorDAG& dag, const TimedDag& time
   // WindowAdvance is neither Source nor Sink; this one needs a check
   // because it genuinely is a Sink).
   //
-  // Review 2026-10-11 IS-4: the check used to be a `"/window"` label-suffix
-  // match, which an ordinary field legally named `q/window` would also
+  // The check is structural rather than a `"/window"` label-suffix match,
+  // which an ordinary field legally named `q/window` would also
   // satisfy -- validate() only checks field-name uniqueness, not the
   // absence of '/' -- silently stealing that field's own delivery into
   // coupler-owned scratch instead of its component's registered storage.
@@ -137,7 +137,7 @@ Result<BufferPlan> try_plan_buffers(const OperatorDAG& dag, const TimedDag& time
     b.label = a.name.empty() ? ("%" + std::to_string(i)) : a.name;
 
     // Filled for component-owned arcs too: `elements` describes the region,
-    // and Phase 4 needs it to check a registered pointer's Layout::count
+    // and the mesh backend needs it to check a registered pointer's Layout::count
     // against what the plan expects. Allocation is governed by the flag.
     b.elements = sizes(b.region, a.type.rank_set);
 

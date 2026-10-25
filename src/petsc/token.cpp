@@ -72,7 +72,7 @@ PetscErrorCode mffd_residual_fn(void* raw_ctx, Vec x, Vec y) {
 // (fuse/num/newton_krylov.hpp) unchanged for both the tiling-coverage
 // check (from_blocks) and the per-block apply -- this file never
 // reimplements that logic, only crosses the Vec/span boundary around it
-// via a throwaway single-rank DistVector pair (this track's own tier-0,
+// via a throwaway single-rank DistVector pair (the tier-0,
 // single-rank scope makes the extra copy's cost irrelevant; see
 // fuse/petsc/solve.hpp's own header comment on scope).
 // ---------------------------------------------------------------------------
@@ -157,9 +157,9 @@ class MffdTokenImpl final : public MffdToken {
     ierr = PCSetType(pc_, PCNONE);
     if (auto r = check(ierr, "PCSetType(NONE)"); !r.ok()) return r;
     // PCSetUp refuses "Missing A matrix" for ANY PC type, PCNONE and
-    // PCSHELL included, until an operator is attached (measured on the
-    // host 2026-10-11: the first run of every apply_preconditioner case
-    // failed exactly there). The token's own matrix is that operator.
+    // PCSHELL included, until an operator is attached (the first run of
+    // every apply_preconditioner case fails exactly there). The token's own
+    // matrix is that operator.
     ierr = PCSetOperators(pc_, J_, J_);
     if (auto r = check(ierr, "PCSetOperators"); !r.ok()) return r;
     return Result<void>::success();
@@ -359,9 +359,9 @@ class AssembledTokenImpl final : public fuse::LinearizationToken {
     ierr = PCSetType(pc_, PCNONE);
     if (auto r = check(ierr, "PCSetType(NONE)"); !r.ok()) return r;
     // PCSetUp refuses "Missing A matrix" for ANY PC type, PCNONE and
-    // PCSHELL included, until an operator is attached (measured on the
-    // host 2026-10-11: the first run of every apply_preconditioner case
-    // failed exactly there). The token's own matrix is that operator.
+    // PCSHELL included, until an operator is attached (the first run of
+    // every apply_preconditioner case fails exactly there). The token's own
+    // matrix is that operator.
     ierr = PCSetOperators(pc_, A_, A_);
     if (auto r = check(ierr, "PCSetOperators"); !r.ok()) return r;
     return Result<void>::success();

@@ -1,12 +1,9 @@
-# Mutation for Conformance Unit 2's Defect 2 fix (coupler-placement
-# track): Runner::Impl::resolve_regions()'s own cold-start priming of a
+# Mutation for Runner::Impl::resolve_regions()'s former cold-start priming of a
 # window member's import arc and straddle-tail history indexed the
 # PROVIDER's own exported-field buffer (`provider_v0`) using THIS
 # member's own exported-field length (`cfg.length`) as the loop bound --
 # a real heap-buffer-overflow READ whenever the provider's field is
-# smaller. Found by ASan on a cross-resolution two-member window
-# (reported to the lead as Finding 3(a)). Own file per the review-fix
-# protocol.
+# smaller. Found by ASan on a cross-resolution two-member window.
 #
 # IMPORTANT, read before trusting a green run of this row's own `test`:
 # an out-of-bounds READ into an adjacent heap allocation does not
@@ -25,21 +22,20 @@
 # fuse::Runner::Impl::resolve_regions" pointing at the exact mutated
 # line, and with the mutation reverted the ASan build passes cleanly.
 # Neither run was executed through tools/mutate.py --build-dir (it
-# refuses on an uncommitted tree, same constraint as every other row
-# added this session) -- both were proved by hand: the mutation applied
+# refuses on an uncommitted tree) -- both were proved by hand: the mutation applied
 # directly with edit_file, the target rebuilt (once in the ordinary
 # tree, once in a separate ASan-flagged tree), run, observed, then the
 # file restored and verified byte-identical to a backup with `cmp`
 # before the next step.
 
-# RETIRED 2026-10-03, Unit 2b (D19) step (b): the row below (`resolve-
+# RETIRED: the row below (`resolve-
 # regions-window-prime-unbounded-provider-read`) mutated a line --
 # `const std::size_t prime_count = std::min(cfg.length, provider_length);`
-# -- that no longer exists. Step (b) removed the whole manual,
+# -- that no longer exists. The whole manual,
 # direct-`registry.get(provider_exported_field)`-based import-priming
-# block this bound lived in (KNOWN_ISSUES.md D19, evidence 3: that read
+# block this bound lived in was removed (that read
 # is the provider's own LOCAL FieldRegistry entry, not necessarily
-# correct cross-rank) and replaced it with a second pass that re-runs
+# correct cross-rank) and replaced with a second pass that re-runs
 # the channel's own COMPILED delivery chain (Transport/Remap/Epoch/
 # Sink) once, through `execute()` -- the same bounds-safe, resolution-
 # aware code path `run_region()`'s own sweep loop already uses every
@@ -49,8 +45,8 @@
 # defect CLASS this row proved is caught is now eliminated by
 # construction, not merely bounded. `runtime.window_runner_mismatched_
 # length` (A: 4 values, B: 9, a REAL cross-mesh remap) still passes,
-# unchanged, under the new code -- confirmed 2026-10-03, full `bafter`
-# rebuild + `ctest`, 162/162 -- demonstrating the real Remap now
+# unchanged, under the new code (full rebuild + `ctest`, 162/162),
+# demonstrating the real Remap now
 # resolves the length difference correctly rather than the old code's
 # silent partial-prime workaround ("a correct REMAP between the two
 # resolutions ... this one-time cold-start shortcut has never
