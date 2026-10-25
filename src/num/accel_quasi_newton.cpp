@@ -67,7 +67,7 @@
 ///     solve is truncated there with the dropped coefficients set to zero.
 ///     The truncation threshold is max(m, k) * DBL_EPSILON relative to the
 ///     leading pivot -- a rounding-level test, deliberately far below the
-///     Task 7.4 filter's `limit`, so it only removes columns that carry no
+///     filter's `limit`, so it only removes columns that carry no
 ///     information at all.
 namespace fuse {
 namespace detail {
@@ -460,8 +460,8 @@ class QuasiNewtonAccel final : public Accelerator {
     return step;
   }
 
-  /// Restart track (docs/dev/restart.md Section 9 item 4; KNOWN_ISSUES.md
-  /// D64, now implemented): every member this class carries forward
+  /// Restart state (docs/dev/restart.md Section 9 item 4): every member
+  /// this class carries forward
   /// between update() calls -- v_/w_ (the current window's own secant
   /// columns), x_new_prev_/r_prev_/have_prev_ (the previous iterate and
   /// residual), blocks_/chain_reprieves_ (IQN-IMVJ's folded
@@ -477,7 +477,7 @@ class QuasiNewtonAccel final : public Accelerator {
     return true;
   }
 
-  /// EXACT-KEY scheme (round 2's own fix, accel_relaxation.cpp), extended
+  /// EXACT-KEY scheme (as in accel_relaxation.cpp), extended
   /// to a MULTI-COLUMN buffer: v_/w_ are "n x cols_, column major" (the
   /// class's own member comment), so column j occupies v_[j*n_, (j+1)*n_)
   /// contiguously -- exactly the single-component, length-n_ row layout
@@ -549,7 +549,7 @@ class QuasiNewtonAccel final : public Accelerator {
   }
 
   /// The read-back counterpart. A missing (field, id) row at ANY step
-  /// below -- the layout-mismatch case owner decision 4 names -- is
+  /// below -- the layout-mismatch case -- is
   /// handled uniformly through `guard()`: `allow_reset_on_mismatch ==
   /// false` refuses by name (propagating the ORIGINAL E-RESTART-MISSING-*
   /// error so the caller sees which row was missing), `true` drops
@@ -935,11 +935,11 @@ class QuasiNewtonAccel final : public Accelerator {
       // probe answers "would this step have been finite without the chain",
       // and a NO does not mean the chain is healthy -- the window's own
       // Wn alpha can overflow while the chain is poisoned too, and then the
-      // probe exonerates a guilty chain. An earlier version of this code
-      // argued that could not persist, because the diverged path clears the
+      // probe exonerates a guilty chain. One might argue that could not
+      // persist, because the diverged path clears the
       // window's columns and a probe at cols_ == 0 is x_new itself and
-      // therefore finite. THAT ARGUMENT IS FALSE and was disproved by
-      // execution: `have_prev_` survives the diverged return by design (see
+      // therefore finite. THAT ARGUMENT IS FALSE, as execution
+      // shows: `have_prev_` survives the diverged return by design (see
       // below), so the very next call regenerates a column through
       // append_column() before the probe runs, cols_ is >= 1 again, and a
       // caller alternating two window-overflowing pairs holds a poisoned chain

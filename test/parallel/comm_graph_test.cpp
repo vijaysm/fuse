@@ -1,6 +1,6 @@
 // CommGraph and the Crystal Router underneath it, under a real mpiexec.
 //
-// This is the regression matrix of docs/specs/2026-09-11-comm-graph-design.md
+// This is the regression matrix of docs/history/soma/specs/2026-09-11-comm-graph-design.md
 // Section 7. Every test here is named after what it pins rather than after the
 // function it calls, and every load-bearing one was checked against a
 // deliberately broken build before being trusted -- the discipline

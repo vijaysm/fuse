@@ -26,9 +26,9 @@ Result<void> CopyTransport::move(const double* src, double* dst,
   // set is ordinary in parallel, and `std::vector<double>{}.data()` is
   // permitted to be null -- MpiTransport::move() (transport.hpp's own doc)
   // accepts null exactly when `n` is zero. Refusing null
-  // unconditionally would mean a zero-element, same-process channel whose storage
-  // is an empty vector is refused by the copy backend and accepted by the
-  // MPI one for the identical input.
+  // unconditionally would mean a zero-element, same-process channel whose
+  // storage is an empty vector is refused by the copy backend and accepted by
+  // the MPI one for the identical input.
   if (n != 0 && (src == nullptr || dst == nullptr)) {
     return Failure{"E-TRANSPORT-NULL", "copy transport given a null pointer"};
   }

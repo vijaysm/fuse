@@ -308,9 +308,9 @@ Result<SchurSlabSolver> SchurSlabSolver::factor(int nx, std::int64_t ny, std::in
   // fails on only SOME ranks' own interior matrix (never expected for
   // this operator's SPD structure, but checked rather than assumed) can
   // never strand the others inside the Schur-assembly allgather below --
-  // the same stranding hazard the row-band-size refusal was found to have
-  // on the host, fixed here the OTHER way the task's own diagnosis named
-  // ("agreed first... then every rank refuses with the same code").
+  // the same stranding hazard the row-band-size refusal below avoids, here
+  // by the OTHER route: agree first, then every rank refuses with the same
+  // code.
   bool local_ok = true;
   Eigen::MatrixXd s_own = a_gg_own;
   if (n_interior > 0) {

@@ -48,9 +48,9 @@ constexpr Vertex kNoVertex = 0xFFFFFFFFu;
 }
 
 // ---------------------------------------------------------------------------
-// The iteration-region rule (spec Section 5.3, Task 7.2).
+// The iteration-region rule (spec Section 5.3).
 //
-// Task 7.2 fills `IterationRegion::carried`: the coupler buffers whose value at
+// Lowering fills `IterationRegion::carried`: the coupler buffers whose value at
 // sweep k is formed from their value at sweep k-1 -- today, the output of a
 // `Relax` (or `Accelerate`) node inside the region. That is the marker in the
 // IR this gate was waiting for. Before it existed, `g.iterate({...})` lowered
@@ -200,7 +200,7 @@ class CarriedValues {
 [[nodiscard]] bool is_loop_carried(const OperatorDAG& dag,
                                    const CarriedValues& carried,
                                    const Node& consumer, ArcId in) {
-  // Spec Section 5.3 / Task 7.2: the iteration region carries this value from the
+  // Spec Section 5.3: the iteration region carries this value from the
   // previous sweep, so it constrains nothing inside this one. See the comment
   // on CarriedValues for the two guards that keep this from being a false
   // negative. Checked before the `consumer.output.valid()` guard below only
@@ -210,7 +210,7 @@ class CarriedValues {
   const TimeLevel& from = dag.arc(in).type.time;
   const TimeLevel& to = dag.arc(consumer.output).type.time;
   // A dependence on a *previous* iterate is likewise carried by the iteration
-  // loop. No lowering rule types an arc at iterate < 0 yet -- Task 7.2's
+  // loop. No lowering rule types an arc at iterate < 0 yet -- the
   // carried set is the marker that does fire -- but the rule is here so that
   // when one does, the gate does not start rejecting every iteration region.
   if (from.iterate < 0 && from.iterate < to.iterate) return true;
@@ -422,29 +422,27 @@ CycleReport prove_acyclic(const CouplingGraph& g, const OperatorDAG& dag,
   // caller that skipped validation or a rule that grows a new way to drop a
   // chain.
   //
-  // Three kinds are excluded: a `Sink`'s output arc is the end of the
-  // chain, a `Residual`'s is read by the iteration driver through
-  // `IterationRegion::residuals`, and neither is read by another DAG
-  // node -- both terminal by construction. A `WindowAdvance`'s own
-  // output, unlike those two, IS read by a real DAG node under this
-  // track's chosen design: its member's own field transfer sources FROM
-  // it (`seed_window_source_arcs()`, src/ir/window_lowering.cpp, seeds
-  // exactly the arc `lower_channel()`, src/ir/rules_channel.cpp, then
-  // reads as that channel's `ctx.source_arc`), so this exclusion never
-  // actually fires for one today -- kept anyway, defensively, since a
-  // WindowAdvance node's OTHER outgoing link, a partner's own
-  // `OpAttrs::window_import`, is metadata rather than a real dependency
-  // edge (making it one would close a cycle in this same untimed graph;
-  // see that field's doc comment, fuse/ir/op.hpp) and this scan has no
-  // way to see it -- excluding the kind outright is simpler than proving
-  // this scan would pass anyway for every graph `finish_window_regions()`
-  // can produce. That metadata edge's own completeness is proven by a
-  // dedicated, targeted check instead: `detail::check_window_causality()`
-  // (fuse/schedule/scheduler.cpp) verifies every `window_import` that is
-  // SET is satisfied by a genuine earlier writer (or, if loop-carried, a
-  // same-window writer anywhere in the group) -- the equivalent guarantee
-  // this scan gives an ordinary channel, proven a different way for the
-  // same reason `Residual`'s is.
+  // Three kinds are excluded: a `Sink`'s output arc is the end of the chain, a
+  // `Residual`'s is read by the iteration driver through
+  // `IterationRegion::residuals`, and neither is read by another DAG node --
+  // both terminal by construction. A `WindowAdvance`'s own output, unlike those
+  // two, IS read by a real DAG node under this design: its member's own field
+  // transfer sources FROM it (`seed_window_source_arcs()`,
+  // src/ir/window_lowering.cpp, seeds exactly the arc `lower_channel()`,
+  // src/ir/rules_channel.cpp, then reads as that channel's `ctx.source_arc`),
+  // so this exclusion never actually fires for one today -- kept anyway,
+  // defensively, since a WindowAdvance node's OTHER outgoing link, a partner's
+  // own `OpAttrs::window_import`, is metadata rather than a real dependency
+  // edge (making it one would close a cycle in this same untimed graph; see
+  // that field's doc comment, fuse/ir/op.hpp) and this scan has no way to see
+  // it -- excluding the kind outright is simpler than proving this scan would
+  // pass anyway for every graph `finish_window_regions()` can produce. That
+  // metadata edge's own completeness is proven by a dedicated, targeted check
+  // instead: `detail::check_window_causality()` (fuse/schedule/scheduler.cpp)
+  // verifies every `window_import` that is SET is satisfied by a genuine
+  // earlier writer (or, if loop-carried, a same-window writer anywhere in the
+  // group) -- the equivalent guarantee this scan gives an ordinary channel,
+  // proven a different way for the same reason `Residual`'s is.
   //
   // The node scan alone is NOT sufficient, which is why the field scan below
   // it exists. A channel between co-located components on one region with no
@@ -758,15 +756,15 @@ CycleReport prove_acyclic(const CouplingGraph& g, const OperatorDAG& dag,
     if (n.kind == OpKind::Source) {
       side = 1;
     } else if (n.kind == OpKind::WindowAdvance) {
-      // Review 2026-10-11 IS-2: a window member's own export is this node,
-      // never a `Source` (finish_window_regions(), src/ir/window_lowering.cpp
-      // -- empty inputs, a real SSA root, exactly like Source). Treating it
-      // the same way Source is treated here is not an analogy, it is the
-      // same case: before this, no component edge was ever formed for a
-      // window member's step, so an unlagged loop through it via channels
-      // declared outside the window-scoped region (the member's clock is
-      // the window's own cadence, but this file's black-box rule does not
-      // care which clock a step counts on) was certified acyclic.
+      // A window member's own export is this node, never a `Source`
+      // (finish_window_regions(), src/ir/window_lowering.cpp -- empty inputs, a
+      // real SSA root, exactly like Source). Treating it the same way Source is
+      // treated here is not an analogy, it is the same case: without it, no
+      // component edge would be formed for a window member's step, so an
+      // unlagged loop through it via channels declared outside the
+      // window-scoped region (the member's clock is the window's own cadence,
+      // but this file's black-box rule does not care which clock a step counts
+      // on) would be certified acyclic.
       side = 1;
     } else if (n.kind == OpKind::Sink && n.origin.valid() &&
                n.origin.value() < g.channel_count()) {
@@ -968,7 +966,7 @@ CycleReport prove_acyclic(const CouplingGraph& g, const OperatorDAG& dag,
       "authorise the staggering.\n"
       "  Or make it implicit: spec Section 5.3's iteration region breaks a cycle only "
       "where it carries a previous-iterate value, and declaring the region "
-      "alone does not create one. Task 7.2 derives IterationRegion::carried "
+      "alone does not create one. IterationRegion::carried is derived "
       "from the SSA form, and a region whose channels have no .relax(omega) "
       "carries nothing, so it lowers to the same straight-line dataflow and "
       "this gate still rejects it. Add .relax(omega) to a channel inside a "

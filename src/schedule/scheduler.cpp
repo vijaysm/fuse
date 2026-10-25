@@ -167,7 +167,7 @@ static_assert(kMaxInstructionInputs == 3,
     std::size_t j = i;
     std::size_t distinct = 0;
     const std::size_t want = member_count[static_cast<std::size_t>(r)];
-    // Time windows track: stop the SAME run the moment every member has
+    // Time windows: stop the SAME run the moment every member has
     // appeared once (`distinct == want`), rather than greedily consuming
     // every following same-owner instruction regardless. A window-scoped
     // region's own window may tick several times per period (this
@@ -213,8 +213,8 @@ static_assert(kMaxInstructionInputs == 3,
               "components is the usual shape -- and it would run once, on one "
               "sweep's iterate, so its place relative to the loop is a "
               "modelling decision and is not chosen for you. Route it from "
-              "the region's output instead. (Declaration order used to matter "
-              "here and no longer does: KNOWN_ISSUES.md D1.)"};
+              "the region's output instead. (Declaration order does not "
+              "matter here.)"};
     }
     instructions[i].region_enter = r;
     instructions[j - 1].region_exit = r;
@@ -260,7 +260,7 @@ static_assert(kMaxInstructionInputs == 3,
 }
 
 /// Reorder inside each (time, phase) instant so one region's members come out
-/// contiguously -- KNOWN_ISSUES D1, fixed 2026-09-21.
+/// contiguously.
 ///
 /// The sort below orders an instant by topological rank, which is a dependence
 /// order but says nothing about grouping: two independent chains at the same
@@ -352,19 +352,18 @@ void group_regions_within_instants(const OperatorDAG& dag,
     // choosing silently is the wrong answer to it.
     //
     // Reading an arc a member PRODUCES is the opposite case and must stay
-    // groupable: the region's own sink (`Sink "pb.in"`, a non-member, reads
-    // the region's converged output) is exactly what interleaved with the
-    // body and made contiguity depend on declaration order. Deferring it past
-    // the loop is not a silent choice -- it is the only correct placement.
-    // Review 2026-10-11 IS-10: that second case needs no vector of its own --
-    // `from_outside` below is built from every input a member reads whose
-    // PRODUCER lies outside the region, so an arc a member itself produces is
-    // never marked `from_outside` regardless of who else reads it, and
-    // readiness (every instruction's inputs already written, checked above)
-    // already keeps the region's own producers ordered correctly relative to
-    // their consumers. A `member_produces` set computed and never read beyond
-    // a `(void)` cast used to sit here, inviting a future reader to assume it
-    // was load-bearing in this decision; it was not.
+    // groupable: the region's own sink (`Sink "pb.in"`, a non-member, reads the
+    // region's converged output) is exactly what interleaved with the body and
+    // made contiguity depend on declaration order. Deferring it past the loop
+    // is not a silent choice -- it is the only correct placement. That second
+    // case needs no vector of its own -- `from_outside` below is built from
+    // every input a member reads whose PRODUCER lies outside the region, so an
+    // arc a member itself produces is never marked `from_outside` regardless of
+    // who else reads it, and readiness (every instruction's inputs already
+    // written, checked above) already keeps the region's own producers ordered
+    // correctly relative to their consumers. A `member_produces` set computed
+    // and never read beyond a `(void)` cast used to sit here, inviting a future
+    // reader to assume it was load-bearing in this decision; it was not.
     bool entangled = false;
     {
       std::vector<char> from_outside(dag.arc_count(), 0);
@@ -513,7 +512,7 @@ void group_regions_within_instants(const OperatorDAG& dag,
 }  // namespace
 
 namespace detail {
-/// Time windows track: the ordering proof for the subcycling node
+/// Time windows: the ordering proof for the subcycling node
 /// (`OpKind::WindowAdvance`). Its import waveform is deliberately NOT a
 /// real `Node::inputs` edge (`OpAttrs::window_import`'s own doc comment,
 /// fuse/ir/op.hpp, explains why: a real edge closes a cycle in the untimed
@@ -544,20 +543,19 @@ namespace detail {
 ///
 /// Declared in fuse/schedule/plan.hpp's `detail` namespace, not kept
 /// anonymous here, so a test can exercise it directly against a hand-built
-/// instruction stream (this track's Unit P: the proof must hold before any
-/// lowering rule emits the node it is about).
-// Time windows track: is the field transfer that delivers `imp` a LAGGED
-// one (`Channel::lag != 0`)? Found via `imp`'s producer node's own
-// `origin` -- the channel every node in a lowered chain carries
-// (fuse/ir/lowering.cpp step 2 / src/ir/rules_channel.cpp) -- rather than
-// via region membership: a Sink is deliberately never part of any
-// `IterationRegion::body` (it is downstream of the loop, not inside it;
-// see group_regions_within_instants()'s own comment), so "loop-carried
-// inside the group" is a property of the CHANNEL, not of the writer
-// node's region membership. Returns false (today's strict rule) for an
-// invalid/out-of-range producer or origin -- a hand-built instruction
-// stream with no real CouplingGraph behind it (this track's own Unit P
-// tests) as much as a graph with no matching channel at all.
+/// instruction stream (the proof must hold before any lowering rule emits
+/// the node it is about).
+// Time windows: is the field transfer that delivers `imp` a LAGGED one
+// (`Channel::lag != 0`)? Found via `imp`'s producer node's own `origin` -- the
+// channel every node in a lowered chain carries (fuse/ir/lowering.cpp step 2 /
+// src/ir/rules_channel.cpp) -- rather than via region membership: a Sink is
+// deliberately never part of any `IterationRegion::body` (it is downstream of
+// the loop, not inside it; see group_regions_within_instants()'s own comment),
+// so "loop-carried inside the group" is a property of the CHANNEL, not of the
+// writer node's region membership. Returns false (the strict rule) for an
+// invalid/out-of-range producer or origin -- a hand-built instruction stream
+// with no real CouplingGraph behind it (as in the unit tests) as much as a
+// graph with no matching channel at all.
 //
 // Reads `effective_channel_lag()` (fuse/model/coupling_graph.hpp), not
 // `Channel::lag` directly: the compiled graph is the single source of
@@ -598,7 +596,7 @@ Result<void> check_window_causality(
   };
 
   // Pass 2: most recent dst_step at which each arc was written so far --
-  // the UNLAGGED rule, unchanged from before this track added laggedness.
+  // the UNLAGGED rule.
   std::vector<std::int64_t> last_written_step(dag.arc_count(), -1);
   for (std::size_t i = 0; i < instructions.size(); ++i) {
     const Instruction& ins = instructions[i];
@@ -719,15 +717,14 @@ bool rank_participates(const Instruction& ins, int rank, const CouplingGraph& g)
   return in_set(ins.attrs.src_rank_set) || in_set(ins.attrs.dst_rank_set);
 }
 
-/// Review 2026-10-11 IS-7: a component or channel named by more than one
-/// window-scoped region is resolved first-wins everywhere that reads it --
-/// `ClockSet`'s ctor takes the first region's window length and `break`s
-/// (clock.hpp:190-191, whose own comment calls the configuration
-/// unsupported without refusing it), and `owning_window_region()`/
-/// `owning_window_region_for_component()` (src/schedule/expand.cpp) both
-/// `return` on the first match. None of those sites refuses the overlap;
-/// this does, once, for every window-scoped region in `g`, before any of
-/// them runs.
+/// A component or channel named by more than one window-scoped region is
+/// resolved first-wins everywhere that reads it -- `ClockSet`'s ctor takes the
+/// first region's window length and `break`s (clock.hpp:190-191, whose own
+/// comment calls the configuration unsupported without refusing it), and
+/// `owning_window_region()`/`owning_window_region_for_component()`
+/// (src/schedule/expand.cpp) both `return` on the first match. None of those
+/// sites refuses the overlap; this does, once, for every window-scoped region
+/// in `g`, before any of them runs.
 [[nodiscard]] Result<void> check_window_region_overlap(const CouplingGraph& g) {
   std::unordered_map<std::uint32_t, std::uint32_t> component_region;
   std::unordered_map<std::uint32_t, std::uint32_t> channel_region;
@@ -777,9 +774,8 @@ std::vector<std::string> epoch_sequence(const ExecutionPlan& plan,
   return seq;
 }
 
-// KNOWN_ISSUES.md D57 ("Collectives" track): see this function's own
-// declaration (plan.hpp) for the full account of what agreement this
-// proves and, as importantly, what it does not.
+// See this function's own declaration (plan.hpp) for the full account of what
+// agreement this proves and, as importantly, what it does not.
 std::vector<std::string> constrain_sequence(const ExecutionPlan& plan,
                                             const CouplingGraph& g, int rank) {
   std::vector<std::string> seq;
@@ -796,10 +792,9 @@ ScheduleResult schedule(const CouplingGraph& g, const OperatorDAG& dag,
                         ExpandMode mode) {
   ScheduleResult result;
 
-  // Review 2026-10-11 IS-7: checked once, across every window-scoped region
-  // at once, before any per-region gate below runs -- those each validate
-  // one region in isolation and cannot see a component or channel a SECOND
-  // region also claims.
+  // Checked once, across every window-scoped region at once, before any
+  // per-region gate below runs -- those each validate one region in isolation
+  // and cannot see a component or channel a SECOND region also claims.
   const Result<void> no_overlap = check_window_region_overlap(g);
   if (!no_overlap.ok()) {
     result.diags.add(Severity::Error, no_overlap.error().code,
@@ -807,18 +802,18 @@ ScheduleResult schedule(const CouplingGraph& g, const OperatorDAG& dag,
     return result;
   }
 
-  // Time windows track: the legality gate for a window-scoped iteration
-  // region (fuse::CouplingWindowScope, fuse/schedule/window.hpp) must be
-  // called from schedule(), never from lower()/ir -- ir sits below
-  // schedule (docs/dev/layering.md) and cannot call validate_coupling_
-  // window() itself. Run before expand(), which also needs window_length()
-  // for its own ticking but does not repeat this gate's POLICY/ORDER/
-  // CAPACITY checks, so a misconfigured scope is reported with the precise
-  // code this gate assigns it rather than expand()'s more generic
-  // E-SCHED-EXPAND. `waveform_capacity` uses validate_coupling_window()'s
-  // own default (4096): schedule()'s RegionSizes callback sizes ordinary
-  // per-rank buffers, a different concept, and threading a dedicated
-  // capacity value through schedule()'s own signature is deferred.
+  // Time windows: the legality gate for a window-scoped iteration region
+  // (fuse::CouplingWindowScope, fuse/schedule/window.hpp) must be called from
+  // schedule(), never from lower()/ir -- ir sits below schedule
+  // (docs/dev/layering.md) and cannot call validate_coupling_window() itself.
+  // Run before expand(), which also needs window_length() for its own ticking
+  // but does not repeat this gate's POLICY/ORDER/CAPACITY checks, so a
+  // misconfigured scope is reported with the precise code this gate assigns it
+  // rather than expand()'s more generic E-SCHED-EXPAND. `waveform_capacity`
+  // uses validate_coupling_window()'s own default (4096): schedule()'s
+  // RegionSizes callback sizes ordinary per-rank buffers, a different concept,
+  // and threading a dedicated capacity value through schedule()'s own signature
+  // is deferred.
   for (std::uint32_t i = 0; i < g.iteration_region_count(); ++i) {
     const IterationRegionDecl& decl = g.iteration_region(IterationRegionIdx{i});
     if (!decl.window_scope.has_value()) continue;

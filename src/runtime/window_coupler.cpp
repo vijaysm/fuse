@@ -43,35 +43,33 @@ Result<double> mean_over(const Waveform& wf, Rational a, Rational b) {
 
 namespace {
 
-// Unit A, step 1: `Substep`/`plan_substeps`/`mean_over` are now
+// `Substep`/`plan_substeps`/`mean_over` are
 // `fuse::detail::WindowSubstep`/`plan_substeps`/`mean_over`
-// (fuse/runtime/window_coupler.hpp), unchanged, so a future subcycling-
-// node runtime dispatch can call the identical functions. These aliases
-// keep every existing use in THIS file (`Substep`, bare `plan_substeps(...)`,
-// bare `mean_over(...)`) resolving to them without a single other line
-// changing -- the safest way to widen a function's visibility without
-// touching the logic that calls it.
+// (fuse/runtime/window_coupler.hpp), unchanged, so a future subcycling-node
+// runtime dispatch can call the identical functions. These aliases keep every
+// existing use in THIS file (`Substep`, bare `plan_substeps(...)`, bare
+// `mean_over(...)`) resolving to them without a single other line changing --
+// the safest way to widen a function's visibility without touching the logic
+// that calls it.
 using Substep = detail::WindowSubstep;
 using detail::plan_substeps;
 using detail::mean_over;
 
-// The user's decision (relayed 2026-09-29): a convergence measure's
-// residual/reference must use "the SAME norm the Runner's block uses
-// (same weighting, same deterministic reduction) so the two cannot
-// disagree by rounding." `iteration.cpp`'s block residual/value norms
+// A convergence measure's residual/reference must use "the SAME norm the
+// Runner's block uses (same weighting, same deterministic reduction) so the two
+// cannot disagree by rounding." `iteration.cpp`'s block residual/value norms
 // call `fuse::num::deterministic_norm_squared[_diff]<Space>`
 // (space_kernels.hpp) -- a fixed-size-chunk, sequential-within-chunk,
-// sequential-across-chunk reduction whose own documentation states its
-// result is independent of the actual Kokkos backend/thread count, by
-// construction (chunk boundaries are fixed by `n` alone; only the
-// ASSIGNMENT of chunks to threads varies, and each chunk's own partial
-// is summed in one thread regardless). A plain sequential C++ loop that
-// visits chunks and elements in the SAME ascending order therefore
-// computes the identical bits, with no Kokkos view or execution space
-// needed -- this coupler has neither. `deterministic_chunks`/
-// `kDeterministicChunk` are the plain (non-templated) halves of that
-// same header, reused here so a change to the chunk size cannot make
-// this drift from `iteration.cpp`.
+// sequential-across-chunk reduction whose own documentation states its result
+// is independent of the actual Kokkos backend/thread count, by construction
+// (chunk boundaries are fixed by `n` alone; only the ASSIGNMENT of chunks to
+// threads varies, and each chunk's own partial is summed in one thread
+// regardless). A plain sequential C++ loop that visits chunks and elements in
+// the SAME ascending order therefore computes the identical bits, with no
+// Kokkos view or execution space needed -- this coupler has neither.
+// `deterministic_chunks`/`kDeterministicChunk` are the plain (non-templated)
+// halves of that same header, reused here so a change to the chunk size cannot
+// make this drift from `iteration.cpp`.
 double deterministic_norm_squared_plain(const double* v, std::size_t n) {
   const std::size_t n_chunks = num::deterministic_chunks(n);
   std::vector<double> scratch(n_chunks, 0.0);
@@ -343,13 +341,12 @@ Result<std::unique_ptr<WindowCoupler>> WindowCoupler::create(
     }
   }
 
-  // The verified envelope (KNOWN_ISSUES.md D7). A member straddles a window
-  // end only if it is Fixed and its step does not divide the window. The
-  // replay handles ONE such member per window: two replay against each
-  // other's unresolved trajectories, and a Fixed step longer than the window
-  // spans a whole window it never samples. Outside the envelope the result
-  // was measured to be wrong without any error, so it is refused here rather
-  // than run.
+  // The verified envelope. A member straddles a window end only if it is Fixed
+  // and its step does not divide the window. The replay handles ONE such member
+  // per window: two replay against each other's unresolved trajectories, and a
+  // Fixed step longer than the window spans a whole window it never samples.
+  // Outside the envelope the result was measured to be wrong without any error,
+  // so it is refused here rather than run.
   {
     const std::string* first_straddler = nullptr;
     for (const WindowMember& m : members) {
@@ -389,13 +386,12 @@ Result<std::unique_ptr<WindowCoupler>> WindowCoupler::create(
     }
   }
 
-  // The user's decision (relayed 2026-09-29): a convergence measure names
-  // a field TRANSFER -- one of `channels`, by its own `name` -- not a raw
-  // field, and residual/reference for that measure are computed over
-  // ONLY that transfer's own delivered waveform (sweep_window()'s own
-  // per-measure convergence check, below). A measure naming a transfer
-  // this coupler does not have is rejected here, by name, rather than
-  // silently falling back to some default at sweep time.
+  // A convergence measure names a field TRANSFER -- one of `channels`, by its
+  // own `name` -- not a raw field, and residual/reference for that measure are
+  // computed over ONLY that transfer's own delivered waveform (sweep_window()'s
+  // own per-measure convergence check, below). A measure naming a transfer this
+  // coupler does not have is rejected here, by name, rather than silently
+  // falling back to some default at sweep time.
   for (const ConvergenceMeasure& cm : cfg.convergence.measures()) {
     bool found = false;
     for (const WindowChannel& ch : channels) {
@@ -480,13 +476,12 @@ Result<void> WindowCoupler::resolve_pending_straddles(Rational T0) {
       if (clock < prev_end && prev_end < end) {
         // This chunk straddles prev_end: split it exactly there, same as
         // sweep_window's straddling substep, and via the SAME shared
-        // choreography (`detail::advance_straddle_split()`, Unit A, step
-        // 3) -- here reading the previous window's converged
-        // `last_window_waveform`/`history` instead of this sweep's live
-        // `delivered[]`. The split value itself is never used here (the
-        // replay's whole point is to reproduce the component's state, not
-        // to record it anywhere new), so `out_at_split` is a throwaway
-        // scratch buffer.
+        // choreography (`detail::advance_straddle_split()`) -- here reading the
+        // previous window's converged `last_window_waveform`/`history` instead
+        // of this sweep's live `delivered[]`. The split value itself is never
+        // used here (the replay's whole point is to reproduce the component's
+        // state, not to record it anywhere new), so `out_at_split` is a
+        // throwaway scratch buffer.
         std::vector<double> scratch(m.length);
         const Result<void> split_r = detail::advance_straddle_split(
             m, clock, prev_end, end, window_index_, 0,
@@ -616,15 +611,14 @@ Result<void> WindowCoupler::sweep_window(Rational T0, Rational T1) {
   // Seed y_fed (sweep 0's "what was fed") from the driver's documented
   // predictor: extrapolate_boundary_value(), a fit of degree >= 1 through
   // the last max(order, 2) converged window-end values -- the standard
-  // waveform-relaxation predictor, at least second order as the user's
-  // rule requires. (Reverted 2026-09-29: an earlier attempt to seed this
-  // from the previous window's own fine-grained waveform, shifted back
-  // one window length, was a ZEROTH-order predictor in time --
-  // persistence, not extrapolation -- and needed MORE sweeps to converge
-  // (measured: gray_scott_multirate's pinned totals rose 9/13/12 ->
-  // 12/16/15), which a strictly more accurate initial guess cannot do.
-  // The fix belongs on the Runner side instead, matching this predictor
-  // exactly -- see iteration.cpp's own advance_window().)
+  // waveform-relaxation predictor, at least second order as the design
+  // requires. (Seeding this from the previous window's own fine-grained
+  // waveform, shifted back one window length, would be a ZEROTH-order
+  // predictor in time -- persistence, not extrapolation -- and needs MORE
+  // sweeps to converge (measured: gray_scott_multirate's pinned totals rose
+  // 9/13/12 -> 12/16/15), which a strictly more accurate initial guess
+  // cannot do. The Runner side instead matches this predictor exactly -- see
+  // iteration.cpp's own advance_window().)
   {
     std::size_t idx = 0;
     for (std::size_t i = 0; i < n; ++i) {
@@ -722,8 +716,8 @@ Result<void> WindowCoupler::sweep_window(Rational T0, Rational T1) {
   // The members whose own outgoing waveform is part of the accelerated
   // vector: every member under Jacobi (today's behaviour, unchanged);
   // under GaussSeidel, only those that do not provide an unlagged
-  // channel -- "only the lagged direction's waveform" (this track's own
-  // design note on acceleration). `accel_member_offset[i]` is member i's
+  // channel -- "only the lagged direction's waveform" (see the design note on
+  // acceleration). `accel_member_offset[i]` is member i's
   // own slice's start within the PROJECTED vector, valid only for `i` in
   // `accel_members`; `member_base[i]` above is its start within the
   // FULL one -- the projection below copies between the two.
@@ -790,32 +784,30 @@ Result<void> WindowCoupler::sweep_window(Rational T0, Rational T1) {
 
       for (const Substep& sub : steps[i]) {
         if (sub.straddle && T1 > sub.t0) {
-          // Split the advance() exactly AT T1 instead of taking one
-          // advance() over the whole [sub.t0, sub.t1) with a single
-          // BLENDED mean and then interpolating the value AT T1 between
-          // the two endpoint STATES. That interpolation does not recover
-          // x(T1) to the substep's own order: x(T1) depends on the TRUE
-          // mean over [sub.t0, T1) specifically, and a state computed by
-          // advancing with a mean valid for the LONGER, blended interval
-          // does not sit on the same trajectory between t0 and T1 that a
-          // direct advance() with mean_in would produce. Splitting the
-          // call -- advance to T1 with mean_in (exactly the non-straddle
-          // formula, restricted to [sub.t0, T1)), then continue to
-          // sub.t1 with mean_tail -- makes the committed T1 value as
-          // accurate as an ordinary substep's own endpoint, which is what
-          // this member's Adjustable counterpart already gets for free
-          // (its last substep simply ends at T1). This is also what the
-          // validated Python reference implements (run_substeps3's two
-          // advance() calls at the straddle boundary); the single-call
-          // interpolation was a divergence from it introduced when this
-          // was ported to C++.
-          // Unit A, step 3: the split-advance choreography itself (advance
-          // to the split point with the in-window mean, record the exact
-          // split value, then -- unless the split point IS the chunk's own
-          // end -- advance the tail with the blended boundary/extrapolate
-          // mean) is shared with `resolve_pending_straddles()`'s replay via
-          // `detail::advance_straddle_split()`; only the callbacks below
-          // (which waveform/history they read) are specific to this sweep.
+          // Split the advance() exactly AT T1 instead of taking one advance()
+          // over the whole [sub.t0, sub.t1) with a single BLENDED mean and then
+          // interpolating the value AT T1 between the two endpoint STATES. That
+          // interpolation does not recover x(T1) to the substep's own order:
+          // x(T1) depends on the TRUE mean over [sub.t0, T1) specifically, and
+          // a state computed by advancing with a mean valid for the LONGER,
+          // blended interval does not sit on the same trajectory between t0 and
+          // T1 that a direct advance() with mean_in would produce. Splitting
+          // the call -- advance to T1 with mean_in (exactly the non-straddle
+          // formula, restricted to [sub.t0, T1)), then continue to sub.t1 with
+          // mean_tail -- makes the committed T1 value as accurate as an
+          // ordinary substep's own endpoint, which is what this member's
+          // Adjustable counterpart already gets for free (its last substep
+          // simply ends at T1). This is also what the validated Python
+          // reference implements (run_substeps3's two advance() calls at the
+          // straddle boundary); the single-call interpolation was a divergence
+          // from it introduced when this was ported to C++. The split-advance
+          // choreography itself (advance to the split point with the in-window
+          // mean, record the exact split value, then -- unless the split point
+          // IS the chunk's own end -- advance the tail with the blended
+          // boundary/extrapolate mean) is shared with
+          // `resolve_pending_straddles()`'s replay via
+          // `detail::advance_straddle_split()`; only the callbacks below (which
+          // waveform/history they read) are specific to this sweep.
           std::vector<double> v_at_t1(m.length);
           const Result<void> split_r = detail::advance_straddle_split(
               members_[i], sub.t0, T1, sub.t1, window_index_, k,
@@ -940,17 +932,15 @@ Result<void> WindowCoupler::sweep_window(Rational T0, Rational T1) {
     if (cfg_.convergence.empty()) {
       converged = resid_norm <= 1e-10 * std::max(1.0, ref_norm);
     } else {
-      // The user's decision (relayed 2026-09-29): "each measure is tested
-      // against the residual of the field transfer it names, as the
-      // Runner does." Measure `mi` names channel `convergence_channel_
-      // [mi]` (create() already proved this index is valid); its
-      // residual/reference are the deterministic norms (matching
+      // "Each measure is tested against the residual of the field transfer it
+      // names, as the Runner does." Measure `mi` names channel
+      // `convergence_channel_[mi]` (create() already proved this index is
+      // valid); its residual/reference are the deterministic norms (matching
       // iteration.cpp's block computation bit-for-bit, see
-      // deterministic_norm_squared[_diff]_plain above) over ONLY that
-      // channel's CONSUMER's own flat slice of (y_new, y_fed) -- never
-      // the whole coupler's `total`-length vector, which is what made
-      // the driver disagree with the Runner's own per-block stopping
-      // rule before this fix.
+      // deterministic_norm_squared[_diff]_plain above) over ONLY that channel's
+      // CONSUMER's own flat slice of (y_new, y_fed) -- never the whole
+      // coupler's `total`-length vector, which is what made the driver disagree
+      // with the Runner's own per-block stopping rule before this fix.
       std::vector<double> res(cfg_.convergence.size());
       std::vector<double> ref(cfg_.convergence.size());
       for (std::size_t mi = 0; mi < cfg_.convergence.size(); ++mi) {

@@ -30,8 +30,8 @@
 // data motion: pack `owned[ans_index[k]]` into a send buffer ordered by
 // `ans_counts`/`ans_displs`, one MPI_Alltoallv into a receive buffer
 // ordered by `req_counts`/`req_displs`, then unpack `ghosts[fill_index[k]]
-// = recv[k]`. A single MPI_Alltoallv per update() call is what the task's
-// own contract names explicitly; persistent point-to-point communication
+// = recv[k]`. A single MPI_Alltoallv per update() call is what the
+// contract names explicitly; persistent point-to-point communication
 // would save the (fixed, amortised-once) pattern's setup cost on every
 // call, which Alltoallv already does not pay again -- the only remaining
 // saving would be the Alltoallv call's own internal bookkeeping versus a

@@ -74,7 +74,7 @@ set_target_properties(fuse-coupler-base PROPERTIES
   # TARGET's own name, not onto the fuse::base ALIAS above -- an installed
   # consumer would otherwise see fuse::fuse-coupler-base instead of fuse::base
   # and every other layer's alias, silently diverging from the in-tree name
-  # docs/dev/conventions.md promises (REVIEW.md R-25/BT-F9). EXPORT_NAME makes
+  # docs/dev/conventions.md promises. EXPORT_NAME makes
   # the two agree; every layer below sets the same property.
   EXPORT_NAME base
   CXX_VISIBILITY_PRESET hidden      # the C ABI exports one symbol per ABI; nothing else leaks
@@ -103,12 +103,11 @@ target_link_libraries(fuse-coupler-model PUBLIC fuse::base)
 # fetched on any machine without an installed copy (FuseDependencies.cmake),
 # which makes it an in-tree build target with no package of its own to
 # install(EXPORT) alongside -- CMake refuses to export fuse-coupler-model
-# otherwise ("requires target yaml-cpp that is not in any export set",
-# REVIEW.md R-25/BT-F9). This tells CMake the dependency is real for OUR
-# build only and never becomes part of what an installed consumer must
-# supply through this package; a consumer linking fuse::model with a
-# fetched yaml-cpp must find/link yaml-cpp itself (documented in
-# cmake/fuse-couplerConfig.cmake.in).
+# otherwise ("requires target yaml-cpp that is not in any export set"). This
+# tells CMake the dependency is real for OUR build only and never becomes part
+# of what an installed consumer must supply through this package; a consumer
+# linking fuse::model with a fetched yaml-cpp must find/link yaml-cpp itself
+# (documented in cmake/fuse-couplerConfig.cmake.in).
 target_link_libraries(fuse-coupler-model PRIVATE $<BUILD_LOCAL_INTERFACE:yaml-cpp::yaml-cpp>)
 set_target_properties(fuse-coupler-model PROPERTIES
   EXPORT_NAME model
@@ -162,7 +161,7 @@ set_target_properties(fuse-coupler-schedule PROPERTIES
 # code does not know which factorisation is present. Sits beside `num` rather
 # than under it: `num` calls it, nothing calls `num` from here.
 #
-# "Containers" track: the row-distributed DistVector/DistSparseMatrix pair
+# The row-distributed DistVector/DistSparseMatrix pair
 # (comm_serial.cpp is the always-built, one-participant Reducer/
 # GhostExchanger; comm_mpi.cpp is the MPI implementation of the same two
 # facades, added below only under FUSE_ENABLE_MPI, the same conditional
@@ -170,7 +169,7 @@ set_target_properties(fuse-coupler-schedule PROPERTIES
 add_library(fuse-coupler-linalg
   linalg/least_squares.cpp
   linalg/comm_serial.cpp
-  # Migration track, 2026-10-15: the shared GPU-aware MPI probe
+  # The shared GPU-aware MPI probe
   # (fuse::linalg::mpi_is_gpu_aware(), comm.hpp) -- always built, like
   # comm_serial.cpp above, not only under FUSE_ENABLE_MPI, since a
   # no-MPI build still needs a definition that returns false.
@@ -227,7 +226,7 @@ add_library(fuse-coupler-num
   num/accel_relaxation.cpp
   num/kernels_inst.cpp
   num/residual_norm.cpp
-  # S7.2: the native Jacobian-free Newton-Krylov coupler
+  # The native Jacobian-free Newton-Krylov coupler
   # (docs/dev/newton-krylov.md). line_search.cpp is the pluggable BT/CP/Basic
   # strategy newton_krylov.cpp's own line-search step dispatches to; neither
   # needs fuse::runtime (the layering newton_krylov.hpp's own header comment
@@ -271,10 +270,10 @@ target_compile_definitions(fuse-coupler-transport PUBLIC
   FUSE_CONNECT_ACCEPT_ENABLED=$<BOOL:${FUSE_ENABLE_CONNECT_ACCEPT}>)
 target_compile_features(fuse-coupler-transport PUBLIC cxx_std_20)
 target_link_libraries(fuse-coupler-transport PUBLIC fuse::schedule)
-# runtime-exchange track: mpi_transport.cpp now calls the shared
-# fuse::linalg::mpi_is_gpu_aware() probe (comm.hpp) instead of its own
-# duplicate -- PRIVATE, the same visibility fuse-coupler-backend already
-# gives this same edge, since nothing transport exports depends on linalg.
+# mpi_transport.cpp calls the shared
+# fuse::linalg::mpi_is_gpu_aware() probe (comm.hpp) -- PRIVATE, the same
+# visibility fuse-coupler-backend already gives this same edge, since nothing
+# transport exports depends on linalg.
 target_link_libraries(fuse-coupler-transport PRIVATE fuse::linalg)
 if(FUSE_ENABLE_MPI)
   target_link_libraries(fuse-coupler-transport PUBLIC MPI::MPI_CXX)
@@ -285,7 +284,7 @@ set_target_properties(fuse-coupler-transport PROPERTIES
   VISIBILITY_INLINES_HIDDEN ON
 )
 
-# ---- S6 phase 3, "MPI connect" track: begin -------------------------------
+# ---- MPI connect: begin ----------------------------------------------------
 # transport/connect.cpp: fuse::transport::connect() (inter-executable rank
 # rendezvous). Added unconditionally, not inside the FUSE_ENABLE_MPI block
 # above, for the same reason backend/nodal_remap_distributed.cpp is (see
@@ -295,9 +294,9 @@ set_target_properties(fuse-coupler-transport PROPERTIES
 # check_mpmd_layout, wait_for_port_file) are header-only inline functions in
 # connect.hpp, needing no library source at all to be tier-0 testable.
 target_sources(fuse-coupler-transport PRIVATE transport/connect.cpp)
-# ---- S6 phase 3, "MPI connect" track: end ---------------------------------
+# ---- MPI connect: end ------------------------------------------------------
 
-# ---- S6 phase 3, "LowFive" track: begin -----------------------------------
+# ---- LowFive: begin --------------------------------------------------------
 # transport/lowfive_transport.cpp is already in the add_library() sources
 # list above (every configuration, per that file's own top-of-file comment);
 # what was missing is the actual link: without this, the #include <hdf5.h>
@@ -315,13 +314,12 @@ if(FUSE_ENABLE_LOWFIVE)
   # applies a target's own include directories to every one of its
   # sources, and every one of them transitively includes fuse/base/
   # result.hpp (via fuse/transport/transport.hpp) and needs fmt 12.
-  # Measured, this session, from a FRESH configure with /opt/lowfive;
-  # /opt/hdf5 FIRST on CMAKE_PREFIX_PATH: EVERY source in this target
-  # failed with an identical fmt/format-inl.h consteval error, including
-  # lowfive_transport.cpp itself -- contradicting this track's own
-  # earlier assumption ("lowfive_transport.cpp compiles because it
-  # includes no FUSE fmt-using header": false, it includes
-  # transport.hpp, which includes result.hpp directly).
+  # Measured from a FRESH configure with /opt/lowfive; /opt/hdf5 FIRST on
+  # CMAKE_PREFIX_PATH: EVERY source in this target failed with an identical
+  # fmt/format-inl.h consteval error, including lowfive_transport.cpp itself
+  # -- so it is NOT true that lowfive_transport.cpp compiles because it
+  # includes no FUSE fmt-using header: it includes transport.hpp, which
+  # includes result.hpp directly.
   fuse_link_lowfive_with_fmt_fix(fuse-coupler-transport)
   # LOWFIVE_HAVE_DIST (cmake/FindLowFive.cmake): whether a liblowfive-dist
   # archive was found alongside the main library. lowfive_transport.cpp's
@@ -335,12 +333,11 @@ if(FUSE_ENABLE_LOWFIVE)
     target_compile_definitions(fuse-coupler-transport PRIVATE FUSE_LOWFIVE_DIST_LIB_FOUND=1)
   endif()
 
-  # ---- S6 phase 3 (Conformance, "LowFive" track), Unit 3b: the loadable
-  # HDF5 VOL plugin -----------------------------------------------------
+  # ---- The loadable HDF5 VOL plugin ------------------------------------------
   # TWO OBJECT libraries with DISJOINT dependencies, not one translation
-  # unit linking both fuse::model and fuse::lowfive -- the lead's own
-  # ruling after a from-clean-configure build failure a single-TU version
-  # (and, separately, a single-link-order "fix" to it) both missed:
+  # unit linking both fuse::model and fuse::lowfive -- a
+  # from-clean-configure build fails for a single-TU version (and,
+  # separately, for a single-link-order "fix" to it):
   # lowfive_plugin_internal.hpp's own header comment has the full account
   # of why ANY translation unit seeing both a FUSE header that needs fmt
   # 12 (fuse/base/result.hpp) and a LowFive header (whose own include
@@ -402,7 +399,7 @@ if(FUSE_ENABLE_LOWFIVE)
   # plugin's entire public API (HDF5's own loader contract fixes their
   # names and requires default visibility to dlsym() them).
 endif()
-# ---- S6 phase 3, "LowFive" track: end -------------------------------------
+# ---- LowFive: end ----------------------------------------------------------
 
 # ---------------------------------------------------------------- search
 # fuse::search: the ArborX-backed spatial index (BVH point/box queries,
@@ -444,7 +441,8 @@ set_target_properties(fuse-coupler-search PROPERTIES
 # ---------------------------------------------------------------- backend
 # Mesh access and spatial/space-time transfer behind one interface. Only the
 # serial mesh and the space-time projection are here; the mesh database and
-# weight generators that need external libraries arrive at S5.
+# weight generators that need external libraries are enabled by their own
+# options.
 add_library(fuse-coupler-backend
   backend/serial_backend.cpp
   backend/supermesh.cpp
@@ -459,29 +457,28 @@ add_library(fuse-coupler-backend
   backend/native_mesh_io.cpp
   backend/native_migration.cpp
   # The planar/volumetric remap halo for NativeMeshBackend (docs/dev/
-  # native-halo.md, "Halo" track). Its own single MPI translation unit for
+  # native-halo.md). Its own single MPI translation unit for
   # the box allgather, the same isolation native_migration.cpp uses one
   # function up; the pack/merge/covering-set pieces are pure and compile
   # unconditionally.
   backend/native_halo.cpp
   # Supermesh intersection: the real implementation needs MOAB, and the
   # file's own no-MOAB path refuses with E-REMAP-NOMOAB rather than
-  # leaving the symbol undefined. S5 turns the option on.
+  # leaving the symbol undefined.
   backend/intx_weights.cpp
   backend/tempest_weights.cpp
   # MOAB-free moving-least-squares remap weights for point clouds and for
-  # mesh fields sampled at vertices/centroids (the "Point clouds" track).
+  # mesh fields sampled at vertices/centroids.
   # Dependency-free like intx_weights.cpp's own no-MOAB path: needs only
   # fuse::search (below) for k-nearest and fuse::linalg (below) for the
   # local polynomial solve, neither of which needs MOAB.
   backend/mls_weights.cpp
-  # Nodal-remap track, step 2: distributed rows and the exact transpose
-  # (KNOWN_ISSUES D8). Its own single MPI translation unit, isolated the same
-  # way native_migration.cpp is above -- the whole file body is inside
-  # #if FUSE_HAVE_MPI, so it compiles to an empty translation unit without
-  # MPI, exactly like transport/comm_graph.cpp.
+  # Distributed rows and the exact transpose of the nodal remap. Its own single
+  # MPI translation unit, isolated the same way native_migration.cpp is above --
+  # the whole file body is inside #if FUSE_HAVE_MPI, so it compiles to an empty
+  # translation unit without MPI, exactly like transport/comm_graph.cpp.
   backend/nodal_remap_distributed.cpp
-  # D73 (automatic remap halo, owner decision 2026-10-18): the caller-driven
+  # Automatic remap halo: the caller-driven
   # step that gives every `OpKind::BuildRemapHalo` instruction `lower()`
   # emitted (fuse::ir, below this layer) its real effect, by calling
   # `fuse::build_remap_halo()` (this same library, backend/intx_weights.cpp)
@@ -495,7 +492,7 @@ add_library(fuse::backend ALIAS fuse-coupler-backend)
 target_compile_features(fuse-coupler-backend PUBLIC cxx_std_20)
 target_link_libraries(fuse-coupler-backend PUBLIC fuse::schedule)
 # fuse::search sits BELOW fuse::backend (docs/dev/layering.md), added here by
-# the nodal-remap track: general_interp.hpp (header-only, included from
+# the nodal remap: general_interp.hpp (header-only, included from
 # consistent_interp.hpp / intx_weights.cpp) calls fuse::search::element_boxes
 # (template, inline) and fuse::search::BoxIndex (pimpl'd, non-inline methods
 # defined in libfuse-coupler-search) for the broad-phase point-location query
@@ -570,7 +567,7 @@ add_library(fuse-coupler-runtime
   runtime/checkpoint_support.cpp
   runtime/window_coupler.cpp
   runtime/fixed_point_residual.cpp
-  # Restart track (docs/dev/restart.md), Stage B Slice 1: the Runner-level
+  # Restart (docs/dev/restart.md): the Runner-level
   # orchestration (time/period_index + component/accelerator field
   # restart) -- backend-agnostic, so it lives here unconditionally rather
   # than in the FUSE_ENABLE_HDF5-gated library below, which supplies only
@@ -578,7 +575,7 @@ add_library(fuse-coupler-runtime
   # abstract fuse::RestartWriter/RestartReader interface, never HDF5
   # itself.
   runtime/restart.cpp
-  # KNOWN_ISSUES.md D57 ("Collectives" track): FUSE_COLLECTIVE_TRACE's own
+  # FUSE_COLLECTIVE_TRACE's own
   # pure formatter, called from run_region() (iteration.cpp) -- kept in
   # its own translation unit so test/runtime/collective_trace_test.cpp
   # can pin the formatter's own output without linking the whole
@@ -596,8 +593,8 @@ set_target_properties(fuse-coupler-runtime PROPERTIES
 )
 
 # ---------------------------------------------------------------- petsc
-# S7's Newton seam, second substrate (PetscToken track, 2026-10-11,
-# docs/dev/newton-krylov.md Sec. 10): a fuse::LinearizationToken backed by
+# The Newton seam's second substrate
+# (docs/dev/newton-krylov.md Sec. 10): a fuse::LinearizationToken backed by
 # PETSc's MATMFFD, and a SNES driver over the same ResidualFn shape the
 # native fuse::num::solve() (just below, in fuse::num) already takes. Built
 # ONLY under FUSE_ENABLE_PETSC -- a build without it registers this target
@@ -635,7 +632,7 @@ if(FUSE_ENABLE_PETSC)
 endif()
 
 # --------------------------------------------------------------- restart
-# Restart track (docs/dev/restart.md), Stage B Slice 1: the CONCRETE
+# Restart (docs/dev/restart.md): the CONCRETE
 # HDF5 writer/reader (hid_t never escapes this library's own public
 # headers -- fuse/restart_io/hdf5_restart_io.hpp's own header comment).
 # Built ONLY under FUSE_ENABLE_HDF5, against FUSE_RESTART_HDF5_TARGET
@@ -668,22 +665,20 @@ if(FUSE_ENABLE_HDF5)
   # right next to FUSE_ENABLE_PETSC's identical <petsc.h>/<mpi.h> fix);
   # PRIVATE because <hdf5.h> appears only in this library's own .cpp.
   target_link_libraries(fuse-coupler-restart-io PRIVATE ${FUSE_RESTART_HDF5_TARGET} MPI::MPI_C)
-  # Restart track round 2, item 5: owner decision 2's cross-rank half (a
-  # genuine MPI_Allgatherv collective, not the INCIDENTAL <mpi.h> the
-  # comment above explains) -- a SEPARATE translation unit, added only
-  # under FUSE_ENABLE_MPI, so the distinction between "mpi.h leaked in
-  # from HDF5's own header" and "this file does a real collective" stays
-  # visible to a reader of this block, the same separation src/linalg's
-  # comm_serial.cpp/comm_mpi.cpp pair already keeps for the identical
-  # reason (that CMakeLists.txt block's own comment). Compiled here only
-  # (never run: MPI cannot start in this sandbox, per the owner's
-  # standing rule) -- host_pending names the exact mpirun command the
-  # owner runs this against.
+  # The cross-rank half of the batched id check (a genuine MPI_Allgatherv
+  # collective, not the INCIDENTAL <mpi.h> the comment above explains) -- a
+  # SEPARATE translation unit, added only under FUSE_ENABLE_MPI, so the
+  # distinction between "mpi.h leaked in from HDF5's own header" and "this
+  # file does a real collective" stays visible to a reader of this block,
+  # the same separation src/linalg's comm_serial.cpp/comm_mpi.cpp pair
+  # already keeps for the identical reason (that CMakeLists.txt block's own
+  # comment). It runs only under an MPI launcher: a sandbox where MPI cannot
+  # start compiles it but cannot run it.
   if(FUSE_ENABLE_MPI)
     target_sources(fuse-coupler-restart-io PRIVATE restart_io/collective_check_mpi.cpp)
-    # Restart track round 2, item 3 (the brief's own main item): the
-    # collective multi-task WRITE -- include/fuse/restart_io/
-    # hdf5_restart_io_mpi.hpp's own header comment for the design.
+    # The collective multi-task WRITE --
+    # include/fuse/restart_io/hdf5_restart_io_mpi.hpp's own header comment
+    # for the design.
     # Links MPI::MPI_CXX (not just MPI_C above) for MPI_Exscan/
     # MPI_Allreduce/MPI_Bcast/MPI_Barrier used directly in this TU.
     target_sources(fuse-coupler-restart-io PRIVATE restart_io/hdf5_restart_io_mpi.cpp)
@@ -703,26 +698,24 @@ endif()
 # thin, exception-containing C wrapper over the same public C++ surface
 # examples/ uses, not a new layer of the coupler itself.
 #
-# Built TWICE from one compilation (an OBJECT library compiled once, linked
-# into both variants) because the task that specified this library asked for
-# both a shared and a static consumer: `fuse::abi` (shared) is what
-# `dlopen()` and the install consumer use; `fuse::abi-static` (the archive)
-# is for a caller that links everything into one binary and wants no extra
-# .so to ship. -fvisibility=hidden is set on the OBJECT library, so it
-# applies identically to both: the static archive's object files carry
-# hidden symbols the same way the shared library's dynamic symbol table
-# does, which is what keeps `fuse_coupler_abi` the one name either variant
-# exposes (abi-design.md point 1).
-# abi/provider_adapter.cpp and abi/registry.cpp (S6 phase 4, "Adapter host"
-# track): the provider direction's own C++ infrastructure -- wrapping a
-# fuse_provider_abi_v1 table as a fuse::Component, and mounting one from a
-# native Component, an in-memory table, or a dlopen'd shared object.
-# Neither exports a NEW C symbol (both are internal to this OBJECT library
-# and hidden the same way participant.cpp's own helpers are; the one C
-# symbol a PLUGIN exports, fuse_provider_abi, is never defined here -- it is
-# the plugin's own), so they cost this library nothing against "one symbol"
-# (abi-design.md point 1) while giving test/abi/conformance_test.cpp a
-# single mechanism for all four kinds it drives.
+# Built TWICE from one compilation (an OBJECT library compiled once, linked into
+# both variants) because the library serves both a shared and a static consumer:
+# `fuse::abi` (shared) is what `dlopen()` and the install consumer use;
+# `fuse::abi-static` (the archive) is for a caller that links everything into
+# one binary and wants no extra .so to ship. -fvisibility=hidden is set on the
+# OBJECT library, so it applies identically to both: the static archive's object
+# files carry hidden symbols the same way the shared library's dynamic symbol
+# table does, which is what keeps `fuse_coupler_abi` the one name either variant
+# exposes (abi-design.md point 1). abi/provider_adapter.cpp and
+# abi/registry.cpp: the provider direction's own C++ infrastructure -- wrapping
+# a fuse_provider_abi_v1 table as a fuse::Component, and mounting one from a
+# native Component, an in-memory table, or a dlopen'd shared object. Neither
+# exports a NEW C symbol (both are internal to this OBJECT library and hidden
+# the same way participant.cpp's own helpers are; the one C symbol a PLUGIN
+# exports, fuse_provider_abi, is never defined here -- it is the plugin's own),
+# so they cost this library nothing against "one symbol" (abi-design.md point 1)
+# while giving test/abi/conformance_test.cpp a single mechanism for all four
+# kinds it drives.
 add_library(fuse-abi-objects OBJECT
   abi/participant.cpp
   abi/provider_adapter.cpp
@@ -837,7 +830,7 @@ set_target_properties(fuse-abi-static PROPERTIES
 # already names in prose ("CMake package `fuse-coupler`"): every target above
 # already carries the BUILD_INTERFACE/INSTALL_INTERFACE split on its include
 # directories, so the missing half was only the install() calls themselves
-# and one Config.cmake.in (REVIEW.md R-25/BT-F9).
+# and one Config.cmake.in.
 include(GNUInstallDirs)
 
 set(FUSE_INSTALL_TARGETS

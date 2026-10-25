@@ -138,7 +138,7 @@ void TraceChainStep(const char* fn, std::size_t step_index, int rank, const char
   MPI_Comm dup = MPI_COMM_NULL;
   rc = MPI_Comm_dup(world, &dup);
   if (rc != MPI_SUCCESS) {
-    // TR-9: every rank already agreed check_mpmd_layout()'s verdict above
+    // Every rank already agreed check_mpmd_layout()'s verdict above
     // from identical gathered data, so a per-rank-divergent MPI_Comm_dup
     // outcome here cannot be reconciled by a further reduction -- the
     // ranks that succeeded go on to perform MORE collectives over `dup`
@@ -570,7 +570,7 @@ Result<void> check_connect_accept_available(bool enabled,
           "' is declared launch mode 'connect', but this build does not offer "
           "that mode: tools/probe-mpi-dynamic.sh measured that this MPI cannot "
           "connect two separately launched jobs on one node, so "
-          "FUSE_ENABLE_CONNECT_ACCEPT is OFF (KNOWN_ISSUES.md D23). Launch the "
+          "FUSE_ENABLE_CONNECT_ACCEPT is OFF. Launch the "
           "components as MPMD segments of one mpiexec instead, which needs "
           "nothing this MPI lacks, or build against an MPI whose dynamic "
           "process management works between same-node jobs -- for MPICH that "

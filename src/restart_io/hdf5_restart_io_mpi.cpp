@@ -393,9 +393,9 @@ class CollectivePointWriterImpl final : public PointWriter, public RestartWriter
     // fails while any object in the file is still open, Hid::reset()
     // discards that failure, and the file stays open with its metadata
     // unflushed when rank 0 renames it. Without this, every collectively
-    // written file is refused on read with E-RESTART-TRUNCATED ("does not open as a valid HDF5 file").
-    // H5Fclose is collective; its result is checked so a failed close is
-    // a refusal, never a renamed partial file.
+    // written file is refused on read with E-RESTART-TRUNCATED ("does not open as a valid HDF5
+    // file"). H5Fclose is collective; its result is checked so a failed close is a refusal, never a
+    // renamed partial file.
     group_.reset();
     const hid_t file_id = file_.release();
     if (file_id >= 0 && H5Fclose(file_id) < 0) {

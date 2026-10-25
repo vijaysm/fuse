@@ -176,8 +176,8 @@ PetscErrorCode snes_monitor(SNES snes, PetscInt its, PetscReal fnorm, void* raw_
 // (src/num/newton_krylov.cpp, `std::clamp(eta, opt.eta_min, opt.eta_max)`).
 // SNESKSPSetParametersEW has rtol_0, rtol_max, gamma, alpha, alpha2 and the
 // safeguard threshold -- no floor. Without one the Brusselator window on
-// this substrate reports DivergedLinearSolve on its FIRST window (host,
-// 2026-10-11, --driver runner --accel newton --substrate petsc --end 1.0:
+// this substrate reports DivergedLinearSolve on its FIRST window (with
+// --driver runner --accel newton --substrate petsc --end 1.0:
 // "DivergedLinearSolve after 3 Newton iteration(s), ||F|| = 0.000012"),
 // the same stall the native solver showed before eta_min = 1e-4 (docs/dev/
 // newton-krylov.md Sec. 9.9.2): the forcing term tightens past the accuracy
@@ -222,8 +222,8 @@ PetscErrorCode destroy_forcing_floor(void* raw) {
 }
 
 /// `SNESConvergedReason` -> `fuse::num::NewtonStatus` (docs/dev/
-/// newton-krylov.md Sec. 10's own table). Every reason this track's own
-/// tests can reach maps to a named native status; the six reasons that
+/// newton-krylov.md Sec. 10's own table). Every reason the tests
+/// can reach maps to a named native status; the six reasons that
 /// have no native counterpart at all (`SNES_CONVERGED_ITS`,
 /// `SNES_CONVERGED_USER`, `SNES_DIVERGED_INNER`, `SNES_DIVERGED_LOCAL_MIN`,
 /// `SNES_DIVERGED_TR_DELTA`, `SNES_DIVERGED_USER`) fall to
@@ -278,7 +278,7 @@ Result<fuse::num::NewtonResult> solve(const fuse::num::ResidualFn& f, DistVector
                                       const fuse::num::PreconditionerApplyFn& precond_apply,
                                       const fuse::num::RefreshPreconditionerFn& refresh_precond,
                                       const SnesOptions& opt) {
-  // KNOWN_ISSUES.md D31/D32: this refusal is about a NONZERO GHOST
+  // This refusal is about a NONZERO GHOST
   // region, never about rank count -- a window- or ordinary-Newton `x`
   // built by `run_region_newton_window()`/`run_region_newton()` always
   // carries `ghost_size() == 0` regardless of how many ranks it is
@@ -305,12 +305,11 @@ Result<fuse::num::NewtonResult> solve(const fuse::num::ResidualFn& f, DistVector
                        "MPI_COMM_NULL -- the caller must supply a real "
                        "communicator (fuse::petsc::comm_self_f() for a "
                        "single-rank region, or the region's own "
-                       "participant communicator for a multi-rank one, "
-                       "KNOWN_ISSUES.md D31/D32)"};
+                       "participant communicator for a multi-rank one)"};
   }
   int comm_size = 1;
   if (auto r = check(MPI_Comm_size(comm, &comm_size), "MPI_Comm_size"); !r.ok()) return r.error();
-  // D31's own "a rank owning zero unknowns is legal": refused only when
+  // A rank owning zero unknowns is legal: refused only when
   // the WHOLE communicator has nothing (comm_size == 1, the single-rank
   // shape this check already covered before the multi-rank lift) --
   // never refused here just because THIS rank's own local share happens
@@ -344,7 +343,7 @@ Result<fuse::num::NewtonResult> solve(const fuse::num::ResidualFn& f, DistVector
   // non-trivial variable's initializer still in scope at the label.
   fuse::num::NewtonResult result;
 
-  // KNOWN_ISSUES.md D31/D32: `VecCreate`+`VecSetSizes`+`VecSetType(...,
+  // `VecCreate`+`VecSetSizes`+`VecSetType(...,
   // VECSTANDARD)`, not `VecCreateSeq` -- `VecCreateSeq` ignores `comm`'s
   // own size entirely (every rank would build its OWN disconnected
   // n-length vector, with VecDot/VecNorm reducing only LOCALLY, so SNES/
@@ -442,9 +441,9 @@ Result<fuse::num::NewtonResult> solve(const fuse::num::ResidualFn& f, DistVector
       // as `alpha` again here, a documented approximation
       // (docs/dev/newton-krylov.md Sec. 10) rather than a silent gap --
       // SNES's own alpha2 affects choice 1's safeguard term specifically,
-      // which this track's own test problems (quadratic, atan) select
+      // which the test problems (quadratic, atan) select
       // choice 2 for, so the approximation is never exercised by anything
-      // this track measures.
+      // the tests measure.
       ierr = SNESKSPSetParametersEW(snes, version, ew.eta_initial, ew.eta_max, ew.gamma, ew.alpha,
                                     ew.alpha, ew.safeguard_threshold);
       if (auto r = check(ierr, "SNESKSPSetParametersEW"); !r.ok()) goto fail;
@@ -565,7 +564,7 @@ fail:
 }
 
 // ===========================================================================
-// S7.2b (PetscSelect track): registering this substrate.
+// Registering this substrate.
 // ===========================================================================
 
 void install() {
@@ -575,14 +574,14 @@ void install() {
          const fuse::num::PreconditionerApplyFn& precond_apply,
          const fuse::num::RefreshPreconditionerFn& refresh_precond,
          const fuse::num::NewtonKrylovOptions& opt, int comm_f) {
-        // KNOWN_ISSUES.md D31/D32: `comm_f` is the caller's own region
+        // `comm_f` is the caller's own region
         // communicator (`RegionRuntime::newton_comm_f`, runner_impl.hpp
         // -- the SAME split `R.newton_reducer` reduces over) when the
         // registry's own call passed one; `0` (a single-rank region, or
         // no communicator configured at all -- `NewtonSolveFn`'s own
         // header comment, newton_krylov.hpp) falls back to
-        // `comm_self_f()`, the UNCHANGED single-rank behaviour this
-        // entry point always had before D31/D32 opened. Never a SILENT
+        // `comm_self_f()`, the single-rank behaviour of
+        // this entry point. Never a SILENT
         // substitute for a real communicator a multi-rank region
         // actually has: `resolve_regions()` is the ONLY writer of
         // `newton_comm_f`, and it writes a real split's own handle on

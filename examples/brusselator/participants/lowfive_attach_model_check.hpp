@@ -643,7 +643,7 @@ enum class EventKind { kWrite, kRead, kSync };
 /// model discriminates them -- the identical
 /// relationship the existing kOriginalNatural/kBothDefer strawmen above
 /// already have to the real protocol.
-enum class Round8Order { kMeasured, kBothWriteReadSteady, kBothReadWriteSteady };
+enum class ExchangeOrder { kMeasured, kBothWriteReadSteady, kBothReadWriteSteady };
 
 /// PURE: this role's own STEADY-state (exchange >= 1) [first, second]
 /// shape for `order`. `kMeasured`'s own shape matches
@@ -653,16 +653,16 @@ enum class Round8Order { kMeasured, kBothWriteReadSteady, kBothReadWriteSteady }
 /// read-then-write) pair, not a coupling window (the host measured ~61
 /// of these per window -- lowfive_attach_decision.hpp's own "EXCHANGE vs.
 /// PERIOD" paragraph has the full account).
-[[nodiscard]] inline std::array<EventKind, 2> SteadyShapeForOrder(Round8Order order,
+[[nodiscard]] inline std::array<EventKind, 2> SteadyShapeForOrder(ExchangeOrder order,
                                                                    ServeRole role) {
   switch (order) {
-    case Round8Order::kMeasured:
+    case ExchangeOrder::kMeasured:
       return role == ServeRole::kFirstServer
                  ? std::array<EventKind, 2>{EventKind::kWrite, EventKind::kRead}
                  : std::array<EventKind, 2>{EventKind::kRead, EventKind::kWrite};
-    case Round8Order::kBothWriteReadSteady:
+    case ExchangeOrder::kBothWriteReadSteady:
       return {EventKind::kWrite, EventKind::kRead};
-    case Round8Order::kBothReadWriteSteady:
+    case ExchangeOrder::kBothReadWriteSteady:
       return {EventKind::kRead, EventKind::kWrite};
   }
   return {EventKind::kWrite, EventKind::kRead};
@@ -677,7 +677,7 @@ enum class Round8Order { kMeasured, kBothWriteReadSteady, kBothReadWriteSteady }
 /// 1..n_exchanges-1 are steady state, from `SteadyShapeForOrder()`,
 /// each followed by one `kSync`. `n_exchanges <= 0` returns an empty
 /// sequence (nothing to simulate).
-[[nodiscard]] inline std::vector<EventKind> BuildEventSequence(Round8Order order, ServeRole role,
+[[nodiscard]] inline std::vector<EventKind> BuildEventSequence(ExchangeOrder order, ServeRole role,
                                                                 int n_exchanges) {
   std::vector<EventKind> out;
   if (n_exchanges <= 0) return out;
@@ -754,7 +754,7 @@ enum class Round8Order { kMeasured, kBothWriteReadSteady, kBothReadWriteSteady }
 /// DFS + visited-set discipline as `RunSimulation()` above, now over a
 /// 3-field `GlobalState`). `policy_a.role`/`policy_b.role` select each
 /// one's own event sequence via `BuildEventSequence()`.
-inline SimulationResult RunSimulationRound8(Round8Order order, int n_exchanges,
+inline SimulationResult RunSimulationForOrder(ExchangeOrder order, int n_exchanges,
                                             ProcessPolicy policy_a, ProcessPolicy policy_b) {
   const std::vector<MicroStep> script_a =
       BuildScriptFromEvents(BuildEventSequence(order, policy_a.role, n_exchanges));
@@ -839,7 +839,7 @@ inline SimulationResult RunSimulationRound8(Round8Order order, int n_exchanges,
 // The accept layout is a
 // scenario: U physics, a placeholder rank that does no LowFive calls
 // but takes part in every base-communicator collective, V. Read
-// against RunSimulationRound8() just above: its own third actor
+// against RunSimulationForOrder() just above: its own third actor
 // ("the coupler", `script_c`, pure kSyncBarrier, no write/read/serve of
 // its own) is ALREADY, at the level this model operates on, the
 // IDENTICAL role an accept-mode bundled coupler/placeholder rank plays
@@ -847,7 +847,7 @@ inline SimulationResult RunSimulationRound8(Round8Order order, int n_exchanges,
 // of each actor's own event sequence, and "pure sync, never a channel
 // event" is the SAME sequence whether that actor is coupler_main.c's
 // own separate MPMD process or u_main.c's own extra, bundled rank. So
-// RunSimulationRound8() already IS the accept-layout scenario, under a
+// RunSimulationForOrder() already IS the accept-layout scenario, under a
 // reading that is made EXPLICIT (not silently assumed) by the test
 // below that exercises it under that name, rather than inventing a
 // fourth, duplicate actor type with nothing to distinguish it.
@@ -872,7 +872,7 @@ inline SimulationResult RunSimulationRound8(Round8Order order, int n_exchanges,
 // barrier at all, the mirror image of "a collective entered without
 // every rank's own participation": U and V get stuck waiting for a
 // rank that never joins.
-inline SimulationResult RunSimulationAcceptLayout(Round8Order order, int n_exchanges,
+inline SimulationResult RunSimulationAcceptLayout(ExchangeOrder order, int n_exchanges,
                                                   ProcessPolicy policy_a, ProcessPolicy policy_b,
                                                   bool third_actor_joins) {
   const std::vector<MicroStep> script_a =
@@ -957,17 +957,17 @@ inline SimulationResult RunSimulationAcceptLayout(Round8Order order, int n_excha
 /// defined false for them so the soundness assertion below
 /// (accepts-implies-completes) is checked against ALL three catalogue
 /// entries uniformly, not only the one real graph.
-[[nodiscard]] inline bool static_check_accepts(Round8Order order) {
-  return order == Round8Order::kMeasured;
+[[nodiscard]] inline bool static_check_accepts(ExchangeOrder order) {
+  return order == ExchangeOrder::kMeasured;
 }
 
 /// PURE (the "soundness link"): does the SHIPPED policy (both
 /// roles, `decide_serve_action()`-driven) complete `order`'s own
 /// `n_exchanges`-exchange script without either process getting stuck?
-[[nodiscard]] inline bool model_completes(Round8Order order, int n_exchanges) {
+[[nodiscard]] inline bool model_completes(ExchangeOrder order, int n_exchanges) {
   ProcessPolicy server{PolicyKind::kShipped, ServeRole::kFirstServer};
   ProcessPolicy reader{PolicyKind::kShipped, ServeRole::kFirstReader};
-  return RunSimulationRound8(order, n_exchanges, server, reader).completed;
+  return RunSimulationForOrder(order, n_exchanges, server, reader).completed;
 }
 
 /// PURE, no search needed (unlike RunSimulation()'s own interleaving

@@ -202,13 +202,13 @@ struct SpacetimeInfo {
   int                       components = 1;
   std::size_t               width = 0;      // elements * components
 
-  /// Device-resident mirror of `history`, built once in resolve_spacetime() when
-  /// RunnerConfig::execution_space is Device. Sample's history branch
-  /// writes a row here with a same-space deep_copy -- no host round trip
-  /// -- when its own arc is device-resident. Empty in Host mode.
+  /// Device-resident mirror of `history`, built once in resolve_spacetime()
+  /// when RunnerConfig::execution_space is Device. Sample's history branch
+  /// writes a row here with a same-space deep_copy -- no host round trip --
+  /// when its own arc is device-resident. Empty in Host mode.
   /// `identity_*_device`/`temporal_*_device` (added alongside the device
-  /// Interpolate kernel) mirror the spatial and temporal operators the
-  /// same way; see their own comments where they are declared.
+  /// Interpolate kernel) mirror the spatial and temporal operators the same
+  /// way; see their own comments where they are declared.
   Kokkos::View<double*, Kokkos::DefaultExecutionSpace::memory_space> history_device;
   /// CSR mirror of `identity_row`/`identity_col`/`identity_val` above
   /// (`row_begin` has `elements + 1` entries); flat mirrors of
@@ -842,7 +842,7 @@ struct RegionRuntime {
   /// communicator whose lifetime would outlive the function that split
   /// it (`runner.cpp`'s own "WHY NOT A SUB-COMMUNICATOR" comment on
   /// `reconcile_epoch()`), `ParticipantSetReducer` IS a held split --
-  /// the task's own explicit choice for this reducer specifically,
+  /// an explicit choice for this reducer specifically,
   /// because a Newton solve's own `Reducer` is reused across every
   /// evaluation of a window instance's solve (many GMRES iterations,
   /// many line-search trials) where a fresh point-to-point exchange per
@@ -1030,14 +1030,14 @@ struct Runner::Impl {
   /// execute_on()'s own Relax/Residual case already plays at the end of
   /// ITS OWN sweep (this header's own `prev`/`previous_device` comments).
   /// Without this device branch the arc would diverge
-  /// (docs/dev/device-resident-arcs.md): `previous_device` takes over as the arc's
-  /// own live carried iterate, but these three callers would keep writing the
-  /// now-orphaned host `previous[arc]` instead, so the NEXT sweep's
-  /// Residual would read whatever `previous_device[arc]` already held --
-  /// never this commit's own value. `resize`: true grows a mismatched or
-  /// unsized host shadow to `n` (the Newton seam's own deliver-to-
-  /// lagged-shadow write); false skips entirely on a mismatch, the same
-  /// guard run_region()'s own commit write already had.
+  /// (docs/dev/device-resident-arcs.md): `previous_device` takes over as the
+  /// arc's own live carried iterate, but these three callers would keep writing
+  /// the now-orphaned host `previous[arc]` instead, so the NEXT sweep's
+  /// Residual would read whatever `previous_device[arc]` already held -- never
+  /// this commit's own value. `resize`: true grows a mismatched or unsized host
+  /// shadow to `n` (the Newton seam's own deliver-to- lagged-shadow write);
+  /// false skips entirely on a mismatch, the same guard run_region()'s own
+  /// commit write already had.
   void sync_previous(std::uint32_t arc, const double* fed, std::size_t n,
                      bool resize) {
     if (arc >= slots.size()) return;
@@ -1173,12 +1173,12 @@ struct Runner::Impl {
   /// comes from the plan, which is identical on every rank.
   std::vector<std::unique_ptr<Transport>> graph_transports;
   /// One entry per `OpKind::Transport` instruction, in instruction order.
-  /// Built in resolve_instructions(); attach_comm_graphs() fills in the CommGraph-derived
-  /// maps. Never resized after setup.
-  /// Row `s` marks every ComponentSet slot that reads, transitively, something
-  /// slot `s` provides -- the components whose step would consume a value a
-  /// failed step never produced. Square, `components.size()` per side, built
-  /// once in setup() from the channels of the coupling graph.
+  /// Built in resolve_instructions(); attach_comm_graphs() fills in the
+  /// CommGraph-derived maps. Never resized after setup. Row `s` marks every
+  /// ComponentSet slot that reads, transitively, something slot `s` provides --
+  /// the components whose step would consume a value a failed step never
+  /// produced. Square, `components.size()` per side, built once in setup() from
+  /// the channels of the coupling graph.
   ///
   /// It exists so that a failing period can keep advancing the components that
   /// are NOT downstream of the failure. Without it a failure anywhere
@@ -1354,18 +1354,17 @@ struct Runner::Impl {
     /// chain, which stands after it -- runs AFTER U's) reaches its own
     /// t=0 correction before that chain has ever run this sweep, so
     /// `window_import`'s own buffer (the Sink's downstream COPY) is
-    /// still unwritten -- reading it there made the harness's own window 0 sweep 0
-    /// WindowAdvance output for U diverge from the reference
-    /// at substep 1, by roughly 4 in an O(1) quantity, traced directly
-    /// to this read. `window_import`, by contrast, is read everywhere
-    /// ELSE in this file for the ordinary, LAGGED per-sweep import
-    /// (`previous[]`/`slots[]`, both read deliberately one sweep late
-    /// for Jacobi/GaussSeidel), which this field must never replace:
-    /// only the t=0 correction, which explicitly wants the LIVE value
-    /// the instant it exists, uses it. Equal to `window_import` for an
-    /// ordinary channel (no walk-back needed there, `import_view_arc`'s
-    /// own initializer); invalid when this member imports nothing, the
-    /// same as `window_import`.
+    /// still unwritten -- reading it there made the harness's own window 0
+    /// sweep 0 WindowAdvance output for U diverge from the reference at substep
+    /// 1, by roughly 4 in an O(1) quantity, traced directly to this read.
+    /// `window_import`, by contrast, is read everywhere ELSE in this file for
+    /// the ordinary, LAGGED per-sweep import (`previous[]`/`slots[]`, both read
+    /// deliberately one sweep late for Jacobi/GaussSeidel), which this field
+    /// must never replace: only the t=0 correction, which explicitly wants the
+    /// LIVE value the instant it exists, uses it. Equal to `window_import` for
+    /// an ordinary channel (no walk-back needed there, `import_view_arc`'s own
+    /// initializer); invalid when this member imports nothing, the same as
+    /// `window_import`.
     ArcId       window_import_delivery_arc;
     /// This member's own IMPORT's own PROVIDER's own `ComponentSet`
     /// slot (resolved the same way `component_slot` above is, from
@@ -2215,16 +2214,15 @@ struct Runner::Impl {
   /// the driver). A no-op for a region with no pending straddle.
   ///
   /// NOT a coroutine, deliberately (only step_period(), run_region() and
-  /// the window-advance path are): its replay calls `comp.advance(ctx)` directly,
-  /// for a member whose PREVIOUS window instance straddled this one's
-  /// boundary, with no `ComponentSet`-tick to suspend through cleanly --
-  /// doing that correctly needs its own accounting of which replayed
-  /// interval an external caller would be asked to redo, which is not
-  /// supported. Refuses `E-RT-WINDOW-EXTERNAL-STRADDLE` up front
-  /// if the member being replayed `is_externally_driven()`, rather than
-  /// silently calling its (no-op) `advance()` out of the order an
-  /// external caller would see through `fuse_begin_step()`/
-  /// `fuse_end_step()`.
+  /// the window-advance path are): its replay calls `comp.advance(ctx)`
+  /// directly, for a member whose PREVIOUS window instance straddled this one's
+  /// boundary, with no `ComponentSet`-tick to suspend through cleanly -- doing
+  /// that correctly needs its own accounting of which replayed interval an
+  /// external caller would be asked to redo, which is not supported. Refuses
+  /// `E-RT-WINDOW-EXTERNAL-STRADDLE` up front if the member being replayed
+  /// `is_externally_driven()`, rather than silently calling its (no-op)
+  /// `advance()` out of the order an external caller would see through
+  /// `fuse_begin_step()`/ `fuse_end_step()`.
   Result<void> resolve_pending_window_straddles(ComponentSet& components,
                                                 detail::RegionRuntime& r);
   /// Executes exactly one `OpKind::WindowAdvance`

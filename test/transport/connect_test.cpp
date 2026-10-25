@@ -179,7 +179,7 @@ TEST(ValidateLaunchLayout, PluginComponentsAreIgnored) {
 // all. Never reaches check_gap_filled_by_in_process_components() --
 // this is the row that row's own doc comment calls out as validating
 // unchanged.
-TEST(ValidateLaunchLayout, ThePreD36OverlappingDeclarationStillValidates) {
+TEST(ValidateLaunchLayout, TheOverlappingDeclarationStillValidates) {
   CouplingGraph g;
   g.add_component({.name = "U",
                    .ranks = RankSet{0, 2},  // U's own physics rank 0 + coupler's bundled rank 1
@@ -729,7 +729,7 @@ TEST(ConnectAcceptCapability, RefusesAConnectComponentWhenTheModeIsUnavailable) 
       << r.error().message;
   EXPECT_NE(r.error().message.find("MPMD"), std::string::npos)
       << r.error().message;
-  EXPECT_NE(r.error().message.find("D23"), std::string::npos)
+  EXPECT_NE(r.error().message.find("FUSE_ENABLE_CONNECT_ACCEPT"), std::string::npos)
       << r.error().message;
 }
 
