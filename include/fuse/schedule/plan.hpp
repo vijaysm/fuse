@@ -32,7 +32,7 @@ struct Instruction {
   /// belongs to, copied verbatim from `TimedNode` (see expand.hpp for the
   /// exact convention). Both are always filled in.
   ///
-  /// Carried into the instruction stream for Phase 6 Task 6.3: a space-time
+  /// Carried into the instruction stream because a space-time
   /// remap's temporal operator `T` is indexed by (target step, source step),
   /// so the interpreter has to know which pair each instance stands for. It is
   /// deliberately NOT printed by `ExecutionPlan::to_string()` -- that dump is
@@ -67,7 +67,7 @@ struct Instruction {
 };
 
 namespace detail {
-/// Time windows track: the ordering proof for the subcycling node
+/// The ordering proof for the subcycling node
 /// (`OpKind::WindowAdvance`). Exposed here, in `detail`, rather than kept
 /// anonymous in src/schedule/scheduler.cpp (where `schedule()` calls it),
 /// so a test can exercise it directly against a hand-built instruction
@@ -93,8 +93,7 @@ namespace detail {
 ///     "written somewhere this window" mean "written last sweep": the
 ///     first sweep of a window reads whatever the arc still held from the
 ///     previous window's last sweep, which is exactly `WindowCoupler`'s own
-///     initial-guess convention (a Runner-side concern, Unit C of this
-///     track, not checked here). Reading the PREVIOUS WINDOW's value
+///     initial-guess convention (a Runner-side concern, not checked here). Reading the PREVIOUS WINDOW's value
 ///     instead of the previous sweep's would turn waveform relaxation into
 ///     an explicit, loosely coupled scheme -- a real accuracy loss, not an
 ///     equivalent rewording -- which is why this rule still requires the
@@ -161,10 +160,7 @@ struct ScheduleResult {
 /// Never throws: this calls `try_plan_buffers()` (buffers.hpp), the
 /// `Result`-returning spelling that reports every setup mistake as a
 /// diagnostic rather than throwing, and `OperatorDAG`'s accessors are
-/// `.at()`-checked. Review 2026-10-11 IS-5: this paragraph used to repeat
-/// the throwing `plan_buffers()`'s now-refuted three-way std::exception
-/// contract (REVIEW.md R-28 fixed the twin text in buffers.hpp but missed
-/// this one) -- the type that function actually throws is
+/// `.at()`-checked. The throwing `plan_buffers()` throws
 /// `fuse::InvalidArgument`, none of `std::invalid_argument` /
 /// `std::out_of_range` / `std::overflow_error`, and schedule() does not call
 /// it anyway. An init-time setup error belongs in `diags`, which is the
@@ -198,7 +194,7 @@ struct ScheduleResult {
 ///                    instruction stream as contiguous whole-body passes, so
 ///                    it cannot be expressed as flat enter/exit boundaries
 ///   E-SCHED-PLAN     the expansion or the buffer plan does not describe `dag`
-///   E-SCHED-WINDOW-OVERLAP  review 2026-10-11 IS-7/IS-12: a component or
+///   E-SCHED-WINDOW-OVERLAP  a component or
 ///                    channel named by more than one window-scoped region,
 ///                    checked once across every region before any of the
 ///                    per-region gates below run
@@ -228,7 +224,7 @@ struct ScheduleResult {
                                                       const CouplingGraph& g,
                                                       int rank);
 
-/// KNOWN_ISSUES.md D57 ("Collectives" track). `epoch_sequence()`'s own
+/// `epoch_sequence()`'s own
 /// sibling for the OTHER real base-communicator collective the
 /// interpreter issues from the per-period path: `OpKind::Constrain`'s
 /// conservation reduction (`src/runtime/runner.cpp`, `ConstrainInfo::
@@ -246,7 +242,7 @@ struct ScheduleResult {
 /// itself disagreed, which it structurally cannot for an instruction
 /// whose own `attrs.src_rank_set`/`dst_rank_set` are both unset. It does
 /// NOT prove the ranks agree on how many PERIODS to walk that plan --
-/// D57's own hang is exactly that second, orthogonal disagreement (a
+/// A hang is exactly that second, orthogonal disagreement (a
 /// property of the ABI driver loop, `src/abi/participant.cpp`'s
 /// `prime_next_request()`, not of `plan` or `g`) -- see docs/dev/
 /// rank-agreement.md's own "Agreement on a schedule is not agreement on

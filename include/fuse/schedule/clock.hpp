@@ -115,8 +115,7 @@ class Clock {
 /// The partially ordered set of component clocks the runtime advances.
 class ClockSet {
  public:
-  /// Spec: never a least-common-multiple window (the user's own standing
-  /// ruling, KNOWN_ISSUES.md and the plan -- a coupling window exists
+  /// Spec: never a least-common-multiple window (a coupling window exists
   /// precisely so two components' several substeps are coupled through
   /// the temporal interpolant, exactly or conservatively, instead of
   /// waiting for their LCM). A window-scoped member's own ComponentDecl::
@@ -144,25 +143,20 @@ class ClockSet {
   /// both depend on that), but `coupler_[i]` records that it is one, and
   /// every aggregate below (`common_period()`, `finest_interval()`,
   /// `checked_common_period()`, `is_lockstep()`, `earliest_next()`,
-  /// `due_at()`) skips it. docs/dev/coupler-placement.md's own table
-  /// claimed this class was "coupler-safe by construction" on the
-  /// grounds that nothing ever calls `advance()` on a coupler's clock
-  /// (true -- `build_ticks()` never schedules it a `Tick`) -- but every
-  /// one of the aggregates folds EVERY clock_'s own `interval()` into
-  /// its answer regardless of whether `advance()` is ever called on it,
-  /// and `ComponentDecl::interval` defaults to `Rational{1}` (a coupler
-  /// declares no interval of its own at all). A coupler added to a
-  /// window-scoped graph whose own window is shorter than 1 (true of
-  /// the Brusselator's own 1/50, or any window under a second) silently
-  /// pulled `lcm(window, 1) = 1` into the compiled period -- the
-  /// Brusselator's own window re-ran 500 times before
-  /// `is_coupling_ongoing()`'s period/now ever advanced once, since
-  /// nothing else in the graph needed that many window instances to
-  /// finish a period. Found and fixed this session (Conformance Unit 2)
-  /// -- the two coupler tests already in the suite
-  /// (window_runner_test.cpp's own WindowChannelRemapRoutedToCoupler
-  /// MatchesIdentityClosedForm, layout_driver) never saw it because
-  /// their own physics intervals already happen to be exactly 1.
+  /// `due_at()`) skips it. It is not enough that nothing ever calls
+  /// `advance()` on a coupler's clock (`build_ticks()` never schedules it
+  /// a `Tick`): every one of the aggregates would fold EVERY clock_'s own
+  /// `interval()` into its answer regardless of whether `advance()` is
+  /// ever called on it, and `ComponentDecl::interval` defaults to
+  /// `Rational{1}` (a coupler declares no interval of its own at all). A
+  /// coupler in a window-scoped graph whose own window is shorter than 1
+  /// (true of the Brusselator's own 1/50, or any window under a second)
+  /// would otherwise pull `lcm(window, 1) = 1` into the compiled period,
+  /// so the window would re-run 500 times before `is_coupling_ongoing()`'s
+  /// period/now ever advanced once. Tests whose physics intervals are
+  /// already exactly 1 (window_runner_test.cpp's own
+  /// WindowChannelRemapRoutedToCouplerMatchesIdentityClosedForm,
+  /// layout_driver) cannot see the difference.
   explicit ClockSet(const CouplingGraph& g) {
     clocks_.reserve(g.component_count());
     coupler_.reserve(g.component_count());

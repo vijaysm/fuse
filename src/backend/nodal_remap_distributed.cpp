@@ -132,10 +132,9 @@ struct GatheredDoubles {
 #endif
 }
 
-/// THE FIX FOR "a rejection reachable after a collective must be an AGREED
-/// outcome, not a rank-local one" -- the exact defect a host MPI run found
-/// in `build_distributed_interp_rows`'s per-entity loop (round 4,
-/// KNOWN_ISSUES.md D8): a rank whose own local evaluation entities all lie
+/// THE RULE "a rejection reachable after a collective must be an AGREED
+/// outcome, not a rank-local one" -- the defect it prevents, in
+/// `build_distributed_interp_rows`'s per-entity loop: a rank whose own local evaluation entities all lie
 /// inside the assembled source mesh would return success while a
 /// DIFFERENT rank, whose own local entities include one that is genuinely
 /// out of domain (or defeats Newton), returned failure -- so at 3+ ranks
@@ -174,10 +173,10 @@ enum class FailCode : int {
   kNoCellVertices = 6,  // gather_global_source: MeshView::cell_vertices rejected
   kShape = 7,           // gather_global_source: unsupported shape or wrong corner count
   kGidAccess = 8,       // gather_global_source: global_id/centroid threw rank-locally
-  kGidTooLarge = 9,     // REVIEW.md TF-11: a global id exceeds a double's 53-bit mantissa
+  kGidTooLarge = 9,     // a global id exceeds a double's 53-bit mantissa
 };
 
-/// REVIEW.md TF-11: every global id in this file travels as a `double`
+/// Every global id in this file travels as a `double`
 /// (`allgatherv_records`' own wire format, stride doubles per record) --
 /// unreachable through `MoabMeshView` (GLOBAL_ID is a 32-bit int) but
 /// `MeshView` is the contract, not MOAB specifically, and nothing here
@@ -264,8 +263,8 @@ struct AssembledMesh {
 
   // ---- vertices: (gid, x, y, z), stride 4, OWNED only ----------------------
   //
-  // Round-4 D8 fixed every POST-collective early return this file's loops
-  // could reach; it did not cover these two buffer-building loops, which run
+  // Every POST-collective early return in this file's loops is agreed
+  // across ranks; that does not cover these two buffer-building loops, which run
   // BEFORE their own `allgatherv_records` call and can fail -- or, worse,
   // THROW -- rank-locally: `MeshView::centroid`/`global_id` throw
   // `std::out_of_range` by their own documented contract, and
@@ -477,44 +476,37 @@ Result<DistributedInterpRows> build_distributed_interp_rows(const MeshView& src_
 
   // ---- Broad phase: one padded box per assembled source cell --------------
   //
-  // THE FIX FOR D74 (KNOWN_ISSUES.md). The eval loop below used to test
-  // EVERY cell in the assembled global mesh against EVERY locally-owned
-  // evaluation point -- unlike this same search's serial counterpart
-  // (general_interp.hpp's build_general_interp_weights), which narrows to a
-  // handful of candidates through exactly this kind of box index FIRST. At
-  // scale (N=1000, 1e6 cells and 1e6 evaluation points) that unfiltered
-  // scan fed `invert_reference_map` cells arbitrarily far from the target
-  // -- an instrumented run of the N=1000, 2-rank case caught it directly:
-  // candidate index 17997 (a cell near x=0.997) was Newton-inverted
-  // against a target at (0.0005, 0.0005), the opposite corner of the
-  // domain, and a damped Gauss-Newton started from THAT cell's own
-  // reference centre for a target that far outside it did not converge
-  // within 50 iterations (last residual 1.92e-12 against a 1e-12
-  // tolerance) -- even though the GENUINE containing cell (global id 0)
-  // had already been found as a tight match at candidate index 0, earlier
-  // in that very same scan. The scan simply never stopped looking once it
-  // had the right answer, and a later, unrelated candidate's non-
-  // convergence aborted the whole evaluation point. Building the same kind
-  // of index build_general_interp_weights already uses, over this
-  // function's own (Allgatherv-replicated) `cells`, and querying it per
-  // evaluation point the same way, fixes both halves of that: Newton is
-  // now only ever invoked on a small, genuinely nearby candidate set, so a
-  // stray distant cell's non-convergence can no longer reach this code at
-  // all, and the whole search drops from O(n_eval * n_cells) to
-  // O(n_eval * candidates) -- the latter a small constant on a structured
-  // mesh, which is also why this was never exercised before this track's
-  // 1e6-cell benchmark row.
+  // The eval loop below does NOT test EVERY cell in the assembled global
+  // mesh against EVERY locally-owned evaluation point -- unlike a plain
+  // scan, it narrows to a handful of candidates through exactly the kind of
+  // box index the serial counterpart (general_interp.hpp's
+  // build_general_interp_weights) uses FIRST. At scale (N=1000, 1e6 cells
+  // and 1e6 evaluation points) an unfiltered scan would feed
+  // `invert_reference_map` cells arbitrarily far from the target: e.g. a
+  // cell near x=0.997 Newton-inverted against a target at (0.0005,
+  // 0.0005), the opposite corner of the domain, where a damped Gauss-Newton
+  // started from THAT cell's own reference centre does not converge within
+  // 50 iterations (last residual 1.92e-12 against a 1e-12 tolerance) --
+  // even though the GENUINE containing cell (global id 0) had already been
+  // found as a tight match earlier in the same scan. The scan would never
+  // stop looking once it had the right answer, and a later, unrelated
+  // candidate's non-convergence would abort the whole evaluation point.
+  // Building the same kind of index build_general_interp_weights uses,
+  // over this function's own (Allgatherv-replicated) `cells`, and querying
+  // it per evaluation point the same way, avoids both: Newton is only ever
+  // invoked on a small, genuinely nearby candidate set, so a stray distant
+  // cell's non-convergence cannot reach this code, and the whole search is
+  // O(n_eval * candidates) rather than O(n_eval * n_cells) -- the
+  // candidate count being a small constant on a structured mesh.
   //
-  // NOT the same mechanism as D67 (the 1-ULP VALUE disagreement in
-  // NodalRemapRunnerMpi.ConsistentTransposeIsBitIdenticalAcrossRankCounts):
-  // that test's winning cell is chosen by the SAME lowest-global-id
-  // tie-break this function already used before this fix, which depends
-  // only on which candidates pass tier (a) or (b), never on scan order --
-  // adding a broad-phase filter that still finds every genuine tier (a)/(b)
-  // candidate (the padding below matches kRefEpsLoose, the loosest bound
-  // either tier accepts) cannot change which cell wins or its computed
-  // natural coordinates. D67 is re-run, unchanged, after this fix lands
-  // (KNOWN_ISSUES.md records the outcome); it remains open on its own.
+  // The filter does not change which cell wins or its computed natural
+  // coordinates: the winning cell is chosen by the lowest-global-id
+  // tie-break, which depends only on which candidates pass tier (a) or (b),
+  // never on scan order, and the padding below matches kRefEpsLoose, the
+  // loosest bound either tier accepts, so every genuine tier (a)/(b)
+  // candidate is still found. (A 1-ULP VALUE disagreement in
+  // NodalRemapRunnerMpi.ConsistentTransposeIsBitIdenticalAcrossRankCounts
+  // is a separate matter, unrelated to this filter.)
   std::vector<search::Box> cell_boxes;
   cell_boxes.reserve(cells.size());
   for (const Cell& cell : cells) {
@@ -559,10 +551,10 @@ Result<DistributedInterpRows> build_distributed_interp_rows(const MeshView& src_
   const search::QueryResult& hits = hits_r.value();
   const int k_nearest = static_cast<int>(std::min<std::size_t>(8, cells.size()));
 
-  // Round 4 (KNOWN_ISSUES.md D8): the branch below does not return
+  // The branch below does not return
   // directly. "No candidate contains this point" (E-INTERP-DOMAIN) depends
   // on THIS rank's own local evaluation entities, so returning it straight
-  // from this loop -- as an earlier version of this file did -- would let
+  // from this loop would let
   // a rank with no bad point return success and go on to call a FURTHER
   // collective its partners, having hit the failure, never reach.
   // `local_failed`/`local_fail_code_id`/`local_fail_entity_gid` record the
@@ -572,15 +564,14 @@ Result<DistributedInterpRows> build_distributed_interp_rows(const MeshView& src_
   // that never fails at all -- takes part in the SAME collective and
   // returns the SAME outcome.
   //
-  // D74's own fix: a per-candidate invert_reference_map failure
-  // (E-INTERP-NEWTON / E-INTERP-DEGENERATE) no longer aborts the
+  // A per-candidate invert_reference_map failure (E-INTERP-NEWTON / E-INTERP-DEGENERATE) does not abort the
   // evaluation point outright -- it means only that THIS candidate is not
   // usable, exactly like one that converges but lands outside the
   // reference domain. The broad phase above already keeps the candidate
   // set small and genuinely nearby, so a converging failure here is rare;
   // when every candidate for a point fails or lands outside both tiers,
-  // the outcome is E-INTERP-DOMAIN below, same as it always was for "no
-  // containing cell found."
+  // the outcome is E-INTERP-DOMAIN below, as for "no containing cell
+  // found."
   bool local_failed = false;
   int local_fail_code_id = 0;
   std::size_t local_fail_entity_gid = 0;
@@ -607,7 +598,7 @@ Result<DistributedInterpRows> build_distributed_interp_rows(const MeshView& src_
 
     bool have_fallback = false;
     std::size_t fallback_c = 0;
-    std::size_t fallback_gid = 0;  // REVIEW.md TF-13: the tie-break key, not just a diagnostic
+    std::size_t fallback_gid = 0;  // the tie-break key, not just a diagnostic
     double fallback_score = std::numeric_limits<double>::max();
     std::array<double, 3> fallback_u{};
     bool fallback_passes_loose = false;
@@ -615,7 +606,7 @@ Result<DistributedInterpRows> build_distributed_interp_rows(const MeshView& src_
     const auto consider = [&](std::size_t c) {
       const auto inv = invert_reference_map(cells[c], target);
       if (!inv.ok()) {
-        // Skip just this candidate (D74's fix) -- another nearby one, or
+        // Skip just this candidate -- another nearby one, or
         // this same point already found as a tight match at a lower-gid
         // cell, still decides the row.
         return;
@@ -639,7 +630,7 @@ Result<DistributedInterpRows> build_distributed_interp_rows(const MeshView& src_
       const double score = lateral + normal_gap * normal_gap;
       const bool passes_loose =
           surf_ok && in_reference_domain(cells[c].shape, inv.value().u, kRefEpsLoose);
-      // REVIEW.md TF-13: a STRICT `score <` leaves an exact tie decided by
+      // A STRICT `score <` leaves an exact tie decided by
       // iteration order; tie-broken by lowest global id -- a property of
       // the cell, not of the gather or the query order -- the SAME rule
       // tier (a) already uses above.
@@ -730,10 +721,10 @@ Result<void> apply_distributed_H(const DistributedInterpRows& rows, const MeshVi
 
   const int stride = 1 + static_cast<int>(components);
   std::vector<double> buf;
-  // REVIEW.md TF-11: this rank's own vertex gids enter the SAME double-
+  // This rank's own vertex gids enter the SAME double-
   // valued wire format gather_global_source's loops do; a gid above
   // kMaxExactDoubleGid would silently lose precision there too. Record-
-  // and-stop, then agree, before allgatherv_records -- the TF-1 shape --
+  // and-stop, then agree, before allgatherv_records --
   // rather than returning straight from the loop.
   bool gid_range_failed = false;
   std::size_t gid_range_fail_gid = 0;
@@ -757,10 +748,10 @@ Result<void> apply_distributed_H(const DistributedInterpRows& rows, const MeshVi
   const auto g = allgatherv_records(comm_handle, buf, stride);
   if (!g.ok()) return g.error();
 
-  // REVIEW.md TF-12: `gather_global_source` rejects a duplicated OWNED gid
+  // `gather_global_source` rejects a duplicated OWNED gid
   // by name (`E-RT-NODAL-DIST-OWNER`, the ownership contract
-  // `MeshView::is_owned` must agree with itself about) -- this loop used
-  // to silently keep whichever record happened to overwrite `value_of`
+  // `MeshView::is_owned` must agree with itself about) -- this loop must
+  // not silently keep whichever record happened to overwrite `value_of`
   // last for the same hazard. Safe to detect and return directly HERE,
   // unlike a pre-collective check: `g.value()` is the Allgatherv's own
   // output, already identical on every rank, so this either rejects on
@@ -779,8 +770,8 @@ Result<void> apply_distributed_H(const DistributedInterpRows& rows, const MeshVi
     (void)it;
   }
 
-  // Round 4 (KNOWN_ISSUES.md D8): same hazard class as
-  // build_distributed_interp_rows' own fix above, and the SAME remedy --
+  // Same hazard class as
+  // build_distributed_interp_rows' fix above, and the SAME remedy --
   // whether a rows' src_global_ids miss the globally-gathered value_of map
   // depends on THIS rank's own rows, so it must never return directly. The
   // scan still runs to completion locally (out_owned is filled wherever
@@ -1035,8 +1026,7 @@ Result<DistributedRemapPlan> build_distributed_remap_plan(const DistributedInter
   plan.ghost_fill_exchanger =
       linalg::make_mpi_exchanger(static_cast<int>(comm_handle), fill_pattern, plan.owned_n);
 
-  // Step 5 (lead's deterministic-sum follow-up, 2026-10-15): resolve the
-  // H^T scatter-add's own FIXED summation order once here, instead of
+  // Resolve the H^T scatter-add's own FIXED summation order once here, instead of
   // leaving it to `Kokkos::atomic_add`'s MPI-arrival order -- recovers
   // `apply_distributed_HT`'s own "bit-identical across rank counts"
   // guarantee for this plan-based path too. See DistributedRemapPlan's

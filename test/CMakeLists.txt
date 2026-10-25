@@ -1701,7 +1701,7 @@ if(FUSE_LINALG_BACKEND_IS_EIGEN)
             brusselator_external_delivery_size)
     # species_core_decomposition asserts make_diffusion_solver throws for
     # SolverKind::Direct on a decomposed grid, so it carries THROWS (the
-    # no-exceptions leg aborted on it, 2026-10-18); the others throw nothing.
+    # no-exceptions leg aborts on it); the others throw nothing.
     if(t STREQUAL "brusselator_species_core_decomposition")
       set(_fuse_bruss_throws THROWS)
     else()
@@ -1719,10 +1719,9 @@ if(FUSE_LINALG_BACKEND_IS_EIGEN)
   # this row the slow one.
   fuse_add_device_twin(verification.brusselator_runner fuse_verification_brusselator_runner_test TIMEOUT 10800)
 
-  # review-2026-10-11 numerics
-  # NL-1: all three DiffusionSolver kinds (species_core.hpp) keyed their
-  # factor() cache on (dt, extra_diagonal) alone, dropping the per-call
-  # diffusion argument -- BrusselatorDiffusionSolverCache pins that a solve
+  # All three DiffusionSolver kinds (species_core.hpp) must key their
+  # factor() cache on the per-call diffusion argument as well as
+  # (dt, extra_diagonal) -- BrusselatorDiffusionSolverCache pins that a solve
   # at a changed diffusion, same dt/extra_diagonal, refactors instead of
   # reusing a stale matrix. Single-rank NativeGrid, same deps as the
   # foreach block just above.
@@ -1730,17 +1729,16 @@ if(FUSE_LINALG_BACKEND_IS_EIGEN)
                  LIBS fuse::runtime fuse::backend fuse::model fuse::linalg Eigen3::Eigen Kokkos::kokkos)
   target_include_directories(fuse_verification_brusselator_diffusion_solver_cache_test PRIVATE
     ${CMAKE_SOURCE_DIR}/examples/brusselator)
-  # TD-1: docs/user/brusselator.md claimed E-BRUSS-MESH-INDEX and
-  # E-BRUSS-U-REACTION were both tested; BrusselatorRefusalCoverage fires
-  # the reachable one (U's reaction fixed point past its 50-solve cap) and
+  # BrusselatorRefusalCoverage fires the reachable refusal
+  # (E-BRUSS-U-REACTION: U's reaction fixed point past its 50-solve cap) and
   # the file's own trailing comment records why E-BRUSS-MESH-INDEX is not
-  # (the doc is corrected to match). Same deps as brusselator_diffusion_
+  # fired. Same deps as brusselator_diffusion_
   # solver_cache just above.
   fuse_add_gtest(verification brusselator_refusal_coverage NO_LAYER_LIB
                  LIBS fuse::runtime fuse::backend fuse::model fuse::linalg Eigen3::Eigen Kokkos::kokkos)
   target_include_directories(fuse_verification_brusselator_refusal_coverage_test PRIVATE
     ${CMAKE_SOURCE_DIR}/examples/brusselator)
-  # Restart track (docs/dev/restart.md), Stage B Slice 2: the Brusselator
+  # Restart (docs/dev/restart.md): the Brusselator
   # Runner round trip (Form A over MeshView::global_id(), window-waveform
   # history, IQN-ILS/IQN-IMVJ accelerator state) at tier 0 -- gated on
   # FUSE_ENABLE_HDF5 the same way runtime/restart_test.cpp already is,
@@ -1755,7 +1753,7 @@ if(FUSE_LINALG_BACKEND_IS_EIGEN)
   endif()
 else()
   # brusselator_newton_norm/brusselator_accept_layout/
-  # brusselator_external_delivery_size (device-track additions, same LIBS as
+  # brusselator_external_delivery_size (same LIBS as
   # the foreach above) and brusselator_diffusion_solver_cache/brusselator_
   # refusal_coverage (same LIBS) all link Eigen3::Eigen directly,
   # so the audit below must name them too.
@@ -1790,7 +1788,7 @@ else()
     verification.accel_names)
 endif()
 
-# KNOWN_ISSUES.md D57 ("Collectives" track): the period-rollover-past-
+# The period-rollover-past-
 # end_time-free-bound regression, driven through the real participant
 # ABI (fuse_begin_step/fuse_end_step) on a single-process, no-coupler
 # window+ExternalDelivery graph -- see the test file's own header for
@@ -1815,9 +1813,9 @@ if(FUSE_LINALG_BACKEND STREQUAL "eigen")
   target_sources(fuse_verification_brusselator_period_rollover_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/abi/test_support.cpp)
 
-  # KNOWN_ISSUES.md D57, "the period contract" (docs/dev/abi-design.md):
-  # the SAME invariant brusselator_period_rollover_test.cpp pins as FOUND,
-  # stated generically here, directly on every real step's own `period`
+  # The period contract (docs/dev/abi-design.md):
+  # the SAME invariant brusselator_period_rollover_test.cpp pins for one
+  # graph, stated generically here, directly on every real step's own `period`
   # field. Same deps/includes/sources as the row above, for the same
   # reasons -- including the SAME Eigen gating (brusselator::
   # add_window_coupling() pulls in the Brusselator's diffusion solver).
@@ -1833,7 +1831,7 @@ else()
                        verification/abi_period_boundary_test.cpp)
 endif()
 
-# S6 phase 3 ("LowFive" track), Unit 3: brusselator_graph_tool.cpp's own
+# brusselator_graph_tool.cpp's own
 # --transport lowfive wiring, reproduced directly against validate() --
 # see the test file's own header comment for why this is not redundant
 # with the byte-for-byte reference-YAML ctest row.
@@ -1842,16 +1840,16 @@ fuse_add_gtest(verification brusselator_graph_tool_lowfive NO_LAYER_LIB
 target_include_directories(fuse_verification_brusselator_graph_tool_lowfive_test PRIVATE
   ${CMAKE_SOURCE_DIR}/examples/brusselator)
 
-# ---- S6 phase 3 (Conformance, "LowFive attach" track): begin ----------
+# ---- LowFive attach: begin ---------------------------------------------
 # The pure, MPI-free and HDF5-free decision function examples/brusselator/
 # participants/lowfive_attach_decision.hpp's own header comment describes
 # in full: which of {single-process, distributed, refused (no channel /
 # no bridge formed / more than two Connect-mode components / inconsistent
 # partition)} a rank's own programmatic VOL attach must reach, from the
-# loaded graph's RankSets/LaunchModes alone -- D14 Stage B (KNOWN_ISSUES.
-# md): accept mode (LaunchMode::Connect) is no longer an outright refusal
-# by itself, now that a caller can recover a formed bridge communicator
-# (fuse_base_communicator(), entries.def).
+# loaded graph's RankSets/LaunchModes alone -- accept mode
+# (LaunchMode::Connect) is not an outright refusal by itself, since a caller
+# can recover a formed bridge communicator (fuse_base_communicator(),
+# entries.def).
 # Header-only, so this test needs only fuse::model's own include path
 # (fuse/model/component.hpp, fuse/model/launch.hpp) plus fuse/transport/
 # lowfive.hpp's header-only plan_lowfive_rendezvous() -- NO_LAYER_LIB,
@@ -1860,7 +1858,7 @@ fuse_add_gtest(verification brusselator_lowfive_attach NO_LAYER_LIB
                LIBS fuse::model)
 target_include_directories(fuse_verification_brusselator_lowfive_attach_test PRIVATE
   ${CMAKE_SOURCE_DIR}/examples/brusselator/participants)
-# ---- "LowFive attach" track: end ---------------------------------------
+# ---- LowFive attach: end -----------------------------------------------
 
 # The weights oracle is pure host arithmetic (no Kokkos kernel of its own);
 # the physics suite's ReactionKokkosMatchesTheClosedForm IS one, so its omp
@@ -1871,7 +1869,7 @@ if(FUSE_LINALG_BACKEND_IS_EIGEN)
   fuse_add_omp_legs(verification.brusselator_physics fuse_verification_brusselator_physics_test)
 endif()
 
-# Brusselator as separately built participants (Conformance, Unit 2): the
+# Brusselator as separately built participants: the
 # tier-0 harness -- drives the SAME u_loop_step() (u_loop.c, PURE C) and
 # bruss_v_loop_step() (v_loop.f90, PURE FORTRAN) examples/brusselator/
 # participants/u_main.c and v_main.f90 call, through the participant ABI,
@@ -1938,19 +1936,19 @@ if(TARGET fuse-abi-fortran AND FUSE_LINALG_BACKEND_IS_EIGEN)
   # own brusselator_u_main/brusselator_v_main already link fuse::lowfive
   # for exactly this; every OTHER target below that also lists shim.cpp
   # as a source needs the identical link, found only once this session
-  # actually configured -DFUSE_ENABLE_LOWFIVE=ON (bafter's own tier-0
-  # tree never has it ON, so compiling shim.cpp there never needed it).
+  # configures -DFUSE_ENABLE_LOWFIVE=ON (a tier-0 tree
+  # never has it ON, so compiling shim.cpp there never needs it).
   if(TARGET fuse::lowfive)
     fuse_link_lowfive_with_fmt_fix(fuse_verification_brusselator_participants_test)
   endif()
-  # "LowFive attach" track: shim.cpp now calls bruss_lowfive_serve_
-  # after_write()/bruss_lowfive_receive_before_read() (lowfive_attach.h),
-  # so every target compiling shim.cpp needs lowfive_attach.cpp's own
-  # object code too, or the link fails on those two undefined symbols --
-  # fuse_verification_brusselator_participants_test compiles shim.cpp (just above) but never called
-  # bruss_lowfive_attach() itself (it drives the ABI through view_field+
-  # memcpy instead of real HDF5, docs/user/lowfive.md's own account), so
-  # this is a build-only addition, not a new behavior under test here.
+  # shim.cpp calls bruss_lowfive_serve_after_write()/
+  # bruss_lowfive_receive_before_read() (lowfive_attach.h), so every
+  # target compiling shim.cpp needs lowfive_attach.cpp's own object code
+  # too, or the link fails on those two undefined symbols. fuse_verification_brusselator_participants_test compiles
+  # shim.cpp (just above) but never calls bruss_lowfive_attach() itself
+  # (it drives the ABI through view_field+memcpy instead of real HDF5,
+  # docs/user/lowfive.md's own account), so this is a build-only addition,
+  # not a new behavior under test here.
   target_sources(fuse_verification_brusselator_participants_test PRIVATE
     ${CMAKE_SOURCE_DIR}/examples/brusselator/participants/lowfive_attach.cpp)
   target_link_libraries(fuse_verification_brusselator_participants_test PRIVATE fuse::model)
@@ -1966,7 +1964,7 @@ if(TARGET fuse-abi-fortran AND FUSE_LINALG_BACKEND_IS_EIGEN)
   set_target_properties(fuse_verification_brusselator_participants_test PROPERTIES
     Fortran_MODULE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/brusselator_participants_fortran_modules)
 
-  # brusselator_check's own assembler logic (Conformance, Unit 2, Q3),
+  # brusselator_check's own assembler logic,
   # exercised directly (no subprocess) against a real shim-driven run --
   # same deps as brusselator_participants above, plus brusselator_check_
   # core.cpp itself.
@@ -1983,14 +1981,14 @@ if(TARGET fuse-abi-fortran AND FUSE_LINALG_BACKEND_IS_EIGEN)
   if(TARGET fuse::lowfive)
     fuse_link_lowfive_with_fmt_fix(fuse_verification_brusselator_check_test)
   endif()
-  # "LowFive attach" track: shim.cpp now calls bruss_lowfive_serve_
-  # after_write()/bruss_lowfive_receive_before_read() (lowfive_attach.h),
-  # so every target compiling shim.cpp needs lowfive_attach.cpp's own
-  # object code too, or the link fails on those two undefined symbols --
-  # fuse_verification_brusselator_check_test compiles shim.cpp (just above) but never called
-  # bruss_lowfive_attach() itself (it drives the ABI through view_field+
-  # memcpy instead of real HDF5, docs/user/lowfive.md's own account), so
-  # this is a build-only addition, not a new behavior under test here.
+  # shim.cpp calls bruss_lowfive_serve_after_write()/
+  # bruss_lowfive_receive_before_read() (lowfive_attach.h), so every
+  # target compiling shim.cpp needs lowfive_attach.cpp's own object code
+  # too, or the link fails on those two undefined symbols. fuse_verification_brusselator_check_test compiles
+  # shim.cpp (just above) but never calls bruss_lowfive_attach() itself
+  # (it drives the ABI through view_field+memcpy instead of real HDF5,
+  # docs/user/lowfive.md's own account), so this is a build-only addition,
+  # not a new behavior under test here.
   target_sources(fuse_verification_brusselator_check_test PRIVATE
     ${CMAKE_SOURCE_DIR}/examples/brusselator/participants/lowfive_attach.cpp)
   target_link_libraries(fuse_verification_brusselator_check_test PRIVATE fuse::model)
@@ -2024,14 +2022,14 @@ if(TARGET fuse-abi-fortran AND FUSE_LINALG_BACKEND_IS_EIGEN)
   if(TARGET fuse::lowfive)
     fuse_link_lowfive_with_fmt_fix(fuse_verification_brusselator_lowfive_harness_test)
   endif()
-  # "LowFive attach" track: shim.cpp now calls bruss_lowfive_serve_
-  # after_write()/bruss_lowfive_receive_before_read() (lowfive_attach.h),
-  # so every target compiling shim.cpp needs lowfive_attach.cpp's own
-  # object code too, or the link fails on those two undefined symbols --
-  # fuse_verification_brusselator_lowfive_harness_test compiles shim.cpp (just above) but never called
-  # bruss_lowfive_attach() itself (it drives the ABI through view_field+
-  # memcpy instead of real HDF5, docs/user/lowfive.md's own account), so
-  # this is a build-only addition, not a new behavior under test here.
+  # shim.cpp calls bruss_lowfive_serve_after_write()/
+  # bruss_lowfive_receive_before_read() (lowfive_attach.h), so every
+  # target compiling shim.cpp needs lowfive_attach.cpp's own object code
+  # too, or the link fails on those two undefined symbols. fuse_verification_brusselator_lowfive_harness_test compiles
+  # shim.cpp (just above) but never calls bruss_lowfive_attach() itself
+  # (it drives the ABI through view_field+memcpy instead of real HDF5,
+  # docs/user/lowfive.md's own account), so this is a build-only addition,
+  # not a new behavior under test here.
   target_sources(fuse_verification_brusselator_lowfive_harness_test PRIVATE
     ${CMAKE_SOURCE_DIR}/examples/brusselator/participants/lowfive_attach.cpp)
   target_link_libraries(fuse_verification_brusselator_lowfive_harness_test PRIVATE fuse::model)
@@ -2043,13 +2041,13 @@ if(TARGET fuse-abi-fortran AND FUSE_LINALG_BACKEND_IS_EIGEN)
   set_tests_properties(verification.brusselator_lowfive_harness PROPERTIES
     LABELS "verification;lowfive")
 
-  # Isolation run (the lead's own instruction, 2026-10-04): the
+  # Isolation run: the
   # IDENTICAL asymmetric-dt_u/dt_v graph and ABI-driven next_component
   # loop as brusselator_lowfive_harness above, but with no hdf5_path and
   # no LowFive component at all -- an ORDINARY Transport-delivered
-  # channel -- to separate a pre-existing Runner defect in externally-
-  # driven members with dt_u != dt_v (which no test before this one
-  # exercised) from something specific to the ExternalDelivery path.
+  # channel -- to separate a Runner defect in externally-
+  # driven members with dt_u != dt_v from something specific to the
+  # ExternalDelivery path.
   fuse_add_gtest(verification brusselator_asymmetric_dt_isolation NO_LAYER_LIB
                  LIBS fuse::runtime fuse::backend fuse::abi fuse::abi-fortran Eigen3::Eigen Kokkos::kokkos)
   target_include_directories(fuse_verification_brusselator_asymmetric_dt_isolation_test PRIVATE

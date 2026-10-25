@@ -373,7 +373,7 @@ TEST(Checkpoint, DefaultDeterminismInsideIterationRegionIsAccepted) {
   EXPECT_FALSE(diags.has_errors()) << diags.to_string();
 }
 
-// Task 7.1's hazard. all_satisfied() on an empty criterion is true, because
+// all_satisfied() on an empty criterion is true, because
 // true is the identity of AND. A region carrying one would stop after a single
 // sweep and report success: an explicit scheme wearing an implicit scheme's
 // report. convergence.hpp exposes empty() so the region can refuse it.
