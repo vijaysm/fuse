@@ -220,7 +220,7 @@ give 2^24.
 
 A type can be a field value type when it is trivially copyable and has a
 `fuse::value_traits<T>` specialization (`fuse/model/value_traits.hpp`). FUSE
-provides binary64, binary32 and `fuse::bfloat16`; you can add your own:
+provides binary64, binary32, `fuse::bfloat16` and `fuse::binary16`; you can add your own:
 
 ```cpp
 struct Dual3 { double v[4]; };   // a value and a gradient of three entries
@@ -243,14 +243,67 @@ struct fuse::value_traits<Dual3> {
 |---|---|---|
 | `ScalarArray` | an array of `scalar_count` scalars of `scalar_type`; every field operation acts on each scalar separately | binary64 (one scalar), complex numbers, forward-mode dual numbers |
 | `Arithmetic` | needs its own arithmetic inside an operator | double-double, quad-double |
-| `Storage` | a compact format, widened exactly to binary64 and rounded once on return | binary32, bfloat16 |
+| `Storage` | a compact format, widened exactly to binary64 and rounded once on return | binary32, bfloat16, binary16 |
 
 `fuse::CoupledValue<T>` checks these requirements at compile time, including
 that a `ScalarArray` type's scalars tile it exactly. A type without
 `value_traits` does not compile as a field value type. The conversion
-`value_traits<fuse::bfloat16>::from_binary64` is correctly rounded (to
-nearest, ties to even): it rounds the intermediate binary32 value to odd,
-because rounding to nearest twice is not correctly rounded.
+`value_traits<fuse::bfloat16>::from_binary64` (and the one for
+`fuse::binary16`) is correctly rounded: to nearest, ties to even, in one step
+from the binary64 value, because rounding to binary32 first and then to the
+narrow format can move a value across a midpoint.
+
+### Storage types: binary32, bfloat16 and binary16
+
+A component may keep a field in single or half precision and still be coupled
+to one that does not. Bind the array as it is (`BasicFieldRef<float>`,
+`BasicFieldRef<fuse::bfloat16>`, `BasicFieldRef<fuse::binary16>`), or register it
+through the C or Fortran interface with `FUSE_ELEMENT_F32`, `FUSE_ELEMENT_BF16`
+or `FUSE_ELEMENT_F16`. The graph is unchanged: a field declares components, not
+a precision.
+
+What the coupler does with such a field:
+
+- It reads the field into a binary64 image when component code has run, and the
+  widening is exact. Remaps, accumulations, the conservation check and the
+  transport all see binary64 values.
+- It rounds into the field when it delivers a value the component requires, to
+  nearest with ties to even, once. So the value a component receives is the
+  binary64 result of the same coupling run with binary64 fields, rounded once
+  to the receiving type; two coupled components of different precisions need
+  nothing more.
+- Remap weights, mesh coordinates and search stay binary64; they are not
+  fields of a component.
+
+`RunStats::storage_fields` lists every such field the run converts, with its
+format and unit roundoff (2^-24 for binary32, 2^-11 for binary16, 2^-8 for
+bfloat16): a value in the format's normal range changes by at most that
+fraction when it is rounded. Set `RunnerConfig::measure_storage_rounding` to also
+count, over every delivery, the finite values rounded, how many overflowed to
+infinity or underflowed to zero, and the largest relative change actually made;
+it costs one reduction per delivery (and a fence on a device), so it is off by
+default.
+
+The conversion runs where the field is. A host field is converted on the host;
+a field registered in device memory is converted by a kernel on the device
+(`fuse/num/storage_convert.hpp`), so the data does not cross to the host to be
+rounded. The three formats are device-callable types
+(`fuse/model/binary16.hpp`, `fuse/model/bfloat16.hpp`): conversions use integer
+operations on the bit pattern, and `test/num/storage_test.cpp` compares the
+device results with the host's over every 16-bit pattern and every midpoint.
+
+What this does not cover:
+
+- **The image costs 8 bytes a value** for each such field arc, in addition to the
+  field. MPI and the transport move binary64, not the narrow format.
+- **A field in a time window or an iteration region window** must still be
+  binary64; the window code refuses a Storage field with `E-FIELD-VALUE-TYPE`.
+- **Restart files** and **provider plugins** (`E-ABI-PROVIDER-ELEMENT`) do not
+  take these formats through the coupling interface yet.
+- **Minimum and maximum accumulation** work: the minimum of the widened values
+  is the widened minimum, and it is rounded once on delivery.
+- A format other than these three is refused with `E-RT-FIELD-TYPE`, naming the
+  type; adding one is a new instantiation of the kernels, not a registration.
 
 ### Forward-mode gradients
 

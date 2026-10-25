@@ -41,7 +41,7 @@ program couple
   status = fuse_field_handle(ctx, "fluid", "heat_flux", heat_flux)
 
   view%handle           = heat_flux%handle
-  view%element_type     = FUSE_ELEMENT_F64
+  view%element_type     = FUSE_ELEMENT_F64      ! or FUSE_ELEMENT_F32 for real(c_float) storage
   view%memspace         = FUSE_MEMSPACE_HOST
   view%ownership        = FUSE_OWNERSHIP_OWNED
   view%components       = heat_flux%components
