@@ -272,6 +272,35 @@ Result<void> Runner::Impl::resolve_buffers(FieldRegistry& registry) {
   sample_count.assign(buffers.size(), 0);
   slot_source_owner.assign(buffers.size(), -1);
 
+  // A field whose values carry derivatives (a forward-mode dual number's
+  // tangents, fuse/model/value_traits.hpp) moves through every operation here
+  // as scalars, which is exact for all of them except an accumulation by
+  // minimum or maximum: that picks one sample, and the tangent that belongs to
+  // the result is the picked sample's, not the minimum of the tangents. Refuse
+  // it by name rather than return a tangent that is not the derivative of
+  // anything. The channel's two fields are the only ones the accumulation can
+  // touch. (An affine unit conversion has the same problem for the offset; the
+  // compiler already refuses that step for every field, E-IR-UNLOWERABLE.)
+  for (std::uint32_t i = 0; i < graph.channel_count(); ++i) {
+    const auto& ch = graph.channel_at(ChannelId{i});
+    if (ch.accumulate.op != AccumOp::Min && ch.accumulate.op != AccumOp::Max) {
+      continue;
+    }
+    for (const FieldId f : {ch.source, ch.target}) {
+      if (registry.has_derivatives(f)) {
+        return Failure{
+            "E-RT-DERIVATIVE-MINMAX",
+            "channel '" + ch.name + "' accumulates by " +
+                (ch.accumulate.op == AccumOp::Min ? "minimum" : "maximum") +
+                ", but field " + std::to_string(f.value()) +
+                " carries derivatives: the derivative of a minimum or "
+                "maximum is that of the sample picked, which comparing the "
+                "tangents scalar by scalar does not give. Accumulate by sum, "
+                "mean or integral, or bind the field without derivatives"};
+      }
+    }
+  }
+
   // Map each component-owned arc back to the field it aliases. `plan_buffers`
   // marks exactly the Source and Sink outputs component-owned, and lowering
   // labels those nodes "component.field", so the two agree by construction --
@@ -324,7 +353,15 @@ Result<void> Runner::Impl::resolve_buffers(FieldRegistry& registry) {
                    "component-owned arc %" + std::to_string(b.arc.value()) +
                        " (" + b.label + ") does not resolve to a field"};
     }
-    const Result<FieldRef> ref = registry.get(it->second);
+    // The field as scalars: a binary64 field as it is, a field of arrays of
+    // binary64 (dual numbers) as `components * scalar_count` scalars, which is
+    // what the plan sized the buffer for. Anything else is refused by name; it
+    // is bound, so "not bound" would be the wrong thing to say.
+    const Result<FieldRef> ref = registry.get_scalars(it->second);
+    if (!ref.ok() && ref.error().code != "E-FIELD-UNBOUND") {
+      return Failure{"E-RT-FIELD-TYPE",
+                     "field '" + b.label + "': " + ref.error().message};
+    }
     if (!ref.ok()) {
       return Failure{"E-RT-UNBOUND",
                    "field '" + b.label +
