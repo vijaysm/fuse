@@ -273,8 +273,8 @@ TEST(NativeMigrationMpi, VertexOwnerIsTheMinimumRankAmongHoldersAfterMigration) 
 }
 
 // ---------------------------------------------------------------------------
-// NM-6: `unpack_migrated_mesh`'s own rebuild is per-rank data (whatever
-// THIS rank alone received); before this fix it returned unreconciled,
+// `unpack_migrated_mesh`'s own rebuild is per-rank data (whatever
+// THIS rank alone received); it must be reconciled
 // ahead of `resolve_vertex_ownership`'s own Allgather/Allgatherv. Ranks 0
 // and 1 each migrate one perfectly valid, dimension-3 Tet to rank 2 --
 // valid by EACH SENDER's own `dim_` (every sender's own `b.build()`

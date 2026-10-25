@@ -139,7 +139,7 @@ class TestDescriptorRoundTrip:
 
     def test_malformed_descriptor_is_rejected(self):
         """deserialize()'s E-DESC-MAGIC is a fuse::Result failure, not a thrown fuse::Error --
-        a bare pfuse.FuseError, (see TestExceptionHierarchy, below)."""
+        a bare pfuse.FuseError (see TestExceptionHierarchy, below)."""
         with pytest.raises(pfuse.FuseError, match="E-DESC-MAGIC") as excinfo:
             pfuse.from_bytes(b"not a fuse descriptor")
         assert excinfo.value.code == "E-DESC-MAGIC"

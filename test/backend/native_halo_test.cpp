@@ -882,14 +882,14 @@ TEST(NativeHaloBuildNativeRemapHalo, IdentitySourceEqualsTargetIsASuccessfulNoOp
 }
 
 // ---------------------------------------------------------------------------
-// NM-3: `merge_halo_cells` appends each halo's newly adopted cells STRICTLY
+// `merge_halo_cells` appends each halo's newly adopted cells STRICTLY
 // AFTER whatever `source` already held (native_halo.cpp's own comment), so
 // U's mesh after a SECOND halo for a different target (here W, a THIRD
 // grid) is laid out `[owned, ghosts_V, ghosts_W]` -- the W pattern's own
 // ghosts do NOT start at `owned_n`, they start `ghost_offset` further in,
 // where `ghost_offset` is exactly how many ghosts the FIRST (V) halo
-// already appended. Before NM-3, `remap_halo_pattern` carried no such
-// offset at all, so any consumer following the documented
+// already appended. `remap_halo_pattern` therefore carries an
+// offset, since any consumer following the documented
 // `make_mpi_exchanger` contract literally (ghosts at `owned_n + g`) would
 // read U's V-ghost slots with W-ghost values for every g below the V
 // halo's own count -- silently wrong field values in a conservative remap.
@@ -995,7 +995,7 @@ TEST(NativeHaloSecondTarget, GhostOffsetIndexesTheSecondHaloBlockCorrectly) {
     }
     // The CORRECT, offset-aware fill for the W block: slot `owned_n +
     // ghost_offset + g`, NOT `owned_n + g` (which would read the V
-    // block's slots instead -- exactly NM-3's bug).
+    // block's slots instead -- the bug the offset prevents).
     for (std::size_t g = 0; g < owner_rank2.size(); ++g) {
       src_field[owned_n + ghost_offset + g] =
           owned_field_of_rank[static_cast<std::size_t>(owner_rank2[g])]
