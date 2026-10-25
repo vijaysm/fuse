@@ -984,6 +984,9 @@ fuse_add_omp_legs(runtime.runner_determinism fuse_runtime_runner_determinism_tes
 # Device cases assert the E-RT-DEVICE refusal instead of skipping silently.
 # See docs/dev/runner-device-dispatch.md.
 fuse_add_gtest(runtime runner_device)
+# A field of dual numbers through the Runner and a real remap (plans/2026-10-22-
+# universal-number-types.md, U2), and the two refusals that keep it honest.
+fuse_add_gtest(runtime dual_field_runner)
 
 # the issue tracker `bool supports_rollback() const override` no longer
 # names a virtual to override, once `Component::capabilities()` is the one
