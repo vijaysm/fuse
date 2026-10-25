@@ -228,9 +228,10 @@ struct Dual3 { double v[4]; };   // a value and three tangents
 template <>
 struct fuse::value_traits<Dual3> {
   static constexpr std::string_view name = "myapp:dual3";
-  static constexpr fuse::FieldValueKind kind = fuse::FieldValueKind::LaneLinear;
-  using lane_type = double;
-  static constexpr int lanes = 4;
+  static constexpr fuse::FieldValueKind kind = fuse::FieldValueKind::ScalarArray;
+  using scalar_type = double;            // what one scalar is
+  static constexpr int scalar_count = 4;      // scalars in one value
+  static constexpr int derivative_count = 3;  // of which the last 3 are tangents
   static double to_binary64(const Dual3& d) noexcept { return d.v[0]; }
   static Dual3 from_binary64(double x) noexcept { return {{x, 0, 0, 0}}; }
 };
@@ -240,20 +241,68 @@ struct fuse::value_traits<Dual3> {
 
 | Kind | Meaning | Examples |
 |---|---|---|
-| `LaneLinear` | `lanes` values of `lane_type`, and every field operation acts on each lane separately | binary64, forward-mode dual numbers, complex values |
+| `ScalarArray` | an array of `scalar_count` scalars of `scalar_type`; every field operation acts on each scalar separately | binary64 (one scalar), complex numbers, forward-mode dual numbers |
 | `Arithmetic` | needs its own arithmetic inside an operator | double-double, quad-double |
 | `Storage` | a compact format, widened exactly to binary64 and rounded once on return | binary32, bfloat16 |
 
 `fuse::CoupledValue<T>` checks these requirements at compile time, including
-that a `LaneLinear` type's lanes tile it exactly. A type without
+that a `ScalarArray` type's scalars tile it exactly. A type without
 `value_traits` does not compile as a field value type. The conversion
 `value_traits<fuse::bfloat16>::from_binary64` is correctly rounded (to
 nearest, ties to even): it rounds the intermediate binary32 value to odd,
 because rounding to nearest twice is not correctly rounded.
 
-At this stage only the C++ field views and the registry take a value type. The
-C ABI, transport, remap and solver interfaces still carry binary64 fields;
-extending them is the next stage of the plan.
+### Forward-mode derivatives
+
+`fuse::num::dual<S, N>` (`fuse/num/dual.hpp`) is a forward-mode automatic
+differentiation number: a value and `N` directional derivatives (tangents),
+propagated by the rules of calculus through `+ - * /`, `sqrt`, `exp`, `log`,
+`sin`, `cos`, `abs` and `pow` with a constant exponent. It runs inside a Kokkos
+kernel on any execution space. In `value_traits` it is a `ScalarArray` of
+`N + 1` scalars of type `S`, the first the value and the last `N` its tangents
+(`derivative_count = N`).
+
+Bind a field of them like any typed field. The graph counts scalars per entity,
+so a one-component field of `dual<double, 3>` is declared with `components = 4`.
+
+```cpp
+std::vector<fuse::num::dual<double, 3>> t(n_cells);
+registry.bind(id, fuse::BasicFieldRef<fuse::num::dual<double, 3>>(
+                      t.data(), fuse::Layout{1, 1, n_cells, 1},
+                      fuse::MemorySpace::Host));
+auto scalars = registry.get_scalars<double>(id);   // 4 binary64 components
+```
+
+The runtime moves such a field as scalars (`FieldRegistry::get_scalars`). A remap
+`y = W x` has weights that do not depend on the field, so the tangent of `y` is
+`W` applied to the tangent of `x`. The tests check that bit for bit, both on the
+remap kernel on every enabled execution space (`num.dual`) and through a
+`Runner` and the backend's own remap (`runtime.dual_field_runner`). They also
+check the Taylor remainder of the Brusselator species residual whose derivative
+action comes from dual numbers pushed through the remap kernel: order 2 for the
+right tangent, order 1 when the tangent is left out of the remap.
+
+What this does not cover:
+
+- **Minimum and maximum accumulation** of a field with derivatives is refused
+  at `Runner::initialize` with `E-RT-DERIVATIVE-MINMAX`: the derivative of a
+  minimum is that of the sample picked, which comparing the tangents scalar by
+  scalar does not give. Sum, mean and integral are linear and are accepted.
+- **An affine unit conversion** (an offset, such as degrees Celsius to kelvin)
+  would add the offset to the tangents as well. The compiler refuses that step
+  for every field today (`E-IR-UNLOWERABLE`), so it cannot happen; whoever makes
+  it lowerable has to apply the offset to the value scalars only.
+- **The components must be interleaved** (`component_stride` 0 or 1). A blocked
+  layout is refused with `E-FIELD-SCALAR-LAYOUT` rather than permuted.
+- **Only typed C++ registration tells the runtime a field has derivatives.** A C
+  or Fortran participant, or a provider plugin, can carry tangents as extra
+  components of a plain binary64 field and they will move correctly, but the
+  runtime cannot tell them from values, so it will not refuse a minimum or
+  maximum accumulation of them. Restart files, iteration-region window members
+  and the C ABI's own field description do not know about derivatives yet.
+- **Reverse mode** is not provided. Each coupler operator already has an adjoint
+  (`apply_transpose`, checked by the derivative gate); a schedule that runs the
+  coupling graph backwards is a later stage.
 
 ## Portable kernels
 
