@@ -63,17 +63,15 @@
 /// compute in binary64 behind a field's back; where they are applied is a
 /// decision of the stage that applies them.
 
-#include <bit>
-#include <cmath>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
-#include <limits>
 #include <string_view>
 #include <type_traits>
 
+#include "fuse/base/portable.hpp"
 #include "fuse/model/bfloat16.hpp"
+#include "fuse/model/binary16.hpp"
 
 namespace fuse {
 
@@ -120,10 +118,10 @@ struct value_traits<double> {
   using scalar_type = double;
   static constexpr int scalar_count = 1;
   static constexpr int gradient_size = 0;
-  [[nodiscard]] static constexpr double to_binary64(double v) noexcept {
+  [[nodiscard]] KOKKOS_INLINE_FUNCTION static constexpr double to_binary64(double v) noexcept {
     return v;
   }
-  [[nodiscard]] static constexpr double from_binary64(double v) noexcept {
+  [[nodiscard]] KOKKOS_INLINE_FUNCTION static constexpr double from_binary64(double v) noexcept {
     return v;
   }
 };
@@ -136,45 +134,15 @@ struct value_traits<float> {
   static constexpr int scalar_count = 1;
   static constexpr int gradient_size = 0;
   /// Exact: every binary32 value is a binary64 value.
-  [[nodiscard]] static constexpr double to_binary64(float v) noexcept {
+  [[nodiscard]] KOKKOS_INLINE_FUNCTION static constexpr double to_binary64(float v) noexcept {
     return static_cast<double>(v);
   }
   /// Round to nearest, ties to even, under the default floating-point
   /// environment (this project never changes the rounding mode).
-  [[nodiscard]] static constexpr float from_binary64(double v) noexcept {
+  [[nodiscard]] KOKKOS_INLINE_FUNCTION static constexpr float from_binary64(double v) noexcept {
     return static_cast<float>(v);
   }
 };
-
-namespace detail {
-
-/// binary64 -> binary32 rounded to odd: the exact result when it is
-/// representable, otherwise whichever of the two neighbouring binary32 values
-/// has an odd last significand bit. Rounding to odd in an intermediate format
-/// with at least p + 2 significand bits, followed by one rounding to nearest
-/// to the p-bit target, equals a single correct rounding to the target
-/// (Boldo and Melquiond, "Emulation of FMA and correctly rounded sums: proved
-/// algorithms using rounding to odd", IEEE Trans. Computers 57(4), 2008).
-/// binary32 has 24 bits and bfloat16 8, so this makes binary64 -> bfloat16
-/// correctly rounded. Rounding to nearest twice is not: a binary64 value just
-/// above a bfloat16 midpoint can first round DOWN onto the midpoint in
-/// binary32, and the tie then goes to even.
-[[nodiscard]] inline float round_to_odd_binary32(double v) noexcept {
-  float f = static_cast<float>(v);  // round to nearest, ties to even
-  if (std::isnan(v) || static_cast<double>(f) == v) return f;
-  const std::uint32_t bits = std::bit_cast<std::uint32_t>(f);
-  if ((bits & 1u) == 0u) {
-    // f is the even neighbour; the odd neighbour lies on v's side of f.
-    // When f overflowed to infinity this steps back to the largest finite
-    // binary32 value, which is odd, as rounding to odd requires.
-    f = std::nextafter(f, static_cast<double>(f) < v
-                              ? std::numeric_limits<float>::infinity()
-                              : -std::numeric_limits<float>::infinity());
-  }
-  return f;
-}
-
-}  // namespace detail
 
 template <>
 struct value_traits<bfloat16> {
@@ -183,16 +151,30 @@ struct value_traits<bfloat16> {
   using scalar_type = bfloat16;
   static constexpr int scalar_count = 1;
   static constexpr int gradient_size = 0;
-  /// Exact: bfloat16 -> binary32 is exact (bfloat16.hpp) and so is
-  /// binary32 -> binary64.
-  [[nodiscard]] static double to_binary64(bfloat16 v) noexcept {
-    return static_cast<double>(v.to_float());
+  /// Exact: every bfloat16 value is a binary64 value.
+  [[nodiscard]] KOKKOS_INLINE_FUNCTION static double to_binary64(bfloat16 v) noexcept {
+    return v.to_double();
   }
-  /// Correctly rounded (to nearest, ties to even); see
-  /// detail::round_to_odd_binary32 for why the intermediate binary32 value is
-  /// rounded to odd rather than to nearest.
-  [[nodiscard]] static bfloat16 from_binary64(double v) noexcept {
-    return bfloat16::from_float(detail::round_to_odd_binary32(v));
+  /// Correctly rounded, to nearest with ties to even, once (bfloat16.hpp).
+  [[nodiscard]] KOKKOS_INLINE_FUNCTION static bfloat16 from_binary64(double v) noexcept {
+    return bfloat16::from_double(v);
+  }
+};
+
+template <>
+struct value_traits<binary16> {
+  static constexpr std::string_view name = "binary16";
+  static constexpr FieldValueKind kind = FieldValueKind::Storage;
+  using scalar_type = binary16;
+  static constexpr int scalar_count = 1;
+  static constexpr int gradient_size = 0;
+  /// Exact: every binary16 value is a binary64 value.
+  [[nodiscard]] KOKKOS_INLINE_FUNCTION static double to_binary64(binary16 v) noexcept {
+    return v.to_double();
+  }
+  /// Correctly rounded, to nearest with ties to even, once (binary16.hpp).
+  [[nodiscard]] KOKKOS_INLINE_FUNCTION static binary16 from_binary64(double v) noexcept {
+    return binary16::from_double(v);
   }
 };
 
