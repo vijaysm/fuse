@@ -305,7 +305,7 @@ CouplingGraph make_graph(AccelConfig accel, int max_iters,
 /// the runtime learned to reject it: IQN-ILS zeroed the a2b residual EXACTLY
 /// on sweep 3 while the b2a residual still stood at 0.8, and the implicit coupling group
 /// reported convergence at a_out = 2.25 against a true fixed point of 2.5.
-/// resolve_regions() now rejects a partially measured implicit coupling group with
+/// resolve_regions() rejects a partially measured implicit coupling group with
 /// E-ITER-MEASURE (see RejectsARegionWithAnUnmeasuredChannel).
 fuse::ConvergenceCriterion both_channels(double tol) {
   fuse::ConvergenceCriterion c;
@@ -901,8 +901,8 @@ TEST(Iteration, ASpacetimeChannelInAnIterationRegionIsRefusedNotSilentlyWrong) {
   Runner runner{g, lowered.dag, sched.plan, backend};
   const auto init = runner.initialize(components, registry);
   ASSERT_FALSE(init.ok())
-      << "a space-time field transfer inside an implicit coupling group now runs -- R12 "
-         "needs its idempotency actually tested, not just documented as "
+      << "a space-time field transfer inside an implicit coupling group now runs -- "
+         "its idempotency needs actually testing, not just documenting as "
          "rejected";
   EXPECT_EQ(init.error().code, "E-RT-REGION");
   EXPECT_NE(init.error().message.find("at or after the region begins"),
@@ -1100,12 +1100,12 @@ TEST(Iteration, TheSweepLoopAllocatesNothing) {
 
 // The accelerator is inside the sweep loop, so the rule above is its rule too.
 //
-// MEASURED BEFORE AND AFTER. AitkenAccel::update() used to build a
-// `std::vector<double> r(n)` on every call (src/num/accel_relaxation.cpp), and
-// the quasi-Newton members allocated their whole least-squares workspace the
-// same way: exactly 56 allocations for the 56 accelerator updates below. Every
-// one of those buffers is now a member of the accelerator, and this asserts
-// the zero rather than a bound -- a `<= updates` bound is satisfied by one
+// AitkenAccel::update() must not build a
+// `std::vector<double> r(n)` on every call (src/num/accel_relaxation.cpp), nor may
+// the quasi-Newton members allocate their whole least-squares workspace per
+// call: that would be exactly 56 allocations for the 56 accelerator updates
+// below. Every one of those buffers is a member of the accelerator, and this
+// asserts the zero rather than a bound -- a `<= updates` bound is satisfied by one
 // allocation per update, which is the defect, and by none, which is the fix,
 // so it cannot tell them apart.
 //

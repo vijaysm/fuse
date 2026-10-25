@@ -1,4 +1,4 @@
-# The two examples named in S4's exit criteria, ported from the coupler parent.
+# The first two examples (mms_pair and dn_heat), ported from the coupler parent.
 #
 # They are EXAMPLES, and they are also the only code in the tree that drives
 # the library the way a user would -- building a graph with the fluent API,
@@ -152,7 +152,7 @@ if(FUSE_ENABLE_TESTS)
 endif()
 
 # ---------------------------------------------------------------------------
-# processor-processor-layout driver (plan-track-d). MPI-only: it links fuse::transport for
+# processor-processor-layout driver. MPI-only: it links fuse::transport for
 # MpiTransport and needs mpiexec to mean anything, so the whole block is
 # gated on FUSE_ENABLE_MPI, exactly as test/CMakeLists.txt gates its own
 # parallel/ targets.
@@ -213,7 +213,7 @@ if(FUSE_LINALG_BACKEND_IS_EIGEN)
     add_test(NAME example.gray_scott COMMAND fuse_example_gray_scott --n 24 --ratio 2 --t-end 4 --dt 0.1 --check)
     set_tests_properties(example.gray_scott PROPERTIES LABELS "example")
     # An unknown --accel name is refused before any setup (examples/common/
-    # accel_names.hpp). Until 2026-10-20 this program ran Aitken for it.
+    # accel_names.hpp), rather than silently running Aitken.
     add_test(NAME example.gray_scott.accel_refused
              COMMAND fuse_example_gray_scott --accel no-such-method)
     set_tests_properties(example.gray_scott.accel_refused PROPERTIES
@@ -283,8 +283,8 @@ if(FUSE_LINALG_BACKEND_IS_EIGEN)
     # test/verification/brusselator_*_test.cpp.
     add_test(NAME example.brusselator COMMAND fuse_example_brusselator --end 0.5 --check)
     set_tests_properties(example.brusselator PROPERTIES LABELS "example")
-    # An unknown --accel name is refused before any setup. Until 2026-10-20
-    # this program ran with no acceleration for it.
+    # An unknown --accel name is refused before any setup, rather than
+    # silently running with no acceleration.
     add_test(NAME example.brusselator.accel_refused
              COMMAND fuse_example_brusselator --accel no-such-method)
     set_tests_properties(example.brusselator.accel_refused PROPERTIES
@@ -314,8 +314,8 @@ if(FUSE_LINALG_BACKEND_IS_EIGEN)
     # newton_test.cpp): the Eisenstat-Walker floor the window needs
     # (docs/dev/newton-krylov.md Sec. 9.9.2, 10.3) shows only on the
     # example's own first window -- the rig's window passed without it on
-    # the host, the example's first window reported DivergedLinearSolve
-    # (2026-10-11). Five windows, --check on.
+    # the host, the example's first window reported DivergedLinearSolve.
+    # Five windows, --check on.
     add_test(NAME example.brusselator.newton
              COMMAND fuse_example_brusselator --driver runner --accel newton --end 0.1 --check)
     set_tests_properties(example.brusselator.newton PROPERTIES LABELS "example")
@@ -648,7 +648,7 @@ if(FUSE_ENABLE_TESTS AND FUSE_ENABLE_MPI AND TARGET brusselator_u_main AND TARGE
       set_tests_properties(${_name} PROPERTIES
         LABELS "parallel;mpi;verification;brusselator" TIMEOUT 120
         ENVIRONMENT "OMPI_MCA_coll_tuned_use_dynamic_rules=1;OMPI_MCA_coll_tuned_alltoallv_algorithm=2;OMPI_MCA_rmaps_base_oversubscribe=1;PRTE_MCA_rmaps_default_mapping_policy=:oversubscribe")
-      # the issue tracker final account: U bundles the coupler's own
+      # U bundles the coupler's own
       # ranks and is the Connect-mode acceptor (brusselator_graph_tool.cpp's
       # own accept branch), so this row's real layout is (ranks_u +
       # ranks_coupler) accepting against ranks_v connecting -- not
@@ -678,18 +678,15 @@ if(FUSE_ENABLE_TESTS AND FUSE_ENABLE_MPI AND TARGET brusselator_u_main AND TARGE
     endforeach()
   endforeach()
 endif()
-# ---- Conformance host rows: end -------------------------------------
+# ---- Brusselator participants host rows: end -------------------------------
 
-# ----  (Conformance,),  host rows:
-# begin -----------------------------------------------------------------
+# ---- LowFive participants host rows: begin ------------------------------
 # Same host_verification_needed status as the plain rows just above.
-# The host's LowFive fmt-12 rebuild (the issue tracker "what remains"
-# item 1) is DONE -- `fuse-lowfive-vol` loads and `.lowfive.mpmd.3` passes
-#. `.lowfive.accept.3` still needs a host run of Stage
-# B's own ABI-gap fix before it can pass.
-# World size 3 only (1+1+1): item 3's own ask names .lowfive.{mpmd,accept}.3,
-# not .5; the degenerate reference graph (brusselator_graph_tool.cpp's own
-# kDtU == kWindow) this track measured against never needed more than one
+# `fuse-lowfive-vol` loads, and `.lowfive.mpmd.3` and `.lowfive.accept.3`
+# pass on the host.
+# World size 3 only (1+1+1): the rows are
+# .lowfive.{mpmd,accept}.3, not .5; the reference graph
+# (brusselator_graph_tool.cpp) needs no more than one
 # rank per component to prove the wiring, and a second world size would
 # only repeat it.
 #
@@ -700,8 +697,7 @@ endif()
 # harmful: libMOAB's static initialiser (_GLOBAL__sub_I_WriteHDF5.cpp) calls
 # H5open before main, HDF5 then reads HDF5_VOL_CONNECTOR and registers the
 # LowFive connector in the coupler, and at exit that connector's teardown
-# reaches an already-destroyed spdlog registry and aborts (the issue tracker
-#). Measured 2026-10-13 on the owner's machine: the mpmd row fails with the
+# reaches an already-destroyed spdlog registry and aborts. Measured: the mpmd row fails with the
 # three variables set and passes with them unset, and also passes with only
 # FUSE_LOWFIVE_BINDINGS set. The env-route plugin (fuse-lowfive-vol) stays in
 # the tree; the TARGET guard below is kept so the rows are registered under
@@ -734,7 +730,7 @@ if(FUSE_ENABLE_TESTS AND FUSE_ENABLE_MPI AND FUSE_ENABLE_LOWFIVE
       LABELS "parallel;mpi;lowfive;verification;brusselator"
       TIMEOUT 120
       ENVIRONMENT "OMPI_MCA_coll_tuned_use_dynamic_rules=1;OMPI_MCA_coll_tuned_alltoallv_algorithm=2;OMPI_MCA_rmaps_base_oversubscribe=1;PRTE_MCA_rmaps_default_mapping_policy=:oversubscribe")
-    # the issue tracker final account, same check as the non-LowFive
+    # Same check as the non-LowFive
     # participants rows above: ranks_u=1, ranks_coupler=1 bundled onto U
     # (the acceptor), ranks_v=1 connecting -- layout 2+1.
     if(_mode STREQUAL "accept")
@@ -754,30 +750,29 @@ if(FUSE_ENABLE_TESTS AND FUSE_ENABLE_MPI AND FUSE_ENABLE_LOWFIVE
     endif()
   endforeach()
 endif()
-# ----   host rows: end ---------------------------------
+# ---- LowFive participants host rows: end --------------------------------
 
-# ---- LowFive attach note (revised 2026-10-13) ---------------------------
+# ---- LowFive attach note -------------------------------------------------
 # Both brusselator_u_main and brusselator_v_main attach LowFive
 # programmatically (examples/brusselator/participants/lowfive_attach.cpp) for
 # every --transport lowfive row, mpmd and accept alike: every
 # bruss_lowfive_write()/bruss_lowfive_read() call passes an explicit fapl_id
 # and refuses if it is negative, so neither row's H5Fcreate/H5Fopen reaches
 # HDF5_VOL_CONNECTOR's default-VOL resolution. The three env-route variables
-# were therefore removed from these two rows' ENVIRONMENT (see the comment
-# above the block for the measurement). The mpmd row passes (# 1.70 s). The accept row's own blanket E-LOWFIVE-ATTACH-ACCEPT refusal is
-# replaced,  (2026-10-13): decide_attach_mode() now accepts a
-# Connect-mode channel when the base communicator is exposed (the new
-# base_communicator() ABI entry) and at most two Connect-mode components
-# are declared, refusing only those two narrower conditions by name.
-# Host-run 2026-10-13: both LowFive rows Passed (accept 1.26 s, mpmd 2.37 s),
-# the issue tracker item 3.
-# ---- "LowFive attach" track note: end ----------------------------------
+# are therefore absent from these two rows' ENVIRONMENT (see the comment
+# above the block for the measurement). The mpmd row passes. In the accept
+# row, decide_attach_mode() accepts a Connect-mode channel when the base
+# communicator is exposed (the base_communicator() ABI entry) and at most
+# two Connect-mode components are declared, refusing only those two
+# narrower conditions by name. Both LowFive rows pass on the host (accept
+# and mpmd).
+# ---- LowFive attach note: end --------------------------------------------
 
 # Gated on the eigen backend -- both FSI channel
 # solvers factor through Eigen::SparseLU with no builtin-backend substitute.
 if(FUSE_LINALG_BACKEND_IS_EIGEN)
   # ---------------------------------------------------------------------------
-  # FSI channel (): a 2D unsteady-Stokes channel with an Euler-
+  # FSI channel: a 2D unsteady-Stokes channel with an Euler-
   # Bernoulli wall beam, strongly coupled on a non-matching 1D interface
   # (consistent H, conservative H^T -- fuse/backend/consistent_interp.hpp).
   # Needs Eigen3::Eigen directly for both solvers' SparseLU factorisations,
@@ -839,10 +834,7 @@ if(FUSE_LINALG_BACKEND_IS_EIGEN)
       set_tests_properties(example.fsi_channel.omp_identical PROPERTIES LABELS "example;omp")
     endif()
     # FUSE_ENABLE_CUSPARSE=ON: these two rows are DISABLED (ctest reports them
-    # as "Not Run (Disabled)", not hidden), the issue tracker (review
-    # 2026-10-11 used the pre-rebase number for this finding; in the
-    # current the issue tracker is the unrelated accept-mode RankSet fix).
-    # Measured 2026-10-11: the example's IQN-ILS coupling is marginally stable
+    # as "Not Run (Disabled)", not hidden). Measured: the example's IQN-ILS coupling is marginally stable
     # at the step nearest the beam's first natural period (step 7 of the
     # default run). With Eigen it passes that step in 46 sweeps, twice its
     # usual count; with the cusolverRf backend -- whose solutions agree with
@@ -911,7 +903,7 @@ if(FUSE_ENABLE_MPI)
   fuse_add_layout_test(layout.4.c1-1-3.c2-0-2 4 ARGS --comp1 1:3 --comp2 0:2 --check)
   fuse_add_layout_test(layout.4.c1-0-3.c2-0-3 4 ARGS --comp1 0:3 --comp2 0:3 --check)
 
-  # --coupler: the coupler-placement track (design C). The field transfer always
+  # --coupler: coupler placement (docs/dev/coupler-placement.md). The field transfer always
   # gets RemapFlags::Conservative (main.cpp's own comment on why), so
   # --check still verifies the same "every destination entity holds its own
   # global id" property as the rows above, now routed source -> coupler ->
@@ -964,8 +956,8 @@ if(FUSE_ENABLE_MPI)
     ARGS --comp1 0:1 --comp2 0:1 --coupler 0:1 --mesh hexbox:4x4x4)
 endif()
 
-# ----: begin -----------------------------------
-# Demo B: two SEPARATE
+# ---- Demo B (LowFive): begin ----------------------------------------------
+# Demo B (docs/user/lowfive.md): two SEPARATE
 # executables, demo_b_producer and demo_b_consumer, coupled purely by
 # LowFive's HDF5-VOL interception across an MPI intercommunicator the two
 # form themselves (examples/demo_b/rendezvous.hpp) -- not launched as one
@@ -1013,7 +1005,7 @@ else()
                  "-DFUSE_ENABLE_LOWFIVE=ON -DFUSE_ENABLE_MPI=ON and a "
                  "LowFive install shipping liblowfive-dist; not built")
 endif()
-# ----: end -------------------------------------
+# ---- Demo B (LowFive): end ------------------------------------------------
 
 # one line naming every example this configure
 # skipped because FUSE_LINALG_BACKEND is not eigen, same convention as
