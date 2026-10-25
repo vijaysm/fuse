@@ -1,22 +1,19 @@
-# Mutation evidence for the "Containers" track (DistVector/DistSparseMatrix).
-# Own file per the review-fix protocol (see linalg-least-squares.toml's own
-# header comment): do not edit build-evidence/mutations.toml directly while
-# other fixers hold it dirty. Discovered automatically by tools/mutate.py's
-# load_manifest() (every build-evidence/mutations/*.toml), no separate
-# registration needed.
+# Mutation evidence for the containers (DistVector/DistSparseMatrix).
+# Discovered automatically by tools/mutate.py's load_manifest() (every
+# build-evidence/mutations/*.toml), no separate registration needed.
 #
-# All three rows were HAND-PROVEN (standing rule: tools/mutate.py itself
-# mutates the real source tree in place and requires a clean `git status`,
-# which this track does not assume here) -- on a byte-for-byte restored
-# copy of the file, the exact sequence `tools/mutate.py` itself would run:
-# apply the `old` -> `new` text, rebuild `target` with
-# `cmake --build <dir> --target <target>`, run the WHOLE binary unfiltered
-# (no `ctest -R`, no gtest filter), record which cases failed and how many
-# passed, restore the original text, and `cmp` the restored file against a
-# saved backup to confirm the restore is exact. None needs `requires =
-# "mpi"`: every one is killed by an in-process two-partition tier-0 test
-# (dist_vector_test.cpp / dist_sparse_matrix_test.cpp), never by
-# test/parallel/linalg_mpi_test.cpp, which this sandbox cannot run at all.
+# All three rows were HAND-PROVEN (tools/mutate.py itself mutates the real
+# source tree in place and requires a clean `git status`) -- on a
+# byte-for-byte restored copy of the file, the exact sequence
+# `tools/mutate.py` itself would run: apply the `old` -> `new` text,
+# rebuild `target` with `cmake --build <dir> --target <target>`, run the
+# WHOLE binary unfiltered (no `ctest -R`, no gtest filter), record which
+# cases failed and how many passed, restore the original text, and `cmp`
+# the restored file against a saved backup to confirm the restore is exact.
+# None needs `requires = "mpi"`: every one is killed by an in-process
+# two-partition tier-0 test (dist_vector_test.cpp /
+# dist_sparse_matrix_test.cpp), never by test/parallel/linalg_mpi_test.cpp,
+# which this sandbox cannot run at all.
 
 [[mutation]]
 id = "linalg-ghost-remote-index-off-by-one"
@@ -29,7 +26,7 @@ new = """    pattern.remote_local_index[g] =
         static_cast<std::int64_t>(global_col) - owners.row_lo[static_cast<std::size_t>(owner)] + 1;"""
 target = "fuse_linalg_dist_sparse_matrix_test"
 test = "linalg.dist_sparse_matrix"
-# Hand-proved 2026-10-09 against a byte-identical restored copy: 8 cases in
+# Hand-proved against a byte-identical restored copy: 8 cases in
 # the target before mutation (all pass); after mutation, applied by hand and
 # the WHOLE binary run unfiltered, 3 fail --
 # DistSparseMatrixFromTriplets.DerivesGhostPatternFromOffProcessColumnsAscending,
@@ -50,7 +47,7 @@ new = """    for (std::size_t k = off_row_ptr_[i]; k < off_row_ptr_[i]; ++k) {
     }"""
 target = "fuse_linalg_dist_sparse_matrix_test"
 test = "linalg.dist_sparse_matrix"
-# Hand-proved 2026-10-09 the same way: 8 pass before; after mutation, 2 fail
+# Hand-proved the same way: 8 pass before; after mutation, 2 fail
 # (DistSparseMatrixApply.PeriodicLaplacian16x16SplitInTwoRowSlabs,
 # DistSparseMatrixApply.RandomNonsymmetricFiveNonzerosPerRow), 6 pass --
 # DiagonalNeedsNoCommunication and the single-partition-adjacent checks are
@@ -68,8 +65,7 @@ new = """  for (std::size_t i = 0; i < owned_n_; ++i) local += storage_[i] * oth
   return local;"""
 target = "fuse_linalg_dist_vector_test"
 test = "linalg.dist_vector"
-# Hand-proved 2026-10-09 (re-proved after LinalgComm.SerialReducerIs...
-# was added to the same binary, which changes the total from 3 to 4): 4
+# Hand-proved: 4
 # pass before; after mutation, 1 fails
 # (DistVectorTwoPartitionFake.DotAndNorm2EqualTheGatheredSerialReduction,
 # all three of its own assertions -- a0.dot(b0), a0_self.norm2(), and
@@ -79,7 +75,7 @@ test = "linalg.dist_vector"
 # answer, and the Reducer test never touches DistVector::dot at all).
 # File restored and `cmp`-verified byte-identical.
 
-# "Krylov" track: fuse::linalg::pcg/gmres (include/fuse/linalg/{pcg,gmres}.hpp),
+# Krylov solvers: fuse::linalg::pcg/gmres (include/fuse/linalg/{pcg,gmres}.hpp),
 # header-only templates with no corresponding .cpp -- every row below
 # mutates the header directly. All four were HAND-PROVEN the same way the
 # three rows above were (apply `old` -> `new` to the real source tree,
@@ -87,8 +83,7 @@ test = "linalg.dist_vector"
 # gtest filter -- record which cases failed and how many passed, restore
 # the original text, `cmp` the restored file against a saved backup to
 # confirm the restore is exact), because `tools/mutate.py` itself refuses
-# to start against a dirty `include`/`src` tree, which this track's own
-# uncommitted new headers already are. None needs `requires = "mpi"`:
+# to start against a dirty `include`/`src` tree. None needs `requires = "mpi"`:
 # every one is killed by the tier-0 binary (test/linalg/pcg_test.cpp,
 # test/linalg/gmres_test.cpp), never by test/parallel/krylov_mpi_test.cpp,
 # which this sandbox cannot run at all.
@@ -102,7 +97,7 @@ old = """    const double beta = rz_new / rz_old;"""
 new = """    const double beta = rz_old / rz_old;"""
 target = "fuse_linalg_pcg_test"
 test = "linalg.pcg"
-# Hand-proved 2026-10-10 against a byte-identical restored copy: 6 cases
+# Hand-proved against a byte-identical restored copy: 6 cases
 # in the target before mutation (all pass); after mutation, applied by
 # hand and the WHOLE binary run unfiltered, 4 fail --
 # PcgAgreesWithEigen.PeriodicLaplacianIdentityAndJacobi,
@@ -121,7 +116,7 @@ old = """      if (true_norm <= opt.rel_tol * b_norm) {"""
 new = """      if (recurrence_norm <= opt.rel_tol * b_norm) {"""
 target = "fuse_linalg_pcg_test"
 test = "linalg.pcg"
-# Hand-proved 2026-10-10: 6 pass before; after mutation, 1 fails --
+# Hand-proved: 6 pass before; after mutation, 1 fails --
 # PcgRecomputesTrueResidual.IllConditionedDiagonalConvergesToTheTrueTolerance,
 # on its own independent-recompute assertion (reported relative residual
 # 4.245e-12 against tolerance 1e-13) -- 5 pass (the five well-conditioned
@@ -139,7 +134,7 @@ new = """    z.copy_from(r);
     const double rz_new = r.dot(z);"""
 target = "fuse_linalg_pcg_test"
 test = "linalg.pcg"
-# Hand-proved 2026-10-10: 6 pass before; after mutation, 1 fails --
+# Hand-proved: 6 pass before; after mutation, 1 fails --
 # PcgAgreesWithEigen.RandomSpdIdentityAndJacobi, on its jacobi sub-case
 # from iteration 2 on (e.g. iteration 2: ours 0.1375 vs Eigen's Jacobi
 # 0.1231, a 0.0144 gap against a 1e-9 bound) -- 5 pass, INCLUDING
@@ -162,7 +157,7 @@ new = """      const double g_k = g[k];
       g[k] = c_k * g_k + s_k * g[k + 1];"""
 target = "fuse_linalg_gmres_test"
 test = "linalg.gmres"
-# Hand-proved 2026-10-10: 3 pass before; after mutation, 2 fail --
+# Hand-proved: 3 pass before; after mutation, 2 fail --
 # GmresAgreesWithEigen.RandomNonsymmetricIdentity and
 # GmresJacobi.ConvergesAndAgreesWithSparseLuOnADiagonallyScaledSystem, both
 # with E-LINALG-NO-CONVERGENCE ("did not converge within 300 iterations;
@@ -171,12 +166,11 @@ test = "linalg.gmres"
 # (GmresRefusals' own tiny-iteration-cap case, which never reaches a
 # second Arnoldi step at all). File restored and `cmp`-verified byte-identical.
 
-# "Schur-slab" track: SchurSlabSolver (docs/dev/schur-slab-solver.md), the
+# Schur-slab solver: SchurSlabSolver (docs/dev/schur-slab-solver.md), the
 # exact distributed direct solver for the backward-Euler periodic Laplacian
 # on row bands. All three rows HAND-PROVEN the same way the rows above were
-# (this track's own checkout had other tracks' uncommitted edits already in
-# place, so `tools/mutate.py`'s own "never run against a dirty tree" guard
-# does not apply here -- the sequence below is exactly what it would run):
+# (`tools/mutate.py`'s own "never run against a dirty tree" guard does not
+# apply here -- the sequence below is exactly what it would run):
 # apply the `old` -> `new` text to src/linalg/schur_slab.cpp, rebuild
 # fuse_linalg_schur_slab_test, run the WHOLE binary unfiltered, record
 # which cases failed and how many passed, restore the original text, `cmp`
@@ -202,7 +196,7 @@ new = """  for (int i = 0; i < nx; ++i) {
   }"""
 target = "fuse_linalg_schur_slab_test"
 test = "linalg.schur_slab"
-# Hand-proved 2026-10-09 against a byte-identical restored copy: 9 cases in
+# Hand-proved against a byte-identical restored copy: 9 cases in
 # the target before mutation (all pass). After mutation, applied by hand
 # and the WHOLE binary run unfiltered: 5 pass (SchurSlabSolverOneRank --
 # the nranks==1 path never touches row_block at all; both
@@ -227,7 +221,7 @@ new = """  Eigen::MatrixXd row_block = Eigen::MatrixXd::Zero(2 * nx, g_total);
   if (rank != 0) row_block.block(0, own_col_lo, 2 * nx, 2 * nx) = s_own;"""
 target = "fuse_linalg_schur_slab_test"
 test = "linalg.schur_slab"
-# Hand-proved 2026-10-09 the same way: 9 pass before; after mutation, 5
+# Hand-proved the same way: 9 pass before; after mutation, 5
 # pass (the SAME 5 as the row above -- SchurSlabSolverOneRank, both
 # SchurSlabSolverRefusal cases, both LinalgComm cases), 4 fail (the SAME 4
 # multi-partition/periodic-wrap cases as the row above). File restored and
@@ -242,7 +236,7 @@ old = """    x_interior = impl_->interior_factor.solve(b_interior - impl_->a_ig 
 new = """    x_interior = impl_->interior_factor.solve(b_interior - impl_->a_ig.transpose() * x_g_own);"""
 target = "fuse_linalg_schur_slab_test"
 test = "linalg.schur_slab"
-# Hand-proved 2026-10-09 against a byte-identical restored copy, TWICE (the
+# Hand-proved against a byte-identical restored copy, TWICE (the
 # second time after reordering the test file so the shape-matched case
 # runs first -- both runs agree on every number below): 9 pass before.
 # After mutation, applied by hand and the WHOLE binary run unfiltered: 2
@@ -261,7 +255,7 @@ test = "linalg.schur_slab"
 # involved. File restored and `cmp`-verified byte-identical to the
 # pre-mutation copy both times.
 
-# HOST-FOUND BUG, FIXED 2026-10-10: a host run of commit 3b43bd0
+# HOST-FOUND BUG, FIXED: a host run of commit 3b43bd0
 # (parallel.schur_slab_mpi.2/.3) found factor()'s row-band-size refusal
 # deciding from THIS rank's own `local_rows` alone and returning
 # immediately -- a collective path (the Schur-assembly allgather)
@@ -269,8 +263,7 @@ test = "linalg.schur_slab"
 # forbidden pattern -- which MPICH's own "Message truncated" in
 # MPI_Allgather confirmed: rank 1's single-row band refused and returned
 # without ever calling that allgather, while rank 0's fine band sailed on
-# into it alone. Fixed two ways, matching the task's own diagnosis
-# exactly: (1) the row-band-size refusal now needs NO collective at all --
+# into it alone. Fixed two ways: (1) the row-band-size refusal now needs NO collective at all --
 # decided from `row_ownership` alone, which every rank already holds in
 # full; (2) a genuinely rank-varying condition (a factorisation's own
 # numerical outcome) that CANNOT be predicted from shared metadata is
@@ -281,7 +274,7 @@ test = "linalg.schur_slab"
 [[mutation]]
 id = "schur-slab-row-band-agreement-dropped"
 area = "linalg"
-describes = "SchurSlabSolver::factor's row-band-size refusal is reverted to deciding from THIS rank's own band alone (the loop that scans every rank's own row_ownership entry is narrowed to iterate only `r == rank`) -- reproducing the EXACT host-found bug (2026-10-10, commit 3b43bd0): a rank whose OWN band is fine never learns that a PEER's band is undersized, so it proceeds past the refusal into the Schur-assembly allgather alone while the undersized rank refuses and returns without ever calling it. Killed at tier 0 by SchurSlabSolverRefusal.OneRowBandRefusesOnEveryRankWithoutStrandingAnyoneInACollective, which calls factor() for BOTH a fine-banded rank and an undersized one and asserts BOTH refuse."
+describes = "SchurSlabSolver::factor's row-band-size refusal is reverted to deciding from THIS rank's own band alone (the loop that scans every rank's own row_ownership entry is narrowed to iterate only `r == rank`) -- reproducing the EXACT host-found bug (commit 3b43bd0): a rank whose OWN band is fine never learns that a PEER's band is undersized, so it proceeds past the refusal into the Schur-assembly allgather alone while the undersized rank refuses and returns without ever calling it. Killed at tier 0 by SchurSlabSolverRefusal.OneRowBandRefusesOnEveryRankWithoutStrandingAnyoneInACollective, which calls factor() for BOTH a fine-banded rank and an undersized one and asserts BOTH refuse."
 file = "src/linalg/schur_slab.cpp"
 old = """  std::vector<int> undersized_ranks;
   for (int r = 0; r < nranks; ++r) {"""
@@ -289,10 +282,9 @@ new = """  std::vector<int> undersized_ranks;
   for (int r = rank; r <= rank; ++r) {"""
 target = "fuse_linalg_schur_slab_test"
 test = "linalg.schur_slab"
-# Hand-proved 2026-10-10 against a byte-identical restored copy: 11 cases
+# Hand-proved against a byte-identical restored copy: 11 cases
 # in the target before mutation (all pass -- this row and the one below
-# were added alongside two new regression tests, bringing the suite from
-# 9 to 11 cases). After mutation, applied by hand and the WHOLE binary run
+# come with two regression tests). After mutation, applied by hand and the WHOLE binary run
 # unfiltered: 10 pass, 1 fails
 # (SchurSlabSolverRefusal.OneRowBandRefusesOnEveryRankWithoutStrandingAnyoneInACollective,
 # specifically on `result0.ok()` being unexpectedly true -- rank 0's own
@@ -326,7 +318,7 @@ new = """  const std::vector<int> failed = local_ok ? std::vector<int>{} : std::
   }"""
 target = "fuse_linalg_schur_slab_test"
 test = "linalg.schur_slab"
-# Hand-proved 2026-10-10 against a byte-identical restored copy: 11 pass
+# Hand-proved against a byte-identical restored copy: 11 pass
 # before. After mutation, applied by hand and the WHOLE binary run
 # unfiltered: 10 pass, 1 fails
 # (SchurSlabSolverRefusal.InteriorFactorizationFailureOnOneRankIsAgreedWithoutStrandingAnyoneInACollective
@@ -336,7 +328,7 @@ test = "linalg.schur_slab"
 # code path, never reached when local_rows >= 2 on every rank), is
 # unaffected. File restored and `cmp`-verified byte-identical.
 
-# "DerivativeGate" track: the adjoint dot-product gate, the finite-difference
+# Derivative gate: the adjoint dot-product gate, the finite-difference
 # derivative-convergence gate (round-off plateau detected, not fit through),
 # and assembled-vs-matrix-free agreement (include/fuse/linalg/
 # derivative_gate.hpp, docs/dev/derivative-gate.md). All three rows
@@ -358,7 +350,7 @@ old = """  if (Result<void> r = apply_transpose(y, aty); !r.ok()) return r.error
 new = """  if (Result<void> r = apply(y, aty); !r.ok()) return r.error();"""
 target = "fuse_linalg_derivative_gate_test"
 test = "linalg.derivative_gate"
-# Hand-proved 2026-10-10 against a byte-identical restored copy: 9 cases in
+# Hand-proved against a byte-identical restored copy: 9 cases in
 # the target before mutation (all pass). After mutation, applied by hand and
 # the WHOLE binary run unfiltered: 8 pass, 1 fails --
 # LinalgDerivativeGate.AdjointIdentityHoldsForEveryOperator, on the
@@ -376,7 +368,7 @@ test = "linalg.derivative_gate"
 [[mutation]]
 id = "derivative-gate-plateau-detection-removed"
 area = "linalg"
-describes = "taylor_remainder_order's round-off plateau scan is short-circuited (the 'still not dropping' branch that records plateau_start is gated behind `false &&`, so it never fires and plateau_start stays n) -- the 'the plateau detection removed (fits through the floor, slope wrong)' mutation row the task names explicitly. With no plateau ever detected, the log-log slope is fit over EVERY swept h, including the ones at the round-off floor where the remainder has stopped meaning anything -- degrading the fitted order below the true value for any case whose h-sweep reaches the floor, and (for the purely affine case, where the remainder IS the floor at every h) fitting a spurious negative slope through pure noise instead of reporting at_floor_everywhere."
+describes = "taylor_remainder_order's round-off plateau scan is short-circuited (the 'still not dropping' branch that records plateau_start is gated behind `false &&`, so it never fires and plateau_start stays n) -- the 'plateau detection removed (fits through the floor, slope wrong)' mutation. With no plateau ever detected, the log-log slope is fit over EVERY swept h, including the ones at the round-off floor where the remainder has stopped meaning anything -- degrading the fitted order below the true value for any case whose h-sweep reaches the floor, and (for the purely affine case, where the remainder IS the floor at every h) fitting a spurious negative slope through pure noise instead of reporting at_floor_everywhere."
 file = "include/fuse/linalg/derivative_gate.hpp"
 old = """    const bool still_dropping = prev > 0.0 && cur <= plateau_drop * prev;
     if (!still_dropping) {"""
@@ -384,7 +376,7 @@ new = """    const bool still_dropping = prev > 0.0 && cur <= plateau_drop * pre
     if (false && !still_dropping) {"""
 target = "fuse_linalg_derivative_gate_test"
 test = "linalg.derivative_gate"
-# Hand-proved 2026-10-10 against a byte-identical restored copy: 9 pass
+# Hand-proved against a byte-identical restored copy: 9 pass
 # before. After mutation, applied by hand and the WHOLE binary run
 # unfiltered: 6 pass, 3 fail --
 # TaylorRemainderOrder.CubicMapWithAnalyticJacobianMeasuresOrderTwo (fitted
@@ -412,7 +404,7 @@ new = """  EXPECT_GT(r.order, 1.8) << "observed order " << r.order;
                             "cannot tell a correct linearisation from an incorrect one";"""
 target = "fuse_linalg_derivative_gate_test"
 test = "linalg.derivative_gate"
-# Hand-proved 2026-10-10 against a byte-identical restored copy: 9 pass
+# Hand-proved against a byte-identical restored copy: 9 pass
 # before. After mutation, applied by hand and the WHOLE binary run
 # unfiltered: 8 pass, 1 fails -- TaylorRemainderOrder.
 # WrongJacobianMeasuresOrderOneNotTwo itself, on its own first EXPECT_GT

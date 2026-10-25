@@ -1,13 +1,12 @@
 #pragma once
 
-// AgreementBounds track: the native-vs-PETSc agreement bound for the
+// The native-vs-PETSc agreement bound for the
 // Brusselator's own window-Newton coupling (docs/dev/newton-krylov.md
-// Section 9), replacing a chosen constant (first a 20x margin on a mistaken
-// proxy, then a measured-but-still-chosen inflation of a LOWER bound on
-// ||J^-1|| -- rejected: a multiple of a lower bound proves nothing about
-// an upper bound, no matter how it is flagged) with an A-POSTERIORI
-// CALIBRATION measured on the SAME configuration the check runs, never a
-// different one.
+// Section 9): an A-POSTERIORI CALIBRATION measured on the SAME
+// configuration the check runs, never a different one, rather than a
+// chosen constant or an inflation of a LOWER bound on ||J^-1|| (a multiple
+// of a lower bound proves nothing about an upper bound, no matter how it
+// is flagged).
 //
 // WHY NOT A DERIVED ||J^-1||, like dn_heat's. dn_heat's bound (examples/
 // dn_heat/agreement_bound.hpp) is exact because its own residual is
@@ -63,9 +62,9 @@
 // way it is signal, not noise, and the bound must not be loosened to
 // silence it.
 //
-// ROUND 3 (the owner's own correction to round 2): the SEPARATE
+// NO SEPARATE INTER-KRYLOV TERM: the
 // `kMeasuredInterSolverRelativeDifference * ||native solution||` term
-// below is REMOVED from the asserted bound. It is docs/dev/newton-
+// below is NOT part of the asserted bound. It is docs/dev/newton-
 // krylov.md Section 10.3's measured FIRST-NEWTON-STEP residual difference
 // between the native and PETSc GMRES implementations on SYNTHETIC
 // quadratic/atan unit problems -- a measurement about how the two
@@ -91,12 +90,12 @@
 // between the U and V grids. A rigorous backward-error bound for a
 // sparse linear solve takes the form `gamma_{c*nnz} * ||A|| * ||x||`
 // (Higham, "Accuracy and Stability of Numerical Algorithms", Ch. 10),
-// `c` a fill-in-dependent constant this track did not derive from
+// `c` a fill-in-dependent constant not derived here from
 // `DiffusionSolver`'s own factorisation, and the window compounds up to
 // 11 such solves (U's own `window_sample_capacity`, docs/dev/newton-
 // krylov.md Section 9.1) with remap interpolation between them. Deriving `||A||`
 // and the fill-in constant from the code rather than guessing would be
-// needed for a defensible number, and this track did not do that work --
+// needed for a defensible number, and that work has not been done --
 // so NO round-off floor is added here. If the host's own observed
 // disagreement sits consistently above the calibrated bound by a SMALL,
 // stable margin (rather than scaling with the residual ratio the way the
@@ -109,8 +108,8 @@ namespace brusselator_bound {
 
 /// The SHARP calibrated agreement bound (this header's own derivation
 /// above): `e_n * (1 + f_final_petsc / f_final_native)`, with NO
-/// separate inter-Krylov term (see this header's own "ROUND 3" section
-/// for why it was removed).
+/// separate inter-Krylov term (see this header's own "NO SEPARATE
+/// INTER-KRYLOV TERM" section for why).
 ///
 /// `e_n`: the native solver's own measured error at the check's `rtol`,
 /// against a tight reference solve of the IDENTICAL configuration
@@ -128,22 +127,22 @@ namespace brusselator_bound {
 }
 
 // ---------------------------------------------------------------------
-// LEGACY (round 2's own formula) -- kept ONLY so the real check can
+// LEGACY (calibrated error plus inter-Krylov term) -- kept ONLY so the real check can
 // print it, labelled `[agreement-bound legacy]`, alongside the sharp
 // bound above, informationally. NEVER asserted against -- this header's
-// own "ROUND 3" section is why.
+// own "NO SEPARATE INTER-KRYLOV TERM" section is why.
 // ---------------------------------------------------------------------
 
 /// docs/dev/newton-krylov.md Section 10.3's own measured relative difference
 /// between the native and PETSc GMRES/Arnoldi implementations, on a
-/// synthetic quadratic/atan problem -- round 2's own additional term,
-/// kept here only for the legacy formula below.
+/// synthetic quadratic/atan problem -- the additional term of
+/// the legacy formula below, kept only for that formula.
 inline constexpr double kMeasuredInterSolverRelativeDifference = 3.9e-8;
 
-/// Round 2's own formula, verbatim: the SAME calibrated error term,
-/// plus the inter-Krylov term this round's own derivation found to be
-/// measuring the wrong kind of quantity for this purpose. See this
-/// header's own top-of-file "ROUND 3" section.
+/// The legacy formula: the SAME calibrated error term, plus an
+/// inter-Krylov term that measures the wrong kind of quantity for this
+/// purpose. See this header's own top-of-file "NO SEPARATE INTER-KRYLOV
+/// TERM" section.
 [[nodiscard]] inline double legacy_agreement_bound(double e_n, double f_final_native,
                                                     double f_final_petsc,
                                                     double native_solution_norm) {

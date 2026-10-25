@@ -11,7 +11,7 @@
 /// WHAT IT COMPUTES. For every target cell `j` and source cell `i` it computes
 /// the exact measure of their intersection, `|T_j intersect S_i|`, and
 /// normalises by ONE of two conventions, chosen by the `Conservation`
-/// argument (KNOWN_ISSUES.md D82, owner decision 2026-10-19):
+/// argument:
 ///
 ///     Intensive: W_ji = |T_j intersect S_i| / m_j   (m_j = target cell j's own measure)
 ///     Extensive: W_ji = |T_j intersect S_i| / n_i   (n_i = source cell i's own measure)

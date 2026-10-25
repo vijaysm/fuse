@@ -1,26 +1,24 @@
-# KNOWN_ISSUES.md D15 ("Registry hosting" track, owner decision
-# 2026-10-22, verbatim: "NO. This should not happen."): mount_dynamic()
-# must dlopen() a LaunchMode::Plugin component's shared object only on
-# ranks that host it. Own file per the review-fix protocol.
+# mount_dynamic() must dlopen() a LaunchMode::Plugin component's shared
+# object only on ranks that host it.
 #
 # Applied by hand against src/abi/participant.cpp, rebuilt, run,
 # confirmed to fail EXACTLY the named test (and no other -- the full
 # fuse_abi_conformance_test suite's other 32 runnable cases, including
-# the contrasting HostingTwin test this same round adds, still passed),
-# then restored byte-for-byte (cmp against the pre-mutation file showed
-# no difference).
+# the contrasting HostingTwin test, still passed), then restored
+# byte-for-byte (cmp against the pre-mutation file showed no
+# difference).
 
 [[mutation]]
 id = "participant-plugin-hosted-check-removed"
 area = "abi-registry-hosting"
-describes = "src/abi/participant.cpp's impl_initialize_local() computes `hosted` from `!c.communicator_set || decl.ranks.contains(rank)` before deciding whether to dlopen() a LaunchMode::Plugin component's shared object; forcing `hosted` to always be true restores the OLD, unconditional-mounting behaviour this round's own task names and fixes -- every rank, hosting or not, calls Registry::mount_dynamic() (dlopen, dlsym, fuse_provider_abi(), create(), describe())"
+describes = "src/abi/participant.cpp's impl_initialize_local() computes `hosted` from `!c.communicator_set || decl.ranks.contains(rank)` before deciding whether to dlopen() a LaunchMode::Plugin component's shared object; forcing `hosted` to always be true restores the old, unconditional-mounting behaviour -- every rank, hosting or not, calls Registry::mount_dynamic() (dlopen, dlsym, fuse_provider_abi(), create(), describe())"
 file = "src/abi/participant.cpp"
 old = """        const bool hosted = !c.communicator_set || decl.ranks.contains(rank);"""
 new = """        const bool hosted = true;  // MUTATION: restores unconditional mounting"""
 target = "fuse_abi_conformance_test"
 test = "abi.conformance"
 requires = "no-mpi"
-result = "CONFIRMED 2026-10-22: ConformanceTest.NonHostingRankNeverDlopensThePluginOrCallsAnyOfItsEntries failed three ways -- dlopen(FUSE_TEST_HOSTING_PROBE_PROVIDER_PLUGIN, RTLD_NOLOAD) returned a non-null handle (0x7d483250) instead of nullptr; counts.create read 1 instead of 0; counts.describe read 2 instead of 0 -- all three confirming the plugin was dlopen()'d and its create()/describe() entries were called even though \"upstream\"'s own RankSet ({1,1}) never includes this process's (hardcoded tier-0) rank 0. The other 32 runnable cases in the 34-test binary, including the contrasting ConformanceTest.HostingTwin_HostingRankDlopensThePluginAndCallsItsEntries (unaffected: it already expected hosted==true, which this mutation does not change for a component whose own RankSet DOES contain this rank), still passed. Restored; cmp against the pre-mutation file reported no difference."
+result = "CONFIRMED: ConformanceTest.NonHostingRankNeverDlopensThePluginOrCallsAnyOfItsEntries failed three ways -- dlopen(FUSE_TEST_HOSTING_PROBE_PROVIDER_PLUGIN, RTLD_NOLOAD) returned a non-null handle (0x7d483250) instead of nullptr; counts.create read 1 instead of 0; counts.describe read 2 instead of 0 -- all three confirming the plugin was dlopen()'d and its create()/describe() entries were called even though \"upstream\"'s own RankSet ({1,1}) never includes this process's (hardcoded tier-0) rank 0. The other 32 runnable cases in the 34-test binary, including the contrasting ConformanceTest.HostingTwin_HostingRankDlopensThePluginAndCallsItsEntries (unaffected: it already expected hosted==true, which this mutation does not change for a component whose own RankSet DOES contain this rank), still passed. Restored; cmp against the pre-mutation file reported no difference."
 
 # The same mutation, killed on an MPI build by the real-communicator row. The tier-0 case above is skipped
 # on an MPI build (it hands fuse_initialize() a placeholder handle), so on such a build this row is the evidence.
@@ -34,4 +32,4 @@ new = """        const bool hosted = true;  // MUTATION: restores unconditional 
 target = "fuse_parallel_provider_subset_mpi_test"
 test = "parallel.provider_subset_mpi.2"
 requires = "mpi"
-result = "KILLED on the host 2026-10-22 (build-all at 88f9fb4, MPICH 5.0.2rc3, FUSE_MUTATE_MPI=1, tools/mutate.py --area abi-registry-hosting): 'KILLED participant-plugin-hosted-check-removed-mpi test fails'; area gate 1 killed, 0 declared equivalent, 1 not assessed here (the no-mpi row, by design on an MPI build), 0 without a baseline, 0 not killed, of 2; checkout clean afterwards."
+result = "KILLED on the host (build-all at 88f9fb4, MPICH 5.0.2rc3, FUSE_MUTATE_MPI=1, tools/mutate.py --area abi-registry-hosting): 'KILLED participant-plugin-hosted-check-removed-mpi test fails'; area gate 1 killed, 0 declared equivalent, 1 not assessed here (the no-mpi row, by design on an MPI build), 0 without a baseline, 0 not killed, of 2; checkout clean afterwards."

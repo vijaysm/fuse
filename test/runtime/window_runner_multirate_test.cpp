@@ -1,26 +1,19 @@
-// Time windows track (C3): NOT the acceptance matrix -- the user rejected
-// LCM coupling windows outright, in favour of the temporal interpolant
-// this whole track implements, so `explicit_interval = lcm(m, n)` (below)
-// is a design this codebase does not offer as the real multirate case.
-// For a 7:13 pair, the window is one member's own step (13 or 7) and the
-// OTHER member's steps cross the window end -- that is what the straddle
-// replay (`fuse::detail::advance_straddle_split()`, not yet wired into
-// advance_window()) exists for; the real acceptance matrix belongs in a
-// separate file, once that replay lands.
+// NOT the acceptance matrix: LCM coupling windows are rejected in favour of
+// the temporal interpolant, so `explicit_interval = lcm(m, n)` (below) is a
+// design this codebase does not offer as the real multirate case. For a
+// 7:13 pair, the window is one member's own step (13 or 7) and the OTHER
+// member's steps cross the window end -- that is what the straddle replay
+// (`fuse::detail::advance_straddle_split()`) exists for; the real
+// acceptance matrix is in window_runner_straddle_test.cpp.
 //
-// This file exists for a narrower, still useful reason: it is what
-// diagnosed, and now regression-guards, two bugs the cold-start fix and
-// the window_component scheduling fix (both items in the lead's own
-// five-item list) needed something to verify against -- an LCM window
-// happens to make BOTH members' own intervals divide the window evenly
-// (91 = lcm(7,13): 91/13 = 7, 91/7 = 13), so it schedules and runs with
-// NO straddle involved, isolating the cold-start/query-range bugs from
-// the (separate, still unimplemented) straddle-replay work entirely.
-// Once the real window_component-based 13:7-with-a-crossing-member
-// matrix exists and passes, this file's own job is done; until then it
-// stays, explicitly labelled as the LCM form item 4's own allowance
-// permits as ONE extra test ("An LCM-window case may remain as ONE extra
-// test, labelled as such") but excludes from the acceptance set.
+// This file exists for a narrower, still useful reason: it diagnoses, and
+// regression-guards, the cold-start priming and the window_component
+// scheduling -- an LCM window happens to make BOTH members' own intervals
+// divide the window evenly (91 = lcm(7,13): 91/13 = 7, 91/7 = 13), so it
+// schedules and runs with NO straddle involved, isolating the
+// cold-start/query-range behaviour from the straddle-replay work entirely.
+// It stays as ONE extra test, labelled as the LCM form, excluded from the
+// acceptance set.
 
 #include <gtest/gtest.h>
 #include <fuse/backend/serial_backend.hpp>
@@ -410,10 +403,8 @@ TEST(WindowRunnerMultirate, SevenThirteenFixedFixedJacobiMatchesDriver) {
 }
 
 // Acceleration None (above) AND the default accelerator (AccelKind::
-// Constant) -- item 4's own wording -- Jacobi only: GaussSeidel rejects
-// any accelerator but None (E-RT-WINDOW-ACCEL) until R.blocks excludes
-// the unlagged transfer's own residual, so this is the one mode that CAN
-// exercise a real accelerator today.
+// Constant) -- Jacobi only; GaussSeidel with a real accelerator is
+// covered in window_runner_test.cpp.
 TEST(WindowRunnerMultirate, SevenThirteenJacobiWithDefaultAcceleratorMatchesDriver) {
   const RunnerResult via_runner = run_via_runner(
       WaveformIteration::Jacobi, DtPolicy::Adjustable, DtPolicy::Adjustable,
@@ -442,9 +433,8 @@ TEST(WindowRunnerMultirate, SevenThirteenJacobiWithDefaultAcceleratorMatchesDriv
   EXPECT_NE(via_runner.iterations, unaccelerated.iterations);
 }
 
-// GaussSeidel, AccelKind::None (the only accelerator it may use today --
-// E-RT-WINDOW-ACCEL rejects the rest), EXPECT_EQ against the driver --
-// item 4's "in BOTH modes".
+// GaussSeidel, AccelKind::None, EXPECT_EQ against the driver -- the "in
+// BOTH modes" case.
 TEST(WindowRunnerMultirate, SevenThirteenGaussSeidelMatchesDriver) {
   const RunnerResult via_runner = run_via_runner(
       WaveformIteration::GaussSeidel, DtPolicy::Adjustable, DtPolicy::Adjustable,
@@ -477,7 +467,7 @@ TEST(WindowRunnerMultirate, SevenThirteenGaussSeidelMatchesDriver) {
 // item 4's own wording. WindowCoupler::create() (and, through the Runner,
 // the compiled schedule's own topological_sweep_order()) must derive the
 // sweep order from the unlagged channel's own direction, never from
-// declaration order (C2's own GaussSeidelResultIsIndependentOfDeclaration
+// declaration order (GaussSeidelResultIsIndependentOfDeclaration
 // Order, for WindowCoupler directly) -- this pins the SAME property for
 // the compiled graph: `swap_declaration_order=true` declares B's
 // ComponentDecl before A's, and the CouplingGraph's own field/channel
@@ -511,24 +501,23 @@ TEST(WindowRunnerMultirate, GaussSeidelResultIsIndependentOfDeclarationOrderThro
   EXPECT_EQ(b_first.xB, driver_b_first.xB);
 }
 
-// Commit 7939643: Runner::Impl::advance_window()'s own "is this the first
-// sweep of a new window instance" detection used to compare
-// Instruction::dst_step directly -- PERIOD-relative, since the compiled
+// Runner::Impl::advance_window()'s own "is this the first sweep of a new
+// window instance" detection must not compare Instruction::dst_step
+// directly -- it is PERIOD-relative, since the compiled
 // TimedDag spans exactly one period and is replayed verbatim by every
 // run_period() call -- so a window-scoped region with exactly one window
 // instance per period (this file's own 91-unit LCM window: one instance
-// per 91-unit period, both before and after ClockSet's later fix) saw
-// dst_step==0 on EVERY run_period() call, not just the first, and
-// silently never advanced past window 0: every SECOND and later call to
-// run_period() left every window member's state frozen bit-identically
-// (verified by hand with debug prints before the fix existed). Fixed by
-// Runner::Impl::window_absolute_instance() (src/runtime/iteration.cpp),
-// which tracks the window's own absolute instance number across repeated
-// run_period() calls instead of resetting it to the period-relative
-// dst_step every call. Regression-guards that fix directly: every OTHER
-// test in this file calls run_period()/run_window() exactly ONCE, which
-// the pre-fix bug could never fail (a frozen window 0 replayed as window
-// 1 is observable only on a SECOND call) -- this one calls both sides
+// per 91-unit period) would see dst_step==0 on EVERY run_period() call,
+// not just the first, and silently never advance past window 0: every
+// SECOND and later call to run_period() would leave every window member's
+// state frozen bit-identically. Runner::Impl::window_absolute_instance()
+// (src/runtime/iteration.cpp) instead tracks the window's own absolute
+// instance number across repeated run_period() calls rather than
+// resetting it to the period-relative dst_step every call. This guards
+// that directly: every OTHER test in this file calls
+// run_period()/run_window() exactly ONCE, which that bug could never fail
+// (a frozen window 0 replayed as window 1 is observable only on a SECOND
+// call) -- this one calls both sides
 // THREE times in a row on the SAME Runner/WindowCoupler and components,
 // checked bit-for-bit at every call, not just the first.
 TEST(WindowRunnerMultirate, ThreeConsecutivePeriodsMatchDriverAcrossRepeatedCalls) {

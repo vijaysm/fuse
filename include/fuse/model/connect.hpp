@@ -1,7 +1,6 @@
 #pragma once
 
-/// The bridge between the two parents' halves of channel checking, and the
-/// substance of S2.4.
+/// The bridge between the two parents' halves of channel checking.
 ///
 /// The coupler validated a channel with direct comparisons and reported one
 /// `E-UNITS` error for any unit disagreement. The spine evaluated a connection in
@@ -83,7 +82,7 @@ struct ConnectPolicy {
                                                         : ConservationGuarantee::None;
 }
 
-/// Review 2026-10-11, BM-1: the transfer a channel actually declares, read
+/// The transfer a channel actually declares, read
 /// from its own `RemapSpec` rather than assumed. `RemapFlags::Conservative`
 /// (`ChannelBuilder::conservative()`) is the one statement this layer can
 /// trust as globally conservative -- it is the authored claim the project's
@@ -141,11 +140,10 @@ struct ConnectPolicy {
   request.target = to_semantics(g.field(ch.target));
   request.required_conservation = required_conservation(g.field(ch.target));
   request.allow_automatic_unit_scale = policy.allow_automatic_unit_scale;
-  // BM-1 (review 2026-10-11): this used to hardcode `TransferKind::Copy`
-  // unconditionally, which made the Conservation stage below refuse EVERY
-  // channel into a `Conservation::Extensive` field (no declared transfer can
-  // ever satisfy `required_conservation`'s `GlobalConservative`) and made the
-  // Location stage refuse every region-changing channel with no remap flags
+  // Hardcoding `TransferKind::Copy` would make the Conservation stage below
+  // refuse EVERY channel into a `Conservation::Extensive` field (no declared
+  // transfer can ever satisfy `required_conservation`'s
+  // `GlobalConservative`) and make the Location stage refuse every region-changing channel with no remap flags
   // (`declared_transfer` there is this same `request.transfer.kind != Copy`
   // test) -- see test/verification/interface_transfer_test.cpp's own account
   // of the second effect. Deriving it from the channel's own declaration

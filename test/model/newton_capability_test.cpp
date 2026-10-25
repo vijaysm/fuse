@@ -1,8 +1,8 @@
-/// S7.1's Newton-Krylov seam: the capability-rejection tests, written before
-/// any Newton solver exists (this track's own brief). Mirrors test/runtime/
-/// checkpoint_test.cpp's own fixtures and idioms -- same two-way graph
-/// shape, same Stub/has_code helpers, duplicated locally rather than shared
-/// because neither file exports them.
+/// The Newton-Krylov seam: the capability-rejection tests, independent of
+/// any Newton solver. Mirrors test/runtime/checkpoint_test.cpp's own
+/// fixtures and idioms -- same two-way graph shape, same Stub/has_code
+/// helpers, duplicated locally rather than shared because neither file
+/// exports them.
 #include <gtest/gtest.h>
 #include <fuse/base/units.hpp>
 #include <fuse/ir/lowering.hpp>
@@ -256,7 +256,7 @@ TEST(NewtonCapability, RegionRequiringResidualAcceptsWhenBothHaveIt) {
   EXPECT_FALSE(diags.has_errors()) << diags.to_string();
 }
 
-// Pre-S7.1 call sites that never pass the two new arguments at all must
+// Call sites that never pass the two new arguments at all must
 // still behave exactly as before: the defaults are false, so nothing new is
 // ever checked.
 TEST(NewtonCapability, OmittingTheNewtonArgumentsChecksNothingNew) {
@@ -272,10 +272,10 @@ TEST(NewtonCapability, OmittingTheNewtonArgumentsChecksNothingNew) {
   EXPECT_FALSE(diags.has_errors()) << diags.to_string();
 }
 
-// The hazard this track's brief names explicitly: a Nondeterministic
-// component inside a Newton-solved region must still be refused through the
-// EXISTING E-ITER-NONDETERMINISTIC path (verify_rollback_support(), inside
-// verify_iteration_region()) -- Newton gains no separate, weaker
+// A Nondeterministic component inside a Newton-solved region must still be
+// refused through the EXISTING E-ITER-NONDETERMINISTIC path
+// (verify_rollback_support(), inside verify_iteration_region()) -- Newton
+// gains no separate, weaker
 // determinism rule of its own.
 TEST(NewtonCapability, NondeterministicComponentInNewtonRegionUsesTheExistingRefusal) {
   const CouplingGraph g = iterated_two_way();
@@ -303,7 +303,7 @@ TEST(NewtonCapability, NondeterministicComponentInNewtonRegionUsesTheExistingRef
 
 // ---------------------------------------------------------------------------
 // E-NEWTON-SHAPE: fuse::verify_linearization_shape() (fuse/runtime/
-// component.hpp), the token-shape half of the capability-rejection brief.
+// component.hpp), the token-shape half of the capability rejection.
 // A pure function over sizes and a token, so no graph or ComponentSet is
 // needed to make it fire.
 // ---------------------------------------------------------------------------

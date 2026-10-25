@@ -113,7 +113,7 @@ struct ErrorPolicy {
 /// Process-wide policy. Set by fuse::initialize from FUSE_ON_ERROR and
 /// friends, or programmatically; read on every throw.
 ///
-/// Returns a COPY, not a reference: REVIEW.md R-16 -- set_error_policy() is
+/// Returns a COPY, not a reference: set_error_policy() is
 /// documented as callable at any time, not only during single-threaded
 /// startup, and takes policy_mutex() while copy-assigning ErrorPolicy's two
 /// std::string members. A reference into that storage could be observed by
@@ -144,7 +144,7 @@ void set_error_rank(int rank) noexcept;
 /// Spawn the debugger from the policy on this process and block for
 /// `debugger_wait_seconds`. POSIX only; returns false if the spawn failed.
 /// IMPLEMENTED, UNTESTED: exercising it needs a terminal and a debugger,
-/// which CI does not have. docs/dev/debugging.md tracks it.
+/// which CI does not have. See docs/dev/debugging.md.
 bool attach_debugger(const ErrorPolicy& policy) noexcept;
 
 /// Install a std::terminate handler that prints the report of an uncaught
@@ -207,11 +207,10 @@ template <class E>
 /// `debug_abort` -- which formats with fmt and captures a stack, both host-only
 /// facilities, so that function cannot be called from a kernel. On the device
 /// it calls `Kokkos::abort` with the condition text, which is what the backend
-/// provides for exactly this. Before 2026-09-20 the macro called `debug_abort`
-/// unconditionally, so a `KOKKOS_INLINE_FUNCTION` using it (the native mesh's
-/// `measure()`/`centroid()`/`normal()`, R-14) could not compile for a
-/// GPU-default build in Debug; no such build exists on this machine, which is
-/// why it went unnoticed (REVIEW.md pass 2, backend R-14 residual).
+/// provides for exactly this. Calling `debug_abort` unconditionally would stop a
+/// `KOKKOS_INLINE_FUNCTION` using this macro (the native mesh's
+/// `measure()`/`centroid()`/`normal()`) from compiling for a
+/// GPU-default build in Debug.
 #ifdef NDEBUG
 #define FUSE_DEBUG_ASSERT(cond) \
   do {                          \

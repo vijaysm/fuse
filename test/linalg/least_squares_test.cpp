@@ -170,11 +170,10 @@ TEST(LeastSquares, RefusesAShapeItCannotSolve) {
                fuse::InvalidArgument);
 }
 
-// REVIEW.md R-45: `least_squares_into` is called from the accelerator with
+// `least_squares_into` is called from the accelerator with
 // fewer rows (m, the interface size) than columns (k, the reuse limit) on any
-// small-interface coupling, but no test drove that shape. This turns the
-// ASan/UBSan check the reviewer ran outside the repository into a durable
-// regression: `least_squares_into` is safe and gives a sane, rank-<=m,
+// small-interface coupling, but no test drove that shape. This is a durable
+// ASan/UBSan regression: `least_squares_into` is safe and gives a sane, rank-<=m,
 // round-off-accurate answer -- it does not enforce the public entry point's
 // `m >= k` precondition, by design (see the header doc on the function).
 TEST(LeastSquares, IntoAgreesWithBuiltinWhenMIsLessThanK) {

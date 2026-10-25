@@ -87,7 +87,7 @@ class NativeMeshBackend final : public MeshBackend {
   /// exactly that, and every caller without its own hand-rolled copy
   /// got `E-MESH-PLACEMENT` the moment any component's own placement
   /// needed resolving (confirmed: the participant ABI's own
-  /// `fuse_initialize()`, Conformance Unit 2, hit this before this
+  /// `fuse_initialize()` hit this before this
   /// method existed). A caller that cannot see library internals -- a
   /// real participant process naming a generated mesh in its own graph
   /// -- has no way to reproduce that by-hand logic at all, so it
@@ -184,7 +184,7 @@ class NativeMeshBackend final : public MeshBackend {
   /// values before `apply_weights`. UNCHANGED return type (deliberately:
   /// `examples/brusselator/species_core.hpp`'s `GhostExchangerFactory`
   /// takes exactly `const fuse::linalg::GhostPattern&`, outside this
-  /// lane's owned paths) -- see `remap_halo_ghost_offset` below for the
+  /// library) -- see `remap_halo_ghost_offset` below for the
   /// piece this type has no room for.
   ///
   /// `E-MESH-HALO` if no halo was built for this triple (at this

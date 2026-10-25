@@ -1,11 +1,10 @@
 #pragma once
 
 /// The Space-templated moving-least-squares weight solve
-/// (docs/dev/device-resident-arcs.md Phase 2: "MLS ... weight assembly
-/// producing the device CSR directly"). `mls_weights.hpp`'s own
+/// (docs/dev/device-resident-arcs.md: "MLS ... weight assembly producing the
+/// device CSR directly"). `mls_weights.hpp`'s own
 /// `build_mls_weights` resolves the mesh entity sets, runs the k-nearest
-/// search (`fuse::search::BoxIndex`, host-only per docs/dev/search.md as
-/// of this track), and for each target assembles a `P x P` moment matrix
+/// search (`fuse::search::BoxIndex`, host-only per docs/dev/search.md), and for each target assembles a `P x P` moment matrix
 /// and solves it with `fuse::linalg::least_squares_builtin` -- a
 /// column-pivoted Householder QR that also yields the rank/condition
 /// diagnostics `E-MLS-RANK` reports. `Result`/`Failure`/`fmt` are not
@@ -22,8 +21,8 @@
 /// needed because `P` is small (a handful to a few dozen for the degrees
 /// this builder supports).
 ///
-/// `KokkosBatched::SerialGesv` from /opt/kokkos-kernels (named by the task
-/// that approved this track) was tried FIRST, not assumed infeasible: both
+/// `KokkosBatched::SerialGesv` from /opt/kokkos-kernels was tried FIRST, not
+/// assumed infeasible: both
 /// its `StaticPivoting` and `NoPivoting` instantiations were built against
 /// this header's own `A`/`B`/`X` views (including a `LayoutRight` batch
 /// layout specifically chosen so `Kokkos::subview(view, t, ALL, ALL)`
@@ -40,21 +39,18 @@
 /// array_layout, Kokkos::Device<Kokkos::CudaSpace::...>>` under the device
 /// build -- a layout/execution-space mismatch inside Kokkos's own subview
 /// type deduction on this installation, not anything this header's view
-/// choices produced. Measured, not guessed: both are recorded with their
-/// exact compiler output in this track's report
-/// (report-weight-builders.md) and in KNOWN_ISSUES.md. The conclusion is
+/// choices produced. Measured, not guessed. The conclusion is
 /// that `KokkosBatched::SerialGesv` -- either pivoting mode -- is not
 /// usable against this host's installed Kokkos/KokkosKernels pairing,
-/// independent of anything in this header, and the task's own fallback
-/// applies: "a device-callable ... of your own in fuse/num." The
-/// elimination below is that fallback: no KokkosKernels dependency at
-/// all, so the broken `find_package(KokkosKernels)` (also recorded in
-/// KNOWN_ISSUES.md) is no longer needed either.
+/// independent of anything in this header, so the elimination below is a
+/// device-callable one of this library's own (in fuse/num): no
+/// KokkosKernels dependency at all, so the broken
+/// `find_package(KokkosKernels)` is not needed either.
 ///
 /// It is NOT the `FUSE_LINALG_BACKEND` facade's dense solver
 /// (cmake/FuseDependencies.cmake's own comment: a KokkosKernels backend
 /// was evaluated there and rejected for lacking column-pivoted QR with
-/// rank truncation, REVIEW.md R-24/R-42) -- this is a narrower, different
+/// rank truncation) -- this is a narrower, different
 /// concern: a batched solve of many SMALL fixed-size systems inside one
 /// builder's own translation unit, not a replacement for the coupler's
 /// own Newton-solve linear algebra.

@@ -158,9 +158,9 @@ RegionSizes constant_sizes(std::size_t n) {
   return [n](RegionId, int /*placement*/) -> std::size_t { return n; };
 }
 
-/// N-ir-schedule-1 (docs/dev/reviews/2026-09-19/pass2/re-ir-schedule.md): the
+/// The
 /// sweep above generates random `Merge` arities but only ever calls
-/// `prove_acyclic()`, so the left-fold-of-pairwise-merges lowering (R-27) got
+/// `prove_acyclic()`, so the left-fold-of-pairwise-merges lowering gets
 /// no independent-oracle coverage of its own -- only the two hand-built
 /// fixed-shape tests in plan_test.cpp. This routes the same random graphs
 /// through the full scheduler, exercising buffer planning and instruction
@@ -220,7 +220,7 @@ TEST(AcyclicitySweep, VerdictAgreesWithAnIndependentlyComputedAnswer) {
     }
 
     // Also route the lockstep, non-lagged, non-region subset of these random
-    // graphs through the full scheduler (N-ir-schedule-1), so the merge
+    // graphs through the full scheduler, so the merge
     // left-fold gets random-oracle coverage of buffer planning and
     // instruction emission, not just the two hand-built fixtures in
     // plan_test.cpp. Every graph this generator produces is already lockstep

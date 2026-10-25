@@ -87,7 +87,7 @@ struct OperatorStep
     /** For `UnitScale`: `v_t = scale * v_s`, `offset` unused (left at its
      * default).
      *
-     * For `AffineUnit` (BM-6, review 2026-10-11): `v_t = scale * v_s +
+     * For `AffineUnit`: `v_t = scale * v_s +
      * offset`, where `scale = source.scale / target.scale` and `offset =
      * (source.offset - target.offset) / target.scale` -- the division by
      * `target.scale` applies to BOTH fields, not only to `scale`. Deriving

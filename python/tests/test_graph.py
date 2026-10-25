@@ -5,8 +5,7 @@ Transplanted from upstream soma's test_graph.py (spec section 3.2) onto fuse's c
 docs/dev/python-surface.md's evidence table for the per-class carry-over/rename/new mapping this
 file exercises.
 
-STATUS: acceptance test, written against the surface in docs/dev/python-surface.md; `pfuse` does
-not exist yet (Stage B builds it).
+STATUS: acceptance test, written against the surface in docs/dev/python-surface.md.
 """
 
 import os
@@ -15,7 +14,7 @@ from fractions import Fraction
 import numpy as np
 import pytest
 
-pfuse = pytest.importorskip("pfuse", reason="Stage B has not built the _pfuse extension yet")
+pfuse = pytest.importorskip("pfuse", reason="the _pfuse extension is not built")
 
 DATA_DIR = os.environ.get("PFUSE_TEST_DATA_DIR")
 
@@ -77,8 +76,8 @@ class TestBuildsAGraph:
     def test_find_component_raises_rather_than_returning_a_sentinel(self):
         """find_component() wraps CouplingGraph::find_component()'s std::optional into a
         raise via FUSE_THROW(fuse::InvalidArgument, ...) -- there is no dedicated "not found"
-        class among the six fuse::Error-mirroring subclasses (the owner's ruling fixes that
-        list at exactly six), so a lookup failure is reported as the generic InvalidArgument
+        class among the six fuse::Error-mirroring subclasses (that list is fixed
+        at exactly six), so a lookup failure is reported as the generic InvalidArgument
         ("the caller broke a documented precondition": naming a component that does not
         exist). InvalidArgument dual-inherits ValueError, not LookupError."""
         g = build_pair()
@@ -140,7 +139,7 @@ class TestDescriptorRoundTrip:
 
     def test_malformed_descriptor_is_rejected(self):
         """deserialize()'s E-DESC-MAGIC is a fuse::Result failure, not a thrown fuse::Error --
-        a bare pfuse.FuseError, per the owner's ruling (see TestExceptionHierarchy, below)."""
+        a bare pfuse.FuseError, (see TestExceptionHierarchy, below)."""
         with pytest.raises(pfuse.FuseError, match="E-DESC-MAGIC") as excinfo:
             pfuse.from_bytes(b"not a fuse descriptor")
         assert excinfo.value.code == "E-DESC-MAGIC"
@@ -183,8 +182,8 @@ class TestLowering:
         reason="include/fuse/ir/dump.hpp:126 still writes 'digraph soma_ir {' -- a leftover "
                "from the soma->fuse rename that dump_text()'s '# fuse-ir v1' banner (line 73 "
                "of the same header) already got. Measured directly against this build, not "
-               "assumed; reported in this track's output rather than edited, since src/ and "
-               "include/ are not this task's to change.",
+               "assumed; not edited here, since src/ and "
+               "include/ are outside this test directory.",
         strict=True,
     )
     def test_graphviz_dump_is_a_digraph(self):
@@ -193,7 +192,7 @@ class TestLowering:
 
 
 class TestExceptionHierarchy:
-    """The owner's ruling (2026-10-12): pfuse.FuseError plus exactly SIX subclasses mirroring
+    """pfuse.FuseError plus exactly SIX subclasses mirroring
     fuse::Error's own C++ hierarchy (error.hpp) -- no further triage of fuse::Result failure
     codes into more classes. Every fuse::Result failure (an E-* code, never thrown in C++) is
     raised as a BARE pfuse.FuseError carrying .code/.message; only a C++ fuse::Error that is

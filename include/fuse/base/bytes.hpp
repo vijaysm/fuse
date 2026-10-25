@@ -36,27 +36,24 @@
  * Dependency-free on purpose: this header pulls in no FUSE type, so the
  * dependency-free encoders can use it without acquiring one.
  *
- * **Now used by the graph descriptor too (D62, descriptor kGraphVersion
- * 15).** Before kGraphVersion 15, the coupling-graph descriptor
+ * **Used by the graph descriptor too.** The coupling-graph descriptor
  * (`fuse::serialize`/`fuse::deserialize`, fuse/model/descriptor.hpp -- "the
- * ABI narrow waist") did not route through this header at all:
- * `detail::Writer::pod`/`detail::Reader::pod` `memcpy`'d a value's native
- * in-memory representation directly, which was little-endian on every
- * machine this library has ever built for but was NOT the little-endian
- * encoding this header defines -- two canonical-byte encoders in the same
- * layer, with different endianness rules, invisible on every common-endian
- * host (BM-5, review 2026-10-11). A big-endian host or adapter would have
- * written a descriptor the golden files under test/golden/ (`waist-v*.bin`,
- * pinned to little-endian bytes only because every machine that has ever
- * produced them was little-endian), and every little-endian peer, would
- * have refused to read. kGraphVersion 15 (KNOWN_ISSUES.md D62, docs/dev/
- * abi-design.md's "The graph descriptor's byte order") routes `pod()`
- * through `put_integer()`/`get_integer()` (an unsigned POD),
+ * ABI narrow waist") routes through this header: `detail::Writer::pod`/
+ * `detail::Reader::pod` do not `memcpy` a value's native in-memory
+ * representation, which would be little-endian on every machine this
+ * library has been built for but would not be guaranteed to be the
+ * little-endian encoding this header defines -- two canonical-byte
+ * encoders in the same layer with different endianness rules, invisible on
+ * every common-endian host. A big-endian host or adapter would otherwise
+ * write a descriptor that the golden files under test/golden/
+ * (`waist-v*.bin`, pinned to little-endian bytes) and every little-endian
+ * peer would refuse to read. Since kGraphVersion 15 (docs/dev/abi-design.md's
+ * "The graph descriptor's byte order"), `pod()` goes through
+ * `put_integer()`/`get_integer()` (an unsigned POD),
  * `put_signed()`/`get_signed()` (a signed POD), or their bit pattern
- * through the same pair (a floating-point POD) -- the version bump absorbs
- * the resulting golden-file churn deliberately; every pre-15 golden file is
- * kept and refused by `kGraphVersion`'s own version check, same as every
- * earlier version bump.
+ * through the same pair (a floating-point POD). Every earlier golden file
+ * is kept and refused by `kGraphVersion`'s own version check, same as for
+ * every version bump.
  */
 namespace fuse::bytes
 {

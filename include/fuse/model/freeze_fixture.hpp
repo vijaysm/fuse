@@ -43,7 +43,7 @@ inline CouplingGraph freeze_fixture() {
                             .service_name = "fuse-solid-fluid"}});
   // A plugin-launched component: `LaunchMode::Plugin` is the one non-default
   // enumerator neither `fluid` nor `solid` could reach (descriptor v10's
-  // reason for the bump, S6 phase 4). Fieldless -- `plugin_path` is the one
+  // reason for the bump). Fieldless -- `plugin_path` is the one
   // member this component exists to pin at a non-default value. It sits
   // before the coupler only because the v10 bytes were frozen that way;
   // since couplers carry `index` in the YAML, the order no longer matters
@@ -53,8 +53,7 @@ inline CouplingGraph freeze_fixture() {
        .launch = LaunchSpec{.mode = LaunchMode::Plugin,
                             .plugin_path = "/opt/fuse-plugins/ideal-gas.so"}});
   // A LowFive-launched component: `LaunchMode::LowFive` is the FIFTH
-  // launch-mode enumerator (descriptor v11's reason for the bump, S6 phase
-  // 3 "LowFive" track, Unit 3), carrying no LaunchSpec member of its own
+  // launch-mode enumerator (descriptor v11's reason for the bump), carrying no LaunchSpec member of its own
   // beyond the mode byte. Fieldless, like "gas" above -- it exists only to
   // pin this one enumerator at a non-default value; `q_out.hdf5_path`
   // above is the member that actually needs a LowFive-launched component
@@ -82,8 +81,7 @@ inline CouplingGraph freeze_fixture() {
                                          .units = kilopascal,
                                          .conservation = Conservation::Extensive,
                                          .intent = Intent::Provides,
-                                         // S6 phase 3 ("LowFive" track), Unit
-                                         // 3: descriptor v11's reason for the
+                                         // Descriptor v11's reason for the
                                          // bump. Paired with "probe"'s own
                                          // LaunchMode::LowFive below -- a
                                          // round trip over defaults proves
@@ -119,11 +117,9 @@ inline CouplingGraph freeze_fixture() {
       .extrapolate(2)
       .lag(1);
 
-  // An iteration region, at non-default values throughout -- this fixture
-  // had none before the multirate-window-on-the-Runner track, so
+  // An iteration region, at non-default values throughout -- this pins
   // IterationRegionDecl's own members (max_iterations, convergence,
-  // acceleration) were never exercised by the golden bytes either; adding
-  // one region closes that gap as well as pinning the new `window_scope`
+  // acceleration) in the golden bytes, as well as the `window_scope`
   // member (fuse::CouplingWindowScope, v7's reason for the descriptor
   // version bump).
   g.iterate({ch})
@@ -153,7 +149,7 @@ inline CouplingGraph freeze_fixture() {
 
   // A second region selecting AccelKind::Newton, with every NewtonConfig
   // member away from its default: descriptor v12's reason for the version
-  // bump (S7.2, the native Jacobian-free Newton-Krylov coupler). Without
+  // bump (the native Jacobian-free Newton-Krylov coupler). Without
   // this, the "outer" region above still has acceleration.kind == Aitken,
   // so a frozen file built from it alone would never exercise the eighth
   // accelerator-kind ordinal, and a NewtonConfig that round-trips to its
@@ -164,13 +160,12 @@ inline CouplingGraph freeze_fixture() {
   // asks it to set `requires_linearization_capability`, so this region
   // exercises both capability bytes at `true` together. `.substrate =
   // NewtonSubstrate::Petsc` (descriptor v13's own reason for the version
-  // bump, PetscSelect track) is this region's own non-default pin for
+  // bump) is this region's own non-default pin for
   // that field -- it is NEVER actually solved (freeze_fixture is never
   // run through a Runner, this file's own opening comment), only
   // round-tripped through the descriptor. `.norm = NewtonNorm::
   // MeasureWeighted` and `.residual_path = NewtonResidualPath::Direct`
-  // (descriptor v14's own reason for the version bump, NewtonModel
-  // track) are this region's own non-default pins for those two fields,
+  // (descriptor v14's own reason for the version bump) are this region's own non-default pins for those two fields,
   // for the identical reason.
   g.iterate({ch})
       .name("newton")

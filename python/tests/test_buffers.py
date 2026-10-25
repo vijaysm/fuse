@@ -8,12 +8,10 @@ resize that reallocates -- is either refused here or made impossible, and each r
 test. See docs/dev/python-surface.md, "The numpy buffer contract and the lifetime rule," for the
 design this file is written against.
 
-STATUS: acceptance test, written against the surface in docs/dev/python-surface.md. `pfuse` does
-not exist yet (Stage B builds it); collected now only to prove the test file itself is well-formed
-Python and to fix, in writing, what Stage B's binding must satisfy. `pytest.importorskip` below
+STATUS: acceptance test, written against the surface in docs/dev/python-surface.md. It states
+what the `pfuse` binding must satisfy. `pytest.importorskip` below
 is what makes `python -m pytest --collect-only` report a clean SKIP rather than a collection
-error while the extension is absent -- one of the two outcomes the plan step calls acceptable
-("fail with a clear skip or import message, not a syntax error").
+error while the extension is absent.
 """
 
 import gc
@@ -21,7 +19,7 @@ import gc
 import numpy as np
 import pytest
 
-pfuse = pytest.importorskip("pfuse", reason="Stage B has not built the _pfuse extension yet")
+pfuse = pytest.importorskip("pfuse", reason="the _pfuse extension is not built")
 
 F0 = pfuse.FieldId(0)
 F1 = pfuse.FieldId(1)
@@ -145,8 +143,8 @@ class TestRejectsWhatWouldBeTheWrongMemory:
 
     def test_rebinding_is_refused_not_silently_replaced(self):
         """fuse::FieldRegistry::bind's own E-FIELD-REBIND: a fuse::Result failure, not a thrown
-        fuse::Error -- so it is a BARE pfuse.FuseError carrying .code, per the owner's ruling
-        (2026-10-12) that every Result failure becomes FuseError with no further triage."""
+        fuse::Error -- so it is a BARE pfuse.FuseError carrying .code (every Result failure becomes
+        a FuseError with no further triage)."""
         first = np.zeros(4)
         second = np.ones(4)
         self.reg.bind_numpy(F0, first)

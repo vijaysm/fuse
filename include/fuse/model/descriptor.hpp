@@ -16,13 +16,13 @@
 namespace fuse {
 
 inline constexpr std::uint32_t kGraphMagic   = 0x46555345u;  // "FUSE"
-/// 15: D62 (KNOWN_ISSUES.md), the descriptor byte-order fix. Before this
-///     bump, `detail::Writer::pod`/`detail::Reader::pod` wrote a value's
+/// 15: the descriptor byte-order fix. Before this bump,
+///     `detail::Writer::pod`/`detail::Reader::pod` wrote a value's
 ///     native in-memory representation via `memcpy` -- host-endian, not
 ///     the little-endian rule `fuse/base/bytes.hpp` states for every other
-///     canonical encoding in this library (BM-5, review 2026-10-11; see
-///     that header's own note and docs/dev/abi-design.md's "The graph
-///     descriptor's byte order"). `pod()` now routes every unsigned POD
+///     canonical encoding in this library (see that header's own note and
+///     docs/dev/abi-design.md's "The graph descriptor's byte order").
+///     `pod()` now routes every unsigned POD
 ///     through `bytes::put_integer`/`bytes::get_integer`, every signed POD
 ///     through `bytes::put_signed`/`bytes::get_signed`, and every
 ///     floating-point POD through the same pair applied to its bit
@@ -46,7 +46,7 @@ inline constexpr std::uint32_t kGraphMagic   = 0x46555345u;  // "FUSE"
 ///     that coincidence, consistent with every version bump that came
 ///     before it.
 ///
-/// 14: the NewtonModel track (2026-10-12), measure-weighted Newton residual
+/// 14: measure-weighted Newton residual
 ///     scaling and the direct residual-evaluation path. `NewtonConfig`
 ///     (fuse/model/iteration.hpp) gains two more fields, `norm` (`fuse::
 ///     NewtonNorm`, Plain or MeasureWeighted) and `residual_path`
@@ -65,7 +65,7 @@ inline constexpr std::uint32_t kGraphMagic   = 0x46555345u;  // "FUSE"
 ///     it decodes as plausible garbage, the same class of silent misread
 ///     every prior bump was made to prevent, so v13 is refused.
 ///
-/// 13: S7.2b (PetscSelect track), the per-region Newton substrate
+/// 13: the per-region Newton substrate
 ///     selector. `NewtonConfig` (fuse/model/iteration.hpp) gains one more
 ///     field, `substrate` (`fuse::NewtonSubstrate`, Native or Petsc),
 ///     appended at the END of the v12 NewtonConfig block -- one more enum
@@ -83,7 +83,7 @@ inline constexpr std::uint32_t kGraphMagic   = 0x46555345u;  // "FUSE"
 ///     the same class of silent misread every prior bump was made to
 ///     prevent, so v12 is refused.
 ///
-/// 12: S7.2, the native Jacobian-free Newton-Krylov coupler. Each iteration
+/// 12: the native Jacobian-free Newton-Krylov coupler. Each iteration
 ///     region record gains, after its window-scope block: two capability
 ///     bytes (`IterationRegionDecl::requires_residual_capability`,
 ///     `::requires_linearization_capability`), and `NewtonConfig`'s own
@@ -100,7 +100,7 @@ inline constexpr std::uint32_t kGraphMagic   = 0x46555345u;  // "FUSE"
 ///     it decodes as plausible garbage, the same class of silent misread
 ///     every prior bump was made to prevent, so v11 is refused.
 ///
-/// 11: the "LowFive" track, Unit 3. Each field record gains a presence byte
+/// 11: LowFive. Each field record gains a presence byte
 ///     after `intent`, and when set, one more length-prefixed string:
 ///     `hdf5_path` (`FieldSpec::hdf5_path`, fuse/model/field_spec.hpp). Also
 ///     adds a FIFTH `LaunchMode` value, `LowFive` (fuse/model/launch.hpp) --
@@ -113,7 +113,7 @@ inline constexpr std::uint32_t kGraphMagic   = 0x46555345u;  // "FUSE"
 ///     -- the same class of silent misread every prior bump was made to
 ///     prevent, so v10 is refused.
 ///
-/// 10: the provider direction (S6 phase 4, "Adapter host" track). Each
+/// 10: the provider direction. Each
 ///     component record's launch record (v9) gains a FOURTH `LaunchMode`
 ///     value, `Plugin`, and one more length-prefixed string after
 ///     `service_name`: `plugin_path`, the shared object
@@ -124,7 +124,7 @@ inline constexpr std::uint32_t kGraphMagic   = 0x46555345u;  // "FUSE"
 ///     as plausible garbage from there on -- the same class of silent
 ///     misread every prior bump was made to prevent, so v9 is refused.
 ///
-/// Bumped to 2 by Phase 7 Task 7.5, which added an iteration region's
+/// Bumped to 2 when an iteration region gained a
 /// `convergence` criterion and `acceleration` config to the record. A v1
 /// buffer read as v2 would take the next region's name length out of the
 /// measure count, so the version gate has to reject it rather than let a
@@ -135,7 +135,7 @@ inline constexpr std::uint32_t kGraphMagic   = 0x46555345u;  // "FUSE"
 /// the seven dimension exponents. A v2 buffer read as v3 would take the next
 /// field's bytes as a scale, so the version gate rejects it rather than admit a
 /// plausible-looking graph with the wrong units.
-/// 9: the interfaces track (S6 phase 3). Each component record gains a
+/// 9: the interfaces. Each component record gains a
 ///    launch record after its `kind` byte: a mode byte (`LaunchMode`:
 ///    InProcess, Mpmd or Connect), a signed appnum word, an `is_acceptor`
 ///    byte, and two length-prefixed strings (`port_file`, `service_name`).
@@ -154,7 +154,7 @@ inline constexpr std::uint32_t kGraphMagic   = 0x46555345u;  // "FUSE"
 ///    everything after it decodes as plausible garbage, the same class of
 ///    silent misread every prior bump was made to prevent, so v7 is refused.
 ///
-/// 7: the multirate-window-on-the-Runner track. Each iteration region record
+/// 7: multirate windows. Each iteration region record
 ///    gains an optional `CouplingWindowScope` after its acceleration block: a
 ///    presence byte, and when set, an optional window-defining component name
 ///    or explicit interval, the interpolation/extrapolation order, and the
@@ -164,7 +164,7 @@ inline constexpr std::uint32_t kGraphMagic   = 0x46555345u;  // "FUSE"
 ///    plausible garbage -- the same class of silent misread every prior bump
 ///    was made to prevent, so v6 is refused.
 ///
-/// 6: the coupler-placement track. Each component record gains a `kind` byte
+/// 6: coupler placement. Each component record gains a `kind` byte
 ///    (`ComponentKind`: Physics or Coupler) after its interval, and each
 ///    channel record gains a `remap_on` component-id word after its remap
 ///    method string. A v5 reader handed a v6 buffer would read the coupler
@@ -188,13 +188,12 @@ inline constexpr std::uint32_t kGraphVersion = 15u;
 
 namespace detail {
 
-// D62 (KNOWN_ISSUES.md), descriptor kGraphVersion 15: `pod()` below used to
-// write a value's native in-memory representation -- host-endian, NOT the
-// little-endian rule fuse/base/bytes.hpp states for every other canonical
-// encoding in this library (BM-5, review 2026-10-11; see bytes.hpp's own
-// note and docs/dev/abi-design.md's "The graph descriptor's byte order"
-// section for the history). It now routes every POD through the SAME
-// canonical encoders bytes.hpp already defines, picked by `T`'s own
+// Descriptor kGraphVersion 15: `pod()` below does not write a value's
+// native in-memory representation (host-endian, NOT the little-endian rule
+// fuse/base/bytes.hpp states for every other canonical encoding in this
+// library; see bytes.hpp's own note and docs/dev/abi-design.md's "The
+// graph descriptor's byte order" section). It routes every POD through the
+// SAME canonical encoders bytes.hpp already defines, picked by `T`'s own
 // category at compile time (`if constexpr`, so each instantiation emits
 // exactly one of the three paths, not a runtime branch):
 //   - floating-point: `std::bit_cast` to an equal-width unsigned integer,
@@ -207,9 +206,8 @@ namespace detail {
 // Every call site already passes an exact-width fundamental type (an
 // explicit `static_cast` to `std::uintN_t`/`std::intN_t`, or a `double`
 // directly) -- never a raw enum or a type whose width varies by platform
-// -- so `sizeof(T)` is exactly the width the wire format has always used
-// for that field; no field changed width by this fix, only how its bytes
-// are produced.
+// -- so `sizeof(T)` is exactly the width the wire format uses
+// for that field; only how its bytes are produced is fixed.
 class Writer {
  public:
   template <class T>
@@ -256,20 +254,20 @@ class Reader {
 
   [[nodiscard]] bool ok() const noexcept { return ok_; }
 
-  // D62 (KNOWN_ISSUES.md), descriptor kGraphVersion 15: the decode-side
+  // Descriptor kGraphVersion 15: the decode-side
   // mirror of Writer::pod's own comment above -- the same three paths
   // (floating-point via bit pattern, signed via two's complement, unsigned
   // directly), each routed through bytes.hpp's `get_integer`/`get_signed`
   // rather than a native-layout `memcpy`. `ok_` is the SAME failure flag
   // `get_integer`/`get_signed` are handed directly (by reference), so a
-  // truncated buffer is reported exactly as before: `ok_` set to false,
+  // truncated buffer is reported as: `ok_` set to false,
   // `pos_` left unmoved, and every subsequent `pod()` call on this `Reader`
   // short-circuits to a default-constructed value without reading further
   // (bytes.hpp's own `get_integer` returns 0 immediately once `ok` is
   // already false coming in only because `pos_ + width > buf_.size()` is
   // still checked fresh each call; a `Reader` that already failed keeps
   // `pos_` at the position of the FIRST failure, so a second corrupt field
-  // is never reached, matching the pre-D62 behaviour exactly).
+  // is never reached).
   template <class T>
   T pod() {
     static_assert(std::is_trivially_copyable_v<T>);
@@ -334,12 +332,9 @@ class Reader {
   /// `AccelKind`/`FilterKind`/`MeasureKind`/`ComponentKind`/`LaunchMode`
   /// are each checked at the call site, not inside a shared helper), so a
   /// corrupted byte is refused with `E-DESC-ENUM` before this ever
-  /// constructs a `Window` with it. Before this change `Window::Kind` was
-  /// the one enum this file's own R-04 sweep never reached: it read
-  /// straight off the wire here with no check at all, and BOTH consumers
-  /// (`validate.hpp`'s `channel_window()`, `yaml_io.cpp`'s `emit_window()`)
-  /// silently folded an out-of-range value into `CouplingPeriod` -- fixed
-  /// alongside this by removing those folds.
+  /// constructs a `Window` with it. Neither consumer (`validate.hpp`'s
+  /// `channel_window()`, `yaml_io.cpp`'s `emit_window()`) folds an
+  /// out-of-range value into `CouplingPeriod`.
   Window window(Window::Kind kind) {
     Window w;
     w.kind = kind;
@@ -424,8 +419,7 @@ class Reader {
     w.units(f.units);
     w.pod(static_cast<std::uint8_t>(f.conservation));
     w.pod(static_cast<std::uint8_t>(f.intent));
-    // v11: the "LowFive" track, Unit 3 (descriptor.hpp's kGraphVersion
-    // history).
+    // v11: LowFive (descriptor.hpp's kGraphVersion history).
     w.pod(static_cast<std::uint8_t>(f.hdf5_path.has_value() ? 1 : 0));
     if (f.hdf5_path.has_value()) w.str(*f.hdf5_path);
   }
@@ -496,7 +490,7 @@ class Reader {
       w.pod(static_cast<std::uint8_t>(scope.iteration));
     }
 
-    // v12: S7.2's own Newton-Krylov coupler (descriptor.hpp's
+    // v12: the Newton-Krylov coupler (descriptor.hpp's
     // kGraphVersion history). The two capability bytes first, then
     // NewtonConfig in full, in its own declaration order -- always
     // written, the same unconditional convention `acceleration` itself
@@ -532,11 +526,11 @@ class Reader {
       w.pod(static_cast<std::uint64_t>(nc.gmres_max_iterations));
       w.pod(static_cast<std::int32_t>(nc.preconditioner_lag));
       w.pod(static_cast<std::uint8_t>(nc.use_block_jacobi_preconditioner ? 1 : 0));
-      // v13: S7.2b's own per-region substrate selector (descriptor.hpp's
+      // v13: the per-region substrate selector (descriptor.hpp's
       // kGraphVersion history), appended at the END of the block,
       // following v12's own append-only placement exactly.
       w.pod(static_cast<std::uint8_t>(nc.substrate));
-      // v14: the NewtonModel track's own `norm`/`residual_path`
+      // v14: `norm`/`residual_path`
       // (descriptor.hpp's kGraphVersion history), appended in that order
       // at the END of the block, following v13's own append-only
       // placement exactly.
@@ -635,7 +629,7 @@ class Reader {
       c.ranks = RankSet{std::move(ranks)};
     }
     c.interval = r.rational();
-    // REVIEW.md R-04's pattern (MeasureKind/AccelKind/FilterKind below):
+    // Same pattern as MeasureKind/AccelKind/FilterKind below:
     // this byte comes straight off the wire, and an out-of-range value must
     // be refused here rather than admitted and later indexed unchecked by
     // to_yaml()'s enum-name table.
@@ -646,12 +640,12 @@ class Reader {
     }
     c.kind = static_cast<ComponentKind>(kind_byte);
     // v9: the launch record (descriptor.hpp's kGraphVersion history). Same
-    // REVIEW.md R-04 pattern as the kind byte just above: an out-of-range
+    // pattern as the kind byte just above: an out-of-range
     // mode must be refused here, not admitted and later indexed unchecked
     // by to_cstring()'s switch.
     const auto launch_mode_byte = r.pod<std::uint8_t>();
-    // v11: the "LowFive" track, Unit 3 (descriptor.hpp's kGraphVersion
-    // history) widens this to admit LaunchMode::LowFive.
+    // v11 (descriptor.hpp's kGraphVersion history) widens this to admit
+    // LaunchMode::LowFive.
     if (launch_mode_byte > static_cast<std::uint8_t>(LaunchMode::LowFive)) {
       return Failure{"E-DESC-ENUM",
                      "unknown launch mode " + std::to_string(launch_mode_byte)};
@@ -671,13 +665,10 @@ class Reader {
     f.name = r.str();
     const ComponentId owner{r.pod<std::uint32_t>()};
     f.region = RegionId{r.pod<std::uint32_t>()};
-    // BM-3: the six enum bytes named in the review's own table (Window::
-    // Kind, AccumOp, TemporalBasis, Discretization, Conservation, Intent)
-    // were the ones R-04's "validate every enumerator read from bytes
-    // against its range" rule never reached. Discretization, Conservation
-    // and Intent read straight off the wire here with no check at all --
-    // the same class MeasureKind/AccelKind/FilterKind/ComponentKind/
-    // LaunchMode already guard a few lines above and below this function.
+    // Every enum byte (Window::Kind, AccumOp, TemporalBasis, Discretization,
+    // Conservation, Intent) is validated against its range, as
+    // MeasureKind/AccelKind/FilterKind/ComponentKind/LaunchMode are a few
+    // lines above and below this function.
     const auto disc_byte = r.pod<std::uint8_t>();
     if (disc_byte > static_cast<std::uint8_t>(Discretization::PointCloud)) {
       return Failure{"E-DESC-ENUM",
@@ -699,13 +690,12 @@ class Reader {
                      "unknown intent " + std::to_string(intent_byte)};
     }
     f.intent = static_cast<Intent>(intent_byte);
-    // v11: the "LowFive" track, Unit 3 (descriptor.hpp's kGraphVersion
-    // history).
+    // v11: LowFive (descriptor.hpp's kGraphVersion history).
     if (r.pod<std::uint8_t>() != 0) f.hdf5_path = r.str();
     if (!r.ok() || owner.value() >= n_comp) {
       return Failure{"E-DESC-TRUNC", "truncated or invalid field table"};
     }
-    // REVIEW.md R-19: Units has no constructor of its own to gate this at
+    // Units has no constructor of its own to gate this at
     // (every call site aggregate-initializes it), so the descriptor reader
     // is the narrowest choke point available: a unit's scale relative to SI
     // base units is a conversion factor and is never non-positive (zero is
@@ -812,7 +802,7 @@ class Reader {
     if (!r.ok()) return Failure{"E-DESC-TRUNC", "truncated iteration region"};
     for (std::uint32_t k = 0; k < n_measure; ++k) {
       ConvergenceMeasure m;
-      // REVIEW.md R-04: deserialize() is the ABI narrow waist every language
+      // deserialize() is the ABI narrow waist every language
       // binding funnels through, and this byte comes straight off the wire.
       // Refusing an out-of-range enumerator here (matching the MergeOp check
       // above) is what stands between a corrupted descriptor and the raw,
@@ -832,7 +822,7 @@ class Reader {
       }
       d.convergence.add(std::move(m));
     }
-    // REVIEW.md R-04: same reasoning as the measure kind above -- both bytes
+    // Same reasoning as the measure kind above -- both bytes
     // are read from the same untrusted buffer and indexed unchecked by
     // to_yaml()'s kAccelNames/kFilterNames tables.
     const auto accel_kind = r.pod<std::uint8_t>();
@@ -883,7 +873,7 @@ class Reader {
         WindowMemberPolicy p;
         p.component = r.str();
         const auto policy_byte = r.pod<std::uint8_t>();
-        // REVIEW.md R-04's pattern (MeasureKind/AccelKind/FilterKind above):
+        // Same pattern as MeasureKind/AccelKind/FilterKind above:
         // this byte comes straight off the wire and is indexed unchecked by
         // to_yaml()'s enum-name table.
         if (policy_byte > static_cast<std::uint8_t>(DtPolicy::Adjustable)) {
@@ -909,7 +899,7 @@ class Reader {
       d.window_scope = std::move(scope);
     }
 
-    // v12: S7.2's own Newton-Krylov coupler (descriptor.hpp's
+    // v12: the Newton-Krylov coupler (descriptor.hpp's
     // kGraphVersion history). Mirrors the write side's own order exactly:
     // the two capability bytes, then NewtonConfig in full.
     d.requires_residual_capability = r.pod<std::uint8_t>() != 0;
@@ -952,7 +942,7 @@ class Reader {
       nc.gmres_max_iterations = r.pod<std::uint64_t>();
       nc.preconditioner_lag = r.pod<std::int32_t>();
       nc.use_block_jacobi_preconditioner = r.pod<std::uint8_t>() != 0;
-      // v13: S7.2b's own per-region substrate selector (descriptor.hpp's
+      // v13: the per-region substrate selector (descriptor.hpp's
       // kGraphVersion history). Mirrors the write side's own order:
       // appended at the END of the block, read last.
       const auto substrate_byte = r.pod<std::uint8_t>();
@@ -961,7 +951,7 @@ class Reader {
                        "unknown newton_config.substrate " + std::to_string(substrate_byte)};
       }
       nc.substrate = static_cast<NewtonSubstrate>(substrate_byte);
-      // v14: the NewtonModel track's own `norm`/`residual_path`
+      // v14: `norm`/`residual_path`
       // (descriptor.hpp's kGraphVersion history). Mirrors the write
       // side's own order: appended at the END of the block, read last.
       const auto norm_byte = r.pod<std::uint8_t>();
@@ -1008,7 +998,7 @@ class Reader {
 }
 
 /// Compares every field the descriptor carries. Used by round-trip tests and
-/// by the YAML round-trip in Task 1.7.
+/// by the YAML round-trip.
 [[nodiscard]] inline bool structurally_equal(const CouplingGraph& a,
                                              const CouplingGraph& b) {
   return serialize(a) == serialize(b);

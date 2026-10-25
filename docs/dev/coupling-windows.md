@@ -7,8 +7,7 @@ for whoever next touches `fuse/schedule/window.hpp`,
 ## Why this is two files, not one field
 
 The natural spelling of the opt-in is a member on `IterationRegionDecl`
-(`fuse/model/coupling_graph.hpp`). That file belongs to a different track of
-this port and is not touched here. `CouplingWindowScope`
+(`fuse/model/coupling_graph.hpp`). `IterationRegionDecl` is left alone, and `CouplingWindowScope`
 (`fuse/schedule/window.hpp`) carries the opt-in as a sibling parameter
 instead — passed alongside the graph, not inside it — and
 `validate_coupling_window()` is the legality gate. `schedule()` itself calls
@@ -145,9 +144,9 @@ divides still converges at order 2
 (`AWindowNeitherStepDividesConvergesAtOrderTwo`). Supporting simultaneous
 straddles needs a joint replay over a consistent snapshot of every member,
 and supporting long Fixed steps needs a commit path that can record "no new
-data this window"; see `KNOWN_ISSUES.md` D7.
+data this window".
 
-## The window-to-window seed (KNOWN_ISSUES.md D17/D76, Window seed track)
+## The window-to-window seed
 
 `WindowCoupler::sweep_window()` seeds `y_fed` (sweep 0's "what was fed") from
 `fuse::extrapolate_boundary_value()`: a polynomial fit of degree
@@ -157,7 +156,7 @@ With a single history point (a member's first-ever window) this reduces to
 persistence (degree 0); from the second window on it is a genuine forward
 extrapolation. An earlier attempt to seed `y_fed` by shifting the previous
 window's own fine-grained waveform back one window length -- persistence,
-not extrapolation -- was measured and reverted on 2026-09-29: it needed MORE
+not extrapolation -- was measured and rejected: it needed MORE
 sweeps to converge (`gray_scott_multirate`'s pinned totals rose 9/13/12 ->
 12/16/15).
 
@@ -173,18 +172,16 @@ TWO separate quantities, not one:
    check.
 2. `Runner::Impl::run_region()`'s own `R.x_old` pre-loop seed -- the ONLY
    value the region's generic Picard/accelerator machinery (the residual
-   norm, `R.accel->update()`) ever sees as "the previous iterate". Before
-   2026-10-20 this was a raw read of the live, already-delivered buffer
-   for every window instance past a member's first-ever one: the SAME
-   zeroth-order/persistence predictor the paragraph above records
-   reverting for `y_fed`, left in place here by omission rather than by
-   design (D17/D76's own trace). `AccelKind::None`'s `update()` ignores
+   norm, `R.accel->update()`) ever sees as "the previous iterate". A raw read of the live, already-delivered buffer
+   for every window instance past a member's first-ever one would be the SAME
+   zeroth-order/persistence predictor the paragraph above rejects
+   for `y_fed`. `AccelKind::None`'s `update()` ignores
    `x_old` entirely, so no test built against it could ever have noticed;
    `AccelKind::Aitken`/`SteffensenAccel`/`QuasiNewtonAccel` all read
    `x_old` directly (the relaxed output itself, and the residual
    difference a history-dependent relaxation weight is computed from),
-   which is where D17/D76 measured the two drivers disagree, starting
-   exactly at the window-0/window-1 boundary. Fixed (2026-10-20) by
+   which is where the two drivers were measured to disagree, starting
+   exactly at the window-0/window-1 boundary. The fix is
    applying the identical predictor to `R.x_old`'s own seed, gated the
    same way `advance_window()`'s own `use_predictor` branch is
    (`cfg.import_lagged`), reusing the SAME `window_member_config`/
@@ -195,36 +192,33 @@ TWO separate quantities, not one:
    test.cpp` already uses, and against a new `AccelKind::Aitken` parity
    case in that same file.
 
-**Fixed (KNOWN_ISSUES.md D17/D76 ROUND 5, 2026-10-20), after an open
-window through ROUND 2-4.** Applying the seed fix above to the
+**Aitken relaxation factor.** Applying the seed above to the
 Brusselator's own `examples/brusselator` configuration (Jacobi,
 `AccelKind::Aitken`, `max_iterations = 100`) made one window (window 3 of
 6, in `test/verification/brusselator_restart_test.cpp`'s own
 `SeparateLayoutJacobiAitken`/`GrowingLayoutJacobiAitken`) run the FULL
-100-sweep cap without converging, where it converged in 25 sweeps before
-the fix -- confirmed genuine non-convergence (not merely slower
+100-sweep cap without converging, where it converged in 25 sweeps without the seed -- confirmed genuine non-convergence (not merely slower
 convergence) by raising the cap to 2000 sweeps and measuring the SAME
 window still exhaust it. `AccelKind::IQN_ILS` on the identical
-configuration showed no such regression. The mechanism, traced (ROUND 3):
+configuration showed no such regression. The mechanism:
 `AitkenAccel::update()` (`src/num/accel_relaxation.cpp`) accepted any
 finite, nonzero relaxation factor `omega`, including a negative one; at the
 Brusselator's own window 3, `omega` goes negative at sweep 3 and then
 random-walks toward zero, and the residual plateaus rather than
 contracting. A stationary scalar relaxation only contracts for `omega` in
 `(0, 2(1 - Re(lambda)) / |1 - lambda|^2)` -- never for a non-positive
-value -- which is this fix's RATIONALE, not a convergence proof for
+value -- which is the rationale for the rule below, not a convergence proof for
 Aitken's own dynamic, history-dependent `omega` recursion. `AitkenAccel::
 update()` now rejects a non-positive candidate and restarts to `omega0_`
 (the configured initial relaxation) instead of accepting it; of three
-measured rejection strategies (ROUND 4: keep the last accepted positive
+measured rejection strategies (keep the last accepted positive
 value; this restart; a noise-perturbed restart), this is the only one that
 converges the Brusselator's own windows 3, 6 AND 9 without breaking the
 two bit-identical round-trip tests above, because it carries no
 epsilon-scaled threshold to be round-off-sensitive about. `--driver
 window --accel aitken` and `--driver runner`, same configuration, now both
 report `--check: OK` with identical `final_mean_u`/`final_mean_v` and no
-cap hit on either side -- see KNOWN_ISSUES.md D76 ROUND 5 FIX for the full
-measurement, the unit and integration tests, and the mutation.
+cap hit on either side.
 
 ## What is NOT built here
 
@@ -233,10 +227,8 @@ measurement, the unit and integration tests, and the mutation.
   standalone `WindowCoupler` rather than through `schedule()`'s own compiled
   plan (`schedule()` itself DOES compile a window-scoped `IterationRegionDecl`
   — see above).
-- Extending `IterationRegionDecl` itself with the opt-in (belongs to the
-  track that owns `fuse/model/coupling_graph.hpp`).
+- Extending `IterationRegionDecl` itself with the opt-in.
 
 `src/CMakeLists.txt` already registers `schedule/window.cpp` and
 `runtime/window_coupler.cpp` into the `fuse::schedule`/`fuse::runtime`
-library targets (review 2026-10-11 IS-12 -- this page used to list that
-registration as not-yet-done).
+library targets.

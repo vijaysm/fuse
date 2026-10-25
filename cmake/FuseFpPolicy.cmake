@@ -1,4 +1,4 @@
-# Floating-point contraction policy (KNOWN_ISSUES.md D30, "FpPolicy" track).
+# Floating-point contraction policy.
 #
 # Apple clang (and GNU/Clang generally) fuse `a*b + c` into a single fused
 # multiply-add BY DEFAULT AT EVERY OPTIMIZATION LEVEL, including -O0 --
@@ -14,11 +14,11 @@
 # instructions instead, fused by default. At -O0 neither transformation
 # happens, so both sides reduce to the SAME textual sequence (fused,
 # ascending) and agree; at -O2/-O3 without the flag they can disagree
-# over the vectorized elements. D30 measured the SYMPTOM of this
-# correctly (fuse::linalg::DistVector::dot against a plain loop;
+# over the vectorized elements. The symptom is that
+# fuse::linalg::DistVector::dot against a plain loop, and
 # fuse::num::deterministic_dot/deterministic_norm_squared against a
-# chunked serial reference differ by one ulp in a Release build and
-# nowhere else) but attributed it to the wrong cause.
+# chunked serial reference, differ by one ulp in a Release build and
+# nowhere else.
 #
 # FUSE_FP_REPRODUCIBLE, default ON (the robustness rule: a build-wide,
 # compiler-default-independent choice is preferred unless there is a
@@ -47,7 +47,7 @@
 # file; it does not redeclare it.
 option(FUSE_FP_REPRODUCIBLE
        "Reproducible floating point: -ffp-contract=off on every target so a \
-Release build reproduces Debug's bits exactly (KNOWN_ISSUES.md D30). OFF \
+Release build reproduces Debug's bits exactly. OFF \
 keeps the compiler's default FMA contraction; the three bit-identity \
 comparisons it affects are then checked against a derived forward-error \
 bound instead."
@@ -67,7 +67,7 @@ bound instead."
 # Applied via a function, not inline at each call site, so the compiler-
 # ID guard and its message are written once.
 #
-# Compiler coverage, measured on this machine (2026-10-12): GNU, Clang and
+# Compiler coverage, measured on this machine: GNU, Clang and
 # AppleClang accept -ffp-contract=off identically (`clang --help` lists
 # `-ffp-contract=<value>`; confirmed Apple clang 21.0.0 here). No other
 # C/C++ compiler is probed -- MSVC and Intel's classic/oneAPI compilers
@@ -102,7 +102,7 @@ function(fuse_apply_fp_contract_policy_c_cxx)
                     "(${CMAKE_C_COMPILER_ID}) or the CXX compiler "
                     "(${CMAKE_CXX_COMPILER_ID}) is neither GNU, Clang nor AppleClang; no "
                     "contraction flag was added for that language, and a Release build may "
-                    "still fuse multiply-adds (KNOWN_ISSUES.md D30).")
+                    "still fuse multiply-adds.")
   endif()
 endfunction()
 
@@ -123,6 +123,6 @@ function(fuse_apply_fp_contract_policy_fortran)
   else()
     message(WARNING "fuse: FUSE_FP_REPRODUCIBLE is ON but the Fortran compiler "
                     "(${CMAKE_Fortran_COMPILER_ID}) is not GNU; no contraction flag was added "
-                    "for ffuse (KNOWN_ISSUES.md D30).")
+                    "for ffuse.")
   endif()
 endfunction()

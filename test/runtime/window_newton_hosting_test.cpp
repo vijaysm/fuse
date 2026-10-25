@@ -1,17 +1,16 @@
-// KNOWN_ISSUES.md D31 -- the window-Newton seam's own multi-rank SHAPE,
+// The window-Newton seam's own multi-rank SHAPE,
 // pinned the SAME way test/runtime/window_hosting_test.cpp already pins
 // Picard's identical `WindowMemberConfig::export_consumer_hosted` rule:
 // via `RunnerConfig::force_this_process`, which gives a tier-0 test a
 // specific rank's own `this_process` with NO communicator at all, so
 // `initialize()` reaches every hosting/exclusion computation
 // `resolve_regions()` makes for a window-Newton region -- including the
-// NEW `b.window_hosted`-gated `newton_offset` exclusion this track adds
-// -- without ever exercising the real cross-rank reduction downstream.
-// This file's own tests stop at `initialize()`/`window_region_fixed_
-// point_residual()`'s own STATIC shape, exactly as window_hosting_test.
-// cpp's header comment explains for Picard: the real agreement behind
-// `ParticipantSetReducer` has no tier-0 oracle, and its own proof is the
-// host-only `parallel.window_newton_mpi.{2,3}` row
+// `b.window_hosted`-gated `newton_offset` exclusion -- without ever exercising
+// the real cross-rank reduction downstream. This file's own tests stop at
+// `initialize()`/`window_region_fixed_ point_residual()`'s own STATIC shape,
+// exactly as window_hosting_test. cpp's header comment explains for Picard:
+// the real agreement behind `ParticipantSetReducer` has no tier-0 oracle, and
+// its own proof is the host-only `parallel.window_newton_mpi.{2,3}` row
 // (test/parallel/window_newton_mpi_test.cpp).
 //
 // MEASURED while writing this file (not assumed): `RegionRuntime::
@@ -170,7 +169,7 @@ CouplingGraph two_member_window_newton_graph_disjoint_ranks() {
   decl.convergence.add(
       fuse::ConvergenceMeasure{fuse::MeasureKind::Absolute, 1e-12, "b_out"});
   decl.window_scope = scope;
-  // KNOWN_ISSUES.md D31: the one line that differs from window_hosting_
+  // The one line that differs from window_hosting_
   // test.cpp's own fixture. Default NewtonConfig -- no block-Jacobi
   // preconditioner, no capability requirement StubBlock cannot meet.
   decl.acceleration.kind = AccelKind::Newton;
@@ -273,19 +272,19 @@ TEST(WindowNewtonHosting, LocalNewtonVectorKeepsOnlyTheBlockThisRankHostsOnBsRan
   EXPECT_EQ(wfpr.value().n, wfpr.value().lengths.front());
 }
 
-// KNOWN_ISSUES.md D31: `RegionRuntime::participants` is populated ONLY
+// `RegionRuntime::participants` is populated ONLY
 // when `RunnerConfig::base_communicator` has a value (iteration.cpp's
 // own comment on that construction) -- with NEITHER a communicator NOR
 // `force_this_process` configured, a window-Newton region whose graph
 // still names two different nominal ranks is run "purely local," on
-// the one process that exists, exactly as the pre-existing Picard path
-// already is: `R.participants` stays empty, `R.newton_reducer` is the
+// the one process that exists, exactly as the Picard path
+// is: `R.participants` stays empty, `R.newton_reducer` is the
 // serial reducer, and -- because `window_hosted` defaults to `true`
 // whenever `this_process` has no value at all -- EVERY block stays
-// included, nothing is excluded. This is the SHAPE this track's own
-// E-RT-REGION-MPI exemption (iteration.cpp, `AccelKind::Newton` added
-// alongside `None`/`Constant`) and `check_region_supports_newton()`'s
-// own lifted refusal (fixed_point_residual.cpp) must both let through
+// included, nothing is excluded. This is the SHAPE the
+// E-RT-REGION-MPI exemption (iteration.cpp, `AccelKind::Newton` alongside
+// `None`/`Constant`) and `check_region_supports_newton()`
+// (fixed_point_residual.cpp) must both let through
 // without error -- proven here by `initialize()` succeeding and by
 // `n` covering BOTH blocks, not a narrowed subset.
 TEST(WindowNewtonHosting, NoCommunicatorAndNoForcedRankRunsPurelyLocalWithNothingExcluded) {

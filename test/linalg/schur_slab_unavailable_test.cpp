@@ -1,14 +1,13 @@
-// test/linalg/schur_slab_unavailable_test.cpp -- review-2026-10-11 NL-5.
+// test/linalg/schur_slab_unavailable_test.cpp 
 //
 // src/linalg/schur_slab_unavailable.cpp is the TU this library compiles
 // instead of src/linalg/schur_slab.cpp whenever FUSE_LINALG_BACKEND is not
 // "eigen" (src/CMakeLists.txt's own backend-selected target_sources call).
-// Before this file, no test row exercised that build at all: the default
+// Without this file, no test row would exercise that build at all: the default
 // (eigen) configuration links schur_slab.cpp and never reaches this code
 // path, and the builtin configuration compiled the unavailable variant with
-// nothing asserting its refusal fires with the documented code and message
-// (num-linalg-field.md NL-5). This row is gated the OPPOSITE way every
-// Eigen-linked row in this file is (review-2026-10-11 BC-1, just above):
+// nothing asserting its refusal fires with the documented code and message. This row is gated the OPPOSITE way every
+// Eigen-linked row in this file is (just above):
 // registered only when FUSE_LINALG_BACKEND is NOT eigen, so it builds and
 // runs in exactly the configuration that compiles schur_slab_unavailable.cpp,
 // and is declared gated (not silently absent) in the eigen configuration

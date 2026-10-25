@@ -13,8 +13,7 @@ construction is PLANAR/VOLUMETRIC rather than spherical.
 ## The construction
 
 Each rank forms the axis-aligned bounding box of every one of its OWNED target cells (per cell, not one
-union box for the whole slab -- more selective, and no more expensive at the cell counts this track
-targets). Every rank's own boxes are gathered onto every other rank (`MPI_Allgather` for counts, then
+union box for the whole slab -- more selective, and no more expensive at the cell counts it targets). Every rank's own boxes are gathered onto every other rank (`MPI_Allgather` for counts, then
 `MPI_Allgatherv` for the flattened `(lo, hi)` doubles -- the same two-phase shape
 `resolve_vertex_ownership`, native_migration.cpp, already uses for a variable-length allgather). A rank's
 OWNED source cell then travels, as a COPY (never a move: its owner never changes), to every OTHER rank
@@ -26,7 +25,7 @@ not care which topological dimension the cells it bounds are; a planar mesh's bo
 branch exists anywhere in `src/backend/native_halo.cpp`'s own geometry.
 
 **A touch is not an overlap.** Two boxes that only share a face -- the common case at an EXACTLY aligned
-partition boundary, which this track's own test fixture hits deliberately -- have a true geometric
+partition boundary, which the test fixture hits deliberately -- have a true geometric
 intersection of measure zero: real cells are contained in their bounding boxes, so a zero-measure box
 intersection proves the real cells cannot overlap with positive area either, regardless of shape.
 `boxes_overlap`'s `kTouchTol` margin excludes an exact touch, but ONLY on an axis where at least one of
@@ -102,34 +101,32 @@ where none is owed.
   checks; and `build_native_remap_halo`'s own no-op short-circuits (one rank, no communicator, identity
   source/target), which are the only cases this file can call the REAL orchestration function, because
   they return before any MPI symbol is touched.
-- `test/parallel/native_halo_mpi_test.cpp` (tier 1, built but not run in this sandbox -- MPI cannot
-  start here at all, docs/dev/testing.md): the same scenario under a REAL `MPI_COMM_WORLD`, with
+- `test/parallel/native_halo_mpi_test.cpp` (tier 1; it needs a host with a working MPI, docs/dev/testing.md): the same scenario under a REAL `MPI_COMM_WORLD`, with
   `build_native_remap_halo` performing its own real collectives and
   `fuse::linalg::make_mpi_exchanger` (not an in-process stand-in) filling the adopted cells' field
   values. Registered at `RANKS 2 3` (test/CMakeLists.txt); `parallel.native_halo_mpi.{2,3}` both
-  passed on the host 2026-10-10 (0.37 s, 0.08 s).
+  passed on the host (0.37 s, 0.08 s).
 - `build-evidence/mutations/native-mesh.toml`'s `native-halo-*` rows: hand-proven against a scratch copy
   (apply, rebuild, run `fuse_backend_native_halo_test` whole and unfiltered, record the exact
   pass/fail split, restore and `cmp` byte-identical).
 
-## Device packing (Phase 2, "weight-builders" track)
+## Device packing
 
-`include/fuse/backend/native/mesh_pack_device.hpp` adds `fuse::native::device::pack_to<kHaloRecord,
-Space>`, the Space-templated packing seam `docs/dev/device-resident-arcs.md`'s Phase 2 names. It
+`include/fuse/backend/native/mesh_pack_device.hpp` provides `fuse::native::device::pack_to<kHaloRecord,
+Space>`, the Space-templated packing seam described in [](device-resident-arcs.md). It
 builds the IDENTICAL wire records `pack_for_migration`/`pack_halo_cells` do (`kHaloRecord` selects
 which of the two), but reads `MeshArrays<Space>`'s own CSR connectivity directly rather than walking
 `NativeMeshView` -- a host-only, validated view by design (`Result`/`Failure`/`fmt` are not
 device-callable) -- so that on `Space == Kokkos::DefaultExecutionSpace::memory_space` the owned-block
 numbering, every record's byte size, and the byte-level write all run as Kokkos kernels, with no host
-round trip for the per-cell data. Verified byte-for-byte against the existing host packers on the same
+round trip for the per-cell data. Verified byte-for-byte against the host packers on the same
 generated meshes (quad and polyhedral), in both Host mode and Device mode (`test/backend/
 native_mesh_pack_device_test.cpp`).
 
-**Wired in (Migration track, 2026-10-15).** `pack_for_migration` (native_migration.cpp) and
-`pack_halo_cells` (native_halo.cpp) now call `pack_to`/a new sibling, `pack_fanout`, directly against
-`mesh.device_arrays()` -- no `NativeMeshView` host-serving accessor (`cell_vertices`/`vertex_x`/
-`cell_faces`) is reached by either packer anymore, checked directly by a `host_mirrors_materialized()
-== 0` assertion around each call (`test/backend/native_migration_test.cpp`'s
+`pack_for_migration` (native_migration.cpp) and `pack_halo_cells` (native_halo.cpp) call `pack_to`/its
+sibling `pack_fanout` directly against `mesh.device_arrays()` -- no `NativeMeshView` host-serving
+accessor (`cell_vertices`/`vertex_x`/`cell_faces`) is reached by either packer, checked directly by a
+`host_mirrors_materialized() == 0` assertion around each call (`test/backend/native_migration_test.cpp`'s
 `PackForMigrationMaterializesNoHostMirror`, `test/backend/native_halo_test.cpp`'s
 `PackHaloCellsMaterializesNoHostMirror`). `pack_fanout` exists because `pack_to`'s model -- ONE
 destination per owned cell -- cannot express a halo copy's many-to-many fan-out (the same source cell
@@ -137,47 +134,41 @@ sent to SEVERAL destination ranks whose covering set it overlaps): `pack_fanout`
 flattened (cell, destination rank) send list instead of the cell set, reusing `pack_to`'s own
 `record_size`/`write_record` helpers unchanged (checked directly: `test/backend/native_halo_test.cpp`'s
 `PackHaloCellsFansOutOneCellToSeveralDestinations` sends one cell to two destinations and checks both
-copies are byte-identical). The one remaining host round trip is the packed WIRE BYTES themselves
-(copied back to a `std::vector<std::byte>` for `exchange_migration_buffers`'s existing signature), not
-the mesh -- see the "GPU-aware exchange" section below for the primitive that removes it, and
-KNOWN_ISSUES.md D51 for why it is not yet wired all the way through.
+copies are byte-identical).
 
-## GPU-aware exchange (Migration track, 2026-10-15)
+## GPU-aware exchange
 
 `fuse::linalg::mpi_is_gpu_aware()` (`include/fuse/linalg/comm.hpp`, `src/linalg/mpi_gpu_aware.cpp`) is
-now the ONE run-time GPU-aware-MPI probe: `fuse::native::mpi_is_gpu_aware()` and
-`fuse::transport::MpiTransport::is_gpu_aware()` both call it, rather than each keeping its own
-identical copy (both `backend` and `transport` sit above `linalg` in the layering order). A new
-Space-templated overload, `exchange_migration_buffers<Space>` (native_migration.hpp/.cpp), takes and
-returns `Kokkos::View<std::byte*, Space>` buffers -- the same per-destination buffers `pack_to`/
-`pack_fanout` produce -- handing `MPI_Alltoallv` a device buffer's own raw pointer directly when
-`Space` is a device memory space and the probe says this MPI build may take one (and
-`FUSE_TRANSPORT_HOST_STAGING` is not forcing the fallback), staging through host `std::vector<std::byte>`
-buffers otherwise (the identical two-phase shape the existing `std::vector` overload already uses).
-Verified byte-for-byte against that existing overload at 1-5 ranks and both
+the one run-time GPU-aware-MPI probe: `fuse::native::mpi_is_gpu_aware()` and
+`fuse::transport::MpiTransport::is_gpu_aware()` both call it (both `backend` and `transport` sit above
+`linalg` in the layering order). The Space-templated overload `exchange_migration_buffers<Space>`
+(native_migration.hpp/.cpp) takes and returns `Kokkos::View<std::byte*, Space>` buffers -- the same
+per-destination buffers `pack_to`/`pack_fanout` produce -- handing `MPI_Alltoallv` a device buffer's
+own raw pointer directly when `Space` is a device memory space and the probe says this MPI build may
+take one (and `FUSE_TRANSPORT_HOST_STAGING` is not forcing the fallback), staging through host
+`std::vector<std::byte>` buffers otherwise (the identical two-phase shape the `std::vector` overload
+uses). Verified byte-for-byte against that overload at 1-5 ranks and both
 `FUSE_TRANSPORT_HOST_STAGING` settings
 (`NativeMigrationMpi.GpuAwareExchangeOverloadMatchesHostVectorOverloadByteForByte`,
-`test/backend/native_migration_mpi_test.cpp`; `backend.native_migration_mpi` gained a `DEVICE_TWIN`
+`test/backend/native_migration_mpi_test.cpp`; `backend.native_migration_mpi` has a `DEVICE_TWIN`
 registration at 2/3 ranks to cover it under the Runner's device interpreter too).
 
-**Wired in (Migration track, 2026-10-15, round 3).** `migrate` and `build_native_remap_halo` now call
-the `Space`-templated `exchange_migration_buffers<Space>` overload directly -- the device-resident
-buffers `pack_to`/`pack_fanout` produce go straight to the exchange and straight on to the device merge
-below, with no `std::vector<std::byte>` staging anywhere in either function. See "Device merge decision"
-below for the receive side this unblocked.
+`migrate` and `build_native_remap_halo` call the `Space`-templated overload directly -- the
+device-resident buffers `pack_to`/`pack_fanout` produce go straight to the exchange and straight on to
+the device merge below, with no `std::vector<std::byte>` staging anywhere in either function.
 
-## Device merge decision (KNOWN_ISSUES D51, CLOSED)
+## Device merge decision
 
-`include/fuse/backend/native/mesh_merge_device.hpp` adds `fuse::native::device::dedup_by_gid<Space>`:
+`include/fuse/backend/native/mesh_merge_device.hpp` provides `fuse::native::device::dedup_by_gid<Space>`:
 the receiving side's MERGE DECISION itself -- "is this incoming global id already held, and if it is
 genuinely new, which ONE of possibly several cross-sender copies is canonical" -- as Kokkos kernels on
 `Space`, replacing the `std::unordered_map`/`std::unordered_set` membership test `merge_halo_cells`'s
-cell dedup and `unpack_migrated_mesh`'s vertex dedup used to make. A sort-and-compact pass:
+cell dedup and `unpack_migrated_mesh`'s vertex dedup would otherwise make. A sort-and-compact pass:
 `Kokkos::Experimental::sort_by_key` the concatenation of the already-held gids and the incoming
 candidates (carrying a signed tag that encodes both side and original position), then one
 `Kokkos::parallel_scan` over the sorted order assigns every DISTINCT value one ascending slot, and an
 `atomic_min` pass picks the lowest-original-index incoming copy as canonical for a slot no existing
-entry claims -- the same "first occurrence in buffer order wins" rule the Host path already follows,
+entry claims -- the same "first occurrence in buffer order wins" rule the Host path follows,
 so Device mode never disagrees with what Host would keep for the same input order.
 `O((E + N) log(E + N))` for the sort (the dominant term), `O(E + N)` for the rest. Verified against a
 from-scratch `std::unordered_map`/`std::unordered_set` reference on gid sets built to exercise every
@@ -185,30 +176,28 @@ case the real wire traffic can produce (no overlap, incoming duplicates of an ex
 cross-sender duplicates among incoming, empty incoming, empty existing), in both Host mode and (when
 this Kokkos has one) a Cuda/HIP/SYCL backend (`test/backend/native_mesh_merge_device_test.cpp`).
 
-**Wired in (Migration track, 2026-10-15, round 3).** The two gaps the round-2 text above left open are
-both closed:
+Two further pieces make the merge a complete receive-side rebuild:
 
 1. **Slot numbering.** `renumber_append_order<Space>` (mesh_merge_device.hpp) wraps `dedup_by_gid` with
-   the mechanical renumbering pass round 2 only sketched: a `Kokkos::parallel_scan` over
-   `incoming_is_new` gives each canonical new entry its rank among canonical entries in ascending
-   ORIGINAL INCOMING index, so `final_index_of_incoming(i) = E + that rank` for a new entry and the
-   existing entry's own original index otherwise -- exactly the Host builders' append-order convention,
-   bit for bit, not merely up to a permutation.
-2. **Record-boundary discovery.** The wire format gained a fixed-size header -- `[int64 record_count]
+   a `Kokkos::parallel_scan` over `incoming_is_new` that gives each canonical new entry its rank among
+   canonical entries in ascending ORIGINAL INCOMING index, so `final_index_of_incoming(i) = E + that
+   rank` for a new entry and the existing entry's own original index otherwise -- exactly the Host
+   builders' append-order convention, bit for bit, not merely up to a permutation.
+2. **Record-boundary discovery.** The wire format has a fixed-size header -- `[int64 record_count]
    [record_count + 1 int64 absolute byte offsets][payload]`, written by `alloc_buffer_with_header`
-   (mesh_pack_device.hpp) from the same `contrib`/`payload_offset` arrays `pack_to`/`pack_fanout` already
-   compute -- so `parse_buffers<kHaloRecord, Space>` (mesh_merge_device.hpp) locates every record's start
-   with one `parallel_for` indexed by record, never a sequential walk of the variable-length payload that
-   follows it. A buffer with zero records is left entirely empty (no header at all), preserving the
-   pre-header "nothing sent to this rank" contract (`pack_halo_cells`'s own "nothing is ever sent to
-   one's own rank" case).
+   (mesh_pack_device.hpp) from the same `contrib`/`payload_offset` arrays `pack_to`/`pack_fanout`
+   compute -- so `parse_buffers<kHaloRecord, Space>` (mesh_merge_device.hpp) locates every record's
+   start with one `parallel_for` indexed by record, never a sequential walk of the variable-length
+   payload. A buffer with zero records is left entirely empty (no header at all), preserving the
+   "nothing sent to this rank" contract (`pack_halo_cells`'s "nothing is ever sent to one's own rank"
+   case).
 
 `unpack_migrated_mesh_device<Space>`/`merge_halo_cells_device<Space>` (mesh_merge_device.hpp) are the
-full device-resident receive-side rebuild this entry described from round 1: `unpack_migrated_mesh`/
-`merge_halo_cells` (native_migration.cpp/native_halo.cpp) now delegate to them directly on `Space =
-Kokkos::HostSpace` -- literally the same template Device instantiates, not a parallel reimplementation,
-which is what guarantees the two numbering schemes agree -- and `migrate`/`build_native_remap_halo` call
-the `Space = NativeMeshView::DeviceMemSpace` instantiation end to end. No step of either function touches
+full device-resident receive-side rebuild: `unpack_migrated_mesh`/`merge_halo_cells`
+(native_migration.cpp/native_halo.cpp) delegate to them directly on `Space = Kokkos::HostSpace` --
+literally the same template Device instantiates, not a parallel reimplementation, which is what
+guarantees the two numbering schemes agree -- and `migrate`/`build_native_remap_halo` call the
+`Space = NativeMeshView::DeviceMemSpace` instantiation end to end. No step of either function touches
 a `NativeMeshView` host-serving accessor; `host_mirrors_materialized() == 0` is asserted across the
 FULL round trip, source and rebuilt result view, host and MPI (1-5 ranks), both
 `FUSE_TRANSPORT_HOST_STAGING` settings, `.device` twins included
@@ -216,107 +205,89 @@ FULL round trip, source and rebuilt result view, host and MPI (1-5 ranks), both
 `test/backend/native_migration_mpi_test.cpp`'s
 `MigrateMaterializesNoHostMirrorOnEitherViewUnderEitherStagingSetting`,
 `test/parallel/native_halo_mpi_test.cpp`'s
-`BuildRemapHaloMaterializesNoHostMirrorOnTheRebuiltSourceView`). Every existing
-`backend.native_migration*`/`native_halo*`/`partition.repartition*` row and its `.device` twin still
-agrees exactly with its own prior (Host-only) numbers.
+`BuildRemapHaloMaterializesNoHostMirrorOnTheRebuiltSourceView`).
 
-Three narrow, DECLARED exceptions remain, none test-covered or load-bearing for this track's own mandate
-(see KNOWN_ISSUES.md D51's closing text for the full statement of each): no cross-cell Polyhedron face
-dedup on the device path (private per-cell faces instead -- untested by any generator in this suite, so
-this round added the suite's first Polyhedron migration case to prove conservation, not face count);
+Three narrow, DECLARED exceptions remain, none test-covered: no cross-cell Polyhedron face
+dedup on the device path (private per-cell faces instead -- untested by any generator in this suite
+except one Polyhedron migration case that proves conservation, not face count);
 `resolve_vertex_ownership_device<Space>`'s one bounded host round trip for `vertex_gid` only (`MPI_
 Allgatherv` has no GPU-aware form the way `MPI_Alltoallv` does); and `NativeMeshBuilder::build()`'s
-fixed-shape corner-count refusal (`E-MESH-CONNECTIVITY`), a pre-existing gap for any direct `create_from_
-host` caller (NM-8) that this device path does not newly need since no sender here produces malformed
+fixed-shape corner-count refusal (`E-MESH-CONNECTIVITY`), a gap for any direct `create_from_
+host` caller that this device path does not newly need since no sender here produces malformed
 corner counts.
 
 ## Open items
 
 - The conservative column-mass-by-global-id check (a source cell's measure, summed across every rank
-  holding a copy of it) is test-level bookkeeping in `native_halo_test.cpp`, not a library API; MOAB's
-  own `accumulate_remap_halo` (the reverse exchange, built for exactly this audit) has no native
-  counterpart. Nothing in this track's scope needs it at the library level yet -- `remap_halo_pattern`'s
-  only documented purpose is the FORWARD fill before `apply_weights` -- but a future conservation-audit
-  tool for the native backend would want one.
+  holding a copy of it) is test-level bookkeeping in `native_halo_test.cpp`, not a library API;
+  `accumulate_remap_halo` (the reverse exchange, built for exactly this audit) is used by
+  `fold_and_reduce_source_coverage` below, but a general native conservation-audit tool would want its
+  own API.
 - `build_native_remap_halo` dispatches through `intx_weights.cpp`'s `build_remap_halo`/
   `build_weights_via_supermesh`, alongside the MOAB path, via `dynamic_cast`; a backend that is neither
   MOAB nor native and reports more than one rank is not covered by any E-REMAP-PARALLEL check in this
-  tree (none exists yet that does).
-- runtime-exchange track, follow-up round: this file's own halo exchange
-  (`exchange_migration_buffers()`, native_migration.hpp/.cpp) was
-  explicitly out of scope for the ghost-field and nodal-remap exchange
-  work that round did (device-resident-arcs.md, "Runtime-exchange track,
-  follow-up round") -- that function's own "always stages through host
-  buffers regardless, per the standing priority" policy sentence is
-  UNCHANGED; its device-residency belongs to the separate Migration
-  track's own worktree, not this one.
+  tree.
 
-## The automatic remap halo (D73, RemapHalo track, 2026-10-18; execution point moved in round 2)
+## The automatic remap halo
 
-Every caller of this backend's halo had, before this track, to identify by hand which
-`(source, target, dimension)` triples needed `build_native_remap_halo()` called on them, and to call it
-at exactly the right point (`remap_plan.hpp`'s own "ORDER MATTERS" note: before `make_region_sizes`,
+A caller of this backend's halo would otherwise have to identify by hand which
+`(source, target, dimension)` triples need `build_native_remap_halo()` called on them, and to call it
+at exactly the right point (`remap_plan.hpp`'s "ORDER MATTERS" note: before `make_region_sizes`,
 `plan_buffers`, `schedule()`, or a component registering storage). `fuse::channel_needs_remap_halo()`
-(src/ir/rules_channel.cpp) now makes that identification automatic: the lowering (`lower()`,
+(src/ir/rules_channel.cpp) makes that identification automatic: the lowering (`lower()`,
 src/ir/lowering.cpp) emits one collective `OpKind::BuildRemapHalo` instruction (fuse/ir/op.hpp) per
 cross-rank weighted (non-nodal, non-consistent) channel, at the front of the compiled instruction
 stream, carrying both arcs' owning components in its own `attrs` (`src_rank_set`/`dst_rank_set`, the
 same fields `Transport`/`Epoch` nodes already use for this). `fuse::execute_remap_halo_instructions()`
-(fuse/backend/remap_halo_instructions.hpp) gives the instruction its real effect -- round 1 had
-application code call this directly, between loading the mesh backend and calling `schedule()`; round 2
-(2026-10-18) moved the call INSIDE `fuse::make_region_sizes()` (fuse/backend/mesh_view.hpp) itself, so a
-caller no longer makes this call by hand at all -- `make_region_sizes(graph, dag, backend)` builds every
-halo `dag` carries before it ever reads an entity count, as the first thing it does.
+(fuse/backend/remap_halo_instructions.hpp) gives the instruction its real effect, and it is called
+INSIDE `fuse::make_region_sizes()` (fuse/backend/mesh_view.hpp) itself, so a caller does not make this
+call by hand -- `make_region_sizes(graph, dag, backend)` builds every halo `dag` carries before it ever
+reads an entity count, as the first thing it does.
 
 **The halo slots are COUPLER-OWNED ghost storage.** A cell `build_native_remap_halo` adopts is a
 non-owned local entity exactly like any other ghost cell this backend already has vocabulary for
-(`MeshView`'s own "owned AND ghost" local entity set) -- its field VALUE is filled by the coupler (the
-same forward exchange `remap_halo_pattern()`'s own `GhostPattern` already drives through
+(`MeshView`'s "owned AND ghost" local entity set) -- its field VALUE is filled by the coupler (the
+same forward exchange `remap_halo_pattern()`'s `GhostPattern` drives through
 `fuse::linalg::make_mpi_exchanger`, the identical mechanism a `Transport` instruction uses), never
 written by the component whose mesh it belongs to. A component's own `register_fields()` binds exactly
 its OWNED entities' storage (`placed_region_size`'s own count, unchanged by a halo build on a region the
 component does not itself read); the halo's EXTRA slots are additional coupler-side bookkeeping the
 component never sees through its own registered pointer.
 
-**Why `Runner::initialize()` is still not the one to build it (KNOWN_ISSUES.md D77, closed).**
-`schedule()`'s own `RegionSizes` callback, now returned BY `make_region_sizes()` only after the halo
-build above completes, is invoked once, synchronously, inside `schedule()` itself, to size every
+**Why `Runner::initialize()` is not the one to build it.**
+`schedule()`'s `RegionSizes` callback, returned BY `make_region_sizes()` only after the halo
+build completes, is invoked once, synchronously, inside `schedule()` itself, to size every
 `BufferDecl` in the resulting `ExecutionPlan` (fuse/schedule/buffers.hpp) -- and a caller builds that
-`ExecutionPlan` and passes it to `Runner`'s own constructor BEFORE `Runner::initialize()` ever runs.
-By the time `initialize()` could call `execute_remap_halo_instructions()` itself, `schedule()`'s own
+`ExecutionPlan` and passes it to `Runner`'s constructor BEFORE `Runner::initialize()` ever runs.
+By the time `initialize()` could call `execute_remap_halo_instructions()` itself, `schedule()`'s
 buffer sizes are already frozen; growing the backend's halo at that point cannot retroactively widen
-them. Moving the call into `make_region_sizes()` (round 2) removes the LAST point at which a caller
-could place the call incorrectly by hand; `Runner::Impl::resolve_remap_halo()` still VERIFIES, at
+them. Putting the call in `make_region_sizes()` removes the last point at which a caller
+could place it incorrectly by hand; `Runner::Impl::resolve_remap_halo()` still VERIFIES, at
 `initialize()` time, that every `BuildRemapHalo` instruction was already satisfied (a local
 `has_remap_halo()` lookup, no MPI call), and refuses `E-RT-REMAP-HALO-NOT-BUILT` by name when it was
-not -- now the gate for a caller that bypassed `make_region_sizes()` entirely, rather than one that
-merely called two separate steps in the wrong order.
+not -- the gate for a caller that bypassed `make_region_sizes()` entirely.
 
-**Resolving the SOURCE mesh through its own placement, not the target's (round 3, 2026-10-18).**
+**Resolving the SOURCE mesh through its own placement, not the target's.**
 `register_default_placements()` (native_backend.cpp) gives every component a placed view of every
 mesh, generated over THAT component's own `RankSet`; a component's view of a mesh outside its own
 `RankSet` is the documented EMPTY view, not a refusal. `build_native_remap_halo`'s single-placement
-form resolved BOTH the source and target mesh through the same `placement` argument -- correct for the
-target (that argument is, by `RemapPlan::placement`'s own already-closed meaning, the target's own
-placement), but wrong for the source on every rank that holds the source's real decomposition: those
-ranks sit outside the target's `RankSet`, so the source view they got back was empty, the covering-set
-exchange adopted nothing, and `commit_remap_halo` still recorded the triple as built. This is
-KNOWN_ISSUES.md D73's "FIX ROUND 4" entry; see there for the host measurement that exposed it. The fix
-is a second, two-placement overload, `build_native_remap_halo(backend, source, target, dim,
-source_placement, placement)`: `source_placement` resolves ONLY the source view; `target` and
-`placement` -- and therefore `commit_remap_halo`'s own key -- are unchanged from the single-placement
-form, so every existing lookup by the target's own placement (`has_remap_halo`, `native_view`,
-`placed_view`) still finds the result where it already expected to. The single-placement overload now
-delegates to this one with `source_placement == placement`, the identity case it already reduced to
-correctly, so no existing caller changes behavior. `fuse::execute_remap_halo_instructions()`
-(src/backend/remap_halo_instructions.cpp) reads the source component's `RankSet` back out of the
-`BuildRemapHalo` instruction's own `attrs.src_rank_set` (carried there since round 2) and calls this
-overload directly for a `NativeMeshBackend`, mirroring the MOAB cross-placement
-`fuse::build_remap_halo(plan, graph, backend, source_placement)` overload the MoabHalo track landed in
-`intx_weights.cpp` for the identical reason -- both backends now bypass the old single-placement
-generic dispatcher entirely for this call.
+form resolves BOTH the source and target mesh through the same `placement` argument -- correct for the
+target (that argument is, by `RemapPlan::placement`'s meaning, the target's own placement), but wrong
+for the source on every rank that holds the source's real decomposition: those ranks sit outside the
+target's `RankSet`, so the source view they would get back is empty, the covering-set exchange adopts
+nothing, and `commit_remap_halo` still records the triple as built. The two-placement overload
+`build_native_remap_halo(backend, source, target, dim, source_placement, placement)` fixes this:
+`source_placement` resolves ONLY the source view; `target` and `placement` -- and therefore
+`commit_remap_halo`'s own key -- are as in the single-placement form, so every lookup by the target's
+own placement (`has_remap_halo`, `native_view`, `placed_view`) finds the result where it expects it.
+The single-placement overload delegates to this one with `source_placement == placement`, the identity
+case. `fuse::execute_remap_halo_instructions()` (src/backend/remap_halo_instructions.cpp) reads the
+source component's `RankSet` back out of the `BuildRemapHalo` instruction's own `attrs.src_rank_set`
+and calls this overload directly for a `NativeMeshBackend`, mirroring the MOAB cross-placement
+`fuse::build_remap_halo(plan, graph, backend, source_placement)` overload in `intx_weights.cpp` --
+both backends bypass the single-placement generic dispatcher entirely for this call.
 
-**`FUSE_REMAP_HALO_TRACE=1` (round 3).** Off by default, same `getenv`-cached convention as
+**`FUSE_REMAP_HALO_TRACE=1`.** Off by default, same `getenv`-cached convention as
 `FUSE_COLLECTIVE_TRACE`/`FUSE_CONSERVATION_DEBUG`. When set, each rank prints, through `fmt::print`
 to stderr: before the covering-set exchange (native_halo.cpp), its own owned source cell count and
 bounding box alongside the target cell count and bounding box; after the exchange, the adopted source
@@ -324,7 +295,7 @@ cell count; and, once `Runner::Impl::resolve_remap()` finishes building a channe
 (runner.cpp), that channel's resulting nonzero count. On a build that adopts the correct cells, the
 adopted count on a providing rank should be close to its own target-side peers' owned counts (exact
 equality is not expected -- the covering set can include extra boundary cells -- but zero adopted
-cells with a non-empty owned-source count is the D73 "FIX ROUND 4" defect recurring). Reproduce with:
+cells with a non-empty owned-source count is the source-placement defect above recurring). Reproduce with:
 
 ```
 mpiexec -n 2 env FUSE_REMAP_HALO_TRACE=1 \
@@ -332,78 +303,66 @@ mpiexec -n 2 env FUSE_REMAP_HALO_TRACE=1 \
     --gtest_filter=NativeRemapHalo.DisjointGeneralWeightedRemapConservesOnceTheHaloIsBuilt
 ```
 
-**The merge into an empty local mesh (round 5, 2026-10-19).** `device::merge_halo_cells_device<Space>`
+**The merge into an empty local mesh.** `device::merge_halo_cells_device<Space>`
 (mesh_merge_device.hpp) copies the EXISTING part of its own CSR offset arrays
 (`cell_vertex_offsets`/`cell_face_offsets`/`face_vertex_offsets`) assuming at least `E_cells + 1` (or
 `E_faces + 1`) elements are present -- the canonical "ncells + 1" size a non-empty mesh always carries.
 A rank whose own local mesh genuinely has zero cells (the "rank hosts only the target" case every
 disjoint-placement run has) reports these arrays at extent 0, not the 1-element `{0}` the "+1"
-convention implies -- `MeshArrays::cell_count()`'s own formula already treats extent 0 as a valid,
-distinct empty-mesh representation, but the copy never checked for it. Each of the three copies is now
+convention implies -- `MeshArrays::cell_count()`'s own formula treats extent 0 as a valid,
+distinct empty-mesh representation. Each of the three copies is therefore
 guarded on `E_cells > 0`/`E_faces > 0`; every destination position is still written unconditionally by
-the existing new-cells scan or its own trailing single-element write either way. `build_native_remap_
-halo`'s own merge-and-view-creation segment (between the exchange collective and the post-exchange
-verdict `MPI_Allreduce`) is now wrapped in a `try`/`catch` that folds any exception into the same
-`post_check` its own pre-existing refusal paths use, so a local throw on one rank still reaches the
-Allreduce every rank agrees through, rather than leaving a peer blocked forever. See KNOWN_ISSUES.md
-D73's own "FIX, ROUND 6" account for the full host measurement and the tier-0 reproduction
-(`NativeHaloPackMerge.RoundTripIntoAnEmptyLocalMeshAdoptsTheReceivedCellsWithoutThrowing`,
-native_halo_test.cpp, no MPI needed).
+the new-cells scan or its own trailing single-element write either way. `build_native_remap_
+halo`'s merge-and-view-creation segment (between the exchange collective and the post-exchange
+verdict `MPI_Allreduce`) is wrapped in a `try`/`catch` that folds any exception into the same
+`post_check` its pre-existing refusal paths use, so a local throw on one rank still reaches the
+Allreduce every rank agrees through, rather than leaving a peer blocked forever.
+`NativeHaloPackMerge.RoundTripIntoAnEmptyLocalMeshAdoptsTheReceivedCellsWithoutThrowing`
+(native_halo_test.cpp, no MPI needed) reproduces it at tier 0.
 
-**The weight builder's own query key (round 6, 2026-10-19).** `commit_remap_halo` records a halo under
-`(source, target, dim, placement)`; `has_remap_halo`'s own fourth argument, `placement`, defaults to
-`ComponentId{}` when omitted. `build_weights_via_supermesh`'s own `NativeMeshBackend` branch
-(`intx_weights.cpp`) called `has_remap_halo` with no fourth argument at all, so it always asked under
-the default -- regardless of `plan.placement`, the real, non-default `ComponentId` any channel with an
-actual component assigns. Every existing tier-0 test for this check used `ComponentId{}` on both sides
-(no graph component registered), so the gap was invisible until a real placement was involved: the
-owner's host measured both ranks of a run refusing `E-REMAP-PARALLEL` even though `build_native_remap_
-halo`'s own trace had already shown the halo committing cleanly moments earlier. Fixed by threading
-`plan.placement` through, the SAME convention `Runner::Impl::resolve_remap_halo` (runner.cpp) already
-uses two call sites away. See KNOWN_ISSUES.md D73's own "FIX, ROUND 7" account for the full host
-measurement, why rank 0's own zero-target-cells refusal was the SAME defect and not a second one, and
-the tier-0 reproduction (`NativeHaloBuildWeights.BuildWeightsFindsAHaloCommittedUnderAnActualComponent
-Placement`, native_halo_test.cpp, no MPI needed).
+**The weight builder's own query key.** `commit_remap_halo` records a halo under
+`(source, target, dim, placement)`; `has_remap_halo`'s fourth argument, `placement`, defaults to
+`ComponentId{}` when omitted. `build_weights_via_supermesh`'s `NativeMeshBackend` branch
+(`intx_weights.cpp`) must therefore pass `plan.placement` -- the real, non-default `ComponentId` any
+channel with an actual component assigns -- the SAME convention `Runner::Impl::resolve_remap_halo`
+(runner.cpp) uses. Calling `has_remap_halo` with no fourth argument always asks under the default, and
+tier-0 tests that use `ComponentId{}` on both sides cannot see the gap: both ranks of a run then refuse
+`E-REMAP-PARALLEL` even though `build_native_remap_halo`'s own trace shows the halo committing cleanly.
+`NativeHaloBuildWeights.BuildWeightsFindsAHaloCommittedUnderAnActualComponentPlacement`
+(native_halo_test.cpp, no MPI needed) covers it.
 
-**The conservative coverage check, distributed (round 7, 2026-10-19).** `min_src_coverage`
-(`build_supermesh_weights`'s own per-cell audit, supermesh.cpp) is computed from the intersections THIS
+**The conservative coverage check, distributed.** `min_src_coverage`
+(`build_supermesh_weights`'s per-cell audit, supermesh.cpp) is computed from the intersections THIS
 RANK's own merged views produced -- wrong whenever a source cell this rank OWNS has every one of its
 intersections on a PEER that adopted it through the halo (a provider rank with no target cells of its
 own is the sharpest case: its own local supermesh intersects its source cells against zero target
-cells and finds nothing, however fully those same cells are covered once the adopting peer's own
+cells and finds nothing, however fully those same cells are covered once the adopting peer's
 intersections are counted). `fuse::native::fold_and_reduce_source_coverage` (native_halo.hpp/.cpp)
-folds each halo copy's own share back to its owner -- `accumulate_remap_halo` (KNOWN_ISSUES D27), the
-reverse of the forward fill, reused rather than rebuilt -- and then reduces the resulting per-owned-cell
+folds each halo copy's own share back to its owner -- `accumulate_remap_halo`, the
+reverse of the forward fill -- and then reduces the resulting per-owned-cell
 minimum to one number over the WHOLE base communicator (`MPI_Allreduce(MIN)`, "agree first"), so every
-rank's Conservative check reads the SAME, now-correct value. `build_weights_via_supermesh`'s own native
-branch (intx_weights.cpp) calls it between `build_supermesh_weights` and the existing `RemapFlags::
+rank's Conservative check reads the SAME value. `build_weights_via_supermesh`'s native
+branch (intx_weights.cpp) calls it between `build_supermesh_weights` and the `RemapFlags::
 Conservative` check, reconstructing the per-cell coverage it needs from the `RemapWeights` triplets
-already returned -- no change to this file's own geometry kernel. See KNOWN_ISSUES.md D73's own "FIX,
-ROUND 8" account for the full host measurement, the three-shapes tier-0/requires-mpi verification split,
-and D82's own precise normalisation sourcing for the owner's decision.
+already returned -- no change to this file's geometry kernel.
 
-**The Extensive/Intensive normalisation convention, D82 (round 7, 2026-10-19).**
-`build_supermesh_weights` now takes a `Conservation` parameter (defaulted to `None`, behaviourally
-identical to the old always-Intensive behaviour, so existing 3-argument call sites are unaffected): a
+**The Extensive/Intensive normalisation convention.**
+`build_supermesh_weights` takes a `Conservation` parameter (defaulted to `None`, behaviourally
+identical to always-Intensive, so 3-argument call sites are unaffected): an
 Extensive channel normalises each weight by the SOURCE cell's own measure (`sum_j val[j,i] = 1` for
-source column `i`, the delivered TOTAL conserves); an Intensive channel keeps the original target-measure
+source column `i`, the delivered TOTAL conserves); an Intensive channel keeps the target-measure
 normalisation (`sum_i val[j,i] = 1` for target row `j`, a constant field reproduces exactly). `RemapPlan`
 carries the channel's own `Conservation`, read at `resolve_remap()` from the arc type at lowering time (the
-same place `placement` is read) and threaded through to this call. See KNOWN_ISSUES.md D82's own entry
-and its "FIX, ROUND 8" account above for the mechanism, the pre-existing test this fix exposed as wrong
-(`interface_transfer_test.cpp`), and the RED/GREEN-verified mutation row. The MOAB intersection path's own
-high-order weight formula is UNCHANGED by this round (MoabHalo track's own scope).
+same place `placement` is read) and threaded through to this call. The MOAB intersection path's
+high-order weight formula is separate.
 
-**The 3-rank duplicate in the comm-graph's own flat offer list (round 9, 2026-10-19).** Once the coverage
-fold and the D82 normalisation above both landed, a 3-rank run of the SAME disjoint-placement fixture failed
-one stage further on: `parallel.native_remap_halo_runner.3` refused with "global id 2 is held by source rank 0
-and again by source rank 0". The halo itself was right (rank 1 adopts 4 cells, rank 2 adopts 2, 16 total
-nonzeros, matching the 2-rank case's own weights) -- the defect was in the TRANSPORT layer, not here:
-`CommGraph::build`'s own `emit()` (src/transport/comm_graph.cpp) flattened one owned entity's offer into its
-owner's own declared list ONCE PER DESTINATION PEER that wanted it, rather than once per unique entity, so a
-cell two different adopting ranks both committed a halo over was declared twice by its true, single owner.
-Fixed in `fuse::dedupe_flat_source_offers` (transport.hpp/comm_graph_support.cpp) -- see KNOWN_ISSUES.md D73's
-own "FIX, ROUND 9" account for the full mechanism and the RED/GREEN-verified mutation row. Nothing in THIS
-file's own halo-building or merge code was touched; readers debugging a native-halo defect that only shows up
-at 3+ ranks (not 2) should check the comm-graph's own entity enumeration before suspecting the halo build
-itself, exactly the trap this round's own first read of the symptom fell into.
+**The 3-rank duplicate in the comm-graph's flat offer list.** A 3-rank run of the same
+disjoint-placement fixture exposed a defect one stage further on, in the TRANSPORT layer rather than the
+halo: `CommGraph::build`'s `emit()` (src/transport/comm_graph.cpp) flattened one owned entity's offer
+into its owner's declared list ONCE PER DESTINATION PEER that wanted it, rather than once per unique
+entity, so a cell two different adopting ranks both committed a halo over was declared twice by its
+true, single owner (symptom: "global id 2 is held by source rank 0 and again by source rank 0", with
+the halo itself right: rank 1 adopts 4 cells, rank 2 adopts 2, 16 total nonzeros). Fixed in
+`fuse::dedupe_flat_source_offers` (transport.hpp/comm_graph_support.cpp). Readers debugging a
+native-halo defect that only shows up at 3+ ranks (not 2) should check the comm-graph's entity
+enumeration before suspecting the halo build itself.

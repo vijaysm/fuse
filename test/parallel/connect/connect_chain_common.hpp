@@ -1,11 +1,9 @@
 #pragma once
 
-// KNOWN_ISSUES.md D18, round 2 (the lead's own instruction): the N-way
-// generalisation of connect_common.hpp's own two-executable pair, built
-// separately from it (connect_a.cpp/connect_b.cpp and their six existing
-// ctest rows are UNTOUCHED -- this file and connect_chain_{a,b,c,d}.cpp
-// are new, independent executables) so the proven 2-component rows carry
-// zero risk from this round's own new code.
+// The N-way generalisation of connect_common.hpp's own two-executable
+// pair, built separately from it (connect_a.cpp/connect_b.cpp and their
+// ctest rows are independent of this file and connect_chain_{a,b,c,d}.cpp)
+// so the 2-component rows carry no risk from the chain code.
 //
 // THE GRAPH. `count` components named "a","b","c","d" (only the first
 // `count` declared), each ONE rank. Component i < count-1 exports
@@ -94,14 +92,12 @@ class ChainTestMesh final : public fuse::MeshView {
 /// partition_block() at every hop is the identity (`n/1` entities, all
 /// of them, every time).
 ///
-/// KNOWN_ISSUES.md D18, round 5 (the lead's own instruction, measured on
-/// the host): this comment used to claim "the chain's own output
-/// matches golden-1+1.txt unchanged regardless of chain length" -- FALSE.
-/// `kEntities` below is 4, not golden-1+1.txt's own `na=1`, and the
-/// LAST component's own merged rank is `count - 1` (2 for a 3-chain, not
-/// golden-1+1.txt's hardcoded 1). connect_golden.cpp's own `--chain`
-/// mode computes this chain's actual golden from the SAME
-/// partition_block() call this file makes; run_chain.sh now uses it.
+/// The chain's output does NOT match golden-1+1.txt: `kEntities` below
+/// is 4, not golden-1+1.txt's own `na=1`, and the LAST component's own
+/// merged rank is `count - 1` (2 for a 3-chain, not golden-1+1.txt's
+/// hardcoded 1). connect_golden.cpp's own `--chain` mode computes this
+/// chain's actual golden from the SAME partition_block() call this file
+/// makes; run_chain.sh uses it.
 class ChainTestBackend final : public fuse::MeshBackend {
  public:
   ChainTestBackend(int me, int count, std::size_t n_entities, int dim)
@@ -319,7 +315,7 @@ struct Args {
 /// and -- ONLY on the LAST component -- prints every value it holds, in
 /// the SAME "rank=... i=... value=..." format connect_common.hpp's own
 /// run_participant() uses, so run_chain.sh's diff against its own
-/// golden-chain-<count>.txt (KNOWN_ISSUES.md D18 round 5; connect_
+/// golden-chain-<count>.txt (connect_
 /// golden.cpp's own --chain mode) is a plain text comparison.
 /// `my_index` is this executable's own 0-based position in the chain.
 [[nodiscard]] inline int run_chain_participant(int argc, char** argv, int my_index) {

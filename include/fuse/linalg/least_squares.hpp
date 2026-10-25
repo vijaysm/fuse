@@ -102,7 +102,7 @@ struct LsScratch {
 /// Same code, same arithmetic, same order; the buffers are the only difference.
 ///
 /// UNLIKE `least_squares`/`least_squares_builtin`, this entry point does NOT
-/// enforce `m >= k` (REVIEW.md R-45): the accelerator's hot loop can call it
+/// enforce `m >= k`: the accelerator's hot loop can call it
 /// with more retained columns (`k`, bounded by `cfg.reuse`) than interface
 /// values (`m`, the coupled problem's own size) when the interface is small,
 /// and that shape is reachable in ordinary use, not just in principle. The

@@ -1,5 +1,4 @@
-// Time windows track (S6 phase 3, Conformance, Unit 3a, LowFive-free
-// half): the tier-0 oracle for "a LowFive-bound channel is an
+// The tier-0 oracle for "a LowFive-bound channel is an
 // application-performed transfer" (docs/user/lowfive.md). Drives the
 // SAME two step functions `examples/brusselator/participants/u_main.c`
 // and `v_main.f90` call (the shim, via u_loop.h/v_loop.h, exactly as
@@ -9,9 +8,9 @@
 // rules_channel.cpp's lower_channel() compiles each transfer channel as
 // OpKind::ExternalDelivery, not Transport, and FUSE moves no data on
 // either channel at all. In place of the real H5Dwrite/H5Dread this
-// harness stands in for, it calls the new view_field ABI entry
+// harness stands in for, it calls the view_field ABI entry
 // (include/fuse/abi/entries.def, implemented against this graph's own
-// window machinery, not yet against real HDF5/LowFive -- that half
+// window machinery, not against real HDF5/LowFive -- that half
 // waits on the host, docs/user/lowfive.md) to read the exporting
 // member's own K-wide waveform and memcpy it into the importing
 // member's own K-wide buffer, at exactly the point an application's
@@ -20,36 +19,32 @@
 // period for this graph shape, so this is also the LAST substep before
 // is_coupling_ongoing()'s own `period` counter would advance).
 //
-// GRAPH: Unit 1's own timing (brusselator_runner_test.cpp's kDtU=0.002/
+// GRAPH: brusselator_runner_test.cpp's own timing (kDtU=0.002/
 // kDtV=0.003/kWindow=0.02 -- genuinely multirate, U:V substep ratio not
 // 1:1, DtPolicy::Adjustable on both so neither ever straddles a window
-// end), but Unit 2's own IDENTITY-REMAP region shape
-// (brusselator_participants_test.cpp's build_graph_and_weights(): both
-// transfer fields on u_region, so the channel's own Remap is the
-// identity, isolating "does the external delivery work" from "does a
-// real Remap work downstream of it" -- the latter is already covered,
-// unaffected by this channel's own data-movement change, by every
-// EXISTING non-LowFive window test). hdf5_path set on u_out/v_out, plus
-// a fieldless LaunchMode::LowFive component
-// (brusselator_graph_tool_lowfive_test.cpp's own precedent) -- MEASURED
-// (this test's own first run) to in fact be scheduled a turn through
-// next_component (component index 3) when declared with no explicit
-// `.kind`, contrary to this file's own first-draft assumption that a
-// fieldless component would never be ticked. Fixed by declaring it
+// end), but brusselator_participants_test.cpp's IDENTITY-REMAP region
+// shape (its build_graph_and_weights(): both transfer fields on
+// u_region, so the channel's own Remap is the identity, isolating "does
+// the external delivery work" from "does a real Remap work downstream of
+// it" -- the latter is already covered, unaffected by this channel's own
+// data-movement change, by every non-LowFive window test). hdf5_path set
+// on u_out/v_out, plus a fieldless LaunchMode::LowFive component
+// (brusselator_graph_tool_lowfive_test.cpp's own precedent). Declared
+// with no explicit `.kind`, such a component would be scheduled a turn
+// through next_component (component index 3), so it is declared
 // `ComponentKind::Coupler` (build_lowfive_graph_and_weights()'s own
-// comment on that line has the full account) rather than by handling
-// its turn in the loop below -- it is a placement marker, not a
-// physics component with steps of its own to take.
+// comment on that line has the account) rather than having its turn
+// handled in the loop below -- it is a placement marker, not a physics
+// component with steps of its own to take.
 //
-// S6 phase 3 (Conformance, Unit 3b), item 2(c): the REAL Brusselator
-// example's own grid and period count (kNxU=16,kNyU=16,kNxV=24,kNyV=24,
-// kPeriods=150, --end 3 at window=1/50) -- Unit 3a's own small/
-// degenerate placeholder (kNxU=3,kNyU=3,kNxV=4,kNyV=4, kPeriods=3)
-// already exercised multiple sweeps per window (the Jacobi fixed
-// point) and the non-degenerate U:V substep-count mismatch the single-
-// substep participants test does not reach; this round additionally
-// confirms the SAME claim holds at the example's own real physics
-// scale, both waveform iterations (Jacobi and GaussSeidel, below).
+// The REAL Brusselator example's own grid and period count (kNxU=16,
+// kNyU=16,kNxV=24,kNyV=24, kPeriods=150, --end 3 at window=1/50): a
+// small placeholder (kNxU=3,kNyU=3,kNxV=4,kNyV=4, kPeriods=3) already
+// exercises multiple sweeps per window (the Jacobi fixed point) and the
+// non-degenerate U:V substep-count mismatch the single-substep
+// participants test does not reach; this file confirms the SAME claim
+// holds at the example's own real physics scale, for both waveform
+// iterations (Jacobi and GaussSeidel, below).
 #include <gtest/gtest.h>
 
 #include <cmath>
@@ -95,15 +90,13 @@ using fuse::RankSet;
 using fuse::Result;
 using fuse::WaveformIteration;
 
-// S6 phase 3 (Conformance, Unit 3b), item 2(c): the REAL Brusselator
-// example's own grid and period count (examples/brusselator/main.cpp's
-// own Args defaults, mirroring brusselator_graph_tool.cpp's own item
-// 2(b) update and brusselator_participants_test.cpp's own item 2(c)
-// update), not the small/degenerate placeholder this file used through
-// Unit 3a -- --end 3 at window=1/50 (0.02) is kPeriods=150 windows.
+// The REAL Brusselator example's own grid and period count
+// (examples/brusselator/main.cpp's own Args defaults, mirroring
+// brusselator_graph_tool.cpp's and brusselator_participants_test.cpp's
+// own) -- --end 3 at window=1/50 (0.02) is kPeriods=150 windows.
 constexpr int kNxU = 16, kNyU = 16, kNxV = 24, kNyV = 24;
-// Unit 1's own timing (brusselator_runner_test.cpp) -- genuinely
-// multirate, neither interval dividing the other.
+// brusselator_runner_test.cpp's own timing -- genuinely multirate,
+// neither interval dividing the other.
 const Rational kDtU{2, 1000}, kDtV{3, 1000}, kWindow{2, 100};
 constexpr double kTolerance = 1e-11;
 constexpr int kMaxIterations = 60;
@@ -118,8 +111,8 @@ struct GraphAndWeights {
   fuse::RemapWeights weights_vu, weights_uv;
 };
 
-// Unit 2's own build_graph_and_weights() (brusselator_participants_
-// test.cpp), plus hdf5_path on u_out/v_out and the fieldless LowFive
+// brusselator_participants_test.cpp's build_graph_and_weights(), plus
+// hdf5_path on u_out/v_out and the fieldless LowFive
 // component -- the ONLY difference from an ordinary identity-remap
 // window graph.
 [[nodiscard]] GraphAndWeights build_lowfive_graph_and_weights(
@@ -163,7 +156,7 @@ struct GraphAndWeights {
   // placement routing, or this one), and gets it the same exemption.
   // Left here as a finding for the graph-authoring contract: brusselator_
   // graph_tool.cpp's and brusselator_graph_tool_lowfive_test.cpp's own
-  // "lowfive" component (committed, Unit 3's graph half) has the
+  // "lowfive" component has the
   // IDENTICAL omission, unobserved there only because neither ever
   // drives it through a live Runner/ABI the way this test does.
   (void)graph.add_component({.name = "lowfive", .ranks = RankSet{0, 1},
@@ -195,7 +188,7 @@ const fuse_participant_abi_v1* Table() {
 
 /// field_handle() + view_field(), in one call -- the harness's own
 /// stand-in for an application's H5Dwrite/H5Dread target: for a window-
-/// scoped field this is the K-wide buffer the lead's instruction names
+/// scoped field this is the K-wide buffer
 /// (the ExternalDelivery arc for an import, the WindowAdvance arc for
 /// an export); asserted window_samples > 0 at every call site below,
 /// since every field this harness views is window-scoped by
@@ -225,7 +218,7 @@ void deliver(const fuse_participant_abi_v1* t, fuse_ctx* ctx,
             const char* import_component, const char* import_field) {
   const fuse_field_view src = view(t, ctx, export_component, export_field);
   const fuse_field_view dst = view(t, ctx, import_component, import_field);
-  // Lead's own instruction (2026-10-04), item 2: for window 1 sweep 0,
+  // Diagnostic: for window 1 sweep 0,
   // element 0, all K samples, in hexfloat -- the first two delivery
   // calls in the whole run (u2v then v2u, both at window 1's own sweep
   // 0, since delivery only happens at a window boundary and this is
@@ -250,34 +243,23 @@ void deliver(const fuse_participant_abi_v1* t, fuse_ctx* ctx,
   const std::uint64_t n = src.count * static_cast<std::uint64_t>(src.components);
   const double* s = static_cast<const double*>(src.data);
   double* d = static_cast<double*>(dst.data);
-  // An earlier version of this function asserted the destination was
-  // NEVER already equal to the source, to catch a genuine double-
-  // delivery (KNOWN_ISSUES.md D14's own regression: every occurrence
-  // past the first was already-equal, caught plenty early by window
-  // 1). That bug is fixed -- this round's own addressing correction
-  // (begin_rep.next_component, not is_u, decides which occurrence
-  // acts) -- and proven fixed by the state/sweep-count comparisons
-  // below passing bit-for-bit across all kPeriods windows. Removed
-  // rather than kept as a standing check: measured on this exact run,
-  // window 149 (the last) hit the one already-equal occurrence this
-  // check ever flagged post-fix, on its own final (5th) sweep's b2a
-  // delivery -- not during a monotonic approach to a fixed sweep
-  // count (periods 135-147 held steady at 4 sweeps; 148-149 rose to
-  // 5, the opposite of settling down). A single field value
-  // legitimately landing on its own prior delivery once, this late in
-  // a long run, is not distinguishable from the fixed double-delivery
-  // regression by inspecting one copy alone -- the real test is the
-  // state/sweep-count comparison below, which this run passed in
-  // full.
+  // This function does not assert that the destination was NEVER already
+  // equal to the source (a check for a genuine double-delivery): a single
+  // field value can legitimately land on its own prior delivery once, late
+  // in a long run (measured: window 149, the last, on its own final (5th)
+  // sweep's b2a delivery, not during a monotonic approach to a fixed sweep
+  // count -- periods 135-147 held steady at 4 sweeps; 148-149 rose to 5).
+  // That is not distinguishable from a double-delivery by inspecting one
+  // copy alone -- the real test is the state/sweep-count comparison below,
+  // which checks every one of the kPeriods windows bit-for-bit.
   std::memcpy(d, s, n * sizeof(double));
 }
 
 }  // namespace
 
-// S6 phase 3 (Conformance, Unit 3b), item 2(c): parameterized on
-// waveform iteration (Jacobi and GaussSeidel, both exercised by the two
-// TEST() wrappers below) so this claim is checked both ways at the
-// real example's own physics scale, exactly the lead's own instruction.
+// Parameterized on waveform iteration (Jacobi and GaussSeidel, both
+// exercised by the two TEST() wrappers below) so this claim is checked
+// both ways at the real example's own physics scale.
 void RunExternalDeliveryMatchesInProcessRunner(WaveformIteration wi) {
   const brusselator::PhysicsConfig cfg;
 
@@ -365,15 +347,14 @@ void RunExternalDeliveryMatchesInProcessRunner(WaveformIteration wi) {
   src.byte_count = bytes.size();
   ASSERT_EQ(t->load_graph(ctx, &src, nullptr), FUSE_OK);
 
-  // The lead's own ruling (2026-10-04): this run's own requested period
-  // count is the fact that bounds it, the SAME fact prime_next_request()
-  // 's own rollover (src/abi/participant.cpp) checks before starting a
-  // period beyond it, and the SAME fact fuse_is_coupling_ongoing() reads
-  // to answer `ongoing` -- without declaring it here, there is nothing
-  // for either to check against, and this graph's own window-per-period
-  // shape (every sweep's own trailing ExternalDelivery, the scheduling-
-  // order fix) would let the Runner roll forward forever once state
-  // reaches a fixed point.
+  // This run's own requested period count is the fact that bounds it,
+  // the SAME fact prime_next_request()'s own rollover
+  // (src/abi/participant.cpp) checks before starting a period beyond it,
+  // and the SAME fact fuse_is_coupling_ongoing() reads to answer
+  // `ongoing` -- without declaring it here, there is nothing for either to
+  // check against, and this graph's own window-per-period shape (every
+  // sweep's own trailing ExternalDelivery) would let the Runner roll
+  // forward forever once state reaches a fixed point.
   {
     fuse_setup_options opts{.struct_size = sizeof(opts)};
     opts.has_end_time = 1;
@@ -471,33 +452,30 @@ void RunExternalDeliveryMatchesInProcessRunner(WaveformIteration wi) {
                abi_v_seed.state().mean(), 0.0);
   v_lines.emplace_back(buf);
 
-  // Cold start (lead's own instruction, 2026-10-04, item 3): period 0's
+  // Cold start: period 0's
   // very first ExternalDelivery suspension is hit before any step at
   // all -- resolve_regions()'s own "ordinary prime" pass (src/runtime/
   // iteration.cpp, the chain-execute loop keyed off each window member's
   // own import_channel) runs once, at fuse_initialize(), entirely
   // OUTSIDE any coroutine, and for an ExternalDelivery arc its own
-  // execute() case is a no-op (unchanged) -- so unlike an ordinary
-  // Transport-delivered channel, which gets ITS first value from that
-  // pass (the provider's own registered initial state, moved through a
-  // REAL Transport/Remap/Sink), a LowFive-bound import gets NOTHING from
-  // it. The suspension itself only happens once the Runner's own
-  // coroutine is entered for the first time, which happens on this
-  // test's own FIRST fuse_begin_step() call, at the bottom of the loop
-  // below -- too late for the application to know ahead of time which
-  // component to call first without hitting E-ABI-STEP-ORDER on BOTH
-  // ExternalDelivery arcs in some order first. So: deliver each
-  // exporter's own INITIAL (pre-any-step) u_out/v_out -- constant over
-  // the window by construction, nothing has happened yet to vary it --
-  // into the other's import, unconditionally, before the very first
-  // fuse_begin_step() of the run. This is the ONE place this harness
-  // does something a real H5Dwrite/H5Dread application would also have
-  // to do differently from the Transport path -- to be recorded as its
-  // own divergence note in docs/user/lowfive.md's Unit 3 section (not
-  // yet written): a provider's registered initial value lives in THIS
-  // process's own FieldRegistry, which does not exist on another
-  // process, so nothing but the application itself can supply period
-  // 0's first waveform.
+  // execute() case is a no-op -- so unlike an ordinary Transport-delivered
+  // channel, which gets ITS first value from that pass (the provider's own
+  // registered initial state, moved through a REAL Transport/Remap/Sink),
+  // a LowFive-bound import gets NOTHING from it. The suspension itself
+  // only happens once the Runner's own coroutine is entered for the first
+  // time, which happens on this test's own FIRST fuse_begin_step() call,
+  // at the bottom of the loop below -- too late for the application to
+  // know ahead of time which component to call first without hitting
+  // E-ABI-STEP-ORDER on BOTH ExternalDelivery arcs in some order first.
+  // So: deliver each exporter's own INITIAL (pre-any-step) u_out/v_out --
+  // constant over the window by construction, nothing has happened yet to
+  // vary it -- into the other's import, unconditionally, before the very
+  // first fuse_begin_step() of the run. This is the ONE place this harness
+  // does something a real H5Dwrite/H5Dread application would also have to
+  // do differently from the Transport path: a provider's registered
+  // initial value lives in THIS process's own FieldRegistry, which does not
+  // exist on another process, so nothing but the application itself can
+  // supply period 0's first waveform.
   deliver(t, ctx, "U", "u_out", "V", "v_in");
   deliver(t, ctx, "V", "v_out", "U", "u_in");
 
@@ -522,21 +500,21 @@ void RunExternalDeliveryMatchesInProcessRunner(WaveformIteration wi) {
   // request, `resolve_cached_next_component()`'s own doc, src/abi/
   // participant.cpp -- reusing the already-known answer here just
   // avoids an identical redundant lookup, not a second source of truth).
-// The lead's own ruling (2026-10-04): drive by fuse_is_coupling_ongoing()
+  // Drive by fuse_is_coupling_ongoing()
   // alone -- the shape the ordinary participants harness and the two mains
   // already have (test/verification/brusselator_participants_test.cpp's
   // own WindowDrivenByNextComponent-style loop; examples/brusselator/
   // participants/{u_main.c,v_main.f90}), not a harness-owned window/period
-  // counter: counting periods itself is exactly what let this harness run
-  // the Runner off its own requested end before the fixes above (both the
-  // region-aware scan and the end_time-bounded rollover, src/runtime/
-  // runner.cpp and src/abi/participant.cpp). fuse_is_coupling_ongoing()'s
-  // own `ongoing` flag and `period` field are the Runner's OWN bookkeeping,
-  // not a second, divergeable copy of it -- `period` is read fresh every
-  // iteration, even mid-period (resolve_cached_next_component()'s own
-  // doc, src/abi/participant.cpp, confirms this is a cache read, no
-  // resumption). fuse_step_report::period (entries.def, appended
-  // 2026-10-04, the SAME counter fuse_ongoing::period reports) is the one
+  // counter: counting periods itself would let this harness run the Runner
+  // off its own requested end (the region-aware scan and the
+  // end_time-bounded rollover, src/runtime/runner.cpp and
+  // src/abi/participant.cpp, prevent that).
+  // fuse_is_coupling_ongoing()'s own `ongoing` flag and `period` field are
+  // the Runner's OWN bookkeeping, not a second, divergeable copy of it --
+  // `period` is read fresh every iteration, even mid-period
+  // (resolve_cached_next_component()'s own doc, src/abi/participant.cpp,
+  // confirms this is a cache read, no resumption). fuse_step_report::period
+  // (entries.def, the SAME counter fuse_ongoing::period reports) is the one
   // place a MATCHED rollover (step_opened=1, but periods_completed still
   // incremented mid-call because the newly rolled-into period's own first
   // request happened to name the SAME component this call asked for) is
@@ -547,18 +525,17 @@ void RunExternalDeliveryMatchesInProcessRunner(WaveformIteration wi) {
   std::int32_t last_period = 0;
   std::int32_t max_iteration_seen = -1;
   int step_count = 0;
-  // S6 phase 3 (Conformance, Unit 3b), item 2 of this round: the
-  // sequence of fired fields, one char per delivery_pending==1 report
-  // ('u' for u_out, 'v' for v_out) -- checked below for alternation,
-  // the lead's own instruction ("the harness asserts the fired field
-  // alternates u_out/v_out in the order the stream dictates").
+  // The sequence of fired fields,
+  // one char per delivery_pending==1 report ('u' for u_out, 'v' for v_out)
+  // -- checked below for alternation: the harness asserts the fired field
+  // alternates u_out/v_out in the order the stream dictates.
   std::string delivery_field_sequence;
   // `fuse_is_coupling_ongoing()`'s own `next_component` is a free,
   // side-effect-free read -- safe for `ongoing`/`period` every
   // iteration, but NOT for addressing: is_delivery_due's own report
   // (src/abi/participant.cpp) deliberately leaves `next_request` reset
   // (not re-primed) so the CALLER's own action on that report (the
-  // H5Dwrite/H5Dread this round's protocol requires) happens before
+  // H5Dwrite/H5Dread the protocol requires) happens before
   // the coroutine resumes any further -- a free read sandwiched in
   // between would resume it early, observing stale, not-yet-delivered
   // data (measured as a window falsely "converging" after one sweep).
@@ -572,47 +549,37 @@ void RunExternalDeliveryMatchesInProcessRunner(WaveformIteration wi) {
   // period this harness has JUST finished -- `new_period` is whatever
   // counter first reports the transition.
   //
-  // MEASURED (this session, UCore::step()'s own temporary per-call trace,
-  // both UCore instances sharing the SAME call sequence through period
-  // 0): call=119 (t_end=0x1.47ae147ae147bp-6 = 0.02, the window-0/window-1
-  // boundary exactly) produced state_new0=0x1.a812fd6999c04p+0
-  // (1.6565397627653065) in BOTH the reference's own UCore and the
-  // harness's own -- EXACTLY this test's own reported `ref_u_state[0][0]`.
-  // call=120 (t_end~=0.0205, window 1's own FIRST substep) produced
-  // state_new0=0x1.a8681633ac936p+0 (1.6578382373960046) in BOTH
-  // instances too -- EXACTLY this test's own reported (wrong) harness
-  // `u_state[0]` BEFORE this fix. Both UCore instances ran call=120
-  // identically; the bug is that the HARNESS reads state after call=120
-  // ran, one substep later than the REFERENCE's own run_period(), which
-  // returns at call=119 and never runs call=120 for period 0 at all --
-  // not a numerics bug, a read-too-late bug in this harness's own loop.
+  // MEASURED (UCore::step()'s own per-call trace, both UCore instances
+  // sharing the SAME call sequence through period 0): call=119
+  // (t_end=0x1.47ae147ae147bp-6 = 0.02, the window-0/window-1 boundary
+  // exactly) produces state_new0=0x1.a812fd6999c04p+0 (1.6565397627653065)
+  // in BOTH the reference's own UCore and the harness's own -- EXACTLY
+  // this test's own `ref_u_state[0][0]`. call=120 (t_end~=0.0205, window
+  // 1's own FIRST substep) produces state_new0=0x1.a8681633ac936p+0
+  // (1.6578382373960046) in BOTH instances too. The harness must read
+  // state after call=119, as the REFERENCE's own run_period() does (it
+  // returns at call=119 and never runs call=120 for period 0 at all);
+  // reading after call=120 would be a read-too-late bug in this harness's
+  // own loop, not a numerics bug.
   //
-  // ALSO MEASURED, directly (added `DIAG top-of-loop`/`DIAG after-step`
-  // prints at every iteration around this exact transition, since
-  // removed): `ongoing.period`, read at the top of the loop BEFORE the
-  // step call that performs call=120, still reads 0 (`last_period`) --
-  // `is_coupling_ongoing()`'s own cached read does not advance until
-  // AFTER the call whose own begin_step() runs prime_next_request()'s
-  // rollover, by which point that SAME call's own u_loop_step()/
-  // bruss_v_loop_step() wrapper has ALREADY run the new period's first
-  // physics substep unconditionally. The `ongoing.period` check below
-  // therefore never fires BEFORE call=120 on this graph -- there is no
-  // point outside the Runner from which this harness can observe the
-  // transition before that extra substep runs. Left in place (harmless,
-  // and a real defense for a graph shape where the cached read DOES
-  // update in time) but `begin_rep.period`, checked after, is doing all
-  // the real work here, exactly as the unmodified code already did --
-  // this refactor's own value is `handle_window_boundary()` being
-  // shared, not an earlier catch, which this specific graph never
-  // exercises. Whether prime_next_request() running a matched rollover's
-  // own new-period physics within the SAME call (rather than returning
-  // step_opened=0 and giving the caller a clean, physics-free
-  // observation point first) is the design intended, or itself the fix
-  // this divergence actually needs, is the open question reported back.
+  // Also measured directly around this exact transition:
+  // `ongoing.period`, read at the top of the loop BEFORE the step call that
+  // performs call=120, still reads 0 (`last_period`) --
+  // `is_coupling_ongoing()`'s own cached read does not advance until AFTER
+  // the call whose own begin_step() runs prime_next_request()'s rollover,
+  // by which point that SAME call's own u_loop_step()/bruss_v_loop_step()
+  // wrapper has ALREADY run the new period's first physics substep
+  // unconditionally. The `ongoing.period` check below therefore never
+  // fires BEFORE call=120 on this graph -- there is no point outside the
+  // Runner from which this harness can observe the transition before that
+  // extra substep runs. It is kept (harmless, and a real defense for a
+  // graph shape where the cached read DOES update in time), but
+  // `begin_rep.period`, checked after, does all the real work here;
+  // `handle_window_boundary()` is shared between the two checks.
   const auto handle_window_boundary = [&](std::int32_t new_period) {
     ASSERT_LT(window_idx, kPeriods)
         << "more windows completed than requested (period " << new_period << ")";
-    // Diagnostic, lead's own instruction (2026-10-04): sweep count
+    // Diagnostic: sweep count
     // actually taken on the ABI-driven side (highest fuse_step_report::
     // iteration seen this window, 0-indexed) vs. the in-process
     // reference's own converged sweep count -- a one-sweep difference
@@ -705,32 +672,27 @@ void RunExternalDeliveryMatchesInProcessRunner(WaveformIteration wi) {
     }
 
     // fuse_step_report::step_opened's own comment (entries.def): the one
-    // place this loop body must look at the report, per the lead's own
-    // ruling (2026-10-04). On 0, no step opened (u_loop_step()/
-    // bruss_v_loop_step() skipped the physics and end_step() entirely,
-    // `end_rep` is not meaningful) -- either a rollover that landed on a
-    // DIFFERENT component (handled already above, via `period`) or this
-    // run's own requested end (ongoing.ongoing will be 0 at the top of
-    // the next iteration).
+    // place this loop body must look at the report. On 0, no step opened
+    // (u_loop_step()/bruss_v_loop_step() skipped the physics and end_step()
+    // entirely, `end_rep` is not meaningful) -- either a rollover that
+    // landed on a DIFFERENT component (handled already above, via
+    // `period`) or this run's own requested end (ongoing.ongoing will be 0
+    // at the top of the next iteration).
     //
     // docs/user/c-abi.md's own `delivery_pending`/`delivery_field`
-    // protocol (item 2 of this round): on a report naming field F,
-    // write F if producing it or read F if consuming it, then
-    // begin_step() again -- never elsewhere, and never both directions
-    // unconditionally (this round's own correction: with TWO
-    // independently-paced LowFive-bound channels, u_out's and v_out's
-    // own deliveries do not happen together, and delivering the wrong
-    // one early reads a not-yet-updated, stale value -- the regression
-    // this test's own earlier "deliver both" version measured,
-    // KNOWN_ISSUES.md D14). This IS that report when it fires
-    // (step_opened=0 is the ONLY place delivery_pending can ever be 1,
-    // entries.def's own comment on the field).
+    // protocol: on a report naming field F, write F if producing it or
+    // read F if consuming it, then begin_step() again -- never elsewhere,
+    // and never both directions unconditionally (with TWO
+    // independently-paced LowFive-bound channels, u_out's and v_out's own
+    // deliveries do not happen together, and delivering the wrong one
+    // early reads a not-yet-updated, stale value). This IS that report
+    // when it fires (step_opened=0 is the ONLY place delivery_pending can
+    // ever be 1, entries.def's own comment on the field).
     if (!begin_rep.step_opened) {
       if (begin_rep.delivery_pending) {
-        // iteration.cpp's own deliver_external() (item 2(a) of this
-        // round) now suspends for BOTH the exporter and the importer
-        // of a channel, each its own report naming the SAME source
-        // field -- the real-process case needs both (one process
+        // iteration.cpp's own deliver_external() suspends for BOTH the
+        // exporter and the importer of a channel, each its own report
+        // naming the SAME source field -- the real-process case needs both (one process
         // writes, the other reads), but this harness drives both
         // components through the SAME loop, so the exporter's own
         // notification and the importer's own notification both land
@@ -781,7 +743,7 @@ void RunExternalDeliveryMatchesInProcessRunner(WaveformIteration wi) {
   }
   ASSERT_EQ(window_idx, kPeriods) << "not all requested windows were validated";
 
-  // The lead's own instruction: the fired field alternates u_out/v_out
+  // The fired field alternates u_out/v_out
   // in the order the stream dictates -- both channels' own deliveries
   // appear (never one silently starved), and the sequence is not
   // segregated into one block of each (both a u->v and a v->u
@@ -908,8 +870,7 @@ namespace {
 }
 
 /// Just the `OpKind` sequence, for a structural comparison that does not
-/// also pin arc numbering (which byte-exact golden IR, added later in this
-/// track, already covers).
+/// also pin arc numbering (which the byte-exact golden IR already covers).
 [[nodiscard]] std::vector<fuse::OpKind> kinds_of(const fuse::ExecutionPlan& plan) {
   std::vector<fuse::OpKind> out;
   out.reserve(plan.instructions().size());
@@ -926,12 +887,9 @@ namespace {
 /// order its OWN data actually flows, not where the scheduler happened
 /// to place it in the global instruction stream -- the Sink/WindowAdvance
 /// GROUPING across channels is a scheduler tie-break this test's own
-/// header comment already disclaims as not a correctness question (and,
-/// MEASURED this session, genuinely differs between Jacobi and
-/// GaussSeidel for the SAME LowFive graph -- a single hardcoded
-/// `expected` vector for both, this test's own prior shape, broke the
-/// moment the scheduling-order fix changed GaussSeidel's own global
-/// ordering without touching either chain's own internal shape at all).
+/// header comment already disclaims as not a correctness question (and
+/// genuinely differs between Jacobi and GaussSeidel for the SAME LowFive
+/// graph, without either chain's own internal shape changing at all).
 [[nodiscard]] std::vector<fuse::OpKind> chain_from(const fuse::ExecutionPlan& plan,
                                                     std::size_t start_index) {
   std::vector<fuse::OpKind> out;
@@ -970,32 +928,30 @@ namespace {
 
 }  // namespace
 
-/// Finding C (lead's instruction, 2026-10-04): a LowFive-bound channel must
-/// still get Constrain/Diagnose -- docs/user/lowfive.md's own Unit 3
-/// section promises "Interpolate/Remap/Constrain if the two sides' meshes
-/// differ... is what FUSE does for a LowFive-bound channel instead". Before
-/// the `chain_entry_arc` fix (LoweringContext, rules_channel.cpp,
-/// rules_derived.cpp), `insert_derived_ops()`'s `channel_chain()` walked
-/// forward from the channel's ORIGINAL `source_arc` -- unreachable from a
-/// zero-input `ExternalDelivery` root -- so `has_remap` came back false and
-/// both ops went unemitted for every LowFive-bound channel, silently.
+/// A LowFive-bound channel must still get Constrain/Diagnose --
+/// docs/user/lowfive.md promises "Interpolate/Remap/Constrain if the two sides' meshes
+/// differ... is what FUSE does for a LowFive-bound channel instead".
+/// `insert_derived_ops()`'s `channel_chain()` walks forward from the
+/// channel's `chain_entry_arc` (LoweringContext, rules_channel.cpp,
+/// rules_derived.cpp); walking from the channel's ORIGINAL `source_arc`
+/// would be unreachable from a zero-input `ExternalDelivery` root, so
+/// `has_remap` would come back false and both ops would go unemitted for
+/// every LowFive-bound channel, silently.
 ///
-/// MEASURED (this test): the ordinary (Transport) graph's own stream for
+/// Measured: the ordinary (Transport) graph's own stream for
 /// this identity-remap shape is, per channel, contiguous:
 /// WindowAdvance->Remap->Constrain->Diagnose->Sink (x2 channels), then
 /// Residual x2 -- 12 instructions, Transport itself absent (same-rank
 /// channel, collapses to nothing). The LowFive graph's stream has each
 /// channel's own ExternalDelivery->Remap->Constrain->Diagnose chain
-/// contiguous (x2, "Transport, here nothing, replaced by one
-/// ExternalDelivery" per the lead's own framing), but BOTH channels' Sink
+/// contiguous (x2; Transport, here nothing, is replaced by one
+/// ExternalDelivery), but BOTH channels' Sink
 /// grouped together, then BOTH WindowAdvance together, then Residual x2 --
 /// 14 instructions. The Sink/WindowAdvance grouping differs from the
 /// ordinary graph's own interleaving (a scheduler tie-break over nodes with
 /// no edges forcing a specific slot -- WindowAdvance is a dead end in both
-/// graphs' DAGs once it no longer feeds Remap directly, consistent with the
-/// UNFIXED trace from the prior report, which already grouped Sink and
-/// WindowAdvance this way even with Constrain/Diagnose missing); it is not
-/// a correctness question for this fix, which is only about which ops
+/// graphs' DAGs once it no longer feeds Remap directly); it is not a
+/// correctness question for this test, which is only about which ops
 /// appear. Identical for both waveform iterations (checked below) -- this
 /// shape has no sweep-order dependence.
 TEST(BrusselatorLowFiveHarness, ChannelGetsConstrainAndDiagnoseLikeAnOrdinaryChannel) {
@@ -1008,15 +964,13 @@ TEST(BrusselatorLowFiveHarness, ChannelGetsConstrainAndDiagnoseLikeAnOrdinaryCha
     // promises: walk each channel's own DATA-FLOW chain forward from its
     // own WindowAdvance (the exporting member's own tick) via arc
     // identity (`chain_from()`'s own comment has the full account), NOT
-    // via the global instruction stream's own index. MEASURED (this
-    // session, the scheduling-order fix): that global index -- which
-    // Sink/WindowAdvance group the scheduler happens to place first --
-    // genuinely differs between Jacobi and GaussSeidel for the SAME
+    // via the global instruction stream's own index. That global index --
+    // which Sink/WindowAdvance group the scheduler happens to place first
+    // -- genuinely differs between Jacobi and GaussSeidel for the SAME
     // LowFive graph, even though neither chain's own internal shape
-    // changes at all; a single hardcoded `expected` vector for both (this
-    // test's own prior shape) pinned that scheduler tie-break as if it
-    // were a correctness invariant, and broke exactly the way this
-    // test's own header comment already warned it would.
+    // changes at all; a single hardcoded `expected` vector for both would
+    // pin that scheduler tie-break as if it were a correctness
+    // invariant.
     const std::vector<std::vector<fuse::OpKind>> lowfive_chains =
         chains_starting_with(lowfive_plan, fuse::OpKind::WindowAdvance);
     const std::vector<std::vector<fuse::OpKind>> ord_chains =

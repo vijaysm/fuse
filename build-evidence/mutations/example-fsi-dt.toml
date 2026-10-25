@@ -1,7 +1,6 @@
-# KNOWN_ISSUES.md D34 item C (owner decision 2026-10-22: step on the delivered dt and write the delivered
-# time axis). examples/fsi_channel/main.cpp. The rows are killed by example.fsi_channel.off_grid_dt (the step
-# count 29 against 28 and the last time 0.10179) and example.fsi_channel.dt_refused. `result` lines are added
-# after tools/mutate.py has run them in a clean export.
+# examples/fsi_channel/main.cpp steps on the delivered dt and writes the delivered time axis. The rows are
+# killed by example.fsi_channel.off_grid_dt (the step count 29 against 28 and the last time 0.10179) and
+# example.fsi_channel.dt_refused. `result` lines record tools/mutate.py runs in a clean export.
 
 [[mutation]]
 id = "fsi-dt-step-count-from-the-literal-dt"

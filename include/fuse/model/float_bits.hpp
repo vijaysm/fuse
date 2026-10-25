@@ -1,8 +1,8 @@
 #pragma once
 
-/// Restart track (docs/dev/restart.md), Stage B Slice 1b: the bit-level
-/// floating-point decode/round/encode pipeline every CROSS-TYPE float
-/// conversion in `fuse::restart_io` goes through -- measured necessary
+/// The bit-level floating-point decode/round/encode pipeline every
+/// CROSS-TYPE float conversion in `fuse::restart_io` goes through (see
+/// docs/dev/restart.md) -- measured necessary
 /// because HDF5's own soft conversion (`H5T__conv_f_f`) refuses a type
 /// with an EXPLICIT (stored) leading significand bit (`H5T_NORM_MSBSET`,
 /// x86's 80-bit extended `long double`) with "normalization method not

@@ -44,7 +44,7 @@ namespace fuse::abi_test {
 bool inject_component(fuse_ctx* ctx, const std::string& component_name,
                       std::unique_ptr<fuse::Component> c);
 
-/// Unit 2b (D19), step (d). Sets the per-rank identity `fuse_initialize()`
+/// Sets the per-rank identity `fuse_initialize()`
 /// passes into `fuse::RunnerConfig::force_this_process`, so a tier-0 test
 /// (no MPI, no `fuse_setup_options()` communicator) can exercise `Runner::
 /// hosts_component()`'s own per-rank hosting rule -- and, through it,
@@ -57,7 +57,7 @@ bool inject_component(fuse_ctx* ctx, const std::string& component_name,
 /// `ctx` is null or the context is not in the `Loaded` state.
 bool force_this_process(fuse_ctx* ctx, int rank);
 
-/// KNOWN_ISSUES.md D57 ("Collectives" track): the Runner's own
+/// The Runner's own
 /// instruction/conservation-check counters (fuse::RunStats, include/fuse/
 /// runtime/runner.hpp), read directly off the context's own Runner -- no
 /// entry in the frozen public ABI exposes them (deliberately: a debugging
@@ -65,7 +65,7 @@ bool force_this_process(fuse_ctx* ctx, int rank);
 /// so a test that needs to tell "exactly N periods' worth of Runner work
 /// happened" from "N periods were REPORTED (fuse_step_report::period) but
 /// N+1 periods' worth of instructions already executed to produce that
-/// report" (D57's own defect: fuse_begin_step()'s own `step_opened == 0`
+/// report" (the defect being: fuse_begin_step()'s own `step_opened == 0`
 /// at a period boundary describes the request the CALLER should act on
 /// next, never how much of a FOLLOWING period's own stream prime_next_
 /// request()'s rollover already ran to find it) has to reach past every
@@ -78,13 +78,13 @@ bool force_this_process(fuse_ctx* ctx, int rank);
 /// take on a misused context.
 fuse::RunStats run_stats(const fuse_ctx* ctx);
 
-/// KNOWN_ISSUES.md D57 ("Collectives" track). Sets `fuse_ctx::
+/// Sets `fuse_ctx::
 /// communicator_set`/`communicator` directly -- the state `fuse_setup()`
 /// (src/abi/participant.cpp) would otherwise set from a NON-ZERO
 /// `fuse_setup_options::communicator`, which that same function refuses
 /// outright on a build with no MPI (`E-ABI-SETUP-NOMPI`) -- so a tier-0
 /// test can exercise `prime_next_request()`'s own `c.communicator_set`
-/// gate (the condition that distinguishes D57's own real row, where a
+/// gate (the condition that distinguishes the real row where a
 /// base communicator IS configured without an end_time, from
 /// `AbiParticipant.MismatchedRolloverNamesTheRealPeriodStartComponent`'s
 /// own single-process, no-communicator scenario, where the PRE-EXISTING
@@ -96,8 +96,8 @@ fuse::RunStats run_stats(const fuse_ctx* ctx);
 /// Constrain instruction reached with `ci.reduce` set instead takes
 /// `resolve_constrain()`'s/`execute()`'s own `#else` arm and returns a
 /// clean `E-RT-CONSERVATION-REDUCE` Result::Failure (runner.cpp), never a
-/// crash or a hang, which is exactly the decisive, safe signal this
-/// track's own mutation proof (reverting the fix) relies on.
+/// crash or a hang, which is exactly the decisive, safe signal the
+/// mutation proof (reverting the fix) relies on.
 ///
 /// Callable any time after a successful `fuse_setup()`, in EITHER the
 /// `Loaded` or the `Initialized` state -- unlike `force_this_process()`,
@@ -113,7 +113,7 @@ fuse::RunStats run_stats(const fuse_ctx* ctx);
 /// leaves `ctx` unchanged) when `ctx` is null or in neither state.
 bool force_communicator_set(fuse_ctx* ctx, std::int64_t value);
 
-/// Restart track round 2, item 4's own C consumer test
+/// The restart-point C consumer test
 /// (test/abi/conformance_test.cpp): the plain C participant ABI has no
 /// entry that reads Runner::take_restart_point_request() back out --
 /// that call is the EMBEDDING HOST's own job, never a plugin's (that
@@ -124,8 +124,7 @@ bool force_communicator_set(fuse_ctx* ctx, std::int64_t value);
 /// Runner exists yet).
 fuse::Runner* runner_of(fuse_ctx* ctx);
 
-/// "Provider parity" track (KNOWN_ISSUES.md D15), Stage B-1, item 2: a
-/// mixed-component iteration region's own converged field values, read
+/// A mixed-component iteration region's own converged field values, read
 /// directly off the context's own FieldRegistry -- the same reason
 /// run_stats()/runner_of() above reach past the ABI, and for the same
 /// kind of consumer: a conformance test comparing a fuse_initialize()-
@@ -143,9 +142,9 @@ fuse::Runner* runner_of(fuse_ctx* ctx);
 /// defensive posture every other accessor in this header takes.
 fuse::FieldRegistry* field_registry_of(fuse_ctx* ctx);
 
-/// D61 (KNOWN_ISSUES.md), "Collectives" track. Stub reducer for
+/// Stub reducer for
 /// reconcile_collective_status() (participant.cpp): makes a tier-0 test
-/// (no MPI runtime, C1) exercise the FULL reconciliation path a real
+/// (no MPI runtime) exercise the FULL reconciliation path a real
 /// collective ABI entry (fuse_setup/fuse_initialize/fuse_begin_step/
 /// fuse_end_step/fuse_run) takes across a component's ranks -- including
 /// the rewritten message a non-originating rank gets -- by supplying the
@@ -168,7 +167,7 @@ fuse::FieldRegistry* field_registry_of(fuse_ctx* ctx);
 bool force_fake_collective_peers(fuse_ctx* ctx, int self_rank,
                                  std::vector<std::int32_t> peer_statuses);
 
-/// KNOWN_ISSUES.md D15 ("Registry agreement" track). The SAME stub-reducer
+/// The SAME stub-reducer
 /// idea force_fake_collective_peers() documents above, for
 /// reconcile_plugin_agreement()'s own reconciliation over the BASE
 /// communicator (c.communicator) instead of the per-component
@@ -182,7 +181,7 @@ bool force_fake_collective_peers(fuse_ctx* ctx, int self_rank,
 bool force_fake_plugin_agreement_peers(fuse_ctx* ctx, int self_rank,
                                        std::vector<std::int32_t> peer_statuses);
 
-/// KNOWN_ISSUES.md D15 ("Registry agreement" track): how many times
+/// How many times
 /// reconcile_plugin_agreement() (participant.cpp) has actually run on
 /// this context so far -- see context.hpp's own comment on
 /// test_plugin_agreement_reconcile_calls for what this lets a tier-0 test

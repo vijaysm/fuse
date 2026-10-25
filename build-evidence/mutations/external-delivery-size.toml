@@ -1,5 +1,4 @@
-# Mutation for the ExternalDelivery size-reconciliation fix (KNOWN_ISSUES.md
-# D38, follow-up to D14/D24/D36): src/runtime/runner.cpp's generic
+# Mutation for the ExternalDelivery size reconciliation: src/runtime/runner.cpp's generic
 # per-instruction buffer-size check exempting OpKind::ExternalDelivery, the
 # same way it already exempts Remap and Transport.
 #
@@ -9,7 +8,7 @@
 # restored byte-for-byte (`cmp` against the pre-mutation file showed no
 # difference) and rebuilt clean. Tier-0 reachable: the test drives
 # fuse::Runner::initialize() directly with RunnerConfig::force_this_process,
-# no MPI needed (KNOWN_ISSUES.md C1).
+# no MPI needed.
 
 [[mutation]]
 id = "external-delivery-size-exemption-removed"
@@ -20,4 +19,4 @@ old = "    if (ins.kind != OpKind::ExternalDelivery) {"
 new = "    if (true) {  // MUTATED: ExternalDelivery exemption disabled"
 target = "fuse_verification_brusselator_external_delivery_size_test"
 test = "verification.brusselator_external_delivery_size"
-result = "CONFIRMED 2026-10-12 (tier-0, no MPI): both of the binary's 2 tests FAILED with the mutation applied -- PASSED 0, FAILED 2. ExternalDeliverySizeReconciliation.ReachesPastExternalDeliveryOnBothRanks failed on both simulated ranks with the host's own two E-RT-SIZE messages reproduced VERBATIM: 'ExternalDelivery instruction 1 reads 2816 values from arc %0 into 0 at arc %2' (U's rank, rank 0 of 3) and 'ExternalDelivery instruction 1 reads 0 values from arc %0 into 2816 at arc %2' (V's rank, rank 2 of 3) -- matching /Users/mahadevan/Code/AI/coupling/fuse/build-lowfive/examples/brusselator-participants-scratch/lowfive-mpmd-3/{u_stdout.0.log,v_stdout.1.log} character for character. ExternalDeliverySizeReconciliation.InitializeSucceedsOnDisjointRanksWithNoIterationRegion (the narrower, non-windowed 2-rank fixture) failed the same way on its exporter's rank: 'ExternalDelivery instruction 1 reads 16 values from arc %0 into 0 at arc %1'. Restored; cmp against the pre-mutation file reported no difference; rebuilt clean, both tests passed (PASSED 2, FAILED 0)."
+result = "CONFIRMED (tier-0, no MPI): both of the binary's 2 tests FAILED with the mutation applied -- PASSED 0, FAILED 2. ExternalDeliverySizeReconciliation.ReachesPastExternalDeliveryOnBothRanks failed on both simulated ranks with the host's own two E-RT-SIZE messages reproduced VERBATIM: 'ExternalDelivery instruction 1 reads 2816 values from arc %0 into 0 at arc %2' (U's rank, rank 0 of 3) and 'ExternalDelivery instruction 1 reads 0 values from arc %0 into 2816 at arc %2' (V's rank, rank 2 of 3) -- matching /Users/mahadevan/Code/AI/coupling/fuse/build-lowfive/examples/brusselator-participants-scratch/lowfive-mpmd-3/{u_stdout.0.log,v_stdout.1.log} character for character. ExternalDeliverySizeReconciliation.InitializeSucceedsOnDisjointRanksWithNoIterationRegion (the narrower, non-windowed 2-rank fixture) failed the same way on its exporter's rank: 'ExternalDelivery instruction 1 reads 16 values from arc %0 into 0 at arc %1'. Restored; cmp against the pre-mutation file reported no difference; rebuilt clean, both tests passed (PASSED 2, FAILED 0)."

@@ -18,7 +18,7 @@ if(FUSE_ENABLE_FORTRAN)
   check_language(Fortran)
   if(CMAKE_Fortran_COMPILER)
     enable_language(Fortran)
-    # FpPolicy track, KNOWN_ISSUES.md D30: CMAKE_Fortran_COMPILER_ID only
+    # Floating-point contraction policy: CMAKE_Fortran_COMPILER_ID only
     # exists after enable_language(Fortran) just above, so the Fortran
     # half of the contraction policy (cmake/FuseFpPolicy.cmake) is set
     # here rather than alongside the C/CXX half in CMakeLists.txt -- and

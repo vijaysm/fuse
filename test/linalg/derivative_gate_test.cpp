@@ -1,4 +1,4 @@
-// The derivative gate (S7.3) -- include/fuse/linalg/derivative_gate.hpp's own
+// The derivative gate -- include/fuse/linalg/derivative_gate.hpp's own
 // file header has the full account of what each of the three checks below
 // verifies and why its bound is derived rather than chosen. This file is the
 // ctest row every operator/residual case in the project runs through:
@@ -21,7 +21,7 @@
 // reduces, through its own small adapter below, to the SAME
 // `fuse::linalg::HostApplyFn` shape derivative_gate.hpp works at.
 //
-// "nodal weights" (the task's own phrase for the fourth backend case):
+// "nodal weights" (the fourth backend case):
 // `fuse::build_consistent_interp_weights` (consistent_interp.hpp) builds `H`,
 // whose own file header says plainly "H interpolates a field whose DOFs are
 // the SOURCE mesh's VERTICES" -- i.e. nodal DOFs. The distributed nodal-remap
@@ -29,9 +29,8 @@
 // `apply_distributed_HT`) are a DIFFERENT code path: they operate directly
 // over MPI on distributed arrays, never producing a `RemapWeights` or a
 // `fuse::LinearOperator` this gate's apply/apply_transpose shape applies to.
-// This file's "consistent" case covers the nodal-DOF interpolation property
-// the task names; the MPI-distributed primitive is not separately adapted
-// here -- see the task's own report for this declared as a deviation.
+// This file's "consistent" case covers the nodal-DOF interpolation property;
+// the MPI-distributed primitive is not separately adapted here.
 //
 // WHAT THE OTHER TWO CHECKS USE. The finite-difference convergence check
 // (requirement 2) needs a residual and a claimed Jacobian action, not an
@@ -40,11 +39,10 @@
 // (and, deliberately, a WRONG one, to prove the check can fail), a
 // Brusselator species reaction-diffusion residual built directly from
 // brusselator_physics.hpp's own `periodic_laplacian` and the reaction term
-// `u^2 v - A u` the task names, and a backward-Euler-shaped AFFINE residual
+// `u^2 v - A u`, and a backward-Euler-shaped AFFINE residual
 // (same `periodic_laplacian`, no reaction term) whose remainder is
-// mathematically zero at every h -- the "dn_heat-shaped" case the task asks
-// for, built directly rather than through examples/dn_heat (a different
-// track's own files, outside what this task reads).
+// mathematically zero at every h -- the "dn_heat-shaped" case,
+// built directly rather than through examples/dn_heat.
 //
 // The assembled-vs-matrix-free check (requirement 3) compares a
 // `DistSparseMatrix` assembled from the Brusselator diffusion operator's own
@@ -58,7 +56,7 @@
 // the codebase for this check to call, so the "matrix-free kernel" here is a
 // plain hand-written function implementing the same stencil arithmetic
 // `periodic_laplacian`/`KrylovDiffusionSolver::factor` both already use
-// (reported as a deviation in the task's own report).
+// (a deviation from using the real kernel).
 
 #include "fuse/linalg/derivative_gate.hpp"
 
@@ -154,10 +152,8 @@ HostApplyFn serial_matrix_apply(std::shared_ptr<DistSparseMatrix> m, std::size_t
 }
 
 // ---- DistSparseMatrix, two in-process partitions ---------------------------
-// Same device dist_sparse_matrix_test.cpp uses, duplicated per that file's
-// own header comment on why ("the task names exactly the files this track
-// owns and a third shared file is not one of them" -- the identical reasoning
-// applies here, one track later).
+// Same device dist_sparse_matrix_test.cpp uses, duplicated rather than
+// shared through a new header.
 
 class FakePeerExchanger : public GhostExchanger {
  public:
@@ -257,8 +253,8 @@ std::vector<Triplet> transpose_of(const std::vector<Triplet>& t) {
 // so A^-1 is symmetric too: `solve()` stands in for both apply and
 // apply_transpose. one-rank and two-in-process-partition variants, the
 // latter via schur_slab_test.cpp's own RingAllgatherReducer/
-// two_pass_collective technique (duplicated per that file's own header
-// comment on why a third shared file is not this track's to add).
+// two_pass_collective technique (duplicated rather than shared through a
+// new header).
 
 std::pair<std::int64_t, std::int64_t> row_band(std::int64_t ny, int rank, int num_ranks) {
   if (num_ranks <= 1) return {0, ny};

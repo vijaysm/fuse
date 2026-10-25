@@ -41,7 +41,7 @@ TEST(Spacetime, SubcyclingAveragesTheSourceSteps) {
   for (const double v : t.val) EXPECT_NEAR(v, 0.25, 1e-14);
 }
 
-// The temporal analogue of Phase 5's row-sum-unity property.
+// The temporal analogue of the row-sum-unity property.
 TEST(Spacetime, RowSumsAreUnity) {
   for (const auto [a, b] : {std::pair{Rational{1, 3}, Rational{1, 5}},
                             std::pair{Rational{1, 2}, Rational{1, 3}},
@@ -131,9 +131,8 @@ TEST(Spacetime, NoneBasisIsRejected) {
 }
 
 // ===========================================================================
-// Everything above is the task brief's test file, transcribed verbatim.
-// Everything below was added while implementing it. Three of the additions
-// exist because the brief was wrong about something; those say so in place.
+// Additional tests. Three of them record a subtlety about a property that
+// is easy to state wrongly; those say so in place.
 // ===========================================================================
 
 #include <fuse/base/ids.hpp>
@@ -264,15 +263,16 @@ TEST(Spacetime, RowSumsAreUnityForEveryBasis) {
 // PROPERTY 2: conservation of the time integral
 // ---------------------------------------------------------------------------
 // The projected field integrated over the target grid must equal the source
-// integral over the same span. Task 6.4 checks space-time conservation
-// globally; a defect here would surface there as an unexplained imbalance.
+// integral over the same span. Space-time conservation is checked
+// globally elsewhere; a defect here would surface there as an unexplained
+// imbalance.
 //
-// CORRECTION TO THE BRIEF. The brief states the conservation property as
+// The conservation property is NOT the row-sum statement
 //
 //     for each target step i,  sum_j T_ij * dt_src == dt_tgt
 //
-// which is a ROW sum and is false for the weights the same brief prescribes.
-// Counter-example, from the brief's own SubcyclingAveragesTheSourceSteps: with
+// which is a ROW sum and is false for the weights used here.
+// Counter-example, from SubcyclingAveragesTheSourceSteps: with
 // src = 1/4 and dst = 1, every T_0j is 1/4 and dt_src is 1/4, so the left side
 // is 4 * (1/4) * (1/4) = 1/4 while dt_tgt is 1. The row sums are unity (tested
 // above); the identity that actually carries the time integral is the COLUMN
@@ -673,7 +673,7 @@ TEST(Spacetime, ApplySpacetimeChecksItsPreconditions) {
 
   // An out-of-range spatial index is caught before it is dereferenced. This is
   // the check that has to survive -O3 -DNDEBUG, which is why apply_spacetime
-  // returns a Result instead of the brief's void.
+  // returns a Result instead of void.
   TinySpatial oob;
   oob.row[2]              = 5;  // n_rows is 2
   const auto bad_row = fuse::apply_spacetime(oob.view(), t, src.data(),
@@ -682,9 +682,9 @@ TEST(Spacetime, ApplySpacetimeChecksItsPreconditions) {
   EXPECT_EQ(bad_row.error().code, "E-ST-SHAPE");
 }
 
-// REVIEW.md R-33: a zero temporal coefficient used to return
+// A zero temporal coefficient must not return
 // Result<void>::success() before the spatial-triplet index loop ran at
-// all, so a malformed `spatial` array was only ever caught on a call whose
+// all, so a malformed `spatial` array would only be caught on a call whose
 // (tgt_step, src_step) pair happened to have a nonzero temporal weight. A
 // LOCKSTEP projection's off-diagonal entries are EXACTLY zero (asserted by
 // `Spacetime.LockstepIsTheIdentityForEveryBasis`), which gives an in-range

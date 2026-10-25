@@ -6,7 +6,7 @@
 /// fuse_end_step(), so its advance() is a no-op that trusts the registered
 /// storage already holds the right values -- by the time
 /// Runner::Impl::advance() (src/runtime/runner.cpp) reaches it, every
-/// exchange feeding this component has already run (KNOWN_ISSUES.md D12).
+/// exchange feeding this component has already run.
 
 #include <cstddef>
 #include <string>
@@ -26,7 +26,7 @@ class ExternalStepComponent final : public fuse::Component {
 
   [[nodiscard]] std::string name() const override { return name_; }
 
-  /// KNOWN_ISSUES.md D12: the one thing this override does is collect, not
+  /// The one thing this override does is collect, not
   /// bind -- every field this component owns is already bound directly by
   /// fuse_register_field() (src/abi/participant.cpp), before
   /// fuse_initialize() ever constructs a fuse::Runner. What this records
@@ -134,7 +134,7 @@ class ExternalStepComponent final : public fuse::Component {
     return fuse::kCapabilityRollback;
   }
 
-  /// KNOWN_ISSUES.md D12's fix: the one override that makes
+  /// The one override that makes
   /// `Runner::Impl::advance()`/`advance_window()` (src/runtime/runner.cpp,
   /// src/runtime/iteration.cpp) suspend at this component's own advance()
   /// point instead of calling the (still here, still a no-op) override

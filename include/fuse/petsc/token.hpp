@@ -1,6 +1,6 @@
 #pragma once
 
-/// The PETSc substrate behind S7's Newton seam (docs/dev/newton-krylov.md
+/// The PETSc substrate behind the Newton seam (docs/dev/newton-krylov.md
 /// Sec. 10): a `fuse::LinearizationToken` whose Jacobian action is PETSc's
 /// own matrix-free finite-difference matrix (`MATMFFD`, Walker-Pernice
 /// differencing) and whose preconditioner is a PETsc `PC`, built and
@@ -30,9 +30,8 @@
 /// compiles (as declarations nobody calls) either way. A consumer that
 /// calls `make_mffd_token()`/`make_assembled_token()` in a build without
 /// PETSC links against nothing (the library target does not exist); that
-/// refusal is the caller's own (the Newton-region graph-selection track,
-/// a later step, is what returns `E-NEWTON-PETSC-UNAVAILABLE`), not this
-/// header's concern.
+/// refusal is the caller's own (the Newton-region graph selection returns
+/// `E-NEWTON-PETSC-UNAVAILABLE`), not this header's concern.
 
 #include <cstddef>
 #include <cstdint>
@@ -88,7 +87,7 @@ using fuse::Result;
 /// PETSc's own internal tracking (see `ensure_initialized()`'s comment).
 ///
 /// NOT called by any token/driver destructor and not called by any test
-/// in this track except `test/petsc/init_test.cpp`'s own dedicated,
+/// except `test/petsc/init_test.cpp`'s own dedicated,
 /// single-test binary: `MPI_Finalize()` is irreversible within a
 /// process (no `MPI_Init()` after it), so calling this from a test that
 /// shares a binary with other PETSc tests would strand every test that
@@ -104,8 +103,8 @@ void finalize_if_owned();
 
 /// `MPI_Comm_c2f(MPI_COMM_SELF)` -- callable before `ensure_initialized()`
 /// (needs only `<mpi.h>`, never PETSc itself), for a caller that wants
-/// the single-rank communicator STEP 3's tier-0 scope restricts this
-/// track to (`fuse::petsc::solve()`'s own header comment).
+/// the single-rank communicator (`fuse::petsc::solve()`'s own header
+/// comment).
 [[nodiscard]] int comm_self_f();
 
 // ===========================================================================
@@ -129,7 +128,7 @@ using ResidualSpanFn =
 /// floor exists for). `error_rel` defaults to EXACTLY
 /// `fuse::num::default_mffd_error_rel()` (`sqrt(eps_mach)`) -- the same
 /// default both the native action and PETSc's own `MATMFFD_WP` already
-/// use unset -- so `step 2`'s agreement check compares two actions that
+/// use unset -- so the agreement check compares two actions that
 /// differ only in which code computed `h` from the identical formula and
 /// the identical inputs, never in the `error_rel` constant itself.
 struct MffdTokenOptions {
@@ -172,9 +171,8 @@ class MffdToken : public fuse::LinearizationToken {
   /// itself" guarantee); when empty, PETSc's own `MATMFFD` evaluates
   /// `F(x)` internally at the next `MatMult` -- ONE MORE function
   /// evaluation than the native path pays for the SAME base-point change
-  /// when the caller does not already have `F(x)` in hand, recorded as a
-  /// measured difference in this track's own report rather than
-  /// silently absorbed.
+  /// when the caller does not already have `F(x)` in hand, a
+  /// measured difference rather than silently absorbed.
   virtual Result<void> set_base_point(std::span<const double> x,
                                       std::span<const double> fx = {}) = 0;
 
@@ -228,8 +226,7 @@ struct MatrixTriplet {
 /// token `test/petsc/derivative_gate_test.cpp`'s own adjoint-identity
 /// check runs against, since the MFFD token has no transpose to compare.
 /// `apply_preconditioner` is `PCNONE` (the identity) always; no
-/// `set_block_preconditioner` exists for this token (nothing in this
-/// track needs one).
+/// `set_block_preconditioner` exists for this token (nothing needs one).
 [[nodiscard]] Result<std::unique_ptr<fuse::LinearizationToken>> make_assembled_token(
     std::size_t rows, std::size_t cols, const std::vector<MatrixTriplet>& triplets,
     int comm_f);

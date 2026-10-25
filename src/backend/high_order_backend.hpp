@@ -5,7 +5,7 @@
 // layer) and src/backend/tempest_weights.cpp (the one backend that exists
 // today).
 //
-// PURPOSE. Task 5.3 added a second way to build remap weights. The seam between
+// PURPOSE. There are two ways to build remap weights. The seam between
 // "resolve the plan, find the meshes, classify the geometry, audit the result"
 // and "run a particular numerical method" is drawn here, and it is drawn in
 // FUSE's own vocabulary:

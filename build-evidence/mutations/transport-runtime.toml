@@ -150,7 +150,7 @@ requires = "mpi"
 # the mutated binary was actually rebuilt before that run -- a stale binary
 # would produce exactly a false SURVIVED with no code-level explanation,
 # which is the one class of cause my trace cannot rule out from here.
-# SURVIVED on the host at .2 (2026-09-28), explained by the host's own stream
+# SURVIVED on the host at .2, explained by the host's own stream
 # print: the region is entered at t=1, after consumer_b's ticks, and every
 # rank of linkB was also a region participant, so every rank returned
 # together and nothing blocked. Re-pointed at .3, where
@@ -170,7 +170,7 @@ requires = "mpi"
 # build (-DFUSE_ENABLE_MPI=ON -DFUSE_ENABLE_FORTRAN=ON) against the same
 # exported tree and built `fuse_parallel_runner_transport_test` to
 # completion (link succeeded) without running it -- MPI cannot initialise a
-# process in this sandbox (KNOWN_ISSUES.md C1), so the host run this row has
+# process in this sandbox, so the host run this row has
 # asked for since 2026-10-02 is still the only way to close it. Host
 # command (same shape as the row's own RECOMMENDED HOST ACTION, generalised
 # to the gate): `FUSE_MUTATE_MPI=1 tools/mutate.py --build-dir <mpi-build>
@@ -538,7 +538,7 @@ requires = "mpi"
 # NEXT sweep's body Transport with no partner there, which the test's own
 # 120s TIMEOUT ctest property turns into a correct kill rather than a
 # silent PASS. NOT-ASSESSED in this sandbox: MPI cannot initialise here
-# (KNOWN_ISSUES.md C1); traced by hand against the carry-forward mechanism
+#; traced by hand against the carry-forward mechanism
 # this same file's own "region-failure-abandons-the-rest-of-the-period"
 # row already documents for the analogous Epoch/advance-failure case, and
 # the anchor is confirmed present (`tools/mutate.py --check-anchors`). A

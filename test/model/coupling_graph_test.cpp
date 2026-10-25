@@ -137,7 +137,7 @@ TEST(CouplingGraph, ChannelBuilderSurvivesReallocation) {
 
 // window_sample_capacity(): hand-derived closed-form values, exact
 // Rational arithmetic (no std::ceil-on-a-double anywhere in the
-// production function). Time windows track (C3): this is the SAME
+// production function). This is the SAME
 // function validate_coupling_window()'s E-SCHED-WINDOW-CAPACITY and
 // window_lowering.cpp's window_source_type() both call, so a wrong value
 // here would silently mis-size a compiled field as well as the schedule-
@@ -183,8 +183,7 @@ TEST(CouplingGraph, WindowSampleCapacityMatchesHandDerivedValues) {
       1u);
 }
 
-// window_sample_times(): the hand-derived check from this track's own
-// design notes -- B (interval 7, DtPolicy::Fixed), window length 13,
+// window_sample_times(): a hand-derived check -- B (interval 7, DtPolicy::Fixed), window length 13,
 // window index 1 (the SECOND window: T0=13, T1=26) -- {13, 14, 21, 26}:
 // T0 itself, the two native grid points (0, 7, 14, 21, 28, ...) strictly
 // inside (13, 26), and T1.
@@ -267,17 +266,17 @@ TEST(CouplingGraph, WindowSampleTimesAgreesWithTheRealCarriedForwardGrid) {
   }
 }
 
-// ---- BM-19 (review 2026-10-11): the no-exceptions contract ------------
+// ---- the no-exceptions contract ----------------------------------------
 //
-// Both functions used to compute with the throwing Rational operators
+// Both functions must not compute with the throwing Rational operators
 // (+, -, *, /), any of which can FUSE_REFUSE on an unrepresentable
 // intermediate -- an uncaught Refusal, or an abort in a
 // FUSE_ENABLE_EXCEPTIONS=OFF build, from functions with no Result in
 // their signature to report that through. Neither of these inputs is
 // anything a legitimate graph would ever produce (every real
 // window_length/interval pair already fits comfortably once reduced);
-// they exist to confirm the fallback path added for BM-19 holds under
-// genuinely adversarial input.
+// they exist to confirm the fallback path holds under genuinely
+// adversarial input.
 
 TEST(CouplingGraph, WindowSampleCapacityNeverThrowsOnAnUnrepresentableRatio) {
   using fuse::DtPolicy;
@@ -289,8 +288,8 @@ TEST(CouplingGraph, WindowSampleCapacityNeverThrowsOnAnUnrepresentableRatio) {
   EXPECT_NO_THROW(
       result = window_sample_capacity(window_length, interval, DtPolicy::Fixed));
   // An unrepresentable ratio reports the capacity as unrepresentably large,
-  // so the caller's E-SCHED-WINDOW-CAPACITY gate refuses it (IS-6 and BM-19
-  // agree on the no-throw contract; the sentinel is the schedule gate's).
+  // so the caller's E-SCHED-WINDOW-CAPACITY gate refuses it (the
+  // sentinel is the schedule gate's).
   EXPECT_EQ(result, std::numeric_limits<std::size_t>::max());
 }
 

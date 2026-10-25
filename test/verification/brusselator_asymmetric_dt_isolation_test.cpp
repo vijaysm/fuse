@@ -1,5 +1,4 @@
-// Time windows track (S6 phase 3, Conformance, Unit 3a, LowFive-free
-// half): the tier-0 oracle for "a LowFive-bound channel is an
+// The LowFive-free half: the tier-0 oracle for "a LowFive-bound channel is an
 // application-performed transfer" (docs/user/lowfive.md). Drives the
 // SAME two step functions `examples/brusselator/participants/u_main.c`
 // and `v_main.f90` call (the shim, via u_loop.h/v_loop.h, exactly as
@@ -20,26 +19,23 @@
 // period for this graph shape, so this is also the LAST substep before
 // is_coupling_ongoing()'s own `period` counter would advance).
 //
-// GRAPH: Unit 1's own timing (brusselator_runner_test.cpp's kDtU=0.002/
+// GRAPH: brusselator_runner_test.cpp's own timing (kDtU=0.002/
 // kDtV=0.003/kWindow=0.02 -- genuinely multirate, U:V substep ratio not
 // 1:1, DtPolicy::Adjustable on both so neither ever straddles a window
-// end), but Unit 2's own IDENTITY-REMAP region shape
-// (brusselator_participants_test.cpp's build_graph_and_weights(): both
-// transfer fields on u_region, so the channel's own Remap is the
+// end), but brusselator_participants_test.cpp's IDENTITY-REMAP region shape
+// (its build_graph_and_weights(): both transfer fields on u_region, so the channel's own Remap is the
 // identity, isolating "does the external delivery work" from "does a
 // real Remap work downstream of it" -- the latter is already covered,
 // unaffected by this channel's own data-movement change, by every
 // EXISTING non-LowFive window test). hdf5_path set on u_out/v_out, plus
 // a fieldless LaunchMode::LowFive component
-// (brusselator_graph_tool_lowfive_test.cpp's own precedent) -- MEASURED
-// (this test's own first run) to in fact be scheduled a turn through
-// next_component (component index 3) when declared with no explicit
-// `.kind`, contrary to this file's own first-draft assumption that a
-// fieldless component would never be ticked. Fixed by declaring it
-// `ComponentKind::Coupler` (build_lowfive_graph_and_weights()'s own
-// comment on that line has the full account) rather than by handling
-// its turn in the loop below -- it is a placement marker, not a
-// physics component with steps of its own to take.
+// (brusselator_graph_tool_lowfive_test.cpp's own precedent). Declared with
+// no explicit `.kind`, such a component would be scheduled a turn through
+// next_component (component index 3), so it is declared
+// `ComponentKind::Coupler` (build_lowfive_graph_and_weights()'s own comment
+// on that line has the account) rather than having its turn handled in the
+// loop below -- it is a placement marker, not a physics component with
+// steps of its own to take.
 //
 // Grid and period count kept small (kNxU=3,kNyU=3,kNxV=4,kNyV=4,
 // kPeriods=3) -- this file's job is the structural claim at a size that
@@ -91,7 +87,7 @@ using fuse::Result;
 using fuse::WaveformIteration;
 
 constexpr int kNxU = 3, kNyU = 3, kNxV = 4, kNyV = 4;
-// Unit 1's own timing (brusselator_runner_test.cpp) -- genuinely
+// brusselator_runner_test.cpp's own timing -- genuinely
 // multirate, neither interval dividing the other.
 const Rational kDtU{2, 1000}, kDtV{3, 1000}, kWindow{2, 100};
 constexpr double kTolerance = 1e-10;
@@ -107,8 +103,7 @@ struct GraphAndWeights {
   fuse::RemapWeights weights_vu, weights_uv;
 };
 
-// Unit 2's own build_graph_and_weights() (brusselator_participants_
-// test.cpp), plus hdf5_path on u_out/v_out and the fieldless LowFive
+// brusselator_participants_test.cpp's build_graph_and_weights(), plus hdf5_path on u_out/v_out and the fieldless LowFive
 // component -- the ONLY difference from an ordinary identity-remap
 // window graph.
 [[nodiscard]] GraphAndWeights build_lowfive_graph_and_weights() {

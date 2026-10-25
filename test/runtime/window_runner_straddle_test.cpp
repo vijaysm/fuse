@@ -1,54 +1,46 @@
-// Time windows track (C3): the REAL acceptance matrix for a genuinely
-// multirate (incommensurate 7:13, neither interval divides the other)
-// coupling window through the compiled dataflow graph + schedule() +
-// Runner, checked against the SAME physics run directly through the
-// standalone WindowCoupler driver -- window_component names ONE member
-// (A, interval 13) as the window; B (interval 7) does not divide it, so
-// the window is A's own step exactly as the user's ruling requires ("the
-// window is one member's own step ... and the other member's steps
-// cross the window end. That is the case the method exists for"), NOT
+// The acceptance matrix for a genuinely multirate (incommensurate 7:13,
+// neither interval divides the other) coupling window through the compiled
+// dataflow graph + schedule() + Runner, checked against the SAME physics
+// run directly through the standalone WindowCoupler driver --
+// window_component names ONE member (A, interval 13) as the window; B
+// (interval 7) does not divide it, so the window is A's own step ("the
+// window is one member's own step ... and the other member's steps cross
+// the window end. That is the case the method exists for"), NOT
 // explicit_interval = lcm(7, 13) (rejected outright; see
 // window_runner_multirate_test.cpp's own header for that file's narrower,
 // diagnostic-only role).
 //
-// Getting window_component="A" to schedule a genuinely non-dividing pair
-// at all needed two scheduler-layer fixes: (1) expand.cpp's own
-// "boundary rule" (every node no channel claims) was ticking a window
-// member's own Source/Sink at ITS native interval, not the window's --
-// overridden to the window's own length, mirroring the channel-chain
-// loop's existing override; still regression-guarded here via the
-// passing case below. (2) mark_regions() (scheduler.cpp) was greedily
-// consuming an ENTIRE contiguous run of same-region instructions
-// regardless of node repeats, so a window that ticks several times per
-// period (at the time this fix was made, 7 times: 91 = lcm(7,13) was
-// the OVERALL clock period regardless of the window's own 13-unit
-// length) had its 7 separate passes merged into one bogus "56 covers 8"
-// run instead of 7 clean ones -- fixed by stopping each run the moment
-// every member has appeared once. ClockSet's OWN later fix (KNOWN_
-// ISSUES.md -- a window member's clock is its region's window length,
-// never its fine interval) means this file's own graph (every component
-// a member of the one window region) no longer compiles a period wider
-// than one window instance, so mark_regions()'s multi-pass-per-period
-// case is no longer regression-guarded HERE; it still applies whenever
-// a window region coexists with an ordinary, non-window-scoped
-// component (or a second window region of a different length) in the
-// same graph. A third, runtime-layer fix was needed too:
-// resolve_regions()'s own residual-Sink count assumed one Sink
-// INSTRUCTION per Sink NODE, which undercounts correctly for an ordinary
-// region but overcounts for a window region's own repeated passes (one
-// instruction per pass, same node) -- fixed by counting distinct nodes
-// instead.
+// Scheduling a genuinely non-dividing pair with window_component="A"
+// relies on three behaviours: (1) expand.cpp's "boundary rule" (every node
+// no channel claims) ticks a window member's own Source/Sink at the
+// window's interval, not its native interval, mirroring the channel-chain
+// loop's override; regression-guarded here via the passing case below.
+// (2) mark_regions() (scheduler.cpp) stops each run of same-region
+// instructions the moment every member has appeared once, so a window
+// that ticks several times per period (e.g. 7 times when the OVERALL
+// clock period is 91 = lcm(7,13) regardless of the window's own 13-unit
+// length) yields 7 clean passes rather than one merged run. A window
+// member's clock is its region's window length, never its fine interval,
+// so this file's own graph (every component a member of the one window
+// region) does not compile a period wider than one window instance, and
+// mark_regions()'s multi-pass-per-period case is not regression-guarded
+// HERE; it still applies whenever a window region coexists with an
+// ordinary, non-window-scoped component (or a second window region of a
+// different length) in the same graph. (3) resolve_regions()'s residual-Sink
+// count counts distinct Sink NODES, not Sink instructions, since a window
+// region's repeated passes produce one instruction per pass for the same
+// node.
 //
 // Both the non-straddling (Adjustable/Adjustable) case and B (interval
 // 7) genuinely crossing the window end (DtPolicy::Fixed, against A's
 // own 13-unit window) are covered below: the straddle replay
-// (fuse::detail::advance_straddle_split()) was already wired in for a
-// member's OWN self-straddle; the remaining piece -- a consumer
-// reconstructing a STRADDLING IMPORT PROVIDER's own grid from the graph
-// alone (fuse::window_sample_times()/window_sample_shift(), fuse/model/
-// coupling_graph.hpp) instead of its runtime state -- is wired in too,
-// and checked bit-for-bit against WindowCoupler here in both waveform-
-// relaxation modes, with and without the default accelerator.
+// (fuse::detail::advance_straddle_split()) handles a member's OWN
+// self-straddle, and a consumer reconstructs a STRADDLING IMPORT
+// PROVIDER's own grid from the graph alone
+// (fuse::window_sample_times()/window_sample_shift(), fuse/model/
+// coupling_graph.hpp) instead of its runtime state. Both are checked
+// bit-for-bit against WindowCoupler here in both waveform-relaxation
+// modes, with and without the default accelerator.
 
 #include <gtest/gtest.h>
 #include <fuse/backend/serial_backend.hpp>
@@ -170,11 +162,10 @@ constexpr double kAX0 = 1.0, kAY0 = 0.2;
 // (lower()+schedule()+Runner). window_component="A" makes the window A's
 // own 13-unit step; A's own interval is 13, B's own interval (its fine
 // subcycling rate, read directly by advance_window(), never through
-// ClockSet) is 7. The compiled schedule's own period -- ClockSet's own
-// fix, KNOWN_ISSUES.md -- is now the window length itself, 13 (both A
-// and B are members of the one window region, so both clocks are 13;
-// lcm(13,13)=13), not 91=lcm(13,7) as it was before that fix (a window
-// member's own fine interval no longer feeds the period's LCM).
+// ClockSet) is 7. The compiled schedule's own period is the window
+// length itself, 13 (both A and B are members of the one window region,
+// so both clocks are 13; lcm(13,13)=13), not 91=lcm(13,7) (a window
+// member's own fine interval does not feed the period's LCM).
 // `swap_declaration_order`: whether B's
 // ComponentDecl/fields are added to the graph BEFORE A's -- Gauss-
 // Seidel's own sweep order must come from topological_sweep_order()
@@ -256,12 +247,13 @@ CouplingGraph make_multirate_graph(WaveformIteration mode, DtPolicy pol_a,
   return g;
 }
 
-// KNOWN_ISSUES.md D7, on the Runner: an `explicit_interval` window (1)
-// that NEITHER member's own interval (4, 6) divides, both Fixed -- unlike
-// make_multirate_graph()'s own window_component="A" shape, where A's
-// interval trivially divides the window by construction (the window IS
-// A's own step) and D7 can therefore never arise no matter which policy
-// A is given. A different (4, 6) pair from the acceptance matrix's own
+// The double-straddle envelope, on the Runner: an `explicit_interval`
+// window (1) that NEITHER member's own interval (4, 6) divides, both
+// Fixed -- unlike make_multirate_graph()'s own window_component="A"
+// shape, where A's interval trivially divides the window by construction
+// (the window IS A's own step) and this envelope can therefore never
+// arise no matter which policy A is given. A different (4, 6) pair from the
+// acceptance matrix's own
 // (13, 7) is deliberate: `schedule()` itself requires the window to
 // divide the graph's own overall period (lcm of every declared
 // interval) an integer number of times (E-SCHED-PERIOD), and 91 = 7*13
@@ -382,12 +374,12 @@ RunnerResult run_via_runner(WaveformIteration mode, DtPolicy pol_a,
     return out;
   }
 
-  // ClockSet's own fix (KNOWN_ISSUES.md -- a window-scoped member's CLOCK
-  // for scheduling purposes is its region's window length, never its
-  // fine subcycling interval, so a window member never reintroduces an
-  // LCM window by way of its own substep rate) makes A's -- and, because
-  // B is a member of the SAME region, B's as well -- effective clock
-  // the 13-unit window length rather than A's 13/B's 7 own intervals.
+  // A window-scoped member's CLOCK for scheduling purposes is its
+  // region's window length, never its fine subcycling interval, so a
+  // window member never reintroduces an LCM window by way of its own
+  // substep rate. This makes A's -- and, because B is a member of the
+  // SAME region, B's as well -- effective clock the 13-unit window length
+  // rather than A's 13/B's 7 own intervals.
   // The compiled schedule's period is therefore 13 (lcm(13,13)), not 91
   // (lcm(13,7)): one window instance per run_period() call, not seven.
   // Looping run_period() 7 times is the Runner-side equivalent of
@@ -570,25 +562,21 @@ TEST(WindowRunnerStraddle, SevenThirteenAdjustableAdjustableThroughWindowCompone
   EXPECT_EQ(via_runner.advance_count_b, 2 * via_runner.advance_count_a);
 }
 
-// Stage B, Window seed track (KNOWN_ISSUES.md D17/D76): the SAME fixture,
-// physics and assertions as
+// The SAME fixture, physics and assertions as
 // SevenThirteenAdjustableAdjustableThroughWindowComponentMatchesDriver
-// above, with AccelKind::None replaced by AccelKind::Aitken -- the one
-// parameter this file never exercised in that combination (grepped,
-// Stage A: zero AccelKind::Aitken hits in this file before this test).
-// Stage A's own hypothesis: Runner::Impl::run_region()'s pre-loop seed of
+// above, with AccelKind::None replaced by AccelKind::Aitken.
+// Runner::Impl::run_region()'s pre-loop seed of
 // R.x_old (src/runtime/iteration.cpp, "slot_to_host(slots[b.feed_arc],
-// R.x_old.data()+b.offset, b.length)") is a raw read of the previous
-// window's own converged trajectory (a zeroth-order/persistence
-// predictor) for every window instance after the member's first, where
+// R.x_old.data()+b.offset, b.length)") must agree with the driver's seed
+// for every window instance after the member's first, where
 // WindowCoupler::sweep_window()'s own y_fed seed always goes through
 // fuse::extrapolate_boundary_value() (a genuine, higher-order
 // extrapolation once history holds 2+ points). AccelKind::None cannot
-// see this (NoneAccel::update() ignores x_old entirely); AccelKind::
-// Aitken's own omega recursion and relaxed output both read x_old
-// directly, so a seed mismatch at a window boundary is expected to show
-// up here as a disagreement in the final xA/xB/iterations after 7
-// window instances. Zero tolerance (EXPECT_EQ): the same bar every
+// see a seed mismatch (NoneAccel::update() ignores x_old entirely);
+// AccelKind::Aitken's own omega recursion and relaxed output both read
+// x_old directly, so a seed mismatch at a window boundary shows up here
+// as a disagreement in the final xA/xB/iterations after 7 window
+// instances. Zero tolerance (EXPECT_EQ): the same bar every
 // other parity case in this file already uses for comparing these two
 // drivers, not a tolerance invented for this test.
 TEST(WindowRunnerStraddle, SevenThirteenAdjustableAdjustableThroughWindowComponentMatchesDriverUnderAitken) {
@@ -612,39 +600,37 @@ TEST(WindowRunnerStraddle, SevenThirteenAdjustableAdjustableThroughWindowCompone
 // B (interval 7) does NOT divide the window (A's own interval, 13): under
 // DtPolicy::Fixed, B's own last substep of every window instance crosses
 // the window end. The self-straddle split-advance (this member's OWN
-// substep, planned from its OWN carried-forward `pass_start_clock`) was
-// already wired in and correct on its own; B, here, is also every OTHER
+// substep, planned from its OWN carried-forward `pass_start_clock`) is
+// correct on its own; B, here, is also every OTHER
 // window member's IMPORT PROVIDER, and the CONSUMER side (A's own
-// advance_window() call) now reconstructs "what grid did B use" from
+// advance_window() call) reconstructs "what grid did B use" from
 // the graph alone -- `fuse::window_sample_times()` (B's own native grid,
 // anchored at t=0, independent of any window) and `fuse::window_sample_
 // shift()` (whether this window's own T0 has a buffer slot of its own,
 // or was already carried past by an earlier window's straddle; both
 // fuse/model/coupling_graph.hpp) -- never B's own `WindowMemberState`.
 // Checked against the SAME physics run directly through WindowCoupler.
-// PASSES bit-exactly (EXPECT_EQ, no tolerance), after two further fixes
-// beyond the replay (resolve_pending_window_straddles(), iteration.cpp,
-// mirroring WindowCoupler::resolve_pending_straddles()'s own
-// choreography) this test originally shipped against: (1) a LAGGED
-// consumer's own first-sweep predictor, on the sweep right after a
-// straddle, was extrapolating the ONE sample the provider's real
-// post-replay state already answers exactly (advance_window()'s own
+// PASSES bit-exactly (EXPECT_EQ, no tolerance), which relies on two
+// properties beyond the replay itself (resolve_pending_window_straddles(),
+// iteration.cpp, mirrors WindowCoupler::resolve_pending_straddles()'s own
+// choreography): (1) a LAGGED consumer's own first-sweep predictor, on
+// the sweep right after a straddle, reads the ONE sample the provider's
+// real post-replay state already answers exactly (advance_window()'s own
 // "use_predictor" comment -- window_sample_shift()'s own first real
-// buffer index), instead of reading it; resolve_pending_window_
-// straddles() now publishes that value into every consumer's own
-// window_import arc the moment the replay finishes, before this pass's
-// first sweep ever snapshots `previous[]`. (2) advance_window() was
-// refining `st.history[e]` -- read by THIS member's OWN self-straddle
-// split for `extrapolate_tail` -- every sweep, not once per window;
-// the driver's own `state_[i].history` only ever commits once, after
-// its sweep loop converges, so a multi-sweep window (this test's own
-// Jacobi, 1e-12 tolerance, up to 300 iterations -- unlike the other
-// tests in this file, which fix sweeps at 1 specifically to avoid this
-// exact class of difference) saw the Runner's own mid-window
-// refinements where the driver never has any. Both found by a
-// hexfloat trace, identical on both sides, at every
-// `advance_straddle_split()`/plain-`advance()` call -- not by
-// guessing among candidate causes.
+// buffer index) instead of extrapolating it;
+// resolve_pending_window_straddles() publishes that value into every
+// consumer's own window_import arc the moment the replay finishes, before
+// the first sweep snapshots `previous[]`. (2) advance_window() refines
+// `st.history[e]` -- read by THIS member's OWN self-straddle split for
+// `extrapolate_tail` -- once per window, not every sweep; the driver's
+// own `state_[i].history` only ever commits once, after its sweep loop
+// converges, so a multi-sweep window (this test's own Jacobi, 1e-12
+// tolerance, up to 300 iterations -- unlike the other tests in this file,
+// which fix sweeps at 1 specifically to avoid this class of difference)
+// would otherwise see the Runner's own mid-window refinements where the
+// driver never has any. Both can be diagnosed with a hexfloat trace,
+// identical on both sides, at every
+// `advance_straddle_split()`/plain-`advance()` call.
 TEST(WindowRunnerStraddle, BCrossingTheWindowEndUnderFixedMatchesDriver) {
   const RunnerResult via_runner = run_via_runner(
       WaveformIteration::Jacobi, DtPolicy::Adjustable, DtPolicy::Fixed,
@@ -714,9 +700,9 @@ TEST(WindowRunnerStraddle, WindowSampleShiftMatchesProviderBufferTimesOverTheWho
   }
 }
 
-// DECISIVE TEST (the user's own framing): SevenThirteenAdjustableAdjustable
+// DECISIVE TEST: SevenThirteenAdjustableAdjustable
 // ThroughWindowComponentMatchesDriver above disagrees at the ~1e-9 level,
-// and two candidate causes were suspected -- (1) window_coupler.cpp:840's
+// and two candidate causes are possible -- (1) window_coupler.cpp:840's
 // convergence check duplicates ONE aggregate residual/reference norm
 // across every configured per-field measure instead of computing separate
 // per-field residuals the way the Runner's own per-block check does, so
@@ -730,14 +716,14 @@ TEST(WindowRunnerStraddle, WindowSampleShiftMatchesProviderBufferTimesOverTheWho
 // identical; if a discrepancy survives, cause (2) (or another bug) is
 // real and independent of either stopping rule.
 //
-// abort_on_nonconvergence=false on both sides (RunnerConfig already had
-// this; WindowCouplerConfig gained it this round, see window_coupler.hpp)
-// so neither side's E-*-NOCONVERGE failure ends the run early -- every
-// window still runs its full fixed count and the driver still commits
+// abort_on_nonconvergence=false on both sides (RunnerConfig and
+// WindowCouplerConfig both have it, see window_coupler.hpp) so neither side's
+// E-*-NOCONVERGE failure ends the run early -- every window still runs its
+// full fixed count and the driver still commits
 // (history, last_window_waveform, clock, straddle bookkeeping) and
 // advances to the next window exactly as if it had converged.
 //
-// RESULT (this session): GaussSeidel matches EXACTLY (xA, xB,
+// RESULT: GaussSeidel matches EXACTLY (xA, xB,
 // advance_count_a, advance_count_b all bitwise equal). Jacobi does not
 // quite: EXPECT_EQ on xA/xB fails by ~4.5e-14 relative -- but a black-box
 // bisection over kFixedSweeps in {1,2,3,5,8,13,20,25,28,29,30} (no
@@ -754,21 +740,15 @@ TEST(WindowRunnerStraddle, WindowSampleShiftMatchesProviderBufferTimesOverTheWho
 // semantics, window_coupler.cpp:840) is confirmed as the WHOLE
 // discrepancy in the ORIGINAL (stopping-rule-driven) comparison; no
 // separate overwrite bug (cause 2) exists. Left as EXPECT_EQ (bit-exact)
-// rather than loosened to a tolerance pending the user's ruling on
-// cause (1) -- see this file's own report to the lead.
+// rather than loosened to a tolerance.
 //
-// RT-6 (review 2026-10-11), plain record of the current state: this
-// comparison runs EXACTLY ONE sweep per window (kFixedSweeps = 1 below),
-// currently passing (EXPECT_EQ, bit-exact) at that count. The paragraph
-// above is the bisection's own account of how the runner/driver gap
-// varies with the sweep count, from N=1 up to the N~25-30 regime its own
-// ~4.5e-14 relative floor was measured at -- left exactly as that
-// session wrote it rather than re-paraphrased here, since which of the
-// two regimes N=1 actually sits at on that curve is precisely the
-// question this round is recording, not resolving (see this round's
-// disposition record_text). `kFixedSweeps` is left at 1 here -- raising
-// it is the user's call (the open "pending the user's ruling on cause
-// (1)" above), not this pass's.
+// This comparison runs EXACTLY ONE sweep per window (kFixedSweeps = 1
+// below), currently passing (EXPECT_EQ, bit-exact) at that count. The
+// paragraph above is the bisection's own account of how the runner/driver
+// gap varies with the sweep count, from N=1 up to the N~25-30 regime its
+// own ~4.5e-14 relative floor was measured at. Which of the two regimes
+// N=1 actually sits at on that curve is not resolved here.
+// `kFixedSweeps` is left at 1.
 constexpr int kFixedSweeps = 1;
 
 void ExpectFixedIterationMatch(WaveformIteration mode,
@@ -852,21 +832,20 @@ TEST(WindowRunnerStraddle,
                             DtPolicy::Adjustable, DtPolicy::Fixed);
 }
 
-// The SAME B-crosses-the-window-end shape, now WITH the default
+// The SAME B-crosses-the-window-end shape, WITH the default
 // accelerator (`AccelConfig{}`'s own default, `AccelKind::Constant`,
 // `omega = 0.5` -- fuse/model/iteration.hpp) instead of `AccelKind::
 // None`, under Jacobi. `WaveformIteration::GaussSeidel` with a real
-// accelerator is a SEPARATE, already-refused combination on the Runner
-// (`E-RT-WINDOW-ACCEL`, WindowRunner.GaussSeidelWindowRejectsAccelerated
-// Region, test/runtime/window_runner_test.cpp) that this track's task
-// does not ask this delegation to lift, so it is not exercised here.
+// accelerator is a SEPARATE combination
+// (WindowRunner.GaussSeidelWindowWithAcceleratorIsAccepted,
+// test/runtime/window_runner_test.cpp), so it is not exercised here.
 TEST(WindowRunnerStraddle,
     FixedIterationCountMatchesDriverJacobiFixedBCrossingWithAccel) {
   ExpectFixedIterationMatch(WaveformIteration::Jacobi, DtPolicy::Adjustable,
                             DtPolicy::Fixed, AccelKind::Constant);
 }
 
-// KNOWN_ISSUES.md D7 (make_d7_graph()'s own comment): BOTH members Fixed
+// (make_d7_graph()'s own comment): BOTH members Fixed
 // and straddling TOGETHER is still refused, unconditionally, identically
 // to WindowCoupler::create()'s own E-RT-WINDOW-STRADDLE -- the replay
 // above handles exactly one straddling member per window, never two
@@ -902,16 +881,15 @@ TEST(WindowRunnerStraddle, BothMembersFixedAndStraddlingTogetherIsRejected) {
   const auto init = runner.initialize(components, registry);
   ASSERT_FALSE(init.ok())
       << "both A and B are Fixed with a step that does not divide the "
-         "window (5); this is the D7 envelope and must be refused at "
+         "window (5); this is the double-straddle envelope and must be refused at "
          "setup, before any window instance runs";
   EXPECT_EQ(init.error().code, "E-RT-WINDOW-STRADDLE") << init.error().message;
 }
 
-// RT-3 (review 2026-10-11), decision record: WindowCoupler::create()'s
-// OTHER D7 refusal -- a Fixed member whose own interval exceeds the
-// window (E-RT-WINDOW-LONGSTEP) -- is NOT mirrored into resolve_regions()
-// above. It was investigated; mirroring it would reject a configuration
-// this compiled path already supports and already tests:
+// WindowCoupler::create()'s OTHER straddle-envelope refusal -- a Fixed member
+// whose own interval exceeds the window (E-RT-WINDOW-LONGSTEP) -- is NOT
+// mirrored into resolve_regions() above. Mirroring it would reject a
+// configuration this compiled path already supports and already tests:
 // test/runtime/window_runner_test.cpp's
 // WindowRunner.FixedPolicyStraddleNowSucceeds runs A Adjustable, B Fixed
 // with interval 1 on a 1/2-length window (interval > window_length) to
@@ -921,6 +899,6 @@ TEST(WindowRunnerStraddle, BothMembersFixedAndStraddlingTogetherIsRejected) {
 // divide the window evenly; WindowCoupler::create()'s stricter driver-
 // level refusal does not have that replay available to it. The
 // divergence from the driver is intentional and is recorded in
-// docs/user/coupling-windows.md, not fixed by mirroring the refusal here.
+// docs/user/coupling-windows.md.
 
 

@@ -98,7 +98,7 @@ TEST(ChannelLowering, SpecExampleEmitsSampleAccumulateRemapRelax) {
   EXPECT_LT(index_of(k, OpKind::Remap), index_of(k, OpKind::Relax));
 }
 
-// Unit 3 (S6 phase 3, Conformance): a LowFive-bound channel's source field
+// A LowFive-bound channel's source field
 // sets FieldSpec::hdf5_path; lower_channel() (src/ir/rules_channel.cpp)
 // must substitute an ExternalDelivery node for the ordinary Source-arc
 // read, and the Transport this channel would otherwise need (fluid/
@@ -107,7 +107,7 @@ TEST(ChannelLowering, SpecExampleEmitsSampleAccumulateRemapRelax) {
 // own Pair, reused unchanged here) must not appear at all. ExternalDelivery
 // carries the source field's own producer (here, Source) as its ONE input
 // -- an ORDERING edge only (OpKind::ExternalDelivery's own comment, op.hpp;
-// MEASURED, a later session: severing it entirely let the scheduler place
+// MEASURED: severing it entirely let the scheduler place
 // this node before the exporting member's own last substep in the SAME
 // sweep, reading stale data) -- its execute() case never reads that
 // input; the application's own write is what fills its output.
@@ -467,8 +467,8 @@ Shape shape_of(const fuse::CouplingGraph& g) {
 // exchanges the values itself, reading each side where it lives; a Transport
 // in front of it would deliver the source values onto the target placement's
 // view of the SOURCE mesh -- empty on a disjoint placement -- and the
-// operator would then sum nothing. That is what the host measured on
-// 2026-09-25: H exact, H^T D delivering zero. So the lowering emits the
+// operator would then sum nothing. That is what a host run measured:
+// H exact, H^T D delivering zero. So the lowering emits the
 // agreement point and a Remap whose output changes placement, and no move.
 TEST(LoweringChannel, AConsistentRemapOnANodalSideMovesThePlacementItself) {
   for (const bool nodal_source : {true, false}) {
@@ -500,8 +500,7 @@ TEST(LoweringChannel, AConsistentRemapOnOnePlacementNeedsNoMoveAndChangesNothing
   EXPECT_EQ(s.remap_in_rs, s.remap_out_rs);
 }
 
-// ---- coupler placement (design C, plans/2026-09-23-coupler-placement-and-
-// migration.md): THE RULE is source -> C -> target, remap on C's
+// ---- coupler placement: THE RULE is source -> C -> target, remap on C's
 // decomposition of both meshes, any hop between identical placements elided
 // by the same `same_as` test as every other hop. -------------------------
 
@@ -735,17 +734,16 @@ TEST(CouplerLowering, RemapOnUnusedWhenChannelWouldNeverRemapReproducesNoCoupler
 }
 
 // ---------------------------------------------------------------------------
-// Review 2026-10-11 IS-9: a merged field's Sink judged its time-mismatch
+// A merged field's Sink judged its time-mismatch
 // authorization by the FIRST-DECLARED writer, not the one whose contribution
 // the merge actually adopted (type_check()'s `n.origin`, set by
 // emit_field_sink()'s own "first channel found" scan). Two lagged writers
 // into one merged field, with the SECOND-declared one more recent (lag 1)
 // than the first (lag 2): the merge's own rule (lower()'s own comment,
 // "the combined value's time level is the LATEST of its contributions")
-// picks the second writer's level, but the old scan still authorized
+// picks the second writer's level, but a scan of the first writer alone would authorize
 // against the first. Below, the first writer IS authorized and the second
-// (the real "newest") is NOT -- before the fix this was wrongly admitted;
-// after the fix, type_check must see the unauthorized mismatch on the
+// (the real "newest") is NOT -- type_check must see the unauthorized mismatch on the
 // writer that actually matters and refuse with E-IR-TYPE.
 // ---------------------------------------------------------------------------
 
@@ -826,19 +824,19 @@ TEST(ChannelLowering, MergedFieldAuthorizedOnTheActualNewestWriterIsAccepted) {
 }
 
 // ---------------------------------------------------------------------------
-// BM-1 (review 2026-10-11): an Extensive-target channel refuses at the
+// An Extensive-target channel refuses at the
 // Conservation stage (connect.hpp's `check_channel()`) whenever its declared
 // transfer is not conservative -- a plain copy, here. `Evaluation::finish()`
-// (src/model/compatibility.cpp) used to clear the WHOLE operator chain on
+// (src/model/compatibility.cpp) must not clear the WHOLE operator chain on
 // that refusal, including a Transform-phase `UnitScale` step the Unit stage
 // had ALREADY authorized (Unit runs before Conservation): a scale-only unit
 // mismatch (kPa -> Pa) on such a channel lost its scale and surfaced here as
 // a bare, unexplained `E-IR-TYPE` -- the type never converts, so `Sink`'s
 // `assignable_from` (op.hpp) sees kilopascals where it required pascals.
-// `finish()` now keeps a Transform-phase step across a later-stage refusal,
+// `finish()` keeps a Transform-phase step across a later-stage refusal,
 // so this channel's Scale operator still gets emitted and the type is
 // correct by the time `type_check()` runs; the authoring-time refusal itself
-// is `validate()`'s job (test/model/validate_test.cpp's own BM-1 tests pin
+// is `validate()`'s job (test/model/validate_test.cpp's own tests pin
 // that it still fires, as `E-CONN-CONSERVATION`, alongside the inserted-scale
 // warning).
 // ---------------------------------------------------------------------------

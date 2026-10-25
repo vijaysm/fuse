@@ -1,4 +1,4 @@
-// "Nodal fields" track, step 1: the ONE definition of a field's extent from
+// The ONE definition of a field's extent from
 // (disc, order, mesh entity set) -- mesh_view.hpp's `field_extent`/`region_extent_kind`
 // -- and its wiring into `make_region_sizes` (serial_backend.cpp), which every
 // caller of RegionSizes (schedule/buffers.cpp's `plan_buffers`, and therefore
@@ -171,7 +171,7 @@ TEST(RegionExtentKind, ACellFieldAndANodalFieldOnOneRegionRefusesAsMixed) {
 
 // ---------------------------------------------------------------------------
 // make_region_sizes(): end to end, on 1D, 2D (quad + tri) and 3D (hex + tet)
-// generated meshes -- both backends this task owns.
+// generated meshes -- both backends.
 // ---------------------------------------------------------------------------
 
 namespace {

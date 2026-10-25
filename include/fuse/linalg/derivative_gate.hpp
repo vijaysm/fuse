@@ -1,6 +1,6 @@
 #pragma once
 
-/// The derivative gate (S7.3) -- the one check every later "Newton" or
+/// The derivative gate -- the one check every later "Newton" or
 /// "monolithic" claim in this project must cite (docs/dev/derivative-gate.md
 /// has the full account: why each bound below is derived rather than chosen,
 /// and the measurements that fixed the one free constant each carries).
@@ -45,7 +45,7 @@
 /// `Eigen::SparseMatrix` to a plain span is something
 /// test/linalg/derivative_gate_test.cpp writes once per operator kind, never
 /// something this header needs to know exists. `fuse::adjoint_defect`
-/// (backend/linear_operator.hpp, S5.1) already checks the identical
+/// (backend/linear_operator.hpp) already checks the identical
 /// adjoint property for the one operator family it was written for (a
 /// RELATIVE defect, floored at a denominator of 1) -- this file does not
 /// duplicate it or change it; `adjoint_gate` below is the ABSOLUTE,
@@ -175,7 +175,7 @@ struct AdjointGateResult {
 /// supermesh map plus a real moving-least-squares map, their composition,
 /// and `SchurSlabSolver` at one rank and at two in-process partitions), the
 /// largest observed ratio `defect / (eps * norm_est * ||x|| * ||y||)`
-/// MEASURED 2026-10-10 (Debug, AppleClang 21, this project's Eigen linalg
+/// MEASURED (Debug, AppleClang 21, the Eigen linalg
 /// backend) was 0.235 -- the one-partition periodic 16x16 Laplacian, the
 /// operator with by far the most floating-point terms per entry in the
 /// dot products this bound covers. `kAdjointGateConstant = 50` carries
@@ -340,7 +340,7 @@ struct TaylorRemainderResult {
 
 /// `c` for `matrix_free_agreement` (docs/dev/derivative-gate.md): a direct
 /// comparison of two `apply`s on the SAME vector, never a dot product, so it
-/// carries no second-vector cancellation term at all. MEASURED 2026-10-10
+/// carries no second-vector cancellation term at all. MEASURED
 /// (test/linalg/derivative_gate_test.cpp,
 /// `AssembledDiffusionMatrixAgreesWithHandWrittenStencilApply`, which prints
 /// its own max_defect/bound to stderr): the Brusselator diffusion operator

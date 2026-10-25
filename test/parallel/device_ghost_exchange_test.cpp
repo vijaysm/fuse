@@ -1,4 +1,4 @@
-// runtime-exchange track, follow-up round: DeviceGhostExchanger
+// DeviceGhostExchanger
 // (include/fuse/backend/device_ghost_exchange.hpp) drives the SAME
 // fuse::linalg::GhostExchanger pattern GhostExchanger::update() does, but
 // over Space-resident buffers. A ring pattern -- rank r's 4 ghosts are
@@ -9,9 +9,7 @@
 // so a wrong rank or a wrong local index is distinguishable from a
 // correct delivery -- a constant would not be.
 //
-// MPI CANNOT INITIALISE IN THIS SANDBOX (docs/dev/testing.md): compiled,
-// never run, in the environment this file was written in; a host run is
-// what confirms it.
+// Needs a working MPI launcher (docs/dev/testing.md).
 
 #include <fuse/backend/device_ghost_exchange.hpp>
 #include <fuse/linalg/comm.hpp>
@@ -109,13 +107,12 @@ void run_ring_check(bool force_host_staging, bool expect_device_direct_possible)
   }
 
   // The device-direct path is reachable only under Device space, with no
-  // forced host staging, and a genuinely GPU-aware MPI. On higgs's original
-  // Open MPI 4.1.5 (configured --without-cuda) `mpi_is_gpu_aware()` was
-  // false and only the else-branch below ever ran (KNOWN_ISSUES.md D66);
-  // since its Open MPI 5.0.9 (CUDA-aware, 2026-10-18) the probe is true
-  // there and the TRUE branch is the one measured by the .device twins of
-  // this row -- the same test exercises whichever branch the host's MPI
-  // makes reachable, never skipping silently.
+  // forced host staging, and a genuinely GPU-aware MPI. With an MPI built
+  // without CUDA `mpi_is_gpu_aware()` is false and only the else-branch
+  // below runs; with a CUDA-aware MPI the probe is true and the TRUE branch
+  // is the one measured by the .device twins of this row -- the same test
+  // exercises whichever branch the host's MPI makes reachable, never
+  // skipping silently.
   if (expect_device_direct_possible && fuse::linalg::mpi_is_gpu_aware() && !force_host_staging) {
     EXPECT_TRUE(dge.last_update_took_device_direct_path())
         << "GPU-aware MPI did not take the device-direct exchange path";

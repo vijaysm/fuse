@@ -18,10 +18,10 @@
 # runs a whole example at one thread and again at every core and compares the
 # two outputs exactly (tools/compare-runs.cmake).
 set(FUSE_SLOW_TESTS
-  bench.scaled_device_benchmark.1   # 61.4 s average over 2 runs, build-all, 2026-10-17
-  bench.scaled_device_benchmark.2   # 41.5 s average over 2 runs, build-all, 2026-10-17
-  bench.scaled_device_benchmark.3   # 35.2 s average over 2 runs, build-all, 2026-10-17
-  example.brusselator.newton_petsc   # 10.1 s average over 9 runs, build-all, 2026-10-15
+  bench.scaled_device_benchmark.1   # 61.4 s average over 2 runs, build-all
+  bench.scaled_device_benchmark.2   # 41.5 s average over 2 runs, build-all
+  bench.scaled_device_benchmark.3   # 35.2 s average over 2 runs, build-all
+  example.brusselator.newton_petsc   # 10.1 s average over 9 runs, build-all
   example.brusselator.omp_identical                    #  313.2 s
   petsc.brusselator_newton                             #  244.2 s average of 5 runs; a passing run took 1220.8 s (the other four were aborted early)
   verification.gray_scott_reference                    #  238.2 s
@@ -39,7 +39,7 @@ set(FUSE_SLOW_TESTS
   example.brusselator.newton                           #   12.7 s
   verification.brusselator_runner                      #   10.4 s
   verification.gray_scott_multirate                    #   10.0 s
-  verification.brusselator_restart                     #   over the 10 s tier-0 threshold once the D17/D76 windows 3 and 6 row was added (tools/check-test-cost.py; duration recorded by the clean-export run, KNOWN_ISSUES.md D76 Round 5)
+  verification.brusselator_restart                     #   over the 10 s tier-0 threshold once the windows 3 and 6 row was added (tools/check-test-cost.py)
 )
 
 # Appends the label to each listed row that exists in the CURRENT directory:

@@ -59,11 +59,11 @@ struct Box3 {
 /// overlaps. `my_rank`'s own target boxes are excluded: a cell already
 /// local to its own target region needs no copy. Brute force
 /// (O(owned source cells x all target cells)) -- exact, no tuning
-/// parameter, the right choice at the cell counts this track targets
+/// parameter, the right choice at the cell counts this targets
 /// (remap_plan.hpp's own `build_remap_halo` cost note makes the same
 /// trade). Each returned list is sorted ascending and has no duplicate.
 /// Two boxes that only TOUCH along a face -- an exactly aligned partition
-/// boundary, the common case this track's own test fixture exercises --
+/// boundary, the common case the test fixtures exercise --
 /// count as NOT overlapping (native_halo.cpp's own `kTouchTol`): their
 /// true geometric intersection has zero measure, so a copy of that cell
 /// would sit in the supermesh contributing nothing.
@@ -92,7 +92,7 @@ struct Box3 {
 /// communicator) or concatenate directly across simulated ranks (an
 /// in-process test).
 ///
-/// DEVICE-RESIDENT (Migration track, 2026-10-15). Built from
+/// DEVICE-RESIDENT. Built from
 /// `mesh.device_arrays()` via `fuse::native::device::pack_fanout<true,
 /// Space>` (include/fuse/backend/native/mesh_pack_device.hpp), the
 /// many-to-many generalization of `pack_to` a halo copy needs: unlike a
@@ -156,7 +156,7 @@ struct Box3 {
                                                           MeshId source, MeshId target, int dim,
                                                           ComponentId placement);
 
-/// KNOWN_ISSUES D5's "last half" (HALO BRIDGING), the native-backend
+/// HALO BRIDGING: the native-backend
 /// counterpart to `fuse::build_remap_halo`'s own MOAB cross-placement
 /// overload (remap_plan.hpp -- "the OVERLOAD this design needs, kept
 /// separate from the one above rather than adding a second placement
@@ -176,17 +176,15 @@ struct Box3 {
 /// success (`commit_remap_halo` still runs and records the triple as
 /// built), `has_remap_halo()` then answers true, and the Remap that
 /// follows builds a matrix with zero rows contributed from the source
-/// side -- a second, deeper instance of KNOWN_ISSUES D73's own silently-
-/// empty-matrix failure mode, this time past the refusal that failure
-/// mode's own fix added, because the halo genuinely WAS built, just over
-/// the wrong source cells. MEASURED on the owner's host (round 3,
-/// 2026-10-18): `parallel.native_remap_halo_runner.{2,3}` both failed
-/// with `remap_weight_nonzeros == 0` despite `initialize()` succeeding --
-/// exactly this.
+/// side -- a silently empty-matrix failure mode that gets past the
+/// refusal guarding against it, because the halo genuinely WAS built, just
+/// over the wrong source cells. `parallel.native_remap_halo_runner.{2,3}`
+/// measured exactly this: both failed with `remap_weight_nonzeros == 0`
+/// despite `initialize()` succeeding.
 ///
 /// `source_placement` resolves ONLY `source`'s own view (`backend.
-/// native_view(source, source_placement)`, this function's own first
-/// change from the single-placement form); `target` still resolves
+/// native_view(source, source_placement)`, the difference from the
+/// single-placement form); `target` still resolves
 /// through `placement`, and the adopted result is still COMMITTED under
 /// `placement` (`backend.commit_remap_halo(source, placement, ...)`,
 /// unchanged) -- so every existing lookup by the target's own placement
@@ -206,7 +204,7 @@ struct Box3 {
                                                           ComponentId placement);
 
 // ===========================================================================
-// KNOWN_ISSUES D27: the reverse exchange, the native backend's counterpart
+// The reverse exchange, the native backend's counterpart
 // to `MoabMeshBackend::accumulate_remap_halo` (moab_backend.hpp). The
 // forward fill above (`remap_halo_pattern` plugged into
 // `fuse::linalg::make_mpi_exchanger`/`GhostExchanger::update`) has no
@@ -276,7 +274,7 @@ struct Box3 {
                                                  double* ghosts, std::size_t ghost_n);
 
 // ===========================================================================
-// KNOWN_ISSUES D73 ROUND 7: the conservative coverage check, DISTRIBUTED.
+// The conservative coverage check, DISTRIBUTED.
 // `build_weights_via_supermesh`'s own `RemapFlags::Conservative` audit
 // (intx_weights.cpp) reads `min_src_coverage` off the LOCAL supermesh -- the
 // intersections THIS rank's own merged source/target views produced. On a

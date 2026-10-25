@@ -39,7 +39,7 @@ void check_matches_brute_force(int dim, int nt, int ns, unsigned seed) {
   // a same-shaped device view declared with no explicit layout do NOT
   // generally agree on layout, and Kokkos::deep_copy between different
   // layouts AND different memory spaces in one call has "no available
-  // copy mechanism" (measured on this track's own device build).
+  // copy mechanism" (measured on a device build).
   // Kokkos::create_mirror_view(device_view) is built to avoid exactly
   // this: the mirror it returns always matches the device view's own
   // layout, so the deep_copy back is a same-layout blit.

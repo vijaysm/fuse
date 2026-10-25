@@ -1,4 +1,4 @@
-// KNOWN_ISSUES.md D15, round 5. Tier-0, MPI-free tests of the pure
+// Tier-0, MPI-free tests of the pure
 // arithmetic src/abi/provider_adapter.cpp's register_fields() uses to
 // size a multi-rank component's own registration per-position -- see
 // include/fuse/abi/rank_share.hpp's own header comment for why this
@@ -12,7 +12,7 @@
 using fuse::abi_detail::even_rank_share;
 
 // THE EXACT MEASURED CASE (provider_subset_mpi_test.cpp's own 3-rank
-// graph, KNOWN_ISSUES.md D15 round 5): one cell, two positions -- the
+// graph): one cell, two positions -- the
 // first position gets it, the second gets none.
 TEST(EvenRankShare, OneCellOverTwoPositionsGivesItAllToTheFirst) {
   const auto [lo0, hi0] = even_rank_share(1, 0, 2);

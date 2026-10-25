@@ -1,4 +1,4 @@
-// KNOWN_ISSUES.md D31 -- fuse::linalg::make_participant_set_reducer()
+// fuse::linalg::make_participant_set_reducer()
 // (src/linalg/comm_mpi.cpp), over a REAL MPI_COMM_WORLD. Mirrors test/
 // parallel/linalg_mpi_test.cpp's own structure and its own closed-form
 // reference convention (every rank reconstructs the identical answer a

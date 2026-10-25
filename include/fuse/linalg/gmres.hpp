@@ -42,7 +42,7 @@
 /// `restart == 0` the Arnoldi loop below never executes a single step,
 /// so `total_iter` never advances and the outer restart loop spins
 /// through `a.apply` (a collective under MPI) with no exit -- the one
-/// configuration `max_iterations` cannot cap (Review 2026-10-11 NL-2).
+/// configuration `max_iterations` cannot cap.
 
 #include <cmath>
 #include <cstddef>

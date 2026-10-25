@@ -27,7 +27,7 @@
 //              while the initial transient is still the largest term
 //   newton     the SAME affine graph (dn::DirichletSlab's beta = 0.0 default,
 //              so its own conductivity is identical to every row above), with
-//              the iteration region selecting S7.2's native Jacobian-free
+//              the iteration region selecting the native Jacobian-free
 //              Newton-Krylov solver (`.newton()`) instead of `.accelerate()`.
 //              Enters the SAME correctness gates (agree with picard, converged,
 //              reproducible) as the quasi-Newton rows; "sweeps" means something
@@ -35,7 +35,7 @@
 //              step -- see the dedicated NOTE at its own print_row call) and is
 //              deliberately left out of the "took fewer sweeps" ladder gate 6
 //              compares the Picard-family rows on.
-//   newton-petsc / newton-nl-petsc (S7.2b, PetscSelect track): the SAME two
+//   newton-petsc / newton-nl-petsc: the SAME two
 //              graphs as newton/newton-nl, solved by the PETSc SNESNEWTONLS
 //              substrate (fuse::petsc::solve(), docs/dev/newton-krylov.md
 //              Section 10) instead of the native one -- selected by
@@ -46,7 +46,7 @@
 //              registry resolve NewtonSubstrate::Petsc at all; without it
 //              (or without FUSE_ENABLE_PETSC), a graph naming it refuses at
 //              initialize() with E-NEWTON-PETSC-UNAVAILABLE -- the refusal
-//              this track's own tier-0 test
+//              the tier-0 test
 //              (NewtonRegion.ARegionSelectingAnUnregisteredSubstrateIs
 //              RefusedAtSetup) fires WITHOUT PETSc. The default invocation
 //              (no flags) never touches either row, so every existing
@@ -110,7 +110,7 @@
 #include <fuse/backend/serial_backend.hpp>
 #include <fuse/runtime/runner.hpp>
 
-// S7.2b (PetscSelect track): fuse/petsc/solve.hpp names no PETSc type
+// fuse/petsc/solve.hpp names no PETSc type
 // (fuse/petsc/token.hpp's own layering comment) and compiles in every
 // build -- but fuse::petsc::install() is defined only in
 // fuse-coupler-petsc, which exists only under FUSE_ENABLE_PETSC
@@ -237,7 +237,7 @@ fuse::CouplingGraph build_graph(fuse::AccelConfig accel, int max_iterations) {
   return g;
 }
 
-/// S7.2's own overload: the IDENTICAL mesh/region/component/field/channel/
+/// The Newton overload: the IDENTICAL mesh/region/component/field/channel/
 /// convergence-criterion setup above, differing only in the iteration
 /// region's own final call -- `.newton(cfg)` rather than `.accelerate(accel)`.
 /// A second function, not a `bool`/`std::variant` parameter threaded through
@@ -298,7 +298,7 @@ fuse::CouplingGraph build_graph(fuse::NewtonConfig cfg, int max_iterations) {
   return g;
 }
 
-/// S7.2b phase 2 (Substrate track, plan S7.2b): ONE graph with TWO
+/// ONE graph with TWO
 /// independent Newton regions, "dirichlet_neumann_a" and
 /// "dirichlet_neumann_b" -- each its own mesh/component/field/channel
 /// pair, no channel crossing between them, both solving the SAME affine
@@ -396,10 +396,8 @@ struct DualOutcome {
   /// for that period -- the same per-period quantity run_case()'s own
   /// `Outcome::per_period_final_residual` captures and
   /// `dn_heat::agreement_bound()`'s "PER-PERIOD RECURSION" derivation
-  /// (agreement_bound.hpp) needs for the SHARP sum bound, not the
-  /// weaker last-period-only one (this file's own round-4 correction,
-  /// above, replaced round 3's last-period-only bound for exactly this
-  /// reason).
+  /// (agreement_bound.hpp) needs for the SHARP sum bound, not a
+  /// weaker last-period-only one.
   std::vector<double> per_period_final_residual_a;
   std::vector<double> per_period_final_residual_b;
   bool                converged_a = false;
@@ -521,7 +519,7 @@ struct Outcome {
   std::vector<double> u_final;
   std::vector<double> q_final;
   std::vector<double> last_residuals;
-  /// AgreementBounds track: the TRUE ||F_0|| of the region's own Newton
+  /// The TRUE ||F_0|| of the region's own Newton
   /// solve in its last period, populated ONLY by the `run_case(NewtonConfig,
   /// ...)` overload below -- `last_residuals.front()`, which IS the
   /// pre-first-step residual (agreement_bound.hpp's own header comment
@@ -531,18 +529,17 @@ struct Outcome {
   /// IQN-ILS) row, where `last_residuals.front()` is a DIFFERENT quantity
   /// (the first Picard sweep's own `||x_new - x_old||`, not a Newton
   /// ||F_0||) and populating this field from it would be the wrong fix for
-  /// the very confusion this track exists to remove.
+  /// the very confusion this field exists to avoid.
   double              initial_residual_norm = 0.0;
-  /// AgreementBounds track, round 4 (KNOWN_ISSUES.md D32's own
-  /// correction to round 3): one entry per period, that period's own
+  /// One entry per period, that period's own
   /// TERMINAL Newton residual (its own `residual_history.back()`),
   /// populated ONLY by the `run_case(NewtonConfig, ...)` overload below.
   /// `last_residuals` above describes only the FINAL period
   /// (`Runner::iteration_stats()`'s own contract,
   /// include/fuse/runtime/runner.hpp: "describing the most recent
-  /// period") -- round 3's bound used that single number for all
-  /// `kPeriods` periods, which `agreement_bound.hpp`'s own "PER-PERIOD
-  /// RECURSION" section shows is not justified once a period's own
+  /// period"), so using that single number for all `kPeriods` periods is
+  /// not justified, as `agreement_bound.hpp`'s own "PER-PERIOD
+  /// RECURSION" section shows, once a period's own
   /// Newton solve starts from a PREVIOUS period's (possibly
   /// substrate-disagreeing) committed state. Filled by calling
   /// `Runner::run(components, 1)` once per period instead of once for
@@ -638,7 +635,7 @@ Outcome run_case(fuse::AccelConfig accel, int max_iterations,
   // the SWEEP residual `||x_new - x_old||` (run_region()'s own Picard
   // loop, src/runtime/iteration.cpp), not a Newton ||F_0|| -- a DIFFERENT
   // quantity under the same field name would be the wrong fix for the
-  // very confusion this track exists to remove. Only the NewtonConfig
+  // very confusion this field exists to avoid. Only the NewtonConfig
   // overload below (the one the `--newton-petsc` check actually reads)
   // populates it.
 
@@ -659,7 +656,7 @@ Outcome run_case(fuse::AccelConfig accel, int max_iterations,
   return o;
 }
 
-/// S7.2's own overload. A near-duplicate of the body above rather than a
+/// The Newton overload. A near-duplicate of the body above rather than a
 /// shared helper the two funnel through, for the same reason the
 /// `build_graph` overload above is a second function and not a branch in the
 /// first: the original's every line stays provably untouched.
@@ -730,7 +727,7 @@ Outcome run_case(fuse::NewtonConfig cfg, int max_iterations,
   if (!runner.checkpoint_explanations().empty()) {
     o.checkpoints = runner.checkpoint_explanations().front();
   }
-  // AgreementBounds track, round 4: one period at a time rather than one
+  // One period at a time rather than one
   // call for all of them -- `Runner::run(components, periods)` is
   // ITSELF exactly this loop (`for (i = 0; i < periods; ++i)
   // run_period(components)`, src/runtime/runner.cpp's own
@@ -766,7 +763,7 @@ Outcome run_case(fuse::NewtonConfig cfg, int max_iterations,
   if (!runner.iteration_stats().empty()) {
     o.last_residuals = runner.iteration_stats().front().residual_history;
   }
-  // AgreementBounds track: last_residuals.front() IS the true ||F_0||
+  // last_residuals.front() IS the true ||F_0||
   // -- agreement_bound.hpp's own header comment cites the code proving
   // it, rather than re-deriving it at every call site. Guarded the same
   // way `checkpoints` above is: empty whenever iteration_stats() itself
@@ -791,7 +788,7 @@ Outcome run_case(fuse::NewtonConfig cfg, int max_iterations,
   return o;
 }
 
-/// The orders S7.2's own `NewtonRegion.QuadraticRateMeasuredOnTheNonlinear
+/// The orders the native Newton solver's own `NewtonRegion.QuadraticRateMeasuredOnTheNonlinear
 /// Problem` (test/runtime/newton_region_test.cpp) fits, reproduced here so
 /// the claim is a number THIS binary also measures and gates on, not only
 /// the unit test: q_k over every consecutive residual triple still above a
@@ -846,12 +843,12 @@ void check(bool cond, const std::string& what) {
 }  // namespace
 
 int main(int argc, char** argv) {
-  // KNOWN_ISSUES.md D11 (closing): the Runner's coupling hot loop now runs
-  // on Kokkos' default host execution space (fuse/num/space_kernels.hpp),
-  // so every caller -- including this one, which ran no Kokkos kernel at
-  // all before this closing -- must initialise Kokkos before touching a
-  // Runner. Same pattern as test/support/fuse_test_main.cpp's
-  // `Kokkos::ScopeGuard` and examples/brusselator/main.cpp's.
+  // The Runner's coupling hot loop runs on Kokkos' default host execution
+  // space (fuse/num/space_kernels.hpp), so every caller -- including this
+  // one, which runs no Kokkos kernel of its own -- must initialise Kokkos
+  // before touching a Runner. Same pattern as
+  // test/support/fuse_test_main.cpp's `Kokkos::ScopeGuard` and
+  // examples/brusselator/main.cpp's.
   Kokkos::ScopeGuard kokkos_guard(argc, argv);
 
   bool dump = false;
@@ -861,7 +858,7 @@ int main(int argc, char** argv) {
     if (std::strcmp(argv[i], "--newton-petsc") == 0) newton_petsc_only = true;
   }
 
-  // S7.2b (PetscSelect track): a SEPARATE code path, run to completion and
+  // A SEPARATE code path, run to completion and
   // returned from here, rather than one more row folded into the table
   // below -- so the default invocation (every existing ctest row) never
   // changes shape, compiled in or not, and this binary still LINKS clean
@@ -911,7 +908,7 @@ int main(int argc, char** argv) {
                   "complete: %s\n", newton_nl_petsc.error.c_str());
     }
 
-    // S7.2b phase 2 (Substrate track): the per-region selector itself,
+    // The per-region selector itself,
     // run with BOTH substrates active in ONE graph/Runner at once --
     // "newton" and "newton-petsc" above run the SAME graph twice, once
     // per substrate, as two SEPARATE Runner invocations; this one graph
@@ -953,7 +950,7 @@ int main(int argc, char** argv) {
     for (std::size_t i = 0; i < std::min(dual.u_final_a.size(), dual.u_final_b.size()); ++i) {
       dual_d = std::max(dual_d, std::abs(dual.u_final_a[i] - dual.u_final_b[i]));
     }
-    // The SHARP bound (round 4, this file's own correction, above): the
+    // The SHARP bound (see the derivation below): the
     // sum over every period's own terminal residual, not the last
     // period's alone -- identical derivation to the native/petsc
     // comparison above, applied to region a/region b instead.
@@ -967,15 +964,14 @@ int main(int argc, char** argv) {
           "(disagreement " + std::to_string(dual_d) + " K, bound " +
           std::to_string(dual_bound) + " K)");
 
-    // The agreement bound: SHARP (round 4 -- the owner's own correction
-    // to round 3). Round 3 used ONLY the LAST (20th) period's own
-    // terminal residual: `x - x* = J^-1 F(x)` is exact for affine F
-    // GIVEN IDENTICAL inputs, but with `kPeriods` periods, periods 2
-    // onward do NOT start from identical native/PETSc inputs -- each
-    // period's own Newton solve inherits whatever the PREVIOUS period
+    // The agreement bound: SHARP. It cannot use ONLY the LAST (20th)
+    // period's own terminal residual: `x - x* = J^-1 F(x)` is exact for
+    // affine F GIVEN IDENTICAL inputs, but with `kPeriods` periods,
+    // periods 2 onward do NOT start from identical native/PETSc inputs --
+    // each period's own Newton solve inherits whatever the PREVIOUS period
     // left in `u_in_`/`q_in_` (nothing resets them between periods,
     // dn_component.hpp's own `advance()`), so a bound built from period
-    // `kPeriods` alone said nothing about periods 1..`kPeriods - 1`.
+    // `kPeriods` alone says nothing about periods 1..`kPeriods - 1`.
     //
     // THE PER-PERIOD RECURSION (agreement_bound.hpp's own "PER-PERIOD
     // RECURSION" section has the full derivation): with e_k the
@@ -1034,12 +1030,12 @@ int main(int argc, char** argv) {
           std::to_string(bound) + " K)");
     check(newton_petsc.not_converged == 0, "newton-petsc converges every period");
 
-    // INFORMATIONAL ONLY, never asserted: round 2's own (legacy) formula,
-    // printed alongside the round-4 sharp bound so a host run can report
-    // BOTH observed/sharp and observed/legacy -- agreement_bound.hpp's
-    // own "LEGACY" section. Still built from the LAST period's own
-    // ||F_0||/rtol (`initial_residual_norm`), unchanged from round 3: it
-    // is kept only for the informational print, not re-derived.
+    // INFORMATIONAL ONLY, never asserted: the legacy formula, printed
+    // alongside the sharp bound so a host run can report BOTH
+    // observed/sharp and observed/legacy -- agreement_bound.hpp's own
+    // "LEGACY" section. Built from the LAST period's own
+    // ||F_0||/rtol (`initial_residual_norm`); kept only for the
+    // informational print.
     const double legacy_bound = dn_heat::legacy_agreement_bound(
         newton_cfg.rtol, newton_native.initial_residual_norm,
         newton_petsc_cfg.rtol, newton_petsc.initial_residual_norm,
@@ -1089,15 +1085,14 @@ int main(int argc, char** argv) {
   // max_iter=1 and read like an explicit scheme.
   const Outcome picard = run_case(picard_cfg, kMaxIterations, kPeriods,
                                   dn::Wiring::Connected, true, dump);
-  // Review 2026-10-11 TD-3: docs/user/dn-heat.md claims --dump prints
-  // "instead of running anything"; prior to this fix every run fell
-  // through into the remaining ten configurations below (aitken
-  // through newton-nl) and their convergence gates regardless, costing
-  // the whole run's time for an exit status that was the gates' own, not
-  // an unconditional 0. `example.dn_heat.dump`'s own ctest row only
-  // checks the dump text via PASS_REGULAR_EXPRESSION (examples/
-  // CMakeLists.txt), never these later outcomes, so nothing below this
-  // point is load-bearing under --dump.
+  // docs/user/dn-heat.md says --dump prints "instead of running
+  // anything", so a dump run returns here rather than falling through
+  // into the remaining ten configurations below (aitken through
+  // newton-nl) and their convergence gates, whose exit status would
+  // otherwise replace an unconditional 0. `example.dn_heat.dump`'s own
+  // ctest row only checks the dump text via PASS_REGULAR_EXPRESSION
+  // (examples/CMakeLists.txt), never these later outcomes, so nothing below
+  // this point is load-bearing under --dump.
   if (dump) return 0;
   const Outcome aitken = run_case(aitken_cfg, kMaxIterations, kPeriods,
                                   dn::Wiring::Connected, true);
@@ -1118,7 +1113,7 @@ int main(int argc, char** argv) {
   const Outcome repeat =
       run_case(iqn_cfg, kMaxIterations, kPeriods, dn::Wiring::Connected, true);
 
-  // S7.2: the SAME affine graph (beta = 0.0, the default, bit-identical to
+  // The SAME affine graph (beta = 0.0, the default, bit-identical to
   // every row above -- Dn.NonlinearAtBetaZeroIsBitIdenticalToTheAffineMap,
   // test/runtime/newton_region_test.cpp), solved by the native Jacobian-free
   // Newton-Krylov region instead of a quasi-Newton accelerator wrapped around
@@ -1336,14 +1331,12 @@ int main(int argc, char** argv) {
             " W/m^2 >= " + std::to_string(kImplicitGate));
   check(newton.addresses_fixed,
         "newton: a registered field address moved during the run");
-  // docs/dev/newton-krylov.md Section 8.3b: this track's own fix for a genuine,
-  // numerically-harmless bookkeeping defect found while measuring Section 8.3 --
-  // run_region_newton() originally left the generic per-period tick every
-  // region (Newton or Picard) is already advanced by before its own body
-  // runs un-rolled-back, so this read 2x the period count. Regression-
-  // tested directly in test/runtime/newton_region_test.cpp's own
-  // NewtonRegion.HistoryAccumulatesExactlyOncePerPeriodNotTwice; asserted
-  // here too because this binary is where the ORIGINAL defect was found.
+  // docs/dev/newton-krylov.md Section 8.3b: run_region_newton() must roll
+  // back the generic per-period tick every region (Newton or Picard) is
+  // already advanced by before its own body runs, or this reads 2x the
+  // period count. Tested directly in test/runtime/newton_region_test.cpp's
+  // own NewtonRegion.HistoryAccumulatesExactlyOncePerPeriodNotTwice;
+  // asserted here too.
   check(newton.d_history == static_cast<double>(newton.periods) &&
             newton.n_history == static_cast<double>(newton.periods),
         "newton: private component state accumulated to " +
@@ -1370,7 +1363,7 @@ int main(int argc, char** argv) {
   check(disagreement(picard, iqn) < kAgreementGate,
         "Picard and IQN-ILS disagree by " +
             std::to_string(disagreement(picard, iqn)) + " K");
-  // S7.2's own native solver is held to the SAME agreement gate: a
+  // The native Newton solver is held to the SAME agreement gate: a
   // different fixed point here would mean Newton and the quasi-Newton
   // accelerators are not solving the same coupling problem.
   check(disagreement(picard, newton) < kAgreementGate,

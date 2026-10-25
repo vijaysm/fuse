@@ -1,12 +1,11 @@
 # Config file for the installed `fuse-coupler` CMake package (docs/dev/conventions.md:
-# "CMake package `fuse-coupler`", never wired up before REVIEW.md R-25/BT-F9).
+# "CMake package `fuse-coupler`", never wired up before this file existed).
 #
 # Kokkos and fmt (every fuse:: layer links both PUBLIC) are resolved below via
 # find_dependency(), the portable path, because both ship a real CMake Config
 # with imported targets. MPI and MOAB are also PUBLIC link dependencies of
 # fuse::transport/fuse::backend when this build had FUSE_ENABLE_MPI/
-# FUSE_ENABLE_MOAB on, so a consumer needs them resolved too (REVIEW.md pass2
-# N-build-tools-docs-9 -- install(EXPORT) failed at Generate time the moment a
+# FUSE_ENABLE_MOAB on, so a consumer needs them resolved too (install(EXPORT) failed at Generate time the moment a
 # host actually configured tier 2, invisible at tier 0/1 where MOAB is off).
 # MPI gets the portable find_dependency() treatment same as Kokkos/fmt. MOAB
 # does not: its shipped MOABConfig.cmake creates no imported target at all
@@ -29,8 +28,7 @@
 # Eigen3 is the same, but only since src/CMakeLists.txt wraps fuse::linalg's
 # link in $<BUILD_LOCAL_INTERFACE:Eigen3::Eigen>. Before that, install(EXPORT)
 # re-exported the STATIC library's PRIVATE link as $<LINK_ONLY:Eigen3::Eigen>
-# and this file had to find_dependency(Eigen3) for it (CI run 36124149902,
-# 2026-09-25) -- which no consumer of a build that FETCHED Eigen could satisfy,
+# and this file had to find_dependency(Eigen3) for it (CI run 36124149902) -- which no consumer of a build that FETCHED Eigen could satisfy,
 # since a fetched Eigen installs nothing. Eigen is header-only and only
 # src/linalg/*.cpp include it, so the archive needs nothing from it at link
 # time and the reference is gone.
@@ -71,8 +69,7 @@ if(FUSE_ENABLE_MPI)
   # would fail FindMPI's own component check for any consumer whose project()
   # enables only CXX -- "MPI component 'C' was requested, but language C is
   # not enabled" -- forcing every consumer to also enable C for a component
-  # this package never uses. Found running this exact consumer scenario by
-  # hand (REVIEW.md pass2 N-build-tools-docs-9's own verification).
+  # this package never uses. Seen when running this exact consumer scenario.
   find_dependency(MPI COMPONENTS CXX)
 endif()
 

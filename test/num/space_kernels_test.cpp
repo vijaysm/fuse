@@ -305,7 +305,7 @@ TYPED_TEST(SpaceKernels, RemapApplyMultiComponentMatchesApplyWeightsOrder) {
   }
 }
 
-/// KNOWN_ISSUES.md D11 / matrix cell A-SPACES-TRANSPORT: the fixed-chunk
+/// Matrix cell A-SPACES-TRANSPORT: the fixed-chunk
 /// scheme `deterministic_dot`/`deterministic_sum`/`deterministic_norm_squared`
 /// use so the runtime's own reductions (iteration.cpp's block residual/value
 /// norms) stay bit-for-bit independent of the execution space's thread count.
@@ -391,7 +391,7 @@ double ChunkedSerialDiffSquaredReference(const std::vector<double>& a,
   return total;
 }
 
-// KNOWN_ISSUES.md D30: the same forward-error bound as
+// The same forward-error bound as
 // test/linalg/dist_vector_test.cpp's forward_error_bound() (Higham,
 // "Accuracy and Stability of Numerical Algorithms", 2nd ed., secs.
 // 3.1/4.2) -- two IEEE-754 evaluations of sum_i x_i differ by at most
@@ -441,13 +441,12 @@ double SumSquaredDiffs(const std::vector<double>& a, const std::vector<double>& 
 }
 }  // namespace
 
-// Renamed from ...Exactly (KNOWN_ISSUES.md D30): with FUSE_FP_REPRODUCIBLE ==
-// 0 the dot/norm_squared/norm_squared_diff comparisons below are no longer
-// bit-for-bit, so a name claiming that would overstate what this test checks
-// in that configuration. deterministic_sum's own comparison (no multiply in
+// With FUSE_FP_REPRODUCIBLE == 0 the dot/norm_squared/norm_squared_diff
+// comparisons below are not bit-for-bit, so the name says "Exactly Or Within
+// The Fp Contraction Bound". deterministic_sum's own comparison (no multiply in
 // `s += v[i]`, so no FMA for any contraction policy to fuse) and the
 // single-chunk-equals-the-plain-oracle check right below it are NOT
-// contraction-sensitive and stay exact in both configurations; the new name
+// contraction-sensitive and stay exact in both configurations; the name
 // covers what the test as a whole asserts in either one.
 TYPED_TEST(SpaceKernels,
           DeterministicReductionsMatchTheChunkedReferenceExactlyOrWithinTheFpContractionBound) {
@@ -481,7 +480,7 @@ TYPED_TEST(SpaceKernels,
 #if FUSE_FP_REPRODUCIBLE
     EXPECT_EQ(got_dot, want_dot) << "deterministic_dot, n=" << n;
 #else
-    // D30: both chunked product-sums (got_dot, and the serial reference it
+    // Both chunked product-sums (got_dot, and the serial reference it
     // is checked against) may each fuse their own a(i)*b(i) accumulation
     // into an FMA, independently -- measured to differ for deterministic_
     // norm_squared below at n=256/257; not observed for this a/b pair at
@@ -505,7 +504,7 @@ TYPED_TEST(SpaceKernels,
 #if FUSE_FP_REPRODUCIBLE
     EXPECT_EQ(got_ns, want_ns) << "deterministic_norm_squared, n=" << n;
 #else
-    // D30's own measured failure (n=256, n=257): one ulp under the
+    // The measured failure (n=256, n=257): one ulp under the
     // compiler's default contraction, here bounded instead of asserted
     // bit-identical.
     const double bound_ns = chunked_forward_error_bound(n, SumAbsProducts(a, a));

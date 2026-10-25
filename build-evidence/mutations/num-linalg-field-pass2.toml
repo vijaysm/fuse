@@ -1,8 +1,5 @@
-# Mutations for the num/linalg/field SECOND fix pass (REVIEW.md pass2
-# N-num-linalg-field-1, R-48). Own file per the review-fix protocol: do not
-# edit build-evidence/mutations.toml directly while other fixers hold it
-# dirty, and do not edit build-evidence/mutations/*.toml belonging to the
-# first pass.
+# Mutations for the num/linalg/field layers (allocation hoisting in the
+# polynomial fit helpers).
 
 [[mutation]]
 id = "fit-polynomial-drops-the-pre-split-length-check"
@@ -24,7 +21,7 @@ test = "num.temporal_basis"
 [[mutation]]
 id = "waveform-evaluate-dg-reallocates-coefficients-per-element"
 area = "num"
-describes = "evaluate_dg reverts to calling the allocating solve_polynomial_fit fresh for every element instead of the hoisted _into buffers, reintroducing the per-element allocation R-48 (pass 2) removed"
+describes = "evaluate_dg reverts to calling the allocating solve_polynomial_fit fresh for every element instead of the hoisted _into buffers, reintroducing the per-element allocation that the hoisting removed"
 file = "include/fuse/num/waveform.hpp"
 old = """    std::vector<double>       coeffs;
     std::vector<double>       rhs_scratch;

@@ -26,16 +26,14 @@
 
 #include <gtest/gtest.h>
 
-// R-50 (REVIEW.md): the documented rank-requirement convention
+// The documented rank-requirement convention
 // (docs/dev/testing.md), so the matrix of rank counts this file needs is
 // checkable by grep instead of by reading every skip guard by hand.
 #include "fuse_test_main.hpp"
 
-// Before the #if. Only <gtest/gtest.h> preceded this test, so FUSE_HAVE_MPI was
-// undefined here, read as 0, and every case in this file was compiled out of
-// every build -- including the host runs that reported the parallel legs
-// passing. A binary with no tests exits 0. Found by the extended invariant
-// gate 2026-09-19, not by any reviewer.
+// This include must come before the #if: <gtest/gtest.h> alone does not define
+// FUSE_HAVE_MPI, which would read as 0 and compile every case in this file
+// out of every build. A binary with no tests exits 0.
 #include "fuse/base/config.hpp"
 #include "fuse/base/error.hpp"
 
@@ -131,9 +129,7 @@ class TestMesh final : public fuse::MeshView {
   }
   // This mesh carries points and ids only -- it exists to test the matching,
   // not geometry -- so it declares no simplices, which MeshView documents as
-  // legal. Added 2026-09-19: the interface gained the simplex contract after
-  // this file was ported, and the mismatch went unseen because the whole file
-  // compiled to nothing until the same day (REVIEW.md R-51).
+  // legal.
   [[nodiscard]] std::size_t simplex_count(int dim, std::size_t i) const override {
     check(dim, i);
     return 0;
@@ -1511,14 +1507,14 @@ TEST(CommGraph, ASideWithACommunicatorButNoMeshIsRefused) {
 
 // ---------------------------------------------------------------------------
 // accumulate_shared_rows / copy_owner_shared_rows -- agreed pre-collective
-// verdicts (review 2026-10-11 TR-7, TR-8).
+// verdicts.
 // ---------------------------------------------------------------------------
 
-// TR-7. Rank 1's buffer is deliberately the wrong size; rank 0's is correct.
-// Before the fix, rank 1 returned E-ACCUM-SIZE locally while rank 0 entered
-// the first MPI_Allgather alone and blocked in it -- a ctest timeout, not a
-// failure. After the fix both ranks agree the same code before either
-// enters that Allgather.
+// Rank 1's buffer is deliberately the wrong size; rank 0's is correct.
+// Without agreement, rank 1 would return E-ACCUM-SIZE locally while rank 0
+// entered the first MPI_Allgather alone and blocked in it -- a ctest
+// timeout, not a failure. Both ranks instead agree the same code before
+// either enters that Allgather.
 TEST(AccumulateSharedRows, AMismatchedBufferOnOneRankIsRefusedByEveryRank) {
   FUSE_REQUIRE_RANKS(2);
   const int rank = world_rank();
@@ -1533,7 +1529,7 @@ TEST(AccumulateSharedRows, AMismatchedBufferOnOneRankIsRefusedByEveryRank) {
   ASSERT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
 }
 
-// TR-7's twin site.
+// The twin site of the previous test.
 TEST(CopyOwnerSharedRows, AMismatchedBufferOnOneRankIsRefusedByEveryRank) {
   FUSE_REQUIRE_RANKS(2);
   const int rank = world_rank();
@@ -1548,13 +1544,13 @@ TEST(CopyOwnerSharedRows, AMismatchedBufferOnOneRankIsRefusedByEveryRank) {
   ASSERT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
 }
 
-// TR-8. gid_of(99) is a ghost on rank 0 (not owned there) and absent from
-// rank 1 entirely -- nobody owns it, a mesh contract violation. Before the
-// fix the "no owner" scan walked only each rank's OWN local_gids: rank 0
-// (which holds the orphaned id) saw the defect and refused, while rank 1
-// (which never held it) saw nothing and returned success -- a mixed
-// outcome across ranks for one shared defect. After the fix both ranks scan
-// the identical gathered id list and agree.
+// gid_of(99) is a ghost on rank 0 (not owned there) and absent from
+// rank 1 entirely -- nobody owns it, a mesh contract violation. A "no owner"
+// scan over only each rank's OWN local_gids would let rank 0 (which holds
+// the orphaned id) see the defect and refuse, while rank 1 (which never
+// held it) saw nothing and returned success -- a mixed outcome across ranks
+// for one shared defect. Both ranks instead scan the identical gathered id
+// list and agree.
 TEST(CopyOwnerSharedRows, AGlobalIdNobodyOwnsIsRefusedByEveryRank) {
   FUSE_REQUIRE_RANKS(2);
   const int rank = world_rank();

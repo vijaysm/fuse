@@ -1,7 +1,7 @@
 #pragma once
 
-/// Restart track (docs/dev/restart.md), Stage B Slice 1b: the closed element-
-/// type enumeration a typed restart field is tagged with, plus the compile-
+/// The closed element-
+/// type enumeration (docs/dev/restart.md) a typed restart field is tagged with, plus the compile-
 /// time trait that maps a C++ type to it and the metadata every HDF5-backed
 /// dataset records so a reader can verify what it is about to interpret
 /// before it interprets it.
@@ -30,9 +30,8 @@
 /// but `element_type_of<_Float16>()` itself would not exist, so no caller
 /// could ask for it -- the enumerator stays in the closed set (a FILE
 /// written by a compiler that has `_Float16` must still be nameable by a
-/// reader that does not) but nothing in THIS build ever WRITES one. This is
-/// the owner's own instruction: "only if the compiler provides _Float16;
-/// otherwise omit it and say so -- do not invent."
+/// reader that does not) but nothing in THIS build ever WRITES one. The type is
+/// provided only if the compiler provides _Float16.
 
 #include <cstddef>
 #include <cstdint>
@@ -104,7 +103,7 @@ enum class ElementType : std::uint8_t {
 };
 
 /// How a `get_field`/`get_scalar` request's own C++ type may differ from
-/// the STORED `ElementType`, owner decision (robustness first; docs/dev/
+/// the STORED `ElementType` (robustness first; docs/dev/
 /// restart.md Section 11's own "READ CONVERSION" heading carries the full
 /// reasoning this comment only summarises):
 ///   Exact           the requested type must equal the stored type (same
@@ -131,7 +130,7 @@ enum class ReadConversion { Exact, Widening, AllowNarrowing };
 
 /// Per-`ElementType` facts a restart dataset's own metadata records and a
 /// reader's own type-agreement check compares against (docs/dev/restart.md
-/// Section 11, item 5). `significand_bits`/`exponent_bits`/`exponent_bias`
+/// Section 11). `significand_bits`/`exponent_bits`/`exponent_bias`
 /// are 0 for an integer or `Bool` type -- they describe a floating type's
 /// `(sign, exponent, significand)` layout, the SAME three quantities
 /// `H5Tget_fields()`/`H5Tget_ebias()` report for the dataset's own HDF5
@@ -272,12 +271,12 @@ inline constexpr ElementType kElementTypeOf = ElementTypeOf<T>::value;
 /// file written on a different platform (x86-64's 80-bit `long double`,
 /// read on this Mac's 53-bit one) is internally self-consistent but
 /// DIFFERS from `fuse::element_type_info(ElementType::LongDouble)` on
-/// THIS build -- exactly docs/dev/restart.md Section 11, item 6's own
+/// THIS build -- exactly the docs/dev/restart.md Section 11
 /// scenario, which this signature exists to make possible at all: if
 /// this function instead re-fetched `from`'s metadata from the global
 /// table by enumerator, reading a genuinely foreign file could never
 /// succeed under ANY `ReadConversion`, not even `AllowNarrowing`, which
-/// would misread the owner's OWN requirement backwards.
+/// would get the requirement backwards.
 [[nodiscard]] bool is_exact_widening(const ElementTypeInfo& from,
                                      const ElementTypeInfo& to);
 

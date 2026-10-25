@@ -1,13 +1,12 @@
-/// Restart track (docs/dev/restart.md), Stage B Slice 1: the dn_heat
-/// end-to-end round trip (owner decision item D) and every refusal
-/// item C names, at tier 0 (no MPI -- this sandbox cannot start it; see
-/// the host_pending note in the delivered report). Reuses examples/
+/// Restart (docs/dev/restart.md): the dn_heat
+/// end-to-end round trip and every refusal
+/// it names, at tier 0 (no MPI). Reuses examples/
 /// dn_heat's own `dn::DirichletSlab`/`dn::NeumannSlab` and the
 /// build_graph()/make_setup() pattern test/runtime/fixed_point_
 /// residual_test.cpp already established for the SAME pair, adding
 /// `.accelerate(AccelKind::Aitken)` so the round trip genuinely exercises
-/// owner decision 4 ("everything restored bit for bit, including
-/// accelerator memory"), not only Form A's own component state.
+/// the requirement that everything is restored bit for bit, including
+/// accelerator memory, not only Form A's own component state.
 #include <gtest/gtest.h>
 #include <fuse/ir/lowering.hpp>
 #include <fuse/backend/serial_backend.hpp>
@@ -127,13 +126,12 @@ fuse::AccelConfig aitken_cfg() {
                            .initial_relaxation = 0.5};
 }
 
-/// Restart track (docs/dev/restart.md Section 9 item 4; KNOWN_ISSUES.md
-/// D64, closed this round): IQN-ILS over the SAME dirichlet_neumann
-/// graph aitken_cfg() uses -- an ORDINARY (non-window-scoped) iteration
-/// region, where `RegionBlock::length` equals the registered field's
-/// own single-sample size by construction, so the window-scoped
-/// id-space mismatch recorded in open_questions (a window region's own
-/// RegionBlock::length is `n * capacity`, not `n`) cannot arise here.
+/// (docs/dev/restart.md Section 9 item 4): IQN-ILS over the SAME
+/// dirichlet_neumann graph aitken_cfg() uses -- an ORDINARY
+/// (non-window-scoped) iteration region, where `RegionBlock::length` equals
+/// the registered field's own single-sample size by construction, so the
+/// window-scoped id-space mismatch (a window region's own RegionBlock::length is
+/// `n * capacity`, not `n`) cannot arise here.
 fuse::AccelConfig iqn_ils_cfg() {
   return fuse::AccelConfig{.kind = fuse::AccelKind::IQN_ILS,
                            .initial_relaxation = 0.5, .reuse = 8};
@@ -152,7 +150,7 @@ struct RunResult {
   double dirichlet_time = 0, neumann_time = 0;
   double dirichlet_history = 0, neumann_history = 0;
   std::size_t last_period_sweeps = 0;
-  // Stage B Slice 1b (docs/dev/restart.md Section 11): DirichletSlab's own
+  // (docs/dev/restart.md Section 11): DirichletSlab's own
   // int32/bool restart fields (sweep_count_/parity_flag_) -- compared
   // here so the round-trip tests verify the TYPED interface end to end
   // through the Runner, not only the double fields every test already
@@ -294,9 +292,8 @@ TEST(Restart, SameRankRoundTripGrowingLayout) {
   std::remove(path.c_str());
 }
 
-/// KNOWN_ISSUES.md D64 (closed this round): the SAME round trip as
-/// SameRankRoundTripSeparateLayout, with IQN-ILS in place of Aitken --
-/// before this round, restoring into this region would have refused
+/// The SAME round trip as SameRankRoundTripSeparateLayout, with IQN-ILS in
+/// place of Aitken. An accelerator without restart state refuses
 /// (E-RESTART-ACCEL-NOT-IMPLEMENTED), proven by AccelNotImplementedRefuses
 /// WithoutOptIn below (which deliberately keeps a DIFFERENT, test-only
 /// accelerator kind as the refusal's own subject so this positive test
@@ -347,7 +344,7 @@ TEST(Restart, GrowingLayoutAppendsASecondPointWithoutDamagingTheFirst) {
                  .ok());
 
   // The FIRST point must still open and read back correctly after the
-  // second one was appended -- the owner's own robustness point for
+  // second one was appended -- the robustness point for
   // copy-append-rename (docs/dev/restart.md Section 4.4).
   auto pr = fuse::restart_io::open_restart_point(
       fuse::restart_io::FileLayout::GrowingFile, path, "p2");
@@ -389,7 +386,7 @@ TEST(Restart, VersionMismatchRefuses) {
 TEST(Restart, DescriptorHashMismatchIsCaughtByTheCaller) {
   // open_restart_point() itself does not compare the hash (fuse/
   // restart_io/hdf5_restart_io.hpp's own PointReader comment: it cannot
-  // see the CURRENT graph). D62 (KNOWN_ISSUES.md): the caller now makes
+  // see the CURRENT graph). The caller makes
   // that comparison through the NAMED refusal fuse::restart_io::
   // check_restart_descriptor_hash() rather than a bare EXPECT_NE on the
   // raw hashes -- "a refusal counts as verified only when a test makes
@@ -431,7 +428,7 @@ TEST(Restart, DescriptorHashMismatchIsCaughtByTheCaller) {
   std::remove(path.c_str());
 }
 
-// D62 (KNOWN_ISSUES.md): the VERSION half of the descriptor provenance
+// The VERSION half of the descriptor provenance
 // check -- distinct from the hash check above, fires INSIDE
 // open_restart_point() itself (no current graph needed: fuse::kGraphVersion
 // is a compile-time constant of this build), with its own refusal code,
@@ -582,7 +579,7 @@ TEST(Restart, FormBOnlyComponentOnDifferentRankCountRefuses) {
 
 TEST(Restart, BadGlobalIdNumberingRefuses) {
   // A duplicate id within one put_field() call is refused locally,
-  // without ever reaching the HDF5 layer (owner decision 2's own
+  // without ever reaching the HDF5 layer (the
   // per-call check, defense in depth ahead of finish_point()'s batched
   // one).
   const std::string path = temp_dir_path("badnum.h5");
@@ -636,8 +633,8 @@ TEST(Restart, AcceleratorLayoutChangeWithoutOptInRefuses) {
   // silent reset) by restoring successfully first (layout UNCHANGED,
   // same graph) with allow_reset=false and confirming no reset was
   // reported -- the positive control for the negative one for a
-  // genuinely different layout, deferred to Slice 2's rank-count-
-  // dependent coverage (host_pending).
+  // genuinely different layout, which needs rank-count-dependent
+  // coverage and is not exercised here.
   auto restored = make_setup(40, aitken_cfg());
   bool any_reset = false;
   const fuse::Result<void> rr = restore_point(
@@ -709,17 +706,16 @@ TEST(Restart, MissingComponentRecordRefuses) {
   std::remove(path.c_str());
 }
 
-// ---------------------------------------------------------------- B
+// ---------------------------------------------------------------- id lookup
 // Rank-count independence rests entirely on get_field() resolving rows
 // BY GLOBAL ID, never by file position -- a reader at a DIFFERENT rank
 // count asks for its own ids in whatever order its own local mesh
 // enumerates them, which is generally NOT the order the writer (at a
 // different rank count, or even the same one with a different field
-// author) stored them in. MEASURED while reviewing this round's own
-// additions: no existing test in this file ever reads a field's ids
-// out of the order they were written in, so a reader that quietly
-// substituted "i-th requested id -> i-th stored row" for the real
-// id->row lookup would pass every other test here. This one asks for
+// author) stored them in. A reader that quietly substituted "i-th
+// requested id -> i-th stored row" for the real id->row lookup would pass
+// every test that reads ids in the order they were written in. This one
+// asks for
 // the SAME three ids written, in REVERSED order, and checks the VALUES
 // come back correspondingly reversed -- the direct, minimal proof that
 // position and id are not being confused.
@@ -767,21 +763,17 @@ TEST(Restart, GetFieldResolvesRowsByIdNotByFilePosition) {
   std::remove(path.c_str());
 }
 
-// ---------------------------------------------------------------- round 2
-// MUST FIX 1: NO SILENT RESET. Round 2 used QuasiNewtonAccel (IQN_ILS)
-// as this fix's test subject, because at that point IQN_ILS genuinely
-// inherited Accelerator's base-class no-op export/import_restart_
-// state(). This round implements IQN_ILS's own restart state
-// (KNOWN_ISSUES.md D64, closed -- see Restart.SameRankRoundTripSeparate
-// LayoutIqnIls above), so IQN_ILS no longer exercises this refusal.
-// Per the owner's own instruction ("keep the refusal path for a
-// test-only accelerator that does not implement it"), these two tests
-// now inject a genuinely test-only `Accelerator` that never overrides
+// ---------------------------------------------------------------- no silent
+// reset NO SILENT RESET. IQN_ILS implements its own restart state (see
+// Restart.SameRankRoundTripSeparateLayoutIqnIls above), so it does not
+// exercise this refusal. The refusal path is kept for a test-only
+// accelerator that does not implement restart state: these two tests
+// inject a genuinely test-only `Accelerator` that never overrides
 // `restart_state_implemented()`/`export_restart_state()`/`import_
 // restart_state()` -- i.e. it is, by construction, "a future
 // Accelerator that keeps the default", the exact case this fix
 // targets -- via `Runner::debug_replace_region_accelerator()`
-// (fuse/runtime/runner.hpp), a TEST-ONLY seam added this round for
+// (fuse/runtime/runner.hpp), a TEST-ONLY seam for
 // exactly this purpose (no AccelKind enumerator exists for a
 // never-implements-restart accelerator, nor should one: every genuine
 // production kind now implements restart state or is trivial).
@@ -859,16 +851,16 @@ TEST(Restart, AccelNotImplementedWithAllowResetSucceedsAndReports) {
   ASSERT_TRUE(rr.ok()) << rr.error().code << ": " << rr.error().message;
   EXPECT_TRUE(any_reset)
       << "opting in must call Accelerator::reset() and REPORT it, per "
-         "owner decision 4 (\"when used it is reported at restart\")";
+         "(\"when used it is reported at restart\")";
   std::remove(path.c_str());
 }
 
-// ---------------------------------------------------------------- D64
-// closure, direct level: a Runner-level round trip (above) cannot
+// ---------------------------------------------------------------- IQN restart
+// state direct level: a Runner-level round trip (above) cannot
 // observe QuasiNewtonAccel's own v_/w_/cols_/have_prev_ at all for
-// AccelKind::IQN_ILS specifically, MEASURED while writing this test --
+// AccelKind::IQN_ILS specifically, MEASURED --
 // a restart point is only ever taken at a period (here, window)
-// boundary (D63), and the very FIRST update() call of the NEXT window
+// boundary, and the very FIRST update() call of the NEXT window
 // has iteration == 0, which calls reset() before anything else;
 // reset() with retain_ == false (every kind except IQN_IMVJ) discards
 // v_/w_/cols_/have_prev_ unconditionally, so a WRONG restore of them
@@ -981,8 +973,8 @@ TEST(Restart, QuasiNewtonAccelExportImportRestartStateRoundTripsBitForBit) {
   std::remove(path.c_str());
 }
 
-// ---------------------------------------------------------------- round 2
-// MUST FIX 2: EXACT KEYS, NO HASH. Two blocks with IDENTICAL local ids but
+// ---------------------------------------------------------------- exact keys
+// EXACT KEYS, NO HASH. Two blocks with IDENTICAL local ids but
 // DIFFERENT field names -- exactly dirichlet/neumann's own shape (both
 // report ids 0..n-1) -- must round-trip to their OWN rows, never cross-
 // contaminate, because each block is written under its own qualified
@@ -1032,8 +1024,8 @@ TEST(Restart, PerBlockKeysNeverCollideOnIdenticalLocalIds) {
   std::remove(path.c_str());
 }
 
-// ---------------------------------------------------------------- round 2
-// MUST FIX 2 (KNOWN_ISSUES.md D69, closed this round): a window-scoped
+// ---------------------------------------------------------------- window
+// capacity A window-scoped
 // region's own accelerated vector is K samples per element, not one --
 // RestartRowBlock::window_capacity, demuxed by detail::put_field_per_
 // block()/get_field_per_block() into one sub-dataset per sample. Two
@@ -1123,10 +1115,10 @@ TEST(Restart, AitkenAccelWindowCapacityPerSampleRestartRoundTripsBitForBit) {
   std::remove(path.c_str());
 }
 
-// ---------------------------------------------------- Stage B Slice 1b
+// ---------------------------------------------------- typed restart fields
 
-// Stage B Slice 1b (docs/dev/restart.md Section 11): restart fields are
-// now templated on the element type -- these tests exercise that
+// (docs/dev/restart.md Section 11): restart fields are
+// templated on the element type -- these tests exercise that
 // directly against `fuse::restart_io::Hdf5GroupWriter`/`Hdf5GroupReader`
 // (through the public `create_restart_point()`/`open_restart_point()`
 // entry points every other test in this file already uses), rather than
@@ -1149,10 +1141,10 @@ fuse::Result<void> write_one_typed(const std::string& path, const char* name,
 }
 }  // namespace
 
-// Every element type the typed interface supports (owner's own closed
-// enumeration, fuse/model/element_type.hpp), round-tripped through a
-// real HDF5 file, bit for bit -- the owner's own test requirement:
-// "round trip bit-identical per type (every enumerator)".
+// Every element type the typed interface supports (the closed
+// enumeration in fuse/model/element_type.hpp), round-tripped through a
+// real HDF5 file, bit for bit: "round trip bit-identical per type (every
+// enumerator)".
 TEST(TypedRestart, EveryElementTypeRoundTripsBitIdentical) {
   const std::string path = temp_dir_path("typed_roundtrip.h5");
 
@@ -1196,7 +1188,7 @@ TEST(TypedRestart, EveryElementTypeRoundTripsBitIdentical) {
   std::remove(path.c_str());
 }
 
-// Both file layouts (owner's own test requirement) -- a single
+// Both file layouts -- a single
 // representative type (double) is enough to prove the typed machinery
 // works identically under GrowingFile, since the type dispatch itself
 // does not depend on which layout wrote it (both route through the
@@ -1284,7 +1276,7 @@ TEST(TypedRestart, WideningSucceedsOnAnExactConversionWithNoReportedChange) {
 }
 
 // "integers that do not fit refuse even under AllowNarrowing: an integer
-// value change is not a rounding" (owner's own words).
+// value change is not a rounding".
 TEST(TypedRestart, IntegerOverflowRefusesEvenUnderAllowNarrowing) {
   const std::string path = temp_dir_path("typed_int_overflow.h5");
   ASSERT_TRUE(write_one_typed<std::int32_t>(path, "v", 100000).ok());
@@ -1339,7 +1331,7 @@ TEST(TypedRestart, FloatNarrowingReportsAMeasuredChange) {
 }
 
 // Same-type requests are unaffected by which ReadConversion was asked
-// for -- the "fast path" every pre-Slice-1b round-trip test already
+// for -- the "fast path" every other round-trip test already
 // relies on, re-stated here as its own explicit property.
 TEST(TypedRestart, IdenticalTypeNeverReportsAChangeUnderAnyConversionMode) {
   const std::string path = temp_dir_path("typed_identical.h5");

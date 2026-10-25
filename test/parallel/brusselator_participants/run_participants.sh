@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
-# Conformance, Unit 2: the host-run driver behind
-# verification.brusselator.participants.{mpmd,accept}.{3,5}. MPI cannot
-# start in this sandbox at all (KNOWN_ISSUES.md C1), so every row this
-# drives is a host_verification_needed item -- what IS verified here is
-# that brusselator_graph_tool, brusselator_u_main, brusselator_v_main,
-# brusselator_coupler_main and brusselator_check all BUILD at tier 1
-# (examples/CMakeLists.txt). test/parallel/connect/run_pair.sh is the
-# precedent this mirrors.
+# The host-run driver behind
+# verification.brusselator.participants.{mpmd,accept}.{3,5}. Every row this
+# drives needs a working MPI launcher; brusselator_graph_tool,
+# brusselator_u_main, brusselator_v_main, brusselator_coupler_main and
+# brusselator_check all build at tier 1 (examples/CMakeLists.txt).
+# test/parallel/connect/run_pair.sh is the precedent this mirrors.
 #
 # Three steps, every mode: (1) brusselator_graph_tool writes the graph
 # YAML for this row's own rank/launch layout; (2) the participant
@@ -20,7 +18,7 @@
 #
 # accept: TWO mpiexec invocations. U's executable is the Connect-mode
 # acceptor AND carries the coupler's own bundled ranks in its local
-# MPI_COMM_WORLD (Q1's ruling, KNOWN_ISSUES.md D18) -- it is therefore
+# MPI_COMM_WORLD -- it is therefore
 # started FIRST and backgrounded (it blocks in MPI_Comm_accept until V's
 # executable, the connector, publishes nothing and instead waits for
 # the acceptor's own published port file -- connect.cpp's own
@@ -29,7 +27,7 @@
 # u_main how many of ITS OWN local ranks are real U-physics ranks; any
 # remaining local ranks are the bundled coupler's own placeholder ranks
 # (u_main.c's own header comment has the full account, including the
-# one mechanical question not yet host-verified).
+# one mechanical question that still needs a host run).
 #
 # Usage:
 #   run_participants.sh <mode: mpmd|accept> <mpiexec> \
@@ -37,18 +35,18 @@
 #     <graph_tool_exe> <u_main_exe> <v_main_exe> <coupler_main_exe> \
 #     <check_exe> <scratch_dir> [periods] [timeout_s] [transport] [solver]
 #
-# [transport] (S6 phase 3, "LowFive" track, Unit 3b): "fuse" (default) or
+# [transport]: "fuse" (default) or
 # "lowfive", passed through verbatim as --transport to graph_tool/u_main/
 # v_main (brusselator_graph_tool.cpp's own --transport flag decides
 # whether u_out/v_out get an hdf5_path at all; u_main.c's/v_main.f90's
 # own --transport decides whether their loop bodies perform the real
-# H5Dwrite/H5Dread this track adds). The VOL connector that makes LowFive
+# H5Dwrite/H5Dread). The VOL connector that makes LowFive
 # interception apply at all is NOT this script's concern -- it is
 # attached process-wide via HDF5_VOL_CONNECTOR/HDF5_PLUGIN_PATH, which
 # the CALLER (examples/CMakeLists.txt's own lowfive ctest rows) sets in
 # the test's own ENVIRONMENT, per docs/user/lowfive.md.
 #
-# [solver] (Physics track): "auto" (default -- direct at 1 rank, schur at
+# [solver]: "auto" (default -- direct at 1 rank, schur at
 # >1), "direct", "schur", "pcg", or "gmres" (species_core.hpp's own
 # SolverKind), passed through verbatim as --solver to u_main/v_main.
 set -u
@@ -77,9 +75,8 @@ if [ "$MODE" = "mpmd" ]; then
   # launcher's. A single mpiexec gives one merged stream in which nothing
   # says which program spoke, and three programs failing at once is the
   # normal case here -- one of them is the cause and the other two are
-  # reacting to a dead peer. Diagnosing the 2026-10-08 MPMD failure from
-  # `combined.log` was not possible for exactly this reason: a Kokkos
-  # error and a SIGABRT, from an unknown pair of the three. `combined.log`
+  # reacting to a dead peer. A merged `combined.log` cannot say which of
+  # the three (a Kokkos error, a SIGABRT) was the cause. `combined.log`
   # is still written for the launcher's own messages (the BAD TERMINATION
   # report, which belongs to no segment).
   # ...and per RANK within a segment, since a segment may have several

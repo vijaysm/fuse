@@ -1,10 +1,8 @@
-// NewtonModel track, Round 2 GAP 1: NewtonNorm::MeasureWeighted over a
-// window-scoped Newton region (`Runner::Impl::run_region_newton_window()`,
-// wired in Round 1 -- src/runtime/iteration.cpp's own "NewtonModel track
-// (2026-10-12)" comments) had never been exercised against the real
-// Brusselator example before this file -- only against a synthetic
-// two-member fixture (test/runtime/newton_norm_test.cpp) and dn_heat's
-// own ordinary (non-window) region. This closes that gap.
+// NewtonNorm::MeasureWeighted over a window-scoped Newton region
+// (`Runner::Impl::run_region_newton_window()`, src/runtime/iteration.cpp),
+// exercised against the real Brusselator example -- the other coverage is
+// a synthetic two-member fixture (test/runtime/newton_norm_test.cpp) and
+// dn_heat's own ordinary (non-window) region.
 //
 // Built from the SAME conventions test/verification/brusselator_runner_
 // test.cpp's own BrusselatorRunner.NewtonConvergesInAPinnedIterationCount
@@ -15,8 +13,8 @@
 //  - the SAME small, fast 5x5/7x7 grid that file's own Rig uses, for (a)
 //    the Plain-vs-MeasureWeighted convergence/agreement comparison and
 //    (c) the GMRES iteration-count, composed-vs-bare-preconditioner
-//    comparison -- neither depends on a specific grid size, and the
-//    throttle this track runs under favours the faster one;
+//    comparison -- neither depends on a specific grid size, so the faster
+//    one is used;
 //  - the example's own REAL defaults (examples/brusselator/main.cpp:
 //    --nx-u 16 --ny-u 16 --nx-v 24 --ny-v 24 --dt-u 0.002 --dt-v 0.003
 //    --window 0.02) for (b), the ONE check tied to a specific number
@@ -33,8 +31,7 @@
 // measure's own units or normalisation are -- leaving a closed-form
 // D_i = sqrt(1 / (capacity * n_u)) / s_b to compare the PRODUCTION value
 // against, with no separate mesh-area oracle needed (and no risk of the
-// GAP 2 unit-factor mistake this track's own Round 2 session already hit
-// once and corrected: this derivation is independent of any component's
+// unit-factor mistake: this derivation is independent of any component's
 // own coefficient convention).
 
 #include <gtest/gtest.h>
@@ -322,8 +319,8 @@ TEST(BrusselatorNewtonNorm, WindowNewtonConvergesUnderPlainAndMeasureWeighted) {
 // example's OWN real defaults -- the one configuration Sec. 9.1's own
 // "measured length" table (n=4864) is about. If D's length, its per-
 // sample uniformity, or its per-entry value disagree with the formula,
-// THAT is the finding to report (per the lead's own instruction), not
-// something this test may loosen to pass.
+// THAT is the finding to report, not something this test may loosen to
+// pass.
 TEST(BrusselatorNewtonNorm, WindowDiagonalMatchesTheFormulaEntryForEntryAtTheExampleDefaults) {
   NewtonConfig cfg;
   cfg.use_block_jacobi_preconditioner = false;  // irrelevant to D itself; keep the solve cheap.
@@ -393,15 +390,14 @@ TEST(BrusselatorNewtonNorm, WindowDiagonalMatchesTheFormulaEntryForEntryAtTheExa
 // jacobi_preconditioner = false) -- the SAME with/without-block-Jacobi
 // comparison brusselator_runner_test.cpp's own pinning test makes for
 // Newton iteration count, extended here to GMRES iteration count via
-// this track's own new debug_newton_gmres_iterations() accessor.
+// the debug_newton_gmres_iterations() accessor.
 //
 // MEASURED, not assumed: composed costs MORE total GMRES work here (42
-// vs 8), not less -- an initial `EXPECT_LE(composed, bare)` written
-// before running this (on the ASSUMPTION a real preconditioner always
-// reduces Krylov work) was WRONG and is not what this test asserts.
-// This is not a regression this track introduced: brusselator_runner_
-// test.cpp's own header for NewtonConvergesInAPinnedIterationCountWith
-// TheBlockJacobiPreconditioner already measured the IDENTICAL direction
+// vs 8), not less -- a real preconditioner does not always reduce Krylov
+// work, so this test does not assert `EXPECT_LE(composed, bare)`.
+// brusselator_runner_test.cpp's own header for
+// NewtonConvergesInAPinnedIterationCountWithTheBlockJacobiPreconditioner
+// already measured the IDENTICAL direction
 // at the full-size grid -- "fewer outer iterations on the first window
 // (3, not 4)" WITHOUT the block-Jacobi preconditioner, citing "a real
 // preconditioner changes the PATH to convergence, never whether

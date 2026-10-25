@@ -1,5 +1,5 @@
-// fuse::petsc::solve() -- the SNES driver (fuse/petsc/solve.hpp), STEP 3
-// of the PetscToken track. The SAME quadratic and atan problems
+// fuse::petsc::solve() -- the SNES driver (fuse/petsc/solve.hpp).
+// The SAME quadratic and atan problems
 // test/num/newton_krylov_test.cpp uses, solved by BOTH substrates from
 // the SAME x0 and (as far as the two option structs overlap) the SAME
 // options -- row petsc.snes.
@@ -153,7 +153,7 @@ TEST(PetscSnes, AtanProblemFromAPoorInitialGuessConvergesOnBothSubstratesAndBtEn
   EXPECT_TRUE(native_backtracked) << "a full Newton step from x0=20 on atan must be rejected by "
                                      "Armijo at least once (the native solver's own mechanism)";
   // PETSc's own BT engagement is RECORDED, not asserted on: SNESLINESEARCHBT's
-  // own internals are not this track's own code, and this test's job is to
+  // own internals are not this library's code, and this test's job is to
   // measure whether the two substrates agree on needing a backtrack here,
   // not to assume PETSc's BT must behave identically to the native one.
 }
@@ -171,11 +171,7 @@ TEST(PetscSnes, DivergenceWhenTheFunctionEvaluationBudgetIsTooSmall) {
 
 TEST(PetscSnes, GhostedVectorIsRefused) {
   // A DistVector with a nonzero ghost region -- E-PETSC-SOLVE-GHOSTED
-  // must fire rather than silently drop the ghost region. (This was
-  // E-PETSC-SOLVE-MULTIRANK while the driver was single-rank only;
-  // 000b01c made it multi-rank over comm_f and narrowed the refusal to
-  // the ghost region itself, KNOWN_ISSUES.md D31/D32, but left this
-  // assertion on the old code: found by the host's quick tier, 2026-10-13.) Built directly
+  // must fire rather than silently drop the ghost region. Built directly
   // against a hand-rolled exchanger reporting a nonzero ghost_size(),
   // the same shape test/num/newton_krylov_test.cpp's own rank-agreement
   // fixtures use for a non-serial exchanger.

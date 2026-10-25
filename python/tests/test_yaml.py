@@ -6,15 +6,14 @@ configuration (include/fuse/model/iteration.hpp) has no soma equivalent at all (
 docs/dev/python-surface.md's evidence table), so upstream's YamlRoundTrip tests never had
 anything like it to cover.
 
-STATUS: acceptance test, written against the surface in docs/dev/python-surface.md; `pfuse` does
-not exist yet (Stage B builds it).
+STATUS: acceptance test, written against the surface in docs/dev/python-surface.md.
 """
 
 import os
 
 import pytest
 
-pfuse = pytest.importorskip("pfuse", reason="Stage B has not built the _pfuse extension yet")
+pfuse = pytest.importorskip("pfuse", reason="the _pfuse extension is not built")
 
 DATA_DIR = os.environ.get("PFUSE_TEST_DATA_DIR")
 
@@ -67,7 +66,7 @@ class TestPlainGraphRoundTrip:
     def test_malformed_yaml_raises_rather_than_returning_a_flag(self):
         """from_yaml()/load_yaml_file() return fuse::Result<CouplingGraph> in C++ -- a parse
         or reference-resolution failure is a Result failure (E-YAML-PARSE/E-YAML-REF/...),
-        never thrown, so it is a bare pfuse.FuseError carrying .code, per the owner's ruling
+        never thrown, so it is a bare pfuse.FuseError carrying .code
         (docs/dev/python-surface.md's "Errors" section)."""
         with pytest.raises(pfuse.FuseError) as excinfo:
             pfuse.from_yaml("this: is: not: a: graph")

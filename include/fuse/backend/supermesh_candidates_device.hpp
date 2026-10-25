@@ -1,12 +1,11 @@
 #pragma once
 
 /// The supermesh's candidate-pair broad phase
-/// (docs/dev/device-resident-arcs.md Phase 2: "last the supermesh
+/// (docs/dev/device-resident-arcs.md: "last the supermesh
 /// intersection"), moved to a Kokkos device kernel, standing ALONGSIDE
 /// `build_supermesh_weights` (src/backend/supermesh.cpp) rather than
-/// replacing any of its code -- see this track's report
-/// (report-weight-builders.md) for exactly why, and for the r3d/r2d
-/// device-feasibility finding this header's own comment below summarizes.
+/// replacing any of its code. The r3d/r2d device-feasibility finding is
+/// summarized below.
 ///
 /// `build_supermesh_weights`'s own brute-force box test -- "O(n_t * n_s)
 /// box tests ... the honest starting point" (supermesh.cpp's own comment)
@@ -29,7 +28,7 @@
 /// (`_deps/r3d-src/src/r3d.c`/`r2d.c`) for this assessment:
 ///   - Every buffer on this call path is a FIXED-size stack array bounded
 ///     by `R3D_MAX_VERTS`/`R2D_MAX_VERTS` (compile-time constants from
-///     `r3d-config.h`/`r2d.h`) -- no VLA, and this track's test meshes
+///     `r3d-config.h`/`r2d.h`) -- no VLA, and the test meshes
 ///     (tets, quads) never approach that bound.
 ///   - No recursion on this call path (`r3d_clip` is a plain nested-loop
 ///     function; verified by reading its body, not inferred).
@@ -51,8 +50,8 @@
 ///   vendored copy (and keeping that patch across an `UPSTREAMS.lock`
 ///   bump) or hand-porting the small subset FUSE actually calls into a
 ///   FUSE-owned, Kokkos-native header. (2) `r3d_clip`'s debug path has an
-///   `fprintf(stderr, ...)` guarded only by `#if !defined(NDEBUG)` -- this
-///   track's build type is Debug (`NDEBUG` unset), and `fprintf` to a
+///   `fprintf(stderr, ...)` guarded only by `#if !defined(NDEBUG)` -- a
+///   Debug build (`NDEBUG` unset) is one such configuration, and `fprintf` to a
 ///   host `FILE*` is not device-callable, so even an annotated `r3d_clip`
 ///   would fail to compile for device in exactly this build configuration
 ///   without also stripping or reworking that guard. (3) `r3d.c`/`r2d.c`
@@ -63,9 +62,8 @@
 ///
 ///   None of these three is a correctness or algorithmic obstacle --
 ///   they are packaging/build-system work on a vendored dependency, which
-///   this track's time budget did not extend to (see report's
-///   `deviations`). The candidate-pair/CSR-assembly split below is
-///   exactly the task's own fallback for this situation: accelerate what
+///   is not done here. The candidate-pair/CSR-assembly split below is
+///   the fallback for this situation: accelerate what
 ///   does not touch r3d/r2d, leave the clip itself host-side, and report
 ///   the blocker precisely rather than assume it either way.
 

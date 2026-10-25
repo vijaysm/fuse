@@ -1,10 +1,9 @@
-// "DerivativeGate" track, tier 1: the adjoint dot-product identity
+// Tier 1: the adjoint dot-product identity
 // (include/fuse/linalg/derivative_gate.hpp) over a REAL MPI_COMM_WORLD
 // fuse::linalg::DistSparseMatrix/DistVector, at RANKS 2 and 3.
 //
-// MPI CANNOT START IN THIS SANDBOX (docs/dev/testing.md): this file is
-// compiled -- registered with fuse_add_mpi_test, RANKS 2 3 -- but never run
-// here; outcomes are a host action.
+// Registered with fuse_add_mpi_test, RANKS 2 3; needs a working MPI
+// launcher (docs/dev/testing.md).
 //
 // WHY THIS DOES NOT CALL fuse::linalg::adjoint_gate DIRECTLY.
 // `adjoint_gate` (derivative_gate.hpp) takes the WHOLE vector as a host

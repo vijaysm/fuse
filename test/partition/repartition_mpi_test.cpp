@@ -4,8 +4,8 @@
 // NOT YET RUN: this sandbox cannot initialize MPI, exactly the posture
 // rcb_mpi_test.cpp documents for itself; running it is a host action.
 //
-// WHAT THIS CHECKS THAT repartition_test.cpp CANNOT: PS-6's
-// num_parts-less-than-comm_size defect can only be reproduced with MORE
+// WHAT THIS CHECKS THAT repartition_test.cpp CANNOT: the
+// num_parts-less-than-comm_size case can only be exercised with MORE
 // THAN ONE real rank -- at kNullComm, comm_size is always 1, so num_parts
 // can never be strictly less than comm_size without also being the
 // already-refused num_parts <= 0 case.

@@ -1,14 +1,12 @@
-# Mutations for the FSI field transfer track (examples/fsi_channel/**,
-# test/verification/fsi_*). Own file per the review-fix protocol: do not
-# edit build-evidence/mutations.toml directly while other tracks hold it
-# dirty.
+# Mutations for the FSI field transfer (examples/fsi_channel/**,
+# test/verification/fsi_*).
 #
 # Each row below was proved BY HAND (tools/mutate.py was not run except
-# --check-anchors, per this delegation's constraints): the edit in `old`/
-# `new` was applied directly to the named file with edit_file, the named
-# target was rebuilt, the named test was run and observed to fail with the
-# message quoted in its own comment, then the file was restored and
-# verified byte-identical to a backup with `cmp` before the next row.
+# --check-anchors): the edit in `old`/`new` was applied directly to the
+# named file, the named target was rebuilt, the named test was run and
+# observed to fail with the message quoted in its own comment, then the
+# file was restored and verified byte-identical to a backup with `cmp`
+# before the next row.
 
 [[mutation]]
 id = "fsi-beam-fd-stencil-center-coefficient"
@@ -30,22 +28,20 @@ test = "verification.fsi_beam"
 #   Restored and confirmed byte-identical with `cmp` before moving on.
 
 # Two further candidate mutations (pressure-outlet gauge sign; H^T D's L
-# scaling in traction_to_fuse_density) were considered but NOT proven this
-# session -- no `old`/`new` anchor exists for them yet, so they are not
-# recorded as rows here (a row without a real anchor fails
-# `tools/mutate.py --check-anchors`). They are reported as "not proven" in
-# this task's submitted output instead.
+# scaling in traction_to_fuse_density) are not proven -- no `old`/`new`
+# anchor exists for them, so they are not recorded as rows here (a row
+# without a real anchor fails `tools/mutate.py --check-anchors`).
 
 [[mutation]]
 id = "fsi-beam-midpoint-load-quarter-dt-coefficient"
 area = "examples/fsi_channel"
-describes = "changes step_midpoint_load()'s RHS coefficient on the K_*vn term from dt/4.0 to dt/3.0, while leaving the LHS effective-system coefficient (rebuild_effective_midpoint's own dt/4.0) untouched -- breaks the exact algebraic identity M*wddot_avg+K*w_avg=q_mid the method's own derivation relies on, without touching the marginal-stability property a spectral-radius check alone would catch. Supersedes an earlier row (`fsi-beam-newmark-gamma-below-half`, mutating a `gamma` parameter in the OLD force-at-t_{n+1} Newmark `step()`) that KNOWN_ISSUES.md D9's round-2 fix made stale: `step()` had zero remaining callers once `step_midpoint_load()` took over the production and diagnostic paths, and was removed this round (dead code) -- the old row's mutation target no longer existed in the code path any test actually exercises."
+describes = "changes step_midpoint_load()'s RHS coefficient on the K_*vn term from dt/4.0 to dt/3.0, while leaving the LHS effective-system coefficient (rebuild_effective_midpoint's own dt/4.0) untouched -- breaks the exact algebraic identity M*wddot_avg+K*w_avg=q_mid the method's own derivation relies on, without touching the marginal-stability property a spectral-radius check alone would catch."
 file = "examples/fsi_channel/beam_solver.hpp"
 old = "    const Eigen::VectorXd rhs =\n        qmid + (mconst / dt) * vn - (dt / 4.0) * (K_ * vn) - (K_ * wn);"
 new = "    const Eigen::VectorXd rhs =\n        qmid + (mconst / dt) * vn - (dt / 3.0) * (K_ * vn) - (K_ * wn);"
 target = "fuse_verification_fsi_beam_test"
 test = "verification.fsi_beam"
-# PROVED (D9 round 2): FsiBeam.MidpointLoadStepConvergesAtSecondOrderInDt
+# PROVED: FsiBeam.MidpointLoadStepConvergesAtSecondOrderInDt
 #   FAILS -- self-convergence order measures 0.9428 (required > 1.8),
 #   diffs=[1.588e-07, 8.497e-08, 4.402e-08, 2.239e-08] -- a first-order,
 #   not second-order, scheme once the RHS/LHS dt/4 coefficients disagree.
@@ -62,13 +58,13 @@ test = "verification.fsi_beam"
 [[mutation]]
 id = "fsi-energy-diag-boundary-bt-term-dropped"
 area = "test/verification"
-describes = "drops the boundary_bt_term correction from measure_full_energy_identity's own closure_residual computation, reverting to the naive (and WRONG, this round's own derivation showed) identity (E1_int-E0_int)/dt = interior_viscous_power + pressure_div_power alone -- misses the continuity operator's own B^T contribution from v_wall/u_outflow (boundary velocities referenced by continuity but with no momentum row of their own), which this round derived, added, and confirmed closes the identity to round-off."
+describes = "drops the boundary_bt_term correction from measure_full_energy_identity's own closure_residual computation, reverting to the naive (and WRONG) identity (E1_int-E0_int)/dt = interior_viscous_power + pressure_div_power alone -- misses the continuity operator's own B^T contribution from v_wall/u_outflow (boundary velocities referenced by continuity but with no momentum row of their own), which closes the identity to round-off."
 file = "test/verification/fsi_energy_diag_test.cpp"
 old = "  r.closure_residual =\n      e_interior_change -\n      dt * (r.interior_viscous_power + r.pressure_div_power - boundary_bt_term);"
 new = "  r.closure_residual =\n      e_interior_change -\n      dt * (r.interior_viscous_power + r.pressure_div_power);"
 target = "fuse_verification_fsi_energy_diag_test"
 test = "verification.fsi_energy_diag"
-# PROVED (D9 round 3): FsiEnergyDiag.
+# PROVED: FsiEnergyDiag.
 #   EnergyIdentityResidualRevealsWhichHypothesisHolds FAILS -- closure_
 #   residual measures 0.013613711065375848 (required < 1e-9*E1 ~=
 #   1.17e-11), off by 9 orders of magnitude, confirming this test's own
@@ -79,54 +75,20 @@ test = "verification.fsi_energy_diag"
 [[mutation]]
 id = "fsi-energy-diag-beam-identity-dx-beam-coefficient-dropped"
 area = "test/verification"
-describes = "drops the (1-dx_beam) coefficient on dPE in the beam-side exact Newmark energy identity, reverting to the NAIVE (and WRONG, this round's own derivation showed) identity dE_beam = dt*sum(load_in*wdot_avg) alone -- misses that BeamSolver::kinetic_energy() (dx-weighted) and strain_energy() (unweighted) use INCONSISTENT quadratures relative to the pointwise-collocation mass/stiffness the actual step_midpoint_load recurrence uses, which this round derived, added, and confirmed closes the identity to solver-tolerance precision."
+describes = "drops the (1-dx_beam) coefficient on dPE in the beam-side exact Newmark energy identity, reverting to the NAIVE (and WRONG) identity dE_beam = dt*sum(load_in*wdot_avg) alone -- misses that BeamSolver::kinetic_energy() (dx-weighted) and strain_energy() (unweighted) use INCONSISTENT quadratures relative to the pointwise-collocation mass/stiffness the actual step_midpoint_load recurrence uses; the (1-dx_beam) coefficient closes the identity to solver-tolerance precision."
 file = "test/verification/fsi_energy_diag_test.cpp"
 old = "  const double dE_beam_predicted = dE_beam_naive + (1.0 - dx_beam) * dPE;"
 new = "  const double dE_beam_predicted = dE_beam_naive + dPE;"
 target = "fuse_verification_fsi_energy_diag_test"
 test = "verification.fsi_energy_diag"
-# CORRECTED 2026-10-13 (FpPolicy track, round 4, KNOWN_ISSUES.md D30): the
-# comment this row carried named a test, FsiEnergyDiag.
-# FullBudgetOnTheUnstableModeItselfAttributesTheGrowth, that no longer
-# exists in the current file -- it was renamed/restructured into
-# FullBudgetOnTheDominantModeCloses once D9 was fully fixed (the dominant
-# mode became Newmark's own energy-free acceleration passenger), at which
-# point this mutation's own target line became UNREACHABLE: the passenger
-# mode's energy-floor guard (a plain `return;`, later a GTEST_SKIP, see
-# round 3's report) returned before execution ever reached the beam-side
-# identity code this row mutates -- confirmed by hand-proving it on round
-# 3's own restated binary and observing byte-identical behaviour with and
-# without the mutation applied, in both contraction policies. Round 4's
-# own redesign (evaluating the budget on the beam's own real-energy
-# oscillatory mode instead) makes this line reachable again by
-# construction, and it is RE-PROVED killed below, on the CURRENT test.
-# PROVED (round 4, 2026-10-13, Release+FUSE_FP_REPRODUCIBLE=OFF, factor 1.5):
-#   FsiEnergyDiag.FullBudgetOnTheDominantModeCloses FAILS at the beam-side
-#   identity's own ASSERT_NEAR -- dE_beam mismatch measures 3.341e-06
-#   (dE_beam=1.899e-05 vs dE_beam_predicted=2.233e-05) against a tolerance
-#   of 1.534e-12 (1.5*eig_quality*|E0| on this mode), a ratio of 2.18e6 --
-#   off by more than 6 orders of magnitude, confirming the (1-dx_beam)
-#   term is still load-bearing on the new mode. Restored and confirmed
-#   byte-identical with cmp before moving on.
-# RE-PROVED (round 5, 2026-10-12, factor 1.0 restored -- see the beam_identity_tol
-#   comment in the test file for why 1.5 was reverted): the UNMUTATED
-#   baseline no longer passes under Release+OFF at factor 1.0 (that is the
-#   round's own reported, unresolved finding), so proving a mutation there
-#   would not be a clean pass-to-fail transition. Re-proved instead under
-#   Release+FUSE_FP_REPRODUCIBLE=ON, where the unmutated baseline passes
-#   (ratio 0.380): FullBudgetOnTheDominantModeCloses FAILS at the same
-#   ASSERT_NEAR -- dE_beam mismatch measures 3.596e-06 (dE_beam=2.035e-05
-#   vs dE_beam_predicted=2.395e-05) against a tolerance of 2.872e-12
-#   (1.0*eig_quality*|E0|), a ratio of 1.25e6. All 5 other tests in the
-#   suite unaffected. Restored and confirmed byte-identical with cmp
-#   before moving on.
-# RE-PROVED (final round, 2026-10-12, KNOWN_ISSUES.md D34 fix applied --
-#   beam_identity_tol is now the Higham-derived bound below, dE_beam_naive
-#   now uses rationalize_dt(c.dt).to_double() instead of literal c.dt): the
-#   UNMUTATED baseline now passes in BOTH policies (Release+ON margin
-#   2534.7x, Release+OFF margin 29183.6x -- see the new mutation row
-#   below and this round's report for the full numbers), so this row was
-#   re-proved as a clean pass-to-fail transition in both. Release+ON:
+# The test FsiEnergyDiag.FullBudgetOnTheDominantModeCloses evaluates the
+# budget on the beam's own real-energy oscillatory mode, so the beam-side
+# identity code this row mutates is reachable.
+# PROVED (final, with beam_identity_tol the Higham-derived bound below and
+#   dE_beam_naive using rationalize_dt(c.dt).to_double() instead of literal
+#   c.dt): the UNMUTATED baseline passes in BOTH policies (Release+ON margin
+#   2534.7x, Release+OFF margin 29183.6x), so this row is a clean
+#   pass-to-fail transition in both. Release+ON:
 #   FullBudgetOnTheDominantModeCloses FAILS -- mismatch=3.5957217943822611e-06
 #   (dE_beam=2.0352110154866983e-05 vs
 #   dE_beam_predicted=2.3947831949249244e-05) against
@@ -139,13 +101,13 @@ test = "verification.fsi_energy_diag"
 [[mutation]]
 id = "fsi-energy-diag-beam-identity-dt-literal-not-delivered"
 area = "test/verification"
-describes = "reverts dE_beam_naive's dt factor from dt_delivered (rationalize_dt(c.dt).to_double(), the dt the coupling graph's component interval actually quantizes to and the production run actually advanced on -- KNOWN_ISSUES.md D34's root cause) back to the literal c.dt -- the exact defect this round fixed. The two differ by a relative 4.6e-7 (c.dt-dt_delivered = -1.613339e-09 on this mode's own dt=3.51042838666104032e-03), small enough that a tolerance not specifically derived to be tighter than it would pass regardless of whether the identity were evaluated against the dt the run actually took."
+describes = "reverts dE_beam_naive's dt factor from dt_delivered (rationalize_dt(c.dt).to_double(), the dt the coupling graph's component interval actually quantizes to and the production run actually advanced on) back to the literal c.dt -- the exact defect the delivered dt fixes. The two differ by a relative 4.6e-7 (c.dt-dt_delivered = -1.613339e-09 on this mode's own dt=3.51042838666104032e-03), small enough that a tolerance not specifically derived to be tighter than it would pass regardless of whether the identity were evaluated against the dt the run actually took."
 file = "test/verification/fsi_energy_diag_test.cpp"
 old = "  const double dE_beam_naive = dt_delivered * beam_wall_power;"
 new = "  const double dE_beam_naive = c.dt * beam_wall_power;"
 target = "fuse_verification_fsi_energy_diag_test"
 test = "verification.fsi_energy_diag"
-# PROVED (final round, 2026-10-12, KNOWN_ISSUES.md D34): killed by the new
+# PROVED: killed by the
 #   Higham-derived beam_identity_tol in BOTH policies, with large margins
 #   (the tolerance is round-off-scale, ~1e-16, while the dt-literal error
 #   this mutation reintroduces is ~1e-12 -- four orders of magnitude
@@ -163,13 +125,13 @@ test = "verification.fsi_energy_diag"
 [[mutation]]
 id = "fsi-energy-diag-closure-drops-imaginary-eigenvalue-contribution"
 area = "test/verification"
-describes = "drops Im(lambda)^2 from the redesigned energy-budget closure's own |lambda|^2 (round 4, KNOWN_ISSUES.md D30's FpPolicy closing note): the chosen mode's eigenvalue is genuinely complex (arg ~4.39 deg, not real), so |lambda|^2 = Re(lambda)^2 + Im(lambda)^2 is itself part of what the closure check verifies, not an incidental detail -- a mutation that silently drops the imaginary contribution is exactly the kind of defect the rotation-invariant Q(x)+Q(x_im) construction exists to make visible, rather than hiding it the way a real-eigenvalue-only identity would."
+describes = "drops Im(lambda)^2 from the redesigned energy-budget closure's own |lambda|^2: the chosen mode's eigenvalue is genuinely complex (arg ~4.39 deg, not real), so |lambda|^2 = Re(lambda)^2 + Im(lambda)^2 is itself part of what the closure check verifies, not an incidental detail -- a mutation that silently drops the imaginary contribution is exactly the kind of defect the rotation-invariant Q(x)+Q(x_im) construction exists to make visible, rather than hiding it the way a real-eigenvalue-only identity would."
 file = "test/verification/fsi_energy_diag_test.cpp"
 old = "  const double lambda_osc_mag2 = a_osc * a_osc + b_osc * b_osc;"
 new = "  const double lambda_osc_mag2 = a_osc * a_osc;"
 target = "fuse_verification_fsi_energy_diag_test"
 test = "verification.fsi_energy_diag"
-# PROVED (round 4, 2026-10-13, Release+FUSE_FP_REPRODUCIBLE=OFF):
+# PROVED (Release+FUSE_FP_REPRODUCIBLE=OFF):
 #   FsiEnergyDiag.FullBudgetOnTheDominantModeCloses FAILS at the new
 #   top-level closure assertion -- E1_total=3.834e-04 vs the (wrong)
 #   predicted |lambda|^2*E0_total=3.811e-04 (using the mutated,
@@ -181,7 +143,7 @@ test = "verification.fsi_energy_diag"
 [[mutation]]
 id = "fsi-traction-is-the-force-on-the-fluid"
 area = "fsi"
-describes = "KNOWN_ISSUES D9's root cause, reproduced exactly: the wall traction delivered to the beam carries the sign of the force on the FLUID (-p + 2 mu dv/dy) instead of on the wall. A negative added mass: the coupled step map's spectral radius was 1.115466 on the diagnostic grid and the energy grew 1.228 per step, while every self-consistency check (power balance, adjointness, energy budgets) passed, because each compared the delivered vector with itself. Killed only by a test that states the physics: a pressurised field transfer pushes its wall outward, and accelerating the wall away from the fluid is opposed."
+describes = "The root cause of an earlier instability, reproduced exactly: the wall traction delivered to the beam carries the sign of the force on the FLUID (-p + 2 mu dv/dy) instead of on the wall. A negative added mass: the coupled step map's spectral radius was 1.115466 on the diagnostic grid and the energy grew 1.228 per step, while every self-consistency check (power balance, adjointness, energy budgets) passed, because each compared the delivered vector with itself. Killed only by a test that states the physics: a pressurised field transfer pushes its wall outward, and accelerating the wall away from the fluid is opposed."
 file = "examples/fsi_channel/stokes_solver.hpp"
 old = "        traction[i] = p_wall_mid - 2.0 * p_.mu * dvdy_mid;"
 new = "        traction[i] = -p_wall_mid + 2.0 * p_.mu * dvdy_mid;"
@@ -191,15 +153,15 @@ test = "verification.fsi_coupled"
 [[mutation]]
 id = "fsi-energy-diag-interface-balance-sign-flip"
 area = "test/verification"
-describes = "flips the interface power balance's own comparison back to the pre-fix subtraction (dE_beam_naive - W_wall_current instead of +) -- the exact sign-convention defect KNOWN_ISSUES.md D34 item (B) traced and this round's own gated assertion exists to catch: W_wall_current is signed as power flowing INTO the fluid (this file's own energy-identity derivation), the NEGATIVE of what the beam receives at a kinematically-matched interface, so the two terms must be added, not subtracted, for the identity to close."
+describes = "flips the interface power balance's own comparison back to the pre-fix subtraction (dE_beam_naive - W_wall_current instead of +) -- the exact sign-convention defect the gated assertion exists to catch: W_wall_current is signed as power flowing INTO the fluid (this file's own energy-identity derivation), the NEGATIVE of what the beam receives at a kinematically-matched interface, so the two terms must be added, not subtracted, for the identity to close."
 file = "test/verification/fsi_energy_diag_test.cpp"
 old = "  const double interface_sum = dE_beam_naive + gen.id.W_wall_current;"
 new = "  const double interface_sum = dE_beam_naive - gen.id.W_wall_current;"
 target = "fuse_verification_fsi_energy_diag_test"
 test = "verification.fsi_energy_diag"
-# PROVED (track InterfaceBound, 2026-10-22, Debug build, both policies;
+# PROVED (Debug build, both policies;
 #   cmake/FuseSlowTests.cmake's own Release-build average for this target
-#   is 123.9 s -- this sandbox's Debug run of the full 6-test target took
+#   is 123.9 s -- a Debug run of the full 6-test target took
 #   28.7 s (ON) / 19.6 s (OFF), itself a "slow"-labelled row):
 #   FsiEnergyDiag.FullBudgetOnTheDominantModeCloses FAILS under the
 #   default (ON) policy -- measured |interface_sum|=1.027117366e-06 vs
@@ -212,13 +174,13 @@ test = "verification.fsi_energy_diag"
 [[mutation]]
 id = "fsi-energy-diag-interface-balance-beam-side-literal-dt"
 area = "test/verification"
-describes = "reintroduces the literal-c.dt bookkeeping defect (KNOWN_ISSUES.md D34 item (A)'s own class) specifically into dE_beam_naive -- the quantity the NEW interface balance assertion (item (B)) also depends on -- to confirm that assertion independently detects a dt regression on the beam side, not only the sign-convention defect it was written for. (The earlier, pre-existing beam-identity assertion ALSO fires on this same mutation and would normally mask this one; it was EXPECT_NEAR'd instead of ASSERT_NEAR'd for this ONE proof run only, then restored, so this row's own target test could be observed independently.)"
+describes = "reintroduces the literal-c.dt bookkeeping defect specifically into dE_beam_naive -- the quantity the interface balance assertion also depends on -- to confirm that assertion independently detects a dt regression on the beam side, not only the sign-convention defect it was written for. (The beam-identity assertion ALSO fires on this same mutation and would normally mask this one; it was EXPECT_NEAR'd instead of ASSERT_NEAR'd for this ONE proof run only, then restored, so this row's own target test could be observed independently.)"
 file = "test/verification/fsi_energy_diag_test.cpp"
 old = "  const double dE_beam_naive = dt_delivered * beam_wall_power;"
 new = "  const double dE_beam_naive = c.dt * beam_wall_power;"
 target = "fuse_verification_fsi_energy_diag_test"
 test = "verification.fsi_energy_diag"
-# PROVED (track InterfaceBound, 2026-10-22, Debug build, ON policy):
+# PROVED (Debug build, ON policy):
 #   FsiEnergyDiag.FullBudgetOnTheDominantModeCloses FAILS at the
 #   interface-balance assertion -- measured |interface_sum|=
 #   2.360835e-13 vs the SAME derived tolerance 4.735389e-16, a ratio of

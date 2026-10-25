@@ -1,20 +1,17 @@
-# Mutations for the ir/schedule fix pass (REVIEW.md R-26, R-27, R-43, R-44).
-# Placed in its own file per the review-fix protocol: do not edit
-# build-evidence/mutations.toml directly while other fixers hold it dirty.
+# Mutations for the ir/schedule layer.
 #
-# NOTE for the lead: fixing R-43/R-44 (IR-F4) restructured the multi-writer
-# combine's tie-break in src/ir/lowering.cpp from a single pass into two
-# (first find the greatest `iterate` across all writers, then resolve
+# NOTE: the multi-writer combine's tie-break in src/ir/lowering.cpp is two
+# passes rather than one (first find the greatest `iterate` across all writers, then resolve
 # anchor/offset only among writers tied at it -- a single pass can flag a
 # false ambiguity from an older tie while a later, strictly-newer writer
-# would have been the unambiguous answer). That rewrite deletes the line
-# Replaces build-evidence/mutations.toml's "merge-typed-at-first-writer", retired when the
-# R-27/R-43 rewrite removed the line it anchored on; same regression, new code shape.
+# would have been the unambiguous answer). That structure replaces the
+# retired "merge-typed-at-first-writer" row, whose anchor line no longer
+# exists; this row covers the same regression in the new code shape.
 
 [[mutation]]
 id = "merge-typed-at-first-writer-v2"
 area = "compiler"
-describes = "the combined value inherits the first writer's time level regardless of a later writer's offset (the axis the sweep's random lag placement actually varies -- it excludes implicit coupling groups, so every generated writer already ties on `iterate`), instead of the newest contribution's -- the same regression the now-stale 'merge-typed-at-first-writer' anchored on the pre-two-pass code (R-27/R-43/R-44). Verified by hand: applying this mutation fails schedule.acyclicity_sweep (a False/0u mismatch on the independently-computed loop outcome); the sibling attempt anchored on the `iterate`-reduction line one loop up is a confirmed NO-OP against this test, because the sweep generator never produces a writer set spanning more than one `iterate` value -- do not reintroduce that anchor as this mutation's replacement."
+describes = "the combined value inherits the first writer's time level regardless of a later writer's offset (the axis the sweep's random lag placement actually varies -- it excludes implicit coupling groups, so every generated writer already ties on `iterate`), instead of the newest contribution's -- the same regression the retired 'merge-typed-at-first-writer' row anchored on the earlier single-pass code. Verified by hand: applying this mutation fails schedule.acyclicity_sweep (a False/0u mismatch on the independently-computed loop outcome); the sibling attempt anchored on the `iterate`-reduction line one loop up is a confirmed NO-OP against this test, because the sweep generator never produces a writer set spanning more than one `iterate` value -- do not reintroduce that anchor as this mutation's replacement."
 file = "src/ir/lowering.cpp"
 old = "        } else if (b.offset > a.offset) {"
 new = "        } else if (false) {"
@@ -24,18 +21,15 @@ test = "schedule.acyclicity_sweep"
 [[mutation]]
 id = "merge-not-folded-past-three-writers"
 area = "compiler"
-describes = "a 4+ writer Merge reverts to one oversized N-ary node instead of a left-fold of pairwise merges, so it compiles past lower() and then fails schedule() with E-SCHED-ARITY (R-27)"
+describes = "a 4+ writer Merge reverts to one oversized N-ary node instead of a left-fold of pairwise merges, so it compiles past lower() and then fails schedule() with E-SCHED-ARITY"
 file = "src/ir/lowering.cpp"
 old = "      if (writers.size() <= kMaxMergeInputs) {"
 new = "      if (true) {"
 target = "fuse_schedule_plan_test"
 test = "schedule.plan"
 
-# The two mutations below guard N-ir-schedule-2
-# (docs/dev/reviews/2026-09-19/pass2/re-ir-schedule.md), found while fixing
-# that report's N-ir-schedule-1 IMPROVEMENT: extending
-# schedule.acyclicity_sweep to also call schedule() immediately turned up a
-# real BLOCKER, not just a coverage gap. A Merge combining two or more
+# The two mutations below guard a boundary-handling bug found by extending
+# schedule.acyclicity_sweep to also call schedule(). A Merge combining two or more
 # field transfers carries `ChannelId{}` origin (fuse/ir/lowering.cpp -- it is not
 # any one of them), so `expand()`'s "no field transfer claimed" boundary handling
 # placed it at its owning component's tick START, the convention meant for
@@ -48,8 +42,7 @@ test = "schedule.plan"
 # touches two independent code paths -- expand()'s lockstep fast path and
 # its general path -- each hand-verified by reverting just that one line,
 # rebuilding, and confirming the cited test fails; `tools/mutate.py` was not
-# run (see the header note: it edits repository sources in place, unsafe
-# against a checkout six fixers share).
+# run (it edits repository sources in place, unsafe against a shared checkout).
 
 [[mutation]]
 id = "merge-placed-at-tick-start-lockstep"
@@ -74,7 +67,7 @@ test = "schedule.expand"
 [[mutation]]
 id = "region-grouping-does-nothing"
 area = "compiler"
-describes = "D1's fix: a region's members are grouped inside their instant so declaration order cannot decide whether a coupling schedules. Without the preference the greedy emission degenerates to the old rank order and the declared-second spelling is rejected again."
+describes = "A region's members are grouped inside their instant so declaration order cannot decide whether a coupling schedules. Without the preference the greedy emission degenerates to the old rank order and the declared-second spelling is rejected again."
 file = "src/schedule/scheduler.cpp"
 old = "      if (open != kNoRegion) {"
 new = "      if (false) {"
@@ -91,7 +84,7 @@ new = "    if (!any_member || hi - lo < 2) {"
 target = "fuse_verification_iteration_test"
 test = "verification.iteration"
 
-# KNOWN_ISSUES.md B3 (Component::capabilities() bitmask). Two mutations: the
+# Component::capabilities() bitmask. Two mutations: the
 # new determinism check going dark, and supports_rollback() reading the wrong
 # bit out of the same word. Both hand-verified by applying the row's `old` ->
 # `new` text edit to a clean checkout copy, rebuilding the named target, and
@@ -111,23 +104,20 @@ test = "runtime.checkpoint"
 [[mutation]]
 id = "b3-rollback-bit-read-from-wrong-field"
 area = "runtime"
-describes = "Component::supports_rollback() (include/fuse/runtime/component.hpp) reads kCapabilityHiddenState (bit 3) instead of kCapabilityRollback (bit 0) out of capabilities(), so a component that declares rollback alone (every ported override before B3, and the general case: rollback set, hidden state unset) reports supports_rollback() == false. HAND-VERIFIED (applied to the real file, rebuilt, run, restored, cmp'd byte-identical -- not derived): applying this mutation, rebuilding fuse_runtime_component_iface_test and running ctest -R '^runtime.component_iface$' gives exactly three failures out of 23 subtests -- ComponentIface.RollbackDefaultsToUnsupported (Toy{\"a\"}.supports_rollback() now reads false), ComponentIface.ToyDeclaresRollbackOnlyAndLeavesTheRestAtDefault (same), and ComponentSet.RegistryObservesComponentStateAcrossACheckpointRoundTrip (its ASSERT_TRUE(c.supports_rollback()) aborts the test) -- every other subtest, including DefaultCapabilitiesDecodeToTheDocumentedTriple and MakeCapabilitiesRoundTripsAllThreeBits, is unaffected. Restored via cmp against a pre-edit copy: byte-identical."
+describes = "Component::supports_rollback() (include/fuse/runtime/component.hpp) reads kCapabilityHiddenState (bit 3) instead of kCapabilityRollback (bit 0) out of capabilities(), so a component that declares rollback alone (every ported override, and the general case: rollback set, hidden state unset) reports supports_rollback() == false. HAND-VERIFIED (applied to the real file, rebuilt, run, restored, cmp'd byte-identical -- not derived): applying this mutation, rebuilding fuse_runtime_component_iface_test and running ctest -R '^runtime.component_iface$' gives exactly three failures out of 23 subtests -- ComponentIface.RollbackDefaultsToUnsupported (Toy{\"a\"}.supports_rollback() now reads false), ComponentIface.ToyDeclaresRollbackOnlyAndLeavesTheRestAtDefault (same), and ComponentSet.RegistryObservesComponentStateAcrossACheckpointRoundTrip (its ASSERT_TRUE(c.supports_rollback()) aborts the test) -- every other subtest, including DefaultCapabilitiesDecodeToTheDocumentedTriple and MakeCapabilitiesRoundTripsAllThreeBits, is unaffected. Restored via cmp against a pre-edit copy: byte-identical."
 file = "include/fuse/runtime/component.hpp"
 old = "    return (capabilities() & kCapabilityRollback) != 0;"
 new = "    return (capabilities() & kCapabilityHiddenState) != 0;"
 target = "fuse_runtime_component_iface_test"
 test = "runtime.component_iface"
 
-# Time windows track (Implement windowed temporal coupling across clocks).
-# Mutations below guard fuse/schedule/window.hpp's legality gate. NOT
-# hand-verified by rebuilding: the shared tier-0 build disk was exhausted
-# by three concurrent tracks for the whole of this session (see the
-# report this change's commit carries). Anchors are confirmed present
-# (`tools/mutate.py --check-anchors`) and the expected failure mode is
-# derived from a from-scratch Python re-implementation of the identical
-# algorithm, run and checked against a closed-form exact solution. The
-# lead should re-verify by actually applying each mutation once tier-0
-# disk is available.
+# Windowed temporal coupling across clocks. Mutations below guard
+# fuse/schedule/window.hpp's legality gate. NOT hand-verified by
+# rebuilding. Anchors are confirmed present (`tools/mutate.py
+# --check-anchors`) and the expected failure mode is derived from a
+# from-scratch Python re-implementation of the identical algorithm, run
+# and checked against a closed-form exact solution. Each mutation should
+# be re-verified by actually applying it.
 
 [[mutation]]
 id = "window-order-floor-not-enforced"
@@ -149,7 +139,7 @@ new = "    const Rational len = Rational{1};"
 target = "fuse_schedule_window_scope_test"
 test = "schedule.window_scope"
 
-# The coupler-placement track (design C, docs/dev/coupler-placement.md).
+# Coupler placement (docs/dev/coupler-placement.md).
 # Both rows below are Tier 0 -- no MPI needed, since the shapes they break
 # are visible from the DAG a single lowering call produces.
 
@@ -196,9 +186,8 @@ target = "fuse_schedule_window_causality_test"
 test = "schedule.window_causality"
 # Expected kill: WindowCausality.WriterForAnEarlierWindowInstanceDoesNotSatisfyALaterOne
 # (an unlagged import written for a DIFFERENT window instance would no
-# longer be refused). Re-verified by hand 2026-09-29 after
-# check_window_causality() gained the CouplingGraph parameter and the
-# lagged/unlagged split.
+# longer be refused). Re-verified by hand with check_window_causality()'s
+# CouplingGraph parameter and the lagged/unlagged split.
 
 [[mutation]]
 id = "window-causality-call-removed-from-schedule"
@@ -215,15 +204,14 @@ test = "schedule.window_region_golden"
 # check_dependence_order() nor mark_regions() can catch, since neither node
 # has a real input edge at all -- run through the public schedule() entry
 # point; with the call removed it schedules cleanly instead of failing with
-# E-SCHED-WINDOW-CAUSALITY). Added once Unit B of the multirate-window-on-
-# the-Runner track compiled a real window-scoped region through lower()/
-# schedule() (build_window_regions(), src/ir/window_lowering.cpp) -- before
-# that, no test exercised schedule()'s own call to this check at all.
+# E-SCHED-WINDOW-CAUSALITY). This is the only test that exercises schedule()'s
+# own call to this check on a real window-scoped region compiled through
+# lower()/schedule() (build_window_regions(), src/ir/window_lowering.cpp).
 
 [[mutation]]
 id = "clockset-window-member-reverts-to-own-interval"
 area = "compiler"
-describes = "ClockSet's own constructor (include/fuse/schedule/clock.hpp) never substitutes a window-scoped member's region's own window length for its clock: every component's clock is unconditionally its own ComponentDecl::interval again, the exact 'a window member's own fine subcycling interval still feeds checked_common_period()'s LCM' defect the user's standing ruling (KNOWN_ISSUES.md / the plan, against a disguised least-common-multiple window) was fixed to remove. On the Brusselator's own dt_u=0.002/dt_v=0.003/window=0.02 shape (WindowRegionGolden.BrusselatorsOwnDtAndWindowScheduleWithoutAnLcmPeriod), the compiled period reverts to lcm(0.002, 0.003) = 0.006, which 0.02 does not divide evenly, so schedule() fails E-SCHED-PERIOD instead of succeeding with period 0.02."
+describes = "ClockSet's own constructor (include/fuse/schedule/clock.hpp) never substitutes a window-scoped member's region's own window length for its clock: every component's clock is unconditionally its own ComponentDecl::interval again, the exact 'a window member's own fine subcycling interval still feeds checked_common_period()'s LCM' defect of a disguised least-common-multiple window. On the Brusselator's own dt_u=0.002/dt_v=0.003/window=0.02 shape (WindowRegionGolden.BrusselatorsOwnDtAndWindowScheduleWithoutAnLcmPeriod), the compiled period reverts to lcm(0.002, 0.003) = 0.006, which 0.02 does not divide evenly, so schedule() fails E-SCHED-PERIOD instead of succeeding with period 0.02."
 file = "include/fuse/schedule/clock.hpp"
 old = "        if (std::find(members.begin(), members.end(), cid) == members.end()) {"
 new = "        if (true) {  // MUTATED: window membership never found, so every component keeps its own ComponentDecl::interval"
@@ -235,8 +223,7 @@ test = "schedule.window_region_golden"
 # checked_common_period()'s LCM again -- lcm(1/500, 3/1000) = 3/500, which
 # the window length 1/50 does not divide evenly -- so schedule() refuses
 # with E-SCHED-PERIOD well before ever reaching the period/diagnostics
-# assertions). Verified by hand 2026-10-02 (see this delegation's report
-# to the lead): reverting the fix line, rebuilding
+# assertions). Verified by hand: reverting the fix line, rebuilding
 # fuse_schedule_window_region_golden_test, and re-running it reproduces
 # exactly this failure; restoring the line byte-identical makes all 6
 # tests in that binary pass again.
@@ -253,11 +240,11 @@ test = "schedule.window_region_golden"
 # Expected kill: WindowRegionGolden.TwoMemberWindowWithNeitherChannelLaggedSchedulesUnderJacobi
 # (ASSERT_TRUE(r.ok()) fails: with the override disabled, a genuinely
 # two-way, now-fully-unlagged exchange has nothing breaking its cycle, the
-# same structurally-unsatisfiable shape Unit B's own Sink-membership fix
-# discovered for the exactly-one-lagged case, generalized to zero-lagged --
+# same structurally-unsatisfiable shape as the exactly-one-lagged case
+# (Sink membership), generalized to zero-lagged --
 # so schedule() refuses with E-SCHED-WINDOW-CAUSALITY well before the test
 # ever reaches its own golden-IR comparison or its "[WindowEnd-1, k]
-# appears twice" substring check). Verified by hand 2026-09-29.
+# appears twice" substring check). Verified by hand.
 
 [[mutation]]
 id = "mark-regions-no-distinct-bound-on-multi-instance-window"
@@ -271,7 +258,7 @@ new = """    while (j < n && true &&  // MUTATED: distinct<want bound removed, r
 target = "fuse_runtime_window_runner_multirate_test"
 test = "runtime.window_runner_multirate"
 # Expected kill: WindowRunnerMultirate.WindowRegionMixedWithOrdinaryComponentAcrossRepeatedPeriods
-# (Time windows track, Unit 1, Q2) -- the only fixture in this file, or in
+# -- the only fixture in this file, or in
 # window_runner_test.cpp/window_runner_straddle_test.cpp, that mixes a
 # multi-instance-per-period window region with a SEPARATE ordinary
 # (non-window) component's own tick in the SAME period: every other
@@ -283,8 +270,7 @@ test = "runtime.window_runner_multirate"
 # pre-existing tests of window_runner_multirate_test.cpp only; against
 # window_runner_test.cpp and window_runner_straddle_test.cpp it is
 # expected, not measured, to be a no-op (not run with the mutation
-# applied). Verified BY HAND 2026-10-03 (see this delegation's report to
-# the lead): with the bound removed, schedule() itself fails with
+# applied). Verified BY HAND: with the bound removed, schedule() itself fails with
 # E-SCHED-REGION ("has 8 member nodes, but instructions 0..23 ... form a
 # run of 24 covering 8 of them") on this fixture specifically, while
 # every OTHER test in this file still passes unaffected. Reverting the
@@ -294,7 +280,7 @@ test = "runtime.window_runner_multirate"
 [[mutation]]
 id = "lowering-never-emits-build-remap-halo"
 area = "compiler"
-describes = "D73 (automatic remap halo, owner decision 2026-10-18): channel_needs_remap_halo() (src/ir/rules_channel.cpp) unconditionally answers false, so emit_remap_halo_instructions() never emits a single BuildRemapHalo node for any channel -- reproducing D73's own pre-fix defect (a cross-rank general weighted Remap with no halo, which used to build a silently empty matrix and, after round 1's interim fix, refused E-RT-REMAP-NO-HALO; round 2's own automatic-halo fix depends on this predicate firing at all)."
+describes = "channel_needs_remap_halo() (src/ir/rules_channel.cpp) unconditionally answers false, so emit_remap_halo_instructions() never emits a single BuildRemapHalo node for any channel -- reproducing the defect of a cross-rank general weighted Remap with no halo (which would build a silently empty matrix or be refused E-RT-REMAP-NO-HALO); the automatic halo depends on this predicate firing at all."
 file = "src/ir/rules_channel.cpp"
 old = """  const bool region_changes = source_field.region != target_field.region;
   return ch.remap.flags != RemapFlags::None || region_changes;
@@ -307,11 +293,9 @@ test = "ir.golden_ir"
 # Expected kill: GoldenIr.PairExplicit, GoldenIr.PairAccumulateRemapRelax,
 # GoldenIr.PairIterated -- each fixture's own channel is a cross-rank
 # weighted (disjoint {first:0,count:1}/{first:1,count:1}) transfer with no
-# `.remap_method()` override, so each golden file (test/golden/*.ir, this
-# round's own update) now has one `BuildRemapHalo` node at the front; with
+# `.remap_method()` override, so each golden file (test/golden/*.ir) has one `BuildRemapHalo` node at the front; with
 # the predicate mutated to always answer false, dump_text(lower(graph).dag)
-# drops that node and the byte comparison fails. VERIFIED 2026-10-18 (this
-# track's own session): applied by hand, `fuse_ir_golden_ir_test` rebuilt,
+# drops that node and the byte comparison fails. VERIFIED: applied by hand, `fuse_ir_golden_ir_test` rebuilt,
 # re-run -- PairExplicit/PairAccumulateRemapRelax/PairIterated fail exactly
 # as described (PairLowFiveBound and OperatorOrderIsObservable, which this
 # predicate does not touch, still pass); file restored and re-verified
@@ -320,7 +304,7 @@ test = "ir.golden_ir"
 [[mutation]]
 id = "make-region-sizes-skips-halo-build"
 area = "runtime"
-describes = "D73 ROUND 2 (owner decision 2026-10-18): make_region_sizes() (src/backend/serial_backend.cpp) is mutated to skip its own new halo-build call entirely, as if round 2's own change had never been made -- a caller back to behaving exactly like round 1's two-argument overload used to, silently reading pre-halo entity counts."
+describes = "make_region_sizes() (src/backend/serial_backend.cpp) is mutated to skip its own halo-build call entirely -- a caller behaves like the two-argument overload, silently reading pre-halo entity counts."
 file = "src/backend/serial_backend.cpp"
 old = """  const Result<std::size_t> halo = execute_remap_halo_instructions(g, dag, backend);
   if (!halo.ok()) {
@@ -345,12 +329,12 @@ test = "parallel.native_remap_halo_runner"
 # is no buffer-size mismatch for E-RT-REMAP-SIZE to catch, only a missing
 # halo for E-RT-REMAP-HALO-NOT-BUILT to catch. This row's own named target
 # needs MPI to execute, which this sandbox cannot start; MEASURED instead
-# (2026-10-18, this track's round-2 session) via a single-process scratch
+# via a single-process scratch
 # harness (not a committed test) exercising the SAME production code path
 # -- a CouplingGraph with provider/consumer components declared on
 # disjoint RankSets (owner_of/remap_placement only read this declared
 # metadata, never the real MPI world size), make_region_sizes(), Runner::
-# initialize() -- built and linked against this round's own tier-0
+# initialize() -- built and linked against the tier-0
 # libraries. With the halo-build call present: initialize() reaches a
 # LATER, unrelated refusal (E-RT-SIZE, a Transport/CommGraph setup
 # question this single-process harness's own simplified RunnerConfig does
@@ -365,7 +349,7 @@ test = "parallel.native_remap_halo_runner"
 [[mutation]]
 id = "regions-includes-build-remap-halo-in-body"
 area = "compiler"
-describes = "Round 1's own regions.cpp fix (D73 FIX, ROUND 2 in KNOWN_ISSUES.md) is reverted: build_iteration_regions() sweeps a window-scoped region's own BuildRemapHalo instruction back into IterationRegion::body, the same defect round 1 found and fixed during its own verification."
+describes = "build_iteration_regions() sweeps a window-scoped region's own BuildRemapHalo instruction into IterationRegion::body (the regions.cpp exclusion is reverted)."
 file = "src/ir/regions.cpp"
 old = """      if (node.kind == OpKind::BuildRemapHalo) continue;
       if (node.origin.valid() && member_channels.count(node.origin.value())) {"""
@@ -377,9 +361,7 @@ test = "schedule.window_region_golden"
 # member_jacobi's own region body moves region_enter onto the
 # BuildRemapHalo node (origin-channel match now sweeps it back into
 # region.body) instead of the real first chain node -- test/golden/
-# window_two_member*.{ir,plan} no longer match. VERIFIED 2026-10-18 (this
-# track's own round-2 session, isolated build tree to avoid racing a
-# concurrent full-tree build): baseline green (8/8) recorded with an md5
+# window_two_member*.{ir,plan} no longer match. VERIFIED (isolated build tree): baseline green (8/8) recorded with an md5
 # of this file; mutation applied by hand, fuse_schedule_window_region_
 # golden_test rebuilt, re-run -- WindowRegionGolden.TwoMemberWindow
 # CompilesThroughScheduleAndMatchesTheGolden and ...SchedulesUnderJacobi

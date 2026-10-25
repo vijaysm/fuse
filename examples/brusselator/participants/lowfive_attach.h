@@ -3,23 +3,19 @@
 
 #include <stdint.h>
 
-/* S6 phase 3 (Conformance, "LowFive" track), "LowFive attach" track:
- * constructs the LowFive VOL connector PROGRAMMATICALLY -- a file-access
+/* Constructs the LowFive VOL connector PROGRAMMATICALLY -- a file-access
  * property list carrying it, built the same way the SINGLE-PROCESS path
  * already measured in this tree does (src/transport/lowfive_transport.
  * cpp's own VolSingleton, LowFive::H5VOLProperty::apply) -- instead of
  * relying on HDF5's HDF5_VOL_CONNECTOR/HDF5_PLUGIN_PATH environment
  * route the loadable plugin (src/transport/lowfive_plugin_vol.cpp,
- * target fuse-lowfive-vol, UNCHANGED by this track) uses. See docs/user/
- * lowfive.md's own "Unit 3" and "programmatic attach" accounts and
- * KNOWN_ISSUES.md D39 for why: with the env route, U's and V's own FIRST
- * H5Fcreate (shim.cpp's own bruss_lowfive_write, called from
+ * target fuse-lowfive-vol) uses. See docs/user/lowfive.md's
+ * programmatic-attach account for why: with the env route, U's and V's
+ * own FIRST H5Fcreate (shim.cpp's own bruss_lowfive_write, called from
  * bruss_lowfive_write_export) null-dereferenced inside LowFive's own
- * VOLBase::_file_create, measured on the host 2026-10-12 (KNOWN_ISSUES.md
- * D38's own "What the host must verify" paragraph names the exact crash
- * reports). This header's own attach call sidesteps the question of WHY
- * (the env route's info_t::vol class-static timing) entirely by never
- * taking that route for the participants.
+ * VOLBase::_file_create. This header's own attach call sidesteps the
+ * question of WHY (the env route's info_t::vol class-static timing)
+ * entirely by never taking that route for the participants.
  *
  * Opaque-free, C-ABI-only types cross this boundary, same convention as
  * shim.h's own bruss_lowfive_write/bruss_lowfive_read (an HDF5 hid_t
@@ -32,14 +28,14 @@
 extern "C" {
 #endif
 
-/* D14 Stage B (KNOWN_ISSUES.md): called by EVERY rank of the bridge
+/* Called by EVERY rank of the bridge
  * communicator (bruss_lowfive_attach()'s own callers below -- the real
  * physics ranks -- AND a bundled coupler/placeholder rank that will
  * never call bruss_lowfive_attach() at all), right after fuse_setup()
  * succeeds, BEFORE any bruss_lowfive_write()/bruss_lowfive_read() call.
  * `bridge_comm_f` is the Fortran handle base_communicator() (entries.def)
  * returned for this context -- MPI_COMM_WORLD itself for an Mpmd launch
- * (D14 Stage B decision 5: MPMD callers keep passing MPI_COMM_WORLD
+ * (MPMD callers keep passing MPI_COMM_WORLD
  * literally, not this accessor's own value -- see u_main.c's own header
  * comment for why), or the merged base communicator connect() formed for
  * a Connect (accept/connect) launch.
@@ -49,9 +45,8 @@ extern "C" {
  * bruss_lowfive_attach() below already does) and, if-and-only-if that
  * graph has at least one field with hdf5_path set, performs EXACTLY ONE
  * MPI_Comm_split() of `bridge_comm_f` -- collective over the WHOLE of
- * it, every rank, coupler/placeholder included (the standing rule this
- * track was asked to audit for: a collective must never be skipped on a
- * locally computed condition; MPI_Comm_split() is collective over its
+ * it, every rank, coupler/placeholder included (a collective must never
+ * be skipped on a locally computed condition; MPI_Comm_split() is collective over its
  * own input communicator regardless of which output group a given rank
  * lands in). A rank this attach's own qualifying channels do not name
  * (the coupler, real or bundled) is given color MPI_UNDEFINED internally
@@ -64,18 +59,16 @@ extern "C" {
  * comment) -- so this function is SAFE and CHEAP to call unconditionally
  * on every participant main, lowfive or not, mpmd or accept.
  *
- * Owner's own ruling (D14 Stage B decision 2): this split's own color is
- * keyed by which component's RankSet (from the graph -- the SAME
- * writer/reader RankSets plan_lowfive_rendezvous() consumes) this rank
- * belongs to, NEVER by reusing a pre-existing communicator like
- * u_main.c's own `u_comm` -- that reuse was this track's OWN Stage A
- * proposal, rejected: it rested on an argument, from source alone, that
- * u_comm's own relative rank order happens to coincide with the bridge's
- * (true for U, who merges "low" and keeps its own numbers, per
- * MPI_Intercomm_merge's own high/low rule -- NOT independently confirmed
- * against real MPI semantics). A fresh split of the bridge itself needs
- * no such argument: the numbering IS, by construction, the one
- * plan_lowfive_rendezvous() already expects.
+ * This split's own color is keyed by which component's RankSet (from the
+ * graph -- the SAME writer/reader RankSets plan_lowfive_rendezvous()
+ * consumes) this rank belongs to, NEVER by reusing a pre-existing
+ * communicator like u_main.c's own `u_comm`: reuse would rest on an
+ * argument, from source alone, that u_comm's own relative rank order
+ * happens to coincide with the bridge's (true for U, who merges "low"
+ * and keeps its own numbers, per MPI_Intercomm_merge's own high/low rule
+ * -- not independently confirmed against real MPI semantics). A fresh
+ * split of the bridge itself needs no such argument: the numbering IS, by
+ * construction, the one plan_lowfive_rendezvous() already expects.
  *
  * On success (return 0) `*local_comm_f_out` is set (0 for a
  * non-participating rank, a real Fortran handle otherwise); on failure
@@ -105,8 +98,7 @@ int bruss_lowfive_join_local_split(const char* graph_path, long long bridge_comm
  * shim already has the graph path on its own command line and reads no
  * FUSE_LOWFIVE_BINDINGS environment variable.
  *
- * NEVER CALLED by a rank with nothing to attach (the companion fix, D14
- * Stage B decision 3): a bundled coupler/placeholder rank (accept mode)
+ * NEVER CALLED by a rank with nothing to attach: a bundled coupler/placeholder rank (accept mode)
  * or the real coupler (mpmd mode) calls bruss_lowfive_join_local_split()
  * above -- the collective every rank of the bridge must join -- and
  * stops there; it must never call this function at all, mirroring
@@ -118,7 +110,7 @@ int bruss_lowfive_join_local_split(const char* graph_path, long long bridge_comm
  * function reads this rank's own position in it (`this_rank`) for the
  * static order check, decide_attach_mode(), and plan_lowfive_rendezvous()
  * alike, and uses it as MPI_Intercomm_create()'s own `peer_comm`
- * argument. D14 Stage A's own open item 3: in an accept (Connect) launch
+ * argument. In an accept (Connect) launch
  * this canNOT be MPI_COMM_WORLD (unlike Mpmd, where it already is one and
  * the same) -- V's own position in the merged bridge is OFFSET from its
  * own local MPI_COMM_WORLD rank by U's local world size
@@ -143,9 +135,8 @@ int bruss_lowfive_join_local_split(const char* graph_path, long long bridge_comm
  * message is copied into `errbuf` (same truncate-and-NUL-terminate
  * convention as bruss_lowfive_write/read): a malformed graph, no
  * HDF5-bound field in it, more than two Connect-mode (accept/connect)
- * components graph-wide (KNOWN_ISSUES.md D18, not pursued), a Connect-
- * mode channel with no bridge formed for this context (the ORIGINAL D14
- * gap, now narrowed to exactly this), two HDF5-bound channels this rank
+ * components graph-wide, a Connect-
+ * mode channel with no bridge formed for this context, two HDF5-bound channels this rank
  * takes part in that do not partition the world the same way, or
  * (distributed mode only) an HDF5/MPI call that itself failed. A second
  * call in the same process is also refused: the VOL registration is
@@ -168,11 +159,10 @@ int bruss_lowfive_attach(const char* graph_path, long long bridge_comm_f,
  *
  * In distributed mode, consults the pure state machine in lowfive_
  * attach_decision.hpp (serve_state_step()) and either serves now
- * (`LowFive::DistMetadataVOL::serve_all()`) or defers -- UNCHANGED by
- * the round-2 review below: this WRITE-side event/action pair was never
- * the part that was wrong. See lowfive_attach_decision.hpp's own
- * "ROUND 2 REVIEW" comment and KNOWN_ISSUES.md D39 for the measured
- * stack that led here and the two rejected designs along the way.
+ * (`LowFive::DistMetadataVOL::serve_all()`) or defers. See
+ * lowfive_attach_decision.hpp's own "WHY THE SERVE IS ROLE-ORDERED" and
+ * "RECEIVE AND RELEASE" comments for the measured stack behind the
+ * design.
  * Refused (nonzero, errbuf set) if bruss_lowfive_attach() was never
  * called successfully in this process, or if the state machine itself
  * refuses (a second deferred serve before the first was flushed -- see
@@ -184,12 +174,10 @@ int bruss_lowfive_serve_after_write(char* errbuf, long long errbuf_len);
  * by u_main.c/v_main.f90. No-op success (0) in single-process mode.
  *
  * In distributed mode, does NOTHING LowFive-level at all, regardless of
- * role or pending state -- this is a CORRECTION this round, not the
- * original design: a first round-2 attempt flushed a first-reader's own
- * deferred serve HERE, before H5Fopen, and was reviewed against
- * LowFive's own source and rejected before any host run (lowfive_
- * attach_decision.hpp's own "ROUND 2 REVIEW" comment has the full
- * citations and the circular-wait it would have reproduced). The real
+ * role or pending state -- flushing a first-reader's own deferred serve
+ * HERE, before H5Fopen, would reproduce a circular wait (lowfive_
+ * attach_decision.hpp's own "RECEIVE AND RELEASE" comment has the full
+ * citations). The real
  * receive is `H5Fopen` itself, about to run right after this call
  * returns, as an ordinary VOL callback dispatch -- nothing here needs to
  * assist it, and nothing here calls `LowFive::DistMetadataVOL::
@@ -209,10 +197,10 @@ int bruss_lowfive_receive_before_read(char* errbuf, long long errbuf_len);
  * why every such path, not only the success path), never directly by
  * u_main.c/v_main.f90. No-op success (0) in single-process mode.
  *
- * NEW this round, replacing the pre-open flush bruss_lowfive_receive_
- * before_read() used to perform: THIS is the event a first-reader's own
- * deferred serve is flushed at. Read from LowFive's own source (lowfive_
- * attach_decision.hpp's own "ROUND 2 REVIEW" comment): a process's own
+ * THIS is the event a first-reader's own deferred serve is flushed at
+ * (not bruss_lowfive_receive_before_read()). Read from LowFive's own
+ * source (lowfive_attach_decision.hpp's own "RECEIVE AND RELEASE"
+ * comment): a process's own
  * H5Fclose of a REMOTE file it opened is exactly what releases the
  * PEER's own pending `serve_all()` -- so only once THIS process has
  * itself completed that open-and-close is it safe to enter its own
@@ -244,10 +232,9 @@ int bruss_lowfive_after_read_close(char* errbuf, long long errbuf_len);
  * -DFUSE_ENABLE_LOWFIVE=ON, or when LowFive was never attached in this
  * process, always returns 0: there is nothing to have deferred.
  *
- * D14 Stage B, owner's own ruling (decision 2): ALSO where the two
- * communicators this track's own code creates are freed, in the order
- * that cannot hang -- AFTER this rank's own H5close() (round 9's own
- * fix, kept: H5close() must run while the process is still in ORDINARY
+ * ALSO where the two communicators this code creates are freed, in the
+ * order that cannot hang -- AFTER this rank's own H5close() (H5close()
+ * must run while the process is still in ORDINARY
  * execution, before any exit()-time static-destruction unwind begins,
  * the same reasoning that makes freeing a communicator here, rather
  * than letting MPI_Finalize's own implicit cleanup do it, the safe
@@ -264,7 +251,7 @@ int bruss_lowfive_after_read_close(char* errbuf, long long errbuf_len);
  * contract above already covers it). */
 int bruss_lowfive_finalize(char* errbuf, long long errbuf_len);
 
-/* ROUND 5 (diagnostic trace track): 1 iff FUSE_LOWFIVE_ATTACH_TRACE is
+/* 1 iff FUSE_LOWFIVE_ATTACH_TRACE is
  * set to exactly "1" in this process's own environment, read ONCE
  * (cached in a function-local static the first time this is called)
  * -- so shim.cpp, u_main.c, and v_main.f90 (via a bind(C) wrapper, see
@@ -274,17 +261,14 @@ int bruss_lowfive_finalize(char* errbuf, long long errbuf_len);
  * ParseTraceEnabledEnv() is the pure half this wraps; see its own doc
  * comment for the exact grammar. When 0, every trace call site below
  * is a single cheap branch -- no fprintf, no formatting -- so the
- * trace adds no cost on a normal (untraced) run. The lead's own brief,
- * item 1-4: "Keep the trace code out of the hot path when disabled
- * (one cached bool)". */
+ * trace adds no cost on a normal (untraced) run (one cached bool). */
 int bruss_lowfive_trace_enabled(void);
 
-/* ROUND 5 (diagnostic trace track), item 3 of the brief: called from
- * u_main.c's/v_main.f90's own write/read guard's ELSE branch (i.e.
- * `window_samples > 0 && data` was FALSE, so the actual H5Fcreate/
- * H5Fopen was SKIPPED) -- settles H1 (did the cold-start export/
- * import's own window view guard actually pass, or was the write/read
- * silently skipped because the window wasn't primed yet). `which` is a
+/* Called from u_main.c's/v_main.f90's own write/read guard's ELSE
+ * branch (i.e. `window_samples > 0 && data` was FALSE, so the actual
+ * H5Fcreate/H5Fopen was SKIPPED) -- settles whether the cold-start
+ * export/import's own window view guard passed, or the write/read was
+ * silently skipped because the window wasn't primed yet. `which` is a
  * short caller-chosen label ("u_lowfive_write_export",
  * "v_lowfive_read_import", etc.); `window_samples`/`count`/
  * `components` are the view's own fields at the point the guard was
@@ -298,8 +282,7 @@ int bruss_lowfive_trace_enabled(void);
 void bruss_lowfive_trace_skip(const char* which, long long window_samples,
                               long long count, long long components);
 
-/* ROUND 5 (diagnostic trace track), item 2 of the brief's own "best
- * available proxy" instruction: returns how many files this process's
+/* Returns how many files this process's
  * own LowFive VOL currently holds in its in-memory metadata (`LowFive
  * ::MetadataVOL::files.size()`, a PUBLIC member -- confirmed from the
  * installed /opt/lowfive/include/lowfive/vol-metadata.hpp, the struct
@@ -309,36 +292,29 @@ void bruss_lowfive_trace_skip(const char* which, long long window_samples,
  * a SPECIFIC dataset was attached as in-memory (`Dataset::is_memory` is
  * a private/internal field, not reachable from this translation unit's
  * own public LowFive headers) -- this file count is the best available
- * proxy the brief itself names; shim.cpp's own trace additionally
- * tries H5Lexists() on the dataset path BEFORE H5Fclose, from the
- * SAME process, as a second, independent proxy for "was the dataset
- * actually created at all". Diagnostic only -- never consulted by any
+ * proxy. Diagnostic only -- never consulted by any
  * non-diagnostic code path. */
 long long bruss_lowfive_attach_file_count(void);
 
-/* ROUND 6 (the diagnostic trace track's own item 6): REPLACES the
- * round-5 trace's H5Lexists()-based `dataset_exists_before_close`
- * check, confirmed UNRELIABLE this round -- H5Lexists() walks a path
- * SEGMENT BY SEGMENT (LowFive::MetadataVOL::link_specific()'s own
- * H5VL_LINK_EXISTS case calls Object::locate() -> search(), which
- * expects each slash-separated segment to be a SEPARATE child object),
- * but dataset_create() (called with no prior H5Gcreate for an
- * intermediate group, exactly what this shim does) attaches the new
+/* Whether `file` (not the dataset within it) is tracked as a REAL file
+ * (not a DummyFile), via `LowFive::MetadataVOL::has_real_file()`, a
+ * PUBLIC, FILE-level, RELIABLE check. (An H5Lexists()-based dataset check
+ * is NOT reliable: H5Lexists() walks a path SEGMENT BY SEGMENT
+ * (LowFive::MetadataVOL::link_specific()'s own H5VL_LINK_EXISTS case calls
+ * Object::locate() -> search(), which expects each slash-separated
+ * segment to be a SEPARATE child object), but dataset_create() (called
+ * with no prior H5Gcreate for an intermediate group) attaches the new
  * Dataset as ONE FLAT child literally named "grid/u_out" -- search()
  * looks for a child named "grid" first, finds none, and reports
- * not-found, even though the dataset genuinely exists (dataset_
- * create()'s own is_memory check, which compares the WHOLE string via
+ * not-found, even though the dataset genuinely exists; dataset_create()'s
+ * own is_memory check, which compares the WHOLE string via
  * Object::fullname() rather than walking it segment by segment, is
- * unaffected -- confirmed by round 4's own fix actually working). This
- * accessor returns 1/0 for whether `file` (not the dataset within it)
- * is tracked as a REAL file (not a DummyFile) via `LowFive::
- * MetadataVOL::has_real_file()`, a PUBLIC, FILE-level, reliable
- * alternative -- or -1 if bruss_lowfive_attach() was never called
- * successfully in this process. Deliberately FILE-level, not dataset-
- * level: nothing public exposes a per-dataset existence check at all
- * (Object/Dataset are forward-declared/opaque in the installed public
- * headers) -- this is the best available proxy, same limitation
- * bruss_lowfive_attach_file_count() above already has, not a new one. */
+ * unaffected.) Returns 1/0, or -1 if bruss_lowfive_attach() was never
+ * called successfully in this process. Deliberately FILE-level, not
+ * dataset-level: nothing public exposes a per-dataset existence check at
+ * all (Object/Dataset are forward-declared/opaque in the installed public
+ * headers) -- this is the best available proxy, the same limitation
+ * bruss_lowfive_attach_file_count() above has. */
 int bruss_lowfive_attach_has_real_file(const char* file);
 
 #ifdef __cplusplus

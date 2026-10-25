@@ -13,10 +13,10 @@ namespace fuse::native {
 namespace {
 // Internal storage only: the generic `fuse::linalg::GhostPattern`
 // `remap_halo_pattern` hands back (UNCHANGED, so `examples/brusselator/
-// species_core.hpp`'s `GhostExchangerFactory` -- outside this lane's
-// owned paths -- keeps compiling against it), plus the ghost-offset
-// `remap_halo_ghost_offset` hands back separately (NM-3's own header
-// comment explains why the two are split rather than one new struct).
+// species_core.hpp`'s `GhostExchangerFactory` -- which is outside this
+// library -- keeps compiling against it), plus the ghost-offset
+// `remap_halo_ghost_offset` hands back separately (the header comment
+// explains why the two are split rather than one new struct).
 struct StoredHaloPattern {
   fuse::linalg::GhostPattern pattern;
   std::size_t ghost_offset = 0;
@@ -32,7 +32,7 @@ struct NativeMeshBackend::Impl {
   std::map<std::pair<std::uint32_t, std::uint32_t>, std::unique_ptr<NativeMeshView>> placed;
   // The remap halo's bookkeeping half (native_backend.hpp's own comment):
   // keyed by (source mesh index, target mesh index, dimension, placement
-  // value -- NM-4: a plain ComponentId::kInvalid for the unplaced default
+  // value -- a plain ComponentId::kInvalid for the unplaced default
   // decomposition, the same sentinel `Id<Tag>` already reserves for it).
   // Presence, not the pattern's size, is "has_remap_halo" -- an empty
   // GhostPattern is a legitimately built, zero-cell halo.
@@ -109,13 +109,12 @@ Result<void> NativeMeshBackend::register_default_placements(const CouplingGraph&
     // "one process IS every placement", which holds on one process and
     // fails the moment a component's rank set is a strict subset of it.
     //
-    // Measured on the host 2026-10-09, the first run with each component
-    // in its own executable: a 176-cell mesh declared on U (one rank) and
+    // Measured with each component in its own executable: a 176-cell mesh declared on U (one rank) and
     // on a coupler (one other rank) gave U 96 cells and the coupler 80 --
     // one decomposition cut across two placements instead of each holding
     // its own whole mesh. The exchange then had no source for the ids the
     // other side wanted, which is what the destination saw
-    // (`CommGraph`'s NoMatch; KNOWN_ISSUES D24).
+    // (`CommGraph`'s NoMatch).
     //
     // A component's decomposition is over ITS ranks, indexed by this
     // process's position WITHIN that rank set -- so a one-rank component
@@ -337,7 +336,7 @@ Result<void> NativeMeshBackend::commit_remap_halo(MeshId source, ComponentId pla
   if (!source.valid() || source.value() >= impl_->meshes.size()) {
     return Failure{"E-MESH-ID", fmt::format("no mesh with id {}", source.value())};
   }
-  // NM-3: this triple's own ghost block starts right after however many
+  // This triple's own ghost block starts right after however many
   // ghost cells `source`'s CURRENT (about-to-be-replaced) view already
   // holds -- the count an EARLIER call for a different target already
   // appended. Computed from the OLD view, before it is overwritten below;

@@ -1,10 +1,7 @@
-# KNOWN_ISSUES D81 (owner ruling 2026-10-19): MoabMeshBackend::sphere_radius
-# / project_onto_unit_sphere (src/backend/moab_backend.cpp,
-# include/fuse/backend/moab_backend.hpp). Own file per the review-fix
-# protocol: do not edit build-evidence/mutations.toml or
-# moab-placement.toml directly while other fixers hold them dirty.
+# MoabMeshBackend::sphere_radius / project_onto_unit_sphere
+# (src/backend/moab_backend.cpp, include/fuse/backend/moab_backend.hpp).
 #
-# NOT HAND-VERIFIED THIS ROUND, for the same sandbox-wide reason
+# NOT HAND-VERIFIED, for the same sandbox-wide reason
 # moab-placement.toml's own header already states: ANY MOAB-linked binary
 # aborts on construction here (moab::Core's constructor calls
 # MPI_Init_thread; this sandbox cannot initialise MPI at all, not even at
@@ -13,7 +10,7 @@
 # assumed -- so there is no MOAB-without-MPI tier-0 configuration to fall
 # back to either). Every row below is written and reasoned through by
 # hand; all three are `requires = "mpi"`, the same NOT-ASSESSED courtesy
-# D27/D73's own MPI-only rows already use, rather than a falsely claimed
+# the other MPI-only rows already use, rather than a falsely claimed
 # kill.
 
 [[mutation]]

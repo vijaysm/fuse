@@ -76,7 +76,7 @@ struct Simplex {
 }
 
 /// `axis1d` is the coordinate axis `build_supermesh_weights` selected for a
-/// 1D pair (REVIEW.md TF-4) -- `dim == 1` tests ONLY that axis, since the
+/// 1D pair -- `dim == 1` tests ONLY that axis, since the
 /// other two are the pair's (near-)constant flat coordinates, not a second
 /// dimension to be boxed in. Ignored for `dim >= 2`.
 [[nodiscard]] bool boxes_overlap(const Simplex& a, const Simplex& b, int dim,
@@ -105,15 +105,14 @@ struct Simplex {
 // would silently return the complement's measure.
 //
 // `inward_plane` itself lives in supermesh_detail.hpp, a private header
-// (REVIEW.md R-12) rather than in this anonymous namespace, so
+// rather than in this anonymous namespace, so
 // test/backend/supermesh_test.cpp can call it directly with a manufactured
-// degenerate face -- the regression test the original fix pass could not
-// add through the public MeshView grammar alone.
+// degenerate face (not possible through the public MeshView grammar alone).
 using fuse::supermesh_detail::inward_plane;
 
 /// The exact measure of the intersection of two simplices. `axis1d` is the
-/// coordinate axis to read for `dim == 1` (REVIEW.md TF-4: hard-coding `.x`
-/// silently measured the wrong thing -- an EMPTY overlap on every pair for
+/// coordinate axis to read for `dim == 1` (hard-coding `.x`
+/// would silently measure the wrong thing -- an EMPTY overlap on every pair for
 /// a y- or z-aligned line, since both "intervals" degenerate to the same
 /// constant x); ignored for `dim >= 2`.
 [[nodiscard]] double intersect(const Simplex& t, const Simplex& s, int dim,
@@ -148,7 +147,7 @@ using fuse::supermesh_detail::inward_plane;
     r2d_plane planes[3];
     for (int f = 0; f < 3; ++f) {
       double n[3], d;
-      // REVIEW.md R-12: a degenerate clipping edge has no half-plane to
+      // A degenerate clipping edge has no half-plane to
       // give; clip to zero rather than silently impose no constraint.
       if (!inward_plane<2>(s.p, f, n, d)) return 0.0;
       planes[f].n.xy[0] = n[0];
@@ -176,7 +175,7 @@ using fuse::supermesh_detail::inward_plane;
   r3d_plane planes[4];
   for (int f = 0; f < 4; ++f) {
     double n[3], d;
-    // REVIEW.md R-12: a degenerate clipping face has no half-plane to give;
+    // A degenerate clipping face has no half-plane to give;
     // clip to zero rather than silently impose no constraint.
     if (!inward_plane<3>(s.p, f, n, d)) return 0.0;
     planes[f].n.xyz[0] = n[0];
@@ -218,9 +217,9 @@ struct HostCandidateCsr {
   const std::size_t nt = ts.size();
   const std::size_t ns = ss.size();
 
-  // KNOWN_ISSUES D54's own defect class, hit here by this header's own new
-  // views (see mls_weights.cpp's build_mls_weights_device, which hits the
-  // identical bug for the companion MLS track and documents it in full):
+  // A defect class to avoid here (see mls_weights.cpp's
+  // build_mls_weights_device, which has the identical hazard for the MLS
+  // builder and documents it in full):
   // a `double* [3]` rank-2 view's PER-SPACE default layout differs between
   // Host and Cuda, so a plain HostSpace mirror is layout-incompatible with
   // a same-shape device view and `Kokkos::deep_copy` cannot bridge both a
@@ -275,12 +274,11 @@ struct HostCandidateCsr {
 Result<RemapWeights> build_supermesh_weights(const MeshView& src,
                                              const MeshView& tgt, int dim,
                                              Conservation conservation) {
-  // KNOWN_ISSUES.md D82 (owner decision 2026-10-19): Extensive normalises by
-  // the SOURCE cell's own measure (columns sum to 1, the whole source
-  // amount redistributed); every other value (Intensive, and None for a
-  // caller that has not yet threaded a channel's declared conservation
-  // through) keeps the ORIGINAL target-measure normalisation (rows sum to
-  // 1) this function always built before this parameter existed.
+  // Extensive normalises by the SOURCE cell's own measure (columns sum to 1,
+  // the whole source amount redistributed); every other value (Intensive,
+  // and None for a caller that has not threaded a channel's declared
+  // conservation through) uses the target-measure normalisation (rows sum
+  // to 1).
   const bool extensive = conservation == Conservation::Extensive;
   if (dim < 1 || dim > 3) {
     return Failure{"E-REMAP-DIM",
@@ -332,8 +330,8 @@ Result<RemapWeights> build_supermesh_weights(const MeshView& src,
   }
 
   // The 1D kernel (`intersect`'s `dim == 1` branch) is a single coordinate
-  // subtraction, with no analogue of the check just above (REVIEW.md
-  // TF-4). Reading `.x` unconditionally had two silent failure modes: a
+  // subtraction, with no analogue of the check just above.
+  // Reading `.x` unconditionally has two silent failure modes: a
   // line laid out along y or z has every pair of "intervals" degenerate to
   // the SAME constant x, so every overlap computes to exactly 0 -- an
   // EMPTY matrix returned as SUCCESS, indistinguishable from a target
@@ -427,24 +425,22 @@ Result<RemapWeights> build_supermesh_weights(const MeshView& src,
   // lost to the floor is reported in `max_col_defect` rather than concealed by
   // computing the audit from entries that were then discarded.
   constexpr double kNegligible = 1e-12;
-  // REVIEW.md R-13: the coverage tolerance itself, and the rejection it backs,
-  // now live in supermesh_detail::audit_coverage -- the same relative
+  // The coverage tolerance itself, and the rejection it backs,
+  // live in supermesh_detail::audit_coverage -- the same relative
   // tolerance intx_weights.cpp's MOAB path uses for its over_src/over_tgt
   // audit (`kCoverageTol` there), so the two paths reject on the same
   // threshold, and unit-testable directly (test/backend/supermesh_test.cpp).
 
-  // Device-resident-arcs Phase 2, "weight-builders" track (KNOWN_ISSUES
-  // D53): the broad phase moves to `fuse::device::candidate_pairs` when the
+  // The broad phase moves to `fuse::device::candidate_pairs` when the
   // resolved execution space is Device AND `dim >= 2` (device_candidate_pairs's
   // own comment states why `dim == 1` is excluded); the clip itself
   // (`intersect`, above) stays host-only regardless -- r3d/r2d are not
-  // device-callable without vendored-dependency changes this track's time
-  // budget did not extend to (this header's own "WHY THE CLIP ITSELF STAYS
+  // device-callable without vendored-dependency changes (this header's own "WHY THE CLIP ITSELF STAYS
   // ON THE HOST" comment, supermesh_candidates_device.hpp). Host mode
   // (space != Device) takes the UNCHANGED brute-force loop, unconditionally:
   // this branch exists only to choose which candidate SOURCE comes first,
   // never to alter the box test or the clip either path applies afterward,
-  // so Host mode's result is bitwise unaffected by this track.
+  // so Host mode's result is bitwise unaffected.
   const auto space_r = search::resolve_execution_space();
   if (!space_r.ok()) return space_r.error();
   const bool device_broad_phase = space_r.value() == search::ExecutionSpace::Device && dim >= 2;
@@ -513,7 +509,7 @@ Result<RemapWeights> build_supermesh_weights(const MeshView& src,
     col_sum[i] += val;
     min_w = std::min(min_w, val);
   }
-  // REVIEW.md TF-15: `acc.empty()` (no candidate pair overlapped at all) is
+  // `acc.empty()` (no candidate pair overlapped at all) is
   // not the only way `w.val` ends up empty -- every accumulated entry
   // falling below `kNegligible` and being dropped does too, and the loop
   // above only updates `min_w` for a KEPT entry, so an all-dropped `acc`
@@ -547,14 +543,13 @@ Result<RemapWeights> build_supermesh_weights(const MeshView& src,
     src_covered[i] += m;
     tgt_covered[j] += m;
   }
-  // REVIEW.md R-13: the MOAB path rejects E-REMAP-INTX when a cell is
+  // The MOAB path rejects E-REMAP-INTX when a cell is
   // assigned more area than it has (intx_weights.cpp's over_src/over_tgt
-  // audit, kCoverageTol). This path tracked only the minimum, so the exact
-  // defect class R-12 produces -- overlap inflated past the cell it came
-  // from -- passed here as a wrong, conservative-looking weight matrix
-  // instead of being caught. Checked against the SAME kept-entries coverage
-  // the minimum already uses, so a degenerate cell fixed by R-12 (now
-  // contributing zero) cannot trip this.
+  // audit, kCoverageTol). This path must too: overlap inflated past the
+  // cell it came from would otherwise pass as a wrong, conservative-looking
+  // weight matrix instead of being caught. Checked against the SAME
+  // kept-entries coverage the minimum already uses, so a degenerate cell
+  // (contributing zero) cannot trip this.
   for (std::size_t i = 0; i < w.n_cols; ++i) {
     const double m = src.measure(dim, i);
     if (m > 0.0) {
@@ -576,7 +571,7 @@ Result<RemapWeights> build_supermesh_weights(const MeshView& src,
 
   // Constant preservation: the row residual. A guarantee under Intensive
   // (rows sum to 1 by construction there); under Extensive the row sum is
-  // not asked to be 1 at all (D82, KNOWN_ISSUES.md) -- still computed and
+  // not asked to be 1 at all -- still computed and
   // reported here as a diagnostic (a caller may want it), but the
   // CONSERVED quantity under Extensive is read from max_col_defect/col_sum
   // below, not from this field.

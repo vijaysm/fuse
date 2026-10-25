@@ -1,5 +1,4 @@
-// KNOWN_ISSUES.md D57 ("Collectives" track). Task item 3's own "pure,
-// deterministic derivation... from the same data the Runner uses":
+// A pure, deterministic derivation from the same data the Runner uses:
 // fuse::constrain_sequence() (include/fuse/schedule/plan.hpp), the
 // sibling of the pre-existing fuse::epoch_sequence() for the OTHER real
 // base-communicator collective (OpKind::Constrain's conservation
@@ -8,8 +7,7 @@
 // This ties the static model to the REAL three-rank Brusselator
 // participants layout (U{0}, V{1}, coupler{2} -- examples/brusselator/
 // participants/brusselator_graph_tool.cpp's own constants and rank
-// sets, the exact shape KNOWN_ISSUES.md D57's own measured section
-// names), built through fuse::lower()/fuse::schedule() alone -- both
+// sets, the exact shape of the real row), built through fuse::lower()/fuse::schedule() alone -- both
 // are pure functions of fuse::CouplingGraph, so this reaches past the
 // E-RT-REGION ceiling that blocks Runner::initialize() on this layout at
 // tier 0 (test/verification/brusselator_external_delivery_size_test.
@@ -47,8 +45,7 @@ TEST(ConstrainSequence, IdenticalAcrossAllThreeRealRankPlacements) {
   const fuse::RegionId region =
       g.add_region({.name = "u_all", .mesh = mesh, .dimension = 2});
 
-  // The real row's own layout (KNOWN_ISSUES.md D57's own measured
-  // section): U on rank 0, V on rank 1, the conservative remap coupler
+  // The real row's own layout: U on rank 0, V on rank 1, the conservative remap coupler
   // on rank 2, brusselator_graph_tool.cpp's own --ranks-u 1 --ranks-v 1
   // --ranks-coupler 1.
   const auto handles = brusselator::add_window_coupling(
@@ -80,8 +77,7 @@ TEST(ConstrainSequence, IdenticalAcrossAllThreeRealRankPlacements) {
   ASSERT_TRUE(sched.ok()) << sched.diags.to_string();
 
   // Sanity: this row's own graph really does compile a Constrain
-  // instruction with no accompanying Transport/Epoch (KNOWN_ISSUES.md
-  // D57's own "Fix" section) -- a test that passed vacuously, on a plan
+  // instruction with no accompanying Transport/Epoch -- a test that passed vacuously, on a plan
   // with no Constrain instruction at all, would prove nothing.
   int n_constrain = 0, n_transport = 0, n_epoch = 0;
   for (const auto& ins : sched.plan.instructions()) {

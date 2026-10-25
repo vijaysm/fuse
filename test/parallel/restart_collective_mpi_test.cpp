@@ -1,11 +1,9 @@
-// Restart track round 2, item 5: owner decision 2's cross-rank half
+// The cross-rank duplicate-id and coverage check
 // (fuse::restart_io::collective_duplicate_and_coverage_check(),
 // src/restart_io/collective_check_mpi.cpp), over a REAL MPI_COMM_WORLD.
 //
-// MPI CANNOT START IN THIS SANDBOX (docs/dev/testing.md): this file is
-// compiled -- registered with fuse_add_mpi_test, RANKS 2 3 -- but never
-// run here; outcomes are a host action (host_pending names the exact
-// mpirun command).
+// Registered with fuse_add_mpi_test, RANKS 2 3; needs a working MPI
+// launcher (docs/dev/testing.md).
 //
 // Every test below makes every rank compute the SAME expected verdict
 // from a pattern that scales with fuse::testing::size(), rather than
@@ -61,11 +59,11 @@ TEST(RestartCollectiveMpi, DisjointIdsSameFieldAcrossRanksSucceeds) {
 }
 
 TEST(RestartCollectiveMpi, IdenticalLocalIdsDifferentFieldNamesAcrossRanksSucceeds) {
-  // The cross-rank analog of round 2's own EXACT-KEY fix (item 2): every
+  // The cross-rank analog of the single-rank EXACT-KEY check: every
   // rank reports the IDENTICAL local ids {0,1,2,3}, but under a field
   // name that is UNIQUE to that rank -- dirichlet/neumann's own shape,
   // generalised to size() components instead of 2. A hash-combined key
-  // (round 1's bridging measure) would risk a collision here if any two
+  // would risk a collision here if any two
   // ranks' field-name hashes collided in their own high bits; this
   // exact-key design cannot collide at all, because two different field
   // names are never written under the same key by construction.
@@ -82,8 +80,8 @@ TEST(RestartCollectiveMpi, IdenticalLocalIdsDifferentFieldNamesAcrossRanksSuccee
 
 TEST(RestartCollectiveMpi, DuplicateIdAcrossRanksForSameFieldRefuses) {
   // Every rank reports the SAME (name, id) pair for the SAME field --
-  // the genuinely cross-rank duplicate round 1 could not even express
-  // (round 1 ran at a single rank only).
+  // the genuinely cross-rank duplicate, which a single-rank run cannot
+  // even express.
   FUSE_REQUIRE_AT_LEAST_RANKS(2);
   std::vector<std::pair<std::string, std::int64_t>> local_ids = {
       {"brusselator/u", 5}};
@@ -97,7 +95,7 @@ TEST(RestartCollectiveMpi, DuplicateIdAcrossRanksForSameFieldRefuses) {
 TEST(RestartCollectiveMpi, DeclaredSizeDisagreementAcrossRanksRefuses) {
   // Rank 0 declares a different global size than every other rank for
   // the SAME field -- the cross-rank half of E-RESTART-GLOBAL-SIZE-
-  // MISMATCH, which round 1 could only check within one rank's own
+  // MISMATCH, which a single-rank run can only check within one rank's own
   // calls, never across two different callers on two different ranks.
   FUSE_REQUIRE_AT_LEAST_RANKS(2);
   const std::int64_t declared_value = (fuse::testing::rank() == 0) ? 10 : 11;

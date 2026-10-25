@@ -1,8 +1,6 @@
-# Mutations for the "Nodal remap" track (general consistent interpolation on
+# Mutations for the nodal remap (general consistent interpolation on
 # any supported cell, general_interp.hpp / consistent_interp.hpp). Schema:
-# build-evidence/mutations.toml. Own file per the review-fix protocol: do not
-# edit build-evidence/mutations.toml directly while other fixers hold it
-# dirty.
+# build-evidence/mutations.toml.
 #
 # All four below were KILLED, observed directly in this sandbox (Tier 0, no
 # MPI needed): each was applied by hand to include/fuse/backend/
@@ -11,35 +9,29 @@
 # green), then the file was restored byte-for-byte (cmp against a
 # pre-mutation backup) and fuse_backend_nodal_interp_test rebuilt and
 # reconfirmed passing (23/23) before moving to the next mutation. The two
-# distributed-path rows this step's task also named -- "the transpose scatter
+# distributed-path rows -- "the transpose scatter
 # summing on the wrong rank" and "a row computed on every holder instead of
 # the owner" -- have no analogue in this file (this builder is serial); they
 # belong to nodal_remap_distributed.hpp and are recorded, NOT-ASSESSED, in
 # nodal-remap-distributed.toml instead.
 #
-# Round 2 revision (2026-09-25): the single-tier containment rule (one
-# `kRefEps`, a boolean "close enough" test feeding a lowest-global-id
-# tie-break among every candidate that passed it) was replaced by a two-tier
-# rule -- `kRefEpsTight` (genuine containment, wins outright, tie-break only
-# among tight matches) then `kRefEpsLoose` (single least-violating fallback,
-# no tie-break, only for a real curved-surface faceting gap). This obsoleted
-# the "containment-tolerance-too-tight" row's anchor (`kRefEps` no longer
-# exists as a name) and, worse, its OLD "new" value (a rounding-scale 1e-9)
-# is now numerically indistinguishable from the new design's own
-# `kRefEpsTight` (`1e3 * kNewtonTol` = `1e-9`) -- so re-running that row
-# verbatim would no longer test anything. It is rewritten below to target
-# `kRefEpsLoose` (the tier that actually carries the curved-surface-faceting
-# concern now) instead of deleted, since the underlying physical concern --
-# a rounding-scale fallback tolerance cannot accept a real geometric gap --
-# is unchanged. A new row, "tier (a) skipped", was added to cover the
-# distinct failure mode the two-tier redesign exists to fix: a lower-global-id
+# The containment rule has two tiers -- `kRefEpsTight` (genuine
+# containment, wins outright, tie-break only among tight matches) then
+# `kRefEpsLoose` (single least-violating fallback, no tie-break, only for a
+# real curved-surface faceting gap). The "containment-tolerance-too-tight"
+# row therefore targets `kRefEpsLoose` (the tier that carries the
+# curved-surface-faceting concern): a rounding-scale 1e-9 there would be
+# numerically the same as `kRefEpsTight` (`1e3 * kNewtonTol` = `1e-9`),
+# and a rounding-scale fallback tolerance cannot accept a real geometric
+# gap. The row "tier (a) skipped" covers the distinct failure mode the
+# two-tier design exists to prevent: a lower-global-id
 # NEIGHBOUR winning by loose-tolerance-tie-break over a higher-global-id cell
 # that genuinely, tightly contains the point.
 
 [[mutation]]
 id = "nodal-interp-tie-break-picks-highest-global-id"
 area = "backend"
-describes = "build_general_interp_weights' tier-(a) tie-break among GENUINELY-containing candidates (docs: 'a point on a shared face or vertex chooses the containing cell with the LOWEST source global id, so weights are deterministic') is inverted to pick the HIGHEST global id instead, so a target point exactly on a shared edge between two cells is assigned the wrong cell's weights depending on which id happens to be higher rather than a rule independent of insertion order. (Anchor updated for the round-2 two-tier rewrite: `have_contain`/`best_gid` -> `have_tight`/`tight_gid`; the tie-break rule and this row's intent are otherwise unchanged.)"
+describes = "build_general_interp_weights' tier-(a) tie-break among GENUINELY-containing candidates (docs: 'a point on a shared face or vertex chooses the containing cell with the LOWEST source global id, so weights are deterministic') is inverted to pick the HIGHEST global id instead, so a target point exactly on a shared edge between two cells is assigned the wrong cell's weights depending on which id happens to be higher rather than a rule independent of insertion order."
 file = "include/fuse/backend/general_interp.hpp"
 old = "        if (!have_tight || gid < tight_gid) {"
 new = "        if (!have_tight || gid > tight_gid) {"
@@ -61,7 +53,7 @@ old = "inline constexpr double kRefEpsLoose = kSurfaceTol;"
 new = "inline constexpr double kRefEpsLoose = 1e-9;"
 target = "fuse_backend_nodal_interp_test"
 test = "backend.nodal_interp"
-# KILLED (re-verified 2026-09-25 against the two-tier rewrite). Every target
+# KILLED (against the two-tier rule). Every target
 # point on GeneralInterp.SphereSurfaceOrderIsAtLeastTwoUnderRefinement's
 # finest cubed-sphere pair fails BOTH tiers: tier (a) is correctly rejected
 # (the physical faceting gap between two independent curved-surface
@@ -113,15 +105,14 @@ test = "backend.nodal_interp"
 # invisible (A's extrapolation would reproduce the correct value by
 # construction), which is why the test uses a field with v11 != v10+v01-v00.
 
-# Round 3 (Stage B, Nodal corner track, 2026-10-20): D74's own sibling defect
-# (KNOWN_ISSUES.md addendum under D74) -- a failed invert_reference_map on
+# A failed invert_reference_map on
 # ANY candidate used to abort the whole evaluation point immediately, even
 # after an earlier candidate in the SAME broad-phase set already satisfied
 # tier (a). Fixed by skipping just the failing candidate, mirroring
-# nodal_remap_distributed.cpp's own `consider()` lambda (D74's own fix)
+# nodal_remap_distributed.cpp's own `consider()` lambda
 # exactly. The mutation below reverts that one change (skip-on-failure back
-# to return-on-failure) and is KILLED by THREE rows, not one: the two new
-# regression tests this round added (2-D and 3-D decoy constructions) and
+# to return-on-failure) and is KILLED by THREE rows, not one: the two
+# regression tests (2-D and 3-D decoy constructions) and
 # one EXISTING row whose own expected error code changes under the fix
 # (GeneralInterp.DegenerateCellRefuses: E-INTERP-DEGENERATE -> E-INTERP-DOMAIN,
 # since its mesh's one and only candidate is itself the degenerate cell, so
@@ -133,7 +124,7 @@ test = "backend.nodal_interp"
 [[mutation]]
 id = "nodal-interp-skip-on-failure-reverted-to-return-on-failure"
 area = "backend"
-describes = "the D74 sibling fix's per-candidate loop (mirroring nodal_remap_distributed.cpp's consider() lambda) is reverted: a candidate whose invert_reference_map fails once again aborts the whole evaluation point immediately with that candidate's own error, rather than being skipped so another candidate in the same broad-phase set -- including one already found, earlier in the same scan -- can still decide the row"
+describes = "the per-candidate loop (mirroring nodal_remap_distributed.cpp's consider() lambda) is reverted: a candidate whose invert_reference_map fails once again aborts the whole evaluation point immediately with that candidate's own error, rather than being skipped so another candidate in the same broad-phase set -- including one already found, earlier in the same scan -- can still decide the row"
 file = "include/fuse/backend/general_interp.hpp"
 old = '''      if (!inv.ok()) {
         // Skip just this candidate (the D74 sibling fix -- KNOWN_ISSUES.md):
@@ -190,4 +181,4 @@ test = "backend.nodal_tie_break"
 # identical md5 5f819d7866541db47cb97c0972bb4cb0) and both binaries rebuilt
 # and reconfirmed passing (26/26 and 4/4) before moving on. See
 # docs/dev/nodal-fields.md's "Mutation coverage" addendum for the same
-# account, and KNOWN_ISSUES.md's D74 addendum for the root cause and fix.
+# account.

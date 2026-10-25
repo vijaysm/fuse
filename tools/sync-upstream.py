@@ -11,7 +11,7 @@ Every upstream commit since the imported tag is classified:
   cherry-pick  touches a path that has diverged in fuse -> a human ports it and
                records the upstream SHA in UPSTREAMS.lock
   superseded   touches code fuse has replaced (listed in [<parent>].superseded)
-  conflict     touches a diverged path AND a byte-identical one -> needs a ruling
+  conflict     touches a diverged path AND a byte-identical one -> needs a human decision
 
 Prints a table to commit alongside any lock bump. Read-only: it never writes to a
 parent and never modifies this repository.
@@ -31,7 +31,7 @@ def lock() -> dict[str, dict[str, object]]:
     """Parse UPSTREAMS.lock as the TOML it is. The line-by-line regex reader it
     replaces could not read a multi-line array, so `superseded` came back empty
     and every upstream commit touching replaced code was classified as live
-    divergence (REVIEW.md BT-F4)."""
+    divergence."""
     import tomllib
     data = tomllib.loads((ROOT / "UPSTREAMS.lock").read_text())
     for sec in data.values():
@@ -69,8 +69,8 @@ def main() -> int:
         retired = str(info.get("retired", ""))
         if retired:
             # A retired parent is frozen for deletion, not for further sync: there
-            # is no backport to classify for a subtree the owner is about to
-            # remove, and treating an unreachable parent path as a warning (the
+            # is no backport to classify for a subtree about to be
+            # removed, and treating an unreachable parent path as a warning (the
             # branch below) would be noise for every retired entry from here on.
             print(f"{name}: retired ({retired}); sync skipped")
             continue
@@ -107,7 +107,7 @@ def main() -> int:
         for name, csha, kind, n, subject in rows:
             print(f"| {name} | `{csha}` | **{kind}** | {n} | {subject[:70]} |")
         need = [r for r in rows if r[2] in ("cherry-pick", "conflict")]
-        print(f"\n{len(rows)} commit(s) since import; {len(need)} need a human ruling.")
+        print(f"\n{len(rows)} commit(s) since import; {len(need)} need a human decision.")
 
     return 1 if moved else 0
 

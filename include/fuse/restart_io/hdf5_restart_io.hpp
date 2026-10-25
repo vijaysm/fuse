@@ -1,6 +1,6 @@
 #pragma once
 
-/// Restart track (docs/dev/restart.md), Stage B Slice 1: the ONLY header
+/// The ONLY header
 /// in this repository that may name an HDF5 type (`tools/check-layering.py`'s
 /// FORBIDDEN_PUBLIC convention, the same one PETSc's own public headers
 /// already follow -- `hid_t` never escapes past this file's own
@@ -21,25 +21,24 @@
 
 namespace fuse::restart_io {
 
-/// Both file layouts the owner settled on (docs/dev/restart.md Section 4.4):
+/// Both file layouts (docs/dev/restart.md Section 4.4):
 ///   SeparateMeshAndPoints  `<run>.mesh.h5` once, `<run>.<period>.h5` per
 ///                          point, each carrying the mesh file's own
 ///                          checksum.
-///   GrowingFile            one file, copy-append-renamed per point (the
-///                          owner's robustness-first choice over in-place
+///   GrowingFile            one file, copy-append-renamed per point (chosen
+///                          for robustness over in-place
 ///                          append: a crash mid-write can never damage an
 ///                          earlier point, at the cost of one file copy
 ///                          per point).
 enum class FileLayout { SeparateMeshAndPoints, GrowingFile };
 
-/// Bumped 1 -> 2 for D62 (KNOWN_ISSUES.md): adding `Provenance::
-/// descriptor_version` below is a restart-file schema change, by this
+/// Bumped 1 -> 2 when `Provenance::
+/// descriptor_version` was added below; is a restart-file schema change, by this
 /// project's own append-only-with-a-version-bump convention (the same one
 /// `fuse::kGraphVersion` itself follows) -- a point written under format
 /// 1 has no `descriptor_version` attribute to read at all, so it is
-/// refused by THIS check (unconditional, format_version != kFormatVersion,
-/// the same gate `open_restart_point()` already applied before this
-/// change) rather than failing later with a generic HDF5 attribute-open
+/// refused by THIS check (unconditional, format_version != kFormatVersion)
+/// rather than failing later with a generic HDF5 attribute-open
 /// error that does not name what is actually missing.
 inline constexpr std::uint32_t kFormatVersion = 2;
 
@@ -50,7 +49,7 @@ inline constexpr std::uint32_t kFormatVersion = 2;
 struct Provenance {
   std::uint32_t format_version = kFormatVersion;
   std::string   fuse_version;
-  /// D62 (KNOWN_ISSUES.md): the coupling-graph descriptor's own
+  /// The coupling-graph descriptor's own
   /// `fuse::kGraphVersion` (fuse/model/descriptor.hpp) THIS POINT WAS
   /// WRITTEN UNDER, recorded independently of `descriptor_hash` below so
   /// `open_restart_point()` can distinguish "this point was written by a
@@ -133,8 +132,7 @@ class PointReader {
     FileLayout layout, const std::string& path,
     const std::string& point_label = {});
 
-/// D62 (KNOWN_ISSUES.md): the CONTENT half of the descriptor provenance
-/// check, with its own refusal code (E-RESTART-DESCRIPTOR-HASH),
+/// The CONTENT half of the descriptor provenance check, with its own refusal code (E-RESTART-DESCRIPTOR-HASH),
 /// distinguished from `open_restart_point()`'s own E-RESTART-DESCRIPTOR-
 /// VERSION refusal above: that one fires on a DIFFERENT descriptor
 /// VERSION and needs no graph (`fuse::kGraphVersion` is a compile-time

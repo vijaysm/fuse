@@ -80,10 +80,8 @@ struct ConvergenceMeasure {
   /// True when this measure alone considers the iteration converged.
   ///
   /// `reference_norm` is ignored by Absolute and used by every other kind.
-  /// REVIEW.md R-34: this used to point at "the header comment" for the
-  /// zero-reference, non-finite and AND/OR policies -- no such section
-  /// exists in this file. They are implemented, and explained, inline
-  /// below: a zero-or-negative `reference_norm` falls back to the absolute
+  /// The zero-reference, non-finite and AND/OR policies are implemented,
+  /// and explained, inline below: a zero-or-negative `reference_norm` falls back to the absolute
   /// check (`have_ref`); a non-finite norm reports "not converged" rather
   /// than throwing; and `AbsoluteOrRelative` is the OR of the two (there is
   /// no AND case among the current MeasureKind values). Throws
@@ -259,36 +257,33 @@ enum class AccelKind {
   Steffensen,
   IQN_ILS,
   IQN_IMVJ,
-  /// S7.2: the native Jacobian-free Newton-Krylov coupler
+  /// The native Jacobian-free Newton-Krylov coupler
   /// (`fuse::num::solve()`, fuse/num/newton_krylov.hpp), selected the same
   /// way every quasi-Newton kind above is -- through
   /// `IterationRegionDecl::acceleration.kind` -- even though it replaces
   /// the ENTIRE sweep (Newton owns its own inner Krylov and line-search
   /// loop, where every kind above instead post-processes one Picard sweep
-  /// per outer iteration). `docs/dev/newton-krylov.md`'s own design page
-  /// (S7.1) anticipated exactly this: "the Newton solver itself (S7.2)
-  /// adds its own AccelKind value and sets these flags when that value is
-  /// chosen" -- `IterationRegionDecl::requires_residual_capability`/
+  /// per outer iteration). Choosing it sets
+  /// `IterationRegionDecl::requires_residual_capability`/
   /// `requires_linearization_capability`, which `IterationBuilder::
-  /// accelerate()`/`::newton()` below set automatically for exactly that
-  /// reason, so a graph author cannot select Newton and forget the
+  /// accelerate()`/`::newton()` below set automatically, so a graph author cannot select Newton and forget the
   /// capability a Newton-solved region needs from every member.
   ///
   /// APPENDED AT THE END, not inserted in any more "natural" position:
   /// `fuse::model::yaml_io`'s `kAccelNames` table and
   /// `fuse::descriptor`'s binary encoding both index this enum
-  /// positionally (REVIEW.md R-04's pattern), so a reordering would
+  /// positionally, so a reordering would
   /// silently relabel every already-serialized graph's accelerator.
   Newton,
 };
 
-/// S7.2: which of SNESLineSearchBT/CP/Basic's own strategies the Newton
+/// Which of SNESLineSearchBT/CP/Basic's own strategies the Newton
 /// solver's line search uses. Mirrors `fuse::num::LineSearchKind`
 /// (fuse/num/line_search.hpp) exactly -- declared again here, rather than
 /// reused from there, for the SAME layering reason `AccelKind` itself is
 /// declared in this header and not in fuse::num: the model layer must not
 /// depend on the numerics layer (this file's own header comment). The
-/// runtime wiring (a later step of this track) translates one into the
+/// runtime wiring translates one into the
 /// other at the one call site that constructs a `fuse::num::
 /// NewtonKrylovOptions` from a `NewtonConfig`.
 enum class LineSearchKind { BT, CP, Basic };
@@ -302,7 +297,7 @@ enum class LineSearchKind { BT, CP, Basic };
   return "?";
 }
 
-/// S7.2: which Eisenstat-Walker forcing-term formula
+/// Which Eisenstat-Walker forcing-term formula
 /// (Eisenstat & Walker, SIAM J. Sci. Comput. 17, 1996) the Newton solver's
 /// linear-solve tolerance follows. Mirrors `fuse::num::
 /// EisenstatWalkerChoice` for the same reason `LineSearchKind` above does.
@@ -317,7 +312,7 @@ enum class EisenstatWalkerChoice { Constant, Choice1, Choice2 };
   return "?";
 }
 
-/// S7.2b (PetscSelect track, 2026-10-11): which implementation of the
+/// Which implementation of the
 /// Newton seam (docs/dev/newton-krylov.md Sec. 6/Sec. 10) a region's
 /// Newton solve actually runs on. Mirrors `fuse::num::NewtonSubstrate`
 /// (fuse/num/newton_krylov.hpp) for the SAME layering reason
@@ -350,7 +345,7 @@ enum class NewtonSubstrate {
   return "?";
 }
 
-/// NewtonModel track (2026-10-12): which norm Newton's own residual norm,
+/// Which norm Newton's own residual norm,
 /// Eisenstat-Walker forcing, line-search merit and stopping test (atol/
 /// rtol/stol/divergence_tolerance, `NewtonConfig` below) are measured in,
 /// over the region's stacked interface vector -- a vector whose blocks, in
@@ -358,11 +353,10 @@ enum class NewtonSubstrate {
 /// different measure (docs/user/convergence.md's own account of the
 /// defects a PLAIN Euclidean norm over such a vector has, written for
 /// Picard's own stopping test and unchanged by anything Newton does).
-/// Opt-in: the default is `Plain`, so every pinned Newton iteration count
-/// and every golden descriptor predating this field is unchanged.
+/// Opt-in: the default is `Plain`.
 enum class NewtonNorm {
-  /// `sqrt(sum F_i^2)` over the stacked vector exactly as every Newton
-  /// region before this field existed already computed it -- dimensionless
+  /// `sqrt(sum F_i^2)` over the stacked vector exactly as the default Newton
+  /// region computes it -- dimensionless
   /// by convention, carrying every defect docs/user/convergence.md
   /// attributes to the plain norm (mesh-resolution dependence, cell-size-
   /// variation dependence, unit confusion between blocks).
@@ -387,21 +381,19 @@ enum class NewtonNorm {
   return "?";
 }
 
-/// NewtonModel track (2026-10-12): how `F(x) = x - G(x)` itself is
+/// How `F(x) = x - G(x)` itself is
 /// evaluated for an ordinary (non-window) Newton region. `fuse::
-/// ImplicitComponent::evaluate_residual()` (fuse/runtime/component.hpp) has
-/// been part of the capability seam since S7.1, but every Newton region
-/// built so far has honoured it only as a CAPABILITY bit
-/// (`kCapabilityResidual`) a member must declare -- `G(x)` itself has
-/// always been obtained the Picard way, by delivering `x`, calling
+/// ImplicitComponent::evaluate_residual()` (fuse/runtime/component.hpp) is
+/// part of the capability seam, but by default a Newton region honours it
+/// only as a CAPABILITY bit (`kCapabilityResidual`) a member must declare
+/// -- `G(x)` itself is obtained the Picard way, by delivering `x`, calling
 /// `advance()` under a checkpoint/restore bracket, and reading back what
 /// the compiled dataflow produced (`Runner::Impl::evaluate_region_
 /// residual()`, src/runtime/fixed_point_residual.cpp). Opt-in: the default
-/// is `Advance`, so every Newton region predating this field keeps
-/// evaluating `G(x)` exactly as it always has.
+/// is `Advance`.
 enum class NewtonResidualPath {
   /// `G(x)` by one `advance()` call per checkpointed member, under
-  /// save_state()/restore_state() -- the only path that has ever existed.
+  /// save_state()/restore_state() -- the default path.
   Advance,
   /// `G(x)` by calling `ImplicitComponent::evaluate_residual()` directly
   /// on every member that provides a block of this region, in place of
@@ -429,18 +421,15 @@ enum class NewtonResidualPath {
   return "?";
 }
 
-/// S7.2: WHAT was asked of the Newton solver, named the same way
+/// WHAT is asked of the Newton solver, named the same way
 /// `AccelConfig` already does for the quasi-Newton ladder -- every numeric
 /// default here is SNES's own default for the matching option
 /// (`docs/dev/newton-krylov.md`'s own table names each one): SNES's own
 /// forcing term clamps only at `eta_max`, never below (it can reach an
 /// exact linear solve), so `eta_min`'s default is `0.0`, what makes that
 /// default actually BE SNES's own -- the option itself still exists for a
-/// caller who wants a nonzero floor, the possibility the task's own brief
-/// named ("a cap eta_max = 0.9 and floor"), without presenting it as
-/// something SNES does by default (CORRECTED: an earlier draft defaulted
-/// this to `1e-4` as a judgement call presented alongside this struct's
-/// genuinely-SNES defaults).
+/// caller who wants a nonzero floor ("a cap eta_max = 0.9 and floor"),
+/// without presenting it as something SNES does by default.
 /// Read only when `IterationRegionDecl::acceleration.kind ==
 /// AccelKind::Newton`; otherwise ignored, the same "declaration carries it,
 /// nothing acts on it until selected" convention `window_scope` already
@@ -498,33 +487,30 @@ struct NewtonConfig {
   /// preconditioner the author actually requested.
   bool use_block_jacobi_preconditioner = false;
 
-  /// S7.2b (PetscSelect track): which Newton substrate
+  /// Which Newton substrate
   /// (`fuse::num::newton_substrate()`'s registry) this region's solve
-  /// actually dispatches to -- `Native` by default, so every graph
-  /// written before this member existed keeps running the library's own
-  /// JFNK coupler unchanged. APPENDED LAST, the descriptor's own
+  /// actually dispatches to -- `Native` by default (the library's own
+  /// JFNK coupler). APPENDED LAST, the descriptor's own
   /// append-only convention (descriptor.hpp's kGraphVersion history, v13):
   /// a new field is added at the struct's own declared END, never
   /// inserted between existing ones, so every earlier field keeps its
   /// wire offset.
   NewtonSubstrate substrate = NewtonSubstrate::Native;
 
-  /// NewtonModel track (2026-10-12): which norm Newton's own residual
+  /// Which norm Newton's own residual
   /// norm, forcing, line search and stopping test are measured in --
-  /// `Plain` by default, so every pinned iteration count and golden
-  /// descriptor predating this field is unchanged. APPENDED LAST, after
+  /// `Plain` by default. APPENDED LAST, after
   /// `substrate` (descriptor.hpp's kGraphVersion history, v14): the
   /// struct's own declared END, never inserted between existing fields.
   NewtonNorm norm = NewtonNorm::Plain;
 
-  /// NewtonModel track (2026-10-12): how `F(x) = x - G(x)` is evaluated
-  /// for an ordinary (non-window) region -- `Advance` by default, the
-  /// only path that existed before this field. APPENDED LAST (descriptor
+  /// How `F(x) = x - G(x)` is evaluated
+  /// for an ordinary (non-window) region -- `Advance` by default. APPENDED LAST (descriptor
   /// v14), after `norm`.
   NewtonResidualPath residual_path = NewtonResidualPath::Advance;
 };
 
-/// Time windows track: how a component's own sub-stepping relates to a
+/// How a component's own sub-stepping relates to a
 /// coupling window's end (`CouplingWindowScope`, fuse/schedule/window.hpp).
 /// Chosen per component, never per region -- a mixed pair is the point.
 enum class DtPolicy {
@@ -551,7 +537,7 @@ enum class DtPolicy {
   return "?";
 }
 
-/// Time windows track: which classical waveform-relaxation scheme a
+/// Which classical waveform-relaxation scheme a
 /// coupling window's own sweep loop runs (Gander & Vandewalle, "Analysis of
 /// the parareal time-parallel time-integration method", SIAM J. Sci.
 /// Comput. 29(2), 2007, and the earlier waveform-relaxation literature it
@@ -595,7 +581,7 @@ struct WindowMemberPolicy {
   DtPolicy    policy = DtPolicy::Adjustable;
 };
 
-/// Time windows track (spec-in-progress Section 5.4): the opt-in payload that turns
+/// The opt-in payload that turns
 /// a multi-clock `IterationRegionDecl` into a coupling window instead of the
 /// contiguous single-clock loop `schedule()` otherwise requires
 /// (`E-SCHED-REGION`; see `fuse::validate_coupling_window`,
@@ -625,9 +611,9 @@ struct CouplingWindowScope {
   /// least second order"); `Adjustable`/`Fixed` do not change this floor.
   int order = 2;
 
-  /// Time windows track: which classical waveform-relaxation scheme this
+  /// Which classical waveform-relaxation scheme this
   /// window's own sweep loop runs. Defaults to `WaveformIteration::Jacobi`
-  /// -- the scheme `WindowCoupler` already implements today, and the one
+  /// -- the scheme `WindowCoupler` implements, and the one
   /// that needs no `.lag()` declaration at all to be schedulable.
   WaveformIteration iteration = WaveformIteration::Jacobi;
 
@@ -683,7 +669,7 @@ struct AccelConfig {
   /// keeps exactly one pair.
   ///
   /// MEASURED: raising this above 8 is a NO-OP whenever a filter is active.
-  /// Task 7.6's Dirichlet-Neumann demo ran reuse = 8/16/24/32 with QR1 and with
+  /// The Dirichlet-Neumann demo ran reuse = 8/16/24/32 with QR1 and with
   /// QR2 and got byte-identical sweep counts in every case -- the filter drops
   /// columns long before the history cap binds. Tune `filter`/`limit` first;
   /// `reuse` only bites with FilterKind::None.

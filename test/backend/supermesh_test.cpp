@@ -24,7 +24,7 @@
 
 // PRIVATE header, reached the same way test/parallel/comm_graph_test.cpp
 // reaches the transport layer's CrystalRouter -- see
-// src/backend/supermesh_detail.hpp for why (REVIEW.md R-12/BK-M2).
+// src/backend/supermesh_detail.hpp for why.
 #include "backend/supermesh_detail.hpp"
 
 namespace {
@@ -174,7 +174,7 @@ TEST(Supermesh, RemappingOntoTheSameMeshIsTheIdentity) {
   }
 }
 
-// ---- 1D, axis orientation (REVIEW.md TF-4) -------------------------------
+// ---- 1D, axis orientation ------------------------------------------------
 //
 // Every 1D test above uses `generated:line`, which SerialMeshBackend lays
 // out along x only -- so a kernel that silently hard-coded `.x` would pass
@@ -823,7 +823,7 @@ TEST(Supermesh, ThinSliversAreClippedAndTheirMassIsKept) {
 }
 
 TEST(Supermesh, MinWeightIsZeroWhenEveryAccumulatedEntryIsDroppedAsNegligible) {
-  // REVIEW.md TF-15. Shifting the target by a FULL unit domain (not a
+  // Shifting the target by a FULL unit domain (not a
   // fraction, as PartialOverlapIsReportedRatherThanHidden's 0.5 or
   // ThinSliversAreClippedAndTheirMassIsKept's 1e-10) makes it adjacent to,
   // not overlapping, the source: an interior target cell's box never
@@ -853,17 +853,15 @@ TEST(Supermesh, MinWeightIsZeroWhenEveryAccumulatedEntryIsDroppedAsNegligible) {
       << "RemapWeights::min_weight documents zero for an empty matrix";
 }
 
-// ---- RemapFlags::Conservative vs. partial coverage (REVIEW.md TF-5) ----
+// ---- RemapFlags::Conservative vs. partial coverage ----
 //
-// I4's own enforcement clause: "a refusal no test fires does not count as
-// implemented." E-REMAP-COVERAGE -- the refusal that guards a conservative
-// remap against exactly the partial-overlap truncation
-// PartialOverlapIsReportedRatherThanHidden above exercises -- was fired by
-// no test anywhere in the tree (the MOAB path's own assemble() has it;
+// A refusal no test fires does not count as implemented.
+// E-REMAP-COVERAGE guards a conservative remap against exactly the
+// partial-overlap truncation PartialOverlapIsReportedRatherThanHidden above
+// exercises. The MOAB path's own assemble() checks it;
 // build_weights_via_supermesh, this backend-agnostic path's own entry
-// point, never checked plan.flags at all, so RemapFlags::Conservative was
-// silently ignored for every non-MOAB backend -- fixed alongside this
-// test, not just tested).
+// point, must check plan.flags too, or RemapFlags::Conservative would be
+// silently ignored for every non-MOAB backend.
 
 namespace {
 
@@ -966,19 +964,18 @@ TEST(Supermesh, BuildWeightsRefusesPartialCoverageUnderConservativeFlag) {
          "test is not exercising the boundary it claims to";
 }
 
-// ---- inward_plane whitebox regression (REVIEW.md R-12/BK-M2) -----------
+// ---- inward_plane whitebox regression ----------------------------------
 //
 // build_supermesh_weights has no source grammar that produces a degenerate
 // clipping face (SerialMeshBackend only generates regular, non-degenerate
-// lines/boxes), so the fix pass that closed R-12 could not add a black-box
-// regression test through the public API -- see its report under "Needs
-// another owner". These reach the fix directly through the private
+// lines/boxes), so a black-box regression test through the public API is not
+// possible. These reach the code directly through the private
 // supermesh_detail.hpp header instead.
 
 TEST(SupermeshDetail, InwardPlaneRefusesAZeroLengthEdgeIn2D) {
   // Face 0 of the "triangle" v omits v[0] and is the edge v[1]-v[2]; make
-  // that edge zero-length by placing v[1] and v[2] at the same point. Before
-  // R-12 this produced n=(0,0,0), d=0 -- a half-plane that reads `0 >= 0` for
+  // that edge zero-length by placing v[1] and v[2] at the same point. Without the
+  // check this would produce n=(0,0,0), d=0 -- a half-plane that reads `0 >= 0` for
   // every point, i.e. no constraint at all -- instead of rejecting.
   const std::array<fuse::Point, 4> v{{{0.0, 0.0, 0.0},
                                       {1.0, 1.0, 0.0},
@@ -1021,11 +1018,11 @@ TEST(SupermeshDetail, InwardPlaneAcceptsAndOrientsANonDegenerateFaceIn2D) {
   EXPECT_GT(n[0] * v[0].x + n[1] * v[0].y + d, 0.0);
 }
 
-// ---- audit_coverage's rejection boundary (REVIEW.md R-13/BK-M3) -----------
+// ---- audit_coverage's rejection boundary ----------------------------
 //
 // The defect class this guards against -- overlap inflated past the cell it
 // came from -- cannot be produced through the public MeshView grammar by a
-// well-formed mesh (that is why the original fix pass could add only a
+// well-formed mesh (that is why only a
 // mutation, `supermesh-no-over-coverage-audit`, and not a permanent test).
 // Testing the extracted boundary directly on a synthetic ratio pins the
 // threshold and the error shape without manufacturing invalid geometry.
@@ -1040,8 +1037,8 @@ TEST(SupermeshDetail, AuditCoverageAcceptsExactAndSlightlyUnderCoverage) {
 }
 
 TEST(SupermeshDetail, AuditCoverageRefusesOverCoverageWithTheDefectsErrorCode) {
-  // 1.5x its own area: exactly the class the R-12/R-13 fix pass introduced
-  // the mutation for.
+  // 1.5x its own area: exactly the class the
+  // `supermesh-no-over-coverage-audit` mutation targets.
   const auto r =
       fuse::supermesh_detail::audit_coverage(1.5, 1.0, "target", 7, 2);
   ASSERT_FALSE(r.ok());
@@ -1058,14 +1055,13 @@ TEST(SupermeshDetail, AuditCoverageSkipsAZeroMeasureCellRatherThanDivideByZero) 
 }
 
 // ---- build_weights dispatches on the backend, not on FUSE_HAVE_MOAB -----
-// (REVIEW.md N-BACKEND-4, found on a host run of the MOAB-enabled build configuration: Runner.RemapsBetween-
-// DifferentlySizedRegions/RefusesEqualCountRegionsThatAreNotProvablyCoincident/
-// RemapsEqualCountEqualMeasureRegionsInADifferentArrangement all failed with
-// "build_weights needs the MOAB backend" once MOAB was compiled in, because
-// resolve()'s dynamic_cast rejected every SerialMeshBackend call unconditionally.
-// This runs identically at the base build configuration (where it is the only path there is, so it
-// is a plain sanity check) and at the MOAB-enabled build configuration (where, before the fix, it failed:
-// `direct` was E-REMAP-BACKEND, not the oracle's weights).
+// With MOAB compiled in, resolve()'s dynamic_cast must not reject every
+// SerialMeshBackend call with "build_weights needs the MOAB backend" (which
+// would fail Runner.RemapsBetweenDifferentlySizedRegions and its siblings).
+// This runs identically at the base build configuration (where it is the
+// only path there is, so it is a plain sanity check) and at the MOAB-enabled
+// build configuration (where `direct` must be the oracle's weights, not
+// E-REMAP-BACKEND).
 
 TEST(Supermesh, BuildWeightsReachesTheSupermeshPathForANonMoabBackend) {
   fuse::SerialMeshBackend backend;
@@ -1115,7 +1111,7 @@ TEST(Supermesh, BuildWeightsReachesTheSupermeshPathForANonMoabBackend) {
   EXPECT_EQ(direct.value().n_cols, oracle.value().n_cols);
 }
 
-// ---- weights follow the PROCESSOR SET's decomposition (KNOWN_ISSUES D5) -------
+// ---- weights follow the PROCESSOR SET's decomposition -------
 
 namespace {
 
@@ -1375,14 +1371,14 @@ TEST(RemapPartial, SourceWiderThanTargetTruncatesWhenConservationIsNotAsked) {
 }
 
 // ===========================================================================
-// Device-resident-arcs Phase 2 (KNOWN_ISSUES D53, narrowed): the broad
+// Device-resident arcs: the broad
 // phase (fuse::device::candidate_pairs) under Device, standing in front of
-// the UNCHANGED host clip. Host mode (no guard below) is untouched by this
-// track and is covered by every test above; these rows set
+// the UNCHANGED host clip. Host mode (no guard below) is
+// covered by every test above; these rows set
 // FUSE_EXECUTION_SPACE directly (build_supermesh_weights's own
 // fuse::search::resolve_execution_space() reads it, mirroring
 // RunnerConfig's convention -- see mls_weights.cpp's identical choice for
-// the companion MLS track) so they are a genuine comparison regardless of
+// the MLS weights) so they are a genuine comparison regardless of
 // whether this binary's own ctest row also sets it externally.
 // ===========================================================================
 
@@ -1475,7 +1471,7 @@ TEST(SupermeshDevice, OneDimensionalStaysOnHostBroadPhaseUnderDeviceToo) {
 }
 
 // ===========================================================================
-// KNOWN_ISSUES.md D82 (owner decision 2026-10-19): the normalisation convention
+// The normalisation convention
 // build_supermesh_weights applies is chosen by its own Conservation argument.
 // Both tests below use a STRICT, convention-specific assertion (amount
 // conserved for Extensive; the constant reproduced exactly for Intensive) --
@@ -1488,8 +1484,7 @@ TEST(Supermesh, ExtensiveConservesTheTotalAmountNotTheConstant) {
   // A non-matching resolution over the SAME domain (both box generators,
   // dim 3): Extensive and Intensive give DIFFERENT matrices on a pair like
   // this, so this test would pass under either convention's assertion only
-  // by the kind of coincidence D82's own "why no prior test caught this"
-  // section describes.
+  // by coincidence.
   auto p = pair_of("generated:box:2x2x2", "generated:box:3x3x3");
   ASSERT_TRUE(p != nullptr);
   const auto built =

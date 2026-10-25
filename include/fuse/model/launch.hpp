@@ -29,7 +29,7 @@ namespace fuse {
 /// through `port_file` or `service_name`, then merges that intercommunicator
 /// into a base communicator with `MPI_Intercomm_merge`.
 ///
-/// `Plugin` (S6 phase 4, "Adapter host" track): this component is not
+/// `Plugin`: this component is not
 /// launched at all -- it is MOUNTED, by `fuse::abi_detail::Registry`, from a
 /// shared object named by `plugin_path` that exports exactly one symbol,
 /// `fuse_provider_abi` (include/fuse/abi/provider.h). A plugin-launched
@@ -42,7 +42,7 @@ namespace fuse {
 /// every OTHER mode, but collapse to one for Plugin, which is always
 /// in-process by construction.
 ///
-/// `LowFive` (S6 phase 3, "LowFive" track, Unit 3): this component
+/// `LowFive`: this component
 /// exchanges at least one of its fields not through an ordinary FUSE
 /// Transport but through plain HDF5 calls LowFive intercepts in memory
 /// (`FieldSpec::hdf5_path`, fuse/model/field_spec.hpp; docs/user/

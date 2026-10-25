@@ -1,5 +1,4 @@
-// General (any supported cell) consistent interpolation -- nodal-remap
-// track, step "Consistent interpolation for any supported cell". This file
+// General (any supported cell) consistent interpolation. This file
 // exercises `fuse::build_general_interp_weights` (general_interp.hpp),
 // reached through the public dispatcher `fuse::build_consistent_interp_weights`
 // (consistent_interp.hpp) exactly the way `operator_conformance_test.cpp`'s
@@ -308,11 +307,10 @@ TEST(GeneralInterp, NoCellVerticesRefuses) {
 }
 
 // ---------------------------------------------------------------------------
-// REVIEW.md TF-10: build_general_interp_weights re-queries cell_vertices()
-// for the WINNING cell a second time (general_interp.hpp, after the
+// build_general_interp_weights re-queries cell_vertices() for the WINNING cell a second time (general_interp.hpp, after the
 // two-tier selection), having already validated every cell's corners once
-// in the up-front loop. Before the fix the second call's Result went
-// unchecked straight into `.value()` -- latent under every existing test,
+// in the up-front loop. The second call's Result must be checked before
+// `.value()`; an unchecked access would be latent under every ordinary test,
 // since a MeshView that answered once always answers the same way again,
 // but a std::bad_variant_access waiting to happen the moment it does not,
 // which is exactly what this wrapper manufactures.
@@ -371,23 +369,19 @@ TEST(GeneralInterp, DegenerateCellRefuses) {
   // Jacobian -- the mesh's ONLY cell, so it is also the ONLY candidate any
   // query point can ever have.
   //
-  // KNOWN_ISSUES.md D74 sibling fix (Stage B, Nodal corner track): before
-  // that fix, a failed invert_reference_map on ANY candidate aborted the
-  // whole evaluation point immediately with THAT candidate's own code
-  // (E-INTERP-DEGENERATE here) -- this test's own original assertion. The
-  // fix makes a failed candidate's inversion mean only "this candidate does
-  // not contain the point" (mirroring nodal_remap_distributed.cpp's own
+  // A failed invert_reference_map on ANY candidate does not abort the
+  // whole evaluation point with THAT candidate's own code
+  // (E-INTERP-DEGENERATE here). A failed candidate's inversion means only
+  // "this candidate does not contain the point" (mirroring nodal_remap_distributed.cpp's own
   // `consider()` lambda exactly), so with the single candidate skipped,
   // neither tier (a) nor tier (b) has a survivor and the point falls through
   // to the SAME "beyond both tiers" E-INTERP-DOMAIN refusal a genuinely
   // outside point already used -- matching the distributed builder's own
   // already-accepted behaviour for the identical all-candidates-failed case
-  // (nodal_remap_distributed.cpp's `consider()`/`FailCode::kDomain`, D74).
+  // (nodal_remap_distributed.cpp's `consider()`/`FailCode::kDomain`).
   // Still a refusal, by name, for "no candidate contains this point" -- the
   // SPECIFIC reason (degenerate vs. genuinely outside) is no longer
-  // distinguished in the code, which is the one behaviour change this fix
-  // makes to an existing, previously-passing row; see design_notes for the
-  // full account.
+  // distinguished in the code.
   std::vector<Point> v = {{0, 0, 0}, {1, 0, 0}, {2, 0, 0}};
   ManualCellMesh src(2, v, {CellShape::Triangle}, {{0, 1, 2}});
   auto tgt = ManualCellMesh::points(0, {{0.5, 0.0, 0.0}});
@@ -768,8 +762,8 @@ TEST(GeneralInterp, MixedPyramidPrismMeshAsSourceRefusesByName) {
 }
 
 // ===========================================================================
-// mesh_view.hpp's cell_vertices() itself, on the two concrete backends this
-// track wired it into beyond native (which the tests above already exercise
+// mesh_view.hpp's cell_vertices() itself, on the concrete backends beyond
+// native (which the tests above already exercise
 // implicitly through every "generated:*" case): SerialMeshBackend's
 // structured hex.
 // ===========================================================================
@@ -798,12 +792,12 @@ TEST(CellVerticesQuery, StructuredHexBoxReportsTheRightCorners) {
   EXPECT_NEAR(p6.z, 1.0, 1e-14);
 }
 
-// Round 2 (nodal-remap track): a StructuredMesh line's dimension-1
-// cell_vertices answer went from "rejected" to "implemented", to give
+// A StructuredMesh line's dimension-1
+// cell_vertices query is implemented, to give
 // `nodal_remap_distributed.hpp`'s builder the same connectivity answer on a
 // 'generated:line' mesh that test/verification/interface_transfer_test.cpp's
 // `run_consistent_pair` already relies on for its serial (single-rank)
-// coverage. This test therefore now asserts the ANSWER, not a rejection --
+// coverage. This test therefore asserts the ANSWER, not a rejection --
 // see StructuredHexBoxStillRefusesAtTheWrongDimension below for what still
 // rejects on this same backend.
 TEST(CellVerticesQuery, StructuredLineReportsConsecutiveEdgeCorners) {
@@ -830,15 +824,14 @@ TEST(CellVerticesQuery, StructuredHexBoxStillRefusesAtTheWrongDimension) {
   ASSERT_TRUE(view.ok());
   // Dimension 2 (a face) of a dimension-3 box mesh has no connectivity
   // answer -- only dimension 3 (the hex cells themselves) does; unaffected
-  // by this round's 1D addition, which is gated on `dim_ == 1` specifically.
+  // by the 1D support, which is gated on `dim_ == 1` specifically.
   const auto cv = view.value()->cell_vertices(2, 0);
   ASSERT_FALSE(cv.ok());
   EXPECT_EQ(cv.error().code, "E-MESH-NO-CELL-VERTICES");
 }
 
 
-// KNOWN_ISSUES.md D74 sibling, 3-D analogue (Stage B, Nodal corner track):
-// the SAME degenerate-candidate-aborts-an-already-contained-point mechanism
+// 3-D analogue: the SAME degenerate-candidate-aborts-an-already-contained-point mechanism
 // nodal_tie_break_test.cpp's own DegenerateNearbyCandidateAbortsAnAlready
 // FoundTightMatch reproduces in 2-D (Quad), reproduced here in 3-D (Hex) --
 // proving the mechanism, and the fix, are shape-independent, not a
@@ -856,8 +849,7 @@ TEST(CellVerticesQuery, StructuredHexBoxStillRefusesAtTheWrongDimension) {
 // padded query box and cannot be excluded by the broad phase on geometry
 // alone.
 //
-// MEASURED (this round, scratch debug, both directions -- not fabricated):
-// reverting the fix below (general_interp.hpp's per-candidate loop) and
+// MEASURED (both directions): reverting the fix below (general_interp.hpp's per-candidate loop) and
 // instrumenting the failure site to print which candidate failed and why
 // reproduces, verbatim:
 //   point=0 candidate=2 code=E-INTERP-DEGENERATE

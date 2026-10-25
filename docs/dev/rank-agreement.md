@@ -54,7 +54,7 @@ mechanically was not done: a `Transport` is followed by a dedicated `Epoch` unco
 (`lower_channel()` step 4), while a placement-moving `Remap` has no uniform post-`Remap` agreement
 point to pair against, so the same pairing loop would either miss the real gap or refuse legal graphs.
 Closing it needs an agreement point emitted alongside a placement-moving `Remap`, the way `Transport`'s
-is — a channel-lowering change. Review 2026-10-11 IS-3, recorded rather than fixed.
+is — a channel-lowering change. This is recorded here rather than fixed.
 
 ## What it deliberately does not do
 
@@ -105,13 +105,9 @@ it — matched sends and receives, a hand-up chain that always terminates at
 participant 0, and a message count per participant that stays logarithmic.
 
 The tag is small and explicit (`kEpoch = 0x5C14`, next to the crystal
-router's `0x5C12`). RT-7/TR-12 (review 2026-10-11): this page previously said
-`0x5C13` — that is `kUnionCommCreate` (`fuse/transport/tags.hpp`'s own
-history comment: `kEpoch` was first chosen as `0x5C13`, landed on the crystal
-router's own collision, and was moved to `0x5C14`; `kUnionCommCreate` took
-the vacated `0x5C13`), not the epoch tag this section describes. Both values
-stay below `MPI_TAG_UB`'s floor either way, so the collision never reached
-`E-RT-EPOCH-TAG` itself — this was doc drift, not a code defect. MPI only
+router's `0x5C12`). `0x5C13` is `kUnionCommCreate` (`fuse/transport/tags.hpp`), not the epoch
+tag: `kEpoch` was first chosen as `0x5C13`, collided with another tag, and was
+moved to `0x5C14`. MPI only
 guarantees tags up to `MPI_TAG_UB`, whose standard minimum
 is 32767; a first version packed `'EPOC'` into an int, which is 1162891075 and
 which every MPI rejects outright. Setup now reads `MPI_TAG_UB` and refuses
@@ -150,10 +146,9 @@ desynchronises the remaining iterations rather than one step.
 
 ### The checklist question
 
-Review 2026-10-11 (index.md §2.1) found this class fixed per-site and
-reintroduced per-subsystem seven separate times before that round, and five
-more sites inside the runtime layer alone (RT-1, RT-2, RT-4) — per-site fixes
-were not holding. Ask this question of **every** rank-local refusal or early
+This class has been fixed per-site and
+reintroduced per-subsystem repeatedly, including several sites inside the
+runtime layer alone — per-site fixes did not hold. Ask this question of **every** rank-local refusal or early
 return, not only ones that look collective-adjacent:
 
 > Does something later in this same call, on a path this refusal skips,
@@ -236,8 +231,7 @@ a rank that skipped one would leave its partners waiting inside it — and
 reports the failure at the end of the period, where every rank has reached the
 same conclusion.
 
-What it does *not* do any longer is stop advancing every component. Since
-2026-09-21 the rule is:
+What it does *not* do any longer is stop advancing every component. The rule is:
 
 > The origin of the failure, and every component that reads — transitively —
 > something the origin provides, do not advance for the rest of that period.
@@ -308,8 +302,8 @@ with its peers" — and it is not one.
 `SchurSlabSolver::factor` ([](schur-slab-solver.md)) first checked whether
 *this rank's own* row band had fewer than two rows and returned immediately
 if so, before ever reaching the Schur-complement assembly's own
-`Reducer::allgather`. A real two-rank run (`parallel.schur_slab_mpi.2`, host,
-2026-10-10) put a one-row band on rank 0 and a fine one on rank 1: rank 0
+`Reducer::allgather`. A real two-rank run (`parallel.schur_slab_mpi.2`, host)
+put a one-row band on rank 0 and a fine one on rank 1: rank 0
 refused and returned without entering the allgather; rank 1's own check
 passed, so it called the allgather alone — and MPICH reported "Message
 truncated", one rank waiting inside a collective nobody else had entered.
@@ -336,9 +330,9 @@ tag 1 waiting for the peer's tag 0 — correct per-rank bookkeeping, crossed
 between ranks: each rank's first `MPI_Sendrecv` then needed a message the
 peer only sends from its SECOND call, which the peer reaches only after its
 own first call completes. Both ranks sampled inside `MPIR_Sendrecv_impl` on
-the first host run (2026-10-09), neither returning — diagnosed with macOS's
+the first host run, neither returning — diagnosed with macOS's
 `sample` tool (see "Diagnosed with `sample`, not re-read code" below), the
-same way D25's seed-chain hang was. The fix pairs the send and receive of
+same way the seed-chain hang was. The fix pairs the send and receive of
 ONE call under the SAME tag (both ranks send their last row under tag 0 and
 receive the peer's last row in the same call; then the same for the first
 row under tag 1) rather than threading two different tags through two calls
@@ -355,7 +349,7 @@ channel inverts ownership in both directions at once: the exporting rank
 wrongly claims a block it never writes, and the consuming rank — the only
 one that does — wrongly disclaims it, so both sides sum a stale 0/0
 residual/reference pair that reads as trivially converged. A host run of
-`parallel.window_runner_mpi.{2,3}` (2026-10-08) measured exactly this:
+`parallel.window_runner_mpi.{2,3}` measured exactly this:
 `iterations_per_window[0] == 1` against a reference of 37, not a crash, a
 silently wrong converged answer. Fixed with a field resolved from the
 channel's TARGET component's own processor set
@@ -364,7 +358,7 @@ exporter's own flag, then taken one level further: ownership is resolved
 PER BLOCK from that block's own channel, not per member from the first
 channel a fan-out member happens to feed, since a member feeding two
 consumers on different processor sets would otherwise hand both blocks the
-wrong one's answer. `KNOWN_ISSUES.md` D25 has the full account. The general
+wrong one's answer. The general
 form: when a quantity is computed in one place (the exporter) but consumed
 and measured in another (the consumer), "is this hosted here" is a question
 about the CONSUMER's processor set, not the producer's, however natural it
@@ -374,10 +368,10 @@ reads to ask the producer first.
 
 A fifth re-reading of a hang rarely finds what the first four missed; a
 sampling profiler attached to the stuck processes usually does in one shot.
-D25's own seed-chain hang — three MPMD programs each stuck inside
+The seed-chain hang — three MPMD programs each stuck inside
 `MPI_Alltoallv`, two of them (U and V) inside `Runner::initialize()`'s
 seed-delivery chain and the third (the coupler) inside `run_region()`'s
-first real Transport — was found this way on the host (2026-10-09): macOS's
+first real Transport — was found this way on the host: macOS's
 `sample <pid>` on each of the three stuck processes named exactly which
 collective each was blocked in and from where, which is what made "the
 initialize-time seed chain's selection is per-rank, and after the hosting
@@ -396,8 +390,7 @@ Everything above proves a property of the *compiled plan*: the ranks that
 take part in one agreement point are exactly the ranks the move it guards
 covers, checked once at `schedule()` time (`E-SCHED-EPOCH-MISSING`,
 `E-SCHED-EPOCH-PARTIAL`). It says nothing about whether two ranks agree on
-how many times to execute that plan, and `KNOWN_ISSUES.md` D57 is a hang
-that lives entirely in that gap.
+how many times to execute that plan, and one hang lives entirely in that gap.
 
 `Constrain`'s own conservation reduction (`src/runtime/runner.cpp`,
 `OpKind::Constrain`) is a real `MPI_Allreduce` over the base communicator,
@@ -425,7 +418,7 @@ That alone is not a bug — every rank's own compiled plan is identical
 rank, so every participant derives the same list without communicating
 to establish it"), so the Nth `Constrain` instruction in the stream is
 the same instruction, with the same `ci.reduce`, on every rank that
-walks that stream. D57's hang is not a disagreement about the plan; it
+walks that stream. That hang is not a disagreement about the plan; it
 is a disagreement about how many PERIODS of it to walk. `Runner::run()`
 (the coupler's own driver, `coupler_main.c`) executes exactly the
 requested period count. The ABI's own `prime_next_request()`

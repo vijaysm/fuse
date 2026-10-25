@@ -1,11 +1,10 @@
-// The remap halo's SERIAL contract -- the part of KNOWN_ISSUES D4's
-// `A-PARTITIONED` gap that can be tested without a launcher.
+// The remap halo's SERIAL contract -- the part of the `A-PARTITIONED` gap
+// that can be tested without a launcher.
 //
-// `build_remap_halo`, `exchange_remap_halo` and `accumulate_remap_halo` had 34
-// references across `src/` and `include/` and NOT ONE test, which is how the
-// S5.5 matrix gate found them. Their parallel behaviour needs `mpiexec` and a
-// partitioned spherical pair and is still uncovered; what is covered here is
-// the contract their own headers state for one rank, and that contract is
+// `build_remap_halo`, `exchange_remap_halo` and `accumulate_remap_halo` are
+// referenced throughout `src/` and `include/`. Their parallel
+// behaviour needs `mpiexec` and a partitioned spherical pair and is still
+// uncovered; what is covered here is the contract their own headers state for one rank, and that contract is
 // load-bearing in a specific way:
 //
 //   "Idempotent per (source mesh, target mesh, dimension). Serial, or a
@@ -57,17 +56,15 @@ struct BoxPair {
   }
 };
 
-// 420b95c (2026-10-19, KNOWN_ISSUES.md D73 round 8 host run): with MOAB
-// compiled in, `execute_remap_halo_instructions` handed EVERY non-native
-// backend to the MOAB cross-placement overload, which refuses
+// With MOAB compiled in, `execute_remap_halo_instructions` must not hand
+// EVERY non-native backend to the MOAB cross-placement overload, which refuses
 // `E-REMAP-BACKEND` for a backend that is neither this nor Native -- true
-// of `SerialMeshBackend`, invisible in a no-MOAB tier-0 build (where this
-// branch does not exist at all), and the reason 30 serial rows went red on
-// the owner's MOAB-enabled host. A backend that is neither native nor MOAB
-// has no partitioned read and nothing to adopt, so the fix makes this a
+// of `SerialMeshBackend`, and invisible in a no-MOAB tier-0 build (where this
+// branch does not exist at all). A backend that is neither native nor MOAB
+// has no partitioned read and nothing to adopt, so this is a
 // successful no-op, the SAME answer the no-MOAB build's own `#else` branch
-// already gives -- the two configurations now agree. Pinned at the level
-// the host measured: a graph with a Conservative, cross-placement channel
+// gives. Pinned at the level a MOAB-enabled host exercises: a graph with a
+// Conservative, cross-placement channel
 // (so `lower()` emits a real `BuildRemapHalo` node, `plan_test.cpp`'s own
 // `pair()` convention) must not refuse when the backend behind it is
 // serial.
@@ -161,8 +158,8 @@ TEST(RemapHalo, WeightsBuildInSerialWithoutTheParallelRefusal) {
 
   // The other half of the boundary moab_backend.hpp calls load bearing: a
   // communicator of ONE must not produce E-REMAP-PARALLEL. (`> 1` without a
-  // halo must; that half needs mpiexec and is the uncovered part of D4's
-  // A-PARTITIONED.)
+  // halo must; that half needs mpiexec and is the uncovered part of the
+  // A-PARTITIONED gap.)
   const auto w = fuse::build_weights(f.plan, f.graph, f.backend);
   ASSERT_TRUE(w.ok()) << w.error().code << ": " << w.error().message;
 }

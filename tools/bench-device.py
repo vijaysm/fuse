@@ -112,7 +112,7 @@ def main():
     lines.append("" if quiet else
                 "**PRELIMINARY** -- the 1-minute load average was >= "
                 f"{args.max_load} before or after at least one repetition; "
-                "re-run on a quiet host for the numbers the lead takes after integration.")
+                "re-run on a quiet host for representative numbers.")
     lines.append("")
     phases = sorted({p for s in results.values() for p in s.keys()})
     header = "| ranks | space | " + " | ".join(f"{p} median (s)" for p in phases) + " | " + \

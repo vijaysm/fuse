@@ -11,7 +11,7 @@ namespace
 using namespace fuse;
 
 // Upstream's require() threw on the first failure; EXPECT_TRUE reports every
-// failure in the function (U2) and the message travels with it unchanged.
+// failure in the function and the message travels with it unchanged.
 void require(bool condition, const char* message) { EXPECT_TRUE(condition) << message; }
 
 std::vector<std::byte> of(std::initializer_list<unsigned> values)
@@ -53,15 +53,12 @@ void signed_values_use_two_s_complement()
     require(lowest == of({0, 0, 0, 0, 0, 0, 0, 0x80}), "INT64_MIN did not encode exactly");
 }
 
-// D62 (KNOWN_ISSUES.md): get_integer/get_signed are the decode side
-// fuse::detail::Reader (fuse/model/descriptor.hpp) now routes through,
-// replacing a native-layout memcpy. RED on pristine (these two functions
-// do not exist there at all -- the file this test was added to is the
-// SAME commit that adds them, so there is no separate pre-fix build to
-// show failing; the round-trip assertions below are what would catch a
-// decode that silently disagreed with put_integer/put_signed's own
-// encoding, which is the behaviour a memcpy-based implementation could
-// never have exercised this way).
+// get_integer/get_signed are the decode side fuse::detail::Reader
+// (fuse/model/descriptor.hpp) routes through, in place of a native-layout
+// memcpy. The round-trip assertions below catch a decode that silently
+// disagreed with put_integer/put_signed's own encoding, which is the
+// behaviour a memcpy-based implementation could never have exercised this
+// way.
 void get_integer_is_the_inverse_of_put_integer()
 {
     std::vector<std::byte> out;
@@ -210,7 +207,7 @@ TEST(Bytes, TheLengthPrefixPreventsAdjacentCollisions) { the_length_prefix_preve
 TEST(Bytes, RationalsEncodeBothTerms) { rationals_encode_both_terms(); }
 TEST(Bytes, TheHashDependsOnEveryByteAndOnOrder) { the_hash_depends_on_every_byte_and_on_order(); }
 
-// Transform (S1.4): a fuse::Rational encodes exactly as its ABI record does.
+// A fuse::Rational encodes exactly as its ABI record does.
 #include "fuse/base/rational.hpp"
 TEST(Bytes, FuseRationalEncodesAsItsAbiRecord) {
     std::vector<std::byte> as_rational, as_record;

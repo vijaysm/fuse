@@ -78,7 +78,7 @@ does not print it: under the mutation, full unfiltered
 fuse_runtime_window_runner_straddle_test (10 tests) ran 9 PASSED / 1
 FAILED -- WindowRunnerStraddle.
 SevenThirteenAdjustableAdjustableThroughWindowComponentMatchesDriverUnderAitken
-(this track's own new RED test, added this round) is the ONE test this
+(the new RED test, added this round) is the ONE test this
 mutation kills: EXPECT_EQ(via_runner.xA, via_driver.xA) fails
 9.3973277778036985e-05 vs 9.3973277885706419e-05, xB fails
 8.3431473580233251e-05 vs 8.343147392391424e-05, iterations fails 17
@@ -117,4 +117,4 @@ new = """      if (den > 0.0 && std::isfinite(den) && std::isfinite(num)) {
 """
 target = "fuse_num_accelerator_test"
 test = "num.accelerator"
-result = """KILLED (tools/mutate.py, --area "num/accel_relaxation (AitkenAccel::update(), reject-a-non-positive-candidate guard)", --build-dir build-tier0, system compiler /usr/bin/cc + /usr/bin/c++, tier 0, no MPI): the new crafted-sequence unit test, Accelerator.AitkenRejectsANonPositiveCandidateAndRestartsToOmega0, fails under the mutation -- EXPECT_EQ(out1, 6.0) sees 4.0 instead (the unguarded formula's own -0.5*2 relaxed step from x_old=5), exactly the RED value this track's own manual check (before writing this mutation row) measured by hand-reverting the guard. Every other test in fuse_num_accelerator_test (54 of 55) still passes under the mutation, including DivergenceFallsBackToTheUnderRelaxedStepWhenItSurvives's own Aitken block, re-engineered this round to use a downward (not upward) residual perturbation specifically so it still exercises the OVERFLOW-recovery path under the guarded formula; that re-engineering means the mutation does not accidentally get caught by a test built for a different purpose."""
+result = """KILLED (tools/mutate.py, --area "num/accel_relaxation (AitkenAccel::update(), reject-a-non-positive-candidate guard)", --build-dir build-tier0, system compiler /usr/bin/cc + /usr/bin/c++, tier 0, no MPI): the new crafted-sequence unit test, Accelerator.AitkenRejectsANonPositiveCandidateAndRestartsToOmega0, fails under the mutation -- EXPECT_EQ(out1, 6.0) sees 4.0 instead (the unguarded formula's own -0.5*2 relaxed step from x_old=5), exactly the RED value the manual check (before writing this mutation row) measured by hand-reverting the guard. Every other test in fuse_num_accelerator_test (54 of 55) still passes under the mutation, including DivergenceFallsBackToTheUnderRelaxedStepWhenItSurvives's own Aitken block, re-engineered this round to use a downward (not upward) residual perturbation specifically so it still exercises the OVERFLOW-recovery path under the guarded formula; that re-engineering means the mutation does not accidentally get caught by a test built for a different purpose."""

@@ -1,6 +1,6 @@
 # Mutation evidence — `model`
 
-Run 2026-09-28 against build `bh`. Regenerate with `tools/mutate.py --write-log`; do not edit.
+Run against build `bh`. Regenerate with `tools/mutate.py --write-log`; do not edit.
 
 | Mutation | File | Outcome | Killed by |
 |---|---|---|---|

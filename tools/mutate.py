@@ -64,7 +64,7 @@ def load_manifest() -> list[dict]:
     # verdict line, so from the caller's side an area with one malformed row
     # was indistinguishable from an area with nothing to do -- and
     # --check-anchors still called all of them valid, because it only reads
-    # `file` and `old`. Found 2026-09-21 by adding two rows without `target`.
+    # `file` and `old`.
     required = ("id", "area", "describes", "file", "old", "new", "target", "test")
     missing = [
         f"{m.get('id', '<no id>')}: missing {k}"
@@ -84,8 +84,8 @@ def main() -> int:
     # build-evidence/*.toml and the source tree, no build, no git
     # requirement), but argparse's own requiredness demanded one anyway --
     # which is exactly what kept this sub-second static check out of CI
-    # (BC-3): a `gates` job leg has no configured build directory to hand
-    # it. `type=Path` only applies when a value is actually given.
+    # (a `gates` job leg has no configured build directory to hand
+    # it). `type=Path` only applies when a value is actually given.
     ap.add_argument("--build-dir", default=None, type=Path)
     ap.add_argument("--area", default=None)
     ap.add_argument("--write-log", action="store_true")
@@ -93,7 +93,7 @@ def main() -> int:
     ap.add_argument("--check-anchors", action="store_true",
                     help="verify every `old` occurs exactly once in its file; no build, "
                          "no git requirement. Run this in CI: an anchor that drifted is a "
-                         "mutation that is silently no longer assessed (REVIEW.md BT-F5).")
+                         "mutation that is silently no longer assessed.")
     args = ap.parse_args()
 
     if args.build_dir is None and not args.check_anchors:
@@ -159,7 +159,7 @@ def main() -> int:
         line.startswith("FUSE_ENABLE_LOWFIVE:") and line.rstrip().endswith("=ON")
         for line in cache.read_text(errors="replace").splitlines())
 
-    # `requires = "device"` (D15 item 1): ProviderAdapter's device-field
+    # `requires = "device"`: ProviderAdapter's device-field
     # allocation and its post-advance fence sit behind `#if
     # defined(KOKKOS_ENABLE_CUDA) || defined(KOKKOS_ENABLE_HIP) ||
     # defined(KOKKOS_ENABLE_SYCL)`; on a host-only Kokkos the `#else` arm
@@ -180,15 +180,12 @@ def main() -> int:
                     build_has_device = True
             break
 
-    # FpPolicy track, KNOWN_ISSUES.md D30: a `requires = "release"` gate
-    # (read from CMAKE_BUILD_TYPE, the same courtesy "mpi"/"petsc" get) was
-    # added here for base.fp_policy's probe on the premise that Debug
-    # (-O0) never contracts a*b+c. That premise is false -- confirmed by
-    # disassembly (docs/dev/testing.md's "Floating-point contraction
-    # policy" section) that -ffp-contract defaults to `on` at every
-    # optimization level -- so the mutation is equally visible in Debug
-    # and Release (hand-proved both ways, build-evidence/mutations/
-    # fp-policy.toml), and the gate is removed rather than kept unused.
+    # There is no `requires = "release"` gate for base.fp_policy's probe:
+    # Debug (-O0) also contracts a*b+c, since -ffp-contract defaults to `on`
+    # at every optimization level (confirmed by disassembly; see
+    # docs/dev/testing.md's "Floating-point contraction policy" section), so
+    # the mutation is equally visible in Debug and Release (hand-proved both
+    # ways, build-evidence/mutations/fp-policy.toml).
 
     if subprocess.run(["git", "status", "--porcelain", "include", "src"], cwd=ROOT,
                       capture_output=True, text=True).stdout.strip():
@@ -208,8 +205,8 @@ def main() -> int:
     # fuse::petsc::ensure_initialized(), which calls PETSc's own
     # PetscInitialize() -- and PetscInitialize() calls MPI_Init() when MPI is
     # not already up (fuse/petsc/token.hpp's own ensure_initialized() comment).
-    # A sandbox that cannot complete a bare MPI_Init() at all (KNOWN_ISSUES.md
-    # D32's own finding, independent of PETSc) therefore cannot run ANY
+    # A sandbox that cannot complete a bare MPI_Init() at all
+    # (independent of PETSc) therefore cannot run ANY
     # petsc.* test, in ANY build configuration -- unlike `mpi`/`no-mpi`, this
     # is not a question of whether FUSE_ENABLE_MPI was turned on, so it is
     # gated the same way "mpi" is (an explicit env var a host with a working
@@ -218,9 +215,9 @@ def main() -> int:
 
     # The SAME argument, one step further: a test that is ALREADY FAILING on
     # the unmutated tree also exits non-zero whether or not the mutation had
-    # any effect. Reporting that as KILLED is a false kill, and the gate did
-    # exactly that on 2026-09-21 -- three mutations whose test was red were
-    # all reported killed, which is how the omission was found. So each
+    # any effect. Reporting that as KILLED is a false kill, and the gate once
+    # did exactly that -- three mutations whose test was red were
+    # all reported killed. So each
     # distinct test is run once on the clean tree first, and a mutation whose
     # test does not pass there is reported NO-BASELINE and proves nothing.
     baseline: dict[str, bool] = {}
@@ -297,7 +294,7 @@ def main() -> int:
                     verdict, note = "INCONCLUSIVE", "mutant does not compile; rewrite it"
             else:
                 # FUSE_MUTATE_LOGDIR (opt-in): keep this row's build log and
-                # the ctest output. Added 2026-10-21 because one run reported
+                # the ctest output. Useful because one run reported
                 # a PETSc row SURVIVED whose mutated binary, built and run by
                 # hand on the same machine, fails its test; the tool threw the
                 # output away, so the disagreement could not be examined.
@@ -329,9 +326,9 @@ def main() -> int:
         finally:
             path.write_text(original)
         # Confirm the restore put back the exact pre-mutation bytes. In one
-        # sandboxed full sweep (2026-10-18, 363 rows, Linux overlay file
+        # sandboxed full sweep (363 rows, Linux overlay file
         # system) ten files were left mutated with no exception and an
-        # ordinary verdict; not reproduced on the owner's machine, but a gate
+        # ordinary verdict; not reproduced elsewhere, but a gate
         # whose contract is "the tree is byte-identical afterwards" must
         # check it rather than trust the write. A failure here is loud.
         restored = path.read_text()

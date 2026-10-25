@@ -71,7 +71,7 @@ Result<std::size_t> execute_remap_halo_instructions(const CouplingGraph& graph,
     plan.tgt = graph.field(ch.target).region;
     plan.flags = ch.remap.flags;
     plan.method = ch.remap.method_override;
-    // ROUND 2 (lead's design decision 2026-10-18): read the placement BACK from
+    // Read the placement BACK from
     // the instruction's own `attrs.dst_rank_set`/`attrs.src_rank_set` --
     // the components `emit_remap_halo_instructions()` (src/ir/rules_
     // channel.cpp) already resolved when it decided to emit this node --
@@ -87,13 +87,11 @@ Result<std::size_t> execute_remap_halo_instructions(const CouplingGraph& graph,
     const ComponentId source_placement =
         ComponentId{static_cast<std::uint32_t>(n.attrs.src_rank_set)};
 
-    // ROUND 3 (KNOWN_ISSUES D5 HALO BRIDGING, 2026-10-18): the single-
-    // placement `fuse::build_remap_halo(plan, graph, backend)` resolves
-    // BOTH source and target through `plan.placement` -- wrong for the
-    // source whenever `source_placement != plan.placement`, which is
-    // every qualifying channel this instruction was emitted for (measured
-    // on the owner's host: the halo "succeeded" having adopted nothing,
-    // KNOWN_ISSUES.md D73's own account). Both backends now have a
+    // The single-placement `fuse::build_remap_halo(plan, graph, backend)`
+    // resolves BOTH source and target through `plan.placement` -- wrong for
+    // the source whenever `source_placement != plan.placement`, which is
+    // every qualifying channel this instruction was emitted for (the halo
+    // would "succeed" having adopted nothing). Both backends have a
     // two-placement form; dispatch to each directly rather than through
     // the generic single-placement entry point.
     Result<std::size_t> r = Failure{"E-REMAP-BACKEND", "unreachable"};
@@ -120,11 +118,10 @@ Result<std::size_t> execute_remap_halo_instructions(const CouplingGraph& graph,
       // backend. Any other backend (the serial backend, a test double) has
       // no partitioned read and therefore nothing to adopt: a successful
       // no-op, the same answer the no-MOAB build below gives, so the two
-      // configurations agree. Before 2026-10-19 this branch handed every
-      // non-native backend to the MOAB overload, which refuses
-      // E-REMAP-BACKEND for a serial backend; the refusal was invisible in a
-      // no-MOAB tier-0 build and turned 30 serial rows red on a MOAB-enabled
-      // host (KNOWN_ISSUES.md D73 round 8's host run).
+      // configurations agree. (Handing every non-native backend to the MOAB
+      // overload would refuse E-REMAP-BACKEND for a serial backend; the
+      // refusal would be invisible in a no-MOAB tier-0 build and turn serial
+      // rows red on a MOAB-enabled host.)
       if (dynamic_cast<MoabMeshBackend*>(&backend) != nullptr) {
         r = build_remap_halo(plan, graph, backend, source_placement);
       } else {

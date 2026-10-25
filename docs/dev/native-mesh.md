@@ -72,7 +72,7 @@ curvature. A cell this test fails refuses with the named error `E-MESH-POLYGON-N
 centroid and cross-checks against the divergence-theorem enclosed volume from the same oriented faces).
 Neither ever reports a wrong measure silently.
 
-## Sources (M1)
+## Sources
 
 Generators (`src/backend/native_generators.cpp`): `generated:line:N`, `generated:tri:NxM`,
 `generated:quad:NxM`, `generated:cubedsphere:N` (six independently-numbered panels, not seam-welded --
@@ -98,7 +98,7 @@ scalars, plus one `#`-prefixed comment line (topological dimension) that a real 
 written as `double` (exact for every integer up to 2^53, which covers any mesh size this is used at). A
 round trip reproduces the mesh exactly, including a polyhedral mesh's face structure.
 
-## Repartition migration (M2)
+## Repartition migration
 
 `fuse::native::migrate` (`include/fuse/backend/native_migration.hpp`/`src/backend/native_migration.cpp`)
 moves owned cells, with their full closure, onto a new per-cell destination rank. Structured so the MPI
@@ -111,10 +111,10 @@ part is ONLY the exchange, matching `fuse::partition::detail::collectives.cpp`'s
   `E-MESH-MIGRATE-INCOMPLETE` when `dest.size()` is not the owned cell count, `E-MESH-MIGRATE-RANGE` when
   an entry names a destination outside `[0, num_ranks)`.
 - `exchange_migration_buffers(send, comm)` -- the ONLY function that names an MPI type: an
-  `MPI_Alltoall` for sizes then `MPI_Alltoallv` for the payload, always staged through HOST buffers (see
+  `MPI_Alltoall` for sizes then `MPI_Alltoallv` for the payload, staged through HOST buffers (see
   "GPU-aware MPI" below). `comm == kNullComm` is the identity, touching no MPI symbol. A Space-templated
-  GPU-aware REPLACEMENT, `exchange_migration_buffers<Space>`, exists alongside it (Migration track,
-  2026-10-15) but is not yet called by `migrate` -- see "GPU-aware MPI" below.
+  GPU-aware overload, `exchange_migration_buffers<Space>`, exists alongside it and is what `migrate`
+  calls -- see "GPU-aware MPI" below.
 - `unpack_migrated_mesh(received, dim, my_rank)` -- rebuilds a mesh from every received buffer, deduping
   vertices and faces by global id (`NativeMeshBuilder`'s own rule). Every unpacked cell is OWNED by this
   rank (a cell migrates whole, never as a ghost); vertex ownership is left tentative.
@@ -138,7 +138,7 @@ part is ONLY the exchange, matching `fuse::partition::detail::collectives.cpp`'s
 agreement, and `exchange` is the identity at `kNullComm`, a Tier-0 test can emulate a P-rank migration in
 one process: call `pack_for_migration` once per emulated source rank, hand each destination's
 concatenated buffers directly to `unpack_migrated_mesh` (skipping `exchange_migration_buffers`
-entirely), and check the recombined result -- exactly the way the partition track compares RCB against
+entirely), and check the recombined result -- exactly the way the partition tests compare RCB against
 an emulated-rank oracle. `test/backend/native_migration_test.cpp` does this at P = 1..5, and separately
 checks a full round trip through two DIFFERENT partitions (a 1-rank mesh split three ways, then gathered
 back onto one rank) reproduces the original global cell id set and total measure exactly.
@@ -148,25 +148,22 @@ convenience the task asked for: `centroids_of` (already existing, `mesh_adapter.
 (uniform per-cell weight) + `migrate`, sharing one communicator across all three. A caller wanting
 load-imbalance-aware weights calls `rcb_partition`/`migrate` directly instead.
 
-**GPU-aware MPI (Migration track, 2026-10-15 update).** `cmake/FuseMpiGpuAware.cmake`'s
+**GPU-aware MPI.** `cmake/FuseMpiGpuAware.cmake`'s
 `fuse_probe_mpi_gpu_aware` is a configure-time check for the `MPIX_CUDA_AWARE_SUPPORT`/
 `MPIX_ROCM_AWARE_SUPPORT` extension macros (`<mpi-ext.h>`), recorded as `FUSE_MPI_GPU_AWARE` in the
 generated `config.hpp`. The run-time probe that prefers `MPIX_Query_cuda_support()` over that
-configure-time fallback now lives ONCE, as `fuse::linalg::mpi_is_gpu_aware()` (`include/fuse/linalg/
+configure-time fallback lives ONCE, as `fuse::linalg::mpi_is_gpu_aware()` (`include/fuse/linalg/
 comm.hpp`, `src/linalg/mpi_gpu_aware.cpp`) -- `fuse::native::mpi_is_gpu_aware()` and
-`fuse::transport::MpiTransport::is_gpu_aware()` both call it now rather than each keeping its own copy
+`fuse::transport::MpiTransport::is_gpu_aware()` both call it
 (`linalg` sits below both `backend` and `transport` in the layering order, and `backend` already links
-it). The `std::vector<std::byte>`-based `exchange_migration_buffers` is UNCHANGED and still what
-`migrate`/`build_native_remap_halo` call: it always stages through host memory regardless of the probe.
-A GPU-aware REPLACEMENT, `exchange_migration_buffers<Space>` (Kokkos::View<std::byte*, Space> buffers,
-`MPI_Alltoallv` on the raw device pointer when `Space` is a device memory space and the probe says so,
-host-staged otherwise), is added and verified byte-for-byte against the `std::vector` overload at 1-5
-ranks and both `FUSE_TRANSPORT_HOST_STAGING` settings (`test/backend/native_migration_mpi_test.cpp`),
-but is not yet called by `migrate`: wiring it through needs `unpack_migrated_mesh`/`merge_halo_cells`
-to also stop requiring a host-resident buffer first (KNOWN_ISSUES.md D51's own remaining gap). (This
-sandbox links MPICH, which does not implement either extension macro, so the configure-time fallback
-reports 0 here; higgs links OpenMPI 4.1.5, which does, so the run-time probe is exercised as a real 0/1
-decision there -- see the ctest rows above.)
+it). The `std::vector<std::byte>`-based `exchange_migration_buffers` always stages through host memory
+regardless of the probe. The GPU-aware overload `exchange_migration_buffers<Space>`
+(Kokkos::View<std::byte*, Space> buffers, `MPI_Alltoallv` on the raw device pointer when `Space` is a
+device memory space and the probe says so, host-staged otherwise) is verified byte-for-byte against the
+`std::vector` overload at 1-5 ranks and both `FUSE_TRANSPORT_HOST_STAGING` settings
+(`test/backend/native_migration_mpi_test.cpp`), and is what `migrate`/`build_native_remap_halo` call.
+(MPICH does not implement either extension macro, so the configure-time fallback reports 0 there;
+Open MPI does, so the run-time probe is a real 0/1 decision.)
 
 ## What is verified where
 
@@ -183,20 +180,13 @@ Tier 1 (`test/backend/native_migration_mpi_test.cpp`, 2-5 ranks): real migration
 actual collective sequence (dimension agreement, RCB's own collectives, the refusal-agreement Allreduce,
 the real `MPI_Alltoallv` exchange, the ownership Allgatherv), and the test checks global cell count
 conservation, total measure conservation, global id uniqueness, a round trip through two different
-partitions, and the collective refusal firing when only ONE rank's assignment is bad. This sandbox
-cannot initialise MPI (`mpiexec` cannot bind a port, and a singleton `MPI_Init` aborts here), so these
-are "compiled here, awaiting host run" -- `docs/dev/testing.md`'s "compiled, untested" state, not
-verified, until run on the user's host (KNOWN_ISSUES.md records no host run of this file specifically).
-`examples/layout_driver`'s own `layout.migrate.{2,3,4}.*` rows are a DIFFERENT claim: KNOWN_ISSUES.md's
-D5 entry records all 18 `layout.*` tests, including the 3 `layout.migrate.*` ones, passing on the host
-2026-09-23 -- this doc previously (and wrongly) lumped them in with the still-host-unverified migration
-test above; they are VERIFIED, not merely compiled.
+partitions, and the collective refusal firing when only ONE rank's assignment is bad. It needs a host with a working MPI, so it is in
+`docs/dev/testing.md`'s "compiled, untested" state, not verified, until run there.
+`examples/layout_driver`'s own `layout.migrate.{2,3,4}.*` rows are a DIFFERENT claim: all 18 `layout.*`
+tests, including the 3 `layout.migrate.*` ones, pass on the host; they are VERIFIED, not merely compiled.
 
 Tier 1, native halo (`test/parallel/native_halo_mpi_test.cpp`; docs/dev/native-halo.md has the full
-breakdown): `parallel.native_halo_mpi.{2,3}` both passed on the host 2026-10-10 -- VERIFIED. This
-sibling file was in the same "compiled, awaiting host run" state the migration row above is still in
-until that run cleared it; an earlier revision of this table did not distinguish the two and left
-native halo looking unverified after it no longer was.
+breakdown): `parallel.native_halo_mpi.{2,3}` both passed on the host -- VERIFIED, unlike the migration row above.
 
 ## The layout driver's `--mesh`/`--migrate`
 
@@ -273,10 +263,10 @@ validation pass has already run:
 
 Both kernels reproduce the host pass's own accumulation order exactly, so on a host-only build
 (`Kokkos::DefaultExecutionSpace` IS the host space there) the device arrays are bit-identical to a
-materialized `measure_`/`centroid_`; on higgs's CUDA build they agree to 1e-14 relative (nvcc's FMA
-contraction; KNOWN_ISSUES.md D45, the accepted contraction gap) -- and since `ensure_host_mirror()`
+materialized `measure_`/`centroid_`; on a CUDA build they agree to 1e-14 relative (nvcc's FMA
+contraction, an accepted gap) -- and since `ensure_host_mirror()`
 now serves `measure_`/`centroid_` BY MIRRORING `device_measure_`/`device_centroid_` rather than
-recomputing them, that is no longer merely a cross-check this file's tests happen to make: it is the
+recomputing them, that is not merely a cross-check this file's tests happen to make: it is the
 actual relationship between what a host accessor returns and what the device computed.
 
 **New: the device simplex CSR is retained, not discarded.** `device_simplex_offsets()`/
@@ -306,40 +296,35 @@ the device path reproduces `element_boxes`'s own boxes to 1e-13 and that the dev
 `host_mirrors_materialized()` never leaves 0 across the whole pipeline (CSR read, box build, index
 build).
 
-**What is still host-only.** `NativeMeshBuilder` (host `std::vector`-based construction), the VTK file
-reader/writer, `fuse::native::migrate`'s pack/unpack, and `build_native_remap_halo`/
-`build_supermesh_weights` (the MLS and conservative-intersection weight builders) all still go through
-the host-only `MeshView`/`MeshArrays<Kokkos::HostSpace>` surface and are unaffected by this section --
-see "What is deferred" below and docs/dev/device-resident-arcs.md's own Phase 2 ordering (search, then
-this file, then halo and migration pack/unpack, then the weight builders, named there as this track's
-siblings' scope, not this one's). The halo receive-side merge and migration's unpack (both a
-dedup-by-global-id decision) still run on the host regardless of what space the mesh they operate on
-is in -- unaffected by `NativeMeshView` becoming device-primary, since neither goes through
-`NativeMeshView` at all (`MeshArrays<Space>`'s own CSR, directly).
+**What is still host-only.** `NativeMeshBuilder` (host `std::vector`-based construction) and the VTK file
+reader/writer go through the host-only `MeshView`/`MeshArrays<Kokkos::HostSpace>` surface and are
+unaffected by this section. Migration's and the halo's pack, exchange and merge are device-templated and
+read `MeshArrays<Space>`'s own CSR directly rather than `NativeMeshView` -- see the next section and
+[](device-resident-arcs.md).
 
-## Device-capable packing (Phase 2, "weight-builders" track)
+## Device-capable packing
 
 `include/fuse/backend/native/mesh_pack_device.hpp` templates migration's and the remap halo's byte-wire
 PACK on the Kokkos memory space (docs/dev/native-halo.md's own "Device packing" section has the full
 account): `MeshArrays<Space>`'s plain CSR connectivity is read directly, with no `NativeMeshView`
 round trip, so packing runs as Kokkos kernels on `Space`. The receiving side's dedup-by-global-id merge
-is not yet templated -- see "What is deferred" below and KNOWN_ISSUES.md.
+is device-templated too (docs/dev/native-halo.md's "Device merge decision").
 
 ## What is deferred
 
-- **Coverage migration (M3).** This migrates OWNED cells whole; it does not build or maintain GHOST
+- **Ghost layers across a repartition.** This migrates OWNED cells whole; it does not build or maintain GHOST
   layers across a repartition. A caller needing ghosts after migration re-derives them separately.
 - **Per-placement remap weights.** `repartition`'s convenience wrapper uses a uniform per-cell weight;
   load-imbalance-aware weighting is available by calling `rcb_partition`/`migrate` directly, not through
   the wrapper.
-- **Device-resident migration/halo, CLOSED 2026-10-15 (Migration track, round 3).** `pack_for_migration`/
+- **Device-resident migration/halo.** `pack_for_migration`/
   `pack_halo_cells`, `exchange_migration_buffers<Space>`, and `unpack_migrated_mesh`/`merge_halo_cells`
   (via their device-templated `unpack_migrated_mesh_device`/`merge_halo_cells_device`) are wired end to
   end in `migrate`/`build_native_remap_halo`, with no host mirror materialized across the full round
-  trip (KNOWN_ISSUES.md D51, docs/dev/native-halo.md's "Device merge decision"). Three narrow, declared
+  trip (docs/dev/native-halo.md's "Device merge decision"). Three narrow, declared
   exceptions remain (no cross-cell Polyhedron face dedup on device, one bounded host round trip for
   `resolve_vertex_ownership_device`'s vertex gids, and `E-MESH-CONNECTIVITY`'s corner-count check not
-  reproduced) -- see D51's closing text for why none blocks this track's own mandate.
+  reproduced) -- see that section for why none blocks it.
 - **Field-transfer integration for a migrated mesh.** The layout driver's `--migrate` mode verifies MESH
   conservation properties, not a full FIELD hand-off through the coupling graph's transport layer for an
   arbitrary post-migration entity ordering. Matching migrated entities back to `MpiTransport`'s exchange

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# S6 phase 3, "MPI connect" track: the host-run driver behind
+# The host-run driver behind
 # parallel.connect.mpmd.* and parallel.connect.accept.*.
 #
 # MPMD mode is one mpiexec invocation with the ':' MPMD separator -- both

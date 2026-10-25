@@ -71,11 +71,10 @@ TEST(Rational, LcmDenominatorGivesFinestCommonTick) {
             Rational(1, 4));
 }
 
-// R-15: two coprime denominators just above sqrt(2^63). Their product does
+// Two coprime denominators just above sqrt(2^63). Their product does
 // not fit int64_t, and a direct std::lcm wrapped to a NEGATIVE value that the
 // constructor then normalised into a small negative "finest tick" with no
-// diagnostic. The fix computes in 128 bits and rejects; this is the test the
-// fix landed without, found by the mutation that reverts it surviving.
+// diagnostic. The implementation computes in 128 bits and rejects.
 TEST(Rational, LcmDenominatorRefusesAnUnrepresentableCommonTick) {
   const Rational a(1, 3037000493);
   const Rational b(1, 3037000507);
@@ -236,7 +235,7 @@ TEST(Rational, DivisionByZeroRationalThrows) {
   EXPECT_THROW(a /= Rational(0), fuse::InvalidArgument);
 }
 
-// ---- transforms (S1.1) --------------------------------------------------
+// ---- transforms --------------------------------------------------
 
 TEST(Rational, ZeroDenominatorIsAnInvalidArgument) {
   EXPECT_THROW(Rational(1, 0), fuse::InvalidArgument);

@@ -1,32 +1,19 @@
-// Conformance Unit 2, Defect 2 (the lead's own numbering, coupler-
-// placement track): a window member's cold-start import priming
-// (Runner::Impl::resolve_regions(), src/runtime/iteration.cpp) used
-// THIS member's own exported-field length (`cfg.length`) as the loop
-// bound when reading the PROVIDER's own exported-field buffer
-// (`provider_v0`, resolved separately from `provider_exported_field`)
-// -- a real heap-buffer-overflow READ whenever the provider's own
-// field is SMALLER, found by ASan on a cross-resolution two-member
-// window (reported to the lead as Finding 3(a) before this fix). Every
-// existing window-region test before this one used same-resolution
-// pairs (grepped: no window test combined mismatched field lengths
-// with a real cross-mesh remap), which is exactly why the overflow was
-// never caught by the ordinary (non-ASan) suite.
+// Mismatched window-member field lengths: a window member's cold-start
+// import priming (Runner::Impl::resolve_regions(), src/runtime/iteration.cpp)
+// must bound the loop reading the PROVIDER's own exported-field buffer
+// (`provider_v0`, resolved separately from `provider_exported_field`) by the
+// provider's own field length, not by THIS member's own exported-field
+// length (`cfg.length`). Using the wrong bound is a heap-buffer-overflow
+// READ whenever the provider's own field is SMALLER, which ASan reports on
+// a cross-resolution two-member window. Same-resolution pairs never expose
+// it, so it is invisible to the ordinary (non-ASan) suite unless a window
+// test combines mismatched field lengths with a real cross-mesh remap.
 //
 // This graph: A exports 4 values (mesh "a", generated:quad:2x2), B
-// exports 9 (mesh "b", generated:quad:3x3) -- the lead's own example.
-// B's own import comes from A (the smaller provider), which is the
-// overflow direction; A's own import comes from B (the larger
-// provider), which was always safe and is exercised here for
-// completeness, not because it ever failed.
-//
-// Original box-graph harness (the ASan run reported as Finding 3(a)):
-// NOT recovered for this fix -- per the lead's own instruction, it was
-// a temporary, never-committed scratch addition from an earlier
-// session; no copy of it was found in this workspace (no git history
-// search was run -- this session's own constraints are git-free). This
-// file is a fresh, independent reproduction of the SAME defect class
-// (mismatched window-member field lengths through a real cross-mesh
-// remap), not a recovery of the original.
+// exports 9 (mesh "b", generated:quad:3x3). B's own import comes from A
+// (the smaller provider), which is the overflow direction; A's own import
+// comes from B (the larger provider), which is always safe and is
+// exercised here for completeness.
 
 #include <gtest/gtest.h>
 #include <fuse/backend/native_backend.hpp>
@@ -119,8 +106,8 @@ class VectorBlock final : public fuse::Component {
 
 CouplingGraph make_mismatched_length_window_graph() {
   CouplingGraph g;
-  // 2x2 (4 cells) and 3x3 (9 cells) -- mutually non-nested, the lead's
-  // own example ("A exports 4 values, B exports 9").
+  // 2x2 (4 cells) and 3x3 (9 cells) -- mutually non-nested
+  // ("A exports 4 values, B exports 9").
   const auto ma = g.add_mesh(MeshDecl{.name = "a", .source = "generated:quad:2x2"});
   const auto mb = g.add_mesh(MeshDecl{.name = "b", .source = "generated:quad:3x3"});
   const auto ra = g.add_region(Region{.name = "ra", .mesh = ma, .dimension = 2});

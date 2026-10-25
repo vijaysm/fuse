@@ -1,11 +1,9 @@
-# Mutations for the Gray-Scott track (examples/gray_scott/**,
-# test/verification/gray_scott_*). Own file per the review-fix protocol: do
-# not edit build-evidence/mutations.toml directly while other tracks hold it
-# dirty.
+# Mutations for Gray-Scott (examples/gray_scott/**,
+# test/verification/gray_scott_*).
 #
 # Each row below was proved BY HAND (tools/mutate.py was not run except
-# --check-anchors, per this delegation's constraints): the edit in `old`/
-# `new` was applied directly to the named file with edit_file, the named
+# --check-anchors): the edit in `old`/
+# `new` was applied directly to the named file directly, the named
 # target was rebuilt, the named test was run and observed to fail with the
 # message quoted in its own comment, then the file was restored and
 # verified byte-identical to a backup with `cmp` before the next row.

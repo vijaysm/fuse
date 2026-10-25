@@ -64,9 +64,8 @@ struct MeshArrays {
   /// LayoutRight in EVERY memory space: a rank-2 View's default layout is
   /// the space's own (LayoutRight on the host, LayoutLeft on CUDA), and
   /// `Kokkos::deep_copy` cannot change memory space and layout in one call,
-  /// so `to_memory_space<Device>()` on a host mesh threw (KNOWN_ISSUES.md
-  /// D54). Pinning the layout keeps the host arrays as they always were
-  /// and makes the device copy a plain contiguous memcpy.
+  /// so `to_memory_space<Device>()` on a host mesh threw. Pinning the layout keeps the host arrays
+  /// unchanged and makes the device copy a plain contiguous memcpy.
   Kokkos::View<double* [3], Kokkos::LayoutRight, MemorySpace> vertex_coords;
   Kokkos::View<std::int64_t*, MemorySpace> vertex_gid;
   Kokkos::View<int*, MemorySpace> vertex_owner;

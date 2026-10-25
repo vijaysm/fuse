@@ -1,13 +1,11 @@
-# KNOWN_ISSUES D81 round 7 (owner ruling 2026-10-19, "a collective path
-# never returns on a locally computed condition"): the cross-placement
-# `fuse::build_remap_halo` overload's own same-placement-vs-different-
-# placement decision (src/backend/intx_weights.cpp). Own file per the
-# review-fix protocol: do not edit moab-sphere.toml, moab-placement.toml,
-# or mutations.toml directly while other fixers hold them dirty.
+# A collective path never returns on a locally computed condition: the
+# cross-placement `fuse::build_remap_halo` overload's own
+# same-placement-vs-different-placement decision
+# (src/backend/intx_weights.cpp).
 #
-# NOT HAND-VERIFIED THIS ROUND, for the same sandbox-wide reason every
-# other MOAB mutations file in this tree already states: ANY MOAB-linked
-# binary aborts on construction here (moab::Core's constructor calls
+# NOT HAND-VERIFIED, for the same sandbox-wide reason every other MOAB
+# mutations file in this tree already states: ANY MOAB-linked binary
+# aborts on construction here (moab::Core's constructor calls
 # MPI_Init_thread; this sandbox cannot initialise MPI at all, not even at
 # one rank, and FUSE_ENABLE_MOAB hard-requires FUSE_ENABLE_MPI in this
 # tree's own CMakeLists.txt). Written and reasoned through by hand;
@@ -25,18 +23,17 @@ target = "fuse_parallel_moab_placed_weights_mpi_test"
 test = "parallel.moab_placed_weights_mpi"
 requires = "mpi"
 
-# RETIRED round 10 (KNOWN_ISSUES D83, owner decision 2026-10-19: make the
-# adoption placement-aware, not a refusal): the row that used to live here,
+# RETIRED: the row that used to live here,
 # "off-placement-rank-skips-the-adopt-remap-halo-collective", mutated the
-# off-target-placement branch's `return std::size_t{0};` back to the
-# round-7 shape (`return moab_backend->adopt_remap_halo(a.mid, b.mid,
+# off-target-placement branch's `return std::size_t{0};` back to an earlier
+# shape (`return moab_backend->adopt_remap_halo(a.mid, b.mid,
 # a.dim, nullptr, 0);`, joining a collective inside `adopt_remap_halo` that
-# ran over the backend's BASE communicator). D83's own round-10 fix moved
-# that collective to run over the PLACEMENT's own sub-communicator instead
+# ran over the backend's BASE communicator). That collective now runs over
+# the PLACEMENT's own sub-communicator instead
 # (`moab-halo-placement-aware-adoption.toml`), so an off-placement rank no
 # longer has anything to join there at all -- `return std::size_t{0};` is
-# now the CORRECT, round-6-era shape again, not a regression to guard
-# against. The anchor this row's own `old` field named
+# now the CORRECT shape, not a regression to guard against. The anchor
+# this row's own `old` field named
 # (`moab_backend->adopt_remap_halo(a.mid, b.mid, a.dim, nullptr, 0)` inside
 # that specific branch) no longer exists in the file (confirmed via
 # `tools/mutate.py --check-anchors`, not assumed) -- removed rather than

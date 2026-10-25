@@ -1,4 +1,4 @@
-// S7.4 (owner decision 2026-10-21, Option C). The derivative gate
+// The derivative gate
 // (docs/dev/derivative-gate.md, include/fuse/linalg/derivative_gate.hpp)
 // applied to reaction_diffusion_physics.hpp's own inner Jacobian --
 // shared by BOTH substrates (the native Thomas-algorithm solve and the
@@ -10,10 +10,9 @@
 // this gate measures -- is a property of the shared stencil formulas,
 // provable here without touching a PETSc type at all.
 //
-// THE BUG THIS FILE'S OWN CONTROL CASE REPRODUCES.
+// THE FAILURE THIS FILE'S OWN CONTROL CASE REPRODUCES.
 // `UncorrectedGhostJacobianMeasuresOrderOneNotTwo` uses the Jacobian a
-// first draft of `right_residual_jacobian` had (this track's own Python
-// prototype, design_notes.md Section 5): row 0's diagonal built from the
+// naive `right_residual_jacobian` would have: row 0's diagonal built from the
 // generic interior-row formula (`2*D/dx^2`) without correcting for the
 // ghost value's own `d(left_contrib)/du[0] = 1` dependence (which should
 // reduce it to `D/dx^2`). That Jacobian is still SYMMETRIC (a diagonal
@@ -174,12 +173,10 @@ TEST(ReactionDiffusionDerivativeGate, WrongReactionJacobianMeasuresOrderOneNotTw
 }
 
 TEST(ReactionDiffusionDerivativeGate, UncorrectedGhostJacobianMeasuresOrderOneNotTwo) {
-  // This track's own history (design_notes.md Section 5): the FIRST
-  // draft of right_residual_jacobian built row 0's diagonal from the
+  // A naive right_residual_jacobian would build row 0's diagonal from the
   // generic interior-row formula (2*D/dx^2), never correcting for the
   // ghost value's own d(left_contrib)/du[0] = 1 dependence (which must
-  // reduce it to D/dx^2). Caught BEFORE this file existed, by a
-  // throwaway Python prototype -- reproduced here, permanently, as a
+  // reduce it to D/dx^2). Reproduced here, permanently, as a
   // regression control: the uncorrected Jacobian is proven, not
   // asserted, to measure order ~1, not 2.
   Fixture fx;
@@ -204,6 +201,6 @@ TEST(ReactionDiffusionDerivativeGate, UncorrectedGhostJacobianMeasuresOrderOneNo
   EXPECT_GT(r.order, 0.7) << "observed order " << r.order;
   EXPECT_LT(r.order, 1.3)
       << "observed order " << r.order
-      << " -- the uncorrected ghost Jacobian (this track's own historical bug) measured as "
+      << " -- the uncorrected ghost Jacobian (the naive formula) measured as "
          "order 2 would mean this gate cannot tell it from the corrected formula";
 }

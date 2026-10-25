@@ -1,10 +1,9 @@
-// Review 2026-10-11 AB-9: by I4 ("a refusal that no test makes fire does
-// not count as implemented"), ~20 participant-ABI refusal codes had no
-// firing test anywhere in the tree, view_field() had no test at all in
-// test/abi/, and neither fuse_coupler_abi()'s own version refusal nor a
-// double fuse_destroy() was exercised. One small, mostly single-assertion
-// test per code, grouped by entry point, in the same style
-// test/abi/participant_test.cpp's own lifecycle tests use.
+// A refusal that no test makes fire does not count as implemented: this
+// file exercises the participant-ABI refusal codes, view_field(),
+// fuse_coupler_abi()'s own version refusal and a double fuse_destroy().
+// One small, mostly single-assertion test per code, grouped by entry
+// point, in the same style test/abi/participant_test.cpp's own lifecycle
+// tests use.
 #include "fuse/base/config.hpp"
 
 #include <gtest/gtest.h>
@@ -144,11 +143,11 @@ TEST(AbiRefusalSweep, SaveGraphBeforeAnyGraphIsLoadedIsRefused) {
 // ---- fuse_setup_options --------------------------------------------------
 
 TEST(AbiRefusalSweep, SetupRefusesAnMpmdComponentWithNoCommunicator) {
-  // Review 2026-10-11 AB-4: my_component's own handling lived entirely
-  // inside `if (in->communicator != 0)`, so a caller that named an
-  // Mpmd/Connect component but left communicator == 0 fell through
-  // silently -- the run proceeded single-process on a graph that
-  // declares a multi-executable launch, with no refusal at all.
+  // my_component's own handling used to live entirely inside
+  // `if (in->communicator != 0)`, so a caller that named an Mpmd/Connect
+  // component but left communicator == 0 fell through silently -- the run
+  // proceeded single-process on a graph that declares a multi-executable
+  // launch, with no refusal at all.
   fuse::CouplingGraph g;
   fuse::ComponentDecl decl{
       .name = "upstream", .ranks = fuse::RankSet{0, 1}, .interval = fuse::Rational{1}};
@@ -170,26 +169,26 @@ TEST(AbiRefusalSweep, SetupRefusesAnMpmdComponentWithNoCommunicator) {
   EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
 }
 
-// KNOWN_ISSUES.md D76: the Fortran handle of MPI_COMM_WORLD is 0 under Open
-// MPI (mpif.h: MPI_COMM_WORLD=0), which collided with this struct's own
-// sentinel for "no communicator supplied" -- examples/brusselator/
+// The Fortran handle of MPI_COMM_WORLD is 0 under Open MPI (mpif.h:
+// MPI_COMM_WORLD=0), which would collide with this struct's own sentinel
+// for "no communicator supplied" -- examples/brusselator/
 // participants/{u_main.c,v_main.f90,coupler_main.c} pass exactly this
-// handle and were refused by SetupRefusesAnMpmdComponentWithNoCommunicator's
+// handle and would be refused by SetupRefusesAnMpmdComponentWithNoCommunicator's
 // own check, above, on every Open MPI build (MPICH's own MPI_COMM_WORLD
-// handle, 0x44000000, never collided, so the defect was invisible there).
+// handle, 0x44000000, never collides, so the problem is invisible there).
 // Guarded on FUSE_HAVE_MPI, like BaseCommunicatorReadsBackAFormedCommunicator
 // WhenMpiIsAvailable (struct_size_test.cpp): unlike that test, my_component
 // here IS set, so impl_setup() really does call fuse::transport::connect()
 // for this Mpmd-launched component -- safe even outside mpiexec because
 // Open MPI's singleton MPI_Init already sets MPI_APPNUM=0 for a one-process
-// job (measured on higgs, 2026-10-18: both a bare singleton MPI_Init and
+// job (measured on higgs: both a bare singleton MPI_Init and
 // `mpiexec -n 1` report MPI_APPNUM flag=1, appnum=0), matching the single
 // rank this graph's own RankSet{0, 1} and LaunchSpec::appnum=0 declare.
 #if FUSE_HAVE_MPI
 TEST(AbiRefusalSweep, SetupAcceptsAnMpmdComponentWithACommunicatorHandleOfZeroWhenFlagged) {
   // connect()'s Mpmd branch reads MPI_APPNUM, which a launcher sets. Open MPI
   // sets it (to 0) even for a singleton MPI_Init; MPICH sets nothing without
-  // mpiexec (measured on MPICH 5.0.0a1, 2026-10-19: this row run plain is
+  // mpiexec (measured on MPICH 5.0.0a1: this row run plain is
   // refused with status -4, run under `mpiexec -n 1` it passes). The graph
   // below also declares exactly one rank.
   {
@@ -219,13 +218,13 @@ TEST(AbiRefusalSweep, SetupAcceptsAnMpmdComponentWithACommunicatorHandleOfZeroWh
 
   fuse_setup_options opts{.struct_size = sizeof(opts)};
   // This process's REAL MPI_COMM_WORLD Fortran handle: 0 under Open MPI (the
-  // collision D76 fixes -- the flag below is what keeps it from reading as
-  // "none supplied"), nonzero under MPICH (0x44000000). A literal 0 would be
-  // an invalid handle for connect() to dereference under MPICH.
+  // flag below is what keeps it from reading as "none supplied"), nonzero
+  // under MPICH (0x44000000). A literal 0 would be an invalid handle for
+  // connect() to dereference under MPICH.
   opts.communicator = static_cast<int64_t>(MPI_Comm_c2f(MPI_COMM_WORLD));
   opts.has_end_time = 0;
   opts.my_component = "upstream";
-  opts.has_communicator = 1;  // D76: a handle of 0 is deliberately supplied.
+  opts.has_communicator = 1;  // a handle of 0 is deliberately supplied.
   EXPECT_EQ(t->setup(ctx, &opts, nullptr), FUSE_OK);
 
   fuse_base_communicator_info info{.struct_size = sizeof(info)};
@@ -239,8 +238,8 @@ TEST(AbiRefusalSweep, SetupAcceptsAnMpmdComponentWithACommunicatorHandleOfZeroWh
 #endif  // FUSE_HAVE_MPI
 
 TEST(AbiRefusalSweep, SetupRefusesANonZeroReservedField) {
-  // Review 2026-10-11 AB-11: entries.def documents fuse_setup_options::
-  // reserved as "must be 0"; nothing checked it until this round's fix.
+  // entries.def documents fuse_setup_options::reserved as "must be 0";
+  // this checks that a non-zero value is refused.
   const auto* t = Table();
   ASSERT_NE(t, nullptr);
   const auto bytes = fuse::abi_test::build_two_component_lag1_bytes();
@@ -424,7 +423,7 @@ TEST_F(AbiRegisterFieldRefusal, OwnedCountMismatchIsRefused) {
   ExpectLastErrorCode(t, ctx, "E-ABI-REGISTER-OWNED-COUNT");
 }
 
-// ---- fuse_view_field: no test exercised this entry AT ALL (AB-9) -------
+// ---- fuse_view_field: no test exercised this entry AT ALL -------
 
 TEST(AbiRefusalSweep, ViewFieldRefusesAHandleOutsideTheLoadedGraph) {
   const auto* t = Table();
@@ -643,8 +642,7 @@ TEST_F(AbiStepRefusal, BeginStepOnADifferentComponentWhileOneIsOpenIsRefused) {
   down_req.component = "downstream";
   fuse_step_report down_rep{.struct_size = sizeof(down_rep)};
   EXPECT_EQ(t->begin_step(ctx, &down_req, &down_rep), FUSE_ERR_STATE)
-      << "KNOWN_ISSUES.md D12: at most one externally driven component "
-         "may be open at a time";
+      << "at most one externally driven component may be open at a time";
   ExpectLastErrorCode(t, ctx, "E-ABI-STEP-ALREADY-OPEN");
 }
 

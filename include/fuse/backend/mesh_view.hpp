@@ -22,8 +22,8 @@ struct Point {
 /// Spec Section 4.1: the core knows only counts, ownership, ids, and geometry.
 /// No third-party type appears here (Global Constraints).
 ///
-/// DESIGNED FOR THE DISTRIBUTED, UNSTRUCTURED CASE. The Phase 4 backend is a
-/// serial structured grid, but Phase 5's MOAB backend must fit this interface
+/// DESIGNED FOR THE DISTRIBUTED, UNSTRUCTURED CASE. The native backend is a
+/// serial structured grid, but the MOAB backend must fit this interface
 /// without changing the runtime, so the contract below deliberately rejects
 /// four assumptions that a structured serial mesh would otherwise smuggle in:
 ///
@@ -174,7 +174,7 @@ class MeshView {
 
   /// --- cell-to-vertex connectivity, for a general nodal basis --------------
   ///
-  /// WHY THIS EXISTS (nodal-remap track). The simplex decomposition above is
+  /// WHY THIS EXISTS. The simplex decomposition above is
   /// exactly what the supermesh/clipping kernel needs, but it is NOT enough
   /// to interpolate a Q1 field on a quadrilateral or hexahedron: a hex's
   /// trilinear basis needs its 8 ACTUAL corners in a known order, not the 6
@@ -232,8 +232,8 @@ class MeshView {
   }
 };
 
-/// Loads meshes and answers questions about them. Phase 4 provides the serial
-/// structured backend; Phase 5 adds `MoabMeshBackend` behind this same
+/// Loads meshes and answers questions about them. The native backend provides
+/// the serial structured case; `MoabMeshBackend` sits behind this same
 /// interface.
 class MeshBackend {
  public:
@@ -295,7 +295,7 @@ class MeshBackend {
   /// Never throws.
   [[nodiscard]] virtual Result<std::size_t> region_size(const Region& r) const = 0;
 
-  // ---- per-placement decomposition (KNOWN_ISSUES D5, ruled 2026-09-22) ----
+  // ---- per-placement decomposition ----
   //
   // Each component holds its OWN decomposition of a mesh it shares with
   // another: the mesh laid out over that component's ranks, not over the
@@ -455,10 +455,9 @@ enum class RegionExtentKind { Cell, Vertex };
   return saw_vertex ? RegionExtentKind::Vertex : RegionExtentKind::Cell;
 }
 
-/// Adapt a backend to the callback Phase 3 Task 3.5 defined.
+/// Adapt a backend to the `RegionSizes` callback (fuse/schedule/buffers.hpp).
 ///
-/// D73 ROUND 2 (owner decision 2026-10-18): BEFORE doing anything else,
-/// this function executes every `OpKind::BuildRemapHalo` instruction
+/// BEFORE doing anything else, this function executes every `OpKind::BuildRemapHalo` instruction
 /// `dag` carries (`fuse::execute_remap_halo_instructions()`,
 /// fuse/backend/remap_halo_instructions.hpp) -- COLLECTIVELY, structural
 /// conditions only (every rank compiles the identical `dag` from the
@@ -471,14 +470,13 @@ enum class RegionExtentKind { Cell, Vertex };
 /// `BufferDecl::elements` into the `ExecutionPlan` -- which happens
 /// BEFORE the `Runner` that will eventually read those buffers is even
 /// constructed (`Runner`'s constructor takes the already-built
-/// `ExecutionPlan`). Round 1 of this track had application code call
-/// `execute_remap_halo_instructions()` directly, between loading the
-/// backend and calling `schedule()`; round 2 moves that call here so a
-/// caller cannot forget it or place it too late by hand -- `make_region_
-/// sizes()` was already the one function EVERY caller passes `dag` to
-/// before `schedule()` runs, so it is the one place the halo build and
-/// the sizing it feeds cannot drift apart. KNOWN_ISSUES.md D77 (closed)
-/// records the measured ordering constraint this decision answers.
+/// `ExecutionPlan`). Application code therefore does not call
+/// `execute_remap_halo_instructions()` itself between loading the
+/// backend and calling `schedule()`: this function does it, so a caller
+/// cannot forget it or place it too late by hand. `make_region_sizes()`
+/// is the one function EVERY caller passes `dag` to before `schedule()`
+/// runs, so it is the one place the halo build and the sizing it feeds
+/// cannot drift apart.
 ///
 /// A graph with no cross-rank weighted channel at all makes this an
 /// unconditional no-op (zero instructions, zero cells) -- exactly as
@@ -486,8 +484,7 @@ enum class RegionExtentKind { Cell, Vertex };
 /// unconditionally, as every existing caller already does, changes
 /// nothing for a graph that never needed a halo.
 ///
-/// `backend` is a non-const reference, unlike earlier revisions of this
-/// declaration: building a remap halo mutates the backend's own mesh
+/// `backend` is a non-const reference: building a remap halo mutates the backend's own mesh
 /// state (ghost entities adopted as ordinary non-owned local ones), and
 /// that mutation must be visible to the `placed_region_size`/
 /// `placed_view` calls the returned callback makes later.
@@ -531,10 +528,10 @@ enum class RegionExtentKind { Cell, Vertex };
 /// few tokens away) -- `examples/*/main.cpp`, `src/abi/participant.cpp`,
 /// `python/src/component_bindings.cpp` were all checked. A two-argument
 /// form with no instruction stream to build the halo from would have to
-/// either silently skip the halo (reintroducing D73) or refuse
+/// either silently skip the halo or refuse
 /// unconditionally for every graph regardless of whether it actually
 /// has a qualifying channel, which is worse than not offering it: there
-/// is no caller this track found that needs it.
+/// is no caller that needs it.
 [[nodiscard]] RegionSizes make_region_sizes(const CouplingGraph& g,
                                             const OperatorDAG& dag,
                                             MeshBackend& backend);

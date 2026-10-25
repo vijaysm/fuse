@@ -31,7 +31,7 @@ no enforcement is a preference.
   Debug-only suites. The no-`assert` rule itself is *enforced by* `tools/check-invariants.py`. Of
   the two mandatory legs, only Release exists today (`tier0`'s Debug/Release matrix,
   `.github/workflows/ci.yml`); the ASan+UBSan leg this rule also demands has no CI leg yet —
-  `testing.md`'s CI-legs list carries it under Planned, for S1's exit.
+  `testing.md`'s CI-legs list carries it under Planned.
 
 `I7` **Third-party types stay out of public headers.**
 : No Eigen, KokkosKernels, MOAB, PETSc, MPI or HDF5 type in a public header outside its own backend
@@ -105,7 +105,7 @@ descriptor's bytes are reproducible). Three rules follow, each with a test:
   squared is not a quantity, and dropping the offset would be a silent error no dimensional check
   can see.
 - **A scale-only mismatch on a channel is its own verdict**, not an `E-UNITS` incompatibility and
-  not silence. Transform inference (S2.4) has landed: under `ConnectPolicy::allow_automatic_unit_scale`
+  not silence. Transform inference is in: under `ConnectPolicy::allow_automatic_unit_scale`
   (the default), an exact, zero-offset scale is inferred as a `UnitScale` operator and *reported*,
   not silent — `validate()` emits `I-UNIT-SCALE-INSERTED` naming the factor, because the user should
   see an operator they did not write. `E-UNITS-SCALE` is the verdict only when insertion is not

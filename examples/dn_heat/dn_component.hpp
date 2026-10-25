@@ -201,10 +201,11 @@ enum class Wiring { Connected, Severed };
 
 /// Slab 1: the Dirichlet solver. Requires the interface temperature, provides
 /// the interface heat flux.
-/// S7.2 (the native Jacobian-free Newton-Krylov coupler): implementing
-/// `fuse::ImplicitComponent` is what lets a region naming this component
+///
+/// Implementing `fuse::ImplicitComponent` (for the native Jacobian-free
+/// Newton-Krylov coupler) is what lets a region naming this component
 /// select `AccelKind::Newton` at all -- `fuse::verify_newton_capability_
-/// support()` (S7.1) refuses a Newton-selected region with
+/// support()` refuses a Newton-selected region with
 /// E-NEWTON-CAPABILITY otherwise. `evaluate_residual()` below is the SAME
 /// formula `advance()` computes into `q_[i]`, with every mutation
 /// (`++advance_count`, `history_ += 1.0`, `time_ = t`) removed: the two
@@ -214,7 +215,7 @@ enum class Wiring { Connected, Severed };
 /// capture, which `advance()` -- an ordinary, checkpointed `Component`
 /// method -- is free to do.
 ///
-/// NOT CURRENTLY CALLED by this track's own Newton runtime wiring
+/// NOT CURRENTLY CALLED by the Newton runtime wiring
 /// (`Runner::Impl::evaluate_region_residual()`, src/runtime/
 /// fixed_point_residual.cpp): that function computes the region's F(x) =
 /// x - G(x) by calling the SAME `advance()` + checkpoint/restore bracket
@@ -222,15 +223,13 @@ enum class Wiring { Connected, Severed };
 /// identical fixed point. This override exists to satisfy the capability
 /// gate HONESTLY (the formula really is pure and really could be
 /// evaluated this way) rather than to flip `kCapabilityResidual` on
-/// without the interface behind it meaning anything -- recorded as an
-/// open question in this track's own report: whether a later step should
-/// have `evaluate_region_residual()` prefer this cheaper, no-checkpoint
-/// path when a component offers it.
+/// without the interface behind it meaning anything. Open question:
+/// whether `evaluate_region_residual()` should prefer this cheaper,
+/// no-checkpoint path when a component offers it.
 class DirichletSlab final : public fuse::Component,
                             public fuse::ImplicitComponent {
  public:
-  /// `beta`/`t_ref` (S7.2): the nonlinear variant this track's own brief
-  /// asks for, a slab-1 conductivity that depends on the WALL temperature
+  /// `beta`/`t_ref`: the nonlinear variant, a slab-1 conductivity that depends on the WALL temperature
   /// being solved for -- `k1_eff(i, T) = k1_at(i, n) * (1 + beta * (T -
   /// t_ref) / t_ref)`, T the local `u_in_[i]`. `beta = 0.0` (the default,
   /// every existing call site's own value) makes `k1_eff` reduce to
@@ -299,9 +298,8 @@ class DirichletSlab final : public fuse::Component,
       q_[i] = k1_eff(i, u_in_[i]) * (T1 - u_in_[i]) / kL1;
     }
     time_ = t;
-    // Stage B Slice 1b's own int32/bool restart-field demonstration (see
-    // write_restart()'s own comment) -- not physically meaningful,
-    // updated here only so save_state()/restore_state() and a restart
+    // The int32/bool restart-field demonstration (see write_restart()'s own
+    // comment) -- not physically meaningful, updated here only so save_state()/restore_state() and a restart
     // round trip both have something real to carry.
     ++sweep_count_;
     parity_flag_ = (sweep_count_ % 2) == 0;
@@ -342,11 +340,10 @@ class DirichletSlab final : public fuse::Component,
            fuse::kCapabilityResidual | fuse::kCapabilityRestartFormA;
   }
 
-  /// Restart track (docs/dev/restart.md), owner decision 1: this
-  /// component lives on one rank (examples/dn_heat/main.cpp's own
-  /// `.ranks` placement), so it numbers its own entries `0..n_-1` --
-  /// trivially re-partitionable because there is nothing to
-  /// re-partition. Every piece of state an exact restart must capture
+  /// Restart (docs/dev/restart.md): this component lives on one rank
+  /// (examples/dn_heat/main.cpp's own `.ranks` placement), so it numbers
+  /// its own entries `0..n_-1` -- trivially re-partitionable because there
+  /// is nothing to re-partition. Every piece of state an exact restart must capture
   /// for this component: the registered fields `q_`/`u_in_` (both
   /// Provides and Requires -- `u_in_` must be restored too, because an
   /// ordinary (non-window) iteration region's NEXT period's sweep 0
@@ -385,8 +382,8 @@ class DirichletSlab final : public fuse::Component,
     if (!r.ok()) return r;
     r = writer.put_scalar("history", history_);
     if (!r.ok()) return r;
-    // Stage B Slice 1b (docs/dev/restart.md Section 11): at least one
-    // INTEGER and one BOOL restart field, covering the typed interface
+    // docs/dev/restart.md Section 11: at least one INTEGER and one BOOL
+    // restart field, covering the typed interface
     // end to end through the Runner -- sweep_count_ (int32) and
     // parity_flag_ (bool) are DirichletSlab's own trivial counters (see
     // their own declaration comment), not physically meaningful, chosen
@@ -454,8 +451,8 @@ class DirichletSlab final : public fuse::Component,
   /// visible to the runtime's byte comparison of registered storage either --
   /// that checks q_/u_, this is private.
   [[nodiscard]] double history() const { return history_; }
-  /// Stage B Slice 1b (docs/dev/restart.md Section 11): a genuine int32
-  /// and a genuine bool restart field, each restored through the typed
+  /// docs/dev/restart.md Section 11: a genuine int32 and a genuine bool
+  /// restart field, each restored through the typed
   /// `put_scalar<T>()`/`get_scalar<T>()` interface -- not physically
   /// meaningful (see write_restart()'s own comment), exposed here only
   /// so a test can compare the restored run's own value against the
@@ -491,17 +488,17 @@ class DirichletSlab final : public fuse::Component,
 /// Slab 2: the Neumann solver. Requires the interface heat flux, provides the
 /// interface temperature.
 ///
-/// S7.2: implements `fuse::ImplicitComponent` for the SAME reason and in
+/// Implements `fuse::ImplicitComponent` for the SAME reason and in
 /// the SAME scope as `DirichletSlab`'s own top comment states -- this
-/// override is not currently called by this track's Newton runtime
+/// override is not currently called by the Newton runtime
 /// wiring, only by the capability gate it satisfies honestly.
 class NeumannSlab final : public fuse::Component,
                           public fuse::ImplicitComponent {
  public:
-  /// `initial_u` (S7.2): overrides the physically sensible first guess
+  /// `initial_u`: overrides the physically sensible first guess
   /// below with a caller-chosen one -- NaN (the default, every existing
   /// call site's own value) keeps today's `T_outer_2(0.0)`. The one use
-  /// this track makes of it: constructing a DELIBERATELY poor initial
+  /// made of it: constructing a DELIBERATELY poor initial
   /// guess for a line-search-engagement test, without needing a
   /// nonphysical conductivity (DirichletSlab::beta_ large enough to make
   /// k1_eff change sign) to get there.
@@ -582,7 +579,7 @@ class NeumannSlab final : public fuse::Component,
            fuse::kCapabilityResidual | fuse::kCapabilityRestartFormA;
   }
 
-  /// Restart track (docs/dev/restart.md), owner decision 1 -- see
+  /// Restart (docs/dev/restart.md) -- see
   /// DirichletSlab's own comment on this pair of methods, unchanged in
   /// substance here.
   /// Same convention as DirichletSlab::write_restart() -- `"u_wall"`/

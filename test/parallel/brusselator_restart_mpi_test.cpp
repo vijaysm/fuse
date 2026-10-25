@@ -1,30 +1,26 @@
-// Restart track round 2, item 3 (the brief's own main item): the
-// collective multi-task WRITE (fuse::restart_io::
+// The collective multi-task WRITE (fuse::restart_io::
 // create_restart_point_collective(), src/restart_io/hdf5_restart_io_mpi.cpp)
 // and the rank-count-independent READ (fuse::restart_io::
 // open_restart_point(), UNCHANGED since it already resolves every row by
 // id, never by position -- Restart.GetFieldResolvesRowsByIdNotByFilePosition,
-// test/runtime/restart_test.cpp, Stage B Slice 2 round 1), over a
+// test/runtime/restart_test.cpp), over a
 // Brusselator-SHAPED field (a representative U-grid-sized array, real
 // global ids, deterministic values every rank can verify independently
 // without needing the writer's own in-memory state).
 //
-// MPI CANNOT START IN THIS SANDBOX (docs/dev/testing.md): this file is
-// compiled -- registered with fuse_add_mpi_test, RANKS 2 3 -- but never
-// run here; host_pending names the exact mpirun commands and what each
-// rank prints on success and on each foreseeable failure.
+// This file is registered with fuse_add_mpi_test, RANKS 2 3, and needs a
+// working MPI launcher (docs/dev/testing.md).
 //
 // Declared scope reduction: this file exercises the restart_io layer
 // DIRECTLY (fuse::restart_io::create_restart_point_collective()/
 // open_restart_point()), not a full Runner-driven Brusselator round trip
 // over real MPI ranks -- building a genuinely rank-partitioned
 // Brusselator Runner (real Transport, real register_default_placements()
-// per-rank partitioning) is separate engineering this round's own time
-// did not allow; the Runner-level orchestration
+// per-rank partitioning) is separate engineering; the Runner-level orchestration
 // (fuse::write_restart_point()/restore_restart_point(), fuse/runtime/
 // restart.hpp) is parameterized ONLY by which RestartWriter/RestartReader
 // implementation it is handed, so this file's own collective-write
-// correctness composes with the ALREADY-PROVEN tier-0 Runner-level round
+// correctness composes with the already-proven tier-0 Runner-level round
 // trip (test/verification/brusselator_restart_test.cpp) rather than
 // needing to re-prove it.
 #include <gtest/gtest.h>
@@ -55,7 +51,7 @@ constexpr std::int64_t kGlobalN = 25;  // brusselator_restart_test.cpp's own kNx
 /// Every rank's own value for global id `id` -- a pure function of the id
 /// alone, so ANY rank, at ANY rank count, can independently recompute
 /// "what should be at this id" without needing the writer's own values in
-/// memory. Mirrors this track's own tier-0 fixtures' own preference for a
+/// memory. Mirrors the tier-0 fixtures' preference for a
 /// deterministic, checkable pattern over a hardcoded table.
 [[nodiscard]] double expected_value(std::int64_t id) {
   return 100.0 + static_cast<double>(id) * 0.5;
@@ -229,7 +225,7 @@ TEST(BrusselatorRestartMpi, WriteAtFewerRanksRestoreAtMoreByGlobalId) {
 /// mpiexec invocation can form (a sub-communicator is always <= the
 /// invocation's own size, never >). Writes to a path named by
 /// FUSE_BRUSSELATOR_RESTART_MPI_FIXED_PATH when that variable is set
-/// (host_pending names the exact two-invocation sequence: run this
+/// (the two-invocation sequence: run this
 /// binary at 3 ranks first with the variable set, then at 2 ranks with
 /// the SAME variable set, in that order) -- skips, naming why, when it
 /// is not, rather than silently asserting nothing.
@@ -238,8 +234,7 @@ TEST(BrusselatorRestartMpi, WriteAtMoreRanksRestoreAtFewerByGlobalId) {
   if (fixed == nullptr) {
     GTEST_SKIP() << "needs FUSE_BRUSSELATOR_RESTART_MPI_FIXED_PATH set and "
                     "this binary run at a LARGER rank count first, then a "
-                    "SMALLER one against the same path -- see host_pending "
-                    "in the delivered report for the exact two commands";
+                    "SMALLER one against the same path";
   }
   const std::string path(fixed);
   const int rank = fuse::testing::rank();

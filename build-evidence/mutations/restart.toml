@@ -33,12 +33,12 @@ new = """    // MUTATION: duplicate-id check disabled.
     }"""
 target = "fuse_runtime_restart_test"
 test = "runtime.restart"
-result = "CONFIRMED 2026-10-15: full unfiltered fuse_runtime_restart_test (14 tests) ran 13 PASSED / 1 FAILED. Restart.BadGlobalIdNumberingRefuses failed: this test calls put_field() directly with a duplicate id ({0,1,1}) and asserts the call itself returns E-RESTART-DUPLICATE-ID -- with the check disabled, put_field() instead wrote the field and returned success, so EXPECT_FALSE(r.ok()) failed first. Every other test, none of which feeds put_field() a duplicate id within one call, still passed -- including the two bit-identical round trips, which never exercise this path at all (every id Form A reports in this slice's fixtures is already locally unique). Restored; cmp against the pre-mutation file reported no difference."
+result = "CONFIRMED: full unfiltered fuse_runtime_restart_test (14 tests) ran 13 PASSED / 1 FAILED. Restart.BadGlobalIdNumberingRefuses failed: this test calls put_field() directly with a duplicate id ({0,1,1}) and asserts the call itself returns E-RESTART-DUPLICATE-ID -- with the check disabled, put_field() instead wrote the field and returned success, so EXPECT_FALSE(r.ok()) failed first. Every other test, none of which feeds put_field() a duplicate id within one call, still passed -- including the two bit-identical round trips, which never exercise this path at all (every id Form A reports in this slice's fixtures is already locally unique). Restored; cmp against the pre-mutation file reported no difference."
 
 [[mutation]]
 id = "restart-period-index-not-resumed"
 area = "runtime/restart (restore_restart_point, the Runner's own clock)"
-describes = "restore_restart_point() restores every component's and accelerator's own state but never calls Runner::set_current_period_index() -- the Runner's own clock (Impl::period_index, which ctx.t_begin/ctx.t_end are computed from at the TOP of the next run_period(), src/runtime/runner.cpp) is left at wherever it was before the restore (0, for a freshly-initialize()d Runner), so the first post-restart period recomputes times as if the run had never advanced at all, even though every registered field was correctly restored to its mid-run values. This is a real defect this round's own first implementation attempt had, caught by the test below before it reached the owner -- see docs/dev/restart.md Section 9's own 'measured findings' note."
+describes = "restore_restart_point() restores every component's and accelerator's own state but never calls Runner::set_current_period_index() -- the Runner's own clock (Impl::period_index, which ctx.t_begin/ctx.t_end are computed from at the TOP of the next run_period(), src/runtime/runner.cpp) is left at wherever it was before the restore (0, for a freshly-initialize()d Runner), so the first post-restart period recomputes times as if the run had never advanced at all, even though every registered field was correctly restored to its mid-run values. This is a real defect the first implementation attempt had, caught by the test below before it reached the owner -- see docs/dev/restart.md Section 9's own 'measured findings' note."
 file = "src/runtime/restart.cpp"
 old = """  // The Runner's own clock is not a fuse::Component and restore_restart_
   // fields() does not touch it -- see Runner::set_current_period_index()'s
@@ -51,12 +51,12 @@ new = """  // MUTATION: period-index resumption disabled.
   return Result<void>::success();"""
 target = "fuse_runtime_restart_test"
 test = "runtime.restart"
-result = "CONFIRMED 2026-10-15: full unfiltered fuse_runtime_restart_test (14 tests) ran 12 PASSED / 2 FAILED. Restart.SameRankRoundTripSeparateLayout and Restart.SameRankRoundTripGrowingLayout both failed, each on multiple EXPECT_EQ mismatches across q[]/u[]/dirichlet_time/neumann_time/last_period_sweeps -- e.g. a.dirichlet_time (the uninterrupted 5-period reference) read 5, b.dirichlet_time (restore after 3, run 2 more) read 2: the restored run's own two post-restart periods computed StepContext times for periods 0-1 instead of 3-4, because Impl::period_index was never set back to 3. This is the IDENTICAL symptom this round's own diagnostic assertion (test/runtime/restart_test.cpp's own EXPECT_EQ(d->time(), 3.0) immediately after restore, before any further period) proved was NOT the cause -- that check still passes under this mutation, confirming the restored FIELD state is correct and the defect is specifically the Runner's own un-resumed clock, isolated to these two tests. The other 12 tests, none of which calls run_period() again after a restore, still passed. Restored; cmp against the pre-mutation file reported no difference."
+result = "CONFIRMED: full unfiltered fuse_runtime_restart_test (14 tests) ran 12 PASSED / 2 FAILED. Restart.SameRankRoundTripSeparateLayout and Restart.SameRankRoundTripGrowingLayout both failed, each on multiple EXPECT_EQ mismatches across q[]/u[]/dirichlet_time/neumann_time/last_period_sweeps -- e.g. a.dirichlet_time (the uninterrupted 5-period reference) read 5, b.dirichlet_time (restore after 3, run 2 more) read 2: the restored run's own two post-restart periods computed StepContext times for periods 0-1 instead of 3-4, because Impl::period_index was never set back to 3. This is the IDENTICAL symptom the diagnostic assertion (test/runtime/restart_test.cpp's own EXPECT_EQ(d->time(), 3.0) immediately after restore, before any further period) proved was NOT the cause -- that check still passes under this mutation, confirming the restored FIELD state is correct and the defect is specifically the Runner's own un-resumed clock, isolated to these two tests. The other 12 tests, none of which calls run_period() again after a restore, still passed. Restored; cmp against the pre-mutation file reported no difference."
 
 [[mutation]]
 id = "restart-per-block-key-collapsed-to-id-alone"
 area = "num (detail::put_field_per_block/get_field_per_block, round 2's EXACT-KEY fix)"
-describes = "Both per-block helpers' own qualified dataset name (name_prefix + '/' + block.field_name) are collapsed to name_prefix alone, in one mutation spanning both functions (the only way to make the old-text anchor unique while mutating both occurrences the real test needs) -- the exact shape round 1's hash-combined key had before round 2 replaced it, now with no key distinguishing field at all: every block of one region's accelerator state writes to the SAME dataset name, so two blocks with identical local ids (dirichlet/neumann's own shape) collide. Anchor re-cut 2026-10-15 after this round's own window_capacity demux refactor renamed the ordinary-case local from count to n_elem and inserted the per-sample branch between the two qualified assignments; the mutated behavior is unchanged."
+describes = "Both per-block helpers' own qualified dataset name (name_prefix + '/' + block.field_name) are collapsed to name_prefix alone, in one mutation spanning both functions (the only way to make the old-text anchor unique while mutating both occurrences the real test needs) -- the exact shape round 1's hash-combined key had before round 2 replaced it, now with no key distinguishing field at all: every block of one region's accelerator state writes to the SAME dataset name, so two blocks with identical local ids (dirichlet/neumann's own shape) collide. Anchor re-cut 2026-10-15 after the window_capacity demux refactor renamed the ordinary-case local from count to n_elem and inserted the per-sample branch between the two qualified assignments; the mutated behavior is unchanged."
 file = "src/num/accel_relaxation.cpp"
 old = """    const std::string qualified = name_prefix + "/" + block.field_name;
     if (block.window_capacity == 0) {
@@ -164,7 +164,7 @@ Result<void> get_field_per_block(RestartReader& reader,
     const std::string qualified = name_prefix;  // MUTATION: key collapsed to id alone"""
 target = "fuse_runtime_restart_test"
 test = "runtime.restart"
-result = "CONFIRMED 2026-10-15 (round 2, anchor re-cut after the window_capacity demux refactor and after a mid-round workspace reset required reconstructing this file): mutate.py --build-dir build1 --area <num per-block area> reported KILLED restart-per-block-key-collapsed-to-id-alone test fails, 1 killed of 1. Restored; rebuilt fuse_runtime_restart_test and confirmed passing again."
+result = "CONFIRMED (round 2, anchor re-cut after the window_capacity demux refactor and after a mid-round workspace reset required reconstructing this file): mutate.py --build-dir build1 --area <num per-block area> reported KILLED restart-per-block-key-collapsed-to-id-alone test fails, 1 killed of 1. Restored; rebuilt fuse_runtime_restart_test and confirmed passing again."
 
 [[mutation]]
 id = "restart-accel-not-implemented-gate-disabled"
@@ -196,7 +196,7 @@ new = """    // MUTATION: no-silent-reset gate disabled
     }"""
 target = "fuse_runtime_restart_test"
 test = "runtime.restart"
-result = "CONFIRMED 2026-10-15 (round 2): full unfiltered fuse_runtime_restart_test (17 tests) ran 15 PASSED / 2 FAILED. AccelNotImplementedRefusesWithoutOptIn failed: EXPECT_EQ(rr.error().code, \"E-RESTART-ACCEL-NOT-IMPLEMENTED\") got \"E-RESTART-NOT-IMPLEMENTED\" instead (the gate never ran, so the call fell through into the base-class default). AccelNotImplementedWithAllowResetSucceedsAndReports failed: rr.ok() was false, exact message \"E-RESTART-NOT-IMPLEMENTED: Accelerator::import_restart_state(): IQN-ILS does not override export_restart_state()/import_restart_state()/restart_state_implemented(), so this call cannot be trusted to mean \\\"nothing to restore\\\" -- the caller must check restart_state_implemented() before ever reaching this default\" -- opting in no longer causes a successful reset, because the gate that would call reset() never runs. Every other test, none of which uses an AccelKind the base default ever reaches, still passed. Restored; cmp against the pre-mutation file reported no difference; rebuilt afterward and confirmed 17/17 passing again."
+result = "CONFIRMED (round 2): full unfiltered fuse_runtime_restart_test (17 tests) ran 15 PASSED / 2 FAILED. AccelNotImplementedRefusesWithoutOptIn failed: EXPECT_EQ(rr.error().code, \"E-RESTART-ACCEL-NOT-IMPLEMENTED\") got \"E-RESTART-NOT-IMPLEMENTED\" instead (the gate never ran, so the call fell through into the base-class default). AccelNotImplementedWithAllowResetSucceedsAndReports failed: rr.ok() was false, exact message \"E-RESTART-NOT-IMPLEMENTED: Accelerator::import_restart_state(): IQN-ILS does not override export_restart_state()/import_restart_state()/restart_state_implemented(), so this call cannot be trusted to mean \\\"nothing to restore\\\" -- the caller must check restart_state_implemented() before ever reaching this default\" -- opting in no longer causes a successful reset, because the gate that would call reset() never runs. Every other test, none of which uses an AccelKind the base default ever reaches, still passed. Restored; cmp against the pre-mutation file reported no difference; rebuilt afterward and confirmed 17/17 passing again."
 
 # mutate.py builds `ctest -R "^{test}$"` from a SINGLE test field; the
 # original row below named three comma-joined targets/tests, which never
@@ -218,7 +218,7 @@ new = """bool is_exact_widening(const ElementTypeInfo& f, const ElementTypeInfo&
   return true;  // MUTATION: Widening check always admits"""
 target = "fuse_runtime_restart_test"
 test = "runtime.restart"
-result = "CONFIRMED 2026-10-15 (Stage B Slice 1b): fuse_runtime_restart_test ran 25 PASSED / 1 FAILED (TypedRestart.WideningRefusesANonExactConversion). Restored; cmp against the pre-mutation file reported no difference; rebuilt afterward and confirmed 26/26 passing again."
+result = "CONFIRMED (Stage B Slice 1b): fuse_runtime_restart_test ran 25 PASSED / 1 FAILED (TypedRestart.WideningRefusesANonExactConversion). Restored; cmp against the pre-mutation file reported no difference; rebuilt afterward and confirmed 26/26 passing again."
 
 [[mutation]]
 id = "typed-restart-widening-admits-narrowing-typed-restart-hdf5"
@@ -230,7 +230,7 @@ new = """bool is_exact_widening(const ElementTypeInfo& f, const ElementTypeInfo&
   return true;  // MUTATION: Widening check always admits"""
 target = "fuse_runtime_typed_restart_hdf5_test"
 test = "runtime.typed_restart_hdf5"
-result = "CONFIRMED 2026-10-15 (Stage B Slice 1b): fuse_runtime_typed_restart_hdf5_test ran 3 PASSED / 1 FAILED (TypedRestartHdf5.HandBuiltX86LongDoubleExactAndWideningRefuseAllowNarrowingReportsDelta -- its Widening-refuses assertion wrongly succeeded, then a bad_variant_access exception fired reading the resulting Failure as a value). Restored; cmp against the pre-mutation file reported no difference; rebuilt afterward and confirmed 4/4 passing again."
+result = "CONFIRMED (Stage B Slice 1b): fuse_runtime_typed_restart_hdf5_test ran 3 PASSED / 1 FAILED (TypedRestartHdf5.HandBuiltX86LongDoubleExactAndWideningRefuseAllowNarrowingReportsDelta -- its Widening-refuses assertion wrongly succeeded, then a bad_variant_access exception fired reading the resulting Failure as a value). Restored; cmp against the pre-mutation file reported no difference; rebuilt afterward and confirmed 4/4 passing again."
 
 [[mutation]]
 id = "typed-restart-widening-admits-narrowing-element-type"
@@ -242,7 +242,7 @@ new = """bool is_exact_widening(const ElementTypeInfo& f, const ElementTypeInfo&
   return true;  // MUTATION: Widening check always admits"""
 target = "fuse_model_element_type_test"
 test = "model.element_type"
-result = "CONFIRMED 2026-10-15 (Stage B Slice 1b): fuse_model_element_type_test ran 4 PASSED / 1 FAILED (ElementType.IsExactWideningMatchesEveryOwnerNamedCase -- multiple EXPECT_FALSE checks on known-non-widening pairs wrongly evaluated true). Restored; cmp against the pre-mutation file reported no difference; rebuilt afterward and confirmed 5/5 passing again."
+result = "CONFIRMED (Stage B Slice 1b): fuse_model_element_type_test ran 4 PASSED / 1 FAILED (ElementType.IsExactWideningMatchesEveryOwnerNamedCase -- multiple EXPECT_FALSE checks on known-non-widening pairs wrongly evaluated true). Restored; cmp against the pre-mutation file reported no difference; rebuilt afterward and confirmed 5/5 passing again."
 
 [[mutation]]
 id = "typed-restart-bfloat16-truncates-instead-of-rne"
@@ -263,7 +263,7 @@ new = """    if (false && round_bit != 0 && (sticky != 0 || lsb_of_kept != 0)) {
     }"""
 target = "fuse_model_bfloat16_test"
 test = "model.bfloat16"
-result = "CONFIRMED 2026-10-15 (Stage B Slice 1b): fuse_model_bfloat16_test ran 2 PASSED / 2 FAILED (BFloat16.RoundToNearestEvenAtExactTies, BFloat16.RoundingOverflowAtTheTopOfTheRangeBecomesInfinity). NOT caught by BFloat16.ExhaustiveBitToFloatToBitIdentityOverEveryNonNanPattern or BFloat16.ToFloatIsAlwaysExactWidening, by construction: the exhaustive test's inputs are bf16 bit patterns widened losslessly to float first, so every value it round-trips already has all-zero bits in the range truncation vs. rounding would differ on -- exactly why the two dedicated tie/overflow tests exist separately. Restored; cmp against the pre-mutation file reported no difference; rebuilt afterward and confirmed 4/4 passing again."
+result = "CONFIRMED (Stage B Slice 1b): fuse_model_bfloat16_test ran 2 PASSED / 2 FAILED (BFloat16.RoundToNearestEvenAtExactTies, BFloat16.RoundingOverflowAtTheTopOfTheRangeBecomesInfinity). NOT caught by BFloat16.ExhaustiveBitToFloatToBitIdentityOverEveryNonNanPattern or BFloat16.ToFloatIsAlwaysExactWidening, by construction: the exhaustive test's inputs are bf16 bit patterns widened losslessly to float first, so every value it round-trips already has all-zero bits in the range truncation vs. rounding would differ on -- exactly why the two dedicated tie/overflow tests exist separately. Restored; cmp against the pre-mutation file reported no difference; rebuilt afterward and confirmed 4/4 passing again."
 
 # Same mutate.py regex defect as typed-restart-widening-admits-narrowing
 # above: one row named three comma-joined targets/tests. Split into one
@@ -283,7 +283,7 @@ new = """    result.absolute_change = 0.0;  // MUTATION: reported change always 
                                               (from_bits - 1))));"""
 target = "fuse_model_float_bits_test"
 test = "model.float_bits"
-result = "CONFIRMED 2026-10-15 (Stage B Slice 1b): fuse_model_float_bits_test ran 5 PASSED / 1 FAILED (FloatBits.OwnerScenario_X86ExtendedLongDoubleNarrowsToMacDoubleWithReportedDelta). Restored; cmp against the pre-mutation file reported no difference; rebuilt afterward and confirmed 6/6 passing again."
+result = "CONFIRMED (Stage B Slice 1b): fuse_model_float_bits_test ran 5 PASSED / 1 FAILED (FloatBits.OwnerScenario_X86ExtendedLongDoubleNarrowsToMacDoubleWithReportedDelta). Restored; cmp against the pre-mutation file reported no difference; rebuilt afterward and confirmed 6/6 passing again."
 
 [[mutation]]
 id = "typed-restart-narrow-float-reports-zero-change-restart"
@@ -300,7 +300,7 @@ new = """    result.absolute_change = 0.0;  // MUTATION: reported change always 
                                               (from_bits - 1))));"""
 target = "fuse_runtime_restart_test"
 test = "runtime.restart"
-result = "CONFIRMED 2026-10-15 (Stage B Slice 1b): fuse_runtime_restart_test ran 8 PASSED / 1 FAILED of the TypedRestart suite (TypedRestart.FloatNarrowingReportsAMeasuredChange: EXPECT_GT(max_absolute_change, 0.0) got 0 vs 0). Restored; cmp against the pre-mutation file reported no difference; rebuilt afterward and confirmed 26/26 passing again."
+result = "CONFIRMED (Stage B Slice 1b): fuse_runtime_restart_test ran 8 PASSED / 1 FAILED of the TypedRestart suite (TypedRestart.FloatNarrowingReportsAMeasuredChange: EXPECT_GT(max_absolute_change, 0.0) got 0 vs 0). Restored; cmp against the pre-mutation file reported no difference; rebuilt afterward and confirmed 26/26 passing again."
 
 [[mutation]]
 id = "typed-restart-narrow-float-reports-zero-change-typed-restart-hdf5"
@@ -317,4 +317,4 @@ new = """    result.absolute_change = 0.0;  // MUTATION: reported change always 
                                               (from_bits - 1))));"""
 target = "fuse_runtime_typed_restart_hdf5_test"
 test = "runtime.typed_restart_hdf5"
-result = "CONFIRMED 2026-10-15 (Stage B Slice 1b): fuse_runtime_typed_restart_hdf5_test ran 3 PASSED / 1 FAILED (TypedRestartHdf5.HandBuiltX86LongDoubleExactAndWideningRefuseAllowNarrowingReportsDelta: max_absolute_change reported 0 against an independently computed 1.0842021724855044e-19). Restored; cmp against the pre-mutation file reported no difference; rebuilt afterward and confirmed 4/4 passing again."
+result = "CONFIRMED (Stage B Slice 1b): fuse_runtime_typed_restart_hdf5_test ran 3 PASSED / 1 FAILED (TypedRestartHdf5.HandBuiltX86LongDoubleExactAndWideningRefuseAllowNarrowingReportsDelta: max_absolute_change reported 0 against an independently computed 1.0842021724855044e-19). Restored; cmp against the pre-mutation file reported no difference; rebuilt afterward and confirmed 4/4 passing again."

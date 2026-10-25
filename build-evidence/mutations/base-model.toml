@@ -1,11 +1,9 @@
-# Mutations for the base/model fix pass (REVIEW.md R-04, R-15, R-19).
-# Own file per the review-fix protocol: do not edit build-evidence/mutations.toml
-# directly while other fixers hold it dirty.
+# Mutations for the base and model layers.
 
 [[mutation]]
 id = "descriptor-accepts-any-convergence-measure-kind"
 area = "model"
-describes = "deserialize() reverts to admitting any byte as a MeasureKind, the exact gap R-04 fixed (yaml_io.cpp's kMeasureNames index would go out of bounds later, disconnected from the cause)"
+describes = "deserialize() reverts to admitting any byte as a MeasureKind, the exact gap that was closed (yaml_io.cpp's kMeasureNames index would go out of bounds later, disconnected from the cause)"
 file = "include/fuse/model/descriptor.hpp"
 old = "      if (measure_kind > static_cast<std::uint8_t>(MeasureKind::ResidualRelative)) {"
 new = "      if (false) {"
@@ -15,7 +13,7 @@ test = "model.descriptor"
 [[mutation]]
 id = "descriptor-accepts-any-acceleration-kind"
 area = "model"
-describes = "deserialize() reverts to admitting any byte as an AccelKind (R-04). The bound was widened at descriptor v12 (S7.2) from AccelKind::IQN_IMVJ to AccelKind::Newton; this anchor follows that widening rather than re-narrowing to the superseded bound, which build-evidence/mutations/model.toml's own descriptor-accel-kind-bound-not-widened row covers separately."
+describes = "deserialize() reverts to admitting any byte as an AccelKind. The bound was widened at descriptor v12 from AccelKind::IQN_IMVJ to AccelKind::Newton; this anchor follows that widening rather than re-narrowing to the superseded bound, which build-evidence/mutations/model.toml's own descriptor-accel-kind-bound-not-widened row covers separately."
 file = "include/fuse/model/descriptor.hpp"
 old = "    if (accel_kind > static_cast<std::uint8_t>(AccelKind::Newton)) {"
 new = "    if (false) {"
@@ -25,7 +23,7 @@ test = "model.descriptor"
 [[mutation]]
 id = "descriptor-accepts-any-acceleration-filter"
 area = "model"
-describes = "deserialize() reverts to admitting any byte as a FilterKind (R-04)"
+describes = "deserialize() reverts to admitting any byte as a FilterKind"
 file = "include/fuse/model/descriptor.hpp"
 old = "    if (accel_filter > static_cast<std::uint8_t>(FilterKind::QR3)) {"
 new = "    if (false) {"
@@ -35,7 +33,7 @@ test = "model.descriptor"
 [[mutation]]
 id = "rational-lcm-denominator-overflows"
 area = "base"
-describes = "lcm_denominator() reverts to a direct int64_t computation (multiply before dividing by the gcd -- std::lcm's own exposed formula, without the Int128 width), reintroducing the overflow gcd_rational's sibling fix removed (R-15)"
+describes = "lcm_denominator() reverts to a direct int64_t computation (multiply before dividing by the gcd -- std::lcm's own exposed formula, without the Int128 width), reintroducing the overflow gcd_rational's sibling fix removed"
 file = "include/fuse/base/rational.hpp"
 old = """    const detail::Int128 ad = a.den_;
     const detail::Int128 bd = b.den_;
@@ -59,24 +57,22 @@ new = """    std::int64_t ad = a.den_, bd = b.den_;
     return Rational{1, static_cast<std::int64_t>((ad * bd) / gx)};"""
 target = "fuse_base_rational_test"
 test = "base.rational"
-# Re-anchored 2026-10-19 (Survivors track, inconclusive-row fix): the
-# original `new` above called `std::lcm(a.den_, b.den_)`, which does not
+# The `new` text above avoids `std::lcm(a.den_, b.den_)`, which does not
 # compile -- rational.hpp includes <compare>/<cstdint>/<limits>/<optional>/
 # <string> and neither fuse/base/error.hpp nor fuse/base/result.hpp pulls
 # in <numeric> transitively on this toolchain (confirmed directly: a
 # standalone translation unit with the SAME include list and a bare
 # `std::lcm` call fails with "no member named 'lcm' in namespace 'std'",
-# Apple clang 21.0.0 / libc++). Reported INCONCLUSIVE ("mutant does not
-# compile; rewrite it"), not a static_assert kill. The fix reimplements
-# the pre-fix defect directly (multiply the two denominators before
-# dividing by their gcd, in plain int64_t -- the exact overflow R-15
-# removed) with a local Euclidean gcd loop, needing no new include.
-result = "RE-VERIFIED 2026-10-19 against the re-anchored `new` above (90d98ee export, tier-0, system /usr/bin/c++): compiles cleanly; ctest -R ^base.rational$ reports exactly 1 FAILED -- Rational.LcmDenominatorRefusesAnUnrepresentableCommonTick -- of 27; restored and reconfirmed 27/27 passing, byte-identical cmp against the pre-mutation file."
+# Apple clang 21.0.0 / libc++). The mutation reimplements the defect
+# directly (multiply the two denominators before dividing by their gcd,
+# in plain int64_t -- the exact overflow that was removed) with a local
+# Euclidean gcd loop, needing no new include.
+result = "RE-VERIFIED against the re-anchored `new` above (90d98ee export, tier-0, system /usr/bin/c++): compiles cleanly; ctest -R ^base.rational$ reports exactly 1 FAILED -- Rational.LcmDenominatorRefusesAnUnrepresentableCommonTick -- of 27; restored and reconfirmed 27/27 passing, byte-identical cmp against the pre-mutation file."
 
 [[mutation]]
 id = "descriptor-accepts-non-positive-unit-scale"
 area = "model"
-describes = "deserialize() stops rejecting a non-positive field unit scale (R-19), letting a corrupted descriptor introduce a zero (annihilator) or negative (sign-flipping) scale"
+describes = "deserialize() stops rejecting a non-positive field unit scale, letting a corrupted descriptor introduce a zero (annihilator) or negative (sign-flipping) scale"
 file = "include/fuse/model/descriptor.hpp"
 old = "    if (!(f.units.scale > Rational{0})) {"
 new = "    if (false) {"
@@ -86,7 +82,7 @@ test = "model.descriptor"
 [[mutation]]
 id = "compatibility-auto-inserts-negative-unit-scale"
 area = "model"
-describes = "check_units() stops gating a negative pure-scale conversion factor behind an explicit request (R-19), so it is auto-inserted like an ordinary positive rescale and silently flips the sign of every value crossing the field transfer"
+describes = "check_units() stops gating a negative pure-scale conversion factor behind an explicit request, so it is auto-inserted like an ordinary positive rescale and silently flips the sign of every value crossing the field transfer"
 file = "src/model/compatibility.cpp"
 old = "    if (*factor < Rational{0} && !explicit_request)"
 new = "    if (false && *factor < Rational{0} && !explicit_request)"
@@ -96,21 +92,20 @@ test = "model.compatibility"
 [[mutation]]
 id = "semantics-accepts-negative-unit-scale"
 area = "model"
-describes = "validate_field_semantics() stops flagging a negative field unit scale (R-19), leaving only the zero/annihilator case checked"
+describes = "validate_field_semantics() stops flagging a negative field unit scale, leaving only the zero/annihilator case checked"
 file = "src/model/semantics.cpp"
 old = "    else if (field.units.scale < Rational{0})"
 new = "    else if (false)"
 target = "fuse_model_semantics_test"
 test = "model.semantics"
 
-# Second-pass mutations (docs/dev/reviews/2026-09-19/pass2/re-base-model.md,
-# N-base-model-1, N-base-model-2): the two "finish the job" gaps the first
-# pass's R-18/R-19 fixes left open in to_yaml()/from_yaml().
+# Mutations for the to_yaml()/from_yaml() gaps: a dangling window component
+# and a non-positive parsed unit scale.
 
 [[mutation]]
 id = "yaml-io-emits-dangling-window-component"
 area = "model"
-describes = "emit_window() stops checking window_component_ok() before dereferencing a FromComponent window's component (N-base-model-1), reopening the std::out_of_range escape R-18 fixed for the other four to_yaml() sites but not this one"
+describes = "emit_window() stops checking window_component_ok() before dereferencing a FromComponent window's component, reopening the std::out_of_range escape that the other four to_yaml() sites already guard against"
 file = "src/model/yaml_io.cpp"
 old = "  if (!detail::window_component_ok(g, w)) {"
 new = "  if (false) {"
@@ -120,7 +115,7 @@ test = "model.yaml_io"
 [[mutation]]
 id = "yaml-io-emits-dangling-field-region"
 area = "model"
-describes = "to_yaml()'s field loop stops bounds-checking a field's RegionId before g.region(f.region).name (N-base-model-1), reopening the same std::out_of_range escape R-18 fixed for the region->mesh, field transfer->field, merge->field, and implicit-coupling-group->field transfer sites"
+describes = "to_yaml()'s field loop stops bounds-checking a field's RegionId before g.region(f.region).name reopening the same std::out_of_range escape closed for the region->mesh, field transfer->field, merge->field, and implicit-coupling-group->field transfer sites"
 file = "src/model/yaml_io.cpp"
 old = "      if (!f.region.valid() || f.region.value() >= g.region_count()) {"
 new = "      if (false) {"
@@ -130,7 +125,7 @@ test = "model.yaml_io"
 [[mutation]]
 id = "yaml-io-parses-non-positive-unit-scale"
 area = "model"
-describes = "from_yaml() stops rejecting a non-positive parsed unit scale (N-base-model-2), reopening on the text front end the exact defect R-19 closed on the binary descriptor"
+describes = "from_yaml() stops rejecting a non-positive parsed unit scale reopening on the text front end the exact defect closed on the binary descriptor"
 file = "src/model/yaml_io.cpp"
 old = "        if (!(f.units.scale > Rational{0})) {"
 new = "        if (false) {"
@@ -140,7 +135,7 @@ test = "model.yaml_io"
 [[mutation]]
 id = "empty-placement-channel-check-never-fires"
 area = "model"
-describes = "The 2026-09-22 ruling: a field transfer out of or into a component placed on no rank is a modelling error, rejected at validate() with E-PLACEMENT-EMPTY. Removing the check returns the diagnosis to MpiTransport::build_plan's E-TRANSPORT-RANKS two layers down -- a rejection that names a rank set when the mistake is in the graph, and only under MPI."
+describes = "A field transfer out of or into a component placed on no rank is a modelling error, rejected at validate() with E-PLACEMENT-EMPTY. Removing the check returns the diagnosis to MpiTransport::build_plan's E-TRANSPORT-RANKS two layers down -- a rejection that names a rank set when the mistake is in the graph, and only under MPI."
 file = "include/fuse/model/validate.hpp"
 old = "      if (!comp.ranks.empty()) continue;"
 new = "      continue;"
@@ -160,7 +155,7 @@ test = "model.validate"
 [[mutation]]
 id = "hdf5-path-ignored-on-serialisation"
 area = "model"
-describes = "S6 phase 3 (\"LowFive\" track), Unit 3. serialize() stops writing FieldSpec::hdf5_path at all (always writing the v11 presence byte as 0, and never writing the string even when set), so a descriptor round trip silently drops every field's hdf5_path -- a graph authored with LowFive transfers would deserialize as though none of them had one, with no diagnostic anywhere."
+describes = "serialize() stops writing FieldSpec::hdf5_path at all (always writing the v11 presence byte as 0, and never writing the string even when set), so a descriptor round trip silently drops every field's hdf5_path -- a graph authored with LowFive transfers would deserialize as though none of them had one, with no diagnostic anywhere."
 file = "include/fuse/model/descriptor.hpp"
 old = """    w.pod(static_cast<std::uint8_t>(f.hdf5_path.has_value() ? 1 : 0));
     if (f.hdf5_path.has_value()) w.str(*f.hdf5_path);"""
@@ -171,7 +166,7 @@ test = "model.descriptor"
 [[mutation]]
 id = "hdf5-path-duplicate-check-disabled"
 area = "model"
-describes = "S6 phase 3 (\"LowFive\" track), Unit 3. validate()'s graph-wide hdf5_path uniqueness check (E-LOWFIVE-DUPPATH) never fires, so two fields bound to the exact same HDF5 path validate clean -- two buffers would silently overwrite each other's dataset the first time a run actually wrote through LowFive, with nothing at authoring time to say so. The analogous check inside LowFiveFieldBindingTable::add() itself is a SEPARATE mutation (build-evidence/mutations/transport-lowfive.toml's own binding-table-skips-the-duplicate-path-check) -- this one is validate()'s own, graph-wide version, reachable from a hand-authored YAML/descriptor that never goes through build_lowfive_bindings() at all."
+describes = "validate()'s graph-wide hdf5_path uniqueness check (E-LOWFIVE-DUPPATH) never fires, so two fields bound to the exact same HDF5 path validate clean -- two buffers would silently overwrite each other's dataset the first time a run actually wrote through LowFive, with nothing at authoring time to say so. The analogous check inside LowFiveFieldBindingTable::add() itself is a SEPARATE mutation (build-evidence/mutations/transport-lowfive.toml's own binding-table-skips-the-duplicate-path-check) -- this one is validate()'s own, graph-wide version, reachable from a hand-authored YAML/descriptor that never goes through build_lowfive_bindings() at all."
 file = "include/fuse/model/validate.hpp"
 old = "        if (!inserted) {"
 new = "        if (false) {"
@@ -181,18 +176,18 @@ test = "model.validate"
 [[mutation]]
 id = "lowfive-component-kind-check-disabled"
 area = "model"
-describes = "Unit 3a's own closing item (S6 phase 3, \"LowFive\" track): validate()'s check that a LaunchMode::LowFive component is a bare placement -- kind=Coupler, no fields -- (E-LOWFIVE-COMPONENT-KIND) never fires, so a LowFive marker component left at its ComponentDecl default (kind=Physics) or carrying stray fields validates clean. Reachable in practice: every caller that ever declared this marker with no explicit .kind got a spurious externally-driven component (resolved to it at period start, with no step call for it anywhere in the caller's own loop) before the graph tool and this project's own test fixtures were fixed to declare .kind = Coupler by hand -- this check pins the rule the tool now happens to follow, rather than leaving it to habit."
+describes = "validate()'s check that a LaunchMode::LowFive component is a bare placement -- kind=Coupler, no fields -- (E-LOWFIVE-COMPONENT-KIND) never fires, so a LowFive marker component left at its ComponentDecl default (kind=Physics) or carrying stray fields validates clean. Reachable in practice: every caller that ever declared this marker with no explicit .kind got a spurious externally-driven component (resolved to it at period start, with no step call for it anywhere in the caller's own loop) before the graph tool and the test fixtures were changed to declare .kind = Coupler by hand -- this check pins the rule the tool now follows, rather than leaving it to habit."
 file = "include/fuse/model/validate.hpp"
 old = "      if (c.kind != ComponentKind::Coupler || !c.fields.empty()) {"
 new = "      if (false) {  // MUTATED: E-LOWFIVE-COMPONENT-KIND disabled."
 target = "fuse_model_validate_test"
 test = "model.validate"
-result = "PROVED BY HAND 2026-10-06 (tools/mutate.py --area model refuses against this uncommitted tree -- the same constraint recorded for every other hand-proved row in this session's own files -- the check itself was added in the same uncommitted edit this mutation targets). Validate.ALowFiveComponentDeclaringPhysicsKindIsRefused and Validate.ALowFiveComponentOwningFieldsIsRefused both failed exactly as predicted: has_code(d, \"E-LOWFIVE-COMPONENT-KIND\") read false where the test expects true (the fields-owning case still reported E-COUPLER-FIELDS, a separate, unaffected check, confirming the test is checking the SPECIFIC code, not just d.has_errors()). The other 41 Validate cases were unaffected. Restored from a /tmp backup; cmp reported no difference; rebuild confirmed all 43 tests pass again."
+result = "PROVED BY HAND (tools/mutate.py --area model refuses against this uncommitted tree -- the same constraint recorded for every other hand-proved row -- the check itself was added in the same uncommitted edit this mutation targets). Validate.ALowFiveComponentDeclaringPhysicsKindIsRefused and Validate.ALowFiveComponentOwningFieldsIsRefused both failed exactly as predicted: has_code(d, \"E-LOWFIVE-COMPONENT-KIND\") read false where the test expects true (the fields-owning case still reported E-COUPLER-FIELDS, a separate, unaffected check, confirming the test is checking the SPECIFIC code, not just d.has_errors()). The other 41 Validate cases were unaffected. Restored from a /tmp backup; cmp reported no difference; rebuild confirmed all 43 tests pass again."
 
 [[mutation]]
 id = "model-channel-window-ignores-window-scope"
 area = "model"
-describes = "channel_window() (include/fuse/model/validate.hpp) no longer resolves a channel's own window-scoped IterationRegionDecl before falling back to the target component's own interval -- the exact pre-fix bug (S6 phase 3, Conformance, Unit 3b, item 2): a GaussSeidel channel's lag is measured against the wrong, unrelated quantity whenever the window length and the target's own interval differ"
+describes = "channel_window() (include/fuse/model/validate.hpp) no longer resolves a channel's own window-scoped IterationRegionDecl before falling back to the target component's own interval -- the exact bug this guards against: a GaussSeidel channel's lag is measured against the wrong, unrelated quantity whenever the window length and the target's own interval differ"
 file = "include/fuse/model/validate.hpp"
 old = """inline Rational channel_window(const CouplingGraph& g, ChannelId cid,
                                const Channel& ch) {
@@ -219,4 +214,4 @@ new = """inline Rational channel_window(const CouplingGraph& g, ChannelId cid,
   const Window& w = ch.accumulate.window;"""
 target = "fuse_model_validate_test"
 test = "model.validate"
-result = "PROVED BY HAND 2026-10-07 (tools/mutate.py --check-anchors refuses against this uncommitted tree, same constraint recorded for every other row in this file). Applied directly to the ordinary bafter build: Validate.GaussSeidelWindowLagWithinTheRealWindowValidates (built specifically for this row, item 2 of this round) failed exactly as predicted -- 'error E-LAG: lag spans 3/1000 but the coupling window is 1/500 [channel 'b2a']', the identical message the real brusselator_participants_test/brusselator_lowfive_harness_test GaussSeidel cases hit before this fix. Validate.RejectsLagExceedingTheWindowItself and Validate.RejectsLagExceedingWindow (the ordinary, non-window case) were both unaffected -- the former because an even-more-excessive lag still exceeds the (wrong) fallback window too, the latter because it never touches a window-scoped region at all. Restored from a /tmp backup; cmp reported no difference; full rebuild confirmed all three tests pass again."
+result = "PROVED BY HAND (tools/mutate.py --check-anchors refuses against this uncommitted tree, same constraint recorded for every other row in this file). Applied directly to the ordinary bafter build: Validate.GaussSeidelWindowLagWithinTheRealWindowValidates (built specifically for this row) failed exactly as predicted -- 'error E-LAG: lag spans 3/1000 but the coupling window is 1/500 [channel 'b2a']', the identical message the real brusselator_participants_test/brusselator_lowfive_harness_test GaussSeidel cases hit before this fix. Validate.RejectsLagExceedingTheWindowItself and Validate.RejectsLagExceedingWindow (the ordinary, non-window case) were both unaffected -- the former because an even-more-excessive lag still exceeds the (wrong) fallback window too, the latter because it never touches a window-scoped region at all. Restored from a /tmp backup; cmp reported no difference; full rebuild confirmed all three tests pass again."

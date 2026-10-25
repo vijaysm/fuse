@@ -21,7 +21,7 @@ bool force_this_process(fuse_ctx* ctx, int rank) {
   return true;
 }
 
-// KNOWN_ISSUES.md D57 ("Collectives" track): see this function's own
+// See this function's own
 // declaration (test_support.hpp) for the full account of what this sets
 // and why it is safe to do with no MPI runtime at all.
 bool force_communicator_set(fuse_ctx* ctx, std::int64_t value) {
@@ -33,7 +33,7 @@ bool force_communicator_set(fuse_ctx* ctx, std::int64_t value) {
   // `RunnerConfig::base_communicator` -- setting it before initialize()
   // on a build with no "mpi" transport backend registered (tier 0,
   // FUSE_HAVE_MPI off) makes initialize() itself fail, which is not what
-  // KNOWN_ISSUES.md D57's own test needs: it is testing prime_next_
+  // the rollover test needs: it is testing prime_next_
   // request()'s own gate in ISOLATION, a plain `fuse_ctx::
   // communicator_set` read with no other consumer at run time, so
   // setting it AFTER a successful initialize() (transport already
@@ -69,7 +69,7 @@ fuse::FieldRegistry* field_registry_of(fuse_ctx* ctx) {
   return &ctx->fields;
 }
 
-// D61 (KNOWN_ISSUES.md): see this function's own declaration
+// See this function's own declaration
 // (test_support.hpp) for what this sets and why reconcile_collective_
 // status() (participant.cpp) treats it as a stand-in for a real
 // MPI_Allreduce.
@@ -81,7 +81,7 @@ bool force_fake_collective_peers(fuse_ctx* ctx, int self_rank,
   return true;
 }
 
-// KNOWN_ISSUES.md D15 ("Registry agreement" track): see this function's
+// See this function's
 // own declaration (test_support.hpp) for what this sets and why
 // reconcile_plugin_agreement() (participant.cpp) treats it as a stand-in
 // for a real MPI_Allreduce, kept separate from force_fake_collective_

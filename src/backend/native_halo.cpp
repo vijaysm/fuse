@@ -29,7 +29,7 @@ namespace fuse::native {
 
 namespace {
 
-/// D73/D5 ROUND 3 (owner request, 2026-10-18, host measurement): off by
+/// Diagnostic trace of the remap halo build: off by
 /// default, in the style of this tree's other per-rank trace env vars
 /// (FUSE_COLLECTIVE_TRACE, FUSE_NEWTON_DEBUG) -- cached once per process,
 /// never re-read per call, so the getenv cost is paid at most once. Writes
@@ -44,8 +44,7 @@ namespace {
 /// The axis-aligned union of `boxes`, or an explicitly empty box (all
 /// bounds at +inf/-inf, printed as such rather than as a plausible-looking
 /// zero) when `boxes` is empty -- an empty box is itself diagnostic
-/// evidence (hypothesis (b)/(c) in the owner's own round-3 request: did
-/// this rank have ANY owned/adopted cells to bound at all).
+/// evidence (did this rank have ANY owned/adopted cells to bound at all).
 [[nodiscard]] std::string trace_box_union(const std::vector<Box3>& boxes) {
   if (boxes.empty()) return "EMPTY (no cells)";
   Box3 u = boxes.front();
@@ -148,7 +147,7 @@ namespace {
 // 12/24 both reduce to the exactly-representable binary fraction 0.5,
 // adopted one full boundary row -- 16 cells -- on EACH rank before this
 // margin was added, zero after). The margin is an absolute tolerance in
-// the mesh's own coordinate units, far below any cell size this track
+// the mesh's own coordinate units, far below any cell size this code
 // targets (quad cells of width >= 1/24) and far above double-precision
 // rounding in a coordinate computed as `index / count` for the counts
 // these generators take.
@@ -295,7 +294,7 @@ std::vector<std::vector<std::byte>> pack_halo_cells(
 /// <std::int64_t>` signature native_halo_test.cpp already calls) and
 /// `build_native_remap_halo` (device buffers end to end) share --
 /// `device::merge_halo_cells_device<Space>` itself has no refusal path
-/// (no existing test's wire data is malformed; see this track's report),
+/// (no existing test's wire data is malformed),
 /// so this wrapper's only job is converting `Kokkos::View<std::int32_t*,
 /// Space>`/`Kokkos::View<std::int64_t*, Space>` GhostPattern outputs to
 /// `std::vector<int>`/`std::vector<std::int64_t>` for callers that have
@@ -425,9 +424,9 @@ Result<std::size_t> build_native_remap_halo(NativeMeshBackend& backend, MeshId s
   // The same guard MoabMeshBackend::set_communicator() makes: a build WITH
   // MPI whose process never called MPI_Init (every tier-0 test binary in a
   // tier-1 build tree) must refuse here, not reach the MPI_Allgather below
-  // with a handle MPI_Comm_f2c cannot interpret. Measured 2026-10-11: the
+  // with a handle MPI_Comm_f2c cannot interpret. The
   // tier-0 row verification.brusselator_species_core_decomposition aborted
-  // inside internal_Allgather ("Invalid communicator") in the user's MPI
+  // inside internal_Allgather ("Invalid communicator") in an MPI
   // build, where the same case refuses E-MESH-NO-MPI in a build without MPI.
   {
     int initialized = 0;
@@ -457,7 +456,7 @@ Result<std::size_t> build_native_remap_halo(NativeMeshBackend& backend, MeshId s
   const MPI_Comm resolved = resolve(backend.communicator());
   int real_size = 1;
   MPI_Comm_size(resolved, &real_size);
-  // NM-5: the sibling check just above this one validates communicator
+  // The sibling check just above this one validates communicator
   // SIZE but not RANK -- `backend.rank()` is what every self-exclusion
   // and wire-owner decision below uses, while box owners and the
   // Allgather/Alltoall below address participants by the COMMUNICATOR's
@@ -485,14 +484,13 @@ Result<std::size_t> build_native_remap_halo(NativeMeshBackend& backend, MeshId s
   // own pattern (native_migration.cpp), BEFORE `allgather_boxes` below, so
   // no rank can return its own refusal while a peer proceeds into that
   // collective.
-  // KNOWN_ISSUES D5 HALO BRIDGING (round 3, 2026-10-18): `source` resolves
-  // through `source_placement` -- NOT `placement` -- because `source`'s
-  // own owned cells live under its OWN component's decomposition, which
-  // is generally a DIFFERENT processor set than the target's. Resolving
-  // it through `placement` (the target's own) used to see the EMPTY view
-  // `register_default_placements()` hands every component for a mesh it
-  // does not itself decompose -- this function's own header comment has
-  // the full measured account.
+  // `source` resolves through `source_placement` -- NOT `placement` --
+  // because `source`'s own owned cells live under its OWN component's
+  // decomposition, which is generally a DIFFERENT processor set than the
+  // target's. Resolving it through `placement` (the target's own) would see
+  // the EMPTY view `register_default_placements()` hands every component
+  // for a mesh it does not itself decompose -- this function's own header
+  // comment has the full account.
   auto src_r = backend.native_view(source, source_placement);
   auto tgt_r = backend.native_view(target, placement);
   Result<void> local_check = Result<void>::success();
@@ -568,7 +566,7 @@ Result<std::size_t> build_native_remap_halo(NativeMeshBackend& backend, MeshId s
     }
   }
 
-  // DEVICE-RESIDENT END TO END (Migration track, 2026-10-15): `send` is
+  // DEVICE-RESIDENT END TO END: `send` is
   // `Space` buffers straight from `device::pack_fanout` (the still-public
   // `pack_halo_cells` stages to host bytes only for the in-process
   // emulation test technique, same split `migrate`'s own comment names
@@ -584,21 +582,18 @@ Result<std::size_t> build_native_remap_halo(NativeMeshBackend& backend, MeshId s
   const std::vector<Kokkos::View<std::byte*, Space>> received =
       exchange_migration_buffers<Space>(send, comm);
 
-  // KNOWN_ISSUES.md D73 (RemapHalo track round 5, host measurement
-  // 2026-10-19): everything from here through the post-exchange verdict
+  // Everything from here through the post-exchange verdict
   // Allreduce below is LOCAL, not collective (`exchange_migration_buffers`
-  // just above is the last real MPI call before it) -- but it was not
+  // just above is the last real MPI call before it) -- so it must be
   // EXCEPTION-safe across that gap: a C++ exception thrown by the merge
-  // or the rebuilt view's own construction unwinds straight out of this
-  // function, skipping the post-exchange Allreduce entirely. Measured on
-  // the owner's host: rank 1 (zero owned source cells, receiving 4 from
-  // rank 0 -- the "rank hosts only the target" case every disjoint-
-  // placement run has) threw inside `device::merge_halo_cells_device`
-  // (the `cell_vertex_offsets` empty-mesh defect fixed in mesh_merge_
-  // device.hpp this same round) and never reached its own Allreduce call,
-  // while rank 0 (which merged cleanly) reached ITS OWN call and blocked
-  // forever waiting for a peer that had already exited the function --
-  // exactly the standing rule this violates ("a collective path never
+  // or the rebuilt view's own construction would unwind straight out of this
+  // function, skipping the post-exchange Allreduce entirely. E.g. rank 1
+  // (zero owned source cells, receiving 4 from rank 0 -- the "rank hosts
+  // only the target" case every disjoint-placement run has) throwing inside
+  // `device::merge_halo_cells_device` would never reach its own Allreduce
+  // call, while rank 0 (which merged cleanly) reached ITS OWN call and
+  // blocked forever waiting for a peer that had already exited the function
+  // -- exactly the standing rule this would violate ("a collective path never
   // returns on a locally computed condition"), here by an uncaught
   // exception rather than an early return. Caught here, between the two
   // Allreduces, and folded into `post_check` so the EXISTING post-exchange
@@ -633,8 +628,8 @@ Result<std::size_t> build_native_remap_halo(NativeMeshBackend& backend, MeshId s
     // the triple this call just committed, and a rank that returned success
     // here while a peer returned failure would desync that caller's next
     // collective. `device::merge_halo_cells_device` itself has no refusal
-    // path of its own (this track's report names the one case it does not
-    // validate -- a Polyhedron's cross-cell face sharing, not attempted on
+    // path of its own (the one case it does not
+    // validate is a Polyhedron's cross-cell face sharing, not attempted on
     // this path either way), but it also does not reproduce
     // `NativeMeshBuilder::build()`'s own `E-MESH-DIM` check (a received
     // cell's topological dimension against the mesh's own) the way
@@ -705,7 +700,7 @@ Result<std::size_t> build_native_remap_halo(NativeMeshBackend& backend, MeshId s
 }
 
 // ---------------------------------------------------------------------------
-// KNOWN_ISSUES D27: the reverse exchange (native_halo.hpp's own header
+// The reverse exchange (native_halo.hpp's own header
 // comment carries the full contract). Built from
 // `fuse::linalg::PackedExchanger::exchange_packed_adjoint`, the same
 // adjoint Alltoallv `src/backend/nodal_remap_distributed.cpp`'s own H^T
@@ -727,11 +722,11 @@ Result<void> accumulate_remap_halo(const fuse::linalg::GhostExchanger& exchanger
   // own mapping) but it decides whether `owned` may be null: a rank that owns
   // NO entries receives nothing, so its owned buffer is legitimately empty
   // (std::vector::data() of an empty vector is null). Refusing on that null
-  // here, as this function did until 2026-10-19, was a LOCAL return in front
+  // here would be a LOCAL return in front
   // of the collective below: the consumer rank of parallel.native_remap_halo_
-  // runner.2 (0 owned source cells, 4 adopted) refused "null buffer with 4
-  // ghost(s) outstanding" while the provider rank sat in the MPI_Alltoallv
-  // (KNOWN_ISSUES.md D73 round 8, host-measured by the lead). Each check
+  // runner.2 (0 owned source cells, 4 adopted) would refuse "null buffer with 4
+  // ghost(s) outstanding" while the provider rank sat in the MPI_Alltoallv.
+  // Each check
   // below refuses only when a buffer this rank will actually touch is null;
   // both are unconditional on FUSE_HAVE_MPI and on the exchanger kind.
   if (ghost_n > 0 && ghosts == nullptr) {
@@ -767,13 +762,11 @@ Result<void> accumulate_remap_halo(const fuse::linalg::GhostExchanger& exchanger
   // PEER'S ghost copy of one of THIS rank's own owned entries is
   // waiting to arrive (`pack_index()`'s size, the answer-side count,
   // depends on what OTHER ranks requested from this rank, not on this
-  // rank's own ghost_n). Short-circuiting here on ghost_n == 0 alone (as
-  // this function did before) skips the call on exactly that rank,
-  // losing every contribution it was due: measured 2026-10-19 by an
-  // in-process reproduction of the 16x16/24x24 fixture at 3 ranks (round
-  // 3) -- the rank with ghost_n == 0 there still owns 16 of a peer's
-  // ghost cells, and omitting its own call to the collective lost
-  // exactly those 16 (host-measured parallel.native_halo_mpi.3,
+  // rank's own ghost_n). Short-circuiting here on ghost_n == 0 alone skips the call on exactly
+  // that rank, losing every contribution it was due: in the 16x16/24x24
+  // fixture at 3 ranks, the rank with ghost_n == 0 still owns 16 of a
+  // peer's ghost cells, and omitting its own call to the collective loses
+  // exactly those 16 (parallel.native_halo_mpi.3,
   // NativeHaloMpi.AccumulateRemapHaloRoundTripsExactly:
   // global_owned_sum=272 vs the expected 288). A real `MpiExchanger`
   // must therefore always proceed to the exchange below, exactly as

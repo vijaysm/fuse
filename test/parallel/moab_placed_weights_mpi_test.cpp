@@ -1,96 +1,70 @@
-// test/parallel/moab_placed_weights_mpi_test.cpp -- KNOWN_ISSUES D5, the
-// last remaining half: per-placement remap WEIGHTS across two
-// INDEPENDENTLY decomposed MOAB processor sets, closed by HALO BRIDGING
-// (the lead's round-2 ruling, consistent with the owner's 2026-10-18 D73
-// decision to build remap halos automatically): `RemapPlan::placement`
-// stays the TARGET's own placement; the source side is brought onto the
-// target's ranks by a remap halo built from the SOURCE's own placement
-// (`fuse::build_remap_halo`'s new 4-argument overload, remap_plan.hpp),
-// so a subsequent `build_weights(plan, graph, backend)` resolves BOTH
-// sides through `plan.placement` alone, exactly as the single-placement
-// case already does.
+// test/parallel/moab_placed_weights_mpi_test.cpp -- per-placement remap
+// WEIGHTS across two INDEPENDENTLY decomposed MOAB processor sets, by HALO
+// BRIDGING: `RemapPlan::placement` stays the TARGET's own placement; the
+// source side is brought onto the target's ranks by a remap halo built from
+// the SOURCE's own placement (`fuse::build_remap_halo`'s 4-argument
+// overload, remap_plan.hpp), so a subsequent `build_weights(plan, graph,
+// backend)` resolves BOTH sides through `plan.placement` alone, exactly as
+// the single-placement case already does.
 //
-// THE REAL, NON-MATCHING SPHERE PAIR (round 4 fix; FUSE_SPHERE_ATM/
-// FUSE_SPHERE_OCN, test/CMakeLists.txt), NOT a generated box mesh. Round
-// 2/3 used `generated:box:4x4x4`/`generated:box:2x2x2` (dimension 3) on
-// the stated reasoning that a generated mesh under a communicator does
-// not actually partition anyway (moab_placed_view_mpi_test.cpp's own
-// header), so a structural-resolution check did not need real geometry.
-// MEASURED WRONG, round 4 (host run at HEAD 512ab69): MOAB's own
-// covering-set construction (Intx2MeshOnSphere/FindMaxEdges/
-// construct_covering_set, src/backend/intx_weights.cpp) is declared on
-// dimension-2 SURFACES ONLY (the SAME restriction the single-placement
-// `build_remap_halo` already states and tests, remap_halo_test.cpp/
-// remap_halo_mpi_test.cpp) -- a dimension-3 fixture hits
-// E-MESH-HALO-GEOMETRY the moment ANY path through this file's own
-// overload reaches a REAL covering-set attempt (the same-Core delegation,
-// test (2) below), before the cross-placement logic under test is ever
-// exercised. READ AGAINST THE BRIEF (round 4 question 1): the production
-// couplings this item exists for (Brusselator, dn_heat) are both 2-D
-// surfaces; nothing in D5's own history or the owner's D73 decision asks
-// for a VOLUMETRIC covering set. The dimension-3 fixture was therefore an
-// accident of copying `BoxPairMpi` (remap_halo_mpi_test.cpp), which
-// deliberately uses a non-spherical box pair to test E-MESH-HALO-GEOMETRY
-// itself -- the wrong fixture to reuse for a test that needs a REAL halo
-// to actually build. Fixed by switching to the SAME non-matching
-// ATM/OCN sphere pair `RemapHaloMpiSphere`'s own tests already use
-// successfully under a real communicator (parallel.remap_halo_mpi.{1..5}
-// PASS at this HEAD) -- gated identically (`#ifdef FUSE_SPHERE_ATM`,
-// which CMake defines only when BOTH wholeATM_T.h5m and recMeshOcn.h5m
-// were found), with the same `#else` GTEST_SKIP fallback
-// moab_placed_view_mpi_test.cpp uses when they are not.
+// THE REAL, NON-MATCHING SPHERE PAIR (FUSE_SPHERE_ATM/FUSE_SPHERE_OCN,
+// test/CMakeLists.txt), NOT a generated box mesh. MOAB's own covering-set
+// construction (Intx2MeshOnSphere/FindMaxEdges/construct_covering_set,
+// src/backend/intx_weights.cpp) is declared on dimension-2 SURFACES ONLY
+// (the SAME restriction the single-placement `build_remap_halo` already
+// states and tests, remap_halo_test.cpp/remap_halo_mpi_test.cpp), so a
+// dimension-3 fixture hits E-MESH-HALO-GEOMETRY the moment ANY path through
+// this file's own overload reaches a REAL covering-set attempt (the
+// same-Core delegation, test (2) below), before the cross-placement logic
+// under test is ever exercised. The production couplings this exists for
+// (Brusselator, dn_heat) are both 2-D surfaces. `BoxPairMpi`
+// (remap_halo_mpi_test.cpp) deliberately uses a non-spherical box pair to
+// test E-MESH-HALO-GEOMETRY itself, which makes it the wrong fixture for a
+// test that needs a REAL halo to actually build. This file therefore uses
+// the SAME non-matching ATM/OCN sphere pair `RemapHaloMpiSphere`'s own
+// tests use under a real communicator (parallel.remap_halo_mpi.{1..5}),
+// gated identically (`#ifdef FUSE_SPHERE_ATM`, which CMake defines only
+// when BOTH wholeATM_T.h5m and recMeshOcn.h5m were found), with the same
+// `#else` GTEST_SKIP fallback moab_placed_view_mpi_test.cpp uses when they
+// are not.
 //
-// MEASURED FINDING, round 2 (read AND built, not yet host-run at the
-// time): `MoabMeshBackend::set_placements` gives every declared processor
-// set its OWN `moab::Core` (moab_backend.cpp's `PlacementContext::core`),
-// and MOAB's own covering-set construction needs BOTH meshes in the SAME
+// WHAT THE 4-ARGUMENT OVERLOAD DOES. `MoabMeshBackend::set_placements`
+// gives every declared processor set its OWN `moab::Core`
+// (moab_backend.cpp's `PlacementContext::core`), and MOAB's own
+// covering-set construction needs BOTH meshes in the SAME
 // `moab::Interface` -- there is no MOAB entry point that intersects a
 // file set living in one Core against a file set living in another.
-// Bridging two DIFFERENT per-placement Cores therefore needs a
+// Bridging two DIFFERENT per-placement Cores would therefore need a
 // migrate-by-global-id exchange (the MOAB analogue of
 // `fuse::native::build_native_remap_halo`'s own box-overlap/pack/merge
-// architecture, native_halo.cpp) that is NOT YET BUILT.
+// architecture, native_halo.cpp), which is not implemented.
 // `fuse::build_remap_halo`'s 4-argument overload
 // (`include/fuse/backend/remap_plan.hpp`, `src/backend/intx_weights.cpp`)
-// therefore does exactly three things, all measured here: (1) when the
-// calling rank is structurally outside the TARGET's own placement, a
-// successful no-op (checked via `MoabMeshBackend::placement_participates`,
-// not a local size); (2) when the source and target placements happen to
-// resolve to the SAME `moab::Core` (the degenerate case: no placements
-// declared, or an identical processor set given for both), it delegates to
-// the EXISTING, already-tested single-placement `build_remap_halo`, and
-// this row checks that delegation reproduces the single-placement answer
-// exactly -- now against a REAL halo build between two genuinely
-// dimension-2 meshes, not a dimension check refusing before the
-// delegation is ever meaningfully exercised; (3) when the two Cores
+// therefore does exactly three things: (1) when the calling rank is
+// structurally outside the TARGET's own placement, a successful no-op
+// (checked via `MoabMeshBackend::placement_participates`, not a local
+// size); (2) when the source and target placements happen to resolve to
+// the SAME `moab::Core` (the degenerate case: no placements declared, or
+// an identical processor set given for both), it delegates to the existing
+// single-placement `build_remap_halo`, and this row checks that delegation
+// reproduces the single-placement answer exactly, against a REAL halo
+// build between two genuinely dimension-2 meshes; (3) when the two Cores
 // genuinely DIFFER (a true cross-placement pair), an explicit, named
 // refusal (`E-MESH-HALO-CROSS-PLACEMENT-UNIMPLEMENTED`) rather than an
-// incomplete or silently wrong halo. KNOWN_ISSUES.md D5 records this as
-// the measured, built-but-incomplete state; closing it needs the
-// migrate-by-global-id mechanism above, which this track's own report
-// flags as not completed in the time available.
+// incomplete or silently wrong halo.
 //
-// ROUND 4, QUESTION 2 (read, not re-designed): is
-// E-MESH-HALO-CROSS-PLACEMENT-UNIMPLEMENTED on an in-B rank the refusal
-// round 2 added for the case round 3's test (3) below EXPECTS, or the
-// overload refusing where it should have adopted? Read against this
-// file's own three rows: test (3) is EXACTLY the row that asserts this
-// refusal on every in-B rank, by design, for the genuinely disjoint pair
-// -- so seeing it there is correct, not a defect. The round-3 host
-// failure was test (2)'s `ASSERT_TRUE(via_overload.ok())`, which failed
-// on an in-A rank for an UNRELATED reason (E-MESH-HALO-GEOMETRY from the
-// wrong, dimension-3 fixture, via the delegated single-placement path),
-// not because the overload answered wrongly for test (2)'s own same-Core
-// case. No refusal-path logic in `build_remap_halo`'s 4-argument overload
-// changes this round; only the fixture's mesh pair does.
+// On an in-B rank, E-MESH-HALO-CROSS-PLACEMENT-UNIMPLEMENTED is the
+// expected answer for the genuinely disjoint pair: test (3) below is
+// EXACTLY the row that asserts this refusal on every in-B rank, by design.
+// Test (2)'s `ASSERT_TRUE(via_overload.ok())` concerns only its own
+// same-Core case.
 //
-// NOT YET RUN: this sandbox cannot initialise MPI at all (docs/dev/
-// testing.md; KNOWN_ISSUES.md C1), and a build with FUSE_ENABLE_MOAB AND
-// FUSE_ENABLE_MPI links against an MPI-enabled MOAB whose moab::Core
-// constructor itself calls MPI_Init_thread, so even a single-process run
-// of this binary aborts before main() runs a single test -- the identical
-// constraint test/parallel/moab_placed_view_mpi_test.cpp's own header
-// states. Compiled here; the outcome comes from a host run.
+// Needs a working MPI launcher (docs/dev/testing.md). A build with
+// FUSE_ENABLE_MOAB AND FUSE_ENABLE_MPI links against an MPI-enabled MOAB
+// whose moab::Core constructor itself calls MPI_Init_thread, so even a
+// single-process run of this binary aborts before main() runs a single
+// test unless MPI can start -- the identical constraint
+// test/parallel/moab_placed_view_mpi_test.cpp's own header states.
 
 #include <cstdio>
 #include <vector>
@@ -113,14 +87,13 @@ int world_handle() { return static_cast<int>(MPI_Comm_c2f(MPI_COMM_WORLD)); }
 /// `[0, size/2)`, B gets `[size/2, size)` -- at `size == 2`, A = {0},
 /// B = {1}; at `size == 3`, A = {0}, B = {1, 2}; at `size == 4`, A =
 /// {0, 1}, B = {2, 3}. Neither set is ever empty at the registered rank
-/// counts (2, 3, 4). KNOWN_ISSUES D81 round 9: `size == 4` is the FIRST
-/// registered row where a placement's own sub-communicator (A, here) has
-/// MORE than one rank -- at 2 and 3 ranks A is always exactly {0}, a
-/// single-rank ParallelComm that round 8 measured takes a DIFFERENT code
-/// path (the degenerate "serial/one-rank/identity" shortcut,
-/// intx_weights.cpp) than a genuine multi-rank covering-set construction
-/// ever reaches, so nothing at 2 or 3 ranks measures the configuration D5
-/// and D81 actually exist for: a real coupling places SEVERAL ranks per
+/// counts (2, 3, 4). `size == 4` is the FIRST registered row where a
+/// placement's own sub-communicator (A, here) has MORE than one rank -- at
+/// 2 and 3 ranks A is always exactly {0}, a single-rank ParallelComm that
+/// takes a DIFFERENT code path (the degenerate "serial/one-rank/identity"
+/// shortcut, intx_weights.cpp) than a genuine multi-rank covering-set
+/// construction ever reaches, so nothing at 2 or 3 ranks measures the
+/// configuration this exists for: a real coupling places SEVERAL ranks per
 /// component.
 struct DisjointRankSets {
   fuse::RankSet a;
@@ -167,9 +140,9 @@ struct DisjointPlacementFixture {
     smid = graph.add_mesh({.name = "s", .source = src});
     tmid = graph.add_mesh({.name = "t", .source = tgt});
 
-    // KNOWN_ISSUES D81, owner ruling 2026-10-19: rescaling is the DRIVER's
-    // explicit responsibility, never the library's. `set_placements`
-    // gives placements A and B their own, independently-read Core copies
+    // Rescaling is the DRIVER's explicit responsibility, never the
+    // library's. `set_placements` gives placements A and B their own,
+    // independently-read Core copies
     // of BOTH meshes, so each copy that this file's own three tests
     // resolve a halo through needs its OWN call: the source ("s", ATM)
     // through A -- every test below resolves `source_placement` as A --
@@ -214,11 +187,11 @@ TEST(MoabPlacedWeightsMpi, ARankOutsideTheTargetPlacementIsASuccessfulNoOp) {
   const DisjointRankSets sets(size);
 
   const auto r = fuse::build_remap_halo(f.plan, f.graph, f.backend, fuse::ComponentId{0});
-  // Printed before any assertion (host instruction, round 3 FAIL 2): a
-  // non-uniform per-rank failure here previously surfaced only as rank 0's
-  // own "failed on rank(s) ..." line (fuse_test_main.cpp's MpiFailureReducer),
-  // with the failing rank's own code/message absent from the captured log
-  // because -outfile-pattern only kept rank 0's stdout.
+  // Printed before any assertion: a non-uniform per-rank failure otherwise
+  // surfaces only as rank 0's own "failed on rank(s) ..." line
+  // (fuse_test_main.cpp's MpiFailureReducer), with the failing rank's own
+  // code/message absent from the captured log because -outfile-pattern only
+  // keeps rank 0's stdout.
   std::fprintf(stderr, "rank %d (in B=%d): build_remap_halo(source_placement=A) ok=%d%s%s\n",
               rank, sets.b.contains(rank) ? 1 : 0, r.ok() ? 1 : 0,
               r.ok() ? "" : " code=", r.ok() ? "" : r.error().code.c_str());
@@ -235,10 +208,7 @@ TEST(MoabPlacedWeightsMpi, ARankOutsideTheTargetPlacementIsASuccessfulNoOp) {
   // cross-placement gap (checked explicitly by
   // DisjointSourceAndTargetPlacementsRefuseWithTheNamedCrossPlacementGap
   // below) -- it is not a no-op, so nothing further is asserted about it
-  // here. Measured 2026-10-19 (round 3 FAIL 2): a prior revision of this
-  // row asserted `r.ok()` for EVERY rank, including ranks inside B, which
-  // is the refusal case by design -- that assertion was simply wrong for
-  // this fixture, not a sign of a defect in the overload under test.
+  // here.
 }
 
 // ---------------------------------------------------------------------------
@@ -246,35 +216,28 @@ TEST(MoabPlacedWeightsMpi, ARankOutsideTheTargetPlacementIsASuccessfulNoOp) {
 // placement B are both declared, but this row asks for the SAME placement
 // on both sides (a RemapPlan whose own source_placement == plan.placement),
 // which must delegate to, and reproduce exactly, the EXISTING
-// single-placement build_remap_halo -- the D5 item already closed
-// 2026-09-25, checked here as a regression guard on the new overload's
-// own "same Core" branch.
+// single-placement build_remap_halo, checked here as a regression guard on
+// the new overload's own "same Core" branch.
 //
-// ROUND 6 (KNOWN_ISSUES D81, owner ruling 2026-10-19): a SUCCESSFUL
-// delegated halo build, asserted on the ADOPTED CELL COUNT -- this is
-// what round 5's own outcome-identity assertion (both paths refuse
-// identically) stood in for while the fixture's own radius mismatch
-// (wholeATM_T.h5m = 1.0, recMeshOcn.h5m = 6371229.0, Earth radius in
-// metres) had no placement-aware rescale available. The fixture's own
-// constructor now calls the new `project_onto_unit_sphere(MeshId,
-// ComponentId)` overload on placement A's own copy of BOTH meshes before
-// either test in this file runs a geometry-sensitive call, so this row
-// goes back to its original intent.
+// It asserts a SUCCESSFUL delegated halo build on the ADOPTED CELL COUNT.
+// The fixture's two meshes have different radii (wholeATM_T.h5m = 1.0,
+// recMeshOcn.h5m = 6371229.0, Earth radius in metres), so the fixture's
+// own constructor calls the `project_onto_unit_sphere(MeshId, ComponentId)`
+// overload on placement A's own copy of BOTH meshes before either test in
+// this file runs a geometry-sensitive call.
 //
-// ROUND 9 (KNOWN_ISSUES D81, owner note 2026-10-19): at 2 and 3 ranks, A
-// is always exactly ONE rank -- round 8's own fix makes that case take
+// At 2 and 3 ranks, A is always exactly ONE rank, which takes
 // `intx_weights.cpp`'s degenerate "serial/one-rank/identity" shortcut
-// (`active_comm_size(a.pcomm) <= 1`), which never reaches MOAB's real,
+// (`active_comm_size(a.pcomm) <= 1`) and never reaches MOAB's real,
 // cross-rank covering-set construction at all (`cells = nullptr, count =
 // 0`). At 4 ranks, A = {0, 1} -- a GENUINE two-rank ParallelComm -- so
 // THIS row is the first one that actually exercises that construction
 // over a placement's own, non-degenerate sub-communicator, with real,
-// non-zero adopted cells expected on EVERY rank of A. See KNOWN_ISSUES
-// D83 for what reading `MoabMeshBackend::adopt_remap_halo` (and its own
-// `regather_with_halo`/`plan_halo_exchange`) found about this
-// configuration before any host run: a structural reason this row may
-// still refuse at 4 ranks that is NOT the round-7/8 guard, and is NOT
-// fixed this round.
+// non-zero adopted cells expected on EVERY rank of A. The path through
+// `MoabMeshBackend::adopt_remap_halo` (and its own
+// `regather_with_halo`/`plan_halo_exchange`) for this configuration may
+// still refuse at 4 ranks for a structural reason other than the
+// single-rank guard above.
 // ---------------------------------------------------------------------------
 TEST(MoabPlacedWeightsMpi, SamePlacementOnBothSidesDelegatesToTheSinglePlacementPath) {
   int size = 1, rank = 0;
@@ -296,11 +259,7 @@ TEST(MoabPlacedWeightsMpi, SamePlacementOnBothSidesDelegatesToTheSinglePlacement
     // via_single below: the pre-existing single-placement path was never
     // designed to tolerate a rank outside plan.placement (its own
     // resolve() call defaults allow_empty=false and refuses E-REMAP-REGION
-    // there by design, unchanged by this track) -- measured 2026-10-19
-    // (round 3 FAIL 2): a prior revision of this row called via_single
-    // unconditionally and asserted it `ok()` on every rank, which fails
-    // off A for exactly this reason, not because of a defect in the new
-    // overload the row's own title names.
+    // there by design).
     ASSERT_TRUE(via_overload.ok()) << via_overload.error().code << ": "
                                    << via_overload.error().message;
     EXPECT_EQ(via_overload.value(), 0u) << "rank " << rank << ": outside A, nothing to adopt";
@@ -308,7 +267,7 @@ TEST(MoabPlacedWeightsMpi, SamePlacementOnBothSidesDelegatesToTheSinglePlacement
   }
   ASSERT_TRUE(via_overload.ok()) << via_overload.error().code << ": "
                                  << via_overload.error().message;
-  // ROUND 9: a real halo, not just a successful delegation -- at 4 ranks
+  // A real halo, not just a successful delegation -- at 4 ranks
   // (A's own two members), the rescaled ATM/OCN pair genuinely overlaps
   // across the partition boundary WITHIN A, so each of A's own ranks must
   // adopt at least one covering cell. At 2 and 3 ranks A is a single rank
@@ -333,8 +292,7 @@ TEST(MoabPlacedWeightsMpi, SamePlacementOnBothSidesDelegatesToTheSinglePlacement
 // ---------------------------------------------------------------------------
 // (3) The genuinely cross-placement case this item measures: source on A,
 // target on B, A and B DISJOINT -- an explicit, specific refusal, not a
-// hang, not an incomplete halo. This is the row KNOWN_ISSUES.md D5 records
-// as the measured, built-but-incomplete state.
+// hang, not an incomplete halo.
 // ---------------------------------------------------------------------------
 TEST(MoabPlacedWeightsMpi, DisjointSourceAndTargetPlacementsRefuseWithTheNamedCrossPlacementGap) {
   int size = 1, rank = 0;
@@ -362,8 +320,8 @@ TEST(MoabPlacedWeightsMpi, DisjointSourceAndTargetPlacementsRefuseWithTheNamedCr
 }
 
 // ---------------------------------------------------------------------------
-// (4) KNOWN_ISSUES D81's own mutation target "the placement selection":
-// rescaling the backend's DEFAULT Core (the MeshId-only overload) must NOT
+// (4) The placement selection: rescaling the backend's DEFAULT Core (the MeshId-only
+// overload) must NOT
 // make a DECLARED placement's own, independently-read Core copy of the
 // SAME mesh pass -- `set_placements` gives each one a genuinely separate
 // read, and `project_onto_unit_sphere(id, placement)`/`sphere_radius(id,
@@ -418,11 +376,10 @@ TEST(MoabPlacedWeightsMpi, RescalingTheDefaultCoreDoesNotAffectAPlacementsOwnCop
 }
 
 // ---------------------------------------------------------------------------
-// (5) KNOWN_ISSUES D83's own "do not alias" requirement (owner decision
-// 2026-10-19: make the adoption placement-aware): the default Core's own
-// recorded halo for a (source, target, dim) triple and a DECLARED
-// placement's own recorded halo for the IDENTICAL triple must be two
-// independent cache entries -- `halo_pairs`/`halos` are now keyed by
+// (5) The "do not alias" requirement (adoption is placement-aware): the
+// default Core's own recorded halo for a (source, target, dim) triple and a
+// DECLARED placement's own recorded halo for the IDENTICAL triple must be
+// two independent cache entries -- `halo_pairs`/`halos` are keyed by
 // `(mesh, mesh, dim, placement)`, not `(mesh, mesh, dim)` alone. A mutation
 // that drops `placement` from either key would make querying ONE answer
 // from having only ever built the OTHER -- checked directly here via

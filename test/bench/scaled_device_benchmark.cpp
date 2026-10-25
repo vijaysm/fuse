@@ -1,5 +1,5 @@
-// Scaled device benchmark (docs/dev/device-resident-arcs.md rollout step 6
-// follow-up). Every row the step 6 gate measured is a few hundred to a few
+// Scaled device benchmark (docs/dev/device-resident-arcs.md). Every row the
+// rollout gate measured is a few hundred to a few
 // thousand cells, so kernel-launch latency and the remaining host stops
 // dominate the ratio; this program exercises the SAME Runner machinery --
 // a native structured-quad mesh pair, a Remap, an MpiTransport exchange, a
@@ -25,8 +25,7 @@
 // coincident-mesh identity copy -- built through the nodal-distributed
 // path (fuse::build_nodal_dist_remap(), an ArborX-backed point-location
 // search) rather than the general conservative weighted builder, whose
-// host-only r3d/r2d clip this file measured as unusably slow at scale
-// (KNOWN_ISSUES.md D73). A Diagnose instruction follows automatically
+// host-only r3d/r2d clip this file measured as unusably slow at scale. A Diagnose instruction follows automatically
 // (fuse::insert_derived_ops: any channel that emitted a Remap gets one),
 // then Sink. Both fields carry Conservation::None, so no Constrain is
 // inserted -- this program's own chain is Sample -> Remap -> Diagnose ->
@@ -52,14 +51,12 @@
 // Runner::initialize()'s weight build took 13+ seconds at a mere 1e4
 // cells and grew far faster than linearly with cell count (0.17s at 900
 // cells, 0.98s at 2500, 13.4s at 10000), making the >= 1e6-cell target
-// this file's own task requires impractical within any reasonable
-// TIMEOUT. Separately, and regardless of that cost, the SAME earlier
-// version's weight build produced a silently EMPTY conservative matrix
-// (RunStats::remap_weight_nonzeros == 0) at every rank count above 1, a
-// found gap recorded as KNOWN_ISSUES.md D73 (NativeMeshBackend's general
-// weighted branch has no automatic remap-halo exchange across a disjoint
-// placement). Both findings, and the decision to switch this file's own
-// scaled row to the nodal path instead, are recorded there in full.
+// this file requires impractical within any reasonable
+// TIMEOUT. Separately, and regardless of that cost, the general weighted
+// builder's weight build at scale can produce a silently EMPTY conservative
+// matrix (RunStats::remap_weight_nonzeros == 0) at rank counts above 1
+// without an automatic remap-halo exchange across a disjoint placement.
+// Hence this file's scaled row uses the nodal path instead.
 //
 // EXECUTION SPACE. RunnerConfig::execution_space follows the environment
 // (FUSE_EXECUTION_SPACE) by default, the same convention
@@ -332,12 +329,11 @@ struct GraphBundle {
   // (an ArborX-backed nearest/containment query, O(n log n)), not the
   // general conservative builder's broad-phase-plus-host-only-r3d-clip
   // path -- measured on this host to cost 13+ seconds of setup at a mere
-  // 1e4 cells and growing far faster than linearly (KNOWN_ISSUES.md D73's
-  // own measurement log), which made it unusable at this file's target
+  // 1e4 cells and growing far faster than linearly, which made it unusable at this file's target
   // size. The nodal path is also the one with its OWN cross-rank MPI
   // exchange (apply_nodal_dist_remap(), an MPI_Allgatherv under the
   // Remap instruction itself, docs/dev/device-resident-arcs.md's own
-  // "Runtime-exchange track" section) -- see this function's own closing
+  // runtime-exchange section) -- see this function's own closing
   // comment on why that means no separate Transport instruction appears.
   // Independently generated (not one shared MeshDecl): two meshes of the
   // identical "generated:quad:NxN" spec, each its own NativeMeshBackend
@@ -391,8 +387,8 @@ struct GraphBundle {
   // next to it -- so this file's instruction chain is Sample -> Remap ->
   // Diagnose -> Sink, not ... -> Remap -> Transport -> .... A SEPARATE,
   // non-nodal weighted channel that also carried a real Transport
-  // instruction would need the remap-halo exchange D73 found missing for
-  // NativeMeshBackend; test/parallel/runner_transport_test.cpp's own
+  // instruction would need a remap-halo exchange, which
+  // NativeMeshBackend lacks for this case; test/parallel/runner_transport_test.cpp's own
   // `parallel.runner_transport.{1,2,3}[.device]` ctest rows already
   // exercise a standalone Transport instruction (at a few cells, not
   // scaled) and are unaffected by anything in this file.

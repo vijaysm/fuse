@@ -98,12 +98,10 @@
 // HEADER-ONLY BY DESIGN, NOT BY DEFAULT. Every other file in this directory
 // pairs a declaration here with a definition in the matching src/backend/
 // *.cpp, registered in src/CMakeLists.txt's explicit `fuse-coupler-backend`
-// source list. That list is a shared build file this task was not given
-// ownership of (see the task's `open_questions`), so these functions are
-// `inline` and defined below instead of in a new .cpp this task cannot wire
-// into the library target. They are called only at plan-build time (once per
-// distinct field transfer, cached by `RemapCache`), never in a per-entity hot loop,
-// so the cost of a header-only definition is init-time only.
+// source list. So these functions are `inline` and defined below instead of
+// in a new .cpp wired into the library target. They are called only at
+// plan-build time (once per distinct field transfer, cached by
+// `RemapCache`), never in a per-entity hot loop, so the cost of a header-only definition is init-time only.
 
 #include <algorithm>
 #include <cmath>
@@ -308,10 +306,10 @@ namespace fuse {
       // Genuine bracket: `it` is strictly greater than x (the equal and
       // below-span cases were handled above), so the pair is (it-1, it).
       //
-      // KNOWN_ISSUES.md D67: this used to compute `t = (x - lo.x) /
-      // (hi.x - lo.x)` directly, a DIFFERENT floating-point expression
-      // from the one `build_distributed_interp_rows`/`build_general_
-      // interp_weights` use for the SAME Edge-cell hat weight
+      // This must not compute `t = (x - lo.x) / (hi.x - lo.x)` directly: that
+      // is a DIFFERENT floating-point expression from the one
+      // `build_distributed_interp_rows`/`build_general_interp_weights` use
+      // for the SAME Edge-cell hat weight
       // (`general_interp_detail::invert_reference_map`'s Gauss-Newton
       // step) -- algebraically identical, not bit-identical, so the two
       // code paths could (and, measured on a real 7-cell/11-cell pair,
@@ -370,7 +368,7 @@ namespace fuse {
   for (const double s : col_sum) {
     w.max_col_defect = std::max(w.max_col_defect, std::abs(s - 1.0));
   }
-  // REVIEW.md TF-16: say so structurally, not just in the comment above --
+  // Say so structurally, not just in a comment --
   // `max_col_defect` here is the unweighted column-sum residual, not a
   // conservation residual, so `WeightsOperator::claims()` must not read it
   // as one (a coincident node-to-node pair's column sum is exactly 1 by

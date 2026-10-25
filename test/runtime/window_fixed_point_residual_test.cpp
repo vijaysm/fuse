@@ -1,4 +1,4 @@
-/// S7.2 WindowNewton (newton-krylov.md Sec. 9.7's own test plan):
+/// Window Newton (newton-krylov.md Sec. 9.7's own test plan):
 /// `Runner::window_region_fixed_point_residual()` and
 /// `Runner::debug_window_member_snapshots()` -- the window-scoped seam's
 /// own `F(x) = x - G(x)`, over a two-member linear-ODE window region
@@ -501,26 +501,22 @@ TEST(WindowFixedPointResidual, AWindowThatExhaustsTheNewtonBudgetIsCountedNotCon
   EXPECT_EQ(s.runner->stats().windows_not_converged, 1);
 }
 
-// Stage B, Window seed track (KNOWN_ISSUES.md D17/D76): `run_region()`'s
-// own window-scoped Picard/accelerator seed fix (`R.x_old`'s pre-loop
-// read, src/runtime/iteration.cpp) sits textually AFTER the early
+// `run_region()`'s own window-scoped Picard/accelerator seed (`R.x_old`'s
+// pre-loop read, src/runtime/iteration.cpp) sits textually AFTER the early
 // `if (R.newton) { ... co_return run_region_newton_window(...); }`
 // dispatch at that same function's own top -- a Newton-selected region
 // never reaches the modified lines at all. `WindowCoupler` has no
 // Newton solve of its own (zero occurrences of "Newton" in window_
 // coupler.cpp; examples/brusselator/main.cpp's own "window" driver
 // branch refuses `--accel newton` outright), so there is no second
-// DRIVER to compare against the way D17/D76's own Aitken parity tests
-// do -- the claim this test makes instead, and the only one that is
-// both true and checkable, is FIX-INVARIANCE: this exact (seed,
-// iteration count, final state) triple, across TWO window instances
-// (the same boundary the seed bug's own window-0/window-1 transition
-// lives at), does not move at all between a build with the Stage A
-// read-first report's hypothesis unconfirmed and a build with the
-// Stage B fix applied. Printed with EXPECT_EQ (bit-for-bit, no
+// DRIVER to compare against the way the Aitken parity tests do -- the
+// claim this test makes instead, and the only one that is both true and
+// checkable, is SEED-INVARIANCE: this exact (seed, iteration count,
+// final state) triple, across TWO window instances (the boundary where
+// the seed's window-0/window-1 transition lives), does not move at all
+// with the seed change. Printed with EXPECT_EQ (bit-for-bit, no
 // tolerance) so a diff between two builds' own stdout for this one
-// test is the entire comparison; this round's own report records that
-// diff verbatim rather than asserting it.
+// test is the entire comparison.
 TEST(WindowFixedPointResidual, TwoWindowInstancesNewtonResultIsFixInvariant) {
   Fixture s = make_fixture(AccelKind::Newton, WaveformIteration::Jacobi);
   ASSERT_TRUE(s.init.ok()) << s.init.error().message;

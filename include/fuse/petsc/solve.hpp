@@ -4,8 +4,8 @@
 /// (`SNESNEWTONLS`) solve over the SAME `fuse::num::ResidualFn` shape
 /// (`fuse/num/newton_krylov.hpp`) the native `fuse::num::solve()` already
 /// takes, returning the SAME `fuse::num::NewtonResult` -- a Newton-region
-/// caller (a later step's graph-level substrate selection) can call
-/// either substrate behind one call shape, and this track's own
+/// caller (the graph-level substrate selection) can call
+/// either substrate behind one call shape, and
 /// `test/petsc/snes_test.cpp` runs both over the IDENTICAL problem and
 /// options to compare them directly.
 ///
@@ -17,10 +17,9 @@
 /// which is FUSE's own configuration (a `NewtonConfig`, read from a YAML
 /// graph or a C++-authored one -- fuse/model/iteration.hpp), not the
 /// process's command line. A caller that also wants `-snes_*` command-line
-/// overrides is free to call `SNESSetFromOptions()` on the handle (a later
-/// step's own concern, if ever needed) -- not something this header
-/// exposes, since this track's own task is driving the SAME options the
-/// native solver already accepts, not a second, parallel options surface.
+/// overrides is free to call `SNESSetFromOptions()` on the handle -- not something this header
+/// exposes, since the aim is to drive the SAME options the native solver
+/// accepts, not a second, parallel options surface.
 
 #include <cstddef>
 #include <memory>
@@ -63,9 +62,7 @@ struct SnesOptions {
 
   /// `MPI_Comm_c2f()` handle the `SNES` and every PETSc object it owns is
   /// built on. `fuse::petsc::comm_self_f()` (fuse/petsc/token.hpp) for
-  /// this track's own single-rank tier-0 scope (the window/multi-rank
-  /// lift this track does not attempt, `KNOWN_ISSUES.md` D31's own
-  /// scope).
+  /// the single-rank case.
   int comm_f = 0;
 };
 
@@ -77,8 +74,7 @@ struct SnesOptions {
 /// lambda), rather than inventing a second residual-function shape for
 /// this driver alone.
 ///
-/// MULTI-RANK over `SnesOptions::comm_f` (KNOWN_ISSUES.md D31/D32,
-/// lifted from this driver's own original single-rank-only scope): `X`/
+/// MULTI-RANK over `SnesOptions::comm_f`: `X`/
 /// `F` are built `VecCreate`+`VecSetSizes(x.owned_size(), PETSC_
 /// DETERMINE)`+`VecSetType(VECSTANDARD)` on `comm_f`, so PETSc's own
 /// `VecDot`/`VecNorm` (and therefore every GMRES inner product and the
@@ -111,7 +107,7 @@ struct SnesOptions {
     const SnesOptions& opt = {});
 
 // ===========================================================================
-// S7.2b (PetscSelect track): registering this substrate with fuse::num's
+// Registering this substrate with fuse::num's
 // Newton registry.
 // ===========================================================================
 
@@ -124,8 +120,8 @@ struct SnesOptions {
 /// layer, ABOVE `fuse::runtime`) would make impossible for the Runner to
 /// make itself.
 ///
-/// COMMUNICATOR (KNOWN_ISSUES.md D31/D32, lifted). The registered entry
-/// point now reads the communicator `fuse::num::NewtonSolveFn`'s own
+/// COMMUNICATOR. The registered entry
+/// point reads the communicator `fuse::num::NewtonSolveFn`'s own
 /// `comm_f` parameter carries (`newton_krylov.hpp`'s own header comment
 /// on that parameter) -- the SAME split `RegionRuntime::newton_reducer`
 /// reduces over, built once in `resolve_regions()` and threaded through
@@ -133,8 +129,7 @@ struct SnesOptions {
 /// call. `comm_f == 0` (a single-rank region, or no communicator
 /// configured -- `check_region_supports_newton()` already refuses the
 /// opposite case, more than one participant with none) falls back to
-/// `comm_self_f()` (`MPI_COMM_SELF`), the UNCHANGED behaviour this
-/// registration always had before this lift: that remains the honest
+/// `comm_self_f()` (`MPI_COMM_SELF`): that is the honest
 /// communicator for a problem this seam already guarantees is rank-
 /// local in that shape, and it still sidesteps the real ownership
 /// question `fuse::petsc::ensure_initialized()`'s own comment flags for

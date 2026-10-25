@@ -13,9 +13,8 @@
 ! ergonomically", which is exactly why ffuse exists as flat ffuse_* symbols
 ! instead), so this mirror type exists ONLY in this test, to pin the one
 ! other number struct_sizes.golden records: struct_size + abi_version
-! (4 + 4 bytes) plus one C_FUNPTR per of the 17 entries (Unit 3, S6 phase
-! 3 Conformance, 2026-10-04: view_field appended last; D14, 2026-10-13:
-! base_communicator appended last after that).
+! (4 + 4 bytes) plus one C_FUNPTR per of the 17 entries (view_field was
+! appended last, then base_communicator after it).
 program sizes_test
   use, intrinsic :: iso_c_binding
   use ffuse

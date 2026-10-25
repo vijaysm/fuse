@@ -109,7 +109,7 @@ fuse::BufferPlan plan_sized(const CouplingGraph& g, std::size_t per_region) {
 }
 
 fuse::BufferPlan plan_for(const CouplingGraph& g) {
-  // 100 elements per region until a mesh backend exists (Phase 4 Task 4.2).
+  // 100 elements per region; no mesh backend is involved.
   return plan_sized(g, 100);
 }
 
@@ -177,16 +177,16 @@ TEST(Buffers, ComponentOwnedIsExactlyTheSourceAndSinkOutputs) {
   EXPECT_EQ(plan.total_coupler_elements, 100u * (dag.arc_count() - 2));
 }
 
-// Review 2026-10-11 IS-4: plan_buffers() used to decide a Sink was a
+// plan_buffers() must not decide a Sink was a
 // window-scoped import's own scratch buffer by matching a "/window" LABEL
 // suffix -- and a field is legally allowed to contain '/' in its own name
 // (validate() checks only name uniqueness). A plain Requires field named
 // "q/window", written by an ordinary channel with no iteration region
 // anywhere in the graph, produces exactly that label by coincidence and
-// used to be silently diverted into coupler-owned scratch instead of being
+// would be silently diverted into coupler-owned scratch instead of being
 // aliased onto its own component's registered storage -- the delivered
 // value would never reach the component. The structural
-// `OpAttrs::window_import_sink` flag this fix reads cannot collide with a
+// `OpAttrs::window_import_sink` flag the planner reads cannot collide with a
 // user-chosen name.
 TEST(Buffers, OrdinaryFieldNamedWithASlashWindowSuffixIsNotMistakenForAWindowImport) {
   CouplingGraph g;
@@ -306,7 +306,7 @@ TEST(Buffers, ElementCountsComeFromTheRegionSizeCallback) {
   }
 }
 
-// `elements` describes the region, not who allocates it. Phase 4 has to check
+// `elements` describes the region, not who allocates it. A caller has to check
 // a component's registered Layout::count against the region it claims to
 // cover, which is impossible if the plan zeroes the count for exactly those
 // arcs. Allocation is governed by `is_component_owned` alone.
@@ -386,7 +386,7 @@ TEST(Buffers, RejectsAnEmptyRegionSizesCallback) {
 // / std::out_of_range / std::overflow_error; it has never thrown any of the
 // three -- every path converts through FUSE_THROW(InvalidArgument, ...), so
 // the real (and now correctly documented) type is fuse::InvalidArgument, a
-// fuse::Error, ultimately a std::runtime_error (REVIEW.md R-28). Pin the type
+// fuse::Error, ultimately a std::runtime_error. Pin the type
 // explicitly, on all three documented failure modes, so the header and the
 // implementation cannot silently re-diverge in either direction.
 TEST(Buffers, PlanBuffersThrowsFuseInvalidArgumentNotTheDocumentedStdTypes) {

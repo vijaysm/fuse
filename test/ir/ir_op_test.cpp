@@ -28,9 +28,8 @@ TEST(OpKind, EveryKindHasAName) {
   EXPECT_STREQ(to_cstring(OpKind::Source), "Source");
   EXPECT_STREQ(to_cstring(OpKind::Sink), "Sink");
   EXPECT_STREQ(to_cstring(OpKind::WindowAdvance), "WindowAdvance");
-  // Review 2026-10-11 IS-8: Scale, Epoch, Map, Reduce, Closure and
-  // ExternalDelivery were all declared after this test was last extended and
-  // none of the six was ever added here.
+  // Scale, Epoch, Map, Reduce, Closure and ExternalDelivery are covered
+  // here too.
   EXPECT_STREQ(to_cstring(OpKind::Scale), "Scale");
   EXPECT_STREQ(to_cstring(OpKind::Epoch), "Epoch");
   EXPECT_STREQ(to_cstring(OpKind::Map), "Map");
@@ -120,7 +119,7 @@ TEST(OpKind, CollectiveClassificationIsDeliberate) {
   EXPECT_TRUE(is_collective(OpKind::Transport));
   EXPECT_TRUE(is_collective(OpKind::Epoch));
   // Constrain reduces its two conservation integrals over the base
-  // communicator (KNOWN_ISSUES.md D10). Were it local, a rank that failed
+  // communicator. Were it local, a rank that failed
   // earlier in the period would skip it and leave every partner inside the
   // Allreduce -- which is why it used to refuse a multi-rank target instead.
   EXPECT_TRUE(is_collective(OpKind::Constrain));
@@ -129,11 +128,11 @@ TEST(OpKind, CollectiveClassificationIsDeliberate) {
   // Subcycling (WindowAdvance) is here too: it runs on the member's own
   // ranks only (docs/dev/coupling-windows.md; the exchange that delivers a
   // partner's waveform to it is the ordinary field-transfer chain, each
-  // classified on its own merits). Review 2026-10-11 IS-8: ExternalDelivery
+  // classified on its own merits). ExternalDelivery
   // is the same shape -- the application-performed transfer that fills it
   // happens entirely outside this instruction stream, so it involves no
-  // other rank set of THIS graph's own exchange -- and was never added here.
-  // D73: BuildRemapHalo's own REAL geometry exchange
+  // other rank set of THIS graph's own exchange.
+  // BuildRemapHalo's own REAL geometry exchange
   // (`fuse::execute_remap_halo_instructions()`) is collective, but it
   // never runs through this instruction at all -- it has to happen
   // before `schedule()`, which has already run by the time this
@@ -159,15 +158,14 @@ TEST(OpKind, CollectiveClassificationIsDeliberate) {
   }
 
   // Exhaustive: every enumerator, counted directly rather than as an offset
-  // from the second-to-last one (review 2026-10-11 IS-8: `WindowAdvance + 1
-  // == 20` silently stopped counting the enumerator declared right after
-  // WindowAdvance -- ExternalDelivery, the 21st -- so a NEW, 22nd operator
-  // would again escape this gate undetected, the exact "gate silently
-  // stopped gating" class R-06/R-51 were fixed for). A new operator makes
+  // from the second-to-last one (an offset such as `WindowAdvance + 1
+  // == 20` would silently stop counting the enumerators declared after
+  // WindowAdvance, so a NEW operator would escape this gate undetected --
+  // the "gate silently stopped gating" failure mode). A new operator makes
   // this fail until it is added to one of the lists above.
   EXPECT_EQ(static_cast<int>(OpKind::ExternalDelivery) + 1, 21)  // 3+15+3
       << "OpKind gained or lost an operator; classify it above";
-  // D73: BuildRemapHalo is the 22nd, added to the "false" list above.
+  // BuildRemapHalo is the 22nd, in the "false" list above.
   EXPECT_EQ(static_cast<int>(OpKind::BuildRemapHalo) + 1, 22)
       << "OpKind gained or lost an operator; classify it above";
 }

@@ -1,5 +1,5 @@
 // test/parallel/native_halo_mpi_test.cpp -- the native mesh backend's
-// planar remap halo ("Halo" track, docs/dev/native-halo.md) under a REAL
+// planar remap halo (docs/dev/native-halo.md) under a REAL
 // mpiexec. test/backend/native_halo_test.cpp covers the pure-function
 // pieces and the in-process-emulated 16x16/24x24 quad-grid scenario at 2
 // and 3 simulated ranks; this file is the same scenario at 2 and 3 REAL
@@ -10,12 +10,10 @@
 // values (as opposed to the tier-0 file's in-process stand-in that reads
 // a peer's array directly).
 //
-// NOT YET RUN: this sandbox cannot initialize MPI at all, not even at one
-// rank (docs/dev/testing.md; KNOWN_ISSUES.md C1) -- the same reason
+// Needs a working MPI launcher (docs/dev/testing.md), like
 // test/backend/native_migration_mpi_test.cpp and
-// test/parallel/remap_halo_mpi_test.cpp are "built, not run" here.
-// Registered only when FUSE_ENABLE_MPI is on (test/CMakeLists.txt); its
-// outcome comes from a host run.
+// test/parallel/remap_halo_mpi_test.cpp. Registered only when
+// FUSE_ENABLE_MPI is on (test/CMakeLists.txt).
 
 #include "fuse/backend/native_halo.hpp"
 
@@ -216,8 +214,7 @@ TEST(NativeHaloMpi, BuildRemapHaloThenBuildWeightsThenExchangeReproducesALinearF
 }
 
 // ---------------------------------------------------------------------------
-// Migration track, 2026-10-15 (KNOWN_ISSUES D51, device-resident merge):
-// `build_native_remap_halo` now rebuilds its source view through
+// Device-resident merge: `build_native_remap_halo` rebuilds its source view through
 // `device::pack_fanout` -> `exchange_migration_buffers<Space>` ->
 // `device::merge_halo_cells_device<Space>` -> `NativeMeshView::create
 // <Space>` end to end -- no `NativeMeshView` host-serving accessor
@@ -277,14 +274,15 @@ TEST(NativeHaloMpi, BuildRemapHaloIsIdempotentUnderARealCommunicator) {
 // dimension here (every other rank asks for the dimension U/V actually
 // are), a data-dependent mismatch no earlier check sees coming -- exactly
 // the shape `migrate()`'s own `E-MESH-MIGRATE-PEER-REFUSED` test exercises
-// for the sibling migration path. Pre-fix: rank 0 returns immediately
-// while ranks 1.. hang in the box allgather, so this ROW (registered with
-// a `--timeout`, docs/dev/testing.md) reports Timeout rather than a test
-// failure. Post-fix: every rank returns within the timeout, rank 0 with
-// its own E-REMAP-DIM and every other rank with E-MESH-HALO-PEER-REFUSED.
+// for the sibling migration path. Without agreement, rank 0 returns
+// immediately while ranks 1.. hang in the box allgather, so this ROW
+// (registered with a `--timeout`, docs/dev/testing.md) reports Timeout
+// rather than a test failure. With agreement, every rank returns within the
+// timeout, rank 0 with its own E-REMAP-DIM and every other rank with
+// E-MESH-HALO-PEER-REFUSED.
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
-// KNOWN_ISSUES D27: `fuse::native::accumulate_remap_halo`, the reverse
+// `fuse::native::accumulate_remap_halo`, the reverse
 // exchange, under a REAL communicator -- the native counterpart of
 // `RemapHaloMpiSphere.BuildRemapHaloDeliversExactHaloValuesAndRoundTripsEx
 // actly` (test/parallel/remap_halo_mpi_test.cpp), adapted to this

@@ -1,8 +1,6 @@
-# Mutations for KNOWN_ISSUES.md D15 round 5's per-position even split
+# Mutations for the per-position even split
 # (include/fuse/abi/rank_share.hpp, consumed by
-# src/abi/provider_adapter.cpp's register_fields()). Own file per the
-# review-fix protocol: do not edit build-evidence/mutations.toml
-# directly while other fixers hold it dirty.
+# src/abi/provider_adapter.cpp's register_fields()).
 #
 # Applied by hand, rebuilt, run, confirmed to fail EXACTLY the named
 # rows, then restored byte-for-byte (cmp against the pre-mutation file
@@ -11,10 +9,10 @@
 [[mutation]]
 id = "even-rank-share-drops-the-remainder"
 area = "abi-rank-share"
-describes = "even_rank_share()'s own remainder distribution (`size = base + (p < extra ? 1 : 0)`) is replaced with `size = base`, so the first `total % group_size` positions never get their extra element -- the exact class of error D15 round 5 measured on the host (a hosting rank at a non-zero position receiving more, or fewer, than its own correct share of an unevenly-divisible region)"
+describes = "even_rank_share()'s own remainder distribution (`size = base + (p < extra ? 1 : 0)`) is replaced with `size = base`, so the first `total % group_size` positions never get their extra element -- the exact class of error measured on the host (a hosting rank at a non-zero position receiving more, or fewer, than its own correct share of an unevenly-divisible region)"
 file = "include/fuse/abi/rank_share.hpp"
 old = """  const std::size_t size = base + ((p < extra) ? 1 : 0);"""
 new = """  const std::size_t size = base;  // MUTATION: remainder never distributed"""
 target = "fuse_abi_rank_share_test"
 test = "abi.rank_share"
-result = "CONFIRMED 2026-10-19: 2 of 6 EvenRankShare cases failed -- OneCellOverTwoPositionsGivesItAllToTheFirst (position 0 of 2 over 1 total element expected count 1, got 0) and RemainderGoesToTheEarliestPositionsOnly (7 over 3 positions: position 0 expected count 3, got 2; the three slices no longer tile [0,7) contiguously). The other 4 cases (EvenlyDivisibleTotalSplitsExactly, GroupSizeOfOneOwnsTheWholeRange, GroupSizeOfZeroDegeneratesToTheWholeRangeLikeRankSliceDoes, EmptyTotalGivesEveryPositionNothing) still passed, since none of them has a nonzero remainder to drop. Restored; cmp against the pre-mutation file reported no difference, md5 683e5cca60de4222809f0cfd20c73316 matches the restored file."
+result = "CONFIRMED: 2 of 6 EvenRankShare cases failed -- OneCellOverTwoPositionsGivesItAllToTheFirst (position 0 of 2 over 1 total element expected count 1, got 0) and RemainderGoesToTheEarliestPositionsOnly (7 over 3 positions: position 0 expected count 3, got 2; the three slices no longer tile [0,7) contiguously). The other 4 cases (EvenlyDivisibleTotalSplitsExactly, GroupSizeOfOneOwnsTheWholeRange, GroupSizeOfZeroDegeneratesToTheWholeRangeLikeRankSliceDoes, EmptyTotalGivesEveryPositionNothing) still passed, since none of them has a nonzero remainder to drop. Restored; cmp against the pre-mutation file reported no difference, md5 683e5cca60de4222809f0cfd20c73316 matches the restored file."

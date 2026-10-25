@@ -99,8 +99,8 @@ TEST(DerivedOps, NoConstrainWhenConservationIsNone) {
 }
 
 // A consistent (pointwise) interpolation conserves no integral, so it gets
-// no conservation check; the host found the false violation one produced on
-// 2026-10-01 (a nodal vertex sum compared with a cell integral). A method
+// no conservation check (a nodal vertex sum compared with a cell integral
+// would be a false violation). A method
 // that does conserve keeps its check. Diagnose is unaffected either way.
 TEST(DerivedOps, NoConstrainAfterAPointwiseInterpolation) {
   for (const char* m : {"consistent", "mls", "mls:basis=linear"}) {

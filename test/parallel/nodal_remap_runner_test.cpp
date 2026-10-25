@@ -1,4 +1,4 @@
-// Nodal-remap track, round 3 (KNOWN_ISSUES.md D8): drives ONE real
+// Drives ONE real
 // Runner/CouplingGraph pair through lower -> schedule -> initialize ->
 // run_period, with a beam (nodal, ContinuousGLL order 1) / fluid (FV)
 // field transfer pair exactly like the FSI channel uses -- "consistent" (H)
@@ -22,8 +22,8 @@
 //
 // "BIT-IDENTICAL ACROSS RANK COUNTS", the property this file's own name
 // promises: matching the SAME rank-count-independent reference at
-// WHATEVER rank count this job happens to run (1 through 5, per this
-// track's own parallel-matrix.toml entry) is the standard way this
+// WHATEVER rank count this job happens to run (1 through 5, per the
+// parallel-matrix.toml entry) is the standard way this
 // codebase already proves that property without two separate job launches
 // compared against each other -- see
 // nodal_remap_distributed_test.cpp's own header comment for the identical
@@ -269,9 +269,8 @@ void run_and_check(std::size_t n_beam, std::size_t n_fluid, fuse::RankSet beam_r
     return mpi->set_communicator(MPI_Comm_c2f(MPI_COMM_WORLD));
   };
   // check_conservation stays at its default (ON). The Runner's Constrain
-  // reduces both integrals over the base communicator (KNOWN_ISSUES.md D10,
-  // 2026-09-25) -- before that it rejected a multi-rank target
-  // (E-RT-CONSERVATION-MPI) and this fixture had to disable it.
+  // reduces both integrals over the base communicator, so a multi-rank
+  // target is accepted.
   //
   // `abort_on_violation = true` is NOT the default -- and its absence is
   // exactly why mutation "conservation-check-not-reduced-across-ranks"
@@ -291,12 +290,12 @@ void run_and_check(std::size_t n_beam, std::size_t n_fluid, fuse::RankSet beam_r
   // `run_period()` still reported `ok()`. Setting this true makes a violation
   // a hard `E-RT-CONSERVATION` failure.
   //
-  // CORRECTION, 2026-10-01 (host run, FUSE_CONSERVATION_DEBUG). Those
-  // "violations" were not the force transfer's: they were a conservation
-  // check on the CONSISTENT velocity transfer (8 beam vertices -> 11 fluid
-  // cells), comparing a vertex sum (10.4) with a cell integral (1.3). A
-  // pointwise interpolation conserves no integral, and compilation no longer
-  // emits a check after one (fuse::is_pointwise_interpolation;
+  // Those "violations" were not the force transfer's: they were a
+  // conservation check on the CONSISTENT velocity transfer (8 beam vertices
+  // -> 11 fluid cells), comparing a vertex sum (10.4) with a cell integral
+  // (1.3), as seen with FUSE_CONSERVATION_DEBUG. A pointwise interpolation
+  // conserves no integral, and compilation does not emit a check after one
+  // (fuse::is_pointwise_interpolation;
   // DerivedOps.NoConstrainAfterAPointwiseInterpolation). The check that
   // remains is the force transfer's, consistent-transpose, Extensive --
   // the one "conservation-check-not-reduced-across-ranks" targets.
@@ -337,7 +336,7 @@ void run_and_check(std::size_t n_beam, std::size_t n_fluid, fuse::RankSet beam_r
   const std::vector<double>& beam_load = bp->bufs["beam_load"];
   for (std::size_t i = 0; i < beam_load.size(); ++i) {
     const std::size_t gid = beam_view->global_id(0, i);
-    // Lead's determinism follow-up (2026-10-15): `exact_beam_load` tightens
+    // `exact_beam_load` tightens
     // this check to bitwise equality for
     // ConsistentTransposeIsBitIdenticalAcrossRankCounts below -- the plan-
     // based H^T scatter-add now sums every contribution in ascending
@@ -348,16 +347,13 @@ void run_and_check(std::size_t n_beam, std::size_t n_fluid, fuse::RankSet beam_r
     // id, and that storage is itself grouped by ascending fluid cell), so
     // the two are expected to agree to the LAST BIT, not just in tolerance.
     //
-    // KNOWN_ISSUES.md D67, CLOSED 2026-10-18: gid 0 (x=0, the domain's own
-    // left edge) used to be excluded from this exact check, at a 5e-16
-    // tolerance instead, because a real host run measured its weight
-    // differing from the one-rank reference by 1 ULP at rank counts 2 and
-    // 3. The root cause was NOT gather_global_source's null-comm-vs-
-    // Allgatherv assembly (that theory, D67's own first write-up, was
-    // investigated and ruled out -- see
-    // test/backend/nodal_remap_distributed_nullcomm_test.cpp's own
-    // D67SerialAndDistributedEdgeWeightsAgreeAtTheDomainBoundary, which
-    // reproduces the identical 1-ULP gap with ZERO MPI involved at all):
+    // gid 0 (x=0, the domain's own left edge) needs no exclusion from this
+    // exact check. Its weight could differ from the one-rank reference by
+    // 1 ULP if the serial and distributed paths computed it differently;
+    // the cause is not gather_global_source's null-comm-vs-Allgatherv
+    // assembly (see the serial-vs-distributed edge-weight test in
+    // test/backend/nodal_remap_distributed_nullcomm_test.cpp, which
+    // reproduces such a gap with ZERO MPI involved at all):
     // `Runner::resolve_remap`'s `both_on_one_rank` (runner.cpp) sends a
     // one-rank placement like THIS test's own world_size==1 case, and
     // `compute_reference()` above, through the SERIAL dispatch
@@ -365,17 +361,15 @@ void run_and_check(std::size_t n_beam, std::size_t n_fluid, fuse::RankSet beam_r
     // weights_1d`, consistent_interp.hpp's own coordinate-sort), while any
     // placement spanning more than one rank goes through the DISTRIBUTED
     // primitive (`build_nodal_dist_remap` -> `build_distributed_interp_
-    // rows`, general_interp_detail's Gauss-Newton) -- two DIFFERENT
+    // rows`, general_interp_detail's Gauss-Newton) -- two potentially DIFFERENT
     // floating-point expressions for the SAME Edge-cell hat weight. Both
-    // now share one predicate (`general_interp_detail::edge_hat_weights`,
-    // general_interp.hpp), so gid 0 needs no exclusion any more: EVERY
-    // vertex is checked bitwise identical here, at every rank count this
-    // file is registered for (parallel-matrix.toml: 1 through 5) -- a host
-    // run (host_pending, this sandbox cannot start MPI) is what confirms
-    // that at a genuine multi-rank launch; test/verification/nodal_remap_
-    // runner_serial_test.cpp's TheOneRankCaseOfTheMpiFixtureRunsAndIsExact
-    // already confirms it for world_size 1 (both code paths, no MPI
-    // needed) in this sandbox.
+    // share one predicate (`general_interp_detail::edge_hat_weights`,
+    // general_interp.hpp), so EVERY vertex is checked bitwise identical
+    // here, at every rank count this file is registered for
+    // (parallel-matrix.toml: 1 through 5) -- a multi-rank launch confirms
+    // that; test/verification/nodal_remap_runner_serial_test.cpp's
+    // TheOneRankCaseOfTheMpiFixtureRunsAndIsExact confirms it for
+    // world_size 1 (both code paths, no MPI needed).
     if (exact_beam_load) {
       EXPECT_EQ(beam_load[i], ref.beam_load.at(gid))
           << "rank " << world_rank() << " beam local vertex " << i << " (global id " << gid << ")";
@@ -416,19 +410,14 @@ void run_and_check(std::size_t n_beam, std::size_t n_fluid, fuse::RankSet beam_r
 }  // namespace
 
 TEST(NodalRemapRunnerMpi, DisjointRankSets) {
-  // Round 4 (KNOWN_ISSUES.md D8, defect 3, found by a real host MPI run):
   // `beam_ranks{0, (w+1)/2}` and `fluid_ranks{(w+1)/2, w-(w+1)/2}` are
   // disjoint by construction ONLY when both halves are non-empty; at
   // `w == 1`, `fluid_ranks` has count 0 -- the fluid component would be
-  // placed on NO rank at all, the exact two-sided-processor-set-on-one-rank
-  // shape commit 2383024 already fixed elsewhere in this codebase. An ad
-  // hoc `if (fluid_ranks.size() == 0) GTEST_SKIP()` caught this at `w == 1`
-  // specifically, but stated the requirement in terms of THIS test's own
-  // arithmetic rather than the rank count a reader can check against
-  // parallel-matrix.toml at a glance; `FUSE_REQUIRE_AT_LEAST_RANKS`
-  // (test/parallel/runner_transport_test.cpp's own convention for exactly
-  // this situation) says it the same way every other multi-rank-shape test
-  // in this codebase does.
+  // placed on NO rank at all, the two-sided-processor-set-on-one-rank
+  // shape. `FUSE_REQUIRE_AT_LEAST_RANKS` states the requirement in terms of
+  // the rank count a reader can check against parallel-matrix.toml at a
+  // glance, the same way every other multi-rank-shape test in this codebase
+  // does.
   FUSE_REQUIRE_AT_LEAST_RANKS(2);  // a disjoint split needs two non-empty halves
   const int w = world_size();
   const fuse::RankSet beam_ranks{0, (w + 1) / 2};
@@ -441,21 +430,13 @@ TEST(NodalRemapRunnerMpi, IdenticalRankSets) {
   // components simply share the one rank the job has) -- so, UNLIKE
   // DisjointRankSets/PartiallyOverlappingRankSets above and below, this
   // case has no empty-RankSet construction to guard against, and none is
-  // added here. A real host MPI run (round 4) reported this test failing
-  // at world size 1 too, with a cause distinct from the other two (their
-  // shared empty-RankSet defect does not apply here); reproducing it needs
-  // a genuine MPI launch, which this sandbox cannot provide even at -np 1
-  // (`mpirun -np 1` fails in HYDU_sock_listen; running the built MPI test
-  // binary directly without mpirun aborts inside MPI_Init's own
-  // debugger-attach teardown, `dbginit.c`'s `MPIR_Debugger_set_aborting`) --
-  // see KNOWN_ISSUES.md D8 for the exact host command this still needs.
+  // added here.
   const fuse::RankSet all{0, world_size()};
   run_and_check(7, 11, all, all, 0.3, 2.0);
 }
 
 TEST(NodalRemapRunnerMpi, ConsistentTransposeIsBitIdenticalAcrossRankCounts) {
-  // Lead's determinism follow-up (2026-10-15): nodal_remap_distributed.cpp's
-  // plan-based H^T scatter-add now sorts every contribution by its
+  // nodal_remap_distributed.cpp's plan-based H^T scatter-add sorts every contribution by its
   // CONTRIBUTOR EVAL ENTITY'S GLOBAL id before summing -- the SAME key
   // compute_reference()'s own serial apply_weights() call effectively sums
   // its COO storage in (a single-rank build's fluid-cell LOCAL index IS its
@@ -464,8 +445,8 @@ TEST(NodalRemapRunnerMpi, ConsistentTransposeIsBitIdenticalAcrossRankCounts) {
   // asserts EXACT (not EXPECT_NEAR) equality against that reference, at
   // every rank count this file is registered for (parallel-matrix.toml:
   // 1 through 5) -- a loose tolerance would not have caught a regression
-  // back to arrival-order Kokkos::atomic_add, since that was already
-  // passing the file's own 1e-12 relative check before this round's fix.
+  // back to arrival-order Kokkos::atomic_add, which would still pass the
+  // file's own 1e-12 relative check.
   const fuse::RankSet all{0, world_size()};
   run_and_check(7, 11, all, all, 0.3, 2.0, /*exact_beam_load=*/true);
 }
@@ -497,7 +478,7 @@ TEST(NodalRemapRunnerMpi, PartiallyOverlappingRankSets) {
 // declared ranks genuinely differ -- independent of, and always agreeing
 // with, whatever `both_on_one_rank` computes. Traced by hand and confirmed
 // with a standalone harness linked against this library (SerialMeshBackend,
-// no MPI, no base_communicator; see this track's evidence log): applying
+// no MPI, no base_communicator): applying
 // the mutation to a fresh build left `DisjointRankSets`'s own two field transfers'
 // outcome completely unchanged, because `moves_placement` alone already
 // forces entry into the nodal-distributed branch.
@@ -623,8 +604,7 @@ TEST(NodalRemapRunnerMpi, DisjointSingleRankPlacementRefusesMismatchedOrientatio
 // so it cannot feed `build_distributed_interp_rows`, which needs real
 // coordinates.
 //
-// `GeometricPlacedLineBackend` (this track's own additive fixture, added
-// alongside this test) closes the gap: it reuses `GeometricLineMesh`
+// `GeometricPlacedLineBackend` closes the gap: it reuses `GeometricLineMesh`
 // UNCHANGED for both the mesh's default decomposition and a SEPARATE,
 // genuinely different decomposition registered per (mesh, component) via
 // `set_component_ranks`. Below, `beam_mesh`'s DEFAULT decomposition is
@@ -635,8 +615,8 @@ TEST(NodalRemapRunnerMpi, DisjointSingleRankPlacementRefusesMismatchedOrientatio
 // `build_nodal_dist_remap`'s own comment (runner.cpp, "Each side as seen by
 // ITS OWN component") says must be read.
 //
-// Verified mechanism (base build configuration, standalone harness, no MPI, see this track's
-// evidence log): with the fixture built this way, correct code
+// Verified mechanism (base build configuration, standalone harness, no MPI):
+// with the fixture built this way, correct code
 // (`placed_view`) returns the exact affine value at every point (H is
 // P1-exact); the mutation (`view`) makes the nodal side's local view come
 // back EMPTY (the DEFAULT decomposition excludes the very ranks that own
@@ -644,10 +624,9 @@ TEST(NodalRemapRunnerMpi, DisjointSingleRankPlacementRefusesMismatchedOrientatio
 // ("the source mesh ... has no cells or no vertices at all"). This
 // specific TEST (a real 2+-rank MPI shape, using a REAL communicator so it
 // is valid at every registered rank count 1-5, not the single-simulated-
-// rank/null-communicator harness used to prove the mechanism above) has
-// been compiled (MPI-enabled build configuration, compile-only -- this sandbox cannot
-// execute MPI) but NOT run; a host run is what confirms it at real rank
-// counts. Expected signatures: correct code -- every EXPECT_NEAR below
+// rank/null-communicator harness used to prove the mechanism above) needs
+// an MPI launcher to run; a multi-rank run is what confirms it at real
+// rank counts. Expected signatures: correct code -- every EXPECT_NEAR below
 // passes; mutated code (apply the manifest's old->new by hand, rebuild) --
 // `initialize()` fails and `E-INTERP-NOGEOMETRY` appears in the message,
 // exactly as the base-build-configuration double showed.

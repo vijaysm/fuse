@@ -1,19 +1,15 @@
-/// D15 item 1 ("Device layout" track, 2026-10-21): the owner's own
-/// instruction was to test field layout and host/device copies on a real
-/// CUDA/HIP/SYCL backend, something nothing in this tree had run before
-/// this track (ssh:higgs, the owner's own GPU host). The existing
+/// Field layout and host/device copies on a real CUDA/HIP/SYCL backend
+/// (run on ssh:higgs, the GPU host). The existing
 /// MixedHostAndDeviceFieldsOnOneProviderConvergeThroughChannels row
-/// (test/abi/conformance_test.cpp, DISABLED_ at the time this file was
-/// written) is NOT extended here: measured on higgs, that row's own
-/// plugin (test/abi/plugins/mixed_memspace_provider.c) dereferenced a
+/// (test/abi/conformance_test.cpp) is NOT extended here: that row's plugin
+/// (test/abi/plugins/mixed_memspace_provider.c) originally dereferenced a
 /// device pointer with an ordinary C store, which segfaulted on a real
-/// device backend (exit code 139). The "Mixed plugin" track
-/// (2026-10-21) later fixed that plugin (mixed_memspace_device_write.cpp,
-/// the same Kokkos-kernel-launch technique this file's own plugin uses)
-/// and dropped the DISABLED_ prefix; this file's own plugin
-/// (test/abi/plugins/device_layout_provider.cpp) predates that fix and
-/// stays as its own, separate test -- it covers 3-component layout and
-/// bidirectional host/device copies the renamed row does not.
+/// device backend (exit code 139); it now writes through
+/// mixed_memspace_device_write.cpp, the same Kokkos-kernel-launch
+/// technique this file's own plugin uses. This file's own plugin
+/// (test/abi/plugins/device_layout_provider.cpp) stays as its own,
+/// separate test -- it covers 3-component layout and bidirectional
+/// host/device copies that row does not.
 ///
 /// THE GRAPH, one component "mixed" (device_layout_provider.cpp, mounted
 /// as a graph-declared LaunchMode::Plugin, never dlopen()'d by this file
@@ -101,8 +97,8 @@ constexpr std::size_t kCells = 4;
 // cold start) have more than one period to assert against.
 constexpr int kPeriods = 5;
 
-// Measured directly on this build (FUSE_DEVICE_DEBUG=1, this track's own
-// run on ssh:higgs), not assumed: each channel hop in this graph delivers
+// Measured directly on this build (FUSE_DEVICE_DEBUG=1, on ssh:higgs), not
+// assumed: each channel hop in this graph delivers
 // its exported value with a ONE-PERIOD lag (the same "lag-1" convention
 // this tree's own graph_fixture.hpp names throughout,
 // e.g. build_two_component_lag1_graph) -- a channel's own Remap/Diagnose
@@ -365,7 +361,7 @@ class Sink final : public fuse::Component {
 /// the Sink instance fuse_ctx owns -- an early version of this test kept
 /// the raw Sink* past destroy() and read freed memory (a garbage
 /// layout_history.size() and a std::bad_alloc downstream of it, both
-/// measured directly on this track before this struct existed); copying
+/// measured directly before this struct existed); copying
 /// the two histories here, inside run_device_layout_graph() while ctx is
 /// still alive, is what makes the result safe to read after the function
 /// returns.
@@ -484,7 +480,7 @@ TEST(DeviceLayoutAndCopies, DeviceOutLayoutMatchesDerivedAoSAndEveryElementIsExa
 #if !(defined(KOKKOS_ENABLE_CUDA) || defined(KOKKOS_ENABLE_HIP) || defined(KOKKOS_ENABLE_SYCL))
   GTEST_SKIP() << "no device backend on this build; see "
                   "MixedHostAndDeviceFieldsOnOneProviderConvergeThroughChannels and "
-                  "this track's own host_pending for the device-build run";
+                  "the device-build run on the GPU host";
 #else
   const RunOutcome outcome =
       run_device_layout_graph(FUSE_TEST_DEVICE_LAYOUT_PROVIDER_PLUGIN, "device", kPeriods);
@@ -576,9 +572,9 @@ TEST(DeviceLayoutAndCopies, HostDeviceHostRoundTripMatchesHostReferenceExactly) 
 
   // RunStats::device_boundary_copies (docs/dev/device-resident-arcs.md,
   // "The boundary rule"), derived from this graph's own instruction
-  // list -- measured with FUSE_DEVICE_DEBUG=1 on this track's own run
-  // (ssh:higgs) to confirm which arcs actually cross, not assumed from
-  // the field declarations alone. The trace's own "[device-place] arc"
+  // list -- measured with FUSE_DEVICE_DEBUG=1 on ssh:higgs to confirm
+  // which arcs actually cross, not assumed from the field declarations
+  // alone. The trace's own "[device-place] arc"
   // lines, one per arc:
   //   arc %0  host mirrored  source.src_out        (component, Provides)
   //   arc %1  device         mixed.device_out       (component, Provides)

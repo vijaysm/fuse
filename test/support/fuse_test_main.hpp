@@ -44,10 +44,10 @@ int size();
 /// than any collective across peers.
 ///
 /// Returns 0 without MPI, where no handle can be formed and none is ever
-/// dereferenced. Under MPI it is `MPI_Comm_c2f(MPI_COMM_SELF)`. Added
-/// 2026-09-20: two runner tests used a literal 0 as a sentinel, reasoning
-/// that the refusal they assert is reached before the handle is used. That
-/// held in Tier 0, where `attach_comm_graphs()` refuses ANY communicator in
+/// dereferenced. Under MPI it is `MPI_Comm_c2f(MPI_COMM_SELF)`. A
+/// literal 0 must not be used as a sentinel, reasoning
+/// that a refusal is reached before the handle is used. That
+/// holds in Tier 0, where `attach_comm_graphs()` refuses ANY communicator in
 /// a build without MPI. In Tier 1 the same 0 reaches
 /// `MPI_Comm_f2c(0)`, which is NOT `MPI_COMM_NULL` on MPICH but an invalid
 /// handle, and the setup status agreement then aborted the process inside
@@ -57,8 +57,8 @@ int self_communicator_handle();
 
 /// Declare a test's rank requirement. A test that needs exactly N ranks must say so;
 /// running it at the wrong size is a configuration error, reported once by rank 0,
-/// not a silent pass. Registration is per ctest entry, so the matrix in
-/// docs/PLAN.md Section S5.5 is checkable by grep.
+/// not a silent pass. Registration is per ctest entry, so the rank-count
+/// matrix is checkable by grep.
 bool requires_ranks(int exact);
 bool requires_at_least_ranks(int minimum);
 
@@ -89,7 +89,7 @@ using EnabledExecutionSpaces = ::testing::Types<
 #if defined(KOKKOS_ENABLE_OPENMP)
     Kokkos::OpenMP,
 #endif
-// Threads was missing until 2026-09-17, and the omission mattered: the
+// Threads must be listed: the
 // machine-tuned Kokkos this project resolves against reports
 // `Kokkos_DEVICES = THREADS;SERIAL` with NO OpenMP, so every typed test
 // instantiated exactly ONCE, on Serial. "Runs on every enabled space" was

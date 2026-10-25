@@ -268,7 +268,7 @@ template <class Space>
 }
 
 // ---------------------------------------------------------------------------
-// KNOWN_ISSUES.md D11 (closing): additive kernels for the coupling hot loop.
+// Additive kernels for the coupling hot loop.
 //
 // `copy`, `scale` and `residual` below are elementwise -- each output entry
 // depends on nothing any other thread writes, so `Kokkos::parallel_for`'s
@@ -392,7 +392,7 @@ void remap_apply(IndexSpanOf<Space> row_begin, IndexSpanOf<Space> col,
       RemapMultiFunctor<Space>{row_begin, col, val, x, y, components});
 }
 
-/// Round 3 (spacetime-history track): the space-time Interpolate's history
+/// The space-time Interpolate's history
 /// branch (spec section 7.3's `T (x) I`, src/backend/spacetime.cpp's
 /// apply_spacetime) as a Space kernel, for one fixed target time step at a
 /// time -- the shape execute_on()'s own OpKind::Interpolate case calls this
@@ -402,7 +402,7 @@ void remap_apply(IndexSpanOf<Space> row_begin, IndexSpanOf<Space> col,
 /// every entity, so each thread walks it; the entity's own row of the
 /// spatial operator (today always the identity, SpacetimeInfo::identity()'s
 /// own comment) is walked the same way, so a future non-identity spatial
-/// half (Phase 5) needs no change here. Deterministic: ascending temporal
+/// half needs no change here. Deterministic: ascending temporal
 /// index within `[t_begin, t_end)`, ascending spatial index within the
 /// entity's own row -- the same order apply_spacetime's own per-triplet
 /// loop uses, so a device run reproduces the host answer to rounding.
@@ -457,7 +457,7 @@ void apply_spacetime_device(IndexSpanOf<Space> spatial_row_begin,
 /// Fixed-order reductions whose answer does not depend on the execution
 /// space's thread count -- unlike `dot`/`weighted_norm_squared` above, whose
 /// own comments say plainly that a parallel reduction's summation order is
-/// the threads'. KNOWN_ISSUES.md D11: the runtime's OWN reductions
+/// the threads'. The runtime's OWN reductions
 /// (`iteration.cpp`'s block residual/value norms) need bit-for-bit
 /// reproducibility across thread counts, which those two cannot give.
 ///
@@ -487,14 +487,15 @@ void apply_spacetime_device(IndexSpanOf<Space> spatial_row_begin,
 /// already document, just resolved differently.
 ///
 /// `scratch` must hold at least `deterministic_chunks(v.extent(0))` entries;
-/// callers size it once, at setup, and reuse it (D11's no-per-coupling-cycle-
-/// allocation rule; `iteration.cpp` sizes it from the largest implicit-coupling-group block).
+/// callers size it once, at setup, and reuse it (the no-per-coupling-cycle-
+/// allocation rule; `iteration.cpp` sizes it from the largest
+/// implicit-coupling-group block).
 ///
 /// The finalising sum reads `scratch`'s partials in a plain sequential loop,
 /// which needs host-accessible memory. On a HostSpace-accessible `Space`
 /// (Serial, Threads, OpenMP) that is `scratch` itself, no copy. On a device
 /// space (Kokkos::Cuda) it is a host mirror `scratch` is `deep_copy`'d into
-/// first -- A5's device path (KNOWN_ISSUES.md D11), closed by
+/// first -- the device path, handled by
 /// `finalize_deterministic_scratch` below.
 inline constexpr std::size_t kDeterministicChunk = 256;
 
@@ -538,9 +539,9 @@ template <class Space>
 // not-further-fusible primitives, so the device path double-rounds exactly
 // like that host path does. The host branch below is the plain expression:
 // a host compiler that contracts by default on FMA hardware (Apple clang at
-// -O2, KNOWN_ISSUES.md D30) fuses it too, and then both spaces agree with
-// each other but not with an unfused build -- D30's open decision on a
-// project-wide contraction policy, not something this helper settles.
+// -O2) fuses it too, and then both spaces agree with each other but not
+// with an unfused build -- the project-wide contraction policy
+// (cmake/FuseFpPolicy.cmake) decides that, not this helper.
 KOKKOS_INLINE_FUNCTION double unfused_multiply_add(double s, double x, double y) {
   double result = s + x * y;
   KOKKOS_IF_ON_DEVICE((result = __dadd_rn(s, __dmul_rn(x, y));))
@@ -655,7 +656,7 @@ template <class Space>
 }
 
 // ---------------------------------------------------------------------------
-// runtime-exchange track: OpKind::Diagnose's non-finite check, parameterised
+// OpKind::Diagnose's non-finite check, parameterised
 // on Space. Unlike deterministic_dot/deterministic_sum above, this reduction
 // needs no fixed-chunk scheme: logical OR is associative and commutative
 // regardless of how a thread count partitions the range, so a plain

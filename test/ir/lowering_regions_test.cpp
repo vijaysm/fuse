@@ -67,7 +67,7 @@ TEST(IterationRegions, EmitsAResidualPerChannel) {
   EXPECT_EQ(residual_nodes, 1);
 }
 
-// Phase 7 Task 7.2 fills this in by dataflow (spec Section 5.3). `iterated_pair` puts
+// The carried set is filled in by dataflow (spec Section 5.3). `iterated_pair` puts
 // .relax(0.8) on its one channel, so the relaxed value is loop-carried: the
 // value at sweep k is formed from the value at k-1, which makes its buffer
 // state rather than a recomputable transient.

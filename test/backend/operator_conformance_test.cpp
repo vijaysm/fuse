@@ -319,16 +319,16 @@ TEST(OperatorConformance, AnUnsatisfiedClaimFails) {
 }
 
 TEST(OperatorConformance, AnHStyleColumnSumIsNotClaimedConservative) {
-  // REVIEW.md TF-16: the consistent-interpolation (H) builders'
+  // The consistent-interpolation (H) builders'
   // `max_col_defect` is an UNWEIGHTED column-sum residual (a nodal degree
   // of freedom has no measure to weight it by), not a conservation
   // residual -- their own headers say H never claims to be conservative in
-  // that sense. Before `RemapWeights::col_defect_is_measure_weighted`
-  // existed, `claims()` could not tell this matrix apart from a genuinely
+  // that sense. Without `RemapWeights::col_defect_is_measure_weighted`,
+  // `claims()` could not tell this matrix apart from a genuinely
   // conservative one: a coincident node-to-node H pair's column sum is
   // exactly 1 by accident of geometry (every source vertex is also a
   // target vertex, weight exactly 1, nothing else contributes), and that
-  // alone used to be enough to certify `conservative`.
+  // alone would be enough to certify `conservative`.
   RemapWeights w = rectangular();
   // An exact identity-style column sum (every column sums to exactly 1) --
   // what AnUnsatisfiedClaimFails above calls "a false audit" when it is

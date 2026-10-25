@@ -242,7 +242,7 @@ TEST(NativeBackend, PlacedViewIsReachableAfterSetPlacedView) {
   EXPECT_EQ(v.value()->entity_count(2), 9u);  // the OTHER decomposition, not the default's 4
 }
 
-// ---- each placement over its OWN ranks (KNOWN_ISSUES D24) ----------------
+// ---- each placement over its OWN ranks ------------------------------
 
 // The defect this pins needs no MPI to reproduce, because the backend takes
 // its position in the run as a constructor argument: a process at rank 2 of
@@ -317,8 +317,8 @@ TEST(NativeBackend, APlacementSpanningSeveralRanksStillSplitsAmongThem) {
 // The ctest rows backend.native_generators, .omp1 and .omp8 run this same
 // binary, and `ctest -j` runs them at once; a fixed name under TempDir()
 // made two of them write and remove the same file, failing the round trip
-// once in every few full-suite runs (first seen 2026-09-30, reproduced
-// 2026-10-04 with eight concurrent copies on a clean HEAD). The process id
+// once in every few full-suite runs (reproduced with eight concurrent
+// copies). The process id
 // makes the path this process's own.
 [[nodiscard]] static std::string scratch_vtk_path(const char* stem) {
   return std::string(::testing::TempDir()) + "native_mesh_roundtrip_" + stem + "_" +

@@ -1,6 +1,6 @@
 # Mutation evidence — `partition`
 
-Run 2026-09-23 against build `build-fuse-s1`. Regenerate with `tools/mutate.py --write-log`; do not edit.
+Run against build `build-fuse-s1`. Regenerate with `tools/mutate.py --write-log`; do not edit.
 
 | Mutation | File | Outcome | Killed by |
 |---|---|---|---|

@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-/* Time windows track (Conformance, Unit 2): the tiny extern "C" shim both
+/* The tiny extern "C" shim both
  * the C main (u_main.c) and the Fortran main (v_main.f90, through
  * iso_c_binding's own bind(C) convention -- identical calling convention,
  * no separate Fortran-specific entry points needed) call. Wraps
@@ -33,11 +33,11 @@ typedef struct bruss_v_handle bruss_v_handle;
  * only (never on a physics error -- step() reports those). */
 /* The grid and physics constants of brusselator_grid.h, for a caller that
  * cannot include a C header (v_main.f90). One source of truth: see that
- * header's own comment for what happened when there were three. */
+ * header's own comment. */
 void bruss_grid_dims(int* nx_u, int* ny_u, int* nx_v, int* ny_v);
 double bruss_diffusion(void);
 
-/* Physics track: THIS rank's own owned cell count of an `nx`x`ny`
+/* THIS rank's own owned cell count of an `nx`x`ny`
  * periodic grid split `fuse::native::rank_slice`'s own way over
  * `num_ranks` ranks (brusselator_physics.hpp's own `NativeGrid::
  * owned_size()`) -- what a decomposed participant must register
@@ -71,10 +71,9 @@ int bruss_owned_slice(const double* whole, int nx, int ny, int rank, int num_ran
  * in-process components hold their constructor's own value there, and an
  * externally driven participant must put the same value there by hand
  * (test/verification/brusselator_participants_test.cpp does exactly this;
- * the standalone programs did not, and the first window's exchange was
- * then measured 40% short on the host, 2026-10-09).
+ * without it the first window's exchange is measured 40% short).
  *
- * `bruss_v_provided`'s own remap (Halo track) can now fail -- an
+ * `bruss_v_provided`'s own remap can fail -- an
  * exchanger-filled, possibly-decomposed `apply_weights` call, not a
  * single-rank hand-apply -- in which case `out` is left ZEROED and
  * `bruss_v_last_error(h)` reports why; `bruss_u_provided` has no such
@@ -82,7 +81,7 @@ int bruss_owned_slice(const double* whole, int nx, int ny, int rank, int num_ran
 void bruss_u_provided(const bruss_u_handle* h, double* out);
 void bruss_v_provided(const bruss_v_handle* h, double* out);
 
-/* Physics track (closing the Grid track's own solver seam): `rank`/
+/* `rank`/
  * `num_ranks` are THIS component's own placement -- 0/1 for every
  * EXISTING caller (the tier-0 harness, the in-process example path),
  * which must keep passing exactly that; there is no default at the C
@@ -111,9 +110,8 @@ int bruss_u_size(const bruss_u_handle* h);
  * comment on UCore::step()) needs `dt` rounded ONCE from the EXACT
  * rational t_end-t_begin, not reconstructed from two ALREADY-rounded
  * t_begin/t_end doubles subtracted a second time -- the two are not
- * always bit-equal (found this session: a Runner-driven bit-identical
- * check caught the difference in --check's round-off-scale diagnostics
- * after the Brusselator physics refactor). This shim does that exact-
+ * always bit-equal (a Runner-driven bit-identical
+ * check catches the difference in --check's round-off-scale diagnostics). This shim does that exact-
  * rational subtraction once, in C++ (fuse::Rational), so u_main.c/
  * v_main.f90 never have to get rational arithmetic right themselves.
  * `required` (length size()) is P_VU(V)'s own mean over the step, on
@@ -143,11 +141,10 @@ const char* bruss_u_last_error(const bruss_u_handle* h);
 /* V_t = a*Lap(V) - q_on_v (species_core.hpp's own VDiffusionCore), PLUS
  * the by-hand remap (both directions) species_component.hpp's own
  * VComponent carries (species_core.hpp's own VParticipant) -- the
- * participant graph IS Unit 1's own graph plus only add_coupler()/
- * remap_on() (the lead's own ruling, Conformance Unit 2: both transfer
- * fields stay on u_region, so the coupler-routed Remap this compiles is
- * the IDENTITY and V still stands in for the real remap by hand,
- * exactly as it already did in Unit 1). `nx_u`/`ny_u` are U's own
+ * participant graph IS the in-process graph plus only add_coupler()/
+ * remap_on() (both transfer fields stay on u_region, so the
+ * coupler-routed Remap this compiles is the IDENTITY and V still stands
+ * in for the real remap by hand, exactly as in the in-process drivers). `nx_u`/`ny_u` are U's own
  * native grid shape (needed here so this shim can build the SAME
  * U<->V remap weights VComponent's own constructor does); `nx_v`/`ny_v`
  * are V's own. Returns NULL on allocation failure OR on a weight-build
@@ -183,9 +180,8 @@ int bruss_v_size(const bruss_v_handle* h);
  * EXACTLY ONCE, in exact rational arithmetic -- the same discipline
  * fuse::StepContext::dt() follows. Computing dt as a double
  * subtraction of two already-rounded doubles here would reintroduce,
- * for V, precisely the rounding mismatch Unit 2's own item 1 found
- * and fixed for U (species_core.hpp's UCore::step() header has the
- * full account). `required` (length bruss_v_size()) is the raw q mean
+ * for V, precisely the rounding mismatch avoided for U
+ * (species_core.hpp's UCore::step() header has the full account). `required` (length bruss_v_size()) is the raw q mean
  * this step, on the U grid (unremapped) -- exactly what
  * advance_window() hands an externally-driven window member through
  * `cfg.required`. On success (return 0), `provided_out` (length
@@ -205,8 +201,7 @@ double bruss_v_state_mean(const bruss_v_handle* h);
 double bruss_v_exchange_in(const bruss_v_handle* h);
 const char* bruss_v_last_error(const bruss_v_handle* h);
 
-/* S6 phase 3 (Conformance, "LowFive" track), Unit 3b -- UPDATED by the
- * "LowFive attach" track: the ordinary, no-FUSE-call-at-all HDF5 write/
+/* The ordinary, no-FUSE-call-at-all HDF5 write/
  * read a window member's own loop performs directly against its export/
  * import. `fapl_id` is now REQUIRED and is passed literally as the
  * `fapl_id` argument of this call's own H5Fcreate/H5Fopen, in place of
@@ -214,9 +209,8 @@ const char* bruss_v_last_error(const bruss_v_handle* h);
  * bruss_lowfive_attach() builds and hands back, exactly the way
  * `fuse::LowFiveTransport::access_plist_handle()` already does for
  * examples/demo_b's own programmatic-attachment path (lowfive_attach.h's
- * own header comment has the full account of why the participants moved
- * onto this mechanism: the env-var route's own null dereference,
- * KNOWN_ISSUES.md D38/D39). A caller that has not called
+ * own header comment has the full account of why the participants use
+ * this mechanism rather than the env-var route). A caller that has not called
  * bruss_lowfive_attach() successfully first -- `fapl_id < 0` -- is
  * refused here rather than silently substituting H5P_DEFAULT, which
  * would reach a real file with no interception and no diagnostic

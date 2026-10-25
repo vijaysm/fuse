@@ -1,4 +1,4 @@
-# The derivative gate (S7.3)
+# The derivative gate
 
 `include/fuse/linalg/derivative_gate.hpp` is the one check every later "Newton" or "monolithic"
 claim in this project must cite. It verifies three properties, each against a bound that is
@@ -27,7 +27,7 @@ nonsymmetric `DistSparseMatrix` fixture below has negative entries by constructi
 small symmetric periodic Laplacian, the estimate is checked against the largest `|eigenvalue|` from
 a dense eigensolve (`Eigen::SelfAdjointEigenSolver`), not merely asserted plausible.
 
-`c` (`kAdjointGateConstant` in the header) is the one free constant. **Measured 2026-10-10** (Debug
+`c` (`kAdjointGateConstant` in the header) is the one free constant. **Measured** (Debug
 build, AppleClang 21, this project's Eigen linalg backend), over every operator case
 `adjoint_cases()` builds -- `fuse::linalg::DistSparseMatrix` at one and two in-process partitions
 (a symmetric periodic 16x16 Laplacian and a random nonsymmetric 50x50 matrix, the latter
@@ -77,8 +77,8 @@ new). Fewer than two points before the plateau (including the plateau starting a
 step) means there is nothing to fit at all: `at_floor_everywhere` is set, `order` is `NaN`, and
 `floor` is the mean of every measured remainder.
 
-Three cases, all residuals built directly from this task's own owned fixtures rather than through
-`examples/dn_heat` or the concurrent Seam track's Runner-level residual:
+Three cases, all residuals built directly from this test's own fixtures rather than through
+`examples/dn_heat` or the Runner-level residual:
 
 - **A hand-written cubic map**, `F(x)_i = x_i^3`, `J(x) v_i = 3 x_i^2 v_i` (exact) --
   `CubicMapWithAnalyticJacobianMeasuresOrderTwo` measures order in `(1.8, 2.3)`. The same map with a
@@ -99,8 +99,7 @@ Three cases, all residuals built directly from this task's own owned fixtures ra
 
 `matrix_free_agreement` applies two independent implementations of the same operator to
 `n_vectors` fixed-seed random vectors and requires `||a(x) - b(x)||_2 <= c * eps * ||A||_est *
-||x||_2` for every one, reporting the worst case. `kMatrixFreeAgreementConstant = 20`: **measured
-2026-10-10**, the Brusselator diffusion operator at 16x16 (`DistSparseMatrix::apply`, assembled from
+||x||_2` for every one, reporting the worst case. `kMatrixFreeAgreementConstant = 20`: **measured**: the Brusselator diffusion operator at 16x16 (`DistSparseMatrix::apply`, assembled from
 the same triplets `species_core.hpp`'s `KrylovDiffusionSolver::factor` builds, vs. a hand-written
 periodic-stencil kernel implementing the identical coefficients directly on arrays) reached a ratio
 of about 0.36 at `c = 1`, so `c = 20` carries about 55x headroom.

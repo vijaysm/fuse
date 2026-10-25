@@ -97,10 +97,10 @@ class BeamComponent final : public fuse::Component {
       q[i] = load_in_[i] / beam_.tributary_length(i);
     }
     if (dt > 0.0) {
-      // KNOWN_ISSUES.md D9's own resolution: `load_in_` (hence `q`) is now
-      // the mid-step (t_{n+1/2}) load H^T D delivers from the fluid's own
-      // mid-step traction (FluidComponent::advance's own comment) --
-      // step_midpoint_load() consumes it AS a mid-step load directly
+      // `load_in_` (hence `q`) is the mid-step (t_{n+1/2}) load H^T D
+      // delivers from the fluid's own mid-step traction
+      // (FluidComponent::advance's own comment) -- step_midpoint_load()
+      // consumes it AS a mid-step load directly
       // (BeamSolver::step_midpoint_load's own comment has the derivation),
       // rather than step()'s "force at t_{n+1}" convention, which this
       // load is NOT.
@@ -174,7 +174,7 @@ class FluidComponent final : public fuse::Component {
     force_out_.assign(p.nx, 0.0);
   }
 
-  // DIAGNOSTIC ONLY (track FsiMassCorr). When non-null, advance() copies
+  // DIAGNOSTIC ONLY. When non-null, advance() copies
   // velocity_in_ into *debug_last_velocity_in_used right before the call
   // into fluid_.step() below, overwriting any earlier capture -- so after
   // the enclosing Runner::run_period() returns, this buffer holds the wall
@@ -224,33 +224,30 @@ class FluidComponent final : public fuse::Component {
       fluid_.step(dt, t0, t1, velocity_in_t0_, velocity_in_, inflow_);
     }
     // wall_traction() reads the mid-step (t_{n+1/2}) traction -- see
-    // KNOWN_ISSUES.md D9 ("Partitioned time-level consistency: the force
-    // side, round 2" in docs/user/fsi-channel.md) for the full derivation
-    // and, importantly, for what this change did and did NOT fix.
-    // Crank-Nicolson's own trapezoidal terms determine the pressure ONLY
-    // at t_{n+1/2} (a fully-implicit pressure GRADIENT, no p0 carried as
-    // state -- StokesSolver::step's own comment has the full derivation),
-    // so `StokesSolver::wall_traction()` genuinely IS the load at
-    // t_{n+1/2}, delivered to `BeamComponent::step_midpoint_load()` as
-    // exactly that, not mislabelled as "the load at t_{n+1}". An earlier
-    // round instead made the pressure GRADIENT trapezoidal to get a
-    // t1-accurate p1, carrying the previous step's p0 as literal state --
-    // that state has a genuine |lambda|=1 parasitic component
-    // (incompressibility only ever pins the p0/p1 AVERAGE), and this
-    // change DOES remove it: fluid-alone's own step-map spectral radius
-    // moves from EXACTLY 1 to 0.9946 under this fix, and the p-block of
-    // the coupled step map's own input sensitivity drops to exactly zero
-    // (test/verification/fsi_energy_diag_test.cpp, both measured
-    // directly). What this change does NOT do is fix D9's headline
-    // symptom: the coupled system's own step-map spectral radius is
-    // UNCHANGED to 4 significant figures (1.115467 -> 1.115466), and an
-    // ablation (zeroing the pressure term in the delivered traction)
-    // gives the identical spectral radius before and after this change
-    // (1.000512 either way) -- so the parasitic p0 mode this fixes is a
-    // REAL defect, correctly removed, but it is demonstrably not the (or
-    // not the only) mechanism sustaining D9's energy growth. That
-    // mechanism remains open; see KNOWN_ISSUES.md D9's own "round 2"
-    // section for the full evidence.
+    // docs/user/fsi-channel.md ("Partitioned time-level consistency: the
+    // force side") for the full derivation and for what this does and does
+    // NOT fix. Crank-Nicolson's own trapezoidal terms determine the
+    // pressure ONLY at t_{n+1/2} (a fully-implicit pressure GRADIENT, no p0
+    // carried as state -- StokesSolver::step's own comment has the full
+    // derivation), so `StokesSolver::wall_traction()` genuinely IS the load
+    // at t_{n+1/2}, delivered to `BeamComponent::step_midpoint_load()` as
+    // exactly that, not mislabelled as "the load at t_{n+1}". Making the
+    // pressure GRADIENT trapezoidal instead, to get a t1-accurate p1,
+    // would carry the previous step's p0 as literal state -- that state has
+    // a genuine |lambda|=1 parasitic component (incompressibility only ever
+    // pins the p0/p1 AVERAGE), and this scheme removes it: fluid-alone's
+    // own step-map spectral radius moves from EXACTLY 1 to 0.9946, and the
+    // p-block of the coupled step map's own input sensitivity drops to
+    // exactly zero (test/verification/fsi_energy_diag_test.cpp, both
+    // measured directly). It does NOT remove the coupled system's energy
+    // growth: the coupled step-map spectral radius is unchanged to 4
+    // significant figures (1.115467 -> 1.115466), and an ablation (zeroing
+    // the pressure term in the delivered traction) gives the identical
+    // spectral radius with and without this scheme (1.000512 either way) --
+    // so the parasitic p0 mode is a REAL defect, correctly absent, but it is
+    // demonstrably not the (or not the only) mechanism sustaining the
+    // energy growth. That mechanism remains open; see
+    // docs/user/fsi-channel.md for the evidence.
     const std::vector<double> traction = fluid_.wall_traction();
     const double L = fluid_.params().L;
     for (std::size_t i = 0; i < traction.size(); ++i) {
@@ -337,13 +334,12 @@ class FluidComponent final : public fuse::Component {
   /// buffer and give `velocity_in_` a NEW one at a different address,
   /// leaving the registry's copy of the OLD pointer dangling -- a
   /// heap-use-after-free the runtime's very next field access hits
-  /// (caught directly, this round, via AddressSanitizer: a genuinely
+  /// (caught directly via AddressSanitizer: a genuinely
   /// non-deterministic SIGTRAP/SIGBUS depending on heap layout, not a
   /// library defect at all). Every other in-place field mutator in this
   /// file (`refresh_force_from_current_state()`,
   /// `refresh_velocity_from_current_state()`) already uses `std::copy`
-  /// into the existing storage for exactly this reason; this one hadn't,
-  /// and is fixed to match.
+  /// into the existing storage for exactly this reason; so does this one.
   void set_velocity_in_for_test(const std::vector<double>& v) {
     if (v.size() != velocity_in_.size()) {
       throw std::invalid_argument(

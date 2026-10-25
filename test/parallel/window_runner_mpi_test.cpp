@@ -1,8 +1,6 @@
-// Unit 2b (D19), step (e) -- the window path's FIRST actual MPI test.
-// Not a fuse_add_mpi_test() gtest binary run through ctest in THIS
-// sandbox: it calls MPI_Init, must be launched by mpiexec, and this
-// sandbox cannot start MPI at all (KNOWN_ISSUES.md C1) -- build-verified
-// only here; registered as a host row (parallel.window_runner_mpi.{2,3}).
+// The window path's MPI test. Not a fuse_add_mpi_test() gtest binary run
+// through ctest: it calls MPI_Init and must be launched by mpiexec;
+// registered as a host row (parallel.window_runner_mpi.{2,3}).
 //
 // THE FIXTURE: window_runner_multirate_test.cpp's own 7:13 LCM-window
 // graph (A interval 13, B interval 7, window 91 = lcm(13,7), so neither
@@ -24,8 +22,8 @@
 // compared against it, EXPECT_EQ, on every rank for the agreed per-window
 // iteration count (decide_window_convergence()'s own agreement must be
 // identical everywhere), and for each member's own per-window final value
-// (x_a(), x_b()) only on the ranks that host that member -- since
-// 0eb576a a member advances ONLY on its own processor set, a rank that
+// (x_a(), x_b()) only on the ranks that host that member -- a member
+// advances ONLY on its own processor set, so a rank that
 // does not host it never touches its real state at all (RankSet::
 // contains(), not a literal rank number, decides which comparisons a
 // given rank makes). Not merely whether the run completes.
@@ -248,7 +246,7 @@ struct RunOutcome {
   std::string error;
   std::vector<double> x_a_per_window, x_b_per_window;
   std::vector<int> iterations_per_window;
-  // Transport-direct track (KNOWN_ISSUES.md D66/D77): this rank's own
+  // This rank's own
   // RunStats counters after the run, read here so a caller does not need
   // its own Runner handle to check which Transport path a window actually
   // took.
@@ -344,17 +342,14 @@ TEST(WindowRunnerMpi, TwoDisjointRanksMatchTheSingleProcessReference) {
   const RunOutcome got = run_window(mpi_graph, kPeriods, cfg, false);
   ASSERT_TRUE(got.ok) << got.error << " (rank " << current_rank() << ")";
 
-  // Found alongside the hosting defect this host run also exposed
-  // (KNOWN_ISSUES.md D19, `WindowMemberConfig::export_consumer_hosted`):
-  // since 0eb576a a member advances ONLY on its own processor set, so a
-  // rank that does not host a given member never touches that member's
-  // OWN `x()` at all -- it stays at its registered initial value there,
-  // never the real, partner-updated state. Comparing `x_a_per_window`/
-  // `x_b_per_window` on EVERY rank (the pre-this-fix code) therefore
-  // compared A's own real trajectory against B's rank's own untouched
-  // copy of A's initial condition, which is not a meaningful check and
-  // was the direct cause of this test's own `got.x_b_per_window[0] ==
-  // 0.2` (B's unmodified `kAY0`) symptom on the host. Each member's own
+  // (See `WindowMemberConfig::export_consumer_hosted`.) A member advances
+  // ONLY on its own processor set, so a rank that does not host a given
+  // member never touches that member's OWN `x()` at all -- it stays at its
+  // registered initial value there, never the real, partner-updated state.
+  // Comparing `x_a_per_window`/`x_b_per_window` on EVERY rank would
+  // therefore compare A's own real trajectory against B's rank's own
+  // untouched copy of A's initial condition (`got.x_b_per_window[0] == 0.2`,
+  // B's unmodified `kAY0`), which is not a meaningful check. Each member's own
   // state is compared only on the ranks that host it -- the ranks.
   // contains() membership test the graph itself declares, not a literal
   // rank number -- while the AGREED sweep count stays compared on every
@@ -376,8 +371,6 @@ TEST(WindowRunnerMpi, TwoDisjointRanksMatchTheSingleProcessReference) {
     // components it couples, and this row also runs under `-n 3`, where
     // every further rank hosts neither member. Such a rank enters no
     // agreement, decides locally, and has no agreed count to report.
-    // Measured on the host 2026-10-08: of three ranks, rank 2 was the only
-    // one that failed, on exactly this comparison.
     if (hosts_a || hosts_b) {
       EXPECT_EQ(got.iterations_per_window[w], ref.iterations_per_window[w])
           << "window " << w << ", rank " << current_rank()
@@ -410,7 +403,7 @@ TEST(WindowRunnerMpi, ThreeRanksWithAnUncoupledThirdMatchTheReference) {
 
   // Same correction as TwoDisjointRanksMatchTheSingleProcessReference's own
   // comment: a member's own state is observable only on the ranks that
-  // host it (0eb576a). Rank 2 (C, uncoupled) hosts neither A nor B, so it
+  // host it. Rank 2 (C, uncoupled) hosts neither A nor B, so it
   // compares only the agreed sweep count, which is exactly the property
   // this test is named for.
   const bool hosts_a = a_ranks.contains(current_rank());
@@ -442,15 +435,15 @@ TEST(WindowRunnerMpi, ThreeRanksWithAnUncoupledThirdMatchTheReference) {
 }
 
 
-// Transport-direct track (KNOWN_ISSUES.md D66, closed by D77). This
+// Device-direct Transport. This
 // fixture's own Transport arcs (a2b's and b2a's coupler-side buffers) are
 // coupler storage, not aliased directly to either component's own field --
 // under Device execution space they land on the device on BOTH ends, and
 // `A`/`B`'s DISJOINT placement (rank 0, rank 1) makes this a genuine MPI
 // exchange: exactly the both-arcs-device, matched-plan configuration that
-// used to hand MpiTransport::move() a device pointer and segfault in its
-// own std::memcpy (parallel.window_runner_mpi.{2,3}.device, this track's
-// own RED state). `RunnerConfig::execution_space` is set explicitly, so
+// would hand MpiTransport::move() a device pointer and segfault in its
+// own std::memcpy without device-direct support
+// (parallel.window_runner_mpi.{2,3}.device). `RunnerConfig::execution_space` is set explicitly, so
 // this test runs under Device on the plain ctest row and the `.device`
 // twin alike, independent of `fuse_add_mpi_test`'s own DEVICE_TWIN
 // mechanism (FUSE_EXECUTION_SPACE only matters when execution_space is

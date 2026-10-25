@@ -1,17 +1,16 @@
-/* KNOWN_ISSUES.md D15 ("Registry hosting" track, owner decision
- * 2026-10-22: a non-hosting rank must never dlopen() a LaunchMode::
- * Plugin component's shared object at all). This plugin's ONLY purpose
+/* A non-hosting rank must never dlopen() a LaunchMode::Plugin
+ * component's shared object at all. This plugin's ONLY purpose
  * is to let a tier-0 test tell, from OUTSIDE the plugin, that NONE of
  * create()/describe()/bind()/advance()/destroy() was ever called -- the
  * direct evidence that a non-hosting rank's own ProviderAdapter never
  * reached this shared object, as distinct from reaching it but finding
- * nothing to do (which is what every rank did before this round).
+ * nothing to do (which is what every rank used to do).
  *
  * A file-static counter per entry, incremented once per call, read back
  * through the one exported probe function at the bottom -- NOT part of
  * the frozen provider ABI (fuse_provider_abi_v1, include/fuse/abi/
  * provider.h, carries no such entry, and growing it to add one is
- * explicitly out of this round's own scope). A test reads the counters
+ * explicitly out of scope). A test reads the counters
  * through its OWN dlsym() on this SAME shared object -- the identical
  * mechanism fuse_provider_abi() itself uses to bootstrap -- never
  * through any FUSE ABI table.

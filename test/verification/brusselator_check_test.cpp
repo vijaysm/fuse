@@ -1,5 +1,4 @@
-// Time windows track (Conformance, Unit 2, Q3): the tier-0 test for
-// brusselator_check_core's own assembler. Drives a short real run
+// The tier-0 test for brusselator_check_core's own assembler. Drives a short real run
 // through the SAME participant ABI + shim + u_loop_step/v_loop_step
 // test/verification/brusselator_participants_test.cpp uses, logging
 // each window's mean_u/external_total/exchange_out (U) and
@@ -8,12 +7,11 @@
 // them (no subprocess -- the SAME split shim.h/loop_step.h already
 // follow between physics/ABI logic and whatever drives it).
 //
-// The mutation Q3 asked for ("restore dt*q_prev in the shim") is proven
-// separately, by hand, against species_core.hpp's own UCore::step() (the
-// shared physics this shim wraps) -- build-evidence/mutations/
-// brusselator.toml's own new row has the account; this file's own test
-// is the harness that mutation is proven against (PASSES on the real
-// code, FAILS once that one line is reverted to the pre-fix form).
+// The mutation "restore dt*q_prev in the shim" is proven separately, by
+// hand, against species_core.hpp's own UCore::step() (the shared physics
+// this shim wraps) -- build-evidence/mutations/brusselator.toml has the
+// account; this file's own test is the harness that mutation is proven
+// against (PASSES on the real code, FAILS once that one line is reverted).
 #include <gtest/gtest.h>
 
 #include <cstdint>

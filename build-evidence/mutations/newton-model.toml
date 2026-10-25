@@ -1,37 +1,33 @@
-# Mutations for the NewtonModel track (NewtonConfig::norm and
+# Mutations for the Newton norm and residual path (NewtonConfig::norm and
 # NewtonConfig::residual_path, src/runtime/iteration.cpp and
-# src/runtime/fixed_point_residual.cpp). Own file per the review-fix
-# protocol: do not edit build-evidence/mutations.toml directly while
-# other tracks hold it dirty.
+# src/runtime/fixed_point_residual.cpp).
 #
 # Every row below was applied by hand against src/runtime/iteration.cpp,
 # rebuilt (`cmake --build /tmp/newtonmodel/build0 -j4 --target
 # fuse_runtime_newton_norm_test`), the WHOLE unfiltered
-# fuse_runtime_newton_norm_test binary (7 tests) run and its
+# fuse_runtime_newton_norm_test binary run and its
 # [PASSED]/[FAILED] counts recorded in each row's own `result` key, then
 # the file restored with a saved pre-mutation copy and confirmed
 # byte-identical via `cmp` before moving to the next row. All three rows
 # touch the SAME file (src/runtime/iteration.cpp) at different lines; each
 # was proved and reverted independently, never two at once.
 #
-# A fourth candidate this track's own plan step 2 named, "weights not
-# applied" vs "a block's scale dropped", are the FIRST two rows below --
-# both target build_newton_measure_weights() (resolve_regions()'s own
-# setup-time build of RegionRuntime::newton_scale), proved against
-# NewtonNorm.ProductionDiagonalMatchesTheFormulaEntryForEntry
+# "weights not applied" vs "a block's scale dropped" are the FIRST two
+# rows below -- both target build_newton_measure_weights()
+# (resolve_regions()'s own setup-time build of RegionRuntime::newton_scale),
+# proved against NewtonNorm.ProductionDiagonalMatchesTheFormulaEntryForEntry
 # (test/runtime/newton_norm_test.cpp), a test added specifically to close
-# a gap this track's own earlier scale-invariance/unit-independence tests
+# a gap the scale-invariance/unit-independence tests
 # (NewtonNorm.ScaledResidualNormMatchesFieldNormDividedByTolerance,
 # NewtonNorm.MeshRefinement4xLeavesWeightedResidualStable) leave open: both
-# of those recompute this track's own D formula INDEPENDENTLY, by design
+# of those recompute the D formula INDEPENDENTLY, by design
 # (a cross-check of the MATH), so neither one actually calls
 # build_newton_measure_weights() at all -- a mutation to the production
 # formula would reproduce itself in the test's own hand-derived
-# comparison and go uncaught. Runner::debug_newton_scale() (new,
-# TEST/DIAGNOSTIC-ONLY, fuse/runtime/runner.hpp/src/runtime/fixed_point_
+# comparison and go uncaught. Runner::debug_newton_scale()
+# (TEST/DIAGNOSTIC-ONLY, fuse/runtime/runner.hpp/src/runtime/fixed_point_
 # residual.cpp) reads RegionRuntime::newton_scale directly -- the
 # PRODUCTION array -- closing that gap.
-
 [[mutation]]
 id = "newton-norm-weights-not-applied"
 area = "runtime/iteration (build_newton_measure_weights)"
@@ -41,18 +37,18 @@ old = "      d[block_offset + i] = std::sqrt(w_base[i] / sum_w) / s_b;"
 new = "      d[block_offset + i] = 1.0 / s_b;  // MUTATED: weights not applied"
 target = "fuse_runtime_newton_norm_test"
 test = "runtime.newton_norm"
-result = "CONFIRMED 2026-10-12 (re-proved, Round 2 GAP 1: the production code this anchor targets changed shape -- the per-element expansion loop was removed when build_newton_measure_weights() was fixed to stop double-counting a window-scoped block's own sample dimension, so this row's old/new anchors were updated to the new single flat loop and re-proved fresh rather than left pointing at code that no longer exists). Full unfiltered fuse_runtime_newton_norm_test (NOW 9 tests, two more than the original 7 -- GAP 2/3 additions this same round) ran 8 PASSED / 1 FAILED. NewtonNorm.ProductionDiagonalMatchesTheFormulaEntryForEntry failed all 8 of its own EXPECT_NEAR checks (one per D entry, 2 blocks x 4 entries each) with the IDENTICAL pattern as the original proof: 'di evaluates to 1000000, expected evaluates to 500000' -- the mutated scale (1/s_b = 1/1e-6 = 1e6) is exactly sqrt(4) = 2x the correct one (sqrt(1/4)/1e-6 = 5e5), the uniform generated:line:4 mesh's own measure (1/4 per entry) silently dropped. The other 8 tests, none of which reads RegionRuntime::newton_scale directly for this fixture, still passed, including the two added this round (NewtonNorm.ExactDenseSolveAgreesToRoundoffTimesConditionNumber, which assembles its own exact Jacobian independently of this function entirely, and NewtonNorm.PlainNormMisjudgesConvergenceOnTheNonlinearTwoFieldRegion, unaffected since its own MixedScaleFixture is a different, ordinary (non-window) region on a different mesh). Restored; cmp against the pre-mutation file reported no difference (md5 c33cd2e0828fce1f0de1d44fc9a9826b both before and after, THIS round's own baseline -- see this file's header note on the hash change from 88e45dcdcb0a02b40e9342f8abb80064)."
+result = "CONFIRMED (the anchors target the single flat loop in build_newton_measure_weights(), which does not double-count a window-scoped block's own sample dimension). Full unfiltered fuse_runtime_newton_norm_test (9 tests) ran 8 PASSED / 1 FAILED. NewtonNorm.ProductionDiagonalMatchesTheFormulaEntryForEntry failed all 8 of its own EXPECT_NEAR checks (one per D entry, 2 blocks x 4 entries each) with the IDENTICAL pattern as the original proof: 'di evaluates to 1000000, expected evaluates to 500000' -- the mutated scale (1/s_b = 1/1e-6 = 1e6) is exactly sqrt(4) = 2x the correct one (sqrt(1/4)/1e-6 = 5e5), the uniform generated:line:4 mesh's own measure (1/4 per entry) silently dropped. The other 8 tests, none of which reads RegionRuntime::newton_scale directly for this fixture, still passed, including NewtonNorm.ExactDenseSolveAgreesToRoundoffTimesConditionNumber, which assembles its own exact Jacobian independently of this function entirely, and NewtonNorm.PlainNormMisjudgesConvergenceOnTheNonlinearTwoFieldRegion (unaffected since its own MixedScaleFixture is a different, ordinary (non-window) region on a different mesh). Restored; cmp against the pre-mutation file reported no difference (md5 c33cd2e0828fce1f0de1d44fc9a9826b both before and after)."
 
 [[mutation]]
 id = "newton-norm-block-scale-dropped"
 area = "runtime/iteration (build_newton_measure_weights)"
-describes = "the block-inclusion guard additionally skips any block named 'flux' (dn_heat's own q_wall/q_wall_in channel) outright, so that block's own entries of RegionRuntime::newton_scale are left at the vector's own zero-initialised default instead of being computed at all -- a block's own scale silently dropped rather than derived, exactly the defect this track's own plan step 2 named."
+describes = "the block-inclusion guard additionally skips any block named 'flux' (dn_heat's own q_wall/q_wall_in channel) outright, so that block's own entries of RegionRuntime::newton_scale are left at the vector's own zero-initialised default instead of being computed at all -- a block's own scale silently dropped rather than derived, exactly the defect the plan step 2 named."
 file = "src/runtime/iteration.cpp"
 old = "    if (!included || b.length == 0) continue;"
 new = "    if (!included || b.length == 0 || b.channel_name == \"flux\") continue;  // MUTATED: a block's scale dropped"
 target = "fuse_runtime_newton_norm_test"
 test = "runtime.newton_norm"
-result = "CONFIRMED 2026-10-12: full unfiltered fuse_runtime_newton_norm_test (7 tests) ran 4 PASSED / 3 FAILED. NewtonNorm.ProductionDiagonalMatchesTheFormulaEntryForEntry failed its own 4 'flux'-block EXPECT_NEAR checks with 'di evaluates to 0, expected evaluates to 500000' (the block's own scale left at the zero-initialised default, never computed) while its 4 'wall_temperature'-block checks still passed, confirming the drop is isolated to the named block, not global. NewtonNorm.AmbiguousToleranceScaleRefusesAtSetup failed on 'Value of: init.ok() / Actual: true / Expected: false' -- the ambiguous block this test names IS 'flux', so skipping it entirely also skips the ambiguity check that would otherwise refuse E-NEWTON-NORM-SCALE, turning a REFUSAL into a silent, wrong success. NewtonNorm.WeightedIteratesAgreeWithPlainUnderTightForcing failed with 'measured max |plain - weighted| = 34.128166580713298' against its own 1e-2 bound -- unlike the uniform wrong-scale mutation above, a DROPPED (zero) scale for one block is NOT a uniform left-diagonal rescaling of F, so the weighted run's own Newton step genuinely diverges from the plain one's, exactly the class of defect this test exists to catch. The other 4 tests, none of which reads or depends on the 'flux' block's own weighted scale in a way this particular drop disturbs, still passed. Restored; cmp against the pre-mutation file reported no difference (md5 88e45dcdcb0a02b40e9342f8abb80064 both before and after)."
+result = "CONFIRMED: full unfiltered fuse_runtime_newton_norm_test (7 tests) ran 4 PASSED / 3 FAILED. NewtonNorm.ProductionDiagonalMatchesTheFormulaEntryForEntry failed its own 4 'flux'-block EXPECT_NEAR checks with 'di evaluates to 0, expected evaluates to 500000' (the block's own scale left at the zero-initialised default, never computed) while its 4 'wall_temperature'-block checks still passed, confirming the drop is isolated to the named block, not global. NewtonNorm.AmbiguousToleranceScaleRefusesAtSetup failed on 'Value of: init.ok() / Actual: true / Expected: false' -- the ambiguous block this test names IS 'flux', so skipping it entirely also skips the ambiguity check that would otherwise refuse E-NEWTON-NORM-SCALE, turning a REFUSAL into a silent, wrong success. NewtonNorm.WeightedIteratesAgreeWithPlainUnderTightForcing failed with 'measured max |plain - weighted| = 34.128166580713298' against its own 1e-2 bound -- unlike the uniform wrong-scale mutation above, a DROPPED (zero) scale for one block is NOT a uniform left-diagonal rescaling of F, so the weighted run's own Newton step genuinely diverges from the plain one's, exactly the class of defect this test exists to catch. The other 4 tests, none of which reads or depends on the 'flux' block's own weighted scale in a way this particular drop disturbs, still passed. Restored; cmp against the pre-mutation file reported no difference (md5 88e45dcdcb0a02b40e9342f8abb80064 both before and after)."
 
 [[mutation]]
 id = "newton-norm-precond-not-composed-with-inverse-diagonal"
@@ -67,22 +63,19 @@ new = """    (void)inv_d;  // MUTATED: preconditioner not composed with D^-1
   const num::RefreshPreconditionerFn refresh_precond = nullptr;"""
 target = "fuse_runtime_newton_norm_test"
 test = "runtime.newton_norm"
-result = "CONFIRMED 2026-10-12: full unfiltered fuse_runtime_newton_norm_test (7 tests) ran 6 PASSED / 1 FAILED. NewtonNorm.BlockJacobiPreconditionerWithExactTokensConvergesUnderMeasureWeighted failed EXPECT_EQ(st.iterations, 1), actual 2 -- the pinned Newton iteration count this row exists to move. Printed residual_history also changed, not only the count: correctly composed (control, run immediately before this mutation on the SAME unmutated file) it is [1000000.005, 0.02969315636] (one Newton step from ||F_0|| to ~0.03); mutated it is [1000000.005, 126.4799515, 0.01571608272] (an intermediate step at ||F|| ~= 126 the correctly-composed run never produces, needing a SECOND Newton step to recover). Both runs still report converged=true (this problem's own exact linear Jacobian means GMRES eventually reaches the fixed point via breakdown either way, composed or not -- the mutation changes the PATH, never whether convergence happens, matching this track's own derivation that an uncomposed preconditioner leaves the operator at ~D rather than ~I without necessarily causing outright divergence on a small, exactly-linear problem). The other 6 tests, none of which sets use_block_jacobi_preconditioner, still passed -- this code path was otherwise NEVER exercised by any pre-existing or other newly-added test in this track, which is why NewtonNorm.BlockJacobiPreconditionerWithExactTokensConvergesUnderMeasureWeighted (DiagonalComponent::ExactToken, a new EXACT LinearizationToken built specifically to make this mutation's own effect observable rather than drowned out by an approximate preconditioner's own error) was added. Restored; cmp against the pre-mutation file reported no difference (md5 88e45dcdcb0a02b40e9342f8abb80064 both before and after)."
+result = "CONFIRMED: full unfiltered fuse_runtime_newton_norm_test (7 tests) ran 6 PASSED / 1 FAILED. NewtonNorm.BlockJacobiPreconditionerWithExactTokensConvergesUnderMeasureWeighted failed EXPECT_EQ(st.iterations, 1), actual 2 -- the pinned Newton iteration count this row exists to move. Printed residual_history also changed, not only the count: correctly composed (control, run immediately before this mutation on the SAME unmutated file) it is [1000000.005, 0.02969315636] (one Newton step from ||F_0|| to ~0.03); mutated it is [1000000.005, 126.4799515, 0.01571608272] (an intermediate step at ||F|| ~= 126 the correctly-composed run never produces, needing a SECOND Newton step to recover). Both runs still report converged=true (this problem's own exact linear Jacobian means GMRES eventually reaches the fixed point via breakdown either way, composed or not -- the mutation changes the PATH, never whether convergence happens, matching the derivation that an uncomposed preconditioner leaves the operator at ~D rather than ~I without necessarily causing outright divergence on a small, exactly-linear problem). The other 6 tests, none of which sets use_block_jacobi_preconditioner, still passed -- this code path was otherwise NEVER exercised by any other test, which is why NewtonNorm.BlockJacobiPreconditionerWithExactTokensConvergesUnderMeasureWeighted (DiagonalComponent::ExactToken, an EXACT LinearizationToken built specifically to make this mutation's own effect observable rather than drowned out by an approximate preconditioner's own error) exists. Restored; cmp against the pre-mutation file reported no difference (md5 88e45dcdcb0a02b40e9342f8abb80064 both before and after)."
 
-# GAP 1 (Round 2 review): the SAME "precond-not-composed-with-inverse-
+# The SAME "precond-not-composed-with-inverse-
 # diagonal" defect as the row above, at the WINDOW path's OWN call site
 # (run_region_newton_window(), a different line than run_region_newton()'s
 # own one two rows up) -- proved against the real Brusselator example
-# (test/verification/brusselator_newton_norm_test.cpp, new this gap) at
+# (test/verification/brusselator_newton_norm_test.cpp) at
 # its own small 5x5/7x7 grid, built/run/reverted the IDENTICAL way: applied
 # by hand, rebuilt (`cmake --build /tmp/newtonmodel/build0 -j2 --target
 # fuse_verification_brusselator_newton_norm_test`), the WHOLE unfiltered
 # binary (3 tests) run, counts recorded, then restored and confirmed
 # byte-identical via `cmp` (md5 c33cd2e0828fce1f0de1d44fc9a9826b both
-# before and after -- NOT the same hash the three rows above cite: this
-# session's own GAP 1 fix to build_newton_measure_weights(), described in
-# this track's own newton-krylov.md update, changed the file's contents
-# between Round 1 and this row).
+# before and after).
 [[mutation]]
 id = "newton-norm-window-precond-not-composed-with-inverse-diagonal"
 area = "runtime/iteration (run_region_newton_window, block-Jacobi preconditioner wiring)"
@@ -96,4 +89,4 @@ new = """    (void)inv_d;  // MUTATED: preconditioner not composed with D^-1 (wi
   // newton-krylov.md Sec. 9.5's own per-sample solve needs no refresh --"""
 target = "fuse_verification_brusselator_newton_norm_test"
 test = "verification.brusselator_newton_norm"
-result = "CONFIRMED 2026-10-12: full unfiltered fuse_verification_brusselator_newton_norm_test (3 tests) ran 2 PASSED / 1 FAILED. BrusselatorNewtonNorm.WindowGmresIterationCountsPinnedWithAndWithoutBlockJacobi failed both its own composed-case pins: Newton iterations dropped 4 -> 3, total GMRES iterations dropped 42 -> 24 (per-step [1 6 17] mutated vs [1 5 17 19] composed) -- a real, measured change in the solve path, confirming this call site is exercised and this specific composition matters to it. BrusselatorNewtonNorm.WindowNewtonConvergesUnderPlainAndMeasureWeighted ALSO changed under this mutation (still passed, bound not tight enough to catch it): weighted iterations 4 -> 3, max|u_plain-u_weighted| grew from 1.332268e-15 to 7.250511e-11 and max|v_plain-v_weighted| from 2.220446e-15 to 5.361667e-11 -- both still far under that test's own 1e-6 sanity bound, so this mutation alone would NOT be caught by that test in isolation, only by the GMRES-count pins above. BrusselatorNewtonNorm.WindowDiagonalMatchesTheFormulaEntryForEntryAtTheExampleDefaults, which uses no preconditioner at all, was unaffected, as expected. Restored; cmp against the pre-mutation file reported no difference (md5 c33cd2e0828fce1f0de1d44fc9a9826b both before and after)."
+result = "CONFIRMED: full unfiltered fuse_verification_brusselator_newton_norm_test (3 tests) ran 2 PASSED / 1 FAILED. BrusselatorNewtonNorm.WindowGmresIterationCountsPinnedWithAndWithoutBlockJacobi failed both its own composed-case pins: Newton iterations dropped 4 -> 3, total GMRES iterations dropped 42 -> 24 (per-step [1 6 17] mutated vs [1 5 17 19] composed) -- a real, measured change in the solve path, confirming this call site is exercised and this specific composition matters to it. BrusselatorNewtonNorm.WindowNewtonConvergesUnderPlainAndMeasureWeighted ALSO changed under this mutation (still passed, bound not tight enough to catch it): weighted iterations 4 -> 3, max|u_plain-u_weighted| grew from 1.332268e-15 to 7.250511e-11 and max|v_plain-v_weighted| from 2.220446e-15 to 5.361667e-11 -- both still far under that test's own 1e-6 sanity bound, so this mutation alone would NOT be caught by that test in isolation, only by the GMRES-count pins above. BrusselatorNewtonNorm.WindowDiagonalMatchesTheFormulaEntryForEntryAtTheExampleDefaults, which uses no preconditioner at all, was unaffected, as expected. Restored; cmp against the pre-mutation file reported no difference (md5 c33cd2e0828fce1f0de1d44fc9a9826b both before and after)."

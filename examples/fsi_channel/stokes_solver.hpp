@@ -143,7 +143,7 @@ struct PressurePin {
 
 struct FlowState {
   std::vector<double> u, v, p;
-  // KNOWN_ISSUES.md D9 (this round): the wall traction delivered to the
+  // The wall traction delivered to the
   // beam, at t_{n+1/2} -- the SAME time level Crank-Nicolson's own
   // trapezoidal terms live at (see StokesSolver::step()'s own comment for
   // the full derivation). It is PART OF FlowState, not a separate member,
@@ -151,8 +151,7 @@ struct FlowState {
   // implicit coupling group's checkpoint verification correctly: a solver-
   // private member `wall_traction()` depends on, that `save()`/`restore()`
   // does not carry, breaks that check the moment it changes between a
-  // save and its matching restore -- an earlier round's own experiment
-  // with a similarly-unsaved member hit exactly this failure mode.
+  // save and its matching restore.
   std::vector<double> traction_mid;
 };
 
@@ -727,50 +726,49 @@ class StokesSolver {
     bcs.left.v = [](double, double) { return 0.0; };
     bcs.right.outflow = true;
 
-    // KNOWN_ISSUES.md D9, root cause and fix (this round). `cn_step`'s
+    // Pressure time level. `cn_step`'s
     // trapezoidal VISCOUS term already averages t0 and t1; incompressibility
     // (div u = 0, enforced at t1 by the continuity rows) determines only
     // that ONE combination of pressure and velocity that makes the t1
     // momentum balance hold -- which, for a fully-implicit pressure
-    // gradient (p0 = nullptr, this round's fix), the manufactured-solution
-    // fixture already showed (docs/user/fsi-channel.md, "Partitioned
-    // time-level consistency: the force side") converges to the ANALYTIC
+    // gradient (p0 = nullptr), the manufactured-solution fixture already
+    // showed (docs/user/fsi-channel.md, "Partitioned time-level
+    // consistency: the force side") converges to the ANALYTIC
     // p(t_{n+1/2}), not p(t1): the solved `p_field_` genuinely IS the
     // trapezoidal scheme's own Lagrange multiplier at the step's MIDPOINT,
     // not a t1 quantity mislabelled or a t0 quantity carried as extra state.
     //
-    // An earlier round's fix instead made the pressure GRADIENT trapezoidal
-    // (half implicit p1, half explicit p0, with p0 = the PREVIOUS step's
-    // p_field_ carried forward as literal state) specifically to make the
-    // solved value t1-accurate. That traded one defect for another: p0 as
-    // carried state is a FREE parasitic component -- incompressibility only
-    // ever pins the average p_mid = (p0+p1)/2, so p1 = 2*p_mid - p0 has a
-    // genuine |lambda|=1 mode in p0 alone (confirmed directly, this round:
+    // Making the pressure GRADIENT trapezoidal instead (half implicit p1,
+    // half explicit p0, with p0 = the PREVIOUS step's p_field_ carried
+    // forward as literal state) to make the solved value t1-accurate would
+    // trade one defect for another: p0 as carried state is a FREE parasitic
+    // component -- incompressibility only ever pins the average
+    // p_mid = (p0+p1)/2, so p1 = 2*p_mid - p0 has a genuine |lambda|=1 mode
+    // in p0 alone (confirmed directly:
     // FsiEnergyDiag.FluidAloneStepMapSpectralRadiusIsAtMostOne measures
     // rho=1.0000000000 for a mode that is ~100% pressure with u=v=0
     // identically -- the fluid alone never feels it, since only p_mid
-    // enters its own momentum balance). Reverting to a fully-implicit
-    // pressure gradient removes that parasitic state entirely: there is
-    // no p0 to carry, only the genuinely mid-step p_field_ this call
-    // produces directly -- confirmed directly by the fluid-alone spectral
-    // radius moving off exactly 1 (to 0.9946) once p0 is gone.
+    // enters its own momentum balance). A fully-implicit pressure gradient
+    // has no such parasitic state: there is no p0 to carry, only the
+    // genuinely mid-step p_field_ this call produces directly -- confirmed
+    // directly by the fluid-alone spectral radius being off exactly 1
+    // (0.9946).
     //
-    // IMPORTANT, measured directly (this round, NOT assumed): removing
-    // this parasitic mode does NOT fix D9's headline coupled-system
-    // growth. The wall traction delivered to the beam used to carry p1
-    // (the "t1-accurate" value, including the parasitic component), and
-    // the natural hypothesis was that THIS closed the feedback loop
-    // driving the coupled step map's rho~1.11 (KNOWN_ISSUES.md D9's own
-    // numbers). Measured before/after this exact change:
+    // IMPORTANT, measured directly (NOT assumed): removing this parasitic
+    // mode does NOT remove the coupled system's energy growth. The wall
+    // traction delivered to the beam used to carry p1 (the "t1-accurate"
+    // value, including the parasitic component), and the natural hypothesis
+    // was that THIS closed the feedback loop driving the coupled step map's
+    // rho~1.11. Measured with and without the parasitic mode:
     // FsiEnergyDiag.CoupledStepMapRevealsTheGrowthMechanism's own rho
     // moves from 1.115467 to 1.115466 -- unchanged to 4 significant
     // figures -- and an ablation that zeroes the pressure term in the
-    // delivered traction gives the identical rho=1.000512 before and
-    // after this change. The parasitic p0 mode is real and is correctly
-    // removed here, but it is demonstrably NOT the (or not the only)
-    // mechanism sustaining D9's coupled energy growth; that mechanism is
-    // still open (KNOWN_ISSUES.md D9's "round 2" section).
-    // DIAGNOSTIC HOOK ONLY (track FsiMassCorr): if non-null, capture the
+    // delivered traction gives the identical rho=1.000512 with and
+    // without it. The parasitic p0 mode is real and is correctly absent
+    // here, but it is demonstrably NOT the (or not the only) mechanism
+    // sustaining the coupled energy growth; that mechanism is still open
+    // (see docs/user/fsi-channel.md).
+    // DIAGNOSTIC HOOK ONLY: if non-null, capture the
     // exact (u_, v_) fed into this call immediately before it -- lets the
     // test verify these equal diag.u0/diag.v0 bit-for-bit, rather than
     // assuming the Runner's checkpoint/restore contract guarantees it.
@@ -814,8 +812,8 @@ class StokesSolver {
     // it lives entirely here, never in `cn_step` itself, so the MMS
     // spatial/temporal-order suite is unaffected too), so the correction
     // is a genuine no-op there and a real, physically-motivated one only
-    // when the wall actually moves. An earlier round measured this
-    // correction alone changes the coupled step map's spectral radius by
+    // when the wall actually moves. Measured alone, this
+    // correction changes the coupled step map's spectral radius by
     // well under 1% -- consistent with it correcting a real but
     // SEPARATE local-continuity defect, not the parasitic-pressure-state
     // mechanism the fix above addresses.
@@ -868,15 +866,15 @@ class StokesSolver {
         // v_wall = +wdot). Cauchy's sigma.n with the fluid's outward normal
         // n = +e_y is the traction the wall exerts on the fluid; the force
         // on the wall is its negative: +p - 2 mu dv/dy. A pressurised
-        // channel pushes its wall OUTWARD. This carried the opposite sign
-        // (-p + 2 mu dv/dy, i.e. the force on the fluid) until 2026-09-25,
-        // which handed the beam a NEGATIVE added mass: KNOWN_ISSUES.md D9's
-        // real eigenvalue 1.115466 with a pressure-and-first-bending-mode
-        // eigenvector, insensitive to every boundary detail four rounds of
-        // energy budgets varied, because every check compared the delivered
-        // vector with itself. With the sign right the coupled step map's
-        // spectral radius is 1.000000 (the Newmark acceleration passenger at
-        // -1), measured in fsi_energy_diag_test.cpp before this line changed.
+        // channel pushes its wall OUTWARD. The opposite sign
+        // (-p + 2 mu dv/dy, i.e. the force on the fluid) would hand the beam
+        // a NEGATIVE added mass: the coupled step map would have a real
+        // eigenvalue 1.115466 with a pressure-and-first-bending-mode
+        // eigenvector, insensitive to every boundary detail, because any
+        // check that compares the delivered vector with itself cannot see it.
+        // With the sign right the coupled step map's spectral radius is
+        // 1.000000 (the Newmark acceleration passenger at -1), measured in
+        // fsi_energy_diag_test.cpp.
         traction[i] = p_wall_mid - 2.0 * p_.mu * dvdy_mid;
       }
     }
@@ -889,7 +887,7 @@ class StokesSolver {
 
   /// Mid-step wall traction, `-p_{n+1/2} + 2 mu (dv/dy)_{n+1/2}`, one value
   /// per wall-face column (size nx) -- see `step()`'s own comment for the
-  /// KNOWN_ISSUES.md D9 derivation. Cached in `step()` (needs the t0 `v_`
+  /// derivation. Cached in `step()` (needs the t0 `v_`
   /// array, no longer available once `step()` returns), not recomputed
   /// here; a plain accessor.
   [[nodiscard]] const std::vector<double>& wall_traction() const {
@@ -980,7 +978,7 @@ class StokesSolver {
   CnStepLuCache lu_cache_;
 
  public:
-  // DIAGNOSTIC ONLY (track FsiMassCorr). See step()'s own comment above.
+  // DIAGNOSTIC ONLY. See step()'s own comment above.
   std::vector<double>* debug_last_u0_used = nullptr;
   std::vector<double>* debug_last_v0_used = nullptr;
 };

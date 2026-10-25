@@ -1,6 +1,5 @@
 """A second coupled problem, chosen to be solvable by hand, with a tolerance DERIVED from
-that solution rather than picked by trial and error -- the owner's third ruling
-(2026-10-12) on top of the dn_heat byte-for-byte reproduction in test_dn_heat_rows.py.
+that solution rather than picked by trial and error -- on top of the dn_heat byte-for-byte reproduction in test_dn_heat_rows.py.
 
 THE PROBLEM. Two components, one scalar field each, one spatial point (a "generated:
 line:1" mesh/region, dimension 1, 1 cell -- the smallest region fuse's serial backend
@@ -47,8 +46,7 @@ point a-posteriori identity is exact here, not approximate:
     e_m = RHO * e_{m-1}        and        (value_m - value_{m-1}) = e_m - e_{m-1} = e_{m-1}*(RHO-1)
     => e_m = RHO/(1-RHO) * (value_m - value_{m-1})                      -- an EQUALITY.
 
-Measured directly (see the probe this file's own test ran before any assertion existed, in
-this track's structured report): for the component whose field just changed on the final
+Measured directly (with a probe run before any assertion existed): for the component whose field just changed on the final
 sweep (always Source.x, by construction -- see the trace above), |Source.x - y*| equals
 RHO/(1-RHO) * R to within floating-point roundoff accumulated over the sweep count, not
 merely bounded by it. The OTHER field (Mirror.y) can be one round trip further behind in the
@@ -62,7 +60,7 @@ takes to reach TOL=1e-10, not fitted to make the test pass.
 import numpy as np
 import pytest
 
-pfuse = pytest.importorskip("pfuse", reason="Stage B has not built the _pfuse extension yet")
+pfuse = pytest.importorskip("pfuse", reason="the _pfuse extension is not built")
 
 RHO = 0.3
 C = 2.0
@@ -70,8 +68,8 @@ Y0 = 0.0
 TOL = 1.0e-10
 MAX_ITERATIONS = 100
 # Floating-point allowance on top of the two EXACT identities above: accumulated rounding
-# over a ~40-sweep run of double-precision arithmetic, measured directly (this track's
-# structured report) at ~1.3e-6 relative between the identity's two sides -- a handful of
+# over a ~40-sweep run of double-precision arithmetic, measured directly at
+# ~1.3e-6 relative between the identity's two sides -- a handful of
 # ULPs compounded through ~40 multiply-adds, not a fitted margin. 1e-4 relative is a
 # two-orders-of-magnitude allowance over that measurement, not a tight fit to it.
 _FP_SLACK = 1.0 + 1.0e-4

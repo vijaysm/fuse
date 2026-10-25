@@ -1,37 +1,30 @@
-# Mutations for S7.2's own addition to examples/dn_heat: DirichletSlab's
-# nonlinear conductivity (k1_eff(), dn_component.hpp), the mechanism this
-# track's own dn_heat-by-Newton rate measurement depends on. New file,
-# following the SAME per-example naming convention build-evidence/
-# mutations/brusselator.toml already uses (one mutations file per
-# example, named after it) -- not one of the four files this track's own
-# brief names explicitly ({num,runtime,model,brusselator}.toml), because
-# dn_heat's own nonlinear variant did not exist when that list was
-# written.
+# Mutations for examples/dn_heat: DirichletSlab's nonlinear conductivity
+# (k1_eff(), dn_component.hpp), the mechanism the dn_heat-by-Newton rate
+# measurement depends on. One mutations file per example, named after it,
+# following build-evidence/mutations/brusselator.toml.
 #
-# Hand-proven, not run through tools/mutate.py itself (this track's own
-# working tree carries untracked new files throughout the session, the
-# standing rule against any state-changing git): backed up, mutated,
+# Hand-proven, not run through tools/mutate.py itself: backed up, mutated,
 # rebuilt (`cmake --build /tmp/newton/b0 --target
 # fuse_runtime_newton_region_test`), run UNFILTERED, restored,
 # cmp-verified byte-identical, rebuilt and reran to confirm the full
-# count returns. Build directory: /tmp/newton/b0 (tier 0, this track's
-# own scratch build).
+# count returns. Build directory: /tmp/newton/b0 (tier 0, a scratch
+# build).
 
 [[mutation]]
 id = "dn-heat-k1-eff-nonlinearity-dropped-in-advance"
 area = "dn-heat"
-describes = "DirichletSlab::advance() reverts to the plain affine k1_at(i, n_) instead of calling k1_eff(i, u_in_[i]) -- beta's own nonlinearity (and t_ref) would then have no effect on the component's real, persisted state at all, even though evaluate_residual() (if left unmutated) would still report the nonlinear residual -- the two would silently disagree about what this component computes, and every mode this track's own nonlinear variant exists to measure (the quadratic rate, the line-search engagement) would be measuring the AFFINE map it claims not to be."
+describes = "DirichletSlab::advance() reverts to the plain affine k1_at(i, n_) instead of calling k1_eff(i, u_in_[i]) -- beta's own nonlinearity (and t_ref) would then have no effect on the component's real, persisted state at all, even though evaluate_residual() (if left unmutated) would still report the nonlinear residual -- the two would silently disagree about what this component computes, and every mode the nonlinear variant exists to measure (the quadratic rate, the line-search engagement) would be measuring the AFFINE map it claims not to be."
 file = "examples/dn_heat/dn_component.hpp"
 old = """      q_[i] = k1_eff(i, u_in_[i]) * (T1 - u_in_[i]) / kL1;"""
 new = """      q_[i] = k1_at(i, n_) * (T1 - u_in_[i]) / kL1;"""
 target = "fuse_runtime_newton_region_test"
 test = "runtime.newton_region"
-result = "Hand-proved 2026-10-10: 14 cases, all pass before; after mutation, 1 fails (Dn.NonlinearAtBetaZeroIsBitIdenticalToTheAffineMap -- its own EXPECT_NE(baseline.q()[i], nonlinear.q()[i]) now finds the two EQUAL, since the mutated advance() computes the same plain k1_at(i, n_) formula regardless of beta), 13 pass. QuadraticRateMeasuredOnTheNonlinearProblem and LineSearchEngagesAndRecoversFromADeliberatelyPoorGuess do not fail under this mutation -- the now-purely-affine map Newton solves happens to still satisfy both tests' own assertions (a clean, if now trivial, convergence sequence and more than one Newton step from the poor guess), which is why the bit-identical test, not the measurement tests, is the one load-bearing check for this specific defect. File restored and cmp-verified byte-identical; rebuilt and reran to confirm all 14 pass again."
+result = "Hand-proved: 14 cases, all pass before; after mutation, 1 fails (Dn.NonlinearAtBetaZeroIsBitIdenticalToTheAffineMap -- its own EXPECT_NE(baseline.q()[i], nonlinear.q()[i]) now finds the two EQUAL, since the mutated advance() computes the same plain k1_at(i, n_) formula regardless of beta), 13 pass. QuadraticRateMeasuredOnTheNonlinearProblem and LineSearchEngagesAndRecoversFromADeliberatelyPoorGuess do not fail under this mutation -- the now-purely-affine map Newton solves happens to still satisfy both tests' own assertions (a clean, if now trivial, convergence sequence and more than one Newton step from the poor guess), which is why the bit-identical test, not the measurement tests, is the one load-bearing check for this specific defect. File restored and cmp-verified byte-identical; rebuilt and reran to confirm all 14 pass again."
 
 [[mutation]]
 id = "dn-heat-newton-generic-tick-restore-removed"
 area = "runtime"
-describes = "run_region_newton() (src/runtime/iteration.cpp) no longer restores every component's state right after seeding x and before calling fuse::num::solve(). step_period()'s own top comment (src/runtime/runner.cpp): by the time control reaches ANY region, every participant has already been advanced once by the generic per-period tick walk, and checkpoint_regions() saves BEFORE that tick specifically so a Picard sweep loop's own repeated restore_state() calls (which all target checkpoint_regions()'s own save point) undo it along with every sweep's own advance. evaluate_region_residual()'s own save/restore is self-referential -- every call restores to what IT most recently saved, never to checkpoint_regions()'s earlier point -- so without this track's own extra restore, that first generic tick is never undone by anything a Newton-selected region does, and the verification sweep's one committed advance lands on top of it: two real advances baked into persisted state per period instead of one. Numerically harmless (q_/u_ are overwritten from scratch by the committed evaluate_region_residual() call regardless of what this restore leaves them at -- the mutation does not move any L2-error or bit-identical gate), but dn_component.hpp's own contract (\"after P coupling cycles a correct run has history() == P exactly\") silently breaks for every Newton-selected region, exactly the invariant examples/dn_heat/main.cpp's own picard/aitken/iqn-ils gates already read for the Picard-family rows."
+describes = "run_region_newton() (src/runtime/iteration.cpp) no longer restores every component's state right after seeding x and before calling fuse::num::solve(). step_period()'s own top comment (src/runtime/runner.cpp): by the time control reaches ANY region, every participant has already been advanced once by the generic per-period tick walk, and checkpoint_regions() saves BEFORE that tick specifically so a Picard sweep loop's own repeated restore_state() calls (which all target checkpoint_regions()'s own save point) undo it along with every sweep's own advance. evaluate_region_residual()'s own save/restore is self-referential -- every call restores to what IT most recently saved, never to checkpoint_regions()'s earlier point -- so without this extra restore, that first generic tick is never undone by anything a Newton-selected region does, and the verification sweep's one committed advance lands on top of it: two real advances baked into persisted state per period instead of one. Numerically harmless (q_/u_ are overwritten from scratch by the committed evaluate_region_residual() call regardless of what this restore leaves them at -- the mutation does not move any L2-error or bit-identical gate), but dn_component.hpp's own contract (\"after P coupling cycles a correct run has history() == P exactly\") silently breaks for every Newton-selected region, exactly the invariant examples/dn_heat/main.cpp's own picard/aitken/iqn-ils gates already read for the Picard-family rows."
 file = "src/runtime/iteration.cpp"
 old = """  for (const std::size_t slot : R.component_slots) {
     const Result<void> r = components.at(slot).restore_state();
@@ -43,4 +36,4 @@ old = """  for (const std::size_t slot : R.component_slots) {
 new = """  const num::NewtonKrylovOptions opt ="""
 target = "fuse_runtime_newton_region_test"
 test = "runtime.newton_region"
-result = "Hand-proved 2026-10-10: 15 cases, all pass before; after mutation, 1 fails (NewtonRegion.HistoryAccumulatesExactlyOncePerPeriodNotTwice: EXPECT_DOUBLE_EQ(s.dirichlet->history(), 3.0) finds 6.0 instead, over 3 periods), 14 pass. File restored and cmp-verified byte-identical; rebuilt and reran to confirm all 15 pass again."
+result = "Hand-proved: 15 cases, all pass before; after mutation, 1 fails (NewtonRegion.HistoryAccumulatesExactlyOncePerPeriodNotTwice: EXPECT_DOUBLE_EQ(s.dirichlet->history(), 3.0) finds 6.0 instead, over 3 periods), 14 pass. File restored and cmp-verified byte-identical; rebuilt and reran to confirm all 15 pass again."

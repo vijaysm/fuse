@@ -46,7 +46,7 @@
 ///     apex is a genuine basis singularity; see e.g. Bedrosian's or
 ///     Zgainski's rational pyramid element), not the polynomial family every
 ///     other shape here uses, and implementing and validating a rational
-///     basis is out of this track's scope -- rejecting loudly beats a
+///     basis is out of scope -- rejecting loudly beats a
 ///     plausible but unvalidated one.
 ///   * `Polygon` (n > 4) and `Polyhedron` -- no STANDARD nodal basis exists
 ///     for either (cell_simplices.hpp's `Polygon` decomposition is a fan
@@ -609,13 +609,12 @@ inline constexpr double kRefEpsLoose = kSurfaceTol;
 /// (`y = z = 0` on both corners and the target), rather than the direct
 /// ratio `(target_x - lo_x) / (hi_x - lo_x)`.
 ///
-/// WHY THIS EXISTS (KNOWN_ISSUES.md D67). `consistent_interp.hpp`'s 1D
-/// coordinate-sort algorithm (`build_consistent_interp_weights_1d`) used to
-/// compute this exact ratio directly with that one division;
-/// `build_distributed_interp_rows` (nodal_remap_distributed.hpp) and
-/// `build_general_interp_weights` above compute the SAME physical quantity
-/// for an Edge cell through `invert_reference_map`'s damped Gauss-Newton
-/// instead -- one step from `u = 0`, landing at `du = dot(jac, res) /
+/// WHY THIS EXISTS. `consistent_interp.hpp`'s 1D coordinate-sort algorithm
+/// (`build_consistent_interp_weights_1d`) must not compute this exact ratio
+/// directly with that one division: `build_distributed_interp_rows`
+/// (nodal_remap_distributed.hpp) and `build_general_interp_weights` above
+/// compute the SAME physical quantity for an Edge cell through
+/// `invert_reference_map`'s damped Gauss-Newton instead -- one step from `u = 0`, landing at `du = dot(jac, res) /
 /// dot(jac, jac)` with `jac = p1 - p0`, `res = target - p0` (exact to
 /// round-off for an affine cell, per this file's own header comment on
 /// why an affine shape converges in one step). The two expressions are
@@ -844,14 +843,14 @@ inline constexpr double kRefEpsLoose = kSurfaceTol;
     for (const std::size_t ci : candidates) {
       const auto inv = invert_reference_map(cells[ci], target);
       if (!inv.ok()) {
-        // Skip just this candidate (the D74 sibling fix -- KNOWN_ISSUES.md):
+        // Skip just this candidate:
         // a failed inversion means THIS candidate does not contain the
         // point, exactly like a candidate that converges but lands outside
         // the reference domain -- it must never abort the whole evaluation
         // point while another candidate in this same list already contains
         // it (or still might, later in the loop). Mirrors
-        // nodal_remap_distributed.cpp's own `consider()` lambda (D74's own
-        // fix, same file header) byte-for-byte in intent: an unconditional
+        // nodal_remap_distributed.cpp's own `consider()` lambda
+        // byte-for-byte in intent: an unconditional
         // `return Failure{...}` here previously discarded an
         // ALREADY-FOUND tight match whenever a LATER candidate in the same
         // broad-phase set merely failed to converge or was geometrically
@@ -924,7 +923,7 @@ inline constexpr double kRefEpsLoose = kSurfaceTol;
                       j, target.x, target.y, target.z)};
     }
 
-    // REVIEW.md TF-10: the up-front loop above already validated this exact
+    // The up-front loop above already validated this exact
     // call for every source cell, including `use_cell` -- but re-deriving
     // the same corner list here rather than keeping the up-front one is
     // the existing shape of this function, and `.value()` on an unchecked
@@ -960,9 +959,9 @@ inline constexpr double kRefEpsLoose = kSurfaceTol;
   // not what makes `OperatorClaims::conservative` true (a vertex has no
   // measure to weight a "conservative" column sum by).
   for (const double s : col_sum) w.max_col_defect = std::max(w.max_col_defect, std::abs(s - 1.0));
-  // REVIEW.md TF-16: the comment above was never enforced structurally --
-  // `WeightsOperator::claims()` read `max_col_defect` directly regardless
-  // of which builder produced it. Say so on the matrix itself now.
+  // The comment above is also enforced structurally: `WeightsOperator::claims()`
+  // would otherwise read `max_col_defect` regardless of which builder
+  // produced it, so say so on the matrix itself.
   w.col_defect_is_measure_weighted = false;
   w.min_weight = min_weight;
   w.monotone = (w.min_weight >= -1e-12) && (w.max_row_defect <= 1e-8);

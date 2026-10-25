@@ -1,5 +1,5 @@
-# Mutations for cmake/FuseMpiDynamic.cmake: the accept/connect probe's cache rules
-# (KNOWN_ISSUES.md D35). The test is the ctest row build.mpi_dynamic_cache_decisions,
+# Mutations for cmake/FuseMpiDynamic.cmake: the accept/connect probe's cache rules.
+# The test is the ctest row build.mpi_dynamic_cache_decisions,
 # which runs tools/check-mpi-dynamic-cache.cmake over plain values. The target is any
 # buildable target: the mutated module is included by FuseDependencies.cmake, so
 # building it re-runs the configure (the same arrangement as build-host-cores.toml).
@@ -7,7 +7,7 @@
 [[mutation]]
 id = "mpi-dynamic-untested-verdict-is-cached"
 area = "build_mpi_dynamic"
-describes = "A verdict of 'not tested' records that NO measurement happened. Treating it as cacheable means a reconfigure on a machine whose launcher has since become usable still does not measure -- the state the owner's build tree was in after the MPI reinstall."
+describes = "A verdict of 'not tested' records that NO measurement happened. Treating it as cacheable means a reconfigure on a machine whose launcher has since become usable still does not measure -- the state a build tree is left in after an MPI reinstall."
 file = "cmake/FuseMpiDynamic.cmake"
 old = "     AND NOT \"${cached_verdict}\" STREQUAL \"not tested\"\n"
 new = ""
@@ -18,7 +18,7 @@ result = "KILLED by tools/mutate.py --area build_mpi_dynamic on a tier-0 tree co
 [[mutation]]
 id = "mpi-dynamic-fingerprint-ignored"
 area = "build_mpi_dynamic"
-describes = "A cached verdict is reused whatever MPI is configured now. A 'measured broken' then outlives the reinstall that fixed it (D23's ch3:nemesis -> ch4:ofi), and nothing ever re-measures."
+describes = "A cached verdict is reused whatever MPI is configured now. A 'measured broken' then outlives the reinstall that fixed it (e.g. MPICH's ch3:nemesis -> ch4:ofi), and nothing ever re-measures."
 file = "cmake/FuseMpiDynamic.cmake"
 old = "     AND \"${cached_fingerprint}\" STREQUAL \"${fingerprint}\")"
 new = ")"
@@ -62,7 +62,7 @@ result = "KILLED by hand on a scratch copy of cmake/FuseMpiDynamic.cmake: tools/
 [[mutation]]
 id = "mpi-dynamic-layouts-missing-record-is-a-measurement"
 area = "build_mpi_dynamic"
-describes = "fuse_mpi_dynamic_layouts_missing() stops reporting an empty per-layout record as missing. A verdict cached before this record existed (or one from a build directory that predates it) would then be reused without ever probing the multi-rank layouts -- exactly the D35 defect this entry's own per-layout record exists to not repeat."
+describes = "fuse_mpi_dynamic_layouts_missing() stops reporting an empty per-layout record as missing. A verdict cached before this record existed (or one from a build directory that predates it) would then be reused without ever probing the multi-rank layouts -- exactly the defect this entry's own per-layout record exists to not repeat."
 file = "cmake/FuseMpiDynamic.cmake"
 old = "function(fuse_mpi_dynamic_layouts_missing cached_layouts out)\n  if(\"${cached_layouts}\" STREQUAL \"\")\n    set(${out} TRUE PARENT_SCOPE)\n  else()\n    set(${out} FALSE PARENT_SCOPE)\n  endif()\nendfunction()"
 new = "function(fuse_mpi_dynamic_layouts_missing cached_layouts out)\n  set(${out} FALSE PARENT_SCOPE)\nendfunction()"
@@ -73,13 +73,13 @@ result = "KILLED by hand on a scratch copy: layouts_missing(|TRUE) now reads FAL
 [[mutation]]
 id = "mpi-dynamic-layouts-value-owner-override-ignored"
 area = "build_mpi_dynamic"
-describes = "fuse_mpi_dynamic_layouts_value() always follows the fresh probe, never keeping an owner's own hand edit to FUSE_MPI_DYNAMIC_LAYOUTS -- the same class of defect build-mpi-dynamic-option-never-follows-the-probe names for the boolean option, here for the per-layout string record."
+describes = "fuse_mpi_dynamic_layouts_value() always follows the fresh probe, never keeping a hand edit to FUSE_MPI_DYNAMIC_LAYOUTS -- the same class of defect build-mpi-dynamic-option-never-follows-the-probe names for the boolean option, here for the per-layout string record."
 file = "cmake/FuseMpiDynamic.cmake"
 old = "  if(\"${previous_value}\" STREQUAL \"${previous_auto}\")\n    set(${out} \"${new_value}\" PARENT_SCOPE)\n  else()\n    set(${out} \"${previous_value}\" PARENT_SCOPE)\n  endif()\nendfunction()"
 new = "  set(${out} \"${new_value}\" PARENT_SCOPE)\nendfunction()"
 target = "fuse-coupler-base"
 test = "build.mpi_dynamic_cache_decisions"
-result = "KILLED by hand on a scratch copy: layouts_value(1+1:3/3|1+1:0/3|1+1:2/3|1+1:3/3) now reads '1+1:2/3' instead of the expected '1+1:3/3' (the owner's kept edit), cmake -P exits 1; the unmutated and restored copies exit 0."
+result = "KILLED by hand on a scratch copy: layouts_value(1+1:3/3|1+1:0/3|1+1:2/3|1+1:3/3) now reads '1+1:2/3' instead of the expected '1+1:3/3' (the kept edit), cmake -P exits 1; the unmutated and restored copies exit 0."
 
 [[mutation]]
 id = "mpi-dynamic-parse-probe-output-unanchored"

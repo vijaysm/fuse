@@ -1,12 +1,9 @@
-// KNOWN_ISSUES.md D15 ("Cross check" track, owner instruction 2026-10-22:
-// "For all judgement calls, cross verify on higgs"), Stage 3. Background:
-// src/abi/provider_adapter.cpp's `unhosted_shell_` branch (register_fields())
+// Background: src/abi/provider_adapter.cpp's `unhosted_shell_` branch (register_fields())
 // registers EVERY field as fuse::MemorySpace::Host, count 0, on a rank that
 // does not host a Plugin component -- it never calls describe(), because the
 // plugin is not loaded there. A hosting rank registers whatever memspace the
 // plugin's own describe() reports, which for a device-resident field is
-// FUSE_MEMSPACE_DEVICE. The lead's own concern (recorded here, not yet
-// measured anywhere in this tree before this round): with
+// FUSE_MEMSPACE_DEVICE. The concern this file measures: with
 // FUSE_EXECUTION_SPACE=device, a non-hosting rank's Runner may see a
 // Host-space, count-0 view for a field the hosting rank holds on the
 // device, and either refuse with E-RT-SPACE or mis-count
@@ -29,7 +26,7 @@
 // ("device_in", "echo_out") are left unbound, which test/abi/plugins/
 // device_layout_provider.cpp's own p_bind()/p_advance() already tolerate
 // (FieldSlot::bound stays false for an unregistered field; see that file's
-// own D24/round5 comment on count==0).
+// own comment on count==0).
 //
 // Both acceptable outcomes are handled explicitly by this file: if
 // fuse_initialize() succeeds, this test keeps running and asserts the
@@ -137,7 +134,7 @@ class ExecutionSpaceEnvGuard {
 /// plugin's own C++ source. `hosted` (constructor argument, the caller's
 /// own `graph.component(...).ranks.contains(rank)` check) decides whether
 /// this rank registers the real kComponents-wide view or an empty one, the
-/// same convention DownstreamSink's own header comment documents for D24.
+/// same convention DownstreamSink's own header comment documents.
 class HostConsumer final : public fuse::Component {
  public:
   explicit HostConsumer(bool hosted) : hosted_(hosted) {}
@@ -183,23 +180,21 @@ class HostConsumer final : public fuse::Component {
 
 }  // namespace
 
-// DISABLED_ (measured 2026-10-22, "Cross check" track, Stage 3, ssh:higgs,
-// Open MPI 5.0.9 + Kokkos CUDA): fuse_initialize() fails before this test
-// reaches the device-memspace question it was written to measure. Both
-// ranks fail identically with E-RT-SIZE, "field 'mixed.device_out' is
-// registered with 1x3 values but the plan sizes its region at 0x3"
-// (fuse::Runner::Impl::resolve_buffers, src/runtime/runner.cpp:361).
-// CAUSE (KNOWN_ISSUES.md D85): the setup call below passed
-// MPI_Comm_c2f(MPI_COMM_WORLD) without has_communicator. MEASURED on higgs
-// (lead, 2026-10-23): that handle is 0 under Open MPI 5.0.9 (0x44000000 under
-// MPICH). READ in src/abi/participant.cpp: a handle of 0 without
-// has_communicator=1 means "no communicator", so each rank took rank 0 of 1.
-// INFERRED, not yet measured: a plugin at RankSet{1, 1} was then excluded from
-// the region's sizing, giving the 0x3 above. The setup call now sets
-// has_communicator = 1 (D86's field). NOT YET RUN on higgs: remove the
-// DISABLED_ prefix only after that run shows the row reaches the
-// device-memspace question; if it fails differently, D85's inference was
-// incomplete and the new failure is the finding.
+// DISABLED_: with Open MPI 5.0.9 + Kokkos CUDA, fuse_initialize() failed
+// before this test reached the device-memspace question it was written to
+// measure. Both ranks failed identically with E-RT-SIZE, "field
+// 'mixed.device_out' is registered with 1x3 values but the plan sizes its
+// region at 0x3" (fuse::Runner::Impl::resolve_buffers,
+// src/runtime/runner.cpp). The suspected cause: the setup call passed
+// MPI_Comm_c2f(MPI_COMM_WORLD) without has_communicator. That handle is 0
+// under Open MPI 5.0.9 (0x44000000 under MPICH), and src/abi/participant.cpp
+// reads a handle of 0 without has_communicator=1 as "no communicator", so
+// each rank took rank 0 of 1; a plugin at RankSet{1, 1} was then (inferred)
+// excluded from the region's sizing, giving the 0x3 above. The setup call
+// now sets has_communicator = 1. Remove the DISABLED_ prefix only after a
+// run shows the row reaches the device-memspace question; if it fails
+// differently, that inference was incomplete and the new failure is the
+// finding.
 TEST(ProviderDeviceSubsetMpi,
     DISABLED_ADeviceResidentPluginFieldOnARankSubsetIsSeenCorrectlyByTheNonHostingRank) {
   if constexpr (!kHasDeviceBackend) GTEST_SKIP() << "no device backend";
@@ -215,7 +210,7 @@ TEST(ProviderDeviceSubsetMpi,
   const ExecutionSpaceEnvGuard env_guard("device");
 
   // "mixed" (the device_layout_provider plugin) is placed on rank 1 only --
-  // RankSet{1, 1} -- per this round's own task. "consumer" (native,
+  // RankSet{1, 1}. "consumer" (native,
   // injected below) is placed on rank 0 only, mirroring provider_subset_
   // mpi_test.cpp's own "downstream" convention exactly.
   fuse::CouplingGraph g;
@@ -241,7 +236,7 @@ TEST(ProviderDeviceSubsetMpi,
   // one of them, even a field this test never wires to a channel. Declared
   // here, left unconnected (W-NO-CONSUMER / no producer, warnings only, not
   // E-codes -- include/fuse/model/validate.hpp) -- this test exercises
-  // "device_out" alone, per this round's own task.
+  // "device_out" alone.
   (void)g.add_field(
       mixed, fuse::FieldSpec{.name = "device_in", .region = r1, .components = 1,
                             .units = fuse::units::kKelvin,
@@ -274,10 +269,10 @@ TEST(ProviderDeviceSubsetMpi,
   fuse_setup_options opts{.struct_size = sizeof(opts)};
   opts.communicator = static_cast<std::int64_t>(MPI_Comm_c2f(MPI_COMM_WORLD));
   // Open MPI's Fortran handle for MPI_COMM_WORLD is 0, which the ABI reads as
-  // "none" unless has_communicator says the handle is deliberate (KNOWN_ISSUES.md D86, D85).
+  // "none" unless has_communicator says the handle is deliberate.
   opts.has_communicator = 1;
   const fuse_status setup_rc = t->setup(ctx, &opts, nullptr);
-  std::fprintf(stdout, "XCHECK3 rank=%d world_size=%d setup_rc=%d\n", rank, world_size,
+  std::fprintf(stdout, "DEVSUBSET rank=%d world_size=%d setup_rc=%d\n", rank, world_size,
               setup_rc);
   std::fflush(stdout);
   ASSERT_EQ(setup_rc, FUSE_OK);
@@ -292,14 +287,13 @@ TEST(ProviderDeviceSubsetMpi,
   err.buffer = buf;
   err.capacity = sizeof(buf);
   t->last_error(ctx, nullptr, &err);
-  std::fprintf(stdout, "XCHECK3 rank=%d init_rc=%d msg=%s\n", rank, init_rc,
+  std::fprintf(stdout, "DEVSUBSET rank=%d init_rc=%d msg=%s\n", rank, init_rc,
               buf[0] != '\0' ? buf : "<none>");
   std::fflush(stdout);
 
   if (init_rc != FUSE_OK) {
-    // Per this round's own instruction: measure only, do not fix. Report
-    // verbatim, on every rank, and stop here -- never a hang, never a
-    // crash.
+    // Report verbatim, on every rank, and stop here -- never a hang, never
+    // a crash.
     std::fprintf(stderr, "rank %d: fuse_initialize failed: %s\n", rank, buf);
     std::fflush(stderr);
     FAIL() << "rank " << rank << ": fuse_initialize failed: " << buf;
@@ -309,7 +303,7 @@ TEST(ProviderDeviceSubsetMpi,
   // What memspace did THIS rank register for "device_out"? Via
   // fuse::abi_test::field_registry_of() -- the same reach-past-the-ABI seam
   // test/abi/conformance_test.cpp's own provider-parity checks already use
-  // (KNOWN_ISSUES.md D15, Stage B-1, item 2) -- not the plugin's own
+  // -- not the plugin's own
   // dlsym() accessor, which has no instance to read on rank 0 at all
   // (RankSet{1, 1} does not host "mixed" there, so register_fields() took
   // provider_adapter.cpp's own unhosted_shell_ branch, never dlopen()ing
@@ -322,19 +316,19 @@ TEST(ProviderDeviceSubsetMpi,
   const char* memspace_name =
       out_view.space() == fuse::MemorySpace::Device ? "Device" : "Host";
   std::fprintf(stdout,
-              "XCHECK3 rank=%d device_out_memspace=%s count=%zu components=%d\n", rank,
+              "DEVSUBSET rank=%d device_out_memspace=%s count=%zu components=%d\n", rank,
               memspace_name, out_view.layout().count, out_view.layout().components);
   std::fflush(stdout);
 
   // fuse_run() takes a request, never a null pointer (check_struct_size refuses
-  // it before storing any message; measured on higgs 2026-10-23). Three periods:
+  // it before storing any message). Three periods:
   // delivery lags one period, so the consumer sees the plugin's value from
   // period 1 on, which is what the assertion below reads.
   fuse_run_request rr{.struct_size = sizeof(rr)};
   rr.periods = 3;
   const fuse_status run_rc = t->run(ctx, &rr, nullptr);
   t->last_error(ctx, nullptr, &err);
-  std::fprintf(stdout, "XCHECK3 rank=%d run_rc=%d msg=%s\n", rank, run_rc,
+  std::fprintf(stdout, "DEVSUBSET rank=%d run_rc=%d msg=%s\n", rank, run_rc,
               buf[0] != '\0' ? buf : "<none>");
   std::fflush(stdout);
   if (run_rc != FUSE_OK) {
@@ -346,7 +340,7 @@ TEST(ProviderDeviceSubsetMpi,
 
   const fuse::RunStats stats = fuse::abi_test::run_stats(ctx);
   std::fprintf(stdout,
-              "XCHECK3 rank=%d periods=%lld device_resident_arcs=%lld "
+              "DEVSUBSET rank=%d periods=%lld device_resident_arcs=%lld "
               "device_boundary_copies=%lld device_staged_copies=%lld\n",
               rank, static_cast<long long>(stats.periods),
               static_cast<long long>(stats.device_resident_arcs),
@@ -372,7 +366,7 @@ TEST(ProviderDeviceSubsetMpi,
     // a prior run and pasted in.
     for (int c = 0; c < kComponents; ++c) {
       const double expected = 1000.0 * 1.0 + static_cast<double>(c + 1);
-      std::fprintf(stdout, "XCHECK3 rank=0 component=%d delivered=%.17g expected=%.17g\n", c,
+      std::fprintf(stdout, "DEVSUBSET rank=0 component=%d delivered=%.17g expected=%.17g\n", c,
                   last[static_cast<std::size_t>(c)], expected);
     }
     std::fflush(stdout);

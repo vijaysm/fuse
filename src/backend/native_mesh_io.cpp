@@ -176,7 +176,7 @@ class TokenReader {
     while (std::getline(in, line)) {
       if (line.rfind("# FUSE_MESH_DIM", 0) == 0) {
         std::istringstream iss(line.substr(std::string("# FUSE_MESH_DIM").size()));
-        // NM-13: conventions.md's canonical-text rule ("pin
+        // conventions.md's canonical-text rule ("pin
         // std::locale::classic() on EVERY stream it creates") covers this
         // reader's own per-line streams too, not just the file stream the
         // writer pins -- only this one extracts more than a single digit

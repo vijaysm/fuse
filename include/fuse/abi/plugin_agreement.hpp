@@ -1,15 +1,14 @@
 #pragma once
 
-/// KNOWN_ISSUES.md D15 ("Registry agreement" track, owner decision
-/// 2026-10-22, verbatim: "...when a multi-executable launch has no base
+/// Registry agreement: when a multi-executable launch has no base
 /// communicator spanning all executables before connect(), validate a
 /// priori during init and throw an error with details on why this cannot
-/// be run"). SPLIT FOR TESTABILITY, the same reason include/fuse/abi/
+/// be run. SPLIT FOR TESTABILITY, the same reason include/fuse/abi/
 /// collective_reconcile.hpp's own module comment gives for the
 /// reconciliation arithmetic: whether THIS process's own base
 /// communicator can be trusted to span every executable a Plugin
 /// component's mount agreement (src/abi/participant.cpp's
-/// reconcile_plugin_agreement(), KNOWN_ISSUES.md D15) would need to
+/// reconcile_plugin_agreement()) would need to
 /// reconcile over is a deterministic function of the loaded graph and this
 /// process's own setup() options -- no MPI call in it, so a tier-0 test
 /// fires every branch directly.
@@ -62,8 +61,8 @@
 /// its own connect() result include the SPECIFIC executable that hosts
 /// the Plugin component" -- a graph shaped that way could still reconcile
 /// over a communicator that spans the WRONG subset of executables,
-/// undetected by this function. Flagged in this round's own open
-/// questions (KNOWN_ISSUES.md D15) rather than solved here: the fully
+/// undetected by this function. Left open
+/// rather than solved here: the fully
 /// general version needs the launch topology connect() itself validates
 /// (fuse::transport::validate_launch_layout(), include/fuse/transport/
 /// connect.hpp) consulted BEFORE connect() runs, which this function

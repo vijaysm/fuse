@@ -68,14 +68,12 @@ namespace fuse::abi_test {
   return fuse::serialize(build_two_component_lag1_graph(upstream_interval, cells));
 }
 
-/// KNOWN_ISSUES.md D12, test (2): "upstream" subcycles 4x per common
-/// period (`upstream_interval = 1/4`) and exports under `AccumOp::Mean` --
-/// "downstream" must see the MEAN of upstream's four substep values, not
-/// the last one, which is exactly what a deferred-exchange scheme (the
-/// fix this file's own test exercises) could never produce (KNOWN_ISSUES.md
-/// D12's own finding: "everything the schedule places WITHIN a period is
-/// lost"). Same two-component, one-channel shape as
-/// build_two_component_lag1_graph() otherwise.
+/// "upstream" subcycles 4x per common period (`upstream_interval = 1/4`)
+/// and exports under `AccumOp::Mean` -- "downstream" must see the MEAN of
+/// upstream's four substep values, not the last one, which is exactly what
+/// a deferred-exchange scheme could never produce (everything the schedule
+/// places WITHIN a period would be lost). Same two-component, one-channel
+/// shape as build_two_component_lag1_graph() otherwise.
 [[nodiscard]] inline fuse::CouplingGraph build_subcycled_mean_graph(
     fuse::Rational upstream_interval = fuse::Rational{1, 4}, int cells = 4) {
   return build_two_component_lag1_graph(upstream_interval, cells, fuse::AccumOp::Mean);
@@ -86,13 +84,12 @@ namespace fuse::abi_test {
   return fuse::serialize(build_subcycled_mean_graph(upstream_interval, cells));
 }
 
-/// KNOWN_ISSUES.md D12, test (3): two single-rank components, "alpha" and
-/// "beta", two-way coupled INSIDE an iteration region -- the shape
-/// test/runtime/checkpoint_test.cpp's own `iterated_two_way()` fixture
-/// builds, reproduced here so an ABI test can drive it entirely through
-/// fuse_begin_step()/fuse_end_step() rather than fuse_run(). The return
-/// channel is relaxed (a genuine loop-carried value) so the sweep count is
-/// not trivially one.
+/// Two single-rank components, "alpha" and "beta", two-way coupled INSIDE an
+/// iteration region -- the shape test/runtime/checkpoint_test.cpp's own
+/// `iterated_two_way()` fixture builds, reproduced here so an ABI test can
+/// drive it entirely through fuse_begin_step()/fuse_end_step() rather than
+/// fuse_run(). The return channel is relaxed (a genuine loop-carried value) so
+/// the sweep count is not trivially one.
 [[nodiscard]] inline fuse::CouplingGraph build_implicit_coupling_graph(
     int cells = 4, int max_iterations = 30) {
   fuse::CouplingGraph g;
@@ -143,7 +140,6 @@ namespace fuse::abi_test {
   return fuse::serialize(build_implicit_coupling_graph(cells, max_iterations));
 }
 
-/// KNOWN_ISSUES.md D15 ("Provider parity" track, Stage B-1, item 2):
 /// build_implicit_coupling_graph()'s own shape above, UNCHANGED except for
 /// "beta"'s own launch mode -- LaunchMode::Plugin naming `beta_plugin_path`
 /// instead of the default (InProcess, test-injected) -- so "beta" is
@@ -202,26 +198,25 @@ namespace fuse::abi_test {
   return g;
 }
 
-/// Time windows track (Conformance, Unit 2): the FIRST graph to put an
-/// externally-driven component (fuse_begin_step()/fuse_end_step()) inside
-/// a WINDOW-scoped iteration region, not merely an ordinary one --
-/// build_implicit_coupling_graph()'s own shape above, with `interval ==
-/// window_length` for both members (the same "deliberately simplest"
-/// choice window_runner_test.cpp's own header explains: no multirate
-/// subcycling within the window itself, so there is exactly one
-/// advance_window() substep per member per window, isolating "does the
-/// suspend/resume protocol work at all for a WindowAdvance instruction"
+/// The graph that puts an externally-driven component
+/// (fuse_begin_step()/fuse_end_step()) inside a WINDOW-scoped iteration
+/// region, not merely an ordinary one -- build_implicit_coupling_graph()'s own
+/// shape above, with `interval == window_length` for both members (the same
+/// "deliberately simplest" choice window_runner_test.cpp's own header
+/// explains: no multirate subcycling within the window itself, so there is
+/// exactly one advance_window() substep per member per window, isolating "does
+/// the suspend/resume protocol work at all for a WindowAdvance instruction"
 /// from the K-wide waveform/subcycling machinery test/runtime/
 /// window_runner_multirate_test.cpp already covers in-process). Both
 /// "alpha" and "beta" are window members (CouplingWindowScope.policies),
-/// matching the eventual Unit 2 shape (U and V both externally driven,
-/// through the SAME window) in miniature.
+/// matching the shape of U and V both externally driven through the SAME
+/// window, in miniature.
 [[nodiscard]] inline fuse::CouplingGraph build_implicit_window_coupling_graph(
     int cells = 4, int max_iterations = 30,
     fuse::DtPolicy pol_a = fuse::DtPolicy::Adjustable,
     fuse::DtPolicy pol_b = fuse::DtPolicy::Adjustable,
-    // Defect 3's own refinement (Conformance Unit 2): `decl.channels`' own
-    // order, not declaration order, is what `members_in_first_seen_order()`
+    // `decl.channels`' own order, not declaration order, is what
+    // `members_in_first_seen_order()`
     // (src/ir/window_lowering.cpp, mirroring window_region_members()) walks
     // to decide which member's WindowAdvance node is created FIRST, which
     // in turn is what makes it appear first in the compiled instruction
@@ -302,8 +297,7 @@ namespace fuse::abi_test {
       reorder_channels_so_beta_is_first_in_plan_order));
 }
 
-/// KNOWN_ISSUES.md D15 item 1 ("Provider parity" track, Stage B-2, Option
-/// A): "mixed" is a LaunchMode::Plugin component (`mixed_plugin_path`,
+/// "mixed" is a LaunchMode::Plugin component (`mixed_plugin_path`,
 /// test/abi/plugins/mixed_memspace_provider.c) with TWO Provides fields
 /// on ONE instance -- "host_out" (FUSE_MEMSPACE_HOST) and "device_out"
 /// (FUSE_MEMSPACE_DEVICE) -- each fed through its own one-way channel to

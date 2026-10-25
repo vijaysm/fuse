@@ -43,7 +43,7 @@ enum class OpKind {
   /// applied.
   Map, Reduce, Closure,
 
-  /// Time windows track: subcycling (docs/user/glossary.md) -- one component
+  /// Subcycling (docs/user/glossary.md) -- one component
   /// of a time window of a waveform iteration taking several of its own time
   /// steps across the window, reading its partners' waveforms (delivered by
   /// the ordinary field-transfer chain: Remap/data redistribution/
@@ -60,7 +60,7 @@ enum class OpKind {
   /// point sample.
   WindowAdvance,
 
-  /// Unit 3 (S6 phase 3, Conformance): a boundary node, shaped like
+  /// A boundary node, shaped like
   /// `Source` but for a channel whose data movement an APPLICATION
   /// performs outside the graph -- today, the LowFive-bound case
   /// (`FieldSpec::hdf5_path` set on the channel's source field), where the
@@ -106,10 +106,10 @@ enum class OpKind {
   /// Sink's own output is excluded from that aliasing for the identical
   /// reason, `is_window_arc()` there) -- it stays a private, Runner-owned
   /// scratch buffer, reachable by the application only through the new
-  /// `field_view` ABI accessor (docs/user/lowfive.md, Unit 3).
+  /// `field_view` ABI accessor (docs/user/lowfive.md).
   ExternalDelivery,
 
-  /// D73 (automatic remap halo, owner decision 2026-10-18). A real
+  /// Automatic remap halo. A real
   /// collective MPI exchange runs once at setup time, but `is_collective()`
   /// below returns false for it (see that function's own comment on this
   /// case) -- NO DATA: emitted by the lowering (src/ir/rules_channel.cpp,
@@ -135,8 +135,8 @@ enum class OpKind {
   /// runs `fuse::execute_remap_halo_instructions()`
   /// (fuse/backend/remap_halo_instructions.hpp) before it reads any entity
   /// count, satisfying every `BuildRemapHalo` node `lower()` emitted at the
-  /// one point every caller already passes `dag` through (owner decision
-  /// 2026-10-18, KNOWN_ISSUES.md D73 and D77); `Runner::Impl::resolve_
+  /// one point every caller already passes `dag` through;
+  /// `Runner::Impl::resolve_
   /// instructions()` only VERIFIES, collectively, that each one was
   /// (`NativeMeshBackend::has_remap_halo` / `MoabMeshBackend::has_remap_
   /// halo`), and refuses by name if not.
@@ -157,13 +157,11 @@ enum class OpKind {
     case OpKind::Transport:  // moves values between two rank sets
     case OpKind::Epoch:      // the agreement itself
     // Constrain reduces the two conservation integrals over the base
-    // communicator when one is configured (KNOWN_ISSUES.md D10, 2026-09-25).
-    // Before that it was rank-local and REFUSED a multi-rank target, because
-    // adding a reduction to a non-collective operator is a hang: a rank that
-    // failed earlier in the period skips it while its partners wait inside
-    // it. Collective is the classification that makes the reduction safe;
-    // with no communicator it is the same local arithmetic as before, merely
-    // no longer skipped after a failure, which costs nothing.
+    // communicator when one is configured. A reduction in a non-collective
+    // operator is a hang: a rank that failed earlier in the period skips it
+    // while its partners wait inside it. Collective is the classification
+    // that makes the reduction safe; with no communicator it is local
+    // arithmetic, not skipped after a failure, which costs nothing.
     case OpKind::Constrain:
       return true;
     case OpKind::Source: case OpKind::Sink: case OpKind::Sample:
@@ -172,7 +170,7 @@ enum class OpKind {
     case OpKind::Residual: case OpKind::Accelerate:
     case OpKind::Diagnose: case OpKind::Scale:
       return false;
-    // D73: the REAL geometry exchange this instruction represents
+    // The REAL geometry exchange this instruction represents
     // (`fuse::native::build_native_remap_halo`, `fuse::build_remap_halo`,
     // each its own MPI_Allgather/MPI_Allgatherv plus a cell exchange,
     // agreed over the base communicator already) runs once, before
@@ -326,7 +324,7 @@ struct OpAttrs {
   /// combination it is performing.
   MergeOp       merge = MergeOp::Sum;
 
-  /// Time windows track: `OpKind::WindowAdvance` (subcycling) has EMPTY
+  /// `OpKind::WindowAdvance` (subcycling) has EMPTY
   /// `Node::inputs` -- like `Source` -- because the field transfer that
   /// delivers its import waveform is on the OTHER end of a two-way time
   /// window, and making that delivery a real producer/consumer edge back
@@ -342,20 +340,19 @@ struct OpAttrs {
   /// then, so no existing reference dump moves.
   ArcId         window_import{};
 
-  /// Review 2026-10-11 IS-4: true for the Sink `emit_field_sink()`
+  /// True for the Sink `emit_field_sink()`
   /// (src/ir/lowering.cpp) builds for a window-scoped import -- the one
   /// whose output is K samples wide, delivered unchanged from its provider,
   /// and must NOT be aliased onto the component's own native (single-value)
   /// storage the way an ordinary Sink's output is (`plan_buffers()`,
-  /// src/schedule/buffers.cpp, is the reader). Previously this was decided
-  /// by a `"/window"` label suffix, which an ordinary field legally named
+  /// src/schedule/buffers.cpp, is the reader). This is decided structurally, not by a
+  /// `"/window"` label suffix, which an ordinary field legally named
   /// `q/window` would also match, silently stealing its own delivery into
-  /// coupler-owned scratch. Not printed by `attrs_string()` below: a boolean
-  /// set structurally by lowering changes no existing dump (the label still
-  /// carries the same text it always did, for readability only).
+  /// coupler-owned scratch. Not printed by `attrs_string()` below (the label
+  /// carries the text, for readability only).
   bool          window_import_sink = false;
 
-  /// Review 2026-10-11 IS-9: the channel `type_check()` (src/ir/
+  /// The channel `type_check()` (src/ir/
   /// lowering.cpp) authorizes a Sink's time-level mismatch against. Set by
   /// `emit_field_sink()` to the channel whose contribution the merge
   /// adopted as newest for a merged field (which need not be `Node::origin`

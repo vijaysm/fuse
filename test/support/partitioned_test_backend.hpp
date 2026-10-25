@@ -99,7 +99,7 @@ class PartitionedTestMesh final : public fuse::MeshView {
 /// One mesh, split into a contiguous block per rank within whichever of
 /// `fluid_`/`solid_` contains the calling rank; empty on a rank in neither.
 ///
-/// PER-PLACEMENT DECOMPOSITION (KNOWN_ISSUES D5). Given `set_placements`, the
+/// PER-PLACEMENT DECOMPOSITION. Given `set_placements`, the
 /// backend also builds one decomposition PER COMPONENT, each laid out over that
 /// component's own ranks, and answers `placed_view` / `placed_region_size`
 /// from it. A rank in two partially overlapping placements then holds two
@@ -109,7 +109,7 @@ class PartitionedTestMesh final : public fuse::MeshView {
 /// MeshBackend contract requires. Without `set_placements` the placed queries
 /// fall back to the default view, exactly as a single-decomposition backend's
 /// do.
-/// `entity_set` on the `Region` is what Task 3's guard checks -- this backend
+/// `entity_set` on the `Region` is what the region guard checks -- this backend
 /// does not itself narrow by it, unlike SerialMeshBackend's real one
 /// (src/mesh/serial_backend.cpp:438-457).
 class PartitionedTestBackend final : public fuse::MeshBackend {
@@ -213,7 +213,7 @@ class PartitionedTestBackend final : public fuse::MeshBackend {
     // LOCAL STORAGE index, making source_indices()/dest_indices() (and so
     // Runner's p.gather/p.scatter) the identity permutation on every rank at
     // every rank count this suite tries. That made TheDeliveredFieldDoesNot-
-    // DependOnTheRankCount's mutation checks (Task 6 Steps 4-5, replacing
+    // DependOnTheRankCount's mutation checks (replacing
     // p.gather[k]/p.scatter[k] with plain k) pass when they should fail: a
     // dropped index map went undetected because k already equalled the right
     // answer. Reversing this rank's local order (local index 0 holds the
@@ -235,8 +235,8 @@ class PartitionedTestBackend final : public fuse::MeshBackend {
 };
 
 // ---------------------------------------------------------------------------
-// SharedVertexLineMesh / SharedVertexLineBackend -- the "Nodal fields" track's
-// own addition (test/parallel/nodal_field_test.cpp), for a genuinely SHARED
+// SharedVertexLineMesh / SharedVertexLineBackend -- used by
+// test/parallel/nodal_field_test.cpp, for a genuinely SHARED
 // vertex across ranks: unlike PartitionedTestMesh's disjoint blocks (which
 // cannot exercise ownership at all -- there is nothing to own jointly), a
 // line of `n_cells` cells / `n_cells + 1` vertices split across `num_ranks`
@@ -397,8 +397,8 @@ class SharedVertexLineBackend final : public fuse::MeshBackend {
 };
 
 // ---------------------------------------------------------------------------
-// GeometricLineMesh / GeometricLineBackend -- the "Nodal remap" track's own
-// addition (test/parallel/nodal_remap_distributed_test.cpp), for a
+// GeometricLineMesh / GeometricLineBackend -- used by
+// test/parallel/nodal_remap_distributed_test.cpp, for a
 // distributed 1D interface with REAL COORDINATES and REAL CONNECTIVITY:
 // unlike PartitionedTestMesh (no geometry at all: centroid is the origin,
 // measure is 1) and SharedVertexLineMesh (also no geometry), this is what
@@ -411,7 +411,7 @@ class SharedVertexLineBackend final : public fuse::MeshBackend {
 // lowest rank holding a shared vertex owns it; cells are a plain,
 // non-overlapping partition) -- duplicated rather than reused because that
 // class deliberately carries NO geometry and this one deliberately does; the
-// two diverge in exactly the fields this task's algorithm needs.
+// two diverge in exactly the fields the distributed algorithm needs.
 // ---------------------------------------------------------------------------
 class GeometricLineMesh final : public fuse::MeshView {
  public:
@@ -597,8 +597,8 @@ class GeometricLineBackend final : public fuse::MeshBackend {
 };
 
 // ---------------------------------------------------------------------------
-// MultiMeshGeometricBackend -- the "Nodal remap" track's round-3 addition
-// (test/parallel/nodal_remap_runner_test.cpp), for driving ONE real
+// MultiMeshGeometricBackend -- used by
+// test/parallel/nodal_remap_runner_test.cpp, for driving ONE real
 // Runner/CouplingGraph pair through a beam/fluid channel pair like FSI
 // uses, where the two meshes have DIFFERENT shapes (cell counts) and
 // DIFFERENT, independently-declared RankSets. `Runner` takes a single
@@ -700,14 +700,13 @@ class MultiMeshGeometricBackend final : public fuse::MeshBackend {
 };
 
 // ---------------------------------------------------------------------------
-// GeometricPlacedLineBackend -- additive fixture for the "nodal-fields"
-// track's "distributed-remap-reads-the-default-view" mutation
+// GeometricPlacedLineBackend -- additive fixture for the
+// "distributed-remap-reads-the-default-view" mutation
 // (build-evidence/mutations/nodal-fields.toml): MultiMeshGeometricBackend's
 // own header comment says plainly that its `placed_view()` forwards
 // straight to `view()`, so it cannot tell `build_nodal_dist_remap`'s two
 // resolution calls apart no matter what shape a test built from it uses.
-// This class exists ONLY to close that specific gap, additively -- every
-// class above is unchanged.
+// This class exists ONLY to close that specific gap.
 //
 // A mesh's DEFAULT decomposition (`view()`) is built from its own
 // `add_mesh_spec` RankSet exactly like MultiMeshGeometricBackend. A

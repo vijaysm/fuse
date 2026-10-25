@@ -1,4 +1,4 @@
-/// S7.2's own direct-residual-path test (this track's plan steps 3-4):
+/// The direct-residual-path test:
 /// `NewtonConfig::residual_path = Advance|Direct`. Same two-fixture
 /// convention test/runtime/newton_norm_test.cpp's own top comment
 /// states: `make_newton_setup()`/`NewtonDnHeatFixture` are duplicated
@@ -279,7 +279,7 @@ TEST(NewtonDirect, AWindowScopedRegionSelectingDirectIsRefusedAtSetup) {
 // ---------------------------------------------------------------------------
 // (4) The rollback gate: a component without rollback cannot run Newton on
 // Direct -- NOT because Direct itself demands rollback (it does not save
-// or restore component state at all, this track's own plan step 3), but
+// or restore component state at all), but
 // because `verify_rollback_support()` (src/runtime/checkpoint_support.cpp)
 // unconditionally refuses E-ITER-NOROLLBACK for every CHECKPOINTED member
 // of ANY iteration region, at the single call site inside
@@ -433,11 +433,9 @@ TEST(NewtonDirect, AMemberWithoutRollbackRefusesNewtonOnDirect) {
 // verify_rollback_support()'s own pre-existing, path-independent rule
 // (checkpoint_support.cpp, called once from resolve_regions() before
 // either path's own setup), not something introduced by, or specific
-// to, Direct. This track's own plan step 3 asked to "measure and
-// document the exact reason and refuse by name" rather than claim the
-// benefit of running without rollback; this test, once it has actually
-// been run (its own PASSED/FAILED result, not this comment, is the
-// measurement), is that check.
+// to, Direct. The refusal is by name, rather than claiming the benefit of
+// running without rollback; this test's own PASSED/FAILED result, not
+// this comment, is the check.
 TEST(NewtonDirect, TheSameRefusalFiresForAdvanceTooProvingItIsPathIndependent) {
   RollbackGateFixture s = make_rollback_gate_setup(NewtonResidualPath::Advance);
   ASSERT_FALSE(s.init.ok());
@@ -448,10 +446,9 @@ TEST(NewtonDirect, TheSameRefusalFiresForAdvanceTooProvingItIsPathIndependent) {
 // (5) Cost: one F evaluation, Advance vs Direct, median of >= 7 repetitions
 // after a warm-up call (JIT/cache effects, the SAME discipline this
 // project's own benchmark code -- examples/*/main.cpp's own timing
-// sections -- already follows). Three tracks build concurrently on this
-// host (the task's own standing rule): this test reports whatever ratio
-// it measures and flags NOISY rather than asserting a specific speed
-// relationship, since a loaded host can move either number around.
+// sections -- already follows). This test reports whatever ratio it measures and
+// flags NOISY rather than asserting a specific speed relationship, since
+// a loaded host can move either number around.
 // ---------------------------------------------------------------------------
 TEST(NewtonDirect, OneFEvaluationIsTimedBothWaysAndReportedWhicheverWayItFalls) {
   // residual_path: Direct, the same reason the bit-identity tests above
@@ -469,7 +466,7 @@ TEST(NewtonDirect, OneFEvaluationIsTimedBothWaysAndReportedWhicheverWayItFalls) 
   const std::size_t n = advance_fpr.value().n;
   std::vector<double> x(n, 1.0), f(n, 0.0);
 
-  constexpr int kReps = 11;  // >= 7, this track's own plan step 4.
+  constexpr int kReps = 11;  // >= 7
   const auto time_one = [&](const fuse::FixedPointResidual& fpr) {
     // Warm-up (not timed): first call on a fresh fixture pays one-time
     // allocation/cache costs (std::vector growth inside evaluate_region_
@@ -492,17 +489,17 @@ TEST(NewtonDirect, OneFEvaluationIsTimedBothWaysAndReportedWhicheverWayItFalls) 
   const double advance_ns = time_one(advance_fpr.value());
   const double direct_ns = time_one(direct_fpr.value());
 
-  // `load1` (1-minute load average, POSIX getloadavg()): the task's own
-  // required disclosure for a timing measurement taken on a host building
-  // other tracks concurrently. >kNoisyLoadThreshold flags the result NOISY
+  // `load1` (1-minute load average, POSIX getloadavg()): the
+  // disclosure for a timing measurement taken on a host that may be busy
+  // with other builds. >kNoisyLoadThreshold flags the result NOISY
   // rather than silently reporting a number a loaded host may have
   // distorted.
   double load[3] = {0.0, 0.0, 0.0};
   const bool have_load = getloadavg(load, 3) == 3;
-  // NOT this host's own core count (12, per this track's own standing
-  // rules) -- a fixed threshold picked between the two load1 values this
-  // track actually observed while measuring this comparison: 6.72 (not
-  // noisy, ratio=0.9923) and 8.41 (noisy, ratio=1.1485), so a result
+  // NOT this host's own core count (12) -- a fixed threshold picked
+  // between the two load1 values observed while measuring this
+  // comparison: 6.72 (not noisy, ratio=0.9923) and 8.41 (noisy,
+  // ratio=1.1485), so a result
   // taken under a load similar to the second is flagged rather than
   // silently reported as clean.
   constexpr double kNoisyLoadThreshold = 8.0;
@@ -515,9 +512,8 @@ TEST(NewtonDirect, OneFEvaluationIsTimedBothWaysAndReportedWhicheverWayItFalls) 
          have_load ? load[0] : -1.0, noisy ? "[NOISY]" : "");
 
   // Both must be positive, finite measurements -- the only thing actually
-  // ASSERTED; the ratio itself is reported above (and in this track's own
-  // submission), not gated on here, exactly because a loaded 12-core host
-  // building two other tracks at once can move it either direction.
+  // ASSERTED; the ratio itself is reported above, not gated on here, exactly
+  // because a loaded 12-core host can move it either direction.
   EXPECT_GT(advance_ns, 0.0);
   EXPECT_GT(direct_ns, 0.0);
 }

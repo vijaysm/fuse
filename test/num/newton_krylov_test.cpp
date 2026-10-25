@@ -1,6 +1,6 @@
-// S7.2: fuse::num::solve(), the native Jacobian-free Newton-Krylov coupler.
+// fuse::num::solve(), the native Jacobian-free Newton-Krylov coupler.
 //
-// WHAT EACH SECTION CHECKS, against the task's own six-mechanism brief.
+// WHAT EACH SECTION CHECKS, one per mechanism.
 //   Mffd.*            -- (1) the MFFD action vs. the analytic Jacobian on
 //                        a quadratic F, to O(h) with h as reported, and
 //                        fuse::linalg::taylor_remainder_order() confirming
@@ -501,8 +501,7 @@ TEST(NewtonKrylovDivergence, FunctionErrorFiresWhenFReturnsAFailure) {
 TEST(NewtonKrylovDivergence, ResidualGrowthFiresWhenBasicDampingOvershootsPastTheSaturatingTail) {
   // Basic line search applies NO merit check at all, so a deliberately
   // oversized damping factor can be used to CONSTRUCT residual growth on
-  // demand (the task's own instruction: "Test each code by constructing
-  // the condition"), rather than relying on BT ever letting it happen (BT
+  // demand (each code is tested by constructing the condition), rather than relying on BT ever letting it happen (BT
   // guarantees f(lambda) < f(0) whenever it accepts a step at all, so
   // residual growth past an accepted BT step is not reachable).
   const std::vector<double> c = {0.0};

@@ -193,15 +193,14 @@ TEST(WindowScope, WindowLongerThanAWaveformCanHoldIsRefused) {
   EXPECT_EQ(r.error().code, "E-SCHED-WINDOW-CAPACITY");
 }
 
-// Review 2026-10-11 IS-6: fuse::window_sample_capacity() (fuse/model/
-// coupling_graph.hpp) used to form `window_length / interval` with
-// Rational's throwing operator/, which FUSE_REFUSEs with
-// E-BASE-RATIONAL-OVERFLOW when the ratio is not representable in an exact
-// 64-bit Rational -- an exception that used to escape validate_coupling_
-// window() (and schedule()) uncaught instead of surfacing as one of this
-// gate's own E-SCHED-WINDOW-* diagnostics. A window interval near INT64_MAX
-// against a fine interval of 1/2 is exactly such a ratio; after the fix the
-// capacity function reports an unrepresentably large (but finite) count
+// fuse::window_sample_capacity() (fuse/model/coupling_graph.hpp) must not
+// form `window_length / interval` with Rational's throwing operator/, which
+// FUSE_REFUSEs with E-BASE-RATIONAL-OVERFLOW when the ratio is not
+// representable in an exact 64-bit Rational -- an exception that would
+// escape validate_coupling_window() (and schedule()) uncaught instead of
+// surfacing as one of this gate's own E-SCHED-WINDOW-* diagnostics. A window
+// interval near INT64_MAX against a fine interval of 1/2 is exactly such a
+// ratio; the capacity function reports an unrepresentably large (but finite) count
 // instead of throwing, and this gate's own `needed > waveform_capacity`
 // check refuses it the ordinary way.
 TEST(WindowScope, UnrepresentableWindowOverIntervalRatioIsRefusedNotThrown) {

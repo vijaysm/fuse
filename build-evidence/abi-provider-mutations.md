@@ -1,6 +1,6 @@
 # Mutation evidence -- `abi-provider`
 
-Run 2026-10-21 against build `b0`. Regenerate with `tools/mutate.py --write-log`; do not edit.
+Run against build `b0`. Regenerate with `tools/mutate.py --write-log`; do not edit.
 
 | Mutation | File | Outcome | Killed by |
 |---|---|---|---|

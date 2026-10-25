@@ -15,16 +15,16 @@
 // binding boundary (Session::rethrow_pending()).
 //
 // -----------------------------------------------------------------------------------------
-// NEWTON: NATIVE COMPONENTS ONLY (owner's ruling, 2026-10-12)
+// NEWTON: NATIVE COMPONENTS ONLY
 // -----------------------------------------------------------------------------------------
 // Component::implicit() is never exposed to a Python Component subclass: ForwardingComponent
 // always returns nullptr from implicit(). The EXISTING fuse::verify_newton_capability_support()
 // (src/runtime/checkpoint_support.cpp) already refuses a Newton region whose member's
 // capabilities() does not set kCapabilityResidual, with E-NEWTON-CAPABILITY -- this covers a
 // ForwardingComponent with the default (unclaimed) capabilities honestly, with NO new code
-// needed here (see test_newton.py's own test that makes this existing refusal fire, and this
-// track's report for why the EXISTING message's C++-specific guidance -- "override Component::
-// implicit()" -- is misleading for a Python reader, which src/ is not this task's to fix).
+// needed here (see test_newton.py's own test that makes this existing refusal fire; note that the EXISTING
+// message's C++-specific guidance -- "override Component::implicit()" -- does not apply to a
+// Python reader).
 // What IS new here: a Python component that tries to CLAIM kCapabilityResidual/
 // kCapabilityLinearization via its own CAPABILITIES attribute (lying about a capability
 // ForwardingComponent can never actually back, since implicit() always returns nullptr) is

@@ -2,8 +2,8 @@
 // vector, and a "fake" two-partition split of a single GLOBAL vector held
 // entirely inside this one process -- two DistVectors, each the size of
 // its own slab, wired together by local test doubles of GhostExchanger and
-// Reducer that copy/combine directly between them. This is what the task
-// means by measuring the PATTERN LOGIC here rather than only on the host:
+// Reducer that copy/combine directly between them. This measures
+// the PATTERN LOGIC here rather than only on the host:
 // MPI cannot start in this sandbox (docs/dev/testing.md), so the real
 // MpiExchanger/MpiReducer (src/linalg/comm_mpi.cpp) are built but never run
 // here; the in-process fakes below exercise the SAME ghost-pattern and
@@ -30,7 +30,7 @@
 
 namespace {
 
-// KNOWN_ISSUES.md D30: the standard forward-error bound for recursive
+// The standard forward-error bound for recursive
 // summation of n floating-point products (Higham, "Accuracy and Stability
 // of Numerical Algorithms", 2nd ed., secs. 3.1/4.2) -- any two IEEE-754
 // evaluations of sum_i x_i, contracted (fused multiply-add, one rounding)
@@ -60,10 +60,8 @@ using fuse::linalg::make_serial_reducer;
 // Requirement 1: one rank, no ghosts, behaves as a plain vector.
 // ---------------------------------------------------------------------
 
-// Renamed from ...BitForBit (KNOWN_ISSUES.md D30): with FUSE_FP_REPRODUCIBLE
-// == 0 the dot/norm2 comparisons below are no longer bit-for-bit, so a name
-// claiming that would overstate what this test checks in that configuration.
-// The new name says what BOTH configurations actually assert.
+// With FUSE_FP_REPRODUCIBLE == 0 the dot/norm2 comparisons below are not
+// bit-for-bit, so the name says what BOTH configurations actually assert.
 TEST(DistVectorOneRank, ArithmeticMatchesAPlainLoopExactlyOrWithinTheFpContractionBound) {
   constexpr std::size_t n = 37;
   std::mt19937 rng(11u);
@@ -84,8 +82,8 @@ TEST(DistVectorOneRank, ArithmeticMatchesAPlainLoopExactlyOrWithinTheFpContracti
 
   // Same loop order as DistVector::dot/norm_inf (src/linalg/dist_vector.cpp).
   // Under FUSE_FP_REPRODUCIBLE (-ffp-contract=off on both this file and
-  // dist_vector.cpp) the comparison below is bit-for-bit; without it, D30
-  // measured a one-ulp difference -- Apple clang may fuse `local +=
+  // dist_vector.cpp) the comparison below is bit-for-bit; without it, a
+  // one-ulp difference was measured -- Apple clang may fuse `local +=
   // storage_[i]*other.storage_[i]` into a single-rounded FMA in one
   // translation unit and not (identically) in the other. sum_abs_* feeds
   // forward_error_bound() in that case.
@@ -277,9 +275,8 @@ class TwoPartitionReducer : public Reducer {
   [[nodiscard]] int rank() const override { return rank_; }
   [[nodiscard]] int size() const override { return 2; }
 
-  // Added by the "Schur-slab" track (docs/dev/schur-slab-solver.md) when
-  // Reducer gained allgather() as a new pure virtual method (comm.hpp,
-  // reported there as "the one change to the containers") -- not exercised
+  // Reducer::allgather() is a pure virtual method (comm.hpp;
+  // docs/dev/schur-slab-solver.md) -- not exercised
   // by this file's own tests (DistVector's dot/norm2/norm_inf never call
   // it), implemented only so this class stays instantiable. Writes this
   // participant's own `send` into its own slot of `recv`; the peer's own
@@ -313,15 +310,15 @@ TEST(DistVectorTwoPartitionFake, DotAndNorm2EqualTheGatheredSerialReduction) {
   double expect_max_a = 0.0;
   for (std::size_t i = 0; i < n; ++i) expect_max_a = std::max(expect_max_a, std::fabs(a[i]));
 
-  // Review 2026-10-11 NL-10: `a0.dot(b0)`/`a1.dot(b1)` below each sum a
+  // `a0.dot(b0)`/`a1.dot(b1)` below each sum a
   // 2-way split (this partition's own local partial plus the OTHER
   // partition's, handed in through `TwoPartitionReducer`) via one
   // `Reducer::sum`; `expect_dot` above sums all `n` terms in a single
   // ascending-index loop. Floating-point addition is not associative, so
   // the two groupings can disagree in the last bit even on a correct
   // implementation -- a bit-tight `EXPECT_DOUBLE_EQ` would pass today by
-  // luck of magnitude (the same fragility class KNOWN_ISSUES.md's D30
-  // already records for contraction, not reassociation), not by
+  // luck of magnitude (the same fragility class as for FMA contraction,
+  // not reassociation), not by
   // construction. Bounded by a measured, term-count-scaled tolerance
   // instead, as dist_sparse_matrix_test.cpp's own
   // `check_two_partition_apply` already does for the analogous apply()
@@ -360,7 +357,7 @@ TEST(DistVectorTwoPartitionFake, DotAndNorm2EqualTheGatheredSerialReduction) {
   double expect_norm2 = 0.0;
   for (std::size_t i = 0; i < n; ++i) expect_norm2 += a[i] * a[i];
   // Every term of expect_norm2 is non-negative, so its own sum is its own
-  // magnitude bound -- no separate sum_abs needed (NL-10, as above).
+  // magnitude bound -- no separate sum_abs needed (as above).
   const double norm2_tol =
       static_cast<double>(n) * std::numeric_limits<double>::epsilon() * expect_norm2;
   EXPECT_NEAR(a0_self.norm2(), std::sqrt(expect_norm2), norm2_tol);

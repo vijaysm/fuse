@@ -23,11 +23,11 @@ namespace u = fuse::units;
 namespace {
 
 // Deliberately exercises non-default accumulate.window, spacetime.window,
-// and remap.method_override -- CRITICAL 2 from the post-1.7 review found
-// that to_yaml() silently dropped all three (it never emitted them at all,
-// and from_yaml() hardcoded Window::coupling_period() on both window
-// paths), and RoundTripsThroughText passed anyway because the pre-fix
-// pair_graph() only used defaults. This fixture would have caught it.
+// and remap.method_override -- a to_yaml() that silently dropped all three
+// (never emitting them, with from_yaml() hardcoding
+// Window::coupling_period() on both window paths) would still pass
+// RoundTripsThroughText if pair_graph() only used defaults. This fixture
+// catches that.
 CouplingGraph pair_graph() {
   CouplingGraph g;
   const auto mf = g.add_mesh(MeshDecl{.name = "fluid_mesh",
@@ -86,7 +86,7 @@ TEST(YamlIo, ReadsTheCheckedInFixture) {
   EXPECT_TRUE(structurally_equal(pair_graph(), g.value()));
 }
 
-// REVIEW.md R-18: to_yaml()'s own signature promises Result<std::string> for
+// to_yaml()'s own signature promises Result<std::string> for
 // a reportable failure, but it dereferences several foreign ids (a channel's
 // source/target field, an iteration region's channel list, a merge entry's
 // field) through CouplingGraph accessors that are plain std::vector::at()
@@ -118,12 +118,10 @@ TEST(YamlIo, EmittingAGraphWithADanglingChannelReferenceReturnsFailure) {
   EXPECT_EQ(text.error().code, "E-YAML-REF");
 }
 
-// N-base-model-1 (docs/dev/reviews/2026-09-19/pass2/re-base-model.md): a
-// FromComponent window's ComponentId is accepted by ChannelBuilder::
+// A FromComponent window's ComponentId is accepted by ChannelBuilder::
 // accumulate()/spacetime() with no bounds check, the same reachability
-// R-18 already covers for a channel's source/target field and an
-// iteration region's channel list -- but neither window field was
-// guarded. Mirrors EmittingAGraphWithADanglingChannelReferenceReturnsFailure
+// as a channel's source/target field and an iteration region's channel
+// list above, so each window field needs its own guard. Mirrors EmittingAGraphWithADanglingChannelReferenceReturnsFailure
 // above, one call site per window.
 TEST(YamlIo, EmittingAGraphWithADanglingAccumulateWindowComponentReturnsFailure) {
   CouplingGraph g;
@@ -175,7 +173,7 @@ TEST(YamlIo, EmittingAGraphWithADanglingSpacetimeWindowComponentReturnsFailure) 
   EXPECT_EQ(text.error().code, "E-YAML-REF");
 }
 
-// N-base-model-1: a FieldSpec's RegionId is accepted by add_field() with no
+// A FieldSpec's RegionId is accepted by add_field() with no
 // bounds check (add_field() only asserts the owning ComponentId is in
 // range), the same reachability gap as the region->mesh check to_yaml()
 // already has for Region::mesh.
@@ -230,11 +228,11 @@ channels: []
   EXPECT_EQ(g.error().code, "E-YAML-UNITS");
 }
 
-// N-base-model-2: R-19 gated a non-positive Units::scale at the binary
-// descriptor boundary (Descriptor.RejectsNonPositiveUnitScale) and at
-// check_units()/validate_field_semantics(), but from_yaml()'s parse_units()
-// parsed "scale" with no sign or zero check at all -- an equally real
-// front-end per testing.md's three-leg round-trip. Mirrors
+// A non-positive Units::scale is gated at the binary descriptor boundary
+// (Descriptor.RejectsNonPositiveUnitScale) and at
+// check_units()/validate_field_semantics(), and from_yaml()'s parse_units()
+// must gate it too -- an equally real front-end per testing.md's
+// three-leg round-trip. Mirrors
 // Descriptor.RejectsNonPositiveUnitScale's two cases through from_yaml()
 // instead of deserialize().
 TEST(YamlIo, RejectsNonPositiveUnitScale) {
@@ -271,9 +269,8 @@ TEST(YamlIo, ParsesRationalIntervalExactly) {
             Rational(1, 2));
 }
 
-// IMPORTANT 3 (post-review fix): Brief 1.7 states "the reader rejects
-// unknown keys", but yaml-cpp only reports on keys the caller looks up, so
-// nothing enforced that until check_unknown_keys() was added. A misspelled
+// The reader rejects unknown keys, but yaml-cpp only reports on keys the
+// caller looks up, so check_unknown_keys() enforces it. A misspelled
 // key ("sourcee" instead of "source") in a channel block must be rejected,
 // not silently ignored (which would otherwise fail later, confusingly, on
 // the missing-but-required "source" key instead).
@@ -306,7 +303,7 @@ TEST(YamlIo, RejectsUnknownTopLevelKey) {
   EXPECT_EQ(g.error().code, "E-YAML-UNKNOWN-KEY");
 }
 
-// ---- the three-leg round-trip (S2 exit) --------------------------------
+// ---- the three-leg round-trip --------------------------------
 
 // The waist's whole claim is that C++, YAML and the canonical bytes describe the
 // same graph. Two legs prove nothing about the third: a front-end could lose a
@@ -316,19 +313,18 @@ TEST(YamlIo, RejectsUnknownTopLevelKey) {
 // physics components must come back between them. The writer keeps physics
 // components and couplers in two sections, so this is only true because each
 // coupler carries its `index`; the first graph that authored a component
-// after a coupler (the v10 freeze fixture, S6 phase 4) came back reordered,
-// and the fixture was rearranged to hide it instead of the writer being
-// fixed. This pins the fix.
+// after a coupler (the v10 freeze fixture) would come back reordered
+// unless the writer preserves it. This pins that.
 // A coupler that is LAUNCHED as its own program -- its own MPMD segment,
 // with its own appnum -- must say so in the file, or the program that
 // loads the graph on the coupler's own ranks believes it is in-process and
 // never joins the collective connect() makes over the whole world. That is
 // not a theoretical loss: the Brusselator's MPMD participant rows hung for
-// their full 120 s with an empty combined.log on the host (2026-10-08),
+// their full 120 s with an empty combined.log on the host,
 // U and V waiting in connect_mpmd()'s MPI_Allgather for a third
 // participant whose own executable had decided it had nothing to connect.
-// The graph tool had always BUILT the right LaunchSpec; the file was where
-// it was lost.
+// The graph tool BUILDS the right LaunchSpec; the file is where it would
+// be lost.
 TEST(YamlIo, ALaunchedCouplerKeepsItsLaunchModeAcrossTheRoundTrip) {
   fuse::CouplingGraph g;
   (void)g.add_component({.name = "a", .ranks = {0, 2}, .interval = fuse::Rational{1, 1}});
@@ -443,14 +439,12 @@ TEST(YamlIo, FixtureSurvivesAnEmitParseCycleByteForByte) {
 }
 
 // ---------------------------------------------------------------------------
-// S7.2: AccelKind::Newton and NewtonConfig. NOT checked via
+// AccelKind::Newton and NewtonConfig. NOT checked via
 // structurally_equal()/serialize() (the canonical-bytes descriptor,
 // fuse/model/descriptor.hpp, does not cross either requires_residual_
-// capability/requires_linearization_capability or newton_config at all --
-// out of this track's own ownership, recorded as an open question in its
-// report rather than silently assumed covered) -- checked directly against
-// the restored IterationRegionDecl's own fields instead, which IS what
-// this track's yaml_io.cpp round-trips.
+// capability/requires_linearization_capability or newton_config at all) --
+// checked directly against the restored IterationRegionDecl's own fields
+// instead, which IS what yaml_io.cpp round-trips.
 // ---------------------------------------------------------------------------
 
 namespace {
@@ -480,12 +474,11 @@ TEST(YamlIo, NewtonKindAndConfigSurviveTheTextRoundTrip) {
   cfg.use_block_jacobi_preconditioner = true;
   cfg.forcing_gamma = 0.8;
   cfg.eta_min = 2e-4;
-  // S7.2b (PetscSelect track): non-default, so the round trip actually
+  // Non-default, so the round trip actually
   // exercises reading the field back rather than reconfirming a default
   // both sides happen to agree on.
   cfg.substrate = fuse::NewtonSubstrate::Petsc;
-  // NewtonModel track (2026-10-12): same reasoning, for the two fields
-  // this track adds.
+  // Same reasoning, for norm and residual_path.
   cfg.norm = fuse::NewtonNorm::MeasureWeighted;
   cfg.residual_path = fuse::NewtonResidualPath::Direct;
 
@@ -626,12 +619,12 @@ TEST(YamlIo, UnknownKeyInNewtonConfigBlockIsRefused) {
 }
 
 // ---------------------------------------------------------------------
-// BM-2 (review 2026-10-11): from_yaml() used to read every required key
-// with a bare `node["key"].as<T>()` -- no presence guard, no surrounding
-// `try` -- so a document that LOADS (valid YAML syntax) but omits or
-// misspells a required key, or supplies a wrong-typed scalar for one,
-// made yaml-cpp throw a raw `YAML::Exception` out of a function whose
-// contract is `Result<CouplingGraph>`. Each case below is a minimal,
+// from_yaml() must not read a required key with a bare
+// `node["key"].as<T>()` -- no presence guard, no surrounding `try` -- since
+// a document that LOADS (valid YAML syntax) but omits or misspells a
+// required key, or supplies a wrong-typed scalar for one, would make
+// yaml-cpp throw a raw `YAML::Exception` out of a function whose contract
+// is `Result<CouplingGraph>`. Each case below is a minimal,
 // otherwise-valid document with exactly one defect.
 // ---------------------------------------------------------------------
 namespace {
@@ -790,10 +783,10 @@ TEST(YamlIo, MissingSpacetimeBasisIsRefused) {
   EXPECT_EQ(restored.error().code, "E-YAML-PARSE");
 }
 
-// Wrong-typed-scalar classes (BM-2's second half): a map where a scalar
-// was expected, and a string where a number was expected. Both used to
-// throw a raw YAML::BadConversion out of from_yaml(); the outer
-// try/catch in from_yaml() (around from_yaml_body()) now translates
+// Wrong-typed-scalar classes: a map where a scalar was expected, and a
+// string where a number was expected. Both throw a raw
+// YAML::BadConversion inside from_yaml(); the outer
+// try/catch in from_yaml() (around from_yaml_body()) translates
 // whichever one yaml-cpp throws into E-YAML-PARSE.
 TEST(YamlIo, WrongTypedScalarMapWhereStringExpectedIsRefused) {
   std::string text = kMinimalYaml;
@@ -814,7 +807,7 @@ TEST(YamlIo, WrongTypedScalarStringWhereNumberExpectedIsRefused) {
   EXPECT_EQ(restored.error().code, "E-YAML-PARSE");
 }
 
-// BM-15: an out-of-range structural-map exponent (narrow_exponent's own
+// An out-of-range structural-map exponent (narrow_exponent's own
 // bound, fuse/base/units.hpp) must be refused, not silently wrapped into
 // a different physical quantity.
 TEST(YamlIo, DuplicateMeshNameIsRefused) {
@@ -846,7 +839,7 @@ TEST(YamlIo, DuplicateChannelNameIsRefused) {
   EXPECT_EQ(restored.error().code, "E-YAML-DUP");
 }
 
-// BM-17: a non-positive max_iterations, and a non-finite/non-positive
+// A non-positive max_iterations, and a non-finite/non-positive
 // convergence tolerance, must be refused at the authoring gate rather
 // than surfacing only mid-sweep (ConvergenceMeasure::satisfied()'s own
 // FUSE_THROW, fuse/model/iteration.hpp).
@@ -859,14 +852,12 @@ TEST(YamlIo, NonPositiveMaxIterationsIsRefused) {
   EXPECT_EQ(restored.error().code, "E-YAML-PARSE");
 }
 
-// BM-12 (review 2026-10-11): parse_units()'s scalar branch used to look
-// symbols up in a private 10-entry table instead of the real unit-
-// expression parser semantics.hpp documents as "how a YAML ... caller
-// states units at all" -- a YAML author writing any of the parser's
-// other symbols was refused with E-YAML-UNITS. Tests both spellings of
-// the same quantity ("Hz" and the structural map it is NOT dimensionally
-// equal to, to show the scalar form now parses at all) plus a compound
-// expression ("m/s") the old table never had an entry for.
+// parse_units()'s scalar branch uses the real unit-expression parser
+// semantics.hpp documents as "how a YAML ... caller states units at all",
+// not a private table that would refuse the parser's other symbols with
+// E-YAML-UNITS. Tests both spellings of the same quantity ("Hz" and the
+// structural map it is NOT dimensionally equal to, to show the scalar form
+// parses at all) plus a compound expression ("m/s").
 TEST(YamlIo, NonPositiveConvergenceToleranceIsRefused) {
   std::string text = kMinimalYaml;
   text = drop_line(text, "iteration_regions: []");
@@ -887,7 +878,7 @@ TEST(YamlIo, OutOfRangeUnitExponentIsRefused) {
   EXPECT_EQ(restored.error().code, "E-YAML-UNITS");
 }
 
-// BM-16: two meshes/regions/channels with the same name must be refused
+// Two meshes/regions/channels with the same name must be refused
 // at parse time, not silently resolved to whichever was declared last.
 TEST(YamlIo, PreviouslyUnsupportedUnitSymbolsNowParse) {
   std::string text = kMinimalYaml;

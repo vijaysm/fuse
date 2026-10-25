@@ -7,7 +7,7 @@
 namespace fuse {
 
 /// A mesh the coupler is told about. `source` is opaque to the graph layer;
-/// the mesh backend (Phase 4 serial, Phase 5 MOAB) interprets it.
+/// the mesh backend (native serial grid, MOAB) interprets it.
 struct MeshDecl {
   std::string name;
   std::string source;  // file path, or "generated:<spec>"

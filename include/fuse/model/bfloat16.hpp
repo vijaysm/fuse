@@ -1,6 +1,6 @@
 #pragma once
 
-/// Restart track (docs/dev/restart.md), Stage B Slice 1b: `fuse::bfloat16`,
+/// `fuse::bfloat16` (docs/dev/restart.md):
 /// a FUSE storage type for Google's bfloat16 ("brain floating point")
 /// format -- 1 sign bit, 8 exponent bits (the SAME width and bias as IEEE
 /// 754-2019 binary32), 7 explicit significand bits (8 total with the

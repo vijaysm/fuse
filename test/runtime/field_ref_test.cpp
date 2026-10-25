@@ -166,7 +166,7 @@ TEST(FieldRegistry, ReportsWhichRequiredFieldsAreMissing) {
 }
 
 // --------------------------------------------------------------------------
-// Additions beyond the brief. Every check below must hold in Release
+// Additional checks. Every check below must hold in Release
 // (-O3 -DNDEBUG) as well as Debug, so none of them may rest on assert().
 // --------------------------------------------------------------------------
 

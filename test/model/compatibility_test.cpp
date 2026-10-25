@@ -130,7 +130,7 @@ void unit_rules()
     require(allowed.verdict == ConnectionVerdict::LosslessExplicit, "an explicitly requested scale was refused");
     require(allowed.chain.steps[0].explicitly_requested, "an explicit request was not recorded on the step");
 
-    // REVIEW.md R-19: a negative scale ratio is a sign flip, not "a change
+    // A negative scale ratio is a sign flip, not "a change
     // of spelling" -- it must never be auto-inserted, even though
     // allow_automatic_unit_scale defaults to true and nothing about a pure
     // scale difference with no offset would otherwise distinguish it from
@@ -367,18 +367,17 @@ void reports_every_stage_at_once()
     late_refusal.available_capabilities = 0;
     const auto discarded = check_connection(late_refusal);
     require(discarded.verdict == ConnectionVerdict::Unsupported, "a missing capability was tolerated");
-    // BM-1 (review 2026-10-11): this used to assert the OPPOSITE --
-    // `discarded.chain.empty()` -- because `Evaluation::finish()`
-    // (src/model/compatibility.cpp) cleared the WHOLE chain on any refusal,
-    // discarding the Unit stage's own already-authorized `UnitScale` right
-    // along with it. That is the exact silent loss BM-1 found: an
-    // Extensive-target channel's auto-inferred scale vanishing behind an
-    // unrelated, LATER-stage Conservation refusal (connect.hpp's hardcoded
-    // `TransferKind::Copy`), surfacing as a bare, unexplained `E-IR-TYPE` in
-    // `lower()` instead of the real problem. A Transform-phase step only
-    // rescales, reorders or selects components -- it never moves or alters
-    // the value the way a Spatial/Temporal/Constraint-phase step does, so
-    // `finish()` now keeps it across a later refusal; the other phases stay
+    // The chain is NOT empty here: clearing the WHOLE chain on any refusal
+    // (`Evaluation::finish()` in src/model/compatibility.cpp) would discard
+    // the Unit stage's own already-authorized `UnitScale` right along with
+    // it, so an Extensive-target channel's auto-inferred scale would vanish
+    // behind an unrelated, LATER-stage Conservation refusal (connect.hpp's
+    // hardcoded `TransferKind::Copy`), surfacing as a bare, unexplained
+    // `E-IR-TYPE` in `lower()` instead of the real problem. A
+    // Transform-phase step only rescales, reorders or selects components --
+    // it never moves or alters the value the way a
+    // Spatial/Temporal/Constraint-phase step does, so `finish()` keeps it
+    // across a later refusal; the other phases stay
     // cleared (the `broken` case above, whose refusal precedes any step at
     // all, is unaffected).
     require(discarded.chain.size() == 1,
@@ -414,15 +413,15 @@ void full_chain_is_ordered()
     require(result.chain.steps.back().kind == OperatorKind::Clip, "the chain does not end with the constraint");
 }
 
-// BM-6 (review 2026-10-11): the emitted AffineUnit offset used to be
-// `source.offset - target.offset`, correct only when `target.scale == 1`
-// -- the one case `unit_rules()` above happens to pin (`agreeing()`'s
-// `temperature()` fixture leaves both sides at the default scale of 1).
-// This test sets `target.scale = 2` so a regression back to the
+// The emitted AffineUnit offset is not just
+// `source.offset - target.offset`, which is correct only when
+// `target.scale == 1` -- the one case `unit_rules()` above happens to pin
+// (`agreeing()`'s `temperature()` fixture leaves both sides at the default
+// scale of 1). This test sets `target.scale = 2` so a regression back to the
 // un-divided formula is caught: the correct conversion is
 // `v_t = (source.scale/target.scale)*v_s + (source.offset-target.offset)/
 // target.scale`, i.e. scale 1/2 and offset -5 for the inputs below, not
-// the buggy scale 1/2 and offset -10 the un-divided formula produced.
+// scale 1/2 and offset -10, which the un-divided formula gives.
 void affine_conversion_divides_offset_by_target_scale()
 {
     auto request = agreeing();
@@ -440,11 +439,10 @@ void affine_conversion_divides_offset_by_target_scale()
             "the offset was not divided by target.scale (got the un-divided -10 instead of -5)");
 }
 
-// BM-13 (review 2026-10-11): `check_constraints()` used to honor only
-// `OperatorKind::Clip` -- an explicit `ConservationEnforcement` request
-// was silently ignored, no step and no diagnostic, the exact I4 shape
-// this project's own conventions forbid. `ir_can_emit(ConservationEnforcement)`
-// is false (src/ir/lowering.cpp), so the request now reaches the SAME
+// `check_constraints()` honors an explicit `ConservationEnforcement`
+// request as well as `OperatorKind::Clip`; silently ignoring it, with no
+// step and no diagnostic, is forbidden. `ir_can_emit(ConservationEnforcement)`
+// is false (src/ir/lowering.cpp), so the request reaches the SAME
 // unlowerable refusal `Clip` already does once the chain is lowered;
 // this test (model layer only, no IR dependency) pins the half this
 // layer owns: the step is emitted and marked as an explicit request, not

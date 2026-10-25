@@ -179,7 +179,7 @@ TEST(ClockSet, CheckedCommonPeriodAcceptsAReasonableSchedule) {
   EXPECT_EQ(r.value(), Rational{1});
 }
 
-// The guard the brief calls for: an LCM needing more than kMaxPeriodTicks ticks
+// The guard: an LCM needing more than kMaxPeriodTicks ticks
 // of the finest interval is an unusable schedule, reported rather than built.
 TEST(ClockSet, CheckedCommonPeriodRejectsAnExplosivePeriod) {
   const auto r = ClockSet{two_components(Rational{1, 999983}, Rational{1, 999979})}
@@ -198,14 +198,14 @@ TEST(ClockSet, CheckedCommonPeriodReportsOverflowAsAnError) {
   EXPECT_EQ(r.error().code, "E-SCHED-PERIOD");
 }
 
-// Conformance Unit 2, defect found by the lead: ComponentDecl::interval
+// ComponentDecl::interval
 // defaults to Rational{1} (a coupler declares no interval of its own --
 // component.hpp's own comment on CouplerDecl/ComponentKind::Coupler), and
-// before this fix every one of ClockSet's own aggregates folded that
-// default straight into its answer like any physics component's real
+// none of ClockSet's own aggregates may fold that
+// default into its answer like any physics component's real
 // interval. One physics component at 1/50 plus a coupler must still give
 // period/finest_interval 1/50, not lcm(1/50, 1) = 1 -- the 50 window
-// instances per period Conformance Unit 2's own tier-0 harness measured.
+// instances per period.
 // MUTATION: reverting ClockSet's own coupler exclusion (deleting the
 // `if (coupler_[i]) continue;` guards) makes this fail -- both EXPECT_EQ
 // below would instead see Rational{1}.

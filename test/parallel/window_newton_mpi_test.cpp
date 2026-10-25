@@ -1,17 +1,15 @@
-// KNOWN_ISSUES.md D31 -- window Newton over the region's REAL participant
-// ranks, native substrate. Not a fuse_add_mpi_test() gtest binary run
-// through ctest in THIS sandbox: it calls MPI_Init, must be launched by
-// mpiexec, and this sandbox cannot start MPI at all (same constraint
-// test/parallel/window_runner_mpi_test.cpp names) -- build-verified
-// only here; registered as a host row (parallel.window_newton_mpi.{2,3}).
+// Window Newton over the region's REAL participant
+// ranks, native substrate. It calls MPI_Init and must be launched by
+// mpiexec (same constraint test/parallel/window_runner_mpi_test.cpp
+// names); registered as a host row (parallel.window_newton_mpi.{2,3}).
 //
 // THE FIXTURE: window_runner_mpi_test.cpp's own `LinearOdeComponent`/
 // `build_window_graph()`, reproduced here (not shared via a header --
 // the identical file-local-helper reasoning that file's own comment
 // gives), with ONE line changed: `decl.acceleration.kind` is
 // `AccelKind::Newton` instead of `AccelKind::None`. `LinearOdeComponent`
-// is this track's own "small synthetic case where the exact answer is
-// known" (the task's own phrase): `dx/dt = -a*x + b*u` integrated in
+// is a small synthetic case where the exact answer is
+// known: `dx/dt = -a*x + b*u` integrated in
 // closed form given the partner's own mean `u` over the substep, so F
 // is AFFINE in the Newton iterate and the native solver's own quadratic-
 // convergence theory predicts (and Sec. 8.2's own dn_heat measurement
@@ -217,8 +215,7 @@ CouplingGraph build_window_newton_graph(RankSet a_ranks, RankSet b_ranks) {
   decl.convergence.add(
       fuse::ConvergenceMeasure{fuse::MeasureKind::Absolute, 1e-12, "b_out"});
   decl.window_scope = scope;
-  // KNOWN_ISSUES.md D31: the one difference from window_runner_mpi_
-  // test.cpp's own fixture.
+  // The one difference from window_runner_mpi_test.cpp's own fixture.
   decl.acceleration.kind = AccelKind::Newton;
   decl.newton_config = NewtonConfig{};
   g.add_iteration_region(decl);

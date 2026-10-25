@@ -2,10 +2,8 @@
 
 FUSE unifies two verified code bases: a coupling compiler and runtime, and a coupling spine
 contributing the semantic model, compatibility inference, collective reconciliation and provider ABI.
-The import baselines are pinned in `UPSTREAMS.lock` at the repository root. [](roadmap.md) is the
-staged build order and where the tree currently stands against it — read it second if you want the
-state of the project before the design pages below; everything else here is organized to be read in
-order, foundations first.
+The import baselines are pinned in `UPSTREAMS.lock` at the repository root. Everything here is
+organized to be read in order, foundations first.
 
 ## Foundations — read these first
 
@@ -65,10 +63,10 @@ extent (`ContinuousGLL` order 1 is sized by vertex count, not cell count) and wh
 vertex ownership means for a nodal field in parallel. [](coupler-placement.md) covers the
 separately-placed coupler: the `ComponentKind` representation decision, the rule that lowers
 `source -> C -> target`, and every `component_count()` call site checked against it.
-[](runner-device-dispatch.md) covers the in-progress effort to give `Runner::Impl::execute()` a
+[](runner-device-dispatch.md) covers the effort to give `Runner::Impl::execute()` a
 real Kokkos device (Cuda) path and a cuSPARSE/cuSOLVER sparse-solve backend, including why the
-device-dispatch scope narrowed twice before settling on templating just `execute()`'s elementwise
-`OpKind` cases. [](device-resident-arcs.md) is the approved follow-on design: arcs, `previous[]`,
+device-dispatch scope is limited to templating `execute()`'s elementwise `OpKind` cases.
+[](device-resident-arcs.md) is the follow-on design: arcs, `previous[]`,
 history and the reduction scratch resident in the execution space's memory, host memory touched only
 at named boundaries, the mesh/topology builders made Space-generic, and the GPU-aware transport path
 for multi-rank device runs.
@@ -76,7 +74,6 @@ for multi-rank device runs.
 ## Holding an external path to the bar
 
 [](conformance.md) defines what "conformance" means for an external code coupling through the
-participant ABI, and is the record of every Runner and window-path defect the Conformance track
-found holding an external path to that bar — the Brusselator, as a separately-launched,
-multi-executable participant, is the external code that track and every one since has measured
-against.
+participant ABI, and is the record of every Runner and window-path defect found holding an external
+path to that bar — the Brusselator, as a separately-launched, multi-executable participant, is the
+external code that has been measured against it.

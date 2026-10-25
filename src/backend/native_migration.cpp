@@ -77,8 +77,7 @@ int allreduce_min_int(int local, CommHandle comm) {
 /// Copies a device-resident packed buffer to a host `std::vector<std::byte>`
 /// -- the ONE host round trip `pack_for_migration` still pays, for the wire
 /// bytes themselves (never the mesh's own geometry), until
-/// `exchange_migration_buffers` below becomes GPU-aware (this track's own
-/// follow-up item).
+/// `exchange_migration_buffers` below becomes GPU-aware.
 std::vector<std::byte> to_host_bytes(const Kokkos::View<std::byte*, NativeMeshView::DeviceMemSpace>& v) {
   auto mirror = Kokkos::create_mirror_view(v);
   Kokkos::deep_copy(mirror, v);
@@ -89,7 +88,7 @@ std::vector<std::byte> to_host_bytes(const Kokkos::View<std::byte*, NativeMeshVi
 
 }  // namespace
 
-// Migration track, 2026-10-15: a thin wrapper over the shared probe
+// A thin wrapper over the shared probe
 // (`fuse::linalg::mpi_is_gpu_aware()`, src/linalg/mpi_gpu_aware.cpp) --
 // kept as its own function, rather than deleted in favour of every call
 // site naming `fuse::linalg::mpi_is_gpu_aware()` directly, for source
@@ -99,8 +98,8 @@ std::vector<std::byte> to_host_bytes(const Kokkos::View<std::byte*, NativeMeshVi
 // comm.hpp's own declaration for the probe's full behaviour (the
 // `MPIX_Query_cuda_support()` run-time check, the `FUSE_MPI_GPU_AWARE`
 // configure-time fallback, and the `FUSE_TRANSPORT_HOST_STAGING=1`
-// override) -- this file used to duplicate that logic; see
-// src/linalg/mpi_gpu_aware.cpp's header comment for why it no longer does.
+// override); this file does not duplicate that logic (see
+// src/linalg/mpi_gpu_aware.cpp's header comment).
 bool mpi_is_gpu_aware() { return fuse::linalg::mpi_is_gpu_aware(); }
 
 /// The device-resident pack both `pack_for_migration` (below, host-byte
@@ -127,7 +126,7 @@ pack_for_migration_device(const NativeMeshView& mesh, const std::vector<int>& de
     }
   }
 
-  // Device-resident pack (Migration track, 2026-10-15): `dest`, one entry
+  // Device-resident pack: `dest`, one entry
   // per OWNED cell, is this function's only host-side input besides the
   // view itself -- copied to a small device array below (bookkeeping, not
   // mesh geometry) so `device::pack_to` can read `mesh.device_arrays()`
@@ -212,7 +211,7 @@ std::vector<std::vector<std::byte>> exchange_migration_buffers(
 #endif
 }
 
-// Migration track, 2026-10-15: the GPU-aware replacement for the
+// The GPU-aware replacement for the
 // `std::vector` overload above (native_migration.hpp's own "GPU-AWARE
 // MPI" paragraph has this primitive's status: proven standalone here,
 // not yet called by `migrate`/`build_native_remap_halo`). `Space` is a
@@ -455,8 +454,8 @@ void resolve_vertex_ownership_device(MeshArrays<Space>& arrays, CommHandle comm)
 #if FUSE_HAVE_MPI
   const int my_rank = comm_rank(comm);
 
-  // The ONE bounded host-staging exception this track's device-resident
-  // pipeline keeps (report-migration.md names it explicitly): only
+  // The ONE bounded host-staging exception this device-resident
+  // pipeline keeps: only
   // `vertex_gid`, an O(nv) int64 bookkeeping array, round-trips through
   // the host for this `MPI_Allgather`/`MPI_Allgatherv` -- never cell or
   // vertex GEOMETRY, and never the `host_mirrors_materialized()` lazy
@@ -507,7 +506,7 @@ Result<std::unique_ptr<NativeMeshView>> migrate(const NativeMeshView& mesh,
   // comment: a rank must never return this rejection on its own and skip
   // the exchange while its neighbours proceed into it.
   //
-  // DEVICE-RESIDENT END TO END (Migration track, 2026-10-15): `local`
+  // DEVICE-RESIDENT END TO END: `local`
   // holds `Space` buffers straight from `device::pack_to` (never staged to
   // a host `std::vector<std::byte>` the way the still-public
   // `pack_for_migration` does for the in-process-emulation test
@@ -518,8 +517,8 @@ Result<std::unique_ptr<NativeMeshView>> migrate(const NativeMeshView& mesh,
   // without one either -- `NativeMeshView::create<Space>` below is the
   // ONLY place left that is allowed to run its own one-time host
   // validation deep-copy (by pre-existing design, native_mesh.cpp), which
-  // is not the `host_mirrors_materialized()` lazy-mirror cache this
-  // track's own tests assert stays unmaterialized.
+  // is not the `host_mirrors_materialized()` lazy-mirror cache the
+  // tests assert stays unmaterialized.
   auto local = pack_for_migration_device(mesh, dest, num_ranks);
   const int locally_ok = local.ok() ? 1 : 0;
   const int globally_ok = allreduce_min_int(locally_ok, comm);
@@ -535,14 +534,14 @@ Result<std::unique_ptr<NativeMeshView>> migrate(const NativeMeshView& mesh,
   auto received = exchange_migration_buffers<Space>(local.value(), comm);
   // `unpack_migrated_mesh_device` itself has no refusal path (the wire
   // format is self-describing by construction, and a Polyhedron's cross-
-  // cell face sharing -- the one thing it does not validate, see this
-  // track's report -- cannot raise one either way), but
-  // `NativeMeshBuilder::build()` -- what `unpack_migrated_mesh` used to
-  // route through -- also checked every cell's topological dimension
+  // cell face sharing -- the one thing it does not validate -- cannot raise one
+  // either way), but
+  // `NativeMeshBuilder::build()` -- what `unpack_migrated_mesh` routes
+  // through -- also checks every cell's topological dimension
   // against `dim` (`E-MESH-DIM`), which this device path does not get for
-  // free since it never goes through the builder. NM-6's own "rebuilds
-  // THIS rank's own mesh from whatever it alone received" reasoning still
-  // applies: reconciled here, BEFORE `resolve_vertex_ownership_device`'s
+  // free since it never goes through the builder. Because it "rebuilds
+  // THIS rank's own mesh from whatever it alone received", the check is
+  // reconciled here, BEFORE `resolve_vertex_ownership_device`'s
   // own Allgather/Allgatherv, the same two-phase pattern the pre-exchange
   // verdict above already uses.
   MeshArrays<Space> arrays = device::unpack_migrated_mesh_device<Space>(received, mesh.dimension(),

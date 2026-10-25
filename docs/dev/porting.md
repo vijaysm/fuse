@@ -50,8 +50,8 @@ same concept — are made in the plan's stage that merges them, and recorded her
 | `SOMA_*`, `KARMA_*` macros and CMake options | `FUSE_*` | |
 | `soma_c.h` flat C API | the `fuse_coupler_abi()` table | not renamed: **replaced**, see [](abi-design.md) |
 | `karma_*_v1` exported symbols | `fuse_plugin_abi()` table | same |
-| Fortran `module soma_mod` | `module ffuse` | ruled 2026-09-17 |
-| Python `_soma` / `soma` | package `pfuse` | ruled 2026-09-17; availability confirmed (`pip index versions pfuse` → no matching distribution) |
+| Fortran `module soma_mod` | `module ffuse` |  |
+| Python `_soma` / `soma` | package `pfuse` | availability confirmed (`pip index versions pfuse` → no matching distribution) |
 | C header and flat-symbol shim | `cfuse.h` | names the HEADER only. There is no separate C binding to name: the C surface *is* `fuse_coupler_abi()` |
 | golden-IR header `soma-ir v1` | `fuse-ir v1` | the only canonical-byte change the rename causes; the golden files are regenerated once, and the diff must be that token and nothing else |
 
@@ -66,23 +66,23 @@ At import the two parents share **no** simple type name once `KARMA` is stripped
 mechanical collisions. There are conceptual overlaps — both have a field handle, a component
 contract, a status type, a coupling graph — and the plan decides each one:
 
-| Concept | Base taken from | Absorbs from the other | Stage |
-|---|---|---|---|
-| `Result` / `Diagnostics` | coupler | the spine's full outcome vocabulary | S1 |
-| exact time (`Rational`, `TimeLevel`) | coupler | — | S1 |
-| identity, versioning, canonical bytes | spine | the coupler's descriptor fields | S2 |
-| coupling graph, IR, schedule, plan | coupler | the spine's transform chain as a lowering rule; `CollectiveOutcome` as the `Epoch` instruction | S3 |
-| field handle, transactions | spine (`FieldTransaction`) on the coupler's plan buffers | | S4 |
-| component contract | coupler `Component` via the spine's registry | capability bits replace `supports_*()` | S4 |
-| transport, remap, mesh | coupler | the spine's FEM transfer as a `LinearOperator` backend | S5 |
+| Concept | Base taken from | Absorbs from the other |
+|---|---|---|
+| `Result` / `Diagnostics` | coupler | the spine's full outcome vocabulary |
+| exact time (`Rational`, `TimeLevel`) | coupler | — |
+| identity, versioning, canonical bytes | spine | the coupler's descriptor fields |
+| coupling graph, IR, schedule, plan | coupler | the spine's transform chain as a lowering rule; `CollectiveOutcome` as the `Epoch` instruction |
+| field handle, transactions | spine (`FieldTransaction`) on the coupler's plan buffers | |
+| component contract | coupler `Component` via the spine's registry | capability bits replace `supports_*()` |
+| transport, remap, mesh | coupler | the spine's FEM transfer as a `LinearOperator` backend |
 
 A row here is the *decision*; the port commit is the *evidence*.
 
-## Binding names — ruled 2026-09-17
+## Binding names
 
 One letter of language prefix on the stem: **`cfuse`** (C), **`ffuse`** (Fortran), **`pfuse`**
 (Python). The shape leaves room for `rfuse` and `jfuse` should Rust or Julia bindings ever exist,
-though neither is on the roadmap and the Julia one should not use a prefix at all (see below).
+though neither is planned and the Julia one should not use a prefix at all (see below).
 
 The collisions that shaped it, so nobody re-litigates them:
 

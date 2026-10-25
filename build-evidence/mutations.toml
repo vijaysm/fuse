@@ -447,14 +447,10 @@ test = "runtime.epoch_schedule"
 id = "epoch-schedule-drops-the-answer"
 area = "runtime"
 describes = "participant 0 keeps the agreed status to itself, so every other participant waits for a message that never comes"
-# Anchor rewritten for REVIEW.md R-21 (BT-F5): the flat `result_send_to`
-# per-participant list this mutation targeted was replaced by the
-# binomial-tree reduce/broadcast's `result_send_count` (a count, not a
-# list -- see epoch_schedule.hpp's own header comment) before this entry's
-# 2026-09-16 KILLED verdict was recorded, so `old` matched zero occurrences
-# and the verdict was unverifiable against the current implementation. The
-# new anchor reproduces the same defect against the current shape:
-# participant 0 sends its answer to nobody.
+# The anchor targets the binomial-tree reduce/broadcast's
+# `result_send_count` (a count, not a per-participant list -- see
+# epoch_schedule.hpp's own header comment): participant 0 sends its answer
+# to nobody.
 file = "include/fuse/runtime/epoch_schedule.hpp"
 old = "    s.result_send_count = participants - 1;"
 new = "    s.result_send_count = 0;"
@@ -596,7 +592,7 @@ test = "backend.supermesh"
 [[mutation]]
 id = "supermesh-divides-by-the-source-measure"
 area = "backend"
-describes = "KNOWN_ISSUES.md D82 (owner decision 2026-10-19): the divisor is unconditionally the source cell's measure regardless of the channel's declared conservation kind, so an Intensive channel (which must divide by the target measure, row-sum-to-1) gets the Extensive divisor instead and loses constant-field preservation on a non-matching pair"
+describes = "the divisor is unconditionally the source cell's measure regardless of the channel's declared conservation kind, so an Intensive channel (which must divide by the target measure, row-sum-to-1) gets the Extensive divisor instead and loses constant-field preservation on a non-matching pair"
 file = "src/backend/supermesh.cpp"
 old = "    const double divisor = extensive ? src.measure(dim, i) : tgt.measure(dim, j);"
 new = "    const double divisor = src.measure(dim, i);"
@@ -616,10 +612,9 @@ test = "backend.supermesh"
 [[mutation]]
 id = "supermesh-coverage-computed-before-the-floor"
 area = "backend"
-# Was declared equivalent (the two audits agree to within the 1e-12 floor). The
-# over-coverage audit added for R-13 checks the kept entries against the bound
-# directly and DOES distinguish them, so the declaration was withdrawn 2026-09-19
-# and this is now an ordinary mutation that must be killed.
+# Not equivalent: the over-coverage audit checks the kept entries against the
+# bound directly and DOES distinguish the two audits, so this is an ordinary
+# mutation that must be killed.
 describes = "the audit is computed from the accumulated overlaps rather than from the entries actually kept, so mass discarded by the negligible-overlap floor is concealed"
 file = "src/backend/supermesh.cpp"
 old = "  std::fill(src_covered.begin(), src_covered.end(), 0.0);"

@@ -1,10 +1,9 @@
 #pragma once
 
-/// D15 (KNOWN_ISSUES.md), round 5. `ProviderAdapter::register_fields()`
-/// (src/abi/provider_adapter.cpp) needs THIS rank's own share of a
-/// region when the region's own component spans MORE THAN ONE rank, not
-/// merely "hosted or not" -- see this header's own doc comment on
-/// `even_rank_share` for the measured bug this closes.
+/// `ProviderAdapter::register_fields()` (src/abi/provider_adapter.cpp)
+/// needs THIS rank's own share of a region when the region's own component
+/// spans MORE THAN ONE rank, not merely "hosted or not" -- see this
+/// header's own doc comment on `even_rank_share`.
 
 #include <cstddef>
 #include <utility>
@@ -27,10 +26,9 @@ namespace fuse::abi_detail {
 /// formula is reproduced EXACTLY (`rank_slice`'s own two branches,
 /// `position < extra` taking one extra element), not approximated; `0`
 /// and `1` `group_size` both degenerate to the whole range, matching
-/// `rank_slice`'s own `num_ranks <= 1` short-circuit. A future round
-/// should consider factoring this into a shared, dependency-free
-/// location so the two formulas can never drift apart -- left open
-/// (KNOWN_ISSUES.md D15's own round-5 entry), not resolved here.
+/// `rank_slice`'s own `num_ranks <= 1` short-circuit. This could be
+/// factored into a shared, dependency-free location so the two formulas
+/// can never drift apart; it is not done here.
 ///
 /// `position` and `group_size` are caller-validated (0 <= position <
 /// group_size is assumed, not checked): this function has no failure

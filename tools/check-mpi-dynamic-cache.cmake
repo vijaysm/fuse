@@ -43,7 +43,7 @@ foreach(_row IN LISTS _probe_rows)
 endforeach()
 
 # ---- option_value: (previous value, previous auto, previous verdict, new default) -> value
-#  first configure; follows the probe both ways; keeps an owner's choice; legacy caches
+#  first configure; follows the probe both ways; keeps a user's choice; legacy caches
 set(_option_rows
   "|||ON|ON"
   "OFF|OFF|measured broken|ON|ON"
@@ -97,7 +97,7 @@ set(MPI_C_COMPILER "")
 fuse_mpi_fingerprint(_fp_none)
 _expect("a machine with no MPI gets the stable fingerprint" "${_fp_none}" "none;none;none;")
 
-# ---- D23's final account: the per-layout record ---------------------------
+# ---- the per-layout record ---------------------------
 
 # ---- layouts_missing: cached_layouts -> probe needed because of a missing record?
 set(_layouts_missing_rows
@@ -158,7 +158,7 @@ foreach(_row IN LISTS _working_rows)
 endforeach()
 
 # ---- layouts_value: (previous_value, previous_auto, new_value) -> value
-#  first configure; follows a fresh probe; keeps an owner's hand-edited record
+#  first configure; follows a fresh probe; keeps a user's hand-edited record
 set(_layouts_value_rows
   "||1+1:3/3|1+1:3/3"
   "1+1:3/3|1+1:3/3|1+1:2/3|1+1:2/3"
@@ -172,8 +172,8 @@ endforeach()
 
 # ---- end-to-end, against the layouts a real row needs: an MPI that
 # measures N of N at 1 rank a side but not at the multi-rank layouts the
-# accept/chain/participants rows actually use (the host's own 2026-10-20
-# shape, KNOWN_ISSUES.md D23's final account) disables every row except the
+# accept/chain/participants rows actually use (a shape seen on a real
+# host) disables every row except the
 # plain 1+1 pair.
 set(_fuse_real_layouts "1+1:3/3;2+1:3/3;3+2:2/3;2+3:3/3;1+2:1/3;1+3:1/3")
 set(_row_layout_rows

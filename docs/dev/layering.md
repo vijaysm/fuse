@@ -21,7 +21,7 @@ base        Rational · units · TimeLevel · SemanticVersion · ids · Result/D
 
 `(*) linalg`, `field`, `search` and `partition` are real, separately-ranked layers in
 `tools/check-layering.py`'s `LAYERS` list, easy to omit from a hand-drawn version of
-this diagram (REVIEW.md R-39 / BT-F13 caught `linalg`/`field` missing once already).
+this diagram (`linalg`/`field` have been missed from it before).
 None of the four sits strictly "under" its neighbour the way the rest of the column
 does: `linalg` is a peer utility `num` depends on (nothing depends on `num` from
 here); `field` is included only by `backend` and `runtime`, not by anything below

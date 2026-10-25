@@ -1,9 +1,8 @@
-# The decisions behind the accept/connect capability probe (KNOWN_ISSUES.md D23,
-# D35). They are functions of plain values, with no probe run and no MPI, so
+# The decisions behind the accept/connect capability probe. They are functions of plain values, with no probe run and no MPI, so
 # tools/check-mpi-dynamic-cache.cmake can test every branch on any machine.
 #
 # WHY THIS EXISTS. The probe's verdict used to be cached once and never looked
-# at again. Two ways that goes wrong, both measured on the owner's machine:
+# at again. Two ways that goes wrong, both measured on a development machine:
 #   - "measured broken" stayed broken after the MPI was reinstalled with a
 #     device that works, and FUSE_ENABLE_CONNECT_ACCEPT, an option whose value
 #     is cached at the first configure, stayed OFF with it;
@@ -59,8 +58,8 @@ endfunction()
 #                               <new_default> <out>)
 #
 # The value FUSE_ENABLE_CONNECT_ACCEPT should have after this configure. The
-# option follows the probe, except where the owner set it: a value that differs
-# from what the probe itself set last time was an owner's choice and is kept.
+# option follows the probe, except where the user set it: a value that differs
+# from what the probe itself set last time was the user's choice and is kept.
 # A cache from before the probe recorded what it set has no such record; there
 # the previous verdict says what the old code would have set (OFF for "measured
 # broken", ON otherwise). A first configure has no previous value and takes the
@@ -85,7 +84,7 @@ function(fuse_mpi_dynamic_option_value previous_value previous_auto previous_ver
   endif()
 endfunction()
 
-# ---- D23's final account: a single 1-rank-a-side verdict is not a
+# ---- A single 1-rank-a-side verdict is not a
 # measurement of a 3-rank row. The functions below turn the probe's raw,
 # multi-layout output into a per-layout record, and read that record back
 # for a specific row's own layout -- all pure functions of plain values,
@@ -153,7 +152,7 @@ endfunction()
 # TRUE iff <record> (fuse_mpi_dynamic_layout_record()'s own output) reads
 # "N of N" -- every run of that layout passed. An empty record (never
 # measured) and a "p/n" with p < n (measured, but not reliably) are both
-# FALSE: the N-of-N rule from KNOWN_ISSUES.md D23's final account, with no
+# FALSE: the N-of-N rule, with no
 # partial credit and no constant to widen after a row still fails.
 function(fuse_mpi_dynamic_layout_working record out)
   set(_working FALSE)
@@ -170,9 +169,9 @@ endfunction()
 #
 # The value FUSE_MPI_DYNAMIC_LAYOUTS should have after a configure that DID
 # re-probe. Same by-hand-override rule as fuse_mpi_dynamic_option_value()
-# above (KNOWN_ISSUES.md D35), written separately because that function's
+# above, written separately because that function's
 # migration branch is specific to a two-valued ON/OFF option and this one
-# carries an opaque string record instead: the owner's own edit is kept
+# carries an opaque string record instead: the user's own edit is kept
 # only when it differs from what the probe itself set last time; a first
 # configure (no previous record at all) takes the fresh measurement
 # unconditionally.

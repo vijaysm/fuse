@@ -12,7 +12,7 @@
  *      rank numbering across every program.
  *   3. both of those between two jobs that happen to share a NODE, AT EVERY
  *      RANK COUNT a registered row actually launches -- not just one rank a
- *      side. KNOWN_ISSUES.md D23's final account: a device whose context-id
+ *      side. A device whose context-id
  *      agreement for the merged communicator is intermittent under load (not
  *      the ch3:nemesis defect this file's comment originally described, which
  *      cleared with a device change) can pass a 1+1 run reliably while the
@@ -27,8 +27,8 @@
  *
  * tools/probe-intercomm-merge.c is a SEPARATE, FUSE-free program with the
  * same shape (accept/connect over a port file, then MPI_Intercomm_merge),
- * kept for its own reason: it is the exact reproducer KNOWN_ISSUES.md D23
- * names for the ad hoc multi-rank measurements recorded there, run and
+ * kept for its own reason: it is the exact reproducer
+ * for the ad hoc multi-rank measurements, run and
  * re-run by hand outside any build, with no cmake, no shell driver, and no
  * dependence on this file's own CLI or exit-code conventions. This file is
  * the one cmake/FuseDependencies.cmake actually compiles and launches at
@@ -57,7 +57,7 @@ enum { kPortWaitSeconds = 30 };
 int main(int argc, char** argv) {
   /* `selftest` takes no port file; the other two require one. Getting this
    * wrong made the probe report "cannot launch an MPI process here" on a
-   * machine whose launcher was fine (host, 2026-10-09) -- the preflight was
+   * machine whose launcher was fine -- the preflight was
    * failing on its own usage message, which is exactly the confusion between
    * "could not test" and "measured" that the three verdicts exist to avoid. */
   const int selftest = (argc == 2 && strcmp(argv[1], "selftest") == 0);

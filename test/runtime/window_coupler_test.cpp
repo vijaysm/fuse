@@ -519,7 +519,7 @@ struct AsymptoticRefinement {
   }
   return out;
 }
-// Every step's order must land in [1.9, 2.1] (the task's own bound); the
+// Every step's order must land in [1.9, 2.1]; the
 // helper below applies that uniformly and reports every step's number on
 // failure, not just the first.
 void expect_order_two_at_every_step(const std::vector<double>& errs,
@@ -580,14 +580,12 @@ TEST(WindowCouplerVerification, ErrorConvergesAtOrderTwoMixedAdjustableFixed) {
   expect_order_two_at_every_step(errs, "mixed A-adjustable,B-fixed");
 }
 
-// The delegated task's item (b), third bullet asked for a genuinely mixed
-// case where BOTH members straddle at once, using an explicit window that
-// is a multiple of neither member's own step, WITH an order-2 assertion.
-// That assertion is NOT made here -- two real, DISCLOSED gaps were found
-// while trying to construct it, neither of them the straddle_window_start
-// bug already fixed above, and both out of scope for a bug-fix pass:
+// A genuinely mixed case where BOTH members straddle at once, using an
+// explicit window that is a multiple of neither member's own step, would
+// ideally carry an order-2 assertion. That assertion is NOT made here --
+// two known gaps, unrelated to straddle_window_start, prevent it:
 //
-// 1. window=10/d (the task's own suggested value): A's interval (13/d)
+// 1. window=10/d: A's interval (13/d)
 //    exceeds the window by 30%, so A's overshoot grows window over
 //    window (13, 26, 39, 52 against window boundaries 10, 20, 30, 40)
 //    until, at the 5th window, A's carried-over clock (52/d) is already
@@ -596,10 +594,10 @@ TEST(WindowCouplerVerification, ErrorConvergesAtOrderTwoMixedAdjustableFixed) {
 //    WindowCoupler's bookkeeping does not handle that: `build_delivered`
 //    constructs a Waveform with window_begin > window_end and throws.
 //
-// 2. window=12/d (chosen to keep A's per-window excess small, 8%,
-//    delaying gap 1 well past any window count tested here -- verified
-//    directly by simulating the substep grid alone, first skip at window
-//    12): a DIFFERENT failure appears much earlier. With BOTH A and B
+// 2. window=12/d (which keeps A's per-window excess small, 8%, delaying
+//    gap 1 well past any window count tested here -- verified directly by
+//    simulating the substep grid alone, first skip at window 12): a
+//    DIFFERENT failure appears much earlier. With BOTH A and B
 //    straddle_pending simultaneously, `resolve_pending_straddles()`
 //    replays them one at a time and one member's replay reads the OTHER
 //    member's `last_window_waveform`/`history` -- measured directly,
@@ -611,12 +609,11 @@ TEST(WindowCouplerVerification, ErrorConvergesAtOrderTwoMixedAdjustableFixed) {
 //    Adjustable/Adjustable (neither member straddles, both truncate)
 //    comes closest to correct -- order 1.87 at the one step measured,
 //    under the 1.9 floor but not crashing or growing. This is a second,
-//    independent simultaneous-straddle interaction bug, not covered by
-//    either fix made above.
+//    independent simultaneous-straddle interaction bug.
 //
-// The straddle envelope (KNOWN_ISSUES.md D7). Outside it the coupler used
-// to run and return a wrong answer with no diagnostic -- growing error in
-// the mixed cases -- so it is now refused at create(). Inside it, a window
+// The straddle envelope. Outside it the coupler would run and return a
+// wrong answer with no diagnostic -- growing error in the mixed cases --
+// so it is refused at create(). Inside it, a window
 // that neither step divides is still verified to order 2.
 namespace {
 
@@ -1056,10 +1053,9 @@ TEST(WindowCouplerRefusals, ChannelIndexOutOfRangeRefused) {
   EXPECT_EQ(r.error().code, "E-RT-WINDOW-CHANNEL");
 }
 
-// The user's decision (relayed 2026-09-29): a convergence measure names a
-// field TRANSFER (a WindowChannel, by its own `name`); one naming a
-// transfer the coupler does not have is refused by name at create(),
-// rather than silently falling back to some default at sweep time.
+// A convergence measure names a field TRANSFER (a WindowChannel, by its own
+// `name`); one naming a transfer the coupler does not have is refused by name
+// at create(), rather than silently falling back to some default at sweep time.
 TEST(WindowCouplerRefusals, ConvergenceMeasureNamingAnUnknownChannelIsRefused) {
   LinearOdeComponent a("A", 1.0, 1.0, 0.0), b("B", 1.0, 1.0, 0.0);
   WindowMember mA;

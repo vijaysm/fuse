@@ -1,6 +1,4 @@
-# Mutations for the participant C ABI (S6.1 "C ABI" track).
-# Own file per the review-fix protocol: do not edit build-evidence/mutations.toml
-# directly while other fixers hold it dirty.
+# Mutations for the participant C ABI.
 #
 # Every row below was applied by hand against the ABI's own src/abi/participant.cpp,
 # rebuilt, run, and confirmed to fail EXACTLY the named test before being restored
@@ -31,7 +29,7 @@ new = """template <class T>
 }"""
 target = "fuse_abi_struct_size_test"
 test = "abi.struct_size"
-result = "CONFIRMED 2026-10-02: AbiStructSize.ShortStructIsRefused failed exactly as predicted (every struct_size in {0,1,2,3} on fuse_capability_set, and struct_size=2 on fuse_setup_options, now returned FUSE_OK instead of FUSE_ERR_VERSION); AbiStructSize.LongerStructFromANewerCallerIsAccepted was unaffected (it never exercises the lower bound). Anchor text updated 2026-10-03 for Defect 3's FirstFrozenStructSize<T> refactor (the per-type minimum check_struct_size now reads, replacing the former bare sizeof(T)) and RE-PROVED BY HAND against the new text the same day: applying it made AbiStructSize.ShortStructIsRefused fail (t->setup() returned FUSE_OK/0 instead of FUSE_ERR_VERSION/-6 for a struct_size=2 fuse_setup_options), LongerStructFromANewerCallerIsAccepted still passed, and the file was restored and confirmed byte-identical via cmp."
+result = "CONFIRMED: AbiStructSize.ShortStructIsRefused failed exactly as predicted (every struct_size in {0,1,2,3} on fuse_capability_set, and struct_size=2 on fuse_setup_options, now returned FUSE_OK instead of FUSE_ERR_VERSION); AbiStructSize.LongerStructFromANewerCallerIsAccepted was unaffected (it never exercises the lower bound). The anchor targets the FirstFrozenStructSize<T> per-type minimum check_struct_size reads (replacing the former bare sizeof(T)); applying it by hand: applying it made AbiStructSize.ShortStructIsRefused fail (t->setup() returned FUSE_OK/0 instead of FUSE_ERR_VERSION/-6 for a struct_size=2 fuse_setup_options), LongerStructFromANewerCallerIsAccepted still passed, and the file was restored and confirmed byte-identical via cmp."
 
 [[mutation]]
 id = "abi-writer-sets-the-wrong-size"
@@ -48,7 +46,7 @@ const fuse_participant_abi_v1 g_table_v1 = {
     FUSE_ABI_VERSION,"""
 target = "fuse_abi_negotiation_test"
 test = "abi.negotiation"
-result = "CONFIRMED 2026-10-02: AbiNegotiation.V2CallerAgainstV1Table failed on EXPECT_EQ(real->struct_size, sizeof(fuse_participant_abi_v1)) (0 vs 128), exactly as predicted; the two other negotiation cases (V1CallerAgainstV2Table, ASubstitutedEntryIsCalledInsteadOfTheLibrarys) still passed, since neither reads the real table's own struct_size field. Restored; cmp reported no difference."
+result = "CONFIRMED: AbiNegotiation.V2CallerAgainstV1Table failed on EXPECT_EQ(real->struct_size, sizeof(fuse_participant_abi_v1)) (0 vs 128), exactly as predicted; the two other negotiation cases (V1CallerAgainstV2Table, ASubstitutedEntryIsCalledInsteadOfTheLibrarys) still passed, since neither reads the real table's own struct_size field. Restored; cmp reported no difference."
 
 [[mutation]]
 id = "abi-time-rounded-to-double"
@@ -65,7 +63,7 @@ new = """[[nodiscard]] fuse_exact_time to_abi_time(const fuse::Rational& r) noex
 }"""
 target = "fuse_abi_participant_test"
 test = "abi.participant"
-result = "CONFIRMED 2026-10-02: AbiParticipant.StepBoundsAreTheSchedulesRationals failed at tick 1 (t_end expected numerator=2, denominator=3; got numerator=0, denominator=1) and tick 2 (t_begin expected numerator=2, denominator=3; got numerator=0, denominator=1) -- every non-integer bound truncated to 0 by the double cast, exactly the class of loss rule 6 exists to forbid. The other two AbiParticipant cases, which do not read fuse_exact_time fields, still passed. Restored; cmp reported no difference."
+result = "CONFIRMED: AbiParticipant.StepBoundsAreTheSchedulesRationals failed at tick 1 (t_end expected numerator=2, denominator=3; got numerator=0, denominator=1) and tick 2 (t_begin expected numerator=2, denominator=3; got numerator=0, denominator=1) -- every non-integer bound truncated to 0 by the double cast, exactly the class of loss rule 6 exists to forbid. The other two AbiParticipant cases, which do not read fuse_exact_time fields, still passed. Restored; cmp reported no difference."
 
 [[mutation]]
 id = "abi-exception-escapes"
@@ -86,7 +84,7 @@ old = """  try {
 new = """  return body(*ctx);"""
 target = "fuse_abi_participant_test"
 test = "abi.participant"
-result = "CONFIRMED 2026-10-02: the fuse_abi_participant_test BINARY ABORTED with `libc++abi: terminating due to uncaught exception of type std::runtime_error: boom: ThrowingComponent always throws` (exit 134, SIGABRT) instead of AbiParticipant.AThrowingComponentBecomesRuntimeErrorWithTheMessage reporting FUSE_ERR_RUNTIME -- ctest would record the whole binary as a crash/failure, exactly the class of failure this row names. Restored; cmp reported no difference."
+result = "CONFIRMED: the fuse_abi_participant_test BINARY ABORTED with `libc++abi: terminating due to uncaught exception of type std::runtime_error: boom: ThrowingComponent always throws` (exit 134, SIGABRT) instead of AbiParticipant.AThrowingComponentBecomesRuntimeErrorWithTheMessage reporting FUSE_ERR_RUNTIME -- ctest would record the whole binary as a crash/failure, exactly the class of failure this row names. Restored; cmp reported no difference."
 
 [[mutation]]
 id = "abi-second-symbol-exported"
@@ -98,7 +96,7 @@ new = """_fuse_coupler_abi
 _r3d_orient"""
 target = "fuse-abi-shared"
 test = "abi.exported_symbols"
-# Re-anchored 2026-10-19 (Survivors track): the stand-in symbol used to be
+# The stand-in symbol used to be
 # `__ZN6Kokkos11num_devicesEv`, which SURVIVED the full tier-0 sweep at
 # `90d98ee` -- not because the allowlist check stopped comparing a set
 # (`test/abi/check_exported_symbols.cmake`'s own `if(NOT _actual STREQUAL
@@ -121,12 +119,12 @@ test = "abi.exported_symbols"
 # CXX_VISIBILITY_PRESET) -- confirmed directly: `nm libfuse-abi.dylib`
 # (no `-gU`) shows `t _r3d_orient` (a local, hidden-by-the-allowlist, but
 # genuinely DEFINED text symbol) before this mutation is applied.
-result = "CONFIRMED 2026-10-02 (original Kokkos-symbol draft, no longer reproducible -- see note above): after rebuilding fuse-abi-shared with the mutated allowlist, `nm -gU` on libfuse-abi.dylib showed two text symbols (ZN6Kokkos11num_devicesEv, fuse_coupler_abi) against the golden file's one. RE-VERIFIED 2026-10-19 with the re-anchored `new` above (90d98ee export, tier-0, system /usr/bin/c++): after rebuilding fuse-abi-shared, `nm -gU` showed `fuse_coupler_abi;r3d_orient` against the golden file's `fuse_coupler_abi`; ctest -R ^abi.exported_symbols$ FAILED with check_exported_symbols.cmake reporting exactly that diff (\"expected: fuse_coupler_abi; actual: fuse_coupler_abi;r3d_orient\"). Restored; cmp reported no difference; rebuilt and reconfirmed passing."
+result = "CONFIRMED (original Kokkos-symbol draft, no longer reproducible -- see note above): after rebuilding fuse-abi-shared with the mutated allowlist, `nm -gU` on libfuse-abi.dylib showed two text symbols (ZN6Kokkos11num_devicesEv, fuse_coupler_abi) against the golden file's one. RE-VERIFIED with the re-anchored `new` above (90d98ee export, tier-0, system /usr/bin/c++): after rebuilding fuse-abi-shared, `nm -gU` showed `fuse_coupler_abi;r3d_orient` against the golden file's `fuse_coupler_abi`; ctest -R ^abi.exported_symbols$ FAILED with check_exported_symbols.cmake reporting exactly that diff (\"expected: fuse_coupler_abi; actual: fuse_coupler_abi;r3d_orient\"). Restored; cmp reported no difference; rebuilt and reconfirmed passing."
 
 [[mutation]]
 id = "abi-step-order-refusal-removed"
 area = "abi"
-describes = "KNOWN_ISSUES.md D13's fix (S6 resumable-loop track): fuse_begin_step()'s check that the caller is stepping the component the Runner's instruction stream actually expects next is removed, so a component asked to step out of turn is silently accepted (and handed the OTHER component's ExternalAdvanceRequest -- wrong tick bounds, wrong checkpoint/restore flags) instead of refused with E-ABI-STEP-ORDER naming the expected component"
+describes = "fuse_begin_step()'s check that the caller is stepping the component the Runner's instruction stream actually expects next is removed, so a component asked to step out of turn is silently accepted (and handed the OTHER component's ExternalAdvanceRequest -- wrong tick bounds, wrong checkpoint/restore flags) instead of refused with E-ABI-STEP-ORDER naming the expected component"
 file = "src/abi/participant.cpp"
 old = """    const bool treat_as_mismatch = (req.component != in->component) || rolled_over;
     if (treat_as_mismatch) {
@@ -148,16 +146,12 @@ new = """    const bool treat_as_mismatch = rolled_over;
     if (treat_as_mismatch) {
       if (false) {
       }"""
-# Re-anchored 2026-10-19 (Survivors track, inconclusive-row fix): the `new`
-# text above used to leave `if (false) {` UNCLOSED, on the premise (true
-# when this row was written, 2026-10-02) that the enclosing `if
-# (treat_as_mismatch) {` body ended right there. It no longer does -- the
-# window-period-rollover handling ("Resuming past a proxy...") was added
-# inside that SAME outer `if` afterward, so the unclosed brace swallowed
-# that unrelated code into the new dead branch, shifting every later
-# brace in the function by one and failing to compile (reported
-# INCONCLUSIVE: "mutant does not compile; rewrite it", not a static_assert
-# in the test file). `old`'s own net brace balance is +1 (the outer `if`
+# The `new` text above must not leave `if (false) {` UNCLOSED: the window-period-rollover
+# handling ("Resuming past a proxy...") lives inside the SAME outer
+# `if (treat_as_mismatch) {`, so an unclosed brace would swallow that
+# unrelated code into the new dead branch, shifting every later brace in
+# the function by one and failing to compile (reported INCONCLUSIVE:
+# "mutant does not compile; rewrite it"). `old`'s own net brace balance is +1 (the outer `if`
 # deliberately left open, closed by the unchanged code that follows); the
 # fix adds the matching `}` so `new`'s balance is +1 too -- an empty,
 # always-false inner block that disables ONLY the step-order refusal,
@@ -165,12 +159,12 @@ new = """    const bool treat_as_mismatch = rolled_over;
 # it.
 target = "fuse_abi_participant_test"
 test = "abi.participant"
-result = "CONFIRMED 2026-10-02: AbiParticipant.BeginStepOutOfTurnIsRefusedNamingTheExpectedComponent failed on EXPECT_EQ(t->begin_step(ctx, &down_req, &rep), FUSE_ERR_STATE) -- begin_step(downstream) returned FUSE_OK (0) instead of FUSE_ERR_STATE (-3) when called out of turn. The other six AbiParticipant cases, none of which calls begin_step() out of the schedule's own order, still passed. Restored; cmp against the pre-mutation file reported no difference. RE-VERIFIED 2026-10-19 against the re-anchored `new` above (90d98ee export, tier-0, system /usr/bin/c++): compiles cleanly; ctest -R ^abi.participant$ reports exactly 1 FAILED -- AbiParticipant.BeginStepOutOfTurnIsRefusedNamingTheExpectedComponent -- of 22; restored and reconfirmed 22/22 passing, byte-identical cmp against the pre-mutation file."
+result = "CONFIRMED: AbiParticipant.BeginStepOutOfTurnIsRefusedNamingTheExpectedComponent failed on EXPECT_EQ(t->begin_step(ctx, &down_req, &rep), FUSE_ERR_STATE) -- begin_step(downstream) returned FUSE_OK (0) instead of FUSE_ERR_STATE (-3) when called out of turn. The other six AbiParticipant cases, none of which calls begin_step() out of the schedule's own order, still passed. Restored; cmp against the pre-mutation file reported no difference. RE-VERIFIED against the re-anchored `new` above (90d98ee export, tier-0, system /usr/bin/c++): compiles cleanly; ctest -R ^abi.participant$ reports exactly 1 FAILED -- AbiParticipant.BeginStepOutOfTurnIsRefusedNamingTheExpectedComponent -- of 22; restored and reconfirmed 22/22 passing, byte-identical cmp against the pre-mutation file."
 
 [[mutation]]
 id = "abi-begin-step-writes-next-component-past-an-old-callers-struct-size"
 area = "abi"
-describes = "Defect 3 (docs/dev/abi-design.md rule 2's write-side mirror): impl_begin_step() writes out->next_component unconditionally, ignoring struct_size_covers() -- an old caller's fuse_step_report*, heap-allocated at exactly the pre-Defect-3 size (no next_component field existed when it was compiled), gets a write past the end of its own allocation"
+describes = "The write-side mirror of docs/dev/abi-design.md rule 2: impl_begin_step() writes out->next_component unconditionally, ignoring struct_size_covers() -- an old caller's fuse_step_report*, heap-allocated at exactly the pre-Defect-3 size (no next_component field existed when it was compiled), gets a write past the end of its own allocation"
 file = "src/abi/participant.cpp"
 old = """    if (struct_size_covers(declared_out_size,
                            offsetof(fuse_step_report, next_component) +
@@ -180,11 +174,11 @@ old = """    if (struct_size_covers(declared_out_size,
 new = """    out->next_component = -2;"""
 target = "fuse_abi_struct_size_test"
 test = "abi.struct_size"
-result = "KILLED by abi.struct_size (AbiStructSize.OldCallerStepReportIsNeverWrittenPastItsOwnStructSize, lead 2026-10-19): the old-size report ends at a PROT_NONE page, so the unconditional write faults on every run. The previous record (PROVED BY HAND with ASan, plain-build crash at teardown) was allocator-dependent: tools/mutate.py --area abi reported SURVIVED for this row in a clean tier-0 tree on 2026-10-19, which is why the deterministic test replaced it."
+result = "KILLED by abi.struct_size (AbiStructSize.OldCallerStepReportIsNeverWrittenPastItsOwnStructSize): the old-size report ends at a PROT_NONE page, so the unconditional write faults on every run. The previous record (PROVED BY HAND with ASan, plain-build crash at teardown) was allocator-dependent: tools/mutate.py --area abi reported SURVIVED for this row in a clean tier-0 tree, which is why the deterministic test replaced it."
 [[mutation]]
 id = "abi-is-coupling-ongoing-reverts-to-undetermined-at-period-start"
 area = "abi"
-describes = "Defect 3's own refinement (Conformance Unit 2): impl_is_coupling_ongoing()'s uncached branch is reverted to the pre-refinement -2 sentinel instead of resolving next_component from Runner::components_due_at_period_start() -- a period's own start again reports 'undetermined without stepping' instead of a real, plan-derived answer, forcing a caller back to guessing the first component of every period"
+describes = "impl_is_coupling_ongoing()'s uncached branch is reverted to the pre-refinement -2 sentinel instead of resolving next_component from Runner::components_due_at_period_start() -- a period's own start again reports 'undetermined without stepping' instead of a real, plan-derived answer, forcing a caller back to guessing the first component of every period"
 file = "src/abi/participant.cpp"
 old = """      } else {
         // Unreachable for a well-formed graph with external_count > 0:
@@ -203,7 +197,7 @@ new = """      } else {
       }"""
 target = "fuse_abi_participant_test"
 test = "abi.participant"
-result = "PROVED BY HAND 2026-10-03 (tools/mutate.py --area abi refuses against this uncommitted tree, same constraint recorded for every other row in this file). Applied directly to the ordinary bafter build (no sanitizer needed -- this is a pure logic/value regression, not a memory-safety one): AbiParticipant.IsCouplingOngoingReportsThePlanFirstComponentNotTheFirstDeclaredOne failed exactly as predicted (ongoing.next_component read -2 instead of beta's ComponentId, 1); BrusselatorParticipants.ExternallyDrivenMultiSubstepWindowDrivenByNextComponent ALSO failed (period 0 step 0: next_component resolved to neither U nor V, got -2), confirming the harness itself depends on this refinement now that it no longer guesses U first. Restored from a /tmp backup; cmp reported no difference; full rebuild confirmed both tests pass again."
+result = "PROVED BY HAND (tools/mutate.py --area abi refuses against this uncommitted tree, same constraint recorded for every other row in this file). Applied directly to the ordinary bafter build (no sanitizer needed -- this is a pure logic/value regression, not a memory-safety one): AbiParticipant.IsCouplingOngoingReportsThePlanFirstComponentNotTheFirstDeclaredOne failed exactly as predicted (ongoing.next_component read -2 instead of beta's ComponentId, 1); BrusselatorParticipants.ExternallyDrivenMultiSubstepWindowDrivenByNextComponent ALSO failed (period 0 step 0: next_component resolved to neither U nor V, got -2), confirming the harness itself depends on this refinement now that it no longer guesses U first. Restored from a /tmp backup; cmp reported no difference; full rebuild confirmed both tests pass again."
 
 [[mutation]]
 id = "abi-setup-reads-my-component-past-an-old-callers-struct-size"
@@ -218,23 +212,23 @@ old = """    const char* my_component =
 new = """    const char* my_component = in->my_component;"""
 target = "fuse_abi_struct_size_test"
 test = "abi.struct_size"
-result = "PROVED BY HAND 2026-10-03 (tools/mutate.py --area abi refuses against this uncommitted tree, the same constraint recorded for every other row in this file). Applied to a scratch ASan tree (-fsanitize=address,undefined -fno-omit-frame-pointer): AbiStructSize.OldCallerStructSizeNeverReadsMyComponent (the heap-exact-buffer test this row targets) ABORTED with 'AddressSanitizer: heap-buffer-overflow ... participant.cpp:439 in impl_setup', exactly the read this guard exists to prevent. Restored from a /tmp backup; cmp reported no difference; full rebuild (both the tier-0 bafter tree and the tier-1 b1mpi tree) confirmed the test passes again. Anchor text updated 2026-10-18 (KNOWN_ISSUES.md D76, abi-communicator track): the trailing `if (in->communicator != 0) {` line was dropped from the quote because D76's has_communicator field inserted a comment block and a new struct_size_covers() read between my_component's assignment and that line, and the anchor's own `old` text otherwise no longer matches the file verbatim; the my_component quote itself is untouched by D76 and was NOT re-proved by hand this round."
+result = "PROVED BY HAND (tools/mutate.py --area abi refuses against this uncommitted tree, the same constraint recorded for every other row in this file). Applied to a scratch ASan tree (-fsanitize=address,undefined -fno-omit-frame-pointer): AbiStructSize.OldCallerStructSizeNeverReadsMyComponent (the heap-exact-buffer test this row targets) ABORTED with 'AddressSanitizer: heap-buffer-overflow ... participant.cpp:439 in impl_setup', exactly the read this guard exists to prevent. Restored from a /tmp backup; cmp reported no difference; full rebuild (both the tier-0 bafter tree and the tier-1 b1mpi tree) confirmed the test passes again. The trailing `if (in->communicator != 0) {` line is not part of the quote because the has_communicator field inserts a comment block and a new struct_size_covers() read between my_component's assignment and that line, and quoting it would no longer match the file verbatim."
 
 [[mutation]]
 id = "run-external-refuses-unconditionally-not-by-hosting"
 area = "abi"
-describes = "Unit 2b (D19), step (d): fuse_run()'s own E-ABI-RUN-EXTERNAL refusal is narrowed to 'an externally driven component IS HOSTED ON THIS PROCESS' (Runner::hosts_component()), from 'the GRAPH declares one anywhere at all' (c.external_count > 0). Reverting to the blanket check refuses fuse_run() even on a process hosting ONLY a ComponentKind::Coupler placement (no advance() to drive at all) -- exactly the gap that left coupler_main.c's/u_main.c's own placeholder ranks calling neither fuse_run() nor fuse_begin_step()/fuse_end_step() between fuse_initialize() and fuse_destroy() (KNOWN_ISSUES.md D19, evidence 4)."
+describes = "fuse_run()'s own E-ABI-RUN-EXTERNAL refusal is narrowed to 'an externally driven component IS HOSTED ON THIS PROCESS' (Runner::hosts_component()), from 'the GRAPH declares one anywhere at all' (c.external_count > 0). Reverting to the blanket check refuses fuse_run() even on a process hosting ONLY a ComponentKind::Coupler placement (no advance() to drive at all) -- exactly the gap that left coupler_main.c's/u_main.c's own placeholder ranks calling neither fuse_run() nor fuse_begin_step()/fuse_end_step() between fuse_initialize() and fuse_destroy()."
 file = "src/abi/participant.cpp"
 old = "    bool external_hosted_here = false;"
 new = "    bool external_hosted_here = c.external_count > 0;  // MUTATED: blanket check"
 target = "fuse_abi_participant_test"
 test = "abi.participant"
-result = "PROVED BY HAND 2026-10-03 (tools/mutate.py --area abi refuses against this uncommitted tree, same constraint as every other row in this file). Applied directly to the ordinary bafter build: AbiParticipant.RunAcceptedOnAProcessHostingOnlyTheCoupler -- built specifically for this row, force_this_process(ctx, 5) on a rank hosting only a coupler placement disjoint from alpha's/beta's own RankSet{0,1} -- failed exactly as predicted: fuse_run() returned FUSE_ERR_UNSUPPORTED (-5) instead of FUSE_OK. AbiParticipant.RunStillRefusedOnAProcessHostingAnExternalComponent (the complementary case, force_this_process(ctx, 0)) was unaffected, as expected -- that rank hosts an external component either way. Restored from a /tmp backup; sha256 reported no difference; full rebuild confirmed both tests pass again, 163/163 overall."
+result = "PROVED BY HAND (tools/mutate.py --area abi refuses against this uncommitted tree, same constraint as every other row in this file). Applied directly to the ordinary bafter build: AbiParticipant.RunAcceptedOnAProcessHostingOnlyTheCoupler -- built specifically for this row, force_this_process(ctx, 5) on a rank hosting only a coupler placement disjoint from alpha's/beta's own RankSet{0,1} -- failed exactly as predicted: fuse_run() returned FUSE_ERR_UNSUPPORTED (-5) instead of FUSE_OK. AbiParticipant.RunStillRefusedOnAProcessHostingAnExternalComponent (the complementary case, force_this_process(ctx, 0)) was unaffected, as expected -- that rank hosts an external component either way. Restored from a /tmp backup; sha256 reported no difference; full rebuild confirmed both tests pass again, 163/163 overall."
 
 [[mutation]]
 id = "abi-prime-next-request-rollover-removed"
 area = "abi"
-describes = "the lead's own ruling (2026-10-04), item 2: prime_next_request()'s legitimate rollover path -- resume_period() finding nothing left in the current period is treated as the period simply having run to completion, not an error, and a second resume_period() call starts the next one -- is removed. Restores the PRE-fix 'unreachable' guard unconditionally: the first resume_period() returning nothing is immediately reported as E-ABI-STEP-ORDER, the same genuine-invariant-violation error correctly reserved for a SECOND consecutive empty period, now wrongly raised on an ordinary, legitimate period-end reached by resuming past a cached LowFive delivery proxy."
+describes = "prime_next_request()'s legitimate rollover path -- resume_period() finding nothing left in the current period is treated as the period simply having run to completion, not an error, and a second resume_period() call starts the next one -- is removed. Restores the PRE-fix 'unreachable' guard unconditionally: the first resume_period() returning nothing is immediately reported as E-ABI-STEP-ORDER, the same genuine-invariant-violation error correctly reserved for a SECOND consecutive empty period, now wrongly raised on an ordinary, legitimate period-end reached by resuming past a cached LowFive delivery proxy."
 file = "src/abi/participant.cpp"
 old = """  if (!outcome.value().has_value()) {
     // This period is over (see this function's own comment above for
@@ -348,19 +342,19 @@ new = """  if (!outcome.value().has_value()) {
   }"""
 target = "fuse_abi_participant_test"
 test = "abi.participant"
-result = "PROVED BY HAND 2026-10-06 (tools/mutate.py --area abi refuses against this uncommitted tree, same constraint recorded for every other row in this file). Applied directly to the ordinary bafter build: AbiParticipant.MismatchedRolloverNamesTheRealPeriodStartComponent -- built specifically for this row, a genuinely multirate LowFive-bound window whose delivery proxy survives to the exact sweep that converges -- failed exactly as predicted: fuse_begin_step() at the rollover point returned FUSE_ERR_RUNTIME (-4) instead of FUSE_OK (0). The other 13 AbiParticipant cases, none of which resumes past a cached delivery proxy that then discovers the period has ended, were unaffected. Restored from a /tmp backup; cmp reported no difference; full rebuild confirmed all 14 tests pass again."
+result = "PROVED BY HAND (tools/mutate.py --area abi refuses against this uncommitted tree, same constraint recorded for every other row in this file). Applied directly to the ordinary bafter build: AbiParticipant.MismatchedRolloverNamesTheRealPeriodStartComponent -- built specifically for this row, a genuinely multirate LowFive-bound window whose delivery proxy survives to the exact sweep that converges -- failed exactly as predicted: fuse_begin_step() at the rollover point returned FUSE_ERR_RUNTIME (-4) instead of FUSE_OK (0). The other 13 AbiParticipant cases, none of which resumes past a cached delivery proxy that then discovers the period has ended, were unaffected. Restored from a /tmp backup; cmp reported no difference; full rebuild confirmed all 14 tests pass again."
 
 
 [[mutation]]
 id = "abi-last-error-truncation-copies-nothing"
 area = "abi"
-describes = "last_error with a buffer smaller than the message sets truncated but copies nothing, so a caller printing the buffer reads uninitialised bytes; the header promises the prefix that fits, NUL-terminated. This was the shipped behaviour until 2026-10-07."
+describes = "last_error with a buffer smaller than the message sets truncated but copies nothing, so a caller printing the buffer reads uninitialised bytes; the header promises the prefix that fits, NUL-terminated."
 file = "src/abi/participant.cpp"
 old = "    if (out->capacity > 0) {\n      const std::size_t n"
 new = "    if (false) {\n      const std::size_t n"
 target = "fuse_abi_participant_test"
 test = "abi.participant"
-# KILLED by hand 2026-10-07 in a clean export: only
+# KILLED by hand in a clean export: only
 # AbiParticipant.LastErrorCopiesThePrefixThatFitsWhenTruncated fails.
 
 [[mutation]]
@@ -401,7 +395,7 @@ test = "abi.install_consumer_c"
 [[mutation]]
 id = "abi-period-rollover-eager-continuation"
 area = "abi/participant (prime_next_request)"
-describes = "KNOWN_ISSUES.md D57. Removing prime_next_request()'s own `else if (c.communicator_set)` branch restores the unconditional fallthrough: when no end_time is declared and the current period has just drained, the function immediately calls Runner::Impl::resume_period() a SECOND time in the SAME fuse_begin_step() call even when a base communicator IS configured -- starting an extra period the caller's own bounded loop (examples/brusselator/participants/u_main.c's own `for (p = 0; p < periods; ++p)`) never asked for and the coupler's own Runner::run(periods) loop will never also enter. (The `c.communicator_set` gate itself -- distinguishing this from the single-process conformance case, AbiParticipant.MismatchedRolloverNamesTheRealPeriodStartComponent, which has no communicator and relies on the SAME eager continuation -- was added after the full tier-0 ctest suite caught that test regressing against a first-draft, unconditional version of this fix.)"
+describes = "Removing prime_next_request()'s own `else if (c.communicator_set)` branch restores the unconditional fallthrough: when no end_time is declared and the current period has just drained, the function immediately calls Runner::Impl::resume_period() a SECOND time in the SAME fuse_begin_step() call even when a base communicator IS configured -- starting an extra period the caller's own bounded loop (examples/brusselator/participants/u_main.c's own `for (p = 0; p < periods; ++p)`) never asked for and the coupler's own Runner::run(periods) loop will never also enter. (The `c.communicator_set` gate itself -- distinguishing this from the single-process conformance case, AbiParticipant.MismatchedRolloverNamesTheRealPeriodStartComponent, which has no communicator and relies on the SAME eager continuation -- was added after the full tier-0 ctest suite caught that test regressing against a first-draft, unconditional version of this fix.)"
 file = "src/abi/participant.cpp"
 old = """    } else if (c.communicator_set) {
       // KNOWN_ISSUES.md D57. No end_time was declared at all (fuse_setup
@@ -470,12 +464,12 @@ new = """    }
     outcome = c.runner->resume_period(c.components);"""
 target = "fuse_verification_brusselator_period_rollover_test"
 test = "verification.brusselator_period_rollover"
-result = "CONFIRMED 2026-10-13 (Collectives track, tier 0, /tmp/collectives/b0): applying the mutation by hand and rebuilding the target made BrusselatorPeriodRollover.StopsAtTheRequestedPeriodCountWithNoEndTime FAIL (begin_rep.next_component=0 at the stopping call instead of -1; whole unfiltered binary: [PASSED] 0 tests, [FAILED] 1 test). File restored from the in-memory pre-mutation text and confirmed byte-identical via cmp (both MD5 8749b463b4c75db9a4909c4218fe17ab). Clean rebuild of the same target then passed again ([PASSED] 1 test, begin_rep.next_component=-1 at the stopping call). The companion regression this `communicator_set` gate exists to prevent was independently confirmed by rebuilding and running fuse_abi_participant_test's own WHOLE unfiltered binary (17 tests): AbiParticipant.MismatchedRolloverNamesTheRealPeriodStartComponent, which never configures a communicator, PASSED unchanged ([PASSED] 17 tests)."
+result = "CONFIRMED (tier 0, /tmp/collectives/b0): applying the mutation by hand and rebuilding the target made BrusselatorPeriodRollover.StopsAtTheRequestedPeriodCountWithNoEndTime FAIL (begin_rep.next_component=0 at the stopping call instead of -1; whole unfiltered binary: [PASSED] 0 tests, [FAILED] 1 test). File restored from the in-memory pre-mutation text and confirmed byte-identical via cmp (both MD5 8749b463b4c75db9a4909c4218fe17ab). Clean rebuild of the same target then passed again ([PASSED] 1 test, begin_rep.next_component=-1 at the stopping call). The companion regression this `communicator_set` gate exists to prevent was independently confirmed by rebuilding and running fuse_abi_participant_test's own WHOLE unfiltered binary (17 tests): AbiParticipant.MismatchedRolloverNamesTheRealPeriodStartComponent, which never configures a communicator, PASSED unchanged ([PASSED] 17 tests)."
 
 [[mutation]]
 id = "abi-base-communicator-always-reports-formed"
 area = "abi"
-describes = "impl_base_communicator() reports formed = 1 unconditionally instead of c.communicator_set ? 1 : 0 (D14 Stage B, 2026-10-13), so a caller cannot tell an unformed base communicator (before setup(), or after a setup() that never supplied one) from a real one -- the one contract struct_size negotiation does not cover"
+describes = "impl_base_communicator() reports formed = 1 unconditionally instead of c.communicator_set ? 1 : 0 so a caller cannot tell an unformed base communicator (before setup(), or after a setup() that never supplied one) from a real one -- the one contract struct_size negotiation does not cover"
 file = "src/abi/participant.cpp"
 old = """    out->struct_size  = sizeof(fuse_base_communicator_info);
     out->communicator = c.communicator_set ? c.communicator : 0;
@@ -487,4 +481,4 @@ new = """    out->struct_size  = sizeof(fuse_base_communicator_info);
     out->reserved     = 0;"""
 target = "fuse_abi_struct_size_test"
 test = "abi.struct_size"
-result = "CONFIRMED 2026-10-13 (sandbox, tier-0 b0): applying the mutation and rebuilding fuse_abi_struct_size_test failed exactly 4 of 8 AbiStructSize tests -- BaseCommunicatorDefaultsToZeroFormedBeforeSetup, BaseCommunicatorStaysUnformedAfterACommunicatorlessSetup, BaseCommunicatorInfoExactFrozenSizeIsAccepted, and BaseCommunicatorInfoLongerStructFromANewerCallerIsAccepted (each on EXPECT_EQ(info.formed, 0), got 1); BaseCommunicatorInfoShortStructIsRefused was unaffected (struct_size negotiation fires before formed is ever read). File restored and confirmed byte-identical to the pre-mutation copy via md5 (803ae5e1dc25cad8413dbafac53e6c63 both before and after); fuse_abi_struct_size_test rebuilt clean and all 8 tests passed again."
+result = "CONFIRMED (sandbox, tier-0 b0): applying the mutation and rebuilding fuse_abi_struct_size_test failed exactly 4 of 8 AbiStructSize tests -- BaseCommunicatorDefaultsToZeroFormedBeforeSetup, BaseCommunicatorStaysUnformedAfterACommunicatorlessSetup, BaseCommunicatorInfoExactFrozenSizeIsAccepted, and BaseCommunicatorInfoLongerStructFromANewerCallerIsAccepted (each on EXPECT_EQ(info.formed, 0), got 1); BaseCommunicatorInfoShortStructIsRefused was unaffected (struct_size negotiation fires before formed is ever read). File restored and confirmed byte-identical to the pre-mutation copy via md5 (803ae5e1dc25cad8413dbafac53e6c63 both before and after); fuse_abi_struct_size_test rebuilt clean and all 8 tests passed again."

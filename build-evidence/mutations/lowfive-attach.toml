@@ -1,7 +1,4 @@
-# Mutations for S6 phase 3 ("LowFive" track), "LowFive attach" track. Own
-# file per the review-fix protocol: do not edit build-evidence/
-# mutations.toml directly while other fixers hold it dirty (same
-# convention as field-pipeline.toml, transport-lowfive.toml).
+# Mutations for the LowFive attach logic (same layout as transport-lowfive.toml).
 
 [[mutation]]
 id = "decide-attach-mode-skips-the-accept-refusal"
@@ -17,12 +14,11 @@ new = """  for (const ChannelRoles& ch : channels) {
 target = "fuse_verification_brusselator_lowfive_attach_test"
 test = "verification.brusselator_lowfive_attach"
 
-# Round 2 ("role-ordered serve"): two more mutations for the pure
-# functions that fix the measured deadlock (lowfive_attach_decision.hpp's
-# own "Round 2" comment has the full account). `serve_on_close` itself --
-# left true, this would reproduce the measured hang -- is NOT tier-0
-# testable (no MPI, no LowFive, in this sandbox) and is recorded as such
-# in KNOWN_ISSUES.md D39 rather than claimed here with no evidence.
+# Role-ordered serve: two more mutations for the pure functions that fix
+# the measured deadlock (lowfive_attach_decision.hpp's own comment has the
+# full account). `serve_on_close` itself -- left true, this would reproduce
+# the measured hang -- is NOT tier-0 testable (no MPI, no LowFive, in this
+# sandbox) and is not claimed here with no evidence.
 
 [[mutation]]
 id = "decide-serve-roles-first-server-comparison-swapped"
@@ -37,30 +33,29 @@ test = "verification.brusselator_lowfive_attach"
 [[mutation]]
 id = "serve-state-step-finalize-unflushed-check-disabled"
 area = "examples"
-describes = "serve_state_step()'s own kFinalize case no longer refuses a first-reader's own deferred serve left unflushed -- exactly the silent-data-drop/silent-hang-elsewhere outcome this track's own instructions named as the one failure mode role-ordering must not hide"
+describes = "serve_state_step()'s own kFinalize case no longer refuses a first-reader's own deferred serve left unflushed -- exactly the silent-data-drop/silent-hang-elsewhere outcome that role-ordering must not hide"
 file = "examples/brusselator/participants/lowfive_attach_decision.hpp"
 old = "      if (state->role == ServeRole::kFirstReader && state->deferred_pending) {"
 new = "      if (false && state->role == ServeRole::kFirstReader && state->deferred_pending) {"
 target = "fuse_verification_brusselator_lowfive_attach_test"
 test = "verification.brusselator_lowfive_attach"
 
-# Round 2 REVIEW: the first round-2 attempt's own exact mistake,
-# reintroduced as a mutation -- a first-reader flushing its own
-# deferred serve at kImportAboutToOpen (before this process's own
+# An earlier attempt's exact mistake, reintroduced as a mutation -- a
+# first-reader flushing its own deferred serve at kImportAboutToOpen (before this process's own
 # open-and-close of the peer's file) instead of at kImportClosed
 # (after it). Caught TWICE, deliberately: directly, by ServeStateStep's
 # own FirstReaderImportAboutToOpenNeverFlushesEvenWithDeferredPending
 # unit test (asserts kReceiveOnly and deferred_pending left untouched);
 # and indirectly, by every ModelCheck.ShippedProtocolCompletes* test
 # (the mutated function makes the simulated protocol deadlock, exactly
-# reproducing the circular wait this review's own account describes) --
-# this file's own "WHAT THIS DOES AND DOES NOT ESTABLISH" comment on the
-# model check is what this second kill demonstrates isn't just rhetoric.
+# reproducing the circular wait) -- this second kill shows that the model
+# check's own "WHAT THIS DOES AND DOES NOT ESTABLISH" comment is not just
+# rhetoric.
 
 [[mutation]]
 id = "serve-state-step-flush-moved-back-to-pre-open"
 area = "examples"
-describes = "serve_state_step()'s own kImportAboutToOpen case flushes a first-reader's own deferred serve immediately (serve_all(), blocking, BEFORE this process's own H5Fopen/H5Fclose of the peer's file) instead of unconditionally returning kReceiveOnly -- reproducing, exactly, the circular wait the FIRST round-2 attempt had: this process enters its own blocking serve before doing anything that could release the PEER's own pending one, and vice versa"
+describes = "serve_state_step()'s own kImportAboutToOpen case flushes a first-reader's own deferred serve immediately (serve_all(), blocking, BEFORE this process's own H5Fopen/H5Fclose of the peer's file) instead of unconditionally returning kReceiveOnly -- reproducing, exactly, the circular wait of the earlier attempt: this process enters its own blocking serve before doing anything that could release the PEER's own pending one, and vice versa"
 file = "examples/brusselator/participants/lowfive_attach_decision.hpp"
 old = """    case ServeEvent::kImportAboutToOpen:
       // Unconditional, any role or state: this header's own "ROUND 2
@@ -77,12 +72,12 @@ new = """    case ServeEvent::kImportAboutToOpen:
 target = "fuse_verification_brusselator_lowfive_attach_test"
 test = "verification.brusselator_lowfive_attach"
 
-# Round 4: two more mutations for the pure functions that fix the two
-# defects the host measured in verification.brusselator.participants.
-# lowfive.mpmd.3 after round 3's own fix (the row no longer hangs, but
-# both programs die at their own first remote H5Fopen with a named
-# LowFive exception -- lowfive_attach_decision.hpp's own "ROUND 4"
-# comment has the full citations for both).
+# Two more mutations for the pure functions that fix the two defects the
+# host measured in verification.brusselator.participants.lowfive.mpmd.3
+# (the row no longer hangs, but both programs die at their own first
+# remote H5Fopen with a named LowFive exception --
+# lowfive_attach_decision.hpp's own comment has the full citations for
+# both).
 
 [[mutation]]
 id = "normalize-dataset-pattern-slash-removed"
@@ -110,12 +105,10 @@ new = """    (void)intercomm_index;
 target = "fuse_verification_brusselator_lowfive_attach_test"
 test = "verification.brusselator_lowfive_attach"
 
-# Round 5 (diagnostic trace track): two more mutations for the pure
-# functions the trace instrumentation's own env-parsing and formatting
-# go through -- the real getenv()/fprintf() call sites in lowfive_
-# attach.cpp/shim.cpp are not tier-0 testable at all (this round's own
-# report says so plainly), so these pure halves are what the gate
-# covers.
+# Diagnostic trace: two more mutations for the pure functions the trace
+# instrumentation's own env-parsing and formatting go through -- the real
+# getenv()/fprintf() call sites in lowfive_attach.cpp/shim.cpp are not
+# tier-0 testable at all, so these pure halves are what the gate covers.
 
 [[mutation]]
 id = "parse-trace-enabled-env-accepts-anything-nonempty"
@@ -134,7 +127,7 @@ test = "verification.brusselator_lowfive_attach"
 [[mutation]]
 id = "format-registrations-for-trace-drops-the-intercomm-index"
 area = "examples"
-describes = "FormatRegistrationsForTrace() stops printing the intercomm_index field -- would make the attach-time trace line silently unable to show H4 (a registration pointed at the wrong intercomm index), one of the four hypotheses this round's own instrumentation exists to distinguish"
+describes = "FormatRegistrationsForTrace() stops printing the intercomm_index field -- would make the attach-time trace line silently unable to show H4 (a registration pointed at the wrong intercomm index), one of the four hypotheses the instrumentation exists to distinguish"
 file = "examples/brusselator/participants/lowfive_attach_decision.hpp"
 old = """    out += "(" + regs[i].file + ", " + regs[i].dataset_pattern + ", " +
            std::to_string(regs[i].intercomm_index) + ")";"""
@@ -142,14 +135,13 @@ new = """    out += "(" + regs[i].file + ", " + regs[i].dataset_pattern + ")";""
 target = "fuse_verification_brusselator_lowfive_attach_test"
 test = "verification.brusselator_lowfive_attach"
 
-# Round 6 (the diagnosed, cited defect -- not instrumentation this time):
-# three mutations for decide_vol_settings()'s own keep field and the
+# Three mutations for decide_vol_settings()'s own keep field and the
 # guarded drop call sites in lowfive_attach.cpp.
 
 [[mutation]]
 id = "decide-vol-settings-keep-removed"
 area = "examples"
-describes = "decide_vol_settings() returns keep=false instead of true -- reproduces round 5's own measured misconfiguration exactly: MetadataVOL::file_close() erases and deletes the file before this attach's own explicit serve_all() call ever runs, and serve_all() finds files.size()==0 and returns without serving"
+describes = "decide_vol_settings() returns keep=false instead of true -- reproduces the measured misconfiguration exactly: MetadataVOL::file_close() erases and deletes the file before this attach's own explicit serve_all() call ever runs, and serve_all() finds files.size()==0 and returns without serving"
 file = "examples/brusselator/participants/lowfive_attach_decision.hpp"
 old = """  (void)distributed;  // both branches currently want the identical pair
   return VolSettings{/*serve_on_close=*/false, /*keep=*/true};"""
@@ -161,22 +153,20 @@ test = "verification.brusselator_lowfive_attach"
 [[mutation]]
 id = "would-reuse-stale-file-on-recreate-ignores-drop-after-serve"
 area = "examples"
-describes = "WouldReuseStaleFileOnRecreate() stops checking drop_after_serve -- would make the model-check's own third named configuration (keep=true without the drop) indistinguishable from the shipped protocol (keep=true, drop after serve), silently dropping the one check this round's own report adds for that failure mode"
+describes = "WouldReuseStaleFileOnRecreate() stops checking drop_after_serve -- would make the model-check's own third named configuration (keep=true without the drop) indistinguishable from the shipped protocol (keep=true, drop after serve), silently dropping the one check for that failure mode"
 file = "examples/brusselator/participants/lowfive_attach_model_check.hpp"
 old = """  return !policy.file_deleted_at_close && !policy.drop_after_serve && n_iterations > 1;"""
 new = """  return !policy.file_deleted_at_close && n_iterations > 1;"""
 target = "fuse_verification_brusselator_lowfive_attach_test"
 test = "verification.brusselator_lowfive_attach"
 
-# Round 7 (the serve now sees the file; the row now fails fast inside
-# V's own H5Dget_space on a remote dataset instead of hanging): one
-# mutation for the pure SplitDatasetGroupPath() helper the shim's new
+# One mutation for the pure SplitDatasetGroupPath() helper the shim's new
 # H5Gcreate2() fix is driven from.
 
 [[mutation]]
 id = "split-dataset-group-path-leaf-keeps-leading-slash"
 area = "examples"
-describes = "SplitDatasetGroupPath() includes the dataset's own leading slash on the leaf name instead of stripping it at the split point -- would make the shim's own H5Gcreate2() call target the wrong string ('/grid' with an extra separator folded into the leaf) and, more importantly, would make the group_path/leaf_name split inconsistent with Object::search()'s own segment boundaries, silently reintroducing a variant of this round's own root cause"
+describes = "SplitDatasetGroupPath() includes the dataset's own leading slash on the leaf name instead of stripping it at the split point -- would make the shim's own H5Gcreate2() call target the wrong string ('/grid' with an extra separator folded into the leaf) and, more importantly, would make the group_path/leaf_name split inconsistent with Object::search()'s own segment boundaries, silently reintroducing a variant of the root cause"
 file = "examples/brusselator/participants/lowfive_attach_decision.hpp"
 old = """  const std::string before = dataset_path.substr(0, last_slash);
   const std::string leaf = dataset_path.substr(last_slash + 1);"""
@@ -185,18 +175,16 @@ new = """  const std::string before = dataset_path.substr(0, last_slash);
 target = "fuse_verification_brusselator_lowfive_attach_test"
 test = "verification.brusselator_lowfive_attach"
 
-# Round 8 (the real steady-state order: U write,read every period;
-# V write,read ONLY at cold start, then read,write -- lowfive_attach_
-# decision.hpp's own "ROUND 8" comment has the full derivation and
-# citations). Three mutations: the corrected policy function, the
-# static per-graph order check, and the local per-event order
-# assertion -- one deviation kind each, matching this round's own
-# task 5.
+# The real steady-state order: U write,read every period; V write,read
+# ONLY at cold start, then read,write -- lowfive_attach_decision.hpp's own
+# comment has the full derivation and citations. Three mutations: the
+# corrected policy function, the static per-graph order check, and the
+# local per-event order assertion -- one deviation kind each.
 
 [[mutation]]
 id = "decide-serve-action-defers-every-first-reader-write"
 area = "examples"
-describes = "decide_serve_action() goes back to round 2/3's own falsified policy -- a first-reader defers EVERY write, not just its cold-start one -- reproducing the measured host hang exactly: V's period-1 write is deferred past U's own blocking read of it, and V's next read needs U's next write, which needs that same read to return first"
+describes = "decide_serve_action() goes back to the falsified earlier policy -- a first-reader defers EVERY write, not just its cold-start one -- reproducing the measured host hang exactly: V's period-1 write is deferred past U's own blocking read of it, and V's next read needs U's next write, which needs that same read to return first"
 file = "examples/brusselator/participants/lowfive_attach_decision.hpp"
 old = """[[nodiscard]] inline ServeNowOrDefer decide_serve_action(ServeRole role, bool completed_any_read) {
   if (role == ServeRole::kFirstReader && !completed_any_read) return ServeNowOrDefer::kDefer;
@@ -227,7 +215,7 @@ test = "verification.brusselator_lowfive_attach"
 [[mutation]]
 id = "check-and-advance-order-write-check-disabled"
 area = "examples"
-describes = "CheckAndAdvanceOrder()'s own kExportWrittenAndClosed case no longer refuses a write observed where the measured order table expects a read -- would let a first-reader regress to writing on every period (the exact round 2/3 defect the OTHER two round 8 mutations in this file also reproduce) run all the way to its own blocking call with no E-LOWFIVE-ATTACH-ORDER-DEVIATION at all, silently losing the one piece of this round's own defense that is supposed to catch it per-event rather than only at attach time"
+describes = "CheckAndAdvanceOrder()'s own kExportWrittenAndClosed case no longer refuses a write observed where the measured order table expects a read -- would let a first-reader regress to writing on every period (the exact defect the OTHER two order mutations in this file also reproduce) run all the way to its own blocking call with no E-LOWFIVE-ATTACH-ORDER-DEVIATION at all, silently losing the one piece of the defense that is supposed to catch it per-event rather than only at attach time"
 file = "examples/brusselator/participants/lowfive_attach_decision.hpp"
 old = """    case ServeEvent::kExportWrittenAndClosed: {
       if (expected[tracker.slot] != ExpectedEventKind::kWrite) {
@@ -240,11 +228,11 @@ new = """    case ServeEvent::kExportWrittenAndClosed: {
 target = "fuse_verification_brusselator_lowfive_attach_test"
 test = "verification.brusselator_lowfive_attach"
 
-# Round 9 (task 1: the coupler exit crash -- a SIGABRT at process exit,
+# The coupler exit crash -- a SIGABRT at process exit,
 # after MPI_Finalize, from HDF5's own atexit teardown calling into
 # LowFive's VOLBase::_term(), which logs through a spdlog registry
 # already destroyed by static-destruction order; lowfive_attach_
-# decision.hpp's own "ROUND 9, task 1" comment has the full trace, root
+# decision.hpp's own comment has the full trace, root
 # cause, and ranked-fix reasoning). One mutation row for the new pure
 # decision function the coupler's own fix (unsetenv the env-route VOL
 # variables) and U's/V's own fix (an explicit H5close() in bruss_
@@ -253,7 +241,7 @@ test = "verification.brusselator_lowfive_attach"
 [[mutation]]
 id = "decide-exit-hygiene-plan-roles-swapped"
 area = "examples"
-describes = "decide_exit_hygiene_plan() swaps which role gets which fix -- a non-attaching coordinator (the coupler) would get the explicit H5close() instead of having the env-route VOL variables unregistered, missing the actual hazard (an HDF5 call it never deliberately makes), while an attaching participant (U or V) would unregister the env-route variables instead of calling H5close() in bruss_lowfive_finalize(), leaving the SAME exit-time crash this round's own fix exists to prevent"
+describes = "decide_exit_hygiene_plan() swaps which role gets which fix -- a non-attaching coordinator (the coupler) would get the explicit H5close() instead of having the env-route VOL variables unregistered, missing the actual hazard (an HDF5 call it never deliberately makes), while an attaching participant (U or V) would unregister the env-route variables instead of calling H5close() in bruss_lowfive_finalize(), leaving the SAME exit-time crash the fix exists to prevent"
 file = "examples/brusselator/participants/lowfive_attach_decision.hpp"
 old = """  if (role == LowFiveProcessRole::kNonAttachingCoordinator) {
     return ExitHygienePlan{/*unregister_env_route_vol=*/true,

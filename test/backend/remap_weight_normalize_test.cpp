@@ -1,4 +1,4 @@
-// KNOWN_ISSUES.md D82, MOAB half, round 11. `normalize_remap_weight`
+// `normalize_remap_weight`
 // (fuse/backend/remap_weight_normalize.hpp) is the one pure function that
 // decides -- given the channel's `Conservation` kind -- how an intersection
 // measure becomes one remap weight entry. It takes four doubles and an
@@ -115,7 +115,7 @@ TEST(RemapWeightNormalize, ExtensiveConservesAnAmountFieldAcrossAnUnevenSplit) {
     delivered_total += w * amount;
   }
   EXPECT_NEAR(delivered_total, amount, 1e-12)
-      << "D82: the delivered total must equal the source amount even though "
+      << "the delivered total must equal the source amount even though "
          "the source cell was split across target cells of different "
          "measure (1, 1, 2)";
 }
@@ -124,7 +124,7 @@ TEST(RemapWeightNormalize,
     IntensiveMisappliedToAnAmountFieldInflatesTheTotalAcrossAnUnevenSplit) {
   // The SAME matrix as above, but through the pre-existing (Intensive)
   // formula, which is correct for a DENSITY field and wrong for an AMOUNT
-  // one. This is D82's own reported symptom, reproduced directly and
+  // one. This is the reported symptom, reproduced directly and
   // algebraically (no MOAB, no sphere): Intensive's density-conversion
   // factor (src_measure/tgt_measure) means a target cell SMALLER than the
   // source cell receives a weight bigger than its own geometric share,
@@ -151,7 +151,7 @@ TEST(RemapWeightNormalize,
   EXPECT_NEAR(delivered_total, 30.0, 1e-12)
       << "measured, not assumed: this is the exact inflation an "
          "amount-valued field sees through the Intensive formula when its "
-         "source cell is split across several target cells -- D82's own "
+         "source cell is split across several target cells -- the "
          "reported symptom, reproduced with no sphere and no MOAB";
   EXPECT_GT(delivered_total, amount)
       << "the pre-existing formula does NOT conserve an amount-valued "

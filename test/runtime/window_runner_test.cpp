@@ -1,4 +1,4 @@
-// Time windows track (C3): the FIRST end-to-end proof that a window-scoped
+// End-to-end proof that a window-scoped
 // iteration region actually EXECUTES through the compiled dataflow graph +
 // schedule() + Runner -- not just compiles (test/schedule/
 // window_region_golden_test.cpp) or runs through the standalone
@@ -6,7 +6,7 @@
 //
 // Deliberately the SIMPLEST possible window graph: one element, one mesh
 // shared by both members (so Remap is the identity -- nothing here
-// exercises a real spatial transfer yet), interval_A = interval_B =
+// exercises a real spatial transfer), interval_A = interval_B =
 // window_length = 1 (no multirate subcycling within the window itself --
 // exactly one substep per member per window). This is the smoke test for
 // the wiring itself (does a WindowAdvance instruction actually run, does
@@ -14,7 +14,7 @@
 // generically reused from an ordinary iteration region behave, is the
 // K-wide field-width plumbing self-consistent end to end); a genuinely
 // multirate (7:13-style) comparison against the direct WindowCoupler
-// driver is the next file's job.
+// driver is in window_runner_straddle_test.cpp.
 
 #include <gtest/gtest.h>
 #include <fuse/backend/serial_backend.hpp>
@@ -171,7 +171,7 @@ CouplingGraph make_single_window_graph(
 // AccelKind::None so the ONLY thing this graph can fail on is the
 // straddle rejection itself, not the (separately tested) GaussSeidel-
 // accel one.
-// Unit 2b (D19): the SAME two-member shape as make_single_window_graph()
+// The SAME two-member shape as make_single_window_graph()
 // (Jacobi only -- hosting is orthogonal to the waveform-iteration mode,
 // and Jacobi is the simpler closed form), but A and B are declared on
 // DISJOINT single-rank processor sets (make_straddle_window_graph_with_
@@ -535,16 +535,9 @@ TEST(WindowRunner, SingleWindowRegionExecutesAndConverges) {
   EXPECT_GT(b->advance_count, 0);
 }
 
-// The unlagged transfer's own residual block is not yet excluded from
-// R.accel's accelerated vector (WindowCoupler's own accel_members/
-// accel_member_offset/accel_total restriction, not yet mirrored here --
-// iteration.cpp's own comment ahead of E-RT-WINDOW-ACCEL). Until that
-// restriction is wired in, a GaussSeidel window naming any accelerator
-// but AccelKind::None must be REJECTED at Runner setup, not silently
-// accelerated wrong.
 // A window member whose registered export is not the field's size on
 // this rank is refused at initialize(), not silently half-primed. Measured
-// on the host 2026-10-09: two participant programs registered 9-element
+// on the host: two participant programs registered 9-element
 // buffers (a stale 3x3 grid constant) against 256-cell fields; the
 // ordinary bind's E-RT-SIZE never saw them because a window member's
 // native storage is read directly from the registry, and the priming's
@@ -576,24 +569,20 @@ TEST(WindowRunner, RefusesAWindowMemberWhoseExportIsNotTheFieldsSize) {
       << init.error().message;
 }
 
-// KNOWN_ISSUES.md D71 (owner priority, closed, Windows track, 2026-10-18):
-// this test USED to pin the refusal (E-RT-WINDOW-ACCEL) a GaussSeidel
-// window with a real accelerator unconditionally raised, because
-// Runner::Impl::run_region()'s own accelerated vector did not yet
-// exclude the window's own unlagged transfer from it the way
+// A GaussSeidel window with a real accelerator is NOT refused
+// (E-RT-WINDOW-ACCEL): Runner::Impl::run_region()'s accelerated vector
+// excludes the window's own unlagged transfer from it the way
 // WindowCoupler::sweep_window()'s own accel_members/accel_member_
-// offset/accel_total restriction already does. That exclusion is now
-// implemented at the R.accel->update() call site (src/runtime/
-// iteration.cpp, see its own comment for the derivation and test/
-// verification/brusselator_restart_test.cpp's own GaussSeidelAitken/
-// IqnIlsConvergesAndMatchesJacobi for the Brusselator-scale measurement),
-// so the combination this test's own name describes is no longer
-// refused -- renamed and rewritten to pin the NEW behaviour (initialize()
-// succeeds, run_period() converges) rather than deleted, so a future
-// regression of either direction (a silent re-introduction of the
-// refusal, or a silent return to accelerating the undifferentiated
-// full vector) shows up here.
-TEST(WindowRunner, GaussSeidelWindowWithAcceleratorNoLongerRefuses) {
+// offset/accel_total restriction does. That exclusion is implemented at
+// the R.accel->update() call site (src/runtime/iteration.cpp, see its
+// own comment for the derivation and test/verification/
+// brusselator_restart_test.cpp's own GaussSeidelAitken/
+// IqnIlsConvergesAndMatchesJacobi for the Brusselator-scale
+// measurement). This test pins that behaviour (initialize() succeeds,
+// run_period() converges), so a regression in either direction (a silent
+// re-introduction of the refusal, or a silent return to accelerating the
+// undifferentiated full vector) shows up here.
+TEST(WindowRunner, GaussSeidelWindowWithAcceleratorIsAccepted) {
   const CouplingGraph g = make_single_window_graph(
       WaveformIteration::GaussSeidel, fuse::AccelKind::Constant);
 
@@ -618,8 +607,8 @@ TEST(WindowRunner, GaussSeidelWindowWithAcceleratorNoLongerRefuses) {
   Runner runner{g, lowered.dag, sched.plan, backend};
   const auto init = runner.initialize(components, registry);
   ASSERT_TRUE(init.ok())
-      << "D71: a GaussSeidel window with a real accelerator must no "
-         "longer refuse E-RT-WINDOW-ACCEL -- " << init.error().message;
+      << "a GaussSeidel window with a real accelerator must not "
+         "refuse E-RT-WINDOW-ACCEL -- " << init.error().message;
 
   const auto ran = runner.run_period(components);
   ASSERT_TRUE(ran.ok()) << ran.error().message;
@@ -757,21 +746,18 @@ TEST(WindowRunner, FixedPolicyStraddleWithRankMismatchIsRejected) {
       << init.error().message;
 }
 
-// Time windows track (Conformance, Unit 2 start): does a window-scoped
-// channel's own Remap run correctly when ROUTED to a third placement
-// (fuse::ComponentKind::Coupler / RemapSpec::remap_on), the shape Unit 2
-// needs for U/V/Coupler on three separate rank sets -- never exercised
-// together anywhere in the existing suite BEFORE this test (grepped: no
-// runtime test combined window_scope with remap_on/add_coupler).
+// Does a window-scoped channel's own Remap run correctly when ROUTED to a
+// third placement (fuse::ComponentKind::Coupler / RemapSpec::remap_on),
+// the shape needed for U/V/Coupler on three separate rank sets?
 // make_single_window_graph()'s own identity-remap closed form (30/19,
 // 44/19) is the oracle: if the coupler-routed remap reproduces the
 // identity transfer correctly (forced via an explicit Conservative flag,
 // layout_driver/main.cpp's own technique, since both ends already share
 // one mesh/region), the converged values must be unchanged from
-// SingleWindowRegionExecutesAndConverges above. PASSES: the mechanism
-// was not missing, only untested -- docs/dev/coupler-placement.md's own
-// enumerated call sites (R.participants, resolve_remap(), etc.) are
-// already window-agnostic, exactly as they are launch-mode-agnostic.
+// SingleWindowRegionExecutesAndConverges above. PASSES:
+// docs/dev/coupler-placement.md's own enumerated call sites (R.participants,
+// resolve_remap(), etc.) are already window-agnostic, exactly as they are
+// launch-mode-agnostic.
 TEST(WindowRunner, WindowChannelRemapRoutedToCouplerMatchesIdentityClosedForm) {
   CouplingGraph g;
   const auto m = g.add_mesh(MeshDecl{.name = "m", .source = "generated:line:1"});
@@ -864,7 +850,7 @@ TEST(WindowRunner, WindowChannelRemapRoutedToCouplerMatchesIdentityClosedForm) {
   EXPECT_NEAR(lb_b->out(), 44.0 / 19.0, 1e-9);
 }
 
-// Unit 2b (D19), step (a) -- HOSTING: a window member not on this
+// HOSTING: a window member not on this
 // process's own rank takes no substeps, calls neither advance() nor
 // save_state()/restore_state(), and yields no ExternalSuspend; its own
 // export arc is left untouched here for the field transfer to deliver
@@ -876,19 +862,19 @@ TEST(WindowRunner, WindowChannelRemapRoutedToCouplerMatchesIdentityClosedForm) {
 // regions()'s own one-time, hosting-INDEPENDENT cold-start priming
 // (this function's own "Cold start" comment) already delivers B's own
 // TRUE value for every window of the run, with nothing further to
-// deliver afterward. This sidesteps a real gap found while designing
-// this test: `Runner`'s own public API (deliberately) exposes no way to
+// deliver afterward. This sidesteps a real gap:
+// `Runner`'s own public API (deliberately) exposes no way to
 // WRITE an arbitrary arc's buffer (only `buffer(ArcId) const`, read-
 // only, and no public accessor for a window member's own export ArcId
 // at all) -- so a literal "stub Transport delivering B's own real,
 // evolving export every window" is not buildable from outside `Runner::
-// Impl` without new public API surface this unit does not add. A
+// Impl` without new public API surface. A
 // constant-output B sidesteps the need for one: there is nothing to
 // deliver PAST the one-time cold start, so hosting's own skip and the
 // existing priming are jointly sufficient, and the comparison below is
 // still bit-for-bit, not approximate. The genuinely cross-rank,
-// evolving-export case is step (e)'s own job (`verification.window.
-// mpi.{2,3}`), where a REAL Transport does real delivery and no stub is
+// evolving-export case is covered by `verification.window.
+// mpi.{2,3}`, where a REAL Transport does real delivery and no stub is
 // needed at all.
 TEST(WindowRunner, NonHostedMemberTakesNoSubstepsAndMatchesTheHostedExport) {
   constexpr std::int64_t kPeriods = 2;

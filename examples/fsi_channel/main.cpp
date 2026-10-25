@@ -86,7 +86,7 @@ constexpr double kRhoS = 1.0;    // beam material density [kg/m^3] (nominal)
 /// settings stay this example's. `none`, `aitken` and `iqn-ils` keep exactly
 /// the settings they had. `constant`, `secant` and `steffensen` use the same
 /// initial relaxation as `aitken`, and `iqn-imvj` the same history and filter
-/// as `iqn-ils`; none was tuned. Measured 2026-10-20 at the registered command
+/// as `iqn-ils`; none was tuned. Measured at the registered command
 /// line: iqn-imvj and iqn-ils converge, constant, steffensen and secant do not
 /// (docs/user/fsi-channel.md).
 fuse::AccelConfig accel_config(const std::string& name) {
@@ -181,12 +181,12 @@ fuse::CouplingGraph build_graph(std::size_t nx_beam, std::size_t nx_fluid,
 }  // namespace
 
 int main(int argc, char** argv) {
-  // KNOWN_ISSUES.md D11 (closing): the Runner's coupling hot loop now runs
-  // on Kokkos' default host execution space (fuse/num/space_kernels.hpp),
-  // so every caller -- including this one, which ran no Kokkos kernel at
-  // all before this closing -- must initialise Kokkos before touching a
-  // Runner. Same pattern as test/support/fuse_test_main.cpp's
-  // `Kokkos::ScopeGuard` and examples/brusselator/main.cpp's.
+  // The Runner's coupling hot loop runs on Kokkos' default host execution
+  // space (fuse/num/space_kernels.hpp), so every caller -- including this
+  // one, which runs no Kokkos kernel of its own -- must initialise Kokkos
+  // before touching a Runner. Same pattern as
+  // test/support/fuse_test_main.cpp's `Kokkos::ScopeGuard` and
+  // examples/brusselator/main.cpp's.
   Kokkos::ScopeGuard kokkos_guard(argc, argv);
 
   Args args;
@@ -199,12 +199,10 @@ int main(int argc, char** argv) {
   }
 
   // The exact-time scheduler steps on `rationalize_dt(args.dt)`, a 1e-6 grid.
-  // Until 2026-10-22 the step count and the CSV time column used the literal
-  // `--dt` instead, so an off-grid value (1.2209e-4 over a run of 285 steps at
-  // 3.5104284e-3) put the reported time axis and the simulated end time off from
-  // what the components actually advanced (KNOWN_ISSUES.md D34 item C, owner
-  // decision 2026-10-22: step on the delivered dt and write the delivered
-  // time axis).
+  // The step count and the CSV time column use the delivered dt, not the
+  // literal `--dt`: for an off-grid value (1.2209e-4 over a run of 285 steps at
+  // 3.5104284e-3) the literal would put the reported time axis and the
+  // simulated end time off from what the components actually advanced.
   const double dt_delivered = rationalize_dt(args.dt).to_double();
   if (!(dt_delivered > 0.0)) {
     std::fprintf(stderr,

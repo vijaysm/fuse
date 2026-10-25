@@ -327,7 +327,7 @@ RcbResult<ExecutionSpace> rcb_partition(
   const bool locally_size_ok = (weights.extent(0) == n && gids.extent(0) == n);
   const bool locally_num_parts_ok = (opts.num_parts >= 0);
 
-  // PS-10: negative weights are meaningless for load balance (they are not
+  // Negative weights are meaningless for load balance (they are not
   // refused by weighted_median's own degenerate-total handling, which
   // treats a non-positive SUM as "nothing to split" and sorts every
   // element to the right by the sign of an arbitrary coordinate). Checked
@@ -377,7 +377,7 @@ RcbResult<ExecutionSpace> rcb_partition(
                  "metric; weighted_median would place the split at an arbitrary coordinate)");
     }
   } else {
-    // PS-2/PS-3: agree this rank's own verdict, AND the recursion's own
+    // Agree this rank's own verdict, AND the recursion's own
     // shape -- num_parts, median_buckets, median_refine_iters -- with
     // every other rank in `comm` BEFORE `recursive_bisect`'s first
     // collective. One Allreduce(MAX) and one Allreduce(MIN) over four

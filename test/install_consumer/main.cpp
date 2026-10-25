@@ -3,7 +3,7 @@
 // unresolved at final link (cmake/fuse-couplerConfig.cmake.in explains why).
 // The point of this program is only that it configures, builds and runs
 // against an INSTALLED fuse-coupler, proving find_package(fuse-coupler)
-// works at all (REVIEW.md R-25/BT-F9) -- the one thing this file exists to
+// works at all -- the one thing this file exists to
 // verify, so it exercises the smallest real fuse:: type: base's Result<T>.
 #include <fuse/base/result.hpp>
 

@@ -1,10 +1,10 @@
 #pragma once
 
-/// Time windows track (Conformance, Unit 2): the ONE physics source
+/// The ONE physics source
 /// species_component.hpp's own UComponent/VComponent and the participant-
 /// ABI shim (examples/brusselator/participants/shim.cpp) both call --
-/// extracted from UComponent::advance()/VComponent::advance() (this
-/// session) so the reaction-diffusion solve itself exists exactly once,
+/// shared by UComponent::advance()/VComponent::advance() so the
+/// reaction-diffusion solve itself exists exactly once,
 /// not duplicated between the in-process (fuse::Component) and the
 /// externally-driven (fuse_begin_step()/fuse_end_step()) drivers.
 ///
@@ -13,17 +13,16 @@
 /// directions, was hand-done inside VComponent), so nothing further
 /// needs splitting out. `VDiffusionCore` is deliberately NOT the whole of
 /// V's own physics: it is only the "solve backward-Euler diffusion given
-/// q already on THIS grid" step -- the lead's own ruling (Conformance
-/// Unit 2) is that the participant graph IS Unit 1's own graph
-/// (brusselator_graph.hpp's `add_window_coupling`) PLUS, and only plus,
+/// q already on THIS grid" step -- the participant graph IS the in-process
+/// graph (brusselator_graph.hpp's `add_window_coupling`) PLUS, and only plus,
 /// `add_coupler()`/`remap_on(coupler)` on both transfers: both transfer
 /// fields stay declared on `u_region` (species_component.hpp's own file
 /// header, "WHY BOTH TRANSFER FIELDS LIVE ON u_region"), so the coupler-
-/// routed Remap this compiles is the IDENTITY (confirmed this session,
+/// routed Remap this compiles is the IDENTITY (confirmed by
 /// `WindowRunner.WindowChannelRemapRoutedToCouplerMatchesIdentity
 /// ClosedForm`, test/runtime/window_runner_test.cpp) and V still stands
-/// in for the real remap by hand, exactly as `VComponent` (Unit 1,
-/// `--driver window`/`--driver runner`) already does: `advance()` remaps
+/// in for the real remap by hand, exactly as `VComponent`
+/// (`--driver window`/`--driver runner`) does: `advance()` remaps
 /// q FROM the U grid onto its own grid by hand (`fuse::apply_weights`,
 /// `weights_uv_`) before calling this, and remaps its own new state BACK
 /// onto the U grid afterward (`remap_state_to_u`). The externally-driven
@@ -62,7 +61,7 @@
 
 namespace brusselator {
 
-/// Physics track (closing the Grid track's own solver seam): which
+/// Which
 /// `DiffusionSolver` implementation (below) `UCore`/`VDiffusionCore`
 /// build. `Auto` (the default) resolves to `Direct` at `num_ranks() == 1`
 /// (every goldened single-rank caller: the in-process example, the 3-rank
@@ -127,7 +126,7 @@ struct PhysicsConfig {
   double A = 3.4;
   double B = 1.0;
   bool   forcing = true;
-  /// Physics track: which `DiffusionSolver` `UCore` builds (`VDiffusionCore`
+  /// Which `DiffusionSolver` `UCore` builds (`VDiffusionCore`
   /// takes its own, separate `SolverKind` argument -- V's diffusion solve
   /// is independent of U's, species_core.hpp's own file header explains
   /// why `VDiffusionCore` is a distinct class rather than a second
@@ -139,8 +138,7 @@ struct PhysicsConfig {
   /// sweeps `rel_tol` from `1e-8` to `1e-13` for both `Pcg` and `Gmres`
   /// and measures each one's max|difference| against the single-rank
   /// `Direct` reference over a 2-partition, 2-window run (`--dt-u 0.002`,
-  /// 20 steps) at this example's own defaults. MEASURED (this session,
-  /// this build): `1e-11` -> 3.3e-12 (pcg) / 1.5e-12 (gmres); `1e-12` ->
+  /// 20 steps) at this example's own defaults. MEASURED: `1e-11` -> 3.3e-12 (pcg) / 1.5e-12 (gmres); `1e-12` ->
   /// 1.4e-13 / 1.4e-13; `1e-13` -> 5.9e-14 / 5.5e-14 -- the SAME order of
   /// magnitude `TwoPartitionSchurMatchesSingleRankUCore` measures for an
   /// EXACT row-banded solve against the same reference (2.4e-14, pure
@@ -165,8 +163,8 @@ struct PhysicsConfig {
 /// only at `num_ranks() == 1`. `SchurDiffusionSolver` (exact, built on
 /// `fuse::linalg::SchurSlabSolver`) and `KrylovDiffusionSolver` (`Pcg`/
 /// `Gmres`, built on `fuse::linalg::DistSparseMatrix`/`DistVector`) are
-/// the `num_ranks() > 1` implementations of this SAME interface the Grid
-/// track's own seam was left for -- `UCore`/`VDiffusionCore` call
+/// the `num_ranks() > 1` implementations of this SAME interface --
+/// `UCore`/`VDiffusionCore` call
 /// through this interface and do not change per solver kind; only
 /// `make_diffusion_solver` (below) picks which concrete type to build.
 class DiffusionSolver {
@@ -225,7 +223,7 @@ class DirectDiffusionSolver final : public DiffusionSolver {
   Sparse laplacian_;
   Eigen::SimplicialLDLT<Sparse> factor_;
   double factored_step_ = -1.0;
-  // Review 2026-10-11 NL-1: `diffusion` is a per-call argument of
+  // `diffusion` is a per-call argument of
   // `factor()`, not a value derivable from `dt`; omitting it from the
   // cache key let a call with the same dt but a different diffusion reuse
   // a stale factorization (BrusselatorDiffusionSolverCache.
@@ -268,10 +266,10 @@ class SchurDiffusionSolver final : public DiffusionSolver {
     if (!factored_ ||
         std::abs(dt - factored_dt_) > 32 * std::numeric_limits<double>::epsilon() * std::max(dt, 1.0) ||
         extra_diagonal != factored_extra_diagonal_ ||
-        // Review 2026-10-11 NL-1: `diffusion` is a per-call argument that
+        // `diffusion` is a per-call argument that
         // changes A exactly like `dt` and `extra_diagonal` do (the matrix
-        // is `(1+extra)*I - dt*diffusion*L_h`) -- omitting it let a call
-        // at the same dt/extra but a different diffusion reuse a stale
+        // is `(1+extra)*I - dt*diffusion*L_h`) -- omitting it would let a
+        // call at the same dt/extra but a different diffusion reuse a stale
         // factorization.
         diffusion != factored_diffusion_) {
       const double scale = 1.0 + extra_diagonal;
@@ -334,7 +332,7 @@ class SchurDiffusionSolver final : public DiffusionSolver {
 /// assembly of `(1 + extra_diagonal)*I - dt*diffusion*L_h`, row-banded
 /// exactly as `SchurDiffusionSolver` above, with a `JacobiPreconditioner`
 /// (`DistSparseMatrix::diagonal()`, no communication) -- the native,
-/// dependency-free Krylov alternative this track's deliverables name.
+/// dependency-free Krylov alternative.
 /// Global triplets use the SAME canonical index `j*nx+i` and the SAME
 /// stencil coefficients `periodic_laplacian` builds (brusselator_physics.hpp),
 /// restricted to this rank's own row band `[j_lo, j_hi)`; the off-process
@@ -366,10 +364,10 @@ class KrylovDiffusionSolver final : public DiffusionSolver {
     if (!factored_ ||
         std::abs(dt - factored_dt_) > 32 * std::numeric_limits<double>::epsilon() * std::max(dt, 1.0) ||
         extra_diagonal != factored_extra_diagonal_ ||
-        // Review 2026-10-11 NL-1: `diffusion` is a per-call argument that
+        // `diffusion` is a per-call argument that
         // changes every off-diagonal and diagonal triplet below exactly
-        // like `dt` does -- omitting it let a call at the same dt/extra
-        // but a different diffusion reuse a stale assembled matrix.
+        // like `dt` does -- omitting it would let a call at the same
+        // dt/extra but a different diffusion reuse a stale assembled matrix.
         diffusion != factored_diffusion_) {
       const double scale = 1.0 + extra_diagonal;
       const double xx = static_cast<double>(nx_) * nx_;
@@ -548,20 +546,14 @@ class UCore {
         provided_(n_),
         q_prev_(n_),
         saved_state_(n_),
-        // Found by inspection this session (examples/brusselator/
-        // participants work): `saved_q_prev_` was left at
-        // Eigen::VectorXd's own default size (0), not `n_` like every
-        // sibling saved_* buffer here -- a genuine latent bug (if
-        // restore_state() ever ran before the first save_state(), the
-        // resulting size-0 `q_prev_ = saved_q_prev_` assignment would
-        // misbehave) and fixed on its own merits. NOTE: measured this
-        // session (BrusselatorParticipants.
-        // ExternallyDrivenBothMembersMatchInProcessRunner, 10 repeated
-        // runs before and after this fix) that this fix did NOT change
-        // the observed intermittent E-RT-NONFINITE failure rate (4/10
-        // both times) -- that non-determinism has a DIFFERENT, still-
-        // unidentified cause, reported separately to the lead rather
-        // than claimed as resolved here.
+        // `saved_q_prev_` is sized `n_` like every sibling saved_* buffer
+        // here (at Eigen::VectorXd's default size 0, a restore_state()
+        // before the first save_state() would assign a size-0 vector to
+        // `q_prev_`). NOTE: this does NOT explain the intermittent
+        // E-RT-NONFINITE failure observed in BrusselatorParticipants.
+        // ExternallyDrivenBothMembersMatchInProcessRunner (4/10 repeated
+        // runs, unchanged by this sizing); that non-determinism has a
+        // different, still-unidentified cause.
         saved_q_prev_(n_) {
     reaction_kokkos(state_, required_, &provided_);
     q_prev_ = provided_;
@@ -571,8 +563,8 @@ class UCore {
   /// size n(). On success, `state()`/`provided()` are valid at t_end.
   /// `dt`: the EXACT step length, i.e. `fuse::StepContext::dt().to_double()`
   /// -- NOT `t_end - t_begin` recomputed from the two already-rounded
-  /// doubles. Found by the lead (bit-identical check, Conformance Unit 2):
-  /// the old UComponent::advance() this was extracted from called
+  /// doubles (needed for a bit-identical match with the in-process
+  /// UComponent::advance(), which calls
   /// `ctx.dt().to_double()` (the EXACT rational t_end-t_begin, rounded
   /// ONCE) for every dt-scaled quantity here, while `t0`/`t1` (also each
   /// rounded once from their own Rationals) were used ONLY for
@@ -626,8 +618,8 @@ class UCore {
       // -- a per-rank LOCAL `change`/`scale` could let one rank's own
       // owned band converge a step early and stop calling solve() while
       // its peers keep going, stranding them inside the next collective
-      // (the same hazard this track's own standing lesson names for a
-      // refusal; this is the fixed-point loop's own instance of it). Two
+      // (the same hazard a per-rank refusal creates; this is the
+      // fixed-point loop's own instance of it). Two
       // `Reducer::max` calls over the SAME `fuse::linalg::Reducer` every
       // rank's `solve()` already shares make every rank's own `change`/
       // `scale` IDENTICAL, so the `break` below fires on the same `k`
@@ -667,7 +659,7 @@ class UCore {
     q_prev_ = saved_q_prev_;
   }
 
-  /// S7.2 WindowNewton (newton-krylov.md Sec. 9.5): `z = M^-1 r` for this
+  /// `z = M^-1 r` (newton-krylov.md Sec. 9.5) for this
   /// species' own block-Jacobi preconditioner, `M` the SAME `(1 +
   /// extra_diagonal)*I - dt*diffusion*Laplacian` system `step()` itself
   /// factors and solves every substep -- `dt`/`extra_diagonal` convention
@@ -713,7 +705,7 @@ class UCore {
   [[nodiscard]] const Vector& provided() const { return provided_; }
   [[nodiscard]] double external_total() const { return external_total_; }
   [[nodiscard]] double exchange_out() const { return exchange_out_; }
-  /// Restart track (docs/dev/restart.md Section 1.8, Slice 2): the
+  /// (docs/dev/restart.md Section 1.8): the
   /// lagged reaction rate from the step just committed -- hidden state
   /// `advance()` mutates outside what `register_fields()` bound
   /// (Section 1.8's own per-example table), not derivable from `state()`
@@ -721,7 +713,7 @@ class UCore {
   /// reaction fixed point that call's own iteration converged to, not a
   /// pure function of `state()`/`required()`).
   [[nodiscard]] const Vector& q_prev() const { return q_prev_; }
-  /// Restart track: the read-back counterpart of every accessor above
+  /// The read-back counterpart of every accessor above
   /// that is not already re-derivable from the registered field storage
   /// a restore pass restores first (`provided_`'s own invariant --
   /// `provided_ == q_prev_` always, by construction at the constructor
@@ -742,7 +734,7 @@ class UCore {
   /// reduction, so it is a collective every rank of the component must
   /// call. On one rank it is `state().mean()` bit for bit. A participant's
   /// own loop over its owned slab gives a per-rank partial mean, which the
-  /// first 5-rank host run (2026-10-10) would have logged as if global.
+  /// would be logged as if global.
   [[nodiscard]] double state_mean() const { return global_mean(state_); }
 
  private:
@@ -828,8 +820,8 @@ class VDiffusionCore {
     exchange_in_ = saved_exchange_in_;
   }
 
-  /// S7.2 WindowNewton (newton-krylov.md Sec. 9.5): `UCore::apply_
-  /// diffusion_preconditioner()`'s own comment, mirrored exactly --
+  /// `UCore::apply_diffusion_preconditioner()`'s own comment (newton-krylov.md
+  /// Sec. 9.5), mirrored exactly --
   /// `extra_diagonal = 0.0` is `VDiffusionCore::step()`'s own unchanged
   /// convention (this class's own file header: "a SEPARATE choice from
   /// U's own"), not an omission.
@@ -854,7 +846,7 @@ class VDiffusionCore {
   [[nodiscard]] double exchange_in() const { return exchange_in_; }
   /// See `UCore::state_mean`: the whole species' mean, a collective.
   [[nodiscard]] double state_mean() const { return global_mean(state_); }
-  /// Restart track: the read-back counterpart of `state()`/`exchange_in()`
+  /// The read-back counterpart of `state()`/`exchange_in()`
   /// -- see `UCore::restore_restart_state()`'s own comment, identical
   /// reasoning, a smaller set of members.
   void restore_restart_state(Vector state, double exchange_in) {
@@ -882,9 +874,9 @@ class VDiffusionCore {
 /// PLUS the by-hand remap glue `VComponent` (species_component.hpp) also
 /// carries -- U-grid-shaped `required`/`provided`, remapped to/from V's
 /// own grid with `fuse::apply_weights` before/after `VDiffusionCore::
-/// step()`. Needed because the participant graph is Unit 1's own graph
+/// step()`. Needed because the participant graph is the in-process graph
 /// (both transfer fields on `u_region`) plus only `add_coupler()`/
-/// `remap_on()` (the lead's own ruling, Conformance Unit 2) -- so
+/// `remap_on()` -- so
 /// `fuse_initialize()` hands this shim's caller U-grid-shaped data on
 /// "v_in"/"v_out", exactly as it hands `VComponent` the same fields
 /// in-process, and V still stands in for the real remap by hand either
@@ -895,7 +887,7 @@ class VDiffusionCore {
 /// `species_component.hpp` nor a real participant process needs to
 /// duplicate it.
 ///
-/// DECOMPOSED (Halo track): both remaps now route through FUSE's own
+/// DECOMPOSED: both remaps route through FUSE's own
 /// distributed weights -- `fuse::build_remap_halo` widens each direction's
 /// SOURCE mesh with the off-rank cells its own target boundary crosses
 /// (docs/dev/native-halo.md), `fuse::build_weights` then intersects only
@@ -1021,9 +1013,10 @@ class VParticipant {
     }
     auto pattern_vu = backend.remap_halo_pattern(v_mid, u_mid, 2);
     if (!pattern_vu.ok()) return pattern_vu.error();
-    // KNOWN_ISSUES D29 (CLOSED): a decomposition whose U and V bands do not
+    // A decomposition whose U and V bands do not
     // cover the same y-range (e.g. 16 rows as 6/5/5 against 24 as 8/8/8)
-    // ADOPTS cells in one or both directions' remap halo. This USED to
+    // ADOPTS cells in one or both directions' remap halo. Sizing the
+    // `apply_weights` destination buffers from the owned counts would
     // measurably disagree with the single-rank reference: `step()` and
     // `remap_state_to_u()` sized their `apply_weights` destination buffers
     // from this rank's OWNED count (`n_v_`/`n_u_`, cached before any halo
@@ -1035,15 +1028,15 @@ class VParticipant {
     // -- measured as a 3.1e-4 `exchange_in` disagreement from the first
     // sub-step (reading whatever heap memory followed the allocation) and,
     // on later steps, an Eigen `Block.h` bounds assertion once the
-    // corrupted heap was read back inside the diffusion solve. Fixed by
-    // sizing `q_native_v`/`u_native` from `weights_uv_.n_rows`/
+    // corrupted heap was read back inside the diffusion solve. So
+    // `q_native_v`/`u_native` are sized from `weights_uv_.n_rows`/
     // `weights_vu_.n_rows` instead (see `step()`/`remap_state_to_u()`'s own
-    // comments) -- no refusal is needed any more; this rank's own
+    // comments) -- no refusal is needed; this rank's own
     // owned/adopted counts are traced below (`FUSE_BRUSS_DEBUG`) purely as
     // an optional diagnostic, with no decision resting on them.
     if (std::getenv("FUSE_BRUSS_DEBUG") != nullptr) {
       std::fprintf(stderr,
-                   "[D29 rank=%d] make_from_grids: owned_u=%d owned_v=%d adopted_u(uv)=%zu "
+                   "[remap rank=%d] make_from_grids: owned_u=%d owned_v=%d adopted_u(uv)=%zu "
                    "adopted_v(vu)=%zu\n",
                    backend.rank(), u_grid.owned_size(), v_grid.owned_size(),
                    pattern_uv.value().owner_rank.size(), pattern_vu.value().owner_rank.size());
@@ -1096,12 +1089,12 @@ class VParticipant {
 
     if (trace) {
       std::fprintf(stderr,
-                   "[D29 rank=%d] step: owned_u=%zu ghost_uv=%zu q_native_u.size=%zu "
+                   "[remap rank=%d] step: owned_u=%zu ghost_uv=%zu q_native_u.size=%zu "
                    "weights_uv(n_rows=%zu,n_cols=%zu) n_v_=%d\n",
                    backend_.rank(), q_native_owned_u.size(), exchanger_uv_->ghost_size(),
                    q_native_u.size(), weights_uv_.n_rows, weights_uv_.n_cols, n_v_);
       for (std::size_t g = 0; g < std::min<std::size_t>(exchanger_uv_->ghost_size(), 4); ++g) {
-        std::fprintf(stderr, "[D29 rank=%d]   ghost_uv[%zu] = %.17g\n", backend_.rank(), g,
+        std::fprintf(stderr, "[remap rank=%d]   ghost_uv[%zu] = %.17g\n", backend_.rank(), g,
                      q_native_u[q_native_owned_u.size() + g]);
       }
     }
@@ -1109,7 +1102,7 @@ class VParticipant {
     // `weights_uv_.n_rows` is V's CURRENT (post-halo) local entity count --
     // `owned_size(V)` plus whatever V was ALSO widened by as the SOURCE of
     // the OTHER direction's halo (V->U), built on this same backend before
-    // this one (KNOWN_ISSUES D29): V's own role as a target here and as a
+    // this one: V's own role as a target here and as a
     // source for remap_state_to_u() are independent widenings of the SAME
     // mesh, and `RemapWeights::n_rows` (remap_plan.hpp: "target entities
     // (local)") always means the FULL local count, owned plus ghost,
@@ -1134,14 +1127,14 @@ class VParticipant {
     v_grid_.to_canonical(q_native_v, &q_on_v);
 
     if (trace) {
-      std::fprintf(stderr, "[D29 rank=%d] step: q_on_v.sum=%.17g q_on_v.size=%d\n", backend_.rank(),
+      std::fprintf(stderr, "[remap rank=%d] step: q_on_v.sum=%.17g q_on_v.size=%d\n", backend_.rank(),
                    q_on_v.sum(), n_v_);
     }
 
     const fuse::Result<void> r = core_->step(dt, q_on_v);
     if (!r.ok()) return r;
     if (trace) {
-      std::fprintf(stderr, "[D29 rank=%d] step: exchange_in=%.17g\n", backend_.rank(),
+      std::fprintf(stderr, "[remap rank=%d] step: exchange_in=%.17g\n", backend_.rank(),
                    core_->exchange_in());
     }
     return remap_state_to_u(provided);
@@ -1185,17 +1178,15 @@ class VParticipant {
         v_grid_(std::move(v_grid)),
         n_u_(u_grid_.owned_size()),
         n_v_(v_grid_.owned_size()),
-        // heap-allocated: originally because VDiffusionCore held an
-        // Eigen::SimplicialLDLT factorization object directly, which Eigen
-        // makes neither copyable nor movable, and a direct VDiffusionCore
-        // member would therefore have made VParticipant itself immovable.
-        // The Grid track's DiffusionSolver seam (above) moved that
+        // heap-allocated: a direct VDiffusionCore member holding an
+        // Eigen::SimplicialLDLT factorization object would be neither
+        // copyable nor movable (Eigen makes it so), making VParticipant
+        // itself immovable. The DiffusionSolver seam (above) puts that
         // factorization behind a std::unique_ptr<DiffusionSolver>, so
-        // VDiffusionCore is movable on its own merits now too -- kept
+        // VDiffusionCore is movable on its own merits too -- kept
         // heap-allocated anyway: bruss_v_create() (shim.cpp) move-
         // constructs the handle's VParticipant from VParticipant::make()'s
-        // return, and a second, independent reason to keep the indirection
-        // was not worth removing for its own sake in this change.
+        // return, and the indirection costs nothing.
         core_(std::make_unique<VDiffusionCore>(v_grid_, diffusion, solver, solver_tolerance, reducer,
                                                make_exchanger)),
         weights_vu_(std::move(weights_vu)),

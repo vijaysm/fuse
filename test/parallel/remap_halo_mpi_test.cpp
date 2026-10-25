@@ -1,5 +1,5 @@
-// test/parallel/remap_halo_mpi_test.cpp -- the PARALLEL half of KNOWN_ISSUES
-// D4's `A-PARTITIONED` gap (build-evidence/parallel-matrix.toml), under a
+// test/parallel/remap_halo_mpi_test.cpp -- the PARALLEL half of the
+// `A-PARTITIONED` gap (build-evidence/parallel-matrix.toml), under a
 // REAL mpiexec. test/backend/remap_halo_test.cpp covers the one-rank
 // contract; this file is everything that needs a communicator of more than
 // one rank to exercise at all:
@@ -17,13 +17,12 @@
 //     can independently confirm the halo's bookkeeping agrees on every rank
 //     (a lost or duplicated exchange message breaks the identity outright).
 //
-// NOT YET RUN: this sandbox cannot initialise MPI at all -- not even at one
-// rank (docs/dev/testing.md; KNOWN_ISSUES.md C1) -- and MOAB in a build with
+// Needs a working MPI launcher (docs/dev/testing.md). MOAB in a build with
 // FUSE_ENABLE_MPI links against an MPI-enabled MOAB whose moab::Core
 // constructor itself calls MPI_Init_thread, so even a single-process run of
-// this binary aborts here. Registered only when FUSE_ENABLE_MOAB AND
-// FUSE_ENABLE_MPI are both on (test/CMakeLists.txt); its outcome comes from
-// a host run, like every other MOAB-enabled-build-configuration MPI test in this tree.
+// this binary aborts unless MPI can start. Registered only when
+// FUSE_ENABLE_MOAB AND FUSE_ENABLE_MPI are both on (test/CMakeLists.txt),
+// like every other MOAB-enabled-build-configuration MPI test in this tree.
 
 #include <cstdint>
 #include <cstdio>
@@ -137,27 +136,28 @@ TEST(RemapHaloMpi, EMeshHaloGeometryRefusesTheBoxPairAboveOneRankAndNotAtOne) {
 }
 
 // ---------------------------------------------------------------------------
-// Review 2026-10-11 TF-3: `MoabMeshBackend::adopt_remap_halo`'s own
-// per-rank rejections (the GLOBAL_ID tag lookup, the per-covering-cell
-// GLOBAL_ID check, `add_entities`, `regather_with_halo`) used to return
-// straight from this rank while a peer with an unaffected covering set
-// proceeded into `plan_halo_exchange`'s own collectives -- and, worse, a
-// rank with an EMPTY local covering set (`count == 0`, an entirely
-// ordinary outcome, not an error) used to skip the rejection checks
-// AND the reconciliation entirely, going straight to `plan_halo_exchange`,
-// while a peer with `count > 0` took the unreconciled rejection path.
+// `MoabMeshBackend::adopt_remap_halo`'s own per-rank rejections (the
+// GLOBAL_ID tag lookup, the per-covering-cell GLOBAL_ID check,
+// `add_entities`, `regather_with_halo`) must be reconciled across ranks.
+// Without reconciliation, a rank could return straight from its rejection
+// while a peer with an unaffected covering set proceeded into
+// `plan_halo_exchange`'s own collectives -- and a rank with an EMPTY local
+// covering set (`count == 0`, an entirely ordinary outcome, not an error)
+// could skip the rejection checks AND the reconciliation entirely, going
+// straight to `plan_halo_exchange`, while a peer with `count > 0` took the
+// unreconciled rejection path.
 // Calls `adopt_remap_halo` DIRECTLY (it is a public method; the "only
 // build_remap_halo may call it" rule in its own header is a layering
 // convention, not an access restriction) with a handle MOAB can never
 // resolve (0, always invalid -- no entity has handle 0) on exactly one
 // rank's covering set, and an EMPTY covering set (`count == 0`) on every
-// other rank -- the exact "one rank bad, the rest legitimately idle" shape
-// TF-3 names. Pre-fix signature: the bad rank returns `Failure` directly
-// (skipping plan_halo_exchange's own collectives) while the `count == 0`
-// ranks call `plan_halo_exchange`, enter ITS internal Allgather, and hang
-// waiting for a peer that already returned. Post-fix: every rank returns
-// the SAME `Failure` within the test's own TIMEOUT, none of them ever
-// reaching `plan_halo_exchange`.
+// other rank -- the "one rank bad, the rest legitimately idle" shape.
+// Unreconciled, the bad rank would return `Failure` directly (skipping
+// plan_halo_exchange's own collectives) while the `count == 0` ranks call
+// `plan_halo_exchange`, enter ITS internal Allgather, and hang waiting for
+// a peer that already returned. Reconciled, every rank returns the SAME
+// `Failure` within the test's own TIMEOUT, none of them ever reaching
+// `plan_halo_exchange`.
 // ---------------------------------------------------------------------------
 TEST(RemapHaloMpi, AdoptRemapHaloOneRankBadCoveringCellAgreesAcrossRanks) {
   FUSE_REQUIRE_AT_LEAST_RANKS(2);
@@ -184,8 +184,8 @@ TEST(RemapHaloMpi, AdoptRemapHaloOneRankBadCoveringCellAgreesAcrossRanks) {
     r = backend.adopt_remap_halo(smid.value(), smid.value(), /*dim=*/3, &bad_handle, 1);
   } else {
     // An ordinary rank whose own covering set happens to be empty -- the
-    // case the pre-fix `count == 0` early return used to treat as "nothing
-    // to reconcile, go straight to plan_halo_exchange".
+    // case an early `count == 0` return would treat as "nothing to
+    // reconcile, go straight to plan_halo_exchange".
     r = backend.adopt_remap_halo(smid.value(), smid.value(), /*dim=*/3, nullptr, 0);
   }
   ASSERT_FALSE(r.ok()) << "rank " << rank
@@ -203,7 +203,7 @@ TEST(RemapHaloMpi, AdoptRemapHaloOneRankBadCoveringCellAgreesAcrossRanks) {
 // is cell j on the same rank).
 //
 // PROJECTION IS NOT OPTIONAL. Read directly off the files (h5dump on the raw
-// node coordinates, 2026-09-28): wholeATM_T.h5m sits at radius 1.0 (std/mean
+// node coordinates): wholeATM_T.h5m sits at radius 1.0 (std/mean
 // radius ~6e-17) and recMeshOcn.h5m at radius 6371229.0, Earth radius in
 // metres (std/mean radius ~1.1e-16 -- the SAME order as wholeATM_T.h5m's own,
 // both floating-point noise, not a real deviation from a sphere) -- two
@@ -212,7 +212,7 @@ TEST(RemapHaloMpi, AdoptRemapHaloOneRankBadCoveringCellAgreesAcrossRanks) {
 // (`kGeomTol = 1e-9`) would reject that combination outright with
 // `E-REMAP-GEOMETRY` ("not the same domain"), correctly: the library cannot
 // know two different radii are meant to be the same sphere in different
-// units. `MoabMeshBackend::project_onto_unit_sphere` (added for this cell)
+// units. `MoabMeshBackend::project_onto_unit_sphere`
 // rescales each mesh onto a common unit sphere before either
 // `build_remap_halo` or `build_weights` ever sees them.
 // ---------------------------------------------------------------------------
@@ -220,7 +220,7 @@ TEST(RemapHaloMpi, AdoptRemapHaloOneRankBadCoveringCellAgreesAcrossRanks) {
 
 namespace {
 
-// Measured via h5ls -r on the raw fixture files (2026-09-28): wholeATM_T.h5m
+// Measured via h5ls -r on the raw fixture files: wholeATM_T.h5m
 // has one Quad4 block of 726 elements; recMeshOcn.h5m has a Polygon5 block of
 // 6 and a Polygon6 block of 7147, 7153 dimension-2 cells total. Both numbers
 // are properties of the FILE MOAB ships, not of this build, and are the
@@ -237,7 +237,7 @@ struct SpherePairMpi {
   fuse::CouplingGraph    graph;
   fuse::MeshId           amid, omid;
   fuse::RemapPlan        plan;
-  // Round 11 (KNOWN_ISSUES D82): stored so a test can build its OWN plan
+  // Stored so a test can build its OWN plan
   // with src/tgt reversed from the fixture's default (ATM source, OCN
   // target) -- ATM is global (covers the whole sphere), so EITHER
   // direction gives one side full coverage by construction: OCN-as-source
@@ -258,7 +258,7 @@ struct SpherePairMpi {
 
     // Every rank, in the same order (both calls are collective): project
     // ATM (already ~unit) and OCN (Earth-radius) onto the SAME unit sphere.
-    // Round 6 (KNOWN_ISSUES D81): the no-op branch and the rescale formula
+    // The no-op branch and the rescale formula
     // are BOTH distinguishable on this one real pair -- ATM measures
     // already_unit (its own mean radius is ~1, well inside kUnitSphereTol),
     // OCN does not (it measures ~6371229, Earth radius in metres) and its
@@ -307,7 +307,7 @@ TEST(RemapHaloMpiSphere, TheNonMatchingPairLoadsProjectsAndIsSphericalAtEveryRan
   const auto reproject = f.backend.project_onto_unit_sphere(f.amid);
   ASSERT_TRUE(reproject.ok()) << reproject.error().code << ": "
                              << reproject.error().message;
-  // Round 6 (KNOWN_ISSUES D81): project_onto_unit_sphere now reports a
+  // project_onto_unit_sphere reports a
   // MEASURED no-op explicitly (already_unit) rather than only a factor
   // numerically close to one -- re-projecting an already-unit mesh a
   // second time must be detected as exactly that.
@@ -330,7 +330,7 @@ TEST(RemapHaloMpiSphere, TheNonMatchingPairLoadsProjectsAndIsSphericalAtEveryRan
                           MPI_COMM_WORLD),
             MPI_SUCCESS);
   // Before build_remap_halo runs, entity_count(2) IS owned_count(2) (no
-  // ghosts requested at read time; KNOWN_ISSUES/moab_backend.hpp), so this
+  // ghosts requested at read time; see moab_backend.hpp), so this
   // sum has no double count.
   EXPECT_EQ(static_cast<std::size_t>(global_atm), kAtmCells);
   EXPECT_EQ(static_cast<std::size_t>(global_ocn), kOcnCells);
@@ -438,8 +438,8 @@ TEST(RemapHaloMpiSphere,
   // number a real build_weights() call reports with this halo in place.
   // Unlike the exact identities above, whether this pair's Conservative flag
   // would be satisfied depends on how much of ATM's domain the regional OCN
-  // mesh geometrically covers, which nobody has measured on the real files
-  // (KNOWN_ISSUES D4) -- so this asserts only that the DEFAULT (truncating)
+  // mesh geometrically covers, which has not been measured on the real files
+  // -- so this asserts only that the DEFAULT (truncating)
   // builder succeeds with the halo present, and prints the audit numbers for
   // the host log rather than gating on a value derived from no measurement.
   const auto w = fuse::build_weights(f.plan, f.graph, f.backend);
@@ -454,13 +454,11 @@ TEST(RemapHaloMpiSphere,
 }
 
 // ---------------------------------------------------------------------------
-// KNOWN_ISSUES D82, MOAB half, round 11 (owner decision 2026-10-19: remap
-// weights normalise by the channel's Conservation kind). Both rows below
+// Remap weights normalise by the channel's Conservation kind. Both rows below
 // read `min_src_coverage`/`min_tgt_coverage` back before trusting the
 // conservation assertion that follows it -- a direction where the relevant
 // side is NOT fully covered would make either property vacuous, not wrong,
-// and D4 already documents that nobody has measured partial coverage on
-// this real pair.
+// and partial coverage has not been measured on this real pair.
 // ---------------------------------------------------------------------------
 
 TEST(RemapHaloMpiSphere, ExtensiveChannelConservesTheDeliveredTotalAcrossTheSpherePair) {
@@ -481,7 +479,7 @@ TEST(RemapHaloMpiSphere, ExtensiveChannelConservesTheDeliveredTotalAcrossTheSphe
 
   const auto halo = fuse::build_remap_halo(reversed, f.graph, f.backend);
   ASSERT_TRUE(halo.ok()) << halo.error().code << ": " << halo.error().message;
-  // Round 12 build item (1): the halo under test is (source=OCN,
+  // The halo under test is (source=OCN,
   // target=ATM) -- a DIFFERENT (mesh, mesh, dim) pair than the fixture's
   // own default direction -- so assert it exists BEFORE trusting any
   // coverage/conservation number the weight build reports; a silently
@@ -521,7 +519,7 @@ TEST(RemapHaloMpiSphere, ExtensiveChannelConservesTheDeliveredTotalAcrossTheSphe
     if (src_view->is_owned(2, i)) local_source_total += 1.0;
   }
 
-  // Round 12 build item (3): per-rank attribution, printed UNCONDITIONALLY
+  // Per-rank attribution, printed UNCONDITIONALLY
   // (every rank, not just rank 0) so a host run can localise any remaining
   // gap to a specific rank or boundary rather than only seeing the
   // already-reduced global numbers below.
@@ -548,7 +546,7 @@ TEST(RemapHaloMpiSphere, ExtensiveChannelConservesTheDeliveredTotalAcrossTheSphe
   // MeshView::measure -- the bilinear patch through each cell's corners,
   // which falls short of the true spherical area by O(h^2)
   // (RemapPlan's own "WHICH SUM IS WHICH" header measured 9.88e-4 on a
-  // different mesh pair). Round 11 measured this DIRECTLY on
+  // different mesh pair). Measured DIRECTLY on
   // recMeshOcn.h5m's own 7153 real cells -- the SOURCE side here, since
   // normalize_remap_weight's Extensive branch divides by the SOURCE cell's
   // own measure -- via the production area formulas
@@ -562,7 +560,7 @@ TEST(RemapHaloMpiSphere, ExtensiveChannelConservesTheDeliveredTotalAcrossTheSphe
   constexpr double kDerivedRelTol = 4e-4;  // 2x 1.84e-4, rounded up
   EXPECT_NEAR(global_target_total, global_source_total,
              kDerivedRelTol * global_source_total)
-      << "D82: an Extensive channel's delivered total (" << global_target_total
+      << "an Extensive channel's delivered total (" << global_target_total
       << ") must track the source total (" << global_source_total
       << ") to the bilinear-vs-spherical measure discrepancy derived above";
 }
@@ -590,7 +588,7 @@ TEST(RemapHaloMpiSphere, IntensiveChannelPreservesAConstantFieldAcrossTheSphereP
          "source) -- the precondition for a non-vacuous constant-"
          "preservation check";
 
-  // Round 12 build item (3): per-rank attribution, every rank.
+  // Per-rank attribution, every rank.
   {
     int this_rank = 0;
     MPI_Comm_rank(MPI_COMM_WORLD, &this_rank);
@@ -608,15 +606,15 @@ TEST(RemapHaloMpiSphere, IntensiveChannelPreservesAConstantFieldAcrossTheSphereP
 
   // Derived tolerance, NOT picked. Same O(h^2) mechanism as the Extensive
   // test above, now on the ROW (constant-preservation) side, so it is
-  // bounded by the SOURCE mesh's own discrepancy here: round 11 measured
-  // wholeATM_T.h5m's own 726 real cells (ATM is the source in this
+  // bounded by the SOURCE mesh's own discrepancy here: wholeATM_T.h5m's own 726 real
+  // cells (ATM is the source in this
   // direction) at 4.38e-3 mean, 5.07e-3 max -- an order of magnitude
   // coarser than recMeshOcn.h5m's, because ATM's cells are far larger.
   // max_row_defect's worst case is bounded by ATM's measured max plus
   // OCN's own (negligible by comparison), with a 2x safety margin.
   constexpr double kDerivedRowTol = 1.2e-2;  // 2x (5.07e-3 + 1.84e-4), rounded up
   EXPECT_LT(w.value().max_row_defect, kDerivedRowTol)
-      << "D82: the pre-existing (Intensive) formula's constant-preservation "
+      << "the Intensive formula's constant-preservation "
          "residual on the real sphere pair, to the bilinear-vs-spherical "
          "measure discrepancy derived above";
 

@@ -22,7 +22,7 @@
 #include <fuse/transport/comm_graph.hpp>
 #include <gtest/gtest.h>
 
-// R-50 (REVIEW.md): the documented rank-requirement convention
+// The documented rank-requirement convention
 // (docs/dev/testing.md). `halves()` below is a divisibility check the
 // documented macros cannot express, so it stays hand-rolled.
 #include "fuse_test_main.hpp"
@@ -332,8 +332,8 @@ TEST(MpiTransport, RedistributesVectorFields) {
 // A rank in NEITHER set is ordinary: it still enters MPI_Alltoallv, with zero
 // counts.
 //
-// HONEST LIMIT OF THIS TEST. The brief says a four-rank run with two idle
-// ranks deadlocks if they skip the collective. Measured, that is not true of
+// HONEST LIMIT OF THIS TEST. A four-rank run with two idle
+// ranks is expected to deadlock if they skip the collective. Measured, that is not true of
 // MPICH 5.0: an early `return` for ranks whose counts are all zero was
 // injected into move() and this test still passed in 3 ms, because MPICH's
 // MPI_Alltoallv posts point-to-point traffic only to peers with non-zero
@@ -566,13 +566,12 @@ TEST(MpiTransport, BuildPlanRejectsOverlappingRankSets) {
   ASSERT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
 }
 
-// R-30 (REVIEW.md): build_plan() has no cross-rank agreement on
-// TransportSpec::components, unlike build_plan_from_peers()'s Phase B
-// numbering check. Rank 0 calls it with components = 1, rank 1 with
+// build_plan() has no cross-rank agreement on
+// TransportSpec::components, unlike build_plan_from_peers()'s numbering
+// check. Rank 0 calls it with components = 1, rank 1 with
 // components = 2, over an otherwise valid disjoint pattern; every rank must
 // reject with E-TRANSPORT-PEERMATCH rather than build a plan whose
-// MPI_Alltoallv count arrays disagree between the two sides. Needs a host
-// run: the sandbox this was written in cannot launch MPI at all.
+// MPI_Alltoallv count arrays disagree between the two sides.
 TEST(MpiTransport, BuildPlanRejectsDisagreeingComponentsAcrossRanks) {
   FUSE_REQUIRE_RANKS(2);
   const int rank = world_rank();
@@ -587,9 +586,9 @@ TEST(MpiTransport, BuildPlanRejectsDisagreeingComponentsAcrossRanks) {
   MpiTransport t;
   ASSERT_TRUE(t.set_communicator(MPI_Comm_c2f(MPI_COMM_WORLD)).ok());
   const auto r = t.build_plan(spec);
-  // Printed on every rank, pass or fail: the 2026-09-20 host run had rank 1
-  // rejecting and rank 0 building a plan, which the assertion alone does not
-  // distinguish from both ranks missing the check.
+  // Printed on every rank, pass or fail: one rank rejecting while another
+  // builds a plan is not distinguishable by the assertion alone from both
+  // ranks missing the check.
   std::printf("[components rank %d/%d] components=%d outcome=%s %s\n", rank,
               world_size(), spec.components, r.ok() ? "OK" : "REFUSED",
               r.ok() ? "" : r.error().code.c_str());
@@ -1327,13 +1326,13 @@ TEST(MpiTransportPeers, DisagreeingHalvesAreRefusedBeforeTheRun) {
   ASSERT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
 }
 
-// Review 2026-10-11 TR-1. rank 0's send plan names rank 2 of a 2-rank
+// Rank 0's send plan names rank 2 of a 2-rank
 // communicator, so Phase A's range check (a purely rank-0-local condition)
 // fails on rank 0 only; rank 1's own plan is empty and never involves rank 0,
-// so rank 1's Phase A passes. Before the fix, rank 0 took the `err !=
+// so rank 1's Phase A passes. Without agreement, rank 0 would take the `err !=
 // Err::None` branch straight to the final agreement while rank 1 entered the
 // Phase B MPI_Alltoall alone -- a hang, which this test turns into a
-// ctest --timeout failure rather than a wrong pass. After the fix, every
+// ctest --timeout failure rather than a wrong pass. With agreement, every
 // rank issues the same Alltoall (rank 0 with a zero-filled sendcounts) and
 // every rank returns E-TRANSPORT-RANKS.
 TEST(MpiTransportPeers, AsymmetricPhaseAFailureIsRefusedByEveryRank) {
@@ -1365,7 +1364,7 @@ TEST(MpiTransportPeers, AsymmetricPhaseAFailureIsRefusedByEveryRank) {
 // returns, every other rank sits inside the collective forever -- whenever
 // the communicator is anything other than MPI_COMM_WORLD itself (a plain
 // MPI_Comm_dup of it is enough), on this exact disjoint-halves pattern.
-// Measured 2026-10-10: reproduced with zero fuse or Kokkos code involved,
+// Reproduced with zero fuse or Kokkos code involved,
 // independent of MPI_THREAD_MULTIPLE (still hangs under MPI_THREAD_FUNNELED
 // and even plain MPI_Init), independent of BTL (vader, tcp) and PML (ob1),
 // and absent on MPI_COMM_WORLD with the identical send/recv pattern. An

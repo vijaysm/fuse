@@ -81,7 +81,7 @@ using fuse::abi_detail::ExternalState;
 /// this template to its ORIGINAL size, computed from its own last
 /// pre-growth member so there is no magic number to drift from the
 /// header -- see the fuse_step_report/fuse_ongoing specializations below,
-/// just after their own growth was appended 2026-10-03 (entries.def's
+/// after their own growth was appended (entries.def's
 /// comment on `next_component` explains why).
 template <class T>
 struct FirstFrozenStructSize {
@@ -102,7 +102,7 @@ struct FirstFrozenStructSize<fuse_ongoing> {
 
 template <>
 struct FirstFrozenStructSize<fuse_setup_options> {
-  // The layout shipped before my_component was appended 2026-10-03; see
+  // The layout shipped before my_component was appended; see
   // entries.def's own comment on that field.
   static constexpr std::size_t value =
       offsetof(fuse_setup_options, end_time) + sizeof(fuse_exact_time);
@@ -110,8 +110,8 @@ struct FirstFrozenStructSize<fuse_setup_options> {
 
 template <>
 struct FirstFrozenStructSize<fuse_field_view> {
-  // The layout shipped before window_samples was appended 2026-10-04;
-  // see entries.def's own comment on that field. `data` is the last
+  // The layout shipped before window_samples was appended; see
+  // entries.def's own comment on that field. `data` is the last
   // pre-growth member.
   static constexpr std::size_t value =
       offsetof(fuse_field_view, data) + sizeof(void*);
@@ -119,11 +119,11 @@ struct FirstFrozenStructSize<fuse_field_view> {
 
 template <>
 struct FirstFrozenStructSize<fuse_step_request> {
-  // Review 2026-10-11 AB-2: this specialization was missing, so an old
+  // Without this specialization an old
   // caller's struct_size=16 (the layout shipped before t_begin/t_end/step/
   // iteration/requires_checkpoint/requires_restore/reserved were appended
-  // in 612b153 for the provider direction, per c-abi.md's growth table
-  // "16 -> 72") was refused FUSE_ERR_VERSION by check_struct_size's old
+  // for the provider direction, per c-abi.md's growth table "16 -> 72")
+  // would be refused FUSE_ERR_VERSION by check_struct_size's
   // `>= sizeof(current)` bound, even though begin_step()/end_step() never
   // read any of the grown members (entries.def's comments on each mark
   // them provider-direction-only). `component` is the last pre-growth
@@ -312,9 +312,8 @@ fuse_status impl_capabilities(fuse_ctx*, const fuse_null*,
 #if FUSE_HAVE_MPI
   flags |= FUSE_CAP_MPI;
 #endif
-  // Not yet implemented through this ABI (open question in the task
-  // report): device fields (register_field refuses FUSE_MEMSPACE_DEVICE),
-  // checkpoint/restore (no iteration-region support through begin_step/
+  // Not yet implemented through this ABI: device fields (register_field
+  // refuses FUSE_MEMSPACE_DEVICE), checkpoint/restore (no iteration-region support through begin_step/
   // end_step), MPI connect/accept or MPMD, and the LowFive in-memory path.
   out->struct_size = sizeof(fuse_capability_set);
   out->flags = flags;
@@ -343,8 +342,8 @@ fuse_status impl_capabilities(fuse_ctx*, const fuse_null*,
 /// torn down. With a statically linked Kokkos that ordering happened to
 /// hold; with a shared one it does not, and the process aborts AFTER
 /// finishing its work with "mutex lock failed: Invalid argument", locking
-/// a mutex in an image that is already gone. Measured 2026-10-09, when
-/// Kokkos was rebuilt as a shared library on this lab's machine: the
+/// a mutex in an image that is already gone. Measured with
+/// Kokkos built as a shared library: the
 /// installed C and Fortran consumers both printed their results and every
 /// expected value, then died in exit.
 ///
@@ -507,7 +506,7 @@ fuse_status impl_destroy(fuse_ctx* ctx, const fuse_null*, fuse_null*) {
     // same channel fuse_last_error() reads for a null handle.
     fuse::transport::ConnectedWorld owned = c.connected;
     c.connected = fuse::transport::ConnectedWorld{};
-    // D61 round 3: the component-local reconciliation communicator
+    // The component-local reconciliation communicator
     // (context.hpp's own comment on `collective_comm_f`), freed the same
     // way -- extracted before delete, released after, 0 meaning there is
     // nothing to free (the default, or any of the "never formed" cases
@@ -649,10 +648,9 @@ fuse_status impl_setup(fuse_ctx* ctx, const fuse_setup_options* in, fuse_null*) 
     }
     const fuse_status sz = check_struct_size(in);
     if (sz != FUSE_OK) return sz;
-    // Review 2026-10-11 AB-11: entries.def documents `reserved` as "must
-    // be 0", but nothing read it to check -- a caller that left it
-    // uninitialised (or copy-pasted a struct with something else in that
-    // slot) was silently accepted. Cheap to check, so checked.
+    // entries.def documents `reserved` as "must be 0"; a caller that left
+    // it uninitialised (or copy-pasted a struct with something else in
+    // that slot) is refused. Cheap to check, so checked.
     if (in->reserved != 0) {
       return fail(&c, FUSE_ERR_INVALID, "E-ABI-SETUP-RESERVED",
                  "fuse_setup_options: reserved must be 0");
@@ -666,7 +664,7 @@ fuse_status impl_setup(fuse_ctx* ctx, const fuse_setup_options* in, fuse_null*) 
                                                 sizeof(in->my_component))
             ? in->my_component
             : nullptr;
-    // KNOWN_ISSUES.md D76: an old caller's smaller struct_size never
+    // An old caller's smaller struct_size never
     // allocated has_communicator either, so it is read under the same
     // struct_size_covers() guard as my_component just above, and an old
     // caller keeps the original sentinel (communicator == 0 means none
@@ -700,7 +698,7 @@ fuse_status impl_setup(fuse_ctx* ctx, const fuse_setup_options* in, fuse_null*) 
                      std::string("fuse_setup_options: my_component names '") +
                          my_component + "', which the loaded graph does not declare");
         }
-        // D61 round 3 (KNOWN_ISSUES.md): kept for initialize() to split
+        // Kept for initialize() to split
         // the component-local reconciliation communicator by -- see
         // context.hpp's own comment on `my_component`/`collective_comm_f`.
         c.my_component = cid;
@@ -726,30 +724,28 @@ fuse_status impl_setup(fuse_ctx* ctx, const fuse_setup_options* in, fuse_null*) 
         // called for any of the three, for the identical reason).
       }
 #endif
-      // D14 (KNOWN_ISSUES.md), found while implementing base_communicator():
-      // set ONLY here, after every early return above has had its chance to
+      // Set ONLY here, after every early return above has had its chance to
       // fire -- a FAILED connect() (Mpmd/Connect launch) must leave
       // communicator_set FALSE, never stranded true with the caller's own
-      // raw, UNMERGED communicator. Before this fix, a failed connect()
-      // left communicator_set true (set eagerly, above the connect() call)
-      // with c.communicator still the caller's own unmerged in->communicator
-      // -- harmless everywhere that already gated on c.state (setup() itself
-      // returned a failure, so no caller proceeds), but exactly wrong for
+      // raw, UNMERGED communicator. (Setting it eagerly, above the connect()
+      // call, would leave c.communicator the caller's own unmerged
+      // in->communicator after a failed connect() -- harmless everywhere that
+      // already gated on c.state, but exactly wrong for
       // base_communicator()'s own `formed` flag, whose contract is "a
-      // TRUSTWORTHY base communicator exists", not "setup() was called".
+      // TRUSTWORTHY base communicator exists", not "setup() was called".)
       c.communicator_set = true;
     } else if (my_component != nullptr) {
-      // Review 2026-10-11 AB-4: this whole my_component handling (above)
-      // lived inside `if (in->communicator != 0)`, so a caller that named
-      // an Mpmd/Connect component but left communicator == 0 fell through
-      // silently -- the run proceeded single-process on a graph that
-      // declares a multi-executable launch, with no refusal at all.
+      // The my_component handling above lives inside
+      // `if (in->communicator != 0)`, so a caller that names an Mpmd/Connect
+      // component but leaves communicator == 0 lands here instead of
+      // proceeding single-process on a graph that declares a
+      // multi-executable launch.
       // my_component's own comment (entries.def) requires a non-zero
       // communicator for exactly these two LaunchModes, to form the real
       // base communicator from; InProcess/Plugin need no communicator at
       // all, so only Mpmd/Connect are refused here.
       //
-      // KNOWN_ISSUES.md D76: this branch is reached only when
+      // This branch is reached only when
       // communicator_supplied is false, i.e. neither a nonzero handle
       // NOR has_communicator=1 was given -- a caller on an Open MPI
       // build that legitimately owns communicator handle 0
@@ -758,7 +754,7 @@ fuse_status impl_setup(fuse_ctx* ctx, const fuse_setup_options* in, fuse_null*) 
       // refused here.
       const auto cid = c.graph.find_component(my_component);
       if (cid.has_value()) {
-        // D61 round 3: stored even on this no-communicator path -- see
+        // Stored even on this no-communicator path -- see
         // context.hpp's own comment -- though collective_comm_f (below,
         // initialize()) only ever forms when communicator_set is ALSO
         // true, so this has no effect on a single-process run beyond
@@ -881,7 +877,7 @@ fuse_status impl_register_field(fuse_ctx* ctx, const fuse_field_view* in,
   });
 }
 
-// Unit 3 (S6 phase 3, Conformance): the reverse of impl_register_field
+// The reverse of impl_register_field
 // above -- FUSE hands back a view of its own storage for `in->handle`,
 // rather than the caller handing FUSE a pointer. Before initialize(), or
 // for a field with no window scope at all, that storage is exactly the
@@ -977,7 +973,7 @@ fuse_status impl_view_field(fuse_ctx* ctx, const fuse_field_ref* in,
 
 // Forward declaration: defined further down, grouped with reconcile_
 // collective_status() (both are "agree a verdict across the base or a
-// component-local communicator" glue, KNOWN_ISSUES.md D61 and D15), but
+// component-local communicator" glue), but
 // needed here because impl_initialize_local() calls it before that
 // point in the file.
 fuse_status reconcile_plugin_agreement(fuse_ctx& c, int rank, fuse_status local_status,
@@ -996,8 +992,7 @@ fuse_status impl_initialize_local(fuse_ctx* ctx, const fuse_null*, fuse_null*) {
                  "fuse_initialize: the graph does not validate:\n" +
                      diags.to_string());
     }
-    // KNOWN_ISSUES.md D15 ("Registry agreement" track, owner decision
-    // 2026-10-22): a priori, before any of the work below runs at all --
+    // Checked a priori, before any of the work below runs at all --
     // fuse::abi_detail::plugin_mount_agreement_needs_a_missing_spanning_
     // communicator() (include/fuse/abi/plugin_agreement.hpp) is a pure
     // function of this process's own already-loaded graph and its own
@@ -1033,7 +1028,7 @@ fuse_status impl_initialize_local(fuse_ctx* ctx, const fuse_null*, fuse_null*) {
                        "no common parent communicator until its own handshake); this process's "
                        "own my_component does not call fuse::transport::connect(), so there is "
                        "no way to confirm its base communicator spans the Connect-launched "
-                       "executable, and the plugin-mount agreement (KNOWN_ISSUES.md D15) cannot "
+                       "executable, and the plugin-mount agreement cannot "
                        "be reconciled across executables that have never shared a communicator. "
                        "Workaround: host the plugin component in a process that is itself "
                        "Connect-launched (so its own connect() call forms the spanning "
@@ -1049,7 +1044,7 @@ fuse_status impl_initialize_local(fuse_ctx* ctx, const fuse_null*, fuse_null*) {
     // recorded, if any (consumed here, same as the RunnerConfig block
     // further down uses it); (0, 1) otherwise -- correct by construction
     // for the single-process case (context.hpp's own comment on
-    // `backend`), and the only case this sandbox can ever execute.
+    // `backend`), and the only case without MPI.
     int rank = 0, num_ranks = 1;
 #if FUSE_HAVE_MPI
     if (c.communicator_set) {
@@ -1092,26 +1087,21 @@ fuse_status impl_initialize_local(fuse_ctx* ctx, const fuse_null*, fuse_null*) {
     // Wire every graph component to either the test-injected real
     // fuse::Component (driven in-process, through fuse_run()), a
     // LaunchMode::Plugin component mounted from its own shared object
-    // (S6 phase 4, "Adapter host" track -- also driven in-process: a
+    // (also driven in-process: a
     // provider shares the host's communicator exactly like an InProcess
     // component, launch.hpp's own doc), or a fresh ExternalStepComponent
     // (driven through fuse_begin_step()/fuse_end_step()); see context.hpp's
     // header comment.
     c.ext.assign(c.graph.component_count(), ExternalState{});
     c.external_count = 0;
-    // KNOWN_ISSUES.md D15 ("Registry agreement" track, owner decision
-    // 2026-10-22, option (b)): the Plugin branch below no longer
-    // `return fail(...)`s immediately on a hosting rank's own mount/
-    // extract/register failure -- every such early return is
-    // restructured to record its verdict here and `break` the loop
-    // instead, so that EVERY rank (hosting or not) still reaches the
+    // The Plugin branch below does not `return fail(...)` immediately on a
+    // hosting rank's own mount/extract/register failure -- every such
+    // early exit records its verdict here and `break`s the loop instead,
+    // so that EVERY rank (hosting or not) still reaches the
     // one-collective reconciliation after the loop, reconcile_plugin_
-    // agreement() below. Without this restructuring, a hosting rank that
-    // failed would return from inside the loop before a non-hosting rank
-    // (which never fails locally -- there is nothing for it to fail on)
-    // ever learned about it, exactly the gap this round closes
-    // (KNOWN_ISSUES.md D15's own "Open after the mount-everywhere fix"
-    // paragraph).
+    // agreement() below. Otherwise a hosting rank that failed would return
+    // from inside the loop before a non-hosting rank (which never fails
+    // locally -- there is nothing for it to fail on) ever learned about it.
     fuse_status plugin_mount_status = FUSE_OK;
     bool saw_plugin_component = false;
     for (std::uint32_t i = 0; i < c.graph.component_count(); ++i) {
@@ -1122,15 +1112,12 @@ fuse_status impl_initialize_local(fuse_ctx* ctx, const fuse_null*, fuse_null*) {
       // no Tick, and is never stepped through fuse_begin_step()/
       // fuse_end_step() (src/runtime/runner.cpp's own step-list builder
       // skips it for the identical reason, in the comment right above its
-      // own `if (decl.kind == ComponentKind::Coupler) continue;`). Before
-      // this fix, this loop built an ExternalStepComponent for it anyway,
-      // which that same runner.cpp step-list builder then rejected with
-      // E-RT-COMPONENT ("component 'coupler' is not declared in the
+      // own `if (decl.kind == ComponentKind::Coupler) continue;`). Building
+      // an ExternalStepComponent for it would be rejected by that same
+      // runner.cpp step-list builder with E-RT-COMPONENT ("component 'coupler' is not declared in the
       // coupling graph") the moment any graph loaded through this ABI had
-      // an add_coupler() placement -- found this session, driving the
-      // Brusselator participant graph (examples/brusselator/participants/
-      // participant_graph.hpp) through fuse_coupler_abi() for the first
-      // time anywhere in the suite.
+      // an add_coupler() placement (as the Brusselator participant graph,
+      // examples/brusselator/participants/participant_graph.hpp, has).
       if (decl.kind == fuse::ComponentKind::Coupler) continue;
       const std::string& name = decl.name;
       auto it = c.injected.find(name);
@@ -1145,13 +1132,9 @@ fuse_status impl_initialize_local(fuse_ctx* ctx, const fuse_null*, fuse_null*) {
         c.components.add(std::move(comp));
         c.ext[i].in_process = true;
       } else if (decl.launch.mode == fuse::LaunchMode::Plugin) {
-        // KNOWN_ISSUES.md D15 ("Registry hosting" track, owner decision
-        // 2026-10-22, verbatim: "NO. This should not happen."): a rank
-        // that is not a member of this component's own RankSet must
+        // A rank that is not a member of this component's own RankSet must
         // never dlopen() its shared object at all -- not even to
-        // immediately discard the result, which is what EVERY rank did
-        // before this round (Registry::mount_dynamic() below was called
-        // unconditionally). `!c.communicator_set` keeps every single-
+        // immediately discard the result. `!c.communicator_set` keeps every single-
         // process caller's own behaviour exactly unchanged: there is
         // only one rank, and it always hosts whatever it is handed --
         // the SAME "assume hosted everywhere" rule provider_adapter.
@@ -1164,10 +1147,9 @@ fuse_status impl_initialize_local(fuse_ctx* ctx, const fuse_null*, fuse_null*) {
           const fuse::Result<void> mounted =
               c.plugin_registry.mount_dynamic(name, decl.launch.plugin_path);
           if (!mounted.ok()) {
-            // KNOWN_ISSUES.md D15 ("Registry agreement" track): recorded,
-            // not returned -- see the `break` right after for why, and
-            // this loop's own header comment above for the rule every
-            // one of this branch's four early-return sites now follows.
+            // Recorded, not returned -- see the `break` right after for why,
+            // and this loop's own header comment above for the rule every
+            // one of this branch's four early-exit sites follows.
             plugin_mount_status = fail(&c, FUSE_ERR_RUNTIME, std::string(mounted.error().code),
                                        mounted.error().message);
             break;
@@ -1180,10 +1162,10 @@ fuse_status impl_initialize_local(fuse_ctx* ctx, const fuse_null*, fuse_null*) {
             break;
           }
           comp = std::move(extracted).value();
-          // KNOWN_ISSUES.md D15 round 3: tell the adapter which rank it is
-          // on the REAL base communicator, if any -- see provider_adapter.
-          // hpp's own comment on set_hosting_rank() and D24 (this file's
-          // own `rank` above, the SAME value backend construction used).
+          // Tell the adapter which rank it is on the REAL base communicator,
+          // if any -- see provider_adapter.hpp's own comment on
+          // set_hosting_rank() (this file's own `rank` above, the SAME value
+          // backend construction used).
           // Always a ProviderAdapter here (mount_dynamic() above only ever
           // constructs one); the dynamic_cast exists so a future second
           // concrete type mounted the same way fails loudly, not silently.
@@ -1199,15 +1181,15 @@ fuse_status impl_initialize_local(fuse_ctx* ctx, const fuse_null*, fuse_null*) {
             adapter->set_hosting_rank(rank);
           }
         } else {
-          // KNOWN_ISSUES.md D15 ("Registry hosting"): build an UNHOSTED
+          // Build an UNHOSTED
           // ProviderAdapter shell directly, bypassing Registry::
           // mount_dynamic() entirely -- no dlopen(), no dlsym(), no
           // fuse_provider_abi() call, and create()/describe()/bind()/
           // advance()/destroy() never reach the plugin's own shared
           // object from this rank. register_fields() (called the same
           // way below for every branch) recognises the shell and
-          // registers exactly the empty views the OLD, mount-everywhere
-          // path already produced -- see that function's own comment
+          // registers exactly the empty views a mount-everywhere
+          // path would produce -- see that function's own comment
           // for the one thing this loses (docs/user/providers.md, "A
           // plugin launched on a subset").
           comp = std::make_unique<fuse::abi_detail::ProviderAdapter>(name);
@@ -1230,28 +1212,26 @@ fuse_status impl_initialize_local(fuse_ctx* ctx, const fuse_null*, fuse_null*) {
         c.components.add(std::move(ext_comp));
         c.ext[i].in_process = false;
         ++c.external_count;
-        // KNOWN_ISSUES.md D12: no separate per-component tick count is
-        // kept any more -- fuse::Runner::resume_period() (through the
+        // No separate per-component tick count is
+        // kept -- fuse::Runner::resume_period() (through the
         // SAME fuse::ClockSet-derived schedule every component, in-process
-        // or external, is built from) is now the single source of when
+        // or external, is built from) is the single source of when
         // this component is due, so there is nothing here left to
         // validate that the real scheduler has not already checked itself
         // when it built the plan above.
       }
     }
 
-    // KNOWN_ISSUES.md D15 ("Registry agreement" track, owner decision
-    // 2026-10-22, option (b)): the ONE collective this round adds, run
+    // The ONE plugin-agreement collective, run
     // exactly once per fuse_initialize() call and ONLY when the graph
     // declares a Plugin component -- `saw_plugin_component` is set above
     // inside the loop's own Plugin branch and nowhere else, so a graph
-    // with none triggers NO extra collective at all, satisfying this
-    // round's own requirement. See reconcile_plugin_agreement()'s own
-    // doc comment (below) for why this cannot deadlock the way
-    // KNOWN_ISSUES.md D61's REVERTED round did: fuse_initialize() has no
-    // per-step cadence to mismatch, and every early return the Plugin
-    // branch above used to take was restructured (this loop's own header
-    // comment) so every rank that reaches this point has finished the
+    // with none triggers NO extra collective at all. See
+    // reconcile_plugin_agreement()'s own doc comment (below) for why this
+    // cannot deadlock: fuse_initialize() has no per-step cadence to
+    // mismatch, and every early exit the Plugin branch above takes is
+    // recorded rather than returned (this loop's own header comment), so
+    // every rank that reaches this point has finished the
     // SAME wiring loop over the SAME graph.
     if (saw_plugin_component) {
       const fuse_status reconciled =
@@ -1265,7 +1245,7 @@ fuse_status impl_initialize_local(fuse_ctx* ctx, const fuse_null*, fuse_null*) {
       return plugin_mount_status;
     }
 
-    // Unit 3 (S6 phase 3, Conformance): a LowFive-bound channel's own
+    // A LowFive-bound channel's own
     // ExternalDelivery instruction (src/ir/rules_channel.cpp's
     // lower_channel()) suspends the Runner's own coroutine chain for the
     // IMPORTING component (deliver_external(), src/runtime/iteration.cpp)
@@ -1303,15 +1283,13 @@ fuse_status impl_initialize_local(fuse_ctx* ctx, const fuse_null*, fuse_null*) {
       // A communicator means the components may live on different ranks,
       // and data between ranks moves only through the "mpi" transport --
       // the default "copy" is the single-address-space one. Setting the
-      // communicator alone, as this block did until 2026-10-09, builds the
-      // exchange plan and then refuses at the first Transport instruction:
+      // communicator alone would build the
+      // exchange plan and then refuse at the first Transport instruction:
       // `a CommGraph-backed Transport plan requires the "mpi" transport
-      // backend, but the configured transport is 'copy'`, measured on the
-      // host from every MPMD participant at once. The in-process C++
-      // callers (test/parallel/connect/connect_common.hpp) have always set
-      // all three together; the ABI was written when every participant it
-      // drove was in one process, and nothing exercised this until the
-      // Brusselator's three programs did.
+      // backend, but the configured transport is 'copy'`, from every MPMD
+      // participant at once. The in-process C++
+      // callers (test/parallel/connect/connect_common.hpp) set all three
+      // together.
       //
       // The transport's own setup is the Runner's `transport_setup` hook,
       // since `Transport&` cannot express a communicator handle: the hook
@@ -1332,7 +1310,7 @@ fuse_status impl_initialize_local(fuse_ctx* ctx, const fuse_null*, fuse_null*) {
       };
 #endif  // FUSE_HAVE_MPI  (without it a non-zero communicator was already refused in setup)
     }
-    // D61 round 4 (KNOWN_ISSUES.md): the component-local communicator
+    // The component-local communicator
     // reconcile_collective_status() (below) reconciles initialize()/
     // begin_step()/end_step()/run() over -- formed EXACTLY ONCE, here,
     // inside the SAME `if (c.communicator_set)` guard the Runner's own
@@ -1340,54 +1318,45 @@ fuse_status impl_initialize_local(fuse_ctx* ctx, const fuse_null*, fuse_null*) {
     // confused with a communicator fuse::abi_test::force_communicator_
     // set() fakes (that seam only ever runs AFTER a real initialize()
     // has already completed -- see context.hpp's own comment on
-    // `collective_comm_f`, and this entry's REVERTED paragraph for the
-    // host crash that conflating the two caused).
+    // `collective_comm_f`, for why conflating the two crashes).
     //
-    // ROUND 3's OWN VERSION OF THIS BLOCK WAS WRONG, MEASURED ON THE HOST
-    // (KNOWN_ISSUES.md D61's own round-4 paragraph carries the stack
-    // samples). It called `fuse::linalg::make_participant_set_reducer()`
-    // -- written for a REGION, where every rank of the base communicator
-    // passes the IDENTICAL participant list, so "am I in it" (colour 0)
-    // vs "not" (MPI_UNDEFINED) is the only distinction that can ever
-    // exist. Here, each rank passes its OWN component's RankSet, not a
-    // shared one: a U-rank calls it with U's own ranks, a V-rank with
-    // V's own -- and a rank is trivially always a member of its OWN
-    // component's set, so EVERY rank computed colour 0 and
-    // `MPI_Comm_split` placed U, V and the coupler into ONE shared
-    // communicator -- exactly the base-communicator reconciliation
-    // this entry's round-2 revert already measured as a deadlock, by a
-    // different route. The lesson this page's own abi-design.md records
-    // ("a collective that pairs calls across components can only run on
-    // a communicator whose every member makes the SAME sequence of
-    // calls") applies to the SPLIT ITSELF, not only to the reconcile
-    // call it feeds.
+    // The split must NOT reuse `fuse::linalg::make_participant_set_reducer()`
+    // -- that is written for a REGION, where every rank of the base
+    // communicator passes the IDENTICAL participant list, so "am I in it"
+    // (colour 0) vs "not" (MPI_UNDEFINED) is the only distinction that can
+    // ever exist. Here, each rank passes its OWN component's RankSet, not a
+    // shared one: a U-rank calls it with U's own ranks, a V-rank with V's
+    // own -- and a rank is trivially always a member of its OWN component's
+    // set, so EVERY rank would compute colour 0 and `MPI_Comm_split` would
+    // place U, V and the coupler into ONE shared communicator -- which is
+    // exactly a base-communicator reconciliation, and deadlocks. The lesson
+    // abi-design.md records ("a collective that pairs calls across
+    // components can only run on a communicator whose every member makes
+    // the SAME sequence of calls") applies to the SPLIT ITSELF, not only to
+    // the reconcile call it feeds.
     //
-    // THE FIX: `colour` must be DISTINCT PER COMPONENT, not a uniform 0,
-    // so `MPI_Comm_split` partitions the base communicator by WHICH
-    // component each rank plays, not by "did I pass a valid set at all"
-    // (every rank always does). `my_component`'s own `ComponentId::
-    // value()` is exactly that -- stable, distinct per component, known
-    // identically on every rank from the SAME loaded graph. `key` orders
-    // ranks within the resulting sub-communicator by this rank's
-    // position in `my_component`'s own declared `RankSet` (unchanged
-    // from round 3). A rank with NO component at all (`my_component`
-    // never named at setup() time -- e.g. accept mode's bundled coupler-
-    // placeholder rank when it is not itself named my_component; see
-    // examples/brusselator/participants/u_main.c's own placeholder
-    // branch and lowfive_attach_decision.hpp's account of the identical
-    // posture) passes `MPI_UNDEFINED` and gets `MPI_COMM_NULL` back --
-    // `collective_comm_f` stays 0, "nothing to reconcile", precisely
-    // the semantics `ParticipantSetReducerResult::comm_f` documented for
-    // the SAME convention, reused here without the type this function no
-    // longer calls.
+    // So `colour` is DISTINCT PER COMPONENT, not a uniform 0, and
+    // `MPI_Comm_split` partitions the base communicator by WHICH component
+    // each rank plays, not by "did I pass a valid set at all" (every rank
+    // always does). `my_component`'s own `ComponentId::value()` is exactly
+    // that -- stable, distinct per component, known identically on every
+    // rank from the SAME loaded graph. `key` orders ranks within the
+    // resulting sub-communicator by this rank's position in
+    // `my_component`'s own declared `RankSet`. A rank with NO component at
+    // all (`my_component` never named at setup() time -- e.g. accept mode's
+    // bundled coupler-placeholder rank when it is not itself named
+    // my_component; see examples/brusselator/participants/u_main.c's own
+    // placeholder branch and lowfive_attach_decision.hpp's account of the
+    // identical posture) passes `MPI_UNDEFINED` and gets `MPI_COMM_NULL`
+    // back -- `collective_comm_f` stays 0, "nothing to reconcile", the same
+    // convention `ParticipantSetReducerResult::comm_f` documents.
     //
     // `MPI_Comm_split` IS COLLECTIVE OVER THE WHOLE BASE COMMUNICATOR:
     // every rank must call it TOGETHER, including one passing
-    // `MPI_UNDEFINED` -- round 3's own version called this ONLY `if (c.
-    // my_component.has_value())`, which would itself have left a
-    // componentless rank never entering the split at all, hanging every
-    // OTHER rank that did. Fixed by moving the `my_component.has_value()`
-    // check INSIDE (deciding `colour`), not around, the call.
+    // `MPI_UNDEFINED`. Calling it ONLY `if (c.my_component.has_value())`
+    // would leave a componentless rank never entering the split at all,
+    // hanging every OTHER rank that did, so the `my_component.has_value()`
+    // check is INSIDE (deciding `colour`), not around, the call.
 #if FUSE_HAVE_MPI
     if (c.communicator_set) {
       const MPI_Comm base = MPI_Comm_f2c(static_cast<MPI_Fint>(c.communicator));
@@ -1409,8 +1378,8 @@ fuse_status impl_initialize_local(fuse_ctx* ctx, const fuse_null*, fuse_null*) {
       // fuse::abi_detail::decide_split_colour_key (include/fuse/abi/
       // collective_reconcile.hpp): the pure half of this decision, tested
       // directly at tier 0 with no MPI dependency -- see that header's own
-      // doc comment for why round 3's version of this call (`make_
-      // participant_set_reducer`) computed the wrong thing here, and what
+      // doc comment for why `make_participant_set_reducer` computes the wrong
+      // thing here, and what
       // `position < 0` defensively covers (should never happen on the
       // real setup()->initialize() path).
       if (const auto ck = fuse::abi_detail::decide_split_colour_key(component_value, position);
@@ -1441,9 +1410,8 @@ fuse_status impl_initialize_local(fuse_ctx* ctx, const fuse_null*, fuse_null*) {
       // "nothing to reconcile".
     }
 #endif  // FUSE_HAVE_MPI
-    // Unit 2b (D19), step (d): fuse::abi_test::force_this_process()'s own
-    // seam -- std::nullopt (the default) leaves config exactly what it
-    // was before this field existed.
+    // fuse::abi_test::force_this_process()'s own seam -- std::nullopt (the
+    // default) leaves config unchanged.
     config.force_this_process = c.test_force_this_process;
     c.runner.emplace(c.graph, *c.dag, *c.plan, *c.backend);
     const fuse::Result<void> r =
@@ -1466,29 +1434,21 @@ std::int32_t first_external_component_due_at_period_start(fuse_ctx& c) {
   return -1;
 }
 
-/// Unit 3 (S6 phase 3, Conformance), the lead's own corrected ruling
-/// (2026-10-04), ITSELF SUPERSEDED this round (item 2 -- see
-/// `impl_begin_step()`'s own is_delivery_due branch above for the full
-/// account): resolves the `next_component` value a CACHED request
+/// Resolves the `next_component` value a CACHED request
 /// (`c.next_request`, assumed to already have a value) reports --
 /// shared by `fuse_is_coupling_ongoing()`, `fuse_end_step()`, and
 /// `fuse_begin_step()`'s own is_delivery_due branch, the three entry
 /// points that report this field. `next_component` has exactly ONE
 /// meaning everywhere: the component whose `fuse_begin_step()` the
-/// Runner expects next. Under the OLD (single-direction, importer-
-/// only-suspends) delivery design, an `is_delivery_due` request was
-/// "purely informational" -- its own `component` named the importer,
-/// but the CALLER needed no action beyond skipping ahead to the next
-/// REAL advance, resolved via a forward scan, `Runner::
-/// next_real_advance_after()`. That rule is now wrong: `delivery_field`
-/// (entries.def's own comment) requires the CALLER to act (H5Dwrite if
-/// producing the named field, H5Dread if consuming it) before its own
-/// next `fuse_begin_step()`, and `deliver_external()` (src/runtime/
-/// iteration.cpp) now suspends for BOTH the exporter and the importer
-/// of a channel, each its own request naming the SPECIFIC component
-/// that must act -- so `req.component` is always meaningful and always
-/// reported directly, exactly like a real (non-delivery) request;
-/// there is no longer a separate "real next stepper" to scan ahead to.
+/// Runner expects next. `delivery_field` (entries.def's own comment)
+/// requires the CALLER to act (H5Dwrite if producing the named field,
+/// H5Dread if consuming it) before its own next `fuse_begin_step()`, and
+/// `deliver_external()` (src/runtime/iteration.cpp) suspends for BOTH the
+/// exporter and the importer of a channel, each its own request naming the
+/// SPECIFIC component that must act -- so `req.component` is always
+/// meaningful and always reported directly, exactly like a real
+/// (non-delivery) request; there is no separate "real next stepper" to
+/// scan ahead to.
 std::int32_t resolve_cached_next_component(fuse_ctx& c) {
   const fuse::ExternalAdvanceRequest& req = *c.next_request;
   const auto cid = c.graph.find_component(req.component);
@@ -1524,10 +1484,9 @@ fuse_status impl_is_coupling_ongoing(fuse_ctx* ctx, const fuse_null*,
     // Resolving a MID-PERIOD answer would mean calling
     // prime_next_request(), which calls runner->resume_period(): a
     // genuine side effect that actually executes ordinary instructions,
-    // not a cache lookup -- unsafe here for exactly the reason an
-    // earlier version of this fix demonstrated by corrupting
+    // not a cache lookup -- unsafe here for exactly the reason
     // AbiParticipant.ExternallyDrivenWindowMemberMatchesInProcessRunner
-    // (fuse_is_coupling_ongoing() called once after a period had already
+    // pins (fuse_is_coupling_ongoing() called once after a period had already
     // fully run, which re-entered resume_period() and silently re-ran
     // part of the window's iteration on top of its own converged
     // output). BUT a period's own START is not a mid-period question at
@@ -1605,7 +1564,7 @@ bool resolve_external(fuse_ctx& c, const char* name, const char* fn,
   return true;
 }
 
-/// KNOWN_ISSUES.md D12: calls `runner->resume_period()` if nothing is
+/// Calls `runner->resume_period()` if nothing is
 /// already cached in `c.next_request` (see context.hpp's own header
 /// comment), and returns the request it finds -- WITHOUT consuming it;
 /// the caller decides whether it matches `name` and, if so, moves it out
@@ -1615,17 +1574,15 @@ bool resolve_external(fuse_ctx& c, const char* name, const char* fn,
 /// is exactly what lets the correctly-named begin_step() that follows see
 /// the same request.
 ///
-/// The lead's own ruling (2026-10-04), SUPERSEDING an earlier one the
-/// SAME day that treated `resume_period()` returning nothing as always
-/// unreachable: that was right for `fuse_is_coupling_ongoing()`'s own
-/// "nothing cached" branch and for a GENUINE mismatch rejected earlier
-/// (resolve_external() already refuses `name` if it is in-process or
-/// unknown, and open_component's own check in impl_begin_step rules out
-/// a second begin_step() for the same component with no intervening
-/// end_step()), but wrong for THIS call site once a scheduling-order fix
-/// (`OpKind::ExternalDelivery`'s own comment, `include/fuse/ir/op.hpp`)
-/// made it possible for `resume_period()`, resumed from a delivery
-/// proxy's own suspend point, to run an iteration region through to real
+/// `resume_period()` returning nothing is unreachable for
+/// `fuse_is_coupling_ongoing()`'s own "nothing cached" branch and for a
+/// GENUINE mismatch rejected earlier (resolve_external() already refuses
+/// `name` if it is in-process or unknown, and open_component's own check
+/// in impl_begin_step rules out a second begin_step() for the same
+/// component with no intervening end_step()), but NOT for THIS call site:
+/// given the scheduling order (`OpKind::ExternalDelivery`'s own comment,
+/// `include/fuse/ir/op.hpp`), `resume_period()`, resumed from a delivery
+/// proxy's own suspend point, can run an iteration region through to real
 /// convergence and on into the period's own end: every externally driven
 /// component still ticks at least once per period (the scheduler's own
 /// common-period invariant), but THIS period already collected that
@@ -1645,8 +1602,7 @@ bool resolve_external(fuse_ctx& c, const char* name, const char* fn,
 /// which remains unreachable for a well-formed graph and is still
 /// reported as `E-ABI-STEP-ORDER`.
 ///
-/// The lead's own ruling (2026-10-04), the SAME day, closing the one way
-/// this rollover could otherwise run away: nothing above bounds how many
+/// One way this rollover could otherwise run away: nothing above bounds how many
 /// times a period can roll into the next one, and a graph whose window
 /// never fails to converge (the common case once state reaches a fixed
 /// point) would let it happen without end, exactly the hang a caller
@@ -1672,7 +1628,7 @@ bool prime_next_request(fuse_ctx& c, const char* fn, bool* rolled_over,
                         std::string* out_code, std::string* out_message) {
   *rolled_over = false;
   if (c.next_request.has_value()) return true;
-  // The lead's own ruling (2026-10-04): this call might be reached fresh
+  // This call might be reached fresh
   // (not through the rollover below) after a PRIOR call already closed
   // the run's own last period -- fuse_end_step()'s own "the period just
   // ran to completion" branch (below, this file) leaves c.next_request
@@ -1712,7 +1668,7 @@ bool prime_next_request(fuse_ctx& c, const char* fn, bool* rolled_over,
         return true;
       }
     } else if (c.communicator_set) {
-      // KNOWN_ISSUES.md D57. No end_time was declared at all (fuse_setup
+      // No end_time was declared at all (fuse_setup
       // ()'s own fuse_setup_options::has_end_time left at its zero
       // default) -- the ONLY bound the branch above can test against is
       // absent, so there is nothing here to check a new period's own
@@ -1733,8 +1689,8 @@ bool prime_next_request(fuse_ctx& c, const char* fn, bool* rolled_over,
       // Gated on `c.communicator_set` -- NOT on `!c.has_end_time` alone
       // -- because the hazard this guards against is specifically a
       // base-communicator collective (OpKind::Constrain's reduction,
-      // gated on `config.base_communicator.has_value()`, KNOWN_ISSUES.md
-      // D10) that an in-process-only PARTNER rank bounded by
+      // gated on `config.base_communicator.has_value()`) that an
+      // in-process-only PARTNER rank bounded by
       // Runner::run(periods) will never also enter, since its own loop
       // already stopped -- a hazard that exists only when a base
       // communicator is configured at all. `c.communicator_set` is set
@@ -1749,13 +1705,9 @@ bool prime_next_request(fuse_ctx& c, const char* fn, bool* rolled_over,
       // a communicator and relies on EXACTLY the eager continuation this
       // branch would otherwise skip, to resolve a still-converging
       // window's real next-period owner ahead of the caller asking for
-      // it, per "the lead's own ruling" that test's own header cites --
-      // regressed the first time this fix was written unconditionally
-      // (measured: the full tier-0 ctest suite caught it, `abi.
-      // participant` FAILED where it had passed on HEAD). With no
-      // communicator at all, there is no partner rank to disagree with,
-      // so the eager continuation below is harmless and that test's own
-      // behaviour is preserved exactly, unchanged by this entry.
+      // it -- would fail. With no communicator at all, there is no partner
+      // rank to disagree with, so the eager continuation below is
+      // harmless.
       //
       // Reported exactly like the exceeded-end_time case: c.next_request
       // stays empty, fuse_begin_step()'s own caller (below) sees
@@ -1818,7 +1770,7 @@ fuse_status impl_begin_step_local(fuse_ctx* ctx, const fuse_step_request* in,
                              "component '") +
                      in->component + "'; call fuse_end_step() first");
     }
-    // KNOWN_ISSUES.md D12: at most one externally driven component may be
+    // At most one externally driven component may be
     // open at a time -- see context.hpp's own header comment for why.
     if (c.open_component.has_value() && *c.open_component != cid) {
       return fail(&c, FUSE_ERR_STATE, "E-ABI-STEP-ALREADY-OPEN",
@@ -1827,61 +1779,48 @@ fuse_status impl_begin_step_local(fuse_ctx* ctx, const fuse_step_request* in,
                      c.graph.component(*c.open_component).name +
                      "' still has one open; call its fuse_end_step() first");
     }
-    // Review 2026-10-11 AB-12: `rolled_over` was declared `false` and
-    // then OR'd with `this_call_rolled_over` immediately below with
-    // nothing in between able to set it -- a no-op vestige of an
-    // earlier loop (this is the only prime_next_request() call in this
-    // function). `this_call_rolled_over` carries the real value from
-    // here on; no behaviour change.
+    // This is the only prime_next_request() call in this function;
+    // `this_call_rolled_over` carries its rollover result.
     bool this_call_rolled_over = false;
     if (!prime_next_request(c, "fuse_begin_step", &this_call_rolled_over,
                             &err_code, &err_message)) {
       return fail(&c, FUSE_ERR_RUNTIME, err_code, err_message);
     }
     const bool rolled_over = this_call_rolled_over;
-    // S6 phase 3 (Conformance, Unit 3b), item 2 of this round,
-    // SUPERSEDING the lead's own earlier (2026-10-04) ruling that this
-    // call "consumes EVERY pending delivery proxy it encounters while
-    // resuming, WHATEVER component each one names" and drains silently
-    // to the first REAL advance request: that was right as long as a
-    // delivery proxy carried no information beyond its own existence,
-    // but is wrong now that `delivery_field` (entries.def's own
-    // comment) must name WHICH field each one is about -- draining
-    // silently discards every proxy's own field identity except the
-    // last one found, the exact bug this round's own report traced
-    // (KNOWN_ISSUES.md D14): `deliver_external()` (src/runtime/
-    // iteration.cpp) now suspends for the EXPORTER as well as the
+    // This call does NOT consume every pending delivery proxy it encounters
+    // while resuming and drain silently to the first REAL advance request:
+    // `delivery_field` (entries.def's own comment) must name WHICH field
+    // each one is about, and draining silently would discard every proxy's
+    // own field identity except the last one found. `deliver_external()`
+    // (src/runtime/iteration.cpp) suspends for the EXPORTER as well as the
     // importer, so a single channel's own delivery produces TWO
-    // back-to-back is_delivery_due requests whenever both ends are
-    // hosted on this process, with nothing real between them for a
-    // draining loop to stop at.
+    // back-to-back is_delivery_due requests whenever both ends are hosted
+    // on this process, with nothing real between them for a draining loop
+    // to stop at.
     //
-    // The corrected rule: EVERY is_delivery_due request is its own
-    // externally visible stop, reported in full and consumed ONE at a
-    // time -- never looped past. `resolve_cached_next_component()`
-    // (this file, above) is the SAME forward-scan `fuse_end_step()`/
-    // `fuse_is_coupling_ongoing()` already use for an identical cached
-    // request, so all three entry points resolve `next_component`
-    // identically for a delivery-due request; it must run BEFORE
-    // `c.next_request.reset()` below, since it reads directly off
+    // So EVERY is_delivery_due request is its own externally visible stop,
+    // reported in full and consumed ONE at a time -- never looped past.
+    // `resolve_cached_next_component()` (this file, above) is what
+    // `fuse_end_step()`/`fuse_is_coupling_ongoing()` also use for an
+    // identical cached request, so all three entry points resolve
+    // `next_component` identically for a delivery-due request; it must run
+    // BEFORE `c.next_request.reset()` below, since it reads directly off
     // `c.next_request`.
     if (c.next_request.has_value() && c.next_request->is_delivery_due) {
       const std::int32_t delivery_next = resolve_cached_next_component(c);
       const std::int32_t delivery_field_value = c.next_request->delivery_field;
       c.next_request.reset();
-      // Deliberately NOT re-primed here (an earlier version of this
-      // round's own fix did, and was wrong): `prime_next_request()`
+      // Deliberately NOT re-primed here: `prime_next_request()`
       // calls `resume_period()`, which RESUMES THE COROUTINE -- for an
       // importer's own is_delivery_due stop, whatever comes next
       // (another sweep, or the window's own convergence check) reads
       // the import buffer the CALLER has not yet refreshed (its own
       // H5Dread, this report's entire reason for existing, has not run
-      // yet). Resuming here reads that buffer BEFORE the caller's own
-      // update -- observed as a window "converging" after a single
-      // stale-data sweep instead of its real iteration count
+      // yet). Resuming here would read that buffer BEFORE the caller's own
+      // update -- a window "converging" after a single stale-data sweep
+      // instead of its real iteration count
       // (`RunExternalDeliveryMatchesInProcessRunner`'s own sweep-count
-      // diagnostic caught this: harness max sweep index 0 against a
-      // reference of 11). Left reset, the CALLER's own next
+      // diagnostic checks this). Left reset, the CALLER's own next
       // `fuse_begin_step()` re-primes it (the existing call at this
       // function's own top, above) -- AFTER that caller has acted on
       // THIS report, the only point priming is safe. A caller needing
@@ -1928,7 +1867,7 @@ fuse_status impl_begin_step_local(fuse_ctx* ctx, const fuse_step_request* in,
       return FUSE_OK;
     }
     if (!c.next_request.has_value()) {
-      // The lead's own ruling (2026-10-04): prime_next_request()'s own
+      // prime_next_request()'s own
       // rollover refused to start a period past the run's declared
       // end_time (that function's own comment has the full account) --
       // this run is simply over, the SAME fact fuse_is_coupling_ongoing()
@@ -1976,38 +1915,29 @@ fuse_status impl_begin_step_local(fuse_ctx* ctx, const fuse_step_request* in,
       return FUSE_OK;
     }
     const fuse::ExternalAdvanceRequest& req = *c.next_request;
-    // Unit 3a (S6 phase 3, Conformance), this round's own correction
-    // (2026-10-06): a MATCHED rollover -- `req.component == in->
-    // component`, but `rolled_over` is true -- used to fall through to
-    // the step_opened=1 path below unconditionally ("whether or not a
-    // period rollover happened first to reach it", this function's own
-    // comment there, now corrected). MEASURED (this session, UCore::
-    // step()'s own temporary per-call trace, test/verification/
-    // brusselator_lowfive_harness_test.cpp's own ExternalDeliveryMatches
-    // InProcessRunner): that let THIS SAME call run the new period's
-    // own first physics substep before any caller outside the Runner
-    // could observe the period having changed at all (fuse_is_coupling_
-    // ongoing()'s own `period` field does not advance until the
-    // FOLLOWING call, by which point the physics already ran) -- there
-    // was no external vantage point from which a window member's own
-    // committed state could be read at the true period boundary. A
-    // matched rollover is no longer special-cased: it is folded into
-    // the SAME `treat_as_mismatch` branch an unmatched rollover already
-    // takes (step_opened=0, request left unconsumed, `next_component`
-    // names `req.component` so the caller's own next call picks the
-    // SAME request back up and actually runs it) -- one extra, cheap
-    // begin_step()/end_step() round trip at a period boundary, in
-    // exchange for every window member's own state being observable
-    // from outside at the period's own true end, matched or not.
+    // A MATCHED rollover -- `req.component == in->component`, but
+    // `rolled_over` is true -- must NOT fall through to the step_opened=1
+    // path below: that would let THIS SAME call run the new period's own
+    // first physics substep before any caller outside the Runner could
+    // observe the period having changed at all (fuse_is_coupling_
+    // ongoing()'s own `period` field does not advance until the FOLLOWING
+    // call, by which point the physics already ran), leaving no external
+    // vantage point from which a window member's own committed state could
+    // be read at the true period boundary. A matched rollover is therefore
+    // not special-cased: it is folded into the SAME `treat_as_mismatch`
+    // branch an unmatched rollover takes (step_opened=0, request left
+    // unconsumed, `next_component` names `req.component` so the caller's
+    // own next call picks the SAME request back up and actually runs it) --
+    // one extra, cheap begin_step()/end_step() round trip at a period
+    // boundary, in exchange for every window member's own state being
+    // observable from outside at the period's own true end, matched or not.
     const bool treat_as_mismatch = (req.component != in->component) || rolled_over;
     if (treat_as_mismatch) {
       if (req.component != in->component && !rolled_over) {
         // Not consumed: the stream's own next tick belongs to a
         // DIFFERENT externally driven component, named here so the
-        // caller can step it first. Unaffected by this day's rollover
-        // correction: no period boundary was crossed to reach this
-        // request, so it is the ordinary out-of-turn mistake it always
-        // was.
+        // caller can step it first. No period boundary was crossed to reach
+        // this request, so it is the ordinary out-of-turn mistake.
         return fail(&c, FUSE_ERR_STATE, "E-ABI-STEP-ORDER",
                    std::string("fuse_begin_step: component '") +
                        in->component +
@@ -2021,7 +1951,7 @@ fuse_status impl_begin_step_local(fuse_ctx* ctx, const fuse_step_request* in,
       // that iteration has converged), not an error, whether the new
       // period's own first request names a DIFFERENT component (the
       // `req.component != in->component` disjunct) or the SAME one
-      // (this fix's own disjunct, `rolled_over` alone -- see the
+      // (the `rolled_over` alone disjunct -- see the
       // comment above `treat_as_mismatch`). No step opens on ANY
       // component either way; the caller's own loop body must call
       // fuse_begin_step() again with the component named below, which
@@ -2064,9 +1994,8 @@ fuse_status impl_begin_step_local(fuse_ctx* ctx, const fuse_step_request* in,
       // `req.component != in->component && !rolled_over`, already
       // returned via `fail()` above with E-ABI-STEP-ORDER) -- an
       // ORDINARY period rollover (prime_next_request()'s own "period is
-      // over, start the next one" mechanism), never a delivery: this
-      // round's own correction (item 2) intercepts every is_delivery_due
-      // request earlier, in its own dedicated branch above, and returns
+      // over, start the next one" mechanism), never a delivery: every is_delivery_due
+      // request is intercepted earlier, in its own dedicated branch above, and returns
       // from there directly -- `c.next_request` reaching this point is
       // never delivery-due by construction. 0 here, always.
       if (struct_size_covers(declared_out_size,
@@ -2109,7 +2038,7 @@ fuse_status impl_begin_step_local(fuse_ctx* ctx, const fuse_step_request* in,
     }
     // step_opened's own comment, entries.def: 1 here always -- reached
     // only when `!treat_as_mismatch`, i.e. `req.component == in->
-    // component && !rolled_over` (this round's own correction, above):
+    // component && !rolled_over`:
     // a step just opened on the component this call was asked for, and
     // no period rollover was needed to reach it at all -- a MATCHED
     // rollover no longer falls through to this branch; see
@@ -2189,7 +2118,7 @@ fuse_status impl_end_step_local(fuse_ctx* ctx, const fuse_step_request* in,
       out->step_opened = 1;
     }
 
-    // KNOWN_ISSUES.md D12: resume the Runner PAST this component's own
+    // Resume the Runner PAST this component's own
     // (no-op) advance(), to the next externally driven component's
     // suspension point or the period's end -- caching whichever it finds
     // for the NEXT fuse_begin_step() to read, exactly as
@@ -2265,18 +2194,16 @@ fuse_status impl_run_local(fuse_ctx* ctx, const fuse_run_request* in, fuse_null*
     }
     const fuse_status sz = check_struct_size(in);
     if (sz != FUSE_OK) return sz;
-    // Unit 2b (D19), step (d): narrowed from "the GRAPH declares an
-    // externally driven component anywhere at all" to "one IS HOSTED ON
-    // THIS PROCESS" -- Runner::hosts_component()'s own rule (step (a)'s
-    // hosting formula, generalised past window members). A process
+    // The refusal applies when an externally driven component IS HOSTED ON
+    // THIS PROCESS (Runner::hosts_component()'s own rule), not merely when
+    // the GRAPH declares one anywhere. A process
     // hosting none at all -- a dedicated coupler rank, or a placeholder
-    // rank in a bundled MPMD run (KNOWN_ISSUES.md D19's own evidence 4)
-    // -- has nothing here for fuse_begin_step()/fuse_end_step() to drive
+    // rank in a bundled MPMD run -- has nothing here for fuse_begin_step()/fuse_end_step() to drive
     // in the first place, so fuse_run() is the ONLY way it can ever
     // execute its own share of the period's collectives (Transport/
     // Epoch) at all; refusing it unconditionally just because SOME
-    // OTHER rank's own component is external is exactly the gap that
-    // left coupler_main.c's/u_main.c's own placeholder ranks calling
+    // OTHER rank's own component is external would leave
+    // coupler_main.c's/u_main.c's own placeholder ranks calling
     // neither fuse_run() nor fuse_begin_step()/fuse_end_step() between
     // fuse_initialize() and fuse_destroy() -- never executing the
     // Transports the physics ranks were waiting on.
@@ -2341,7 +2268,7 @@ fuse_status impl_run_local(fuse_ctx* ctx, const fuse_run_request* in, fuse_null*
   });
 }
 
-// D14 (KNOWN_ISSUES.md), appended 2026-10-13: a local, non-collective read of
+// A local, non-collective read of
 // c.communicator/c.communicator_set -- entries.def's own doc comment on this
 // entry has the full account of why it exists (the merged base communicator
 // Connect-mode's own accept/connect + MPI_Intercomm_merge forms, previously
@@ -2365,7 +2292,7 @@ fuse_status impl_base_communicator(fuse_ctx* ctx, const fuse_null*,
   });
 }
 
-/// Restart track round 2, item 4's participant-side request
+/// The participant-side request
 /// (entries.def's own doc comment on this entry, fuse/runtime/
 /// runner.hpp's Runner::request_restart_point()). A no-op, not an
 /// error, before initialize(): no Runner exists yet to hold the flag,
@@ -2387,69 +2314,63 @@ fuse_status impl_request_restart_point(fuse_ctx* ctx, const fuse_null*,
   });
 }
 
-// --------------------------------------------- D61 collective reconciliation
+// --------------------------------------------- collective reconciliation
 //
-// KNOWN_ISSUES.md D61: begin_step()/end_step()/initialize()/run() each
-// decided a refusal from this rank's own local state only, with nothing
-// agreeing that decision across the rest of the component's ranks before
-// returning -- violating the standing rule a collective path never
-// returns on a locally computed condition (KNOWN_ISSUES.md D3, docs/dev/
-// invariants.md I2/A4), which src/runtime/runner.cpp's own
-// reconcile_epoch() already upholds for the C++ terminals, through the
+// begin_step()/end_step()/initialize()/run() each decide a refusal from
+// this rank's own local state, so something must agree that decision
+// across the rest of the component's ranks before returning -- the standing
+// rule is that a collective path never returns on a locally computed
+// condition (docs/dev/invariants.md I2/A4), which src/runtime/runner.cpp's
+// own reconcile_epoch() already upholds for the C++ terminals, through the
 // Epoch instruction. The ABI boundary meets the SAME contract here, by
 // the same means A4 names for a terminal: one MPI_Allreduce of an
 // encoded status before anyone acts on it, not a further round after the
 // fact.
 //
-// ROUND 3, REPLACING A REVERTED FIX (KNOWN_ISSUES.md D61's own REVERTED
-// paragraph carries the measurements). The first attempt reconciled over
-// TWO wrong communicators:
+// WHICH COMMUNICATOR. Neither of two tempting choices is right:
 //   1. The base communicator (`c.communicator`), which in a multi-
 //      executable run spans every component (U, V and the coupler all
 //      merged into one world) -- different components make different
 //      numbers of begin_step()/end_step() calls per window, so an
 //      Allreduce keyed to the WRONG set of ranks never finds a partner on
-//      the other side and the whole run hangs. Fixed by reconciling over
-//      a COMPONENT-LOCAL communicator instead (see impl_initialize_local()
+//      the other side and the whole run hangs. Reconciliation instead runs
+//      over a COMPONENT-LOCAL communicator (see impl_initialize_local()
 //      above, where it is split once from the real base communicator by
-//      `my_component`'s own RankSet). ROUND 3's OWN FIRST ATTEMPT AT THIS
-//      reused `fuse::linalg::make_participant_set_reducer()` (D32's own
-//      `MPI_Comm_split`) directly -- wrong for a DIFFERENT reason, measured
-//      on the host and fixed in round 4: that function colours a rank by
-//      "is it a member of THE participant list passed in", written for a
-//      caller where every rank passes the SAME list; here, every rank
-//      passes its OWN component's list and is trivially always a member of
-//      it, so every rank computed colour 0 and landed back in ONE shared
-//      communicator -- the identical bug, by a different route. Round 4's
-//      own fix calls `MPI_Comm_split` directly, colouring by `my_component`'s
-//      own `ComponentId::value()` (distinct per component) instead.
+//      `my_component`'s own RankSet). That split calls `MPI_Comm_split`
+//      directly, colouring by `my_component`'s own `ComponentId::value()`
+//      (distinct per component), rather than reusing
+//      `fuse::linalg::make_participant_set_reducer()`, whose
+//      `MPI_Comm_split` colours a rank by "is it a member of THE
+//      participant list passed in", written for a caller where every rank
+//      passes the SAME list; here, every rank passes its OWN component's list and is
+//      trivially always a member of it, so every rank would compute colour
+//      0 and land back in ONE shared communicator -- the identical bug, by
+//      a different route).
 //   2. Reading `c.communicator`/`c.communicator_set` directly, which
 //      `fuse::abi_test::force_communicator_set()` can set to a value that
 //      is not a real MPI handle at all (its own doc comment: deliberately
 //      callable AFTER a successful initialize(), to reach a LATER gate in
 //      isolation, never meant to feed MPI itself) -- `MPI_Comm_f2c` on
-//      that fake value, then `MPI_Comm_rank` on the result, aborted three
-//      tier-0 rows on the host (MPICH's default error handler on an
-//      invalid communicator; this sandbox has no MPI runtime at all, so
-//      it could not have caught this). Fixed by reconciling over
-//      `c.collective_comm_f` instead -- a SEPARATE field `force_
-//      communicator_set()` never touches, which stays 0 (its default,
-//      "nothing to reconcile") for every context that seam builds, BY
-//      CONSTRUCTION: the real split only ever runs inside initialize()'s
+//      that fake value, then `MPI_Comm_rank` on the result, aborts under
+//      MPICH's default error handler on an invalid communicator.
+//      Reconciliation therefore uses `c.collective_comm_f` -- a SEPARATE
+//      field `force_communicator_set()` never touches, which stays 0 (its
+//      default, "nothing to reconcile") for every context that seam builds,
+//      BY CONSTRUCTION: the real split only ever runs inside initialize()'s
 //      own `if (c.communicator_set)` block, before the seam has had any
 //      chance to set a fake value (or not at all, if the seam is the
 //      ONLY thing that ever sets communicator_set on that context).
 //
 // WHICH ENTRIES, AND WHY SETUP() IS NOT ONE OF THEM. Four of entries.def's
 // fifteen participant-table members: initialize, begin_step, end_step,
-// run. `setup()` is explicitly EXCLUDED this round, unlike round 2:
+// run. `setup()` is explicitly EXCLUDED:
 // `my_component` -- the only thing that tells this function WHICH
 // component's ranks to split a communicator by -- is an ARGUMENT to
 // setup() itself (`fuse_setup_options::my_component`), resolved partway
 // through its own body; there is no component-local communicator to
 // reconcile setup()'s own verdict over until setup() has already decided
-// one. Reconciling setup() over the raw, UNSPLIT base communicator (round
-// 2's own choice) is exactly bug 1 above, generalised: setup() is called
+// one. Reconciling setup() over the raw, UNSPLIT base communicator is
+// exactly bug 1 above, generalised: setup() is called
 // once per component, by definition, before any other component in the
 // same merged world has necessarily called it too, so there is no single
 // communicator setup() could reconcile over that is guaranteed to span
@@ -2458,9 +2379,9 @@ fuse_status impl_request_restart_point(fuse_ctx* ctx, const fuse_null*,
 // malformed `fuse_setup_options`, an unknown `my_component` name, a
 // missing communicator for an Mpmd/Connect launch) -- the SAME bytes on
 // every rank that is supposed to agree would also decide them the same
-// way independently, which is why KNOWN_ISSUES.md D61's own first
-// paragraph names the hazard as an OUT-OF-TURN or OMITTED call (begin_
-// step/end_step), not a setup()-time configuration mismatch.
+// way independently; the hazard being guarded against is an OUT-OF-TURN or
+// OMITTED call (begin_step/end_step), not a setup()-time configuration
+// mismatch.
 //
 // Of the remaining four:
 //   - initialize/begin_step/end_step are marked COLLECTIVE in entries.
@@ -2468,18 +2389,15 @@ fuse_status impl_request_restart_point(fuse_ctx* ctx, const fuse_null*,
 //     "COLLECTIVE over the component's processes").
 //   - run's own doc string is not marked with that literal word, but
 //     states it "still executes this call's own share of the period's
-//     collectives" even when refusing nothing itself, and KNOWN_ISSUES.md
-//     D61 names it explicitly alongside the other four -- a rank that
-//     refuses run() locally (E-ABI-RUN-EXTERNAL) while its peers proceed
+//     collectives" even when refusing nothing itself -- a rank
+//     that refuses run() locally (E-ABI-RUN-EXTERNAL) while its peers proceed
 //     into the period's own Transport/Epoch/Constrain collectives hangs
 //     them exactly as an unreconciled begin_step()/end_step() refusal
 //     does.
-//   - The other eleven entries (now including setup) are NOT reconciled
-//     here, for the reasons round 2's own version of this comment already
-//     gave: none is marked COLLECTIVE in entries.def; each is a purely
+//   - The other eleven entries (including setup) are NOT reconciled
+//     here: none is marked COLLECTIVE in entries.def; each is a purely
 //     local operation on this rank's own handle, copy of the (identically
-//     loaded) graph, or storage; register_field was checked explicitly
-//     (per the original round's own task) and found not collective
+//     loaded) graph, or storage; register_field is not collective
 //     either; there is no "finalize" entry at all (destroy() is the
 //     nearest analogue and is, per entries.def, a per-handle operation).
 //
@@ -2512,10 +2430,8 @@ fuse_status impl_request_restart_point(fuse_ctx* ctx, const fuse_null*,
 // E-ABI-HANDLE before any body runs) has no communicator this function
 // can read at all -- there is no fuse_ctx to ask. That specific
 // misuse -- confusing which handle to call, not a refusal this entry's
-// own body decided -- is not rescued here; KNOWN_ISSUES.md D61's own
-// entry records this as the residual scope, consistent with D61's "the
-// ABI boundary... said nothing about it" being about THIS call's own
-// refusal, not about a caller passing the wrong object entirely. A
+// own body decided -- is not rescued here; the residual scope is THIS
+// call's own refusal, not a caller passing the wrong object entirely. A
 // process whose own base communicator carries a real multi-rank run but
 // never names `my_component` at setup() time also gets no reconciliation
 // (`collective_comm_f` stays 0, with no component to split by) -- a
@@ -2524,8 +2440,7 @@ fuse_status impl_request_restart_point(fuse_ctx* ctx, const fuse_null*,
 // arise for an InProcess/Plugin-only graph handed a real communicator
 // directly, without going through fuse::transport::connect() at all.
 //
-// COST, ACCEPTED AS PERMANENT (the lead's own decision, round 2, restated
-// here since it still applies): begin_step()/end_step() are step-boundary
+// COST, ACCEPTED AS PERMANENT: begin_step()/end_step() are step-boundary
 // calls (abi-design.md's own "costs" section: "every entry point is a
 // setup or step-boundary call, never per-degree-of-freedom"), so one
 // small MPI_Allreduce added to each is bounded, not asymptotic -- but it
@@ -2605,8 +2520,7 @@ fuse_status reconcile_collective_status(fuse_ctx& c, fuse_status local_status,
 #endif
 }
 
-// KNOWN_ISSUES.md D15 ("Registry agreement" track, owner decision
-// 2026-10-22, option (b)). Reconciles the plugin-mount verdict
+// Reconciles the plugin-mount verdict
 // impl_initialize_local()'s own component-wiring loop (Plugin branch,
 // above) computes, across EVERY rank of the BASE communicator
 // (c.communicator) -- NOT the per-component collective_comm_f
@@ -2614,30 +2528,28 @@ fuse_status reconcile_collective_status(fuse_ctx& c, fuse_status local_status,
 // never forms for a graph whose my_component is unset (Plugin/InProcess
 // launch never resolves my_component to anything Mpmd/Connect --
 // entries.def's own my_component comment), which is exactly the shape a
-// Plugin-only, direct-communicator graph takes -- the gap KNOWN_ISSUES.md
-// D15's own "Open after the mount-everywhere fix" paragraph names and
-// this function closes.
+// Plugin-only, direct-communicator graph takes.
 //
-// CANNOT DEADLOCK THE WAY D61's ROUND-2 FIX DID (abi-design.md's own "How
-// the participant ABI reconciles a collective refusal", "LESSON (round
-// 3, the hard way)"): that fix reconciled begin_step()/end_step()/run()
-// -- PER-STEP entries a multi-component graph's different components
-// call a DIFFERENT NUMBER OF TIMES -- over the base communicator, so two
-// ranks hosting different components never paired the same Allreduce
+// This CANNOT DEADLOCK the way a base-communicator reconciliation of
+// begin_step()/end_step()/run() would (abi-design.md's own "How
+// the participant ABI reconciles a collective refusal", "LESSON"):
+// those are PER-STEP entries a multi-component graph's different
+// components call a DIFFERENT NUMBER OF TIMES, so two
+// ranks hosting different components never pair the same Allreduce
 // call. fuse_initialize() has no such cadence to mismatch: it is called
 // EXACTLY ONCE, synchronously, by every rank of the base communicator,
 // before any step boundary exists at all -- there is no "which call
 // number is this" question for two ranks to disagree about. The other
-// half of what made D61's round 2 unsafe -- touching a FAKED
+// hazard -- touching a FAKED
 // (fuse::abi_test::force_communicator_set()) communicator handle with a
-// real MPI_Comm_rank/MPI_Allreduce under FUSE_HAVE_MPI, which aborted
-// three host rows -- is avoided the same way the pre-existing rank/
+// real MPI_Comm_rank/MPI_Allreduce under FUSE_HAVE_MPI, which aborts --
+// is avoided the same way the pre-existing rank/
 // num_ranks derivation at the top of impl_initialize_local() already
 // relies on: every test that fakes a communicator with no real MPI
 // behind it is, by established convention, excluded from MPI-enabled
 // test binaries (test/abi/conformance_test.cpp's own
-// NonHostingRankNeverDlopensThePluginOrCallsAnyOfItsEntries, "Registry
-// hosting" track, is the precedent).
+// NonHostingRankNeverDlopensThePluginOrCallsAnyOfItsEntries is the
+// precedent).
 //
 // Reuses fuse::abi_detail::reconcile_local_statuses (include/fuse/abi/
 // collective_reconcile.hpp) for the MIN-with-origin-rank decision -- the
@@ -2655,9 +2567,8 @@ fuse_status reconcile_collective_status(fuse_ctx& c, fuse_status local_status,
 // of force_fake_collective_peers()). test_plugin_agreement_reconcile_
 // calls (context.hpp) is incremented on EVERY call, real or faked,
 // before any early return below -- the white-box signal a tier-0 test
-// uses to confirm this function was actually reached (impl_initialize_
-// local()'s own restructuring did its job) versus merely that the
-// outcome would have looked the same either way.
+// uses to confirm this function was actually reached versus merely that
+// the outcome would have looked the same either way.
 fuse_status reconcile_plugin_agreement(fuse_ctx& c, int rank, fuse_status local_status,
                                        const char* fn) noexcept {
   ++c.test_plugin_agreement_reconcile_calls;
@@ -2684,8 +2595,7 @@ fuse_status reconcile_plugin_agreement(fuse_ctx& c, int rank, fuse_status local_
                    " refused the plugin-mount agreement (status " +
                    std::to_string(agreed.status) +
                    "); reconciled across every rank of the base communicator because the "
-                   "graph declares a Plugin component (docs/dev/abi-design.md, "
-                   "KNOWN_ISSUES.md D15)");
+                   "graph declares a Plugin component (docs/dev/abi-design.md)");
   }
 
 #if FUSE_HAVE_MPI
@@ -2707,8 +2617,7 @@ fuse_status reconcile_plugin_agreement(fuse_ctx& c, int rank, fuse_status local_
              std::string(fn) + ": rank " + std::to_string(out.rank) +
                  " refused the plugin-mount agreement (status " + std::to_string(out.status) +
                  "); reconciled across every rank of the base communicator because the "
-                 "graph declares a Plugin component (docs/dev/abi-design.md, "
-                 "KNOWN_ISSUES.md D15)");
+                 "graph declares a Plugin component (docs/dev/abi-design.md)");
 #else
   return local_status;
 #endif

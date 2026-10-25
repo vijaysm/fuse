@@ -47,10 +47,10 @@ struct SolverReport {
 /// rather than a thrown exception -- the same execution-boundary contract
 /// `fuse::Result`'s own header comment describes.
 ///
-/// UNIFORM-FAILURE PRECONDITION (Review 2026-10-11 NL-6). `pcg`/`gmres`
+/// UNIFORM-FAILURE PRECONDITION. `pcg`/`gmres`
 /// return on the FIRST `!apply(...).ok()` with no cross-rank
 /// reconciliation of that decision -- unlike `DistSparseMatrix::apply`'s
-/// own refusals (I2-audited: every one is either a rank-identical
+/// own refusals (every one is either a rank-identical
 /// function of locally held data, agreed via `ranks_not_ok` before any
 /// collective it guards, or has no later collective in the call), an
 /// implementation of this concept whose `apply` can refuse on SOME ranks

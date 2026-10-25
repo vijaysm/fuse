@@ -1,4 +1,4 @@
-// Demo B consumer driver (S6 phase 3, "LowFive" track). See
+// Demo B consumer driver. See
 // producer_main.cpp's own comment -- the same reasoning applies here.
 //
 // Run by the ctest row example.demo_b; see producer_main.cpp.

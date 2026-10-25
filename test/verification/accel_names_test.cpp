@@ -4,8 +4,8 @@
 // build-evidence/mutations/example-accel-names.toml:
 //   1. every name maps to exactly the kind it names;
 //   2. a name outside the table is REFUSED (std::nullopt), never mapped to a
-//      default -- before 2026-10-20 two of the three example programs mapped
-//      an unrecognised name to None or to Aitken without a word;
+//      default (silently mapping an unrecognised name to None or to Aitken
+//      is the failure being excluded);
 //   3. the printed list `kAccelNames` and the table agree, so a usage line
 //      built from the list never offers a name the table refuses nor hides
 //      one it accepts.

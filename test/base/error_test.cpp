@@ -124,7 +124,7 @@ TEST(Error, BacktraceCaptureCanBeDisabledByPolicy) {
   }
 }
 
-// REVIEW.md R-16: error_policy() used to return a reference into
+// error_policy() used to return a reference into
 // policy_storage() with no lock, while set_error_policy() writes that same
 // storage under policy_mutex() -- a data race on ErrorPolicy's two
 // std::string members, invisible to any functional test and only reliably
@@ -332,7 +332,7 @@ TEST(ErrorDeath, TerminateHandlerReportsANonFuseException) {
       "uncaught exception: from somebody else(.|\\n)*backtrace:");
 }
 
-// REVIEW.md R-35: g_previous (the terminate handler installed before
+// g_previous (the terminate handler installed before
 // fuse::install_terminate_handler() ran) used to be captured and never
 // used -- an embedding application's own handler (flushing output,
 // MPI_Abort, ...) was silently discarded. install_terminate_handler() is

@@ -13,7 +13,7 @@
 /// Spec Section 4.4 / Section 7.3: the temporal half of a space-time representation. These
 /// are the raw basis kernels -- fitting, evaluating and integrating a
 /// polynomial or a cubic spline in time -- factored out of `Waveform` so the
-/// space-time projection operator (Task 6.3) can reuse them without owning a
+/// space-time projection operator can reuse them without owning a
 /// sample buffer.
 ///
 /// Tier C per spec Section 3.1: header-only. Everything here is `inline`; there is no
@@ -116,12 +116,11 @@ struct GaussRule {
 ///
 /// The normal-equations matrix and its elimination depend only on `t`,
 /// `degree` and `t0` -- never on `f` -- yet `Waveform::evaluate_dg`/
-/// `integrate_dg` called this once per field element with the same `t`,
-/// `degree`, `t0` and a different `f` each time (REVIEW.md R-48), repeating
-/// the O(n*m^2 + m^3) build-and-eliminate for every element. `fit_polynomial`
-/// itself is unchanged -- same signature, same exceptions, same answer -- and
-/// is now the one-shot convenience wrapper around the two halves below, which
-/// a multi-element caller uses directly to pay the shared cost once.
+/// `integrate_dg` would otherwise call this once per field element with the
+/// same `t`, `degree`, `t0` and a different `f` each time, repeating the
+/// O(n*m^2 + m^3) build-and-eliminate for every element. `fit_polynomial`
+/// is the one-shot convenience wrapper around the two halves below, which a
+/// multi-element caller uses directly to pay the shared cost once.
 [[nodiscard]] inline std::vector<double> fit_polynomial(
     const std::vector<double>& t, const std::vector<double>& f, int degree,
     double t0);
@@ -229,7 +228,7 @@ struct PolynomialFitPlan {
 }
 
 /// The `f`-only half of `fit_polynomial`, writing into caller-supplied
-/// buffers instead of allocating (REVIEW.md R-48, pass 2): `Waveform`'s
+/// buffers instead of allocating: `Waveform`'s
 /// per-element loops (`evaluate_dg`/`integrate_dg`) call this once per
 /// element with `out`/`rhs_scratch` hoisted outside the loop, mirroring
 /// `linalg::least_squares_into`'s scratch convention, so a steady-state
@@ -358,11 +357,10 @@ inline void solve_polynomial_fit_into(const PolynomialFitPlan& plan,
 ///
 /// The tridiagonal system's matrix -- `lo`/`di`/`up` below -- depends only on
 /// `t`; only the right-hand side `r` depends on `f`. `Waveform::evaluate_spline`/
-/// `integrate_spline` called this once per field element with the same `t`
-/// and a different `f` each time (REVIEW.md R-48), rebuilding and
-/// re-factoring the same tridiagonal matrix every time. `cubic_spline_moments`
-/// itself is unchanged; it is now the convenience wrapper around the two
-/// halves below, which a multi-element caller uses directly to factor once.
+/// `integrate_spline` would otherwise call this once per field element with
+/// the same `t` and a different `f` each time, rebuilding and re-factoring
+/// the same tridiagonal matrix every time. `cubic_spline_moments` is the
+/// convenience wrapper around the two halves below, which a multi-element caller uses directly to factor once.
 [[nodiscard]] inline std::vector<double> cubic_spline_moments(
     const std::vector<double>& t, const std::vector<double>& f);
 
@@ -415,7 +413,7 @@ struct SplineMomentPlan {
 }
 
 /// The `f`-only half of `cubic_spline_moments`, writing into caller-supplied
-/// buffers instead of allocating (REVIEW.md R-48, pass 2): `Waveform`'s
+/// buffers instead of allocating: `Waveform`'s
 /// per-element loops (`evaluate_spline`/`integrate_spline`) call this once
 /// per element with `out`/`r_scratch` hoisted outside the loop, mirroring
 /// `solve_polynomial_fit_into` above. `out` is resized to `plan.n` and

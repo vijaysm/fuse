@@ -1,5 +1,5 @@
-// Moving-least-squares remap weights (`fuse/backend/mls_weights.hpp`): the
-// "Point clouds" track. Covers option parsing, the mesh entity set/discretization
+// Moving-least-squares remap weights (`fuse/backend/mls_weights.hpp`) for
+// point clouds. Covers option parsing, the mesh entity set/discretization
 // resolution `build_mls_weights` shares no code with `intx_weights.cpp`'s
 // own (a deliberate, separate, smaller copy -- see the header comment),
 // exact reproduction of the declared polynomial degree in 1D/2D/3D and on
@@ -865,7 +865,7 @@ TEST(MlsWeights, MatchesArborXsOwnInterpolateOnTheSameCloud3D) {
 }
 
 // ===========================================================================
-// Device-resident-arcs Phase 2 (KNOWN_ISSUES D52): build_mls_weights's own
+// Device-resident arcs: build_mls_weights's own
 // dispatch to fuse::device::solve_mls_on_space, read from the SAME
 // FUSE_EXECUTION_SPACE convention RunnerConfig::resolved_execution_space()
 // and fuse::search::resolve_execution_space() both use
@@ -954,10 +954,10 @@ TEST(MlsWeightsDevice, DeviceMatchesHostStructureAndValuesWithinTolerance) {
 }
 
 TEST(MlsRefusalsDevice, AllCoincidentNeighboursIsRankDeficientUnderDeviceToo) {
-  // Exactly KNOWN_ISSUES's own AllCoincidentNeighboursIsRankDeficient
+  // Exactly the AllCoincidentNeighboursIsRankDeficient
   // fixture (Host-mode test above): 8 EXACT duplicates of one point, so
   // the moment matrix is singular to an exact-zero pivot -- the one case
-  // this track's two different eliminations (Host's column-pivoted QR,
+  // the two different eliminations (Host's column-pivoted QR,
   // Device's partial-pivot Gaussian elimination) are both certain to
   // agree on, since neither needs a relative tolerance to see a literal
   // zero. build_mls_weights's Device path confirms the device solve's

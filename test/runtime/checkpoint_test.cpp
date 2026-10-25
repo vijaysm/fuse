@@ -113,8 +113,8 @@ TEST(Checkpoint, DerivedSetIsStable) {
 }
 
 // ---------------------------------------------------------------------------
-// Beyond the brief. Everything below tests behaviour the brief specified in
-// prose but did not pin, plus the two hazards Tasks 3.4 and 7.1 handed over.
+// Additional checks. Everything below tests behaviour specified in prose
+// elsewhere but not otherwise pinned.
 // ---------------------------------------------------------------------------
 
 namespace {
@@ -124,7 +124,7 @@ namespace {
 ///
 /// `determinism` defaults to Bitwise so every existing two-argument call
 /// (`Stub("a", true)`) keeps describing exactly the component it described
-/// before KNOWN_ISSUES.md B3 replaced the bool with a bitmask.
+/// before capabilities() became a bitmask instead of a bool.
 class Stub final : public fuse::Component {
  public:
   Stub(std::string name, bool rollback,
@@ -182,7 +182,7 @@ TEST(Checkpoint, LoweringRecordsExactlyTheDerivedCouplerArcs) {
 
 // Not merely "non-empty": the carried value must be the relaxed one, produced
 // by the Relax node. A set that happened to be non-empty for another reason
-// would pass the brief's first test and still be wrong.
+// would pass the basic non-empty test and still be wrong.
 TEST(Checkpoint, TheCarriedValueIsTheRelaxOutput) {
   const CouplingGraph g = iterated_two_way(true);
   const auto lowered = lower(g);
@@ -273,7 +273,7 @@ TEST(Checkpoint, UnregisteredComponentIsRefusedRatherThanAssumedFine) {
 }
 
 // ---------------------------------------------------------------------------
-// KNOWN_ISSUES.md B3: verify_rollback_support() also checks the determinism
+// verify_rollback_support() also checks the determinism
 // bit capabilities() now carries -- the refusal src/model/multiscale.cpp's
 // review_surrogate_contract() predicts ("it is an error to use [a
 // nondeterministic component] inside an iteration region") but cannot itself

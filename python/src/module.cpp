@@ -7,10 +7,9 @@
 // fuse reports failure two ways, both of which must become a Python exception:
 //
 //   1. fuse::Result<T> -- a Failure{code, message} returned, never thrown. There is no closed
-//      enum behind the code string (unlike soma's 5-value SOMA_ERR_*), so per the owner's
-//      ruling (2026-10-12) every such failure becomes a BARE pfuse.FuseError carrying .code
-//      (the E-* string) and .message (the text); there is no hand triage into more
-//      subclasses. Binding code that calls something returning fuse::Result<T> and gets a
+//      enum behind the code string (unlike soma's 5-value SOMA_ERR_*), so every such failure becomes a BARE
+//      pfuse.FuseError carrying .code (the E-* string) and .message (the text);
+//      there is no hand triage into more subclasses. Binding code that calls something returning fuse::Result<T> and gets a
 //      Failure raises `raise_result_failure(f)` (below).
 //
 //   2. fuse::Error (FUSE_ASSERT/FUSE_THROW/FUSE_REFUSE) -- an exception thrown across the
@@ -172,8 +171,7 @@ PYBIND11_MODULE(_pfuse, m) {
     Kokkos::initialize(settings);
     // Explicitly finalize at process exit via std::atexit, RATHER than leaving Kokkos'
     // own global destructors to run uncontrolled after the Python interpreter has begun
-    // tearing down its own threading state: measured directly (see this track's own
-    // report) that omitting this produced a "mutex lock failed" abort message during
+    // tearing down its own threading state: measured directly that omitting this produced a "mutex lock failed" abort message during
     // interpreter shutdown even on an all-tests-pass run (harmless to the exit code, but
     // a real teardown-ordering defect this avoids rather than papers over).
     std::atexit([]() {

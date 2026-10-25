@@ -1,15 +1,13 @@
-// Review 2026-10-11 NL-1: `DiffusionSolver::factor(dt, diffusion,
-// extra_diagonal)` takes `diffusion` as a per-call argument, but all three
-// implementations (`DirectDiffusionSolver`, `SchurDiffusionSolver`,
-// `KrylovDiffusionSolver`, examples/brusselator/species_core.hpp) used to
-// key their factorization cache on `(dt, extra_diagonal)` alone. A call at
-// an unchanged `dt`/`extra_diagonal` but a different `diffusion` then
-// reused a stale factorization of the WRONG matrix -- silently wrong, not
-// refused. This is the defect class `c2c7162` ("Key StokesSolver's LU
-// cache on the pressure-gradient form as well as dt") already closed for
-// `fsi::StokesSolver`'s own LU cache (test/verification/
-// fsi_stokes_mms_test.cpp's `FsiStokesLuCache` suite); this file applies
-// the same regression shape to all three `DiffusionSolver` kinds: factor
+// `DiffusionSolver::factor(dt, diffusion, extra_diagonal)` takes
+// `diffusion` as a per-call argument, so all three implementations
+// (`DirectDiffusionSolver`, `SchurDiffusionSolver`, `KrylovDiffusionSolver`,
+// examples/brusselator/species_core.hpp) must key their factorization cache
+// on `diffusion` as well as `(dt, extra_diagonal)`: a call at an unchanged
+// `dt`/`extra_diagonal` but a different `diffusion` would otherwise reuse a
+// stale factorization of the WRONG matrix -- silently wrong, not refused.
+// The same cache-key regression shape applies to `fsi::StokesSolver`'s own
+// LU cache (test/verification/fsi_stokes_mms_test.cpp's `FsiStokesLuCache`
+// suite); this file applies it to all three `DiffusionSolver` kinds: factor
 // at `diffusion_a`, solve; factor again at the SAME dt/extra_diagonal but
 // `diffusion_b != diffusion_a`, solve; the second solve must differ from
 // the first and must match a solver built FRESH at `diffusion_b` (no

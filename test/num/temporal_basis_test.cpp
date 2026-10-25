@@ -251,7 +251,7 @@ TEST(TemporalBasis, SplineRejectsMalformedInput) {
 }
 
 // ---------------------------------------------------------------------------
-// REVIEW.md R-48: the prepare/solve split
+// The prepare/solve split
 // ---------------------------------------------------------------------------
 //
 // `fit_polynomial`/`cubic_spline_moments` are themselves unchanged (defined
@@ -307,7 +307,7 @@ TEST(TemporalBasis, PreparedSplineMomentsAgreeWithCubicSplineMomentsAcrossSevera
   }
 }
 
-// REVIEW.md R-48, pass 2: the allocation-free `_into` entry points must
+// The allocation-free `_into` entry points must
 // agree with the allocating convenience wrappers above, and reusing the same
 // `out`/scratch buffers across several calls -- exactly how `Waveform`'s
 // per-element loop uses them -- must not leak a stale value from a previous,
@@ -362,20 +362,18 @@ TEST(TemporalBasis, PrepareSplineMomentsThrowsExactlyAsCubicSplineMomentsOnTOnly
 }
 
 // ---------------------------------------------------------------------------
-// N-num-linalg-field-1 (pass 2): the split reordered which of two
-// simultaneous errors `fit_polynomial`/`cubic_spline_moments` report, because
-// `prepare_*` runs to completion -- including its own t-only checks -- before
-// `solve_*` ever sees `f`. These pin a NAMED, FROZEN expectation (the
-// pre-split order, extracted from `git show fd5bbc2` by the pass-2 review)
+// The split determines which of two simultaneous errors
+// `fit_polynomial`/`cubic_spline_moments` report, because `prepare_*` runs to
+// completion -- including its own t-only checks -- before `solve_*` ever
+// sees `f`. These pin a NAMED, FROZEN expectation (length first)
 // rather than comparing against `fit_polynomial`/`cubic_spline_moments`
-// themselves, since post-split those are the code under test, not an
-// independent oracle -- exactly the trap the finding describes.
+// themselves, since those are the code under test, not an independent
+// oracle.
 // ---------------------------------------------------------------------------
 
 TEST(TemporalBasis, FitPolynomialReportsTheLengthMismatchBeforeTheDegreeError) {
-  // f is the wrong length (needs 3) AND degree is negative: the pre-split
-  // function checked length before degree, so that is the error that must
-  // survive the split.
+  // f is the wrong length (needs 3) AND degree is negative: the function
+  // checks length before degree, so that is the error that must be reported.
   try {
     (void)fit_polynomial({0.0, 1.0, 2.0}, {1.0, 2.0}, -1, 0.0);
     FAIL() << "a simultaneous length-mismatch-and-negative-degree call was "
@@ -390,8 +388,8 @@ TEST(TemporalBasis, FitPolynomialReportsTheLengthMismatchBeforeTheDegreeError) {
 }
 
 TEST(TemporalBasis, CubicSplineMomentsReportsTheLengthMismatchBeforeTheMonotonicityError) {
-  // t is non-monotonic AND f is the wrong length (needs 4): the pre-split
-  // function checked length before monotonicity.
+  // t is non-monotonic AND f is the wrong length (needs 4): the function
+  // checks length before monotonicity.
   try {
     (void)cubic_spline_moments({0.0, 1.0, 0.5, 3.0}, {1.0, 2.0});
     FAIL() << "a simultaneous length-mismatch-and-non-monotonic call was "
@@ -407,9 +405,9 @@ TEST(TemporalBasis, CubicSplineMomentsReportsTheLengthMismatchBeforeTheMonotonic
 }
 
 TEST(TemporalBasis, FitPolynomialStillReportsNoSamplesAheadOfALengthMismatch) {
-  // t is empty (t.size()==0) AND f is not: the pre-split function checked
-  // "no samples" first, ahead of the length check added by this fix -- the
-  // wrapper's own no-samples check must stay ahead of its length check too.
+  // t is empty (t.size()==0) AND f is not: the function checks
+  // "no samples" first, ahead of the length check -- the wrapper's own
+  // no-samples check must stay ahead of its length check too.
   try {
     (void)fit_polynomial({}, {1.0, 2.0}, 1, 0.0);
     FAIL() << "an empty t with a non-empty f was accepted";

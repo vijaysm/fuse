@@ -1,5 +1,4 @@
-// S5.4's remaining acceptance item (plans/2026-09-15-fuse-plan.md): the
-// persisted-map round trip proven in transfer_map_io_test.cpp used SYNTHETIC
+// The persisted-map round trip proven in transfer_map_io_test.cpp uses SYNTHETIC
 // triplets, not a map the real builder produced. This file closes that gap
 // at tier 0 (no MPI): the weights come from fuse::build_supermesh_weights
 // (src/backend/supermesh.cpp), the lowest-order conservative builder, on two
@@ -67,7 +66,7 @@ namespace {
 
 /// `n` source cells on `[0, 1]`, never partitioned: every reader and writer
 /// in this file holds the WHOLE source, as a replicated source would -- the
-/// only shape KNOWN_ISSUES.md D8 records as reachable today, and the one
+/// only shape reachable today, and the one
 /// `localise()`'s own `E-MAP-COVERAGE` check demands (a kept row's source
 /// entity must be held by the rank applying it).
 ::GeometricLineMesh full_source(std::size_t n) {
@@ -227,7 +226,7 @@ TEST(TransferMapRealBuilderReload, WriteAtTwoRanksReadAtThreeReproducesTheDirect
   EXPECT_NEAR(total_reload, total_src, 1e-13 * std::abs(total_src))
       << "the reloaded matrix must conserve mass";
 
-  // The acceptance criterion's own number (plan S5.4): the derived bound
+  // The acceptance criterion's own number: the derived bound
   // must be tighter than this, not merely asserted at it. If it were not,
   // the derivation above would be missing a term, not an excuse to use
   // 1e-13 as the assertion itself.

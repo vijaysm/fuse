@@ -1,7 +1,7 @@
 #pragma once
 
 /// Shared grid, mesh-index bookkeeping, and periodic-diffusion/backward-Euler
-/// pieces for the multirate Brusselator example (Time windows track), ported
+/// pieces for the multirate Brusselator example, ported
 /// from the independently-written multirate 2D Brusselator ("the Toy":
 /// /Users/mahadevan/Code/AI/Toy, its NUMERICS.md/README.md are the model and
 /// algorithm reference).
@@ -27,7 +27,7 @@
 /// `MeshView::centroid`, so it is correct even if a future native-mesh
 /// change reorders cells.
 ///
-/// DECOMPOSITION (Grid track). `NativeGrid::make` loads `backend` at
+/// DECOMPOSITION. `NativeGrid::make` loads `backend` at
 /// `backend.rank()`/`backend.num_ranks()`: `fuse::native::NativeMeshBackend`
 /// slabs a generated quad grid by ROWS (`fuse::native::rank_slice(ny, rank,
 /// num_ranks)` over the row index), so the view this rank sees is already
@@ -44,7 +44,7 @@
 /// every existing whole-grid caller (`UCore`, `VDiffusionCore`,
 /// `VParticipant`) is unaffected; see docs/user/brusselator.md's grid-
 /// decomposition section for the full contract and what remains undone (the
-/// decomposed diffusion SOLVE is a different track's work, not this one's).
+/// decomposed diffusion SOLVE is not done here).
 ///
 /// FIELD STORAGE. Every field this example solves for is kept as a plain
 /// `Eigen::VectorXd` in CANONICAL order (`index(i,j) = j*nx+i`, matching
@@ -91,22 +91,14 @@ namespace brusselator {
 using Vector = Eigen::VectorXd;
 using Sparse = Eigen::SparseMatrix<double>;
 
-/// Grid track -> Solvers/Containers tracks substitution (not a redesign):
-/// this header used to carry its own `GridGhostPattern`/`GridHaloExchanger`/
-/// `GridReducer`/`SelfHaloExchanger`/`SerialReducer`, hand-written to the
-/// EXACT shape `fuse::linalg`'s own `GhostPattern`/`GhostExchanger`/
-/// `Reducer`/`make_serial_exchanger`/`make_serial_reducer`
-/// (include/fuse/linalg/comm.hpp) were always going to land as -- that
-/// substitution has now landed: every name below is the `fuse::linalg`
-/// type itself, aliased under its old name so every existing caller in
-/// this directory (and the grid/participants tests this track owns)
-/// compiles unchanged. `NativeGrid`'s own public shape (`ghost_pattern()`,
-/// `SlabField::update_ghosts`/`owned_mean`) is therefore unaffected: the
-/// method signatures already matched (`comm.hpp`'s own header comment on
-/// `GhostExchanger::update` says so), so this is a type substitution, not
-/// an interface change. `make_serial_exchanger()`/`make_serial_reducer()`
-/// replace the one-rank `SelfHaloExchanger`/`SerialReducer` this header
-/// used to define itself; an MPI pair comes from
+/// The grid ghost/halo/reduction types are the `fuse::linalg` types
+/// themselves (`GhostPattern`/`GhostExchanger`/`Reducer`,
+/// include/fuse/linalg/comm.hpp), aliased under the `Grid*` names used
+/// throughout this directory. `NativeGrid`'s own public shape
+/// (`ghost_pattern()`, `SlabField::update_ghosts`/`owned_mean`) follows
+/// `comm.hpp`'s own header comment on `GhostExchanger::update`.
+/// `make_serial_exchanger()`/`make_serial_reducer()` give the one-rank
+/// case; an MPI pair comes from
 /// `fuse::linalg::make_mpi_exchanger`/`make_mpi_reducer` in the
 /// participants (examples/brusselator/participants), never from a type
 /// defined here.
@@ -153,7 +145,7 @@ class NativeGrid {
 
   [[nodiscard]] fuse::MeshId mesh_id() const noexcept { return mesh_id_; }
 
-  /// --- decomposition over this component's own ranks (Grid track) -------
+  /// --- decomposition over this component's own ranks -----------------
   ///
   /// `backend.rank()`/`backend.num_ranks()` at `make()` time, kept so a
   /// caller can tell whether it is looking at a slab or the whole grid
@@ -208,8 +200,8 @@ class NativeGrid {
   /// `row_ownership_by_grid_row()` below -- the two are NOT
   /// interchangeable despite sharing a type, a genuine convention
   /// difference between `DistSparseMatrix` and `SchurSlabSolver`, not a
-  /// copy-paste duplication; found and fixed this session after
-  /// `SchurSlabSolver::factor`'s own `FUSE_ASSERT` caught the mismatch
+  /// copy-paste duplication.
+  /// `SchurSlabSolver::factor`'s own `FUSE_ASSERT` catches the mismatch
   /// (`row_ownership.row_lo[...]` disagreeing with the `j_lo` argument by
   /// exactly a factor of `nx`).
   [[nodiscard]] fuse::linalg::RowOwnership row_ownership() const {
@@ -282,7 +274,7 @@ class NativeGrid {
   /// `j_lo() == 0`.
   [[nodiscard]] int native_index_of(int c) const noexcept { return native_of_canonical_[static_cast<std::size_t>(c)]; }
 
-  /// Restart track (docs/dev/restart.md Section 2.2-2.3, Slice 2): the
+  /// (docs/dev/restart.md Section 2.2-2.3): the
   /// `fuse::MeshView::global_id(2, i)` of the native cell at LOCAL
   /// canonical index `c = (j - j_lo())*nx+i`, i.e. the SAME `cell_gid =
   /// ix + iy*nx` (`src/backend/native_generators.cpp`'s own
@@ -327,7 +319,7 @@ class NativeGrid {
   int j_lo_ = 0, j_hi_ = 0;  ///< this rank's GLOBAL row band, [j_lo_, j_hi_)
   fuse::MeshId mesh_id_{};
   std::vector<int> native_of_canonical_;  ///< indexed by LOCAL canonical index (j-j_lo_)*nx+i
-  /// Restart track: indexed the SAME way as `native_of_canonical_`, the
+  /// Indexed the SAME way as `native_of_canonical_`, the
   /// native mesh's own `MeshView::global_id(2, native_of_canonical_[c])`
   /// for LOCAL canonical index `c`. See `global_id()`'s own comment.
   std::vector<std::int64_t> global_id_of_canonical_;
@@ -543,10 +535,9 @@ inline void reaction_kokkos(const Vector& u, const Vector& v_on_u_grid, Vector* 
 /// An owned-plus-ghost field over one rank's row band: `owned_size()`
 /// entries this rank is responsible for, then `ghost_size()` copies of
 /// neighbouring ranks' boundary rows -- the same contiguous "owned block
-/// then ghosts" layout the Containers track's planned
-/// `fuse::linalg::DistVector` uses (`data()[0..owned_size())` owned,
-/// `[owned_size()..size())` ghosts), so adopting that type later moves
-/// this storage, not this class's callers.
+/// then ghosts" layout `fuse::linalg::DistVector` uses
+/// (`data()[0..owned_size())` owned, `[owned_size()..size())` ghosts), so
+/// adopting that type later moves this storage, not this class's callers.
 class SlabField {
  public:
   SlabField(std::size_t owned_n, std::size_t ghost_n)

@@ -1,13 +1,13 @@
 #pragma once
 
-/// Rank-to-device binding (docs/dev/device-resident-arcs.md Phase 3): which
+/// Rank-to-device binding (docs/dev/device-resident-arcs.md): which
 /// Kokkos device id a process should bind to, decided BEFORE
 /// Kokkos::initialize()/Kokkos::ScopeGuard construction -- Kokkos has no
 /// API to rebind a device after that point.
 ///
 /// Header-only and framework-free on purpose: `resolve_device_id()` below
 /// is pure arithmetic, so a test can assert the binding rule with a mocked
-/// device count as well as the real one. higgs (this track's host) has
+/// device count as well as the real one. a single-GPU host (higgs) has
 /// exactly one GPU, so nothing running there can exercise
 /// `local_rank % device_count > 1` against a real device backend; the
 /// mock is how that branch gets covered at all.

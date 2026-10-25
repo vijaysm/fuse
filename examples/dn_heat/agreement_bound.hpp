@@ -1,48 +1,46 @@
 #pragma once
 
-// AgreementBounds track, round 4 (the owner's own correction to round 3):
-// the SHARP native-vs-PETSc agreement bound for dn_heat's affine graph,
+// The SHARP native-vs-PETSc agreement bound for dn_heat's affine graph,
 // factored out of examples/dn_heat/main.cpp's `--newton-petsc` check so a
 // tier-0 unit test (test/verification/dn_heat_agreement_bound_test.cpp)
 // can hand-build numbers and prove the derivation, rather than asserting
-// it only end to end through a PETSc run this sandbox cannot execute
-// (KNOWN_ISSUES.md D32).
+// it only end to end through a PETSc run this sandbox cannot execute.
 //
-// WHAT WAS WRONG WITH ROUND 2's BOUND, by the owner's own diagnosis.
-// `||J^-1|| (rtol_n ||F_0||_n + rtol_p ||F_0||_p)` bounds the disagreement
-// using the SOLVERS' OWN STOPPING CRITERION (`rtol * ||F_0||`), not what
-// either solver's own TERMINAL residual actually measures -- and Newton's
-// own quadratic convergence routinely overshoots that criterion by many
-// orders of magnitude (measured: a terminal ||F|| of 4.159e-11 against a
-// stopping level near `rtol * ||F_0|| ~ 1e-8 * 56.8 ~ 5.7e-7`). Scaling by
-// the stopping criterion instead of the actual terminal residual made the
-// bound many orders of magnitude looser than the quantity it was meant to
-// certify. The separate `3.9e-8 * ||native solution||` term was ALSO the
-// wrong kind of quantity for this purpose: it is docs/dev/newton-krylov.md
-// Section 10.3's measured first-Newton-step residual difference between the
-// native and PETSc GMRES implementations on SYNTHETIC quadratic/atan unit
-// problems -- a measurement about how the two Krylov solvers' own internal
-// arithmetic differs ONE STEP IN, not a bound on the difference between
-// two CONVERGED Newton solutions of dn_heat's own problem.
+// WHY NOT THE STOPPING CRITERION. A bound of the form
+// `||J^-1|| (rtol_n ||F_0||_n + rtol_p ||F_0||_p)` scales by the SOLVERS'
+// OWN STOPPING CRITERION (`rtol * ||F_0||`), not by what either solver's
+// own TERMINAL residual actually measures -- and Newton's own quadratic
+// convergence routinely overshoots that criterion by many orders of
+// magnitude (measured: a terminal ||F|| of 4.159e-11 against a stopping
+// level near `rtol * ||F_0|| ~ 1e-8 * 56.8 ~ 5.7e-7`). Scaling by the
+// stopping criterion instead of the actual terminal residual makes the
+// bound many orders of magnitude looser than the quantity it is meant to
+// certify. A separate `3.9e-8 * ||native solution||` term would ALSO be
+// the wrong kind of quantity for this purpose: it is
+// docs/dev/newton-krylov.md Section 10.3's measured first-Newton-step
+// residual difference between the native and PETSc GMRES implementations
+// on SYNTHETIC quadratic/atan unit problems -- a measurement about how the
+// two Krylov solvers' own internal arithmetic differs ONE STEP IN, not a
+// bound on the difference between two CONVERGED Newton solutions of
+// dn_heat's own problem.
 //
-// WHAT WAS WRONG WITH ROUND 3's BOUND, by the owner's own reading of
-// `main.cpp`. Round 3's identity (below, still exact for ONE period)
-// used only `Outcome::last_residuals.back()`, the LAST of `kPeriods`
-// (=20) periods' own terminal residual -- but `x - x* = J^-1 F(x)` being
-// exact for affine `F` requires comparing the SAME map `F`, which only
-// holds cleanly when both solvers start period `k` from an IDENTICAL
-// `x`. That is true of period 1 (both substrates start from the
-// IDENTICAL initial state), but from period 2 on, each period's own
-// Newton solve starts from whatever the PREVIOUS period committed --
+// WHY ONE PERIOD IS NOT ENOUGH. The single-period identity below (exact for
+// ONE period) used alone with `Outcome::last_residuals.back()`, the LAST of
+// `kPeriods` (=20) periods' own terminal residual, would be incomplete:
+// `x - x* = J^-1 F(x)` being exact for affine `F` requires comparing the
+// SAME map `F`, which only holds cleanly when both solvers start period `k`
+// from an IDENTICAL `x`. That is true of period 1 (both substrates start
+// from the IDENTICAL initial state), but from period 2 on, each period's
+// own Newton solve starts from whatever the PREVIOUS period committed --
 // and native and PETSc committed slightly different values, by exactly
 // the previous period's own disagreement. A bound built from period 20
-// alone said nothing about whatever periods 1..19 may have contributed
+// alone says nothing about whatever periods 1..19 may have contributed
 // on top of that. The "PER-PERIOD RECURSION" section below derives the
-// corrected bound; it turns out, once derived from the actual commit
-// formulas, that it NEEDS every period's own terminal residual, not an
-// assumption that the carried-forward disagreement cannot grow -- see
-// that section for why the station's own contraction factor `r_i` does
-// NOT, by itself, bound how the carried disagreement amplifies.
+// bound actually asserted; once derived from the actual commit formulas,
+// it NEEDS every period's own terminal residual, not an assumption that
+// the carried-forward disagreement cannot grow -- see that section for why
+// the station's own contraction factor `r_i` does NOT, by itself, bound
+// how the carried disagreement amplifies.
 //
 // THE SHARP BOUND (exact for ONE period, given identical inputs).
 // `fixed_point_residual_test.cpp`'s own header comment derives
@@ -91,8 +89,7 @@
 // period whose own committed Newton solve produced `u_final`
 // (`run_region_newton()`'s own verification sweep lands exactly there).
 // It remains the right quantity for `legacy_agreement_bound()` below
-// (unchanged from round 2/3) and for round 3's own single-period
-// identity above, but the `--newton-petsc` check compares `u_final`
+// and for the single-period identity above, but the `--newton-petsc` check compares `u_final`
 // AFTER the full `kPeriods`-period run, so the ASSERTED bound needs
 // every period's own terminal residual, not the last one alone --
 // `Outcome::per_period_final_residual` (`main.cpp`, populated by
@@ -100,7 +97,7 @@
 // for all of them, since `iteration_stats()` only ever describes "the
 // most recent period").
 //
-// PER-PERIOD RECURSION (round 4). Let `e_k` be the max-norm disagreement
+// PER-PERIOD RECURSION. Let `e_k` be the max-norm disagreement
 // between the two substrates' own committed states after period `k`,
 // and let `A` be the map carrying period `k-1`'s own committed state
 // into period `k`'s own Newton STARTING point (its initial iterate).
@@ -111,8 +108,7 @@
 // periods: whatever period `k-1` last committed into these registered
 // arrays is bit-for-bit what period `k`'s own Newton iteration starts
 // from. The carry-over `A` is therefore the IDENTITY, `||A||_inf = 1`
-// exactly -- which already satisfies fix (A)'s own `||A||_inf <= 1`
-// requirement, so the recursion
+// exactly -- which satisfies `||A||_inf <= 1`, so the recursion
 //     e_k <= ||A||_inf e_{k-1} + ||J^-1||_inf (F_n,k + F_p,k)
 // telescopes (`e_0 = 0`: both substrates start from the IDENTICAL
 // initial state) to
@@ -165,7 +161,7 @@
 // observed disagreement sits near this ~1e-13 K level rather than near
 // the sharp bound's own prediction, that is the round-off floor showing
 // up empirically, to be reported and derived further, never tuned to.
-// The round-4 bound sums every period's own terms rather than using
+// The asserted bound sums every period's own terms rather than using
 // only one period's, so it is never SMALLER than the single-period
 // figure used in the ~909x comparison above -- the margin between this
 // floor and the asserted bound only widens once summed over `kPeriods`
@@ -186,7 +182,7 @@ inline constexpr double kMinStationRatio = 0.50;
 /// `kMinStationRatio`.
 inline constexpr double kJacobianInverseInfNorm = 2.0 / (1.0 + kMinStationRatio);
 
-/// The SHARP agreement bound (round 4: this header's own "PER-PERIOD
+/// The SHARP agreement bound (this header's own "PER-PERIOD
 /// RECURSION" section above). `final_residuals_native`/`_petsc` are
 /// each solver's own TERMINAL residual FOR EVERY PERIOD
 /// (`Outcome::per_period_final_residual`, in the 2-norm,
@@ -212,24 +208,23 @@ inline constexpr double kJacobianInverseInfNorm = 2.0 / (1.0 + kMinStationRatio)
 }
 
 // ---------------------------------------------------------------------
-// LEGACY (round 2's own formula) -- kept ONLY so `main.cpp`'s own check
+// LEGACY (stopping-criterion formula) -- kept ONLY so `main.cpp`'s own check
 // can print it, labelled `[agreement-bound legacy]`, alongside the sharp
-// bound above, informationally: the owner's own round-3 instruction asks
-// for both numbers so a host run can report observed/sharp AND
-// observed/legacy. NEVER asserted against -- round 2's own diagnosis
-// (this header's own "WHAT WAS WRONG" section) is why.
+// bound above, informationally: so a host run can report observed/sharp AND
+// observed/legacy. NEVER asserted against -- this header's own "WHY NOT THE
+// STOPPING CRITERION" section is why.
 // ---------------------------------------------------------------------
 
 /// The measured relative inter-solver (native-vs-PETSc GMRES/Arnoldi)
-/// difference, docs/dev/newton-krylov.md Section 10.3 -- round 2's own
-/// additional term, kept here only for the legacy formula below.
+/// difference, docs/dev/newton-krylov.md Section 10.3 -- the additional
+/// term of the legacy formula below, kept only for that formula.
 inline constexpr double kMeasuredInterSolverRelativeDifference = 3.9e-8;
 
-/// Round 2's own formula, verbatim: scales by each solver's own stopping
-/// criterion (`rtol * ||F_0||`) rather than its terminal residual, plus
-/// the inter-Krylov term this round's own derivation found to be the
-/// wrong kind of quantity for this purpose. See this header's own
-/// top-of-file "WHAT WAS WRONG" section.
+/// The legacy formula: scales by each solver's own stopping criterion
+/// (`rtol * ||F_0||`) rather than its terminal residual, plus an
+/// inter-Krylov term that is the wrong kind of quantity for this purpose.
+/// See this header's own top-of-file "WHY NOT THE STOPPING CRITERION"
+/// section.
 [[nodiscard]] inline double legacy_agreement_bound(
     double rtol_native, double initial_residual_norm_native, double rtol_petsc,
     double initial_residual_norm_petsc, double native_solution_norm) {

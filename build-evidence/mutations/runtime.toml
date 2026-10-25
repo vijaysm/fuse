@@ -45,7 +45,7 @@ new = """  if (false) {
   }"""
 target = "fuse_runtime_fixed_point_residual_test"
 test = "runtime.fixed_point_residual"
-result = "KILLED (2026-10-10): FixedPointResidual.EvaluatingFDoesNotPerturbTheRunnersOwnPicardIteration FAILED (probed.neumann->u()/probed.dirichlet->q() after the Runner's own run() diverged from a fresh baseline run's values -- e.g. u[0] 293.566... vs 293.582..., q[3] 52.617... vs -218.426...); the other 5 cases in the binary still PASSED. Restored; cmp against the pre-mutation file reported no difference."
+result = "KILLED: FixedPointResidual.EvaluatingFDoesNotPerturbTheRunnersOwnPicardIteration FAILED (probed.neumann->u()/probed.dirichlet->q() after the Runner's own run() diverged from a fresh baseline run's values -- e.g. u[0] 293.566... vs 293.582..., q[3] 52.617... vs -218.426...); the other 5 cases in the binary still PASSED. Restored; cmp against the pre-mutation file reported no difference."
 
 # S7.2's own rows: the Newton runtime wiring (run_region_newton(),
 # check_region_supports_newton(), and evaluate_region_residual()'s own
@@ -71,7 +71,7 @@ new = """      const Result<void> supported =
       (void)supported;"""
 target = "fuse_runtime_newton_region_test"
 test = "runtime.newton_region"
-result = "Re-proved 2026-10-11 from a clean export after S7.2 lifted the window-scoped refusal this row used to kill through (the user's build-all gate had reported it SURVIVED): under the mutation fuse_runtime_newton_region_test reports [ FAILED ] 1 test, NewtonRegion.AnExternallyDrivenMemberIsRefusedAtSetup (initialize() succeeds on a region with an externally driven member instead of refusing E-NEWTON-UNSUPPORTED-REGION), [ PASSED ] 15 tests; file restored and cmp-verified against the worktree."
+result = "Re-proved from a clean export after S7.2 lifted the window-scoped refusal this row used to kill through (the user's build-all gate had reported it SURVIVED): under the mutation fuse_runtime_newton_region_test reports [ FAILED ] 1 test, NewtonRegion.AnExternallyDrivenMemberIsRefusedAtSetup (initialize() succeeds on a region with an externally driven member instead of refusing E-NEWTON-UNSUPPORTED-REGION), [ PASSED ] 15 tests; file restored and cmp-verified against the worktree."
 
 [[mutation]]
 id = "newton-verification-sweep-commit-ignored"
@@ -82,7 +82,7 @@ old = """  const bool skip_restore = commit && adv_err.ok() && body_err.ok();"""
 new = """  const bool skip_restore = false && commit && adv_err.ok() && body_err.ok();"""
 target = "fuse_runtime_newton_region_test"
 test = "runtime.newton_region"
-result = "Hand-proved 2026-10-10: 11 cases, all pass before; after mutation, 1 fails (NewtonRegion.VerificationSweepDeliversTheConvergedStateToTheComponents -- e.g. neumann's u()[3] read back as 270.337 against the exact solution's 304.458, the PRE-Newton value components.add() left them at, not Newton's own converged iterate), 10 pass. File restored and cmp-verified byte-identical; rebuilt and reran to confirm all 11 pass again."
+result = "Hand-proved: 11 cases, all pass before; after mutation, 1 fails (NewtonRegion.VerificationSweepDeliversTheConvergedStateToTheComponents -- e.g. neumann's u()[3] read back as 270.337 against the exact solution's 304.458, the PRE-Newton value components.add() left them at, not Newton's own converged iterate), 10 pass. File restored and cmp-verified byte-identical; rebuilt and reran to confirm all 11 pass again."
 
 [[mutation]]
 id = "newton-nonconvergence-not-reported"
@@ -115,7 +115,7 @@ new = """  st.iterations = nr.iterations;
   if (false && !num::is_converged(nr.status)) {"""
 target = "fuse_runtime_newton_region_test"
 test = "runtime.newton_region"
-result = "REPAIRED and RE-PROVED 2026-10-12 (NewtonModel track's own GAP 1 widened this anchor's own reporting block with a gmres_iterations extraction, same semantic point unchanged -- the anchor went stale as a SIDE EFFECT of that change and is repaired here, by the same track, per the lead's own review). Control run (unmutated, current file): full unfiltered fuse_runtime_newton_region_test, 17/17 PASSED. Mutation applied, rebuilt, full unfiltered binary run: 16 PASSED / 1 FAILED -- NewtonRegion.ExhaustingTheNewtonIterationBudgetReportsNonConvergence (run_period() returns success instead of E-RT-NOCONVERGE for a region whose NewtonConfig::max_nonlinear_iterations is 0), the SAME test the original 2026-10-10 proof named. Restored; cmp against the pre-mutation file reported no difference (md5 c33cd2e0828fce1f0de1d44fc9a9826b both before and after -- this round's own baseline, see newton-model.toml's header for the hash's own history). Rebuilt and reran to confirm 17/17 returns."
+result = "REPAIRED and RE-PROVED (NewtonModel track's own GAP 1 widened this anchor's own reporting block with a gmres_iterations extraction, same semantic point unchanged -- the anchor went stale as a SIDE EFFECT of that change and is repaired here, by the same track, per the lead's own review). Control run (unmutated, current file): full unfiltered fuse_runtime_newton_region_test, 17/17 PASSED. Mutation applied, rebuilt, full unfiltered binary run: 16 PASSED / 1 FAILED -- NewtonRegion.ExhaustingTheNewtonIterationBudgetReportsNonConvergence (run_period() returns success instead of E-RT-NOCONVERGE for a region whose NewtonConfig::max_nonlinear_iterations is 0), the SAME test the original 2026-10-10 proof named. Restored; cmp against the pre-mutation file reported no difference (md5 c33cd2e0828fce1f0de1d44fc9a9826b both before and after -- the baseline, see newton-model.toml's header for the hash's own history). Rebuilt and reran to confirm 17/17 returns."
 
 # The same reporting block exists on the WINDOW-scoped Newton path
 # (run_region_newton_window, added by the WindowNewton track after the row
@@ -150,7 +150,7 @@ new = """  st.iterations = nr.iterations;
   if (false && !num::is_converged(nr.status)) {"""
 target = "fuse_runtime_window_fixed_point_residual_test"
 test = "runtime.window_fixed_point_residual"
-result = "REPAIRED and RE-PROVED 2026-10-12 (anchor widened for the SAME reason as the row above: NewtonModel track's own GAP 1 gmres_iterations extraction). No longer UNPROVEN: fuse_runtime_window_fixed_point_residual_test has since gained WindowFixedPointResidual.ExhaustingTheNewtonBudgetOnAWindowReportsNonConvergence and ...AWindowThatExhaustsTheNewtonBudgetIsCountedNotConverged (neither test existed, or at least neither was named, when this row was marked UNPROVEN on 2026-10-11 -- this repair is the first time anyone has actually run the mutation against the CURRENT binary). Control run (unmutated, current file): full unfiltered binary, 8/8 PASSED. Mutation applied, rebuilt, full unfiltered binary run: 6 PASSED / 2 FAILED -- both of the tests just named fail (the first on `r.ok()` being true instead of false; the second on `iteration_stats().front().converged` being true instead of false, and `stats().windows_not_converged` being 0 instead of 1). Restored; cmp against the pre-mutation file reported no difference (md5 c33cd2e0828fce1f0de1d44fc9a9826b both before and after). Rebuilt and reran to confirm 8/8 returns."
+result = "REPAIRED and RE-PROVED (anchor widened for the SAME reason as the row above: NewtonModel track's own GAP 1 gmres_iterations extraction). No longer UNPROVEN: fuse_runtime_window_fixed_point_residual_test has since gained WindowFixedPointResidual.ExhaustingTheNewtonBudgetOnAWindowReportsNonConvergence and ...AWindowThatExhaustsTheNewtonBudgetIsCountedNotConverged (neither test existed, or at least neither was named, when this row was marked UNPROVEN on 2026-10-11 -- this repair is the first time anyone has actually run the mutation against the CURRENT binary). Control run (unmutated, current file): full unfiltered binary, 8/8 PASSED. Mutation applied, rebuilt, full unfiltered binary run: 6 PASSED / 2 FAILED -- both of the tests just named fail (the first on `r.ok()` being true instead of false; the second on `iteration_stats().front().converged` being true instead of false, and `stats().windows_not_converged` being 0 instead of 1). Restored; cmp against the pre-mutation file reported no difference (md5 c33cd2e0828fce1f0de1d44fc9a9826b both before and after). Rebuilt and reran to confirm 8/8 returns."
 
 # S7.2 WindowNewton (newton-krylov.md Sec. 9.1, 9.7's own test plan): the
 # window-Newton interface vector's own GaussSeidel exclusion rule
@@ -171,7 +171,7 @@ old = """          if (!lagged) continue;  // GaussSeidel's own unlagged transfe
 new = """          if (false && !lagged) continue;  // GaussSeidel's own unlagged transfer"""
 target = "fuse_runtime_window_fixed_point_residual_test"
 test = "runtime.window_fixed_point_residual"
-result = "Hand-proved 2026-10-11: 6 cases, all pass before; after mutation, 1 fails (WindowFixedPointResidual.GaussSeidelUnlaggedBlockIsExcludedFromX -- excluded_lengths.size() reads 0 instead of 1, i.e. the GaussSeidel region's own `n` grew to include the channel GaussSeidel already resolves deterministically), 5 pass. File restored and cmp-verified byte-identical; rebuilt and reran to confirm all 6 pass again."
+result = "Hand-proved: 6 cases, all pass before; after mutation, 1 fails (WindowFixedPointResidual.GaussSeidelUnlaggedBlockIsExcludedFromX -- excluded_lengths.size() reads 0 instead of 1, i.e. the GaussSeidel region's own `n` grew to include the channel GaussSeidel already resolves deterministically), 5 pass. File restored and cmp-verified byte-identical; rebuilt and reran to confirm all 6 pass again."
 
 # S7.2b (PetscSelect track): the substrate-selection seam in
 # src/runtime/iteration.cpp. Two independent mutation rows, one per the
@@ -194,12 +194,12 @@ old = """    case NewtonSubstrate::Petsc:  return num::NewtonSubstrate::Petsc;""
 new = """    case NewtonSubstrate::Petsc:  return num::NewtonSubstrate::Native;"""
 target = "fuse_runtime_newton_region_test"
 test = "runtime.newton_region"
-result = "Hand-proved 2026-10-11, /tmp/petscselect/b0 (tier-0 without PETSc): 17 cases, all pass before; after mutation, 1 fails (NewtonRegion.ARegionSelectingAnUnregisteredSubstrateIsRefusedAtSetup -- a graph naming NewtonSubstrate::Petsc is silently solved by the always-registered Native substrate and initialize() succeeds instead of refusing E-NEWTON-PETSC-UNAVAILABLE), 16 pass. File restored and md5/cmp-verified byte-identical; rebuilt and reran to confirm all 17 pass again."
+result = "Hand-proved, /tmp/petscselect/b0 (tier-0 without PETSc): 17 cases, all pass before; after mutation, 1 fails (NewtonRegion.ARegionSelectingAnUnregisteredSubstrateIsRefusedAtSetup -- a graph naming NewtonSubstrate::Petsc is silently solved by the always-registered Native substrate and initialize() succeeds instead of refusing E-NEWTON-PETSC-UNAVAILABLE), 16 pass. File restored and md5/cmp-verified byte-identical; rebuilt and reran to confirm all 17 pass again."
 
 [[mutation]]
 id = "newton-petsc-unavailable-refusal-waved-through"
 area = "runtime"
-describes = "resolve_regions()'s own eager substrate-availability check (added alongside check_region_supports_newton()'s call) is short-circuited to never refuse (`false && !substrate_fn.ok()` instead of `!substrate_fn.ok()`), so a Newton-selected region naming an unavailable substrate is accepted at initialize() -- the refusal this track's own task brief required to fire tier-0, without PETSc, would never fire at setup; the SAME region would only be caught (or not) the first time run_region_newton()/run_region_newton_window() itself re-checks the registry, far later than initialize()."
+describes = "resolve_regions()'s own eager substrate-availability check (added alongside check_region_supports_newton()'s call) is short-circuited to never refuse (`false && !substrate_fn.ok()` instead of `!substrate_fn.ok()`), so a Newton-selected region naming an unavailable substrate is accepted at initialize() -- the refusal the task brief required to fire tier-0, without PETSc, would never fire at setup; the SAME region would only be caught (or not) the first time run_region_newton()/run_region_newton_window() itself re-checks the registry, far later than initialize()."
 file = "src/runtime/iteration.cpp"
 old = """      if (const Result<const num::NewtonSolveFn*> substrate_fn =
               resolve_newton_substrate(R.name, decl.newton_config.substrate);
@@ -215,7 +215,7 @@ new = """      if (const Result<const num::NewtonSolveFn*> substrate_fn =
       R.newton = true;"""
 target = "fuse_runtime_newton_region_test"
 test = "runtime.newton_region"
-result = "Hand-proved 2026-10-11, /tmp/petscselect/b0 (tier-0 without PETSc): 17 cases, all pass before; after mutation, 1 fails (NewtonRegion.ARegionSelectingAnUnregisteredSubstrateIsRefusedAtSetup -- the eager check's own result is discarded, so a graph naming an unavailable substrate is accepted at initialize() instead of refused), 16 pass. File restored and md5/cmp-verified byte-identical; rebuilt and reran to confirm all 17 pass again."
+result = "Hand-proved, /tmp/petscselect/b0 (tier-0 without PETSc): 17 cases, all pass before; after mutation, 1 fails (NewtonRegion.ARegionSelectingAnUnregisteredSubstrateIsRefusedAtSetup -- the eager check's own result is discarded, so a graph naming an unavailable substrate is accepted at initialize() instead of refused), 16 pass. File restored and md5/cmp-verified byte-identical; rebuilt and reran to confirm all 17 pass again."
 
 # Substrate track (plan S7.2b phase 2 closing): the per-region DISPATCH
 # call site, not the eager setup-time check above -- a defect here is
@@ -255,4 +255,4 @@ new = """  const Result<const num::NewtonSolveFn*> substrate_fn =
   st.iterations = nr.iterations;"""
 target = "fuse_runtime_newton_region_test"
 test = "runtime.newton_region"
-result = "Hand-proved 2026-10-18, /tmp/substrate/b0 (tier-0 without PETSc, applied at the real line 2567 anchor -- the `old`/`new` blocks above use a nearby, uniquely-matching anchor since the exact dispatch lines recur byte-for-byte at the window call site; the measurement itself mutated only the ordinary-region call at line 2567): 19 cases, all pass before; after mutation, 1 fails (NewtonRegion.TwoNewtonRegionsInOneRunnerDispatchToTheirOwnSubstrateIndependently -- region B's own declared Petsc substrate is never looked up, g_test_double_calls stays 0 instead of 1, and region B's q() becomes bit-identical to region A's instead of differing), 18 pass, INCLUDING TwoNewtonRegionsOneUnavailableSubstrateIsRefusedByNameNotByRegionOrder and ARegionSelectingAnUnregisteredSubstrateIsRefusedAtSetup (both unaffected: neither reaches run_region_newton() at all, since both expect initialize() itself to refuse). File restored and md5-verified byte-identical (292ee305e271b547318524b2266a6c09 before and after); rebuilt and reran to confirm all 19 pass again."
+result = "Hand-proved, /tmp/substrate/b0 (tier-0 without PETSc, applied at the real line 2567 anchor -- the `old`/`new` blocks above use a nearby, uniquely-matching anchor since the exact dispatch lines recur byte-for-byte at the window call site; the measurement itself mutated only the ordinary-region call at line 2567): 19 cases, all pass before; after mutation, 1 fails (NewtonRegion.TwoNewtonRegionsInOneRunnerDispatchToTheirOwnSubstrateIndependently -- region B's own declared Petsc substrate is never looked up, g_test_double_calls stays 0 instead of 1, and region B's q() becomes bit-identical to region A's instead of differing), 18 pass, INCLUDING TwoNewtonRegionsOneUnavailableSubstrateIsRefusedByNameNotByRegionOrder and ARegionSelectingAnUnregisteredSubstrateIsRefusedAtSetup (both unaffected: neither reaches run_region_newton() at all, since both expect initialize() itself to refuse). File restored and md5-verified byte-identical (292ee305e271b547318524b2266a6c09 before and after); rebuilt and reran to confirm all 19 pass again."

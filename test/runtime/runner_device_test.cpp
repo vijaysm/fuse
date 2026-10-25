@@ -1,4 +1,4 @@
-// KNOWN_ISSUES.md A5: `Runner::Impl::execute()` dispatching its elementwise
+// `Runner::Impl::execute()` dispatching its elementwise
 // `OpKind`s on `RunnerConfig::RunnerExecutionSpace::Device`, run through a
 // real CouplingGraph -> lower -> schedule -> Runner pipeline (never by
 // calling a kernel directly -- test/num/space_kernels_test.cpp already does
@@ -6,13 +6,13 @@
 // scope: only the Space-generic cases (Sample/Accumulate/Scale/Remap/Relax/
 // Residual/Merge/Extrapolate/Interpolate-identity) move; Epoch/Sink stay
 // host-only for the value-copy's own scalar bookkeeping around it, never
-// for the copy itself. `Transport` moved out of the host-only group in the
-// transport track (docs/dev/device-resident-arcs.md Phase 3): its own case
+// for the copy itself. `Transport` is not in the host-only group
+// (docs/dev/device-resident-arcs.md): its own case
 // packs and unpacks on the device when both its arcs are device-resident,
 // handing MPI a device pointer when `Transport::is_gpu_aware()` and staging
 // through host memory when not. Constrain/Diagnose and Remap's
 // distributed-nodal branch (apply_nodal_dist_remap(), an MPI exchange)
-// moved out of it in the runtime-exchange track: Constrain's conservation
+// are not in it either: Constrain's conservation
 // sum and Diagnose's non-finite check are now reductions on the arc's own
 // space (only the scalar verdict is host), and apply_nodal_dist_remap()
 // stages its own arcs explicitly around an MPI exchange that still runs
@@ -34,7 +34,7 @@
 // the same order, on both spaces) and to a few ulps for the relax and
 // weighted-remap arcs: nvcc contracts `a*b + c` into a single FMA inside
 // `RelaxFunctor`/`RemapMultiFunctor` (space_kernels.hpp), one rounding where
-// the host does two -- the same gap D45 closed for the deterministic dot
+// the host does two -- the same gap closed for the deterministic dot
 // products with `unfused_multiply_add`, deliberately NOT applied to those two
 // functors here because build-evidence/mutations.toml anchors their exact
 // source lines ("relax-swaps-its-weights", "remap-apply-drops-each-row-first-
@@ -232,11 +232,10 @@ struct Scenario {
   /// 0 leaves the channel without a Relax node.
   double        relax_omega = 0.0;
   /// `TemporalBasis::None` leaves the channel without a space-time
-  /// projection (the ordinary Accumulate/lag path). Round 3
-  /// (spacetime-history track): mutually exclusive with `accum` --
-  /// resolve_spacetime() itself refuses both on the same channel
-  /// (E-RT-SPACETIME), the same refusal `channel_test.cpp` covers at the
-  /// model layer.
+  /// projection (the ordinary Accumulate/lag path). Mutually
+  /// exclusive with `accum` -- resolve_spacetime() itself refuses both on
+  /// the same channel (E-RT-SPACETIME), the same refusal
+  /// `channel_test.cpp` covers at the model layer.
   fuse::TemporalBasis spacetime_basis = fuse::TemporalBasis::None;
   int                  spacetime_degree = 0;
 };
@@ -259,7 +258,7 @@ Scenario weighted_remap_then_relax() {
 /// target step, same subcycling ratio `mean_over_four_substeps()` uses: a
 /// Sample per source tick (writing `SpacetimeInfo::history`) and one
 /// Interpolate per target tick (`num::apply_spacetime_device` in Device
-/// mode), round 3 (spacetime-history track).
+/// mode).
 Scenario spacetime_linear_projection() {
   return Scenario{.src_dt = Rational{1, 4}, .dst_dt = Rational{1},
                   .spacetime_basis = fuse::TemporalBasis::Linear,
@@ -343,7 +342,7 @@ struct Outcome {
   bool                has_sample = false;
   bool                has_accumulate = false;
   bool                has_remap = false;
-  bool                has_interpolate = false;  // round 3: spacetime-history track
+  bool                has_interpolate = false;
   int                 transports = 0;   // Transport instructions per period
   int                 diagnoses = 0;    // Diagnose instructions per period
   int                 accumulates = 0;  // Accumulate instructions per period
@@ -489,13 +488,12 @@ TEST(RunnerDevice, DeviceAndHostAgreeToRoundingOnRelaxAndWeightedRemap) {
   EXPECT_NE(host.consumer.front(), 0.0);
 }
 
-// docs/dev/device-resident-arcs.md step 2 and, as of the transport track,
-// Phase 3: fields registered in device memory are aliased by the Runner
-// directly, so a chain whose endpoints are both device fields is mirrored
-// nowhere. The one host stop left in this plan is its single remaining
-// unconditionally host-only instruction -- the Diagnose after the Remap (a
-// host reduction) -- which pins the arc it reads and the arc it writes, so
-// a space-aware copy next to it (the Sink) crosses once. The channel's
+// docs/dev/device-resident-arcs.md: fields registered in device memory are
+// aliased by the Runner directly, so a chain whose endpoints are both device
+// fields is mirrored nowhere. The one host stop left in this plan is its
+// single remaining unconditionally host-only instruction -- the Diagnose after
+// the Remap (a host reduction) -- which pins the arc it reads and the arc it
+// writes, so a space-aware copy next to it (the Sink) crosses once. The channel's
 // Transport is no longer a host stop: it is a same-process, no-graph move
 // (this scenario builds no CommGraph), both its arcs are coupler-owned and
 // therefore device-resident like everything around them, so its case takes
@@ -503,14 +501,13 @@ TEST(RunnerDevice, DeviceAndHostAgreeToRoundingOnRelaxAndWeightedRemap) {
 // not `device_boundary_copies` -- and the Epoch next to it, now reading a
 // device arc on both sides, is a same-space copy that crosses nothing
 // either (RunStats::device_boundary_copies' own comment: "a same-space
-// copy does not count"). runtime-exchange track: Diagnose, the one
-// instruction left in this plan that used to pin both the arc it reads and
-// the arc it writes, no longer does either -- its non-finite check is now
-// a reduction on the arc's own space. Measured on this plan
+// copy does not count"). Diagnose pins neither the arc it reads nor the
+// arc it writes -- its non-finite check is a reduction on the arc's own
+// space. Measured on this plan
 // (FUSE_DEVICE_DEBUG=1): Sample -> Accumulate -> Transport -> Epoch ->
 // Remap -> Diagnose -> Sink; every instruction in it is now Space-generic
 // or space-aware, so it crosses the host/device boundary ZERO times per
-// period (down from one, the Sink, before this track).
+// period.
 TEST(RunnerDevice, DeviceRegisteredFieldsCrossTheBoundaryZeroTimesAndAgreeWithHost) {
   if constexpr (!kHasDeviceBackend) GTEST_SKIP() << "no device backend";
   Scenario s = mean_over_four_substeps();
@@ -526,17 +523,15 @@ TEST(RunnerDevice, DeviceRegisteredFieldsCrossTheBoundaryZeroTimesAndAgreeWithHo
   }
   EXPECT_GT(dev.stats.device_dispatches, 0);
   EXPECT_GT(dev.stats.device_resident_arcs, 0);
-  // GREEN since the transport track: Transport's own no-graph arcs are now
-  // device-resident and its move is a Kokkos::deep_copy, counted here, not
-  // staged through host memory and not refused.
+  // Transport's own no-graph arcs are device-resident and its move is a
+  // Kokkos::deep_copy, counted here, not staged through host memory and
+  // not refused.
   ASSERT_GT(dev.transports, 0);
   EXPECT_EQ(dev.stats.device_transport_moves, dev.transports * 3);
-  // runtime-exchange track (RED before this track: place_arcs_on_device()
-  // pinned Diagnose's arcs to host unconditionally, so this device-
-  // registered chain crossed the boundary once per period, at the Sink
-  // right after it -- GREEN now that Diagnose's own case reads and writes
-  // through span_c()/span_m() like every other Space-generic case, so the
-  // Sink beside it is a same-space copy that does not count either).
+  // Diagnose's own case reads and writes through span_c()/span_m() like
+  // every other Space-generic case (place_arcs_on_device() does not pin
+  // its arcs to host), so the Sink beside it is a same-space copy that
+  // does not count either.
   ASSERT_GT(dev.diagnoses, 0);
   EXPECT_EQ(dev.stats.device_boundary_copies, 0)
       << "a device-registered chain crossed the boundary even though every "
@@ -545,10 +540,9 @@ TEST(RunnerDevice, DeviceRegisteredFieldsCrossTheBoundaryZeroTimesAndAgreeWithHo
   const Outcome one = run(s, Space::Device, 1);
   ASSERT_TRUE(one.init.ok()) << one.init.error().message;
   EXPECT_EQ(one.stats.device_boundary_copies, 0);
-  // Nothing stages through a device_staging lane either: the Remap's
-  // output used to be staged for the Diagnose right after it (a host-only
-  // instruction's input); now that Diagnose reads it directly on the
-  // device, that lane is never touched.
+  // Nothing stages through a device_staging lane either: Diagnose reads
+  // the Remap's output directly on the device, so that lane is never
+  // touched.
   ASSERT_GT(dev.remaps, 0);
   EXPECT_EQ(dev.stats.device_staged_copies, 0)
       << "something was staged through a device_staging lane even though "
@@ -573,20 +567,15 @@ TEST(RunnerDevice, HostRegisteredFieldsAreMirroredOncePerProducerStep) {
   ASSERT_TRUE(host_fields.init.ok()) << host_fields.init.error().message;
   ASSERT_TRUE(device_fields.init.ok()) << device_fields.init.error().message;
   const std::int64_t producer_steps = 2 * 4, consumer_steps = 2;
-  // runtime-exchange track: Diagnose's own arc (the Sink's input, %6 in
-  // FUSE_DEVICE_DEBUG's own trace of this plan) is no longer host-pinned,
-  // so it is device-resident in BOTH variants here -- which flips which
-  // variant the Sink's own crossing falls in. `consumer_steps` (one Sink
-  // execution per period) used to count a crossing in `device_fields`
-  // only (Diagnose's host-pinned output -> the device-registered consumer
-  // field) and none in `host_fields` (host -> host); now it is the
-  // reverse (device Diagnose output -> the device-registered consumer
-  // field in `device_fields` is same-space, device Diagnose output -> the
-  // HOST-registered consumer field in `host_fields` crosses once per
-  // period instead). The mirror term (`producer_steps`, unaffected by
-  // this track) still only counts in `host_fields`; the Sink term now
-  // only counts in `host_fields` too, so the difference ADDS the two
-  // instead of subtracting them.
+  // Diagnose's own arc (the Sink's input, %6 in FUSE_DEVICE_DEBUG's own
+  // trace of this plan) is not host-pinned, so it is device-resident in
+  // BOTH variants here. `consumer_steps` (one Sink execution per period)
+  // counts a crossing in `host_fields` only: device Diagnose output ->
+  // the device-registered consumer field in `device_fields` is
+  // same-space, while device Diagnose output -> the HOST-registered
+  // consumer field in `host_fields` crosses once per period. The mirror
+  // term (`producer_steps`) also only counts in `host_fields`, so the
+  // difference ADDS the two.
   EXPECT_EQ(host_fields.stats.device_boundary_copies - device_fields.stats.device_boundary_copies,
             producer_steps + consumer_steps)
       << "the producer's field was mirrored other than once per producer step, or the "
@@ -597,7 +586,7 @@ TEST(RunnerDevice, HostRegisteredFieldsAreMirroredOncePerProducerStep) {
   EXPECT_EQ(host_fields.stats.device_staged_copies, device_fields.stats.device_staged_copies);
 }
 
-// docs/dev/device-resident-arcs.md step 4: a RunnerConfig that leaves
+// docs/dev/device-resident-arcs.md: a RunnerConfig that leaves
 // `execution_space` at `Default` takes the process environment's choice,
 // which is how the `.device` ctest twins run every verification binary
 // under the device interpreter without touching its source.
@@ -789,7 +778,7 @@ TEST(RunnerDevice, OrdinaryIterationRegionConvergesOnTheDeviceLikeTheHost) {
   EXPECT_EQ(host.iterations, dev.iterations);
   ASSERT_EQ(host.a_in.size(), dev.a_in.size());
   ASSERT_EQ(host.b_in.size(), dev.b_in.size());
-  // Relax runs on the device (1e-14 relative, D45's accepted contraction
+  // Relax runs on the device (1e-14 relative, the accepted contraction
   // gap); everything else in the loop is a copy, so the converged state
   // agrees to that precision, not just to the convergence tolerance.
   for (std::size_t i = 0; i < host.a_in.size(); ++i) {
@@ -804,17 +793,16 @@ TEST(RunnerDevice, OrdinaryIterationRegionConvergesOnTheDeviceLikeTheHost) {
   EXPECT_GT(dev.stats.device_dispatches, 0);
 }
 
-// Round 3 (spacetime-history track, docs/dev/device-resident-arcs.md step
-// 8): the space-time projection's Sample/Interpolate pair, the last two
+// (docs/dev/device-resident-arcs.md): the space-time projection's
+// Sample/Interpolate pair, the last two
 // Space-generic-able OpKinds this plan can exercise single-process. Sample
 // writes SpacetimeInfo::history_device with a same-space deep_copy;
 // Interpolate runs num::apply_spacetime_device (space_kernels.hpp) instead
-// of the host-only apply_spacetime. Before this track, place_arcs_on_device()
-// pinned both instructions' arcs unconditionally (PINS, not generic), so a
-// device-registered chain through a spacetime channel crossed the host/
-// device boundary at every Sample and Interpolate call; RED on that tree
-// would show device_boundary_copies/device_staged_copies > 0 here. GREEN
-// now that both are classified generic.
+// of the host-only apply_spacetime. place_arcs_on_device() classifies both
+// instructions as generic (not pinned), so a device-registered chain
+// through a spacetime channel does not cross the host/device boundary at
+// any Sample or Interpolate call; device_boundary_copies and
+// device_staged_copies are 0 here.
 TEST(RunnerDevice, SpacetimeHistoryIsDeviceResidentAndAgreesWithHost) {
   if constexpr (!kHasDeviceBackend) GTEST_SKIP() << "no device backend";
   Scenario s = spacetime_linear_projection();
@@ -832,13 +820,13 @@ TEST(RunnerDevice, SpacetimeHistoryIsDeviceResidentAndAgreesWithHost) {
     const double b = dev.consumer[i];
     // A handful of ulps: one FMA contraction per target entity in
     // SpacetimeInterpolateFunctor (space_kernels.hpp), the same accepted
-    // gap D45 documents for RelaxFunctor/RemapMultiFunctor.
+    // gap documented for RelaxFunctor/RemapMultiFunctor.
     EXPECT_NEAR(a, b, 1e-14 * std::max(1.0, std::abs(a))) << "cell " << i;
   }
   EXPECT_NE(host.consumer.front(), 0.0);
   EXPECT_GT(dev.stats.device_dispatches, 0);
   EXPECT_GT(dev.stats.device_resident_arcs, 0);
-  // THE assertion this track exists for: Sample and Interpolate no longer
+  // THE assertion this test exists for: Sample and Interpolate do not
   // pin their arcs, so a fully device-registered spacetime chain crosses
   // the host/device boundary zero times and stages nothing through a
   // device_staging lane -- the same standard

@@ -20,14 +20,14 @@ struct FieldSpec {
   Conservation   conservation = Conservation::None;
   Intent         intent = Intent::Provides;
 
-  /// S6 phase 3 ("LowFive" track), Unit 3: `"<file>.h5/<dataset path>"`
+  /// `"<file>.h5/<dataset path>"`
   /// (fuse::split_hdf5_path, fuse/transport/lowfive.hpp) -- this field
   /// moves between components not through FUSE's own Transport but by one
   /// side calling plain H5Dwrite and the other plain H5Dread at this path,
   /// with LowFive intercepting both calls in memory (docs/user/lowfive.md).
   /// unset (the default) for every field that moves through an ordinary
-  /// Transport, which is every field before this track. `validate()`
-  /// (fuse/model/validate.hpp) refuses a graph that sets this with no
+  /// Transport.
+  /// `validate()` (fuse/model/validate.hpp) refuses a graph that sets this with no
   /// LowFive-launched component (`LaunchMode::LowFive`, fuse/model/
   /// launch.hpp) anywhere in it, and refuses two fields sharing the exact
   /// same (non-wildcard) path -- the same two rules

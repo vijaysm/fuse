@@ -68,58 +68,42 @@ typedef struct fuse_participant_abi_v1 {
   fuse_status (*end_step)(fuse_ctx* ctx, const fuse_step_request* in, fuse_step_report* out);
 
   /* FUSE_ERR_UNSUPPORTED (E-ABI-RUN-EXTERNAL) only when an externally driven */
-  /* component is HOSTED ON THIS PROCESS; legal on a process hosting none at */
-  /* all (a coupler-only placement, or any rank with no externally driven */
-  /* component of its own), which still executes this call's own share of the */
-  /* period's collectives */
+  /* component is hosted on this process; legal on a process hosting none (a */
+  /* coupler-only placement, or any rank with no externally driven component of */
+  /* its own), which still executes its share of the period's collectives */
   fuse_status (*run)(fuse_ctx* ctx, const fuse_run_request* in, fuse_null* out);
 
-  /* Unit 3 (S6 phase 3, Conformance), appended 2026-10-04 -- LAST, per this */
-  /* table's own append-only rule above (an entry inserted mid-table would */
-  /* shift every later member's offset, breaking a caller compiled against the */
-  /* previous layout): the reverse of register_field -- FUSE hands back a view */
-  /* of ITS OWN storage for the named handle, rather than the caller handing */
-  /* FUSE a pointer. Named view_field, not field_view, because the latter */
-  /* collides with the fuse_field_view TYPE it returns once Fortran lower-cases */
-  /* both (tools/gen-abi.py's own check). Before initialize, this is the same */
-  /* native storage register_field was already given (an early call is legal */
-  /* but pointless: the application already holds that pointer). After */
-  /* initialize, a window-scoped field (see fuse_field_view's own */
-  /* window_samples comment) returns the window path's own private buffer */
-  /* instead -- the one surface through which an application participating in a */
+  /* the reverse of register_field: FUSE hands back a view of its own storage */
+  /* for the named handle. Named view_field, not field_view, because the latter */
+  /* collides with the fuse_field_view type it returns once Fortran lower-cases */
+  /* both. Before initialize, this is the native storage register_field was */
+  /* given. After initialize, a window-scoped field (see */
+  /* fuse_field_view.window_samples) returns the window path's own private */
+  /* buffer instead -- the surface through which an application on a */
   /* LowFive-bound window channel reads the waveform it must write, or writes */
-  /* the waveform it must deliver, with no other FUSE call involved in the */
-  /* transfer itself. FUSE_ERR_NOTFOUND if the handle names no field in the */
-  /* loaded graph. */
+  /* the waveform it must deliver. FUSE_ERR_NOTFOUND if the handle names no */
+  /* field in the loaded graph */
   fuse_status (*view_field)(fuse_ctx* ctx, const fuse_field_ref* in, fuse_field_view* out);
 
-  /* D14 (KNOWN_ISSUES.md), appended 2026-10-13 -- LAST, per this table's own */
-  /* append-only rule above, same reason view_field states for itself: a local, */
-  /* non-collective read of this context's own c.communicator/ */
-  /* c.communicator_set, already agreed identically on every rank by setup()'s */
-  /* own collective (connect.hpp's own module comment); lets a Connect-mode */
-  /* (accept/connect) caller recover the merged base communicator setup() */
-  /* formed internally and never exposed before this entry, the gap D14's own */
-  /* \"what remains\" item 3 named. Legal before setup() (formed=0, */
-  /* communicator=0) and for every launch mode, not Connect alone: */
-  /* InProcess/Plugin/Mpmd callers get back their own, already-trivial base */
-  /* communicator the same way. */
+  /* a local, non-collective read of this context's communicator and */
+  /* communicator_set, already agreed identically on every rank by setup()'s */
+  /* collective (connect.hpp); lets a Connect-mode (accept/connect) caller */
+  /* recover the merged base communicator setup() formed internally. Legal */
+  /* before setup() (formed=0, communicator=0) and for every launch mode: */
+  /* InProcess/Plugin/Mpmd callers get back their own, already trivial, base */
+  /* communicator the same way */
   fuse_status (*base_communicator)(fuse_ctx* ctx, const fuse_null* in, fuse_base_communicator_info* out);
 
-  /* docs/dev/restart.md round 2, item 4 -- appended LAST per this table's own */
-  /* append-only rule above. An externally-driven (ABI) participant's own way */
-  /* to ask that a restart point be taken: SETS A FLAG */
-  /* (fuse::Runner::request_restart_point()), never writes a file itself -- */
-  /* write_restart_point() needs a RestartWriter the embedding host process */
-  /* configures (a file path, which HDF5 layout), which this entry's fixed */
-  /* (ctx, in, out) shape cannot carry. The embedding host polls */
-  /* fuse::Runner::take_restart_point_request() after every */
-  /* run_period()/resume_period() call and decides whether, and how, to act on */
-  /* it; a participant that never polls back its own host's restart cadence has */
-  /* asked for nothing more than that one bit of intent. Idempotent: calling */
-  /* this more than once before the host polls leaves exactly one pending */
-  /* request, never a queue. Legal at any time after initialize(); has no */
-  /* effect before it, since no Runner exists yet to hold the flag. */
+  /* an externally driven (ABI) participant's way to ask that a restart point */
+  /* be taken: sets a flag (fuse::Runner::request_restart_point()) and never */
+  /* writes a file itself, because write_restart_point() needs a RestartWriter */
+  /* the embedding host process configures (a file path, an HDF5 layout), which */
+  /* this entry's fixed (ctx, in, out) shape cannot carry. The embedding host */
+  /* polls fuse::Runner::take_restart_point_request() after every */
+  /* run_period()/resume_period() call and decides whether, and how, to act. */
+  /* Idempotent: several calls before the host polls leave exactly one pending */
+  /* request. Legal any time after initialize(); has no effect before it, since */
+  /* no Runner exists yet to hold the flag */
   fuse_status (*request_restart_point)(fuse_ctx* ctx, const fuse_null* in, fuse_null* out);
 } fuse_participant_abi_v1;
 

@@ -4,9 +4,9 @@
 
 #include <gtest/gtest.h>
 
-/// Stage B Slice 1b (docs/dev/restart.md Section 11). Compile-time trait
-/// resolution -- `fuse::kElementTypeOf<T>` for every C++ type the typed
-/// restart interface supports.
+/// Compile-time trait resolution (docs/dev/restart.md Section 11) --
+/// `fuse::kElementTypeOf<T>` for every C++ type the typed restart interface
+/// supports.
 TEST(ElementType, TraitResolvesEveryCppTypeToItsOwnEnumerator) {
   static_assert(fuse::kElementTypeOf<std::int8_t> == fuse::ElementType::Int8);
   static_assert(fuse::kElementTypeOf<std::int16_t> == fuse::ElementType::Int16);
@@ -55,7 +55,7 @@ TEST(ElementType, UnknownNameReturnsNulloptRatherThanGuessing) {
   EXPECT_EQ(*binary64, fuse::ElementType::Binary64);
 }
 
-/// `fuse::is_exact_widening()` -- every case the owner's own design
+/// `fuse::is_exact_widening()` -- every case the design
 /// names explicitly, plus the "never signed->unsigned" and exponent-
 /// range-containment rules it derives those named cases from.
 TEST(ElementType, IsExactWideningMatchesEveryOwnerNamedCase) {
@@ -91,8 +91,8 @@ TEST(ElementType, IsExactWideningMatchesEveryOwnerNamedCase) {
   // excludes this pair.
   EXPECT_FALSE(fuse::is_exact_widening(ElementType::BFloat16, ElementType::Binary16));
   EXPECT_FALSE(fuse::is_exact_widening(ElementType::Binary16, ElementType::BFloat16));
-  // float -> integer and bool -> float: not authorized by the owner's
-  // design (docs/dev/restart.md Section 11's own open question).
+  // float -> integer and bool -> float: not authorized by the
+  // design (docs/dev/restart.md Section 11's open question).
   EXPECT_FALSE(fuse::is_exact_widening(ElementType::Binary32, ElementType::Int32));
   EXPECT_FALSE(fuse::is_exact_widening(ElementType::Bool, ElementType::Binary32));
 }

@@ -59,53 +59,37 @@ struct IterationRegionDecl {
   /// `filter_qn_columns()` (src/num/accel_quasi_newton.cpp) is called from
   /// the accelerator, `fuse/model/iteration.hpp` documents each filter's
   /// measured effect on sweep count, and the freeze fixture pins
-  /// `FilterKind::QR1` in the canonical bytes. BM-11 (review 2026-10-11):
-  /// this comment used to say the filter was "a documented no-op until
-  /// Task 7.4", which was true when this declaration was written but
-  /// stayed uncorrected after Task 7.4 landed -- a reader tuning
-  /// convergence off this comment alone would skip the one knob that can
-  /// change sweep count by a large factor.
+  /// `FilterKind::QR1` in the canonical bytes. It is the one knob that can
+  /// change sweep count by a large factor, so it is worth tuning.
   AccelConfig            acceleration{.kind = AccelKind::None};
 
-  /// Time windows track: the OPT-IN that will turn this region from today's
-  /// single-clock loop into a coupling window (`fuse::CouplingWindowScope`,
-  /// `fuse/model/iteration.hpp`). `std::nullopt` (the default) is every
-  /// region declared before this member existed, and -- as of this
-  /// declaration's own introduction -- every region there is: `schedule()`
-  /// does not yet inspect this member. It still runs its existing
-  /// contiguous-run check (`mark_regions`, src/schedule/scheduler.cpp)
-  /// unconditionally and still refuses a multi-clock region with
-  /// `E-SCHED-REGION`, whether or not this field is set. Setting it changes
-  /// nothing today; only the descriptor (v7), the YAML round trip, and
-  /// `fuse::validate_coupling_window()`'s standalone legality gate
-  /// (`fuse/schedule/window.hpp`) can see it. Teaching `schedule()` to call
-  /// that gate for a window-scoped region instead of the contiguous-run
-  /// check is designed but NOT WIRED (see docs/dev/testing.md's "Five
-  /// states" and this track's design notes) -- adding that call is a
-  /// separate, not-yet-made change to scheduler.cpp.
+  /// The OPT-IN that turns this region from a single-clock loop into a
+  /// coupling window (`fuse::CouplingWindowScope`,
+  /// `fuse/model/iteration.hpp`). `std::nullopt` (the default) is an
+  /// ordinary single-clock region. `schedule()` runs
+  /// `fuse::validate_coupling_window()`'s legality gate
+  /// (`fuse/schedule/window.hpp`) for a window-scoped region; the
+  /// descriptor (v7) and the YAML round trip carry the member.
   std::optional<CouplingWindowScope> window_scope;
 
-  /// S7.1's Newton-Krylov seam. `true` requires every member of this
+  /// Newton-Krylov seam. `true` requires every member of this
   /// region to set `kCapabilityResidual` (fuse/model/capabilities.hpp),
   /// i.e. to implement `fuse::ImplicitComponent`
   /// (fuse/runtime/component.hpp) -- checked at `initialize()` by
   /// `fuse::verify_newton_capability_support()` and refused with
   /// `E-NEWTON-CAPABILITY`, naming the component, when it does not.
   ///
-  /// A FIELD ON THE DECLARATION, NOT A NEW `AccelKind` ENUMERATOR: the
-  /// Newton solver itself (S7.2) is a separate, not-yet-landed track that
-  /// will add its own `AccelKind` value and set this flag when that value
-  /// is chosen; this field exists on its own so the capability refusal
-  /// (S7.1) can be tested before any Newton code exists, per this track's
-  /// own brief. Defaults to `false`: every region declared before this
-  /// member existed asks for nothing new.
+  /// A FIELD ON THE DECLARATION, NOT A NEW `AccelKind` ENUMERATOR: choosing
+  /// `AccelKind::Newton` sets this flag, and the field exists on its own so
+  /// the capability refusal can be tested independently of the Newton
+  /// solver. Defaults to `false`.
   bool requires_residual_capability = false;
 
-  /// S7.1's Newton-Krylov seam. `true` additionally requires every member
+  /// Newton-Krylov seam. `true` additionally requires every member
   /// to set `kCapabilityLinearization`, i.e. to be prepared to return a
   /// usable `fuse::LinearizationToken` from `ImplicitComponent::
   /// linearization()` once it has been asked for a residual -- the
-  /// physics-based block-Jacobi preconditioner (S7.2) needs this from
+  /// physics-based block-Jacobi preconditioner needs this from
   /// every member it preconditions; a Newton loop driven purely by a
   /// matrix-free Jacobian action with no physics-based preconditioner does
   /// not. Independent of `requires_residual_capability` in the type
@@ -114,13 +98,13 @@ struct IterationRegionDecl {
   /// evaluate. Defaults to `false`.
   bool requires_linearization_capability = false;
 
-  /// S7.2's own Newton-specific options (`fuse::NewtonConfig`,
+  /// The Newton-specific options (`fuse::NewtonConfig`,
   /// fuse/model/iteration.hpp): line search strategy, forcing-term
   /// choice, lag, GMRES restart/budget, tolerances. Read ONLY when
   /// `acceleration.kind == AccelKind::Newton`; present unconditionally
   /// (rather than `std::optional`) the same way `AccelConfig` itself is,
-  /// so a region declared before this member existed carries SNES's own
-  /// defaults with no special-casing anywhere that reads it.
+  /// so a region carries SNES's own defaults with no special-casing
+  /// anywhere that reads it.
   NewtonConfig newton_config{};
 };
 
@@ -144,7 +128,7 @@ class IterationBuilder {
   /// `ConvergenceMeasure`, and spec Section 5.3's example passes one directly.
   IterationBuilder& until(ConvergenceMeasure m);
   IterationBuilder& max_iterations(int n);
-  /// Sets `acceleration` to `cfg`. S7.2's own addition: when
+  /// Sets `acceleration` to `cfg`. When
   /// `cfg.kind == AccelKind::Newton`, this ALSO sets
   /// `requires_residual_capability = true` (and, when
   /// `newton_config.use_block_jacobi_preconditioner` is already `true` at
@@ -162,7 +146,7 @@ class IterationBuilder {
   IterationBuilder& initial_relaxation(double omega);
   IterationBuilder& name(std::string n);
 
-  /// S7.2: selects `AccelKind::Newton` with the given options in one call,
+  /// Selects `AccelKind::Newton` with the given options in one call,
   /// and sets `requires_residual_capability = true` unconditionally plus
   /// `requires_linearization_capability = cfg.use_block_jacobi_preconditioner`
   /// -- the single-method spelling `accelerate({.kind = AccelKind::Newton})`
@@ -170,14 +154,9 @@ class IterationBuilder {
   /// conditionally, `.requires_linearization()`) to say the same thing.
   IterationBuilder& newton(NewtonConfig cfg = {});
 
-  /// S7.1's own fluent setters, left out of that track's brief (its own
-  /// comment on `IterationRegionDecl::requires_residual_capability`: "the
-  /// Newton solver itself (S7.2) adds its own AccelKind value and sets
-  /// these flags") -- added here, by the track that needed them, rather
-  /// than guessed at by the track that did not. Exposed independently of
+  /// Fluent setters for the capability flags, exposed independently of
   /// `accelerate()`/`newton()` for a region that wants the residual seam
-  /// without Newton itself (S7.1's own non-goal, but not this type's to
-  /// forbid).
+  /// without Newton itself.
   IterationBuilder& requires_residual(bool v = true);
   IterationBuilder& requires_linearization(bool v = true);
 
@@ -512,22 +491,21 @@ namespace detail {
 /// `effective_channel_lag()`'s own "never fails, refusal is someone
 /// else's job" shape.
 ///
-/// BM-19 (review 2026-10-11): the division used to be the throwing `/`
-/// operator, which can `FUSE_REFUSE` on an unrepresentable ratio --
-/// escaping as a thrown `Refusal` the signature never promised, and
-/// `abort_no_exceptions()` in a `FUSE_ENABLE_EXCEPTIONS=OFF` build, where
-/// this "never fails" function would abort instead. `try_div` makes the
-/// promise true: an unrepresentable ratio is treated the same as the
+/// The division is `try_div`, not the throwing `/` operator, which can
+/// `FUSE_REFUSE` on an unrepresentable ratio -- escaping as a thrown
+/// `Refusal` the signature never promised, and `abort_no_exceptions()` in a
+/// `FUSE_ENABLE_EXCEPTIONS=OFF` build, where this "never fails" function
+/// would abort instead. `try_div` keeps the promise: an unrepresentable ratio is treated the same as the
 /// already-documented non-positive-`interval` case above, a harmless
 /// minimum the caller's own gate is responsible for refusing instead.
 [[nodiscard]] inline std::size_t window_sample_capacity(
     Rational window_length, Rational interval, DtPolicy policy) {
   if (!(interval > Rational{0})) return 1;
-  // Review 2026-10-11 IS-6: `window_length / interval` (Rational::operator/)
-  // FUSE_REFUSEs with E-BASE-RATIONAL-OVERFLOW on an unrepresentable ratio
-  // (~2^63-magnitude window/interval values) -- an exception this function's
-  // own contract ("never fails, refusal is someone else's job", matching
-  // effective_channel_lag()'s shape) does not allow, and which used to
+  // `window_length / interval` (Rational::operator/) FUSE_REFUSEs with
+  // E-BASE-RATIONAL-OVERFLOW on an unrepresentable ratio (~2^63-magnitude
+  // window/interval values) -- an exception this function's own contract
+  // ("never fails, refusal is someone else's job", matching
+  // effective_channel_lag()'s shape) does not allow, and which would
   // escape schedule() uncaught instead of surfacing as an E-SCHED-*
   // diagnostic. `try_div` cannot throw; on overflow, report the capacity as
   // unrepresentably large rather than the ratio itself -- the caller's own
@@ -579,9 +557,8 @@ namespace detail {
 /// a window boundary (every window up to and including this one landed
 /// exactly on a native grid point at its own T0) has one buffer entry
 /// per entry of this list, in the same order: `window_sample_capacity()`
-/// was sized for exactly that correspondence, and it is what today's
-/// only caller (`Runner::Impl::advance_window()`, before this track's
-/// own straddle replay lands) relies on. A member whose clock HAS
+/// was sized for exactly that correspondence, and it is what
+/// `Runner::Impl::advance_window()` relies on. A member whose clock HAS
 /// carried a straddle into this window (this window's own `T0` is not
 /// itself one of the member's own native grid points -- checkable from
 /// the graph alone, `(T0 - member_start)` not an exact multiple of
@@ -597,19 +574,18 @@ namespace detail {
 /// update comment) -- but it must be read from there, never
 /// reconstructed from this member's own compiled buffer, whichever
 /// window instance is being read.
-/// BM-19 (review 2026-10-11): every Rational operation below used to use
-/// the throwing spellings (`+`, `-`, `*`, `/`), any of which can
-/// `FUSE_REFUSE` on an unrepresentable intermediate -- an uncaught
-/// `Refusal` escaping a function with no `Result` in its signature to
-/// report that through, or an abort in a `FUSE_ENABLE_EXCEPTIONS=OFF`
-/// build. `try_*` is used throughout instead; the four lambdas below set
+/// Every Rational operation below uses the `try_*` spellings, not the
+/// throwing ones (`+`, `-`, `*`, `/`), any of which can `FUSE_REFUSE` on an
+/// unrepresentable intermediate -- an uncaught `Refusal` escaping a
+/// function with no `Result` in its signature to report that through, or an
+/// abort in a `FUSE_ENABLE_EXCEPTIONS=OFF` build. The four lambdas below set
 /// `ok` on the first unrepresentable step and every later computation and
 /// loop is gated on it, so the function always returns a well-formed (if,
 /// on that one unrepresentable path, truncated after `T0`) list ending in
 /// `T1` rather than throwing. No legitimate window -- every caller passes
 /// a `window_length`/`interval` that already fits comfortably once
 /// reduced -- can reach this path; it exists for the same reason
-/// `window_sample_capacity()` just above now also uses `try_div`: a
+/// `window_sample_capacity()` just above also uses `try_div`: a
 /// corrupted or adversarially constructed graph must not be able to
 /// crash this function.
 [[nodiscard]] inline std::vector<Rational> window_sample_times(

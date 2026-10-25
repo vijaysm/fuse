@@ -1,8 +1,7 @@
 # FUSE -- top-level superbuild.
 #
-# At S0 this builds the two imported parent trees and nothing else: there is no
-# fuse/ source yet, and a target that compiles nothing is worse than no target.
-# Each stage from S1 adds its own layer directory here.
+# This builds the imported parent trees and the fuse:: layers; each layer adds
+# its own directory here.
 #
 # The imported trees keep their OWN build systems and are configured as
 # subprojects, unmodified. That is invariant I8: an import that had to be
@@ -41,7 +40,7 @@ option(FUSE_BUILD_UPSTREAM_KARMA "Build the imported spine tree under upstream/k
 # found.
 option(FUSE_ENABLE_FORTRAN "Build the Fortran participant binding ffuse (needs a Fortran compiler)" ON)
 
-# FpPolicy track, KNOWN_ISSUES.md D30: included here, before FuseFortran,
+# Floating-point contraction policy: included here, before FuseFortran,
 # for the identical ordering reason the comment above gives for
 # FUSE_ENABLE_FORTRAN -- FuseFortran.cmake calls
 # fuse_apply_fp_contract_policy_fortran() (cmake/FuseFpPolicy.cmake) right
@@ -65,12 +64,11 @@ endif()
 
 # --- imported parents ------------------------------------------------------
 # Namespaced build directories and an EXCLUDE_FROM_ALL-free add_subdirectory so
-# their own ctest registrations land in this project's test list: the S0 exit
-# condition is those suites passing *here*, not passing somewhere else.
-# upstream/soma is no longer built here (soma-import track, 2026-10-12):
-# UPSTREAMS.lock's [soma].retired field records the detachment. The subtree
-# itself stays present and unmodified (I8) until the repository owner removes
-# it -- see docs/dev/soma-import.md for what from it fuse:: still needs.
+# their own ctest registrations land in this project's test list: the condition
+# is those suites passing *here*, not passing somewhere else.
+# upstream/soma is no longer built here: UPSTREAMS.lock's [soma].retired field
+# records the detachment. The subtree itself stays present and unmodified (I8)
+# until it is removed -- see docs/dev/soma-import.md for what from it fuse:: still needs.
 
 if(FUSE_BUILD_UPSTREAM_KARMA)
   # Needs tier 2+: MOAB and PETSc. Off by default so the fast path stays fast.
@@ -81,7 +79,7 @@ endif()
 include(FuseDependencies)
 fuse_resolve_dependencies()
 
-# FpPolicy track, KNOWN_ISSUES.md D30: AFTER fuse_resolve_dependencies(),
+# Floating-point contraction policy: AFTER fuse_resolve_dependencies(),
 # once every FetchContent_MakeAvailable call it makes (r3d, yaml-cpp on a
 # machine with no installed copy) has already run, so the contraction
 # flag reaches fuse's own src/test/examples/tools targets below without
@@ -112,7 +110,7 @@ if(FUSE_ENABLE_PYTHON)
 endif()
 
 # The banner used to name the stage and the layer list as literal strings and
-# drifted for four stages and eight layers (REVIEW.md R-37): read the layer
+# drifted as layers were added: read the layer
 # list back from src/CMakeLists.txt's own targets instead of restating it, so
 # it cannot drift again. `fuse::` is the alias namespace every layer target
 # registers itself under (src/CMakeLists.txt); this reads them back rather

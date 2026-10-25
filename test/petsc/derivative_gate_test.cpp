@@ -1,6 +1,6 @@
-// The derivative gate (fuse/linalg/derivative_gate.hpp, S7.3) run on the
-// PETSc-backed tokens (fuse/petsc/token.hpp) -- STEP 2 of the PetscToken
-// track. Tier-0 row petsc.derivative_gate.
+// The derivative gate (fuse/linalg/derivative_gate.hpp) run on the
+// PETSc-backed tokens (fuse/petsc/token.hpp). Tier-0 row
+// petsc.derivative_gate.
 //
 // Three checks, mirroring test/linalg/derivative_gate_test.cpp's own
 // structure:
@@ -152,10 +152,9 @@ TEST(PetscDerivativeGate, ADeliberatelyWrongTransposeIsDetected) {
   Result<double> norm_est = estimate_operator_norm(n, n, apply, wrong_transpose);
   ASSERT_TRUE(norm_est.ok());
   // x and y must DIFFER: for x == y the identity <Ax, y> = <x, A^T y> reads
-  // x^T A x on both sides and holds for every A, transpose or not -- the
-  // first draft of this case used (1,1) for both and passed on the host
-  // with the wrong transpose, which is the gate being blind, not the
-  // defect being absent. With these vectors <Ax, y> = -7 and <x, Ay> = 2.
+  // x^T A x on both sides and holds for every A, transpose or not -- using
+  // (1,1) for both would pass with the wrong transpose, which is the gate
+  // being blind, not the defect being absent. With these vectors <Ax, y> = -7 and <x, Ay> = 2.
   const std::vector<double> x = {1.0, 1.0};
   const std::vector<double> y = {1.0, -2.0};
   Result<AdjointGateResult> gate = adjoint_gate(n, n, apply, wrong_transpose, x, y, norm_est.value());

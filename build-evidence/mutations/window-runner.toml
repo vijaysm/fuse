@@ -56,7 +56,7 @@ new = "    const bool use_predictor = false && cfg.import_lagged && first_sweep_
 target = "fuse_runtime_window_runner_straddle_test"
 test = "runtime.window_runner_straddle"
 # PROVED 2026-09-30: 3 of 5 WindowRunnerStraddle tests failed, reproducing
-# EXACTLY this track's own original failure (measured before this
+# EXACTLY the original failure (measured before this
 # session's fix, and again here after reverting it):
 # SevenThirteenAdjustableAdjustableThroughWindowComponentMatchesDriver
 # (xA/xB off by ~4e-9 relative, advance_count_a 156 vs 154, advance_count_b
@@ -169,7 +169,7 @@ new = """      if (false && cfg_.iteration == WaveformIteration::GaussSeidel &&
     }"""
 target = "fuse_runtime_window_coupler_test"
 test = "runtime.window_coupler"
-# PROVED (2026-09-29): 3 of 32 WindowCoupler tests failed --
+# PROVED: 3 of 32 WindowCoupler tests failed --
 # WindowCouplerVerification.{GaussSeidelReadsThePartnersSameIterateOutput,
 # GaussSeidelAccelerationActsOnlyOnTheLaggedDirection,
 # GaussSeidelConvergesInFewerIterationsOnThisProblem} -- the first two
@@ -191,7 +191,7 @@ new = """    std::vector<double> y_out(total);
     if (false && cfg_.iteration == WaveformIteration::GaussSeidel) {  // MUTATED"""
 target = "fuse_runtime_window_coupler_test"
 test = "runtime.window_coupler"
-# PROVED (2026-09-29): exactly 1 of 32 WindowCoupler tests failed --
+# PROVED: exactly 1 of 32 WindowCoupler tests failed --
 # WindowCouplerVerification.GaussSeidelAccelerationActsOnlyOnTheLaggedDirection,
 # specifically its iterate-2/3 assertions (68.33.../36.66...): iterate 0
 # and 1 are UNCHANGED by this mutation (the first accelerated call's omega
@@ -209,7 +209,7 @@ test = "runtime.window_coupler"
 # test above is this mutation's only anchor. File restored and
 # `cmp`-verified byte-identical to the pre-mutation copy afterward.
 
-# PROVED (2026-09-28): 6 of 21 WindowCoupler tests failed --
+# PROVED: 6 of 21 WindowCoupler tests failed --
 # WindowCouplerVerification.{ErrorConvergesAtOrderTwoAdjustableAdjustable,
 # ErrorConvergesAtOrderTwoFixedFixedIncommensurate,
 # ErrorConvergesAtOrderTwoMixedFixedAdjustable,
@@ -240,7 +240,7 @@ new = """  if (false && cfg_.iteration == WaveformIteration::GaussSeidel) {  // 
   }"""
 target = "fuse_runtime_window_coupler_test"
 test = "runtime.window_coupler"
-# PROVED (2026-09-29): exactly 1 of 33 WindowCoupler tests failed --
+# PROVED: exactly 1 of 33 WindowCoupler tests failed --
 # WindowCouplerVerification.GaussSeidelResultIsIndependentOfDeclarationOrder,
 # the only test in this file that declares the unlagged provider member
 # SECOND (make_identity_rig_ordered(..., a_declared_first=false)) and
@@ -277,7 +277,7 @@ test = "verification.brusselator_runner"
 # substep per window AND converges in one sweep, which is every existing
 # fixture's own shape -- this is why the defect went undetected until the
 # Brusselator's own first multi-sweep, multi-element window-scoped Runner
-# fixture existed. Verified BY HAND 2026-10-02/03 (see this delegation's
+# fixture existed. Verified BY HAND/03 (see this delegation's
 # report to the lead), capturing the mutated run's COMPLETE, untruncated
 # stdout (not piped through `tail`): EVERY ONE of the 150 windows fails
 # EXPECT_EQ on via_runner.u0_per_window[w] vs via_driver.u0_per_window[w] --
@@ -305,7 +305,7 @@ test = "runtime.window_runner_multirate"
 # Expected kill: WindowRunnerMultirate.ThreeConsecutivePeriodsMatchDriverAcrossRepeatedCalls
 # (the only test in this file -- or in window_runner_test.cpp/window_runner_
 # straddle_test.cpp -- that calls run_period() more than once on the SAME
-# Runner). Verified BY HAND 2026-10-02 (see this delegation's report to the
+# Runner). Verified BY HAND (see this delegation's report to the
 # lead): reverting the two-line fix and re-running the test fails it, but
 # NOT via the silently-frozen-state path the pre-fix bug originally showed
 # (that path is now caught earlier): run_period()'s SECOND call itself
@@ -341,7 +341,7 @@ test = "verification.brusselator_runner"
 # bisection PerWindowStateMatchesDriverWithStoppingRuleRemoved relies on,
 # which is a confirmed NO-OP against this mutation: with the stopping
 # rule never consulted, inflating the reference norm changes nothing).
-# Verified BY HAND 2026-10-03 (see this delegation's report to the lead):
+# Verified BY HAND (see this delegation's report to the lead):
 # with the mutation applied, both tests FAIL -- EXPECT_EQ on
 # iterations_per_window[w] (brusselator_runner_test.cpp:363) first
 # disagrees at window 20, exactly where this defect was originally
@@ -364,7 +364,7 @@ test = "runtime.window_runner"
 # to a rank where one window member's own RankSet is absent -- every OTHER
 # existing window fixture leaves this_process unset, where cfg.hosted is
 # unconditionally true per its own formula, and is therefore a confirmed
-# NO-OP against this mutation). Verified BY HAND 2026-10-03 (see this
+# NO-OP against this mutation). Verified BY HAND (see this
 # delegation's report to the lead): with the mutation applied, the test
 # FAILS -- EXPECT_EQ(b->advance_count, 0) (window_runner_test.cpp:897)
 # reports b->advance_count == 3, i.e. B's advance() ran despite B's own
@@ -393,7 +393,7 @@ test = "runtime.window_runner_straddle"
 # at window 0), which coincides with the un-primed default regardless
 # of whether this pass runs -- not evidence the mutation is survived,
 # just that those fixtures cannot distinguish "primed to 0" from
-# "never primed, defaults to 0". Verified BY HAND 2026-10-03 (see this
+# "never primed, defaults to 0". Verified BY HAND (see this
 # delegation's report to the lead): with the mutation applied, 7/9
 # WindowRunnerStraddle tests and 7/7 WindowRunnerMultirate tests FAIL
 # (EXPECT_EQ against the WindowCoupler driver's own closed-form/
@@ -434,7 +434,7 @@ new = """    if (false) {  // MUTATED: window convergence agreement disabled
 target = "fuse_runtime_window_runner_test"
 test = "runtime.window_runner"
 # Expected kill: broad and immediate -- every window-scoped test binary in
-# the suite. Verified BY HAND 2026-10-03 (see this delegation's report to
+# the suite. Verified BY HAND (see this delegation's report to
 # the lead): with the mutation applied, 163-test ctest run reports 7
 # FAILED: runtime.window_runner, runtime.window_runner_multirate,
 # runtime.window_runner_straddle, verification.brusselator_runner,
@@ -536,7 +536,7 @@ equivalent = "window_export_meta's third field (cfg.hosted vs cfg.export_consume
 # formulas, which is the whole reason this defect had no tier-0 oracle
 # before this fix.
 #
-# Verified BY HAND 2026-10-08: with the mutation applied, `ctest -L runtime`
+# Verified BY HAND: with the mutation applied, `ctest -L runtime`
 # (13 tests) reports exactly 1 FAILED -- runtime.window_hosting -- no other
 # runtime test affected. Run directly for the exact values:
 # `fuse_runtime_window_hosting_test` reports, on A's own rank (0):
@@ -559,7 +559,7 @@ old = "        if (b.window_export_capacity > 0 && ch.target.valid() &&"
 new = "        if (false && b.window_export_capacity > 0 && ch.target.valid() &&"
 target = "fuse_runtime_window_hosting_test"
 test = "runtime.window_hosting"
-# Verified BY HAND 2026-10-08 on a clean export of the worktree: with the
+# Verified BY HAND on a clean export of the worktree: with the
 # mutation applied, fuse_runtime_window_hosting_test reports exactly one
 # failure, WindowHosting.FanOutBlocksFollowTheirOwnConsumerNotTheFirstChannel,
 # at the a2c assertion -- "Actual: true" where the consumer C is on rank 2 and
@@ -577,7 +577,7 @@ old = "          if (cfg.capacity > 0 && ins.out.valid() && ins.out.value() < sl
 new = "          if (false && cfg.capacity > 0 && ins.out.valid() && ins.out.value() < slots.size() &&"
 target = "fuse_runtime_window_runner_test"
 test = "runtime.window_runner"
-# Verified BY HAND 2026-10-09 on a clean export of HEAD, the whole binary
+# Verified BY HAND on a clean export of HEAD, the whole binary
 # UNFILTERED under the mutation: "[ FAILED ] 1 test" --
 # RefusesAWindowMemberWhoseExportIsNotTheFieldsSize ("Value of: init.ok()
 # Actual: true -- a 2-value export on a 1-cell field was accepted") -- and
