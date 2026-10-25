@@ -19,6 +19,9 @@ module ffuse
   integer(c_int32_t), parameter, public :: FUSE_ERR_VERSION = -6_c_int32_t
   integer(c_int32_t), parameter, public :: FUSE_ELEMENT_F64 = 0_c_int32_t
   integer(c_int32_t), parameter, public :: FUSE_ELEMENT_I64 = 1_c_int32_t
+  integer(c_int32_t), parameter, public :: FUSE_ELEMENT_F32 = 2_c_int32_t
+  integer(c_int32_t), parameter, public :: FUSE_ELEMENT_BF16 = 3_c_int32_t
+  integer(c_int32_t), parameter, public :: FUSE_ELEMENT_F16 = 4_c_int32_t
   integer(c_int32_t), parameter, public :: FUSE_MEMSPACE_HOST = 0_c_int32_t
   integer(c_int32_t), parameter, public :: FUSE_MEMSPACE_DEVICE = 1_c_int32_t
   integer(c_int32_t), parameter, public :: FUSE_OWNERSHIP_OWNED = 0_c_int32_t
