@@ -1610,6 +1610,11 @@ fuse_add_gtest(num space_kernels)
 # fuse::num::dual and the view of a field of dual numbers as scalars (plans/2026-10-22-
 # universal-number-types.md, U2). One definition per enabled execution space.
 fuse_add_gtest(num dual LIBS fuse::linalg)
+
+# The Storage conversions (binary32, bfloat16, binary16) as kernels on every enabled
+# execution space, bit for bit against the host functions (plans/2026-10-22-
+# universal-number-types.md, U3).
+fuse_add_gtest(num storage LIBS fuse::linalg)
 fuse_add_omp_legs(num.space_kernels fuse_num_space_kernels_test)
 
 # ---------------------------------------------------------------- search
