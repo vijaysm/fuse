@@ -1,25 +1,23 @@
 #pragma once
 
-// Task 8.4 continuation (S6 phase 3, "LowFive" track): the dataset-name <->
-// field mapping Demo B (examples/demo_b) needs, declared independently of
+// The dataset-name <-> field mapping Demo B (examples/demo_b) needs,
+// declared independently of
 // `fuse::TransportSpec` and `fuse::FieldSpec`.
 //
 // WHY A SEPARATE HEADER, AND WHY NOT ON TransportSpec OR FieldSpec.
 // `TransportSpec` (fuse/transport/transport.hpp) is shared by every
 // transport backend (`CopyTransport`, `MpiTransport`, `LowFiveTransport`);
 // adding a LowFive-only field there would be a field every OTHER backend
-// carries and ignores, and it is also mid-edit by this phase's "MPI
-// connect" track (see src/CMakeLists.txt's own track markers). `FieldSpec`
-// (include/fuse/model/field_spec.hpp) is owned by the model-layer track, not
-// this one. This header is therefore new and self-contained: it is read by
+// carries and ignores. `FieldSpec`
+// (include/fuse/model/field_spec.hpp) belongs to the model layer, not
+// to this one. This header is therefore self-contained: it is read by
 // examples/demo_b's own drivers only, and by test/transport/lowfive_test.cpp.
 // Folding it into the coupling graph properly (so a YAML `channels:` entry
-// can name an HDF5 dataset the way it names a field) is exactly the open
-// question this track's report raises for the lead -- see KNOWN_ISSUES.md
-// section D and docs/user/lowfive.md.
+// can name an HDF5 dataset the way it names a field) is an open design
+// question -- see docs/user/lowfive.md.
 //
 // The string format mirrors Wilkins's own data-centric port model (named in
-// docs/plans/soma-phase-8.md's Task 8.4 interfaces): a "port" is an HDF5
+// docs/plans/soma-phase-8.md): a "port" is an HDF5
 // path pattern, `"<file>.h5/<dataset path>"`. A leading `*` in the file
 // component is a wildcard (matches LowFive's own `set_memory("*", "*")`
 // pattern, already used unconditionally in lowfive_transport.cpp); nothing
@@ -159,7 +157,7 @@ class LowFiveFieldBindingTable {
   std::vector<LowFiveFieldBinding> bindings_;
 };
 
-/// Unit 3b (S6 phase 3, Conformance): the writer/reader intercommunicator
+/// The writer/reader intercommunicator
 /// `DistMetadataVOL` needs for the distributed interception path
 /// (docs/user/lowfive.md's own account of why the single-process
 /// `MetadataVOL` cannot serve two separate OS processes). Derived from
@@ -174,10 +172,9 @@ class LowFiveFieldBindingTable {
 /// SPLIT FOR TESTABILITY, the same reasoning connect.hpp's own module
 /// comment gives: this struct and `plan_lowfive_rendezvous()` below are
 /// pure functions of two already-known `RankSet`s and a rank number --
-/// no MPI call, so they run in the base build configuration this sandbox
-/// can always start, instead of only inside a job MPI cannot launch here
-/// (KNOWN_ISSUES.md C1). The actual `MPI_Comm_split`/`MPI_Intercomm_
-/// create` calls this plan feeds are `#if FUSE_HAVE_MPI`-guarded,
+/// no MPI call, so they run in the base build configuration, instead of
+/// only inside a job MPI cannot launch. The actual `MPI_Comm_split`/
+/// `MPI_Intercomm_create` calls this plan feeds are `#if FUSE_HAVE_MPI`-guarded,
 /// alongside `connect()`'s own MPI-calling functions.
 struct LowFiveRendezvousPlan {
   /// True if this rank is on the writer's side (the field whose

@@ -1,6 +1,6 @@
 #pragma once
 
-// S6 phase 3 ("LowFive" track), Unit 3: build a LowFiveFieldBindingTable
+// Build a LowFiveFieldBindingTable
 // FROM a fuse::CouplingGraph's own fields, instead of a caller hand-listing
 // bindings one at a time (fuse/transport/lowfive.hpp's own standalone
 // `LowFiveFieldBindingTable::add()` constructor, which stays -- it is what
@@ -13,15 +13,14 @@
 // only, and by test/transport/lowfive_test.cpp" -- and every existing
 // caller of that header still wants that property (no CouplingGraph pulled
 // in just to parse a port string). `fuse::FieldSpec::hdf5_path`
-// (fuse/model/field_spec.hpp) now makes a graph-aware builder a real,
-// useful thing to have, but it belongs beside lowfive.hpp, not inside it:
+// (fuse/model/field_spec.hpp) makes a graph-aware builder
+// useful, but it belongs beside lowfive.hpp, not inside it:
 // `transport` sits above `model` in the layer order (tools/check-
 // layering.py), so this file may include fuse/model/coupling_graph.hpp;
 // lowfive.hpp may not, and keeps not needing to.
 //
-// LowFiveFieldBindingTable itself -- the TYPE -- is untouched, exactly the
-// "keep the standalone type as the implementation detail" the lead asked
-// for: this file only adds one more way to populate one.
+// LowFiveFieldBindingTable itself -- the TYPE -- is the standalone
+// implementation type; this file only adds one more way to populate one.
 
 #include <cstdint>
 #include <string>

@@ -15,7 +15,7 @@
 ///     U's OWN state at the START of its step (`state_` before this call)
 ///     and the partner mean it just received -- an explicit, backward-
 ///     Euler-LAGGED reaction, matching "backward Euler for diffusion and
-///     the U decay" (the task's model statement says nothing about an
+///     the U decay" (the model statement says nothing about an
 ///     implicit reaction) while keeping U's own linear system LINEAR, at
 ///     the cost of resolving q at only U's own step resolution, not the
 ///     Toy's union-of-both-schedules knot resolution. See

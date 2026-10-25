@@ -146,7 +146,7 @@ alone, with no new transport logic: the machinery was already
 dimension-generic, it was simply never asked about dimension 0 for a field
 in view.
 
-### H^T on a distributed interface: refused until it can be verified
+### H^T on a distributed interface: refused except for the consistent methods
 
 A Remap into a nodal field on more than one rank is refused
 (`E-RT-REMAP-NODAL-PARALLEL`) for every method except the two consistent ones described below.

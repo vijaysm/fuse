@@ -36,12 +36,13 @@
 /// contributor rank, then ascending local index) gives one answer,
 /// independent of which rank asks.
 ///
-/// This is a robustness-over-efficiency trade: it replicates the WHOLE source mesh's geometry (not the
-/// field data of every OTHER field transfer, only this one interpolation's own
-/// source mesh entity set) on every rank, which does not scale to a source mesh too
-/// large to fit on one rank, and every `apply_*` call is a fresh
-/// `MPI_Allgatherv`, not a cached point-to-point plan. A directory-based, point-to-point implementation is the
-/// natural efficiency follow-up; its concrete next step is reusing
+/// This is a robustness-over-efficiency trade: it replicates the WHOLE
+/// source mesh's geometry (not the field data of every OTHER field
+/// transfer, only this one interpolation's own source mesh entity set) on
+/// every rank, which does not scale to a source mesh too large to fit on
+/// one rank, and every `apply_*` call is a fresh `MPI_Allgatherv`, not a
+/// cached point-to-point plan. A directory-based, point-to-point
+/// implementation is the natural efficiency follow-up; its concrete next step is reusing
 /// `fuse::search::query_points_distributed`, already built and available,
 /// for the row-location step only.
 ///

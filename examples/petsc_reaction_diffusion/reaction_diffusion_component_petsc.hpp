@@ -88,10 +88,9 @@ namespace detail {
     const PhysicsParams& p, double tol = 1e-13, int max_iterations = 40) {
   using detail::check_petsc;
   // PETSc must be initialized before the first PETSc object is created, here
-  // as in fuse/petsc/solve.cpp and token.cpp. Until 2026-10-21 only the
-  // component constructor did this, so a direct call aborted inside
-  // MPI_Comm_get_attr (an uninitialized PETSc has an invalid communicator
-  // keyval): measured on the host, petsc.reaction_diffusion, first case.
+  // as in fuse/petsc/solve.cpp and token.cpp. Without it, a direct call (not through the
+  // component constructor) aborts inside MPI_Comm_get_attr (an
+  // uninitialized PETSc has an invalid communicator keyval).
   if (auto r = fuse::petsc::ensure_initialized(fuse::petsc::comm_self_f()); !r.ok()) {
     return r.error();
   }

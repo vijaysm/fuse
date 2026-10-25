@@ -8,7 +8,7 @@
 #include "fuse/ir/op.hpp"
 #include "fuse/model/iteration.hpp"
 
-// Spec Section 5.3's derived checkpoint set (Task 7.2).
+// Spec Section 5.3's derived checkpoint set.
 //
 // THE RULE, stated so it can be checked. Re-executing an iteration region's
 // body must produce the same answer it would have produced had the previous
@@ -152,7 +152,7 @@ CheckpointSet derive_checkpoint_set(const CouplingGraph& g,
     // nodes (lowering.cpp steps 2 and 3), so the body contains no Sink and the
     // delivery is invisible in the DAG at this point.
     //
-    // D73 ROUND 2: excludes `OpKind::BuildRemapHalo` explicitly, the same way
+    // Excludes `OpKind::BuildRemapHalo` explicitly, the same way
     // `build_iteration_regions()` (src/ir/regions.cpp) excludes it from a
     // region's own `body` collection. `BuildRemapHalo` carries the
     // qualifying channel's own `ChannelId` as its `origin` (so `execute_
@@ -163,7 +163,7 @@ CheckpointSet derive_checkpoint_set(const CouplingGraph& g,
     // component this checkpoint set should name. Without this exclusion, a
     // caller that ever handed this function a `region.body` containing a
     // `BuildRemapHalo` node (this file's own `derive_checkpoint_set` does
-    // not itself enforce round 1's exclusion -- it trusts the caller's own
+    // not itself enforce that exclusion -- it trusts the caller's own
     // `body`) would silently attribute that channel's components to the
     // checkpoint set regardless of whether the real body actually reads or
     // writes anything belonging to them.
@@ -254,7 +254,7 @@ CheckpointSet derive_checkpoint_set(const CouplingGraph& g,
 // `verify_rollback_support(graph, ComponentSet)` lived here upstream. It asks the
 // RUNTIME what each component can do (`Component::supports_rollback`), so in this
 // library it is a layering inversion: `ir` may not depend on `runtime`. It moved
-// to src/runtime/checkpoint_support.cpp, which S4 builds; the derivation above
+// to src/runtime/checkpoint_support.cpp; the derivation above
 // stays here because it is a pure function of the graph.
 //
 // `verify_iteration_region(..., ComponentSet)` moved with it, because it calls
@@ -270,7 +270,7 @@ Diagnostics verify_iteration_declaration(
     const std::string& region_name, int max_iterations,
     const ConvergenceCriterion& convergence) {
   Diagnostics diags;
-  // Task 7.1's hazard. all_satisfied() on an empty criterion returns true --
+  // The hazard: all_satisfied() on an empty criterion returns true --
   // correctly, since true is the identity of AND and there is nothing to
   // refuse. For a region that means the first sweep is declared converged: an
   // explicit scheme wearing an implicit scheme's report. convergence.hpp

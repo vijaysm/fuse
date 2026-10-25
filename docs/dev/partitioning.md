@@ -76,7 +76,7 @@ parity with the oracle below is verified end to end, including on the user's hos
 `rcb_partition`'s entry-point rejections (`E-PART-SIZE-MISMATCH`, `E-PART-NUM-PARTS`,
 `E-PART-WEIGHT`) are each a RANK-LOCAL computation -- a per-rank view's own length, a per-rank
 `RcbOptions::num_parts`, a per-rank weights array's sign -- but never a rank-local RETURN when
-`comm != kNullComm`. Found 2026-10-11: they used to throw directly, before
+`comm != kNullComm`. They used to throw directly, before
 `detail::recursive_bisect`'s first Allreduce, so a caller's precondition bug on exactly one rank
 hung every other rank waiting in that collective. The fix mirrors `centroids_of`'s and
 `fuse::native::migrate`'s own recipe: this rank's combined verdict is Allreduce(MIN)-agreed with

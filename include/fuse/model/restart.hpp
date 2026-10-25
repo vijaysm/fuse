@@ -45,13 +45,12 @@
 /// `declared_global_size` every caller for that field reported (which
 /// must therefore agree across every caller of the SAME field -- `finish_
 /// point()` refuses, by name, if two calls for the same field declared
-/// different global sizes). At a single rank (Slice 1, no MPI in this
-/// sandbox) this degenerates to a purely local sort with no communication;
-/// Slice 2 extends `finish_point()`'s own combined sort into one collective
-/// (a single `Allgatherv` over the SAME combined buffer, not N separate
-/// ones per field) rather than replacing it, so the tier-0 code path this
-/// slice tests is not thrown away when MPI is added -- see docs/dev/
-/// restart.md Section 7(iv)'s own tier split.
+/// different global sizes). At a single rank (no MPI) this
+/// degenerates to a purely local sort with no communication; under MPI
+/// the combined sort extends into one collective (a single `Allgatherv`
+/// over the SAME combined buffer, not N separate ones per field) rather
+/// than replacing it, so the tier-0 code path stays in use -- see
+/// docs/dev/restart.md Section 7(iv)'s own tier split.
 
 #include <cstddef>
 #include <cstdint>
@@ -239,17 +238,16 @@ class RestartWriter {
   /// component.hpp), recorded so a reader can refuse an incompatible
   /// blob by name rather than by a corrupted read -- the same posture
   /// `kGraphVersion` (fuse/model/descriptor.hpp) already takes for the
-  /// coupling graph. UNCHANGED by Slice 1b's typed-fields work (owner's
-  /// own instruction: "the opaque byte record (form B) is unchanged") --
-  /// an opaque blob has no element type for this scheme to tag.
+  /// coupling graph. Unaffected by typed fields: an opaque blob (form B)
+  /// has no element type for this scheme to tag.
   virtual Result<void> put_blob(std::string_view qualified_name,
                                 std::span<const std::byte> bytes,
                                 std::uint32_t version) = 0;
 
-  /// Owner decision 2's own batched check -- see this file's header
+  /// The batched check -- see this file's header
   /// comment. Called exactly once, after every `put_field()`/`put_scalar()`
   /// `put_scalar_rational()`/`put_blob()` call for this restart point has
-  /// returned successfully; refuses (collectively, when Slice 2 adds MPI)
+  /// returned successfully; refuses
   /// on a duplicate id within one field across callers, a global-size
   /// disagreement, or (E-RESTART-BAD-NUMBERING) a field whose received
   /// count never reaches its declared global size.

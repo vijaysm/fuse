@@ -2,8 +2,8 @@
 
 /// Multiscale and surrogate contracts -- **declared, and rejecting.**
 ///
-/// Neither parent implements these. They are declared now, at the stage that
-/// freezes the descriptor, for one reason: the narrow waist is about to become a
+/// Neither parent implements these. They are declared ahead of the
+/// descriptor freeze, for one reason: the narrow waist is about to become a
 /// binary dependency, and a type added to it later is an ABI break. Declaring the
 /// shape now costs nothing; discovering it after the freeze costs a version.
 ///

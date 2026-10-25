@@ -53,8 +53,8 @@
 /// `q = U^2*V - A*U` -- the one genuinely elementwise, embarrassingly
 /// parallel kernel in this model -- is instead computed on a
 /// `Kokkos::View<double*>` with `Kokkos::parallel_for` over the canonical
-/// cell index space (`reaction_kokkos`, below): this is the "port to
-/// Kokkos" the task asks for, and it is what makes `ctest -L omp` load-
+/// cell index space (`reaction_kokkos`, below): this is the Kokkos
+/// port, and it is what makes `ctest -L omp` load-
 /// bearing for this example (examples/CMakeLists.txt registers an
 /// `omp_identical` leg exactly as mms_pair/dn_heat do). FUSE's remap
 /// weights (fuse::RemapWeights, built over the NATIVE mesh's own local

@@ -333,7 +333,7 @@ int main(int argc, char** argv) {
   memset(&setup, 0, sizeof(setup));
   setup.struct_size = sizeof(setup);
   setup.communicator = (int64_t)MPI_Comm_c2f(MPI_COMM_WORLD);
-  /* KNOWN_ISSUES.md D76: MPI_Comm_c2f(MPI_COMM_WORLD) is 0 under Open MPI,
+  /* MPI_Comm_c2f(MPI_COMM_WORLD) is 0 under Open MPI,
    * which this struct's older sentinel read as "no communicator" -- set
    * has_communicator so fuse_setup() knows 0 really is this process's own
    * world, not an absent one. */
@@ -342,27 +342,25 @@ int main(int argc, char** argv) {
   rc = t->setup(ctx, &setup, NULL);
   if (rc != FUSE_OK) fail(ctx, "setup", rc);
 
-  /* D14 Stage B (KNOWN_ISSUES.md), decision 5: the attach call moves
+  /* The attach call comes
    * HERE, after fuse_setup() succeeds, uniformly for mpmd and accept
    * (not mode-conditional) -- base_communicator() (entries.def) has
    * nothing to report before setup() has run its own collective. Cold-
    * start priming (u_loop.c's own first write-then-read, below, after
-   * bruss_u_create()) is UNAFFECTED: it already runs after this point in
-   * program order (it needs uh/u_in/u_out, not created yet either), so
-   * moving the attach call earlier in that same post-setup region changes
-   * nothing about when priming itself happens, only when the VOL
-   * registration it depends on does -- strictly before, same as before.
+   * bruss_u_create()) runs after this point in program order (it needs
+   * uh/u_in/u_out, not created yet either), strictly after the VOL
+   * registration it depends on.
    *
-   * bridge_comm_f, decision 5's own ruling: mpmd keeps MPI_COMM_WORLD
+   * bridge_comm_f: mpmd passes MPI_COMM_WORLD
    * literally (connect_mpmd() merely dups it, so the two are congruent,
    * same rank for same process, by construction -- but they are NOT the
-   * SAME communicator object, and this track found no way to show they
+   * SAME communicator object, and nothing shows they
    * are interchangeable for MPI_Intercomm_create's own peer_comm
-   * argument without a host measurement this sandbox cannot make; the
-   * mpmd row already PASSES on the host with MPI_COMM_WORLD, so nothing
-   * here risks that regression for zero measured benefit). Accept mode
-   * queries the new accessor -- the ONLY way to recover the merged
-   * communicator connect() formed (D14's own gap, Stage A section 3). */
+   * argument without a host measurement; the
+   * mpmd row passes on the host with MPI_COMM_WORLD, so nothing
+   * here risks a regression for zero measured benefit). Accept mode
+   * queries base_communicator() -- the ONLY way to recover the merged
+   * communicator connect() formed. */
   long long bridge_comm_f = 0;
   if (is_mpmd_launch) {
     bridge_comm_f = (long long)MPI_Comm_c2f(MPI_COMM_WORLD);
@@ -382,15 +380,15 @@ int main(int argc, char** argv) {
     bridge_comm_f = bci.communicator;
   }
 
-  /* D14 Stage B, decision 3 (the companion fix): called by EVERY rank,
+  /* Called by EVERY rank,
    * physics and placeholder alike -- the collective MPI_Comm_split()
    * inside needs the WHOLE bridge's participation, coupler/placeholder
    * included (lowfive_attach.h's own doc comment on this function has
    * the full account); safe and cheap even for an ordinary, non-LowFive
    * run (no MPI call at all when the graph carries no hdf5_path field).
    * NEVER gated on use_lowfive/is_physics_rank -- gating a collective on
-   * either would be exactly the "collective skipped on a locally
-   * computed condition" hazard this track was asked to audit for. */
+   * either would be a "collective skipped on a locally
+   * computed condition" hazard. */
   long long local_comm_f = 0;
   {
     char split_errbuf[2048];
@@ -404,11 +402,11 @@ int main(int argc, char** argv) {
     }
   }
 
-  /* D14 Stage B, decision 3 (the companion fix): a rank with nothing to
+  /* A rank with nothing to
    * attach (local_comm_f == 0 -- the bundled coupler/placeholder, or any
    * run with no qualifying channel) must NEVER call
-   * bruss_lowfive_attach() at all, mirroring coupler_main.c's own,
-   * pre-existing, explicit convention ("this process never calls
+   * bruss_lowfive_attach() at all, mirroring coupler_main.c's own
+   * explicit convention ("this process never calls
    * bruss_lowfive_attach()"). Gating THIS call on is_physics_rank/
    * local_comm_f is safe precisely because it is NOT collective --
    * unlike the split above, bruss_lowfive_attach() forms its own
@@ -448,13 +446,11 @@ int main(int argc, char** argv) {
    * out struct is negotiated exactly like an in struct: the library reads
    * the caller's struct_size to learn which layout it was compiled
    * against, and a zero is not "unset, use the current layout" but a
-   * version older than anything it knows -- FUSE_ERR_VERSION. Only
-   * u_out_ref used to get one (set again at its own lookup below), so
-   * field_handle("u_in") failed with -6 the first time this program ran
-   * far enough to reach it (host, 2026-10-09). The tier-0 conformance
-   * harness drives the SAME loops through the same ABI and never saw it,
-   * because it is a different caller: this is u_main.c's own bug, and the
-   * negotiation check is what caught it. */
+   * version older than anything it knows -- FUSE_ERR_VERSION. Without
+   * it, field_handle("u_in") fails with -6. The tier-0 conformance
+   * harness drives the SAME loops through the same ABI and never sees
+   * this, because it is a different caller: the negotiation check is
+   * what catches it. */
   fuse_field_ref u_out_ref, u_in_ref, v_out_peer_ref;
   memset(&u_out_ref, 0, sizeof(u_out_ref));
   u_out_ref.struct_size = sizeof(u_out_ref);
@@ -478,18 +474,17 @@ int main(int argc, char** argv) {
     /* The grid is brusselator_grid.h's, the SAME header the graph tool
      * writes the meshes from. The participant ABI has no "field length"
      * query (the caller is expected to know its own grid), which is
-     * exactly why the number must come from one place: this file carried
-     * its own copy, the graph tool moved to 16x16 and this stayed at 3x3,
-     * and a 9-element registration against a 256-cell field ran for two
-     * days before the host measured a trajectory nothing could explain. */
+     * exactly why the number must come from one place: a private copy
+     * here could drift from the graph tool's grid, and a 9-element
+     * registration against a 256-cell field gives a trajectory nothing
+     * can explain. */
     const int nx = BRUSS_NX_U, ny = BRUSS_NY_U;
-    /* Physics track: OWNED size at (u_rank, u_size), not the GLOBAL
-     * nx*ny every pre-decomposition caller used -- at u_size==1 the two
-     * are equal (u_rank==0 forced above), so this is byte-identical to
-     * before for every row this file's own ctest rows exercise today
-     * (ranks_u 1 or 2; the latter genuinely decomposed). The registered
+    /* OWNED size at (u_rank, u_size), not the GLOBAL
+     * nx*ny -- at u_size==1 the two
+     * are equal (u_rank==0 forced above). This file's own ctest rows use
+     * ranks_u 1 or 2; the latter is genuinely decomposed. The registered
      * field storage below (view.count/owned_count) is this SAME nu, per
-     * the Runner's own per-placement sizing (D24/D25). */
+     * the Runner's own per-placement sizing. */
     nu = bruss_owned_size(nx, ny, u_rank, u_size);
     if (nu < 0) fail(ctx, "bruss_owned_size", FUSE_ERR_RUNTIME);
     u_out = (double*)calloc((size_t)nu, sizeof(double));
@@ -499,13 +494,12 @@ int main(int argc, char** argv) {
      * (test/verification/brusselator_participants_test.cpp, "U seeded
      * from V's own initial provided value"): U's initial reaction rate
      * depends on V's initial state on U's grid, and V's initial state is
-     * not uniform, so "zero is a valid starting point" (what this block
-     * said until 2026-10-09) is a DIFFERENT problem from the one V and the
+     * not uniform, so "zero is a valid starting point" would be a DIFFERENT problem from the one V and the
      * single-process example solve. A throwaway V, built from the same
      * header's grid, is read for its constructor's own initial P_VU(V0)
      * and discarded -- deterministic, cheap, and bit-identical to what the
      * real V in the other program starts from. The throwaway V is always
-     * SINGLE-rank (V's own decomposition is a different track's work --
+     * SINGLE-rank (V's own decomposition is not supported here --
      * species_core.hpp's own VParticipant::make refuses otherwise), so
      * its own bruss_v_provided() hands back the WHOLE U grid
      * (nx*ny); bruss_owned_slice() is what restricts that down to THIS
@@ -666,18 +660,16 @@ int main(int argc, char** argv) {
     free(u_in);
     free(u_out);
   } else {
-    /* Unit 2b (D19), step (d): a bundled-coupler placeholder rank
+    /* A bundled-coupler placeholder rank
      * (accept mode, --ranks-coupler > 0) hosts no externally driven
-     * component -- fuse_run() is now legal here (Runner::hosts_
+     * component -- fuse_run() is legal here (Runner::hosts_
      * component() says so; fuse_run()'s own E-ABI-RUN-EXTERNAL refusal
      * only fires when one IS hosted). This is the ONLY way this rank
      * can execute its own share of the period's collectives (the
      * Transport/Remap routed through it) at all: it registers no
-     * field, so begin_step()/end_step() have nothing to drive, and
-     * before this fix this branch did not exist -- this rank called
-     * neither, leaving U's own rank blocked in the first Transport
-     * that needed this one's participation (KNOWN_ISSUES.md D19,
-     * evidence 4). Same --periods every physics rank steps, so every
+     * field, so begin_step()/end_step() have nothing to drive; a rank
+     * that called neither would leave U's own rank blocked in the first
+     * Transport that needed this one's participation. Same --periods every physics rank steps, so every
      * rank's own period count agrees (the schedule's own common-
      * period invariant depends on it). */
     fuse_run_request req;
@@ -691,14 +683,14 @@ int main(int argc, char** argv) {
   rc = t->destroy(ctx, NULL, NULL);
   if (rc != FUSE_OK) fail(NULL, "destroy", rc);
 
-  /* Round 2 ("role-ordered serve"), new in this track: called
+  /* Called
    * unconditionally (harmless no-op when !use_lowfive or the attach was
    * never reached) at the very end, after this process's own last
    * u_lowfive_write_export()/u_lowfive_read_import() call and before
    * tearing down MPI -- lowfive_attach.h's own header comment has the
    * full account of what this catches (a first-reader role's own
    * deferred serve left unflushed, which would otherwise be a silent
-   * data drop instead of a refusal). D14 Stage B: this is ALSO now
+   * data drop instead of a refusal). This is ALSO
    * where the local split and intercomm this process created are freed
    * (bruss_lowfive_finalize()'s own doc comment has the full account of
    * the order) -- still unconditional and still harmless for the

@@ -93,7 +93,7 @@ struct RoundedSignificand {
 /// path calls: decodes `raw` as `from_info`'s own layout, rounds to
 /// `to_info`'s own significand width (handling the exponent carry
 /// `round_significand()` may report, and any further exponent-range
-/// clamping the OWNER's design does not define -- `to_info`'s own
+/// clamping this design does not define -- `to_info`'s own
 /// `exponent_bits` is assumed wide enough to hold the result, which
 /// every (from,to) pair this call is ever reached for in fact is, because
 /// `fuse::restart_io` only calls this once `ReadConversion::AllowNarrowing`

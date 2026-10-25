@@ -25,21 +25,18 @@ namespace {
   return std::string(buf, static_cast<std::size_t>(len));
 }
 
-// KNOWN_ISSUES.md D18, round 3 (the lead's own instruction): parallel.
-// connect.chain.3 failed in 10.7s (not a 120s TIMEOUT) and chain.4 timed
-// out at 120s -- distinguishable, on the host, only from WHICH rendezvous
-// step each process was in when it stopped, which no log before this
-// round captured (run_chain.sh's own a/b/c/d.log carried nothing past
-// MPICH's own leak report). The accept rows this chain reuses
-// (connect_pairwise(), run_pair.sh) are already known-intermittent on
-// this host (D23/D65); this trace is what lets a future host run tell
-// "the chain itself deadlocks" apart from "the same pre-existing
-// accept/connect intermittency, now on a 3- or 4-way chain". OFF by
-// default -- the style docs/dev's own examples/brusselator/participants/
-// lowfive_attach_decision.hpp follows for FUSE_LOWFIVE_ATTACH_TRACE:
-// `fuse::transport` cannot depend on that file at all (it sits ABOVE
-// this layer), so this is a separate, local instance of the identical
-// pattern, not a reuse of it.
+// Optional trace of which rendezvous step each process is in. A chain failure
+// (a fast error versus a 120s timeout) is distinguishable, on a host, only from
+// WHICH rendezvous step each process was in when it stopped, which the launcher
+// logs do not capture (they carry nothing past MPICH's own leak report). The
+// accept rows this chain reuses (connect_pairwise(), run_pair.sh) are known to
+// be intermittent on some hosts; this trace is what lets a host run tell "the
+// chain itself deadlocks" apart from "the same accept/connect intermittency,
+// now on a 3- or 4-way chain". OFF by default -- the style
+// examples/brusselator/participants/lowfive_attach_decision.hpp follows for
+// FUSE_LOWFIVE_ATTACH_TRACE: `fuse::transport` cannot depend on that file at
+// all (it sits ABOVE this layer), so this is a separate, local instance of the
+// identical pattern, not a reuse of it.
 [[nodiscard]] inline bool ParseConnectChainTraceEnabledEnv(const char* raw) noexcept {
   return raw != nullptr && raw[0] == '1' && raw[1] == '\0';
 }
@@ -63,13 +60,13 @@ void TraceChainStep(const char* fn, std::size_t step_index, int rank, const char
   std::fflush(stderr);
 }
 
-// Review 2026-10-11 TR-9. The same discipline mpi_transport.cpp's and
-// comm_graph.cpp's own header comments state: a failure that cannot be
-// agreed across ranks (because it happens inside, or strictly between,
-// collectives every rank already entered together) aborts loudly with a
-// message rather than returning a Result one rank's peers never see --
-// returning instead leaves them in whatever COLLECTIVE this communicator's
-// caller performs next, waiting for a rank that already left.
+// The same discipline mpi_transport.cpp's and comm_graph.cpp's own header
+// comments state: a failure that cannot be agreed across ranks (because it
+// happens inside, or strictly between, collectives every rank already entered
+// together) aborts loudly with a message rather than returning a Result one
+// rank's peers never see -- returning instead leaves them in whatever
+// COLLECTIVE this communicator's caller performs next, waiting for a rank that
+// already left.
 [[noreturn]] void abort_job(MPI_Comm comm, const char* what) {
   std::fprintf(stderr,  // NOLINT(fuse-raw-io)
                "FUSE: connect() cannot continue (%s). Aborting rather than "
@@ -160,16 +157,15 @@ void TraceChainStep(const char* fn, std::size_t step_index, int rank, const char
                                                       ComponentId my_id,
                                                       MPI_Comm world,
                                                       const ConnectOptions& opts) {
-  // TR-17: the two-component rule itself now lives in connect.hpp, pure
-  // and MPI-free, so a tier-0 test can fire its refusal directly.
+  // The two-component rule itself lives in connect.hpp, pure and MPI-free,
+  // so a tier-0 test can fire its refusal directly.
   //
-  // D18: connect_mode_components() may now return MORE than two
-  // components (the N-way chain generalisation) -- this function is
-  // ALWAYS the two-party merge of the first two in that order, used
-  // standalone for a plain two-component graph and as connect_chain()'s
-  // own step 1 for a longer one; connect_chain() never calls this with
-  // `my_id` outside {order[0], order[1]}, so looking only at those two
-  // here, regardless of how many more the graph declares, is correct.
+  // connect_mode_components() may return MORE than two components (the N-way
+  // chain generalisation) -- this function is ALWAYS the two-party merge of the
+  // first two in that order, used standalone for a plain two-component graph
+  // and as connect_chain()'s own step 1 for a longer one; connect_chain() never
+  // calls this with `my_id` outside {order[0], order[1]}, so looking only at
+  // those two here, regardless of how many more the graph declares, is correct.
   const auto order_result = ::fuse::transport::connect_mode_components(g);
   if (!order_result.ok()) return order_result.error();
   const std::vector<ComponentId>& order = order_result.value();
@@ -203,12 +199,12 @@ void TraceChainStep(const char* fn, std::size_t step_index, int rank, const char
   MPI_Comm intercomm = MPI_COMM_NULL;
   if (mine.launch.is_acceptor) {
     char port_name[MPI_MAX_PORT_NAME] = {};
-    // Review 2026-10-11 TR-5. rank 0 alone opens the port and publishes its
-    // name; a failure in either call used to return from rank 0 right here,
-    // while every other acceptor rank went on into the MPI_Bcast below and
-    // blocked in it forever. rank 0's outcome is now itself broadcast first,
-    // so every acceptor rank learns it and returns the same E-CONNECT-MPI
-    // together before any rank reaches the port-name Bcast.
+    // rank 0 alone opens the port and publishes its name; if a failure in
+    // either call returned from rank 0 right here, every other acceptor rank
+    // would go on into the MPI_Bcast below and block in it forever. So rank 0's
+    // outcome is itself broadcast first, so every acceptor rank learns it and
+    // returns the same E-CONNECT-MPI together before any rank reaches the
+    // port-name Bcast.
     int         open_rc = MPI_SUCCESS;
     std::string open_detail;
     if (rank == 0) {
@@ -259,14 +255,13 @@ void TraceChainStep(const char* fn, std::size_t step_index, int rank, const char
   MPI_Comm merged = MPI_COMM_NULL;
   rc = MPI_Intercomm_merge(intercomm, i_am_first ? 0 : 1, &merged);
   // MPI_Comm_disconnect, not MPI_Comm_free: this intercommunicator is the
-  // connection itself, and freeing it locally leaves the peer's half in
-  // place. Measured on the host 2026-10-08 -- with MPI_Comm_free here the
-  // acceptor took SIGSEGV inside MPICH's own communicator bookkeeping
-  // (MPII_CommL_forget, reading a freed communicator) about a tenth of a
-  // second in, long before MPI_Finalize, and the connector then failed
-  // dup'ing the merged communicator. Both sides reach this point together,
-  // so the collective is matched. The merged communicator survives it and
-  // is what the caller gets; it is released separately by disconnect().
+  // connection itself, and freeing it locally leaves the peer's half in place.
+  // With MPI_Comm_free here the acceptor took SIGSEGV inside MPICH's own
+  // communicator bookkeeping (MPII_CommL_forget, reading a freed communicator)
+  // about a tenth of a second in, long before MPI_Finalize, and the connector
+  // then failed dup'ing the merged communicator. Both sides reach this point
+  // together, so the collective is matched. The merged communicator survives it
+  // and is what the caller gets; it is released separately by disconnect().
   MPI_Comm_disconnect(&intercomm);
   if (rc != MPI_SUCCESS) {
     return Failure{"E-CONNECT-MPI", "MPI_Intercomm_merge failed: " + mpi_error_text(rc)};
@@ -280,24 +275,22 @@ void TraceChainStep(const char* fn, std::size_t step_index, int rank, const char
   return out;
 }
 
-// KNOWN_ISSUES.md D18. Generalises connect_pairwise() above to any number
-// of Connect-mode components (>= 2), per connect_chain_plan()'s own rule
-// (connect.hpp): step 1 is connect_pairwise() ITSELF, verbatim, between
-// order[0] and order[1]; each later step i merges the chain already
-// formed from order[0..i-1] with order[i] alone, with order[i] always
-// the acceptor (connect_chain_plan() already refused a graph where that
-// is not declared, before this function is ever called). For the
-// REAL two-component graph (order.size() == 2) this performs EXACTLY
-// one merge -- step 1 -- so behaviour for every existing two-component
+// Generalises connect_pairwise() above to any number of Connect-mode components
+// (>= 2), per connect_chain_plan()'s own rule (connect.hpp): step 1 is
+// connect_pairwise() ITSELF, verbatim, between order[0] and order[1]; each
+// later step i merges the chain already formed from order[0..i-1] with order[i]
+// alone, with order[i] always the acceptor (connect_chain_plan() already
+// refused a graph where that is not declared, before this function is ever
+// called). For the REAL two-component graph (order.size() == 2) this performs
+// EXACTLY one merge -- step 1 -- so behaviour for every existing two-component
 // caller is unchanged.
 //
-// Built, not run: this sandbox cannot start mpiexec (KNOWN_ISSUES.md C1).
+// Built, not run: a sandbox that cannot start mpiexec cannot exercise it.
 // The host rows this entry names (`parallel.connect.chain.{3,4}`) are not
-// registered in this round -- see KNOWN_ISSUES.md D18's own updated entry
-// for why building the matching N-executable test harness was scoped out
-// of this round's budget, and what test/parallel/connect/connect_common.
-// hpp's own build_graph()/run_participant() would need to grow a third
-// and fourth participant executable.
+// registered: the matching N-executable test harness does not exist yet,
+// and test/parallel/connect/connect_common.hpp's own
+// build_graph()/run_participant() would need to grow a third and fourth
+// participant executable.
 [[nodiscard]] Result<ConnectedWorld> connect_chain(const CouplingGraph& g,
                                                    ComponentId my_id,
                                                    MPI_Comm world,
@@ -484,11 +477,10 @@ Result<ConnectedWorld> connect(const CouplingGraph& g, int my_world_comm_f,
           !r.ok()) {
         return r.error();
       }
-      // D18 (KNOWN_ISSUES.md): connect_chain() subsumes the plain
-      // two-component case as its own single step (connect_chain_plan()'s
-      // own rule, connect.hpp), so every existing two-component caller's
-      // behaviour is unchanged -- this is connect_pairwise()'s own body,
-      // run once, for order.size() == 2.
+      // connect_chain() subsumes the plain two-component case as its own single
+      // step (connect_chain_plan()'s own rule, connect.hpp), so every existing
+      // two-component caller's behaviour is unchanged -- this is
+      // connect_pairwise()'s own body, run once, for order.size() == 2.
       return connect_chain(g, opts.my_component, world, opts);
     case LaunchMode::Plugin:
       // A plugin is mounted (fuse::abi_detail::Registry), never launched: it
@@ -502,16 +494,14 @@ Result<ConnectedWorld> connect(const CouplingGraph& g, int my_world_comm_f,
                          "connect, and my_world_comm_f already is the base "
                          "communicator"};
     case LaunchMode::LowFive:
-      // S6 phase 3 ("LowFive" track), Unit 3. Today's only implemented
-      // case (launch.hpp's own doc on this value) is in-process: the
-      // ranks a LowFive-launched component runs on come from whatever
-      // OTHER launch story this run uses (or none at all), never from
+      // The only implemented case (launch.hpp's own doc on this value) is
+      // in-process: the ranks a LowFive-launched component runs on come from
+      // whatever OTHER launch story this run uses (or none at all), never from
       // this call -- same refusal shape as InProcess/Plugin above. The
-      // distributed, cross-executable extension this value's own doc
-      // comment names (DistMetadataVOL's own intercommunicator) is
-      // explicitly NOT this function's job either way
-      // (docs/user/lowfive.md's own "forming the intercommunicator is
-      // explicitly NOT this transport's job" ruling for Demo B's
+      // distributed, cross-executable extension this value's own doc comment
+      // names (DistMetadataVOL's own intercommunicator) is explicitly NOT this
+      // function's job either way (docs/user/lowfive.md: forming the
+      // intercommunicator is explicitly not this transport's job, for the
       // identical case).
       return Failure{"E-CONNECT-SPEC",
                      "connect() called for component '" + mine.name +

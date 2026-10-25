@@ -141,8 +141,7 @@ interleaving instruction was the region's *own* sink — a non-member reading
 the region's converged output — and that made both halves of the fix obvious:
 group the members, but not when a non-member reads an external value the
 region re-advances. Reading a diagnostic beats reading the code that produces
-it, and this session spent that lesson twice (see also
-`FUSE_TRANSPORT_DEBUG` in `rank-agreement.md`).
+it (see also `FUSE_TRANSPORT_DEBUG` in `rank-agreement.md`).
 
 ## Opt-in traces outside `base/error.hpp`'s own mechanism
 

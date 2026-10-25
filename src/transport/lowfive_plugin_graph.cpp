@@ -1,4 +1,4 @@
-// S6 phase 3 (Conformance, "LowFive" track), Unit 3b. The graph/bindings/
+// The graph/bindings/
 // rendezvous half of the `fuse-lowfive-vol` plugin -- see lowfive_plugin_
 // internal.hpp's own header comment for why this is a SEPARATE
 // translation unit from lowfive_plugin_vol.cpp rather than one file: this
@@ -33,35 +33,31 @@ namespace fuse::lowfive_plugin_internal {
 namespace {
 
 #if FUSE_HAVE_MPI
-// Unit 3b's own distributed half: find the ONE LowFive-bound channel's
+// The distributed half: find the ONE LowFive-bound channel's
 // writer/reader RankSets this process is a member of, via
 // fuse::plan_lowfive_rendezvous() (include/fuse/transport/lowfive.hpp,
-// this track's own tier-0-tested rank-set arithmetic). Forming the
+// its tier-0-tested rank-set arithmetic). Forming the
 // actual intercommunicator (MPI_Comm_split/MPI_Intercomm_create) is
 // deliberately NOT this function's job -- lowfive_plugin_vol.cpp does
 // that, from the plain RendezvousPlan this returns, the same split this
 // header's own comment explains.
 //
-// SCOPED TO MPMD LAUNCH ONLY, same as this track's reference graph:
-// MPI_COMM_WORLD's own rank IS the graph's base-communicator rank in
-// that mode. In ACCEPT mode the base communicator connect() builds by
-// merging two intercommunicators is never exposed back to a caller (no
-// ABI query returns it) -- an open question for the lead, not silently
-// guessed past.
+// SCOPED TO MPMD LAUNCH ONLY: MPI_COMM_WORLD's own rank IS the graph's
+// base-communicator rank in that mode. In ACCEPT mode the base
+// communicator connect() builds by merging two intercommunicators is not
+// visible to this path.
 //
-// ADDITIVE NOTE, D14 Stage B (2026-10-13): that ABI gap is closed --
-// `fuse_coupler_abi()`'s new `base_communicator()` entry
-// (`fuse_base_communicator_info`, `include/fuse/abi/entries.def`) now
-// returns the merged communicator setup() formed, for every launch
-// mode, not MPMD alone. This function's own behaviour is UNCHANGED by
-// that: it reads `MPI_COMM_WORLD` directly because it runs inside
-// `fuse-lowfive-vol`'s OWN plugin-side env-route path (the
-// `HDF5_VOL_CONNECTOR` route), a different consumer from the
-// Brusselator example's programmatic attach path
-// (`examples/brusselator/participants/lowfive_attach.cpp`, which DOES
-// use the new accessor). Extending the env-route path itself to accept
+// `fuse_coupler_abi()`'s `base_communicator()` entry
+// (`fuse_base_communicator_info`, `include/fuse/abi/entries.def`) does
+// return the merged communicator setup() formed, for every launch mode,
+// not MPMD alone. This function does not use it: it reads
+// `MPI_COMM_WORLD` directly because it runs inside `fuse-lowfive-vol`'s
+// OWN plugin-side env-route path (the `HDF5_VOL_CONNECTOR` route), a
+// different consumer from the Brusselator example's programmatic attach
+// path (`examples/brusselator/participants/lowfive_attach.cpp`, which
+// DOES use the accessor). Extending the env-route path itself to accept
 // mode -- reading `base_communicator()` here instead of assuming
-// `MPI_COMM_WORLD` -- is a separate change, out of this stage's scope.
+// `MPI_COMM_WORLD` -- is not done here.
 bool ConfigureDistributed(const fuse::CouplingGraph& g, Config* out) {
   int mpi_initialized = 0;
   MPI_Initialized(&mpi_initialized);
@@ -71,7 +67,7 @@ bool ConfigureDistributed(const fuse::CouplingGraph& g, Config* out) {
   MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);
 
   // The first LowFive-bound channel found decides this process's own
-  // writer/reader role -- this track's reference graph has exactly one
+  // writer/reader role -- the reference graph has exactly one
   // channel per direction, each a separate field, so "first found"
   // never has to choose between two disagreeing channels in practice;
   // a graph with more than one would need this loop to confirm every

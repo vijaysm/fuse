@@ -88,8 +88,7 @@ enum class OpKind {
   /// that order, and a LowFive-bound channel's own chain could and did
   /// get scheduled before the exporting member's own `WindowAdvance` in
   /// the SAME sweep -- reading last sweep's state instead of this one's
-  /// (MEASURED this session; not yet recorded as its own divergence note
-  /// in docs/user/lowfive.md). The rest of the channel's chain (Scale,
+  /// (measured). The rest of the channel's chain (Scale,
   /// Remap, Extrapolate, the window-importing
   /// Sink) is unchanged downstream of it.
   ///

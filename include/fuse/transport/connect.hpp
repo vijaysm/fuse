@@ -18,7 +18,7 @@
 /// `#if FUSE_HAVE_MPI`, so `validate_launch_layout()`, `check_mpmd_layout()`
 /// and `wait_for_port_file()` compile and run at the base build
 /// configuration, where most of this project's tests run, instead of only
-/// inside a two-rank job this sandbox cannot start (KNOWN_ISSUES.md C1).
+/// inside a two-rank job.
 ///
 /// COLLECTIVE AGREEMENT, THE EASY WAY. `connect()`'s refusals
 /// (`E-CONNECT-SPEC`, `E-CONNECT-APPNUM`) are computed from data that is
@@ -26,11 +26,11 @@
 /// itself (every rank parses the same descriptor) and, for
 /// `check_mpmd_layout()`, an `MPI_Allgather`ed array rather than any rank's
 /// private view. A deterministic function of identical input returns an
-/// identical answer on every rank without a further reduction; see
-/// KNOWN_ISSUES.md D3 for why a collective path must never return on a
-/// locally computed condition, and how `MpiTransport::build_plan` earns the
-/// same property in a harder case (its validation is NOT already uniform,
-/// so it reduces with `MPI_Allreduce` before anyone acts on it).
+/// identical answer on every rank without a further reduction. (A
+/// collective path must never return on a locally computed condition;
+/// `MpiTransport::build_plan` earns the same property in a harder case --
+/// its validation is NOT already uniform, so it reduces with
+/// `MPI_Allreduce` before anyone acts on it.)
 
 #include <algorithm>
 #include <chrono>
@@ -51,7 +51,7 @@ namespace fuse::transport {
 /// Whether this build offers the `Connect` launch mode, decided at configure
 /// time by `tools/probe-mpi-dynamic.sh`: an MPI may provide
 /// `MPI_Comm_accept`/`MPI_Comm_connect` and still be unable to use them
-/// between two jobs on one node (`KNOWN_ISSUES.md` D23). `Mpmd` is not
+/// between two jobs on one node. `Mpmd` is not
 /// affected and is never gated on this.
 inline constexpr bool kConnectAcceptEnabled =
 #if defined(FUSE_CONNECT_ACCEPT_ENABLED) && FUSE_CONNECT_ACCEPT_ENABLED
@@ -87,7 +87,7 @@ struct ConnectOptions {
   /// refusing with `E-CONNECT-TIMEOUT`. A partner that never launches must
   /// become a named refusal, not a process that blocks forever in
   /// `MPI_Comm_connect` -- see connect.hpp's own module comment and
-  /// KNOWN_ISSUES.md D3's "a collective must agree before anyone returns".
+  /// the rule that a collective must agree before anyone returns.
   double timeout_s = 30.0;
 
   /// How often to re-check for the port file while waiting. The residual
@@ -119,7 +119,7 @@ struct ConnectedWorld {
                  ///< over connected programs; leaving this undone is what
                  ///< crashed the acceptor inside MPICH's own communicator
                  ///< bookkeeping (`MPII_CommL_forget`, reading a freed
-                 ///< communicator) on the host, 2026-10-08. The connector
+                 ///< communicator). The connector
                  ///< then failed too, in whatever way it happened to be
                  ///< waiting -- an MPICH-internal communicator failure in
                  ///< the `ctest` run, `E-CONNECT-TIMEOUT` in a later manual
@@ -129,8 +129,8 @@ struct ConnectedWorld {
   Teardown teardown = Teardown::None;
 };
 
-/// Pure, MPI-free. Part of `validate_launch_layout()`'s own gap rule (D36,
-/// KNOWN_ISSUES.md). `[gap_start, gap_end)` is the space between two
+/// Pure, MPI-free. Part of `validate_launch_layout()`'s own gap rule.
+/// `[gap_start, gap_end)` is the space between two
 /// consecutive Connect/Mpmd ("launched") blocks, in the graph's own
 /// component order; `fillers` is every InProcess/Plugin ("in-process")
 /// component with a nonempty `RankSet`, from the whole graph, not just this
@@ -147,9 +147,9 @@ struct ConnectedWorld {
 ///     different gap, or past every block this graph declares -- refused
 ///     as a STRADDLE. An in-process component may share ranks with
 ///     whichever single launched block hosts it (`RankSet`'s own
-///     documented "overlap is legal", the pre-D36 shape where U's own
-///     declared range already included the coupler's), or sit entirely
-///     inside one gap between two launched blocks (the D36 shape), but not
+///     documented "overlap is legal", where U's own
+///     declared range already includes the coupler's), or sit entirely
+///     inside one gap between two launched blocks, but not
 ///     split across the boundary between them: this function could not
 ///     then say which side of the boundary the component's ranks actually
 ///     belong to, and `connect()` has no mechanism to place part of one
@@ -215,8 +215,8 @@ struct ConnectedWorld {
 /// -- every component whose `LaunchSpec::mode` is `Connect` or `Mpmd` --
 /// form, in the graph's own component order, consecutive blocks separated
 /// by nothing but GAPS that in-process components exactly fill (the rule
-/// `check_gap_filled_by_in_process_components()` above states in full --
-/// D36, KNOWN_ISSUES.md). Not merely "disjoint and covering": the
+/// `check_gap_filled_by_in_process_components()` above states in full).
+/// Not merely "disjoint and covering": the
 /// underlying consecutive-block requirement is what the two launch
 /// mechanisms actually produce --
 ///
@@ -234,12 +234,10 @@ struct ConnectedWorld {
 /// blocks-plus-gaps (e.g. two launched components interleaved on
 /// alternating ranks) could never actually be produced by either
 /// mechanism, so it is refused here before `connect()` goes anywhere near
-/// MPI. BEFORE D36, a gap between two launched blocks was refused
-/// outright, with no exception for what lives in it; every graph that
-/// validated then still validates now, because a graph with no gap (the
-/// pre-D36 shape, where a launched component's own declared range already
-/// includes whatever in-process ranks ride along inside its executable)
-/// never reaches the new check at all.
+/// MPI. A gap between two launched blocks is legal only when in-process
+/// components fill it; a graph with no gap (where a launched component's
+/// own declared range already includes whatever in-process ranks ride
+/// along inside its executable) never reaches the gap check at all.
 ///
 /// Refuses `E-CONNECT-SPEC` when: no component declares a launch mode
 /// other than `InProcess`/`Plugin`/`LowFive` (nothing for `connect()` to do); a
@@ -264,30 +262,27 @@ struct ConnectedWorld {
     const auto& c = g.component(ComponentId{i});
     // Plugin, like InProcess, shares the host process's own communicator
     // (launch.hpp's own doc on LaunchMode::Plugin): neither needs a rank
-    // block in the mpmd/connect layout this function checks -- but, since
-    // D36, an in-process/plugin component's ranks are not simply ignored:
-    // they may be asked to account for a gap between two launched blocks.
+    // block in the mpmd/connect layout this function checks -- but an
+    // in-process/plugin component's ranks are not simply ignored: they
+    // may be asked to account for a gap between two launched blocks.
     if (c.launch.mode == LaunchMode::InProcess || c.launch.mode == LaunchMode::Plugin) {
       if (!c.ranks.empty()) fillers.push_back(&c);
       continue;
     }
-    // LowFive needs no block of its own either (D36's second defect, found
-    // the same host run as the first): launch.hpp's own doc on this value
+    // LowFive needs no block of its own either: launch.hpp's own doc on this value
     // says "where do my ranks come from" is unaffected by it -- today,
     // always in-process -- and connect()'s own `case LaunchMode::LowFive`
     // (src/transport/connect.cpp) gives it the identical refusal shape as
-    // InProcess/Plugin for exactly that reason. Measured on the owner's
-    // host, 2026-10-12 (a LowFive-enabled tree): the Brusselator's own
-    // `--transport lowfive` marker -- a FIELDLESS ComponentKind::Coupler
+    // InProcess/Plugin for exactly that reason. The Brusselator's own
+    // `--transport lowfive` marker is a FIELDLESS ComponentKind::Coupler
     // entry whose RankSet spans the WHOLE run (brusselator_graph_tool.cpp's
-    // own write_lowfive_declarations-equivalent block) -- was NOT in this
-    // skip list, so an ordinary three-segment MPMD graph (U, V, coupler,
-    // each its own consecutive block, no gap at all) was refused
-    // E-CONNECT-SPEC: the marker's own range, starting at rank 0, did not
+    // own write_lowfive_declarations-equivalent block); were it not in this
+    // skip list, an ordinary three-segment MPMD graph (U, V, coupler,
+    // each its own consecutive block, no gap at all) would be refused
+    // E-CONNECT-SPEC: the marker's own range, starting at rank 0, does not
     // "start where the previous launched component left off" (the end of
     // the coupler's own block) -- a graph that validate() itself accepts
-    // (BrusselatorGraphToolLowFive.TheGeneratedGraphValidatesClean) but
-    // validate_launch_layout() did not. UNLIKE InProcess/Plugin, a LowFive
+    // (BrusselatorGraphToolLowFive.TheGeneratedGraphValidatesClean). UNLIKE InProcess/Plugin, a LowFive
     // marker is deliberately NOT added to `fillers`: its ranks are a
     // cross-cutting annotation over however many ranks the run actually
     // has, not a placement confined to one gap between two launched
@@ -440,18 +435,14 @@ struct ConnectedWorld {
 /// publish the port. Refuses `E-CONNECT-SPEC` when there are FEWER THAN
 /// TWO: nothing for a connect handshake to join.
 ///
-/// KNOWN_ISSUES.md D18. Before this round, this function refused anything
-/// other than EXACTLY two (the only case `connect_pairwise()` implemented,
-/// in connect.cpp); `connect_chain_plan()`, immediately below, generalises
-/// the merge itself to any count `>= 2`, so this function's own refusal
-/// narrows to the one limit that is still real: a chain needs at least two
-/// components to have anything to chain.
+/// `connect_chain_plan()`, immediately below, generalises the merge itself
+/// to any count `>= 2`, so this function's own refusal is the one limit
+/// that is real: a chain needs at least two components to have anything
+/// to chain.
 ///
-/// Review 2026-10-11 TR-17. This rule used to live inline inside
-/// `connect_pairwise()`, behind `#if FUSE_HAVE_MPI` and `MPI_Initialized()`
-/// -- a real, reachable refusal with no test anywhere in the tree, because
-/// its only caller needed a live MPI world to reach at all. Pulled out
-/// beside `validate_launch_layout()` so a tier-0 test can fire it directly.
+/// Kept beside `validate_launch_layout()`, outside the `#if FUSE_HAVE_MPI`
+/// code that needs a live MPI world, so a tier-0 test can fire the refusal
+/// directly.
 [[nodiscard]] inline Result<std::vector<ComponentId>> connect_mode_components(
     const CouplingGraph& g) {
   std::vector<ComponentId> out;
@@ -469,16 +460,16 @@ struct ConnectedWorld {
   return out;
 }
 
-/// One step of `connect_chain()`'s own merge sequence (KNOWN_ISSUES.md
-/// D18's generalisation of `connect_pairwise()` to N connect-mode
-/// components, "each component publishes its port name once"). At step
+/// One step of `connect_chain()`'s own merge sequence (the generalisation
+/// of `connect_pairwise()` to N connect-mode components, "each component
+/// publishes its port name once"). At step
 /// `step_index` (1-based, through `order.size() - 1`), the chain already
 /// merged from `order[0 .. step_index - 1]` joins with `joining` --
 /// `order[step_index]` alone, never more than one component per step.
 ///
 /// THE RULE, stated once here rather than split across connect.cpp's own
-/// per-mode branches: step 1 (`step_index == 1`) is UNCHANGED from
-/// today's two-component path -- whichever of `order[0]`/`order[1]`
+/// per-mode branches: step 1 (`step_index == 1`) is the
+/// two-component path -- whichever of `order[0]`/`order[1]`
 /// declares `LaunchSpec::is_acceptor == true` opens the port, read from
 /// whichever of the two names a `port_file` (connect.cpp's own existing
 /// `connect_pairwise()` logic, reused verbatim for this one step). EVERY

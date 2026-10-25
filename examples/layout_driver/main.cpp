@@ -10,8 +10,7 @@
 //   mpiexec -n P fuse_example_layout_driver --comp1 a:b --comp2 c:d \
 //       [--coupler e:f] [--entities N] [--steps K] [--check] [--timing out.csv]
 //
-// --coupler e:f (design C, plans/2026-09-23-coupler-placement-and-
-// migration.md) routes the "link" field transfer's Remap through a separately
+// --coupler e:f (docs/dev/coupler-placement.md) routes the "link" field transfer's Remap through a separately
 // placed coupler on ranks [e:f]: comp1 -> coupler -> comp2, with the
 // coupler->comp2 redistribution omitted whenever [e:f] is identical to comp2's own
 // range. It always attaches RemapFlags::Conservative to the field transfer, since
@@ -590,11 +589,10 @@ int main(int argc, char** argv) {
   // One decomposition per graph component, INCLUDING the coupler: it is a
   // component-array entry like any other (ComponentKind::Coupler), and the
   // Remap routed through it resolves both meshes with placed_view(mesh,
-  // coupler). The first version listed comp1 and comp2 by hand, so with
-  // --coupler the third processor set had no decomposition and every coupler
-  // layout failed at initialize with E-MESH-PLACEMENT (host run,
-  // 2026-09-27) -- the library rejected correctly; the driver had not kept
-  // its promise. Read from the graph, as runner_transport_test.cpp does.
+  // coupler). Listing comp1 and comp2 by hand would leave the third
+  // processor set with no decomposition, and every coupler layout would
+  // fail at initialize with E-MESH-PLACEMENT. Read from the graph, as
+  // runner_transport_test.cpp does.
   {
     std::vector<fuse::RankSet> placements;
     for (std::uint32_t c = 0; c < graph.component_count(); ++c) {
@@ -618,8 +616,8 @@ int main(int argc, char** argv) {
   // cannot size THROWS rather than returning 0, and schedule() lets that
   // propagate. An exception escaping main() in an MPI program is an abort on
   // that rank and a hang for the others if the failure was not unanimous --
-  // the first host run of the coupler rows died exactly this way (libc++abi
-  // terminating, E-MESH-PLACEMENT, 2026-09-27). A configuration failure is
+  // a coupler row dies exactly this way (libc++abi
+  // terminating, E-MESH-PLACEMENT). A configuration failure is
   // unanimous, so it is turned into the same agreed exit as every other one.
   std::optional<decltype(schedule(graph, lowered.dag, clocks, fuse::RegionSizes{}))> sched;
   try {

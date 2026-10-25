@@ -80,7 +80,7 @@ legitimately built, zero-cell answer.
 
 ## What is conservative here, and what a first-order remap is NOT
 
-Row-sum-1 (checked to round-off by every test in this track) reproduces a CONSTANT field exactly, and the
+Row-sum-1 (checked to round-off by every test) reproduces a CONSTANT field exactly, and the
 column-mass sum -- a source cell's measure, accounted once on its owner's own weights and once on every
 halo copy's, summed by global id -- conserves the integral to round-off. Neither claims exact
 reproduction of a LINEAR field: a piecewise-constant (first-order) remap's reproduction error for a

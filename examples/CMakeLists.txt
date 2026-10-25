@@ -31,7 +31,7 @@ target_include_directories(fuse_example_mms_pair PRIVATE mms_pair)
 add_executable(fuse_example_dn_heat dn_heat/main.cpp)
 target_link_libraries(fuse_example_dn_heat PRIVATE fuse::runtime fuse::backend)
 target_include_directories(fuse_example_dn_heat PRIVATE dn_heat)
-# S7.2b (PetscSelect track): dn_heat/main.cpp's own --newton-petsc path
+# dn_heat/main.cpp's own --newton-petsc path
 # (guarded by #if FUSE_HAVE_PETSC, fuse/base/config.hpp) calls
 # fuse::petsc::install(), which is defined only in fuse-coupler-petsc.
 # Linking it unconditionally would be fine too (the symbol is simply
@@ -43,7 +43,7 @@ if(FUSE_ENABLE_PETSC)
   target_link_libraries(fuse_example_dn_heat PRIVATE fuse::petsc)
 endif()
 
-# S7.4 (owner decision 2026-10-21, Option C): the smallest real port of an
+# The smallest real port of an
 # ImplicitComponent onto a PETSc-object-backed LinearizationToken (real
 # Mat/Vec, MatMult/MatMultTranspose, never MATMFFD), paired with an
 # existing native-substrate implementation of the SAME physics in one
@@ -99,7 +99,7 @@ if(FUSE_ENABLE_TESTS)
   set_tests_properties(example.mms_pair example.dn_heat
     example.mms_pair.dump example.dn_heat.dump PROPERTIES LABELS "example")
 
-  # S7.2b (PetscSelect track): the PETSc-substrate rows, gated the same
+  # The PETSc-substrate rows, gated the same
   # way every other PETSc-dependent ctest row in this tree is -- the
   # target does not exist, and --newton-petsc refuses at runtime with a
   # clear message, in a build without FUSE_ENABLE_PETSC (dn_heat/main.
@@ -111,17 +111,16 @@ if(FUSE_ENABLE_TESTS)
     set_tests_properties(example.dn_heat.newton_petsc PROPERTIES LABELS "example;petsc")
   endif()
 
-  # S7.4: the native-twin leg always runs (no PETSc, no MPI) and is gated
+  # The native-twin leg always runs (no PETSc, no MPI) and is gated
   # on the physics the SAME way dn_heat/mms_pair are -- exits non-zero if
   # the converged answer misses the manufactured solution by more than
-  # the track's own derived bound (main.cpp's own kAgreementBound
+  # the example's own derived bound (main.cpp's own kAgreementBound
   # comment). The --petsc leg additionally builds AND RUNS the PETSc-
   # substrate half; registered ONLY when FUSE_ENABLE_PETSC, for the exact
   # reason example.dn_heat.newton_petsc is gated just above, and expected
-  # to FAIL in a sandbox that cannot complete a bare MPI_Init()
-  # (KNOWN_ISSUES.md D32) -- the SAME already-documented, host-pending
-  # status every other petsc.*/example.dn_heat.newton_petsc row carries,
-  # not a new one this track introduces.
+  # to FAIL in a sandbox that cannot complete a bare MPI_Init() -- the
+  # SAME host-pending status every other petsc.*/
+  # example.dn_heat.newton_petsc row carries.
   add_test(NAME example.petsc_reaction_diffusion
            COMMAND fuse_example_petsc_reaction_diffusion)
   set_tests_properties(example.petsc_reaction_diffusion PROPERTIES LABELS "example")
@@ -133,13 +132,12 @@ if(FUSE_ENABLE_TESTS)
 
   # Thread-count determinism of the two physics examples, bit for bit: each is
   # run at one OpenMP thread and at every core and the two outputs compared
-  # exactly (tools/compare-runs.cmake). Since D11 closed (2026-09-28) the
+  # exactly (tools/compare-runs.cmake). The
   # Runner's own hot loop runs on Kokkos' host execution space with a
   # fixed-order reduction scheme, so these legs are load-bearing: they are
   # what the components' `DeterminismLevel::Bitwise` declarations rest on.
-  # (Until the same day, test/CMakeLists.txt's FUSE_KOKKOS_HAS_OPENMP was not
-  # exported to this sibling directory and every leg here silently registered
-  # nothing.)
+  # (test/CMakeLists.txt must export FUSE_KOKKOS_HAS_OPENMP to this sibling
+  # directory, or every leg here silently registers nothing.)
   if(COMMAND fuse_add_omp_legs AND FUSE_KOKKOS_HAS_OPENMP)
     foreach(ex mms_pair dn_heat)
       add_test(NAME example.${ex}.omp_identical
@@ -188,7 +186,7 @@ endif()
 # review-2026-10-11 BC-1: gated on the eigen backend -- this example's
 # Newton solves use Eigen::SparseLU and have no builtin-backend substitute.
 if(FUSE_LINALG_BACKEND_IS_EIGEN)
-  # Gray-Scott (Time windows track): U and V on one structured grid, coupled
+  # Gray-Scott: U and V on one structured grid, coupled
   # implicitly at independent time steps through fuse::WindowCoupler. Needs
   # Eigen3::Eigen directly (its Newton solves use Eigen::SparseLU) -- available
   # because FUSE_LINALG_BACKEND=eigen is the default (cmake/FuseDependencies.cmake).
@@ -248,7 +246,7 @@ endif()
 # periodic-diffusion backward-Euler solve uses Eigen::SimplicialLDLT and
 # has no builtin-backend substitute.
 if(FUSE_LINALG_BACKEND_IS_EIGEN)
-  # Brusselator (Time windows track, "a code FUSE has never met"): U and V on
+  # Brusselator ("a code FUSE has never met"): U and V on
   # two INDEPENDENT, non-nested native meshes ("generated:quad:NxM"), coupled
   # at independent time steps through fuse::WindowCoupler and exchanged
   # through FUSE's conservative supermesh remap (fuse::build_weights /
@@ -265,7 +263,7 @@ if(FUSE_LINALG_BACKEND_IS_EIGEN)
     fuse::runtime fuse::backend Eigen3::Eigen Kokkos::kokkos
     fuse::examples_common)
   target_include_directories(fuse_example_brusselator PRIVATE brusselator)
-  # S7.2b (PetscSelect track): main.cpp's own unconditional (guarded by #if
+  # main.cpp's own unconditional (guarded by #if
   # FUSE_HAVE_PETSC) fuse::petsc::install() call -- same reasoning as
   # fuse_example_dn_heat's own identical conditional link, just above in
   # this file.
@@ -292,7 +290,7 @@ if(FUSE_LINALG_BACKEND_IS_EIGEN)
     set_tests_properties(example.brusselator.accel_refused PROPERTIES
       LABELS "example" PASS_REGULAR_EXPRESSION "E-EXAMPLE-ACCEL: unknown --accel 'no-such-method'")
 
-    # Time windows track (Conformance, Unit 1): `--driver runner` (main.cpp)
+    # `--driver runner` (main.cpp)
     # runs the SAME graph through fuse::Runner instead of fuse::WindowCoupler
     # (docs/user/coupling-windows.md "Through schedule() and the Runner"), at
     # this example's own default parameters (--window 0.02, --dt-u 0.002,
@@ -330,7 +328,7 @@ if(FUSE_LINALG_BACKEND_IS_EIGEN)
 
     # Thread-count determinism of the Kokkos reaction kernel, bit for bit --
     # the same convention mms_pair/dn_heat use (tools/compare-runs.cmake),
-    # and, since D11 closed, load-bearing for every example: `reaction_kokkos`
+    # and load-bearing for every example: `reaction_kokkos`
     # is a genuine Kokkos::parallel_for over the OpenMP execution space on top
     # of the Runner's own kernels.
     if(COMMAND fuse_add_omp_legs AND FUSE_KOKKOS_HAS_OPENMP)
@@ -349,9 +347,8 @@ else()
   list(APPEND _fuse_eigen_gated_examples fuse_example_brusselator)
 endif()
 
-# Conformance, Unit 2 ("Brusselator as separately built participants"):
-# graph AUTHORING, kept deliberately separate from PARTICIPATING (the
-# lead's own Q2 ruling) -- this tool calls brusselator_graph.hpp's own
+# "Brusselator as separately built participants": graph AUTHORING, kept
+# deliberately separate from PARTICIPATING -- this tool calls brusselator_graph.hpp's own
 # add_window_coupling() and writes the result as text YAML
 # (fuse::to_yaml(), include/fuse/model/yaml_io.hpp), so u_main.c/
 # v_main.f90 (examples/brusselator/participants, built only under

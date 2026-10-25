@@ -191,8 +191,8 @@ bool is_exact_widening(const ElementTypeInfo& f, const ElementTypeInfo& t) {
   }
 
   if (f.is_bool) {
-    // bool -> any integer type: always exact (owner's own rule). bool ->
-    // float is NOT authorized by the owner's design and is deliberately
+    // bool -> any integer type: always exact. bool ->
+    // float is NOT authorized by the design and is deliberately
     // not added here -- see docs/dev/restart.md Section 11's open
     // question on this gap.
     return t.is_signed_integer || t.is_unsigned_integer;
@@ -200,7 +200,7 @@ bool is_exact_widening(const ElementTypeInfo& f, const ElementTypeInfo& t) {
 
   if ((f.is_signed_integer || f.is_unsigned_integer) &&
       (t.is_signed_integer || t.is_unsigned_integer)) {
-    // NEVER signed -> unsigned, at any width (owner's own rule, stated
+    // NEVER signed -> unsigned, at any width (a rule stated
     // unconditionally -- not a per-value check of whether the source
     // happens to be non-negative).
     if (f.is_signed_integer && t.is_unsigned_integer) return false;
@@ -209,7 +209,7 @@ bool is_exact_widening(const ElementTypeInfo& f, const ElementTypeInfo& t) {
     if (f.is_unsigned_integer && t.is_signed_integer) {
       // An N-bit unsigned value's range [0, 2^N - 1] fits an M-bit
       // signed type's range [-2^(M-1), 2^(M-1) - 1] exactly when N <
-      // M - 1, i.e. N <= M - 2... but the owner's own named example,
+      // M - 1, i.e. N <= M - 2... but the named example,
       // uint32 -> int64 (N=32, M=64), needs N <= M-1 to hold (32 <= 63):
       // an N-bit unsigned max is 2^N - 1, which fits an M-bit signed
       // type's max (2^(M-1) - 1) exactly when 2^N - 1 <= 2^(M-1) - 1,
@@ -223,8 +223,8 @@ bool is_exact_widening(const ElementTypeInfo& f, const ElementTypeInfo& t) {
 
   if ((f.is_signed_integer || f.is_unsigned_integer) && t.is_float) {
     // "integer -> float only when the float's significand covers the
-    // integer's width" (owner's own words) -- an N-bit integer (signed
-    // or unsigned; the owner's rule does not distinguish) is exactly
+    // integer's width" -- an N-bit integer (signed
+    // or unsigned; the rule does not distinguish) is exactly
     // representable in a float with >= N significand bits, because every
     // integer with magnitude < 2^(significand_bits) is exactly
     // representable in that format.

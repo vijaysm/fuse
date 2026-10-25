@@ -24,7 +24,7 @@ across whatever `Reducer` the vector was built with -- the solvers themselves ne
 collective of their own, so they are parallel by construction. `SolverReport {iterations,
 residual_norm, converged}` is returned alongside the solution.
 
-**The claim above is about the CONVERGED path only (Review 2026-10-11 NL-6).** `pcg`/`gmres`
+**The claim above is about the CONVERGED path only.** `pcg`/`gmres`
 return on the first `!apply(...).ok()` with no cross-rank reconciliation of that decision --
 `LinearOperator`'s/`Preconditioner`'s own header comments now state the precondition this
 relies on: every `apply` the solver is handed must fail IDENTICALLY on every rank of a call, or
@@ -120,8 +120,8 @@ Measured at tier 0, one rank, against Eigen (`test/linalg/{pcg,gmres}_test.cpp`)
   absent diagonal entry).
 * `test/parallel/krylov_mpi_test.cpp` (tier 1, `RANKS 2`, built here, never run here -- MPI cannot
   start in this sandbox, [](testing.md)) repeats convergence and an independently recomputed
-  residual check for both solvers over a real `MPI_COMM_WORLD`. `parallel.krylov_mpi.2` passed on
-  the host 2026-10-10 (0.31 s).
+  residual check for both solvers over a real `MPI_COMM_WORLD`. `parallel.krylov_mpi.2` passes on
+  the host (0.31 s).
 
 Not verified here: breakdown (an exactly rank-deficient Krylov subspace) is handled defensively
 (`gmres.hpp`'s own comments) but no test constructs a genuine breakdown case, since the random test

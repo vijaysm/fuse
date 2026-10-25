@@ -248,12 +248,11 @@ communicator) is exactly the mistake described above. `setup()`'s own refusals a
 the same bytes on every rank that is meant to agree, independent of
 reconciliation.
 
-**Why not `make_participant_set_reducer()`.** Calling it for the
-colour decision with THIS rank's
-OWN component's `RankSet::ranks()` as the "participant set" -- a function
-written for a caller where every rank of a SHARED base communicator
-passes the IDENTICAL set and asks "is my rank a member" (colour `0` if
-yes, `MPI_UNDEFINED` if no). Every rank here passes a DIFFERENT
+**Why not `make_participant_set_reducer()`.** It is the wrong function
+for the colour decision with THIS rank's OWN component's `RankSet::ranks()`
+as the "participant set". It is written for a caller where every rank of a
+SHARED base communicator passes the IDENTICAL set and asks "is my rank a
+member" (colour `0` if yes, `MPI_UNDEFINED` if no). Every rank here passes a DIFFERENT
 component's own set, so every rank trivially answers "yes" about its OWN
 component and computes the SAME colour `0` -- landing every component of
 a multi-component graph on ONE shared communicator, the identical failure

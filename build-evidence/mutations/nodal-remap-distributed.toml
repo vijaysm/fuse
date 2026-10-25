@@ -123,7 +123,7 @@ requires = "mpi"
 # a FIXED rank count, and its kill is necessarily deferred to a two-run
 # rank-count comparison a host performs separately, not to
 # `parallel.nodal_remap_distributed`'s own pass/fail at one rank count.
-# Round 3: `parallel.nodal_remap_runner`'s `NodalRemapRunnerMpi.*`
+# `parallel.nodal_remap_runner`'s `NodalRemapRunnerMpi.*`
 # (test/parallel/nodal_remap_runner_test.cpp) is an EQUALLY valid surface
 # for that same two-launch comparison, now through a real Runner-driven
 # beam vertex load rather than the bare primitive's own row -- run it at

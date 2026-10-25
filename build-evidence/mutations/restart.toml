@@ -9,7 +9,7 @@
 
 [[mutation]]
 id = "restart-duplicate-id-check-disabled"
-area = "restart_io (Hdf5GroupWriter::put_field, local pre-check)"
+area = "restart_io (Hdf5GroupWriter::put_field, owner decision 2's local pre-check)"
 describes = "put_field()'s own local duplicate-id check (within one call) is disabled -- a component or accelerator reporting the same global id twice for the same field would silently write both rows instead of being refused, the one check decision 2's own 'checked, not trusted' posture puts ahead of finish_point()'s batched, cross-caller version of the same question."
 file = "src/restart_io/hdf5_restart_io.cpp"
 old = """    {
@@ -53,7 +53,7 @@ result = "CONFIRMED: full unfiltered fuse_runtime_restart_test (14 tests) ran 12
 
 [[mutation]]
 id = "restart-per-block-key-collapsed-to-id-alone"
-area = "num (detail::put_field_per_block/get_field_per_block, exact-key naming)"
+area = "num (detail::put_field_per_block/get_field_per_block, round 2's EXACT-KEY fix)"
 describes = "Both per-block helpers' own qualified dataset name (name_prefix + '/' + block.field_name) are collapsed to name_prefix alone, in one mutation spanning both functions (the only way to make the old-text anchor unique while mutating both occurrences the real test needs) -- the shape of the earlier hash-combined key, now with no key distinguishing field at all: every block of one region's accelerator state writes to the SAME dataset name, so two blocks with identical local ids (dirichlet/neumann's own shape) collide."
 file = "src/num/accel_relaxation.cpp"
 old = """    const std::string qualified = name_prefix + "/" + block.field_name;
@@ -166,7 +166,7 @@ result = "CONFIRMED: mutate.py --build-dir build1 --area <num per-block area> re
 
 [[mutation]]
 id = "restart-accel-not-implemented-gate-disabled"
-area = "runtime (Runner::restore_restart_fields, no silent reset)"
+area = "runtime (Runner::restore_restart_fields, round 2's NO-SILENT-RESET fix)"
 describes = "The restart_state_implemented() collective refusal gate in restore_restart_fields() is disabled (replaced with `if (false)`), so an accelerator that does not implement restart state (QuasiNewtonAccel/IQN-ILS/IQN-IMVJ today) is never refused and never resets through this gate -- the call falls through into import_restart_state(), whose base-class default now unconditionally returns Failure (E-RESTART-NOT-IMPLEMENTED) regardless of the run's own allow_accelerator_reset_on_mismatch setting, so even the opt-in path breaks."
 file = "src/runtime/runner.cpp"
 old = """    if (!region.accel->restart_state_implemented()) {

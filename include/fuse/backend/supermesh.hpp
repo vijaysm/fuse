@@ -40,7 +40,7 @@
 ///
 /// WHAT IT IS NOT. Order 1. The reconstruction is piecewise constant per
 /// source cell, so the map is exact for constants and first order for anything
-/// else. That is what the ruling asked for as the floor; higher order on the
+/// else. That is the floor; higher order on the
 /// sphere is what the TempestRemap tier adds.
 
 #include "fuse/backend/mesh_view.hpp"

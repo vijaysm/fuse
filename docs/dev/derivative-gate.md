@@ -55,8 +55,7 @@ source mesh's *vertices* -- nodal DOFs, by that header's own description -- so t
 case above is also the "nodal weights" case. `nodal_remap_distributed.hpp`'s own
 `apply_distributed_H`/`apply_distributed_HT` are a different, MPI-distributed code path that never
 produces a `RemapWeights` or a `fuse::LinearOperator`; they are not separately adapted to this
-gate's `apply`/`apply_transpose` shape (declared as a deviation in the originating session's
-report).
+gate's `apply`/`apply_transpose` shape (a deliberate deviation).
 
 ## 2. Finite-difference derivative convergence
 

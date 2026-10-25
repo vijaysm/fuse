@@ -63,8 +63,8 @@ extent (`ContinuousGLL` order 1 is sized by vertex count, not cell count) and wh
 vertex ownership means for a nodal field in parallel. [](coupler-placement.md) covers the
 separately-placed coupler: the `ComponentKind` representation decision, the rule that lowers
 `source -> C -> target`, and every `component_count()` call site checked against it.
-[](runner-device-dispatch.md) covers the effort to give `Runner::Impl::execute()` a
-real Kokkos device (Cuda) path and a cuSPARSE/cuSOLVER sparse-solve backend, including why the
+[](runner-device-dispatch.md) covers how `Runner::Impl::execute()` gets a
+real Kokkos device (Cuda) path, and the optional cuSPARSE/cuSOLVER sparse-solve backend, including why the
 device-dispatch scope is limited to templating `execute()`'s elementwise `OpKind` cases.
 [](device-resident-arcs.md) is the follow-on design: arcs, `previous[]`,
 history and the reduction scratch resident in the execution space's memory, host memory touched only

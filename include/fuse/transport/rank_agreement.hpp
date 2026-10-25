@@ -3,14 +3,12 @@
 /// Rank-agreement rules as pure functions over already-gathered data.
 ///
 /// The rules themselves involve no MPI: a collective produces an array, and
-/// a rule reads it. Keeping them here makes them testable at the base build configuration, where
-/// most of this project's tests run, instead of only inside a two-rank job.
+/// a rule reads it. Keeping them here makes them testable at the base build
+/// configuration, where most of this project's tests run, instead of only
+/// inside a two-rank job.
 /// `runtime/epoch_schedule.hpp` is the same idea for the agreement schedule.
 ///
-/// Written 2026-09-20 because the component-agreement rule read as though it
-/// could not fail to fire, and a host run showed both ranks accepting a spec
-/// it should have rejected. A rule you can only exercise under `mpiexec` is a
-/// rule you cannot debug.
+/// A rule you can only exercise under `mpiexec` is a rule you cannot debug.
 
 #include <cstddef>
 #include <vector>

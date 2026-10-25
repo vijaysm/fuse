@@ -55,12 +55,11 @@ void insert_derived_ops(LoweringContext& ctx, ChannelId cid) {
   // ordering-only input of its own (include/fuse/ir/op.hpp's own comment
   // on that node has the full account; `channel_chain()`, below, must
   // still start AT the delivery node, not at ITS OWN input, which is
-  // `source_arc` again and would defeat the whole point of this fix).
-  // Walking from `source_arc` unconditionally used to find no node of
+  // `source_arc` again and would defeat the whole point).
+  // Walking from `source_arc` unconditionally would find no node of
   // this channel's origin downstream of a severed `ExternalDelivery`
-  // root, so `has_remap` came back false and Constrain/Diagnose went
-  // silently unemitted for every LowFive-bound channel -- this is the
-  // fix. For an ordinary channel `chain_entry_arc[cid] ==
+  // root, so `has_remap` would come back false and Constrain/Diagnose go
+  // silently unemitted for every LowFive-bound channel. For an ordinary channel `chain_entry_arc[cid] ==
   // source_arc[ch.source]` always, so nothing changes there; see
   // LoweringContext for the `field_arc`-vs-`source_arc` invariant this
   // still relies on for `Bidirectional` fields.

@@ -12,9 +12,9 @@
 namespace fuse {
 
 /// Supplied by the mesh backend: how many entities does this region hold on
-/// this rank? Phase 3 tests pass a constant; Phase 4 Task 4.2 wires the real
-/// one via `make_region_sizes(graph, dag, backend)`. Taking the callback now means
-/// the signature does not change when the backend arrives.
+/// this rank? Tests pass a constant; production wires the real one via
+/// `make_region_sizes(graph, dag, backend)`. Taking a callback keeps the
+/// signature independent of the backend.
 ///
 /// It is only ever called with a valid `RegionId`; `plan_buffers` rejects a
 /// DAG carrying an invalid one rather than passing 0xFFFFFFFF to a backend
@@ -84,11 +84,10 @@ struct BufferPlan {
 ///
 /// Persistence *across iterations* of an iteration region is deliberately not
 /// covered here: that is `OperatorDAG::IterationRegion::carried`, the derived
-/// checkpoint set (spec Section 5.3, Phase 7 Task 7.2).
+/// checkpoint set (spec Section 5.3).
 ///
 /// `timed` is checked for consistency with `dag` and otherwise unused: the
-/// per-period instance count only changes buffer sizes once waveform depth is
-/// real (Phase 6).
+/// per-period instance count does not change buffer sizes.
 ///
 /// Throws (this returns a plain value, not a `Result`, so the checks cannot be
 /// asserts -- an assert compiles out under Release's -O3 -DNDEBUG, and
@@ -102,9 +101,7 @@ struct BufferPlan {
 /// out of range for `dag`, `timed` naming a node `dag` does not have, or an
 /// `elements * components` (or running-total) product that does not fit
 /// `std::size_t`. The specific reason is in the exception's `.message()`;
-/// the code is always `E-SCHED-BUFFERS` (REVIEW.md R-28 -- this docstring
-/// used to promise the three-way `std::` split above, which the
-/// implementation has never thrown: every path here converts through
+/// the code is always `E-SCHED-BUFFERS` (every path here converts through
 /// `FUSE_THROW(InvalidArgument, ...)`, per conventions.md's ban on a bare
 /// `throw std::...`).
 /// Buffer planning that REPORTS. Every failure it can detect is a setup

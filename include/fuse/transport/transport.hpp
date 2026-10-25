@@ -17,7 +17,7 @@ namespace fuse {
 struct CommGraphPeer;
 struct LocalCopyPair;
 
-/// Transport-direct track (2026-10-18). The packed layout behind one
+/// The packed layout behind one
 /// backend's `move()`: the permutation it applies to pack `move()`'s `src`
 /// into its own exchange-ordered send buffer (`send_index`), the mirror
 /// permutation it applies to unpack the received buffer into `dst`
@@ -37,7 +37,7 @@ struct LocalCopyPair;
 /// `recv_index`/`local_copy` once, at setup, and run the pack/unpack as
 /// ordinary Kokkos kernels on whichever execution space it is already
 /// using -- `fuse::runtime::Runner` (src/runtime/runner.cpp) is that
-/// caller today.
+/// caller.
 struct TransportPackedLayout {
   std::vector<std::size_t> send_index;
   std::vector<std::size_t> recv_index;
@@ -71,9 +71,9 @@ struct TransportSpec {
 /// Spec Section 2.2: the one seam by which in-process, MPI, MPMD, and LowFive
 /// coupling share a runtime. Everything else in the DAG is unchanged.
 ///
-/// HOT-LOOP CONTRACT (Task 4.6). `Runner::Impl::execute` calls `prepare()`
-/// immediately before `move()`, inside the coupling-cycle loop, from a `TransportSpec`
-/// resolved once at setup. `prepare()` is therefore required to be
+/// HOT-LOOP CONTRACT. `Runner::Impl::execute` calls `prepare()`
+/// immediately before `move()`, inside the coupling-cycle loop, from a
+/// `TransportSpec` resolved once at setup. `prepare()` is therefore required to be
 /// allocation-free and communication-free: it may re-read the spec, it may
 /// validate it against work already done, but it may NOT build a plan. A
 /// backend that needs a plan builds it in a one-time, explicitly collective
@@ -88,8 +88,8 @@ class Transport {
   [[nodiscard]] virtual bool is_local() const = 0;
 
   /// True iff `move()` may be handed device pointers directly for THIS
-  /// backend, right now, in this process (docs/dev/device-resident-arcs.md
-  /// Phase 3). Not pure: `false` is the correct answer for every backend
+  /// backend, right now, in this process (docs/dev/device-resident-arcs.md).
+  /// Not pure: `false` is the correct answer for every backend
   /// that never crosses a process boundary (`CopyTransport` -- the
   /// Runner's own `OpKind::Transport` case does a `Kokkos::deep_copy`
   /// there directly and never asks) or that always stages through host
@@ -97,11 +97,11 @@ class Transport {
   /// override that can answer true, and does so at run time via
   /// `fuse::linalg::mpi_is_gpu_aware()` (comm.hpp) -- the SAME probe
   /// `fuse::native::mpi_is_gpu_aware()` calls, no longer duplicated
-  /// between the two libraries (Migration track, 2026-10-15:
-  /// src/linalg/mpi_gpu_aware.cpp's own header comment has the history).
+  /// between the two libraries (src/linalg/mpi_gpu_aware.cpp's own header
+  /// comment has the details).
   [[nodiscard]] virtual bool is_gpu_aware() const noexcept { return false; }
 
-  /// Transport-direct track. The planned packed layout behind `move()`,
+  /// The planned packed layout behind `move()`,
   /// for a caller that wants to pack and unpack `move()`'s pack/unpack
   /// step itself (on a different execution space, typically) and hand
   /// `move_packed()` only the already-packed buffers. Returns
@@ -116,7 +116,7 @@ class Transport {
                           "build_plan_from_peers()"};
   }
 
-  /// Transport-direct track. The exchange step alone -- no pack, no
+  /// The exchange step alone -- no pack, no
   /// unpack, no same-rank copy -- exactly the collective `move()`
   /// performs on ITS OWN already-packed buffers. `packed_send` must hold
   /// `packed_layout()->send_index.size() * components` doubles in the
@@ -134,7 +134,7 @@ class Transport {
   }
 };
 
-/// In-process copy. Phase 5 adds "mpi"; Phase 8 adds "lowfive".
+/// In-process copy. The "mpi" and "lowfive" transports are the others.
 ///
 /// `move` requires that `src` and `dst` either designate the same address (a
 /// no-op, which compiling into the dataflow graph legitimately emits when a component reads
@@ -161,10 +161,10 @@ class CopyTransport final : public Transport {
 /// peer wants it) into the single, DEDUPLICATED list `TransportSpec::
 /// global_ids` requires for a SOURCE rank: `MpiTransport::build_plan`
 /// matches each declared id against exactly one owner and REFUSES a repeat
-/// within one rank's own list as ambiguous (KNOWN_ISSUES.md D73 round 9's
-/// own measurement: two different destination ranks independently adopting
-/// the SAME source entity through the remap halo each ask for it, so the
-/// owner's naive per-peer concatenation declared that entity twice). Fan-out
+/// within one rank's own list as ambiguous (two different destination
+/// ranks can independently adopt the SAME source entity through the remap
+/// halo and each ask for it, so the owner's naive per-peer concatenation
+/// would declare that entity twice). Fan-out
 /// to every peer that wants it does not need the declaration repeated --
 /// `build_plan`'s own per-destination loop looks an id up once per peer BY
 /// VALUE, not by walking `global_ids`'s own length -- so keeping the FIRST
@@ -244,8 +244,8 @@ class MpiTransport final : public Transport {
   /// block in a collective.
   ///
   /// Errors: `E-TRANSPORT-COMM`, `E-TRANSPORT-RANKS`, `E-TRANSPORT-SIZE`,
-  /// `E-TRANSPORT-MATCH`, `E-TRANSPORT-MPI`, `E-TRANSPORT-PEERMATCH` (R-30:
-  /// ranks disagreeing on `TransportSpec::components`), `E-TRANSPORT-ALLOC`.
+  /// `E-TRANSPORT-MATCH`, `E-TRANSPORT-MPI`, `E-TRANSPORT-PEERMATCH` (ranks
+  /// disagreeing on `TransportSpec::components`), `E-TRANSPORT-ALLOC`.
   Result<void> build_plan(const TransportSpec& spec);
 
   /// COLLECTIVE, once, before the run. The same plan, built from a rank graph's
@@ -302,7 +302,7 @@ class MpiTransport final : public Transport {
   /// probe itself).
   [[nodiscard]] bool is_gpu_aware() const noexcept override;
 
-  /// Transport-direct track. `send_index`/`recv_index`/`local_copy` are
+  /// `send_index`/`recv_index`/`local_copy` are
   /// copies of the arrays `move()` itself packs and unpacks with, read
   /// after a successful `build_plan()`/`build_plan_from_peers()`. Not
   /// hot-loop: a caller builds its own device mirror of these ONCE, at
@@ -310,14 +310,14 @@ class MpiTransport final : public Transport {
   /// for the full contract.
   [[nodiscard]] Result<TransportPackedLayout> packed_layout() const override;
 
-  /// Transport-direct track. `MPI_Alltoallv` alone, on the buffers given --
+  /// `MPI_Alltoallv` alone, on the buffers given --
   /// no pack, no unpack, no same-rank copy. `packed_send`/`packed_recv` may
   /// be device pointers exactly when `is_gpu_aware()` is true: this is what
   /// lets a caller that packs on the device (via `packed_layout()`'s
   /// indices) hand MPI a device pointer with zero host round trip, instead
   /// of `move()`'s own host-only `std::memcpy` pack/unpack -- which is a
   /// HOST routine and may not be handed a device pointer; doing so is
-  /// KNOWN_ISSUES.md D66/D77's segfault, not a supported use.
+  /// a segfault, not a supported use.
   Result<void> move_packed(const double* packed_send,
                            double* packed_recv) override;
 
@@ -332,7 +332,7 @@ class MpiTransport final : public Transport {
 };
 #endif  // FUSE_HAVE_MPI
 
-/// Task 8.4, spec Section 5 mechanism 4: coupled data carried through LowFive,
+/// Spec Section 5 mechanism 4: coupled data carried through LowFive,
 /// Argonne's HDF5 Virtual Object Layer connector. A component writes its
 /// fields with ordinary `H5Fcreate` / `H5Dcreate` / `H5Dwrite` calls; the VOL
 /// connector intercepts them in memory and the data is handed to the coupler
@@ -341,8 +341,8 @@ class MpiTransport final : public Transport {
 /// DECLARED UNCONDITIONALLY, unlike `MpiTransport` above. Every member below
 /// links in every configuration; on a build without LowFive they return
 /// `E-TRANSPORT-NOLOWFIVE` naming the CMake option, rather than vanishing from
-/// the header and breaking a consumer's translation unit (Task 5.2's lesson:
-/// an always-visible header must not declare a function that does not link).
+/// the header and breaking a consumer's translation unit (an always-visible header
+/// must not declare a function that does not link).
 /// `is_available()` is the cheap capability query.
 ///
 /// WHERE THE WORK HAPPENS, exactly as `MpiTransport` splits it. Registering
@@ -402,11 +402,9 @@ class LowFiveTransport final : public Transport {
   /// `E-TRANSPORT-HDF5`.
   Result<void> build_plan(const TransportSpec& spec);
 
-  // Review 2026-10-11 TR-3: this class used to also declare
-  // `build_plan_from_peers`, copied from `MpiTransport`'s contract, with no
-  // definition anywhere in the tree -- an undefined-symbol link error for
-  // any caller, and a doc describing MPI_Alltoallv machinery LowFive does
-  // not have. Removed rather than defined: nothing in the tree calls it
+  // This class deliberately declares no `build_plan_from_peers`: that
+  // method is `MpiTransport`'s, and LowFive has no MPI_Alltoallv
+  // machinery to describe. Nothing in the tree calls it on this class
   // (runner.cpp's own peer-wise path calls it only through an
   // `MpiTransport*`), and the comm-graph peer-wise plan this class would
   // need it for has no LowFive-specific meaning to add.
@@ -442,7 +440,7 @@ class LowFiveTransport final : public Transport {
   /// The path that is deliberately never created.
   [[nodiscard]] std::string file_path() const;
 
-  /// Task 8.4 continuation (S6 LowFive track, Demo B): switches this
+  /// Switches this
   /// transport into LowFive's DISTRIBUTED mode, where data crosses an MPI
   /// intercommunicator to a PEER PROCESS instead of staying in this
   /// process's own in-memory file map. This is what makes two separate
@@ -464,10 +462,9 @@ class LowFiveTransport final : public Transport {
   /// transport's job.
   ///
   /// Measured end to end for ONE producer process and ONE consumer process
-  /// (ctest row example.demo_b, owner's machine 2026-10-14: values bit for
-  /// bit, no HDF5 file on disk). Not measured: more than one rank per side,
-  /// more than one file or dataset per transport, or a second exchange in
-  /// the same process. KNOWN_ISSUES.md D14 is the authoritative record.
+  /// (ctest row example.demo_b: values bit for bit, no HDF5 file on disk).
+  /// Not measured: more than one rank per side, more than one file or
+  /// dataset per transport, or a second exchange in the same process.
   ///
   /// Errors: `E-TRANSPORT-NOLOWFIVE`, `E-TRANSPORT-NOMPI` (built without
   /// `FUSE_ENABLE_MPI`), `E-TRANSPORT-MPIINIT`, `E-TRANSPORT-COMM`,

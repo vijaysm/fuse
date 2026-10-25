@@ -100,9 +100,9 @@ struct Args {
 }
 
 /// `--accel`'s names come from the shared table
-/// (examples/common/accel_names.hpp). Until 2026-10-20 any name other than
-/// `none` and `iqn-ils` silently ran with Aitken; main() now refuses an
-/// unknown name (E-EXAMPLE-ACCEL) before any setup.
+/// (examples/common/accel_names.hpp). main() refuses an unknown name
+/// (E-EXAMPLE-ACCEL) before any setup, rather than silently running with
+/// Aitken.
 [[nodiscard]] AccelKind parse_accel(const std::string& s) {
   if (const auto k = fuse_examples::accel_kind_from_name(s)) return *k;
   std::fprintf(stderr, "FAIL: E-EXAMPLE-ACCEL: unknown --accel '%s'\n", s.c_str());
@@ -215,12 +215,9 @@ int main(int argc, char** argv) {
   cfg.window_length = u_interval;
   cfg.max_iterations = 100;
   cfg.acceleration = AccelConfig{.kind = parse_accel(args.accel)};
-  // The user's decision (relayed 2026-09-29): a convergence measure names
-  // a field TRANSFER (a WindowChannel, by its own `name`), not the whole
-  // coupled system. Split into the two real transfers, same kind/
-  // tolerance as the single aggregate measure this replaces; both must
-  // be satisfied. Not byte-identical to before by the user's own choice
-  // -- see this program's before/after diagnostics.
+  // A convergence measure names a field TRANSFER (a WindowChannel, by its
+  // own `name`), not the whole coupled system. Split into the two real
+  // transfers, same kind/tolerance; both must be satisfied.
   fuse::ConvergenceMeasure measure_u;
   measure_u.kind = fuse::MeasureKind::Relative;
   measure_u.tolerance = args.coupling_tol;

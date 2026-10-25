@@ -1,17 +1,15 @@
-// S6 phase 3 (Conformance, "LowFive" track), Unit 3b. `fuse-lowfive-vol`:
-// the loadable HDF5 VOL plugin docs/user/lowfive.md's own "Unit 3"
-// section designed (single-process case only) and this track extends to
-// the genuinely distributed, cross-process case Unit 3b needs.
+// `fuse-lowfive-vol`: the loadable HDF5 VOL plugin that docs/user/lowfive.md
+// designs for the single-process case, extended here to the genuinely
+// distributed, cross-process case.
 //
-// **UNMEASURED, like the rest of this track's distributed half** (docs/
-// user/lowfive.md, KNOWN_ISSUES.md D14): this file compiles against real
-// LowFive/HDF5/MPI headers on this host, but neither this plugin nor the
-// H5PL_* loader path it serves has ever been exercised -- the host's
-// LowFive still cannot even dlopen (the libfmt.8 blocker D14 already
-// records), so there is no way, in this sandbox, to confirm the design
-// below past "it compiles against the public header contract as closely
-// as that contract states it." Treat every claim below as a design, not
-// a result.
+// **UNMEASURED, like the rest of the distributed half** (docs/user/
+// lowfive.md): this file compiles against real LowFive/HDF5/MPI headers on
+// this host, but neither this plugin nor the H5PL_* loader path it serves
+// has ever been exercised -- the host's LowFive still cannot even dlopen
+// (a libfmt.8 conflict), so there is no way, in this sandbox, to confirm the
+// design below past "it compiles against the public header contract as closely
+// as that contract states it." Treat every claim below as a design, not a
+// result.
 //
 // THE VOL-CONSTRUCTION HALF ONLY. lowfive_plugin_internal.hpp's own
 // header comment has the full account of why this is a separate
@@ -99,30 +97,29 @@ void ConfigureOnce() {
 
     bool distributed_configured = false;
 #if defined(FUSE_LOWFIVE_DIST_LIB_FOUND) && FUSE_HAVE_MPI
-    // Review 2026-10-11 TR-2. MPI_Comm_split and MPI_Intercomm_create are
-    // each collective over MPI_COMM_WORLD (the split) or the union of the
-    // two local groups it produces (the intercomm rendezvous), but the
-    // call used to sit inside `if (cfg.distributed)` -- a rank the LowFive
-    // channel does not name never took `cfg.distributed`, so it never
-    // called either, while a rank that did took the opposite branch and
-    // blocked in them forever. The split below is issued on every rank
+    // MPI_Comm_split and MPI_Intercomm_create are each collective over
+    // MPI_COMM_WORLD (the split) or the union of the two local groups it
+    // produces (the intercomm rendezvous), so the split must not sit inside
+    // `if (cfg.distributed)` -- a rank the LowFive channel does not name
+    // never takes `cfg.distributed`, so it would never call either, while a
+    // rank that did would take the opposite branch and block in them
+    // forever. The split below is issued on every rank
     // that reaches this line, participant or not: a non-participant
     // passes MPI_UNDEFINED, which MPI defines to hand it MPI_COMM_NULL and
     // exclude it from the result without excluding it from the
     // collective. Only a participant's `local` is non-null, so only a
     // participant goes on to the leader-to-leader rendezvous.
     //
-    // This closes the finding's first hazard (participant-only calls); it
-    // does not close the second one the same finding names -- the split
-    // still runs only on a rank whose OWN first H5P_DEFAULT call triggers
-    // this lazily-loaded plugin at all, and a rank that never makes one
-    // (a pure orchestrator touching no HDF5 file) still never reaches this
-    // line. Moving the rendezvous into an explicit step every participant
-    // calls regardless of its own HDF5 usage (connect()'s own MPMD
-    // choreography is the natural site, since every FUSE-aware process in
-    // the launch already calls it) is the larger fix that closes that
-    // half; left to the lead, and recorded unmeasured either way (D14):
-    // this plugin has not run on a host yet.
+    // This covers the participant-only-call hazard; it does not cover a
+    // second one -- the split still runs only on a rank whose OWN first
+    // H5P_DEFAULT call triggers this lazily-loaded plugin at all, and a rank
+    // that never makes one (a pure orchestrator touching no HDF5 file) still
+    // never reaches this line. Moving the rendezvous into an explicit step
+    // every participant calls regardless of its own HDF5 usage (connect()'s own
+    // MPMD choreography is the natural site, since every FUSE-aware process in
+    // the launch already calls it) is the larger fix that closes that half; it
+    // is not done here, and is unmeasured either way: this plugin has not run
+    // on a host yet.
     {
       int split_color = MPI_UNDEFINED;
       int split_key   = 0;
@@ -144,14 +141,13 @@ void ConfigureOnce() {
     }
 #endif
 
-    // Review 2026-10-11 TR-4. A failed LoadConfig() (missing
-    // FUSE_LOWFIVE_BINDINGS, a bad graph path) or a distributed config
-    // this build cannot honour (no DistMetadataVOL) used to attach
-    // MetadataVOL with zero bindings -- every later HDF5 call then
-    // silently reached a real file instead of refusing, which is exactly
-    // the substitution transport.hpp's own contract and docs/user/
-    // lowfive.md both rule out ("it never silently degrades to file
-    // I/O"). Both cases now abort the job with the diagnostic
+    // A failed LoadConfig() (missing FUSE_LOWFIVE_BINDINGS, a bad graph
+    // path) or a distributed config this build cannot honour (no
+    // DistMetadataVOL) must not attach MetadataVOL with zero bindings --
+    // every later HDF5 call would then silently reach a real file instead
+    // of refusing, which is exactly the substitution transport.hpp's own
+    // contract and docs/user/lowfive.md both rule out ("it never silently
+    // degrades to file I/O"). Both cases abort the job with the diagnostic
     // LoadConfig() or this block already printed, instead of constructing
     // a connector that cannot do the job it was loaded to do.
     if (!config_loaded || (cfg.distributed && !distributed_configured)) {

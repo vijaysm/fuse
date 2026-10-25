@@ -203,9 +203,8 @@ struct RemapWeights {
   [[nodiscard]] std::size_t nnz() const noexcept { return val.size(); }
 };
 
-/// Adapt to the non-owning view `apply_spacetime` takes. `spacetime.hpp`
-/// promised this would be "one aggregate initialisation" once `RemapWeights`
-/// landed; it is spelled once, here, because the field order of
+/// Adapt to the non-owning view `apply_spacetime` takes. It is "one
+/// aggregate initialisation", spelled once, here, because the field order of
 /// `SpatialWeightsView` puts `nnz` between the pointers and the shape and a
 /// hand-written brace list gets it wrong silently.
 [[nodiscard]] inline SpatialWeightsView spatial_view(

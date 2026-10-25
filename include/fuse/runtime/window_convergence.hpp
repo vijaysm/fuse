@@ -96,9 +96,9 @@ struct WindowConvergenceResult {
 /// block `bi`'s own sweep-0 residual, used for a `MeasureKind::
 /// ResidualRelative` reference and (when `first_sweep`) OVERWRITTEN here
 /// with this sweep's own agreed residual, exactly mirroring `run_region()`'s
-/// own pre-fix capture (`if (k == 0) R.block_first[bi] = R.block_residual
+/// own capture (`if (k == 0) R.block_first[bi] = R.block_residual
 /// [bi];`, itself downstream of that sweep's own agreement) -- so a
-/// caller no longer needs to repeat that assignment itself.
+/// caller does not need to repeat that assignment itself.
 [[nodiscard]] inline WindowConvergenceResult decide_window_convergence(
     const std::vector<std::vector<WindowBlockSample>>& gathered,
     const ConvergenceCriterion& measures,

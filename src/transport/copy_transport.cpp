@@ -22,12 +22,12 @@ Result<void> CopyTransport::prepare(const TransportSpec& spec) {
 // header is compiled with -O3 -DNDEBUG in release, where an assert vanishes.
 Result<void> CopyTransport::move(const double* src, double* dst,
                                  std::size_t n) {
-  // Review 2026-10-11 TR-16. A rank owning zero elements of a mesh entity
+  // A rank owning zero elements of a mesh entity
   // set is ordinary in parallel, and `std::vector<double>{}.data()` is
   // permitted to be null -- MpiTransport::move() (transport.hpp's own doc)
-  // accepts null exactly when `n` is zero. This backend used to refuse null
-  // unconditionally, so a zero-element, same-process channel whose storage
-  // is an empty vector was refused by the copy backend and accepted by the
+  // accepts null exactly when `n` is zero. Refusing null
+  // unconditionally would mean a zero-element, same-process channel whose storage
+  // is an empty vector is refused by the copy backend and accepted by the
   // MPI one for the identical input.
   if (n != 0 && (src == nullptr || dst == nullptr)) {
     return Failure{"E-TRANSPORT-NULL", "copy transport given a null pointer"};
