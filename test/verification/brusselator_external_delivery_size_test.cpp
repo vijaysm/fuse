@@ -441,9 +441,8 @@ Result<void> initialize_disjoint_on_rank(int this_rank) {
 
 }  // namespace
 
-// The literal ask this task's TO-DO #2 makes ("assert initialize
-// succeeds on both"), delivered at the narrowest level that can actually
-// reach it for an `ExternalDelivery` channel on disjoint ranks with no
+// Asserts that initialize succeeds on both sides, at the narrowest level
+// that can actually reach it for an `ExternalDelivery` channel on disjoint ranks with no
 // real MPI communicator: A alone (rank 0, the exporter) and B alone
 // (rank 1, the importer).
 TEST(ExternalDeliverySizeReconciliation, InitializeSucceedsOnDisjointRanksWithNoIterationRegion) {

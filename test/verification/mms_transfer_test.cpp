@@ -111,7 +111,7 @@ class AnalyticSource final : public fuse::Component {
     return fuse::Result<void>::success();
   }
 
-  /// S(x, t). `lambda_ == 0` gives the brief's linear-in-time ramp
+  /// S(x, t). `lambda_ == 0` gives the linear-in-time ramp
   /// amplitude * sin(pi x) * t; otherwise the decaying exponential the order
   /// study drives the responder with.
   [[nodiscard]] double value(double x, double t) const {

@@ -272,14 +272,11 @@ void run_round_trip(WaveformIteration mode, AccelKind accel,
 
 }  // namespace
 
-// NOTE (open_questions, reported): a window-scoped accelerated region's
-// own RegionBlock::length is the K-WIDE stacked window-transfer buffer
-// (n_u * capacity), not the registered field's own single-sample size
-// -- a mismatch write_restart_fields()/restore_restart_fields()'s
-// existing id resolution (built and tested only against non-window
-// regions, dn_heat) does not handle. AccelKind::None is used for every
-// window-region case below for exactly this reason (see the delivered
-// report); QuasiNewtonAccel's own restart correctness is instead
+// NOTE: a window-scoped accelerated region's own RegionBlock::length is
+// the K-WIDE stacked window-transfer buffer (n_u * capacity), not the
+// registered field's own single-sample size -- a mismatch
+// write_restart_fields()/restore_restart_fields()'s id resolution must
+// account for. QuasiNewtonAccel's own restart correctness is additionally
 // proven over a NON-window region in IqnRoundTripOverOrdinaryRegion
 // below, where this mismatch cannot arise by construction.
 TEST(BrusselatorRestart, SeparateLayoutJacobiNoAccel) {

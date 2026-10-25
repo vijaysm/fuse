@@ -2038,13 +2038,13 @@ TEST(Accelerator, ImvjDropsAPoisonedChainEvenWhenEveryProbeExoneratesIt) {
   // measures; it is answering "would this step have been finite without the
   // chain", and the answer is no while the chain is also unusable.
   //
-  // MEASURED against the first version of this fix, which had no reprieve
-  // budget and argued instead that a second divergence would be judged at
-  // cols_ == 0: 11 consecutive E-ACCEL-DIVERGED calls with the chain retained
-  // throughout, and a fresh benign input still diverging afterwards. The
-  // argument was false because `have_prev_` survives the diverged return, so
-  // append_column() regenerates a column at the top of the next call, before
-  // the probe runs. This test is that sequence.
+  // MEASURED without a reprieve budget, arguing instead that a second
+  // divergence would be judged at cols_ == 0: 11 consecutive E-ACCEL-DIVERGED
+  // calls with the chain retained throughout, and a fresh benign input still
+  // diverging afterwards. That argument is false because `have_prev_`
+  // survives the diverged return, so append_column() regenerates a column at
+  // the top of the next call, before the probe runs. This test is that
+  // sequence.
   auto a = must_make(AccelConfig{
       .kind = AccelKind::IQN_IMVJ, .initial_relaxation = 0.5, .reuse = 8});
   std::vector<double> out(2, 0.0);

@@ -15,7 +15,8 @@
 //   v = -psi_x = -(pi/L) cos(kx x) sin(ky y) cos(w t)
 //   p = P0 cos(kx x) cos(ky y) cos(w t)
 // with the body force f = rho u_t + grad p - mu Lap(u) computed by hand and
-// cross-checked against an independent sympy derivation; see docs/user/fsi-channel.md for the closed forms.
+// cross-checked against an independent sympy derivation; see
+// docs/user/fsi-channel.md for the closed forms.
 
 #include <gtest/gtest.h>
 

@@ -159,7 +159,7 @@ const fuse_participant_abi_v1* Table() {
 
 /// field_handle() + view_field(), in one call -- the harness's own
 /// stand-in for an application's H5Dwrite/H5Dread target: for a window-
-/// scoped field this is the K-wide buffer the lead's instruction names
+/// scoped field this is the K-wide buffer
 /// (the ExternalDelivery arc for an import, the WindowAdvance arc for
 /// an export); asserted window_samples > 0 at every call site below,
 /// since every field this harness views is window-scoped by

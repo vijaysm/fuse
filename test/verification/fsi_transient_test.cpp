@@ -291,7 +291,8 @@ TEST(FsiTransient, SelfConvergenceInDtIsSecondOrderInTheAsymptoticRegime) {
 // levels only (T1/40, T1/80, T1/160). Not an assertion on the order: an
 // impulsive start of an incompressible system is not second-order data, and
 // the number is recorded so that a future reader comparing against the enabled
-// test above knows the two differ by the start, not by the scheme. Measured: |dw| = 1.037e-4, 9.349e-5, i.e. order 0.15
+// test above knows the two differ by the start, not by the scheme. Measured:
+// |dw| = 1.037e-4, 9.349e-5, i.e. order 0.15
 // over these two differences. (A five-level regression over T1/40..T1/640
 // from the same impulsive start measures 0.87 -- a different construction;
 // the two numbers are not comparable.)

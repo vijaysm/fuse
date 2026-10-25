@@ -129,10 +129,8 @@ TEST(BrusselatorGraphToolLowFive, LowersWithExternalDeliveryAndNoTransport) {
       ++external_delivery_count;
       // ONE input, an ORDERING edge onto the source field's own
       // producer -- here, a window-scoped export, so WindowAdvance
-      // (OpKind::ExternalDelivery's own comment, op.hpp; the scheduling-
-      // order fix this comment documents, MEASURED a later session,
-      // needs this edge to place the node after the exporting member's
-      // own last substep this sweep) -- never a data dependency
+      // (OpKind::ExternalDelivery's own comment, op.hpp; this edge places the
+      // node after the exporting member's own last substep this sweep) -- never a data dependency
       // (execute()'s own ExternalDelivery case, src/runtime/runner.cpp,
       // does not read it).
       ASSERT_EQ(n.inputs.size(), 1u);
