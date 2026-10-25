@@ -10,7 +10,7 @@
 # for this directory and the examples build but are never run. The parent
 # recorded that trap and it applies unchanged.
 
-# review-2026-10-11 BC-1: FUSE_LINALG_BACKEND=builtin configures the library
+# FUSE_LINALG_BACKEND=builtin configures the library
 # with no Eigen3::Eigen target at all (cmake/FuseDependencies.cmake creates
 # it only when the backend is eigen). Several example executables below link
 # Eigen3::Eigen directly (Gray-Scott, Brusselator, FSI channel -- all via
@@ -170,8 +170,8 @@ add_library(fuse_examples_common INTERFACE)
 add_library(fuse::examples_common ALIAS fuse_examples_common)
 target_include_directories(fuse_examples_common INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/common)
 target_link_libraries(fuse_examples_common INTERFACE fuse::base)
-# review-2026-10-11 BC-1: fuse::examples_common is an INTERFACE target, so
-# this one unguarded Eigen3::Eigen link used to fail every consumer's
+# fuse::examples_common is an INTERFACE target, so
+# an unguarded Eigen3::Eigen link here would fail every consumer's
 # configure at once under FUSE_LINALG_BACKEND=builtin (test/CMakeLists.txt's
 # own comment on this target makes the same observation about its reach).
 if(FUSE_LINALG_BACKEND_IS_EIGEN)
@@ -183,7 +183,7 @@ if(FUSE_ENABLE_CUSPARSE)
 endif()
 
 # ---------------------------------------------------------------------------
-# review-2026-10-11 BC-1: gated on the eigen backend -- this example's
+# Gated on the eigen backend -- this example's
 # Newton solves use Eigen::SparseLU and have no builtin-backend substitute.
 if(FUSE_LINALG_BACKEND_IS_EIGEN)
   # Gray-Scott: U and V on one structured grid, coupled
@@ -242,7 +242,7 @@ else()
 endif()
 
 # ---------------------------------------------------------------------------
-# review-2026-10-11 BC-1: gated on the eigen backend -- this example's
+# Gated on the eigen backend -- this example's
 # periodic-diffusion backward-Euler solve uses Eigen::SimplicialLDLT and
 # has no builtin-backend substitute.
 if(FUSE_LINALG_BACKEND_IS_EIGEN)
@@ -381,7 +381,7 @@ if(FUSE_ENABLE_TESTS)
   set_tests_properties(verification.brusselator.graph_tool.reproduces_reference
                        PROPERTIES LABELS "verification")
 
-  # S6 phase 3 ("LowFive" track), Unit 3: the SAME {3}-rank mpmd layout,
+  # The SAME {3}-rank mpmd layout,
   # plus --transport lowfive -- byte-for-byte against examples/
   # brusselator/participants/reference_mpmd_3_lowfive.yaml, exactly the
   # same convention as the row above. Needs no MPI, no LowFive and no
@@ -397,16 +397,12 @@ if(FUSE_ENABLE_TESTS)
   set_tests_properties(verification.brusselator.graph_tool.reproduces_reference_lowfive
                        PROPERTIES LABELS "verification")
 
-  # KNOWN_ISSUES.md D36: the accept-mode layout had NO committed reference
-  # at all before this fix (confirmed by listing this directory -- only
-  # the two mpmd rows above ever had one), so nothing caught a regression
-  # in brusselator_graph_tool.cpp's own accept branch the way the mpmd
-  # rows above do for theirs. Added now, alongside the fix, at both world
-  # sizes the tool already supports: --ranks-u 1 --ranks-v 1
-  # --ranks-coupler 1 (world 3, the row that timed out on the host) and
-  # --ranks-u 2 --ranks-v 2 --ranks-coupler 1 (world 5, never run --
-  # KNOWN_ISSUES.md D18's own "build it but never run it" ruling for the
-  # 5-rank accept row, unchanged by this track).
+  # The accept-mode layout has committed references too, so a regression
+  # in brusselator_graph_tool.cpp's own accept branch is caught the way the
+  # mpmd rows above catch theirs, at both world sizes the tool supports:
+  # --ranks-u 1 --ranks-v 1 --ranks-coupler 1 (world 3) and
+  # --ranks-u 2 --ranks-v 2 --ranks-coupler 1 (world 5, built but never
+  # run).
   add_test(NAME verification.brusselator.graph_tool.reproduces_reference_accept_3
            COMMAND ${CMAKE_COMMAND}
                    -DBIN=$<TARGET_FILE:brusselator_graph_tool>
@@ -428,8 +424,7 @@ if(FUSE_ENABLE_TESTS)
                        PROPERTIES LABELS "verification")
 
   # The SAME {3}-rank accept layout, plus --transport lowfive -- exactly the
-  # combination KNOWN_ISSUES.md D36's own second defect (the LowFive
-  # skip-list gap) was measured against, mirrored here the way
+  # combination that exercises the LowFive skip-list handling, mirrored here the way
   # reproduces_reference_lowfive mirrors reproduces_reference for mpmd.
   add_test(NAME verification.brusselator.graph_tool.reproduces_reference_accept_3_lowfive
            COMMAND ${CMAKE_COMMAND}
@@ -442,7 +437,7 @@ if(FUSE_ENABLE_TESTS)
                        PROPERTIES LABELS "verification")
 endif()
 
-# Conformance, Unit 2 (Q3): the --check assembler, run against u_main.c's
+# The --check assembler, run against u_main.c's
 # and v_main.f90's own printed per-window logs after a real host run
 # (ctest rows registered in test/CMakeLists.txt pipe both executables'
 # logs into this tool as their last step). Needs no MPI -- it is pure
@@ -454,42 +449,39 @@ add_executable(brusselator_check
   brusselator/participants/brusselator_check.cpp
   brusselator/participants/brusselator_check_core.cpp)
 
-# The three participant/coupler executables themselves (Conformance,
-# Unit 2) -- tier 1 (FUSE_ENABLE_MPI) only, since each genuinely needs
+# The three participant/coupler executables themselves
+# -- tier 1 (FUSE_ENABLE_MPI) only, since each genuinely needs
 # MPI (u_main.c's/coupler_main.c's own MPI_Init/MPI_Comm_c2f,
 # v_main.f90's own `use mpi`), unlike the two tools above. Each is PURE
 # C (u_main.c, coupler_main.c, u_loop.c) or PURE FORTRAN (v_main.f90,
 # v_loop.f90) in its own coupling-facing code -- only the shared physics
 # (shim.cpp) is C++ (u_main.c's own header comment has the full
-# rationale). Never run in THIS sandbox (KNOWN_ISSUES.md C1: MPI cannot
-# start here at all) -- build-verified only; test/CMakeLists.txt's own
+# rationale). Never run in a sandbox where MPI cannot
+# start -- build-verified only there; test/CMakeLists.txt's own
 # verification.brusselator.participants.{mpmd,accept}.{3,5} rows below
 # register the real host invocations.
 if(FUSE_ENABLE_MPI)
   add_executable(brusselator_coupler_main
     brusselator/participants/coupler_main.c)
   target_link_libraries(brusselator_coupler_main PRIVATE fuse::abi MPI::MPI_C)
-  # ---- D14 Stage B (KNOWN_ISSUES.md), additive: begin --------------------
-  # brusselator_coupler_main now ALSO joins the single collective split
+  # ---- LowFive local split: begin ----------------------------------------
+  # brusselator_coupler_main ALSO joins the single collective split
   # bruss_lowfive_join_local_split() performs (lowfive_attach.cpp, compiles
   # to a trivial, always-local_comm_f=0 stub when FUSE_HAVE_LOWFIVE is 0,
-  # exactly like u_main.c's/v_main.f90's own additive hunks below) -- never
-  # bruss_lowfive_attach() itself (round 9's own ruling, unchanged: this
-  # target still never constructs a real LowFive VOL object). Needs
-  # fuse::model (fuse::build_lowfive_bindings(), fuse::load_yaml_file())
-  # AND, corrected here after a tier-1 (-DFUSE_ENABLE_LOWFIVE=ON) build
-  # caught the gap this comment's own earlier claim missed:
+  # exactly like u_main.c's/v_main.f90's own hunks below) -- never
+  # bruss_lowfive_attach() itself (this target never constructs a real
+  # LowFive VOL object). Needs fuse::model (fuse::build_lowfive_bindings(),
+  # fuse::load_yaml_file()) AND fuse::lowfive:
   # lowfive_attach.cpp's own top-of-file #include block (outside any
   # FUSE_HAVE_LOWFIVE guard, so EVERY target compiling this source needs
   # it) names <lowfive/H5VOLProperty.hpp> directly -- a HEADER search
-  # path only `fuse::lowfive` provides, which KNOWN_ISSUES.md D39 Round
-  # 10's own finding (liblowfive/liblowfive-dist already linked
-  # transitively via fuse::abi -> fuse-coupler-transport) does NOT: a
-  # transitive LINK dependency carries no transitive include directory
-  # in this build graph. Mirrors brusselator_u_main's own identical
-  # fuse_link_lowfive_with_fmt_fix() call below, same reason (shim.cpp's
-  # own header comment on that function has the full fmt-version
-  # account).
+  # path only `fuse::lowfive` provides (liblowfive/liblowfive-dist are
+  # already linked transitively via fuse::abi -> fuse-coupler-transport,
+  # but a transitive LINK dependency carries no transitive include
+  # directory in this build graph). Mirrors brusselator_u_main's own
+  # identical fuse_link_lowfive_with_fmt_fix() call below, same reason
+  # (shim.cpp's own header comment on that function has the full
+  # fmt-version account).
   target_sources(brusselator_coupler_main PRIVATE brusselator/participants/lowfive_attach.cpp)
   target_link_libraries(brusselator_coupler_main PRIVATE fuse::model)
   if(TARGET fuse::lowfive)
@@ -498,9 +490,9 @@ if(FUSE_ENABLE_MPI)
   if(LOWFIVE_HAVE_DIST)
     target_compile_definitions(brusselator_coupler_main PRIVATE FUSE_LOWFIVE_DIST_LIB_FOUND=1)
   endif()
-  # ---- D14 Stage B: end ---------------------------------------------------
+  # ---- LowFive local split: end ------------------------------------------
 
-  # review-2026-10-11 BC-1: brusselator_u_main/brusselator_v_main link
+  # brusselator_u_main/brusselator_v_main link
   # Eigen3::Eigen directly (shim.cpp's physics), so both -- and the two
   # host rows below that are already conditioned on
   # "TARGET brusselator_u_main AND TARGET brusselator_v_main" -- are gated
@@ -515,42 +507,39 @@ if(FUSE_ENABLE_MPI)
       fuse::abi MPI::MPI_C Eigen3::Eigen Kokkos::kokkos)
     target_include_directories(brusselator_u_main PRIVATE brusselator)
 
-    # S6 phase 3 (Conformance, "LowFive" track), Unit 3b: shim.cpp's own
+    # shim.cpp's own
     # bruss_lowfive_write/read (behind FUSE_HAVE_LOWFIVE) call the real
     # HDF5 C API -- fuse::lowfive (cmake/FuseDependencies.cmake, which this
     # directory's own fuse_resolve_dependencies() call already ran before
     # add_subdirectory(examples) reached here, CMakeLists.txt) carries
-    # HDF5 plus the LowFive libraries themselves. This unit first attached the
-    # connector through the HDF5_VOL_CONNECTOR/HDF5_PLUGIN_PATH env-var
-    # mechanism (docs/user/lowfive.md), which needed no LowFive SYMBOL in THIS
-    # executable at all -- only ordinary HDF5 calls (the participants now attach
-    # programmatically, see the note after the Unit 3b rows) -- but linking the one
-    # `fuse::lowfive` target already resolved is simpler than teasing the
-    # raw HDF5-only half back out, and costs nothing an ordinary HDF5
-    # dependency does not already cost.
+    # HDF5 plus the LowFive libraries themselves. The participants attach
+    # the connector programmatically (see the note after the host rows
+    # below), so shim.cpp itself needs only ordinary HDF5 calls -- but
+    # linking the one `fuse::lowfive` target already resolved is simpler
+    # than teasing the raw HDF5-only half back out, and costs nothing an
+    # ordinary HDF5 dependency does not already cost.
     # fuse_link_lowfive_with_fmt_fix (cmake/FuseDependencies.cmake): plain
     # target_link_libraries(... fuse::lowfive ...) here is not enough --
     # shim.cpp also includes fuse/base/rational.hpp (-> result.hpp -> fmt
     # 12), in the SAME translation unit as <hdf5.h>, and fuse::lowfive's
     # own include directory carries a bundled, incompatible fmt. See that
-    # function's own comment and KNOWN_ISSUES.md D14's Unit 3b account for
-    # the full measured record (an earlier, single-link-order version of
-    # this fix broke under a different CMAKE_PREFIX_PATH ordering).
+    # function's own comment for the full measured record (a
+    # single-link-order version of this fix breaks under a different
+    # CMAKE_PREFIX_PATH ordering).
     if(TARGET fuse::lowfive)
       fuse_link_lowfive_with_fmt_fix(brusselator_u_main)
     endif()
 
-    # ---- S6 phase 3 (Conformance, "LowFive attach" track): begin --------
+    # ---- Programmatic LowFive attach: begin ------------------------------
     # lowfive_attach.cpp (examples/brusselator/participants) constructs the
     # VOL connector PROGRAMMATICALLY instead of through the HDF5_VOL_
     # CONNECTOR/HDF5_PLUGIN_PATH env-var route -- see that file's own
-    # header comment and KNOWN_ISSUES.md D39 for why. Always added to this
+    # header comment for why. Always added to this
     # executable's own sources (like shim.cpp, it compiles to a trivial
     # "not built with LowFive" stub when FUSE_HAVE_LOWFIVE is 0), needing
     # fuse::model (fuse/model/yaml_io.hpp, CouplingGraph) in addition to
-    # shim.cpp's own fuse::lowfive -- a dependency this executable did not
-    # need before this track, since shim.cpp's own bruss_lowfive_write/
-    # read never parsed the graph themselves.
+    # shim.cpp's own fuse::lowfive -- shim.cpp's own bruss_lowfive_write/
+    # read never parse the graph themselves.
     target_sources(brusselator_u_main PRIVATE brusselator/participants/lowfive_attach.cpp)
     target_link_libraries(brusselator_u_main PRIVATE fuse::model)
     # FUSE_LOWFIVE_DIST_LIB_FOUND: this executable's own copy of the SAME
@@ -561,7 +550,7 @@ if(FUSE_ENABLE_MPI)
     if(LOWFIVE_HAVE_DIST)
       target_compile_definitions(brusselator_u_main PRIVATE FUSE_LOWFIVE_DIST_LIB_FOUND=1)
     endif()
-    # ---- "LowFive attach" track: end (brusselator_u_main half) ----------
+    # ---- Programmatic LowFive attach: end (brusselator_u_main half) ------
 
     if(TARGET fuse-abi-fortran)
       add_executable(brusselator_v_main
@@ -580,45 +569,44 @@ if(FUSE_ENABLE_MPI)
       if(TARGET fuse::lowfive)
         fuse_link_lowfive_with_fmt_fix(brusselator_v_main)
       endif()
-      # ---- "LowFive attach" track: begin (brusselator_v_main half) ------
+      # ---- Programmatic LowFive attach: begin (brusselator_v_main half) --
       # Mirrors brusselator_u_main's own additive hunk just above exactly.
       target_sources(brusselator_v_main PRIVATE brusselator/participants/lowfive_attach.cpp)
       target_link_libraries(brusselator_v_main PRIVATE fuse::model)
       if(LOWFIVE_HAVE_DIST)
         target_compile_definitions(brusselator_v_main PRIVATE FUSE_LOWFIVE_DIST_LIB_FOUND=1)
       endif()
-      # ---- "LowFive attach" track: end -----------------------------------
+      # ---- Programmatic LowFive attach: end ------------------------------
     else()
       message(STATUS "fuse: FUSE_ENABLE_MPI is ON but no Fortran compiler was found; "
-                     "brusselator_v_main (Conformance Unit 2) will not be built")
+                     "brusselator_v_main will not be built")
     endif()
   else()
-    message(STATUS "fuse: brusselator_u_main/brusselator_v_main (Conformance Unit 2) not "
+    message(STATUS "fuse: brusselator_u_main/brusselator_v_main not "
                    "built under FUSE_LINALG_BACKEND=builtin (shim.cpp needs Eigen3::Eigen)")
     list(APPEND _fuse_eigen_gated_examples brusselator_u_main brusselator_v_main)
   endif()
 endif()
 
 
-# ---- Conformance Unit 2, "Brusselator as separately built participants":
-# host rows begin -----------------------------------------------------------
-# MPI cannot start in this sandbox at all (KNOWN_ISSUES.md C1), so --
+# ---- "Brusselator as separately built participants": host rows begin ----
+# MPI cannot start in every sandbox, so --
 # exactly like test/CMakeLists.txt's own parallel.connect.* rows, whose
 # host_verification_needed convention this mirrors -- every row below is
-# a host_verification_needed item; what IS verified here is that every
-# executable involved builds at tier 1 (confirmed this session) and that
+# a host_verification_needed item; what IS verified without a host is that
+# every executable involved builds at tier 1 and that
 # brusselator_graph_tool reproduces its own committed reference YAML byte
 # for byte (verification.brusselator.graph_tool.reproduces_reference,
 # registered just above). Registered HERE, not in test/CMakeLists.txt,
 # because add_subdirectory(test) runs before add_subdirectory(examples)
 # at the top level (CMakeLists.txt) -- a TARGET check against these
-# executables in test/CMakeLists.txt would always be false (found this
-# session: the rows silently failed to register there).
+# executables in test/CMakeLists.txt would always be false (the rows
+# would silently fail to register there).
 #
 # {3,5} name each row's total world size. mpmd: ranks_u + ranks_v +
 # ranks_coupler = 3 (1+1+1) or 5 (2+2+1), three app segments. accept:
 # U's own executable carries ranks_u + ranks_coupler (2 or 3), V's
-# carries ranks_v (1 or 2) -- Q1's ruling, KNOWN_ISSUES.md D18.
+# carries ranks_v (1 or 2).
 if(FUSE_ENABLE_TESTS AND FUSE_ENABLE_MPI AND TARGET brusselator_u_main AND TARGET brusselator_v_main)
   set(_fuse_bp_world_3_u 1)
   set(_fuse_bp_world_3_v 1)
@@ -786,7 +774,7 @@ endif()
 # KNOWN_ISSUES.md D14 item 3.
 # ---- "LowFive attach" track note: end ----------------------------------
 
-# review-2026-10-11 BC-1: gated on the eigen backend -- both FSI channel
+# Gated on the eigen backend -- both FSI channel
 # solvers factor through Eigen::SparseLU with no builtin-backend substitute.
 if(FUSE_LINALG_BACKEND_IS_EIGEN)
   # ---------------------------------------------------------------------------
@@ -1028,7 +1016,7 @@ else()
 endif()
 # ---- S6 phase 3, "LowFive" track: end -------------------------------------
 
-# review-2026-10-11 BC-1: one line naming every example this configure
+# one line naming every example this configure
 # skipped because FUSE_LINALG_BACKEND is not eigen, same convention as
 # test/CMakeLists.txt's own skip summary at the bottom of its audit section.
 if(NOT FUSE_LINALG_BACKEND_IS_EIGEN)

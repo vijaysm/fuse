@@ -16,13 +16,13 @@
 //      freed by every rank that is in it, on every path including the error
 //      paths, before `build()` returns. `CommGraph` therefore owns no MPI
 //      resource and its destructor is not collective -- which is exactly the
-//      hazard R24 records for `MpiTransport`.
+//      hazard `MpiTransport`'s collective destructor has.
 //   4. The two windows that cannot be agreed -- an MPI failure and a heap
 //      failure strictly between two collectives -- abort loudly with a
 //      message rather than hanging.
 //
 // WHY THE DIRECTORY IS ROUTED AND NOT ALLGATHERED. `MpiTransport::build_plan`
-// allgathers every global id to every rank, O(total entities) per rank (R24).
+// allgathers every global id to every rank, O(total entities) per rank.
 // The directory phases below never do: each rank's traffic is bounded by its
 // own local entity count plus whatever it receives as a bucket owner, and the
 // router delivers it in O(log P) rounds. The one place an O(P)-ish exchange
@@ -614,15 +614,15 @@ Result<CommGraph> CommGraph::build(int base_comm_handle,
   MPI_Group bgroup = MPI_GROUP_NULL;
   MPI_Group ugroup = MPI_GROUP_NULL;
   {
-    // Review 2026-10-11 TR-9. MPI_Comm_group/MPI_Group_incl are both purely
-    // local -- no communication -- but MPI_Comm_create_group right after
-    // them is collective over `ugroup`, and every rank that reaches it did
-    // so because its OWN local pair above succeeded. A local failure here
-    // on one rank only used to return a Result while its ugroup peers, who
-    // saw no failure, go on to enter that collective and wait for a rank
-    // that now never will -- exactly the "MPI failure strictly between two
-    // collectives" window this file's own header discipline (point 4)
-    // already names and answers by aborting rather than returning.
+    // MPI_Comm_group/MPI_Group_incl are both purely local -- no communication
+    // -- but MPI_Comm_create_group right after them is collective over
+    // `ugroup`, and every rank that reaches it did so because its OWN local
+    // pair above succeeded. A local failure on one rank only must not return a
+    // Result while its ugroup peers, who saw no failure, go on to enter that
+    // collective and wait for a rank that never will -- exactly the "MPI
+    // failure strictly between two collectives" window this file's own header
+    // discipline (point 4) already names and answers by aborting rather than
+    // returning.
     if (MPI_Comm_group(base, &bgroup) != MPI_SUCCESS ||
         MPI_Group_incl(bgroup, static_cast<int>(union_ranks.size()),
                        union_ranks.data(), &ugroup) != MPI_SUCCESS) {
@@ -1137,7 +1137,7 @@ Result<CommGraph> CommGraph::build(int base_comm_handle,
                         bool                          dedupe_flat) {
     // The per-peer `CommGraphPeer` lists (`peers`) are keyed by destination
     // and MUST keep one entry per (peer, entity) pair -- the peer-wise
-    // transport path (R31, `peer_plan_needed` above) gathers/scatters each
+    // transport path (`peer_plan_needed` above) gathers/scatters each
     // peer's own block through them. `ids`/`idxs` are a DIFFERENT, FLAT
     // thing: `TransportSpec::global_ids`, one rank's own declared offer
     // list, fed to `MpiTransport::build_plan`'s from-scratch id matching,
@@ -1148,7 +1148,7 @@ Result<CommGraph> CommGraph::build(int base_comm_handle,
     // need the declaration itself repeated. `dedupe_flat` selects which
     // contract `ids`/`idxs` must satisfy: true for the SEND side (SOURCE,
     // where a single owned entity routinely has more than one destination
-    // peer wanting it -- KNOWN_ISSUES.md D73 round 9), false for the RECV
+    // peer wanting it), false for the RECV
     // side (DESTINATION, where a genuine repeat means this rank itself
     // wants the same remote entity written into two different local slots,
     // which `idxs`' own per-occurrence local index must keep distinct).
@@ -1234,12 +1234,12 @@ Result<void> accumulate_shared_rows(const MeshView& view, int dim,
     return Failure{"E-ACCUM-COMM", "accumulate_shared_rows: MPI_Comm_size failed"};
   }
 
-  // Review 2026-10-11 TR-7. `components` and `local_values` are per-rank
-  // CALLER data, unlike `base_comm_handle` above -- a caller bug can size
-  // either wrong on one rank only, and a local return here used to leave
-  // every other rank to enter the MPI_Allgather below alone. The verdict is
-  // agreed (MPI_Allreduce MAX) before anyone acts on it, the same
-  // Collective-1 discipline build_plan() uses (mpi_transport.cpp).
+  // `components` and `local_values` are per-rank CALLER data, unlike
+  // `base_comm_handle` above -- a caller bug can size either wrong on one rank
+  // only, and a local return here would leave every other rank to enter the
+  // MPI_Allgather below alone. The verdict is agreed (MPI_Allreduce MAX) before
+  // anyone acts on it, the same Collective-1 discipline build_plan() uses
+  // (mpi_transport.cpp).
   enum class SizeErr : int { None = 0, Components = 1, Size = 2 };
   SizeErr local_err = SizeErr::None;
   if (components < 1) {
@@ -1374,10 +1374,9 @@ Result<void> copy_owner_shared_rows(const MeshView& view, int dim,
     return Failure{"E-ACCUM-COMM", "copy_owner_shared_rows: MPI_Comm_size failed"};
   }
 
-  // Review 2026-10-11 TR-7 (copy_owner_shared_rows is this finding's second
-  // site). Same fix as accumulate_shared_rows: `components`/`local_values`
-  // are per-rank caller data, so their verdict is agreed before anyone acts
-  // on it rather than returned locally ahead of the MPI_Allgather below.
+  // Same discipline as accumulate_shared_rows: `components`/`local_values` are
+  // per-rank caller data, so their verdict is agreed before anyone acts on it
+  // rather than returned locally ahead of the MPI_Allgather below.
   enum class SizeErr : int { None = 0, Components = 1, Size = 2 };
   SizeErr local_err = SizeErr::None;
   if (components < 1) {
@@ -1483,15 +1482,15 @@ Result<void> copy_owner_shared_rows(const MeshView& view, int dim,
     }
   }
 
-  // Review 2026-10-11 TR-8. This used to walk THIS rank's own `local_gids`
-  // -- a per-rank subset of the mesh -- so a missing owner fired only on
-  // the ranks that happen to hold the orphaned vertex among their own
-  // entities, while every other rank returned success for the very same
-  // global defect: a mixed outcome across ranks for one shared mesh
-  // contract violation. `gathered_gids` is the identical union on every
-  // rank (it came from the Allgatherv above), so checking that instead
-  // makes the check -- and its outcome -- the same everywhere, exactly
-  // like the "more than one owner" check just above it.
+  // This walks `gathered_gids`, not THIS rank's own `local_gids` (a
+  // per-rank subset of the mesh): walking the local subset would fire a
+  // missing owner only on the ranks that happen to hold the orphaned vertex
+  // among their own entities, while every other rank returned success for
+  // the very same global defect -- a mixed outcome across ranks for one
+  // shared mesh contract violation. `gathered_gids` is the identical union
+  // on every rank (it came from the Allgatherv above), so checking it makes
+  // the check -- and its outcome -- the same everywhere, exactly like the
+  // "more than one owner" check just above it.
   for (std::size_t i = 0; i < static_cast<std::size_t>(total); ++i) {
     if (owner_of.find(gathered_gids[i]) != owner_of.end()) continue;
     return Failure{"E-ACCUM-OWNER",
