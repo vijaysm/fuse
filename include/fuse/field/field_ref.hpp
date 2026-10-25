@@ -292,6 +292,10 @@ class AnyFieldRef {
   [[nodiscard]] MemorySpace space() const noexcept { return space_; }
   [[nodiscard]] bool valid() const noexcept { return data_ != nullptr; }
 
+  /// The first byte of the storage, for code that has established the value
+  /// type from `value_type()` and converts it (the Runner's Storage path).
+  [[nodiscard]] void* data() const noexcept { return data_; }
+
   /// True when `as<T>()` would succeed.
   template <CoupledValue T>
   [[nodiscard]] bool holds() const noexcept {

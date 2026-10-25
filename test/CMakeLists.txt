@@ -988,6 +988,11 @@ fuse_add_gtest(runtime runner_device)
 # universal-number-types.md, U2), and the two refusals that keep it honest.
 fuse_add_gtest(runtime dual_field_runner)
 
+# Fields of a Storage value type (binary32, bfloat16, binary16) through the Runner and
+# a real remap, host and device (plans/2026-10-22-universal-number-types.md, U3).
+fuse_add_gtest(runtime storage_field_runner)
+fuse_add_device_twin(runtime.storage_field_runner fuse_runtime_storage_field_runner_test)
+
 # the issue tracker `bool supports_rollback() const override` no longer
 # names a virtual to override, once `Component::capabilities()` is the one
 # virtual. A rule enforced by a REMOVED VIRTUAL, like U6's deleted overload

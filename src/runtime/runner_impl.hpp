@@ -13,6 +13,8 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
@@ -22,6 +24,7 @@
 #include "fuse/linalg/comm.hpp"
 #include "fuse/num/accelerator.hpp"
 #include "fuse/num/space_kernels.hpp"
+#include "fuse/num/storage_convert.hpp"
 #include "fuse/model/iteration.hpp"
 #include "fuse/backend/device_ghost_exchange.hpp"
 #include "fuse/backend/nodal_remap_distributed.hpp"
@@ -58,6 +61,65 @@ struct Slot {
   [[nodiscard]] std::size_t total() const noexcept {
     return elements * static_cast<std::size_t>(components);
   }
+};
+
+/// The Storage value types the runtime converts at the component boundary: a
+/// closed list, because each one is a kernel instantiated on both execution
+/// spaces. A field of any other value type that is not an array of binary64
+/// scalars is refused by name (E-RT-FIELD-TYPE).
+enum class StorageFormat : std::uint8_t { Binary32, BFloat16, Binary16 };
+
+[[nodiscard]] inline std::optional<StorageFormat> storage_format_of(
+    const AnyFieldRef& f) noexcept {
+  if (f.holds<float>()) return StorageFormat::Binary32;
+  if (f.holds<bfloat16>()) return StorageFormat::BFloat16;
+  if (f.holds<binary16>()) return StorageFormat::Binary16;
+  return std::nullopt;
+}
+
+[[nodiscard]] inline std::string_view storage_format_name(StorageFormat f) noexcept {
+  switch (f) {
+    case StorageFormat::Binary32: return value_traits<float>::name;
+    case StorageFormat::BFloat16: return value_traits<bfloat16>::name;
+    case StorageFormat::Binary16: return value_traits<binary16>::name;
+  }
+  return {};
+}
+
+/// Significand precision p (the implicit bit included): the unit roundoff of
+/// rounding to nearest in the format is 2^-p.
+[[nodiscard]] inline int storage_format_precision(StorageFormat f) noexcept {
+  switch (f) {
+    case StorageFormat::Binary32: return 24;
+    case StorageFormat::BFloat16: return bfloat16::format::precision;
+    case StorageFormat::Binary16: return binary16::format::precision;
+  }
+  return 0;
+}
+
+/// Calls `fn(std::type_identity<T>{})` with the C++ type of the format.
+template <class F>
+void visit_storage_format(StorageFormat f, F&& fn) {
+  switch (f) {
+    case StorageFormat::Binary32: fn(std::type_identity<float>{}); return;
+    case StorageFormat::BFloat16: fn(std::type_identity<bfloat16>{}); return;
+    case StorageFormat::Binary16: fn(std::type_identity<binary16>{}); return;
+  }
+}
+
+/// A component-owned arc whose field is Storage-typed. The arc's slot does not
+/// alias the component's array (it holds a different type); it is a binary64
+/// image of it. A provided field is widened into its image when component
+/// code has run; a required field is rounded out of its image into the
+/// component's array when the coupler delivers into it.
+struct StorageBinding {
+  std::uint32_t arc = 0;        ///< the slot whose `data` is the image
+  StorageFormat format = StorageFormat::Binary32;
+  bool          delivered = false;  ///< a Sink arc: the runtime writes the field
+  bool          device = false;     ///< the field (and the image) are in device memory
+  void*         field = nullptr;    ///< the component's array
+  std::size_t   count = 0;          ///< values, components included
+  std::size_t   stat = 0;           ///< index into RunStats::storage_fields
 };
 
 /// What a `Constrain` compares, resolved at setup.
@@ -1110,7 +1172,21 @@ struct Runner::Impl {
   /// through note_component_ran().
   std::uint64_t              component_epoch = 1;
   std::vector<std::uint64_t> device_mirror_epoch;
-  void note_component_ran() noexcept { ++component_epoch; }
+  void note_component_ran() noexcept {
+    ++component_epoch;
+    if (!storage_bindings.empty()) refresh_storage_images();
+  }
+
+  /// Storage-typed fields converted at the component boundary (see
+  /// detail::StorageBinding), and for each arc the index of its binding or -1.
+  std::vector<detail::StorageBinding> storage_bindings;
+  std::vector<std::int32_t>           storage_binding_of_arc;
+  /// Widens every provided Storage field into its binary64 image: exact.
+  /// Called after component code has run and at the start of each period.
+  void refresh_storage_images();
+  /// Rounds the image of a required Storage field into the component's array,
+  /// to nearest with ties to even, once. A no-op for an arc that has no binding.
+  void deliver_storage_field(std::uint32_t arc);
   std::vector<detail::Slot>        slots;         // parallel to arcs
   std::vector<std::vector<double>> previous;      // previous iterate, for Relax
   /// Device-resident twin of `previous`, same index: the Relax/Residual
