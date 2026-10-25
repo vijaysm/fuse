@@ -48,6 +48,17 @@ struct RunnerConfig {
   /// false.
   bool        force_distributed_nodal_remap = false;
 
+  /// A field of a Storage value type (binary32, bfloat16, binary16) is
+  /// converted at the component boundary: widened to binary64 exactly when a
+  /// component has written it, and rounded once, to nearest with ties to even,
+  /// when the coupler delivers into it (`RunStats::storage_fields`). With this
+  /// set, every delivery also measures what the rounding did -- the largest
+  /// relative change and the number of values that overflowed or underflowed
+  /// -- in the same pass over the data. It costs one reduction per delivery,
+  /// and on a device a fence, so a production run leaves it false; the unit
+  /// roundoff of each format is reported either way.
+  bool        measure_storage_rounding = false;
+
   /// `MPI_Comm_c2f()` of a communicator whose group contains every rank of
   /// every component in the graph -- `MPI_COMM_WORLD` under spec Section 6 mode 1,
   /// which is the only integration mode v1 implements. Set it to make
@@ -133,6 +144,28 @@ struct RunnerConfig {
   /// `Default` resolved against the environment as described above; what
   /// `initialize()` stores. `execution_space` itself is left as given.
   [[nodiscard]] Result<RunnerExecutionSpace> resolved_execution_space() const;
+};
+
+/// One Storage-typed field the runtime converts at the component boundary
+/// (include/fuse/num/storage_convert.hpp). A field a component provides is
+/// widened to binary64 when the component has written it; a field a component
+/// requires is rounded from binary64 once, when the coupler delivers into it.
+struct StorageFieldStats {
+  std::string  field;          ///< "component.field"
+  std::string  format;         ///< "binary32", "bfloat16" or "binary16"
+  bool         delivered = false;  ///< true: the runtime writes (rounds) it; false: it reads (widens) it
+  int          significand_bits = 0;
+  /// 2^-significand_bits: a value in the format's normal range changes by at
+  /// most this fraction when it is rounded to the format.
+  double       unit_roundoff = 0.0;
+  std::int64_t widenings = 0;  ///< times the field was read into binary64 (exact)
+  std::int64_t narrowings = 0; ///< times the runtime rounded into it
+  /// The rest is filled only under `RunnerConfig::measure_storage_rounding`,
+  /// summed over every delivery.
+  std::int64_t values = 0;     ///< finite values rounded
+  std::int64_t overflow = 0;   ///< of those, how many became an infinity
+  std::int64_t underflow = 0;  ///< nonzero values that became a zero
+  double       max_relative_change = 0.0;
 };
 
 struct RunStats {
@@ -224,6 +257,9 @@ struct RunStats {
   /// `device_staging`-lane staged copy -- a Transport plan's own send/recv
   /// buffers are not `device_staging`'s four lanes.
   std::int64_t device_transport_moves = 0;
+  /// One entry per Storage-typed field arc the runtime converts; empty when
+  /// every bound field is binary64 (or an array of binary64 scalars).
+  std::vector<StorageFieldStats> storage_fields;
 };
 
 /// Per-region outcome of the most recent period (spec Section 5.3).

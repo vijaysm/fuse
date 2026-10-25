@@ -271,6 +271,9 @@ Result<void> Runner::Impl::resolve_buffers(FieldRegistry& registry) {
   previous_device.assign(buffers.size(), {});
   sample_count.assign(buffers.size(), 0);
   slot_source_owner.assign(buffers.size(), -1);
+  storage_bindings.clear();
+  storage_binding_of_arc.assign(buffers.size(), -1);
+  stats.storage_fields.clear();
 
   // A field whose values carry a gradient (a forward-mode dual number's
   // gradient, fuse/model/value_traits.hpp) moves through every operation here
@@ -307,10 +310,14 @@ Result<void> Runner::Impl::resolve_buffers(FieldRegistry& registry) {
   // but a mismatch is a silent wrong-pointer bug, so it is an error, not a
   // fallback to allocating a shadow buffer.
   std::unordered_map<std::uint32_t, FieldId> arc_field;
+  std::vector<std::uint8_t> sink_arc(buffers.size(), 0);
   for (std::uint32_t i = 0; i < dag.node_count(); ++i) {
     const Node& n = dag.node(NodeId{i});
     if (n.kind != OpKind::Source && n.kind != OpKind::Sink) continue;
     if (!n.output.valid()) continue;
+    if (n.kind == OpKind::Sink && n.output.value() < sink_arc.size()) {
+      sink_arc[n.output.value()] = 1;
+    }
     const auto dot = n.label.find('.');
     if (dot == std::string::npos) continue;
     const auto cid = graph.find_component(n.label.substr(0, dot));
@@ -355,21 +362,35 @@ Result<void> Runner::Impl::resolve_buffers(FieldRegistry& registry) {
     }
     // The field as scalars: a binary64 field as it is, a field of arrays of
     // binary64 (dual numbers) as `components * scalar_count` scalars, which is
-    // what the plan sized the buffer for. Anything else is refused by name; it
-    // is bound, so "not bound" would be the wrong thing to say.
+    // what the plan sized the buffer for. A field of a Storage value type
+    // (binary32, bfloat16, binary16) is none of those: it has no binary64
+    // storage to alias, so the arc gets a binary64 image of it, converted at
+    // the component boundary (refresh_storage_images, deliver_storage_field).
+    // Anything else is refused by name; it is bound, so "not bound" would be
+    // the wrong thing to say.
     const Result<FieldRef> ref = registry.get_scalars(it->second);
+    std::optional<detail::StorageFormat> storage_format;
+    AnyFieldRef storage_field;
     if (!ref.ok() && ref.error().code != "E-FIELD-UNBOUND") {
-      return Failure{"E-RT-FIELD-TYPE",
-                     "field '" + b.label + "': " + ref.error().message};
+      const Result<AnyFieldRef> any = registry.get_any(it->second);
+      if (any.ok()) storage_format = detail::storage_format_of(any.value());
+      if (!storage_format.has_value()) {
+        return Failure{"E-RT-FIELD-TYPE",
+                       "field '" + b.label + "': " + ref.error().message};
+      }
+      storage_field = any.value();
     }
-    if (!ref.ok()) {
+    if (!ref.ok() && !storage_format.has_value()) {
       return Failure{"E-RT-UNBOUND",
                    "field '" + b.label +
                        "' is not bound; did the component call "
                        "register_fields?"};
     }
-    FieldRef view = ref.value();  // by value: FieldRegistry hands back a copy
-    if (view.space() != MemorySpace::Host &&
+    const Layout   field_layout = storage_format ? storage_field.layout()
+                                                 : ref.value().layout();
+    const MemorySpace field_space = storage_format ? storage_field.space()
+                                                   : ref.value().space();
+    if (field_space != MemorySpace::Host &&
         config.execution_space != RunnerConfig::RunnerExecutionSpace::Device) {
       // docs/dev/device-resident-arcs.md: a device-registered field is only
       // reachable by the Space-generic kernels and the space-aware boundary
@@ -377,39 +398,124 @@ Result<void> Runner::Impl::resolve_buffers(FieldRegistry& registry) {
       // interpreter dereferences slot pointers directly.
       return Failure{"E-RT-SPACE",
                    "field '" + b.label + "' is registered in " +
-                       to_cstring(view.space()) +
+                       to_cstring(field_space) +
                        " memory, but RunnerConfig::execution_space is Host; "
                        "select Device, or register the field in host memory"};
     }
-    if (!is_flat_contiguous(view.layout())) {
+    if (!is_flat_contiguous(field_layout)) {
       return Failure{"E-RT-LAYOUT",
                    "field '" + b.label +
                        "' is registered with a non-contiguous layout (stride=" +
-                       std::to_string(view.layout().stride) +
+                       std::to_string(field_layout.stride) +
                        ", component_stride=" +
-                       std::to_string(view.layout().component_stride) +
+                       std::to_string(field_layout.component_stride) +
                        ", components=" +
-                       std::to_string(view.layout().components) +
+                       std::to_string(field_layout.components) +
                        "); the interpreter walks every buffer as a flat, "
                        "component-fastest array and would silently permute it"};
     }
-    if (view.layout().count != b.elements ||
-        view.layout().components != b.components) {
+    if (field_layout.count != b.elements ||
+        field_layout.components != b.components) {
       return Failure{"E-RT-SIZE",
                    "field '" + b.label + "' is registered with " +
-                       std::to_string(view.layout().count) + "x" +
-                       std::to_string(view.layout().components) +
+                       std::to_string(field_layout.count) + "x" +
+                       std::to_string(field_layout.components) +
                        " values but the plan sizes its region at " +
                        std::to_string(b.elements) + "x" +
                        std::to_string(b.components) +
                        "; a short registration is a heap overflow in the hot "
                        "loop, where there is no bounds check left"};
     }
+    if (storage_format.has_value()) {
+      const std::size_t n = s.total();
+      double* image = nullptr;
+      if (field_space == MemorySpace::Device) {
+        device_storage[i] = Kokkos::View<double*, DeviceMemSpace>(
+            Kokkos::view_alloc("fuse::storage_image"), n);  // zero-initialised
+        image = device_storage[i].data();
+      } else {
+        storage[i].assign(n, 0.0);
+        image = storage[i].data();
+      }
+      detail::StorageBinding sb;
+      sb.arc = static_cast<std::uint32_t>(i);
+      sb.format = *storage_format;
+      sb.delivered = sink_arc[i] != 0;
+      sb.device = field_space == MemorySpace::Device;
+      sb.field = storage_field.data();
+      sb.count = n;
+      sb.stat = stats.storage_fields.size();
+      StorageFieldStats st;
+      st.field = b.label;
+      st.format = std::string(detail::storage_format_name(sb.format));
+      st.delivered = sb.delivered;
+      st.significand_bits = detail::storage_format_precision(sb.format);
+      st.unit_roundoff = std::ldexp(1.0, -st.significand_bits);
+      stats.storage_fields.push_back(std::move(st));
+      storage_binding_of_arc[i] = static_cast<std::int32_t>(storage_bindings.size());
+      storage_bindings.push_back(sb);
+      s.data = image;
+      s.owned_by_component = true;
+      s.device = sb.device;
+      continue;
+    }
+    FieldRef view = ref.value();  // by value: FieldRegistry hands back a copy
     s.data = view.data();
     s.owned_by_component = true;
-    s.device = view.space() == MemorySpace::Device;
+    s.device = field_space == MemorySpace::Device;
   }
+  // The components' initial values are in their arrays already; the images of
+  // the provided Storage fields start from them, not from zero.
+  refresh_storage_images();
   return Result<void>::success();
+}
+
+void Runner::Impl::refresh_storage_images() {
+  for (const detail::StorageBinding& b : storage_bindings) {
+    if (b.delivered) continue;
+    double* const image = slots[b.arc].data;
+    detail::visit_storage_format(b.format, [&]<class T>(std::type_identity<T>) {
+      const auto* in = static_cast<const T*>(b.field);
+      if (b.device) {
+        num::widen<DeviceExecSpace, T>(num::ConstStorageSpanOf<DeviceExecSpace, T>(in, b.count),
+                                       num::SpanOf<DeviceExecSpace>(image, b.count));
+        DeviceExecSpace().fence("fuse::storage_widen");
+      } else {
+        num::widen<HostExecSpace, T>(num::ConstStorageSpanOf<HostExecSpace, T>(in, b.count),
+                                     num::SpanOf<HostExecSpace>(image, b.count));
+        HostExecSpace().fence("fuse::storage_widen");
+      }
+    });
+    ++stats.storage_fields[b.stat].widenings;
+  }
+}
+
+void Runner::Impl::deliver_storage_field(std::uint32_t arc) {
+  if (arc >= storage_binding_of_arc.size() || storage_binding_of_arc[arc] < 0) return;
+  const detail::StorageBinding& b =
+      storage_bindings[static_cast<std::size_t>(storage_binding_of_arc[arc])];
+  const double* const image = slots[b.arc].data;
+  StorageFieldStats& st = stats.storage_fields[b.stat];
+  const bool measure = config.measure_storage_rounding;
+  detail::visit_storage_format(b.format, [&]<class T>(std::type_identity<T>) {
+    auto* const out = static_cast<T*>(b.field);
+    const auto run = [&]<class Space>(Space) {
+      const num::ConstSpanOf<Space> in(image, b.count);
+      const num::StorageSpanOf<Space, T> dst(out, b.count);
+      if (measure) {
+        const num::RoundingReport r = num::narrow_measured<Space, T>(in, dst);
+        st.values += r.values;
+        st.overflow += r.overflow;
+        st.underflow += r.underflow;
+        st.max_relative_change = std::max(st.max_relative_change, r.max_relative_change);
+      } else {
+        num::narrow<Space, T>(in, dst);
+      }
+      Space().fence("fuse::storage_narrow");
+    };
+    if (b.device) run(DeviceExecSpace{}); else run(HostExecSpace{});
+  });
+  ++st.narrowings;
 }
 
 void Runner::Impl::place_arcs_on_device() {
@@ -4445,6 +4551,9 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
     case OpKind::Accelerate: {  // Phase 7 replaces this with a real accelerator.
       if (ins.n_in == 0 || !ins.out.valid()) break;
       copy_arc(in_ptr(0), out_ptr(), n);
+      // A Storage-typed Requires field: the arc is its binary64 image, and the
+      // component's array takes the value rounded once from it.
+      if (ins.kind == OpKind::Sink) deliver_storage_field(ins.out.value());
       break;
     }
 
@@ -5414,6 +5523,7 @@ detail::Task<Result<void>> Runner::Impl::advance(ComponentSet& components,
 
 detail::Task<Result<void>> Runner::Impl::step_period(ComponentSet& components) {
   const std::vector<Instruction>& stream = plan.instructions();
+
 
   // The period is one merged walk over two pre-built, pre-sorted sequences:
   // the component ticks and the instruction stream.

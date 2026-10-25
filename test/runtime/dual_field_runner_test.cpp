@@ -31,6 +31,23 @@ using fuse::SerialMeshBackend;
 using fuse::StepContext;
 namespace u = fuse::units;
 
+/// A Storage value type the runtime has no conversion for: one byte, named so
+/// that the refusal can be recognised.
+struct Foreign {
+  std::uint8_t v;
+};
+
+template <>
+struct fuse::value_traits<Foreign> {
+  static constexpr std::string_view name = "myapp:byte";
+  static constexpr fuse::FieldValueKind kind = fuse::FieldValueKind::Storage;
+  using scalar_type = Foreign;
+  static constexpr int scalar_count = 1;
+  static constexpr int gradient_size = 0;
+  static double to_binary64(Foreign f) noexcept { return f.v; }
+  static Foreign from_binary64(double x) noexcept { return Foreign{static_cast<std::uint8_t>(x)}; }
+};
+
 namespace {
 
 using D1 = fuse::num::dual<double, 1>;
@@ -38,7 +55,7 @@ using D1 = fuse::num::dual<double, 1>;
 /// How a component's array is registered. Dual and Flat2 are the same memory
 /// (value then gradient, per cell) registered two ways; Plain is one scalar per
 /// cell, and which of the two scalars it carries is chosen by the test.
-enum class Bind { Dual, Flat2, Plain, Float };
+enum class Bind { Dual, Flat2, Plain, Foreign };
 
 int scalars_per_cell(Bind b) { return (b == Bind::Dual || b == Bind::Flat2) ? 2 : 1; }
 
@@ -58,7 +75,7 @@ class DualProducer final : public fuse::Component {
         bind_(bind),
         plain_scalar_(plain_scalar),
         raw_(cells * static_cast<std::size_t>(scalars_per_cell(bind)), 0.0),
-        single_(bind == Bind::Float ? cells : 0, 0.0f) {}
+        foreign_(bind == Bind::Foreign ? cells : 0) {}
 
   [[nodiscard]] std::string name() const override { return "producer"; }
 
@@ -84,9 +101,9 @@ class DualProducer final : public fuse::Component {
                                          fuse::Layout{1, 0, cells_, 1},
                                          fuse::MemorySpace::Host));
           break;
-        case Bind::Float:
-          r = reg.bind(f, fuse::BasicFieldRef<float>(
-                              single_.data(), fuse::Layout{1, 0, cells_, 1},
+        case Bind::Foreign:
+          r = reg.bind(f, fuse::BasicFieldRef<Foreign>(
+                              foreign_.data(), fuse::Layout{1, 0, cells_, 1},
                               fuse::MemorySpace::Host));
           break;
       }
@@ -101,8 +118,8 @@ class DualProducer final : public fuse::Component {
     for (std::size_t i = 0; i < cells_; ++i) {
       for (int l = 0; l < s; ++l) {
         const int which = bind_ == Bind::Plain ? plain_scalar_ : l;
-        if (bind_ == Bind::Float) {
-          single_[i] = static_cast<float>(pattern(0, i, steps_));
+        if (bind_ == Bind::Foreign) {
+          foreign_[i] = Foreign{static_cast<std::uint8_t>(i)};
         } else {
           raw_[i * static_cast<std::size_t>(s) + static_cast<std::size_t>(l)] =
               pattern(which, i, steps_);
@@ -120,7 +137,7 @@ class DualProducer final : public fuse::Component {
   int plain_scalar_;
   int steps_ = 0;
   std::vector<double> raw_;
-  std::vector<float> single_;
+  std::vector<Foreign> foreign_;
 };
 
 class DualConsumer final : public fuse::Component {
@@ -312,12 +329,12 @@ TEST(DualFieldRunner, MinimumAndMaximumAreRefusedOnlyForAFieldWithAGradient) {
 }
 
 TEST(DualFieldRunner, ABoundFieldOfATypeTheRuntimeCannotMoveIsNotCalledUnbound) {
-  auto h = build(Bind::Float, Bind::Plain, 0);
+  auto h = build(Bind::Foreign, Bind::Plain, 0);
   Runner runner{h->graph, h->dag, h->plan, h->backend};
   const auto r = bind_and_initialize(*h, runner);
   ASSERT_FALSE(r.ok());
   EXPECT_EQ(r.error().code, "E-RT-FIELD-TYPE");
-  EXPECT_NE(r.error().message.find("binary32"), std::string::npos);
+  EXPECT_NE(r.error().message.find("myapp:byte"), std::string::npos);
 }
 
 }  // namespace
