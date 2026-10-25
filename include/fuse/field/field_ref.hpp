@@ -118,6 +118,53 @@ struct Layout {
   }
 };
 
+/// The layout of the same storage addressed as scalars: a value is
+/// `scalar_count` consecutive scalars, so there are `components * scalar_count`
+/// scalars per element. Value `(i, c)` of the original starts at scalar offset
+/// `(i * stride + c * cs) * scalar_count`, and its scalar `k` is `k` further on,
+/// so the result is again a `Layout` only when the components are interleaved
+/// (`cs == 1`) or there is just one: then scalar `c * scalar_count + k` of
+/// element `i` sits at `i * stride * scalar_count + c * scalar_count + k`. With
+/// a blocked component layout the step between scalars of one value and the
+/// step between components differ, and no single `component_stride` expresses
+/// both, so this refuses (`E-FIELD-SCALAR-LAYOUT`) instead of returning a view
+/// that permutes the data.
+[[nodiscard]] inline Result<Layout> scalar_layout(const Layout& l,
+                                                  int scalar_count) {
+  if (scalar_count < 1) {
+    return Failure{"E-FIELD-SCALAR-LAYOUT",
+                   "a scalar count of " + std::to_string(scalar_count) +
+                       " is not at least 1"};
+  }
+  if (scalar_count == 1) return l;
+  if (l.components > 1 && l.effective_component_stride() != 1) {
+    return Failure{"E-FIELD-SCALAR-LAYOUT",
+                   "cannot view " + std::to_string(l.components) +
+                       " components of " + std::to_string(scalar_count) +
+                       " scalars each as scalars: the components are blocked "
+                       "(component_stride=" +
+                       std::to_string(l.component_stride) +
+                       "), and one component stride cannot express both the "
+                       "component step and the step between the scalars of "
+                       "one value; use an interleaved layout (component_stride "
+                       "0 or 1)"};
+  }
+  if (l.components > std::numeric_limits<int>::max() / scalar_count) {
+    return Failure{"E-FIELD-SCALAR-LAYOUT",
+                   "components * scalar_count overflows an int"};
+  }
+  Layout out;
+  out.stride = detail::sat_mul(l.stride, static_cast<std::size_t>(scalar_count));
+  out.component_stride = l.component_stride == 0 ? 0 : 1;
+  out.count = l.count;
+  out.components = l.components * scalar_count;
+  if (!out.well_formed()) {
+    return Failure{"E-FIELD-SCALAR-LAYOUT",
+                   "the scalar view of this layout aliases or overflows"};
+  }
+  return out;
+}
+
 /// Non-owning view over component-owned storage (spec 4.2), templated on the
 /// field's value type `T` (fuse/model/value_traits.hpp). `FieldRef` is the
 /// binary64 instance, and every interface that predates value types uses it.
@@ -176,6 +223,23 @@ class BasicFieldRef {
     return data_[checked_offset(i, c)];
   }
 
+  /// The same storage addressed as scalars of `scalar_type`: `components *
+  /// scalar_count` per element (see `scalar_layout`). This is the form every
+  /// operation that acts on each scalar separately -- a remap, a halo copy, a
+  /// transfer -- takes, so a field of dual numbers needs no operator of its
+  /// own. Nothing is copied; writes through the view are writes to the
+  /// original.
+  [[nodiscard]] Result<BasicFieldRef<typename value_traits<T>::scalar_type>>
+  as_scalars() const
+    requires(value_traits<T>::kind == FieldValueKind::ScalarArray)
+  {
+    using Scalar = typename value_traits<T>::scalar_type;
+    auto lay = scalar_layout(layout_, value_traits<T>::scalar_count);
+    if (!lay) return lay.error();
+    return BasicFieldRef<Scalar>(reinterpret_cast<Scalar*>(data_), lay.value(),
+                                 space_);
+  }
+
  private:
   [[nodiscard]] std::size_t checked_offset(std::size_t i, int c) const {
     if (data_ == nullptr) {
@@ -232,6 +296,49 @@ class AnyFieldRef {
   template <CoupledValue T>
   [[nodiscard]] bool holds() const noexcept {
     return type_ == field_value_type_of<T>();
+  }
+
+  /// Derivative (tangent) scalars per value; 0 for an ordinary field.
+  [[nodiscard]] int derivative_count() const noexcept {
+    return type_.derivative_count;
+  }
+
+  /// True when the stored values are `type_.scalar_count` consecutive scalars
+  /// of type `S`, and every operation on them may act on each scalar
+  /// separately (`FieldValueKind::ScalarArray`). A binary64 field holds
+  /// binary64 scalars.
+  template <CoupledValue S>
+  [[nodiscard]] bool holds_scalars_of() const noexcept {
+    return type_.kind == FieldValueKind::ScalarArray &&
+           type_.scalar_name == value_traits<S>::name &&
+           type_.scalar_size == sizeof(S) &&
+           type_.size ==
+               static_cast<std::size_t>(type_.scalar_count) * sizeof(S);
+  }
+
+  /// The field as scalars of type `S`, `components * scalar_count` per element:
+  /// the view the operations that act on each scalar separately take. For a
+  /// field that already holds `S` this is the field itself. Refused
+  /// (`E-FIELD-VALUE-TYPE`) when the values are not arrays of `S`, and
+  /// (`E-FIELD-SCALAR-LAYOUT`) when the layout cannot be expressed as scalars.
+  template <CoupledValue S>
+  [[nodiscard]] Result<BasicFieldRef<S>> as_scalars() const {
+    // A field that already holds `S` is its own scalar view, whatever its kind:
+    // a binary32 field read as binary32 needs no decomposition.
+    if (holds<S>()) return as<S>();
+    if (!holds_scalars_of<S>()) {
+      const FieldValueType want = field_value_type_of<S>();
+      return Failure{"E-FIELD-VALUE-TYPE",
+                     "the field holds " + std::string(type_.name) +
+                         " values (" + std::to_string(type_.scalar_count) +
+                         " scalars of " + std::string(type_.scalar_name) + ", " +
+                         std::string(to_cstring(type_.kind)) +
+                         "), which cannot be viewed as scalars of type " +
+                         std::string(want.name)};
+    }
+    auto lay = scalar_layout(layout_, type_.scalar_count);
+    if (!lay) return lay.error();
+    return BasicFieldRef<S>(static_cast<S*>(data_), lay.value(), space_);
   }
 
   template <CoupledValue T>

@@ -20,8 +20,8 @@
 
 namespace {
 
-// A forward-mode dual number with three tangents: the case lane decomposition
-// exists for. Its value_traits says LaneLinear over four binary64 lanes.
+// A forward-mode dual number with three tangents: the case viewing a field as
+// scalars exists for. Its value_traits says ScalarArray, four binary64 scalars.
 struct Dual3 {
   double v[4];
 };
@@ -31,8 +31,8 @@ struct NoTraits {
   double x;
 };
 
-// Claims to be LaneLinear over three doubles but holds four: the lanes do not
-// tile the type, so lane decomposition would read the wrong bytes.
+// Claims to be ScalarArray of three doubles but holds four: the scalars do not
+// tile the type, so viewing it as scalars would read the wrong bytes.
 struct MisTiled {
   double v[4];
 };
@@ -54,9 +54,10 @@ struct NotTrivial {
 template <>
 struct fuse::value_traits<Dual3> {
   static constexpr std::string_view name = "test:dual3";
-  static constexpr FieldValueKind kind = FieldValueKind::LaneLinear;
-  using lane_type = double;
-  static constexpr int lanes = 4;
+  static constexpr FieldValueKind kind = FieldValueKind::ScalarArray;
+  using scalar_type = double;
+  static constexpr int scalar_count = 4;
+  static constexpr int derivative_count = 3;
   static double to_binary64(const Dual3& d) noexcept { return d.v[0]; }
   static Dual3 from_binary64(double x) noexcept { return Dual3{{x, 0, 0, 0}}; }
 };
@@ -64,9 +65,10 @@ struct fuse::value_traits<Dual3> {
 template <>
 struct fuse::value_traits<MisTiled> {
   static constexpr std::string_view name = "test:mistiled";
-  static constexpr FieldValueKind kind = FieldValueKind::LaneLinear;
-  using lane_type = double;
-  static constexpr int lanes = 3;
+  static constexpr FieldValueKind kind = FieldValueKind::ScalarArray;
+  using scalar_type = double;
+  static constexpr int scalar_count = 3;
+  static constexpr int derivative_count = 2;
   static double to_binary64(const MisTiled& d) noexcept { return d.v[0]; }
   static MisTiled from_binary64(double x) noexcept {
     return MisTiled{{x, 0, 0, 0}};
@@ -77,8 +79,9 @@ template <>
 struct fuse::value_traits<NotTrivial> {
   static constexpr std::string_view name = "test:not-trivial";
   static constexpr FieldValueKind kind = FieldValueKind::Storage;
-  using lane_type = NotTrivial;
-  static constexpr int lanes = 1;
+  using scalar_type = NotTrivial;
+  static constexpr int scalar_count = 1;
+  static constexpr int derivative_count = 0;
   static double to_binary64(const NotTrivial& d) noexcept { return d.x; }
   static NotTrivial from_binary64(double x) noexcept {
     NotTrivial n;
@@ -96,7 +99,7 @@ static_assert(fuse::CoupledValue<Dual3>);
 static_assert(!fuse::CoupledValue<NoTraits>,
               "a type with no value_traits must not be a field value type");
 static_assert(!fuse::CoupledValue<MisTiled>,
-              "a LaneLinear type whose lanes do not tile it must be refused");
+              "a ScalarArray type whose scalars do not tile it must be refused");
 static_assert(!fuse::CoupledValue<NotTrivial>,
               "a type that is not trivially copyable must be refused");
 static_assert(!fuse::CoupledValue<int>,
@@ -112,12 +115,12 @@ fuse::Layout interleaved(std::size_t count, int components) {
                       components};
 }
 
-TEST(FieldValueType, DescriptorsNameSizeKindAndLanes) {
+TEST(FieldValueType, DescriptorsNameSizeKindAndScalarCount) {
   constexpr auto b64 = fuse::field_value_type_of<double>();
   EXPECT_EQ(b64.name, "binary64");
   EXPECT_EQ(b64.size, 8u);
-  EXPECT_EQ(b64.kind, fuse::FieldValueKind::LaneLinear);
-  EXPECT_EQ(b64.lanes, 1);
+  EXPECT_EQ(b64.kind, fuse::FieldValueKind::ScalarArray);
+  EXPECT_EQ(b64.scalar_count, 1);
 
   constexpr auto b32 = fuse::field_value_type_of<float>();
   EXPECT_EQ(b32.name, "binary32");
@@ -129,7 +132,7 @@ TEST(FieldValueType, DescriptorsNameSizeKindAndLanes) {
   EXPECT_EQ(bf.size, 2u);
 
   constexpr auto d3 = fuse::field_value_type_of<Dual3>();
-  EXPECT_EQ(d3.lanes, 4);
+  EXPECT_EQ(d3.scalar_count, 4);
   EXPECT_EQ(d3.size, 32u);
 
   EXPECT_NE(b64, b32);
@@ -237,7 +240,7 @@ TEST(FieldRegistryValueType, BinaryDoubleCallersAreUnchanged) {
   EXPECT_EQ(data[2], 4.0);
 }
 
-TEST(FieldRegistryValueType, UserLaneLinearTypeBindsAndRoundTrips) {
+TEST(FieldRegistryValueType, UserScalarArrayTypeBindsAndRoundTrips) {
   std::vector<Dual3> data(2, Dual3{{0, 0, 0, 0}});
   fuse::FieldRegistry reg;
   ASSERT_TRUE(reg.bind(fuse::FieldId{9},
