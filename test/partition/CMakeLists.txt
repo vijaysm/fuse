@@ -70,8 +70,8 @@ if(FUSE_ENABLE_MPI)
   fuse_partition_add_mpi_test(rcb_mpi LIBS fuse::backend MPI::MPI_CXX)
 endif()
 
-# review-2026-10-11 partition-search PS-6: repartition's num_parts <
-# comm_size defect needs a real communicator with more than one rank to
+# repartition's num_parts <
+# comm_size case needs a real communicator with more than one rank to
 # reproduce (kNullComm's comm_size is always 1) -- see
 # repartition_mpi_test.cpp's header comment.
 fuse_tests_gated_by(FUSE_ENABLE_MPI partition/repartition_mpi_test.cpp)

@@ -2,8 +2,7 @@
 // the Space-templated batched moment-matrix solve mls_weights.hpp's own
 // "WHY THIS FILE EXISTS" section describes, run on real fuse::search::
 // BoxIndex k-nearest results and checked two ways: (1) against a NumPy-
-// computed reference for one 2D and one 3D case (the same reference this
-// track's report cites), entry-by-entry to the documented 1e-12 relative
+// computed reference for one 2D and one 3D case, entry-by-entry to the documented 1e-12 relative
 // tolerance for a well-conditioned system; (2) `fuse::mls_crbf_device`
 // against the real host `fuse::mls_crbf` at a grid of arguments, since the
 // host function IS callable from ordinary test code and this is a direct
@@ -12,8 +11,7 @@
 //
 // NOT covered here: wiring `solve_mls_on_space` into `build_mls_weights`'s
 // own `RemapPlan`-level dispatch (mesh entity set resolution, option
-// parsing, `E-MLS-RANK`'s named diagnostic). See this track's report for
-// why that integration is a follow-up, not part of this increment.
+// parsing, `E-MLS-RANK`'s named diagnostic).
 
 #include "fuse/backend/mls_weights_device.hpp"
 
@@ -50,7 +48,7 @@ TEST(MlsCrbfDevice, MatchesHostClosedFormsAtAGridOfArguments) {
 
 template <class Space>
 void check_2d_case() {
-  // Same case this track's report cites: dim=2, degree=1 (P=3), k=5,
+  // Case: dim=2, degree=1 (P=3), k=5,
   // Wendland2, 8 source points, 1 target -- NumPy reference computed
   // independently (numpy.linalg.solve on the same moment matrix).
   std::vector<fuse::search::Point> src_pts = {

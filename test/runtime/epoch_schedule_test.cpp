@@ -123,7 +123,7 @@ TEST(EpochSchedule, ANonParticipantDoesNothing) {
   }
 }
 
-// RT-8 (review 2026-10-11): a participant count at or past
+// A participant count at or past
 // kMaxStrideParticipants (2^30) is clamped to the SAME empty schedule an
 // out-of-range `index` already returns, rather than entering the stride
 // walk at all -- the walk's own `stride *= 2`/`2 * stride` arithmetic is
@@ -167,7 +167,7 @@ TEST(EpochSchedule, IsAllocationFree) {
   SUCCEED();
 }
 
-// RT-9 (review 2026-10-11): the threshold comparison behind E-RT-EPOCH-TAG
+// The threshold comparison behind E-RT-EPOCH-TAG
 // (resolve_epoch_participants(), src/runtime/runner.cpp), factored into
 // tag_ub_too_low() so it is unit-testable without MPI -- rank-agreement.md
 // documents the refusal as a deliberate "fail before the run, not inside a

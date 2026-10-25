@@ -123,7 +123,7 @@ which this grid and partition were always meant to allow, and silently
 handling the 1-row case would hide a misconfigured decomposition instead of
 surfacing it.
 
-**HOST-FOUND BUG (2026-10-09, commit c11ac18 "Agree the Schur solver's
+**HOST-FOUND BUG (commit c11ac18 "Agree the Schur solver's
 refusals across every rank before any collective"), and the general
 principle it forced.** The first version of this check was answerable from this rank's
 own `j_lo`/`j_hi` alone and returned immediately on that -- which reads, at
@@ -247,8 +247,7 @@ separately materialised; every use reads it as `A_IG.transpose()`.
 **Assembled by allgather.** Each rank places its OWN `2*nx` rows of the
 `|G| x |G|` dense matrix (`S_own` at its own column block, the two
 couplings above at its neighbours' column blocks, zero elsewhere) into a
-`2*nx x |G|` buffer and calls ONE `Reducer::allgather` (this track's own
-addition to `comm.hpp`, below): the concatenation of every rank's own
+`2*nx x |G|` buffer and calls ONE `Reducer::allgather` (added to `comm.hpp`, below): the concatenation of every rank's own
 `2*nx` rows, in RANK ORDER, IS the complete `|G| x |G|` matrix row-major,
 with no further bookkeeping -- ranks are numbered `0..nranks-1` and each
 owns exactly `2*nx` CONSECUTIVE rows of `G` by construction (`G`'s own
@@ -353,14 +352,14 @@ larger one. Added as `Reducer::allgather(send, n_each, recv)`:
 `recv[r*n_each .. (r+1)*n_each)` becomes participant `r`'s own `send`, for
 every `r`, in rank order. `make_serial_reducer()`'s own implementation is
 the one-participant identity (a copy); `make_mpi_reducer`'s wraps a single
-`MPI_Allgather` per call. This is the ONE change this track made to the
-containers the "Containers" track committed; both implementations and a
+`MPI_Allgather` per call. This is the only change made to the
+distributed containers; both implementations and a
 `LinalgComm` test of each (`test/linalg/schur_slab_test.cpp`'s
 `SerialReducerAllgatherIsTheOneParticipantIdentity`,
 `test/parallel/schur_slab_mpi_test.cpp`'s
 `MpiReducerAllgatherConcatenatesInRankOrder`) live alongside this solver's
 own files rather than in `dist_vector_test.cpp`/`dist_sparse_matrix_test.cpp`,
-which this track does not own.
+which this solver does not own.
 
 ## Measured at tier 0 with an N-way in-process fake, not only the host
 
@@ -384,7 +383,7 @@ rank's own already-fixed rhs) -- nothing a warm-up call could leave mutated
 that the real call would see differently.
 `test/parallel/schur_slab_mpi_test.cpp` repeats the 2- and 3-rank
 properties over a REAL `MPI_COMM_WORLD`, compiled here, run on the host:
-`parallel.schur_slab_mpi.2`/`.3` both passed 2026-10-10 (0.26 s, 0.07 s) --
+`parallel.schur_slab_mpi.2`/`.3` both passed (0.26 s, 0.07 s) --
 the same host run that found the one-row-band collective-stranding defect
 this page's own "HOST-FOUND BUG" section above describes.
 

@@ -1,4 +1,4 @@
-// the issue tracker the named bit assignments fuse/model/capabilities.hpp
+// The named bit assignments fuse/model/capabilities.hpp
 // gives to the 64-bit space fuse::ComponentSemantics::capabilities,
 // fuse::FieldRequirement::required_capabilities and
 // fuse::Component::capabilities() all share.
@@ -25,8 +25,8 @@ TEST(Capabilities, HiddenStateIsBitThree) {
   EXPECT_EQ(fuse::kCapabilityHiddenState, std::uint64_t{1} << 3);
 }
 
-// residual/linearisation seam (fuse/runtime/component.hpp): the two
-// bits it took from what was "bits 4-63 reserved" before this track.
+// The residual/linearisation seam (fuse/runtime/component.hpp) takes two
+// bits.
 TEST(Capabilities, ResidualIsBitFour) {
   EXPECT_EQ(fuse::kCapabilityResidual, std::uint64_t{1} << 4);
 }
@@ -35,10 +35,8 @@ TEST(Capabilities, LinearizationIsBitFive) {
   EXPECT_EQ(fuse::kCapabilityLinearization, std::uint64_t{1} << 5);
 }
 
-//  (docs/dev/restart.md),  Slice 1: bits 6-7, taken
-// from what was "bits 6-63 reserved" before this track -- the same
-// pattern ResidualIsBitFour/LinearizationIsBitFive above already pin for
-// the bits that preceded them.
+// Restart (docs/dev/restart.md): bits 6-7, the same pattern
+// ResidualIsBitFour/LinearizationIsBitFive above already pin.
 TEST(Capabilities, RestartFormAIsBitSix) {
   EXPECT_EQ(fuse::kCapabilityRestartFormA, std::uint64_t{1} << 6);
 }

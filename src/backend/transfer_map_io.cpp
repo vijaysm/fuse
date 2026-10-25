@@ -42,7 +42,7 @@ class Cursor {
   [[nodiscard]] bool real(double& out) noexcept {
     std::uint64_t bits = 0;
     if (!integer(8, bits)) return false;
-    // Round-trips exactly: put_double writes the bit pattern, not a decimal.
+    // Exact round trip: put_double writes the bit pattern, not a decimal.
     std::memcpy(&out, &bits, sizeof out);
     return true;
   }

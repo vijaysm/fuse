@@ -150,7 +150,7 @@ requires = "mpi"
 # the mutated binary was actually rebuilt before that run -- a stale binary
 # would produce exactly a false SURVIVED with no code-level explanation,
 # which is the one class of cause my trace cannot rule out from here.
-# SURVIVED on the host at .2 (2026-09-28), explained by the host's own stream
+# SURVIVED on the host at .2, explained by the host's own stream
 # print: the region is entered at t=1, after consumer_b's ticks, and every
 # rank of linkB was also a region participant, so every rank returned
 # together and nothing blocked. Re-pointed at .3, where

@@ -331,10 +331,9 @@ inline void recursive_bisect_oracle_impl(
   }
 
   // rcb_moab sorts on_split by GID locally before building the per-rank
-  // Allgatherv payload. PS-9 correction (2026-10-11 review): the comment
-  // this replaced claimed the subsequent GLOBAL sort by GID made this local
-  // pre-sort "provably not affect the final `goes_left` decision" -- true
-  // only when every gid is unique. `rcb_partition` does NOT require unique
+  // Allgatherv payload. The subsequent GLOBAL sort by GID does not make this
+  // local pre-sort "provably not affect the final `goes_left` decision" --
+  // that holds only when every gid is unique. `rcb_partition` does NOT require unique
   // gids, and when two on-split entries share one, this rank's local order
   // between them decides which "gathered position" each receives, which
   // the global sort's weight walk can then split across the cutoff

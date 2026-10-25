@@ -26,7 +26,7 @@ class ExternalStepComponent final : public fuse::Component {
 
   [[nodiscard]] std::string name() const override { return name_; }
 
-  /// the issue tracker the one thing this override does is collect, not
+  /// The one thing this override does is collect, not
   /// bind -- every field this component owns is already bound directly by
   /// fuse_register_field() (src/abi/participant.cpp), before
   /// fuse_initialize() ever constructs a fuse::Runner. What this records
@@ -134,7 +134,7 @@ class ExternalStepComponent final : public fuse::Component {
     return fuse::kCapabilityRollback;
   }
 
-  /// the issue tracker fix: the one override that makes
+  /// The one override that makes
   /// `Runner::Impl::advance()`/`advance_window()` (src/runtime/runner.cpp,
   /// src/runtime/iteration.cpp) suspend at this component's own advance()
   /// point instead of calling the (still here, still a no-op) override

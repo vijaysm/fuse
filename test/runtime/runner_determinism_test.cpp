@@ -1,4 +1,4 @@
-// the issue tracker (closing) / matrix cell A-SPACES-TRANSPORT.
+// Matrix cell A-SPACES-TRANSPORT.
 //
 // A Runner-level, integration proof that the coupling hot loop's move onto
 // Kokkos' default host execution space (fuse/num/space_kernels.hpp) is

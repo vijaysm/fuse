@@ -1,5 +1,5 @@
-# Driver for the "install.consumer_find_package" ctest entry (the issue tracker
-#). ctest's add_test COMMAND runs one program; this is that
+# Driver for the "install.consumer_find_package" ctest entry.
+# ctest's add_test COMMAND runs one program; this is that
 # program -- a `cmake -P` script, since the check is itself three separate
 # cmake invocations (install, configure a second project, build it), not one
 # executable.

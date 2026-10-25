@@ -1,6 +1,6 @@
 // test/partition/mesh_adapter_test.cpp -- centroids_of against
-// SerialMeshBackend's generated line and box meshes (the task's named
-// fixture source: "the native mesh does not exist yet"). The
+// SerialMeshBackend's generated line and box meshes (a fixture source
+// independent of the native mesh). The
 // E-PART-MIXED-DIM rejection itself is a cross-rank property (see
 // mesh_adapter.hpp's header comment) and is exercised only under a real
 // communicator -- see rcb_mpi_test.cpp; comm == kNullComm agrees with
@@ -20,9 +20,9 @@
 namespace fuse::partition {
 namespace {
 
-// PS-4: a minimal MeshView stub whose dimension() answers <= 0 -- the one
+// A minimal MeshView stub whose dimension() answers <= 0 -- the one
 // documented, Tier-0-reachable refusal (mesh_adapter.hpp's own doc
-// comment, mesh_adapter.cpp:35-39) no test in this file previously fired.
+// comment, mesh_adapter.cpp).
 // Every other pure virtual is unreachable once dimension() <= 0 refuses
 // before a single entity is read, so they return harmless placeholders.
 class DimensionStubMesh : public fuse::MeshView {

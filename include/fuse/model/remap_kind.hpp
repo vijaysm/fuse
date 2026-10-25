@@ -13,8 +13,8 @@
 /// A Transport in front of it delivers the source values onto the target
 /// placement's view of the SOURCE mesh, which on a disjoint placement holds
 /// no entities: the values land in a zero-length buffer, and the operator,
-/// reading its input on the target placement, sums nothing. Host run
-/// 2026-09-25: H exact, H^T D delivering zero to every beam vertex, both
+/// reading its input on the target placement, sums nothing. Measured on a host run:
+/// H exact, H^T D delivering zero to every beam vertex, both
 /// "correct" by their own bookkeeping.
 ///
 /// So the lowering asks this ONE question and, when the answer is yes, emits
@@ -55,8 +55,7 @@ namespace fuse {
 /// differing regions, or a method that moves placement itself (above)
 /// whenever its two ends' placements differ.
 ///
-/// The coupler-placement track's shared gate (plans/2026-09-23-coupler-
-/// placement-and-migration.md design C). Deliberately independent of any
+/// The coupler-placement shared gate. Deliberately independent of any
 /// particular placement -- the channel's own source/target ranks, or a
 /// declared `RemapSpec::remap_on` -- because flags and region don't depend
 /// on ranks, and a non-moving method never moves ranks by itself. If this is

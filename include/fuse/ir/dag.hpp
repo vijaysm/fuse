@@ -18,18 +18,17 @@ namespace fuse {
 /// enforced at add_node time rather than checked afterwards.
 class OperatorDAG {
  public:
-  /// Spec Section 5.3. `carried` is the derived checkpoint set (Phase 7 Task 7.2):
+  /// Spec Section 5.3. `carried` is the derived checkpoint set:
   /// the loop-carried coupler buffers whose sweep-k value depends on sweep
   /// k-1's (src/ir/checkpoint.cpp names a node's output as carried when its
   /// kind is `OpKind::Relax` or `OpKind::Accelerate` -- see
   /// `Runner::Impl::run_region`'s long comment in src/runtime/iteration.cpp
   /// for why restoring these between sweeps would be the wrong physics).
   ///
-  /// R13: as of Phase 7, `carried` can in practice only ever be populated by
-  /// `Relax` nodes. `OpKind::Accelerate` has no emitter anywhere in
+  /// `carried` can in practice only ever be populated by `Relax` nodes. `OpKind::Accelerate` has no emitter anywhere in
   /// src/ir/rules_channel.cpp or src/ir/rules_derived.cpp (grepped, zero
-  /// hits) and no lowering rule is planned to add one -- Task 7.3 implemented
-  /// acceleration as a REGION-LEVEL construct instead (`num::Accelerator`,
+  /// hits) and no lowering rule is planned to add one -- acceleration is a
+  /// REGION-LEVEL construct instead (`num::Accelerator`,
   /// driven by `IterationRegionDecl::acceleration` and applied in
   /// `Runner::Impl::run_region` to the region's whole concatenated iterate
   /// vector, `R.x_old`/`R.x_new`/`R.x_out`), not as a per-channel IR node the

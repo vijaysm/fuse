@@ -13,7 +13,7 @@ namespace
 using namespace fuse;
 
 // Upstream's require() threw on the first failure; EXPECT_TRUE reports every
-// failure in the function (U2) and the message travels with it unchanged.
+// failure in the function and the message travels with it unchanged.
 void require(bool condition, const char* message) { EXPECT_TRUE(condition) << message; }
 
 void parsing()

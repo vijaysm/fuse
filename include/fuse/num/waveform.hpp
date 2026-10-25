@@ -137,8 +137,7 @@ class Waveform {
   /// in `fit_polynomial` the degree-3 fit reproduces an exact cubic to ~1e-14
   /// independently of the window length (measured), but the loss grows quickly
   /// with degree, and returning a fit that does not deliver its claimed order
-  /// is worse than rejecting. Task 6.3 should move to an orthogonal basis if it
-  /// needs more.
+  /// is worse than rejecting. An orthogonal basis would be needed for more.
   static constexpr int kMaxDgDegree = 4;
 
   /// `elements` may be 0 (an empty mesh partition on this rank is legal).
@@ -484,9 +483,9 @@ class Waveform {
     // factorization on its own right-hand side instead of rebuilding it.
     const num::PolynomialFitPlan plan = num::prepare_polynomial_fit(tt, deg, 0.0);
     std::vector<double>       ff(times_.size());
-    // the issue tracker, pass 2: `coeffs`/`rhs_scratch` are hoisted here and
-    // reused every element via the `_into` entry point, so the disclosed
-    // per-element solve allocation is gone too, not just the factorization.
+    // `coeffs`/`rhs_scratch` are hoisted here and reused every element via
+    // the `_into` entry point, so there is no per-element solve allocation,
+    // not just no per-element factorization.
     std::vector<double>       coeffs;
     std::vector<double>       rhs_scratch;
     for (std::size_t e = 0; e < elements_; ++e) {
@@ -504,7 +503,7 @@ class Waveform {
     // matching evaluate_dg's plan/solve split above.
     const num::SplineMomentPlan plan = num::prepare_cubic_spline_moments(tt);
     std::vector<double>       ff(times_.size());
-    // the issue tracker, pass 2: same hoisting as evaluate_dg above.
+    // Same hoisting as evaluate_dg above.
     std::vector<double>       moments;
     std::vector<double>       r_scratch;
     for (std::size_t e = 0; e < elements_; ++e) {
@@ -557,7 +556,7 @@ class Waveform {
     // Hoisted for the same reason as evaluate_dg above.
     const num::PolynomialFitPlan plan = num::prepare_polynomial_fit(tt, deg, 0.0);
     std::vector<double>       ff(times_.size());
-    // the issue tracker, pass 2: same hoisting as evaluate_dg above.
+    // Same hoisting as evaluate_dg above.
     std::vector<double>       coeffs;
     std::vector<double>       rhs_scratch;
     for (std::size_t e = 0; e < elements_; ++e) {
@@ -574,7 +573,7 @@ class Waveform {
     // Hoisted for the same reason as evaluate_spline above.
     const num::SplineMomentPlan plan = num::prepare_cubic_spline_moments(tt);
     std::vector<double>       ff(times_.size());
-    // the issue tracker, pass 2: same hoisting as evaluate_dg above.
+    // Same hoisting as evaluate_dg above.
     std::vector<double>       moments;
     std::vector<double>       r_scratch;
     for (std::size_t e = 0; e < elements_; ++e) {

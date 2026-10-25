@@ -1,4 +1,4 @@
-/// Newton-Krylov seam: `Runner::region_fixed_point_residual()` and
+/// The Newton-Krylov seam: `Runner::region_fixed_point_residual()` and
 /// the `fuse::FixedPointResidual` it returns, exercised on examples/
 /// dn_heat's own Dirichlet-Neumann pair (dn_component.hpp, on this file's
 /// own include path -- see test/CMakeLists.txt).

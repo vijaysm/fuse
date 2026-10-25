@@ -1,29 +1,24 @@
 // ABI-COLLECTIVE-AGREEMENT (build-evidence/abi-matrix.toml). Tier 1 only:
-// gated by FUSE_ENABLE_MPI in test/CMakeLists.txt, and MPI cannot start in
-// this sandbox (host_verification_needed in the task report) -- see that
-// row's own `requires = "mpi"` line. Compiled here so a tier-1 build at
-// least proves the file builds against a real MPI; running it, and
-// confirming it actually catches the fault class it claims to, is the
-// user's host to verify -- the deviation this file does NOT close.
+// gated by FUSE_ENABLE_MPI in test/CMakeLists.txt and needs a working MPI
+// launcher -- see that row's own `requires = "mpi"` line. Running it, and
+// confirming it actually catches the fault class it claims to, requires a
+// host with MPI; the asymmetric case is not covered here (see below).
 //
-// The claim is a failure on one process of a COLLECTIVE entry is reported
-// on every process -- the same class of bug bb6f57f fixed elsewhere in
-// this runtime. This test does NOT inject that asymmetry: an rc-mismatch
-// scenario deliberately diverges ranks' call sequence into
+// The claim is that a failure on one process of a COLLECTIVE entry is
+// reported on every process. This test does NOT inject that asymmetry: an
+// rc-mismatch scenario deliberately diverges ranks' call sequence into
 // initialize()/begin_step() (one rank skipping initialize() while others
 // proceed), and this ABI has no MPI awareness of its own to resynchronise
 // such a divergence -- if fuse::Runner's own collective reconciliation
 // (RunStats::epochs_reconciled; test/parallel/epoch_reconcile_test.cpp)
 // does not cover it either, an asymmetric scenario risks a genuine
-// cross-rank hang in a grading run with no way for this sandbox to catch
-// that risk first. So this test instead drives the graph SYMMETRICALLY --
+// cross-rank hang. So this test instead drives the graph SYMMETRICALLY --
 // every rank takes the identical sequence of calls -- and checks the one
-// thing that is safe to assert without a real MPI run: that
+// thing that is safe to assert without risking a hang: that
 // fuse_is_coupling_ongoing() answers identically on every rank after one
 // full period, via a collective comparison. It is a sanity check on the
 // reporting entries' determinism under MPI, not evidence that an
-// asymmetric fault is actually caught; closing that gap is an open
-// question in the task report.
+// asymmetric fault is actually caught.
 #include "fuse/base/config.hpp"
 
 #include <gtest/gtest.h>

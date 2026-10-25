@@ -126,19 +126,15 @@ TEST(Epoch, ReservedMultiscaleOperatorsAreRefused) {
   }
 }
 
-// `E-SCHED-EPOCH-PARTIAL`'s comparison (scheduler.cpp:1069-1081 as of review
-// 2026-10-11 IS-12's fix -- this comment's own line citation had drifted
-// from the function's growth since it was written) cannot fire under any
+// `E-SCHED-EPOCH-PARTIAL`'s comparison (scheduler.cpp) cannot fire under any
 // lowering path that exists today: the only place an Epoch node is
 // created copies its rank sets verbatim from the Transport it guards
-// (rules_channel.cpp:352-356, also redrifted since this comment was
-// written), so the two always agree by construction. That
+// (rules_channel.cpp), so the two always agree by construction. That
 // makes the check currently unreachable by normal means, not incorrect --
 // same situation as ReservedMultiscaleOperatorsAreRefused above, which
 // splices in an opcode no lowering rule emits either. Splice a genuinely
 // mismatched Transport/Epoch pair the same way, so the diagnostic text and
-// code path are proven reachable and correctly worded (the issue tracker /
-//).
+// code path are proven reachable and correctly worded.
 TEST(Epoch, MismatchedRankSetsAreRefused) {
   CouplingGraph g = colocated_pair();
   auto lowered = lower(g);

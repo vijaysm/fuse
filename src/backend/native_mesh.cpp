@@ -343,11 +343,11 @@ KOKKOS_FUNCTION double device_tetrahedron_volume(const double a[3], const double
 
 Result<std::unique_ptr<NativeMeshView>> NativeMeshView::create_from_host(
     const MeshArrays<Kokkos::HostSpace>& arrays, int my_rank) {
-  // NM-8: the class's own doc claims create_from_host "validates
-  // connectivity" -- it checked vertex-index range (E-MESH-CONNECTIVITY,
-  // below) but never the topological dimension itself nor a fixed-shape
-  // cell's own corner count, both of which NativeMeshBuilder::build()
-  // already checks for data that arrives through the builder. A direct
+  // The class's own doc says create_from_host "validates connectivity":
+  // vertex-index range (E-MESH-CONNECTIVITY, below), the topological
+  // dimension itself, and a fixed-shape cell's own corner count, as
+  // NativeMeshBuilder::build() does for data that arrives through the
+  // builder. A direct
   // caller of create_from_host (every in-tree producer routes through
   // NativeMeshBuilder::build(), which already checks these -- latent via
   // the public direct call this header's "every producer" claim does not
@@ -404,7 +404,7 @@ Result<std::unique_ptr<NativeMeshView>> NativeMeshView::create_from_host(
 
     const int voff = arrays.cell_vertex_offsets(c);
     const int vcount = arrays.cell_vertex_offsets(c + 1) - voff;
-    // NM-8: the same corner-count check NativeMeshBuilder::build() already
+    // The same corner-count check NativeMeshBuilder::build() already
     // makes for data arriving through the builder (this function's own
     // class-doc "validates connectivity" claim, restated here for a
     // caller that reaches create_from_host directly). A Triangle given 2
@@ -927,7 +927,7 @@ void NativeMeshView::simplex_points(int dim, std::size_t i, std::size_t s, Point
 }
 
 // ---------------------------------------------------------------------------
-// mesh_view.hpp's cell-to-vertex connectivity query (nodal-remap track). The
+// mesh_view.hpp's cell-to-vertex connectivity query (used by nodal remap). The
 // native mesh already stores exactly this -- `cell_vertices_[c]`, corner
 // indices in `native/cell_topology.hpp`'s convention, which is worded
 // identically to `cell_simplices.hpp`'s `CellShape` tables ("quad base 0-3,

@@ -1,6 +1,6 @@
 # Mutation evidence — `examples/brusselator`
 
-Run 2026-09-25 against build `b0`. Regenerate with `tools/mutate.py --write-log`; do not edit.
+Run against build `b0`. Regenerate with `tools/mutate.py --write-log`; do not edit.
 
 | Mutation | File | Verdict | Killed by |
 |---|---|---|---|

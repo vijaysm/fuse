@@ -68,7 +68,7 @@ TEST(Diagnostics, FormatsThroughFmtIdenticallyToToString) {
   EXPECT_EQ(fmt::format("{}", Failure{"E9", "gone"}), "[E9] gone");
 }
 
-// U2: one terminal call reports EVERY defect, in insertion order. The
+// One terminal call reports EVERY defect, in insertion order. The
 // first-failure behaviour is the thing being excluded.
 TEST(Diagnostics, AccumulatesEveryDefectInOrder) {
   Diagnostics d;

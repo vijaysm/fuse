@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#: the host-run driver behind
+# The host-run driver behind
 # parallel.connect.mpmd.* and parallel.connect.accept.*.
 #
 # MPMD mode is one mpiexec invocation with the ':' MPMD separator -- both

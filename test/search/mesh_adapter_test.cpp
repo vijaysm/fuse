@@ -47,8 +47,8 @@ TEST(MeshAdapter, GeneratedLineYieldsOneBoxPerCellAtDimension1) {
   }
 
   // Feeds a real BoxIndex build directly -- the composed pipeline
-  // element_boxes -> BoxIndex::build the next-phase (nodal remap) track will
-  // actually call.
+  // element_boxes -> BoxIndex::build the nodal remap
+  // actually calls.
   auto idx = BoxIndex::build(boxes);
   ASSERT_TRUE(idx.ok()) << idx.error().message;
   EXPECT_EQ(idx.value().dimension(), 1);

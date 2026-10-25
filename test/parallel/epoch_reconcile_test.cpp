@@ -354,9 +354,8 @@ TwoComponentJob make_two_component_job(const std::string& entity_set) {
   return TwoComponentJob{entity_set};
 }
 
-/// Bind every component's storage; the Runner rejects a plan otherwise. Not
-/// part of the brief's TwoComponentJob text, but required by the same
-/// contract test/unit/runner_test.cpp:399-404 documents (`bind_all`): nothing
+/// Bind every component's storage; the Runner rejects a plan otherwise.
+/// Required by the same contract test/unit/runner_test.cpp:399-404 documents (`bind_all`): nothing
 /// in Runner::initialize() calls Component::register_fields() for you.
 void bind_all(TwoComponentJob& h) {
   for (auto& c : h.components) {
@@ -514,11 +513,11 @@ TEST(EpochReconcile, AClearRunReconcilesAtEveryAgreementPoint) {
 }
 
 // A component is stepped only on the processes of its own processor set
-// (docs/user/placement.md). Until 2026-09-29 the runtime gave every component
-// a step on every process, so a process outside a component's processor set
-// called its advance() with the component's communicator MPI_COMM_NULL; the
-// D3 host run found it, when a process outside an implicit coupling group
-// reported the group's failing component as its own failure. Here fluid and
+// (docs/user/placement.md). Were every component stepped on every process, a
+// process outside a component's processor set would call its advance() with
+// the component's communicator MPI_COMM_NULL, and a process outside an
+// implicit coupling group would report the group's failing component as its
+// own failure. Here fluid and
 // solid are on disjoint processor sets, so each process must step exactly
 // one of them, once per coupling cycle.
 TEST(EpochReconcile, AComponentIsSteppedOnlyOnItsOwnProcesses) {

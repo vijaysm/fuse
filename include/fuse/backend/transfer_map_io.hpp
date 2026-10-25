@@ -1,6 +1,6 @@
 #pragma once
 
-/// Persisted transfer maps --.
+/// Persisted transfer maps.
 ///
 /// A remap matrix costs far more to build than to apply: a supermesh
 /// intersection over two unstructured meshes dominates setup, and the result

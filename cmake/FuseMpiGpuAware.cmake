@@ -12,7 +12,7 @@
 # standing priority (robustness before efficiency) -- a device-resident
 # native-mesh migration path is still future work.
 # fuse::transport::MpiTransport::is_gpu_aware() (src/transport/
-# mpi_transport.cpp, docs/dev/device-resident-arcs.md Phase 3) decides
+# mpi_transport.cpp, docs/dev/device-resident-arcs.md) decides
 # whether a channel Transport exchange may hand device pointers straight
 # to MPI from the IDENTICAL run-time probe, duplicated rather than
 # shared: transport's library does not link backend's, so a call from

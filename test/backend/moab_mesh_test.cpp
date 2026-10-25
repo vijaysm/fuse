@@ -135,7 +135,7 @@ std::string write_mixed_vtk() {
 }  // namespace
 
 // ===========================================================================
-// The brief's tests
+// Core behaviour
 // ===========================================================================
 
 TEST(MoabMesh, LoadsAGeneratedBox) {
@@ -524,7 +524,7 @@ TEST(MoabMesh, RejectsTheSameMalformedSourcesAsTheSerialBackend) {
 }
 
 // ===========================================================================
-// mesh_id, the name-to-id lookup Task 4.2 flagged as missing
+// mesh_id, the name-to-id lookup
 // ===========================================================================
 
 TEST(MoabMesh, MeshIdResolvesByNameRegardlessOfLoadOrder) {
@@ -615,7 +615,7 @@ TEST(MoabMesh, SetCommunicatorAfterLoadIsRefused) {
 }
 
 // ===========================================================================
-// the issue tracker, the MOAB half: per-placement decomposition.
+// The MOAB half of per-placement decomposition.
 //
 // Every test below runs with NO communicator adopted -- moab_backend.hpp's
 // "Mode A", where "this rank" is rank 0 of an effective size-1 base

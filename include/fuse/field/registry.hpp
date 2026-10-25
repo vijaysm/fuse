@@ -37,18 +37,14 @@ class FieldRegistry {
     }
     // A null pointer is rejected only when there is something to point AT.
     //
-    // Task 4.1 wrote this as an unconditional rejection, which made a component
-    // that legitimately owns zero elements of a mesh entity set impossible to bind:
+    // An unconditional rejection would make a component that legitimately
+    // owns zero elements of a mesh entity set impossible to bind:
     // `std::vector<double>{}.data()` is null, and on a partitioned mesh a rank
-    // owning none of a mesh entity set is ordinary, not an error (spec Section 4.1, and the
-    // n->m redistribution of Task 5.4 is built around it). An empty view
+    // owning none of a mesh entity set is ordinary, not an error (spec Section
+    // 4.1, and the n->m redistribution is built around it). An empty view
     // addresses nothing -- `Layout::well_formed()` already says so explicitly
-    // -- so there is no pointer for it to get wrong.
-    //
-    // The Task 4.1 test that pinned this down, FieldRegistry.RejectsNullData,
-    // binds null with count = 4 and is unaffected: what narrows is the
-    // premise, from "null is always rejected" to "null is rejected for a
-    // non-empty field".
+    // -- so there is no pointer for it to get wrong. Null with count = 4
+    // (FieldRegistry.RejectsNullData) is still rejected.
     if (!ref.valid() && ref.layout().count != 0) {
       return Failure{"E-FIELD-NULL", "field " + std::to_string(id.value()) +
                                        " bound to a null pointer for " +

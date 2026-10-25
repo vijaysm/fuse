@@ -1,6 +1,6 @@
 # Mutations for the examples' shared `--accel` name table
-# (examples/common/accel_names.hpp), written 2026-10-20. The `result` lines
-# are added after tools/mutate.py has run these rows in a clean export.
+# (examples/common/accel_names.hpp). The `result` lines
+# record tools/mutate.py runs of these rows in a clean export.
 
 [[mutation]]
 id = "accel-names-unknown-falls-back-to-none"
@@ -13,7 +13,7 @@ new = """  if (s == "iqn-imvj") return fuse::AccelKind::IQN_IMVJ;
   return fuse::AccelKind::None;  // MUTATION: unknown name silently becomes None"""
 target = "fuse_verification_accel_names_test"
 test = "verification.accel_names"
-result = "KILLED by tools/mutate.py --area example-accel-names on a tier-0 tree exported from the working files (2026-10-21): 5 killed, 0 declared equivalent, 0 not assessed, 0 without a baseline, 0 not killed, of 5; verification.accel_names fails."
+result = "KILLED by tools/mutate.py --area example-accel-names on a tier-0 tree exported from the working files: 5 killed, 0 declared equivalent, 0 not assessed, 0 without a baseline, 0 not killed, of 5; verification.accel_names fails."
 
 [[mutation]]
 id = "accel-names-unknown-falls-back-to-aitken"
@@ -26,7 +26,7 @@ new = """  if (s == "iqn-imvj") return fuse::AccelKind::IQN_IMVJ;
   return fuse::AccelKind::Aitken;  // MUTATION: unknown name silently becomes Aitken"""
 target = "fuse_verification_accel_names_test"
 test = "verification.accel_names"
-result = "KILLED by tools/mutate.py --area example-accel-names on a tier-0 tree exported from the working files (2026-10-21): 5 killed, 0 declared equivalent, 0 not assessed, 0 without a baseline, 0 not killed, of 5; verification.accel_names fails."
+result = "KILLED by tools/mutate.py --area example-accel-names on a tier-0 tree exported from the working files: 5 killed, 0 declared equivalent, 0 not assessed, 0 without a baseline, 0 not killed, of 5; verification.accel_names fails."
 
 [[mutation]]
 id = "accel-names-steffensen-selects-secant"
@@ -37,7 +37,7 @@ old = """  if (s == "steffensen") return fuse::AccelKind::Steffensen;"""
 new = """  if (s == "steffensen") return fuse::AccelKind::Secant;  // MUTATION: wrong kind"""
 target = "fuse_verification_accel_names_test"
 test = "verification.accel_names"
-result = "KILLED by tools/mutate.py --area example-accel-names on a tier-0 tree exported from the working files (2026-10-21): 5 killed, 0 declared equivalent, 0 not assessed, 0 without a baseline, 0 not killed, of 5; verification.accel_names fails."
+result = "KILLED by tools/mutate.py --area example-accel-names on a tier-0 tree exported from the working files: 5 killed, 0 declared equivalent, 0 not assessed, 0 without a baseline, 0 not killed, of 5; verification.accel_names fails."
 
 [[mutation]]
 id = "accel-names-iqn-alias-dropped"
@@ -48,7 +48,7 @@ old = """  if (s == "iqn-ils" || s == "iqn") return fuse::AccelKind::IQN_ILS;"""
 new = """  if (s == "iqn-ils") return fuse::AccelKind::IQN_ILS;  // MUTATION: alias dropped"""
 target = "fuse_verification_accel_names_test"
 test = "verification.accel_names"
-result = "KILLED by tools/mutate.py --area example-accel-names on a tier-0 tree exported from the working files (2026-10-21): 5 killed, 0 declared equivalent, 0 not assessed, 0 without a baseline, 0 not killed, of 5; verification.accel_names fails."
+result = "KILLED by tools/mutate.py --area example-accel-names on a tier-0 tree exported from the working files: 5 killed, 0 declared equivalent, 0 not assessed, 0 without a baseline, 0 not killed, of 5; verification.accel_names fails."
 
 [[mutation]]
 id = "accel-names-printed-list-hides-a-name"
@@ -59,5 +59,5 @@ old = """    "none|constant|aitken|secant|steffensen|iqn-ils|iqn-imvj";"""
 new = """    "none|constant|aitken|secant|steffensen|iqn-ils";  // MUTATION: iqn-imvj not printed"""
 target = "fuse_verification_accel_names_test"
 test = "verification.accel_names"
-result = "KILLED by tools/mutate.py --area example-accel-names on a tier-0 tree exported from the working files (2026-10-21): 5 killed, 0 declared equivalent, 0 not assessed, 0 without a baseline, 0 not killed, of 5; verification.accel_names fails."
+result = "KILLED by tools/mutate.py --area example-accel-names on a tier-0 tree exported from the working files: 5 killed, 0 declared equivalent, 0 not assessed, 0 without a baseline, 0 not killed, of 5; verification.accel_names fails."
 

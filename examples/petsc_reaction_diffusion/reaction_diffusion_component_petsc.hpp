@@ -1,6 +1,6 @@
 #pragma once
 
-///  (decision 2026-10-21, Option C). `NeumannHalfPetsc`: the SAME
+/// `NeumannHalfPetsc`: the SAME
 /// physics as `NeumannHalfNative` (reaction_diffusion_component.hpp), but
 /// the INNER backward-Euler Newton solve runs on real PETSc objects:
 ///
@@ -48,9 +48,8 @@
 /// sandbox, the same already-documented, already-measured constraint
 /// every other `petsc.*` row carries, not a new one. This file is
 /// therefore BUILT and ctest-REGISTERED here, never RUN here; see
-/// design_notes.md Section 1 for the direct measurement this track took
-/// of that constraint before writing a line of this file, and
-/// the issue tracker own addendum for the record.
+/// design_notes.md Section 1 for the direct measurement of that
+/// constraint.
 
 #include <cstddef>
 #include <memory>
@@ -146,7 +145,7 @@ namespace detail {
 
     // Residual into the real PETSc Vec: owned entries only, via
     // VecGetArray -- never a global-index VecSetValues (this component's
-    // own header comment; the owner's Section 4 wording, verbatim).
+    // own header comment).
     PetscScalar* rarr = nullptr;
     ierr = VecGetArray(r_vec, &rarr);
     if (auto r = check_petsc(ierr, "VecGetArray(r)"); !r.ok()) { cleanup(); return r.error(); }
@@ -155,8 +154,7 @@ namespace detail {
 
     // Jacobian into a real, assembled PETSc Mat -- MatSetValues one
     // triplet at a time, ADD_VALUES, the SAME convention
-    // src/petsc/token.cpp's own make_assembled_token already uses
-    // (owner's own correction to this track's claim).
+    // src/petsc/token.cpp's own make_assembled_token already uses.
     MatZeroEntries(J);
     for (PetscInt i = 0; i < m; ++i) {
       PetscInt cols[3];

@@ -1,4 +1,4 @@
-// Task 3.7 -- spec Section 8.2's lockstep fast path.
+// Spec Section 8.2's lockstep fast path.
 //
 // Lockstep is an *optimisation*, not a second set of semantics. Section 8.1 makes
 // independent per-component intervals the default and lockstep the degenerate
@@ -14,10 +14,9 @@
 // graph *both* ways and comparing `ExecutionPlan::to_string()` byte for byte
 // can, and that comparison is the backbone here.
 //
-// It caught a real defect: the version of the fast path this task started from
-// emitted every node at `t = period`, which is right for the channel chain and
-// wrong for boundary nodes and for the `Sample` of an accumulating channel,
-// both of which the general path places at `t = 0`.
+// For example, emitting every node at `t = period` is right for the channel
+// chain and wrong for boundary nodes and for the `Sample` of an accumulating
+// channel, both of which the general path places at `t = 0`.
 
 #include <gtest/gtest.h>
 #include <fuse/model/coupling_graph.hpp>
@@ -106,7 +105,7 @@ void iterate(CouplingGraph& g, ChannelId c) {
 /// path lays a channel without a `Sample` on the slab decomposition and
 /// therefore calls `decompose()` once for it; the fast path never calls it at
 /// all. A space-time channel on its own no longer distinguishes the two, since
-/// Task 6.3 gave it a `Sample` and put its chain on the two clocks rather than
+/// it has a `Sample` and its chain is on the two clocks rather than
 /// on the slabs -- exactly like an accumulating channel, which
 /// `AccumulationDoesNotChangeTheClassification` already notes the counter
 /// cannot see.
@@ -600,13 +599,11 @@ TEST(LockstepDetection, ASpacetimeChannelDisablesTheFastPath) {
   EXPECT_EQ(fuse::decompose_call_count(), 1u);
 }
 
-/// Task 6.3 made the space-time flag a LOWERING change: the channel gains a
+/// The space-time flag is a LOWERING change: the channel gains a
 /// `Sample` on the source clock and an `Interpolate` carrying the temporal
-/// basis on the target clock (spec Section 7.3's `T`). This test asserted the
-/// opposite before 6.3 -- "spacetime changes no lowering rule, so the plans
-/// differ only in the `lockstep=` marker" -- which is now false by design, so
-/// what it pins instead is that the flag adds exactly that pair and moves
-/// nothing else: every other instruction keeps its kind, its order and its
+/// basis on the target clock (spec Section 7.3's `T`). The plans therefore
+/// do not differ only in the `lockstep=` marker; this test pins that the flag
+/// adds exactly that pair and moves nothing else: every other instruction keeps its kind, its order and its
 /// time.
 TEST(Lockstep, TheSpacetimeFlagAddsOnlyTheSampleInterpolatePair) {
   const auto plan_of = [](const CouplingGraph& g) {

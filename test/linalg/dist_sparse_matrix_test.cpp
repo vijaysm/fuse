@@ -2,8 +2,7 @@
 // random nonsymmetric matrix both run under an in-process "fake"
 // two-partition split -- the same FakePeerExchanger device
 // dist_vector_test.cpp uses, duplicated here rather than shared through a
-// new header, since the task names exactly the files this track owns and
-// a third shared file is not one of them. MPI cannot start in this
+// new header. MPI cannot start in this
 // sandbox (docs/dev/testing.md): src/linalg/comm_mpi.cpp's real
 // MpiExchanger/MpiReducer are built (test/parallel/linalg_mpi_test.cpp)
 // but never run here.
@@ -267,9 +266,9 @@ TEST(DistSparseMatrixApply, DiagonalNeedsNoCommunicationAndMatchesTheAssembledTr
   EXPECT_DOUBLE_EQ(d.data()[2], 0.0);  // structurally absent diagonal entry
 }
 
-// Review 2026-10-11 NL-11: row i's write to y overwrites x's owned block
+// Row i's write to y overwrites x's owned block
 // before every later row that reads the SAME entry as an off-diagonal
-// input column (dist_sparse_matrix.hpp's own apply() doc now states the
+// input column (dist_sparse_matrix.hpp's own apply() doc states the
 // rule) -- apply(v, v) is exactly the case the header forbids.
 TEST(DistSparseMatrixApply, RefusesXAndYAliasing) {
   const RowOwnership owners{{0, 3}};

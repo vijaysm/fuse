@@ -1,7 +1,4 @@
-# Mutations for fuse::partition (the RCB partitioner track). Own file per
-# the mutation-manifest protocol (tools/mutate.py's own doc comment): do not
-# edit build-evidence/mutations.toml directly while another track holds it
-# dirty.
+# Mutations for fuse::partition (the RCB partitioner).
 
 [[mutation]]
 id = "partition-classify-bucket-bounds-not-split-value"

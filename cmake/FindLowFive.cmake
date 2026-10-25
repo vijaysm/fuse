@@ -80,7 +80,7 @@ set(LOWFIVE_FMT_INCLUDE_DIR "${_fuse_lowfive_fmt_include}" CACHE PATH
 # consumer that includes vol-dist-metadata.hpp and does not also link this
 # archive gets "symbol(s) not found" at the final link of ITS OWN binary,
 # not here -- which is exactly what happened before this search existed
-# (fuse_transport_lowfive_test, 2026-10-02). find_library on a base name
+# (fuse_transport_lowfive_test). find_library on a base name
 # that already contains a hyphen needs the NAMES form spelled out; PATH_SUFFIXES
 # mirrors LOWFIVE_LIBRARY's own search above.
 find_library(LOWFIVE_DIST_LIBRARY NAMES lowfive-dist

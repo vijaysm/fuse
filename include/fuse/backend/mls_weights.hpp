@@ -77,13 +77,12 @@
 ///      would have to overrule that behaviour after the fact, in a kernel
 ///      not written to expose what it decided.
 ///
-/// So: **the coefficient matrix is implemented HERE, in FUSE**, exactly as the
-/// task anticipates for the case where ArborX's own is not reachable through
-/// a stable surface. `fuse::search::BoxIndex::query_nearest` supplies the k
-/// nearest source points (the ArborX-backed BVH, used exactly as the nodal
-/// track's k-nearest work already established it), a compactly supported
-/// radial weight (Wendland, Section "radial weight" below) is evaluated in this file,
-/// and the local polynomial fit is one call to
+/// So: **the coefficient matrix is implemented HERE, in FUSE**, because
+/// ArborX's own is not reachable through a stable surface.
+/// `fuse::search::BoxIndex::query_nearest` supplies the k nearest source
+/// points (the ArborX-backed BVH, as the nodal k-nearest search uses it), a
+/// compactly supported radial weight (Wendland, Section "radial weight"
+/// below) is evaluated in this file, and the local polynomial fit is one call to
 /// `fuse::linalg::least_squares_builtin` per target -- not on the k x P
 /// weighted Vandermonde system directly (that facade takes one right-hand
 /// side per call, so getting all k per-neighbour weights would need k

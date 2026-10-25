@@ -1,6 +1,6 @@
 # Mutation evidence — `schedule`
 
-Run 2026-09-23 against build `b0`. Regenerate with `tools/mutate.py --write-log`; do not edit.
+Run against build `b0`. Regenerate with `tools/mutate.py --write-log`; do not edit.
 
 | Mutation | File | Outcome | Killed by |
 |---|---|---|---|

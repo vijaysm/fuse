@@ -20,26 +20,24 @@
  *                              for "out".
  *   FUSE_TEST_BAD_ADVANCE      advance() always returns FUSE_ERR_RUNTIME.
  *   FUSE_TEST_BAD_CREATE       create() always returns FUSE_ERR_RUNTIME
- *                              (Review 2026-10-11 TD-6: E-ABI-PROVIDER-CREATE
- *                              had no test).
+ *                              (E-ABI-PROVIDER-CREATE).
  *   FUSE_TEST_BAD_BIND         bind() always returns FUSE_ERR_INVALID
- *                              (TD-6: E-ABI-PROVIDER-BIND).
+ *                              (E-ABI-PROVIDER-BIND).
  *   FUSE_TEST_BAD_WINDOW       advance() echoes a window shifted from the
- *                              one it was asked to run (TD-6:
- *                              E-ABI-PROVIDER-WINDOW).
+ *                              one it was asked to run
+ *                              (E-ABI-PROVIDER-WINDOW).
  *   FUSE_TEST_BAD_ELEMENT      describe() reports an element type other than
- *                              FUSE_ELEMENT_F64 (TD-6: E-ABI-PROVIDER-ELEMENT).
+ *                              FUSE_ELEMENT_F64 (E-ABI-PROVIDER-ELEMENT).
  *   FUSE_TEST_BAD_CAPABILITIES capabilities() always returns FUSE_ERR_RUNTIME
- *                              (Review 2026-10-11 AB-6(a):
- *                              E-ABI-PROVIDER-CAPABILITIES).
+ *                              (E-ABI-PROVIDER-CAPABILITIES).
  *   FUSE_TEST_BAD_DESCRIBE_EXTRA describe() reports "out" correctly PLUS an
  *                              extra field the graph never declares
- *                              (AB-6(b): the describe() superset direction
+ *                              (the describe() superset direction
  *                              of E-ABI-DESCRIBE).
  *   FUSE_TEST_BAD_SAVE         save_state() always returns FUSE_ERR_RUNTIME
- *                              (TD-6: E-ABI-PROVIDER-SAVE).
+ *                              (E-ABI-PROVIDER-SAVE).
  *   FUSE_TEST_BAD_RESTORE      restore_state() always returns
- *                              FUSE_ERR_RUNTIME (TD-6: E-ABI-PROVIDER-RESTORE).
+ *                              FUSE_ERR_RUNTIME (E-ABI-PROVIDER-RESTORE).
  */
 #include "fuse/abi/provider.h"
 
@@ -143,7 +141,7 @@ static fuse_status p_advance(fuse_provider_ctx* self, const fuse_step_request* i
     *inst->out_ptr = (double)in->t_end.numerator / (double)in->t_end.denominator;
   }
 #ifdef FUSE_TEST_OLD_STEP_REPORT
-  /* Review 2026-10-11 AB-3: a plugin built against the pre-growth
+  /* A plugin built against the pre-growth
    * fuse_step_report layout (c-abi.md's growth table, 64 bytes, before
    * next_component/step_opened/period/delivery_pending/delivery_field
    * were appended) never had those members to write, and writes the
@@ -203,7 +201,7 @@ static fuse_status p_capabilities(fuse_provider_ctx* self, const fuse_null* in, 
 #else
   if (out == NULL) return FUSE_ERR_INVALID;
   out->struct_size = sizeof(fuse_capability_set);
-  /* docs/dev/restart.md round 2, item 4: this plugin's own
+  /* This plugin's own
    * save_restart_blob/load_restart_blob below are real, so it declares
    * FUSE_CAP_RESTART_FORM_B -- the C consumer test's own tier-0 proof
    * that the new entries are callable and round-trip through the WHOLE
@@ -214,7 +212,7 @@ static fuse_status p_capabilities(fuse_provider_ctx* self, const fuse_null* in, 
 #endif
 }
 
-/* docs/dev/restart.md round 2, item 4. A fixed, recognisable byte pattern
+/* A fixed, recognisable byte pattern
  * -- not all-zero, so a test comparing against a zero-filled buffer by
  * accident would still fail -- and a version distinct from 0 (the
  * Component base class's own default), so a round-trip test can tell

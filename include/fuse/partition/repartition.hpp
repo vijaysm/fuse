@@ -1,7 +1,6 @@
 #pragma once
 
-/// `fuse::partition::repartition` -- the convenience the native-mesh track
-/// asked for: compute each owned cell's centroid, hand them to
+/// `fuse::partition::repartition` -- the convenience that computes each owned cell's centroid, hand them to
 /// `rcb_partition`, and `fuse::native::migrate` the mesh onto the result.
 /// Header-only (like `rcb.hpp` itself): the only non-template work is
 /// `centroids_of` and `fuse::native::migrate`, both already compiled
@@ -46,12 +45,11 @@ struct RepartitionOptions {
 /// CONSTRAINT: `options.rcb.num_parts`, if set explicitly rather than left
 /// at its default (0, meaning "the communicator's size"), must equal the
 /// communicator's size -- `repartition` always migrates onto one part per
-/// rank. Found 2026-10-11 (PS-6): this was previously enforced only in the
-/// `num_parts > comm_size` direction, where `migrate` rejects
-/// `E-MESH-MIGRATE-RANGE` the moment a part id lands outside
-/// `[0, num_ranks)`; for `num_parts < comm_size` every part id IS inside
-/// that range, so `migrate` accepted it, and the surplus ranks silently
-/// ended up with an empty mesh -- no rejection at all. `repartition` now
+/// rank. `migrate` itself rejects the `num_parts > comm_size` direction
+/// (`E-MESH-MIGRATE-RANGE` the moment a part id lands outside
+/// `[0, num_ranks)`); for `num_parts < comm_size` every part id IS inside
+/// that range, so `migrate` would accept it and the surplus ranks would
+/// silently end up with an empty mesh. `repartition` therefore
 /// pre-refuses `E-PART-REPARTITION-NUM-PARTS` for BOTH directions before
 /// calling `centroids_of`/`rcb_partition`: `num_parts` (when explicitly
 /// set) and the communicator's size are both rank-identical inputs by
@@ -69,7 +67,7 @@ template <class ExecutionSpace = Kokkos::DefaultHostExecutionSpace>
   using MemorySpace = typename ExecutionSpace::memory_space;
   options.rcb.comm = options.comm;
 
-  // PS-6: pre-refuse BOTH directions of num_parts/comm_size mismatch, not
+  // Pre-refuse BOTH directions of num_parts/comm_size mismatch, not
   // only the `>` direction `migrate` itself catches -- see the header
   // comment above. `num_parts` (when explicitly set) and `comm_size` are
   // both rank-identical inputs by this function's own contract, so this
