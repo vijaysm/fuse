@@ -24,6 +24,9 @@ enum {
   FUSE_ERR_VERSION = -6,  /* struct_size smaller than the oldest layout this library knows, or larger than FUSE_ABI_MAX_STRUCT_SIZE */
   FUSE_ELEMENT_F64 = 0,  /* IEEE double */
   FUSE_ELEMENT_I64 = 1,  /* 64-bit signed integer (identifiers, not coupled values) */
+  FUSE_ELEMENT_F32 = 2,  /* IEEE binary32 (float): a storage type, widened to binary64 exactly when read and rounded once, to nearest, on delivery */
+  FUSE_ELEMENT_BF16 = 3,  /* bfloat16, 8 exponent and 7 fraction bits, as a 16-bit pattern: a storage type like FUSE_ELEMENT_F32 */
+  FUSE_ELEMENT_F16 = 4,  /* IEEE binary16, as a 16-bit pattern: a storage type like FUSE_ELEMENT_F32 */
   FUSE_MEMSPACE_HOST = 0,  /* pointer addressable by the host CPU */
   FUSE_MEMSPACE_DEVICE = 1,  /* pointer in the default device memory space of this build's Kokkos */
   FUSE_OWNERSHIP_OWNED = 0,  /* every entry owned by this process; the default */

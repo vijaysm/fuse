@@ -2480,6 +2480,11 @@ fuse_add_gtest(abi negotiation)
 fuse_add_gtest(abi participant LIBS fuse_abi_test_support)
 target_include_directories(fuse_abi_participant_test PRIVATE ${CMAKE_SOURCE_DIR}/src/abi)
 
+# FUSE_ELEMENT_F32/BF16/F16 through the participant table (plans/2026-10-22-
+# universal-number-types.md, U3).
+fuse_add_gtest(abi storage_element LIBS fuse_abi_test_support)
+target_include_directories(fuse_abi_storage_element_test PRIVATE ${CMAKE_SOURCE_DIR}/src/abi)
+
 # review-2026-10-11 abi: AB-9's table-driven negative-test sweep over the
 # participant-ABI refusal codes no test fired.
 fuse_add_gtest(abi refusal_sweep LIBS fuse_abi_test_support)

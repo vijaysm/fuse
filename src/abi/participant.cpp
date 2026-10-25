@@ -28,6 +28,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <unordered_set>
 
 #include <Kokkos_Core.hpp>
@@ -53,6 +54,7 @@
 #include "fuse/base/rational.hpp"
 #include "fuse/base/version.hpp"
 #include "fuse/field/field_ref.hpp"
+#include "fuse/model/binary16.hpp"
 #include "fuse/ir/lowering.hpp"
 #include "fuse/model/component.hpp"
 #include "fuse/model/descriptor.hpp"
@@ -867,10 +869,13 @@ fuse_status impl_register_field(fuse_ctx* ctx, const fuse_field_view* in,
     }
     const fuse_status sz = check_struct_size(in);
     if (sz != FUSE_OK) return sz;
-    if (in->element_type != FUSE_ELEMENT_F64) {
+    if (in->element_type != FUSE_ELEMENT_F64 && in->element_type != FUSE_ELEMENT_F32 &&
+        in->element_type != FUSE_ELEMENT_BF16 && in->element_type != FUSE_ELEMENT_F16) {
       return fail(&c, FUSE_ERR_UNSUPPORTED, "E-ABI-REGISTER-ELEMENT",
-                 "fuse_register_field: only FUSE_ELEMENT_F64 is supported "
-                 "through this ABI");
+                 "fuse_register_field: only FUSE_ELEMENT_F64, FUSE_ELEMENT_F32, "
+                 "FUSE_ELEMENT_BF16 and FUSE_ELEMENT_F16 are supported through "
+                 "this ABI (FUSE_ELEMENT_I64 names identifiers, not coupled "
+                 "values)");
     }
     if (in->memspace != FUSE_MEMSPACE_HOST) {
       return fail(&c, FUSE_ERR_UNSUPPORTED, "E-ABI-REGISTER-MEMSPACE",
@@ -892,10 +897,22 @@ fuse_status impl_register_field(fuse_ctx* ctx, const fuse_field_view* in,
                                   static_cast<std::size_t>(in->component_stride),
                               .count = static_cast<std::size_t>(in->count),
                               .components = in->components};
-    const fuse::FieldRef ref{static_cast<double*>(in->data), layout,
-                             fuse::MemorySpace::Host};
-    const fuse::Result<void> bound =
-        c.fields.bind(fuse::FieldId{static_cast<std::uint32_t>(in->handle)}, ref);
+    // A FUSE_ELEMENT_F32/BF16/F16 field is bound as its own value type, not
+    // converted here: the Runner widens it to binary64 when the component has
+    // written it and rounds once into it on delivery (RunStats::storage_fields).
+    const fuse::FieldId id{static_cast<std::uint32_t>(in->handle)};
+    const auto bind_as = [&]<class T>(std::type_identity<T>) {
+      return c.fields.bind(
+          id, fuse::BasicFieldRef<T>(static_cast<T*>(in->data), layout,
+                                     fuse::MemorySpace::Host));
+    };
+    fuse::Result<void> bound = fuse::Result<void>::success();
+    switch (in->element_type) {
+      case FUSE_ELEMENT_F32:  bound = bind_as(std::type_identity<float>{}); break;
+      case FUSE_ELEMENT_BF16: bound = bind_as(std::type_identity<fuse::bfloat16>{}); break;
+      case FUSE_ELEMENT_F16:  bound = bind_as(std::type_identity<fuse::binary16>{}); break;
+      default:                bound = bind_as(std::type_identity<double>{}); break;
+    }
     if (!bound.ok()) {
       return fail(&c, FUSE_ERR_INVALID, std::string(bound.error().code),
                  bound.error().message);
@@ -930,7 +947,8 @@ fuse_status impl_view_field(fuse_ctx* ctx, const fuse_field_ref* in,
     }
     const fuse::FieldId field{static_cast<std::uint32_t>(in->handle)};
 
-    const double* data = nullptr;
+    const void* data = nullptr;
+    std::int32_t element_type = FUSE_ELEMENT_F64;
     std::uint64_t count = 0;
     std::int32_t window_samples = 0;
     if (c.runner.has_value()) {
@@ -950,13 +968,28 @@ fuse_status impl_view_field(fuse_ctx* ctx, const fuse_field_ref* in,
       // Not window-scoped (or not initialized yet): the native storage
       // this context's own register_field() was given, same as
       // impl_register_field binds from above.
-      const fuse::Result<fuse::FieldRef> ref = c.fields.get(field);
+      const fuse::Result<fuse::AnyFieldRef> ref = c.fields.get_any(field);
       if (!ref.ok()) {
         return fail(&c, FUSE_ERR_INVALID, std::string(ref.error().code),
                    ref.error().message);
       }
-      data = ref.value().data();
-      count = static_cast<std::uint64_t>(ref.value().size());
+      const fuse::AnyFieldRef& any = ref.value();
+      if (any.holds<double>()) {
+        element_type = FUSE_ELEMENT_F64;
+      } else if (any.holds<float>()) {
+        element_type = FUSE_ELEMENT_F32;
+      } else if (any.holds<fuse::bfloat16>()) {
+        element_type = FUSE_ELEMENT_BF16;
+      } else if (any.holds<fuse::binary16>()) {
+        element_type = FUSE_ELEMENT_F16;
+      } else {
+        return fail(&c, FUSE_ERR_UNSUPPORTED, "E-ABI-VIEW-ELEMENT",
+                   "fuse_view_field: the field holds " +
+                       std::string(any.value_type().name) +
+                       " values, which have no FUSE_ELEMENT_* code");
+      }
+      data = any.data();
+      count = static_cast<std::uint64_t>(any.layout().count);
     }
 
     const fuse::FieldSpec& spec = c.graph.field(field);
@@ -979,7 +1012,7 @@ fuse_status impl_view_field(fuse_ctx* ctx, const fuse_field_ref* in,
     // iteration.cpp).
     out->struct_size   = sizeof(fuse_field_view);
     out->handle         = in->handle;
-    out->element_type   = FUSE_ELEMENT_F64;
+    out->element_type   = element_type;
     out->memspace       = FUSE_MEMSPACE_HOST;
     out->ownership      = FUSE_OWNERSHIP_OWNED;
     out->components     = spec.components *
@@ -988,7 +1021,7 @@ fuse_status impl_view_field(fuse_ctx* ctx, const fuse_field_ref* in,
     out->owned_count    = out->count;
     out->stride         = out->components;
     out->component_stride = 1;
-    out->data           = const_cast<double*>(data);
+    out->data           = const_cast<void*>(data);
     if (struct_size_covers(declared_out_size,
                            offsetof(fuse_field_view, window_samples) +
                                sizeof(out->window_samples))) {
