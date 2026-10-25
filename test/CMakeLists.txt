@@ -418,7 +418,7 @@ foreach(t rational units error)
 endforeach()
 
 # ---------------------------------------------------------------- model
-foreach(t semantics transform compatibility connect builder yaml_io region channel coupling_graph descriptor capabilities bfloat16 element_type float_bits)
+foreach(t semantics transform compatibility connect builder yaml_io region channel coupling_graph descriptor capabilities bfloat16 binary16 small_float element_type float_bits)
   fuse_add_gtest(model ${t})
 endforeach()
 # multiscale and component assert a Refusal is raised (OverlapSpec::total's

@@ -364,4 +364,24 @@ TEST(Bfloat16FromBinary64, RandomizedResultIsTheNearestWithTiesToEven) {
   EXPECT_EQ(checked, 200000);
 }
 
+// ----------------------------------------------------- binary64 -> binary16
+
+TEST(Binary16FromBinary64, RoundingTwiceToNearestIsWrongHereAndOnceIsRight) {
+  // 1 and 1 + 2^-10 are adjacent binary16 values; their midpoint is 1 + 2^-11.
+  // v lies 2^-40 above the midpoint, so it rounds to the midpoint in binary32
+  // and the tie then goes to the even neighbour, 1.
+  const double mid = 1.0 + std::ldexp(1.0, -11);
+  const double above = mid + std::ldexp(1.0, -40);
+  ASSERT_EQ(static_cast<double>(static_cast<float>(above)), mid);
+  EXPECT_EQ(fuse::binary16::from_float(static_cast<float>(above)).bits(), 0x3C00u)
+      << "the counterexample must exist for this test to mean anything";
+  using Traits = fuse::value_traits<fuse::binary16>;
+  EXPECT_EQ(Traits::from_binary64(above).bits(), 0x3C01u);
+  EXPECT_EQ(Traits::from_binary64(mid).bits(), 0x3C00u);  // an exact tie goes to even
+  EXPECT_EQ(Traits::from_binary64(-above).bits(), 0xBC01u);
+  EXPECT_EQ(Traits::to_binary64(fuse::binary16::from_bits(0x3C01u)), 1.0 + std::ldexp(1.0, -10));
+  static_assert(Traits::kind == fuse::FieldValueKind::Storage);
+  static_assert(fuse::CoupledValue<fuse::binary16>);
+}
+
 }  // namespace
