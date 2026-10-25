@@ -1,17 +1,12 @@
-# the issue tracker, MOAB half (decision 2026-10-19: remap
-# weights normalise by the channel's Conservation kind, carried in
-# RemapPlan). fuse::normalize_remap_weight
+# Remap weights normalise by the channel's Conservation kind, carried in
+# RemapPlan: fuse::normalize_remap_weight
 # (include/fuse/backend/remap_weight_normalize.hpp), and its single call
 # site in intx_weights.cpp's assemble() (the MOAB FV<->FV order-1 path).
-# Own file per the review-fix protocol: do not edit moab-sphere.toml,
-# moab-halo-cross-placement-agreement.toml, moab-halo-active-comm-size.toml,
-# moab-halo-placement-aware-adoption.toml, moab-placement.toml, or
-# mutations.toml directly while other fixers hold them dirty.
 #
 # The first row below is HAND-VERIFIED in this sandbox, not just read:
 # `normalize_remap_weight` takes four doubles and an enum, no MOAB or MPI
 # symbol, so test/backend/remap_weight_normalize_test.cpp actually BUILDS
-# AND RUNS here (165-test tier-0 tree, FUSE_ENABLE_MPI=OFF) -- the mutation
+# AND RUNS here (tier-0 tree, FUSE_ENABLE_MPI=OFF) -- the mutation
 # below was applied, the target rebuilt, and the named test's own
 # ExtensiveAndIntensiveDisagreeWheneverMeasuresDiffer /
 # ExtensiveConservesAnAmountFieldAcrossAnUnevenSplit cases were confirmed to
@@ -21,10 +16,10 @@
 # can reach -- `requires = "mpi"`, the same NOT-ASSESSED courtesy every
 # other MOAB-only row in this project already uses, since no MOAB-linked
 # binary can be RUN in this sandbox (moab::Core's constructor calls
-# MPI_Init_thread, which aborts here; confirmed again this round -- even a
-# tier-0, MOAB-free test binary aborts the same way once FUSE_ENABLE_MPI=ON
-# is configured for the WHOLE build, which is why this round's hand-
-# verified row above needed its OWN, separate, MPI-free build tree).
+# MPI_Init_thread, which aborts here; even a tier-0, MOAB-free test binary
+# aborts the same way once FUSE_ENABLE_MPI=ON is configured for the WHOLE
+# build, which is why the hand-verified row above needed its OWN,
+# separate, MPI-free build tree).
 
 [[mutation]]
 id = "normalize-remap-weight-swaps-extensive-and-intensive"
@@ -39,7 +34,7 @@ test = "backend.remap_weight_normalize"
 [[mutation]]
 id = "assemble-col-sum-always-measure-weighted"
 area = "backend"
-describes = "assemble()'s own col_sum accumulation (intx_weights.cpp) reverts to ALWAYS multiplying by tgt.measure[j], even under Conservation::Extensive -- re-introducing exactly the density conversion normalize_remap_weight's own Extensive branch was written to drop, one step later, inside the audit this round also made kind-aware. Under this mutation, an Extensive channel's max_col_defect would read against src.measure[i] * (a measure ratio), not against 1.0 - own 'source total == target total' sphere-pair test (RemapHaloMpiSphere.ExtensiveChannelConservesTheDeliveredTotalAcrossTheSpherePair, test/parallel/remap_halo_mpi_test.cpp) would see a GLOBAL target total scaled by each receiving cell's own tgt.measure, not the plain sum the test's own Allreduce expects, and fail its EXPECT_NEAR. NOT-ASSESSED here: no MOAB-linked binary can be RUN in this sandbox (moab::Core's constructor aborts on MPI_Init_thread); read and reasoned through by hand against the exact formula col_sum[i] += extensive ? weight: weight * tgt.measure[j] the diff introduces."
+describes = "assemble()'s own col_sum accumulation (intx_weights.cpp) reverts to ALWAYS multiplying by tgt.measure[j], even under Conservation::Extensive -- re-introducing exactly the density conversion normalize_remap_weight's own Extensive branch was written to drop, one step later, inside the audit this round also made kind-aware. Under this mutation, an Extensive channel's max_col_defect would read against src.measure[i] * (a measure ratio), not against 1.0 -- the 'source total == target total' sphere-pair test (RemapHaloMpiSphere.ExtensiveChannelConservesTheDeliveredTotalAcrossTheSpherePair, test/parallel/remap_halo_mpi_test.cpp) would see a GLOBAL target total scaled by each receiving cell's own tgt.measure, not the plain sum the test's own Allreduce expects, and fail its EXPECT_NEAR. NOT-ASSESSED here: no MOAB-linked binary can be RUN in this sandbox (moab::Core's constructor aborts on MPI_Init_thread); read and reasoned through by hand against the exact formula col_sum[i] += extensive ? weight : weight * tgt.measure[j] the diff introduces."
 file = "src/backend/intx_weights.cpp"
 old = "    col_sum[i] += extensive ? weight : weight * tgt.measure[j];"
 new = "    col_sum[i] += weight * tgt.measure[j];"
@@ -50,7 +45,7 @@ requires = "mpi"
 [[mutation]]
 id = "fold-halo-contributions-skips-on-a-local-not-owned-check"
 area = "backend"
-describes = "fold_halo_contributions's (intx_weights.cpp) collectively-unsafe pre-check is restored (src.not_owned == 0 || src.backend == nullptr), re-introducing the exact round-12 bug: on a rank that adopts no halo copies of its own but owns cells a PEER adopted, the fold never runs on that rank, so accumulate_remap_halo's own cross-rank contribution is never received into its owned slots. Host-measured shape (RemapHaloMpiSphere.ExtensiveChannelConservesTheDeliveredTotalAcrossTheSpherePair, 2/3 ranks): min_src_coverage reads 0 instead of ~1, and the delivered total undershoots the source total by far more than the derived tolerance (28x, host-measured). NOT-ASSESSED here: no MOAB-linked binary can be run in this sandbox (moab::Core's constructor aborts on MPI_Init_thread); this row records the EXACT host-observed symptom as the kill criterion for the next host run, not a guess."
+describes = "fold_halo_contributions's (intx_weights.cpp) collectively-unsafe pre-check is restored (src.not_owned == 0 || src.backend == nullptr), re-introducing the exact bug: on a rank that adopts no halo copies of its own but owns cells a PEER adopted, the fold never runs on that rank, so accumulate_remap_halo's own cross-rank contribution is never received into its owned slots. Host-measured shape (RemapHaloMpiSphere.ExtensiveChannelConservesTheDeliveredTotalAcrossTheSpherePair, 2/3 ranks): min_src_coverage reads 0 instead of ~1, and the delivered total undershoots the source total by far more than the derived tolerance (28x, host-measured). NOT-ASSESSED here: no MOAB-linked binary can be run in this sandbox (moab::Core's constructor aborts on MPI_Init_thread); this row records the EXACT host-observed symptom as the kill criterion for the next host run, not a guess."
 file = "src/backend/intx_weights.cpp"
 old = "[[nodiscard]] Result<void> fold_halo_contributions(const Side& src,\n                                                   std::vector<double>& covered,\n                                                   std::vector<double>& col_sum) {\n  if (src.backend == nullptr) {\n    return Result<void>::success();\n  }"
 new = "[[nodiscard]] Result<void> fold_halo_contributions(const Side& src,\n                                                   std::vector<double>& covered,\n                                                   std::vector<double>& col_sum) {\n  if (src.not_owned == 0 || src.backend == nullptr) {\n    return Result<void>::success();\n  }"

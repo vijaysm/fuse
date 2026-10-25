@@ -127,7 +127,7 @@ struct CycleReport {
 /// direction.
 ///
 /// So the test is on `OperatorDAG::IterationRegion::carried`, the checkpoint
-/// set derived in Phase 7 Task 7.2 by dataflow analysis over the SSA form. An
+/// set derived by dataflow analysis over the SSA form. An
 /// edge is cut iff its arc is in some region's `carried` set AND the consumer
 /// is a `Sink` AND the receiving component also owns the source field of a
 /// channel inside that region. The last two conditions are refusals to cut,

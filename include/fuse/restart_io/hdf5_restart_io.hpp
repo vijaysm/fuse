@@ -32,8 +32,8 @@ namespace fuse::restart_io {
 ///                          per point).
 enum class FileLayout { SeparateMeshAndPoints, GrowingFile };
 
-/// Bumped 1 -> 2 when `Provenance::
-/// descriptor_version` was added below; is a restart-file schema change, by this
+/// Bumped 1 -> 2 because adding `Provenance::descriptor_version` below is
+/// a restart-file schema change, by this
 /// project's own append-only-with-a-version-bump convention (the same one
 /// `fuse::kGraphVersion` itself follows) -- a point written under format
 /// 1 has no `descriptor_version` attribute to read at all, so it is

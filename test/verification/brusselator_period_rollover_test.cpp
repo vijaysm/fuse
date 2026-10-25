@@ -413,35 +413,35 @@ std::int64_t reference_conservation_checks(int periods) {
 // `impl_begin_step()` (src/abi/participant.cpp) reports correctly (-1,
 // genuinely nothing cached) once the `else if (c.communicator_set)`
 // branch stops the rollover, but it is not what the real row's own
-// callers ever read: `examples/brusselator/participants/u_loop.c`'s
+// callers read: `examples/brusselator/participants/u_loop.c`'s
 // `u_loop_step()` (mirrored in Fortran by `v_loop.f90`'s
-// `v_loop_step()`) zeroes `*out_rep` WHOLESALE -- including
-// `out_rep->next_component` -- whenever `!out_begin_rep->step_opened`,
-// and NEVER copies `out_begin_rep->next_component` across before
-// returning. `u_main.c`'s own loop (`for (p = 0; p < periods; ++p) {
-// for (;;) { ...; if (rep.next_component == -1) break; } }`,
-// `v_main.f90`'s own `do p = 0, periods - 1 ... if (rep%next_component
-// == -1) exit`) checks exactly that zeroed field -- `rep`/`out_rep`,
-// never `begin_rep`/`out_begin_rep` -- to decide when a period has
-// closed. `rep.next_component` is therefore 0 (zeroed), not -1, on
-// EVERY `step_opened == 0` report, including the genuine, correctly-
-// reported period-boundary one, so the inner
-// `for(;;)` loop never breaks there: it calls `begin_step()` again,
-// `prime_next_request()` finds `c.next_request` still empty and makes its FIRST, ORDINARY
-// `resume_period()` call -- the one call site `prime_next_request()`
-// has NO bound on at all when `!c.has_end_time` (the bound check at the
-// TOP of that function only fires `if (c.has_end_time && ...)`) --
-// which happily starts period index `kRequestedPeriods` (2), the one
-// `Runner::run(components, kRequestedPeriods)` (the coupler's own
-// driver) never requests. This is NOT the eager SECOND call inside ONE
+// `v_loop_step()`) zeroes `*out_rep` WHOLESALE whenever
+// `!out_begin_rep->step_opened`, except for `next_component`, which it
+// copies across from `out_begin_rep`. `u_main.c`'s own loop (`for (p = 0;
+// p < periods; ++p) { for (;;) { ...; if (rep.next_component == -1) break;
+// } }`, `v_main.f90`'s own `do p = 0, periods - 1 ... if
+// (rep%next_component == -1) exit`) checks exactly that field --
+// `rep`/`out_rep`, never `begin_rep`/`out_begin_rep` -- to decide when a
+// period has closed. Without the copy, `rep.next_component` would be 0
+// (zeroed), not -1, on EVERY `step_opened == 0` report, including the
+// genuine period-boundary one, so the inner `for(;;)` loop would never
+// break there: it would call `begin_step()` again, `prime_next_request()`
+// would find `c.next_request` still empty and make its FIRST, ORDINARY
+// `resume_period()` call -- the one call site `prime_next_request()` has
+// NO bound on at all when `!c.has_end_time` (the bound check at the TOP
+// of that function only fires `if (c.has_end_time && ...)`) -- which
+// would start period index `kRequestedPeriods` (2), the one
+// `Runner::run(components, kRequestedPeriods)` (the coupler's own driver)
+// never requests. This is NOT the eager SECOND call inside ONE
 // `prime_next_request()` invocation, which the rollover gate already
-// closes (that gate still fires correctly, `begin_rep.next_component
-// == -1` below IS observed) -- it is a FRESH, separate `fuse_begin_step()`
-// call the caller's own loop makes because `u_loop_step()`/`v_loop_step()`
-// threw away the one signal that would have stopped it.
+// closes (that gate still fires correctly, `begin_rep.next_component ==
+// -1` below IS observed) -- it is a FRESH, separate `fuse_begin_step()`
+// call the caller's own loop would make because the wrapper threw away
+// the one signal that would have stopped it.
 //
-// This test mirrors `u_loop_step()`'s own zeroing exactly (`drive_one_
-// step()`, this file) and drives TWO independent per-component loop cursors shaped exactly like
+// This test mirrors `u_loop_step()`'s own zeroing and propagation exactly
+// (`drive_one_step()`, this file) and drives TWO independent
+// per-component loop cursors shaped exactly like
 // `u_main.c`'s/`v_main.f90`'s own outer `for (p = 0; p < periods; ++p)`
 // loop, and the ONLY signal either cursor ever consults to decide a
 // period has closed is `end_rep.next_component == -1` (`rep`'s own
@@ -539,22 +539,23 @@ TEST(BrusselatorPeriodRollover, CallerLoopNeverSeesThePeriodBoundaryThroughTheZe
       // keep the window's own convergence correct) -- `delivery_pending`
       // is handled by doing nothing, exactly as a no-op write/read would.
       //
-      // THE BUG, reproduced exactly: u_main.c's/v_main.f90's own ONLY
-      // period-closed check reads `rep`/`out_rep` (`end_rep` here) --
-      // `drive_one_step()` (this file, mirroring u_loop_step()/
-      // v_loop_step() verbatim) zeroes it whenever `!step_opened`, so
-      // `end_rep.next_component` is 0 here, NEVER -1, even on the exact
-      // call where `begin_rep.next_component` (unzeroed, read only as
-      // an observation above and via the diagnostic below, never to
-      // decide anything) correctly says -1.
+      // THE HAZARD: u_main.c's/v_main.f90's own ONLY period-closed check
+      // reads `rep`/`out_rep` (`end_rep` here) -- `drive_one_step()` (this
+      // file, mirroring u_loop_step()/v_loop_step() verbatim) zeroes it
+      // whenever `!step_opened`, except for the propagated
+      // `next_component`; without that propagation `end_rep.next_component`
+      // would be 0 here, NEVER -1, even on the exact call where
+      // `begin_rep.next_component` (unzeroed, read only as an observation
+      // above and via the diagnostic below, never to decide anything)
+      // correctly says -1.
       if (end_rep.next_component == -1) {
         ++global_periods_done;
       } else if (begin_rep.next_component == -1) {
         // Diagnostic only, not part of the decision: this is the exact
         // call where the REAL signal (begin_rep) says "period closed,
         // nothing cached" but the zeroed one (end_rep, what the real
-        // callers actually read) does not -- the moment this entry's
-        // correct rollover report gets silently dropped.
+        // callers actually read) does not -- the moment the correct
+        // rollover report would get silently dropped.
         observed_unauthorized_via_rollover_report = true;
       }
       next_hint = begin_rep.next_component;  // dispatch artifact only.

@@ -117,7 +117,7 @@ class StubBlock final : public fuse::Component {
 // Two window members A, B on DISJOINT single-rank processor sets -- A on
 // rank 0, B on rank 1 -- the same shape window_runner_test.cpp's own
 // `make_single_window_graph_with_disjoint_ranks()` uses for the hosting
-// (step (a)) test, duplicated here rather than shared across the two
+// test, duplicated here rather than shared across the two
 // translation units for the same reason resolve_regions()'s own comment
 // gives for duplicating member_exported_field()/member_imported_field():
 // file-local helpers are cheaper than a new shared header two tests would

@@ -256,7 +256,7 @@ class Stowaway final : public fuse::Component {
   }
 };
 
-/// Task 8.5's RunnerConfig::transport_setup hook, exercised without dragging
+/// The RunnerConfig::transport_setup hook, exercised without dragging
 /// in MPI or LowFive. A local-transport CopyTransport lookalike, registered
 /// under its own name so it never shadows "copy" in the process-wide
 /// TransportRegistry.
@@ -434,7 +434,7 @@ std::unique_ptr<Harness> build(HarnessOpts o) {
   return h;
 }
 
-/// Matching 8-cell meshes so Phase 4's identity Remap is meaningful.
+/// Matching 8-cell meshes so the identity Remap is meaningful.
 std::unique_ptr<Harness> make_harness(fuse::AccumOp accum, Rational src_dt,
                                       Rational dst_dt) {
   return build(HarnessOpts{.accum = accum, .src_dt = src_dt, .dst_dt = dst_dt});
@@ -814,12 +814,12 @@ TEST(Runner, PersistentAccumulatorIsNotContaminatedAcrossPeriods) {
 /// `v` was produced over `[(v/2 - 1) * src_dt, (v/2) * src_dt)` and the
 /// contract is `(v/2) * src_dt <= t_begin`.
 ///
-/// This is the test R2's first fix needed and did not have. Marking every
-/// chain instance `BeforeTicks` made a delivery jump the tick boundary even
-/// when its own source step was still running -- on 1 against 1/2 the target's
-/// second sub-step consumed source state from `[0, 1)` at `t = 1/2`, its own
-/// future, and bought nothing for it, because the slab that follows carries
-/// the identical `src_step`. The phase is now conditional on the contract.
+/// Marking every chain instance `BeforeTicks` would make a delivery jump the
+/// tick boundary even when its own source step was still running -- on 1
+/// against 1/2 the target's second sub-step would consume source state from
+/// `[0, 1)` at `t = 1/2`, its own future, and buy nothing for it, because the
+/// slab that follows carries the identical `src_step`. The phase is therefore
+/// conditional on the contract.
 ///
 /// SCOPE, stated because the excluded family is a real defect and not a
 /// convenience. Withholding a target-limited delivery from the tick at its own
@@ -828,7 +828,7 @@ TEST(Runner, PersistentAccumulatorIsNotContaminatedAcrossPeriods) {
 /// `(k+2)*dst_dt`, will read it. That is enough iff a source step spans no
 /// more than two target steps, `src_dt <= 2*dst_dt`. Beyond that the phase
 /// cannot help -- the value would have to not be written at all -- and those
-/// schedules are still acausal, exactly as they were before R2. See
+/// schedules are still acausal. See
 /// `ASourceStepSpanningMoreThanTwoTargetStepsIsStillDeliveredEarly`.
 TEST(Runner, NoTargetStepIntegratesAgainstUnfinishedSourceState) {
   struct Case {
@@ -838,8 +838,8 @@ TEST(Runner, NoTargetStepIntegratesAgainstUnfinishedSourceState) {
   };
   // Refining, coarsening, non-nesting both ways, and lockstep -- every one
   // with src_dt <= 2*dst_dt. Three of these (1/2 -> 1/3, 1/3 -> 1/2,
-  // 1/3 -> 1/4) were acausal before R2 as well, so this is not merely a
-  // restoration of the old behaviour.
+  // 1/3 -> 1/4) would be acausal under a blanket `BeforeTicks` marking, so
+  // this is not merely a restoration of a simpler behaviour.
   const Case cases[] = {
       {"1 -> 1/2", Rational{1}, Rational{1, 2}},
       {"1/2 -> 1/3", Rational{1, 2}, Rational{1, 3}},
@@ -881,9 +881,8 @@ TEST(Runner, NoTargetStepIntegratesAgainstUnfinishedSourceState) {
   }
 }
 
-/// THE RESIDUAL, PINNED RATHER THAN HIDDEN. Not introduced by R2 and not
-/// fixed by it: measured identical on 9902f82, the commit before any of this
-/// work.
+/// THE RESIDUAL, PINNED RATHER THAN HIDDEN. The phase rule does not fix this
+/// case; it is a known limitation of the schedule.
 ///
 /// A source step that spans more than two target steps still reaches a target
 /// step that began before it finished. With `src_dt = 1` and `dst_dt = 1/3`
@@ -974,10 +973,9 @@ TEST(Runner, EveryCompletedSourceStepStillReachesTheTarget) {
 ///
 /// The reduction is `BeforeTicks` and the `Sample` `AfterTicks`, so the window
 /// closes over source step 0 alone, exactly as `Instruction::src_step` says.
-/// Before R2's fix the `Sample` ran first -- lower topological rank, and a
-/// bare timestamp could not separate them -- and leaked source step 1 into a
-/// window that had already ended, delivering 0,0,6,6 where the source produced
-/// 2,4,6,8.
+/// If the `Sample` ran first -- lower topological rank, and a bare timestamp
+/// could not separate them -- it would leak source step 1 into a window that
+/// had already ended, delivering 0,0,6,6 where the source produced 2,4,6,8.
 TEST(Runner, ASampleSharingAnInstantWithAReductionDoesNotLeakIntoItsWindow) {
   auto h = build(HarnessOpts{.accum = fuse::AccumOp::Mean,
                              .src_dt = Rational{1, 2},
@@ -1014,7 +1012,7 @@ TEST(Runner, ASampleSharingAnInstantWithAReductionDoesNotLeakIntoItsWindow) {
   EXPECT_DOUBLE_EQ(rx.seen()[3], 6.0);
 }
 
-/// R2 on an ACCUMULATING channel: two target steps per period, and each
+/// The phase rule on an ACCUMULATING channel: two target steps per period, and each
 /// window's reduction must reach the target step that begins where it closes.
 ///
 /// 1/3 against 1/2 gives a period of 1, three source substeps and two target
@@ -1023,7 +1021,7 @@ TEST(Runner, ASampleSharingAnInstantWithAReductionDoesNotLeakIntoItsWindow) {
 /// divide 1/2, and that is the documented window rule ("every source step that
 /// BEGINS inside the target step"), not an artefact.
 ///
-/// On THIS schedule R2's `TickPhase` fix changed only WHO SEES the reduction,
+/// On THIS schedule the `TickPhase` rule affects only WHO SEES the reduction,
 /// not its composition: 1/3 and 1/2 share no instant below their lcm of 1, and
 /// 1 is the period here, so no `Sample` is ever stamped where a reduction is.
 /// That is a property of this pair of intervals and NOT a general one -- with a
@@ -1427,7 +1425,7 @@ TEST(Runner, AcceptsAnAcceleratedMultiRankRegionWhenNoCommunicatorIsConfigured) 
 }
 
 // ---------------------------------------------------------------------------
-// Spec Section 5.4, Task 5.5: which Remaps the runtime will and will not execute.
+// Spec Section 5.4: which Remaps the runtime will and will not execute.
 //
 // A `Remap` is now either real weights from `build_weights` or an identity
 // that was PROVED correct, and nothing else. The three tests below pin the
@@ -1455,9 +1453,9 @@ TEST(Runner, RemapsBetweenDifferentlySizedRegions) {
 // THE TEST THE OLD SIZE GUARD COULD NOT HAVE PASSED. The box's 24 boundary
 // faces and the line's 24 cells agree on a count and on nothing else: they are
 // different dimensions, different places, and different measures (total area 6
-// against total length 1). Until Task 5.5 that pair was accepted and
-// element-wise copied, which is the whole hazard -- equal counts are not a
-// correspondence. Now it is refused, and the message has to say why, because
+// against total length 1). Accepting and element-wise copying that pair is
+// the whole hazard -- equal counts are not a correspondence. It is refused,
+// and the message has to say why, because
 // "sizes differ" was never the reason and a user told that would go and resize
 // something.
 TEST(Runner, RefusesEqualCountRegionsThatAreNotProvablyCoincident) {
@@ -1615,7 +1613,7 @@ TEST(Runner, RefusesAnUnknownTransportBackend) {
 }
 
 // ---------------------------------------------------------------------------
-// Task 8.5: RunnerConfig::transport_setup, the hook that closes the gap
+// RunnerConfig::transport_setup, the hook that closes the gap
 // between the Runner and a transport's one-time, backend-specific setup
 // (LowFiveTransport::set_location+build_plan, MpiTransport::set_communicator+
 // build_plan) -- neither of which Transport's virtual interface can express.
@@ -1738,12 +1736,12 @@ TEST(Runner, ConservativeIdentityRemapBetweenCoincidentRegionsReportsNoError) {
   EXPECT_LT(runner.stats().worst_conservation_error, 1e-15);
 }
 
-// A NOTE ON WHAT MOVED, AND WHY.
+// A NOTE ON HOW THE CONSERVATION CHECK IS TESTED.
 //
-// Until Task 5.5 the two tests that showed the conservation check has teeth --
+// The tests that show the conservation check has teeth --
 // that it integrates against each region's own measures, and that a violation
-// can abort the run -- drove it with a box-wall-to-line identity copy whose
-// integral jumped by a factor of six. That pair no longer reaches the
+// can abort the run -- cannot drive it with a box-wall-to-line identity copy
+// whose integral jumps by a factor of six. That pair never reaches the
 // interpreter at all: it is refused at setup, by
 // RefusesEqualCountRegionsThatAreNotProvablyCoincident above, precisely
 // because copying across it was wrong. Producing a genuinely non-conservative
