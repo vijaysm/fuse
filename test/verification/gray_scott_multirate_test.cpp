@@ -15,7 +15,7 @@
 // below -- U never straddles, so testing U at both policies would not
 // exercise anything the straddle logic touches.
 //
-// THE ENVELOPE (KNOWN_ISSUES.md D7, E-RT-WINDOW-STRADDLE / -LONGSTEP).
+// THE ENVELOPE (E-RT-WINDOW-STRADDLE / -LONGSTEP).
 // WindowCoupler::create rejects a Fixed member whose interval exceeds the
 // window (E-RT-WINDOW-LONGSTEP) and rejects two members that could both
 // straddle the same window end (E-RT-WINDOW-STRADDLE). Every configuration
@@ -124,7 +124,7 @@ struct MultirateResult {
   cfg.window_length = window;
   cfg.max_iterations = 200;
   cfg.acceleration = AccelConfig{.kind = accel};
-  // The user's decision (relayed 2026-09-29): a convergence measure names
+  // A convergence measure names
   // a field TRANSFER (a WindowChannel, by its own `name`), not the whole
   // coupled system -- see gray_scott_reference_test.cpp's identical
   // comment. Split into the two real transfers, same kind/tolerance as
@@ -191,7 +191,7 @@ TEST(GrayScottMultirate, CommensurateRatiosConverge) {
 
 TEST(GrayScottMultirate, CommensurateRatiosFixedVDivideNeverStraddles) {
   // V's interval divides the window exactly at m=2,4, so DtPolicy::Fixed
-  // never triggers a straddle for V either (KNOWN_ISSUES.md D7's own
+  // never triggers a straddle for V either (the window coupler's own
   // "AFixedStepThatDividesTheWindowNeverStraddlesAndIsAccepted" case) --
   // exercised here with the real Gray-Scott components, not the linear ODE.
   const Rational window{1, 20};
@@ -274,7 +274,7 @@ TEST(GrayScottMultirate, IterationCountsAcrossAccelerators) {
 
 TEST(GrayScottMultirate, RespectsTheStraddleEnvelope) {
   // Both members Fixed, both intervals fail to divide the window: outside
-  // the D7 envelope, rejected at create() with E-RT-WINDOW-STRADDLE --
+  // the straddle envelope, rejected at create() with E-RT-WINDOW-STRADDLE --
   // demonstrating (not merely asserting) that every configuration ABOVE,
   // which never does this, sits inside it.
   const Grid grid{kN, kL};

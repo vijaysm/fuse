@@ -1,9 +1,9 @@
-// Spec Section 10 level 4 for Phase 4: the first coupled run measured against an
+// Spec Section 10 level 4: the first coupled run measured against an
 // analytic answer.
 //
 // WHAT IS AND IS NOT BEING VERIFIED HERE
 //
-// Phase 4's `Remap` is an identity copy (src/runtime/runner.cpp), `Interpolate`
+// `Remap` is an identity copy (src/runtime/runner.cpp), `Interpolate`
 // and `Accelerate` are copies, and `Extrapolate` is order 0. So there is no
 // spatial transfer error to measure and no point building a case whose answer
 // depends on one: the number that came out would be the missing remap, not the
@@ -11,7 +11,7 @@
 // coincident line meshes, which is exactly where the identity remap is the
 // correct operator.
 //
-// What Phase 4 *does* have that can be wrong is the TIME behaviour of the
+// What CAN be wrong here is the TIME behaviour of the
 // exchange: the window reduction the plan performs over a subcycled producer,
 // and the one-coupling-cycle lag with which the result reaches the consumer
 // (`Runner::Impl::step_period`'s tick convention). That has a measurable order,
@@ -338,7 +338,7 @@ void run(Fixture& f, std::int64_t periods) {
 }  // namespace
 
 // ---------------------------------------------------------------------------
-// Transfer correctness (Phase 4 exit criteria)
+// Transfer correctness
 // ---------------------------------------------------------------------------
 
 // A field must transfer bit-exactly across the identity remap: no drift, no

@@ -169,7 +169,7 @@ using HType = Hid<H5Tclose>;
   return std::string(buf.data());
 }
 
-/// `fuse::restart_io`'s own typed-field backend (Stage B Slice 1b):
+/// `fuse::restart_io`'s own typed-field backend:
 /// every value is written/read as an EXACT byte copy of its own native
 /// representation, memory type identical to file type, for EVERY
 /// `H5Dwrite`/`H5Dread` this backend ever issues -- see this file's own
@@ -200,10 +200,10 @@ using HType = Hid<H5Tclose>;
 /// verify_type_metadata()` can hand this function an info built from a
 /// FOREIGN file's own attributes (docs/dev/restart.md Section 11, item
 /// 6 -- a hand-built x86-64-style 80-bit `long double`), which this
-/// Mac's `H5T_NATIVE_LDOUBLE` cannot represent at all. ONE code path for
+/// platform's `H5T_NATIVE_LDOUBLE` cannot represent at all. ONE code path for
 /// both cases, rather than a native-type shortcut for the common case
 /// plus a separately-tested derived path for the exotic one, is what
-/// closed a real, measured defect this round: `H5Dread()`/`H5Dwrite()`
+/// avoids a real, measured defect: `H5Dread()`/`H5Dwrite()`
 /// against `H5T_NATIVE_LDOUBLE` as the MEMORY type while the FILE type
 /// is a hand-built 80-bit MSBSET one asks HDF5 to CONVERT between them,
 /// which fails the identical way `H5T__conv_f_f()` already does for any
@@ -365,7 +365,7 @@ using HType = Hid<H5Tclose>;
 /// of against the dataset's own real type would reject every such file
 /// before `ReadConversion` is ever consulted, making `AllowNarrowing`
 /// unable to do the ONE thing item 6 asks it to do. "Corrupted or
-/// foreign" in the owner's own phrasing means a file whose OWN two
+/// foreign" means a file whose OWN two
 /// descriptions of itself (attribute vs. real HDF5 type) disagree --
 /// not a file that disagrees with this reader's own platform.
 ///
@@ -532,7 +532,7 @@ struct DecodedInt {
 /// Encodes `d` into `target`'s own native width, refusing
 /// (E-RESTART-INTEGER-OVERFLOW) if the value does not fit -- "integers
 /// that do not fit refuse even under AllowNarrowing: an integer value
-/// change is not a rounding" (owner's own words, docs/dev/restart.md
+/// change is not a rounding" (docs/dev/restart.md
 /// Section 11) -- so this function takes no `ReadConversion` parameter at
 /// all; the overflow check is unconditional. Signed -> unsigned is
 /// refused unconditionally too (E-RESTART-SIGNED-TO-UNSIGNED), matching
@@ -604,8 +604,7 @@ struct DecodedInt {
 /// Converts ONE element's worth of bytes from `stored` (`src`) to
 /// `requested` (`dst`), per `conversion` -- the one dispatch every
 /// `get_field_bytes()`/`get_scalar_bytes()` row goes through, whether
-/// `stored == requested` (the fast, copy-only path every call takes
-/// before Slice 1b existed) or not. Accumulates into `report` --
+/// `stored == requested` (the fast, copy-only path) or not. Accumulates into `report` --
 /// `changed`/`abs_change` are per-element; the caller aggregates
 /// `max_absolute_change`/`changed_count`/`converted_any` across every
 /// element a single call reads (docs/dev/restart.md Section 11's own
@@ -664,8 +663,7 @@ struct DecodedInt {
     // (Widening path, already checked above) and otherwise may still
     // fit under AllowNarrowing -- encode_int_checked() itself decides,
     // and an integer value change from narrowing is refused there, not
-    // reported (owner's own rule: "an integer value change is not a
-    // rounding").
+    // reported ("an integer value change is not a rounding").
     return encode_int_checked(d, to_info, dst, context);
   }
 
@@ -754,11 +752,11 @@ class Hdf5GroupWriter final : public RestartWriter {
       }
     }
     if (static_cast<std::int64_t>(ids.size()) != declared_global_size) {
-      // Single-writer case (Slice 1, no MPI): this ONE call is the whole
+      // Single-writer case (no MPI): this ONE call is the whole
       // graph's contribution, so "coverage of the declared global size"
       // reduces to "this call's own count equals it" -- the general,
-      // multi-caller version of this check is finish_point()'s own job
-      // (owner decision 2), re-run below for defense in depth even
+      // multi-caller version of this check is finish_point()'s own job,
+      // re-run below for defense in depth even
       // though at a single rank it can only re-confirm this one.
       return Failure{"E-RESTART-BAD-NUMBERING",
                      "put_field('" + key + "'): declared_global_size=" +
@@ -870,11 +868,11 @@ class Hdf5GroupWriter final : public RestartWriter {
   }
 
   Result<void> finish_point() override {
-    // Owner decision 2's own batched check: ONE combined sort over every
-    // field's own (name, id) pairs. At a single rank (Slice 1, no MPI)
+    // Batched check: ONE combined sort over every
+    // field's own (name, id) pairs. At a single rank (no MPI)
     // every field was reported by exactly one caller (this object), so
     // this re-confirms what put_field() already checked rather than
-    // discovering anything new -- Slice 2 extends this into a single
+    // discovering anything new -- with several ranks this extends into a single
     // collective Allgatherv over the SAME combined buffer instead of
     // replacing it (docs/dev/restart.md Section 7(iv)).
     std::vector<std::pair<std::string, std::int64_t>> combined;
@@ -1151,7 +1149,7 @@ class Hdf5GroupReader final : public RestartReader {
 }
 
 /// `SeparateMeshAndPoints`: write directly to a fresh temp file, no prior
-/// content to preserve. `GrowingFile`: owner decision 3's own
+/// content to preserve. `GrowingFile`: a
 /// copy-append-rename -- copy whatever already exists at `path` (nothing,
 /// for the first point) to the temp name, open THAT for read-write, add
 /// the new group, close, then rename over `path`. A crash at any point
@@ -1271,7 +1269,7 @@ Result<std::unique_ptr<PointWriter>> create_restart_point(
     if (!r.ok()) return r.error();
     r = write_scalar_attr_str(file, "fuse_version", provenance.fuse_version);
     if (!r.ok()) return r.error();
-    // D62 (KNOWN_ISSUES.md): written as its own attribute, independent of
+    // Written as its own attribute, independent of
     // descriptor_hash, so open_restart_point() can refuse a descriptor-
     // version mismatch by name BEFORE ever comparing hashes -- see
     // Provenance::descriptor_version's own doc comment (fuse/restart_io/
@@ -1355,7 +1353,7 @@ Result<std::unique_ptr<PointReader>> open_restart_point(
   Result<std::string> ver = read_attr_str(file, "fuse_version");
   if (!ver.ok()) return ver.error();
   prov.fuse_version = ver.value();
-  // D62 (KNOWN_ISSUES.md): refused HERE, unconditionally, before
+  // Refused HERE, unconditionally, before
   // descriptor_hash is even read -- a descriptor-version mismatch means
   // the WIRE LAYOUT fuse::serialize()/deserialize() used to produce
   // descriptor_hash may itself disagree between the point's own writer

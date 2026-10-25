@@ -15,8 +15,7 @@
 //   v = -psi_x = -(pi/L) cos(kx x) sin(ky y) cos(w t)
 //   p = P0 cos(kx x) cos(ky y) cos(w t)
 // with the body force f = rho u_t + grad p - mu Lap(u) computed by hand and
-// cross-checked against an independent sympy derivation (this task's own
-// working notes); see docs/user/fsi-channel.md for the closed forms.
+// cross-checked against an independent sympy derivation; see docs/user/fsi-channel.md for the closed forms.
 
 #include <gtest/gtest.h>
 
@@ -170,10 +169,10 @@ TEST(FsiStokesMms, SpatialOrderIsTwo) {
              order, errs[0], errs[1], errs[2], errs[3]);
   // The REQUIRED order is 2 (this is a second-order scheme in the interior).
   // The mirror-ghost Dirichlet wall treatment for a tangential no-slip
-  // velocity used to be LINEAR (ghost = 2D - c), exact only for an AFFINE
-  // profile through the wall -- that cost roughly half an order globally
-  // (measured before this fix: order ~1.436-1.688 depending on grid range,
-  // below the required >1.8). Replaced with a QUADRATIC ghost through the
+  // velocity must not be LINEAR (ghost = 2D - c), which is exact only for an
+  // AFFINE profile through the wall and costs roughly half an order globally
+  // (order ~1.436-1.688 depending on grid range, below the required >1.8).
+  // It is a QUADRATIC ghost through the
   // wall value D and the first two interior nodes c1, c2:
   // ghost = (8 D - 6 c1 + c2) / 3, exact for a QUADRATIC profile through
   // the wall -- see docs/user/fsi-channel.md's derivation and
@@ -216,7 +215,7 @@ TEST(FsiStokesMms, SpatialOrderIsTwoOnTheSlowerGrids) {
 // div(u,v) = du/dx + dv/dy = 0 + 0 = 0 identically (u does not depend on x;
 // v is identically 0) -- exact, discretely, at any nx,ny.
 // Lap(u) = d^2u/dy^2 = 0 (u is LINEAR in y): the QUADRATIC mirror-ghost
-// Dirichlet construction this scheme now uses at a wall (ghost =
+// Dirichlet construction this scheme uses at a wall (ghost =
 // (8D - 6 c1 + c2)/3, see stokes_solver.hpp's own header comment) is
 // exact for a quadratic profile through the boundary by construction, and
 // a linear profile is a quadratic with a zero leading coefficient, so the
@@ -307,16 +306,14 @@ TEST(FsiStokesMms, SpatialExactnessHoldsAtAnyGridForTheTemporalFixture) {
   // two DIFFERENTLY-SIZED SparseLU factorizations of an exactly-reproduced
   // (to the scheme's own arithmetic) solution agree.
   //
-  // CORRECTED this session (an earlier comment here mis-stated the
-  // relationship): measured e1=6.5891e-08, e2=6.4599e-08, so the errors
-  // THEMSELVES are about 6.5x the 1.0e-8 threshold below -- NOT ">50x
-  // below" as an earlier version of this comment claimed. What the
+  // Measured e1=6.5891e-08, e2=6.4599e-08, so the errors
+  // THEMSELVES are about 6.5x the 1.0e-8 threshold below (not ">50x
+  // below"). What the
   // EXPECT_LT actually compares is |e1-e2| = 1.2926e-09, which IS about
   // 50x SMALLER than e1/e2 themselves (confirming "near-round-off
   // RELATIVE TO THE ERRORS", the claim this test is actually evidence
   // for), but the 1.0e-8 THRESHOLD sits only ~7.7x above that difference
-  // -- a real but modest margin, not the ">50x" an earlier reader might
-  // assume from the old wording. 1.0e-8 is kept as-is: SparseLU on two
+  // -- a real but modest margin. 1.0e-8 is kept as-is: SparseLU on two
   // differently-sized systems is not expected to agree closer than this
   // (the 7.7x margin already absorbs that), and tightening it further
   // risks flaking on a different machine's BLAS/LAPACK without buying
@@ -349,7 +346,7 @@ TEST(FsiStokesMms, TemporalOrderIsTwo) {
   EXPECT_LT(order, 2.3) << "suspiciously high temporal order " << order;
 }
 
-// Phase 1's dt-keyed LU cache (`fsi::CnStepLuCache`, stokes_solver.hpp) is
+// The dt-keyed LU cache (`fsi::CnStepLuCache`, stokes_solver.hpp) is
 // sound only if dt is the ONLY per-call argument that changes A. `p0` is not
 // rhs-only: the pressure-gradient coefficient is 0.5/dx when p0 is supplied
 // (trapezoidal) and 1/dx when it is not (fully implicit), so A itself differs.

@@ -265,11 +265,12 @@ TEST(FsiCoupled, FluidReconstructedPoiseuilleIsAFixedPointOfCnStep) {
 
 // ---------------------------------------------------------------------------
 // The SIGN of the interface force, pinned by physics rather than by
-// self-consistency. KNOWN_ISSUES.md D9: the wall traction delivered to the beam
-// was -p + 2 mu dv/dy, the force on the FLUID, for the whole life of this
-// example, and no test could see it -- the steady-deflection test compared the
-// beam against the analytic solution under whatever load the code produced, and
-// every energy check compared the delivered vector with itself. The two tests
+// self-consistency. The wall traction delivered to the beam must be the
+// force on the WALL, not -p + 2 mu dv/dy (the force on the fluid). The
+// steady-deflection test compares the
+// beam against the analytic solution under whatever load the code produces, and
+// every energy check compares the delivered vector with itself, so neither
+// can see the sign. The two tests
 // below state what the force must do, in terms no internal identity can
 // satisfy with the wrong sign:
 //   1. a pressurised field transfer pushes its wall AWAY from the fluid;
@@ -305,7 +306,7 @@ TEST(FsiCoupled, APressurisedChannelPushesItsWallAwayFromTheFluid) {
   });
   ASSERT_GT(mean_p, 0.0) << "the fixture's channel is not pressurised; the test is vacuous";
   EXPECT_GT(mean_q, 0.0) << "the delivered load points INTO the fluid: the traction sign is "
-                            "the force on the fluid, not on the wall (D9)";
+                            "the force on the fluid, not on the wall";
   EXPECT_GT(mid, 0.0) << "the wall deflects toward the fluid under positive pressure";
 }
 
@@ -325,7 +326,7 @@ TEST(FsiCoupled, AcceleratingTheWallAwayFromTheFluidIsOpposedByTheTraction) {
   double sum = 0.0;
   for (const double f : tr) sum += f;
   EXPECT_LT(sum, 0.0) << "the net wall force is in the direction of the acceleration: "
-                         "a NEGATIVE added mass, which is D9's growth mechanism";
+                         "a NEGATIVE added mass, a growth mechanism";
   // And the pressure that produced it is genuinely below the outlet reference
   // in the row under the wall, not an artefact of the viscous term.
   double p_top = 0.0;
@@ -352,18 +353,16 @@ TEST(FsiCoupled, SteadyStateBeamDeflectionMatchesTheAnalyticLinearLoad) {
       // state's load -- together these form a genuine fixed point of the
       // COUPLED system (zero net force on the beam -> zero acceleration ->
       // w stays put -> wdot stays 0 -> v_top stays 0 -> the fluid stays
-      // put). Root-caused this session: an EARLIER version of this test
-      // left the beam at w=0 (rest, BeamComponent's default construction)
-      // -- NOT its equilibrium -- so the beam was NOT at a fixed point at
-      // all: run_period()'s own Newmark march accelerated it away from
-      // w=0 toward equilibrium WITHIN this one coupling cycle, delivering a
-      // non-zero wdot (hence non-zero v_top) back to the fluid, which
-      // then genuinely changed the fluid's own pressure field -- an O(1),
-      // physically real transient response, not a discretisation error,
-      // which is exactly why the old test's error was large and flat
-      // (measured directly this session by feeding the beam the ANALYTIC
-      // load in isolation, which DID converge at order ~2: the beam's own
-      // solve_static/order machinery was never the problem).
+      // put). Leaving the beam at w=0 (rest, BeamComponent's default
+      // construction) would NOT be its equilibrium, so the beam would NOT be
+      // at a fixed point: run_period()'s own Newmark march would accelerate
+      // it away from w=0 toward equilibrium WITHIN one coupling cycle,
+      // delivering a non-zero wdot (hence non-zero v_top) back to the fluid,
+      // which would genuinely change the fluid's own pressure field -- an
+      // O(1), physically real transient response, not a discretisation error,
+      // which would make the measured error large and flat (feeding the beam
+      // the ANALYTIC load in isolation does converge at order ~2: the beam's
+      // own solve_static/order machinery is not the issue).
       const double dpdx0 = -8.0 * c.mu * c.U_max / (c.H * c.H);
       const double dx_fluid0 = c.L / static_cast<double>(nf);
       const double x_pin0 = (static_cast<double>(nf - 1) + 0.5) * dx_fluid0;
@@ -414,7 +413,7 @@ TEST(FsiCoupled, SteadyStateBeamDeflectionMatchesTheAnalyticLinearLoad) {
       // The analytic clamped-clamped affine-load deflection, using the
       // SAME gauge convention StokesSolver pins its pressure to (see
       // exact_poiseuille_state): traction(x) = +p(x) = q1*x + q0, the force ON
-      // the wall (it used to be -p, the force on the fluid; D9).
+      // the wall (not -p, the force on the fluid).
       const double dpdx = -8.0 * c.mu * c.U_max / (c.H * c.H);
       const double dx_fluid = c.L / static_cast<double>(nf);
       // Same outflow-column reference as exact_poiseuille_state above.
@@ -619,24 +618,15 @@ TEST(FsiCoupled, GaussSeidelDivergesWhileIqnIlsConvergesAtMassRatioOne) {
 // Aitken's OWN measured operating range, with numbers, rather than an
 // assumption that it must match IQN-ILS at every mass ratio.
 //
-// HISTORY (kept for the record -- the boundary below has moved twice).
-// An earlier fluid-solver scheme (trapezoidal pressure GRADIENT, with the
-// previous step's pressure carried as literal state to get a nominally
-// t1-accurate p1) had Aitken needing 422 sweeps to converge at
-// mass_ratio=1 -- slow, but not divergent. KNOWN_ISSUES.md D9's own fix
-// (docs/user/fsi-channel.md, "Partitioned time-level consistency: the
-// force side, round 2") replaced that scheme with a genuinely mid-step
-// pressure (fully-implicit gradient, no p0 carried as state) delivered to
-// a matching midpoint-load beam step -- removing a real |lambda|=1
-// parasitic mode confirmed by test/verification/fsi_energy_diag_test.cpp,
-// but the coupled system's own step-map spectral radius barely moved
-// (~1.1155 either way -- that root cause is SEPARATE and still open, see
-// KNOWN_ISSUES.md D9). What DID change is Aitken's own operating point at
-// mass_ratio=1: measured directly (this round), it now DIVERGES (residual
-// grows without bound, confirmed non-finite well past the 500-sweep
-// budget) rather than merely converging slowly. This test now pins the
-// CURRENT boundary -- a genuine divergence at 1, a clean convergence at
-// 25 -- exactly mirroring GaussSeidelDivergesWhileIqnIlsConvergesAtMass
+// The fluid solver uses a genuinely mid-step pressure (fully-implicit
+// gradient, no p0 carried as state) delivered to a matching midpoint-load
+// beam step (docs/user/fsi-channel.md, "Partitioned time-level
+// consistency"). With this scheme Aitken's operating point at
+// mass_ratio=1 is a genuine DIVERGENCE (residual grows without bound,
+// confirmed non-finite well past the 500-sweep budget) rather than slow
+// convergence. This test pins that boundary -- a genuine divergence at 1,
+// a clean convergence at 25 -- exactly mirroring
+// GaussSeidelDivergesWhileIqnIlsConvergesAtMass
 // RatioOne's own residual_grew check, rather than assuming either
 // direction.
 TEST(FsiCoupled, AitkenDivergesAtLowMassRatioButConvergesAtHigh) {
@@ -661,10 +651,9 @@ TEST(FsiCoupled, AitkenDivergesAtLowMassRatioButConvergesAtHigh) {
              low_out.residual_last);
   EXPECT_FALSE(low_out.converged)
       << "Aitken was expected to DIVERGE (not merely converge slowly) at "
-         "mass ratio " << low_ratio << " under D9's mid-step fix -- if "
-         "this now converges, the fix's effect on Aitken's own operating "
-         "range has changed again and this test's history comment needs "
-         "updating";
+         "mass ratio " << low_ratio << " under the mid-step pressure scheme -- if "
+         "this converges, Aitken's own operating range has changed and "
+         "this test's comment needs updating";
   EXPECT_TRUE(low_out.residual_grew)
       << "expected Aitken's residual to GROW, not merely fail to shrink "
          "fast enough; first=" << low_out.residual_first << " last="
@@ -683,7 +672,7 @@ TEST(FsiCoupled, AitkenDivergesAtLowMassRatioButConvergesAtHigh) {
              static_cast<long long>(high_out.sweeps));
   EXPECT_TRUE(high_out.converged)
       << "Aitken failed to converge at mass ratio " << high_ratio
-      << " (" << high_out.sweeps << " sweeps) -- previously measured to "
+      << " (" << high_out.sweeps << " sweeps) -- expected to "
          "converge cleanly there";
   // No sweep-count comparison here: low_out never converges (it hits
   // max_iterations having diverged), so "sweeps" there is just the

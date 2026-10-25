@@ -31,32 +31,24 @@
 //     each source cell's average as flat across the whole cell introduces an
 //     O(h) error near every cell boundary that does not line up with the
 //     target grid, same order as for any other smooth field. Measured
-//     directly (worst error 0.075 on the case below) before this comment was
-//     corrected to match. `PointwiseTransferIsExactForAConstantField` is
+//     directly (worst error 0.075 on the case below).
+//     `PointwiseTransferIsExactForAConstantField` is
 //     the exactness property the P0 kernel genuinely has;
 //     `TransferOrderOnASmoothField` is the refinement-order property (>= 1)
 //     that covers a linear field at VARYING resolution instead. A true
 //     pointwise-consistent (order >= 2, exact-for-linear-at-fixed-resolution)
 //     kernel would need a genuinely different reconstruction (P1/nodal) that
-//     does not exist yet for the native backend -- see the task's
-//     open_questions.
+//     does not exist yet for the native backend.
 //   * "fluid_force" -> "beam_force": an INTEGRATED quantity (traction
 //     integrated to a per-cell force -- already an amount, not a density),
 //     Conservation::Extensive, field transfer marked `.conservative()`.
 //     `ConservativeTransferPreservesTotalForce` checks the PLAIN (unweighted)
-//     SUM delivered equals the plain sum sent, to round-off -- KNOWN_ISSUES.md
-//     D82 (owner decision 2026-10-19): Extensive's own value directly IS the
+//     SUM delivered equals the plain sum sent, to round-off:
+//     Extensive's own value directly IS the
 //     conserved amount, not a density, so no measure weighting belongs here
-//     at all. A STALE version of this comment (and the assertion below, now
-//     fixed) claimed the opposite ("Extensive fields are densities") and
-//     added measure-weighting to the test's own sums as a WORKAROUND for
-//     D82's own pre-existing library defect (the unconditional Intensive
-//     normalisation build_supermesh_weights always applied before D82's own
-//     fix landed) -- compensating in the test for a bug in the library,
-//     rather than fixing the library, and then mis-describing the result as
-//     the field's own semantics. Once the library was fixed to apply
-//     Extensive's own column normalisation, the compensating weighting here
-//     became a SECOND, now-wrong correction on top of a now-correct matrix.
+//     at all (build_supermesh_weights applies Extensive's own column
+//     normalisation, so a compensating measure weighting in the test's own
+//     sums would be a second, wrong correction on top of a correct matrix).
 //
 
 // `TransferOrderOnASmoothField` repeats the pointwise study over four
@@ -80,7 +72,7 @@
 #include <string>
 #include <vector>
 
-// Nodal-remap track, round 3: apply_nodal_dist_remap's own per-coupling-cycle
+// apply_nodal_dist_remap's own per-coupling-cycle
 // allocation check (below, ApplyNodalDistRemapHasAConstantMeasuredPerPeriodAllocationCount)
 // needs this. Safe to include here: this file's own test target compiles
 // exactly one .cpp against the prebuilt fuse_test_main -- see the header's
@@ -169,7 +161,7 @@ RunResult run_once(const TransferCase& s) {
   // only to turn this two-way pair into a legal explicit scheme (spec
   // Section 8.2's E-SCHED-CYCLE hard gate rejects an unlagged algebraic loop; this
   // test is about transfer accuracy, not about the FSI model's own strong
-  // coupling, which is a later phase's concern).
+  // coupling, which is outside this test's scope).
   const auto fch = g.add_channel("wall_force", force_out, force_in);
   g.channel(fch).conservative().lag(1).allow_time_level_mismatch(
       "capability test: only transfer accuracy is under test here");
@@ -313,8 +305,8 @@ TEST(InterfaceTransfer, ConservativeTransferPreservesTotalForce) {
 
   // "force" is a per-cell amount (already integrated), so the TOTAL is the
   // plain sum across cells -- no measure weighting, unlike a density.
-  // KNOWN_ISSUES.md D82 (owner decision 2026-10-19): Extensive's own value
-  // directly IS the conserved amount; build_supermesh_weights now applies
+  // Extensive's own value
+  // directly IS the conserved amount; build_supermesh_weights applies
   // Extensive's own column (source-measure) normalisation, so a plain,
   // unweighted sum is the right comparison -- no compensating measure
   // weighting belongs on either side.
@@ -372,12 +364,11 @@ TEST(InterfaceTransfer, TransferOrderOnASmoothField) {
 // between a genuinely nodal field (Discretization::ContinuousGLL order <= 1,
 // SemanticLocation::Vertex) and an FV field (SemanticLocation::Element) is
 // rejected by include/fuse/model/connect.hpp's check_channel(), called from
-// src/ir/rules_channel.cpp during lower() -- neither file is owned by this
-// track, and check_channel() hardcodes `request.transfer.kind =
+// src/ir/rules_channel.cpp during lower() -- neither file is exercised by this
+// test, and check_channel() hardcodes `request.transfer.kind =
 // TransferKind::Copy` unconditionally, so a location-changing field transfer has no
-// way to declare the transfer that would let it through. This is reported
-// exactly as found in the task's open_questions; it is not worked around
-// here. What IS tested here is everything this track owns: build_weights()'s
+// way to declare the transfer that would let it through. This is not worked around
+// here. What IS tested here is: build_weights()'s
 // dispatch on `RemapPlan::method`, mesh entity set resolution through the graph, the
 // discretization gate, and that the weights returned match
 // build_consistent_interp_weights() called directly on the same MeshViews.
@@ -537,13 +528,13 @@ NodalResult run_consistent_pair(std::size_t n_beam, std::size_t n_fluid,
                                 const std::function<double(double)>& vel,
                                 const std::function<double(double)>& trac,
                                 fuse::RankSet beam_ranks = {0, 1},
-                                // Round 2 (nodal-remap track): lets a caller
+                                // Lets a caller
                                 // force the "wall_force" field transfer's own
                                 // method away from "consistent-transpose",
                                 // to exercise the rejection a non-consistent
                                 // method into a multi-rank nodal target
-                                // still gets (E-RT-REMAP-NODAL-PARALLEL,
-                                // KNOWN_ISSUES D5 item 3) through this same,
+                                // still gets (E-RT-REMAP-NODAL-PARALLEL)
+                                // through this same,
                                 // already-built graph shape instead of a
                                 // second hand-rolled one.
                                 const std::string& force_method = "consistent-transpose",
@@ -795,8 +786,8 @@ TEST(InterfaceTransfer, AnUnimplementedNodalOrderRefusesThroughTheRealScheduling
   EXPECT_NE(what.find("E-EXTENT-DISC"), std::string::npos) << what;
 }
 
-// KNOWN_ISSUES D8, round 2 (2026-09-25): a Remap into a nodal field on more
-// than one rank via "consistent-transpose" is no longer rejected --
+// A Remap into a nodal field on more
+// than one rank via "consistent-transpose" is accepted --
 // `Runner::Impl::build_nodal_dist_remap` (runner.cpp) builds distributed
 // rows through nodal_remap_distributed.hpp instead. The processor set is
 // DECLARED (`fuse::RankSet{0, 2}`, two ranks in the graph) but this test
@@ -812,18 +803,17 @@ TEST(InterfaceTransfer, AnUnimplementedNodalOrderRefusesThroughTheRealScheduling
 // itself changes nothing about the physics, only which code path computes
 // it (build_nodal_dist_remap vs. the plain local weights-apply).
 //
-// Round 4 (defect 2, found by a real host MPI run): `beam_ranks` governs
+// `beam_ranks` governs
 // the SAME "beam" component for BOTH field transfers here -- `vel_out` (the
 // SOURCE of "consistent"/H, wall_velocity) and `force_in` (the TARGET of
-// "consistent-transpose"/H^T D, wall_force). Before round 4,
-// resolve_remap's distributed trigger read only the REMAP TARGET's kind,
-// so declaring `beam_ranks{0, 2}` moved only wall_force onto the
-// distributed path; wall_velocity's nodal SOURCE being multi-rank went
-// unnoticed and silently fell through to the old rank-local weights (Tier
-// 0 could not catch this: with no genuine partition, the old path still
-// saw the whole mesh and got the right answer by coincidence -- exactly
-// the "declare 2 ranks on the host and it reproduces" masking a real host
-// MPI run exposed, KNOWN_ISSUES.md D8). This SAME test, unmodified, now
+// "consistent-transpose"/H^T D, wall_force). resolve_remap's distributed
+// trigger must consider the nodal SOURCE as well as the REMAP TARGET's
+// kind: if it read only the target's kind, declaring `beam_ranks{0, 2}`
+// would move only wall_force onto the distributed path, and wall_velocity's
+// multi-rank nodal SOURCE would silently fall through to rank-local weights
+// (Tier 0 cannot catch this by itself: with no genuine partition, the
+// rank-local path still sees the whole mesh and gets the right answer by
+// coincidence -- a real MPI run is what exposes it). This test
 // exercises BOTH orientations at once through the one declared processor set:
 // `fluid_in`'s closed-form check below is H's own correctness proof for
 // the newly-covered nodal-SOURCE direction, and `beam_load`'s one-rank
@@ -866,9 +856,9 @@ TEST(InterfaceTransfer, ARemapIntoANodalFieldOnTwoDeclaredRanksIsAcceptedAndMatc
 }
 
 // A method OTHER than "consistent"/"consistent-transpose" into a nodal
-// target on more than one rank is unaffected by round 2: per-placement
-// supermesh weights remain unimplemented (KNOWN_ISSUES D5 item 3), so this
-// still rejects -- now for a method-specific reason, since the SAME
+// target on more than one rank is not accepted: per-placement
+// supermesh weights are unimplemented, so this
+// rejects -- for a method-specific reason, since the SAME
 // declared processor set with method "consistent-transpose" (the test above)
 // is accepted. `run_consistent_pair`'s own default empty method ("") is
 // neither "consistent" nor "consistent-transpose", so build_weights() would
@@ -885,7 +875,7 @@ TEST(InterfaceTransfer, ARemapIntoANodalFieldOnSeveralRanksViaASupermeshMethodSt
   }
 }
 
-// Round 4 (KNOWN_ISSUES.md D8, defect 2(b)): resolve_remap's generalized
+// resolve_remap's generalized
 // trigger recognizes a field transfer whose SOURCE *and* TARGET are both nodal
 // (Vertex-kind) mesh entity sets, with at least one side's component on more than
 // one rank, but must REJECT it by name rather than silently pick one
@@ -964,7 +954,7 @@ TEST(InterfaceTransfer, BothSidesNodalOnMultipleRanksRefuses) {
       << r.error().message;
 }
 
-// Nodal-remap track, round 3: apply_nodal_dist_remap's own per-coupling-cycle
+// apply_nodal_dist_remap's own per-coupling-cycle
 // allocation, checked with the SAME `AllocationCounter` instrument
 // Runner.AllocatesNothingWhileRunning (test/runtime/runner_test.cpp) uses
 // for the ordinary weights-apply path. `Runner.AllocatesNothingWhileRunning`'s
@@ -977,12 +967,10 @@ TEST(InterfaceTransfer, BothSidesNodalOnMultipleRanksRefuses) {
 // because zero is not the true answer here: `apply_distributed_H`/
 // `apply_distributed_HT` (nodal_remap_distributed.hpp) build fresh
 // Allgatherv buffers, an unordered_map and (in the H branch) a local-slot
-// copy on EVERY call by design, a cost KNOWN_ISSUES.md D8 already named as
-// "a distinct, documented cost" in round 2 -- this test MEASURES it (a
+// copy on EVERY call by design, a distinct, documented cost -- this test MEASURES it (a
 // small, constant number per coupling cycle, not zero, not growing) rather than
-// asserting a bound that was never true, and records the measured number
-// in KNOWN_ISSUES.md D8 as the concrete baseline a future point-to-point
-// implementation should reduce.
+// asserting a bound that is not true; the measured number is the concrete
+// baseline a future point-to-point implementation should reduce.
 TEST(InterfaceTransfer, ApplyNodalDistRemapHasAConstantMeasuredPerPeriodAllocationCount) {
   CouplingGraph g;
   const auto m_beam = g.add_mesh(fuse::MeshDecl{.name = "beam_mesh", .source = "generated:line:7"});
@@ -1089,8 +1077,7 @@ TEST(InterfaceTransfer, ApplyNodalDistRemapHasAConstantMeasuredPerPeriodAllocati
   // every coupling cycle, and those functions build fresh Allgatherv buffers, an
   // unordered_map, and (in the H branch) a copy of the local input slot on
   // EVERY call by design -- exactly the "Allgatherv buffers apply_distributed_H/HT
-  // allocate per call are a distinct, documented cost" this track's own round-2
-  // KNOWN_ISSUES.md D8 entry already named, now measured for the first time
+  // allocate per call are a distinct, documented cost", measured here
   // rather than only asserted. `DistributedInterpRows` itself (the expensive
   // part: locating every point's containing cell) is genuinely built ONCE, at
   // setup -- what this test actually proves is that the PER-COUPLING-CYCLE count is
@@ -1123,7 +1110,7 @@ TEST(InterfaceTransfer, ApplyNodalDistRemapHasAConstantMeasuredPerPeriodAllocati
       << " -- the per-period allocation count must be CONSTANT across periods (no "
          "growth, no leak); it is measured here as " << first_period_allocations
       << " allocations/period, not zero (see this test's own comment on why), and "
-         "KNOWN_ISSUES.md D8 records this number as the Allgatherv-per-apply cost "
+         "this number is the Allgatherv-per-apply cost "
          "a future point-to-point implementation should reduce, not silently accept "
          "as unmeasurable";
 }

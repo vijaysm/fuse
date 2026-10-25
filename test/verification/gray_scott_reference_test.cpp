@@ -8,12 +8,10 @@
 // claims with different evidence:
 //
 //   (1) At m=1 the windowed result matches the monolithic one to the
-//       coupling ITERATION tolerance -- but only at a small enough dt. The
-//       delegated task states this as an unconditional requirement; it is
-//       not one for this model, and this file reports why with a measured
+//       coupling ITERATION tolerance -- but only at a small enough dt. It is
+//       not an unconditional property of this model, and this file reports why with a measured
 //       number rather than silently loosening a bound (see
-//       WindowedMatchesMonolithicAtASufficientlySmallDt and
-//       open_questions in the delivered report). Reaction terms in
+//       WindowedMatchesMonolithicAtASufficientlySmallDt). Reaction terms in
 //       Gray-Scott are QUADRATIC in the partner (u*v^2): the partitioned
 //       scheme freezes the partner at its CN-window MEAN and uses that
 //       SAME frozen value at both the CN step's old and new reaction
@@ -148,7 +146,7 @@ struct WindowedRun {
   cfg.window_length = window;
   cfg.max_iterations = 300;
   cfg.acceleration = AccelConfig{.kind = AccelKind::Aitken};
-  // The user's decision (relayed 2026-09-29): a convergence measure names
+  // A convergence measure names
   // a field TRANSFER (a WindowChannel, by its own `name`), not the whole
   // coupled system -- there is no single channel a combined "gray_scott"
   // measure over BOTH directions could name. Split into the two real
