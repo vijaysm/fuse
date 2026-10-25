@@ -1,14 +1,10 @@
 // src/petsc/init.cpp -- PetscInitialize/PetscFinalize ownership
 // (fuse/petsc/token.hpp's own header comment has the full contract).
 //
-// TO BE MEASURED, this track (Debug, /opt/petsc/download-moab, PETSc
-// 3.25.99, gcc 16.2.0's gfortran runtime, /opt/mpich): whether calling
-// PetscInitialize() in a tier-0 process (FUSE_ENABLE_MPI=OFF, so nothing
-// in this harness has called MPI_Init()) succeeds and itself calls
+// In a tier-0 process (FUSE_ENABLE_MPI=OFF, so nothing in the harness has
+// called MPI_Init()), PetscInitialize() succeeds and itself calls
 // MPI_Init() -- see test/petsc/init_test.cpp for the exact
-// MPI_Initialized()/MPI_Finalized() transitions this pins, and this
-// track's own report for what was actually observed (stdout/stderr noise
-// included) once that test runs.
+// MPI_Initialized()/MPI_Finalized() transitions this pins.
 
 #include "fuse/petsc/token.hpp"
 
@@ -38,9 +34,7 @@ Result<void> ensure_initialized(int comm_f) {
   //  - MPI is NOT up (a tier-0 test binary): the Fortran handle cannot be
   //    converted (MPI_Comm_f2c before MPI_Init is undefined) and setting
   //    PETSC_COMM_WORLD would make PetscInitialize SKIP its own MPI_Init
-  //    and fail with PETSC_ERR_SUP -- which is what the first draft of this
-  //    function did, on every host, not only in a sandbox whose MPI cannot
-  //    start (measured 2026-10-11: PetscInitialize returned 56 for exactly
+  //    and fail with PETSC_ERR_SUP (PetscInitialize returns 56 for exactly
   //    this reason). So PETSC_COMM_WORLD is left at its default and
   //    PetscInitialize calls MPI_Init itself; PetscFinalize then owns the
   //    matching MPI_Finalize, which is PETSc's own documented rule.
@@ -53,8 +47,8 @@ Result<void> ensure_initialized(int comm_f) {
   // finalised -- here, after finalize_if_owned() released an MPI this
   // library started -- cannot have PETSc again: PetscInitialize would call
   // into a finalised MPICH, which aborts ("Attempting to use an MPI routine
-  // ... after finalizing MPICH", measured on the host 2026-10-11 in the
-  // tier-0 init test's second case). Refuse by name instead.
+  // ... after finalizing MPICH", as the tier-0 init test's second case
+  // shows). Refuse by name instead.
   int mpi_done = 0;
   if (MPI_Finalized(&mpi_done) != MPI_SUCCESS) {
     return Failure{"E-PETSC-CALL", "MPI_Finalized failed"};

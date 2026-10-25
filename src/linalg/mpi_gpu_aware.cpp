@@ -1,10 +1,9 @@
-// src/linalg/mpi_gpu_aware.cpp -- the shared GPU-aware MPI probe (Migration
-// track, 2026-10-15; lead's layering decision, 2026-10-15 integration).
+// src/linalg/mpi_gpu_aware.cpp -- the shared GPU-aware MPI probe.
 //
-// BEFORE THIS FILE: `fuse::native::mpi_is_gpu_aware()`
+// WHY IT LIVES HERE: `fuse::native::mpi_is_gpu_aware()`
 // (src/backend/native_migration.cpp) and `fuse::transport::MpiTransport::
 // is_gpu_aware()`'s own `transport_mpi_is_gpu_aware()`
-// (src/transport/mpi_transport.cpp) each carried an IDENTICAL run-time
+// (src/transport/mpi_transport.cpp) would each need an IDENTICAL run-time
 // probe, duplicated because `backend` could not depend on `transport`'s
 // library and vice versa (cmake/FuseMpiGpuAware.cmake's own header
 // comment states this explicitly). `fuse::linalg` sits BELOW both in the

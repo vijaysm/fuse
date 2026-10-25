@@ -421,7 +421,7 @@ Result<NewtonResult> solve(const ResidualFn& f, DistVector& x,
 }
 
 // ===========================================================================
-// S7.2b (): the Newton substrate registry.
+// The Newton substrate registry.
 // ===========================================================================
 
 namespace {
