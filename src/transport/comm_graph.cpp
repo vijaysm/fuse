@@ -1,5 +1,5 @@
 // CommGraph. See include/fuse/transport/comm_graph.hpp for the contract and
-// docs/specs/2026-09-11-comm-graph-design.md for the design.
+// docs/history/soma/specs/2026-09-11-comm-graph-design.md for the design.
 //
 // DEADLOCK DISCIPLINE. Identical to the one stated at the top of
 // mpi_transport.cpp, applied consistently rather than reinvented:

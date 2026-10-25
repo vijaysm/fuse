@@ -23,7 +23,7 @@
 // the transport layer depend on the mesh-backend layer, breaking the "works
 // for SerialMeshBackend too, no MOAB required" property that
 // `mpi_transport.cpp` -- which also depends on no MOAB -- already has. See
-// docs/specs/2026-09-11-comm-graph-design.md Section 3.
+// docs/history/soma/specs/2026-09-11-comm-graph-design.md Section 3.
 
 #if FUSE_HAVE_MPI
 

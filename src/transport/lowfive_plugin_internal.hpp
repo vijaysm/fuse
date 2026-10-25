@@ -17,13 +17,13 @@
 // constant expression` -- regardless of which `fmt` a `target_link_
 // libraries` ORDER happens to put first on the search path (relying on
 // that order breaks under a different, still-supported
-// `CMAKE_PREFIX_PATH` ordering). The only configure-order-independent fix is to never
-// let one translation unit see both `fmt` variants' own headers at all --
-// enforced here at the CMake level (lowfive_plugin_graph.cpp's own
-// object library links `fuse::model`/`fuse::base` and NEVER `fuse::
-// lowfive`; lowfive_plugin_vol.cpp's links `fuse::lowfive` and NEVER
-// `fuse::model` -- src/CMakeLists.txt), not merely by a source-level
-// `#include` discipline a future edit could quietly violate.
+// `CMAKE_PREFIX_PATH` ordering). The only configure-order-independent fix is to
+// never let one translation unit see both `fmt` variants' own headers at all --
+// enforced here at the CMake level (lowfive_plugin_graph.cpp's own object
+// library links `fuse::model`/`fuse::base` and NEVER `fuse:: lowfive`;
+// lowfive_plugin_vol.cpp's links `fuse::lowfive` and NEVER `fuse::model` --
+// src/CMakeLists.txt), not merely by a source-level `#include` discipline a
+// future edit could quietly violate.
 //
 // lowfive_plugin_graph.cpp: the ONLY place Config is ever built, from
 // `FUSE_LOWFIVE_BINDINGS` and (for a multi-rank LowFive-bound channel

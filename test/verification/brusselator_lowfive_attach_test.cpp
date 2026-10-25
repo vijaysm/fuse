@@ -53,9 +53,9 @@ using fuse_examples::lowfive_attach::ExitHygienePlan;
 using fuse_examples::lowfive_attach::decide_exit_hygiene_plan;
 using fuse_examples::lowfive_attach_model::WouldReuseStaleFileOnRecreate;
 using fuse_examples::lowfive_attach_model::EventKind;
-using fuse_examples::lowfive_attach_model::Round8Order;
+using fuse_examples::lowfive_attach_model::ExchangeOrder;
 using fuse_examples::lowfive_attach_model::BuildEventSequence;
-using fuse_examples::lowfive_attach_model::RunSimulationRound8;
+using fuse_examples::lowfive_attach_model::RunSimulationForOrder;
 using fuse_examples::lowfive_attach_model::static_check_accepts;
 using fuse_examples::lowfive_attach_model::model_completes;
 using fuse_examples::lowfive_attach_model::ProcessPolicy;
@@ -708,8 +708,8 @@ TEST(ModelCheck, ShippedProtocolCompletesFor1Iteration) {
   EXPECT_TRUE(r.completed) << (r.stuck_example ? *r.stuck_example : "");
 }
 
-// Uses `RunSimulationRound8()` with the MEASURED order
-// (lowfive_attach_model::Round8Order::kMeasured) -- the one shape the real
+// Uses `RunSimulationForOrder()` with the MEASURED order
+// (lowfive_attach_model::ExchangeOrder::kMeasured) -- the one shape the real
 // graph produces for N>=2 exchanges: the two components' own steady-state
 // orders are COMPLEMENTARY (lowfive_attach_decision.hpp's own comment on
 // the measured order), never identical. A shape that put BOTH roles
@@ -718,7 +718,7 @@ TEST(ModelCheck, ShippedProtocolCompletesFor1Iteration) {
 // below, the DIRECT test for exactly that shape.
 TEST(ModelCheck, MeasuredOrderCompletesFor2Exchanges) {
   using namespace fuse_examples::lowfive_attach_model;
-  const auto r = RunSimulationRound8(Round8Order::kMeasured, 2,
+  const auto r = RunSimulationForOrder(ExchangeOrder::kMeasured, 2,
                                      ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstServer},
                                      ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstReader});
   EXPECT_TRUE(r.completed) << (r.stuck_example ? *r.stuck_example : "");
@@ -731,7 +731,7 @@ TEST(ModelCheck, MeasuredOrderCompletesFor2Exchanges) {
 // derived here).
 TEST(ModelCheck, MeasuredOrderCompletesFor60Exchanges) {
   using namespace fuse_examples::lowfive_attach_model;
-  const auto r = RunSimulationRound8(Round8Order::kMeasured, 60,
+  const auto r = RunSimulationForOrder(ExchangeOrder::kMeasured, 60,
                                      ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstServer},
                                      ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstReader});
   EXPECT_TRUE(r.completed) << (r.stuck_example ? *r.stuck_example : "");
@@ -741,7 +741,7 @@ TEST(ModelCheck, MeasuredOrderCompletesFor60Exchanges) {
 // matter -- the search itself has no preferred side.
 TEST(ModelCheck, MeasuredOrderCompletesRegardlessOfWhichPositionIsFirstServer) {
   using namespace fuse_examples::lowfive_attach_model;
-  const auto r = RunSimulationRound8(Round8Order::kMeasured, 3,
+  const auto r = RunSimulationForOrder(ExchangeOrder::kMeasured, 3,
                                      ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstReader},
                                      ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstServer});
   EXPECT_TRUE(r.completed) << (r.stuck_example ? *r.stuck_example : "");
@@ -945,7 +945,7 @@ TEST(ModelCheck, ShippedConfigurationCompletesFor1Iteration) {
   EXPECT_TRUE(r.completed) << (r.stuck_example ? *r.stuck_example : "");
 }
 
-// Driven from decide_vol_settings() via RunSimulationRound8() and the
+// Driven from decide_vol_settings() via RunSimulationForOrder() and the
 // measured order (RunSimulation()'s own BuildScript() shape is unrealistic
 // for N>=2).
 TEST(ModelCheck, MeasuredOrderWithDecideVolSettingsCompletesFor2And60Exchanges) {
@@ -954,7 +954,7 @@ TEST(ModelCheck, MeasuredOrderWithDecideVolSettingsCompletesFor2And60Exchanges) 
   ProcessPolicy server{PolicyKind::kShipped, ServeRole::kFirstServer, !settings.keep};
   ProcessPolicy reader{PolicyKind::kShipped, ServeRole::kFirstReader, !settings.keep};
   for (int n : {2, 60}) {
-    const auto r = RunSimulationRound8(Round8Order::kMeasured, n, server, reader);
+    const auto r = RunSimulationForOrder(ExchangeOrder::kMeasured, n, server, reader);
     EXPECT_TRUE(r.completed) << "n=" << n << " " << (r.stuck_example ? *r.stuck_example : "");
   }
 }
@@ -964,7 +964,7 @@ TEST(ModelCheck, MeasuredOrderWithDecideVolSettingsCompletesRegardlessOfWhichPos
   const auto settings = fuse_examples::lowfive_attach::decide_vol_settings(/*distributed=*/true);
   ProcessPolicy a{PolicyKind::kShipped, ServeRole::kFirstReader, !settings.keep};
   ProcessPolicy b{PolicyKind::kShipped, ServeRole::kFirstServer, !settings.keep};
-  const auto r = RunSimulationRound8(Round8Order::kMeasured, 2, a, b);
+  const auto r = RunSimulationForOrder(ExchangeOrder::kMeasured, 2, a, b);
   EXPECT_TRUE(r.completed) << (r.stuck_example ? *r.stuck_example : "");
 }
 
@@ -997,7 +997,7 @@ TEST(ModelCheck, ShippedProtocolDefaultsToKeptAndStillCompletes) {
   EXPECT_FALSE(reader.file_deleted_at_close);
   EXPECT_TRUE(server.drop_after_serve);
   EXPECT_TRUE(reader.drop_after_serve);
-  const auto r = RunSimulationRound8(Round8Order::kMeasured, 2, server, reader);
+  const auto r = RunSimulationForOrder(ExchangeOrder::kMeasured, 2, server, reader);
   EXPECT_TRUE(r.completed) << (r.stuck_example ? *r.stuck_example : "");
 }
 
@@ -1340,7 +1340,7 @@ TEST(ModelCheck, MeasuredOrderCompletesFor1And2And60And122And25Exchanges) {
   // kMaxIterations, reused as an exchange count, not a claim it equals a
   // Jacobi sweep count).
   for (int n : {1, 2, 25, 60, 122}) {
-    const auto r = RunSimulationRound8(Round8Order::kMeasured, n,
+    const auto r = RunSimulationForOrder(ExchangeOrder::kMeasured, n,
                                        ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstServer},
                                        ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstReader});
     EXPECT_TRUE(r.completed) << "n=" << n << " " << (r.stuck_example ? *r.stuck_example : "");
@@ -1355,8 +1355,8 @@ TEST(ModelCheck, MeasuredOrderUnderRegressedPolicyReproducesTheMeasuredHang) {
   // must be U in read(v#1) (first-server's own kOpenClose at
   // exchange 1) with the first-reader parked at its own exchange-1
   // sync -- exactly the measured cycle.
-  const auto r = RunSimulationRound8(
-      Round8Order::kMeasured, 2,
+  const auto r = RunSimulationForOrder(
+      ExchangeOrder::kMeasured, 2,
       ProcessPolicy{PolicyKind::kRegressedAlwaysDeferFirstReader, ServeRole::kFirstServer},
       ProcessPolicy{PolicyKind::kRegressedAlwaysDeferFirstReader, ServeRole::kFirstReader});
   EXPECT_FALSE(r.completed);
@@ -1371,7 +1371,7 @@ TEST(ModelCheck, BothSidesWriteReadSteadyGetsStuck) {
   // mutual-serve stuck state: both block on their OWN write's serve
   // at the SAME exchange, neither has reached the read that would
   // release the other.
-  const auto r = RunSimulationRound8(Round8Order::kBothWriteReadSteady, 3,
+  const auto r = RunSimulationForOrder(ExchangeOrder::kBothWriteReadSteady, 3,
                                      ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstServer},
                                      ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstReader});
   EXPECT_FALSE(r.completed);
@@ -1382,7 +1382,7 @@ TEST(ModelCheck, BothSidesReadWriteSteadyGetsStuck) {
   // Scenario (iv): nobody writes first in steady state -- also a
   // shape no real graph produces; reported stuck (neither side's read
   // can find anything served yet).
-  const auto r = RunSimulationRound8(Round8Order::kBothReadWriteSteady, 3,
+  const auto r = RunSimulationForOrder(ExchangeOrder::kBothReadWriteSteady, 3,
                                      ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstServer},
                                      ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstReader});
   EXPECT_FALSE(r.completed);
@@ -1396,8 +1396,8 @@ TEST(ModelCheck, StaticCheckAcceptsImpliesModelCompletesForEveryCatalogueEntry) 
   // false for the two strawman shapes, so the implication holds there
   // vacuously; it is TRUE (and must be matched by completion) only for
   // kMeasured.
-  for (Round8Order order :
-       {Round8Order::kMeasured, Round8Order::kBothWriteReadSteady, Round8Order::kBothReadWriteSteady}) {
+  for (ExchangeOrder order :
+       {ExchangeOrder::kMeasured, ExchangeOrder::kBothWriteReadSteady, ExchangeOrder::kBothReadWriteSteady}) {
     const bool accepts = static_check_accepts(order);
     const bool completes = model_completes(order, 3);
     EXPECT_TRUE(!accepts || completes)
@@ -1407,9 +1407,9 @@ TEST(ModelCheck, StaticCheckAcceptsImpliesModelCompletesForEveryCatalogueEntry) 
 }
 
 TEST(ModelCheck, MeasuredOrderIsTheOnlyAcceptedCatalogueEntry) {
-  EXPECT_TRUE(static_check_accepts(Round8Order::kMeasured));
-  EXPECT_FALSE(static_check_accepts(Round8Order::kBothWriteReadSteady));
-  EXPECT_FALSE(static_check_accepts(Round8Order::kBothReadWriteSteady));
+  EXPECT_TRUE(static_check_accepts(ExchangeOrder::kMeasured));
+  EXPECT_FALSE(static_check_accepts(ExchangeOrder::kBothWriteReadSteady));
+  EXPECT_FALSE(static_check_accepts(ExchangeOrder::kBothReadWriteSteady));
 }
 
 // ---------------------------------------------------------------------
@@ -1417,7 +1417,7 @@ TEST(ModelCheck, MeasuredOrderIsTheOnlyAcceptedCatalogueEntry) {
 // DATA (a list of events), pinned directly.
 
 TEST(BuildEventSequence, FirstServerIsWriteReadEveryExchangeIncludingColdStart) {
-  const auto seq = BuildEventSequence(Round8Order::kMeasured, ServeRole::kFirstServer, 3);
+  const auto seq = BuildEventSequence(ExchangeOrder::kMeasured, ServeRole::kFirstServer, 3);
   const std::vector<EventKind> expected{
       EventKind::kWrite, EventKind::kRead,                                // exchange 0 (cold start)
       EventKind::kWrite, EventKind::kRead, EventKind::kSync,              // exchange 1
@@ -1429,7 +1429,7 @@ TEST(BuildEventSequence, FirstServerIsWriteReadEveryExchangeIncludingColdStart) 
 }
 
 TEST(BuildEventSequence, FirstReaderIsWriteReadAtColdStartThenReadWriteSteady) {
-  const auto seq = BuildEventSequence(Round8Order::kMeasured, ServeRole::kFirstReader, 3);
+  const auto seq = BuildEventSequence(ExchangeOrder::kMeasured, ServeRole::kFirstReader, 3);
   const std::vector<EventKind> expected{
       EventKind::kWrite, EventKind::kRead,                                // exchange 0 (cold start)
       EventKind::kRead, EventKind::kWrite, EventKind::kSync,              // exchange 1 (steady)
@@ -1441,7 +1441,7 @@ TEST(BuildEventSequence, FirstReaderIsWriteReadAtColdStartThenReadWriteSteady) {
 }
 
 TEST(BuildEventSequence, ZeroExchangesIsEmpty) {
-  EXPECT_TRUE(BuildEventSequence(Round8Order::kMeasured, ServeRole::kFirstServer, 0).empty());
+  EXPECT_TRUE(BuildEventSequence(ExchangeOrder::kMeasured, ServeRole::kFirstServer, 0).empty());
 }
 
 // ---------------------------------------------------------------------
@@ -1474,13 +1474,13 @@ TEST(DecideExitHygienePlan, AttachingParticipantCallsExplicitH5closeAndDoesNotUn
 
 // The accept-layout scenario -- lowfive_attach_model_check.hpp's own
 // "RunSimulationAcceptLayout"
-// comment has the full account of why this reuses RunSimulationRound8's
+// comment has the full account of why this reuses RunSimulationForOrder's
 // existing third-actor machinery under an explicit name, rather than a
 // new, duplicate actor type.
 TEST(ModelCheck, AcceptLayoutPlaceholderJoiningCompletesLikeTheCouplerScenario) {
   for (int n : {1, 2, 25}) {
     const auto r = fuse_examples::lowfive_attach_model::RunSimulationAcceptLayout(
-        Round8Order::kMeasured, n, ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstServer},
+        ExchangeOrder::kMeasured, n, ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstServer},
         ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstReader},
         /*third_actor_joins=*/true);
     EXPECT_TRUE(r.completed) << "n=" << n << " " << (r.stuck_example ? *r.stuck_example : "");
@@ -1496,7 +1496,7 @@ TEST(ModelCheck, AcceptLayoutPlaceholderJoiningCompletesLikeTheCouplerScenario) 
 // is missing a participant.
 TEST(ModelCheck, AcceptLayoutPlaceholderNeverJoiningGetsStuck) {
   const auto r = fuse_examples::lowfive_attach_model::RunSimulationAcceptLayout(
-      Round8Order::kMeasured, /*n_exchanges=*/2,
+      ExchangeOrder::kMeasured, /*n_exchanges=*/2,
       ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstServer},
       ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstReader},
       /*third_actor_joins=*/false);
@@ -1511,7 +1511,7 @@ TEST(ModelCheck, AcceptLayoutPlaceholderNeverJoiningGetsStuck) {
 // silently merged into the n=2 case above.
 TEST(ModelCheck, AcceptLayoutPlaceholderNeverJoiningStillCompletesAtOneExchange) {
   const auto r = fuse_examples::lowfive_attach_model::RunSimulationAcceptLayout(
-      Round8Order::kMeasured, /*n_exchanges=*/1,
+      ExchangeOrder::kMeasured, /*n_exchanges=*/1,
       ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstServer},
       ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstReader},
       /*third_actor_joins=*/false);

@@ -265,7 +265,7 @@ CouplingGraph make_multirate_graph(WaveformIteration mode, DtPolicy pol_a,
 // resolve_regions()'s static check (iteration.cpp) must refuse
 // identically, checked once at setup, before any window instance ever
 // runs.
-CouplingGraph make_d7_graph() {
+CouplingGraph make_double_straddle_graph() {
   CouplingGraph g;
   const auto m = g.add_mesh(MeshDecl{.name = "m", .source = "generated:line:1"});
   const auto r = g.add_region(Region{.name = "r", .mesh = m, .dimension = 1});
@@ -845,20 +845,20 @@ TEST(WindowRunnerStraddle,
                             DtPolicy::Fixed, AccelKind::Constant);
 }
 
-// (make_d7_graph()'s own comment): BOTH members Fixed
+// (make_double_straddle_graph()'s own comment): BOTH members Fixed
 // and straddling TOGETHER is still refused, unconditionally, identically
 // to WindowCoupler::create()'s own E-RT-WINDOW-STRADDLE -- the replay
 // above handles exactly one straddling member per window, never two
 // replaying against each other's own unresolved trajectories at once.
 // window_component="A" (make_multirate_graph()) can never reach this
 // envelope (A's own interval trivially divides the window by
-// construction), so this uses make_d7_graph()'s own explicit_interval
+// construction), so this uses make_double_straddle_graph()'s own explicit_interval
 // shape instead -- the one place in this file explicit_interval is used,
 // and only to exercise a refusal, never as the acceptance construction
 // window_runner_multirate_test.cpp's own header already explains is
 // rejected for that purpose.
 TEST(WindowRunnerStraddle, BothMembersFixedAndStraddlingTogetherIsRejected) {
-  const CouplingGraph g = make_d7_graph();
+  const CouplingGraph g = make_double_straddle_graph();
   const auto lowered = lower(g);
   ASSERT_TRUE(lowered.ok()) << lowered.diags.to_string();
 

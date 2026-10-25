@@ -374,7 +374,7 @@ Result<QueryResult> BoxIndex::query_nearest(const std::vector<Point>& points, in
   empty_result.offsets.assign(points.size() + 1, 0);
   if (empty() || points.empty()) return empty_result;
 
-  // PS-7: cap explicitly rather than relying on ArborX::nearest's own
+  // Cap explicitly rather than relying on ArborX::nearest's own
   // internal clamp -- box_index.hpp's doc promises "k capped to size()" as
   // THIS facade's contract, not a property borrowed from whatever ArborX
   // version happens to be linked. Applies to both the device and host

@@ -4,7 +4,7 @@
 /// holds, or wants, this data", for two components whose rank sets may be
 /// disjoint, identical, or partially overlapping.
 ///
-/// Spec: docs/specs/2026-09-11-comm-graph-design.md. For the
+/// Spec: docs/history/soma/specs/2026-09-11-comm-graph-design.md. For the
 /// fully-disjoint case, `MpiTransport::build_plan()` redistributes
 /// correctly given `TransportSpec::src_ranks`/`dst_ranks`/`global_ids`, and
 /// `Runner::Impl::attach_comm_graphs` (`src/runtime/runner.cpp`) is the

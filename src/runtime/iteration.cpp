@@ -987,27 +987,24 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
         // including the field-transfer chain, ever runs -- has
         // something real to see on window 0's own sweep 0, before that
         // chain has delivered anything). A CONSUMER's own K-wide IMPORT
-        // arc (`cfg.window_import`) is primed too, but not here: it is primed in
-        // a SECOND pass over this same
-        // region's own members, below, once every member's own export
-        // (this block, for every one of them) is guaranteed primed --
-        // see that pass's own top comment for why.
-        // Gated on `cfg.hosted`. THIS member's own
-        // `cfg.provided` is read from THIS rank's own local
-        // `registry.get(exported_field)` a few lines above -- which,
-        // on a rank that does not host this member, is whatever an
-        // externally-driven stand-in's own placeholder storage holds,
-        // NOT a reliable mirror of the real, hosted value (the exact
-        // gap the hosting check on advance() already exists to avoid for
-        // this member's own PHYSICS; priming its EXPORT arc from that
-        // same unreliable storage here would be the identical mistake
-        // one step removed). Priming only where hosted leaves `ins.out`
-        // on every OTHER rank at whatever default the slot already
-        // has; those ranks never need it to be meaningful locally --
-        // the pass below delivers the correct, HOSTED value to
-        // whichever rank's own `window_import` needs it, through a
-        // real Transport, not by every rank separately guessing at its
-        // own copy of someone else's state.
+        // arc (`cfg.window_import`) is primed too, but not here: it is primed
+        // in a SECOND pass over this same region's own members, below, once
+        // every member's own export (this block, for every one of them) is
+        // guaranteed primed -- see that pass's own top comment for why. Gated
+        // on `cfg.hosted`. THIS member's own `cfg.provided` is read from THIS
+        // rank's own local `registry.get(exported_field)` a few lines above --
+        // which, on a rank that does not host this member, is whatever an
+        // externally-driven stand-in's own placeholder storage holds, NOT a
+        // reliable mirror of the real, hosted value (the exact gap the hosting
+        // check on advance() already exists to avoid for this member's own
+        // PHYSICS; priming its EXPORT arc from that same unreliable storage
+        // here would be the identical mistake one step removed). Priming only
+        // where hosted leaves `ins.out` on every OTHER rank at whatever default
+        // the slot already has; those ranks never need it to be meaningful
+        // locally -- the pass below delivers the correct, HOSTED value to
+        // whichever rank's own `window_import` needs it, through a real
+        // Transport, not by every rank separately guessing at its own copy of
+        // someone else's state.
         if (cfg.hosted && cfg.provided != nullptr && ins.out.valid() &&
             ins.out.value() < slots.size()) {
           detail::Slot& export_slot = slots[ins.out.value()];
@@ -1688,7 +1685,8 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
         // not distinguish the two). See
         // `Iteration.ASpacetimeChannelInAnIterationRegionIsRefusedNotSilentlyWrong`
         // (test/verification/iteration_test.cpp) for both constructions,
-        // (test/verification/iteration_test.cpp) for both constructions.
+        // measured. The guard must not depend on reachability being rare.
+        if (!(all_ticks[t].time < enter_time)) {
           return Failure{"E-RT-REGION",
                        "component '" + components.at(all_ticks[t].slot).name() +
                            "' is checkpointed by iteration region '" + R.name +
@@ -2854,11 +2852,11 @@ Result<void> Runner::Impl::run_region_newton_window(
   // missing a rank: MPICH's zero-count exchange happens to complete
   // without it, Open MPI's pairwise algorithm does not (participants in
   // MpiTransport::move(), the bystander already in agree_checkpoint_
-  // status()'s MPI_Allreduce; parallel.window_newton_mpi.3 covers it). The number of
-  // evaluations is Newton's own, data-dependent, so the first participant
-  // broadcasts, before EACH one, which kind it is, and kStop on every way
-  // out; the bystander runs the SAME evaluation (newton_n is 0 there: it
-  // hosts no block, so every span is empty and only the stream, with its
+  // status()'s MPI_Allreduce; parallel.window_newton_mpi.3 covers it). The
+  // number of evaluations is Newton's own, data-dependent, so the first
+  // participant broadcasts, before EACH one, which kind it is, and kStop on
+  // every way out; the bystander runs the SAME evaluation (newton_n is 0 there:
+  // it hosts no block, so every span is empty and only the stream, with its
   // zero-count move()s, runs) until it hears kStop.
   enum : int { kNewtonStop = 0, kNewtonSeed = 1, kNewtonProbe = 2, kNewtonCommit = 3 };
   const bool lockstep = R.participants.size() > 1;

@@ -183,7 +183,7 @@ Result<DistributedQueryResult> query_points_distributed(CommHandle comm,
   int my_rank = 0;
   MPI_Comm_rank(mpi_comm, &my_rank);
 
-  // PS-1: reconcile the rank-local dimension check across the WHOLE
+  // Reconcile the rank-local dimension check across the WHOLE
   // communicator BEFORE any rank reaches a collective -- an
   // `MPI_Allreduce(MIN)` of a locally-computed validity flag, mirroring
   // `fuse::native::migrate`'s agree-before-exchange recipe (see
@@ -205,7 +205,7 @@ Result<DistributedQueryResult> query_points_distributed(CommHandle comm,
                                my_rank)};
   }
 
-  // PS-5: every rank's own boxes now agree with themselves; agree them
+  // Every rank's own boxes agree with themselves; agree them
   // with each other next. A rank with zero local_boxes classifies as 0 (no
   // opinion, matching BoxIndex's own empty-index convention) and must not
   // be read as "this rank votes for 0D" -- it is excluded from the
