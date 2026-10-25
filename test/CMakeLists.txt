@@ -1604,6 +1604,9 @@ endif()
 # views and the correctly rounded binary64 -> bfloat16 conversion.
 fuse_add_gtest(field value_type NO_LAYER_LIB LIBS fuse::model fuse::base)
 fuse_add_gtest(num space_kernels)
+# fuse::num::dual and the view of a field of dual numbers as scalars (plans/2026-10-22-
+# universal-number-types.md, U2). One definition per enabled execution space.
+fuse_add_gtest(num dual LIBS fuse::linalg)
 fuse_add_omp_legs(num.space_kernels fuse_num_space_kernels_test)
 
 # ---------------------------------------------------------------- search

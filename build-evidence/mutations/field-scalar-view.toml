@@ -1,0 +1,104 @@
+# Mutations for the view of a field as scalars and fuse::num::dual (plans/2026-10-22-
+# universal-number-types.md, stage U2): a field of forward-mode dual numbers reaches
+# the runtime as scalars (the value, then the tangents), and the dual arithmetic
+# carries the derivative.
+
+[[mutation]]
+id = "scalar-layout-forgets-the-scalar-count-in-the-stride"
+area = "num_dual"
+describes = "scalar_layout() leaves the element stride in value units instead of multiplying it by the number of scalars per value, so every element after the first is read from inside the previous one"
+file = "include/fuse/field/field_ref.hpp"
+old = "  out.stride = detail::sat_mul(l.stride, static_cast<std::size_t>(scalar_count));"
+new = "  out.stride = l.stride;"
+target = "fuse_num_dual_test"
+test = "num.dual"
+
+[[mutation]]
+id = "scalar-layout-accepts-a-blocked-component-layout"
+area = "num_dual"
+describes = "scalar_layout() no longer refuses a blocked component layout, so it returns a view that permutes the scalars of one component into another"
+file = "include/fuse/field/field_ref.hpp"
+old = "  if (l.components > 1 && l.effective_component_stride() != 1) {"
+new = "  if (false) {"
+target = "fuse_num_dual_test"
+test = "num.dual"
+
+[[mutation]]
+id = "field-holding-s-is-not-its-own-scalar-view"
+area = "num_dual"
+describes = "as_scalars<S>() loses the identity case, so a binary32 (Storage) field read as binary32 scalars is refused for not being an array of scalars"
+file = "include/fuse/field/field_ref.hpp"
+old = "    if (holds<S>()) return as<S>();"
+new = "    // [mutated] no identity case"
+target = "fuse_num_dual_test"
+test = "num.dual"
+
+[[mutation]]
+id = "derivative-test-accepts-a-plain-field"
+area = "num_dual"
+describes = "has_derivatives() treats every bound field as having derivatives, so the minimum/maximum refusal would fire on ordinary fields"
+file = "include/fuse/field/registry.hpp"
+old = "    return it != refs_.end() && it->second.derivative_count() > 0;"
+new = "    return it != refs_.end() && it->second.derivative_count() >= 0;"
+target = "fuse_num_dual_test"
+test = "num.dual"
+
+[[mutation]]
+id = "dual-product-rule-drops-the-second-term"
+area = "num_dual"
+describes = "dual multiplication keeps only a.value * b.tangent, dropping a.tangent * b.value, so every product carries a wrong tangent"
+file = "include/fuse/num/dual.hpp"
+old = "    for (int k = 1; k <= N; ++k) d[k] = a * o.d[k] + d[k] * b;"
+new = "    for (int k = 1; k <= N; ++k) d[k] = a * o.d[k];"
+target = "fuse_num_dual_test"
+test = "num.dual"
+
+[[mutation]]
+id = "dual-quotient-rule-forgets-the-denominator-tangent"
+area = "num_dual"
+describes = "dual division drops the -q * b.tangent term, so the tangent of a quotient ignores the denominator's dependence on the parameter"
+file = "include/fuse/num/dual.hpp"
+old = "    for (int k = 1; k <= N; ++k) d[k] = (d[k] - q * o.d[k]) / b;"
+new = "    for (int k = 1; k <= N; ++k) d[k] = d[k] / b;"
+target = "fuse_num_dual_test"
+test = "num.dual"
+
+[[mutation]]
+id = "dual-sqrt-tangent-divides-by-the-root-not-twice-the-root"
+area = "num_dual"
+describes = "the tangent of sqrt is divided by sqrt(x) instead of 2 sqrt(x)"
+file = "include/fuse/num/dual.hpp"
+old = "  for (int k = 1; k <= N; ++k) a.d[k] /= two_r;"
+new = "  for (int k = 1; k <= N; ++k) a.d[k] /= r;"
+target = "fuse_num_dual_test"
+test = "num.dual"
+
+[[mutation]]
+id = "dual-cos-tangent-loses-its-sign"
+area = "num_dual"
+describes = "the tangent of cos is multiplied by +sin(x) instead of -sin(x)"
+file = "include/fuse/num/dual.hpp"
+old = "  const S ms = -Kokkos::sin(x);"
+new = "  const S ms = Kokkos::sin(x);"
+target = "fuse_num_dual_test"
+test = "num.dual"
+
+[[mutation]]
+id = "dual-abs-keeps-the-negative-tangent"
+area = "num_dual"
+describes = "abs of a negative value flips the value but not the tangent"
+file = "include/fuse/num/dual.hpp"
+old = "    for (int i = 0; i <= N; ++i) a.d[i] = -a.d[i];\n  }\n  return a;\n}\n/// a^p for a constant exponent p."
+new = "    a.d[0] = -a.d[0];\n  }\n  return a;\n}\n/// a^p for a constant exponent p."
+target = "fuse_num_dual_test"
+test = "num.dual"
+
+[[mutation]]
+id = "taylor-sweep-cannot-see-a-missing-diffusion-tangent"
+area = "num_dual"
+describes = "the multi-component remap kernel zeroes the second component's result, so the tangent never arrives through the remap and the dual derivative action is wrong by the whole diffusion term"
+file = "include/fuse/num/space_kernels.hpp"
+old = "            y(base + c) += v * x(cbase + c);"
+new = "            if (c == 0) y(base + c) += v * x(cbase + c);"
+target = "fuse_num_dual_test"
+test = "num.dual"

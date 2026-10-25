@@ -1,6 +1,6 @@
 # Mutations for field value types (plans/2026-10-22-universal-number-types.md,
 # stage U1): the type check that keeps a typed field from being reinterpreted,
-# the lane-tiling clause of fuse::CoupledValue, and the correctly rounded
+# the scalar-tiling clause of fuse::CoupledValue, and the correctly rounded
 # binary64 -> bfloat16 conversion.
 
 [[mutation]]
@@ -14,11 +14,11 @@ target = "fuse_field_value_type_test"
 test = "field.value_type"
 
 [[mutation]]
-id = "coupled-value-drops-lane-tiling"
+id = "coupled-value-drops-scalar-tiling"
 area = "field"
-describes = "fuse::CoupledValue stops requiring a LaneLinear type's lanes to tile it exactly, so lane decomposition would address the wrong bytes"
+describes = "fuse::CoupledValue stops requiring a ScalarArray type's scalars to tile it exactly, so viewing the field as scalars would address the wrong bytes"
 file = "include/fuse/model/value_traits.hpp"
-old = "    (value_traits<T>::kind != FieldValueKind::LaneLinear ||"
+old = "    (value_traits<T>::kind != FieldValueKind::ScalarArray ||"
 new = "    (true ||"
 target = "fuse_field_value_type_test"
 test = "field.value_type"
