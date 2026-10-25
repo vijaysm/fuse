@@ -142,8 +142,7 @@ struct GraphAndWeights {
   const_cast<FieldSpec&>(graph.field(*u_out)).hdf5_path = "brusselator_u.h5/grid/u_out";
   const_cast<FieldSpec&>(graph.field(*v_out)).hdf5_path = "brusselator_v.h5/grid/v_out";
   // Fieldless marker component (docs/user/lowfive.md, launch.hpp).
-  // MEASURED (this test's own first run, before this line read `.kind =
-  // ComponentKind::Coupler`): with no explicit `.kind` -- the
+  // MEASURED: with no explicit `.kind` -- the
   // ComponentDecl default, ComponentKind::Physics -- fuse_initialize()'s
   // own wiring loop (src/abi/participant.cpp) does NOT exempt it the
   // way it exempts a real ComponentKind::Coupler entry

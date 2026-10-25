@@ -290,16 +290,16 @@ class VarGatherBarrier {
 /// exchangers, THEN whatever `VDiffusionCore`'s own constructor builds,
 /// if anything) -- the same "same call site, same round" reasoning
 /// `BarrierReducer::allgather`'s own `n_each` key relies on. `owned_n`
-/// was folded into this key in an earlier round of this same session, to
-/// guard against two UNRELATED ghost exchanges in the SAME run
+/// is not part of this key: it would guard against two
+/// UNRELATED ghost exchanges in the SAME run
 /// coincidentally sharing one `owned_n` (`VParticipant`'s own V->U remap
 /// exchanger and a Krylov solver's own V-grid ghost pattern can both be
 /// V's `owned_size()`) -- but `owned_n` is NOT invariant across ranks at
 /// a GENUINELY uneven row split (a 6/5/5-row U partition's three ranks
-/// own 48/40/40 cells respectively), so keying on it split one logical
+/// own 48/40/40 cells respectively), so keying on it would split one logical
 /// 3-rank collective into THREE single-rank ones, each waiting forever
-/// for peers that could never arrive on its own key -- the actual
-/// deadlock `VarGatherBarrier`'s own class comment (above) measured.
+/// for peers that could never arrive on its own key -- the deadlock
+/// `VarGatherBarrier`'s own class comment (above) describes.
 /// `call_index` alone already disambiguates same-run same-size exchanges
 /// (VParticipant's two calls get indices 0 and 1 on every rank, never
 /// colliding with each other or with a third caller's index 2) without
@@ -429,7 +429,8 @@ struct PartitionedGrid {
 
 /// `whole[g.index(i,j)]` restricted to `g`'s own owned band, in LOCAL
 /// canonical order -- what a decomposed `UCore`/`VDiffusionCore`'s own
-/// constructor (its `initial_v_on_u` argument, OWNED-sized) and `step()` (its `required` argument) both need, as
+/// constructor (its `initial_v_on_u` argument, OWNED-sized) and `step()`
+/// (its `required` argument) both need, as
 /// opposed to the whole-grid-sized vector a caller with no decomposition
 /// of its own (V's remap) still hands over.
 [[nodiscard]] Vector slice_owned(const Vector& whole, const NativeGrid& g) {
@@ -1424,7 +1425,8 @@ TEST(BrusselatorSpeciesCoreDecomposition, ThreePartitionVParticipantMatchesSingl
 // rows as 6/5/5 against V's 24 as 8/8/8 -- SOME U cell crosses a V
 // partition boundary, adopting cells in BOTH remap halo directions,
 // measured per-rank at make_from_grids time as rank 0 "0 U, 12 V", rank 1
-// "8 U, 12 V", rank 2 "8 U, 0 V" under FUSE_BRUSS_DEBUG=1). A mis-sized destination buffer here would
+// "8 U, 12 V", rank 2 "8 U, 0 V" under FUSE_BRUSS_DEBUG=1). A mis-sized
+// destination buffer here would
 // diverge from the single-rank reference in exchange_in from the
 // first sub-step and later overflow inside the diffusion solve (an Eigen
 // Block.h bounds assertion) in `step()`/

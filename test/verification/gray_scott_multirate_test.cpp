@@ -238,19 +238,16 @@ TEST(GrayScottMultirate, IterationCountsAcrossAccelerators) {
     for (int it : r.iterations) *total += it;
   }
   // MEASURED: 9/13/12 sweeps total (None/Aitken/IQN-ILS) over 4 windows.
-  // (It was 14/17/16 while WindowCoupler wrote its sweep vector
-  // transposed, then 9/13/12 once that was fixed. An intermediate Unit
-  // C3 attempt re-seeded window N>0's own first sweep from V's real
+  // (Re-seeding window N>0's own first sweep from V's real
   // previous-window trajectory directly, shifted one window back,
   // instead of the driver's documented extrapolate_boundary_value()
-  // predictor -- measured to raise this pin to 12/16/15, i.e. MORE
-  // sweeps, which is the tell: that seed was persistence, a
+  // predictor raises this pin to 12/16/15, i.e. MORE
+  // sweeps, which is the tell: that seed is persistence, a
   // zeroth-order predictor in time, not the second-order-or-better
   // extrapolation the class is documented to use, and a strictly more
-  // accurate initial guess cannot need more iterations. Reverted; this
-  // pin is back to 9/13/12. Splitting the single aggregate convergence
-  // measure into the two real per-channel transfers (u_out/v_out, Unit
-  // C3's per-field-transfer stopping rule) measured NO change to this
+  // accurate initial guess cannot need more iterations. Splitting the
+  // single aggregate convergence measure into the two real per-channel
+  // transfers (u_out/v_out) changes NO part of this
   // pin -- on this problem the two channels' own residuals track each
   // other closely enough that testing them separately rather than
   // combined never changes which sweep first satisfies tolerance.)

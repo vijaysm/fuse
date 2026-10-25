@@ -270,8 +270,9 @@ struct FullIdentityResult {
   // Higham gamma_n bound input for W_wall_current: sum_i |dx*(-p_wall_current
   // + 2*mu*dvdy_current_mid)*vw_avg|, UNSCALED (pre-dt, same convention as
   // beam_wall_power in the caller). Populated only by
-  // measure_full_energy_identity_general; the simpler measure_full_energy_identity leaves this at 0.0,
-  // which is fine since no caller of that overload reads this field.
+  // measure_full_energy_identity_general; the simpler
+  // measure_full_energy_identity leaves this at 0.0, which is fine since
+  // no caller of that overload reads this field.
   double W_wall_current_abs_sum = 0.0;
 };
 
@@ -1569,7 +1570,8 @@ CoupledPeriodDiag run_one_coupled_period_with_budget(
 /// FluidComponent objects and calling set_state() directly -- the SAME
 /// formulas CoupledPeriodDiag::beam_KE0/beam_PE0/fluid_KE0 (and the *1
 /// counterparts) use inside run_one_coupled_period_with_budget, confirmed
-/// identical to machine precision (MEASURED: Q(x) computed this way vs. diag.beam_KE0+beam_PE0+fluid_KE0
+/// identical to machine precision (MEASURED: Q(x) computed this way vs.
+/// diag.beam_KE0+beam_PE0+fluid_KE0
 /// from a REAL production run on the same x, both before and after the
 /// period -- relative difference 0.000e+00 on both the chosen mode's real
 /// and imaginary parts). No dependence on wdd/p/vin, confirmed by
@@ -1748,7 +1750,8 @@ TEST(FsiEnergyDiag, FullBudgetOnTheDominantModeCloses) {
 
   // `x` (the real part) and `x_im` (the imaginary part) of the chosen
   // eigenvector. `x` deliberately reuses the name the beam-side/fluid-side
-  // identity code below already expects (see that code's own comments): it is fed exactly ONE real state
+  // identity code below already expects (see that code's own comments): it
+  // is fed exactly ONE real state
   // vector and one real production run -- x_re of the chosen oscillatory
   // mode; nothing in the identity derivations below assumes anything
   // about WHICH real state vector `x` is.
@@ -2426,8 +2429,8 @@ TEST(FsiEnergyDiag, FullBudgetOnTheDominantModeCloses) {
   //       `diag.load_in_interior` to round-off (relative <= 1e-9, limited
   //       by how many digits of the production vectors were copied into
   //       the check, not by the matrix itself).
-  //  (h2) dt_delivered/literal-c.dt bookkeeping (same class as the fluid-side dt bookkeeping above):
-  //       FALSIFIED. Both `dE_beam_naive` and `gen.id.W_wall_current`
+  //  (h2) dt_delivered/literal-c.dt bookkeeping (same class as the
+  //       fluid-side dt bookkeeping above): FALSIFIED. Both `dE_beam_naive` and `gen.id.W_wall_current`
   //       already use `dt_delivered` consistently. Moving `c.dt` exactly
   //       onto the rationalize_dt() 1e-8 grid (so diff=0 identically)
   //       left this section's mismatch bit-for-bit unchanged.

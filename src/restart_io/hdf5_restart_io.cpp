@@ -601,15 +601,14 @@ struct DecodedInt {
   return Result<void>::success();
 }
 
-/// Converts ONE element's worth of bytes from `stored` (`src`) to
-/// `requested` (`dst`), per `conversion` -- the one dispatch every
-/// `get_field_bytes()`/`get_scalar_bytes()` row goes through, whether
-/// `stored == requested` (the fast, copy-only path) or not. Accumulates into `report` --
-/// `changed`/`abs_change` are per-element; the caller aggregates
-/// `max_absolute_change`/`changed_count`/`converted_any` across every
-/// element a single call reads (docs/dev/restart.md Section 11's own
-/// "measured over the values actually read", not merely declared from
-/// the types).
+/// Converts ONE element's worth of bytes from `stored` (`src`) to `requested`
+/// (`dst`), per `conversion` -- the one dispatch every
+/// `get_field_bytes()`/`get_scalar_bytes()` row goes through, whether `stored
+/// == requested` (the fast, copy-only path) or not. Accumulates into `report`
+/// -- `changed`/`abs_change` are per-element; the caller aggregates
+/// `max_absolute_change`/`changed_count`/`converted_any` across every element a
+/// single call reads (docs/dev/restart.md Section 11's own "measured over the
+/// values actually read", not merely declared from the types).
 [[nodiscard]] Result<void> convert_one_element(
     const fuse::ElementTypeInfo& from_info, std::span<const std::byte> src,
     fuse::ElementType requested, std::span<std::byte> dst,
@@ -660,10 +659,10 @@ struct DecodedInt {
       (to_info.is_signed_integer || to_info.is_unsigned_integer)) {
     const DecodedInt d = decode_int_bytes(src, from_info);
     // Integer -> integer is EXACT whenever is_exact_widening() said so
-    // (Widening path, already checked above) and otherwise may still
-    // fit under AllowNarrowing -- encode_int_checked() itself decides,
-    // and an integer value change from narrowing is refused there, not
-    // reported ("an integer value change is not a rounding").
+    // (Widening path, already checked above) and otherwise may still fit under
+    // AllowNarrowing -- encode_int_checked() itself decides, and an integer
+    // value change from narrowing is refused there, not reported ("an integer
+    // value change is not a rounding").
     return encode_int_checked(d, to_info, dst, context);
   }
 
@@ -752,12 +751,11 @@ class Hdf5GroupWriter final : public RestartWriter {
       }
     }
     if (static_cast<std::int64_t>(ids.size()) != declared_global_size) {
-      // Single-writer case (no MPI): this ONE call is the whole
-      // graph's contribution, so "coverage of the declared global size"
-      // reduces to "this call's own count equals it" -- the general,
-      // multi-caller version of this check is finish_point()'s own job,
-      // re-run below for defense in depth even
-      // though at a single rank it can only re-confirm this one.
+      // Single-writer case (no MPI): this ONE call is the whole graph's
+      // contribution, so "coverage of the declared global size" reduces to
+      // "this call's own count equals it" -- the general, multi-caller version
+      // of this check is finish_point()'s own job, re-run below for defense in
+      // depth even though at a single rank it can only re-confirm this one.
       return Failure{"E-RESTART-BAD-NUMBERING",
                      "put_field('" + key + "'): declared_global_size=" +
                          std::to_string(declared_global_size) +
@@ -868,13 +866,12 @@ class Hdf5GroupWriter final : public RestartWriter {
   }
 
   Result<void> finish_point() override {
-    // Batched check: ONE combined sort over every
-    // field's own (name, id) pairs. At a single rank (no MPI)
-    // every field was reported by exactly one caller (this object), so
-    // this re-confirms what put_field() already checked rather than
-    // discovering anything new -- with several ranks this extends into a single
-    // collective Allgatherv over the SAME combined buffer instead of
-    // replacing it (docs/dev/restart.md Section 7(iv)).
+    // Batched check: ONE combined sort over every field's own (name, id) pairs.
+    // At a single rank (no MPI) every field was reported by exactly one caller
+    // (this object), so this re-confirms what put_field() already checked
+    // rather than discovering anything new -- with several ranks this extends
+    // into a single collective Allgatherv over the SAME combined buffer instead
+    // of replacing it (docs/dev/restart.md Section 7(iv)).
     std::vector<std::pair<std::string, std::int64_t>> combined;
     for (const auto& [name, ids] : ids_by_name_) {
       for (const std::int64_t id : ids) combined.emplace_back(name, id);
@@ -1269,11 +1266,11 @@ Result<std::unique_ptr<PointWriter>> create_restart_point(
     if (!r.ok()) return r.error();
     r = write_scalar_attr_str(file, "fuse_version", provenance.fuse_version);
     if (!r.ok()) return r.error();
-    // Written as its own attribute, independent of
-    // descriptor_hash, so open_restart_point() can refuse a descriptor-
-    // version mismatch by name BEFORE ever comparing hashes -- see
-    // Provenance::descriptor_version's own doc comment (fuse/restart_io/
-    // hdf5_restart_io.hpp) for why the two checks are split this way.
+    // Written as its own attribute, independent of descriptor_hash, so
+    // open_restart_point() can refuse a descriptor-version mismatch by name
+    // BEFORE ever comparing hashes -- see Provenance::descriptor_version's own
+    // doc comment (fuse/restart_io/hdf5_restart_io.hpp) for why the two checks
+    // are split this way.
     r = write_scalar_attr_u32(file, "descriptor_version", provenance.descriptor_version);
     if (!r.ok()) return r.error();
     r = write_scalar_attr_u64(file, "descriptor_hash", provenance.descriptor_hash);
@@ -1353,19 +1350,18 @@ Result<std::unique_ptr<PointReader>> open_restart_point(
   Result<std::string> ver = read_attr_str(file, "fuse_version");
   if (!ver.ok()) return ver.error();
   prov.fuse_version = ver.value();
-  // Refused HERE, unconditionally, before
-  // descriptor_hash is even read -- a descriptor-version mismatch means
-  // the WIRE LAYOUT fuse::serialize()/deserialize() used to produce
-  // descriptor_hash may itself disagree between the point's own writer
-  // and this build, the same reason fuse::deserialize() refuses a
-  // kGraphVersion mismatch before ever comparing content (fuse/model/
-  // descriptor.hpp). Unlike descriptor_hash, no current graph is needed
-  // to make this comparison -- fuse::kGraphVersion is a compile-time
-  // constant of THIS build -- so this check belongs here, the same way
-  // the pre-existing format_version check above does, rather than in the
-  // caller-side fuse::check_restart_descriptor_hash() (fuse/runtime/
-  // restart.hpp), which exists for the comparison that DOES need the
-  // current graph.
+  // Refused HERE, unconditionally, before descriptor_hash is even read -- a
+  // descriptor-version mismatch means the WIRE LAYOUT
+  // fuse::serialize()/deserialize() used to produce descriptor_hash may itself
+  // disagree between the point's own writer and this build, the same reason
+  // fuse::deserialize() refuses a kGraphVersion mismatch before ever comparing
+  // content (fuse/model/descriptor.hpp). Unlike descriptor_hash, no current
+  // graph is needed to make this comparison -- fuse::kGraphVersion is a
+  // compile-time constant of THIS build -- so this check belongs here, the same
+  // way the pre-existing format_version check above does, rather than in the
+  // caller-side fuse::check_restart_descriptor_hash()
+  // (fuse/runtime/restart.hpp), which exists for the comparison that DOES need
+  // the current graph.
   Result<std::uint32_t> dv = read_attr_u32(file, "descriptor_version");
   if (!dv.ok()) return dv.error();
   prov.descriptor_version = dv.value();
