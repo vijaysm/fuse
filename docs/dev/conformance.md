@@ -38,8 +38,7 @@ regions, which is why nothing earlier found them.
    verbatim), so a window-scoped region with one instance per period saw
    `dst_step == 0` on every call, not just the first, and never advanced
    past window 0 after the first period.
-   Fix: `window_absolute_instance(cfg, ins.dst_step)` — commit `7939643`
-   ("Track a time window's absolute instance across repeated periods").
+   Fix: `window_absolute_instance(cfg, ins.dst_step)`.
    Mutation row: `window-runner-new-instance-uses-period-
    relative-dst-step` (`build-evidence/mutations/window-runner.toml`).
 

@@ -633,7 +633,7 @@ int main(int argc, char** argv) {
          * elsewhere, and never both unconditionally (a graph with more
          * than one independently-paced LowFive-bound channel can report
          * a field THIS component is neither producing nor consuming at
-         * all, this round's own corrected rule). view_field(u_out), not
+         * all). view_field(u_out), not
          * u_out itself, still holds the sweep that JUST completed
          * (nothing has overwritten it yet, since this call's own physics
          * -- if any ran -- is for the NEXT sweep, not this report's). */

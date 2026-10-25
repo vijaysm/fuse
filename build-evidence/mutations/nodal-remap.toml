@@ -133,8 +133,8 @@ old = '''      if (!inv.ok()) {
         // the reference domain -- it must never abort the whole evaluation
         // point while another candidate in this same list already contains
         // it (or still might, later in the loop). Mirrors
-        // nodal_remap_distributed.cpp's own `consider()` lambda (own
-        // fix, same file header) byte-for-byte in intent: an unconditional
+        // nodal_remap_distributed.cpp's own `consider()` lambda
+        // byte-for-byte in intent: an unconditional
         // `return Failure{...}` here previously discarded an
         // ALREADY-FOUND tight match whenever a LATER candidate in the same
         // broad-phase set merely failed to converge or was geometrically
