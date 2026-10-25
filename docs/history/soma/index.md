@@ -7,7 +7,7 @@ natively into `fuse::`. Every page here is preserved from that commit with only 
 edits listed under "Edits to the preserved text" below; none describes FUSE's current
 architecture. See [](../../dev/soma-import.md) for the per-file and per-case record
 of what was ported, superseded, or remains an open gap, and [](../../dev/porting.md) for the
-general porting procedure this track followed.
+general porting procedure.
 
 ```{toctree}
 :maxdepth: 1

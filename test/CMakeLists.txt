@@ -70,7 +70,7 @@ if(FUSE_LINALG_BACKEND STREQUAL "eigen")
 else()
   set(FUSE_LINALG_BACKEND_IS_EIGEN OFF)
 endif()
-# NL-5's row (linalg/schur_slab_unavailable_test.cpp) is gated the opposite
+# The row for linalg/schur_slab_unavailable_test.cpp is gated the opposite
 # way: it exercises src/linalg/schur_slab_unavailable.cpp, which this
 # library compiles only when the backend is NOT eigen. fuse_tests_gated_by
 # always tests "if(NOT ${option})", so declaring that row gated in the
@@ -434,7 +434,7 @@ endforeach()
 # buffers asserts the overflow refusals are raised, so it aborts in the no-exceptions leg.
 fuse_add_gtest(schedule buffers THROWS)
 fuse_add_gtest(schedule clock THROWS)
-# KNOWN_ISSUES.md D57 ("Collectives" track): fuse::constrain_sequence()
+# fuse::constrain_sequence()
 # tied to the REAL three-rank Brusselator participants layout, which
 # needs examples/brusselator's own graph builder on its include path --
 # test/parallel/schur_slab_mpi_test.cpp's own precedent for a schedule-
@@ -450,7 +450,7 @@ endforeach()
 foreach(t temporal_basis waveform accelerator)
   fuse_add_gtest(num ${t} THROWS)
 endforeach()
-# S7.2: the native Newton-Krylov coupler. line_search is pure scalar
+# The native Newton-Krylov coupler. line_search is pure scalar
 # arithmetic (no DistVector), so it needs nothing beyond fuse::num itself;
 # newton_krylov drives fuse::linalg::gmres/DistVector directly, so it needs
 # LIBS fuse::linalg explicitly -- a test binary is a separate consumer of
@@ -461,7 +461,7 @@ endforeach()
 # Clang toolchain need no separate -lpthread for <thread>.
 fuse_add_gtest(num line_search)
 fuse_add_gtest(num newton_krylov LIBS fuse::linalg)
-# Window seed track, Stage E (KNOWN_ISSUES.md D76): dense Anderson
+# Dense Anderson
 # Type-II reference, checked against QuasiNewtonAccel's own IQN_ILS
 # path. Needs Eigen directly (ColPivHouseholderQR/JacobiSVD), same
 # precedent as the petsc/brusselator_newton test above.
@@ -473,7 +473,7 @@ else()
 endif()
 
 # ---------------------------------------------------------------- petsc
-# S7's Newton seam, second substrate (PetscToken track, 2026-10-11). Every
+# The Newton seam, second substrate. Every
 # row here needs fuse::linalg explicitly, the SAME reason num.newton_krylov
 # does just above: fuse-coupler-petsc links fuse::num PUBLIC, which links
 # fuse::linalg only PRIVATEly, so DistVector/make_serial_exchanger symbols
@@ -490,20 +490,20 @@ if(FUSE_ENABLE_PETSC)
   fuse_add_gtest(petsc token LIBS fuse::linalg)
   fuse_add_gtest(petsc derivative_gate LIBS fuse::linalg)
   fuse_add_gtest(petsc snes LIBS fuse::linalg)
-  # S7.4 (owner decision 2026-10-21, Option C): the structural analogue of
+  # The structural analogue of
   # runtime.petsc_reaction_diffusion_component for NeumannHalfPetsc --
-  # BUILT and registered here, never RUN in this sandbox (the SAME
-  # ensure_initialized()/MPI_Init() barrier every petsc.* row above
+  # built and registered here, but not runnable in a sandbox without MPI_Init
+  # (the SAME ensure_initialized()/MPI_Init() barrier every petsc.* row above
   # carries); a host run measures it. No Eigen, no Brusselator headers.
   fuse_add_gtest(petsc reaction_diffusion LIBS fuse::linalg PkgConfig::PETSc MPI::MPI_C)
   target_include_directories(fuse_petsc_reaction_diffusion_test PRIVATE
     ${CMAKE_SOURCE_DIR}/examples/petsc_reaction_diffusion)
-  # S7.2b (PetscSelect track): the Brusselator's own window-Newton region,
+  # The Brusselator's own window-Newton region,
   # solved by this substrate -- its own DEDICATED binary, not one more
   # TEST() in test/verification/brusselator_runner_test.cpp, for the
   # reason brusselator_newton_test.cpp's own header comment measures
-  # directly: a PETSc call that segfaults (this sandbox, KNOWN_ISSUES.md
-  # D32) takes the WHOLE PROCESS down, and sharing a process with
+  # directly: a PETSc call that segfaults (in a sandbox without a working
+  # MPI) takes the WHOLE PROCESS down, and sharing a process with
   # otherwise-PETSc-independent coverage would take that coverage's own
   # ctest row down with it. Needs the same LIBS brusselator_runner (just
   # above) does, plus fuse::petsc.
@@ -664,7 +664,7 @@ if(FUSE_ENABLE_MOAB)
   # case, which never touches TempestRemap/NetCDF/PnetCDF/Zoltan directly) --
   # so resolving it at runtime falls on libMOAB.so's OWN rpath instead,
   # which is not this project's to guarantee complete. Measured:
-  # a MOAB rebuilt against a different dependency tree landed with a rpath
+  # a MOAB rebuilt against a different dependency tree can land with a rpath
   # naming only its MPI-stack paths, breaking backend.moab_mesh and the
   # abi.install_consumer_* tests with "libTempestRemap.so.0: cannot open
   # shared object file" though nothing in this repository had changed.
@@ -1935,16 +1935,17 @@ if(TARGET fuse-abi-fortran AND FUSE_LINALG_BACKEND_IS_EIGEN)
   # CMakeLists.txt directory compiles it -- examples/CMakeLists.txt's
   # own brusselator_u_main/brusselator_v_main already link fuse::lowfive
   # for exactly this; every OTHER target below that also lists shim.cpp
-  # as a source needs the identical link, found only once this session
-  # configures -DFUSE_ENABLE_LOWFIVE=ON (a tier-0 tree
-  # never has it ON, so compiling shim.cpp there never needs it).
+  # as a source needs the identical link, found only when configuring
+  # -DFUSE_ENABLE_LOWFIVE=ON (a tier-0 tree never has it ON, so compiling
+  # shim.cpp there never needs it).
   if(TARGET fuse::lowfive)
     fuse_link_lowfive_with_fmt_fix(fuse_verification_brusselator_participants_test)
   endif()
   # shim.cpp calls bruss_lowfive_serve_after_write()/
   # bruss_lowfive_receive_before_read() (lowfive_attach.h), so every
   # target compiling shim.cpp needs lowfive_attach.cpp's own object code
-  # too, or the link fails on those two undefined symbols. fuse_verification_brusselator_participants_test compiles
+  # too, or the link fails on those two undefined symbols.
+  # fuse_verification_brusselator_participants_test compiles
   # shim.cpp (just above) but never calls bruss_lowfive_attach() itself
   # (it drives the ABI through view_field+memcpy instead of real HDF5,
   # docs/user/lowfive.md's own account), so this is a build-only addition,
@@ -1984,7 +1985,8 @@ if(TARGET fuse-abi-fortran AND FUSE_LINALG_BACKEND_IS_EIGEN)
   # shim.cpp calls bruss_lowfive_serve_after_write()/
   # bruss_lowfive_receive_before_read() (lowfive_attach.h), so every
   # target compiling shim.cpp needs lowfive_attach.cpp's own object code
-  # too, or the link fails on those two undefined symbols. fuse_verification_brusselator_check_test compiles
+  # too, or the link fails on those two undefined symbols.
+  # fuse_verification_brusselator_check_test compiles
   # shim.cpp (just above) but never calls bruss_lowfive_attach() itself
   # (it drives the ABI through view_field+memcpy instead of real HDF5,
   # docs/user/lowfive.md's own account), so this is a build-only addition,
@@ -1998,17 +2000,14 @@ if(TARGET fuse-abi-fortran AND FUSE_LINALG_BACKEND_IS_EIGEN)
   set_target_properties(fuse_verification_brusselator_check_test PROPERTIES
     Fortran_MODULE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/brusselator_check_fortran_modules)
 
-  # LowFive-free half of Unit 3a's tier-0 oracle (S6 phase 3,
-  # Conformance): the SAME participant-ABI harness as above, on a graph
+  # LowFive-free half of the tier-0 oracle: the SAME participant-ABI harness as above, on a graph
   # whose u_out/v_out set FieldSpec::hdf5_path, with the harness's own
   # view_field+memcpy calls standing in for the H5Dwrite/H5Dread an
   # application would do -- no LowFive, no HDF5, no MPI needed; same
   # deps as brusselator_check above. ctest row verification.brusselator_
   # lowfive_harness (fuse_add_gtest's own ${layer}.${name} convention,
   # underscores throughout like every other multi-word row in this
-  # file -- brusselator_check, brusselator_participants -- not the
-  # dotted verification.brusselator.lowfive.harness form first typed in
-  # chat, which would need a differently-named source file to match).
+  # file -- brusselator_check, brusselator_participants).
   fuse_add_gtest(verification brusselator_lowfive_harness NO_LAYER_LIB
                  LIBS fuse::runtime fuse::backend fuse::abi fuse::abi-fortran Eigen3::Eigen Kokkos::kokkos)
   target_include_directories(fuse_verification_brusselator_lowfive_harness_test PRIVATE
@@ -2025,7 +2024,8 @@ if(TARGET fuse-abi-fortran AND FUSE_LINALG_BACKEND_IS_EIGEN)
   # shim.cpp calls bruss_lowfive_serve_after_write()/
   # bruss_lowfive_receive_before_read() (lowfive_attach.h), so every
   # target compiling shim.cpp needs lowfive_attach.cpp's own object code
-  # too, or the link fails on those two undefined symbols. fuse_verification_brusselator_lowfive_harness_test compiles
+  # too, or the link fails on those two undefined symbols.
+  # fuse_verification_brusselator_lowfive_harness_test compiles
   # shim.cpp (just above) but never calls bruss_lowfive_attach() itself
   # (it drives the ABI through view_field+memcpy instead of real HDF5,
   # docs/user/lowfive.md's own account), so this is a build-only addition,
@@ -2074,7 +2074,7 @@ if(TARGET fuse-abi-fortran AND FUSE_LINALG_BACKEND_IS_EIGEN)
   set_target_properties(fuse_verification_brusselator_asymmetric_dt_isolation_test PROPERTIES
     Fortran_MODULE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/brusselator_asymmetric_dt_isolation_fortran_modules)
 
-  # KNOWN_ISSUES.md D57 ("Collectives" track), Round 2: drives the REAL
+  # Drives the REAL
   # u_loop_step()/bruss_v_loop_step() (not brusselator_period_rollover_
   # test.cpp's own mirror) at a 1x1 grid, so a mutation reverting u_loop.c's/
   # v_loop.f90's own next_component-propagation fix is caught by rebuilding
@@ -2111,22 +2111,21 @@ if(TARGET fuse-abi-fortran AND FUSE_LINALG_BACKEND_IS_EIGEN)
 endif()
 
 # ---------------------------------------------------------------- install
-# find_package(fuse-coupler) smoke test (REVIEW.md R-25/BT-F9): install this
+# find_package(fuse-coupler) smoke test: install this
 # build, configure and build a tiny STANDALONE consumer project against the
 # install prefix (test/install_consumer/, its own independent CMake project,
 # never add_subdirectory'd into this one), then run it. A `cmake -P` script
 # drives the three cmake invocations because ctest's COMMAND runs one program.
 #
 # This is the actual thing conventions.md's "CMake package `fuse-coupler`"
-# claim needs to be true, not a proxy for it: before this, nothing in the
-# tree ran `cmake --install` at all.
+# claim needs to be true, not a proxy for it.
 # The installed fuse-couplerConfig.cmake find_dependency()s Kokkos, fmt and
 # Eigen3. The consumer configure below sees CMAKE_PREFIX_PATH, but a package
 # this configure found through a prefix derived from the invoking shell's
-# PATH (fmt from a conda prefix, measured 2026-10-12) is not on it, so the
-# consumer resolved it only when ctest ran from a shell with the same PATH.
+# PATH (fmt from a conda prefix) is not on it, so the
+# consumer would resolve it only when ctest ran from a shell with the same PATH.
 # Forward where THIS configure found each one -- the same shape as the
-# OMPI_CXX pin above (D47) -- so the three install consumers test the
+# OMPI_CXX pin above -- so the three install consumers test the
 # installed package, not the invoking shell.
 set(_fuse_consumer_dep_args "")
 foreach(_fuse_dep IN ITEMS Kokkos fmt Eigen3 yaml-cpp)
@@ -2231,24 +2230,22 @@ if(TARGET fuse-abi-fortran)
 
   # ABI-FORTRAN-CONSUMER's full run: an install-tree find_package(fuse-coupler)
   # smoke test, modelled on "install.consumer_find_package" above, that
-  # actually links and runs consumer.f90 -- which needs libfuse-abi (the
-  # sibling track's src/abi) to resolve fuse_coupler_abi() at all. Depending
+  # actually links and runs consumer.f90 -- which needs libfuse-abi
+  # (src/abi) to resolve fuse_coupler_abi() at all. Depending
   # on TARGET fuse-abi-shared, decided at configure time, means the ctest
   # NAME abi.install_consumer_fortran exists either way: it runs for real
   # once that target does, and until then FAILS with the explicit reason in
   # awaiting_libfuse_abi.cmake -- not silently absent, and not a SKIP that
   # would read like a pass in a CI summary.
   #
-  # fuse-abi-shared, not the bare "fuse-abi" the task that specified this
-  # gate named: src/CMakeLists.txt's own abi section (landed by the other
-  # S6-phase-2 track while this one was in progress) builds two variants,
-  # fuse-abi-shared (alias fuse::abi) and fuse-abi-static (alias
-  # fuse::abi-static); no target is literally named fuse-abi. Checked here
-  # specifically because it is the one install_consumer/CMakeLists.txt
-  # actually links -- fuse::abi-static was tried first and failed at this
-  # consumer's own install-tree link with undefined yaml-cpp/r3d symbols
-  # (that CMakeLists.txt's own header has the full account); fuse::abi
-  # (shared) does not have that gap, matching the C sibling's own
+  # fuse-abi-shared, not a bare "fuse-abi": src/CMakeLists.txt's own abi
+  # section builds two variants, fuse-abi-shared (alias fuse::abi) and
+  # fuse-abi-static (alias fuse::abi-static); no target is literally named
+  # fuse-abi. Checked here specifically because it is the one
+  # install_consumer/CMakeLists.txt actually links -- fuse::abi-static fails
+  # at this consumer's own install-tree link with undefined yaml-cpp/r3d
+  # symbols (that CMakeLists.txt's own header has the full account);
+  # fuse::abi (shared) does not have that gap, matching the C sibling's own
   # install_consumer, which links fuse::abi for the identical reason.
   if(TARGET fuse-abi-shared)
     add_test(NAME abi.install_consumer_fortran
@@ -2284,8 +2281,8 @@ endif()
 
 # ---------------------------------------------------------------- abi (C)
 # The participant C ABI's own matrix rows (build-evidence/abi-matrix.toml,
-# S6.1 / "C ABI" track). Each fuse_add_gtest below links fuse::abi
-# (src/CMakeLists.txt's new layer), which PUBLIC-links fuse::runtime, so the
+# C ABI). Each fuse_add_gtest below links fuse::abi
+# (src/CMakeLists.txt's abi layer), which PUBLIC-links fuse::runtime, so the
 # usual fuse:: C++ types these test files use directly (Component,
 # FieldRegistry, CouplingGraph, ...) need no extra LIBS.
 find_package(Python3 COMPONENTS Interpreter QUIET)
@@ -2314,13 +2311,13 @@ target_compile_definitions(fuse_abi_entries_golden_test PRIVATE
 
 fuse_add_gtest(abi struct_size)
 
-# D61 (KNOWN_ISSUES.md): the pure MPI_MINLOC-equivalent arithmetic
+# The pure MPI_MINLOC-equivalent arithmetic
 # src/abi/participant.cpp's reconcile_collective_status() uses, tested
 # directly with no MPI and no fuse_ctx at all -- include/fuse/abi/
 # collective_reconcile.hpp's own header comment has the full account.
 fuse_add_gtest(abi collective_reconcile)
 
-# KNOWN_ISSUES.md D15 ("Registry agreement" track): the pure, graph-shape
+# The pure, graph-shape
 # predicate src/abi/participant.cpp's impl_initialize_local() consults a
 # priori, before any Plugin-mount work runs -- include/fuse/abi/
 # plugin_agreement.hpp's own header comment has the full account.
@@ -2339,8 +2336,8 @@ fuse_add_gtest(abi negotiation)
 fuse_add_gtest(abi participant LIBS fuse_abi_test_support)
 target_include_directories(fuse_abi_participant_test PRIVATE ${CMAKE_SOURCE_DIR}/src/abi)
 
-# review-2026-10-11 abi: AB-9's table-driven negative-test sweep over the
-# participant-ABI refusal codes no test fired.
+# A table-driven negative-test sweep over the
+# participant-ABI refusal codes.
 fuse_add_gtest(abi refusal_sweep LIBS fuse_abi_test_support)
 target_include_directories(fuse_abi_refusal_sweep_test PRIVATE ${CMAKE_SOURCE_DIR}/src/abi)
 
@@ -2393,12 +2390,11 @@ if(FUSE_ENABLE_MPI)
     ${CMAKE_CURRENT_SOURCE_DIR})
 endif()
 
-# KNOWN_ISSUES.md D61, round 2/3 (the lead's own instruction): the
-# asymmetric-refusal row abi_participant_mpi_test.cpp's own header
+# The asymmetric-refusal row abi_participant_mpi_test.cpp's own header
 # comment explicitly declines to attempt -- see abi_reconcile_mpi_test.
 # cpp's own header for why a one-component, spanning-RankSet graph (sized
-# so every rank's own share is exactly one cell -- round 3's own fix for
-# the "LoadedContext returned null" host failure) is what lets this row
+# so every rank's own share is exactly one cell, which avoids a
+# "LoadedContext returned null" failure) is what lets this row
 # exercise a REAL multi-rank begin_step() without needing a correct
 # per-rank field decomposition to be computed by hand. RANKS 2 3 only
 # (not the default 1..5): rank 1 must exist to host the deliberately
@@ -2409,9 +2405,9 @@ if(FUSE_ENABLE_MPI)
   fuse_add_mpi_test(parallel abi_reconcile_mpi LIBS fuse::abi RANKS 2 3)
 endif()
 
-# KNOWN_ISSUES.md D61, round 4 (the lead's own instruction, after round 3's
-# fix deadlocked verification.brusselator.participants.{mpmd,accept}.{3,5}
-# on the real host): the minimal model abi_reconcile_mpi_test.cpp's own
+# The minimal model (distilled from a deadlock seen in
+# verification.brusselator.participants.{mpmd,accept}.{3,5} on a real host)
+# abi_reconcile_mpi_test.cpp's own
 # single spanning component cannot exercise -- TWO components on DISJOINT
 # rank sets, each calling begin_step()/end_step() a DIFFERENT number of
 # times. RANKS 3 only (not the default, not 2 3): this row's graph is
@@ -2422,7 +2418,7 @@ if(FUSE_ENABLE_MPI)
   fuse_add_mpi_test(parallel abi_reconcile_disjoint_mpi LIBS fuse::abi RANKS 3)
 endif()
 
-# ---------------------------------------------------------------- abi (provider, S6 phase 4)
+# ---------------------------------------------------------------- abi (provider)
 # test/abi/conformance_test.cpp's four kinds, two of which need a REAL
 # dlopen()'d shared object (never a hand-built in-memory table standing in
 # for one): one correct C plugin and three deliberately wrong variants (bad
@@ -2447,8 +2443,8 @@ add_library(fuse_test_provider_linear_bad_advance SHARED abi/plugins/linear_prov
 target_include_directories(fuse_test_provider_linear_bad_advance PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_compile_definitions(fuse_test_provider_linear_bad_advance PRIVATE FUSE_TEST_BAD_ADVANCE)
 
-# review-2026-10-11 abi: TD-6 (provider-adapter refusal codes no test fired)
-# and AB-6 (capabilities()/describe() silent-degradation paths) each need a
+# Provider-adapter refusal codes and the capabilities()/describe()
+# silent-degradation paths each need a
 # real dlopen()'d plugin that misbehaves in one more way, compiled from the
 # SAME source as the targets above.
 add_library(fuse_test_provider_linear_bad_create SHARED abi/plugins/linear_provider.c)
@@ -2483,14 +2479,13 @@ add_library(fuse_test_provider_linear_bad_restore SHARED abi/plugins/linear_prov
 target_include_directories(fuse_test_provider_linear_bad_restore PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_compile_definitions(fuse_test_provider_linear_bad_restore PRIVATE FUSE_TEST_BAD_RESTORE)
 
-# review-2026-10-11 abi: AB-3's old-plugin struct_size variant -- writes
+# Old-plugin struct_size variant -- writes
 # the pre-growth fuse_step_report size instead of sizeof(current).
 add_library(fuse_test_provider_linear_old_step_report SHARED abi/plugins/linear_provider.c)
 target_include_directories(fuse_test_provider_linear_old_step_report PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_compile_definitions(fuse_test_provider_linear_old_step_report PRIVATE FUSE_TEST_OLD_STEP_REPORT)
 
-# KNOWN_ISSUES.md D15 ("Provider parity" track, Stage B-1, item 2): a
-# faithful C reimplementation of test/abi/participant_test.cpp's own
+# A faithful C reimplementation of test/abi/participant_test.cpp's own
 # AffineComponent (abi/plugins/affine_provider.c's own header comment has
 # the full account), used so a plugin-backed component can stand in for
 # the native "beta" half of build_implicit_coupling_graph()'s own
@@ -2509,7 +2504,7 @@ target_compile_definitions(fuse_test_provider_linear_old_step_report PRIVATE FUS
 add_library(fuse_test_provider_affine SHARED abi/plugins/affine_provider.c)
 target_include_directories(fuse_test_provider_affine PRIVATE ${CMAKE_SOURCE_DIR}/include)
 
-# KNOWN_ISSUES.md D15 ("Registry hosting" track, 2026-10-22): test/abi/
+# test/abi/
 # plugins/hosting_probe_provider.c, a minimal provider whose entries each
 # increment a file-static counter read back through this file's own
 # fuse_test_hosting_probe_calls() probe (not part of the frozen provider
@@ -2519,8 +2514,7 @@ target_include_directories(fuse_test_provider_affine PRIVATE ${CMAKE_SOURCE_DIR}
 add_library(fuse_test_provider_hosting_probe SHARED abi/plugins/hosting_probe_provider.c)
 target_include_directories(fuse_test_provider_hosting_probe PRIVATE ${CMAKE_SOURCE_DIR}/include)
 
-# KNOWN_ISSUES.md D15 item 1 ("Provider parity" track, Stage B-2, Option
-# A): test/abi/plugins/mixed_memspace_provider.c, one host-resident and
+# test/abi/plugins/mixed_memspace_provider.c, one host-resident and
 # one device-resident field on the SAME provider instance. The _NO_
 # DEVICE_CAPABILITY variant is its own target, the same "behaviours
 # selected at compile time, each its own CMake target" convention
@@ -2528,8 +2522,7 @@ target_include_directories(fuse_test_provider_hosting_probe PRIVATE ${CMAKE_SOUR
 # for FUSE_MEMSPACE_DEVICE on "device_out" but capabilities() no longer
 # grants FUSE_CAP_DEVICE_FIELDS, so ProviderAdapter's own capability gate
 # must refuse it by name.
-# mixed_memspace_device_write.cpp (D15 item 1, "Mixed plugin" track,
-# 2026-10-21): the one Kokkos kernel launch mixed_memspace_provider.c's
+# mixed_memspace_device_write.cpp: the one Kokkos kernel launch mixed_memspace_provider.c's
 # own advance() needs for its device-resident field, kept as its own
 # C++ translation unit (Kokkos has no C binding) and compiled into all
 # three targets below alongside the .c file itself -- see that file's
@@ -2545,7 +2538,7 @@ add_library(fuse_test_provider_mixed_memspace_no_device_cap SHARED
 target_include_directories(fuse_test_provider_mixed_memspace_no_device_cap PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(fuse_test_provider_mixed_memspace_no_device_cap PRIVATE Kokkos::kokkos)
 target_compile_definitions(fuse_test_provider_mixed_memspace_no_device_cap PRIVATE FUSE_TEST_NO_DEVICE_CAPABILITY)
-# The "opposite" direction the owner's own task names explicitly: capabilities()
+# The opposite direction: capabilities()
 # sets FUSE_CAP_DEVICE_FIELDS but describe() reports no device field at all.
 add_library(fuse_test_provider_mixed_memspace_host_only_fields SHARED
   abi/plugins/mixed_memspace_provider.c
@@ -2554,10 +2547,10 @@ target_include_directories(fuse_test_provider_mixed_memspace_host_only_fields PR
 target_link_libraries(fuse_test_provider_mixed_memspace_host_only_fields PRIVATE Kokkos::kokkos)
 target_compile_definitions(fuse_test_provider_mixed_memspace_host_only_fields PRIVATE FUSE_TEST_HOST_ONLY_FIELDS)
 
-# D15 item 1 ("Device layout" track, 2026-10-21): test/abi/plugins/
+# test/abi/plugins/
 # device_layout_provider.cpp, a C++ provider plugin that genuinely
 # launches a Kokkos kernel to touch its device-resident fields (unlike
-# mixed_memspace_provider.c above, measured on ssh:higgs to segfault on
+# mixed_memspace_provider.c above, which segfaults on
 # a real device backend for exactly that reason -- its own advance()
 # dereferences a device pointer with an ordinary C store). Two CMake
 # targets off the SAME source, the same "behaviours selected at compile
@@ -2625,7 +2618,7 @@ target_compile_definitions(fuse_abi_conformance_test PRIVATE
   FUSE_TEST_C_PROVIDER_PLUGIN_BAD_VERSION="$<TARGET_FILE:fuse_test_provider_linear_bad_version>"
   FUSE_TEST_C_PROVIDER_PLUGIN_BAD_DESCRIBE="$<TARGET_FILE:fuse_test_provider_linear_bad_describe>"
   FUSE_TEST_C_PROVIDER_PLUGIN_BAD_ADVANCE="$<TARGET_FILE:fuse_test_provider_linear_bad_advance>"
-  # review-2026-10-11 abi: TD-6/AB-6's own plugin variants.
+  # Provider-adapter refusal and silent-degradation plugin variants.
   FUSE_TEST_C_PROVIDER_PLUGIN_BAD_CREATE="$<TARGET_FILE:fuse_test_provider_linear_bad_create>"
   FUSE_TEST_C_PROVIDER_PLUGIN_BAD_BIND="$<TARGET_FILE:fuse_test_provider_linear_bad_bind>"
   FUSE_TEST_C_PROVIDER_PLUGIN_BAD_WINDOW="$<TARGET_FILE:fuse_test_provider_linear_bad_window>"
@@ -2634,7 +2627,7 @@ target_compile_definitions(fuse_abi_conformance_test PRIVATE
   FUSE_TEST_C_PROVIDER_PLUGIN_BAD_DESCRIBE_EXTRA="$<TARGET_FILE:fuse_test_provider_linear_bad_describe_extra>"
   FUSE_TEST_C_PROVIDER_PLUGIN_BAD_SAVE="$<TARGET_FILE:fuse_test_provider_linear_bad_save>"
   FUSE_TEST_C_PROVIDER_PLUGIN_BAD_RESTORE="$<TARGET_FILE:fuse_test_provider_linear_bad_restore>"
-  # review-2026-10-11 abi: AB-3's old-plugin struct_size variant.
+  # Old-plugin struct_size variant.
   FUSE_TEST_C_PROVIDER_PLUGIN_OLD_STEP_REPORT="$<TARGET_FILE:fuse_test_provider_linear_old_step_report>"
 )
 if(FUSE_TEST_FORTRAN_PROVIDER_AVAILABLE)
@@ -2651,7 +2644,7 @@ else()
     FUSE_TEST_FORTRAN_PROVIDER_PLUGIN="")
 endif()
 
-# D15 item 1 ("Device layout" track, 2026-10-21): the new layout/copies
+# The layout/copies
 # test, its own graph-declared plugin (mounted automatically at
 # fuse_initialize(), never dlopen()'d directly by this test itself --
 # the SAME convention ConformanceTest.GraphDeclaredPluginIsAutoMountedAndRun
@@ -2668,7 +2661,7 @@ target_compile_definitions(fuse_abi_device_layout_test PRIVATE
   FUSE_TEST_DEVICE_LAYOUT_PROVIDER_PLUGIN_HOST_REF="$<TARGET_FILE:fuse_test_provider_device_layout_host_ref>")
 target_link_libraries(fuse_abi_device_layout_test PRIVATE ${CMAKE_DL_LIBS})
 
-# KNOWN_ISSUES.md D15, round 2, item 3 (the lead's own instruction): "a
+# "A
 # plugin on a rank subset" -- the real C provider plugin
 # (fuse_test_provider_linear, defined above in this same section)
 # mounted on a STRICT SUBSET of a real multi-rank base communicator.
@@ -2686,7 +2679,7 @@ if(FUSE_ENABLE_MPI)
   target_include_directories(fuse_parallel_provider_subset_mpi_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/abi)
 
-  # KNOWN_ISSUES.md D15 ("Registry agreement" track): AHostingRanksPlugin
+  # AHostingRanksPlugin
   # MountFailureIsAgreedByEveryRankNotOnlyTheHostingOnes (this file) needs
   # a plugin that genuinely fails to mount -- the already-built BAD_VERSION
   # variant (fuse_test_provider_linear_bad_version, defined above in this
@@ -2696,9 +2689,8 @@ if(FUSE_ENABLE_MPI)
   add_dependencies(fuse_parallel_provider_subset_mpi_test fuse_test_provider_linear_bad_version)
 endif()
 
-# KNOWN_ISSUES.md D15 ("Cross check" track, Stage 3, 2026-10-22): a
-# device-resident Plugin field on a rank SUBSET, cross-measured against the
-# lead's own darwin/MPICH judgement calls. Needs fuse::abi-static +
+# A
+# device-resident Plugin field on a rank SUBSET. Needs fuse::abi-static +
 # fuse_abi_test_support for the same test-only seams (inject_component(),
 # field_registry_of(), run_stats()) provider_subset_mpi_test.cpp above
 # already links directly, plus the existing device_layout_provider plugin
@@ -2720,8 +2712,7 @@ if(FUSE_ENABLE_MPI)
 endif()
 
 # ---------------------------------------------------------------- bench
-# Scaled device benchmark (docs/dev/device-resident-arcs.md rollout step 6
-# follow-up, scaled-bench track): a native quad-mesh Remap/Transport chain
+# Scaled device benchmark (docs/dev/device-resident-arcs.md): a native quad-mesh Remap/Transport chain
 # at problem sizes orders of magnitude larger than the correctness suite,
 # so per-instruction kernel-launch and host-stop overhead can be told
 # apart from genuine arithmetic cost -- see bench/scaled_device_benchmark.cpp's
@@ -2788,17 +2779,13 @@ if(FUSE_ENABLE_MPI)
         ENVIRONMENT "FUSE_EXECUTION_SPACE=device")
     endif()
   endforeach()
-  # KNOWN_ISSUES.md D74, FIXED (follow-up round): the nodal Remap's
-  # distributed point-location search used to refuse to place the
+  # The nodal Remap's distributed point-location search places the
   # domain's own corner vertex (global id 0) at 2 and 3 ranks, host and
-  # device alike -- root cause was build_distributed_interp_rows's own
-  # per-eval-point candidate scan testing EVERY cell in the assembled
-  # mesh with no broad-phase spatial filter, so a single unrelated,
-  # far-away cell's Newton non-convergence could abort an evaluation
-  # point whose genuine answer the same scan had already found
-  # (src/backend/nodal_remap_distributed.cpp's own comment on the fix).
-  # bench.scaled_device_benchmark.{2,3}[.device] are no longer disabled;
-  # confirmed green at N=1000 on this host (KNOWN_ISSUES.md D74 entry).
+  # device alike: build_distributed_interp_rows's per-eval-point candidate
+  # scan must not let a single unrelated, far-away cell's Newton
+  # non-convergence abort an evaluation point whose genuine answer the
+  # same scan had already found (src/backend/nodal_remap_distributed.cpp's
+  # own comment). bench.scaled_device_benchmark.{2,3}[.device] are enabled.
 else()
   message(STATUS "fuse: fuse_bench_scaled_device_benchmark not built -- needs FUSE_ENABLE_MPI=ON")
 endif()

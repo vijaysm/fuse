@@ -290,8 +290,8 @@ id = "common-period-throws-instead-of-reporting"
 area = "compiler"
 describes = "checked_common_period uses the throwing lcm instead of the reporting one, so an unrepresentable period escapes a function documented never to throw -- and aborts outright when exceptions are disabled"
 file = "include/fuse/schedule/clock.hpp"
-# Indentation changed (8 spaces -> 6) when Conformance Unit 2's Defect 1
-# fix restructured this loop to skip ComponentKind::Coupler entries (the
+# Indentation is 6 spaces because this loop skips ComponentKind::Coupler
+# entries (the
 # `if (!clocks_.empty()) { for (const Clock& c : clocks_) ... }` wrapper
 # became a single `for (std::size_t i ...) { if (coupler_[i]) continue;
 # ... }`, one nesting level shallower) -- the mutation itself (throwing

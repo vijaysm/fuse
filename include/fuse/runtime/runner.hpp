@@ -76,22 +76,21 @@ struct RunnerConfig {
   /// "unset" value to use as a sentinel: 0 is a legal handle.
   std::optional<int> base_communicator;
 
-  /// Unit 2b (D19): overrides `build_ticks()`'s own `this_process`
+  /// Overrides `build_ticks()`'s own `this_process`
   /// computation directly, bypassing `base_communicator`/`MPI_Comm_rank`
   /// entirely -- the SAME reason `force_distributed_nodal_remap` above
   /// exists: a tier-0 build (no MPI compiled in at all) can exercise the
   /// per-rank HOSTING decision (ordinary ticks' own `hosted[]`, and
-  /// Unit 2b's own `WindowMemberConfig::hosted`) with a specific rank
+  /// `WindowMemberConfig::hosted`) with a specific rank
   /// number, with no real communicator, no launcher, and no `#if
   /// FUSE_HAVE_MPI` branch ever taken. `base_communicator` need not be
   /// set at all when this is -- a test that wants both a pretend "rank 1
   /// of 3" placement AND genuine ordinary-tick filtering sets only this
   /// one field. Left unset (the default) for every production caller,
-  /// which continues to derive `this_process` from `base_communicator`
-  /// exactly as before this field existed.
+  /// which derives `this_process` from `base_communicator`.
   std::optional<int> force_this_process;
 
-  /// Task 8.5's gap-closer. `Transport`'s virtual interface (prepare/move/
+  /// `Transport`'s virtual interface (prepare/move/
   /// name/is_local) has no hook for a backend's one-time, backend-specific
   /// setup -- `MpiTransport::set_communicator`+`build_plan` or
   /// `LowFiveTransport::set_location`+`build_plan` -- because that setup takes
@@ -109,13 +108,12 @@ struct RunnerConfig {
   /// `RunnerConfig{}` user is unaffected.
   std::function<Result<void>(Transport&)> transport_setup;
 
-  /// A5. Which Kokkos execution space `Runner::Impl::execute()` dispatches
+  /// Which Kokkos execution space `Runner::Impl::execute()` dispatches
   /// its elementwise `OpKind`s (Interpolate/Remap/Sample/Accumulate/
   /// Extrapolate/Merge/Scale/Relax/Residual) on. `Host` (the default) is
-  /// byte-for-byte what every caller got before this field existed --
-  /// `Device` is new, opt-in, and only meaningful when fuse was built
-  /// against a Kokkos with a real device backend (CUDA/HIP/SYCL) compiled
-  /// in; asking for it otherwise is a configuration error (see
+  /// the plain host path -- `Device` is opt-in, and only meaningful when
+  /// fuse was built against a Kokkos with a real device backend
+  /// (CUDA/HIP/SYCL) compiled in; asking for it otherwise is a configuration error (see
   /// `Runner::Impl::setup()`), not a silent fall back to `Host`. Everything
   /// else `execute()` does (Transport/Epoch/Sink/Accelerate/Constrain/
   /// window refusals) is unconditionally host-only and ignores this field
@@ -170,7 +168,7 @@ struct RunStats {
   /// verification is observable, and therefore testable, rather than asserted
   /// in a comment.
   ///
-  /// R16: "registered" is load-bearing, not decorative. Each count is a
+  /// "registered" is load-bearing, not decorative. Each count is a
   /// `memcmp` against one arc's REGISTERED storage; a component's own
   /// private state that was never bound via `register_fields()` is not
   /// counted here and is not covered by any of these verifications, even
@@ -181,7 +179,7 @@ struct RunStats {
   /// Rank-agreement points this rank took part in. Zero in a serial run,
   /// and zero is correct there: with one rank there is nobody to agree with.
   std::size_t epochs_reconciled = 0;
-  /// A5: instructions whose elementwise kernels ran on the device space
+  /// Instructions whose elementwise kernels ran on the device space
   /// (`RunnerConfig::execution_space == Device`). Exactly 0 under the `Host`
   /// default. A counter for the same reason `remap_weight_builds` is one:
   /// the host and device paths are meant to agree numerically, so no
@@ -216,7 +214,7 @@ struct RunStats {
   /// (or, for a same-process move, `Kokkos::deep_copy`'d) WITHOUT crossing
   /// to host memory: both arcs were device-resident and, for an MPI
   /// exchange, `Transport::is_gpu_aware()` was true
-  /// (docs/dev/device-resident-arcs.md Phase 3). 0 under Host, and 0 under
+  /// (docs/dev/device-resident-arcs.md). 0 under Host, and 0 under
   /// Device whenever `FUSE_TRANSPORT_HOST_STAGING=1` forces the fallback
   /// below instead. Disjoint from `device_staged_copies`: the host-staged
   /// fallback (not GPU-aware, or forced) still packs/unpacks ON the device
@@ -236,12 +234,10 @@ struct IterationStats {
   std::vector<double> residual_history;
 };
 
-/// KNOWN_ISSUES.md D12's fix. One externally driven component's suspended
-/// `advance()` point, reported by `Runner::resume_period()`: every
-/// instruction up to (but not including) this component's own `advance()`
-/// has already run, so every channel that feeds it has been exchanged and
-/// its `Requires` storage is current -- unlike the deferred, end-of-period
-/// scheme this replaces, which could not make that promise.
+/// One externally driven component's suspended `advance()` point, reported
+/// by `Runner::resume_period()`: every instruction up to (but not including)
+/// this component's own `advance()` has already run, so every channel that
+/// feeds it has been exchanged and its `Requires` storage is current.
 struct ExternalAdvanceRequest {
   /// The graph component name whose turn it now is -- the same string
   /// `Component::name()` returns, and the same one a caller must pass to
@@ -264,7 +260,7 @@ struct ExternalAdvanceRequest {
   /// after an iteration region's `restore_state()` rolled it back for a
   /// re-sweep. `fuse_step_report::requires_restore`'s real meaning.
   bool requires_restore = false;
-  /// Unit 3 (S6 phase 3, Conformance). True when this request was
+  /// True when this request was
   /// recorded by `Runner::Impl::deliver_external()`
   /// (src/runtime/iteration.cpp), not by `advance()`: `component` names
   /// the component an `OpKind::ExternalDelivery` instruction's own
@@ -273,47 +269,35 @@ struct ExternalAdvanceRequest {
   /// above are meaningless on a request with this flag set and are left
   /// at their defaults.
   ///
-  /// The lead's own ruling (2026-10-04), SUPERSEDING an earlier one the
-  /// SAME day that called `component` here "purely informational" on a
-  /// report: that was wrong, and produced a real contradiction (a
-  /// fuse_begin_step() call that correctly consumed every pending proxy
-  /// regardless of name still reached a real request naming a DIFFERENT
-  /// component than the one `next_component` had just reported,
-  /// because the proxy's own importer need not be the same component
-  /// whose real advance comes next in the compiled stream). The
-  /// corrected rule: `next_component` has exactly ONE meaning
-  /// everywhere -- the component whose `fuse_begin_step()` the Runner
-  /// expects next. A delivery proxy is not a component's turn, so it
-  /// NEVER supplies that name directly: `fuse_end_step()`/`fuse_is_
-  /// coupling_ongoing()`, finding a cached request with this flag set,
-  /// report `next_component` by scanning FORWARD in the compiled
-  /// stream from `delivery_instruction_index` (below) for the first
-  /// real advance of an externally driven, hosted component --
-  /// `Runner::Impl::next_real_advance_after()` (src/runtime/
-  /// runner.cpp), the same kind of static plan scan
-  /// `components_due_at_period_start()` already does.
+  /// `next_component` has exactly ONE meaning everywhere -- the component
+  /// whose `fuse_begin_step()` the Runner expects next. A delivery proxy is
+  /// not a component's turn, so it NEVER supplies that name directly:
+  /// `fuse_end_step()`/`fuse_is_coupling_ongoing()`, finding a cached
+  /// request with this flag set, report `next_component` by scanning
+  /// FORWARD in the compiled stream from `delivery_instruction_index`
+  /// (below) for the first real advance of an externally driven, hosted
+  /// component -- `Runner::Impl::next_real_advance_after()`
+  /// (src/runtime/runner.cpp), the same kind of static plan scan
+  /// `components_due_at_period_start()` already does. (The proxy's own
+  /// importer need not be the component whose real advance comes next in
+  /// the compiled stream, so `component` on a proxy request is not
+  /// that name.)
   ///
-  /// SECOND correction, the SAME day, once a scheduling-order fix
-  /// (`fuse::OpKind::ExternalDelivery`'s own comment, `include/fuse/
-  /// ir/op.hpp`) made a delivery instruction's own position coincide
-  /// with the END of a time-window's per-sweep instruction range: a
-  /// plain forward scan to the end of the compiled stream is only
-  /// correct OUTSIDE every iteration region, because INSIDE one,
-  /// whether execution continues past the region's own `exit` or loops
-  /// back for another sweep is a convergence decision the region's own
-  /// sweep loop makes AFTER this instruction runs -- not yet taken, not
-  /// knowable from the compiled plan alone, and not something ANY
-  /// static scan can resolve. So `next_real_advance_after()` now bounds
-  /// its forward scan to the containing region's own pass `exit` and,
-  /// finding nothing there, WRAPS to that pass's own `enter` and scans
-  /// up to (not including) `delivery_instruction_index` -- the
-  /// instruction sequence the sweep loop actually runs on another
-  /// sweep. Only when the instruction lies outside every region does
-  /// "found nothing" fall through to `components_due_at_period_start()`
-  /// 's own answer for the next period, as before. The reported
-  /// `next_component` is therefore a CONDITIONAL answer -- the
-  /// component due IF the iteration continues -- never a promise of
-  /// what `fuse_begin_step()` will actually do next.
+  /// A plain forward scan to the end of the compiled stream is only
+  /// correct OUTSIDE every iteration region: INSIDE one, whether execution
+  /// continues past the region's own `exit` or loops back for another
+  /// sweep is a convergence decision the region's own sweep loop makes
+  /// AFTER this instruction runs -- not knowable from the compiled plan
+  /// alone. So `next_real_advance_after()` bounds its forward scan to the
+  /// containing region's own pass `exit` and, finding nothing there, WRAPS
+  /// to that pass's own `enter` and scans up to (not including)
+  /// `delivery_instruction_index` -- the instruction sequence the sweep
+  /// loop actually runs on another sweep. Only when the instruction lies
+  /// outside every region does "found nothing" fall through to
+  /// `components_due_at_period_start()`'s own answer for the next period.
+  /// The reported `next_component` is therefore a CONDITIONAL answer -- the
+  /// component due IF the iteration continues -- never a promise of what
+  /// `fuse_begin_step()` will actually do next.
   ///
   /// Because no static scan can know whether the iteration actually
   /// continues, `fuse_begin_step(C)`'s own resumption is the one place
@@ -327,7 +311,7 @@ struct ExternalAdvanceRequest {
   /// error: it completes this period's bookkeeping exactly as
   /// `fuse_run()` would at a period's end, starts the next one, and
   /// primes ITS OWN first request. `fuse_step_report::step_opened`
-  /// (appended 2026-10-04, `entries.def`) reports which happened -- 1
+  /// (`entries.def`) reports which happened -- 1
   /// if a step opened on `C` as usual (whether or not a period
   /// rollover occurred first), 0 if the rolled-over period's own first
   /// request names a DIFFERENT component, in which case NO step is
@@ -335,12 +319,11 @@ struct ExternalAdvanceRequest {
   /// `fuse_begin_step()` again with `fuse_step_report::next_component`.
   /// Only a mismatch reached WITHOUT a period rollover remains the
   /// ordinary `E-ABI-STEP-ORDER` out-of-turn refusal. Never open a step
-  /// directly off a request with this flag set. S6 phase 3 (Conformance,
-  /// Unit 3b), item 2's own correction: the writer DOES need to know
-  /// which export is due, once a graph has more than one independently-
-  /// paced LowFive-bound channel -- `delivery_field` below is what tells
-  /// it -- `docs/user/c-abi.md` documents the full protocol, including
-  /// `step_opened`.
+  /// directly off a request with this flag set. The writer DOES need to
+  /// know which export is due, once a graph has more than one
+  /// independently-paced LowFive-bound channel -- `delivery_field` below
+  /// is what tells it -- `docs/user/c-abi.md` documents the full protocol,
+  /// including `step_opened`.
   bool is_delivery_due = false;
   /// Valid only when `is_delivery_due`: this request's own `OpKind::
   /// ExternalDelivery` instruction's index into `ExecutionPlan::
@@ -377,7 +360,7 @@ class Runner {
   Result<void> initialize(ComponentSet& components, FieldRegistry& registry,
                           const RunnerConfig& config = {});
 
-  /// A5: the Kokkos execution space `RunnerConfig::RunnerExecutionSpace::
+  /// The Kokkos execution space `RunnerConfig::RunnerExecutionSpace::
   /// Device` resolves to on THIS build -- `"Cuda"` against a CUDA-enabled
   /// Kokkos, `"HIP"`/`"SYCL"` likewise. Equal to the host space's own name
   /// when no device backend was compiled in, which is exactly the build
@@ -385,7 +368,7 @@ class Runner {
   /// ask before configuring rather than after failing.
   [[nodiscard]] static std::string_view device_execution_space_name() noexcept;
 
-  /// THE PERIOD CONTRACT (KNOWN_ISSUES.md D57; stated here as the Runner's
+  /// THE PERIOD CONTRACT (stated here as the Runner's
   /// own half -- docs/dev/abi-design.md states the ABI's half of the same
   /// rule). A period is this Runner's own unit of forward progress: one
   /// call to `run_period()`, or the externally driven equivalent
@@ -396,10 +379,10 @@ class Runner {
   /// `fuse_step_report::period`) -- never a promise that state has
   /// "settled" or "converged" past that count, even on a graph whose
   /// window-scoped region happens to reach a fixed point every period
-  /// (D57's own real row: a time window that converges in 12 sweeps,
+  /// (e.g. a time window that converges in 12 sweeps,
   /// every period, on a graph with no declared end time at all).
   ///
-  /// THE INVARIANT D57 FOUND MISSING: **this Runner must never execute a
+  /// THE INVARIANT: **this Runner must never execute a
   /// period's real instructions beyond the last one the caller actually
   /// asked for, even when every externally driven component's own request
   /// for that period has already been resolved and cached.** Resolving
@@ -414,8 +397,8 @@ class Runner {
   /// of the same component ever reaches it, because a driver with its own
   /// bound (an ABI caller's own `for (p = 0; p < periods; ++p)` loop, or
   /// `Runner::run()`'s own `for (i = 0; i < periods; ++i) run_period();`)
-  /// stops exactly at that bound and never calls in again. D57's own
-  /// real row measured the consequence directly: two externally driven
+  /// stops exactly at that bound and never calls in again. The
+  /// consequence, measured directly: two externally driven
   /// ranks (U, V) each continued into an UNREQUESTED third period's own
   /// `Constrain` reduction after a converged, no-end-time window reached
   /// its fixed point at the end of period 2, while a third rank (the
@@ -435,12 +418,12 @@ class Runner {
   /// `AbiPeriodBoundary.NeverRunsAPeriodTheCallerDidNotRequestOnceState
   /// HasReachedAFixedPoint` pins exactly this, at tier 0, through the
   /// real public ABI (no MPI, `fuse::abi_test::force_communicator_set()`
-  /// standing in for a live communicator the same way D57's own earlier
+  /// standing in for a live communicator the same way
   /// `brusselator_period_rollover_test.cpp` does).
   Result<void> run_period(ComponentSet& components);
   Result<void> run(ComponentSet& components, std::int64_t periods);
 
-  /// KNOWN_ISSUES.md D12's fix: resumes the current period's instruction
+  /// Resumes the current period's instruction
   /// stream from wherever it last suspended (or begins a new period, if
   /// the previous one ran to completion), executing every instruction up
   /// to the NEXT externally driven component's own `advance()` point and
@@ -465,11 +448,10 @@ class Runner {
   Result<std::optional<ExternalAdvanceRequest>> resume_period(
       ComponentSet& components);
 
-  /// Defect 3's own refinement (Conformance Unit 2, docs/dev/abi-design.md):
-  /// `fuse_is_coupling_ongoing()` originally had no way to answer
-  /// `next_component` AT A PERIOD'S OWN START without calling
-  /// `resume_period()` -- a real side effect a previously side-effect-free
-  /// entry point must never pay for just to answer a status query. But the
+  /// Answers `next_component` AT A PERIOD'S OWN START without calling
+  /// `resume_period()` (docs/dev/abi-design.md): `fuse_is_coupling_ongoing()`
+  /// is a side-effect-free entry point and must not pay for a real side
+  /// effect just to answer a status query. The
   /// instruction stream is static once `schedule()` has built it: the
   /// FIRST externally driven component of a period is a property of the
   /// compiled plan, not of where execution happens to be right now, and
@@ -484,7 +466,7 @@ class Runner {
   /// ever been called at all.
   [[nodiscard]] std::vector<ComponentId> components_due_at_period_start() const;
 
-  /// Unit 3 (S6 phase 3, Conformance): resolves `next_component` when
+  /// Resolves `next_component` when
   /// the cached request is a delivery proxy
   /// (`ExternalAdvanceRequest::is_delivery_due`'s own comment, above,
   /// has the full account of why the proxy's own importer name is
@@ -535,9 +517,8 @@ class Runner {
   [[nodiscard]] std::optional<bool> test_only_window_block_hosted(
       const std::string& channel_name) const;
 
-  /// Unit 3 (S6 phase 3, Conformance): the C++ side of the ABI's new
-  /// `view_field` entry (fuse_field_view's own `window_samples` member,
-  /// include/fuse/abi/entries.def). For a field that is part of a
+  /// The C++ side of the ABI's `view_field` entry (fuse_field_view's own
+  /// `window_samples` member, include/fuse/abi/entries.def). For a field that is part of a
   /// coupling window (export or import), `window_samples` is the
   /// window's own sample capacity K and `data`/`count` describe the
   /// window path's own private buffer -- the WindowAdvance node's own
@@ -560,23 +541,23 @@ class Runner {
   };
   [[nodiscard]] Result<FieldWindowView> field_window_view(FieldId field) const;
 
-  /// Unit 2b (D19), step (d): whether THIS process hosts `component` --
-  /// the same rule `WindowMemberConfig::hosted` (step (a)) already
+  /// Whether THIS process hosts `component` --
+  /// the same rule `WindowMemberConfig::hosted` already
   /// applies to a window member, generalised to any component. `true`
   /// before `initialize()` has run (nothing to disagree with yet) or
   /// whenever no per-rank identity is configured (`RunnerConfig::
   /// force_this_process`/`base_communicator` both unset -- tier 0, or a
   /// genuinely single-rank run): every existing caller that never names
-  /// a rank keeps meaning exactly what it always meant. The ABI layer
+  /// a rank means a single-rank run. The ABI layer
   /// (`src/abi/participant.cpp`) reads this to narrow `fuse_run()`'s own
   /// `E-ABI-RUN-EXTERNAL` refusal to "an externally driven component IS
   /// hosted here", rather than "the GRAPH declares one anywhere at all".
   [[nodiscard]] bool hosts_component(ComponentId component) const;
 
-  /// S7.1's Newton-Krylov seam. A `fuse::FixedPointResidual` for iteration
+  /// The Newton-Krylov seam. A `fuse::FixedPointResidual` for iteration
   /// region `region_index` (the same indexing `iteration_stats()` uses),
   /// in place of letting this `Runner` drive that region's own Picard
-  /// sweep loop: the JFNK track's Newton solver (S7.2) calls `evaluate`
+  /// sweep loop: the JFNK Newton solver calls `evaluate`
   /// instead of `run_period()`/`run()` ever reaching this region.
   ///
   /// `evaluate(x, f)` computes `f = x - G(x)`, `G` one Picard sweep of the
@@ -590,8 +571,7 @@ class Runner {
   /// Picard loop, and reaches the same fixed point it would have without
   /// the evaluation, bit for bit.
   ///
-  /// SCOPE (S7.1 only; lifting these is the JFNK track's own work, not
-  /// this seam's): refuses `E-NEWTON-UNSUPPORTED-REGION` for a window-
+  /// SCOPE: refuses `E-NEWTON-UNSUPPORTED-REGION` for a window-
   /// scoped region, a region with more than one cross-rank participant, or
   /// a region with an externally driven member -- none of those have a
   /// Picard sweep this function can run standalone without also
@@ -602,15 +582,14 @@ class Runner {
   [[nodiscard]] Result<FixedPointResidual> region_fixed_point_residual(
       std::size_t region_index, ComponentSet& components);
 
-  /// NewtonModel track (2026-10-12): TEST/DIAGNOSTIC-ONLY, the
+  /// TEST/DIAGNOSTIC-ONLY, the
   /// `NewtonResidualPath::Direct` sibling of `region_fixed_point_
   /// residual()` immediately above -- same shape, same save/restore
   /// contract, but `evaluate` calls `Runner::Impl::evaluate_region_
   /// residual_direct()` (src/runtime/fixed_point_residual.cpp) instead,
   /// so a caller can compare `F(x)` under both seams at the SAME `x`
-  /// without running a full Newton solve (the comparison this track's
-  /// own plan step 4 names). No production caller: `run_region_newton()`
-  /// reaches `evaluate_region_residual_direct()` directly when
+  /// without running a full Newton solve. No production caller:
+  /// `run_region_newton()` reaches `evaluate_region_residual_direct()` directly when
   /// `NewtonConfig::residual_path == Direct`. Refuses the same way
   /// `region_fixed_point_residual()` does, PLUS `E-RT-REGION` when the
   /// region's own `newton_config.residual_path` is not `Direct` --
@@ -626,9 +605,8 @@ class Runner {
   [[nodiscard]] Result<FixedPointResidual> region_fixed_point_residual_direct(
       std::size_t region_index, ComponentSet& components);
 
-  /// S7.2 WindowNewton (newton-krylov.md Sec. 9.7's own test plan):
-  /// TEST/DIAGNOSTIC-ONLY, the window-scoped sibling of `region_fixed_
-  /// point_residual()` above -- see `WindowFixedPointResidual`'s own
+  /// TEST/DIAGNOSTIC-ONLY (newton-krylov.md Sec. 9.7), the window-scoped
+  /// sibling of `region_fixed_point_residual()` above -- see `WindowFixedPointResidual`'s own
   /// comment (fuse/runtime/fixed_point_residual.hpp) for the shape and
   /// `Runner::Impl::evaluate_window_region_residual()` (src/runtime/
   /// runner_impl.hpp) for the save/restore contract `evaluate` carries.
@@ -641,9 +619,8 @@ class Runner {
   [[nodiscard]] Result<WindowFixedPointResidual> window_region_fixed_point_residual(
       std::size_t region_index, ComponentSet& components);
 
-  /// S7.2 WindowNewton (newton-krylov.md Sec. 9.7's own test plan):
-  /// TEST/DIAGNOSTIC-ONLY snapshot of every window member's own
-  /// checkpoint state for iteration region `region_index` -- see
+  /// TEST/DIAGNOSTIC-ONLY (newton-krylov.md Sec. 9.7) snapshot of every
+  /// window member's own checkpoint state for iteration region `region_index` -- see
   /// `WindowMemberDebugSnapshot`'s own comment (fuse/runtime/fixed_
   /// point_residual.hpp) for the fields and what they let a test pin.
   /// One entry per `RegionRuntime::window_member_nodes`, in that order.
@@ -651,7 +628,7 @@ class Runner {
   [[nodiscard]] Result<std::vector<WindowMemberDebugSnapshot>>
   debug_window_member_snapshots(std::size_t region_index) const;
 
-  /// NewtonModel track (2026-10-12): TEST/DIAGNOSTIC-ONLY, the same
+  /// TEST/DIAGNOSTIC-ONLY, the same
   /// convention as `debug_window_member_snapshots()` immediately
   /// above -- a copy of `RegionRuntime::newton_scale`, the diagonal `D`
   /// `NewtonNorm::MeasureWeighted` scales the Newton residual by (`D_i =
@@ -672,7 +649,7 @@ class Runner {
   [[nodiscard]] Result<std::vector<double>> debug_newton_scale(
       std::size_t region_index) const;
 
-  /// NewtonModel track (Round 2, GAP 1): TEST/DIAGNOSTIC-ONLY, the same
+  /// TEST/DIAGNOSTIC-ONLY, the same
   /// convention as `debug_newton_scale()` immediately above -- a copy of
   /// `RegionRuntime::newton_gmres_iterations` (one entry per outer
   /// Newton iteration of the MOST RECENT solve of this region, in
@@ -685,7 +662,7 @@ class Runner {
   [[nodiscard]] Result<std::vector<std::size_t>> debug_newton_gmres_iterations(
       std::size_t region_index) const;
 
-  /// Restart track (docs/dev/restart.md), Stage B Slice 1. The period
+  /// Restart (docs/dev/restart.md). The period
   /// counter `run_period()`/`run()` advance (`Runner::Impl::period_index`,
   /// src/runtime/runner_impl.hpp) -- a restart point records this value
   /// (docs/dev/restart.md Section 4.1's `@period_index`) so a restored
@@ -717,7 +694,7 @@ class Runner {
   /// skipped entirely, the same default-no-op posture `save_state()`'s
   /// own default takes for a component that is never iterated) and every
   /// accelerated region's own accelerator memory (`RegionRuntime::accel`,
-  /// keyed by the owning component's own global ids -- owner decision 4)
+  /// keyed by the owning component's own global ids)
   /// into `writer`. Does NOT call `writer.finish_point()` -- the caller
   /// (`fuse::write_restart_point()`, fuse/runtime/restart.hpp) does that
   /// once, after also writing the provenance scalars this method does
@@ -729,20 +706,19 @@ class Runner {
   /// The read-back counterpart of `write_restart_fields()`, called before
   /// the FIRST `run_period()`/`run()` after a restore. For each
   /// accelerated region, `allow_accelerator_reset_on_mismatch` is the
-  /// owner's explicit, off-by-default run option (docs/dev/restart.md
+  /// explicit, off-by-default run option (docs/dev/restart.md
   /// Section 4.1): when a region's current stacked-vector layout does
   /// not match what the file recorded for it, `false` refuses by name
   /// (E-RESTART-BAD-NUMBERING); `true` calls `Accelerator::reset()`
   /// instead and sets `any_accelerator_reset` to `true` -- the caller
-  /// reports this at restart (owner decision 4: "when used it is
-  /// reported at restart"), never silently.
+  /// reports this at restart, never silently.
   Result<void> restore_restart_fields(RestartReader& reader,
                                       ComponentSet& components,
                                       bool allow_accelerator_reset_on_mismatch,
                                       bool& any_accelerator_reset);
 
-  /// Restart track round 2 (docs/dev/restart.md), item 4's participant-
-  /// side request. An externally-driven (ABI) participant has no other
+  /// The participant-side restart request (docs/dev/restart.md). An
+  /// externally-driven (ABI) participant has no other
   /// way to ask that a restart point be taken, because write_restart_
   /// point() needs a RestartWriter the embedding HOST process configures
   /// (a file path, which HDF5 layout) -- something no ABI entry's fixed
@@ -763,7 +739,7 @@ class Runner {
   /// has already acted on it.
   [[nodiscard]] bool take_restart_point_request() noexcept;
 
-  /// Restart track (docs/dev/restart.md Section 9 item 4): TEST-ONLY,
+  /// TEST-ONLY (docs/dev/restart.md),
   /// the same `debug_` convention as `debug_newton_scale()` above --
   /// never called by production code. Replaces region `region_index`'s
   /// own `Accelerator` with `accel` in place, after `initialize()` has
@@ -771,9 +747,8 @@ class Runner {
   /// for exactly one purpose: exercising `restore_restart_fields()`'s
   /// own E-RESTART-ACCEL-NOT-IMPLEMENTED refusal against an accelerator
   /// that genuinely never overrides `restart_state_implemented()`
-  /// (every REAL `AccelKind` does, as of this round -- see KNOWN_ISSUES.md
-  /// D64's closure), without reintroducing a hand-rolled test double
-  /// into a graph-compiled region any other way. Refuses the same way
+  /// (every REAL `AccelKind` does), without reintroducing a hand-rolled
+  /// test double into a graph-compiled region any other way. Refuses the same way
   /// `debug_newton_scale()` does for an out-of-range `region_index` or
   /// a `Runner` not yet `initialize()`d.
   [[nodiscard]] Result<void> debug_replace_region_accelerator(

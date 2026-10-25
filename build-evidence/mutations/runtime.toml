@@ -1,25 +1,23 @@
-# Mutations for S7.1 (the Newton-Krylov residual/linearisation seam):
+# Mutations for the Newton-Krylov residual/linearisation seam:
 # src/runtime/fixed_point_residual.cpp, Runner::Impl::evaluate_region_
-# residual(). Own file per the review-fix protocol: do not edit
-# build-evidence/mutations.toml directly while other tracks hold it dirty.
+# residual().
 #
 # The row below was applied by hand, rebuilt (`cmake --build . --target
 # fuse_runtime_fixed_point_residual_test`), run UNFILTERED, and confirmed
 # to produce the result recorded in `result` before being restored
 # byte-for-byte (`cmp` against the pre-mutation file showed no
-# difference). Build directory: /tmp/seam/b0 (tier 0, this track's own
-# scratch build).
+# difference). Build directory: /tmp/seam/b0 (tier 0, a scratch build).
 #
 # NOT A HYPOTHETICAL DEFECT: this is the exact bug the first
 # implementation of evaluate_region_residual() shipped with, caught by
-# the test named below before this row was ever written -- the mutation
-# merely reproduces it on demand so the kill is reproducible evidence
-# rather than a one-time debugging session.
+# the test named below -- the mutation merely reproduces it on demand so
+# the kill is reproducible evidence rather than a one-time debugging
+# session.
 
 [[mutation]]
 id = "fixed-point-residual-feed-value-arc-not-restored"
 area = "runtime"
-describes = "S7.2's own `commit`/`skip_restore` gate (added after this row was first written) now wraps this exact block; the mutation keeps the SAME effect -- short-circuiting the condition to `false` -- rather than re-deriving a new one, since the defect this row exists to catch (the restore never running) is identical either way. The restore step's own snapshot-restore of every block's feed arc (the component Requires storage the caller's x was delivered into) and value arc is skipped entirely, while component save_state()/restore_state() and the carried-arc restore still run. A caller's out-of-band residual evaluation then leaves the LAST x it evaluated sitting in every member's own Requires storage, so a later, ordinary Picard sweep over the same region starts from that stale delivered value instead of from what the region's own schedule last delivered -- a silent perturbation of the Runner's subsequent behaviour, not a crash."
+describes = "The `commit`/`skip_restore` gate wraps this exact block; the mutation keeps the SAME effect -- short-circuiting the condition to `false` -- rather than re-deriving a new one, since the defect this row exists to catch (the restore never running) is identical either way. The restore step's own snapshot-restore of every block's feed arc (the component Requires storage the caller's x was delivered into) and value arc is skipped entirely, while component save_state()/restore_state() and the carried-arc restore still run. A caller's out-of-band residual evaluation then leaves the LAST x it evaluated sitting in every member's own Requires storage, so a later, ordinary Picard sweep over the same region starts from that stale delivered value instead of from what the region's own schedule last delivered -- a silent perturbation of the Runner's subsequent behaviour, not a crash."
 file = "src/runtime/fixed_point_residual.cpp"
 old = """  if (!skip_restore) {
     for (std::size_t bi = 0; bi < R.blocks.size(); ++bi) {
@@ -47,7 +45,7 @@ target = "fuse_runtime_fixed_point_residual_test"
 test = "runtime.fixed_point_residual"
 result = "KILLED: FixedPointResidual.EvaluatingFDoesNotPerturbTheRunnersOwnPicardIteration FAILED (probed.neumann->u()/probed.dirichlet->q() after the Runner's own run() diverged from a fresh baseline run's values -- e.g. u[0] 293.566... vs 293.582..., q[3] 52.617... vs -218.426...); the other 5 cases in the binary still PASSED. Restored; cmp against the pre-mutation file reported no difference."
 
-# S7.2's own rows: the Newton runtime wiring (run_region_newton(),
+# The Newton runtime wiring (run_region_newton(),
 # check_region_supports_newton(), and evaluate_region_residual()'s own
 # `commit` parameter -- all src/runtime/iteration.cpp and
 # src/runtime/fixed_point_residual.cpp). Same hand-proof discipline as
@@ -55,8 +53,8 @@ result = "KILLED: FixedPointResidual.EvaluatingFDoesNotPerturbTheRunnersOwnPicar
 # mutated, rebuilt (`cmake --build /tmp/newton/b0 --target
 # fuse_runtime_newton_region_test`), run UNFILTERED, restored,
 # cmp-verified byte-identical, rebuilt and reran to confirm the full
-# count returns. Build directory: /tmp/newton/b0 (tier 0, this track's
-# own scratch build).
+# count returns. Build directory: /tmp/newton/b0 (tier 0, a
+# scratch build).
 
 [[mutation]]
 id = "newton-region-eager-validation-skipped"
@@ -71,7 +69,7 @@ new = """      const Result<void> supported =
       (void)supported;"""
 target = "fuse_runtime_newton_region_test"
 test = "runtime.newton_region"
-result = "Re-proved from a clean export after S7.2 lifted the window-scoped refusal this row used to kill through (the user's build-all gate had reported it SURVIVED): under the mutation fuse_runtime_newton_region_test reports [ FAILED ] 1 test, NewtonRegion.AnExternallyDrivenMemberIsRefusedAtSetup (initialize() succeeds on a region with an externally driven member instead of refusing E-NEWTON-UNSUPPORTED-REGION), [ PASSED ] 15 tests; file restored and cmp-verified against the worktree."
+result = "Proved from a clean export (an earlier build-all gate had reported it SURVIVED because the window-scoped refusal this row used to kill through was lifted): under the mutation fuse_runtime_newton_region_test reports [ FAILED ] 1 test, NewtonRegion.AnExternallyDrivenMemberIsRefusedAtSetup (initialize() succeeds on a region with an externally driven member instead of refusing E-NEWTON-UNSUPPORTED-REGION), [ PASSED ] 15 tests; file restored and cmp-verified against the worktree."
 
 [[mutation]]
 id = "newton-verification-sweep-commit-ignored"
@@ -115,11 +113,10 @@ new = """  st.iterations = nr.iterations;
   if (false && !num::is_converged(nr.status)) {"""
 target = "fuse_runtime_newton_region_test"
 test = "runtime.newton_region"
-result = "REPAIRED and RE-PROVED (NewtonModel track's own GAP 1 widened this anchor's own reporting block with a gmres_iterations extraction, same semantic point unchanged -- the anchor went stale as a SIDE EFFECT of that change and is repaired here, by the same track, per the lead's own review). Control run (unmutated, current file): full unfiltered fuse_runtime_newton_region_test, 17/17 PASSED. Mutation applied, rebuilt, full unfiltered binary run: 16 PASSED / 1 FAILED -- NewtonRegion.ExhaustingTheNewtonIterationBudgetReportsNonConvergence (run_period() returns success instead of E-RT-NOCONVERGE for a region whose NewtonConfig::max_nonlinear_iterations is 0), the SAME test the original 2026-10-10 proof named. Restored; cmp against the pre-mutation file reported no difference (md5 c33cd2e0828fce1f0de1d44fc9a9826b both before and after -- the baseline, see newton-model.toml's header for the hash's own history). Rebuilt and reran to confirm 17/17 returns."
+result = "PROVED (the anchor includes the reporting block's gmres_iterations extraction). Control run (unmutated, current file): full unfiltered fuse_runtime_newton_region_test, 17/17 PASSED. Mutation applied, rebuilt, full unfiltered binary run: 16 PASSED / 1 FAILED -- NewtonRegion.ExhaustingTheNewtonIterationBudgetReportsNonConvergence (run_period() returns success instead of E-RT-NOCONVERGE for a region whose NewtonConfig::max_nonlinear_iterations is 0), the same test as the original proof. Restored; cmp against the pre-mutation file reported no difference (md5 c33cd2e0828fce1f0de1d44fc9a9826b both before and after). Rebuilt and reran to confirm 17/17 returns."
 
 # The same reporting block exists on the WINDOW-scoped Newton path
-# (run_region_newton_window, added by the WindowNewton track after the row
-# above, which widened its anchor to stay unique). This anchor is the window
+# (run_region_newton_window; the row above widens its anchor to stay unique). This anchor is the window
 # path's own history-loop spacing (no blank line before the for-loop).
 [[mutation]]
 id = "window-newton-nonconvergence-not-reported"
@@ -150,17 +147,17 @@ new = """  st.iterations = nr.iterations;
   if (false && !num::is_converged(nr.status)) {"""
 target = "fuse_runtime_window_fixed_point_residual_test"
 test = "runtime.window_fixed_point_residual"
-result = "REPAIRED and RE-PROVED (anchor widened for the SAME reason as the row above: NewtonModel track's own GAP 1 gmres_iterations extraction). No longer UNPROVEN: fuse_runtime_window_fixed_point_residual_test has since gained WindowFixedPointResidual.ExhaustingTheNewtonBudgetOnAWindowReportsNonConvergence and ...AWindowThatExhaustsTheNewtonBudgetIsCountedNotConverged (neither test existed, or at least neither was named, when this row was marked UNPROVEN on 2026-10-11 -- this repair is the first time anyone has actually run the mutation against the CURRENT binary). Control run (unmutated, current file): full unfiltered binary, 8/8 PASSED. Mutation applied, rebuilt, full unfiltered binary run: 6 PASSED / 2 FAILED -- both of the tests just named fail (the first on `r.ok()` being true instead of false; the second on `iteration_stats().front().converged` being true instead of false, and `stats().windows_not_converged` being 0 instead of 1). Restored; cmp against the pre-mutation file reported no difference (md5 c33cd2e0828fce1f0de1d44fc9a9826b both before and after). Rebuilt and reran to confirm 8/8 returns."
+result = "PROVED (anchor widened for the SAME reason as the row above: the gmres_iterations extraction). fuse_runtime_window_fixed_point_residual_test has WindowFixedPointResidual.ExhaustingTheNewtonBudgetOnAWindowReportsNonConvergence and ...AWindowThatExhaustsTheNewtonBudgetIsCountedNotConverged. Control run (unmutated, current file): full unfiltered binary, 8/8 PASSED. Mutation applied, rebuilt, full unfiltered binary run: 6 PASSED / 2 FAILED -- both of the tests just named fail (the first on `r.ok()` being true instead of false; the second on `iteration_stats().front().converged` being true instead of false, and `stats().windows_not_converged` being 0 instead of 1). Restored; cmp against the pre-mutation file reported no difference (md5 c33cd2e0828fce1f0de1d44fc9a9826b both before and after). Rebuilt and reran to confirm 8/8 returns."
 
-# S7.2 WindowNewton (newton-krylov.md Sec. 9.1, 9.7's own test plan): the
+# Window Newton (newton-krylov.md Sec. 9.1, 9.7's own test plan): the
 # window-Newton interface vector's own GaussSeidel exclusion rule
 # (resolve_regions(), the `R.window_scoped` branch computing `RegionBlock::
 # newton_offset`/`RegionRuntime::newton_n`). Same hand-proof discipline:
 # backed up (md5 10e6bf78d89881f534abab62f52487bf), mutated, rebuilt
 # (`ninja fuse_runtime_window_fixed_point_residual_test`), run UNFILTERED,
 # restored, cmp-verified byte-identical, rebuilt and reran to confirm the
-# full count returns. Build directory: /tmp/winnewton/b0 (tier 0, this
-# track's own scratch build).
+# full count returns. Build directory: /tmp/winnewton/b0 (tier 0, a
+# scratch build).
 
 [[mutation]]
 id = "window-newton-gauss-seidel-exclusion-dropped"
@@ -173,7 +170,7 @@ target = "fuse_runtime_window_fixed_point_residual_test"
 test = "runtime.window_fixed_point_residual"
 result = "Hand-proved: 6 cases, all pass before; after mutation, 1 fails (WindowFixedPointResidual.GaussSeidelUnlaggedBlockIsExcludedFromX -- excluded_lengths.size() reads 0 instead of 1, i.e. the GaussSeidel region's own `n` grew to include the channel GaussSeidel already resolves deterministically), 5 pass. File restored and cmp-verified byte-identical; rebuilt and reran to confirm all 6 pass again."
 
-# S7.2b (PetscSelect track): the substrate-selection seam in
+# The substrate-selection seam in
 # src/runtime/iteration.cpp. Two independent mutation rows, one per the
 # two places a Petsc selection could be silently defeated -- the
 # translation function every call site goes through, and the eager
@@ -217,7 +214,7 @@ target = "fuse_runtime_newton_region_test"
 test = "runtime.newton_region"
 result = "Hand-proved, /tmp/petscselect/b0 (tier-0 without PETSc): 17 cases, all pass before; after mutation, 1 fails (NewtonRegion.ARegionSelectingAnUnregisteredSubstrateIsRefusedAtSetup -- the eager check's own result is discarded, so a graph naming an unavailable substrate is accepted at initialize() instead of refused), 16 pass. File restored and md5/cmp-verified byte-identical; rebuilt and reran to confirm all 17 pass again."
 
-# Substrate track (plan S7.2b phase 2 closing): the per-region DISPATCH
+# The per-region DISPATCH
 # call site, not the eager setup-time check above -- a defect here is
 # invisible to any test built from a SINGLE Newton region (every such
 # region's own config already names the substrate the mutation hard-codes,

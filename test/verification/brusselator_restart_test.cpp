@@ -1,8 +1,6 @@
-/// Restart track (docs/dev/restart.md), Stage B Slice 2: the Brusselator
-/// Runner round trip at tier 0 (no MPI -- this sandbox cannot start it;
-/// see the host_pending note in the delivered report), proving owner
-/// decisions 1 and 4 against the one example of the four Stage A named
-/// that genuinely exercises Form A's own generality (docs/dev/
+/// Restart (docs/dev/restart.md): the Brusselator Runner round trip at
+/// tier 0 (no MPI), proving the restart contract against the one example
+/// of the four that genuinely exercises Form A's own generality (docs/dev/
 /// restart.md Section 2.3: Brusselator is the only one of the four
 /// examples with real sub-component spatial partitioning). Covers:
 ///   - UComponent/VComponent Form A over MeshView::global_id() (species
@@ -11,8 +9,7 @@
 ///   - window-waveform history (WindowMemberState: clock, history,
 ///     last_window_waveform) restart, keyed by (field, global id) per
 ///     sample;
-///   - IQN-ILS accelerator restart state (KNOWN_ISSUES.md D64, closed
-///     this round), alongside the already-tested Aitken path;
+///   - IQN-ILS accelerator restart state, alongside the Aitken path;
 ///   - both file layouts, Jacobi and Gauss-Seidel waveform iteration.
 /// Reuses test/verification/brusselator_runner_test.cpp's own Rig/
 /// make_rig()/add_window_coupling() construction, not re-derived.
@@ -62,12 +59,11 @@ struct BrusselatorFixture {
   fuse::CouplingGraph graph;
   ComponentSet components;
   FieldRegistry registry;
-  // Latent bug fixed this round: `fuse::Runner::Impl::dag` is held by
-  // REFERENCE to the `OperatorDAG` inside a `fuse::LoweringResult` --
-  // make_setup() used to keep that result as a stack-local, dangling the
-  // instant make_setup() returned. Never manifested until a later
-  // Runner-internal call read deep enough into the stale memory to
-  // observe a corrupted OperatorDAG. Declared BEFORE `runner` so
+  // `fuse::Runner::Impl::dag` is held by REFERENCE to the `OperatorDAG`
+  // inside a `fuse::LoweringResult` -- make_setup() must therefore not keep
+  // that result as a stack-local, which would dangle the instant
+  // make_setup() returned and corrupt the OperatorDAG seen by a later
+  // Runner-internal call. Declared BEFORE `runner` so
   // destruction order is correct: members destroy in REVERSE declaration
   // order, so `runner` (which holds a reference into `lowered.dag`) is
   // destroyed before `lowered` itself is.
@@ -254,11 +250,10 @@ void run_round_trip(WaveformIteration mode, AccelKind accel,
   const fuse::Result<void> rr = restore_point(*restored, layout, path, "p3",
                                               /*allow_reset=*/false, any_reset);
   ASSERT_TRUE(rr.ok()) << rr.error().code << ": " << rr.error().message;
-  // EXPECT_FALSE, not EXPECT_TRUE: round 2's MUST-FIX 2 (KNOWN_ISSUES.md
-  // D69, closed) implements a window-scoped region's own accelerator
-  // restart genuinely, rather than silently resetting it -- AccelKind::
-  // None's own restart_state_implemented()==true (NoneAccel, src/num/
-  // accel_relaxation.cpp) now means a window-scoped None region
+  // EXPECT_FALSE, not EXPECT_TRUE: a window-scoped region's own accelerator
+  // restart is implemented genuinely, rather than silently resetting it --
+  // AccelKind::None's own restart_state_implemented()==true (NoneAccel,
+  // src/num/accel_relaxation.cpp) means a window-scoped None region
   // restores with NO reset at all, the same as an ordinary region.
   EXPECT_FALSE(any_reset);
   const RunResult restored_result = run_n_periods(*restored, 3);
@@ -305,15 +300,13 @@ TEST(BrusselatorRestart, GrowingLayoutJacobiNoAccel) {
                 "growing_jacobi_none.h5");
 }
 
-// KNOWN_ISSUES.md D72: a window-scoped region's own CONSUMER-side
-// transfer buffer (cfg.window_import) with a REAL accelerator.
-// Previously removed (both fix attempts measured insufficient/harmful,
-// see KNOWN_ISSUES.md); restored here once D72's own fix (advance_
-// window()'s D70-populated last_window_waveform re-primes the live
-// window_import buffer right after restore_restart_fields(), see
+// A window-scoped region's own CONSUMER-side transfer buffer
+// (cfg.window_import) with a REAL accelerator. advance_window()'s
+// last_window_waveform re-primes the live window_import buffer right after
+// restore_restart_fields() (see
 // Runner::Impl::reprime_window_import_after_restore(), src/runtime/
-// iteration.cpp) makes the restored run's per-window iteration count
-// and final fields agree with the reference run bit for bit.
+// iteration.cpp), so the restored run's per-window iteration count and
+// final fields agree with the reference run bit for bit.
 TEST(BrusselatorRestart, SeparateLayoutJacobiAitken) {
   run_round_trip(WaveformIteration::Jacobi, AccelKind::Aitken,
                 fuse::restart_io::FileLayout::SeparateMeshAndPoints,
@@ -326,18 +319,14 @@ TEST(BrusselatorRestart, GrowingLayoutJacobiAitken) {
                 "growing_jacobi_aitken.h5");
 }
 
-TEST(BrusselatorRestart, D17ConfigurationWindows3And6ConvergeUnderTheGuardedAitken) {
-  // Window seed track, Stage E (KNOWN_ISSUES.md D76). This fixture's own
-  // kDtU/kDtV/kWindow (0.002, 0.003, 0.02) already IS D17's own CLI
-  // configuration. Before Stage B's seed fix, Jacobi+Aitken's own
-  // iterations_per_window measured [15,16,18,25,25,25] over 6 periods;
-  // after Stage B's seed fix alone (Runner adopts WindowCoupler's own
-  // predictor; Aitken's own omega update still unguarded), window 3 (the
-  // 4th entry) exhausted the full kMaxIterations=100 sweep cap instead --
-  // this track's own D76 round 3 measurement. The guarded Aitken (this
-  // round) must converge every one of the first 7 windows (0-6) strictly
-  // under the cap; windows 3 and 6 are the two this track named
-  // explicitly as failing before this fix.
+TEST(BrusselatorRestart, ExampleCliConfigurationWindows3And6ConvergeUnderTheGuardedAitken) {
+  // This fixture's own kDtU/kDtV/kWindow (0.002, 0.003, 0.02) is the
+  // example's own CLI configuration. The Runner adopts WindowCoupler's own
+  // window-seed predictor, and Aitken's omega update is guarded (a
+  // non-positive omega is rejected); an unguarded omega update let window 3
+  // exhaust the full kMaxIterations=100 sweep cap. Every one of the first
+  // 7 windows (0-6) must converge strictly under the cap; windows 3 and 6
+  // are the ones that failed without the guard.
   auto s = make_setup(WaveformIteration::Jacobi, AccelKind::Aitken);
   ASSERT_TRUE(s != nullptr);
   const RunResult r = run_n_periods(*s, 7);
@@ -345,7 +334,7 @@ TEST(BrusselatorRestart, D17ConfigurationWindows3And6ConvergeUnderTheGuardedAitk
   for (std::size_t w = 0; w < r.iterations_per_window.size(); ++w) {
     EXPECT_LT(r.iterations_per_window[w], kMaxIterations)
         << "window " << w << " measured " << r.iterations_per_window[w]
-        << " iterations (cap " << kMaxIterations << ") -- D76";
+        << " iterations (cap " << kMaxIterations << ")";
   }
 }
 
@@ -361,7 +350,7 @@ TEST(BrusselatorRestart, GrowingLayoutJacobiIqnIls) {
                 "growing_jacobi_iqnils.h5");
 }
 
-/// Owner decision 2's refusal, D63's own convention applied to this
+/// Refusal on mismatch, the descriptor-hash convention applied to this
 /// example: a restart at a graph whose descriptor differs refuses by
 /// name. Exercised here by restoring a point written by the Jacobi
 /// graph into a Runner built from the GaussSeidel graph -- the caller's
@@ -391,13 +380,9 @@ TEST(BrusselatorRestart, DescriptorHashMismatchIsDetectable) {
 // A window-scoped region's own accelerator restart with a REAL
 // accelerator (AccelKind::IQN_ILS or Aitken over `brusselator_window`,
 // as opposed to AccelKind::None above, which has no learned state at
-// all) is NOT exercised at the Runner level in this file -- KNOWN_
-// ISSUES.md D72 (open): a window-scoped region's own CONSUMER-side
-// transfer buffer (`cfg.window_import`) is not correctly reconstructed
-// after a restart, so a Runner-level round trip with a real
-// accelerator does not yet reproduce the reference run's own iteration
-// count, even though the accelerator's own state round-trips correctly
-// in isolation (test/runtime/restart_test.cpp's own
+// all) is exercised at the Runner level by the Separate/Growing
+// Jacobi Aitken/IqnIls round trips above; the accelerator's own state also
+// round-trips in isolation (test/runtime/restart_test.cpp's own
 // AitkenAccelWindowCapacityPerSampleRestartRoundTripsBitForBit).
 // QuasiNewtonAccel's own restart correctness over an ORDINARY
 // (non-window) region is proven instead by test/runtime/
@@ -405,7 +390,7 @@ TEST(BrusselatorRestart, DescriptorHashMismatchIsDetectable) {
 
 namespace {
 
-/// MUST-FIX 1 (NO SILENT RESET), round 2: the SAME test-only double
+/// NO SILENT RESET: the SAME test-only double
 /// test/runtime/restart_test.cpp's own NeverImplementsRestartAccel is
 /// (duplicated here rather than shared across translation units, since
 /// it is a test-only class with no production header), used to verify
@@ -466,7 +451,7 @@ TEST(BrusselatorRestart, WindowScopedAccelNotImplementedRefusesWithoutOptIn) {
   ASSERT_FALSE(rr.ok())
       << "a window-scoped region's own accelerator must refuse by name, "
          "not silently reset, when restart_state_implemented() == false "
-         "and the run did not opt in -- MUST-FIX 1, round 2";
+         "and the run did not opt in";
   EXPECT_EQ(rr.error().code, "E-RESTART-ACCEL-NOT-IMPLEMENTED");
   EXPECT_FALSE(any_reset);
   std::remove(path.c_str());
@@ -491,20 +476,16 @@ TEST(BrusselatorRestart, WindowScopedAccelNotImplementedWithAllowResetSucceedsAn
   ASSERT_TRUE(rr.ok()) << rr.error().code << ": " << rr.error().message;
   EXPECT_TRUE(any_reset)
       << "opting in must call Accelerator::reset() and REPORT it, per "
-         "owner decision 4 (\"when used it is reported at restart\")";
+         "the restart contract (\"when used it is reported at restart\")";
   std::remove(path.c_str());
 }
 
-// KNOWN_ISSUES.md D70 (owner decision 2026-10-18): advance_window()
-// (src/runtime/iteration.cpp, the Runner-compiled window driver) now
-// populates WindowMemberState::last_window_waveform every sweep, the
+// advance_window() (src/runtime/iteration.cpp, the Runner-compiled window
+// driver) populates WindowMemberState::last_window_waveform every sweep, the
 // same local-trajectory-rebuilt-every-sweep convention WindowCoupler::
 // sweep_window() already uses for its own real_traj[i] (window_coupler.
 // cpp) -- so write_window_member_restart()'s own "/waveform/present"
-// branch (runner.cpp) has a live producer for the Runner driver, where
-// before this fix it was unconditionally false (measured dead: a grep
-// of iteration.cpp for .last_window_waveform/->last_window_waveform
-// returned zero matches).
+// branch (runner.cpp) has a live producer for the Runner driver.
 TEST(BrusselatorRestart, WaveformPresentAfterAdvanceThroughTheRunner) {
   const std::string path = temp_dir_path("waveform_present.h5");
   std::remove(path.c_str());
@@ -529,14 +510,14 @@ TEST(BrusselatorRestart, WaveformPresentAfterAdvanceThroughTheRunner) {
   ASSERT_TRUE(rv.ok()) << rv.error().code << ": " << rv.error().message;
   EXPECT_TRUE(present_u) << "U's own last_window_waveform must be populated "
                             "by advance_window() after at least one window "
-                            "has completed (D70)";
+                            "has completed";
   EXPECT_TRUE(present_v) << "V's own last_window_waveform must be populated "
                             "by advance_window() after at least one window "
-                            "has completed (D70)";
+                            "has completed";
   std::remove(path.c_str());
 }
 
-// D70's second acceptance criterion: a restored run's first window after
+// A restored run's first window after
 // restore uses the same extrapolation history (here, the SAME
 // last_window_waveform samples) as an uninterrupted reference run would
 // have recorded at the identical window boundary. Compared through the
@@ -624,12 +605,11 @@ void expect_window_waveform_bit_identical(const std::string& path_a,
   }
 }
 
-// KNOWN_ISSUES.md D71 (owner priority, closed): a real accelerator
-// (Aitken, IQN-ILS) over a WaveformIteration::GaussSeidel coupling
-// window used to refuse E-RT-WINDOW-ACCEL unconditionally
-// (resolve_regions(), src/runtime/iteration.cpp). Fixed by excluding
-// the GaussSeidel window's own unlagged transfer from the accelerated
-// vector at the Runner::Impl::run_region() accelerator-update call
+// A real accelerator (Aitken, IQN-ILS) over a WaveformIteration::GaussSeidel
+// coupling window does not refuse E-RT-WINDOW-ACCEL
+// (resolve_regions(), src/runtime/iteration.cpp), because
+// the GaussSeidel window's own unlagged transfer is excluded from the
+// accelerated vector at the Runner::Impl::run_region() accelerator-update call
 // site, the identical membership test (a block's own feed_arc present
 // in R.window_lagged_import_arcs) run_region_newton_window()'s own
 // newton_offset already uses for the window-Newton interface vector
@@ -648,45 +628,34 @@ TEST(BrusselatorRestart, GaussSeidelAitkenConvergesAndMatchesJacobi) {
 
   auto gs = make_setup(WaveformIteration::GaussSeidel, AccelKind::Aitken);
   ASSERT_NE(gs, nullptr)
-      << "GaussSeidel + AccelKind::Aitken must no longer refuse "
-         "E-RT-WINDOW-ACCEL (D71)";
+      << "GaussSeidel + AccelKind::Aitken must not refuse "
+         "E-RT-WINDOW-ACCEL";
   const RunResult gs_result = run_n_periods(*gs, 6);
 
-  // Pinned, not just bounded: MEASURED on the fixed build, this exact
+  // Pinned, not just bounded: MEASURED, this exact
   // sequence (mutation testing found the weaker "GS <= Jacobi" bound
-  // below passes even with the GaussSeidel exclusion (D71's own fix)
+  // below passes even with the GaussSeidel exclusion
   // disabled entirely on THIS rig). Pinning the real count is what
   // actually exercises the fix; re-measure and update this vector, with
   // a comment naming the measurement, if a future change to the
   // accelerator or the problem genuinely moves it.
   //
-  // RE-PINNED, Window seed track Stage E (KNOWN_ISSUES.md D76): was
-  // {7, 8, 9, 9, 9, 9} (measured against the pre-Stage-B Runner seed,
-  // a persistence predictor past a member's first window). Stage B's
-  // Runner seed fix (adopts WindowCoupler's own extrapolation predictor
-  // for every window instance) moves every seed closer to the window's
-  // own fixed point; GaussSeidel's own D71 exclusion already keeps the
-  // accelerated vector to the single lagged channel here, so a strictly
-  // better seed converges that one channel in the measured minimum of 7
-  // sweeps on every window rather than 8-9 -- every moved entry is a
-  // DECREASE, consistent with "a more accurate seed needs no more
-  // sweeps, usually fewer," never an increase. The Aitken safeguard
-  // (reject a non-positive omega) added the same round does not move
-  // this row at all: measured identically {7,7,7,7,7,7} with the seed
-  // fix alone and with the seed fix plus the safeguard, so this rig's
-  // own GaussSeidel+Aitken sequence never hits the unguarded formula's
-  // negative-omega case. The "matches Jacobi" assertions below (the LE
-  // bound and the U/V EXPECT_NEAR cross-check) are unchanged by the
-  // re-pin: both still hold against the new numbers exactly as they did
-  // against the old ones.
+  // The Runner seeds every window instance with WindowCoupler's own
+  // extrapolation predictor, which puts each seed close to the window's
+  // own fixed point; GaussSeidel's exclusion keeps the accelerated vector
+  // to the single lagged channel here, so that one channel converges in
+  // 7 sweeps on every window. The Aitken safeguard (reject a non-positive
+  // omega) does not move this row: the sequence is {7,7,7,7,7,7} with or
+  // without it, so this rig's own GaussSeidel+Aitken sequence never hits
+  // the unguarded formula's negative-omega case.
   const std::vector<int> expected_gs_iterations = {7, 7, 7, 7, 7, 7};
   ASSERT_EQ(gs_result.iterations_per_window.size(), expected_gs_iterations.size());
   for (std::size_t w = 0; w < expected_gs_iterations.size(); ++w) {
     EXPECT_EQ(gs_result.iterations_per_window[w], expected_gs_iterations[w])
         << "window " << w
         << " -- GaussSeidel's own measured sweep count regressed; this is "
-           "exactly what D71's own fix (excluding the unlagged transfer "
-           "from the accelerated vector) changes";
+           "exactly what excluding the unlagged transfer "
+           "from the accelerated vector changes";
   }
   ASSERT_EQ(jacobi_result.iterations_per_window.size(),
            gs_result.iterations_per_window.size());
@@ -715,23 +684,18 @@ TEST(BrusselatorRestart, GaussSeidelIqnIlsConvergesAndMatchesJacobi) {
 
   auto gs = make_setup(WaveformIteration::GaussSeidel, AccelKind::IQN_ILS);
   ASSERT_NE(gs, nullptr)
-      << "GaussSeidel + AccelKind::IQN_ILS must no longer refuse "
-         "E-RT-WINDOW-ACCEL (D71)";
+      << "GaussSeidel + AccelKind::IQN_ILS must not refuse "
+         "E-RT-WINDOW-ACCEL";
   const RunResult gs_result = run_n_periods(*gs, 6);
 
   // Pinned, not just bounded -- see GaussSeidelAitkenConvergesAndMatches
   // Jacobi's own comment above for why the weaker bound alone is not
-  // enough to exercise this fix. MEASURED on the fixed build.
+  // enough to exercise this fix. MEASURED.
   //
-  // RE-PINNED, Window seed track Stage E (KNOWN_ISSUES.md D76): was
-  // {7, 8, 8, 8, 8, 8} (pre-Stage-B Runner seed). Stage B's Runner seed
-  // fix moves every seed closer to the window's own fixed point, the
-  // same mechanism GaussSeidelAitkenConvergesAndMatchesJacobi's own
-  // comment names; IQN_ILS is not touched by the Aitken safeguard added
-  // the same round, and measured identically {7,7,6,6,6,6} with the
-  // seed fix alone and with the seed fix plus the safeguard. Every
-  // moved entry is a DECREASE or unchanged, never an increase. The
-  // "matches Jacobi" assertions below are unchanged by the re-pin.
+  // The seed predictor is the same mechanism
+  // GaussSeidelAitkenConvergesAndMatchesJacobi's own comment names;
+  // IQN_ILS is not touched by the Aitken safeguard, and the sequence is
+  // {7,7,6,6,6,6} with or without it.
   const std::vector<int> expected_gs_iterations = {7, 7, 6, 6, 6, 6};
   ASSERT_EQ(gs_result.iterations_per_window.size(), expected_gs_iterations.size());
   for (std::size_t w = 0; w < expected_gs_iterations.size(); ++w) {

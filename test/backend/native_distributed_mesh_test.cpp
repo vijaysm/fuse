@@ -385,13 +385,12 @@ TEST(NativeDistributedMesh, RefusesAFixedShapeGivenTheWrongCornerCount) {
 }
 
 // ---------------------------------------------------------------------------
-// NM-8: the three tests above exercise NativeMeshBuilder::build()'s OWN
+// The three tests above exercise NativeMeshBuilder::build()'s OWN
 // checks; every in-tree producer routes through it, so a direct caller of
 // NativeMeshView::create_from_host (the class's own doc: "validates
 // connectivity") was the only way to reach either gap below. Not latent
-// via any producer in this tree, but the header's claim was false for a
-// caller that bypasses the builder, and the unguarded reads this closes
-// are both UB (an out-of-range dim fell through to no matching branch in
+// via any producer in this tree, but the header's claim would be false for a
+// caller that bypasses the builder, and the unguarded reads are both UB (an out-of-range dim fell through to no matching branch in
 // the dimension dispatch; a wrong corner count read past a cell's own
 // vertex slice).
 // ---------------------------------------------------------------------------
@@ -587,7 +586,7 @@ TEST(NativeDistributedMesh, DeviceGeometryMatchesHostForTwoDimensionalShapes) {
 }
 
 // ---------------------------------------------------------------------------
-// NM-10: a face vertex set `find_or_add_face` cannot reconcile with the one
+// A face vertex set `find_or_add_face` cannot reconcile with the one
 // it already recorded (same vertex SET, but an order that is neither a
 // cyclic match nor its reversal) must be refused, not silently reused under
 // whichever orientation the comparison happens to settle on.

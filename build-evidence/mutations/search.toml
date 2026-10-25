@@ -1,6 +1,4 @@
-# Mutations for fuse::search (the ArborX track). Own file per the
-# mutation-manifest protocol (tools/mutate.py's own doc comment): do not edit
-# build-evidence/mutations.toml directly while another track holds it dirty.
+# Mutations for fuse::search (ArborX).
 
 [[mutation]]
 id = "search-padding-dropped"

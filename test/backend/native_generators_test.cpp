@@ -380,9 +380,9 @@ TEST(NativeMeshIo, VtkRoundTripReproducesAPolyhedralMeshExactly) {
 }
 
 // ---------------------------------------------------------------------------
-// NM-7: `native_backend.hpp` documents `E-MESH-SIZE` for a spec whose
-// count does not fit; before this fix nothing produced it, and a spec
-// this large instead crashed inside `VertexLookup::local.assign` as an
+// `native_backend.hpp` documents `E-MESH-SIZE` for a spec whose
+// count does not fit; a spec this large must not instead crash inside
+// `VertexLookup::local.assign` as an
 // uncaught `std::bad_alloc`/`std::length_error`. Both specs are far past
 // the int-indexed builder's limit but cheap to refuse -- no allocation is
 // attempted before the check fires.
@@ -406,7 +406,7 @@ TEST(NativeMeshIo, RefusesAFileThatDoesNotExist) {
 }
 
 // ---------------------------------------------------------------------------
-// NM-1: the writer's stream precision must be `max_digits10` for `double`
+// The writer's stream precision must be `max_digits10` for `double`
 // (17), or ids and coordinates past 6 significant digits are silently
 // rounded on write. A gid at or beyond 1e6 is dense in the generators, so a
 // rounded gid collides with a DIFFERENT real vertex/cell instead of merely
@@ -460,7 +460,7 @@ TEST(NativeMeshIo, VtkRoundTripReproducesGidsAndCoordinatesAtFullPrecision) {
   }
 }
 
-// NM-1: the writer must refuse (as an invariant, not a data-dependent
+// The writer must refuse (as an invariant, not a data-dependent
 // refusal: a gid this large is this backend's own id assignment going
 // wrong, never a caller input) rather than silently truncate a gid past
 // the format's documented bound (native_mesh_io.hpp: "every integer up to

@@ -73,7 +73,7 @@ namespace {
 }
 
 // ---------------------------------------------------------------------------
-// Spec Section 5.4 (Task 5.5): when may a `Remap` be an element-wise copy?
+// Spec Section 5.4: when may a `Remap` be an element-wise copy?
 // ---------------------------------------------------------------------------
 
 /// The outcome of asking whether two regions are, cell for cell and index for
@@ -934,7 +934,7 @@ Result<void> Runner::Impl::resolve_remap_halo(const Instruction& ins, std::size_
 }
 
 // ---------------------------------------------------------------------------
-// Spec Section 5.4: the spatial remap (Task 5.5)
+// Spec Section 5.4: the spatial remap
 // ---------------------------------------------------------------------------
 
 Result<void> Runner::Impl::resolve_remap(const Instruction& ins, Resolved& r) {
@@ -2199,7 +2199,7 @@ Result<void> Runner::Impl::apply_nodal_dist_remap(const Instruction& ins, const 
 }
 
 // ---------------------------------------------------------------------------
-// Spec Section 7.3: the space-time remap (Task 6.3)
+// Spec Section 7.3: the space-time remap
 // ---------------------------------------------------------------------------
 
 namespace {
@@ -2805,8 +2805,8 @@ Result<void> Runner::Impl::resolve_instructions() {
         p.spec.dst_rank_set = ins.attrs.dst_rank_set;
         p.spec.elements     = out.elements;
         p.spec.components   = out.components;
-        // Transport preserves region; the input and output arcs agree. Task 3
-        // checks that rather than trusting it.
+        // Transport preserves region; the input and output arcs agree. The
+        // check_transport_extents() checks that rather than trusting it.
         p.region = dag.arc(ins.out).type.region;
         r.transport = static_cast<std::int32_t>(transport_plans.size());
         transport_plans.push_back(std::move(p));

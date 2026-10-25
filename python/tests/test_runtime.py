@@ -241,7 +241,7 @@ class TestSessionDrivesPythonPeers:
 
     def test_an_unbound_field_is_refused_before_the_hot_loop(self):
         """fuse::Runner::initialize()'s E-RT-UNBOUND is a fuse::Result failure -- a bare
-        pfuse.FuseError carrying .code, (docs/dev/python-surface.md)."""
+        pfuse.FuseError carrying .code (docs/dev/python-surface.md)."""
         class Lazy(Producer):
             def register_fields(self, registry, graph):
                 pass  # binds nothing

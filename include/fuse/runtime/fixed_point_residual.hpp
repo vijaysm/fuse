@@ -1,9 +1,8 @@
 #pragma once
 
-/// S7.1's Newton-Krylov seam: the coupled fixed-point residual over one
-/// iteration region, the thing a Newton loop (S7.2, a separate, not-yet-
-/// landed track) drives to zero instead of letting `Runner` run Picard's
-/// own sweep loop for that region.
+/// The Newton-Krylov seam: the coupled fixed-point residual over one
+/// iteration region, the thing a Newton loop drives to zero instead of
+/// letting `Runner` run Picard's own sweep loop for that region.
 ///
 /// `G` is one Picard sweep of the region's body: deliver the stacked
 /// interface vector `x` into every member's `Requires` storage, re-advance
@@ -26,13 +25,13 @@
 namespace fuse {
 
 /// A callable evaluating `F(x) = x - G(x)` over one iteration region's
-/// stacked interface vector, in the calling convention the JFNK track can
+/// stacked interface vector, in the calling convention the JFNK solver can
 /// wrap directly: a `std::function` over `std::span<const double> in /
 /// std::span<double> out`, matching `fuse::linalg::MatrixFreeOperator`'s
 /// own `apply()` shape but over spans rather than a `DistVector` -- the
-/// JFNK track adapts one into the other for its own distributed Krylov
-/// solve; this seam stays serial and span-based because that is all S7.1
-/// itself needs to prove.
+/// JFNK solver adapts one into the other for its own distributed Krylov
+/// solve; this seam stays serial and span-based because that is all the
+/// serial region residual needs.
 struct FixedPointResidual {
   /// `F(x) = x - G(x)`. `in.size() == out.size() == n`. Evaluating this
   /// leaves every region member's own state, and every coupler-owned
@@ -51,7 +50,7 @@ struct FixedPointResidual {
   /// One entry per block (one entry per residual the region carries), in
   /// the SAME order `evaluate`'s vector is laid out: `offsets[i]` is where
   /// block i starts, `lengths[i]` how long it is -- offsets a caller
-  /// (e.g. the JFNK track's own block-Jacobi preconditioner) needs to
+  /// (e.g. the JFNK solver's own block-Jacobi preconditioner) needs to
   /// scatter a global Newton iterate into each member's own slice, or
   /// gather per-block Jacobian actions back. `channel_names[i]` is
   /// `RegionBlock::channel_name` (src/runtime/runner_impl.hpp) for that
@@ -62,11 +61,11 @@ struct FixedPointResidual {
   std::vector<std::string> channel_names;
 };
 
-/// S7.2 WindowNewton (newton-krylov.md Sec. 9.1-9.2, 9.7's own test plan):
-/// the window-scoped sibling of `FixedPointResidual`, letting
+/// Window Newton (newton-krylov.md Sec. 9.1-9.2, 9.7): the window-scoped
+/// sibling of `FixedPointResidual`, letting
 /// `window_fixed_point_residual_test.cpp` exercise `Runner::Impl::
 /// evaluate_window_region_residual()` the same way `FixedPointResidual`
-/// lets S7.1's own test exercise the ordinary seam -- see
+/// lets its own test exercise the ordinary seam -- see
 /// `Runner::window_region_fixed_point_residual()` (fuse/runtime/
 /// runner.hpp) for how one is obtained. TEST/DIAGNOSTIC-ONLY: no
 /// production caller drives a window region this way (`run_region_

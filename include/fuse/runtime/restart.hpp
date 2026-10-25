@@ -1,6 +1,6 @@
 #pragma once
 
-/// Restart track (docs/dev/restart.md), Stage B Slice 1: the Runner-level
+/// Restart (docs/dev/restart.md): the Runner-level
 /// orchestration two free functions below provide -- writing/restoring a
 /// restart point's TIME-LEVEL scalars and every restartable component's
 /// and accelerated region's own state (`Runner::write_restart_fields()`/
@@ -36,7 +36,7 @@ namespace fuse {
 /// `@time_numerator`/`@time_denominator`/`@period_index`) plus every
 /// restartable component's own state and every accelerated region's
 /// accelerator memory into `writer`, then calls `writer.finish_point()`
-/// -- owner decision 2's batched id check, which must run exactly once,
+/// -- the batched id check, which must run exactly once,
 /// AFTER every other call for this point has already succeeded.
 [[nodiscard]] Result<void> write_restart_point(Runner& runner,
                                                ComponentSet& components,
@@ -52,7 +52,7 @@ namespace fuse {
 /// run()`/`run_period()` counting from where the point was taken.
 /// `allow_accelerator_reset_on_mismatch`/`any_accelerator_reset` are
 /// `Runner::restore_restart_fields()`'s own parameters, forwarded
-/// unchanged (owner decision 4's off-by-default reset option).
+/// unchanged (the off-by-default reset option).
 [[nodiscard]] Result<void> restore_restart_point(
     Runner& runner, ComponentSet& components, RestartReader& reader,
     bool allow_accelerator_reset_on_mismatch, bool& any_accelerator_reset,

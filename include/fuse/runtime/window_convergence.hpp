@@ -1,6 +1,6 @@
 #pragma once
 
-/// Unit 2b (D19), step (c) -- AGREED CONVERGENCE for a window-scoped
+/// AGREED CONVERGENCE for a window-scoped
 /// iteration region. Separated from the MPI call that gathers the input,
 /// for the same reason `epoch_schedule.hpp`/`rank_agreement.hpp` are: "a
 /// collective produces an array, and a rule reads it" -- a mistake in the
@@ -9,13 +9,13 @@
 /// Keeping them apart means the decision itself is tested at tier 0, the
 /// platform most of this project's suite runs under.
 ///
-/// `run_region()`'s own pre-fix convergence check (`R.convergence.
-/// all_satisfied(R.residual_norms, R.reference_norms)`) read `R.block_
+/// A convergence check of the form `R.convergence.
+/// all_satisfied(R.residual_norms, R.reference_norms)` over `R.block_
 /// residual`/`R.block_value` computed entirely from THIS rank's own
-/// buffers -- fine for an ordinary iteration region, whose own cross-rank
+/// buffers is fine for an ordinary iteration region, whose own cross-rank
 /// agreement is `reduce_region_residuals()` (a binomial reduce-then-
 /// broadcast, `epoch_schedule.hpp`). A window-scoped region's own blocks
-/// are tied to `WindowMemberConfig::hosted` (Unit 2b step (a)), not
+/// are tied to `WindowMemberConfig::hosted`, not
 /// `RegionBlock::length > 0` -- a non-hosted rank's local `block_residual`/
 /// `block_value` are computed from whatever stale buffer sits in its own
 /// `slots[]` (nothing writes there; `advance_window()` skips a non-hosted

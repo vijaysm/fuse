@@ -578,7 +578,7 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
     R.max_iterations = reg.max_iterations;
     R.convergence = decl.convergence;
 
-    // THE GATE (spec Section 5.3, Task 7.2). This is the only call site of
+    // THE GATE (spec Section 5.3). This is the only call site of
     // verify_iteration_region(), and it is why IterationRegionDecl carries a
     // ConvergenceCriterion at all: without the field there is nowhere for the
     // criterion to live, so the E-ITER-NOCONVERGE check could never run and a

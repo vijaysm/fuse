@@ -1,4 +1,4 @@
-// Brusselator (Time windows track), weights: the one place this port CAN
+// Brusselator weights: the one place this port CAN
 // be exact against the Toy (/Users/mahadevan/Code/AI/Toy). Both codes
 // remap between two axis-aligned uniform rectangular grids over the same
 // unit square, so the true overlap area between ANY source cell and ANY

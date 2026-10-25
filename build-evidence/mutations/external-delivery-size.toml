@@ -13,7 +13,7 @@
 [[mutation]]
 id = "external-delivery-size-exemption-removed"
 area = "runtime"
-describes = "runner.cpp's per-instruction size-reconciliation loop reverts to treating OpKind::ExternalDelivery like an ordinary data-moving kind, comparing its input arc (the EXPORTING component's own decomposition) against its output arc (the IMPORTING component's own decomposition, by design two DIFFERENT components' RankSets, src/ir/rules_channel.cpp's lower_channel()). On a rank hosting exactly one end this is exactly the host's own measured failure (KNOWN_ISSUES.md D38): verification.brusselator.participants.lowfive.mpmd.3's u_stdout.0.log, 'ExternalDelivery instruction 1 reads 2816 values from arc %0 into 0 at arc %2'."
+describes = "runner.cpp's per-instruction size-reconciliation loop reverts to treating OpKind::ExternalDelivery like an ordinary data-moving kind, comparing its input arc (the EXPORTING component's own decomposition) against its output arc (the IMPORTING component's own decomposition, by design two DIFFERENT components' RankSets, src/ir/rules_channel.cpp's lower_channel()). On a rank hosting exactly one end this is exactly the failure measured on the host: verification.brusselator.participants.lowfive.mpmd.3's u_stdout.0.log, 'ExternalDelivery instruction 1 reads 2816 values from arc %0 into 0 at arc %2'."
 file = "src/runtime/runner.cpp"
 old = "    if (ins.kind != OpKind::ExternalDelivery) {"
 new = "    if (true) {  // MUTATED: ExternalDelivery exemption disabled"

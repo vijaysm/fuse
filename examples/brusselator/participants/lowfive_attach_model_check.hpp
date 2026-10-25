@@ -1,13 +1,12 @@
 #pragma once
 
-// S6 phase 3 (Conformance, "LowFive" track), "LowFive attach" track,
-// ROUND 2 REVIEW: a pure, MPI-free and HDF5-free explicit-state
+// A pure, MPI-free and HDF5-free explicit-state
 // simulation of the TWO processes in one LowFive-bound bidirectional
 // exchange (one first-server, one first-reader; lowfive_attach_
 // decision.hpp's own ServeRole/ServeEvent/ServeAction/ServeState/
 // serve_state_step()), checked against the BLOCKING semantics read
 // directly from LowFive's own source (lowfive_attach_decision.hpp's own
-// "ROUND 2 REVIEW" comment has the full citations):
+// "RECEIVE AND RELEASE" comment has the full citations):
 //
 //   - a process that enters a blocking serve for file K (ServeAction::
 //     kServeNow or kFlushDeferred) does not proceed past that point
@@ -17,10 +16,8 @@
 //     then immediately (non-blockingly, from this process's own view)
 //     releases it.
 //
-// ROUND 7 CONFIRMATION (not a change -- the blocking semantics above
-// are re-read against source this round and CONFIRMED, with the
-// mechanism now cited rather than assumed; this comment is appended,
-// the two bullets above are untouched). `DistMetadataVOL::file_close()`
+// The blocking semantics above are confirmed against LowFive's source,
+// with the mechanism cited. `DistMetadataVOL::file_close()`
 // (LowFive/src/vol-dist-metadata.cpp)'s own RemoteFile branch does
 // THREE things, not one: `f->obj.call<void>("file_close")` (an RPC to
 // the producer), then a COLLECTIVE `MPI_Barrier(local)` across EVERY
@@ -35,8 +32,8 @@
 // part breakdown matters only once more than one intercomm/consumer is
 // in play, which this row is not. Nothing here changes which process
 // blocks on what -- it only names the RPC/barrier/finish sequence
-// underneath "close" that this track's own earlier rounds cited as a
-// single step.
+// underneath "close", which the two bullets above treat as a single
+// step.
 //
 // WHAT THIS DOES AND DOES NOT ESTABLISH. This checks the PROTOCOL
 // (lowfive_attach_decision.hpp's own state machine) against the
@@ -54,8 +51,8 @@
 //
 // THE FIXED LOCAL PROGRAM. Each process's own local event sequence, for
 // N iterations, is NOT searched for every possible interleaving WITHIN
-// one process -- it is the one this track's own measured diagnosis and
-// lowfive_attach_decision.hpp's own INVARIANT comment already fixed:
+// one process -- it is the one the measured diagnosis and
+// lowfive_attach_decision.hpp's own INVARIANT comment fix:
 // per iteration, write-closed, then import-about-to-open, then the
 // open-and-close itself, then import-closed; never two writes before a
 // read, matching I1. What IS explored is every possible INTERLEAVING of
@@ -107,7 +104,7 @@ using fuse_examples::lowfive_attach::serve_state_step;
 /// correspond exactly to `ServeEvent`'s own three per-read/write members
 /// (`kFinalize` is handled separately, once, after the whole script).
 enum class StepKind { kWriteClosed, kAboutToOpen, kOpenClose, kImportClosed,
-                      kSyncBarrier };  // ROUND 8: the collective sync U, V and the coupler share
+                      kSyncBarrier };  // the collective sync U, V and the coupler share
 
 /// What a process does at one step, translated from the real
 /// `ServeAction` (or, for `kOpenClose`, unconditional). `kEnterBlocking`/
@@ -120,7 +117,7 @@ enum class StepKind { kWriteClosed, kAboutToOpen, kOpenClose, kImportClosed,
 /// ordinary, re-triable program-counter position instead of a special
 /// case in the search itself.
 enum class MicroAction { kEnterBlocking, kExitBlocking, kOpenCloseStep, kPassThrough,
-                        kSyncBarrierStep };  // ROUND 8
+                        kSyncBarrierStep };
 
 struct MicroStep {
   StepKind kind;
@@ -145,23 +142,22 @@ inline std::vector<MicroStep> BuildScript(int n_iterations) {
 /// test, not only by the narrower unit tests in test/verification/
 /// brusselator_lowfive_attach_test.cpp); the other two are rejected
 /// designs, expressed directly (never through `serve_state_step()`,
-/// since they are not what this track ships), kept only as illustrative
+/// since they are not what ships), kept only as illustrative
 /// evidence that this search is discriminating -- it must flag these --
 /// not as evidence about the shipped protocol, which `kShipped` alone
 /// speaks for.
 enum class PolicyKind {
-  kShipped,              // decide_serve_action() decides (round 8's own fix); flush at kImportClosed
-  kOriginalNatural,      // round 1: serve at EVERY write, both roles, never defer
+  kShipped,              // decide_serve_action() decides (decide_serve_action()); flush at kImportClosed
+  kOriginalNatural,      // serve at EVERY write, both roles, never defer
   kBothDefer,            // strawman: both roles defer at write, flush at kImportClosed
-  kRejectedPreOpenFlush, // the FIRST round-2 attempt this review rejected: flush at kAboutToOpen
-  // ROUND 8, task 4 scenario (ii) -- round 2/3's own FALSIFIED model,
-  // hand-rolled exactly like the three strawmen above (never through
-  // serve_state_step(), which this round's own fix changed to call
-  // decide_serve_action() instead and so can no longer express this):
+  kRejectedPreOpenFlush, // rejected design: flush at kAboutToOpen
+  // A FALSIFIED model, hand-rolled exactly like the three strawmen above
+  // (never through serve_state_step(), which calls decide_serve_action()
+  // and so can no longer express this):
   // a first-reader defers EVERY write, unconditionally, flushing only
   // at its own next kImportClosed; a first-server never defers. This
   // is the regression test for the measured host hang, not a design
-  // this track ships -- see this file's own ModelCheck.
+  // that ships -- see this file's own ModelCheck.
   // MeasuredOrderUnderRegressedPolicyReproducesTheMeasuredHang test.
   kRegressedAlwaysDeferFirstReader
 };
@@ -169,12 +165,7 @@ enum class PolicyKind {
 struct ProcessPolicy {
   PolicyKind kind;
   ServeRole role;  // meaningful for kShipped and kRejectedPreOpenFlush only
-  // ROUND 6, RENAMED from round 4's own `nothing_indexed` (the lead's
-  // own instruction: "do not leave two names for it" -- round 5 already
-  // established the round-4 NAME's own guessed MECHANISM, an unslashed
-  // set_memory() pattern, does not hold; round 6 found the REAL one and
-  // this field is renamed to say so, not left with the wrong name
-  // alongside a corrected comment). When true, a kEnterBlocking action
+  // When true, a kEnterBlocking action
   // never actually serves anything, modelling `DistMetadataVOL::
   // serve_all()` returning WITHOUT calling `index.serve()` because
   // `files.size() == 0` by the time it runs -- `MetadataVOL::file_
@@ -185,17 +176,15 @@ struct ProcessPolicy {
   // ONLY server this protocol ever gives a file -- ever runs a line.
   // Driven, in the tests that use this field, from `fuse_examples::
   // lowfive_attach::decide_vol_settings()`'s own `keep` field (`!keep`
-  // => this flag true), not hand-set independently of it -- "the model
-  // must be driven from decide_vol_settings so that a mutation of the
-  // setting changes the verdict," the lead's own instruction. Default
+  // => this flag true), not hand-set independently of it, so that a mutation
+  // of the setting changes the verdict. Default
   // false (the shipped protocol's own tests, which assert completion,
   // must not accidentally rely on this).
   bool file_deleted_at_close = false;
-  // ROUND 6: whether this process's own exported file is dropped
+  // Whether this process's own exported file is dropped
   // (lowfive_attach.cpp's own GuardedDropOwnExportedFile(), called
   // right after each ACTUAL serve) once it has been served. Default
-  // true (the shipped protocol). False models the round-6 brief's own
-  // third named configuration -- keep=true, but the drop step itself
+  // true (the shipped protocol). False models the configuration with keep=true, but the drop step itself
   // never runs -- see WouldReuseStaleFileOnRecreate() below for why
   // this is NOT modelled as a blocking/stuck state at all (it is not
   // one): the search's own vocabulary covers whether processes get
@@ -214,15 +203,14 @@ struct DecideResult {
   // at all (false, ProcessPolicy::file_deleted_at_close's own case).
   // Always true for every other action.
   bool actually_serves = true;
-  // ROUND 8: threaded the SAME way `pending`/`pending_k` already are
+  // Threaded the SAME way `pending`/`pending_k` are
   // (this header's own "PURITY" paragraph) -- decide_serve_action()'s
   // own "history" input. A fresh, throwaway ServeState built fresh
   // every Decide() call (as this function already does for
   // deferred_pending) would otherwise silently default this to false
   // on EVERY call, never actually recording that a read has completed
-  // -- exactly the bug this field's own addition fixes (caught before
-  // any test used it: scenario (i) would never complete past exchange 1
-  // without it, first-reader deferring at every write forever, never
+  // (scenario (i) would never complete past exchange 1 without it,
+  // first-reader deferring at every write forever, never
   // just the cold start).
   bool new_completed_any_read;
 };
@@ -230,8 +218,8 @@ struct DecideResult {
 /// PURE: the action this process takes at `kind`/`k`, given its own
 /// policy and its own CURRENT `pending`/`pending_k`/`completed_any_read`
 /// (passed in, not retained) -- see this header's own top "PURITY"
-/// paragraph for why. `completed_any_read` is round 8's own addition,
-/// threaded the SAME way `pending`/`pending_k` already were.
+/// paragraph for why. `completed_any_read` is threaded the SAME way
+/// `pending`/`pending_k` are.
 inline DecideResult Decide(const ProcessPolicy& policy, StepKind kind, int k, bool pending,
                            int pending_k, bool completed_any_read) {
   if (policy.kind == PolicyKind::kShipped || policy.kind == PolicyKind::kRejectedPreOpenFlush) {
@@ -240,8 +228,8 @@ inline DecideResult Decide(const ProcessPolicy& policy, StepKind kind, int k, bo
     // itself a pure function of (ServeState, ServeEvent); giving it a
     // FRESH, explicitly-seeded state each call (rather than one mutable
     // object threaded live through the search) is what keeps THIS
-    // function pure. completed_any_read MUST be seeded here too (round
-    // 8's own fix, caught before any test used it): leaving it at
+    // function pure. completed_any_read MUST be seeded here too:
+    // leaving it at
     // ServeState's own default (false) on every call would silently
     // make decide_serve_action() see "no read has ever completed" every
     // single time, defeating the very policy this header exists to
@@ -263,7 +251,7 @@ inline DecideResult Decide(const ProcessPolicy& policy, StepKind kind, int k, bo
         } else {
           // kRejectedPreOpenFlush: model the FIRST attempt's own mistake
           // directly (serve_state_step()'s OWN kImportAboutToOpen case
-          // can no longer flush at all, by this round's own fix, so this
+          // can no longer flush at all, so this
           // branch cannot be expressed by calling the real function --
           // it stands for "what the rejected design's hook body did",
           // not for a call into today's serve_state_step()).
@@ -333,11 +321,11 @@ inline DecideResult Decide(const ProcessPolicy& policy, StepKind kind, int k, bo
   // hand-rolled, no serve_state_step() involvement at all (these
   // designs predate it, were never wired through it, or -- the
   // regressed one -- can no longer BE expressed by calling it, since
-  // round 8's own fix changed what it calls for the write decision).
+  // it now calls decide_serve_action() for the write decision).
   // None of these three ever CONSULT completed_any_read (they are
   // role-only or unconditional), but it is still threaded through
   // unchanged, marked true at kImportClosed, so a caller that mixes a
-  // strawman policy into round 8's own event-sequence machinery still
+  // strawman policy into the event-sequence machinery still
   // gets a consistent value out, never a silently stale one.
   const bool next_completed_any_read = completed_any_read || kind == StepKind::kImportClosed;
   if (kind == StepKind::kOpenClose) {
@@ -379,20 +367,16 @@ struct ProcPos {
   int serving_k = -1;
   bool pending = false;
   int pending_k = -1;
-  // ROUND 8: decide_serve_action()'s own "history" input, threaded the
-  // SAME way pending/pending_k already are (this header's own
+  // decide_serve_action()'s own "history" input, threaded the
+  // SAME way pending/pending_k are (this header's own
   // "PURITY" paragraph) -- see DecideResult::new_completed_any_read's
-  // own comment for the bug this fixes. False initially (no read
-  // completed yet); every pre-round-8 script never reads this field at
-  // all (Decide()'s OLD call sites never passed it), so it is harmless
-  // there too.
+  // own comment. False initially (no read completed yet).
   bool completed_any_read = false;
-  // ROUND 8: how many sync barriers (StepKind::kSyncBarrier) this
-  // process has gotten PAST so far -- monotonic, 0 initially. Unused
-  // (always 0) by every pre-round-8 script/test, which never contains
-  // a kSyncBarrier step at all; harmless to carry on every ProcPos.
+  // How many sync barriers (StepKind::kSyncBarrier) this
+  // process has gotten PAST so far -- monotonic, 0 initially. Always 0
+  // for scripts that contain no kSyncBarrier step.
   int sync_passed = 0;
-  // ROUND 8: has this process ARRIVED at (but not yet passed) barrier
+  // Has this process ARRIVED at (but not yet passed) barrier
   // index `sync_passed`? Mirrors `entering`'s own two-phase pattern for
   // serve blocking -- needed because `sync_passed >= sync_passed` is
   // vacuously true for two processes that have BOTH merely never
@@ -412,11 +396,10 @@ struct ProcPos {
 
 struct GlobalState {
   ProcPos a, b;
-  // ROUND 8: the coupler, a THIRD actor that only ever runs
-  // StepKind::kSyncBarrier steps (task 4's own "a third process that
-  // only participates in the sync") -- default-constructed (all-zero)
-  // and never touched by any pre-round-8 RunSimulation() call, so the
-  // existing two-process search is unaffected.
+  // The coupler, a THIRD actor that only ever runs
+  // StepKind::kSyncBarrier steps (a third process that only
+  // participates in the sync) -- default-constructed (all-zero) and
+  // never touched by the two-process RunSimulation() search.
   ProcPos c;
   bool operator<(const GlobalState& o) const {
     if (!(a == o.a)) return a < o.a;
@@ -446,10 +429,10 @@ struct StepOutcome {
 inline std::optional<StepOutcome> TryStep(const std::vector<MicroStep>& script, const ProcPos& pos,
                                           bool peer_own_serving, int peer_serving_k,
                                           const ProcessPolicy& policy,
-                                          // ROUND 8: the OTHER two processes' own sync-arrival state,
+                                          // The OTHER two processes' own sync-arrival state,
                                           // for the kSyncBarrier branch below -- defaulted so every
-                                          // pre-round-8 call site (two-process scripts, never a
-                                          // kSyncBarrier step) compiles and behaves unchanged.
+                                          // two-process call site (never a
+                                          // kSyncBarrier step) is unaffected.
                                           bool other1_sync_entering = false,
                                           int other1_sync_passed = 0,
                                           bool other2_sync_entering = false,
@@ -467,8 +450,8 @@ inline std::optional<StepOutcome> TryStep(const std::vector<MicroStep>& script, 
   }
 
   if (step.kind == StepKind::kSyncBarrier) {
-    // ROUND 8: a symmetric N-of-N rendezvous (task 4's own "collective
-    // sync event shared by U, V and the coupler"), two phases like the
+    // A symmetric N-of-N rendezvous (a collective
+    // sync event shared by U, V and the coupler), two phases like the
     // serve/open-close pair above but symmetric (every one of the
     // THREE actors both "enters" and is released by the SAME kind of
     // step, unlike serve's asymmetric enter-vs-open-close split).
@@ -531,8 +514,7 @@ inline std::optional<StepOutcome> TryStep(const std::vector<MicroStep>& script, 
       Decide(policy, step.kind, step.k, pos.pending, pos.pending_k, pos.completed_any_read);
 
   if (d.action == MicroAction::kEnterBlocking && !d.actually_serves) {
-    // ROUND 6 (renamed from round 4's own ProcessPolicy::nothing_indexed,
-    // now ProcessPolicy::file_deleted_at_close):
+    // ProcessPolicy::file_deleted_at_close:
     // `serve_all()` returns WITHOUT ever calling `index.serve()` when
     // nothing is indexed -- a complete no-op from BOTH sides' own point
     // of view. This process does NOT block (advances immediately,
@@ -640,24 +622,25 @@ inline SimulationResult RunSimulation(int n_iterations, ProcessPolicy policy_a,
 
 
 // ---------------------------------------------------------------------
-// ROUND 8, task 4: the per-component event sequences are now DATA (a
+// The per-component event sequences are DATA (a
 // list of `EventKind`), not RunSimulation()'s own hard-coded
 // write-then-read pair -- the host's own measured steady-state orders
-// (lowfive_attach_decision.hpp's own "ROUND 8" comment has the derived
-// table and citations) differ between the two roles, which a single
+// (lowfive_attach_decision.hpp's own "THE PER-EXCHANGE ORDER DIFFERS"
+// comment has the derived table and citations) differ between the two roles, which a single
 // shared `BuildScript()` can never express. A third actor, the
 // coupler, participates in a `kSyncBarrier` event neither physics
-// process's own old script had any notion of.
+// process's own two-process script has any notion of.
 
-/// One top-level event this round's own catalogue of orders is built
+/// One top-level event the catalogue of orders is built
 /// from -- `kSync` is the collective the coupler also participates in.
 enum class EventKind { kWrite, kRead, kSync };
 
-/// The order catalogue (task 4): `kMeasured` is the ONE order any real
+/// The order catalogue: `kMeasured` is the ONE order any real
 /// graph can produce under the current channel-order mechanism
-/// (lowfive_attach_decision.hpp's own "ROUND 8" comment); the other two
+/// (lowfive_attach_decision.hpp's own "THE PER-EXCHANGE ORDER DIFFERS"
+/// comment); the other two
 /// are strawmen with NO corresponding real graph, kept only to show the
-/// model discriminates them (task 4, scenarios iii/iv) -- the identical
+/// model discriminates them -- the identical
 /// relationship the existing kOriginalNatural/kBothDefer strawmen above
 /// already have to the real protocol.
 enum class Round8Order { kMeasured, kBothWriteReadSteady, kBothReadWriteSteady };
@@ -666,11 +649,10 @@ enum class Round8Order { kMeasured, kBothWriteReadSteady, kBothReadWriteSteady }
 /// shape for `order`. `kMeasured`'s own shape matches
 /// `lowfive_attach::ExpectedOrderForExchange(role, 1)` exactly (not
 /// re-derived independently of it: both read the SAME measured table).
-/// Round 9 (task 2) renamed "period" to "exchange" throughout this
-/// section: the unit here is ONE write-then-read (or read-then-write)
-/// pair, not a coupling window (the host measured ~61 of these per
-/// window -- lowfive_attach_decision.hpp's own "ROUND 9" comment has
-/// the full account).
+/// The unit here is an "exchange": ONE write-then-read (or
+/// read-then-write) pair, not a coupling window (the host measured ~61
+/// of these per window -- lowfive_attach_decision.hpp's own "EXCHANGE vs.
+/// PERIOD" paragraph has the full account).
 [[nodiscard]] inline std::array<EventKind, 2> SteadyShapeForOrder(Round8Order order,
                                                                    ServeRole role) {
   switch (order) {
@@ -691,7 +673,7 @@ enum class Round8Order { kMeasured, kBothWriteReadSteady, kBothReadWriteSteady }
 /// EITHER role, unconditionally, with NO sync (u_main.c's/v_main.f90's
 /// own pre-loop priming call, a separate mechanism from the
 /// IR-scheduled steady state -- lowfive_attach_decision.hpp's own
-/// "ROUND 8" comment has the full account of why). Exchanges
+/// "THE PER-EXCHANGE ORDER DIFFERS" comment has the full account of why). Exchanges
 /// 1..n_exchanges-1 are steady state, from `SteadyShapeForOrder()`,
 /// each followed by one `kSync`. `n_exchanges <= 0` returns an empty
 /// sequence (nothing to simulate).
@@ -716,10 +698,10 @@ enum class Round8Order { kMeasured, kBothWriteReadSteady, kBothReadWriteSteady }
 /// 2 events (write, read), no sync; every later exchange is exactly 3
 /// (the steady shape's own two events, then sync) -- so this function
 /// can walk the list two-or-three-at-a-time rather than inferring
-/// exchange boundaries from counting, which this round's own design
-/// notes found ambiguous at the cold-start/exchange-1 boundary when
-/// exchanges were counted purely by "two write/read events seen"
-/// without knowing in advance whether a sync follows.
+/// exchange boundaries from counting, which is
+/// ambiguous at the cold-start/exchange-1 boundary when exchanges are
+/// counted purely by "two write/read events seen" without knowing in
+/// advance whether a sync follows.
 [[nodiscard]] inline std::vector<MicroStep> BuildScriptFromEvents(
     const std::vector<EventKind>& events) {
   std::vector<MicroStep> steps;
@@ -854,9 +836,9 @@ inline SimulationResult RunSimulationRound8(Round8Order order, int n_exchanges,
 }
 
 // ---------------------------------------------------------------------
-// D14 Stage B (KNOWN_ISSUES.md), scope C: "the accept layout is a
+// The accept layout is a
 // scenario: U physics, a placeholder rank that does no LowFive calls
-// but takes part in every base-communicator collective, V". Read
+// but takes part in every base-communicator collective, V. Read
 // against RunSimulationRound8() just above: its own third actor
 // ("the coupler", `script_c`, pure kSyncBarrier, no write/read/serve of
 // its own) is ALREADY, at the level this model operates on, the
@@ -866,23 +848,23 @@ inline SimulationResult RunSimulationRound8(Round8Order order, int n_exchanges,
 // event" is the SAME sequence whether that actor is coupler_main.c's
 // own separate MPMD process or u_main.c's own extra, bundled rank. So
 // RunSimulationRound8() already IS the accept-layout scenario, under a
-// reading that is now made EXPLICIT (not silently assumed) by the test
+// reading that is made EXPLICIT (not silently assumed) by the test
 // below that exercises it under that name, rather than inventing a
 // fourth, duplicate actor type with nothing to distinguish it.
 //
 // What this model CANNOT distinguish, stated rather than elided: the
 // REAL bridge communicator's own rank-numbering difference between mpmd
-// and accept (D14 Stage A section 3(A) item 3, fixed in lowfive_attach_
+// and accept (fixed in lowfive_attach_
 // decision.hpp's own decide_attach_mode()/this_rank handling, tier-0
 // tested directly in test/verification/brusselator_lowfive_attach_
 // test.cpp's own WrongThisRankFromLocalWorldInsteadOfBridgeMisclassifiesV)
 // -- that is a RankSet-arithmetic property, checked separately, not an
 // event-ordering one this file's own search explores.
 //
-// The known-bad placement scope C also asks for: a THIRD actor that
+// The known-bad placement: a THIRD actor that
 // EXISTS in the real row (the placeholder/coupler rank is really
 // there) but never calls bruss_lowfive_join_local_split() at all -- the
-// exact bug the companion fix (decision 3) closes. Modelled here as
+// exact bug the join call prevents. Modelled here as
 // `third_actor_joins = false`: U's and V's own scripts are UNCHANGED
 // (still try to pass every kSyncBarrier, because the real collective
 // IS entered on their side), but the third actor's own script is
@@ -963,12 +945,13 @@ inline SimulationResult RunSimulationAcceptLayout(Round8Order order, int n_excha
   return result;
 }
 
-/// PURE (task 4's own "soundness link"): would the STATIC check
+/// PURE (the "soundness link"): would the STATIC check
 /// (lowfive_attach_decision.hpp's own `CheckGraphOrderValidated()`)
 /// accept a graph exhibiting `order`? Only `kMeasured` has a real graph
 /// behind it at all (the channel-order mechanism can only ever produce
 /// "one side exports-then-imports, the other imports-then-exports" --
-/// lowfive_attach_decision.hpp's own "ROUND 8" comment) -- the other
+/// lowfive_attach_decision.hpp's own "THE PER-EXCHANGE ORDER DIFFERS"
+/// comment) -- the other
 /// two catalogue entries are strawmen with no corresponding graph, so
 /// there is no signature for the static check to ever be asked about;
 /// defined false for them so the soundness assertion below
@@ -978,7 +961,7 @@ inline SimulationResult RunSimulationAcceptLayout(Round8Order order, int n_excha
   return order == Round8Order::kMeasured;
 }
 
-/// PURE (task 4's own "soundness link"): does the SHIPPED policy (both
+/// PURE (the "soundness link"): does the SHIPPED policy (both
 /// roles, `decide_serve_action()`-driven) complete `order`'s own
 /// `n_exchanges`-exchange script without either process getting stuck?
 [[nodiscard]] inline bool model_completes(Round8Order order, int n_exchanges) {
@@ -1007,7 +990,7 @@ inline SimulationResult RunSimulationAcceptLayout(Round8Order order, int n_excha
 /// hence no interleaving search: `!file_deleted_at_close &&
 /// !drop_after_serve && n_iterations > 1` is both necessary and
 /// sufficient, true for any policy whose OWN write actually keeps a
-/// file (both roles write once per iteration in this track's own fixed
+/// file (both roles write once per iteration in the fixed
 /// script, so this applies to either). Returns false for a single
 /// iteration (nothing to recreate yet), whenever a drop actually
 /// happens, or whenever the file was never kept in the first place

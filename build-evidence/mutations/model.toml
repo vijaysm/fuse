@@ -1,8 +1,7 @@
-# Mutations for S7.1 (the Newton-Krylov residual/linearisation seam):
+# Mutations for the Newton-Krylov residual/linearisation seam:
 # fuse::verify_newton_capability_support() (model-level capability
 # refusal, E-NEWTON-CAPABILITY) and fuse::verify_linearization_shape()
-# (E-NEWTON-SHAPE). Own file per the review-fix protocol: do not edit
-# build-evidence/mutations.toml directly while other tracks hold it dirty.
+# (E-NEWTON-SHAPE).
 #
 # Every row below was applied by hand against the files,
 # rebuilt (`cmake --build . --target fuse_model_newton_capability_test`),
@@ -46,7 +45,7 @@ target = "fuse_model_newton_capability_test"
 test = "model.newton_capability"
 result = "KILLED: NewtonCapability.TokenWithWrongRowsIsRejected and NewtonCapability.TokenWithWrongColsIsRejected both FAILED; the other 11 cases still PASSED. Restored; cmp reported no difference."
 
-# S7.2's own rows: AccelKind::Newton selectable from the graph, both in C++
+# Rows for AccelKind::Newton selectable from the graph, both in C++
 # (IterationBuilder::accelerate()/::newton()) and through the YAML text
 # format (src/model/yaml_io.cpp) -- the auto-trigger that sets
 # requires_residual_capability/requires_linearization_capability the
@@ -91,10 +90,10 @@ target = "fuse_model_yaml_io_test"
 test = "model.yaml_io"
 result = "Hand-proved: 23 cases, all pass before; after mutation, 1 fails (YamlIo.HandWrittenYamlSelectingNewtonGetsTheCapabilityFlagEvenWhenOmitted, which strips the explicit capability keys from the emitted text before reparsing, isolating exactly this auto-trigger), 22 pass. File restored and cmp-verified byte-identical; rebuilt and reran to confirm all 23 pass again."
 
-# Descriptor v12's own row: AccelKind::Newton is encoded on the wire only
+# Descriptor v12 row: AccelKind::Newton is encoded on the wire only
 # if deserialize()'s accelerator-kind bound check was actually widened to
 # admit it. The pre-v12 bound (AccelKind::IQN_IMVJ, ordinal 6) is what
-# every reader checked before S7.2; this mutation reverts to exactly
+# every reader checked before Newton was added; this mutation reverts to exactly
 # that, so a buffer carrying AccelKind::Newton (ordinal 7) is refused as
 # E-DESC-ENUM -- the same failure a genuinely un-widened reader would
 # produce for every Newton-selected graph, not a corrupted-byte probe.
@@ -110,7 +109,7 @@ target = "fuse_model_descriptor_test"
 test = "model.descriptor"
 result = "Hand-proved: 21 cases, all pass before; after mutation, 1 fails (Descriptor.RoundTripPreservesEveryNonDefaultMember, whose freeze_fixture() second region selects AccelKind::Newton and is refused on deserialize() with 'unknown acceleration kind 7'), 20 pass. MatchesTheFrozenWaistBytes is unaffected (it only calls serialize(), never deserialize()) -- expected, not a gap: RoundTripPreservesEveryNonDefaultMember is the test that exercises the read path. File restored and cmp-verified byte-identical; rebuilt and reran to confirm all 21 pass again."
 
-# descriptor v13's own row (S7.2b, PetscSelect track): NewtonConfig::
+# Descriptor v13 row (PETSc substrate selection): NewtonConfig::
 # substrate's own bound check, mirroring descriptor-accel-kind-bound-
 # not-widened immediately above for the identical reason -- a reader
 # that never refuses an out-of-range substrate byte would admit a

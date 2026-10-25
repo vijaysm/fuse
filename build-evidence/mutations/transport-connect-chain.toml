@@ -1,6 +1,5 @@
-# Mutations for KNOWN_ISSUES.md D18's N-way connect chain generalisation
-# (connect_chain_plan(), include/fuse/transport/connect.hpp). Own file
-# per the review-fix protocol.
+# Mutations for the N-way connect chain generalisation
+# (connect_chain_plan(), include/fuse/transport/connect.hpp).
 #
 # Applied by hand, rebuilt, run, confirmed to fail EXACTLY the named
 # row, then restored byte-for-byte (cmp against the pre-mutation file

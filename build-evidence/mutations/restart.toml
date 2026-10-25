@@ -196,16 +196,13 @@ target = "fuse_runtime_restart_test"
 test = "runtime.restart"
 result = "CONFIRMED: full unfiltered fuse_runtime_restart_test (17 tests) ran 15 PASSED / 2 FAILED. AccelNotImplementedRefusesWithoutOptIn failed: EXPECT_EQ(rr.error().code, \"E-RESTART-ACCEL-NOT-IMPLEMENTED\") got \"E-RESTART-NOT-IMPLEMENTED\" instead (the gate never ran, so the call fell through into the base-class default). AccelNotImplementedWithAllowResetSucceedsAndReports failed: rr.ok() was false, exact message \"E-RESTART-NOT-IMPLEMENTED: Accelerator::import_restart_state(): IQN-ILS does not override export_restart_state()/import_restart_state()/restart_state_implemented(), so this call cannot be trusted to mean \\\"nothing to restore\\\" -- the caller must check restart_state_implemented() before ever reaching this default\" -- opting in no longer causes a successful reset, because the gate that would call reset() never runs. Every other test, none of which uses an AccelKind the base default ever reaches, still passed. Restored; cmp against the pre-mutation file reported no difference; rebuilt afterward and confirmed 17/17 passing again."
 
-# mutate.py builds `ctest -R "^{test}$"` from a SINGLE test field; the
-# original row below named three comma-joined targets/tests, which never
-# matched any real ctest name and reported NO-BASELINE rather than the
-# three separate outcomes the 2026-10-15 hand run actually found (each
-# ctest row quoted verbatim in its own `result` below). Split into one row
-# per test, same `file`/`old`/`new` (mutate.py applies it once regardless
-# of how many rows name it -- the anchor is checked per row, so applying
-# the SAME file edit three times in three separate mutate.py rows is
-# redundant but harmless: each row's own apply/build/run/restore cycle is
-# independent).
+# mutate.py builds `ctest -R "^{test}$"` from a SINGLE test field, so each
+# test has its own row, with the same `file`/`old`/`new` (mutate.py applies
+# it once regardless of how many rows name it -- the anchor is checked per
+# row, so applying the SAME file edit three times in three separate
+# mutate.py rows is redundant but harmless: each row's own
+# apply/build/run/restore cycle is independent). Each ctest row's outcome is
+# quoted verbatim in its own `result` below.
 [[mutation]]
 id = "typed-restart-widening-admits-narrowing-restart"
 area = "model (fuse::detail::is_exact_widening, Stage B Slice 1b typed fields)"
@@ -263,9 +260,8 @@ target = "fuse_model_bfloat16_test"
 test = "model.bfloat16"
 result = "CONFIRMED: fuse_model_bfloat16_test ran 2 PASSED / 2 FAILED (BFloat16.RoundToNearestEvenAtExactTies, BFloat16.RoundingOverflowAtTheTopOfTheRangeBecomesInfinity). NOT caught by BFloat16.ExhaustiveBitToFloatToBitIdentityOverEveryNonNanPattern or BFloat16.ToFloatIsAlwaysExactWidening, by construction: the exhaustive test's inputs are bf16 bit patterns widened losslessly to float first, so every value it round-trips already has all-zero bits in the range truncation vs. rounding would differ on -- exactly why the two dedicated tie/overflow tests exist separately. Restored; cmp against the pre-mutation file reported no difference; rebuilt afterward and confirmed 4/4 passing again."
 
-# Same mutate.py regex defect as typed-restart-widening-admits-narrowing
-# above: one row named three comma-joined targets/tests. Split into one
-# row per test; same `file`/`old`/`new` in each.
+# One row per test, as for typed-restart-widening-admits-narrowing above;
+# same `file`/`old`/`new` in each.
 [[mutation]]
 id = "typed-restart-narrow-float-reports-zero-change-float-bits"
 area = "model (fuse::detail::narrow_float, Stage B Slice 1b typed fields)"

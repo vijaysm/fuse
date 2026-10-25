@@ -59,14 +59,14 @@ struct StepContext {
   }
 };
 
-/// S7.1's residual/linearisation seam: a component's own approximate
+/// The residual/linearisation seam: a component's own approximate
 /// linearisation of its `ImplicitComponent::evaluate_residual()` about the
 /// point of its most recent call.
 ///
 /// Acts on this component's OWN block of the region's stacked interface
 /// vector only -- `cols()`-long in, `rows()`-long out (and the reverse for
 /// the transpose) -- never the whole region's vector. The Newton coupler
-/// (S7.2) is responsible for scattering a global Krylov iterate into each
+/// is responsible for scattering a global Krylov iterate into each
 /// member's own block before calling `apply_jacobian()`, and gathering the
 /// per-block outputs back, exactly the convention
 /// `fuse::linalg::MatrixFreeOperator` already uses for a single operator
@@ -95,7 +95,7 @@ class LinearizationToken {
   /// lower-fidelity model). `r.size() == rows()`, `z.size() == cols()`. A
   /// component with no better choice may implement this as the identity
   /// (copy `r` into `z`) rather than refuse: the Newton coupler's
-  /// block-Jacobi preconditioner (S7.2) composes whatever every member
+  /// block-Jacobi preconditioner composes whatever every member
   /// returns, and the identity is always a legal, if weak, one.
   virtual Result<void> apply_preconditioner(std::span<const double> r,
                                             std::span<double> z) = 0;
@@ -119,7 +119,7 @@ class LinearizationToken {
   [[nodiscard]] virtual std::uint64_t signature() const = 0;
 };
 
-/// S7.1's residual/linearisation seam: an interface a `Component` may
+/// The residual/linearisation seam: an interface a `Component` may
 /// ADDITIONALLY implement, queried through `Component::implicit()` rather
 /// than through a second base class -- see that method's own comment for
 /// why.
@@ -169,8 +169,8 @@ class ImplicitComponent {
   /// Returning an error aborts the Newton step the same way an error from
   /// `advance()` aborts an explicit one; the coupler does not retry.
   ///
-  /// WHAT "A FROZEN TIME LEVEL" MEANS FOR A WINDOW-SCOPED MEMBER (S7.2
-  /// WindowNewton, newton-krylov.md Sec. 9). The paragraph above
+  /// WHAT "A FROZEN TIME LEVEL" MEANS FOR A WINDOW-SCOPED MEMBER (window
+  /// Newton, newton-krylov.md Sec. 9). The paragraph above
   /// describes an ORDINARY (single-clock) region, where `ctx.t_end` is
   /// one instant and `interface_in`/`residual_out` are each one field's
   /// worth of plain values. `Runner::Impl::evaluate_window_region_
@@ -217,7 +217,7 @@ class ImplicitComponent {
   [[nodiscard]] virtual LinearizationToken* linearization() { return nullptr; }
 };
 
-/// S7.1's E-NEWTON-SHAPE check: whether `token`'s own `rows()`/`cols()`
+/// The E-NEWTON-SHAPE check: whether `token`'s own `rows()`/`cols()`
 /// agree with the block sizes a region's interface-vector assembly derived
 /// for the component that returned it. A pure function of already-known
 /// sizes, so it needs no graph, no `ComponentSet` and no running region --
@@ -348,12 +348,11 @@ class Component {
   /// Spec Section 5.3: FUSE derives the checkpoint set from dataflow over the SSA
   /// form, tells the component which of its state crosses the region
   /// boundary, and *verifies at runtime that it was saved* -- unlike preCICE,
-  /// which pushes `requiresWritingCheckpoint()` onto the user. Phase 7
-  /// Task 7.2 raises an error for a component that appears in an iteration
-  /// region with `supports_rollback() == false`; the hooks are declared now so
-  /// the interface does not change under existing implementers later.
+  /// which pushes `requiresWritingCheckpoint()` onto the user. A component that
+  /// appears in an iteration region with `supports_rollback() == false` is
+  /// refused.
   ///
-  /// R16 CAVEAT, because the sentence above reads as a stronger guarantee
+  /// CAVEAT, because the sentence above reads as a stronger guarantee
   /// than it is: the runtime verification is a `memcmp` against REGISTERED
   /// field storage only (the arcs `register_fields()` bound; see
   /// `Runner::Impl::run_region`, src/runtime/iteration.cpp), one per
@@ -385,8 +384,8 @@ class Component {
   /// than restore garbage.
   virtual Result<void> restore_state() { return Result<void>::success(); }
 
-  /// Restart track (docs/dev/restart.md), Stage B Slice 1, owner decision 1,
-  /// Form A: put every array this component owns into `writer`, keyed by
+  /// Restart (docs/dev/restart.md), Form A: put every array this component
+  /// owns into `writer`, keyed by
   /// THIS COMPONENT'S OWN global ids for the array's index space -- a
   /// component that lives on one rank numbers its own entries `0..n-1`,
   /// trivially satisfying the "re-partitionable" requirement (there is
@@ -399,7 +398,7 @@ class Component {
   /// Deliberately a SEPARATE virtual from `save_state()`/`restore_state()`
   /// above, which this method shares no caller with: those are the
   /// in-memory, single-slot ROLLBACK checkpoint `run_region()` uses to
-  /// re-advance one iteration-region sweep (R16's own caveat on that pair
+  /// re-advance one iteration-region sweep (the caveat on that pair
   /// applies to restart identically and is restated here rather than
   /// assumed: FUSE can verify that every id this call named was written
   /// by SOME rank and that no id repeats, `RestartWriter::finish_point()`'s
@@ -440,11 +439,11 @@ class Component {
     return Result<void>::success();
   }
 
-  /// Form B (owner decision 1): an opaque, versioned per-rank byte
+  /// Form B: an opaque, versioned per-rank byte
   /// record, same-decomposition only -- `memcpy`-cheap for a component
   /// with no mesh behind it to implement, at the cost that a restart at
-  /// a DIFFERENT rank count refuses this component BY NAME (owner
-  /// decision 1: a graph refuses a rank-count change collectively if ANY
+  /// a DIFFERENT rank count refuses this component BY NAME (a graph
+  /// refuses a rank-count change collectively if ANY
   /// component in it sets `kCapabilityRestartFormB` without also setting
   /// `kCapabilityRestartFormA`). The default returns an empty blob,
   /// correct only for a component that does not set
@@ -486,7 +485,7 @@ class Component {
     return (capabilities() & kCapabilityRestartFormB) != 0;
   }
 
-  /// This component's capability bits (KNOWN_ISSUES.md B3). ONE virtual;
+  /// This component's capability bits. ONE virtual;
   /// `supports_rollback()`, `determinism_level()` and `carries_hidden_state()`
   /// below are non-virtual readers of it, not separate overridable questions
   /// -- a derived class states everything it knows about itself in one call,
@@ -551,7 +550,7 @@ class Component {
   /// Whether this component is driven by a caller OUTSIDE fuse::Runner --
   /// i.e. through the participant ABI's `fuse_begin_step()`/
   /// `fuse_end_step()` (src/abi/participant.cpp) rather than by
-  /// Runner::Impl's own instruction-stream walk (KNOWN_ISSUES.md D12).
+  /// Runner::Impl's own instruction-stream walk.
   ///
   /// Deliberately a SEPARATE virtual from `capabilities()`, not a new bit
   /// in that bitmask: `capabilities()` is a property a component author
@@ -577,7 +576,7 @@ class Component {
     return false;
   }
 
-  /// S7.1's residual/linearisation seam: this component's own
+  /// The residual/linearisation seam: this component's own
   /// `ImplicitComponent` interface, or `nullptr` if it does not implement
   /// one.
   ///

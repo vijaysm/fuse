@@ -1,4 +1,4 @@
-// Brusselator (Time windows track), physics: the Toy's own closed-form
+// Brusselator physics: the Toy's own closed-form
 // invariants (VERIFICATION.md / tests/numerical_tests.cpp), ported onto
 // this example's FUSE-native-mesh-backed physics
 // (examples/brusselator/brusselator_physics.hpp) rather than `#include`d

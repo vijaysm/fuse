@@ -1,18 +1,13 @@
-# Restart-to-disk and field output: design (Stage A) and Slice 1 implementation record (Stage B)
+# Restart-to-disk and field output
 
-STATUS: Sections 0-8 and the citation table below are the Stage A design as the owner accepted it
-(design only at that point; HEAD `35229b28a86d065b49c09be21458a2795e2a64c9`), unchanged except for
-the correction already noted inline in Section 2.3. Section 9, appended below the citation table,
-is the Stage B Slice 1 implementation record: what Slice 1 actually built against the owner's five
-decisions, measured findings Stage A did not anticipate, and the scope reductions declared for
-this round. Every claim in both parts is a citation to `file:line` in the export it was written
-against, not an assumption about what the code "should" do.
+Sections 0-8 are the design; Section 9 describes what is implemented and its limitations. Every
+claim is a citation to `file:line`, not an assumption about what the code "should" do.
 
-Owner decisions already made, not reopened here: the restart format is a custom HDF5 schema;
-the mesh is written once and state is written per restart point; field data is keyed by global
-id so a run can restart on a different rank count; component state is carried as an opaque,
-versioned record; an XDMF (`.xmf`) sidecar lets ParaView/VisIt read the restart file directly;
-a CF/UGRID NetCDF-4 writer is a second, output-only deliverable of this same stage.
+Fixed design decisions: the restart format is a custom HDF5 schema; the mesh is written once and
+state is written per restart point; field data is keyed by global id so a run can restart on a
+different rank count; component state is carried as an opaque, versioned record; an XDMF (`.xmf`)
+sidecar lets ParaView/VisIt read the restart file directly; a CF/UGRID NetCDF-4 writer is a
+second, output-only deliverable.
 
 ## 0. Terminology
 
@@ -30,8 +25,8 @@ casual speech; this document always qualifies which one it means.
 
 ## 1. State inventory
 
-Read from the Runner, the iteration machinery, the accelerators and the four worked examples
-the task names, not assumed. Each row: owner (class/member), distribution, whether a global-id
+Read from the Runner, the iteration machinery, the accelerators and the four worked examples,
+not assumed. Each row: owner (class/member), distribution, whether a global-id
 index exists for its index space TODAY, and size order.
 
 ### 1.1 The Runner's clock and schedule position
@@ -93,14 +88,13 @@ and `columns()` "Retained secant columns; 0 for the relaxation methods, and 0 im
 | `QuasiNewtonAccel` | `blocks_` -- `std::vector<JacobianBlock>`, each holding `z`, `v` ("n x cols, column major," `accel_quasi_newton.cpp:92-94`) | IQN-IMVJ's folded Jacobian history across windows (`Accelerator::reset()`'s own comment: "IQN_IMVJ folds it [into blocks_] instead," `accelerator.hpp:56-58`) | **No**, same convention | O(n x reuse x blocks) |
 | `QuasiNewtonAccel` | `alpha_`, `ls_a_`, `ls_b_`, `rho_`, `jrho_`, `probe_`, `jac_a_`, `jac_b_`, `jac_beta_` (`accel_quasi_newton.cpp:783-793`) | per-solve scratch, re-derived every call from the members above | N/A | O(n) each |
 
-**This is the state inventory's central negative result, asked for explicitly by the task
-brief: every accelerator buffer is indexed by position in the stacked interface vector
+**This is the state inventory's central negative result: every accelerator buffer is indexed by position in the stacked interface vector
 (`RegionBlock::offset`/`length`, `src/runtime/runner_impl.hpp`), which is an artifact of how
 the current rank's own `RegionRuntime` concatenates its hosted blocks -- it has no relationship
 to a mesh global id and is not even stable across a rank-count change for the SAME graph**,
 because the set of blocks a rank hosts, and therefore the stacked vector's own layout, is a
 function of `WindowMemberConfig::hosted`/`consumer_hosted` (`src/runtime/runner_impl.hpp:1098,
-1127` -- the D19 fix this file's own comment narrates at length), which depends on the
+1127` -- explained at length in that file's own comment), which depends on the
 rank-to-component placement. A different rank count placing the same components differently
 produces a stacked vector with different length and different block order on every rank. An
 accelerator's `v_`/`w_`/`blocks_` columns from a 2-rank run have **no element-wise
@@ -155,8 +149,7 @@ graph"). A remap weight matrix (`fuse::backend::RemapPlan`, intersection weights
 remap kind/order recorded in the coupling graph -- it does **not** need to be in the restart
 file, provided the mesh (Section 4) and the graph descriptor (Section 4's provenance block) that
 produced it are both restored first and the weights are deterministically rebuilt from them (not
-read from a stale cache). This is the "which is recomputable, which is not" the task brief asks
-for: remap/transport state is recomputable; **the mesh and the field values are not**.
+read from a stale cache). This is the "which is recomputable, which is not" split: remap/transport state is recomputable; **the mesh and the field values are not**.
 
 ### 1.7 Plugin / provider state (ABI)
 
@@ -195,12 +188,11 @@ through that trampoline, with the identical no-argument, in-memory-rollback shap
 base (Section 1.8's caveat applies without modification -- a Python component's own instance
 attributes are exactly as invisible to FUSE as a C++ component's private members). **Not
 separately measured beyond this** -- I did not find a Python example component with
-restart-relevant state beyond what Section 1.8 already covers; flagged as an open item if the
-owner has one in mind (open_questions).
+restart-relevant state beyond what Section 1.8 already covers; flagged as an open item if one exists.
 
 ### 1.10 Summary -- what has NO global-id index today
 
-Explicitly, per the task's instruction to say so: window waveform/history element position
+Explicitly: window waveform/history element position
 (Section 1.2), every accelerator buffer (Aitken/Steffensen `r_`/`r_prev_`, IQN
 `v_`/`w_`/`blocks_`, Section 1.3), and the plain `std::vector<double>` arrays every one of the
 four worked examples registers (Section 2.3) carry **no** global id today. Only entities read
@@ -258,13 +250,13 @@ silently writing MOAB's internal handle instead.
 |---|---|---|---|
 | Native mesh fields (any component built over `fuse::native::NativeMeshView`) | `NativeMeshBuilder::add_vertex`/`add_cell`'s caller-supplied `gid` (`native_mesh.cpp:13,25`) | Only as strong as the generator; FUSE's own quad generator is contiguous+unique (Section 2.2) | Read by global id: hyperslab/point selection against the HDF5 dataset's own global-id-indexed layout (Section 4), independent of partition |
 | MOAB-backed fields | MOAB's `GLOBAL_ID` tag, surfaced via `DimData::global_ids` (`moab_backend.cpp:364-379`) | Per-dimension; refuse (Section 2.2) when `gid_error` is set | Same read pattern, gated on the refusal above |
-| `fuse::linalg::DistVector` | **None.** `DistVector`'s own header states its layout is "owned block first" in "its own local order" (`include/fuse/linalg/dist_vector.hpp:7-8,24-26`); `GhostPattern::remote_local_index` is explicitly "never a global id" (`comm.hpp:79-83`) | N/A -- no id space exists | **Cannot**, today. A `DistVector` built directly (not through a `MeshView`-backed field) has no way for a reader at a different rank count to know which logical row its position 0 corresponds to. This is the gap the owner's tension statement (measured starting fact) is really about, concretely: it is not a hypothetical "a component only offering an opaque blob," it is `DistVector` itself when used without a mesh behind it (e.g. a hand-assembled linear system in a Newton region) |
-| Window waveform samples (`WindowMemberState::history`/`last_window_waveform`) | None (Section 1.2) -- indexed by element position in the member's own interface vector | N/A | Not re-partitionable by global id today; restarts at the SAME rank count only, unless the member's element ordering is itself tied to a global id the component chooses to expose (open question, see open_questions) |
+| `fuse::linalg::DistVector` | **None.** `DistVector`'s own header states its layout is "owned block first" in "its own local order" (`include/fuse/linalg/dist_vector.hpp:7-8,24-26`); `GhostPattern::remote_local_index` is explicitly "never a global id" (`comm.hpp:79-83`) | N/A -- no id space exists | **Cannot**, today. A `DistVector` built directly (not through a `MeshView`-backed field) has no way for a reader at a different rank count to know which logical row its position 0 corresponds to. This is the concrete gap: it is not a hypothetical "a component only offering an opaque blob," it is `DistVector` itself when used without a mesh behind it (e.g. a hand-assembled linear system in a Newton region) |
+| Window waveform samples (`WindowMemberState::history`/`last_window_waveform`) | None (Section 1.2) -- indexed by element position in the member's own interface vector | N/A | Not re-partitionable by global id today; restarts at the SAME rank count only, unless the member's element ordering is itself tied to a global id the component chooses to expose (an open question) |
 | Brusselator example | Native mesh, `cell_gid = ix + iy*nx` (Section 2.2); `NativeGrid::make` recovers the local-index<->(i,j) correspondence by reading `MeshView::centroid` back (`examples/brusselator/brusselator_physics.hpp:23-25`) | Yes | Reader computes `(ix, iy)` from the stored global id, reads by hyperslab into whichever row band this rank's own partition owns |
 | dn_heat example | **None.** `DirichletSlab`/`NeumannSlab` are placed one-component-per-rank (`examples/dn_heat/main.cpp:176,179`: `ranks = {0,1}` and `{1,1}` -- i.e. the whole component lives on exactly one rank each), and each component's own `u_in_`/`q_`/`u_`/`q_in_` (`examples/dn_heat/dn_component.hpp:380-382,519-521`) is a plain, fully-owned `std::vector<double>` -- not partitioned across ranks at all | N/A | Not applicable: there is no sub-component partitioning to re-partition. A restart that moves this component to a DIFFERENT rank still reads the whole array whole; "rank-count independence" for this example means only "the run as a whole may use a different number of ranks," never "this component's own array is split differently" |
 | Gray-Scott example | Same pattern as dn_heat: `GrayScottSpeciesComponent::state_` (`examples/gray_scott/species_component.hpp:278`) is a single-rank-owned array, no `MeshView` in this example (confirmed: no `MeshView`/`NativeMeshView` reference anywhere under `examples/gray_scott/`) | N/A | Same as dn_heat |
 
-**This table is the direct, measured answer to the owner's tension statement.** Only the
+**This table is the direct, measured answer to which components can restart on a different rank count.** Only the
 Brusselator, of the four named examples, exercises genuine sub-component spatial partitioning
 with a real global id; dn_heat, Gray-Scott and fsi_channel place each component wholly on one
 rank. CORRECTED (an earlier draft of this document misread the bracket literal): `RankSet`'s
@@ -308,7 +300,7 @@ class RestartWriter {
  public:
   // `ids.size() == values.size() / components`; `ids` are THIS component's own global ids
   // for the index space `values` is defined over (mesh entity ids from MeshView::global_id(),
-  // or a component-chosen numbering for a non-mesh index space -- see open_questions).
+  // or a component-chosen numbering for a non-mesh index space).
   virtual Result<void> put_field(std::string_view name, std::span<const std::int64_t> ids,
                                   std::span<const double> values, int components) = 0;
   // Scalars with no spatial index -- replicated, written once (first-writer-wins or
@@ -409,7 +401,7 @@ class Component {
 
 ### Option C -- both, with A required for rank-count-independent restart
 
-The recommended default, following the owner's already-made decision that field data is keyed
+The recommended default, following the decision that field data is keyed
 by global id generally: implement both interfaces, document Option A as the one a component
 MUST implement to be restarted on a different rank count (checked, not trusted -- a component
 that implements only Option B is tagged in the schema's component-record as "same-decomposition
@@ -419,13 +411,11 @@ Section 2.3's finding exactly: dn_heat/Gray-Scott/fsi_channel are honest Option-
 partitioning to lose), Brusselator is the one example for which Option A is load-bearing, not
 decorative.
 
-**Open question for the owner (also listed in open_questions):** does a component get to
-declare "I offer Option B only" as a first-class, intentional choice (e.g. a legacy or
-third-party physics code the owner cannot modify), or is Option A eventually mandatory for every
-component the graph admits into a restartable run? The trade-off: mandatory-A is simpler to
-reason about (one restart contract) but forces work on components that, per Section 2.3, gain
-nothing from it; optional-B-only is pragmatic but means "is this run restartable at this rank
-count" is a property the owner must track per-component, not a single yes/no for the graph.
+**Resolution:** a component may declare "I offer Option B only" as a first-class, intentional
+choice (for example a legacy or third-party physics code that cannot be modified). The cost is
+that "is this run restartable at this rank count" becomes a per-component property rather than a
+single yes/no for the graph; the graph refuses a rank-count change collectively when any
+component offers only Option B (Section 9).
 
 ---
 
@@ -441,7 +431,7 @@ count" is a property the owner must track per-component, not a single yes/no for
   written_by_rank_count = <uint32>           (MPI_Comm_size() at write time; Option-B refusal key, Section 3)
   mesh_checksum         = <uint64>
   (names as written by both writers and read by the reader; this table's draft used "@"-prefixed
-   names and a format_name attribute that were never implemented -- KNOWN_ISSUES.md D75)
+   names and a format_name attribute that were never implemented)
 
   /mesh                              (written ONCE per file; never rewritten by a later restart point)
     @mesh_backend        = "native" | "moab"
@@ -515,12 +505,11 @@ inventing a new hash, and the graph's own version gate (`kGraphVersion`,
 `descriptor.hpp:486-489`) already refuses a version mismatch inside `deserialize()` before this
 design's own hash comparison would even run. **One measured caveat the schema inherits
 unavoidably:** `descriptor.hpp`'s own `Writer::pod`/`Reader::pod` are host-endian, not
-little-endian like every other canonical encoding in `fuse/base/bytes.hpp` -- recorded as OPEN in
-`KNOWN_ISSUES.md` (D62, "The graph descriptor is host-endian while `bytes.hpp`'s canonical rules
-are little-endian"). **Consequence: `@descriptor_hash` is currently only comparable between
-hosts of the same endianness**, which this design does not fix (D62 is owned elsewhere) but must
-document at the point the hash is used, so a cross-architecture restart failure is correctly
-diagnosed as D62, not as a new restart defect.
+little-endian like every other canonical encoding in `fuse/base/bytes.hpp` -- a known open limitation.
+**Consequence: `@descriptor_hash` is currently only comparable between hosts of the same
+endianness**, which this design does not fix but must document at the point the hash is used, so
+a cross-architecture restart failure is correctly diagnosed as the descriptor's host-endianness,
+not as a restart defect.
 
 ### 4.2 Why global-id-keyed datasets, not one dataset per rank
 
@@ -540,15 +529,15 @@ for matching, not for position -- applied to a file format instead of to in-memo
   a new primitive this codebase needs to invent).
 - **Chunking**: one chunk per rank's own contiguous write region at write time is the natural
   choice and keeps the write collective-but-independent per rank; HDF5's own chunk cache sizing
-  is a tuning question deferred past Stage A (robustness-over-efficiency: get a correct
-  collective write first, per the owner's standing priority).
+  is a tuning question deferred (robustness over efficiency: get a correct
+  collective write first).
 - **Who writes replicated data** (the mesh, Section 4.1's `/mesh` group; provenance attributes):
   rank 0 writes, every other rank's corresponding collective call participates with a zero-size
   selection -- the ordinary parallel-HDF5 pattern for "logically global, physically replicated"
   data, so the write is still one collective call every rank enters (never a rank-0-only
   `H5Dwrite` that leaves other ranks not calling the collective operation at all, which would be
-  exactly the "collective path returns on a locally computed condition" mistake the owner's
-  standing rule forbids).
+  exactly the "collective path returns on a locally computed condition" mistake the project's
+  collective-call rule forbids).
 
 ### 4.4 Atomicity and consistency
 
@@ -566,7 +555,7 @@ for matching, not for position -- applied to a file format instead of to in-memo
   crash mid-append to an otherwise-valid existing file is a harder case -- the new point's data
   must be written to a staging location and the file extended only after that succeeds, or each
   restart point is simply its own file, trading one atomic rename per checkpoint for N small
-  files instead of one growing one). This decision belongs in open_questions.
+  files instead of one growing one). This decision is still open.
 - **Checksum**: `@checksum` on each restart point (fnv1a over the point's own payload bytes,
   Section 4.1), checked by the reader BEFORE any `restore_restart()`/`read_restart()` call runs --
   a mismatch is `Failure`, collectively agreed the same way the rank-count mismatch is (Section 3,
@@ -597,9 +586,8 @@ for matching, not for position -- applied to a file format instead of to in-memo
   XDMF's own name for each code, not new per-cell-type logic. A **structured** native mesh
   (regular Nx x Ny quad grid, as the Brusselator generator produces) can ALSO be expressed as
   XDMF's more compact `<Topology TopologyType="2DCoRectMesh">` with an `<Origin>`/`<Spacing>`
-  geometry instead of an explicit connectivity list -- an optimization, not required for Stage A
-  correctness, and deferred (robustness first, per the owner's standing priority) unless the
-  owner wants it in the first slice.
+  geometry instead of an explicit connectivity list -- an optimization, not required for
+  correctness, and deferred (robustness first).
 - **What it cannot show**: component-private state (Section 1.8 -- a plugin's opaque blob,
   Section 3 Option B) has no spatial location XDMF can attach an `<Attribute>` to, so it is
   invisible in ParaView/VisIt by construction, not by an XDMF-writer omission -- the sidecar can
@@ -628,9 +616,8 @@ for matching, not for position -- applied to a file format instead of to in-memo
   community's own layered/volume-mesh extensions exist but are not part of the stable 1.0
   convention most tools (ParaView's UGRID reader) implement -- a volume-mesh FUSE field is
   written as plain CF data (dimensions + coordinates, no UGRID topology variable) rather than
-  claiming UGRID conformance it cannot deliver. This split belongs in open_questions: does the
-  owner want volume output at all in this stage, given the honest answer is "CF, not UGRID, for
-  a volume mesh"?
+  claiming UGRID conformance it cannot deliver. This split is an open question: whether volume output is wanted
+  at all, given the honest answer is "CF, not UGRID, for a volume mesh".
 - **Parallel write path**: NetCDF-4/HDF5 collective write through the same `/opt/netcdf`
   (built parallel on `/opt/hdf5`, per host facts) the HDF5 restart writer already targets --
   `nc_var_par_access(..., NC_COLLECTIVE)` before a collective `nc_put_vara_double`, the standard
@@ -665,7 +652,7 @@ identical runs).
 ### (ii) Different rank count
 
 Restored state compared BY GLOBAL ID (not by rank-local position) to the written state.
-**Precisely what can and cannot be bit-identical, stated as the task asks:**
+**Precisely what can and cannot be bit-identical, stated precisely:**
 
 - A field's own VALUE at a given global id: bit-identical, because the value itself does not
   depend on which rank currently owns that id -- it is a number attached to a mesh entity, and
@@ -680,7 +667,7 @@ Restored state compared BY GLOBAL ID (not by rank-local position) to the written
   and the test asserts it reaches the SAME converged fixed point the uninterrupted run's
   corresponding window reached -- a weaker, but genuinely exact, claim: not "the iteration path
   is identical" (it provably is not, different accelerator starting state) but "the fixed point
-  is identical," checked to the derived tolerance the owner's standing convention requires (a
+  is identical," checked to the derived tolerance the project's convention requires (a
   tolerance from a stated theorem -- the fixed-point residual's own convergence tolerance
   already in `RunnerConfig`, `include/fuse/runtime/runner.hpp`, is the correct instrument here,
   not a new ad hoc one).
@@ -691,7 +678,7 @@ Restored state compared BY GLOBAL ID (not by rank-local position) to the written
   already on record for this project -- `c*u*(sum|x_i y_i|)` from Higham's recursive-summation
   bound -- bounds exactly this discrepancy, and this design reuses that bound rather than
   widening it or inventing a new one; the test's own tolerance must cite which theorem it
-  derives from, per the owner's standing tolerance convention.
+  derives from, per the project's tolerance convention.
 
 ### (iii) Every refusal made to fire
 
@@ -727,85 +714,35 @@ rank-count-dependent refusals.
 
 ---
 
-## 8. Staging
+## 8. Build options and constraints
 
-### Slice 1 -- same-rank-count restart of dn_heat
-
-**Why dn_heat, not Brusselator, for the first slice**: dn_heat already carries a derived
-agreement-bound tolerance (`examples/dn_heat/agreement_bound.hpp`) and has no sub-component
-partitioning to get right at the same time as the restart mechanics (Section 2.3) -- the
-smallest possible surface that still exercises every non-partitioning-dependent piece of this
-design: the HDF5 schema (Section 4), the XDMF sidecar (Section 5), Option B for
-`DirichletSlab`/`NeumannSlab`'s own private state (Section 3; trivial here per Section 3's own
-observation), the Runner's clock/period-index restore (Section 1.1), and refusals (i), (ii),
-(iv), (v) of Section 7.iii (every one except the two rank-count-dependent rows, which genuinely
-need Brusselator).
-
-- **Files touched** (new, under the owner's live checkout once Stage A is approved -- none
-  touched in THIS stage): `include/fuse/runtime/restart.hpp` (new `RestartWriter`/`RestartReader`
-  interfaces plus the Option-B blob methods, added to `component.hpp`), `src/runtime/restart_io.cpp`
-  (HDF5 writer/reader implementation), `src/runtime/restart_xdmf.cpp` (sidecar), a new
-  `cmake/FuseDependencies.cmake` option block, `examples/dn_heat/dn_component.hpp` (Option-B
-  overrides), `examples/dn_heat/main.cpp` (checkpoint-interval/restart CLI options), new tests
-  under `test/runtime/restart_*.cpp`.
-- **CMake options**: a NEW `FUSE_ENABLE_HDF5` option (default OFF, following the
-  `FUSE_ENABLE_MOAB`/`FUSE_ENABLE_PETSC` naming convention, `cmake/FuseDependencies.cmake:119-122`),
-  **not** folded into `FUSE_ENABLE_LOWFIVE` -- LowFive's own documentation states plainly that its
-  interception is in-memory only, "no file ever reaches disk" (`docs/user/lowfive.md:6-7`), so
-  reusing `FUSE_ENABLE_LOWFIVE`'s HDF5 *discovery* (the `find_package(HDF5 REQUIRED COMPONENTS
-  C)` call, `cmake/FuseDependencies.cmake:1054`) is correct and saves duplicated `find_package`
-  logic, but the restart writer must call `H5Fcreate`/`H5Dwrite` with the DEFAULT (non-VOL)
-  property list, never LowFive's `H5VOLProperty`, or the restart write would silently become
-  in-memory-only too. **This interaction needs the SAME two-HDF5-image hazard check
-  (`tools/probe-hdf5-images.sh`, `cmake/FuseDependencies.cmake:1107-1217`) already gates
-  `FUSE_ENABLE_LOWFIVE` + `FUSE_ENABLE_MOAB` on**, extended to cover `FUSE_ENABLE_HDF5` +
-  `FUSE_ENABLE_LOWFIVE` together, since both would then link the SAME `/opt/hdf5` into one
-  process for two different purposes (genuine disk I/O vs. VOL interception) -- this is a new
-  configure-time check, not a reuse of the existing one as-is, and belongs in open_questions
-  as a build-system design point the owner should see before it is written.
-- **KNOWN_ISSUES.md entry to open**: `D63` (next available number, after `D62`) -- "Restart-to-disk
-  cannot capture a period mid-suspension (an externally-driven ABI participant's coroutine
-  frame, `src/runtime/resume.hpp`) -- restart points are period-boundary only, by construction,
-  not a gap to close later" -- recorded as a DESIGN CONSTRAINT (Section 1.1), not a defect,
-  following the file's own convention of recording known, deliberate limitations next to open
-  defects.
-- **What would make me stop and ask the owner**: discovering that `DirichletSlab`/`NeumannSlab`'s
-  own private state (the `k1_eff`/`beta_` nonlinearity parameters and `q_`/`u_in_` buffers,
-  `examples/dn_heat/dn_component.hpp`) includes anything this document's state inventory
-  (Section 1) did not already name -- a sign the inventory itself is incomplete and needs the
-  owner's review before more examples are touched.
-
-### Slice 2 -- rank-count-independent restart (Brusselator)
-
-Built on Slice 1's schema and writer/reader, adding: Option A's `put_field`/`get_field` over
-`MeshView::global_id()` for `UComponent`/`VComponent` (`examples/brusselator/species_component.hpp`),
-the accelerator-layout-hash refusal (Section 4.1, Section 7.iii), and the different-rank-count
-round trip test (Section 7.ii) at 2 and 3 ranks on the host. Files touched:
-`examples/brusselator/species_component.hpp` (Option A overrides), `examples/brusselator/main.cpp`
-(restart CLI options), new `test/parallel/restart_rank_change_mpi_test.cpp`. CMake: no new
-option, reuses Slice 1's `FUSE_ENABLE_HDF5`.
-
-### Slice 3 -- XDMF sidecar
-
-Adds `restart_xdmf.cpp`'s own writer (if not already built in Slice 1 -- listed separately here
-because it is independently useful once ANY restart file exists, and the owner may want to see
-it against dn_heat's structured grid before Brusselator's unstructured-generator output is
-ready) and a manual-inspection acceptance step (open ParaView/VisIt against the sidecar -- not
-automatable in this sandbox, host-only, by the owner).
-
-### Slice 4 -- NetCDF-UGRID output
-
-Independent of restart entirely (Section 6: output-only). New `FUSE_ENABLE_NETCDF` option
-(following the same naming convention), `src/backend/netcdf_ugrid_writer.cpp`, wired to
-whichever of dn_heat (CF only, no UGRID -- it has no mesh) or Brusselator (CF+UGRID, 2-D face
-mesh) the owner wants demonstrated first; Brusselator is the natural choice since it is the only
-one of the four examples with a mesh to put a UGRID topology variable over at all (Section 2.3).
+- **CMake option**: `FUSE_ENABLE_HDF5` (default OFF, following the `FUSE_ENABLE_MOAB`/
+  `FUSE_ENABLE_PETSC` naming convention, `cmake/FuseDependencies.cmake:119-122`), not folded into
+  `FUSE_ENABLE_LOWFIVE`. LowFive's interception is in-memory only, "no file ever reaches disk"
+  (`docs/user/lowfive.md:6-7`). Reusing LowFive's HDF5 *discovery* (the `find_package(HDF5 REQUIRED
+  COMPONENTS C)` call, `cmake/FuseDependencies.cmake:1054`) is correct, but the restart writer must
+  call `H5Fcreate`/`H5Dwrite` with the default (non-VOL) property list, never LowFive's
+  `H5VOLProperty`, or the restart write would silently become in-memory-only too. Because the
+  restart writer and LowFive would link the same HDF5 into one process for different purposes
+  (disk I/O vs. VOL interception), the two-HDF5-image hazard check (`tools/probe-hdf5-images.sh`,
+  `cmake/FuseDependencies.cmake:1107-1217`) that gates `FUSE_ENABLE_LOWFIVE` plus
+  `FUSE_ENABLE_MOAB` applies to this combination as well.
+- **Period boundaries only**: restart-to-disk cannot capture a period mid-suspension (an
+  externally driven ABI participant's coroutine frame, `src/runtime/resume.hpp`). Restart points
+  are period-boundary only, by construction. This is a design constraint (Section 1.1), not a gap
+  to close later.
+- **XDMF sidecar** acceptance is manual inspection (open ParaView/VisIt against the sidecar); it
+  cannot be automated in a headless build.
+- **NetCDF-UGRID output** is independent of restart (Section 6: output-only). It would use its own
+  option following the same naming convention. Brusselator is the natural first example, being
+  the only one of the four examples with a mesh to put a UGRID topology variable over
+  (Section 2.3).
 
 ---
 
 ## Summary table of file:line citations used above
 
-(For the reviewer's convenience; every citation above is repeated here with no new claims.)
+Every citation above is repeated here with no new claims.
 
 - `include/fuse/runtime/component.hpp:315,342,374,385,401-417,420-429,442-446,474` -- Component
   interface, save/restore_state, capabilities, is_externally_driven.
@@ -850,1026 +787,300 @@ one of the four examples with a mesh to put a UGRID topology variable over at al
 - `cmake/FuseDependencies.cmake:119-122,1050-1217` -- option naming convention, LowFive+HDF5
   discovery, two-HDF5-image hazard probe.
 - `cmake/FuseFpPolicy.cmake:1-30,48` -- FUSE_FP_REPRODUCIBLE.
-- `KNOWN_ISSUES.md` D14 (closed, two-HDF5-image hazard), D58 (probe limitation), D62 (descriptor
-  endianness) -- context for the provenance hash's own caveat.
 
 ---
 
-## 9. Stage B Slice 1 -- implementation record (2026-10-15)
-
-The owner accepted this design with five decisions, reproduced here against what Slice 1 actually
-built, each cited to the file that carries it.
-
-1. **Form A is primary; Form B is same-rank-count only; a graph refuses a rank-count change
-   collectively if any component offers only Form B.** Implemented exactly as a capability-bit
-   pair, `kCapabilityRestartFormA`/`kCapabilityRestartFormB` (`include/fuse/model/
-   capabilities.hpp`, bits 6-7), checked by `fuse::check_restart_rank_count()` (`src/runtime/
-   restart.cpp`) -- `test/runtime/restart_test.cpp`'s `FormBOnlyComponentOnDifferentRankCountRefuses`
-   proves the refusal fires and that equal rank counts never trigger it. All four examples named in
-   Stage A were not all touched this slice (dn_heat only, per the staging plan); `examples/dn_heat/
-   dn_component.hpp`'s `DirichletSlab`/`NeumannSlab` both set `kCapabilityRestartFormA` and
-   implement `write_restart()`/`read_restart()`, confirming the owner's own claim that a
-   single-rank component's numbering is trivial (`0..n-1`).
-
-2. **FUSE verifies uniqueness and coverage of the declared global size for ALL arrays of a restart
-   point in ONE collective, never one per array.** Implemented as `RestartWriter::put_field()`'s
-   `declared_global_size` parameter plus `finish_point()`'s own combined sort over every field's
-   `(name, id)` pairs at once (`include/fuse/model/restart.hpp`'s own header comment states the
-   contract; `src/restart_io/hdf5_restart_io.cpp`'s `Hdf5GroupWriter::finish_point()` is the
-   concrete combined sort). At a single rank (this slice; MPI cannot run in this sandbox) the
-   combined sort re-confirms what `put_field()`'s own local check already found rather than
-   discovering anything new across ranks -- `test/runtime/restart_test.cpp`'s
-   `BadGlobalIdNumberingRefuses`/`DeclaredGlobalSizeMismatchRefuses` exercise the LOCAL half of
-   this; the genuinely cross-rank half is Slice 2's own host-run deliverable (see host_pending).
-
-3. **Both file layouts, selectable at run time; `GrowingFile` is copy-append-rename, never
-   in-place append.** `fuse::restart_io::FileLayout::{SeparateMeshAndPoints,GrowingFile}`
-   (`include/fuse/restart_io/hdf5_restart_io.hpp`); `create_restart_point()`'s own implementation
-   copies the existing file to a temp name before opening it read-write for the new point, and
-   `finish()` is the one atomic rename in either layout (`src/restart_io/hdf5_restart_io.cpp`).
-   `test/runtime/restart_test.cpp`'s `GrowingLayoutAppendsASecondPointWithoutDamagingTheFirst`
-   writes two points and confirms the first is still readable afterward; the cost (one file copy
-   per point) is exactly what the owner's own brief named and is not hidden anywhere.
-
-4. **Accelerator and window-waveform histories are keyed by (field, global id) so they MOVE
-   across a rank-count change; a row with no global id refuses by name; an explicit, off-by-default
-   run option allows a reset instead, reported at restart.** Implemented for the accelerator half
-   -- `Accelerator::export_restart_state()`/`import_restart_state()` (`include/fuse/num/
-   accelerator.hpp`), with real bodies for `AitkenAccel` and `SteffensenAccel`
-   (`src/num/accel_relaxation.cpp`); `QuasiNewtonAccel` (IQN-ILS/IQN-IMVJ) keeps the inherited
-   no-op default this slice, a scope reduction declared below. `Runner::write_restart_fields()`/
-   `restore_restart_fields()` (`src/runtime/runner.cpp`) resolve each `RegionBlock`'s own rows to
-   the OWNING component's Form-A ids via `build_field_owner_map()`; `allow_accelerator_reset_on_
-   mismatch`/`any_accelerator_reset` are threaded through exactly as named.
-   **Window-waveform history is NOT implemented this slice** -- dn_heat has no coupling window
-   (declared below; Slice 2, alongside Brusselator, is where a window genuinely exists to restart).
-   **Same rank count: everything restored bit for bit, including accelerator memory** --
-   `test/runtime/restart_test.cpp`'s `SameRankRoundTripSeparateLayout`/`SameRankRoundTripGrowingLayout`
-   prove this directly: run 5 periods uninterrupted vs. run 3, write, a NEW `Runner` restores, runs
-   2 more, compared `EXPECT_EQ` (not a tolerance) on every field element, both components' private
-   `time_`/`history_`, and the LAST period's own `IterationStats::iterations` (sweep count) -- the
-   Aitken accelerator's own dynamic relaxation factor and residual history are part of what makes
-   that sweep count match, so this is a genuine test of decision 4, not only of decision 1.
-
-5. **NetCDF/MPAS-style general unstructured output; can a UGRID-1.0 `mesh_topology` variable
-   reference the MPAS arrays.** Design only this round (Slice 4, unchanged from Stage A's own
-   Section 6 deferral) -- **answered, checked against the UGRID-1.0 conventions text rather than
-   assumed**: UGRID-1.0's `face_node_connectivity` variable carries its own `start_index` attribute
-   (declaring 0- or 1-based indexing) and supports a `_FillValue` for a ragged/padded face-node
-   array whose rows have fewer nodes than the array's own width -- exactly MPAS's own
-   `verticesOnCell(nCells, maxEdges)` layout (1-based Fortran indexing, padded to `maxEdges` with a
-   fill value where `nEdgesOnCell(c) < maxEdges`). **Yes**: a UGRID-1.0 `mesh_topology` variable can
-   reference MPAS's own `verticesOnCell` AS-IS, declaring `start_index` and `_FillValue` to match
-   MPAS's own convention, with no data rewritten -- the two conventions were designed to compose for
-   exactly this padded-polygon case, not merely compatible by coincidence.
-
-### Measured findings this slice surfaced that Stage A's design did not anticipate
-
-- **Accelerator rows from DIFFERENT components collide if concatenated into one flat id space.**
-  `dirichlet_neumann`'s own two blocks (`u_wall_in`, owned by `dirichlet`; `q_wall_in`, owned by
-  `neumann`) both report Form-A ids `0..n-1` -- correct and sufficient for each field ALONE, but
-  writing one flat `r_prev` field over the WHOLE accelerated vector put both components' id-0 rows
-  at the same key, refused by `E-RESTART-DUPLICATE-ID`. Fixed with `combine_field_and_local_id()`
-  (`src/runtime/runner.cpp`), a hash-combined `(qualified field name, local id)` key -- correct for
-  this slice's graphs, FLAGGED rather than assumed general: a genuinely collision-proof design
-  writes one NAMED sub-field per block instead of one flat field per region, listed in
-  `open_questions` below as Slice 2 work.
-- **A component's Form-A field name must equal the graph's own `FieldSpec::name`, not an
-  arbitrary label, for any field an accelerated channel feeds.** `RegionBlock::target_field` is
-  literally `graph.field(channel.target).name` (`src/runtime/iteration.cpp:1627`); the accelerator
-  row resolution looks the owning field up BY THAT STRING, so `dn_component.hpp`'s first draft
-  (field names `"q"`/`"u_in"` rather than the graph's own `"q_wall"`/`"u_wall_in"`) refused with
-  `E-RESTART-MISSING-FIELD` at every restore. Fixed by renaming; documented as a convention in
-  `docs/user/restart.md` and in `dn_component.hpp`'s own comment, so the next component author does
-  not rediscover it by the same failing test.
-- **The Runner's own clock is not restored by `restore_restart_fields()` and needed a new public
-  setter.** `ctx.t_begin = Rational{period_index} * plan.period() + tick.time` (`src/runtime/
-  runner.cpp`) is computed from `Impl::period_index` at call time, which is NOT a `Component` or an
-  `Accelerator` and therefore outside what `restore_restart_fields()` touches. Added `Runner::
-  set_current_period_index()` (`include/fuse/runtime/runner.hpp`, `src/runtime/runner.cpp`),
-  called from `fuse::restore_restart_point()` (`src/runtime/restart.cpp`) immediately after fields
-  succeed. Without it, the FIRST version of the round-trip test showed every restored field correct
-  immediately after restore (a passing diagnostic assertion proved this) but WRONG after the next
-  `run_period()` call, because the Runner recomputed `ctx.t_end` from period 0 instead of the
-  restored period -- a measured, not hypothetical, bug this test caught before it reached the
-  owner.
-
-### Scope reductions declared for this round
-
-- **QuasiNewtonAccel (IQN-ILS/IQN-IMVJ) restart state is not implemented** -- `export_restart_
-  state()`/`import_restart_state()` keep the inherited no-op default, so an IQN-accelerated
-  region's `v_`/`w_`/`blocks_` are NOT restored (a restore after an IQN-accelerated run resets that
-  accelerator silently rather than refusing, because the no-op default reports no mismatch at all
-  -- flagged explicitly in open_questions as a gap the owner should see, not a silent limitation).
-  Aitken and Steffensen are implemented and tested; `AccelKind::None`/`Constant` need nothing (no
-  learned state).
-- **Window-waveform history (the second half of owner decision 4) is designed, not implemented.**
-  No test in this slice exercises a coupling window (dn_heat has none); the API shape would follow
-  the identical `(field, global id)` keying the accelerator path already uses, but writing and
-  testing it needs a window-scoped region to exist, which is Slice 2's own Brusselator work.
-- **The combined-collective verification of owner decision 2 is implemented and tested only at a
-  single rank.** The genuinely cross-rank half (an `Allgatherv` over the combined id buffer) is
-  unwritten; MPI cannot start in this sandbox (standing rule), so it could not have been tested here
-  regardless of whether it were written.
-- **The C/Fortran ABI entries for restart (item B's own "every generated file and golden updated")
-  are NOT implemented this round.** `include/fuse/abi/entries.def`'s append-only X-macro generator
-  (`tools/gen-abi.py`, 799 lines) and its own golden-file discipline
-  (`test/abi/entries_golden_test.cpp`) were read but not extended -- a correct extension needs
-  the SAME scrutiny this slice spent on the C++ API (measured bugs found by running real tests,
-  twice), and attempting it without that scrutiny risked shipping a plausible-looking but unverified
-  ABI surface, which is a worse outcome than declaring it undone. The C++ `fuse::RestartWriter`/
-  `RestartReader`/`Component::write_restart()` etc. are complete and tested; only the C-callable
-  table entries and the Fortran shim are missing.
-- **Python binding impact: not assessed this round.** Listed for completeness, not measured.
-
-## 10. Stage B Slice 1 -- review round 2 record (2026-10-15)
-
-Round 1's review found two MUST-FIX defects and left the brief's ABI item open; this section
-records what round 2 changed, file:line cited, against each point the review raised.
-
-### MUST-FIX 1 -- no silent reset
-
-Round 1's base `Accelerator::import_restart_state()` returned success on a no-op default, so an
-accelerator that never implemented restart state (QuasiNewtonAccel) silently reset itself on every
-restore with no refusal and no report -- a correct-looking restore that was actually wrong. Fixed
-with a new virtual, `Accelerator::restart_state_implemented()` (`include/fuse/num/accelerator.hpp:213`,
-default `false`); the base `import_restart_state()` now unconditionally
-returns `Failure{"E-RESTART-NOT-IMPLEMENTED", ...}` (`accelerator.hpp:272`) and documents that this
-default must never actually run, because the caller checks `restart_state_implemented()` first
-(`accelerator.hpp:263,278`). `Runner::restore_restart_fields()` (`src/runtime/runner.cpp:4845`)
-checks the flag BEFORE calling `import_restart_state()` at all: `false` and no opt-in refuses with
-`E-RESTART-ACCEL-NOT-IMPLEMENTED` (`runner.cpp:4848`); opted in via `allow_accelerator_reset_on_
-mismatch`, it calls `Accelerator::reset()` directly and sets `any_accelerator_reset = true`
-(`runner.cpp:4859`) -- the no-op default is never reached either way. This is collective by
-construction, not by a runtime reduction: every rank's graph assigns the same `AccelKind` to the
-same region (the graph itself is agreed before any rank runs), so `restart_state_implemented()`
-evaluates to the identical boolean on every rank from identical input, and the comment at
-`runner.cpp:4839` states this explicitly rather than leaving it to be rediscovered.
-`NoneAccel`/`ConstantAccel` override the flag to `true` (trivially correct -- no learned state);
-`AitkenAccel`/`SteffensenAccel` override to `true` with real bodies. `QuasiNewtonAccel` (IQN-ILS/
-IQN-IMVJ) keeps the inherited `false` -- used deliberately as this round's test subject for the
-refusal path (a real, already-wired production `AccelKind`, not a new test-only seam), per the
-scope reduction below. Two new tests, `AccelNotImplementedRefusesWithoutOptIn` and
-`AccelNotImplementedWithAllowResetSucceedsAndReports` (`test/runtime/restart_test.cpp`), prove both
-branches; a mutation row (`restart-accel-not-implemented-gate-disabled`, `build-evidence/mutations/
-restart.toml`) disabling the gate kills exactly these two tests, confirmed and reverted.
-
-### MUST-FIX 2 -- exact keys, no hash
-
-Round 1's `combine_field_and_local_id()` (`src/runtime/runner.cpp`, removed this round) hash-
-combined `(qualified field name, local id)` into one 64-bit key shared across every accelerated
-block in a region -- collision-FREE for this slice's own graphs, but not collision-PROOF, which is
-what the review asked for. Fixed by keying exactly instead of combining at all:
-`fuse::RestartRowBlock` (`include/fuse/model/restart.hpp:121`, `{field_name, ids}`) replaces the
-flat id span in `Accelerator::export_restart_state()`/`import_restart_state()`'s own signature
-(`accelerator.hpp`), and `detail::put_field_per_block()`/`get_field_per_block()`
-(`accelerator.hpp:328,339`, defined in `src/num/accel_relaxation.cpp`) write and read ONE
-`put_field`/`get_field` call PER BLOCK, under the dataset name `name_prefix + "/" +
-block.field_name` -- a different HDF5 dataset per field, not a shared id space, so two blocks with
-IDENTICAL local ids cannot collide by construction, not merely by this slice's own graphs
-happening not to exercise it. `AitkenAccel`/`SteffensenAccel` are rewired onto these helpers;
-`Runner::write_restart_fields()`/`restore_restart_fields()` build a `std::vector<RestartRowBlock>`
-(one per `RegionBlock`) instead of a flat combined-id vector. A new direct unit test,
-`PerBlockKeysNeverCollideOnIdenticalLocalIds` (`test/runtime/restart_test.cpp`), drives two
-`RestartRowBlock`s with the SAME local ids `{0,1,2}` and different field names
-(`"dirichlet/q_wall"`/`"neumann/q_wall_in"`) and confirms no cross-contamination; a mutation row
-(`restart-per-block-key-collapsed-to-id-alone`, `restart.toml`) collapsing the qualified name back
-to `name_prefix` alone kills this test plus every multi-block-region test, confirmed and reverted.
-
-### MUST-FIX 3 -- `FUSE_FP_REPRODUCIBLE` status, and why bit-identity holds regardless
-
-`FUSE_FP_REPRODUCIBLE` is **ON by default** (confirmed from this round's own cmake configure
-output: "Reproducible floating point: -ffp-contract=off on every target"; the option's default is
-set in `cmake/FuseFpPolicy.cmake:49`). Restart's own round-trip tests hold bit-for-bit regardless of
-this setting, and the reason is in the policy file's own header, not asserted independently of it:
-`FuseFpPolicy.cmake:1-19` explains that the ULP divergence `-ffp-contract=off` guards against comes
-from comparing TWO DIFFERENT CODE SHAPES over the same data -- a vectorized loop's main body against
-its own scalar remainder tail, or a Release build's auto-vectorized loop against a Debug build's
-fully-unrolled one (`FuseFpPolicy.cmake:9-15`: "a runtime-trip-count loop gets split into a
-vectorized main body ... plus a scalar remainder tail"). `SameRankRoundTripSeparateLayout`/
-`SameRankRoundTripGrowingLayout` (`test/runtime/restart_test.cpp`) compare ONE compiled test
-binary's two executions -- an uninterrupted 5-period reference run, and a 3-period run, restore,
-plus 2 more periods -- through the IDENTICAL compiled `advance()`/accelerator functions on both
-sides; there is only ever ONE code shape in play, never two. Whatever FMA contraction that single
-compiled binary applies (fused or not, `FUSE_FP_REPRODUCIBLE` ON or OFF) is applied identically to
-both the reference run and the restored run, because both run the same instructions on the same
-hardware from the same build -- there is no second code shape for the first one to disagree with.
-The round-trip tests' own `EXPECT_EQ` (not a tolerance) on every field element is therefore a valid
-assertion independent of this build option, and would remain valid even if a future build turned
-`FUSE_FP_REPRODUCIBLE` OFF -- restart's bit-identity guarantee rests on "same binary, same inputs,
-twice", not on the contraction policy.
-
-### Item 4 -- ABI entries for restart (brief item, now done)
-
-Read `test/abi/entries_golden_test.cpp` and `test/abi/fortran/sizes_test.f90` first, as instructed:
-`types.h`/`participant.h`/`provider.h` and the Fortran modules are ALL generated from
-`include/fuse/abi/entries.def` via `tools/gen-abi.py`; the two named test files are themselves
-hand-written (`sizes_test.f90` keeps exactly one hand-written mirror type because Fortran cannot
-dereference the participant table's function pointers; the provider table IS generated and used
-directly, since a provider plugin never dereferences it). Added, following `entries.def`'s own
-append-only convention (new entries always appended last):
-
-- **Provider-side Form B**: `save_restart_blob`/`load_restart_blob` (`entries.def:332-333`), using
-  `fuse_restart_blob_sink`/`fuse_restart_blob_source` (`entries.def:162-175`) -- query-then-fill,
-  reusing `fuse_graph_sink`'s own idiom rather than inventing a new one. New capability bit
-  `FUSE_CAP_RESTART_FORM_B` (`entries.def:108`, value 64). `ProviderAdapter::save_restart_blob()`/
-  `load_restart_blob()` (`src/abi/provider_adapter.cpp:392,435`) implement the caller side of the
-  SAME query-then-fill pattern `impl_save_graph` already uses as the callee side, with a cached
-  `last_blob_version_` (`provider_adapter.hpp:84`) backing `restart_blob_version()`.
-- **Participant-side**: `request_restart_point` (`entries.def:286`, `fuse_null`/`fuse_null`) --
-  a flag, not a trigger: the ABI's fixed `(ctx, in, out)` shape cannot carry a file path or an
-  HDF5 layout choice, so `Runner::request_restart_point()`/`take_restart_point_request()`
-  (`include/fuse/runtime/runner.hpp:704,711`, `src/runtime/runner.cpp:4704,4708`, backed by
-  `Impl::restart_point_requested`, `src/runtime/runner_impl.hpp:1049`) is consume-not-peek: the
-  embedding host polls after every `run_period()`/`resume_period()` and decides whether, and how,
-  to act. Idempotent -- two requests before a poll leave exactly one pending, proven by
-  `AbiParticipant.RequestRestartPointSetsTheRunnersFlagIdempotently` (`test/abi/participant_test.cpp`)
-  via a new test-only seam, `fuse::abi_test::runner_of(ctx)` (`src/abi/test_support.hpp/.cpp`).
-- Ran `tools/gen-abi.py --write` then `--check` (passed, "6 current, 0 stale, of 6") to regenerate
-  all 6 generated files, which caught a REAL latent bug: `gen_fortran_provider_module()`
-  (`tools/gen-abi.py:636`) hardcoded its `use ffuse, only: ...` list instead of computing it from
-  `spec.provider_entries`' own struct types -- gfortran failed to compile the regenerated
-  `ffuse_provider.f90` with "Cannot IMPORT 'fuse_restart_blob_sink' ... does not exist" until this
-  was fixed to compute the needed-structs set dynamically, with line-wrapping for Fortran's
-  ~132-column free-form limit.
-- Golden files updated: `test/abi/struct_sizes.golden` (+`fuse_restart_blob_sink` 40,
-  +`fuse_restart_blob_source` 32, `fuse_participant_abi_v1` 144->152, `fuse_provider_abi_v1`
-  80->96), `entries_golden_test.cpp`'s measured-struct map and `FUSE_NO_TRAILING_PADDING` checks,
-  `negotiation_test.cpp`'s `FakeV2Table` (folded `request_restart_point` into its real-prefix, the
-  same convention prior entries already used).
-- Two new C-consumer tests at tier 0: `ConformanceTest.ProviderSaveAndLoadRestartBlobRoundTrips`
-  (`test/abi/conformance_test.cpp`, a full round trip through a `dlopen`'d plugin ->
-  `ProviderAdapter` -> `Component`) and `AbiParticipant.RequestRestartPointSetsTheRunnersFlag
-  Idempotently` (above). `test/abi/plugins/linear_provider.c` (shared across every provider-plugin
-  test variant) gained real `p_save_restart_blob`/`p_load_restart_blob` bodies and sets
-  `FUSE_CAP_RESTART_FORM_B` unconditionally in `p_capabilities`.
-- **Not implemented this round, declared as a scope reduction**: Form A's full writer/reader ABI
-  surface. `entries.def`'s own header states the one rule every entry in this file follows -- an
-  identical flat `(ctx, in, out)` shape -- and there is no existing precedent in this codebase for
-  a nested-table or opaque-handle ABI object; inventing one without dedicated review risked the same
-  "plausible-looking but unverified" outcome round 1 declined for the whole ABI item. Only Form B
-  (same-decomposition-only, opaque bytes) fits the existing shape and is implemented.
-
-### Item 5 -- the cross-rank collective half of decision 2 (brief item, now done, compiled only)
-
-New header `include/fuse/restart_io/collective_check_mpi.hpp` declares
-`collective_duplicate_and_coverage_check()` (`collective_check_mpi.hpp:82`) over an `int`
-(`MPI_Comm_c2f` handle), not `MPI_Comm` -- following the EXACT convention `fuse/linalg/comm.hpp`
-already uses, because `tools/check-layering.py`'s `FORBIDDEN_PUBLIC` rule rejects `mpi.h` in any
-public header and `restart_io`'s own `ALLOWED_PUBLIC_THIRD_PARTY` entry is `set()` (verified:
-`check-layering.py` reports 0 violations with this header in the tree). The implementation
-(`src/restart_io/collective_check_mpi.cpp`, compiled only under `FUSE_ENABLE_MPI`) serializes
-`(name, id)` pairs and `(name, declared_size)` pairs as length-prefixed byte buffers and calls
-exactly TWO `MPI_Allgatherv`s total -- never one per field, per the owner's decision 2 -- after
-which every rank performs an IDENTICAL pure local check over the now-identical gathered data
-(duplicate id, declared-size agreement, coverage), so every rank reaches the same verdict with no
-further reduction. Five new tests (`test/parallel/restart_collective_mpi_test.cpp`), registered via
-`fuse_add_mpi_test(parallel restart_collective_mpi ... RANKS 2 3 LABELS restart_io)`, scale with
-`fuse::testing::size()` rather than hardcoding rank counts. **Deliberately not wired into
-`Hdf5GroupWriter`/`create_restart_point()` this round** -- Slice 1's own tested tier-0 surface stays
-untouched; this is a standalone utility for a future round's parallel-aware writer, matching
-`finish_point()`'s own pre-existing comment anticipating exactly this extension. **Compiled, never
-run** -- MPI cannot start in this sandbox (standing rule); see `host_pending` for the exact commands
-the lead runs on a real multi-rank host.
-
-### Item 6 -- Python binding impact (brief item, read-only assessment, not implemented)
-
-Read `python/src/component_bindings.cpp`, `python/src/field_registry.hpp` +
-`field_bindings.cpp` (the `FieldRegistry` wrapper precedent), `python/src/module.cpp`, and
-`docs/dev/python-surface.md` (confirmed the doc predates the restart track entirely -- no mention
-of restart-to-disk in its own "What this does not expose" section, a genuinely new gap, not an
-already-tracked one). `ForwardingComponent` currently infers `kCapabilityRollback` from
-`hasattr(obj_, "save_state")`/`hasattr(obj_, "restore_state")` (`component_bindings.cpp:87-88`),
-ORed into its declared capabilities at `component_bindings.cpp:177`. Restart-to-disk needs the same
-hasattr-gated pattern, not yet written:
-
-- New pybind11 wrapper classes for `RestartWriter`/`RestartReader` exposing `put_field`/`get_field`/
-  `put_scalar`/etc. over NumPy arrays (ids as `int64`, values as `float64`) -- sized similarly to
-  the `FieldRegistry` wrapper precedent (`field_registry.hpp`, 208 lines; `field_bindings.cpp`, 32
-  lines), so roughly 150-250 combined lines.
-- `ForwardingComponent` additions: `has_write_restart_`/`has_read_restart_`/
-  `has_save_restart_blob_`/etc., hasattr-gated overrides for `write_restart`/`read_restart`/
-  `save_restart_blob`/`load_restart_blob`/`restart_blob_version`, plus capability-bit inference
-  extensions mirroring `kCapabilityRollback`'s own pattern -- roughly 40-60 lines.
-- `module.cpp` registration of the new wrapper classes.
-- **No binding work needed for `Accelerator::export_restart_state()`/`import_restart_state()`**:
-  accelerators are never subclassed in Python -- a graph configures one only via the `AccelKind`
-  enum (`component_bindings.cpp` has no accelerator-subclassing path), so a Python-driven run
-  restarts accelerators through the same native C++ implementations regardless of which language
-  the components are written in.
-
-`FUSE_ENABLE_PYTHON` was OFF in every build this round; no binding code was written or built,
-consistent with the "read-only, do not implement" instruction.
-
-### Item 7 -- sandbox Fortran-plugin conformance failures (brief item, now fixed; MAJOR CORRECTION to round 1)
-
-Round 1 reported "this sandbox has no Fortran compiler" and configured `FUSE_ENABLE_FORTRAN=OFF`
-as a workaround. That diagnosis was **wrong**: `gfortran` (GNU 16.2.0) is installed at
-`/opt/homebrew/bin/gfortran`, simply not on `PATH` (the identical situation as this sandbox's
-`cmake`/`ninja`, which also need an explicit full path). Reconfiguring with
-`-DFUSE_ENABLE_FORTRAN=ON -DCMAKE_Fortran_COMPILER=/opt/homebrew/bin/gfortran` makes
-`abi.conformance`'s two previously-failing tests (`LagOneGraphAllFourKindsMatchNative`,
-`SubcycledMeanGraphAllFourKindsMatchNative`) PASS, because the Fortran plugin dylib those tests
-load now actually gets built. With this configuration (HDF5 ON, Fortran ON via the explicit
-compiler path, MPI/MOAB/PETSc/LowFive OFF, Debug, `FUSE_FP_REPRODUCIBLE` ON by default): **219/219
-tier-0 tests pass (100%)**, up from 210 under round 1's Fortran-OFF workaround (Fortran adds
-`fuse_abi_fortran_sizes_test` plus the Fortran-linked verification tests). A separate build with
-`-DFUSE_ENABLE_HDF5=OFF` (otherwise identical) confirmed nothing else breaks without HDF5:
-**218/218 tests pass (100%)**; that build tree was deleted immediately after recording this result,
-per the two-build-tree limit.
-
-### Full tier-0 run, this round's final state
-
-With every round-2 change applied (MUST-FIX 1/2/3, items 4/5/6/7) and `build2` configured exactly
-as above (`-DFUSE_ENABLE_HDF5=ON -DFUSE_ENABLE_FORTRAN=ON
--DCMAKE_Fortran_COMPILER=/opt/homebrew/bin/gfortran -DFUSE_ENABLE_MPI=OFF`), a full `ctest`
-run reports **100% tests passed, 0 tests failed out of 219**. The five gates (`check-layering.py`,
-`check-invariants.py`, `verify-import.py`, `mutate.py --check-anchors`, and `sphinx-build -W
---keep-going`) were run against this same tree; the four static gates report 0 violations/problems
-and 357 valid/0 stale anchors (two new rows added to `build-evidence/mutations/restart.toml` this
-round, following its own hand-applied/restored/`cmp`-verified convention, not the source-anchor
-system `--check-anchors` itself verifies).
-
-### Scope reductions declared this round (in addition to round 1's, unresolved)
-
-- **QuasiNewtonAccel (IQN-ILS/IQN-IMVJ) restart state is still not implemented** -- now with a
-  tested, correct refusal (MUST-FIX 1) instead of round 1's silent reset. See `KNOWN_ISSUES.md`
-  D64 for exactly what a future round would need to export/import, keyed by field.
-- **Window-waveform restart history is still not implemented** (carried from round 1 unchanged --
-  dn_heat has no coupling window; Slice 2's Brusselator work is where one exists to restart).
-- **Form A's full writer/reader ABI surface is not implemented** (this round's own item 4 scope
-  reduction, above) -- only Form B (opaque, same-decomposition-only bytes).
-- **The cross-rank collective (item 5) is compiled and unit-tested but not wired into
-  `Hdf5GroupWriter`/`create_restart_point()`** -- a standalone utility a future round's writer
-  calls.
-- **No Python binding code was written** (item 6, read-only by instruction).
-- **No fault-injection provider-plugin variant exercises `save_restart_blob`/`load_restart_blob`
-  returning an error** -- `linear_provider.c`'s new bodies always succeed; a variant that reports
-  `FUSE_ERR_IO` or a version mismatch was not added this round, matching the level of fault
-  coverage the ORIGINAL (pre-restart) provider entries this round extended already have in this
-  test file.
-
-
-## 11. Stage B Slice 1b -- typed fields, implementation record (2026-10-15)
-
-The owner reviewed Slice 1's design (Section 9-10) and required restart
-fields to be templated on element type before Slice 2 proceeds. This
-section records what was built, what the real HDF5 and compiler behaviour
-turned out to be (several measured facts this slice's own design review
-did not anticipate), and the mutation/tier-0 evidence.
-
-### Design implemented (owner's ten numbered items)
-
-1. **`fuse::ElementType`** (`include/fuse/model/element_type.hpp:54-81`) is a
-   closed enum: `Int8`..`Int64`, `UInt8`..`UInt64`, `Binary16`, `BFloat16`,
-   `Binary32`, `Binary64`, `LongDouble`, `Bool`. `ElementTypeOf<T>`
-   (`element_type.hpp:167-240`) resolves a C++ type to its enumerator at
-   compile time; any `T` outside the supported set fails a `static_assert`
-   in the unspecialised primary template.
-2. **`fuse::bfloat16`** (`include/fuse/model/bfloat16.hpp`) is a FUSE
-   storage type: 1 sign, 8 exponent (bias 127, same as `Binary32`), 7
-   explicit significand bits. `from_float()` rounds to nearest, ties to
-   even, quiet-NaN-preserving (`bfloat16.hpp:63-76`). `test/model/
-   bfloat16_test.cpp`'s `ExhaustiveBitToFloatToBitIdentityOverEveryNonNan
-   Pattern` round-trips all 65536 bit patterns (254 correctly identified as
-   NaN). Stored in HDF5 as a user-defined float type built the same way as
-   every other non-native float `ElementType` -- see item 5 below.
-3. **`Bool`** is stored as one `UInt8` byte; `validate_bool_bytes()`
-   (`src/restart_io/hdf5_restart_io.cpp:482-495`) refuses
-   (`E-RESTART-BAD-BOOL-BYTE`) any byte that is not `0` or `1`.
-4. **Templated interface.** `put_field<T>()`/`get_field<T>()` and
-   `put_scalar<T>()`/`get_scalar<T>()` (`include/fuse/model/restart.hpp:
-   194-200, 224-229, 305-311, 326-334`) are non-virtual templates over ONE
-   virtual byte-based pair each (`put_field_bytes`/`get_field_bytes`,
-   `put_scalar_bytes`/`get_scalar_bytes`). This round MIGRATED every caller
-   to the templated interface rather than keeping a double-only legacy
-   overload (the "say which" the owner asked for -- migrate, not
-   dual-maintain): `src/num/accel_relaxation.cpp`, `src/runtime/
-   restart.cpp` (`period_index` now `std::int64_t` through the typed path,
-   never cast through `double`), `examples/dn_heat/dn_component.hpp`, and
-   `test/runtime/restart_test.cpp`'s existing call sites. `get_scalar<T>()`
-   takes an out-parameter `T&` rather than round 1's `Result<double>`
-   return (`restart.hpp:314-325`'s comment records why: a value and a
-   report cannot both occupy one `Result<>` slot without inventing a pair
-   type this project has no other use for). `DirichletSlab` gained a
-   `std::int32_t sweep_count_` and a `bool parity_flag_`
-   (`examples/dn_heat/dn_component.hpp`), round-tripped through the Runner
-   end to end -- `test/runtime/restart_test.cpp`'s `RunResult::
-   dirichlet_sweep_count`/`dirichlet_parity_flag`, verified by a real
-   mutation (disabling `sweep_count_` restore fails `SameRankRoundTrip*`,
-   reverted and confirmed clean).
-5. **Per-field metadata.** `write_type_metadata()`/`read_and_verify_type_
-   metadata()` (`hdf5_restart_io.cpp:327-472`) write/check `element_type`,
-   `byte_size`, `significand_bits`, `exponent_bits`, `exponent_bias`,
-   `byte_order`, `is_signed` as HDF5 attributes alongside each dataset.
-   `read_and_verify_type_metadata()` was REWRITTEN mid-round (see "Design
-   bugs found" below): it returns a fresh `ElementTypeInfo` built from the
-   FILE's own attributes, checked only for internal self-consistency
-   against the dataset's own actual HDF5 datatype
-   (`H5Tget_fields`/`H5Tget_ebias`/`H5Tget_norm`/`H5Tget_class`/
-   `H5Tget_sign`) -- never against this build's global `element_type_info()`
-   table. Any attribute/dataset-type disagreement refuses
-   (`E-RESTART-TYPE-METADATA-MISMATCH`); an unrecognised `element_type`
-   name refuses by name (`E-RESTART-UNKNOWN-ELEMENT-TYPE`).
-6. **`ReadConversion::Exact`/`Widening`/`AllowNarrowing`**
-   (`element_type.hpp:113`) -- `convert_one_element()`
-   (`hdf5_restart_io.cpp:613-712`) is the one dispatch point: identical-type
-   fast path, `Exact` refusal (`E-RESTART-TYPE-MISMATCH`), `Widening`'s
-   exactness check via `fuse::detail::is_exact_widening()`
-   (`element_type.cpp:183`, two overloads -- the `ElementTypeInfo`-based
-   primary used here, and a convenience `ElementType`-based wrapper for
-   same-platform callers), float narrowing via `fuse::detail::
-   narrow_float()` (`float_bits.cpp:250`), integer narrowing via
-   `encode_int_checked()` (`hdf5_restart_io.cpp:540-595`, refuses
-   `E-RESTART-INTEGER-OVERFLOW` on overflow even under `AllowNarrowing`,
-   and `E-RESTART-SIGNED-TO-UNSIGNED` unconditionally). All float
-   conversion is done in FUSE code built and tested from scratch
-   (`include/fuse/model/float_bits.hpp`/`.cpp`: `decode_float_bits()`,
-   `encode_float_bits()`, `round_significand()`, `narrow_float()`) --
-   **never HDF5's own soft-conversion machinery**; see "HDF5's own
-   conversion limitation" below for why. The owner's exact mandated
-   scenario -- a hand-built x86-64-style 80-bit `long double` dataset,
-   mantissa `0x8000000000000001`, biased exponent `16383` (unbiased `0`,
-   value `1 + 2^-63`), explicit leading bit (`H5T_NORM_MSBSET`, per
-   `H5Tpublic.h`) -- is `test/runtime/typed_restart_hdf5_test.cpp`'s
-   `TypedRestartHdf5.HandBuiltX86LongDoubleExactAndWideningRefuseAllow
-   NarrowingReportsDelta`: `Exact` and `Widening` both refuse
-   (`E-RESTART-TYPE-MISMATCH`), `AllowNarrowing` succeeds with
-   `max_absolute_change` bit-for-bit equal to an independently computed
-   `std::ldexp(1.0, -63)`.
-7. **Accelerator/waveform histories stay `Binary64`.**
-   `src/num/accel_relaxation.cpp`'s per-block helpers and Aitken's omega
-   read/write exclusively `double` -- unchanged from Stage B Slice 1 Round
-   2; this round only migrated their call sites to the typed
-   `put_scalar<double>`/`get_scalar<double>` spelling, never the stored
-   type.
-8. **Collective global-id check** (`fuse/restart_io/collective_check_mpi.
-   hpp`/`.cpp`, int64 ids) is unchanged from Round 2; typed fields do not
-   touch it.
-9. **ABI.** No Form-A entry exists yet (Round 2 Item 4's own scope
-   reduction stands), so no ABI change was made. A future Form-A struct
-   that exposes a field's element type would add one `std::uint8_t`-sized
-   tag immediately after the existing `byte_size`/`components` pair in
-   whatever field-descriptor struct Form A eventually defines, matching
-   `ElementType`'s own `std::uint8_t` underlying type -- append-only,
-   never inserted before an existing member, the same rule Round 2's Item
-   4 note already states for Form A generally.
-10. **Python.** Read-only note, not implemented: `fuse::bfloat16` has no
-    standard numpy dtype; a future binding would need either `ml_dtypes`
-    (adds a third-party dependency solely for its `bfloat16`/`float8_*`
-    numpy extension types) or a FUSE-side `uint16` view with a documented
-    reinterpretation contract. `Binary16` maps to numpy's own `float16`
-    when the platform provides it; `LongDouble` maps to numpy's
-    `longdouble` ONLY when the two platforms' extended-precision formats
-    agree (this project's own measured Apple-Silicon-vs-x86-64 difference,
-    item 2 below, means that mapping is platform-conditional, not
-    universal). No implementation; `python/` is untouched this round.
-
-### Measured findings this round surfaced that the design review did not anticipate
-
-- **HDF5's own soft type-conversion refuses `H5T_NORM_MSBSET`.** A
-  standalone test program (`/tmp/h5test3.c`, HDF5 1.14.1-2 at `/opt/hdf5`)
-  built an 80-bit x86-extended-style `long double` HDF5 type (explicit
-  leading significand bit) and asked `H5Dread()` to convert it to a plain
-  `double`. HDF5's own error stack: `H5Tconv.c` line 4602 in
-  `H5T__conv_f_f()`: "normalization method not implemented yet". This
-  means FUSE cannot trust `H5Dread`'s type-conversion machinery for ANY
-  conversion touching an explicit-leading-bit format (x86 extended
-  precision is the only one this project's measured platforms produce,
-  but the limitation is in HDF5's own soft converter, not specific to one
-  bit pattern) -- motivating item 6's from-scratch bit-level pipeline.
-- **`H5Tset_fields()`/`H5Tset_precision()`/`H5Tset_size()` ordering is
-  direction-dependent**, found and fixed twice while building
-  `make_derived_float_type()` (`hdf5_restart_io.cpp:236-295`): for a
-  PRECISION DECREASE (e.g. `Binary32` -> `BFloat16`/`Binary16`,
-  shrinking from 32 to 16 bits), `H5Tset_fields()` must run BEFORE
-  `H5Tset_precision()`/`H5Tset_size()` shrink the type, or HDF5 reports
-  "exponent bit field size/location is invalid" (the old field positions
-  no longer fit the new, smaller size). For a PRECISION INCREASE (e.g.
-  `Binary64` -> an 80-bit extended type), size/precision must grow FIRST,
-  then `H5Tset_fields()` positions the fields in the new, larger size, or
-  HDF5 reports "adjust sign, mantissa, and exponent fields first" (the old
-  field positions do not fit the type being asked to shrink TO before it
-  has grown). Both exact messages were captured from the real HDF5 error
-  stack, not inferred.
-- **The original `make_hdf5_type_for()` dispatched `LongDouble` to
-  `H5T_NATIVE_LDOUBLE` unconditionally -- wrong when the `ElementTypeInfo`
-  comes from a FOREIGN file's own attributes.** On this platform
-  `H5T_NATIVE_LDOUBLE` is a 53-bit type; using it as the memory type while
-  reading a file whose actual on-disk type is a hand-built MSBSET 80-bit
-  type triggered the identical "normalization method not implemented"
-  failure as the untrusted-soft-conversion path above, because HDF5 still
-  has to soft-convert between the file type and whatever memory type is
-  requested. **Fix:** `make_hdf5_type_for()` now dispatches EVERY float
-  `ElementType` (`Binary16`/`BFloat16`/`Binary32`/`Binary64`/`LongDouble`)
-  through ONE fully general `make_derived_float_type(const
-  ElementTypeInfo&)` (`hdf5_restart_io.cpp:236-295`) that builds the HDF5
-  type purely from the `ElementTypeInfo`'s OWN fields -- no native-type
-  shortcut for any float type, including the common case where a platform's
-  own `long double`/`double` happen to match a native type exactly.
-  Within that rewrite, the precision formula was also corrected: `stored_
-  mantissa_bits + exponent_bits + 1`, NOT `significand_bits + exponent_
-  bits + 1` -- `significand_bits` already INCLUDES any implicit leading
-  bit (`element_type.hpp`'s own `ElementTypeInfo::significand_bits` doc
-  comment), so adding `+1` again overcounted by one bit for every
-  IMPLIED-norm type. This was masked for every PRECISION-DECREASE case
-  by HDF5's own auto-shrink-on-size-decrease behaviour (documented under
-  `H5Tset_size()`), but produced a wrong, non-matching type for the
-  INCREASE case (the x86-long-double scenario), which is how it was
-  caught -- a real test failure (`E-RESTART-HDF5: H5Dread scalars/x86ld`),
-  not a code-review catch.
-- **A design flaw in the original `read_and_verify_type_metadata()`
-  would have made it structurally IMPOSSIBLE to read a genuinely
-  foreign-platform file under `AllowNarrowing`,** contradicting item 6's
-  own requirement. The original version compared a file's `element_type`
-  attributes against `fuse::element_type_info(enum)` -- THIS build's own
-  canonical/global metadata table -- so any file whose actual recorded
-  metadata did not match this platform's own table entry (exactly the
-  x86-long-double scenario) would refuse before `AllowNarrowing` ever got
-  a chance to run. Caught by test DESIGN (recognising the contradiction
-  with item 6 while writing the hand-built-file test), fixed before
-  running the broken version: the function now builds a FRESH
-  `ElementTypeInfo` from the file's own attributes, verified only for
-  internal self-consistency against the dataset's own actual HDF5 type.
-  `is_exact_widening()` was refactored to take `const ElementTypeInfo&` on
-  both sides for this reason (`element_type.hpp:264`, with a convenience
-  `ElementType`-based overload at `element_type.hpp:272` for same-platform
-  callers), and `convert_one_element()` takes the stored side as `const
-  ElementTypeInfo&` directly rather than re-deriving it from an
-  `ElementType` enumerator.
-
-### Mutation rows (this round, build-evidence/mutations/restart.toml)
-
-Each row below was hand-applied to `/tmp/restart/src4`, rebuilt, run for
-real, reverted, and `cmp`-verified byte-identical against the clean file
-before moving to the next row -- this project's established convention,
-not the source-anchor system `mutate.py --check-anchors` verifies.
-
-| # | Mutation | File:line | Killed by |
-|---|---|---|---|
-| 1 | `is_exact_widening()` always returns `true` | `element_type.cpp:183` (body replaced with unconditional `return true`) | `TypedRestart.WideningRefusesANonExactConversion` (`restart_test.cpp`), `TypedRestartHdf5.HandBuiltX86LongDoubleExactAndWideningRefuseAllowNarrowingReportsDelta` (its `Widening`-refuses assertion wrongly succeeds, then throws `bad_variant_access` reading a `Failure` as a value), `ElementType.IsExactWideningMatchesEveryOwnerNamedCase` |
-| 2 | `bfloat16::from_float()`'s round-up branch disabled (`if (false && ...)`), reducing it to plain truncation | `bfloat16.hpp` (round-to-nearest-even branch) | `BFloat16.RoundToNearestEvenAtExactTies`, `BFloat16.RoundingOverflowAtTheTopOfTheRangeBecomesInfinity` -- NOT caught by the exhaustive round-trip test, by construction: that test's inputs are bf16 bit patterns widened losslessly to `float` first, so every value it round-trips already has all-zero bits in the range truncation vs. rounding would differ on, which is exactly why the two dedicated tie/overflow tests exist separately |
-| 3 | `narrow_float()`'s `result.absolute_change` forced to `0.0` regardless of the computed delta | `float_bits.cpp:301` | `FloatBits.OwnerScenario_X86ExtendedLongDoubleNarrowsToMacDoubleWithReportedDelta`, `TypedRestart.FloatNarrowingReportsAMeasuredChange` (`restart_test.cpp`), `TypedRestartHdf5.HandBuiltX86LongDoubleExactAndWideningRefuseAllowNarrowingReportsDelta` (reports `0` against an independently computed `1.0842021724855044e-19`) |
-
-### Fortran build-configuration correction (carried forward from Round 2)
-
-This round's own instructions repeated Round 1's original ("no Fortran
-compiler in sandbox") premise and asked for `-DFUSE_ENABLE_FORTRAN=OFF`.
-That premise is the SAME one Round 2 Item 7 already measured and corrected:
-`gfortran` (GNU 16.2.0) is installed at `/opt/homebrew/bin/gfortran`, not
-on `PATH` by default -- verified again this round (`gfortran --version`
-reports `GNU Fortran (Homebrew GCC 16.2.0) 16.2.0`). Flagged to the owner
-mid-round rather than silently deciding either way; the owner chose to
-enable Fortran, matching Round 2's own established configuration
-(`-DFUSE_ENABLE_FORTRAN=ON -DCMAKE_Fortran_COMPILER=/opt/homebrew/bin/
-gfortran`). Built WITHOUT this flag first to confirm the two
-`abi.conformance` Fortran-plugin tests (`LagOneGraphAllFourKindsMatch
-Native`, `SubcycledMeanGraphAllFourKindsMatchNative`) fail identically
-(`FortranPlugin: E-ABI-LOAD`) on the UNMODIFIED pristine tree under the
-same flag -- confirming the failure is a build-configuration effect, not a
-Slice 1b regression -- before reconfiguring with Fortran on and deleting
-that temporary verification tree.
-
-### Full tier-0 run, this round
-
-With `-DFUSE_ENABLE_HDF5=ON -DFUSE_ENABLE_FORTRAN=ON -DCMAKE_Fortran_
-COMPILER=/opt/homebrew/bin/gfortran -DFUSE_ENABLE_MPI=OFF` (otherwise
-identical to Round 2's configuration, Debug, `FUSE_FP_REPRODUCIBLE` ON by
-default): **100% tests passed, 0 tests failed out of 223** (up from Round
-2's 219 -- this round added 4 new ctest entries: `fuse_model_bfloat16_test`,
-`fuse_model_element_type_test`, `fuse_model_float_bits_test`, and
-`fuse_runtime_typed_restart_hdf5_test`, the last gated by
-`FUSE_ENABLE_HDF5`). A separate build with `-DFUSE_ENABLE_HDF5=OFF`
-(otherwise identical) confirmed nothing else breaks without HDF5.
-
-### Scope reductions declared this round (in addition to Round 2's, unresolved)
-
-- **Integer narrowing under `AllowNarrowing` reports no measured change**
-  (unlike float narrowing's `max_absolute_change`) -- an integer value
-  that does not fit refuses outright (`E-RESTART-INTEGER-OVERFLOW`); one
-  that DOES fit is exact by construction (narrowing a wider integer type
-  to a narrower one that still holds the value loses nothing), so there is
-  no partial-information case analogous to float rounding to report a
-  magnitude for.
-- **`int` -> `float` narrowing is not implemented/not authorized** --
-  item 6's design restricts `int -> float` conversion to the `Widening`
-  case where the float's significand width exactly covers the integer's
-  range (`is_exact_widening()`'s int-to-float branch); a NARROWING int-to-
-  float conversion (one that could lose integer precision) was never
-  part of the owner's ten-item list and was not added speculatively.
-- **`bool` -> `float` widening is not implemented** -- not named in any of
-  the owner's ten items; `Bool` only interconverts with itself under every
-  `ReadConversion` mode in this round's implementation.
-- **No Python binding code was written** (item 10, read-only by
-  instruction).
-- **Form A's element-type tag is a documentation note only** (item 9), not
-  an actual ABI/`entries.def` change -- no Form-A struct exists yet for it
-  to attach to.
-
-## 12. Stage B Slice 2 -- rank-count-independent restart, implementation record (2026-10-15)
-
-The owner's five settled decisions for this slice, against what was built, each cited to the
-file that carries it.
-
-1. **Form A primary; a small-task-count run computes ICs and restarts on a larger one, and the
-   reverse; Form B same-count only; self-numbered global ids allowed with FUSE's single batched
-   collective check.** `UComponent`/`VComponent` (`examples/brusselator/species_component.hpp`)
-   both set `kCapabilityRestartFormA` unconditionally and implement `write_restart()`/
-   `read_restart()` over `NativeGrid::global_id()` (new accessor, `examples/brusselator/
-   brusselator_physics.hpp`, filled once in `NativeGrid::make()` from the SAME
-   `view->global_id(2, native_idx)` call already sitting beside the `centroid()` read that
-   resolves `native_of_canonical_` -- no second mesh walk). `UComponent` keys `"u_out"`/`"u_in"`
-   (its own registered fields) AND its private `"u_state"`/`"u_q_prev"` (`UCore::state_`/
-   `q_prev_`, Section 1.8's own hidden state) by the SAME U-grid ids, since all four live on the
-   U grid's own element space. `VComponent` keys `"v_out"`/`"v_in"` (U-grid ids, per the file's
-   own header: "both members use `WindowMember::length = N_u`") and its own private `"v_state"`
-   (`VDiffusionCore::state_`, genuinely V-grid-sized) by the V grid's OWN ids -- two different id
-   spaces in one component, exactly as Section 2.2's own per-backend table anticipated. Measured:
-   neither component has any INTEGER or BOOL hidden state (unlike dn_heat's own demonstration
-   `sweep_count_`/`parity_flag_`) -- `UCore::external_total_`/`exchange_out_` and
-   `VDiffusionCore::exchange_in_` are the only scalars, both `double`, restarted via
-   `put_scalar<double>()`. The rank-count-independent READ this decision's own second half asks
-   for needed NO new code at all: `Hdf5GroupReader::get_field_bytes()` (`src/restart_io/
-   hdf5_restart_io.cpp`) already resolves every row by an id->position map built from the file's
-   own `ids` dataset, never from the caller's own request order -- confirmed directly by a new
-   test, `Restart.GetFieldResolvesRowsByIdNotByFilePosition` (`test/runtime/restart_test.cpp`),
-   which reads three ids in REVERSED order from how they were written and checks the returned
-   values come back correspondingly reversed. A hand-applied mutation that substitutes the
-   request's own position for the id-resolved row (`src/restart_io/hdf5_restart_io.cpp`,
-   reverted) killed exactly this one test and no other in the whole restart suite -- MEASURED
-   evidence that no earlier test (every one of which happens to request ids in write order) had
-   ever exercised this property, and that it now does.
-
-2. **FUSE verifies uniqueness and coverage of the declared global size for ALL arrays of a
-   restart point in ONE collective, never one per array.** Unchanged from Slice 1 (Stage B
-   Section 9 item 2) -- the cross-rank half (`fuse::restart_io::
-   collective_duplicate_and_coverage_check()`, `include/fuse/restart_io/
-   collective_check_mpi.hpp`) remains compiled and unit-tested, not run (MPI cannot start in
-   this sandbox), and still not wired into `Hdf5GroupWriter`. This slice did not extend it:
-   closing D68 (item below) is a prerequisite for a genuinely multi-rank write of a
-   window-scoped accelerated region's own rows, and wiring the collective check into the writer
-   without that in place would exercise less than the real target.
-
-3. **Both file layouts, selectable at run time.** Unchanged (Slice 1). The Brusselator round
-   trip exercises both: `BrusselatorRestart.SeparateLayoutJacobiNoAccel`/
-   `GaussSeidelNoAccel` use `FileLayout::SeparateMeshAndPoints`;
-   `BrusselatorRestart.GrowingLayoutJacobiNoAccel` uses `FileLayout::GrowingFile`
-   (`test/verification/brusselator_restart_test.cpp`).
-
-4. **Accelerator and window-waveform histories are keyed by (field, global id) and MOVE across
-   rank counts; a row with no global id refuses by name unless the run opts into a reset,
-   reported at restart.**
-   - **IQN-ILS/IQN-IMVJ (KNOWN_ISSUES.md D64, closed).** `QuasiNewtonAccel::
-     restart_state_implemented()` (`src/num/accel_quasi_newton.cpp`) now returns `true`;
-     `export_restart_state()`/`import_restart_state()` export/import `v_`/`w_` (one
-     `put_field_per_block()`/`get_field_per_block()` call PER COLUMN -- column `j` of the
-     "n x cols_, column major" buffer occupies a contiguous, length-n_ span, written under
-     `<prefix>/iqn/v/col<j>`/`.../w/col<j>`, under the SAME per-block EXACT-KEY convention round
-     2 built for Aitken/Steffensen), `x_new_prev_`/`r_prev_`/`have_prev_`, and
-     `blocks_`/`chain_reprieves_` (IQN-IMVJ's folded inverse-Jacobian chain: one scalar `cols`
-     plus a `z`/`v` column pair per retained block). Verified bit for bit two ways: (a)
-     `Restart.SameRankRoundTripSeparateLayoutIqnIls` (`test/runtime/restart_test.cpp`), the SAME
-     dn_heat round trip the Aitken test already holds to, with `.accelerate(AccelKind::IQN_ILS)`;
-     (b) `Restart.QuasiNewtonAccelExportImportRestartStateRoundTripsBitForBit`, which drives
-     `fuse::Accelerator` DIRECTLY (no Runner) with `AccelKind::IQN_IMVJ` across two windows so
-     that `blocks_`/`retained_blocks() > 0` is genuinely populated before the restart point is
-     written -- MEASURED while writing this test: a Runner-level round trip with `AccelKind::
-     IQN_ILS` cannot observe `v_`/`w_`/`cols_`/`have_prev_` restoring WRONG at all, because a
-     restart point is only ever taken at a window boundary (D63) and the next window's own first
-     `update()` call (`iteration == 0`) calls `reset()` before anything else, which discards
-     those members unconditionally whenever `retain_ == false` (every kind except IQN-IMVJ) --
-     confirmed by a hand-applied mutation (`cols_ = 0` after restore, reverted) that the direct
-     test killed and the Runner-level IQN-ILS round trip did not. `AccelNotImplementedRefuses
-     WithoutOptIn`/`AccelNotImplementedWithAllowResetSucceedsAndReports` (round 2's own "NO
-     SILENT RESET" tests) lost their real-`AccelKind` test subject (every kind now implements
-     restart state) and were repointed at a genuinely test-only `Accelerator` subclass,
-     `NeverImplementsRestartAccel`, injected via a new TEST-ONLY seam, `Runner::
-     debug_replace_region_accelerator()` (`include/fuse/runtime/runner.hpp`, `src/runtime/
-     runner.cpp`) -- per the task's own instruction to "keep the refusal path for a test-only
-     accelerator that does not implement it".
-   - **Window-waveform history.** `detail::WindowMemberState::clock`/`straddle_pending`/
-     `straddle_window_start`/`straddle_window_end` (scalars, no id dependency) and `history`
-     (per-element, keyed by the SAME global ids the member's own EXPORTED field reports, one
-     `put_field<int64>`/`put_field<int64>`/`put_field<double>` triple PER SAMPLE INDEX under
-     `__window/<owner>/<field>/history/sample<k>/{time_num,time_den,value}`) are implemented and
-     restart-tested: `write_window_member_restart()`/`restore_window_member_restart()`
-     (`src/runtime/runner.cpp`), wired into `Runner::write_restart_fields()`/
-     `restore_restart_fields()` after the accelerator loop. `WindowMemberConfig::exported_field`
-     (new member, `src/runtime/runner_impl.hpp`, set in `resolve_regions()` from the SAME
-     `exported_field` local that function already resolved, `src/runtime/iteration.cpp`) is what
-     lets this orchestration find a window member's own qualified field name without a second
-     graph walk. Verified bit for bit by the Brusselator round trip (window 0-2 committed before
-     the restart point, windows 3-5 compared against an uninterrupted 0-5 reference) and by a
-     hand-applied mutation (the write loop reads history sample `k+1` instead of `k`, reverted)
-     that killed three of the four `BrusselatorRestart` tests (the fourth,
-     `DescriptorHashMismatchIsDetectable`, never runs a period past the point it writes, so it
-     has no history to corrupt). **`last_window_waveform` is implemented but UNEXERCISED by any
-     Runner-driven test** -- KNOWN_ISSUES.md D69, measured directly: `iteration.cpp`'s own
-     `advance_window()` never populates this member at all (only the standalone, non-Runner
-     `fuse::WindowCoupler` does), so this round's own restart code for it is reached only on its
-     "nothing to write" branch, confirmed by the SAME mutation technique finding nothing to kill
-     when applied to the waveform (as opposed to the history) write loop.
-   - **A window-scoped region's own accelerator state is NOT restored this round** --
-     KNOWN_ISSUES.md D68, found while wiring the Brusselator in: a window-scoped channel's own
-     `detail::RegionBlock::length` is the K-wide stacked window-transfer buffer (element count
-     TIMES `window_sample_capacity()`), not the registered field's own single-sample size, which
-     is all a component's `write_restart()` can report ids for -- measured directly
-     (`write_restart_fields` refused `E-RESTART-BAD-NUMBERING`, "expects 275 rows, component
-     reported 25", the FIRST time a window-scoped accelerated region's restart point was ever
-     written). `write_restart_fields()`/`restore_restart_fields()` now skip accelerator-state
-     restart entirely for any `region.window_scoped` region, reporting the skip through
-     `any_accelerator_reset` (the SAME flag a real reset uses) -- declared, not silent. See D68
-     for the two design options a future round would choose between.
-
-5. **NetCDF/MPAS-style general unstructured output; UGRID-1.0 referencing MPAS arrays.**
-   Unchanged (design only, Stage A Section 6 / Stage B Section 9 item 5) -- out of this slice's
-   own scope (rank-count-independent restart, not output-only NetCDF).
-
-### Measured findings this slice surfaced that the design review did not anticipate
-
-- **A window-scoped region's own accelerated vector is the K-wide stacked buffer, not the
-  registered field.** D68, above -- the single largest gap between what Section 1.3's own state
-  inventory anticipated (an ordinary region's stacked interface vector) and what a window-scoped
-  region's accelerator actually operates on.
-- **`last_window_waveform` is dead code for the Runner driver.** D69, above.
-- **`/opt/hdf5` is a parallel build whose own public header pulls in `<mpi.h>` unconditionally
-  even with `FUSE_ENABLE_MPI=OFF`** -- Section 8's own Slice 1 note already named the mechanism;
-  measured THIS round that `find_package(MPI REQUIRED COMPONENTS C)` (`cmake/
-  FuseDependencies.cmake`'s own HDF5 block) needs `/opt/mpich` on `CMAKE_PREFIX_PATH` to resolve
-  a USABLE `MPI_C_COMPILER`/`MPI_C_HEADER_DIR` in this sandbox -- without it, CMake's own
-  `FindMPI` silently leaves `MPI_C_COMPILER-NOTFOUND` cached and the configure step reports no
-  error, only failing much later at `#include <mpi.h>` inside the first translation unit that
-  names `<hdf5.h>`.
-
-### Tier-0 verification, this slice
-
-Configured `-DFUSE_ENABLE_HDF5=ON -DFUSE_ENABLE_FORTRAN=ON
--DCMAKE_Fortran_COMPILER=/opt/homebrew/bin/gfortran -DFUSE_ENABLE_MPI=OFF
--DCMAKE_PREFIX_PATH="/opt/arborx;/opt/kokkos;/opt/kokkos-kernels;/opt/homebrew;/opt/hdf5;/opt/mpich"`
-(Debug, `FUSE_FP_REPRODUCIBLE` ON by default). A full `ctest -j3` run (225 registered tests) was
-also run on the UNMODIFIED pristine tree under the identical configuration to separate a
-pre-existing environment failure from a regression this slice introduced:
-`search.mesh_adapter`'s own `MeshAdapter.DeviceElementBoxesMatchHostElementBoxesForANativeMesh`
-fails identically on both trees (confirmed by building and running it from a second,
-immediately-deleted build tree against the pristine checkout) -- measured, not assumed,
-pre-existing, and unrelated to this track. Every other test passed on both trees. New tests this
-slice adds: `test/verification/brusselator_restart_test.cpp` (4 tests: `SeparateLayoutJacobi
-NoAccel`, `SeparateLayoutGaussSeidelNoAccel`, `GrowingLayoutJacobiNoAccel`,
-`DescriptorHashMismatchIsDetectable`) and three new tests in `test/runtime/restart_test.cpp`
-(`SameRankRoundTripSeparateLayoutIqnIls`, `QuasiNewtonAccelExportImportRestartStateRoundTrips
-BitForBit`, `GetFieldResolvesRowsByIdNotByFilePosition`), plus the two round-2 refusal tests
-repointed at `NeverImplementsRestartAccel` as described above.
-
-### Scope reductions declared this slice (in addition to prior rounds', unresolved)
-
-- **A window-scoped region's own accelerator restart is not implemented** (D68, above) --
-  AccelKind::None/Aitken/IQN-ILS/IQN-IMVJ alike, for ANY window-scoped region; only an ORDINARY
-  (non-window) region's accelerator restarts.
-- **`last_window_waveform` restart cannot be exercised through the Runner** (D69, above) --
-  implemented against the documented struct, unreachable in practice until the Runner's own
-  `advance_window()` populates it.
-- **No genuinely multi-rank (more than one real MPI process) write or restore was run.** MPI
-  cannot start in this sandbox (standing rule). Beyond that: `Hdf5GroupWriter::put_field_bytes()`
-  (`src/restart_io/hdf5_restart_io.cpp`) is fundamentally single-writer -- it refuses a SECOND
-  `put_field()` call for the same qualified name (`E-RESTART-DUPLICATE-CALL`), which is exactly
-  what two real MPI ranks each contributing their own partition of the SAME field would need to
-  do. Section 4.3's own design (collective MPI-IO, a hyperslab per rank at an `MPI_Exscan`-derived
-  offset) was not implemented this slice; item 5's own cross-rank CHECK utility
-  (`collective_check_mpi.cpp`) remains the only MPI-aware restart code, compiled and
-  unit-tested, still not wired into the writer. Consequence, stated precisely: the
-  rank-count-independent READ this slice delivers and tests (`Hdf5GroupReader::get_field_bytes()`
-  resolving by id) is real and is exactly the mechanism Section 4.2 describes; a genuinely
-  multi-rank-written restart file to read it FROM does not yet exist, so "write at 1 rank,
-  restore at 2 and 3" is buildable today (the write side is unchanged, single-rank) but "write at
-  2, restore at 3" (and the reverse) needs the collective write path first. No `test/parallel/
-  restart_rank_change_mpi_test.cpp` was written this slice for this reason -- writing it before
-  the collective write path exists would either not compile against real multi-rank semantics or
-  silently test less than its own name claims; `host_pending` names the exact prerequisite.
-- **Form A's ABI entries, ABI entries for restart generally, and Python bindings** -- unchanged,
-  still not implemented (Round 2 items 4/6, Stage B Section 11 item 9/10).
-
-## 13. Stage B Slice 2 -- round 2 record (2026-10-15)
-
-Base moved from `372f09084662e9c4a63f35ee4a10438923ec9291` (Section 12's own base) to
-`c6427690fa6ac2a6653da88fd48bc93de7fffb37` across 8 intervening commits (a BoxIndex fix, now
-D68 above -- unrelated to this track -- plus an ASCII-cleanup sequence touching comments only).
-A three-way merge of every file Section 12 touched produced zero conflicts; the two pristine
-trees differed only in `Section` vs the ASCII original for five source files and
-`KNOWN_ISSUES.md`, confirmed functionally identical before merging.
-
-NOTE ON THIS RECORD'S OWN PROVENANCE: mid-round, this session's own workspace was cleaned up by
-an idle-timeout reset that discarded every uncommitted file in the scratch tree (round 1's own
-artifacts, already saved, were unaffected). Everything below was reconstructed afterward --
-round 1's files from their own saved artifacts, re-merged onto the `c642769` base the identical
-way as before; the files this round itself had already written and verified (the parallel MPI
-test, the decomposition-order measurement test, this document's own additions) were restored
-from the conversation's own record rather than re-derived; the remaining code changes (the
-accelerator per-block key fix, the no-silent-reset fix, the two latent-bug fixes, the HDF5
-collective-writer source) were rewritten fresh against the same interfaces and RE-VERIFIED by a
-full rebuild and retest rather than assumed identical to the pre-reset version. Declared here as
-a deviation rather than left unstated.
-
-### Renumbering
-
-Round 1's D68 (window-scoped accelerator restart) collided with a real, unrelated D68 that
-landed on `main` in the interim (the BoxIndex fix above). Renumbered D68 -> D69 (closed this
-round, see below) and D69 (`last_window_waveform`) -> D70 (left open, content and the
-instruction not to touch `advance_window()` both unchanged). Every cross-reference to the old
-numbers, across `runner.cpp`, `runner_impl.hpp`, `iteration.cpp`, `accel_relaxation.cpp`,
-`accelerator.hpp`, `include/fuse/model/restart.hpp`, both restart test files, and this document,
-was found and corrected by a project-wide grep sweep.
-
-### MUST-FIX 1 -- no silent reset for a window-scoped region
-
-`restore_restart_fields()` (`src/runtime/runner.cpp`) special-cased `window_scoped` regions: it
-set `any_accelerator_reset = true` and skipped the accelerator entirely, without ever checking
-`allow_accelerator_reset_on_mismatch`. Removed the special case; a window-scoped region now runs
-the IDENTICAL `restart_state_implemented()` check every ordinary region already ran, refusing by
-name (`E-RESTART-ACCEL-NOT-IMPLEMENTED`) unless the run opted in. Verified by two new tests in
-`test/verification/brusselator_restart_test.cpp`:
-`WindowScopedAccelNotImplementedRefusesWithoutOptIn` and
-`WindowScopedAccelNotImplementedWithAllowResetSucceedsAndReports`, both using a
-`NeverImplementsRestartAccel` test double injected via `Runner::debug_replace_region_accelerator`.
-
-### MUST-FIX 2 -- window-scoped accelerator restart implemented (closes D69)
-
-Added `RestartRowBlock::window_capacity` (default 0, meaning "not window-scoped, unchanged
-path"). `detail::put_field_per_block`/`get_field_per_block`/`total_rows`
-(`src/num/accel_relaxation.cpp`) branch on it: a window-scoped block's own slice of the flat
-accelerator buffer is `ids.size() * window_capacity` rows, element-major sample-minor (index(e,
-s) = e*window_capacity + s, matching the convention `last_window_waveform`'s own history rows
-already use); demuxed into `window_capacity` separate per-sample sub-datasets
-(`<qualified>/sample<k>`) by a strided gather/scatter per sample. No change was needed inside
-`AitkenAccel`, `SteffensenAccel`, or `QuasiNewtonAccel` themselves -- the per-block helpers are
-the only place that needed to know about window scoping. Verified by a new, isolated,
-non-Runner unit test, `Restart.AitkenAccelWindowCapacityPerSampleRestartRoundTripsBitForBit`
-(`test/runtime/restart_test.cpp`): two blocks of different capacities, 18 total rows, restores
-`r_prev_` bit-for-bit and a subsequent `update()` call reproduces `x_out` exactly.
-
-**Known residual gap, NOT closed by this fix (D72, new, open):** a Runner-level round trip with
-a REAL accelerator (Aitken, IQN-ILS) over `brusselator_window` still does not reproduce the
-reference run's own iteration count after a restore, because `cfg.window_import`'s own
-CONSUMER-side transfer buffer is a coupler-owned slot primed once at `resolve_regions()` time
-and never refreshed from restored state. Root-caused via `fprintf` tracing to a stale,
-construction-time seed value feeding `R.x_old` at the first post-restore iteration; a first fix
-(re-priming the EXPORT slot only, `Impl::reprime_window_transfer_buffers()`) is correct and
-kept; a second fix attempt (re-running the import channel's own delivery chain) was MEASURED to
-make the mismatch worse (iteration count moved from 12 further from the reference's 13, to 10)
-and was reverted rather than shipped unverified. D72 recommends a future round trace
-`window_import`'s own write timing across a full continuous run rather than attempt another
-plausible-looking re-derivation. This gap affects ONLY `AccelKind::None` runs not at all (their
-`update()` never reads `x_old`) and does not affect Form A field/history restart; it affects
-`AccelKind::Aitken`/`SteffensenAccel`/`QuasiNewtonAccel` specifically over a window-scoped
-region. Four previously-drafted Runner-level round-trip tests for this exact case
-(`SeparateLayoutJacobiAitken`, `GrowingLayoutJacobiAitken`, `SeparateLayoutJacobiIqnIls`,
-`GrowingLayoutJacobiIqnIls`) were written, found failing because of D72, and removed rather than
-shipped failing or weakened to avoid exercising the gap; the isolated unit test above is what
-verifies MUST-FIX 2's own key-collision fix independent of D72.
-
-### D71 -- the Gauss-Seidel refusal, named precisely (not fixed, out of this track's scope)
-
-A real accelerator over a `WaveformIteration::GaussSeidel` window refuses with code
-`E-RT-WINDOW-ACCEL`, raised at `src/runtime/iteration.cpp:1836-1851` inside
-`resolve_regions()`. Cross-referenced against `docs/dev/newton-krylov.md` Section 9.1
-(lines ~483-507), which documents the identical gap from the window-Newton side. Pre-existing,
-named in KNOWN_ISSUES.md as D71 rather than described as "a limitation" in prose, per the
-brief's own instruction; fixing it is out of restart's own scope.
-
-### MUST-FIX 3 -- the parallel path (this round's main item)
-
-**Collective write.** New header `include/fuse/restart_io/hdf5_restart_io_mpi.hpp` and
-implementation `src/restart_io/hdf5_restart_io_mpi.cpp` add
-`fuse::restart_io::create_restart_point_collective()`: `H5Pset_fapl_mpio` for the file access
-property list, an `MPI_Exscan`-derived per-rank row offset into one collective hyperslab write
-per field (`H5FD_MPIO_COLLECTIVE` data transfer property list), collective `H5Dcreate2` for a
-`declared_global_size`-sized dataset (every rank must call the metadata operation, even though
-only its own rows carry its own data), `finish_point()` wired to the pre-existing
-`collective_duplicate_and_coverage_check()` (Stage B Slice 1 item 5), and a collective
-rename-on-success (`MPI_Allreduce(MIN, ...)` to agree every rank's own `put_field` succeeded,
-rank-0-only `std::rename`, a second `MPI_Allreduce`/`MPI_Barrier` so no rank proceeds past
-`finish()` until the rename is visible everywhere) per Section 4.4's own replicated-write
-convention. Declared scope: only `ElementType::Binary64`/`Int64` are supported (anything else
-refuses `E-RESTART-TYPE-MISMATCH`); only `FileLayout::SeparateMeshAndPoints` is supported
-(`FileLayout::GrowingFile` refuses `E-RESTART-COLLECTIVE-LAYOUT-UNSUPPORTED`); scalars,
-rationals, and blobs all refuse with a new code, `E-RESTART-COLLECTIVE-SCALAR-UNSUPPORTED`
-(HDF5 metadata operations are collective-required even for a single-rank-hosted scalar, and
-this round's own time did not extend to that path).
-
-**Rank-count-independent read.** Needs NO new code: every rank already independently calls the
-existing, unchanged `open_restart_point()`/`get_field()` with its own local ids, proven correct
-in round 1 (`Restart.GetFieldResolvesRowsByIdNotByFilePosition`, Section 12 above). The new
-header's own comment documents this explicitly rather than adding redundant code.
-
-**Parallel ctest registration.** `fuse_add_mpi_test(parallel brusselator_restart_mpi ... RANKS 2
-3 LABELS restart_io)` added to `test/CMakeLists.txt`, gated on
-`FUSE_LINALG_BACKEND_IS_EIGEN AND FUSE_ENABLE_HDF5`, with matching `fuse_tests_gated_by(...)`
-entries so the row reports as gated (not silently absent) when either condition is OFF. MPI
-cannot start in this sandbox (standing rule); the test was compiled against a second,
-MPI-enabled build tree (`build2`, `-DFUSE_ENABLE_MPI=ON`, otherwise identical configuration to
-`build1`) and never run here.
-
-`test/parallel/brusselator_restart_mpi_test.cpp` exercises the restart_io layer directly over a
-Brusselator-shaped field (the restart track's own 5x5 U-grid size, real global ids,
-deterministic per-id values every rank recomputes independently rather than needing the
-writer's own in-memory state) -- not a full Runner-driven distributed Brusselator round trip;
-building a genuinely rank-partitioned Runner (real Transport, real per-rank
-`register_default_placements()`) is separate engineering this round's own time did not allow,
-and the collective-write correctness this file proves composes with the already-proven
-Runner-level round trip (Section 12 above) because `write_restart_point()`/
-`restore_restart_point()` are parameterized only by which writer/reader implementation they are
-handed. Four scenarios: (i) write at N real ranks, restore at the same N, compared by global id
--- the strongest exact comparison, since restore is a file read with no recomputation involved;
-(ii) write at 1 rank (the existing serial writer, unchanged) restore at the job's current size,
-by global id; (iii) write at a 2-rank sub-communicator (`MPI_Comm_split`) restore at the job's
-current (larger) size, by global id -- covers "write at 2, restore at 3" when run at `RANKS 3`;
-(iv) write at the job's current (larger) size, restore at a SMALLER one -- not reachable within
-one `mpiexec` invocation (a sub-communicator is always <= the invocation's own size, never
-greater), so this scenario reads a path named by an environment variable
-(`FUSE_BRUSSELATOR_RESTART_MPI_FIXED_PATH`) that a two-invocation host sequence sets; it skips,
-naming why, when that variable is absent. `host_pending` in the delivered report names the exact
-two commands.
-
-### Decomposition-order measurement (this round's own required serial evidence)
-
-Added `BrusselatorSpeciesCoreDecomposition.OneWindowAtRestartCadenceMeasuresDecompositionOrder
-Sensitivity` to `test/verification/brusselator_species_core_decomposition_test.cpp`, reusing
-that file's own thread-barrier partition infrastructure (`BarrierGroup`,
-`make_partitioned_grid`) at the restart track's own dt (0.002) and window length (0.02, i.e. 10
-sub-steps), rather than its own 8x8 grid precedent's dt/cadence. MEASURED: one restart window of
-Schur-decomposed solves disagrees with an undecomposed reference by 1.155e-14 (2 partitions) and
-4.396e-14 (3 partitions) -- the same ~1e-14 scale `TwoPartitionSchurMatchesSingleRankUCore` /
-`ThreePartitionSchurMatchesSingleRankUCore` (Section 8 above) already established for a
-different grid size and sub-step count, confirming the disagreement is decomposition-order
-round-off intrinsic to the Schur-complement solve path, not a function of grid or cadence. This
-justifies the parallel ctest row's own comparison strategy, named precisely rather than assumed:
-a restored (pre-advance) state compares bit-identically by global id across any rank-count
-change, because a restore is a file read, never a recomputation; but a state produced by
-advancing one FURTHER window after a restore at a rank count different from the one a reference
-run used throughout must be compared with a measured tolerance (recommended 1e-9, three orders
-of margin over the ~1e-14 measured here, since the real parallel test advances genuine MPI ranks
-rather than this file's own thread-barrier simulation), never asserted bit-identical.
-
-### Mutation anchor maintenance
-
-This round's own `window_capacity` demux refactor (MUST-FIX 2, above) renamed the ordinary-case
-local in `put_field_per_block`/`get_field_per_block` from `count` to `n_elem` and inserted the
-per-sample branch between the two functions' own `qualified` assignments, staling the existing
-`restart-per-block-key-collapsed-to-id-alone` mutation anchor
-(`build-evidence/mutations/restart.toml`) -- caught by `mutate.py --check-anchors`. Re-cut the
-anchor's `old`/`new` text to match the current source exactly (same mutated behavior: both
-helpers' own qualified dataset name collapsed to `name_prefix` alone) and reconfirmed it:
-`mutate.py --build-dir build1 --area "..."` reports `KILLED`, 1 of 1; source restored; rebuilt
-`fuse_runtime_restart_test` and confirmed 30/30 passing again.
-
-### Latent bugs found and fixed as drive-by discoveries (blocking this round's own verification)
-
-- `NoneAccel`/`ConstantAccel` both declared `restart_state_implemented() == true` while relying
-  on the base class's `import_restart_state()` default, an UNCONDITIONAL `Failure` by design
-  (meant to be unreachable when `restart_state_implemented()==true`). Never caught before
-  because no prior test completed a real Runner-driven restore through an explicit
-  `AccelKind::None` region all the way to the accelerator-restore call. Fixed with genuine
-  no-op `export_restart_state`/`import_restart_state` overrides on both classes.
-- `region.blocks`' own iteration order does not match ascending `RegionBlock::offset` for
-  `brusselator_window` (the U/u_in block at offset 275 iterates before the V/v_in block at
-  offset 0). `put_field_per_block`/`get_field_per_block`'s running-offset accumulation assumed
-  iteration order matched layout order. Fixed by sorting a local copy of `region.blocks` by
-  `offset` before building `RestartRowBlock`s, in both `write_restart_fields()` and
-  `restore_restart_fields()`.
-- `BrusselatorFixture`/`make_setup()` in `test/verification/brusselator_restart_test.cpp` held
-  `Runner::Impl::dag` by reference to a `LoweringResult` that was a stack-local inside
-  `make_setup()`, dangling the instant that function returned -- present since round 1, never
-  manifesting until `Impl::reprime_window_transfer_buffers()`'s own `dag.node_count()` read deep
-  enough into stale memory to observe `node_count()==0`. Fixed by storing
-  `fuse::LoweringResult lowered;` as a real `BrusselatorFixture` member, declared before
-  `runner` for correct destruction order.
-
-### Full tier-0 run, this round
-
-Configured identically to Section 12's own `build1` (updated `yaml-cpp_DIR` per the lead's own
-note). `ninja` (434 targets) then `ctest -j3 --output-on-failure` (225 registered tests): **100%
-tests passed, 0 tests failed out of 225** -- `search.mesh_adapter`'s own previously-known failure
-(Section 12 above) is confirmed fixed upstream on `c642769`, not merely assumed from the lead's
-own message. All five pre-existing gates (`check-invariants.py`, `check-layering.py`,
-`verify-import.py`, `gen-abi.py --check`, `mutate.py --check-anchors`) plus the new
-`check-ascii.py` (0 violations across every changed and new file) pass clean.
-
-### Scope reductions declared this round (in addition to prior rounds', unresolved)
-
-- **D72 left open** rather than shipping a second, unverified fix for the window-import
-  transfer-buffer gap (the Pass-2 attempt was measured to regress the result and was reverted).
-- **The four Aitken/IQN-ILS Runner-level round-trip tests removed**, not shipped failing or
-  weakened, pending D72.
-- **The collective writer supports only `Binary64`/`Int64` and only
-  `SeparateMeshAndPoints`**; scalars, rationals, blobs, and `GrowingFile` are all out of scope
-  this round (flagged to `open_questions`).
-- **Mesh/provenance replication** (rank-0-writes-others-zero-size per Section 4.3) is still not
-  implemented -- Brusselator restart still uses the `mesh_checksum = 0` sentinel, unchanged since
-  Slice 1.
-- **No genuinely multi-rank write or restore was run** -- MPI cannot start in this sandbox
-  (standing rule); the collective writer and the new parallel test were compiled, not executed,
-  against a second, MPI-enabled build tree.
-- **One compile bug found and fixed while compile-checking against the MPI-enabled tree**: `write_scalar_attr_num_collective()` (src/restart_io/hdf5_restart_io_mpi.cpp) originally took `hid_t NativeType` as a template non-type parameter, instantiated with `H5T_NATIVE_UINT32`/`H5T_NATIVE_UINT64` -- these are NOT compile-time constants (HDF5 resolves them at `H5open()` time), so this failed to compile the moment it was built against a real MPI configuration (never caught against build1, since this function is only compiled under `FUSE_ENABLE_MPI`). Fixed by making it an ordinary runtime parameter instead; confirmed by a clean compile and link of `fuse_parallel_brusselator_restart_mpi_test`/`fuse_parallel_restart_collective_mpi_test` against `build2`.
-- **A mid-round workspace reset required reconstructing this round's own work** (declared in
-  this section's own opening note above) -- the code this reconstruction touched was rewritten
-  fresh against the same interfaces rather than recovered byte-for-byte, and re-verified end to
-  end rather than assumed equivalent to the pre-reset version.
+## 9. Implementation
+
+### 9.1 What is built
+
+**Form A and Form B.** Form A is primary; Form B is same-rank-count only. A graph refuses a
+rank-count change collectively if any component offers only Form B. The two forms are a
+capability-bit pair, `kCapabilityRestartFormA`/`kCapabilityRestartFormB`
+(`include/fuse/model/capabilities.hpp`, bits 6-7), checked by `fuse::check_restart_rank_count()`
+(`src/runtime/restart.cpp`). `FormBOnlyComponentOnDifferentRankCountRefuses` in
+`test/runtime/restart_test.cpp` proves the refusal fires and that equal rank counts never trigger
+it. `DirichletSlab`/`NeumannSlab` (`examples/dn_heat/dn_component.hpp`) and
+`UComponent`/`VComponent` (`examples/brusselator/species_component.hpp`) set
+`kCapabilityRestartFormA` and implement `write_restart()`/`read_restart()`.
+
+**One batched uniqueness and coverage check.** FUSE verifies uniqueness and coverage of the
+declared global size for all arrays of a restart point in one collective, never one per array.
+`RestartWriter::put_field()` takes a `declared_global_size`, and
+`Hdf5GroupWriter::finish_point()` (`src/restart_io/hdf5_restart_io.cpp`) runs one combined sort
+over every field's `(name, id)` pairs. At a single rank this re-confirms what `put_field()`'s
+local check already found (`BadGlobalIdNumberingRefuses`, `DeclaredGlobalSizeMismatchRefuses`).
+The cross-rank form is `fuse::restart_io::collective_duplicate_and_coverage_check()`
+(`include/fuse/restart_io/collective_check_mpi.hpp`). It takes an `int` (`MPI_Comm_c2f` handle)
+rather than an `MPI_Comm`, following `fuse/linalg/comm.hpp`, because `tools/check-layering.py`
+forbids `mpi.h` in public headers. It serializes `(name, id)` and `(name, declared_size)` pairs as
+length-prefixed buffers and makes exactly two `MPI_Allgatherv` calls in total, after which every
+rank runs the identical local check and reaches the same verdict without a further reduction. It
+is covered by `test/parallel/restart_collective_mpi_test.cpp` (ranks 2 and 3).
+
+**File layouts.** `fuse::restart_io::FileLayout::{SeparateMeshAndPoints,GrowingFile}`
+(`include/fuse/restart_io/hdf5_restart_io.hpp`) are selectable at run time. `GrowingFile` is
+copy-append-rename, never an in-place append: `create_restart_point()` copies the existing file to
+a temporary name before opening it read-write for the new point, and `finish()` is the one atomic
+rename in either layout. The cost is one file copy per point.
+`GrowingLayoutAppendsASecondPointWithoutDamagingTheFirst` checks the first point is still readable.
+
+**Accelerator state.** `Accelerator::export_restart_state()`/`import_restart_state()`
+(`include/fuse/num/accelerator.hpp`) are implemented for every `AccelKind`: `None` and `Constant`
+trivially, `AitkenAccel`/`SteffensenAccel` in `src/num/accel_relaxation.cpp`, and
+`QuasiNewtonAccel` (IQN-ILS/IQN-IMVJ) in `src/num/accel_quasi_newton.cpp`. The quasi-Newton export
+covers `v_`/`w_` (one dataset per column, `<prefix>/iqn/v/col<j>` and `.../w/col<j>`),
+`x_new_prev_`, `r_prev_`, `have_prev_`, and the IQN-IMVJ folded inverse-Jacobian chain
+(`blocks_`, `chain_reprieves_`). History is keyed by (field, global id), so it moves across a
+rank-count change.
+
+- *No silent reset.* `Accelerator::restart_state_implemented()` (default `false`) is checked by
+  `Runner::restore_restart_fields()` before `import_restart_state()` is called. `false` without
+  opt-in refuses with `E-RESTART-ACCEL-NOT-IMPLEMENTED`; with `allow_accelerator_reset_on_mismatch`
+  it calls `Accelerator::reset()` and sets `any_accelerator_reset`. The base
+  `import_restart_state()` unconditionally returns `E-RESTART-NOT-IMPLEMENTED` and is never
+  reached. The check is collective by construction: every rank's graph assigns the same
+  `AccelKind` to the same region, so the flag evaluates identically everywhere. The refusal tests
+  (`AccelNotImplementedRefusesWithoutOptIn`, `AccelNotImplementedWithAllowResetSucceedsAndReports`)
+  use a test-only subclass, `NeverImplementsRestartAccel`, injected through
+  `Runner::debug_replace_region_accelerator()`.
+- *Exact keys, no hash.* `fuse::RestartRowBlock` (`include/fuse/model/restart.hpp`, `{field_name,
+  ids}`) is passed per block, and `detail::put_field_per_block()`/`get_field_per_block()`
+  (`accelerator.hpp`, defined in `src/num/accel_relaxation.cpp`) write one dataset per block under
+  `name_prefix + "/" + block.field_name`. Two blocks with identical local ids (for example
+  `dirichlet_neumann`'s two blocks, which both report ids `0..n-1`) therefore cannot collide.
+  `PerBlockKeysNeverCollideOnIdenticalLocalIds` drives this directly. A component's Form-A field
+  name must equal the graph's `FieldSpec::name` for any field an accelerated channel feeds,
+  because the row resolution looks the owning field up by `RegionBlock::target_field`
+  (`src/runtime/iteration.cpp`); `docs/user/restart.md` states the convention.
+- *Window-scoped blocks.* `RestartRowBlock::window_capacity` (0 means not window-scoped) makes the
+  per-block helpers treat a block's slice of the flat buffer as `ids.size() * window_capacity`
+  rows, element-major and sample-minor (`index(e, s) = e*window_capacity + s`), demultiplexed into
+  `window_capacity` datasets `<qualified>/sample<k>`. This is needed because a window-scoped
+  channel's `RegionBlock::length` is the K-wide stacked window-transfer buffer, not the registered
+  field's single-sample size. `AitkenAccel`, `SteffensenAccel` and `QuasiNewtonAccel` need no
+  change; only the helpers know about window scoping.
+  `Restart.AitkenAccelWindowCapacityPerSampleRestartRoundTripsBitForBit` covers it in isolation.
+- *Block order.* `region.blocks` does not iterate in ascending `RegionBlock::offset` order for
+  `brusselator_window`, so `write_restart_fields()` and `restore_restart_fields()` sort a local
+  copy by offset before building the `RestartRowBlock` list; the helpers' running-offset
+  accumulation depends on it.
+
+**Window-member state.** `detail::WindowMemberState::clock`, `straddle_pending`,
+`straddle_window_start`/`straddle_window_end` (scalars) and `history` (per element, keyed by the
+global ids of the member's exported field, one `time_num`/`time_den`/`value` triple per sample
+under `__window/<owner>/<field>/history/sample<k>/`) are written and restored by
+`write_window_member_restart()`/`restore_window_member_restart()` (`src/runtime/runner.cpp`).
+`WindowMemberConfig::exported_field` (`src/runtime/runner_impl.hpp`, set in `resolve_regions()`)
+lets this code find a member's qualified field name without a second graph walk.
+
+**The Runner's clock.** `restore_restart_fields()` does not touch `Impl::period_index`, which the
+Runner uses to compute `ctx.t_begin`/`ctx.t_end`. `Runner::set_current_period_index()` is called
+from `fuse::restore_restart_point()` (`src/runtime/restart.cpp`) right after the fields succeed.
+Without it, restored fields are correct immediately after restore but wrong after the next
+`run_period()`.
+
+**Typed fields.** Field and scalar I/O is templated on element type.
+
+- `fuse::ElementType` (`include/fuse/model/element_type.hpp`) is a closed enum: `Int8`..`Int64`,
+  `UInt8`..`UInt64`, `Binary16`, `BFloat16`, `Binary32`, `Binary64`, `LongDouble`, `Bool`.
+  `ElementTypeOf<T>` resolves a C++ type at compile time; any other `T` fails a `static_assert`.
+- `fuse::bfloat16` (`include/fuse/model/bfloat16.hpp`) is a storage type with 1 sign, 8 exponent
+  (bias 127) and 7 explicit significand bits. `from_float()` rounds to nearest, ties to even, and
+  preserves quiet NaN. `BFloat16`'s exhaustive test round-trips all 65536 bit patterns.
+- `Bool` is stored as one `UInt8` byte; `validate_bool_bytes()` refuses any byte other than 0 or 1
+  (`E-RESTART-BAD-BOOL-BYTE`).
+- `put_field<T>()`/`get_field<T>()` and `put_scalar<T>()`/`get_scalar<T>()`
+  (`include/fuse/model/restart.hpp`) are non-virtual templates over one virtual byte-based pair
+  each (`put_field_bytes`/`get_field_bytes`, `put_scalar_bytes`/`get_scalar_bytes`). All callers
+  use the templated interface; there is no double-only legacy overload. `get_scalar<T>()` takes an
+  out-parameter `T&`, because a value and a report cannot share one `Result<>` slot. The
+  period index is stored as `std::int64_t`, never cast through `double`.
+- Per-field metadata (`element_type`, `byte_size`, `significand_bits`, `exponent_bits`,
+  `exponent_bias`, `byte_order`, `is_signed`) is written as HDF5 attributes beside each dataset by
+  `write_type_metadata()`. `read_and_verify_type_metadata()` builds a fresh `ElementTypeInfo` from
+  the file's own attributes and checks it only for internal consistency against the dataset's
+  actual HDF5 datatype (`E-RESTART-TYPE-METADATA-MISMATCH`); it never compares against this
+  build's own table, because that would make a genuinely foreign-platform file unreadable under
+  `AllowNarrowing`. An unrecognised `element_type` name refuses with
+  `E-RESTART-UNKNOWN-ELEMENT-TYPE`.
+- `ReadConversion::Exact`/`Widening`/`AllowNarrowing` (`element_type.hpp`) are dispatched in
+  `convert_one_element()` (`hdf5_restart_io.cpp`): an identical-type fast path; `Exact` refuses
+  any mismatch (`E-RESTART-TYPE-MISMATCH`); `Widening` allows only conversions that
+  `fuse::detail::is_exact_widening()` accepts; float narrowing goes through
+  `fuse::detail::narrow_float()` (`src/model/float_bits.cpp`) and reports a measured
+  `max_absolute_change`; integer narrowing (`encode_int_checked()`) refuses overflow even under
+  `AllowNarrowing` (`E-RESTART-INTEGER-OVERFLOW`) and signed-to-unsigned unconditionally
+  (`E-RESTART-SIGNED-TO-UNSIGNED`). All float conversion is done in FUSE code
+  (`include/fuse/model/float_bits.hpp`: `decode_float_bits()`, `encode_float_bits()`,
+  `round_significand()`, `narrow_float()`), never HDF5's soft conversion (see 9.2).
+  `TypedRestartHdf5.HandBuiltX86LongDoubleExactAndWideningRefuseAllowNarrowingReportsDelta` builds
+  an x86-64-style 80-bit `long double` dataset by hand (mantissa `0x8000000000000001`, biased
+  exponent 16383, explicit leading bit) and checks that `Exact` and `Widening` refuse while
+  `AllowNarrowing` succeeds with `max_absolute_change` equal to `std::ldexp(1.0, -63)`.
+- Accelerator and waveform histories stay `Binary64`.
+
+**ABI.** Provider-side Form B is `save_restart_blob`/`load_restart_blob` in
+`include/fuse/abi/entries.def`, using `fuse_restart_blob_sink`/`fuse_restart_blob_source` in the
+same query-then-fill idiom as `fuse_graph_sink`, with capability bit `FUSE_CAP_RESTART_FORM_B`
+(value 64). `ProviderAdapter::save_restart_blob()`/`load_restart_blob()`
+(`src/abi/provider_adapter.cpp`) are the caller side. The participant-side entry,
+`request_restart_point`, is a flag rather than a trigger, because the ABI's fixed `(ctx, in, out)`
+shape cannot carry a file path or an HDF5 layout choice:
+`Runner::request_restart_point()`/`take_restart_point_request()` is consume-not-peek, idempotent,
+and polled by the embedding host after each `run_period()`/`resume_period()`
+(`AbiParticipant.RequestRestartPointSetsTheRunnersFlagIdempotently`, through the test-only seam
+`fuse::abi_test::runner_of(ctx)`). All generated ABI files and `test/abi/struct_sizes.golden` are
+regenerated with `tools/gen-abi.py --write` and verified with `--check`.
+`ConformanceTest.ProviderSaveAndLoadRestartBlobRoundTrips` is a full round trip through a
+`dlopen`'d plugin. Form A has no ABI surface (see 9.4).
+
+**Collective write.** `fuse::restart_io::create_restart_point_collective()`
+(`include/fuse/restart_io/hdf5_restart_io_mpi.hpp`, `src/restart_io/hdf5_restart_io_mpi.cpp`) uses
+`H5Pset_fapl_mpio` for the file access property list, an `MPI_Exscan`-derived per-rank row offset
+into one collective hyperslab write per field (`H5FD_MPIO_COLLECTIVE`), collective `H5Dcreate2` of
+a `declared_global_size`-sized dataset, `finish_point()` wired to
+`collective_duplicate_and_coverage_check()`, and a collective rename-on-success
+(`MPI_Allreduce(MIN)` to agree every rank's `put_field` succeeded, rank-0-only `std::rename`, a
+second `MPI_Allreduce`/`MPI_Barrier` so no rank proceeds past `finish()` before the rename is
+visible). It is compiled only under `FUSE_ENABLE_MPI`. The serial `Hdf5GroupWriter` is
+single-writer and refuses a second `put_field()` for the same qualified name
+(`E-RESTART-DUPLICATE-CALL`).
+
+**Rank-count-independent read.** `Hdf5GroupReader::get_field_bytes()` resolves every row through
+an id-to-position map built from the file's own `ids` dataset, never from the caller's request
+order, so every rank reads its own local ids from a file written at any rank count.
+`Restart.GetFieldResolvesRowsByIdNotByFilePosition` reads three ids in reversed order and checks
+the values come back reversed.
+
+**Brusselator.** `UComponent` keys `u_out`/`u_in` and its private `u_state`/`u_q_prev` by the U
+grid's ids (`NativeGrid::global_id()` in `examples/brusselator/brusselator_physics.hpp`, filled once
+in `NativeGrid::make()`). `VComponent` keys `v_out`/`v_in` by U-grid ids (both members use
+`WindowMember::length = N_u`) and its private `v_state` by the V grid's own ids: two id spaces in
+one component, as Section 2.2 anticipated. The only scalars are `double`, stored with
+`put_scalar<double>()`. `test/verification/brusselator_restart_test.cpp` runs windows 0-2,
+restarts, and compares windows 3-5 bit for bit with an uninterrupted reference, for both Jacobi
+and Gauss-Seidel and both file layouts, plus descriptor-hash mismatch detection and the
+window-scoped no-silent-reset tests.
+
+### 9.2 Measured behaviour
+
+- **Bit identity does not depend on `FUSE_FP_REPRODUCIBLE`.** The ULP divergence that option
+  guards against comes from comparing two different code shapes over the same data
+  (`cmake/FuseFpPolicy.cmake:1-19`). `SameRankRoundTripSeparateLayout`/`SameRankRoundTripGrowingLayout`
+  compare one binary's two executions (an uninterrupted 5-period run, and a 3-period run, restore,
+  plus 2 more periods) through the same compiled `advance()` and accelerator code, so there is
+  only one code shape and `EXPECT_EQ` (no tolerance) on every field element is valid with the
+  option on or off. They also compare both components' private state and the last period's
+  `IterationStats::iterations`, so Aitken's dynamic relaxation factor and residual history are
+  covered.
+- **A Runner-level IQN-ILS round trip cannot observe `v_`/`w_`/`cols_`/`have_prev_` restoring
+  wrongly.** A restart point is only taken at a window boundary, and the next window's first
+  `update()` (`iteration == 0`) calls `reset()` before anything else, which discards those members
+  whenever `retain_ == false` (every kind except IQN-IMVJ).
+  `Restart.QuasiNewtonAccelExportImportRestartStateRoundTripsBitForBit` therefore drives
+  `fuse::Accelerator` directly with `AccelKind::IQN_IMVJ` across two windows, so `blocks_` is
+  populated before the restart point is written.
+- **HDF5's soft type conversion refuses `H5T_NORM_MSBSET`.** Converting an x86-extended-style
+  `long double` type (explicit leading significand bit) to `double` in `H5Dread()` fails in
+  `H5T__conv_f_f()` with "normalization method not implemented yet" (HDF5 1.14.1-2). FUSE cannot
+  rely on HDF5 conversion for any explicit-leading-bit format, hence the FUSE-side conversion
+  pipeline.
+- **`H5Tset_fields()`/`H5Tset_precision()`/`H5Tset_size()` ordering is direction-dependent**
+  (`make_derived_float_type()` in `hdf5_restart_io.cpp`). For a precision decrease (for example
+  `Binary32` to `BFloat16`), `H5Tset_fields()` must run before the precision/size shrink, or HDF5
+  reports "exponent bit field size/location is invalid". For a precision increase (for example
+  `Binary64` to an 80-bit extended type), size/precision must grow first, then `H5Tset_fields()`,
+  or HDF5 reports "adjust sign, mantissa, and exponent fields first".
+- **Every float `ElementType` builds its HDF5 type from its own `ElementTypeInfo`.**
+  `make_hdf5_type_for()` never uses a native-type shortcut such as `H5T_NATIVE_LDOUBLE`, because
+  that type (53 bits on the measured platform) forces HDF5 to soft-convert against a foreign file's
+  80-bit type. The stored precision is `stored_mantissa_bits + exponent_bits + 1`, not
+  `significand_bits + exponent_bits + 1`, because `ElementTypeInfo::significand_bits` already
+  includes an implicit leading bit.
+- **Decomposition-order round-off.** One restart window of Schur-decomposed solves disagrees with
+  an undecomposed reference by 1.155e-14 (2 partitions) and 4.396e-14 (3 partitions)
+  (`BrusselatorSpeciesCoreDecomposition.OneWindowAtRestartCadenceMeasuresDecompositionOrderSensitivity`).
+  A restored, not-yet-advanced state therefore compares bit-identically by global id across any
+  rank-count change (a restore is a file read), but a state advanced one further window after a
+  restore at a different rank count must be compared with a measured tolerance; 1e-9 leaves three
+  orders of margin over the serial measurement.
+- **A parallel HDF5 build needs MPI headers even with MPI disabled.** A parallel HDF5's public header
+  includes `<mpi.h>` even with `FUSE_ENABLE_MPI=OFF`, and `find_package(MPI REQUIRED COMPONENTS C)`
+  in the HDF5 block of `cmake/FuseDependencies.cmake` must resolve a usable `MPI_C_COMPILER`
+  (put the MPI prefix on `CMAKE_PREFIX_PATH`); otherwise configure succeeds with
+  `MPI_C_COMPILER-NOTFOUND` and the build fails at `#include <mpi.h>`.
+
+### 9.3 Verification
+
+Tier 0 (no MPI): `test/runtime/restart_test.cpp`, `test/runtime/typed_restart_hdf5_test.cpp`,
+`test/model/bfloat16_test.cpp`, `test/model/element_type_test.cpp`,
+`test/model/float_bits_test.cpp`, `test/verification/brusselator_restart_test.cpp`, and the ABI
+tests named above. Mutation rows for restart live in `build-evidence/mutations/restart.toml`; they
+cover the accelerator not-implemented gate, per-block key collapse, `is_exact_widening()` always
+true, `bfloat16::from_float()` reduced to truncation, and `narrow_float()` reporting a zero change.
+The `bfloat16` rounding mutation is not caught by the exhaustive round-trip test, by construction
+(its inputs are bf16 patterns widened losslessly, so truncation and rounding agree), which is why
+dedicated tie and overflow tests exist.
+
+Tier 1 (needs a working MPI): `parallel.restart_collective_mpi` and
+`parallel.brusselator_restart_mpi` (ranks 2 and 3, gated on `FUSE_LINALG_BACKEND_IS_EIGEN` and
+`FUSE_ENABLE_HDF5`). The latter exercises the restart_io layer directly over a Brusselator-shaped
+field, not a full rank-partitioned Runner round trip, in four scenarios: write at N ranks and
+restore at N; write at one rank and restore at the job size; write on a 2-rank sub-communicator
+and restore at the job size; and write at the job size and restore at a smaller size. The last
+cannot happen within one `mpiexec` invocation, so it reads a path named by
+`FUSE_BRUSSELATOR_RESTART_MPI_FIXED_PATH` set by a two-invocation host sequence and skips, saying
+why, when the variable is absent.
+
+### 9.4 Limitations
+
+- **Accelerated window-scoped round trip.** A Runner-level round trip with Aitken, Steffensen or a
+  quasi-Newton accelerator over a window-scoped region (`brusselator_window`) does not reproduce
+  the reference run's iteration count after a restore. `cfg.window_import`'s consumer-side
+  transfer buffer is a coupler-owned slot primed once in `resolve_regions()` and never refreshed
+  from restored state, so the first post-restore iteration starts from a stale seed in `R.x_old`.
+  Re-priming the export slot (`Impl::reprime_window_transfer_buffers()`) is correct and kept;
+  re-running the import channel's delivery chain made the mismatch worse and was not adopted. A
+  future fix should trace `window_import`'s write timing across a continuous run. `AccelKind::None`
+  is unaffected (its `update()` never reads `x_old`), and field and history restart are
+  unaffected. The accelerator-state restore itself is covered by the isolated per-sample test
+  above, not by a Runner-level round trip.
+- **Gauss-Seidel windows with an accelerator.** A real accelerator over a
+  `WaveformIteration::GaussSeidel` window refuses with `E-RT-WINDOW-ACCEL`
+  (`resolve_regions()` in `src/runtime/iteration.cpp`); `docs/dev/newton-krylov.md` documents the
+  same gap from the window-Newton side. This is outside restart.
+- **`last_window_waveform`.** Restart code exists for it, but the Runner's `advance_window()` never
+  populates the member (only the standalone `fuse::WindowCoupler` does), so only the "nothing to
+  write" branch is reachable through the Runner.
+- **Collective writer scope.** Only `ElementType::Binary64`/`Int64` are supported (anything else
+  refuses `E-RESTART-TYPE-MISMATCH`), only `FileLayout::SeparateMeshAndPoints`
+  (`GrowingFile` refuses `E-RESTART-COLLECTIVE-LAYOUT-UNSUPPORTED`), and scalars, rationals and
+  blobs refuse with `E-RESTART-COLLECTIVE-SCALAR-UNSUPPORTED`, because HDF5 metadata operations
+  are collective even for a single-rank-hosted scalar.
+- **Mesh and provenance replication.** The rank-0-writes, others-zero-size pattern of Section 4.3
+  is not implemented; Brusselator restart uses the `mesh_checksum = 0` sentinel.
+- **Multi-rank execution.** The collective writer and the parallel tests have been compiled
+  against an MPI-enabled build but not run in the development sandbox, where MPI cannot start.
+  Writing at one rank and restoring at several is covered by the serial writer and the id-keyed
+  reader; writing at several ranks and restoring at a different count needs a host with a working
+  MPI.
+- **Form A ABI surface.** Only Form B (opaque, same-decomposition-only bytes) has C/Fortran ABI
+  entries. `entries.def` has no precedent for a nested-table or opaque-handle object, and every
+  entry shares one flat `(ctx, in, out)` shape. A future Form-A field-descriptor struct would add
+  a `std::uint8_t` element-type tag after the existing `byte_size`/`components` pair, append-only.
+  There is no fault-injection provider variant in which `save_restart_blob`/`load_restart_blob`
+  returns an error.
+- **Python.** No binding code exists for restart. `ForwardingComponent` infers
+  `kCapabilityRollback` from `hasattr(obj_, "save_state")`/`"restore_state"`
+  (`python/src/component_bindings.cpp`); restart would need the same hasattr-gated pattern, new
+  pybind11 `RestartWriter`/`RestartReader` wrappers over NumPy arrays (ids as `int64`, values as
+  `float64`), and registration in `python/src/module.cpp`. Accelerators are never subclassed in
+  Python, so they need no binding work. `fuse::bfloat16` has no standard numpy dtype: a binding
+  would need `ml_dtypes` or a `uint16` view with a documented reinterpretation contract.
+  `LongDouble` maps to numpy's `longdouble` only when both platforms' extended formats agree.
+- **Type conversion.** Integer narrowing under `AllowNarrowing` reports no measured change (a value
+  either fits exactly or refuses). `int` to `float` is allowed only as an exact `Widening`; a
+  narrowing int-to-float conversion does not exist. `Bool` interconverts only with itself.
+- **Not yet built.** The XDMF sidecar (Section 5) and the NetCDF-UGRID writer (Section 6) are
+  designed but not implemented.
