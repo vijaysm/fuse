@@ -20,7 +20,7 @@
 
 namespace {
 
-// A forward-mode dual number with three tangents: the case viewing a field as
+// A forward-mode dual number with a gradient of three entries: the case viewing a field as
 // scalars exists for. Its value_traits says ScalarArray, four binary64 scalars.
 struct Dual3 {
   double v[4];
@@ -57,7 +57,7 @@ struct fuse::value_traits<Dual3> {
   static constexpr FieldValueKind kind = FieldValueKind::ScalarArray;
   using scalar_type = double;
   static constexpr int scalar_count = 4;
-  static constexpr int derivative_count = 3;
+  static constexpr int gradient_size = 3;
   static double to_binary64(const Dual3& d) noexcept { return d.v[0]; }
   static Dual3 from_binary64(double x) noexcept { return Dual3{{x, 0, 0, 0}}; }
 };
@@ -68,7 +68,7 @@ struct fuse::value_traits<MisTiled> {
   static constexpr FieldValueKind kind = FieldValueKind::ScalarArray;
   using scalar_type = double;
   static constexpr int scalar_count = 3;
-  static constexpr int derivative_count = 2;
+  static constexpr int gradient_size = 2;
   static double to_binary64(const MisTiled& d) noexcept { return d.v[0]; }
   static MisTiled from_binary64(double x) noexcept {
     return MisTiled{{x, 0, 0, 0}};
@@ -81,7 +81,7 @@ struct fuse::value_traits<NotTrivial> {
   static constexpr FieldValueKind kind = FieldValueKind::Storage;
   using scalar_type = NotTrivial;
   static constexpr int scalar_count = 1;
-  static constexpr int derivative_count = 0;
+  static constexpr int gradient_size = 0;
   static double to_binary64(const NotTrivial& d) noexcept { return d.x; }
   static NotTrivial from_binary64(double x) noexcept {
     NotTrivial n;

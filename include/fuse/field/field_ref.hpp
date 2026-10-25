@@ -298,9 +298,9 @@ class AnyFieldRef {
     return type_ == field_value_type_of<T>();
   }
 
-  /// Derivative (tangent) scalars per value; 0 for an ordinary field.
-  [[nodiscard]] int derivative_count() const noexcept {
-    return type_.derivative_count;
+  /// Scalars per value that hold the gradient; 0 for an ordinary field.
+  [[nodiscard]] int gradient_size() const noexcept {
+    return type_.gradient_size;
   }
 
   /// True when the stored values are `type_.scalar_count` consecutive scalars

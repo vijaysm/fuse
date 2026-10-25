@@ -1,7 +1,7 @@
 // fuse::num::dual and the view of a field as scalars (plans/2026-10-22-universal-number-types.md,
-// stage U2): closed-form derivatives, independence of the number of tangent
-// directions, a field of dual numbers crossing the registry as scalars, a
-// tangent through the remap kernel equal to the remap of the tangent (bitwise),
+// stage U2): closed-form derivatives, independence of the number of parameters
+// carried, a field of dual numbers crossing the registry as scalars, a
+// gradient through the remap kernel equal to the remap of the gradient (bitwise),
 // and the Taylor-remainder order of a residual whose derivative action is
 // produced by dual numbers through that kernel.
 
@@ -61,51 +61,51 @@ double tol_for(double reference) {
 
 // ------------------------------------------------------------ the number type
 
-TEST(Dual, TangentsOfTheCompositeMatchTheClosedForm) {
+TEST(Dual, GradientsOfTheCompositeMatchTheClosedForm) {
   for (double x : {0.3, 0.9, 1.7, 2.4}) {
     for (double y : {0.8, 1.3, 2.9}) {
       const D2 f = composite(D2::variable(x, 0), D2::variable(y, 1));
       const Analytic a = analytic(x, y);
       EXPECT_NEAR(f.value(), a.f, tol_for(a.f)) << x << "," << y;
-      EXPECT_NEAR(f.tangent(0), a.fx, tol_for(a.fx)) << x << "," << y;
-      EXPECT_NEAR(f.tangent(1), a.fy, tol_for(a.fy)) << x << "," << y;
+      EXPECT_NEAR(f.gradient(0), a.fx, tol_for(a.fx)) << x << "," << y;
+      EXPECT_NEAR(f.gradient(1), a.fy, tol_for(a.fy)) << x << "," << y;
     }
   }
 }
 
-TEST(Dual, TangentsAgreeWithACentralDifferenceOfTheValue) {
-  // An independent check that does not use the formulas above: the tangent is
-  // the derivative of the value, whatever the value function is.
+TEST(Dual, GradientsAgreeWithACentralDifferenceOfTheValue) {
+  // An independent check that does not use the formulas above: each gradient
+  // entry is the partial derivative of the value, whatever the value function is.
   const double x = 1.1, y = 1.9, h = 1e-6;
   const auto val = [](double a, double b) {
     return composite(D1(a), D1(b)).value();
   };
   const D2 f = composite(D2::variable(x, 0), D2::variable(y, 1));
-  EXPECT_NEAR(f.tangent(0), (val(x + h, y) - val(x - h, y)) / (2 * h), 1e-8);
-  EXPECT_NEAR(f.tangent(1), (val(x, y + h) - val(x, y - h)) / (2 * h), 1e-8);
+  EXPECT_NEAR(f.gradient(0), (val(x + h, y) - val(x - h, y)) / (2 * h), 1e-8);
+  EXPECT_NEAR(f.gradient(1), (val(x, y + h) - val(x, y - h)) / (2 * h), 1e-8);
 }
 
 TEST(Dual, AbsAndPowFollowTheBranchTheValueLiesOn) {
   const D1 neg = fuse::num::abs(D1::variable(-2.0, 0));
   EXPECT_EQ(neg.value(), 2.0);
-  EXPECT_EQ(neg.tangent(0), -1.0);
+  EXPECT_EQ(neg.gradient(0), -1.0);
   const D1 pos = fuse::num::abs(D1::variable(2.0, 0));
-  EXPECT_EQ(pos.tangent(0), 1.0);
+  EXPECT_EQ(pos.gradient(0), 1.0);
   const D1 p = fuse::num::pow(D1::variable(3.0, 0), 4.0);
   EXPECT_NEAR(p.value(), 81.0, 1e-12);
-  EXPECT_NEAR(p.tangent(0), 4.0 * 27.0, 1e-10);
+  EXPECT_NEAR(p.gradient(0), 4.0 * 27.0, 1e-10);
 }
 
 TEST(Dual, SinAndCosAreDifferentiatedByTheirClosedForms) {
   // The composite above uses sin but not cos; this is the only place the sign
-  // of cos's tangent is pinned.
+  // of cos's derivative is pinned.
   for (double x : {0.2, 0.9, 2.3, -1.4}) {
     const D1 c = fuse::num::cos(D1::variable(x, 0));
     EXPECT_NEAR(c.value(), std::cos(x), 1e-15) << x;
-    EXPECT_NEAR(c.tangent(0), -std::sin(x), 1e-15) << x;
+    EXPECT_NEAR(c.gradient(0), -std::sin(x), 1e-15) << x;
     const D1 s = fuse::num::sin(D1::variable(x, 0));
     EXPECT_NEAR(s.value(), std::sin(x), 1e-15) << x;
-    EXPECT_NEAR(s.tangent(0), std::cos(x), 1e-15) << x;
+    EXPECT_NEAR(s.gradient(0), std::cos(x), 1e-15) << x;
   }
 }
 
@@ -114,30 +114,30 @@ TEST(Dual, ScalarOperandsAreConstantsAndConvertImplicitly) {
   const D1 r = 3 * x - 1 + x / 4 + (10 - x) + (6 / x);
   // 3x - 1 + x/4 + 10 - x + 6/x at x = 2, derivative 3 + 1/4 - 1 - 6/4.
   EXPECT_NEAR(r.value(), 6.0 - 1.0 + 0.5 + 8.0 + 3.0, 1e-14);
-  EXPECT_NEAR(r.tangent(0), 3.0 + 0.25 - 1.0 - 1.5, 1e-14);
+  EXPECT_NEAR(r.gradient(0), 3.0 + 0.25 - 1.0 - 1.5, 1e-14);
   EXPECT_TRUE(D1(2.0) == x);   // ordered and compared by value only
   EXPECT_TRUE(D1(1.0) < x);
 }
 
-TEST(Dual, EachTangentIsIndependentOfHowManyDirectionsAreCarried) {
+TEST(Dual, EachGradientIsIndependentOfHowManyDirectionsAreCarried) {
   const double x = 1.4, y = 2.2;
   const D3 both = composite(D3::variable(x, 0), D3::variable(y, 2));
   const D1 only_x = composite(D1::variable(x, 0), D1(y));
   const D1 only_y = composite(D1(x), D1::variable(y, 0));
   EXPECT_EQ(both.value(), only_x.value());
-  EXPECT_EQ(both.tangent(0), only_x.tangent(0));
-  EXPECT_EQ(both.tangent(2), only_y.tangent(0));
-  EXPECT_EQ(both.tangent(1), 0.0);   // no parameter was seeded in direction 1
+  EXPECT_EQ(both.gradient(0), only_x.gradient(0));
+  EXPECT_EQ(both.gradient(2), only_y.gradient(0));
+  EXPECT_EQ(both.gradient(1), 0.0);   // no parameter was seeded in direction 1
 }
 
-TEST(DualFieldValue, TraitsDescribeFourBinary64ScalarsOfWhichThreeAreDerivatives) {
+TEST(DualFieldValue, TraitsDescribeFourBinary64ScalarsOfWhichThreeAreGradients) {
   constexpr auto t = fuse::field_value_type_of<D3>();
   EXPECT_EQ(t.name, "fuse:dual<binary64,3>");
   EXPECT_EQ(t.scalar_name, "binary64");
   EXPECT_EQ(t.scalar_size, sizeof(double));
   EXPECT_EQ(t.size, 4 * sizeof(double));
   EXPECT_EQ(t.scalar_count, 4);
-  EXPECT_EQ(t.derivative_count, 3);
+  EXPECT_EQ(t.gradient_size, 3);
   EXPECT_EQ(t.kind, fuse::FieldValueKind::ScalarArray);
   EXPECT_NE(t, fuse::field_value_type_of<D2>());
   EXPECT_NE(t, fuse::field_value_type_of<DF>());
@@ -145,7 +145,7 @@ TEST(DualFieldValue, TraitsDescribeFourBinary64ScalarsOfWhichThreeAreDerivatives
   using D12 = fuse::num::dual<double, 12>;
   EXPECT_EQ(fuse::field_value_type_of<D12>().name, "fuse:dual<binary64,12>");
   EXPECT_EQ(fuse::value_traits<D3>::to_binary64(D3::variable(2.5, 1)), 2.5);
-  EXPECT_EQ(fuse::value_traits<D3>::from_binary64(2.5).tangent(1), 0.0);
+  EXPECT_EQ(fuse::value_traits<D3>::from_binary64(2.5).gradient(1), 0.0);
 }
 
 // ------------------------------------------------- a field viewed as scalars
@@ -175,7 +175,7 @@ TEST(ScalarView, ADualFieldIsItsScalarsComponentsFollowingEachOther) {
   const fuse::FieldId id{4};
   ASSERT_TRUE(reg.bind(id, fuse::BasicFieldRef<D3>(data.data(), interleaved(n, C),
                                                    fuse::MemorySpace::Host)));
-  EXPECT_TRUE(reg.has_derivatives(id));
+  EXPECT_TRUE(reg.has_gradient(id));
 
   // The strict getter still refuses: a dual field is not a binary64 field.
   const auto strict = reg.get(id);
@@ -196,7 +196,7 @@ TEST(ScalarView, ADualFieldIsItsScalarsComponentsFollowingEachOther) {
     }
   }
   f.at(3, 1 * 4 + 2) = -7.5;                 // writes through to the owner
-  EXPECT_EQ(data[3 * C + 1].tangent(1), -7.5);
+  EXPECT_EQ(data[3 * C + 1].gradient(1), -7.5);
 
   const auto as_float = reg.get_scalars<float>(id);
   ASSERT_FALSE(as_float);
@@ -219,9 +219,9 @@ TEST(ScalarView, OrdinaryAndStorageFieldsAreTheirOwnScalarView) {
   ASSERT_TRUE(reg.bind(fuse::FieldId{2},
                        fuse::BasicFieldRef<float>(g.data(), interleaved(3, 2),
                                                   fuse::MemorySpace::Host)));
-  EXPECT_FALSE(reg.has_derivatives(fuse::FieldId{1}));
-  EXPECT_FALSE(reg.has_derivatives(fuse::FieldId{2}));
-  EXPECT_FALSE(reg.has_derivatives(fuse::FieldId{9}));  // unbound
+  EXPECT_FALSE(reg.has_gradient(fuse::FieldId{1}));
+  EXPECT_FALSE(reg.has_gradient(fuse::FieldId{2}));
+  EXPECT_FALSE(reg.has_gradient(fuse::FieldId{9}));  // unbound
   auto a = reg.get_scalars(fuse::FieldId{1});
   ASSERT_TRUE(a);
   EXPECT_EQ(a.value().data(), d.data());
@@ -302,12 +302,12 @@ struct CompositeKernel {
   KOKKOS_INLINE_FUNCTION void operator()(const std::size_t i) const {
     const D2 f = composite(D2::variable(xs(i), 0), D2::variable(ys(i), 1));
     out(3 * i) = f.value();
-    out(3 * i + 1) = f.tangent(0);
-    out(3 * i + 2) = f.tangent(1);
+    out(3 * i + 1) = f.gradient(0);
+    out(3 * i + 2) = f.gradient(1);
   }
 };
 
-TYPED_TEST(DualOnSpace, TheCompositeRunsInAKernelAndKeepsItsTangents) {
+TYPED_TEST(DualOnSpace, TheCompositeRunsInAKernelAndKeepsItsGradients) {
   // Device and host evaluate sin, exp, log with different libraries, and the
   // device contracts a*b+c into a fused multiply-add the host does not, so
   // this compares to the closed form to rounding, not to the host bitwise.
@@ -353,7 +353,7 @@ Csr make_remap(std::size_t rows, std::size_t cols) {
   return m;
 }
 
-TYPED_TEST(DualOnSpace, ATangentThroughTheRemapIsTheRemapOfTheTangentBitwise) {
+TYPED_TEST(DualOnSpace, AGradientThroughTheRemapIsTheRemapOfTheGradientBitwise) {
   constexpr std::size_t n_src = 37, n_dst = 29;
   constexpr int C = 2, L = 4, S = C * L;   // scalars per element
   const Csr m = make_remap(n_dst, n_src);
@@ -389,7 +389,7 @@ TYPED_TEST(DualOnSpace, ATangentThroughTheRemapIsTheRemapOfTheTangentBitwise) {
   const auto y_all = TestFixture::download(Y);
 
   // (b) The reference: the single-component remap applied to each scalar
-  // (the value, and each tangent of each component) as a field of its own.
+  // (the value, and each gradient of each component) as a field of its own.
   for (int s = 0; s < S; ++s) {
     std::vector<double> xcol(n_src);
     for (std::size_t i = 0; i < n_src; ++i) xcol[i] = xs[i * S + s];
@@ -479,7 +479,7 @@ struct Ring {
   }
 };
 
-TYPED_TEST(DualOnSpace, TaylorRemainderOfADualDerivativeThroughARemapIsOrderTwo) {
+TYPED_TEST(DualOnSpace, TaylorRemainderOfADualGradientThroughARemapIsOrderTwo) {
   const Ring ring;
   constexpr std::size_t n = Ring::n;
   std::vector<double> u(n), dir(n);
@@ -491,10 +491,10 @@ TYPED_TEST(DualOnSpace, TaylorRemainderOfADualDerivativeThroughARemapIsOrderTwo)
   auto cl = TestFixture::upload_idx(ring.lap.col, "col");
   auto vl = TestFixture::upload(ring.lap.val, "val");
 
-  // One dual number per cell with a single tangent: the value u_i and the
-  // tangent dir_i, as the two scalars of a one-component field.
-  const auto jv = [&](bool include_diffusion_tangent) {
-    return [&, include_diffusion_tangent](const std::vector<double>& at,
+  // One dual number per cell with a single gradient: the value u_i and the
+  // gradient dir_i, as the two scalars of a one-component field.
+  const auto jv = [&](bool include_diffusion_gradient) {
+    return [&, include_diffusion_gradient](const std::vector<double>& at,
                                           const std::vector<double>& d) {
       std::vector<D1> x(n);
       for (std::size_t i = 0; i < n; ++i) {
@@ -521,11 +521,11 @@ TYPED_TEST(DualOnSpace, TaylorRemainderOfADualDerivativeThroughARemapIsOrderTwo)
       for (std::size_t i = 0; i < n; ++i) {
         D1 Lx;
         Lx.d[0] = ly[2 * i];
-        Lx.d[1] = include_diffusion_tangent ? ly[2 * i + 1] : 0.0;
+        Lx.d[1] = include_diffusion_gradient ? ly[2 * i + 1] : 0.0;
         const D1 r = x[i] - ring.u_old[i] -
                      Ring::dt * (Ring::D * Lx + x[i] * x[i] * ring.v[i] -
                                  Ring::A * x[i]);
-        out[i] = r.tangent(0);
+        out[i] = r.gradient(0);
       }
       return out;
     };
@@ -540,7 +540,7 @@ TYPED_TEST(DualOnSpace, TaylorRemainderOfADualDerivativeThroughARemapIsOrderTwo)
   EXPECT_GT(good.order, 1.8);
   EXPECT_LT(good.order, 2.3);
 
-  // The control: leave the tangent out of the remap and the derivative action
+  // The control: leave the gradient out of the remap and the derivative action
   // is wrong by the whole diffusion term, which the sweep must see as order 1.
   const auto wrong = fuse::linalg::taylor_remainder_order(
       F, jv(false), u, dir, /*h0=*/1e-1, /*ndecades=*/9);

@@ -272,13 +272,13 @@ Result<void> Runner::Impl::resolve_buffers(FieldRegistry& registry) {
   sample_count.assign(buffers.size(), 0);
   slot_source_owner.assign(buffers.size(), -1);
 
-  // A field whose values carry derivatives (a forward-mode dual number's
-  // tangents, fuse/model/value_traits.hpp) moves through every operation here
+  // A field whose values carry a gradient (a forward-mode dual number's
+  // gradient, fuse/model/value_traits.hpp) moves through every operation here
   // as scalars, which is exact for all of them except an accumulation by
-  // minimum or maximum: that picks one sample, and the tangent that belongs to
-  // the result is the picked sample's, not the minimum of the tangents. Refuse
-  // it by name rather than return a tangent that is not the derivative of
-  // anything. The channel's two fields are the only ones the accumulation can
+  // minimum or maximum: that picks one sample, and the gradient that belongs to
+  // the result is the picked sample's, not the minimum of the gradients. Refuse
+  // it by name rather than return a gradient that is not the gradient of the
+  // result. The channel's two fields are the only ones the accumulation can
   // touch. (An affine unit conversion has the same problem for the offset; the
   // compiler already refuses that step for every field, E-IR-UNLOWERABLE.)
   for (std::uint32_t i = 0; i < graph.channel_count(); ++i) {
@@ -287,16 +287,16 @@ Result<void> Runner::Impl::resolve_buffers(FieldRegistry& registry) {
       continue;
     }
     for (const FieldId f : {ch.source, ch.target}) {
-      if (registry.has_derivatives(f)) {
+      if (registry.has_gradient(f)) {
         return Failure{
-            "E-RT-DERIVATIVE-MINMAX",
+            "E-RT-GRADIENT-MINMAX",
             "channel '" + ch.name + "' accumulates by " +
                 (ch.accumulate.op == AccumOp::Min ? "minimum" : "maximum") +
                 ", but field " + std::to_string(f.value()) +
-                " carries derivatives: the derivative of a minimum or "
+                " carries a gradient: the gradient of a minimum or "
                 "maximum is that of the sample picked, which comparing the "
-                "tangents scalar by scalar does not give. Accumulate by sum, "
-                "mean or integral, or bind the field without derivatives"};
+                "gradient scalar by scalar does not give. Accumulate by sum, "
+                "mean or integral, or bind the field without a gradient"};
       }
     }
   }

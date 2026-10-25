@@ -1,9 +1,9 @@
 // A field of forward-mode dual numbers through the Runner and a real remap
-// (plans/2026-10-22-universal-number-types.md, stage U2): the tangent that
-// arrives equals the remap of the tangent, bitwise, because a field of dual
-// numbers reaches every operation as a field with value and tangent as
+// (plans/2026-10-22-universal-number-types.md, stage U2): the gradient that
+// arrives equals the remap of the gradient, bitwise, because a field of dual
+// numbers reaches every operation as a field with value and gradient as
 // components. Also the two refusals that keep that honest: a minimum or maximum
-// accumulation of a field with derivatives, and a bound field whose type
+// accumulation of a field with a gradient, and a bound field whose type
 // the runtime cannot move.
 
 #include "fuse/base/config.hpp"
@@ -36,15 +36,15 @@ namespace {
 using D1 = fuse::num::dual<double, 1>;
 
 /// How a component's array is registered. Dual and Flat2 are the same memory
-/// (value then tangent, per cell) registered two ways; Plain is one scalar per
+/// (value then gradient, per cell) registered two ways; Plain is one scalar per
 /// cell, and which of the two scalars it carries is chosen by the test.
 enum class Bind { Dual, Flat2, Plain, Float };
 
 int scalars_per_cell(Bind b) { return (b == Bind::Dual || b == Bind::Flat2) ? 2 : 1; }
 
 /// The value the producer writes for scalar `which` of cell `i` at `step`. The
-/// two scalars differ in shape, so a tangent that was the value, or a value that
-/// was the tangent, cannot pass unnoticed.
+/// two scalars differ in shape, so a gradient that was the value, or a value that
+/// was the gradient, cannot pass unnoticed.
 double pattern(int which, std::size_t i, int step) {
   const double x = static_cast<double>(i);
   return which == 0 ? 2.0 * step + x + 0.125 * x * x
@@ -197,7 +197,7 @@ std::unique_ptr<Rig> build(Bind producer_bind, Bind consumer_bind, int plain_sca
       .name = "producer", .ranks = fuse::RankSet{0, 1}, .interval = Rational{1}});
   const auto c = g.add_component(fuse::ComponentDecl{
       .name = "consumer", .ranks = fuse::RankSet{1, 1}, .interval = Rational{1}});
-  // The graph counts scalars per cell: a value and its tangent are two.
+  // The graph counts scalars per cell: a value and its gradient are two.
   const int comps = scalars_per_cell(producer_bind);
   // An Integral channel delivers [source] x [time]: the target is declared so.
   const bool integral = accum == fuse::AccumOp::Integral;
@@ -252,25 +252,25 @@ std::uint64_t bits(double x) {
   return b;
 }
 
-TEST(DualFieldRunner, TheTangentThatArrivesIsTheRemapOfTheTangent) {
+TEST(DualFieldRunner, TheGradientThatArrivesIsTheRemapOfTheGradient) {
   const std::size_t dst = 5;
   const auto dual = run_one_period(Bind::Dual, Bind::Dual, 0);
   const auto value_only = run_one_period(Bind::Plain, Bind::Plain, 0);
-  const auto tangent_only = run_one_period(Bind::Plain, Bind::Plain, 1);
+  const auto gradient_only = run_one_period(Bind::Plain, Bind::Plain, 1);
   ASSERT_EQ(dual.size(), 2 * dst);
   ASSERT_EQ(value_only.size(), dst);
-  ASSERT_EQ(tangent_only.size(), dst);
+  ASSERT_EQ(gradient_only.size(), dst);
 
-  bool value_moved = false, tangent_moved = false;
+  bool value_moved = false, gradient_moved = false;
   for (std::size_t j = 0; j < dst; ++j) {
     EXPECT_EQ(bits(dual[2 * j]), bits(value_only[j])) << "value, cell " << j;
-    EXPECT_EQ(bits(dual[2 * j + 1]), bits(tangent_only[j])) << "tangent, cell " << j;
+    EXPECT_EQ(bits(dual[2 * j + 1]), bits(gradient_only[j])) << "gradient, cell " << j;
     value_moved = value_moved || value_only[j] != 0.0;
-    tangent_moved = tangent_moved || tangent_only[j] != 0.0;
+    gradient_moved = gradient_moved || gradient_only[j] != 0.0;
   }
   // Not vacuous: both scalars arrived, and they are different fields.
   EXPECT_TRUE(value_moved);
-  EXPECT_TRUE(tangent_moved);
+  EXPECT_TRUE(gradient_moved);
   EXPECT_NE(bits(dual[0]), bits(dual[1]));
 }
 
@@ -286,15 +286,15 @@ TEST(DualFieldRunner, ATypedDualFieldAndAPlainTwoComponentFieldMoveIdentically) 
   }
 }
 
-TEST(DualFieldRunner, MinimumAndMaximumAreRefusedForDerivativesOnly) {
+TEST(DualFieldRunner, MinimumAndMaximumAreRefusedOnlyForAFieldWithAGradient) {
   for (const auto op : {fuse::AccumOp::Min, fuse::AccumOp::Max}) {
     auto h = build(Bind::Dual, Bind::Dual, 0, op);
     Runner runner{h->graph, h->dag, h->plan, h->backend};
     const auto r = bind_and_initialize(*h, runner);
     ASSERT_FALSE(r.ok());
-    EXPECT_EQ(r.error().code, "E-RT-DERIVATIVE-MINMAX");
+    EXPECT_EQ(r.error().code, "E-RT-GRADIENT-MINMAX");
     EXPECT_NE(r.error().message.find("link"), std::string::npos);
-    EXPECT_NE(r.error().message.find("carries derivatives"), std::string::npos);
+    EXPECT_NE(r.error().message.find("carries a gradient"), std::string::npos);
   }
   // The linear accumulations are fine on the same field...
   for (const auto op : {fuse::AccumOp::Sum, fuse::AccumOp::Mean,

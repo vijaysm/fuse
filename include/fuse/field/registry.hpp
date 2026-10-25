@@ -68,7 +68,7 @@ class FieldRegistry {
 
   /// The field as scalars of type `S` (default binary64), `components *
   /// scalar_count` per element. A field that holds `S` is returned as it is; a
-  /// field of arrays of scalars (a dual number with tangents, say) is returned
+  /// field of arrays of scalars (a dual number with a gradient, say) is returned
   /// as its scalars, the components of each value following each other
   /// (`scalar_layout`). This is what the runtime reads, because every
   /// operation it applies to field values acts on each scalar separately (see
@@ -90,10 +90,10 @@ class FieldRegistry {
     return scalars.value();
   }
 
-  /// True when `id` is bound to a field whose values carry derivatives.
-  [[nodiscard]] bool has_derivatives(FieldId id) const {
+  /// True when `id` is bound to a field whose values carry a gradient.
+  [[nodiscard]] bool has_gradient(FieldId id) const {
     const auto it = refs_.find(id);
-    return it != refs_.end() && it->second.derivative_count() > 0;
+    return it != refs_.end() && it->second.gradient_size() > 0;
   }
 
   /// The view with its value type erased, for code that dispatches on the
