@@ -9,7 +9,7 @@
 
 [[mutation]]
 id = "restart-duplicate-id-check-disabled"
-area = "restart_io (Hdf5GroupWriter::put_field, owner decision 2's local pre-check)"
+area = "restart_io (Hdf5GroupWriter::put_field, local pre-check)"
 describes = "put_field()'s own local duplicate-id check (within one call) is disabled -- a component or accelerator reporting the same global id twice for the same field would silently write both rows instead of being refused, the one check decision 2's own 'checked, not trusted' posture puts ahead of finish_point()'s batched, cross-caller version of the same question."
 file = "src/restart_io/hdf5_restart_io.cpp"
 old = """    {
@@ -53,13 +53,13 @@ result = "CONFIRMED: full unfiltered fuse_runtime_restart_test (14 tests) ran 12
 
 [[mutation]]
 id = "restart-per-block-key-collapsed-to-id-alone"
-area = "num (detail::put_field_per_block/get_field_per_block, round 2's EXACT-KEY fix)"
+area = "num (detail::put_field_per_block/get_field_per_block, EXACT-KEY scheme)"
 describes = "Both per-block helpers' own qualified dataset name (name_prefix + '/' + block.field_name) are collapsed to name_prefix alone, in one mutation spanning both functions (the only way to make the old-text anchor unique while mutating both occurrences the real test needs) -- the shape of the earlier hash-combined key, now with no key distinguishing field at all: every block of one region's accelerator state writes to the SAME dataset name, so two blocks with identical local ids (dirichlet/neumann's own shape) collide."
 file = "src/num/accel_relaxation.cpp"
 old = """    const std::string qualified = name_prefix + "/" + block.field_name;
     if (block.window_capacity == 0) {
-      // Ordinary case, UNCHANGED since round 2's own EXACT-KEY fix: one
-      // row per id, contiguous in `flat`.
+      // Ordinary case (EXACT-KEY scheme): one row per id, contiguous in
+      // `flat`.
       const Result<void> r = writer.put_field(
           qualified, block.ids,
           flat.subspan(off * static_cast<std::size_t>(components),
@@ -69,7 +69,7 @@ old = """    const std::string qualified = name_prefix + "/" + block.field_name;
       off += n_elem;
       continue;
     }
-    // Window-scoped case (KNOWN_ISSUES.md D69, formerly D68): this
+    // Window-scoped case: this
     // block's own slice of `flat` is `n_elem * window_capacity` rows,
     // element-major sample-minor (index(e, s) = e*window_capacity + s).
     // Demux into `window_capacity` separate, per-sample, per-element-id
@@ -110,8 +110,8 @@ Result<void> get_field_per_block(RestartReader& reader,
     const std::string qualified = name_prefix + "/" + block.field_name;"""
 new = """    const std::string qualified = name_prefix;  // MUTATION: key collapsed to id alone
     if (block.window_capacity == 0) {
-      // Ordinary case, UNCHANGED since round 2's own EXACT-KEY fix: one
-      // row per id, contiguous in `flat`.
+      // Ordinary case (EXACT-KEY scheme): one row per id, contiguous in
+      // `flat`.
       const Result<void> r = writer.put_field(
           qualified, block.ids,
           flat.subspan(off * static_cast<std::size_t>(components),
@@ -121,7 +121,7 @@ new = """    const std::string qualified = name_prefix;  // MUTATION: key collap
       off += n_elem;
       continue;
     }
-    // Window-scoped case (KNOWN_ISSUES.md D69, formerly D68): this
+    // Window-scoped case: this
     // block's own slice of `flat` is `n_elem * window_capacity` rows,
     // element-major sample-minor (index(e, s) = e*window_capacity + s).
     // Demux into `window_capacity` separate, per-sample, per-element-id
@@ -166,7 +166,7 @@ result = "CONFIRMED: mutate.py --build-dir build1 --area <num per-block area> re
 
 [[mutation]]
 id = "restart-accel-not-implemented-gate-disabled"
-area = "runtime (Runner::restore_restart_fields, round 2's NO-SILENT-RESET fix)"
+area = "runtime (Runner::restore_restart_fields, NO-SILENT-RESET check)"
 describes = "The restart_state_implemented() collective refusal gate in restore_restart_fields() is disabled (replaced with `if (false)`), so an accelerator that does not implement restart state (QuasiNewtonAccel/IQN-ILS/IQN-IMVJ today) is never refused and never resets through this gate -- the call falls through into import_restart_state(), whose base-class default now unconditionally returns Failure (E-RESTART-NOT-IMPLEMENTED) regardless of the run's own allow_accelerator_reset_on_mismatch setting, so even the opt-in path breaks."
 file = "src/runtime/runner.cpp"
 old = """    if (!region.accel->restart_state_implemented()) {
@@ -205,7 +205,7 @@ result = "CONFIRMED: full unfiltered fuse_runtime_restart_test (17 tests) ran 15
 # quoted verbatim in its own `result` below.
 [[mutation]]
 id = "typed-restart-widening-admits-narrowing-restart"
-area = "model (fuse::detail::is_exact_widening, Stage B Slice 1b typed fields)"
+area = "model (fuse::detail::is_exact_widening, typed fields)"
 describes = "is_exact_widening() unconditionally returns true regardless of its two ElementTypeInfo arguments, so ReadConversion::Widening admits every conversion -- including a float narrowing (reduced significand/exponent range) or a signed-to-unsigned conversion that should never be classified as lossless."
 file = "src/model/element_type.cpp"
 old = """bool is_exact_widening(const ElementTypeInfo& f, const ElementTypeInfo& t) {"""
@@ -217,7 +217,7 @@ result = "CONFIRMED: fuse_runtime_restart_test ran 25 PASSED / 1 FAILED (TypedRe
 
 [[mutation]]
 id = "typed-restart-widening-admits-narrowing-typed-restart-hdf5"
-area = "model (fuse::detail::is_exact_widening, Stage B Slice 1b typed fields)"
+area = "model (fuse::detail::is_exact_widening, typed fields)"
 describes = "is_exact_widening() unconditionally returns true regardless of its two ElementTypeInfo arguments, so ReadConversion::Widening admits every conversion -- including a float narrowing (reduced significand/exponent range) or a signed-to-unsigned conversion that should never be classified as lossless."
 file = "src/model/element_type.cpp"
 old = """bool is_exact_widening(const ElementTypeInfo& f, const ElementTypeInfo& t) {"""
@@ -229,7 +229,7 @@ result = "CONFIRMED: fuse_runtime_typed_restart_hdf5_test ran 3 PASSED / 1 FAILE
 
 [[mutation]]
 id = "typed-restart-widening-admits-narrowing-element-type"
-area = "model (fuse::detail::is_exact_widening, Stage B Slice 1b typed fields)"
+area = "model (fuse::detail::is_exact_widening, typed fields)"
 describes = "is_exact_widening() unconditionally returns true regardless of its two ElementTypeInfo arguments, so ReadConversion::Widening admits every conversion -- including a float narrowing (reduced significand/exponent range) or a signed-to-unsigned conversion that should never be classified as lossless."
 file = "src/model/element_type.cpp"
 old = """bool is_exact_widening(const ElementTypeInfo& f, const ElementTypeInfo& t) {"""
@@ -241,7 +241,7 @@ result = "CONFIRMED: fuse_model_element_type_test ran 4 PASSED / 1 FAILED (Eleme
 
 [[mutation]]
 id = "typed-restart-bfloat16-truncates-instead-of-rne"
-area = "model (fuse::bfloat16::from_float, Stage B Slice 1b typed fields)"
+area = "model (fuse::bfloat16::from_float, typed fields)"
 describes = "bfloat16::from_float()'s round-to-nearest-even carry branch is disabled (guarded by `if (false && ...)`), reducing the conversion to plain truncation of the low 16 bits -- round-to-nearest-even at exact ties and rounding overflow at the top of the range both become wrong."
 file = "include/fuse/model/bfloat16.hpp"
 old = """    if (round_bit != 0 && (sticky != 0 || lsb_of_kept != 0)) {
@@ -264,7 +264,7 @@ result = "CONFIRMED: fuse_model_bfloat16_test ran 2 PASSED / 2 FAILED (BFloat16.
 # same `file`/`old`/`new` in each.
 [[mutation]]
 id = "typed-restart-narrow-float-reports-zero-change-float-bits"
-area = "model (fuse::detail::narrow_float, Stage B Slice 1b typed fields)"
+area = "model (fuse::detail::narrow_float, typed fields)"
 describes = "narrow_float()'s result.absolute_change is forced to 0.0 regardless of the computed delta_units/ldexp result, so a float narrowing conversion under ReadConversion::AllowNarrowing silently under-reports the largest change it actually made."
 file = "src/model/float_bits.cpp"
 old = """    result.absolute_change =
@@ -281,7 +281,7 @@ result = "CONFIRMED: fuse_model_float_bits_test ran 5 PASSED / 1 FAILED (FloatBi
 
 [[mutation]]
 id = "typed-restart-narrow-float-reports-zero-change-restart"
-area = "model (fuse::detail::narrow_float, Stage B Slice 1b typed fields)"
+area = "model (fuse::detail::narrow_float, typed fields)"
 describes = "narrow_float()'s result.absolute_change is forced to 0.0 regardless of the computed delta_units/ldexp result, so a float narrowing conversion under ReadConversion::AllowNarrowing silently under-reports the largest change it actually made."
 file = "src/model/float_bits.cpp"
 old = """    result.absolute_change =
@@ -298,7 +298,7 @@ result = "CONFIRMED: fuse_runtime_restart_test ran 8 PASSED / 1 FAILED of the Ty
 
 [[mutation]]
 id = "typed-restart-narrow-float-reports-zero-change-typed-restart-hdf5"
-area = "model (fuse::detail::narrow_float, Stage B Slice 1b typed fields)"
+area = "model (fuse::detail::narrow_float, typed fields)"
 describes = "narrow_float()'s result.absolute_change is forced to 0.0 regardless of the computed delta_units/ldexp result, so a float narrowing conversion under ReadConversion::AllowNarrowing silently under-reports the largest change it actually made."
 file = "src/model/float_bits.cpp"
 old = """    result.absolute_change =

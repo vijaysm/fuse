@@ -99,7 +99,7 @@ file = "examples/brusselator/participants/brusselator_graph_tool.cpp"
 old = """    u_ranks = fuse::RankSet{0, args.ranks_u};
     const int u_local_world = args.ranks_u + args.ranks_coupler;"""
 new = """    const int u_local_world = args.ranks_u + args.ranks_coupler;
-    u_ranks = fuse::RankSet{0, u_local_world};  // MUTATED: pre-D36 span"""
+    u_ranks = fuse::RankSet{0, u_local_world};  // MUTATED: span includes the coupler ranks"""
 target = "brusselator_graph_tool"
 test = "verification.brusselator.graph_tool.reproduces_reference_accept_3"
 result = "CONFIRMED: both accept-mode reference rows failed as predicted -- verification.brusselator.graph_tool.reproduces_reference_accept_3 (U's ranks printed as {first: 0, count: 2} instead of the committed {first: 0, count: 1}) and .reproduces_reference_accept_5 ({first: 0, count: 3} instead of {first: 0, count: 2}); the two mpmd reference rows (.reproduces_reference, .reproduces_reference_lowfive) were unaffected, since the mpmd branch this mutation does not touch is untouched. Separately confirmed at the Runner's own placement-plan level (test/verification/brusselator_accept_layout_test.cpp, mutated by hand the same way and restored -- not a row here, since that test's own build() reconstructs the graph independently of this tool and so is not actually exercised by mutating this file): with U's RankSet widened to {0, 2} the SAME way, make_region_sizes() reports U's own planned size as 128 instead of 256, reproducing the host's E-RT-SIZE number exactly. Restored; cmp against the pre-mutation file reported no difference; rebuilt clean, all 4 reproduces_reference rows passed."

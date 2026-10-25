@@ -104,7 +104,7 @@ set(FUSE_EIGEN_TAG      "3.4.0")
 set(FUSE_ARBORX_VERSION "2.1")
 # Pinned by COMMIT, not just the tag, so a tag that moves upstream cannot
 # silently change what a fetch build compiles. This is the exact commit v2.1
-# resolves to; verified by the lead, and proven here against Kokkos 5.1.0
+# resolves to, and is proven here against Kokkos 5.1.0
 # (UPSTREAMS.lock's [arborx] entry, docs/dev/search.md).
 set(FUSE_ARBORX_COMMIT  "8f89be60bc3797670b9be8843da7dcdbc5f2333f")
 

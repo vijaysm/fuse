@@ -131,10 +131,8 @@ old = """    const bool treat_as_mismatch = (req.component != in->component) || 
       if (req.component != in->component && !rolled_over) {
         // Not consumed: the stream's own next tick belongs to a
         // DIFFERENT externally driven component, named here so the
-        // caller can step it first. Unaffected by this day's rollover
-        // correction: no period boundary was crossed to reach this
-        // request, so it is the ordinary out-of-turn mistake it always
-        // was.
+        // caller can step it first. No period boundary was crossed to reach
+        // this request, so it is the ordinary out-of-turn mistake.
         return fail(&c, FUSE_ERR_STATE, "E-ABI-STEP-ORDER",
                    std::string("fuse_begin_step: component '") +
                        in->component +
@@ -249,7 +247,7 @@ old = """  if (!outcome.value().has_value()) {
         return true;
       }
     } else if (c.communicator_set) {
-      // KNOWN_ISSUES.md D57. No end_time was declared at all (fuse_setup
+      // No end_time was declared at all (fuse_setup
       // ()'s own fuse_setup_options::has_end_time left at its zero
       // default) -- the ONLY bound the branch above can test against is
       // absent, so there is nothing here to check a new period's own
@@ -270,8 +268,8 @@ old = """  if (!outcome.value().has_value()) {
       // Gated on `c.communicator_set` -- NOT on `!c.has_end_time` alone
       // -- because the hazard this guards against is specifically a
       // base-communicator collective (OpKind::Constrain's reduction,
-      // gated on `config.base_communicator.has_value()`, KNOWN_ISSUES.md
-      // D10) that an in-process-only PARTNER rank bounded by
+      // gated on `config.base_communicator.has_value()`) that an
+      // in-process-only PARTNER rank bounded by
       // Runner::run(periods) will never also enter, since its own loop
       // already stopped -- a hazard that exists only when a base
       // communicator is configured at all. `c.communicator_set` is set
@@ -286,13 +284,9 @@ old = """  if (!outcome.value().has_value()) {
       // a communicator and relies on EXACTLY the eager continuation this
       // branch would otherwise skip, to resolve a still-converging
       // window's real next-period owner ahead of the caller asking for
-      // it, per "the lead's own ruling" that test's own header cites --
-      // regressed the first time this fix was written unconditionally
-      // (measured: the full tier-0 ctest suite caught it, `abi.
-      // participant` FAILED where it had passed on HEAD). With no
-      // communicator at all, there is no partner rank to disagree with,
-      // so the eager continuation below is harmless and that test's own
-      // behaviour is preserved exactly, unchanged by this entry.
+      // it -- would fail. With no communicator at all, there is no partner
+      // rank to disagree with, so the eager continuation below is
+      // harmless.
       //
       // Reported exactly like the exceeded-end_time case: c.next_request
       // stays empty, fuse_begin_step()'s own caller (below) sees
@@ -398,7 +392,7 @@ area = "abi/participant (prime_next_request)"
 describes = "Removing prime_next_request()'s own `else if (c.communicator_set)` branch restores the unconditional fallthrough: when no end_time is declared and the current period has just drained, the function immediately calls Runner::Impl::resume_period() a SECOND time in the SAME fuse_begin_step() call even when a base communicator IS configured -- starting an extra period the caller's own bounded loop (examples/brusselator/participants/u_main.c's own `for (p = 0; p < periods; ++p)`) never asked for and the coupler's own Runner::run(periods) loop will never also enter. (The `c.communicator_set` gate itself -- distinguishing this from the single-process conformance case, AbiParticipant.MismatchedRolloverNamesTheRealPeriodStartComponent, which has no communicator and relies on the SAME eager continuation -- was added after the full tier-0 ctest suite caught that test regressing against a first-draft, unconditional version of this fix.)"
 file = "src/abi/participant.cpp"
 old = """    } else if (c.communicator_set) {
-      // KNOWN_ISSUES.md D57. No end_time was declared at all (fuse_setup
+      // No end_time was declared at all (fuse_setup
       // ()'s own fuse_setup_options::has_end_time left at its zero
       // default) -- the ONLY bound the branch above can test against is
       // absent, so there is nothing here to check a new period's own
@@ -419,8 +413,8 @@ old = """    } else if (c.communicator_set) {
       // Gated on `c.communicator_set` -- NOT on `!c.has_end_time` alone
       // -- because the hazard this guards against is specifically a
       // base-communicator collective (OpKind::Constrain's reduction,
-      // gated on `config.base_communicator.has_value()`, KNOWN_ISSUES.md
-      // D10) that an in-process-only PARTNER rank bounded by
+      // gated on `config.base_communicator.has_value()`) that an
+      // in-process-only PARTNER rank bounded by
       // Runner::run(periods) will never also enter, since its own loop
       // already stopped -- a hazard that exists only when a base
       // communicator is configured at all. `c.communicator_set` is set
@@ -435,13 +429,9 @@ old = """    } else if (c.communicator_set) {
       // a communicator and relies on EXACTLY the eager continuation this
       // branch would otherwise skip, to resolve a still-converging
       // window's real next-period owner ahead of the caller asking for
-      // it, per "the lead's own ruling" that test's own header cites --
-      // regressed the first time this fix was written unconditionally
-      // (measured: the full tier-0 ctest suite caught it, `abi.
-      // participant` FAILED where it had passed on HEAD). With no
-      // communicator at all, there is no partner rank to disagree with,
-      // so the eager continuation below is harmless and that test's own
-      // behaviour is preserved exactly, unchanged by this entry.
+      // it -- would fail. With no communicator at all, there is no partner
+      // rank to disagree with, so the eager continuation below is
+      // harmless.
       //
       // Reported exactly like the exceeded-end_time case: c.next_request
       // stays empty, fuse_begin_step()'s own caller (below) sees

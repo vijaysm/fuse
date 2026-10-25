@@ -58,10 +58,9 @@ area = "examples"
 describes = "serve_state_step()'s own kImportAboutToOpen case flushes a first-reader's own deferred serve immediately (serve_all(), blocking, BEFORE this process's own H5Fopen/H5Fclose of the peer's file) instead of unconditionally returning kReceiveOnly -- reproducing, exactly, the circular wait of the earlier attempt: this process enters its own blocking serve before doing anything that could release the PEER's own pending one, and vice versa"
 file = "examples/brusselator/participants/lowfive_attach_decision.hpp"
 old = """    case ServeEvent::kImportAboutToOpen:
-      // Unconditional, any role or state: this header's own "ROUND 2
-      // REVIEW" comment has the full account of why NOTHING is flushed
-      // here, no matter what -- that is precisely the first round-2
-      // attempt's own mistake.
+      // Unconditional, any role or state: this header's own "RECEIVE AND
+      // RELEASE" comment has the full account of why NOTHING is flushed
+      // here, no matter what.
       return ServeAction::kReceiveOnly;"""
 new = """    case ServeEvent::kImportAboutToOpen:
       if (state->role == ServeRole::kFirstReader && state->deferred_pending) {

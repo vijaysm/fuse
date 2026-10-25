@@ -92,7 +92,7 @@ test = "verification.iteration"
 # and confirmed byte-identical to the original via `cmp`.
 
 [[mutation]]
-id = "b3-determinism-check-disabled"
+id = "determinism-check-disabled"
 area = "runtime"
 describes = "verify_rollback_support()'s new check (src/runtime/checkpoint_support.cpp) for a component whose capabilities() decodes DeterminismLevel::Nondeterministic inside an implicit coupling group's checkpoint set is disabled, so a nondeterministic component's noise is silently treated as a residual instead of being rejected with E-ITER-NONDETERMINISTIC. HAND-VERIFIED (applied to the real file, rebuilt, run, restored, cmp'd byte-identical -- not derived): applying this mutation, rebuilding fuse_runtime_checkpoint_test and running ctest -R '^runtime.checkpoint$' gives exactly one failure, Checkpoint.NondeterministicComponentInsideIterationRegionIsRejected (diags.has_errors() is false, has_code(diags, \"E-ITER-NONDETERMINISTIC\") is false, diags.size() is 0 not 1) -- the other 19 subtests in the suite, including ExplicitlyBitwiseComponentInsideIterationRegionIsAccepted and DefaultDeterminismInsideIterationRegionIsAccepted, pass unchanged. Restored via cmp against a pre-edit copy: byte-identical."
 file = "src/runtime/checkpoint_support.cpp"
@@ -102,7 +102,7 @@ target = "fuse_runtime_checkpoint_test"
 test = "runtime.checkpoint"
 
 [[mutation]]
-id = "b3-rollback-bit-read-from-wrong-field"
+id = "rollback-bit-read-from-wrong-field"
 area = "runtime"
 describes = "Component::supports_rollback() (include/fuse/runtime/component.hpp) reads kCapabilityHiddenState (bit 3) instead of kCapabilityRollback (bit 0) out of capabilities(), so a component that declares rollback alone (every ported override, and the general case: rollback set, hidden state unset) reports supports_rollback() == false. HAND-VERIFIED (applied to the real file, rebuilt, run, restored, cmp'd byte-identical -- not derived): applying this mutation, rebuilding fuse_runtime_component_iface_test and running ctest -R '^runtime.component_iface$' gives exactly three failures out of 23 subtests -- ComponentIface.RollbackDefaultsToUnsupported (Toy{\"a\"}.supports_rollback() now reads false), ComponentIface.ToyDeclaresRollbackOnlyAndLeavesTheRestAtDefault (same), and ComponentSet.RegistryObservesComponentStateAcrossACheckpointRoundTrip (its ASSERT_TRUE(c.supports_rollback()) aborts the test) -- every other subtest, including DefaultCapabilitiesDecodeToTheDocumentedTriple and MakeCapabilitiesRoundTripsAllThreeBits, is unaffected. Restored via cmp against a pre-edit copy: byte-identical."
 file = "include/fuse/runtime/component.hpp"

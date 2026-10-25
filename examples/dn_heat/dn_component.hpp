@@ -30,7 +30,7 @@
 /// EXACTLY. Neither has a mesh, a time integrator, or a linear solve, and
 /// therefore neither has a discretisation error. Whatever the coupled answer
 /// misses the analytic two-layer-wall solution by came from the coupling, and
-/// only from the coupling. That is the whole point: Task 4.7's example
+/// only from the coupling. That is the whole point: an earlier example
 /// measured a coupler against a component carrying its own O(dx^2) + O(dt)
 /// error, which is a measurement of the component.
 ///
@@ -191,7 +191,7 @@ template <class F>
 /// size that nothing reads, so the coupler transports, remaps, diagnoses and
 /// delivers exactly as before and the value never reaches the physics.
 ///
-/// This is not a hypothetical. It is the bug Task 4.7 shipped -- a participant
+/// This is not a hypothetical. It is a bug the first version of this example had -- a participant
 /// that was accidentally uncoupled while the run, the plan and the headline
 /// error all looked healthy -- reproduced on purpose so the demo can prove its
 /// gate detects it. A severed run still CONVERGES, monotonically and in two

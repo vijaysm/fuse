@@ -89,7 +89,7 @@ describes = "run_region_newton()'s own non-convergence check is short-circuited 
 file = "src/runtime/iteration.cpp"
 old = """  st.iterations = nr.iterations;
 
-  // NewtonModel track (Round 2, GAP 1): RegionRuntime::newton_gmres_
+  // See RegionRuntime::newton_gmres_
   // iterations' own comment -- overwritten, not appended, each solve.
   R.newton_gmres_iterations.clear();
   for (const num::NewtonIterationRecord& rec : nr.trace) {
@@ -101,7 +101,7 @@ old = """  st.iterations = nr.iterations;
   if (!num::is_converged(nr.status)) {"""
 new = """  st.iterations = nr.iterations;
 
-  // NewtonModel track (Round 2, GAP 1): RegionRuntime::newton_gmres_
+  // See RegionRuntime::newton_gmres_
   // iterations' own comment -- overwritten, not appended, each solve.
   R.newton_gmres_iterations.clear();
   for (const num::NewtonIterationRecord& rec : nr.trace) {
@@ -124,7 +124,7 @@ area = "runtime"
 describes = "run_region_newton_window() ignores a non-converged NewtonStatus: the window is counted as converged and the run proceeds. Must be killed by a window Newton test that exhausts the iteration budget and requires it reported."
 file = "src/runtime/iteration.cpp"
 old = """  st.iterations = nr.iterations;
-  // NewtonModel track (Round 2, GAP 1): RegionRuntime::newton_gmres_
+  // See RegionRuntime::newton_gmres_
   // iterations' own comment -- overwritten, not appended, each solve.
   R.newton_gmres_iterations.clear();
   for (const num::NewtonIterationRecord& rec : nr.trace) {
@@ -135,7 +135,7 @@ old = """  st.iterations = nr.iterations;
 
   if (!num::is_converged(nr.status)) {"""
 new = """  st.iterations = nr.iterations;
-  // NewtonModel track (Round 2, GAP 1): RegionRuntime::newton_gmres_
+  // See RegionRuntime::newton_gmres_
   // iterations' own comment -- overwritten, not appended, each solve.
   R.newton_gmres_iterations.clear();
   for (const num::NewtonIterationRecord& rec : nr.trace) {

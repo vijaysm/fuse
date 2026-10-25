@@ -564,8 +564,8 @@ program v_main
       ! read F if consuming it, then begin_step() again -- never
       ! elsewhere, and never both unconditionally (a graph with more
       ! than one independently-paced LowFive-bound channel can report a
-      ! field THIS component is neither producing nor consuming at all,
-      ! this round's own corrected rule). fuse_view_field(v_out_ref),
+      ! field THIS component is neither producing nor consuming at all).
+      ! fuse_view_field(v_out_ref),
       ! not v_out itself, still holds the sweep that JUST completed
       ! (nothing has overwritten it yet, since this call's own physics
       ! -- if any ran -- is for the NEXT sweep, not this report's).

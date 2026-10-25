@@ -51,7 +51,7 @@ new = """    std::int64_t ad = a.den_, bd = b.den_;
     // MUTATION: reverts to a direct int64_t computation -- multiply before
     // dividing by the gcd, std::lcm's own exposed formula without the
     // Int128 width -- reintroducing the overflow gcd_rational's sibling
-    // fix removed (R-15). No <numeric> needed (std::lcm is not called),
+    // fix removed. No <numeric> needed (std::lcm is not called),
     // unlike an earlier draft of this row that failed to compile because
     // this file never includes <numeric>.
     return Rational{1, static_cast<std::int64_t>((ad * bd) / gx)};"""

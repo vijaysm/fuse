@@ -19,9 +19,9 @@ old = """        if (hosting_rank_.has_value()) {
               full, position, static_cast<int>(ranks.size()));
           count = hi - lo;
         } else {
-          count = full;  // single-process caller: unchanged from round 3.
+          count = full;  // single-process caller: the full size.
         }"""
-new = """        count = full;  // MUTATION: per-position split bypassed, round-3 binary rule restored"""
+new = """        count = full;  // MUTATION: per-position split bypassed, full size used on every rank"""
 target = "fuse_abi_conformance_test"
 test = "abi.conformance"
 result = "CONFIRMED: ConformanceTest.ProviderAdapterSplitsAMultiRankComponentsRegionByPosition failed (rank 2, position 1 of 2 over a 1-element region, expected count 0, got 1). All other 26 cases in the 27-test binary still passed, confirming this is the only test in the suite that depends on per-position splitting rather than plain RankSet membership. Restored; cmp against the pre-mutation file reported no difference, md5 f30c85150fa973a49887eb9d9b6aed48 matches the restored file."

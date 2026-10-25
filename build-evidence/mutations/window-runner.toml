@@ -334,7 +334,7 @@ test = "verification.brusselator_runner"
 
 [[mutation]]
 id = "window-runner-hosting-ignored"
-area = "runtime/iteration (advance_window, Unit 2b step (a), D19)"
+area = "runtime/iteration (advance_window, window hosting)"
 describes = "advance_window() has no hosting check at all: WindowMemberConfig::hosted is computed in resolve_regions() (the SAME !this_process.has_value() || ranks.contains(*this_process) formula build_ticks() already uses for ordinary ticks) but advance_window() never reads it, so a window member not on this process's own rank still takes every substep, calls advance()/save_state()/restore_state(), and raises ExternalSuspend exactly as if it were hosted here -- a certain deadlock: on more than one process, every rank runs every window member's full physics, including members whose own inputs/state live only on a DIFFERENT rank."
 file = "src/runtime/iteration.cpp"
 old = """  if (!cfg.hosted) co_return Result<void>::success();"""
@@ -357,7 +357,7 @@ test = "runtime.window_runner"
 
 [[mutation]]
 id = "window-runner-priming-through-transfer-disabled"
-area = "runtime/iteration (resolve_regions, Unit 2b step (b), D19)"
+area = "runtime/iteration (resolve_regions, priming through transfer)"
 describes = "resolve_regions()'s second pass re-runs each importing member's own compiled delivery chain (Transport/Remap/Epoch/Interpolate/Sink) once, at setup, so a window member's own cfg.window_import arc and straddle-tail history are primed through the real field transfer rather than a direct registry.get(provider_exported_field) read of the provider's own FieldRegistry entry. Disabling this pass entirely -- skipping every member unconditionally -- removes ALL cold-start priming of a consumer's own import arc and straddle history, leaving both at whatever default the slot/map already holds (zero, an empty history list)."
 file = "src/runtime/iteration.cpp"
 old = "        if (!cfg.import_channel.valid()) continue;"
@@ -403,7 +403,7 @@ test = "runtime.window_runner_straddle"
 
 [[mutation]]
 id = "window-runner-convergence-agreement-disabled"
-area = "runtime/iteration (run_region, Unit 2b step (c), D19)"
+area = "runtime/iteration (run_region, convergence agreement)"
 describes = "run_region()'s own per-sweep convergence decision now branches on R.window_scoped: a window-scoped region's own agreement is decide_window_convergence() (fuse/runtime/window_convergence.hpp), gated on WindowMemberConfig::hosted per block rather than the ordinary path's length>0 gate. Disabling the branch (forcing it to fall through to the ordinary else-if arm, which never recognises a window-scoped region's own blocks the same way) leaves window_converged permanently false -- the region's own measure-mapping/all_satisfied() call, still gated by R.window_scoped further down the SAME function, is the one place that actually sets st.converged for a window region, and it reads window_converged, never recomputing its own verdict."
 file = "src/runtime/iteration.cpp"
 old = """    if (R.window_scoped) {
@@ -441,7 +441,7 @@ test = "runtime.window_runner"
 
 [[mutation]]
 id = "window-runner-export-ownership-uses-the-exporter"
-area = "runtime/iteration (resolve_regions, Unit 2b step (c) correction, D19)"
+area = "runtime/iteration (resolve_regions, export ownership)"
 describes = "window_export_meta's third field (consulted by RegionBlock::window_hosted, the per-block convergence-ownership gate run_region() reads) must be whether the CONSUMER of this member's own export is hosted here (WindowMemberConfig::export_consumer_hosted), never whether the EXPORTER itself is (WindowMemberConfig::hosted) -- a window block's residual is measured through the compiled delivery chain (Transport/Epoch/Remap/Constrain/Diagnose), which runs on the CONSUMER's own processor set, not the exporter's. This is the defect a real host MPI run of parallel.window_runner_mpi.{2,3} found: on a disjoint-ranks channel, storing the exporter's own hosted flag here makes the exporting rank wrongly claim a block it never writes, and the consuming rank -- the only rank that does write it -- wrongly disclaim it, so decide_window_convergence() sums a stale 0/0 residual/reference pair and reports converged after exactly one sweep, with the partner's own state never updated (got.iterations_per_window[0] == 1 against a reference of 37; got.x_b_per_window[0] == 0.2, B's own unmodified initial value). Reverting to the exporter's own `cfg.hosted` reproduces exactly that inversion."
 file = "src/runtime/iteration.cpp"
 old = """          window_export_meta[ins.out.value()] = {cfg.capacity, valid_substeps,

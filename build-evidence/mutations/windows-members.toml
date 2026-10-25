@@ -13,11 +13,11 @@
 # `diff` before moving to the next row.
 
 [[mutation]]
-id = "d70-waveform-wrong-sample-value"
-area = "runtime/iteration (Runner::Impl::advance_window(), D70's own real-trajectory push)"
+id = "window-waveform-wrong-sample-value"
+area = "runtime/iteration (Runner::Impl::advance_window(), real-trajectory push)"
 describes = "advance_window()'s own per-substep push into window_waveform_trace (the local trajectory committed into WindowMemberState::last_window_waveform) pushes the WINDOW-START value (start_value[e], constant for the whole window) instead of this substep's own real cfg.provided[e] output -- a 'wrong value, written consistently every substep' defect, not a crash and not a shape mismatch, so it is invisible to write_window_member_restart()'s own numbering checks and to a pure write/restore round trip that never independently verifies the pushed VALUES are the real advance() outputs (only that whatever was written round-trips)."
 file = "src/runtime/iteration.cpp"
-old = """      // D70: real sample at this substep's own committed time, matching
+old = """      // Real sample at this substep's own committed time, matching
       // the out_slot write immediately above.
       for (std::size_t e = 0; e < cfg.length; ++e) {
         double v = cfg.provided[e];
@@ -36,8 +36,8 @@ test = "verification.brusselator_restart"
 result = "CONFIRMED: full unfiltered fuse_verification_brusselator_restart_test (14 tests) ran 10 PASSED / 4 FAILED. BrusselatorRestart.SeparateLayoutJacobiAitken/GrowingLayoutJacobiAitken/SeparateLayoutJacobiIqnIls/GrowingLayoutJacobiIqnIls (the four restart round-trip tests, which depend on last_window_waveform to reprime window_import after a restore -- Runner::Impl::reprime_window_import_after_restore()) all failed on iterations_per_window and/or final-field mismatches: a constant, wrong trajectory fed into the reprime produces a wrong seed, exactly the class of defect the reprime exists to prevent. Two further tests (WaveformPresentAfterAdvanceThroughTheRunner, which only checks the waveform is non-empty, not its values; RestoredRunReproducesLastWindowWaveformBitForBit, which compares the reference run's own restart point against the restored run's -- both sides wrong in the SAME consistent way under this mutation, so they still agree) both still PASSED under this mutation -- a measured gap in those two tests' own sensitivity, not a claim that this mutation is undetected: it IS detected, by a different, still-valid pair of tests. Restored; diff against the pre-mutation file reported no difference."
 
 [[mutation]]
-id = "d71-gauss-seidel-exclusion-disabled"
-area = "runtime/iteration (Runner::Impl::run_region(), D71's own GaussSeidel-unlagged-block exclusion)"
+id = "gauss-seidel-exclusion-disabled"
+area = "runtime/iteration (Runner::Impl::run_region(), GaussSeidel-unlagged-block exclusion)"
 describes = "The membership test that decides whether any block is excluded from the accelerated vector (a block's own feed_arc present in R.window_lagged_import_arcs) is short-circuited to 'every block is always included' -- reproducing the behaviour of accelerating the undifferentiated full vector over a GaussSeidel window's own unlagged transfer, the exact defect the lifted E-RT-WINDOW-ACCEL refusal used to protect against by refusing outright instead of computing it."
 file = "src/runtime/iteration.cpp"
 old = """      for (const detail::RegionBlock& b : R.blocks) {
@@ -56,8 +56,8 @@ test = "verification.brusselator_restart"
 result = "CONFIRMED (two measurements). (1) Full unfiltered fuse_verification_brusselator_restart_test (14 tests, the ORIGINAL weak EXPECT_LE-only version of GaussSeidelAitkenConvergesAndMatchesJacobi/GaussSeidelIqnIlsConvergesAndMatchesJacobi): 14 PASSED / 0 FAILED -- the mutation was NOT caught; Jacobi's own iteration count on this small rig grows close to its own 25-sweep cap (15,16,18,25,25,25), which the mutated GaussSeidel row's own 15,16,16,18,19,21 still clears, so 'GS <= Jacobi' alone is too weak a bound to exercise this fix. Measured directly at Brusselator production scale via the example CLI (--driver runner --accel aitken --iteration-mode gauss-seidel --end 0.5): peak sweeps per window 28 under this mutation vs 10 on the fixed build -- the fix is real and large, the GTest-level bound was simply insensitive to it. (2) After replacing the weak bound with a PINNED exact iterations_per_window vector measured on the fixed build ({7,8,9,9,9,9} for Aitken, {7,8,8,8,8,8} for IQN-ILS): re-ran the full unfiltered binary under this SAME mutation, 12 PASSED / 2 FAILED -- GaussSeidelAitkenConvergesAndMatchesJacobi (measured {15,16,16,18,19,21}) and GaussSeidelIqnIlsConvergesAndMatchesJacobi (measured {7,9,9,8,8,8}) both failed on the pinned comparison, every other test unaffected. The delivered test file carries the pinned version; the weak bound is kept alongside it as a secondary structural check, not the only one. Restored; diff against the pre-mutation file reported no difference."
 
 [[mutation]]
-id = "d72-reprime-copy-loop-disabled"
-area = "runtime/iteration (Runner::Impl::reprime_window_import_after_restore(), D72's own fix)"
+id = "window-reprime-copy-loop-disabled"
+area = "runtime/iteration (Runner::Impl::reprime_window_import_after_restore(), copy loop)"
 describes = "The per-sample scalar_to_slot() copy loop that writes the restored PROVIDER's own last_window_waveform samples into the CONSUMER's live window_import buffer never runs (the loop's own condition is permanently false) -- reproducing the behaviour of leaving that buffer at whatever initialize()'s own construction-time 'ordinary prime' pass left there."
 file = "src/runtime/iteration.cpp"
 old = '      for (std::size_t s = 0; s < n_samples; ++s) {'
@@ -67,8 +67,8 @@ test = "verification.brusselator_restart"
 result = "CONFIRMED: full unfiltered fuse_verification_brusselator_restart_test (14 tests) ran 10 PASSED / 4 FAILED. BrusselatorRestart.SeparateLayoutJacobiAitken/GrowingLayoutJacobiAitken/SeparateLayoutJacobiIqnIls/GrowingLayoutJacobiIqnIls all failed, reproducing the originally measured symptom exactly: iterations_per_window[0] 12 against the reference's 13, and final U/V fields disagreeing from the 5th significant digit on. Every other test (none of which restores a window-scoped region with a real accelerator) still passed. Restored; diff against the pre-mutation file reported no difference."
 
 [[mutation]]
-id = "d72-reprime-shape-mismatch-skipped"
-area = "runtime/iteration (Runner::Impl::reprime_window_import_after_restore(), lead review of D72)"
+id = "window-reprime-shape-mismatch-skipped"
+area = "runtime/iteration (Runner::Impl::reprime_window_import_after_restore(), shape check)"
 file = "src/runtime/iteration.cpp"
 target = "fuse_verification_brusselator_restart_test"
 old = """    if (wf.size() != cfg.length) {
@@ -78,4 +78,4 @@ new = """    if (wf.size() != cfg.length) {
       return Failure{"E-RESTART-WINDOW-REPRIME","""
 describes = "reprime_window_import_after_restore() skips a restored last_window_waveform whose entity count disagrees with the window member instead of refusing E-RESTART-WINDOW-REPRIME by name: a silent reset of the accelerator seed."
 test = "test/verification/brusselator_restart_test.cpp"
-result = "NOT YET MEASURED: run tools/mutate.py --area windows_track on a tier-0 tree; a killing test (restore a point whose provider waveform was written for a different window member length) is required before this row counts."
+result = "NOT YET MEASURED: run tools/mutate.py --area \"runtime/iteration (Runner::Impl::reprime_window_import_after_restore(), shape check)\" on a tier-0 tree; a killing test (restore a point whose provider waveform was written for a different window member length) is required before this row counts."
