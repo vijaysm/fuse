@@ -1624,6 +1624,8 @@ fuse_add_gtest(num storage LIBS fuse::linalg)
 # fuse::num::dd and qd against exact arithmetic (plans/2026-10-22-universal-number-types.md, U4).
 fuse_add_gtest(num dd LIBS fuse::linalg)
 fuse_add_gtest(num qd LIBS fuse::linalg)
+# The kernels that do arithmetic on dd and qd fields, on every enabled execution space.
+fuse_add_gtest(num arithmetic_kernels LIBS fuse::linalg)
 # The bit-for-bit comparison of dd and qd with stillwater-sc/universal: host only, and
 # only when the build is pointed at a checkout (FUSE_ENABLE_UNIVERSAL). Universal's
 # headers do not compile under nvcc, so they are built into a separate program
