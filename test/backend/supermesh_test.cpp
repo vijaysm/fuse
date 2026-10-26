@@ -4,6 +4,7 @@
 // rather than a tolerance.
 
 #include "fuse/backend/supermesh.hpp"
+#include "fuse/base/config.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1066,6 +1067,46 @@ TEST(SupermeshDetail, AuditCoverageSkipsAZeroMeasureCellRatherThanDivideByZero) 
 // This runs identically at the base build configuration (where it is the only path there is, so it
 // is a plain sanity check) and at the MOAB-enabled build configuration (where, before the fix, it failed:
 // `direct` was E-REMAP-BACKEND, not the oracle's weights).
+
+// An unrecognised method string is refused by `build_weights()` on EVERY
+// backend, with the MOAB path's own code. The dependency-free path used to
+// match only "consistent"/"consistent-transpose"/"mls" and then fall through
+// to the conservative supermesh for ANY other string, so a misspelt method
+// was silently computed as the default remap (the serial backend here is
+// exactly that path, with or without MOAB compiled in). "tempest" names a
+// backend this path does not have and is refused by name rather than
+// quietly built at order 1.
+TEST(Supermesh, BuildWeightsRefusesAnUnknownMethodOnTheSerialBackend) {
+  fuse::SerialMeshBackend backend;
+  ASSERT_TRUE(backend.load({.name = "s", .source = "generated:line:8"}).ok());
+  ASSERT_TRUE(backend.load({.name = "t", .source = "generated:line:5"}).ok());
+  fuse::CouplingGraph graph;
+  const fuse::MeshId smid = graph.add_mesh({.name = "s", .source = "generated:line:8"});
+  const fuse::MeshId tmid = graph.add_mesh({.name = "t", .source = "generated:line:5"});
+  fuse::RemapPlan plan;
+  plan.src = graph.add_region({.name = "s_all", .mesh = smid, .dimension = 1});
+  plan.tgt = graph.add_region({.name = "t_all", .mesh = tmid, .dimension = 1});
+
+  for (const char* bad : {"supermesh", "consistent_transpose", "Intx", "mls2"}) {
+    plan.method = bad;
+    const auto r = fuse::build_weights(plan, graph, backend);
+    ASSERT_FALSE(r.ok()) << "method '" << bad << "' was built as if it were known";
+    EXPECT_EQ(r.error().code, "E-REMAP-UNSUPPORTED") << r.error().message;
+    EXPECT_NE(r.error().message.find(bad), std::string::npos) << r.error().message;
+  }
+  for (const char* good : {"", "intx", "conservative"}) {
+    plan.method = good;
+    const auto r = fuse::build_weights(plan, graph, backend);
+    EXPECT_TRUE(r.ok()) << "method '" << good << "': " << r.error().code << ": "
+                        << r.error().message;
+  }
+#if !FUSE_HAVE_MOAB
+  plan.method = "tempest";
+  const auto r = fuse::build_weights(plan, graph, backend);
+  ASSERT_FALSE(r.ok());
+  EXPECT_EQ(r.error().code, "E-REMAP-NOHIGHORDER") << r.error().message;
+#endif
+}
 
 TEST(Supermesh, BuildWeightsReachesTheSupermeshPathForANonMoabBackend) {
   fuse::SerialMeshBackend backend;

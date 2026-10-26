@@ -7,6 +7,7 @@
 #include "fuse/backend/remap_plan.hpp"
 #include "fuse/backend/remap_weight_normalize.hpp"
 #include "fuse/backend/supermesh.hpp"
+#include "fuse/model/remap_kind.hpp"
 
 #include "high_order_backend.hpp"
 
@@ -341,6 +342,28 @@ Result<RemapWeights> build_weights(const RemapPlan& plan,
   // Only what this builder can honour. The checks are deliberately the same
   // shape as the MOAB path's, so a plan rejected there is rejected here for the
   // same stated reason rather than silently accepted by the other build.
+  //
+  // The method string first. This path used to accept ANY string not
+  // matched above and build the default conservative supermesh for it, so a
+  // misspelt method was silently a different remap; the MOAB path below has
+  // always refused an unknown name. Same predicate as `validate()`'s
+  // E-CHANNEL-REMAP-METHOD (fuse/model/remap_kind.hpp), so a plan built
+  // without going through `validate()` is refused for the same reason.
+  if (!is_known_remap_method(plan.method)) {
+    return Failure{"E-REMAP-UNSUPPORTED",
+                   "unknown remap method '" + plan.method + "'. Known methods: " +
+                       std::string(known_remap_methods_text()) +
+                       "; this build's conservative FV<->FV builder honours '', "
+                       "'intx' and 'conservative'."};
+  }
+  if (plan.method == "tempest") {
+    return Failure{
+        "E-REMAP-NOHIGHORDER",
+        "method 'tempest' names the MOAB/TempestRemap high-order backend, which "
+        "this build does not have (-DFUSE_ENABLE_MOAB=OFF, or no TempestRemap in "
+        "the MOAB it was built against). Leave the method empty or name 'intx' "
+        "or 'conservative' for the piecewise-constant conservative supermesh."};
+  }
   if (plan.src_disc != Discretization::FV ||
       plan.tgt_disc != Discretization::FV) {
     return Failure{"E-REMAP-UNSUPPORTED",

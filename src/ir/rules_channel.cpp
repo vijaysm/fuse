@@ -155,8 +155,15 @@ bool lower_channel(LoweringContext& ctx, ChannelId cid) {
           // would be comparing a value in pascals against a slot in kilopascals
           // while the plan contained a multiply. Type and data must move
           // together.
+          // For an `AccumOp::Integral` channel the TARGET's units are the
+          // time-integrated ones (connect.hpp's `delivered_units()`), and
+          // the integral is only formed by the Accumulate below; the arc
+          // between carries the source quantity, scaled, so its units are
+          // the target's divided back by time.
           ValueType converted = type;
-          converted.units = g.field(g.channel_at(cid).target).units;
+          converted.units = ch.accumulate.op == AccumOp::Integral
+                                ? g.field(ch.target).units / units::kSecond
+                                : g.field(ch.target).units;
           cur = emit(ctx, OpKind::Scale, cur, converted,
                      OpAttrs{.scale = step.scale,
                              .reason = step.explicitly_requested ? "requested" : "inferred"},
@@ -182,8 +189,18 @@ bool lower_channel(LoweringContext& ctx, ChannelId cid) {
     cur = emit(ctx, OpKind::Sample, cur, wave, OpAttrs{}, cid, base + "/sample");
 
     ValueType acc = type;  // back to Instant
-    cur = emit(ctx, OpKind::Accumulate, cur, acc,
-               OpAttrs{.accum = ch.accumulate.op}, cid, base + "/accumulate");
+    OpAttrs attrs{.accum = ch.accumulate.op};
+    if (ch.accumulate.op == AccumOp::Integral) {
+      // `Sample` runs once per SOURCE tick (src/schedule/expand.cpp), so the
+      // interval between samples is the source component's own interval:
+      // the `dt` of `num::accumulate_finalize_integral` (kernels.hpp). It is
+      // carried exactly, as `OpAttrs::scale`, and applied once by the
+      // interpreter when the window closes (src/runtime/runner.cpp,
+      // `OpKind::Accumulate`); the delivered value is [source] x [time].
+      attrs.scale = g.component(g.owner_of(ch.source)).interval;
+      acc.units = acc.units * units::kSecond;
+    }
+    cur = emit(ctx, OpKind::Accumulate, cur, acc, attrs, cid, base + "/accumulate");
     type = acc;
   }
 

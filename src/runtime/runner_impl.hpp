@@ -1788,9 +1788,13 @@ struct Runner::Impl {
   /// projected exactly once, and no row of `T` reaching past the last source
   /// step available when it is applied.
   Result<void> check_spacetime_schedule();
+  /// The conservation-check weights for a field of `conservation` kind on
+  /// `region`: weight 1 per owned entity for `Conservation::Extensive` (the
+  /// value IS the amount), the entity measure per owned cell for
+  /// `Conservation::Intensive` (the value is a density), 0 per ghost.
   Result<std::uint32_t> weights_for(RegionId region, int rank_set,
                                     std::size_t elements,
-                                    int components);
+                                    int components, Conservation conservation);
   Result<void> build_ticks(ComponentSet& components);
 
   Result<void> execute(const Instruction& ins, const detail::Resolved& r);

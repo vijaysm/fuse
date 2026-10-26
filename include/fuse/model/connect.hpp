@@ -133,11 +133,26 @@ struct ConnectPolicy {
 }
 
 /// Evaluate one channel through the spine's seven stages.
+/// The units a channel DELIVERS, given what it accumulates. `AccumOp::Integral`
+/// forms the left-rectangle time integral of the source over each target step
+/// (`num::accumulate_finalize_integral`, kernels.hpp: `(sum_k y_k) * dt`, dt
+/// the source interval), whose units are [source] x [time]; every other
+/// accumulation (Instant, Sum, Mean, Min, Max) keeps the source's own units.
+/// The unit stage of `check_channel()` compares THIS against the target, so
+/// an Integral channel from a power (W) must land in an energy (J), and one
+/// declared with equal units on both ends is refused rather than quietly
+/// delivering a number whose dimension nobody wrote down.
+[[nodiscard]] inline Units delivered_units(const CouplingGraph& g, const Channel& ch) {
+  const Units& source = g.field(ch.source).units;
+  return ch.accumulate.op == AccumOp::Integral ? source * units::kSecond : source;
+}
+
 [[nodiscard]] inline ConnectionCompatibility check_channel(const CouplingGraph& g, ChannelId c,
                                                            const ConnectPolicy& policy = {}) {
   const Channel& ch = g.channel_at(c);
   ConnectionRequest request;
   request.source = to_semantics(g.field(ch.source));
+  request.source.units = delivered_units(g, ch);
   request.target = to_semantics(g.field(ch.target));
   request.required_conservation = required_conservation(g.field(ch.target));
   request.allow_automatic_unit_scale = policy.allow_automatic_unit_scale;
