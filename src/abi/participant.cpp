@@ -476,6 +476,15 @@ fuse_status impl_create(fuse_ctx* ctx, const fuse_null*,
   if (sz != FUSE_OK) return sz;
   try {
     ensure_kokkos_initialized();
+    // The diagnostics layer's own process-wide set-up (fuse/base/error.hpp):
+    // a C or Fortran caller has no other way to make FUSE_ON_ERROR and its
+    // companions effective, so the first context created in the process
+    // reads them, once. Not re-read on a second context, and never undone
+    // from destroy(): a caller that set a policy programmatically in
+    // between keeps it. An unrecognised value is the InvalidArgument the
+    // parser raises, reported through this entry's own E-ABI-CREATE path.
+    static std::once_flag error_policy_once;
+    std::call_once(error_policy_once, [] { fuse::initialize(); });
     auto* c = new fuse_ctx();
     try {
       HandleTable&                t = table();
@@ -738,6 +747,19 @@ fuse_status impl_setup(fuse_ctx* ctx, const fuse_setup_options* in, fuse_null*) 
       // base_communicator()'s own `formed` flag, whose contract is "a
       // TRUSTWORTHY base communicator exists", not "setup() was called".
       c.communicator_set = true;
+#if FUSE_HAVE_MPI
+      // "fuse::initialize once MPI is up" (fuse/base/error.hpp): the base
+      // communicator is now formed, so every Error this process reports
+      // from here on carries its rank in it. Advisory only -- a failed
+      // MPI_Comm_rank leaves the rank at -1 rather than failing setup.
+      {
+        const MPI_Comm base = MPI_Comm_f2c(static_cast<MPI_Fint>(c.communicator));
+        int rank = -1;
+        if (base != MPI_COMM_NULL && MPI_Comm_rank(base, &rank) == MPI_SUCCESS) {
+          fuse::set_error_rank(rank);
+        }
+      }
+#endif
     } else if (my_component != nullptr) {
       // Review 2026-10-11 AB-4: this whole my_component handling (above)
       // lived inside `if (in->communicator != 0)`, so a caller that named

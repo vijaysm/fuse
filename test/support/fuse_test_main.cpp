@@ -1,5 +1,6 @@
 // Explicit, not transitive: the feature macros are read below (docs/dev/invariants.md).
 #include "fuse/base/config.hpp"
+#include "fuse/base/error.hpp"
 
 #include "fuse_test_main.hpp"
 
@@ -187,6 +188,13 @@ int main(int argc, char** argv) {
     argv = augmented_argv.data();
     argc = static_cast<int>(augmented_argv.size());
   }
+  // The diagnostics layer's own process-wide set-up (fuse/base/error.hpp):
+  // the FUSE_ON_ERROR family is read here, once, so FUSE_ON_ERROR=debugger
+  // (or =abort, =throw) on a failing test binary does what docs/dev/
+  // debugging.md says, and every Error a test raises carries this rank.
+  // Without the call the environment is parsed by nothing and ignored.
+  // Under MPI g_rank is this process's MPI_COMM_WORLD rank; otherwise 0.
+  fuse::initialize(fuse::testing::g_rank);
   {
     Kokkos::ScopeGuard guard(argc, argv);
 

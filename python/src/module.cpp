@@ -248,6 +248,16 @@ PYBIND11_MODULE(_pfuse, m) {
     }
   });
 
+  // The diagnostics layer's process-wide set-up (fuse/base/error.hpp): the
+  // FUSE_ON_ERROR family is read here, at import, so the behaviour this
+  // file's own comments describe (abort under FUSE_ON_ERROR=abort, throw
+  // under =throw|backtrace) is what the interpreter actually gets. After
+  // the translator above, so an unrecognised value surfaces as the
+  // InvalidArgument it is rather than an untyped import failure. No rank: a
+  // Python process drives fuse::SerialMeshBackend with no communicator
+  // (docs/dev/python-surface.md, "What this does not expose").
+  fuse::initialize();
+
   bind_base(m);
   bind_model(m);
   bind_field(m);
