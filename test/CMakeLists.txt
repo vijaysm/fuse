@@ -1620,6 +1620,44 @@ fuse_add_gtest(num dual LIBS fuse::linalg)
 # execution space, bit for bit against the host functions (plans/2026-10-22-
 # universal-number-types.md, U3).
 fuse_add_gtest(num storage LIBS fuse::linalg)
+
+# fuse::num::dd and qd against exact arithmetic (plans/2026-10-22-universal-number-types.md, U4).
+fuse_add_gtest(num dd LIBS fuse::linalg)
+fuse_add_gtest(num qd LIBS fuse::linalg)
+# The bit-for-bit comparison of dd and qd with stillwater-sc/universal: host only, and
+# only when the build is pointed at a checkout (FUSE_ENABLE_UNIVERSAL). Universal's
+# headers do not compile under nvcc, so they are built into a separate program
+# (test/num/universal_oracle.cpp) with a plain host compiler, and the test compares
+# against what that program computes. FUSE_UNIVERSAL_CXX names that compiler; it
+# defaults to the project's own, which is right when that is a host compiler and wrong
+# for a CUDA build (CMAKE_CXX_COMPILER is then nvcc_wrapper): pass g++ or clang++.
+fuse_tests_gated_by(FUSE_ENABLE_UNIVERSAL num/dd_universal_test.cpp)
+if(FUSE_ENABLE_UNIVERSAL)
+  if(NOT EXISTS "${FUSE_UNIVERSAL_INCLUDE_DIR}/universal/number/dd/dd.hpp")
+    message(FATAL_ERROR "FUSE_ENABLE_UNIVERSAL is ON but FUSE_UNIVERSAL_INCLUDE_DIR "
+                        "('${FUSE_UNIVERSAL_INCLUDE_DIR}') is not the include/sw directory of a "
+                        "stillwater-sc/universal checkout (universal/number/dd/dd.hpp not found)")
+  endif()
+  if(FUSE_UNIVERSAL_CXX)
+    set(_fuse_universal_cxx "${FUSE_UNIVERSAL_CXX}")
+  else()
+    set(_fuse_universal_cxx "${CMAKE_CXX_COMPILER}")
+  endif()
+  set(_fuse_universal_oracle "${CMAKE_CURRENT_BINARY_DIR}/fuse_universal_oracle")
+  # -ffp-contract=off: the same floating-point contract as the code it is compared with
+  add_custom_command(
+    OUTPUT "${_fuse_universal_oracle}"
+    COMMAND "${_fuse_universal_cxx}" -std=c++20 -O1 -ffp-contract=off
+            "-I${FUSE_UNIVERSAL_INCLUDE_DIR}"
+            -o "${_fuse_universal_oracle}" "${CMAKE_CURRENT_SOURCE_DIR}/num/universal_oracle.cpp"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/num/universal_oracle.cpp"
+    COMMENT "Building the Universal oracle with ${_fuse_universal_cxx}"
+    VERBATIM)
+  add_custom_target(fuse_universal_oracle DEPENDS "${_fuse_universal_oracle}")
+  fuse_add_gtest(num dd_universal LIBS fuse::linalg LABELS universal)
+  add_dependencies(fuse_num_dd_universal_test fuse_universal_oracle)
+  target_compile_definitions(fuse_num_dd_universal_test PRIVATE FUSE_UNIVERSAL_ORACLE="${_fuse_universal_oracle}")
+endif()
 fuse_add_omp_legs(num.space_kernels fuse_num_space_kernels_test)
 
 # ---------------------------------------------------------------- search
