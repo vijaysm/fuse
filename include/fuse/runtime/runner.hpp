@@ -20,6 +20,18 @@
 
 namespace fuse {
 
+/// The type in which the coupler's own sums are accumulated (the plan's
+/// "accumulation type"): the row sums of a remap application and the integrals of
+/// the conservation check. The values themselves stay what the fields hold.
+enum class AccumulationType {
+  /// binary64, as always: each sum is rounded to binary64 at every step.
+  Binary64,
+  /// double-double (fuse::num::dd, about 106 bits): the products of weights and
+  /// values are formed exactly, the sums are accumulated in double-double, and
+  /// the result is rounded once to the type of the field.
+  DoubleDouble,
+};
+
 struct RunnerConfig {
   std::string transport = "copy";
   bool        check_conservation = true;
@@ -58,6 +70,17 @@ struct RunnerConfig {
   /// and on a device a fence, so a production run leaves it false; the unit
   /// roundoff of each format is reported either way.
   bool        measure_storage_rounding = false;
+
+  /// The accumulation type of the sums of a binary64 field: the rows of a remap
+  /// application (rounded once to binary64 when the row is complete) and the
+  /// integrals of the conservation check (compared, and summed across ranks, in
+  /// double-double, so that the reported error is the error of the stored
+  /// binary64 values and not the rounding error of the sum that measures it).
+  /// The sums of a field whose value type is double-double or quad-double are
+  /// always accumulated in that type, whatever this says. Default Binary64:
+  /// double-double accumulation costs several times the arithmetic of a binary64
+  /// sum.
+  AccumulationType accumulation_type = AccumulationType::Binary64;
 
   /// `MPI_Comm_c2f()` of a communicator whose group contains every rank of
   /// every component in the graph -- `MPI_COMM_WORLD` under spec Section 6 mode 1,
@@ -168,6 +191,17 @@ struct StorageFieldStats {
   double       max_relative_change = 0.0;
 };
 
+/// One Arithmetic-typed field (double-double or quad-double) the runtime moves
+/// as limbs and operates on in that type (include/fuse/num/arithmetic_kernels.hpp).
+struct ArithmeticFieldStats {
+  std::string  field;          ///< "component.field"
+  std::string  type;           ///< "dd" or "qd"
+  int          limbs = 0;      ///< binary64 values per value of the field
+  /// The accuracy of the type's operators relative to the result: 2^-104 for
+  /// dd, 2^-208 for qd.
+  double       unit_roundoff = 0.0;
+};
+
 struct RunStats {
   std::int64_t periods = 0;
   std::int64_t instructions_executed = 0;
@@ -260,6 +294,9 @@ struct RunStats {
   /// One entry per Storage-typed field arc the runtime converts; empty when
   /// every bound field is binary64 (or an array of binary64 scalars).
   std::vector<StorageFieldStats> storage_fields;
+  /// One entry per field of an Arithmetic value type (double-double,
+  /// quad-double) bound to an arc of this plan; empty when there is none.
+  std::vector<ArithmeticFieldStats> arithmetic_fields;
 };
 
 /// Per-region outcome of the most recent period (spec Section 5.3).

@@ -993,6 +993,11 @@ fuse_add_gtest(runtime dual_field_runner)
 fuse_add_gtest(runtime storage_field_runner)
 fuse_add_device_twin(runtime.storage_field_runner fuse_runtime_storage_field_runner_test)
 
+# Fields of an Arithmetic value type (double-double, quad-double) through the Runner and
+# a real remap, host and device (plans/2026-10-22-universal-number-types.md, U4).
+fuse_add_gtest(runtime arithmetic_field_runner)
+fuse_add_device_twin(runtime.arithmetic_field_runner fuse_runtime_arithmetic_field_runner_test)
+
 # KNOWN_ISSUES.md B3: `bool supports_rollback() const override` no longer
 # names a virtual to override, once `Component::capabilities()` is the one
 # virtual. A rule enforced by a REMOVED VIRTUAL, like U6's deleted overload
@@ -1550,6 +1555,18 @@ fuse_tests_gated_by(FUSE_ENABLE_MPI parallel/native_remap_halo_runner_test.cpp)
 if(FUSE_ENABLE_MPI)
   fuse_add_mpi_test(parallel native_remap_halo_runner LIBS fuse::runtime fuse::backend
                     MPI::MPI_CXX RANKS 2 3 DEVICE_TWIN)
+endif()
+# The ordered cross-rank sum of dd and qd conservation integrals, at 1 to 5 ranks
+# (plans/2026-10-22-universal-number-types.md, U4).
+fuse_tests_gated_by(FUSE_ENABLE_MPI parallel/arithmetic_reduce_mpi_test.cpp)
+if(FUSE_ENABLE_MPI)
+  fuse_add_mpi_test(parallel arithmetic_reduce_mpi LIBS fuse::runtime fuse::linalg MPI::MPI_CXX)
+  target_include_directories(fuse_parallel_arithmetic_reduce_mpi_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+endif()
+# A dd field between components on disjoint ranks through a distributed remap, 2 and 3 ranks.
+fuse_tests_gated_by(FUSE_ENABLE_MPI parallel/arithmetic_field_mpi_test.cpp)
+if(FUSE_ENABLE_MPI)
+  fuse_add_mpi_test(parallel arithmetic_field_mpi LIBS fuse::runtime fuse::backend MPI::MPI_CXX RANKS 2 3 DEVICE_TWIN)
 endif()
 fuse_add_gtest(backend supermesh THROWS)
 # Device-resident-arcs Phase 2, "weight-builders" track (KNOWN_ISSUES D53,

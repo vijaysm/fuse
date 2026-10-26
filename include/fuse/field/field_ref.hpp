@@ -240,6 +240,22 @@ class BasicFieldRef {
                                  space_);
   }
 
+  /// The same storage addressed as the limbs of an Arithmetic value (double-
+  /// double, quad-double): `components * scalar_count` scalars per element, the
+  /// limbs of one value consecutive. Not `as_scalars`: the limbs of a value are
+  /// one number, and an operation that acts on scalars separately would treat
+  /// them as `scalar_count` independent ones.
+  [[nodiscard]] Result<BasicFieldRef<typename value_traits<T>::scalar_type>>
+  as_limbs() const
+    requires(value_traits<T>::kind == FieldValueKind::Arithmetic)
+  {
+    using Scalar = typename value_traits<T>::scalar_type;
+    auto lay = scalar_layout(layout_, value_traits<T>::scalar_count);
+    if (!lay) return lay.error();
+    return BasicFieldRef<Scalar>(reinterpret_cast<Scalar*>(data_), lay.value(),
+                                 space_);
+  }
+
  private:
   [[nodiscard]] std::size_t checked_offset(std::size_t i, int c) const {
     if (data_ == nullptr) {
@@ -318,6 +334,36 @@ class AnyFieldRef {
            type_.scalar_size == sizeof(S) &&
            type_.size ==
                static_cast<std::size_t>(type_.scalar_count) * sizeof(S);
+  }
+
+  /// True when the stored values are the `type_.scalar_count` limbs, of type
+  /// `S`, of an Arithmetic value (`FieldValueKind::Arithmetic`).
+  template <CoupledValue S>
+  [[nodiscard]] bool holds_limbs_of() const noexcept {
+    return type_.kind == FieldValueKind::Arithmetic &&
+           type_.scalar_name == value_traits<S>::name &&
+           type_.scalar_size == sizeof(S) &&
+           type_.size ==
+               static_cast<std::size_t>(type_.scalar_count) * sizeof(S);
+  }
+
+  /// The field as the limbs of its values, `components * scalar_count` scalars
+  /// of type `S` per element, the limbs of one value consecutive. Refused
+  /// (`E-FIELD-VALUE-TYPE`) when the values are not an Arithmetic type over `S`.
+  template <CoupledValue S>
+  [[nodiscard]] Result<BasicFieldRef<S>> as_limbs() const {
+    if (!holds_limbs_of<S>()) {
+      return Failure{"E-FIELD-VALUE-TYPE",
+                     "the field holds " + std::string(type_.name) +
+                         " values (" + std::to_string(type_.scalar_count) +
+                         " scalars of " + std::string(type_.scalar_name) + ", " +
+                         std::string(to_cstring(type_.kind)) +
+                         "), which are not the limbs of an Arithmetic type "
+                         "over " + std::string(value_traits<S>::name)};
+    }
+    auto lay = scalar_layout(layout_, type_.scalar_count);
+    if (!lay) return lay.error();
+    return BasicFieldRef<S>(static_cast<S*>(data_), lay.value(), space_);
   }
 
   /// The field as scalars of type `S`, `components * scalar_count` per element:
