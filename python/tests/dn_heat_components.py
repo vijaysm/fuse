@@ -224,6 +224,10 @@ def build_graph(accel, max_iterations=MAX_ITERATIONS, stations=STATIONS):
                         intent=pfuse.Intent.Provides)
 
     flux = g.add_channel("flux", q_out, q_in)
+    # Both flux fields are Extensive, and validate() requires a channel into an Extensive
+    # field to declare that its transfer conserves it (E-CONN-CONSERVATION); between two
+    # coincident meshes the remap is the identity, which does. Same as the C++ example.
+    g.channel(flux).conservative()
     temp = g.add_channel("wall_temperature", u_out, u_in)
     g.channel(temp).lag(1).allow_time_level_mismatch(
         "resolved by the Dirichlet-Neumann implicit coupling group")

@@ -13129,3 +13129,143 @@ fetch, so fmt, yaml-cpp, googletest and this project's own libraries keep their 
 `libfuse-abi.so` now resolve the one `libkokkoscore.so.5.1`, the two MPMD rows pass, and tier 0 (189/189, Debug, builtin) and
 the Open MPI suite (347/347, Release, eigen) pass with it.
 
+### ~~D89. The Runner's conservation check integrated every cell field against the cell measure, so a conservative Extensive remap between non-matching meshes was reported as a violation of the quantity it preserves~~ -- FOUND AND FIXED 2026-10-25 (documentation-of-current-behaviour pass)
+
+**Mechanism.** `Runner::Impl::weights_for()` (`src/runtime/runner.cpp`) built the
+`OpKind::Constrain` weights as "measure per owned cell, 1 per owned vertex, 0 per ghost"
+regardless of the field's `Conservation` kind. D82 (owner decision 2026-10-19) fixed the
+WEIGHT BUILDER to follow the kind: an Extensive field's value IS the amount, its supermesh
+weights are column-normalised by the source measure and preserve the plain sum; an Intensive
+field is a density, its weights are row-normalised by the target measure and preserve the
+measure-weighted integral. The CHECK was left on the Intensive convention for both kinds.
+
+**Measured** (tier-0, `SerialMeshBackend`, `generated:line:8` onto `generated:line:5`, source
+value 2.0 per cell, channel `.conservative()`): Extensive delivers 3.2 per target cell (16 = 16,
+the amount redistributed) and the check reported `relative conservation error 0.6` (measure-
+weighted integrals 2.0 against 3.2); Intensive delivers 2.0 per cell and passed. With
+`RunnerConfig::abort_on_violation` the Extensive run would have aborted on a correct result.
+Masked whenever every overlapping cell pair shares a measure (identical or uniformly-resolved
+pairs), which is every in-tree Extensive conservation-checked pair but
+`test/parallel/native_remap_halo_runner_test.cpp`'s 2x2 -> 3x3 quads, whose own assertion is a
+plain sum and which does not read `conservation_violations`.
+
+**Fix.** `weights_for()` takes the arc's `Conservation` (cache key extended): weight 1 per owned
+entity for `Extensive` (cell or vertex alike -- the nodal rule of docs/dev/nodal-fields.md is now
+the general Extensive rule), the measure per owned cell for `Intensive`, 0 per ghost in both.
+`resolve_constrain()` passes each arc's own kind. The one other caller, the
+`NewtonNorm::MeasureWeighted` scale in `src/runtime/iteration.cpp`, asks for the measure
+weights explicitly: a norm weight, not a conservation statement.
+
+RED/GREEN: `Runner.ExtensiveRemapBetweenNonMatchingRegionsConservesThePlainSum` (new,
+`test/runtime/runner_test.cpp`; `abort_on_violation = true`, 0 violations, 6.4 per target cell
+after two steps of `value * step`) failed before the fix with the 0.6 error above;
+`Runner.IntensiveRemapBetweenNonMatchingRegionsConservesTheIntegral` (new) pins the other
+convention.
+
+### ~~D90. `AccumOp::Integral` delivered the plain sum of the samples: nothing ever scaled it by the sample interval~~ -- FOUND AND FIXED 2026-10-25
+
+`num::accumulate_finalize_integral` (kernels.hpp) existed and was unit-tested, but the
+interpreter's `OpKind::Accumulate` case (`src/runtime/runner.cpp`) finalised only `Mean`.
+Measured through pfuse: a constant 2.0 sampled at dt = 1/4 over a target step of 1 delivered 8.0
+under `Integral` (2.0 under `Mean`). The delivered value was also typed in the source's own
+units, so a W -> W "integral" passed every check.
+
+**Fix.** The channel's delivered units are now `delivered_units()` (`fuse/model/connect.hpp`):
+[source] x [time] for `Integral`, the source's own otherwise. `check_channel()` compares THAT
+against the target, so an Integral channel needs a target in integrated units (W -> J) and
+`validate()`'s `E-UNITS` names the integrated units when it refuses equal ones. Lowering
+(`src/ir/rules_channel.cpp`) records the SOURCE component's interval -- the interval between
+samples, since `Sample` runs once per source tick -- exactly, as `OpAttrs::scale` on the
+Accumulate node, types its output arc in the integrated units (and an inserted unit `Scale`
+ahead of it in the target's units divided back by time), and the interpreter multiplies the
+sum by that interval when the window closes.
+
+RED/GREEN: `Runner.IntegralAccumulationIsTheSampleSumTimesTheSourceStep` (samples 2, 4, 6, 8
+at dt = 1/4 -> 5.0, W source into a J target),
+`ChannelLowering.IntegralRecordsTheSourceIntervalAndIntegratesTheUnits`,
+`Validate.IntegralChannelDeliversTimeIntegratedUnits`. The pre-existing
+`ChannelLowering.AccumulateRecordsItsOpInAttrs` used `Integral` on an equal-units pair and now
+uses `Mean`; no in-tree graph used `Integral` otherwise.
+
+### ~~D91. A unit-scaled accumulating channel was refused `E-SCHED-ORDER` ("a scheduler defect") in both the lockstep and the general expansion~~ -- FOUND AND FIXED 2026-10-25
+
+`expand()` (`src/schedule/expand.cpp`) placed only the `Sample` of an accumulating channel on
+the source clock (`runs_on_source_clock(OpKind) == Sample`); every other node of the chain ran
+at the end of the target step. Lowering inserts the exact unit `Scale` BEFORE the `Sample`
+(step 1 of `src/ir/rules_channel.cpp`), so on a kPa -> Pa channel with `accumulate(Mean)` the
+`Sample` at `t = 0` read the `Scale`'s arc, written once at `t = period`, and
+`check_dependence_order()` refused the plan -- the lockstep shortcut included, since it placed
+the `Scale` at `t = period` the same way.
+
+**Fix.** `source_clock_nodes()` marks, per channel, the `Sample` and every node of the same
+chain upstream of it (walking producers while `Node::origin` matches); both expansion paths
+emit those nodes on the source clock, one instance per source tick, `TickPhase::AfterTicks`,
+sorted ahead of the `Sample` by node id. The acyclicity proof pairs them instance-for-instance
+(equal counts) and the `Source` feeding the head by `src_step`, unchanged.
+
+RED/GREEN: `Expand.NodesUpstreamOfTheSampleRunOnTheSourceClock` and
+`Expand.UnitScaledAccumulatingChannelSchedulesInLockstepAndMultirate` (new,
+`test/schedule/expand_test.cpp`; `Auto` and `ForceGeneral` agree node for node, `schedule()`
+succeeds at src_dt = 1 and 1/4). Through the Runner (pfuse) the scaled Mean channel now
+delivers 2000.0 from a constant 2.0 kPa, as the unscaled and the Instant cases always did.
+
+### ~~D92. An unrecognised `remap_method` string was silently computed as the default conservative supermesh on the dependency-free weight builder~~ -- FOUND AND FIXED 2026-10-25
+
+The `!FUSE_HAVE_MOAB` `build_weights()` (`src/backend/intx_weights.cpp`) matched
+`"consistent"`/`"consistent-transpose"`/`"mls"` and then fell through to
+`build_weights_via_supermesh()` for ANY other string; only the MOAB-enabled builder refused an
+unknown name (`E-REMAP-UNSUPPORTED`). A misspelt `"consistent_transpose"` or `"supermesh"` was
+therefore a different remap, with no diagnostic, on every tier-0 build and on a MOAB build whose
+backend is not `MoabMeshBackend`.
+
+**Fix.** `is_known_remap_method()` / `known_remap_methods_text()` (`fuse/model/remap_kind.hpp`)
+list the method strings the builders recognise; `validate()` refuses any other at authoring
+time (`E-CHANNEL-REMAP-METHOD`, new code), and the dependency-free `build_weights()` refuses it
+again (`E-REMAP-UNSUPPORTED`, the MOAB path's own code) and refuses `"tempest"` by name
+(`E-REMAP-NOHIGHORDER`) rather than building order 1 under that name.
+
+RED/GREEN: `Supermesh.BuildWeightsRefusesAnUnknownMethodOnTheSerialBackend` (new; four
+misspellings refused, `""`/`"intx"`/`"conservative"` built), `Validate.UnknownRemapMethodIsRefused`.
+
+### ~~D93. `fuse::initialize`/`fuse::finalize` were documented three times and did not exist, so `FUSE_ON_ERROR` and its companions were parsed by nothing~~ -- FOUND AND FIXED 2026-10-25
+
+docs/dev/debugging.md, docs/dev/conventions.md and `fuse/base/error.hpp`'s own comments all
+described `fuse::initialize` reading the environment once and announcing the rank. No such
+function existed; `error_policy_from_environment()` was called only by its unit test, and
+`set_error_rank()` by nothing, so every program in the tree ran on the built-in defaults with
+rank -1 whatever the environment said.
+
+**Fix.** `fuse::initialize(int rank = -1)` and `fuse::finalize()` (`fuse/base/error.hpp`,
+`src/base/error.cpp`): parse-then-install, so an unrecognised value is the `InvalidArgument`
+the parser raises and the policy in force stays untouched (I4). Called from every entry point:
+the examples' `main()` (`layout_driver` with its rank), `test/support/fuse_test_main.cpp`
+(with the MPI rank), pfuse's module import (after the exception translator) and the C ABI's
+`fuse_create()` (once per process, `std::call_once`), with `fuse_setup()` announcing the base
+communicator's rank once it is formed. A program that embeds the library directly must call it
+itself.
+
+RED/GREEN: `ErrorPolicy.InitializeInstallsTheEnvironmentPolicyAndTheRank`,
+`ErrorPolicy.InitializeLeavesThePolicyAloneWhenTheEnvironmentIsRefused` (new,
+`test/base/error_test.cpp`).
+
+### ~~D94. No C++ example called `validate()`, and the `mms_pair`, `dn_heat` and `petsc_reaction_diffusion` graphs (and pfuse's `dn_heat_components.py`) failed it with `E-CONN-CONSERVATION`~~ -- FIXED 2026-10-25
+
+Every example lowered its graph directly, so the authoring gate the quickstart puts first never
+ran on them; the BM-1 rule (review 2026-10-11: a channel into an Extensive field must declare a
+conservative transfer) refused the three graphs above, which declare Extensive flux/temperature
+fields on coincident mesh pairs with no `.conservative()`. pfuse's `Session.initialize()` DOES
+validate, which is how `python.dn_heat_rows` failed ("the graph does not validate").
+
+**Fix.** Each example calls `fuse::validate()` before `lower()` and fails with the diagnostics;
+the Extensive channels declare `.conservative()` (the identity remap between coincident meshes
+is). `python/tests/dn_heat_components.py` follows the C++ example. `python.graph`'s strict
+`xfail` on `dump_graphviz` (which expected the pre-rename `digraph soma_ir` banner) is a plain
+assertion again, since `fuse/ir/dump.hpp` writes `digraph fuse_ir`.
+
+Running the gate in `examples/brusselator/main.cpp` found a fourth graph: `add_window_coupling()`
+(`examples/brusselator/brusselator_graph.hpp`) connects `u2v` into the Extensive `v_in` on the
+SAME region with no flag, a plain Copy the rule refuses; the coupler branch the participants'
+`reference_*.yaml` files come from already set `RemapFlags::Conservative`, so only the in-process
+`--driver runner` mode was affected. `u2v` now declares `.conservative()` unconditionally (an
+identity on one region); the reference YAML files are byte-identical because the coupler branch
+ORs the same flag. Tier-0 `ctest -LE slow`: 231/231, from 229/231 at the base commit.

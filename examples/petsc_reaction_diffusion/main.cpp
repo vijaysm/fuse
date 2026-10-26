@@ -37,6 +37,8 @@
 #include <fuse/backend/serial_backend.hpp>
 #include <fuse/field/registry.hpp>
 #include <fuse/ir/lowering.hpp>
+#include <fuse/base/error.hpp>
+#include <fuse/model/validate.hpp>
 #include <fuse/model/coupling_graph.hpp>
 #include <fuse/schedule/buffers.hpp>
 #include <fuse/schedule/clock.hpp>
@@ -93,6 +95,9 @@ fuse::CouplingGraph build_graph(const prd::PhysicsParams& params, int max_iterat
                                                       .intent = fuse::Intent::Provides});
 
   const auto flux = g.add_channel("flux", q_out, q_in);
+  // Extensive fields: the channel must declare its transfer conservative
+  // (E-CONN-CONSERVATION); the identity remap between coincident meshes is.
+  g.channel(flux).conservative();
   const auto temp = g.add_channel("wall_value", u_out, u_in);
   g.channel(temp).lag(1).allow_time_level_mismatch(
       "resolved by the Dirichlet-Neumann implicit coupling group");
@@ -156,6 +161,7 @@ RunOutcome run_case(const prd::PhysicsParams& params, const std::string& neumann
     if (!r.ok()) { o.error = "mesh load: " + r.error().message; return o; }
   }
 
+  if (const auto d = fuse::validate(graph); d.has_errors()) { o.error = d.to_string(); return o; }
   const auto lowered = lower(graph);
   if (!lowered.ok()) { o.error = lowered.diags.to_string(); return o; }
 
@@ -284,6 +290,11 @@ int run_petsc_case(const prd::PhysicsParams& params, const RunOutcome& native_re
 }  // namespace
 
 int main(int argc, char** argv) {
+  // Process-wide diagnostics set-up (fuse/base/error.hpp): reads FUSE_ON_ERROR
+  // and its companions (docs/dev/debugging.md) once. Without this call the
+  // environment is parsed by nothing and the built-in defaults apply.
+  fuse::initialize();
+
   Kokkos::ScopeGuard kokkos_guard(argc, argv);  // Runner's hot loop runs on
                                                  // Kokkos' host execution
                                                  // space (KNOWN_ISSUES.md
