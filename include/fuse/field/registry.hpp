@@ -90,6 +90,28 @@ class FieldRegistry {
     return scalars.value();
   }
 
+  /// The limbs of an Arithmetic field (double-double, quad-double), as scalars of
+  /// type `S`, `components * scalar_count` per element. For the operators that
+  /// are instantiated for the Arithmetic type from a closed list (stage U4);
+  /// `get_scalars` refuses such a field, because an operator that acts on each
+  /// scalar separately must not see its limbs as independent numbers. A field
+  /// that is not an Arithmetic type over `S` is refused with `E-FIELD-VALUE-TYPE`.
+  template <CoupledValue S = double>
+  [[nodiscard]] Result<BasicFieldRef<S>> get_limbs(FieldId id) const {
+    const auto it = refs_.find(id);
+    if (it == refs_.end()) {
+      return Failure{"E-FIELD-UNBOUND",
+                   "field " + std::to_string(id.value()) + " is not bound"};
+    }
+    auto limbs = it->second.template as_limbs<S>();
+    if (!limbs) {
+      return Failure{limbs.error().code,
+                     "field " + std::to_string(id.value()) + ": " +
+                         limbs.error().message};
+    }
+    return limbs.value();
+  }
+
   /// True when `id` is bound to a field whose values carry a gradient.
   [[nodiscard]] bool has_gradient(FieldId id) const {
     const auto it = refs_.find(id);

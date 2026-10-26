@@ -31,9 +31,16 @@
 ///               gradient travels through a remap exactly: the gradient of W x
 ///               is W applied to the gradient. binary64 itself is the case of
 ///               one scalar.
-///   Arithmetic  `T` needs its own arithmetic inside an operator (double-double,
-///               quad-double): the operator is instantiated for `T` from a
-///               closed list (stage U4).
+///   Arithmetic  `T` is `scalar_count` consecutive scalars that are the limbs
+///               of an unevaluated sum (double-double: two binary64 values,
+///               quad-double: four), so the arithmetic is not that of each
+///               scalar separately. An operator that does arithmetic on the
+///               values is instantiated for `T` from a closed list (stage U4);
+///               one with no instantiation refuses the field by name, and an
+///               operator that only moves values (a halo copy, a transfer)
+///               moves the limbs. `FieldRegistry::get_limbs` is the view as
+///               limbs; `get_scalars` refuses such a field, so that nothing
+///               meant for scalars acts on the limbs one at a time.
 ///   Storage     `T` is a compact format (binary32, bfloat16, binary16, posit):
 ///               widened exactly to binary64 at a boundary and rounded once,
 ///               with round to nearest, ties to even, on the way back.
@@ -194,9 +201,10 @@ concept ScalarTypeNamed =
 
 /// A field value type: trivially copyable and standard layout (so its bytes
 /// can move through MPI, Kokkos::deep_copy and a type-erased registry), with a
-/// complete `value_traits<T>`. For a ScalarArray type the scalars must tile `T`
-/// exactly, because viewing a field as scalars addresses scalar `k` of value
-/// `v` as `reinterpret_cast<const scalar_type*>(&v)[k]`.
+/// complete `value_traits<T>`. For a ScalarArray or an Arithmetic type the
+/// scalars must tile `T` exactly, because viewing a field as scalars (or as
+/// limbs) addresses scalar `k` of value `v` as
+/// `reinterpret_cast<const scalar_type*>(&v)[k]`.
 template <class T>
 concept CoupledValue =
     std::is_trivially_copyable_v<T> && std::is_standard_layout_v<T> &&
@@ -215,7 +223,7 @@ concept CoupledValue =
     (value_traits<T>::scalar_count >= 1) &&
     (value_traits<T>::gradient_size >= 0) &&
     (value_traits<T>::gradient_size < value_traits<T>::scalar_count) &&
-    (value_traits<T>::kind != FieldValueKind::ScalarArray ||
+    (value_traits<T>::kind == FieldValueKind::Storage ||
      sizeof(T) == static_cast<std::size_t>(value_traits<T>::scalar_count) *
                       sizeof(typename value_traits<T>::scalar_type));
 

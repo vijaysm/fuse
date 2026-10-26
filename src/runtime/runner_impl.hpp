@@ -23,6 +23,7 @@
 #include "fuse/ir/lowering.hpp"
 #include "fuse/linalg/comm.hpp"
 #include "fuse/num/accelerator.hpp"
+#include "fuse/num/arithmetic_kernels.hpp"
 #include "fuse/num/space_kernels.hpp"
 #include "fuse/num/storage_convert.hpp"
 #include "fuse/model/iteration.hpp"
@@ -57,6 +58,14 @@ struct Slot {
   /// execute_on() span helpers. Set at the end of setup() for Device mode
   /// (docs/dev/device-resident-arcs.md); always false under Host.
   bool        device = false;
+  /// The Arithmetic value type of the values on this arc (a `value_traits` name
+  /// from fuse/num/arithmetic_types.def: "dd", "qd"), empty for an arc of
+  /// binary64 scalars. Set at setup for the arcs aliasing an Arithmetic field and
+  /// propagated down the instruction stream (resolve_arithmetic). Such an arc
+  /// holds `limbs` binary64 values per value, so `components` counts limbs:
+  /// the arc of a field of N dd values per entity has components == 2 * N.
+  std::string_view arithmetic;
+  int         limbs = 1;
 
   [[nodiscard]] std::size_t total() const noexcept {
     return elements * static_cast<std::size_t>(components);
@@ -1181,6 +1190,22 @@ struct Runner::Impl {
   /// detail::StorageBinding), and for each arc the index of its binding or -1.
   std::vector<detail::StorageBinding> storage_bindings;
   std::vector<std::int32_t>           storage_binding_of_arc;
+
+  /// Arithmetic-typed fields (dd, qd): the arcs carry them as limbs, and the
+  /// instructions that do arithmetic on values run the kernels of
+  /// fuse/num/arithmetic_kernels.hpp (the arc's `Slot::arithmetic`).
+  /// `resolve_arithmetic` gives each instruction's output arc the type of its
+  /// inputs and refuses a mix; `check_arithmetic_ops` refuses the operators that
+  /// have no arithmetic instantiation, by name: among them the Relax and Residual
+  /// of an iteration region, which is why a region over such a field is refused.
+  Result<void> resolve_arithmetic(const Instruction& ins, std::size_t index);
+  Result<void> check_arithmetic_ops(const Instruction& ins, const detail::Resolved& r, std::size_t index) const;
+  /// The partials of the arithmetic conservation sums, `limb_count<qd>` binary64
+  /// values per chunk at most; sized at setup from the largest weight set. The
+  /// per-rank integrals travel with MPI_Allgather and are summed in rank order
+  /// in the accumulator type (`arith_gather` is the receive buffer).
+  std::vector<double> arith_scratch;
+  std::vector<double> arith_gather;
   /// Widens every provided Storage field into its binary64 image: exact.
   /// Called after component code has run and at the start of each period.
   void refresh_storage_images();
