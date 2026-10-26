@@ -225,6 +225,40 @@ TEST(ErrorPolicy, UnrecognisedEnvironmentValueIsRefusedNotDefaulted) {
   EXPECT_THROW(error_policy_from_environment(), InvalidArgument);
 }
 
+// `fuse::initialize()` is what makes the environment effective: parsing
+// alone (`error_policy_from_environment()`) installs nothing, and until this
+// existed no program in the tree ever called `set_error_policy()` with the
+// parsed result, so FUSE_ON_ERROR and its companions were documented but
+// inert. It also announces the rank, and `finalize()` undoes both.
+TEST(ErrorPolicy, InitializeInstallsTheEnvironmentPolicyAndTheRank) {
+  QuietPolicy quiet;  // restores the policy this test replaces
+  const int previous_rank = error_rank();
+  {
+    ScopedEnv e("FUSE_ON_ERROR", "throw");
+    ScopedEnv b("FUSE_BACKTRACE", "0");
+    fuse::initialize(3);
+    EXPECT_EQ(error_policy().on_error, OnError::Throw);
+    EXPECT_FALSE(error_policy().capture_backtrace);
+    EXPECT_EQ(error_rank(), 3);
+  }
+  fuse::finalize();
+  EXPECT_EQ(error_policy().on_error, ErrorPolicy{}.on_error);
+  EXPECT_TRUE(error_policy().capture_backtrace);
+  EXPECT_EQ(error_rank(), -1);
+  set_error_rank(previous_rank);  // the harness's own announcement
+}
+
+TEST(ErrorPolicy, InitializeLeavesThePolicyAloneWhenTheEnvironmentIsRefused) {
+  QuietPolicy quiet;
+  ErrorPolicy before = error_policy();
+  before.debugger_wait_seconds = 7;  // something the environment below does not set
+  set_error_policy(before);
+  ScopedEnv e("FUSE_ON_ERROR", "sometimes");
+  EXPECT_THROW(fuse::initialize(), InvalidArgument);  // I4: refused, not defaulted
+  EXPECT_EQ(error_policy().debugger_wait_seconds, 7u)
+      << "a refused environment must not install a partial policy";
+}
+
 TEST(ErrorPolicy, DebuggerCommandIsWhatWouldBeRun) {
   ErrorPolicy p;
   p.debugger = Debugger::Lldb;
