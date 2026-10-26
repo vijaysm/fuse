@@ -323,6 +323,21 @@ inline Rational channel_window(const CouplingGraph& g, ChannelId cid,
     // The coupler-placement track: `remap_on` names WHERE this channel's
     // Remap runs. Invalid (the default) means "the target's own placement",
     // today's behaviour, and needs no check at all.
+    //
+    // The method string is matched by the weight builders at run time
+    // (src/backend/intx_weights.cpp), and an unrecognised one used to be
+    // caught only by the MOAB-enabled builder; the dependency-free builder
+    // fell through to the default conservative supermesh and computed that
+    // instead, so a misspelt "consistent-transpose" was silently a different
+    // remap. Refused here, at authoring time, by the one predicate both
+    // builders now share (fuse/model/remap_kind.hpp).
+    if (!is_known_remap_method(ch.remap.method_override)) {
+      d.add(Severity::Error, "E-CHANNEL-REMAP-METHOD",
+            "remap method '" + ch.remap.method_override +
+                "' is not one this library's weight builders recognise; known "
+                "methods are " + std::string(known_remap_methods_text()),
+            ctx);
+    }
     if (ch.remap.remap_on.valid()) {
       const ComponentId ro = ch.remap.remap_on;
       if (ro.value() >= g.component_count()) {
@@ -406,6 +421,10 @@ inline Rational channel_window(const CouplingGraph& g, ChannelId cid,
             case ConnectionReason::DimensionMismatch:
               d.add(Severity::Error, "E-UNITS",
                     "unit mismatch: source '" + sf.name + "' is " + sf.units.to_string() +
+                        (ch.accumulate.op == AccumOp::Integral
+                             ? " and the channel accumulates its time integral (AccumOp::Integral), "
+                               "which it delivers in " + delivered_units(g, ch).to_string()
+                             : std::string{}) +
                         ", target '" + tf.name + "' is " + tf.units.to_string(), ctx);
               break;
             case ConnectionReason::UnitsUndeclared:
