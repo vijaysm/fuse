@@ -1,0 +1,52 @@
+# Mutations for the quad-double type (plans/2026-10-22-universal-number-types.md, stage U4).
+
+[[mutation]]
+id = "qd-narrowing-takes-the-leading-limb"
+area = "num_qd"
+describes = "narrowing to binary64 returns x[0], which is not the nearest binary64 value for limbs that are not in normal form"
+file = "include/fuse/num/qd.hpp"
+old = "    return to_dd().to_double();"
+new = "    return x[0];"
+target = "fuse_num_qd_test"
+test = "num.qd"
+
+[[mutation]]
+id = "qd-order-continues-past-a-nan-limb"
+area = "num_qd"
+describes = "the lexicographic order skips a limb that is a NaN and compares the next one, so a NaN compares less than a number"
+file = "include/fuse/num/qd.hpp"
+old = "    if (a[i] != b[i]) return a[i] < b[i];  // false when either limb is a NaN"
+new = "    if (a[i] < b[i]) return true;\n    if (a[i] > b[i]) return false;"
+target = "fuse_num_qd_test"
+test = "num.qd"
+
+[[mutation]]
+id = "qd-mul-drops-the-last-third-order-product"
+area = "num_qd"
+describes = "the product leaves out a[3] times b[0], a term at 2^-159 of the result"
+file = "include/fuse/num/qd.hpp"
+old = "  double p9 = eft::two_prod(a[3], b[0], q9);"
+new = "  double p9 = 0.0;\n  q9 = 0.0;"
+target = "fuse_num_qd_test"
+test = "num.qd"
+
+[[mutation]]
+id = "qd-div-does-not-reduce-the-residual-after-the-third-quotient-limb"
+area = "num_qd"
+describes = "the residual is not reduced after the third quotient limb, so the next limb repeats it and the quotient is wrong at 2^-106"
+file = "include/fuse/num/qd.hpp"
+old = "  double q2 = r[0] / b[0];\n  r = r - (b * qd(q2));"
+new = "  double q2 = r[0] / b[0];\n  r = r - (b * qd(0.0));"
+target = "fuse_num_qd_test"
+test = "num.qd"
+
+[[mutation]]
+id = "qd-sqrt-takes-one-newton-step"
+area = "num_qd"
+describes = "the square root iterates once on 1/sqrt, accurate to about 2^-106"
+file = "include/fuse/num/qd.hpp"
+old = "  r += ((qd(0.5) - h * sqr(r)) * r);\n  r += ((qd(0.5) - h * sqr(r)) * r);\n  r += ((qd(0.5) - h * sqr(r)) * r);\n"
+new = "  r += ((qd(0.5) - h * sqr(r)) * r);\n"
+target = "fuse_num_qd_test"
+test = "num.qd"
+
