@@ -242,7 +242,7 @@ struct fuse::value_traits<Dual3> {
 | Kind | Meaning | Examples |
 |---|---|---|
 | `ScalarArray` | an array of `scalar_count` scalars of `scalar_type`; every field operation acts on each scalar separately | binary64 (one scalar), complex numbers, forward-mode dual numbers |
-| `Arithmetic` | needs its own arithmetic inside an operator | double-double, quad-double |
+| `Arithmetic` | `scalar_count` limbs (binary64 values) that are one number; the operators that add or multiply values do it in the type, from a closed list | double-double, quad-double |
 | `Storage` | a compact format, widened exactly to binary64 and rounded once on return | binary32, bfloat16, binary16 |
 
 `fuse::CoupledValue<T>` checks these requirements at compile time, including
@@ -356,6 +356,111 @@ What this does not cover:
 - **Reverse mode** is not provided. Each coupler operator already has an adjoint
   (`apply_transpose`, checked by the derivative gate); a schedule that runs the
   coupling graph backwards is a later stage.
+
+### Double-double and quad-double
+
+`fuse::num::dd` (`fuse/num/dd.hpp`) and `fuse::num::qd` (`fuse/num/qd.hpp`) are
+double-double and quad-double numbers: unevaluated sums of two and of four
+binary64 values, the limbs, most significant first, with about 106 and 212 bits of
+significand over binary64's exponent range. They are plain structs of 16 and 32
+bytes with `+ - * /`, `sqrt` and the comparisons, built from error-free
+transformations (two-sum, and two-product with a fused multiply-add), so they
+run inside a Kokkos kernel on any execution space and never allocate. The
+algorithms are those of Hida, Li and Bailey (the QD library). On operands in the
+normal range every result is the same bits as stillwater-sc/universal's `dd` and
+`qd` (see the build option below); FUSE itself never includes Universal.
+
+In `value_traits` they are `Arithmetic`: the limbs of one number, not independent
+scalars. A remap, a sum or a division of them has to be done in the type, so the
+runtime instantiates those operators for the type from a closed list
+(`fuse/num/arithmetic_types.def`) and refuses anything not in it. Bind a field
+like any typed field. The graph counts limbs per entity, so a one-value-per-cell
+field of `dd` is declared with `components = 2` (`qd`: 4):
+
+```cpp
+std::vector<fuse::num::dd> t(n_cells);
+registry.bind(id, fuse::BasicFieldRef<fuse::num::dd>(
+                      t.data(), fuse::Layout{1, 1, n_cells, 1},
+                      fuse::MemorySpace::Host));
+auto limbs = registry.get_limbs<double>(id);   // 2 binary64 components per cell
+```
+
+`FieldRegistry::get_scalars` refuses such a field (`E-FIELD-VALUE-TYPE`): an
+operator written for independent scalars, such as the remap of a field of dual
+numbers, would otherwise treat the two limbs as two unrelated values.
+
+**What the Runner does with them.** The operators that add or multiply values
+work in the field's type: a remap (each row summed in `dd` or `qd` with the products of
+the weights and the values formed exactly), accumulation by sum, mean, integral,
+minimum and maximum (a mean is one division by the count in the type), a merge by
+sum or mean, scaling, and the conservation check. The operators that only move
+values (source, sink, transport, epoch, the identity transfer) move the limbs
+unchanged. The remap weights stay binary64.
+
+**The conservation check.** The two integrals are accumulated in the field's type,
+added over the ranks in the type, and subtracted in the type, so the error the
+check reports is that of the stored values and not the rounding error of the sums
+that measure it. The per-rank integrals travel in one `MPI_Allgather` and are
+added in rank order (`parallel.arithmetic_reduce_mpi`, at one to five ranks, checks the
+bits against the ordered sum and the accuracy against the exact one), which gives the same bits on every rank and does not depend
+on the shape of a reduction tree (a floating-point sum is not associative, so a
+user-defined `MPI_Op` would). On a remap whose weights are exactly representable
+(eight cells onto four, an intensive field) the defect of a `dd` field is 4e-32,
+the round-off of the type; the same kind of data held in binary64 shows about 1e-17,
+which is binary64's (`runtime.arithmetic_field_runner`).
+
+**Accumulating a binary64 field in double-double.** `RunnerConfig::accumulation_type`
+(default `AccumulationType::Binary64`) set to `DoubleDouble` makes the row sums of
+the remap, and the integrals and their comparison in the conservation check, of a
+binary64 field be accumulated in `dd` and rounded once: each remapped value is
+the correctly rounded row sum, and the reported conservation error is the exact
+defect of the stored binary64 values. It costs several times the arithmetic of a
+binary64 sum, so it is off by default; it changes nothing for fields that are
+already `dd` or `qd`.
+
+**Accuracy.** The tests compare each operation with exact arithmetic (sums of
+binary64 values with error-free transformations only, which share no code with
+the types): `+ - * /` and `sqrt` of `dd` are within 2^-102 of the exact result, those of
+`qd` within 2^-206 (the largest errors the tests observed: 2^-107 for the `dd`
+sum, 2^-211 for `qd`). Through a
+Runner and a real remap the transferred values are within 2^-108 (`dd`) and
+2^-217 (`qd`) of the exact result for the weights the operator applies, where the
+same transfer of the leading limbs alone, in binary64, is further than 1e-18.
+The kernels give the same bits on every enabled execution space and match a
+plain host loop in the documented summation order (`num.arithmetic_kernels`).
+
+What this does not cover:
+
+- **Iteration regions, relaxation and residuals** over a `dd` or `qd` field are
+  refused with `E-RT-ARITHMETIC-OP`, as are the space-time projection and the
+  distributed nodal remap: the residual norms and the accelerators are binary64.
+- **Mixing types across a channel** (a `dd` field delivered into a binary64 field,
+  or a merge of a `dd` and a binary64 field) is refused with `E-RT-ARITHMETIC-MIX`;
+  the coupler does not convert between two fields' types.
+- **An Arithmetic type not in the closed list** is refused with `E-RT-FIELD-TYPE`.
+  Adding one is a line in `arithmetic_types.def`, its limb access in
+  `fuse/num/arithmetic_kernels.hpp`, and a row in the kernel tests.
+- **Results near the ends of the exponent range** (a product or a square of a limb
+  that overflows or goes subnormal) are not specified, as in the QD library.
+- **The C and Fortran interface and restart files** do not know the types yet, and
+  `RunnerConfig::accumulation_type` is not reachable from them. The
+  limbs of a field registered through them are independent binary64 components to
+  the runtime: they move correctly through the operators that only move values,
+  but a remap acts on each limb separately, in binary64.
+- The weights of a remap are computed in binary64, so a `dd` field is remapped
+  exactly for the weights as stored, not for the exact geometric overlaps.
+
+**Testing against Universal.** The bit-for-bit comparison builds only with
+`-DFUSE_ENABLE_UNIVERSAL=ON -DFUSE_UNIVERSAL_INCLUDE_DIR=<checkout>/include/sw`
+(default off; Universal is a header-only checkout, never a dependency of the
+library). Universal's headers do not compile under nvcc, so they are built into a
+small separate program (`test/num/universal_oracle.cpp`) with a host compiler, and
+the test (`num.dd_universal`) runs that program on files of operands and compares
+what it returns. The compiler is `FUSE_UNIVERSAL_CXX`; it defaults to the project's
+C++ compiler, which is right for a host build, and on a CUDA build (where that is
+`nvcc_wrapper`) has to be set to `g++` or `clang++`. The test compares `+ - * /` and
+`sqrt` of both types on random operands, on operands of very different magnitudes,
+on operands that cancel, and on the special values.
 
 ## Portable kernels
 
