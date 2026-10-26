@@ -48,6 +48,8 @@
 #include <fuse/backend/native_backend.hpp>
 #include <fuse/backend/native_migration.hpp>
 #include <fuse/ir/lowering.hpp>
+#include <fuse/base/error.hpp>
+#include <fuse/model/validate.hpp>
 #include <fuse/model/coupling_graph.hpp>
 #include <fuse/partition/repartition.hpp>
 #include <fuse/runtime/runner.hpp>
@@ -487,6 +489,10 @@ int main(int argc, char** argv) {
   int rank = 0, world = 1;
   MPI_Comm_rank(MPI_COMM_WORLD, &rank);
   MPI_Comm_size(MPI_COMM_WORLD, &world);
+  // Process-wide diagnostics set-up (fuse/base/error.hpp): reads FUSE_ON_ERROR
+  // and its companions (docs/dev/debugging.md) once, and announces this rank
+  // so every Error this process reports carries it.
+  fuse::initialize(rank);
 
   // Kokkos is initialised here and for the whole of main, before any argument
   // is parsed (the guard also strips --kokkos-* arguments). The native mesh,
@@ -607,6 +613,10 @@ int main(int argc, char** argv) {
     return agree_and_exit(1);
   }
 
+  if (const auto d = fuse::validate(graph); d.has_errors()) {
+    if (rank == 0) std::cerr << d.to_string();
+    return agree_and_exit(1);
+  }
   const auto lowered = lower(graph);
   if (!lowered.ok()) {
     if (rank == 0) std::cerr << lowered.diags.to_string();
