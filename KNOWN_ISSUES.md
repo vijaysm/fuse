@@ -13440,9 +13440,9 @@ corrections before landing: the quadrature exactness tolerance's `1e-13` floor w
 derived bound (measured margin: largest |error|/bound = 1.25e-1), and the basis-registry early refusal gained the
 test that fires it (its mutation row was declared equivalent without one). See docs/dev/physics-kit.md, "Lead's review
 of wave 1".
-### D101. Time-window members and iteration regions take binary64 fields only: a Storage field (binary32, bfloat16, binary16) is refused by the window code and an Arithmetic field (double-double, quad-double) by the operator check -- OPEN by design, 2026-10-27 (number-types track)
+### D101. Time-window members and iteration regions take binary64 fields only: a Storage field (binary32, bfloat16, binary16, posit16, posit32) is refused by the window code and an Arithmetic field (double-double, quad-double) by the operator check -- OPEN by design, 2026-10-27 (number-types track)
 
-**What happens.** A field bound as `float`, `fuse::bfloat16` or `fuse::binary16` that is a member of
+**What happens.** A field bound as `float`, `fuse::bfloat16`, `fuse::binary16`, `fuse::num::posit16` or `fuse::num::posit32` that is a member of
 a coupling window or an iteration region reaches `Runner::Impl::resolve_regions()`
 (`src/runtime/iteration.cpp`), which reads the members' registered storage as binary64
 (`registry.get(...)`) and refuses the field with `E-FIELD-VALUE-TYPE`. A `dd` or `qd` field in an
