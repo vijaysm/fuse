@@ -959,6 +959,29 @@ class Hdf5GroupReader final : public RestartReader {
     const fuse::ElementTypeInfo& requested_info =
         fuse::element_type_info(requested_type);
 
+    // The stored rows are `components` wide. A request for another width would read the
+    // dataset past the buffer sized below, or misread every row, so it is refused by name.
+    // The serial writer stores {rows, components}; the collective writer stores {rows} when a
+    // row is one value, and both are read here.
+    {
+      HDataspace value_space(H5Dget_space(vd));
+      hsize_t dims[2] = {0, 0};
+      const int stored_rank = H5Sget_simple_extent_ndims(value_space);
+      const bool shape_ok =
+          stored_rank >= 1 && stored_rank <= 2 &&
+          H5Sget_simple_extent_dims(value_space, dims, nullptr) == stored_rank &&
+          dims[0] == static_cast<hsize_t>(n) &&
+          (stored_rank == 2 ? dims[1] == static_cast<hsize_t>(components) : components == 1);
+      if (!shape_ok) {
+        const std::string stored_width = stored_rank == 2 ? std::to_string(dims[1]) : "1";
+        return Failure{"E-RESTART-FIELD-SHAPE",
+                       "get_field('" + key + "'): the stored values are " +
+                           std::to_string(dims[0]) + " rows of " + stored_width +
+                           " components, and " + std::to_string(n) + " rows of " +
+                           std::to_string(components) + " were asked for"};
+      }
+    }
+
     std::vector<std::byte> file_values(
         static_cast<std::size_t>(n) * static_cast<std::size_t>(components) *
         stored_info.byte_size);

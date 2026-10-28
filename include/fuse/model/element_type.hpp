@@ -59,6 +59,7 @@
 #include <type_traits>
 
 #include "fuse/model/bfloat16.hpp"
+#include "fuse/model/binary16.hpp"
 
 namespace fuse {
 
@@ -77,9 +78,11 @@ enum class ElementType : std::uint8_t {
   UInt16 = 5,
   UInt32 = 6,
   UInt64 = 7,
-  Binary16 = 8,   ///< IEEE 754-2019 binary16 ("half"). Only ever WRITTEN by a
-                  ///< build whose compiler provides `_Float16` (see the file
-                  ///< header comment); always a valid enumerator to READ.
+  Binary16 = 8,   ///< IEEE 754-2019 binary16 ("half"). Written from
+                  ///< `fuse::binary16` (fuse/model/binary16.hpp, on every
+                  ///< compiler) and, where the compiler provides it, from
+                  ///< `_Float16` (see the file header comment); always a
+                  ///< valid enumerator to READ.
   BFloat16 = 9,   ///< `fuse::bfloat16` (fuse/model/bfloat16.hpp) -- no C++
                   ///< standard type backs this on any compiler this project
                   ///< has measured (`__bf16`/`std::bfloat16_t` both absent,
@@ -225,6 +228,12 @@ struct ElementTypeOf<std::uint64_t> {
 template <>
 struct ElementTypeOf<fuse::bfloat16> {
   static constexpr ElementType value = ElementType::BFloat16;
+};
+/// `fuse::binary16` is the IEEE binary16 bit pattern in a `uint16_t`, so it is stored as
+/// `Binary16` byte for byte on every compiler, with no `_Float16` involved.
+template <>
+struct ElementTypeOf<fuse::binary16> {
+  static constexpr ElementType value = ElementType::Binary16;
 };
 template <>
 struct ElementTypeOf<float> {

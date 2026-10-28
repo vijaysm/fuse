@@ -241,8 +241,9 @@ implementation can refuse bytes it no longer understands by name.
 `RestartWriter::put_field<T>()`/`put_scalar<T>()` and `RestartReader::get_field<T>()`/`get_scalar<T>()`
 are templates over one byte-based virtual pair. `T` resolves to a `fuse::ElementType` at compile
 time, and a `static_assert` fires for a `T` outside the supported set: `std::int8_t` to
-`std::int64_t`, `std::uint8_t` to `std::uint64_t`, `fuse::bfloat16`, `float`, `double`,
-`long double`, `bool`, and `_Float16` where the compiler provides it. Every field and scalar carries
+`std::int64_t`, `std::uint8_t` to `std::uint64_t`, `fuse::bfloat16`, `fuse::binary16`, `float`,
+`double`, `long double`, `bool`, and `_Float16` where the compiler provides it (the same format as
+`fuse::binary16`, which every compiler has). Every field and scalar carries
 its element-type metadata in the file (see "Element types" in [](glossary.md)), and the reader never
 assumes its `T` matches what was written.
 
@@ -268,6 +269,31 @@ if (rw.ok() && rw.value().max_absolute_change > 0.0) {
   // is reported here; report and act on it.
 }
 ```
+
+### Fields of double-double, quad-double and dual values
+
+A component whose state is a field of `fuse::num::dd`, `fuse::num::qd` or a `fuse::num::dual<S, N>`
+stores it with `fuse::put_values<T>()` and reads it with `fuse::get_values<T>()`
+(`fuse/model/restart_values.hpp`). They take the arguments of `put_field<T>()` and
+`get_field<T>()`, with `components` counting values of `T`, and store each value as its scalars, bit
+for bit: a double-double value is two binary64 entries, a quad-double value four, and a dual number
+of `N` gradient entries `N + 1` of its scalar type.
+
+```cpp
+std::vector<fuse::num::dd> t_(n_);                       // the component's state
+auto w = fuse::put_values<fuse::num::dd>("t", ids, t_, 1, static_cast<std::int64_t>(n_));
+
+auto r = fuse::get_values<fuse::num::dd>(reader, "t", ids, std::span(t_), 1);
+```
+
+The file holds an ordinary binary64 field with two components per row, so any reader reads it, and
+a program that does not know `dd` reads the pairs. The cost is that the file does not say they are
+double-double: the reader names the type it expects, and the number of components it asks for must
+be the number the writer used (a different one is refused like any component mismatch). A type that
+is already a stored type (`double`, `float`, `bfloat16`, `binary16`) is stored as itself. Restart
+points are written by components, not by the Runner, so there is no field-level restart of the
+Runner's own arrays to extend: what these functions give is the means for a component to restart its
+own typed state exactly.
 
 Accelerator and waveform histories are stored as `double` (binary64). A `Rational` time level is
 stored exactly, as its numerator and denominator (`put_scalar_rational()`/`get_scalar_rational()`),
@@ -303,7 +329,7 @@ Every refusal is a named `fuse::Failure` code, never a silent default.
 | `E-RESTART-MISSING-ID` | the field exists, but not this row |
 | `E-RESTART-DUPLICATE-ID`, `E-RESTART-BAD-NUMBERING` | the batched or per-call id check on write failed: an id written twice, or a numbering that does not cover `declared_global_size` |
 | `E-RESTART-DUPLICATE-CALL` | `put_field()` called twice under one name for the same point |
-| `E-RESTART-FIELD-SHAPE` | `values.size()` is not `ids.size() * components` |
+| `E-RESTART-FIELD-SHAPE` | `values.size()` is not `ids.size() * components`, or a read asks for a number of components other than the file holds |
 | `E-RESTART-AMBIGUOUS-FIELD-NAME` | two components in the graph declare a field of the same name, so an accelerator row cannot be attributed |
 | `E-RESTART-USAGE` | `GrowingFile` used without a `point_label` |
 | `E-RESTART-TRUNCATED` | not a valid HDF5 file, or missing `@format_version` |
