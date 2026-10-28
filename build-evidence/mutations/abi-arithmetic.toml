@@ -1,0 +1,122 @@
+# Mutations for FUSE_ELEMENT_DD, FUSE_ELEMENT_QD and gradient_size in the C interface, for a participant's
+# fields (plans/2026-10-22-universal-number-types.md, stage U4).
+
+[[mutation]]
+id = "abi-register-binds-double-double-as-binary64"
+area = "abi_arithmetic"
+describes = "FUSE_ELEMENT_DD is bound as a field of doubles, so the runtime reads the pair as two independent numbers"
+file = "src/abi/participant.cpp"
+old = "      case FUSE_ELEMENT_DD:   bound = bind_as(std::type_identity<fuse::num::dd>{}); break;"
+new = "      case FUSE_ELEMENT_DD:   bound = bind_as(std::type_identity<double>{}); break;"
+target = "fuse_abi_arithmetic_element_test"
+test = "abi.arithmetic_element"
+
+[[mutation]]
+id = "abi-register-binds-quad-double-as-double-double"
+area = "abi_arithmetic"
+describes = "FUSE_ELEMENT_QD is bound as double-double values, so two limbs of each quadruple are lost"
+file = "src/abi/participant.cpp"
+old = "      case FUSE_ELEMENT_QD:   bound = bind_as(std::type_identity<fuse::num::qd>{}); break;"
+new = "      case FUSE_ELEMENT_QD:   bound = bind_as(std::type_identity<fuse::num::dd>{}); break;"
+target = "fuse_abi_arithmetic_element_test"
+test = "abi.arithmetic_element"
+
+[[mutation]]
+id = "abi-view-reports-double-double-as-binary64"
+area = "abi_arithmetic"
+describes = "fuse_view_field reports a double-double field as FUSE_ELEMENT_F64"
+file = "src/abi/participant.cpp"
+old = "        element_type = FUSE_ELEMENT_DD;"
+new = "        element_type = FUSE_ELEMENT_F64;"
+target = "fuse_abi_arithmetic_element_test"
+test = "abi.arithmetic_element"
+
+[[mutation]]
+id = "abi-view-counts-limbs-instead-of-values"
+area = "abi_arithmetic"
+describes = "fuse_view_field reports the graph's binary64 count as the view's components for a double-double field"
+file = "src/abi/participant.cpp"
+old = "    out->components     = spec.components / limbs *"
+new = "    out->components     = spec.components *"
+target = "fuse_abi_arithmetic_element_test"
+test = "abi.arithmetic_element"
+
+[[mutation]]
+id = "abi-register-ignores-the-gradient-size"
+area = "abi_arithmetic"
+describes = "the gradient_size of a registered view is dropped, so a gradient field is accepted on a minimum channel"
+file = "src/abi/participant.cpp"
+old = "      gradient = in->gradient_size;"
+new = "      gradient = 0;"
+target = "fuse_abi_arithmetic_element_test"
+test = "abi.arithmetic_element"
+
+[[mutation]]
+id = "abi-register-accepts-a-gradient-without-a-value"
+area = "abi_arithmetic"
+describes = "a gradient_size equal to components, which leaves no value component, is accepted"
+file = "src/abi/participant.cpp"
+old = "    if (gradient < 0 || (gradient > 0 && gradient >= in->components)) {"
+new = "    if (gradient < 0 || (gradient > 0 && gradient > in->components)) {"
+target = "fuse_abi_arithmetic_element_test"
+test = "abi.arithmetic_element"
+
+[[mutation]]
+id = "abi-register-accepts-a-negative-gradient"
+area = "abi_arithmetic"
+describes = "a negative gradient_size is accepted as no gradient"
+file = "src/abi/participant.cpp"
+old = "    if (gradient < 0 || (gradient > 0 && gradient >= in->components)) {"
+new = "    if ((gradient > 0 && gradient >= in->components)) {"
+target = "fuse_abi_arithmetic_element_test"
+test = "abi.arithmetic_element"
+
+[[mutation]]
+id = "abi-register-reads-the-gradient-size-of-a-short-struct"
+area = "abi_arithmetic"
+describes = "gradient_size is read from a view whose struct_size ends before it, so an older caller's padding is taken for a gradient"
+file = "src/abi/participant.cpp"
+old = "    if (struct_size_covers(in->struct_size,\n                           offsetof(fuse_field_view, gradient_size) + sizeof(in->gradient_size))) {\n      gradient = in->gradient_size;"
+new = "    if (true) {\n      gradient = in->gradient_size;"
+target = "fuse_abi_arithmetic_element_test"
+test = "abi.arithmetic_element"
+
+[[mutation]]
+id = "abi-view-omits-the-gradient-size"
+area = "abi_arithmetic"
+describes = "fuse_view_field reports gradient_size 0 for a field registered with a gradient"
+file = "src/abi/participant.cpp"
+old = "      out->gradient_size = declared.ok() ? declared.value().gradient_size() : 0;"
+new = "      out->gradient_size = 0;"
+target = "fuse_abi_arithmetic_element_test"
+test = "abi.arithmetic_element"
+
+[[mutation]]
+id = "field-registry-accepts-a-gradient-without-a-value"
+area = "abi_arithmetic"
+describes = "declare_gradient accepts a gradient of every component"
+file = "include/fuse/field/registry.hpp"
+old = "    if (n < 1 || n >= components) {"
+new = "    if (n < 1 || n > components) {"
+target = "fuse_abi_arithmetic_element_test"
+test = "abi.arithmetic_element"
+
+[[mutation]]
+id = "field-registry-accepts-a-gradient-of-zero"
+area = "abi_arithmetic"
+describes = "declare_gradient accepts a gradient of no components"
+file = "include/fuse/field/registry.hpp"
+old = "    if (n < 1 || n >= components) {"
+new = "    if (n < 0 || n >= components) {"
+target = "fuse_abi_arithmetic_element_test"
+test = "abi.arithmetic_element"
+
+[[mutation]]
+id = "field-ref-reports-no-declared-gradient"
+area = "abi_arithmetic"
+describes = "a gradient declared for a field is not what gradient_size() returns"
+file = "include/fuse/field/field_ref.hpp"
+old = "    return type_.gradient_size > 0 ? type_.gradient_size : declared_gradient_;"
+new = "    return type_.gradient_size > 0 ? type_.gradient_size : 0 * declared_gradient_;"
+target = "fuse_abi_arithmetic_element_test"
+test = "abi.arithmetic_element"

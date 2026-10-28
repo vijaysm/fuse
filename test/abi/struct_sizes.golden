@@ -9,7 +9,7 @@ fuse_graph_sink 32
 fuse_setup_options 56
 fuse_field_name 24
 fuse_field_ref 20
-fuse_field_view 72
+fuse_field_view 80
 fuse_step_request 72
 fuse_step_report 104
 fuse_ongoing 40

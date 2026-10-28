@@ -118,6 +118,29 @@ class FieldRegistry {
     return it != refs_.end() && it->second.gradient_size() > 0;
   }
 
+  /// Declares that the last `n` components of each entity of the bound field
+  /// `id` hold the gradient of the leading ones: what a participant that sees only
+  /// arrays of binary64 (the C and Fortran interface) says in place of a dual-number
+  /// type. Refused (`E-FIELD-GRADIENT`) unless `1 <= n < components`, so that at
+  /// least one component is the value itself, and (`E-FIELD-UNBOUND`) for a field
+  /// that is not bound.
+  [[nodiscard]] Result<void> declare_gradient(FieldId id, int n) {
+    const auto it = refs_.find(id);
+    if (it == refs_.end()) {
+      return Failure{"E-FIELD-UNBOUND",
+                   "field " + std::to_string(id.value()) + " is not bound"};
+    }
+    const int components = it->second.layout().components;
+    if (n < 1 || n >= components) {
+      return Failure{"E-FIELD-GRADIENT",
+                   "field " + std::to_string(id.value()) + ": a gradient of " +
+                       std::to_string(n) + " components needs 1 <= n < components (" +
+                       std::to_string(components) + ")"};
+    }
+    it->second.declare_gradient(n);
+    return Result<void>::success();
+  }
+
   /// The view with its value type erased, for code that dispatches on the
   /// value type itself.
   [[nodiscard]] Result<AnyFieldRef> get_any(FieldId id) const {

@@ -92,8 +92,35 @@ binary16) are registered the same way, with the storage you already have. The co
 such an array to binary64 exactly when your step has run and rounds into it once, to nearest with
 ties to even, when it delivers a value you require; `fuse_view_field` reports the element type you
 registered. See `docs/user/field-pipeline.md`, "Storage types". `FUSE_ELEMENT_I64` is not a coupled
-value and is refused (`E-ABI-REGISTER-ELEMENT`); a provider plugin's fields are still
-`FUSE_ELEMENT_F64` only.
+value and is refused (`E-ABI-REGISTER-ELEMENT`).
+
+**Double-double and quad-double.** `FUSE_ELEMENT_DD` is an array of pairs of `double`, the larger
+first (`hi`, then `lo`): `double q[n][2]` in C, `real(c_double) :: q(2, n)` in Fortran.
+`FUSE_ELEMENT_QD` is an array of quadruples of decreasing magnitude, `double q[n][4]`. The coupler
+adds, scales and remaps these values in their own type and delivers every limb, so a value kept to
+about 106 bits (double-double) or 212 bits (quad-double) crosses the coupling with that precision.
+The graph does not know the element type, so it counts binary64 values per entity: a scalar
+double-double field is declared with `components: 2` in the graph and a scalar quad-double field
+with `components: 4`, while `view.components` counts values of the type you register (`1` for a
+scalar). `stride` and `component_stride` count values of that type too, not doubles. A view for
+which `view.components` times the limbs of its type (1, 2 or 4) is not `fuse_field_ref.components`
+is refused at `initialize()` (`E-RT-SIZE`). A double-double field cannot be coupled to a field of
+another type, neither across a channel nor in a merge (`E-RT-ARITHMETIC-MIX`). See
+`docs/user/field-pipeline.md`, "Double-double and quad-double".
+
+**Gradients.** A component that carries derivatives of its values with respect to some parameters
+(forward-mode automatic differentiation) lays them out as extra components of the same field: a
+value followed by `g` gradient entries is `g + 1` components per entity, and the graph declares
+`g + 1`. The coupler moves them like any other component. Remapping, delivery and the sum, mean and
+integral accumulations are linear, so each entry is treated separately and the gradient that arrives
+is the gradient of the value that arrives. Say so in the view: `gradient_size = g` marks the last `g`
+components of each entity as gradient, and a channel that accumulates the field by minimum or maximum
+is then refused at `initialize()` (`E-RT-GRADIENT-MINMAX`), because the gradient of a minimum is the
+gradient of the sample picked, which comparing component by component does not give. The default,
+`0`, means no gradient; a caller built before the member existed passes a smaller `struct_size` and
+gets that default. A `gradient_size` that is negative, or not smaller than `components`, is refused at
+registration (`E-ABI-REGISTER-GRADIENT`), since at least one component must be the value itself.
+`fuse_view_field` reports the `gradient_size` that was registered.
 
 ### A complete program
 
@@ -230,7 +257,7 @@ process of the communicator (or of the component) must make the call.
 | `request_restart_point` | `fuse_null` → `fuse_null` | Initialized | raises a flag asking for a restart point; no effect before `initialize` |
 
 Field intents and the other enumerators are defined in `fuse/abi/types.h`:
-`FUSE_ELEMENT_{F64,I64}`, `FUSE_MEMSPACE_{HOST,DEVICE}`,
+`FUSE_ELEMENT_{F64,I64,F32,BF16,F16,DD,QD}`, `FUSE_MEMSPACE_{HOST,DEVICE}`,
 `FUSE_OWNERSHIP_{OWNED,GHOSTED,REPLICATED}`, and the `FUSE_CAP_*` bits.
 
 ## Setup: communicator, end time and `my_component`
@@ -299,12 +326,16 @@ by `delivery_field`, below).
 `register_field` binds your own storage to a handle. FUSE keeps the pointer and never copies the
 data; the storage must stay valid and at the same address until `destroy()`. The rules:
 
-- `element_type` must be `FUSE_ELEMENT_F64` (`E-ABI-REGISTER-ELEMENT`).
+- `element_type` must be `FUSE_ELEMENT_F64`, `F32`, `BF16`, `F16`, `DD` or `QD`
+  (`E-ABI-REGISTER-ELEMENT`; `FUSE_ELEMENT_I64` names identifiers, not coupled values).
 - `memspace` must be `FUSE_MEMSPACE_HOST` (`E-ABI-REGISTER-MEMSPACE`). Device pointers are
   accepted only on the provider side ([](providers.md)).
 - `ownership` must not be `FUSE_OWNERSHIP_GHOSTED` (`E-ABI-REGISTER-OWNERSHIP`), and `owned_count`
   must equal `count` (`E-ABI-REGISTER-OWNED-COUNT`).
-- `components` must equal the `components` the graph declares (`fuse_field_ref::components`).
+- `components`, in values of the element type, times the binary64 values one value occupies (1, or 2
+  for `FUSE_ELEMENT_DD`, 4 for `FUSE_ELEMENT_QD`), must equal the `components` the graph declares
+  (`fuse_field_ref::components`); `initialize()` refuses a view that does not (`E-RT-SIZE`).
+- `gradient_size` is `0`, or at least `1` and less than `components` (`E-ABI-REGISTER-GRADIENT`).
 - `count` is the number of entities on this process. It must match the size the compiled plan
   gives the field on this rank, otherwise `initialize()` refuses with `E-RT-SIZE`. For a component
   on several ranks, that is the rank's share of the region under the mesh's decomposition, not the
@@ -562,7 +593,7 @@ Current sizes of the structs this page discusses (`test/abi/struct_sizes.golden`
 | `fuse_step_report` | 104 |
 | `fuse_ongoing` | 40 |
 | `fuse_setup_options` | 56 |
-| `fuse_field_view` | 72 |
+| `fuse_field_view` | 80 |
 
 A caller built against an older header, with a smaller `struct_size`, sees the documented
 defaults: `next_component` is not written, `step_opened` reads as `1`, `delivery_pending` as `0`,
@@ -617,7 +648,7 @@ as the table, so the two cannot disagree. See [](fortran.md).
 
 ## Limitations
 
-- `register_field` accepts only `FUSE_ELEMENT_F64` fields (`E-ABI-REGISTER-ELEMENT`), only
+- `register_field` does not accept `FUSE_ELEMENT_I64` fields (`E-ABI-REGISTER-ELEMENT`), accepts only
   `FUSE_MEMSPACE_HOST` storage (`E-ABI-REGISTER-MEMSPACE`), and does not accept
   `FUSE_OWNERSHIP_GHOSTED` (`E-ABI-REGISTER-OWNERSHIP`).
 - At most one externally driven component has an open step per context, and `begin_step()` calls

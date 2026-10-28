@@ -56,6 +56,8 @@
 #include "fuse/field/field_ref.hpp"
 #include "fuse/model/binary16.hpp"
 #include "fuse/ir/lowering.hpp"
+#include "fuse/num/dd.hpp"
+#include "fuse/num/qd.hpp"
 #include "fuse/model/component.hpp"
 #include "fuse/model/descriptor.hpp"
 #include "fuse/model/field_spec.hpp"
@@ -870,12 +872,13 @@ fuse_status impl_register_field(fuse_ctx* ctx, const fuse_field_view* in,
     const fuse_status sz = check_struct_size(in);
     if (sz != FUSE_OK) return sz;
     if (in->element_type != FUSE_ELEMENT_F64 && in->element_type != FUSE_ELEMENT_F32 &&
-        in->element_type != FUSE_ELEMENT_BF16 && in->element_type != FUSE_ELEMENT_F16) {
+        in->element_type != FUSE_ELEMENT_BF16 && in->element_type != FUSE_ELEMENT_F16 &&
+        in->element_type != FUSE_ELEMENT_DD && in->element_type != FUSE_ELEMENT_QD) {
       return fail(&c, FUSE_ERR_UNSUPPORTED, "E-ABI-REGISTER-ELEMENT",
                  "fuse_register_field: only FUSE_ELEMENT_F64, FUSE_ELEMENT_F32, "
-                 "FUSE_ELEMENT_BF16 and FUSE_ELEMENT_F16 are supported through "
-                 "this ABI (FUSE_ELEMENT_I64 names identifiers, not coupled "
-                 "values)");
+                 "FUSE_ELEMENT_BF16, FUSE_ELEMENT_F16, FUSE_ELEMENT_DD and "
+                 "FUSE_ELEMENT_QD are supported through this ABI "
+                 "(FUSE_ELEMENT_I64 names identifiers, not coupled values)");
     }
     if (in->memspace != FUSE_MEMSPACE_HOST) {
       return fail(&c, FUSE_ERR_UNSUPPORTED, "E-ABI-REGISTER-MEMSPACE",
@@ -897,9 +900,28 @@ fuse_status impl_register_field(fuse_ctx* ctx, const fuse_field_view* in,
                                   static_cast<std::size_t>(in->component_stride),
                               .count = static_cast<std::size_t>(in->count),
                               .components = in->components};
+    // The gradient a participant declares for its own layout: how many of the
+    // trailing components of each entity hold the gradient of the leading ones.
+    // The member was appended after window_samples; a caller built before it
+    // has a smaller struct_size, so its value is not read.
+    int gradient = 0;
+    if (struct_size_covers(in->struct_size,
+                           offsetof(fuse_field_view, gradient_size) + sizeof(in->gradient_size))) {
+      gradient = in->gradient_size;
+    }
+    if (gradient < 0 || (gradient > 0 && gradient >= in->components)) {
+      return fail(&c, FUSE_ERR_INVALID, "E-ABI-REGISTER-GRADIENT",
+                 "fuse_register_field: gradient_size " + std::to_string(gradient) +
+                     " must be 0, or at least 1 and less than components (" +
+                     std::to_string(in->components) +
+                     "): the last gradient_size components of each entity hold the gradient of "
+                     "the leading ones, and at least one must be the value itself");
+    }
     // A FUSE_ELEMENT_F32/BF16/F16 field is bound as its own value type, not
     // converted here: the Runner widens it to binary64 when the component has
     // written it and rounds once into it on delivery (RunStats::storage_fields).
+    // A FUSE_ELEMENT_DD/QD field is bound as double-double or quad-double values:
+    // the Runner does its sums, scalings and remaps in that type.
     const fuse::FieldId id{static_cast<std::uint32_t>(in->handle)};
     const auto bind_as = [&]<class T>(std::type_identity<T>) {
       return c.fields.bind(
@@ -911,11 +933,20 @@ fuse_status impl_register_field(fuse_ctx* ctx, const fuse_field_view* in,
       case FUSE_ELEMENT_F32:  bound = bind_as(std::type_identity<float>{}); break;
       case FUSE_ELEMENT_BF16: bound = bind_as(std::type_identity<fuse::bfloat16>{}); break;
       case FUSE_ELEMENT_F16:  bound = bind_as(std::type_identity<fuse::binary16>{}); break;
+      case FUSE_ELEMENT_DD:   bound = bind_as(std::type_identity<fuse::num::dd>{}); break;
+      case FUSE_ELEMENT_QD:   bound = bind_as(std::type_identity<fuse::num::qd>{}); break;
       default:                bound = bind_as(std::type_identity<double>{}); break;
     }
     if (!bound.ok()) {
       return fail(&c, FUSE_ERR_INVALID, std::string(bound.error().code),
                  bound.error().message);
+    }
+    if (gradient > 0) {
+      const fuse::Result<void> declared = c.fields.declare_gradient(id, gradient);
+      if (!declared.ok()) {
+        return fail(&c, FUSE_ERR_INVALID, std::string(declared.error().code),
+                   declared.error().message);
+      }
     }
     return FUSE_OK;
   });
@@ -982,6 +1013,10 @@ fuse_status impl_view_field(fuse_ctx* ctx, const fuse_field_ref* in,
         element_type = FUSE_ELEMENT_BF16;
       } else if (any.holds<fuse::binary16>()) {
         element_type = FUSE_ELEMENT_F16;
+      } else if (any.holds<fuse::num::dd>()) {
+        element_type = FUSE_ELEMENT_DD;
+      } else if (any.holds<fuse::num::qd>()) {
+        element_type = FUSE_ELEMENT_QD;
       } else {
         return fail(&c, FUSE_ERR_UNSUPPORTED, "E-ABI-VIEW-ELEMENT",
                    "fuse_view_field: the field holds " +
@@ -1015,7 +1050,11 @@ fuse_status impl_view_field(fuse_ctx* ctx, const fuse_field_ref* in,
     out->element_type   = element_type;
     out->memspace       = FUSE_MEMSPACE_HOST;
     out->ownership      = FUSE_OWNERSHIP_OWNED;
-    out->components     = spec.components *
+    // The graph counts binary64 values; the view counts values of the element type:
+    // a double-double value is two of the graph's, a quad-double value four.
+    const std::int32_t limbs = element_type == FUSE_ELEMENT_DD ? 2
+                               : element_type == FUSE_ELEMENT_QD ? 4 : 1;
+    out->components     = spec.components / limbs *
                           static_cast<int32_t>(window_samples > 0 ? window_samples : 1);
     out->count          = entities;
     out->owned_count    = out->count;
@@ -1026,6 +1065,13 @@ fuse_status impl_view_field(fuse_ctx* ctx, const fuse_field_ref* in,
                            offsetof(fuse_field_view, window_samples) +
                                sizeof(out->window_samples))) {
       out->window_samples = window_samples;
+    }
+    if (struct_size_covers(declared_out_size,
+                           offsetof(fuse_field_view, gradient_size) +
+                               sizeof(out->gradient_size))) {
+      const fuse::Result<fuse::AnyFieldRef> declared = c.fields.get_any(field);
+      out->reserved      = 0;
+      out->gradient_size = declared.ok() ? declared.value().gradient_size() : 0;
     }
     return FUSE_OK;
   });

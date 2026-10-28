@@ -1,0 +1,37 @@
+# The graph arithmetic_consumer.f90 drives: test/abi/fortran/install_consumer/two_component.yaml with
+# two channels. The graph counts binary64 numbers per entity, so a double-double value is
+# components: 2, and a value with two derivatives is components: 3.
+version: 1
+meshes:
+  - {name: m1, source: "generated:line:4"}
+  - {name: m2, source: "generated:line:4"}
+regions:
+  - {name: r1, mesh: m1, dimension: 1}
+  - {name: r2, mesh: m2, dimension: 1}
+components:
+  - name: upstream
+    ranks: {first: 0, count: 1}
+    interval: 1
+    fields:
+      - {name: dd, region: r1, disc: FV, components: 2, units: K,
+         conservation: None, intent: Provides}
+      - {name: grad, region: r1, disc: FV, components: 3, units: K,
+         conservation: None, intent: Provides}
+  - name: downstream
+    ranks: {first: 0, count: 1}
+    interval: 1
+    fields:
+      - {name: dd, region: r2, disc: FV, components: 2, units: K,
+         conservation: None, intent: Requires}
+      - {name: grad, region: r2, disc: FV, components: 3, units: K,
+         conservation: None, intent: Requires}
+channels:
+  - name: link_dd
+    source: upstream.dd
+    target: downstream.dd
+    remap: {flags: [Conservative]}
+  - name: link_grad
+    source: upstream.grad
+    target: downstream.grad
+    remap: {flags: [Conservative]}
+iteration_regions: []
