@@ -13,6 +13,12 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - run: python3 tools/check-layering.py
+      # physics-kit's own naming check (docs/dev/physics-kit.md): KARMA*
+      # type prefix, karma_ file prefix, .C extension, scoped to
+      # physics-kit/ -- the four directories check-layering.py's own
+      # check_legacy() covers do not include it (on purpose: see that
+      # function's docstring).
+      - run: python3 tools/check-physics-kit-naming.py
       - run: python3 tools/check-invariants.py
       # Owner's 2026-10-15 ASCII-only ruling: every tracked source file
       # decodes as pure ASCII except *.md (reviewed by eye) and upstream/
@@ -129,6 +135,13 @@ jobs:
       # CONFIG) is satisfied by the fetched Kokkos through the redirect
       # fuse_resolve_dependencies() writes, and CMake refuses to disable a
       # REQUIRED find_package.
+      # -DFUSE_ENABLE_PHYSICS_KIT=ON is the cache default (cmake/
+      # FuseDependencies.cmake) already, on every leg in this matrix: none
+      # resolves MOAB or PETSc (tiers 2/3), and physics-kit needs nothing
+      # beyond what fuse::runtime/backend/num/linalg already need here.
+      # Named explicitly so these ARE the tier-0 legs physics-kit's gtest
+      # (physics.skeleton) runs on, rather than relying on a default a
+      # later change to that option could flip without this job noticing.
       - run: >
           cmake -S . -B build -G Ninja
           -DCMAKE_BUILD_TYPE=${{ matrix.build }}
@@ -137,6 +150,7 @@ jobs:
           -DFUSE_ENABLE_EXCEPTIONS=$FUSE_CI_EXCEPTIONS
           -DFUSE_ALLOW_FETCH=ON
           -DFUSE_BUILD_UPSTREAM_KARMA=OFF
+          -DFUSE_ENABLE_PHYSICS_KIT=ON
           -DKokkos_ENABLE_SERIAL=ON -DKokkos_ENABLE_OPENMP=$FUSE_CI_OPENMP
           -DCMAKE_DISABLE_FIND_PACKAGE_fmt=ON
           -DCMAKE_DISABLE_FIND_PACKAGE_GTest=ON -DCMAKE_DISABLE_FIND_PACKAGE_Eigen3=ON
