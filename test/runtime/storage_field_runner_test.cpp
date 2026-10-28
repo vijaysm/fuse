@@ -1,4 +1,4 @@
-// Fields of a Storage value type (binary32, bfloat16, binary16) through the
+// Fields of a Storage value type (binary32, bfloat16, binary16, posit16, posit32) through the
 // Runner and a real remap (plans/2026-10-22-universal-number-types.md, stage
 // U3). The components hold their arrays in the narrow type; everything the
 // coupler does between them is binary64. So the value a consumer receives is the
@@ -20,6 +20,7 @@
 #include <fuse/backend/serial_backend.hpp>
 #include <fuse/ir/lowering.hpp>
 #include <fuse/model/value_traits.hpp>
+#include <fuse/num/posit.hpp>
 #include <fuse/runtime/runner.hpp>
 
 #include <Kokkos_Core.hpp>
@@ -35,6 +36,8 @@
 
 using fuse::bfloat16;
 using fuse::binary16;
+using fuse::num::posit16;
+using fuse::num::posit32;
 using fuse::ComponentSet;
 using fuse::CouplingGraph;
 using fuse::FieldRegistry;
@@ -294,6 +297,21 @@ TEST(StorageFieldRunner, ABinary16ConsumerHoldsTheBinary64ResultRoundedOnce) {
   expect_single_rounding<binary16, binary16, binary16>(fuse::AccumOp::Instant, Rational{1}, false);
 }
 
+TEST(StorageFieldRunner, APosit16ConsumerHoldsTheBinary64ResultRoundedOnce) {
+  expect_single_rounding<posit16, posit16, posit16>(fuse::AccumOp::Instant, Rational{1}, false);
+}
+TEST(StorageFieldRunner, APosit32ConsumerHoldsTheBinary64ResultRoundedOnce) {
+  expect_single_rounding<posit32, posit32, posit32>(fuse::AccumOp::Instant, Rational{1}, false);
+}
+TEST(StorageFieldRunner, PositsMixWithTheOtherFormatsAcrossTheBoundary) {
+  expect_single_rounding<float, float, posit16>(fuse::AccumOp::Instant, Rational{1}, false);
+  expect_single_rounding<posit16, posit16, binary16>(fuse::AccumOp::Instant, Rational{1}, false);
+  expect_single_rounding<posit32, posit32, double>(fuse::AccumOp::Instant, Rational{1}, false);
+  expect_single_rounding<double, posit16, posit32>(fuse::AccumOp::Instant, Rational{1}, false);
+  expect_single_rounding<posit16, posit16, posit16>(fuse::AccumOp::Mean, Rational{1, 4}, false);
+  expect_single_rounding<posit32, posit32, posit16>(fuse::AccumOp::Sum, Rational{1, 4}, false, 3);
+}
+
 TEST(StorageFieldRunner, FormatsMixAcrossTheBoundaryAndBinary64IsOneOfThem) {
   expect_single_rounding<float, float, bfloat16>(fuse::AccumOp::Instant, Rational{1}, false);
   expect_single_rounding<bfloat16, bfloat16, double>(fuse::AccumOp::Instant, Rational{1}, false);
@@ -346,7 +364,9 @@ TEST(StorageFieldRunner, MeasuredRoundingStaysWithinTheUnitRoundoffInTheNormalRa
   const Outcome b16 = run<double, double, binary16>(fuse::AccumOp::Instant, Rational{1}, false, true);
   const Outcome bf = run<double, double, bfloat16>(fuse::AccumOp::Instant, Rational{1}, false, true);
   const Outcome f32 = run<double, double, float>(fuse::AccumOp::Instant, Rational{1}, false, true);
-  for (const auto* o : {&b16, &bf, &f32}) {
+  const Outcome p16 = run<double, double, posit16>(fuse::AccumOp::Instant, Rational{1}, false, true);
+  const Outcome p32 = run<double, double, posit32>(fuse::AccumOp::Instant, Rational{1}, false, true);
+  for (const auto* o : {&b16, &bf, &f32, &p16, &p32}) {
     ASSERT_TRUE(o->ran);
     const fuse::StorageFieldStats* d = nullptr;
     for (const auto& s : o->storage) if (s.delivered) d = &s;
@@ -357,6 +377,22 @@ TEST(StorageFieldRunner, MeasuredRoundingStaysWithinTheUnitRoundoffInTheNormalRa
     EXPECT_GT(d->max_relative_change, 0.0);
     EXPECT_LE(d->max_relative_change, d->unit_roundoff);
   }
+}
+
+TEST(StorageFieldRunner, ValuesBeyondAPositsRangeAreCountedAsOverflowAndClamped) {
+  // posit16 stops at 2^56, about 7.2e16: the values here are 1e18 and more
+  const Outcome o = run<double, double, posit16>(fuse::AccumOp::Instant, Rational{1}, false, true,
+                                                 1.0e18, 8, 5, 3);
+  ASSERT_TRUE(o.ran);
+  const fuse::StorageFieldStats* d = nullptr;
+  for (const auto& s : o.storage) if (s.delivered) d = &s;
+  ASSERT_NE(d, nullptr);
+  EXPECT_EQ(d->format, "posit16");
+  EXPECT_EQ(d->significand_bits, 12);
+  EXPECT_EQ(d->values, 15);
+  EXPECT_EQ(d->overflow, 15);
+  EXPECT_EQ(d->underflow, 0);
+  for (const double v : o.consumer) EXPECT_EQ(v, posit16::maxpos().to_double());
 }
 
 TEST(StorageFieldRunner, ValuesBeyondTheFormatsRangeAreCountedAsOverflow) {
@@ -414,6 +450,8 @@ TEST(StorageFieldRunner, FieldsRegisteredInDeviceMemoryAreConvertedByKernels) {
   expect_single_rounding<float, float, binary16>(fuse::AccumOp::Instant, Rational{1}, true);
   expect_single_rounding<binary16, binary16, double>(fuse::AccumOp::Mean, Rational{1, 4}, true);
   expect_single_rounding<double, bfloat16, float>(fuse::AccumOp::Sum, Rational{1, 4}, true, 2);
+  expect_single_rounding<posit16, posit16, posit32>(fuse::AccumOp::Instant, Rational{1}, true);
+  expect_single_rounding<float, float, posit16>(fuse::AccumOp::Mean, Rational{1, 4}, true);
 }
 
 TEST(StorageFieldRunner, MeasuredRoundingOnTheDeviceMatchesTheHost) {

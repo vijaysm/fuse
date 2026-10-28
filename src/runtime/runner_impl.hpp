@@ -24,6 +24,7 @@
 #include "fuse/linalg/comm.hpp"
 #include "fuse/num/accelerator.hpp"
 #include "fuse/num/arithmetic_kernels.hpp"
+#include "fuse/num/posit.hpp"
 #include "fuse/num/space_kernels.hpp"
 #include "fuse/num/storage_convert.hpp"
 #include "fuse/model/iteration.hpp"
@@ -76,13 +77,15 @@ struct Slot {
 /// closed list, because each one is a kernel instantiated on both execution
 /// spaces. A field of any other value type that is not an array of binary64
 /// scalars is refused by name (E-RT-FIELD-TYPE).
-enum class StorageFormat : std::uint8_t { Binary32, BFloat16, Binary16 };
+enum class StorageFormat : std::uint8_t { Binary32, BFloat16, Binary16, Posit16, Posit32 };
 
 [[nodiscard]] inline std::optional<StorageFormat> storage_format_of(
     const AnyFieldRef& f) noexcept {
   if (f.holds<float>()) return StorageFormat::Binary32;
   if (f.holds<bfloat16>()) return StorageFormat::BFloat16;
   if (f.holds<binary16>()) return StorageFormat::Binary16;
+  if (f.holds<num::posit16>()) return StorageFormat::Posit16;
+  if (f.holds<num::posit32>()) return StorageFormat::Posit32;
   return std::nullopt;
 }
 
@@ -91,17 +94,24 @@ enum class StorageFormat : std::uint8_t { Binary32, BFloat16, Binary16 };
     case StorageFormat::Binary32: return value_traits<float>::name;
     case StorageFormat::BFloat16: return value_traits<bfloat16>::name;
     case StorageFormat::Binary16: return value_traits<binary16>::name;
+    case StorageFormat::Posit16: return value_traits<num::posit16>::name;
+    case StorageFormat::Posit32: return value_traits<num::posit32>::name;
   }
   return {};
 }
 
 /// Significand precision p (the implicit bit included): the unit roundoff of
-/// rounding to nearest in the format is 2^-p.
+/// rounding to nearest in the format is 2^-p. For a posit it is the precision at the value
+/// one, the largest the format has: the precision falls by one bit for each factor of
+/// 2^(2^es) away from one, so a value far from one changes by more (the measured
+/// `max_relative_change` shows by how much).
 [[nodiscard]] inline int storage_format_precision(StorageFormat f) noexcept {
   switch (f) {
     case StorageFormat::Binary32: return 24;
     case StorageFormat::BFloat16: return bfloat16::format::precision;
     case StorageFormat::Binary16: return binary16::format::precision;
+    case StorageFormat::Posit16: return num::posit16::max_fraction_bits + 1;
+    case StorageFormat::Posit32: return num::posit32::max_fraction_bits + 1;
   }
   return 0;
 }
@@ -113,6 +123,8 @@ void visit_storage_format(StorageFormat f, F&& fn) {
     case StorageFormat::Binary32: fn(std::type_identity<float>{}); return;
     case StorageFormat::BFloat16: fn(std::type_identity<bfloat16>{}); return;
     case StorageFormat::Binary16: fn(std::type_identity<binary16>{}); return;
+    case StorageFormat::Posit16: fn(std::type_identity<num::posit16>{}); return;
+    case StorageFormat::Posit32: fn(std::type_identity<num::posit32>{}); return;
   }
 }
 

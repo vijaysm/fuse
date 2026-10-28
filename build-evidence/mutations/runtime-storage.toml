@@ -40,3 +40,23 @@ old = "        st.values += r.values;\n        st.overflow += r.overflow;"
 new = "        st.values = r.values;\n        st.overflow = r.overflow;"
 target = "fuse_runtime_storage_field_runner_test"
 test = "runtime.storage_field_runner"
+
+[[mutation]]
+id = "runner-posit-roundoff-is-reported-as-one-bit-better"
+area = "runtime_storage"
+describes = "the unit roundoff reported for a posit16 field is that of one more fraction bit"
+file = "src/runtime/runner_impl.hpp"
+old = "    case StorageFormat::Posit16: return num::posit16::max_fraction_bits + 1;"
+new = "    case StorageFormat::Posit16: return num::posit16::max_fraction_bits + 2;"
+target = "fuse_runtime_storage_field_runner_test"
+test = "runtime.storage_field_runner"
+
+[[mutation]]
+id = "runner-posit32-field-is-converted-as-posit16"
+area = "runtime_storage"
+describes = "a posit32 field is widened and rounded as a posit16 field"
+file = "src/runtime/runner_impl.hpp"
+old = "    case StorageFormat::Posit32: fn(std::type_identity<num::posit32>{}); return;"
+new = "    case StorageFormat::Posit32: fn(std::type_identity<num::posit16>{}); return;"
+target = "fuse_runtime_storage_field_runner_test"
+test = "runtime.storage_field_runner"

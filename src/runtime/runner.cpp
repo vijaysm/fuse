@@ -365,7 +365,7 @@ Result<void> Runner::Impl::resolve_buffers(FieldRegistry& registry) {
     // The field as scalars: a binary64 field as it is, a field of arrays of
     // binary64 (dual numbers) as `components * scalar_count` scalars, which is
     // what the plan sized the buffer for. A field of a Storage value type
-    // (binary32, bfloat16, binary16) is none of those: it has no binary64
+    // (binary32, bfloat16, binary16, posit16, posit32) is none of those: it has no binary64
     // storage to alias, so the arc gets a binary64 image of it, converted at
     // the component boundary (refresh_storage_images, deliver_storage_field).
     // Anything else is refused by name; it is bound, so "not bound" would be

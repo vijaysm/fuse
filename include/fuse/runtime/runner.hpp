@@ -60,7 +60,7 @@ struct RunnerConfig {
   /// false.
   bool        force_distributed_nodal_remap = false;
 
-  /// A field of a Storage value type (binary32, bfloat16, binary16) is
+  /// A field of a Storage value type (binary32, bfloat16, binary16, posit16, posit32) is
   /// converted at the component boundary: widened to binary64 exactly when a
   /// component has written it, and rounded once, to nearest with ties to even,
   /// when the coupler delivers into it (`RunStats::storage_fields`). With this
@@ -175,19 +175,21 @@ struct RunnerConfig {
 /// requires is rounded from binary64 once, when the coupler delivers into it.
 struct StorageFieldStats {
   std::string  field;          ///< "component.field"
-  std::string  format;         ///< "binary32", "bfloat16" or "binary16"
+  std::string  format;         ///< "binary32", "bfloat16", "binary16", "posit16" or "posit32"
   bool         delivered = false;  ///< true: the runtime writes (rounds) it; false: it reads (widens) it
   int          significand_bits = 0;
   /// 2^-significand_bits: a value in the format's normal range changes by at
-  /// most this fraction when it is rounded to the format.
+  /// most this fraction when it is rounded to the format. For a posit it is
+  /// the precision at the value one, the largest the format has; a value far
+  /// from one changes by more, which `max_relative_change` measures.
   double       unit_roundoff = 0.0;
   std::int64_t widenings = 0;  ///< times the field was read into binary64 (exact)
   std::int64_t narrowings = 0; ///< times the runtime rounded into it
   /// The rest is filled only under `RunnerConfig::measure_storage_rounding`,
   /// summed over every delivery.
   std::int64_t values = 0;     ///< finite values rounded
-  std::int64_t overflow = 0;   ///< of those, how many became an infinity
-  std::int64_t underflow = 0;  ///< nonzero values that became a zero
+  std::int64_t overflow = 0;   ///< of those, how many became an infinity (a posit: were clamped to its largest value)
+  std::int64_t underflow = 0;  ///< nonzero values that became a zero (a posit: were clamped to its smallest positive value)
   double       max_relative_change = 0.0;
 };
 
