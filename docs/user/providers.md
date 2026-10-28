@@ -494,7 +494,7 @@ See [](build.md) for enabling the Fortran bindings.
 | `E-ABI-PROVIDER-CREATE` / `-BIND` / `-ADVANCE` / `-SAVE` / `-RESTORE` | the named entry returned a non-`FUSE_OK` status |
 | `E-ABI-PROVIDER-CAPABILITIES` | the optional `capabilities()` entry exists but returned a non-`FUSE_OK` status |
 | `E-ABI-PROVIDER-WINDOW` | `advance()` echoed a different window than the one it was asked to run |
-| `E-ABI-PROVIDER-ELEMENT` | a field's `element_type` is not one of `FUSE_ELEMENT_F64`, `F32`, `BF16`, `F16`, `DD`, `QD` (`FUSE_ELEMENT_I64` names identifiers), or a device-resident field is not `FUSE_ELEMENT_F64` |
+| `E-ABI-PROVIDER-ELEMENT` | a field's `element_type` is not one of `FUSE_ELEMENT_F64`, `F32`, `BF16`, `F16`, `DD`, `QD`, `POSIT16`, `POSIT32` (`FUSE_ELEMENT_I64` names identifiers), or a device-resident field is not `FUSE_ELEMENT_F64` |
 | `E-ABI-PROVIDER-GRADIENT` | a row's `gradient_size` is negative, or not smaller than the row's `components` |
 | `E-ABI-PROVIDER-MEMSPACE` | a field's `memspace` is neither `FUSE_MEMSPACE_HOST` nor `FUSE_MEMSPACE_DEVICE` |
 | `E-ABI-PROVIDER-DEVICE-UNDECLARED` | a `describe()` row asks for `FUSE_MEMSPACE_DEVICE` but `capabilities()` did not report `FUSE_CAP_DEVICE_FIELDS` |
@@ -537,7 +537,7 @@ objects; FUSE does not apply either to plugins you build.
 
 ## Limitations
 
-- Provider fields must be one of the six element types above (`E-ABI-PROVIDER-ELEMENT`) and
+- Provider fields must be one of the eight element types above (`E-ABI-PROVIDER-ELEMENT`) and
   `FUSE_MEMSPACE_HOST` or `FUSE_MEMSPACE_DEVICE` (`E-ABI-PROVIDER-MEMSPACE`); a device-resident field
   is `FUSE_ELEMENT_F64` only. A field of an element type other than `FUSE_ELEMENT_F64` should belong to
   a provider placed on every rank of the run: a rank that does not host the component does not load

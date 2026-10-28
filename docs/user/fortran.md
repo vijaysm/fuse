@@ -164,7 +164,8 @@ All of kind `integer(c_int32_t)`, with the values of `fuse/abi/types.h`:
 - `FUSE_OK`, `FUSE_ERR_INVALID`, `FUSE_ERR_NOTFOUND`, `FUSE_ERR_STATE`, `FUSE_ERR_RUNTIME`,
   `FUSE_ERR_UNSUPPORTED`, `FUSE_ERR_VERSION`
 - `FUSE_ELEMENT_F64`, `FUSE_ELEMENT_I64`, `FUSE_ELEMENT_F32`, `FUSE_ELEMENT_BF16`,
-  `FUSE_ELEMENT_F16`, `FUSE_ELEMENT_DD`, `FUSE_ELEMENT_QD`
+  `FUSE_ELEMENT_F16`, `FUSE_ELEMENT_DD`, `FUSE_ELEMENT_QD`, `FUSE_ELEMENT_POSIT16`,
+  `FUSE_ELEMENT_POSIT32`
 - `FUSE_MEMSPACE_HOST`, `FUSE_MEMSPACE_DEVICE`
 - `FUSE_OWNERSHIP_OWNED`, `FUSE_OWNERSHIP_GHOSTED`, `FUSE_OWNERSHIP_REPLICATED`
 - `FUSE_CAP_DEVICE_FIELDS`, `FUSE_CAP_CHECKPOINT`, `FUSE_CAP_MPI`, `FUSE_CAP_MPI_CONNECT`,
@@ -514,6 +515,16 @@ limb index first:
 
 A quad-double value is `real(c_double) :: x(4, n)`, `FUSE_ELEMENT_QD`, and the graph declares
 `components: 4`. The coupler does its sums and remaps in the type and delivers every limb.
+
+A posit is its bit pattern: `integer(c_int16_t), target :: p(100)` with `FUSE_ELEMENT_POSIT16`, or
+`integer(c_int32_t)` with `FUSE_ELEMENT_POSIT32`, and the graph declares the ordinary `components: 1`.
+The pattern is a two's complement integer whose order is the order of the values, and the single
+pattern with only the sign bit set (`-32768` as `c_int16_t`) is NaR. Fortran has no posit type, so
+the program that computes in posits converts its own values to and from patterns; the coupler
+converts the pattern to binary64 and back as for the other Storage formats
+([](field-pipeline.md#storage-types-posit16-and-posit32)).
+`test/abi/fortran/posit_consumer.f90` is a complete program that registers `posit16`, `posit32` and
+mixed binary64-to-posit16 channels and checks the patterns that arrive.
 
 A component that carries a forward-mode derivative with respect to two parameters keeps a value
 and its two derivatives together, `real(c_double), target :: u(3, 100)`, declares `components: 3`

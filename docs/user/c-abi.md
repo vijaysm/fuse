@@ -91,7 +91,11 @@ below bound their loops with a period count instead.
 binary16) are registered the same way, with the storage you already have. The coupler widens
 such an array to binary64 exactly when your step has run and rounds into it once, to nearest with
 ties to even, when it delivers a value you require; `fuse_view_field` reports the element type you
-registered. See `docs/user/field-pipeline.md`, "Storage types". `FUSE_ELEMENT_I64` is not a coupled
+registered. `FUSE_ELEMENT_POSIT16` and `FUSE_ELEMENT_POSIT32` are the bit patterns, `uint16_t` and
+`uint32_t`, of the 2022 Posit Standard's `posit<16,2>` and `posit<32,2>`; the coupler treats them
+like the other Storage formats, except that a delivery saturates instead of overflowing and NaN and
+infinity become NaR (`docs/user/field-pipeline.md`, "Storage types: posit16 and posit32"). See
+`docs/user/field-pipeline.md`, "Storage types". `FUSE_ELEMENT_I64` is not a coupled
 value and is refused (`E-ABI-REGISTER-ELEMENT`).
 
 **Double-double and quad-double.** `FUSE_ELEMENT_DD` is an array of pairs of `double`, the larger
@@ -257,7 +261,7 @@ process of the communicator (or of the component) must make the call.
 | `request_restart_point` | `fuse_null` → `fuse_null` | Initialized | raises a flag asking for a restart point; no effect before `initialize` |
 
 Field intents and the other enumerators are defined in `fuse/abi/types.h`:
-`FUSE_ELEMENT_{F64,I64,F32,BF16,F16,DD,QD}`, `FUSE_MEMSPACE_{HOST,DEVICE}`,
+`FUSE_ELEMENT_{F64,I64,F32,BF16,F16,DD,QD,POSIT16,POSIT32}`, `FUSE_MEMSPACE_{HOST,DEVICE}`,
 `FUSE_OWNERSHIP_{OWNED,GHOSTED,REPLICATED}`, and the `FUSE_CAP_*` bits.
 
 ## Setup: communicator, end time and `my_component`
@@ -326,7 +330,7 @@ by `delivery_field`, below).
 `register_field` binds your own storage to a handle. FUSE keeps the pointer and never copies the
 data; the storage must stay valid and at the same address until `destroy()`. The rules:
 
-- `element_type` must be `FUSE_ELEMENT_F64`, `F32`, `BF16`, `F16`, `DD` or `QD`
+- `element_type` must be `FUSE_ELEMENT_F64`, `F32`, `BF16`, `F16`, `DD`, `QD`, `POSIT16` or `POSIT32`
   (`E-ABI-REGISTER-ELEMENT`; `FUSE_ELEMENT_I64` names identifiers, not coupled values).
 - `memspace` must be `FUSE_MEMSPACE_HOST` (`E-ABI-REGISTER-MEMSPACE`). Device pointers are
   accepted only on the provider side ([](providers.md)).

@@ -597,3 +597,13 @@ The graph counts binary64 values per entity and a view counts values of its elem
 That is the one place the two meanings of "components" differ, because the graph carries no element
 type: it is fixed when a field is bound. `fuse_field_ref.components` keeps reporting the graph's
 count, and `view_field` reports the view's.
+
+### Posit element types: a third growth, rule 2 (2026-10-28)
+
+Two more enumerators, `FUSE_ELEMENT_POSIT16` (7) and `FUSE_ELEMENT_POSIT32` (8), name the 16-bit and
+32-bit posits of the 2022 Posit Standard (`posit<16,2>`, `posit<32,2>`). They change no layout: the
+`element_type` word already existed and a caller that never passes them sees nothing different. A view
+holds the bit patterns (`uint16_t`, `uint32_t`; `integer(c_int16_t)`, `integer(c_int32_t)` in
+Fortran), `view.components` counts values as for any Storage type, and `fuse_view_field` reports the
+element type that was registered. The one declaration is `include/fuse/abi/entries.def`; `types.h`,
+`ffuse.f90` and the goldens came from `tools/gen-abi.py --write`.

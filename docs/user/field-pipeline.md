@@ -220,7 +220,8 @@ give 2^24.
 
 A type can be a field value type when it is trivially copyable and has a
 `fuse::value_traits<T>` specialization (`fuse/model/value_traits.hpp`). FUSE
-provides binary64, binary32, `fuse::bfloat16` and `fuse::binary16`; you can add your own:
+provides binary64, binary32, `fuse::bfloat16`, `fuse::binary16` and the posits `fuse::num::posit16` and
+`fuse::num::posit32`; you can add your own:
 
 ```cpp
 struct Dual3 { double v[4]; };   // a value and a gradient of three entries
@@ -243,7 +244,7 @@ struct fuse::value_traits<Dual3> {
 |---|---|---|
 | `ScalarArray` | an array of `scalar_count` scalars of `scalar_type`; every field operation acts on each scalar separately | binary64 (one scalar), complex numbers, forward-mode dual numbers |
 | `Arithmetic` | `scalar_count` limbs (binary64 values) that are one number; the operators that add or multiply values do it in the type, from a closed list | double-double, quad-double |
-| `Storage` | a compact format, widened exactly to binary64 and rounded once on return | binary32, bfloat16, binary16 |
+| `Storage` | a compact format, widened exactly to binary64 and rounded once on return | binary32, bfloat16, binary16, posit16, posit32 |
 
 `fuse::CoupledValue<T>` checks these requirements at compile time, including
 that a `ScalarArray` type's scalars tile it exactly. A type without
@@ -303,8 +304,47 @@ What this does not cover:
   [](providers.md)).
 - **Minimum and maximum accumulation** work: the minimum of the widened values
   is the widened minimum, and it is rounded once on delivery.
-- A format other than these three is refused with `E-RT-FIELD-TYPE`, naming the
-  type; adding one is a new instantiation of the kernels, not a registration.
+- A format other than these and the posits below is refused with `E-RT-FIELD-TYPE`,
+  naming the type; adding one is a new instantiation of the kernels, not a
+  registration.
+
+### Storage types: posit16 and posit32
+
+`fuse::num::posit16` and `fuse::num::posit32` (`fuse/num/posit.hpp`) are the 16-bit and
+32-bit posits of the 2022 Posit Standard, `posit<16, 2>` and `posit<32, 2>` (two
+exponent bits at both widths). They are Storage types like binary32 and bfloat16:
+bind the array as it is (`BasicFieldRef<fuse::num::posit16>`), or register it through the
+C or Fortran interface with `FUSE_ELEMENT_POSIT16` or `FUSE_ELEMENT_POSIT32` (an array of
+the 16-bit or 32-bit patterns), and the coupler widens it exactly to binary64 and rounds
+once into it, as described above. What differs from the IEEE formats:
+
+- **Tapered precision.** A posit has the most fraction bits near one (11 for `posit16`,
+  27 for `posit32`) and fewer as the magnitude grows or shrinks, so its relative rounding
+  error is not one number. `RunStats::storage_fields` reports the unit roundoff at its
+  best, 2^-12 and 2^-28, which is what a value near one sees.
+- **Range.** `posit16` covers 2^-56 to 2^56 and `posit32` 2^-120 to 2^120.
+- **Saturation.** A posit has no infinity and no signed zero, and rounding never
+  produces zero from a nonzero value or overflows: a value past the largest posit becomes
+  the largest posit, and a nonzero value below the smallest becomes the smallest. With
+  `RunnerConfig::measure_storage_rounding` those are counted as overflow and underflow,
+  like an infinity or a zero in the IEEE formats. Delivering into a posit field is
+  therefore the one conversion whose result is never infinite.
+- **NaR.** The single pattern `1000...0` (Not a Real) stands for every NaN and infinity: a
+  binary64 NaN or infinity becomes NaR on delivery, and NaR widens to a quiet NaN. It is
+  the most negative pattern in the order of the patterns, which is the order of the values.
+- **Rounding.** To nearest, ties to the even pattern, once, from binary64, by the rule of
+  the standard: the boundary between two neighbours is the value of the pattern one bit
+  longer, so it is the midpoint of the two where they differ in a fraction bit and a
+  different point where they differ in an exponent or regime bit. `posit_test.cpp` checks
+  every boundary of `posit16`.
+
+In component code `posit16` and `posit32` are device-callable types: `+ - * /` and
+`sqrt` return the correctly rounded posit of the exact result (the same saturating rule),
+the comparison operators are the integer order of the patterns, and `bits()` and
+`from_bits()` give the pattern. `test/num/posit_test.cpp` checks every 16-bit pattern,
+the boundaries between neighbours, and the arithmetic against exact values;
+`test/num/posit_universal_test.cpp` compares the patterns with stillwater-sc/universal
+(see "Testing against Universal" in the section on double-double and quad-double).
 
 ### Forward-mode gradients
 
@@ -460,12 +500,15 @@ What this does not cover:
 (default off; Universal is a header-only checkout, never a dependency of the
 library). Universal's headers do not compile under nvcc, so they are built into a
 small separate program (`test/num/universal_oracle.cpp`) with a host compiler, and
-the test (`num.dd_universal`) runs that program on files of operands and compares
-what it returns. The compiler is `FUSE_UNIVERSAL_CXX`; it defaults to the project's
+the tests (`num.dd_universal` and `num.posit_universal`) run that program on files of
+operands and compare what it returns. The compiler is `FUSE_UNIVERSAL_CXX`; it defaults to the project's
 C++ compiler, which is right for a host build, and on a CUDA build (where that is
-`nvcc_wrapper`) has to be set to `g++` or `clang++`. The test compares `+ - * /` and
-`sqrt` of both types on random operands, on operands of very different magnitudes,
-on operands that cancel, and on the special values.
+`nvcc_wrapper`) has to be set to `g++` or `clang++`. The double-double test compares
+`+ - * /` and `sqrt` of both types on random operands, on operands of very different
+magnitudes, on operands that cancel, and on the special values; the posit test compares
+patterns pattern for pattern: the decoding of every 16-bit pattern and a sample of 32-bit
+ones, the conversion from binary64 at the boundaries between neighbours and at random, and
+the five operations.
 
 ## Portable kernels
 
