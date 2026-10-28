@@ -4,11 +4,16 @@
 #include <cstdint>
 #include <cstring>
 #include <optional>
+#include <type_traits>
 #include <unordered_set>
 
 #include "fuse/abi/rank_share.hpp"
 #include "fuse/base/rational.hpp"
 #include "fuse/field/field_ref.hpp"
+#include "fuse/model/bfloat16.hpp"
+#include "fuse/model/binary16.hpp"
+#include "fuse/num/dd.hpp"
+#include "fuse/num/qd.hpp"
 #include "fuse/model/capabilities.hpp"
 
 namespace fuse::abi_detail {
@@ -343,7 +348,11 @@ fuse::Result<void> ProviderAdapter::register_fields(fuse::FieldRegistry& registr
       }
       const fuse_field_spec& row = *it->second;
       const std::int32_t expected_intent = static_cast<std::int32_t>(spec.intent);
-      if (row.components != spec.components ||
+      // The graph counts binary64 values per entity; a row counts values of its own
+      // element type, and a double-double value is two of the graph's, a quad-double four.
+      const int limbs = row.element_type == FUSE_ELEMENT_DD ? 2 : row.element_type == FUSE_ELEMENT_QD ? 4 : 1;
+      const int values_per_entity = spec.components / limbs;
+      if (spec.components % limbs != 0 || row.components != values_per_entity ||
           (row.intent != expected_intent && row.intent != 2 && expected_intent != 2)) {
         return fuse::Failure{
             "E-ABI-DESCRIBE",
@@ -353,10 +362,37 @@ fuse::Result<void> ProviderAdapter::register_fields(fuse::FieldRegistry& registr
                 "; describe(): components=" + std::to_string(row.components) +
                 " intent=" + std::to_string(row.intent) + ")"};
       }
-      if (row.element_type != FUSE_ELEMENT_F64) {
+      // FUSE allocates the field in the element type the row names and the plugin binds
+      // to it: binary64, the storage types (binary32, bfloat16, binary16), or the
+      // arithmetic types (double-double, quad-double).
+      std::size_t element_size = 0;
+      switch (row.element_type) {
+        case FUSE_ELEMENT_F64:  element_size = sizeof(double); break;
+        case FUSE_ELEMENT_F32:  element_size = sizeof(float); break;
+        case FUSE_ELEMENT_BF16: element_size = sizeof(fuse::bfloat16); break;
+        case FUSE_ELEMENT_F16:  element_size = sizeof(fuse::binary16); break;
+        case FUSE_ELEMENT_DD:   element_size = sizeof(fuse::num::dd); break;
+        case FUSE_ELEMENT_QD:   element_size = sizeof(fuse::num::qd); break;
+        default: break;
+      }
+      if (element_size == 0) {
+        return fuse::Failure{"E-ABI-PROVIDER-ELEMENT",
+                             "provider '" + name_ + "': field '" + spec.name + "' has element_type " +
+                                 std::to_string(row.element_type) + ", which is not one of "
+                                 "FUSE_ELEMENT_F64, F32, BF16, F16, DD or QD (FUSE_ELEMENT_I64 "
+                                 "names identifiers, not coupled values)"};
+      }
+      if (row.element_type != FUSE_ELEMENT_F64 && row.memspace == FUSE_MEMSPACE_DEVICE) {
         return fuse::Failure{"E-ABI-PROVIDER-ELEMENT",
                              "provider '" + name_ + "': field '" + spec.name +
-                                 "' is not FUSE_ELEMENT_F64, the only element type this host supports"};
+                                 "' asks for device storage with an element type other than "
+                                 "FUSE_ELEMENT_F64; device-resident provider fields are binary64 only"};
+      }
+      if (row.gradient_size < 0 || (row.gradient_size > 0 && row.gradient_size >= values_per_entity)) {
+        return fuse::Failure{"E-ABI-PROVIDER-GRADIENT",
+                             "provider '" + name_ + "': field '" + spec.name + "' reports gradient_size " +
+                                 std::to_string(row.gradient_size) + ", which must be 0, or at least 1 and "
+                                 "less than its " + std::to_string(values_per_entity) + " components"};
       }
 
       // KNOWN_ISSUES.md D15 item 1 (Stage B-2, Option A): a field whose
@@ -507,17 +543,35 @@ fuse::Result<void> ProviderAdapter::register_fields(fuse::FieldRegistry& registr
         field_space = fuse::MemorySpace::Device;
         has_device_fields_ = true;
       } else {
-        storage_[i].assign(count * static_cast<std::size_t>(spec.components), 0.0);
+        // the field's bytes, in whole doubles: every element type here is no more aligned
+        // than a double
+        const std::size_t bytes =
+            count * static_cast<std::size_t>(values_per_entity) * element_size;
+        storage_[i].assign((bytes + sizeof(double) - 1) / sizeof(double), 0.0);
         base = storage_[i].data();
       }
 
-      const fuse::Layout layout{.stride = static_cast<std::size_t>(spec.components),
+      const fuse::Layout layout{.stride = static_cast<std::size_t>(values_per_entity),
                                 .component_stride = 1,
                                 .count = count,
-                                .components = spec.components};
-      fuse::Result<void> bound =
-          registry.bind(fid, fuse::FieldRef{base, layout, field_space});
+                                .components = values_per_entity};
+      const auto bind_as = [&]<class T>(std::type_identity<T>) {
+        return registry.bind(fid, fuse::BasicFieldRef<T>{reinterpret_cast<T*>(base), layout, field_space});
+      };
+      fuse::Result<void> bound = fuse::Result<void>::success();
+      switch (row.element_type) {
+        case FUSE_ELEMENT_F32:  bound = bind_as(std::type_identity<float>{}); break;
+        case FUSE_ELEMENT_BF16: bound = bind_as(std::type_identity<fuse::bfloat16>{}); break;
+        case FUSE_ELEMENT_F16:  bound = bind_as(std::type_identity<fuse::binary16>{}); break;
+        case FUSE_ELEMENT_DD:   bound = bind_as(std::type_identity<fuse::num::dd>{}); break;
+        case FUSE_ELEMENT_QD:   bound = bind_as(std::type_identity<fuse::num::qd>{}); break;
+        default:                bound = bind_as(std::type_identity<double>{}); break;
+      }
       if (!bound.ok()) return bound;
+      if (row.gradient_size > 0) {
+        const fuse::Result<void> declared = registry.declare_gradient(fid, row.gradient_size);
+        if (!declared.ok()) return declared;
+      }
 
       // D24/D15 round 3: the PLUGIN's own bind() is skipped entirely when
       // `count == 0` -- `base` (storage_[i].data() on a just-.assign(0,
@@ -548,13 +602,14 @@ fuse::Result<void> ProviderAdapter::register_fields(fuse::FieldRegistry& registr
       if (count > 0) {
         fuse_field_view view{sizeof(fuse_field_view)};
         view.handle            = static_cast<std::int32_t>(fid.value());
-        view.element_type      = FUSE_ELEMENT_F64;
+        view.element_type      = row.element_type;
         view.memspace          = wants_device ? FUSE_MEMSPACE_DEVICE : FUSE_MEMSPACE_HOST;
         view.ownership         = FUSE_OWNERSHIP_OWNED;
-        view.components        = spec.components;
+        view.components        = values_per_entity;
+        view.gradient_size     = row.gradient_size;
         view.count             = count;
         view.owned_count       = count;
-        view.stride             = static_cast<std::int64_t>(spec.components);
+        view.stride             = static_cast<std::int64_t>(values_per_entity);
         view.component_stride    = 1;
         view.data               = base;
         fuse_null bout{sizeof(fuse_null)};

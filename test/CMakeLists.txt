@@ -2556,6 +2556,9 @@ target_include_directories(fuse_abi_storage_element_test PRIVATE ${CMAKE_SOURCE_
 # FUSE_ELEMENT_DD and FUSE_ELEMENT_QD, and a registered field's gradient_size, through the C table.
 fuse_add_gtest(abi arithmetic_element LIBS fuse_abi_test_support)
 target_include_directories(fuse_abi_arithmetic_element_test PRIVATE ${CMAKE_SOURCE_DIR}/src/abi)
+# A provider plugin's fields in the element types the host allocates for them, and gradient_size.
+fuse_add_gtest(abi typed_provider NO_LAYER_LIB LIBS fuse::abi-static fuse_abi_test_support)
+target_include_directories(fuse_abi_typed_provider_test PRIVATE ${CMAKE_SOURCE_DIR}/src/abi)
 
 # review-2026-10-11 abi: AB-9's table-driven negative-test sweep over the
 # participant-ABI refusal codes no test fired.
