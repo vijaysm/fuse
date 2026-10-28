@@ -146,16 +146,21 @@ FUSE calls your table in this order, once per instance:
    `E-ABI-PROVIDER-CAPABILITIES`; absence means "no optional capability"). FUSE always assumes the
    plugin has hidden state.
 3. `describe`, as a size query and then a fill. Each row is a `fuse_field_spec`: `name`,
-   `components`, `intent` (0 Provides, 1 Requires, 2 both), `element_type`, `memspace`. Rows are
-   matched to the graph's field declarations for your component **by name**, and must agree in
-   `components` and `intent`. A row the graph does not declare, a declared field without a row, or a
-   mismatch is refused with `E-ABI-DESCRIBE`. A `describe` call that itself fails is
+   `components`, `intent` (0 Provides, 1 Requires, 2 both), `element_type`, `memspace` and
+   `gradient_size`. Rows are matched to the graph's field declarations for your component **by
+   name**, and must agree in `components` and `intent`: the graph counts binary64 numbers per
+   entity and a row counts values of its `element_type`, so a `FUSE_ELEMENT_DD` row of `1` agrees
+   with a graph field of `2` components (a `FUSE_ELEMENT_QD` row of `1` with `4`). A row the graph
+   does not declare, a declared field without a row, or a mismatch is refused with
+   `E-ABI-DESCRIBE`. A `describe` call that itself fails is
    `E-ABI-PROVIDER-DESCRIBE`.
 4. `bind`, once per graph field, **in the order the graph declares the fields** for your component.
    FUSE allocates and owns the storage (sized to this rank's share of the region, see
-   [Plugins on multi-rank components](#plugins-on-multi-rank-components)) and hands you a
-   `fuse_field_view` on it: keep `data` and `count`; write exports and read imports through them at
-   every `advance`. On a rank whose share of a field is empty, `bind` is skipped for that field.
+   [Plugins on multi-rank components](#plugins-on-multi-rank-components)) in the element type the
+   row named, and hands you a `fuse_field_view` on it: keep `data` and `count`; write exports and
+   read imports through them at every `advance`, as `double`, `float`, 16-bit patterns, pairs or
+   quadruples of `double` according to `view.element_type` (see [](c-abi.md#fields-field_handle-and-register_field)
+   for the layouts), with `view.components` and `view.stride` counting values of that type. On a rank whose share of a field is empty, `bind` is skipped for that field.
 5. `advance(req)`, once per step. `req.t_begin`/`req.t_end` are the exact window to integrate,
    `req.step` the step index, `req.iteration` the sweep index inside an iteration region (0
    outside). `req.requires_checkpoint`/`requires_restore` are always 0 here: FUSE calls
@@ -489,7 +494,8 @@ See [](build.md) for enabling the Fortran bindings.
 | `E-ABI-PROVIDER-CREATE` / `-BIND` / `-ADVANCE` / `-SAVE` / `-RESTORE` | the named entry returned a non-`FUSE_OK` status |
 | `E-ABI-PROVIDER-CAPABILITIES` | the optional `capabilities()` entry exists but returned a non-`FUSE_OK` status |
 | `E-ABI-PROVIDER-WINDOW` | `advance()` echoed a different window than the one it was asked to run |
-| `E-ABI-PROVIDER-ELEMENT` | a field is not `FUSE_ELEMENT_F64`, the only element type this host supports through this ABI |
+| `E-ABI-PROVIDER-ELEMENT` | a field's `element_type` is not one of `FUSE_ELEMENT_F64`, `F32`, `BF16`, `F16`, `DD`, `QD` (`FUSE_ELEMENT_I64` names identifiers), or a device-resident field is not `FUSE_ELEMENT_F64` |
+| `E-ABI-PROVIDER-GRADIENT` | a row's `gradient_size` is negative, or not smaller than the row's `components` |
 | `E-ABI-PROVIDER-MEMSPACE` | a field's `memspace` is neither `FUSE_MEMSPACE_HOST` nor `FUSE_MEMSPACE_DEVICE` |
 | `E-ABI-PROVIDER-DEVICE-UNDECLARED` | a `describe()` row asks for `FUSE_MEMSPACE_DEVICE` but `capabilities()` did not report `FUSE_CAP_DEVICE_FIELDS` |
 | `E-ABI-PROVIDER-NO-DEVICE` | a correctly declared device field, but this FUSE build has no CUDA/HIP/SYCL backend |
@@ -531,8 +537,13 @@ objects; FUSE does not apply either to plugins you build.
 
 ## Limitations
 
-- Provider fields must be `FUSE_ELEMENT_F64` (`E-ABI-PROVIDER-ELEMENT`) and `FUSE_MEMSPACE_HOST` or
-  `FUSE_MEMSPACE_DEVICE` (`E-ABI-PROVIDER-MEMSPACE`).
+- Provider fields must be one of the six element types above (`E-ABI-PROVIDER-ELEMENT`) and
+  `FUSE_MEMSPACE_HOST` or `FUSE_MEMSPACE_DEVICE` (`E-ABI-PROVIDER-MEMSPACE`); a device-resident field
+  is `FUSE_ELEMENT_F64` only. A field of an element type other than `FUSE_ELEMENT_F64` should belong to
+  a provider placed on every rank of the run: a rank that does not host the component does not load
+  the plugin, so it cannot know the element type and binds the field as binary64 with no entries.
+- `gradient_size` in a row marks the last components of each entity as the gradient of the leading
+  ones, as it does for a participant ([](c-abi.md#fields-field_handle-and-register_field)).
 - `FUSE_MEMSPACE_DEVICE` needs a build with a CUDA, HIP or SYCL backend.
 - `bind()` carries no field name; a multi-field plugin relies on the graph's declared field order.
 - `create()` takes no arguments: a plugin's run-time configuration comes from its own environment

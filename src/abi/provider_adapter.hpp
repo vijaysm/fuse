@@ -83,6 +83,14 @@ class ProviderAdapter final : public fuse::Component {
   /// this adapter from the plugin registry) -- never again after.
   void set_hosting_rank(std::optional<int> rank) { hosting_rank_ = rank; }
 
+  /// The bytes FUSE allocated in host memory for the `index`-th field this
+  /// component declares (graph order), after register_fields(); 0 for a field
+  /// in device memory or an index past the last. For tests and diagnostics: it
+  /// is what an element type's size and a row's component count must add up to.
+  [[nodiscard]] std::size_t host_storage_bytes(std::size_t index) const noexcept {
+    return index < storage_.size() ? storage_[index].size() * sizeof(double) : 0;
+  }
+
   [[nodiscard]] std::string name() const override { return name_; }
 
   fuse::Result<void> register_fields(fuse::FieldRegistry& registry,

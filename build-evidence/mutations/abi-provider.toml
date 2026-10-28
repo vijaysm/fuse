@@ -36,7 +36,11 @@ area = "abi-provider"
 describes = "ProviderAdapter::register_fields()'s cross-check between the graph's own field declaration and the plugin's describe() response (components count and intent) is removed, so a plugin whose describe() disagrees with the graph -- here, reporting 2 components for a field the graph declares as 1 -- is accepted instead of refused with E-ABI-DESCRIBE naming the field"
 file = "src/abi/provider_adapter.cpp"
 old = """      const std::int32_t expected_intent = static_cast<std::int32_t>(spec.intent);
-      if (row.components != spec.components ||
+      // The graph counts binary64 values per entity; a row counts values of its own
+      // element type, and a double-double value is two of the graph's, a quad-double four.
+      const int limbs = row.element_type == FUSE_ELEMENT_DD ? 2 : row.element_type == FUSE_ELEMENT_QD ? 4 : 1;
+      const int values_per_entity = spec.components / limbs;
+      if (spec.components % limbs != 0 || row.components != values_per_entity ||
           (row.intent != expected_intent && row.intent != 2 && expected_intent != 2)) {
         return fuse::Failure{
             \"E-ABI-DESCRIBE\",
@@ -47,6 +51,8 @@ old = """      const std::int32_t expected_intent = static_cast<std::int32_t>(sp
                 \" intent=\" + std::to_string(row.intent) + \")\"};
       }"""
 new = """      const std::int32_t expected_intent = static_cast<std::int32_t>(spec.intent);
+      const int limbs = row.element_type == FUSE_ELEMENT_DD ? 2 : row.element_type == FUSE_ELEMENT_QD ? 4 : 1;
+      const int values_per_entity = spec.components / limbs;
       (void)expected_intent;"""
 target = "fuse_abi_conformance_test"
 test = "abi.conformance"
