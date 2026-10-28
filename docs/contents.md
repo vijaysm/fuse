@@ -99,6 +99,7 @@ dev/device-resident-arcs
 dev/physics-kit-disposition
 dev/integrators-design
 dev/field-semantics-matrix
+dev/physics-kit
 dev/roadmap
 dev/soma-import
 ```

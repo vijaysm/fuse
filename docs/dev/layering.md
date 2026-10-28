@@ -48,6 +48,23 @@ no directory ever matched `interface`.
 `physics-kit/` is a separate optional component. It **depends on FUSE and never the reverse** — that
 direction is what keeps FUSE adoptable by a code that already has its own discretisation.
 
+Enforced by `tools/check-layering.py`'s `check_physics_kit_boundary` (added at the S8.1 skeleton):
+nothing under `include/fuse/`, `src/`, `python/` or `examples/` — fuse proper — may include a
+`fuse_physics/` header (physics-kit's own include root, outside `include/fuse/` entirely) or name
+`fuse::physics_kit` in a `target_link_libraries()` call; `physics-kit/` itself is exempt from both,
+since depending on FUSE is exactly what it is for. physics-kit is not given a rank in `LAYERS`
+above: a rank taller than every fuse:: layer would still let a fuse:: layer be mis-ranked above it,
+and `physics-kit/` is not under `include/fuse/` for the walk in `main()` to reach in the first
+place, so the direction is checked as its own pass instead. Proven to fire against a probe header
+(`#include "fuse_physics/version.hpp"` placed under `include/fuse/base/`) and a probe
+`target_link_libraries(... fuse::physics_kit)` (placed under `src/`), both producing a violation
+line and both removed once the proof was captured — the S8.1 skeleton track's `measured_results`
+has the verbatim output. `docs/dev/physics-kit.md` is this component's own page; naming
+(`KARMA*`/`karma_`/`.C`) under `physics-kit/` is a separate gate, `tools/check-physics-kit-
+naming.py`, because `tools/check-layering.py`'s own naming check (`check_legacy`) is scoped to the
+four fuse-proper directories by a fixed tuple and physics-kit is deliberately not a fifth member of
+it (this paragraph's own enforcement is the opposite direction from that check).
+
 ## Why the bottom half is dependency-light
 
 `base` through `num` need only a C++20 compiler, Kokkos and a linear-algebra backend. That is not
