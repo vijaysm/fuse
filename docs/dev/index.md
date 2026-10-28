@@ -73,6 +73,15 @@ history and the reduction scratch resident in the execution space's memory, host
 at named boundaries, the mesh/topology builders made Space-generic, and the GPU-aware transport path
 for multi-rank device runs.
 
+## physics-kit (S8)
+
+[](physics-kit-disposition.md) is the S8.0 inventory of the vendored KARMA tree: the per-file
+supersession table, the include graph and import order, the test mapping and the baselines the
+port must reproduce, with the lead's corrections after review at the end. [](integrators-design.md)
+is the read-first design for porting KARMA's 22 Runge-Kutta and Rosenbrock tableaus into `fuse::num`
+as templates with a separate embedded-error controller, the contract with the coupling window, and
+the owner's decisions on its open questions.
+
 ## Holding an external path to the bar
 
 [](conformance.md) defines what "conformance" means for an external code coupling through the
