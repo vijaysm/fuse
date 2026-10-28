@@ -118,7 +118,7 @@ set(FUSE_ARBORX_COMMIT  "8f89be60bc3797670b9be8843da7dcdbc5f2333f")
 # it is silently skipped and resolution later fails with 'no content details'.
 option(FUSE_ENABLE_MPI     "Tier 1: MPI transport, CommGraph, epochs across ranks" OFF)
 option(FUSE_ENABLE_MOAB    "Tier 2: MOAB mesh backend, Intx2Mesh, TempestRemap"    OFF)
-option(FUSE_ENABLE_PETSC   "Tier 3: PETSc solver plugin and physics-kit"           OFF)
+option(FUSE_ENABLE_PETSC   "Tier 3: PETSc solver plugin (optional for physics-kit)"   OFF)
 option(FUSE_ENABLE_LOWFIVE "HDF5-VOL interception transport"                        OFF)
 # Restart track (docs/dev/restart.md), Slice 1. Plain HDF5 I/O for restart-to-
 # disk and the XDMF sidecar -- never LowFive's VOL property list, so a restart
@@ -137,6 +137,17 @@ option(FUSE_ENABLE_CUSPARSE "cuSOLVER/cuSPARSE device sparse LU for the FSI and 
 option(FUSE_ENABLE_PYTHON  "pybind11 module"                                        OFF)
 option(FUSE_ENABLE_FORTRAN "Fortran participant shim"                               OFF)
 option(FUSE_ENABLE_TESTS   "Build the test suite"                                   ON)
+# physics-kit (docs/dev/physics-kit.md), S8's optional finite-element
+# component. Default ON, unlike FUSE_ENABLE_PYTHON/FORTRAN just above:
+# those add a real third-party dependency (pybind11, a Fortran compiler)
+# this option does not -- physics-kit links only fuse::runtime,
+# fuse::backend, fuse::num and fuse::linalg (physics-kit/CMakeLists.txt),
+# every one of them already required at tier 0, so there is nothing tier-0
+# would lose by building it by default. FUSE_ENABLE_PETSC, several lines
+# above, is unaffected either way: physics-kit reads the resulting
+# FUSE_HAVE_PETSC define (fuse/base/config.hpp) but adds no PETSc
+# find_package of its own and needs no option to gate that reading.
+option(FUSE_ENABLE_PHYSICS_KIT "physics-kit: the optional finite-element component (tier 0; PETSc optional)" ON)
 # OFF turns every FUSE_THROW/ASSERT/REFUSE into report-then-abort after the same
 # on-error policy has run; the types and call sites are unconditional either way.
 option(FUSE_ENABLE_EXCEPTIONS "Throw C++ exceptions on errors (OFF = report and abort)" ON)

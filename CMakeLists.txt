@@ -98,6 +98,20 @@ if(FUSE_ENABLE_TESTS)
   target_link_libraries(fuse_write_golden_descriptor PRIVATE fuse::model)
 endif()
 
+# physics-kit (docs/dev/physics-kit.md), S8's optional finite-element
+# component -- a separate component, not a fuse:: layer (docs/dev/
+# layering.md), so it is added here rather than from inside src/
+# CMakeLists.txt's layer list. AFTER the FUSE_ENABLE_TESTS block just
+# above, and for the SAME reason the comment below gives for examples/:
+# physics-kit/test/ registers its own gtest through test/CMakeLists.txt's
+# fuse_add_gtest (test/CMakeLists.txt's own function, called from outside
+# its directory tree -- see physics-kit/test/CMakeLists.txt's comment),
+# which must already be defined, and its add_test() needs the
+# CTestTestfile.cmake machinery include(CTest) above already started.
+if(FUSE_ENABLE_PHYSICS_KIT)
+  add_subdirectory(physics-kit)
+endif()
+
 # AFTER enable_testing() and after test/, because the examples register ctest
 # entries of their own: added earlier, no CTestTestfile.cmake is generated for
 # that directory and the examples would build but never run. The parent
