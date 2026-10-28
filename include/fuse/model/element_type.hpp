@@ -104,6 +104,11 @@ enum class ElementType : std::uint8_t {
   Bool = 13,      ///< Stored as one `UInt8` byte, 0 or 1 -- `element_type`
                   ///< says `Bool`, not `UInt8`, so a reader can refuse a
                   ///< byte that is neither (docs/dev/restart.md Section 11).
+  Posit16 = 14,   ///< `fuse::num::posit<16, 2>` (fuse/num/posit.hpp, the 2022
+                  ///< Posit Standard), stored as the unsigned 16-bit integer
+                  ///< of its bit pattern.
+  Posit32 = 15,   ///< `fuse::num::posit<32, 2>`, stored as the unsigned 32-bit
+                  ///< integer of its bit pattern.
 };
 
 /// How a `get_field`/`get_scalar` request's own C++ type may differ from
@@ -150,6 +155,11 @@ struct ElementTypeInfo {
   bool        is_signed_integer = false;    ///< meaningful only if !is_float
   bool        is_unsigned_integer = false;  ///< meaningful only if !is_float
   bool        is_bool = false;
+  /// A posit (`Posit16`, `Posit32`): stored as an unsigned integer of its
+  /// pattern but not an integer for any conversion. `significand_bits` is its
+  /// largest precision (the fraction bits of the value one, and the leading bit),
+  /// `exponent_bits` its exponent size es, and `exponent_bias` is 0.
+  bool        is_posit = false;
   std::size_t significand_bits = 0;  ///< INCLUDING any implicit leading bit
   std::size_t exponent_bits = 0;
   std::int64_t exponent_bias = 0;

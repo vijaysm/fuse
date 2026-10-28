@@ -89,6 +89,20 @@ constexpr std::int64_t kLongDoubleExponentBias = LDBL_MAX_EXP - 1;
   return info;
 }
 
+/// A posit<n, 2> of the 2022 Posit Standard: n - 3 - es fraction bits at the value one
+/// and a leading bit make the precision, es is the exponent size.
+[[nodiscard]] ElementTypeInfo make_posit(ElementType t, const char* name, std::size_t bytes) {
+  constexpr std::size_t es = 2;
+  ElementTypeInfo info;
+  info.element_type = t;
+  info.name = name;
+  info.byte_size = bytes;
+  info.is_posit = true;
+  info.significand_bits = bytes * 8 - 3 - es + 1;
+  info.exponent_bits = es;
+  return info;
+}
+
 [[nodiscard]] const std::unordered_map<ElementType, ElementTypeInfo>& table() {
   static const std::unordered_map<ElementType, ElementTypeInfo> t = [] {
     std::unordered_map<ElementType, ElementTypeInfo> m;
@@ -132,6 +146,8 @@ constexpr std::int64_t kLongDoubleExponentBias = LDBL_MAX_EXP - 1;
                         sizeof(long double), kLongDoubleSignificandBits,
                         kLongDoubleExponentBits, kLongDoubleExponentBias,
                         kLongDoubleHasExplicitIntegerBit));
+    m.emplace(ElementType::Posit16, make_posit(ElementType::Posit16, "posit16", 2));
+    m.emplace(ElementType::Posit32, make_posit(ElementType::Posit32, "posit32", 4));
     ElementTypeInfo b;
     b.element_type = ElementType::Bool;
     b.name = "bool";
@@ -188,6 +204,25 @@ bool is_exact_widening(const ElementTypeInfo& f, const ElementTypeInfo& t) {
                  // Exact semantics never reach this function at all
                  // (Exact is enumerator equality, decided before this
                  // call) -- kept here only so this function is total.
+  }
+
+  if (f.is_posit || t.is_posit) {
+    // A posit is exactly the value of its pattern, so a posit widens exactly to a wider posit
+    // of the same exponent size (the pattern gains zero bits on the right), and to a float
+    // whose significand covers the posit's largest precision and whose normal range
+    // contains its smallest and largest values (2^-max_scale to 2^max_scale, with
+    // max_scale = (n - 2) 2^es). Nothing else is exact by metadata alone: not an integer,
+    // not a bool, and not anything into a posit (its precision falls away from one).
+    if (!f.is_posit) return false;
+    if (t.is_posit) {
+      return t.exponent_bits == f.exponent_bits && t.byte_size >= f.byte_size;
+    }
+    if (!t.is_float) return false;
+    const std::int64_t max_scale =
+        (static_cast<std::int64_t>(f.byte_size * 8) - 2) << f.exponent_bits;
+    const ExponentRange tr = exponent_range(t);
+    return t.significand_bits >= f.significand_bits && tr.min_exp <= -max_scale &&
+           tr.max_exp >= max_scale;
   }
 
   if (f.is_bool) {

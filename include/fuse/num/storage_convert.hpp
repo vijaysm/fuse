@@ -1,7 +1,7 @@
 #pragma once
 
-/// Conversion of a Storage field (binary32, bfloat16, binary16) to and from
-/// binary64, as kernels on a Kokkos execution space.
+/// Conversion of a Storage field (binary32, bfloat16, binary16, posit16, posit32) to and
+/// from binary64, as kernels on a Kokkos execution space.
 ///
 /// `widen` is exact. `narrow` rounds each value once, to nearest with ties to
 /// even (`value_traits<T>::from_binary64`), which is the only rounding a value
@@ -15,6 +15,13 @@
 /// the format's normal range is at most the unit roundoff 2^-p (p = 24 for
 /// binary32, 11 for binary16, 8 for bfloat16); a value that rounds to a
 /// subnormal can change by more, and the report does not hide it.
+///
+/// A posit has no infinity and no zero to fall to, so a value beyond its largest
+/// (or below its smallest positive) value is clamped to it, silently as far as the
+/// data goes; the report counts such a value as an overflow (an underflow). The
+/// precision of a posit is that of the value one at best and falls by a bit for
+/// every factor of 2^(2^es) away from it, so `max_relative_change` is the figure to
+/// read, not 2^-p.
 ///
 /// Both are Space-generic and take unmanaged views, like the kernels in
 /// fuse/num/space_kernels.hpp; the labels stay under the small-string limit
@@ -86,6 +93,18 @@ struct NarrowMeasuredFunctor {
     if (!Kokkos::isfinite(x)) return;
     ++r.values;
     const double w = value_traits<T>::to_binary64(y);
+    if constexpr (requires { T::saturates; }) {
+      // clamped to the largest or the smallest positive value
+      const double a = Kokkos::abs(x);
+      if (a > T::maxpos().to_double()) {
+        ++r.overflow;
+        return;
+      }
+      if (a != 0.0 && a < T::minpos().to_double()) {
+        ++r.underflow;
+        return;
+      }
+    }
     if (!Kokkos::isfinite(w)) {
       ++r.overflow;
       return;

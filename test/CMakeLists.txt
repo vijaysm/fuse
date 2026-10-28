@@ -1644,6 +1644,8 @@ fuse_add_gtest(num dd LIBS fuse::linalg)
 fuse_add_gtest(num qd LIBS fuse::linalg)
 # The kernels that do arithmetic on dd and qd fields, on every enabled execution space.
 fuse_add_gtest(num arithmetic_kernels LIBS fuse::linalg)
+# fuse::num::posit16 and posit32 against the definition of the format, and on every execution space.
+fuse_add_gtest(num posit LIBS fuse::linalg)
 # Fields of double-double, quad-double and dual values in a restart file, and the 16-bit formats.
 fuse_add_gtest(num restart_values LIBS fuse::linalg)
 # The bit-for-bit comparison of dd and qd with stillwater-sc/universal: host only, and
