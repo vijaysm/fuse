@@ -80,7 +80,10 @@ supersession table, the include graph and import order, the test mapping and the
 port must reproduce, with the lead's corrections after review at the end. [](integrators-design.md)
 is the read-first design for porting KARMA's 22 Runge-Kutta and Rosenbrock tableaus into `fuse::num`
 as templates with a separate embedded-error controller, the contract with the coupling window, and
-the owner's decisions on its open questions.
+the owner's decisions on its open questions. [](field-semantics-matrix.md) is the
+read-only comparison of KARMA's eight coupling headers and SOMA's field layer against the current
+fuse field semantics: eight verdicts, a per-concern matrix with file and line, and the smallest
+addition proposed for each gap.
 
 ## Holding an external path to the bar
 
