@@ -49,3 +49,43 @@ old = "    std::is_same_v<T, double> || value_traits<T>::kind == FieldValueKind:
 new = "    std::is_same_v<T, double>;"
 target = "fuse_num_restart_values_test"
 test = "num.restart_values"
+
+[[mutation]]
+id = "restart-posit-widens-into-a-narrower-posit"
+area = "restart_values"
+describes = "a posit32 is called an exact widening into a posit16"
+file = "src/model/element_type.cpp"
+old = "      return t.exponent_bits == f.exponent_bits && t.byte_size >= f.byte_size;"
+new = "      return t.exponent_bits == f.exponent_bits;"
+target = "fuse_num_restart_values_test"
+test = "num.restart_values"
+
+[[mutation]]
+id = "restart-posit-widens-into-a-float-with-less-precision"
+area = "restart_values"
+describes = "a posit32 is called an exact widening into binary32 (24 bits against its 28)"
+file = "src/model/element_type.cpp"
+old = "    return t.significand_bits >= f.significand_bits && tr.min_exp <= -max_scale &&"
+new = "    return tr.min_exp <= -max_scale &&"
+target = "fuse_num_restart_values_test"
+test = "num.restart_values"
+
+[[mutation]]
+id = "restart-anything-widens-into-a-posit"
+area = "restart_values"
+describes = "a binary64 field is called an exact widening into a posit"
+file = "src/model/element_type.cpp"
+old = "    if (!f.is_posit) return false;"
+new = "    if (!f.is_posit) return t.is_posit;"
+target = "fuse_num_restart_values_test"
+test = "num.restart_values"
+
+[[mutation]]
+id = "restart-posit-is-not-marked-as-one"
+area = "restart_values"
+describes = "the element-type table does not mark posit16 and posit32 as posits"
+file = "src/model/element_type.cpp"
+old = "  info.is_posit = true;"
+new = "  info.is_posit = false;"
+target = "fuse_num_restart_values_test"
+test = "num.restart_values"

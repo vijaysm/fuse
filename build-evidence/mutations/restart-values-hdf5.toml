@@ -29,3 +29,33 @@ old = "          stored_rank >= 1 && stored_rank <= 2 &&"
 new = "          stored_rank == 2 &&"
 target = "fuse_parallel_brusselator_restart_mpi_test"
 test = "parallel.brusselator_restart_mpi.2"
+
+[[mutation]]
+id = "restart-hdf5-posit-exponent-size-is-not-checked"
+area = "restart_values_hdf5"
+describes = "a posit field whose exponent_bits attribute says 1 (the 2017 draft's posit16) is read as the 2022 posit16"
+file = "src/restart_io/hdf5_restart_io.cpp"
+old = "        info.exponent_bits != canonical.exponent_bits || info.exponent_bias != canonical.exponent_bias ||"
+new = "        info.exponent_bias != canonical.exponent_bias ||"
+target = "fuse_runtime_typed_restart_hdf5_test"
+test = "runtime.typed_restart_hdf5"
+
+[[mutation]]
+id = "restart-hdf5-posit16-is-stored-in-32-bit-words"
+area = "restart_values_hdf5"
+describes = "a posit16 field is given the file type of a 32-bit unsigned integer"
+file = "src/restart_io/hdf5_restart_io.cpp"
+old = "    case ElementType::Posit16: return HType(H5Tcopy(H5T_NATIVE_UINT16));"
+new = "    case ElementType::Posit16: return HType(H5Tcopy(H5T_NATIVE_UINT32));"
+target = "fuse_runtime_typed_restart_hdf5_test"
+test = "runtime.typed_restart_hdf5"
+
+[[mutation]]
+id = "restart-hdf5-posit-conversion-reports-no-change"
+area = "restart_values_hdf5"
+describes = "a conversion into a posit reports no change however far it moved the value"
+file = "src/restart_io/hdf5_restart_io.cpp"
+old = "      changed = !both_not_numbers && !(back == x);"
+new = "      changed = false;"
+target = "fuse_runtime_typed_restart_hdf5_test"
+test = "runtime.typed_restart_hdf5"
