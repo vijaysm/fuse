@@ -298,8 +298,9 @@ What this does not cover:
   field. MPI and the transport move binary64, not the narrow format.
 - **A field in a time window or an iteration region window** must still be
   binary64; the window code refuses a Storage field with `E-FIELD-VALUE-TYPE`.
-- **Restart files** and **provider plugins** (`E-ABI-PROVIDER-ELEMENT`) do not
-  take these formats through the coupling interface yet.
+- **Restart files** do not take these formats through the coupling interface yet.
+  A provider plugin's fields may have them, in host memory (see
+  [](providers.md)).
 - **Minimum and maximum accumulation** work: the minimum of the widened values
   is the widened minimum, and it is rounded once on delivery.
 - A format other than these three is refused with `E-RT-FIELD-TYPE`, naming the
@@ -442,11 +443,15 @@ What this does not cover:
   `fuse/num/arithmetic_kernels.hpp`, and a row in the kernel tests.
 - **Results near the ends of the exponent range** (a product or a square of a limb
   that overflows or goes subnormal) are not specified, as in the QD library.
-- **The C and Fortran interface and restart files** do not know the types yet, and
-  `RunnerConfig::accumulation_type` is not reachable from them. The
-  limbs of a field registered through them are independent binary64 components to
-  the runtime: they move correctly through the operators that only move values,
-  but a remap acts on each limb separately, in binary64.
+- **Restart files** do not know the types yet, and `RunnerConfig::accumulation_type`
+  is not reachable from the C and Fortran interface.
+- **A field registered through the C or Fortran interface** is a `dd` or `qd` field
+  only if it says so, with `FUSE_ELEMENT_DD` or `FUSE_ELEMENT_QD`
+  ([](c-abi.md#fields-field_handle-and-register_field)). The same array registered
+  as `FUSE_ELEMENT_F64` with twice or four times the components is a field of
+  independent binary64 components to the runtime: it moves correctly through the
+  operators that only move values, but a remap acts on each limb separately, in
+  binary64.
 - The weights of a remap are computed in binary64, so a `dd` field is remapped
   exactly for the weights as stored, not for the exact geometric overlaps.
 

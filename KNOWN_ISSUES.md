@@ -13440,3 +13440,27 @@ corrections before landing: the quadrature exactness tolerance's `1e-13` floor w
 derived bound (measured margin: largest |error|/bound = 1.25e-1), and the basis-registry early refusal gained the
 test that fires it (its mutation row was declared equivalent without one). See docs/dev/physics-kit.md, "Lead's review
 of wave 1".
+### D101. Time-window members and iteration regions take binary64 fields only: a Storage field (binary32, bfloat16, binary16) is refused by the window code and an Arithmetic field (double-double, quad-double) by the operator check -- OPEN by design, 2026-10-27 (number-types track)
+
+**What happens.** A field bound as `float`, `fuse::bfloat16` or `fuse::binary16` that is a member of
+a coupling window or an iteration region reaches `Runner::Impl::resolve_regions()`
+(`src/runtime/iteration.cpp`), which reads the members' registered storage as binary64
+(`registry.get(...)`) and refuses the field with `E-FIELD-VALUE-TYPE`. A `dd` or `qd` field in an
+iteration region reaches `check_arithmetic_ops()` (`src/runtime/runner.cpp`) and is refused with
+`E-RT-ARITHMETIC-OP` on the `Relax` or `Residual` instruction; the window instructions are refused
+the same way. Everywhere else (remap, accumulation, merge, scaling, the conservation check,
+transport) the new types work.
+
+**Why it is not fixed here.** The window path does more than move values. It applies the space-time
+projection `T` to the K samples of a window, evaluates convergence residuals and norms, and feeds an
+accelerator (relaxation, Aitken, quasi-Newton) with the iterates, and each of those is written for
+binary64. Making a Storage member work means giving that path the binary64 image the other
+operators already use. Making an Arithmetic member work means the projection, the residual norms and
+the accelerators in the type, which is new numerics rather than data movement. Neither is a
+small change, and both need a case that exercises them.
+
+**What to do meanwhile.** Keep the members of a window or of an iteration region binary64 and
+convert at the component boundary in the component's own code; the fields around them can be of any
+type. The refusals above are by name, at `initialize()`, so a graph that asks for more is stopped
+before it runs. Tests: `ArithmeticFieldRunner.AnIterationRegionOverAnArithmeticFieldIsRefusedByName`
+(`test/runtime/arithmetic_field_runner_test.cpp`).
