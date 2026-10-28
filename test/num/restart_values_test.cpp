@@ -20,6 +20,7 @@
 #include "fuse/model/restart_values.hpp"
 #include "fuse/num/dd.hpp"
 #include "fuse/num/dual.hpp"
+#include "fuse/num/posit.hpp"
 #include "fuse/num/qd.hpp"
 
 namespace {
@@ -194,6 +195,64 @@ TEST(RestartValues, TheStorageFormatsAreStoredAsThemselves) {
   EXPECT_TRUE(same_bits(fb, f));
   EXPECT_TRUE(same_bits(bb, b));
   EXPECT_TRUE(same_bits(hb, h));
+}
+
+TEST(RestartValues, APositIsStoredAsItsPatternTaggedWithItsFormat) {
+  using fuse::num::posit16;
+  using fuse::num::posit32;
+  const std::vector<posit16> a = {posit16::from_double(0.1), posit16::from_double(-7.0), posit16::nar()};
+  const std::vector<posit32> b = {posit32::from_double(1.0 / 3.0), posit32::from_double(-1e10),
+                                  posit32::maxpos()};
+  MemoryWriter w;
+  ASSERT_TRUE(fuse::put_values<posit16>(w, "a", kIds, a, 1, 3).ok());
+  ASSERT_TRUE(fuse::put_values<posit32>(w, "b", kIds, b, 1, 3).ok());
+  EXPECT_EQ(w.fields.at("a").type, fuse::ElementType::Posit16);
+  EXPECT_EQ(w.fields.at("b").type, fuse::ElementType::Posit32);
+  EXPECT_EQ(w.fields.at("a").bytes.size(), 3u * 2u);
+  EXPECT_EQ(w.fields.at("b").bytes.size(), 3u * 4u);
+  // the bytes are the patterns
+  std::uint16_t first = 0;
+  std::memcpy(&first, w.fields.at("a").bytes.data(), 2);
+  EXPECT_EQ(first, a[0].bits());
+  MemoryReader r(w);
+  std::vector<posit16> ab(3);
+  std::vector<posit32> bb(3);
+  ASSERT_TRUE(fuse::get_values<posit16>(r, "a", kIds, ab, 1).ok());
+  ASSERT_TRUE(fuse::get_values<posit32>(r, "b", kIds, bb, 1).ok());
+  EXPECT_TRUE(same_bits(ab, a));
+  EXPECT_TRUE(same_bits(bb, b));
+  // the element type table: a posit is neither an integer nor a float for a conversion
+  const auto& p16 = fuse::element_type_info(fuse::ElementType::Posit16);
+  const auto& p32 = fuse::element_type_info(fuse::ElementType::Posit32);
+  EXPECT_TRUE(p16.is_posit && !p16.is_float && !p16.is_signed_integer && !p16.is_unsigned_integer);
+  EXPECT_EQ(p16.name, "posit16");
+  EXPECT_EQ(p32.byte_size, 4u);
+  EXPECT_EQ(fuse::element_type_from_name("posit32"), fuse::ElementType::Posit32);
+}
+
+TEST(RestartValues, AnExactWideningOfAPositIsDecidedFromItsMetadata) {
+  const auto& p16 = fuse::element_type_info(fuse::ElementType::Posit16);
+  const auto& p32 = fuse::element_type_info(fuse::ElementType::Posit32);
+  const auto info = [](fuse::ElementType t) -> const fuse::ElementTypeInfo& { return fuse::element_type_info(t); };
+  using T = fuse::ElementType;
+  // posit16 (12 bits of precision, 2^-56 .. 2^56) fits binary32 and binary64 and posit32
+  EXPECT_TRUE(fuse::is_exact_widening(p16, info(T::Binary32)));
+  EXPECT_TRUE(fuse::is_exact_widening(p16, info(T::Binary64)));
+  EXPECT_TRUE(fuse::is_exact_widening(p16, p32));
+  // but not binary16 (range), bfloat16 (precision), an integer or a bool
+  EXPECT_FALSE(fuse::is_exact_widening(p16, info(T::Binary16)));
+  EXPECT_FALSE(fuse::is_exact_widening(p16, info(T::BFloat16)));
+  EXPECT_FALSE(fuse::is_exact_widening(p16, info(T::Int64)));
+  EXPECT_FALSE(fuse::is_exact_widening(p16, info(T::Bool)));
+  // posit32 (28 bits, 2^-120 .. 2^120) fits binary64 only
+  EXPECT_TRUE(fuse::is_exact_widening(p32, info(T::Binary64)));
+  EXPECT_FALSE(fuse::is_exact_widening(p32, info(T::Binary32)));
+  EXPECT_FALSE(fuse::is_exact_widening(p32, p16));
+  // nothing is an exact widening into a posit: its precision falls away from one
+  for (const T t : {T::Binary16, T::BFloat16, T::Binary32, T::Binary64, T::Int8, T::UInt16, T::Bool}) {
+    EXPECT_FALSE(fuse::is_exact_widening(info(t), p16)) << static_cast<int>(t);
+    EXPECT_FALSE(fuse::is_exact_widening(info(t), p32)) << static_cast<int>(t);
+  }
 }
 
 TEST(RestartValues, ABinary64FileOfLimbsIsReadAsLimbsByAnyReader) {
