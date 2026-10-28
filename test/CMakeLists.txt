@@ -2419,8 +2419,20 @@ if(TARGET fuse-abi-fortran)
     DEPENDS fuse-abi-fortran ${CMAKE_CURRENT_SOURCE_DIR}/abi/fortran/consumer.f90
     COMMENT "Compiling test/abi/fortran/consumer.f90 against ffuse (no link)"
   )
+  # arithmetic_consumer.f90 (double-double values and a gradient, FUSE_ELEMENT_DD and
+  # gradient_size): the same strict compile; its full run is in the install smoke test.
+  add_custom_command(
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/fuse_abi_fortran_arithmetic_check.o
+    COMMAND ${CMAKE_Fortran_COMPILER} -std=f2008 -Wall -Wextra -Werror -fimplicit-none
+            -I$<TARGET_PROPERTY:fuse-abi-fortran,Fortran_MODULE_DIRECTORY>
+            -c ${CMAKE_CURRENT_SOURCE_DIR}/abi/fortran/arithmetic_consumer.f90
+            -o ${CMAKE_CURRENT_BINARY_DIR}/fuse_abi_fortran_arithmetic_check.o
+    DEPENDS fuse-abi-fortran ${CMAKE_CURRENT_SOURCE_DIR}/abi/fortran/arithmetic_consumer.f90
+    COMMENT "Compiling test/abi/fortran/arithmetic_consumer.f90 against ffuse (no link)"
+  )
   add_custom_target(fuse_abi_fortran_consumer_check ALL
-    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/fuse_abi_fortran_consumer_check.o)
+    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/fuse_abi_fortran_consumer_check.o
+            ${CMAKE_CURRENT_BINARY_DIR}/fuse_abi_fortran_arithmetic_check.o)
   add_test(NAME abi.fortran_consumer_compiles
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
             --target fuse_abi_fortran_consumer_check)
@@ -2541,6 +2553,9 @@ target_include_directories(fuse_abi_participant_test PRIVATE ${CMAKE_SOURCE_DIR}
 # universal-number-types.md, U3).
 fuse_add_gtest(abi storage_element LIBS fuse_abi_test_support)
 target_include_directories(fuse_abi_storage_element_test PRIVATE ${CMAKE_SOURCE_DIR}/src/abi)
+# FUSE_ELEMENT_DD and FUSE_ELEMENT_QD, and a registered field's gradient_size, through the C table.
+fuse_add_gtest(abi arithmetic_element LIBS fuse_abi_test_support)
+target_include_directories(fuse_abi_arithmetic_element_test PRIVATE ${CMAKE_SOURCE_DIR}/src/abi)
 
 # review-2026-10-11 abi: AB-9's table-driven negative-test sweep over the
 # participant-ABI refusal codes no test fired.

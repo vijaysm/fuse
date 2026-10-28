@@ -318,10 +318,19 @@ class AnyFieldRef {
     return type_ == field_value_type_of<T>();
   }
 
-  /// Scalars per value that hold the gradient; 0 for an ordinary field.
+  /// Scalars per value that hold the gradient; 0 for an ordinary field. A field
+  /// whose owner declared a gradient for its layout (`declare_gradient`) reports
+  /// that count, in components.
   [[nodiscard]] int gradient_size() const noexcept {
-    return type_.gradient_size;
+    return type_.gradient_size > 0 ? type_.gradient_size : declared_gradient_;
   }
+
+  /// Records that the last `n` components of each entity of this field hold the
+  /// gradient of the leading ones. For a field whose type is not itself a value
+  /// with a gradient (a participant of the C or Fortran interface, which sees
+  /// only arrays of binary64): it says what the type of a dual number would.
+  /// The caller has checked `0 <= n < layout().components`.
+  void declare_gradient(int n) noexcept { declared_gradient_ = n; }
 
   /// True when the stored values are `type_.scalar_count` consecutive scalars
   /// of type `S`, and every operation on them may act on each scalar
@@ -411,6 +420,7 @@ class AnyFieldRef {
   Layout      layout_{};
   MemorySpace space_ = MemorySpace::Host;
   FieldValueType   type_ = field_value_type_of<double>();
+  int              declared_gradient_ = 0;
 };
 
 static_assert(std::is_trivially_copyable_v<AnyFieldRef>);

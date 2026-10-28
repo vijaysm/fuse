@@ -22,6 +22,8 @@ module ffuse
   integer(c_int32_t), parameter, public :: FUSE_ELEMENT_F32 = 2_c_int32_t
   integer(c_int32_t), parameter, public :: FUSE_ELEMENT_BF16 = 3_c_int32_t
   integer(c_int32_t), parameter, public :: FUSE_ELEMENT_F16 = 4_c_int32_t
+  integer(c_int32_t), parameter, public :: FUSE_ELEMENT_DD = 5_c_int32_t
+  integer(c_int32_t), parameter, public :: FUSE_ELEMENT_QD = 6_c_int32_t
   integer(c_int32_t), parameter, public :: FUSE_MEMSPACE_HOST = 0_c_int32_t
   integer(c_int32_t), parameter, public :: FUSE_MEMSPACE_DEVICE = 1_c_int32_t
   integer(c_int32_t), parameter, public :: FUSE_OWNERSHIP_OWNED = 0_c_int32_t
@@ -156,6 +158,8 @@ module ffuse
     integer(c_int64_t) :: component_stride = 0_c_int64_t
     type(c_ptr) :: data = c_null_ptr
     integer(c_int32_t) :: window_samples = 0_c_int32_t
+    integer(c_int32_t) :: reserved = 0_c_int32_t
+    integer(c_int32_t) :: gradient_size = 0_c_int32_t
   end type fuse_field_view
 
   type, bind(C), public :: fuse_step_request
@@ -217,7 +221,7 @@ module ffuse
     integer(c_int32_t) :: intent = 0_c_int32_t
     integer(c_int32_t) :: element_type = 0_c_int32_t
     integer(c_int32_t) :: memspace = 0_c_int32_t
-    integer(c_int32_t) :: reserved = 0_c_int32_t
+    integer(c_int32_t) :: gradient_size = 0_c_int32_t
   end type fuse_field_spec
 
   type, bind(C), public :: fuse_field_table

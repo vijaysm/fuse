@@ -568,3 +568,32 @@ refusal gates `fuse::abi_detail::ProviderAdapter::register_fields()` applies to 
 `FUSE_MEMSPACE_DEVICE` request are documented for plugin authors in
 [](../user/providers.md#device-fields); KNOWN_ISSUES.md D15 (item 1) carries the full round record,
 the mutation rows, and the CUDA run (ssh:higgs, 2026-10-21) of the positive device-resident path.
+
+### Element types and gradients: a second worked growth, rules 2 and 3 (2026-10-27)
+
+Two enumerators, `FUSE_ELEMENT_DD` (5) and `FUSE_ELEMENT_QD` (6), and one member, `gradient_size`,
+were added so that a C or Fortran participant or provider can register double-double and quad-double
+arrays and say which trailing components of a field are a forward-mode gradient. The enumerators
+change no layout: the `element_type` word already existed, and a caller that never passes them
+sees nothing different.
+
+`fuse_field_view` is the struct that grew. Measured as for `memspace` above: `window_samples` at
+offset 64 ends at 68 in a struct whose `sizeof` was 72 (`struct_sizes.golden`), so a member appended
+alone would sit in bytes 68-71, padding that an old caller's `struct_size` of 72 already covers and
+that it never set. Rule 3's remedy: a `reserved` word is appended first, filling 68-71, and
+`gradient_size` follows at offset 72; `sizeof` goes from 72 to 80, and `struct_size_covers()`
+(`src/abi/participant.cpp`) is true for the new member only when the caller passed at least 76. A
+smaller `struct_size` gets the default (no gradient) on `register_field`, and `view_field` writes
+`gradient_size` only into an `out` struct that is large enough to hold it.
+
+`fuse_field_spec` already had the `reserved` word that `memspace` was paired with, always zero from
+every plugin built since, so `gradient_size` takes its place at offset 32 and `sizeof` stays 40: a
+plugin built before the member was named leaves it zero, which means no gradient. The two goldens
+(`struct_sizes.golden`, and `FUSE_NO_TRAILING_PADDING` in `entries_golden_test.cpp`) name the new
+last members, and every generated file came from `tools/gen-abi.py --write`.
+
+The graph counts binary64 values per entity and a view counts values of its element type, so for
+`FUSE_ELEMENT_DD` and `FUSE_ELEMENT_QD` `view.components` is the graph's count divided by 2 or 4.
+That is the one place the two meanings of "components" differ, because the graph carries no element
+type: it is fixed when a field is bound. `fuse_field_ref.components` keeps reporting the graph's
+count, and `view_field` reports the view's.

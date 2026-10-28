@@ -55,3 +55,13 @@ add_custom_command(TARGET consumer_fortran POST_BUILD
           ${CMAKE_CURRENT_SOURCE_DIR}/two_component.yaml
           $<TARGET_FILE_DIR:consumer_fortran>/two_component.yaml
 )
+
+# The double-double and gradient program (arithmetic_consumer.f90) is linked and run the same way,
+# with its own two-channel graph beside it. It checks its values itself and exits 1 on a mismatch.
+add_executable(arithmetic_consumer_fortran ../arithmetic_consumer.f90)
+target_link_libraries(arithmetic_consumer_fortran PRIVATE fuse::abi-fortran fuse::abi)
+add_custom_command(TARGET arithmetic_consumer_fortran POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy
+          ${CMAKE_CURRENT_SOURCE_DIR}/dd_two_component.yaml
+          $<TARGET_FILE_DIR:arithmetic_consumer_fortran>/dd_two_component.yaml
+)
