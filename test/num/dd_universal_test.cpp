@@ -16,10 +16,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
-#include <cstdio>
-#include <cstdlib>
 #include <cstring>
-#include <filesystem>
 #include <limits>
 #include <random>
 #include <sstream>
@@ -27,20 +24,18 @@
 #include <utility>
 #include <vector>
 
-#include <unistd.h>
-
 #include "fuse/num/dd.hpp"
 #include "fuse/num/qd.hpp"
 #include "fuse_test_main.hpp"
-
-#ifndef FUSE_UNIVERSAL_ORACLE
-#error "FUSE_UNIVERSAL_ORACLE must name the built universal_oracle program"
-#endif
+#include "universal_oracle_client.hpp"
 
 namespace {
 
 using fuse::num::dd;
 using fuse::num::qd;
+using fuse_test::universal::oracle_results;
+using fuse_test::universal::Record;
+using fuse_test::universal::Result;
 
 enum Op : std::uint32_t { Add, Sub, Mul, Div, Sqrt, AddD, MulD, RSubD, DivD };
 
@@ -48,16 +43,6 @@ const char* op_name(std::uint32_t op) {
   static const char* names[] = {"+", "-", "*", "/", "sqrt", "+ double", "* double", "double -", "/ double"};
   return names[op];
 }
-
-struct Record {
-  std::uint32_t limbs;
-  std::uint32_t op;
-  double a[4];
-  double b[4];
-};
-struct Result {
-  double r[4];
-};
 
 std::uint64_t bits(double x) {
   std::uint64_t b;
@@ -120,36 +105,6 @@ Result fuse_result(const Record& r) {
     for (int i = 0; i < 4; ++i) out.r[i] = v[i];
   }
   return out;
-}
-
-/// Runs Universal on the records through the oracle program.
-std::vector<Result> oracle_results(const std::vector<Record>& records) {
-  namespace fs = std::filesystem;
-  static int counter = 0;
-  const std::string stem = (fs::temp_directory_path() / ("fuse_universal_oracle_" + std::to_string(::getpid()) + "_" +
-                                                         std::to_string(counter++))).string();
-  const std::string in = stem + ".in", out = stem + ".out";
-  {
-    std::FILE* f = std::fopen(in.c_str(), "wb");
-    EXPECT_NE(f, nullptr);
-    if (f == nullptr) return {};
-    std::fwrite(records.data(), sizeof(Record), records.size(), f);
-    std::fclose(f);
-  }
-  const std::string cmd = std::string("\"") + FUSE_UNIVERSAL_ORACLE + "\" \"" + in + "\" \"" + out + "\"";
-  const int rc = std::system(cmd.c_str());
-  EXPECT_EQ(rc, 0) << cmd;
-  std::vector<Result> results(records.size());
-  if (std::FILE* f = std::fopen(out.c_str(), "rb")) {
-    const std::size_t got = std::fread(results.data(), sizeof(Result), results.size(), f);
-    EXPECT_EQ(got, results.size());
-    std::fclose(f);
-  } else {
-    ADD_FAILURE() << "the oracle wrote no output: " << cmd;
-  }
-  std::remove(in.c_str());
-  std::remove(out.c_str());
-  return results;
 }
 
 /// Compares every record's fuse::num result with Universal's; reports the first

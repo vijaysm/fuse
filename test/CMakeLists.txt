@@ -1647,14 +1647,15 @@ fuse_add_gtest(num arithmetic_kernels LIBS fuse::linalg)
 fuse_add_gtest(num posit LIBS fuse::linalg)
 # Fields of double-double, quad-double and dual values in a restart file, and the 16-bit formats.
 fuse_add_gtest(num restart_values LIBS fuse::linalg)
-# The bit-for-bit comparison of dd and qd with stillwater-sc/universal: host only, and
+# The bit-for-bit comparison of dd and qd (num.dd_universal) and of posit16 and posit32
+# (num.posit_universal) with stillwater-sc/universal: host only, and
 # only when the build is pointed at a checkout (FUSE_ENABLE_UNIVERSAL). Universal's
 # headers do not compile under nvcc, so they are built into a separate program
 # (test/num/universal_oracle.cpp) with a plain host compiler, and the test compares
 # against what that program computes. FUSE_UNIVERSAL_CXX names that compiler; it
 # defaults to the project's own, which is right when that is a host compiler and wrong
 # for a CUDA build (CMAKE_CXX_COMPILER is then nvcc_wrapper): pass g++ or clang++.
-fuse_tests_gated_by(FUSE_ENABLE_UNIVERSAL num/dd_universal_test.cpp)
+fuse_tests_gated_by(FUSE_ENABLE_UNIVERSAL num/dd_universal_test.cpp num/posit_universal_test.cpp)
 if(FUSE_ENABLE_UNIVERSAL)
   if(NOT EXISTS "${FUSE_UNIVERSAL_INCLUDE_DIR}/universal/number/dd/dd.hpp")
     message(FATAL_ERROR "FUSE_ENABLE_UNIVERSAL is ON but FUSE_UNIVERSAL_INCLUDE_DIR "
@@ -1680,6 +1681,9 @@ if(FUSE_ENABLE_UNIVERSAL)
   fuse_add_gtest(num dd_universal LIBS fuse::linalg LABELS universal)
   add_dependencies(fuse_num_dd_universal_test fuse_universal_oracle)
   target_compile_definitions(fuse_num_dd_universal_test PRIVATE FUSE_UNIVERSAL_ORACLE="${_fuse_universal_oracle}")
+  fuse_add_gtest(num posit_universal LIBS fuse::linalg LABELS universal)
+  add_dependencies(fuse_num_posit_universal_test fuse_universal_oracle)
+  target_compile_definitions(fuse_num_posit_universal_test PRIVATE FUSE_UNIVERSAL_ORACLE="${_fuse_universal_oracle}")
 endif()
 fuse_add_omp_legs(num.space_kernels fuse_num_space_kernels_test)
 
