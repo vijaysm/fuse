@@ -229,10 +229,37 @@ function(fuse_add_gtest layer name)
   # needs an optional dependency carries its name (e.g. `moab`) so the
   # whole set can be selected with `ctest -L moab` -- the first host run
   # asked exactly that and found no tests, because nothing carried it.
-  cmake_parse_arguments(ARG "THROWS;NO_LAYER_LIB" "" "LIBS;LABELS" ${ARGN})
+  #
+  # SRC_DIR: directory holding "<name>_test.cpp", in place of the default
+  # "<layer>/" -- resolved the same way the default is, i.e. relative to
+  # the CALLER's own CMAKE_CURRENT_SOURCE_DIR (a function call does not
+  # push a new directory scope in CMake, so this macro always sees
+  # whichever directory's listfile is currently executing). test/partition/
+  # CMakeLists.txt's own header comment already names this exact limit --
+  # "${layer}/${name}_test.cpp" resolves against the CALLER's directory,
+  # so a caller whose test tree is not test/<layer>/ cannot use this macro
+  # unchanged -- and works around it there with a hand-duplicated wrapper
+  # (fuse_partition_add_gtest) instead, because test/partition/ is still a
+  # child of test/ and its sources must keep landing in the audit's
+  # test/*/*_test.cpp glob at the "partition/<name>_test.cpp" path either
+  # way. physics-kit/test/ is the first caller from OUTSIDE test/'s own
+  # directory tree entirely (physics-kit/CMakeLists.txt's own
+  # add_subdirectory(test), a sibling of the root's add_subdirectory(test),
+  # not a descendant of it) and is not, and does not need to be, covered by
+  # that audit -- see physics-kit/test/CMakeLists.txt's own comment. One
+  # optional keyword argument is the minimal extension: every existing call
+  # site passes no SRC_DIR and sees no change in behaviour (verified: grep
+  # -c "fuse_add_gtest(" test/CMakeLists.txt finds 117 call sites, none of
+  # which names SRC_DIR).
+  cmake_parse_arguments(ARG "THROWS;NO_LAYER_LIB" "SRC_DIR" "LIBS;LABELS" ${ARGN})
+  if(ARG_SRC_DIR)
+    set(_fuse_gtest_src_dir "${ARG_SRC_DIR}")
+  else()
+    set(_fuse_gtest_src_dir "${layer}")
+  endif()
   set(target fuse_${layer}_${name}_test)
-  add_executable(${target} ${layer}/${name}_test.cpp)
-  fuse_record_test_source(${layer}/${name}_test.cpp)
+  add_executable(${target} ${_fuse_gtest_src_dir}/${name}_test.cpp)
+  fuse_record_test_source(${_fuse_gtest_src_dir}/${name}_test.cpp)
   if(ARG_NO_LAYER_LIB)
     target_link_libraries(${target} PRIVATE fuse_test_main ${ARG_LIBS})
   else()
