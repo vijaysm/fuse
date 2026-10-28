@@ -1062,6 +1062,23 @@ Granularity note: KARMA's own `docs/HANDOFF.md` records 425 passing ctest rows o
 | `karma_transient_reaction_diffusion_component_test` | `transient_reaction_diffusion_component_test.C` | physics/diffusion-reaction | 3 | port-adapt | transient reaction-diffusion component, D-A |
 | `karma_transient_reaction_diffusion_mms_test` | `transient_reaction_diffusion_mms_test.C` | physics/diffusion-reaction | 3 | port-adapt | transient reaction-diffusion MMS baseline (item 4), D-A |
 
+## Oracle baseline run (owner's machine, 2026-10-27)
+
+MEASURED by `hostrun/run-karma-oracle.sh` (started by the owner; output `hostrun/out10/`): KARMA at
+`136f520`, built in its own `karma/build` with Apple clang 21.0.0, MPICH 5.0.2rc3, macOS 26.7.1 arm64,
+libMesh off, MOAB coupler on. `ctest -N` registers 425 rows. Three consecutive `ctest -j1` runs with a
+600 s cap per row: 425 of 425 passed in each, identical verdicts in all three, total wall time 1044.8,
+975.9 and 974.1 s (sum of row times). Per-row wall-time spread across the three runs: median 3.2 percent
+over the 36 rows of at least one second; the one outlier is `karma_fe_variants_prism_pyramid` at 97.4,
+69.3 and 68.7 s (first run slower, consistent with a cold cache), the next largest spread 4.1 s on
+`karma_fe_quadrature`. The five slowest rows: `karma_fe_face_parent_variants_prism_pyramid` 126.4 s,
+`karma_gray_scott_mutation_detection` 115.3 s, `karma_gray_scott_spatial_convergence` 104.7 s,
+`karma_fe_variants_prism_pyramid` 97.4 s, `karma_fe_variants_prism_pyramid_replicated_spmd_mpi` 70.0 s.
+What this does and does not give: the pass/fail baseline is stable on this toolchain; the NUMERIC
+variation D-A's bound needs (iteration counts and asserted values across toolchains) is not in a ctest
+verdict and has to be read from the tests' own printed values, which the S8.1 differential tests will
+capture per toolchain (macbook and higgs). The logs are kept in `hostrun/out10/`.
+
 ---
 
 ## Lead's corrections after review (2026-10-27)
