@@ -1,6 +1,7 @@
-// FUSE_ELEMENT_F32, FUSE_ELEMENT_BF16 and FUSE_ELEMENT_F16 through the plain-C
+// FUSE_ELEMENT_F32, FUSE_ELEMENT_BF16, FUSE_ELEMENT_F16 and, from stage U5,
+// FUSE_ELEMENT_POSIT16 and FUSE_ELEMENT_POSIT32 through the plain-C
 // participant table (plans/2026-10-22-universal-number-types.md, stage U3): a
-// C or Fortran component that keeps single or half precision arrays registers
+// C or Fortran component that keeps single, half or posit precision arrays registers
 // them as they are. The coupler widens them to binary64 when the component has
 // written them and rounds once into them on delivery, so the value a downstream
 // component receives is the binary64 transfer of what the upstream wrote, rounded
@@ -19,6 +20,7 @@
 
 #include "fuse/abi/participant.h"
 #include "fuse/model/value_traits.hpp"
+#include "fuse/num/posit.hpp"
 
 #include "graph_fixture.hpp"
 #include "test_support.hpp"
@@ -132,9 +134,51 @@ TEST(AbiStorageElement, FormatsMixAcrossTheBoundary) {
   }
 }
 
+TEST(AbiStorageElement, APositUpstreamArrivesAsTheSamePositInAPositDownstream) {
+  using fuse::num::posit16;
+  using fuse::num::posit32;
+  const auto got16 = OnePeriod<posit16, posit16>(FUSE_ELEMENT_POSIT16, FUSE_ELEMENT_POSIT16, kValues,
+                                                 WriteAs<posit16>, ReadAs<posit16>);
+  const auto got32 = OnePeriod<posit32, posit32>(FUSE_ELEMENT_POSIT32, FUSE_ELEMENT_POSIT32, kValues,
+                                                 WriteAs<posit32>, ReadAs<posit32>);
+  for (std::size_t i = 0; i < kValues.size(); ++i) {
+    EXPECT_EQ(got16[i], Through<posit16>(kValues[i])) << i;
+    EXPECT_EQ(got32[i], Through<posit32>(kValues[i])) << i;
+    EXPECT_NE(got16[i], kValues[i]) << "the 16-bit posit is not the binary64 value";
+  }
+}
+
+TEST(AbiStorageElement, PositsMixWithTheOtherFormatsAndAValueBeyondTheRangeIsClamped) {
+  using fuse::num::posit16;
+  using fuse::num::posit32;
+  // binary64 into posit16, binary16 into posit32, posit32 into binary64: one rounding at most
+  const auto into16 = OnePeriod<double, posit16>(FUSE_ELEMENT_F64, FUSE_ELEMENT_POSIT16, kValues,
+                                                 WriteAs<double>, ReadAs<posit16>);
+  const auto from32 = OnePeriod<posit32, double>(FUSE_ELEMENT_POSIT32, FUSE_ELEMENT_F64, kValues,
+                                                 WriteAs<posit32>, ReadAs<double>);
+  const auto half_to_32 = OnePeriod<fuse::binary16, posit32>(
+      FUSE_ELEMENT_F16, FUSE_ELEMENT_POSIT32, kValues, WriteAs<fuse::binary16>, ReadAs<posit32>);
+  for (std::size_t i = 0; i < kValues.size(); ++i) {
+    EXPECT_EQ(into16[i], Through<posit16>(kValues[i])) << i;
+    EXPECT_EQ(from32[i], Through<posit32>(kValues[i])) << i;
+    EXPECT_EQ(half_to_32[i], Through<posit32>(Through<fuse::binary16>(kValues[i]))) << i;
+  }
+  // a value beyond the largest posit16 (2^56) is the largest posit16, not an infinity
+  const std::vector<double> huge = {1e20, -1e20, 1e-10, -1e-30};
+  const auto clamped = OnePeriod<double, posit16>(FUSE_ELEMENT_F64, FUSE_ELEMENT_POSIT16, huge,
+                                                  WriteAs<double>, ReadAs<posit16>);
+  EXPECT_EQ(clamped[0], posit16::maxpos().to_double());
+  EXPECT_EQ(clamped[1], -posit16::maxpos().to_double());
+  EXPECT_EQ(clamped[2], Through<posit16>(1e-10));  // within range: rounded, not clamped
+  EXPECT_GT(clamped[2], posit16::minpos().to_double());
+  // below the smallest positive posit16 (2^-56): the smallest, not zero
+  EXPECT_EQ(clamped[3], -posit16::minpos().to_double());
+}
+
 TEST(AbiStorageElement, ViewFieldReportsTheElementTypeTheFieldWasRegisteredWith) {
   const auto* t = Table();
-  for (const int et : {FUSE_ELEMENT_F64, FUSE_ELEMENT_F32, FUSE_ELEMENT_BF16, FUSE_ELEMENT_F16}) {
+  for (const int et : {FUSE_ELEMENT_F64, FUSE_ELEMENT_F32, FUSE_ELEMENT_BF16, FUSE_ELEMENT_F16,
+                       FUSE_ELEMENT_POSIT16, FUSE_ELEMENT_POSIT32}) {
     fuse_ctx* ctx = CreateAndLoad(t, fuse::abi_test::build_two_component_lag1_bytes());
     alignas(8) unsigned char up[4 * 8] = {};
     alignas(8) unsigned char down[4 * 8] = {};

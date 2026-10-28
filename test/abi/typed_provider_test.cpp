@@ -1,5 +1,5 @@
 // A provider plugin's fields in the element types the host allocates for it: binary64, the
-// storage types (binary32, bfloat16, binary16) and the arithmetic types (double-double,
+// storage types (binary32, bfloat16, binary16, posit16, posit32) and the arithmetic types (double-double,
 // quad-double), and a field's gradient_size (plans/2026-10-22-universal-number-types.md,
 // stage U4). The plugin is an in-memory table, so that the adapter's own decisions are what
 // the test sees: the type each field is bound in, the view the plugin is handed, and the
@@ -24,6 +24,7 @@
 #include "fuse/model/binary16.hpp"
 #include "fuse/model/coupling_graph.hpp"
 #include "fuse/num/dd.hpp"
+#include "fuse/num/posit.hpp"
 #include "fuse/num/qd.hpp"
 
 #include "provider_adapter.hpp"
@@ -136,6 +137,7 @@ TEST(AbiTypedProvider, EachRowIsBoundInItsOwnTypeAndTheViewCountsValues) {
       {"brain", 1, 1, FUSE_ELEMENT_BF16},  {"half", 1, 1, FUSE_ELEMENT_F16},
       {"dd", 2, 1, FUSE_ELEMENT_DD},       {"qd", 4, 1, FUSE_ELEMENT_QD},
       {"dd3", 6, 3, FUSE_ELEMENT_DD},      {"grad", 3, 3, FUSE_ELEMENT_F64, 2},
+      {"p16", 1, 1, FUSE_ELEMENT_POSIT16}, {"p32", 2, 2, FUSE_ELEMENT_POSIT32},
   };
   fuse::FieldRegistry registry;
   fuse::CouplingGraph graph;
@@ -150,6 +152,8 @@ TEST(AbiTypedProvider, EachRowIsBoundInItsOwnTypeAndTheViewCountsValues) {
   EXPECT_TRUE(registry.get_any(Id(graph, "dd")).value().holds<fuse::num::dd>());
   EXPECT_TRUE(registry.get_any(Id(graph, "qd")).value().holds<fuse::num::qd>());
   EXPECT_TRUE(registry.get_any(Id(graph, "dd3")).value().holds<fuse::num::dd>());
+  EXPECT_TRUE(registry.get_any(Id(graph, "p16")).value().holds<fuse::num::posit16>());
+  EXPECT_TRUE(registry.get_any(Id(graph, "p32")).value().holds<fuse::num::posit32>());
 
   for (std::size_t i = 0; i < rows.size(); ++i) {
     const auto any = registry.get_any(Id(graph, rows[i].name));
@@ -172,8 +176,9 @@ TEST(AbiTypedProvider, EachRowIsBoundInItsOwnTypeAndTheViewCountsValues) {
 TEST(AbiTypedProvider, TheStorageHoldsEveryElementOfEveryTypeAndNoMoreThanAWordOver) {
   // three cells, so that the byte counts are not multiples of the word: 6, 36, 48 and 192 bytes
   const std::vector<Row> rows = {{"half", 1, 1, FUSE_ELEMENT_F16},  {"single", 3, 3, FUSE_ELEMENT_F32},
-                                 {"dd", 2, 1, FUSE_ELEMENT_DD},      {"qd", 8, 2, FUSE_ELEMENT_QD}};
-  const std::size_t element_size[] = {2, 4, 16, 32};
+                                 {"dd", 2, 1, FUSE_ELEMENT_DD},      {"qd", 8, 2, FUSE_ELEMENT_QD},
+                                 {"p16", 1, 1, FUSE_ELEMENT_POSIT16}, {"p32", 3, 3, FUSE_ELEMENT_POSIT32}};
+  const std::size_t element_size[] = {2, 4, 16, 32, 2, 4};
   fuse::FieldRegistry registry;
   fuse::CouplingGraph graph;
   ASSERT_TRUE(Register(rows, registry, graph, 3).ok());
@@ -189,6 +194,10 @@ TEST(AbiTypedProvider, TheStorageHoldsEveryElementOfEveryTypeAndNoMoreThanAWordO
   EXPECT_EQ(static_cast<fuse::num::dd*>(g_seen[2].data)[3 - 1].lo, 0x1p-60);
   static_cast<fuse::num::qd*>(g_seen[3].data)[3 * 2 - 1] = fuse::num::qd(1.0, 0x1p-60, 0x1p-120, 0x1p-180);
   EXPECT_EQ(static_cast<fuse::num::qd*>(g_seen[3].data)[3 * 2 - 1][3], 0x1p-180);
+  static_cast<fuse::num::posit16*>(g_seen[4].data)[3 - 1] = fuse::num::posit16::from_double(3.0);
+  EXPECT_EQ(static_cast<fuse::num::posit16*>(g_seen[4].data)[3 - 1].to_double(), 3.0);
+  static_cast<fuse::num::posit32*>(g_seen[5].data)[3 * 3 - 1] = fuse::num::posit32::from_double(-0.75);
+  EXPECT_EQ(static_cast<fuse::num::posit32*>(g_seen[5].data)[3 * 3 - 1].to_double(), -0.75);
 }
 
 TEST(AbiTypedProvider, ARowThatCountsBinary64ValuesForADoubleDoubleFieldDisagreesWithTheGraph) {

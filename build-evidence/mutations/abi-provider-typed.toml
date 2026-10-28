@@ -80,3 +80,23 @@ old = "      if (element_size == 0) {"
 new = "      if (false) {"
 target = "fuse_abi_typed_provider_test"
 test = "abi.typed_provider"
+
+[[mutation]]
+id = "abi-provider-binds-posit16-as-binary16"
+area = "abi_provider_typed"
+describes = "a provider's FUSE_ELEMENT_POSIT16 field is bound as binary16, so the runtime reads posit patterns as half precision"
+file = "src/abi/provider_adapter.cpp"
+old = "        case FUSE_ELEMENT_POSIT16: bound = bind_as(std::type_identity<fuse::num::posit16>{}); break;"
+new = "        case FUSE_ELEMENT_POSIT16: bound = bind_as(std::type_identity<fuse::binary16>{}); break;"
+target = "fuse_abi_typed_provider_test"
+test = "abi.typed_provider"
+
+[[mutation]]
+id = "abi-provider-sizes-a-posit32-field-as-a-posit16"
+area = "abi_provider_typed"
+describes = "a provider's FUSE_ELEMENT_POSIT32 field is sized as 2-byte elements"
+file = "src/abi/provider_adapter.cpp"
+old = "        case FUSE_ELEMENT_POSIT32: element_size = sizeof(fuse::num::posit32); break;"
+new = "        case FUSE_ELEMENT_POSIT32: element_size = sizeof(fuse::num::posit16); break;"
+target = "fuse_abi_typed_provider_test"
+test = "abi.typed_provider"

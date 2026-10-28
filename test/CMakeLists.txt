@@ -2432,9 +2432,21 @@ if(TARGET fuse-abi-fortran)
     DEPENDS fuse-abi-fortran ${CMAKE_CURRENT_SOURCE_DIR}/abi/fortran/arithmetic_consumer.f90
     COMMENT "Compiling test/abi/fortran/arithmetic_consumer.f90 against ffuse (no link)"
   )
+  # posit_consumer.f90 (the integer patterns of posit16 and posit32 fields, FUSE_ELEMENT_POSIT16 and
+  # POSIT32): the same strict compile.
+  add_custom_command(
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/fuse_abi_fortran_posit_check.o
+    COMMAND ${CMAKE_Fortran_COMPILER} -std=f2008 -Wall -Wextra -Werror -fimplicit-none
+            -I$<TARGET_PROPERTY:fuse-abi-fortran,Fortran_MODULE_DIRECTORY>
+            -c ${CMAKE_CURRENT_SOURCE_DIR}/abi/fortran/posit_consumer.f90
+            -o ${CMAKE_CURRENT_BINARY_DIR}/fuse_abi_fortran_posit_check.o
+    DEPENDS fuse-abi-fortran ${CMAKE_CURRENT_SOURCE_DIR}/abi/fortran/posit_consumer.f90
+    COMMENT "Compiling test/abi/fortran/posit_consumer.f90 against ffuse (no link)"
+  )
   add_custom_target(fuse_abi_fortran_consumer_check ALL
     DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/fuse_abi_fortran_consumer_check.o
-            ${CMAKE_CURRENT_BINARY_DIR}/fuse_abi_fortran_arithmetic_check.o)
+            ${CMAKE_CURRENT_BINARY_DIR}/fuse_abi_fortran_arithmetic_check.o
+            ${CMAKE_CURRENT_BINARY_DIR}/fuse_abi_fortran_posit_check.o)
   add_test(NAME abi.fortran_consumer_compiles
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
             --target fuse_abi_fortran_consumer_check)
