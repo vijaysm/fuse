@@ -1,0 +1,51 @@
+# Mutations for fields of any coupled value type in a restart file (plans/2026-10-22-universal-number-types.md, stage U4).
+
+[[mutation]]
+id = "restart-values-store-one-scalar-per-value"
+area = "restart_values"
+describes = "put_values writes the components of the values as the components of the stored scalars"
+file = "include/fuse/model/restart_values.hpp"
+old = "      components * k, declared_global_size);"
+new = "      components, declared_global_size);"
+target = "fuse_num_restart_values_test"
+test = "num.restart_values"
+
+[[mutation]]
+id = "restart-values-read-one-scalar-per-value"
+area = "restart_values"
+describes = "get_values asks the reader for the components of the values, not of their scalars"
+file = "include/fuse/model/restart_values.hpp"
+old = "      components * k, conversion);"
+new = "      components, conversion);"
+target = "fuse_num_restart_values_test"
+test = "num.restart_values"
+
+[[mutation]]
+id = "restart-values-write-only-the-first-scalars"
+area = "restart_values"
+describes = "put_values hands the writer one scalar per value, whatever the type"
+file = "include/fuse/model/restart_values.hpp"
+old = "      qualified_name, ids, std::span<const S>(scalars, values.size() * static_cast<std::size_t>(k)),"
+new = "      qualified_name, ids, std::span<const S>(scalars, values.size()),"
+target = "fuse_num_restart_values_test"
+test = "num.restart_values"
+
+[[mutation]]
+id = "restart-binary16-is-stored-as-bfloat16"
+area = "restart_values"
+describes = "fuse::binary16 is tagged BFloat16 in the file"
+file = "include/fuse/model/element_type.hpp"
+old = "struct ElementTypeOf<fuse::binary16> {\n  static constexpr ElementType value = ElementType::Binary16;"
+new = "struct ElementTypeOf<fuse::binary16> {\n  static constexpr ElementType value = ElementType::BFloat16;"
+target = "fuse_num_restart_values_test"
+test = "num.restart_values"
+
+[[mutation]]
+id = "restart-values-store-a-storage-type-as-binary64"
+area = "restart_values"
+describes = "a Storage type (binary32, bfloat16, binary16) is no longer a type a restart file stores as itself, so a value type whose scalars are binary32, such as a dual number over binary32, is refused"
+file = "include/fuse/model/restart_values.hpp"
+old = "    std::is_same_v<T, double> || value_traits<T>::kind == FieldValueKind::Storage;"
+new = "    std::is_same_v<T, double>;"
+target = "fuse_num_restart_values_test"
+test = "num.restart_values"

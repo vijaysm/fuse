@@ -16,10 +16,16 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <memory>
+#include <span>
+#include <string>
+#include <vector>
 
 #include <gtest/gtest.h>
 
 #include <fuse/model/element_type.hpp>
+#include <fuse/model/restart_values.hpp>
+#include <fuse/num/dd.hpp>
 #include <fuse/restart_io/hdf5_restart_io.hpp>
 
 namespace {
@@ -327,5 +333,85 @@ TEST(TypedRestartHdf5, HandBuiltX86LongDoubleExactAndWideningRefuseAllowNarrowin
     EXPECT_EQ(static_cast<double>(restored), 1.0);  // rounds down
   }
 #endif
+  std::remove(path.c_str());
+}
+
+// Fields of double-double values and of the 16-bit formats through a real file: put_values
+// stores each value as its scalars, get_values restores the bits, and a read with another
+// number of components than was written is refused by name instead of reading past a buffer.
+namespace {
+std::unique_ptr<fuse::restart_io::PointWriter> make_point(const std::string& path) {
+  std::remove(path.c_str());
+  fuse::restart_io::Provenance prov;
+  prov.format_version = fuse::restart_io::kFormatVersion;
+  prov.fuse_version = "test";
+  auto pw = fuse::restart_io::create_restart_point(
+      fuse::restart_io::FileLayout::SeparateMeshAndPoints, path, prov, "");
+  EXPECT_TRUE(pw.ok());
+  return std::move(pw).value();
+}
+}  // namespace
+
+TEST(TypedRestartHdf5, ADoubleDoubleFieldRoundTripsBitForBitAndReadsAsLimbs) {
+  using fuse::num::dd;
+  const std::string path = temp_path("typed_dd_roundtrip.h5");
+  const std::vector<std::int64_t> ids = {7, 3, 5};
+  const std::vector<dd> x = {dd(1.0, 0x1p-60), dd(-3.0, -0x1p-58), dd(0.1, 0x1p-57)};
+  {
+    auto pw = make_point(path);
+    ASSERT_TRUE(pw != nullptr);
+    ASSERT_TRUE(fuse::put_values<dd>(pw->writer(), "t", ids, x, 1, 3).ok());
+    ASSERT_TRUE(pw->finish().ok());
+  }
+  auto pr = fuse::restart_io::open_restart_point(
+      fuse::restart_io::FileLayout::SeparateMeshAndPoints, path, "");
+  ASSERT_TRUE(pr.ok());
+  std::vector<dd> back(3);
+  ASSERT_TRUE(fuse::get_values<dd>(pr.value()->reader(), "t", ids, back, 1).ok());
+  EXPECT_EQ(std::memcmp(back.data(), x.data(), sizeof(dd) * 3), 0);
+  // a reader that does not know the type reads the limbs
+  std::vector<double> limbs(6);
+  ASSERT_TRUE(pr.value()->reader().get_field<double>("t", ids, std::span(limbs), 2).ok());
+  EXPECT_EQ(limbs[2], -3.0);
+  EXPECT_EQ(limbs[3], -0x1p-58);
+  // and another number of components than was written is refused, both ways
+  std::vector<double> narrow(3);
+  const auto one = pr.value()->reader().get_field<double>("t", ids, std::span(narrow), 1);
+  ASSERT_FALSE(one.ok());
+  EXPECT_EQ(one.error().code, "E-RESTART-FIELD-SHAPE");
+  std::vector<double> wide(12);
+  const auto four = pr.value()->reader().get_field<double>("t", ids, std::span(wide), 4);
+  ASSERT_FALSE(four.ok());
+  EXPECT_EQ(four.error().code, "E-RESTART-FIELD-SHAPE");
+  std::remove(path.c_str());
+}
+
+TEST(TypedRestartHdf5, ABinary16FieldRoundTripsAndWidensExactly) {
+  using H = fuse::binary16;
+  const std::string path = temp_path("typed_binary16_roundtrip.h5");
+  const std::vector<std::int64_t> ids = {0, 1, 2, 3};
+  std::vector<H> h;
+  for (const double v : {0.1, -7.0, 65504.0, 6.1035e-05}) h.push_back(fuse::value_traits<H>::from_binary64(v));
+  {
+    auto pw = make_point(path);
+    ASSERT_TRUE(pw != nullptr);
+    ASSERT_TRUE(fuse::put_values<H>(pw->writer(), "h", ids, h, 1, 4).ok());
+    ASSERT_TRUE(pw->finish().ok());
+  }
+  auto pr = fuse::restart_io::open_restart_point(
+      fuse::restart_io::FileLayout::SeparateMeshAndPoints, path, "");
+  ASSERT_TRUE(pr.ok());
+  std::vector<H> back(4);
+  ASSERT_TRUE(fuse::get_values<H>(pr.value()->reader(), "h", ids, back, 1).ok());
+  EXPECT_EQ(std::memcmp(back.data(), h.data(), sizeof(H) * 4), 0);
+  // widening to binary32 is exact for every binary16 value
+  std::vector<float> wide(4);
+  const auto rw = fuse::get_values<float>(pr.value()->reader(), "h", ids, std::span(wide), 1,
+                                          fuse::ReadConversion::Widening);
+  ASSERT_TRUE(rw.ok()) << (rw.ok() ? "" : rw.error().message);
+  EXPECT_FALSE(rw.value().converted_any && rw.value().changed_count != 0);
+  for (std::size_t i = 0; i < 4; ++i) {
+    EXPECT_EQ(static_cast<double>(wide[i]), fuse::value_traits<H>::to_binary64(h[i])) << i;
+  }
   std::remove(path.c_str());
 }
