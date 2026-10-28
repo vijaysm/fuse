@@ -97,6 +97,8 @@ FUSE_ABI_ENUM(FUSE_ELEMENT_BF16,    3,  "bfloat16, 8 exponent and 7 fraction bit
 FUSE_ABI_ENUM(FUSE_ELEMENT_F16,     4,  "IEEE binary16, as a 16-bit pattern: a storage type like FUSE_ELEMENT_F32")
 FUSE_ABI_ENUM(FUSE_ELEMENT_DD,      5,  "double-double: two consecutive binary64 values, the larger first (double hi, lo), one value of about 106 bits. An arithmetic type: sums, scalings and remaps of it are done in double-double and it is delivered as the pair. The graph counts the two binary64 values per entity in its components; the view counts values (see fuse_field_view.components)")
 FUSE_ABI_ENUM(FUSE_ELEMENT_QD,      6,  "quad-double: four consecutive binary64 values of decreasing magnitude (double x[4]), one value of about 212 bits; an arithmetic type like FUSE_ELEMENT_DD. The graph counts four binary64 values per entity")
+FUSE_ABI_ENUM(FUSE_ELEMENT_POSIT16, 7,  "posit<16, 2> of the 2022 Posit Standard, as a 16-bit pattern (an unsigned integer, negative values in two's complement, 0x8000 is NaR): a storage type like FUSE_ELEMENT_F32; conversion saturates, it never overflows to an infinity or flushes to zero")
+FUSE_ABI_ENUM(FUSE_ELEMENT_POSIT32, 8,  "posit<32, 2> of the 2022 Posit Standard, as a 32-bit pattern: a storage type like FUSE_ELEMENT_POSIT16")
 FUSE_ABI_ENUM(FUSE_MEMSPACE_HOST,   0,  "pointer addressable by the host CPU")
 FUSE_ABI_ENUM(FUSE_MEMSPACE_DEVICE, 1,  "pointer in the default device memory space of this build's Kokkos")
 FUSE_ABI_ENUM(FUSE_OWNERSHIP_OWNED, 0,  "every entry owned by this process; the default")

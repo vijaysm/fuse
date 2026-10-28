@@ -30,3 +30,33 @@ old = "    if (in->element_type != FUSE_ELEMENT_F64 && in->element_type != FUSE_
 new = "    if (in->element_type != FUSE_ELEMENT_F64 && in->element_type != FUSE_ELEMENT_I64 &&"
 target = "fuse_abi_storage_element_test"
 test = "abi.storage_element"
+
+[[mutation]]
+id = "abi-register-binds-posit16-as-binary16"
+area = "abi_storage"
+describes = "FUSE_ELEMENT_POSIT16 is bound as an array of binary16 values, so the runtime reads posit patterns as half precision"
+file = "src/abi/participant.cpp"
+old = "      case FUSE_ELEMENT_POSIT16: bound = bind_as(std::type_identity<fuse::num::posit16>{}); break;"
+new = "      case FUSE_ELEMENT_POSIT16: bound = bind_as(std::type_identity<fuse::binary16>{}); break;"
+target = "fuse_abi_storage_element_test"
+test = "abi.storage_element"
+
+[[mutation]]
+id = "abi-view-reports-posit32-as-posit16"
+area = "abi_storage"
+describes = "fuse_view_field reports a posit32 field as FUSE_ELEMENT_POSIT16"
+file = "src/abi/participant.cpp"
+old = "        element_type = FUSE_ELEMENT_POSIT32;"
+new = "        element_type = FUSE_ELEMENT_POSIT16;"
+target = "fuse_abi_storage_element_test"
+test = "abi.storage_element"
+
+[[mutation]]
+id = "abi-register-refuses-posit32"
+area = "abi_storage"
+describes = "FUSE_ELEMENT_POSIT32 is refused at registration"
+file = "src/abi/participant.cpp"
+old = "        in->element_type != FUSE_ELEMENT_POSIT16 && in->element_type != FUSE_ELEMENT_POSIT32) {"
+new = "        in->element_type != FUSE_ELEMENT_POSIT16 && in->element_type != FUSE_ELEMENT_POSIT16 + 100) {"
+target = "fuse_abi_storage_element_test"
+test = "abi.storage_element"

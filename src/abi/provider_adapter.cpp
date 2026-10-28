@@ -13,6 +13,7 @@
 #include "fuse/model/bfloat16.hpp"
 #include "fuse/model/binary16.hpp"
 #include "fuse/num/dd.hpp"
+#include "fuse/num/posit.hpp"
 #include "fuse/num/qd.hpp"
 #include "fuse/model/capabilities.hpp"
 
@@ -363,8 +364,8 @@ fuse::Result<void> ProviderAdapter::register_fields(fuse::FieldRegistry& registr
                 " intent=" + std::to_string(row.intent) + ")"};
       }
       // FUSE allocates the field in the element type the row names and the plugin binds
-      // to it: binary64, the storage types (binary32, bfloat16, binary16), or the
-      // arithmetic types (double-double, quad-double).
+      // to it: binary64, the storage types (binary32, bfloat16, binary16, posit16, posit32),
+      // or the arithmetic types (double-double, quad-double).
       std::size_t element_size = 0;
       switch (row.element_type) {
         case FUSE_ELEMENT_F64:  element_size = sizeof(double); break;
@@ -373,13 +374,15 @@ fuse::Result<void> ProviderAdapter::register_fields(fuse::FieldRegistry& registr
         case FUSE_ELEMENT_F16:  element_size = sizeof(fuse::binary16); break;
         case FUSE_ELEMENT_DD:   element_size = sizeof(fuse::num::dd); break;
         case FUSE_ELEMENT_QD:   element_size = sizeof(fuse::num::qd); break;
+        case FUSE_ELEMENT_POSIT16: element_size = sizeof(fuse::num::posit16); break;
+        case FUSE_ELEMENT_POSIT32: element_size = sizeof(fuse::num::posit32); break;
         default: break;
       }
       if (element_size == 0) {
         return fuse::Failure{"E-ABI-PROVIDER-ELEMENT",
                              "provider '" + name_ + "': field '" + spec.name + "' has element_type " +
                                  std::to_string(row.element_type) + ", which is not one of "
-                                 "FUSE_ELEMENT_F64, F32, BF16, F16, DD or QD (FUSE_ELEMENT_I64 "
+                                 "FUSE_ELEMENT_F64, F32, BF16, F16, POSIT16, POSIT32, DD or QD (FUSE_ELEMENT_I64 "
                                  "names identifiers, not coupled values)"};
       }
       if (row.element_type != FUSE_ELEMENT_F64 && row.memspace == FUSE_MEMSPACE_DEVICE) {
@@ -565,6 +568,8 @@ fuse::Result<void> ProviderAdapter::register_fields(fuse::FieldRegistry& registr
         case FUSE_ELEMENT_F16:  bound = bind_as(std::type_identity<fuse::binary16>{}); break;
         case FUSE_ELEMENT_DD:   bound = bind_as(std::type_identity<fuse::num::dd>{}); break;
         case FUSE_ELEMENT_QD:   bound = bind_as(std::type_identity<fuse::num::qd>{}); break;
+        case FUSE_ELEMENT_POSIT16: bound = bind_as(std::type_identity<fuse::num::posit16>{}); break;
+        case FUSE_ELEMENT_POSIT32: bound = bind_as(std::type_identity<fuse::num::posit32>{}); break;
         default:                bound = bind_as(std::type_identity<double>{}); break;
       }
       if (!bound.ok()) return bound;

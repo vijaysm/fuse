@@ -1,0 +1,45 @@
+# The graph posit_consumer.f90 drives: test/abi/fortran/install_consumer/two_component.yaml with
+# three channels. A posit is one number per entity as the graph counts them (components: 1);
+# the element type is the one the program registers: posit16, posit32, or binary64 into posit16.
+version: 1
+meshes:
+  - {name: m1, source: "generated:line:4"}
+  - {name: m2, source: "generated:line:4"}
+regions:
+  - {name: r1, mesh: m1, dimension: 1}
+  - {name: r2, mesh: m2, dimension: 1}
+components:
+  - name: upstream
+    ranks: {first: 0, count: 1}
+    interval: 1
+    fields:
+      - {name: p16, region: r1, disc: FV, components: 1, units: K,
+         conservation: None, intent: Provides}
+      - {name: p32, region: r1, disc: FV, components: 1, units: K,
+         conservation: None, intent: Provides}
+      - {name: mix, region: r1, disc: FV, components: 1, units: K,
+         conservation: None, intent: Provides}
+  - name: downstream
+    ranks: {first: 0, count: 1}
+    interval: 1
+    fields:
+      - {name: p16, region: r2, disc: FV, components: 1, units: K,
+         conservation: None, intent: Requires}
+      - {name: p32, region: r2, disc: FV, components: 1, units: K,
+         conservation: None, intent: Requires}
+      - {name: mix, region: r2, disc: FV, components: 1, units: K,
+         conservation: None, intent: Requires}
+channels:
+  - name: link_p16
+    source: upstream.p16
+    target: downstream.p16
+    remap: {flags: [Conservative]}
+  - name: link_p32
+    source: upstream.p32
+    target: downstream.p32
+    remap: {flags: [Conservative]}
+  - name: link_mix
+    source: upstream.mix
+    target: downstream.mix
+    remap: {flags: [Conservative]}
+iteration_regions: []

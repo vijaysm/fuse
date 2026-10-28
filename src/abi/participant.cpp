@@ -57,6 +57,7 @@
 #include "fuse/model/binary16.hpp"
 #include "fuse/ir/lowering.hpp"
 #include "fuse/num/dd.hpp"
+#include "fuse/num/posit.hpp"
 #include "fuse/num/qd.hpp"
 #include "fuse/model/component.hpp"
 #include "fuse/model/descriptor.hpp"
@@ -873,12 +874,13 @@ fuse_status impl_register_field(fuse_ctx* ctx, const fuse_field_view* in,
     if (sz != FUSE_OK) return sz;
     if (in->element_type != FUSE_ELEMENT_F64 && in->element_type != FUSE_ELEMENT_F32 &&
         in->element_type != FUSE_ELEMENT_BF16 && in->element_type != FUSE_ELEMENT_F16 &&
-        in->element_type != FUSE_ELEMENT_DD && in->element_type != FUSE_ELEMENT_QD) {
+        in->element_type != FUSE_ELEMENT_DD && in->element_type != FUSE_ELEMENT_QD &&
+        in->element_type != FUSE_ELEMENT_POSIT16 && in->element_type != FUSE_ELEMENT_POSIT32) {
       return fail(&c, FUSE_ERR_UNSUPPORTED, "E-ABI-REGISTER-ELEMENT",
                  "fuse_register_field: only FUSE_ELEMENT_F64, FUSE_ELEMENT_F32, "
-                 "FUSE_ELEMENT_BF16, FUSE_ELEMENT_F16, FUSE_ELEMENT_DD and "
-                 "FUSE_ELEMENT_QD are supported through this ABI "
-                 "(FUSE_ELEMENT_I64 names identifiers, not coupled values)");
+                 "FUSE_ELEMENT_BF16, FUSE_ELEMENT_F16, FUSE_ELEMENT_POSIT16, "
+                 "FUSE_ELEMENT_POSIT32, FUSE_ELEMENT_DD and FUSE_ELEMENT_QD are supported "
+                 "through this ABI (FUSE_ELEMENT_I64 names identifiers, not coupled values)");
     }
     if (in->memspace != FUSE_MEMSPACE_HOST) {
       return fail(&c, FUSE_ERR_UNSUPPORTED, "E-ABI-REGISTER-MEMSPACE",
@@ -935,6 +937,8 @@ fuse_status impl_register_field(fuse_ctx* ctx, const fuse_field_view* in,
       case FUSE_ELEMENT_F16:  bound = bind_as(std::type_identity<fuse::binary16>{}); break;
       case FUSE_ELEMENT_DD:   bound = bind_as(std::type_identity<fuse::num::dd>{}); break;
       case FUSE_ELEMENT_QD:   bound = bind_as(std::type_identity<fuse::num::qd>{}); break;
+      case FUSE_ELEMENT_POSIT16: bound = bind_as(std::type_identity<fuse::num::posit16>{}); break;
+      case FUSE_ELEMENT_POSIT32: bound = bind_as(std::type_identity<fuse::num::posit32>{}); break;
       default:                bound = bind_as(std::type_identity<double>{}); break;
     }
     if (!bound.ok()) {
@@ -1017,6 +1021,10 @@ fuse_status impl_view_field(fuse_ctx* ctx, const fuse_field_ref* in,
         element_type = FUSE_ELEMENT_DD;
       } else if (any.holds<fuse::num::qd>()) {
         element_type = FUSE_ELEMENT_QD;
+      } else if (any.holds<fuse::num::posit16>()) {
+        element_type = FUSE_ELEMENT_POSIT16;
+      } else if (any.holds<fuse::num::posit32>()) {
+        element_type = FUSE_ELEMENT_POSIT32;
       } else {
         return fail(&c, FUSE_ERR_UNSUPPORTED, "E-ABI-VIEW-ELEMENT",
                    "fuse_view_field: the field holds " +

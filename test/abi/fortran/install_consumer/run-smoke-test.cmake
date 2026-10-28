@@ -94,6 +94,19 @@ if(NOT _fuse_rc EQUAL 0)
 endif()
 message(STATUS "abi.install_consumer_fortran: ${_fuse_arith_output}")
 
+message(STATUS "abi.install_consumer_fortran: running the posit consumer")
+execute_process(
+  COMMAND "${CONSUMER_BUILD_DIR}/posit_consumer_fortran"
+  WORKING_DIRECTORY "${CONSUMER_BUILD_DIR}"
+  OUTPUT_VARIABLE _fuse_posit_output
+  ERROR_VARIABLE _fuse_posit_error
+  RESULT_VARIABLE _fuse_rc)
+if(NOT _fuse_rc EQUAL 0)
+  message(FATAL_ERROR "the posit Fortran consumer exited ${_fuse_rc}:\n"
+                      "${_fuse_posit_output}\n${_fuse_posit_error}")
+endif()
+message(STATUS "abi.install_consumer_fortran: ${_fuse_posit_output}")
+
 if(DEFINED REFERENCE_OUTPUT)
   if(NOT EXISTS "${REFERENCE_OUTPUT}")
     message(FATAL_ERROR "REFERENCE_OUTPUT was given but does not exist: ${REFERENCE_OUTPUT}")
