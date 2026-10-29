@@ -482,6 +482,16 @@ endforeach()
 foreach(t temporal_basis waveform accelerator)
   fuse_add_gtest(num ${t} THROWS)
 endforeach()
+# S8 physics-kit, track "Integrators", Stage B Round 1 (docs/dev/integrators-design.md):
+# the integrator foundation (butcher_tableau.hpp, embedded_controller.hpp,
+# integrator.hpp) and the explicit family (explicit_integrator.hpp). THROWS: integrator
+# exercises FUSE_ASSERT/FUSE_THROW paths (SubStepClock's own invariants);
+# butcher_tableau/embedded_controller/explicit_integrator only ever return a Result,
+# never throw, so they need no THROWS label.
+fuse_add_gtest(num butcher_tableau)
+fuse_add_gtest(num embedded_controller)
+fuse_add_gtest(num integrator THROWS)
+fuse_add_gtest(num explicit_integrator)
 # S7.2: the native Newton-Krylov coupler. line_search is pure scalar
 # arithmetic (no DistVector), so it needs nothing beyond fuse::num itself;
 # newton_krylov drives fuse::linalg::gmres/DistVector directly, so it needs
