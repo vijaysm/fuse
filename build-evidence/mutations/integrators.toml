@@ -1,0 +1,77 @@
+# S8 physics-kit, track "Integrators", Stage B Round 1 (docs/dev/integrators-design.md):
+# one coefficient-perturbation row per tableau this round implements (FE, KUTTA22,
+# KUTTA44, DOPRI45), a controller safety-factor row, a rejection-path row and a clip
+# row, per the task's own instruction. Every row is proved by tools/mutate.py against
+# this round's own build-tier0 (MEASURED, not hand-verified like clock-coupler.toml's
+# own precedent, since the scratch tree's own build directory was already configured
+# for exactly this).
+
+[[mutation]]
+id = "integrators-fe-coefficient-perturbation"
+area = "num"
+describes = "perturbs forward_euler_tableau()'s own B[0] from 1.0 to 1.05 (a 5 percent weight error, far above round-off) -- the order-1 consistency condition (sum(B)=1, Hairer Thm II.1.5) and the method's own first-order accuracy both break."
+file = "include/fuse/num/butcher_tableau.hpp"
+old = "  t.A = std::vector<std::vector<double>>{\n      {0.0}\n    };\n  t.B = std::vector<double>{1.0};"
+new = "  t.A = std::vector<std::vector<double>>{\n      {0.0}\n    };\n  t.B = std::vector<double>{1.05};"
+target = "fuse_num_explicit_integrator_test"
+test = "num.explicit_integrator"
+
+[[mutation]]
+id = "integrators-kutta22-coefficient-perturbation"
+area = "num"
+describes = "perturbs kutta22_tableau()'s own B from {0.25, 0.75} to {0.2, 0.8} -- sum(B) is STILL 1 (the order-1 condition survives), but the order-2 condition (b2*c2 = 1/2, Hairer Thm II.2.3, here 0.8*2/3 = 0.5333 != 0.5) breaks -- a surgical case the row-sum/weight-sum consistency test (butcher_tableau_test.cpp) does NOT catch at all, proving the convergence-order test earns its own keep beyond that sanity check."
+file = "include/fuse/num/butcher_tableau.hpp"
+old = "  t.B = std::vector<double>{0.25, 0.75};"
+new = "  t.B = std::vector<double>{0.2, 0.8};"
+target = "fuse_num_explicit_integrator_test"
+test = "num.explicit_integrator"
+
+[[mutation]]
+id = "integrators-kutta44-coefficient-perturbation"
+area = "num"
+describes = "perturbs kutta44_tableau()'s own B[0] from 0.125 to 0.135 (a weight error well above round-off); both the order-1 condition and the method's own fourth-order accuracy break."
+file = "include/fuse/num/butcher_tableau.hpp"
+old = "  t.B = std::vector<double>{0.125, 0.375, 0.375, 0.125};"
+new = "  t.B = std::vector<double>{0.135, 0.375, 0.375, 0.125};"
+target = "fuse_num_explicit_integrator_test"
+test = "num.explicit_integrator"
+
+[[mutation]]
+id = "integrators-dopri45-coefficient-perturbation"
+area = "num"
+describes = "perturbs dopri45_tableau()'s own A[2][1] (the strictly-lower-triangular stage-3 coefficient, 9/40 = 0.225) by roughly 4 percent -- the reference-loop bit-identity test (explicit_integrator_test.cpp's own expect_bit_identical_to_reference) reads the SAME (mutated) tableau for both sides and cannot see this, which is why the row-sum/weight-sum and the order-fit tests, not the bit-identity one, are this row's own evidence that the port is checked against an INDEPENDENT closed-form solution, not merely against itself."
+file = "include/fuse/num/butcher_tableau.hpp"
+old = "      {0.075, 0.225, 0.0, 0.0, 0.0, 0.0, 0.0},"
+new = "      {0.075, 0.234, 0.0, 0.0, 0.0, 0.0, 0.0},"
+target = "fuse_num_explicit_integrator_test"
+test = "num.explicit_integrator"
+
+[[mutation]]
+id = "integrators-controller-safety-factor"
+area = "num"
+describes = "removes the PI controller's own safety-factor division (dopri45_integrator.C's own `fac/safe`) from the accepted-step branch of EmbeddedController::propose() -- embedded_controller_test.cpp's own PiAcceptedStepMatchesTheHandComputedDopri45Formula computes the expected h_next by hand, including the /safety term, so it is sensitive to the factor being dropped."
+file = "include/fuse/num/embedded_controller.hpp"
+old = "        const double fac = std::max(facc2, std::min(facc1, fac11 / std::pow(state.fac_old, opt_.beta) / opt_.safety));"
+new = "        const double fac = std::max(facc2, std::min(facc1, fac11 / std::pow(state.fac_old, opt_.beta)));"
+target = "fuse_num_embedded_controller_test"
+test = "num.embedded_controller"
+
+[[mutation]]
+id = "integrators-controller-rejection-path"
+area = "num"
+describes = "changes the REJECTED-step branch of EmbeddedController::propose() from `h/min(facc1, fac11/safety)` to `h/max(facc1, fac11/safety)` -- a rejection would then shrink the step far more aggressively (or, depending on fac11's own magnitude, not consistently shrink at all) than the vendored dopri45_integrator.C:261-265 formula calls for; embedded_controller_test.cpp's own PiRejectedStepDoesNotUpdateFacOld computes the expected h_next by hand against the ORIGINAL (min) formula."
+file = "include/fuse/num/embedded_controller.hpp"
+old = "        h_next = h / std::min(facc1, fac11 / opt_.safety);"
+new = "        h_next = h / std::max(facc1, fac11 / opt_.safety);"
+target = "fuse_num_embedded_controller_test"
+test = "num.embedded_controller"
+
+[[mutation]]
+id = "integrators-substepclock-clip"
+area = "num"
+describes = "deletes SubStepClock::round_to_quantum()'s own clamp to the quanta remaining in the window (`if (n > remaining) n = remaining;`) -- the owner's own decision (3), 'last step clipped exactly', is this one line; without it a caller's own last proposed step can overrun the window, which SubStepClock::advance()'s own FUSE_ASSERT(n <= remaining_quanta()) then refuses with an InvariantViolation instead of the step landing exactly on the window end -- SubStepClock.LastStepClipsExactlyToTheWindowEnd (integrator_test.cpp) is this row's own target, not a test that merely tolerates the thrown exception: it asserts clk.now() == window_end, which an uncaught InvariantViolation propagating out of the test body fails outright."
+file = "include/fuse/num/integrator.hpp"
+old = "    const std::int64_t remaining = remaining_quanta();\n    if (n > remaining) n = remaining;\n    return n;"
+new = "    return n;"
+target = "fuse_num_integrator_test"
+test = "num.integrator"
