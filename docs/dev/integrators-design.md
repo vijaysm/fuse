@@ -683,3 +683,149 @@ Owner decisions of 2026-10-27 on the open questions: (1) primal-only error norm;
 (3) a Rational time accumulator with a recorded per-window quantum, last step clipped exactly;
 (4) no PETSc-TS substrate in S8; (5) stage GMRES rtol = step rtol times a fixed factor starting at
 1e-2, held to the per-method order test and tightened, never loosened; (6) type-erased Problem.
+
+
+---
+
+## Round 1 built (2026-10-27/28, Stage B)
+
+Built in `include/fuse/num/{butcher_tableau,embedded_controller,integrator,
+explicit_integrator}.hpp` (all four header-only: no `.cpp` turned out to be needed --
+`ButcherTableau`'s factories are plain functions, `EmbeddedController`/`Integrator`/
+`ExplicitIntegrator` are template classes whose bodies have to live in the header
+regardless) plus `test/num/{butcher_tableau,embedded_controller,integrator,
+explicit_integrator}_test.cpp` (37 new `TEST` cases, all passing) and
+`build-evidence/mutations/integrators.toml` (7 new rows, all killed).
+
+**What the four headers are.** `butcher_tableau.hpp`: the `ButcherTableau` struct
+(Section 4.1) plus all 22 KARMA tableaus as factory functions, each coefficient cited
+to its vendored `file:line`. `embedded_controller.hpp`: `EmbeddedController` (Section
+4.2), the PI (DOPRI45's own Gustafsson controller) and I (EmbeddedDIRKIntegrator's own
+controller) kinds behind one entry point, `propose()`, a pure function of an
+already-agreed scalar error norm. `integrator.hpp`: the `IntegratorValue` concept (a
+LOCAL mirror of the not-yet-landed `CoupledValue`/`value_traits<T>::scalar_type`
+shape), the type-erased `TemporalProblem<Value>` adapter (owner decision 6), the
+`Integrator<Value>` interface every family implements, and `SubStepClock` (owner
+decision 3: a Rational time accumulator with a recorded per-window quantum,
+`kDefaultQuantumCount = 2^20`, derived in the class's own doc comment).
+`explicit_integrator.hpp`: `ExplicitIntegrator<Value>`, one class over any
+`Erk`/`ErkEmbedded` tableau, covering FE/KUTTA22/KUTTA44 (fixed step) and DOPRI45
+(embedded, with the corrected metadata below).
+
+**Three findings this round**, all re-verified or newly found by reading/running
+against the vendored source directly (not inherited from Stage A by reference):
+
+1. RE-VERIFIED (task's own instruction): GRK4A's embedded estimate is still measured
+   identically zero (`grk4a.C:71`) on a second, independent read; `grk4a_tableau()`
+   sets `embedded_order = std::nullopt` accordingly (`butcher_tableau.hpp`'s own top
+   comment, `ButcherTableau::has_embedded_estimate()` reports `false`), tested by
+   `ButcherTableau.Grk4aEmbeddedEstimateIsMeasuredZeroNotAssumed`.
+2. NEW: DOPRI45's own `is_FSAL()` is hardcoded `false` (`dopri45.h`) despite the
+   tableau having the textbook FSAL structure (row 6 of `A` bit-identical to `B`,
+   `C[6] == 1.0`) -- `dopri45_tableau()` carries the CORRECTED value, `true`, tested by
+   `ButcherTableau.DeclaredFsalMatchesTheStructuralProperty` (run over all 22 tableaus,
+   not just DOPRI45).
+3. NEW, found MECHANICALLY by `butcher_row_sum_defect()` rather than by reading:
+   SDIRK332's own `C[1]` (`24.0/108.0`, `sdirk332.C:29`) does not equal row 1 of `A`
+   summed (`29/108`, `sdirk332.C:40`) -- a defect of `~0.046`, far above every other
+   tableau's own round-off-level agreement (max observed `8.9e-16`). Kept
+   byte-identical to the vendored (wrong) value pending the owner's own Open Question
+   5 below; `ButcherTableau.ClassicalFamiliesAreRowSumConsistentExceptTheKnownSdirk332
+   Defect` asserts the defect itself, so a future silent "fix" is caught.
+
+**Verification, MEASURED:**
+- `test/num/{butcher_tableau,embedded_controller,integrator,explicit_integrator}
+  _test.cpp`: 37 new `TEST` cases (6 + 7 + 8 + 16), all passing
+  (`ctest -R '^num\.'`: `num.butcher_tableau`, `num.embedded_controller`,
+  `num.integrator`, `num.explicit_integrator`, each one ctest row per
+  `fuse_add_gtest`'s own convention).
+- Convergence order measured by a log-log least-squares fit over a decade of `h`
+  (fitted order, its own standard error from the fit, and 8 standard errors as the
+  acceptance band -- the multiplier and the `h`-range are both derived and documented
+  at the call site, `explicit_integrator_test.cpp`'s own comments): FE 1.00503 +/-
+  0.00082 (band 0.0065, expected 1), KUTTA22 2.00160 +/- 0.00025 (band 0.0020, expected
+  2), KUTTA44 4.00623 +/- 0.00101 (band 0.0081, expected 4, Dahlquist; 4.01112 +/-
+  0.00303 on the logistic equation, band 0.0242), DOPRI45 5.03938 +/- 0.00726 (band
+  0.0581, expected 5, fixed step) -- every fitted order inside its own band by 20-50
+  percent of margin, MEASURED by a standalone sweep of candidate `h`-ranges before this
+  round's own `h_max` values were fixed (this is a choice of WHICH `h` values enter the
+  fit, decided before relying on the result, not a widened acceptance band after a
+  failure). A mutated KUTTA44 coefficient collapses the fitted order well outside the
+  same band (`APerturbedKutta44CoefficientFailsTheOrderFourBand`), confirming the test
+  is sensitive, not merely passing regardless.
+- DOPRI45's adaptive loop, driven through `SubStepClock`, lands on the window end at
+  EXACT `Rational` equality (`Dopri45AdaptiveLandsExactlyOnTheWindowEndViaSubStepClock`)
+  -- not approximately: `clk.now() == Rational(1)` is asserted, not `EXPECT_NEAR`.
+  Rejections are made to fire under a deliberately oversized initial step and a tight
+  tolerance (`Dopri45RejectsAnOversizedInitialStepUnderATightTolerance`).
+- Byte-identical agreement against an independent 40-line reference RK loop (same
+  tableau, same fixed step sequence) for all four methods
+  (`expect_bit_identical_to_reference`, `EXPECT_EQ` on every component of every step,
+  not `EXPECT_NEAR`).
+- `E-INTEGRATOR-NONFINITE-ERROR`, `E-INTEGRATOR-STEP-TOO-SMALL`,
+  `E-INTEGRATOR-NO-RHS`, `E-INTEGRATOR-MASS-UNSUPPORTED`, `E-INTEGRATOR-WRONG-FAMILY`
+  and `E-INTEGRATOR-DIMENSION-MISMATCH` are each made to fire by a test, per the
+  report contract ("a refusal counts as verified only when a test makes it fire").
+- `build-evidence/mutations/integrators.toml`: 7 rows (one coefficient perturbation per
+  round-1 tableau -- FE, KUTTA22, KUTTA44, DOPRI45 -- a controller safety-factor row, a
+  rejection-path row, and a `SubStepClock` clip row), all run through
+  `tools/mutate.py --build-dir build-tier0 --area num` (Python 3.15,
+  `/opt/homebrew/bin/python3`, for `tomllib`; the system `/usr/bin/python3` is 3.9 and
+  lacks it) against this round's own `build-tier0`: **25 killed, 0 not-killed, 0
+  inconclusive, 0 without a baseline** (18 pre-existing num-area rows plus the 7 new
+  ones) -- every row's source file was BYTE-IDENTICAL to its pre-mutation content after
+  the run (re-checked with `tools/mutate.py --check-anchors`, 455/455 valid, and by
+  `grep` for leftover mutant text, none found).
+- Full tier-0 `ctest -j3`: **244/244 tests passed** (`num` label: 14 tests, the 10
+  pre-existing plus the 4 new binaries), run once after the mutation gate's own restore,
+  confirming the restore left the tree in the SAME state the rest of the suite already
+  depends on.
+- Sphinx: `fuse-docs` conda environment's own interpreter
+  (`/Users/mahadevan/.claude-science/conda/envs/fuse-docs`, Sphinx 9.1.0),
+  `sphinx-build -W --keep-going -b html docs docs/_build/html`: the track reported
+  "build succeeded, zero warnings" in its structured result; the lead's own clean-export
+  docs build of this landing is recorded in the lead's note below.
+
+**Round 1 deliberately did NOT build** (round 2, D-B): the DIRK family (`ImplicitDIRK`/
+`EmbeddedDIRK`-equivalent, over `fuse::num::solve()`), the Rosenbrock family (over
+`gmres`/`MatrixFreeOperator`), `TemporalProblem::mass`/`jacobian_action`/`dfdt` call
+sites (declared now, Section 4.1, not yet called from anywhere), the dynamical-
+time-scale controller (out of this track's scope, Section 4 top comment of
+`explicit_integrator.hpp`), and the FSAL reuse optimisation (a deliberate accuracy-
+over-efficiency choice, same file's own top comment).
+
+### Open questions, updated
+
+Open questions 1-6 from Stage A stand (DIRK/Rosenbrock/numtypes scope, round 2). One
+NEW open question from this round:
+
+7. **SDIRK332's own `C[1]` defect** (finding 3 above): is `24.0/108.0`
+   (`sdirk332.C:29`) a mistyped `C[1]` that should read `29.0/108.0` (making the tableau
+   row-sum consistent, the far more likely transcription slip given every other row of
+   every other tableau agrees to round-off), or did the ORIGINAL derivation of this
+   tableau's `A[1][0]`/`A[1][1]` go wrong instead, with `C[1]` being the one correct
+   value? No test in this round's own suite can distinguish the two (both keep the
+   tableau internally self-consistent); re-deriving SDIRK332 from its own cited source
+   (Kvaerno, Norsett & Owren, "Runge-Kutta research in Trondheim") is round-2 scope, not
+   decided here. Recommendation: treat `C[1] = 29.0/108.0` as the more likely fix
+   (consistent with every other row's own agreement), but confirm against the cited
+   reference before changing the shipped coefficient -- a silent "fix" without that
+   confirmation would just trade one undocumented wrong number for another.
+
+**Lead's verification of finding 3 (2026-10-28, read from `upstream/karma/src/numerics/temporal/sdirk332.C`):**
+`gamma = 5.0/6.0` (line 25); row 2 of `A` is `-23/183 - 33/61 + gamma = 1/6 = C[2] = 1 - gamma`
+(lines 29 and 42), so `gamma = 5/6` is forced by the tableau itself; row 1 of `A` is
+`-61/108 + 5/6 = 29/108` (line 41) against the vendored `C[1] = 24/108` (line 29). The row-sum
+condition holds for every other row of every other tableau to round-off, so `C[1]` is the
+transcription error, as the track inferred. `C` enters only a non-autonomous right-hand side; the
+Dahlquist and logistic rows cannot see it, which is why no test distinguishes the two readings. The
+owner decides whether the shipped `sdirk332_tableau()` carries `29/108` (recommended) before the
+DIRK family is built in round 2.
+
+**Lead's note on the order bands (2026-10-28).** The acceptance band is eight standard errors of
+the least-squares slope. That bounds the fit's statistical scatter, not the systematic deviation of
+the observed order from the tableau order at finite `h` (the next term of the asymptotic expansion);
+the latter is controlled by the per-method `h_max` chosen in a standalone sweep before the fit, and
+the measured deviations (FE 0.005, Kutta22 0.0016, Kutta44 0.006, DOPRI45 0.039) are each inside
+their band with margin. A future failure of one of these rows is read against the `h` range first,
+never against the multiplier.
