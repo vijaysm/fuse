@@ -13466,12 +13466,13 @@ before it runs. Tests: `ArithmeticFieldRunner.AnIterationRegionOverAnArithmeticF
 (`test/runtime/arithmetic_field_runner_test.cpp`).
 
 
-### D102. Reverse mode (the adjoint schedule) covers binary64 fields in one process: iteration regions, time histories, minimum and maximum accumulation, MPI transport, dd/qd/Storage fields and components behind the C ABI are refused or absent -- OPEN by design, 2026-10-30 (number-types track, stage U6)
+### D102. Reverse mode (the adjoint schedule) covers binary64 fields: iteration regions, time histories, minimum and maximum accumulation, the distributed nodal remap, a LowFive transport, dd/qd/Storage fields and components behind the C ABI are refused or absent -- OPEN by design, 2026-10-30 (number-types track, stage U6)
 
 **What happens.** `Runner::initialize_adjoint()` (`src/runtime/runner_adjoint.cpp`) refuses by name, with an
 `E-ADJ-*` code, a plan that has an iteration region (`E-ADJ-REGION`), a minimum or maximum accumulation
 (`E-ADJ-ACCUM`), a space-time Sample or Interpolate (`E-ADJ-SPACETIME`), a Transport between processes
-(`E-ADJ-TRANSPORT`), a distributed nodal Remap (`E-ADJ-NODAL-DIST`), a field of an Arithmetic or Storage
+whose backend has no adjoint (`E-ADJ-TRANSPORT`; copy and MPI have one), a distributed nodal Remap
+(`E-ADJ-NODAL-DIST`), a field of an Arithmetic or Storage
 value type (`E-ADJ-FIELD-TYPE`), an adjoint array in a different memory space than its field
 (`E-ADJ-SPACE`), an instruction with no adjoint such as Relax or Residual (`E-ADJ-OP`) and a component without an
 `AdjointComponent` (`E-ADJ-COMPONENT`). A component behind the C ABI, Fortran or Python has no
@@ -13482,12 +13483,16 @@ reversed exactly: the adjoint identity holds within the derivative gate's bound 
 **Why it is not fixed here.** Each excluded item is its own piece of work and none is data movement alone.
 A fixed-point iteration is differentiated implicitly (a linear solve with the transposed interface
 Jacobian) or by unrolling the sweeps, which needs every sweep's forward values; a minimum or maximum
-needs to know which sample was picked, and the coupler keeps no forward values; the adjoint of an MPI
-exchange is the same exchange with send and receive swapped, which has to be done and tested at 2 and 3
-ranks; and an entry point in the C ABI is a change to `entries.def`, the generated header, the Fortran
+needs to know which sample was picked, and the coupler keeps no forward values; the adjoint of the
+distributed nodal remap (`apply_distributed_HT` where the forward run applied `H`) cannot be checked
+while its forward test fails on higgs -- `parallel.nodal_remap_runner.{1..5}` and `.1` to `.3` on the
+device give `E-RT-CONSERVATION: relative conservation error 0.909091 (integral 11.000000 -> 1.000000)`
+at 8820aed2, a main commit before any number-type change, and again at the head of the number-types branch (the 2026-10-20
+host run recorded above has them passing; the cause was not investigated); and an entry point in the C ABI is a change to `entries.def`, the generated header, the Fortran
 module and the conformance suite.
 
-**What to do meanwhile.** Differentiate a coupling that is one process, binary64, host or device memory, with
+**What to do meanwhile.** Differentiate a coupling that is binary64, in host or device memory, in one process
+or across ranks through the copy or MPI transport (the exchange is reversed and tested at 2 and 3 ranks), with
 sum, mean, integral or instant accumulation, remap, unit conversion and merge; take the derivative through
 an iteration region by differentiating the converged fixed point yourself (implicit function theorem) and
 hand the result to the component as the adjoint of its step. Tests: `RuntimeAdjoint.Refuses*`

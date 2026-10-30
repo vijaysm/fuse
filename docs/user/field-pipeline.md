@@ -444,12 +444,15 @@ values its own adjoint needs; FUSE keeps none. The full contract, the rule for e
 operator and the checks are in [](../dev/adjoint-schedule.md).
 
 The adjoint array of a field is in the memory the field is in, host or device, and the
-reverse sweep runs on the execution space the forward run used. What is supported today:
-binary64 fields, one process, remap, unit
+reverse sweep runs on the execution space the forward run used. Across ranks the
+exchange of a channel (the MPI transport) is run backwards, and a rank that fails in
+the middle of a sweep does not leave the ranks it exchanges with waiting: they are
+told at the next agreement point and every rank returns an error. What is supported today:
+binary64 fields, in one process or across ranks, remap, unit
 conversion, sum, mean and integral accumulation, merge by first, sum or mean, and
 lagged channels. Refused by name (`E-ADJ-*`) at `initialize_adjoint`: iteration
 regions, minimum and maximum accumulation, time histories (space-time channels),
-transport between processes, distributed nodal remaps, fields of the dd, qd and
+a transport that has no adjoint (LowFive), distributed nodal remaps, fields of the dd, qd and
 Storage types, an adjoint array in another memory space than its field, and the
 operators with no adjoint (relaxation, residual). C, Fortran and Python components have no adjoint entry points yet.
 

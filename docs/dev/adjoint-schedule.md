@@ -72,7 +72,9 @@ because the output was dead before the write; then `g` is added to the adjoint o
 | instruction | forward | reverse |
 |---|---|---|
 | Source | the arc is the provider's own array | nothing: readers added to the provider's adjoint array |
-| Sink, Epoch, Transport (one process), Constrain, Diagnose, Interpolate (no time history), Extrapolate (order 0) | `out = in` | `in_bar += g` |
+| Sink, Transport (one process), Constrain, Diagnose, Interpolate (no time history), Extrapolate (order 0) | `out = in` | `in_bar += g` |
+| Epoch | the ranks of the exchange agree whether all succeeded, then `out = in` | the same agreement (`reconcile_epoch`), then `in_bar += g` |
+| Transport between processes | `Transport::move` copies the entries of `in` it moves into entries of `out`, same-rank matches directly, the rest by an exchange; the other entries of `out` are left alone | `g_w` is the adjoint of the entries written, taken from `out`'s adjoint array and set to zero there; `in_bar += P^T g_w`, the exchange run backwards (`Transport::move_adjoint`); the entries not written keep their adjoint |
 | Remap | `out = W in` (identity when the regions coincide) | `in_bar += W^T g`, a gather over the transposed matrix |
 | Scale | `out = f in` | `in_bar += f g` |
 | Merge first | `out = in_0` | `in_0_bar += g` |
@@ -106,6 +108,28 @@ fence precedes every call to `advance_adjoint` and ends the sweep, so a componen
 kernels must have finished when it returns, sees complete adjoint arrays and the next instruction
 sees its result.
 
+**Between ranks.** The reverse of a Transport between processes is the same exchange run
+backwards, by the backend that ran it forward. `Transport::move_adjoint(dst_bar, src_bar, n)`
+(`fuse/transport/transport.hpp`) overwrites `src_bar` with `P^T dst_bar`, where `dst = P src` is the
+0/1 matrix `move()` applies to the entries it writes; `has_adjoint()` says whether a backend has
+it, and a backend that has not is refused at `initialize_adjoint()` (`E-ADJ-TRANSPORT`).
+`CopyTransport` copies the other way. `MpiTransport` packs `dst_bar` in the order of its receive
+buffer, runs the `MPI_Alltoallv` of `move()` with the send and receive counts and displacements
+exchanged, and adds what arrives to the entries of `src_bar` that `move()` read: a source entry
+sent to several ranks (a halo) receives the sum of their adjoints, in ascending peer rank, and the
+same-rank matches of a partially overlapping plan are added directly. The Runner reverses a
+Transport on host buffers, as the forward run does, so a destination arc in device memory is copied
+to the host and back, and the adjoint handed to the source arc is copied in from the host; the
+device-direct exchange of the forward run (`move_packed`) is not used. The exchange and the
+`Epoch` that follows it are collective, so the sweep is carried like a period of the forward run
+(`step_period`): a rank on which a component's adjoint step or an instruction fails records the
+failure and goes on to execute only the collective instructions (`is_collective`), so that the
+ranks it exchanges with are not left waiting for it, skips the local work, and returns its failure
+at the end of the period; the reverse of an `Epoch` takes part in the agreement, so that a rank
+whose partner failed earlier in the sweep fails too (`E-RT-EPOCH-PEER`) rather than pass on an
+adjoint derived from an exchange that did not complete. A period that failed did not happen: the
+next `run_period_adjoint()` reverses it again.
+
 **Order.** The sweep reproduces the merged walk of `Runner::Impl::step_period()` -- ticks before the
 instructions stamped later, `AfterTicks` instructions after the ticks at their own time -- by
 replaying its condition on the static lists of ticks and instructions, then reads the list
@@ -129,8 +153,8 @@ codes), so a graph that asks for more is stopped before anything is differentiat
 | `E-ADJ-REGION` | the plan has an iteration region (the adjoint of a fixed-point iteration is implicit differentiation, or the unrolled sweeps: not implemented) |
 | `E-ADJ-ACCUM` | a minimum or maximum accumulation (the adjoint selects a sample and needs the forward values) |
 | `E-ADJ-SPACETIME` | a space-time Sample or Interpolate (a time history) |
-| `E-ADJ-TRANSPORT` | a Transport between processes (the adjoint of an MPI exchange) |
-| `E-ADJ-NODAL-DIST` | a distributed nodal Remap |
+| `E-ADJ-TRANSPORT` | a Transport between processes whose backend has no `move_adjoint` (LowFive), or a Transport that resolved to no plan |
+| `E-ADJ-NODAL-DIST` | a distributed nodal Remap (its adjoint would be `apply_distributed_HT`, and `D H` for the consistent transpose; not verifiable here, see section 6) |
 | `E-ADJ-FIELD-TYPE` | a field of an Arithmetic (dd, qd) or Storage (binary32, bfloat16, binary16, posit) value type |
 | `E-ADJ-SPACE` | an adjoint array in a different memory space than its field (a field in device memory is refused by `initialize()` itself under host execution, `E-RT-SPACE`) |
 | `E-ADJ-OP` | an instruction with no adjoint (Relax, Residual, ExternalDelivery, Accelerate, WindowAdvance, ...) or an Extrapolate above order 0 (the forward run applies order 0 whatever order is asked; an adjoint written for that would go wrong silently when it does not) |
@@ -223,10 +247,21 @@ component depends on.
 
 ## 6. Not done
 
-- **MPI.** The adjoint of a Transport between processes is the same exchange with send and receive
-  exchanged (the CommGraph reversed); a distributed nodal Remap needs `apply_distributed_HT` in
-  the roles of `H` and `H^T`; `Epoch` carries a collective agreement that the reverse sweep skips
-  (it is a copy here, single process).
+- **Distributed nodal Remap.** Its adjoint is `apply_distributed_HT` where the forward run applied
+  `H`, and `apply_distributed_H` followed by the diagonal `D` where it applied `H^T D` (the
+  consistent transpose), each with the exchange inside it run the other way. It is not written
+  because it cannot be verified here: the forward test of the same path,
+  `parallel.nodal_remap_runner.{1..5}` (and `.1` to `.3` on the device), fails on higgs at 8820aed2
+  (a main commit before any change for number types) and at the head of the number-types branch,
+  with `E-RT-CONSERVATION: relative conservation error 0.909091 (integral 11.000000 -> 1.000000)`.
+  An adjoint of a forward map that does not pass its own test would be checked against nothing.
+  KNOWN_ISSUES.md D102 has the record.
+- **Transports other than copy and MPI.** A LowFive transport has no `move_adjoint` and is refused;
+  the device-direct exchange (`move_packed`, GPU-aware MPI) is not used in the reverse sweep, which
+  exchanges through host buffers. The same-rank matches of a plan that is not peer-wise
+  (`TransportPlan::local_src`) are reversed by code that mirrors the forward loop and that no test is
+  known to reach: the Runner plans a partially overlapping placement peer-wise, and the tests'
+  placements with same-rank matches are partially overlapping.
 - **Iteration regions and time windows.** Reverse mode through a fixed-point iteration is implicit
   differentiation (a linear solve with the transposed interface Jacobian, for which the
   `ImplicitComponent` linearization already offers `apply_jacobian_transpose`) or the unrolled
