@@ -72,6 +72,29 @@ minimalism for its own sake: it is what makes the fast CI leg fast, and what let
 MOAB nor PETSc use the coupler. MPI enters at `transport`; everything heavier enters at `backend`,
 behind one directory and one build option each.
 
+## MPI outside `transport` (2026-10-29)
+
+"MPI enters at `transport`," above, names where the ROUTING of field values between ranks lives; it
+has never meant that no `.cpp` below `transport` may call an MPI function at all. Two translation
+units do, both deliberately, both PRIVATE to the layer whose own invariant the call protects, and
+neither reachable from a public header: `src/abi/participant.cpp`'s `reconcile_plugin_agreement()`
+(an `MPI_Allreduce(MPI_MINLOC)` agreeing a plugin-mount verdict across the base communicator, `abi`
+sitting at the TOP of the stack) and `src/field/transaction.cpp`'s `FieldTransaction::
+commit_collective()` (an `MPI_Allreduce(MPI_MAXLOC)` agreeing a staged-commit verdict, `field`
+sitting BELOW `transport`, S8 Stage B Field semantics track). Both exist for the same reason: a
+collective AGREEMENT about whether an operation may proceed is not the same thing as MOVING field
+values between ranks, and it belongs in the layer that owns the invariant being agreed on -- the
+plugin-mount invariant is `abi`'s own, and the staged-commit invariant ("no caller-visible value
+changes until every rank has agreed," `include/fuse/field/transaction.hpp`'s own file comment) is
+`field`'s own. Moving that one collective up to `transport` would not remove it from the layer that
+needs it; it would make `field` (or `abi`) depend upward on `transport` to get back a capability
+`transport` itself has no stake in, which is the inversion `tools/check-layering.py` exists to catch
+in the direction that matters -- a layer's PUBLIC header naming a layer above it. Neither of these two
+`.cpp` files' own public header names `mpi.h` (`tools/check-layering.py`'s
+`ALLOWED_PUBLIC_THIRD_PARTY` forbids it for every layer); each links `MPI::MPI_CXX` conditionally,
+under `FUSE_ENABLE_MPI`, exactly the way every layer AT OR ABOVE `transport` already does. Not
+restructured: this paragraph records the exception, it does not propose closing it.
+
 ## Enforcement
 
 ```{literalinclude} ../../tools/check-layering.py

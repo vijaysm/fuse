@@ -223,6 +223,239 @@ build; each is an `open_questions` entry below, for the owner.
 
 ---
 
+## 6. Built (Stage B, 2026-10-28)
+
+The owner's 2026-10-28 decision closed gap (1) (`karma_field_transaction.h`, Section 2.2) and
+narrow gaps (a) and (b) (Section 2.4's double-to-Rational conversion, and half of Section 2.5's
+PETSc residual diagnostic) as follows. Gaps (2) and (3) (Section 2.6's component registry/
+compliance harness, Section 2.1's field-entry identity) are DEFERRED; their own KNOWN_ISSUES.md
+entries (D95, D96) carry this page's smallest-addition text and name the consumer that would force
+each one, per the owner's instruction, rather than repeating that text here.
+
+### 6.1 FieldTransaction (gap 1, BUILT; round 2, 2026-10-29)
+
+`include/fuse/field/transaction.hpp` + `src/field/transaction.cpp`: `FieldStorage` (an abstract
+publish/read-into contract), `FieldRefStorage` (the one implementation, over the existing
+`fuse::FieldRef`), and `FieldTransaction` itself, carrying KARMA's own invariant
+(karma_field_transaction.h:11-23) -- no caller-visible value change until every staged value has
+passed local validation, and in the collective form until every rank has agreed. `UpdateMode`
+keeps KARMA's three modes, renaming `SparseReplace` to `Insert` per the owner's decision.
+
+**The numtypes seam.** Every value in this file is `double`; the header's own file comment names
+exactly where a future `template <class Value>` parameter would go (`FieldStorage`,
+`FieldRefStorage`, `FieldTransaction`, all three) and records that the canonical accumulation
+order (below) will NOT transfer unchanged to a `dual<S,N>` value, since it is defined on a
+`double`'s own magnitude, sign and (as a tie-break) raw bit pattern, none of which has a single
+meaning for a multi-component value type.
+
+**Layering: DECIDED, round 2 (the lead's own instruction, 2026-10-29).** `field` sits below
+`transport`, the layer this project's own `docs/dev/layering.md` names as where MPI "enters", and
+`tools/check-layering.py`'s `ALLOWED_PUBLIC_THIRD_PARTY["field"]` permits only `Kokkos_Core.hpp` in
+a public `field` header -- `mpi.h` is forbidden there at every layer. `commit_collective()`
+therefore takes `std::optional<int>`, the same Fortran-handle convention `fuse::RunnerConfig::
+base_communicator` (include/fuse/runtime/runner.hpp) already uses, never a raw `MPI_Comm`; the
+`MPI_Allreduce` itself lives in `src/field/transaction.cpp` behind `#if FUSE_HAVE_MPI`, in the same
+`MPI_2INT`/`MPI_MAXLOC` shape `reconcile_plugin_agreement()` (src/abi/participant.cpp) already uses
+for a different collective agreement. Round 1 flagged keeping MPI in `field`'s own `.cpp` (never
+its public header) as an open question rather than deciding it silently; the lead's round-2
+instruction decided it, NOT restructured: `docs/dev/layering.md`'s new "MPI outside `transport`"
+section (2026-10-29) names both `field/transaction.cpp` and `abi/participant.cpp` as the two
+translation units this applies to, and why -- a collective agreement belongs to the layer whose own
+invariant it protects, not to the layer that merely routes values between ranks.
+
+**The canonical accumulation order: changed, round 2 (the owner's standing rule -- accuracy over
+efficiency).** Round 1 summed a slot's contributions in a VALUE-determined but accuracy-indifferent
+order (ascending raw IEEE-754 bit pattern). Round 2 replaces it with KARMA's own magnitude-first
+scheme (karma_field_transaction.C:48-54), precisely stated in `src/field/transaction.cpp`'s own
+comment and summarised here: ascending `|value|` first, then (equal magnitude) sign with the
+NEGATIVE value first, then (an exact duplicate) the raw bit pattern as a final, formally-complete
+tie-break. This bounds the accumulated rounding by the classical recursive-summation error bound
+(Higham, *Accuracy and Stability of Numerical Algorithms*, 2nd ed., Theorem 4.2) more tightly than
+an accuracy-indifferent order, by keeping each running partial sum close to the magnitude of the
+terms still to be added rather than letting one disproportionately large term swamp many smaller
+ones one at a time -- `FieldTransaction.MagnitudeFirstOrderBeatsANaiveArrivalOrderSumOnACaseWhereIt
+Matters` (test/field/transaction_test.cpp) derives and asserts one concrete case where this changes
+the EXACT published bits (worked below). This IS still independent of staging order (the order is a
+function of WHICH VALUES were staged to a slot, never of WHEN) -- the arrival-dependence mutation
+stays killable, since swapping the comparator's keys for raw push order breaks the sort just as
+surely as it broke round 1's simpler one. It is NOT a correctly-rounded sum (still a plain
+left-to-right fold, no Kahan compensation, no pairwise tree) and NOT pairwise/tree summation.
+
+**The worked case (derivation).** The field starts at `0.0` (Accumulate mode allows starting
+fresh); three contributions are STAGED, in this order: `huge = 2^60` (`ulp(huge) = 2^8 = 256`,
+`half-ulp = 128`), then `100.0`, then `100.0` again -- deliberately the order a naive,
+staging-order sum would fold them in, and deliberately not the canonical order
+`build_published_values()` actually uses (it always starts its running sum from the field's
+EXISTING value, `0.0` here, then folds the STAGED contributions in ascending-magnitude order,
+`huge` last since it is the largest of the three, regardless of the order they were staged in). A
+single `100.0 < half-ulp`, so adding it alone to a `huge`-sized running sum rounds back to that
+running sum exactly, losing it: a NAIVE staging-order sum (`0 + huge -> huge`, `+100 -> huge`
+rounded away, `+100 -> huge` rounded away again) loses the ENTIRE `200.0` contribution, publishing
+exactly `huge`. The ACTUAL canonical (magnitude-first) order sums the two smaller,
+equal-magnitude contributions with EACH OTHER first, while the running sum is still `0.0` (`0 +
+100 + 100 = 200` exactly, far below double precision's own limit at this magnitude), and only THEN
+adds the large one: `0 + 200 + huge`; `200 > half-ulp`, so this rounds to the nearest representable
+double, `huge + 200` evaluated directly -- which IS the correctly-rounded value of the true
+mathematical sum (MEASURED, Python, IEEE-754 binary64, the same arithmetic the C++ test exercises:
+`huge + 200.0` rounds to the double exactly one bit-pattern step above `huge`, landing on `huge`'s
+own next representable neighbour at this magnitude's `ulp`, not back on `huge` itself). Naive
+staging-order sum gives exactly `huge`; magnitude-first order gives exactly `huge + 200.0`'s
+correctly-rounded value, one full representable step above `huge` -- the two differ, and the test
+asserts both exact values, not merely that they differ.
+
+**Collective agreement: fixed, round 2 (the lead's own instruction).** Round 1's
+`commit_collective()` let the ORIGINATING rank -- the one whose own local validation or publication
+is what failed -- return its own raw local `Result`, while every OTHER rank got a uniform,
+rewritten `E-FIELD-TXN-AGREEMENT-REFUSED` naming that rank; a caller comparing every rank's return
+value therefore saw a MIX of one detailed local diagnostic and N-1 identical rewrites, which is
+also a `collective path ... return[ing] on a locally computed condition`, the standing rule this
+function's own `MPI_Allreduce` comment already invokes and the pre-fix code violated on exactly the
+one rank that condition belonged to. Round 2 drops the special case: every rank, failing one
+included, returns the IDENTICAL `Failure{"E-FIELD-TXN-AGREEMENT-REFUSED", ...}` naming the failing
+rank, for both the validation-agreement and the publication-agreement phase. This is a DIFFERENT
+convention from `reconcile_plugin_agreement()`'s own (which keeps the originating rank's raw
+message, KNOWN_ISSUES.md D85) -- a deliberate difference for THIS collective, not an inconsistency
+to reconcile with the ABI layer's.
+
+**Tested red-then-green and mutation-killed.** `test/field/transaction_test.cpp` (16 cases, 14 from
+round 1 plus 2 new this round) mirrors `field_transaction_test.C`'s own cases one-for-one where one
+exists (cited per case in the test file); `test/parallel/field_transaction_mpi_test.cpp` (new this
+round, 3 cases, RANKS 2 3) is the real-communicator twin of the `CommitCollectiveWith*` cases,
+closing the one hole round 1 left: `build-evidence/mutations/field-transaction.toml`'s
+`field-transaction-collective-agreement-skipped` row is KILLED by this file's own
+`ValidationDisagreementAgreesTheSameRefusalOnEveryRankAndPublishesNowhere` case (every non-failing
+rank would publish under the mutation, which that case's own "unchanged on every rank" assertion
+catches) -- `tools/mutate.py --area field-transaction` still reports it NOT-ASSESSED in THIS
+sandbox (no working multi-rank MPI launcher here), per `FUSE_MUTATE_MPI=1` on a host that has one;
+see `host_pending`. `tools/mutate.py --area field-transaction`, this sandbox: 3 of 4 KILLED (one
+row's own anchor text updated this round for the new comparator function name), 1 NOT-ASSESSED --
+see `measured_results` for the exact run.
+
+### 6.2 `rational_from_double` (narrow gap (a), BUILT)
+
+`include/fuse/base/rational.hpp` gains `Result<Rational> rational_from_double(double x,
+std::int64_t max_denominator)`: exact whenever `x`'s reduced denominator fits `max_denominator`
+(every finite `double` IS a dyadic rational, so exactness itself is never the question -- see the
+function's own doc comment), refused by name otherwise. Three refusal codes, matching the task's
+own naming: `E-RATIONAL-NONFINITE` (NaN/infinity), `E-RATIONAL-INEXACT` (the exact value's
+denominator exceeds the caller's bound -- KARMA's own `NotDyadic`, renamed because every finite
+double genuinely IS dyadic; the bound, not dyadicity, is what fails), `E-RATIONAL-OVERFLOW` (the
+exact numerator/denominator does not fit `int64_t` even after reduction). No best-approximation
+mode, matching KARMA's own `rational_from_dyadic_bounded` discipline (karma_semantics.h:90-99) and
+this project's own standing rule against silently admitting an inexact time. Reuses
+`Rational::from_i128` for the reduction and the int64 fit check rather than re-deriving either.
+Tested in `test/base/rational_test.cpp` (8 new cases: round-trip exactness on `2^-k` for k in
+[0,20], negative/integer values, each of the three refusal codes by name, the no-best-
+approximation claim, and the `max_denominator <= 0` precondition throw).
+
+### 6.3 Transfer-accuracy residual bound (narrow gap (b)): DERIVATION, interface signature only, NO implementation
+
+The owner's instruction for this round: derive the bound, name every quantity, propose the
+interface, and put the derived bound to the owner in `open_questions` -- do not implement it.
+
+**What KARMA checks (karma_transfer_diagnostics.h:36-42, .C:42-75).** Given a mass-matrix solve
+`M u = b` for a field transfer (a consistent/variational projection: `M` the target mesh's own
+mass matrix, `b` assembled from the source field against the target's test functions, `u` the
+projected field), recompute `r = M u - b` and test
+
+```
+||r||_inf <= tolerance * max(||b||_inf, ||M||_inf ||u||_inf, eps)
+```
+
+The scale `max(||b||_inf, ||M||_inf ||u||_inf, eps)` is the Rigal-Gaches/Oettli-Prager NORMWISE
+BACKWARD ERROR denominator (Higham, *Accuracy and Stability of Numerical Algorithms*, 2nd ed.,
+Theorem 7.1's componentwise/normwise backward error for a linear system): the smallest normwise
+relative perturbation of `(M, b)` for which `u` is an EXACT solution is `eta(u) = ||r|| /
+(||M|| ||u|| + ||b||)`, and `max(a, b) <= a + b <= 2 max(a, b)` relates KARMA's own `max`-based
+scale to this quantity within a factor of 2. KARMA's own test (`cg_transfer_accuracy_test.C:290`)
+calls this with a flat, uncommented `tolerance = 1.0e-11` -- already flagged, independently of this
+track, in `physics-kit-disposition.md:244` as "stated as a flat relative bound, no derivation
+shown". This section supplies the derivation that row names as missing.
+
+**The derivation.** Let:
+- `n` -- the number of degrees of freedom in the target field (the mass matrix's own dimension).
+  MEASURED at run time from the target mesh/solve, not a compile-time constant.
+- `rtol_solver` -- the Krylov solver's own configured relative-residual stopping tolerance for the
+  mass-matrix solve (e.g. PETSc's `KSPSetTolerances` `rtol`). KNOWN at solve-setup time (a
+  configuration input the caller chose), not measured after the fact.
+- `||r||_2`, `||b||_2` -- the solve's own stopping norms, in whatever norm the solver's own
+  `KSPNormType` tests (PETSc's default for an unpreconditioned or left-preconditioned KSP is the
+  **2-norm of the (preconditioned) residual**; a solver configured with a different `KSPNormType`
+  tests a different quantity, and this derivation's bridging step below would need re-deriving
+  against THAT norm instead -- a fact about the solver's own configuration to confirm before this
+  bound is trusted, not assumed here).
+- `||r||_inf`, `||b||_inf`, `||M||_inf`, `||u||_inf` -- the same infinity-norm quantities KARMA's
+  own `transfer_residual_report` already computes via `VecNorm(..., NORM_INFINITY, ...)` and
+  `MatNorm(..., NORM_INFINITY, ...)`. MEASURED at run time, exactly as that function already does.
+- `eps` -- `std::numeric_limits<PetscReal>::epsilon()`, the same zero-problem floor KARMA's own
+  code already uses. A constant, not measured.
+
+Step 1. The solver's own stopping criterion gives `||r||_2 <= rtol_solver * ||b||_2` directly (the
+usual relative-residual convergence test, `||r_k||/||r_0|| <= rtol` with `r_0 = b` for a zero
+initial guess).
+
+Step 2. Norm equivalence on an `n`-vector: `||r||_inf <= ||r||_2` and `||b||_2 <= sqrt(n)
+||b||_inf`. Chaining: `||r||_inf <= ||r||_2 <= rtol_solver * ||b||_2 <= rtol_solver * sqrt(n) *
+||b||_inf`.
+
+Step 3. Since KARMA's own denominator is a MAX that already includes `||b||_inf` as one of its
+terms, `max(||b||_inf, ||M||_inf ||u||_inf, eps) >= ||b||_inf`, so
+
+```
+rel = ||r||_inf / max(||b||_inf, ||M||_inf ||u||_inf, eps)
+    <= ||r||_inf / ||b||_inf
+    <= rtol_solver * sqrt(n)
+```
+
+**The derived bound**: `tolerance = rtol_solver * sqrt(n)`, not a flat constant independent of
+problem size. `sqrt(n)` is the one "conditioning factor" this derivation needs -- and it is a
+norm-equivalence factor bridging the solver's own 2-norm stopping test to KARMA's infinity-norm
+backward-error check, not a matrix condition number (`kappa(M)`): the matrix's own conditioning
+does NOT enter this particular bound, because the denominator's `||b||_inf` term alone already
+dominates `||r||_inf` once Step 1/2 are applied, before `||M||_inf ||u||_inf` or `kappa(M)` are
+ever needed. (A matrix-conditioning-dependent bound WOULD be needed for a tighter statement about
+`||u||_inf` alone, e.g. `||u||_inf <= ||M^{-1}||_inf ||b||_inf`, but nothing in KARMA's own check,
+or in this derivation's conclusion, requires bounding `||u||_inf` that way.)
+
+**Proposed interface (signature only; not implemented this round):**
+
+```cpp
+// fuse/petsc, gated like every other PETSc-facing signature in that layer
+// (fuse/petsc/token.hpp's own posture: no PETSc type escapes past src/petsc/*.cpp).
+struct TransferResidualReport {
+  double residual_norm = 0.0;   // ||r||_inf, measured
+  double scale = 0.0;           // max(||b||_inf, ||M||_inf ||u||_inf, eps), measured
+  double tolerance = 0.0;       // rtol_solver * sqrt(n), DERIVED per this section, not a literal
+  bool within_tolerance = false;
+};
+[[nodiscard]] Result<TransferResidualReport> transfer_residual_report(
+    /* mass matrix, solution, rhs, scratch -- fuse::linalg types, not PETSc's own,
+       matching fuse/petsc's existing posture */
+    const DistSparseMatrix& mass, const DistVector& solution, const DistVector& rhs,
+    DistVector& residual_scratch, double solver_rtol);
+```
+
+`solver_rtol` is a REQUIRED parameter (not defaulted to a literal): the derivation above shows the
+tolerance is a function of the solve's own configured `rtol` and the problem's own `n`, both
+available to the caller that set up the solve, so there is no honest default to supply here.
+
+Put to the owner in `open_questions`: does `rtol_solver * sqrt(n)` read as the right bound, or
+should the `sqrt(n)` norm-equivalence factor instead be derived against the ACTUAL `KSPNormType`
+the physics-kit tier-0-with-PETSc-optional solves will use (D-B), once one is chosen, rather than
+assumed here against PETSc's documented default?
+
+### 6.4 Constrain's finite floor (decision (c)): documented, not changed
+
+The owner's decision: FUSE's existing `Constrain` floor (`scale = |before| if nonzero else 1.0`,
+`src/runtime/runner.cpp`) STAYS as it is. Recorded as a deliberate difference from KARMA's own
+`relative_integral_error` (which returns `+infinity` for a zero reference and a nonzero value,
+karma_transfer_diagnostics.C:12-18) in `KNOWN_ISSUES.md` D97 (see that entry; this page's own
+Section 2.5 already named the two as DIFFERENT, not superset, before this decision was taken).
+Fixed in round 2 (the reviewer's own finding, 2026-10-29): this section previously cited "the S8
+record" instead of naming D97 directly.
+
+---
+
 ## Lead's review (2026-10-28)
 
 Spot-checked against the tree: `fuse::Rational` has `to_double()` and no constructor or factory
