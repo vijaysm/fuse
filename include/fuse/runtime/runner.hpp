@@ -515,6 +515,44 @@ class Runner {
   Result<void> run_period(ComponentSet& components);
   Result<void> run(ComponentSet& components, std::int64_t periods);
 
+  /// Reverse mode (stage U6, docs/dev/adjoint-schedule.md). Binds the adjoint
+  /// arrays of every component-owned arc from `adjoint_registry` (filled by
+  /// each component's `AdjointComponent::register_adjoint_fields()`), allocates
+  /// the adjoint of every coupler-owned arc, and works out the order of one
+  /// period's component steps and coupling instructions, so that
+  /// `run_period_adjoint()` can traverse it backwards. Call it after
+  /// `initialize()` and before the first `run_period_adjoint()`; the forward run
+  /// may come before or after.
+  ///
+  /// The coupling operators are linear with weights that do not depend on the
+  /// field values, so their adjoint needs no stored forward values. What this
+  /// supports in this stage: binary64 fields in host memory; Source, Sink,
+  /// Remap (through `LinearOperator::apply_transpose`, the transpose verified by
+  /// the derivative gate), Sample and Accumulate by sum, mean, integral or
+  /// instant value, Merge by first, sum or mean, Scale, Extrapolate of order 0,
+  /// Interpolate without a time history, Transport within one process,
+  /// Constrain, Diagnose and Epoch. Refused by name (E-ADJ-*, listed in the
+  /// design note): iteration regions, minimum and maximum accumulation,
+  /// space-time Interpolate and Sample, a Transport between processes, a
+  /// distributed nodal Remap, Arithmetic and Storage value types, device
+  /// execution, an accumulation window that straddles a period boundary, and
+  /// every operator with no adjoint (Relax, Residual, ExternalDelivery, ...).
+  /// Every component that advances must return an `AdjointComponent` from
+  /// `Component::adjoint()` (E-ADJ-COMPONENT).
+  Result<void> initialize_adjoint(ComponentSet& components,
+                                  FieldRegistry& adjoint_registry);
+
+  /// Reverses the most recent forward period that has not been reversed yet:
+  /// walks that period's component steps and coupling instructions backwards,
+  /// calling `AdjointComponent::advance_adjoint()` for each step with the
+  /// `StepContext` the forward step had, and applying the adjoint of each
+  /// coupling instruction to the adjoint arrays. The first call after N
+  /// forward periods reverses period N-1, the next N-2, and so on. The adjoint
+  /// variables of the final state are the seed: the caller writes them into the
+  /// components' adjoint arrays before the first call. Running a forward period
+  /// between two calls is refused (E-ADJ-ORDER).
+  Result<void> run_period_adjoint(ComponentSet& components);
+
   /// KNOWN_ISSUES.md D12's fix: resumes the current period's instruction
   /// stream from wherever it last suspended (or begins a new period, if
   /// the previous one ran to completion), executing every instruction up
