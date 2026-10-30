@@ -829,3 +829,42 @@ the latter is controlled by the per-method `h_max` chosen in a standalone sweep 
 the measured deviations (FE 0.005, Kutta22 0.0016, Kutta44 0.006, DOPRI45 0.039) are each inside
 their band with margin. A future failure of one of these rows is read against the `h` range first,
 never against the multiplier.
+
+## Owner decisions on the tableau findings (2026-10-29) and the lead's stability audit
+
+The owner supplied the primary source for SDIRK332: S. P. Norsett and P. G. Thomsen, "Embedded
+SDIRK-methods of basic order three", BIT 24 (1984) 634-646. Scheme (5.4) there (the pair "based on
+(3.15) using local extrapolation") is the vendored method: c = (5/6, 29/108, 1/6), rows
+(-61/108, 5/6) and (-23/183, -33/61, 5/6), the paper's b-row (25/61, 36/61, 0) is the second-order
+estimate and its e-row (26/61, 324/671, 1/11) the propagated third-order solution. The vendored
+`C[1] = 24/108` is a transcription error; Open Question 7 is CLOSED with `C[1] = 29/108`.
+
+The lead then evaluated every shipped tableau's stability function R(z) rather than trusting the
+vendored `is_A_stable()`/`is_L_stable()` bodies (exact rational arithmetic for the classical
+families, 40-digit arithmetic for the Rosenbrock family after recovering the stored convention: the
+vendored Rosenbrock files hold Hairer and Wanner's implementation form scaled by gamma, identified by
+recovering ROS3P's published b = (2/3, 0, 1/3)). Findings, all now carried as the computed flags and
+pinned by `ButcherTableau.DeclaredStabilityMatchesTheStabilityFunction`:
+
+| Method | Vendored claim | Computed | Decision |
+|---|---|---|---|
+| SDIRK332 | A, L | A-stable, R(-inf) = -91/125 | flag corrected |
+| SDIRK34 (gamma = 0.1289) | A | not A-stable, max abs R(iy) = 9.82 | owner: ship the A-stable root gamma = 1.0685790213016289 (R(-inf) = -0.630) under the same name; the vendored root is pinned as not A-stable by a test |
+| SDIRK45 | A | not A-stable (R unbounded), not singly diagonal | owner: dropped; 21 tableaus shipped |
+| ROS3P | A, L | A-stable, R(-inf) = 1 - sqrt(3) (by design, Lang and Verwer 2001) | flag corrected |
+| GRK4Sn | A, L | A-stable, R(-inf) = 1/3 | flag corrected |
+| GRK4T | A, L | A(89.3 deg)-stable, max abs R(iy) = 1.028, R(-inf) = 0.454 | both flags corrected |
+
+The remaining fifteen agree with their vendored flags. The row-sum test no longer carries an
+exception; the vendored SDIRK332 value is pinned as a defect the check catches.
+
+Owner decisions for round 2, recorded here: (a) the DIRK integrator treats a zero diagonal as an
+explicit stage, so ESDIRK methods (SDIRK643 already is one) need no new family; Kennedy-Carpenter
+ESDIRK3(2)4L[2]SA, 4(3)6L[2]SA, 5(4)7L[2]SA and Kvaerno (2004) are the pairs to add, cited to their
+papers, each passing the stability-function test and the order conditions before use; (b) SSP
+explicit methods (Shu-Osher SSPRK(3,3), Ketcheson SSPRK(10,4), the embedded SSP pairs of Conde,
+Fekete and Shadid 2018) run in `ExplicitIntegrator` as tableaus; the SSP coefficient is carried as
+tableau metadata and checked by a test of the same kind as the stability test; (c) dense output
+(DOPRI5's free fourth-order interpolant, the b(theta) polynomials of the stiffly accurate ESDIRKs)
+goes on the round-2 list as the integrator-side supply for the coupling window's temporal
+interpolant.
