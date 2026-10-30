@@ -88,6 +88,7 @@ dev/linalg-distributed
 dev/linalg-krylov
 dev/schur-slab-solver
 dev/derivative-gate
+dev/adjoint-schedule
 dev/newton-krylov
 dev/coupling-windows
 dev/nodal-fields

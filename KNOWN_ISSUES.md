@@ -13464,3 +13464,32 @@ convert at the component boundary in the component's own code; the fields around
 type. The refusals above are by name, at `initialize()`, so a graph that asks for more is stopped
 before it runs. Tests: `ArithmeticFieldRunner.AnIterationRegionOverAnArithmeticFieldIsRefusedByName`
 (`test/runtime/arithmetic_field_runner_test.cpp`).
+
+
+### D102. Reverse mode (the adjoint schedule) covers binary64 fields in host memory in one process: iteration regions, time histories, minimum and maximum accumulation, MPI transport, device execution, dd/qd/Storage fields and components behind the C ABI are refused or absent -- OPEN by design, 2026-10-30 (number-types track, stage U6)
+
+**What happens.** `Runner::initialize_adjoint()` (`src/runtime/runner_adjoint.cpp`) refuses by name, with an
+`E-ADJ-*` code, a plan that has an iteration region (`E-ADJ-REGION`), a minimum or maximum accumulation
+(`E-ADJ-ACCUM`), a space-time Sample or Interpolate (`E-ADJ-SPACETIME`), a Transport between processes
+(`E-ADJ-TRANSPORT`), a distributed nodal Remap (`E-ADJ-NODAL-DIST`), a field of an Arithmetic or Storage
+value type (`E-ADJ-FIELD-TYPE`), device execution (`E-ADJ-SPACE`), an
+instruction with no adjoint such as Relax or Residual (`E-ADJ-OP`) and a component without an
+`AdjointComponent` (`E-ADJ-COMPONENT`). A component behind the C ABI, Fortran or Python has no
+`advance_adjoint` entry point at all, so it cannot take part. Every plan the refusals let through is
+reversed exactly: the adjoint identity holds within the derivative gate's bound for every case in
+`test/runtime/adjoint_runner_test.cpp`.
+
+**Why it is not fixed here.** Each excluded item is its own piece of work and none is data movement alone.
+A fixed-point iteration is differentiated implicitly (a linear solve with the transposed interface
+Jacobian) or by unrolling the sweeps, which needs every sweep's forward values; a minimum or maximum
+needs to know which sample was picked, and the coupler keeps no forward values; the adjoint of an MPI
+exchange is the same exchange with send and receive swapped, which has to be done and tested at 2 and 3
+ranks; the device reverse of a remap is a scatter that needs atomic adds or a transposed matrix built at
+setup; and an entry point in the C ABI is a change to `entries.def`, the generated header, the Fortran
+module and the conformance suite.
+
+**What to do meanwhile.** Differentiate a coupling that is one process, binary64, host memory, with
+sum, mean, integral or instant accumulation, remap, unit conversion and merge; take the derivative through
+an iteration region by differentiating the converged fixed point yourself (implicit function theorem) and
+hand the result to the component as the adjoint of its step. Tests: `RuntimeAdjoint.Refuses*`
+(`test/runtime/adjoint_runner_test.cpp`). Design and evidence: `docs/dev/adjoint-schedule.md`.
