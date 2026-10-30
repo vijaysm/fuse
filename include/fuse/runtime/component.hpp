@@ -217,6 +217,55 @@ class ImplicitComponent {
   [[nodiscard]] virtual LinearizationToken* linearization() { return nullptr; }
 };
 
+/// Reverse mode (adjoint) interface of a component (plans/2026-10-22-universal-
+/// number-types.md, stage U6; docs/dev/adjoint-schedule.md). Queried through
+/// `Component::adjoint()`, like `ImplicitComponent`, rather than as a second
+/// base class.
+///
+/// FUSE supplies the adjoint of every coupling operator it applies (the
+/// transpose of a remap, the factor of a scaling, the fan-out of a sum); the
+/// component supplies the adjoint of its own `advance()`, with whatever
+/// automatic differentiation tool or hand-derived formula it prefers. FUSE
+/// never sees a tape: the only things that cross the interface are arrays of
+/// binary64 adjoint variables, one per field, laid out like the field itself.
+///
+/// CONVENTIONS. For a field F of this component the adjoint array `Fbar` holds
+/// the derivative of the scalar being differentiated with respect to each entry
+/// of F, at the time of the call.
+///
+///   - A Provides field (the component writes it in `advance()`): on entry to
+///     `advance_adjoint(ctx)` `Fbar` holds the adjoint variable of F as it was
+///     left by the step `ctx` describes, to which the coupler has ALREADY added
+///     the adjoint of every read of F at or after the end of that step. On
+///     return it must hold the adjoint variable of F as it was BEFORE the step
+///     (the forward step overwrote F, so the reverse step overwrites `Fbar`).
+///   - A Requires field (the coupler delivers it before `advance()` reads it):
+///     the component ADDS to `Fbar` the adjoint of every value it read during
+///     the step; it must not overwrite what is there, because a field read by
+///     several steps between two deliveries gets one contribution from each.
+///     The coupler consumes `Fbar` when it reverses the delivery and sets it to
+///     zero.
+///
+/// A step is reversed exactly once, in the reverse of the order in which
+/// `advance()` ran, with the same `StepContext`. The component must keep
+/// whatever forward values its own adjoint needs (a tape, a checkpoint, or
+/// nothing at all for a linear step): FUSE does not store them.
+class AdjointComponent {
+ public:
+  virtual ~AdjointComponent() = default;
+
+  /// Binds the adjoint arrays of this component's fields in `registry`, each
+  /// under the `FieldId` of the field it is the adjoint of and with the same
+  /// layout and value type as that field's own binding. A field with no
+  /// adjoint array is one nothing is differentiated through: the coupler then
+  /// refuses the run by name (E-ADJ-UNBOUND) rather than skip it.
+  virtual Result<void> register_adjoint_fields(FieldRegistry& registry,
+                                               const CouplingGraph& graph) = 0;
+
+  /// The adjoint of `Component::advance(ctx)`, under the conventions above.
+  virtual Result<void> advance_adjoint(const StepContext& ctx) = 0;
+};
+
 /// E-NEWTON-SHAPE check: whether `token`'s own `rows()`/`cols()`
 /// agree with the block sizes a region's interface-vector assembly derived
 /// for the component that returned it. A pure function of already-known
@@ -603,6 +652,15 @@ class Component {
   /// construct, and every component written before this seam existed,
   /// does not implement `ImplicitComponent`.
   [[nodiscard]] virtual ImplicitComponent* implicit() { return nullptr; }
+
+  /// Stage U6: this component's reverse mode (adjoint) interface, or
+  /// `nullptr` if it has none. A separate query for the reason `implicit()`
+  /// gives: most components never differentiate, and a second base class would
+  /// make every one of them override two pure virtuals. `Runner::
+  /// initialize_adjoint()` refuses a run in which a component that advances has
+  /// no adjoint (E-ADJ-COMPONENT). Unlike `implicit()` there is no capability
+  /// bit to keep in step: the query is made once, at `initialize_adjoint()`.
+  [[nodiscard]] virtual AdjointComponent* adjoint() { return nullptr; }
 };
 
 namespace detail {

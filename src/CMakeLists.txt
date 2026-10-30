@@ -602,6 +602,7 @@ set_target_properties(fuse-coupler-partition PROPERTIES
 # The top of the library -- it links everything below and nothing links it.
 add_library(fuse-coupler-runtime
   runtime/runner.cpp
+  runtime/runner_adjoint.cpp
   runtime/iteration.cpp
   runtime/checkpoint_support.cpp
   runtime/window_coupler.cpp

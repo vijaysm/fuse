@@ -29,6 +29,7 @@
 #include "fuse/num/storage_convert.hpp"
 #include "fuse/model/iteration.hpp"
 #include "fuse/backend/device_ghost_exchange.hpp"
+#include "fuse/backend/linear_operator.hpp"
 #include "fuse/backend/nodal_remap_distributed.hpp"
 #include "fuse/backend/remap_plan.hpp"
 #include "fuse/backend/spacetime.hpp"
@@ -662,6 +663,50 @@ struct Resolved {
   /// instruction, since the two are mutually exclusive execution paths, not
   /// a base answer plus a correction.
   std::int32_t  nodal_dist = -1;
+};
+
+/// Everything `Runner::run_period_adjoint()` needs beyond the forward state
+/// (stage U6, docs/dev/adjoint-schedule.md). Built by `initialize_adjoint()`;
+/// absent (`Impl::adjoint` null) on a Runner that only runs forward.
+struct AdjointState {
+  /// One event of a period, in the order the forward walk (`step_period()`)
+  /// runs them: a component step (`index` into `Impl::ticks`) or a coupling
+  /// instruction (`index` into the plan's stream). The reverse sweep walks the
+  /// list from the back.
+  struct Event {
+    bool        is_tick = false;
+    std::size_t index = 0;
+  };
+  std::vector<Event> events;
+
+  /// Parallel to the instruction stream. For a `Sample`: how many samples of the
+  /// same accumulation window precede it (0 marks the first, which overwrites
+  /// the accumulator). For an `Accumulate`: the number of samples in its window.
+  /// Found once by replaying the forward bookkeeping on the list of events.
+  std::vector<std::size_t> window_index;
+
+  /// The adjoint array of every arc, parallel to `Impl::slots`: the component's
+  /// own adjoint array for a component-owned arc, `owned[i]` otherwise.
+  std::vector<double*>             bar;
+  std::vector<std::vector<double>> owned;
+
+  /// The transposable operator of each entry of `Impl::remap_weights`, same
+  /// index; the adjoint of a remap is its `apply_transpose`.
+  std::vector<std::unique_ptr<LinearOperator>> remap_operator;
+
+  /// Scratch of the largest arc: the adjoint of the output of the instruction in
+  /// hand (`scratch`), and, for a remap, its transpose applied to it
+  /// (`scratch_in`).
+  std::vector<double> scratch;
+  std::vector<double> scratch_in;
+
+  /// The reverse sweep: `open` once the first `run_period_adjoint()` call has
+  /// fixed the number of forward periods it reverses (`forward_periods`, the
+  /// value of `Impl::period_index` then); `next` is the period the next call
+  /// reverses, -1 when there is none left.
+  bool         open = false;
+  std::int64_t forward_periods = 0;
+  std::int64_t next = -1;
 };
 
 /// One component advance the runtime owes within a period.
@@ -1357,6 +1402,8 @@ struct Runner::Impl {
   std::vector<std::vector<double>> transport_in_scratch, transport_out_scratch;
   RunStats                         stats;
   std::int64_t                     period_index = 0;
+  /// Stage U6: non-null once `initialize_adjoint()` has succeeded.
+  std::unique_ptr<detail::AdjointState> adjoint;
   /// Restart track round 2, Runner::request_restart_point()'s own
   /// backing flag -- see that method's doc comment (fuse/runtime/
   /// runner.hpp) for why this is a flag, not a trigger.
@@ -1716,6 +1763,13 @@ struct Runner::Impl {
       : graph(g), dag(d), plan(std::move(p)), backend(b) {}
 
   Result<void> setup(ComponentSet& components, FieldRegistry& registry);
+
+  /// Stage U6 (src/runtime/runner_adjoint.cpp): `Runner::initialize_adjoint()`
+  /// and `Runner::run_period_adjoint()` are these, and the adjoint of one
+  /// coupling instruction.
+  Result<void> init_adjoint(ComponentSet& components, FieldRegistry& adjoint_registry);
+  Result<void> sweep_adjoint_period(ComponentSet& components);
+  Result<void> reverse_instruction(std::size_t index);
   Result<void> resolve_buffers(FieldRegistry& registry);
   /// Device mode only: moves every eligible coupler-owned arc from
   /// `storage` into `device_storage` and flags its Slot. Eligibility is
