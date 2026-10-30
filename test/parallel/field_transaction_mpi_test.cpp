@@ -195,6 +195,15 @@ TEST(FieldTransactionMpi, ValidationDisagreementAgreesTheSameRefusalOnEveryRankA
   EXPECT_NE(outcome.error().message.find("rank " + std::to_string(last_rank)), std::string::npos)
       << "rank " << rank << " got message: " << outcome.error().message;
   expect_identical_status_code_on_every_rank(outcome, world_size);
+  // D97 (2026-10-30): the ORIGINAL error and its rank are known on every
+  // rank, as data and in the message -- the origin's own local code
+  // (E-FIELD-TXN-INCOMPLETE, the incomplete entry 1) and its own text.
+  EXPECT_EQ(outcome.error().origin_rank, last_rank) << "rank " << rank;
+  EXPECT_EQ(outcome.error().origin_code, "E-FIELD-TXN-INCOMPLETE") << "rank " << rank;
+  EXPECT_NE(outcome.error().message.find("E-FIELD-TXN-INCOMPLETE"), std::string::npos)
+      << "rank " << rank << " got message: " << outcome.error().message;
+  EXPECT_NE(outcome.error().message.find("(1 refusing rank;"), std::string::npos)
+      << "rank " << rank << " got message: " << outcome.error().message;
 
   // No rank publishes when any rank's validation failed -- every rank's
   // own target is exactly its own starting values, whether or not THIS
@@ -264,6 +273,8 @@ TEST(FieldTransactionMpi, PublicationDisagreementAgreesTheSameFailureNamingTheFa
     EXPECT_NE(outcome.error().message.find("rank " + std::to_string(last_rank)), std::string::npos)
         << "rank " << rank << " got message: " << outcome.error().message;
     expect_identical_status_code_on_every_rank(outcome, world_size);
+    EXPECT_EQ(outcome.error().origin_rank, last_rank) << "rank " << rank;
+    EXPECT_EQ(outcome.error().origin_code, "E-FIELD-TXN-STORAGE-TEST") << "rank " << rank;  // the storage's own code, passed through commit()
     // FailingFieldRefStorage::publish() refuses before writing any slot --
     // this rank's own target is untouched, same as
     // FieldTransaction.AFailingPublicationLeavesNoPartialMutation.
@@ -283,6 +294,8 @@ TEST(FieldTransactionMpi, PublicationDisagreementAgreesTheSameFailureNamingTheFa
     EXPECT_NE(outcome.error().message.find("rank " + std::to_string(last_rank)), std::string::npos)
         << "rank " << rank << " got message: " << outcome.error().message;
     expect_identical_status_code_on_every_rank(outcome, world_size);
+    EXPECT_EQ(outcome.error().origin_rank, last_rank) << "rank " << rank;
+    EXPECT_EQ(outcome.error().origin_code, "E-FIELD-TXN-STORAGE-TEST") << "rank " << rank;  // the storage's own code, passed through commit()
     // This rank's own commit() already succeeded before the agreement
     // Allreduce ran -- the documented non-atomicity of this phase.
     EXPECT_EQ(target[0], 100.0 + static_cast<double>(rank)) << "rank " << rank;

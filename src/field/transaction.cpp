@@ -1,17 +1,17 @@
 #include "fuse/field/transaction.hpp"
 
+#include "fuse/field/collective_agreement.hpp"
+
 #include <algorithm>
 #include <bit>
 #include <cmath>
 
-// Explicit, not transitive: the feature macro FUSE_HAVE_MPI is read below
-// (docs/dev/invariants.md; tools/check-invariants.py enforces this).
-#include "fuse/base/config.hpp"
 #include "fuse/base/error.hpp"
 
-#if FUSE_HAVE_MPI
-#include <mpi.h>
-#endif
+// MPI is no longer named in this file: the two collective agreements of
+// commit_collective() run through fuse::agree_outcome() in
+// src/field/collective_agreement.cpp, now the one translation unit of
+// `field` that calls MPI (docs/dev/layering.md, "MPI outside transport").
 
 namespace fuse {
 
@@ -310,102 +310,30 @@ Result<void> FieldTransaction::restore_committed() noexcept {
 }
 
 Result<void> FieldTransaction::commit_collective(std::optional<int> communicator) noexcept {
-  // Preparation: agree that every rank can commit. No rank publishes while
-  // any rank's validation has failed. Single process (no communicator):
-  // nothing to reconcile, the same convention reconcile_plugin_agreement()
-  // (src/abi/participant.cpp) uses for `!c.communicator_set`.
   if (!communicator.has_value()) {
     return commit();
   }
-
-#if FUSE_HAVE_MPI
+  // Two agreements, each through fuse::agree_outcome() (fuse/field/
+  // collective_agreement.hpp): the verdict is reduced, the originating rank
+  // broadcasts its own Failure, and every rank -- the originator included --
+  // returns the identical Failure carrying the origin rank, the origin's own
+  // code and its message (KNOWN_ISSUES.md D97, owner's rule of 2026-10-30:
+  // the original error and the rank it came from are known everywhere).
+  // Phase 1 agrees validation; no rank publishes unless every rank's local
+  // validation passed. Phase 2 agrees publication; by the time a refusal is
+  // discovered there every other rank has already published, the one
+  // non-atomic case the header documents, and the caller must restore.
   const auto local_validation = validate_local();
-  // MPI_MINLOC over {status-as-int32, rank}: the same shape
-  // reconcile_plugin_agreement() (src/abi/participant.cpp) uses to agree a
-  // verdict across a communicator, picking the MOST NEGATIVE/failing status
-  // and the rank it came from deterministically, so every rank reaches the
-  // identical decision from the identical reduced value -- a collective
-  // path never returns on a locally computed condition.
-  const MPI_Comm comm = MPI_Comm_f2c(static_cast<MPI_Fint>(*communicator));
-  if (comm == MPI_COMM_NULL) {
-    return Failure{"E-FIELD-TXN-COMM", "FieldTransaction::commit_collective: null communicator"};
-  }
-  int rank = 0;
-  if (MPI_Comm_rank(comm, &rank) != MPI_SUCCESS) {
-    return Failure{"E-FIELD-TXN-COMM",
-                   "FieldTransaction::commit_collective: MPI_Comm_rank failed"};
-  }
-  static_assert(sizeof(int) == sizeof(std::int32_t),
-               "MPI_2INT packs two `int`s; the status code below is int32_t -- the two must "
-               "agree, the same static_assert reconcile_plugin_agreement() carries");
-  struct {
-    std::int32_t status;
-    int rank;
-  } in{local_validation.ok() ? 0 : 1, rank}, out{0, 0};
-  if (MPI_Allreduce(&in, &out, 1, MPI_2INT, MPI_MAXLOC, comm) != MPI_SUCCESS) {
-    return Failure{"E-FIELD-TXN-COMM",
-                   "FieldTransaction::commit_collective: MPI_Allreduce(MPI_MAXLOC) failed "
-                   "while reconciling the validation verdict"};
-  }
-  if (out.status != 0) {
-    // At least one rank's local validation failed; no rank publishes.
-    // Round 2 (S8 Stage B, real-communicator test, the lead's own
-    // instruction): every rank -- including the one whose own local
-    // validation is what failed -- returns the IDENTICAL Failure{code,
-    // message} naming the failing rank, never the originating rank's own
-    // raw local code. Round 1 special-cased `local_validation.ok()` to let
-    // the originating rank's own message stand, mirroring
-    // reconcile_plugin_agreement()'s (src/abi/participant.cpp) convention
-    // for a DIFFERENT collective (that one deliberately keeps the origin's
-    // own detailed diagnostic and rewrites it only for peers, host-verified
-    // in KNOWN_ISSUES.md D85). FieldTransaction's own collective is
-    // decided differently: a caller comparing every rank's return value
-    // must see the SAME status everywhere, which is also what actually
-    // completes the "a collective path never returns on a locally computed
-    // condition" rule this function's own Allreduce comment already
-    // invokes -- the pre-fix code violated that rule on exactly the one
-    // rank whose local condition WAS the failure.
-    return Failure{"E-FIELD-TXN-AGREEMENT-REFUSED",
-                   "FieldTransaction::commit_collective: rank " + std::to_string(out.rank) +
-                       " refused local validation; no rank publishes"};
-  }
+  const auto validation = agree_outcome(*communicator, local_validation,
+                                        "E-FIELD-TXN-AGREEMENT-REFUSED", "E-FIELD-TXN-COMM",
+                                        "FieldTransaction::commit_collective (validation)");
+  if (!validation.ok()) return validation;
 
-  // Publication: publish, then reconcile the publication outcome so every
-  // rank learns of a failure that happened elsewhere. Every rank other than
-  // the failing one has ALREADY published by the time this Allreduce runs
-  // (`commit()` just above ran unconditionally, per rank, before the
-  // agreement check) -- unlike the validation phase above, this phase
-  // cannot be made atomic after the fact, the one limitation KARMA's own
-  // commit_collective() documents and this file's own header repeats; what
-  // this round's fix buys is a uniform REPORT of that inconsistent state,
-  // not a way to undo it (restore_committed() is the caller's own recourse).
   const auto local = commit();
-  struct {
-    std::int32_t status;
-    int rank;
-  } pub_in{local.ok() ? 0 : 1, rank}, pub_out{0, 0};
-  if (MPI_Allreduce(&pub_in, &pub_out, 1, MPI_2INT, MPI_MAXLOC, comm) != MPI_SUCCESS) {
-    return Failure{"E-FIELD-TXN-COMM",
-                   "FieldTransaction::commit_collective: MPI_Allreduce(MPI_MAXLOC) failed "
-                   "while reconciling the publication outcome"};
-  }
-  if (pub_out.status != 0) {
-    // Same uniformity fix as the validation branch above: every rank,
-    // including the one that failed to publish, returns the identical
-    // Failure naming that rank -- never the failing rank's own raw local
-    // commit() error.
-    return Failure{"E-FIELD-TXN-AGREEMENT-REFUSED",
-                   "FieldTransaction::commit_collective: rank " + std::to_string(pub_out.rank) +
-                       " failed publication after a successful agreement; the distributed "
-                       "state is now inconsistent and must be restored"};
-  }
-  return Result<void>::success();
-#else
-  (void)communicator;
-  return Failure{"E-FIELD-TXN-COMM",
-                 "FieldTransaction::commit_collective: a communicator was supplied but this "
-                 "build has no MPI (FUSE_HAVE_MPI=OFF)"};
-#endif
+  return agree_outcome(*communicator, local, "E-FIELD-TXN-AGREEMENT-REFUSED",
+                       "E-FIELD-TXN-COMM",
+                       "FieldTransaction::commit_collective (publication; every rank that "
+                       "did not refuse has already published and must be restored)");
 }
 
 std::size_t FieldTransaction::staged_count() const noexcept {

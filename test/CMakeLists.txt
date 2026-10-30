@@ -1579,6 +1579,7 @@ fuse_add_gtest(field pipeline THROWS NO_LAYER_LIB LIBS fuse::model fuse::base)
 # src/field/transaction.cpp) is fuse::field's first real translation unit,
 # so this row links the new library like any other layer's own tests do.
 fuse_add_gtest(field transaction LIBS fuse::field)
+fuse_add_gtest(field collective_agreement LIBS fuse::field)
 # S8 Stage B, Field semantics track, round 2 (the lead's own instruction):
 # the real-communicator twin of the CommitCollectiveWith* cases above --
 # a genuine MPI_Allreduce over MPI_COMM_WORLD, where the tier-0 suite

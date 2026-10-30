@@ -159,21 +159,20 @@ class FieldTransaction {
   /// and not an `MPI_Comm`.
   ///
   /// Every rank of `communicator` must call this. Every rank's RETURNED
-  /// STATUS is identical -- the same code and the same message, naming the
-  /// one rank whose local condition caused the refusal -- whether validation
-  /// disagreed (nothing published anywhere) or publication disagreed after
-  /// a successful validation agreement (every rank but the failing one has
-  /// already published by the time that is discovered, the one case this
-  /// API cannot make atomic, the same limitation KARMA's own
-  /// `commit_collective()` documents, karma_field_transaction.h:117-124);
-  /// in that second case the caller must restore. This is a DIFFERENT
-  /// convention from `reconcile_plugin_agreement()`'s (src/abi/
-  /// participant.cpp), which lets the originating rank's own raw message
-  /// stand and rewrites it only for peers -- a deliberate choice for THIS
-  /// collective (round 2, S8 Stage B, the lead's own instruction): a caller
-  /// comparing every rank's return value sees one answer, not a mix of a
-  /// detailed local diagnostic on one rank and a generic one everywhere
-  /// else.
+  /// STATUS is identical -- the same code, the same message, and the same
+  /// provenance fields (`Failure::origin_rank`, `Failure::origin_code`): the
+  /// agreement (fuse/field/collective_agreement.hpp) broadcasts the
+  /// originating rank's own Failure, so the ORIGINAL error and the rank it
+  /// came from are known on every rank, the originator included (owner's
+  /// rule, KNOWN_ISSUES.md D97, 2026-10-30). The code is
+  /// `E-FIELD-TXN-AGREEMENT-REFUSED` whether validation disagreed (nothing
+  /// published anywhere) or publication disagreed after a successful
+  /// validation agreement (every rank but the refusing one has already
+  /// published by the time that is discovered, the one case this API cannot
+  /// make atomic, the same limitation KARMA's own CommitCollective has);
+  /// the phase is named in the message, and in that second case the caller
+  /// must restore. The ABI's plugin-mount agreement (src/abi/participant.cpp)
+  /// carries the same provenance through the same helper.
   [[nodiscard]] Result<void> commit_collective(std::optional<int> communicator) noexcept;
 
   [[nodiscard]] std::size_t staged_count() const noexcept;

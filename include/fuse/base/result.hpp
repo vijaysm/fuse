@@ -74,6 +74,14 @@ class Diagnostics {
 struct Failure {
   std::string code;
   std::string message;
+  /// Provenance of a failure that reached this rank through a collective
+  /// agreement (fuse/field/collective_agreement.hpp): the rank whose own
+  /// refusal is reported and that rank's own code. -1 and empty for a
+  /// failure computed on this rank itself. `Failure{code, message}` keeps
+  /// working: both are defaulted (KNOWN_ISSUES.md D97, 2026-10-30).
+  int origin_rank = -1;
+  std::string origin_code;
+  int origin_status = 0;  ///< the origin's numeric status, for callers that have one
 };
 
 /// Recoverable-error return type for the execution boundary (U2). Invariants
