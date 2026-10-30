@@ -39,11 +39,20 @@
 /// of `A` summed (`-61/108 + 5/6 = 29/108`, sdirk332.C:40) -- a defect of `5/108 ~= 0.046`,
 /// far above floating round-off (every OTHER row of every OTHER ERK/DIRK/SDIRK/FIRK
 /// tableau here satisfies `C[i] == sum_j A[i][j]` to ~1e-16, printed in
-/// test/num/butcher_tableau_test.cpp). `C[1]` is kept byte-identical to the vendored
-/// `24.0/108.0` pending the owner's Open Question (docs/dev/integrators-design.md's
-/// Round 1 section): the defect could be a mistyped `C[1]` (should be `29.0/108.0`) or a
-/// mistyped `A[1][0]`/`A[1][1]`, and nothing in the vendored source or its (absent, per
-/// Stage A Section 1.4) test coverage says which.
+/// test/num/butcher_tableau_test.cpp). RESOLVED 2026-10-29 against the primary source
+/// (Norsett and Thomsen, BIT 24 (1984), scheme (5.4), see `sdirk332_tableau()`): `C[1]`
+/// is `29/108`; the shipped tableau carries it, and the row-sum test now holds for every
+/// classical tableau without exception.
+///
+/// A FOURTH set of findings (lead, 2026-10-29), from evaluating each tableau's linear
+/// stability function R(z) = 1 + z b^T (I - z M)^{-1} 1 rather than trusting the vendored
+/// `is_A_stable()`/`is_L_stable()` bodies: SDIRK332 and ROS3P are A-stable but NOT
+/// L-stable (R(-inf) = -91/125 and 1 - sqrt(3)); GRK4Sn is not L-stable (R(-inf) = 1/3);
+/// GRK4T is A(89.3 deg)-stable only (max |R(iy)| = 1.028) and not L-stable
+/// (R(-inf) = 0.454); the vendored SDIRK34 and SDIRK45 are not A-stable at all (see their
+/// factories). Every flag below is now the computed one, and
+/// `ButcherTableau.DeclaredStabilityMatchesTheStabilityFunction` recomputes R(z) from the
+/// shipped coefficients so a future copy error cannot survive.
 ///
 /// GRK4A's embedded estimate (Stage A design Section 6.1) is RE-VERIFIED here, not
 /// assumed: grk4a.C:71 still reads `E[i] = B[i] - B[i]` for every stage (this round's own
@@ -53,8 +62,18 @@
 /// "does this method have a usable embedded error estimate" gets the honest answer; `E` is
 /// still populated with the vendored (zero) values for transparency, not omitted.
 ///
-/// `gamma` (the Rosenbrock linearisation matrix) is populated for the six Rosenbrock
-/// tableaus for DATA FIDELITY -- Round 1 implements only the explicit family
+/// `gamma` is populated for the six Rosenbrock tableaus for DATA FIDELITY, in the form the
+/// vendored files store (identified 2026-10-29 by recovering ROS3P's published weights
+/// b = (2/3, 0, 1/3) and gamma_21 = -1 from it): it is Hairer and Wanner's implementation
+/// form (Solving ODEs II, IV.7, (7.4)), scaled by gamma. With Gamma the method's own
+/// lower-triangular matrix (diagonal gamma) and alpha its stage matrix, the stored
+/// fields are `A[i][j] = (alpha Gamma^{-1})_{ij}`, `gamma[i][j] = (I - gamma Gamma^{-1})_{ij}`
+/// off the diagonal with `gamma[i][i] = gamma`, and `B[i] = (Gamma^{-T} b)_i`; the
+/// inverse map is `Gamma = ((I - gamma_offdiag) / gamma)^{-1}`, `alpha = A Gamma`,
+/// `b = Gamma^T B`, and the stability function is that of the DIRK with matrix
+/// alpha + Gamma. The Rosenbrock integrator (round 2) consumes the stored form directly;
+/// the test recovers the classical form only to check the flags.
+/// Round 1 implements only the explicit family
 /// (integrator.hpp, explicit_integrator.hpp); the Rosenbrock integrator itself, and the
 /// consistency condition that actually applies to a Rosenbrock tableau (which is NOT the
 /// classical `C[i] = sum_j A[i][j]` row-sum relation -- see `butcher_row_sum_defect()`'s
@@ -379,7 +398,15 @@ struct ButcherTableau {
 }
 
 
-/// SDIRK34 (sdirk34.C:22-56, gamma=0.12888640051572).
+/// SDIRK34 (sdirk34.C:22-56): the 3-stage, order-4 SDIRK of Crouzeix and Norsett, with gamma
+/// the LARGEST root 1.0685790213016289 of x^3 - 3/2 x^2 + 1/2 x - 1/24 (the other two roots,
+/// 0.12888640051572 and 0.30253457818265, give |R(-inf)| = 9.82 and 1.45: bounded stability
+/// regions, not A-stable). The vendored file uses the smallest root and declares the method
+/// A-stable (sdirk34.h:60); owner decision 2026-10-29: ship the A-stable method, R(-inf) =
+/// -0.6304, and pin the vendored root's instability in a test rather than ship it under a
+/// second name. Coefficients: a21 = 1/2 - gamma, a31 = 2 gamma, a32 = 1 - 4 gamma,
+/// b1 = b3 = q/24, b2 = 1 - q/12 with q = 1/(1/2 - gamma)^2, c = (gamma, 1/2, 1 - gamma);
+/// c3 < 0 is a property of the method, not an error.
 [[nodiscard]] inline ButcherTableau sdirk34_tableau() {
   ButcherTableau t;
   t.name = "SDIRK34";
@@ -388,12 +415,12 @@ struct ButcherTableau {
   t.order = 4;
   t.embedded_order = std::nullopt;
   t.A = std::vector<std::vector<double>>{
-      {0.12888640051572, 0.0, 0.0},
-      {0.37111359948428, 0.12888640051572, 0.0},
-      {0.25777280103144, 0.48445439793712, 0.12888640051572}
+      {1.0685790213016289, 0.0, 0.0},
+      {-0.5685790213016289, 1.0685790213016289, 0.0},
+      {2.1371580426032577, -3.2743160852065154, 1.0685790213016289}
     };
-  t.B = std::vector<double>{0.30253457818265, 0.3949308436347, 0.30253457818265};
-  t.C = std::vector<double>{0.12888640051572, 0.5, 0.87111359948428};
+  t.B = std::vector<double>{0.12888640051572042, 0.7422271989685592, 0.12888640051572042};
+  t.C = std::vector<double>{1.0685790213016289, 0.5, -0.06857902130162881};
   t.E = std::nullopt;
   t.gamma = std::nullopt;
   t.is_A_stable = true;
@@ -404,7 +431,15 @@ struct ButcherTableau {
 }
 
 
-/// SDIRK332 (sdirk332.C:22-42, gamma=5/6).
+/// SDIRK332 (sdirk332.C:22-42, gamma=5/6). Primary source: S. P. Norsett and P. G. Thomsen,
+/// "Embedded SDIRK-methods of basic order three", BIT 24 (1984) 634-646, scheme (5.4) ("based
+/// on (3.15) using local extrapolation"): the propagated weights are the paper's third-order
+/// e-row (26/61, 324/671, 1/11) and the error estimate subtracts its second-order b-row
+/// (25/61, 36/61, 0). Two corrections against the vendored file, both verified 2026-10-29:
+/// C[1] = 29/108 (the paper's value and the row sum of A; the vendored 24/108 is a
+/// transcription error under which even the second-order condition b.c = 1/2 fails), and
+/// is_L_stable = false (R(z) -> -91/125 as z -> -inf; the method is A-stable, as the paper
+/// states, not L-stable as sdirk332.h:66 claims).
 [[nodiscard]] inline ButcherTableau sdirk332_tableau() {
   ButcherTableau t;
   t.name = "SDIRK332";
@@ -418,11 +453,11 @@ struct ButcherTableau {
       {-0.12568306010928962, -0.5409836065573771, 0.8333333333333334}
     };
   t.B = std::vector<double>{0.4262295081967213, 0.4828614008941878, 0.09090909090909091};
-  t.C = std::vector<double>{0.8333333333333334, 0.2222222222222222, 0.16666666666666663};
+  t.C = std::vector<double>{0.8333333333333334, 0.26851851851851855, 0.16666666666666663};
   t.E = std::vector<double>{0.016393442622950782, -0.10730253353204172, 0.09090909090909091};
   t.gamma = std::nullopt;
   t.is_A_stable = true;
-  t.is_L_stable = true;
+  t.is_L_stable = false;
   t.is_S_stable = true;
   t.is_FSAL = false;
   return t;
@@ -559,30 +594,12 @@ struct ButcherTableau {
 }
 
 
-/// SDIRK45 (sdirk45.C:22-40).
-[[nodiscard]] inline ButcherTableau sdirk45_tableau() {
-  ButcherTableau t;
-  t.name = "SDIRK45";
-  t.family = ButcherFamily::Sdirk;
-  t.stages = 4;
-  t.order = 5;
-  t.embedded_order = std::nullopt;
-  t.A = std::vector<std::vector<double>>{
-      {0.0, 0.0, 0.0, 0.0},
-      {0.125, 0.125, 0.0, 0.0},
-      {-0.01, 0.56, 0.15, 0.0},
-      {0.2857142857142857, 0.0, 0.7142857142857143, 0.0}
-    };
-  t.B = std::vector<double>{0.07142857142857142, 0.3950617283950617, 0.4409171075837742, 0.09259259259259259};
-  t.C = std::vector<double>{0.0, 0.25, 0.7, 1.0};
-  t.E = std::nullopt;
-  t.gamma = std::nullopt;
-  t.is_A_stable = true;
-  t.is_L_stable = false;
-  t.is_S_stable = false;
-  t.is_FSAL = false;
-  return t;
-}
+/// SDIRK45 (sdirk45.C:22-40) is NOT ported (owner decision 2026-10-29). The vendored tableau
+/// is not singly diagonal (diagonal 0, 1/8, 3/20, 0: an explicit first AND last stage with two
+/// distinct implicit diagonals), and its stability function is unbounded (R(z) -> inf as
+/// z -> -inf) although sdirk45.h:60 declares it A-stable; the order conditions through 4 and
+/// the linear order-5 condition do hold. A method with a bounded stability region has no use
+/// in the implicit kit.
 
 
 /// ROS22 (ros22.C:22-65).
@@ -643,7 +660,8 @@ struct ButcherTableau {
 }
 
 
-/// GRK4T (grk4t.C:22-86).
+/// GRK4T (grk4t.C:22-86). Kaps and Rentrop 1979; A(89.3 deg)-stable, not A-stable, R(-inf) = 0.454:
+/// grk4t.h declares A- and L-stable, both corrected here (lead, 2026-10-29, from R(z)).
 [[nodiscard]] inline ButcherTableau grk4t_tableau() {
   ButcherTableau t;
   t.name = "GRK4T";
@@ -666,15 +684,16 @@ struct ButcherTableau {
       {1.3906552803181502, 0.036902408159463, 0.231, 0.0},
       {-0.428815375914387, -1.96474297824189, -0.48142135642062006, 0.231}
     };
-  t.is_A_stable = true;
-  t.is_L_stable = true;
+  t.is_A_stable = false;
+  t.is_L_stable = false;
   t.is_S_stable = false;
   t.is_FSAL = false;
   return t;
 }
 
 
-/// GRK4Sn (grk4sn.C:22-86).
+/// GRK4Sn (grk4sn.C:22-86). A-stable with R(-inf) = 1/3, not L-stable as grk4sn.h declares;
+/// corrected (lead, 2026-10-29, from R(z)).
 [[nodiscard]] inline ButcherTableau grk4sn_tableau() {
   ButcherTableau t;
   t.name = "GRK4Sn";
@@ -698,14 +717,16 @@ struct ButcherTableau {
       {-0.448, -0.216, -0.2, 0.5}
     };
   t.is_A_stable = true;
-  t.is_L_stable = true;
+  t.is_L_stable = false;
   t.is_S_stable = false;
   t.is_FSAL = false;
   return t;
 }
 
 
-/// ROS3P (ros3p.C:22-75).
+/// ROS3P (ros3p.C:22-75). Lang and Verwer 2001: A-stable with R(-inf) = 1 - sqrt(3) = -0.732, by
+/// design (the order-3 gamma is not the L-stable root); ros3p.C's comment and ros3p.h declare
+/// L-stable, corrected here (lead, 2026-10-29, from R(z)).
 [[nodiscard]] inline ButcherTableau ros3p_tableau() {
   ButcherTableau t;
   t.name = "ROS3P";
@@ -727,7 +748,7 @@ struct ButcherTableau {
       {-2.7320508075688776, -1.3660254037844384, 0.7886751345948129}
     };
   t.is_A_stable = true;
-  t.is_L_stable = true;
+  t.is_L_stable = false;
   t.is_S_stable = true;
   t.is_FSAL = false;
   return t;
@@ -768,7 +789,7 @@ struct ButcherTableau {
   return t;
 }
 
-/// Every factory above, for a test or a report that wants "all 22" without naming each
+/// Every factory above, for a test or a report that wants "all 21" without naming each
 /// one. Order matches the RKType enum's own declaration order
 /// (include/enums/runge_kutta_schemes.h:42-64).
 [[nodiscard]] inline std::vector<ButcherTableau> all_karma_tableaus() {
@@ -777,7 +798,7 @@ struct ButcherTableau {
     backward_euler_tableau(), crank_nicolson_tableau(),
     sdirk22_tableau(), sdirk23_tableau(), sdirk34_tableau(), sdirk332_tableau(),
     sdirk543_tableau(), sdirk643_tableau(), trbe_tableau(), sdirk33_tableau(),
-    sdirk45_tableau(), ros22_tableau(), grk4a_tableau(), grk4t_tableau(),
+    ros22_tableau(), grk4a_tableau(), grk4t_tableau(),
     grk4sn_tableau(), ros3p_tableau(), rodasp_tableau(), sdirk44_tableau(),
   };
 }
