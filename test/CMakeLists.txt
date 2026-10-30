@@ -1569,6 +1569,14 @@ if(FUSE_ENABLE_MPI)
   fuse_add_mpi_test(parallel arithmetic_reduce_mpi LIBS fuse::runtime fuse::linalg MPI::MPI_CXX)
   target_include_directories(fuse_parallel_arithmetic_reduce_mpi_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 endif()
+# Reverse mode through the Runner with the components on different ranks: the adjoint identity
+# across an MPI exchange (disjoint and partially overlapping placements), the exchange by exact
+# value, and a failure on one rank in the middle of a sweep, 2 and 3 ranks, host and device
+# (plans/2026-10-22-universal-number-types.md, U6; docs/dev/adjoint-schedule.md).
+fuse_tests_gated_by(FUSE_ENABLE_MPI parallel/adjoint_runner_mpi_test.cpp)
+if(FUSE_ENABLE_MPI)
+  fuse_add_mpi_test(parallel adjoint_runner_mpi LIBS fuse::runtime MPI::MPI_CXX RANKS 2 3 DEVICE_TWIN)
+endif()
 # A dd field between components on disjoint ranks through a distributed remap, 2 and 3 ranks.
 fuse_tests_gated_by(FUSE_ENABLE_MPI parallel/arithmetic_field_mpi_test.cpp)
 if(FUSE_ENABLE_MPI)
