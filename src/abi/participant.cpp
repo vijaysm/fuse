@@ -44,6 +44,7 @@
 #include <impl/Kokkos_DeviceManagement.hpp>
 #endif
 
+#include "fuse/field/collective_agreement.hpp"
 #include "fuse/abi/collective_reconcile.hpp"
 #include "fuse/abi/device_binding.hpp"
 #include "fuse/abi/plugin_agreement.hpp"
@@ -2594,34 +2595,32 @@ fuse_status reconcile_collective_status(fuse_ctx& c, fuse_status local_status,
 
 #if FUSE_HAVE_MPI
   if (c.collective_comm_f == 0) return local_status;  // no component-local
-                                                       // communicator was ever formed
+                                                      // communicator was formed
   const MPI_Comm comm = MPI_Comm_f2c(static_cast<MPI_Fint>(c.collective_comm_f));
   if (comm == MPI_COMM_NULL) return local_status;  // nothing sane to reconcile over
-  int rank = 0;
-  if (MPI_Comm_rank(comm, &rank) != MPI_SUCCESS) {
-    return fail(&c, FUSE_ERR_RUNTIME, "E-ABI-COLLECTIVE-COMM",
-               std::string(fn) + ": MPI_Comm_rank failed while reconciling status "
-                                  "across the component's ranks");
+  // One reduction through fuse::agree_outcome() (fuse/field/
+  // collective_agreement.hpp): the origin's own E-code, message and numeric
+  // status reach every rank of the component, so a rank that did not refuse
+  // returns the ORIGIN's status and a message carrying the original error
+  // and its rank (KNOWN_ISSUES.md D97, owner's rule of 2026-10-30). Ranks
+  // that themselves refused keep their own record, which is an original.
+  const fuse::Result<void> local_outcome =
+      (local_status == FUSE_OK)
+          ? fuse::Result<void>::success()
+          : fuse::Result<void>(fuse::Failure{c.last_error_code, c.last_error_message});
+  const fuse::Result<void> agreed = fuse::agree_outcome(
+      static_cast<int>(c.collective_comm_f), local_outcome, "E-ABI-COLLECTIVE-REFUSED",
+      "E-ABI-COLLECTIVE-COMM",
+      std::string(fn) + ": reconciled across every rank of the component's own communicator "
+                        "so every rank returns the same status (docs/dev/abi-design.md)",
+      static_cast<std::int32_t>(local_status));
+  if (agreed.ok()) return FUSE_OK;
+  if (agreed.error().code != "E-ABI-COLLECTIVE-REFUSED") {
+    return fail(&c, FUSE_ERR_RUNTIME, "E-ABI-COLLECTIVE-COMM", agreed.error().message);
   }
-  // MPI_2INT packs two plain `int`s; fuse_status is int32_t. Every
-  // platform this library builds on has sizeof(int) == 4, so the two
-  // agree, but it is cheap to say so rather than assume it.
-  static_assert(sizeof(int) == sizeof(std::int32_t),
-               "MPI_2INT packs two `int`s; fuse_status is int32_t -- the two must agree");
-  struct { std::int32_t status; int rank; } in{local_status, rank}, out{0, 0};
-  if (MPI_Allreduce(&in, &out, 1, MPI_2INT, MPI_MINLOC, comm) != MPI_SUCCESS) {
-    return fail(&c, FUSE_ERR_RUNTIME, "E-ABI-COLLECTIVE-COMM",
-               std::string(fn) + ": MPI_Allreduce(MPI_MINLOC) failed while "
-                                  "reconciling status across the component's ranks");
-  }
-  if (out.rank == rank) return local_status;  // this rank's own message stands (incl. FUSE_OK)
-  if (out.status == FUSE_OK) return FUSE_OK;
-  return fail(&c, static_cast<fuse_status>(out.status), "E-ABI-COLLECTIVE-REFUSED",
-             std::string(fn) + ": rank " + std::to_string(out.rank) +
-                 " of this component refused (status " + std::to_string(out.status) +
-                 "); reconciled across every rank of the component's own "
-                 "communicator so every rank returns the same code "
-                 "(docs/dev/abi-design.md)");
+  if (local_status != FUSE_OK) return local_status;
+  return fail(&c, static_cast<fuse_status>(agreed.error().origin_status),
+              "E-ABI-COLLECTIVE-REFUSED", agreed.error().message);
 #else
   return local_status;
 #endif
@@ -2713,24 +2712,42 @@ fuse_status reconcile_plugin_agreement(fuse_ctx& c, int rank, fuse_status local_
 #if FUSE_HAVE_MPI
   const MPI_Comm comm = MPI_Comm_f2c(static_cast<MPI_Fint>(c.communicator));
   if (comm == MPI_COMM_NULL) return local_status;  // defensive: impl_initialize_local()'s
-                                                   // own derivation above already refused
-                                                   // E-ABI-INIT-COMM before this point if so
-  static_assert(sizeof(int) == sizeof(std::int32_t),
-               "MPI_2INT packs two `int`s; fuse_status is int32_t -- the two must agree");
-  struct { std::int32_t status; int rank; } in{local_status, rank}, out{0, 0};
-  if (MPI_Allreduce(&in, &out, 1, MPI_2INT, MPI_MINLOC, comm) != MPI_SUCCESS) {
-    return fail(&c, FUSE_ERR_RUNTIME, "E-ABI-PLUGIN-AGREEMENT-COMM",
-               std::string(fn) + ": MPI_Allreduce(MPI_MINLOC) failed while reconciling the "
-                                  "plugin-mount agreement across the base communicator");
+                                                    // own check already refused this
+  // ONE reduction, through the same agreement helper the field transaction
+  // uses (fuse/field/collective_agreement.hpp; owner's rule, KNOWN_ISSUES.md
+  // D97, 2026-10-30): the verdict is agreed, then the originating rank
+  // broadcasts its own E-code, message and numeric status, so every rank
+  // returns the ORIGIN's numeric status and a message that carries the
+  // original error and the rank it came from. Before this, the MINLOC over
+  // numeric statuses told a peer the rank and the number but not what that
+  // rank had actually refused with. When several ranks refuse, the
+  // lowest-numbered one is reported (MPI_MAXLOC's tie rule) and the message
+  // says how many refused; the pure reconcile_local_statuses() the fake
+  // path uses reports the lowest NUMERIC status instead, which names the
+  // same rank whenever one rank refuses, every host-verified case of
+  // D15/D85.
+  const fuse::Result<void> local_outcome =
+      (local_status == FUSE_OK)
+          ? fuse::Result<void>::success()
+          : fuse::Result<void>(fuse::Failure{c.last_error_code, c.last_error_message});
+  const fuse::Result<void> agreed = fuse::agree_outcome(
+      static_cast<int>(c.communicator), local_outcome, "E-ABI-PLUGIN-AGREEMENT-REFUSED",
+      "E-ABI-PLUGIN-AGREEMENT-COMM",
+      std::string(fn) + ": plugin-mount agreement across the base communicator (the graph "
+                        "declares a Plugin component; docs/dev/abi-design.md, KNOWN_ISSUES.md D15)",
+      static_cast<std::int32_t>(local_status));
+  if (agreed.ok()) return FUSE_OK;
+  if (agreed.error().code != "E-ABI-PLUGIN-AGREEMENT-REFUSED") {
+    return fail(&c, FUSE_ERR_RUNTIME, "E-ABI-PLUGIN-AGREEMENT-COMM", agreed.error().message);
   }
-  if (out.rank == rank) return local_status;  // this rank's own message stands (incl. FUSE_OK)
-  if (out.status == FUSE_OK) return FUSE_OK;
-  return fail(&c, static_cast<fuse_status>(out.status), "E-ABI-PLUGIN-AGREEMENT-REFUSED",
-             std::string(fn) + ": rank " + std::to_string(out.rank) +
-                 " refused the plugin-mount agreement (status " + std::to_string(out.status) +
-                 "); reconciled across every rank of the base communicator because the "
-                 "graph declares a Plugin component (docs/dev/abi-design.md, "
-                 "KNOWN_ISSUES.md D15)");
+  // Every rank that itself refused keeps its own record: its last_error()
+  // IS an original error, and overwriting it with another rank's would lose
+  // one of the originals the owner's rule says must be known. Ranks that
+  // did not refuse receive the reported origin's status and message.
+  if (local_status != FUSE_OK) return local_status;
+  (void)rank;
+  return fail(&c, static_cast<fuse_status>(agreed.error().origin_status),
+              "E-ABI-PLUGIN-AGREEMENT-REFUSED", agreed.error().message);
 #else
   return local_status;
 #endif

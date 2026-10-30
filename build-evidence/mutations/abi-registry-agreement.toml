@@ -46,12 +46,14 @@ result = "CONFIRMED 2026-10-22: killed 5 of 9 cases in fuse_abi_plugin_agreement
 id = "participant-plugin-agreement-minloc-to-maxloc-mpi"
 area = "abi-registry-agreement"
 describes = "the real MPI_Allreduce(MPI_MINLOC) reconcile_plugin_agreement() runs when FUSE_HAVE_MPI (src/abi/participant.cpp), replaced by MPI_MAXLOC -- the largest (least negative) status would win instead of the smallest, so a hosting rank's own real refusal (a negative FUSE_ERR_* code) would lose to any OTHER rank's FUSE_OK (0) rather than propagating, the exact inverse of entries.def's own \"FUSE_OK is 0 and every FUSE_ERR_* code is negative, so the plain minimum already propagates any refusal\" rule reconcile_plugin_agreement()'s own doc comment restates"
-file = "src/abi/participant.cpp"
-old = """  if (MPI_Allreduce(&in, &out, 1, MPI_2INT, MPI_MINLOC, comm) != MPI_SUCCESS) {
-    return fail(&c, FUSE_ERR_RUNTIME, "E-ABI-PLUGIN-AGREEMENT-COMM","""
-new = """  if (MPI_Allreduce(&in, &out, 1, MPI_2INT, MPI_MAXLOC, comm) != MPI_SUCCESS) {  // MUTATION: MAXLOC
-    return fail(&c, FUSE_ERR_RUNTIME, "E-ABI-PLUGIN-AGREEMENT-COMM","""
+file = "src/field/collective_agreement.cpp"
+old = """  if (MPI_Allreduce(&in, &out, 1, MPI_2INT, MPI_MAXLOC, comm) != MPI_SUCCESS) {"""
+new = """  if (MPI_Allreduce(&in, &out, 1, MPI_2INT, MPI_MINLOC, comm) != MPI_SUCCESS) {  // MUTATION: MINLOC picks a non-refusing rank"""
 target = "fuse_parallel_provider_subset_mpi_test"
 test = "parallel.provider_subset_mpi.2"
 requires = "mpi"
 result = "KILLED on the host 2026-10-22 (build-all at 8e88f9c, MPICH 5.0.2rc3, FUSE_MUTATE_MPI=1, tools/mutate.py --area abi-registry-agreement): 'KILLED participant-plugin-agreement-minloc-to-maxloc-mpi test fails'; area gate 1 killed, 0 declared equivalent, 2 not assessed here (the two no-mpi rows, by design on an MPI build), 0 without a baseline, 0 not killed, of 3; checkout clean afterwards."
+# 2026-10-30 (lead, D97): re-anchored into fuse::agree_outcome(), which the plugin-mount
+# agreement now runs through; the helper reduces {refused, rank} with MAXLOC, so the
+# wrong-direction mutation is MAXLOC -> MINLOC (a non-refusing rank wins and no rank refuses).
+
