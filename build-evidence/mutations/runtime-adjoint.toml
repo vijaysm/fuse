@@ -1,0 +1,412 @@
+# Mutations for the adjoint (reverse mode) of the Runner (plans/2026-10-22-universal-number-types.md, stage U6).
+
+[[mutation]]
+id = "runtime-adjoint-remap-applies-the-matrix-not-its-transpose"
+area = "runtime_adjoint"
+describes = "the adjoint of a remap applies the matrix instead of its transpose"
+file = "src/runtime/runner_adjoint.cpp"
+old = "A.remap_operator[ri]->apply_transpose("
+new = "A.remap_operator[ri]->apply("
+target = "fuse_runtime_adjoint_runner_test"
+test = "runtime.adjoint_runner"
+
+[[mutation]]
+id = "runtime-adjoint-remap-identity-doubles"
+area = "runtime_adjoint"
+describes = "the proved-coincident remap passes the adjoint through twice"
+file = "src/runtime/runner_adjoint.cpp"
+old = "if (r.remap < 0) {  // the proved-coincident identity\n        add(ins.in[0], g, 1.0);"
+new = "if (r.remap < 0) {  // the proved-coincident identity\n        add(ins.in[0], g, 2.0);"
+target = "fuse_runtime_adjoint_runner_test"
+test = "runtime.adjoint_runner"
+
+[[mutation]]
+id = "runtime-adjoint-add-overwrites"
+area = "runtime_adjoint"
+describes = "the adjoint of an input is replaced by each contribution instead of accumulated"
+file = "src/runtime/runner_adjoint.cpp"
+old = "for (std::size_t k = 0; k < count; ++k) b[k] += f * g[k];"
+new = "for (std::size_t k = 0; k < count; ++k) b[k] = f * g[k];"
+target = "fuse_runtime_adjoint_runner_test"
+test = "runtime.adjoint_runner"
+
+[[mutation]]
+id = "runtime-adjoint-take-keeps-the-output-adjoint"
+area = "runtime_adjoint"
+describes = "the adjoint of an overwritten output is not set to zero after it is passed on"
+file = "src/runtime/runner_adjoint.cpp"
+old = "      g[k] = b[k];\n      b[k] = 0.0;"
+new = "      g[k] = b[k];"
+target = "fuse_runtime_adjoint_runner_test"
+test = "runtime.adjoint_runner"
+
+[[mutation]]
+id = "runtime-adjoint-copy-drops-the-input-adjoint"
+area = "runtime_adjoint"
+describes = "the adjoint of a copy is taken from the output and never added to the input"
+file = "src/runtime/runner_adjoint.cpp"
+old = "      if (!has_io) return Result<void>::success();\n      add(ins.in[0], take(), 1.0);"
+new = "      if (!has_io) return Result<void>::success();\n      (void)take();"
+target = "fuse_runtime_adjoint_runner_test"
+test = "runtime.adjoint_runner"
+
+[[mutation]]
+id = "runtime-adjoint-sample-never-zeroes-the-accumulator"
+area = "runtime_adjoint"
+describes = "the first sample of a window leaves the accumulator's adjoint in place"
+file = "src/runtime/runner_adjoint.cpp"
+old = "if (r.accum == AccumOp::Instant || A.window_index[index] == 0) {"
+new = "if (r.accum == AccumOp::Instant) {"
+target = "fuse_runtime_adjoint_runner_test"
+test = "runtime.adjoint_runner"
+
+[[mutation]]
+id = "runtime-adjoint-sample-zeroes-the-accumulator-every-time"
+area = "runtime_adjoint"
+describes = "every sample of a window zeroes the accumulator's adjoint, so only the last one receives it"
+file = "src/runtime/runner_adjoint.cpp"
+old = "if (r.accum == AccumOp::Instant || A.window_index[index] == 0) {"
+new = "if (true) {"
+target = "fuse_runtime_adjoint_runner_test"
+test = "runtime.adjoint_runner"
+
+[[mutation]]
+id = "runtime-adjoint-window-position-never-advances"
+area = "runtime_adjoint"
+describes = "the position of a sample in its window is not counted"
+file = "src/runtime/runner_adjoint.cpp"
+old = "st->window_index[e.index] = count[ins.out.value()]++;"
+new = "st->window_index[e.index] = count[ins.out.value()];"
+target = "fuse_runtime_adjoint_runner_test"
+test = "runtime.adjoint_runner"
+
+[[mutation]]
+id = "runtime-adjoint-window-count-keyed-by-the-wrong-arc"
+area = "runtime_adjoint"
+describes = "an Accumulate reads the sample count of its output arc instead of its accumulator"
+file = "src/runtime/runner_adjoint.cpp"
+old = "st->window_index[e.index] = count[ins.in[0].value()];"
+new = "st->window_index[e.index] = count[ins.out.value()];"
+target = "fuse_runtime_adjoint_runner_test"
+test = "runtime.adjoint_runner"
+
+[[mutation]]
+id = "runtime-adjoint-window-count-never-resets"
+area = "runtime_adjoint"
+describes = "the sample count of a window is not reset by the Accumulate that closes it"
+file = "src/runtime/runner_adjoint.cpp"
+old = "        count[ins.in[0].value()] = 0;\n"
+new = ""
+target = "fuse_runtime_adjoint_runner_test"
+test = "runtime.adjoint_runner"
+
+[[mutation]]
+id = "runtime-adjoint-accumulate-mean-forgets-the-count"
+area = "runtime_adjoint"
+describes = "the adjoint of a mean does not divide by the number of samples"
+file = "src/runtime/runner_adjoint.cpp"
+old = "factor = 1.0 / static_cast<double>(count);"
+new = "factor = 1.0;"
+target = "fuse_runtime_adjoint_runner_test"
+test = "runtime.adjoint_runner"
+
+[[mutation]]
+id = "runtime-adjoint-accumulate-mean-counts-one-too-many"
+area = "runtime_adjoint"
+describes = "the adjoint of a mean divides by one more than the number of samples"
+file = "src/runtime/runner_adjoint.cpp"
+old = "factor = 1.0 / static_cast<double>(count);"
+new = "factor = 1.0 / static_cast<double>(count + 1);"
+target = "fuse_runtime_adjoint_runner_test"
+test = "runtime.adjoint_runner"
+
+[[mutation]]
+id = "runtime-adjoint-accumulate-integral-forgets-the-interval"
+area = "runtime_adjoint"
+describes = "the adjoint of an integral does not multiply by the sample interval"
+file = "src/runtime/runner_adjoint.cpp"
+old = "factor = ins.attrs.scale.to_double();\n      }\n      add(ins.in[0], take(), factor);"
+new = "factor = 1.0;\n      }\n      add(ins.in[0], take(), factor);"
+target = "fuse_runtime_adjoint_runner_test"
+test = "runtime.adjoint_runner"
+
+[[mutation]]
+id = "runtime-adjoint-merge-mean-forgets-the-mean"
+area = "runtime_adjoint"
+describes = "the adjoint of a mean merge does not divide by the number of inputs"
+file = "src/runtime/runner_adjoint.cpp"
+old = "const double inv = 1.0 / static_cast<double>(ins.n_in);\n          for (std::uint8_t k = 0; k < ins.n_in; ++k) add(ins.in[k], g, inv);"
+new = "const double inv = 1.0;\n          for (std::uint8_t k = 0; k < ins.n_in; ++k) add(ins.in[k], g, inv);"
+target = "fuse_runtime_adjoint_runner_test"
+test = "runtime.adjoint_runner"
+
+[[mutation]]
+id = "runtime-adjoint-merge-first-feeds-every-input"
+area = "runtime_adjoint"
+describes = "the adjoint of a first-wins merge goes to every input"
+file = "src/runtime/runner_adjoint.cpp"
+old = "        case MergeOp::First:\n          add(ins.in[0], g, 1.0);\n          break;"
+new = "        case MergeOp::First:\n          for (std::uint8_t k = 0; k < ins.n_in; ++k) add(ins.in[k], g, 1.0);\n          break;"
+target = "fuse_runtime_adjoint_runner_test"
+test = "runtime.adjoint_runner"
+
+[[mutation]]
+id = "runtime-adjoint-merge-sum-feeds-only-the-first-input"
+area = "runtime_adjoint"
+describes = "the adjoint of a sum merge goes to the first input only"
+file = "src/runtime/runner_adjoint.cpp"
+old = "case MergeOp::Sum:\n          for (std::uint8_t k = 0; k < ins.n_in; ++k) add(ins.in[k], g, 1.0);"
+new = "case MergeOp::Sum:\n          for (std::uint8_t k = 0; k < 1; ++k) add(ins.in[k], g, 1.0);"
+target = "fuse_runtime_adjoint_runner_test"
+test = "runtime.adjoint_runner"
+
+[[mutation]]
+id = "runtime-adjoint-scale-forgets-the-factor"
+area = "runtime_adjoint"
+describes = "the adjoint of a unit conversion does not multiply by the factor"
+file = "src/runtime/runner_adjoint.cpp"
+old = "add(ins.in[0], take(), ins.attrs.scale.to_double());"
+new = "add(ins.in[0], take(), 1.0);"
+target = "fuse_runtime_adjoint_runner_test"
+test = "runtime.adjoint_runner"
+
+[[mutation]]
+id = "runtime-adjoint-sweep-runs-forward"
+area = "runtime_adjoint"
+describes = "the sweep walks the period's events forward instead of backward"
+file = "src/runtime/runner_adjoint.cpp"
+old = "for (std::size_t e = A.events.size(); e-- > 0;) {"
+new = "for (std::size_t e = 0; e < A.events.size(); ++e) {"
+target = "fuse_runtime_adjoint_runner_test"
+test = "runtime.adjoint_runner"
+
+[[mutation]]
+id = "runtime-adjoint-events-ignore-the-tick-phase"
+area = "runtime_adjoint"
+describes = "the replay of the period puts every component step ahead of the instructions stamped after it"
+file = "src/runtime/runner_adjoint.cpp"
+old = "(ticks[ti].time < ins.time || (ticks_here && !(ins.time < ticks[ti].time)))"
+new = "(ticks[ti].time < ins.time)"
+target = "fuse_runtime_adjoint_runner_test"
+test = "runtime.adjoint_runner"
+
+[[mutation]]
+id = "runtime-adjoint-tick-step-index-ignores-the-period"
+area = "runtime_adjoint"
+describes = "a reversed component step is given the step index within its period"
+file = "src/runtime/runner_adjoint.cpp"
+old = "ctx.step = p * tick.per_period + tick.local_step;"
+new = "ctx.step = tick.local_step;"
+target = "fuse_runtime_adjoint_runner_test"
+test = "runtime.adjoint_runner"
+
+[[mutation]]
+id = "runtime-adjoint-tick-time-ignores-the-period"
+area = "runtime_adjoint"
+describes = "a reversed component step is given the time within its period"
+file = "src/runtime/runner_adjoint.cpp"
+old = "ctx.t_begin = Rational{p} * plan.period() + tick.time;"
+new = "ctx.t_begin = tick.time;"
+target = "fuse_runtime_adjoint_runner_test"
+test = "runtime.adjoint_runner"
+
+[[mutation]]
+id = "runtime-adjoint-sweep-reverses-the-oldest-period-first"
+area = "runtime_adjoint"
+describes = "the sweep starts from the first forward period"
+file = "src/runtime/runner_adjoint.cpp"
+old = "A.next = period_index - 1;"
+new = "A.next = 0;"
+target = "fuse_runtime_adjoint_runner_test"
+test = "runtime.adjoint_runner"
+
+[[mutation]]
+id = "runtime-adjoint-order-accepts-a-forward-period-mid-sweep"
+area = "runtime_adjoint"
+describes = "a forward period between two reverse periods is accepted"
+file = "src/runtime/runner_adjoint.cpp"
+old = "} else if (period_index != A.forward_periods) {"
+new = "} else if (false) {"
+target = "fuse_runtime_adjoint_runner_test"
+test = "runtime.adjoint_runner"
+
+[[mutation]]
+id = "runtime-adjoint-order-accepts-an-exhausted-sweep"
+area = "runtime_adjoint"
+describes = "reversing more periods than the forward run completed is accepted"
+file = "src/runtime/runner_adjoint.cpp"
+old = "  if (A.next < 0) {\n    return refuse(\"E-ADJ-ORDER\",\n                  \"run_period_adjoint(): every forward period has already been reversed\");\n  }"
+new = "  if (false) {\n    return refuse(\"E-ADJ-ORDER\",\n                  \"run_period_adjoint(): every forward period has already been reversed\");\n  }"
+target = "fuse_runtime_adjoint_runner_test"
+test = "runtime.adjoint_runner"
+
+[[mutation]]
+id = "runtime-adjoint-order-accepts-a-sweep-before-any-forward-period"
+area = "runtime_adjoint"
+describes = "a reverse sweep before any forward period is accepted"
+file = "src/runtime/runner_adjoint.cpp"
+old = "    if (period_index < 1) {"
+new = "    if (false) {"
+target = "fuse_runtime_adjoint_runner_test"
+test = "runtime.adjoint_runner"
+
+[[mutation]]
+id = "runtime-adjoint-refusal-minmax-removed"
+area = "runtime_adjoint"
+describes = "a minimum or maximum accumulation is accepted"
+file = "src/runtime/runner_adjoint.cpp"
+old = "if (r.accum == AccumOp::Min || r.accum == AccumOp::Max) {"
+new = "if (false) {"
+target = "fuse_runtime_adjoint_runner_test"
+test = "runtime.adjoint_runner"
+
+[[mutation]]
+id = "runtime-adjoint-refusal-region-removed"
+area = "runtime_adjoint"
+describes = "a plan with an iteration region is accepted"
+file = "src/runtime/runner_adjoint.cpp"
+old = "  if (!regions.empty()) {\n    return refuse(\"E-ADJ-REGION\","
+new = "  if (false) {\n    return refuse(\"E-ADJ-REGION\","
+target = "fuse_runtime_adjoint_runner_test"
+test = "runtime.adjoint_runner"
+
+[[mutation]]
+id = "runtime-adjoint-refusal-missing-component-adjoint-removed"
+area = "runtime_adjoint"
+describes = "a component with no adjoint is accepted"
+file = "src/runtime/runner_adjoint.cpp"
+old = "if (c.adjoint() == nullptr) {\n      return refuse(\"E-ADJ-COMPONENT\","
+new = "if (false) {\n      return refuse(\"E-ADJ-COMPONENT\","
+target = "fuse_runtime_adjoint_runner_test"
+test = "runtime.adjoint_runner"
+
+[[mutation]]
+id = "runtime-adjoint-refusal-arithmetic-field-removed"
+area = "runtime_adjoint"
+describes = "a field of an Arithmetic value type is accepted"
+file = "src/runtime/runner_adjoint.cpp"
+old = "if (!slots[i].arithmetic.empty() || storage_typed) {"
+new = "if (storage_typed) {"
+target = "fuse_runtime_adjoint_runner_test"
+test = "runtime.adjoint_runner"
+
+[[mutation]]
+id = "runtime-adjoint-refusal-layout-removed"
+area = "runtime_adjoint"
+describes = "an adjoint array of the wrong size is accepted"
+file = "src/runtime/runner_adjoint.cpp"
+old = "if (!flat_contiguous(view.layout()) || view.layout().count != s.elements ||\n        view.layout().components != s.components) {"
+new = "if (false) {"
+target = "fuse_runtime_adjoint_runner_test"
+test = "runtime.adjoint_runner"
+
+[[mutation]]
+id = "runtime-adjoint-refusal-alias-removed"
+area = "runtime_adjoint"
+describes = "an adjoint array that is the field's own array is accepted"
+file = "src/runtime/runner_adjoint.cpp"
+old = "if (view.data() == s.data) {"
+new = "if (false) {"
+target = "fuse_runtime_adjoint_runner_test"
+test = "runtime.adjoint_runner"
+
+[[mutation]]
+id = "runtime-adjoint-refusal-extrapolate-order-removed"
+area = "runtime_adjoint"
+describes = "an extrapolation above order 0 is accepted"
+file = "src/runtime/runner_adjoint.cpp"
+old = "if (ins.attrs.order != 0) {"
+new = "if (false) {"
+target = "fuse_runtime_adjoint_runner_test"
+test = "runtime.adjoint_runner"
+
+[[mutation]]
+id = "runtime-adjoint-epoch-has-no-adjoint"
+area = "runtime_adjoint"
+describes = "the adjoint of an Epoch is left out"
+file = "src/runtime/runner_adjoint.cpp"
+old = "    case OpKind::Epoch:        // agreement, then a copy\n"
+new = ""
+target = "fuse_runtime_adjoint_runner_test"
+test = "runtime.adjoint_runner"
+
+[[mutation]]
+id = "runtime-adjoint-transport-has-no-adjoint"
+area = "runtime_adjoint"
+describes = "the adjoint of a same-process Transport is left out"
+file = "src/runtime/runner_adjoint.cpp"
+old = "    case OpKind::Transport: {  // within one process: a copy"
+new = "    case OpKind::Accelerate: {  // within one process: a copy"
+target = "fuse_runtime_adjoint_runner_test"
+test = "runtime.adjoint_runner"
+
+[[mutation]]
+id = "runtime-adjoint-diagnose-has-no-adjoint"
+area = "runtime_adjoint"
+describes = "the adjoint of a Diagnose is left out"
+file = "src/runtime/runner_adjoint.cpp"
+old = "    case OpKind::Diagnose:     // checks for non-finite values, copies\n"
+new = ""
+target = "fuse_runtime_adjoint_runner_test"
+test = "runtime.adjoint_runner"
+
+[[mutation]]
+id = "runtime-adjoint-constrain-has-no-adjoint"
+area = "runtime_adjoint"
+describes = "the adjoint of a Constrain is left out"
+file = "src/runtime/runner_adjoint.cpp"
+old = "    case OpKind::Constrain:    // reports the conservation defect, copies\n"
+new = ""
+target = "fuse_runtime_adjoint_runner_test"
+test = "runtime.adjoint_runner"
+
+[[mutation]]
+id = "runtime-adjoint-interpolate-has-no-adjoint"
+area = "runtime_adjoint"
+describes = "the adjoint of a lag Interpolate is left out"
+file = "src/runtime/runner_adjoint.cpp"
+old = "    case OpKind::Interpolate:  // without a time history: a copy\n"
+new = ""
+target = "fuse_runtime_adjoint_runner_test"
+test = "runtime.adjoint_runner"
+
+[[mutation]]
+id = "runtime-adjoint-extrapolate-has-no-adjoint"
+area = "runtime_adjoint"
+describes = "the adjoint of an order 0 Extrapolate is left out"
+file = "src/runtime/runner_adjoint.cpp"
+old = "    case OpKind::Extrapolate:  // order 0: a copy\n"
+new = ""
+target = "fuse_runtime_adjoint_runner_test"
+test = "runtime.adjoint_runner"
+
+[[mutation]]
+id = "runtime-adjoint-refusal-unsupported-instruction-removed"
+area = "runtime_adjoint"
+describes = "an instruction with no adjoint (Relax, Residual, ...) is accepted when the plan is checked"
+file = "src/runtime/runner_adjoint.cpp"
+old = "      default:\n        return refuse(\"E-ADJ-OP\", std::string{\"instruction \"} + std::to_string(i) +\n                                      \" is a '\" + to_cstring(ins.kind) +\n                                      \"', which has no adjoint\");\n    }\n  }\n\n  // 3."
+new = "      default:\n        break;\n    }\n  }\n\n  // 3."
+target = "fuse_runtime_adjoint_runner_test"
+test = "runtime.adjoint_runner"
+
+[[mutation]]
+id = "runtime-adjoint-refusal-device-execution-removed"
+area = "runtime_adjoint"
+describes = "device execution is accepted (needs a build with a device backend: the test that kills it is not compiled without one)"
+file = "src/runtime/runner_adjoint.cpp"
+old = "if (config.execution_space == RunnerConfig::RunnerExecutionSpace::Device) {"
+new = "if (false) {"
+target = "fuse_runtime_adjoint_runner_test"
+test = "runtime.adjoint_runner"
+requires = "device"
+
+[[mutation]]
+id = "runtime-adjoint-refusal-spacetime-removed"
+area = "runtime_adjoint"
+describes = "a space-time Sample or Interpolate (a time history) is accepted"
+file = "src/runtime/runner_adjoint.cpp"
+old = "if ((ins.kind == OpKind::Sample || ins.kind == OpKind::Interpolate) && r.spacetime >= 0) {"
+new = "if (false) {"
+target = "fuse_runtime_adjoint_runner_test"
+test = "runtime.adjoint_runner"
