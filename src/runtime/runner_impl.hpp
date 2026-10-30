@@ -29,7 +29,6 @@
 #include "fuse/num/storage_convert.hpp"
 #include "fuse/model/iteration.hpp"
 #include "fuse/backend/device_ghost_exchange.hpp"
-#include "fuse/backend/linear_operator.hpp"
 #include "fuse/backend/nodal_remap_distributed.hpp"
 #include "fuse/backend/remap_plan.hpp"
 #include "fuse/backend/spacetime.hpp"
@@ -665,6 +664,19 @@ struct Resolved {
   std::int32_t  nodal_dist = -1;
 };
 
+/// The memory space of the device execution space `Runner::Impl` selects (the
+/// same chain of #if as `Impl::DeviceExecSpace`; a static_assert after `Impl`
+/// keeps the two equal). The reverse sweep needs it before `Impl` is defined.
+#if defined(KOKKOS_ENABLE_CUDA)
+using AdjointDeviceMemSpace = Kokkos::Cuda::memory_space;
+#elif defined(KOKKOS_ENABLE_HIP)
+using AdjointDeviceMemSpace = Kokkos::HIP::memory_space;
+#elif defined(KOKKOS_ENABLE_SYCL)
+using AdjointDeviceMemSpace = Kokkos::SYCL::memory_space;
+#else
+using AdjointDeviceMemSpace = Kokkos::DefaultHostExecutionSpace::memory_space;
+#endif
+
 /// Everything `Runner::run_period_adjoint()` needs beyond the forward state
 /// (stage U6, docs/dev/adjoint-schedule.md). Built by `initialize_adjoint()`;
 /// absent (`Impl::adjoint` null) on a Runner that only runs forward.
@@ -686,19 +698,31 @@ struct AdjointState {
   std::vector<std::size_t> window_index;
 
   /// The adjoint array of every arc, parallel to `Impl::slots`: the component's
-  /// own adjoint array for a component-owned arc, `owned[i]` otherwise.
-  std::vector<double*>             bar;
-  std::vector<std::vector<double>> owned;
+  /// own adjoint array for a component-owned arc, `owned[i]` (host memory) or
+  /// `owned_device[i]` (device memory) otherwise. `bar_device[i]` says which
+  /// memory space `bar[i]` points into; an arc is on the device exactly when its
+  /// forward slot is (`Slot::device`), so a device-resident field has a
+  /// device-resident adjoint array.
+  std::vector<double*>                                          bar;
+  std::vector<std::uint8_t>                                     bar_device;
+  std::vector<std::vector<double>>                              owned;
+  std::vector<Kokkos::View<double*, AdjointDeviceMemSpace>>     owned_device;
 
-  /// The transposable operator of each entry of `Impl::remap_weights`, same
-  /// index; the adjoint of a remap is its `apply_transpose`.
-  std::vector<std::unique_ptr<LinearOperator>> remap_operator;
+  /// The transpose of each entry of `Impl::remap_weights` as a CSR matrix (rows
+  /// are the columns of the weights), same index. Built once on the host by a
+  /// stable sort, so every row sums its terms in the order `apply_transpose` of
+  /// `WeightsOperator` does; `remap_t_device` is its copy in device memory,
+  /// filled only for device execution.
+  std::vector<RemapCsr>                                         remap_t;
+  std::vector<RemapCsrOf<AdjointDeviceMemSpace>>                remap_t_device;
 
-  /// Scratch of the largest arc: the adjoint of the output of the instruction in
-  /// hand (`scratch`), and, for a remap, its transpose applied to it
-  /// (`scratch_in`).
-  std::vector<double> scratch;
-  std::vector<double> scratch_in;
+  /// Scratch lanes of the largest arc, in the memory of the execution space
+  /// (`lanes_device` for device execution, `lanes_host` otherwise): the adjoint
+  /// of the output of the instruction in hand, the operands of another memory
+  /// space staged for a kernel, and the transpose of a remap applied to it.
+  static constexpr std::size_t kLanes = 6;
+  std::vector<std::vector<double>>                              lanes_host;
+  std::vector<Kokkos::View<double*, AdjointDeviceMemSpace>>     lanes_device;
 
   /// The reverse sweep: `open` once the first `run_period_adjoint()` call has
   /// fixed the number of forward periods it reverses (`forward_periods`, the
@@ -1135,6 +1159,8 @@ struct Runner::Impl {
   using DeviceExecSpace = HostExecSpace;
 #endif
   using DeviceMemSpace = typename DeviceExecSpace::memory_space;
+  static_assert(std::is_same_v<DeviceMemSpace, detail::AdjointDeviceMemSpace>,
+                "AdjointState names the device memory space by the same rule");
 
   /// Space-aware moves between a Slot and host memory, for the host-side
   /// bookkeeping of iteration.cpp / fixed_point_residual.cpp (gather and
@@ -1770,6 +1796,8 @@ struct Runner::Impl {
   Result<void> init_adjoint(ComponentSet& components, FieldRegistry& adjoint_registry);
   Result<void> sweep_adjoint_period(ComponentSet& components);
   Result<void> reverse_instruction(std::size_t index);
+  template <class Space>
+  Result<void> reverse_on(std::size_t index);
   Result<void> resolve_buffers(FieldRegistry& registry);
   /// Device mode only: moves every eligible coupler-owned arc from
   /// `storage` into `device_storage` and flags its Slot. Eligibility is

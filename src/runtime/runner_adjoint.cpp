@@ -24,7 +24,10 @@
 #include <unordered_map>
 #include <vector>
 
-#include "fuse/backend/weights_operator.hpp"
+#include <Kokkos_Core.hpp>
+
+#include "fuse/num/adjoint_kernels.hpp"
+#include "fuse/num/space_kernels.hpp"
 #include "runner_impl.hpp"
 
 namespace fuse {
@@ -92,11 +95,8 @@ Result<void> Runner::Impl::init_adjoint(ComponentSet& components,
   const std::vector<BufferDecl>& buffers = plan.buffers().buffers;
 
   // 1. What this stage does not differentiate through, refused by name.
-  if (config.execution_space == RunnerConfig::RunnerExecutionSpace::Device) {
-    return refuse("E-ADJ-SPACE",
-                  "the adjoint is implemented for the host execution space only; "
-                  "RunnerConfig::execution_space is Device");
-  }
+  const bool device_exec =
+      config.execution_space == RunnerConfig::RunnerExecutionSpace::Device;
   if (!regions.empty()) {
     return refuse("E-ADJ-REGION",
                   "the plan has an iteration region; the adjoint of a fixed-point "
@@ -199,7 +199,9 @@ Result<void> Runner::Impl::init_adjoint(ComponentSet& components,
   //    a field, the coupler's for the rest.
   auto st = std::make_unique<AdjointState>();
   st->bar.assign(slots.size(), nullptr);
+  st->bar_device.assign(slots.size(), 0);
   st->owned.assign(slots.size(), {});
+  st->owned_device.assign(slots.size(), {});
   std::unordered_map<std::uint32_t, FieldId> arc_field;
   for (std::uint32_t i = 0; i < dag.node_count(); ++i) {
     const Node& n = dag.node(NodeId{i});
@@ -217,8 +219,15 @@ Result<void> Runner::Impl::init_adjoint(ComponentSet& components,
     const Slot& s = slots[i];
     largest = std::max(largest, s.total());
     if (!b.is_component_owned) {
-      st->owned[i].assign(s.total(), 0.0);
-      st->bar[i] = st->owned[i].data();
+      if (s.device) {  // an arc the forward run keeps in device memory
+        st->owned_device[i] = Kokkos::View<double*, detail::AdjointDeviceMemSpace>(
+            Kokkos::view_alloc(std::string("fuse::adjoint_bar")), std::max<std::size_t>(s.total(), 1));
+        st->bar[i] = st->owned_device[i].data();
+        st->bar_device[i] = 1;
+      } else {
+        st->owned[i].assign(s.total(), 0.0);
+        st->bar[i] = st->owned[i].data();
+      }
       continue;
     }
     const auto it = arc_field.find(b.arc.value());
@@ -233,9 +242,15 @@ Result<void> Runner::Impl::init_adjoint(ComponentSet& components,
                                          " (did the component call register_adjoint_fields?)");
     }
     FieldRef view = ref.value();  // by value: the registry hands back a copy
-    if (view.space() != MemorySpace::Host) {
-      return refuse("E-ADJ-SPACE", "the adjoint array of field '" + b.label +
-                                       "' is not in host memory");
+    // The adjoint array is in the memory of the field it is the adjoint of: a field in
+    // device memory is reversed by kernels on the device, a field in host memory by
+    // kernels on the host or, for device execution, through a staged copy.
+    const MemorySpace want = s.device ? MemorySpace::Device : MemorySpace::Host;
+    if (view.space() != want) {
+      return refuse("E-ADJ-SPACE",
+                    "the adjoint array of field '" + b.label + "' is in " +
+                        to_cstring(view.space()) + " memory but the field is in " +
+                        to_cstring(want) + " memory; the two must be in the same memory space");
     }
     if (!flat_contiguous(view.layout()) || view.layout().count != s.elements ||
         view.layout().components != s.components) {
@@ -250,15 +265,40 @@ Result<void> Runner::Impl::init_adjoint(ComponentSet& components,
                                        "' is the field's own array");
     }
     st->bar[i] = view.data();
+    st->bar_device[i] = s.device ? 1 : 0;
   }
-  st->scratch.assign(largest, 0.0);
-  st->scratch_in.assign(largest, 0.0);
+  // Scratch lanes in the memory of the execution space.
+  const std::size_t lane_size = std::max<std::size_t>(largest, 1);
+  if (device_exec) {
+    st->lanes_device.reserve(AdjointState::kLanes);
+    for (std::size_t k = 0; k < AdjointState::kLanes; ++k) {
+      st->lanes_device.emplace_back(Kokkos::view_alloc(std::string("fuse::adjoint_lane")), lane_size);
+    }
+  } else {
+    st->lanes_host.assign(AdjointState::kLanes, std::vector<double>(lane_size, 0.0));
+  }
 
-  // 5. The transposable operator of every remap.
-  st->remap_operator.reserve(remap_weights.size());
-  for (const RemapWeights* w : remap_weights) {
-    st->remap_operator.push_back(w != nullptr ? std::make_unique<WeightsOperator>(*w)
-                                              : std::unique_ptr<LinearOperator>{});
+  // 5. The transpose of every remap as a CSR matrix: the triplets with rows and columns
+  //    exchanged, then the forward run's own stable sort by row, so that each output
+  //    entry sums its terms in the order of the triplets, as `apply_transpose` of
+  //    `WeightsOperator` does.
+  st->remap_t.resize(remap_weights.size());
+  if (device_exec) st->remap_t_device.resize(remap_weights.size());
+  for (std::size_t ri = 0; ri < remap_weights.size(); ++ri) {
+    const RemapWeights* w = remap_weights[ri];
+    if (w == nullptr) continue;
+    RemapWeights wt;
+    wt.row = w->col;
+    wt.col = w->row;
+    wt.val = w->val;
+    wt.n_rows = w->n_cols;
+    wt.n_cols = w->n_rows;
+    Result<detail::RemapCsr> csr = build_remap_csr(wt);
+    if (!csr.ok()) return csr.error();
+    st->remap_t[ri] = csr.value();
+    if (device_exec) {
+      st->remap_t_device[ri] = detail::mirror_remap_csr<detail::AdjointDeviceMemSpace>(st->remap_t[ri]);
+    }
   }
 
   // 6. The order of one period: the merged walk of `step_period()`, replayed
@@ -365,14 +405,32 @@ Result<void> Runner::Impl::sweep_adjoint_period(ComponentSet& components) {
       return refuse("E-ADJ-COMPONENT", "component '" + comp.name() +
                                            "' no longer has an adjoint");
     }
+    // The kernels of the instructions reversed so far must have finished before the
+    // component reads or writes the adjoint arrays; the component's own kernels must
+    // have finished when it returns (Component's threading contract).
+    Kokkos::fence("fuse::adjoint_before_component");
     const Result<void> r = adj->advance_adjoint(ctx);
     if (!r.ok()) return r;
   }
+  Kokkos::fence("fuse::adjoint_sweep");
   --A.next;
   return Result<void>::success();
 }
 
 Result<void> Runner::Impl::reverse_instruction(std::size_t index) {
+  if (config.execution_space == RunnerConfig::RunnerExecutionSpace::Device) {
+    return reverse_on<DeviceExecSpace>(index);
+  }
+  return reverse_on<HostExecSpace>(index);
+}
+
+// The rule of each instruction on execution space `Space`. The adjoint array of an arc is
+// in the memory of the arc's forward slot; an operand in a memory space the kernels of
+// `Space` cannot reach is staged through a lane of `Space`'s memory, read in when the rule
+// reads it and written back when the rule changes it, as the forward interpreter stages
+// the arcs it keeps on the host.
+template <class Space>
+Result<void> Runner::Impl::reverse_on(std::size_t index) {
   const Instruction& ins = plan.instructions()[index];
   const Resolved& r = resolved[index];
   AdjointState& A = *adjoint;
@@ -381,22 +439,65 @@ Result<void> Runner::Impl::reverse_instruction(std::size_t index) {
   // no output; so does the reverse.
   const bool has_io = ins.n_in > 0 && ins.out.valid();
 
-  // g <- adjoint of the output; the adjoint of the output <- 0.
-  const auto take = [&]() -> const double* {
-    double* g = A.scratch.data();
-    double* b = A.bar[ins.out.value()];
-    for (std::size_t k = 0; k < n; ++k) {
-      g[k] = b[k];
-      b[k] = 0.0;
+  constexpr bool kHostExec = Kokkos::SpaceAccessibility<Space, Kokkos::HostSpace>::accessible;
+  using Span = num::SpanOf<Space>;
+  using CSpan = num::ConstSpanOf<Space>;
+  using HostSpan = num::SpanOf<HostExecSpace>;
+  using HostCSpan = num::ConstSpanOf<HostExecSpace>;
+
+  const auto lane = [&](std::size_t k) -> double* {
+    if constexpr (kHostExec) {
+      return A.lanes_host[k].data();
+    } else {
+      return A.lanes_device[k].data();
     }
-    return g;
+  };
+
+  // An adjoint array as the kernels of `Space` can reach it: itself when it is in
+  // that memory, else lane `lane_index` holding a copy (`read`) of its `len` values.
+  struct Staged {
+    double* p = nullptr;       // what the kernels use
+    double* host = nullptr;    // the host array to write back to, null when not staged
+    std::size_t len = 0;
+  };
+  const auto stage = [&](ArcId a, std::size_t len, std::size_t lane_index, bool read) -> Staged {
+    double* const ptr = A.bar[a.value()];
+    if constexpr (kHostExec) {
+      (void)lane_index;
+      (void)read;
+      return Staged{ptr, nullptr, len};
+    } else {
+      if (A.bar_device[a.value()] != 0) return Staged{ptr, nullptr, len};
+      double* const l = lane(lane_index);
+      if (read) Kokkos::deep_copy(Span(l, len), HostCSpan(ptr, len));
+      return Staged{l, ptr, len};
+    }
+  };
+  const auto commit = [&](const Staged& s) {
+    if constexpr (!kHostExec) {
+      if (s.host != nullptr) Kokkos::deep_copy(HostSpan(s.host, s.len), CSpan(s.p, s.len));
+    }
+  };
+
+  // g <- adjoint of the output; the adjoint of the output <- 0. g is lane 0.
+  const auto take = [&]() -> const double* {
+    Staged o = stage(ins.out, n, 1, true);
+    num::take<Space>(Span(lane(0), n), Span(o.p, n));
+    commit(o);
+    return lane(0);
   };
   // adjoint of input `a` (`count` values) += f * g
   const auto add_n = [&](ArcId a, const double* g, double f, std::size_t count) {
-    double* b = A.bar[a.value()];
-    for (std::size_t k = 0; k < count; ++k) b[k] += f * g[k];
+    Staged s = stage(a, count, 2, true);
+    num::axpy<Space>(f, CSpan(g, count), Span(s.p, count));
+    commit(s);
   };
   const auto add = [&](ArcId a, const double* g, double f) { add_n(a, g, f, n); };
+
+  const auto done = [&]() -> Result<void> {
+    if constexpr (!kHostExec) Kokkos::fence("fuse::adjoint_instruction");
+    return Result<void>::success();
+  };
 
   switch (ins.kind) {
     case OpKind::Source:
@@ -414,7 +515,7 @@ Result<void> Runner::Impl::reverse_instruction(std::size_t index) {
     case OpKind::Transport: {  // within one process: a copy
       if (!has_io) return Result<void>::success();
       add(ins.in[0], take(), 1.0);
-      return Result<void>::success();
+      return done();
     }
 
     case OpKind::Remap: {
@@ -422,24 +523,36 @@ Result<void> Runner::Impl::reverse_instruction(std::size_t index) {
       const double* g = take();
       if (r.remap < 0) {  // the proved-coincident identity
         add(ins.in[0], g, 1.0);
-        return Result<void>::success();
+        return done();
       }
       const auto ri = static_cast<std::size_t>(r.remap);
       const RemapWeights& w = *remap_weights[ri];
       const auto nc = static_cast<std::size_t>(slots[ins.out.value()].components);
-      double* in_bar = A.scratch_in.data();
-      const Result<void> t = A.remap_operator[ri]->apply_transpose(
-          std::span<const double>(g, w.n_rows * nc), std::span<double>(in_bar, w.n_cols * nc),
-          static_cast<int>(nc));
-      if (!t.ok()) return t;
-      add_n(ins.in[0], in_bar, 1.0, w.n_cols * nc);
-      return Result<void>::success();
+      // W^T g by the transposed matrix, then added to the adjoint of the input (lane 3)
+      num::IndexSpanOf<Space> row_begin;
+      num::IndexSpanOf<Space> col;
+      num::ConstSpanOf<Space> val;
+      if constexpr (kHostExec) {
+        const detail::RemapCsr& csr = A.remap_t[ri];
+        row_begin = num::IndexSpanOf<Space>(csr.row_begin.data(), csr.row_begin.extent(0));
+        col = num::IndexSpanOf<Space>(csr.col.data(), csr.col.extent(0));
+        val = num::ConstSpanOf<Space>(csr.val.data(), csr.val.extent(0));
+      } else {
+        const auto& csr = A.remap_t_device[ri];
+        row_begin = num::IndexSpanOf<Space>(csr.row_begin.data(), csr.row_begin.extent(0));
+        col = num::IndexSpanOf<Space>(csr.col.data(), csr.col.extent(0));
+        val = num::ConstSpanOf<Space>(csr.val.data(), csr.val.extent(0));
+      }
+      num::remap_apply<Space>(row_begin, col, val, CSpan(g, w.n_rows * nc),
+                              Span(lane(3), w.n_cols * nc), nc);
+      add_n(ins.in[0], lane(3), 1.0, w.n_cols * nc);
+      return done();
     }
 
     case OpKind::Scale: {
       if (!has_io) return Result<void>::success();
       add(ins.in[0], take(), ins.attrs.scale.to_double());
-      return Result<void>::success();
+      return done();
     }
 
     case OpKind::Merge: {
@@ -458,7 +571,7 @@ Result<void> Runner::Impl::reverse_instruction(std::size_t index) {
           break;
         }
       }
-      return Result<void>::success();
+      return done();
     }
 
     case OpKind::Sample: {
@@ -467,13 +580,15 @@ Result<void> Runner::Impl::reverse_instruction(std::size_t index) {
       // acc = acc + sample. So the sample receives the adjoint of the
       // accumulator, and the accumulator's own adjoint is dead before the first
       // sample of the window (or before any sample, for Instant).
-      double* acc = A.bar[ins.out.value()];
-      double* in = A.bar[ins.in[0].value()];
-      for (std::size_t k = 0; k < n; ++k) in[k] += acc[k];
+      Staged acc = stage(ins.out, n, 1, true);
+      Staged in = stage(ins.in[0], n, 2, true);
+      num::axpy<Space>(1.0, CSpan(acc.p, n), Span(in.p, n));
       if (r.accum == AccumOp::Instant || A.window_index[index] == 0) {
-        for (std::size_t k = 0; k < n; ++k) acc[k] = 0.0;
+        num::fill<Space>(0.0, Span(acc.p, n));
       }
-      return Result<void>::success();
+      commit(in);
+      commit(acc);
+      return done();
     }
 
     case OpKind::Accumulate: {
@@ -488,7 +603,7 @@ Result<void> Runner::Impl::reverse_instruction(std::size_t index) {
         factor = ins.attrs.scale.to_double();
       }
       add(ins.in[0], take(), factor);
-      return Result<void>::success();
+      return done();
     }
 
     default:
