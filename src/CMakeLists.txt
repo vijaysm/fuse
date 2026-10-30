@@ -245,6 +245,41 @@ set_target_properties(fuse-coupler-num PROPERTIES
   VISIBILITY_INLINES_HIDDEN ON
 )
 
+# ---------------------------------------------------------------- field
+# The lazy field pipeline (field_ref.hpp/pipeline.hpp/extent.hpp, still
+# header-only) plus, as of the S8 Stage B Field semantics track, the one
+# translation unit FieldTransaction needs (field/transaction.hpp ->
+# src/field/transaction.cpp): staged, all-or-nothing field updates over
+# fuse::FieldRef (docs/dev/field-semantics-matrix.md Section 2.2, gap 1,
+# BUILT this round). Depends on fuse::base only (Result/Failure, the
+# Fortran-handle communicator convention) -- `field` is ranked directly
+# above `num` and below `search` in tools/check-layering.py's LAYERS list,
+# and its public headers may name only Kokkos_Core.hpp
+# (ALLOWED_PUBLIC_THIRD_PARTY["field"]), never mpi.h; the one place this
+# library touches MPI is the .cpp below, behind #if FUSE_HAVE_MPI, the same
+# posture src/abi/participant.cpp's reconcile_plugin_agreement() takes for
+# its own collective reconciliation -- see transaction.hpp's own LAYERING
+# comment for why that .cpp is where MPI is allowed to appear even though
+# `field` sits BELOW `transport`, the layer docs/dev/layering.md names as
+# where MPI "enters": linking MPI::MPI_CXX conditionally here, the same way
+# every other MPI-touching layer already does below, is the smallest change
+# that keeps the public-header rule intact without restating MPI access at
+# a higher layer for one function.
+add_library(fuse-coupler-field
+  field/transaction.cpp
+)
+add_library(fuse::field ALIAS fuse-coupler-field)
+target_compile_features(fuse-coupler-field PUBLIC cxx_std_20)
+target_link_libraries(fuse-coupler-field PUBLIC fuse::base)
+if(FUSE_ENABLE_MPI)
+  target_link_libraries(fuse-coupler-field PRIVATE MPI::MPI_CXX)
+endif()
+set_target_properties(fuse-coupler-field PROPERTIES
+  EXPORT_NAME field
+  CXX_VISIBILITY_PRESET hidden
+  VISIBILITY_INLINES_HIDDEN ON
+)
+
 # ---------------------------------------------------------------- transport
 # Moving field values between rank sets. The copy path is always built; the MPI
 # router and the rank-matching graph are compiled only in an MPI build, because

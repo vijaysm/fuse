@@ -1,0 +1,68 @@
+# Mutations for the S8 Stage B Field semantics track's FieldTransaction
+# (include/fuse/field/transaction.hpp, src/field/transaction.cpp). Own file
+# per the review-fix protocol: do not edit build-evidence/mutations.toml
+# directly while other fixers hold it dirty.
+#
+# Applied by tools/mutate.py, rebuilt, run, confirmed to fail EXACTLY the
+# named test, then restored byte-for-byte (the tool's own restore-check).
+
+[[mutation]]
+id = "field-transaction-duplicate-refusal-removed"
+area = "field-transaction"
+describes = "FieldTransaction::stage()'s own ambiguity refusal (a second value for one slot under Replace/Insert) is replaced with `if (false)`, so a duplicate silently overwrites the first value instead of being refused by name -- the exact failure mode karma_field_transaction.h's own UpdateMode contract exists to prevent"
+file = "src/field/transaction.cpp"
+old = """  if (has_staged_[slot]) {
+    return Failure{"E-FIELD-TXN-DUPLICATE",
+                   "FieldTransaction::stage: a second value for one slot is ambiguous under "
+                   "Replace/Insert and is refused rather than resolved by arrival order"};
+  }"""
+new = """  if (false) {  // MUTATION: ambiguity refusal removed
+    return Failure{"E-FIELD-TXN-DUPLICATE",
+                   "FieldTransaction::stage: a second value for one slot is ambiguous under "
+                   "Replace/Insert and is refused rather than resolved by arrival order"};
+  }"""
+target = "fuse_field_transaction_test"
+test = "field.transaction"
+
+[[mutation]]
+id = "field-transaction-accumulation-order-arrival-dependent"
+area = "field-transaction"
+describes = "build_published_values()'s own canonical (magnitude, sign, bit-pattern) tie-break within one slot's contributions is removed, so Accumulate mode sums each slot's values in the order they were STAGED rather than in a value-determined order -- the exact property FieldTransaction.AccumulationIsBitwiseIndependentOfStagingOrder exists to pin. Round 2 (2026-10-29): anchor updated for the renamed comparator (bit_pattern_before -> magnitude_then_sign_then_bits_before, the owner's own accuracy-over-efficiency instruction); the property this mutation breaks is unchanged, since swapping the comparator's keys for raw push order breaks the sort regardless of which keys it sorts by."
+file = "src/field/transaction.cpp"
+old = """    std::sort(slot_values.begin(), slot_values.end(), magnitude_then_sign_then_bits_before);"""
+new = """    // MUTATION: canonical order removed; summed in arrival (push) order instead."""
+target = "fuse_field_transaction_test"
+test = "field.transaction"
+
+[[mutation]]
+id = "field-transaction-rollback-leaks-staged-state"
+area = "field-transaction"
+describes = "rollback()'s own clearing of staged_/has_staged_ is skipped (guarded by `if (false)`), so a rolled-back transaction keeps its staged values and staged_count() still reports them -- the exact failure FieldTransaction.RollbackDiscardsStagedStateWithoutTouchingTheTarget exists to catch"
+file = "src/field/transaction.cpp"
+old = """void FieldTransaction::rollback() noexcept {
+  if (mode_ != UpdateMode::Accumulate) {
+    std::fill(staged_.begin(), staged_.end(), 0.0);
+    std::fill(has_staged_.begin(), has_staged_.end(), false);
+  }
+  contributions_.clear();
+}"""
+new = """void FieldTransaction::rollback() noexcept {
+  if (false) {  // MUTATION: staged/has_staged clearing removed, leaking staged state
+    std::fill(staged_.begin(), staged_.end(), 0.0);
+    std::fill(has_staged_.begin(), has_staged_.end(), false);
+  }
+  contributions_.clear();
+}"""
+target = "fuse_field_transaction_test"
+test = "field.transaction"
+
+[[mutation]]
+id = "field-transaction-collective-agreement-skipped"
+area = "field-transaction"
+describes = "commit_collective()'s own post-Allreduce VALIDATION-agreement check (`if (out.status != 0)`) is replaced with `if (false)`, so a rank whose local validation failed is ignored and every rank proceeds to call its own commit() anyway -- the exact collective failure mode commit_collective()'s own 'agree first, then every rank publishes or none does' contract exists to prevent. Needs a working multi-rank MPI launcher to observe (the sandbox cannot start one, host_pending names the 2- and 3-rank run this row still needs); NOT-ASSESSED on a no-MPI or single-process host, same courtesy every other `requires = \"mpi\"` row in this tree gets. KILLED BY (round 2, 2026-10-29): test/parallel/field_transaction_mpi_test.cpp's FieldTransactionMpi.ValidationDisagreementAgreesTheSameRefusalOnEveryRankAndPublishesNowhere -- under the mutation every rank OTHER than the one deliberately left incomplete would publish (each one's own commit() succeeds locally, since its own staging is valid), which that case's own 'unchanged on every rank' assertion catches directly; run with FUSE_MUTATE_MPI=1 in an MPI-ON tree, per host_pending."
+file = "src/field/transaction.cpp"
+old = """  if (out.status != 0) {"""
+new = """  if (false) {  // MUTATION: collective agreement check skipped"""
+target = "fuse_field_transaction_test"
+test = "field.transaction"
+requires = "mpi"

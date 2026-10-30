@@ -1571,9 +1571,24 @@ fuse_add_gtest(backend remap_apply)
 
 # ---------------------------------------------------------------- field
 # THROWS: the extent refusals are the point of half these cases.
-# field/ is header-only (the pipeline is templates over Kokkos views), so there
-# is no fuse::field library for the helper to derive from the directory name.
+# The pipeline (field_ref.hpp/extent.hpp/pipeline.hpp) stays header-only (it
+# is templates over Kokkos views), so this one row still has no fuse::field
+# library to derive from the directory name -- NO_LAYER_LIB as before.
 fuse_add_gtest(field pipeline THROWS NO_LAYER_LIB LIBS fuse::model fuse::base)
+# S8 Stage B, Field semantics track: FieldTransaction (field/transaction.hpp,
+# src/field/transaction.cpp) is fuse::field's first real translation unit,
+# so this row links the new library like any other layer's own tests do.
+fuse_add_gtest(field transaction LIBS fuse::field)
+# S8 Stage B, Field semantics track, round 2 (the lead's own instruction):
+# the real-communicator twin of the CommitCollectiveWith* cases above --
+# a genuine MPI_Allreduce over MPI_COMM_WORLD, where the tier-0 suite
+# cannot run one. Closes the field-transaction-collective-agreement-
+# skipped mutation row's own NOT-ASSESSED status (needs a working
+# multi-rank MPI launcher this sandbox does not have -- host_pending).
+fuse_tests_gated_by(FUSE_ENABLE_MPI parallel/field_transaction_mpi_test.cpp)
+if(FUSE_ENABLE_MPI)
+  fuse_add_mpi_test(parallel field_transaction_mpi LIBS fuse::field RANKS 2 3)
+endif()
 fuse_add_gtest(num space_kernels)
 fuse_add_omp_legs(num.space_kernels fuse_num_space_kernels_test)
 
