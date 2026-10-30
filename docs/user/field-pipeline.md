@@ -394,9 +394,62 @@ What this does not cover:
   runtime cannot tell them from values, so it will not refuse a minimum or
   maximum accumulation of them. Restart files, iteration-region window members
   and the C ABI's own field description do not know about a gradient yet.
-- **Reverse mode** is not provided. Each coupler operator already has an adjoint
-  (`apply_transpose`, checked by the derivative gate); a schedule that runs the
-  coupling graph backwards is a later stage.
+- **Reverse mode** is a separate mechanism, below: a field with a gradient is
+  forward mode, and reverse mode needs the component to supply its own adjoint.
+
+### Reverse mode (adjoints)
+
+Forward mode carries a gradient with each value. When there are many inputs and
+few outputs, reverse mode is cheaper: it computes `G^T y`, the derivative of a
+scalar of the final state with respect to every input, in one backward sweep.
+FUSE supplies the adjoint of every coupling operator it applies (the transpose of
+a remap, the factor of a unit conversion, the fan-out of a sum or a mean); the
+component supplies the adjoint of its own `advance()` with whatever tool it uses.
+No tape crosses the coupler: only arrays of binary64 adjoint variables move between a
+component and FUSE, which is what lets the same design reach components written in
+other languages and running in other processes (neither is implemented yet).
+
+A component that can be reversed returns itself from `Component::adjoint()` and
+implements `fuse::AdjointComponent` (`fuse/runtime/component.hpp`):
+
+```cpp
+class MyModel : public fuse::Component, public fuse::AdjointComponent {
+  fuse::AdjointComponent* adjoint() override { return this; }
+  // Bind an array of adjoint variables for each field, under the field's FieldId.
+  fuse::Result<void> register_adjoint_fields(fuse::FieldRegistry&, const fuse::CouplingGraph&) override;
+  // The adjoint of advance(ctx), for the same ctx.
+  fuse::Result<void> advance_adjoint(const fuse::StepContext& ctx) override;
+};
+```
+
+The run is a forward sweep followed by a backward one:
+
+```cpp
+runner.initialize(components, registry);
+for (auto& c : components) c.adjoint()->register_adjoint_fields(adjoint_registry, graph);
+runner.initialize_adjoint(components, adjoint_registry);
+runner.run(components, n_periods);              // forward
+// write the adjoint of the final state into the adjoint arrays (the seed)
+for (int i = 0; i < n_periods; ++i) runner.run_period_adjoint(components);   // newest period first
+// the adjoint arrays now hold the adjoint of the initial state
+```
+
+The component's side of the contract, for the adjoint array `Fbar` of a field F: for a
+field it provides, `Fbar` enters `advance_adjoint` holding the adjoint of F as the
+step left it (the coupler has added the adjoint of everything that read F later) and
+must leave holding the adjoint of F before the step; for a field it requires, the
+component adds the adjoint of each value it read and leaves the rest alone (the
+coupler zeroes it when it reverses the delivery). The component keeps the forward
+values its own adjoint needs; FUSE keeps none. The full contract, the rule for each
+operator and the checks are in [](../dev/adjoint-schedule.md).
+
+What is supported today: binary64 fields in host memory, one process, remap, unit
+conversion, sum, mean and integral accumulation, merge by first, sum or mean, and
+lagged channels. Refused by name (`E-ADJ-*`) at `initialize_adjoint`: iteration
+regions, minimum and maximum accumulation, time histories (space-time channels),
+transport between processes, distributed nodal remaps, fields of the dd, qd and
+Storage types, device execution, and the operators with no adjoint (relaxation,
+residual). C, Fortran and Python components have no adjoint entry points yet.
 
 ### Double-double and quad-double
 

@@ -52,7 +52,9 @@ on; [](linalg-krylov.md) is the native PCG and right-preconditioned GMRES(m) bui
 [](schur-slab-solver.md) is the exact distributed direct solver for a row-band-decomposed periodic
 Laplacian, and the one-row-band refusal that taught the rank-agreement lesson above.
 [](derivative-gate.md) is the adjoint-identity, Taylor-remainder and assembled-vs-matrix-free
-checks every derivative-bearing operator passes before a Newton claim may cite it; and
+checks every derivative-bearing operator passes before a Newton claim may cite it;
+[](adjoint-schedule.md) is reverse mode through the coupler, the adjoint of each operator and the
+order of the backward sweep, checked by that same adjoint identity; and
 [](newton-krylov.md) is the residual/linearisation seam, the native Jacobian-free Newton-Krylov
 solver with its SNES counterparts tabulated, and the measured convergence on dn_heat and the
 Brusselator's coupling window.
