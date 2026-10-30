@@ -998,6 +998,11 @@ fuse_add_device_twin(runtime.storage_field_runner fuse_runtime_storage_field_run
 fuse_add_gtest(runtime arithmetic_field_runner)
 fuse_add_device_twin(runtime.arithmetic_field_runner fuse_runtime_arithmetic_field_runner_test)
 
+# Reverse mode through the Runner: the adjoint identity for the composed coupling within
+# the derivative gate's bound, the adjoint of each coupling rule, the sweep order, and every
+# refusal (plans/2026-10-22-universal-number-types.md, U6; docs/dev/adjoint-schedule.md).
+fuse_add_gtest(runtime adjoint_runner)
+
 # KNOWN_ISSUES.md B3: `bool supports_rollback() const override` no longer
 # names a virtual to override, once `Component::capabilities()` is the one
 # virtual. A rule enforced by a REMOVED VIRTUAL, like U6's deleted overload
