@@ -317,6 +317,16 @@ convention from `reconcile_plugin_agreement()`'s own (which keeps the originatin
 message, KNOWN_ISSUES.md D85) -- a deliberate difference for THIS collective, not an inconsistency
 to reconcile with the ABI layer's.
 
+**Superseded 2026-10-30 (owner's rule, KNOWN_ISSUES.md D97):** the uniform status above dropped the
+failing rank's own code from what the other ranks saw. Both phases of `commit_collective()` now run
+through `fuse::agree_outcome()` (`include/fuse/field/collective_agreement.hpp`): after the verdict is
+reduced, the originating rank broadcasts its own `Failure`, and every rank returns the identical
+`Failure` with `code = E-FIELD-TXN-AGREEMENT-REFUSED`, `origin_rank`, `origin_code` (the origin's own
+code, e.g. `E-FIELD-TXN-INCOMPLETE`) and a message that names the rank, the number of refusing ranks
+and the origin's own message verbatim. The ABI's `reconcile_plugin_agreement()` and
+`reconcile_collective_status()` run through the same helper, so there is one convention, not two:
+ranks that refused keep their own record; every other rank gets the origin's.
+
 **Tested red-then-green and mutation-killed.** `test/field/transaction_test.cpp` (16 cases, 14 from
 round 1 plus 2 new this round) mirrors `field_transaction_test.C`'s own cases one-for-one where one
 exists (cited per case in the test file); `test/parallel/field_transaction_mpi_test.cpp` (new this

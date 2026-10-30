@@ -13345,10 +13345,28 @@ discrepancy.
 clean export (tier 0 232/232, tier 1 builds with `parallel.field_transaction_mpi.{2,3}` registered, all gates, docs;
 field-transaction mutation area 3 of 4 killed at tier 0). HOST-PENDING: the two MPI rows and the MPI-gated row
 `field-transaction-collective-agreement-skipped` have never run on any machine; `hostrun/run-30oct-ft.sh` runs them
-(results in `hostrun/out11`). Two lead notes on round 2: (1) `commit_collective()` now returns the identical
+(results in `hostrun/out11`). Two lead notes on round 2: (1) `commit_collective()` returned the identical
 `E-FIELD-TXN-AGREEMENT-REFUSED` on every rank including the failing one, so the failing rank's own local code
-(`E-FIELD-TXN-INCOMPLETE`, `E-FIELD-TXN-DUPLICATE`) is no longer in any return value; the message names the rank, and
-the local code is recoverable only by calling `validate_local()` on that rank. This is a second collective-status
-convention beside `reconcile_plugin_agreement()`'s (D85); whether to unify them is open. (2) The magnitude-first
+was no longer in any return value -- FIXED the same day, see the D97 provenance record below. (2) The magnitude-first
 order sorts non-finite values never: staging refuses them (`E-FIELD-TXN-NONFINITE`) before the sort, which is what
 makes the comparator a strict weak ordering in practice.
+
+**D97 provenance rule and fix (owner 2026-10-30: "we always want to know the original error and which rank it
+originated from"; lead, same day):** every collective agreement in the tree carried a 0/1 verdict (or a numeric
+status) and a rank, never the origin's own code and message, so a non-originating rank could say WHO refused but
+not WHY. One helper, `fuse::agree_outcome()` (`include/fuse/field/collective_agreement.hpp`,
+`src/field/collective_agreement.cpp`), now does the agreement for `FieldTransaction::commit_collective()` (both
+phases), `reconcile_plugin_agreement()` and `reconcile_collective_status()` (src/abi/participant.cpp): MAXLOC over
+{refused, rank}, SUM for the count, then the origin broadcasts a three-int header (code length, message length,
+numeric status) and the bytes. `Failure` gained `origin_rank`, `origin_code` and `origin_status` (defaulted, so
+`Failure{code, message}` is unchanged). Every rank returns the agreed code with a message of the form
+"<phase>: rank R of N refused (K refusing rank(s); the lowest-numbered is reported) with <origin code>: <origin
+message>"; in the ABI, ranks that themselves refused keep their own record (an original), the others get the
+origin's numeric status and this message. The reported origin is the LOWEST-numbered refusing rank: MPI_MAXLOC
+breaks a tie in the value on the smallest index (MPI 4.1, 6.9.4); the first draft said "highest" and a reviewer
+caught it against the standard before anything ran. `fuse-coupler-field` joins the install set (the ABI links it;
+it had been left out when created). Tier-0 rows: `field.collective_agreement` pins the message and the packing;
+the four field-transaction mutation rows plus three new ones (origin code not carried, origin rank omitted, origin
+status not carried) and the re-anchored `participant-plugin-agreement-minloc-to-maxloc-mpi`. HOST-PENDING: the
+MPI rows (`parallel.field_transaction_mpi.{2,3}`, `parallel.provider_subset_mpi.2`, `parallel.abi_reconcile_mpi.2`)
+and the MPI-gated mutation rows have not run since this change; `hostrun/run-30oct-ft.sh` now covers them.

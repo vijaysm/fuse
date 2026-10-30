@@ -269,9 +269,12 @@ that rank's `count`; a rank whose share is empty gets no `bind()` call for the f
 
 A refusal from the plugin (`E-ABI-LOAD`, `E-ABI-VERSION`, `E-ABI-DESCRIBE`, or a device gate) is
 seen first by a hosting rank alone, but `initialize()` agrees it across every rank of the base
-communicator before any rank returns, with one `MPI_Allreduce(MPI_MINLOC)` per `initialize()` call,
-and only when the graph declares a plugin component. Every rank then returns the same code, and a
-non-originating rank's message names the rank that refused (`E-ABI-PLUGIN-AGREEMENT-REFUSED`). See
+communicator before any rank returns, only when the graph declares a plugin component. Every rank
+then returns the same numeric status, the refusing rank's own; a rank that itself refused keeps its own
+error record, and every other rank's record is `E-ABI-PLUGIN-AGREEMENT-REFUSED` with a message that
+names the refusing rank, how many ranks refused, and that rank's own error code and message verbatim
+(the origin's refusal is broadcast after the agreement, so the original error is never known on one
+rank only). See
 [A known failure case](#a-known-failure-case) for the one launch shape this agreement cannot be
 formed for.
 
@@ -497,7 +500,7 @@ See [](build.md) for enabling the Fortran bindings.
 | `E-ABI-PROVIDER-EXCEPTION` | a `std::exception` was caught around a plugin call |
 | `E-ABI-REGISTRY-NULL` / `-DUPLICATE` / `-INSTALL` / `-NOTFOUND` | the mount table was given a null table, a second provider under a name already in use, failed to install a mounted provider, or was asked for a name nothing is mounted under |
 | `E-LAUNCH-PLUGIN-PATH` | a `plugin`-launched component declares an empty `plugin_path` |
-| `E-ABI-PLUGIN-AGREEMENT-REFUSED` | a different rank's plugin-mount refusal was agreed across the base communicator; the message names which rank and which status |
+| `E-ABI-PLUGIN-AGREEMENT-REFUSED` | a different rank's plugin-mount refusal was agreed across the base communicator; the message names which rank, how many ranks refused, and that rank's own error code and message verbatim |
 | `E-ABI-PLUGIN-NO-SPANNING-COMM` | a plugin component and a `connect`-launched one share a graph, and this process's own `my_component` does not itself connect; see below |
 
 ## A known failure case
