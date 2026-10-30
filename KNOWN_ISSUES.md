@@ -13269,3 +13269,86 @@ SAME region with no flag, a plain Copy the rule refuses; the coupler branch the 
 `--driver runner` mode was affected. `u2v` now declares `.conservative()` unconditionally (an
 identity on one region); the reference YAML files are byte-identical because the coupler branch
 ORs the same flag. Tier-0 `ctest -LE slow`: 231/231, from 229/231 at the base commit.
+
+### D95. No component registry, named-contract selection, or compliance harness exists anywhere in FUSE -- OPEN, S8 Field semantics track, Stage B (2026-10-28), DEFERRED by owner decision
+
+**What is missing.** `fuse::Component` (`include/fuse/runtime/component.hpp:265`) is a single
+abstract base with no implementation-id namespace, no selection among several registered
+implementations of one named contract, no ambiguous-selection refusal, and no independent
+compliance harness that cross-checks a running component's behaviour against what it claims
+(`docs/dev/field-semantics-matrix.md` Section 2.6, gap 8's own finding against
+`karma_reference_components.h`). MEASURED: `grep -rln "ComponentRegistry\|SelectionRequest\|SelectionPolicy\|check_component_compliance\|ComplianceFixture" include/fuse src/`
+returns zero hits. This sharpens, rather than answers, `docs/dev/physics-kit-disposition.md`'s own
+open question 6 about `karma_registry.h` (`ComponentRegistry`/`SelectionPolicy`/`RegistryReason`):
+that header is not one of the Field semantics track's eight, but `karma_reference_components.h`'s
+own semantics depend on exactly the same missing mechanism, so the two open questions are now
+known to be the same mechanism, not two independent gaps.
+
+**Smallest addition** (`docs/dev/field-semantics-matrix.md` Section 4, item 7): none proposed --
+building a registry is a design decision (ambiguity-refusal policy, priority semantics) the owner
+should make once, covering both open questions, not twice.
+
+**What would force this.** The FIRST physics-kit component that needs more than one registered
+implementation of one named contract (the reference-component pattern
+`karma_reference_components.h` itself demonstrates: two implementations of
+`karma.contract.scalar-decay`, registered on purpose so a selection test can prove ambiguity is
+refused rather than resolved silently) -- no current FUSE component is multiply-implemented, so
+nothing in the tree today exercises the absence. D-C's own rule ("a KARMA test retires only if a
+named fuse test covers the behaviour") means every KARMA registry/compliance test
+(`component_compliance_test.C`'s full suite) stays un-retired until this lands.
+
+### D96. No stable, cross-rank field-entry identity exists below a single per-dimension mesh global id -- OPEN, S8 Field semantics track, Stage B (2026-10-28), DEFERRED by owner decision
+
+**What is missing.** `karma_field_identity.h`'s `FieldEntryKey`/`DofKey` (a closed variant over a
+MOAB-global-id identity and a DOF-basis identity, with a canonical fixed-width byte encoding and
+an FNV-1a hash, `karma_field_entry_encoding.h`) has no FUSE counterpart
+(`docs/dev/field-semantics-matrix.md` Section 2.1, gaps 2 and 3). FUSE's field identity is a dense
+positional index (`fuse::FieldRef`/`Layout`) plus, at the mesh layer, one `global_id(dim, index)`
+per entity dimension (`src/backend/transfer_map_io.cpp:112-113`) -- sufficient to name a mesh
+entity, insufficient to name a continuous-Galerkin degree of freedom shared by two elements, which
+has no single owning mesh entity at all. MEASURED: `grep -rln "FieldEntryKey\|DofKey" include/fuse src/`
+returns zero hits.
+
+**Smallest addition** (`docs/dev/field-semantics-matrix.md` Section 4, item 5): a closed variant
+type in `fuse/model` (or `fuse/field`) naming a mesh-global identity vs a DOF-basis identity, with
+a canonical fixed-width encode/decode pair and an FNV-1a hash, under FUSE's own `Result`-based
+error discipline -- NOT a transplant of `karma_field_identity.h`'s own type, which this page's own
+Section 1 verdict table (row 3) already named as needing a DOF identity scheme FUSE does not yet
+have at all, for fields that do not yet exist either.
+
+**What would force this.** The first higher-order continuous-Galerkin field
+(`fuse::Discretization::ContinuousGLL` with `order > 1`, already declarable in both SOMA's and
+FUSE's own `FieldSpec`, graph/field_spec.hpp and model/field_spec.hpp) whose coupling needs a DOF
+shared by two elements to carry one canonical, cross-rank-stable identity -- the ordinary
+mesh-entity `global_id()` FUSE already has cannot name that DOF, because it does not correspond to
+any single mesh entity. Also forces gap 1's own `FieldTransaction::stage_by_key()` counterpart
+(`docs/dev/field-semantics-matrix.md` Section 4, item 6 names the dependency): a stable key is
+what a setup-time `stage_by_key()` would resolve to a dense index, and `transaction.hpp` built
+this round (S8 Stage B) deliberately has NO such method, staging only by dense `(entry,
+component)` position, for exactly this reason.
+
+### D97. FUSE's `Constrain` conservation-check floor differs from KARMA's own zero-reference convention -- DECIDED 2026-10-28, kept as documented (S8 Field semantics track, Stage B, decision (c))
+
+`docs/dev/field-semantics-matrix.md` Section 2.5 (row 1) found, by reading both, that KARMA's
+`relative_integral_error` (`karma_transfer_diagnostics.C:12-18`) returns `+infinity` when the
+reference integral is zero and the measured value is nonzero, while FUSE's `Constrain` operator
+(`src/runtime/runner.cpp`) floors the scale to `1.0` in the same situation, returning a FINITE
+number instead -- a verified numerical difference, not an oversight. **Owner decision 2026-10-28:**
+FUSE's existing finite floor stays exactly as it is. The floor avoids propagating an infinity into
+`stats.worst_conservation_error` (a diagnostic a caller may read and compare across periods, where
+an infinity would poison every subsequent comparison), which KARMA's own `TransferIntegralReport`
+has no equivalent running-statistic consumer for. No code changed by this decision; it is recorded
+here so a future reader comparing the two conventions finds a decision, not an unexplained
+discrepancy.
+
+**Landing of the field transaction (lead, 2026-10-30, `main` after `39f7bab`):** rounds 1 and 2 landed together from a
+clean export (tier 0 232/232, tier 1 builds with `parallel.field_transaction_mpi.{2,3}` registered, all gates, docs;
+field-transaction mutation area 3 of 4 killed at tier 0). HOST-PENDING: the two MPI rows and the MPI-gated row
+`field-transaction-collective-agreement-skipped` have never run on any machine; `hostrun/run-30oct-ft.sh` runs them
+(results in `hostrun/out11`). Two lead notes on round 2: (1) `commit_collective()` now returns the identical
+`E-FIELD-TXN-AGREEMENT-REFUSED` on every rank including the failing one, so the failing rank's own local code
+(`E-FIELD-TXN-INCOMPLETE`, `E-FIELD-TXN-DUPLICATE`) is no longer in any return value; the message names the rank, and
+the local code is recoverable only by calling `validate_local()` on that rank. This is a second collective-status
+convention beside `reconcile_plugin_agreement()`'s (D85); whether to unify them is open. (2) The magnitude-first
+order sorts non-finite values never: staging refuses them (`E-FIELD-TXN-NONFINITE`) before the sort, which is what
+makes the comparator a strict weak ordering in practice.
