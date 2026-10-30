@@ -724,6 +724,11 @@ struct AdjointState {
   std::vector<std::vector<double>>                              lanes_host;
   std::vector<Kokkos::View<double*, AdjointDeviceMemSpace>>     lanes_device;
 
+  /// Host scratch for the reverse of a Transport between processes, whose exchange runs on
+  /// host buffers: the adjoint of the destination arc, when that is in device memory, and the
+  /// adjoint the exchange hands back to the source arc. Sized once, to the largest such arc.
+  std::vector<double> transport_out, transport_in;
+
   /// The reverse sweep: `open` once the first `run_period_adjoint()` call has
   /// fixed the number of forward periods it reverses (`forward_periods`, the
   /// value of `Impl::period_index` then); `next` is the period the next call

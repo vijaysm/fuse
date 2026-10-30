@@ -117,6 +117,7 @@ Result<void> Runner::Impl::init_adjoint(ComponentSet& components,
   }
 
   // 2. Every instruction in the stream has an adjoint.
+  std::size_t transport_in_max = 0, transport_out_max = 0;
   for (std::size_t i = 0; i < stream.size(); ++i) {
     const Instruction& ins = stream[i];
     const Resolved& r = resolved[i];
@@ -166,14 +167,26 @@ Result<void> Runner::Impl::init_adjoint(ComponentSet& components,
                             "exchange is not implemented");
         }
         break;
-      case OpKind::Transport:
-        if (r.transport < 0 || transport_plans[static_cast<std::size_t>(r.transport)].has_graph) {
+      case OpKind::Transport: {
+        if (ins.n_in == 0 || !ins.out.valid()) break;
+        if (r.transport < 0) {
           return refuse("E-ADJ-TRANSPORT",
-                        "instruction " + std::to_string(i) +
-                            " moves data between processes; the adjoint of an MPI "
-                            "exchange is not implemented");
+                        "instruction " + std::to_string(i) + " is a Transport that resolved to no plan");
         }
+        const auto pi = static_cast<std::size_t>(r.transport);
+        if (!transport_plans[pi].has_graph) break;  // within one process: a copy
+        // Between processes: the exchange run backwards, by the backend that ran it forward.
+        const Transport* const tp = pi < graph_transports.size() ? graph_transports[pi].get() : nullptr;
+        if (tp == nullptr || !tp->has_adjoint()) {
+          return refuse("E-ADJ-TRANSPORT",
+                        "instruction " + std::to_string(i) + " moves data between processes through the '" +
+                            (tp != nullptr ? tp->name() : std::string{"(none)"}) +
+                            "' transport, which has no adjoint (Transport::move_adjoint)");
+        }
+        transport_in_max = std::max(transport_in_max, slots[ins.in[0].value()].total());
+        transport_out_max = std::max(transport_out_max, slots[ins.out.value()].total());
         break;
+      }
       default:
         return refuse("E-ADJ-OP", std::string{"instruction "} + std::to_string(i) +
                                       " is a '" + to_cstring(ins.kind) +
@@ -260,13 +273,16 @@ Result<void> Runner::Impl::init_adjoint(ComponentSet& components,
                         std::to_string(s.elements) + "x" + std::to_string(s.components) +
                         " values, the layout of the field itself");
     }
-    if (view.data() == s.data) {
+    // (A rank that holds none of a field has no array: two null pointers are not an alias.)
+    if (s.total() != 0 && view.data() == s.data) {
       return refuse("E-ADJ-ALIAS", "the adjoint array of field '" + b.label +
                                        "' is the field's own array");
     }
     st->bar[i] = view.data();
     st->bar_device[i] = s.device ? 1 : 0;
   }
+  st->transport_in.assign(transport_in_max, 0.0);
+  st->transport_out.assign(transport_out_max, 0.0);
   // Scratch lanes in the memory of the execution space.
   const std::size_t lane_size = std::max<std::size_t>(largest, 1);
   if (device_exec) {
@@ -381,13 +397,26 @@ Result<void> Runner::Impl::sweep_adjoint_period(ComponentSet& components) {
   }
   const std::int64_t p = A.next;
 
+  // A failure on one rank is carried to the end of the sweep, as `step_period` carries one: the
+  // rank goes on executing the collective instructions (an exchange, an agreement point), so
+  // that the ranks it exchanges with are not left waiting for it, and skips the rest, which is
+  // local arithmetic on a sweep being abandoned. The failing rank reports its own cause at the
+  // end. Without a communicator this is a sweep that stops doing work at its first failure.
+  const std::vector<Instruction>& stream = plan.instructions();
+  step_failure.reset();
   for (std::size_t e = A.events.size(); e-- > 0;) {
     const AdjointState::Event& ev = A.events[e];
     if (!ev.is_tick) {
+      if (step_failure.has_value() && !is_collective(stream[ev.index].kind)) continue;
       const Result<void> r = reverse_instruction(ev.index);
-      if (!r.ok()) return r;
+      if (!r.ok()) {
+        if (!step_failure.has_value()) step_failure = r.error();
+        // An Epoch that fails has already reconciled: nothing is left to tell the partners.
+        if (stream[ev.index].kind == OpKind::Epoch) break;
+      }
       continue;
     }
+    if (step_failure.has_value()) continue;
     const Tick& tick = ticks[ev.index];
     StepContext ctx;  // the context the forward step had (Impl::advance)
     ctx.t_begin = Rational{p} * plan.period() + tick.time;
@@ -396,23 +425,31 @@ Result<void> Runner::Impl::sweep_adjoint_period(ComponentSet& components) {
     ctx.iteration = 0;
     Component& comp = components.at(tick.slot);
     if (!ctx.valid()) {
-      return refuse("E-RT-STEP", "step context [" + ctx.t_begin.to_string() + ", " +
-                                     ctx.t_end.to_string() + ") for component '" +
-                                     comp.name() + "' is not valid");
+      step_failure = Failure{"E-RT-STEP", "step context [" + ctx.t_begin.to_string() + ", " +
+                                              ctx.t_end.to_string() + ") for component '" +
+                                              comp.name() + "' is not valid"};
+      continue;
     }
     AdjointComponent* adj = comp.adjoint();
     if (adj == nullptr) {
-      return refuse("E-ADJ-COMPONENT", "component '" + comp.name() +
-                                           "' no longer has an adjoint");
+      step_failure = Failure{"E-ADJ-COMPONENT", "component '" + comp.name() +
+                                                    "' no longer has an adjoint"};
+      continue;
     }
     // The kernels of the instructions reversed so far must have finished before the
     // component reads or writes the adjoint arrays; the component's own kernels must
     // have finished when it returns (Component's threading contract).
     Kokkos::fence("fuse::adjoint_before_component");
     const Result<void> r = adj->advance_adjoint(ctx);
-    if (!r.ok()) return r;
+    if (!r.ok()) step_failure = r.error();
   }
   Kokkos::fence("fuse::adjoint_sweep");
+  if (step_failure.has_value()) {
+    // A period that failed did not happen: the next call reverses it again.
+    const Failure f = *step_failure;
+    step_failure.reset();
+    return f;
+  }
   --A.next;
   return Result<void>::success();
 }
@@ -509,12 +546,107 @@ Result<void> Runner::Impl::reverse_on(std::size_t index) {
     case OpKind::Sink:
     case OpKind::Extrapolate:  // order 0: a copy
     case OpKind::Interpolate:  // without a time history: a copy
-    case OpKind::Epoch:        // agreement, then a copy
     case OpKind::Constrain:    // reports the conservation defect, copies
-    case OpKind::Diagnose:     // checks for non-finite values, copies
-    case OpKind::Transport: {  // within one process: a copy
+    case OpKind::Diagnose: {   // checks for non-finite values, copies
       if (!has_io) return Result<void>::success();
       add(ins.in[0], take(), 1.0);
+      return done();
+    }
+
+    case OpKind::Epoch: {
+      // The agreement of the forward run, then the copy reversed: a rank whose partners have
+      // failed does not pass on an adjoint derived from an exchange that did not complete.
+      const Result<void> agreed = reconcile_epoch(ins);
+      if (!agreed.ok()) return agreed;
+      if (!has_io) return Result<void>::success();
+      add(ins.in[0], take(), 1.0);
+      return done();
+    }
+
+    case OpKind::Transport: {
+      if (!has_io) return Result<void>::success();
+      detail::TransportPlan& p = transport_plans[static_cast<std::size_t>(r.transport)];
+      if (!p.has_graph) {  // within one process: a copy
+        add(ins.in[0], take(), 1.0);
+        return done();
+      }
+      // Between processes. The forward run copied the entries it wrote from the source arc
+      // (the same-rank matches directly, the rest through the exchange of `Transport::move`)
+      // and left the other entries of the destination arc alone. Reversed: the adjoint of
+      // each entry written is taken from the destination arc, which is set to zero there, and
+      // added to the source entry it came from; the exchange itself runs backwards
+      // (`Transport::move_adjoint`), on host buffers, as the forward exchange does.
+      Transport* const tp = graph_transports[static_cast<std::size_t>(r.transport)].get();
+      if (tp == nullptr) {
+        return refuse("E-ADJ-TRANSPORT", "instruction " + std::to_string(index) +
+                                             " has no transport instance");
+      }
+      const std::size_t n_in = slots[ins.in[0].value()].total();
+      const std::size_t n_out = slots[ins.out.value()].total();
+      const std::size_t out_arc = ins.out.value();
+      const std::size_t nc = static_cast<std::size_t>(p.spec.components < 1 ? 1 : p.spec.components);
+
+      // the adjoint of the destination arc, as a host array
+      double* hout = A.bar[out_arc];
+      const bool out_in_device_memory = A.bar_device[out_arc] != 0;
+      if (out_in_device_memory) {
+        hout = A.transport_out.data();
+        Kokkos::deep_copy(HostSpan(hout, n_out), CSpan(A.bar[out_arc], n_out));
+      }
+      double* const hin = A.transport_in.data();
+      std::fill(hin, hin + n_in, 0.0);
+
+      Result<void> result = Result<void>::success();
+      if (p.from_peers) {
+        // A peer plan addresses both buffers by local entity index: the entries written are
+        // `peer_written`, and the adjoint of the whole source block comes back.
+        std::fill(p.recv.begin(), p.recv.begin() + static_cast<std::ptrdiff_t>(p.total()), 0.0);
+        for (const std::size_t d2 : p.peer_written) {
+          for (std::size_t c = 0; c < nc; ++c) {
+            p.recv[d2 * nc + c] = hout[d2 * nc + c];
+            hout[d2 * nc + c] = 0.0;
+          }
+        }
+        result = tp->prepare(p.spec);
+        if (result.ok()) result = tp->move_adjoint(p.recv.data(), p.send.data(), p.total());
+        if (result.ok()) {
+          for (std::size_t k = 0; k < p.peer_src_total; ++k) hin[k] += p.send[k];
+        }
+      } else {
+        // The matched plan, backwards: scatter -> exchange -> gather, then the local matches.
+        for (std::size_t k = 0; k < p.scatter.size(); ++k) {
+          const std::size_t d2 = p.scatter[k] * nc;
+          for (std::size_t c = 0; c < nc; ++c) {
+            p.recv[k * nc + c] = hout[d2 + c];
+            hout[d2 + c] = 0.0;
+          }
+        }
+        result = tp->prepare(p.spec);
+        if (result.ok()) result = tp->move_adjoint(p.recv.data(), p.send.data(), p.total());
+        if (result.ok()) {
+          for (std::size_t k = 0; k < p.gather.size(); ++k) {
+            const std::size_t s = p.gather[k] * nc;
+            for (std::size_t c = 0; c < nc; ++c) hin[s + c] += p.send[k * nc + c];
+          }
+        }
+        for (std::size_t k = 0; k < p.local_src.size(); ++k) {
+          const std::size_t s = p.local_src[k] * nc;
+          const std::size_t d2 = p.local_dst[k] * nc;
+          for (std::size_t c = 0; c < nc; ++c) {
+            hin[s + c] += hout[d2 + c];
+            hout[d2 + c] = 0.0;
+          }
+        }
+      }
+      if (out_in_device_memory) Kokkos::deep_copy(Span(A.bar[out_arc], n_out), HostCSpan(hout, n_out));
+      if (!result.ok()) return result;
+      // add the adjoint of the source to the arc's adjoint array
+      const double* g = hin;
+      if constexpr (!kHostExec) {
+        Kokkos::deep_copy(Span(lane(3), n_in), HostCSpan(hin, n_in));
+        g = lane(3);
+      }
+      add_n(ins.in[0], g, 1.0, n_in);
       return done();
     }
 
