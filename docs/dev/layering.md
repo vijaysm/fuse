@@ -77,7 +77,9 @@ behind one directory and one build option each.
 "MPI enters at `transport`," above, names where the ROUTING of field values between ranks lives; it
 has never meant that no `.cpp` below `transport` may call an MPI function at all. Two translation
 units do, both deliberately, both PRIVATE to the layer whose own invariant the call protects, and
-neither reachable from a public header: `src/abi/participant.cpp`'s `reconcile_plugin_agreement()`
+neither reachable from a public header (since 2026-10-30 both run through one helper,
+`src/field/collective_agreement.cpp`, which is now the translation unit of `field` that calls MPI;
+`src/field/transaction.cpp` no longer names it): `src/abi/participant.cpp`'s `reconcile_plugin_agreement()`
 (an `MPI_Allreduce(MPI_MINLOC)` agreeing a plugin-mount verdict across the base communicator, `abi`
 sitting at the TOP of the stack) and `src/field/transaction.cpp`'s `FieldTransaction::
 commit_collective()` (an `MPI_Allreduce(MPI_MAXLOC)` agreeing a staged-commit verdict, `field`
