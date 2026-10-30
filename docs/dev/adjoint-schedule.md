@@ -14,9 +14,11 @@ Sink, ...). The reverse sweep visits the same events in the opposite order.
 
 - **A coupling instruction** is linear in the field values, with weights fixed at setup (remap
   matrices, scale factors, sample counts). Its adjoint is the transpose, `xbar += A^T ybar`, and
-  needs no value from the forward run. The remap uses `LinearOperator::apply_transpose` of
-  `WeightsOperator`, the transpose the derivative gate verifies ([](derivative-gate.md)); every
-  other rule is a copy, a scalar multiple or a fan-out (section 3).
+  needs no value from the forward run. The remap applies the transposed weights as a CSR matrix
+  built at `initialize_adjoint()` with the construction and the summation order of the forward
+  run's own matrix, so each entry is the sum `WeightsOperator::apply_transpose` makes, the
+  transpose the derivative gate verifies ([](derivative-gate.md)); every other rule is a copy, a
+  scalar multiple or a fan-out (section 3).
 - **A component step** is reversed by the component: `AdjointComponent::advance_adjoint(ctx)`
   (`fuse/runtime/component.hpp`), reached through `Component::adjoint()`, with the `StepContext` the
   forward step had. The component brings whatever differentiation it likes (a hand-derived
@@ -71,7 +73,7 @@ because the output was dead before the write; then `g` is added to the adjoint o
 |---|---|---|
 | Source | the arc is the provider's own array | nothing: readers added to the provider's adjoint array |
 | Sink, Epoch, Transport (one process), Constrain, Diagnose, Interpolate (no time history), Extrapolate (order 0) | `out = in` | `in_bar += g` |
-| Remap | `out = W in` (identity when the regions coincide) | `in_bar += W^T g` (`apply_transpose`) |
+| Remap | `out = W in` (identity when the regions coincide) | `in_bar += W^T g`, a gather over the transposed matrix |
 | Scale | `out = f in` | `in_bar += f g` |
 | Merge first | `out = in_0` | `in_0_bar += g` |
 | Merge sum | `out = sum in_k` | `in_k_bar += g` for every k |
@@ -84,6 +86,25 @@ same numbers and takes them from a replay of the period's event order (`AdjointS
 which is possible because the stream is static. A window that is still open at the end of the
 period would make the counts depend on the previous period; that is refused (`E-ADJ-WINDOW`),
 though no configuration reaching it has been found.
+
+**Execution space.** The rules run as kernels on the execution space the forward run uses
+(`RunnerConfig::execution_space`): the host space, or the device space of a build with a CUDA, HIP
+or SYCL backend. The adjoint array of an arc is in the memory of the arc itself: the arcs the
+coupler owns get an array in device memory when the forward run keeps the arc there, and a field
+a component registers gets the memory its own adjoint array is registered in, which must be the
+space the field is in (`E-ADJ-SPACE` otherwise). A field in host memory reversed on the device is
+staged through a scratch array on the device: read in when the rule reads it, written back when
+the rule changes it, as the forward interpreter stages the arcs it keeps on the host. Every rule
+except the remap is one of three loops over an adjoint array, in `fuse/num/adjoint_kernels.hpp`
+(add a multiple of one array to another, take an array and set it to zero, fill); each is a named
+functor, whose element results do not depend on how the range is split, and the multiply and add
+of the first are not fused (`unfused_multiply_add`), so the host and the device round the same
+way. The transpose of a remap is `remap_apply` over the transposed CSR matrix, a gather per
+output row and therefore without atomic additions, and the order of the sum in each row is the
+order of the triplets, as on the host. Each instruction ends in a fence on the device, and a
+fence precedes every call to `advance_adjoint` and ends the sweep, so a component, whose own
+kernels must have finished when it returns, sees complete adjoint arrays and the next instruction
+sees its result.
 
 **Order.** The sweep reproduces the merged walk of `Runner::Impl::step_period()` -- ticks before the
 instructions stamped later, `AfterTicks` instructions after the ticks at their own time -- by
@@ -111,7 +132,7 @@ codes), so a graph that asks for more is stopped before anything is differentiat
 | `E-ADJ-TRANSPORT` | a Transport between processes (the adjoint of an MPI exchange) |
 | `E-ADJ-NODAL-DIST` | a distributed nodal Remap |
 | `E-ADJ-FIELD-TYPE` | a field of an Arithmetic (dd, qd) or Storage (binary32, bfloat16, binary16, posit) value type |
-| `E-ADJ-SPACE` | device execution, or an adjoint array in device memory (a field in device memory is refused by `initialize()` itself under host execution, `E-RT-SPACE`) |
+| `E-ADJ-SPACE` | an adjoint array in a different memory space than its field (a field in device memory is refused by `initialize()` itself under host execution, `E-RT-SPACE`) |
 | `E-ADJ-OP` | an instruction with no adjoint (Relax, Residual, ExternalDelivery, Accelerate, WindowAdvance, ...) or an Extrapolate above order 0 (the forward run applies order 0 whatever order is asked; an adjoint written for that would go wrong silently when it does not) |
 | `E-ADJ-WINDOW` | an accumulation window open at the end of a period |
 
@@ -158,6 +179,17 @@ against `c = 50`, the same order as the 0.235 the gate measured for its own oper
 `AWrongComponentAdjointIsDetected` is the control: the loop with a component whose adjoint leaves
 out the factor of its state fails the same gate by more than 100 times `c`.
 
+**On the device.** The test binary is registered a second time as `runtime.adjoint_runner.device`
+(`FUSE_EXECUTION_SPACE=device`) in a build with a device backend, so every test above also runs
+with the sweep as device kernels: the fields the test components register are in host memory and
+are staged. On higgs (CUDA 12.5, sm_61) the worst ratio is the same 0.351. Four tests exist only
+in such a build (`RuntimeAdjointDevice.*`): the identity for the same sixteen cases with the
+fields and the adjoint arrays of the components in device memory, with the components' own steps
+and adjoints as kernels (worst ratio 0.480); the adjoint of each case under the host and under the
+device execution space for the same seed, which agrees to 2.2e-16 of the largest entry at worst
+(the test allows 4 eps); and the two refusals of an adjoint array in the other memory space than
+its field.
+
 **The rule of each instruction, by exact value.** A mean of four samples gives each sample exactly
 1/4 of the adjoint, a mean of eight 1/8, an integral over eight samples at `dt = 1/4` gives 1/4
 (not 1/8: this separates the two), a sum gives each the whole, a unit conversion multiplies by
@@ -170,19 +202,24 @@ recovered from the forward run (a unit vector in, a column out).
 not known to exist.
 
 **Mutation coverage.** `build-evidence/mutations/runtime-adjoint.toml`, area `runtime_adjoint`:
-41 rows, all against `src/runtime/runner_adjoint.cpp`: the transpose and the accumulation of
-an adjoint (remap, add, take), the rule of each reduction (sample, accumulate, merge, scale), the
-window bookkeeping, the order of the sweep and the step contexts, each copy-type instruction, and each
-refusal. On the Mac tier-0 build 40 are killed and one, `refusal-device-execution-removed`, is marked
-`requires = "device"` and reported NOT-ASSESSED: the test that catches it, `RefusesDeviceExecution`,
-is compiled only against a device backend.
+51 rows, against `src/runtime/runner_adjoint.cpp` and `include/fuse/num/adjoint_kernels.hpp`: the
+transposed matrix of a remap and the accumulation and the take of an adjoint (the three kernels),
+the rule of each reduction (sample, accumulate, merge, scale), the window bookkeeping, the order of
+the sweep and the step contexts, each copy-type instruction, each refusal, and the device path
+(the memory an arc's adjoint array is in, the dispatch to the device space, the staging of a host
+operand in and out, the mirror of the transposed matrix). Six rows exist only for the device path
+and are marked `requires = "device"`: the tests that kill them are compiled only against a device
+backend, and the Mac tier-0 build reports them NOT-ASSESSED; the other 45 are killed on the Mac.
 
-Two candidate rows were dropped as equivalent mutants, not as tested. Replacing the accumulation of
+Three candidate rows were dropped as equivalent mutants, not as tested. Replacing the accumulation of
 a remap's input adjoint by an assignment changes nothing, because each arc is read by one
 instruction and the instruction that wrote it was reversed first and took its adjoint, so the array
 is zero when the remap is reversed. The instantaneous branch of the Sample rule is reached only by
 a hand-built plan: lowering emits no Sample for an instantaneous channel. That branch mirrors the
-forward kernel and has no test.
+forward kernel and has no test. Removing the fence that ends each instruction on the device
+changes nothing the sweep can observe: Kokkos runs the kernels and the copies of one execution
+space in order, and the fence before each `advance_adjoint` call, which is kept, is the one a
+component depends on.
 
 ## 6. Not done
 
@@ -190,8 +227,6 @@ forward kernel and has no test.
   exchanged (the CommGraph reversed); a distributed nodal Remap needs `apply_distributed_HT` in
   the roles of `H` and `H^T`; `Epoch` carries a collective agreement that the reverse sweep skips
   (it is a copy here, single process).
-- **Device.** The rules are written for host memory. On a device the reverse of a remap is a
-  scatter, which needs atomic adds or the transposed CSR built at setup.
 - **Iteration regions and time windows.** Reverse mode through a fixed-point iteration is implicit
   differentiation (a linear solve with the transposed interface Jacobian, for which the
   `ImplicitComponent` linearization already offers `apply_jacobian_transpose`) or the unrolled

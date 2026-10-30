@@ -443,13 +443,15 @@ coupler zeroes it when it reverses the delivery). The component keeps the forwar
 values its own adjoint needs; FUSE keeps none. The full contract, the rule for each
 operator and the checks are in [](../dev/adjoint-schedule.md).
 
-What is supported today: binary64 fields in host memory, one process, remap, unit
+The adjoint array of a field is in the memory the field is in, host or device, and the
+reverse sweep runs on the execution space the forward run used. What is supported today:
+binary64 fields, one process, remap, unit
 conversion, sum, mean and integral accumulation, merge by first, sum or mean, and
 lagged channels. Refused by name (`E-ADJ-*`) at `initialize_adjoint`: iteration
 regions, minimum and maximum accumulation, time histories (space-time channels),
 transport between processes, distributed nodal remaps, fields of the dd, qd and
-Storage types, device execution, and the operators with no adjoint (relaxation,
-residual). C, Fortran and Python components have no adjoint entry points yet.
+Storage types, an adjoint array in another memory space than its field, and the
+operators with no adjoint (relaxation, residual). C, Fortran and Python components have no adjoint entry points yet.
 
 ### Double-double and quad-double
 
