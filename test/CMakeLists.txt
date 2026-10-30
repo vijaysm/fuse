@@ -1002,6 +1002,7 @@ fuse_add_device_twin(runtime.arithmetic_field_runner fuse_runtime_arithmetic_fie
 # the derivative gate's bound, the adjoint of each coupling rule, the sweep order, and every
 # refusal (plans/2026-10-22-universal-number-types.md, U6; docs/dev/adjoint-schedule.md).
 fuse_add_gtest(runtime adjoint_runner)
+fuse_add_device_twin(runtime.adjoint_runner fuse_runtime_adjoint_runner_test)
 
 # KNOWN_ISSUES.md B3: `bool supports_rollback() const override` no longer
 # names a virtual to override, once `Component::capabilities()` is the one

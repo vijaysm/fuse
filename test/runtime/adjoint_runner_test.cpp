@@ -65,6 +65,35 @@ std::uint64_t bits(double x) {
   return b;
 }
 
+#if defined(KOKKOS_ENABLE_CUDA) || defined(KOKKOS_ENABLE_HIP) || defined(KOKKOS_ENABLE_SYCL)
+#define FUSE_ADJOINT_TEST_DEVICE 1
+using DevSpace = Kokkos::DefaultExecutionSpace;
+using DevView = Kokkos::View<double*, DevSpace::memory_space>;
+using DevHostView = Kokkos::View<double*, Kokkos::HostSpace>;
+
+/// out <- a out + c in + drive on the device, the same step as `Lin::advance` on the host.
+struct DeviceStep {
+  double a, c;
+  DevView out, in, drive;
+  KOKKOS_INLINE_FUNCTION void operator()(const int i) const {
+    out(i) = a * out(i) + c * in(i) + drive(i);
+  }
+};
+
+/// The adjoint of that step on the device: `in_bar += c out_bar; out_bar *= a`.
+struct DeviceStepAdjoint {
+  double a, c;
+  bool keep_state_factor;
+  DevView out_bar, in_bar;
+  KOKKOS_INLINE_FUNCTION void operator()(const int i) const {
+    in_bar(i) += c * out_bar(i);
+    if (keep_state_factor) out_bar(i) *= a;
+  }
+};
+#else
+#define FUSE_ADJOINT_TEST_DEVICE 0
+#endif
+
 /// What a deliberately broken component does, to reach each refusal.
 enum class Fault {
   None,
@@ -74,6 +103,8 @@ enum class Fault {
   ShortAdjoint,     // an adjoint array of the wrong size
   AliasedAdjoint,   // the adjoint array of a Provides field is the field's own array
   DoubleDouble,     // the fields are double-double values (two limbs per cell)
+  HostAdjointForDeviceField,  // a field in device memory with an adjoint array in host memory
+  DeviceAdjointForHostField,  // a field in host memory with an adjoint array in device memory
 };
 
 struct Call {
@@ -90,13 +121,26 @@ using CallLog = std::vector<Call>;
 /// `fuse::AdjointComponent`.
 class Lin final : public fuse::Component, public fuse::AdjointComponent {
  public:
-  Lin(std::string name, std::size_t cells, int comps, double a, double c, CallLog* log, Fault fault)
-      : name_(std::move(name)), cells_(cells), comps_(comps), a_(a), c_(c), log_(log), fault_(fault) {
+  Lin(std::string name, std::size_t cells, int comps, double a, double c, CallLog* log, Fault fault,
+      bool device_fields = false)
+      : name_(std::move(name)), cells_(cells), comps_(comps), a_(a), c_(c), log_(log), fault_(fault),
+        device_(device_fields) {
     const std::size_t n = size();
     out_.assign(n, 0.0);
     in_.assign(n, 0.0);
     out_bar_.assign(n, 0.0);
     in_bar_.assign(n, 0.0);
+#if FUSE_ADJOINT_TEST_DEVICE
+    // The device arrays are the registered fields; the host vectors above are the copy the test reads and writes.
+    if (device_ || fault_ == Fault::DeviceAdjointForHostField) {
+      d_out_bar_ = DevView("out_bar", n);
+      d_in_bar_ = DevView("in_bar", n);
+    }
+    if (device_) {
+      d_out_ = DevView("out", n);
+      d_in_ = DevView("in", n);
+    }
+#endif
   }
   [[nodiscard]] std::string name() const override { return name_; }
   [[nodiscard]] fuse::AdjointComponent* adjoint() override {
@@ -106,6 +150,7 @@ class Lin final : public fuse::Component, public fuse::AdjointComponent {
   // An iteration region needs the component to roll back; the region is refused later.
   [[nodiscard]] std::uint64_t capabilities() const override { return fuse::kCapabilityRollback; }
   fuse::Result<void> save_state() override {
+    download_state();
     saved_out_ = out_;
     saved_in_ = in_;
     return fuse::Result<void>::success();
@@ -113,6 +158,7 @@ class Lin final : public fuse::Component, public fuse::AdjointComponent {
   fuse::Result<void> restore_state() override {
     out_ = saved_out_;
     in_ = saved_in_;
+    upload_state();
     return fuse::Result<void>::success();
   }
 
@@ -121,7 +167,12 @@ class Lin final : public fuse::Component, public fuse::AdjointComponent {
     for (const fuse::FieldId f : g.component(*cid).fields) {
       const bool provides = g.field(f).intent == fuse::Intent::Provides;
       (provides ? has_out_ : has_in_) = true;
+#if FUSE_ADJOINT_TEST_DEVICE
+      auto r = device_ ? bind_device(reg, f, provides ? d_out_ : d_in_, cells_)
+                       : bind(reg, f, provides ? out_ : in_, cells_);
+#else
       auto r = bind(reg, f, provides ? out_ : in_, cells_);
+#endif
       if (!r.ok()) return r;
     }
     return fuse::Result<void>::success();
@@ -132,6 +183,15 @@ class Lin final : public fuse::Component, public fuse::AdjointComponent {
     for (const fuse::FieldId f : g.component(*cid).fields) {
       const bool provides = g.field(f).intent == fuse::Intent::Provides;
       std::vector<double>& target = provides ? out_bar_ : in_bar_;
+#if FUSE_ADJOINT_TEST_DEVICE
+      const bool adjoint_on_device = (device_ && fault_ != Fault::HostAdjointForDeviceField) ||
+                                     fault_ == Fault::DeviceAdjointForHostField;
+      if (adjoint_on_device) {
+        auto rd = bind_device(reg, f, provides ? d_out_bar_ : d_in_bar_, cells_);
+        if (!rd.ok()) return rd;
+        continue;
+      }
+#endif
       auto r = fault_ == Fault::ShortAdjoint
                    ? bind(reg, f, target, cells_ - 1)
                    : fault_ == Fault::AliasedAdjoint && provides ? bind(reg, f, out_, cells_)
@@ -144,6 +204,18 @@ class Lin final : public fuse::Component, public fuse::AdjointComponent {
   fuse::Result<void> advance(const StepContext& ctx) override {
     if (log_ != nullptr) log_->push_back({name_, false, ctx.t_begin, ctx.t_end, ctx.step});
     const auto d = drive.find(ctx.step);
+#if FUSE_ADJOINT_TEST_DEVICE
+    if (device_) {
+      DevHostView h("drive_host", out_.size());
+      for (std::size_t k = 0; k < out_.size(); ++k) h(k) = d != drive.end() ? d->second[k] : 0.0;
+      if (d_drive_.extent(0) != out_.size()) d_drive_ = DevView("drive", out_.size());
+      Kokkos::deep_copy(d_drive_, h);
+      Kokkos::parallel_for("lin_step", Kokkos::RangePolicy<DevSpace>(0, static_cast<int>(out_.size())),
+                           DeviceStep{a_, c_, d_out_, d_in_, d_drive_});
+      Kokkos::fence("lin_step");
+      return fuse::Result<void>::success();
+    }
+#endif
     for (std::size_t k = 0; k < out_.size(); ++k) {
       out_[k] = a_ * out_[k] + c_ * in_[k] + (d != drive.end() ? d->second[k] : 0.0);
     }
@@ -153,6 +225,17 @@ class Lin final : public fuse::Component, public fuse::AdjointComponent {
     if (log_ != nullptr) log_->push_back({name_, true, ctx.t_begin, ctx.t_end, ctx.step});
     std::vector<double>& db = drive_bar[ctx.step];
     db.assign(out_.size(), 0.0);
+#if FUSE_ADJOINT_TEST_DEVICE
+    if (device_) {
+      DevHostView h("out_bar_host", out_.size());
+      Kokkos::deep_copy(h, d_out_bar_);
+      for (std::size_t k = 0; k < out_.size(); ++k) db[k] = h(k);  // d out / d drive = 1
+      Kokkos::parallel_for("lin_step_adjoint", Kokkos::RangePolicy<DevSpace>(0, static_cast<int>(out_.size())),
+                           DeviceStepAdjoint{a_, c_, fault_ != Fault::SkipRecurrence, d_out_bar_, d_in_bar_});
+      Kokkos::fence("lin_step_adjoint");
+      return fuse::Result<void>::success();
+    }
+#endif
     for (std::size_t k = 0; k < out_.size(); ++k) {
       db[k] = out_bar_[k];              // d out / d drive = 1
       in_bar_[k] += c_ * out_bar_[k];   // a Requires field: add
@@ -164,11 +247,44 @@ class Lin final : public fuse::Component, public fuse::AdjointComponent {
   bool has_out() const { return has_out_; }
   bool has_in() const { return has_in_; }
 
+  // Copies between the host vectors the test reads and the device arrays the Runner reads and writes
+  // (no-ops for a component whose fields are in host memory).
+  void upload_state() { transfer(out_, in_, true, true); }
+  void download_state() { transfer(out_, in_, false, true); }
+  void upload_bars() { transfer(out_bar_, in_bar_, true, false); }
+  void download_bars() { transfer(out_bar_, in_bar_, false, false); }
+
   std::vector<double> out_, in_, out_bar_, in_bar_;
   std::map<std::int64_t, std::vector<double>> drive;      // forward input at each step
   std::map<std::int64_t, std::vector<double>> drive_bar;  // its adjoint
 
  private:
+#if FUSE_ADJOINT_TEST_DEVICE
+  fuse::Result<void> bind_device(FieldRegistry& reg, fuse::FieldId f, const DevView& v, std::size_t count) const {
+    return reg.bind(f, fuse::FieldRef(v.data(),
+                                      fuse::Layout{static_cast<std::size_t>(comps_), 1, count, comps_},
+                                      fuse::MemorySpace::Device));
+  }
+#endif
+  void transfer([[maybe_unused]] std::vector<double>& first, [[maybe_unused]] std::vector<double>& second,
+                [[maybe_unused]] bool to_device, [[maybe_unused]] bool state) {
+#if FUSE_ADJOINT_TEST_DEVICE
+    if (!device_) return;
+    using Unmanaged = Kokkos::MemoryTraits<Kokkos::Unmanaged>;
+    const DevView& d1 = state ? d_out_ : d_out_bar_;
+    const DevView& d2 = state ? d_in_ : d_in_bar_;
+    Kokkos::View<double*, Kokkos::HostSpace, Unmanaged> h1(first.data(), first.size());
+    Kokkos::View<double*, Kokkos::HostSpace, Unmanaged> h2(second.data(), second.size());
+    if (to_device) {
+      Kokkos::deep_copy(d1, h1);
+      Kokkos::deep_copy(d2, h2);
+    } else {
+      Kokkos::deep_copy(h1, d1);
+      Kokkos::deep_copy(h2, d2);
+    }
+#endif
+  }
+
   fuse::Result<void> bind(FieldRegistry& reg, fuse::FieldId f, std::vector<double>& v,
                           std::size_t count) const {
     if (fault_ == Fault::DoubleDouble) {
@@ -189,6 +305,10 @@ class Lin final : public fuse::Component, public fuse::AdjointComponent {
   Fault fault_;
   bool has_out_ = false, has_in_ = false;
   std::vector<double> saved_out_, saved_in_;
+  bool device_ = false;
+#if FUSE_ADJOINT_TEST_DEVICE
+  DevView d_out_, d_in_, d_out_bar_, d_in_bar_, d_drive_;
+#endif
 };
 
 enum class Topology {
@@ -214,6 +334,8 @@ struct Spec {
   fuse::Conservation conservation = fuse::Conservation::None;
   double a_p = 0.0, c_p = 0.0, a_q = 0.0, c_q = 0.0;
   Fault p_fault = Fault::None, q_fault = Fault::None;
+  bool device_fields = false;  // the components register fields in device memory (needs a device backend)
+  fuse::RunnerConfig::RunnerExecutionSpace execution = fuse::RunnerConfig::RunnerExecutionSpace::Default;
 };
 
 struct Net {
@@ -228,6 +350,7 @@ struct Net {
   Lin* p2 = nullptr;
   Lin* q = nullptr;
   std::unique_ptr<Runner> runner;
+  fuse::RunnerConfig::RunnerExecutionSpace execution = fuse::RunnerConfig::RunnerExecutionSpace::Default;
 };
 
 std::unique_ptr<Net> make_net(const Spec& s) {
@@ -282,13 +405,15 @@ std::unique_ptr<Net> make_net(const Spec& s) {
   EXPECT_TRUE(sched.ok()) << sched.diags.to_string();
   n->plan = sched.plan;
 
-  auto lp = std::make_unique<Lin>("p", s.p_cells, s.comps, s.a_p, s.c_p, &n->log, s.p_fault);
-  auto lq = std::make_unique<Lin>("q", s.same_region ? s.p_cells : s.q_cells, s.comps, s.a_q, s.c_q, &n->log, s.q_fault);
+  n->execution = s.device_fields ? fuse::RunnerConfig::RunnerExecutionSpace::Device : s.execution;
+  auto lp = std::make_unique<Lin>("p", s.p_cells, s.comps, s.a_p, s.c_p, &n->log, s.p_fault, s.device_fields);
+  auto lq = std::make_unique<Lin>("q", s.same_region ? s.p_cells : s.q_cells, s.comps, s.a_q, s.c_q, &n->log,
+                                  s.q_fault, s.device_fields);
   n->p = lp.get();
   n->q = lq.get();
   n->components.add(std::move(lp));
   if (s.second) {
-    auto lp2 = std::make_unique<Lin>("p2", s.p_cells, s.comps, 0.0, 0.0, &n->log, s.p_fault);
+    auto lp2 = std::make_unique<Lin>("p2", s.p_cells, s.comps, 0.0, 0.0, &n->log, s.p_fault, s.device_fields);
     n->p2 = lp2.get();
     n->components.add(std::move(lp2));
   }
@@ -297,11 +422,12 @@ std::unique_ptr<Net> make_net(const Spec& s) {
   return n;
 }
 
-fuse::Result<void> init_forward(Net& n, const fuse::RunnerConfig& cfg = {}) {
+fuse::Result<void> init_forward(Net& n, fuse::RunnerConfig cfg = {}) {
   for (auto& c : n.components) {
     auto r = c.register_fields(n.registry, n.graph);
     if (!r.ok()) return r;
   }
+  if (cfg.execution_space == fuse::RunnerConfig::RunnerExecutionSpace::Default) cfg.execution_space = n.execution;
   return n.runner->initialize(n.components, n.registry, cfg);
 }
 
@@ -363,7 +489,9 @@ fuse::Result<std::vector<double>> forward_map(const Spec& s, int periods, std::s
       for (double& v : d) v = x[at++];
     }
   }
+  for (Lin* c : members(*n)) c->upload_state();
   if (auto r = n->runner->run(n->components, periods); !r.ok()) return r.error();
+  for (Lin* c : members(*n)) c->download_state();
   std::vector<double> y;
   for (Lin* c : members(*n)) {
     if (c->has_out()) y.insert(y.end(), c->out_.begin(), c->out_.end());
@@ -384,9 +512,11 @@ fuse::Result<std::unique_ptr<Net>> reverse_run(const Spec& s, int periods, std::
     if (c->has_out()) for (double& v : c->out_bar_) v = w[at++];
     if (c->has_in()) for (double& v : c->in_bar_) v = w[at++];
   }
+  for (Lin* c : members(*n)) c->upload_bars();
   for (int i = 0; i < periods; ++i) {
     if (auto r = n->runner->run_period_adjoint(n->components); !r.ok()) return r.error();
   }
+  for (Lin* c : members(*n)) c->download_bars();
   return std::move(n);  // not `return n;`: gcc 13 will not convert an lvalue unique_ptr into the Result
 }
 
@@ -590,6 +720,52 @@ std::vector<NamedCase> identity_cases() {
 // ---------------------------------------------------------------------------
 // The adjoint identity for the composed coupling, within the gate's bound
 // ---------------------------------------------------------------------------
+
+#if FUSE_ADJOINT_TEST_DEVICE
+// The same identity with the fields and their adjoint arrays in device memory: the whole sweep
+// is kernels on the device, and the components' own adjoints run there too.
+TEST(RuntimeAdjointDevice, AdjointIdentityHoldsForFieldsRegisteredInDeviceMemory) {
+  double worst = 0.0;
+  for (NamedCase c : identity_cases()) {
+    c.spec.device_fields = true;
+    const GateRun r = gate(c.spec, c.periods);
+    EXPECT_TRUE(r.error.empty()) << c.name << ": " << r.error;
+    EXPECT_TRUE(r.all_passed) << c.name << ": worst ratio " << r.worst_ratio;
+    EXPECT_GT(r.norm, 0.0) << c.name;
+    worst = std::max(worst, r.worst_ratio);
+  }
+  std::fprintf(stderr, "[adjoint] device-registered fields: max observed adjoint ratio = %.3f (bound constant %.0f)\n",
+               worst, fuse::linalg::kAdjointGateConstant);
+  EXPECT_LT(worst, fuse::linalg::kAdjointGateConstant);
+}
+
+// The host execution space and the device execution space reverse the same coupling to the same
+// adjoint, up to the rounding the two spaces may differ by (it is printed, and bounded below).
+TEST(RuntimeAdjointDevice, HostAndDeviceExecutionGiveTheSameAdjoint) {
+  double worst = 0.0;
+  for (const NamedCase& c : identity_cases()) {
+    Spec host = c.spec, dev = c.spec;
+    host.execution = fuse::RunnerConfig::RunnerExecutionSpace::Host;
+    dev.execution = fuse::RunnerConfig::RunnerExecutionSpace::Device;
+    const Dims d = dims_of(host, c.periods);
+    const std::vector<double> w = random_vector(d.ny, 77);
+    const auto xh = adjoint_map(host, c.periods, w);
+    const auto xd = adjoint_map(dev, c.periods, w);
+    ASSERT_TRUE(xh.ok()) << c.name << ": " << xh.error().message;
+    ASSERT_TRUE(xd.ok()) << c.name << ": " << xd.error().message;
+    ASSERT_EQ(xh.value().size(), xd.value().size()) << c.name;
+    double diff = 0.0, mag = 0.0;
+    for (std::size_t i = 0; i < xh.value().size(); ++i) {
+      diff = std::max(diff, std::abs(xh.value()[i] - xd.value()[i]));
+      mag = std::max(mag, std::abs(xh.value()[i]));
+    }
+    worst = std::max(worst, mag > 0.0 ? diff / mag : diff);
+    std::fprintf(stderr, "[adjoint] host vs device %-34s max|diff| / max|xbar| = %.3g\n", c.name,
+                 mag > 0.0 ? diff / mag : diff);
+  }
+  EXPECT_LE(worst, 4.0 * std::numeric_limits<double>::epsilon());
+}
+#endif
 
 TEST(RuntimeAdjoint, AdjointIdentityHoldsForTheComposedCoupling) {
   double worst = 0.0;
@@ -891,18 +1067,25 @@ TEST(RuntimeAdjoint, RefusesAnInstructionWithNoAdjoint) {
   EXPECT_EQ(refusal_code(s), "E-ADJ-OP");
 }
 
-#if defined(KOKKOS_ENABLE_CUDA) || defined(KOKKOS_ENABLE_HIP) || defined(KOKKOS_ENABLE_SYCL)
-TEST(RuntimeAdjoint, RefusesDeviceExecution) {
-  auto n = make_net(Spec{});
-  fuse::RunnerConfig cfg;
-  cfg.execution_space = fuse::RunnerConfig::RunnerExecutionSpace::Device;
-  ASSERT_TRUE(init_forward(*n, cfg).ok());
+#if FUSE_ADJOINT_TEST_DEVICE
+// An adjoint array lives in the memory of the field it is the adjoint of; the execution space does not matter.
+TEST(RuntimeAdjointDevice, RefusesAHostAdjointArrayForAFieldInDeviceMemory) {
+  Spec s;
+  s.device_fields = true;
+  s.q_fault = Fault::HostAdjointForDeviceField;
+  auto n = make_net(s);
+  ASSERT_TRUE(init_forward(*n).ok());
   ASSERT_TRUE(n->runner->run_period(n->components).ok());
   const auto r = init_adjoint(*n);
   ASSERT_FALSE(r.ok());
   EXPECT_EQ(r.error().code, "E-ADJ-SPACE");
-  // by the execution space itself, not by the first arc that happens to be on the device
-  EXPECT_NE(r.error().message.find("host execution space"), std::string::npos) << r.error().message;
+  EXPECT_NE(r.error().message.find("same memory space"), std::string::npos) << r.error().message;
+}
+
+TEST(RuntimeAdjointDevice, RefusesADeviceAdjointArrayForAFieldInHostMemory) {
+  Spec s;
+  s.p_fault = Fault::DeviceAdjointForHostField;
+  EXPECT_EQ(refusal_code(s), "E-ADJ-SPACE");
 }
 #endif
 
