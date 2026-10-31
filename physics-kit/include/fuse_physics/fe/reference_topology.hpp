@@ -4,22 +4,23 @@
 /// from KARMA's karma_reference_topology.h/.C (docs/dev/physics-kit-
 /// disposition.md Appendix A, port-adapt, decision).
 ///
-/// SCOPE. This port covers the five element families KARMA calls
-/// Edge, Tri, Quad, Tet and Hex at Lagrange order 1 and 2 (GeometryVariant
-/// below), i.e. the simplex and tensor-product cells whose shape functions
-/// are the textbook barycentric/tensor-Lagrange forms. Prism and pyramid
-/// (KARMA's GeometryVariant::Prism6/15/18, Pyramid5/13/14) are NOT ported in
-/// this wave: the pyramid family needs a rational (non-polynomial) basis
-/// construction (karma_reference_topology.C's pyramid_values(), built from a
-/// Vandermonde solve over a collapsed-coordinate candidate set) that is a
-/// substantial separate numerical undertaking, and upstream/karma/
-/// the issue tracker item 1 already flags the pyramid's quadrature accuracy as
-/// an unverified risk in KARMA itself -- see this wave's the issue tracker
-/// hunk, which carries that note forward, and design_notes/open_questions
-/// for the deferral. A request for one of the three Prism/Pyramid variants
-/// is refused with a clear message (Cell::Unsupported... never constructed
-/// for them); see physics.fe_reference_topology_test's
-/// "RefusesUnimplementedCellFamilies" case.
+/// SCOPE ("execute FE first
+/// completely"): this port now covers all seven element families KARMA's
+/// own GeometryVariant names -- Edge, Triangle, Quadrilateral, Tetrahedron,
+/// Hexahedron plus Prism and Pyramid -- at Lagrange
+/// order 1 and 2 (the complete tensor/simplex family, e.g. Quad9/Tet10/
+/// Hex27/Prism18/Pyramid14, not the Quad8 serendipity variant).
+///
+/// THE PYRAMID IS RATIONAL, NOT POLYNOMIAL. Its five linear (and 14
+/// quadratic) shape functions are built from a collapsed-coordinate
+/// candidate set containing terms like x*y/(1-z), which are finite
+/// everywhere except the exact apex (1-z = 0) where they are removable
+/// singularities evaluated by direct limit, not by the rational formula --
+/// see basis.cpp's pyramid_candidates() and its own header comment, ported
+/// from karma_reference_topology.C's pyramid_values()/pyramid_candidates().
+/// The construction solves a square linear system (candidate values at
+/// each reference node) whose conditioning is measured and refused above a
+/// derived threshold -- see basis.cpp's pyramid_nodal_coefficients().
 ///
 /// DECOUPLING FROM MOAB (docs/dev/layering.md's public-header third-party
 /// rule). KARMA's KARMAReferenceTopology::topology()/from_moab() return and
@@ -28,8 +29,7 @@
 /// role KARMA's (GeometryVariant, moab::EntityType) pair did, as a plain
 /// physics-kit-own enum; a moab::EntityType <-> GeometryVariant conversion,
 /// where physics-kit eventually needs one for a MOAB-backed mesh binding, is
-/// left to that (not-yet-written, FUSE_HAVE_MOAB-gated) translation unit,
-/// named as an open gap rather than guessed at here.
+/// left to that translation unit.
 
 #include <cstddef>
 #include <optional>
@@ -40,14 +40,38 @@
 
 namespace fuse::physics::fe {
 
-/// The geometric element families this wave ports, Lagrange order 1 (linear)
-/// and 2 (quadratic, full tensor/complete simplex -- not the Quad8
-/// serendipity family, which KARMA itself treats as a distinct variant and
-/// this wave defers along with Prism/Pyramid).
-enum class GeometryVariant { Edge2, Edge3, Tri3, Tri6, Quad4, Quad9, Tet4, Tet10, Hex8, Hex27 };
+/// The geometric element families this port implements, Lagrange order 1
+/// (linear) and 2 (quadratic, full tensor/complete simplex -- not the
+/// serendipity Quad8).
+enum class GeometryVariant {
+  Edge2,
+  Edge3,
+  Tri3,
+  Tri6,
+  Quad4,
+  // Quad8 (serendipity, 8 nodes) exists ONLY as a face shape -- Prism15's
+  // and Pyramid13's one quadrilateral side (reference_topology.cpp's
+  // side_topology()) -- and is never registered as a stand-alone basis
+  // family (basis.cpp's variant_for() always selects Quad9 for a
+  // Quadrilateral cell's own order-2 basis).
+  Quad8,
+  Quad9,
+  Tet4,
+  Tet10,
+  Hex8,
+  Hex27,
+  Prism6,
+  Prism15,
+  Prism18,
+  Pyramid5,
+  Pyramid13,
+  Pyramid14
+};
 
-/// Which reference cell a GeometryVariant belongs to, irrespective of order.
-enum class CellFamily { Edge, Triangle, Quadrilateral, Tetrahedron, Hexahedron };
+/// Which reference cell a GeometryVariant belongs to, irrespective of
+/// order. Appended (Prism, Pyramid) rather than inserted, so the five
+/// wave-1 enumerators keep their original integral values.
+enum class CellFamily { Edge, Triangle, Quadrilateral, Tetrahedron, Hexahedron, Prism, Pyramid };
 
 [[nodiscard]] CellFamily cell_family(GeometryVariant variant) noexcept;
 [[nodiscard]] unsigned cell_dimension(CellFamily family) noexcept;
@@ -75,19 +99,33 @@ class ReferenceTopology {
 
   [[nodiscard]] Point center() const noexcept;
 
-  /// Shape values only.
+  /// Shape values only. Throws for Pyramid at the exact apex (0,0,1): the
+  /// shape VALUES are well-defined there (basis.cpp evaluates the removable
+  /// limit directly), so this is not that case -- see evaluate_values's
+  /// own apex special-case in reference_topology.cpp, ported unchanged from
+  /// KARMA's identical carve-out.
   [[nodiscard]] std::vector<double> evaluate_values(const Point& point) const;
   void evaluate_values(const Point& point, std::span<double> values) const;
 
-  /// Shape values and reference-space derivatives.
+  /// Shape values and reference-space derivatives. Throws for Pyramid at
+  /// the exact apex: the DERIVATIVES are genuinely path-dependent there
+  /// (KARMA's own documented carve-out, karma_geometry_map.h's jacobian()
+  /// comment), so this is refused rather than returning a direction-
+  /// dependent answer silently.
   [[nodiscard]] ReferenceValues evaluate(const Point& point) const;
   void evaluate(const Point& point, std::span<double> values, std::span<Point> derivatives) const;
 
   [[nodiscard]] unsigned side_count() const noexcept;
   /// Node indices (into reference_nodes()) of one codimension-1 side, CN
   /// convention: the side's own linear corners first, any midside nodes
-  /// after -- see fe/topology_tables.hpp's side tables.
+  /// after.
   [[nodiscard]] std::vector<std::size_t> side_nodes(unsigned side) const;
+  /// The side's own cell shape. A Hexahedron's sides are uniformly
+  /// Quadrilateral and a Tetrahedron's uniformly Triangle, but Prism and
+  /// Pyramid have MIXED face shapes (prism: 3 quad + 2 tri; pyramid: 4 tri
+  /// + 1 quad) -- callers that need to know WHICH shape a given side is
+  /// (fe_base.cpp's own per-side quadrature-rule selection) read
+  /// side_topology(side).family().
   [[nodiscard]] ReferenceTopology side_topology(unsigned side) const;
   [[nodiscard]] Point side_reference_map(unsigned side, const Point& point) const;
   [[nodiscard]] Matrix3 side_reference_jacobian(unsigned side, const Point& point) const;
