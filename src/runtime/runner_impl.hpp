@@ -691,6 +691,31 @@ struct AdjointState {
   };
   std::vector<Event> events;
 
+  /// An iteration region as the reverse sweep runs it: the closed interval of `events` from the
+  /// first re-advanced component step to the last instruction of the region body, which is
+  /// reversed over and over until the adjoint of the delivered values has converged (the
+  /// reverse accumulation of the fixed point; docs/dev/adjoint-schedule.md). `event_loop` is
+  /// parallel to `events`: -1 outside every interval, else the index in `loops`; the sweep runs a
+  /// loop when it reaches `last_event` and skips the other events of the interval.
+  struct RegionLoop {
+    std::size_t region = 0;  // index into Impl::regions
+    std::size_t first_event = 0;
+    std::size_t last_event = 0;
+  };
+  std::vector<RegionLoop>   loops;
+  std::vector<std::int32_t> event_loop;
+
+  /// Every adjoint array an interval can change, restored from a copy taken before the loop
+  /// before each pass, so that each pass differs from the next only in the seed it is given:
+  /// the adjoint array of every arc, and of every field of a component the region steps.
+  struct ManagedArray {
+    double*     ptr = nullptr;
+    std::size_t len = 0;
+    bool        device = false;
+  };
+  std::vector<ManagedArray>        managed;
+  std::vector<std::vector<double>> snapshot;
+
   /// Parallel to the instruction stream. For a `Sample`: how many samples of the
   /// same accumulation window precede it (0 marks the first, which overwrites
   /// the accumulator). For an `Accumulate`: the number of samples in its window.
@@ -1801,6 +1826,8 @@ struct Runner::Impl {
   Result<void> init_adjoint(ComponentSet& components, FieldRegistry& adjoint_registry);
   Result<void> sweep_adjoint_period(ComponentSet& components);
   Result<void> reverse_instruction(std::size_t index);
+  Result<void> reverse_tick(ComponentSet& components, std::size_t tick_index, std::int64_t period);
+  Result<void> reverse_region(ComponentSet& components, std::size_t loop_index, std::int64_t period);
   template <class Space>
   Result<void> reverse_on(std::size_t index);
   Result<void> resolve_buffers(FieldRegistry& registry);

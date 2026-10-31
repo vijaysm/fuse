@@ -16,6 +16,8 @@
 
 #include "fuse/runtime/runner.hpp"
 
+#include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
@@ -97,12 +99,29 @@ Result<void> Runner::Impl::init_adjoint(ComponentSet& components,
   // 1. What this stage does not differentiate through, refused by name.
   const bool device_exec =
       config.execution_space == RunnerConfig::RunnerExecutionSpace::Device;
-  if (!regions.empty()) {
-    return refuse("E-ADJ-REGION",
-                  "the plan has an iteration region; the adjoint of a fixed-point "
-                  "iteration (implicit differentiation) is not implemented, and "
-                  "unrolling the sweeps would need the sweep count the forward run "
-                  "reached");
+  // An ordinary iteration region is reversed as the fixed point it converged to (the adjoint
+  // iteration of `reverse_region`); what that cannot do is refused here, by name.
+  std::vector<std::uint8_t> in_region_body(stream.size(), 0);
+  for (const detail::RegionRuntime& R : regions) {
+    if (R.newton) {
+      return refuse("E-ADJ-REGION",
+                    "iteration region '" + R.name +
+                        "' is solved by Newton's method; the adjoint of a Newton solve "
+                        "is not implemented (only the fixed point of an ordinary "
+                        "sweep is reversed)");
+    }
+    if (R.window_scoped) {
+      return refuse("E-ADJ-REGION", "iteration region '" + R.name +
+                                        "' is scoped to a time window; the adjoint of a "
+                                        "window iteration is not implemented");
+    }
+    if (R.participants.size() > 1) {
+      return refuse("E-ADJ-REGION",
+                    "iteration region '" + R.name +
+                        "' spans several ranks; its adjoint iteration would need the "
+                        "agreement of every rank on each pass, which is not implemented");
+    }
+    for (std::size_t i = R.enter; i <= R.exit && i < stream.size(); ++i) in_region_body[i] = 1;
   }
   for (std::size_t i = 0; i < slots.size(); ++i) {
     const std::string& label = buffers[i].label;
@@ -138,6 +157,12 @@ Result<void> Runner::Impl::init_adjoint(ComponentSet& components,
       case OpKind::Constrain:
       case OpKind::Diagnose:
         break;
+      case OpKind::Residual:
+        // The residual of an iteration region feeds only its convergence test, which the
+        // adjoint iteration makes for itself: nothing to reverse.
+        if (in_region_body[i] != 0) break;
+        return refuse("E-ADJ-OP", "instruction " + std::to_string(i) +
+                                      " is a Residual outside an iteration region, which has no adjoint");
       case OpKind::Extrapolate:
         // The forward run applies order 0 (a copy) whatever order is asked, because it keeps no
         // history; an adjoint written for that would go wrong silently the day it does.
@@ -364,6 +389,76 @@ Result<void> Runner::Impl::init_adjoint(ComponentSet& components,
     }
   }
 
+  // 8. Iteration regions: the interval of events each is reversed over. It runs from the first
+  //    component step the region re-advances to the last instruction of its body, and may hold
+  //    instructions of other channels but no step of a component the region does not step (the
+  //    adjoint step of such a component would be called once per pass).
+  st->event_loop.assign(st->events.size(), -1);
+  for (std::size_t ri = 0; ri < regions.size(); ++ri) {
+    const detail::RegionRuntime& R = regions[ri];
+    std::size_t first = st->events.size(), last = 0, body = 0;
+    for (std::size_t e = 0; e < st->events.size(); ++e) {
+      const AdjointState::Event& ev = st->events[e];
+      if (ev.is_tick || ev.index < R.enter || ev.index > R.exit) continue;
+      first = std::min(first, e);
+      last = std::max(last, e);
+      ++body;
+    }
+    if (body == 0 || body != R.exit - R.enter + 1) {
+      return refuse("E-ADJ-REGION", "the body of iteration region '" + R.name +
+                                        "' does not appear once in a period");
+    }
+    for (const std::size_t t : R.tick_indices) {
+      for (std::size_t e = 0; e < st->events.size(); ++e) {
+        if (st->events[e].is_tick && st->events[e].index == t) first = std::min(first, e);
+      }
+    }
+    for (std::size_t e = first; e <= last; ++e) {
+      const AdjointState::Event& ev = st->events[e];
+      if (st->event_loop[e] >= 0) {
+        return refuse("E-ADJ-REGION", "iteration region '" + R.name +
+                                          "' overlaps another region in the order of a period");
+      }
+      if (ev.is_tick &&
+          std::find(R.tick_indices.begin(), R.tick_indices.end(), ev.index) == R.tick_indices.end()) {
+        return refuse("E-ADJ-REGION",
+                      "component '" + components.at(ticks[ev.index].slot).name() +
+                          "' steps between the steps and the body of iteration region '" + R.name +
+                          "' without being part of it; its adjoint step would be called once per pass");
+      }
+      st->event_loop[e] = static_cast<std::int32_t>(st->loops.size());
+    }
+    st->loops.push_back({ri, first, last});
+  }
+  if (!st->loops.empty()) {
+    // every adjoint array a pass can change: the arcs, and the fields of the components stepped
+    const auto add_managed = [&](double* ptr, std::size_t len, bool device) {
+      if (ptr == nullptr || len == 0) return;
+      for (const AdjointState::ManagedArray& m : st->managed) {
+        if (m.ptr == ptr) return;
+      }
+      st->managed.push_back({ptr, len, device});
+    };
+    for (std::size_t i = 0; i < slots.size(); ++i) {
+      add_managed(st->bar[i], slots[i].total(), st->bar_device[i] != 0);
+    }
+    for (const AdjointState::RegionLoop& loop : st->loops) {
+      for (const std::size_t slot : regions[loop.region].component_slots) {
+        const auto cid = graph.find_component(components.at(slot).name());
+        if (!cid.has_value()) continue;
+        for (const FieldId f : graph.component(*cid).fields) {
+          const Result<FieldRef> found = adjoint_registry.get_scalars(f);
+          if (!found.ok() || !flat_contiguous(found.value().layout())) continue;
+          FieldRef view = found.value();  // by value: data() is not const
+          add_managed(view.data(), view.layout().count * static_cast<std::size_t>(view.layout().components),
+                      view.space() == MemorySpace::Device);
+        }
+      }
+    }
+    st->snapshot.resize(st->managed.size());
+    for (std::size_t i = 0; i < st->managed.size(); ++i) st->snapshot[i].assign(st->managed[i].len, 0.0);
+  }
+
   adjoint = std::move(st);
   return Result<void>::success();
 }
@@ -406,6 +501,13 @@ Result<void> Runner::Impl::sweep_adjoint_period(ComponentSet& components) {
   step_failure.reset();
   for (std::size_t e = A.events.size(); e-- > 0;) {
     const AdjointState::Event& ev = A.events[e];
+    // An iteration region is reversed as a whole when the sweep reaches the end of its interval.
+    if (const std::int32_t loop = A.event_loop[e]; loop >= 0) {
+      if (e != A.loops[static_cast<std::size_t>(loop)].last_event || step_failure.has_value()) continue;
+      const Result<void> r = reverse_region(components, static_cast<std::size_t>(loop), p);
+      if (!r.ok()) step_failure = r.error();
+      continue;
+    }
     if (!ev.is_tick) {
       if (step_failure.has_value() && !is_collective(stream[ev.index].kind)) continue;
       const Result<void> r = reverse_instruction(ev.index);
@@ -417,30 +519,7 @@ Result<void> Runner::Impl::sweep_adjoint_period(ComponentSet& components) {
       continue;
     }
     if (step_failure.has_value()) continue;
-    const Tick& tick = ticks[ev.index];
-    StepContext ctx;  // the context the forward step had (Impl::advance)
-    ctx.t_begin = Rational{p} * plan.period() + tick.time;
-    ctx.t_end = ctx.t_begin + tick.dt;
-    ctx.step = p * tick.per_period + tick.local_step;
-    ctx.iteration = 0;
-    Component& comp = components.at(tick.slot);
-    if (!ctx.valid()) {
-      step_failure = Failure{"E-RT-STEP", "step context [" + ctx.t_begin.to_string() + ", " +
-                                              ctx.t_end.to_string() + ") for component '" +
-                                              comp.name() + "' is not valid"};
-      continue;
-    }
-    AdjointComponent* adj = comp.adjoint();
-    if (adj == nullptr) {
-      step_failure = Failure{"E-ADJ-COMPONENT", "component '" + comp.name() +
-                                                    "' no longer has an adjoint"};
-      continue;
-    }
-    // The kernels of the instructions reversed so far must have finished before the
-    // component reads or writes the adjoint arrays; the component's own kernels must
-    // have finished when it returns (Component's threading contract).
-    Kokkos::fence("fuse::adjoint_before_component");
-    const Result<void> r = adj->advance_adjoint(ctx);
+    const Result<void> r = reverse_tick(components, ev.index, p);
     if (!r.ok()) step_failure = r.error();
   }
   Kokkos::fence("fuse::adjoint_sweep");
@@ -451,6 +530,164 @@ Result<void> Runner::Impl::sweep_adjoint_period(ComponentSet& components) {
     return f;
   }
   --A.next;
+  return Result<void>::success();
+}
+
+Result<void> Runner::Impl::reverse_tick(ComponentSet& components, std::size_t tick_index,
+                                        std::int64_t period) {
+  const Tick& tick = ticks[tick_index];
+  StepContext ctx;  // the context the forward step had (Impl::advance)
+  ctx.t_begin = Rational{period} * plan.period() + tick.time;
+  ctx.t_end = ctx.t_begin + tick.dt;
+  ctx.step = period * tick.per_period + tick.local_step;
+  ctx.iteration = 0;
+  Component& comp = components.at(tick.slot);
+  if (!ctx.valid()) {
+    return refuse("E-RT-STEP", "step context [" + ctx.t_begin.to_string() + ", " +
+                                   ctx.t_end.to_string() + ") for component '" + comp.name() +
+                                   "' is not valid");
+  }
+  AdjointComponent* adj = comp.adjoint();
+  if (adj == nullptr) {
+    return refuse("E-ADJ-COMPONENT", "component '" + comp.name() + "' no longer has an adjoint");
+  }
+  // The kernels of the instructions reversed so far must have finished before the
+  // component reads or writes the adjoint arrays; the component's own kernels must
+  // have finished when it returns (Component's threading contract).
+  Kokkos::fence("fuse::adjoint_before_component");
+  return adj->advance_adjoint(ctx);
+}
+
+// An iteration region, reversed as the fixed point the forward sweeps converged to.
+//
+// Forward, a period with a region steps the components of the region, runs the body of the
+// region (the channels, ending in the delivery of G(y) into the components' inputs), and repeats
+// from a restored state with the accelerated iterate, until G(y) = y within tolerance. At the
+// fixed point y* = F(y*, x), with x everything the region reads from outside (the checkpointed
+// states, the drives, the values delivered before it), so the derivative of the converged values
+// is (I - F_y)^-1 F_x whatever way the iteration reached y*, and its adjoint is
+//
+//     lambda = ybar + F_y^T lambda,        xbar += F_x^T lambda,
+//
+// where ybar is the adjoint of the delivered values as the sweep found it. One pass of the
+// reverse of the interval (the body, the instructions between, the component steps) given a seed
+// lambda on the delivered values leaves F_y^T lambda on them and F_x^T lambda in the adjoint
+// arrays of everything else, so the iteration is the reverse of the interval repeated to a
+// fixed point (Christianson, "Reverse accumulation and attractive fixed points", 1994): the
+// arrays are restored from a copy taken before the first pass so that the contribution to xbar
+// is that of the last pass only, and the iteration is held to the convergence criterion of the
+// region. The initial iterate y_0 does not influence y*, so what remains on the delivered values
+// is zero.
+Result<void> Runner::Impl::reverse_region(ComponentSet& components, std::size_t loop_index,
+                                          std::int64_t period) {
+  AdjointState& A = *adjoint;
+  const AdjointState::RegionLoop& loop = A.loops[loop_index];
+  detail::RegionRuntime& R = regions[loop.region];
+
+  const auto copy_out = [&](const AdjointState::ManagedArray& m, double* host) {
+    if (m.device) {
+      Kokkos::deep_copy(num::SpanOf<HostExecSpace>(host, m.len),
+                        num::ConstSpanOf<DeviceExecSpace>(m.ptr, m.len));
+    } else if (m.len != 0) {
+      std::copy(m.ptr, m.ptr + m.len, host);
+    }
+  };
+  const auto copy_in = [&](const AdjointState::ManagedArray& m, const double* host) {
+    if (m.device) {
+      Kokkos::deep_copy(num::SpanOf<DeviceExecSpace>(m.ptr, m.len),
+                        num::ConstSpanOf<HostExecSpace>(host, m.len));
+    } else if (m.len != 0) {
+      std::copy(host, host + m.len, m.ptr);
+    }
+  };
+  // the iterate lives on the value arcs of the blocks (G(y), what the body computes); what the
+  // component steps leave on the delivered values (`feed_array`) is its image under F_y^T
+  const auto block_array = [&](const detail::RegionBlock& b) {
+    return AdjointState::ManagedArray{A.bar[b.value_arc], b.length, A.bar_device[b.value_arc] != 0};
+  };
+  const auto feed_array = [&](const detail::RegionBlock& b) {
+    return AdjointState::ManagedArray{A.bar[b.feed_arc], b.length, A.bar_device[b.feed_arc] != 0};
+  };
+
+  Kokkos::fence("fuse::adjoint_region_begin");
+  for (std::size_t i = 0; i < A.managed.size(); ++i) copy_out(A.managed[i], A.snapshot[i].data());
+
+  // the adjoint of the values the body computes, as the sweep found it (the delivery after the
+  // region has been reversed), and what stood on the delivered values
+  std::vector<double> ybar(R.n, 0.0), lambda(R.n, 0.0), next(R.n, 0.0), fed(R.n, 0.0), first_residual(R.blocks.size(), 0.0);
+  for (const detail::RegionBlock& b : R.blocks) {
+    copy_out(block_array(b), ybar.data() + b.offset);
+    copy_out(feed_array(b), fed.data() + b.offset);
+  }
+  lambda = ybar;
+
+  const std::vector<AdjointState::Event>& events = A.events;
+  bool converged = false;
+  int passes = 0;
+  for (int j = 0; j < R.max_iterations && !converged; ++j) {
+    // every pass starts from the state the interval was found in, with lambda on the delivered values
+    for (std::size_t i = 0; i < A.managed.size(); ++i) copy_in(A.managed[i], A.snapshot[i].data());
+    for (const detail::RegionBlock& b : R.blocks) copy_in(block_array(b), lambda.data() + b.offset);
+    for (std::size_t e = loop.last_event + 1; e-- > loop.first_event;) {
+      const AdjointState::Event& ev = events[e];
+      const Result<void> r = ev.is_tick ? reverse_tick(components, ev.index, period)
+                                        : reverse_instruction(ev.index);
+      if (!r.ok()) return r;
+    }
+    Kokkos::fence("fuse::adjoint_region_pass");
+    ++passes;
+
+    // the new iterate: what the pass added to the delivered values, plus the seed
+    for (const detail::RegionBlock& b : R.blocks) {
+      copy_out(feed_array(b), next.data() + b.offset);
+      for (std::size_t k = 0; k < b.length; ++k) {
+        next[b.offset + k] += ybar[b.offset + k] - fed[b.offset + k];
+      }
+    }
+    // held to the convergence criterion of the region, on the change of the iterate
+    std::vector<double> residual(R.blocks.size(), 0.0), value(R.blocks.size(), 0.0);
+    bool finite = true;
+    for (std::size_t bi = 0; bi < R.blocks.size(); ++bi) {
+      const detail::RegionBlock& b = R.blocks[bi];
+      double rs = 0.0, vs = 0.0;
+      for (std::size_t k = 0; k < b.length; ++k) {
+        const double d = next[b.offset + k] - lambda[b.offset + k];
+        rs += d * d;
+        vs += next[b.offset + k] * next[b.offset + k];
+      }
+      residual[bi] = std::sqrt(rs);
+      value[bi] = std::sqrt(vs);
+      finite = finite && std::isfinite(residual[bi]) && std::isfinite(value[bi]);
+      if (j == 0) first_residual[bi] = residual[bi];
+    }
+    if (!finite) {
+      return refuse("E-ADJ-REGION-DIVERGED",
+                    "the adjoint iteration of region '" + R.name + "' left the finite numbers after " +
+                        std::to_string(passes) + " pass(es); the fixed-point map is not a contraction, "
+                        "which the forward run's accelerator may have hidden");
+    }
+    std::vector<double> residual_norms(R.measure_block.size(), 0.0), reference_norms(R.measure_block.size(), 0.0);
+    for (std::size_t mi = 0; mi < R.measure_block.size(); ++mi) {
+      const std::size_t bi = R.measure_block[mi];
+      residual_norms[mi] = residual[bi];
+      reference_norms[mi] = R.convergence.measures()[mi].kind == MeasureKind::ResidualRelative
+                                ? first_residual[bi]
+                                : value[bi];
+    }
+    converged = R.convergence.all_satisfied(residual_norms, reference_norms);
+    lambda = next;
+  }
+  if (!converged) {
+    return refuse("E-ADJ-REGION-NOCONVERGE",
+                  "the adjoint iteration of region '" + R.name + "' did not meet the region's convergence criterion in " +
+                      std::to_string(R.max_iterations) +
+                      " passes; the plain fixed-point iteration of the adjoint converges only when the "
+                      "forward iteration does without acceleration");
+  }
+  // y_0, the iterate the forward sweeps started from, does not influence the fixed point: what
+  // the last pass added to the delivered values is not passed on
+  for (const detail::RegionBlock& b : R.blocks) copy_in(feed_array(b), fed.data() + b.offset);
+  Kokkos::fence("fuse::adjoint_region_end");
   return Result<void>::success();
 }
 
@@ -541,6 +778,10 @@ Result<void> Runner::Impl::reverse_on(std::size_t index) {
     case OpKind::BuildRemapHalo:
       // The arc is the provider's own array: the adjoint arrays of its readers
       // were added to the provider's adjoint array when they were reversed.
+      return Result<void>::success();
+
+    case OpKind::Residual:
+      // The residual of an iteration region only feeds its convergence test.
       return Result<void>::success();
 
     case OpKind::Sink:
