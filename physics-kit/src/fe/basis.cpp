@@ -1,19 +1,33 @@
 // fuse_physics::fe::Basis / BasisRegistry -- adapted from KARMA's
 // karma_basis.h/.C. See basis.hpp's header comment for the wave's scope.
 //
-// NOT PORTED THIS WAVE: KARMA's OrientationTransform / apply_orientation /
-// apply_orientation_inverse machinery, which lets a basis function's local
-// coefficient be re-signed/permuted to agree with a shared edge or face's
-// GLOBAL orientation when two elements see it from opposite local vertex
-// order. Single-element evaluation (this wave's whole test surface --
-// quadrature exactness, basis properties on one reference cell, geometry
-// maps on one element) never exercises it; it matters only once elements
-// are assembled into a global system, which is explicitly a later wave
-// (numerics/linear, "WAVE 2" per the task). Named here and in
-// design_notes/open_questions rather than silently dropped.
+// ORIENTATION (owner instruction 2026-10-31, item 5; superseding wave 1's
+// "not ported this wave" note, which this wave closes): KARMA's
+// OrientationTransform / apply_orientation / apply_orientation_inverse,
+// letting a basis function's local DOF be re-signed/permuted to agree
+// with a shared edge or face's GLOBAL orientation when two elements see
+// it from opposite local vertex order. KARMA determines each sub-entity's
+// own shape (to size orientation_count: 2 for an edge, 6 for a triangular
+// face, 8 for a quadrilateral face) via moab::CN::SubEntityType;
+// physics-kit has no MOAB dependency (docs/dev/layering.md), so
+// subentity_shape() below reads the SAME fact off this wave's own
+// ReferenceTopology::side_topology(side).family() instead -- the two are
+// the same classification (reference_topology.cpp confirmed the cell
+// corner/side ordering already agrees with MOAB/Exodus convention
+// exactly, wave 1b's own note), just read through a native accessor
+// rather than a MOAB one.
+//
+// This wave's built-in bases (order <= 2) place at most ONE DOF on any
+// edge or face, so every generated OrientationTransform is PROVABLY the
+// identity permutation with sign +1 (basis.hpp's own header comment) --
+// ported with KARMA's identical general-purpose construction (it does
+// not special-case the DOF count; a future higher-order basis gets a
+// genuine permutation for free), with the IDENTITY result confirmed by
+// fe_basis_test.cpp rather than assumed.
 
 #include "fuse_physics/fe/basis.hpp"
 
+#include <algorithm>
 #include <array>
 #include <stdexcept>
 
@@ -24,7 +38,12 @@ namespace {
 [[noreturn]] void refuse(const char* message) { throw std::invalid_argument(message); }
 
 bool valid_key(const BasisKey& key) noexcept {
-  return key.family == FieldBasisFamily::LagrangeNodal || key.order <= maximum_basis_order;
+  // The lead's review of wave 1 (docs/dev/physics-kit.md) found this OR
+  // was a bug: it accepted ANY key.order for a LagrangeNodal key,
+  // regardless of maximum_basis_order, because the family clause alone
+  // made the whole disjunction true. Dropped (KNOWN_ISSUES.md D101) --
+  // the order bound applies uniformly to every family.
+  return key.order <= maximum_basis_order;
 }
 
 GeometryVariant variant_for(CellFamily cell, unsigned order) {
@@ -39,6 +58,13 @@ GeometryVariant variant_for(CellFamily cell, unsigned order) {
       return order <= 1 ? GeometryVariant::Tet4 : GeometryVariant::Tet10;
     case CellFamily::Hexahedron:
       return order <= 1 ? GeometryVariant::Hex8 : GeometryVariant::Hex27;
+    case CellFamily::Prism:
+      // The COMPLETE family (Prism18), not the Quad8-like serendipity
+      // Prism15 -- same principle basis.hpp's header states for Quad9
+      // over Quad8.
+      return order <= 1 ? GeometryVariant::Prism6 : GeometryVariant::Prism18;
+    case CellFamily::Pyramid:
+      return order <= 1 ? GeometryVariant::Pyramid5 : GeometryVariant::Pyramid14;
   }
   refuse("unknown cell family");
 }
@@ -55,8 +81,27 @@ std::string cell_name(CellFamily cell) {
       return "Tetrahedron";
     case CellFamily::Hexahedron:
       return "Hexahedron";
+    case CellFamily::Prism:
+      return "Prism";
+    case CellFamily::Pyramid:
+      return "Pyramid";
   }
   return "Unknown";
+}
+
+/// The number of distinct local-vertex orderings a (entity_dimension,
+/// local_entity_index) sub-entity of `cell` can be seen in by its two
+/// (or more) incident elements -- 2 for any edge, 6 for a triangular
+/// face, 8 for a quadrilateral face, 1 (no choice) for anything else
+/// (cell-dimension entity_dimension itself: never shared, so never
+/// re-oriented).
+unsigned orientation_count(CellFamily cell, unsigned entity_dimension, unsigned local_entity_index) {
+  if (entity_dimension == 1) return 2;  // every edge, in every cell family
+  if (entity_dimension != 2) return 1;
+  const auto side_family = ReferenceTopology(variant_for(cell, 1)).side_topology(local_entity_index).family();
+  if (side_family == CellFamily::Triangle) return 6;
+  if (side_family == CellFamily::Quadrilateral) return 8;
+  return 1;
 }
 
 std::string continuity_name(BasisContinuity continuity) {
@@ -121,17 +166,65 @@ class BuiltinBasis {
     for (std::size_t i = 0; i < vertex_count; ++i) result.push_back({0, static_cast<unsigned>(i), 0});
     if (key_.order == 1) return result;
 
-    constexpr std::array<unsigned, 5> edge_count{1, 3, 4, 6, 12};  // Edge, Tri, Quad, Tet, Hex
+    // Edge, Triangle, Quadrilateral, Tetrahedron, Hexahedron, Prism, Pyramid.
+    constexpr std::array<unsigned, 7> edge_count{1, 3, 4, 6, 12, 9, 8};
     const unsigned edges = edge_count[static_cast<std::size_t>(key_.cell)];
     for (unsigned i = 0; i < edges; ++i) result.push_back({1, i, 0});
-    const unsigned face_centers = key_.cell == CellFamily::Hexahedron ? 6 : 0;
+    // Hexahedron's 6 quad faces and Prism's 3 quad SIDE faces (not its 2
+    // triangular caps, which carry no P2 face dof -- Tri6 has none
+    // either) each get a face-centre dof at this order.
+    const unsigned face_centers = key_.cell == CellFamily::Hexahedron ? 6 : key_.cell == CellFamily::Prism ? 3 : 0;
     for (unsigned i = 0; i < face_centers; ++i) result.push_back({2, i, 0});
+    // The pyramid's one extra P2 node (Pyramid14's 14th, at the base
+    // centre p(0,0,0)) lies ON the base QUAD face -- side index 4 in
+    // this wave's side_topology ordering (4 triangular sides first, the
+    // quad base last) -- so it is a genuine face dof, not a cell-
+    // interior one: it must be covered by an orientation transform when
+    // two pyramids share a base face, same as the hexahedron's and
+    // prism's face centres.
+    if (key_.cell == CellFamily::Pyramid) result.push_back({2, 4, 0});
     if (result.size() < size()) result.push_back({cell_dimension_of(key_.cell), 0, 0});
+    return result;
+  }
+
+  /// KARMA's own construction (karma_basis.C's BuiltinBasis::
+  /// orientation_transforms): for every (entity_dimension, sub-entity)
+  /// this basis places a dof on, and every orientation code that
+  /// sub-entity's shape can present, emit the IDENTITY permutation with
+  /// sign +1 -- correct by construction whenever the sub-entity carries
+  /// at most one dof (basis.hpp's header comment derives why that holds
+  /// for every key this wave's registry builds), ported unchanged rather
+  /// than special-cased so a future higher-order basis only needs to
+  /// override this method, not re-derive the surrounding bookkeeping.
+  [[nodiscard]] std::vector<OrientationTransform> orientation_transforms() const {
+    std::vector<OrientationTransform> result;
+    const auto associations = dof_associations();
+    const unsigned top_dimension = cell_dimension_of(key_.cell);
+    for (unsigned entity_dimension = 1; entity_dimension < top_dimension; ++entity_dimension) {
+      const unsigned n_entities = entity_dimension == 1 ? edge_count_of(key_.cell) : side_count_of(key_.cell);
+      for (unsigned entity = 0; entity < n_entities; ++entity) {
+        const auto dof_count = static_cast<std::size_t>(
+            std::count_if(associations.begin(), associations.end(), [=](const DofAssociation& association) {
+              return association.entity_dimension == entity_dimension && association.local_entity_index == entity;
+            }));
+        const unsigned codes = orientation_count(key_.cell, entity_dimension, entity);
+        for (unsigned code = 0; code < codes; ++code) {
+          std::vector<std::size_t> permutation(dof_count);
+          for (std::size_t i = 0; i < dof_count; ++i) permutation[i] = i;
+          result.push_back({entity_dimension, entity, code, std::move(permutation), std::vector<int>(dof_count, 1)});
+        }
+      }
+    }
     return result;
   }
 
  private:
   static unsigned cell_dimension_of(CellFamily cell) { return cell_dimension(cell); }
+  static unsigned edge_count_of(CellFamily cell) {
+    constexpr std::array<unsigned, 7> edge_count{1, 3, 4, 6, 12, 9, 8};
+    return edge_count[static_cast<std::size_t>(cell)];
+  }
+  static unsigned side_count_of(CellFamily cell) { return ReferenceTopology(variant_for(cell, 1)).side_count(); }
 
   BasisKey key_;
   ReferenceTopology reference_;
@@ -140,8 +233,9 @@ class BuiltinBasis {
 }  // namespace
 
 BasisRegistry::BasisRegistry() {
-  constexpr std::array cells{CellFamily::Edge, CellFamily::Triangle, CellFamily::Quadrilateral,
-                              CellFamily::Tetrahedron, CellFamily::Hexahedron};
+  constexpr std::array cells{CellFamily::Edge,        CellFamily::Triangle, CellFamily::Quadrilateral,
+                              CellFamily::Tetrahedron, CellFamily::Hexahedron, CellFamily::Prism,
+                              CellFamily::Pyramid};
   constexpr std::array continuities{BasisContinuity::cG, BasisContinuity::dG, BasisContinuity::SE};
   for (const auto cell : cells)
     for (unsigned order = 0; order <= 2; ++order)
@@ -172,6 +266,38 @@ Basis BasisRegistry::create(const BasisKey& key) const {
   Basis result = found->second();
   if (!(result.key() == key)) refuse("basis factory returned a mismatched key");
   return result;
+}
+
+namespace {
+const OrientationTransform& find_transform(const std::vector<OrientationTransform>& transforms,
+                                            unsigned entity_dimension, unsigned local_entity_index,
+                                            unsigned orientation_code) {
+  const auto found = std::find_if(transforms.begin(), transforms.end(), [&](const OrientationTransform& transform) {
+    return transform.entity_dimension == entity_dimension && transform.local_entity_index == local_entity_index &&
+           transform.orientation_code == orientation_code;
+  });
+  if (found == transforms.end()) refuse("unknown orientation state for this basis's sub-entity");
+  return *found;
+}
+}  // namespace
+
+void Basis::apply_orientation(unsigned entity_dimension, unsigned local_entity_index, unsigned orientation_code,
+                               std::span<const double> local, std::span<double> canonical) const {
+  const auto& transform = find_transform(orientation_transforms_, entity_dimension, local_entity_index, orientation_code);
+  if (local.size() != transform.local_to_canonical.size() || canonical.size() != local.size())
+    refuse("orientation coefficient storage must match the sub-entity's own dof count");
+  for (std::size_t i = 0; i < local.size(); ++i)
+    canonical[transform.local_to_canonical[i]] = static_cast<double>(transform.signs[i]) * local[i];
+}
+
+void Basis::apply_orientation_inverse(unsigned entity_dimension, unsigned local_entity_index,
+                                       unsigned orientation_code, std::span<const double> canonical,
+                                       std::span<double> local) const {
+  const auto& transform = find_transform(orientation_transforms_, entity_dimension, local_entity_index, orientation_code);
+  if (canonical.size() != transform.local_to_canonical.size() || local.size() != canonical.size())
+    refuse("orientation coefficient storage must match the sub-entity's own dof count");
+  for (std::size_t i = 0; i < canonical.size(); ++i)
+    local[i] = static_cast<double>(transform.signs[i]) * canonical[transform.local_to_canonical[i]];
 }
 
 }  // namespace fuse::physics::fe
