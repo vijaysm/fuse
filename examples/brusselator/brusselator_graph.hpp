@@ -183,7 +183,7 @@ struct WindowGraphHandles {
   const fuse::ChannelId ch_v2u = g.add_channel("v2u", v_out, u_in);
   // `v_in` is Conservation::Extensive, and validate() requires a channel into
   // an Extensive field to declare that its transfer conserves it
-  // (E-CONN-CONSERVATION, KNOWN_ISSUES.md D94). Both fields live on
+  // (E-CONN-CONSERVATION). Both fields live on
   // `u_region`, so the transfer is the identity, which does; the coupler
   // branch below adds the same flag together with its placement, so the
   // graph it writes (the reference_*.yaml files) is unchanged by this line.

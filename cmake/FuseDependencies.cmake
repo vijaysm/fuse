@@ -133,7 +133,7 @@ option(FUSE_ENABLE_CUSPARSE "cuSOLVER/cuSPARSE device sparse LU for the FSI and 
 option(FUSE_ENABLE_PYTHON  "pybind11 module"                                        OFF)
 option(FUSE_ENABLE_FORTRAN "Fortran participant shim"                               OFF)
 option(FUSE_ENABLE_TESTS   "Build the test suite"                                   ON)
-# physics-kit (docs/dev/physics-kit.md), S8's optional finite-element
+# physics-kit (docs/dev/physics-kit.md), the optional finite-element
 # component. Default ON, unlike FUSE_ENABLE_PYTHON/FORTRAN just above:
 # those add a real third-party dependency (pybind11, a Fortran compiler)
 # this option does not -- physics-kit links only fuse::runtime,

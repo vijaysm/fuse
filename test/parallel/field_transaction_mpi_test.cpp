@@ -1,39 +1,36 @@
-// KNOWN_ISSUES.md / docs/dev/field-semantics-matrix.md Section 6.1: the
+// docs/dev/field-semantics-matrix.md Section 6.1: the
 // real-communicator twin of test/field/transaction_test.cpp's
 // CommitCollectiveWith* cases, over an ACTUAL MPI_COMM_WORLD rather than
 // `std::nullopt` or (compiled out under FUSE_HAVE_MPI) a locally-constructed
-// non-null handle with no MPI behind it. S8 Stage B, Field semantics track,
-// round 2 (the lead's own instruction, 2026-10-28/29): the round-1 tier-0
-// suite built and linked `commit_collective()`'s `#if FUSE_HAVE_MPI` branch
-// but never exercised it -- the round-1 `CommitCollectiveWithACommunicator
+// non-null handle with no MPI behind it. The tier-0
+// suite builds and links `commit_collective()`'s `#if FUSE_HAVE_MPI` branch
+// but never exercises it -- the `CommitCollectiveWithACommunicator
 // AndNoMpiIsRefused` case is guarded `#if !FUSE_HAVE_MPI` and so is compiled
 // OUT of an MPI build entirely, and the tier-0 mutation sweep's own
 // `field-transaction-collective-agreement-skipped` row (build-evidence/
-// mutations/field-transaction.toml) could only be marked NOT-ASSESSED for
+// mutations/field-transaction.toml) can only be marked NOT-ASSESSED for
 // exactly that reason (tools/mutate.py --area field-transaction,
-// `measured_results`). This file is that hole closed: a real
+// `measured_results`). This file closes that hole: a real
 // MPI_Allreduce over MPI_COMM_WORLD, registered through the same
 // fuse_add_mpi_test machinery as test/parallel/provider_subset_mpi_test.cpp
 // (RANKS 2 3).
 //
-// MPI CANNOT START IN THIS SANDBOX (KNOWN_ISSUES.md C1): this file is
-// compiled here, never run; host_pending names the exact `mpirun` commands
-// the lead runs on higgs.
+// Where MPI cannot start (a restricted sandbox, say) this file is only
+// compiled, never run; host_pending names the exact `mpirun` commands to
+// run on a host with a working launcher.
 //
 // THE COMMUNICATOR HANDLE. Every case below passes
 // `MPI_Comm_c2f(MPI_COMM_WORLD)` as the `std::optional<int>` argument
 // `FieldTransaction::commit_collective()` takes. On Open MPI that Fortran
-// handle is 0 (KNOWN_ISSUES.md D85's own MEASURED finding, higgs, Open MPI
-// 5.0.9, 2026-10-23) -- a value that the C ABI (`fuse_setup_options`) must
+// handle is 0 (measured with Open MPI 5.0.9) -- a value that the C ABI (`fuse_setup_options`) must
 // be told is deliberate via a SEPARATE `has_communicator` flag, because a
 // plain `int64_t communicator` field cannot otherwise distinguish "the
-// handle is 0" from "no communicator was given" (D85's own "why not choose
-// by MPI flavour" paragraph). `FieldTransaction::commit_collective()` does
-// NOT have that ambiguity: its argument is `std::optional<int>`, and
+// handle is 0" from "no communicator was given".
+// `FieldTransaction::commit_collective()` does NOT have that ambiguity: its argument is `std::optional<int>`, and
 // `std::optional<int>{0}` is a PRESENT optional holding the value 0, fully
 // distinguishable from `std::nullopt` at the type level -- there is no
 // second flag to set and no way to construct this call that reads as
-// "unset" by accident. The comment is here anyway, matching D85's own
+// "unset" by accident. The comment is here anyway, matching the ABI's
 // precedent, because a reader unfamiliar with Open MPI's own numbering
 // could otherwise mistake a logged "communicator = 0" for a bug.
 #include "fuse/base/config.hpp"
@@ -195,7 +192,7 @@ TEST(FieldTransactionMpi, ValidationDisagreementAgreesTheSameRefusalOnEveryRankA
   EXPECT_NE(outcome.error().message.find("rank " + std::to_string(last_rank)), std::string::npos)
       << "rank " << rank << " got message: " << outcome.error().message;
   expect_identical_status_code_on_every_rank(outcome, world_size);
-  // D97 (2026-10-30): the ORIGINAL error and its rank are known on every
+  // The ORIGINAL error and its rank are known on every
   // rank, as data and in the message -- the origin's own local code
   // (E-FIELD-TXN-INCOMPLETE, the incomplete entry 1) and its own text.
   EXPECT_EQ(outcome.error().origin_rank, last_rank) << "rank " << rank;

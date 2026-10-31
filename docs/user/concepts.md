@@ -72,7 +72,9 @@ whole pattern of steps and transfers repeats (the least common multiple of the s
 faster component takes several steps per slower step. FUSE records the faster one's output at each
 sub-step (`Sample`), then reduces it over the slower component's step (`Accumulate`) with a sum, mean,
 minimum, maximum or integral. Use the mean for a state and the integral for a flux, so that what one
-side loses the other gains over the same interval.
+side loses the other gains over the same interval. The integral is the sum of the samples times
+the faster component's step, so it carries units of the source times time; the plain sum does not
+scale by the step.
 
 **Cycles must be broken explicitly.** If two channels form a loop, one must be *lagged*: the target
 reads the source's value from the previous coupling step. That is explicit (staggered) coupling.
@@ -161,7 +163,7 @@ Nothing fails silently. FUSE reports problems in three ways, and they are meant 
   weaker behaviour.
 - Internal invariants are checked in every build type, including Release.
 
-A program that installs the environment error policy (`fuse::set_error_policy(fuse::error_policy_from_environment())`)
+A program that has called `fuse::initialize()` (every shipped example does; your own driver should)
 can be told with `FUSE_ON_ERROR=debugger` to open a debugger on the failing rank at the moment it
 fails ([](environment.md), [](troubleshooting.md#debugging-a-failure)).
 

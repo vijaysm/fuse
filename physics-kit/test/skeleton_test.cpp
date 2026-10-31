@@ -2,10 +2,10 @@
 // compiles, links against fuse::runtime/fuse::backend/fuse::num/
 // fuse::linalg, and that FUSE_HAVE_PETSC (fuse/base/config.hpp) reaches
 // physics-kit code without physics-kit adding any find_package(PETSc) of
-// its own (owner decision D-B: physics-kit is tier 0 with PETSc optional).
+// its own (physics-kit is tier 0 with PETSc optional).
 //
 // No physics code exists yet (docs/dev/physics-kit.md); this is the one
-// test the skeleton stage asks for, not a stand-in for behavioural
+// skeleton test, not a stand-in for behavioural
 // coverage of a component that has none yet.
 
 #include "fuse_physics/version.hpp"

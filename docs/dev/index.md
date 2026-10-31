@@ -71,20 +71,17 @@ history and the reduction scratch resident in the execution space's memory, host
 at named boundaries, the mesh/topology builders made Space-generic, and the GPU-aware transport path
 for multi-rank device runs.
 
-## physics-kit (S8)
+## physics-kit
 
-[](physics-kit-disposition.md) is the S8.0 inventory of the vendored KARMA tree: the per-file
-supersession table, the include graph and import order, the test mapping and the baselines the
-port must reproduce, with the lead's corrections after review at the end. [](integrators-design.md)
-is the read-first design for porting KARMA's 22 Runge-Kutta and Rosenbrock tableaus into `fuse::num`
+[](integrators-design.md)
+is the design for porting KARMA's 22 Runge-Kutta and Rosenbrock tableaus into `fuse::num`
 as templates with a separate embedded-error controller, the contract with the coupling window, and
-the owner's decisions on its open questions. [](field-semantics-matrix.md) is the
+the decisions on its open questions. [](field-semantics-matrix.md) is the
 read-only comparison of KARMA's eight coupling headers and SOMA's field layer against the current
 fuse field semantics: eight verdicts, a per-concern matrix with file and line, and the smallest
-addition proposed for each gap. [](physics-kit.md) is the component page once the
-skeleton landed (S8.1): what physics-kit is, its tier and build option, and the two gates
+addition proposed for each gap. [](physics-kit.md) is the component page: what physics-kit is, its tier and build option, and the two gates
 (`tools/check-layering.py`'s boundary check, `tools/check-physics-kit-naming.py`) that keep the
-direction of dependency and the naming honest while the port is in progress.
+direction of dependency and the naming honest.
 
 ## Holding an external path to the bar
 

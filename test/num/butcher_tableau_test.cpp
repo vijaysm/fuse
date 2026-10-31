@@ -1,15 +1,13 @@
-// S8 physics-kit, track "Integrators", Stage B Round 1.
-//
 // Tests the data layer (fuse/num/butcher_tableau.hpp) independent of whether an
 // integrator for a given family is implemented yet: the Butcher row-sum/weight-sum
 // consistency conditions (Hairer, Norsett & Wanner, Solving ODEs I, Theorem II.1.5) and
 // the FSAL structural property catch a defective tableau mechanically, before any
-// convergence test ever runs one. Two of this file's own assertions are the task's own
-// request to RE-VERIFY (not assume) the Stage A design's GRK4A finding, and a NEW
-// finding this round found by the row-sum check itself (SDIRK332, since resolved against
-// its primary source: butcher_tableau.hpp's top comment). The stability-function test at
-// the end recomputes R(z) from the shipped coefficients, which is how the A/L-stability
-// flags of five vendored methods were found to be wrong (lead, 2026-10-29).
+// convergence test ever runs one. Two of this file's own assertions re-verify (rather
+// than assume) the design doc's GRK4A finding, and a finding made by the row-sum check
+// itself (SDIRK332, resolved against its primary source: butcher_tableau.hpp's top
+// comment). The stability-function test at the end recomputes R(z) from the shipped
+// coefficients, which is how the A/L-stability flags of five vendored methods were
+// found to be wrong.
 
 #include "fuse/num/butcher_tableau.hpp"
 
@@ -59,8 +57,8 @@ bool is_classical_family(ButcherFamily f) {
 }
 
 // Every ERK/DIRK/SDIRK/FIRK tableau satisfies the classical row-sum/weight-sum
-// consistency conditions to round-off. SDIRK332 was the one exception until 2026-10-29,
-// when its C[1] was corrected to 29/108 against Norsett and Thomsen (1984), scheme (5.4);
+// consistency conditions to round-off. SDIRK332 was the one exception until its C[1] was
+// corrected to 29/108 against Norsett and Thomsen (1984), scheme (5.4);
 // the vendored 24/108 is pinned below as a defect so a revert to it is caught.
 TEST(ButcherTableau, ClassicalFamiliesAreRowSumConsistent) {
   for (const ButcherTableau& t : all_karma_tableaus()) {
@@ -97,8 +95,8 @@ TEST(ButcherTableau, DeclaredFsalMatchesTheStructuralProperty) {
   }
 }
 
-// RE-VERIFIED this round (task's own instruction): grk4a_tableau()'s E is read back
-// and confirmed identically zero, independent of the Stage A design's own prior read.
+// Verified, not assumed: grk4a_tableau()'s E is read back and confirmed identically
+// zero, independent of the design doc's own read.
 TEST(ButcherTableau, Grk4aEmbeddedEstimateIsMeasuredZeroNotAssumed) {
   const ButcherTableau t = grk4a_tableau();
   ASSERT_TRUE(t.E.has_value());
@@ -125,10 +123,10 @@ TEST(ButcherTableau, Dopri45EmbeddedOrderIsCorrectedToFour) {
   EXPECT_TRUE(t.is_FSAL);
 }
 
-// Spot-check against the Stage A design's own inventory table (a handful of named
+// Spot-check against the design doc's own inventory table (a handful of named
 // values, not every one -- the row-sum/FSAL tests above already exercise every
 // tableau's own data mechanically).
-TEST(ButcherTableau, StageCountsAndOrdersMatchTheStageAInventory) {
+TEST(ButcherTableau, StageCountsAndOrdersMatchTheInventoryMatchesTheSource) {
   EXPECT_EQ(forward_euler_tableau().stages, 1);
   EXPECT_EQ(forward_euler_tableau().order, 1);
   EXPECT_EQ(dopri45_tableau().stages, 7);
@@ -255,8 +253,8 @@ TEST(ButcherTableau, DeclaredStabilityMatchesTheStabilityFunction) {
 }
 
 // The values the flags were corrected from, pinned as numbers rather than booleans so
-// the corrections stay measured: SDIRK332 R(-inf) = -91/125 (exact rational arithmetic,
-// lead 2026-10-29), ROS3P R(-inf) = 1 - sqrt(3), GRK4T's violation max |R(iy)| = 1.028.
+// the corrections stay measured: SDIRK332 R(-inf) = -91/125 (exact rational arithmetic),
+// ROS3P R(-inf) = 1 - sqrt(3), GRK4T's violation max |R(iy)| = 1.028.
 TEST(ButcherTableau, CorrectedStabilityLimitsAreTheMeasuredOnes) {
   {
     const auto [M, b] = stability_data(sdirk332_tableau());

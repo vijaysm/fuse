@@ -733,8 +733,8 @@ Result<std::uint32_t> Runner::Impl::weights_for(RegionId region,
   // (mesh_view.hpp), and which conservation convention the field follows.
   //
   // The conserved quantity depends on the field's `Conservation` kind, the
-  // same convention the weight builder normalises by (KNOWN_ISSUES.md D82,
-  // owner decision 2026-10-19; `RemapPlan::conservation`, remap_plan.hpp):
+  // same convention the weight builder normalises by
+  // (`RemapPlan::conservation`, remap_plan.hpp):
   //
   //   * `Conservation::Extensive`: the field's VALUE IS the conserved amount
   //     (not a density), so the conserved total is the plain sum of owned

@@ -901,10 +901,10 @@ TEST(Runner, NoTargetStepIntegratesAgainstUnfinishedSourceState) {
 /// unfinished, state. The fix is to emit an Instant chain once per SOURCE
 /// step, at that step's end, which changes instance counts, the buffer plan
 /// and every plan dump. That is a redesign of slab-based emission, out of
-/// scope here and recorded as R34 in docs/HANDOFF.md.
+/// scope here.
 ///
 /// This test exists so the residual cannot be mistaken for absent, and so that
-/// whoever does R34 has the failing shape already written down. Flip the
+/// whoever redesigns it has the failing shape already written down. Flip the
 /// expectations when it lands.
 TEST(Runner, ASourceStepSpanningMoreThanTwoTargetStepsIsStillDeliveredEarly) {
   auto h = build(HarnessOpts{.src_dt = Rational{1},
@@ -924,7 +924,7 @@ TEST(Runner, ASourceStepSpanningMoreThanTwoTargetStepsIsStillDeliveredEarly) {
   EXPECT_DOUBLE_EQ(rx.seen()[1], 0.0);
   EXPECT_EQ(rx.seen_at()[2], Rational(2, 3));
   EXPECT_DOUBLE_EQ(rx.seen()[2], 2.0)
-      << "the early delivery is gone -- if R34 landed, update this test and "
+      << "the early delivery is gone -- if that redesign landed, update this test and "
          "add 1 -> 1/3 to NoTargetStepIntegratesAgainstUnfinishedSourceState";
   EXPECT_DOUBLE_EQ(rx.seen()[3], 2.0);  // t = 1, now causal
 }
@@ -1771,7 +1771,7 @@ TEST(Runner, ConservativeIdentityRemapBetweenCoincidentRegionsReportsNoError) {
 // leg, where the numbers are the real ones. Nothing here is left unpinned; it
 // is pinned somewhere a real remap exists.
 
-// KNOWN_ISSUES.md D82 (owner decision 2026-10-19): an Extensive field's value
+// An Extensive field's value
 // IS the conserved amount, so the supermesh weights for an Extensive channel
 // are column-normalised and preserve the plain sum; an Intensive field is a
 // density, its weights are row-normalised and preserve the measure-weighted

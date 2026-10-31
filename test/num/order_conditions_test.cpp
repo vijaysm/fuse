@@ -1,9 +1,8 @@
-// S8 physics-kit, track "Integrators", Stage B Round 2, task item 1.
-//
 // A generic order-condition checker (fuse/num/order_conditions.hpp) over Butcher's own
 // rooted trees, proved here against known published per-tree conditions before being
-// trusted to grade a single tableau (the task's own instruction, "do not hand-check" --
-// this file IS the hand-check, run once, of the generic machinery itself).
+// trusted to grade a single tableau (nothing is hand-checked
+// per tableau -- this file IS the hand-check, run once, of the generic machinery
+// itself).
 
 #include "fuse/num/order_conditions.hpp"
 
@@ -162,7 +161,7 @@ TEST(OrderConditions, PerChildProductMatchesTheLiteratureConditions) {
 // satisfies every order condition through its own declared `order` to round-off, AND
 // does not understate it: at least one condition at `order + 1` fails by well above
 // round-off (skipped when `order + 1` exceeds the catalog's own max order, 5 --
-// DOPRI45 is order 5 already). This is the task's own "prove every new tableau" in its
+// DOPRI45 is order 5 already). This is how every tableau is proved, in its
 // general form, run here against the 15 EXISTING classical tableaus first.
 TEST(OrderConditions, ClassicalFamiliesSatisfyExactlyTheirDeclaredOrder) {
   RootedTreeCatalog cat(kMaxCatalogOrder);
@@ -210,9 +209,8 @@ TEST(OrderConditions, Sdirk44sDeclaredOrderIsCorrectedFromFourToThree) {
 // finding): `rosenbrock_classical_form()`'s (M, b) satisfies the classical order-2
 // conditions for EVERY Rosenbrock tableau (the Jacobian-exactness equivalence holds
 // that far unconditionally), but the higher-order classical conditions do NOT hold for
-// any tableau declared order 3 or above -- this is not a defect, it is why task item 3
-// asks for a MEASURED numerical order test on the Rosenbrock family rather than this
-// checker; the test exists so a future change that silently started asserting the
+// any tableau declared order 3 or above -- this is not a defect, it is why the Rosenbrock family
+// gets a MEASURED numerical order test rather than this checker; the test exists so a future change that silently started asserting the
 // higher-order classical conditions for Rosenbrock (which would be mathematically
 // unjustified, Hairer & Wanner Solving ODEs II IV.7) is caught by this test FAILING to
 // fail, not by a missing assertion nobody noticed.
@@ -233,12 +231,12 @@ TEST(OrderConditions, RosenbrockOrderTwoConditionsHoldButHigherOrderClassicalCon
   }
 }
 
-// Round 2's own new tableaus (task items 2 and 4): each proved by this SAME generic
-// checker before being wired into any integrator, per the task's own "every tableau
-// you add must pass it... before it is used anywhere".
-TEST(RoundTwoTableaus, EveryNewTableauSatisfiesExactlyItsDeclaredOrder) {
+// The additional (non-KARMA) tableaus: each proved by this SAME generic checker
+// before being wired into any integrator (every tableau added must pass it before it
+// is used anywhere).
+TEST(ExtendedTableaus, EveryNewTableauSatisfiesExactlyItsDeclaredOrder) {
   RootedTreeCatalog cat(kMaxCatalogOrder);
-  for (const ButcherTableau& t : all_round2_tableaus()) {
+  for (const ButcherTableau& t : all_extended_tableaus()) {
     const double tol = order_tolerance(t.stages);
     const double thru = max_defect_through_order(cat, t.A, t.B, t.order);
     EXPECT_LT(thru, tol) << t.name << ": defect through order " << t.order << " = " << thru;
@@ -259,7 +257,7 @@ TEST(RoundTwoTableaus, EveryNewTableauSatisfiesExactlyItsDeclaredOrder) {
 // A/B were derived by hand (Shu-Osher substitution, butcher_tableau.hpp's own
 // ssprk104_tableau() doc comment) rather than copied from a published Butcher table --
 // a defect here would mean the substitution itself was wrong, not a transcription slip.
-TEST(RoundTwoTableaus, Ssprk104SatisfiesOrderFourConditions) {
+TEST(ExtendedTableaus, Ssprk104SatisfiesOrderFourConditions) {
   const ButcherTableau t = ssprk104_tableau();
   RootedTreeCatalog cat(kMaxCatalogOrder);
   const double thru4 = max_defect_through_order(cat, t.A, t.B, 4);

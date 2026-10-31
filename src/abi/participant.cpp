@@ -2517,7 +2517,7 @@ fuse_status reconcile_collective_status(fuse_ctx& c, fuse_status local_status,
   // collective_agreement.hpp): the origin's own E-code, message and numeric
   // status reach every rank of the component, so a rank that did not refuse
   // returns the ORIGIN's status and a message carrying the original error
-  // and its rank (KNOWN_ISSUES.md D97, owner's rule of 2026-10-30). Ranks
+  // and its rank. Ranks
   // that themselves refused keep their own record, which is an original.
   const fuse::Result<void> local_outcome =
       (local_status == FUSE_OK)
@@ -2624,18 +2624,16 @@ fuse_status reconcile_plugin_agreement(fuse_ctx& c, int rank, fuse_status local_
   if (comm == MPI_COMM_NULL) return local_status;  // defensive: impl_initialize_local()'s
                                                     // own check already refused this
   // ONE reduction, through the same agreement helper the field transaction
-  // uses (fuse/field/collective_agreement.hpp; owner's rule, KNOWN_ISSUES.md
-  // D97, 2026-10-30): the verdict is agreed, then the originating rank
+  // uses (fuse/field/collective_agreement.hpp): the verdict is agreed, then the originating rank
   // broadcasts its own E-code, message and numeric status, so every rank
   // returns the ORIGIN's numeric status and a message that carries the
-  // original error and the rank it came from. Before this, the MINLOC over
-  // numeric statuses told a peer the rank and the number but not what that
-  // rank had actually refused with. When several ranks refuse, the
+  // original error and the rank it came from. (A MINLOC over numeric
+  // statuses would tell a peer the rank and the number but not what that
+  // rank had actually refused with.) When several ranks refuse, the
   // lowest-numbered one is reported (MPI_MAXLOC's tie rule) and the message
   // says how many refused; the pure reconcile_local_statuses() the fake
   // path uses reports the lowest NUMERIC status instead, which names the
-  // same rank whenever one rank refuses, every host-verified case of
-  // D15/D85.
+  // same rank whenever one rank refuses, every host-verified case.
   const fuse::Result<void> local_outcome =
       (local_status == FUSE_OK)
           ? fuse::Result<void>::success()
@@ -2644,7 +2642,7 @@ fuse_status reconcile_plugin_agreement(fuse_ctx& c, int rank, fuse_status local_
       static_cast<int>(c.communicator), local_outcome, "E-ABI-PLUGIN-AGREEMENT-REFUSED",
       "E-ABI-PLUGIN-AGREEMENT-COMM",
       std::string(fn) + ": plugin-mount agreement across the base communicator (the graph "
-                        "declares a Plugin component; docs/dev/abi-design.md, KNOWN_ISSUES.md D15)",
+                        "declares a Plugin component; docs/dev/abi-design.md)",
       static_cast<std::int32_t>(local_status));
   if (agreed.ok()) return FUSE_OK;
   if (agreed.error().code != "E-ABI-PLUGIN-AGREEMENT-REFUSED") {

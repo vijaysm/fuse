@@ -246,7 +246,7 @@ set_target_properties(fuse-coupler-num PROPERTIES
 
 # ---------------------------------------------------------------- field
 # The lazy field pipeline (field_ref.hpp/pipeline.hpp/extent.hpp, still
-# header-only) plus, as of the S8 Stage B Field semantics track, the one
+# header-only) plus the one
 # translation unit FieldTransaction needs (field/transaction.hpp ->
 # src/field/transaction.cpp): staged, all-or-nothing field updates over
 # fuse::FieldRef (docs/dev/field-semantics-matrix.md Section 2.2, gap 1,
@@ -760,8 +760,8 @@ add_library(fuse-abi-objects OBJECT
 target_compile_features(fuse-abi-objects PUBLIC cxx_std_20)
 target_link_libraries(fuse-abi-objects PUBLIC fuse::runtime)
 # The plugin-mount agreement carries the origin's own failure to every rank
-# through fuse::agree_outcome() (KNOWN_ISSUES.md D97); `abi` sits above
-# `field` in tools/check-layering.py's LAYERS list.
+# through fuse::agree_outcome(); `abi` sits above `field` in
+# tools/check-layering.py's LAYERS list.
 target_link_libraries(fuse-abi-objects PUBLIC fuse::field)
 target_compile_definitions(fuse-abi-objects PRIVATE
   FUSE_PROJECT_VERSION_MAJOR=${PROJECT_VERSION_MAJOR}
@@ -877,8 +877,8 @@ set(FUSE_INSTALL_TARGETS
   fuse-coupler-base fuse-coupler-model fuse-coupler-ir fuse-coupler-schedule
   fuse-coupler-linalg fuse-coupler-num fuse-coupler-transport fuse-coupler-search
   fuse-coupler-backend fuse-coupler-partition fuse-coupler-runtime
-  # `field` was created in S8.1 without being installed; the ABI's
-  # plugin-mount agreement now links it (D97), so it ships with the rest.
+  # `field` is linked by the ABI's plugin-mount agreement, so it ships with
+  # the rest.
   fuse-coupler-field
 )
 if(FUSE_ENABLE_PETSC)

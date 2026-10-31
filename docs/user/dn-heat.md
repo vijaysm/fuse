@@ -102,6 +102,11 @@ itself:
 :end-at: "return g;"
 ```
 
+Both flux fields are `Extensive`, so `validate()` requires the `flux` channel to declare
+`.conservative()` (`E-CONN-CONSERVATION` otherwise); between the two coincident meshes the remap is
+the identity, which does conserve. The example calls `fuse::validate()` before `lower()` and the
+graph passes it ([](quickstart.md)).
+
 :::{warning}
 A convergence criterion must measure every field transfer in the cycle. Deleting either `crit.add(...)`
 line is rejected at `initialize()` with `E-ITER-MEASURE`, naming the unmeasured field transfer. A

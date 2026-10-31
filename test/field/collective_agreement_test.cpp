@@ -2,9 +2,8 @@
 // agreement (the message every rank carries, the Failure it is packed into,
 // and the defaults of Failure's provenance fields) are pinned exactly, so the
 // MPI rows (parallel.field_transaction_mpi.{2,3}, parallel.provider_subset_mpi.2)
-// only have to show that the bytes arrive, not what they say. KNOWN_ISSUES.md
-// D97 (2026-10-30): the original error and the rank it came from are known on
-// every rank.
+// only have to show that the bytes arrive, not what they say. The original
+// error and the rank it came from are known on every rank.
 
 #include "fuse/field/collective_agreement.hpp"
 

@@ -1,4 +1,4 @@
-# physics-kit -- S8's optional finite-element component (docs/dev/physics-kit.md).
+# physics-kit -- the optional finite-element component (docs/dev/physics-kit.md).
 #
 # A separate optional component, not a fuse:: layer (docs/dev/layering.md):
 # it depends on FUSE and FUSE never depends on it back. tools/check-layering.py's
@@ -7,8 +7,7 @@
 # fuse::physics_kit); this file enforces the "depends on FUSE" half, by
 # linking only fuse:: targets below.
 #
-# Tier 0 at this skeleton stage (owner decision D-B, docs/dev/integrators-
-# design.md's "Lead's corrections" section): needs nothing beyond what
+# Tier 0: needs nothing beyond what
 # fuse::runtime, fuse::backend, fuse::num and fuse::linalg already need
 # (Kokkos, fmt). FUSE_ENABLE_PETSC is OPTIONAL, read through the existing
 # FUSE_HAVE_PETSC define (fuse/base/config.hpp) -- no new find_package(PETSc)

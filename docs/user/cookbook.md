@@ -26,7 +26,9 @@ Declare `Conservation::Extensive` on both fields. FUSE adds a check to the trans
 
 **Couple components with different time steps.** Give each its own `fuse::Rational` step. Choose how
 the fast side is reduced with `.accumulate(...)`: `Mean` for a state, `Integral` for a flux
-([](concepts.md#time)).
+([](concepts.md#time)). `Integral` multiplies the sum of the samples by the fast side's step, so the
+target field's units must be the source's times time (watts in, joules out); `Sum` adds the samples
+without scaling.
 
 **Break a cycle.** Mark one channel of the loop `.lag(1)`, or put the loop in an iteration region.
 `schedule()` names the cycle if you do neither.

@@ -5,46 +5,44 @@
 
 #include "fuse/num/integrator.hpp"
 
-/// S8 physics-kit, track "Integrators", Stage B Round 2, task item 5: dense output.
+/// Dense output.
 ///
-/// DEVIATION, stated up front rather than left for a reader to discover: the task
-/// asks for "DOPRI5's free fourth-order interpolant (Hairer, Norsett and Wanner I,
-/// Section II.6, the b_i(theta) polynomials, cited)". This round's own search for
-/// that polynomial's exact coefficients found one machine-readable secondary source
+/// DEVIATION, stated up front rather than left for a reader to discover: the natural
+/// choice would be "DOPRI5's free fourth-order interpolant (Hairer, Norsett and Wanner
+/// I, Section II.6, the b_i(theta) polynomials)". A search for that polynomial's
+/// exact coefficients found one machine-readable secondary source
 /// (a Boost.odeint header reproducing Dormand & Prince's own continuous extension),
 /// but the extracted text was garbled/incomplete (the auxiliary polynomials X1..X7 and
 /// the combining constants A, B, C, D came back with missing operators and unclear
 /// grouping) -- entering a quartic interpolant from an incomplete transcription would
 /// risk shipping a SILENTLY wrong formula (a wrong dense-output interpolant "fails
 /// silently, giving large interior errors on a step whose endpoints are perfect",
-/// exactly the failure mode the task's own report contract exists to prevent). This
-/// header instead implements the CUBIC HERMITE interpolant -- match value AND
+/// exactly the failure mode to avoid). This header instead implements the CUBIC HERMITE interpolant -- match value AND
 /// derivative at both endpoints of the accepted step, a standard, unambiguous
 /// construction (the same one MATLAB's own `ode45` dense output and many other
 /// production solvers use when a method-specific higher-order interpolant is not
 /// available) -- and `continuous_extension_test.cpp` MEASURES its actual order rather
-/// than asserting the task's own "fourth order" label. The genuine DOP5(4)-specific
+/// than asserting a "fourth order" label. The genuine DOP5(4)-specific
 /// quartic interpolant and the stiffly accurate ESDIRK pairs' own published b(theta)
-/// (Kennedy & Carpenter give them) are both left as a Round 3 open question, not
+/// (Kennedy & Carpenter give them) are both left as an open question, not
 /// silently assumed equivalent to what ships here.
 ///
-/// `fuse::Waveform` consumption (design only, task item 5's own instruction -- "design
-/// only, no coupling code this round"): a coupling window's own temporal interpolant
-/// needs `evaluate(theta)` for theta in [0,1] inside an ACCEPTED step, which is
-/// exactly `ContinuousExtension<Value>::evaluate()`'s own signature below;
+/// `fuse::Waveform` consumption (design only, no coupling code): a coupling window's
+/// own temporal interpolant needs `evaluate(theta)` for theta in [0,1] inside an
+/// ACCEPTED step, which is exactly `ContinuousExtension<Value>::evaluate()`'s own signature below;
 /// `fuse::num::Waveform::push()` (fuse/num/waveform.hpp) already accepts one exact
 /// `Rational` sample per call, so a caller wanting a DENSE (not just end-of-window)
 /// sample would call `push()` at a `Rational` theta computed from `SubStepClock`'s own
 /// `now()`/`quantum()` (both already exact), evaluating THIS header's own
 /// `evaluate(static_cast<Scalar>(theta))` to get the `Value` to push -- no new type is
-/// needed on either side, which is why this round adds no `Waveform`-facing code.
+/// needed on either side, which is why no `Waveform`-facing code exists.
 namespace fuse::num {
 
 /// The cubic Hermite interpolant over one accepted step `[t_n, t_n+h]`: matches
 /// `y(t_n)=y0`, `y'(t_n)=f0`, `y(t_n+h)=y1`, `y'(t_n+h)=f1` exactly at `theta=0,1`.
 /// `f0`/`f1` are the SAME right-hand-side evaluations an integrator already computed
-/// for its own first and last stage (DOPRI45's own FSAL structure, Round 1's own
-/// correction to `is_FSAL`, means `f1` costs no NEW evaluation for that family) --
+/// for its own first and last stage (DOPRI45's own FSAL structure, the
+/// corrected `is_FSAL`, means `f1` costs no NEW evaluation for that family) --
 /// this header does not recompute them, a caller supplies what it already has.
 template <IntegratorValue Value>
 class CubicHermiteExtension {

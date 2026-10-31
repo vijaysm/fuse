@@ -320,8 +320,7 @@ def check_physics_kit_boundary(root: Path) -> list[str]:
     Proof this fires: a probe file placed under include/fuse/base/ with
     '#include "fuse_physics/version.hpp"' and a probe CMakeLists.txt under
     src/ naming 'fuse::physics_kit' in a target_link_libraries() call both
-    produced a violation line here, then were removed; see this track's
-    measured_results for the verbatim output.
+    produced a violation line here, then were removed.
     """
     problems: list[str] = []
     for area in PHYSICS_KIT_BOUNDARY_AREAS:

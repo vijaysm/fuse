@@ -95,9 +95,9 @@ is the plain SUM of its (owned) values, weight 1, not a measure-weighted
 sum. `weights_for` now branches on `region_extent_kind`: `Vertex` gets
 weight `1.0` per owned vertex (0 for a ghost, same double-counting guard as
 the cell path), dimension 0 instead of the region's own dimension for the
-entity-count cross-check. Since KNOWN_ISSUES.md D89 the same weight-1
+entity-count cross-check. The same weight-1
 convention applies to a CELL field of `Conservation::Extensive` kind too
-(the value IS the amount, D82's convention, which the column-normalised
+(the value IS the amount, which the column-normalised
 Extensive supermesh weights preserve as a plain sum); only an `Intensive`
 cell field integrates against the cell measure.
 

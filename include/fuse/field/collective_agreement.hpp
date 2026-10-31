@@ -2,14 +2,14 @@
 // Collective agreement on a per-rank outcome, with provenance.
 //
 // A collective path never returns on a locally computed condition: the ranks
-// agree first, then every rank returns the SAME status. Before 2026-10-30 the
-// agreement in FieldTransaction::commit_collective() (and the plugin-mount
-// agreement in src/abi/participant.cpp) carried only a 0/1 verdict and the
-// originating rank across the communicator, so a non-originating rank could
-// name the rank that refused but not WHY it refused; the original code and
-// message existed on one rank only. The owner's rule (KNOWN_ISSUES.md D97,
-// 2026-10-30): the original error and the rank it originated from must be
-// known on every rank, for provenance and debugging.
+// agree first, then every rank returns the SAME status. An agreement that
+// carried only a 0/1 verdict and the originating rank across the communicator
+// (as FieldTransaction::commit_collective() and the plugin-mount agreement in
+// src/abi/participant.cpp would otherwise do) lets a non-originating rank name
+// the rank that refused but not WHY it refused; the original code and message
+// would exist on one rank only. The rule here: the original error and the rank
+// it originated from must be known on every rank, for provenance and
+// debugging.
 //
 // agree_outcome() is that rule as one function: after the verdict is reduced,
 // the originating rank broadcasts its own Failure (code and message) and

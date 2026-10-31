@@ -14,42 +14,38 @@
 #include "fuse/base/result.hpp"
 #include "fuse/num/butcher_tableau.hpp"
 
-/// S8 physics-kit, track "Integrators", Stage B Round 1
-/// (docs/dev/integrators-design.md Section 4.1/4.3/4.4).
+/// Integrator interface (docs/dev/integrators-design.md Section 4.1/4.3/4.4).
 ///
 /// Three things live here: the IntegratorValue concept and TemporalProblem<Value>
-/// adapter (a type-erased, std::function-based "Problem" in the sense of the owner's
-/// decision (6), 2026-10-27: "type-erased Problem"), the Integrator<Value> interface
-/// every family (explicit now, DIRK/Rosenbrock in round 2) implements, and
-/// SubStepClock, the Rational time accumulator the owner's decision (3) asked for.
+/// adapter (a type-erased, std::function-based "Problem"), the Integrator<Value>
+/// interface every family (explicit, DIRK, Rosenbrock) implements, and
+/// SubStepClock, the Rational time accumulator.
 ///
-/// numtypes (D-E, the parallel "higgs" branch track) has not landed in this checkout:
-/// grepped, include/fuse/model/value_traits.hpp and include/fuse/num/dual.hpp do not
-/// exist. IntegratorValue below is therefore a LOCAL concept, written from the task's
-/// own quoted handoff notes (value_traits<T>::scalar_type, the CoupledValue concept),
-/// not from reading a header that is not here -- it is deliberately satisfied by
-/// `double` today and by `dual<S, N>` once that type lands, without this header naming
-/// either `fuse::CoupledValue` or `fuse::dual` (neither exists to name). When numtypes
-/// lands, this concept is replaced by (or forwards to) the real one; nothing downstream
-/// of `IntegratorValue` should need to change, by construction, since every requirement
-/// below is read from the SAME quoted shape fuse::CoupledValue will have.
+/// No value-traits header (include/fuse/model/value_traits.hpp) or forward-AD dual
+/// type (include/fuse/num/dual.hpp) exists yet. IntegratorValue below is therefore a
+/// LOCAL concept (value_traits<T>::scalar_type, the CoupledValue concept shape) --
+/// deliberately satisfied by `double` today and by `dual<S, N>` once that type
+/// exists, without this header naming either `fuse::CoupledValue` or `fuse::dual`.
+/// If a real value-traits concept is added, this concept is replaced by (or forwards
+/// to) it; nothing downstream of `IntegratorValue` should need to change, by
+/// construction, since every requirement below is read from the SAME shape
+/// fuse::CoupledValue will have.
 namespace fuse::num {
 
-/// Refusal codes shared by every `Integrator<Value>` family (Round 2: moved here from
-/// `explicit_integrator.hpp`, which defined them first, so `DirkIntegrator`/
+/// Refusal codes shared by every `Integrator<Value>` family (defined here rather than
+/// in `explicit_integrator.hpp`, so `DirkIntegrator`/
 /// `RosenbrockIntegrator` can refuse the SAME named conditions without a duplicate
 /// symbol definition -- `kMassUnsupportedCode` stays local to `explicit_integrator.hpp`
 /// since only the explicit family actually refuses on a mass matrix; DIRK and
-/// Rosenbrock both honour `TemporalProblem::mass` instead (task item 2/3)).
+/// Rosenbrock both honour `TemporalProblem::mass` instead).
 inline constexpr const char* kNoRhsCode = "E-INTEGRATOR-NO-RHS";
 inline constexpr const char* kWrongFamilyCode = "E-INTEGRATOR-WRONG-FAMILY";
 inline constexpr const char* kDimensionMismatchCode = "E-INTEGRATOR-DIMENSION-MISMATCH";
 
 /// Primary template: T IS its own scalar type (the case for `double`/`float` -- the
-/// only case this checkout can exercise). Specialised for `dual<S, N>` once
-/// fuse/num/dual.hpp lands, mirroring `value_traits<T>::scalar_type`'s own convention
-/// (the handoff notes quoted in this task: "value_traits<T>::scalar_type" for
-/// `dual<S,N>` is `S`).
+/// only case exercised today). Specialised for `dual<S, N>` once
+/// fuse/num/dual.hpp exists, mirroring `value_traits<T>::scalar_type`'s own convention
+/// (`value_traits<T>::scalar_type` for `dual<S,N>` is `S`).
 template <class T>
 struct integrator_scalar {
   using type = T;
@@ -68,7 +64,7 @@ using integrator_scalar_t = typename integrator_scalar<T>::type;
 /// Section 4.3 of the design doc: the step size and the embedded error norm are ALWAYS
 /// `integrator_scalar_t<Value>` (an `S`, never a `Value` itself, never a dual) -- "a
 /// step size with a nonzero tangent would mean the schedule point moves as a function
-/// of the sensitivity parameter", out of this track's scope. That decision is why this
+/// of the sensitivity parameter", out of scope. That decision is why this
 /// concept requires scaling a `T` by an `integrator_scalar_t<T>` rather than by a `T`.
 template <class T>
 concept IntegratorValue = requires(T a, T b, integrator_scalar_t<T> s) {
@@ -81,21 +77,21 @@ concept IntegratorValue = requires(T a, T b, integrator_scalar_t<T> s) {
   { a * s } -> std::convertible_to<T>;
 };
 
-/// A type-erased right-hand side and its optional extensions (owner decision 6:
-/// "type-erased Problem" -- a caller builds one of these by assigning `std::function`s
-/// rather than this header needing a structural concept over the caller's own class).
-/// Mirrors `KARMAInterface`'s own problem-facing surface (Stage A design Section 3,
+/// A type-erased right-hand side and its optional extensions (a caller builds one of
+/// these by assigning `std::function`s rather than this header needing a structural
+/// concept over the caller's own class).
+/// Mirrors `KARMAInterface`'s own problem-facing surface (design doc Section 3,
 /// `include/interface/karma_interface.h:70-177`), minus the preprocessing/postprocessing
 /// hooks (`step_preprocess` etc.) that belong to the coupling layer above `fuse::num`
-/// (the layering constraint, Stage A design Section 3.1: `num` may not depend on
+/// (the layering constraint, design doc Section 3.1: `num` may not depend on
 /// `field`/`runtime`), not to the integrator itself.
 ///
-/// `rhs` is required; `mass`/`jacobian_action`/`dfdt` are round-2 hooks (DIRK's/
-/// Rosenbrock's own needs, Stage A design Section 3/4.1) declared now so round 2 adds
-/// call sites, not a new type. Round 1's explicit family (explicit_integrator.hpp)
-/// calls `rhs` only and refuses if a caller's problem sets `mass` (Section 4.1: an
-/// explicit method with a nontrivial mass matrix needs a linear solve per stage, which
-/// is round-2 scope, not an explicit stage loop silently ignoring M).
+/// `rhs` is required; `mass`/`jacobian_action`/`dfdt` are the hooks DIRK and
+/// Rosenbrock need (design doc Section 3/4.1). The explicit family
+/// (explicit_integrator.hpp) calls `rhs` only and refuses if a caller's problem sets
+/// `mass` (Section 4.1: an explicit method with a nontrivial mass matrix needs a
+/// linear solve per stage, which the DIRK/Rosenbrock families do, rather than an
+/// explicit stage loop silently ignoring M).
 template <IntegratorValue Value>
 struct TemporalProblem {
   using Scalar = integrator_scalar_t<Value>;
@@ -104,14 +100,14 @@ struct TemporalProblem {
   /// which every Integrator refuses with E-INTEGRATOR-NO-RHS before taking a step.
   std::function<Result<void>(Scalar t, std::span<const Value> y, std::span<Value> out)> rhs;
 
-  /// out <- M * v. Absent (round 1) means M = I; present is round-2 scope.
+  /// out <- M * v. Absent means M = I; present needs a linear solve (DIRK/Rosenbrock).
   std::function<Result<void>(std::span<const Value> v, std::span<Value> out)> mass;
 
-  /// out <- J(t, y) * v. Round-2 scope (DIRK's Newton solve, Rosenbrock's linear one).
+  /// out <- J(t, y) * v. Used by DIRK's Newton solve and Rosenbrock's linear one.
   std::function<Result<void>(Scalar t, std::span<const Value> y, std::span<const Value> v,
                              std::span<Value> out)> jacobian_action;
 
-  /// out <- d/dt f(t, y). Round-2 scope (Rosenbrock's own non-autonomous correction,
+  /// out <- d/dt f(t, y). Used by Rosenbrock's own non-autonomous correction,
   /// `RosenbrockIntegrator::dfdt`, upstream/karma/include/numerics/temporal/
   /// rosenbrock_integrator.h:41).
   std::function<Result<void>(Scalar t, std::span<const Value> y, std::span<Value> out)> dfdt;
@@ -139,11 +135,10 @@ struct StepRecord {
 };
 
 /// The interface every integrator family implements (Section 4.1 of the design doc).
-/// Round 1 has exactly one concrete subtype, `ExplicitIntegrator<Value>`
-/// (explicit_integrator.hpp); round 2 adds a DIRK one (built on `fuse::num::solve()`)
-/// and a Rosenbrock one (built on `gmres`/`MatrixFreeOperator`, Stage A design Section
-/// 3.2) beside it, both satisfying this SAME interface so a caller holding an
-/// `Integrator<Value>&` never needs to know which family it got.
+/// The concrete subtypes are `ExplicitIntegrator<Value>` (explicit_integrator.hpp),
+/// a DIRK one (built on `fuse::num::solve()`) and a Rosenbrock one (built on
+/// `gmres`/`MatrixFreeOperator`, design doc Section 3.2), all satisfying this SAME
+/// interface so a caller holding an `Integrator<Value>&` never needs to know which family it got.
 template <IntegratorValue Value>
 class Integrator {
  public:
@@ -167,15 +162,15 @@ class Integrator {
 
 /// A functor reducing n already rtol/atol-scaled error components
 /// (Hairer's own convention, e(i) = err(i) / (atol + rtol*|y(i)|), dopri45_integrator.C:
-/// 212-217) to the ONE scalar an EmbeddedController::propose() call decides on. Task
-/// item 4: "a norm functor the caller supplies (DistVector::norm2 for distributed
-/// state, plain for serial) so agreement across ranks is by construction" -- this
+/// 212-217) to the ONE scalar an EmbeddedController::propose() call decides on.
+/// The functor is supplied by the caller (DistVector::norm2 for distributed
+/// state, plain for serial) so agreement across ranks is by construction -- this
 /// header defines only the serial one; a distributed caller supplies its own closure
 /// over `fuse::linalg::DistVector::norm2()` without this header ever naming
 /// `DistVector` (the same "named, not included" discipline
 /// `fuse::num::newton_krylov.hpp`'s own `PreconditionerBlock::apply` uses for
-/// `fuse::LinearizationToken`), which is also why round 1 needs no MPI code at all
-/// (task's own instruction): the reduction, when there is one to do, is entirely the
+/// `fuse::LinearizationToken`), which is also why this header needs no MPI code at all:
+/// the reduction, when there is one to do, is entirely the
 /// CALLER's closure, never this header's.
 using ScaledNormFn = std::function<double(std::span<const double> scaled_error)>;
 
@@ -190,11 +185,11 @@ using ScaledNormFn = std::function<double(std::span<const double> scaled_error)>
 }
 
 // ===========================================================================
-// SubStepClock -- owner decision (3), 2026-10-27: "a Rational time accumulator with a
-// recorded per-window quantum, last step clipped exactly".
+// SubStepClock -- a Rational time accumulator with a recorded per-window quantum,
+// last step clipped exactly.
 // ===========================================================================
 
-/// Section 4.4/6.4 of the Stage A design named the problem this solves: an adaptive
+/// Section 4.4/6.4 of the design doc names the problem this solves: an adaptive
 /// sub-stepper's own `h` is proposed in floating point (EmbeddedController::propose,
 /// embedded_controller.hpp, returns a `double`), while the coupling window and
 /// `Waveform::push()` (fuse/num/waveform.hpp:216) both want an EXACT `Rational` sample
@@ -216,8 +211,8 @@ class SubStepClock {
  public:
   /// DEFAULT QUANTUM COUNT, DERIVED: 2^20 (1,048,576). A relative sub-step resolution
   /// of 2^-20 ~= 9.5e-7 of the window length is roughly THREE decades finer than the
-  /// coarsest step an order-convergence study's own decade ever proposes (Stage A
-  /// design Section 5.1's own verification plan measures the observed order over "a
+  /// coarsest step an order-convergence study's own decade ever proposes (design
+  /// doc Section 5.1's own verification plan measures the observed order over "a
   /// decade of h above the round-off floor", and a tier-0 test problem's own coarsest h
   /// in that decade is never finer than ~1e-2 to 1e-3 relative to the window -- MEASURED
   /// in explicit_integrator_test.cpp's own convergence rows, printed alongside the
@@ -257,7 +252,7 @@ class SubStepClock {
   [[nodiscard]] std::int64_t quantum_count() const noexcept { return quantum_count_; }
   [[nodiscard]] std::int64_t elapsed_quanta() const noexcept { return elapsed_quanta_; }
 
-  /// Exact (Rational comparison, no tolerance): the owner's own "last step clipped
+  /// Exact (Rational comparison, no tolerance): the "last step clipped
   /// exactly" standard, satisfied by equality, not by "close enough".
   [[nodiscard]] bool at_window_end() const { return now() == end_; }
 
@@ -287,7 +282,7 @@ class SubStepClock {
   /// zero would never advance time -- a defensive minimum, not a substitute for
   /// EmbeddedController's own E-INTEGRATOR-STEP-TOO-SMALL refusal, which fires before a
   /// proposal this small would ever reach here), and CLIPPED to the quanta remaining in
-  /// the window -- the owner's "last step clipped exactly": a caller that always
+  /// the window -- "last step clipped exactly": a caller that always
   /// advances by this function's own return value can never leave the window, by
   /// construction, not by a separate post-hoc check.
   [[nodiscard]] std::int64_t round_to_quantum(double h_proposed) const {

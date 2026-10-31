@@ -14,15 +14,14 @@
 ///
 /// NUMTYPES SEAM. Every value in this file is `double` -- the one scalar
 /// type `fuse::FieldRef`/`fuse::FieldSpan` carry today (field/field_ref.hpp,
-/// field/pipeline.hpp). The numtypes track (docs/dev/physics-kit-
-/// disposition.md's D-E, landing in parallel) is expected to template
-/// `FieldRef` into a `BasicFieldRef<T>`; WHEN IT DOES, the template
+/// field/pipeline.hpp). If `FieldRef` is later templated into a
+/// `BasicFieldRef<T>`, the template
 /// parameter goes HERE -- `FieldStorage`, `FieldRefStorage` and
 /// `FieldTransaction` below all become `template <class Value = double>`,
 /// and every `double` in this file becomes `Value`. Built over `double` now,
 /// deliberately: there is no `BasicFieldRef<T>` to templatize against yet
 /// (field-semantics-matrix.md Section 3), and templating ahead of that
-/// landing would guess at a shape this track has no evidence for. The one
+/// existing would guess at a shape there is no evidence for. The one
 /// place this will NOT transfer unchanged is the canonical accumulation
 /// order below (`Accumulate` mode): it is defined on a `double`'s own
 /// magnitude, sign, and (as a final tie-break) raw bit pattern, none of
@@ -60,7 +59,7 @@ namespace fuse {
 
 /// Three update modes, each with its own ambiguity rule -- copied from
 /// KARMA's own `UpdateMode` (karma_field_transaction.h:26-37), renamed
-/// `SparseReplace` to `Insert` per the owner's 2026-10-28 decision.
+/// `SparseReplace` to `Insert`.
 enum class UpdateMode {
   /// Every value must be staged exactly once; a second value for one slot
   /// is ambiguous and refused rather than resolved by arrival order.
@@ -131,8 +130,7 @@ class FieldTransaction {
   /// own `stage_by_key()` (karma_field_transaction.h:97-98, over a
   /// `FieldIndexMap`) has no counterpart here, because there is no stable
   /// per-entry key below `fuse::FieldRef`'s own dense index yet
-  /// (field-semantics-matrix.md Section 2.1, gap 3, DEFERRED per the
-  /// owner's 2026-10-28 decision) -- every caller of this transaction
+  /// (field-semantics-matrix.md Section 2.1, gap 3, DEFERRED) -- every caller of this transaction
   /// addresses a slot by its dense `(entry, component)` position.
   [[nodiscard]] Result<void> stage(std::size_t entry, int component, double value) noexcept;
 
@@ -163,8 +161,7 @@ class FieldTransaction {
   /// provenance fields (`Failure::origin_rank`, `Failure::origin_code`): the
   /// agreement (fuse/field/collective_agreement.hpp) broadcasts the
   /// originating rank's own Failure, so the ORIGINAL error and the rank it
-  /// came from are known on every rank, the originator included (owner's
-  /// rule, KNOWN_ISSUES.md D97, 2026-10-30). The code is
+  /// came from are known on every rank, the originator included. The code is
   /// `E-FIELD-TXN-AGREEMENT-REFUSED` whether validation disagreed (nothing
   /// published anywhere) or publication disagreed after a successful
   /// validation agreement (every rank but the refusing one has already

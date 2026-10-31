@@ -1,11 +1,10 @@
-# physics-kit (S8)
+# physics-kit
 
 The optional finite-element component: KARMA's FEM core, physics modules (advection-reaction,
-diffusion-reaction, Gray-Scott), FEM transfer and the 22-tableau Runge-Kutta/Rosenbrock integrator
-family, ported into `fuse::` per [](physics-kit-disposition.md)'s disposition and
-[](integrators-design.md)'s design for the temporal integrators. [](roadmap.md)'s S8 row tracks
-where the port currently stands; at the skeleton stage (this page) no physics code exists yet --
-only the directory, the build option, the two gates and one placeholder test described below.
+diffusion-reaction, Gray-Scott), FEM transfer and the Runge-Kutta/Rosenbrock integrator
+family, ported into `fuse::` following [](integrators-design.md)'s design for the temporal
+integrators. At present no physics code exists under `physics-kit/` -- only the directory, the build
+option, the two gates and one placeholder test described below.
 
 ## What it is, and what it is not
 
@@ -50,23 +49,22 @@ layering.py`'s and the new `tools/check-physics-kit-naming.py`'s CI job:
   outside the four directories `tools/check-layering.py`'s own naming check already covers.
 
 Both gates were proven to fire against a probe file (added, run, shown to produce a violation,
-removed) before being accepted; the S8 skeleton track's `measured_results` has the verbatim output.
+removed) before being accepted.
 
-## Status
+## Contents
 
-No physics code lives under `physics-kit/` yet. The skeleton (this track) is: the directory layout,
-the `fuse::physics_kit` target with one placeholder translation unit, the `physics.skeleton` gtest
+No physics code lives under `physics-kit/` yet. What exists is the directory layout, the
+`fuse::physics_kit` target with one placeholder translation unit, the `physics.skeleton` gtest
 (asserts a version string and that `FUSE_HAVE_PETSC` reaches physics-kit code), the two gates above,
-and this page. [](physics-kit-disposition.md) and [](integrators-design.md) are the read-first design
-pages for what a later track ports here.
+and this page. [](integrators-design.md) is the design for the integrators that will be ported here.
 
-## Not yet installed (lead, 2026-10-28)
+## Not installed
 
 `fuse_physics_kit` is not in the package's `install(TARGETS ... EXPORT fuse-coupler-targets)` set:
 that export is closed inside `src/CMakeLists.txt` (`install(EXPORT ...)` at its end), which runs before
 the root adds `physics-kit/`, so a contribution from here would arrive after the export is written.
-Shipping physics-kit needs its own export set and a `find_package` component, which is S8.2 work once
-the component carries code a consumer would link. `tools/check-invariants.py` scans `physics-kit/`
-from the skeleton on; `tools/check-layering.py`'s third-party-header rules for physics-kit's own public
-headers are not yet applied and are an S8.2 item too.
+Shipping physics-kit needs its own export set and a `find_package` component, which becomes
+worthwhile once the component carries code a consumer would link. `tools/check-invariants.py` scans
+`physics-kit/`; `tools/check-layering.py`'s third-party-header rules are not applied to physics-kit's
+own public headers.
 

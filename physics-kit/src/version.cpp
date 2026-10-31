@@ -1,8 +1,7 @@
 // The one placeholder translation unit for the physics-kit skeleton
 // (physics-kit/CMakeLists.txt's fuse_physics_kit target). Exists so the
 // target compiles and links something; no physics code yet (see
-// docs/dev/physics-kit.md and docs/dev/physics-kit-disposition.md for what
-// a later track ports here).
+// docs/dev/physics-kit.md).
 
 #include "fuse_physics/version.hpp"
 

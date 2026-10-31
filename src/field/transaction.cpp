@@ -117,10 +117,9 @@ namespace {
 /// The canonical accumulation order (`UpdateMode::Accumulate`'s commit
 /// step), and precisely what it is, and is not, a guarantee of.
 ///
-/// Round 2 of the S8 Stage B Field semantics track (the owner's own
-/// standing rule: accuracy over efficiency) replaces round 1's raw-bit-
-/// pattern order with KARMA's own magnitude-first scheme
-/// (karma_field_transaction.C:48-54): TOTAL ORDER: contributions are
+/// Accuracy takes priority over efficiency here, so the order is KARMA's own
+/// magnitude-first scheme (karma_field_transaction.C:48-54), not a raw-bit-
+/// pattern order: TOTAL ORDER: contributions are
 /// summed grouped by SLOT (entry index) -- `std::stable_sort` on `.first`
 /// below, the same grouping KARMA's own `build_published_values()` uses
 /// (karma_field_transaction.C:130-132) -- and, WITHIN one slot's group,
@@ -140,8 +139,8 @@ namespace {
 /// the ambiguity-removed mutation and the reversed-order mutation in
 /// `build-evidence/mutations/field-transaction.toml` are built to catch;
 /// swapping the comparator's magnitude/sign keys for raw arrival order
-/// breaks the sort just as surely as it did for round 1's simpler key, so
-/// that mutation stays killable unchanged.
+/// breaks the sort just as surely as it would for a simpler key, so
+/// that mutation is killable.
 ///
 /// WHAT THIS IS: summing the smallest-magnitude contributions to a slot
 /// FIRST bounds the accumulated rounding by the classical recursive-
@@ -193,9 +192,8 @@ bool magnitude_then_sign_then_bits_before(double left, double right) noexcept {
   // Equal magnitude and equal sign already means `left == right` bit for
   // bit for any finite IEEE-754 double (magnitude and sign determine the
   // value completely), so this branch can never actually distinguish two
-  // UNEQUAL bit patterns -- it is kept anyway, as the task's own
-  // instruction asks, so the comparator is a formally complete strict
-  // weak ordering rather than one that relies on an unstated invariant.
+  // UNEQUAL bit patterns -- it is kept anyway, so
+  // the comparator is a formally complete strict weak ordering rather than one that relies on an unstated invariant.
   return std::bit_cast<std::uint64_t>(left) < std::bit_cast<std::uint64_t>(right);
 }
 }  // namespace
@@ -317,8 +315,8 @@ Result<void> FieldTransaction::commit_collective(std::optional<int> communicator
   // collective_agreement.hpp): the verdict is reduced, the originating rank
   // broadcasts its own Failure, and every rank -- the originator included --
   // returns the identical Failure carrying the origin rank, the origin's own
-  // code and its message (KNOWN_ISSUES.md D97, owner's rule of 2026-10-30:
-  // the original error and the rank it came from are known everywhere).
+  // code and its message (the original error and the rank it came from are
+  // known everywhere).
   // Phase 1 agrees validation; no rank publishes unless every rank's local
   // validation passed. Phase 2 agrees publication; by the time a refusal is
   // discovered there every other rank has already published, the one

@@ -313,7 +313,7 @@ TEST(Rational, TheNonThrowingSpellingReportsTheSameCases) {
 
 
 // -----------------------------------------------------------------------
-// rational_from_double: S8 Stage B, Field semantics track -- narrow gap (a).
+// rational_from_double: narrow gap (a).
 // Bounded double-to-Rational factory with named refusals, no best-
 // approximation mode (docs/dev/field-semantics-matrix.md Section 4 item 1).
 // -----------------------------------------------------------------------

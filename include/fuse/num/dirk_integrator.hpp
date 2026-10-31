@@ -14,8 +14,7 @@
 #include "fuse/num/integrator.hpp"
 #include "fuse/num/newton_krylov.hpp"
 
-/// S8 physics-kit, track "Integrators", Stage B Round 2, task item 2: the DIRK/ESDIRK
-/// family, owner decision (a): "a zero diagonal entry is an explicit stage; stiffly
+/// The DIRK/ESDIRK family: "a zero diagonal entry is an explicit stage; stiffly
 /// accurate tableaus give FSAL" -- ONE family handles SDIRK (every diagonal nonzero)
 /// and ESDIRK (first diagonal zero) alike, since a zero `A[i][i]` makes stage `i`'s own
 /// nonlinear solve trivial (it collapses to a plain function evaluation) without any
@@ -25,23 +24,23 @@
 ///   stage_y_i = y + h * sum_{j<=i} A[i][j] * k_j
 ///   M * k_i = f(t_i, stage_y_i),  t_i = t + h * C[i]
 /// with `k_i` the unknown when `A[i][i] != 0` (an IMPLICIT stage) and already known by
-/// substitution when `A[i][i] == 0` (an EXPLICIT one, owner decision (a)). The implicit
-/// case is solved for `k_i` directly (not `stage_y_i`) via `fuse::num::solve()` -- the
-/// owner's own standing decision ("DIRK stages through fuse::num::solve") -- on the
+/// substitution when `A[i][i] == 0` (an EXPLICIT one). The implicit
+/// case is solved for `k_i` directly (not `stage_y_i`) via `fuse::num::solve()` -- DIRK
+/// stages go through `fuse::num::solve` -- on the
 /// residual `F(k_i) = M*k_i - f(t_i, y_known + h*A[i][i]*k_i)`, with `y_known` the
 /// ALREADY-COMPUTED `y + h*sum_{j<i} A[i][j] k_j` held fixed for that one stage's own
 /// Newton iteration.
 ///
-/// NOT wired this round: `TemporalProblem::jacobian_action`. `fuse::num::solve()`'s own
+/// NOT wired: `TemporalProblem::jacobian_action`. `fuse::num::solve()`'s own
 /// signature (newton_krylov.hpp) takes a `ResidualFn` ALONE -- mechanism 1 (MFFD) is
 /// internal to `solve()` and differences whatever residual function it is given; there
 /// is no parameter through which an analytic `jacobian_action` could replace that
-/// internal MFFD. Task item 2 says "jacobian_action() used when present else MFFD";
-/// since the owner's OWN standing decision names `fuse::num::solve()` specifically for
-/// DIRK (as opposed to Rosenbrock's own lower-level `gmres`/`MatrixFreeOperator` path,
-/// where an analytic Jacobian plugs in naturally), this round's DIRK integrator always
+/// internal MFFD. Ideally `jacobian_action()` would be used when present, else MFFD;
+/// since the DIRK family is built on `fuse::num::solve()` specifically (as opposed to
+/// Rosenbrock's own lower-level `gmres`/`MatrixFreeOperator` path,
+/// where an analytic Jacobian plugs in naturally), this DIRK integrator always
 /// uses `solve()`'s own internal MFFD, regardless of whether `problem.jacobian_action`
-/// is set -- raised as an open question (new `solve()` overload, or routing DIRK through
+/// is set -- an open question (new `solve()` overload, or routing DIRK through
 /// the lower-level path when an analytic Jacobian exists) rather than silently assumed
 /// resolved.
 ///
@@ -49,17 +48,17 @@
 /// evaluates `f` AT `t_i = t + h*C[i]` directly (no frozen-Jacobian linearisation the
 /// way Rosenbrock's own non-autonomous correction needs `h*gamma_i*f_t` for), so `C`'s
 /// own role here is exactly "feed the right `t_i` into every stage's own `rhs` call" --
-/// task item 2's own "a NON-AUTONOMOUS test problem so C defects are visible" is
+/// the requirement that C defects be visible is
 /// answered by `dirk_integrator_test.cpp`'s own non-autonomous problem, not by a dfdt
 /// call site this family has no mathematical need for.
 ///
-/// NOT implemented: the FSAL reuse the task names for stiffly accurate tableaus (the
+/// NOT implemented: the FSAL reuse available for stiffly accurate tableaus (the
 /// last stage's own `k` IS the next step's own first, explicit stage's `k`, since
 /// `t + h*C[last] == t_new` and `stage_y[last] == y_new` for a stiffly accurate
 /// tableau). `step()` below recomputes stage 0 every call -- numerically IDENTICAL,
-/// one extra function evaluation per step -- for the SAME reason Round 1's
-/// `ExplicitIntegrator` skipped the equivalent optimisation for DOPRI45 (this
-/// project's own standing rule: "robustness and accuracy beats efficiency, always").
+/// one extra function evaluation per step -- for the SAME reason `ExplicitIntegrator`
+/// skips the equivalent optimisation for DOPRI45 (robustness and accuracy beat
+/// efficiency).
 /// Declared as a deviation, not a silent omission.
 namespace fuse::num {
 
@@ -142,9 +141,9 @@ class DirkIntegrator final : public Integrator<Value> {
       const Scalar t_stage = t + h * static_cast<Scalar>(tableau_.C[static_cast<std::size_t>(i)]);
 
       if (aii == 0.0) {
-        // Explicit stage (owner decision (a)): k_i = f(t_i, y_known) directly, or the
+        // Explicit stage: k_i = f(t_i, y_known) directly, or the
         // linear mass-solve M k_i = f(...) if a mass matrix is present (not exercised
-        // by any Round 2 test problem -- every one uses M = I -- so this path is
+        // by any test problem -- every one uses M = I -- so this path is
         // UNTESTED for M != I and flagged in the design doc as an open question rather
         // than silently assumed correct).
         std::vector<Value> stage_y(n), rhs_val(n);
@@ -155,8 +154,8 @@ class DirkIntegrator final : public Integrator<Value> {
         if (problem.has_mass()) {
           return Failure{kWrongFamilyCode,
                          "DirkIntegrator::step: an explicit (zero-diagonal) stage with a "
-                         "mass matrix needs a linear mass-solve this round does not "
-                         "implement (no Round 2 test problem exercises M != I)"};
+                         "mass matrix needs a linear mass-solve that is not "
+                         "implemented (no test problem exercises M != I)"};
         }
         for (std::size_t m = 0; m < n; ++m) k[static_cast<std::size_t>(i)][m] = static_cast<double>(rhs_val[m]);
         continue;

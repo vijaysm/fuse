@@ -1559,17 +1559,16 @@ fuse_add_gtest(backend remap_apply)
 # is templates over Kokkos views), so this one row still has no fuse::field
 # library to derive from the directory name -- NO_LAYER_LIB as before.
 fuse_add_gtest(field pipeline THROWS NO_LAYER_LIB LIBS fuse::model fuse::base)
-# S8 Stage B, Field semantics track: FieldTransaction (field/transaction.hpp,
+# FieldTransaction (field/transaction.hpp,
 # src/field/transaction.cpp) is fuse::field's first real translation unit,
 # so this row links the new library like any other layer's own tests do.
 fuse_add_gtest(field transaction LIBS fuse::field)
 fuse_add_gtest(field collective_agreement LIBS fuse::field)
-# S8 Stage B, Field semantics track, round 2 (the lead's own instruction):
-# the real-communicator twin of the CommitCollectiveWith* cases above --
+# The real-communicator twin of the CommitCollectiveWith* cases above --
 # a genuine MPI_Allreduce over MPI_COMM_WORLD, where the tier-0 suite
 # cannot run one. Closes the field-transaction-collective-agreement-
 # skipped mutation row's own NOT-ASSESSED status (needs a working
-# multi-rank MPI launcher this sandbox does not have -- host_pending).
+# multi-rank MPI launcher; host_pending).
 fuse_tests_gated_by(FUSE_ENABLE_MPI parallel/field_transaction_mpi_test.cpp)
 if(FUSE_ENABLE_MPI)
   fuse_add_mpi_test(parallel field_transaction_mpi LIBS fuse::field RANKS 2 3)

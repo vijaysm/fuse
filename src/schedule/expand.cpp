@@ -654,7 +654,7 @@ Result<TimedDag> expand(const CouplingGraph& g, const OperatorDAG& dag,
         // precisely so that step k+1 can consume it. Emitting it after that
         // tick -- which is what a bare timestamp used to mean -- delayed every
         // delivery by two target steps and dropped one write per period
-        // unread, because the next write overtook it. That was R2;
+        // unread, because the next write overtook it;
         // `SpacetimeRunner.EveryTargetStepProjectionReachesTheTargetComponent`
         // in test/unit/spacetime_conservation_test.cpp fails if it comes back.
         //
@@ -702,7 +702,7 @@ Result<TimedDag> expand(const CouplingGraph& g, const OperatorDAG& dag,
   // on is not observable; what would be observable is the reverse choice,
   // because a `Source` stamped at the same instant as a delivery sorts first
   // (it is a DAG root) and would drag the receiving component's tick forward
-  // past the delivery. That is R2 again, reached from the boundary pass.
+  // past the delivery. That is the same defect, reached from the boundary pass.
   for (std::uint32_t i = 0; i < dag.node_count(); ++i) {
     const NodeId nid{i};
     const Node& n = dag.node(nid);

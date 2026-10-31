@@ -86,7 +86,7 @@ test = "num.line_search"
 [[mutation]]
 id = "newton-relative-convergence-test-duplicates-absolute"
 area = "num"
-describes = "solve()'s relative-convergence test (||F|| <= rtol*||F0||) is replaced by a second copy of the absolute test (||F|| <= atol), so a region that never reaches atol is reported DivergedMaxIterations/etc. instead of ConvergedRelative even when it has genuinely reduced the residual by rtol -- the 'relative test duplicates absolute' mutation row, a silent-misreport class the task's own standing rule (never a silent outcome) is meant to prevent."
+describes = "solve()'s relative-convergence test (||F|| <= rtol*||F0||) is replaced by a second copy of the absolute test (||F|| <= atol), so a region that never reaches atol is reported DivergedMaxIterations/etc. instead of ConvergedRelative even when it has genuinely reduced the residual by rtol -- the 'relative test duplicates absolute' mutation row, a silent-misreport class the rule that no outcome is ever silent is meant to prevent."
 file = "src/num/newton_krylov.cpp"
 old = """    if (norm_f_new <= opt.rtol * norm_f0) return finish(NewtonStatus::ConvergedRelative);"""
 new = """    if (norm_f_new <= opt.atol) return finish(NewtonStatus::ConvergedRelative);"""

@@ -38,7 +38,8 @@ coupled interface between differently discretised solvers.
 
 [](convergence.md) explains how an implicit coupling decides it is done,
 [](coupling-windows.md) couples components that do not share a time grid, and
-[](linear-algebra.md) covers the solvers behind Newton-Krylov coupling. [](multiscale.md) covers
+[](linear-algebra.md) covers the solvers behind Newton-Krylov coupling and [](integrators.md) the
+Runge-Kutta and Rosenbrock time integrators a component can step with. [](multiscale.md) covers
 multiscale coupling and [](surrogates.md) learned models as components.
 
 ## Bringing your own code

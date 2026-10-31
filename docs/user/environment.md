@@ -62,25 +62,28 @@ override. `FUSE_DEVICE_DEBUG` prints the decision as
 These variables configure what happens between "an error has been constructed" and "it is
 thrown", in the style of PETSc's `-on_error_*` options.
 
-:::{warning}
-They are **opt-in**. FUSE parses them only when the program calls
-`fuse::error_policy_from_environment()` and installs the result. No library code and none of the
-shipped examples do that, so setting `FUSE_ON_ERROR=debugger` before `fuse_example_dn_heat` has
-no effect. Your own driver enables them with three lines at the top of `main()`:
+:::{note}
+The variables are read by `fuse::initialize()` (`fuse/base/error.hpp`), once, and the result is
+installed as the process-wide policy. Every shipped entry point calls it: the C++ examples, the
+test harness, `import pfuse` and the C ABI's `fuse_create()` (the first context created in the
+process reads them). A driver you write yourself must call it too, or the variables are ignored
+and the default policy applies: print a report with a backtrace to `stderr`, then throw:
 
 ```cpp
 #include <fuse/base/error.hpp>
 
 int main(int argc, char** argv) {
-  fuse::set_error_policy(fuse::error_policy_from_environment());  // FUSE_ON_ERROR and friends
-  fuse::set_error_rank(/* MPI rank, once MPI is up */ 0);          // tag every report with it
-  fuse::install_terminate_handler();                              // report an uncaught error, then abort
+  // ... MPI_Init / Kokkos::ScopeGuard as your driver needs ...
+  fuse::initialize(/* MPI rank, once MPI is up; -1 (the default) when there is none */);
+  fuse::install_terminate_handler();   // report an uncaught error, then abort
   // ...
+  fuse::finalize();                    // optional: back to the built-in defaults
 }
 ```
 
-Without the first line the default policy applies: print a report with a backtrace to
-`stderr`, then throw.
+`initialize()` also tags every error report with the rank you pass. Calling it again re-reads the
+environment. Programs that cannot call it can still do the two steps by hand with
+`fuse::set_error_policy(fuse::error_policy_from_environment())` and `fuse::set_error_rank(rank)`.
 :::
 
 | Variable | Values | Meaning |
@@ -92,8 +95,8 @@ Without the first line the default policy applies: print a report with a backtra
 | `FUSE_DEBUGGER_WAIT` | non-negative integer seconds, default 15 | How long the process blocks for the debugger to attach |
 | `FUSE_BACKTRACE` | `0` or `1` (default on) | Whether each error captures a stack trace |
 
-An unrecognised value is itself an error, not a silent default: with `FUSE_ON_ERROR=bogus` the
-prologue throws `InvalidArgument` with the message
+An unrecognised value is itself an error, not a silent default: with `FUSE_ON_ERROR=bogus`
+`fuse::initialize()` throws `InvalidArgument` (and installs nothing) with the message
 `FUSE_ON_ERROR='bogus': expected throw|backtrace|debugger|abort`. The debugger command that
 `debugger` runs is `<terminal> -T 'fuse rank R pid P' -e <lldb|gdb> -p <pid>`.
 
@@ -168,8 +171,8 @@ see [](multiple-executables.md) and [](yaml.md).
 
 ## `ErrorPolicy`
 
-What `error_policy_from_environment()` fills in and `set_error_policy()` installs
-(`include/fuse/base/error.hpp`). Set it programmatically when you would rather not depend on the
+What `error_policy_from_environment()` fills in and `set_error_policy()` installs; `initialize()`
+does both (`include/fuse/base/error.hpp`). Set it programmatically when you would rather not depend on the
 environment:
 
 | Field | Default | Environment variable |
