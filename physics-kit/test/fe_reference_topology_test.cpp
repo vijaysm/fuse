@@ -5,11 +5,16 @@
 // nodes, and derivative sums to zero are the three properties
 // docs/dev/porting.md's own task brief names for this wave's basis tests.
 //
-// PORTED SUBSET (deviations: this file does not reproduce every KARMA
-// basis_test.C/geometry_test.C case -- see this wave's design_notes for
-// the full list of what is deferred, principally the orientation-metadata
-// tests, which need the OrientationTransform machinery this wave's
-// basis.hpp does not port).
+// WAVE 1b (owner instruction 2026-10-31, item 1): Prism6/15/18 and
+// Pyramid5/13/14 join the variant list this file's properties are
+// checked against, plus the serendipity Quad8 (needed as Prism15's and
+// Pyramid13's one quadrilateral side, basis.hpp's own note) -- the same
+// three properties hold for a serendipity basis as for a complete one
+// (both are still a partition of unity with the Kronecker property), so
+// Quad8 is exercised by the same generic loops as every other variant,
+// not given special-cased tests. The pyramid's apex gets its own tests
+// (ApexValuesAreWellDefinedButDerivativesRefuse) since its basis has a
+// genuinely different (removable-limit) evaluation path there.
 
 #include "fuse_physics/fe/reference_topology.hpp"
 
@@ -26,11 +31,19 @@ using fuse::physics::fe::GeometryVariant;
 using fuse::physics::fe::ReferenceTopology;
 
 std::vector<GeometryVariant> all_variants() {
-  return {GeometryVariant::Edge2,  GeometryVariant::Edge3, GeometryVariant::Tri3, GeometryVariant::Tri6,
-          GeometryVariant::Quad4,  GeometryVariant::Quad9, GeometryVariant::Tet4, GeometryVariant::Tet10,
-          GeometryVariant::Hex8,   GeometryVariant::Hex27};
+  return {GeometryVariant::Edge2,    GeometryVariant::Edge3,    GeometryVariant::Tri3,    GeometryVariant::Tri6,
+          GeometryVariant::Quad4,    GeometryVariant::Quad8,    GeometryVariant::Quad9,   GeometryVariant::Tet4,
+          GeometryVariant::Tet10,    GeometryVariant::Hex8,     GeometryVariant::Hex27,   GeometryVariant::Prism6,
+          GeometryVariant::Prism15,  GeometryVariant::Prism18,  GeometryVariant::Pyramid5,
+          GeometryVariant::Pyramid13, GeometryVariant::Pyramid14};
 }
 
+// Points used by PartitionOfUnity and DerivativesSumToZero -- evaluate()
+// (unlike evaluate_values()) genuinely refuses at the pyramid's exact
+// apex (0,0,1) (the path-dependent-derivative carve-out both this file's
+// header and reference_topology.hpp's own document), so no pyramid
+// sample point here is the apex; ApexValuesAreWellDefinedButDerivativesRefuse
+// below covers that point on its own.
 std::vector<Point> sample_points(CellFamily family) {
   switch (family) {
     case CellFamily::Edge:
@@ -43,6 +56,12 @@ std::vector<Point> sample_points(CellFamily family) {
       return {Point(0, 0, 0), Point(1, 0, 0), Point(.2, .3, .1), Point(.25, .25, .25)};
     case CellFamily::Hexahedron:
       return {Point(0, 0, 0), Point(1, 1, 1), Point(.3, .6, .9), Point(.5, .5, .5)};
+    case CellFamily::Prism:
+      return {Point(0, 0, 0), Point(1, 0, 1), Point(0, 1, .5), Point(.2, .3, .4)};
+    case CellFamily::Pyramid:
+      // The base corners, a mid-height point near but not at the apex,
+      // and the cell centre -- none equal to the exact apex (0,0,1).
+      return {Point(-1, -1, 0), Point(1, 1, 0), Point(0, 0, .5), Point(.25, -.25, .75)};
   }
   return {};
 }
@@ -104,11 +123,18 @@ TEST(ReferenceTopologyTest, NodeCountMatchesVariant) {
   EXPECT_EQ(ReferenceTopology(GeometryVariant::Tri3).node_count(), 3u);
   EXPECT_EQ(ReferenceTopology(GeometryVariant::Tri6).node_count(), 6u);
   EXPECT_EQ(ReferenceTopology(GeometryVariant::Quad4).node_count(), 4u);
+  EXPECT_EQ(ReferenceTopology(GeometryVariant::Quad8).node_count(), 8u);
   EXPECT_EQ(ReferenceTopology(GeometryVariant::Quad9).node_count(), 9u);
   EXPECT_EQ(ReferenceTopology(GeometryVariant::Tet4).node_count(), 4u);
   EXPECT_EQ(ReferenceTopology(GeometryVariant::Tet10).node_count(), 10u);
   EXPECT_EQ(ReferenceTopology(GeometryVariant::Hex8).node_count(), 8u);
   EXPECT_EQ(ReferenceTopology(GeometryVariant::Hex27).node_count(), 27u);
+  EXPECT_EQ(ReferenceTopology(GeometryVariant::Prism6).node_count(), 6u);
+  EXPECT_EQ(ReferenceTopology(GeometryVariant::Prism15).node_count(), 15u);
+  EXPECT_EQ(ReferenceTopology(GeometryVariant::Prism18).node_count(), 18u);
+  EXPECT_EQ(ReferenceTopology(GeometryVariant::Pyramid5).node_count(), 5u);
+  EXPECT_EQ(ReferenceTopology(GeometryVariant::Pyramid13).node_count(), 13u);
+  EXPECT_EQ(ReferenceTopology(GeometryVariant::Pyramid14).node_count(), 14u);
 }
 
 // physics.fe_reference_topology.SideCountsMatchReferenceCell -- side_count()
@@ -119,6 +145,8 @@ TEST(ReferenceTopologyTest, SideCountsMatchReferenceCell) {
   EXPECT_EQ(ReferenceTopology(GeometryVariant::Quad4).side_count(), 4u);
   EXPECT_EQ(ReferenceTopology(GeometryVariant::Tet4).side_count(), 4u);
   EXPECT_EQ(ReferenceTopology(GeometryVariant::Hex8).side_count(), 6u);
+  EXPECT_EQ(ReferenceTopology(GeometryVariant::Prism6).side_count(), 5u);   // 3 quad + 2 triangle
+  EXPECT_EQ(ReferenceTopology(GeometryVariant::Pyramid5).side_count(), 5u);  // 4 triangle + 1 quad
 }
 
 // physics.fe_reference_topology.SideTopologyMatchesCorners -- a Hex8 side
@@ -129,6 +157,51 @@ TEST(ReferenceTopologyTest, SideTopologyMatchesCorners) {
   for (unsigned s = 0; s < hex.side_count(); ++s) EXPECT_EQ(hex.side_topology(s).variant(), GeometryVariant::Quad4);
   const ReferenceTopology tet(GeometryVariant::Tet4);
   for (unsigned s = 0; s < tet.side_count(); ++s) EXPECT_EQ(tet.side_topology(s).variant(), GeometryVariant::Tri3);
+}
+
+// physics.fe_reference_topology.PrismAndPyramidHaveMixedSideShapes --
+// fe_base.hpp's own motivation for carrying two quadrature rules on a
+// Face FEBase: a Prism's sides are 3 quadrilaterals then 2 triangles, a
+// Pyramid's are 4 triangles then 1 quadrilateral (KARMA's own
+// side_table ordering, reference_topology.cpp's own comment).
+TEST(ReferenceTopologyTest, PrismAndPyramidHaveMixedSideShapes) {
+  const ReferenceTopology prism(GeometryVariant::Prism6);
+  for (unsigned s = 0; s < 3; ++s) EXPECT_EQ(prism.side_topology(s).family(), CellFamily::Quadrilateral) << s;
+  for (unsigned s = 3; s < 5; ++s) EXPECT_EQ(prism.side_topology(s).family(), CellFamily::Triangle) << s;
+
+  const ReferenceTopology pyramid(GeometryVariant::Pyramid5);
+  for (unsigned s = 0; s < 4; ++s) EXPECT_EQ(pyramid.side_topology(s).family(), CellFamily::Triangle) << s;
+  EXPECT_EQ(pyramid.side_topology(4).family(), CellFamily::Quadrilateral);
+}
+
+// physics.fe_reference_topology.SerendipityQuadSideOfOrder2PrismAndPyramid
+// -- Prism15's quad sides and Pyramid13's one quad side are the Quad8
+// serendipity face (basis.hpp's own note on why Quad8 exists at all),
+// not Quad9: a P2 wedge/pyramid has no face-interior dof to put a ninth
+// node at.
+TEST(ReferenceTopologyTest, SerendipityQuadSideOfOrder2PrismAndPyramid) {
+  const ReferenceTopology prism15(GeometryVariant::Prism15);
+  for (unsigned s = 0; s < 3; ++s) EXPECT_EQ(prism15.side_topology(s).variant(), GeometryVariant::Quad8) << s;
+  const ReferenceTopology pyramid13(GeometryVariant::Pyramid13);
+  EXPECT_EQ(pyramid13.side_topology(4).variant(), GeometryVariant::Quad8);
+}
+
+// physics.fe_reference_topology.ApexValuesAreWellDefinedButDerivativesRefuse
+// -- the pyramid's apex (0,0,1) is a removable singularity of its
+// rational basis (reference_topology.hpp's own documented carve-out):
+// evaluate_values() returns the known limit (only the apex node's own
+// function is 1) but evaluate() (which also wants the DERIVATIVE, which
+// is genuinely path-dependent there) refuses -- a refusal counts as
+// verified only when a test fires it (this wave's own rule), so this is
+// that test, for all three pyramid variants the apex singularity applies
+// to.
+TEST(ReferenceTopologyTest, ApexValuesAreWellDefinedButDerivativesRefuse) {
+  for (const auto variant : {GeometryVariant::Pyramid5, GeometryVariant::Pyramid13, GeometryVariant::Pyramid14}) {
+    const ReferenceTopology pyramid(variant);
+    const auto values = pyramid.evaluate_values(Point(0, 0, 1));
+    for (std::size_t i = 0; i < values.size(); ++i) EXPECT_NEAR(values[i], i == 4 ? 1.0 : 0.0, 1.0e-14) << i;
+    EXPECT_THROW((void)pyramid.evaluate(Point(0, 0, 1)), std::invalid_argument);
+  }
 }
 
 // physics.fe_reference_topology.EdgeSideTopologyRefuses -- an edge's sides
