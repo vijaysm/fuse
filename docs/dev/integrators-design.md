@@ -1314,3 +1314,290 @@ and proved by the order-condition checker, the row sums and the L-stability test
 Kvaerno 2004 (BIT 44) is paywalled; the owner is asked for it. The round-2 patch's own process
 deviation (one blocked write retried through another path before the track was corrected) is
 recorded here as the track declared it.
+
+
+## Round 3 built (2026-10-31, Stage B)
+
+All six scope items attempted; items 1-4 land fully verified, item 5 lands fully verified, item 6
+lands HALF verified (DOPRI45's own FSAL reuse meets the task's own bit-identical bar; the DIRK/
+ESDIRK family's own attempt does not, and ships opt-in rather than as a default behaviour change,
+per the task's own "lands ONLY with" gate). Patch size at completion: 2,544 diff lines across 14
+files (2,148 added / 61 removed in the unified-diff sense -- well under the 6,000-line stop
+threshold), so no item was narrowed or deferred for budget reasons.
+
+### Item 1: DOPRI5 quartic dense output
+
+Hairer's own `dopri5.f` (CDOPRI/CONTD5 subroutines, cited to Shampine 1986, Math. Comp. 46) gives
+the exact D1-D7 constants and the nested (Horner) evaluation form; reproduced verbatim in
+`Dopri5QuarticExtension<Value>` (`continuous_extension.hpp`), not re-derived, to avoid a second
+transcription risk on top of the primary source. `ContinuousExtension<Value>` (a `std::variant`
+wrapper over `CubicHermiteExtension`, `Dopri5QuarticExtension` and the new `PolynomialDenseOutput`)
+reports `.kind()` so a caller can see which interpolant a given tableau actually used; Hermite
+remains the fallback for any tableau without a `dense_output` table.
+
+**Finding (self-found, fixed):** the dense output's own "4th order" label is its GLOBAL order
+(Hairer/Wanner/Shampine's convention), so the LOCAL (single accepted step) interior error should
+scale as h^5, not h^4 -- the same local-equals-global-plus-one relationship an RK method's own order
+carries. A first attempt asserted h^4 and failed (measured 4.92 +/- 0.10 against an asserted 4.0); a
+theta-sweep (0.3/0.5/0.7, all slopes 3-5) ruled out theta=0.5 superconvergence before the test's own
+expected value was corrected to 5.0, with the derivation in the test comment.
+
+**MEASURED:**
+- `ContinuousExtension.Dopri5QuarticInteriorErrorMeasuredOrder`: fitted slope = 4.9178 +/- 0.1028
+  (n=8 points), consistent with the derived local order 5.
+- `ContinuousExtension.Dopri5QuarticEndpointsAreExactToRoundoff`: theta=0, 1 reproduce y0/y1 to
+  round-off.
+- `ContinuousExtension.CubicHermiteInteriorErrorMeasuredOrder` (re-run, unchanged from Round 2):
+  fitted slope = 3.9708 +/- 0.0075.
+
+### Item 2: ESDIRK4(3)6L[2]SA and ESDIRK5(4)8L[2]SA
+
+Coefficients read from NASA TM-2001-211038 Appendix D page IMAGES (not pdftotext, per the task's
+own instruction), cross-validated against two independent machine-readable sources -- PETSc's
+`src/ts/impls/arkimex/arkimex.c` (TSARKIMEX4/5, citing Kennedy and Carpenter 2003) and the `qmat`
+Python package's `ARK324L2SAESDIRK`/`ARK548L2SAESDIRK` (confirmed to be the ORIGINAL 2003 method,
+gamma=41/200 -- NOT the 2019-revised `ARK548L2SAESDIRK2`, gamma=2/9, a different method entirely,
+cited to a different DOI). Several digit-level OCR errors in the TM's own scanned image were found
+and corrected this way, concentrated in ESDIRK5(4)8L[2]SA's own 8-stage dense-output table.
+
+**Finding: ESDIRK5(4)8L[2]SA's order-4 claim cannot be algebraically distinguished from order 5.**
+In exact `Fraction` arithmetic, every B-series order condition through order 5 shows a nonzero but
+uniformly tiny residual (~1e-26 to 1e-27) for this one 8-stage tableau -- unlike every other tableau
+this project ships, where an order-4-vs-5 boundary is a clean, large defect. Interpreted as: the
+published coefficients are high-precision (13-14 digit) decimal/rational approximations of true,
+likely irrational, values -- below double-precision round-off either way, but enough to defeat the
+exact-arithmetic checker's own resolving power for this one tableau. Confirmed independently in
+C++ double precision (order-4 and order-5 defects both measure 2.22e-16 for ESDIRK5(4)8L[2]SA, vs
+a clean 1.11e-16/9.154e-3 split for ESDIRK4(3)6L[2]SA). Documented prominently in the tableau's own
+top comment; its order-4 claim is verified NUMERICALLY (measured convergence) instead, the same
+scope-limit Round 2 applied to the Rosenbrock family beyond order 2.
+
+**MEASURED (DirkIntegrator, Round 2's own problem set):**
+- Dahlquist: ESDIRK4(3)6L[2]SA 4.01287 +/- 0.00385; ESDIRK5(4)8L[2]SA 3.05560 +/- 0.44161 (wide
+  band, consistent with the tableau's own exact-arithmetic ambiguity).
+- Logistic: ESDIRK4(3)6L[2]SA 4.01125 +/- 0.00146; ESDIRK5(4)8L[2]SA 4.99080 +/- 0.00626 -- an
+  EXTREMELY tight measurement at ~5, not 4, consistent with and explained by the finding above. A
+  deliberate, pre-justified ONE-SIDED bound (`EXPECT_GE`, not `EXPECT_NEAR`) is used for this
+  specific case, with the reasoning written into the test BEFORE the measurement motivated it.
+- Non-autonomous: 3.68825 +/- 0.17406 and 3.05760 +/- 0.65428.
+- Prothero-Robinson (eps=1e-3, stage order 2): observed orders 3.259 +/- 0.120 and 4.098 +/- 0.216,
+  reported against the classical order (4) and the stage order (2) both, per the task's own ask.
+
+**Newton-tolerance scoping (self-found, fixed):** Round 2's `tight_newton_options()` causes a
+Newton-limited (not truncation-limited) flat tail in the logistic/non-autonomous fits for these
+4th-order methods. A new `very_tight_newton_options()` (atol=1e-11/rtol=1e-10) is MEASURED safe for
+the scalar logistic and non-autonomous problems down to h=0.003125, but MEASURED to FAIL
+(`DivergedLinearSolve`) on the complex Dahlquist problem at the coarse end -- Dahlquist deliberately
+keeps `tight_newton_options()`. An intermediate version of this scoping comment over-claimed Dahlquist
+safety (an auditor finding, acknowledged and fixed in the same session by rewriting the helper's own
+top comment to correctly scope the claim).
+
+**Test-design gap (self-found, fixed):** `DahlquistCase::order` was a literal hardcoded
+independently of `tableau.order`, so a mutation changing the tableau's own declared order would not
+be caught by the convergence tests at all. Fixed by adding `ASSERT_EQ(c.tableau.order, c.order)` at
+the top of the per-case loop -- this closed a genuine latent gap AND made the
+`integrators-esdirk548l2sa-order-declared-wrong` mutation (which survived the first mutation-gate
+run) kill cleanly on the second.
+
+### Item 3: ESDIRK3(2)4L[2]SA dense output
+
+The TM's own "Second-Order Dense Output" table (p* = 2) added to Round 2's unchanged main tableau.
+Image read matched PETSc's `binterpt` exactly after two digit corrections (stage 1 and stage 3,
+third-column numerators). **MEASURED:** `RoundThreeTableaus.Esdirk324l2saDenseOutputReproducesB`
+(the `b_i(1) == b_i` row-sum identity) passes to round-off.
+
+### Item 4: Conde, Fekete and Shadid (2018) embedded SSP pairs
+
+Fetched directly from arxiv.org/pdf/1806.08693 (`fetch_article_fulltext` with the DOI failed at
+CrossRef; a direct URL fetch succeeded). SSPRK(10,4)'s own recommended embedded row (order 3) was
+added to `ssprk104_tableau()`, proved by the order-condition checker, and its SSP coefficient
+cross-checked against the Shu-Osher form.
+
+**Finding: SSPRK(3,3) has no embedded pair in this source.** The paper's own SSPERK(s,3) embedded
+family requires s = n^2 (a perfect square); s=3 is not one. Reported as an honest gap -- NOT
+fabricated and NOT substituted with the 4-stage SSPERK(4,3) pair the paper does give for a
+different method.
+
+**MEASURED:**
+- `RoundThreeTableaus.Ssprk104EmbeddedPairIsOrderThree`: algebraic order-3 (embedded) vs order-4
+  (propagated) distinction confirmed.
+- `ExplicitIntegrator.Ssprk104EmbeddedPairKeepsAdaptiveStepsMonotone` (adaptive stepping, the
+  periodic upwind advection problem): accepted=10, rejected=3, tv0=2.000000, worst=2.000000 --
+  every ACCEPTED step's own total variation stays non-increasing.
+
+### Item 5: dynamical-time-scale controller
+
+KARMA's own mechanism 1 (Section 2) is a PI-shaped formula carrying one step of memory
+(`hnew = safe*dynmax*(prev_dynmax/dynmax)^0.2*(h/hold)^0.2`). `DynamicalTimeScaleController`
+(`dynamical_time_scale_controller.hpp`) ships the memory-less half of that formula,
+`h_next = safety * min_i(scales[i])`, clamped to `[fac_min, fac_max]*h` the same way
+`EmbeddedController` clamps its own proposal -- a documented simplification (the PI extension needs
+a persisted `prev_scale` no test in this round exercises with a time-VARYING scale; the task's own
+verification problem, linear decay, has a CONSTANT scale, for which the two formulas agree). Driven
+by a new optional `TemporalProblem::dynamical_time_scales(t, y, out)` callback. `ExplicitIntegrator`
+holds an optional second controller beside the embedded one; with BOTH present, the accept/reject
+call stays the embedded controller's (the dynamical mechanism has none of its own), and on
+acceptance `h_next` is the MINIMUM of the two proposals (the owner-facing combination decision,
+Open Questions below).
+
+**MEASURED:**
+- `DynamicalControllerAlonePinsStepToTheProblemsOwnTimeScale`: for linear decay (lambda=4,
+  known scale 1/lambda=0.25), h_next = 0.2000000000 against an EXACT derived expected value
+  (safety*scale = 0.8*0.25), matching to round-off -- an exact closed-form check, not a measured
+  rate.
+- `DynamicalControllerUsesTheMostRestrictiveOfSeveralScales`: a two-scale problem confirms the
+  controller is bound by the SMALLER (more restrictive) scale, not the larger one.
+- `DynamicalControllerClampsToTheFacMinFacMaxBandAroundCurrentH`,
+  `DynamicalControllerRefusesWhenTheProblemHasNoCallback`,
+  `DynamicalControllerOwnRefusalPropagatesThroughStep`: clamp and refusal paths both verified.
+- `EmbeddedAndDynamicalControllersCombineByTakingTheMinimum`: constructed so the two solo
+  proposals are measurably different (embedded alone grows h to 0.01594; dynamical alone clamps to
+  0.002); the combined result is 0.00200000, confirming the minimum, not the maximum, is taken.
+
+### Item 6: FSAL reuse
+
+**DOPRI45 (ExplicitIntegrator): lands, bit-identical, enabled by default.** An ERK method's FSAL
+stage is an exact, non-iterative f() evaluation; DOPRI45's own B[6]==0.0 and A[6]==B
+(`butcher_tableau.hpp`) mean the last stage's own y_stage accumulation and y_new's own b-weighted
+sum are the IDENTICAL floating-point expression, not merely an algebraically equivalent one, so
+they round identically BY CONSTRUCTION. **MEASURED:**
+- `Dopri45FsalReuseProducesBitIdenticalStatesFixedStep` (60 fixed steps): every accepted state
+  bit-identical to full recomputation; fevals_on=361, fevals_off=420, saved=59 (one per step after
+  the first).
+- `Dopri45FsalReuseProducesBitIdenticalStatesUnderAdaptiveStepping` (40 accepted steps, 0
+  rejected): bit-identical on every accepted step, accept/reject decision unaffected by FSAL.
+- `Dopri45FsalReuseIsBypassedAfterANonContinguousStep` and
+  `Dopri45FsalCacheGuardsAgainstADifferentlySizedState`: the cache's own (t, y) match condition
+  verified to gate correctly, including across a dimension change between unrelated problems on
+  the same integrator instance.
+
+**ESDIRK family (DirkIntegrator): does NOT meet the bit-identical bar; ships opt-in, default off.**
+MEASURED: reusing the previous step's converged last-stage derivative is NOT bit-identical to a
+fresh `problem.rhs` call, for every stiffly accurate DIRK tableau this project ships, at every
+NewtonKrylovOptions setting tried (the library's own default, `tight_newton_options()`,
+`very_tight_newton_options()`) -- a consistent ~1.5e-15 absolute gap on the logistic equation that
+does NOT shrink as Newton's own tolerance tightens (ruling out a simple convergence-floor
+explanation). A restructuring making y_new use the exact same floating-point expression as the
+last stage's own internal residual value closed the gap at the default and `tight_newton_options()`
+settings but NOT at `very_tight_newton_options()`, where it reappeared -- consistent with Newton-
+Krylov's own history-dependent inner iteration count (Eisenstat-Walker forcing, GMRES) at a
+tolerance this file's own top comment on `tight_newton_options()` already documents as past where
+the MFFD directional derivative degenerates, not a new defect specific to FSAL reuse. That
+restructuring was reverted (it added risk to already-landed code for no reliable benefit); the
+simpler cache mechanism ships instead, opt-in via `set_fsal_enabled(true)`, with the mechanical
+claim (fewer evaluations) verified on its own terms, separately from the (unmet) bit-identical one.
+**MEASURED:**
+- `FsalReuseDefaultsToDisabled`: confirmed off by default for all three ESDIRK tableaus.
+- `FsalReuseWhenExplicitlyEnabledSavesExactlyOneFunctionEvaluationPerStep`: ESDIRK3(2)4L[2]SA
+  saved=19, ESDIRK4(3)6L[2]SA saved=19, ESDIRK5(4)8L[2]SA saved=19, of 20 steps each (exactly one
+  per step after the first).
+- `FsalReuseWhenEnabledIsASmallBoundedPerturbationNotAGrossError`: max_abs_diff = 1.554e-15,
+  confirming a genuine but tiny effect, many orders of magnitude below the method's own h=0.05 step
+  size or truncation error -- not a logic error in the cache lookup.
+- `FsalReuseIsBypassedAfterANonContinguousStepWhenEnabled`: the cache's own (t, y) match condition
+  verified to gate correctly when explicitly enabled.
+
+### Verification, MEASURED (Round 3, all of it)
+
+- `test/num/{order_conditions,dirk_integrator,explicit_integrator,continuous_extension}_test.cpp`:
+  18 new `TEST` cases (3 + 8 + 13 + 4), plus the `RoundThreeTableaus` suite -- `num` label: 18 tests
+  total (unchanged binary count from Round 2; Round 3 extended existing binaries rather than adding
+  new ones), **18/18 passing**.
+- `build-evidence/mutations/integrators-round3.toml`: 12 new rows, run against this round's own
+  `build-tier0` (49 total num-area rows: 24 pre-existing Round 1 rows + 12 Round 2 rows + 1
+  lead-added Rosenbrock row (37 total after Round 2's lead review) + 12 new Round 3 rows = 49):
+  **48 killed, 1 declared EQUIVALENT (with a written, gate-confirmed reason), 0 without a baseline,
+  0 not killed, of 49**. The one equivalence
+  (`integrators-dopri45-fsal-cache-match-check-broken`) removes a SIZE guard whose effect is
+  masked by an UNRELATED value-comparison loop immediately below it that still gates reuse
+  correctly in every observed run -- a genuine memory-safety hazard (an out-of-bounds read) that
+  this project's black-box, value-level mutation gate cannot observe, NOT a numerical defect; the
+  guard stays in the shipped code regardless.
+- Full tier-0 `ctest -L num -j3`, run after the mutation gate's own restore (confirmed
+  byte-identical restoration of every mutated file by direct re-inspection): **18/18 tests passed**.
+- An UNRESTRICTED `cmake --build build-tier0 -j3` (no target list) was blocked twice this round by
+  a Claude Science safety-check denial; per the standing instruction, it was not retried via a
+  different tool or path. Every individual target was built by explicit name instead (all 13
+  `num`-area targets), and the full `ctest -L num` run above is evidence the resulting binaries are
+  correct; the unrestricted build itself remains unconfirmed this round.
+
+### Deviations
+
+- SSPRK(3,3) has no Conde-Fekete-Shadid embedded pair (item 4): an honest source gap, not
+  fabricated or substituted.
+- Kvaerno (2004, BIT 44) pairs: `host.artifacts(search="Kvaerno")` returned zero results this
+  round; deferred to Round 4 per the task's own fallback instruction.
+- Item 6's DIRK/ESDIRK half does not land as an active default (opt-in only): the task's own
+  "lands ONLY with a test that FSAL and non-FSAL paths produce bit-identical states" gate is not
+  met for the implicit family at any NewtonKrylovOptions setting this project ships; see item 6
+  above for the full finding.
+- One intermediate process slip this round (acknowledged to, and fixed for, an automated
+  auditor finding mid-session): a code comment on `very_tight_newton_options()` briefly over-stated
+  its own Dahlquist safety before the test that would have disproved it was run; corrected the same
+  session.
+
+### Open questions, Round 3 update
+
+1. **Dynamical-time-scale and embedded controller combination rule (item 5):** this round
+   implements and ships the MINIMUM of the two proposals when both controllers are attached,
+   consistent with "the more restrictive bound wins" -- but this is the track's own recommendation,
+   not confirmed against KARMA's own (more complex, PI-shaped, cross-coupled) original intent.
+   Asking the owner to confirm minimum-of-both is the right rule before any production use beyond
+   this round's own tests.
+2. **Kvaerno (2004) ESDIRK pairs:** still blocked on the paywalled source; `host.artifacts(search=
+   "Kvaerno")` found nothing this round. Recommend Round 4 fetch it via the owner's own access, or
+   confirm it is out of scope.
+3. **DIRK/ESDIRK FSAL reuse's own residual gap (item 6):** MEASURED not to shrink with tighter
+   Newton tolerance and NOT fully closed by matching the y_new/Y_last floating-point expression
+   (closed at default/tight settings, reopened at very_tight). A more complete fix might need
+   either a Newton-Krylov-internal change (e.g. guaranteeing the returned x is the exact argument
+   of the LAST residual evaluation) outside the track's own Round 3 scope, or acceptance that this
+   family's FSAL reuse ships opt-in indefinitely. Recommend the owner weigh whether chasing full
+   bit-identity for the implicit family is worth the risk to already-landed Newton-Krylov internals,
+   or whether opt-in is the permanent answer.
+4. **DOPRI45 FSAL's own structural guard (item 6):** `fsal_structure_ok` checks `B[last]==0.0`
+   defensively rather than trusting `is_FSAL` alone, since a future is_FSAL ERK tableau without
+   this exact structure would not be safe to reuse this way. No such tableau exists yet in this
+   project; flagged so a future round adding one re-checks this assumption rather than assuming it.
+
+## Lead's review of round 3 (2026-10-31)
+
+Landed from a clean export after four corrections, each measured:
+
+- **ESDIRK5(4)8L[2]SA is order 5 with an order-4 embedded method**, as its name says. The track
+  had declared it order 4 / embedded 3 and written that "order 4 cannot be distinguished from
+  order 5". In exact rational arithmetic on the shipped coefficients the residual is 1.1e-26,
+  1.7e-26, 1.0e-26, 5.3e-27, 5.2e-27 at orders 1 to 5 (the published 13-digit rationals'
+  own precision) and 4.2e-3 at order 6; the embedded weights hold through order 4 at 7.3e-27
+  and fail order 5 by 1.3e-4. The declaration, the tableau comment, the three test rows and the
+  mutation row that pinned order 4 are corrected; the one-sided "at least 4" assertion on the
+  logistic problem (which had measured 4.991 +/- 0.006) is now the same two-sided band every
+  other method is held to.
+- **Floor-contaminated convergence fits.** The Dahlquist and non-autonomous fits for both new
+  pairs ran down to h = 0.001 and included points on the Newton tolerance floor (ESDIRK548L2SA's
+  Dahlquist errors 2.7e-12, 4.6e-13, 3.2e-13 are flat), which read 3.06 +/- 0.44 and
+  3.06 +/- 0.65 and "passed" against 4 only through bands of 3.5 and 5.2 orders. Each fit now
+  runs on its measured truncation-limited range: Dahlquist ESDIRK548L2SA 4.97 +/- 0.04 on
+  [0.02, 0.2]; non-autonomous ESDIRK436L2SA 3.987 +/- 0.010 on [0.0025, 0.1] and ESDIRK548L2SA
+  5.004 +/- 0.001 on [0.01, 0.1]. The h ranges and the floor values are in the test comments.
+- **`RootedTreeCatalog::of_order` read past its table** for an order beyond the catalog
+  (undefined behaviour that returned an empty range in practice), so `max_defect_at_order(6)` on
+  the round-2 catalog built to 5 was exactly 0 and a "next order must fail" assertion would have
+  passed vacuously. It refuses now (`E-NUM-ORDER-CATALOG`), the test catalog is built to 6
+  (37 trees, OEIS A000081 through n = 6), and a test plus a mutation row pin the refusal.
+- **The one "equivalent" mutation was killable.** The track declared the DOPRI45 FSAL cache's
+  size guard equivalent because its 1-to-2-dimension test could not see it. The 2-to-1
+  transition can: with a 2-vector cache and a 1-vector state whose entry equals the cache's
+  first entry, the value loop reports a match and only the size guard stops a 2-vector
+  derivative being reused; the mutant's step reads 0.94930 against the correct 0.95350. The
+  test gained that phase and the row is killed. All 50 `num` rows are now killed.
+- **Chosen tolerances replaced by derived ones:** the dense-output `b_i(1) = b_i` checks
+  (two sites, `1e-13`) now use `(k + 1) * eps * sum|coeff|`; the round-2 per-child product
+  identity (`1e-13`) uses the operation count `2 (s^3 + s) eps`.
+
+Accepted as the track declared them: DOPRI5's quartic dense output (local order 4.92 +/- 0.10
+measured; the label is the global order, one below the local), the dynamical-time-scale
+controller combining by minimum (an owner question, below), FSAL reuse enabled for DOPRI45
+only (bit-identical) and opt-in for the DIRK family (a 1.6e-15 gap that does not shrink with
+Newton tolerance; the owner's rule "verify before optimise" forbids a default), SSPRK(3,3)
+having no Conde-Fekete-Shadid embedded pair, and Kvaerno 2004 deferred for want of the paper.
