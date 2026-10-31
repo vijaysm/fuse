@@ -1,4 +1,4 @@
-// A reproducer for the two-HDF5-image hazard (KNOWN_ISSUES.md section D):
+// A reproducer for the two-HDF5-image hazard (docs/user/lowfive.md):
 // a binary that links both MOAB and LowFive may load TWO independent
 // `libhdf5` images -- one through each library's own linkage -- because
 // MOAB's HDF5 dependency is recorded as an absolute path while LowFive's may
@@ -8,7 +8,7 @@
 // the VOL connector registry, free lists, ...), and a handle minted by one
 // image is meaningless to the other.
 //
-// Despite the `.c` name (kept to match the file this task names), this is a
+// Despite the `.c` name (kept for historical reasons), this is a
 // C++ translation unit: both MOAB's and LowFive's public APIs are C++
 // classes with no C binding, so a probe that actually links against them
 // cannot be written in C. tools/probe-hdf5-images.sh compiles it with a C++

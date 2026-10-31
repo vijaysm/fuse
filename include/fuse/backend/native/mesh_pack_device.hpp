@@ -1,23 +1,21 @@
 #pragma once
 
 /// Device-capable pack for the native mesh's migration and halo wire
-/// format (docs/dev/device-resident-arcs.md's Phase 2: "halo and migration
+/// format (docs/dev/device-resident-arcs.md: "halo and migration
 /// pack/unpack ... producing the device CSR directly"). `pack_for_migration`
-/// (native_migration.cpp) and `pack_halo_cells` (native_halo.cpp) are now
-/// wired directly to `pack_to`/`pack_fanout` below (Migration track,
-/// 2026-10-15): both read `NativeMeshView::device_arrays()` -- plain CSR
+/// (native_migration.cpp) and `pack_halo_cells` (native_halo.cpp) are
+/// wired directly to `pack_to`/`pack_fanout` below: both read `NativeMeshView::device_arrays()` -- plain CSR
 /// data, valid in any Kokkos memory space -- instead of walking the VIEW's
 /// own host-only, VALIDATED accessors (`cell_vertices`/`vertex_x`/
 /// `cell_faces`, which materialize the lazy host mirror on first call;
 /// docs/dev/native-mesh.md: `Result`/`Failure`/`fmt` are not
 /// device-callable, so `NativeMeshView::create_from_host`'s VALIDATION
 /// stays a one-time, host-side cost by design, but nothing past that
-/// needs the mirror an old caller's `cell_vertices`/`vertex_x` calls used
-/// to force). The owned-block numbering, every record's exact byte size,
+/// needs the host mirror that `cell_vertices`/`vertex_x` calls force). The owned-block numbering, every record's exact byte size,
 /// and the byte-level write all run as Kokkos kernels on `Space`;
 /// `exchange_migration_buffers`'s MPI alltoall is the GPU-aware exchange
-/// track's own follow-up (this same track, see native_migration.hpp's
-/// header comment on `mpi_is_gpu_aware`), not this header's concern.
+/// (see native_migration.hpp's header comment on `mpi_is_gpu_aware`),
+/// not this header's concern.
 ///
 /// `pack_to<kHaloRecord, Space>` is the named seam this is: a caller on
 /// `Space == Kokkos::DefaultExecutionSpace::memory_space` gets
@@ -39,10 +37,9 @@
 /// header, exactly as native_halo.cpp's own comment on `pack_one_halo_cell`
 /// states.
 ///
-/// NOT YET DONE: the receiving side's dedup-by-global-id merge
+/// NOT DONE HERE: the receiving side's dedup-by-global-id merge
 /// (`merge_halo_cells`'s cell dedup, `unpack_migrated_mesh`'s vertex
-/// dedup) is not templated here. See this track's report
-/// (report-weight-builders.md) for why and what the next increment is.
+/// dedup) is not templated in this header; see mesh_merge_device.hpp.
 
 #include <cstddef>
 #include <cstdint>
@@ -162,11 +159,10 @@ KOKKOS_INLINE_FUNCTION void write_record(const MeshArrays<Space>& mesh, int c, s
   }
 }
 
-/// WIRE FORMAT v2 (Migration track, 2026-10-15; KNOWN_ISSUES D51's own
-/// narrowing: "the wire format's variable-length, unprefixed records
-/// make per-record boundary discovery... a serial walk... it would need
-/// either a length-prefixed wire-format change"). Every buffer `pack_to`/
-/// `pack_fanout` produce now opens with a FIXED-SIZE header a receiver
+/// WIRE FORMAT v2. The wire format's variable-length, unprefixed records
+/// would make per-record boundary discovery a serial walk without a
+/// length-prefixed wire-format change. Every buffer `pack_to`/
+/// `pack_fanout` produce opens with a FIXED-SIZE header a receiver
 /// can read with one `parallel_for` indexed by record, never a
 /// sequential walk of the variable-length payload that follows it:
 ///
@@ -174,8 +170,7 @@ KOKKOS_INLINE_FUNCTION void write_record(const MeshArrays<Space>& mesh, int c, s
 ///   [record_count + 1 int64 byte offsets, ABSOLUTE from the start of
 ///    this buffer -- record r's bytes span [offsets[r], offsets[r+1]),
 ///    and offsets[record_count] is the buffer's own total size]
-///   [payload: every record, back to back, unchanged from before this
-///    header existed]
+///   [payload: every record, back to back]
 ///
 /// `alloc_buffer_with_header` below builds this from the SAME `contrib`/
 /// `payload_offset` arrays `pack_to`/`pack_fanout` already compute for
@@ -263,7 +258,7 @@ alloc_buffer_with_header(const Kokkos::View<std::size_t*, Space>& contrib,
 /// `Kokkos::parallel_for` for per-cell record sizes, then for each of
 /// `num_ranks` destinations one `parallel_for` + `parallel_scan` +
 /// `parallel_reduce` + `parallel_for` -- O(num_ranks * cell_count())
-/// total. Fine at this track's test scale (a handful of ranks, a few
+/// total. Fine at test scale (a handful of ranks, a few
 /// hundred cells); a single bucketed (radix) assignment across all ranks
 /// in one pass would remove the rank factor for a large communicator and
 /// is future work, not needed yet.
@@ -330,8 +325,8 @@ template <bool kHaloRecord, class Space>
     // `KOKKOS_LAMBDA` (which is what a first attempt did): nvcc's extended
     // `__host__ __device__` lambda rejects a variable's FIRST capture
     // occurring inside an `if constexpr` branch ("cannot first-capture
-    // variable in constexpr-if context") -- measured on this track's own
-    // device build, not a style preference. Each lambda below captures
+    // variable in constexpr-if context") -- measured on a device build,
+    // not a style preference. Each lambda below captures
     // exactly what it needs unconditionally, which both compiles under
     // nvcc and is the clearer reading anyway.
     if constexpr (kHaloRecord) {
@@ -372,7 +367,7 @@ template <bool kHaloRecord, class Space>
 /// cell lookup (native_halo.hpp's `owned_block_index`) -- the caller's
 /// existing arrays need no re-indexing to become these views' host
 /// mirrors. Read only when `kHaloRecord`; omit both for a hypothetical
-/// fanout migration pack (not a case this track's two real callers need:
+/// fanout migration pack (not a case either real caller needs:
 /// `pack_for_migration` itself still goes through `pack_to`, whose
 /// one-destination-per-cell model is exactly what migration is).
 ///
@@ -380,7 +375,7 @@ template <bool kHaloRecord, class Space>
 /// destination rank the same `parallel_for` + `parallel_scan` +
 /// `parallel_reduce` + `parallel_for` shape `pack_to` uses, over `n_sends`
 /// instead of `cell_count()` -- `O(num_ranks * n_sends)`, matching
-/// `pack_to`'s own cost note at this track's test scale.
+/// `pack_to`'s own cost note at test scale.
 template <bool kHaloRecord, class Space>
 [[nodiscard]] std::vector<Kokkos::View<std::byte*, Space>> pack_fanout(
     const MeshArrays<Space>& mesh, const Kokkos::View<int*, Space>& cell_of_send,

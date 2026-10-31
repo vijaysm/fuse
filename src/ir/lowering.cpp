@@ -50,56 +50,52 @@ void emit_field_sink(LoweringContext& ctx, const CouplingGraph& g, FieldId f,
   const auto it = ctx.field_arc.find(f.value());
   if (it == ctx.field_arc.end()) return;
 
-  // Find the channel that wrote it, so the Sink can carry its origin. This
-  // is NOT changed for a merged field (review 2026-10-11 IS-9, see below):
-  // `Node::origin` also governs `claimed_by_channel()` in src/schedule/
-  // expand.cpp, which routes this Sink through that ORIGIN CHANNEL's OWN
-  // slab decomposition -- correct only when the Sink genuinely belongs to
-  // that channel's chain. A merged field's Sink does not belong to any one
-  // writer's chain, so its origin stays "first declared", exactly as
-  // before, and the authorization question below is answered separately.
+  // Find the channel that wrote it, so the Sink can carry its origin. This is
+  // NOT changed for a merged field (see below): `Node::origin` also governs
+  // `claimed_by_channel()` in src/schedule/expand.cpp, which routes this Sink
+  // through that ORIGIN CHANNEL's OWN slab decomposition -- correct only when
+  // the Sink genuinely belongs to that channel's chain. A merged field's Sink
+  // does not belong to any one writer's chain, so its origin stays "first
+  // declared", and the authorization question below is answered separately.
   ChannelId origin;
   for (std::uint32_t c = 0; c < g.channel_count(); ++c) {
     if (g.channel_at(ChannelId{c}).target == f) { origin = ChannelId{c}; break; }
   }
 
-  // Review 2026-10-11 IS-9: a MERGED field's Sink inherits its time level
-  // from whichever writer the merge adopted as newest (the merge-
-  // construction comment above explains why), which need not be the
-  // first-declared one `origin` above names. `type_check()` below must
-  // authorize against the ACTUAL writer, not the one it happens to share a
-  // node with -- but it must do so WITHOUT touching `origin` itself, since
-  // that field is shared with the scheduler's chain-membership test
-  // (`claimed_by_channel()`) and retargeting it previously misrouted this
-  // Sink through the authorizing channel's own multirate slab decomposition
-  // instead of the ordinary boundary-tick stamp a Sink needs (measured on
-  // `multirate_merge()`'s own fixture, test/schedule/plan_test.cpp: the
-  // Sink was duplicated across the authorizing writer's slabs and one
-  // instance sorted before the Merge it reads). A dedicated OpAttrs field
-  // keeps the two concerns -- "which chain does scheduling put this node
-  // in" and "which writer does authorization check" -- independent.
+  // A MERGED field's Sink inherits its time level from whichever writer the
+  // merge adopted as newest (the merge-construction comment above explains
+  // why), which need not be the first-declared one `origin` above names.
+  // `type_check()` below must authorize against the ACTUAL writer, not the one
+  // it happens to share a node with -- but it must do so WITHOUT touching
+  // `origin` itself, since that field is shared with the scheduler's
+  // chain-membership test (`claimed_by_channel()`) and retargeting it would
+  // misroute this Sink through the authorizing channel's own multirate slab
+  // decomposition instead of the ordinary boundary-tick stamp a Sink needs
+  // (measured on `multirate_merge()`'s own fixture,
+  // test/schedule/plan_test.cpp: the Sink was duplicated across the authorizing
+  // writer's slabs and one instance sorted before the Merge it reads). A
+  // dedicated OpAttrs field keeps the two concerns -- "which chain does
+  // scheduling put this node in" and "which writer does authorization check" --
+  // independent.
   ChannelId merge_auth = origin;
   const auto merge_origin = ctx.merge_newest_origin.find(f.value());
   if (merge_origin != ctx.merge_newest_origin.end()) {
     merge_auth = merge_origin->second;
   }
 
-  // Time windows track (C3): a window-scoped import's own Sink output is
-  // K samples wide, delivered unchanged from its provider -- never the
-  // single value the component's own native Requires storage holds
-  // (window_import_width()'s own comment, fuse/ir/lowering.hpp). The
-  // "/window" label suffix, the SAME convention the window EXPORT side's
-  // own WindowAdvance output already uses, is what plan_buffers()
-  // (src/schedule/buffers.cpp) reads to keep this arc a fresh
-  // coupler-owned scratch buffer instead of aliasing it onto the
+  // Time windows: a window-scoped import's own Sink output is K samples wide,
+  // delivered unchanged from its provider -- never the single value the
+  // component's own native Requires storage holds (window_import_width()'s own
+  // comment, fuse/ir/lowering.hpp). The "/window" label suffix, the SAME
+  // convention the window EXPORT side's own WindowAdvance output already uses,
+  // is what plan_buffers() (src/schedule/buffers.cpp) reads to keep this arc a
+  // fresh coupler-owned scratch buffer instead of aliasing it onto the
   // component's own registered storage -- which resolve_buffers()
-  // (src/runtime/runner.cpp) would otherwise do unconditionally for any
-  // Sink whose label parses as "component.field" for a real field.
-  // Review 2026-10-11 IS-4: the label still carries the "/window" suffix
-  // below (unchanged, so no existing dump moves), but it is readability only
-  // now -- plan_buffers() reads the structural `window_import_sink` flag,
-  // not the string, so a field legally named "q/window" cannot be mistaken
-  // for one.
+  // (src/runtime/runner.cpp) would otherwise do unconditionally for any Sink
+  // whose label parses as "component.field" for a real field. The label carries
+  // the "/window" suffix below, but it is readability only -- plan_buffers()
+  // reads the structural `window_import_sink` flag, not the string, so a field
+  // legally named "q/window" cannot be mistaken for one.
   const std::string label =
       qualified(g, f) + (is_window_import ? "/window" : "");
   const ArcId sink_arc =
@@ -123,11 +119,10 @@ void type_check(LoweringContext& ctx) {
     const ValueType& required = d.arc(n.output).type;
 
     bool allow_time = false;
-    // Review 2026-10-11 IS-9: `merge_auth_channel` is the channel a merged
-    // field's Sink was actually typed from (the newest contribution); for
-    // a single-writer Sink `emit_field_sink()` sets it equal to `n.origin`,
-    // so this is a strict generalization, not a behavior change, for every
-    // field that isn't merged.
+    // `merge_auth_channel` is the channel a merged field's Sink was actually
+    // typed from (the newest contribution); for a single-writer Sink
+    // `emit_field_sink()` sets it equal to `n.origin`, so this is a strict
+    // generalization for every field that isn't merged.
     const ChannelId auth_channel = n.attrs.merge_auth_channel.valid()
                                        ? n.attrs.merge_auth_channel
                                        : n.origin;
@@ -182,31 +177,29 @@ bool ir_can_emit(OperatorKind kind) noexcept {
 
 LoweringResult lower(const CouplingGraph& g, ConnectPolicy policy) {
   LoweringResult result;
-  // Designated initializers, not positional: review 2026-10-11 IS-9 twice
-  // inserted a new LoweringContext member ahead of `connect_policy` and
-  // broke a positional `{g, result.dag, result.diags, {}, {}, ...}` call
-  // here both times (a silent-until-compile-error member-count mismatch,
-  // or worse, a silent WRONG-member assignment if the types had matched).
-  // Naming each member skips that whole class of defect -- an insertion
-  // anywhere else in the struct cannot shift what `policy` initializes.
+  // Designated initializers, not positional: inserting a new LoweringContext
+  // member ahead of `connect_policy` would break a positional `{g, result.dag,
+  // result.diags, {}, {}, ...}` call (a silent-until-compile-error member-count
+  // mismatch, or worse, a silent WRONG-member assignment if the types had
+  // matched). Naming each member skips that whole class of defect -- an
+  // insertion anywhere else in the struct cannot shift what `policy`
+  // initializes.
   LoweringContext ctx{.graph = g, .dag = result.dag, .diags = result.diags,
                       .connect_policy = policy};
 
-  // D73 (automatic remap halo, owner decision 2026-10-18): step 0, before
-  // step 1's `Source` loop below -- not after it, and not folded into
-  // step 2's per-channel rule -- so every `BuildRemapHalo` node this emits
-  // gets a lower `NodeId` than every `Source` node, which is what makes
-  // `OperatorDAG::topological_order()`'s ascending-NodeId tie-break (and,
-  // downstream, `expand()`'s own `t = 0` stamp for both kinds) place it at
-  // the front of the compiled instruction stream. See `OpKind::
-  // BuildRemapHalo`'s own doc comment (fuse/ir/op.hpp) and `emit_remap_
-  // halo_instructions()`'s (fuse/ir/lowering.hpp).
+  // Automatic remap halo: step 0, before step 1's `Source` loop below -- not
+  // after it, and not folded into step 2's per-channel rule -- so every
+  // `BuildRemapHalo` node this emits gets a lower `NodeId` than every `Source`
+  // node, which is what makes `OperatorDAG::topological_order()`'s
+  // ascending-NodeId tie-break (and, downstream, `expand()`'s own `t = 0` stamp
+  // for both kinds) place it at the front of the compiled instruction stream.
+  // See `OpKind::BuildRemapHalo`'s own doc comment (fuse/ir/op.hpp) and
+  // `emit_remap_halo_instructions()`'s (fuse/ir/lowering.hpp).
   emit_remap_halo_instructions(ctx);
 
-  // Time windows track: every field a window-scoped iteration region's
-  // own exporting member provides instead of an ordinary Source
-  // (seed_window_source_arcs(), called after step 1). Computed once, up
-  // front, since step 1 needs it below.
+  // Time windows: every field a window-scoped iteration region's own exporting
+  // member provides instead of an ordinary Source (seed_window_source_arcs(),
+  // called after step 1). Computed once, up front, since step 1 needs it below.
   const std::unordered_set<std::uint32_t> window_fields =
       window_provided_fields(g);
 
@@ -230,14 +223,13 @@ LoweringResult lower(const CouplingGraph& g, ConnectPolicy policy) {
     ctx.field_arc[i] = a;
   }
 
-  // Time windows track: pre-creates the bare output arc (no producing
-  // node yet) for every window-scoped region member that owns a
-  // channel's source field, seeding ctx.source_arc/ctx.field_arc exactly
-  // as the ordinary Source loop above would have -- so step 2's ordinary
-  // per-channel rule, run UNCHANGED below for a window-scoped region's
-  // own channels too, has something real to read as that channel's
-  // source. See seed_window_source_arcs()'s own doc comment
-  // (fuse/ir/lowering.hpp) for why the actual WindowAdvance NODE is not
+  // Time windows: pre-creates the bare output arc (no producing node yet) for
+  // every window-scoped region member that owns a channel's source field,
+  // seeding ctx.source_arc/ctx.field_arc exactly as the ordinary Source loop
+  // above would have -- so step 2's ordinary per-channel rule, run UNCHANGED
+  // below for a window-scoped region's own channels too, has something real to
+  // read as that channel's source. See seed_window_source_arcs()'s own doc
+  // comment (fuse/ir/lowering.hpp) for why the actual WindowAdvance NODE is not
   // created until much later (finish_window_regions(), after step 3).
   seed_window_source_arcs(ctx);
 
@@ -247,11 +239,11 @@ LoweringResult lower(const CouplingGraph& g, ConnectPolicy policy) {
   // Constrain/Diagnose produced, which is only possible if the derived pass
   // runs before Relax's node is created, not after the whole rule returns.
   //
-  // Time windows track: a window-scoped region's own channels run through
-  // this SAME rule, unchanged -- the user's chosen design. Their source
-  // reads back the arc seed_window_source_arcs() just seeded; their
-  // ordinary Transport/Remap/Epoch chain, and the Sink step 3 builds for
-  // them below, are exactly what any other cross-placement channel gets.
+  // Time windows: a window-scoped region's own channels run through this SAME
+  // rule, unchanged. Their source reads back the arc seed_window_source_arcs()
+  // just seeded; their ordinary Transport/Remap/Epoch chain, and the Sink step
+  // 3 builds for them below, are exactly what any other cross-placement channel
+  // gets.
   for (std::uint32_t i = 0; i < g.channel_count(); ++i) {
     const ChannelId cid{i};
     if (!LoweringRegistry::builtin().apply_first_match(ctx, cid)) {
@@ -314,7 +306,7 @@ LoweringResult lower(const CouplingGraph& g, ConnectPolicy policy) {
       // this same ambiguity) -- but unlike those two call sites, silently
       // keeping whichever writer got here first would mistype the merged
       // output, not just risk an over-cautious cycle report. So this refuses
-      // rather than guesses (REVIEW.md R-43; today no lowering rule produces
+      // rather than guesses (today no lowering rule produces
       // a non-WindowEnd anchor, so this branch is not yet reachable, but the
       // guard has to exist before one does).
       //
@@ -359,47 +351,44 @@ LoweringResult lower(const CouplingGraph& g, ConnectPolicy policy) {
       }
       const OpAttrs merge_attrs{.reason = std::string(merge_op_name(spec->op)),
                                 .merge = spec->op};
-      // Review 2026-10-11 IS-1 (placement follow-on): the newest writer's
-      // own arc supplies the merge's time level, but NOT its placement --
-      // `lower_channel()`'s step 5b (src/ir/rules_channel.cpp) only moves
-      // `type.rank_set` off the writer's own component when the two
-      // components' RankSets actually differ, so a same-rank-set channel
-      // (the ordinary case: writer and target happen to run on the same
-      // ranks) leaves it stamped with the WRITER's component id for the
-      // whole chain. Taking `newest_type.rank_set` as-is therefore schedules
-      // the Merge against whichever writer happened to be newest's own
-      // clock (`boundary_owner()`, src/schedule/expand.cpp) instead of
-      // `f`'s owner -- silently correct when that writer's interval equals
-      // the owner's, and silently wrong (one Merge instance instead of one
-      // per owner tick) when it does not. The merge is always delivered to
-      // `f`'s owner, never to a writer, so that is the placement it carries
-      // regardless of which writer is newest (measured on
-      // `multirate_merge()`'s own fixture, test/schedule/plan_test.cpp: a
-      // period-2 lagging writer merged with a period-1 identity one
-      // produced a single Merge instance at the slower writer's own tick
-      // instead of one per target tick, sorting the Sink's own per-tick
-      // reads ahead of the write they depend on).
+      // The newest writer's own arc supplies the merge's time level, but NOT
+      // its placement -- `lower_channel()`'s step 5b (src/ir/rules_channel.cpp)
+      // only moves `type.rank_set` off the writer's own component when the two
+      // components' RankSets actually differ, so a same-rank-set channel (the
+      // ordinary case: writer and target happen to run on the same ranks)
+      // leaves it stamped with the WRITER's component id for the whole chain.
+      // Taking `newest_type.rank_set` as-is therefore schedules the Merge
+      // against whichever writer happened to be newest's own clock
+      // (`boundary_owner()`, src/schedule/expand.cpp) instead of `f`'s owner --
+      // silently correct when that writer's interval equals the owner's, and
+      // silently wrong (one Merge instance instead of one per owner tick) when
+      // it does not. The merge is always delivered to `f`'s owner, never to a
+      // writer, so that is the placement it carries regardless of which writer
+      // is newest (measured on `multirate_merge()`'s own fixture,
+      // test/schedule/plan_test.cpp: a period-2 lagging writer merged with a
+      // period-1 identity one produced a single Merge instance at the slower
+      // writer's own tick instead of one per target tick, sorting the Sink's
+      // own per-tick reads ahead of the write they depend on).
       ValueType newest_type = ctx.dag.arc(newest).type;
       newest_type.rank_set = static_cast<int>(g.owner_of(f).value());
 
-      // Review 2026-10-11 IS-9: looked up via `ctx.writer_arc_channel`
-      // (recorded in `lower_channel()`, src/ir/rules_channel.cpp), NOT via
-      // `newest`'s own producer node's `Node::origin` -- an identity
-      // channel (same region, same placement, unlagged) emits no chain
-      // node at all, so its writer arc IS the bare Source arc, whose
-      // producer's origin is deliberately `ChannelId{}` (a Source belongs
-      // to its component, not to any one channel that reads it). Reading
-      // that invalid origin here used to make the Sink's `claimed_by_
-      // channel()` check false, silently dropping it into the boundary
-      // pass at its component's tick START instead of the chain's tick
-      // END -- sorting it before the very Merge it reads and refusing the
-      // graph with E-SCHED-ORDER (measured on `five_writer_merge()`'s own
-      // all-identity-channel fixture, test/schedule/plan_test.cpp).
-      // Recorded here, keyed by field, so `emit_field_sink()` below can
-      // authorize the Sink's time-level mismatch against the writer that
-      // actually produced `newest_type` -- not against whichever channel
-      // happens to target this field first by declaration order, which
-      // for a multi-writer field need not be the same channel.
+      // Looked up via `ctx.writer_arc_channel` (recorded in `lower_channel()`,
+      // src/ir/rules_channel.cpp), NOT via `newest`'s own producer node's
+      // `Node::origin` -- an identity channel (same region, same placement,
+      // unlagged) emits no chain node at all, so its writer arc IS the bare
+      // Source arc, whose producer's origin is deliberately `ChannelId{}` (a
+      // Source belongs to its component, not to any one channel that reads it).
+      // Reading that invalid origin here would make the Sink's
+      // `claimed_by_channel()` check false, silently dropping it into the
+      // boundary pass at its component's tick START instead of the chain's tick
+      // END -- sorting it before the very Merge it reads and refusing the graph
+      // with E-SCHED-ORDER (measured on `five_writer_merge()`'s own
+      // all-identity-channel fixture, test/schedule/plan_test.cpp). Recorded
+      // here, keyed by field, so `emit_field_sink()` below can authorize the
+      // Sink's time-level mismatch against the writer that actually produced
+      // `newest_type` -- not against whichever channel happens to target this
+      // field first by declaration order, which for a multi-writer field need
+      // not be the same channel.
       const auto newest_channel = ctx.writer_arc_channel.find(newest.value());
       if (newest_channel != ctx.writer_arc_channel.end()) {
         ctx.merge_newest_origin[field_value] = newest_channel->second;
@@ -407,10 +396,10 @@ LoweringResult lower(const CouplingGraph& g, ConnectPolicy policy) {
 
       // Merge with more than three sources is lowered as a left-fold of
       // pairwise merges (documented at include/fuse/schedule/plan.hpp's
-      // Instruction; that struct's `in` array is what actually holds three,
-      // but `ir` does not depend on `schedule`, so the limit is duplicated
-      // here rather than shared -- REVIEW.md R-27). Up to that many writers
-      // still become one Merge node, unchanged from before this fix.
+      // Instruction; that struct's `in` array is what actually holds three, but
+      // `ir` does not depend on `schedule`, so the limit is duplicated here
+      // rather than shared). Up to that many writers still become one Merge
+      // node.
       constexpr std::size_t kMaxMergeInputs = 3;
       if (writers.size() <= kMaxMergeInputs) {
         const ArcId out =
@@ -452,18 +441,16 @@ LoweringResult lower(const CouplingGraph& g, ConnectPolicy policy) {
   // Lowering.UnwrittenBidirectionalFieldSelfCopiesThroughOneSink in
   // test/unit/lowering_test.cpp for the regression test that pins it.
   //
-  // Time windows track: split into two passes rather than moved wholesale,
-  // to keep this step's own node-creation ORDER unchanged for every graph
-  // with no window-scoped region (which is every graph before this
-  // track, and every one after it that does not opt in): only a field a
-  // window member actually IMPORTS needs its Sink before
-  // build_iteration_regions() (so finish_window_regions() below can read
-  // its output arc via ctx.sink_arc, for that importing member's
-  // OpAttrs::window_import); every other required field's Sink -- which
-  // is every one of them on a graph with no window-scoped region --
-  // still lands exactly where step 3 always has, after
-  // build_iteration_regions(), so its node ids and the golden IR fixtures
-  // that pin them are unaffected.
+  // Time windows: split into two passes rather than moved wholesale, to keep
+  // this step's own node-creation ORDER unchanged for every graph with no
+  // window-scoped region (the ones that do not opt in): only a field a window
+  // member actually IMPORTS needs its Sink before build_iteration_regions() (so
+  // finish_window_regions() below can read its output arc via ctx.sink_arc, for
+  // that importing member's OpAttrs::window_import); every other required
+  // field's Sink -- which is every one of them on a graph with no window-scoped
+  // region -- still lands exactly where step 3 always has, after
+  // build_iteration_regions(), so its node ids and the golden IR fixtures that
+  // pin them are unaffected.
   const std::unordered_set<std::uint32_t> window_imported =
       window_imported_fields(g);
   for (std::uint32_t i = 0; i < g.field_count(); ++i) {
@@ -475,12 +462,11 @@ LoweringResult lower(const CouplingGraph& g, ConnectPolicy policy) {
                     /*is_window_import=*/true);
   }
 
-  // Time windows track: must run after the window-imported Sink pass
-  // above (an importing member's window_import names a Sink's own output
-  // arc, via ctx.sink_arc) and before build_iteration_regions(), which
-  // groups the WindowAdvance nodes this creates into the region's body by
-  // their origin channel, exactly as it already does for
-  // ordinarily-lowered nodes.
+  // Time windows: must run after the window-imported Sink pass above (an
+  // importing member's window_import names a Sink's own output arc, via
+  // ctx.sink_arc) and before build_iteration_regions(), which groups the
+  // WindowAdvance nodes this creates into the region's body by their origin
+  // channel, exactly as it already does for ordinarily-lowered nodes.
   finish_window_regions(ctx);
 
   build_iteration_regions(ctx);

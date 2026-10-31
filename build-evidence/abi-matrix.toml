@@ -1,19 +1,18 @@
-#  The ABI test matrix -- S6.1, written before the implementation (2026-10-02).
+#  The ABI test matrix.
 #
 #  Every row names the test that pins one claim about the participant ABI,
 #  the file it lives in, and WHAT MAKES IT FAIL: a row whose failure
 #  condition cannot be stated is not a test. tools/check-abi-matrix.py
-#  (Phase 2, not yet built) would turn a row whose test or file is missing
-#  into a gate failure, the way tools/check-parallel-matrix.py does for the
+#  (not yet written) would turn a row whose test or file is missing into a
+#  gate failure, the way tools/check-parallel-matrix.py does for the
 #  parallel matrix -- until it exists, this file is read by eye.
 #
-#  `status` (S6 phase 3, Unit 4, record-consistency pass: replaces the
-#  earlier two-value present/planned scheme with what each row's own test
-#  has actually been measured to do, not merely whether it exists):
+#  `status` records what each row's own test has actually been measured to
+#  do, not merely whether it exists:
 #    measured-tier-0  the named test runs, and passes, in the ordinary
 #                      (no MPI, no LowFive) sandbox ctest suite -- every row
-#                      below with this status was confirmed passing in the
-#                      SAME ctest run this pass's own report cites.
+#                      below with this status was confirmed passing in a
+#                      single ctest run.
 #    built-only        the named test's own file compiles and links clean in
 #                      SOME configured tier, but has not been run anywhere
 #                      yet -- neither this sandbox (missing a capability it
@@ -60,7 +59,7 @@ rule = 3
 claim = "appending a member to any struct in the .def increases its sizeof"
 file = "test/abi/entries_golden_test.cpp"
 test = "AbiGolden.NoStructHasTrailingPaddingALaterMemberCouldHide"
-fails_when = "for any struct, sizeof(struct) > offsetof(last member) + sizeof(last member) rounded to the struct's alignment -- i.e. there is trailing padding a 4-byte append would vanish into. fuse_version_info was the one case (28 bytes of members in 32) and carries a reserved member since 2026-10-02; the measured table in test/abi/struct_sizes.golden shows zero trailing padding everywhere"
+fails_when = "for any struct, sizeof(struct) > offsetof(last member) + sizeof(last member) rounded to the struct's alignment -- i.e. there is trailing padding a 4-byte append would vanish into. fuse_version_info was the one case (28 bytes of members in 32) and carries a reserved member; the measured table in test/abi/struct_sizes.golden shows zero trailing padding everywhere"
 status = "measured-tier-0"
 
 [[row]]
@@ -149,20 +148,20 @@ id = "ABI-COLLECTIVE-AGREEMENT"
 rule = 7
 claim = "a failure on one process of a collective entry is reported on every process"
 file = "test/parallel/abi_participant_mpi_test.cpp"
-test = "AbiParticipantMpi.IsCouplingOngoingAgreesAcrossRanksAfterOnePeriod (ctest row parallel.abi_participant_mpi.2; corrected from the stale parallel.abi_participant.2 this pass found)"
+test = "AbiParticipantMpi.IsCouplingOngoingAgreesAcrossRanksAfterOnePeriod (ctest row parallel.abi_participant_mpi.2)"
 fails_when = "initialize() or begin_step() returns FUSE_OK on one process and an error on another for the same call (a rank-local refusal inside a collective, the class fixed in bb6f57f)"
 status = "host-only"
 requires = "mpi"
 
-#  Planned mutation rows (added to build-evidence/mutations/abi.toml in
-#  Phase 2, once the anchors exist):
+#  Planned mutation rows (to be added to build-evidence/mutations/abi.toml
+#  once the anchors exist):
 #    abi-reader-trusts-a-short-struct      struct_size check removed -> ABI-SHORT-STRUCT
 #    abi-writer-sets-the-wrong-size        table.struct_size = 0 -> ABI-TABLE-NEGOTIATION
 #    abi-time-rounded-to-double            t_begin built from a double -> ABI-EXACT-TIME
 #    abi-exception-escapes                 try/catch removed from one entry -> ABI-EXCEPTION-CONTAINMENT
 #    abi-second-symbol-exported            an extra extern "C" function -> ABI-GOLDEN-SYMBOLS
 
-#  ---- the provider direction (S6 phase 4, "Adapter host" track) ----------
+#  ---- the provider direction (adapter host) ----------
 #  The coupler calls a plugin (include/fuse/abi/provider.h); one conformance
 #  harness, test/abi/conformance_test.cpp, drives ONE graph four ways
 #  (native, a C plugin, a Fortran plugin, the participant direction) with

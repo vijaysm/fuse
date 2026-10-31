@@ -3,7 +3,7 @@
 A field's discretization (`FieldSpec::disc`/`order`) decides not just which
 remap operator applies to it (`connect.hpp`'s `to_semantics`,
 `consistent_interp.hpp`'s `is_nodal`) but how many scalar values it needs --
-and until this track, every buffer-sizing and conservation-measure call site
+and originally every buffer-sizing and conservation-measure call site
 answered that second question the same, wrong way for a genuinely nodal
 field: by the region's own (cell) dimension, unconditionally.
 
@@ -72,10 +72,10 @@ about what the answer means, and `RegionSizes`'s signature -- `(RegionId,
 int) -> size_t` -- did not need to grow a `FieldSpec` parameter, because
 `region_extent_kind` recovers the same information by reading the graph
 `make_region_sizes` already closes over. This is why the fix stayed inside
-`include/fuse/backend/**`/`src/backend/**` (this track's own files) rather
+`include/fuse/backend/**`/`src/backend/**` rather
 than needing a change to `ValueType`/`Arc` (`include/fuse/ir/op.hpp`) or to
 `try_plan_buffers`'s signature (which would have required a change in
-`src/schedule/scheduler.cpp`, outside this track's ownership).
+`src/schedule/scheduler.cpp`).
 
 ## The conservation measure
 
@@ -95,9 +95,9 @@ is the plain SUM of its (owned) values, weight 1, not a measure-weighted
 sum. `weights_for` now branches on `region_extent_kind`: `Vertex` gets
 weight `1.0` per owned vertex (0 for a ghost, same double-counting guard as
 the cell path), dimension 0 instead of the region's own dimension for the
-entity-count cross-check. Since KNOWN_ISSUES.md D89 the same weight-1
+entity-count cross-check. The same weight-1
 convention applies to a CELL field of `Conservation::Extensive` kind too
-(the value IS the amount, D82's convention, which the column-normalised
+(the value IS the amount, which the column-normalised
 Extensive supermesh weights preserve as a plain sum); only an `Intensive`
 cell field integrates against the cell measure.
 
@@ -111,13 +111,13 @@ two ways.
 ## Parallel: lowest-rank vertex ownership
 
 In parallel, a vertex shared by several ranks has exactly one owner: the
-LOWEST rank holding it. This is not a new rule invented for this track --
+LOWEST rank holding it. This is not a rule invented for nodal fields --
 it is the native mesh's own rule, `resolve_vertex_ownership`
 (`src/backend/native_migration.cpp`): every rank `Allgatherv`s its local
 vertex global ids, and each vertex's owner is `min` over every rank
 reporting that id. `NativeMeshView::is_owned(0, i)` already answers
-correctly for any native-mesh-backed run; nothing in this track re-derives
-or re-implements that rule -- it is reused, exactly as directed.
+correctly for any native-mesh-backed run; nothing here re-derives
+or re-implements that rule -- it is reused.
 
 ### Which dimension Transport matches at
 
@@ -150,16 +150,16 @@ alone, with no new transport logic: the machinery was already
 dimension-generic, it was simply never asked about dimension 0 for a field
 in view.
 
-### H^T on a distributed interface: refused until it can be verified
+### H^T on a distributed interface: refused except for the consistent methods
 
 A Remap into a nodal field on more than one rank is refused
-(`E-RT-REMAP-NODAL-PARALLEL`, KNOWN_ISSUES D8).
+(`E-RT-REMAP-NODAL-PARALLEL`) for every method except the two consistent ones described below.
 
 The reduction such a target needs depends on how the weights were built. With
 weights on a genuinely partitioned source, each holder of a shared vertex holds a
 partial row: loads must be summed onto the owner once, and pointwise values taken
 from the owner. With weights on a replicated source, which is every case reachable
-today because weights are built on the default view (D5 item 3), each holder
+today because weights are built on the default view, each holder
 already holds the complete row, and the sum multiplies it by the holder count.
 
 The reduction was first wired in on the assumption that rows are partial, and that
@@ -169,7 +169,7 @@ remain, and the last two are unit-tested under MPI. The refusal is lifted once
 per-placement weights exist and a partitioned, non-matching nodal Remap through the
 Runner conserves force and balances power at 1 to 5 ranks.
 
-**Update (nodal-remap track, round 1).** Rather than extending the replicated-source
+**Distributed primitive.** Rather than extending the replicated-source
 owner sum above to a per-placement one, `fuse/backend/nodal_remap_distributed.hpp` builds
 a genuinely different (and genuinely partitioned) primitive from the ground up: each
 evaluation entity's row is computed ONLY by the rank that owns it, against an
@@ -183,20 +183,17 @@ which is what makes it bit-identical across rank counts (the header explains why
 summing in whatever order `MPI_Allgatherv` happens to concatenate records would not
 be).
 
-**Update (nodal-remap track, round 2, 2026-09-25): the Runner IS now wired.**
-`src/runtime/runner.cpp`'s `resolve_remap` calls the new `Runner::Impl::
+**The Runner is wired.**
+`src/runtime/runner.cpp`'s `resolve_remap` calls `Runner::Impl::
 build_nodal_dist_remap`/`apply_nodal_dist_remap` for exactly the two consistent
-methods, replacing `E-RT-REMAP-NODAL-PARALLEL` for them (every other method
-still refuses it — D5 item 3's per-placement supermesh weights remain
-unimplemented). `reduce_nodal_remap_target()`/`NodalReduceInfo`/
-`NodalReduceMode`/`Impl::nodal_reductions` are DELETED (they were genuine
-dead code: the index into them was never set to anything but -1 before a
-`Failure` returned first) — `accumulate_shared_rows`/`copy_owner_shared_rows`
-themselves are UNTOUCHED, since `test/parallel/nodal_field_test.cpp` (the
-"nodal fields" track) calls them directly for its own Transport-side
-ownership tests, independent of the deleted Remap-specific caller.
+methods, in place of `E-RT-REMAP-NODAL-PARALLEL` (every other method
+still refuses it — per-placement supermesh weights remain
+unimplemented). There is no Remap-specific `reduce_nodal_remap_target()` caller any
+more; `accumulate_shared_rows`/`copy_owner_shared_rows`
+are used directly by `test/parallel/nodal_field_test.cpp` for its Transport-side
+ownership tests.
 
-The distributed builder also gained a NULL-COMMUNICATOR code path this round
+The distributed builder also has a NULL-COMMUNICATOR code path
 (`fuse::search::kNullComm`; only `nodal_remap_distributed.cpp`'s
 `allgatherv_records` still branches on real MPI, mirroring
 `fuse::partition::detail::collectives.hpp`'s established convention), which is
@@ -207,12 +204,10 @@ single participant already owns everything, so
 is a REAL Runner run (not a compile check) proving a declared two-rank
 placement reproduces the one-rank baseline's numbers exactly. A genuinely
 partitioned multi-PROCESS host run — where the source mesh is actually split,
-not fully replicated by construction — remains unverified; see KNOWN_ISSUES.md
-D8's "What is still open, honestly" for the precise gap and why a dedicated
-Runner-level MPI test was not authored this round.
+not fully replicated by construction — remains unverified, and there is no
+dedicated Runner-level MPI test for it yet.
 
-**Update (nodal-remap track, round 4, 2026-09-25): a real host MPI run found
-two genuine defects in the round-2/3 wiring above, both fixed.** (1) A
+**Two defects found by a real host MPI run, both fixed.** (1) A
 refusal reachable INSIDE a collective function must be an AGREED verdict,
 not a rank-local one: `build_distributed_interp_rows` (and, by the same
 audit, `apply_distributed_H`) returned their domain/owner-missing failures
@@ -232,13 +227,11 @@ Tier-0 coincidence (no genuine partition to expose it) and broken
 (`E-INTERP-NOGEOMETRY` or a silently wrong local-only answer) on a real
 host. The trigger now reads both regions' kind and both components' rank
 counts; a shape still not implemented after that (both sides nodal) is
-refused by name, not silently attempted. See KNOWN_ISSUES.md D8's round-4
-entry for the full account, measured numbers, and the exact host commands
-still needed.
+refused by name, not silently attempted.
 
 ## Mutation coverage
 
-`build-evidence/mutations/nodal-fields.toml` (this track's own file) records
+`build-evidence/mutations/nodal-fields.toml` records
 four rows: the ownership rule inverted to max-rank, a halo copy skipped, a
 shared load summed on every holder rather than once, and a nodal field's
 extent read as its region's cell count. The first three need a working MPI
@@ -255,25 +248,21 @@ quad-triangle/hex-tet cases fail the same way. The mutated source was then
 restored byte-for-byte (`cmp` against a pre-mutation backup) and the suite
 rebuilt and reconfirmed passing (14/14) before moving on.
 
-**Addendum (Stage B, Nodal corner track, 2026-10-20): the two interpolation
-builders' own parity, and the D74 sibling fix.** `build_general_interp_weights`
+**The two interpolation
+builders' own parity.** `build_general_interp_weights`
 (general_interp.hpp, serial) and `build_distributed_interp_rows`
-(nodal_remap_distributed.hpp, this track's own distributed primitive) are
+(nodal_remap_distributed.hpp, the distributed primitive) are
 INTENTIONALLY built to the same contract -- `nodal_tie_break_test.cpp`'s own
 header states it directly: "the deterministic, global-id tie-break ... exercised
-... cross-checked between the two code paths that must agree on it." KNOWN_
-ISSUES.md D74 found and fixed a defect in the distributed side only: a failed
+... cross-checked between the two code paths that must agree on it." A defect was found and fixed in the distributed side first: a failed
 `invert_reference_map` on any candidate aborted the whole evaluation point,
 even after an earlier candidate in the same broad-phase set already decided
-it. This round found the IDENTICAL defect, never fixed, in the serial side --
-`build_general_interp_weights`'s own per-candidate loop still returned
-`Failure` unconditionally on the first failing candidate. Fixed by mirroring
+it. The IDENTICAL defect existed in the serial side --
+`build_general_interp_weights`'s own per-candidate loop returned
+`Failure` unconditionally on the first failing candidate. It now mirrors
 `nodal_remap_distributed.cpp`'s own `consider()` lambda exactly (skip, don't
-abort); `build-evidence/mutations/nodal-remap.toml`'s new row records the
+abort); `build-evidence/mutations/nodal-remap.toml`'s row records the
 mutation test (reverting the skip back to a return) and its triple kill
 (`NodalTieBreak.DegenerateNearbyCandidateAbortsAnAlreadyFoundTightMatch`, its
 3-D Hex analogue, and `GeneralInterp.DegenerateCellRefuses`'s own updated
-expectation). See KNOWN_ISSUES.md's "D74 SIBLING FIX" addendum for the full
-measured account, including the one existing row whose refusal CODE (not its
-pass/fail) changes, and why that specific change restores -- rather than
-breaks -- parity between the two builders.
+expectation).

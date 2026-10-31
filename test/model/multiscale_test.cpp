@@ -62,12 +62,10 @@ TEST(Multiscale, OverlapCheckRefusesEvenForValidCoverage) {
   EXPECT_EQ(under.error().code, "E-MULTISCALE-NOT-IMPLEMENTED");
 }
 
-// BM-19 (review 2026-10-11): `total()` used to accumulate with the
-// throwing `+` operator, which already refused an unrepresentable sum
-// (via Rational::operator+=) but did so from three stack frames down,
-// with a message naming an addition rather than this accumulation. The
-// refusal itself is unchanged -- same E-BASE-RATIONAL-OVERFLOW code --
-// now raised explicitly, by name, at this call site via `try_add`.
+// `total()` refuses an unrepresentable sum explicitly, by name, at its own
+// call site via `try_add`, rather than from three stack frames down inside
+// Rational::operator+= with a message naming an addition rather than this
+// accumulation. The code is E-BASE-RATIONAL-OVERFLOW.
 TEST(Multiscale, OverlapTotalRefusesAnUnrepresentableSum) {
   constexpr std::int64_t kMax = std::numeric_limits<std::int64_t>::max();
   const OverlapSpec huge{.coverage = {Rational{kMax}, Rational{kMax}}};
@@ -95,7 +93,7 @@ TEST(Multiscale, AnIncompleteContractIsReportedBeforeTheUnimplementedRefusal) {
 }
 
 // The reviewer is real, not a stub, so it is tested as behaviour: every failure
-// at once (U2), and the two "usable but constrained" cases as warnings rather
+// at once, and the two "usable but constrained" cases as warnings rather
 // than errors.
 TEST(Multiscale, ContractReviewReportsEveryGapAtOnce) {
   const Diagnostics empty = review_surrogate_contract(SurrogateContract{});

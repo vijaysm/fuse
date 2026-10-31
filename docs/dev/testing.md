@@ -46,7 +46,7 @@ FUSE_REQUIRE_AT_LEAST_RANKS(2);
 Reducing the failure status across the communicator answers "did this test
 pass", but a launcher commonly forwards only one rank's stdout, so the rank
 that actually failed can be entirely absent from the log — "failed on 1 of 3
-rank(s)" is then the whole evidence (measured on the host, 2026-10-08,
+rank(s)" is then the whole evidence (measured on the host,
 `parallel.window_runner_mpi.3`). `MpiFailureReducer::OnTestEnd`
 (`test/support/fuse_test_main.cpp`) now `MPI_Allgather`s each rank's own
 pass/fail bit — collective, since every rank runs the same tests in the same
@@ -84,7 +84,7 @@ whose order is the threads'), the native mesh, and the typed numerical kernels.
 `tools/compare-runs.cmake` additionally runs the two physics examples at both counts and requires
 byte-identical output.
 
-`KNOWN_ISSUES.md` D11, CLOSED 2026-09-28: `src/runtime/`'s `execute()`/`run_region()` now call
+`src/runtime/`'s `execute()`/`run_region()` now call
 `num/space_kernels.hpp`'s kernels over `Runner::Impl::HostExecSpace`
 (`Kokkos::DefaultHostExecutionSpace`), so `example.*.omp_identical` and this leg are load-bearing
 for the coupling hot loop, not merely for the partitioner, the native mesh and the typed kernels.
@@ -96,12 +96,11 @@ each output element's write touches no other; the per-sweep block value/residual
 (`space_kernels.hpp`'s `deterministic_dot`/`deterministic_norm_squared`(`_diff`)), verified against
 a plain-host reference with `EXPECT_EQ` under `FUSE_FP_REPRODUCIBLE` and against a derived bound
 otherwise (`SpaceKernels.
-DeterministicReductionsMatchTheChunkedReferenceExactlyOrWithinTheFpContractionBound` — renamed from
-`...Exactly`, see "Floating-point contraction policy" below) and, at the Runner level, by a real
+DeterministicReductionsMatchTheChunkedReferenceExactlyOrWithinTheFpContractionBound` — see "Floating-point contraction policy" below) and, at the Runner level, by a real
 2048-element iteration region pinned to measured literals across every `OMP_NUM_THREADS`
-(`runtime.runner_determinism`, `fuse_add_omp_legs`). See `KNOWN_ISSUES.md` D11's closing entry for
-the full account, including the one label-length allocation trap this closing found and fixed, and
-what remains open for a device execution space under A5.
+(`runtime.runner_determinism`, `fuse_add_omp_legs`). One label-length allocation trap was found and fixed while
+making the coupling hot loop run over these kernels. Device execution spaces are covered by the
+device leg below.
 
 ### The device leg (`ctest -L device`)
 
@@ -135,10 +134,10 @@ across both linear-algebra backends, with dependencies resolved from the runner'
 (`FUSE_ALLOW_FETCH=ON` there, since a CI runner has no tuned install) — and a **no-exceptions leg**
 that builds with `FUSE_ENABLE_EXCEPTIONS=OFF` and runs every test not labelled `throws`.
 
-**Planned**: tier 1 at 2/3/4/5 ranks (S4), tier 2 and tier 3 (S5, S7), an ASan+UBSan leg (S1 exit),
-LowFive (S6), and *running the mutations themselves* as a CI leg once its runtime is acceptable —
+**Not yet in CI**: tier 1 at 2/3/4/5 ranks, tiers 2 and 3, an ASan+UBSan leg,
+LowFive, and *running the mutations themselves* as a CI leg once its runtime is acceptable —
 today that step (apply each mutation, build, confirm the target fails) is run before a port is
-accepted, on the owner's machine, with its log committed under `build-evidence/`; only the
+accepted, on a developer machine, with its log committed under `build-evidence/`; only the
 staleness check above has moved into CI.
 
 The `throws` label is **declared** on a test target, not detected: a parent tried to find
@@ -174,18 +173,18 @@ an acceleration bug presents.
 
 `FUSE_FP_REPRODUCIBLE` (`cmake/FuseFpPolicy.cmake`, default **ON**) decides whether `a*b + c` is
 rounded once (a fused multiply-add) or twice (multiply, round, then add — `-ffp-contract=off`,
-applied to every C, C++ and Fortran target). **Measured 2026-10-12**, reproducing `KNOWN_ISSUES.md`
-D30 at the stock compiler default (no flag at all, `tier0-release`, Apple clang 21.0.0): exactly
+applied to every C, C++ and Fortran target). **Measured** at the stock compiler default
+(no flag at all, `tier0-release`, Apple clang 21.0.0): exactly
 three named cases fail by one ulp and nothing else does —
 `DistVectorOneRank.ArithmeticMatchesAPlainLoopBitForBit` (`linalg.dist_vector`) and
 `SpaceKernels/{0,1}.DeterministicReductionsMatchTheChunkedReferenceExactly`
-(`num.space_kernels{,.omp1,.omp8}`) — 184 of 188 tier-0 rows passing. Both are renamed below
+(`num.space_kernels{,.omp1,.omp8}`) — 184 of 188 tier-0 rows passing. Both tests are named
 (`...ExactlyOrWithinTheFpContractionBound`) because under `FUSE_FP_REPRODUCIBLE=OFF` they no longer
 claim bit-identity.
 
-**D30's own account of *why* this happens was wrong, and the record is corrected here rather than
-quietly fixed.** D30 said "Apple clang contracts `a*b + c` into a fused multiply-add at `-O2` and
-not at `-O0`." That is false, confirmed directly: `double f(double a,double b,double c){return
+**Contraction is not toggled by the optimization level.** It is tempting to say Apple clang
+contracts `a*b + c` into a fused multiply-add at `-O2` and not at `-O0`. That is false, confirmed
+directly: `double f(double a,double b,double c){return
 a*b+c;}` compiled `-S` emits one `fmadd` (the fused form) at `-O0` with the compiler's **default**
 flags, zero `fmadd` at `-O0 -ffp-contract=off`, and the SAME one `fmadd` at `-O2` with default flags
 — `-ffp-contract`'s default is `on` at every optimization level this compiler has; it is not toggled
@@ -260,7 +259,7 @@ differ on this compiler — then asserts `a*b+c ==` the two-step value under `FU
 and only prints the observed difference, asserting nothing, under `==0`. Because the flag's default
 (`on`, fused) applies at **every** optimization level, not only `-O2`/`-O3` (the corrected premise
 above), this single, unvectorized expression is sensitive to the flag in Debug exactly as it is in
-Release — **hand-proved 2026-10-12** in both: deleting the call that applies the C/CXX half of the
+Release — **hand-proved** in both: deleting the call that applies the C/CXX half of the
 policy (`fuse_apply_fp_contract_policy_c_cxx()`, `CMakeLists.txt`) fails
 `FpPolicy.ContractionIsOffWhenReproducible` in a Release tree (`-4.0672332501391795` vs
 `-4.0672332501391804`) AND in a Debug tree (same two values), while the precondition test still
@@ -293,7 +292,7 @@ this machine: Apple clang 21.0.0 and Homebrew GNU Fortran 16.2.0). Any other C/C
 CMake `WARNING` instead of a silently-assumed flag (MSVC's `/fp:precise` and Intel's `-fp-model=
 precise` are different flags, untested here, not added). **Not covered, by design:** a CUDA device
 build's own contraction (`nvcc`'s `-fmad`, default `ON`) needs the matching `-fmad=false` — documented
-here as follow-up for the device branch (A5), not added, since this machine has no CUDA toolchain to
+here as follow-up for the device branch, not added, since this machine has no CUDA toolchain to
 test it against.
 
 ### Measured run-time cost
@@ -311,165 +310,114 @@ compiled with each build's own flags, `-O3 -DNDEBUG -mcpu=native`:
 | `fuse_example_brusselator --driver runner --end 1.0` (end to end) | — | 1008.3 \[974.2, 1111.5\] ms | 994.7 \[990.1, 1064.9\] ms |
 
 **Caveat, stated rather than hidden: this machine could not be made quiet.** The methodology called
-for `load1 < 3` before each batch, retried up to 10 times at 60 s intervals; two other tracks were
-building concurrently throughout and `load1` never dropped below 6 in ten attempts (range 6.0–13.8
+for `load1 < 3` before each batch, retried up to 10 times at 60 s intervals; other builds were
+running concurrently throughout and `load1` never dropped below 6 in ten attempts (range 6.0–13.8
 across all batches). Every row above is labelled **NOISY**. `deterministic_sum` contains no multiply
 at all (`s += v[i]`) and therefore cannot be affected by a contraction policy either way, yet shows a
 "cost" of the same order as the kernels that do — direct evidence the differences above are
-contention noise, not a measured cost attributable to `-ffp-contract`. **The lead repeats this
-measurement on a quiet machine**; until then, no speedup or slowdown number from this table should be
+contention noise, not a measured cost attributable to `-ffp-contract`. **This
+measurement needs repeating on a quiet machine**; until then, no speedup or slowdown number from this table should be
 cited as a property of the flag.
 
-### A measured cost beyond speed: iteration-sensitive tests, restated as what they actually show
+### Iteration-sensitive tests assert properties, not counts
 
-Round 2 of this track found that `FUSE_FP_REPRODUCIBLE=ON` (the chosen default) regressed three
-pre-existing, unowned tests because each asserted a *specific* iteration count or energy-closure
-value that turned out to be a measurement of the compiler's default (contracted) arithmetic, not a
-robust property of the method. **Round 3, measured 2026-10-12 (user decision 2026-10-12: restate
-each test as the property it is actually named for; default stays `ON`)**, restated two of the
-three and made the third's own exemption visible rather than silent — this track edited only these
-three `TEST(...)` bodies (its only edit permission this round); `examples/` and `src/` were untouched:
+`FUSE_FP_REPRODUCIBLE=ON` (the default) changes the arithmetic of every build type, so any test that
+asserted a *specific* iteration count or energy-closure value was measuring the compiler's default
+(contracted) arithmetic rather than a property of the method. Three tests are written as the property
+they are named for.
 
-- **`Accelerator.LadderIsMonotoneOnADenseLinearProblem`** (`test/num/accelerator_test.cpp`) no
-  longer pins `n_aitken == 56`. A 24-way perturbation of the problem's initial vector by 1 ulp of
-  1.0 showed `n_aitken` spans `{55, 56, 57, 59}` under BOTH contraction policies (contracted:
-  `{55:3, 56:12, 57:7, 59:2}`, mean 56.42; `ON`: `{55:3, 56:14, 57:6, 59:1}`, mean 56.25) — 56 is
-  the single most common value in both, and the `56->57` shift between the two unperturbed
-  baselines sits well inside this natural scatter, confirming the literal was a rounding-dependent
-  number. The test's *own name* — "monotone" — is what is actually asserted now: the pre-existing
-  ordering relations (`n_secant < n_picard`, `n_aitken < n_secant`, `n_ils < n_aitken`,
-  `n_imvj <= n_ils`) hold for every one of the 48 measured values of `n_aitken`, under both
-  policies, so this test now PASSES under `ON`.
-- **`Accelerator.SteffensenIsExactOnADiagonalProblemAndBasisDependent`** (same file) no longer pins
-  `n_dense == 681`. Residual histories under the two policies track each other to 5-6 significant
-  figures through iteration 35, then both enter an intermittent-burst regime (k~60-165) consistent
-  with a trajectory near a chaotic basin boundary; the contracted build's bursts happen to relax
-  back into convergence by k=681, `ON`'s does not and diverges instead. The same 24-way, 1-ulp
-  perturbation showed this is not specific to `ON`: 4 of 24 (16.7%) perturbed runs also diverge
-  (non-convergent, `-1`) under the DEFAULT contracted policy, and 8 of 24 (33%) under `ON`; the
-  convergent runs ranged 488-2366 iterations in both policies. 681 was one outcome of a dynamical
-  system whose qualitative behaviour is controlled by perturbations far smaller than any physically
-  meaningful input, not a reproducible property — so the test now asserts what it is actually named
-  for, basis dependence: `n_dense == -1` or `n_dense >= 20 * n_diag` (with `n_diag` itself exact at
-  `2` in all 48 measured runs). `K = 20` carries more than a 12x margin below the weakest ratio
-  actually measured (488/2 = 244) while remaining far larger than any ratio a well-conditioned
-  method could reach by chance; this test now also PASSES under `ON`.
-- **`FsiEnergyDiag.FullBudgetOnTheDominantModeCloses`** (`test/verification/fsi_energy_diag_test.cpp`).
-  Round 3's `GTEST_SKIP()` treatment (above) was itself superseded 2026-10-12 (user decision: redesign
-  the check around a mode with real energy, rather than make the old mode's exemption more visible).
-  The dominant eigenvalue (`lambda = -1`, Newmark's acceleration passenger) is *retained* only as a
-  cheap growth-rate sanity check (`EXPECT_LE(eig.rho, 1.0 + 1e-6)`) with no energy-budget assertion —
-  it carries no energy of its own in either policy (measured in round 3: `E0` is within 1-2 orders of
-  magnitude of its own eigenvector-accuracy noise floor), so no closure check on it could ever be
-  trustworthy. The budget is instead evaluated on **the beam's own oscillatory mode**: among the full
-  spectrum's complex-conjugate eigenvalue pairs (printed once per run), the one whose argument is
-  closest to `omega1*dt` (the phase a free oscillator at the beam's own fundamental frequency would
-  advance in one coupling step) and whose two-part energy `Q(Re v)+Q(Im v)` exceeds `1e-6` of the full
-  spectrum's total — a criterion applied in code, not chosen by trial. (Measured: `omega1*dt` = 9.00
-  deg/step; the discrete beam-alone estimate is 8.09 deg/step; the selected coupled-system mode sits
-  at 4.39 deg/step, roughly half of either — consistent with fluid ADDED MASS lowering the coupled
-  system's effective frequency, not a selection error.) Since a real coupling period cannot start
-  from a complex state, the check runs `run_one_coupled_period_with_budget` on the eigenvector's real
-  and imaginary parts SEPARATELY (`x`, `x_im`) and combines them: for a real matrix `M` with
-  `M v = lambda v` and ANY quadratic form `Q`, `Q(M x) + Q(M x_im) = |lambda|^2 * (Q(x) + Q(x_im))`
-  exactly (the cross term between the two parts cancels in the sum) — verified numerically on this
-  `M1`/mode to a relative difference of `7.3e-17` (machine precision), and confirmed to be the
-  phase-independent quantity to use: `Q(x)+Q(x_im)` agreed to 7 significant figures between the two
-  contraction policies (`3.871039808e-04` vs `3.871040e-04`) even though the individual real/imaginary
-  energies differed between them. The tolerance is DERIVED (Cauchy-Schwarz on the energy inner
-  product, full derivation in the code comment) from each part's own measured `eig_quality` (residual
-  against the correct two-part eigen-prediction, not simply `lambda*x`) and a measured energy-density
-  proxy, not chosen: `2|lambda| sqrt(E0) sqrt(Q(r)) + Q(r)`. A non-vacuity assertion
-  (`E0/(eig_quality^2 |x|^2) > 1e6`) fails loudly, rather than passing silently, if this test ever
-  lands on an energetically-empty mode again — the passenger mode's own worst measured ratio was
-  `~54`; this mode measures `~1e12`, ten-plus orders of magnitude higher, so the `1e6` bar has wide
-  margin on both sides.
+- **`Accelerator.LadderIsMonotoneOnADenseLinearProblem`** (`test/num/accelerator_test.cpp`) does not
+  pin `n_aitken`. A 24-way perturbation of the problem's initial vector by 1 ulp of 1.0 gives
+  `n_aitken` in `{55, 56, 57, 59}` under both contraction policies (contracted:
+  `{55:3, 56:12, 57:7, 59:2}`, mean 56.42; `ON`: `{55:3, 56:14, 57:6, 59:1}`, mean 56.25), so the
+  count is a rounding-dependent number. The test asserts the ordering relations its name claims
+  (`n_secant < n_picard`, `n_aitken < n_secant`, `n_ils < n_aitken`, `n_imvj <= n_ils`), which hold
+  for every one of the 48 measured values of `n_aitken`.
+- **`Accelerator.SteffensenIsExactOnADiagonalProblemAndBasisDependent`** (same file) does not pin
+  `n_dense`. Residual histories under the two policies track each other to 5-6 significant figures
+  through iteration 35, then both enter an intermittent-burst regime (k~60-165) consistent with a
+  trajectory near a chaotic basin boundary. The same 24-way, 1-ulp perturbation makes 4 of 24
+  (16.7%) runs diverge (non-convergent, `-1`) under the default contracted policy and 8 of 24 (33%)
+  under `ON`; the convergent runs range over 488-2366 iterations in both. The test asserts basis
+  dependence: `n_dense == -1` or `n_dense >= 20 * n_diag` (`n_diag` is exactly `2` in all 48
+  measured runs). `K = 20` leaves more than a 12x margin below the weakest ratio measured (488/2 =
+  244) while remaining far larger than any ratio a well-conditioned method could reach by chance.
+- **`FsiEnergyDiag.FullBudgetOnTheDominantModeCloses`**
+  (`test/verification/fsi_energy_diag_test.cpp`). The dominant eigenvalue (`lambda = -1`, Newmark's
+  acceleration passenger) is kept only as a growth-rate sanity check
+  (`EXPECT_LE(eig.rho, 1.0 + 1e-6)`), with no energy-budget assertion: it carries no energy of its
+  own in either policy (`E0` is within 1-2 orders of magnitude of its eigenvector-accuracy noise
+  floor), so no closure check on it could be trustworthy. The budget is evaluated on the beam's own
+  oscillatory mode: among the spectrum's complex-conjugate eigenvalue pairs, the one whose argument
+  is closest to `omega1*dt` (the phase a free oscillator at the beam's fundamental frequency would
+  advance in one coupling step) and whose two-part energy `Q(Re v)+Q(Im v)` exceeds `1e-6` of the
+  spectrum's total, a criterion applied in code. Measured: `omega1*dt` is 9.00 deg/step, the discrete
+  beam-alone estimate is 8.09 deg/step, and the selected coupled mode sits at 4.39 deg/step, about
+  half of either, consistent with fluid added mass lowering the coupled system's effective
+  frequency. A real coupling period cannot start from a complex state, so the check runs
+  `run_one_coupled_period_with_budget` on the eigenvector's real and imaginary parts separately
+  (`x`, `x_im`) and combines them: for a real matrix `M` with `M v = lambda v` and any quadratic
+  form `Q`, `Q(M x) + Q(M x_im) = |lambda|^2 * (Q(x) + Q(x_im))` exactly (verified numerically to a
+  relative difference of `7.3e-17`), and `Q(x)+Q(x_im)` agreed to 7 significant figures between the
+  two contraction policies even though the individual real and imaginary energies differed. The
+  tolerance is derived (Cauchy-Schwarz on the energy inner product; the derivation is in the code
+  comment) from each part's measured `eig_quality` and an energy-density proxy:
+  `2|lambda| sqrt(E0) sqrt(Q(r)) + Q(r)`. A non-vacuity assertion (`E0/(eig_quality^2 |x|^2) >
+  1e6`) fails loudly if the test lands on an energetically empty mode; the passenger mode's ratio
+  is about `54` and this mode measures about `1e12`.
 
-  The pre-existing beam-side/fluid-side identity checks further down the same test function now run
-  on the real part's own production period and are reachable/load-bearing again (see
-  `build-evidence/mutations/fsi.toml`). Round 4 first recalibrated the beam-side identity's tolerance
-  factor from `1.0` to `1.5` because factor `1.0` narrowly failed on this less-favourably-resolved
-  mode (`1.029` contracted); that recalibration was reverted round 5 (a tolerance widened specifically
-  because one run failed is a widened tolerance regardless of how the new number is framed), and
-  `eig_quality`/`CoupledCase::tol`/the beam stiffness matrix's condition number were each measured and
-  ruled out as the floor's mechanism, leaving a real `~1.05e-12` failure under Release+`OFF` as an open
-  finding.
+The beam-side and fluid-side identity checks further down the same test run on the real part's
+production period (see `build-evidence/mutations/fsi.toml`). The beam-side identity uses
+`dt_delivered = rationalize_dt(c.dt).to_double()` rather than the literal `c.dt`, because
+`build_fsi_graph()` quantizes `dt` through this file's `rationalize_dt()` (an 8-decimal-place
+rational, `Rational{llround(dt*1e8), 1e8}`) and the production run advances on that quantized
+value; nothing downstream of `rationalize_dt()` sees the literal `c.dt` again. Using the literal
+gave a mismatch of `|c.dt - dt_delivered| * |beam_wall_power|` (`c.dt - dt_delivered =
+-1.613339e-09` on this mode); with the delivered value the mismatch is round-off (`4.07e-20` ON,
+`6.78e-21` OFF; relative to `E0`: `2.78e-16` ON, `3.03e-17` OFF).
 
-  **Root cause found and fixed 2026-10-12 (final FpPolicy round, `KNOWN_ISSUES.md` D34).** The floor
-  was neither `eig_quality` nor the solver's own conditioning: it was this test's own bookkeeping.
-  `build_fsi_graph()` does not hand the coupling graph `c.dt` itself — it quantizes it first, through
-  this file's own `rationalize_dt()` (an 8-decimal-place rational: `Rational{llround(dt*1e8), 1e8}`),
-  and the production run every downstream identity is evaluated against physically advanced on THAT
-  quantized value, not on the literal `c.dt`. (`FUSE`'s core scheduler was considered and ruled out
-  directly: `fuse::StepContext::dt()` and the coupling graph's own component interval already carry the
-  quantized `Rational` — nothing downstream of `rationalize_dt()` ever sees the literal `c.dt` again.)
-  The beam-side identity's `dE_beam_naive = c.dt * beam_wall_power` line used the literal value while
-  the run it was being compared against used the delivered one; measured directly, `mismatch = |c.dt -
-  dt_delivered| * |beam_wall_power|` to 7-8 significant figures in both policies (`c.dt - dt_delivered
-  = -1.613339e-09` on this mode), and substituting the delivered dt into a fresh, isolated beam step
-  reproduces the production run's own `w1`/`wd1` to exactly `0.0` in both policies. Fixed by computing
-  `dt_delivered = rationalize_dt(c.dt).to_double()` and using it in place of `c.dt` in
-  `dE_beam_naive`; the mismatch drops to round-off (`4.07e-20` ON, `6.78e-21` OFF; relative to `E0`:
-  `2.78e-16` ON, `3.03e-17` OFF). The fluid-side budget's `measure_full_energy_identity_general` call
-  has the same class of defect (passes the literal `c.dt` to an independently-built `cn_step`, compared
-  against a production state that advanced on `dt_delivered`) but was not fixed this round — only the
-  beam identity was in scope.
+Its tolerance bounds the floating-point evaluation error of the identity's own arithmetic through
+Higham's recursive-summation/inner-product result (*Accuracy and Stability of Numerical
+Algorithms*, 2nd ed., Sec. 3.1: an `n`-term sum or inner product has error at most `gamma_n * (sum
+of absolute products)`, `gamma_n = n*u/(1-n*u)`), plus the forward error of the beam's
+`Keff2=(dt/4)*K+(rho_s h_s/dt)*I` solve (direct sparse LU, `kappa_2(Keff2)*u`). The quadratic form
+`PE=0.5*w^T*K*w` cancels substantially against its own evaluation-error scale (about 44x:
+`sum|K_ij*w_i*w_j|` versus `2*|PE|`), so the bound uses the larger uncancelled sum; using `|PE|`
+would understate the floor by the same factor. `nnz(K)` (`19`) and `kappa_2(Keff2)` (`1.222628`)
+are computed in the test from an independent replica of `BeamSolver`'s documented stiffness
+construction (byte-identical to the private `K_` for this configuration, `||diff||=0.0`). The
+overall multiplier (the maximum of three per-term multipliers, never fitted) is `11402.13` (ON) /
+`23444.91` (OFF), giving tolerances `1.031e-16` (ON) / `1.978e-16` (OFF), which are `2534.7x` /
+`29183.6x` looser than the observed round-off-level mismatch: a loose bound, not tightened to fit.
+Two mutation rows in `build-evidence/mutations/fsi.toml` cover this identity: dropping the beam
+coefficient (`fsi-energy-diag-beam-identity-dx-beam-coefficient-dropped`) kills the test under both
+policies, and reverting to the literal `c.dt` (`fsi-energy-diag-beam-identity-dt-literal-not-delivered`)
+is killed under both, with the mismatch exceeding the tolerance by `1.058e+04x` (ON) / `5.319e+03x`
+(OFF).
 
-  The tolerance was re-derived from scratch rather than loosened: it no longer uses `eig_quality` at
-  all (measured, this round, to be the wrong scale for an identity computed entirely from one
-  production run's own data). It now bounds the floating-point evaluation error of the identity's own
-  arithmetic directly, via Higham's recursive-summation/inner-product result (*Accuracy and Stability
-  of Numerical Algorithms*, 2nd ed., Sec. 3.1: an `n`-term sum/inner product's evaluation error is
-  bounded by `gamma_n * (sum of absolute products)`, `gamma_n = n*u/(1-n*u)`), plus the beam's
-  `Keff2=(dt/4)*K+(rho_s h_s/dt)*I` solve's own backward-stable (direct sparse LU) forward error
-  (`kappa_2(Keff2)*u`). The quadratic form `PE=0.5*w^T*K*w` behind the energy terms cancels
-  substantially against its own evaluation-error scale (measured ~44x: `sum|K_ij*w_i*w_j|` versus
-  `2*|PE|`), so the bound uses that larger, uncancelled sum rather than `|PE|` itself — using `|PE|`
-  there would understate the true floor by the same ~44x. Both `nnz(K)` (`19`) and `kappa_2(Keff2)`
-  (`1.222628`) are computed directly in the test from an independent replica of `BeamSolver`'s public,
-  documented stiffness construction (confirmed byte-identical, `||diff||=0.0`, to the real, private
-  `K_` for this configuration) — no private access, no cited external constant. The resulting overall
-  multiplier `c` (`max` of three per-term multipliers, never fitted) is `11402.13` (ON) / `23444.91`
-  (OFF); the derived tolerance is `1.031e-16` (ON) / `1.978e-16` (OFF), which is `2534.7x` / `29183.6x`
-  looser than the now-round-off-level observed mismatch — a loose bound, honestly reported as such,
-  not tightened to fit.
-
-  Both `build-evidence/mutations/fsi.toml` rows for this identity were re-proved on the fixed code: the
-  pre-existing `fsi-energy-diag-beam-identity-dx-beam-coefficient-dropped` row now kills the test in
-  BOTH policies (previously it could only be proved under `ON`, since the `OFF` baseline itself failed
-  before this round); a new row,
-  `fsi-energy-diag-beam-identity-dt-literal-not-delivered`, reverts the fix (`dE_beam_naive` back to
-  literal `c.dt`) and is killed in both policies by the new tolerance, with the mismatch exceeding it
-  by `1.058e+04x` (ON) / `5.319e+03x` (OFF).
-
-Full `ctest`, both targets, after the final round (measured 2026-10-12):
+Full `ctest` in the three configurations that matter:
 
 | `CMAKE_BUILD_TYPE` | `FUSE_FP_REPRODUCIBLE` | `num.accelerator` | `verification.fsi_energy_diag` |
 |---|---|---|---|
 | Release | ON  | Passed (2/2 cases OK) | **Passed** (`FullBudgetOnTheDominantModeCloses` OK, closure mismatch/tolerance `2.38e-3`, non-vacuity `1.0e12`, beam-identity mismatch/tolerance `3.95e-4`, margin `2534.7x`) |
-| Release | OFF | Passed (2/2 cases OK) | **Passed** (closure mismatch/tolerance `1.36e-1`, non-vacuity `4.5e12`; beam-identity mismatch/tolerance `3.43e-5`, margin `29183.6x` — previously FAILED here at `1.029`, see above) |
-| Debug   | ON  | Passed (2/2 cases OK) | **Passed** (identical numbers to Release+ON, as D30's own mechanism predicts) |
+| Release | OFF | Passed (2/2 cases OK) | **Passed** (closure mismatch/tolerance `1.36e-1`, non-vacuity `4.5e12`; beam-identity mismatch/tolerance `3.43e-5`, margin `29183.6x`) |
+| Debug   | ON  | Passed (2/2 cases OK) | **Passed** (identical numbers to Release+ON, as the contraction mechanism above predicts) |
 
-All three required configurations now pass, including the previously-failing Release+`OFF` case. The
-beam-side identity's floor is no longer open: it was this test's own dt-literal/dt-delivered
-bookkeeping, now fixed, with a Higham-derived (not fitted, not eig_quality-based) tolerance in its
-place. Two related, same-class findings are carried forward rather than fixed this round: the
-fluid-side budget's `measure_full_energy_identity_general` call (described above), and
-`examples/fsi_channel/main.cpp`'s own `rationalize_dt()` (a coarser, 6-decimal-place quantization of
-the same kind), whose literal, un-quantized `dt` is used in exactly two places after the graph is
+Two same-class quantization effects are not fixed. The fluid-side budget's
+`measure_full_energy_identity_general` call passes the literal `c.dt` to an independently built
+`cn_step`, compared against a production state that advanced on `dt_delivered`. And
+`examples/fsi_channel/main.cpp` has its own `rationalize_dt()` (a coarser, 6-decimal-place
+quantization), whose literal, un-quantized `dt` is used in exactly two places after the graph is
 built: the step count `llround(t_end / dt)` (`main.cpp:259`) and the output CSV's `time` column,
-`(step + 1) * dt` (`main.cpp:279`). Neither enters a dynamics computation — the components take their
-step and time from the scheduler's `StepContext`, and the inflow is a function of `y` alone — so the
-consequence is that the simulated end time is `n_steps` times the quantized step rather than
-`t_end`, and the CSV's time axis carries the same relative error, accumulating linearly. The example
-computes no energy budget or identity of its own. Its magnitude is
-NOT the `~4.6e-7` figure this round's fix measured (that number is specific to this test's own
-`c.dt`/8-decimal-place grid): measured directly for `main.cpp`'s own 6-decimal-place grid, the
-quantization is EXACT (`0.0` relative error) for the tool's default `--dt 0.01`, since `0.01` lands
-exactly on a `1e-6` grid point; for a `--dt` that does not (e.g. `0.0035104283866610403`, this test's
-own value, used here only to exercise the grid, not as a claim about what `main.cpp` is run with), the
-relative error measures `~1.22e-4` — about 265x LARGER than this round's own figure, consistent with
-`main.cpp`'s grid being 100x coarser (`1e6` vs `1e8`).
+`(step + 1) * dt` (`main.cpp:279`). Neither enters a dynamics computation (the components take step
+and time from the scheduler's `StepContext`, and the inflow is a function of `y` alone), so the
+simulated end time is `n_steps` times the quantized step rather than `t_end`, and the CSV's time
+axis carries the same relative error, accumulating linearly. The example computes no energy budget
+or identity of its own. Measured for `main.cpp`'s 6-decimal-place grid, the quantization is exact
+(`0.0` relative error) for the default `--dt 0.01`, since `0.01` lands exactly on a `1e-6` grid
+point; for a `--dt` that does not (for example `0.0035104283866610403`), the relative error is
+about `1.22e-4`, roughly 265x larger than the test's 8-decimal grid gives, consistent with the
+grid being 100x coarser.
 
 ## Golden files
 
@@ -512,7 +460,7 @@ stays readable.
 `model.descriptor_mpi.{2,3,4,5}` asserts that every rank serializes the same graph to the same bytes
 — the last condition on the waist freeze, and one a single-process determinism test cannot catch (an
 unordered container's iteration order, a pointer value reaching the buffer, a locale-dependent number
-format). **Verified on the host, 2026-09-15: passed at 2, 3, 4 and 5 ranks.** The odd counts are
+format). **Verified on the host: passed at 2, 3, 4 and 5 ranks.** The odd counts are
 deliberate: a bug that only appears when ranks do not divide evenly is the usual kind.
 
 It is a Tier 1 test and absent from a Tier 0 build, because there is no MPI to run it with and a
@@ -531,23 +479,21 @@ The sandbox this library is developed in cannot initialise MPI at all, so every
 Tier 1 leg is compile-verified there and **run on the host**. Recorded results,
 rather than claims:
 
-| Date | Result |
-|---|---|
-| 2026-09-15 | `model.descriptor_mpi` at 2/3/4/5 ranks; full suite 796 tests, 4 MOAB skips |
-| 2026-09-16 | full suite **843 tests, 0 failures**, 4 MOAB skips, including all 16 `parallel.*` legs: `runner_transport`, `comm_graph`, `mpi_transport`, `epoch_reconcile` at 2/3/4/5 ranks |
-| 2026-09-16 | full suite **845 tests, 0 failures** after the peer-wise transport landed, and both `requires = "mpi"` mutations **killed** under `FUSE_MUTATE_MPI=1` — so the numbering check and the local-copy pass are each load-bearing, not merely present |
-| 2026-09-17 | full suite **855 tests, 0 failures**, 36.2 s real; 4 skips, all of them the parent suite's MOAB-dependent cases. Adds the 4 `example`, 2 `compile_fail`, 1 `field` and 1 `num` (typed, per execution space) entries. Both `requires = "mpi"` transport mutations **killed** under `FUSE_MUTATE_MPI=1`. |
-| 2026-09-17 | **Kokkos 5.1.0** (`OPENMP;SERIAL`) replaced 4.6.0 (`THREADS;SERIAL`) on the machine. Tier 0 65/65 and Tier 1 builds after two fixes: Apple clang needs a libomp hint, and `FindOpenMP` had selected GNU `libgomp` whose ABI lacks the `__kmpc_*` entry points Kokkos' objects call. Kernels now instantiate on `Kokkos::OpenMP` and `Serial`; **Threads is no longer enabled anywhere**, so that space is currently unexercised. |
-| 2026-09-17 | full suite **855 tests, 0 failures**, 49.7 s real, on the upgraded **Kokkos 5.1.0** (`OPENMP;SERIAL`). Same 4 parent-suite MOAB skips. Confirms the two OpenMP resolution fixes on the host, not just in the sandbox. |
-| 2026-10-08 | **MOAB, 12 of 12 rows, no failures**: `parallel.moab_placed_view_mpi.{1..5}` (0.06–0.33 s) alongside `backend.moab_mesh`'s 47 cases and the five `parallel.remap_halo_mpi` legs (`KNOWN_ISSUES.md` D5). `parallel.window_runner_mpi.{2,3}` pass (D19). `parallel.connect.mpmd.*` pass throughout; `parallel.connect.accept.*` fails on this MPICH `ch3:nemesis` build when both programs share a node — not a library defect (D23). |
-| 2026-10-09 | `verification.brusselator.participants.mpmd.3` passes: `max_window_balance_error`/`global_balance_error`/`max_window_exchange_error` within threshold, final means within 2 ulp (`mean_u`) and 5 ulp (`mean_v`) of the single-process example (D25). The Schur-complement row-band solver's one-row-band refusal is found to strand a peer inside the Schur-assembly allgather when decided from local data alone, and fixed to decide from `row_ownership` (a pure function every rank already holds) instead — no collective needed for the refusal itself (`docs/dev/schur-slab-solver.md`, commit `3b43bd0`). |
-| 2026-10-10 | On `main` `e76881c`, eight rows in one `ctest` invocation, no failures: `parallel.linalg_mpi.2` (0.40 s), `parallel.schur_slab_mpi.2` (0.26 s), `.3` (0.07 s), `parallel.krylov_mpi.2` (0.31 s), `parallel.brusselator_grid_mpi.2` (0.29 s), `parallel.native_halo_mpi.2` (0.37 s), `.3` (0.08 s), `verification.brusselator.participants.mpmd.3` (2.34 s). The first host run of each of the first seven, two days earlier, had found one defect per track (a refusal returned on one rank's data before a collective; crossed `MPI_Sendrecv` tags in a test's halo exchange; a test combining vectors of different ghost layouts), all fixed before this run. |
-| 2026-10-10 | `verification.brusselator.participants.mpmd.5` passes (D25): U on two ranks, V on two, the coupler on one, 1.37 s. Bit-identical to the single-process example at 3 ranks (0 ulp in both means); the 5-rank row differs by 8.9e-14 in `mean_u` and 9.4e-14 in `mean_v` (relative 5.6e-14/4.7e-14) — the decomposed Schur solve's own round-off, consistent with the in-process 2-partition bound of 4.5e-14. The species-core decomposition track's own in-process harness (`test/verification/brusselator_species_core_decomposition_test.cpp`, 9 tests) measures the decomposed `Schur`/`Pcg`/`Gmres` diffusion solvers against a single-rank reference to 2.7e-15–5.9e-14. Full tier-0 suite unaffected throughout (179/179; see "Tier-0 row count" below). |
+- `model.descriptor_mpi` at 2/3/4/5 ranks; full suite 796 tests, 4 MOAB skips
+- full suite **843 tests, 0 failures**, 4 MOAB skips, including all 16 `parallel.*` legs: `runner_transport`, `comm_graph`, `mpi_transport`, `epoch_reconcile` at 2/3/4/5 ranks
+- full suite **845 tests, 0 failures** after the peer-wise transport landed, and both `requires = "mpi"` mutations **killed** under `FUSE_MUTATE_MPI=1` — so the numbering check and the local-copy pass are each load-bearing, not merely present
+- full suite **855 tests, 0 failures**, 36.2 s real; 4 skips, all of them the parent suite's MOAB-dependent cases. Adds the 4 `example`, 2 `compile_fail`, 1 `field` and 1 `num` (typed, per execution space) entries. Both `requires = "mpi"` transport mutations **killed** under `FUSE_MUTATE_MPI=1`.
+- **Kokkos 5.1.0** (`OPENMP;SERIAL`) replaced 4.6.0 (`THREADS;SERIAL`) on the machine. Tier 0 65/65 and Tier 1 builds after two fixes: Apple clang needs a libomp hint, and `FindOpenMP` had selected GNU `libgomp` whose ABI lacks the `__kmpc_*` entry points Kokkos' objects call. Kernels now instantiate on `Kokkos::OpenMP` and `Serial`; **Threads is no longer enabled anywhere**, so that space is currently unexercised.
+- full suite **855 tests, 0 failures**, 49.7 s real, on the upgraded **Kokkos 5.1.0** (`OPENMP;SERIAL`). Same 4 parent-suite MOAB skips. Confirms the two OpenMP resolution fixes on the host, not just in the sandbox.
+- **MOAB, 12 of 12 rows, no failures**: `parallel.moab_placed_view_mpi.{1..5}` (0.06–0.33 s) alongside `backend.moab_mesh`'s 47 cases and the five `parallel.remap_halo_mpi` legs. `parallel.window_runner_mpi.{2,3}` pass. `parallel.connect.mpmd.*` pass throughout; `parallel.connect.accept.*` fails on this MPICH `ch3:nemesis` build when both programs share a node — not a library defect.
+- `verification.brusselator.participants.mpmd.3` passes: `max_window_balance_error`/`global_balance_error`/`max_window_exchange_error` within threshold, final means within 2 ulp (`mean_u`) and 5 ulp (`mean_v`) of the single-process example. The Schur-complement row-band solver's one-row-band refusal is found to strand a peer inside the Schur-assembly allgather when decided from local data alone, and fixed to decide from `row_ownership` (a pure function every rank already holds) instead — no collective needed for the refusal itself (`docs/dev/schur-slab-solver.md`, commit `3b43bd0`).
+- On `main` `e76881c`, eight rows in one `ctest` invocation, no failures: `parallel.linalg_mpi.2` (0.40 s), `parallel.schur_slab_mpi.2` (0.26 s), `.3` (0.07 s), `parallel.krylov_mpi.2` (0.31 s), `parallel.brusselator_grid_mpi.2` (0.29 s), `parallel.native_halo_mpi.2` (0.37 s), `.3` (0.08 s), `verification.brusselator.participants.mpmd.3` (2.34 s). The first host run of each of the first seven, two days earlier, had each found a defect (a refusal returned on one rank's data before a collective; crossed `MPI_Sendrecv` tags in a test's halo exchange; a test combining vectors of different ghost layouts), all fixed before this run.
+- `verification.brusselator.participants.mpmd.5` passes: U on two ranks, V on two, the coupler on one, 1.37 s. Bit-identical to the single-process example at 3 ranks (0 ulp in both means); the 5-rank row differs by 8.9e-14 in `mean_u` and 9.4e-14 in `mean_v` (relative 5.6e-14/4.7e-14) — the decomposed Schur solve's own round-off, consistent with the in-process 2-partition bound of 4.5e-14. The species-core decomposition's own in-process harness (`test/verification/brusselator_species_core_decomposition_test.cpp`, 9 tests) measures the decomposed `Schur`/`Pcg`/`Gmres` diffusion solvers against a single-rank reference to 2.7e-15–5.9e-14. Full tier-0 suite unaffected throughout (179/179; see "Tier-0 row count" below).
 
-The 2026-09-16 run is what makes the rank-agreement mechanism verified rather
+The `parallel.epoch_reconcile` run is what makes the rank-agreement mechanism verified rather
 than asserted: `parallel.epoch_reconcile` fails one rank's component mid-step
 and requires every other rank to return a failure instead of blocking. The
-2026-10-08/09/10 runs are the first on this machine to exercise a THIRD
+MOAB, MPMD and native-linear-algebra runs are the first on this machine to exercise a THIRD
 process boundary at once (U, V and the coupler each their own executable,
 `verification.brusselator.participants.mpmd.{3,5}`) and the first to run the
 native distributed linear-algebra containers, the Krylov solvers and the
@@ -556,7 +502,7 @@ the in-process fakes `docs/dev/linalg-distributed.md`/`linalg-krylov.md`/
 `schur-slab-solver.md`/`native-halo.md` describe: `parallel.linalg_mpi.2`,
 `parallel.krylov_mpi.2`, `parallel.schur_slab_mpi.{2,3}`,
 `parallel.brusselator_grid_mpi.2` and `parallel.native_halo_mpi.{2,3}` all
-pass (0.07–0.40 s each) — the 2026-10-10 row in the table above is that run,
+pass (0.07–0.40 s each) — the eight-row `ctest` invocation above is that run,
 on `main` `e76881c`, together with `mpmd.3`.
 
 ## Tier-0 row count, recounted
@@ -678,7 +624,7 @@ registered in `test/CMakeLists.txt`'s own "bench" section): a native structured-
 provider/consumer mesh pair, a conservative weighted Remap (the two grids differ by one
 cell per side, so they cannot coincide and the Remap is never the identity-copy
 shortcut), an MpiTransport exchange across a disjoint rank split, a Diagnose and a Sink
--- the same instruction shapes [](device-resident-arcs.md) step 6's own gate exercises,
+-- the same instruction shapes [](device-resident-arcs.md)'s device gate exercises,
 at a problem size (`--n`, default 1000: 1e6 provider cells) orders of magnitude larger
 than that gate's few-hundred-to-few-thousand-cell rows, so per-instruction kernel-launch
 and host-stop overhead can be told apart from genuine arithmetic cost. Labelled `bench`
@@ -700,16 +646,13 @@ storage itself is device-resident, not merely the elementwise kernels' dispatch 
 configure time; the binary's own `--n`/`--periods`/`--fields`/`--timing` flags are
 documented in its header comment.
 
-**The 2- and 3-rank rows were `DISABLED TRUE`** (KNOWN_ISSUES.md D74) until the
-scaled-bench track's 2026-10-16 fix (the nodal Remap's distributed point-location search
-had refused to place the domain's own corner vertex at those rank counts and this
-problem size) re-enabled them -- this passage is updated, not current when it still
-read "currently DISABLED". D67, the separate 1-ULP arithmetic-divergence this entry's
-own text once linked to D74 as a shared root cause, was investigated and found NOT to
-share D74's mechanism at all (two different floating-point expressions for the same
-Edge-cell hat weight, picked by which of two code paths a placement's rank count
-routes through -- KNOWN_ISSUES.md D67's own closing entry); it is fixed independently
-and needed no change to this file's bench rows or their registration.
+**The 2- and 3-rank rows are enabled.** The nodal Remap's distributed point-location search
+once refused to place the domain's own corner vertex at those rank counts and this problem
+size; that is fixed. A separate 1-ULP arithmetic divergence between rank counts has a
+different mechanism: two different floating-point expressions for the same Edge-cell hat
+weight, picked by which of two code paths a placement's rank count routes through. It is
+fixed independently of the point-location search and needs nothing in this file's bench rows
+or their registration.
 
 `tools/bench-device.py` is the timing harness: it runs
 `fuse_bench_scaled_device_benchmark` host vs device N times (`FUSE_EXECUTION_SPACE`
@@ -737,5 +680,5 @@ reports "Subprocess aborted". Such a test is registered with `THROWS`
 no-exceptions CI leg excludes with `ctest -LE 'throws|bench'`.
 `tools/check-throws-labels.py` finds a throwing test registered without the
 label statically; it runs with the other static gates in CI. The first run of
-the no-exceptions leg as a leg (2026-10-18) found three unlabelled tests the
+the no-exceptions leg as a leg found three unlabelled tests the
 gate now catches.

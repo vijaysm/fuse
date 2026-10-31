@@ -1,12 +1,9 @@
-# KNOWN_ISSUES D82 round 15 (owner instruction 2026-10-20, "read then fix":
-# switch the MOAB-half intersection driver from the advancing-front kernel
-# to the kd-tree kernel). Own file per the review-fix protocol: do not edit
-# moab-sphere.toml, moab-placement.toml, or mutations.toml directly while
-# other fixers hold them dirty.
+# The MOAB-half intersection driver uses the kd-tree kernel rather than the
+# advancing-front kernel.
 #
-# NOT HAND-VERIFIED THIS ROUND, for the same sandbox-wide reason every
-# other MOAB mutations file in this tree already states: ANY MOAB-linked
-# binary aborts on construction here (moab::Core's constructor calls
+# NOT HAND-VERIFIED, for the same sandbox-wide reason every other MOAB
+# mutations file in this tree already states: ANY MOAB-linked binary
+# aborts on construction here (moab::Core's constructor calls
 # MPI_Init_thread; this sandbox cannot initialise MPI at all, not even at
 # one rank, and FUSE_ENABLE_MOAB hard-requires FUSE_ENABLE_MPI in this
 # tree's own CMakeLists.txt). Written and reasoned through by hand;
@@ -16,7 +13,7 @@
 [[mutation]]
 id = "moab-intersection-reverts-to-advancing-front"
 area = "backend"
-describes = "assemble()'s call to Intx2Mesh::intersect_meshes_kdtree is reverted to the advancing-front Intx2Mesh::intersect_meshes it replaced in D82 round 15. On a genuinely partitioned (multi-rank) source mesh, the advancing front cannot reach a source cell adopted into the local covering set unless that cell shares MOAB vertex handles with a cell already resident on the rank -- confirmed by round 14/15's independent probe (trace_remap_halo_probe, point_in_convex_spherical_polygon) to be false for a real fraction of adopted cells on wholeATM_T.h5m/recMeshOcn.h5m. Reverting silently drops those cells' contribution again: RemapWeights::min_src_coverage falls back to 0 instead of ~1 on the OCN(source)/ATM(target) sphere pair, and ExtensiveChannelConservesTheDeliveredTotalAcrossTheSpherePair's delivered-vs-source total check (kDerivedRelTol=4e-4) fails by roughly 28x, exactly as it did before this round's fix. Killed by that test's own EXPECT_NEAR(min_src_coverage, 1.0, 1e-6) and EXPECT_NEAR(global_target_total, global_source_total, kDerivedRelTol*global_source_total)."
+describes = "assemble()'s call to Intx2Mesh::intersect_meshes_kdtree is reverted to the advancing-front Intx2Mesh::intersect_meshes it replaced. On a genuinely partitioned (multi-rank) source mesh, the advancing front cannot reach a source cell adopted into the local covering set unless that cell shares MOAB vertex handles with a cell already resident on the rank -- confirmed by an independent probe (trace_remap_halo_probe, point_in_convex_spherical_polygon) to be false for a real fraction of adopted cells on wholeATM_T.h5m/recMeshOcn.h5m. Reverting silently drops those cells' contribution again: RemapWeights::min_src_coverage falls back to 0 instead of ~1 on the OCN(source)/ATM(target) sphere pair, and ExtensiveChannelConservesTheDeliveredTotalAcrossTheSpherePair's delivered-vs-source total check (kDerivedRelTol=4e-4) fails by roughly 28x, exactly as it did with the advancing-front kernel. Killed by that test's own EXPECT_NEAR(min_src_coverage, 1.0, 1e-6) and EXPECT_NEAR(global_target_total, global_source_total, kDerivedRelTol*global_source_total)."
 file = "src/backend/intx_weights.cpp"
 old = "  rval = worker->intersect_meshes_kdtree(src.file_set, tgt.file_set, out_set);"
 new = "  rval = worker->intersect_meshes(src.file_set, tgt.file_set, out_set);"

@@ -1,11 +1,8 @@
-// S8 physics-kit, track "Integrators", Stage B Round 1.
-//
-// SubStepClock (integrator.hpp): the owner's own decision (3), 2026-10-27, "a Rational
-// time accumulator with a recorded per-window quantum, last step clipped exactly" --
-// tested for the three properties that decision names: the accumulator stays EXACT
-// (Rational equality, never a tolerance), the quantum is derived and recorded (the
-// header's own doc comment on kDefaultQuantumCount), and the last step lands on the
-// window end exactly.
+// SubStepClock (integrator.hpp): "a Rational time accumulator with a recorded
+// per-window quantum, last step clipped exactly" -- tested for the three properties
+// that names: the accumulator stays EXACT (Rational equality, never a tolerance), the
+// quantum is derived and recorded (the header's own doc comment on
+// kDefaultQuantumCount), and the last step lands on the window end exactly.
 
 #include "fuse/num/integrator.hpp"
 
@@ -33,8 +30,8 @@ TEST(SubStepClock, QuantumDividesTheWindowExactly) {
 
 TEST(SubStepClock, ANonTrivialWindowStaysExact) {
   // A window whose length is not a power of two, so a floating accumulation of the
-  // same sub-steps would NOT stay exact -- this is exactly the case the owner's
-  // decision exists for.
+  // same sub-steps would NOT stay exact -- this is exactly the case the
+  // exact accumulator exists for.
   SubStepClock clk(Rational(1, 3), Rational(1, 2));
   std::int64_t total_advanced = 0;
   while (!clk.at_window_end()) {
@@ -46,7 +43,7 @@ TEST(SubStepClock, ANonTrivialWindowStaysExact) {
   EXPECT_EQ(clk.now(), Rational(1, 2));
 }
 
-// The owner's own "last step clipped exactly": a controller that keeps proposing a
+// "Last step clipped exactly": a controller that keeps proposing a
 // step larger than what remains in the window is clipped by round_to_quantum, not by a
 // separate post-hoc check, and the clock lands EXACTLY on the window end (Rational
 // equality) rather than merely close to it.

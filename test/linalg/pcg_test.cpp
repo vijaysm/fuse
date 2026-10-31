@@ -1,4 +1,4 @@
-// "Krylov" track: fuse::linalg::pcg at tier 0, one rank.
+// fuse::linalg::pcg at tier 0, one rank.
 //
 // WHAT EACH CASE CHECKS.
 //   Requirement 1 -- iterate-for-iterate agreement, both preconditioners.

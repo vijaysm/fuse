@@ -61,7 +61,7 @@ struct LoweringContext {
   std::unordered_map<std::uint32_t, ArcId>  field_arc;
   std::unordered_map<std::uint32_t, ArcId>  source_arc;
 
-  /// Time windows track: `sink_arc[f]` is field `f`'s own `Sink` node's
+  /// `sink_arc[f]` is field `f`'s own `Sink` node's
   /// output arc, populated by `lower()`'s step 3 (one `Sink` per
   /// `Requires`/`Bidirectional` field that has a writer) as each one is
   /// created. Unlike `field_arc[f]` (the value delivered TO the Sink),
@@ -74,7 +74,7 @@ struct LoweringContext {
   /// placement besides).
   std::unordered_map<std::uint32_t, ArcId>  sink_arc;
 
-  /// Unit 3 (S6 phase 3, Conformance): the arc THIS channel's own chain
+  /// The arc THIS channel's own chain
   /// actually begins at, keyed by `ChannelId::value()` -- `source_arc[f]`
   /// for an ordinary channel, but the channel's own `ExternalDelivery` arc
   /// for a LowFive-bound one, since `lower_channel()` gives that node zero
@@ -97,7 +97,7 @@ struct LoweringContext {
   /// combine node is emitted once all channels have lowered.
   std::unordered_map<std::uint32_t, std::vector<ArcId>> field_writers;
 
-  /// Review 2026-10-11 IS-9: the channel that produced each arc recorded in
+  /// The channel that produced each arc recorded in
   /// `field_writers`, keyed by `ArcId::value()`. An identity channel (same
   /// region, same placement, unlagged -- `five_writer_merge()`'s own shape,
   /// test/schedule/plan_test.cpp) emits NO node of its own: the writer arc
@@ -111,7 +111,7 @@ struct LoweringContext {
   /// channel each writer arc belongs to, before that identity is lost.
   std::unordered_map<std::uint32_t, ChannelId> writer_arc_channel;
 
-  /// Review 2026-10-11 IS-9: for a merged field, the channel whose
+  /// For a merged field, the channel whose
   /// contribution the merge actually adopted as the combined value's time
   /// level -- the LATEST of its writers' (lower()'s own merge-construction
   /// comment on why: a lagged writer's output is typed one level back, and
@@ -154,8 +154,8 @@ class LoweringRegistry {
     // may itself call add() on this same registry (reentrant registration),
     // which push_back()s and stable_sort()s rules_ and can reallocate it.
     // Range-iterating rules_ directly while a callback can reallocate it
-    // underneath the loop is a use-after-free -- ASan-confirmed (see R8 in
-    // docs/HANDOFF.md, and the ReentrantAddDuringApplyFirstMatchIsSafe
+    // underneath the loop is a use-after-free -- ASan-confirmed (see the
+    // ReentrantAddDuringApplyFirstMatchIsSafe
     // regression test in test/unit/lowering_test.cpp). Unreachable today,
     // since every builtin rule registers once before any dispatch runs, but a
     // real hazard for any future plugin-style external registration.
@@ -223,10 +223,10 @@ void insert_derived_ops(LoweringContext& ctx, ChannelId cid);
 
 /// Spec Section 5.3: turns graph-level IterationRegionDecls into DAG regions with
 /// residual arcs, and fills `IterationRegion::carried` from
-/// derive_checkpoint_set() below (Phase 7 Task 7.2).
+/// derive_checkpoint_set() below.
 void build_iteration_regions(LoweringContext& ctx);
 
-/// Time windows track: every field a window-scoped iteration region's
+/// Every field a window-scoped iteration region's
 /// channels source FROM a member component (`fuse::CouplingWindowScope`,
 /// `fuse/model/iteration.hpp`) -- the field an exporting member's own
 /// `OpKind::WindowAdvance` node (`finish_window_regions()` below) produces
@@ -235,7 +235,7 @@ void build_iteration_regions(LoweringContext& ctx);
 [[nodiscard]] std::unordered_set<std::uint32_t> window_provided_fields(
     const CouplingGraph& g);
 
-/// Time windows track: every field a window-scoped iteration region's
+/// Every field a window-scoped iteration region's
 /// channels deliver TO a member component -- the field whose `Sink` must
 /// exist BEFORE `finish_window_regions()` runs, because that member's own
 /// `OpKind::WindowAdvance` node's `OpAttrs::window_import` names this
@@ -243,23 +243,23 @@ void build_iteration_regions(LoweringContext& ctx);
 /// subset of Sinks FIRST, ahead of `build_iteration_regions()`, and every
 /// other required field's Sink afterwards, in its ordinary position --
 /// so a graph with no window-scoped region (for which this is always
-/// empty) sees no change in node creation order at all.
+/// empty) has the ordinary node creation order.
 [[nodiscard]] std::unordered_set<std::uint32_t> window_imported_fields(
     const CouplingGraph& g);
 
-/// Time windows track (C3): the `components` count field `f`'s own `Sink`
+/// The `components` count field `f`'s own `Sink`
 /// must be built with, when `f` is a window-scoped import (i.e.
 /// `window_imported_fields(g)` names it) -- exactly the SAME width its
 /// PROVIDER's own exported field carries (the identical K-sample flat
 /// array, delivered unchanged; see `window_source_type()`'s own widening
 /// in window_lowering.cpp), never the field's own declared
 /// `FieldSpec::components` alone. Falls back to `g.field(f).components`
-/// (today's behaviour) for a field that is not actually a window import
+/// (the ordinary behaviour) for a field that is not actually a window import
 /// -- callers only use this after checking `window_imported_fields()`.
 [[nodiscard]] std::size_t window_import_width(const CouplingGraph& g,
                                               FieldId f);
 
-/// Time windows track: pre-creates the bare output ARC (no producing node
+/// Pre-creates the bare output ARC (no producing node
 /// yet) for every window-scoped region member that owns a channel's
 /// source field, and seeds `ctx.source_arc`/`ctx.field_arc` with it --
 /// exactly what `lower()`'s ordinary step 1 (`Source` per provided field)
@@ -267,10 +267,9 @@ void build_iteration_regions(LoweringContext& ctx);
 /// than from this member's own `OpKind::WindowAdvance` node.
 ///
 /// Called from `lower()` right after step 1 and BEFORE step 2 (the
-/// ordinary per-channel lowering rule, run UNCHANGED for a window-scoped
-/// region's own channels -- the user's chosen design: waveforms travel
-/// through the ordinary Remap/Transport/Epoch operations, not around
-/// them): that rule reads `ctx.source_arc[[the channel's source field]]`
+/// ordinary per-channel lowering rule, run unchanged for a window-scoped
+/// region's own channels -- waveforms travel through the ordinary
+/// Remap/Transport/Epoch operations, not around them): that rule reads `ctx.source_arc[[the channel's source field]]`
 /// for ANY channel, window-scoped or not, and this is what gives a
 /// window-scoped one something real to read.
 ///
@@ -281,7 +280,7 @@ void build_iteration_regions(LoweringContext& ctx);
 /// has run -- see `finish_window_regions()`.
 void seed_window_source_arcs(LoweringContext& ctx);
 
-/// D73 (automatic remap halo, owner decision 2026-10-18). Emits one
+/// Automatic remap halo. Emits one
 /// `OpKind::BuildRemapHalo` node (src/ir/rules_channel.cpp) per
 /// cross-rank weighted (non-nodal, non-consistent) channel of `ctx.graph`
 /// -- `channel_needs_remap_halo()`'s own gate, src/ir/rules_channel.cpp.
@@ -292,13 +291,13 @@ void seed_window_source_arcs(LoweringContext& ctx);
 /// instance must precede every `Source` node in `NodeId` order, and
 /// `fuse::execute_remap_halo_instructions()` (fuse/backend/remap_halo_
 /// instructions.hpp) is called from inside `fuse::make_region_sizes()`
-/// (fuse/backend/mesh_view.hpp, round 2) to give this instruction its REAL
+/// (fuse/backend/mesh_view.hpp) to give this instruction its REAL
 /// effect (a mesh backend's remap halo) before `schedule()` ever sizes a
 /// buffer from that mesh -- see that function's own header for why
 /// `Runner::initialize()` cannot be the one to run it.
 void emit_remap_halo_instructions(LoweringContext& ctx);
 
-/// D73. The component whose decomposition channel `ch`'s own `Remap` runs
+/// The component whose decomposition channel `ch`'s own `Remap` runs
 /// on -- `RemapSpec::remap_on` when declared and able to matter, `g.owner_
 /// of(ch.target)` otherwise. Defined in src/ir/rules_channel.cpp, where
 /// `lower_channel()`'s own inline `coupler_rank_set` computation (that
@@ -309,7 +308,7 @@ void emit_remap_halo_instructions(LoweringContext& ctx);
 /// instruction's own emission decided, from one definition.
 [[nodiscard]] ComponentId remap_placement(const CouplingGraph& g, const Channel& ch);
 
-/// Time windows track: creates the actual `OpKind::WindowAdvance` node for
+/// Creates the actual `OpKind::WindowAdvance` node for
 /// every member of every window-scoped iteration region, in
 /// `members_in_first_seen_order()`'s (a duplicate of `fuse::
 /// window_region_members()`, `fuse/schedule/window.hpp` -- `ir` cannot
@@ -320,9 +319,8 @@ void emit_remap_halo_instructions(LoweringContext& ctx);
 /// exported field transfer reads this node's output as a REAL edge
 /// (`ctx.source_arc`), which is fine -- the node itself has nothing
 /// upstream to close a cycle with -- but the reverse, this node reading
-/// its PARTNER's output as a real edge, would (measured directly, an
-/// earlier pass of this track: schedule() refused with only 2 of 12 nodes
-/// topologically orderable). `OpAttrs::window_import` instead names the
+/// its PARTNER's output as a real edge, would (measured directly:
+/// schedule() refused with only 2 of 12 nodes topologically orderable). `OpAttrs::window_import` instead names the
 /// arc the field transfer INTO this member actually DELIVERS -- that
 /// channel's own `Sink` output (`ctx.sink_arc`, populated by `lower()`'s
 /// step 3, which must therefore run before this function), on this
@@ -342,7 +340,7 @@ void emit_remap_halo_instructions(LoweringContext& ctx);
 void finish_window_regions(LoweringContext& ctx);
 
 // ---------------------------------------------------------------------------
-// Spec Section 5.3: the derived checkpoint set (Task 7.2).
+// Spec Section 5.3: the derived checkpoint set.
 //
 // FUSE derives the checkpoint set rather than asking the user. preCICE pushes
 // this onto every adapter via requiresWritingCheckpoint(); here a dataflow
@@ -384,7 +382,7 @@ struct CheckpointSet {
 /// `E-ITER-NOROLLBACK` for a component that reports
 /// `supports_rollback() == false`, and equally for one the analysis named that
 /// is not registered at all -- an unverifiable claim is refused, not assumed.
-/// Also `E-ITER-NONDETERMINISTIC` (KNOWN_ISSUES.md B3) for one whose
+/// Also `E-ITER-NONDETERMINISTIC` for one whose
 /// `determinism_level() == DeterminismLevel::Nondeterministic`: the sweep
 /// loop's convergence test compares successive iterates, and noise in a
 /// component is indistinguishable from a residual.
@@ -392,7 +390,7 @@ struct CheckpointSet {
                                                   const CheckpointSet& set,
                                                   const ComponentSet& components);
 
-/// S7.1's Newton-Krylov seam. Over the SAME checkpoint set
+/// The Newton-Krylov seam. Over the SAME checkpoint set
 /// `verify_rollback_support()` checks -- the Newton coupler re-advances
 /// these components' own residuals exactly where Picard would re-advance
 /// their state, so the same universe of components applies -- refuses a
@@ -421,8 +419,7 @@ struct CheckpointSet {
 ///
 /// Split out of `verify_iteration_region()` below because the C ABI needs
 /// exactly this subset: `fuse_initialize()` (`impl_initialize`,
-/// src/abi/participant.cpp -- review 2026-10-11 IS-11, this used to cite a
-/// `soma_c.cpp`/`soma_initialize()` that does not exist) has no
+/// src/abi/participant.cpp) has no
 /// `ComponentSet`, so it cannot ask about rollback support, and no `Runner`, so
 /// it never reaches `verify_iteration_region()` at all -- yet both states above
 /// are exactly as wrong there as they are on the Runner path. Shared rather
@@ -458,9 +455,8 @@ struct MeasureTarget {
 ///
 /// Shared by `Runner::Impl::resolve_regions()` (src/runtime/iteration.cpp),
 /// whose targets come from the DAG's residual blocks, and by
-/// `fuse_initialize()` (`impl_initialize`, src/abi/participant.cpp --
-/// review 2026-10-11 IS-11, correcting the same stale `soma_c.cpp` citation
-/// as above), whose targets come from the graph's declared channel list.
+/// `fuse_initialize()` (`impl_initialize`, src/abi/participant.cpp),
+/// whose targets come from the graph's declared channel list.
 ///
 /// WHY THOSE TWO LISTS AGREE, stated precisely because the obvious reason is
 /// not the operative one. `build_iteration_regions()` (src/ir/regions.cpp)
@@ -489,9 +485,9 @@ struct MeasureTarget {
 /// when `max_iterations < 1`, which would run the body zero times.
 /// Then everything verify_rollback_support() checks, and -- when
 /// `requires_residual_capability`/`requires_linearization_capability` is
-/// true, S7.1's own addition -- everything verify_newton_capability_
+/// true -- everything verify_newton_capability_
 /// support() checks. Both default to `false` (no Newton solver selected
-/// for this region), so every pre-S7.1 call site is unchanged.
+/// for this region).
 [[nodiscard]] Diagnostics verify_iteration_region(
     const CouplingGraph& g, const OperatorDAG& dag,
     const OperatorDAG::IterationRegion& region,

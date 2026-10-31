@@ -195,7 +195,7 @@ TEST(FieldTransaction, InsertKeepsUnstagedValuesAndStillRejectsDuplicates) {
 // --- Accumulate mode: the canonical total order -- karma_field_transaction_
 // test.C's canonical_accumulation() (:146-178), translated onto this file's
 // own (slot, magnitude, sign, bit-pattern) order, KARMA's own magnitude-
-// first scheme as of round 2 (see src/field/transaction.cpp's own comment
+// first scheme (see src/field/transaction.cpp's own comment
 // for exactly what guarantee this is and is not) ----------------------------
 
 TEST(FieldTransaction, AccumulationIsBitwiseIndependentOfStagingOrder) {
@@ -237,10 +237,9 @@ TEST(FieldTransaction, AccumulationIsBitwiseIndependentOfStagingOrder) {
             std::bit_cast<std::uint64_t>(shuffled_target[0]));
 }
 
-// Round 2 (S8 Stage B, the owner's own accuracy-over-efficiency instruction):
-// the same bitwise-independence property, over contributions spanning 1e-16
-// to 1e+0 -- sixteen orders of magnitude -- rather than round 1's
-// 1e16-to-1.0 range, so the new magnitude-first comparator's own ordering
+// The same bitwise-independence property, over contributions spanning 1e-16
+// to 1e+0 -- sixteen orders of magnitude -- rather than the 1e16-to-1.0
+// range above, so the new magnitude-first comparator's own ordering
 // among SMALL values (not just its behaviour against one huge term) is
 // exercised by this property too.
 TEST(FieldTransaction, AccumulationIsBitwiseIndependentOfStagingOrderAcrossSixteenOrdersOfMagnitude) {
@@ -281,7 +280,7 @@ TEST(FieldTransaction, AccumulationIsBitwiseIndependentOfStagingOrderAcrossSixte
             std::bit_cast<std::uint64_t>(shuffled_target[0]));
 }
 
-// Round 2's own worked case (docs/dev/field-semantics-matrix.md Section 6.1
+// A worked case (docs/dev/field-semantics-matrix.md Section 6.1
 // carries the derivation this test's own numbers come from): magnitude-
 // first order against a naive sequential (STAGING-order) sum, asserted on
 // the EXACT published bits, not merely "the two differ".
@@ -305,7 +304,7 @@ TEST(FieldTransaction, AccumulationIsBitwiseIndependentOfStagingOrderAcrossSixte
 // THEN adds the large one: `0+200+huge`; `200 > half-ulp`, so this rounds
 // to the NEAREST representable double, `huge + 200` evaluated directly --
 // which IS the correctly-rounded value of the true mathematical sum
-// (MEASURED in Python IEEE-754 binary64 during this round's own
+// (MEASURED in Python IEEE-754 binary64 during the
 // derivation: `huge+200` rounds to the double one bit-pattern step above
 // `huge`, landing on `huge`'s own next representable neighbour at this
 // magnitude's `ulp`, not back on `huge` itself).

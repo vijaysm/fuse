@@ -1,12 +1,10 @@
 // Byte-exact IR-dump regression suite, ported from
-// upstream/soma/test/golden_ir_test.cpp (REVIEW.md R-26 / IR-F1): the three
-// golden files under test/golden/ were carried over at import but the test
-// that compares against them never was, so this project's own documented
+// upstream/soma/test/golden_ir_test.cpp: it compares against the three
+// golden files under test/golden/, which enforces this project's documented
 // guarantee -- dump.hpp's dump_text() comment says a lowering change "cannot
 // silently alter the numerics" because the dump is "checked into
-// test/golden/ and compared byte-for-byte" -- had zero enforcement behind
-// it for any graph containing a cross-rank Transport (which is every fixture
-// here). Run with FUSE_UPDATE_GOLDEN=1 to regenerate the fixtures after a
+// test/golden/ and compared byte-for-byte" -- for any graph containing a
+// cross-rank Transport (which is every fixture here). Run with FUSE_UPDATE_GOLDEN=1 to regenerate the fixtures after a
 // reviewed, intentional IR change.
 #include <gtest/gtest.h>
 #include <fuse/ir/dump.hpp>
@@ -73,7 +71,7 @@ void check_golden(const std::string& name) {
 TEST(GoldenIr, PairExplicit)             { check_golden("pair_explicit"); }
 TEST(GoldenIr, PairAccumulateRemapRelax) { check_golden("pair_accumulate_remap_relax"); }
 TEST(GoldenIr, PairIterated)             { check_golden("pair_iterated"); }
-// Unit 3 (S6 phase 3, Conformance, Unit 3a): a LowFive-bound channel (the
+// A LowFive-bound channel (the
 // source field's own hdf5_path) compiles as OpKind::ExternalDelivery, not
 // OpKind::Transport -- pins the shape "a LowFive-bound channel is an
 // application-performed transfer" (docs/user/lowfive.md) at the IR level,

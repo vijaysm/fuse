@@ -1,22 +1,19 @@
-# Mutation evidence for the "Containers" track (DistVector/DistSparseMatrix).
-# Own file per the review-fix protocol (see linalg-least-squares.toml's own
-# header comment): do not edit build-evidence/mutations.toml directly while
-# other fixers hold it dirty. Discovered automatically by tools/mutate.py's
-# load_manifest() (every build-evidence/mutations/*.toml), no separate
-# registration needed.
+# Mutation evidence for the containers (DistVector/DistSparseMatrix).
+# Discovered automatically by tools/mutate.py's load_manifest() (every
+# build-evidence/mutations/*.toml), no separate registration needed.
 #
-# All three rows were HAND-PROVEN (standing rule: tools/mutate.py itself
-# mutates the real source tree in place and requires a clean `git status`,
-# which this track does not assume here) -- on a byte-for-byte restored
-# copy of the file, the exact sequence `tools/mutate.py` itself would run:
-# apply the `old` -> `new` text, rebuild `target` with
-# `cmake --build <dir> --target <target>`, run the WHOLE binary unfiltered
-# (no `ctest -R`, no gtest filter), record which cases failed and how many
-# passed, restore the original text, and `cmp` the restored file against a
-# saved backup to confirm the restore is exact. None needs `requires =
-# "mpi"`: every one is killed by an in-process two-partition tier-0 test
-# (dist_vector_test.cpp / dist_sparse_matrix_test.cpp), never by
-# test/parallel/linalg_mpi_test.cpp, which this sandbox cannot run at all.
+# All three rows were HAND-PROVEN (tools/mutate.py itself mutates the real
+# source tree in place and requires a clean `git status`) -- on a
+# byte-for-byte restored copy of the file, the exact sequence
+# `tools/mutate.py` itself would run: apply the `old` -> `new` text,
+# rebuild `target` with `cmake --build <dir> --target <target>`, run the
+# WHOLE binary unfiltered (no `ctest -R`, no gtest filter), record which
+# cases failed and how many passed, restore the original text, and `cmp`
+# the restored file against a saved backup to confirm the restore is exact.
+# None needs `requires = "mpi"`: every one is killed by an in-process
+# two-partition tier-0 test (dist_vector_test.cpp /
+# dist_sparse_matrix_test.cpp), never by test/parallel/linalg_mpi_test.cpp,
+# which this sandbox cannot run at all.
 
 [[mutation]]
 id = "linalg-ghost-remote-index-off-by-one"
@@ -29,7 +26,7 @@ new = """    pattern.remote_local_index[g] =
         static_cast<std::int64_t>(global_col) - owners.row_lo[static_cast<std::size_t>(owner)] + 1;"""
 target = "fuse_linalg_dist_sparse_matrix_test"
 test = "linalg.dist_sparse_matrix"
-# Hand-proved 2026-10-09 against a byte-identical restored copy: 8 cases in
+# Hand-proved against a byte-identical restored copy: 8 cases in
 # the target before mutation (all pass); after mutation, applied by hand and
 # the WHOLE binary run unfiltered, 3 fail --
 # DistSparseMatrixFromTriplets.DerivesGhostPatternFromOffProcessColumnsAscending,
@@ -50,7 +47,7 @@ new = """    for (std::size_t k = off_row_ptr_[i]; k < off_row_ptr_[i]; ++k) {
     }"""
 target = "fuse_linalg_dist_sparse_matrix_test"
 test = "linalg.dist_sparse_matrix"
-# Hand-proved 2026-10-09 the same way: 8 pass before; after mutation, 2 fail
+# Hand-proved the same way: 8 pass before; after mutation, 2 fail
 # (DistSparseMatrixApply.PeriodicLaplacian16x16SplitInTwoRowSlabs,
 # DistSparseMatrixApply.RandomNonsymmetricFiveNonzerosPerRow), 6 pass --
 # DiagonalNeedsNoCommunication and the single-partition-adjacent checks are
@@ -60,7 +57,7 @@ test = "linalg.dist_sparse_matrix"
 [[mutation]]
 id = "linalg-dot-reduction-skipped"
 area = "linalg"
-describes = "DistVector::dot returns the owned-block LOCAL partial sum directly, never calling the injected Reducer -- the 'dot reduction skipped' mutation row the task names explicitly, with the instruction that the in-process two-partition test (not only an MPI one) must kill it. It does: on one rank the local partial already IS the global answer (SerialReducer::sum is the identity), so DistVectorOneRank's own case cannot tell the difference and still passes -- but DistVectorTwoPartitionFake.DotAndNorm2EqualTheGatheredSerialReduction bakes in a nonzero peer contribution via its own Reducer test double, and a dot()/norm2() that never adds it disagrees with the gathered serial answer."
+describes = "DistVector::dot returns the owned-block LOCAL partial sum directly, never calling the injected Reducer -- the 'dot reduction skipped' mutation, which the in-process two-partition test (not only an MPI one) must kill. It does: on one rank the local partial already IS the global answer (SerialReducer::sum is the identity), so DistVectorOneRank's own case cannot tell the difference and still passes -- but DistVectorTwoPartitionFake.DotAndNorm2EqualTheGatheredSerialReduction bakes in a nonzero peer contribution via its own Reducer test double, and a dot()/norm2() that never adds it disagrees with the gathered serial answer."
 file = "src/linalg/dist_vector.cpp"
 old = """  for (std::size_t i = 0; i < owned_n_; ++i) local += storage_[i] * other.storage_[i];
   return reducer_->sum(local);"""
@@ -68,8 +65,7 @@ new = """  for (std::size_t i = 0; i < owned_n_; ++i) local += storage_[i] * oth
   return local;"""
 target = "fuse_linalg_dist_vector_test"
 test = "linalg.dist_vector"
-# Hand-proved 2026-10-09 (re-proved after LinalgComm.SerialReducerIs...
-# was added to the same binary, which changes the total from 3 to 4): 4
+# Hand-proved: 4
 # pass before; after mutation, 1 fails
 # (DistVectorTwoPartitionFake.DotAndNorm2EqualTheGatheredSerialReduction,
 # all three of its own assertions -- a0.dot(b0), a0_self.norm2(), and
@@ -79,7 +75,7 @@ test = "linalg.dist_vector"
 # answer, and the Reducer test never touches DistVector::dot at all).
 # File restored and `cmp`-verified byte-identical.
 
-# "Krylov" track: fuse::linalg::pcg/gmres (include/fuse/linalg/{pcg,gmres}.hpp),
+# Krylov solvers: fuse::linalg::pcg/gmres (include/fuse/linalg/{pcg,gmres}.hpp),
 # header-only templates with no corresponding .cpp -- every row below
 # mutates the header directly. All four were HAND-PROVEN the same way the
 # three rows above were (apply `old` -> `new` to the real source tree,
@@ -87,8 +83,7 @@ test = "linalg.dist_vector"
 # gtest filter -- record which cases failed and how many passed, restore
 # the original text, `cmp` the restored file against a saved backup to
 # confirm the restore is exact), because `tools/mutate.py` itself refuses
-# to start against a dirty `include`/`src` tree, which this track's own
-# uncommitted new headers already are. None needs `requires = "mpi"`:
+# to start against a dirty `include`/`src` tree. None needs `requires = "mpi"`:
 # every one is killed by the tier-0 binary (test/linalg/pcg_test.cpp,
 # test/linalg/gmres_test.cpp), never by test/parallel/krylov_mpi_test.cpp,
 # which this sandbox cannot run at all.
@@ -96,13 +91,13 @@ test = "linalg.dist_vector"
 [[mutation]]
 id = "krylov-pcg-beta-stale-rz"
 area = "linalg"
-describes = "pcg's Polak-Ribiere-style beta = (r,z)_new / (r,z)_old divides the NEW inner product by itself instead of the previous iteration's -- the 'beta uses the stale rz' mutation row the task names explicitly, making beta exactly 1.0 on every iteration regardless of the actual conjugacy the recurrence needs. Killed at tier 0 by the periodic-Laplacian and random-SPD iterate-for-iterate comparisons against Eigen::ConjugateGradient (a beta of 1.0 is a different search direction from iteration 2 on, so the traces diverge immediately), the ill-conditioned recompute-discipline case, and the Jacobi-converges-faster case; survived only by the two refusal cases, which never reach a second iteration's beta at all."
+describes = "pcg's Polak-Ribiere-style beta = (r,z)_new / (r,z)_old divides the NEW inner product by itself instead of the previous iteration's -- the 'beta uses the stale rz' mutation, making beta exactly 1.0 on every iteration regardless of the actual conjugacy the recurrence needs. Killed at tier 0 by the periodic-Laplacian and random-SPD iterate-for-iterate comparisons against Eigen::ConjugateGradient (a beta of 1.0 is a different search direction from iteration 2 on, so the traces diverge immediately), the ill-conditioned recompute-discipline case, and the Jacobi-converges-faster case; survived only by the two refusal cases, which never reach a second iteration's beta at all."
 file = "include/fuse/linalg/pcg.hpp"
 old = """    const double beta = rz_new / rz_old;"""
 new = """    const double beta = rz_old / rz_old;"""
 target = "fuse_linalg_pcg_test"
 test = "linalg.pcg"
-# Hand-proved 2026-10-10 against a byte-identical restored copy: 6 cases
+# Hand-proved against a byte-identical restored copy: 6 cases
 # in the target before mutation (all pass); after mutation, applied by
 # hand and the WHOLE binary run unfiltered, 4 fail --
 # PcgAgreesWithEigen.PeriodicLaplacianIdentityAndJacobi,
@@ -115,13 +110,13 @@ test = "linalg.pcg"
 [[mutation]]
 id = "krylov-pcg-stopping-test-on-recurrence-not-recomputed"
 area = "linalg"
-describes = "pcg's candidate-convergence check tests the CHEAP RECURRENCE residual's own norm (already known true, by construction, at that point in the branch) instead of the FRESHLY RECOMPUTED one before reporting convergence -- the 'stopping test on the recurrence residual instead of the recomputed one' mutation row the task names explicitly, with the instruction that the test must be designed so the two differ. PcgRecomputesTrueResidual's ill-conditioned diagonal matrix (condition number 1e12, rel_tol 1e-13) is exactly that design: the recurrence first reads below tolerance while an independently recomputed residual is still far above it, so the mutated code reports a convergence this test's own independent recompute (done outside the solver entirely) rejects. The five other, well-conditioned cases cannot tell the difference -- their recurrence and recomputed residuals already agree closely enough that trusting either gives the same answer -- which is the reason this needed its own purpose-built matrix rather than being caught by the general iterate-for-iterate comparisons."
+describes = "pcg's candidate-convergence check tests the CHEAP RECURRENCE residual's own norm (already known true, by construction, at that point in the branch) instead of the FRESHLY RECOMPUTED one before reporting convergence -- the 'stopping test on the recurrence residual instead of the recomputed one' mutation, for which the test must be designed so the two differ. PcgRecomputesTrueResidual's ill-conditioned diagonal matrix (condition number 1e12, rel_tol 1e-13) is exactly that design: the recurrence first reads below tolerance while an independently recomputed residual is still far above it, so the mutated code reports a convergence this test's own independent recompute (done outside the solver entirely) rejects. The five other, well-conditioned cases cannot tell the difference -- their recurrence and recomputed residuals already agree closely enough that trusting either gives the same answer -- which is the reason this needed its own purpose-built matrix rather than being caught by the general iterate-for-iterate comparisons."
 file = "include/fuse/linalg/pcg.hpp"
 old = """      if (true_norm <= opt.rel_tol * b_norm) {"""
 new = """      if (recurrence_norm <= opt.rel_tol * b_norm) {"""
 target = "fuse_linalg_pcg_test"
 test = "linalg.pcg"
-# Hand-proved 2026-10-10: 6 pass before; after mutation, 1 fails --
+# Hand-proved: 6 pass before; after mutation, 1 fails --
 # PcgRecomputesTrueResidual.IllConditionedDiagonalConvergesToTheTrueTolerance,
 # on its own independent-recompute assertion (reported relative residual
 # 4.245e-12 against tolerance 1e-13) -- 5 pass (the five well-conditioned
@@ -131,7 +126,7 @@ test = "linalg.pcg"
 [[mutation]]
 id = "krylov-pcg-preconditioner-skipped"
 area = "linalg"
-describes = "pcg's main-loop z <- M^-1 r is replaced by z <- r (the identity's own effect) -- the 'the preconditioner skipped' mutation row the task names explicitly. A constant-diagonal matrix (the periodic Laplacian, every diagonal entry equal) cannot distinguish this: M = c*I is a scalar multiple of the identity for CG, which leaves every iterate's DIRECTION unchanged and only rescales a quantity CG's own ratios cancel out again, so that case survives by coincidence, not by the preconditioner actually having been skipped. A matrix with a genuinely VARYING diagonal (the random SPD case) cannot: killed there from iteration 2 on, once the single un-mutated initial precondition-and-build-p step (before this loop starts) stops dominating the trajectory."
+describes = "pcg's main-loop z <- M^-1 r is replaced by z <- r (the identity's own effect) -- the 'the preconditioner skipped' mutation. A constant-diagonal matrix (the periodic Laplacian, every diagonal entry equal) cannot distinguish this: M = c*I is a scalar multiple of the identity for CG, which leaves every iterate's DIRECTION unchanged and only rescales a quantity CG's own ratios cancel out again, so that case survives by coincidence, not by the preconditioner actually having been skipped. A matrix with a genuinely VARYING diagonal (the random SPD case) cannot: killed there from iteration 2 on, once the single un-mutated initial precondition-and-build-p step (before this loop starts) stops dominating the trajectory."
 file = "include/fuse/linalg/pcg.hpp"
 old = """    if (Result<void> s = m.apply(r, z); !s.ok()) return s.error();
     const double rz_new = r.dot(z);"""
@@ -139,7 +134,7 @@ new = """    z.copy_from(r);
     const double rz_new = r.dot(z);"""
 target = "fuse_linalg_pcg_test"
 test = "linalg.pcg"
-# Hand-proved 2026-10-10: 6 pass before; after mutation, 1 fails --
+# Hand-proved: 6 pass before; after mutation, 1 fails --
 # PcgAgreesWithEigen.RandomSpdIdentityAndJacobi, on its jacobi sub-case
 # from iteration 2 on (e.g. iteration 2: ours 0.1375 vs Eigen's Jacobi
 # 0.1231, a 0.0144 gap against a 1e-9 bound) -- 5 pass, INCLUDING
@@ -153,7 +148,7 @@ test = "linalg.pcg"
 [[mutation]]
 id = "krylov-gmres-givens-rotation-one-row-only"
 area = "linalg"
-describes = "gmres's application of the newly computed Givens rotation to the right-hand-side pair g[k], g[k+1] updates ONLY g[k] and leaves g[k+1] at its pre-rotation value -- the 'the Givens rotation applied to only one of the two rows' mutation row the task names explicitly. g[k+1] carries the residual-norm estimate for the NEXT Arnoldi step and feeds the NEXT rotation's own g update, so the corruption compounds: the residual estimate reads near zero from the very first rotation (losing the beta contribution the true residual still carries), triggering a spurious candidate convergence that this file's own recompute-before-reporting discipline correctly rejects every time, exhausting the iteration budget without ever genuinely converging."
+describes = "gmres's application of the newly computed Givens rotation to the right-hand-side pair g[k], g[k+1] updates ONLY g[k] and leaves g[k+1] at its pre-rotation value -- the 'the Givens rotation applied to only one of the two rows' mutation. g[k+1] carries the residual-norm estimate for the NEXT Arnoldi step and feeds the NEXT rotation's own g update, so the corruption compounds: the residual estimate reads near zero from the very first rotation (losing the beta contribution the true residual still carries), triggering a spurious candidate convergence that this file's own recompute-before-reporting discipline correctly rejects every time, exhausting the iteration budget without ever genuinely converging."
 file = "include/fuse/linalg/gmres.hpp"
 old = """      const double g_k = g[k];
       g[k] = c_k * g_k + s_k * g[k + 1];
@@ -162,7 +157,7 @@ new = """      const double g_k = g[k];
       g[k] = c_k * g_k + s_k * g[k + 1];"""
 target = "fuse_linalg_gmres_test"
 test = "linalg.gmres"
-# Hand-proved 2026-10-10: 3 pass before; after mutation, 2 fail --
+# Hand-proved: 3 pass before; after mutation, 2 fail --
 # GmresAgreesWithEigen.RandomNonsymmetricIdentity and
 # GmresJacobi.ConvergesAndAgreesWithSparseLuOnADiagonallyScaledSystem, both
 # with E-LINALG-NO-CONVERGENCE ("did not converge within 300 iterations;
@@ -171,12 +166,11 @@ test = "linalg.gmres"
 # (GmresRefusals' own tiny-iteration-cap case, which never reaches a
 # second Arnoldi step at all). File restored and `cmp`-verified byte-identical.
 
-# "Schur-slab" track: SchurSlabSolver (docs/dev/schur-slab-solver.md), the
+# Schur-slab solver: SchurSlabSolver (docs/dev/schur-slab-solver.md), the
 # exact distributed direct solver for the backward-Euler periodic Laplacian
 # on row bands. All three rows HAND-PROVEN the same way the rows above were
-# (this track's own checkout had other tracks' uncommitted edits already in
-# place, so `tools/mutate.py`'s own "never run against a dirty tree" guard
-# does not apply here -- the sequence below is exactly what it would run):
+# (`tools/mutate.py`'s own "never run against a dirty tree" guard does not
+# apply here -- the sequence below is exactly what it would run):
 # apply the `old` -> `new` text to src/linalg/schur_slab.cpp, rebuild
 # fuse_linalg_schur_slab_test, run the WHOLE binary unfiltered, record
 # which cases failed and how many passed, restore the original text, `cmp`
@@ -190,7 +184,7 @@ test = "linalg.gmres"
 [[mutation]]
 id = "schur-slab-wrap-coupling-dropped"
 area = "linalg"
-describes = "SchurSlabSolver::factor's own 2*nx-row contribution to the assembled Schur complement writes the periodic-wrap coupling (this rank's FIRST interface row to its predecessor's LAST interface row) only when rank != 0, silently dropping it for rank 0 specifically -- the 'wrap coupling dropped' row the task names explicitly. Dropping it from only ONE side of the coupling (the other rank's own symmetric write, 'last row <-> successor's first row', is untouched) is what makes this mutation meaningful at all: the Schur complement is explicitly symmetrised before its dense LDLT factorisation (src/linalg/schur_slab.cpp's own comment on that line explains why -- Eigen::LDLT's default Lower mode reads only one triangle, so a bug that corrupts only the discarded triangle would otherwise never reach the factorisation), so a HALF-dropped coupling survives as a measurable, half-strength value rather than vanishing. Killed at tier 0 by every multi-partition case that includes rank 0 (all of them, since rank 0 always owns the first row band): the periodic-wrap case (SchurSlabSolverPeriodicWrap) and every SchurSlabSolverMultiPartition case."
+describes = "SchurSlabSolver::factor's own 2*nx-row contribution to the assembled Schur complement writes the periodic-wrap coupling (this rank's FIRST interface row to its predecessor's LAST interface row) only when rank != 0, silently dropping it for rank 0 specifically -- the 'wrap coupling dropped' mutation. Dropping it from only ONE side of the coupling (the other rank's own symmetric write, 'last row <-> successor's first row', is untouched) is what makes this mutation meaningful at all: the Schur complement is explicitly symmetrised before its dense LDLT factorisation (src/linalg/schur_slab.cpp's own comment on that line explains why -- Eigen::LDLT's default Lower mode reads only one triangle, so a bug that corrupts only the discarded triangle would otherwise never reach the factorisation), so a HALF-dropped coupling survives as a measurable, half-strength value rather than vanishing. Killed at tier 0 by every multi-partition case that includes rank 0 (all of them, since rank 0 always owns the first row band): the periodic-wrap case (SchurSlabSolverPeriodicWrap) and every SchurSlabSolverMultiPartition case."
 file = "src/linalg/schur_slab.cpp"
 old = """  for (int i = 0; i < nx; ++i) {
     row_block(i, prev_last_col_lo + i) += vert_val;       // first row <-> predecessor's last row
@@ -202,7 +196,7 @@ new = """  for (int i = 0; i < nx; ++i) {
   }"""
 target = "fuse_linalg_schur_slab_test"
 test = "linalg.schur_slab"
-# Hand-proved 2026-10-09 against a byte-identical restored copy: 9 cases in
+# Hand-proved against a byte-identical restored copy: 9 cases in
 # the target before mutation (all pass). After mutation, applied by hand
 # and the WHOLE binary run unfiltered: 5 pass (SchurSlabSolverOneRank --
 # the nranks==1 path never touches row_block at all; both
@@ -219,7 +213,7 @@ test = "linalg.schur_slab"
 [[mutation]]
 id = "schur-slab-contribution-omitted"
 area = "linalg"
-describes = "SchurSlabSolver::factor writes its own 2*nx x 2*nx diagonal block of the assembled Schur complement (S_own, the Schur-reduced interface block for THIS rank's own row band) only when rank != 0 -- rank 0's own diagonal block (including its own interface rows' diagonal entries, which hold the operator's own 1 + 2*coefficient*(xx+yy) term) is left at zero -- the 'Schur contribution from one slab omitted' row the task names explicitly. Killed at tier 0 the same way the wrap-coupling row above is: every multi-partition case includes rank 0's own contribution, so a zeroed diagonal block (producing, among other things, a singular or wildly indefinite assembled matrix) disagrees with the whole-grid reference everywhere rank 0's own interface rows are read."
+describes = "SchurSlabSolver::factor writes its own 2*nx x 2*nx diagonal block of the assembled Schur complement (S_own, the Schur-reduced interface block for THIS rank's own row band) only when rank != 0 -- rank 0's own diagonal block (including its own interface rows' diagonal entries, which hold the operator's own 1 + 2*coefficient*(xx+yy) term) is left at zero -- the 'Schur contribution from one slab omitted' mutation. Killed at tier 0 the same way the wrap-coupling row above is: every multi-partition case includes rank 0's own contribution, so a zeroed diagonal block (producing, among other things, a singular or wildly indefinite assembled matrix) disagrees with the whole-grid reference everywhere rank 0's own interface rows are read."
 file = "src/linalg/schur_slab.cpp"
 old = """  Eigen::MatrixXd row_block = Eigen::MatrixXd::Zero(2 * nx, g_total);
   row_block.block(0, own_col_lo, 2 * nx, 2 * nx) = s_own;"""
@@ -227,7 +221,7 @@ new = """  Eigen::MatrixXd row_block = Eigen::MatrixXd::Zero(2 * nx, g_total);
   if (rank != 0) row_block.block(0, own_col_lo, 2 * nx, 2 * nx) = s_own;"""
 target = "fuse_linalg_schur_slab_test"
 test = "linalg.schur_slab"
-# Hand-proved 2026-10-09 the same way: 9 pass before; after mutation, 5
+# Hand-proved the same way: 9 pass before; after mutation, 5
 # pass (the SAME 5 as the row above -- SchurSlabSolverOneRank, both
 # SchurSlabSolverRefusal cases, both LinalgComm cases), 4 fail (the SAME 4
 # multi-partition/periodic-wrap cases as the row above). File restored and
@@ -236,13 +230,13 @@ test = "linalg.schur_slab"
 [[mutation]]
 id = "schur-slab-back-substitution-transposition"
 area = "linalg"
-describes = "SchurSlabSolver::solve's own local back-substitution x_I = A_II^-1(b_I - A_IG x_G) (src/linalg/schur_slab.cpp) uses A_IG.transpose() (A_GI's own role, correct only for the Schur-reduction cross term built earlier in the SAME function and in factor()) in place of A_IG itself -- the 'back-substitution using A_IG instead of A_GI (transposition)' row the task names explicitly. VERIFIED, NOT ASSUMED, by hand-proof: this specific swap is dimensionally valid ONLY where n_interior (= (local_rows-2)*nx) equals 2*nx, which solving for local_rows gives as local_rows==4 for ANY nx -- and at local_rows==4 there are exactly 2 interior rows, each adjacent to EXACTLY ONE interface row, which makes A_IG provably equal to vert_val * I_{2nx} (a scalar multiple of the identity) at that one shape -- its own transpose, bit for bit. The mutation is therefore NOT caught by a grid chosen for shape-compatibility alone; test/linalg/schur_slab_test.cpp deliberately declares its one such case (nx=4, ny=8, 2 ranks, SchurSlabSolverMultiPartition.FourByEightTwoPartitionsAgreesWithWholeGridReference) FIRST among the multi-partition tests so the mutation's own kill -- a genuine Eigen dimension assertion on the VERY NEXT case, where shapes do not coincide -- is a reproducible declaration-order fact, not an accident of whichever case the test binary happens to reach first. docs/dev/schur-slab-solver.md's own account of this mutation has the full derivation."
+describes = "SchurSlabSolver::solve's own local back-substitution x_I = A_II^-1(b_I - A_IG x_G) (src/linalg/schur_slab.cpp) uses A_IG.transpose() (A_GI's own role, correct only for the Schur-reduction cross term built earlier in the SAME function and in factor()) in place of A_IG itself -- the 'back-substitution using A_IG instead of A_GI (transposition)' mutation. VERIFIED, NOT ASSUMED, by hand-proof: this specific swap is dimensionally valid ONLY where n_interior (= (local_rows-2)*nx) equals 2*nx, which solving for local_rows gives as local_rows==4 for ANY nx -- and at local_rows==4 there are exactly 2 interior rows, each adjacent to EXACTLY ONE interface row, which makes A_IG provably equal to vert_val * I_{2nx} (a scalar multiple of the identity) at that one shape -- its own transpose, bit for bit. The mutation is therefore NOT caught by a grid chosen for shape-compatibility alone; test/linalg/schur_slab_test.cpp deliberately declares its one such case (nx=4, ny=8, 2 ranks, SchurSlabSolverMultiPartition.FourByEightTwoPartitionsAgreesWithWholeGridReference) FIRST among the multi-partition tests so the mutation's own kill -- a genuine Eigen dimension assertion on the VERY NEXT case, where shapes do not coincide -- is a reproducible declaration-order fact, not an accident of whichever case the test binary happens to reach first. docs/dev/schur-slab-solver.md's own account of this mutation has the full derivation."
 file = "src/linalg/schur_slab.cpp"
 old = """    x_interior = impl_->interior_factor.solve(b_interior - impl_->a_ig * x_g_own);"""
 new = """    x_interior = impl_->interior_factor.solve(b_interior - impl_->a_ig.transpose() * x_g_own);"""
 target = "fuse_linalg_schur_slab_test"
 test = "linalg.schur_slab"
-# Hand-proved 2026-10-09 against a byte-identical restored copy, TWICE (the
+# Hand-proved against a byte-identical restored copy, TWICE (the
 # second time after reordering the test file so the shape-matched case
 # runs first -- both runs agree on every number below): 9 pass before.
 # After mutation, applied by hand and the WHOLE binary run unfiltered: 2
@@ -261,7 +255,7 @@ test = "linalg.schur_slab"
 # involved. File restored and `cmp`-verified byte-identical to the
 # pre-mutation copy both times.
 
-# HOST-FOUND BUG, FIXED 2026-10-10: a host run of commit 3b43bd0
+# HOST-FOUND BUG, FIXED: a host run of commit 3b43bd0
 # (parallel.schur_slab_mpi.2/.3) found factor()'s row-band-size refusal
 # deciding from THIS rank's own `local_rows` alone and returning
 # immediately -- a collective path (the Schur-assembly allgather)
@@ -269,8 +263,7 @@ test = "linalg.schur_slab"
 # forbidden pattern -- which MPICH's own "Message truncated" in
 # MPI_Allgather confirmed: rank 1's single-row band refused and returned
 # without ever calling that allgather, while rank 0's fine band sailed on
-# into it alone. Fixed two ways, matching the task's own diagnosis
-# exactly: (1) the row-band-size refusal now needs NO collective at all --
+# into it alone. Fixed two ways: (1) the row-band-size refusal now needs NO collective at all --
 # decided from `row_ownership` alone, which every rank already holds in
 # full; (2) a genuinely rank-varying condition (a factorisation's own
 # numerical outcome) that CANNOT be predicted from shared metadata is
@@ -281,7 +274,7 @@ test = "linalg.schur_slab"
 [[mutation]]
 id = "schur-slab-row-band-agreement-dropped"
 area = "linalg"
-describes = "SchurSlabSolver::factor's row-band-size refusal is reverted to deciding from THIS rank's own band alone (the loop that scans every rank's own row_ownership entry is narrowed to iterate only `r == rank`) -- reproducing the EXACT host-found bug (2026-10-10, commit 3b43bd0): a rank whose OWN band is fine never learns that a PEER's band is undersized, so it proceeds past the refusal into the Schur-assembly allgather alone while the undersized rank refuses and returns without ever calling it. Killed at tier 0 by SchurSlabSolverRefusal.OneRowBandRefusesOnEveryRankWithoutStrandingAnyoneInACollective, which calls factor() for BOTH a fine-banded rank and an undersized one and asserts BOTH refuse."
+describes = "SchurSlabSolver::factor's row-band-size refusal is reverted to deciding from THIS rank's own band alone (the loop that scans every rank's own row_ownership entry is narrowed to iterate only `r == rank`) -- reproducing the EXACT host-found bug (commit 3b43bd0): a rank whose OWN band is fine never learns that a PEER's band is undersized, so it proceeds past the refusal into the Schur-assembly allgather alone while the undersized rank refuses and returns without ever calling it. Killed at tier 0 by SchurSlabSolverRefusal.OneRowBandRefusesOnEveryRankWithoutStrandingAnyoneInACollective, which calls factor() for BOTH a fine-banded rank and an undersized one and asserts BOTH refuse."
 file = "src/linalg/schur_slab.cpp"
 old = """  std::vector<int> undersized_ranks;
   for (int r = 0; r < nranks; ++r) {"""
@@ -289,10 +282,9 @@ new = """  std::vector<int> undersized_ranks;
   for (int r = rank; r <= rank; ++r) {"""
 target = "fuse_linalg_schur_slab_test"
 test = "linalg.schur_slab"
-# Hand-proved 2026-10-10 against a byte-identical restored copy: 11 cases
+# Hand-proved against a byte-identical restored copy: 11 cases
 # in the target before mutation (all pass -- this row and the one below
-# were added alongside two new regression tests, bringing the suite from
-# 9 to 11 cases). After mutation, applied by hand and the WHOLE binary run
+# come with two regression tests). After mutation, applied by hand and the WHOLE binary run
 # unfiltered: 10 pass, 1 fails
 # (SchurSlabSolverRefusal.OneRowBandRefusesOnEveryRankWithoutStrandingAnyoneInACollective,
 # specifically on `result0.ok()` being unexpectedly true -- rank 0's own
@@ -326,7 +318,7 @@ new = """  const std::vector<int> failed = local_ok ? std::vector<int>{} : std::
   }"""
 target = "fuse_linalg_schur_slab_test"
 test = "linalg.schur_slab"
-# Hand-proved 2026-10-10 against a byte-identical restored copy: 11 pass
+# Hand-proved against a byte-identical restored copy: 11 pass
 # before. After mutation, applied by hand and the WHOLE binary run
 # unfiltered: 10 pass, 1 fails
 # (SchurSlabSolverRefusal.InteriorFactorizationFailureOnOneRankIsAgreedWithoutStrandingAnyoneInACollective
@@ -336,7 +328,7 @@ test = "linalg.schur_slab"
 # code path, never reached when local_rows >= 2 on every rank), is
 # unaffected. File restored and `cmp`-verified byte-identical.
 
-# "DerivativeGate" track: the adjoint dot-product gate, the finite-difference
+# Derivative gate: the adjoint dot-product gate, the finite-difference
 # derivative-convergence gate (round-off plateau detected, not fit through),
 # and assembled-vs-matrix-free agreement (include/fuse/linalg/
 # derivative_gate.hpp, docs/dev/derivative-gate.md). All three rows
@@ -352,13 +344,13 @@ test = "linalg.schur_slab"
 [[mutation]]
 id = "derivative-gate-adjoint-transpose-swapped-for-apply"
 area = "linalg"
-describes = "adjoint_gate's own apply_transpose(y, aty) call replaced by apply(y, aty) -- the 'the adjoint check with apply_transpose swapped for apply' mutation row the task that produced this file names explicitly. A SYMMETRIC operator cannot distinguish this mutation at all (apply and apply_transpose compute the same thing), which is exactly why the random-nonsymmetric 50x50 DistSparseMatrix case in adjoint_cases() is load-bearing for this row specifically, not merely for the adjoint identity in general: its own apply_transpose is built from independently re-assembled, row/col-swapped triplets (transpose_of()), never derived from apply() by any relation the mutation could leave intact."
+describes = "adjoint_gate's own apply_transpose(y, aty) call replaced by apply(y, aty) -- the 'the adjoint check with apply_transpose swapped for apply' mutation. A SYMMETRIC operator cannot distinguish this mutation at all (apply and apply_transpose compute the same thing), which is exactly why the random-nonsymmetric 50x50 DistSparseMatrix case in adjoint_cases() is load-bearing for this row specifically, not merely for the adjoint identity in general: its own apply_transpose is built from independently re-assembled, row/col-swapped triplets (transpose_of()), never derived from apply() by any relation the mutation could leave intact."
 file = "include/fuse/linalg/derivative_gate.hpp"
 old = """  if (Result<void> r = apply_transpose(y, aty); !r.ok()) return r.error();"""
 new = """  if (Result<void> r = apply(y, aty); !r.ok()) return r.error();"""
 target = "fuse_linalg_derivative_gate_test"
 test = "linalg.derivative_gate"
-# Hand-proved 2026-10-10 against a byte-identical restored copy: 9 cases in
+# Hand-proved against a byte-identical restored copy: 9 cases in
 # the target before mutation (all pass). After mutation, applied by hand and
 # the WHOLE binary run unfiltered: 8 pass, 1 fails --
 # LinalgDerivativeGate.AdjointIdentityHoldsForEveryOperator, on the
@@ -376,7 +368,7 @@ test = "linalg.derivative_gate"
 [[mutation]]
 id = "derivative-gate-plateau-detection-removed"
 area = "linalg"
-describes = "taylor_remainder_order's round-off plateau scan is short-circuited (the 'still not dropping' branch that records plateau_start is gated behind `false &&`, so it never fires and plateau_start stays n) -- the 'the plateau detection removed (fits through the floor, slope wrong)' mutation row the task names explicitly. With no plateau ever detected, the log-log slope is fit over EVERY swept h, including the ones at the round-off floor where the remainder has stopped meaning anything -- degrading the fitted order below the true value for any case whose h-sweep reaches the floor, and (for the purely affine case, where the remainder IS the floor at every h) fitting a spurious negative slope through pure noise instead of reporting at_floor_everywhere."
+describes = "taylor_remainder_order's round-off plateau scan is short-circuited (the 'still not dropping' branch that records plateau_start is gated behind `false &&`, so it never fires and plateau_start stays n) -- the 'plateau detection removed (fits through the floor, slope wrong)' mutation. With no plateau ever detected, the log-log slope is fit over EVERY swept h, including the ones at the round-off floor where the remainder has stopped meaning anything -- degrading the fitted order below the true value for any case whose h-sweep reaches the floor, and (for the purely affine case, where the remainder IS the floor at every h) fitting a spurious negative slope through pure noise instead of reporting at_floor_everywhere."
 file = "include/fuse/linalg/derivative_gate.hpp"
 old = """    const bool still_dropping = prev > 0.0 && cur <= plateau_drop * prev;
     if (!still_dropping) {"""
@@ -384,7 +376,7 @@ new = """    const bool still_dropping = prev > 0.0 && cur <= plateau_drop * pre
     if (false && !still_dropping) {"""
 target = "fuse_linalg_derivative_gate_test"
 test = "linalg.derivative_gate"
-# Hand-proved 2026-10-10 against a byte-identical restored copy: 9 pass
+# Hand-proved against a byte-identical restored copy: 9 pass
 # before. After mutation, applied by hand and the WHOLE binary run
 # unfiltered: 6 pass, 3 fail --
 # TaylorRemainderOrder.CubicMapWithAnalyticJacobianMeasuresOrderTwo (fitted
@@ -400,7 +392,7 @@ test = "linalg.derivative_gate"
 [[mutation]]
 id = "derivative-gate-wrong-jacobian-expectation-inverted"
 area = "linalg"
-describes = "TaylorRemainderOrder.WrongJacobianMeasuresOrderOneNotTwo's own EXPECT_GT/EXPECT_LT bounds inverted to the (1.8, 2.3) band a CORRECT Jacobian would need, in place of the (0.7, 1.3) band a WRONG one actually produces -- the 'the wrong-Jacobian sanity case's expectation inverted' mutation row the task names explicitly. This is the meta-test: it proves the ORIGINAL test's assertion direction is load-bearing (the wrong Jacobian's own measured order, ~1.0, genuinely fails the inverted band) rather than a vacuous pass that would succeed under either set of bounds."
+describes = "TaylorRemainderOrder.WrongJacobianMeasuresOrderOneNotTwo's own EXPECT_GT/EXPECT_LT bounds inverted to the (1.8, 2.3) band a CORRECT Jacobian would need, in place of the (0.7, 1.3) band a WRONG one actually produces -- the 'the wrong-Jacobian sanity case's expectation inverted' mutation. This is the meta-test: it proves the ORIGINAL test's assertion direction is load-bearing (the wrong Jacobian's own measured order, ~1.0, genuinely fails the inverted band) rather than a vacuous pass that would succeed under either set of bounds."
 file = "test/linalg/derivative_gate_test.cpp"
 old = """  EXPECT_GT(r.order, 0.7) << "observed order " << r.order;
   EXPECT_LT(r.order, 1.3) << "observed order " << r.order
@@ -412,7 +404,7 @@ new = """  EXPECT_GT(r.order, 1.8) << "observed order " << r.order;
                             "cannot tell a correct linearisation from an incorrect one";"""
 target = "fuse_linalg_derivative_gate_test"
 test = "linalg.derivative_gate"
-# Hand-proved 2026-10-10 against a byte-identical restored copy: 9 pass
+# Hand-proved against a byte-identical restored copy: 9 pass
 # before. After mutation, applied by hand and the WHOLE binary run
 # unfiltered: 8 pass, 1 fails -- TaylorRemainderOrder.
 # WrongJacobianMeasuresOrderOneNotTwo itself, on its own first EXPECT_GT

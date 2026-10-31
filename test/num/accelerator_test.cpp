@@ -301,14 +301,13 @@ TEST(Accelerator, AitkenBeatsConstantRelaxation) {
 }
 
 TEST(Accelerator, AitkenRejectsANonPositiveCandidateAndRestartsToOmega0) {
-  // Window seed track, Stage E (KNOWN_ISSUES.md D76): a crafted 2-sweep
-  // scalar sequence whose UNGUARDED secant candidate is negative.
+  // A crafted 2-sweep scalar sequence whose UNGUARDED secant candidate is negative.
   // Sweep 0: no history, w = initial_relaxation = 0.5, r_prev = 1 - 0 = 1.
   // Sweep 1: r = 7 - 5 = 2, d = r - r_prev = 1, num = r_prev*d = 1,
   // den = d*d = 1, candidate = -omega_*num/den = -0.5*1/1 = -0.5 -- the
-  // formula this track's own D76 entry measured AitkenAccel::update()
-  // used to accept outright (the window-3 stagnation: a negative omega
-  // at sweep 3, never recovering). The guarded formula rejects a
+  // formula AitkenAccel::update() must not accept outright (it would
+  // stagnate in window 3: a negative omega at sweep 3, never recovering).
+  // The guarded formula rejects a
   // non-positive candidate and restarts to omega0_, so sweep 1's own
   // output is 5 + 0.5*2 = 6, not 5 + (-0.5)*2 = 4. Every value here is
   // exactly representable and every operation a multiply or divide by a
@@ -368,22 +367,18 @@ TEST(Accelerator, LadderIsMonotoneOnADenseLinearProblem) {
   // Pinned counts for picard/constant/secant/ils/imvj. These were measured
   // to be identical under -O0, -O1, -O3 -DNDEBUG, -O2 -ffp-contract=fast and
   // ASan+UBSan; the kernels' ascending-index accumulation convention is what
-  // makes them reproducible for a given buffer. MEASURED 2026-10-12
-  // (FpPolicy track, KNOWN_ISSUES.md D30): that list does NOT cover
-  // -ffp-contract=off (the flag did not exist when it was written) -- under
-  // FUSE_FP_REPRODUCIBLE=ON these five counts were checked directly and are
+  // makes them reproducible for a given buffer. That list does NOT cover
+  // -ffp-contract=off -- under FUSE_FP_REPRODUCIBLE=ON these five counts were checked directly and are
   // unchanged (382, 382, 269, 7, 7); only n_aitken, below, moves between the
   // two contraction policies. The list above shows these five counts are
-  // insensitive to several compiler/optimizer choices; it does not show, and
-  // was never claimed to show, insensitivity to contraction policy
-  // specifically -- that had to be measured separately, and was.
+  // insensitive to several compiler/optimizer choices; insensitivity to
+  // contraction policy specifically had to be measured separately, and was.
   EXPECT_EQ(n_picard, 382);
   EXPECT_EQ(n_constant, 382) << "omega == 1 is exactly Picard";
   EXPECT_EQ(n_secant, 269);
-  // n_aitken is deliberately NOT pinned to a literal count. MEASURED
-  // 2026-10-12 (FpPolicy track, KNOWN_ISSUES.md D30): the literal this test
-  // used to assert (56) was a rounding-dependent number, not a robust
-  // property of the method. At x0 = {0,0,0,0,0} exactly, n_aitken = 56 under
+  // n_aitken is deliberately NOT pinned to a literal count. A literal (56)
+  // would be a rounding-dependent number, not a robust property of the
+  // method. Measured: at x0 = {0,0,0,0,0} exactly, n_aitken = 56 under
   // the compiler's default (fused) contraction and 57 under
   // FUSE_FP_REPRODUCIBLE=ON (-ffp-contract=off); the two residual histories
   // first diverge at iteration k=1, by 2 ulp (1.8748738283994892 vs
@@ -441,12 +436,11 @@ TEST(Accelerator, SteffensenIsExactOnADiagonalProblemAndBasisDependent) {
   // Steffensen is the one member of the family that is not orthogonally
   // equivariant: it models the Jacobian by its diagonal, so on a dense
   // Jacobian with the same spectrum it is worse than plain Picard. That is a
-  // property of the method, not a defect -- but MEASURED 2026-10-12
-  // (FpPolicy track, KNOWN_ISSUES.md D30), the specific iteration count this
-  // test used to pin (681) is NOT a robust property to assert: Steffensen's
-  // iteration on this dense, basis-rotated problem sits at or very near a
-  // chaotic basin boundary. Residual histories under the two contraction
-  // policies track each other to 5-6 significant figures through k<=35, then
+  // property of the method, not a defect -- but a specific iteration count
+  // (681 was measured in one build) is NOT a robust property to assert:
+  // Steffensen's iteration on this dense, basis-rotated problem sits at or
+  // very near a chaotic basin boundary. Residual histories under the two
+  // contraction policies track each other to 5-6 significant figures through k<=35, then
   // both show intermittent large residual bursts from k~60-165 (a signature
   // of a trajectory near a chaotic repeller/saddle); the default
   // (contracted) build's bursts happen to relax back into convergence by
@@ -458,7 +452,7 @@ TEST(Accelerator, SteffensenIsExactOnADiagonalProblemAndBasisDependent) {
   // (non-convergent, -1) in the DEFAULT contracted build, and 8 of 24
   // (33%) diverge under ON; the convergent runs ranged 488-2366 iterations
   // across both policies -- nowhere near a tight cluster around 681. So 681
-  // was one outcome of a dynamical system whose qualitative behaviour
+  // is one outcome of a dynamical system whose qualitative behaviour
   // (converge vs. diverge) is controlled by perturbations far smaller than
   // any physically meaningful input uncertainty, not a measured, reproducible
   // property of the method. What IS robust, and is asserted below instead,
@@ -471,7 +465,7 @@ TEST(Accelerator, SteffensenIsExactOnADiagonalProblemAndBasisDependent) {
   // 12x margin below the weakest case actually measured) while remaining
   // many times larger than any ratio a correctly-functioning, well-
   // conditioned secant-based method could plausibly reach by chance -- i.e.
-  // it does not depend on the single value 681 that used to be pinned here.
+  // it does not depend on the single value 681.
   auto on_dense = must_make(
       AccelConfig{.kind = AccelKind::Steffensen, .initial_relaxation = 0.5});
   const int n_dense = iterate_linear(*on_dense, ladder_problem(), kTol, kMaxIters);
@@ -596,7 +590,7 @@ TEST(Accelerator, ResetClearsHistory) {
   EXPECT_EQ(a->columns(), 0u);
 }
 
-// REVIEW.md R-45: `cols_` (bounded by `cfg.reuse`, default 8) is completely
+// `cols_` (bounded by `cfg.reuse`, default 8) is completely
 // independent of `n` (the interface size, legitimately as small as 1), so any
 // coupling with a small interface and the default reuse limit reaches
 // `cols_ > n` on the very first window -- exactly the shape
@@ -619,7 +613,7 @@ TEST(Accelerator, HandlesAnInterfaceSmallerThanTheReuseLimit) {
     EXPECT_TRUE(std::isfinite(out[0])) << "at iteration " << k;
   }
   EXPECT_GT(a->columns(), 1u)
-      << "the test must actually reach cols_ > n=1 to exercise R-45's path";
+      << "the test must actually reach cols_ > n=1 to exercise this path";
 }
 
 TEST(Accelerator, RespectsTheReuseLimit) {
@@ -979,7 +973,7 @@ TEST(QnLeastSquares, HandlesAZeroColumnAndAnEmptyProblem) {
 }
 
 // ---------------------------------------------------------------------------
-// Task 7.4: QR column filtering.
+// QR column filtering.
 //
 // Every test here is written to fail against the no-op filter it replaced:
 // each one either compares a QR filter against FilterKind::None on the same
@@ -1448,11 +1442,10 @@ TEST(Accelerator, DivergenceFallsBackToTheUnderRelaxedStepWhenItSurvives) {
   // dynamic factor rather than through initial_relaxation.
   {
     // Aitken. omega0 = 1e280, and one secant pair whose residual moves
-    // DOWN by a single ulp (window seed track Stage E's own D76
-    // safeguard rejects a non-positive candidate and restarts to
-    // omega0_, so an UPWARD ulp here -- making num = r_prev*d > 0,
-    // candidate = -omega_*num/den < 0 -- is rejected and never reaches
-    // relax_into at all; a DOWNWARD ulp makes num < 0, candidate =
+    // DOWN by a single ulp (the safeguard rejects a non-positive candidate
+    // and restarts to omega0_, so an UPWARD ulp here -- making
+    // num = r_prev*d > 0, candidate = -omega_*num/den < 0 -- is rejected and
+    // never reaches relax_into at all; a DOWNWARD ulp makes num < 0, candidate =
     // -omega_*num/den > 0, so the guard accepts it and the Irons-Tuck
     // factor is still amplified by ~1/eps to 6e295, and 6e295 * 1e20
     // overflows -- while 1e280 * 1e20 is a finite 1e300).
@@ -2045,13 +2038,13 @@ TEST(Accelerator, ImvjDropsAPoisonedChainEvenWhenEveryProbeExoneratesIt) {
   // measures; it is answering "would this step have been finite without the
   // chain", and the answer is no while the chain is also unusable.
   //
-  // MEASURED against the first version of this fix, which had no reprieve
-  // budget and argued instead that a second divergence would be judged at
-  // cols_ == 0: 11 consecutive E-ACCEL-DIVERGED calls with the chain retained
-  // throughout, and a fresh benign input still diverging afterwards. The
-  // argument was false because `have_prev_` survives the diverged return, so
-  // append_column() regenerates a column at the top of the next call, before
-  // the probe runs. This test is that sequence.
+  // MEASURED without a reprieve budget, arguing instead that a second
+  // divergence would be judged at cols_ == 0: 11 consecutive E-ACCEL-DIVERGED
+  // calls with the chain retained throughout, and a fresh benign input still
+  // diverging afterwards. That argument is false because `have_prev_`
+  // survives the diverged return, so append_column() regenerates a column at
+  // the top of the next call, before the probe runs. This test is that
+  // sequence.
   auto a = must_make(AccelConfig{
       .kind = AccelKind::IQN_IMVJ, .initial_relaxation = 0.5, .reuse = 8});
   std::vector<double> out(2, 0.0);

@@ -1,11 +1,10 @@
-# Mutations for the native-mesh track (native distributed mesh + RCB-driven
-# repartition migration). Own file per the review-fix protocol: do not edit
-# build-evidence/mutations.toml directly while other fixers hold it dirty.
+# Mutations for the native mesh (native distributed mesh + RCB-driven
+# repartition migration).
 
 [[mutation]]
 id = "migrate-incomplete-assignment-refusal-disabled"
 area = "backend"
-describes = "pack_for_migration's E-MESH-MIGRATE-INCOMPLETE rejection (dest.size() must equal the owned cell count) is disabled. Without it, a destination array one entry short or long is accepted, silently misassigning every cell from the short point onward -- rcb_moab's own historical failure mode (MeshMigration.cpp, HANDOFF.md) of cells destroyed without a trace."
+describes = "pack_for_migration's E-MESH-MIGRATE-INCOMPLETE rejection (dest.size() must equal the owned cell count) is disabled. Without it, a destination array one entry short or long is accepted, silently misassigning every cell from the short point onward -- rcb_moab's own historical failure mode (MeshMigration.cpp) of cells destroyed without a trace."
 file = "src/backend/native_migration.cpp"
 old = "  if (dest.size() != nowned) {"
 new = "  if (false) {"
@@ -64,7 +63,7 @@ target = "fuse_backend_native_generators_test"
 test = "backend.native_generators"
 
 # ---------------------------------------------------------------------------
-# The "Halo" track: a planar/volumetric remap halo for NativeMeshBackend
+# The halo: a planar/volumetric remap halo for NativeMeshBackend
 # (docs/dev/native-halo.md, src/backend/native_halo.cpp). Hand-proven against
 # a scratch copy of the checkout: each row applied, fuse_backend_native_halo
 # _test rebuilt and run WHOLE AND UNFILTERED (12 tests, 5 suites, no
@@ -75,7 +74,7 @@ test = "backend.native_generators"
 [[mutation]]
 id = "native-halo-covering-set-always-empty"
 area = "backend/native (covering_set_destinations)"
-describes = "covering_set_destinations's own-rank exclusion (`if (owner == my_rank) continue`) is corrupted to `if (true) continue`, so EVERY candidate destination is skipped and no owned source cell is ever sent anywhere -- the covering set is always empty, exactly the gap this whole track exists to close. Hand-verified: 12 tests run, 9 pass, 3 fail (NativeHaloCoveringSet.NamesEveryOverlappingOtherRankOnceEachSortedAscending, NativeHaloQuadGrid.ThreeRanksMisalignedAdoptsExactlyWhatTheOracleComputes, NativeHaloBuildWeights.ThreeRanksMisalignedCompleteWeightsAndLinearFieldReproduction); restored file cmp byte-identical."
+describes = "covering_set_destinations's own-rank exclusion (`if (owner == my_rank) continue`) is corrupted to `if (true) continue`, so EVERY candidate destination is skipped and no owned source cell is ever sent anywhere -- the covering set is always empty, exactly the gap the halo exists to close. Hand-verified: 12 tests run, 9 pass, 3 fail (NativeHaloCoveringSet.NamesEveryOverlappingOtherRankOnceEachSortedAscending, NativeHaloQuadGrid.ThreeRanksMisalignedAdoptsExactlyWhatTheOracleComputes, NativeHaloBuildWeights.ThreeRanksMisalignedCompleteWeightsAndLinearFieldReproduction); restored file cmp byte-identical."
 file = "src/backend/native_halo.cpp"
 old = "      if (owner == my_rank) continue;  // already local to its own target"
 new = "      if (true) continue;  // already local to its own target"
@@ -95,7 +94,7 @@ test = "backend.native_halo"
 [[mutation]]
 id = "native-halo-ghost-pattern-owned-index-off-by-one"
 area = "backend/native (pack_one_halo_cell)"
-describes = "pack_one_halo_cell writes owned_block_idx + 1 onto the wire instead of owned_block_idx, so every adopted cell's fuse::linalg::GhostPattern::remote_local_index is off by one -- the exact defect class this row names, and the one a real make_mpi_exchanger would reproduce bit-for-bit from the same corrupted wire value. Hand-verified: 12 tests run, 10 pass, 2 fail (NativeHaloPackMerge.RoundTripAdoptsExactlyTheRequestedCellsAsNonOwnedCopies, which pins owner_owned_index[0] == 1 exactly; NativeHaloBuildWeights.ThreeRanksMisalignedCompleteWeightsAndLinearFieldReproduction, whose ghost field values are now read from the WRONG owned-block slot); restored file cmp byte-identical. RE-ANCHORED 2026-10-15 (Migration track): pack_one_halo_cell no longer exists -- pack_halo_cells now calls fuse::native::device::pack_fanout (mesh_pack_device.hpp), whose write_record is where every halo record, including this owned_block_idx field, is written now; the mutation itself (an off-by-one on the wire) is unchanged, only its source location moved."
+describes = "pack_one_halo_cell writes owned_block_idx + 1 onto the wire instead of owned_block_idx, so every adopted cell's fuse::linalg::GhostPattern::remote_local_index is off by one -- the exact defect class, and the one a real make_mpi_exchanger would reproduce bit-for-bit from the same corrupted wire value. Hand-verified: 12 tests run, 10 pass, 2 fail (NativeHaloPackMerge.RoundTripAdoptsExactlyTheRequestedCellsAsNonOwnedCopies, which pins owner_owned_index[0] == 1 exactly; NativeHaloBuildWeights.ThreeRanksMisalignedCompleteWeightsAndLinearFieldReproduction, whose ghost field values are now read from the WRONG owned-block slot); restored file cmp byte-identical. Anchor: pack_one_halo_cell no longer exists -- pack_halo_cells now calls fuse::native::device::pack_fanout (mesh_pack_device.hpp), whose write_record is where every halo record, including this owned_block_idx field, is written now; the mutation itself (an off-by-one on the wire) is unchanged, only its source location moved."
 file = "include/fuse/backend/native/mesh_pack_device.hpp"
 old = "    append_pod_at<std::int64_t>(dst, pos, owned_block_idx);"
 new = "    append_pod_at<std::int64_t>(dst, pos, owned_block_idx + 1);"

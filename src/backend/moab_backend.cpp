@@ -517,8 +517,8 @@ class MoabMeshView final : public MeshView {
     }
   }
 
-  // --- mesh_view.hpp's cell-to-vertex connectivity query (nodal-remap
-  // track) -- straightforward here: `shape_of` already maps MOAB's own
+  // --- mesh_view.hpp's cell-to-vertex connectivity query (used by nodal
+  // remap) -- straightforward here: `shape_of` already maps MOAB's own
   // entity type onto `CellShape` (used above for the simplex decomposition),
   // and `get_connectivity(..., corners_only=true, ...)` gives the corner
   // HANDLES in MOAB's own (identical to cell_simplices.hpp's) corner order;
@@ -567,8 +567,8 @@ class MoabMeshView final : public MeshView {
   // --- used by the backend, not part of MeshView ---------------------------
 
   [[nodiscard]] moab::EntityHandle file_set() const { return file_set_; }
-  /// The Interface that owns this view's entities -- KNOWN_ISSUES D5's MOAB
-  /// half needs it: a processor set's own decomposition lives in its OWN
+  /// The Interface that owns this view's entities -- the per-placement
+  /// decomposition needs it: a processor set's own decomposition lives in its OWN
   /// `moab::Core`, distinct from the backend's default one, and a caller
   /// resolving a named entity set (`placed_region_size`) must query the
   /// SAME Core the view's handles came from, never the backend's default
@@ -657,7 +657,7 @@ class MoabMeshView final : public MeshView {
 };
 
 // ===========================================================================
-// KNOWN_ISSUES D5, the MOAB half: the view answered to a rank OUTSIDE a
+// Per-placement decomposition: the view answered to a rank OUTSIDE a
 // declared processor set.
 //
 // moab_backend.hpp's contract is explicit that this must be an EMPTY view,
@@ -709,7 +709,7 @@ class EmptyMeshView final : public MeshView {
     FUSE_THROW(InvalidArgument, "{}", std::string(std::string("EmptyMeshView::") + what +
         ": entity index " + std::to_string(i) + " of dimension " + std::to_string(dim) +
         " does not exist -- this view stands for a rank OUTSIDE its declared "
-        "placement (KNOWN_ISSUES D5), which by contract holds no entities of "
+        "placement, which by contract holds no entities of "
         "any dimension"));
   }
 };
@@ -776,8 +776,8 @@ struct TaggedSetPrefix {
   const char* tag_name;
 };
 
-/// The brief's rule -- "a NEUMANN_SET / DIRICHLET_SET / MATERIAL_SET tag
-/// whose value matches a trailing integer" -- does not say WHICH of the three
+/// The rule "a NEUMANN_SET / DIRICHLET_SET / MATERIAL_SET tag
+/// whose value matches a trailing integer" does not say WHICH of the three
 /// to look in, and trying all three makes "sideset_3" ambiguous the moment a
 /// mesh has both a sideset 3 and a block 3, which Exodus meshes routinely do.
 /// The prefix picks the tag; nothing is guessed.
@@ -808,18 +808,16 @@ constexpr std::array<BoxSide, 6> kBoxSides{{
 }};
 
 // ===========================================================================
-// KNOWN_ISSUES D5, the MOAB half: one moab::Core and one moab::ParallelComm
-// PER COMPONENT COMMUNICATOR (the ruling of 2026-09-22, iMOAB's own
-// application-id model).
+// Per-placement decomposition: one moab::Core and one moab::ParallelComm
+// PER COMPONENT COMMUNICATOR (iMOAB's own application-id model).
 //
 // Everything that reads a source into a fresh moab::Interface -- generate a
-// box, read a file, number it, gather it into a MoabMeshView -- used to be
-// nine `MoabMeshBackend::Impl` methods hard-wired to `this->mb`/`this->pcomm`.
-// A processor set's decomposition needs the EXACT same sequence run against a
-// DIFFERENT (Core, ParallelComm) pair, so that sequence is pulled out here,
-// unchanged body for body (every one of these still says bare `mb`/`pcomm`;
-// only the enclosing class changed, from `Impl` to this), as a small object
-// bound to whichever pair it is given. `Impl` keeps one instance, `base_
+// box, read a file, number it, gather it into a MoabMeshView -- is a set of
+// methods bound to one (Core, ParallelComm) pair rather than hard-wired to
+// `this->mb`/`this->pcomm`. A processor set's decomposition needs the EXACT
+// same sequence run against a DIFFERENT pair, so it lives here as a small
+// object bound to whichever pair it is given (every body still says bare
+// `mb`/`pcomm`). `Impl` keeps one instance, `base_
 // loader`, bound to its own `mb`/`pcomm`; `set_placements()` builds one more
 // per declared processor set, bound to that processor set's own Core.
 // ===========================================================================
@@ -908,13 +906,13 @@ struct MoabMeshBackend::Impl {
   /// member below binds to an already-constructed object; `pcomm` (when
   /// this build has MPI) is wired in by `set_communicator`, once it exists.
   // `mutable`, like `mb` just above and for the identical reason:
-  // `resolve_for_halo` (KNOWN_ISSUES D83) hands back a `MeshLoader*` for
+  // `resolve_for_halo` hands back a `MeshLoader*` for
   // `gather()` to call, which is not const, from what is otherwise a pure
   // Core/communicator/view LOOKUP that every other `const` reader in this
   // file (e.g. `run_halo_exchange`) also needs to call.
   mutable MeshLoader base_loader{mb};
 
-  // --- per-placement decomposition (KNOWN_ISSUES D5, MOAB half) -----------
+  // --- per-placement decomposition ------------------------------------------
   //
   // One RankSet per graph component, indexed by ComponentId -- declared by
   // `set_placements()`, mirroring `PartitionedTestBackend::set_placements`
@@ -924,15 +922,15 @@ struct MoabMeshBackend::Impl {
   // convention `PartitionedTestBackend` uses to fall back to the default
   // view; `placed_view`/`placed_region_size` read this to tell "never
   // declared" apart from "declared, but this component index is out of
-  // range", which the ruling above requires be told apart (a silent
+  // range", which must be told apart (a silent
   // fallback for the latter would hide a real caller bug).
   std::vector<RankSet> placements;
 
 #ifdef FUSE_MOAB_PARALLEL
   /// One rank's context for one declared processor set: a wholly separate
   /// `moab::Core` + `moab::ParallelComm`, split from the BASE communicator
-  /// over exactly that processor set's ranks (iMOAB's application-id model,
-  /// the ruling of 2026-09-22). A rank outside the processor set has no Core
+  /// over exactly that processor set's ranks (iMOAB's application-id model).
+  /// A rank outside the processor set has no Core
   /// here -- `core == nullptr` -- and its queries answer from the shared
   /// `empty_mesh_view()`, never from a decomposition it does not hold.
   ///
@@ -966,7 +964,7 @@ struct MoabMeshBackend::Impl {
   [[nodiscard]] Result<void> load_into_placements(const MeshDecl& decl);
 #endif
 
-  // --- the remap halo (R3) --------------------------------------------------
+  // --- the remap halo --------------------------------------------------
   //
   // Kept on the backend and not on the view: a halo is a property of a PAIR of
   // meshes, and the exchange plan needs the communicator, which the view has
@@ -996,8 +994,7 @@ struct MoabMeshBackend::Impl {
     HaloExchange ex;
   };
 
-  /// KNOWN_ISSUES D83 (owner decision 2026-10-19: make the adoption
-  /// placement-aware, not a refusal). Every piece this subsystem needs to
+  /// The adoption is placement-aware, not a refusal. Every piece this subsystem needs to
   /// operate against ONE Core/communicator, resolved ONCE per call the
   /// same way `MoabMeshBackend::native_mesh(id, placement)` already
   /// resolves its own triple -- a placement's own `ctx->core`/`ctx->pcomm`
@@ -1070,8 +1067,8 @@ struct MoabMeshBackend::Impl {
   /// (mesh index, dimension, placement value) -> halo. `ComponentId::value()`
   /// (`kInvalid` for the default Core) is the third key component, so the
   /// default Core and every declared placement each get their OWN entry --
-  /// KNOWN_ISSUES D83's own "do not alias" requirement; before this round
-  /// every placement silently shared the DEFAULT Core's single entry.
+  /// the "do not alias" requirement: no placement shares the DEFAULT
+  /// Core's single entry.
   /// `std::map`, not `unordered_map`: a handful of entries, and a stable
   /// iteration order keeps diagnostics reproducible.
   std::map<std::tuple<std::size_t, int, std::uint32_t>, HaloState> halos;
@@ -1744,7 +1741,7 @@ Result<void> MoabMeshBackend::load(const MeshDecl& decl) {
   impl_->names.push_back(decl.name);
 
 #ifdef FUSE_MOAB_PARALLEL
-  // KNOWN_ISSUES D5, the MOAB half: read this same source into every
+  // Read this same source into every
   // declared processor set's own Core too, now that the base decomposition
   // (above) has succeeded and the new MeshId is committed. A no-op when no
   // processor sets were declared (`set_placements()` was never called).
@@ -1903,7 +1900,7 @@ struct ResolvedRegion {
 };
 
 // A named entity set, resolved against an EXPLICIT (Interface, file set)
-// pair rather than a hard-wired `mb` -- KNOWN_ISSUES D5's MOAB half needs
+// pair rather than a hard-wired `mb` -- the per-placement decomposition needs
 // this too: a processor set's own Core has its OWN copy of the same named sets
 // (a fresh read of the same source), and resolving a name against the
 // backend's DEFAULT `mb` when the caller asked for a processor set's own
@@ -2108,7 +2105,7 @@ Result<std::size_t> MoabMeshBackend::region_size(const Region& r) const {
 }
 
 // ===========================================================================
-// KNOWN_ISSUES D5, the MOAB half: per-placement decomposition.
+// Per-placement decomposition.
 // ===========================================================================
 
 Result<const MeshView*> MoabMeshBackend::placed_view(
@@ -2292,7 +2289,7 @@ Result<int> MoabMeshBackend::partition_rank_of(const Region& r,
 
 // ===========================================================================
 // sphere_radius / project_onto_unit_sphere (moab_backend.hpp: DRIVER-SIDE
-// geometry seam for KNOWN_ISSUES D81). See the header for the full design;
+// geometry seam). See the header for the full design;
 // this is ONE shared measurement, used by all four overloads, so a
 // placement-aware call and the default-Core call can never disagree about
 // the formula.
@@ -2301,11 +2298,11 @@ Result<int> MoabMeshBackend::partition_rank_of(const Region& r,
 namespace {
 
 /// `kUnitSphereTol`'s own derivation (moab_backend.hpp's own doc restates
-/// this beside the constant, per the owner's round-6 instruction): IEEE
+/// this beside the constant): IEEE
 /// double's machine epsilon is ~2.22e-16; this tolerance is roughly 4e6
 /// times that, enough headroom to absorb round-off accumulated summing
-/// millions of vertex coordinates (measured on wholeATM_T.h5m/recMeshOcn.h5m,
-/// 2026-09-28: std/mean radius deviation a few times 1e-17 to 1e-16) while
+/// millions of vertex coordinates (measured on wholeATM_T.h5m/recMeshOcn.h5m:
+/// std/mean radius deviation a few times 1e-17 to 1e-16) while
 /// remaining many orders of magnitude below any real sphere's genuine
 /// eccentricity (Earth's own flattening is ~3e-3).
 constexpr double kUnitSphereTol = 1e-9;
@@ -2361,7 +2358,7 @@ Result<SphereRadiusReport> measure_sphere_radius(moab::Interface& mb,
     // mesh's vertices (or none at all, if vh is empty -- rmin/rmax then sit
     // at their sentinel/zero initialisers, which MUST NOT win the
     // reduction). Reconciled the same way build_remap_halo's own
-    // fit_surface() is (REVIEW.md R-01): every rank needs the GLOBAL
+    // fit_surface() is: every rank needs the GLOBAL
     // radius, not its own local slice's.
     const MPI_Comm comm = pcomm->comm();
     const double local_min = vh.empty() ? 1e300 : rmin;
@@ -2506,16 +2503,15 @@ int MoabMeshBackend::communicator_size() const noexcept {
 }
 
 // ===========================================================================
-// The remap halo (R3). See moab_backend.hpp for the contract.
+// The remap halo. See moab_backend.hpp for the contract.
 // ===========================================================================
 
 Result<void> MoabMeshBackend::Impl::regather_with_halo(std::size_t mesh,
                                                        int dim,
                                                        ComponentId placement) {
-  // KNOWN_ISSUES D83: resolved THROUGH `placement`, exactly as
+  // Resolved THROUGH `placement`, exactly as
   // `adopt_remap_halo` resolves the Core these cells actually live in --
-  // never `meshes[mesh]`/`base_loader` unconditionally, which was the
-  // whole gap.
+  // never `meshes[mesh]`/`base_loader` unconditionally.
   const PlacementResolved pr = resolve_for_halo(mesh, placement);
   if (!pr.participates || pr.view == nullptr || pr.loader == nullptr) {
     return Result<void>::success();
@@ -2543,7 +2539,7 @@ namespace {
 
 /// Reconcile a per-rank yes/no outcome across the communicator before the
 /// next collective, so a data-dependent local rejection -- an inconsistent
-/// global id, an owner contradiction (REVIEW.md R-02) -- produces the SAME
+/// global id, an owner contradiction -- produces the SAME
 /// Failure on every rank instead of letting the ranks that did not hit it
 /// walk into the next `MPI_Alltoall(v)` and hang waiting for the one that
 /// did. `local_failed`/`local_message` describe only this rank's outcome;
@@ -2555,11 +2551,11 @@ namespace {
 [[nodiscard]] Result<void> reconcile_halo(MPI_Comm comm, bool local_failed,
                                           const std::string& local_message) {
   int nproc = 1, rank = 0;
-  // REVIEW.md N-BACKEND-3: the sibling reconcile<T> (intx_weights.cpp)
+  // The sibling reconcile<T> (intx_weights.cpp)
   // rejects rather than silently falling through when it cannot size its
-  // communicator; this one used to ignore both return values, so a
+  // communicator; ignoring both return values would let a
   // corrupted/mismatched communicator -- exactly the class E-TRANSPORT-
-  // PEERMATCH exists elsewhere to catch -- would leave nproc at its
+  // PEERMATCH exists elsewhere to catch -- leave nproc at its
   // initialiser value of 1 and take the "no peers to disagree with" path on
   // the one rank most likely to need reconciling (I4: no silent fallback).
   if (MPI_Comm_size(comm, &nproc) != MPI_SUCCESS ||
@@ -2612,7 +2608,7 @@ namespace {
 #endif  // FUSE_MOAB_PARALLEL
 
 // ===========================================================================
-// KNOWN_ISSUES D5, the MOAB half: reading a mesh into every declared
+// Per-placement decomposition: reading a mesh into every declared
 // processor set's own decomposition, once `load()`'s own default-decomposition
 // read has already succeeded for it.
 //
@@ -2843,7 +2839,7 @@ Result<void> MoabMeshBackend::Impl::plan_halo_exchange(std::size_t mesh,
   (void)placement;
   return Result<void>::success();
 #else
-  // KNOWN_ISSUES D83: resolved THROUGH `placement` -- the communicator the
+  // Resolved THROUGH `placement` -- the communicator the
   // Allgather/Alltoall(v) below run over, and the view/handles they read,
   // must be the SAME Core/communicator `adopt_remap_halo` built this
   // halo's own cells against, never the backend's default unconditionally.
@@ -2855,7 +2851,7 @@ Result<void> MoabMeshBackend::Impl::plan_halo_exchange(std::size_t mesh,
 
   const MPI_Comm comm = pr.pcomm->comm();
   int nproc = 1, me = 0;
-  // REVIEW.md TF-8 (N-BACKEND-3 class): unchecked, `nproc`/`me` silently
+  // Unchecked, `nproc`/`me` would silently
   // keep their initialisers (1, 0) on failure -- sized and addressed as a
   // one-rank communicator while the Allgather/Alltoall(v) below are issued
   // against the REAL communicator, a size mismatch the collectives
@@ -2874,7 +2870,7 @@ Result<void> MoabMeshBackend::Impl::plan_halo_exchange(std::size_t mesh,
   if (pr.view == nullptr) return Result<void>::success();
   const MoabMeshView& view = *pr.view;
   const DimData& dd = view.dim_data(dim);
-  // REVIEW.md R-02: reconciled BEFORE the first collective below (the
+  // Reconciled BEFORE the first collective below (the
   // MPI_Allgather a few lines down), not after -- this check needs no
   // per-rank data beyond what is already local at function entry, so there
   // is no reason to let a divergent rejection race a peer into that
@@ -2927,9 +2923,9 @@ Result<void> MoabMeshBackend::Impl::plan_halo_exchange(std::size_t mesh,
   }
 
   // Group this rank's halo slots by the rank that owns them.
-  // REVIEW.md R-02: both rejections below depend on THIS RANK's own global-id
+  // Both rejections below depend on THIS RANK's own global-id
   // scan, and can therefore fire on one rank without firing on its peers.
-  // The loop no longer returns from inside itself -- it records the first
+  // The loop does not return from inside itself -- it records the first
   // local problem and reconciles it, once, before the MPI_Alltoall further
   // down -- so a rank hitting either condition still reaches the same
   // outcome as every other rank instead of racing ahead of it.
@@ -2996,13 +2992,13 @@ Result<void> MoabMeshBackend::Impl::plan_halo_exchange(std::size_t mesh,
                     comm) != MPI_SUCCESS) {
     return Failure{"E-MESH-HALO", "MPI_Alltoallv of the requested ids failed"};
   }
-  // REVIEW.md N-BACKEND-2: this is a fourth per-rank-local rejection drawn
-  // from this rank's own `owned_by_gid` map, the same shape R-02 fixed for
-  // the two `want`-loop rejections above -- but it sits AFTER both collective
+  // This is a fourth per-rank-local rejection drawn
+  // from this rank's own `owned_by_gid` map, the same shape as the two
+  // `want`-loop rejections above -- but it sits AFTER both collective
   // pairs in this function, so it does not itself race into a further
-  // collective here. It still broke the function's own "every rank returns
-  // the IDENTICAL Failure" contract that R-01/R-02 established everywhere
-  // else in this file, which a caller upstream may rely on. Recorded and
+  // collective here. It must still honour the function's own "every rank
+  // returns the IDENTICAL Failure" contract that holds everywhere else in
+  // this file, which a caller upstream may rely on. Recorded and
   // reconciled the same way rather than returned from inside the loop.
   ex.send_index.resize(ans_gids.size());
   std::string send_error;
@@ -3041,7 +3037,7 @@ Result<void> MoabMeshBackend::Impl::run_halo_exchange(std::size_t mesh,
   (void)placement;
   return Result<void>::success();
 #else
-  // KNOWN_ISSUES D83: the SAME (mesh, dim, placement) key
+  // The SAME (mesh, dim, placement) key
   // `plan_halo_exchange` filed this plan under, and the SAME placement's
   // own communicator the Alltoallv below runs over -- `const` here, so
   // `resolve_for_halo` (non-const) cannot be called; the pieces it would
@@ -3132,17 +3128,15 @@ Result<std::size_t> MoabMeshBackend::adopt_remap_halo(MeshId source,
   const auto seen = impl_->halo_pairs.find(key);
   if (seen != impl_->halo_pairs.end()) return seen->second;
 
-  // KNOWN_ISSUES D83 (owner decision 2026-10-19: make the adoption
-  // placement-aware, not a refusal): resolved ONCE, through `placement`,
+  // Resolved ONCE, through `placement`,
   // the SAME way `native_mesh(id, placement)` resolves its own triple --
   // a placement's own Core/communicator/view when `placement` names a
   // processor set this rank participates in, the backend's default
   // decomposition otherwise. EVERY MOAB call below goes through `pr.mb`/
   // `pr.pcomm`/`pr.view`, never `impl_->mb`/`impl_->pcomm`/
-  // `impl_->meshes[s]` directly -- the EntityHandle-across-Cores mismatch
-  // D83 recorded (a covering cell built in a placement's own Core has no
-  // meaning read against `impl_->mb`'s unrelated internal numbering) is
-  // exactly what this removes.
+  // `impl_->meshes[s]` directly -- this avoids the EntityHandle-across-Cores
+  // mismatch (a covering cell built in a placement's own Core has no
+  // meaning read against `impl_->mb`'s unrelated internal numbering).
   const Impl::PlacementResolved pr = impl_->resolve_for_halo(s, placement);
   if (!pr.participates) {
     return Failure{"E-MESH-PLACEMENT",
@@ -3175,7 +3169,7 @@ Result<std::size_t> MoabMeshBackend::adopt_remap_halo(MeshId source,
   MoabMeshView& view = *pr.view;
   const DimData& dd = view.dim_data(dim);
 
-  // REVIEW.md TF-3: every rejection below (`gid_error`, the GLOBAL_ID tag
+  // Every rejection below (`gid_error`, the GLOBAL_ID tag
   // lookup, the per-covering-cell GLOBAL_ID check, `add_entities`,
   // `regather_with_halo`) depends on THIS rank's own covering-set contents
   // -- rank-local by construction, since `cells`/`count` is this rank's own
@@ -3183,17 +3177,15 @@ Result<std::size_t> MoabMeshBackend::adopt_remap_halo(MeshId source,
   // local covering set is an ordinary outcome, not an error) from rank to
   // rank -- and each one precedes `plan_halo_exchange`'s own collectives
   // (the Allgather/Alltoall(v) inside it, already guarded by
-  // N-BACKEND-2/R-02's own `reconcile_halo` calls one frame down). Every
+  // `reconcile_halo` calls one frame down). Every
   // PARTICIPATING rank of `pr.pcomm`'s own communicator reaches this
   // point identically (`pr.participates` is a structural property of the
   // declared processor set, true or false the same way on every rank that
   // calls this with the SAME `placement`), so every one of them runs the
   // SAME five `reconcile_step` calls below, in the SAME order, regardless
-  // of its own `count` -- `count == 0` must NOT skip any of them (an
-  // earlier version of this fix did exactly that, which would have let a
+  // of its own `count` -- `count == 0` must NOT skip any of them (that would let a
   // rank with an empty local covering set skip a collective a peer with a
-  // non-empty one still enters -- the same hang TF-3 reports, reintroduced
-  // one level down).
+  // non-empty one still enters, a hang).
   const MPI_Comm halo_comm = pr.pcomm->comm();
   const auto reconcile_step = [&](bool failed, std::string msg) -> Result<void> {
     return reconcile_halo(halo_comm, failed, msg);
@@ -3391,10 +3383,9 @@ Result<void> MoabMeshBackend::set_communicator(int fortran_comm_handle) {
   // inside the call -- and the caller's communicator carries whatever
   // handler the application set, MPI_ERRORS_ARE_FATAL by default. So the
   // backend works on its OWN duplicate with MPI_ERRORS_RETURN, the same
-  // arrangement the MPI transport uses (mpi_transport.cpp). Until 2026-09-20
-  // the given communicator was handed to MOAB directly, which made every
-  // `!= MPI_SUCCESS` branch in this file dead in practice (pass-3 review,
-  // N-BACKEND-1). MPI_Comm_dup is collective: every rank that constructs the
+  // arrangement the MPI transport uses (mpi_transport.cpp). Handing the given
+  // communicator to MOAB directly would make every
+  // `!= MPI_SUCCESS` branch in this file dead in practice. MPI_Comm_dup is collective: every rank that constructs the
   // backend calls set_communicator, in the same order, which is the contract
   // documented on the declaration.
   MPI_Comm dup = MPI_COMM_NULL;

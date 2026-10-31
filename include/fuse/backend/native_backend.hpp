@@ -71,7 +71,7 @@ class NativeMeshBackend final : public MeshBackend {
   /// rank 0) collapse to the SAME index, which can then numerically
   /// coincide with a different component's own id and ask for THAT
   /// component's placement on a mesh it owns no field on at all
-  /// (confirmed this session: an ABI test's own two-component lag1
+  /// (an ABI test's own two-component lag1
   /// fixture, both components on the same `RankSet{0,1}`, hit exactly
   /// this with the narrower rule). Reverse-engineering every path that
   /// can derive a placement this way is not worth it when every
@@ -87,7 +87,7 @@ class NativeMeshBackend final : public MeshBackend {
   /// exactly that, and every caller without its own hand-rolled copy
   /// got `E-MESH-PLACEMENT` the moment any component's own placement
   /// needed resolving (confirmed: the participant ABI's own
-  /// `fuse_initialize()`, Conformance Unit 2, hit this before this
+  /// `fuse_initialize()` hit this before this
   /// method existed). A caller that cannot see library internals -- a
   /// real participant process naming a generated mesh in its own graph
   /// -- has no way to reproduce that by-hand logic at all, so it
@@ -164,7 +164,7 @@ class NativeMeshBackend final : public MeshBackend {
   /// every caller that does not pass one today). Zero cells adopted is a
   /// legitimate, already-built answer -- this is "was it asked for", not
   /// "did it find anything" -- matching `MoabMeshBackend::has_remap_halo`'s
-  /// own contract exactly. NM-4: `placement` is part of the bookkeeping
+  /// own contract exactly. `placement` is part of the bookkeeping
   /// key precisely because `build_native_remap_halo` can run once per
   /// placement on the SAME (source, target, dim) triple (a component's own
   /// decomposition is its own halo); omitting it would make two placements
@@ -184,7 +184,7 @@ class NativeMeshBackend final : public MeshBackend {
   /// values before `apply_weights`. UNCHANGED return type (deliberately:
   /// `examples/brusselator/species_core.hpp`'s `GhostExchangerFactory`
   /// takes exactly `const fuse::linalg::GhostPattern&`, outside this
-  /// lane's owned paths) -- see `remap_halo_ghost_offset` below for the
+  /// library) -- see `remap_halo_ghost_offset` below for the
   /// piece this type has no room for.
   ///
   /// `E-MESH-HALO` if no halo was built for this triple (at this
@@ -193,7 +193,7 @@ class NativeMeshBackend final : public MeshBackend {
   [[nodiscard]] Result<fuse::linalg::GhostPattern> remap_halo_pattern(
       MeshId source, MeshId target, int dim, ComponentId placement = ComponentId{}) const;
 
-  /// NM-3: where THIS triple's own ghost block (the `remap_halo_pattern`
+  /// Where THIS triple's own ghost block (the `remap_halo_pattern`
   /// above) begins within `source`'s ghost region, i.e. in `source`'s
   /// local cell numbering, `remap_halo_pattern(...).owner_rank[g]`'s
   /// value lives at local cell index `owned_n + remap_halo_ghost_offset(...)

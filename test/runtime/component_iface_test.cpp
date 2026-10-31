@@ -175,7 +175,7 @@ TEST(ComponentIface, RollbackDefaultsToUnsupported) {
   EXPECT_TRUE(Toy{"a"}.supports_rollback());
 }
 
-// KNOWN_ISSUES.md B3. capabilities() == 0 (no override at all) must decode
+// capabilities() == 0 (no override at all) must decode
 // to the same three answers a reader of Component::capabilities()'s doc
 // comment is told to expect: no rollback, NO determinism claim, no hidden
 // state. A default that read as Bitwise would silently promote every

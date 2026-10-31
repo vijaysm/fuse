@@ -1,5 +1,5 @@
-// test/parallel/moab_placed_view_mpi_test.cpp -- KNOWN_ISSUES D5, the MOAB
-// half: one moab::Core + moab::ParallelComm per declared processor set, run
+// test/parallel/moab_placed_view_mpi_test.cpp -- the MOAB
+// half of per-placement views: one moab::Core + moab::ParallelComm per declared processor set, run
 // under a REAL communicator of more than one rank.
 //
 // test/backend/moab_mesh_test.cpp covers everything Mode A (no
@@ -15,22 +15,15 @@
 // that `placed_view` answers a genuine per-placement partition of a real
 // mesh, entity for entity, and an empty view to every rank outside it.
 // Per-placement REMAP WEIGHTS on MOAB (RemapPlan::placement resolving
-// through this same `placed_view`) are not built here: assembling a
-// conservative weight matrix from two independently-partitioned MOAB
-// meshes is its own undertaking, out of reach in this round, and faking
-// the check by asserting on the view layer alone and calling it a weights
-// test would be worse than not claiming it. KNOWN_ISSUES.md records this
-// as still open.
+// through this same `placed_view`) are covered separately by
+// moab_placed_weights_mpi_test.cpp; asserting on the view layer alone
+// would not be a weights test.
 //
-// NOT YET RUN: this sandbox cannot initialise MPI at all -- not even at
-// one rank (docs/dev/testing.md; KNOWN_ISSUES.md C1) -- and MOAB in a
-// build with FUSE_ENABLE_MPI links against an MPI-enabled MOAB whose
-// moab::Core constructor itself calls MPI_Init_thread, so even a
-// single-process run of ANY MOAB-linked binary aborts before main() runs a
-// single test -- confirmed empirically against this tree's PRE-EXISTING
-// fuse_backend_moab_mesh_test binary (it crashes identically on tests this
-// change did not touch), not assumed from this file's own header comment.
-// Compiled here; the outcome comes from a host run, like every other
+// Needs a working MPI launcher (docs/dev/testing.md). MOAB in a build with
+// FUSE_ENABLE_MPI links against an MPI-enabled MOAB whose moab::Core
+// constructor itself calls MPI_Init_thread, so even a single-process run
+// of ANY MOAB-linked binary aborts before main() runs a single test unless
+// MPI can start. The outcome comes from a host run, like every other
 // MOAB-enabled-build-configuration MPI test in this tree.
 
 #include <cstdint>
@@ -110,10 +103,10 @@ void check_placements_partition_the_mesh(std::vector<fuse::RankSet> placements) 
 
   // One communicator per processor set, built by EVERY rank in processor set order
   // (MPI_Comm_split is collective over MPI_COMM_WORLD; a rank outside the
-  // processor set passes MPI_UNDEFINED and gets MPI_COMM_NULL). The first version
-  // split only on ranks inside processor set p, so the calls paired up across
-  // DIFFERENT processor sets -- the host run (2026-09-28) summed two processor sets
-  // into one "processor set total" (1452 = 2 x 726 at 2 ranks) and hung at >= 3.
+  // processor set passes MPI_UNDEFINED and gets MPI_COMM_NULL). Splitting
+  // only on ranks inside processor set p would pair the calls up across
+  // DIFFERENT processor sets, summing two processor sets into one "processor
+  // set total" (1452 = 2 x 726 at 2 ranks) and hanging at >= 3.
   std::vector<MPI_Comm> comms;
   for (const auto& rs : placements) comms.push_back(component_comm(rs, rank));
 
@@ -138,7 +131,7 @@ void check_placements_partition_the_mesh(std::vector<fuse::RankSet> placements) 
     ASSERT_NE(comp_comm, MPI_COMM_NULL);
 
     // 1. This processor set's OWN ranks tile the mesh's global entity count
-    //    exactly -- the whole point of D5's MOAB half: each component
+    //    exactly -- the whole point of the MOAB half: each component
     //    holds the WHOLE mesh entity set over its own ranks, not a slice shared
     //    with every other component.
     const long long placement_total = allreduce_sum(

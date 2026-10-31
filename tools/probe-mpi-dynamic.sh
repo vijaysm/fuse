@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # tools/probe-mpi-dynamic.sh -- the acceptance test for the accept/connect
-# launch mode (KNOWN_ISSUES.md D23, docs/user/multiple-executables.md).
+# launch mode (docs/user/multiple-executables.md).
 #
 # Builds tools/probe-mpi-dynamic.c once and launches it as TWO separate jobs
 # PER LAYOUT, repeated several times per layout -- the shape a coupled run
 # uses, and the shape whose intermittency a single 1-rank-a-side run cannot
-# see. KNOWN_ISSUES.md D23's own account: the configure-time probe measured
+# see. The configure-time probe once measured
 # "working" at one rank a side on an MPI whose multi-rank accept rows then
 # timed out six of six times in the next full suite. A probe that only ever
 # tries 1+1 is not a measurement of a 3+2 row; this one tries every layout a
@@ -17,7 +17,7 @@
 #   given, "1+1" is assumed (the single legacy case). The FIRST layout given
 #   is the one cmake/FuseDependencies.cmake reads back for the single
 #   overall verdict: FUSE_ENABLE_CONNECT_ACCEPT keeps following "1+1" alone
-#   (KNOWN_ISSUES.md D23's final account, "nothing downstream changes").
+#   (nothing downstream changes).
 #
 # Prints one line per layout to STDOUT, in the exact form the caller parses
 # (cmake/FuseMpiDynamic.cmake's fuse_mpi_dynamic_parse_probe_output()):

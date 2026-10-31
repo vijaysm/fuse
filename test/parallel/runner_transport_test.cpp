@@ -5,8 +5,7 @@
 #include <gtest/gtest.h>
 #include <mpi.h>
 
-// R-50 (REVIEW.md): the documented rank-requirement convention
-// (docs/dev/testing.md).
+// The documented rank-requirement convention (docs/dev/testing.md).
 #include "fuse_test_main.hpp"
 
 #include <algorithm>
@@ -43,10 +42,10 @@ int current_rank() {
 }
 
 // PartitionedTestMesh / PartitionedTestBackend moved verbatim to
-// test/support/partitioned_test_backend.hpp (2026-09-23) so
+// test/support/partitioned_test_backend.hpp so
 // examples/layout_driver can share the one per-placement decomposition
 // instead of carrying a second, drifting copy. See that header for the
-// class bodies; nothing about their behaviour changed.
+// class bodies.
 #include "../support/partitioned_test_backend.hpp"
 
 
@@ -57,11 +56,11 @@ int current_rank() {
 /// belongs to only one of them.
 class StubComponent final : public fuse::Component {
  public:
-  /// `rollback`: R-10 (REVIEW.md). An implicit coupling group requires every
+  /// `rollback`: an implicit coupling group requires every
   /// component it checkpoints to support rollback (E-ITER-NOROLLBACK);
   /// default false matches every existing caller, none of which puts this
   /// component in an implicit coupling group.
-  /// N-transport-runtime-2 (REVIEW.md pass2): fail_after -- -1 (the
+  /// `fail_after`: -1 (the
   /// default, every existing caller) never rejects; 0 rejects starting with
   /// this component's very FIRST advance() call, the shape
   /// RunnerTransport.StillRunsASecondChannelAfterARegionFailsUnderMpi needs
@@ -85,14 +84,12 @@ class StubComponent final : public fuse::Component {
 
   fuse::Result<void> advance(const fuse::StepContext&) override {
     // `calls_` counts EVERY advance, so `calls()` means what its name says.
-    // It used to be incremented inside the condition below, to the right of
-    // `fail_after_ >= 0 &&` -- so for a stub with no failure configured
-    // (`fail_after_ == -1`) short-circuit evaluation skipped the increment
-    // entirely and `calls()` was stuck at 0 however often the component ran.
+    // It must not be incremented inside the condition below, to the right of
+    // `fail_after_ >= 0 &&` -- for a stub with no failure configured
+    // (`fail_after_ == -1`) short-circuit evaluation would skip the increment
+    // entirely and `calls()` would stay at 0 however often the component ran.
     // StillRunsASecondChannelAfterARegionFailsUnderMpi asserts
-    // `cons_b->calls() >= 1` on exactly such a stub, so it could not pass
-    // whatever the runtime did; four separate real defects were found and
-    // fixed against it before the counter itself was read.
+    // `cons_b->calls() >= 1` on exactly such a stub.
     //
     // The comparison keeps the pre-increment value, so `fail_after_`'s
     // meaning is unchanged: with 0 the first call fails, with 1 the second.
@@ -197,27 +194,27 @@ enum class CouplerShape {
 
 class TwoComponentJob {
  public:
-  /// `entity_set`, when non-empty, is set on the shared implicit coupling group. Task 3's
+  /// `entity_set`, when non-empty, is set on the shared implicit coupling group. The
   /// E-RT-TRANSPORT-REGION test passes "wall"; every other test passes "".
-  /// `with_iteration_region`: R-10 (REVIEW.md) -- wraps the "link" field transfer
+  /// `with_iteration_region`: wraps the "link" field transfer
   /// in an implicit coupling group with a real convergence measure, and makes both
   /// components rollback-capable so E-ITER-NOROLLBACK does not mask the
-  /// check this exists to reach. Default false leaves every existing caller
-  /// of this class exactly as it was. `accel_kind`: which accelerator the
+  /// check this exists to reach. Default false adds no implicit coupling
+  /// group. `accel_kind`: which accelerator the
   /// implicit coupling group declares; only read when `with_iteration_region` is true.
   /// AccelKind::None (the default, and IterationRegionDecl's own) is one of
-  /// the two kinds R-10's fix genuinely supports for an implicit coupling group spanning more
+  /// the two kinds genuinely supported for an implicit coupling group spanning more
   /// than one rank; a dynamic kind (Aitken and stronger) is the case it
   /// still rejects -- see RefusesADynamicAcceleratorOnACrossRankRegion.
-  /// `with_independent_channel`: N-transport-runtime-2 (REVIEW.md pass2) --
-  /// adds a SECOND field transfer, "linkB", between two more components on the SAME
+  /// `with_independent_channel`: adds a SECOND field transfer, "linkB", between two
+  /// more components on the SAME
   /// fluid_/solid_ ranks and the SAME shared implicit coupling group, but NOT one of the
-  /// implicit coupling group's field transfers. Default false leaves every existing caller
-  /// unchanged. `fail_fluid_after`: forwarded to "fluid"'s StubComponent
+  /// implicit coupling group's field transfers. Default false adds no such
+  /// transfer. `fail_fluid_after`: forwarded to "fluid"'s StubComponent
   /// (see its own doc); -1 (default) never rejects.
-  /// `independent_interval`: D3 (KNOWN_ISSUES) -- producer_b/consumer_b's own
-  /// time grid. Default `Rational{1}` (one tick per coupling cycle, unchanged from every
-  /// prior caller). `StillRunsASecondChannelAfterARegionFailsUnderMpi` passes
+  /// `independent_interval`: producer_b/consumer_b's own
+  /// time grid. Default `Rational{1}` (one tick per coupling cycle).
+  /// `StillRunsASecondChannelAfterARegionFailsUnderMpi` passes
   /// `Rational{1,2}` (two ticks per coupling cycle) so its SECOND tick sits at
   /// `t=1/2`, strictly later than anything at `t=0` by the schedule's own
   /// (time, phase, rank) sort key (`plan.hpp`'s own contract) -- not by any
@@ -288,18 +285,17 @@ class TwoComponentJob {
     }
 
     // Declared AFTER the implicit coupling group, which is the natural order and which the
-    // scheduler now honours: `group_regions_within_instants()` keeps the
-    // implicit coupling group's body contiguous whatever order its neighbour was declared in
-    // (KNOWN_ISSUES D1, fixed 2026-09-21). This fixture used to declare it
-    // FIRST to work around that, and the workaround is why three mutations
-    // survived: with the independent field transfer ahead of the implicit coupling group, everything
-    // this test observes happened before the failure, so "the rest of the
-    // coupling cycle" was empty and R-09's mutant skipped nothing (D3).
+    // scheduler honours: `group_regions_within_instants()` keeps the
+    // implicit coupling group's body contiguous whatever order its neighbour was declared in.
+    // Declaring it FIRST would hide failures: with the independent field transfer ahead of
+    // the implicit coupling group, everything this test observes happens before the
+    // failure, so "the rest of the coupling cycle" would be empty and a mutant that skips
+    // it would skip nothing.
     if (with_independent_channel) {
       const auto pb = graph.add_component(fuse::ComponentDecl{
           .name = "producer_b", .ranks = fluid_,
           .interval = independent_interval});
-      // `independent_consumer_outside_region` (D3): consumer_b alone on the
+      // `independent_consumer_outside_region`: consumer_b alone on the
       // last rank, which neither implicit coupling group component uses, so one rank of
       // linkB is NOT a participant of the implicit coupling group -- the only shape in which
       // a rank can be left waiting in linkB for a partner that returned out
@@ -321,7 +317,7 @@ class TwoComponentJob {
       graph.add_channel("linkB", src_field_b, dst_field_b);
     }
 
-    // Every component's own decomposition (KNOWN_ISSUES D5), built before
+    // Every component's own decomposition, built before
     // the load that lays them out.
     std::vector<fuse::RankSet> placements;
     for (std::uint32_t c = 0; c < graph.component_count(); ++c) {
@@ -476,9 +472,8 @@ TwoComponentJob make_two_component_job(const std::string& entity_set) {
   return TwoComponentJob{entity_set};
 }
 
-/// Bind every component's storage; the Runner rejects a plan otherwise. Not
-/// part of the brief's TwoComponentJob text, but required by the same
-/// contract test/unit/runner_test.cpp:399-404 documents (`bind_all`): nothing
+/// Bind every component's storage; the Runner rejects a plan otherwise.
+/// Required by the same contract test/unit/runner_test.cpp:399-404 documents (`bind_all`): nothing
 /// in Runner::initialize() calls Component::register_fields() for you.
 void bind_all(TwoComponentJob& h) {
   for (auto& c : h.components) {
@@ -487,7 +482,7 @@ void bind_all(TwoComponentJob& h) {
 }
 
 // ---------------------------------------------------------------------------
-// R-10 (REVIEW.md): a genuine two-way iterated coupling, for the positive
+// A genuine two-way iterated coupling, for the positive
 // convergence test below. TwoComponentJob's one-way "link" field transfer has
 // nothing to iterate on -- the whole point here is a fixed point with real
 // feedback, split across ranks with an UNEQUAL local partition.
@@ -503,7 +498,7 @@ void bind_all(TwoComponentJob& h) {
 /// back together.
 class LinearRelaxComponent final : public fuse::Component {
  public:
-  /// RT-2(c) (review 2026-10-11): `fail_restore_after` -- -1 (the default,
+  /// `fail_restore_after`: -1 (the default,
   /// every existing caller) never rejects; N makes the (N+1)-th
   /// restore_state() call (0-based, matching StubComponent's own
   /// fail_after convention) return a Failure instead of restoring,
@@ -574,7 +569,7 @@ class LinearFixedPointJob {
  public:
   static constexpr std::size_t kEntities = 4;
 
-  /// `kA`/`tol`: D3 (KNOWN_ISSUES) -- `RegionResidualLocalConvergenceIsNot-
+  /// `kA`/`tol`: `RegionResidualLocalConvergenceIsNot-
   /// EnoughUnderMpi` passes a `kA` CHOSEN PER RANK (`current_rank() == 0 ?
   /// fast : slow`) so this rank's own LOCAL residual and the implicit coupling group's
   /// GLOBALLY-AGREED residual reach different convergence outcomes at the
@@ -618,8 +613,8 @@ class LinearFixedPointJob {
     conv.add(fuse::Converged::Relative(tol, "a2b"));
     conv.add(fuse::Converged::Relative(tol, "b2a"));
     // .acceleration defaults to AccelKind::None (plain Picard) -- the only
-    // kind R-10's fix supports for an implicit coupling group spanning more than one rank
-    // (REVIEW.md; see resolve_regions()'s accelerator-kind check), and the
+    // kind supported for an implicit coupling group spanning more than one rank
+    // (see resolve_regions()'s accelerator-kind check), and the
     // kind test/verification/iteration_test.cpp's
     // AitkenNeedsNoMoreIterationsThanPicard measured at 30 iterations for
     // this exact pair of coefficients, entity count and tolerance.
@@ -691,10 +686,8 @@ TEST(RunnerTransport, BaseCommunicatorIsOptionalAndDefaultsToUnset) {
 // puts exactly the component's ranks in its communicator, and a rank in no
 // component gets MPI_COMM_NULL.
 TEST(RunnerTransport, SplittingByRankSetReproducesComponentMembership) {
-  // Was a hard ASSERT_GE(world, 2), which held only because this file was
-  // registered from 2 ranks up. Adding rank 1 (S5.5) falsified that premise
-  // and the assertion fired as designed; a skip states the requirement where
-  // the reader is, and does not depend on the registration staying put.
+  // A skip states the requirement where the reader is, and does not depend
+  // on the registration staying put.
   FUSE_REQUIRE_AT_LEAST_RANKS(2);
   int world = 0, me = 0;
   MPI_Comm_size(MPI_COMM_WORLD, &world);
@@ -746,12 +739,12 @@ TEST(RunnerTransport, AWholeMeshRegionIsNotRefused) {
   // transport over the base communicator -- so the entity set is the ONLY
   // difference between the two.
   //
-  // It used the "copy" transport with no communicator until 2026-09-23. That
-  // passed only while both ends of the Transport shared one mesh view; with
-  // each end in its own component's decomposition it copies fluid's local
-  // block whole into solid's, which on a rank in one processor set and not the
-  // other are different sizes. That is rejected (E-RT-SIZE) and pinned by the
-  // test below, so this control no longer rides on it.
+  // The "copy" transport with no communicator would pass only while both ends
+  // of the Transport shared one mesh view; with each end in its own
+  // component's decomposition it copies fluid's local block whole into
+  // solid's, which on a rank in one processor set and not the other are
+  // different sizes. That is rejected (E-RT-SIZE) and pinned by the test
+  // below, so this control does not ride on it.
   FUSE_REQUIRE_AT_LEAST_RANKS(2);  // two disjoint placements
   auto h = make_two_component_job(/*entity_set=*/"");
   Runner runner{h.graph, h.dag, h.plan, h.backend};
@@ -802,31 +795,26 @@ std::function<fuse::Result<void>(fuse::Transport&)> mpi_comm_setup() {
   };
 }
 
-// R-10 (REVIEW.md). Originally: an implicit coupling group's convergence decision
-// was computed from a purely rank-local residual with no cross-rank
-// agreement, and ANY group spanning more than one rank was rejected
-// (E-RT-REGION-MPI) as unverified. Superseded: resolve_regions() and
-// run_region() now reduce the residual across the implicit coupling group's participants on
+// An implicit coupling group's convergence decision must not be computed
+// from a purely rank-local residual. resolve_regions() and run_region()
+// reduce the residual across the implicit coupling group's participants on
 // every sweep (reduce_region_residuals(), src/runtime/runner.cpp), so an
-// implicit coupling group using AccelKind::None or AccelKind::Constant is genuinely
+// implicit coupling group using AccelKind::None or AccelKind::Constant is
 // supported -- see RegionConvergesInTheSerialIterationCount below, which is
-// exactly the TwoComponentJob("", true) scenario this test used to reject.
+// the TwoComponentJob("", true) scenario.
 //
 // What is NOT supported: a DYNAMIC accelerator (Aitken and stronger)
 // derives its relaxation coefficient from an inner product over this
 // rank's own local iterate history, computed inside fuse::num
-// (src/num/accel_quasi_newton.cpp, accel_relaxation.cpp's Aitken branch) --
-// outside this fixer's owned paths, and Accelerator::update()'s signature
-// has no hook for a caller-supplied global reduction. Two ranks with
+// (src/num/accel_quasi_newton.cpp, accel_relaxation.cpp's Aitken branch),
+// and Accelerator::update()'s signature has no hook for a caller-supplied
+// global reduction. Two ranks with
 // different local slices would compute different coefficients from that
 // inner product and take different accelerator paths even with the
-// residual itself correctly agreed, reopening the desynchronisation risk
-// R-10 was about. `fluid`/`solid` are on disjoint rank sets (as in every
-// other TwoComponentJob test), so this still needs `FUSE_REQUIRE_AT_LEAST_
-// RANKS(2)` to reach a real cross-rank configuration; the sandbox this was
-// written in cannot launch MPI at all (every test here dies in
-// MPI_Init_thread), so it is recorded verified only by the MPI-enabled BUILD
-// succeeding, and needs a host run to execute.
+// residual itself correctly agreed, reopening the desynchronisation risk.
+// `fluid`/`solid` are on disjoint rank sets (as in every
+// other TwoComponentJob test), so this needs `FUSE_REQUIRE_AT_LEAST_
+// RANKS(2)` to reach a real cross-rank configuration.
 TEST(RunnerTransport, RefusesADynamicAcceleratorOnACrossRankRegion) {
   FUSE_REQUIRE_AT_LEAST_RANKS(2);
   auto h = TwoComponentJob("", /*with_iteration_region=*/true,
@@ -843,29 +831,28 @@ TEST(RunnerTransport, RefusesADynamicAcceleratorOnACrossRankRegion) {
   ASSERT_FALSE(r.ok())
       << "fluid and solid are on disjoint ranks, a real communicator is "
          "configured, and the region names AccelKind::Aitken -- the one "
-         "case R-10's reduction fix still refuses";
+         "case the residual reduction still refuses";
   EXPECT_EQ(r.error().code, "E-RT-REGION-MPI") << r.error().message;
   ASSERT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
 }
 
-// N-transport-runtime-2 / R-09 (REVIEW.md pass2, re-transport-runtime.md):
-// what R-09's fix (step_period(), src/runtime/runner.cpp) is actually FOR --
-// an implicit coupling group failure must not abandon a LATER, unrelated field transfer's collective
+// What step_period() (src/runtime/runner.cpp) carrying a failure forward is
+// FOR: an implicit coupling group failure must not abandon a LATER, unrelated field
+// transfer's collective
 // instructions in the same coupling cycle. Under the base build configuration (no MPI) that abandonment is
 // unobservable: nothing is waiting on the other end. Under a real multi-rank
 // run it is exactly the hang rank-agreement.md exists to prevent -- "fluid"'s
-// rank(s) return out of step_period() the moment the implicit coupling group fails (pre-R-09
-// behaviour) while "consumer_b"'s rank(s), on the disjoint `solid_` set,
+// rank(s) would return out of step_period() the moment the implicit coupling group fails
+// (without the carry-forward) while "consumer_b"'s rank(s), on the disjoint `solid_` set,
 // still walk forward to "linkB"'s Epoch and block waiting for a partner that
 // already left.
 //
-// D1 (KNOWN_ISSUES, fixed 2026-09-21) means "linkB" no longer has to be
-// declared before the implicit coupling group to survive scheduling -- `with_independent_
-// field transfer`'s block is declared AFTER `add_iteration_region` now (see the
-// class comment above) -- but D3's own history is that this declaration
-// reorder ALONE did not kill the three survivors on the host: producer_b/
-// consumer_b's own component TICK still lands at the same `t=0` the implicit coupling group
-// occupies, and `group_regions_within_instants()` only reorders the
+// "linkB" does not have to be declared before the implicit coupling group
+// to survive scheduling -- `with_independent_channel`'s block is declared
+// AFTER `add_iteration_region` (see the class comment above) -- but the
+// declaration order ALONE does not expose the failure: producer_b/
+// consumer_b's own component TICK would still land at the same `t=0` the
+// implicit coupling group occupies, and `group_regions_within_instants()` only reorders the
 // INSTRUCTION stream inside one (time, phase) window -- it says nothing
 // about which same-time observable an unrelated reader happens to see, and
 // a test that depends on winning that tie-break is a test that depends on
@@ -877,21 +864,22 @@ TEST(RunnerTransport, RefusesADynamicAcceleratorOnACrossRankRegion) {
 // "schedule() orders by (time, TickPhase, topological rank..., NodeId)")
 // means the SECOND tick, at `t=1/2`, is placed strictly after every `t=0`
 // instruction by the sort key itself, not by any greedy preference that
-// could go either way. Under the fix, `step_period()` carries the implicit coupling group's
+// could go either way. With the carry-forward, `step_period()` carries the implicit
+// coupling group's
 // failure forward and keeps walking the stream, so both ticks of producer_b/
 // consumer_b still run (their own field has nothing to do with the implicit coupling group,
 // so `block_advances_from()` never reaches their slot) and "linkB"'s
-// Transport+Epoch at `t=1/2` complete on every process. Reverting R-09's
-// fix makes `step_period()` return the instant the implicit coupling group's `run_region()`
+// Transport+Epoch at `t=1/2` complete on every process. Without it,
+// `step_period()` would return the instant the implicit coupling group's `run_region()`
 // reports failure, at `t=0` -- strictly BEFORE `t=1/2` -- so consumer_b's
-// second tick, and "linkB"'s second exchange, are abandoned outright: no
-// hang is even needed for the mutant to be visibly wrong here, though a
+// second tick, and "linkB"'s second exchange, would be abandoned outright:
+// no hang is even needed for a mutant to be visibly wrong here, though a
 // version of this shape that put producer_b/consumer_b on the SAME `t=0`
 // time grid would still hang the way the ctest TIMEOUT property (matching the
 // existing mutation entries in build-evidence/mutations/transport-runtime.
 // toml) is there to catch.
 //
-// With the fix, every rank -- both the ones that saw "fluid" fail and the
+// With the carry-forward, every rank -- both the ones that saw "fluid" fail and the
 // ones that never did -- must return from run_period() with the SAME
 // reported failure, and consumer_b's rank(s) must show BOTH of their own
 // ticks having run.
@@ -916,11 +904,11 @@ TEST(RunnerTransport, StillRunsASecondChannelAfterARegionFailsUnderMpi) {
   auto* cons_b = dynamic_cast<StubComponent*>(h.components.find("consumer_b"));
   ASSERT_NE(cons_b, nullptr);
 
-  // What this test does NOT detect (D3, host run 2026-09-28): the implicit coupling group is
+  // What this test does NOT detect: the implicit coupling group is
   // entered at t=1, after both of consumer_b's ticks, and every rank of linkB
   // is also an implicit coupling group participant, so a coupling cycle abandoned straight after the
-  // implicit coupling group loses nothing observable here -- the host's stream print showed
-  // exactly that. It pins the tick carry-forward (ticks unrelated to the
+  // implicit coupling group loses nothing observable here. It pins the tick
+  // carry-forward (ticks unrelated to the
   // failure still run). 'region-failure-abandons-the-rest-of-the-period' is
   // killed by AChannelOutsideTheRegionStillCompletesAfterTheRegionFails below.
   const auto r = runner.run_period(h.components);
@@ -928,7 +916,7 @@ TEST(RunnerTransport, StillRunsASecondChannelAfterARegionFailsUnderMpi) {
       << "fluid refuses its first advance() inside the region; the period "
          "must report that failure on every rank, including ranks that "
          "belong only to the independent channel";
-  // Since 3aae2ed the fluid is stepped only on its own processes, so only
+  // The fluid is stepped only on its own processes, so only
   // they see its refusal; every other process learns of it at an agreement
   // point -- linkB's Epoch or the implicit coupling group's residual
   // agreement, whichever its stream reaches first -- and reports that a
@@ -943,7 +931,7 @@ TEST(RunnerTransport, StillRunsASecondChannelAfterARegionFailsUnderMpi) {
         << r.error().message;
   }
   // Only consumer_b's own processes step it (the runtime steps a component
-  // only on its processor set since 2026-09-29), so only they can count.
+  // only on its processor set), so only they can count.
   if (h.solid_.contains(current_rank())) {
     EXPECT_GE(cons_b->calls(), 2)
         << "consumer_b ticks TWICE this period (t=0 and t=1/2), on a clock "
@@ -958,9 +946,9 @@ TEST(RunnerTransport, StillRunsASecondChannelAfterARegionFailsUnderMpi) {
   ASSERT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
 }
 
-// Mutation "region-failure-abandons-the-rest-of-the-period" (D3, R-09):
+// Mutation "region-failure-abandons-the-rest-of-the-period":
 // step_period() returning straight out of run_region() on failure instead of
-// recording it and walking on. The host's stream for this fixture (implicit coupling group at
+// recording it and walking on. The stream for this fixture (implicit coupling group at
 // t=1; linkB's Transport and Epoch ordered AFTER the implicit coupling group's exit) shows the
 // only thing such a return can lose is linkB's t=1 exchange, and losing it is
 // only observable on a rank of linkB that is NOT in the implicit coupling group: with
@@ -982,11 +970,10 @@ TEST(RunnerTransport, AChannelOutsideTheRegionStillCompletesAfterTheRegionFails)
   ASSERT_GT(h.plan.region_count(), 0u);
   // PRECONDITION, identical on every rank (the plan is): at least one
   // Transport ordered after the implicit coupling group's exit. That is linkB's t=1 exchange
-  // in the stream the host printed for this graph (interval 1/2); if the
+  // in the stream for this graph (interval 1/2); if the
   // scheduler ever orders it before the implicit coupling group, nothing after the implicit coupling group is
-  // left to abandon and this test could not see the mutant -- the first
-  // version, at interval 1, failed on exactly one rank (2026-09-28), most
-  // likely the outside one finishing its exchange before any failure.
+  // left to abandon and this test could not see the mutant (at interval 1,
+  // the outside rank would likely finish its exchange before any failure).
   const auto& stream = h.plan.instructions();
   std::size_t exit_at = stream.size();
   for (std::size_t k = 0; k < stream.size(); ++k) {
@@ -997,7 +984,7 @@ TEST(RunnerTransport, AChannelOutsideTheRegionStillCompletesAfterTheRegionFails)
     if (stream[k].kind == fuse::OpKind::Transport) ++transports_after;
   }
   if (current_rank() == 0) {
-    std::printf("[D3-outside] region exits at instruction %zu; %zu Transport(s) after it; stream:\n%s\n",
+    std::printf("[outside-rank] region exits at instruction %zu; %zu Transport(s) after it; stream:\n%s\n",
                 exit_at, transports_after, h.plan.to_string().c_str());
   }
   ASSERT_GT(transports_after, 0u)
@@ -1017,18 +1004,18 @@ TEST(RunnerTransport, AChannelOutsideTheRegionStillCompletesAfterTheRegionFails)
   const bool outside = me == world_size() - 1;
   const auto r = runner.run_period(h.components);
   // Every rank prints its own outcome: only rank 0's gtest output reaches the
-  // log, and the first host run showed one failing rank without its message.
-  std::printf("[D3-outside] rank %d (%s): ok=%d code=%s\n", me, outside ? "outside" : "region",
+  // log.
+  std::printf("[outside-rank] rank %d (%s): ok=%d code=%s\n", me, outside ? "outside" : "region",
               r.ok() ? 1 : 0, r.ok() ? "-" : r.error().code.c_str());
   std::fflush(stdout);
   ASSERT_FALSE(r.ok()) << "rank " << me
                        << ": the period must fail everywhere, including on the "
                           "rank that only belongs to linkB";
-  // Only the fluid's own processes step it (3aae2ed), so only they report its
+  // Only the fluid's own processes step it, so only they report its
   // refusal. A process outside the implicit coupling group learns of it at
   // linkB's Epoch; a process inside the group that does not host the fluid
   // learns at linkB's Epoch or the group's residual agreement, whichever its
-  // stream reaches first (host, 2026-10-01: E-RT-EPOCH-PEER at 3, 4 and 5).
+  // stream reaches first.
   if (h.fluid_.contains(me)) {
     EXPECT_EQ(r.error().code, "E-TEST-ADVANCE-REFUSED") << "rank " << me << ": " << r.error().message;
   } else if (outside) {
@@ -1110,7 +1097,7 @@ TEST(RunnerTransport, IterationRegionParticipantsIncludeADisjointCoupler) {
   ASSERT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
 }
 
-// R-10 (REVIEW.md), the positive case: `A` and `B` each span the WHOLE
+// The positive case: `A` and `B` each span the WHOLE
 // communicator (LinearFixedPointJob, above), so every rank owns a slice of
 // both -- and at 3 ranks, kEntities == 4 splits 2/1/1, giving genuinely
 // unequal per-rank local residuals. `initialize()` must now SUCCEED (not
@@ -1124,7 +1111,7 @@ TEST(RunnerTransport, IterationRegionParticipantsIncludeADisjointCoupler) {
 // do not depend on how the 4 entities are split across ranks -- only
 // reduce_region_residuals() combining the per-rank Euclidean sums back into
 // the same global norm makes that hold under a real partition instead of
-// desynchronising. Needs a host run: this sandbox cannot launch MPI at all.
+// desynchronising.
 TEST(RunnerTransport, RegionConvergesInTheSerialIterationCount) {
   FUSE_REQUIRE_AT_LEAST_RANKS(2);
   constexpr int kSerialIterations = 30;
@@ -1155,13 +1142,12 @@ TEST(RunnerTransport, RegionConvergesInTheSerialIterationCount) {
 }
 
 // ---------------------------------------------------------------------------
-// RT-1 (review 2026-10-11): a rank outside an ORDINARY (non-window-scoped)
+// A rank outside an ORDINARY (non-window-scoped)
 // multi-rank iteration region's own R.participants shares config.
 // base_communicator with the region's real participants -- the same shape
-// KNOWN_ISSUES.md D35 fixed for the window-scoped sibling
-// (broadcast_window_convergence()). Before the mirroring fix
-// (broadcast_region_convergence(), src/runtime/runner.cpp),
-// reduce_region_residuals() left such a rank's payload at all-zero `owned`
+// the window-scoped sibling handles (broadcast_window_convergence()). The
+// mirroring step (broadcast_region_convergence(), src/runtime/runner.cpp) is needed
+// because reduce_region_residuals() leaves such a rank's payload at all-zero `owned`
 // counts -- never reduced for it -- and the UNMEASURED check right after
 // read that as "no participant owns this block": a guaranteed, spurious
 // E-RT-REGION-UNMEASURED at sweep 0 on the bystander alone, with the two
@@ -1195,7 +1181,7 @@ class DisjointFixedPointJob {
  public:
   static constexpr std::size_t kEntities = 4;
 
-  /// RT-2(c): `fail_a_restore_after` (-1 default, every existing caller) is
+  /// `fail_a_restore_after` (-1 default) is
   /// passed to "A"'s own LinearRelaxComponent ONLY on a rank `a_ranks_`
   /// actually names (`-1`, never-fails, on every other rank) -- every
   /// rank constructs its OWN LinearRelaxComponent("A", ...) object
@@ -1268,7 +1254,7 @@ class DisjointFixedPointJob {
       EXPECT_TRUE(n.ok());
       return n.ok() ? n.value() : 0;
     };
-    // RT-2(c): only the rank a_ranks_ actually names gets the real
+    // Only the rank a_ranks_ actually names gets the real
     // threshold; every other rank's own (otherwise-inert) copy of "A" is
     // left at -1, never failing on its own.
     const int fail_this_rank =
@@ -1336,12 +1322,12 @@ TEST(RunnerTransport,
 }
 
 // ---------------------------------------------------------------------------
-// RT-2(c) (review 2026-10-11): a mid-sweep restore_state() failure on one
-// rank of an ordinary multi-rank iteration region used to `co_return`
-// straight out of run_region() (iteration.cpp), before that sweep's
-// partner ever learns of it -- the partner's own restore_state() succeeds
+// A mid-sweep restore_state() failure on one
+// rank of an ordinary multi-rank iteration region must not `co_return`
+// straight out of run_region() (iteration.cpp) before that sweep's
+// partner learns of it -- the partner's own restore_state() succeeds
 // and it proceeds into the NEXT sweep's body Transport, where the failing
-// rank never arrives. Fixed by recording step_failure and falling through
+// rank never arrives. run_region() instead records step_failure and falls through
 // to the existing carry-forward machinery (the deliver/re-advance code
 // right below already gates on step_failure via is_collective()), so the
 // failure reaches every partner at the next sweep's residual agreement --
@@ -1353,10 +1339,7 @@ TEST(RunnerTransport,
 TEST(RunnerTransport, RestoreStateFailureIsCarriedToEveryRankNotReturnedFrom) {
   // Exactly 2, not "at least 2": a third rank here would be a bystander
   // hosting neither A nor B, and peer-FAILURE propagation to such a
-  // bystander is the one gap D35's own closing note left for a window
-  // region's bystander and a real run confirmed is identical for this
-  // ordinary-region path (KNOWN_ISSUES.md D35; this round's own
-  // disposition record_text) -- out of scope for RT-2(c), which is about
+  // bystander is a case out of scope here, which is about
   // the two real participants, A's rank and B's rank, not a rank with no
   // stake in this region at all.
   FUSE_REQUIRE_RANKS(2);
@@ -1392,12 +1375,12 @@ TEST(RunnerTransport, RestoreStateFailureIsCarriedToEveryRankNotReturnedFrom) {
   // this fixture's own channels carry a Transport+Epoch pair, and
   // reconcile_epoch() co_returns immediately on an Epoch failure (the
   // i-loop's own established rule, iteration.cpp) -- before the region's
-  // own residual agreement (reduce_region_residuals(), RT-2(c)'s own
-  // target) is ever reached. Measured: E-RT-EPOCH-PEER. Both codes are
+  // own residual agreement (reduce_region_residuals()) is ever reached. Measured:
+  // E-RT-EPOCH-PEER. Both codes are
   // accepted, matching this file's own existing convention for the
   // identical ambiguity (see AChannelOutsideTheRegionStillCompletesAfter
   // TheRegionFails's own "whichever its stream reaches first" comment,
-  // above) -- what RT-2(c) actually guarantees is that B's rank reports SOME
+  // above) -- what is actually guaranteed is that B's rank reports SOME
   // "-PEER" code rather than hanging or reporting success.
   if (h.a_ranks_.contains(current_rank())) {
     EXPECT_EQ(run.error().code, "E-TEST-RESTORE-REFUSED")
@@ -1412,7 +1395,7 @@ TEST(RunnerTransport, RestoreStateFailureIsCarriedToEveryRankNotReturnedFrom) {
   ASSERT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
 }
 
-// D3 (KNOWN_ISSUES), `one-transport-shared-across-every-plan`:
+// Mutation `one-transport-shared-across-every-plan`:
 // `Runner::Impl::attach_comm_graphs()` (src/runtime/runner.cpp) builds ONE
 // `Transport` object per CommGraph-backed plan and stores it at
 // `graph_transports[pi]`; the mutant changes `graph_transports[pi] =
@@ -1436,7 +1419,7 @@ TEST(RunnerTransport, RestoreStateFailureIsCarriedToEveryRankNotReturnedFrom) {
 // (`fail_fluid_after=0`), which sets `step_failure` before "linkB"'s
 // Transport instruction is even reached; `step_period()`'s failure branch
 // only OVERWRITES `step_failure` `if (!step_failure.has_value())` (see the
-// R-09 mutation's own `old` line, just above this in the same function),
+// carry-forward mutation's own `old` line, just above this in the same function),
 // so the implicit coupling group's "E-TEST-ADVANCE-REJECTED" wins and "linkB"'s distinct
 // "E-RT-TRANSPORT" outcome is silently discarded -- masked, not fixed. And
 // `cons_b->calls()` does not depend on whether "linkB"'s DATA arrived
@@ -1490,7 +1473,7 @@ TEST(RunnerTransport, TwoIndependentCommGraphChannelsBothDeliverInOnePeriod) {
   ASSERT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
 }
 
-// D3 (KNOWN_ISSUES), `region-residual-skips-the-cross-rank-reduction` (R-10):
+// Mutation `region-residual-skips-the-cross-rank-reduction`:
 // `run_region()`'s `if (R.participants.size() > 1) { ... reduce_region_
 // residuals(...) ... }` (src/runtime/iteration.cpp) agrees `R.block_residual`/
 // `R.block_value` across every rank in the implicit coupling group BEFORE the convergence
@@ -1524,11 +1507,11 @@ TEST(RunnerTransport, TwoIndependentCommGraphChannelsBothDeliverInOnePeriod) {
 // At `max_iterations = 5`, the GLOBALLY AGREED residual (dominated by the
 // slow ranks, since `num::combine`-style reduction sums OWNED entities
 // across every participant) never drops under `tol`: `st.converged` must be
-// `false` on EVERY rank under the fix, having spent the whole budget.
+// `false` on EVERY rank, having spent the whole budget.
 // Under the mutant, rank 0 decides FROM ITS OWN LOCAL RESIDUAL ALONE,
 // already under `tol` by sweep 4, and reports `st.converged == true` at a
 // SMALLER `st.iterations` -- exactly the "reaches a different convergence
-// decision" this task names, caught here by an outright `EXPECT_FALSE`/
+// decision" failure, caught here by an outright `EXPECT_FALSE`/
 // `EXPECT_EQ` mismatch on rank 0 without needing the desync to hang first
 // (though a hang on a LATER sweep, once rank 0 has stopped participating in
 // the implicit coupling group's own cross-rank exchange while the slow ranks keep going, is
@@ -1565,7 +1548,7 @@ TEST(RunnerTransport, RegionResidualLocalConvergenceIsNotEnoughUnderMpi) {
          "residual (rank 0's kA=" << kFast << " converges by itself) could "
          "report converged here";
   EXPECT_EQ(st.iterations, kMaxIterations)
-      << "the fix spends the whole iteration budget because the AGREED "
+      << "the correct code spends the whole iteration budget because the AGREED "
          "residual never clears tol; a smaller count means this rank exited "
          "on its own local (unreduced) residual instead";
   ASSERT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
@@ -1685,7 +1668,7 @@ TEST(RunnerTransport, ADeviceResidentRunDeliversTheSourceValuesGpuAwareOrNot) {
   long long total_moves = 0, total_boundary = 0;
   MPI_Allreduce(&local_moves, &total_moves, 1, MPI_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
   MPI_Allreduce(&local_boundary, &total_boundary, 1, MPI_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
-  // Whichever branch this host's MPI took (GPU-aware OpenMPI on higgs, or
+  // Whichever branch this host's MPI took (GPU-aware OpenMPI, or
   // FUSE_TRANSPORT_HOST_STAGING=1 forcing the fallback in the row below) is
   // moot here: no rank in THIS job ever reaches the both-device branch
   // (`device_transport_moves`) at all, only the mixed-pair one.
@@ -1695,7 +1678,7 @@ TEST(RunnerTransport, ADeviceResidentRunDeliversTheSourceValuesGpuAwareOrNot) {
 }
 
 // The host-staged fallback, forced via FUSE_TRANSPORT_HOST_STAGING=1 so it
-// has a test on higgs's genuinely GPU-aware OpenMPI too, not only on a
+// has a test on a genuinely GPU-aware OpenMPI too, not only on a
 // machine whose MPI happens not to be GPU-aware. Delivery must still agree
 // bitwise with the GPU-aware path above and with Host: nothing here is
 // floating-point arithmetic, only data movement, so there is no rounding
@@ -1737,7 +1720,7 @@ TEST(RunnerTransport, TheTransportPathAllocatesNothingWhileRunning) {
   // (E-TRANSPORT-RANKS). A skip, not a workaround: this test's subject is a
   // two-sided job, which one rank cannot host.
   FUSE_REQUIRE_AT_LEAST_RANKS(2);
-  // KNOWN_ISSUES.md D49: under this row's `.device` twin,
+  // Under this row's `.device` twin,
   // `fluid`/`solid`'s disjoint placement puts Transport's input arc at
   // n=0 (skipped by place_arcs_on_device(), stays host) and its output arc
   // on the device on the rank that holds `solid` -- a MIXED pair, staged
@@ -1755,7 +1738,7 @@ TEST(RunnerTransport, TheTransportPathAllocatesNothingWhileRunning) {
   // asserting a count nobody has explained yet.
   if (const char* space = std::getenv("FUSE_EXECUTION_SPACE");
       space != nullptr && std::string_view{space} == "device") {
-    GTEST_SKIP() << "KNOWN_ISSUES.md D49: allocation count under the mixed "
+    GTEST_SKIP() << "allocation count under the mixed "
                     "device/host arc pair this disjoint placement produces "
                     "is not yet isolated to a cause";
   }
@@ -1795,28 +1778,23 @@ TEST(RunnerTransport, TheTransportPathAllocatesNothingWhileRunning) {
 // the job-wide expected count, so a dropped rank's absence shows up here even
 // though it shows up nowhere else.
 //
-// MUTATION RESULTS (Steps 4-5 of the plan): temporarily replacing
-// `in[p.gather[k] * nc + c]` with `in[k * nc + c]` in the gather loop, and
-// separately `out[p.scatter[k] * nc + c]` with `out[k * nc + c]` in the
-// scatter loop (src/runtime/runner.cpp), was run at 2, 3, 4 and 5 ranks.
+// MUTATIONS KILLED: replacing `in[p.gather[k] * nc + c]` with
+// `in[k * nc + c]` in the gather loop, and separately
+// `out[p.scatter[k] * nc + c]` with `out[k * nc + c]` in the scatter loop
+// (src/runtime/runner.cpp), makes this test fail at 2, 3, 4 and 5 ranks.
 //
-// BOTH MUTATIONS SURVIVED -- this test PASSED when it should have failed --
-// AT EVERY RANK COUNT (2, 3, 4 and 5), against the original
-// `PartitionedTestBackend::block()`, which handed out each rank's ids in
-// ascending order. CommGraph's send/recv lists are sorted by (global_id, ...)
-// (comm_graph.cpp:1125-1133), and with an ascending block a rank's local
-// storage index already equals its position in that sorted order, so
-// `p.gather[k] == k` and `p.scatter[k] == k` on every rank: the mutation
-// changed nothing. This was the identity-permutation gap the plan's Task 5
-// notes flagged as a possible, non-blocking outcome -- and it was the index
-// maps that were degenerate, not the per-entity source values (those were
-// already distinguishable: `write_source_by_global_id()` writes each id's own
-// value). Fixed by reversing each rank's LOCAL STORAGE order in `block()`
-// (this file) so local index 0 holds the block's largest global id rather
-// than its smallest, decoupling "sorted-by-gid position" from "local index"
-// without changing which ids a rank owns. After that fix, both mutations were
-// caught -- this test FAILED as expected -- at every rank count tried (2, 3,
-// 4 and 5). Neither mutation survives anywhere post-fix.
+// That depends on `block()` reversing each rank's LOCAL STORAGE order, so
+// local index 0 holds the block's largest global id rather than its
+// smallest. CommGraph's send/recv lists are sorted by (global_id, ...)
+// (comm_graph.cpp), and with an ascending block a rank's local storage
+// index would already equal its position in that sorted order, so
+// `p.gather[k] == k` and `p.scatter[k] == k` on every rank and either
+// mutation would change nothing (an identity-permutation gap). Reversing
+// the local order decouples "sorted-by-gid position" from "local index"
+// without changing which ids a rank owns. It is the index maps that need
+// to be non-degenerate; the per-entity source values are already
+// distinguishable (`write_source_by_global_id()` writes each id's own
+// value).
 TEST(RunnerTransport, TheDeliveredFieldDoesNotDependOnTheRankCount) {
   // Two DISJOINT processor sets need two ranks: at one rank
   // `fluid_{0, world_size()/2}` is `{first=0, count=0}`, a component placed
@@ -1848,7 +1826,7 @@ TEST(RunnerTransport, TheDeliveredFieldDoesNotDependOnTheRankCount) {
   EXPECT_EQ(total_ok, h.global_destination_entity_count());
 }
 
-// ---- the three overlap shapes through the Runner (KNOWN_ISSUES D5) -------
+// ---- the three overlap shapes through the Runner -------
 //
 // CommGraph is tested on all three shapes (rows 1-6). These put the same
 // shapes through Runner::initialize + run_period, which is where CommGraph's
@@ -1924,11 +1902,10 @@ TEST(RunnerTransport, ADisjointPlacementDeliversEveryEntityThroughTheSameHarness
 // coupler -> solid; a hop between identical processor sets is elided. The three
 // shapes below are the ones the processor-layout driver registers (layout.coupler.*),
 // asserted here through the same helper as the no-coupler shapes so the only
-// difference is the route. The first host run of those driver rows failed on
-// every shape at initialize (E-MESH-PLACEMENT, 2026-09-27): the driver had
-// told the backend about two processor sets and the coupler was the third. This
-// fixture reads its processor sets from the graph, which is why it could not have
-// caught that -- and why the driver now does the same.
+// difference is the route. The driver must tell the backend about all three
+// processor sets (a driver that named only two fails at initialize with
+// E-MESH-PLACEMENT). This fixture reads its processor sets from the graph,
+// which is why it could not catch that; the driver does the same.
 
 TEST(RunnerTransport, ADisjointCouplerDeliversEveryEntity) {
   // The coupler is the last rank alone; fluid and solid split the others.

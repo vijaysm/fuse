@@ -23,7 +23,7 @@
 /// WHAT AN IMPLEMENTATION PROMISES. `apply` and `apply_transpose` are exact
 /// adjoints of one another in the discrete inner product -- see
 /// `adjoint_defect()`. That is not a numerical nicety: the monolithic solver
-/// path (S7) forms its off-diagonal Jacobian blocks from these operators, and a
+/// path forms its off-diagonal Jacobian blocks from these operators, and a
 /// transpose that is merely approximately the adjoint produces a Newton
 /// iteration that converges to the wrong thing while looking healthy.
 
@@ -112,7 +112,7 @@ class LinearOperator {
   ///
   /// Two operators with equal signatures must compute the same thing; the
   /// converse is not promised (it is a 64-bit hash). Used to tell whether a
-  /// persisted map matches the mesh pair it is being reloaded onto (S5.4), and
+  /// persisted map matches the mesh pair it is being reloaded onto, and
   /// to keep a plan dump stable. It must NOT include anything incidental --
   /// allocation addresses, build configuration, the order the triplets were
   /// discovered in -- or a reload that is genuinely valid will be rejected.

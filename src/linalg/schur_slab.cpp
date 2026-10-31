@@ -42,10 +42,7 @@ using SpMat = Eigen::SparseMatrix<double>;
 /// for bit, from the Toy's own reference at `nranks==1`
 /// (`SchurSlabSolver.OneRankIsBitIdenticalToWholeGridSparseCholesky`,
 /// test/linalg/schur_slab_test.cpp). Duplicated rather than included:
-/// `src/linalg` may not depend on `examples/` (this track's own scope is
-/// `docs/dev/schur-slab-solver.md` and the five files under
-/// `include/fuse/linalg`, `src/linalg`, `test/linalg`, `test/parallel`
-/// it owns -- "touch nothing under examples/").
+/// `src/linalg` may not depend on `examples/`.
 SpMat periodic_laplacian_duplicate(int nx, int ny) {
   std::vector<Eigen::Triplet<double>> entries;
   entries.reserve(static_cast<std::size_t>(nx) * static_cast<std::size_t>(ny) * 5);
@@ -75,15 +72,12 @@ SpMat periodic_laplacian_duplicate(int nx, int ny) {
 /// This is the collective every refusal in this file that depends on
 /// RANK-VARYING RUNTIME DATA (a factorisation's own numerical outcome,
 /// which no rank can predict from another's inputs) must perform BEFORE
-/// returning -- found missing on the host, 2026-10-10: the row-band-size
-/// refusal below USED TO be decided from this rank's own `local_rows`
-/// alone and return immediately, which is a DIFFERENT, STRONGER fix than
-/// this function provides (that refusal needs no collective at all, since
-/// `row_ownership` already gives every rank the full partition -- see
-/// `factor()`'s own comment at that check) -- but a numerical
-/// factorisation failure genuinely CANNOT be predicted from
+/// returning. The row-band-size refusal below needs no collective at all,
+/// since `row_ownership` already gives every rank the full partition (see
+/// `factor()`'s own comment at that check). A numerical factorisation
+/// failure, by contrast, genuinely CANNOT be predicted from
 /// `row_ownership` alone, so it is this function's own collective that
-/// keeps it from stranding a peer the same way.
+/// keeps it from stranding a peer.
 std::vector<int> ranks_not_ok(const Reducer& reducer, bool local_ok) {
   const int nranks = reducer.size();
   const double send = local_ok ? 0.0 : 1.0;
@@ -200,23 +194,22 @@ Result<SchurSlabSolver> SchurSlabSolver::factor(int nx, std::int64_t ny, std::in
   // docs/dev/schur-slab-solver.md) to have a first AND a last interface
   // row at all -- not just THIS rank's own.
   //
-  // HOST-FOUND BUG (2026-10-10), FIXED HERE: this used to check only
-  // `local_rows < 2` and return immediately on THAT alone -- a collective
-  // path (the Schur-assembly `allgather` below) returning on a condition
-  // computed from THIS rank's own data violates the standing rule that a
-  // collective path must never do that. On the host, rank 0's single-row
-  // band refused and returned without ever reaching that allgather, while
-  // every other rank's own band was fine and sailed on into it alone;
-  // MPICH's own "Message truncated" in MPI_Allgather is exactly one rank
-  // waiting inside a collective nobody else entered.
+  // This must not check only `local_rows < 2` and return on THAT alone: a
+  // collective path (the Schur-assembly `allgather` below) returning on a
+  // condition computed from THIS rank's own data violates the standing rule
+  // that a collective path must never do that. If rank 0's single-row band
+  // refused and returned without reaching that allgather while every other
+  // rank's band was fine and went on into it, those ranks would wait inside
+  // a collective nobody else entered (MPICH reports "Message truncated" in
+  // MPI_Allgather).
   //
-  // The fix needs NO new collective at all: `row_ownership` already gives
-  // EVERY rank the full partition (every participant's own `row_lo`, the
-  // same convention the FUSE_ASSERT block above already trusts for THIS
-  // rank's own `j_lo`/`j_hi`), so every rank can determine -- by scanning
-  // ALL `nranks` bands locally, with zero communication -- whether ANY
-  // band anywhere is undersized, and reach the IDENTICAL conclusion with
-  // the IDENTICAL message, before the one real collective this function
+  // The check needs NO new collective: `row_ownership` already gives EVERY
+  // rank the full partition (every participant's own `row_lo`, the same
+  // convention the FUSE_ASSERT block above already trusts for THIS rank's
+  // own `j_lo`/`j_hi`), so every rank can determine -- by scanning ALL
+  // `nranks` bands locally, with zero communication -- whether ANY band
+  // anywhere is undersized, and reach the IDENTICAL conclusion with the
+  // IDENTICAL message, before the one real collective this function
   // performs.
   std::vector<int> undersized_ranks;
   for (int r = 0; r < nranks; ++r) {
@@ -315,9 +308,9 @@ Result<SchurSlabSolver> SchurSlabSolver::factor(int nx, std::int64_t ny, std::in
   // fails on only SOME ranks' own interior matrix (never expected for
   // this operator's SPD structure, but checked rather than assumed) can
   // never strand the others inside the Schur-assembly allgather below --
-  // the same stranding hazard the row-band-size refusal was found to have
-  // on the host, fixed here the OTHER way the task's own diagnosis named
-  // ("agreed first... then every rank refuses with the same code").
+  // the same stranding hazard the row-band-size refusal below avoids, here
+  // by the OTHER route: agree first, then every rank refuses with the same
+  // code.
   bool local_ok = true;
   Eigen::MatrixXd s_own = a_gg_own;
   if (n_interior > 0) {

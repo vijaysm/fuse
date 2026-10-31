@@ -60,23 +60,23 @@ class Evaluation
             // fallback that substitutes an operator changes the meaning of
             // the coupled quantity while reporting success).
             //
-            // BM-1 (review 2026-10-11): this used to clear the WHOLE chain,
-            // including a Transform-phase step (an inferred `UnitScale`, most
-            // often) that an EARLIER stage had already authorized before a
+            // Only the non-Transform part of the chain is cleared: a
+            // Transform-phase step (an inferred `UnitScale`, most often) that
+            // an EARLIER stage had already authorized stays, even though a
             // LATER stage refused -- Shape, Location, Temporal, Conservation
-            // and Capability all run after Unit. Discarding it was a second,
-            // independent silent loss on top of the refusal itself: a
+            // and Capability all run after Unit. Discarding it would be a
+            // second, independent silent loss on top of the refusal itself: a
             // channel whose target is `Conservation::Extensive` refuses at
             // the Conservation stage on every declared transfer that is not
             // conservative, so a scale-only unit mismatch (kPa -> Pa) on such
-            // a channel lost its UnitScale here and surfaced, much later
+            // a channel would lose its UnitScale here and surface, much later
             // and with no explanation, as a bare `E-IR-TYPE` in `lower()`
             // (src/ir/rules_channel.cpp reads this same chain). A
             // Transform-phase step only rescales, reorders or selects
             // components -- it carries none of the above risk, so keeping it
             // is not a partial chain in the sense the comment above warns
-            // against; it is the one part of the chain that was already
-            // correct before the later stage had anything to say.
+            // against; it is the one part of the chain that is already
+            // correct before the later stage has anything to say.
             auto& steps = result_.chain.steps;
             steps.erase(std::remove_if(steps.begin(), steps.end(),
                                        [](const OperatorStep& step) {
@@ -204,16 +204,15 @@ void check_units(const ConnectionRequest& request, Evaluation& evaluation)
                               "the exact unit offset difference is not representable");
             return;
         }
-        // BM-6: the affine conversion is `v_t = factor * v + (o_s - o_t) /
-        // target.scale` -- the step's own OWN consumer (not yet landed;
+        // The affine conversion is `v_t = factor * v + (o_s - o_t) /
+        // target.scale` -- the step's own consumer (not yet landed;
         // `ir_can_emit(AffineUnit)` is false) will apply `step.scale` and
         // `step.offset` exactly that way (transform.hpp's `OperatorStep`).
-        // The division by `target.scale` was missing here -- ported
-        // verbatim from the parent, where it is only ever correct when
-        // `target.scale == 1`, the one case `Compatibility.UnitRules`
-        // happens to pin. `target.scale` is never zero (R-19: a unit's
-        // scale is never non-positive), so `try_div` here fails only on
-        // overflow, like `factor` above.
+        // The division by `target.scale` is required: without it the offset
+        // is only correct when `target.scale == 1`, the one case
+        // `Compatibility.UnitRules` happens to pin. `target.scale` is never
+        // zero (a unit's scale is never non-positive), so `try_div` here
+        // fails only on overflow, like `factor` above.
         const std::optional<Rational> delta = Rational::try_div(*raw_delta, target.scale);
         if (!delta)
         {
@@ -238,12 +237,11 @@ void check_units(const ConnectionRequest& request, Evaluation& evaluation)
     }
 
     const bool explicit_request = evaluation.requested(OperatorKind::UnitScale);
-    // REVIEW.md R-19: an exact, zero-offset unit scale is auto-insertable
-    // because it is "a change of spelling, not of meaning" (this file's own
-    // rationale for allow_automatic_unit_scale) -- but a NEGATIVE factor
-    // negates every value crossing the channel, which is a change of
-    // meaning. Gated exactly like the affine branch above: never inserted
-    // without an explicit request, regardless of allow_automatic_unit_scale.
+    // An exact, zero-offset unit scale is auto-insertable because it is "a change of spelling, not
+    // of meaning" (this file's own rationale for allow_automatic_unit_scale) -- but a NEGATIVE
+    // factor negates every value crossing the channel, which is a change of meaning. Gated exactly
+    // like the affine branch above: never inserted without an explicit request, regardless of
+    // allow_automatic_unit_scale.
     if (*factor < Rational{0} && !explicit_request)
     {
         evaluation.refuse(ConnectionStage::Unit, ConnectionReason::UnitScaleSignNotRequested,
@@ -402,16 +400,15 @@ void check_capabilities(const ConnectionRequest& request, Evaluation& evaluation
 
 void check_constraints(Evaluation& evaluation)
 {
-    // BM-13: `Clip` used to be the only requested constraint this
-    // function honored; an explicit `operator_request_bit(OperatorKind::
-    // ConservationEnforcement)` -- bit 41, a VALID request -- was
-    // silently ignored, no step emitted and no diagnostic raised, the I4
-    // shape (a caller's explicit request that silently does nothing).
-    // Both operators are unimplemented in the IR today (`ir_can_emit()`,
-    // src/ir/lowering.cpp, returns `false` for each), so emitting the
-    // step -- exactly as `Clip` already does -- reaches the SAME
-    // `E-IR-UNLOWERABLE` refusal `rules_channel.cpp` already raises for
-    // `Clip`, rather than inventing a second way to say "not yet
+    // Both `Clip` and an explicit
+    // `operator_request_bit(OperatorKind::ConservationEnforcement)` -- bit
+    // 41, a VALID request -- are honoured: a requested constraint must
+    // never be silently ignored, with no step emitted and no diagnostic
+    // raised (a caller's explicit request that silently does nothing). Both
+    // operators are unimplemented in the IR today (`ir_can_emit()`,
+    // src/ir/lowering.cpp, returns `false` for each), so emitting the step
+    // reaches the SAME `E-IR-UNLOWERABLE` refusal `rules_channel.cpp`
+    // raises for either, rather than inventing a second way to say "not yet
     // implemented".
     if (evaluation.requested(OperatorKind::Clip))
     {

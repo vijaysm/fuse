@@ -1,11 +1,11 @@
-// Task 8.4: the LowFive HDF5-VOL transport (spec Section 5 mechanism 4, Demo B).
+// The LowFive HDF5-VOL transport (spec Section 5 mechanism 4, Demo B).
 //
 // THIS FILE IS COMPILED IN EVERY CONFIGURATION. Only its body is conditional.
 // `LowFiveTransport` is declared unconditionally in the public header, so
 // every one of its members must link everywhere; on a build without LowFive
-// they return E-TRANSPORT-NOLOWFIVE and name the CMake option. Task 5.2's
-// failure was the other arrangement -- an always-visible header declaring a
-// function that only exists in some configurations.
+// they return E-TRANSPORT-NOLOWFIVE and name the CMake option. The
+// alternative -- an always-visible header declaring a function that only
+// exists in some configurations -- fails to link elsewhere.
 //
 // THREE THINGS IN HERE ARE NOT OBVIOUS, AND EACH ONE WAS MEASURED.
 //
@@ -65,13 +65,13 @@
 // ALSO needs FUSE_LOWFIVE_DIST_LIB_FOUND (cmake/FuseDependencies.cmake's
 // LowFive block, via cmake/FindLowFive.cmake's LOWFIVE_HAVE_DIST):
 // LowFive::DistMetadataVOL is compiled into a SEPARATE static archive
-// (liblowfive-dist.a) on both installs measured on this lab's host, not
-// into liblowfive itself -- linking against vol-dist-metadata.hpp's
-// declarations without that archive fails at the FINAL link of whatever
-// links this translation unit, not here, which is exactly what happened to
-// fuse_transport_lowfive_test (2026-10-02) before this second guard
-// existed. A build with MPI but no discovered dist archive therefore still
-// gets the single-process path only, same as a build with no MPI at all.
+// (liblowfive-dist.a) on both installs measured on this lab's host, not into
+// liblowfive itself -- linking against vol-dist-metadata.hpp's declarations
+// without that archive fails at the FINAL link of whatever links this
+// translation unit, not here, which is exactly what happened to
+// fuse_transport_lowfive_test before this second guard existed. A build with
+// MPI but no discovered dist archive therefore still gets the single-process
+// path only, same as a build with no MPI at all.
 #if FUSE_HAVE_LOWFIVE && FUSE_HAVE_MPI && defined(FUSE_LOWFIVE_DIST_LIB_FOUND)
 #include <mpi.h>
 #include <lowfive/vol-dist-metadata.hpp>
@@ -91,16 +91,15 @@ namespace {
                    "without it. Reconfigure with -DFUSE_ENABLE_LOWFIVE=ON and "
                    "-DFUSE_ENABLE_MOAB=ON, -DCMAKE_PREFIX_PATH pointed at a "
                    "LowFive built against the SAME HDF5 prefix MOAB uses -- "
-                   // R-NN (this track, 2026-10-02): the previous guidance here
-                   // named "/opt/lowfive-shared;/opt/hdf5-shared", which is
-                   // EXACTLY the pairing tools/probe-hdf5-images.sh measures
-                   // as hazardous on this lab's machine (two distinct libhdf5
+                   // This guidance must not name
+                   // "/opt/lowfive-shared;/opt/hdf5-shared", which is EXACTLY
+                   // the pairing tools/probe-hdf5-images.sh measures as
+                   // hazardous on this lab's machine (two distinct libhdf5
                    // images load when it is linked alongside MOAB; see
-                   // docs/user/lowfive.md and KNOWN_ISSUES.md section D).
-                   // cmake/FuseDependencies.cmake now refuses that pairing at
-                   // configure time rather than let it reach here, but a
-                   // string baked into this message is not refused by
-                   // anything, so it must not repeat the mistake.
+                   // docs/user/lowfive.md). cmake/FuseDependencies.cmake
+                   // refuses that pairing at configure time rather than let it
+                   // reach here, but a string baked into this message is not
+                   // refused by anything, so it must not repeat the mistake.
                    "cmake/FuseDependencies.cmake's configure-time probe will "
                    "refuse any pairing that is not (see docs/user/lowfive.md)"};
 }
@@ -192,10 +191,9 @@ VolSingleton& vol_singleton() {
 ///
 /// Constructed from LowFive::DistMetadataVOL's public header contract
 /// (lowfive/vol-dist-metadata.hpp); measured end to end for one producer and
-/// one consumer process by the ctest row example.demo_b (2026-10-14). See
+/// one consumer process by the ctest row example.demo_b. See
 /// docs/user/lowfive.md for what that one configuration covers, versus the
-/// single-process path above, which
-/// IS measured end to end.
+/// single-process path above, which IS measured end to end.
 struct DistVolSingleton {
   LowFive::DistMetadataVOL& vol;
   LowFive::H5VOLProperty*   prop = nullptr;  // intentionally leaked with `this`
@@ -304,10 +302,10 @@ struct LowFiveTransport::Impl {
 
   std::size_t writes_seen = 0;
 
-  // Task 8.4 continuation (Demo B): set once by set_intercomm(), before
-  // set_location(). Decides which VOL singleton build_plan() attaches to --
-  // see the note on DistVolSingleton for why there is only ever one kind
-  // per process. See transport.hpp's set_intercomm() doc.
+  // Demo B: set once by set_intercomm(), before set_location(). Decides which
+  // VOL singleton build_plan() attaches to -- see the note on DistVolSingleton
+  // for why there is only ever one kind per process. See transport.hpp's
+  // set_intercomm() doc.
   bool distributed = false;
 #if FUSE_LOWFIVE_HAVE_DIST
   MPI_Comm    local_comm = MPI_COMM_NULL;
@@ -387,7 +385,7 @@ std::string LowFiveTransport::file_path() const {
 
 // ---------------------------------------------------------------------------
 // set_intercomm / serve_as_producer / receive_as_consumer -- distributed
-// mode, Demo B (Task 8.4 continuation). See the doc comment on
+// mode, Demo B. See the doc comment on
 // set_intercomm() in fuse/transport/transport.hpp.
 // ---------------------------------------------------------------------------
 
@@ -429,7 +427,7 @@ Result<void> LowFiveTransport::set_intercomm(int fortran_local_comm,
   }
   // Refuse a null handle BEFORE any query on it: MPICH's default error
   // handler aborts the process inside MPI_Comm_test_inter on an invalid
-  // handle instead of returning (seen on the host 2026-10-04, handle 0).
+  // handle instead of returning (seen with handle 0).
   if (fortran_local_comm == 0 || fortran_intercomm == 0 ||
       MPI_Comm_f2c(static_cast<MPI_Fint>(fortran_local_comm)) == MPI_COMM_NULL ||
       MPI_Comm_f2c(static_cast<MPI_Fint>(fortran_intercomm)) == MPI_COMM_NULL) {
@@ -570,9 +568,8 @@ Result<void> LowFiveTransport::set_location(std::string file,
   // The sentinel name is unique per call (mkstemp). A fixed name made two
   // processes claiming the same path at once refuse each other: the second
   // O_EXCL open failed while the first process's sentinel existed, which is
-  // exactly Demo B's launch (producer and consumer in one directory),
-  // measured on the owner's machine 2026-10-13; a sentinel left by a crashed
-  // run refused every later run the same way.
+  // exactly Demo B's launch (producer and consumer in one directory); a
+  // sentinel left by a crashed run refused every later run the same way.
   std::string sentinel = file + ".writable-probe.XXXXXX";
   const int fd = ::mkstemp(sentinel.data());
   if (fd < 0) {
@@ -672,10 +669,10 @@ Result<void> LowFiveTransport::build_plan(const TransportSpec& spec) {
     }
     // A consumer's H5Fopen of a memory file looks up the intercommunicator
     // serving it (DistMetadataVOL::file_open: "no intercomm found" when the
-    // lookup is empty, measured for Demo B 2026-10-13); the producer side
-    // needs no lookup but the registration is harmless there. Index 0 is the
-    // only intercommunicator this singleton holds. LowFive matches the full
-    // dataset path, so it is registered with exactly one leading '/'.
+    // lookup is empty, as measured for Demo B); the producer side needs no
+    // lookup but the registration is harmless there. Index 0 is the only
+    // intercommunicator this singleton holds. LowFive matches the full dataset
+    // path, so it is registered with exactly one leading '/'.
     const std::string full_path =
         p->dataset.front() == '/' ? p->dataset : "/" + p->dataset;
     if (std::find(dg.registered_paths.begin(), dg.registered_paths.end(),
@@ -779,9 +776,8 @@ Result<void> LowFiveTransport::build_plan(const TransportSpec& spec) {
   if (probe_space < 0) {
     return Failure{"E-TRANSPORT-HDF5", "H5Screate_simple(1) failed"};
   }
-  // R-46 (REVIEW.md): residual upstream name, harmless (it never leaves this
-  // process's own scratch HDF5 file) but a leftover porting.md renaming would
-  // have caught.
+  // Residual upstream name, harmless (it never leaves this process's own
+  // scratch HDF5 file) but a leftover porting.md renaming would have caught.
   const char* kProbe = "__fuse_lowfive_probe__";
   bool        hdf5_ok = true;
   {

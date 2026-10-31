@@ -1,8 +1,8 @@
 /* A provider plugin for test/abi/conformance_test.cpp: a faithful, pure-C
  * reimplementation of test/abi/participant_test.cpp's own AffineComponent
- * (lines ~106-168 there), used so a mixed native/plugin iteration region
- * (KNOWN_ISSUES.md D15, "checkpoint/restore through a mixed iteration
- * region") can be compared bit-for-bit against the all-native reference
+ * (lines ~106-168 there), used so checkpoint/restore through a mixed
+ * native/plugin iteration region can be compared bit-for-bit against the
+ * all-native reference
  * ImplicitCouplingConvergesLikeInProcess already measures for the SAME
  * physics (participant_test.cpp:785).
  *
@@ -63,9 +63,8 @@
  * call order. This does not appear to be written down anywhere in
  * docs/user/providers.md or entries.def's own "bind" row (both are
  * silent on ORDER across more than one field) -- flagged as an open
- * question for that doc, not fixed here (Stage B-1 does not touch
- * entries.def; docs/user/providers.md's own wording is a separate,
- * narrower edit).
+ * question for that doc, not addressed here (this file does not touch
+ * entries.def).
  *
  * fuse_field_view carries no field NAME at all, only a handle this
  * plugin never interprets, so order is the only way to tell "b_out"
@@ -235,10 +234,9 @@ static fuse_status p_save_state(fuse_provider_ctx* self, const fuse_null* in, fu
       return FUSE_ERR_RUNTIME;
     }
     inst->saved_count = inst->out_count;
-    /* Round 2 (KNOWN_ISSUES.md D15, Stage B-1): poison the freshly
-     * allocated buffer with a quiet NaN BEFORE the real capture below,
-     * rather than leaving it at whatever malloc() happens to hand back.
-     * Measured round 1: a provider-parity mutation that skips the
+    /* Poison the freshly allocated buffer with a quiet NaN BEFORE the
+     * real capture below, rather than leaving it at whatever malloc()
+     * happens to hand back. Measured: a provider-parity mutation that skips the
      * memcpy just below survived undetected, because this fixture's
      * own "beta" provides field is genuinely 0.0 at the one checkpoint
      * this region takes (its pristine pre-advance value), and a fresh
@@ -250,8 +248,8 @@ static fuse_status p_save_state(fuse_provider_ctx* self, const fuse_null* in, fu
      * are both finite, and b_in is never NaN in this fixture), so the
      * runtime's own byte-level rollback check (src/runtime/
      * iteration.cpp, "THE RUNTIME VERIFIES THE ROLLBACK RATHER THAN
-     * TRUSTING IT") cannot mistake a skipped capture for a correct one
-     * ever again, regardless of what any given allocator or platform
+     * TRUSTING IT") cannot mistake a skipped capture for a correct one,
+     * regardless of what any given allocator or platform
      * happens to hand back. Written once, right after allocation, not
      * on every save_state() call: the real memcpy below overwrites it
      * immediately in CORRECT code, so this changes nothing observable
@@ -305,7 +303,7 @@ static fuse_status p_capabilities(fuse_provider_ctx* self, const fuse_null* in, 
    * tell a provider that merely forgot to declare this from one that
    * genuinely has no save_state()/restore_state() to call.
    * No FUSE_CAP_DEVICE_FIELDS (this plugin binds fuse::MemorySpace::Host
-   * storage only -- Stage B-1 builds item 2 only, not item 1), no
+   * storage only), no
    * FUSE_CAP_RESTART_FORM_B (save_restart_blob()/load_restart_blob()
    * below are the documented no-op default, not a real implementation). */
   out->flags = FUSE_CAP_CHECKPOINT;

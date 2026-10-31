@@ -1,4 +1,4 @@
-// D61 (KNOWN_ISSUES.md). Tier-0, MPI-free tests of the pure arithmetic
+// Tier-0, MPI-free tests of the pure arithmetic
 // src/abi/participant.cpp's real MPI_Allreduce(..., MPI_2INT, MPI_MINLOC,
 // ...) glue, and its own test-only stub reducer (test_support.hpp's
 // force_fake_collective_peers(), exercised end to end in
@@ -67,11 +67,11 @@ TEST(ReconcileLocalStatuses, EmptyInputIsDefensiveOk) {
   EXPECT_EQ(r.origin_rank, 0);
 }
 
-// D61 round 4 (KNOWN_ISSUES.md): the pure half of the per-component split
-// decision src/abi/participant.cpp's real MPI_Comm_split call feeds from --
-// see collective_reconcile.hpp's own doc comment for why round 3's
-// make_participant_set_reducer call computed the SAME colour for every
-// component (the bug this function's own existence fixes).
+// The pure half of the per-component split decision
+// src/abi/participant.cpp's real MPI_Comm_split call feeds from -- see
+// collective_reconcile.hpp's own doc comment for why a single
+// make_participant_set_reducer call would compute the SAME colour for every
+// component (which this function's own existence avoids).
 
 TEST(DecideSplitColourKey, NoComponentReturnsNullopt) {
   EXPECT_FALSE(decide_split_colour_key(std::nullopt, 0).has_value());

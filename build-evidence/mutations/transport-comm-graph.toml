@@ -1,12 +1,12 @@
-# Mutation for KNOWN_ISSUES.md D73 round 9 (RemapHalo track): the flat,
-# deduplicated source-offer list `CommGraph::build`'s own `emit()` needs for
-# `MpiTransport::build_plan`'s from-scratch id matching.
+# Mutation for the flat, deduplicated source-offer list `CommGraph::build`'s
+# own `emit()` needs for `MpiTransport::build_plan`'s from-scratch id
+# matching.
 # Schema: build-evidence/mutations.toml.
 
 [[mutation]]
 id = "dedupe-flat-source-offers-does-not-dedupe"
 area = "transport"
-describes = "KNOWN_ISSUES.md D73 round 9: without deduplication, a source entity wanted by two different destination peers (a cell two different adopting ranks both committed a remap halo over) gets declared twice in the SOURCE rank's own flat global_ids list; MpiTransport::build_plan's own id-matching (mpi_transport.cpp) requires each entity declared exactly once and refuses a repeat as ambiguous ownership -- 'global id X is held by source rank Y and again by source rank Y' -- even though the repeat is a harmless fan-out, not a genuine ambiguity."
+describes = "Without deduplication, a source entity wanted by two different destination peers (a cell two different adopting ranks both committed a remap halo over) gets declared twice in the SOURCE rank's own flat global_ids list; MpiTransport::build_plan's own id-matching (mpi_transport.cpp) requires each entity declared exactly once and refuses a repeat as ambiguous ownership -- 'global id X is held by source rank Y and again by source rank Y' -- even though the repeat is a harmless fan-out, not a genuine ambiguity."
 file = "src/transport/comm_graph_support.cpp"
 old = "      if (seen.insert(gid).second) {"
 new = "      if (true) {"

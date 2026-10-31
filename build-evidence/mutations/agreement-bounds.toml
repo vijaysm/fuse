@@ -1,42 +1,30 @@
-# Mutations for the AgreementBounds track's own addition:
-# examples/dn_heat/agreement_bound.hpp and examples/brusselator/
-# agreement_bound.hpp's own `agreement_bound()` free functions, which
-# replaced dn_heat's 20x safety margin (KNOWN_ISSUES.md D32) with a
-# derived/measured bound. New file, named after the track per the
-# project's one-mutations-file-per-area convention (build-evidence/
-# mutations/dn-heat.toml, brusselator.toml, etc.).
+# Mutations for the agreement bounds: examples/dn_heat/agreement_bound.hpp
+# and examples/brusselator/agreement_bound.hpp's own `agreement_bound()`
+# free functions, which replace dn_heat's 20x safety margin with a
+# derived/measured bound.
 #
-# ROUND 3 (current): the rows below target the SHARP (round-3) formula
-# in each header -- `agreement_bound()` itself, not the `legacy_
-# agreement_bound()` function both headers also carry for the
-# informational `[agreement-bound legacy]` print only. The round-1/2
-# rows this file carried before round 3 targeted text that, after round
-# 3's rewrite, survives verbatim but moved into `legacy_
-# agreement_bound()` -- `tools/mutate.py --check-anchors` reported those
-# rows "valid" on the live checkout (the literal text still exists) even
-# though they no longer exercise the asserted bound at all, only the
-# informational one. Anchor-text validity is NOT a proxy for "still
-# tests what `describes` says" -- re-pointed at the sharp functions' own
-# lines below instead of trusting the text match.
+# The rows below target the SHARP formula in each header --
+# `agreement_bound()` itself, not the `legacy_agreement_bound()` function
+# both headers also carry for the informational `[agreement-bound legacy]`
+# print only. Anchor-text validity is NOT a proxy for "still tests what
+# `describes` says": text that survives verbatim inside
+# `legacy_agreement_bound()` still matches, yet no longer exercises the
+# asserted bound at all, so the rows point at the sharp functions' own
+# lines.
 #
-# Hand-proven, not run through tools/mutate.py itself (this track's own
-# working tree carries untracked new files throughout the session, the
-# standing rule against any state-changing git): backed up, mutated,
+# Hand-proven, not run through tools/mutate.py itself: backed up, mutated,
 # rebuilt (`cmake --build /tmp/agreebounds/mine_b0 --target
 # fuse_verification_<dn_heat|brusselator>_agreement_bound_test`), run
 # UNFILTERED, restored, cmp-verified byte-identical, rebuilt and reran
 # to confirm the full count returns. Build directory:
-# /tmp/agreebounds/mine_b0 (tier 0, no PETSc, this track's own scratch
-# build over a stable HEAD-plus-own-files snapshot -- see this track's
-# own report for why building from the shared checkout directly was
-# unsafe this session). Mutations were applied to the scratch
-# snapshot's own copy (/tmp/agreebounds/mine_export), never to the live
-# checkout.
+# /tmp/agreebounds/mine_b0 (tier 0, no PETSc, a scratch build over a
+# stable snapshot). Mutations were applied to the scratch snapshot's own
+# copy (/tmp/agreebounds/mine_export), never to the live checkout.
 
 [[mutation]]
 id = "dn-heat-agreement-bound-sums-only-the-last-period"
 area = "agreement-bounds"
-describes = "agreement_bound() (examples/dn_heat/agreement_bound.hpp, the SHARP round-4 per-period-sum formula) replaces its own per-vector summation with 'take only the last element of each vector' -- exactly round 3's OWN defect (KNOWN_ISSUES.md D32's owner-found correction this round-4 row replaces the round-3 row for): a bound built from only the LAST of kPeriods periods says nothing about what the earlier periods contributed, understating the bound for any pair of runs whose earlier periods disagreed by more than their last one, the wrong direction for a robustness-over-efficiency gate."
+describes = "agreement_bound() (examples/dn_heat/agreement_bound.hpp, the SHARP per-period-sum formula) replaces its own per-vector summation with 'take only the last element of each vector' -- an earlier defect of this very formula: a bound built from only the LAST of kPeriods periods says nothing about what the earlier periods contributed, understating the bound for any pair of runs whose earlier periods disagreed by more than their last one, the wrong direction for a robustness-over-efficiency gate."
 file = "examples/dn_heat/agreement_bound.hpp"
 old = """  double sum = 0.0;
   for (const double f : final_residuals_native) sum += f;
@@ -48,16 +36,16 @@ new = """  double sum = 0.0;
   return kJacobianInverseInfNorm * sum;"""
 target = "fuse_verification_dn_heat_agreement_bound_test"
 test = "verification.dn_heat_agreement_bound"
-result = "Hand-proved 2026-10-12 on /tmp/agreebounds/mine_b0 (a stable HEAD-plus-own-files snapshot, not the shared checkout): 10 cases (8 sharp + 2 legacy), all pass before. After the mutation (the sharp bound's own summation reduced to each vector's own .back()): 4 FAILED (MatchesHandComputedValueForRepresentativeInputs -- the mutant drops two of native's own three periods; SumIsOrderIndependent -- permuting which entry is LAST changes the mutant's own answer, where the correct sum does not; TheBoundSumsEveryPeriodNotJustTheLast -- the row this mutation names directly: native's own first two (dominant) periods vanish, the mutant's bound collapses from the correct (4/3)*(2.0+2e-8) to (4/3)*(1e-8+1e-8); AsymmetricTerminalResidualsSumLinearly -- a petsc vector of two entries sums only its own last one), 6 PASSED (JacobianInverseInfNormIsExactlyFourThirds never calls agreement_bound(); EmptyVectorsGiveAZeroBound and ZeroBothTerminalResidualsGivesAZeroBound are unaffected since every vector used is either empty or single-valued/all-zero, where .back() and the true sum coincide; TheBoundGrowsWithEitherSolversTerminalResidual uses single-element vectors only, where .back() IS the sum; both DnHeatLegacyAgreementBound cases are unaffected -- legacy_agreement_bound() is a separate function, untouched by this mutation). File restored and cmp-verified byte-identical against the pre-mutation copy; rebuilt and reran to confirm all 10 pass again."
+result = "Hand-proved on /tmp/agreebounds/mine_b0 (a stable HEAD-plus-own-files snapshot, not the shared checkout): 10 cases (8 sharp + 2 legacy), all pass before. After the mutation (the sharp bound's own summation reduced to each vector's own .back()): 4 FAILED (MatchesHandComputedValueForRepresentativeInputs -- the mutant drops two of native's own three periods; SumIsOrderIndependent -- permuting which entry is LAST changes the mutant's own answer, where the correct sum does not; TheBoundSumsEveryPeriodNotJustTheLast -- the row this mutation names directly: native's own first two (dominant) periods vanish, the mutant's bound collapses from the correct (4/3)*(2.0+2e-8) to (4/3)*(1e-8+1e-8); AsymmetricTerminalResidualsSumLinearly -- a petsc vector of two entries sums only its own last one), 6 PASSED (JacobianInverseInfNormIsExactlyFourThirds never calls agreement_bound(); EmptyVectorsGiveAZeroBound and ZeroBothTerminalResidualsGivesAZeroBound are unaffected since every vector used is either empty or single-valued/all-zero, where .back() and the true sum coincide; TheBoundGrowsWithEitherSolversTerminalResidual uses single-element vectors only, where .back() IS the sum; both DnHeatLegacyAgreementBound cases are unaffected -- legacy_agreement_bound() is a separate function, untouched by this mutation). File restored and cmp-verified byte-identical against the pre-mutation copy; rebuilt and reran to confirm all 10 pass again."
 
 [[mutation]]
 id = "brusselator-agreement-bound-drops-petsc-terminal-residual"
 area = "agreement-bounds"
-describes = "agreement_bound() (examples/brusselator/agreement_bound.hpp, the SHARP round-3 formula) drops its dependence on the PETSc solver's own terminal residual (and so on the native/PETSc residual ratio entirely), returning the calibrated error e_n alone -- exactly the defect this track's own a-posteriori calibration exists to rule out: the bound would then silently stop growing with the substrate actually being checked, understating it for any PETSc run whose own terminal residual exceeds the native one, the wrong direction for a robustness-over-efficiency gate."
+describes = "agreement_bound() (examples/brusselator/agreement_bound.hpp, the SHARP formula) drops its dependence on the PETSc solver's own terminal residual (and so on the native/PETSc residual ratio entirely), returning the calibrated error e_n alone -- exactly the defect the a-posteriori calibration exists to rule out: the bound would then silently stop growing with the substrate actually being checked, understating it for any PETSc run whose own terminal residual exceeds the native one, the wrong direction for a robustness-over-efficiency gate."
 file = "examples/brusselator/agreement_bound.hpp"
 old = """  const double residual_ratio = f_final_petsc / f_final_native;
   return e_n * (1.0 + residual_ratio);"""
 new = """  return e_n;"""
 target = "fuse_verification_brusselator_agreement_bound_test"
 test = "verification.brusselator_agreement_bound"
-result = "Hand-proved 2026-10-12 on /tmp/agreebounds/mine_b0 (the same stable snapshot as the dn_heat row above): 7 cases (5 sharp + 2 legacy), all pass before. After the mutation (the sharp bound's own return statement drops the residual_ratio factor, degenerating to e_n alone): 4 FAILED (MatchesHandComputedValueForRepresentativeInputs -- hand-computed 1e-6*(1+2)=3e-6 no longer matches the mutant's 1e-6; EqualResidualsGiveExactlyTwiceEn -- expected 1e-5 (5e-6*2), mutant gives 5e-6; TheBoundGrowsWithTheCalibratedError -- the EXPECT_NEAR on the delta no longer holds, since the mutant's delta is e_n_large-e_n_small rather than 2*(e_n_large-e_n_small); LargerPetscResidualGrowsTheBoundLinearly -- the mutant is constant in f_final_petsc, both cases collapse to the same 2e-5), 3 PASSED (ZeroErrorGivesAZeroBound still holds since e_n==0 either way; both BrusselatorLegacyAgreementBound cases are unaffected -- legacy_agreement_bound() is a separate function, untouched by this mutation). File restored and cmp-verified byte-identical against the pre-mutation copy; rebuilt and reran to confirm all 7 pass again."
+result = "Hand-proved on /tmp/agreebounds/mine_b0 (the same stable snapshot as the dn_heat row above): 7 cases (5 sharp + 2 legacy), all pass before. After the mutation (the sharp bound's own return statement drops the residual_ratio factor, degenerating to e_n alone): 4 FAILED (MatchesHandComputedValueForRepresentativeInputs -- hand-computed 1e-6*(1+2)=3e-6 no longer matches the mutant's 1e-6; EqualResidualsGiveExactlyTwiceEn -- expected 1e-5 (5e-6*2), mutant gives 5e-6; TheBoundGrowsWithTheCalibratedError -- the EXPECT_NEAR on the delta no longer holds, since the mutant's delta is e_n_large-e_n_small rather than 2*(e_n_large-e_n_small); LargerPetscResidualGrowsTheBoundLinearly -- the mutant is constant in f_final_petsc, both cases collapse to the same 2e-5), 3 PASSED (ZeroErrorGivesAZeroBound still holds since e_n==0 either way; both BrusselatorLegacyAgreementBound cases are unaffected -- legacy_agreement_bound() is a separate function, untouched by this mutation). File restored and cmp-verified byte-identical against the pre-mutation copy; rebuilt and reran to confirm all 7 pass again."

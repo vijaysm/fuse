@@ -1,20 +1,12 @@
-// Scaled-bench track, D73 fix follow-up; RemapHalo track made this GREEN
-// (round 1, owner decision 2026-10-18) and then moved its own execution
-// point (round 2, same date). KNOWN_ISSUES.md D73: a general (non-nodal)
-// weighted Remap between two components on DISJOINT MPI rank sets, backed
-// by `fuse::native::NativeMeshBackend`, used to build a SILENTLY EMPTY
-// conservative matrix (`RunStats::remap_weight_nonzeros == 0`) at every
-// rank count above 1 -- no automatic remap-halo exchange, and no refusal
-// either. The scaled-bench track's own interim fix made `Runner::
-// initialize()` REFUSE by name (`E-RT-REMAP-NO-HALO`) instead of silently
-// proceeding; the RemapHalo track replaced that refusal with an automatic
-// halo, driven by the lowering's own `OpKind::BuildRemapHalo` instruction
-// (fuse/ir/op.hpp). Round 1 had application code call `fuse::execute_
-// remap_halo_instructions()` directly; round 2 (KNOWN_ISSUES.md D73 ROUND
-// 3, D77 closed) moved that call INSIDE `fuse::make_region_sizes()`
-// (fuse/backend/mesh_view.hpp) itself, so `build()` below no longer makes
-// that call by hand for the GREEN row -- `make_region_sizes(g, dag,
-// backend)` does it automatically, as the first thing it does.
+// A general (non-nodal) weighted Remap between two components on DISJOINT
+// MPI rank sets, backed by `fuse::native::NativeMeshBackend`, would build a
+// SILENTLY EMPTY conservative matrix (`RunStats::remap_weight_nonzeros ==
+// 0`) at every rank count above 1 if no remap-halo exchange happened, and
+// nothing refused. The lowering's own `OpKind::BuildRemapHalo` instruction
+// (fuse/ir/op.hpp) drives an automatic halo build, which
+// `fuse::make_region_sizes()` (fuse/backend/mesh_view.hpp) performs as the
+// first thing it does, so `build()` below does not call
+// `fuse::execute_remap_halo_instructions()` by hand for the GREEN row.
 //
 // TWO rows: GREEN (`make_region_sizes()` builds the halo before
 // `schedule()` reads any entity count; `initialize()` and a real period
@@ -23,16 +15,11 @@
 // `RegionSizes`, which the type system cannot prevent -- never builds a
 // halo; `initialize()` must still refuse, with `E-RT-REMAP-HALO-NOT-
 // BUILT`, the check `Runner::Impl::resolve_remap_halo()` performs for
-// every `BuildRemapHalo` instruction in the plan). Round 1's RED row
-// modeled "the two steps called in the wrong order"; round 2 retired the
-// two-argument `make_region_sizes()` overload that would have let that
-// happen, so round 2's own RED row models the one bypass still possible:
-// not using `make_region_sizes()` at all.
+// every `BuildRemapHalo` instruction in the plan).
 //
 // test/parallel/nodal_remap_runner.* and its serial twin exercise the
 // NODAL path this same disjoint-placement shape also supports (an
-// orthogonal, unaffected code path -- KNOWN_ISSUES.md D73's own header
-// explains why the two differ); this file is the general-weighted path's
+// orthogonal code path); this file is the general-weighted path's
 // own disjoint-placement row.
 
 #include <fuse/ir/lowering.hpp>
@@ -126,7 +113,8 @@ std::function<fuse::Result<void>(fuse::Transport&)> mpi_comm_setup() {
 /// provider owns the first half of the ranks, consumer the rest. Both
 /// `fuse_add_mpi_test`'s `RANKS 2 3` split this evenly (one rank each at
 /// world 2) and unevenly (one rank, two ranks, at world 3) -- either way,
-/// genuinely disjoint, which is D73's own repro condition.
+/// genuinely disjoint, which is the condition under which the matrix would
+/// otherwise come back empty.
 struct Placement {
   fuse::RankSet provider;
   fuse::RankSet consumer;
@@ -150,16 +138,14 @@ struct Harness {
 /// Two differently-resolved native quad meshes (2x2 and 3x3 cells, both
 /// plain FV at dimension 2) on disjoint rank sets, through a GENERAL
 /// (non-nodal) weighted channel -- no `.remap_method()` override, so
-/// `Runner::Impl::resolve_remap()` takes the branch this file's own D73
-/// fix touches, never the nodal-distributed one. `Extensive` conservation
-/// plus `RemapFlags::Conservative` (new for the GREEN row -- the RED-only
-/// predecessor needed neither, since it never got as far as building real
-/// weights) is what gives this channel the Runner's own `Constrain` check
+/// `Runner::Impl::resolve_remap()` takes the general
+/// weighted branch, never the nodal-distributed one. `Extensive` conservation
+/// plus `RemapFlags::Conservative` is what gives this channel the Runner's own `Constrain` check
 /// (spec Section 5.1) in addition to this file's OWN before/after sum
 /// comparison below.
 ///
 /// `build_halo`: when true (the GREEN row), sizes buffers through `fuse::
-/// make_region_sizes(g, dag, backend)` -- round 2's own call, which builds
+/// make_region_sizes(g, dag, backend)`, which builds
 /// every `BuildRemapHalo` instruction `dag` carries BEFORE reading any
 /// entity count (fuse/backend/mesh_view.hpp's own header comment) -- so
 /// the mesh is already widened by the time `schedule()` reads its sizes.
@@ -167,9 +153,9 @@ struct Harness {
 /// `RegionSizes` that reads the backend's entity counts DIRECTLY
 /// (`backend.placed_region_size()`, the same primitive `make_region_
 /// sizes()` itself calls, minus the halo build) -- modeling a caller that
-/// bypasses `make_region_sizes()` entirely, the one bypass round 2's
-/// retired two-argument overload no longer lets a caller reach by
-/// calling the right functions in the wrong order. Either way, `Runner::
+/// bypasses `make_region_sizes()` entirely, the one bypass left now that
+/// no two-argument overload lets a caller reach it by calling the right
+/// functions in the wrong order. Either way, `Runner::
 /// Impl::resolve_remap_halo()`'s own verification is the gate expected to
 /// refuse when the halo genuinely was never built.
 [[nodiscard]] std::unique_ptr<Harness> build(bool build_halo,
@@ -211,28 +197,23 @@ struct Harness {
     EXPECT_TRUE(h->backend.load(g.mesh(fuse::MeshId{i}), g).ok());
   }
 
-  // ROUND 4 (KNOWN_ISSUES.md D73, host measurement 2026-10-18): this call
-  // was MISSING entirely. `cfg.transport_setup` (below, at Runner
-  // construction) adopts a real MPI communicator for the TRANSPORT Runner
+  // The backend needs its own communicator. `cfg.transport_setup` (below,
+  // at Runner construction) adopts a real MPI communicator for the TRANSPORT Runner
   // uses for Transport/Epoch -- a DIFFERENT object from `h->backend`, the
   // NativeMeshBackend `fuse::make_region_sizes()` calls immediately below
   // to build every `BuildRemapHalo` instruction. Without this,
-  // `h->backend.communicator()` stayed `kNullComm` for the entire `build()`
-  // call (native_backend.hpp's own doc on `set_communicator`: "`kNullComm`
-  // ... means no covering-set exchange is possible ... treats every mesh
-  // here as serial"), so `fuse::native::build_native_remap_halo`'s own
-  // `ranks <= 1 || backend.communicator() == kNullComm` short-circuit
-  // (native_halo.cpp) fired UNCONDITIONALLY regardless of how many real
-  // MPI ranks this row actually ran under -- the real covering-set
+  // `h->backend.communicator()` would stay `kNullComm` for the entire
+  // `build()` call (native_backend.hpp's own doc on `set_communicator`:
+  // "`kNullComm` ... means no covering-set exchange is possible ... treats
+  // every mesh here as serial"), so `fuse::native::build_native_remap_halo`'s
+  // own `ranks <= 1 || backend.communicator() == kNullComm` short-circuit
+  // (native_halo.cpp) would fire UNCONDITIONALLY regardless of how many
+  // real MPI ranks this row actually ran under -- the real covering-set
   // exchange this test exists to exercise, and every
-  // `FUSE_REMAP_HALO_TRACE` line inside it, never ran at all. Measured on
-  // the owner's host 2026-10-18: `parallel.native_remap_halo_runner.{2,3}`
-  // produced NEITHER of native_halo.cpp's own trace lines on either rank,
-  // only runner.cpp's per-channel nonzero count -- exactly what a
-  // short-circuited halo build looks like. `test/parallel/native_halo_mpi_
-  // test.cpp:63` is the established pattern this call now matches: set the
-  // BACKEND's own communicator right after construction/`load()`, before
-  // anything that can build or need a halo.
+  // `FUSE_REMAP_HALO_TRACE` line inside it, would never run at all.
+  // `test/parallel/native_halo_mpi_test.cpp` is the established pattern:
+  // set the BACKEND's own communicator right after construction/`load()`,
+  // before anything that can build or need a halo.
   h->backend.set_communicator(MPI_Comm_c2f(MPI_COMM_WORLD));
 
   const auto lowered = lower(g);
@@ -242,12 +223,11 @@ struct Harness {
   const fuse::ClockSet clocks{g};
   fuse::ScheduleResult sched;
   if (build_halo) {
-    // D73 ROUND 2: `make_region_sizes()` builds every halo `h->dag`
-    // carries BEFORE this call reads a single entity count -- the ONE
-    // call site that can run the real geometry exchange at all (fuse/
-    // backend/mesh_view.hpp's own header comment). No separate call to
-    // `fuse::execute_remap_halo_instructions()` is made by this harness
-    // any more; round 1 made that call directly, round 2 moved it here.
+    // `make_region_sizes()` builds every halo `h->dag` carries BEFORE this
+    // call reads a single entity count -- the ONE call site that can run
+    // the real geometry exchange at all (fuse/backend/mesh_view.hpp's own
+    // header comment). This harness makes no separate call to
+    // `fuse::execute_remap_halo_instructions()`.
     sched = schedule(g, h->dag, clocks, fuse::make_region_sizes(g, h->dag, h->backend));
   } else {
     // RED row: bypass `make_region_sizes()` entirely with a hand-rolled
@@ -258,9 +238,7 @@ struct Harness {
     // region_sizes()`'s own nodal-vertex branch to answer correctly for
     // THIS test -- it is deliberately not a general replacement, only a
     // stand-in for "a caller that never goes through make_region_sizes()
-    // at all", the one bypass left once the two-argument overload that
-    // let round 1's RED row call the two steps in the wrong order was
-    // retired.
+    // at all", the one bypass available.
     fuse::native::NativeMeshBackend* const backend_ptr = &h->backend;
     const fuse::RegionSizes naive_sizes =
         [&g, backend_ptr](fuse::RegionId id, int placement) -> std::size_t {
@@ -330,7 +308,7 @@ struct Harness {
 }  // namespace
 
 TEST(NativeRemapHalo, DisjointGeneralWeightedRemapConservesOnceTheHaloIsBuilt) {
-  // D73's own repro shape, at whatever rank count this ctest row runs
+  // The disjoint repro shape, at whatever rank count this ctest row runs
   // (`fuse_add_mpi_test`'s own RANKS 2 3): provider and consumer never
   // share a rank, so every rank's local-only intersection search would
   // otherwise see only one side's geometry. With the halo built BEFORE
@@ -366,39 +344,32 @@ TEST(NativeRemapHalo, DisjointGeneralWeightedRemapConservesOnceTheHaloIsBuilt) {
 
   // "the weights' row sums": `RunStats::remap_weight_nonzeros` is the one
   // weight-matrix diagnostic the public `Runner` API exposes (`Runner::
-  // stats()`) -- D73's own defect was `remap_weight_builds == 1` with
+  // stats()`) -- the defect to catch is `remap_weight_builds == 1` with
   // `remap_weight_nonzeros == 0` (a genuinely empty matrix); a literal
-  // per-row sum would need a new debug accessor this track did not add
-  // (open_questions names this). A non-empty matrix is necessary, not
+  // per-row sum would need a new debug accessor. A non-empty matrix is necessary, not
   // sufficient, for "the row sums are right" -- the conservation check
   // right below is what actually measures that, through the one channel
   // the public API exposes it by (the delivered field's own sum).
   EXPECT_EQ(runner.stats().remap_weight_builds, 1);
-  // ROUND 4 (owner request, 2026-10-18): PER RANK, not globally. The weight
+  // PER RANK, not globally. The weight
   // matrix's own ROWS are the TARGET region's entities (build_supermesh_
   // weights: "row(target)"); a rank outside the target component's own
   // placement/RankSet (`placement_for(world).consumer` here) owns zero
   // target cells by construction (register_default_placements's own
   // "outside the processor set: an EMPTY view" rule, native_backend.cpp),
   // so its own local weight build correctly has zero rows and therefore
-  // zero nonzeros -- not KNOWN_ISSUES.md D73's own defect (a target-hosting
-  // rank's matrix coming back empty), but the ordinary, expected shape of a
-  // rank that was never asked to build anything. Asserting `> 0`
-  // unconditionally on every rank, as this row did through round 3, would
-  // have FAILED on the provider-only rank even with the halo working
-  // perfectly -- it happened not to, only because `world_size() == 2` in
-  // this fixture's own even 50/50 split (`placement_for`) puts the
-  // provider-only rank and the one assertion-running process at DIFFERENT
-  // ranks, and gtest's `EXPECT_*` macros run (and would fail) independently
-  // on whichever rank reaches them -- so the gap was real, just not yet
-  // triggered by this specific RANKS 2 case the way RANKS 3 (one provider
-  // rank, two consumer ranks, or vice versa) could.
+  // zero nonzeros -- not the empty-matrix defect (a target-hosting rank's
+  // matrix coming back empty), but the ordinary, expected shape of a rank
+  // that was never asked to build anything. Asserting `> 0` unconditionally
+  // on every rank would FAIL on the provider-only rank even with the halo
+  // working perfectly, since gtest's `EXPECT_*` macros run (and fail)
+  // independently on whichever rank reaches them.
   const int this_rank = world_rank();
   const Placement pl = placement_for(world_size());
   const bool this_rank_hosts_target = pl.consumer.contains(this_rank);
   if (this_rank_hosts_target) {
     EXPECT_GT(runner.stats().remap_weight_nonzeros, 0)
-        << "KNOWN_ISSUES.md D73's own defect: a genuinely empty matrix, built but with "
+        << "a genuinely empty matrix, built but with "
            "nothing in it, on a rank that DOES host the target component's own cells";
   } else {
     EXPECT_EQ(runner.stats().remap_weight_nonzeros, 0)
@@ -449,18 +420,18 @@ TEST(NativeRemapHalo, DisjointGeneralWeightedRemapConservesOnceTheHaloIsBuilt) {
          "target, to the Higham recursive-summation bound derived above (tol=" << tol
       << "); global_source_sum=" << global_source_sum
       << " global_target_sum=" << global_target_sum;
-  // Genuinely non-trivial: D73's own defect delivered a plausible-looking
-  // ZERO (the empty matrix's own silent answer), which the bound above
+  // Genuinely non-trivial: an empty matrix delivers a plausible-looking
+  // ZERO (its own silent answer), which the bound above
   // alone would not catch if `fill` summed to something `tol`-close to
   // zero -- it does not (7.0 * 4 = 28.0), but this makes the intent
   // explicit rather than relying on that arithmetic coincidence.
   EXPECT_GT(global_target_sum, tol)
       << "the delivered total must be genuinely non-zero, not merely within tolerance "
-         "of zero (KNOWN_ISSUES.md D73's own silent-empty-matrix failure mode)";
+         "of zero (the silent-empty-matrix failure mode)";
 }
 
 // ---------------------------------------------------------------------------
-// KNOWN_ISSUES.md D82 (owner decision 2026-10-19): the SAME disjoint
+// The SAME disjoint
 // provider/consumer shape, under `Conservation::Intensive` instead --
 // `build_supermesh_weights`'s own ORIGINAL (unchanged) target-measure
 // normalisation, which makes a CONSTANT field reproduce exactly (not just
@@ -511,7 +482,7 @@ TEST(NativeRemapHalo, DisjointGeneralWeightedRemapPreservesAConstantFieldExactly
 }
 
 TEST(NativeRemapHalo, DisjointGeneralWeightedRemapRefusesWhenTheHaloWasNeverBuilt) {
-  // The RED row this track's own fix must still produce: a caller that
+  // The RED row: a caller that
   // bypasses `fuse::make_region_sizes()` entirely (`build(false)`'s own
   // hand-rolled `RegionSizes`, above) never builds a halo, and gets a
   // named refusal, not a silently empty matrix and not a crash.
@@ -532,7 +503,7 @@ TEST(NativeRemapHalo, DisjointGeneralWeightedRemapRefusesWhenTheHaloWasNeverBuil
 
   const auto init = runner.initialize(h->components, h->registry, cfg);
   ASSERT_FALSE(init.ok()) << "expected E-RT-REMAP-HALO-NOT-BUILT; initialize() succeeded "
-                             "instead (the D73 automatic-halo fix regressed, or this test's "
+                             "instead (the automatic halo build regressed, or this test's "
                              "own build(false) built a halo some other way -- in either "
                              "case, update this test)";
   EXPECT_EQ(init.error().code, "E-RT-REMAP-HALO-NOT-BUILT");

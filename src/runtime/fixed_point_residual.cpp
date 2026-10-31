@@ -7,7 +7,7 @@
 #include "fuse/num/kernels.hpp"
 #include "fuse/runtime/fixed_point_residual.hpp"
 
-/// S7.1's Newton-Krylov seam: `Runner::region_fixed_point_residual()` and
+/// The Newton-Krylov seam: `Runner::region_fixed_point_residual()` and
 /// the `Runner::Impl::evaluate_region_residual()` it wraps.
 ///
 /// WHAT ONE EVALUATION DOES, and why it leaves no trace. Calling `evaluate`
@@ -36,15 +36,15 @@
 /// `run_region()` itself performs recomputes every other intermediate
 /// unconditionally anyway.
 ///
-/// SCOPE. A window-scoped region's own body can run several times per
-/// period and reads/writes state (`window_member_state`,
-/// `window_lagged_import_arcs`) this function never touches; a multi-rank
-/// region's residual needs the same cross-rank reduction
-/// `decide_window_convergence()`/the R-10 participant reduction already
-/// gives an ordinary sweep. Lifting either is follow-on work for the JFNK
-/// track (S7.2), not this seam -- both refuse with
-/// `E-NEWTON-UNSUPPORTED-REGION` rather than compute an answer whose
-/// window/parallel semantics have not been worked out here.
+/// SCOPE. This seam covers the ordinary (non-window) sweep. A window-scoped
+/// region's own body can run several times per period and reads/writes state
+/// (`window_member_state`, `window_lagged_import_arcs`) this function never
+/// touches; `evaluate_window_region_residual()` (src/runtime/iteration.cpp)
+/// handles that shape instead. A multi-rank region's residual needs the same
+/// cross-rank participant reduction an ordinary sweep already gets
+/// (`resolve_regions()` builds it). An externally driven member is refused
+/// with `E-NEWTON-UNSUPPORTED-REGION` rather than compute an answer whose
+/// semantics have not been worked out here.
 namespace fuse {
 
 Result<void> Runner::Impl::check_region_supports_newton(
@@ -57,43 +57,41 @@ Result<void> Runner::Impl::check_region_supports_newton(
   }
   const detail::RegionRuntime& R = regions[region_index];
 
-  // S7.2 WindowNewton: the blanket "window-scoped is always refused" rule
-  // this function used to apply here is GONE -- `evaluate_window_region_
-  // residual()` (src/runtime/iteration.cpp) is the window-scoped sibling
-  // this check now ALSO gates, sharing the two checks below with the
-  // ordinary seam (`evaluate_region_residual()`'s own ordinary-seam-only
-  // refusal, immediately below in that function, is where "window-scoped"
-  // is refused for THAT function specifically -- the ordinary seam's own
-  // ADVANCE/body machinery is genuinely wrong for a window region, never
-  // lifted). A window-scoped region's own `R.participants`/`R.tick_
-  // indices` are populated the identical way an ordinary region's are
-  // (`resolve_regions()`'s own single derivation, shared by both shapes),
-  // so the two checks below need no window-specific branch of their own.
+  // There is no blanket "window-scoped is always refused" rule here --
+  // `evaluate_window_region_residual()` (src/runtime/iteration.cpp) is the
+  // window-scoped sibling this check ALSO gates, sharing the two checks below
+  // with the ordinary seam (`evaluate_region_residual()`'s own
+  // ordinary-seam-only refusal, immediately below in that function, is where
+  // "window-scoped" is refused for THAT function specifically -- the ordinary
+  // seam's own ADVANCE/body machinery is genuinely wrong for a window region,
+  // never lifted). A window-scoped region's own
+  // `R.participants`/`R.tick_indices` are populated the identical way an
+  // ordinary region's are (`resolve_regions()`'s own single derivation, shared
+  // by both shapes), so the two checks below need no window-specific branch of
+  // their own.
   //
-  // KNOWN_ISSUES.md D31: the blanket "more than one participant is
-  // refused" rule is GONE, and nothing replaces it with a narrower
-  // refusal -- `R.participants` (resolve_regions(), iteration.cpp) is
-  // populated with more than the empty set ONLY when `config.
-  // base_communicator` has a value in the first place (that
-  // construction's own comment has the invariant: with no communicator
-  // configured, a region's components on different nominal ranks are
-  // run "purely local," on the one process that exists, and `R.
-  // participants` stays empty). `R.participants.size() > 1` THEREFORE
-  // ALREADY IMPLIES a real communicator is configured -- exactly what
-  // `resolve_regions()` needs to build a real `ParticipantSetReducer`
-  // (`RegionRuntime::newton_reducer`'s own comment, runner_impl.hpp, has
-  // the full account) -- so there is no reachable "more than one
-  // participant, no communicator to agree across them" case left for
-  // this function to catch: the Reducer a multi-rank Newton region needs
-  // is unconditionally buildable whenever this function would otherwise
-  // have refused for that reason alone.
+  // There is no blanket "more than one participant is refused" rule, and
+  // nothing replaces it with a narrower refusal -- `R.participants`
+  // (resolve_regions(), iteration.cpp) is populated with more than the empty
+  // set ONLY when `config.base_communicator` has a value in the first place
+  // (that construction's own comment has the invariant: with no communicator
+  // configured, a region's components on different nominal ranks are run
+  // "purely local," on the one process that exists, and `R.participants` stays
+  // empty). `R.participants.size() > 1` THEREFORE ALREADY IMPLIES a real
+  // communicator is configured -- exactly what `resolve_regions()` needs to
+  // build a real `ParticipantSetReducer` (`RegionRuntime::newton_reducer`'s own
+  // comment, runner_impl.hpp, has the full account) -- so there is no reachable
+  // "more than one participant, no communicator to agree across them" case left
+  // for this function to catch: the Reducer a multi-rank Newton region needs is
+  // unconditionally buildable whenever this function would otherwise have
+  // refused for that reason alone.
   for (const std::size_t t : R.tick_indices) {
     if (components.at(ticks[t].slot).is_externally_driven()) {
       return Failure{"E-NEWTON-UNSUPPORTED-REGION",
                    "iteration region '" + R.name + "' has an externally "
                        "driven member ('" +
                        components.at(ticks[t].slot).name() +
-                       "'); S7.1's fixed-point residual seam covers only "
+                       "'); the fixed-point residual seam covers only "
                        "in-process members"};
     }
   }
@@ -110,16 +108,15 @@ Result<void> Runner::Impl::evaluate_region_residual(
   }
   detail::RegionRuntime& R = regions[region_index];
 
-  // S7.2 WindowNewton: this function's own body (below) is the ORDINARY
-  // seam -- it advances `R.tick_indices` directly, once, over `R.enter..
-  // R.exit`, with no notion of a window's own multiple substeps, lagged-
-  // import predictor, or straddle bookkeeping. A window-scoped region
-  // needs `evaluate_window_region_residual()` (this file's own sibling,
-  // src/runtime/iteration.cpp) instead -- refused HERE, specifically,
-  // rather than folded into `check_region_supports_newton()` above
-  // (which now accepts a window-scoped region, since BOTH functions
-  // share its two general checks; only this function's own machinery is
-  // ordinary-only).
+  // This function's own body (below) is the ORDINARY seam -- it advances
+  // `R.tick_indices` directly, once, over `R.enter..R.exit`, with no notion of
+  // a window's own multiple substeps, lagged-import predictor, or straddle
+  // bookkeeping. A window-scoped region needs
+  // `evaluate_window_region_residual()` (this file's own sibling,
+  // src/runtime/iteration.cpp) instead -- refused HERE, specifically, rather
+  // than folded into `check_region_supports_newton()` above (which now accepts
+  // a window-scoped region, since BOTH functions share its two general checks;
+  // only this function's own machinery is ordinary-only).
   if (R.window_scoped) {
     return Failure{"E-NEWTON-UNSUPPORTED-REGION",
                  "iteration region '" + R.name +
@@ -274,24 +271,23 @@ Result<void> Runner::Impl::evaluate_region_residual(
   return restore_err;
 }
 
-/// NewtonModel track (2026-10-12): `NewtonResidualPath::Direct`'s own
-/// `F(x) = x - G(x)` for an ordinary (non-window) region. Structurally a
-/// close twin of `evaluate_region_residual()` immediately above -- same
-/// save/restore bracket for the region's own loop-carried buffers and
-/// every block's own feed/value arc -- with two differences: (1) no
-/// `save_state()`/`restore_state()` call on any component at all (`Implicit
-/// Component::evaluate_residual()`'s own contract already guarantees it
-/// leaves the component bit-identical to how it found it, so there is
-/// nothing to roll back there), and (2) `G(x)` is obtained by calling
-/// each providing member's own `evaluate_residual()` directly, writing its
-/// `residual_out` into the registered Source-node storage `RegionRuntime::
-/// NewtonDirectMember::provides_source_arcs` names -- the SAME storage
-/// `advance()` would have written -- so the region's existing body
+/// `NewtonResidualPath::Direct`'s own `F(x) = x - G(x)` for an ordinary
+/// (non-window) region. Structurally a close twin of
+/// `evaluate_region_residual()` immediately above -- same save/restore bracket
+/// for the region's own loop-carried buffers and every block's own feed/value
+/// arc -- with two differences: (1) no `save_state()`/`restore_state()` call on
+/// any component at all (`Implicit Component::evaluate_residual()`'s own
+/// contract already guarantees it leaves the component bit-identical to how it
+/// found it, so there is nothing to roll back there), and (2) `G(x)` is
+/// obtained by calling each providing member's own `evaluate_residual()`
+/// directly, writing its `residual_out` into the registered Source-node storage
+/// `RegionRuntime::NewtonDirectMember::provides_source_arcs` names -- the SAME
+/// storage `advance()` would have written -- so the region's existing body
 /// instructions (R.enter..R.exit: Transport/Remap/Constrain/Sink) carry it
-/// downstream exactly as they already carry `advance()`'s own output.
-/// That write is the one EXTRA state this function must snapshot/restore
-/// that the Advance seam does not: Advance's own write there is undone by
-/// the component's own `restore_state()` instead.
+/// downstream exactly as they already carry `advance()`'s own output. That
+/// write is the one EXTRA state this function must snapshot/restore that the
+/// Advance seam does not: Advance's own write there is undone by the
+/// component's own `restore_state()` instead.
 Result<void> Runner::Impl::evaluate_region_residual_direct(
     ComponentSet& components, std::size_t region_index,
     std::span<const double> x, std::span<double> f_out, bool commit) {
@@ -536,12 +532,12 @@ Result<FixedPointResidual> Runner::region_fixed_point_residual(
   return out;
 }
 
-/// NewtonModel track (2026-10-12): TEST/DIAGNOSTIC-ONLY, the
-/// `NewtonResidualPath::Direct` sibling immediately above -- see this
-/// function's own declaration (fuse/runtime/runner.hpp) for what it is
-/// for. Structurally identical to `region_fixed_point_residual()`
-/// immediately above, with `evaluate` calling `evaluate_region_residual_
-/// direct()` in place of `evaluate_region_residual()`.
+/// TEST/DIAGNOSTIC-ONLY, the `NewtonResidualPath::Direct` sibling immediately
+/// above -- see this function's own declaration (fuse/runtime/runner.hpp) for
+/// what it is for. Structurally identical to `region_fixed_point_residual()`
+/// immediately above, with `evaluate` calling
+/// `evaluate_region_residual_direct()` in place of
+/// `evaluate_region_residual()`.
 Result<FixedPointResidual> Runner::region_fixed_point_residual_direct(
     std::size_t region_index, ComponentSet& components) {
   if (!impl_->initialized) {
@@ -599,9 +595,8 @@ Result<FixedPointResidual> Runner::region_fixed_point_residual_direct(
   return out;
 }
 
-/// NewtonModel track (2026-10-12): TEST/DIAGNOSTIC-ONLY -- see this
-/// function's own declaration (fuse/runtime/runner.hpp) for what it is
-/// for.
+/// TEST/DIAGNOSTIC-ONLY -- see this function's own declaration
+/// (fuse/runtime/runner.hpp) for what it is for.
 Result<std::vector<double>> Runner::debug_newton_scale(std::size_t region_index) const {
   if (!impl_->initialized) {
     return Failure{"E-RT-REGION",

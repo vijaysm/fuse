@@ -1,5 +1,3 @@
-// S8 physics-kit, track "Integrators", Stage B Round 1.
-//
 // EmbeddedController::propose() is a pure function of (err_norm, h, state)
 // (embedded_controller.hpp's own top comment) -- every case here is checked against a
 // value computed independently (by hand, cited in the comment) from the SAME formula

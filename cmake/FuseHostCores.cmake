@@ -6,8 +6,8 @@
 # line) sees ONE core. Two things then go wrong without a message:
 #
 #   - fuse_add_omp_legs() registers only the `.omp1` leg of each test and
-#     drops the all-cores leg (13 rows on a 12-core machine, measured
-#     2026-10-12: 193 rows configured with the variable unset, 180 with it set);
+#     drops the all-cores leg (13 rows on a 12-core machine, measured:
+#     193 rows configured with the variable unset, 180 with it set);
 #   - every example.*.omp_identical row is registered with THREADS_HI=1, so it
 #     compares one thread against one thread. The row exists and passes, and
 #     can no longer detect anything: it is the slowest rows in the suite

@@ -328,8 +328,8 @@ TEST(Acyclicity, UnwrittenBidirectionalFieldIsNotASpuriousCycle) {
 }
 
 // ---------------------------------------------------------------------------
-// Iteration regions (spec Section 5.3), now that Task 7.2 derives
-// IterationRegion::carried. The gate learned about `carried`, not about the
+// Iteration regions (spec Section 5.3), with
+// IterationRegion::carried derived. The gate looks at `carried`, not at the
 // annotation: what breaks a cycle is a previous-iterate value in the IR, and
 // declaring a region does not by itself create one.
 //
@@ -364,7 +364,7 @@ TEST(Acyclicity, IterationRegionWithoutACarriedValueDoesNotBreakACycle) {
 
 // The flip. Same topology, same annotation, plus the one thing that makes it a
 // Picard iteration rather than a deadlock: a relaxed value on the return
-// channel, which Task 7.2 derives as the region's carried buffer.
+// channel, which is derived as the region's carried buffer.
 TEST(Acyclicity, IterationRegionWithACarriedValueBreaksTheCycle) {
   CouplingGraph g = two_way(false);
   g.channel(fuse::ChannelId{1}).relax(0.7);
@@ -468,9 +468,9 @@ TEST(Acyclicity, SecondCycleOutsideTheRegionIsStillRejected) {
 }
 
 // ---------------------------------------------------------------------------
-// Task 3.3 handoff: its instruction order assumes ascending NodeId is a
-// topological order of the untimed DAG. Nothing enforces that, so check it
-// instead of inheriting it.
+// The scheduler's instruction order assumes ascending NodeId is a
+// topological order of the untimed DAG. Nothing else enforces that, so check
+// it instead of inheriting it.
 // ---------------------------------------------------------------------------
 
 TEST(Acyclicity, EmissionOrderOfEveryExpandedScheduleIsChecked) {
@@ -500,7 +500,7 @@ TEST(Acyclicity, EmissionOrderViolationIsReported) {
   // dependence graph is keyed on (node, instance) and so is unaffected by
   // the move.)
   //
-  // D73 (automatic remap halo, owner decision 2026-10-18): `two_way()`'s
+  // Automatic remap halo: `two_way()`'s
   // two channels are cross-rank weighted transfers between disjoint
   // placements (region_changes alone triggers their Remap, `ra != rb`),
   // so `lower()` now emits a `BuildRemapHalo` instruction for each, and
@@ -610,7 +610,7 @@ fuse::TimedDag one_instance_each(const fuse::OperatorDAG& dag) {
 // there is none here), so the loop is found.
 //
 // Confirmed to fail without the fix: replacing is_loop_carried()'s body with
-// `return dag.arc(in).type.time.offset < Rational{0};` -- the brief's rule --
+// `return dag.arc(in).type.time.offset < Rational{0};` -- the naive rule --
 // makes this test report acyclic == true.
 TEST(Acyclicity, LagDoesNotDropEdgesInsideTheLaggedRegion) {
   using fuse::ArcId;

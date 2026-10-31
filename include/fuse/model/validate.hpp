@@ -46,10 +46,9 @@ inline bool window_component_ok(const CouplingGraph& g, const Window& w) {
 /// `Window::Kind::CouplingPeriod` case below), where "the period the value
 /// must survive" genuinely is the target's own tick. Conflating the two
 /// was invisible as long as every window-scoped test graph happened to set
-/// dt_u == window (S6 phase 3, Conformance, Unit 3b, item 2's own finding,
-/// KNOWN_ISSUES.md D14): `channel_window()` was answering "the target's
-/// own interval" by construction, which only ever matched the window's
-/// real length by coincidence.
+/// dt_u == window: answering "the target's
+/// own interval" would only ever match the window's real length by
+/// coincidence.
 inline Rational channel_window(const CouplingGraph& g, ChannelId cid,
                                const Channel& ch) {
   if (cid.valid() && cid.value() < g.channel_count()) {
@@ -80,10 +79,10 @@ inline Rational channel_window(const CouplingGraph& g, ChannelId cid,
       return g.component(tgt).interval;
     }
   }
-  // BM-3: there used to be a `default:` here that folded an out-of-range
-  // `Window::Kind` into the `CouplingPeriod` case above, silently
-  // reinterpreting a corrupted value rather than refusing it --
-  // `deserialize()` (fuse/model/descriptor.hpp) now range-checks every
+  // There is deliberately no `default:` above: it would fold an
+  // out-of-range `Window::Kind` into the `CouplingPeriod` case, silently
+  // reinterpreting a corrupted value rather than refusing it.
+  // `deserialize()` (fuse/model/descriptor.hpp) range-checks every
   // byte a `Window::Kind` can be built from, so every graph this
   // function can see has one of the three enumerators above. Reaching
   // here means a `Window` was constructed directly with a `static_cast`
@@ -106,7 +105,7 @@ inline Rational channel_window(const CouplingGraph& g, ChannelId cid,
 
   // --- name uniqueness -----------------------------------------------------
   std::unordered_set<std::string> comp_names;
-  // S6 phase 3 ("LowFive" track), Unit 3: whether ANY component in the
+  // Whether ANY component in the
   // graph declares LaunchMode::LowFive. Checked against every field's own
   // hdf5_path below (E-LOWFIVE-NO-COMPONENT) -- a field whose bytes move
   // through LowFive-intercepted HDF5 needs at least one component in the
@@ -147,7 +146,7 @@ inline Rational channel_window(const CouplingGraph& g, ChannelId cid,
                   c.name + "'");
       }
     }
-    // ---- S6 phase 3, "MPI connect" track: begin --------------------------
+    // ---- launch checks: begin ---------------------------------------------
     // Per-member LaunchSpec checks that need no OTHER component's
     // declaration (fuse/model/launch.hpp). Cross-component questions --
     // whether the launched components' RankSets actually partition the
@@ -172,19 +171,18 @@ inline Rational channel_window(const CouplingGraph& g, ChannelId cid,
                 "service_name set; connect() has no way to publish or find "
                 "the rendezvous port");
     }
-    // ---- S6 phase 3, "MPI connect" track: end ----------------------------
-    // ---- S6 phase 4, "Adapter host" track: begin --------------------------
+    // ---- launch checks: end -----------------------------------------------
+    // ---- plugin launch checks: begin --------------------------------------
     if (c.launch.mode == LaunchMode::Plugin && c.launch.plugin_path.empty()) {
       d.add(Severity::Error, "E-LAUNCH-PLUGIN-PATH",
             "component '" + c.name +
                 "' declares a plugin launch with no plugin_path set; "
                 "fuse::abi_detail::Registry has no shared object to dlopen()");
     }
-    // ---- S6 phase 4, "Adapter host" track: end ----------------------------
+    // ---- plugin launch checks: end ----------------------------------------
     if (c.launch.mode == LaunchMode::LowFive) {
       any_lowfive_component = true;
-      // Unit 3a's own closing item (the lead's own ruling, 2026-10-06): a
-      // LaunchMode::LowFive component is a placement, the same role a
+      // A LaunchMode::LowFive component is a placement, the same role a
       // Coupler already plays for an ordinary remap_on routing -- it has
       // no register_fields() of its own to call, no advance(), and gets
       // no Tick (fuse_initialize()'s own wiring loop, src/abi/
@@ -192,13 +190,11 @@ inline Rational channel_window(const CouplingGraph& g, ChannelId cid,
       // exactly that reason). Declaring kind == Physics (the
       // ComponentDecl default) or owning fields would make it a THIRD
       // kind of participant this graph has no machinery for at all --
-      // MEASURED, this track's own session history: every caller that
-      // ever declared this marker with no explicit .kind got a spurious
-      // externally-driven component (resolved to it at period start,
-      // with no step call for it anywhere in the caller's own loop)
-      // before the tool and this test's own fixture were fixed to
-      // declare .kind = Coupler by hand. This check pins the RULE, not
-      // the tool's own present habit of getting it right.
+      // MEASURED: a marker declared with no explicit .kind gets a spurious
+      // externally-driven component (resolved to it at period start, with
+      // no step call for it anywhere in the caller's own loop), so the
+      // marker must declare .kind = Coupler by hand. This check pins the
+      // RULE, not any tool's habit of getting it right.
       if (c.kind != ComponentKind::Coupler || !c.fields.empty()) {
         d.add(Severity::Error, "E-LOWFIVE-COMPONENT-KIND",
               "component '" + c.name +
@@ -215,7 +211,7 @@ inline Rational channel_window(const CouplingGraph& g, ChannelId cid,
   }
 
   // --- reference integrity -------------------------------------------------
-  // S6 phase 3 ("LowFive" track), Unit 3: hdf5_path -> the first field id
+  // hdf5_path -> the first field id
   // seen claiming it, so a later field naming the SAME exact path can be
   // reported against the earlier one. Ascending field-id order, like the
   // multi-writer check further down, so the diagnostic text is
@@ -320,17 +316,15 @@ inline Rational channel_window(const CouplingGraph& g, ChannelId cid,
             ctx);
     }
 
-    // The coupler-placement track: `remap_on` names WHERE this channel's
-    // Remap runs. Invalid (the default) means "the target's own placement",
-    // today's behaviour, and needs no check at all.
+    // `remap_on` names WHERE this channel's Remap runs. Invalid (the default)
+    // means "the target's own placement" and needs no check at all.
     //
     // The method string is matched by the weight builders at run time
-    // (src/backend/intx_weights.cpp), and an unrecognised one used to be
-    // caught only by the MOAB-enabled builder; the dependency-free builder
-    // fell through to the default conservative supermesh and computed that
-    // instead, so a misspelt "consistent-transpose" was silently a different
-    // remap. Refused here, at authoring time, by the one predicate both
-    // builders now share (fuse/model/remap_kind.hpp).
+    // (src/backend/intx_weights.cpp). A misspelt name such as
+    // "consistent-transpose" would otherwise fall through to the default
+    // conservative supermesh and silently compute a different remap. It is
+    // refused here, at authoring time, by the one predicate both builders
+    // share (fuse/model/remap_kind.hpp).
     if (!is_known_remap_method(ch.remap.method_override)) {
       d.add(Severity::Error, "E-CHANNEL-REMAP-METHOD",
             "remap method '" + ch.remap.method_override +
@@ -396,17 +390,15 @@ inline Rational channel_window(const CouplingGraph& g, ChannelId cid,
     //   * an OFFSET change, or a scale under a policy that forbids insertion
     //     -> E-UNITS-SCALE, refused. Moving the zero of a scale changes meaning.
     //
-    // BM-1 (review 2026-10-11): this loop used to skip every stage but Unit
-    // (`if (item.stage != ConnectionStage::Unit) continue;`), so a Location-
-    // or Conservation-stage refusal reached no consumer at all here -- the
-    // graph validated clean and the channel failed much later, inside
-    // `lower()`, with no authoring-time explanation. Both are mapped below
-    // now. Shape-stage diagnostics are NOT added here: `to_semantics()`
+    // This loop maps the Location- and Conservation-stage refusals as well as
+    // Unit, so that a graph does not validate clean and then fail much later,
+    // inside `lower()`, with no authoring-time explanation. Shape-stage
+    // diagnostics are NOT added here: `to_semantics()`
     // derives `FieldSemantics::shape`/`components` from the same
     // `FieldSpec::components` the pre-existing `E-SHAPE` check below already
     // compares, so a Shape-stage refusal from `check_channel()` fires on
     // exactly the same condition `E-SHAPE` already reports -- adding a
-    // second code for it would be a duplicate, not a previously-silent gap.
+    // second code for it would be a duplicate, not a silent gap.
     // Temporal and Capability never fire through this path at all: neither
     // axis is populated from a `FieldSpec` (connect.hpp's own top-of-file
     // comment: continuity, temporal interpretation, ownership, access and
@@ -537,14 +529,14 @@ inline Rational channel_window(const CouplingGraph& g, ChannelId cid,
     // Spec Section 4.3: OASIS documents lag beyond the coupling period as a
     // restartability and deadlock hazard.
     //
-    // BM-8: `ch.lag` is a raw `int32_t` read off the wire with no range
-    // check (descriptor.hpp), so `std::abs(ch.lag)` here was UB for
-    // `ch.lag == INT_MIN` -- widened to `int64_t` before negating, never
-    // UB whatever the corrupted value. The multiply used to be the
-    // throwing `*` operator, which can `FUSE_REFUSE` on overflow and
-    // escape `validate()`, whose whole contract is "every problem is
-    // reported together", never a throw; `try_mul` reports an
-    // unrepresentable span as a diagnostic instead.
+    // `ch.lag` is a raw `int32_t` read off the wire with no range
+    // check (descriptor.hpp), so it is widened to `int64_t` before
+    // negating: `std::abs(ch.lag)` would be UB for `ch.lag == INT_MIN`.
+    // The multiply uses `try_mul` rather than the throwing `*` operator,
+    // which can `FUSE_REFUSE` on overflow and escape `validate()`, whose
+    // whole contract is "every problem is reported together", never a
+    // throw; `try_mul` reports an unrepresentable span as a diagnostic
+    // instead.
     if (ch.lag != 0 && accum_window_ok) {
       const std::int64_t lag_magnitude =
           std::abs(static_cast<std::int64_t>(ch.lag));

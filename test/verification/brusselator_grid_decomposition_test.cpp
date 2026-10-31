@@ -1,13 +1,12 @@
-// Grid track: NativeGrid's decomposition over a component's own ranks, the
+// NativeGrid's decomposition over a component's own ranks, the
 // one-row periodic halo it exposes (GridGhostPattern/GridHaloExchanger,
 // shaped to match FUSE's planned fuse::linalg::GhostPattern/GhostExchanger),
 // and the explicit (no-solve) physics kernels -- reaction, forcing mask,
 // global mean -- run over owned-plus-ghost storage (SlabField). Every claim
 // here is either a closed-form arithmetic check or a byte-for-byte/measured
 // comparison against the existing whole-grid (num_ranks()==1) functions;
-// none is a tolerance chosen to pass. The implicit diffusion SOLVE is a
-// different track's work (brusselator_physics.hpp's own file header names
-// whose) and is not exercised here.
+// none is a tolerance chosen to pass. The implicit diffusion SOLVE is not
+// exercised here (see brusselator_physics.hpp's own file header).
 
 #include <algorithm>
 #include <cmath>
@@ -126,8 +125,8 @@ namespace {
 /// `owner_rank == this_rank`) or the OTHER partition's owned data, reached
 /// directly since both partitions live in the same process here --
 /// standing in for the MPI exchange a real multi-process run would need,
-/// exactly as this track's standing instructions describe ("serial copy at
-/// tier 0, MPI in the tier-1 test").
+/// exactly as the testing tiers describe (serial copy at tier 0, MPI in the
+/// tier-1 test).
 class TwoPartitionHaloExchanger final : public GridHaloExchanger {
  public:
   TwoPartitionHaloExchanger(GridGhostPattern pattern, int this_rank, const double* other_owned,
@@ -173,12 +172,11 @@ class TwoPartitionHaloExchanger final : public GridHaloExchanger {
 /// outside, by the test driver -- the same two numbers an MPI_Allreduce
 /// over 2 ranks would combine) and fold it in, so `rank()`/`size()` read
 /// as a real 2-rank communicator would. `sum(double*, n)`/`allgather` are
-/// the two `fuse::linalg::Reducer` members this test's own `GridReducer`
-/// alias did not carry before the Grid-track substitution (brusselator_
-/// physics.hpp's own comment on that alias) -- added here so this
-/// concrete type satisfies the now-abstract interface; neither is
-/// exercised by the two tests that use `PairedReducer` (both call only
-/// the scalar `sum`/`max` this class already implemented), so they are
+/// the two `fuse::linalg::Reducer` members beyond the scalar `sum`/`max`
+/// (see brusselator_physics.hpp's own comment on the `GridReducer` alias)
+/// -- implemented here so this concrete type satisfies the abstract
+/// interface; neither is exercised by the two tests that use
+/// `PairedReducer` (both call only the scalar `sum`/`max`), so they are
 /// simple, uncontested implementations (a per-scalar loop; a 2-rank
 /// gather of the two already-known `send` buffers in rank order).
 class PairedReducer final : public GridReducer {
@@ -282,7 +280,7 @@ TEST(BrusselatorGridDecomposition, OwnedPlusGhostExplicitQuantitiesMatchTheSingl
   Vector q_whole;
   brusselator::reaction_kokkos(u_whole, v_whole, &q_whole);
 
-  // Same fields, built from the OWNED-band functions this track adds, one
+  // Same fields, built from the OWNED-band functions, one
   // partition at a time.
   const Vector u0 = brusselator::initial_condition_owned(/*is_u=*/true, kNx, kNy, grid0.j_lo(),
                                                           grid0.owned_rows());

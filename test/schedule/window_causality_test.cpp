@@ -1,10 +1,10 @@
-// Unit P of the multirate-window-on-the-Runner track: the ordering proof
+// The ordering proof
 // for the subcycling node (OpKind::WindowAdvance, docs/user/glossary.md).
 //
 // The subcycling node has EMPTY Node::inputs -- like Source -- because a
 // real producer/consumer edge from the field transfer that delivers its
 // import waveform closes a genuine cycle in the untimed dataflow graph
-// (measured directly in an earlier pass of this track: schedule() refused
+// (measured directly: schedule() refuses
 // with only 2 of 12 nodes topologically orderable). Its import edge is
 // instead named by OpAttrs::window_import, metadata only, and causality
 // against it is established by TIME (TickPhase) rather than by an edge.
@@ -12,8 +12,7 @@
 // against a hand-built instruction stream -- deliberately not through
 // lower()/expand()/schedule(), so the mechanical proof stays independent
 // of whatever a real compiled graph happens to look like (that
-// integration is test/schedule/window_region_golden_test.cpp's own job,
-// this track's Unit B).
+// integration is test/schedule/window_region_golden_test.cpp's own job).
 
 #include <gtest/gtest.h>
 #include <fuse/ir/dag.hpp>
@@ -140,7 +139,7 @@ TEST(WindowCausality, WriterBeforeSubcyclerForTheSameWindowIsAccepted) {
   EXPECT_TRUE(r.ok()) << (r.ok() ? "" : r.error().message);
 }
 
-// THE MUTATION Unit P's own acceptance criterion names: swap the phase (in
+// THE MUTATION: swap the phase (in
 // effect, swap which of the two instructions the stream places first for
 // the same window instance) so the subcycling node reads its import
 // waveform before that window's own writer has run. Killed.
@@ -194,7 +193,7 @@ TEST(WindowCausality, ANonWindowStreamIsUnaffected) {
   EXPECT_TRUE(r.ok());
 }
 
-// ---- lag-aware relaxation (this pass: waveforms travel through the
+// ---- lag-aware relaxation (waveforms travel through the
 // ordinary field-transfer rules, and a two-way window needs exactly one
 // direction loop-carried, as FSI's own .lag(1) is -- see check_window_
 // causality()'s own doc comment, fuse/schedule/plan.hpp).
@@ -216,11 +215,10 @@ TEST(WindowCausality, LaggedImportWrittenLaterInTheSamePassIsAccepted) {
   EXPECT_TRUE(r.ok()) << (r.ok() ? "" : r.error().message);
 }
 
-// The UNLAGGED rule stays strict even with the lagged relaxation's new
+// The UNLAGGED rule stays strict even with the lagged relaxation's
 // code path live: an unlagged import's writer running later for the SAME
 // window instance is still refused (mirrors SwappedOrderForTheSameWindow
-// IsKilled above, using build_fixture()'s own always-unlagged writer,
-// named explicitly per this pass's own acceptance list).
+// IsKilled above, using build_fixture()'s own always-unlagged writer).
 TEST(WindowCausality, UnlaggedImportWrittenLaterIsStillRejected) {
   const Fixture f = build_fixture();
   const std::vector<Instruction> stream = {

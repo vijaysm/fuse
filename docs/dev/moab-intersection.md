@@ -30,20 +30,20 @@ covering-set/target-set intersection on the sphere, naming the two "the advancin
 propagation algorithm" and "the Kd-tree search algorithm"; its own sphere intersection test
 (`test/intx_on_sphere_test.cpp`) uses the KD-tree path as its brute-force fallback.
 
-## Why the front misses adopted cells on a partitioned mesh (KNOWN_ISSUES D82)
+## Why the front misses adopted cells on a partitioned mesh
 
 MOAB's adjacency tags are built from shared VERTEX HANDLES, not from geometric coincidence. A
 source cell adopted into a rank's local covering set through MOAB's parallel exchange is not
 guaranteed to share vertex handles with a cell already resident on that rank, even when it sits at
 the identical geometric location -- so the advancing front may never reach it, no matter where it
-is seeded. This mechanism is inferred from the kernel's adjacency source and the round-14 probe
+is seeded. This mechanism is inferred from the kernel's adjacency source and a probe
 (cells present and geometrically covered on a rank, intersected nothing there); where the adjacency
 tag is populated for adopted cells was not read to the end. Worse, a target cell is marked resolved the moment ANY intersecting source cell is
 found for it, not when its full area is accounted for, so a target cell satisfied in part by a
 front-reachable source cell is never revisited for the remaining, adjacency-unreachable, adopted
 source cell that would complete its coverage.
 
-This was diagnosed, not assumed: KNOWN_ISSUES D82's round-14/15 probe
+This was diagnosed, not assumed: a probe
 (`trace_remap_halo_probe`, `point_in_convex_spherical_polygon` -- a point-in-convex-spherical-
 polygon test built with zero shared code path with MOAB's own intersection machinery, specifically
 so a bug in that machinery could not make the diagnostic agree with itself) found, on the real

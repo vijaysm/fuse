@@ -84,10 +84,8 @@ TEST(IrDump, GraphvizIsWellFormed) {
   EXPECT_NE(s.find("->"), std::string::npos);
   EXPECT_EQ(s.back(), '\n');
   EXPECT_NE(s.find('}'), std::string::npos);
-  // Review 2026-10-11 IS-11: legacy upstream residue in a public output
-  // artifact, same class R-46 fixed for the LowFive probe dataset name
-  // (src/transport/lowfive_transport.cpp) -- a different, still-open
-  // instance of that class (TR-13) is not this file's concern.
+  // No legacy upstream residue in a public output artifact (the same
+  // class as the LowFive probe dataset name, src/transport/lowfive_transport.cpp).
   EXPECT_NE(s.find("digraph fuse_ir"), std::string::npos);
   EXPECT_EQ(s.find("soma"), std::string::npos);
 }

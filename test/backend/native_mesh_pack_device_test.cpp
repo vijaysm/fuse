@@ -1,6 +1,6 @@
 // fuse::native::device::pack_to (include/fuse/backend/native/mesh_pack_device.hpp):
-// the Space-templated packing seam docs/dev/device-resident-arcs.md's
-// Phase 2 names for native migration and halo. Cross-checked byte-for-byte
+// the Space-templated packing seam docs/dev/device-resident-arcs.md
+// names for native migration and halo. Cross-checked byte-for-byte
 // against the EXISTING, already-tested host packers
 // (pack_for_migration/pack_halo_cells, both walking NativeMeshView) on the
 // SAME generated MeshArrays -- not a separate hand-built fixture -- because
@@ -64,24 +64,12 @@ Kokkos::View<int*, Space> dest_view(const std::vector<int>& dest_host) {
 }
 
 /// `to_memory_space<Space>` crossing Host -> a real device (Cuda/HIP/SYCL)
-/// space was never exercised before this track (docs/dev/native-mesh.md's
-/// own Phase 2 section: "NativeMeshView converts to host at construction
-/// and the NativeMesh tests were pinned to host for the CUDA build"). It
-/// has a pre-existing defect this track's own device build surfaced for
-/// the first time, independent of `pack_to`: `MeshArrays<MemorySpace>`'s
-/// multi-dimensional fields (`vertex_coords`, a `double*[3]`) are declared
-/// with no explicit layout, so `Kokkos::View`'s PER-SPACE default layout
-/// differs (LayoutLeft on Cuda, LayoutRight on Host/OpenMP for a rank >= 2
-/// view) between the host source and the device destination, and
-/// `Kokkos::deep_copy` across both a different memory space AND a
-/// different layout in one call has "no available copy mechanism" --
-/// measured as a thrown `Kokkos::Impl::..." exception at runtime, not a
-/// compile error. This is `fuse::native::to_memory_space`'s own defect
-/// (include/fuse/backend/native_mesh.hpp), not `pack_to`'s, and fixing it
-/// (explicit matching layouts, or a mirror-based copy per field) is
-/// outside this track's named scope -- see KNOWN_ISSUES.md's
-/// weight-builders entry. Skip the Device-mode row with that citation
-/// rather than report a `pack_to` failure that isn't one.
+/// space is exercised by the checks below. `MeshArrays<MemorySpace>`'s
+/// multi-dimensional fields (`vertex_coords`, a `double*[3]`) have their layout
+/// pinned, because `Kokkos::View`'s PER-SPACE default layout differs (LayoutLeft
+/// on Cuda, LayoutRight on Host/OpenMP for a rank >= 2 view) and
+/// `Kokkos::deep_copy` across both a different memory space AND a different
+/// layout in one call has "no available copy mechanism".
 template <class Space>
 void check_migration_pack_matches_host(const char* generator_spec) {
   auto arrays = generate_native_mesh(generator_spec, /*rank=*/0, /*num_ranks=*/1);
@@ -96,8 +84,8 @@ void check_migration_pack_matches_host(const char* generator_spec) {
   const auto expected = pack_for_migration(*view.value(), dest_host, /*num_ranks=*/3);
   ASSERT_TRUE(expected.ok()) << expected.error().message;
 
-  // KNOWN_ISSUES.md D54 (fixed): a host -> device copy of the rank-2
-  // vertex_coords used to throw on the layout change; the layout is pinned now.
+  // A host -> device copy of the rank-2 vertex_coords must not throw on
+  // the layout change; the layout is pinned.
   const MeshArrays<Space> device_mesh = to_memory_space<Space>(arrays.value());
   const auto dest = dest_view<Space>(dest_host);
   auto got = device::pack_to<false, Space>(device_mesh, dest, 3);
@@ -130,8 +118,8 @@ void check_halo_pack_matches_host(const char* generator_spec) {
   const auto expected =
       pack_halo_cells(*view.value(), send_by_local_index, owned_idx_host, /*my_rank=*/5, 3);
 
-  // KNOWN_ISSUES.md D54 (fixed): a host -> device copy of the rank-2
-  // vertex_coords used to throw on the layout change; the layout is pinned now.
+  // A host -> device copy of the rank-2 vertex_coords must not throw on
+  // the layout change; the layout is pinned.
   const MeshArrays<Space> device_mesh = to_memory_space<Space>(arrays.value());
   const auto dest = dest_view<Space>(dest_of_owned);
   std::vector<std::int32_t> owner_rank_host(nowned, 5);

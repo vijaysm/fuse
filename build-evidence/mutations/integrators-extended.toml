@@ -1,13 +1,13 @@
-# S8 physics-kit, track "Integrators", Stage B Round 2 (docs/dev/integrators-design.md):
-# mutation rows for every Round 2 refusal path, the new tableaus, the self-found/
-# self-fixed order-condition-checker bug, the Rosenbrock jacobian_action() dispatch,
-# and the SSP-coefficient computation. Each proved by tools/mutate.py against this
-# round's own build-tier0 (MEASURED).
+# Integrators, extended families (docs/dev/integrators-design.md):
+# mutation rows for the DIRK, Rosenbrock, SSP and dense-output refusal paths, the
+# additional tableaus, the order-condition-checker product-form bug, the Rosenbrock
+# jacobian_action() dispatch, and the SSP-coefficient computation. Each proved by
+# tools/mutate.py against build-tier0 (MEASURED).
 
 [[mutation]]
 id = "integrators-esdirk324l2sa-coefficient-perturbation"
 area = "num"
-describes = "perturbs esdirk324l2sa_tableau()'s own A[2][1] (the stage-3, column-2 implicit coefficient, -640167445237/6845629431997 = -0.09354) by roughly 2 percent -- the order checker reads A and B only (C is metadata for the non-autonomous rhs evaluation here, not re-derived from row sums), so RoundTwoTableaus.EveryNewTableauSatisfiesExactlyItsDeclaredOrder (order_conditions_test.cpp) catches the broken order-3 condition this introduces -- a same-sized perturbation of C alone, tried first, is invisible to this test for exactly that reason, which is why this row targets A instead."
+describes = "perturbs esdirk324l2sa_tableau()'s own A[2][1] (the stage-3, column-2 implicit coefficient, -640167445237/6845629431997 = -0.09354) by roughly 2 percent -- the order checker reads A and B only (C is metadata for the non-autonomous rhs evaluation here, not re-derived from row sums), so ExtendedTableaus.EveryNewTableauSatisfiesExactlyItsDeclaredOrder (order_conditions_test.cpp) catches the broken order-3 condition this introduces -- a same-sized perturbation of C alone, tried first, is invisible to this test for exactly that reason, which is why this row targets A instead."
 file = "include/fuse/num/butcher_tableau.hpp"
 old = "      {2746238789719.0 / 10658868560708.0, -640167445237.0 / 6845629431997.0, gamma, 0.0},"
 new = "      {2746238789719.0 / 10658868560708.0, -640167445237.0 / 6845629431997.0 * 1.02, gamma, 0.0},"
@@ -17,7 +17,7 @@ test = "num.order_conditions"
 [[mutation]]
 id = "integrators-ssprk33-coefficient-perturbation"
 area = "num"
-describes = "perturbs ssprk33_tableau()'s own B[2] from 2/3 to 0.7 -- sum(B) no longer equals 1, breaking the order-1 condition RoundTwoTableaus.EveryNewTableauSatisfiesExactlyItsDeclaredOrder checks for every Round 2 tableau including SSPRK33."
+describes = "perturbs ssprk33_tableau()'s own B[2] from 2/3 to 0.7 -- sum(B) no longer equals 1, breaking the order-1 condition ExtendedTableaus.EveryNewTableauSatisfiesExactlyItsDeclaredOrder checks for every additional tableau including SSPRK33."
 file = "include/fuse/num/butcher_tableau.hpp"
 old = "  t.B = std::vector<double>{1.0 / 6.0, 1.0 / 6.0, 2.0 / 3.0};"
 new = "  t.B = std::vector<double>{1.0 / 6.0, 1.0 / 6.0, 0.7};"
@@ -27,7 +27,7 @@ test = "num.order_conditions"
 [[mutation]]
 id = "integrators-ssprk104-order4-perturbation"
 area = "num"
-describes = "SSPRK104's own derived Butcher form (ssprk104_tableau()'s own A, hand-expanded from the Shu-Osher recursion by exact Fraction arithmetic per its own doc comment) is exercised by RoundTwoTableaus.Ssprk104SatisfiesOrderFourConditions through order 4; this row perturbs ssprk104_tableau()'s OWN local h6 constant (NOT the separate, same-named constant inside ssp_coefficient.hpp's ssprk104_shu_osher(), which this round's first attempt at this row mutated instead and found did not reach the A actually used by the order checker) from 1/6 to 0.17, breaking every order condition above order 1."
+describes = "SSPRK104's own derived Butcher form (ssprk104_tableau()'s own A, hand-expanded from the Shu-Osher recursion by exact Fraction arithmetic per its own doc comment) is exercised by ExtendedTableaus.Ssprk104SatisfiesOrderFourConditions through order 4; this row perturbs ssprk104_tableau()'s OWN local h6 constant (NOT the separate, same-named constant inside ssp_coefficient.hpp's ssprk104_shu_osher(), which does not reach the A actually used by the order checker) from 1/6 to 0.17, breaking every order condition above order 1."
 file = "include/fuse/num/butcher_tableau.hpp"
 old = "  constexpr double h6 = 1.0 / 6.0;\n  constexpr double h15 = 1.0 / 15.0;  // (2/5)*h6"
 new = "  constexpr double h6 = 0.17;\n  constexpr double h15 = 1.0 / 15.0;  // (2/5)*h6"
@@ -37,7 +37,7 @@ test = "num.order_conditions"
 [[mutation]]
 id = "integrators-order-condition-product-form-regression"
 area = "num"
-describes = "reintroduces the self-found/self-fixed order-condition-checker bug (docs/dev/integrators-design.md's own Round 2 finding): replaces the per-child independently-summed PRODUCT recursion `Phi_i(t) = PRODUCT_k (sum_j m[i][j]*Phi_j(child_k))` with a single shared-sum recursion that collapses every multi-child tree to the same value as a single-child one -- OrderConditions.PerChildProductMatchesTheLiteratureConditions (the test added specifically to catch this class of bug) fails."
+describes = "reintroduces an order-condition-checker bug that was found and fixed (see docs/dev/integrators-design.md): replaces the per-child independently-summed PRODUCT recursion `Phi_i(t) = PRODUCT_k (sum_j m[i][j]*Phi_j(child_k))` with a single shared-sum recursion that collapses every multi-child tree to the same value as a single-child one -- OrderConditions.PerChildProductMatchesTheLiteratureConditions (the test added specifically to catch this class of bug) fails."
 file = "include/fuse/num/order_conditions.hpp"
 old = '''    for (std::size_t i = 0; i < n_stages; ++i) {
       double prod = 1.0;
@@ -65,7 +65,7 @@ test = "num.order_conditions"
 [[mutation]]
 id = "integrators-sdirk44-order-regression"
 area = "num"
-describes = "reverts SDIRK44's own Round 2 correction (order 4 -> 3, KNOWN_ISSUES.md D98) back to the originally-shipped (wrong) order=4 -- OrderConditions.Sdirk44sDeclaredOrderIsCorrectedFromFourToThree fails since it asserts order()==3 AND that the order-4 condition's own defect is non-trivial."
+describes = "reverts SDIRK44's own correction (order 4 -> 3) back to the originally-shipped (wrong) order=4 -- OrderConditions.Sdirk44sDeclaredOrderIsCorrectedFromFourToThree fails since it asserts order()==3 AND that the order-4 condition's own defect is non-trivial."
 file = "include/fuse/num/butcher_tableau.hpp"
 old = '''  t.name = "SDIRK44";
   t.family = ButcherFamily::Sdirk;
@@ -110,11 +110,11 @@ file = "include/fuse/num/dirk_integrator.hpp"
 old = '''        if (problem.has_mass()) {
           return Failure{kWrongFamilyCode,
                          "DirkIntegrator::step: an explicit (zero-diagonal) stage with a "
-                         "mass matrix needs a linear mass-solve this round does not '''
+                         "mass matrix needs a linear mass-solve that is not '''
 new = '''        if (false && problem.has_mass()) {
           return Failure{kWrongFamilyCode,
                          "DirkIntegrator::step: an explicit (zero-diagonal) stage with a "
-                         "mass matrix needs a linear mass-solve this round does not '''
+                         "mass matrix needs a linear mass-solve that is not '''
 target = "fuse_num_dirk_integrator_test"
 test = "num.dirk_integrator"
 
@@ -159,7 +159,7 @@ test = "num.rosenbrock_integrator"
 [[mutation]]
 id = "integrators-rosenbrock-stage-solve-failed-refusal"
 area = "num"
-describes = "removes RosenbrockIntegrator::step's own refusal when a stage's GMRES solve fails (E-INTEGRATOR-STAGE-SOLVE-FAILED) by ignoring gr.ok() and folding whatever k_i holds into the step. SURVIVED in round 2 (the track described the refusal as load-bearing but no test fired it); killed since 2026-10-31 by RosenbrockIntegrator.StageSolveFailureIsRefusedNotFoldedIntoTheStep, which exhausts a one-step GMRES budget on a 2x2 system with complex eigenvalues and asserts the named refusal and an unchanged state."
+describes = "removes RosenbrockIntegrator::step's own refusal when a stage's GMRES solve fails (E-INTEGRATOR-STAGE-SOLVE-FAILED) by ignoring gr.ok() and folding whatever k_i holds into the step. Killed by RosenbrockIntegrator.StageSolveFailureIsRefusedNotFoldedIntoTheStep, which exhausts a one-step GMRES budget on a 2x2 system with complex eigenvalues and asserts the named refusal and an unchanged state."
 file = "include/fuse/num/rosenbrock_integrator.hpp"
 old = '''      if (!gr.ok()) {
         return Failure{kStageSolveFailedCode,
@@ -179,7 +179,7 @@ test = "num.rosenbrock_integrator"
 [[mutation]]
 id = "integrators-ssp-coefficient-hardcoded-regression"
 area = "num"
-describes = "reintroduces the self-found/self-fixed ssp_coefficient defect (docs/dev/integrators-design.md's own Round 2 finding): replaces SSPRK104's own COMPUTED ssp_coefficient (from ssp_coefficient_from_shu_osher(), evaluating to 6.0) with a hardcoded literal 1.0 -- the monotonicity test (ExplicitIntegrator.SspMethodsPreserveMonotonicityWithinTheirCoefficientAndViolateItBeyond), which steps at 0.9*C*h_FE and 1.5*C*h_FE using the tableau's OWN ssp_coefficient field, now tests the wrong step sizes and the 'violate beyond' half of the test fails (1.5*1.0*h_FE is comfortably inside SSPRK104's real monotonicity region of C=6, so no violation occurs where one is asserted)."
+describes = "reintroduces an ssp_coefficient defect that was found and fixed (see docs/dev/integrators-design.md): replaces SSPRK104's own COMPUTED ssp_coefficient (from ssp_coefficient_from_shu_osher(), evaluating to 6.0) with a hardcoded literal 1.0 -- the monotonicity test (ExplicitIntegrator.SspMethodsPreserveMonotonicityWithinTheirCoefficientAndViolateItBeyond), which steps at 0.9*C*h_FE and 1.5*C*h_FE using the tableau's OWN ssp_coefficient field, now tests the wrong step sizes and the 'violate beyond' half of the test fails (1.5*1.0*h_FE is comfortably inside SSPRK104's real monotonicity region of C=6, so no violation occurs where one is asserted)."
 file = "include/fuse/num/butcher_tableau.hpp"
 old = "  t.ssp_coefficient = ssp_coefficient_from_shu_osher(ssprk104_shu_osher());"
 new = "  t.ssp_coefficient = 1.0;"

@@ -1,6 +1,6 @@
 # Mutation evidence — `base`
 
-Run 2026-09-20 against build `build-fuse-s1`. Regenerate with `tools/mutate.py --write-log`; do not edit.
+Run against build `build-fuse-s1`. Regenerate with `tools/mutate.py --write-log`; do not edit.
 
 | Mutation | File | Outcome | Killed by |
 |---|---|---|---|
@@ -17,6 +17,6 @@ Run 2026-09-20 against build `build-fuse-s1`. Regenerate with `tools/mutate.py -
 | `error-assert-compiled-out` — FUSE_ASSERT becomes a no-op (the `assert` it replaces) | `include/fuse/base/error.hpp` | **KILLED** (test fails) | `base.error` |
 | `error-slices-to-base` — raise() throws the Error base, so catch(const Refusal&) is dead | `include/fuse/base/error.hpp` | **KILLED** (test fails) | `base.error` |
 | `rational-try-skips-the-fit-check` — the non-throwing arithmetic stops checking that the reduced result fits, so an overflowing value narrows silently instead of reporting -- and the throwing operators inherit it, since they are layered on this | `include/fuse/base/rational.hpp` | **KILLED** (test fails) | `base.rational` |
-| `rational-lcm-denominator-overflows` — lcm_denominator() reverts to the direct int64_t std::lcm call, reintroducing the overflow gcd_rational's sibling fix removed (R-15) | `include/fuse/base/rational.hpp` | **KILLED** (test fails) | `base.rational` |
+| `rational-lcm-denominator-overflows` — lcm_denominator() reverts to a direct int64_t computation (multiply before dividing by the gcd -- std::lcm's own exposed formula, without the Int128 width), reintroducing the overflow gcd_rational's sibling fix removed | `include/fuse/base/rational.hpp` | **KILLED** (test fails) | `base.rational` |
 
 **14 killed / 14 total.**

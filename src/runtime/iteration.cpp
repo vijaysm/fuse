@@ -113,11 +113,11 @@ namespace {
   return Failure{fallback, d.to_string()};
 }
 
-/// S7.2b (PetscSelect track): `fuse::NewtonSubstrate` (fuse/model/
+/// Converts `fuse::NewtonSubstrate` (fuse/model/
 /// iteration.hpp) to `fuse::num::NewtonSubstrate` (fuse/num/
-/// newton_krylov.hpp), the registry's own key type -- moved ahead of
+/// newton_krylov.hpp), the registry's own key type -- placed ahead of
 /// `resolve_regions()` below (which needs it, through `resolve_newton_
-/// substrate()` immediately below this), rather than left alongside
+/// substrate()` immediately below this), rather than alongside
 /// `to_num_line_search_kind()`/`to_num_ew_choice()` further down this
 /// file (those two are read only from `newton_options_from_config()`,
 /// called only from `run_region_newton()`/`run_region_newton_window()`,
@@ -131,7 +131,7 @@ namespace {
   return num::NewtonSubstrate::Native;
 }
 
-/// S7.2b: looks up the registered solve entry point for `region_name`'s
+/// Looks up the registered solve entry point for `region_name`'s
 /// own `substrate`, or refuses `E-NEWTON-PETSC-UNAVAILABLE` naming the
 /// region when none is registered (the ONLY way this can happen for
 /// `NewtonSubstrate::Native`, which `fuse::num`'s own registry registers
@@ -166,7 +166,7 @@ namespace {
   return fn;
 }
 
-/// NewtonModel track (2026-10-12): which component provides, and which
+/// Records which component provides, and which
 /// consumes, each of a Newton region's own `RegionBlock`s -- needed both
 /// by `NewtonResidualPath::Direct` (to call the right component's own
 /// `evaluate_residual()` for each block's own role) and by the ordinary
@@ -213,7 +213,7 @@ resolve_newton_block_endpoints(const CouplingGraph& graph,
 /// `ComponentSet` is keyed by name, not by the graph's own `ComponentId`
 /// ordinals (the resolution `window_member_config`'s own build loop, above
 /// in this file, already uses) -- this is the identical lookup, factored
-/// out for the two NEW call sites this track adds (block-Jacobi provider
+/// out for its two call sites (block-Jacobi provider
 /// resolution and `NewtonResidualPath::Direct` member resolution), neither
 /// of which may assume slot == ComponentId::value().
 [[nodiscard]] std::optional<std::size_t> find_component_slot_by_name(
@@ -224,7 +224,7 @@ resolve_newton_block_endpoints(const CouplingGraph& graph,
   return std::nullopt;
 }
 
-/// NewtonModel track: the diagonal `D*J` needs for GMRES to stay
+/// The diagonal `D*J` needs for GMRES to stay
 /// well-conditioned is `(D*J)^-1 = J^-1 * D^-1`; a block-Jacobi
 /// preconditioner `inner` approximates `J^-1` already (`apply(r) ~=
 /// J^-1 r`), so the scaled solve's own preconditioner is `inner(D^-1 *
@@ -261,8 +261,8 @@ resolve_newton_block_endpoints(const CouplingGraph& graph,
 }  // namespace
 
 // ---------------------------------------------------------------------------
-// NewtonModel track (2026-10-12): the setup-time builders resolve_regions()
-// below calls for a Newton region naming NewtonNorm::MeasureWeighted or
+// Setup-time builders that resolve_regions() below calls for a Newton
+// region naming NewtonNorm::MeasureWeighted or
 // NewtonResidualPath::Direct.
 // ---------------------------------------------------------------------------
 
@@ -377,7 +377,7 @@ Result<std::vector<double>> Runner::Impl::build_newton_measure_weights(
     const std::size_t capacity =
         (window_scoped && b.window_export_capacity > 0) ? b.window_export_capacity : 1;
 
-    // GAP 1 (Round 2 review) fix: `weights_for()` is called just above
+    // `weights_for()` is called just above
     // with `elements = slots[b.feed_arc].elements` and `components =
     // slots[b.feed_arc].components` -- for a window-scoped consumer arc
     // those are the MESH's own entity count and `field_components *
@@ -389,16 +389,12 @@ Result<std::vector<double>> Runner::Impl::build_newton_measure_weights(
     // w.push_back(m)`) -- `w_base.size() == b.length` already, the
     // window dimension folded in once, not `b.length / capacity`.
     // Treating `w_base` as purely spatial and re-expanding by `capacity`
-    // a SECOND time (this function's own earlier version) double-counted
-    // the window dimension: EVERY window-scoped NewtonNorm::
-    // MeasureWeighted region with a real multi-sample window (capacity >
-    // 1, i.e. every window this track's own synthetic single-sample test
-    // fixtures never exercised) refused with E-NEWTON-NORM-SCALE before
-    // this fix -- found here, against the real Brusselator example, by
-    // this gap's own verification test
-    // (test/verification/brusselator_newton_norm_test.cpp). An ordinary
-    // (non-window) block is unaffected: `capacity` is always 1 there, so
-    // `w_base.size() == spatial_len` exactly as before.
+    // a SECOND time would double-count the window dimension: EVERY
+    // window-scoped NewtonNorm::MeasureWeighted region with a real
+    // multi-sample window (capacity > 1) would refuse with
+    // E-NEWTON-NORM-SCALE. An ordinary (non-window) block is unaffected:
+    // `capacity` is always 1 there, so `w_base.size() == spatial_len`
+    // exactly.
     if (w_base.size() != b.length) {
       return Failure{"E-NEWTON-NORM-SCALE",
                    "iteration region '" + region_name + "': block '" +
@@ -413,7 +409,7 @@ Result<std::vector<double>> Runner::Impl::build_newton_measure_weights(
     // window sample" true today (this function no longer re-derives it
     // by construction the way the removed manual expansion loop did) --
     // a future change to that function's own loop order would silently
-    // break the uniformity this track's own formula and tests both rely
+    // break the uniformity the formula and tests both rely
     // on, so it is checked here rather than trusted.
     if (window_scoped && capacity > 1) {
       for (std::size_t e = 0; e * capacity < w_base.size(); ++e) {
@@ -588,7 +584,7 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
     R.max_iterations = reg.max_iterations;
     R.convergence = decl.convergence;
 
-    // THE GATE (spec Section 5.3, Task 7.2). This is the only call site of
+    // THE GATE (spec Section 5.3). This is the only call site of
     // verify_iteration_region(), and it is why IterationRegionDecl carries a
     // ConvergenceCriterion at all: without the field there is nowhere for the
     // criterion to live, so the E-ITER-NOCONVERGE check could never run and a
@@ -631,15 +627,15 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
     }
 
     // --- every contiguous pass over the body --------------------------------
-    // Moved ahead of the participant computation below (it used to follow):
-    // that computation now needs [R.enter, R.exit] to see every Transport
+    // Placed ahead of the participant computation below:
+    // that computation needs [R.enter, R.exit] to see every Transport
     // and Epoch INSIDE the region body, not only the checkpointed
     // components' own declared ranks.
     //
-    // Time windows track: an ORDINARY region's own clock ticks once per
+    // An ORDINARY region's own clock ticks once per
     // schedule period by construction, so mark_regions() (src/schedule/
     // scheduler.cpp) stamps exactly one (enter, exit) run for it and the
-    // check below is unchanged from before this track. A WINDOW-scoped
+    // check below applies directly. A WINDOW-scoped
     // region's own window may tick several times per period (a 7:13 ratio
     // ticks `period / window_length` times), so its body legitimately
     // appears as that many SEPARATE runs -- each is its own pass, with its
@@ -693,7 +689,7 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
     R.enter = R.passes.front().first;
     R.exit = R.passes.front().second;
 
-    // Time windows track (C3): resolve every window member's own static
+    // Resolve every window member's own static
     // config -- window_member_config's own comment (runner_impl.hpp) --
     // from the graph alone. Every pass of a window-scoped region repeats
     // the identical instruction shape (only `dst_step`/`time` differ), so
@@ -708,7 +704,7 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
     // directly: the lookup there walks back through any interposed
     // single-input, size-preserving node first (the Brusselator's own
     // graph puts exactly one `OpKind::Interpolate` resample between the
-    // two, measured 2026-10-03 -- a shape-PRESERVING resample for an
+    // two -- a shape-PRESERVING resample for an
     // identity transfer with no real fuse::Remap, brusselator_graph.
     // hpp's own "WHY BOTH TRANSFER FIELDS LIVE ON u_region" comment, not
     // a no-op alias, so the two arc ids genuinely differ).
@@ -731,32 +727,26 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
     // the window-start sample before norming, matching the driver's own
     // named-measure residual (`WindowCoupler::sweep_window()`'s own
     // comment: "ONLY that channel's CONSUMER's own flat slice", sized
-    // to EXACTLY `steps[consumer].size()`, never +1). MEASURED,
-    // 2026-10-03 (this delegation's own report), against the
-    // Brusselator's own window 20, sweep k=1 -- pairing each side's own
-    // measure by its NUMERIC VALUE, not by channel label, since the two
+    // to EXACTLY `steps[consumer].size()`, never +1). Against the
+    // Brusselator's own window 20, sweep k=1, each side's own measure is
+    // paired by its NUMERIC VALUE, not by channel label, since the two
     // sides name the same pair of quantities in SWAPPED order (the
-    // Runner's own block for channel `u2v` holds U's own export, the
-    // SAME quantity the driver's own "v_out"-named measure reads via
-    // channel `v2u`'s consumer being U -- `WindowCoupler::sweep_window
-    // ()`'s own "each measure is tested against the residual of the
-    // field transfer it names, as the Runner does" comment describes
-    // the FORMULA, not this index correspondence): before this fix, the
-    // Runner's own u2v block (element length 256, capacity 11) summed
-    // 2816 entries against the driver's own paired measure's 2560
-    // (element length 256, 10 substeps) -- 256 too many, i.e. exactly
-    // one extra entry per element, the window-start sample; the two
-    // sides' own `ref` hexfloats disagreed from the third significant
-    // hex digit on (`0x1.6be7e489b2a8cp+5` vs `0x1.5b510b3c3ad89p+5`).
-    // After this fix, stripping that one entry, the two sides' own
-    // `res`/`ref` are bit-for-bit identical at every sweep k>=1 of
-    // window 20, and `BrusselatorRunner.{Jacobi,GaussSeidel}
-    // MatchesDriver` (test/verification/brusselator_runner_test.cpp)
-    // pass EXPECT_EQ over the full 150-window span with the real
-    // stopping rule, both waveform iterations.
-    // Unit 2b (D19), step (c), CORRECTED (measured against a real host
-    // MPI run of `parallel.window_runner_mpi.{2,3}`, 2026-10-08): the
-    // third field is `hosted`, but it must be the CONSUMER's own
+    // Runner's own block for channel `u2v` holds U's own export, the SAME
+    // quantity the driver's own "v_out"-named measure reads via channel
+    // `v2u`'s consumer being U -- `WindowCoupler::sweep_window()`'s own
+    // "each measure is tested against the residual of the field transfer
+    // it names, as the Runner does" comment describes the FORMULA, not
+    // this index correspondence). Without the strip, the Runner's own u2v
+    // block (element length 256, capacity 11) would sum 2816 entries
+    // against the driver's own paired measure's 2560 (element length 256,
+    // 10 substeps) -- one extra entry per element, the window-start
+    // sample. With it, the two sides' own `res`/`ref` are bit-for-bit
+    // identical at every sweep k>=1 of window 20, and
+    // `BrusselatorRunner.{Jacobi,GaussSeidel}MatchesDriver`
+    // (test/verification/brusselator_runner_test.cpp) pass EXPECT_EQ over
+    // the full 150-window span with the real stopping rule, both waveform
+    // iterations.
+    // The third field is `hosted`, but it must be the CONSUMER's own
     // hosting -- `WindowMemberConfig::export_consumer_hosted`, that
     // struct's own comment has the full measured account -- never this
     // EXPORTING member's own `WindowMemberConfig::hosted`. A window
@@ -804,7 +794,7 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
 
         WindowMemberConfig cfg;
         cfg.component_slot = slot;
-        // Unit 2b (D19): the IDENTICAL formula build_ticks()'s own
+        // The IDENTICAL formula build_ticks()'s own
         // `hosted[]` uses for ordinary ticks, read from the SAME
         // `this_process` member (set once, there, before resolve_regions()
         // ever runs -- Runner::initialize()'s own call order).
@@ -862,7 +852,7 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
             cfg.provider_capacity = window_sample_capacity(
                 cfg.window_length, cfg.provider_interval, cfg.provider_policy);
 
-            // Time windows track: resolve_pending_window_straddles() (this
+            // resolve_pending_window_straddles() (this
             // function's own sibling, below) publishes a straddling
             // provider's real post-replay value straight into THIS
             // consumer's own `window_import` arc, bypassing Transport/
@@ -917,8 +907,8 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
         // participant registers its own storage and has never heard of
         // the other programs' arrays. Resolving every member's storage on
         // every rank therefore refused `E-FIELD-UNBOUND` ("field 2 is not
-        // bound") from the first MPMD run that got this far (host,
-        // 2026-10-09, from U and from the coupler at once). It went
+        // bound") from the first MPMD run that got this far (
+        // from U and from the coupler at once). It went
         // unseen in `parallel.window_runner_mpi` because that test's
         // ComponentSet holds EVERY component on every rank, so everything
         // is bound everywhere -- a shape no real multi-executable run has.
@@ -940,7 +930,7 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
                              "support"};
           }
           // The registered storage must be the field's size on this
-          // rank. Measured on the host 2026-10-09: two participant
+          // rank. In an MPMD run, two participant
           // programs registered 9-element buffers (a stale 3x3 grid
           // constant) against 256-cell fields, nothing refused it, and
           // the priming below -- whose own guard `export_slot.total() ==
@@ -984,7 +974,7 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
           R.window_lagged_import_arcs.push_back(cfg.window_import);
         }
 
-        // Cold start (the user's ruling): before window 0 ever runs, a
+        // Cold start: before window 0 ever runs, a
         // consumer's import must read the provider's own registered
         // INITIAL value, held constant -- exactly what an ORDINARY
         // (non-window) lag(1) channel already gets for free, because its
@@ -993,7 +983,7 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
         // value there IS the registered initial condition from the
         // moment register_fields() ran, with no separate buffer to
         // prime. This member's own K-wide EXPORT arc (`ins.out`) is NOT
-        // such an alias (the C3 buffer-ownership fix, the `/window`-
+        // such an alias (the `/window`-
         // labelled Sink, plan_buffers.cpp) -- it is a genuinely
         // separate, coupler-owned buffer -- so it is primed explicitly
         // here, once, at setup, to this member's own `cfg.provided`
@@ -1003,28 +993,24 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
         // including the field-transfer chain, ever runs -- has
         // something real to see on window 0's own sweep 0, before that
         // chain has delivered anything). A CONSUMER's own K-wide IMPORT
-        // arc (`cfg.window_import`) is primed too, but not here: Unit 2b
-        // (D19), step (b) moved that to a SECOND pass over this same
-        // region's own members, below, once every member's own export
-        // (this block, for every one of them) is guaranteed primed --
-        // see that pass's own top comment for why.
-        // Unit 2b (D19), step (b) correction (the lead's own addendum,
-        // 2026-10-03): gated on `cfg.hosted`. THIS member's own
-        // `cfg.provided` is read from THIS rank's own local
-        // `registry.get(exported_field)` a few lines above -- which,
-        // on a rank that does not host this member, is whatever an
-        // externally-driven stand-in's own placeholder storage holds,
-        // NOT a reliable mirror of the real, hosted value (the exact
-        // gap step (a) already exists to stop pretending otherwise for
-        // this member's own PHYSICS; priming its EXPORT arc from that
-        // same unreliable storage here would be the identical mistake
-        // one step removed). Priming only where hosted leaves `ins.out`
-        // on every OTHER rank at whatever default the slot already
-        // has; those ranks never need it to be meaningful locally --
-        // the pass below delivers the correct, HOSTED value to
-        // whichever rank's own `window_import` needs it, through a
-        // real Transport, not by every rank separately guessing at its
-        // own copy of someone else's state.
+        // arc (`cfg.window_import`) is primed too, but not here: it is primed
+        // in a SECOND pass over this same region's own members, below, once
+        // every member's own export (this block, for every one of them) is
+        // guaranteed primed -- see that pass's own top comment for why. Gated
+        // on `cfg.hosted`. THIS member's own `cfg.provided` is read from THIS
+        // rank's own local `registry.get(exported_field)` a few lines above --
+        // which, on a rank that does not host this member, is whatever an
+        // externally-driven stand-in's own placeholder storage holds, NOT a
+        // reliable mirror of the real, hosted value (the exact gap the hosting
+        // check on advance() already exists to avoid for this member's own
+        // PHYSICS; priming its EXPORT arc from that same unreliable storage
+        // here would be the identical mistake one step removed). Priming only
+        // where hosted leaves `ins.out` on every OTHER rank at whatever default
+        // the slot already has; those ranks never need it to be meaningful
+        // locally -- the pass below delivers the correct, HOSTED value to
+        // whichever rank's own `window_import` needs it, through a real
+        // Transport, not by every rank separately guessing at its own copy of
+        // someone else's state.
         if (cfg.hosted && cfg.provided != nullptr && ins.out.valid() &&
             ins.out.value() < slots.size()) {
           detail::Slot& export_slot = slots[ins.out.value()];
@@ -1038,7 +1024,7 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
           }
         }
 
-        // Restart track (docs/dev/restart.md Section 9 item 4): stash the
+        // Stash the
         // SAME exported_field this function already resolved above, so
         // restart's own orchestration (Runner::write_restart_fields()/
         // restore_restart_fields(), src/runtime/runner.cpp) can find
@@ -1047,7 +1033,7 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
         window_member_config[node] = cfg;
         R.window_member_nodes.push_back(NodeId{node});
 
-        // Unit 3: Runner::field_window_view()'s own lookup, keyed by the
+        // For Runner::field_window_view()'s own lookup, keyed by the
         // field the ABI caller actually names rather than this node.
         // `exported_field` is the SAME FieldId this function already
         // resolved a few lines above; `ins.out` is this member's own
@@ -1085,34 +1071,26 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
                   sink_candidate.output.valid() &&
                   sink_candidate.output.value() == cfg.window_import.value() &&
                   !sink_candidate.inputs.empty()) {
-                // Unit 3 (S6 phase 3, Conformance): walk ALL the way
+                // Walk ALL the way
                 // back to this chain's own TRUE root (ExternalDelivery,
                 // by construction for a LowFive-bound channel's
                 // chain_entry_arc, src/ir/rules_channel.cpp -- its own
                 // `source_producer` input, include/fuse/ir/op.hpp's own
                 // comment on that node, is an ordering edge this walk
                 // must NOT follow, the loop below's own stop condition)
-                // -- NOT just one hop past the Sink. One hop was
-                // correct when this fix (f7fc3dc)
-                // landed, because Constrain/Diagnose were never
-                // emitted for a LowFive channel then (insert_derived_
-                // ops()'s own channel_chain() silently found no nodes,
-                // Finding C, src/ir/rules_derived.cpp): the Sink's own
-                // direct input WAS the ExternalDelivery arc. After
-                // that fix, Constrain/Diagnose sit between Remap and
-                // the Sink, so the Sink's own direct input is
-                // Diagnose's OUTPUT -- an arc OpKind::Diagnose's own
-                // execute() case (runner.cpp) overwrites every sweep
-                // with `num::copy()` from ITS OWN input, discarding
-                // anything an application wrote there between
-                // sweeps. MEASURED (this session's own report): the
-                // Brusselator LowFive harness's own residual/reference
-                // norms for the channel this broke stuck at EXACTLY
-                // `0x0p+0` every sweep, because the application's
-                // write (through the WRONG arc this one-hop walk
-                // handed it) never reached the real ExternalDelivery
-                // arc at all, which stayed at its own unwritten
-                // (zero) default while Diagnose kept copying from it.
+                // -- NOT just one hop past the Sink. Constrain/Diagnose sit
+                // between Remap and the Sink for a LowFive channel, so the
+                // Sink's own direct input is Diagnose's OUTPUT -- an arc
+                // OpKind::Diagnose's own execute() case (runner.cpp)
+                // overwrites every sweep with `num::copy()` from ITS OWN
+                // input, discarding anything an application wrote there
+                // between sweeps. A one-hop walk would hand the application
+                // that WRONG arc: the Brusselator LowFive harness's own
+                // residual/reference norms for the channel would stick at
+                // EXACTLY `0x0p+0` every sweep, because the application's
+                // write never reaches the real ExternalDelivery arc, which
+                // stays at its own unwritten (zero) default while Diagnose
+                // keeps copying from it.
                 ArcId walk = sink_candidate.inputs.front();
                 while (true) {
                   const NodeId producer = dag.arc(walk).producer;
@@ -1141,7 +1119,7 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
                   walk = producer_node.inputs.front();
                 }
                 import_view_arc = walk;
-                // The general lesson this fix is one instance of: the
+                // General rule: the
                 // application's own arc is always the chain's TRUE
                 // ROOT -- the arc an `ExternalDelivery` node's own
                 // execute() case never writes, so only the application
@@ -1157,7 +1135,7 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
             }
           }
           window_import_field_arc[imported_field.value()] = import_view_arc;
-          // Unit 3 (S6 phase 3, Conformance): `cfg` here is the SAME
+          // `cfg` here is the SAME
           // local variable already copied into `window_member_config[
           // node]` above (this function's own line, before this block),
           // so mutating `cfg` itself from this point on would not reach
@@ -1185,7 +1163,7 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
         }
       }
 
-      // Unit 2b (D19), step (b) -- PRIMING THROUGH THE TRANSFER. A
+      // PRIMING THROUGH THE TRANSFER. A
       // second pass over this SAME region's own window members, in the
       // SAME stream order every rank already traverses identically
       // (the pass just above): by now every member's own EXPORT arc
@@ -1206,11 +1184,11 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
       // Transport when provider and consumer are on different ranks;
       // a local copy otherwise), never a direct
       // `registry.get(provider_exported_field)` read of the PROVIDER's
-      // own FieldRegistry entry (KNOWN_ISSUES.md D19, evidence 3) --
+      // own FieldRegistry entry --
       // which is only ever the provider's own local, same-process copy
       // and, on a rank that does not host the provider, is not even
-      // guaranteed to be kept current by anything (Unit 2b, step (a)'s
-      // own hosting check stops calling that provider's `advance()`
+      // guaranteed to be kept current by anything (the
+      // hosting check stops calling that provider's `advance()`
       // there at all).
       //
       // SAFE from `SpacetimeInfo::history` reading stale/zero data (a
@@ -1230,17 +1208,13 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
       // incremental history for a window channel to depend on in the
       // first place.
       //
-      // NOT YET INDEPENDENTLY VERIFIED: that re-running `OpKind::Epoch`
-      // (a real cross-rank `reconcile_epoch()` agreement) and
-      // `OpKind::Transport` here, once per channel, extra, ahead of
-      // `run_region()`'s own first real sweep, is collective-safe
-      // across actual MPI ranks. The argument is that every rank reaches
-      // this SAME pass, over the SAME compiled stream, in the SAME
-      // order (nothing here branches on `cfg.hosted` or on which rank
-      // this is), so the call is matched identically everywhere -- but
-      // this sandbox cannot run multi-rank MPI, so this is a claim, not
-      // a demonstrated fact. Flagged for `verification.window.mpi.{2,3}`
-      // (step (e)) to confirm or refute.
+      // Re-running `OpKind::Epoch` (a real cross-rank `reconcile_epoch()`
+      // agreement) and `OpKind::Transport` here, once per channel, extra,
+      // ahead of `run_region()`'s own first real sweep, is collective-safe
+      // across MPI ranks because every rank reaches this SAME pass, over
+      // the SAME compiled stream, in the SAME order (nothing here branches
+      // on `cfg.hosted` or on which rank this is), so the call is matched
+      // identically everywhere.
       for (std::size_t i = R.enter; i <= R.exit; ++i) {
         const Instruction& ins = stream[i];
         if (ins.kind != OpKind::WindowAdvance) continue;
@@ -1256,7 +1230,7 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
         // `cfg.required` is NOT such a condition: since the binding above
         // became per-hosting it is null on every rank that does not host
         // this member, and `continue`-ing on it here sent the hosting ranks
-        // into the collective alone. Measured on the host 2026-10-09 with
+        // into the collective alone. Observed on the host with
         // the macOS sampler, all three MPMD programs in MPI_Alltoallv -- U
         // and V from THIS pass inside Runner::initialize(), the coupler
         // (hosting no window member, so skipping here) from run_region()'s
@@ -1284,9 +1258,9 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
         // (it had to -- collective) and has nothing of its own to seed.
         if (!cfg.hosted || cfg.required == nullptr) continue;
 
-        // Time windows track: this member's own straddle-tail
+        // This member's own straddle-tail
         // extrapolation history, seeded from the SAME value the chain
-        // above just delivered (mirrors the pre-existing seeding
+        // above just delivered (mirrors the seeding
         // exactly -- `detail::WindowMemberState::history`'s own struct
         // comment, "seeded with the initial condition, t=0") -- read
         // back from `cfg.window_import`'s own sample 0 (every one of
@@ -1308,7 +1282,7 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
         }
       }
 
-      // The D7 envelope (KNOWN_ISSUES.md; WindowCoupler::create()'s own
+      // The straddle envelope (WindowCoupler::create()'s own
       // check, window_coupler.cpp): a member straddles a window end only
       // if it is Fixed and its own interval does not divide the window.
       // The replay (run_region()'s own straddle-replay step,
@@ -1320,15 +1294,15 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
       // graph-level property of policy+interval+window_length, not
       // something that depends on any particular window instance ever
       // running.
-      // RT-3 (review 2026-10-11): WindowCoupler::create()'s OTHER D7
+      // WindowCoupler::create()'s OTHER
       // refusal -- a Fixed member whose own interval exceeds the window
       // (E-RT-WINDOW-LONGSTEP) -- was considered for mirroring here, but
       // is deliberately NOT mirrored: this compiled path's own replay
       // (detail::advance_straddle_split(), exercised below) already
       // handles exactly that configuration, and
       // test/runtime/window_runner_test.cpp's
-      // WindowRunner.FixedPolicyStraddleNowSucceeds is a pre-existing,
-      // passing test of it (A Adjustable, B Fixed with interval 1 on a
+      // WindowRunner.FixedPolicyStraddleNowSucceeds covers it (A
+      // Adjustable, B Fixed with interval 1 on a
       // 1/2 window, i.e. interval > window_length). Mirroring the
       // driver's refusal here would reject a configuration this path
       // both supports and already tests; the divergence from
@@ -1346,7 +1320,7 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
               "member is Fixed with a step that does not divide the window "
               "(" + cfg.window_length.to_string() + "); both can straddle "
               "one window end, and only one straddling member per window is "
-              "supported (KNOWN_ISSUES.md D7, mirrors WindowCoupler::"
+              "supported (mirrors WindowCoupler::"
               "create()'s own refusal). Make all but one of them Adjustable, "
               "or choose a window every Fixed member's own step divides"};
         }
@@ -1354,15 +1328,13 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
       }
     }
 
-    // R-10 (REVIEW.md): the convergence decision in run_region() used to be
-    // computed entirely from this rank's own buffers, with no MPI_Allreduce
-    // or equivalent before `all_satisfied()` was called -- a silent
-    // hang-or-wrong-answer risk when the region's components sit on more
-    // than one rank, because two ranks measuring different slices of a
+    // The convergence decision in run_region() must not be computed from
+    // this rank's own buffers alone: when the region's components sit on
+    // more than one rank, two ranks measuring different slices of a
     // not-yet-converged field could satisfy the tolerance on different
-    // sweeps and desynchronise the region's own per-sweep exchanges. Fixed
-    // by reducing every measure's residual and reference contribution
-    // across the region's participants on every sweep (run_region(), via
+    // sweeps and desynchronise the region's own per-sweep exchanges. So
+    // every measure's residual and reference contribution is reduced across
+    // the region's participants on every sweep (run_region(), via
     // reduce_region_residuals()); `R.participants`, computed below, is what
     // that reduction runs over.
     //
@@ -1372,14 +1344,13 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
     // declares a region's components on different nominal ranks while
     // running all of them, right here, on the one process that exists;
     // there is no second rank to reduce across, and `R.participants` stays
-    // empty (run_region() takes that as "purely local", unchanged from
-    // before this fix).
+    // empty (run_region() takes that as "purely local").
     if (config.base_communicator.has_value()) {
       std::vector<int> region_ranks;
       for (const ComponentId c : cp.components) {
         for (const int rk : graph.component(c).ranks) region_ranks.push_back(rk);
       }
-      // The coupler-placement track: a channel inside this region that
+      // A channel inside this region that
       // routes through a separately-placed coupler (RemapSpec::remap_on)
       // makes the coupler's ranks participants of every Transport/Epoch
       // that channel's lowering emitted -- even though the coupler owns no
@@ -1416,23 +1387,23 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
       region_ranks.erase(std::unique(region_ranks.begin(), region_ranks.end()),
                          region_ranks.end());
       if (region_ranks.size() > 1) {
-        // The one case this fix does NOT cover: a dynamic accelerator
+        // The one case this reduction does NOT cover: a dynamic accelerator
         // (Aitken and everything with more history than that) derives its
         // relaxation coefficient from an inner product over this rank's own
         // local iterate history (fuse::num, src/num/accel_quasi_newton.cpp
-        // and accel_relaxation.cpp's Aitken branch -- outside this fixer's
-        // owned paths, and `Accelerator::update()`'s signature has no hook
+        // and accel_relaxation.cpp's Aitken branch, and `Accelerator::update()`'s
+        // signature has no hook
         // for a caller-supplied global reduction). Two ranks with different
         // local slices would compute different coefficients from that
         // inner product and take different accelerator paths even with the
         // residual itself correctly agreed, which is the same
-        // desynchronisation risk R-10 opened with. `None` (plain Picard)
+        // desynchronisation risk. `None` (plain Picard)
         // and `Constant` (a fixed, config-supplied omega, identical on
         // every rank because AccelConfig comes from the graph) need
         // nothing beyond the residual reduction below and are genuinely
         // supported.
         //
-        // KNOWN_ISSUES.md D31: `AccelKind::Newton` is ALSO genuinely
+        // `AccelKind::Newton` is ALSO genuinely
         // supported on a multi-rank region, for the opposite reason
         // `None`/`Constant` are -- not because it has no dynamic
         // coefficient of its own, but because every one of `fuse::num::
@@ -1459,7 +1430,7 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
               std::string(to_cstring(decl.acceleration.kind)) +
               "', whose dynamic coefficient is computed from this rank's "
               "own local iterate history with no cross-rank agreement "
-              "(REVIEW.md R-10) and no hook to add one from here. Use "
+              "and no hook to add one from here. Use "
               "AccelKind::None, AccelKind::Constant or AccelKind::Newton "
               "for a region spanning more than one rank, or place every "
               "component this region checkpoints on the same rank"};
@@ -1500,8 +1471,7 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
       //
       // `b.value_arc` itself is the Residual node's own input, NOT
       // necessarily the WindowAdvance instruction's own raw `ins.out`
-      // directly: measured, 2026-10-03 (this delegation's own report),
-      // the Brusselator's own graph interposes one `OpKind::Interpolate`
+      // directly: the Brusselator's own graph interposes one `OpKind::Interpolate`
       // node (a SHAPE-PRESERVING resample of the window waveform, same
       // `length*capacity` total() in as out, for an identity transfer
       // with no real fuse::Remap -- brusselator_graph.hpp's own "WHY
@@ -1586,7 +1556,7 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
                          " values) and the storage it is delivered into do not "
                          "have the same length"};
       }
-      // R-10 (REVIEW.md): a rank that is a genuine participant of a
+      // A rank that is a genuine participant of a
       // multi-rank region (R.participants.size() > 1) but owns no local
       // entries of THIS measure's coupling value is ordinary -- the same
       // "n == 0 is a success no-op" case Accelerator::update() documents --
@@ -1674,7 +1644,7 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
 
     // --- the ticks the sweep re-runs ---------------------------------------
     //
-    // Time windows track: this ENTIRE block is skipped for a window-scoped
+    // This ENTIRE block is skipped for a window-scoped
     // region. It re-derives the ordinary re-advance mechanism (a
     // component's own native-interval Tick, re-run once per sweep via
     // R.tick_indices) -- but a window member gets NO Tick at all
@@ -1706,10 +1676,7 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
         // it once more after the region exits -- a double advance with no
         // diagnostic.
         //
-        // REACHABILITY (R12 follow-up, corrected -- this comment previously
-        // claimed "no graph reaches this today ... which E-SCHED-REGION refuses
-        // first"; that was false, disproved by construction rather than by
-        // argument). A region whose body contains a space-time channel's
+        // REACHABILITY. A region whose body contains a space-time channel's
         // `Sample` node reaches it directly: `Sample` runs `AfterTicks` at the
         // SAME nominal time as the tick that feeds it (a single-source-step
         // history, the only shape E-SCHED-REGION's contiguity rule admits
@@ -1724,9 +1691,7 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
         // not distinguish the two). See
         // `Iteration.ASpacetimeChannelInAnIterationRegionIsRefusedNotSilentlyWrong`
         // (test/verification/iteration_test.cpp) for both constructions,
-        // measured. The guard still must not depend on reachability being rare
-        // -- it refuses correctly here too -- but "no graph reaches this" is no
-        // longer an accurate reason to leave it undertested.
+        // measured. The guard must not depend on reachability being rare.
         if (!(all_ticks[t].time < enter_time)) {
           return Failure{"E-RT-REGION",
                        "component '" + components.at(all_ticks[t].slot).name() +
@@ -1815,30 +1780,26 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
 
     // --- the accelerator ----------------------------------------------------
     //
-    // D71 (owner priority, closed): a WaveformIteration::GaussSeidel
+    // A WaveformIteration::GaussSeidel
     // window's own UNLAGGED transfer is resolved WITHIN the same sweep it
     // is fed from (WindowMemberConfig::import_lagged's own comment) and
     // carries no residual of its own to accelerate -- WindowCoupler's own
     // `accel_members`/`accel_member_offset`/`accel_total` restriction
     // already excludes it there (window_coupler.hpp/.cpp's own
     // "provides_unlagged_channel" comment). `run_region()`'s own R.accel-
-    // >update() call site (this file, below) now applies the IDENTICAL
+    // >update() call site (this file, below) applies the IDENTICAL
     // exclusion to R.blocks, reusing the SAME membership test (a block's
     // own feed_arc present in R.window_lagged_import_arcs) run_region_
     // newton_window()'s own newton_offset already uses for the window-
     // Newton interface vector -- so a real accelerator over a GaussSeidel
-    // window now accelerates exactly the lagged direction's own residual,
-    // the method's own iterate, never the undifferentiated full vector
-    // this refusal used to exist to protect against. Measured (test/
-    // verification/brusselator_restart_test.cpp's own SeparateLayoutGauss
-    // SeidelAitken/IqnIls): iteration counts against the SAME config
-    // under Jacobi are recorded in the delivered report.
+    // window accelerates exactly the lagged direction's own residual,
+    // the method's own iterate, never the undifferentiated full vector.
     //
-    // S7.2 WindowNewton: `AccelKind::Newton` is excluded from this check,
+    // `AccelKind::Newton` is excluded from this check,
     // not merely another case of it -- a Newton-selected region is not an
     // `Accelerator` at all (this function's own very next `if`, below).
 
-    // S7.2: a Newton-selected region is not accelerated at all -- the
+    // A Newton-selected region is not accelerated at all -- the
     // Newton-Krylov solve (run_region_newton(), this file's own sibling
     // below) replaces the whole Picard sweep loop, not just the quasi-
     // Newton update inside it. make_accelerator() is never called for
@@ -1853,7 +1814,7 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
           check_region_supports_newton(components, ri);
       if (!supported.ok()) return supported;
 
-      // S7.2b (PetscSelect track): the substrate this region names must
+      // The substrate this region names must
       // actually be registered in THIS build/process, checked eagerly
       // here (resolve_regions() runs from Runner::initialize()) so a
       // graph selecting an unavailable substrate (most commonly: PETSc,
@@ -1868,8 +1829,8 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
       }
       R.newton = true;
 
-      // S7.2 WindowNewton (newton-krylov.md Sec. 9.1): the window-Newton
-      // interface vector's own layout, computed ONCE here from `R.blocks`
+      // The window-Newton interface vector's own layout (newton-krylov.md
+      // Sec. 9.1), computed ONCE here from `R.blocks`
       // and `R.window_lagged_import_arcs` (both already final by this
       // point in this function), never re-derived per evaluation. A
       // non-window Newton region's own vector is `R.x_old`'s (`n` long,
@@ -1879,7 +1840,7 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
       // (every block's own `newton_offset == RegionBlock::
       // kNotInNewtonVector`, `R.newton_n == 0`) otherwise.
       if (R.window_scoped) {
-        // KNOWN_ISSUES.md D31: a multi-rank window-Newton region's own
+        // A multi-rank window-Newton region's own
         // interface vector is DISTRIBUTED, one disjoint slice per
         // participant -- `b.window_hosted` (the CONSUMER-side ownership
         // rule `WindowMemberConfig::export_consumer_hosted` already
@@ -1907,8 +1868,8 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
         // no value (resolve_regions()'s own construction of the field,
         // a few hundred lines above -- `!this_process.has_value() ||
         // consumer.ranks.contains(*this_process)`), so a plain run with
-        // nothing configured excludes nothing, exactly as before this
-        // lift; `this_process` IS set (`force_this_process` or a real
+        // nothing configured excludes nothing, exactly as in a serial run;
+        // `this_process` IS set (`force_this_process` or a real
         // communicator) is the only shape in which `window_hosted` can
         // ever be false, and that is exactly the shape in which a block
         // some OTHER rank hosts must be excluded from THIS rank's own
@@ -1934,8 +1895,7 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
         R.newton_n = running;
       }
 
-      // S7.2 WindowNewton (newton-krylov.md Sec. 9.4), lifted to multi-
-      // rank (KNOWN_ISSUES.md D31): held by the region so every norm/
+      // Held by the region (newton-krylov.md Sec. 9.4, multi-rank) so every norm/
       // inner product `run_region_newton_window()`/`run_region_newton()`'s
       // own `fuse::num::solve()` call computes goes through ONE place --
       // `RegionRuntime::newton_reducer`'s own comment (runner_impl.hpp)
@@ -1971,7 +1931,7 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
         // instead of component id. ONE call builds both the `Reducer`
         // and (`runner_impl.hpp`'s own `RegionRuntime::newton_comm_f`
         // comment) the raw communicator handle `fuse::petsc::solve()`
-        // needs (D32) -- `make_participant_set_reducer()`'s own
+        // needs -- `make_participant_set_reducer()`'s own
         // `ParticipantSetReducerResult` bundles them so this is exactly
         // one `MPI_Comm_split`, not two.
         const Result<linalg::ParticipantSetReducerResult> built =
@@ -1991,7 +1951,7 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
 #endif
       }
 
-      // NewtonModel track (2026-10-12): E-NEWTON-DIRECT-WINDOW. A window
+      // E-NEWTON-DIRECT-WINDOW. A window
       // sweep's own coroutine-resident state (newton-krylov.md Sec. 9.2's
       // table: window_member_state[node].clock/straddle_*, the pass-
       // scoped window_pass_start_clock/window_start_value caches) is
@@ -2015,7 +1975,7 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
             "region"};
       }
 
-      // NewtonModel track: NewtonNorm::MeasureWeighted's own diagonal D,
+      // NewtonNorm::MeasureWeighted's own diagonal D,
       // built once here. R.newton_scale stays empty for NewtonNorm::
       // Plain -- run_region_newton()/run_region_newton_window() read its
       // own emptiness as "do not scale".
@@ -2028,7 +1988,7 @@ Result<void> Runner::Impl::resolve_regions(ComponentSet& components,
         R.newton_scale = built.value();
       }
 
-      // NewtonModel track: NewtonResidualPath::Direct's own per-member
+      // NewtonResidualPath::Direct's own per-member
       // Requires/Provides arc lists (ordinary regions only -- refused
       // above for a window-scoped one).
       if (decl.newton_config.residual_path == NewtonResidualPath::Direct) {
@@ -2104,7 +2064,7 @@ Result<void> Runner::Impl::check_region_isolation(const detail::RegionRuntime& R
   }
 
   const std::vector<Instruction>& stream = plan.instructions();
-  // Time windows track: a window-scoped region can have more than one
+  // A window-scoped region can have more than one
   // pass in one period (RegionRuntime::passes' own comment) -- every one
   // of them is inside the loop, not just the first, so every one must be
   // excluded here.
@@ -2145,10 +2105,10 @@ Result<void> Runner::Impl::check_region_isolation(const detail::RegionRuntime& R
 // ---------------------------------------------------------------------------
 
 Result<void> Runner::Impl::checkpoint_regions(ComponentSet& components) {
-  // RT-2(e) (review 2026-10-11): `local_result` records the FIRST local
+  // `local_result` records the FIRST local
   // failure (if any) and stops the walk right there -- but does not
   // return out of this function. A bare `return s;` on the first
-  // region/slot whose save_state() failed used to leave here directly,
+  // region/slot whose save_state() failed would leave here directly,
   // before this period's instruction stream has run a single collective
   // on ANY rank -- step_period()'s caller (`co_return c;`, right after
   // this call) would then exit this rank from the whole period while a
@@ -2160,7 +2120,7 @@ Result<void> Runner::Impl::checkpoint_regions(ComponentSet& components) {
   // instruction stream, or none does.
   Result<void> local_result = Result<void>::success();
   for (detail::RegionRuntime& R : regions) {
-    // Time windows track: a window-scoped region's own checkpoint happens
+    // A window-scoped region's own checkpoint happens
     // once per PASS (once per window instance), inside run_region()
     // itself, not once per period here -- see RegionRuntime::
     // window_scoped's own comment for why an ordinary region's
@@ -2176,7 +2136,7 @@ Result<void> Runner::Impl::checkpoint_regions(ComponentSet& components) {
         local_result = s;
         break;
       }
-      // KNOWN_ISSUES.md D12: consumed by advance() the next time it is
+      // Consumed by advance() the next time it is
       // about to suspend for this slot -- see runner_impl.hpp's own
       // comment on slot_just_checkpointed/slot_just_restored.
       if (slot < slot_just_checkpointed.size()) slot_just_checkpointed[slot] = 1;
@@ -2208,7 +2168,7 @@ Result<void> Runner::Impl::checkpoint_regions(ComponentSet& components) {
 }
 
 // ---------------------------------------------------------------------------
-// The Newton-Krylov solve (S7.2)
+// The Newton-Krylov solve
 // ---------------------------------------------------------------------------
 
 namespace {
@@ -2294,7 +2254,7 @@ namespace {
 
 }  // namespace
 
-/// S7.2: the Newton-Krylov solve that replaces the Picard sweep loop
+/// The Newton-Krylov solve that replaces the Picard sweep loop
 /// entirely for a region with `RegionRuntime::newton` set.
 ///
 /// WHY THIS IS NOT run_region()'S OWN k-LOOP. A Picard sweep's own
@@ -2315,8 +2275,8 @@ namespace {
 /// So this function does not iterate `k`; it hands the ENTIRE solve to
 /// `fuse::num::solve()` in one call, then performs exactly one additional,
 /// COMMITTING evaluation (`evaluate_region_residual(..., commit = true)`)
-/// at the converged iterate -- the "verification sweep" the task's own
-/// brief names, which is what turns Newton's own side-effect-free
+/// at the converged iterate -- the "verification sweep"
+/// which is what turns Newton's own side-effect-free
 /// bookkeeping into the region's real, persisted state, the same way a
 /// Picard sweep's own delivery does.
 ///
@@ -2327,12 +2287,10 @@ namespace {
 /// alone on its own communicator-free serial solve, so docs/dev/
 /// rank-agreement.md's own concern (a collective path returning on a
 /// locally computed condition) does not arise here: there is no
-/// collective in this function at all. Lifting that restriction (Step 4,
-/// the Brusselator's own coupling window) is this track's own next
-/// section.
+/// collective in this function at all.
 Result<void> Runner::Impl::run_region_newton(ComponentSet& components,
                                              detail::RegionRuntime& R) {
-  // KNOWN_ISSUES.md D31: a rank that is not one of `R.participants` has
+  // A rank that is not one of `R.participants` has
   // nothing to contribute to this region's Newton solve and nothing to
   // wait for from it -- mirrors `reduce_region_residuals()`'s own early
   // return for the identical reason, extended to the WHOLE solve (every
@@ -2343,7 +2301,7 @@ Result<void> Runner::Impl::run_region_newton(ComponentSet& components,
   // so there is nothing partial to compute here either). AGREED, not
   // locally decided: `R.participants` is the SAME deterministic, graph-
   // derived list on every rank of the base communicator
-  // (`resolve_regions()`'s own R-10 derivation), so this check reaches
+  // (`resolve_regions()`'s own derivation), so this check reaches
   // the identical verdict everywhere it runs -- it is not a rank
   // branching on a locally-computed condition ahead of a collective, it
   // is every rank agreeing (by construction) on who the collective's own
@@ -2370,12 +2328,11 @@ Result<void> Runner::Impl::run_region_newton(ComponentSet& components,
   // is the same evaluation with no extra indirection.
   const std::size_t region_index = R.index;
   ComponentSet* comps = &components;
-  // NewtonModel track (2026-10-12): NewtonResidualPath selects which of
-  // the two side-effect-free F(x) = x - G(x) seams this solve's own
-  // (non-committing) evaluations drive -- Advance (evaluate_region_
-  // residual(), the only path before this track) or Direct (evaluate_
-  // region_residual_direct(), new). The COMMITTING evaluation below,
-  // at the converged iterate, is UNCHANGED: it always calls evaluate_
+  // NewtonResidualPath selects which of the two side-effect-free
+  // F(x) = x - G(x) seams this solve's own (non-committing) evaluations
+  // drive -- Advance (evaluate_region_residual()) or Direct
+  // (evaluate_region_residual_direct()). The COMMITTING evaluation below,
+  // at the converged iterate, always calls evaluate_
   // region_residual() (Advance), never this selection, so the Runner's
   // own persisted state is always reached by a genuine advance() call,
   // once per period, regardless of which path the solve itself used.
@@ -2394,7 +2351,7 @@ Result<void> Runner::Impl::run_region_newton(ComponentSet& components,
                      std::span<double>(out.data(), out.owned_size()));
   };
 
-  // NewtonModel track: NewtonNorm::MeasureWeighted wraps F into F_D(x) =
+  // NewtonNorm::MeasureWeighted wraps F into F_D(x) =
   // D * F(x) -- built here, once per solve, over R.newton_scale (itself
   // built once at setup, resolve_regions()). The substrate (native or
   // PETSc) never learns the residual was scaled: it still sees a plain
@@ -2413,13 +2370,12 @@ Result<void> Runner::Impl::run_region_newton(ComponentSet& components,
     };
   }
 
-  // KNOWN_ISSUES.md D31: `R.newton_reducer`, built once in
+  // `R.newton_reducer`, built once in
   // `resolve_regions()` (`RegionRuntime::newton_reducer`'s own comment,
   // runner_impl.hpp, has the full account), not a fresh `make_serial_
-  // reducer()` -- this is the ONE place this function's own rank
-  // agreement was still hardcoded to single-rank after the window seam
-  // (`run_region_newton_window()`) was already lifted to read this
-  // field instead of constructing its own. A zero-ghost exchanger is
+  // reducer()` -- the same field `run_region_newton_window()` reads, so
+  // this function's own rank agreement is not hardcoded to single-rank.
+  // A zero-ghost exchanger is
   // still correct for a multi-rank ordinary region: Sec. 9's own
   // analysis (ownership by `b.length > 0`, not a window's replicated
   // storage) means a block this rank does not own already contributes
@@ -2468,10 +2424,8 @@ Result<void> Runner::Impl::run_region_newton(ComponentSet& components,
   const num::NewtonKrylovOptions opt =
       newton_options_from_config(decl.newton_config);
 
-  // NewtonModel track (2026-10-12): the block-Jacobi preconditioner hook
-  // for an ORDINARY region -- the gap S7.2's own report left open
-  // ("neither dn_heat test in this track sets it"), filled here by the
-  // SAME construction run_region_newton_window() already uses (newton-
+  // The block-Jacobi preconditioner hook for an ORDINARY region, built by
+  // the SAME construction run_region_newton_window() already uses (newton-
   // krylov.md Sec. 9.5): one PreconditionerBlock per region block whose
   // provider offers a usable LinearizationToken, composed by
   // BlockJacobiPreconditioner::from_blocks(). `use_block_jacobi_
@@ -2525,14 +2479,13 @@ Result<void> Runner::Impl::run_region_newton(ComponentSet& components,
                 })
           : nullptr;
 
-  // NewtonModel track: NewtonNorm::MeasureWeighted's own preconditioner
-  // composition -- "CRITICAL DETAIL" of this track's own plan. The
+  // NewtonNorm::MeasureWeighted's own preconditioner composition. The
   // block-Jacobi preconditioner above approximates J^-1; with the scaled
   // operator D*J the right preconditioner approximates (D*J)^-1 = J^-1 *
   // D^-1, so `precond_apply` is composed as `v -> precond_apply(D^-1 *
   // v)` -- a bare (uncomposed) precond_apply would leave the
   // preconditioned operator at ~D instead of ~I (docs/dev/newton-
-  // krylov.md's own new section; `build-evidence/mutations/newton-
+  // krylov.md's own section; `build-evidence/mutations/newton-
   // model.toml`'s own row reproduces this on demand). A null
   // precond_apply (no block-Jacobi preconditioner requested) is left
   // null: there is no M to compose with, and composing D^-1 onto the
@@ -2546,7 +2499,7 @@ Result<void> Runner::Impl::run_region_newton(ComponentSet& components,
   }
   const num::RefreshPreconditionerFn refresh_precond = nullptr;
 
-  // S7.2b (PetscSelect track): dispatch through the registered substrate
+  // Dispatch through the registered substrate
   // rather than calling num::solve() directly -- resolve_regions() has
   // already refused this region at initialize() if its substrate is
   // unavailable, so this lookup is defensive, not trusted blindly
@@ -2563,7 +2516,7 @@ Result<void> Runner::Impl::run_region_newton(ComponentSet& components,
 
   st.iterations = nr.iterations;
 
-  // NewtonModel track (Round 2, GAP 1): RegionRuntime::newton_gmres_
+  // See RegionRuntime::newton_gmres_
   // iterations' own comment -- overwritten, not appended, each solve.
   R.newton_gmres_iterations.clear();
   for (const num::NewtonIterationRecord& rec : nr.trace) {
@@ -2644,8 +2597,7 @@ Result<void> Runner::Impl::run_region_newton(ComponentSet& components,
 }
 
 // ---------------------------------------------------------------------------
-// S7.2 WindowNewton: Newton-Krylov over a coupling window (newton-krylov.md
-// Sec. 9, the design this track's own Stage B implements).
+// Newton-Krylov over a coupling window (newton-krylov.md Sec. 9).
 // ---------------------------------------------------------------------------
 
 /// newton-krylov.md Sec. 9.1-9.2: `F(x) = x - G(x)` for a WINDOW-scoped
@@ -2658,8 +2610,8 @@ Result<void> Runner::Impl::run_region_newton(ComponentSet& components,
 /// `previous[]` for THIS window instance yet, and `advance_window()`'s
 /// own predictor branch at `iteration == 0` does not read it regardless
 /// -- Sec. 9.3's own "one real gap", resolved by reading `g_out` instead
-/// of `x` there); `1` for every other call this track's own design
-/// settled on using a single non-zero constant for (the Jacobian
+/// of `x` there); `1` for every other call, which uses a single non-zero
+/// constant (the Jacobian
 /// action's own perturbed evaluations, every line-search trial, every
 /// later Newton iterate, and the final committing evaluation).
 Result<void> Runner::Impl::evaluate_window_region_residual(
@@ -2855,7 +2807,7 @@ Result<void> Runner::Impl::evaluate_window_region_residual(
   return restore_err;
 }
 
-/// S7.2 WindowNewton (newton-krylov.md Sec. 9.5): one species' own
+/// newton-krylov.md Sec. 9.5: one species' own
 /// physics-based block preconditioner, PER INCLUDED NEWTON BLOCK -- see
 /// `species_component.hpp`'s own `LinearizationToken` for why `rows() ==
 /// cols()`, both equal to the providing species' own exported block
@@ -2883,7 +2835,7 @@ LinearizationToken* Runner::Impl::window_block_provider_token(
   return nullptr;
 }
 
-/// S7.2 WindowNewton (newton-krylov.md Sec. 9): the window-scoped sibling
+/// newton-krylov.md Sec. 9: the window-scoped sibling
 /// of `run_region_newton()`. See this function's own declaration
 /// (runner_impl.hpp) and the design doc's Sec. 9.3/9.4/9.5 for the full
 /// account of the three things that differ from the ordinary seam: the
@@ -2895,22 +2847,22 @@ LinearizationToken* Runner::Impl::window_block_provider_token(
 Result<void> Runner::Impl::run_region_newton_window(
     ComponentSet& components, detail::RegionRuntime& R, std::size_t enter,
     std::size_t exit) {
-  // KNOWN_ISSUES.md D55: every residual evaluation below executes this
+  // Every residual evaluation below executes this
   // region's instruction range, whose Transport ops move() over the run's
   // ONE shared transport communicator -- MPI_Alltoallv over every rank of
   // the base communicator, a bystander outside `R.participants` included
   // (mpi_transport.cpp's "rank in neither rank set still enters
-  // MPI_Alltoallv with zero counts" convention, the same one D42 keeps the
-  // Picard window sweep's bystander in step for). D31 had the bystander
-  // return here instead, so the participants' Alltoallv calls were missing
-  // a rank: MPICH's zero-count exchange happened to complete without it,
-  // Open MPI's pairwise algorithm does not (measured: participants in
+  // MPI_Alltoallv with zero counts" convention, the same one the Picard
+  // window sweep's bystander is kept in step with). A bystander that
+  // returned here instead would leave the participants' Alltoallv calls
+  // missing a rank: MPICH's zero-count exchange happens to complete
+  // without it, Open MPI's pairwise algorithm does not (participants in
   // MpiTransport::move(), the bystander already in agree_checkpoint_
-  // status()'s MPI_Allreduce, parallel.window_newton_mpi.3). The number of
-  // evaluations is Newton's own, data-dependent, so the first participant
-  // broadcasts, before EACH one, which kind it is, and kStop on every way
-  // out; the bystander runs the SAME evaluation (newton_n is 0 there: it
-  // hosts no block, so every span is empty and only the stream, with its
+  // status()'s MPI_Allreduce; parallel.window_newton_mpi.3 covers it). The
+  // number of evaluations is Newton's own, data-dependent, so the first
+  // participant broadcasts, before EACH one, which kind it is, and kStop on
+  // every way out; the bystander runs the SAME evaluation (newton_n is 0 there:
+  // it hosts no block, so every span is empty and only the stream, with its
   // zero-count move()s, runs) until it hears kStop.
   enum : int { kNewtonStop = 0, kNewtonSeed = 1, kNewtonProbe = 2, kNewtonCommit = 3 };
   const bool lockstep = R.participants.size() > 1;
@@ -2992,12 +2944,12 @@ Result<void> Runner::Impl::run_region_newton_window(
         /*commit=*/false);
   };
 
-  // NewtonModel track (2026-10-12): NewtonNorm::MeasureWeighted, over the
+  // NewtonNorm::MeasureWeighted, over the
   // window-Newton vector's own (element, sample)-major layout -- the
   // SAME per-element weight repeated across every sample column of a
   // block (R.newton_scale's own construction, resolve_regions()),
   // because decide_window_convergence() itself has no time weighting
-  // either (docs/dev/newton-krylov.md's own new section records this
+  // either (docs/dev/newton-krylov.md's own section records this
   // choice and the discrepancy it is measured against).
   num::ResidualFn f = f_raw;
   if (decl.newton_config.norm == NewtonNorm::MeasureWeighted) {
@@ -3081,7 +3033,7 @@ Result<void> Runner::Impl::run_region_newton_window(
                   return bjp->apply(r, z);
                 })
           : nullptr;
-  // NewtonModel track: NewtonNorm::MeasureWeighted's own preconditioner
+  // NewtonNorm::MeasureWeighted's own preconditioner
   // composition -- see run_region_newton()'s identical comment for the
   // (D*J)^-1 = J^-1 * D^-1 derivation. A null precond_apply (no block-
   // Jacobi preconditioner requested) is left null.
@@ -3098,7 +3050,7 @@ Result<void> Runner::Impl::run_region_newton_window(
   // `preconditioner_lag` rebuild would ever change.
   const num::RefreshPreconditionerFn refresh_precond = nullptr;
 
-  // S7.2b (PetscSelect track): the window path dispatches through the
+  // The window path dispatches through the
   // registry the identical way the ordinary (non-window) seam does --
   // resolve_regions() already refused this region at initialize() if
   // its substrate is unavailable (the SAME eager check, shared by both
@@ -3129,7 +3081,7 @@ Result<void> Runner::Impl::run_region_newton_window(
   }
 
   st.iterations = nr.iterations;
-  // NewtonModel track (Round 2, GAP 1): RegionRuntime::newton_gmres_
+  // See RegionRuntime::newton_gmres_
   // iterations' own comment -- overwritten, not appended, each solve.
   R.newton_gmres_iterations.clear();
   for (const num::NewtonIterationRecord& rec : nr.trace) {
@@ -3175,10 +3127,9 @@ Result<void> Runner::Impl::run_region_newton_window(
   for (std::size_t mi = 0; mi < R.measure_block.size(); ++mi) {
     const std::size_t bi = R.measure_block[mi];
     const detail::RegionBlock& b = R.blocks[bi];
-    // KNOWN_ISSUES.md D31: `newton_offset == kNotInNewtonVector` now
-    // fires for TWO reasons -- the pre-existing GaussSeidel-unlagged
-    // exclusion (defensive, not reached by any graph this track's own
-    // tests build) AND, new, a block some OTHER rank hosts on a multi-
+    // `newton_offset == kNotInNewtonVector` fires for TWO reasons -- the
+    // GaussSeidel-unlagged exclusion (defensive, not reached by any graph
+    // the tests build) AND a block some OTHER rank hosts on a multi-
     // rank region. Both leave `block_total`/`value_total` at 0.0 on
     // THIS rank; `R.newton_reducer->sum()` below (the identity when
     // `R.participants.size() <= 1`, a real cross-rank sum otherwise)
@@ -3219,7 +3170,7 @@ Result<void> Runner::Impl::run_region_newton_window(
 detail::Task<Result<void>> Runner::Impl::run_region(
     ComponentSet& components, detail::RegionRuntime& R, std::size_t enter,
     std::size_t exit) {
-  // S7.2: a Newton-selected ORDINARY (non-window) region bypasses every
+  // A Newton-selected ORDINARY (non-window) region bypasses every
   // line below -- none of it applies (there is no accelerator to R.
   // accel->reset(), and the Picard sweep loop's own checkpoint/deliver/
   // re-advance cycle is not how a Newton solve makes progress; see
@@ -3230,7 +3181,7 @@ detail::Task<Result<void>> Runner::Impl::run_region(
   // not through the public `Runner::region_fixed_point_residual()`
   // wrapper), which reads `R.enter`/`R.exit` itself.
   //
-  // S7.2 WindowNewton: a window-scoped Newton region does NOT bypass
+  // A window-scoped Newton region does NOT bypass
   // everything below -- unlike the ordinary case, it genuinely needs
   // the straddle replay and per-pass checkpoint just below (this
   // window instance's own verification-sweep commit IS this pass's
@@ -3259,7 +3210,7 @@ detail::Task<Result<void>> Runner::Impl::run_region(
 
   const std::vector<Instruction>& stream = plan.instructions();
 
-  // S7.2 WindowNewton: `R.accel` stays null for a Newton-selected region
+  // `R.accel` stays null for a Newton-selected region
   // (resolve_regions()'s own comment on the point: "make_accelerator()
   // is never called for one") -- skipped here for exactly the reason
   // the ordinary seam's own early return above skips it entirely; a
@@ -3267,7 +3218,7 @@ detail::Task<Result<void>> Runner::Impl::run_region(
   // early return) but must not dereference a null `R.accel` either.
   if (!R.newton) R.accel->reset();
 
-  // Time windows track: a window-scoped region's own checkpoint happens
+  // A window-scoped region's own checkpoint happens
   // HERE, once per PASS (once per window instance) -- checkpoint_regions()
   // (called once per PERIOD, from step_period()) explicitly skips a
   // window-scoped region, per RegionRuntime::window_scoped's own comment
@@ -3285,9 +3236,9 @@ detail::Task<Result<void>> Runner::Impl::run_region(
     // that checkpoint would otherwise overwrite the very state the
     // replay needs to restore_state() back to (resolve_pending_window_
     // straddles()'s own comment, runner_impl.hpp).
-    // RT-2(a)/(b) (review 2026-10-11): neither a replay failure nor a
+    // Neither a replay failure nor a
     // save_state() failure here is rank-uniform -- each is a rank-local
-    // component verdict, exactly like (c)/(d)'s own restore_state()/
+    // component verdict, exactly like the restore_state()/
     // rollback-check below -- and a bare co_return at this point in the
     // function would exit before the sweep loop just below reaches its
     // own first body Transport and residual/window-convergence agreement,
@@ -3297,7 +3248,7 @@ detail::Task<Result<void>> Runner::Impl::run_region(
     // setup -- while still falling through into the sweep loop, whose
     // body already gates every instruction on `step_failure.has_value()`
     // via `is_collective()` -- carries the failure to every partner at
-    // the first collective this pass reaches, the same way (c)/(d) do.
+    // the first collective this pass reaches, the same way they do.
     const Result<void> replay_r = resolve_pending_window_straddles(
         components, R);
     if (!replay_r.ok() && !step_failure.has_value()) {
@@ -3310,7 +3261,7 @@ detail::Task<Result<void>> Runner::Impl::run_region(
           step_failure = s.error();
           break;
         }
-        // KNOWN_ISSUES.md D12: see the matching line in checkpoint_regions().
+        // See the matching line in checkpoint_regions().
         if (slot < slot_just_checkpointed.size()) slot_just_checkpointed[slot] = 1;
       }
     }
@@ -3324,7 +3275,7 @@ detail::Task<Result<void>> Runner::Impl::run_region(
     }
   }
 
-  // S7.2 WindowNewton: the dispatch this function's own top comment
+  // The dispatch this function's own top comment
   // deferred -- NOW, after the straddle replay and this window
   // instance's own checkpoint have run, exactly like the Picard path
   // below gets them, but BEFORE the Picard-only `y_0` seed and sweep
@@ -3333,7 +3284,7 @@ detail::Task<Result<void>> Runner::Impl::run_region(
   // reach this point with `R.newton` set -- the early return above
   // already took every ordinary Newton region out).
   //
-  // RT-2(a)/(b)'s own carry-forward above is for the Picard sweep loop
+  // The failure carry-forward above is for the Picard sweep loop
   // just below, which gates every instruction on `step_failure` via
   // `is_collective()`; `run_region_newton_window()` has no such gate and
   // never reads this function's `step_failure` at all, so a straddle-
@@ -3358,7 +3309,7 @@ detail::Task<Result<void>> Runner::Impl::run_region(
   }
 
   for (int k = 0; k < R.max_iterations; ++k) {
-    // Time windows track: snapshot every LAGGED window_import arc BEFORE
+    // Snapshot every LAGGED window_import arc BEFORE
     // this sweep's own body runs -- R.window_lagged_import_arcs' own
     // comment (runner_impl.hpp). advance_window() reads `previous[arc]`
     // for a lagged import instead of the live buffer, so it sees LAST
@@ -3384,7 +3335,7 @@ detail::Task<Result<void>> Runner::Impl::run_region(
       // times, so a rank that drops out of the exchange desynchronises the
       // remaining iterations rather than just one step.
       if (step_failure.has_value() && !is_collective(stream[i].kind)) continue;
-      // KNOWN_ISSUES.md D57 ("Collectives" track). Off by default (one
+      // Off by default (one
       // getenv per instruction, cached the same way FUSE_CONSERVATION_
       // DEBUG already is at its own call site, runner.cpp): a per-rank
       // trace of every COLLECTIVE instruction this sweep reaches, so a
@@ -3402,8 +3353,8 @@ detail::Task<Result<void>> Runner::Impl::run_region(
           // has_value())` directly: that exact substring is build-
           // evidence/mutations/transport-runtime.toml's own
           // `cross-rank-region-check-fires-unconditionally` anchor
-          // (src/runtime/iteration.cpp:1351, a DIFFERENT, pre-existing
-          // check), and tools/mutate.py --check-anchors flags any
+          // (a DIFFERENT check in resolve_regions()),
+          // and tools/mutate.py --check-anchors flags any
           // anchor text that no longer identifies its target uniquely --
           // which a second, textually identical line would, even one
           // this far away and unrelated to that row's own mutation.
@@ -3419,7 +3370,7 @@ detail::Task<Result<void>> Runner::Impl::run_region(
                          "base", ++collective_trace_ordinal));
         }
       }
-      // Time windows track: execute() has no ComponentSet& and cannot call
+      // execute() has no ComponentSet& and cannot call
       // advance()/save_state()/restore_state() itself (see its own
       // OpKind::WindowAdvance case, src/runtime/runner.cpp) -- a
       // WindowAdvance instruction is dispatched to advance_window()
@@ -3427,7 +3378,7 @@ detail::Task<Result<void>> Runner::Impl::run_region(
       // guaranteed a WindowAdvance instruction only ever appears inside
       // some region's body.
       //
-      // Unit 3 (S6 phase 3, Conformance): an ExternalDelivery instruction
+      // An ExternalDelivery instruction
       // is dispatched to deliver_external() for the identical reason --
       // it is the one place with `components`, needed to resolve the
       // importing ComponentId to a real Component& and ask whether it
@@ -3452,16 +3403,16 @@ detail::Task<Result<void>> Runner::Impl::run_region(
 
     // `R.x_old`'s own pre-loop seed (this function's own top, reading
     // `slots[b.feed_arc]`) is wrong for a LowFive-bound channel's member's
-    // own FIRST EVER window instance, for the SAME reason advance_window()
-    // 's own predictor fix (this function's own sibling, this session)
-    // was needed: resolve_regions()'s "ordinary prime" pass can only
+    // own FIRST EVER window instance, for the SAME reason as in
+    // advance_window()'s own predictor: resolve_regions()'s "ordinary
+    // prime" pass can only
     // deliver a real value synchronously for a Transport-rooted channel;
     // an ExternalDelivery-rooted one's own `execute()` case is a no-op by
     // design, so that pre-loop read saw whatever zero-initialized garbage
-    // the arc started with -- MEASURED (this session, full-vector L2
-    // norms, not one element): |x_old| == 0x0p+0 exactly for the LowFive
-    // harness's own window 1, where the matching ordinary run's own
-    // |x_old| was the genuine, nonzero cold-start value.
+    // the arc started with (full-vector L2 norms, not one element:
+    // |x_old| == 0x0p+0 exactly for the LowFive harness's own window 1,
+    // where the matching ordinary run's own |x_old| was the genuine,
+    // nonzero cold-start value).
     //
     // `window_member_state[node].history[e].front()` -- seeded by that
     // SAME pass, and ALREADY corrected for a LowFive channel's own t=0
@@ -3537,15 +3488,15 @@ detail::Task<Result<void>> Runner::Impl::run_region(
           }
           continue;
         }
-        // KNOWN_ISSUES.md D17/D76 (Window seed track, Stage B fix): every
+        // Every
         // window instance AFTER the member's first-ever one (the branch
-        // just above) reached here with `R.x_old`'s pre-loop seed left at
+        // just above) reaches here with `R.x_old`'s pre-loop seed left at
         // whatever `slot_to_host(slots[b.feed_arc], ...)` (this function's
         // own top) read -- the PREVIOUS window's own converged delivery,
         // reused verbatim. That is a zeroth-order (persistence) predictor:
         // EXACTLY the one `WindowCoupler::sweep_window()`'s own comment
-        // (window_coupler.cpp, next to its `y_fed` seed) records trying
-        // and reverting on 2026-09-29 for needing MORE sweeps than the
+        // (window_coupler.cpp, next to its `y_fed` seed) records as needing
+        // MORE sweeps than the
         // genuine `extrapolate_boundary_value()` fit that file always
         // uses. This block applies that SAME predictor -- the one
         // `advance_window()`'s own `use_predictor` branch (this file's
@@ -3565,7 +3516,7 @@ detail::Task<Result<void>> Runner::Impl::run_region(
         // stream above, which already dispatched this member's own
         // WindowAdvance this sweep), it already names THIS window's own
         // absolute instance, not the previous one -- measured directly
-        // (temporary trace, this round) rather than assumed from
+        // rather than assumed from
         // `refresh_window_member_history()`'s own read of the same map,
         // which runs at a DIFFERENT point (the previous pass's own exit,
         // before this pass started) and would be one behind here.
@@ -3600,7 +3551,7 @@ detail::Task<Result<void>> Runner::Impl::run_region(
       }    }
 
     // G(y), and the residual G(y) - y. Computed unconditionally, even after
-    // a local failure earlier in this same sweep: R-10 (REVIEW.md)'s
+    // a local failure earlier in this same sweep: the
     // cross-rank reduction just below is itself a collective every
     // participant must reach on every sweep -- mirroring reconcile_epoch(),
     // and for the same reason -- so the local half of it cannot be skipped
@@ -3613,13 +3564,13 @@ detail::Task<Result<void>> Runner::Impl::run_region(
       double* x_new_block = R.x_new.data() + b.offset;
       const double* x_old_block = R.x_old.data() + b.offset;
 
-      // KNOWN_ISSUES.md D11 (closing) / matrix cell A-SPACES-TRANSPORT: the
+      // The
       // copy is elementwise -- trivially thread-count-independent, same
       // argument as every other elementwise kernel in
       // fuse/num/space_kernels.hpp. The two norms below are REDUCTIONS, and
       // are exactly the case that header's `deterministic_norm_squared`/
       // `deterministic_norm_squared_diff` exist for: a plain accumulator
-      // (what this loop used to be) or a `Kokkos::parallel_reduce` both
+      // or a `Kokkos::parallel_reduce` both
       // associate depending on how the work is split, which a runtime whose
       // bit-for-bit reproducibility across thread counts is a requirement
       // cannot use. `reduction_scratch` is sized once, in initialize(), from
@@ -3628,7 +3579,7 @@ detail::Task<Result<void>> Runner::Impl::run_region(
                                num::SpanOf<HostExecSpace>(x_new_block,
                                                           b.length));
 
-      // Time windows track: a window-scoped value arc carries one
+      // A window-scoped value arc carries one
       // window-START sample (index 0 of every element's own
       // `window_export_capacity`-wide stride) ahead of its real
       // substep-end samples -- RegionBlock::window_export_capacity's
@@ -3640,9 +3591,8 @@ detail::Task<Result<void>> Runner::Impl::run_region(
       // convergence decision onto a different sweep than the driver's
       // own named-measure residual, which is sized to EXACTLY the
       // member's own substep count and never includes it
-      // (`WindowCoupler::sweep_window()`'s own comment). Measured,
-      // 2026-10-03 (this delegation's own report): the Brusselator's
-      // own window 20. Gathered into scratch, in the SAME element-
+      // (`WindowCoupler::sweep_window()`'s own comment). Gathered into
+      // scratch, in the SAME element-
       // major order the driver's own flat vector uses, so the two
       // sides norm the identical set of entries -- never touching
       // `x_new_block`/`x_old_block` (== `R.x_new`/`R.x_old`)
@@ -3684,14 +3634,14 @@ detail::Task<Result<void>> Runner::Impl::run_region(
       R.block_value[bi] = std::sqrt(vs);
     }
 
-    // R-10 (REVIEW.md): agree the residual across the region's participants
+    // Agree the residual across the region's participants
     // before testing convergence or letting the accelerator see it, so
     // every participant decides from the same globally-owned norm rather
     // than its own local slice. `R.participants.size() <= 1` (no
     // communicator, or every checkpointed component on one rank) skips
-    // this entirely -- run_region() is then exactly what it always was.
+    // this entirely -- run_region() is then purely local.
     //
-    // Unit 2b (D19), step (c): a window-scoped region's own agreement is
+    // A window-scoped region's own agreement is
     // `decide_window_convergence()` (fuse/runtime/window_convergence.hpp),
     // not this tree-combine -- its blocks are gated by `WindowMemberConfig
     // ::export_consumer_hosted` (RegionBlock::window_hosted), not
@@ -3703,14 +3653,14 @@ detail::Task<Result<void>> Runner::Impl::run_region(
     // already is -- length-gating it the same way would silently fold
     // uninitialized memory into the sum below.
     bool window_converged = false;
-    // RT-4 (review 2026-10-11): recorded instead of an immediate co_return
+    // Recorded instead of an immediate co_return
     // from inside the `else if (!gathered.empty())` branch below, so this
     // pass's broadcast -- which every rank sharing the communicator,
     // participant or bystander, must still reach -- runs before any rank
     // leaves. See that branch's own comment.
     bool window_unmeasured_found = false;
     std::string window_unmeasured_detail;
-    // RT-1 (review 2026-10-11): set by reduce_region_residuals() below for
+    // Set by reduce_region_residuals() below for
     // the ordinary (non-window-scoped) multi-rank path; read again past the
     // step_failure check to gate the convergence decision the same way.
     // Left at its default (true) for the window-scoped and single-rank
@@ -3762,17 +3712,17 @@ detail::Task<Result<void>> Runner::Impl::run_region(
         // `gathered.empty()`: this rank is not a participant of this
         // window region's own agreement at all (`gather_window_block_
         // samples()`'s own early return) -- nothing to decide here,
-        // mirroring `R.participants.size() <= 1`'s own "exactly what it
-        // always was" for the single-process case, where `gathered ==
+        // mirroring `R.participants.size() <= 1`'s own purely local decision
+        // for the single-process case, where `gathered ==
         // {mine}` (never empty) and every block is hosted by
-        // construction (step (a)'s own `!this_process.has_value()`
+        // construction (the `!this_process.has_value()`
         // branch), so the sum below is this rank's own value alone --
-        // bit-identical to the pre-this-fix local decision.
+        // bit-identical to the local decision.
         const WindowConvergenceResult wc = decide_window_convergence(
             gathered, R.convergence, R.measure_block, R.block_first,
             k == 0, R.residual_norms, R.reference_norms);
         if (wc.unmeasured_block >= 0) {
-          // RT-4 (review 2026-10-11): recorded, not an immediate
+          // Recorded, not an immediate
           // co_return -- see the broadcast below, which this rank (a
           // participant) must still reach so a bystander outside
           // `gathered` learns to stop too, rather than being left
@@ -3792,7 +3742,7 @@ detail::Task<Result<void>> Runner::Impl::run_region(
         }
       }
 
-      // KNOWN_ISSUES.md D42: `gathered_window_block_samples()` just above
+      // `gathered_window_block_samples()` just above
       // reaches only `R.participants` -- correctly, it has nothing to
       // gather from anyone else -- but THIS region's own channels move
       // over the run's single shared transport communicator, which a
@@ -3813,7 +3763,7 @@ detail::Task<Result<void>> Runner::Impl::run_region(
       // loop stop in lockstep with the participants it has no other
       // relationship to.
       //
-      // RT-4: the unmeasured verdict is broadcast FIRST and separately --
+      // The unmeasured verdict is broadcast FIRST and separately --
       // a bystander that only ever learned `converged == false` here
       // would read "not yet", keep sweeping past every participant's own
       // co_return just below, and deadlock the next sweep's move() with
@@ -3866,7 +3816,7 @@ detail::Task<Result<void>> Runner::Impl::run_region(
       const Result<void> red =
           reduce_region_residuals(R, payload, is_region_participant);
       if (!red.ok()) co_return red.error();
-      // RT-1 (review 2026-10-11): a rank outside R.participants shares
+      // A rank outside R.participants shares
       // config.base_communicator with every rank that IS -- this region's
       // own transport channels move over that whole communicator every
       // sweep (mpi_transport.cpp's "rank in neither rank set still enters
@@ -3977,7 +3927,7 @@ detail::Task<Result<void>> Runner::Impl::run_region(
           R.convergence.all_satisfied(R.residual_norms, R.reference_norms);
       bool region_converged = locally_satisfied;
       if (R.participants.size() > 1) {
-        // RT-1 (review 2026-10-11), mirroring D35's broadcast_window_
+        // Mirroring broadcast_window_
         // convergence(): `locally_satisfied` is only the AGREED decision
         // on a rank reduce_region_residuals() actually reduced for
         // (is_region_participant); a bystander's own R.residual_norms/
@@ -3987,8 +3937,7 @@ detail::Task<Result<void>> Runner::Impl::run_region(
         // config.base_communicator -- bystander included -- is what keeps
         // a bystander's own copy of this loop breaking on the SAME sweep
         // the real participants do, rather than drifting to a different
-        // (or no) sweep and deadlocking the next collective, which is this
-        // finding's hang.
+        // (or no) sweep and deadlocking the next collective.
         const bool candidate = is_region_participant && locally_satisfied;
         bool agreed_converged = candidate;
         const Result<void> bc =
@@ -4003,7 +3952,7 @@ detail::Task<Result<void>> Runner::Impl::run_region(
     }
     if (k + 1 == R.max_iterations) break;
 
-    // D71 (owner priority): a WaveformIteration::GaussSeidel window's own
+    // A WaveformIteration::GaussSeidel window's own
     // UNLAGGED transfer is resolved WITHIN the same sweep it is fed from
     // (WindowMemberConfig::import_lagged's own comment) and carries no
     // residual of its own to accelerate -- excluded from the accelerated
@@ -4012,7 +3961,7 @@ detail::Task<Result<void>> Runner::Impl::run_region(
     // (window_coupler.cpp's own "provides_unlagged_channel" comment), and
     // exactly as run_region_newton_window()'s own newton_offset already
     // excludes it from the window-Newton interface vector (this file,
-    // resolve_regions(), "KNOWN_ISSUES.md D31" comment) -- the SAME
+    // resolve_regions()) -- the SAME
     // membership test (b.feed_arc present in R.window_lagged_import_arcs),
     // reused rather than re-derived, so the Picard/accelerator path cannot
     // disagree with the Newton path about which direction is lagged.
@@ -4021,8 +3970,7 @@ detail::Task<Result<void>> Runner::Impl::run_region(
     // block's own feed_arc is already in R.window_lagged_import_arcs and
     // `any_excluded` is always false there -- this is a no-op for Jacobi
     // and for every ordinary (non-window) region, which keeps calling
-    // R.accel->update() on the full R.n-sized vector exactly as before
-    // this fix, unchanged.
+    // R.accel->update() on the full R.n-sized vector.
     // Allocation-free scan first (Iteration.TheSweepLoopAllocatesNothing/
     // TheAcceleratorAllocatesNothingPerUpdate's own invariant, test/
     // verification/iteration_test.cpp -- this region's own sweep loop,
@@ -4035,8 +3983,7 @@ detail::Task<Result<void>> Runner::Impl::run_region(
     // there, so the loop runs but never sets any_excluded), which is
     // every case these two tests exercise and must keep allocating
     // nothing. Only a genuinely GaussSeidel-plus-real-accelerator sweep
-    // -- unreachable before this fix (refused by name) and so not a
-    // sweep either allocation test's own region ever reaches -- sets
+    // -- one neither allocation test's own region ever reaches -- sets
     // any_excluded and takes the projected branch below, which does
     // allocate (the projection buffers themselves).
     bool any_excluded = false;
@@ -4128,12 +4075,12 @@ detail::Task<Result<void>> Runner::Impl::run_region(
       // E-ACCEL-DIVERGED and friends: x_out's contents are not part of the
       // contract after a failed update, so nothing here reads them.
       //
-      // R-09 (REVIEW.md): record the failure and fall through to the
+      // Record the failure and fall through to the
       // post-loop failure check below instead of returning straight out of
-      // the sweep loop. A bare return here bypassed step_period()'s
-      // failure-carries-forward mechanism once that caller stopped
-      // early-returning on a failed region (the fix immediately above this
-      // one, in runner.cpp): every remaining collective this rank owes its
+      // the sweep loop. A bare return here would bypass step_period()'s
+      // failure-carries-forward mechanism, which relies on the caller not
+      // early-returning on a failed region (see runner.cpp): every
+      // remaining collective this rank owes its
       // partners -- in this region and in the rest of the period -- still
       // needs to be reached, and only step_period()'s continuation can do
       // that once this function returns.
@@ -4150,8 +4097,8 @@ detail::Task<Result<void>> Runner::Impl::run_region(
       const Result<void> rs = components.at(slot).restore_state();
       note_component_ran();
       if (!rs.ok()) {
-        // RT-2(c) (review 2026-10-11): record and carry forward exactly as
-        // the accelerator-divergence path above does (R-09's own comment),
+        // Record and carry forward exactly as
+        // the accelerator-divergence path above does (see its own comment),
         // rather than returning straight out of run_region(). The deliver
         // loop just below already gates its own sink instructions on
         // `step_failure.has_value()` (via `is_collective()`), and the
@@ -4167,7 +4114,7 @@ detail::Task<Result<void>> Runner::Impl::run_region(
         if (!step_failure.has_value()) step_failure = rs.error();
         continue;
       }
-      // KNOWN_ISSUES.md D12: the re-advance below (R.tick_indices) is
+      // The re-advance below (R.tick_indices) is
       // this slot's first advance() after THIS restore_state(), so it is
       // the one that must report requires_restore -- and, since a
       // restore always supersedes whatever checkpoint flag an earlier
@@ -4181,7 +4128,7 @@ detail::Task<Result<void>> Runner::Impl::run_region(
     // so anything but an exact match means state the analysis named did not
     // come back -- and a NaN, which no tolerance comparison can see, does.
     //
-    // R16: `R.verify_arcs` is REGISTERED storage only -- the `detail::Slot`s
+    // `R.verify_arcs` is REGISTERED storage only -- the `detail::Slot`s
     // the field registry knows about, one per arc the derived checkpoint set
     // (`CheckpointSet`, src/ir/lowering.hpp) said must survive a rejected
     // iterate. A component's own private member state (anything `advance()`
@@ -4205,7 +4152,7 @@ detail::Task<Result<void>> Runner::Impl::run_region(
         continue;
       }
       const std::size_t which = R.verify_component[v];
-      // RT-2(d) (review 2026-10-11): E-ITER-ROLLBACK is BY DESIGN a
+      // E-ITER-ROLLBACK is BY DESIGN a
       // rank-local verdict -- it compares each rank's own slice of
       // registered storage, so one rank's component failing this check
       // while a peer's passes is precisely the scenario it exists to
@@ -4213,7 +4160,7 @@ detail::Task<Result<void>> Runner::Impl::run_region(
       // the derived checkpoint set (each arc's own comparison is
       // independent) instead of returning straight out of run_region();
       // the deliver/re-advance code below already carries a recorded
-      // `step_failure` through its own collectives exactly as (c)'s own
+      // `step_failure` through its own collectives exactly as the restore_state() failure's
       // comment just above describes, reaching the next sweep's residual
       // agreement rather than leaving a peer waiting in it.
       if (!step_failure.has_value()) {
@@ -4286,7 +4233,7 @@ detail::Task<Result<void>> Runner::Impl::run_region(
     R.x_old.swap(R.x_out);
   }
 
-  // R-09 (REVIEW.md): the accelerator-divergence `break` above leaves this
+  // The accelerator-divergence `break` above leaves this
   // sweep's rollback, delivery and re-advance unexecuted -- correctly, since
   // every collective this pass owed its partners was already reached inside
   // the body loop above (`for (std::size_t i = R.enter; ...)`), before the
@@ -4342,16 +4289,13 @@ detail::Task<Result<void>> Runner::Impl::run_region(
   co_return Result<void>::success();
 }
 
-// S7.2 WindowNewton: extracted verbatim from this function's own sibling
-// above (run_region()'s post-loop history refresh) with NO behaviour
-// change, so `run_region_newton_window()`'s own committing evaluation
-// (src/runtime/iteration.cpp, this file's own sibling below) can call
-// the IDENTICAL refresh instead of duplicating it -- a Newton region's
-// own window instance is over the moment its one committing evaluation
-// returns, exactly the point this function's own callers already reach
-// it from. See this block's own original comment, preserved at the
-// (sole) remaining call site above, for the full account of WHY `slots[]`
-// rather than `previous[]`, and why NOW rather than mid-sweep.
+// The post-loop history refresh shared by run_region() and
+// `run_region_newton_window()`'s own committing evaluation (this file's
+// own sibling below): a Newton region's own window instance is over the
+// moment its one committing evaluation returns, exactly the point
+// run_region() reaches it from. See run_region()'s call site above for
+// the full account of WHY `slots[]` rather than `previous[]`, and why NOW
+// rather than mid-sweep.
 void Runner::Impl::refresh_window_member_history(detail::RegionRuntime& R) {
   for (auto& [node, cfg] : window_member_config) {
     if (cfg.region_index != R.index || !cfg.window_import.valid() ||
@@ -4394,41 +4338,37 @@ void Runner::Impl::refresh_window_member_history(detail::RegionRuntime& R) {
   }
 }
 
-// KNOWN_ISSUES.md D72 (owner priority): see this function's own
-// declaration (runner_impl.hpp) for why it exists. Called once, from
-// Runner::restore_restart_fields(), after every window member's own
-// detail::WindowMemberState has been restored (history AND, since D70,
-// last_window_waveform).
+// See this function's own declaration (runner_impl.hpp) for why it
+// exists. Called once, from Runner::restore_restart_fields(), after every
+// window member's own detail::WindowMemberState has been restored
+// (history AND last_window_waveform).
 //
-// Root cause (confirmed by disabling this call behind a temporary env
-// gate and re-running the four Brusselator Aitken/IQN-ILS round-trip
-// tests, instrumentation since removed): with this call disabled, the
-// restored run reproduces D72's own originally-measured symptom exactly
-// -- iterations_per_window[0] reports 12 against the uninterrupted
-// reference's 13, and U/V's own final fields disagree from the 5th
-// significant digit on -- confirming run_region_window()'s own pre-loop
-// seed (`slot_to_host(slots[b.feed_arc], ...)`, this file's own "y_0"
-// comment, b.feed_arc == cfg.window_import.value() for a window-scoped
-// region) is reading a stale buffer on the restored run's first
-// post-restore window instance: resolve_regions()/initialize() primes
-// `window_import` exactly ONCE, at construction, and before this fix
-// restore_restart_fields() touched only detail::WindowMemberState
-// (history, and -- since D70 -- last_window_waveform), never this live
-// buffer, so the construction-time cold-start value survived untouched
-// into the first post-restore sweep's residual and accelerator input.
+// Why it is needed: run_region_window()'s own pre-loop seed
+// (`slot_to_host(slots[b.feed_arc], ...)`, this file's own "y_0" comment,
+// b.feed_arc == cfg.window_import.value() for a window-scoped region)
+// reads the `window_import` buffer on the restored run's first
+// post-restore window instance. resolve_regions()/initialize() primes
+// `window_import` exactly ONCE, at construction, and
+// restore_restart_fields() otherwise touches only
+// detail::WindowMemberState (history, last_window_waveform), never this
+// live buffer, so the construction-time cold-start value would survive
+// untouched into the first post-restore sweep's residual and accelerator
+// input (iterations_per_window[0] would report 12 against the
+// uninterrupted reference's 13, and U/V's own final fields would
+// disagree from the 5th significant digit on).
 //
-// The fix: last_window_waveform (D70) is now exactly the restored
-// PROVIDER's own real, per-sample trajectory over the window that just
-// completed, pushed in the SAME (sample index -> buffer offset
-// e*provider_capacity+s) layout advance_window()'s own out_slot writes
-// already use (this file's own sibling function, above) -- so copying
-// it into the CONSUMER's window_import buffer, sample for sample, is
-// not a re-derivation, only a replay of a write resolve_regions()'s own
-// "ordinary prime" pass already does once at construction, now done
-// again after a restore with the restored values instead of the
-// construction-time ones. With this call enabled, all four previously-
-// removed round-trip tests (test/verification/brusselator_restart_
-// test.cpp) pass bit for bit, including iterations_per_window.
+// last_window_waveform is exactly the restored PROVIDER's own real,
+// per-sample trajectory over the window that just completed, pushed in
+// the SAME (sample index -> buffer offset e*provider_capacity+s) layout
+// advance_window()'s own out_slot writes already use (this file's own
+// sibling function, above) -- so copying it into the CONSUMER's
+// window_import buffer, sample for sample, is not a re-derivation, only
+// a replay of a write resolve_regions()'s own "ordinary prime" pass
+// already does once at construction, now done again after a restore with
+// the restored values instead of the construction-time ones. With this
+// call, the Brusselator Aitken/IQN-ILS restart round-trip tests
+// (test/verification/brusselator_restart_test.cpp) pass bit for bit,
+// including iterations_per_window.
 Result<void> Runner::Impl::reprime_window_import_after_restore() {
   for (auto& [node, cfg] : window_member_config) {
     if (!cfg.window_import.valid()) continue;
@@ -4457,11 +4397,11 @@ Result<void> Runner::Impl::reprime_window_import_after_restore() {
     const std::vector<std::unique_ptr<Waveform>>& wf =
         provider_state->last_window_waveform;
     // Empty means the point was taken before the provider completed a
-    // window (D70 populates it every sweep), so the construction-time
+    // window (advance_window() populates it every sweep), so the construction-time
     // prime IS the continuous run's seed: nothing to do. Any other shape
     // disagreement is a defect in the point or the graph and is refused
     // by name, never skipped: a silent skip here would be a silent reset
-    // of the accelerator's seed (owner decision 4).
+    // of the accelerator's seed.
     if (wf.empty()) continue;
     if (wf.size() != cfg.length) {
       return Failure{"E-RESTART-WINDOW-REPRIME",
@@ -4494,7 +4434,7 @@ Result<void> Runner::Impl::reprime_window_import_after_restore() {
   return Result<void>::success();
 }
 
-// S7.2 WindowNewton (newton-krylov.md Sec. 9.7's own test plan):
+// newton-krylov.md Sec. 9.7's test plan:
 // TEST/DIAGNOSTIC-ONLY public accessors, mirroring `Runner::region_
 // fixed_point_residual()`'s own pattern (src/runtime/fixed_point_
 // residual.cpp) for the window-scoped seam -- see `WindowFixedPoint
@@ -4617,7 +4557,7 @@ Result<void> Runner::Impl::resolve_pending_window_straddles(
     if (!st.straddle_pending) continue;
     const WindowMemberConfig& cfg = window_member_config.at(node.value());
     Component& comp = components.at(cfg.component_slot);
-    // KNOWN_ISSUES.md D12: this function is NOT a coroutine (see its own
+    // This function is NOT a coroutine (see its own
     // declaration comment, runner_impl.hpp) -- its replay below calls
     // comp.restore_state() and comp.advance(ctx) directly, with no
     // ComponentSet-tick for a suspend to attach to cleanly. Refuse rather
@@ -4827,10 +4767,10 @@ Result<void> Runner::Impl::resolve_pending_window_straddles(
                      "consumer's own window_import arc is not sized the "
                      "way this write expects (length * provider_capacity)"};
       }
-      // Space-aware: `import_slot` can be device-resident now that a
-      // window-scoped region's arcs are no longer pinned to the host
-      // (docs/dev/device-resident-arcs.md, step 8) -- this publish write
-      // used to assume a host pointer the same way the read above did.
+      // Space-aware: `import_slot` can be device-resident (a window-scoped
+      // region's arcs are not pinned to the host,
+      // docs/dev/device-resident-arcs.md), so this publish write must not
+      // assume a host pointer.
       for (std::size_t e = 0; e < other_cfg.length && e < cfg.length; ++e) {
         scalar_to_slot(cfg.provided[e], import_slot,
                        e * other_cfg.provider_capacity + 0);
@@ -4840,8 +4780,7 @@ Result<void> Runner::Impl::resolve_pending_window_straddles(
   return Result<void>::success();
 }
 
-// Time windows track (C3): the Jacobi/GaussSeidel design question the
-// former stub above named is resolved -- see fuse::WaveformIteration
+// The Jacobi/GaussSeidel choice is made by fuse::WaveformIteration
 // (fuse/model/iteration.hpp) and effective_channel_lag() (fuse/model/
 // coupling_graph.hpp). What decides "same-sweep-fresh vs previous-sweep"
 // for THIS function is entirely mechanical, below: an UNLAGGED import
@@ -4873,22 +4812,18 @@ Result<void> Runner::Impl::resolve_pending_window_straddles(
 // straddles()` (this file, called from `run_region()`, BEFORE this
 // function ever runs for that next instance) then REPLAYS it with that
 // window's own now-final data, following the SAME choreography
-// `WindowCoupler::resolve_pending_straddles()` uses -- RT-6 (review
-// 2026-10-11): the *FixedBCrossing tests this comment used to call "not
-// yet verified" now exist, run, and are currently passing, with
-// GaussSeidel matching the driver bitwise; they run at kFixedSweeps=1,
-// not the N~25-30 regime a separate bisection measured a ~4.5e-14
-// relative Jacobi floor at -- see test/runtime/window_runner_straddle_
-// test.cpp's own comment next to `kFixedSweeps` for the current state
-// and the open question of which regime this check is meant to pin. An
+// `WindowCoupler::resolve_pending_straddles()` uses; the *FixedBCrossing
+// tests in test/runtime/window_runner_straddle_test.cpp compare it against
+// the driver (see the comment next to `kFixedSweeps` there for the sweep
+// count they run at). An
 // IMPORT PROVIDER's straddle is handled by
 // `window_sample_times()`/`window_sample_shift()` (fuse/model/coupling_
 // graph.hpp) reconstructing the provider's own grid and buffer-index
 // correspondence from the graph alone -- verified against the compiled
 // buffer a straddling provider actually writes, and against a real
 // carried-forward clock over a full period, for a provider whose own
-// interval is smaller than the window (the only envelope this track
-// names; KNOWN_ISSUES.md D7 -- TWO Fixed members straddling the SAME
+// interval is smaller than the window (the only envelope handled; TWO
+// Fixed members straddling the SAME
 // window -- remains refused at setup, unconditionally, identically to
 // `WindowCoupler::create()`'s own `E-RT-WINDOW-STRADDLE`).
 std::int64_t Runner::Impl::window_absolute_instance(const WindowMemberConfig& cfg,
@@ -4918,7 +4853,7 @@ detail::Task<Result<void>> Runner::Impl::advance_window(
   }
   const WindowMemberConfig& cfg = cfg_it->second;
 
-  // Unit 2b (D19): a member not hosted on this process takes no
+  // A member not hosted on this process takes no
   // substeps, calls neither advance() nor save_state()/restore_state(),
   // and yields no ExternalSuspend -- checked FIRST, before any of this
   // function's own bookkeeping (window_last_dst_step, window_pass_
@@ -4980,22 +4915,13 @@ detail::Task<Result<void>> Runner::Impl::advance_window(
     // ever runs for this pass) already clears that flag once its own
     // replay resolves it, but `st.clock` itself is untouched by that
     // replay (the replay redoes the COMPONENT's state, never this
-    // bookkeeping). MEASURED (this session): switching this ternary's
-    // condition from `st.straddle_pending` to `st.clock > T0` fixed a
-    // real bug -- the OLD condition, now always false by the time this
-    // runs (the replay clears it first), was silently collapsing every
-    // post-straddle window back onto `T0`, one whole pass_start_clock
-    // wrong -- confirmed by instrumenting this call and
-    // resolve_pending_window_straddles() temporarily and comparing the
-    // printed T0/T1/clock sequence against the hand-derived (13,7)
-    // schedule (instrumentation since removed). This
-    // fixes THAT bug specifically; RT-6 (review 2026-10-11): the wider
+    // bookkeeping). Using `st.straddle_pending` in this ternary would be
+    // wrong: that flag is always false by the time this runs (the replay
+    // clears it first), which would silently collapse every post-straddle
+    // window back onto `T0`, one whole pass_start_clock wrong. The wider
     // `*FixedBCrossing` comparisons in test/runtime/window_runner_
-    // straddle_test.cpp now exist, run, and currently pass, at
-    // kFixedSweeps=1 -- that file's own comment next to `kFixedSweeps`
-    // has the current account, including the open question of whether
-    // N=1 is the regime this check is meant to pin, versus the N~25-30
-    // regime a separate bisection measured a floor at. Cached in
+    // straddle_test.cpp run at kFixedSweeps=1; that file's own comment
+    // next to `kFixedSweeps` has the account of that sweep count. Cached in
     // `window_pass_start_clock`
     // (its own comment, runner_impl.hpp) so EVERY sweep of this pass
     // plans from the SAME clock, not from wherever the PREVIOUS
@@ -5030,7 +4956,7 @@ detail::Task<Result<void>> Runner::Impl::advance_window(
   // Jacobi window regardless of the graph's own `.lag()` declaration
   // (its own `is_jacobi_window_channel()` helper), so `cfg.import_lagged`
   // is already true here for BOTH directions in this file's graphs --
-  // confirmed by instrumented probing this session, not assumed.
+  // confirmed by probing, not assumed.
   if (cfg.window_import.valid() && cfg.required != nullptr) {
     // On the first sweep of a NEW window instance, a LAGGED import has
     // nothing genuine to read yet (the provider has not run THIS
@@ -5145,8 +5071,8 @@ detail::Task<Result<void>> Runner::Impl::advance_window(
       // ir/op.hpp's own comment on OpKind::ExternalDelivery), so that
       // "ordinary prime" pass, running
       // BEFORE the application's own first write has happened, recorded
-      // whatever zero-initialized garbage the arc started with. MEASURED
-      // (this session, paired `TRACE seed`/`TRACE predictor` lines, both
+      // whatever zero-initialized garbage the arc started with. In the
+      // LowFive harness (both
       // channels): window 1's own sweep 0 used v=0x0p+0 here where the
       // reference run's own equivalent read 0x1.7f96603e92f42p+0 /
       // -0x1.edc01ec2c97a2p+0 -- the harness's own extra sweeps (24 vs
@@ -5155,25 +5081,21 @@ detail::Task<Result<void>> Runner::Impl::advance_window(
       // `extrapolate_boundary_value()`'s own fit, below, which keeps
       // reading it as one of its knots until something overwrites it).
       //
-      // An EARLIER version of this fix read `slots[cfg.window_import.
-      // value()]` here -- the window Sink's own downstream COPY --
-      // on the claim that "by THIS point in THIS call, this member's
-      // own chain (Remap..Sink, stream order strictly ahead of this
-      // WindowAdvance) has ALREADY executed for real this sweep". That
-      // held under the instruction ordering in force when this fix was
-      // written (both members' own chains grouped together, both ahead
-      // of both WindowAdvance calls), but NOT under the scheduling-order
-      // fix now in effect (OpKind::ExternalDelivery's own comment,
-      // include/fuse/ir/op.hpp): stream order interleaves per member --
+      // Reading `slots[cfg.window_import.value()]` here -- the window
+      // Sink's own downstream COPY -- would assume that "by THIS point in
+      // THIS call, this member's own chain (Remap..Sink) has ALREADY
+      // executed for real this sweep". That does NOT hold (see
+      // OpKind::ExternalDelivery's own comment, include/fuse/ir/op.hpp):
+      // stream order interleaves per member --
       // WindowAdvance(U) -> Sink(V's import, fed by U) -> WindowAdvance(
       // V) -> Sink(U's import, fed by V) -- so U's OWN import chain
       // (fed by V) does not run until AFTER U's own WindowAdvance, and
       // `slots[cfg.window_import.value()]` is still whatever the PRIOR
       // sweep (or, on sweep 0, the "ordinary prime" pass above) left
-      // there when U reaches this line. MEASURED (this session, traced
-      // per sweep, hexfloat, both members' own WindowAdvance output and
-      // Sink input side by side against the in-process reference): the
-      // harness's own window 0 sweep 0 WindowAdvance output for U
+      // there when U reaches this line. In a per-sweep hexfloat trace of
+      // both members' own WindowAdvance output and Sink input side by side
+      // against the in-process reference, the harness's own window 0 sweep
+      // 0 WindowAdvance output for U
       // matched the reference exactly at element 0 (the window-start
       // sample, never touched by this correction) but diverged from
       // element 1 onward, by roughly 4 in an O(1) quantity -- traced
@@ -5224,13 +5146,10 @@ detail::Task<Result<void>> Runner::Impl::advance_window(
           // SAME real value into this provider's own export, buffer
           // index 0, the moment its straddle resolves -- before this
           // pass's sweep 0 ever starts -- so `arr[...+0]` already
-          // holds it here. (An earlier version of this function
-          // extrapolated `k == shift` too, on the mistaken claim that
-          // doing so was "robust to shift ... since neither branch
-          // reads the raw buffer" -- it is not: the driver's own
-          // extra real knot has no extrapolated counterpart, and nothing
-          // published it to the Runner's own buffer until the fix
-          // above.) Every entry PAST that one (`k > shift`) still has
+          // holds it here. (Extrapolating `k == shift` too would be wrong:
+          // the driver's own extra real knot has no extrapolated
+          // counterpart, and the raw buffer holds the published real value.)
+          // Every entry PAST that one (`k > shift`) still has
           // nothing real behind it (the provider has not run ITS OWN
           // substeps for this window yet), so extrapolation remains
           // the only option there.
@@ -5282,7 +5201,7 @@ detail::Task<Result<void>> Runner::Impl::advance_window(
   // (docs/dev/device-resident-arcs.md, step 8), so every write below
   // goes through scalar_to_slot() rather than a raw host pointer; `out`
   // itself is kept only as the readiness flag the four write sites below
-  // already guarded on (unchanged from before this fix: `ins.out` is
+  // already guarded on (`ins.out` is
   // valid whenever `cfg.provided` is non-null, by the same invariant the
   // raw pointer read this replaces relied on).
   const bool out_valid = cfg.provided != nullptr;
@@ -5312,11 +5231,10 @@ detail::Task<Result<void>> Runner::Impl::advance_window(
     }
   }
 
-  // D70 (owner decision 2026-10-18): populate WindowMemberState::
+  // Populate WindowMemberState::
   // last_window_waveform here, so write_window_member_restart()'s own
   // "/waveform/present" branch (runner.cpp) has a live producer for the
-  // Runner-compiled path -- measured dead (KNOWN_ISSUES.md D70) because
-  // this function never built one. Mirrors WindowCoupler::sweep_window()'s
+  // Runner-compiled path. Mirrors WindowCoupler::sweep_window()'s
   // own `real_traj[i]` (window_coupler.cpp): one Waveform per element,
   // reset over [pass_start_clock, this sweep's own last substep end),
   // seeded at sample 0 with the SAME start_value this function already
@@ -5436,20 +5354,20 @@ detail::Task<Result<void>> Runner::Impl::advance_window(
           scalar_to_slot(v_at_t1[e], *out_slot, e * cfg.capacity + (s + 1));
         }
       }
-      // D70: one real sample per substep index, matching the out_slot
+      // One real sample per substep index, matching the out_slot
       // write just above exactly -- not WindowCoupler::sweep_window()'s
       // own real_traj[i], which (for this same straddling case) pushes a
       // SECOND knot at sub.t1 when T1 < sub.t1. That second knot has no
       // out_slot write of its own to mirror and no compiled capacity
       // reserved for it here (cfg.capacity is sized from steps.size()+1,
       // the same bound this function's own E-RT-WINDOW-CAPACITY check
-      // above enforces); Brusselator (the restored test target for D70
-      // and D72) uses DtPolicy::Adjustable for both members, which never
+      // above enforces); Brusselator (the restart test target)
+      // uses DtPolicy::Adjustable for both members, which never
       // straddles, so this branch is not exercised by either. Declared
       // here rather than silently reproduced: a DtPolicy::Fixed member
       // that straddles would get one fewer trajectory sample than
       // WindowCoupler's own driver records, a known, intentionally
-      // undercovered case (open_questions in the delivered report).
+      // undercovered case.
       if (out_valid) {
         for (std::size_t e = 0; e < cfg.length; ++e) {
           double v = v_at_t1[e];
@@ -5482,7 +5400,7 @@ detail::Task<Result<void>> Runner::Impl::advance_window(
     // account).
     ctx.step = absolute_instance;
     ctx.iteration = iteration;
-    // KNOWN_ISSUES.md D12: same rule as Runner::Impl::advance() (runner.cpp)
+    // Same rule as Runner::Impl::advance() (runner.cpp)
     // -- suspend here, before the call, for the one component override
     // that is_externally_driven(); every real (in-process) window member
     // takes the branch never, so the unconditional `comp.advance(ctx)`
@@ -5509,7 +5427,7 @@ detail::Task<Result<void>> Runner::Impl::advance_window(
       for (std::size_t e = 0; e < cfg.length; ++e) {
         scalar_to_slot(cfg.provided[e], *out_slot, e * cfg.capacity + (s + 1));
       }
-      // D70: real sample at this substep's own committed time, matching
+      // Real sample at this substep's own committed time, matching
       // the out_slot write immediately above.
       for (std::size_t e = 0; e < cfg.length; ++e) {
         double v = cfg.provided[e];
@@ -5535,10 +5453,9 @@ detail::Task<Result<void>> Runner::Impl::advance_window(
   // This member's own record of what it received, for a LATER window's
   // own straddle-tail `extrapolate_tail` (this function's own top
   // comment, resolve_regions()'s seeding comment), is intentionally NOT
-  // touched here, mid-sweep. (An earlier version of this function DID
-  // push/refine `st.history[e]` right here, every sweep, from
-  // `import_wf[e]` -- measured, this session, to be the cause of a
-  // real divergence from the driver: THIS member's own self-straddle
+  // touched here, mid-sweep. (Pushing/refining `st.history[e]` right here,
+  // every sweep, from `import_wf[e]` would cause a real divergence from
+  // the driver: THIS member's own self-straddle
   // split, a few lines above in THIS SAME call, reads `st.history[e]`
   // for ITS OWN `extrapolate_tail`, and a mid-pass refinement changes
   // what that read sees sweep over sweep, sweep 1 onward, within the
@@ -5553,7 +5470,7 @@ detail::Task<Result<void>> Runner::Impl::advance_window(
   // k-loop exits -- making the per-sweep write here not just wrong but
   // redundant.)
 
-  // D70: commit this sweep's own trajectory -- whichever sweep turns out
+  // Commit this sweep's own trajectory -- whichever sweep turns out
   // to be this pass's last (converged or run to max_iterations) is the
   // one whose trajectory survives, exactly as WindowCoupler::
   // sweep_window()'s own "Commit" step (window_coupler.cpp) does for
@@ -5579,14 +5496,11 @@ detail::Task<Result<void>> Runner::Impl::advance_window(
     // assigns there, captured at THIS window's own top, BEFORE any of
     // its own substeps ran. When this member already carried a straddle
     // INTO this window, that checkpoint sits at wherever the carry left
-    // it, past `T0` -- not at `T0` itself. MEASURED (this session): the
-    // `T0` version walked the WRONG number of chunks in `resolve_
-    // pending_window_straddles()`'s own replay (an extra, sub-interval
-    // leftover chunk at the tail, from clipping a walk that started too
-    // early against `target_clock`) -- confirmed by instrumenting the
-    // replay's own chunk loop temporarily and comparing its printed
-    // trace against the hand-derived (13,7) schedule (instrumentation
-    // since removed).
+    // it, past `T0` -- not at `T0` itself. Using `T0` would walk the WRONG
+    // number of chunks in `resolve_pending_window_straddles()`'s own replay
+    // (an extra, sub-interval leftover chunk at the tail, from clipping a
+    // walk that started too early against `target_clock`), as the
+    // hand-derived (13,7) schedule shows.
     st.straddle_window_start = pass_start_clock;
     st.straddle_window_end = T1;
   }
@@ -5615,7 +5529,7 @@ detail::Task<Result<void>> Runner::Impl::deliver_external(
   const ComponentId importer{static_cast<std::uint32_t>(rank_set)};
   const ComponentDecl& importer_decl = graph.component(importer);
 
-  // S6 phase 3 (Conformance, Unit 3b), item 2 of this round: the
+  // The
   // exporter, resolved from this instruction's own origin channel
   // (`Node::origin`, set by `lower_channel()`'s `ctx.dag.add_node(
   // OpKind::ExternalDelivery, {source_producer}, out, OpAttrs{}, cid,
@@ -5629,7 +5543,7 @@ detail::Task<Result<void>> Runner::Impl::deliver_external(
   const ComponentDecl& exporter_decl = graph.component(exporter);
   const std::int32_t delivery_field = static_cast<std::int32_t>(ch.source.value());
 
-  // The lead's own ruling (2026-10-04, extended this round): on a
+  // On a
   // process hosting neither end of this channel, the whole instruction
   // is a no-op, exactly as `advance_window()` is for a non-hosted
   // member (that function's own `if (!cfg.hosted) co_return Result<
@@ -5646,16 +5560,15 @@ detail::Task<Result<void>> Runner::Impl::deliver_external(
                                importer_decl.ranks.contains(*this_process);
   if (!exporter_hosted && !importer_hosted) co_return Result<void>::success();
 
-  // S6 phase 3 (Conformance, Unit 3b), item 2 of this round: the
+  // The
   // ordering edge (OpKind::ExternalDelivery's own comment, op.hpp) puts
   // this instruction right after the exporter's own last substep of a
   // sweep -- on the EXPORTER's own process, that suspension is exactly
   // "your export of this sweep is complete; write it now". Without
   // this, a distributed writer process (one that hosts the exporter but
   // not the importer) never learns when to write at all -- the
-  // single-process harness this track's own earlier tests used hid the
-  // gap because both ends were always hosted together (KNOWN_ISSUES.md
-  // D14's own account of the finding this closes). Suspended FIRST,
+  // single-process harness hides the gap because both ends are always
+  // hosted together. Suspended FIRST,
   // matching the real time order ("export done" precedes "import due").
   if (exporter_hosted) {
     Component* exp_comp = components.find(exporter_decl.name);

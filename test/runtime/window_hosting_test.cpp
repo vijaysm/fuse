@@ -1,6 +1,5 @@
-// Unit 2b (D19) correction, measured against a real host MPI run of
-// `parallel.window_runner_mpi.{2,3}` (2026-10-08): the unit test of the
-// rule `WindowMemberConfig::export_consumer_hosted` replaces.
+// The unit test of the rule `WindowMemberConfig::export_consumer_hosted`,
+// motivated by a real host MPI run of `parallel.window_runner_mpi.{2,3}`.
 //
 // This drives the public `Runner` API exactly as window_runner_test.cpp
 // does, plus one TEST-ONLY accessor (`Runner::test_only_window_block_
@@ -21,10 +20,11 @@
 // ()` makes -- including the one this file checks -- without ever
 // exercising the gate that consumes it downstream. That gate, and the real
 // cross-rank agreement behind it, has no tier-0 oracle; its own proof is the
-// host-only `parallel.window_runner_mpi.{2,3}` this defect was found in.
+// host-only `parallel.window_runner_mpi.{2,3}`.
 //
-// THE MEASUREMENT THAT MOTIVATES THIS FILE (the lead's host run,
-// 2026-10-08, `build-all`, MPI on): `parallel.window_runner_mpi.{2,3}` FAIL.
+// THE MEASUREMENT THAT MOTIVATES THIS FILE (a host run, `build-all`, MPI
+// on, with the exporting member's flag used):
+// `parallel.window_runner_mpi.{2,3}` FAIL.
 // Window 0, rank 0: `got.iterations_per_window[0] == 1` against a reference
 // of 37 (windows 1..4: reference 35, 25, 15, 3 vs `got` 1 every time);
 // `got.x_b_per_window[0] == 0.2`, B's own unmodified initial value, since no
@@ -117,7 +117,7 @@ class StubBlock final : public fuse::Component {
 // Two window members A, B on DISJOINT single-rank processor sets -- A on
 // rank 0, B on rank 1 -- the same shape window_runner_test.cpp's own
 // `make_single_window_graph_with_disjoint_ranks()` uses for the hosting
-// (step (a)) test, duplicated here rather than shared across the two
+// test, duplicated here rather than shared across the two
 // translation units for the same reason resolve_regions()'s own comment
 // gives for duplicating member_exported_field()/member_imported_field():
 // file-local helpers are cheaper than a new shared header two tests would

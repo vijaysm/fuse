@@ -1,10 +1,8 @@
-# S8 physics-kit, track "Integrators", Stage B Round 1 (docs/dev/integrators-design.md):
-# one coefficient-perturbation row per tableau this round implements (FE, KUTTA22,
-# KUTTA44, DOPRI45), a controller safety-factor row, a rejection-path row and a clip
-# row, per the task's own instruction. Every row is proved by tools/mutate.py against
-# this round's own build-tier0 (MEASURED, not hand-verified like clock-coupler.toml's
-# own precedent, since the scratch tree's own build directory was already configured
-# for exactly this).
+# Integrators, explicit family (docs/dev/integrators-design.md):
+# one coefficient-perturbation row per explicit tableau (FE, KUTTA22, KUTTA44,
+# DOPRI45), a controller safety-factor row, a rejection-path row and a clip row.
+# Every row is proved by tools/mutate.py against build-tier0 (MEASURED, not
+# hand-verified like clock-coupler.toml).
 
 [[mutation]]
 id = "integrators-fe-coefficient-perturbation"
@@ -69,7 +67,7 @@ test = "num.embedded_controller"
 [[mutation]]
 id = "integrators-substepclock-clip"
 area = "num"
-describes = "deletes SubStepClock::round_to_quantum()'s own clamp to the quanta remaining in the window (`if (n > remaining) n = remaining;`) -- the owner's own decision (3), 'last step clipped exactly', is this one line; without it a caller's own last proposed step can overrun the window, which SubStepClock::advance()'s own FUSE_ASSERT(n <= remaining_quanta()) then refuses with an InvariantViolation instead of the step landing exactly on the window end -- SubStepClock.LastStepClipsExactlyToTheWindowEnd (integrator_test.cpp) is this row's own target, not a test that merely tolerates the thrown exception: it asserts clk.now() == window_end, which an uncaught InvariantViolation propagating out of the test body fails outright."
+describes = "deletes SubStepClock::round_to_quantum()'s own clamp to the quanta remaining in the window (`if (n > remaining) n = remaining;`) -- the 'last step clipped exactly' guarantee is this one line; without it a caller's own last proposed step can overrun the window, which SubStepClock::advance()'s own FUSE_ASSERT(n <= remaining_quanta()) then refuses with an InvariantViolation instead of the step landing exactly on the window end -- SubStepClock.LastStepClipsExactlyToTheWindowEnd (integrator_test.cpp) is this row's own target, not a test that merely tolerates the thrown exception: it asserts clk.now() == window_end, which an uncaught InvariantViolation propagating out of the test body fails outright."
 file = "include/fuse/num/integrator.hpp"
 old = "    const std::int64_t remaining = remaining_quanta();\n    if (n > remaining) n = remaining;\n    return n;"
 new = "    return n;"

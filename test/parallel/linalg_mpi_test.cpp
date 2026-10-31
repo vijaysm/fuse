@@ -1,10 +1,9 @@
-// "Containers" track, tier 1: fuse::linalg::make_mpi_reducer/
+// Tier 1: fuse::linalg::make_mpi_reducer/
 // make_mpi_exchanger (src/linalg/comm_mpi.cpp) and the DistVector/
 // DistSparseMatrix operations built on them, over a REAL MPI_COMM_WORLD.
 //
-// MPI CANNOT START IN THIS SANDBOX (docs/dev/testing.md): this file is
-// compiled -- registered with fuse_add_mpi_test, RANKS 2 -- but never run
-// here; outcomes are a host action.
+// Registered with fuse_add_mpi_test, RANKS 2; needs a working MPI
+// launcher (docs/dev/testing.md).
 //
 // THE REFERENCE. Every quantity below is checked against a closed-form
 // value every rank can compute WITHOUT any communication: `g(i) =
@@ -12,7 +11,7 @@
 // directly for a matrix row. Because `g` is a pure function of the GLOBAL
 // index, every rank reconstructs the IDENTICAL whole-domain answer a
 // single rank computing the whole problem serially would get -- the "rank-0
-// serial computation" the task names, done redundantly on every rank
+// serial computation", done redundantly on every rank
 // instead of gathered from one, which needs no extra collective of its
 // own and cannot disagree with what rank 0 would have produced. This is
 // the same comparison test/linalg/dist_vector_test.cpp's and
@@ -115,14 +114,14 @@ TEST(LinalgMpi, DotNorm2AndNormInfMatchTheWholeDomainClosedFormReference) {
     expect_max = std::max(expect_max, std::fabs(g(i)));
   }
 
-  // Review 2026-10-11 NL-10: v.dot(v) sums a 5-term rank-0 partial and a
+  // v.dot(v) sums a 5-term rank-0 partial and a
   // 5-term rank-1 partial via MPI_Allreduce; `expect_dot` above sums all
   // 10 terms in a single ascending-index loop. Floating-point addition is
   // not associative, so the two groupings can disagree in the last bit
   // even though both are "the same sum" mathematically -- a bit-tight
   // `EXPECT_DOUBLE_EQ` would pass today by luck of magnitude, not by
-  // construction (the same fragility class KNOWN_ISSUES.md's D30
-  // already records for contraction, not reassociation). Bounded by a
+  // construction (the same fragility class that applies to
+  // contraction, not reassociation). Bounded by a
   // measured, term-count-scaled tolerance instead, as
   // dist_sparse_matrix_test.cpp's own `check_two_partition_apply` already
   // does for the analogous apply() split.

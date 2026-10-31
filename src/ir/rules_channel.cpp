@@ -39,36 +39,30 @@ bool lower_channel(LoweringContext& ctx, ChannelId cid) {
     return true;  // claimed, but failed
   }
 
-  // Unit 3 (S6 phase 3, Conformance): a LowFive-bound channel
-  // (`FieldSpec::hdf5_path` set on the source field) is an
-  // APPLICATION-performed transfer -- the field's own producer (its
-  // ordinary `Source`, or for a window-scoped export its
-  // `WindowAdvance`) still runs exactly as it does today, but this
-  // channel's own chain does not READ its output: `ExternalDelivery`'s
-  // own `execute()` case (src/runtime/runner.cpp) ignores its input, and
-  // the application (an ordinary HDF5 write/read, through the installed
-  // VOL, or for the tier-0 oracle, a test harness) fills its output from
-  // outside this graph entirely. See OpKind::ExternalDelivery
-  // (include/fuse/ir/op.hpp) and docs/user/lowfive.md, Unit 3, for why:
-  // in the deployment this exists for, the source field's own producer
-  // and this channel's consumer may be different processes with no such
-  // DATA edge at all.
+  // A LowFive-bound channel (`FieldSpec::hdf5_path` set on the source field) is
+  // an APPLICATION-performed transfer -- the field's own producer (its ordinary
+  // `Source`, or for a window-scoped export its `WindowAdvance`) still runs
+  // exactly as it does today, but this channel's own chain does not READ its
+  // output: `ExternalDelivery`'s own `execute()` case (src/runtime/runner.cpp)
+  // ignores its input, and the application (an ordinary HDF5 write/read,
+  // through the installed VOL, or for the tier-0 oracle, a test harness) fills
+  // its output from outside this graph entirely. See OpKind::ExternalDelivery
+  // (include/fuse/ir/op.hpp) and docs/user/lowfive.md for why: in the
+  // deployment this exists for, the source field's own producer and this
+  // channel's consumer may be different processes with no such DATA edge at
+  // all.
   //
   // The DAG edge is NOT severed, though -- it is given the SAME input
   // `Transport` would have had for this same channel (`source_producer`,
-  // below), an earlier version of this node did not, and that was wrong:
-  // with no input at all, nothing forces the scheduler to place this
-  // node where `Transport` stands (after the source field's own
-  // producer, before the channel's own Remap/Diagnose/Sink), and it was
-  // measured, this session, to place a LowFive-bound channel's own
-  // chain BEFORE the exporting member's own WindowAdvance in the SAME
-  // sweep instead -- reading last sweep's state, not this one's (not
-  // yet recorded as its own divergence note in docs/user/lowfive.md).
-  // Carrying that SAME edge here is what gives the scheduler the
-  // ordering constraint it needs, on every process, exactly as it has
-  // for `Transport` in the
-  // distributed ordinary case (the stream is static and identical
-  // everywhere) -- without making this node READ anything through it.
+  // below). With no input at all, nothing would force the scheduler to place
+  // this node where `Transport` stands (after the source field's own producer,
+  // before the channel's own Remap/Diagnose/Sink), and it was measured to place
+  // a LowFive-bound channel's own chain BEFORE the exporting member's own
+  // WindowAdvance in the SAME sweep instead -- reading last sweep's state, not
+  // this one's. Carrying that SAME edge here is what gives the scheduler the
+  // ordering constraint it needs, on every process, exactly as it has for
+  // `Transport` in the distributed ordinary case (the stream is static and
+  // identical everywhere) -- without making this node READ anything through it.
   //
   // Everything below this point -- unit conversion, Remap, Extrapolate,
   // the window-importing Sink -- is unchanged: it operates on `cur`/
@@ -287,22 +281,21 @@ bool lower_channel(LoweringContext& ctx, ChannelId cid) {
   const bool remap_moves =
       remap_moves_placement(ch.remap.method_override, g.field(ch.source), g.field(ch.target));
 
-  // The coupler-placement track (design C, plans/2026-09-23-coupler-
-  // placement-and-migration.md): `RemapSpec::remap_on` says WHERE this
-  // channel's Remap runs. THE RULE is one rule, not a second mode: the value
-  // moves source -> C, is remapped on C's decomposition of both meshes, and
-  // (after the Remap block below) moves C -> target, with any hop between
-  // identical placements elided by the same `same_as` test as always.
-  // `C = target` -- `remap_on` invalid, the default -- must reproduce
-  // today's IR exactly, which is why `coupler_rank_set` below degrades to
-  // `dst_rank_set` both when no `remap_on` is declared AND when one is
-  // declared but could never affect this channel's lowering: honouring it
-  // in that case would insert two data moves (source->C, C->target) where a
-  // channel with no coupler needed none, for a setting `validate()`'s
+  // Coupler placement (docs/dev/coupler-placement.md): `RemapSpec::remap_on`
+  // says WHERE this channel's Remap runs. THE RULE is one rule, not a second
+  // mode: the value moves source -> C, is remapped on C's decomposition of both
+  // meshes, and (after the Remap block below) moves C -> target, with any hop
+  // between identical placements elided by the same `same_as` test as always.
+  // `C = target` -- `remap_on` invalid, the default -- must reproduce today's
+  // IR exactly, which is why `coupler_rank_set` below degrades to
+  // `dst_rank_set` both when no `remap_on` is declared AND when one is declared
+  // but could never affect this channel's lowering: honouring it in that case
+  // would insert two data moves (source->C, C->target) where a channel with no
+  // coupler needed none, for a setting `validate()`'s
   // `W-CHANNEL-REMAP-ON-UNUSED` already reports as having no effect.
-  // `could_ever_emit_remap` (fuse/model/remap_kind.hpp) is the exact gate
-  // that warning is keyed on, so the two cannot disagree about which
-  // channels a coupler declaration actually touches.
+  // `could_ever_emit_remap` (fuse/model/remap_kind.hpp) is the exact gate that
+  // warning is keyed on, so the two cannot disagree about which channels a
+  // coupler declaration actually touches.
   const bool remap_on_declared = ch.remap.remap_on.valid() &&
                                  ch.remap.remap_on.value() < g.component_count();
   const bool remap_on_could_matter =
@@ -326,12 +319,12 @@ bool lower_channel(LoweringContext& ctx, ChannelId cid) {
         g.component(ComponentId{static_cast<std::uint32_t>(coupler_rank_set)}).ranks;
     ranks_differ = !src_ranks.same_as(dst_ranks);
   }
-  // Unit 3: the application's own read already delivered the value onto
-  // the consumer's placement (the ExternalDelivery arc above was typed
-  // with dst_rank_set for exactly this reason) -- FUSE performs no data
-  // move of its own on this channel, so neither hop below (Transport-
-  // before-Remap here, nor the coupler-second-hop Transport at 5b) may
-  // fire, whatever a rank-set comparison alone would otherwise say.
+  // The application's own read already delivered the value onto the consumer's
+  // placement (the ExternalDelivery arc above was typed with dst_rank_set for
+  // exactly this reason) -- FUSE performs no data move of its own on this
+  // channel, so neither hop below (Transport-before-Remap here, nor the
+  // coupler-second-hop Transport at 5b) may fire, whatever a rank-set
+  // comparison alone would otherwise say.
   if (lowfive_bound) ranks_differ = false;
 
   if (ranks_differ && remap_moves) {
@@ -455,28 +448,28 @@ bool lower_channel(LoweringContext& ctx, ChannelId cid) {
   // Which writers exist is settled here; how they combine is settled after
   // every channel has lowered, because the combine needs all of them at once.
   ctx.field_writers[ch.target.value()].push_back(cur);
-  // Review 2026-10-11 IS-9: recorded here, not reconstructed later from
-  // `cur`'s producer node, because an identity channel (same region, same
-  // placement, unlagged -- this loop emitted no node at all for it) leaves
-  // `cur` as the bare Source arc, whose producer's own `Node::origin` is
-  // deliberately `ChannelId{}` (lower()'s step 1: a Source belongs to its
-  // component, not to any one reader). This is the one place that still
-  // knows `cid` is the channel that put `cur` into `field_writers`.
+  // Recorded here, not reconstructed later from `cur`'s producer node, because
+  // an identity channel (same region, same placement, unlagged -- this loop
+  // emitted no node at all for it) leaves `cur` as the bare Source arc, whose
+  // producer's own `Node::origin` is deliberately `ChannelId{}` (lower()'s step
+  // 1: a Source belongs to its component, not to any one reader). This is the
+  // one place that still knows `cid` is the channel that put `cur` into
+  // `field_writers`.
   ctx.writer_arc_channel[cur.value()] = cid;
   ctx.field_arc[ch.target.value()] = cur;  // single-writer fast path, fixed up below
   return true;
 }
 
-/// D73. Whether channel `cid` is a CROSS-RANK WEIGHTED (non-nodal,
-/// non-consistent) channel: one whose Remap, if `lower_channel()` lowers it
-/// today, takes `Runner::Impl::resolve_remap()`'s general conservative /
-/// MLS / tempest / intx branch rather than the nodal-distributed H / H^T
-/// one (`fuse::remap_moves_placement`, fuse/model/remap_kind.hpp, answers
-/// false for this channel's method and fields), whose source field's own
-/// component and whose Remap placement (`remap_placement()` above) are
-/// physically different sets of ranks, and that genuinely lowers to a
-/// `Remap` node at all (an explicit `RemapFlags` or a region change --
-/// `lower_channel()`'s own step 5 gate).
+/// Whether channel `cid` is a CROSS-RANK WEIGHTED (non-nodal, non-consistent)
+/// channel: one whose Remap, if `lower_channel()` lowers it today, takes
+/// `Runner::Impl::resolve_remap()`'s general conservative / MLS / tempest / intx
+/// branch rather than the nodal-distributed H / H^T one
+/// (`fuse::remap_moves_placement`, fuse/model/remap_kind.hpp, answers false for
+/// this channel's method and fields), whose source field's own component and
+/// whose Remap placement (`remap_placement()` above) are physically different
+/// sets of ranks, and that genuinely lowers to a `Remap` node at all (an
+/// explicit `RemapFlags` or a region change -- `lower_channel()`'s own step 5
+/// gate).
 ///
 /// MUST STAY IN SYNC with `lower_channel()`'s own `ranks_differ` /
 /// `remap_moves` / `coupler_rank_set` / `region_changes` computation
@@ -529,17 +522,17 @@ bool lower_channel(LoweringContext& ctx, ChannelId cid) {
 
 }  // namespace
 
-/// D73 (automatic remap halo, owner decision 2026-10-18). The placement
-/// `lower_channel()`'s own Remap step runs on: the coupler channel `ch`
-/// names via `RemapSpec::remap_on` when one is declared AND `could_ever_
-/// emit_remap()` says it could actually change this channel's lowering
-/// (fuse/model/remap_kind.hpp; mirrors `lower_channel()`'s own `coupler_
-/// rank_set`, this same file, above), the target's own owning component
-/// otherwise. PUBLIC (declared in fuse/ir/lowering.hpp) so `fuse::
-/// execute_remap_halo_instructions()` (fuse/backend/remap_halo_instructions.cpp)
-/// can resolve the SAME placement a `BuildRemapHalo` instruction's own
-/// `channel_needs_remap_halo()` gate (above) used to decide whether to
-/// emit it, from one definition rather than two that could drift.
+/// Automatic remap halo. The placement `lower_channel()`'s own Remap step runs
+/// on: the coupler channel `ch` names via `RemapSpec::remap_on` when one is
+/// declared AND `could_ever_emit_remap()` says it could actually change this
+/// channel's lowering (fuse/model/remap_kind.hpp; mirrors `lower_channel()`'s
+/// own `coupler_rank_set`, this same file, above), the target's own owning
+/// component otherwise. PUBLIC (declared in fuse/ir/lowering.hpp) so
+/// `fuse::execute_remap_halo_instructions()`
+/// (fuse/backend/remap_halo_instructions.cpp) can resolve the SAME placement a
+/// `BuildRemapHalo` instruction's own `channel_needs_remap_halo()` gate (above)
+/// used to decide whether to emit it, from one definition rather than two that
+/// could drift.
 ComponentId remap_placement(const CouplingGraph& g, const Channel& ch) {
   const ComponentId dst_component = g.owner_of(ch.target);
   const bool remap_on_declared =
@@ -551,17 +544,16 @@ ComponentId remap_placement(const CouplingGraph& g, const Channel& ch) {
   return remap_on_could_matter ? ch.remap.remap_on : dst_component;
 }
 
-/// D73. One `BuildRemapHalo` instruction per channel `channel_needs_remap_
-/// halo()` above names, in channel id order, with empty inputs and the
-/// invalid `ArcId{}` as output -- see `OpKind::BuildRemapHalo`'s own doc
-/// comment (fuse/ir/op.hpp) for why this instruction carries no SSA value
-/// at all. Called from `lower()` (src/ir/lowering.cpp) BEFORE step 1's
-/// `Source` loop, so every `BuildRemapHalo` node gets a lower `NodeId`
-/// than every `Source` node -- `OperatorDAG::topological_order()`'s own
-/// "ties broken by ascending NodeId" rule (dag.hpp) is what turns that
-/// into "first in the compiled stream" once `expand()` also stamps every
-/// instance at `t = 0`, `TickPhase::BeforeTicks` (the same instant
-/// `Source` gets).
+/// One `BuildRemapHalo` instruction per channel `channel_needs_remap_halo()`
+/// above names, in channel id order, with empty inputs and the invalid
+/// `ArcId{}` as output -- see `OpKind::BuildRemapHalo`'s own doc comment
+/// (fuse/ir/op.hpp) for why this instruction carries no SSA value at all.
+/// Called from `lower()` (src/ir/lowering.cpp) BEFORE step 1's `Source` loop,
+/// so every `BuildRemapHalo` node gets a lower `NodeId` than every `Source`
+/// node -- `OperatorDAG::topological_order()`'s own "ties broken by ascending
+/// NodeId" rule (dag.hpp) is what turns that into "first in the compiled
+/// stream" once `expand()` also stamps every instance at `t = 0`,
+/// `TickPhase::BeforeTicks` (the same instant `Source` gets).
 void emit_remap_halo_instructions(LoweringContext& ctx) {
   const CouplingGraph& g = ctx.graph;
   for (std::uint32_t i = 0; i < g.channel_count(); ++i) {
@@ -569,17 +561,16 @@ void emit_remap_halo_instructions(LoweringContext& ctx) {
     if (!channel_needs_remap_halo(g, cid)) continue;
     const Channel& ch = g.channel_at(cid);
 
-    // ROUND 2 (lead's design decision 2026-10-18): carry BOTH arcs' owning
-    // components through the instruction's own `attrs`, the same
-    // `src_rank_set`/`dst_rank_set` fields `Transport`/`Epoch` nodes
-    // already use for exactly this purpose (dump.hpp's `attrs_string`
-    // only prints them for `OpKind::Transport`, so this adds no visible
-    // text to any golden dump). `execute_remap_halo_instructions()`
-    // (fuse/backend/remap_halo_instructions.cpp) reads them back rather
-    // than re-deriving `g.owner_of(ch.source)`/`remap_placement(g, ch)` a
-    // second time at execution: what this instruction acts on is frozen
-    // at lowering, the same decision `channel_needs_remap_halo()` just
-    // made, not whatever the graph would answer if asked again later.
+    // Carry BOTH arcs' owning components through the instruction's own `attrs`,
+    // the same `src_rank_set`/`dst_rank_set` fields `Transport`/`Epoch` nodes
+    // already use for exactly this purpose (dump.hpp's `attrs_string` only
+    // prints them for `OpKind::Transport`, so this adds no visible text to any
+    // golden dump). `execute_remap_halo_instructions()`
+    // (fuse/backend/remap_halo_instructions.cpp) reads them back rather than
+    // re-deriving `g.owner_of(ch.source)`/`remap_placement(g, ch)` a second
+    // time at execution: what this instruction acts on is frozen at lowering,
+    // the same decision `channel_needs_remap_halo()` just made, not whatever
+    // the graph would answer if asked again later.
     OpAttrs attrs;
     attrs.src_rank_set = static_cast<int>(g.owner_of(ch.source).value());
     attrs.dst_rank_set = static_cast<int>(remap_placement(g, ch).value());

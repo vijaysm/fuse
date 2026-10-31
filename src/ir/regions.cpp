@@ -25,13 +25,11 @@ void build_iteration_regions(LoweringContext& ctx) {
       // A Sink is never an ORDINARY region's member: it is downstream of
       // the loop (reads the region's converged output), not part of what
       // the loop re-executes -- see group_regions_within_instants()'s
-      // own comment (src/schedule/scheduler.cpp). Before the time-
-      // windows track's lowering moved Sink creation earlier in
-      // lower()'s own pipeline, this was true merely because no Sink
-      // existed yet when this scan ran; made explicit here so it stays
-      // true regardless of that ordering.
+      // own comment (src/schedule/scheduler.cpp). Sinks are created early
+      // in lower()'s own pipeline, so this is stated explicitly here
+      // rather than relying on no Sink existing yet when this scan runs.
       //
-      // Time windows track: a WINDOW-SCOPED region's own Sink is the
+      // Time windows: a WINDOW-SCOPED region's own Sink is the
       // opposite case -- every Sink whose origin is one of THIS region's
       // channels is, by construction (finish_window_regions(),
       // src/ir/window_lowering.cpp, only pre-creates a Sink's arc for a
@@ -54,14 +52,14 @@ void build_iteration_regions(LoweringContext& ctx) {
       // what surfaced this as a scheduling-order defect rather than a
       // graph error.
       if (node.kind == OpKind::Sink && !decl.window_scope.has_value()) continue;
-      // D73: `BuildRemapHalo` carries the SAME channel origin its qualifying
+      // `BuildRemapHalo` carries the SAME channel origin its qualifying
       // channel's ordinary chain does (so `fuse::execute_remap_halo_
       // instructions()` and `Runner::Impl::resolve_remap_halo()` can find
       // the channel it is for), but it is a ONE-TIME setup instruction
       // (`expand()` stamps a single instance at `t = 0`, `TickPhase::
       // BeforeTicks` -- OpKind::BuildRemapHalo's own doc comment, op.hpp),
       // never one more node the loop below re-executes per sweep. Without
-      // this exclusion it was swept into `region.body` by the SAME origin
+      // this exclusion it would be swept into `region.body` by the SAME origin
       // match that finds the channel's Transport/Remap/.../Sink chain,
       // which both misreports the loop as starting at `t = 0` (`region_
       // enter` lands on it instead of on the real first chain node) and
@@ -95,7 +93,7 @@ void build_iteration_regions(LoweringContext& ctx) {
       region.residuals.push_back(res);
     }
 
-    // Spec Section 5.3 / Task 7.2: the checkpoint set is derived, never asked for.
+    // Spec Section 5.3: the checkpoint set is derived, never asked for.
     // Run it last, after the Residual nodes exist, so the analysis sees the
     // whole body. Note the residual nodes are deliberately *not* in
     // region.body -- body is fixed above, before they are emitted -- and nor

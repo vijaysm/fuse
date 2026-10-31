@@ -1,5 +1,5 @@
-# Driver for the "install.consumer_find_package" ctest entry (REVIEW.md
-# R-25/BT-F9). ctest's add_test COMMAND runs one program; this is that
+# Driver for the "install.consumer_find_package" ctest entry.
+# ctest's add_test COMMAND runs one program; this is that
 # program -- a `cmake -P` script, since the check is itself three separate
 # cmake invocations (install, configure a second project, build it), not one
 # executable.
@@ -44,7 +44,7 @@ execute_process(
   RESULT_VARIABLE _fuse_rc)
 if(NOT _fuse_rc EQUAL 0)
   message(FATAL_ERROR "configuring the install consumer failed (${_fuse_rc}) -- "
-                      "find_package(fuse-coupler) does not work (REVIEW.md R-25)")
+                      "find_package(fuse-coupler) does not work")
 endif()
 
 message(STATUS "install.consumer_find_package: building the consumer")

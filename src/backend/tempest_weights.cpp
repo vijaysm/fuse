@@ -1,9 +1,10 @@
-// The TempestRemap high-order / monotone backend, Task 5.3.
+// The TempestRemap high-order / monotone backend.
 //
 // This translation unit is compiled UNCONDITIONALLY. Without TempestRemap it
 // still defines every function `high_order_backend.hpp` declares; they just say
-// no. Task 5.2 was bitten by the other arrangement (an always-visible
-// declaration whose definition was inside an #ifdef), so the rule here is:
+// no. An always-visible
+// declaration whose definition is inside an #ifdef is the arrangement to
+// avoid, so the rule here is:
 //
 // A NOTE ON THE GUARDS: FUSE's feature macros come from config.hpp via
 // `#cmakedefine01`, so they are always DEFINED, as 0 or 1. Every test on one
@@ -35,7 +36,7 @@
 // and `GenerateOfflineMapWithMeshes` from <TempestRemapAPI.h>. That library has
 // no MPI in it, needs no `moab::Core`, and its `Mesh` face indices are exactly
 // the order we hand it, which removes the whole GLOBAL_ID-versus-position
-// guessing game that Task 5.2 had to do for `Intx2Mesh`.
+// guessing game that the MOAB `Intx2Mesh` path has to do.
 //
 // ---------------------------------------------------------------------------
 // TEMPESTREMAP REPORTS FAILURE BY PRINTING AND RETURNING SUCCESS
@@ -59,7 +60,7 @@
 // the primary error channel, not a nicety. It is also why the remap path is
 // serial and non-reentrant: `g_fpAnnounceOutput` is a process-wide `FILE*`.
 //
-// R10 hardening: two threads each constructing an `AnnounceCapture`
+// Hardening: two threads each constructing an `AnnounceCapture`
 // concurrently could previously corrupt each other's diagnostics --
 // thread B's constructor could capture thread A's temp file as `previous_`
 // instead of the true prior buffer, and thread A's destructor could then
@@ -212,7 +213,7 @@ class AnnounceCapture {
 }
 
 /// The mutex serializing every high-order build against `AnnounceCapture`'s
-/// process-wide `FILE*` hazard (R10). Function-local static so it is
+/// process-wide `FILE*` hazard. Function-local static so it is
 /// constructed exactly once, on first use, with no static-init-order question
 /// against anything else in this translation unit.
 std::mutex& announce_mutex() {
@@ -235,9 +236,9 @@ std::mutex& announce_mutex() {
 ///      too, but doing it here keeps the face's corner count honest for the
 ///      `kMinCorners` check.
 ///   3. faces are oriented outward from the origin. TempestRemap's overlap
-///      requires it, and Task 5.2 recorded that MOAB's own spherecube.h5m is the
+///      requires it, and MOAB's own spherecube.h5m is the
 ///      other way round (signed area -4*pi*R^2), so this is not hypothetical.
-///      Unlike Task 5.2's supermesh path, which reverses connectivity IN the
+///      Unlike the MOAB supermesh path, which reverses connectivity IN the
 ///      moab::Core, this reverses only the copy.
 [[nodiscard]] Result<void> to_tempest(const PolygonSurface& s, double radius,
                                       ::Mesh& out) {
@@ -412,7 +413,7 @@ Result<HighOrderResult> build_high_order_weights(const HighOrderRequest& request
   out.order = request.order;
   out.monotone = request.monotone;
 
-  // R10: held from before `capture` is constructed to after it is destroyed
+  // Held from before `capture` is constructed to after it is destroyed
   // (declared first in this scope, so it is destroyed LAST on every path out
   // of this function -- normal return or early `return Failure{...}` alike,
   // per C++'s reverse-order-of-construction guarantee for locals). Every
@@ -502,7 +503,7 @@ Result<HighOrderResult> build_high_order_weights(const HighOrderRequest& request
     }
     // The silent one. Not a warning to be relayed: the map that came back is a
     // first-order map wearing an order-N label, which is precisely the thing
-    // this task exists to prevent.
+    // this check exists to prevent.
     if (contains(out.log, "dropping to 1st order")) {
       return Failure{
           "E-REMAP-DEGRADED",

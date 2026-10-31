@@ -1,8 +1,7 @@
-# Conformance Unit 2 (Q2): runs brusselator_graph_tool with the committed
+# Runs brusselator_graph_tool with the committed
 # reference layout's own arguments and requires its output to be BYTE FOR
-# BYTE identical to the committed reference YAML -- the lead's own
-# instruction ("a tier-0 test that the tool reproduces it byte for byte,
-# so the committed text never drifts from the builder"). Same cmake -P
+# BYTE identical to the committed reference YAML, so the committed text
+# never drifts from the builder. Same cmake -P
 # driver convention as compare-runs.cmake (this directory).
 #
 # Invoked by CTest as:

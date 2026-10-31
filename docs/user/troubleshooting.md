@@ -26,16 +26,17 @@ the variables named here.
 6. **Trace.** Set one of the trace variables for the area the code names
    ([](environment.md#debug-and-trace-variables)). For a hang use `FUSE_COLLECTIVE_TRACE` and
    compare the last line each rank printed.
-7. **Stop in a debugger.** Add the opt-in prologue to your `main()` and run with
-   `FUSE_ON_ERROR=debugger` (or `abort` for a core file):
+7. **Stop in a debugger.** Run with `FUSE_ON_ERROR=debugger` (or `abort` for a core file). The
+   shipped examples, `import pfuse` and the C ABI's `fuse_create()` already read it; a driver of
+   your own must call `fuse::initialize()` at the top of `main()`
+   ([](environment.md#error-policy-variables)):
 
    ```cpp
-   fuse::set_error_policy(fuse::error_policy_from_environment());
+   fuse::initialize();                 // reads FUSE_ON_ERROR and friends
    fuse::install_terminate_handler();
    ```
 
-   Without those lines the variable is ignored; none of the shipped examples installs the policy.
-   The policy stops at *thrown* errors (assertions, invalid arguments, `FUSE_REFUSE`). A refusal
+   Without that call the variable is ignored. The policy stops at *thrown* errors (assertions, invalid arguments, `FUSE_REFUSE`). A refusal
    that reached you as a `Result` with an `E-...` code was returned, not thrown, so set a
    breakpoint on the message or on the function the code names instead
    ([](environment.md#error-policy-variables)).
@@ -53,7 +54,7 @@ prefixes, listed at the end.
 | `E-ACCEL-*` | Accelerators | Unknown kind, a configuration a kind does not accept, a non-finite or diverging iterate (`E-ACCEL-NONFINITE`, `E-ACCEL-DIVERGED`). Try `aitken` first, then tighten the components' own tolerances ([](dn-heat.md)) |
 | `E-ACCUM-*`, `E-COMMGRAPH-*`, `E-CROUTER-*` | Distributed communication graph and crystal router | Component counts or owners that disagree between ranks, or a communicator that does not contain every rank. Check that all ranks built the same graph and that `base_communicator` covers every `RankSet` |
 | `E-BASE-*`, `E-TIME-*` | Rationals, times and unit algebra | A `Rational` that overflows or is unreduced, an affine unit (`degC`) where a scale was needed. Put times on a fixed grid before building the graph ([](drivers.md#reproducibility-checklist)) |
-| `E-CONN-*`, `E-CONSERV`, `E-SHAPE`, `E-INTENT`, `E-INTERVAL`, `E-LAG`, `E-DUP-*`, `E-COUPLER-*`, `E-CHANNEL-*`, `E-MULTI-*`, `E-SELF`, `E-MERGE-*` | Graph validation | A channel into an `Extensive` field without a conservative transfer (`E-CONN-CONSERVATION`), mismatched component counts, a `Provides` wired to a `Provides`, a non-positive interval, a duplicate name, a coupler with fields, a second writer with no `.merge(...)`. `validate()` prints all of them; fix the graph and re-run it |
+| `E-CONN-*`, `E-CONSERV`, `E-SHAPE`, `E-INTENT`, `E-INTERVAL`, `E-LAG`, `E-DUP-*`, `E-COUPLER-*`, `E-CHANNEL-*`, `E-MULTI-*`, `E-SELF`, `E-MERGE-*` | Graph validation | A channel into an `Extensive` field without a conservative transfer (`E-CONN-CONSERVATION`), mismatched component counts, a `Provides` wired to a `Provides`, a non-positive interval, a duplicate name, a coupler with fields, a second writer with no `.merge(...)`, a `remap_method` string no weight builder recognises (`E-CHANNEL-REMAP-METHOD`). `validate()` prints all of them; fix the graph and re-run it |
 | `E-CONNECT-*` | Multi-executable rendezvous | Segment order different from the graph's component order (`E-CONNECT-APPNUM`), acceptor not started or port file not visible (`E-CONNECT-TIMEOUT`), `disconnect()` after `MPI_Finalize` (`E-CONNECT-FINALIZED`), build without connect/accept (`E-CONNECT-ACCEPT-UNAVAILABLE`). See [What `connect()` checks](multiple-executables.md#what-connect-checks-and-what-it-refuses) |
 | `E-DESC-*` | Binary graph descriptor | A restart or transfer-map file whose embedded graph descriptor is not a FUSE descriptor, is truncated or carries an unknown enum: the file was written by a different graph or a different build. Regenerate it |
 | `E-EXTENT-*`, `E-FIELD-*` | Field registry and extents | A null or rebound pointer, a layout whose strides alias, a field never bound (`E-FIELD-UNBOUND`), an extent outside the region. Check `register_fields` binds every `FieldId` in `graph.component(id).fields` exactly once ([](component-interface.md)) |
@@ -121,8 +122,10 @@ and restore checkpoints element-wise ([](quickstart.md), [](component-interface.
 `Kokkos::ScopeGuard`. Construct the guard first ([](drivers.md)); among the examples only
 `brusselator` has this order.
 
-**`FUSE_ON_ERROR=debugger` does nothing.** The program never installed the environment policy.
-Add the two-line prologue from [Debugging a failure](#debugging-a-failure) to its `main()`.
+**`FUSE_ON_ERROR=debugger` does nothing.** Either the program is your own driver and never called
+`fuse::initialize()` (add it to `main()`, see [Debugging a failure](#debugging-a-failure)), or the
+error was not thrown: a refusal that comes back as a `Result` is returned, not thrown, and the
+policy never sees it.
 
 **`E-RT-DEVICE` or `E-RT-SPACE` at `initialize()`.** `FUSE_EXECUTION_SPACE` is set in the
 environment, perhaps left over from another run. Unset it, or build against a Kokkos with a

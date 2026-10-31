@@ -1,12 +1,10 @@
-// S8 physics-kit, track "Integrators", Stage B Round 2, task item 2.
-//
 // DIRK/ESDIRK family tests. Scope: convergence order is MEASURED on Dahlquist for
 // every one of the six named methods (SDIRK22, SDIRK23, SDIRK332, SDIRK34, SDIRK643,
 // ESDIRK324L2SA); the logistic (nonlinear), non-autonomous, and stiff Prothero-Robinson
 // problems are run on a representative subset (SDIRK22, SDIRK332, SDIRK34,
 // ESDIRK324L2SA) rather than the full 6x4 cross product -- every method is ALREADY
-// proven to its own declared classical order algebraically by order_conditions.hpp
-// (task item 1); the numerical tests here confirm the INTEGRATOR CODE (the Newton
+// proven to its own declared classical order algebraically by order_conditions.hpp;
+// the numerical tests here confirm the INTEGRATOR CODE (the Newton
 // stage solve, the mass-matrix path, the embedded controller), not the tableau data
 // a second time.
 
@@ -346,11 +344,11 @@ TEST(DirkIntegrator, ConvergesAtDeclaredOrderOnTheLogisticEquation) {
 }
 
 TEST(DirkIntegrator, ConvergesAtDeclaredOrderOnANonAutonomousProblem) {
-  // The round-1 problems (Dahlquist, logistic) are both autonomous (rhs has no
+  // The Dahlquist and logistic problems are both autonomous (rhs has no
   // explicit t); a bug that fed the WRONG t_i (e.g. always t, never t + h*C[i]) into
   // a stage's own rhs call would be invisible to either. This problem's own rhs
   // depends on t explicitly, so such a bug shows up as a WRONG fitted order here
-  // (task item 2's own instruction).
+  //
   const double omega = 3.0;
   const std::vector<DahlquistCase> cases = {
       {"SDIRK22", sdirk22_tableau(), 2, 0.1, 6},
@@ -384,9 +382,9 @@ TEST(DirkIntegrator, OrderReductionOnProtheroRobinsonIsMeasuredAgainstStageOrder
   // this exact test problem, in the stiff limit. This is MEASURED here at a fixed,
   // moderately stiff eps (not eps -> 0, which would need h << eps to resolve the
   // transient at all) and REPORTED against each method's own mechanically-computed
-  // stage order, not asserted to equal q+1 exactly (the task's own instruction:
-  // "report the observed order against the stage order", not "prove order reduction
-  // theory").
+  // stage order, not asserted to equal q+1 exactly (the observed order is
+  // reported against the stage order; this is not a proof of order reduction
+  // theory).
   const double eps = 1e-3;
   struct Case { const char* name; ButcherTableau tableau; int classical_order; double h_max; };
   const std::vector<Case> cases = {
@@ -415,7 +413,7 @@ TEST(DirkIntegrator, OrderReductionOnProtheroRobinsonIsMeasuredAgainstStageOrder
     // The only assertion: the observed order is a FINITE, non-negative number (the
     // method still converges on a stiff problem at this eps/h combination) -- the
     // comparison against stage order is reported, not pass/failed against a precise
-    // theoretical target this task did not ask this round to derive.
+    // theoretical target.
     EXPECT_GE(fit.slope, 0.0) << c.name << ": integrator must still converge on a stiff problem";
     EXPECT_TRUE(std::isfinite(fit.slope));
   }

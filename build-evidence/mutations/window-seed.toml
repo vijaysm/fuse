@@ -1,21 +1,17 @@
-# Mutation for the Window seed track (KNOWN_ISSUES.md D17/D76): the
-# generalized extrapolation predictor Stage B adds to `Runner::Impl::
-# run_region()`'s own `R.x_old` pre-loop seed, for every window
-# instance after a member's first-ever one. Own file per the
-# review-fix protocol: do not edit build-evidence/mutations.toml
-# directly while other tracks hold it dirty.
+# Mutations for the generalized extrapolation predictor in `Runner::Impl::
+# run_region()`'s own `R.x_old` pre-loop seed, for every window instance
+# after a member's first-ever one, and for the Aitken accelerator's
+# non-positive-candidate guard.
 #
-# VERIFIED THIS ROUND with tools/mutate.py itself (--check-anchors
-# passes; the mutated build measured below). `new` below is
-# byte-identical to this file's own pre-fix content (saved this round
-# as /tmp/a1seed/snapshots/iteration.cpp.ORIGINAL, a plain `git archive
-# HEAD` export at 17ba185ec46d816da97ac676408d0983e5893177, before any
-# edit this track made).
+# Verified with tools/mutate.py itself (--check-anchors passes; the
+# mutated build measured below). The first row's `new` is byte-identical
+# to the file's content before the predictor existed (a plain `git
+# archive HEAD` export taken before the change).
 
 [[mutation]]
-id = "d17-d76-window-seed-predictor-replaced-by-raw-read"
+id = "window-seed-predictor-replaced-by-raw-read"
 area = "runtime/iteration (Runner::Impl::run_region(), R.x_old pre-loop seed, k == 0 block)"
-describes = "The generalized predictor branch (applies fuse::extrapolate_boundary_value() to R.x_old's pre-loop seed for every window instance after a member's first-ever one, mirroring WindowCoupler::sweep_window()'s own y_fed seed and advance_window()'s own use_predictor branch) is replaced by a bare `continue;` -- reproducing this file's own pre-fix behaviour exactly: R.x_old keeps whatever slot_to_host(slots[b.feed_arc], ...) (this function's own top) already read for it, the previous window's own converged delivery reused verbatim (a zeroth-order/persistence predictor), for every window instance k >= 1."
+describes = "The generalized predictor branch (applies fuse::extrapolate_boundary_value() to R.x_old's pre-loop seed for every window instance after a member's first-ever one, mirroring WindowCoupler::sweep_window()'s own y_fed seed and advance_window()'s own use_predictor branch) is replaced by a bare `continue;` -- reproducing the behaviour without the predictor exactly: R.x_old keeps whatever slot_to_host(slots[b.feed_arc], ...) (this function's own top) already read for it, the previous window's own converged delivery reused verbatim (a zeroth-order/persistence predictor), for every window instance k >= 1."
 file = "src/runtime/iteration.cpp"
 old = """        if (seed_cfg == nullptr || !seed_cfg->import_lagged) continue;
         const auto dst_it = window_last_dst_step.find(seed_node);
@@ -27,7 +23,7 @@ old = """        if (seed_cfg == nullptr || !seed_cfg->import_lagged) continue;
         // stream above, which already dispatched this member's own
         // WindowAdvance this sweep), it already names THIS window's own
         // absolute instance, not the previous one -- measured directly
-        // (temporary trace, this round) rather than assumed from
+        // rather than assumed from
         // `refresh_window_member_history()`'s own read of the same map,
         // which runs at a DIFFERENT point (the previous pass's own exit,
         // before this pass started) and would be one behind here.
@@ -70,7 +66,7 @@ test = "runtime.window_runner_straddle"
 result = """KILLED (tools/mutate.py, --area "runtime/iteration (Runner::Impl::
 run_region(), R.x_old pre-loop seed, k == 0 block)", --build-dir
 build-tier0, system compiler /usr/bin/cc + /usr/bin/c++, tier 0, no
-MPI): "KILLED d17-d76-window-seed-predictor-replaced-by-raw-read test
+MPI): "KILLED window-seed-predictor-replaced-by-raw-read test
 fails" -- mutation gate: 1 killed, 0 declared equivalent, 0 not
 assessed here, 0 without a baseline, 0 not killed, of 1. Manually
 confirmed which test failed and why, since mutate.py's own summary line
@@ -78,7 +74,7 @@ does not print it: under the mutation, full unfiltered
 fuse_runtime_window_runner_straddle_test (10 tests) ran 9 PASSED / 1
 FAILED -- WindowRunnerStraddle.
 SevenThirteenAdjustableAdjustableThroughWindowComponentMatchesDriverUnderAitken
-(this track's own new RED test, added this round) is the ONE test this
+(the RED test for this predictor) is the ONE test this
 mutation kills: EXPECT_EQ(via_runner.xA, via_driver.xA) fails
 9.3973277778036985e-05 vs 9.3973277885706419e-05, xB fails
 8.3431473580233251e-05 vs 8.343147392391424e-05, iterations fails 17
@@ -92,9 +88,9 @@ run; `diff -q` against the fixed file confirmed byte-identical
 restoration."""
 
 [[mutation]]
-id = "d76-aitken-reject-nonpositive-omega-removed"
+id = "aitken-reject-nonpositive-omega-removed"
 area = "num/accel_relaxation (AitkenAccel::update(), reject-a-non-positive-candidate guard)"
-describes = "The Stage E safeguard (reject a non-positive or non-finite secant candidate and restart to omega0_) is replaced by the pre-Stage-E unguarded acceptance rule: any finite, nonzero candidate is used verbatim, including a negative one -- reproducing D76's own measured window-3 stagnation."
+describes = "The safeguard (reject a non-positive or non-finite secant candidate and restart to omega0_) is replaced by an unguarded acceptance rule: any finite, nonzero candidate is used verbatim, including a negative one -- reproducing the measured window-3 stagnation."
 file = "src/num/accel_relaxation.cpp"
 old = """      if (den > 0.0 && std::isfinite(den) && std::isfinite(num)) {
         const double candidate = -omega_ * num / den;
@@ -110,11 +106,11 @@ old = """      if (den > 0.0 && std::isfinite(den) && std::isfinite(num)) {
 """
 new = """      if (den > 0.0 && std::isfinite(den) && std::isfinite(num)) {
         // MUTATION: accept any finite, nonzero candidate, including a
-        // negative one -- the pre-Stage-E behaviour.
+        // negative one -- the unguarded behaviour.
         const double candidate = -omega_ * num / den;
         if (std::isfinite(candidate) && candidate != 0.0) w = candidate;
       }
 """
 target = "fuse_num_accelerator_test"
 test = "num.accelerator"
-result = """KILLED (tools/mutate.py, --area "num/accel_relaxation (AitkenAccel::update(), reject-a-non-positive-candidate guard)", --build-dir build-tier0, system compiler /usr/bin/cc + /usr/bin/c++, tier 0, no MPI): the new crafted-sequence unit test, Accelerator.AitkenRejectsANonPositiveCandidateAndRestartsToOmega0, fails under the mutation -- EXPECT_EQ(out1, 6.0) sees 4.0 instead (the unguarded formula's own -0.5*2 relaxed step from x_old=5), exactly the RED value this track's own manual check (before writing this mutation row) measured by hand-reverting the guard. Every other test in fuse_num_accelerator_test (54 of 55) still passes under the mutation, including DivergenceFallsBackToTheUnderRelaxedStepWhenItSurvives's own Aitken block, re-engineered this round to use a downward (not upward) residual perturbation specifically so it still exercises the OVERFLOW-recovery path under the guarded formula; that re-engineering means the mutation does not accidentally get caught by a test built for a different purpose."""
+result = """KILLED (tools/mutate.py, --area "num/accel_relaxation (AitkenAccel::update(), reject-a-non-positive-candidate guard)", --build-dir build-tier0, system compiler /usr/bin/cc + /usr/bin/c++, tier 0, no MPI): the new crafted-sequence unit test, Accelerator.AitkenRejectsANonPositiveCandidateAndRestartsToOmega0, fails under the mutation -- EXPECT_EQ(out1, 6.0) sees 4.0 instead (the unguarded formula's own -0.5*2 relaxed step from x_old=5), exactly the RED value measured by hand-reverting the guard. Every other test in fuse_num_accelerator_test (54 of 55) still passes under the mutation, including DivergenceFallsBackToTheUnderRelaxedStepWhenItSurvives's own Aitken block, engineered to use a downward (not upward) residual perturbation specifically so it still exercises the OVERFLOW-recovery path under the guarded formula; that re-engineering means the mutation does not accidentally get caught by a test built for a different purpose."""

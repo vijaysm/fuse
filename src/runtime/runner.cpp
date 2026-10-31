@@ -28,7 +28,7 @@
 #include "fuse/schedule/window.hpp"
 
 // The native backend is built in every configuration (src/CMakeLists.txt
-// lists backend/native_backend.cpp unconditionally), and the D73 refusal
+// lists backend/native_backend.cpp unconditionally), and the refusal
 // below names fuse::native::NativeMeshBackend outside any MOAB guard; the
 // include was inside the MOAB block and broke every build without MOAB.
 #include "fuse/backend/native_backend.hpp"
@@ -73,7 +73,7 @@ namespace {
 }
 
 // ---------------------------------------------------------------------------
-// Spec Section 5.4 (Task 5.5): when may a `Remap` be an element-wise copy?
+// Spec Section 5.4: when may a `Remap` be an element-wise copy?
 // ---------------------------------------------------------------------------
 
 /// The outcome of asking whether two regions are, cell for cell and index for
@@ -393,15 +393,15 @@ void Runner::Impl::place_arcs_on_device() {
   // pointer, and only through span_c()/span_m(). The spacetime projections
   // (Sample/Interpolate's history branch) run host code on their arcs.
   // Source/ExternalDelivery (alias or mirror), Sink/Accelerate/Epoch (a
-  // space-aware copy), Transport (docs/dev/device-resident-arcs.md
-  // Phase 3: a device-resident gather/scatter when the backend is
+  // space-aware copy), Transport (docs/dev/device-resident-arcs.md:
+  // a device-resident gather/scatter when the backend is
   // GPU-aware, a host-staged pack/unpack otherwise), Remap's
-  // distributed-nodal operator (runtime-exchange track:
-  // apply_nodal_dist_remap() stages its own arcs explicitly, the same
+  // distributed-nodal operator (apply_nodal_dist_remap()
+  // stages its own arcs explicitly, the same
   // shape as Transport's mixed-pair fallback -- its own MPI exchange
   // always stages through host buffers, so the space decision is entirely
   // the deep_copy at its own entry/exit, not a staging lane here) and
-  // Constrain/Diagnose (runtime-exchange track: the conservation sum and
+  // Constrain/Diagnose (the conservation sum and
   // the non-finite check are now reductions on the arc's own space,
   // `fuse::num::deterministic_dot`/`any_nonfinite`; only the scalar
   // verdict is host) handle either space and pin nothing.
@@ -419,7 +419,7 @@ void Runner::Impl::place_arcs_on_device() {
         generic = true;
         break;
       case OpKind::WindowAdvance:
-        // Time windows track (docs/dev/device-resident-arcs.md, step 8):
+        // Per docs/dev/device-resident-arcs.md:
         // this instruction never reaches execute_on() at all --
         // run_region()'s own body loop dispatches it to advance_window()
         // instead (that function's own OpKind::WindowAdvance case,
@@ -436,14 +436,14 @@ void Runner::Impl::place_arcs_on_device() {
       case OpKind::Remap:
         // An ordinary weighted Remap is still Space-generic
         // (num::remap_apply<Space>, read_by_kernel marking included).
-        // runtime-exchange track: the distributed-nodal operator
+        // The distributed-nodal operator
         // (r.nodal_dist >= 0) no longer pins its arcs either --
         // apply_nodal_dist_remap() stages them explicitly (deep_copy at
         // entry/exit), the same space-AWARE shape Transport already uses,
         // rather than this function forcing them to host.
         if (r.nodal_dist >= 0) { space_aware = true; } else { generic = true; }
         break;
-      // Round 3 (spacetime-history track): Sample's history branch writes
+      // Sample's history branch writes
       // `SpacetimeInfo::history_device` with a same-space deep_copy (its
       // own case in execute_on() below), so it no longer forces its arcs
       // to host -- Space-generic unconditionally, like Accumulate above.
@@ -481,16 +481,16 @@ void Runner::Impl::place_arcs_on_device() {
   }
   // An ordinary region's block, carried and verify arcs are reached from
   // iteration.cpp / fixed_point_residual.cpp only through the space-aware
-  // slot_to_host()/host_to_slot()/slot_host_read() helpers (step 3), so
+  // slot_to_host()/host_to_slot()/slot_host_read() helpers, so
   // they may live on the device. A WINDOW-scoped region's own bookkeeping
   // (advance_window(), priming, lagged imports, the t0 correction,
   // resolve_pending_window_straddles()) now reaches every arc it names
   // through the SAME space-aware helpers, plus scalar_to_slot() for the
-  // single-element writes none of step 3's helpers covered (docs/dev/
-  // device-resident-arcs.md, step 8) -- so a window-scoped region's own
+  // single-element writes the other helpers do not cover (docs/dev/
+  // device-resident-arcs.md) -- so a window-scoped region's own
   // block/carried/verify/lagged-import/window_import/window_export arcs
-  // are no longer pinned here either, the same way step 3 already left
-  // an ordinary region's. runtime-exchange track: a Constrain's
+  // are not pinned here either, the same way an ordinary region's are
+  // not. A Constrain's
   // `before_arc` is no longer pinned here -- execute_on()'s
   // OpKind::Constrain case reads it through its own space-aware helper
   // (span_any_c()) exactly as it reads its own in/out arcs, so the arc is
@@ -518,7 +518,7 @@ void Runner::Impl::place_arcs_on_device() {
           Kokkos::view_alloc("fuse::dev_arc", Kokkos::WithoutInitializing),
           s.total());
     }
-    // Time windows track (step 8): `storage[i]` is not always the cold-
+    // `storage[i]` is not always the cold-
     // start zero resolve_buffers() first gave it -- a window-scoped
     // region's own priming pass (resolve_regions(), this file's
     // "PRIMING THROUGH THE TRANSFER" comment) writes the member's own
@@ -526,12 +526,10 @@ void Runner::Impl::place_arcs_on_device() {
     // function ever runs, and that pass runs exactly once, strictly
     // before this one (never again, so there is no later rewrite to
     // rely on instead). Copying it across before the host buffer is
-    // discarded is the fix: the OLD unconditional zero-fill silently
-    // replaced that real value with 0.0 the instant an arc landed on
-    // the device, undetectable until a window-scoped region's own arcs
-    // were ever allowed to land there at all (this round's own
-    // confirmed, reproducible divergence -- docs/dev/device-resident-
-    // arcs.md, step 8). A no-op for every OTHER arc here, which really
+    // discarded is what keeps that real value: an unconditional zero-fill
+    // would silently replace it with 0.0 the instant an arc landed on the
+    // device (docs/dev/device-resident-arcs.md). A no-op for every OTHER
+    // arc here, which really
     // is still the cold-start zero resolve_buffers() gave it.
     Kokkos::deep_copy(num::SpanOf<DeviceExecSpace>(device_storage[i].data(), s.total()),
                       num::ConstSpanOf<HostExecSpace>(storage[i].data(), s.total()));
@@ -539,7 +537,7 @@ void Runner::Impl::place_arcs_on_device() {
     s.data = device_storage[i].data();
     s.device = true;
     ++stats.device_resident_arcs;
-    // Time windows track (step 8): a Relax/Residual output arc's own
+    // A Relax/Residual output arc's own
     // previous-iterate buffer (sized in the OpKind::Relax/Residual case
     // of this plan's own instruction-resolution pass, before this
     // function ever runs) gets a device-resident twin here too, seeded
@@ -595,7 +593,7 @@ void Runner::Impl::build_transport_device_buffers() {
     if (in_slot.device && out_slot.device) {
       transport_device[pi] =
           detail::mirror_transport_plan<DeviceMemSpace>(transport_plans[pi]);
-      // Transport-direct track (KNOWN_ISSUES.md D66/D77): a GPU-aware
+      // A GPU-aware
       // backend additionally gets its own packed layout mirrored to the
       // device here, once, alongside the plan itself -- what lets
       // execute_on()'s Transport case hand MPI a device pointer through
@@ -604,7 +602,7 @@ void Runner::Impl::build_transport_device_buffers() {
       // aware() is true AND the backend actually has a packed layout to
       // report (packed_layout().ok()) -- a backend that answers gpu-aware
       // without one (none does today) simply leaves has_packed_layout
-      // false, and the hot loop falls back to the pre-existing
+      // false, and the hot loop falls back to the
       // host-staged path rather than ever constructing the device-direct
       // one from an incomplete mirror.
       const bool gpu_aware = transport_plans[pi].has_graph &&
@@ -644,7 +642,7 @@ void Runner::Impl::build_transport_device_buffers() {
   }
 }
 
-// runtime-exchange track: device mode only, called right after
+// Device mode only, called right after
 // build_transport_device_buffers(). weight_sets never changes after setup
 // (resolve_remap()'s own comment), so its device mirror is built exactly
 // once here rather than per Constrain or per period.
@@ -705,8 +703,8 @@ Result<std::uint32_t> Runner::Impl::weights_for(RegionId region,
                      reg.entity_set +
                      "', whose members MeshView cannot enumerate, so the "
                      "measures a conservation check needs cannot be taken; "
-                     "drop the Conservation flag or wait for the Phase 5 "
-                     "backend"};
+                     "drop the Conservation flag or use a backend that "
+                     "can enumerate them"};
   }
 
   // Resolved by NAME: `reg.mesh` is the GRAPH's MeshId, a numbering
@@ -735,8 +733,8 @@ Result<std::uint32_t> Runner::Impl::weights_for(RegionId region,
   // (mesh_view.hpp), and which conservation convention the field follows.
   //
   // The conserved quantity depends on the field's `Conservation` kind, the
-  // same convention the weight builder normalises by (KNOWN_ISSUES.md D82,
-  // owner decision 2026-10-19; `RemapPlan::conservation`, remap_plan.hpp):
+  // same convention the weight builder normalises by
+  // (`RemapPlan::conservation`, remap_plan.hpp):
   //
   //   * `Conservation::Extensive`: the field's VALUE IS the conserved amount
   //     (not a density), so the conserved total is the plain sum of owned
@@ -829,14 +827,12 @@ Result<void> Runner::Impl::resolve_constrain(const Instruction& ins,
                      ", so there is no pre-remap integral to compare against"};
   }
 
-  // N-transport-runtime-1 (REVIEW.md pass2), closed 2026-09-25 (KNOWN_ISSUES.md
-  // D10). weights_for() builds this rank's OWNED share of each integral --
+  // weights_for() builds this rank's OWNED share of each integral --
   // every ghost zeroed -- so once either region spans more than one rank the
   // two shares cannot be compared in isolation: mass that left this rank is
-  // accounted for on the receiving one. The check used to REFUSE a multi-rank
-  // target (E-RT-CONSERVATION-MPI) because reducing inside a non-collective
-  // operator would hang: a rank that had already failed skips local
-  // instructions while its partners wait in the reduction. Constrain is now
+  // accounted for on the receiving one. Reducing inside a non-collective
+  // operator would hang (a rank that had already failed skips local
+  // instructions while its partners wait in the reduction); Constrain is
   // collective (fuse::is_collective), so every rank of the base communicator
   // reaches the reduction, failed or not, and the shares are summed there.
   // A failed rank does not poison the sum: it contributes a flag instead of
@@ -886,7 +882,7 @@ Result<void> Runner::Impl::resolve_constrain(const Instruction& ins,
 }
 
 // ---------------------------------------------------------------------------
-// D73 (automatic remap halo, owner decision 2026-10-18)
+// Automatic remap halo
 // ---------------------------------------------------------------------------
 
 Result<void> Runner::Impl::resolve_remap_halo(const Instruction& ins, std::size_t index) {
@@ -932,7 +928,7 @@ Result<void> Runner::Impl::resolve_remap_halo(const Instruction& ins, std::size_
       const int sdim =
           sr.dimension >= 0 ? sr.dimension : (sview.ok() ? sview.value()->dimension() : -1);
       if (sdim >= 0) {
-        // KNOWN_ISSUES D83: threaded through, matching the native branch
+        // Threaded through, matching the native branch
         // just above -- a placed component's own halo is filed under its
         // own cache entry, never the default Core's.
         built = moab->has_remap_halo(smid.value(), tmid.value(), sdim, placement);
@@ -940,7 +936,7 @@ Result<void> Runner::Impl::resolve_remap_halo(const Instruction& ins, std::size_
     }
 #endif
   } else {
-    // Neither backend this track's own halo bookkeeping covers (the
+    // Neither backend the halo bookkeeping covers (the
     // serial/test backend, say) ever reaches `channel_needs_remap_halo()`'s
     // own emission gate on a real run -- that predicate exists precisely
     // because only a backend with a per-placement decomposition can have
@@ -953,7 +949,7 @@ Result<void> Runner::Impl::resolve_remap_halo(const Instruction& ins, std::size_
         "E-RT-REMAP-HALO-NOT-BUILT",
         "channel '" + ch.name +
             "' is a cross-rank weighted (non-nodal, non-consistent) Remap "
-            "(KNOWN_ISSUES.md D73) and needs a remap halo on its (source, "
+            "and needs a remap halo on its (source, "
             "target) mesh pair before this Runner's instruction stream can "
             "run, but none has been built for it at this placement. Call "
             "fuse::execute_remap_halo_instructions(graph, dag, backend) "
@@ -965,7 +961,7 @@ Result<void> Runner::Impl::resolve_remap_halo(const Instruction& ins, std::size_
 }
 
 // ---------------------------------------------------------------------------
-// Spec Section 5.4: the spatial remap (Task 5.5)
+// Spec Section 5.4: the spatial remap
 // ---------------------------------------------------------------------------
 
 Result<void> Runner::Impl::resolve_remap(const Instruction& ins, Resolved& r) {
@@ -1014,10 +1010,8 @@ Result<void> Runner::Impl::resolve_remap(const Instruction& ins, Resolved& r) {
 
   // Weights are built on THIS placement's decomposition: RemapPlan::placement
   // is set below and every builder resolves its sides through
-  // MeshBackend::placed_view (KNOWN_ISSUES D5, closed 2026-09-25). Until then
-  // a Remap on a non-default decomposition was refused (E-RT-REMAP-PLACEMENT)
-  // because weights built on the default view would have indexed the wrong
-  // entities with no diagnostic. A placement the backend was never told about
+  // MeshBackend::placed_view, never the default view (which would index the
+  // wrong entities with no diagnostic). A placement the backend was never told about
   // is still refused, by placed_view itself (E-MESH-PLACEMENT).
 
   // Discretization, order and conservation live on the FIELDS, not on the
@@ -1026,8 +1020,8 @@ Result<void> Runner::Impl::resolve_remap(const Instruction& ins, Resolved& r) {
   // builder cannot handle is refused there with E-REMAP-UNSUPPORTED rather
   // than silently downgraded here) and to decide, BEFORE either return
   // point, whether this Remap's target needs the cross-rank reconciliation
-  // docs/dev/nodal-fields.md's "H^T on a distributed interface" specifies
-  // (lead's ruling 2026-09-24): the decision depends only on the graph --
+  // docs/dev/nodal-fields.md's "H^T on a distributed interface" specifies.
+  // The decision depends only on the graph --
   // the target's discretization, its conservation, and the destination
   // component's declared rank-set SIZE, none of it rank-specific -- so it is
   // identical on every rank and safe to compute before either the coincident
@@ -1072,21 +1066,15 @@ Result<void> Runner::Impl::resolve_remap(const Instruction& ins, Resolved& r) {
 
   std::int32_t nodal_dist_idx = -1;
   if (sf_ptr != nullptr && tf_ptr != nullptr) {
-    // Round 4 (KNOWN_ISSUES.md D8, defect 2, found by a real host MPI run):
-    // the ORIGINAL guard here read only `dst_ranks.size() > 1` and
-    // `region_extent_kind(tgt) == Vertex` -- exactly right for
-    // "consistent-transpose" (H^T D delivers a load TO a nodal target), but
-    // it silently missed "consistent" (H interpolates FROM a nodal
-    // SOURCE): when the target was a cell region, `kind(tgt)` was `Cell`,
-    // the inner check never ran, and control fell through to the OLD
-    // rank-local path below -- which assumes its local `MeshView` already
-    // holds the region's WHOLE mesh, wrong (or E-INTERP-NOGEOMETRY on a
-    // rank owning zero local entities of one side) whenever either
-    // component is genuinely partitioned across ranks. Both `src_ranks`
-    // and `dst_ranks` are checked now, and either region's kind, so the
-    // decision still depends only on the declared graph -- unchanged from
-    // the original guard's own invariant -- and is identical on every
-    // rank.
+    // The guard reads `src_ranks`, `dst_ranks` and both regions' kinds:
+    // "consistent-transpose" (H^T D delivers a load TO a nodal target) and
+    // "consistent" (H interpolates FROM a nodal SOURCE) both need the
+    // distributed path. Falling through to the rank-local path below
+    // assumes its local `MeshView` already holds the region's WHOLE mesh,
+    // which is wrong (or E-INTERP-NOGEOMETRY on a rank owning zero local
+    // entities of one side) whenever either component is genuinely
+    // partitioned across ranks. The decision depends only on the declared
+    // graph and is identical on every rank.
     const auto src_kind = region_extent_kind(graph, src);
     if (!src_kind.ok()) return src_kind.error();
     const auto tgt_kind = region_extent_kind(graph, tgt);
@@ -1104,8 +1092,8 @@ Result<void> Runner::Impl::resolve_remap(const Instruction& ins, Resolved& r) {
             : nullptr;
     const std::size_t src_ranks = src_set != nullptr ? src_set->size() : 1U;
     const std::size_t dst_ranks = dst_set != nullptr ? dst_set->size() : 1U;
-    // Round 5 (a real host MPI run again): `src_ranks > 1 || dst_ranks > 1`
-    // was still not the condition. At exactly TWO ranks a disjoint pair is
+    // `src_ranks > 1 || dst_ranks > 1` is not the condition. At exactly
+    // TWO ranks a disjoint pair is
     // one rank EACH -- neither side is partitioned, yet the source lives on
     // rank 0 and the target on rank 1, so no rank holds both and the
     // rank-local path below produced E-INTERP-NOGEOMETRY ("they hold 7 and 0
@@ -1117,9 +1105,8 @@ Result<void> Runner::Impl::resolve_remap(const Instruction& ins, Resolved& r) {
         src_ranks == 1U && dst_ranks == 1U &&
         (src_set == nullptr || dst_set == nullptr ||
          src_set->min_rank() == dst_set->min_rank());
-    // "A single-rank placement on BOTH sides skips this whole path, since
-    // nothing is shared" -- the lead's ruling, generalized from the
-    // original's `dst_ranks.size() > 1` to look at whichever side (or
+    // A single-rank placement on BOTH sides skips this whole path, since
+    // nothing is shared; otherwise look at whichever side (or
     // both) is genuinely partitioned: a nodal source replicated via
     // Allgatherv still needs the distributed path when only the EVAL side
     // is spread across ranks, since a rank holding zero local evaluation
@@ -1130,7 +1117,7 @@ Result<void> Runner::Impl::resolve_remap(const Instruction& ins, Resolved& r) {
         // Neither `build_nodal_dist_remap` orientation has been run against
         // a nodal-to-nodal channel (both regions Vertex-kind); refuse by
         // name rather than silently picking one orientation's convention
-        // (KNOWN_ISSUES.md D8) -- verified by
+        // -- verified by
         // NodalRemapRunnerTierZero.BothSidesNodalOnMultipleRanksRefuses.
         return Failure{
             "E-RT-REMAP-NODAL-PARALLEL",
@@ -1138,8 +1125,8 @@ Result<void> Runner::Impl::resolve_remap(const Instruction& ins, Resolved& r) {
                     "least one side's component is on more than one rank ("
                 "source: " + std::to_string(src_ranks) + ", target: " +
                 std::to_string(dst_ranks) +
-                "). A nodal-to-nodal distributed Remap is not implemented "
-                "(KNOWN_ISSUES.md D8). Route through a cell-located "
+                "). A nodal-to-nodal distributed Remap is not implemented. "
+                "Route through a cell-located "
                 "intermediate field, or place both components on one rank."};
       }
       // "consistent" needs a nodal SOURCE (H); "consistent-transpose" needs
@@ -1151,20 +1138,19 @@ Result<void> Runner::Impl::resolve_remap(const Instruction& ins, Resolved& r) {
           (ins.attrs.method == "consistent" && src_nodal) ||
           (ins.attrs.method == "consistent-transpose" && tgt_nodal);
       if (method_matches_orientation) {
-        // Round 2 (KNOWN_ISSUES.md D8): build distributed rows via
+        // Build distributed rows via
         // `build_nodal_dist_remap` instead of refusing --
         // `nodal_remap_distributed.hpp`'s Allgatherv-replicated primitive,
         // verified serially in
         // test/backend/nodal_remap_distributed_nullcomm_test.cpp and under
         // real MPI in test/parallel/nodal_remap_distributed_test.cpp;
-        // round 4 extended it to the nodal-SOURCE orientation
+        // it covers the nodal-SOURCE orientation too
         // (test/parallel/nodal_remap_runner_test.cpp's wall_velocity
         // channel). Any OTHER method (including the supermesh conservative
         // ones, which build FV<->FV weights only) still refuses:
         // per-placement supermesh weights for a nodal side remain
-        // unimplemented (KNOWN_ISSUES D5 item 3), and this track's own
-        // scope is the two consistent-interpolation methods specifically,
-        // not every method.
+        // unimplemented, and the scope here is the two
+        // consistent-interpolation methods specifically, not every method.
         const auto built = build_nodal_dist_remap(ins, label, src, tgt, sf_ptr, tf_ptr);
         if (!built.ok()) return built.error();
         nodal_dist_idx = built.value();
@@ -1190,8 +1176,8 @@ Result<void> Runner::Impl::resolve_remap(const Instruction& ins, Resolved& r) {
                 "supported only for method 'consistent' with a nodal SOURCE, "
                 "or 'consistent-transpose' with a nodal TARGET "
                 "(nodal_remap_distributed.hpp); a supermesh conservative "
-                "method's per-placement weights are not built yet "
-                "(KNOWN_ISSUES.md D8, D5 item 3). Place both components on "
+                "method's per-placement weights are not built yet. "
+                "Place both components on "
                 "one rank, use a cell-located field on the multi-rank side, "
                 "or set Channel::remap_method to the matching orientation"};
       }
@@ -1231,7 +1217,7 @@ Result<void> Runner::Impl::resolve_remap(const Instruction& ins, Resolved& r) {
   // The decomposition the weights index. Part of the plan's key, so the same
   // channel on two placements builds two matrices rather than sharing one.
   p.placement = placement;
-  // KNOWN_ISSUES.md D82 (owner decision 2026-10-19): the SAME place
+  // The SAME place
   // `placement` is read, two lines above -- the Remap arc's own
   // ValueType, set from the channel's declared FieldSpec::conservation at
   // lower() time (lowering.cpp's source_type()) and preserved unmodified
@@ -1295,7 +1281,7 @@ Result<void> Runner::Impl::resolve_remap(const Instruction& ins, Resolved& r) {
         const int sdim = sr.dimension >= 0
                              ? sr.dimension
                              : (sview.ok() ? sview.value()->dimension() : -1);
-        // KNOWN_ISSUES D83: threaded through -- this placed component's own
+        // Threaded through -- this placed component's own
         // halo (if any) is filed under its own cache entry, never the
         // default Core's.
         if (sdim >= 0 && mb->remap_halo_size(smid.value(), sdim, placement) > 0) {
@@ -1320,12 +1306,12 @@ Result<void> Runner::Impl::resolve_remap(const Instruction& ins, Resolved& r) {
 
   // ---- A NATIVE-BACKEND ANALOGUE OF THE MOAB HALO REFUSAL ABOVE -----------
   //
-  // KNOWN_ISSUES.md D73: a general (non-nodal) weighted Remap between two
+  // A general (non-nodal) weighted Remap between two
   // components placed on DISJOINT rank sets, backed by NativeMeshBackend,
-  // used to proceed straight to `remap_cache.get_or_build` below with no
-  // halo at all -- each rank's local intersection search saw only its own
+  // would proceed straight to `remap_cache.get_or_build` below with no
+  // halo at all -- each rank's local intersection search sees only its own
   // region's local geometry, so the conservative weight build silently
-  // returned a matrix with `nnz() == 0` on every rank, every time: not a
+  // returns a matrix with `nnz() == 0` on every rank, every time: not a
   // crash, not a wrong answer flagged anywhere, a plausible-looking empty
   // transfer with no diagnostic at all.
   //
@@ -1341,14 +1327,10 @@ Result<void> Runner::Impl::resolve_remap(const Instruction& ins, Resolved& r) {
   // AFTER that point), and whether filling a component's own array's halo
   // slots is the coupler's contract to take on. MOAB's own halo settles
   // both by refusing rather than guessing (E-RT-REMAP-HALO, above); the
-  // native backend had no analogous refusal at all, so the silent empty
-  // matrix was the only outcome ever reachable. This refuses the same way,
+  // native backend would otherwise have no refusal at all, so the silent empty
+  // matrix would be the only outcome reachable. This refuses the same way,
   // for the same reason: never apply a plausible matrix with no
-  // diagnostic. The automatic-halo fix is preferred and left for the lead
-  // to scope (same open sequencing question as the MOAB side); this
-  // refusal is the honest interim answer, chosen over guessing at a
-  // restructuring of Runner::initialize()'s own call order within this
-  // round's time.
+  // diagnostic.
   if (dynamic_cast<const fuse::native::NativeMeshBackend*>(&backend) != nullptr) {
     const RankSet* src_ranks_ptr =
         (src_component.valid() && src_component.value() < graph.component_count())
@@ -1391,7 +1373,7 @@ Result<void> Runner::Impl::resolve_remap(const Instruction& ins, Resolved& r) {
                 "built for this (source, target) pair. Each rank's local "
                 "intersection search would see only its own side's geometry, so "
                 "the conservative weight build would silently return an EMPTY "
-                "matrix (KNOWN_ISSUES.md D73) rather than fail -- refused here "
+                "matrix rather than fail -- refused here "
                 "instead. Place both components on one rank, route through a "
                 "nodal 'consistent' channel (nodal_remap_distributed.hpp, which "
                 "already resolves ownership once at setup), or drive the remap "
@@ -1428,7 +1410,7 @@ Result<void> Runner::Impl::resolve_remap(const Instruction& ins, Resolved& r) {
   if (remap_cache.misses() != before_builds) {
     ++stats.remap_weight_builds;
     stats.remap_weight_nonzeros += static_cast<std::int64_t>(weights->nnz());
-    // D73/D5 ROUND 3 (owner request, 2026-10-18): the per-rank half of
+    // The per-rank half of
     // FUSE_REMAP_HALO_TRACE the halo-build side (native_halo.cpp) cannot
     // print itself, since the nonzero count is only known once build_
     // weights() (intx_weights.cpp) has actually run. Same getenv
@@ -1444,13 +1426,12 @@ Result<void> Runner::Impl::resolve_remap(const Instruction& ins, Resolved& r) {
                  "FUSE_REMAP_HALO_TRACE rank={} channel='{}' remap_weight_nonzeros={} "
                  "remap_weight_builds={}\n",
                  me, label, weights->nnz(), stats.remap_weight_builds);
-      // ROUND 4 (owner request, 2026-10-18): "print the matrix (rows, cols,
-      // values) under the trace on the target rank" -- the triplets
+      // Also print the matrix (rows, cols, values) on the target rank -- the triplets
       // themselves, not just the count, so a wrong NORMALISATION (every
       // row summing to 1.0, the density/Intensive convention
       // build_supermesh_weights/build_weights always build, per that
-      // function's own "Constant preservation: the row residual" check --
-      // see KNOWN_ISSUES.md D73's own round-4 account) is visible without a
+      // function's own "Constant preservation: the row residual" check)
+      // is visible without a
       // debugger, the same way the per-rank cell counts above are for the
       // halo's own geometry.
       for (std::size_t k = 0; k < weights->val.size(); ++k) {
@@ -1477,7 +1458,7 @@ Result<void> Runner::Impl::resolve_remap(const Instruction& ins, Resolved& r) {
                      "the two regions"};
   }
 
-  // KNOWN_ISSUES.md D11 (closing): the CSR conversion of THIS weights matrix,
+  // The CSR conversion of THIS weights matrix,
   // built here -- at plan time, once -- so execute()'s OpKind::Remap case
   // never converts a triplet list on the hot path. remap_csr stays parallel
   // to remap_weights: both are pushed together, indexed by the same
@@ -1496,7 +1477,7 @@ Result<void> Runner::Impl::resolve_remap(const Instruction& ins, Resolved& r) {
 }
 
 // ---------------------------------------------------------------------------
-// KNOWN_ISSUES.md D11 (closing): builds the CSR conversion of one
+// Builds the CSR conversion of one
 // RemapWeights' COO triplets, ONCE, at the point resolve_remap() is about
 // to push a new remap_weights entry. See detail::RemapCsr's own comment
 // (runner_impl.hpp) for the layout this produces and why the two views'
@@ -1584,11 +1565,10 @@ Result<detail::RemapCsr> Runner::Impl::build_remap_csr(
 }
 
 // ---------------------------------------------------------------------------
-// Nodal-remap track, round 2 (KNOWN_ISSUES.md D8). Replaces the deleted
-// reduce_nodal_remap_target()/NodalReduceInfo design (see NodalDistRemap's
-// own comment in runner_impl.hpp for why): a distributed nodal Remap target
-// now gets ITS OWN operator built here via nodal_remap_distributed.hpp,
-// rather than a per-rank LOCAL Remap answer reconciled afterwards.
+// A distributed nodal Remap target gets ITS OWN operator built here via
+// nodal_remap_distributed.hpp (see NodalDistRemap's own comment in
+// runner_impl.hpp), rather than a per-rank LOCAL Remap answer reconciled
+// afterwards.
 // ---------------------------------------------------------------------------
 
 Result<std::int32_t> Runner::Impl::build_nodal_dist_remap(
@@ -1604,7 +1584,7 @@ Result<std::int32_t> Runner::Impl::build_nodal_dist_remap(
 
   const std::string& method = ins.attrs.method;
   const bool transpose = (method == "consistent-transpose");
-  // Round 2 activates this function only when `tgt` is Vertex-located
+  // This function is activated only when `tgt` is Vertex-located
   // (resolve_remap's own caller already checked); "consistent" additionally
   // needs `src` nodal (H interpolates FROM a nodal source), and
   // "consistent-transpose" needs `tgt` nodal (H^T D delivers a load TO a
@@ -1634,10 +1614,9 @@ Result<std::int32_t> Runner::Impl::build_nodal_dist_remap(
   const bool eval_is_nodal = transpose ? is_nodal(sf_ptr) : is_nodal(tf_ptr);
 
   // Each side as seen by ITS OWN component: the input region by the input
-  // arc's placement, the output region by the output arc's. Before 2026-09-25
-  // both used the mesh's default view, which coincided with the placed view
-  // on the backends that had been run; it is the placed view the buffers are
-  // sized by (make_region_sizes), so it is the placed view the operator must
+  // arc's placement, the output region by the output arc's. The buffers are
+  // sized by the placed view (make_region_sizes), so it is the placed view
+  // the operator must
   // read and write.
   const auto placement_of = [&](ArcId arc) {
     const int rs = dag.arc(arc).type.rank_set;
@@ -1692,14 +1671,14 @@ Result<std::int32_t> Runner::Impl::build_nodal_dist_remap(
       slots[ins.out.value()].components < 1 ? 1 : slots[ins.out.value()].components);
   plan.comm_handle = comm_handle;
 
-  // runtime-exchange track, follow-up round: a REAL communicator gets the
+  // A REAL communicator gets the
   // one-time resolved exchange plan built here, once, alongside `rows`
   // itself -- `apply_nodal_dist_remap()` below then drives it every
   // period instead of apply_distributed_H/HT's own per-call Allgatherv.
   // `comm_handle == fuse::search::kNullComm` (a single-rank run) skips
   // this entirely: `plan.remap_plan.exchanger` stays null, and
   // `apply_nodal_dist_remap()` falls back to apply_distributed_H/HT
-  // directly, UNCHANGED from before this round.
+  // directly.
   if (comm_handle != search::kNullComm) {
     const auto remap_plan_r = build_distributed_remap_plan(
         plan.rows, *plan.nodal_view, *eval_view_r.value(), eval_dim, plan.components, comm_handle);
@@ -1729,7 +1708,7 @@ Result<std::int32_t> Runner::Impl::build_nodal_dist_remap(
     Kokkos::deep_copy(plan.row_offset_device, h_row_offset);
     Kokkos::deep_copy(plan.weights_flat_device, h_weights);
 
-    // Lead's determinism follow-up (2026-10-15): device mirrors of the
+    // Device mirrors of the
     // H^T scatter-add's own precomputed summation order, the same
     // caching convention as row_offset_device/weights_flat_device just
     // above.
@@ -1766,7 +1745,7 @@ using DeviceMemSpaceT = Kokkos::DefaultExecutionSpace::memory_space;
 /// `DeviceMemSpaceT`, but a Host-space kernel cannot dereference a
 /// device-space View (measured: `Kokkos::View ERROR: attempt to access
 /// inaccessible memory space` -- the mirror-image of the ghost-exchange
-/// deadlock this same round already fixed once, same root cause: a
+/// deadlock, same root cause: a
 /// per-rank/per-call Space choice must not silently assume the OTHER
 /// side's own fixed storage). These two helpers hand back an UNMANAGED
 /// view in whichever `Space` the caller is actually templated on: the
@@ -1800,7 +1779,7 @@ Kokkos::View<const double*, Space, Kokkos::MemoryTraits<Kokkos::Unmanaged>> weig
 /// The SAME Space-dispatch convention as row_offset_on/weights_flat_on
 /// just above, for the H^T scatter-add's own precomputed summation
 /// order (DistributedRemapPlan::target_row_offset/sorted_answer_slot's
-/// own header comment, lead's determinism follow-up 2026-10-15).
+/// own header comment).
 template <class Space>
 Kokkos::View<const std::size_t*, Space, Kokkos::MemoryTraits<Kokkos::Unmanaged>>
 target_row_offset_on(const detail::NodalDistRemap& plan) {
@@ -1828,8 +1807,7 @@ sorted_answer_slot_on(const detail::NodalDistRemap& plan) {
 /// Free function, not a member: nvcc refuses an extended `__host__
 /// __device__` lambda (`KOKKOS_LAMBDA`) defined inside a function that is
 /// a member of a class nested privately in another (`Runner::Impl`'s own
-/// situation) -- the same reason every other device kernel this track
-/// and the device-resident-arcs design before it added
+/// situation) -- the same reason every other device kernel
 /// (`fuse::num::any_nonfinite<Space>`, `deterministic_dot<Space>`,
 /// space_kernels.hpp) lives at namespace scope, called FROM a
 /// `Runner::Impl` member rather than embedded in one.
@@ -1876,7 +1854,7 @@ void nodal_dist_scatter_expand_kernel(
   Kokkos::fence("nodal_dist_scatter_expand_fence");
 }
 
-/// Lead's determinism follow-up (2026-10-15): the H^T scatter-add's own
+/// The H^T scatter-add's own
 /// FIXED, decomposition-independent reduction -- one thread per LOCAL
 /// target position `t`, summing its own precomputed bucket of answer-
 /// slot values (`DistributedRemapPlan::target_row_offset`/
@@ -1992,7 +1970,7 @@ Result<void> Runner::Impl::nodal_dist_scatter_on(detail::NodalDistRemap& plan,
   Kokkos::View<double*, Space, Kokkos::MemoryTraits<Kokkos::Unmanaged>> out_view(out_slot.data,
                                                                                  accum_n);
 
-  // Lead's determinism follow-up (2026-10-15): the raw post-exchange
+  // The raw post-exchange
   // answer buffer (pack_index()'s own ANSWER order), reduced below by
   // nodal_dist_scatter_reduce_deterministic_kernel in a FIXED,
   // decomposition-independent order instead of update_adjoint()'s own
@@ -2036,15 +2014,14 @@ Result<void> Runner::Impl::apply_nodal_dist_remap(const Instruction& ins, const 
   const detail::Slot& out_slot = slots[ins.out.value()];
   const std::size_t components = plan.components;
 
-  // runtime-exchange track, follow-up round: a REAL communicator's plan
+  // A REAL communicator's plan
   // (`build_nodal_dist_remap()` built `plan.device_exchanger` whenever
   // `plan.comm_handle != fuse::search::kNullComm`) drives the one-time
   // resolved exchange below (`nodal_dist_gather_on`/`nodal_dist_
   // scatter_on`, defined just above) instead of apply_distributed_H/
   // HT's own per-call Allgatherv-and-replicate. A single-rank run
   // (`comm_handle == kNullComm`, `plan.device_exchanger` null) falls
-  // through to the OLD path further down, UNCHANGED from before this
-  // round.
+  // through to the path further down.
   if (plan.device_exchanger) {
     if (!plan.transpose) {
       // "consistent": H. in_slot (the nodal source)'s own residency
@@ -2065,10 +2042,8 @@ Result<void> Runner::Impl::apply_nodal_dist_remap(const Instruction& ins, const 
     // load) needs `plan.eval_view->measure()` -- a host-only MeshView
     // accessor, no device-callable form -- so this input-side gather
     // and scale stays on HOST regardless of in_slot's own residency,
-    // EXACTLY the OLD code's own `in_host`/`slot_to_vector` staging
-    // below (deviation noted in report-exchange-2.md: this is a pre-
-    // existing MeshView limitation, not something this round's scope
-    // changes). Only the EXCHANGE and the scatter-add into out_slot run
+    // exactly like the `in_host`/`slot_to_vector` staging below (a MeshView
+    // limitation). Only the EXCHANGE and the scatter-add into out_slot run
     // on Space, chosen by out_slot's own residency.
     std::vector<double> in_host;
     const double* in_read = in_slot.data;
@@ -2099,8 +2074,8 @@ Result<void> Runner::Impl::apply_nodal_dist_remap(const Instruction& ins, const 
   // the one-time resolved exchange plan above does not apply there (its
   // own `build_distributed_remap_plan` refuses a null communicator --
   // "no index resolution worth amortising for one participant"), so this
-  // path calls apply_distributed_H/HT exactly as the runtime-exchange
-  // track's FIRST round left it: the MPI exchange stays entirely on host
+  // path calls apply_distributed_H/HT directly: the MPI exchange stays
+  // entirely on host
   // buffers (moot at a single rank, which touches no MPI symbol at all
   // either way); `slot_to_vector`/`host_to_slot` (both already used by
   // iteration.cpp's own sweep-loop bookkeeping) are the exact deep_copy-
@@ -2110,7 +2085,7 @@ Result<void> Runner::Impl::apply_nodal_dist_remap(const Instruction& ins, const 
   std::vector<double> local_src;
   if (!plan.transpose) slot_to_vector(in_slot, local_src, in_slot.elements * components);
 
-  // Opt-in trace (FUSE_NODAL_DEBUG). Host run 2026-09-25: on a disjoint
+  // Opt-in trace (FUSE_NODAL_DEBUG). On a disjoint
   // two-component placement the H direction delivered exact values while
   // H^T D delivered zero to every target vertex, and the two paths read as
   // symmetric. What decides it is what each rank actually holds here: how
@@ -2251,7 +2226,7 @@ Result<void> Runner::Impl::apply_nodal_dist_remap(const Instruction& ins, const 
 }
 
 // ---------------------------------------------------------------------------
-// Spec Section 7.3: the space-time remap (Task 6.3)
+// Spec Section 7.3: the space-time remap
 // ---------------------------------------------------------------------------
 
 namespace {
@@ -2286,7 +2261,7 @@ namespace {
                "channel '" + channel + "' has an unknown window kind"};
 }
 
-/// Round 3 (spacetime-history track): a flat, unmanaged-wrapped deep_copy
+/// A flat, unmanaged-wrapped deep_copy
 /// of a setup-time host std::vector onto `Kokkos::DefaultExecutionSpace`'s
 /// memory space. Used once per channel, at resolve_spacetime() time, for
 /// SpacetimeInfo's device mirrors -- not a hot-loop helper, so the longer
@@ -2447,7 +2422,7 @@ Result<void> Runner::Impl::resolve_spacetime() {
     }
     info.history.assign(n_src * info.width, 0.0);
 
-    // Round 3 (spacetime-history track): the device-resident twin of
+    // The device-resident twin of
     // `history` above, zero-filled the same way. Built here, once, rather
     // than lazily on first Sample, so every period's write is a plain
     // same-space copy with no first-touch branch in the hot loop.
@@ -2472,7 +2447,7 @@ Result<void> Runner::Impl::resolve_spacetime() {
     }
 
     if (config.execution_space == RunnerConfig::RunnerExecutionSpace::Device) {
-      // Round 3 (spacetime-history track): the identity spatial operator's
+      // The identity spatial operator's
       // CSR mirror (one pass, assuming identity_row is already ascending
       // by construction above -- a stable sort would be the identity
       // permutation here) and flat mirrors of the temporal operator's own
@@ -2645,7 +2620,7 @@ Result<void> Runner::Impl::resolve_instructions() {
   const Result<void> st = resolve_spacetime();
   if (!st.ok()) return st;
 
-  // Spec Section 5.3, Phase 7 Task 7.5. The loop itself lives in
+  // Spec Section 5.3. The loop itself lives in
   // src/runtime/iteration.cpp; resolve_regions() builds it. What is still
   // refused here is a marker with no region behind it: the interpreter would
   // walk straight over an enter/exit pair and run the body exactly once, which
@@ -2694,7 +2669,7 @@ Result<void> Runner::Impl::resolve_instructions() {
       }
     }
 
-    // D73: checked before `!ins.out.valid()` below, which this kind always
+    // Checked before `!ins.out.valid()` below, which this kind always
     // takes (it carries no output arc at all, op.hpp's own doc comment) --
     // skipping straight past it would mean this verification never runs.
     if (ins.kind == OpKind::BuildRemapHalo) {
@@ -2716,8 +2691,8 @@ Result<void> Runner::Impl::resolve_instructions() {
     // is actually given, in resolve_remap() below, which is a stronger check
     // than this one -- equal lengths never implied the two ends corresponded.
     //
-    // `Transport` is exempt too, since per-placement decomposition (KNOWN_ISSUES
-    // D5): its two ends are the SAME region in two components' decompositions,
+    // `Transport` is exempt too, because of per-placement decomposition: its
+    // two ends are the SAME region in two components' decompositions,
     // so on a rank in one placement and not the other one end legitimately
     // holds 12 entities and the other 0. Whether that is right depends on
     // which kind of plan it gets -- a whole-arc copy needs equal sizes, a
@@ -2730,18 +2705,17 @@ Result<void> Runner::Impl::resolve_instructions() {
     // toml's own `transport-held-to-equal-extents` -- anchors that exact
     // line verbatim; wrapping it here, instead of editing it, is what keeps
     // that anchor valid unchanged). Its input and output are not just two
-    // placements of the SAME region (D5) but two DIFFERENT components' own
+    // placements of the SAME region but two DIFFERENT components' own
     // decompositions by design (src/ir/rules_channel.cpp's own `lower_
     // channel()`: the input carries the EXPORTING component's own producer
     // arc, the output is typed with the IMPORTING component's own
     // `rank_set` -- "the value...lands on the CONSUMER's own placement, not
-    // the producer's"). On a rank hosting exactly one end, D24's own
+    // the producer's"). On a rank hosting exactly one end, the
     // contract ("a placement is decomposed over its own RankSet... a
     // component that does not live on this rank gets an empty view") makes
     // the two sizes disagree by construction: 2816 values from the
     // exporter's own producer into 0 at the (unhosted) importer's own arc,
-    // or the mirror -- KNOWN_ISSUES.md D38, measured on the host's first
-    // LowFive-bound MPMD/accept run past D36's own launch-layout fix.
+    // or the mirror (seen on the host's first LowFive-bound MPMD/accept run).
     // Unlike `Transport`, there is no replacement check to add here:
     // `execute()`'s own `OpKind::ExternalDelivery` case (this file) never
     // reads the input at all -- it is purely the ordering edge op.hpp's own
@@ -2858,8 +2832,8 @@ Result<void> Runner::Impl::resolve_instructions() {
         p.spec.dst_rank_set = ins.attrs.dst_rank_set;
         p.spec.elements     = out.elements;
         p.spec.components   = out.components;
-        // Transport preserves region; the input and output arcs agree. Task 3
-        // checks that rather than trusting it.
+        // Transport preserves region; the input and output arcs agree. The
+        // check_transport_extents() checks that rather than trusting it.
         p.region = dag.arc(ins.out).type.region;
         r.transport = static_cast<std::int32_t>(transport_plans.size());
         transport_plans.push_back(std::move(p));
@@ -2893,7 +2867,7 @@ Result<void> Runner::Impl::resolve_instructions() {
 
 namespace {
 
-/// Time windows track: every component that is a member of some
+/// Every component that is a member of some
 /// window-scoped iteration region (`fuse::CouplingWindowScope`,
 /// `fuse/model/iteration.hpp`) -- the ones `build_ticks()` below must NOT
 /// give an ordinary per-native-interval `Tick`. Such a member's entire
@@ -2928,7 +2902,7 @@ namespace {
 Result<void> Runner::Impl::build_ticks(ComponentSet& components) {
   ticks.clear();
 
-  // KNOWN_ISSUES.md D12: one entry per ComponentSet slot, consumed by
+  // One entry per ComponentSet slot, consumed by
   // advance() the next time it is about to suspend for an externally
   // driven component. Sized here (components.size() is already fixed by
   // this point in setup()) rather than in resolve_regions(), which runs
@@ -2960,10 +2934,10 @@ Result<void> Runner::Impl::build_ticks(ComponentSet& components) {
   // stepped only on the processes of its own processor set (the placement
   // guide's contract -- a component placed on no processes "does not run
   // here, this run"). Without a communicator every component runs in this
-  // one process, exactly as before. Found by the D3 host run (2026-09-28): a
-  // process outside a component's processor set was calling its advance(),
-  // where the component's own communicator is MPI_COMM_NULL.
-  // Unit 2b (D19): `this_process` is now `Runner::Impl::this_process`, a
+  // one process. A process outside a component's processor set must not
+  // call its advance(), since the component's own communicator is
+  // MPI_COMM_NULL there.
+  // `this_process` is `Runner::Impl::this_process`, a
   // member (its own declaration comment has the full account), not a
   // local -- reset here, at the top of the ONE place that computes it,
   // so a second `build_ticks()` call (if initialize() ever runs twice)
@@ -2993,7 +2967,7 @@ Result<void> Runner::Impl::build_ticks(ComponentSet& components) {
   all_ticks.clear();
   std::vector<bool> hosted(components.size(), false);
   std::vector<bool> matched(components.size(), false);
-  // Time windows track: computed once, up front -- see
+  // Computed once, up front -- see
   // window_member_components()'s own comment for why a member of this set
   // gets no Tick below, ever, regardless of its own ComponentDecl::interval.
   const std::unordered_set<std::uint32_t> window_members =
@@ -3016,7 +2990,7 @@ Result<void> Runner::Impl::build_ticks(ComponentSet& components) {
     }
     matched[slot] = true;
 
-    // Time windows track: this component's own advance() calls are entirely
+    // This component's own advance() calls are entirely
     // owned by its OpKind::WindowAdvance instruction (advance_window(),
     // src/runtime/iteration.cpp) -- no ordinary Tick, at any interval, is
     // built for it. Its own ComponentDecl::interval is still read directly
@@ -3201,9 +3175,9 @@ Result<void> Runner::Impl::attach_comm_graphs() {
     const auto src_cid = static_cast<std::uint32_t>(p.spec.src_rank_set);
     const auto dst_cid = static_cast<std::uint32_t>(p.spec.dst_rank_set);
 
-    // EACH SIDE ITS OWN COMPONENT'S DECOMPOSITION (KNOWN_ISSUES D5). This used
-    // to be one `backend.view(mesh)` handed to both sides, so a rank in both
-    // placements offered the same piece as source and as destination, and two
+    // EACH SIDE ITS OWN COMPONENT'S DECOMPOSITION: one `backend.view(mesh)`
+    // handed to both sides would offer a rank in both
+    // placements the same piece as source and as destination, and two
     // partially overlapping placements could not both cover the region. The
     // failures here are local and identical on every rank (the same graph,
     // the same backend contract), so breaking before the collective is safe.
@@ -3253,7 +3227,7 @@ Result<void> Runner::Impl::attach_comm_graphs() {
     // preserves region, so both sides are the same mesh and ids match by
     // construction. NearestNeighbor becomes reachable only when Transport can
     // cross regions, which needs a per-channel tolerance the graph cannot yet
-    // express -- see docs/plans/2026-09-11-comm-graph-runner-wiring.md.
+    // express.
     opts.mode         = MatchMode::GlobalId;
     opts.nn_tolerance = 0.0;
 
@@ -3290,7 +3264,7 @@ Result<void> Runner::Impl::attach_comm_graphs() {
     // disjoint placements can be described by one global_ids list per rank, so
     // they take the matched path, which is the verified one. Partially shared
     // placements cannot -- a rank is then a source for some entities and a
-    // destination for others -- and take the peer-wise path (R31).
+    // destination for others -- and take the peer-wise path.
     const int nc_planned = p.spec.components;
     peer_plan_needed = !g.specs_are_disjoint();
 
@@ -3421,7 +3395,7 @@ Result<void> Runner::Impl::attach_comm_graphs() {
 
   // Nothing outlives this function. `CommGraph` is a pure value
   // (comm_graph.hpp:151-159) and holds no MPI resource, so the Runner never
-  // acquires a collective destructor and the R24 asymmetric-destruction hang
+  // acquires a collective destructor and the asymmetric-destruction hang
   // stays out.
   for (MPI_Comm& c : comms) {
     if (c != MPI_COMM_NULL) MPI_Comm_free(&c);
@@ -3432,7 +3406,7 @@ Result<void> Runner::Impl::attach_comm_graphs() {
 
 Result<void> Runner::Impl::setup(ComponentSet& components,
                                  FieldRegistry& registry) {
-  // A5: `config.execution_space` and `DeviceExecSpace` are resolved purely
+  // `config.execution_space` and `DeviceExecSpace` are resolved purely
   // from compile-time macros and this rank's own config struct, so every
   // rank of a job built from the same binary reaches the same verdict here
   // -- this check needs no collective agreement, unlike the resolution
@@ -3535,7 +3509,7 @@ Result<void> Runner::Impl::setup(ComponentSet& components,
   r = build_ticks(components);
   if (!r.ok()) return r;
 
-  // A5: the device staging lanes (`Impl::device_staging`'s own comment has
+  // The device staging lanes (`Impl::device_staging`'s own comment has
   // the sizing argument), sized once here like `reduction_scratch` below and
   // for the same reason; grown, not shrunk, on a repeated initialize().
   // BEFORE resolve_regions(): a window-scoped region's lagged import chain
@@ -3561,20 +3535,20 @@ Result<void> Runner::Impl::setup(ComponentSet& components,
   r = resolve_regions(components, registry);
   if (!r.ok()) return r;
 
-  // docs/dev/device-resident-arcs.md, step 1: with every consumer of every
+  // docs/dev/device-resident-arcs.md: with every consumer of every
   // arc now known (instructions, regions, windows, constrains), move the
   // arcs that only Space-generic kernels touch into device memory.
   if (config.execution_space == RunnerConfig::RunnerExecutionSpace::Device) {
     place_arcs_on_device();
-    // Phase 3: now that every Transport instruction's arcs have their
+    // Now that every Transport instruction's arcs have their
     // final placement, mirror the ones that landed fully on the device.
     build_transport_device_buffers();
-    // runtime-exchange track: weight_sets is complete by this point
+    // weight_sets is complete by this point
     // (every Constrain was built during resolve, above); mirror it once.
     build_constrain_device_buffers();
   }
 
-  // KNOWN_ISSUES.md D11 (closing): scratch for the fixed-chunk deterministic
+  // Scratch for the fixed-chunk deterministic
   // reductions run_region() uses (fuse/num/space_kernels.hpp's
   // `deterministic_norm_squared`/`deterministic_norm_squared_diff`), sized
   // ONCE here from the largest block any region has -- never per sweep or
@@ -3613,7 +3587,7 @@ namespace {
          static_cast<std::uint32_t>(dst);
 }
 
-/// R-10 (REVIEW.md): folds `peer`'s contribution into `acc` in place, one
+/// Folds `peer`'s contribution into `acc` in place, one
 /// block at a time, via `num::combine()` -- the same undefined-count
 /// exclusion `fuse::num::field_norm()`'s callers get for free, so a rank that
 /// wrote `owned == 0` (no local entries, or a locally-failed sweep; see
@@ -3621,10 +3595,9 @@ namespace {
 /// combined by MIN, matching reconcile_epoch()'s status arithmetic: one
 /// failed participant makes the combined status failed for everyone.
 ///
-/// Euclidean is the kind used throughout: it is what run_region()'s
-/// existing per-rank computation already was (REVIEW.md R-10's fix keeps the
-/// serial iteration counts the recorded test fixtures were built with; see
-/// docs -- num/residual_norm.hpp's own header comment says the same about
+/// Euclidean is the kind used throughout: it is what run_region()'s own
+/// per-rank computation uses, so the reduction keeps the serial iteration
+/// counts (num/residual_norm.hpp's own header comment says the same about
 /// MeasureWeightedRms being a deliberate, opt-in departure). `combine()`
 /// cannot fail for Euclidean (the E-NORM-UNITS check is
 /// MeasureWeightedRms-only, and Euclidean's NormValue::units is always the
@@ -3659,7 +3632,7 @@ void merge_region_payload(std::vector<double>& acc,
 /// they have to be chosen together.
 constexpr int kEpochTag = tags::kEpoch;
 
-/// R-10 (REVIEW.md): the tag reduce_region_residuals() uses on the same base
+/// The tag reduce_region_residuals() uses on the same base
 /// communicator. Distinct from kEpochTag for the reason tags.hpp's own
 /// comment on kIterationRegion gives.
 constexpr int kRegionTag = tags::kIterationRegion;
@@ -3673,7 +3646,7 @@ Result<void> Runner::Impl::resolve_epoch_participants() {
   // refusal at setup is a better failure than "Invalid tag" from inside a
   // reduction on one rank while the others wait.
   //
-  // R-32 (REVIEW.md): queried against `base`, the same communicator
+  // Queried against `base`, the same communicator
   // reconcile_epoch() actually sends and receives on, not MPI_COMM_WORLD.
   // `MPI_TAG_UB` is an attribute of a communicator and nothing here
   // guarantees the two share a value -- only that they usually do, under the
@@ -3693,7 +3666,7 @@ Result<void> Runner::Impl::resolve_epoch_participants() {
     }
     void* ub = nullptr;
     int   found = 0;
-    // RT-9 (review 2026-10-11): the threshold comparison itself lives in
+    // The threshold comparison itself lives in
     // epoch_schedule.hpp's tag_ub_too_low() now, MPI-free and unit-tested
     // to fire -- this call site keeps only the MPI query.
     if (MPI_Comm_get_attr(base, MPI_TAG_UB, &ub, &found) == MPI_SUCCESS &&
@@ -3875,7 +3848,7 @@ Result<void> Runner::Impl::reduce_region_residuals(
     // Not a participant of this region -- see RegionRuntime::participants.
     // Joining would make the real participants wait for a rank with nothing
     // to contribute, exactly as reconcile_epoch() reasons for an Epoch.
-    // RT-1 (review 2026-10-11): report that to the caller rather than
+    // Report that to the caller rather than
     // leaving `payload` -- still all the zeros it was filled with before
     // this call -- looking like an agreed answer; the caller must not run
     // `payload`'s UNMEASURED/peer-failure checks against it.
@@ -4105,7 +4078,7 @@ Result<void> Runner::Impl::broadcast_window_convergence(
   return Result<void>::success();
 }
 
-// RT-1 (review 2026-10-11): the ordinary (non-window-scoped) sibling of
+// The ordinary (non-window-scoped) sibling of
 // broadcast_window_convergence(), for the analogous gap in
 // reduce_region_residuals() -- see that function's own comment and
 // runner_impl.hpp's declaration of this one.
@@ -4136,7 +4109,7 @@ Result<void> Runner::Impl::broadcast_region_convergence(
   return Result<void>::success();
 }
 
-// RT-2(e) (review 2026-10-11): see this function's own declaration,
+// See this function's own declaration,
 // runner_impl.hpp, and checkpoint_regions()'s own comment, iteration.cpp.
 Result<void> Runner::Impl::agree_checkpoint_status(bool local_ok,
                                                    bool& agreed_ok_out) {
@@ -4172,7 +4145,7 @@ Result<void> Runner::Impl::agree_checkpoint_status(bool local_ok,
 }
 
 Result<void> Runner::Impl::execute(const Instruction& ins, const Resolved& r) {
-  // A5: `config.execution_space` picks the instantiation; the body is
+  // `config.execution_space` picks the instantiation; the body is
   // `execute_on<Space>` below, identical for both except where a kernel
   // launches and, on a non-host-accessible `Space`, how its operands get
   // there (the staging helpers at the top of that body).
@@ -4190,13 +4163,12 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
   const auto out_ptr = [&]() -> double* { return slots[ins.out.value()].data; };
   const std::size_t n = r.out_total;
 
-  // KNOWN_ISSUES.md D11 (closing) / matrix cell A-SPACES-TRANSPORT: the
+  // The
   // elementwise operators below wrap their existing raw pointers as
   // UNMANAGED views (fuse/num/space_kernels.hpp's SpanOf/ConstSpanOf are
   // zero-cost for exactly this) and run on `Space` -- `HostExecSpace`
   // (OpenMP if the build enabled it, Serial otherwise) for every caller
-  // that leaves `RunnerConfig::execution_space` at its default -- instead
-  // of the hand-written serial loops this switch used to run directly.
+  // that leaves `RunnerConfig::execution_space` at its default.
   // Each output element's write depends on no other, so the answer cannot
   // depend on how many threads Kokkos happened to split the range across;
   // see space_kernels.hpp's own header comment. Nothing here allocates: a
@@ -4208,8 +4180,8 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
   // Accelerate/Epoch/Constrain/Diagnose (plain `num::copy(ptr, ptr, n)` plus
   // host-side bookkeeping) and the WindowAdvance/Map/Reduce/Closure
   // refusals are host-only whatever `Space` is, and read their raw
-  // pointers directly. `Transport` is NOT in that list as of
-  // docs/dev/device-resident-arcs.md Phase 3: its own case below reads
+  // pointers directly. `Transport` is NOT in that list (see
+  // docs/dev/device-resident-arcs.md): its own case below reads
   // `Impl::transport_device` and `Transport::is_gpu_aware()` to decide,
   // per instruction, whether to pack/unpack on the device (handing MPI a
   // device pointer when the backend is GPU-aware, staging through host
@@ -4218,9 +4190,9 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
   // rather than either generic or unconditionally host-only. Remap's
   // distributed-nodal branch (`r.nodal_dist >= 0`,
   // apply_nodal_dist_remap(): an MPI exchange over host buffers) remains
-  // unconditionally host-only; it is a different track's scope.
+  // unconditionally host-only.
   //
-  // A5, the non-host-accessible `Space` (Kokkos::Cuda here): the same two
+  // For the non-host-accessible `Space` (Kokkos::Cuda here): the same two
   // helpers instead hand back views over `device_staging` lanes
   // (`Impl::device_staging`'s own comment). `stage()` keys lanes by HOST
   // pointer, so an in-place call such as Accumulate's
@@ -4390,13 +4362,13 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
       // same ordering constraint `Transport`'s own input gives it for an
       // ordinary channel -- deliberately never read here. See
       // OpKind::ExternalDelivery (include/fuse/ir/op.hpp) and
-      // docs/user/lowfive.md, Unit 3. The application wrote the buffer, so
+      // docs/user/lowfive.md. The application wrote the buffer, so
       // a device mirror of it is stale (Impl::component_epoch).
       note_component_ran();
       break;
 
     case OpKind::BuildRemapHalo:
-      // D73: carries no SSA value at all (op.hpp's own doc comment) and
+      // Carries no SSA value at all (op.hpp's own doc comment) and
       // its real work -- `fuse::execute_remap_halo_instructions()`,
       // fuse/backend/remap_halo_instructions.hpp -- already ran (or was
       // refused) once, at `Runner::initialize()` time, in `resolve_
@@ -4405,7 +4377,7 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
       break;
 
     case OpKind::Sink:
-    case OpKind::Accelerate: {  // Phase 7 replaces this with a real accelerator.
+    case OpKind::Accelerate: {
       if (ins.n_in == 0 || !ins.out.valid()) break;
       copy_arc(in_ptr(0), out_ptr(), n);
       break;
@@ -4443,7 +4415,7 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
           if (!a.ok()) return a;
         }
       } else {
-        // Round 3 (spacetime-history track): the temporal projection and
+        // The temporal projection and
         // the (today always identity) spatial weights run as one Space
         // kernel, batched over this target step's few source terms, one
         // thread per target spatial entity -- num::apply_spacetime_device
@@ -4473,7 +4445,7 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
     case OpKind::Remap: {
       if (ins.n_in == 0 || !ins.out.valid()) break;
       if (r.nodal_dist >= 0) {
-        // Nodal-remap track, round 2 (KNOWN_ISSUES.md D8): a distributed
+        // A distributed
         // nodal Remap target via "consistent"/"consistent-transpose" has
         // its OWN operator (build_nodal_dist_remap() at setup); this is the
         // WHOLE answer, not a local Remap answer plus a correction, so it
@@ -4481,7 +4453,7 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
         // an instruction (see Resolved::nodal_dist's own comment). Host-only
         // whatever `Space` is: the operator is an MPI exchange over host
         // buffers, so this branch never stages and never counts as a
-        // device dispatch (A5).
+        // device dispatch.
         const Result<void> nd = apply_nodal_dist_remap(ins, r);
         if (!nd.ok()) return nd;
         break;
@@ -4499,7 +4471,7 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
         // built from the supermesh at SETUP (src/remap/intx_weights.cpp).
         // Nothing is allocated, looked up or rebuilt here -- `remap_weights`
         // AND `remap_csr` were both filled in resolve_remap()
-        // (build_remap_csr(), KNOWN_ISSUES.md D11 closing), and the CSR
+        // (build_remap_csr()), and the CSR
         // conversion, like the triplets themselves, is owned by setup, not
         // rebuilt per period. `remap_apply`'s multi-component overload
         // (fuse/num/space_kernels.hpp) reproduces `apply_weights`' own
@@ -4515,7 +4487,7 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
         }
         const std::size_t nc = static_cast<std::size_t>(components);
         // The CSR already lives in `Space`'s memory: `remap_csr` for the
-        // host, its `deep_copy` twin `remap_csr_device` otherwise (A5) --
+        // host, its `deep_copy` twin `remap_csr_device` otherwise --
         // nothing about the matrix is staged per instruction.
         num::IndexSpanOf<Space> row_begin;
         num::IndexSpanOf<Space> col;
@@ -4558,7 +4530,7 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
           num::copy<Space>(span_c(in_ptr(0), st.width),
                            span_m(st.history.data() + j * st.width, st.width));
         } else {
-          // Round 3 (spacetime-history track): a same-space deep_copy
+          // A same-space deep_copy
           // into the device-resident ring, no host walk. Interpolate's
           // own history branch now reads `history_device` directly
           // (num::apply_spacetime_device, its own case below), so the
@@ -4612,7 +4584,7 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
 
     case OpKind::Extrapolate: {
       if (ins.n_in == 0 || !ins.out.valid()) break;
-      // Phase 4 keeps no history, so order 0 -- `out[i] = history[i]`,
+      // No history is kept, so order 0 -- `out[i] = history[i]`,
       // exactly `copy` -- is the only behaviour `num::extrapolate` (still
       // used, and still the oracle for a future order > 0) ever actually
       // takes here.
@@ -4681,10 +4653,9 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
     }
 
     case OpKind::WindowAdvance:
-      // Time windows track: a plan CAN contain this op now (Unit B of this
-      // track compiles a window-scoped region's own field transfers
-      // through the ordinary rules, with a WindowAdvance node per
-      // exporting member; see src/ir/window_lowering.cpp), and it does
+      // A plan can contain this op (a window-scoped region's own field
+      // transfers compile through the ordinary rules, with a WindowAdvance
+      // node per exporting member; see src/ir/window_lowering.cpp), and it does
       // reach the interpreter -- but never through THIS switch. Unlike
       // every other instruction here, subcycling is not a stateless
       // function of its resolved input/output buffers -- it calls the
@@ -4729,7 +4700,7 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
       if (ins.n_in == 0 || !ins.out.valid()) break;
       double* out = out_ptr();
       const std::size_t out_arc = ins.out.value();
-      // Step 8: when this arc's own previous-iterate buffer has a
+      // When this arc's own previous-iterate buffer has a
       // device-resident twin (place_arcs_on_device() allocates one
       // whenever the arc itself landed on the device), keep the carried
       // iterate on that same space instead of staging the host `prev`
@@ -4758,12 +4729,12 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
       detail::TransportPlan& p = transport_plans[plan_idx];
       const Slot& in_slot  = slots[ins.in[0].value()];
       const Slot& out_slot = slots[ins.out.value()];
-      // docs/dev/device-resident-arcs.md Phase 3: build_transport_device_buffers()
+      // docs/dev/device-resident-arcs.md: build_transport_device_buffers()
       // mirrors a plan only when BOTH its arcs landed on the device; a
       // mixed or all-host pair leaves this entry empty and the code below
       // falls back to per-arc host staging (mixed) or the unchanged host
       // pointer arithmetic (all-host), exactly as every Transport
-      // instruction ran before this track.
+      // instruction ran without it.
       detail::TransportDeviceOf<DeviceMemSpace>* d =
           (plan_idx < transport_device.size() &&
            transport_device[plan_idx].send.extent(0) > 0)
@@ -4815,7 +4786,7 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
       const std::size_t nc =
           static_cast<std::size_t>(p.spec.components < 1 ? 1 : p.spec.components);
 
-      // Transport-direct track (KNOWN_ISSUES.md D66/D77). The device-direct
+      // The device-direct
       // exchange itself, shared by the peer-wise and matched branches below:
       // both call `tp->move(dd.send.data(), dd.recv.data(), p.total())`
       // identically (move() packs `dd.send` via its own send_index, runs
@@ -4881,7 +4852,7 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
         // hands `Transport::move_packed()` a device pointer with zero host
         // round trip -- `Transport::move()` is a host routine (its own
         // pack/unpack is `std::memcpy`) and handing IT a device pointer is
-        // exactly KNOWN_ISSUES.md D66/D77's segfault, which is why that
+        // exactly a segfault, which is why that
         // call never happens on this path. Otherwise, deep_copy the packed
         // buffer to the plan's existing host `send`/`recv` and exchange
         // through those via `move()`, exactly as the host path always has,
@@ -4992,7 +4963,7 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
       }
 
       // Host path: byte-for-byte what every Transport instruction ran
-      // before this track, EXCEPT that `in`/`out` are staged through a
+      // without device-direct exchange, EXCEPT that `in`/`out` are staged through a
       // per-plan host scratch buffer first when the arc they name is
       // device-resident -- a MIXED pair, which build_transport_device_
       // buffers() leaves with no `transport_device` entry precisely so
@@ -5092,7 +5063,7 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
         num::residual<Space>(span_c(a, n), span_c(b, n), span_m(out, n));
       } else {
         const std::size_t out_arc = ins.out.value();
-        // Step 8: same device-native carried-iterate path as
+        // Same device-native carried-iterate path as
         // OpKind::Relax above, for the one-input form of Residual.
         if (slots[out_arc].device && previous_device[out_arc].extent(0) >= n) {
           double* const prev_dev = previous_device[out_arc].data();
@@ -5112,7 +5083,7 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
     case OpKind::Constrain: {
       if (ins.n_in == 0 || !ins.out.valid()) break;
       double* out = out_ptr();
-      // Phase 4 reports; it does not correct. Space-generic: runs wherever
+      // This reports; it does not correct. Space-generic: runs wherever
       // in_ptr(0)/out are resident, exactly like every other case that
       // calls num::xxx<Space>(span_c(...), span_m(...)) above.
       auto out_span = span_m(out, n);
@@ -5130,7 +5101,7 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
       // the quantity a conservative remap must preserve; comparing the
       // operator's own input with its own copy of it never can.
       //
-      // runtime-exchange track: this is now a reduction on the arc's own
+      // This is a reduction on the arc's own
       // space (device-resident-arcs.md's "Constrain (reduction result)"),
       // not an unconditional host call. `src` (ci.before_arc) is not one of
       // this instruction's own in/out arcs -- it is the Remap's own input,
@@ -5172,17 +5143,16 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
       // The per-rank shares BEFORE the Allreduce below may overwrite
       // before/after with the cross-rank totals -- captured here so
       // FUSE_CONSERVATION_DEBUG's own print (further down) never
-      // re-derives them with a second call. runtime-exchange track: the
-      // debug print used to recompute them with a direct
-      // num::weighted_sum(src.data, ...) call, which is both redundant
-      // (the values are exactly what was just computed above) and, once
+      // re-derives them with a second call (a direct
+      // num::weighted_sum(src.data, ...) call would be both redundant
+      // -- the values are exactly what was just computed above -- and, once
       // `src.data`/`out` can be device addresses, unsafe to dereference
-      // from host code -- reusing the saved locals fixes both.
+      // from host code).
       const double own_before = before;
       const double own_after = after;
       if (ci.reduce) {
 #if FUSE_HAVE_MPI
-        // KNOWN_ISSUES.md D10: the owned shares summed over every rank, plus
+        // The owned shares summed over every rank, plus
         // a flag from any rank whose period has already failed -- its buffers
         // are whatever the abandoned step left, and summing them would turn
         // one real failure into a spurious conservation error on every
@@ -5255,7 +5225,7 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
       // Space-generic, same shape as Constrain's own copy above.
       auto out_span = span_m(out, n);
       num::copy<Space>(span_c(in_ptr(0), n), out_span);
-      // runtime-exchange track: has_nonfinite becomes a reduction on the
+      // has_nonfinite is a reduction on the
       // arc's own space (device-resident-arcs.md: "Diagnose (has_nonfinite
       // becomes a reduction on the arc space; only the verdict is host)");
       // on kHostAccessible this is exactly the original host call.
@@ -5275,7 +5245,7 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
     }
   }
 
-  // A5: every Space-generic case above ends in `break`, so this is the one
+  // Every Space-generic case above ends in `break`, so this is the one
   // place a device-staged output returns to its host buffer. The host-only
   // cases that `return` early staged nothing and never reach here with
   // `n_staged > 0`.
@@ -5344,7 +5314,7 @@ detail::Task<Result<void>> Runner::Impl::advance(ComponentSet& components,
                      components.at(tick.slot).name() + "' is not valid"};
   }
   Component& comp = components.at(tick.slot);
-  // KNOWN_ISSUES.md D12: an in-process component takes this branch never --
+  // An in-process component takes this branch never --
   // `is_externally_driven()` is false for every one of them -- so the
   // statement immediately below (the unconditional `comp.advance(ctx)` this
   // function has always ended with) runs at exactly the same point in
@@ -5460,7 +5430,7 @@ detail::Task<Result<void>> Runner::Impl::step_period(ComponentSet& components) {
       const std::int32_t region_idx = ins.region_enter;
       detail::RegionRuntime& r =
           regions.at(static_cast<std::size_t>(region_idx));
-      // Time windows track: THIS run's own exit position, not r.exit --
+      // THIS run's own exit position, not r.exit --
       // a window-scoped region can have more than one pass per period
       // (RegionRuntime::passes' own comment), so a stale single r.exit
       // (fixed at resolve_regions() time to the FIRST pass only) would
@@ -5474,7 +5444,7 @@ detail::Task<Result<void>> Runner::Impl::step_period(ComponentSet& components) {
         ++exit_pos;
       }
       const Result<void> rr = co_await run_region(components, r, i, exit_pos);
-      // R-09 (REVIEW.md): a region failure carries forward exactly like an
+      // A region failure carries forward exactly like an
       // ordinary instruction failure two branches below -- record it and
       // keep walking the stream -- instead of returning straight out of
       // step_period(). Returning here abandoned every later Epoch/Transport
@@ -5728,7 +5698,7 @@ Result<void> Runner::run_period(ComponentSet& components) {
     detail::Task<Result<void>> task = impl_->step_period(components);
     const bool finished = task.resume();
     if (!finished) {
-      // KNOWN_ISSUES.md D12: step_period() suspends only at a component
+      // step_period() suspends only at a component
       // whose is_externally_driven() is true (component.hpp) -- nothing a
       // run_period()/run() caller's own ComponentSet should ever contain,
       // since that caller has no begin_step()/end_step() to resume past
@@ -5761,7 +5731,7 @@ Result<void> Runner::run_period(ComponentSet& components) {
 
 namespace {
 
-/// Restart track (docs/dev/restart.md), Stage B Slice 1: builds the
+/// Builds the
 /// `field name -> owning component name` map a `RegionBlock::target_field`
 /// is resolved through to find the accelerator row's qualified field
 /// name. Built fresh per call rather than cached on `Impl` -- it is read
@@ -5793,11 +5763,10 @@ build_field_owner_map(const fuse::CouplingGraph& graph) {
   return owner;
 }
 
-/// Restart track (docs/dev/restart.md Section 9 item 4, window-waveform
-/// history, Slice 2). Writes ONE window member's own subcycling state
+/// Writes ONE window member's own subcycling state (docs/dev/restart.md)
 /// (`detail::WindowMemberState`, fuse/runtime/window_coupler.hpp) keyed
 /// by the SAME global ids the member's own owning component already
-/// reported for its exported field (owner decision 4: accelerator and
+/// reported for its exported field (accelerator and
 /// window-waveform histories are both keyed by (field, global id)).
 /// `qualified_base` is "__window/" + owner_component + "/" + field_name
 /// -- a SEPARATE top-level name space from the field's own real dataset
@@ -5932,7 +5901,7 @@ fuse::Result<void> write_window_member_restart(
 }
 
 /// The read-back counterpart. `allow_reset_on_mismatch`/`did_reset`
-/// mirror the accelerator path's own owner-decision-4 escape hatch: a
+/// mirror the accelerator path's own escape hatch: a
 /// missing (field, global id) row for ANY element of this member's own
 /// history or waveform refuses by name unless the run opted in, in
 /// which case THIS MEMBER's own history/waveform is cleared (did_reset
@@ -6147,11 +6116,11 @@ Result<void> Runner::write_restart_fields(RestartWriter& writer,
 
   for (const detail::RegionRuntime& region : impl_->regions) {
     if (region.accel == nullptr) continue;
-    // Round 2 EXACT-KEY fix: one RestartRowBlock PER RegionBlock, each
+    // One RestartRowBlock PER RegionBlock, each
     // carrying its OWNING component's own unmodified ids under its own
     // qualified field name -- never concatenated into one flat id space.
     //
-    // MUST-FIX 2 (KNOWN_ISSUES.md D69, closed round 2): a window-scoped
+    // A window-scoped
     // region's own RegionBlock::length is the K-WIDE stacked window-
     // transfer buffer (element count TIMES window_export_capacity), not
     // the registered field's own single-sample size a component's
@@ -6161,8 +6130,8 @@ Result<void> Runner::write_restart_fields(RestartWriter& writer,
     // detail::put_field_per_block (src/num/accel_relaxation.cpp), which
     // demuxes the K samples into per-sample sub-datasets.
     //
-    // Latent bug fixed this round: region.blocks' own iteration order
-    // does not always match ascending RegionBlock::offset (measured for
+    // region.blocks' own iteration order
+    // does not always match ascending RegionBlock::offset (e.g. for
     // brusselator_window: the U/u_in block at offset 275 iterates before
     // the V/v_in block at offset 0) -- the running-offset accumulation
     // in put_field_per_block()/get_field_per_block() assumes iteration
@@ -6203,11 +6172,11 @@ Result<void> Runner::write_restart_fields(RestartWriter& writer,
       rb.window_capacity = cap;
       blocks.push_back(std::move(rb));
     }
-    // Round 2 fix 1 (NO SILENT RESET): an accelerator that does not
+    // NO SILENT RESET: an accelerator that does not
     // implement restart state writes nothing for this region -- the
     // base class's export_restart_state() default is a harmless no-op
     // on the WRITE side (nothing is lost that was ever asked to be
-    // captured); the refusal this round's fix 1 requires is on the
+    // captured); the refusal is on the
     // RESTORE side, enforced in restore_restart_fields() below, driven
     // by the CURRENT run's own restart_state_implemented(), never by
     // what a previous write did or did not record.
@@ -6217,8 +6186,8 @@ Result<void> Runner::write_restart_fields(RestartWriter& writer,
     if (!r.ok()) return r;
   }
 
-  // Window-waveform history (docs/dev/restart.md Section 9 item 4, Slice
-  // 2): keyed by the SAME (owning field, global id) pairs the owning
+  // Window-waveform history (docs/dev/restart.md): keyed by the SAME
+  // (owning field, global id) pairs the owning
   // component's own write_restart() just recorded above, under a
   // SEPARATE "__window/" top-level prefix so a window member's own
   // restart point never collides with the registered field it is
@@ -6297,16 +6266,14 @@ Result<void> Runner::restore_restart_fields(RestartReader& reader,
   for (detail::RegionRuntime& region : impl_->regions) {
     if (region.accel == nullptr) continue;
 
-    // MUST-FIX 1 (NO SILENT RESET), round 2: a window-scoped region
-    // used to be special-cased here to silently any_accelerator_reset
-    // = true and skip, WITHOUT checking allow_accelerator_reset_on_
-    // mismatch -- that special case is removed. Every region, window-
-    // scoped or not, now runs the IDENTICAL refusal-by-name check
-    // below; MUST-FIX 2 (closing D69) is what makes a window-scoped
+    // NO SILENT RESET: every region, window-scoped or not, runs the
+    // IDENTICAL refusal-by-name check below, honouring
+    // allow_accelerator_reset_on_mismatch. The window_export_capacity
+    // handling further below is what makes a window-scoped
     // region's own accelerator genuinely restartable rather than
     // merely refusing less silently.
     //
-    // Round 2 fix 1 (NO SILENT RESET), owner decision 4: refuse by name
+    // Refuse by name
     // unless the run opted in. This check is COLLECTIVE BY
     // CONSTRUCTION, not by an added reduction -- every rank's graph
     // assigns the SAME AccelKind to the SAME region (validate()'s own
@@ -6335,7 +6302,7 @@ Result<void> Runner::restore_restart_fields(RestartReader& reader,
       continue;
     }
 
-    // Round 2 EXACT-KEY fix: one RestartRowBlock PER RegionBlock, each
+    // One RestartRowBlock PER RegionBlock, each
     // carrying its OWNING component's own unmodified, CURRENT ids under
     // its own qualified field name -- never concatenated into one flat
     // id space keyed by a combined/hashed value.
@@ -6385,14 +6352,13 @@ Result<void> Runner::restore_restart_fields(RestartReader& reader,
     any_accelerator_reset = any_accelerator_reset || did_reset;
   }
 
-  // Window-waveform history restore (docs/dev/restart.md Section 9 item
-  // 4, Slice 2): see write_restart_fields()'s own comment on the
+  // Window-waveform history restore (docs/dev/restart.md): see
+  // write_restart_fields()'s own comment on the
   // "__window/" prefix. `any_accelerator_reset` is shared across both
-  // the accelerator reset report and this one -- owner decision 4 names
-  // one reporting convention ("when used it is reported at restart")
-  // for both kinds, and this round reuses it rather than widening the
+  // the accelerator reset report and this one -- one reporting convention
+  // ("when used it is reported at restart") covers both kinds, without widening the
   // public restore_restart_point()/restore_restart_fields() signature
-  // with a second output parameter the owner has not asked for.
+  // with a second output parameter.
   for (auto& [node, cfg] : impl_->window_member_config) {
     if (!cfg.exported_field.valid()) continue;
     const std::string& field_name = impl_->graph.field(cfg.exported_field).name;
@@ -6422,9 +6388,9 @@ Result<void> Runner::restore_restart_fields(RestartReader& reader,
     any_accelerator_reset = any_accelerator_reset || did_reset;
   }
 
-  // KNOWN_ISSUES.md D72 (owner priority): every window member's own
-  // detail::WindowMemberState has just been restored above (history,
-  // and -- since D70 -- last_window_waveform); re-prime the live
+  // Every window member's own
+  // detail::WindowMemberState has just been restored above (history
+  // and last_window_waveform); re-prime the live
   // window_import buffer every window-scoped region's own accelerator
   // and GS/Jacobi residual read directly (run_region_window()'s own
   // pre-loop seed, src/runtime/iteration.cpp) from it, so a restored
@@ -6469,11 +6435,9 @@ std::vector<ComponentId> Runner::Impl::components_due_at_period_start() const {
   // NEVER stamped earlier than its own (strictly positive) window
   // length: a WindowAdvance instruction is a chain node, stamped at the
   // SLAB END per plan.hpp's own documented convention ("chain nodes at
-  // the slab end"), not at its start -- MEASURED directly against this
-  // exact confusion (an earlier version of this function filtered
-  // WindowAdvance instructions by `.time == 0` and found every one of
-  // them excluded, since their `.time` is the window's own end, e.g.
-  // 1/500 for a 1/500 window, never 0). So whenever `ticks` is non-empty
+  // the slab end"), not at its start: their `.time` is the window's own
+  // end, e.g. 1/500 for a 1/500 window, never 0 (filtering them by
+  // `.time == 0` would exclude every one). So whenever `ticks` is non-empty
   // at all, its own time-0 prefix -- already sorted ascending by
   // (time, order), build_ticks()'s own stable_sort -- is unconditionally
   // the period's own first due point; no window region can tie with it,
@@ -6571,8 +6535,7 @@ std::optional<ComponentId> Runner::Impl::next_real_advance_after(
   // is already this period's own schedule order, so the first eligible
   // one found is the earliest.
   //
-  // The lead's own ruling (2026-10-04, correcting the SAME day's earlier
-  // one): a plain forward scan to `stream.size()` is only correct when
+  // A plain forward scan to `stream.size()` is only correct when
   // `instruction_index` lies outside every iteration region. Inside one,
   // whether the scan may walk past that region's own `exit` depends on a
   // convergence decision the region's sweep loop makes AFTER this
@@ -6764,7 +6727,7 @@ Result<Runner::FieldWindowView> Runner::field_window_view(FieldId field) const {
   }
   const detail::Slot& slot = impl_->slots[arc.value()];
   if (slot.device) {
-    // Step 8: a window-scoped region's own export/import arc is no
+    // A window-scoped region's own export/import arc is no
     // longer pinned to the host (place_arcs_on_device() no longer pins
     // it), so this raw-pointer accessor needs the same refusal
     // Runner::buffer() already gives a device-resident ordinary arc,
@@ -6789,7 +6752,7 @@ Result<Runner::FieldWindowView> Runner::field_window_view(FieldId field) const {
 }
 
 bool Runner::hosts_component(ComponentId component) const {
-  // The IDENTICAL formula build_ticks()'s own `hosted[]` and Unit 2b's
+  // The IDENTICAL formula build_ticks()'s own `hosted[]` and the
   // own `WindowMemberConfig::hosted` already use, read from the SAME
   // `this_process` (set once, in build_ticks(), called from
   // initialize() -- std::nullopt beforehand, which this treats the same

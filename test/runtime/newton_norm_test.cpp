@@ -1,9 +1,9 @@
-/// NewtonModel track (2026-10-12): NewtonNorm::MeasureWeighted. Proves scale
+/// NewtonNorm::MeasureWeighted. Proves scale
 /// invariance and unit independence over the diagonal `D` `run_region_
 /// newton()`/`run_region_newton_window()` build from each block's own
 /// entity measure and consumer-field tolerance scale (src/runtime/
 /// iteration.cpp's own `build_newton_measure_weights()`, docs/dev/
-/// newton-krylov.md's new section).
+/// newton-krylov.md).
 ///
 /// Two fixtures, reused across the tests below:
 ///  - `make_newton_setup()` (duplicated from test/runtime/newton_region_
@@ -16,7 +16,7 @@
 ///    a block; used for tests (i), (iii), (iv) and the mesh-measure
 ///    mutation rows.
 ///  - `DiagonalComponent`/`diagonal_graph()`: a minimal, independently-
-///    scaled two-field affine pair this track adds, used ONLY for test
+///    scaled two-field affine pair, used ONLY for test
 ///    (ii) (field units rescaled by 1e3) and the GMRES-count mutation,
 ///    where the dn_heat fixture's own fixed physical constants (kL1 =
 ///    kL2 = kK2 = 1, examples/dn_heat/dn_component.hpp) give no knob to
@@ -153,12 +153,11 @@ NewtonDnHeatFixture make_newton_setup(int max_iterations, fuse::NewtonConfig cfg
 /// (include/fuse/num/newton_krylov.hpp)'s own naive floor -- STILL make
 /// the first GMRES(30) solve exhaust its full 1000-iteration budget
 /// without a VERIFIED convergence (`DivergedLinearSolve`, `iterations =
-/// 0`): `FUSE_NEWTON_DEBUG_TMP` tracing (temporary, removed from the
-/// substrate before this track's submission) showed the Givens-rotation
-/// residual ESTIMATE dropping to ~1e-10-1e-23 -- the loss-of-orthogonality
-/// disagreement include/fuse/linalg/gmres.hpp's own header comment names
-/// as an acknowledged Modified-Gram-Schmidt risk -- while the TRUE,
-/// recomputed residual the solver correctly insists on before reporting
+/// 0`): `FUSE_NEWTON_DEBUG_TMP` tracing (a temporary debug aid) showed the
+/// Givens-rotation residual ESTIMATE dropping to ~1e-10-1e-23 -- the
+/// loss-of-orthogonality disagreement include/fuse/linalg/gmres.hpp's own
+/// header comment names as an acknowledged Modified-Gram-Schmidt risk -- while
+/// the TRUE, recomputed residual the solver correctly insists on before reporting
 /// success never actually reaches the requested `1e-6` within the
 /// restart budget, a tighter, problem-specific floor than the naive MFFD
 /// estimate, matching newton-krylov.md Section 9.9.2's own point that MFFD/GMRES
@@ -266,8 +265,8 @@ class DiagonalComponent final : public fuse::Component, public fuse::ImplicitCom
   /// EXACT inverse should drive GMRES to convergence in very few
   /// iterations REGARDLESS of NewtonNorm, UNLESS the scaled operator's own
   /// right preconditioner is composed WRONG (left at `~M` instead of `~M
-  /// D^-1`), in which case the preconditioned operator is `~D` (this
-  /// track's own derivation, docs/dev/newton-krylov.md) rather than `~I`,
+  /// D^-1`), in which case the preconditioned operator is `~D` (see
+  /// docs/dev/newton-krylov.md) rather than `~I`,
   /// and GMRES degrades by `D`'s own spread -- the exact, isolated
   /// observable `build-evidence/mutations/newton-model.toml`'s own
   /// "preconditioner not composed with D^-1" row needs.
@@ -430,13 +429,13 @@ DiagonalFixture make_diagonal_setup(int max_iterations, const NewtonConfig& cfg,
 // IDENTICAL dx regardless of D. The only reason the two solves can differ
 // at all is GMRES's own achieved accuracy, bounded by the forcing term eta.
 //
-// GAP 3 (round 2 review, 2026-10-12): a quantitative bound on "how much can
+// A quantitative bound on "how much can
 // they differ" in terms of eta needs the inexact-Newton theory's own
 // accumulation of a RELATIVE linear-solve error (eta) through a FULL
 // multi-step nonlinear iteration on a problem whose own Jacobian is only
 // piecewise-exact (dn_heat's own k(T), and even the affine map's own GMRES
-// forcing interacts with line search/MFFD noise) -- not a bound this track
-// could derive and defend in closed form. Run here PURELY as INFORMATIONAL
+// forcing interacts with line search/MFFD noise) -- not a bound that
+// can be derived and defended in closed form. Run here PURELY as INFORMATIONAL
 // output (no assertion on the diff): the real, derivable bound is
 // `NewtonNorm.ExactDenseSolveAgreesToRoundoffTimesConditionNumber`,
 // immediately below, which proves the UNDERLYING algebraic claim --
@@ -485,7 +484,7 @@ namespace {
 /// A dense Gaussian-elimination solve with partial pivoting, `A x = b`,
 /// over a caller-owned COPY of `A`/`b` (both consumed) -- small and plain
 /// on purpose: this is the n=8 "direct dense solve of the exact Jacobian"
-/// GAP 3 (round 2 review) asks for, not a production linear-algebra path,
+/// the bound below needs, not a production linear-algebra path,
 /// so it owes nothing to `fuse::linalg::gmres()`'s own iterative
 /// machinery and cannot share any of its own floating-point behaviour
 /// with what it is being used to double-check.
@@ -548,9 +547,9 @@ double condition_number_inf(const std::vector<std::vector<double>>& a) {
 }  // namespace
 
 // ---------------------------------------------------------------------------
-// (i, replacement bound -- GAP 3, round 2 review) The algebraic claim
+// (i, replacement bound) The algebraic claim
 // `(D*J)^-1 * D = J^-1`, proved directly: assemble the EXACT, full n=8
-// Jacobian of this track's own 2-field affine fixture through
+// Jacobian of the 2-field affine fixture through
 // DiagonalComponent::ExactToken::apply_jacobian() (not GMRES, not MFFD --
 // `F = x - G(x)`'s own exact derivative, per-entry diagonal coupling
 // blocks: d(F_lo)/d(x_lo) = I, d(F_lo)/d(x_hi) = -diag(lo_coeff),
@@ -610,7 +609,7 @@ TEST(NewtonNorm, ExactDenseSolveAgreesToRoundoffTimesConditionNumber) {
     jac[n + i][i] = -hi_jac[i];
   }
 
-  // This track's own D formula, uniform mesh (w_i = 1/n), one tolerance
+  // The D formula, uniform mesh (w_i = 1/n), one tolerance
   // per block.
   std::vector<double> d(2 * n, 0.0);
   for (std::size_t i = 0; i < n; ++i) {
@@ -684,15 +683,15 @@ TEST(NewtonNorm, ExactDenseSolveAgreesToRoundoffTimesConditionNumber) {
 // SINGLE fixed point (x = 0, before any Newton step), reusing the exact
 // mechanism test (iii) above already establishes is correct
 // (Runner::region_fixed_point_residual(), the PLAIN F(x), combined with
-// this track's own D formula).
+// the D formula).
 TEST(NewtonNorm, InitialResidualNormIsUnitIndependentOnlyUnderMeasureWeighted) {
   constexpr double kScale = 1.0e4;
   constexpr double kTolHiBaseline = 1e-6;
   constexpr std::size_t kN = 4;
 
   // `norm` is irrelevant here (ignored): region_fixed_point_residual()
-  // always returns the PLAIN residual (S7.1), by construction; this test
-  // applies this track's own D formula to it BY HAND, using the SAME
+  // always returns the PLAIN residual, by construction; this test
+  // applies the D formula to it BY HAND, using the SAME
   // tolerance each run's own graph declares for "hi_out".
   const auto norms_at = [&](double scale) {
     NewtonConfig cfg;
@@ -768,7 +767,7 @@ TEST(NewtonNorm, InitialResidualNormIsUnitIndependentOnlyUnderMeasureWeighted) {
 // ---------------------------------------------------------------------------
 TEST(NewtonNorm, ScaledResidualNormMatchesFieldNormDividedByTolerance) {
   NewtonConfig cfg;  // norm irrelevant: region_fixed_point_residual() always
-                     // returns the PLAIN residual, by construction (S7.1).
+                     // returns the PLAIN residual, by construction.
   NewtonDnHeatFixture s = make_newton_setup(/*max_iterations=*/30, cfg);
   ASSERT_TRUE(s.init.ok()) << s.init.error().message;
 
@@ -796,7 +795,7 @@ TEST(NewtonNorm, ScaledResidualNormMatchesFieldNormDividedByTolerance) {
     const double block_scaled = norm.value().value / tol;
     sum_sq += block_scaled * block_scaled;
 
-    // Cross-check against this track's own D_i formula directly.
+    // Cross-check against the D_i formula directly.
     for (std::size_t j = 0; j < len; ++j) {
       const double w = measure[j];
       const double d_i = std::sqrt(w / 1.0) / tol;  // sum_w == 1 (uniform, normalised)
@@ -932,8 +931,8 @@ TEST(NewtonNorm, AmbiguousToleranceScaleRefusesAtSetup) {
 
 // ---------------------------------------------------------------------------
 // (vi) The PRODUCTION diagonal D (Runner::debug_newton_scale(), reading
-// RegionRuntime::newton_scale directly, never re-derived) matches this
-// track's own formula exactly, entry for entry -- closing the gap tests
+// RegionRuntime::newton_scale directly, never re-derived) matches the
+// D formula exactly, entry for entry -- closing the gap tests
 // (iii)/(iv) above leave open (both recompute the formula independently
 // of build_newton_measure_weights(), by design, as a cross-check of the
 // MATH -- neither exercises the real D array the Runner's own Newton
@@ -1004,7 +1003,7 @@ TEST(NewtonNorm, BlockJacobiPreconditionerWithExactTokensConvergesUnderMeasureWe
   // Jacobian is linear in x, so one Newton step with an exact linear
   // solve should already reach the fixed point to GMRES's own eta
   // accuracy -- it does, under the CORRECT `(D*J)^-1 = J^-1 * D^-1`
-  // composition (this track's own derivation). Pinned here (not only
+  // composition. Pinned here (not only
   // "converged") because `build-evidence/mutations/newton-model.toml`'s
   // own "preconditioner not composed with D^-1" row needs a NUMBER that
   // actually moves when the composition is dropped -- MEASURED doing
@@ -1014,7 +1013,7 @@ TEST(NewtonNorm, BlockJacobiPreconditionerWithExactTokensConvergesUnderMeasureWe
 }
 
 // ---------------------------------------------------------------------------
-// GAP 2 (round 2 review, 2026-10-12): the plain norm's masking failure,
+// The plain norm's masking failure,
 // shown end to end (not only at the initial residual, test (ii) above).
 // ---------------------------------------------------------------------------
 //
@@ -1220,7 +1219,7 @@ TEST(NewtonNorm, PlainNormMisjudgesConvergenceOnTheNonlinearTwoFieldRegion) {
   ASSERT_GT(disc, 0.0) << "synthetic fixture's own quadratic has no real root";
   const double a_nat_true = (-qb - std::sqrt(disc)) / (2.0 * qa);  // the smaller root.
   const double b_true = k_nat * a_nat_true * a_nat_true + m_nat;
-  fprintf(stderr, "[NewtonNorm] GAP2 exact root: a_nat_true=%.10g b_true=%.10g\n",
+  fprintf(stderr, "[NewtonNorm] masking exact root: a_nat_true=%.10g b_true=%.10g\n",
          a_nat_true, b_true);
 
   // cfg.atol is the ONE number this demonstration turns on: applied,
@@ -1228,7 +1227,7 @@ TEST(NewtonNorm, PlainNormMisjudgesConvergenceOnTheNonlinearTwoFieldRegion) {
   // own huge absolute units, then by whatever is left once A has
   // converged), and applied, in TOLERANCE units, to the WEIGHTED combined
   // residual (where "1" means "every block at its own declared
-  // tolerance", this track's own convergence.md).
+  // tolerance", see convergence.md).
   NewtonConfig base_cfg;
   base_cfg.atol = 1.0;
   base_cfg.rtol = 1e-14;  // effectively disabled, so atol alone governs.
@@ -1258,7 +1257,7 @@ TEST(NewtonNorm, PlainNormMisjudgesConvergenceOnTheNonlinearTwoFieldRegion) {
   const double weighted_b_scaled_error = std::abs(weighted_b_nat - b_true) / tol_b;
 
   fprintf(stderr,
-         "[NewtonNorm] GAP2 MEASURED: plain stopped at iteration=%d (converged=%d), "
+         "[NewtonNorm] masking MEASURED: plain stopped at iteration=%d (converged=%d), "
          "b=%.10g, |b-b_true|/tol_b=%.6g; weighted stopped at iteration=%d (converged=%d), "
          "b=%.10g, |b-b_true|/tol_b=%.6g\n",
          plain_st.iterations, plain_st.converged, plain_b_nat, plain_b_scaled_error,

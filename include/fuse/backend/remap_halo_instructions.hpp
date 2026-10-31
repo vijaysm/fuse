@@ -1,7 +1,6 @@
 #pragma once
 
-/// D73 (automatic remap halo, owner decision 2026-10-18; execution point
-/// moved in ROUND 2, 2026-10-18). See `OpKind::BuildRemapHalo`'s own doc
+/// Automatic remap halo. See `OpKind::BuildRemapHalo`'s own doc
 /// comment (fuse/ir/op.hpp) and `emit_remap_halo_instructions()`'s
 /// (fuse/ir/lowering.hpp) for how these instructions get into the IR.
 ///
@@ -10,11 +9,11 @@
 /// function on its own `dag` argument BEFORE building the `RegionSizes`
 /// callback it returns, so the halo is built before any buffer is sized
 /// from the mesh it grows (see `make_region_sizes`'s own doc for why that
-/// ordering, not merely "early", is the one that matters). Round 1 of
-/// this track had application code call this directly between loading
-/// the backend and calling `schedule()`; KNOWN_ISSUES.md D77 records why
-/// that could not be `Runner::initialize()` itself and why round 2 moved
-/// the call here instead. This function remains declared in a public
+/// ordering, not merely "early", is the one that matters). Application
+/// code does not call this directly between loading the backend and
+/// calling `schedule()`, and it cannot be `Runner::initialize()` itself,
+/// because buffers are sized before the `Runner` exists. This function
+/// is declared in a public
 /// header (not an internal/detail namespace) only because
 /// `make_region_sizes()`'s own implementation, which calls it, lives in
 /// a different translation unit (src/backend/serial_backend.cpp) in the

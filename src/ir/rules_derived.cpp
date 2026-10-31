@@ -46,24 +46,22 @@ void insert_derived_ops(LoweringContext& ctx, ChannelId cid) {
   if (tgt_it == ctx.field_arc.end()) return;  // the rule failed; nothing to do
 
   // `chain_entry_arc`, not `source_arc`: this is the head of the chain
-  // `lower_channel()` actually emitted FOR THIS CHANNEL -- the source
-  // field's own `Source`/`WindowAdvance` arc for an ordinary channel, but
-  // the channel's own `ExternalDelivery` node's OWN OUTPUT arc for a
-  // LowFive-bound one, since this channel's chain reads what THAT node
-  // produces (the application's own write), never `source_arc` directly
-  // -- unchanged by `ExternalDelivery` carrying `source_producer` as an
-  // ordering-only input of its own (include/fuse/ir/op.hpp's own comment
-  // on that node has the full account; `channel_chain()`, below, must
-  // still start AT the delivery node, not at ITS OWN input, which is
-  // `source_arc` again and would defeat the whole point of this fix).
-  // Walking from `source_arc` unconditionally used to find no node of
-  // this channel's origin downstream of a severed `ExternalDelivery`
-  // root, so `has_remap` came back false and Constrain/Diagnose went
-  // silently unemitted for every LowFive-bound channel -- this is the
-  // fix. For an ordinary channel `chain_entry_arc[cid] ==
-  // source_arc[ch.source]` always, so nothing changes there; see
-  // LoweringContext for the `field_arc`-vs-`source_arc` invariant this
-  // still relies on for `Bidirectional` fields.
+  // `lower_channel()` actually emitted FOR THIS CHANNEL -- the source field's
+  // own `Source`/`WindowAdvance` arc for an ordinary channel, but the channel's
+  // own `ExternalDelivery` node's OWN OUTPUT arc for a LowFive-bound one, since
+  // this channel's chain reads what THAT node produces (the application's own
+  // write), never `source_arc` directly -- unchanged by `ExternalDelivery`
+  // carrying `source_producer` as an ordering-only input of its own
+  // (include/fuse/ir/op.hpp's own comment on that node has the full account;
+  // `channel_chain()`, below, must still start AT the delivery node, not at ITS
+  // OWN input, which is `source_arc` again and would defeat the whole point).
+  // Walking from `source_arc` unconditionally would find no node of this
+  // channel's origin downstream of a severed `ExternalDelivery` root, so
+  // `has_remap` would come back false and Constrain/Diagnose go silently
+  // unemitted for every LowFive-bound channel. For an ordinary channel
+  // `chain_entry_arc[cid] == source_arc[ch.source]` always, so nothing changes
+  // there; see LoweringContext for the `field_arc`-vs-`source_arc` invariant
+  // this still relies on for `Bidirectional` fields.
   const auto entry_it = ctx.chain_entry_arc.find(cid.value());
   if (entry_it == ctx.chain_entry_arc.end()) return;
 
@@ -81,9 +79,9 @@ void insert_derived_ops(LoweringContext& ctx, ChannelId cid) {
 
   // A conservation check needs a conserved integral. A consistent (pointwise)
   // interpolation has none (fuse::is_pointwise_interpolation), so checking it
-  // reports a violation that is not one: the host found exactly that on
-  // 2026-10-01, a consistent velocity transfer from 8 beam vertices to 11
-  // fluid cells "failing" 10.4 -> 1.3, a vertex sum against a cell integral.
+  // reports a violation that is not one: for example, a consistent velocity
+  // transfer from 8 beam vertices to 11 fluid cells "failing" 10.4 -> 1.3,
+  // a vertex sum against a cell integral.
   if (has_remap && type.conservation != Conservation::None &&
       !is_pointwise_interpolation(ch.remap.method_override)) {
     cur = append(ctx, OpKind::Constrain, cur, type, OpAttrs{}, cid,

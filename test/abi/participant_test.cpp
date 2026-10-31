@@ -93,7 +93,7 @@ class TrivialComponent final : public fuse::Component {
   std::vector<double> storage_ = std::vector<double>(4, 0.0);
 };
 
-/// KNOWN_ISSUES.md D12, test (3): a hand-written implicit-coupling
+/// A hand-written implicit-coupling
 /// participant, used as a real, in-process fuse::Component for the
 /// REFERENCE run below (constructed directly against fuse::Runner,
 /// bypassing the ABI entirely). `ImplicitCouplingConvergesLikeInProcess`'s
@@ -235,7 +235,7 @@ TEST(AbiParticipant, StepBoundsAreTheSchedulesRationals) {
   // numerator/denominator literals, is what this test is actually checking:
   // fuse_exact_time crossing the boundary with no information lost to a
   // double, not a specific unreduced spelling.
-  // MEASURED (this pass, via a standalone probe replaying this exact
+  // MEASURED (via a standalone probe replaying this exact
   // graph): "upstream"'s tick 0 and "downstream"'s only tick both fall
   // at t=0 (downstream's interval is 1, spanning the whole period), tied
   // and broken by declaration order -- upstream first, per
@@ -243,10 +243,8 @@ TEST(AbiParticipant, StepBoundsAreTheSchedulesRationals) {
   // the Runner's instruction stream expects upstream's tick 0, THEN
   // downstream's one tick, THEN upstream's ticks 1 and 2, in that exact
   // order. Asking for upstream's tick 1 right after tick 0 is refused
-  // E-ABI-STEP-ORDER (naming "downstream") -- KNOWN_ISSUES.md D12's fix
-  // makes the Runner's own schedule the one source of truth for call
-  // order, where the deferred scheme this file's history replaced had
-  // none.
+  // E-ABI-STEP-ORDER (naming "downstream") -- the Runner's own schedule
+  // is the one source of truth for call order.
   fuse_step_request req{.struct_size = sizeof(req)};
   req.component = "upstream";
   fuse_step_request down_req{.struct_size = sizeof(down_req)};
@@ -280,7 +278,7 @@ TEST(AbiParticipant, StepBoundsAreTheSchedulesRationals) {
   EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
 }
 
-// docs/dev/restart.md round 2, item 4's participant-side request: a C
+// The participant-side restart-point request: a C
 // consumer test of request_restart_point() through the REAL plain-C
 // table, proving the flag reaches fuse::Runner::take_restart_point_
 // request() (checked via the fuse::abi_test::runner_of() seam, since
@@ -421,8 +419,8 @@ TEST(AbiParticipant, LastErrorCopiesThePrefixThatFitsWhenTruncated) {
 }
 
 // types.h documents fuse_error::status as "out: the fuse_status of the
-// failed call"; Review 2026-10-11 AB-1 found impl_last_error() wrote
-// FUSE_OK unconditionally instead. A fresh context (nothing has failed
+// failed call"; impl_last_error() must not write
+// FUSE_OK unconditionally. A fresh context (nothing has failed
 // yet) must report FUSE_OK, and the context's own failing call's status
 // -- not a fixed constant -- after a failure.
 TEST(AbiParticipant, LastErrorReportsTheFailingCallsStatus) {
@@ -494,7 +492,7 @@ TEST(AbiParticipant, LifecycleEndToEndTransfersEachPeriodsValue) {
   fuse_step_request down_req{.struct_size = sizeof(down_req)};
   down_req.component = "downstream";
 
-  // Period 0: upstream writes 7.0. MEASURED (this pass): for this graph
+  // Period 0: upstream writes 7.0. MEASURED: for this graph
   // -- both components interval 1 (one tick each, spanning the WHOLE
   // period) -- upstream's export is not VALID until upstream's own tick
   // reaches its t_end, which is the period's own end; the Transport/
@@ -502,10 +500,9 @@ TEST(AbiParticipant, LifecycleEndToEndTransfersEachPeriodsValue) {
   // at the period's t_begin), never between them. down_storage is still
   // stale right after begin_step(downstream) -- confirmed below -- and
   // only becomes current once end_step(downstream) resumes PAST
-  // downstream's own tick to that Transport/Remap. This is unchanged
-  // from before KNOWN_ISSUES.md D12's fix for exactly this graph shape
-  // (context.hpp's "exact for exactly one class of graph" claim); the
-  // fix's own observable difference is in ImportIsCurrentExactlyWhenThe
+  // downstream's own tick to that Transport/Remap. This matches
+  // context.hpp's "exact for exactly one class of graph" claim; the
+  // schedule-driven behaviour is observable in ImportIsCurrentExactlyWhenThe
   // ScheduleMakesItAvailable and the subcycled/implicit-coupling tests
   // below, where the exchange point is NOT simply "the period's own end".
   fuse_step_report rep{.struct_size = sizeof(rep)};
@@ -527,9 +524,9 @@ TEST(AbiParticipant, LifecycleEndToEndTransfersEachPeriodsValue) {
   EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
 }
 
-// KNOWN_ISSUES.md D12, test (1) (lag-0 transfer): the Runner suspends
-// EXACTLY at the scheduled tick, neither early nor late. MEASURED (this
-// pass, via a standalone probe replaying this exact graph): for two
+// Lag-0 transfer: the Runner suspends
+// EXACTLY at the scheduled tick, neither early nor late. MEASURED (via a
+// standalone probe replaying this exact graph): for two
 // components of interval 1 (one tick each, spanning the whole period),
 // the channel's Remap is scheduled strictly AFTER both ticks -- upstream's
 // export is not valid until upstream's own tick reaches its t_end, which
@@ -609,7 +606,7 @@ TEST(AbiParticipant, SuspensionHappensExactlyAtTheScheduledTickNeitherEarlyNorLa
   EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
 }
 
-// KNOWN_ISSUES.md D12, test (4): begin_step() on a component the Runner's
+// begin_step() on a component the Runner's
 // own instruction stream does not expect next is refused, naming the
 // component it DOES expect -- and, crucially, consumes nothing, so a
 // subsequent begin_step() for the correctly-named component still
@@ -681,10 +678,10 @@ TEST(AbiParticipant, BeginStepOutOfTurnIsRefusedNamingTheExpectedComponent) {
   EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
 }
 
-// KNOWN_ISSUES.md D12, test (2): "upstream" subcycles 4x per common period
+// "upstream" subcycles 4x per common period
 // under AccumOp::Mean; "downstream" must see the MEAN of the four substep
-// values FUSE actually ran, not the last one -- the class of transfer the
-// deferred, end-of-period scheme could never produce (D12's own finding).
+// values FUSE actually ran, not the last one -- the class of transfer a
+// deferred, end-of-period scheme could never produce.
 TEST(AbiParticipant, SubcycledMeanAccumulation) {
   const auto* t = Table();
   ASSERT_NE(t, nullptr);
@@ -723,7 +720,7 @@ TEST(AbiParticipant, SubcycledMeanAccumulation) {
   // Four substeps: 2, 4, 6, 8 -- mean 5, not the last value 8. The same
   // sequence test/runtime/runner_test.cpp's own Accumulate.Mean tests use.
   //
-  // MEASURED (this pass, via a standalone probe replaying this exact
+  // MEASURED (via a standalone probe replaying this exact
   // graph): "downstream" (interval 1, one tick spanning the whole
   // period) ticks at the period's own t_begin, same as "upstream"'s
   // FIRST substep -- tie-broken by declaration order, so the Runner's
@@ -775,7 +772,7 @@ TEST(AbiParticipant, SubcycledMeanAccumulation) {
   EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
 }
 
-// KNOWN_ISSUES.md D12, test (3): an implicit coupling group ("alpha"/
+// An implicit coupling group ("alpha"/
 // "beta" two-way coupled inside an iteration region) driven ENTIRELY
 // through fuse_begin_step()/fuse_end_step(), compared bit-for-bit against
 // a REFERENCE run of the identical graph driven directly through
@@ -784,11 +781,10 @@ TEST(AbiParticipant, SubcycledMeanAccumulation) {
 // comparable rather than merely "both converge".
 TEST(AbiParticipant, ImplicitCouplingConvergesLikeInProcess) {
   constexpr int kCells = 4;
-  // MEASURED (this pass): the affine/relaxation coefficients below give a
+  // MEASURED: the affine/relaxation coefficients below give a
   // 2x2 Jacobi iteration matrix with complex eigenvalues of magnitude
   // sqrt(0.35) =~ 0.592 (trace 0.3, det 0.35) -- convergent, but reaching
-  // a 1e-9 relative tolerance needs ~39 sweeps, not the 30 a first draft
-  // of this test used.
+  // a 1e-9 relative tolerance needs ~39 sweeps.
   constexpr int kMaxIterations = 60;
 
   // --- Reference: fuse::Runner driven directly, bypassing the ABI. ---
@@ -892,7 +888,7 @@ TEST(AbiParticipant, ImplicitCouplingConvergesLikeInProcess) {
   for (int sweep = 0; sweep < ref_iterations; ++sweep) {
     fuse_step_report a_rep{.struct_size = sizeof(a_rep)};
     ASSERT_EQ(t->begin_step(ctx, &a_req, &a_rep), FUSE_OK) << "sweep " << sweep;
-    // KNOWN_ISSUES.md D12: requires_checkpoint fires exactly on the first
+    // requires_checkpoint fires exactly on the first
     // sweep (right after checkpoint_regions() saved this component),
     // requires_restore on every sweep after it (right after
     // run_region()'s own restore loop).
@@ -945,23 +941,21 @@ TEST(AbiParticipant, ImplicitCouplingConvergesLikeInProcess) {
   EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
 }
 
-// Time windows track (Conformance, Unit 2): the FIRST test driving a
-// WINDOW-scoped member (fuse::CouplingWindowScope, not merely an ordinary
-// iteration region) through fuse_begin_step()/fuse_end_step() -- read
-// from src/abi/participant.cpp and src/runtime/iteration.cpp before
-// writing this: Runner::Impl::advance_window()'s own externally-driven
-// branch (its own "KNOWN_ISSUES.md D12" comment, right before the
-// `if (comp.is_externally_driven())` block) ALREADY computes
+// A test driving a WINDOW-scoped member (fuse::CouplingWindowScope, not
+// merely an ordinary iteration region) through
+// fuse_begin_step()/fuse_end_step(). In src/abi/participant.cpp and
+// src/runtime/iteration.cpp, Runner::Impl::advance_window()'s own
+// externally-driven branch (right before the
+// `if (comp.is_externally_driven())` block) already computes
 // `cfg.required[e]` as the substep MEAN before suspending -- the exact
 // semantics docs/user/c-abi.md's own "What imports are current actually
-// means" section documents for a window member -- and ALREADY writes
+// means" section documents for a window member -- and writes
 // `cfg.provided[e]` into the window's own K-wide export buffer on
 // resume, through the SAME `co_await detail::ExternalSuspend{}` protocol
-// `Runner::Impl::advance()` (runner.cpp) uses for an ordinary tick. The
-// mechanism was not missing; it was simply never driven by a test. This
-// one proves it, against the in-process fuse::Runner as the oracle, the
-// same technique ImplicitCouplingConvergesLikeInProcess above uses for
-// an ordinary region.
+// `Runner::Impl::advance()` (runner.cpp) uses for an ordinary tick. This
+// test drives that mechanism, against the in-process fuse::Runner as the
+// oracle, the same technique ImplicitCouplingConvergesLikeInProcess above uses
+// for an ordinary region.
 TEST(AbiParticipant, ExternallyDrivenWindowMemberMatchesInProcessRunner) {
   constexpr int kCells = 4;
   constexpr int kMaxIterations = 60;  // ImplicitCouplingConvergesLikeInProcess's own figure
@@ -1023,8 +1017,7 @@ TEST(AbiParticipant, ExternallyDrivenWindowMemberMatchesInProcessRunner) {
   }
 
   // --- Same graph, driven entirely through the ABI, both members
-  // externally driven -- the Unit 2 shape (U and V both externally
-  // driven) in miniature. ---
+  // externally driven (U and V both externally driven) in miniature. ---
   const auto* t = Table();
   ASSERT_NE(t, nullptr);
   const auto bytes =
@@ -1134,8 +1127,8 @@ TEST(AbiParticipant, ExternallyDrivenWindowMemberMatchesInProcessRunner) {
   EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
 }
 
-// AbiParticipant.EndTimeBoundedRunRefusesPastItsOwnDeclaredEnd (S6 phase 3,
-// Conformance, Unit 3a): fuse_setup()'s own `end_time` bounds
+// AbiParticipant.EndTimeBoundedRunRefusesPastItsOwnDeclaredEnd:
+// fuse_setup()'s own `end_time` bounds
 // prime_next_request()'s own rollover (src/abi/participant.cpp) -- a
 // begin_step() that would start a period at or past the declared end
 // leaves c.next_request empty (success, not an error) instead of rolling
@@ -1250,8 +1243,7 @@ TEST(AbiParticipant, EndTimeBoundedRunRefusesPastItsOwnDeclaredEnd) {
   EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
 }
 
-// AbiParticipant.MismatchedRolloverNamesTheRealPeriodStartComponent (S6
-// phase 3, Conformance, Unit 3a): case (ii) of the lead's own ruling --
+// AbiParticipant.MismatchedRolloverNamesTheRealPeriodStartComponent:
 // a caller's begin_step() resumes past a period boundary (rolled_over
 // true in prime_next_request()'s own terms, src/abi/participant.cpp)
 // and the NEW period's own first-due component is NOT the one this call
@@ -1278,8 +1270,7 @@ TEST(AbiParticipant, EndTimeBoundedRunRefusesPastItsOwnDeclaredEnd) {
 // that follows is another iteration or the one that converges and ends
 // the period. So the two are declared to disagree on purpose: region-
 // entry (alpha, what every hint during the window says) is NOT period-
-// start (gamma, what actually happens once the window converges) --
-// exactly the lead's own phrasing.
+// start (gamma, what actually happens once the window converges).
 //
 // The LowFive-bound channel is "beta"'s own b_out -> "alpha"'s a_in
 // (the BACK channel), not the forward one, and "beta" is declared on a
@@ -1481,8 +1472,7 @@ TEST(AbiParticipant, MismatchedRolloverNamesTheRealPeriodStartComponent) {
     const fuse_status brc = t->begin_step(ctx, &req, &brep);
     ASSERT_EQ(brc, FUSE_OK) << "k=" << k;
     if (brep.step_opened == 0 && brep.delivery_pending == 1) {
-      // S6 phase 3 (Conformance, Unit 3b), item 2 of this round: an
-      // ORDINARY mid-sweep delivery stop, not the period-ending
+      // An ORDINARY mid-sweep delivery stop, not the period-ending
       // mismatch this test is looking for -- every ExternalDelivery
       // proxy is now its own externally visible report (never silently
       // drained), so this fires on every sweep along the way, not only
@@ -1622,7 +1612,7 @@ TEST(AbiParticipant, OldCallerStructSizeNeverTouchesNextComponent) {
 }
 
 // AbiParticipant.IsCouplingOngoingReportsThePlanFirstComponentNotTheFirst
-// DeclaredOne (Defect 3's own refinement). "alpha" is declared FIRST
+// DeclaredOne. "alpha" is declared FIRST
 // (ComponentId 0) and "beta" SECOND (ComponentId 1), same as every other
 // test built on build_implicit_window_coupling_graph() -- but this
 // fixture's own `reorder_channels_so_beta_is_first_in_plan_order` flag
@@ -1704,7 +1694,7 @@ TEST(AbiParticipant, IsCouplingOngoingReportsThePlanFirstComponentNotTheFirstDec
 
 namespace {
 
-// Unit 2b (D19), step (d) -- RANKS WITHOUT A COMPONENT. The SAME shape as
+// RANKS WITHOUT A COMPONENT. The SAME shape as
 // fuse::abi_test::build_implicit_window_coupling_graph() ("alpha"/"beta",
 // both window-scoped, both externally driven), plus a THIRD,
 // ComponentKind::Coupler placement -- a pure placement, on its own rank,
@@ -1890,8 +1880,8 @@ TEST(AbiParticipant, RunStillRefusedOnAProcessHostingAnExternalComponent) {
   EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
 }
 
-// AbiParticipant.DeliveryPendingIsSetExactlyOncePerLowFiveSuspension (S6
-// phase 3, Conformance, Unit 3b): `delivery_pending` (entries.def's own
+// AbiParticipant.DeliveryPendingIsSetExactlyOncePerLowFiveSuspension:
+// `delivery_pending` (entries.def's own
 // comment on the field) must read 1 on the report of the begin_step() call
 // that returned because the Runner suspended at a LowFive-bound channel's
 // own delivery proxy, and 0 on every other report -- never left to an
@@ -1903,27 +1893,25 @@ TEST(AbiParticipant, RunStillRefusedOnAProcessHostingAnExternalComponent) {
 // channel (beta's b_out -> alpha's a_in) LowFive-bound. Without a third,
 // outside-the-window component, period-start names alpha itself -- the
 // SAME component every mid-window hint already named -- so every
-// rollover this graph produces is a MATCHED one. Unit 3a's own fix folded
-// matched and unmatched rollovers into the same `step_opened = 0` branch
+// rollover this graph produces is a MATCHED one. Matched
+// and unmatched rollovers share the same `step_opened = 0` branch
 // (entries.def's comment on that field), so this is still a clean probe
 // of `delivery_pending` specifically, not a repeat of the mismatch case
 // above.
 //
-// Driven for THREE periods. Prediction, from reading participant.cpp's
-// four report-construction sites (this round's own work): delivery_pending
-// is 1 on EXACTLY the one report per period that crosses the rollover
+// Driven for THREE periods. From participant.cpp's
+// four report-construction sites: delivery_pending is 1 on EXACTLY the
+// one report per period that crosses the rollover
 // (`treat_as_mismatch`, reached only via `rolled_over`), 0 on every
 // ordinary substep's begin_step()/end_step() report in between, and 0 on
 // the final "run is over" report once all three periods are driven.
-// AbiParticipant.DeliveryFieldNamesTheRightChannelOnEachSuspension (S6
-// phase 3, Conformance, Unit 3b), item 2 of this round, SUPERSEDING the
-// single-channel version this test name replaces: with BOTH channels of
-// a two-member window LowFive-bound (a_out forward, b_out back -- the
-// REAL Brusselator shape, examples/brusselator/brusselator_graph.hpp's
-// own build_lowfive_plan()), and deliver_external() now suspending for
-// the EXPORTER as well as the importer (this round's own item 2(a)),
-// every is_delivery_due suspension is its own report (never silently
-// drained), and `delivery_field` must name EXACTLY the channel whose
+// AbiParticipant.DeliveryFieldNamesTheRightChannelOnEachSuspension: with
+// BOTH channels of a two-member window LowFive-bound (a_out forward,
+// b_out back -- the REAL Brusselator shape,
+// examples/brusselator/brusselator_graph.hpp's own build_lowfive_plan()),
+// and deliver_external() suspending for the EXPORTER as well as the
+// importer, every is_delivery_due suspension is its own report (never
+// silently drained), and `delivery_field` must name EXACTLY the channel whose
 // own ExternalDelivery proxy produced it -- a_out's own handle or
 // b_out's own handle, never anything else, and never -1 while
 // delivery_pending==1.
@@ -2091,11 +2079,9 @@ TEST(AbiParticipant, DeliveryFieldNamesTheRightChannelOnEachSuspension) {
       // A legitimate, non-delivery period rollover (this graph's own
       // window converging cleanly, the SAME event
       // MismatchedRolloverNamesTheRealPeriodStartComponent's own header
-      // comment documents for a plain, non-LowFive case) -- unlike this
-      // test's own EARLIER (single-channel, single-proxy-per-period)
-      // version, a rollover here is no longer guaranteed to coincide
-      // with the LAST delivery, now that every delivery is its own
-      // separate, earlier stop (this round's own item 2 correction).
+      // comment documents for a plain, non-LowFive case). A rollover
+      // here is not guaranteed to coincide with the LAST delivery, since
+      // every delivery is its own separate, earlier stop.
       // Re-request per next_component, same as a delivery stop.
       next_hint = brep.next_component;
       continue;
@@ -2123,11 +2109,11 @@ TEST(AbiParticipant, DeliveryFieldNamesTheRightChannelOnEachSuspension) {
   EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
 }
 
-// AbiParticipant.DeliveryPendingIsAlwaysZeroOnAnOrdinaryGraph (S6 phase 3,
-// Conformance, Unit 3b): the ordinary (non-window, non-LowFive) path never
-// rolls over at all (step_opened's own comment, entries.def) -- so every
-// begin_step()/end_step() report's delivery_pending must read 0, driven
-// across several periods, never left to chance.
+// AbiParticipant.DeliveryPendingIsAlwaysZeroOnAnOrdinaryGraph: the ordinary
+// (non-window, non-LowFive) path never rolls over at all (step_opened's own
+// comment, entries.def) -- so every begin_step()/end_step() report's
+// delivery_pending must read 0, driven across several periods, never left to
+// chance.
 TEST(AbiParticipant, DeliveryPendingIsAlwaysZeroOnAnOrdinaryGraph) {
   const auto* t = Table();
   ASSERT_NE(t, nullptr);
@@ -2192,9 +2178,9 @@ TEST(AbiParticipant, DeliveryPendingIsAlwaysZeroOnAnOrdinaryGraph) {
   EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
 }
 
-// -------------------------------------------- D61 collective reconciliation
+// -------------------------------------------- collective reconciliation
 //
-// KNOWN_ISSUES.md D61: begin_step()/end_step()/setup()/initialize()/run()
+// begin_step()/end_step()/setup()/initialize()/run()
 // must reconcile a collective refusal across the component's ranks
 // (docs/dev/abi-design.md, "How the participant ABI reconciles a
 // collective refusal") rather than returning on this rank's own local
@@ -2290,8 +2276,8 @@ TEST(AbiParticipantCollectiveReconciliation,
   // E-ABI-STEP-ORDER's own FUSE_ERR_STATE. The agreed status must be
   // that peer's refusal (the only non-FUSE_OK candidate), and this
   // rank's OWN report must be REWRITTEN to carry it, naming rank 1 --
-  // exactly the hazard D61 exists to close: a rank that locally "passed"
-  // must not proceed alone while a peer refused.
+  // exactly the hazard reconciliation exists to close: a rank that locally
+  // "passed" must not proceed alone while a peer refused.
   ASSERT_TRUE(fuse::abi_test::force_fake_collective_peers(ctx, /*self_rank=*/0,
                                                            {FUSE_ERR_STATE}));
 
@@ -2336,7 +2322,7 @@ TEST(AbiParticipantCollectiveReconciliation,
   const fuse_status rc = t->begin_step(ctx, &req, &rep);
   EXPECT_EQ(rc, FUSE_ERR_STATE)
       << "with no communicator configured, the local verdict must stand "
-         "unreconciled, exactly as before D61";
+         "unreconciled";
 
   EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
 }

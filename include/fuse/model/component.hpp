@@ -39,11 +39,8 @@ namespace fuse {
 /// `first + count` has to say what it means.
 class RankSet {
  public:
-  // REVIEW.md R-17 was investigated and REJECTED here: see the review
-  // report for the git-history evidence (ComponentDecl.DefaultsToUnitInterval
-  // OnRankZero, test/model/component_test.cpp, predates this class and pins
-  // rank 0 as the deliberate default of the pre-refactor `struct RankSet
-  // { int first = 0; int count = 1; }` this class replaced). "Empty =
+  // The default is rank 0, deliberately (ComponentDecl.DefaultsToUnitInterval
+  // OnRankZero, test/model/component_test.cpp, pins it). "Empty =
   // unplaced" is RankSet(int, int)'s documented contract for an EXPLICIT
   // count <= 0, not a claim about the niladic default, which has always
   // meant "rank 0" and is tested as such.
@@ -61,13 +58,12 @@ class RankSet {
   /// means "switched off this run", and switching a component off means its
   /// channels go with it.
   ///
-  /// This sentence used to stop at "legal", which left the model layer calling
-  /// a configuration legal while `MpiTransport::build_plan` refused it
-  /// (`E-TRANSPORT-RANKS`) two layers down -- the ruling of 2026-09-22 is that
-  /// the refusal is right and this contract was the incomplete half.
+  /// "Legal" here is the model layer's view only: `MpiTransport::build_plan`
+  /// refuses a component with channels on an empty set (`E-TRANSPORT-RANKS`)
+  /// two layers down, and that refusal is right.
   RankSet(int first, int count) {
     if (count <= 0) return;  // empty, as documented above.
-    // BM-14 (review 2026-10-11): `first` and `count` arrive unchecked from
+    // `first` and `count` arrive unchecked from
     // any caller, including a hand-written YAML document (src/model/
     // yaml_io.cpp) that has not yet reached any other validation gate. A
     // huge `count` would `reserve()` gigabytes before anything looks at
@@ -220,10 +216,9 @@ struct ComponentDecl {
   // Deliberately NOT serialized by either the flat descriptor
   // (include/fuse/model/descriptor.hpp) or the YAML front-end
   // (src/graph/yaml_io.cpp). Nothing in the current graph API populates
-  // this field -- there is no add_region_to_component()-style call -- so
-  // Task 1.5-1.7 leaves it as a placeholder for whatever Phase 2 introduces
-  // to populate it, at which point serialization support should be added
-  // alongside the writer. Pinned by
+  // this field -- there is no add_region_to_component()-style call -- so it
+  // is a placeholder; serialization support should be added alongside
+  // whatever writer populates it. Pinned by
   // Descriptor.RegionsFieldIsIntentionallyNotSerialized so a later
   // populate-without-serialize regression is caught rather than silently
   // passing through structurally_equal() (which is defined in terms of
@@ -233,8 +228,8 @@ struct ComponentDecl {
   /// How THIS component's executable finds the rest of the graph when it is
   /// not run in-process with everyone else (fuse/model/launch.hpp). Default
   /// `InProcess` keeps every existing `ComponentDecl{...}` aggregate
-  /// initializer and every descriptor written before S6's interfaces track
-  /// meaning what it meant before this field existed (descriptor v9, see
+  /// initializer and every descriptor written before this field existed
+  /// meaning what it meant (descriptor v9, see
   /// descriptor.hpp's kGraphVersion history).
   LaunchSpec launch;
 };
@@ -258,7 +253,7 @@ struct CouplerDecl {
   /// say so here, exactly as a component does. Left at its default
   /// (`LaunchMode::InProcess`) a coupler shares whichever executable its
   /// ranks already belong to, which is the accept-mode arrangement.
-  /// Measured consequence of not carrying this, 2026-10-08: the
+  /// Measured consequence of not carrying this: the
   /// Brusselator's MPMD rows hung with no output at all, U and V waiting
   /// in `connect_mpmd()`'s collective for a coupler rank that never
   /// called `connect()`.

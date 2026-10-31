@@ -1,8 +1,8 @@
 #ifndef FUSE_EXAMPLES_BRUSSELATOR_PARTICIPANTS_BRUSSELATOR_CHECK_CORE_H_
 #define FUSE_EXAMPLES_BRUSSELATOR_PARTICIPANTS_BRUSSELATOR_CHECK_CORE_H_
 
-/// Time windows track (Conformance, Unit 2, Q3): the assembler that reads
-/// u_main.c's and v_main.f90's own per-window log files and recomputes
+/// The `--check` assembler: reads u_main.c's and v_main.f90's own
+/// per-window log files and recomputes
 /// `examples/brusselator/main.cpp`'s own `balance_err`/`exchange_err`/
 /// `max_window_balance_error`/`global_balance_error`/
 /// `max_window_exchange_error` from them -- bit for bit the SAME formulas

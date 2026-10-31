@@ -34,15 +34,13 @@ bool has_code(const Diagnostics& d, std::string_view code) {
 
 // A graph that validates clean; individual tests perturb one thing.
 //
-// BM-1 (review 2026-10-11): `src`/`dst` are `Conservation::Intensive`, not
-// `Extensive` as an earlier version of this fixture had them -- this
+// `src`/`dst` are `Conservation::Intensive`, not `Extensive` -- this
 // fixture's "flux" channel declares no remap at all (same region on both
-// ends), and connect.hpp's `check_channel()` now correctly refuses an
-// `Extensive`-target channel whose declared transfer is a plain Copy
-// (ConnectTest/ValidateTest's own BM-1 tests exercise that refusal
-// directly). None of the tests built on this fixture are ABOUT
-// conservation, so `Intensive` keeps them exercising what they actually
-// name instead of all newly failing on an unrelated, correctly-added
+// ends), and connect.hpp's `check_channel()` refuses an `Extensive`-target
+// channel whose declared transfer is a plain Copy (ConnectTest/ValidateTest
+// exercise that refusal directly). None of the tests built on this fixture
+// are ABOUT conservation, so `Intensive` keeps them exercising what they
+// actually name instead of all failing on an unrelated
 // E-CONN-CONSERVATION.
 struct Fixture {
   CouplingGraph g;
@@ -87,7 +85,7 @@ TEST(Validate, RejectsDuplicateComponentNames) {
   EXPECT_TRUE(has_code(d, "E-DUP-COMP")) << d.to_string();
 }
 
-// S6 phase 3, "MPI connect" track (fuse/model/launch.hpp). These are the
+// MPI connect (fuse/model/launch.hpp). These are the
 // per-member checks validate() itself owns; the cross-component questions
 // (do the launched components' RankSets actually partition the declared
 // world, does an appnum collide with another component's) are
@@ -130,7 +128,7 @@ TEST(Validate, AcceptsAConnectComponentWithAPortFile) {
   EXPECT_FALSE(has_code(d, "E-LAUNCH-CONNECT-TARGET")) << d.to_string();
 }
 
-// S6 phase 4, "Adapter host" track.
+// Adapter host.
 TEST(Validate, RejectsAPluginComponentWithNoPluginPath) {
   Fixture f;
   f.g.add_component(ComponentDecl{
@@ -238,7 +236,7 @@ TEST(Validate, RejectsLagExceedingWindow) {
   EXPECT_TRUE(has_code(d, "E-LAG")) << d.to_string();
 }
 
-// BM-8 (review 2026-10-11): `std::abs(ch.lag)` is UB for `ch.lag ==
+// `std::abs(ch.lag)` is UB for `ch.lag ==
 // INT_MIN` (no positive int counterpart), and `ch.lag` is a raw int32_t
 // off the wire with no range check (descriptor.hpp) -- a corrupted
 // descriptor could set exactly this value. `ChannelBuilder::lag()` has
@@ -254,8 +252,8 @@ TEST(Validate, LagOfIntMinDoesNotTriggerUndefinedBehavior) {
   EXPECT_TRUE(has_code(d, "E-LAG")) << d.to_string();
 }
 
-// BM-8: the lag-span multiply used to be the throwing `*` operator,
-// which can FUSE_REFUSE out of validate() on overflow -- a throw from a
+// The lag-span multiply must not be the throwing `*` operator, which can
+// FUSE_REFUSE out of validate() on overflow -- a throw from a
 // Diagnostics-returning function whose whole point is "report every
 // problem together", and an abort in a FUSE_ENABLE_EXCEPTIONS=OFF
 // build. `try_mul` turns the identical condition into a reported
@@ -374,17 +372,17 @@ TEST(Validate, ReportsEveryProblemNotJustTheFirst) {
   EXPECT_TRUE(has_code(d, "E-INTERVAL"));
 }
 
-// CRITICAL 1 (post-review fix): a FromComponent window naming a component
-// that does not exist used to make channel_window()'s g.component(w.component)
-// throw std::out_of_range, uncaught, straight out of validate() -- the one
+// A FromComponent window naming a component that does not exist must not
+// make channel_window()'s g.component(w.component) throw std::out_of_range,
+// uncaught, straight out of validate() -- the one
 // function whose contract is "accumulate every problem, never abort".
 // Id::valid() only tests the 0xFFFFFFFF sentinel, not component_count(), so
 // ComponentId{99} on a 2-component graph passed .valid() and reached .at().
 TEST(Validate, DirectApiBadWindowComponentDoesNotThrowAndReportsBadRef) {
   Fixture f;
   // lag != 0 is what makes validate() actually evaluate channel_window();
-  // without it the pre-fix code path is never exercised and this test would
-  // pass vacuously even against the broken implementation.
+  // without it that code path is never exercised and this test would pass
+  // vacuously even against a broken implementation.
   f.g.channel(f.ch)
       .accumulate(AccumOp::Integral, Window::from(ComponentId{99}))
       .lag(1);
@@ -393,7 +391,7 @@ TEST(Validate, DirectApiBadWindowComponentDoesNotThrowAndReportsBadRef) {
   EXPECT_TRUE(has_code(d, "E-BAD-REF")) << d.to_string();
 }
 
-// Same defect, reached via the other path the review called out:
+// Same hazard, reached via the other path:
 // deserialize() never validates embedded window component ids, so a
 // hand-crafted (or corrupted) descriptor byte buffer can carry a
 // FromComponent window pointing at a component index that was never
@@ -497,7 +495,7 @@ TEST(Validate, DeserializedGraphWithBadWindowComponentDoesNotThrowAndReportsBadR
   EXPECT_TRUE(has_code(d, "E-BAD-REF")) << d.to_string();
 }
 
-// ---- merge transform (S2.1, S2.4) -------------------------------------
+// ---- merge transform -------------------------------------
 
 // Three outcomes where the two parents had one. Dimensions that differ are an
 // incompatibility; an exact zero-offset scale is a conversion the compiler
@@ -561,7 +559,7 @@ TEST(Validate, UnitGapHasThreeDistinctOutcomes) {
   EXPECT_EQ(count(wrong, "E-UNITS-SCALE"), 0u);
 }
 
-// ---- empty placement (the 2026-09-22 ruling) -----------------------------
+// ---- empty placement ------------------------------------------------------
 //
 // An empty placement is legal ONLY for a component with no channels. Both
 // halves are tested, because the rule is a boundary and a check that refused
@@ -723,7 +721,7 @@ TEST(Validate, RemapOnACouplerPlacedNowhereIsNotRefusedWhenItWouldNotBeUsed) {
   EXPECT_TRUE(has_code(d, "W-CHANNEL-REMAP-ON-UNUSED")) << d.to_string();
 }
 
-// ---- hdf5_path (S6 phase 3, "LowFive" track, Unit 3) -------------------
+// ---- hdf5_path ------------------------------------------------------------
 
 TEST(Validate, FieldWithHdf5PathButNoLowFiveComponentIsRefused) {
   Fixture f;
@@ -744,14 +742,11 @@ TEST(Validate, FieldWithHdf5PathAndALowFiveComponentIsAccepted) {
   EXPECT_FALSE(d.has_errors()) << d.to_string();
 }
 
-// Unit 3a's own closing item (the lead's own ruling): a LaunchMode::
-// LowFive component is a placement, the same role an ordinary coupler
+// A LaunchMode::LowFive component is a placement, the same role an ordinary coupler
 // already plays -- it must declare kind=Coupler and own no fields, or
 // fuse_initialize()'s own wiring loop (src/abi/participant.cpp) has no
 // exemption for it and it becomes a spurious externally-driven
-// component with no step call anywhere in a caller's own loop (MEASURED,
-// this track's own session history, before the graph tool and this
-// file's own fixtures were fixed to declare .kind = Coupler by hand).
+// component with no step call anywhere in a caller's own loop.
 TEST(Validate, ALowFiveComponentDeclaringPhysicsKindIsRefused) {
   Fixture f;
   const_cast<FieldSpec&>(f.g.field(f.src)).hdf5_path = "producer_out.h5/grid/q";
@@ -814,8 +809,7 @@ namespace {
 
 // A two-member (alpha/beta) window-scoped graph on the REAL Brusselator
 // example's own dt_u/dt_v/window (examples/brusselator/participants/
-// brusselator_graph_tool.cpp, this round's own item 2(b) update):
-// dt_u=1/500, dt_v=3/1000, window=1/50. beta's own back channel
+// brusselator_graph_tool.cpp): dt_u=1/500, dt_v=3/1000, window=1/50. beta's own back channel
 // (b_out -> a_in) is lagged -- required for GaussSeidel (a two-way
 // window with no lagged transfer at all is refused, WaveformIteration's
 // own comment, fuse/model/iteration.hpp) -- `extra_back_lag` lets a
@@ -871,14 +865,12 @@ namespace {
 
 }  // namespace
 
-// S6 phase 3 (Conformance, Unit 3b), item 2's own firing test: the real
-// Brusselator parameters (dt_u=1/500, dt_v=3/1000, window=1/50) under
+// The real Brusselator parameters (dt_u=1/500, dt_v=3/1000, window=1/50) under
 // GaussSeidel -- beta's own back channel lagged by 1*dt_v=3/1000, well
 // under the WINDOW's own 1/50, but OVER the target component's own
 // interval (alpha's 1/500) that channel_window()'s stale fallback used
-// to measure it against (KNOWN_ISSUES.md D14's own account of the bug
-// this closes). Must validate clean -- no E-LAG, and no OTHER error
-// introduced by the fix.
+// to measure it against. Must validate clean -- no E-LAG, and no OTHER
+// error.
 TEST(Validate, GaussSeidelWindowLagWithinTheRealWindowValidates) {
   const CouplingGraph g =
       build_real_parameter_window_graph(fuse::WaveformIteration::GaussSeidel);
@@ -901,12 +893,10 @@ TEST(Validate, RejectsLagExceedingTheWindowItself) {
 }
 
 // ---------------------------------------------------------------------------
-// BM-1 (review 2026-10-11): the Conservation stage now reaches validate().
-// `connect.hpp`'s `check_channel()` used to hardcode `TransferKind::Copy`,
-// so EVERY channel into a `Conservation::Extensive` field refused there --
-// but this loop skipped every stage but Unit, so the refusal reached no
-// consumer and the graph validated clean regardless. These three pin the
-// fixed behavior directly: a plain copy into an Extensive field is refused
+// The Conservation stage reaches validate(). `connect.hpp`'s
+// `check_channel()` resolves the declared `TransferKind` rather than
+// hardcoding `TransferKind::Copy`, and validate() maps every stage's
+// diagnostics, not only Unit's. These three pin that behavior directly: a plain copy into an Extensive field is refused
 // with a message naming the field and guarantee; a channel that actually
 // declares a conservative transfer is accepted; and a channel that ALSO has
 // a scale-only unit mismatch reports both problems rather than losing the
@@ -1021,14 +1011,11 @@ TEST(Validate, ExtensiveTargetOverAConservativeRemapIsAccepted) {
   const Diagnostics d = validate(f.g);
   EXPECT_FALSE(has_code(d, "E-CONN-CONSERVATION")) << d.to_string();
   EXPECT_FALSE(d.has_errors()) << d.to_string();
-  // `validate()`'s two assertions above pass even pre-fix, for the WRONG
-  // reason: before BM-1, this loop mapped only Unit-stage diagnostics, so a
-  // Conservation-stage refusal (which the hardcoded-Copy bug fired on EVERY
-  // Extensive target, including this conservative one) reached no consumer
-  // here regardless of whether the channel actually compiled. Asking
-  // `check_channel()` directly is what actually discriminates: pre-fix it
-  // reports `Unsupported` for this exact graph (the hardcoded Copy ignores
-  // `.conservative()`); post-fix, `declared_transfer()` resolves the
+  // `validate()`'s two assertions above would also pass if conservation
+  // refusals never reached validate() at all, for the WRONG reason. Asking
+  // `check_channel()` directly is what actually discriminates: a hardcoded
+  // Copy would report `Unsupported` for this exact graph (ignoring
+  // `.conservative()`), whereas `declared_transfer()` resolves the
   // channel's `RemapFlags::Conservative` and the connection compiles.
   const auto connection = check_channel(f.g, f.ch);
   EXPECT_TRUE(connection.compiles())
@@ -1041,8 +1028,8 @@ TEST(Validate,
     ExtensiveTargetWithScaleOnlyMismatchReportsBothConservationAndUnitScale) {
   ExtensiveFixture f(/*same_region=*/true);  // plain copy: Conservation refuses
   // Same dimensions as the fixture's own kHeatFluxDensity, differing only by
-  // an exact, zero-offset scale -- the kPa-vs-Pa shape BM-1's own finding
-  // names, reproduced here in the fixture's own unit dimension rather than
+  // an exact, zero-offset scale -- the kPa-vs-Pa shape,
+  // reproduced here in the fixture's own unit dimension rather than
   // pulling in a second one.
   fuse::Units base_units = u::kHeatFluxDensity;
   fuse::Units scaled_units = base_units;

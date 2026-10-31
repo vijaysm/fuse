@@ -80,7 +80,7 @@ struct WindowGraphHandles {
 /// lagged so `E-SCHED-WINDOW-GAUSSSEIDEL-NOLAG` does not fire; under
 /// `Jacobi` this has no effect.
 ///
-/// `coupler_ranks`: Conformance Unit 2's own addition -- when set, adds
+/// `coupler_ranks`: when set, adds
 /// a THIRD `ComponentKind::Coupler` placement and routes BOTH channels'
 /// `.remap(RemapFlags::Conservative).remap_on(coupler)` through it,
 /// exactly `examples/layout_driver/main.cpp`'s own `--coupler` flag does
@@ -88,26 +88,23 @@ struct WindowGraphHandles {
 /// on the SAME region (`u_region` -- this file's own "WHY BOTH TRANSFER
 /// FIELDS LIVE ON u_region" header comment), so the Remap this compiles
 /// is the IDENTITY: U as a separately-built participant, V as another,
-/// and the coupler as a third, reproduce Unit 1's own `--driver window`/
+/// and the coupler as a third, reproduce the `--driver window`/
 /// `runner` values bit for bit, which is what makes the executables this
 /// graph shape feeds a genuine conformance case rather than a different
 /// graph that merely resembles one. `std::nullopt` (the default)
 /// reproduces every existing caller's own graph exactly -- no coupler
 /// component, no Remap, untouched.
 ///
-/// `u_ranks`/`v_ranks`/`u_launch`/`v_launch`/`coupler_launch`: also
-/// Conformance Unit 2's own addition, for `examples/brusselator/
-/// participants/brusselator_graph_tool` -- the in-process callers above
+/// `u_ranks`/`v_ranks`/`u_launch`/`v_launch`/`coupler_launch`: for
+/// `examples/brusselator/participants/brusselator_graph_tool` -- the in-process callers above
 /// (the tier-0 harness, `main.cpp`) never pass them, so their default
 /// (`RankSet{0, 1}`, `LaunchSpec{}` i.e. `LaunchMode::InProcess`)
-/// reproduces exactly what this function declared before these
-/// parameters existed. `coupler_launch` rides on the `CouplerDecl`
+/// reproduces exactly what this function declares without them. `coupler_launch` rides on the `CouplerDecl`
 /// itself: a coupler launched as its own program must take part in
 /// `connect()`'s own collective like any other launched entry, which is
 /// why that field exists at all (`component.hpp`'s own comment on it).
-/// `newton_config`: S7.2 WindowNewton's own addition (newton-krylov.md
-/// Sec. 9, trailing and defaulted -- every existing caller passing
-/// `accel != AccelKind::Newton` is unaffected). Read only when `accel ==
+/// `newton_config`: (newton-krylov.md Sec. 9, trailing and defaulted --
+/// every caller passing `accel != AccelKind::Newton` is unaffected). Read only when `accel ==
 /// AccelKind::Newton`, in which case `decl.requires_residual_capability`
 /// is set unconditionally and `decl.requires_linearization_capability`
 /// is set when `newton_config.use_block_jacobi_preconditioner` is --
@@ -186,7 +183,7 @@ struct WindowGraphHandles {
   const fuse::ChannelId ch_v2u = g.add_channel("v2u", v_out, u_in);
   // `v_in` is Conservation::Extensive, and validate() requires a channel into
   // an Extensive field to declare that its transfer conserves it
-  // (E-CONN-CONSERVATION, KNOWN_ISSUES.md D94). Both fields live on
+  // (E-CONN-CONSERVATION). Both fields live on
   // `u_region`, so the transfer is the identity, which does; the coupler
   // branch below adds the same flag together with its placement, so the
   // graph it writes (the reference_*.yaml files) is unchanged by this line.
@@ -212,7 +209,7 @@ struct WindowGraphHandles {
   decl.convergence.add(ConvergenceMeasure{MeasureKind::Relative, tolerance, "u_out"});
   decl.convergence.add(ConvergenceMeasure{MeasureKind::Relative, tolerance, "v_out"});
   decl.acceleration.kind = accel;
-  // S7.2 WindowNewton: the SAME auto-trigger `fuse::IterationBuilder::
+  // The SAME auto-trigger `fuse::IterationBuilder::
   // accelerate()`/`::newton()` apply (newton-krylov.md Sec. 7), by hand,
   // since this function never goes through that builder.
   if (accel == fuse::AccelKind::Newton) {

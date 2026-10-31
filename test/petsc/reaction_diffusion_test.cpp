@@ -1,13 +1,12 @@
-// S7.4 (owner decision 2026-10-21, Option C). The structural analogue of
+// The structural analogue of
 // test/runtime/petsc_reaction_diffusion_component_test.cpp for
 // NeumannHalfPetsc (examples/petsc_reaction_diffusion/
-// reaction_diffusion_component_petsc.hpp): gated FUSE_ENABLE_PETSC,
-// BUILT and ctest-registered, never RUN in this sandbox
+// reaction_diffusion_component_petsc.hpp): gated FUSE_ENABLE_PETSC and
+// ctest-registered. It needs a host where MPI_Init() completes
 // (NeumannHalfPetsc's own constructor calls
-// fuse::petsc::ensure_initialized(), which SEGFAULTS on MPI_Init() here --
-// KNOWN_ISSUES.md D32, the same already-documented, already-measured
-// barrier every other petsc.* row carries). A host run is what measures
-// whether these cases pass; see docs/user/petsc-reaction-diffusion.md.
+// fuse::petsc::ensure_initialized(), which SEGFAULTS where MPI cannot
+// start -- the barrier every other petsc.* row carries); see
+// docs/user/petsc-reaction-diffusion.md.
 
 #include <gtest/gtest.h>
 

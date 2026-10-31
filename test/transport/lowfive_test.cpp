@@ -1,4 +1,4 @@
-// S6 phase 3, "LowFive" track. Everything in this file compiles and runs in
+// Everything in this file compiles and runs in
 // EVERY configuration, including tier 0 (no LowFive, no MPI, no MOAB) --
 // see the comment at the top of src/transport/lowfive_transport.cpp for why
 // that file is structured the same way. The LowFiveFieldBindingTable tests
@@ -138,10 +138,10 @@ TEST(LowFiveFieldBindingTable, AllowsTwoWildcardFilesOnDifferentDatasets) {
 }
 
 // ---------------------------------------------------------------------------
-// plan_lowfive_rendezvous -- Unit 3b's own rank-set arithmetic, pure and
+// plan_lowfive_rendezvous -- the rank-set arithmetic, pure and
 // MPI-free (the same "split for testability" reasoning connect.hpp's own
-// module comment gives), so it runs in the base build configuration this
-// sandbox can always start rather than only inside an MPI job it cannot.
+// module comment gives), so it runs in the base build configuration
+// rather than only inside an MPI job.
 // ---------------------------------------------------------------------------
 
 TEST(PlanLowFiveRendezvous, WriterSideReadsItsOwnSplitAndRemoteLeader) {
@@ -251,8 +251,8 @@ TEST(LowFiveTransport, SetLocationRequiresBothNames) {
 // Demo B launches its producer and consumer on one path in one directory.
 // set_location() proves the directory writable by creating and removing a
 // probe file; with a fixed probe name the second process's O_EXCL open failed
-// while the first one's probe existed (measured on the owner's machine,
-// 2026-10-13, E-TRANSPORT-LF-LOCATION). A file at that old fixed name stands
+// while the first one's probe existed (E-TRANSPORT-LF-LOCATION). A file at that old
+// fixed name stands
 // in for the peer's live probe: the claim must still succeed, and no probe
 // may be left behind.
 TEST(LowFiveTransport, SetLocationIsNotBlockedByAPeersProbe) {
@@ -299,9 +299,8 @@ TEST(LowFiveTransport, MoveBeforeBuildPlanIsRefused) {
 #include <mpi.h>
 TEST(LowFiveTransport, SetIntercommRefusesANullHandle) {
   // A handle of 0 is not a communicator. This must be refused BEFORE any
-  // MPI query on it: the host run of 2026-10-04 aborted inside
-  // MPI_Comm_test_inter (MPICH's default handler is fatal) because the
-  // check came after the query. Without MPI_Init the uninitialised-MPI
+  // MPI query on it: querying first aborts inside
+  // MPI_Comm_test_inter (MPICH's default handler is fatal). Without MPI_Init the uninitialised-MPI
   // refusal fires first, which is also acceptable here.
   LowFiveTransport t;
   const auto r = t.set_intercomm(0, 0);
@@ -341,7 +340,7 @@ TEST(LowFiveTransport, SetIntercommNeedsMpi) {
 // The distributed round trip (two processes joined by a real
 // intercommunicator) is not exercised in this single-process binary; it is
 // the ctest row example.demo_b (examples/CMakeLists.txt), which runs
-// examples/demo_b/run_demo.sh. A placeholder SUCCEED() test that stood here
-// was removed: it could not fail.
+// examples/demo_b/run_demo.sh. A placeholder SUCCEED() test would not
+// be meaningful: it could not fail.
 
 #endif  // FUSE_HAVE_LOWFIVE

@@ -260,7 +260,7 @@ struct MlsTargetFit {
 }
 
 // ---------------------------------------------------------------------------
-// Device path (KNOWN_ISSUES D52): the k-nearest search already ran on
+// Device path: the k-nearest search already ran on
 // `fuse::search::resolve_execution_space()`'s resolved space by the time
 // this is called (`BoxIndex::build`'s own `space` argument, threaded
 // through from `build_mls_weights` below) -- this function performs the
@@ -317,7 +317,7 @@ struct MlsTargetFit {
     }
   }
 
-  // KNOWN_ISSUES D54's own defect class (a `double* [3]` rank-2 view's
+  // A defect class to avoid (a `double* [3]` rank-2 view's
   // PER-SPACE default layout -- LayoutRight on Host, LayoutLeft on Cuda --
   // makes a plain `Kokkos::View<double* [3], Kokkos::HostSpace>` mirror
   // layout-INCOMPATIBLE with a same-shape `Kokkos::View<double* [3], Space>`
@@ -691,7 +691,7 @@ Result<RemapWeights> build_mls_weights(const RemapPlan& plan, const CouplingGrap
                                opt.k, n_cols)};
   }
 
-  // Device-resident-arcs Phase 2 (KNOWN_ISSUES D52): which Kokkos execution
+  // Which Kokkos execution
   // space the k-nearest search and the per-target solve run on. No explicit
   // argument on `RemapPlan` or `MlsOptions` for this -- `RemapPlan::key()`'s
   // own contract is that every field of the struct appears in the cache key
@@ -708,11 +708,10 @@ Result<RemapWeights> build_mls_weights(const RemapPlan& plan, const CouplingGrap
   // `FUSE_EXECUTION_SPACE=device` in its environment, trusting the function
   // under test to read it. A Runner that sets `RunnerConfig::execution_space`
   // explicitly in code (bypassing the environment variable) is NOT seen by
-  // this resolution -- a gap disclosed in this track's report, not closed
-  // here: closing it needs either exporting the Runner's own resolved space
-  // into the environment before a plan is built, or threading an explicit
-  // space through `RemapPlan` (touching its cache key), both wider than
-  // this track's scope.
+  // this resolution -- a known gap: closing it needs either exporting the
+  // Runner's own resolved space into the environment before a plan is
+  // built, or threading an explicit space through `RemapPlan` (touching
+  // its cache key).
   const auto space_r = search::resolve_execution_space();
   if (!space_r.ok()) return space_r.error();
   const search::ExecutionSpace space = space_r.value();
@@ -757,7 +756,7 @@ Result<RemapWeights> build_mls_weights(const RemapPlan& plan, const CouplingGrap
     return out;
   }
 
-  // ---- Host path, bitwise unchanged from before this track -----------------
+  // ---- Host path ------------------------------------------------------------
   out.row.reserve(n_rows * static_cast<std::size_t>(opt.k));
   out.col.reserve(n_rows * static_cast<std::size_t>(opt.k));
   out.val.reserve(n_rows * static_cast<std::size_t>(opt.k));

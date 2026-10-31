@@ -6,10 +6,9 @@
 
 #include "fuse/num/butcher_tableau.hpp"
 
-/// S8 physics-kit, track "Integrators", Stage B Round 2, task item 1: "Order-condition
-/// checker (rooted trees to order 5, Butcher's conditions) as a tier-0 test over all
-/// tableaus, with the embedded weights checked to embedded_order. This is also how you
-/// prove every new tableau."
+/// Order-condition checker (rooted trees to order 5, Butcher's conditions), usable as a
+/// tier-0 test over all tableaus, with the embedded weights checked to embedded_order.
+/// This is also how every new tableau is proved.
 ///
 /// Butcher's theorem (Hairer, Norsett & Wanner, Solving Ordinary Differential Equations
 /// I, Theorem II.2.6 and Section II.2's own construction of the elementary weights):
@@ -30,7 +29,7 @@
 /// non-decreasing sequence of catalog ids so two orderings of the same multiset never
 /// generate two catalog entries) and evaluates the condition above directly from a
 /// tableau's own A/B, rather than from any hand-derived per-order formula ("b1+b2=1",
-/// "sum b_i c_i = 1/2", etc. -- the task's own instruction, "do not hand-check").
+/// "sum b_i c_i = 1/2", etc.; nothing is hand-checked).
 ///
 /// Order-5 trees: OEIS A000081 (rooted trees by node count) gives 1, 1, 2, 4, 9 for
 /// n = 1..5 -- 17 trees total up to order 5, pinned by
@@ -178,8 +177,7 @@ class RootedTreeCatalog {
 
 /// The worst (maximum) order-condition defect over every tree of EXACTLY `order`
 /// vertices -- used both to confirm a declared order holds (every tree up to that
-/// order should be near round-off) and to confirm it is not UNDERSTATED (the task's
-/// own "prove every new tableau": a method declared order p must have at least one
+/// order should be near round-off) and to confirm it is not UNDERSTATED (a method declared order p must have at least one
 /// order-(p+1) tree whose condition fails by construction, since "order p" means the
 /// largest p for which every condition up to p holds -- OrderConditions::
 /// NoShippedTableauIsCreditedBelowItsActualOrder, order_conditions_test.cpp, checks

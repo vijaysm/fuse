@@ -2,7 +2,7 @@
 
 New relative to upstream: soma's iteration regions had no accelerator and no Newton path at
 all (docs/dev/python-surface.md's evidence table). This file specifies what v1 CAN cover for
-Newton, per the owner's ruling (2026-10-12):
+Newton:
 
   1. IterationBuilder.newton()/.accelerate() configuration from Python.
   2. The capability-gate refusal for the HONEST default (a Python component that declares
@@ -14,7 +14,7 @@ Newton, per the owner's ruling (2026-10-12):
      a Python subclass) -- raised by pfuse's own binding code, with a message a Python reader
      can act on.
   4. The Python-authored descriptor of a Newton-configured region compared BYTE FOR BYTE
-     against a reference this track generated from the C++ API directly (not assumed equal).
+     against a reference generated from the C++ API directly (not assumed equal).
 
 Explicitly, plainly, NOT covered: Python v1 cannot RUN a Newton-solved region, because no
 component reachable from a Python-authored graph can ever supply a linearisation
@@ -29,7 +29,7 @@ import pathlib
 
 import pytest
 
-pfuse = pytest.importorskip("pfuse", reason="Stage B has not built the _pfuse extension yet")
+pfuse = pytest.importorskip("pfuse", reason="the _pfuse extension is not built")
 
 GOLDEN_DIR = pathlib.Path(__file__).parent / "golden"
 
@@ -67,7 +67,7 @@ class TestIterationBuilderConfiguration:
         assert decl.requires_linearization_capability
 
     def test_convergence_criterion_composes_with_and(self):
-        """Converged.Relative(...) & Converged.Absolute(...) -- the dn_heat brief's own spelling."""
+        """Converged.Relative(...) & Converged.Absolute(...) -- the spelling dn_heat uses."""
         criterion = (pfuse.Converged.Relative(1e-8, "u_wall")
                      & pfuse.Converged.Absolute(1e-8, "flux"))
         assert len(criterion) == 2
@@ -122,7 +122,7 @@ class TestNewtonCapabilityGate:
 
     This is simultaneously the proof that Python v1 cannot RUN a Newton-solved region: the
     honest default (capabilities() == 0, no residual bit) is refused here by an EXISTING
-    fuse-side check that this track added no code for -- a Python component is never
+    fuse-side check that needed no new code -- a Python component is never
     special-cased by it, it is simply never able to set the bit honestly.
     """
 
@@ -146,8 +146,8 @@ class TestNewtonCapabilityGate:
         CAPABILITY message reads 'override Component::implicit() to return it' -- correct
         advice for a C++ author, impossible advice for a Python one, since pfuse does not
         expose Component.implicit() to a Python subclass at all (docs/dev/python-surface.md).
-        This track does not edit src/ or include/; it records the exact message so the owner
-        can judge whether a Python-specific wording is worth adding there."""
+        src/ and include/ are not edited here; this records the exact message so that
+        whether a Python-specific wording is worth adding there can be judged."""
         g, ch, _a, _b = line_pair_with_two_components()
         g.iterate([ch]).until(pfuse.Converged.Relative(1e-8, "inp")).newton()
         session = pfuse.Session(g)
@@ -215,7 +215,7 @@ class TestDescriptorMatchesNativeReference:
 
     Reference generation (recorded here, not invented): a standalone program
     (/tmp/pybind/probe/newton_descriptor_probe.cpp, not part of this tree's deliverables)
-    built against this track's own tier-0 libfuse-coupler-model.a/libfuse-coupler-base.a and
+    built against the tier-0 libfuse-coupler-model.a/libfuse-coupler-base.a and
     linked with `clang++ -std=c++20 -ffp-contract=off`, constructs the IDENTICAL graph this
     test builds from Python (same mesh/region/component/field/channel/remap/spacetime/relax
     configuration, same NewtonConfig(rtol=1e-9, max_nonlinear_iterations=30)) and writes

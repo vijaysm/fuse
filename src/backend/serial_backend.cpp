@@ -1,5 +1,5 @@
 #include "fuse/backend/serial_backend.hpp"
-#include "fuse/backend/remap_halo_instructions.hpp"  // D73 round 2
+#include "fuse/backend/remap_halo_instructions.hpp"
 #include "fuse/base/error.hpp"
 
 #include <array>
@@ -261,7 +261,7 @@ class StructuredMesh final : public MeshView {
     return i;  // serial: one partition, so local index == global id
   }
 
-  /// mesh_view.hpp's cell-to-vertex connectivity query (nodal-remap track),
+  /// mesh_view.hpp's cell-to-vertex connectivity query (used by nodal remap),
   /// for the one shape this structured backend can answer without storing
   /// an explicit connectivity list: a volume cell (`dim == dim_ == 3`) is a
   /// hexahedron whose 8 corner vertex indices follow directly from the same
@@ -280,7 +280,7 @@ class StructuredMesh final : public MeshView {
     // 1D ('generated:line') cells: Edge, corners {i, i+1} -- vertices are
     // numbered 0..n_[0] in order along the line (entity_count(0) ==
     // n_[0] + 1, checked above), so this is a plain consecutive pair, no
-    // ix/iy/iz decomposition needed. Added for the nodal-remap track's
+    // ix/iy/iz decomposition needed. Used by the nodal remap
     // distributed builder (nodal_remap_distributed.hpp), which needs a
     // connectivity answer for the SAME 1D line meshes
     // test/verification/interface_transfer_test.cpp's `run_consistent_pair`
@@ -653,7 +653,7 @@ Result<std::size_t> SerialMeshBackend::region_size(const Region& r) const {
 RegionSizes make_region_sizes(const CouplingGraph& g,
                               const OperatorDAG& dag,
                               MeshBackend& backend) {
-  // D73 ROUND 2 (owner decision 2026-10-18). Collective, structural-only
+  // Collective, structural-only
   // (see mesh_view.hpp's own doc on this function): build every remap
   // halo `dag` carries BEFORE the lambda below ever reads an entity
   // count from `backend`, so a cross-rank weighted channel's buffers are

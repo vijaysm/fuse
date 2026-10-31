@@ -139,13 +139,13 @@ TEST(NativeMigrationMpi, RoundTripThroughTwoDifferentPartitionsReproducesGlobalM
   auto view = NativeMeshView::create_from_host(arrays.value(), rank);
   ASSERT_TRUE(view.ok());
 
-  // Round 1: RCB onto the current communicator.
+  // First pass: RCB onto the current communicator.
   fuse::partition::RepartitionOptions opts;
   opts.comm = world_handle();
   auto round1 = fuse::partition::repartition(*view.value(), opts);
   ASSERT_TRUE(round1.ok()) << round1.error().message;
 
-  // Round 2: migrate everything to rank 0 (a different partition: an
+  // Second pass: migrate everything to rank 0 (a different partition: an
   // all-to-one gather).
   std::vector<int> dest2(round1.value()->owned_count(3), 0);
   auto final_mesh = migrate(*round1.value(), dest2, world_handle());
@@ -164,7 +164,7 @@ TEST(NativeMigrationMpi, RoundTripThroughTwoDifferentPartitionsReproducesGlobalM
   }
 }
 
-// D3 (KNOWN_ISSUES) / `vertex-ownership-rule-picks-max-not-min-rank`
+// `vertex-ownership-rule-picks-max-not-min-rank`
 // (build-evidence/mutations/native-mesh.toml): docs/dev/native-mesh.md's own
 // words for `resolve_vertex_ownership` -- "a vertex's new owner is the
 // MINIMUM rank, over the whole communicator, among ranks that now hold a
@@ -273,8 +273,8 @@ TEST(NativeMigrationMpi, VertexOwnerIsTheMinimumRankAmongHoldersAfterMigration) 
 }
 
 // ---------------------------------------------------------------------------
-// NM-6: `unpack_migrated_mesh`'s own rebuild is per-rank data (whatever
-// THIS rank alone received); before this fix it returned unreconciled,
+// `unpack_migrated_mesh`'s own rebuild is per-rank data (whatever
+// THIS rank alone received); it must be reconciled
 // ahead of `resolve_vertex_ownership`'s own Allgather/Allgatherv. Ranks 0
 // and 1 each migrate one perfectly valid, dimension-3 Tet to rank 2 --
 // valid by EACH SENDER's own `dim_` (every sender's own `b.build()`
@@ -347,7 +347,7 @@ TEST(NativeMigrationMpi, ADimensionMismatchVisibleOnlyOnTheDestinationRefusesEve
   }
 }
 
-// Migration track, 2026-10-15: `exchange_migration_buffers<Space>` (the
+// `exchange_migration_buffers<Space>` (the
 // GPU-aware replacement, native_migration.hpp's own "GPU-AWARE MPI"
 // paragraph) must move the SAME bytes to the SAME destinations as the
 // `std::vector<std::byte>` overload it replaces -- checked directly
@@ -407,8 +407,7 @@ TEST(NativeMigrationMpi, GpuAwareExchangeOverloadMatchesHostVectorOverloadByteFo
   unsetenv("FUSE_TRANSPORT_HOST_STAGING");
 }
 
-// Migration track, 2026-10-15 (KNOWN_ISSUES D51, device-resident merge):
-// a REAL multi-rank `migrate` must leave BOTH the source view's and the
+// Device-resident merge: a REAL multi-rank `migrate` must leave BOTH the source view's and the
 // rebuilt result view's lazy host mirror unmaterialized, under EITHER
 // `FUSE_TRANSPORT_HOST_STAGING` setting (comm.hpp's own GPU-aware-vs-
 // host-staged branch inside `exchange_migration_buffers<Space>`) --

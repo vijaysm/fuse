@@ -1,8 +1,8 @@
-// Task 5.4: n->m redistribution between two disjoint rank sets (spec Section 4.1).
+// n->m redistribution between two disjoint rank sets (spec Section 4.1).
 //
 // THE SHAPE OF THIS FILE IS DICTATED BY TWO CONSTRAINTS THAT PULL APART.
 //
-// 1. Task 4.6's hot loop. `Runner::Impl::execute` calls `prepare()` and then
+// 1. The hot loop. `Runner::Impl::execute` calls `prepare()` and then
 //    `move()` inside the coupling-cycle loop, and that loop is proved allocation-free
 //    by replacing global operator new. So `prepare()` may not build anything:
 //    no allocation, no rank-set analysis, no matching, no buffer sizing, no
@@ -158,13 +158,9 @@ struct MpiTransport::Impl {
   // fuse::linalg::mpi_is_gpu_aware(), read once at construction so
   // is_gpu_aware() -- called from the Runner's hot loop, once per
   // Transport instruction per period -- is a field read, not a repeated
-  // getenv()/extension call (docs/dev/device-resident-arcs.md Phase 3).
-  // runtime-exchange track: this probe used to be transport's own
-  // private duplicate (transport_mpi_is_gpu_aware(), this file's
-  // previous header comment on why) -- now the one copy
-  // fuse::backend's device-resident ghost and nodal-remap exchanges
-  // also call, per the layering decision that put it in fuse::linalg
-  // (below both transport and backend).
+  // getenv()/extension call (docs/dev/device-resident-arcs.md). This is the
+  // one copy fuse::backend's device-resident ghost and nodal-remap exchanges
+  // also call; it lives in fuse::linalg (below both transport and backend).
   const bool gpu_aware = fuse::linalg::mpi_is_gpu_aware();
 
   ~Impl() {
@@ -498,7 +494,7 @@ Result<void> MpiTransport::build_plan(const TransportSpec& spec) {
     }
   }
 
-  // -- Collective 2b: agree on components (R-30, REVIEW.md) ----------------
+  // -- Collective 2b: agree on components ----------------------------------
   // `sendcounts`/`recvcounts` below are each sized from THIS rank's own
   // `spec.components` (via `nc`); nothing about the id-matching above would
   // ever notice two ranks disagreeing on it, since ids carry no per-rank
@@ -511,12 +507,11 @@ Result<void> MpiTransport::build_plan(const TransportSpec& spec) {
   // function, so it is still reconciled at Collective 4 rather than left for
   // one rank to discover alone inside the actual data move.
   //
-  // Review 2026-10-11 TR-10. This allocation sits strictly between
-  // Collective 2 above and the Allgather just below, with nothing to catch
-  // a bad_alloc here the way Phase A's own try/catch covers its own
-  // allocations -- exactly the single window this file's own header
-  // comment (point under "THE ONE WINDOW...") already names and answers by
-  // aborting rather than letting an uncaught exception skip the
+  // This allocation sits strictly between Collective 2 above and the Allgather
+  // just below, with nothing to catch a bad_alloc here the way Phase A's own
+  // try/catch covers its own allocations -- exactly the single window this
+  // file's own header comment (point under "THE ONE WINDOW...") already names
+  // and answers by aborting rather than letting an uncaught exception skip the
   // collectives every other rank is about to enter.
   std::vector<int> all_components;
   try {
@@ -535,10 +530,9 @@ Result<void> MpiTransport::build_plan(const TransportSpec& spec) {
                    "MPI_Allgather of components failed: " +
                        mpi_error_text(rc)};
     }
-    // Opt-in trace, because this check has now twice not fired when reading
-    // the code said it must (host runs 2026-09-20). Off unless
-    // FUSE_TRANSPORT_DEBUG is set in the environment, so it costs a getenv
-    // per build_plan() and nothing else.
+    // Opt-in trace, for when this check does not fire although reading the code
+    // says it must. Off unless FUSE_TRANSPORT_DEBUG is set in the environment,
+    // so it costs a getenv per build_plan() and nothing else.
     if (std::getenv("FUSE_TRANSPORT_DEBUG") != nullptr) {
       std::string line = "[build_plan rank " + std::to_string(rank) + "/" +
                          std::to_string(size) + "] err=" +
@@ -578,9 +572,9 @@ Result<void> MpiTransport::build_plan(const TransportSpec& spec) {
 
     if (err == Err::None) {
       if (!agreement.agreed()) {
-        // TR-10 (continued): the string concatenation below is itself an
-        // allocation strictly between this Allgather and Collective 3; the
-        // same reasoning as all_components above applies.
+        // The string concatenation below is itself an allocation strictly
+        // between this Allgather and Collective 3; the same reasoning as
+        // all_components above applies.
         try {
           fail(Err::PeerMatch,
                "rank " + std::to_string(agreement.disagreeing_rank) +
@@ -643,17 +637,12 @@ Result<void> MpiTransport::build_plan(const TransportSpec& spec) {
   //
   // `err` IS NOT RESET HERE, and must not be. It is one monotonic outcome for
   // the whole function -- `fail()` keeps the first and ignores later ones --
-  // and the loops below read it only to stop early. It used to be cleared at
-  // this point, back when every outcome before it had already been agreed and
-  // returned at Collective 1, so clearing it was harmless. Collective 2b (the
-  // components agreement, R-30) then added an outcome recorded AFTER Collective
-  // 1 and agreed only at Collective 4 -- on the far side of the clear. The
-  // effect was that R-30's check ran, computed the right answer on every rank,
-  // and had it erased two phases later: `build_plan()` returned success on
-  // ranks that had just rejected. Found 2026-09-21 by tracing the outcome at
-  // both ends (FUSE_TRANSPORT_DEBUG) after reading the path five times without
-  // seeing it; `MpiTransport.BuildPlanRejectsDisagreeingComponentsAcrossRanks`
-  // could not pass until this line went away.
+  // and the loops below read it only to stop early. Collective 2b (the
+  // components agreement) records an outcome AFTER Collective 1 that is agreed
+  // only at Collective 4, so clearing it here would erase that outcome: the
+  // check would run and compute the right answer on every rank, and
+  // `build_plan()` would still return success on ranks that had just rejected.
+  // `MpiTransport.BuildPlanRejectsDisagreeingComponentsAcrossRanks` pins this.
   //
   // With the outcome kept, a rank that has already rejected skips the matching
   // below -- every rank does, since the outcome is derived from the gathered
@@ -875,13 +864,12 @@ Result<void> MpiTransport::build_plan_from_peers(
            "components must be positive, got " + std::to_string(components));
     }
 
-    // Review 2026-10-11 TR-14. The matched path (build_plan(), ~line 427)
-    // checks elements*components against kIntMax before anything derived
-    // from it is cast to an MPI int; this peer-wise path had no equivalent,
-    // and the per-peer casts a few lines below it (sendcounts/recvcounts)
-    // can wrap negative first. Same guard, same reasoning: size_t
-    // arithmetic wraps in silence, so the product is checked before it is
-    // formed, not after.
+    // The matched path (build_plan()) checks elements*components against
+    // kIntMax before anything derived from it is cast to an MPI int; this
+    // peer-wise path needs the same guard, since the per-peer casts a few lines
+    // below it (sendcounts/recvcounts) can wrap negative first. Same guard,
+    // same reasoning: size_t arithmetic wraps in silence, so the product is
+    // checked before it is formed, not after.
     if (components > 0) {
       const auto nc_check = static_cast<std::size_t>(components);
       if (elements > kIntMax) {
@@ -933,10 +921,10 @@ Result<void> MpiTransport::build_plan_from_peers(
             return;
           }
         }
-        // TR-14 (continued): this peer's own block, per_peer*nc, is what the
-        // sendcounts/recvcounts population loop below casts to int; a peer
-        // with enough local_indices to overflow that cast would otherwise
-        // wrap into a negative Alltoallv count rather than refuse.
+        // This peer's own block, per_peer*nc, is what the sendcounts/recvcounts
+        // population loop below casts to int; a peer with enough local_indices
+        // to overflow that cast would otherwise wrap into a negative Alltoallv
+        // count rather than refuse.
         if (components > 0) {
           const auto nc_check = static_cast<std::size_t>(components);
           const std::size_t n = peer.local_indices.size();
@@ -1041,15 +1029,14 @@ Result<void> MpiTransport::build_plan_from_peers(
   // leaving its peers waiting inside this Alltoall while it goes straight to
   // the agreement below.
   {
-    // Review 2026-10-11 TR-10. `expected`'s allocation sits strictly before
-    // the Alltoall every rank now reaches unconditionally (TR-1 above); an
-    // uncaught bad_alloc here would keep THIS rank from ever reaching that
-    // collective while every peer already has, and the fail()-string
-    // concatenation below sits strictly between that Alltoall and the final
-    // agreement a few lines down -- both are the same "between two
-    // collectives" window this file's own header comment already names and
-    // answers by aborting rather than letting an uncaught exception skip a
-    // collective a peer is already in.
+    // `expected`'s allocation sits strictly before the Alltoall every rank
+    // reaches unconditionally (see above); an uncaught bad_alloc here would
+    // keep THIS rank from ever reaching that collective while every peer
+    // already has, and the fail()-string concatenation below sits strictly
+    // between that Alltoall and the final agreement a few lines down -- both
+    // are the same "between two collectives" window this file's own header
+    // comment already names and answers by aborting rather than letting an
+    // uncaught exception skip a collective a peer is already in.
     std::vector<int> expected;
     try {
       expected.assign(usize, 0);
@@ -1126,7 +1113,7 @@ Result<void> MpiTransport::build_plan_from_peers(
 //
 // Scalar comparisons only. No allocation, no MPI, no matching, no buffer
 // sizing: `Runner::Impl::execute` calls this once per Transport instruction
-// per coupling cycle, inside the loop Task 4.6 proved allocation-free.
+// per coupling cycle, inside the loop that is proved allocation-free.
 Result<void> MpiTransport::prepare(const TransportSpec& spec) {
   const Impl* p = impl_.get();
   if (p == nullptr || !p->planned) {
@@ -1159,7 +1146,7 @@ Result<void> MpiTransport::prepare(const TransportSpec& spec) {
 }
 
 // ---------------------------------------------------------------------------
-// packed_layout / move_packed -- the device-direct track's own seam
+// packed_layout / move_packed -- the device-direct seam
 // ---------------------------------------------------------------------------
 //
 // `move()` below packs `src` into `send_buf` via `send_index`, exchanges

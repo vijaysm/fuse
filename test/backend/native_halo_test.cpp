@@ -1,5 +1,5 @@
-// The native mesh backend's planar remap halo (docs/dev/native-halo.md,
-// "Halo" track), emulated IN-PROCESS: several `NativeMeshBackend` instances
+// The native mesh backend's planar remap halo (docs/dev/native-halo.md),
+// emulated IN-PROCESS: several `NativeMeshBackend` instances
 // in one process, one per simulated rank, driven directly through the
 // PURE pieces `native_halo.hpp` exposes (`cell_box`, `covering_set_
 // destinations`, `owned_block_index`, `pack_halo_cells`, `merge_halo_cells`)
@@ -184,21 +184,20 @@ TEST(NativeHaloPackMerge, RoundTripAdoptsExactlyTheRequestedCellsAsNonOwnedCopie
 }
 
 TEST(NativeHaloPackMerge, RoundTripIntoAnEmptyLocalMeshAdoptsTheReceivedCellsWithoutThrowing) {
-  // KNOWN_ISSUES.md D73 (RemapHalo track round 5, host measurement
-  // 2026-10-19): the "rank hosts only the target" case every disjoint-
+  // The "rank hosts only the target" case every disjoint-
   // placement run has -- a rank whose own local mesh genuinely has ZERO
   // cells (`NativeMeshBackend::register_default_placements()`'s own
   // "outside the processor set: an EMPTY view" rule, native_backend.cpp --
   // the identical construction this test reproduces by hand, no backend or
   // graph needed) receiving its first halo copies from a peer. Measured on
-  // the owner's host: `device::merge_halo_cells_device<Space>` threw a
+  // a multi-rank host: `device::merge_halo_cells_device<Space>` threw a
   // Kokkos `deep_copy` shape-mismatch ("merge_cvo(1) (0)") trying to copy
   // this rank's own (EMPTY, 0-extent) `cell_vertex_offsets` as if it were
   // the canonical 1-element `{0}` a non-empty mesh's "ncells + 1" CSR
   // invariant implies -- the exact mechanism this test isolates with NO
   // MPI and NO backend/graph machinery, only `merge_halo_cells` itself
   // (the HostSpace instantiation of `device::merge_halo_cells_device` this
-  // track's own round-5 fix touches, mesh_merge_device.hpp).
+  // case's fix touches, mesh_merge_device.hpp).
   fuse::native::MeshArrays<Kokkos::HostSpace> empty_local;
   empty_local.dim = 2;  // the ONLY field register_default_placements's own
                         // empty-view construction sets; every Kokkos::View
@@ -211,9 +210,9 @@ TEST(NativeHaloPackMerge, RoundTripIntoAnEmptyLocalMeshAdoptsTheReceivedCellsWit
   ASSERT_EQ(empty_view.value()->cell_count(), 0u);
 
   // The peer: a real, populated 4-cell mesh (rank 0's own whole
-  // "generated:quad:2x2", matching the RemapHalo track's own disjoint
-  // fixture -- a one-rank component's RankSet-size-1 decomposition gives
-  // it the WHOLE mesh, round 4's own finding) sending every one of its
+  // "generated:quad:2x2", matching the disjoint
+  // fixture below -- a one-rank component's RankSet-size-1 decomposition gives
+  // it the WHOLE mesh) sending every one of its
   // owned cells as halo copies to rank 1.
   auto arrays0 = generate_native_mesh("quad:2x2", /*rank=*/0, /*num_ranks=*/1);
   ASSERT_TRUE(arrays0.ok()) << arrays0.error().message;
@@ -234,8 +233,8 @@ TEST(NativeHaloPackMerge, RoundTripIntoAnEmptyLocalMeshAdoptsTheReceivedCellsWit
   std::vector<std::vector<std::byte>> received_by_rank1 = {packed[1]};
   std::vector<int> owner_rank;
   std::vector<std::int64_t> owner_owned_index;
-  // Before this round's own fix (mesh_merge_device.hpp's three CSR-offset
-  // deep_copy calls, now guarded on `E_cells > 0`/`E_faces > 0`), this call
+  // Without the guard (mesh_merge_device.hpp's three CSR-offset
+  // deep_copy calls are guarded on `E_cells > 0`/`E_faces > 0`), this call
   // threw instead of returning a Result -- EXPECT_NO_THROW is the point of
   // this test, not merely a style choice.
   fuse::Result<fuse::native::MeshArrays<Kokkos::HostSpace>> merged =
@@ -262,7 +261,7 @@ TEST(NativeHaloPackMerge, RoundTripIntoAnEmptyLocalMeshAdoptsTheReceivedCellsWit
 }
 
 TEST(NativeHaloPackMerge, PackHaloCellsMaterializesNoHostMirror) {
-  // Migration track, 2026-10-15: pack_halo_cells now builds its wire
+  // pack_halo_cells builds its wire
   // records from device_arrays() via fuse::native::device::pack_fanout,
   // never from the view's own lazy host mirror.
   auto arrays0 = generate_native_mesh("line:4", 0, 2);
@@ -848,7 +847,7 @@ TEST(NativeHaloBuildNativeRemapHalo, NoCommunicatorIsASuccessfulNoOpEvenAtManyRa
 // E-MESH-HALO: `remap_halo_pattern`'s own documented refusal for a triple
 // no halo was ever built for -- unfired by any test in the tree before
 // this one (index.md's own test-coverage-gap list: "no test fires
-// E-MESH-HALO"), and per I4 an unfired refusal does not count as
+// E-MESH-HALO"), and an unfired refusal does not count as
 // implemented.
 // ---------------------------------------------------------------------------
 TEST(NativeHaloBuildNativeRemapHalo, RemapHaloPatternRefusesBeforeAHaloIsBuilt) {
@@ -883,14 +882,14 @@ TEST(NativeHaloBuildNativeRemapHalo, IdentitySourceEqualsTargetIsASuccessfulNoOp
 }
 
 // ---------------------------------------------------------------------------
-// NM-3: `merge_halo_cells` appends each halo's newly adopted cells STRICTLY
+// `merge_halo_cells` appends each halo's newly adopted cells STRICTLY
 // AFTER whatever `source` already held (native_halo.cpp's own comment), so
 // U's mesh after a SECOND halo for a different target (here W, a THIRD
 // grid) is laid out `[owned, ghosts_V, ghosts_W]` -- the W pattern's own
 // ghosts do NOT start at `owned_n`, they start `ghost_offset` further in,
 // where `ghost_offset` is exactly how many ghosts the FIRST (V) halo
-// already appended. Before NM-3, `remap_halo_pattern` carried no such
-// offset at all, so any consumer following the documented
+// already appended. `remap_halo_pattern` therefore carries an
+// offset, since any consumer following the documented
 // `make_mpi_exchanger` contract literally (ghosts at `owned_n + g`) would
 // read U's V-ghost slots with W-ghost values for every g below the V
 // halo's own count -- silently wrong field values in a conservative remap.
@@ -996,7 +995,7 @@ TEST(NativeHaloSecondTarget, GhostOffsetIndexesTheSecondHaloBlockCorrectly) {
     }
     // The CORRECT, offset-aware fill for the W block: slot `owned_n +
     // ghost_offset + g`, NOT `owned_n + g` (which would read the V
-    // block's slots instead -- exactly NM-3's bug).
+    // block's slots instead -- the bug the offset prevents).
     for (std::size_t g = 0; g < owner_rank2.size(); ++g) {
       src_field[owned_n + ghost_offset + g] =
           owned_field_of_rank[static_cast<std::size_t>(owner_rank2[g])]
@@ -1031,7 +1030,7 @@ TEST(NativeHaloSecondTarget, GhostOffsetIndexesTheSecondHaloBlockCorrectly) {
 
 
 // ---------------------------------------------------------------------------
-// KNOWN_ISSUES D27: `fuse::native::accumulate_remap_halo`, the reverse
+// `fuse::native::accumulate_remap_halo`, the reverse
 // exchange. The nontrivial data motion (the adjoint Alltoallv) needs a
 // REAL `PackedExchanger`, which needs MPI -- not available in this sandbox
 // (docs/dev/testing.md) -- so what is RUN here is (a) the function's own
@@ -1108,11 +1107,10 @@ TEST(NativeHaloAccumulate, NoPackedExchangerFacetRefusesWithEMeshHalo) {
 // A null buffer refuses only when this rank would touch it: a null ghost
 // buffer with ghosts outstanding, or a null owned buffer with owned entries.
 // A rank that owns nothing (owned_n == 0) legitimately passes a null owned
-// buffer (an empty std::vector's data()); refusing it, as this function did
-// until 2026-10-19, was a local return in front of the collective exchange
-// and deadlocked parallel.native_remap_halo_runner.2 (KNOWN_ISSUES.md D73
-// round 8). With owned_n == 0 the call proceeds to the exchanger-facet check,
-// which is what this fake (no PackedExchanger facet) then refuses.
+// buffer (an empty std::vector's data()); refusing it (as this function once
+// did) was a local return in front of the collective exchange and deadlocked
+// parallel.native_remap_halo_runner.2. With owned_n == 0 the call proceeds to
+// the exchanger-facet check, which is what this fake (no PackedExchanger facet) then refuses.
 TEST(NativeHaloAccumulate, NullGhostBufferWithOutstandingGhostsRefusesWithEMeshArg) {
   GhostOnlyFakeExchanger exchanger(1);
   double owned = 0.0;
@@ -1206,11 +1204,9 @@ TEST(NativeHaloAccumulate, OracleSumOfOwnedAfterFoldingEveryHaloCopyEqualsCellsP
 
 
 // ---------------------------------------------------------------------------
-// KNOWN_ISSUES D5/D73 ROUND 3 (owner's host measurement, 2026-10-18):
 // `parallel.native_remap_halo_runner.{2,3}` both failed with a built-but-
 // EMPTY halo (`remap_weight_nonzeros == 0` despite `initialize()`
-// succeeding) -- the same silently-empty-matrix failure mode D73's own
-// fix was supposed to close, now one layer deeper. ROOT CAUSE, proved
+// succeeding) -- a silently-empty-matrix failure mode. ROOT CAUSE, proved
 // here WITHOUT needing a real multi-rank MPI run (which this sandbox
 // cannot start; the full exchange is host_pending): `register_default_
 // placements()` (native_backend.cpp) hands every component a placed view
@@ -1221,7 +1217,7 @@ TEST(NativeHaloAccumulate, OracleSumOfOwnedAfterFoldingEveryHaloCopyEqualsCellsP
 // rank that actually holds the source's real decomposition. This test
 // exercises `native_view()` directly (no MPI, no communicator, no
 // collective at all) to show the empty-vs-real view split that makes
-// the bug possible, and that `source_placement` (this round's own fix)
+// the bug possible, and that `source_placement`
 // is the one that finds the real cells.
 // ---------------------------------------------------------------------------
 TEST(NativeHaloCrossPlacement, SourceMeshViewedThroughTheTargetsPlacementIsEmptyButThroughItsOwnIsNot) {
@@ -1260,7 +1256,7 @@ TEST(NativeHaloCrossPlacement, SourceMeshViewedThroughTheTargetsPlacementIsEmpty
 // ---------------------------------------------------------------------------
 // The two-placement overload's own short-circuit path (ranks <= 1, no
 // multi-rank collective reached at all -- tier-0 runnable, unlike the
-// real exchange this round's own fix touches, which needs a live
+// real exchange, which needs a live
 // multi-rank MPI run this sandbox cannot start): `commit_remap_halo`
 // must still key the result by `placement` (the TARGET's own, the
 // single-placement form's existing convention every downstream lookup
@@ -1296,13 +1292,13 @@ TEST(NativeHaloCrossPlacement, TwoPlacementOverloadsShortCircuitStillCommitsUnde
 
 
 // ---------------------------------------------------------------------------
-// KNOWN_ISSUES.md D73 (RemapHalo track round 6): `build_weights_via_supermesh`'s
+// `build_weights_via_supermesh`'s
 // own E-REMAP-PARALLEL check (intx_weights.cpp) called `has_remap_halo(s.mid,
 // d.mid, s.dim)` with NO FOURTH ARGUMENT, so it asked under `ComponentId{}`
 // (that parameter's own documented default, native_backend.hpp) no matter what
 // `plan.placement` actually was. `commit_remap_halo` records under `placement`
 // -- the real, non-default `ComponentId` every channel with an actual
-// component assigns (round 3's own fix; the test just above this one proves
+// component assigns (the test just above this one proves
 // the commit side). Every EXISTING tier-0 test for this check (`BackendFixture`
 // above, `NativeHaloBuildWeights`'s own suite) used `ComponentId{}` on BOTH
 // sides -- no graph component was ever registered there at all -- so the
@@ -1310,7 +1306,7 @@ TEST(NativeHaloCrossPlacement, TwoPlacementOverloadsShortCircuitStillCommitsUnde
 // the default always matched the default. This is the first test in the file
 // to give `commit_remap_halo` and `plan.placement` the SAME real, non-default
 // `ComponentId` and then call `fuse::build_weights` the way `Runner::
-// initialize()` actually does, reproducing the owner's host measurement
+// initialize()` actually does, reproducing a failure seen on a multi-rank host
 // (both ranks of a 2-rank run refused E-REMAP-PARALLEL although the halo had
 // already built and committed cleanly) without needing MPI: `set_communicator`
 // to a placeholder non-null handle (`communicator_size() > 1`, the fixture's
@@ -1367,13 +1363,13 @@ TEST(NativeHaloBuildWeights, BuildWeightsFindsAHaloCommittedUnderAnActualCompone
     ASSERT_TRUE(w.ok()) << "rank " << r << ": " << w.error().code << ": " << w.error().message
                         << " -- build_weights_via_supermesh's own E-REMAP-PARALLEL check must query "
                            "has_remap_halo under plan.placement, the same key commit_remap_halo used, "
-                           "not the default it silently fell back to before this round's fix";
+                           "not the default it would otherwise silently fall back to";
   }
 }
 
 
 // ===========================================================================
-// KNOWN_ISSUES.md D73 ROUND 8 (RemapHalo track round 7): the conservative
+// The conservative
 // coverage check, DISTRIBUTED. `fuse::native::fold_and_reduce_source_
 // coverage` (native_halo.cpp) is the production fix; its own real fold (a
 // collective Alltoallv-based exchange, through `fuse::linalg::make_mpi_
@@ -1482,7 +1478,7 @@ TEST(NativeHaloDistributedCoverage, FoldIsANoOpPassThroughAtOneRank) {
 // REAL `fuse::build_supermesh_weights` on each simulated rank's own local
 // view (no stand-in geometry kernel), and hand-applies `accumulate_remap_
 // halo`'s own documented contract (`owned[remote_local_index[g]] +=
-// ghosts[g]`) to fold, mirroring round 5's own in-process technique (no
+// ghosts[g]`) to fold, mirroring the in-process technique used above (no
 // MPI, no real exchanger -- the real one is `requires = "mpi"` above).
 // ---------------------------------------------------------------------------
 TEST(NativeHaloDistributedCoverage, FoldingAPeersGhostCoverageTurnsALocalZeroIntoTheTrueAnswer) {
@@ -1505,7 +1501,7 @@ TEST(NativeHaloDistributedCoverage, FoldingAPeersGhostCoverageTurnsALocalZeroInt
 
   // Rank 0's OWN local supermesh: 4 source cells against 0 target cells --
   // NOTHING intersects, so every one of rank 0's own cells shows 0 covered
-  // measure, the EXACT local-only shape the owner's host measured ("the
+  // measure, the EXACT local-only shape seen on a multi-rank host ("the
   // target domain covers only 0.000000% of the worst source cell").
   auto built0 = fuse::build_supermesh_weights(*u_view0.value(), *v_view0.value(), 2);
   ASSERT_TRUE(built0.ok()) << built0.error().message;
@@ -1591,13 +1587,13 @@ TEST(NativeHaloDistributedCoverage, FoldingAPeersGhostCoverageTurnsALocalZeroInt
 // ---------------------------------------------------------------------------
 // THE GATE ITSELF, through the REAL `fuse::build_weights` entry point: a
 // disjoint provider/consumer split (CrossPlacement's own convention) where
-// rank 0 owns all 4 source cells and NO target cells -- the owner's host
-// measured shape exactly. Conservative is requested and the communicator
+// rank 0 owns all 4 source cells and NO target cells -- the shape seen on a
+// multi-rank host exactly. Conservative is requested and the communicator
 // is faked to 2 ranks (no real MPI, so the fold itself cannot complete) --
 // the CORRECT, SAFE answer is `E-REMAP-PARALLEL` ("I would need to fold
 // across ranks and cannot"), NOT the OLD `E-REMAP-COVERAGE` ("the target
 // covers 0% of the worst source cell"), which is what judging from rank 0's
-// own LOCAL-ONLY coverage (the pre-fix defect, or this round's own fix
+// own LOCAL-ONLY coverage (the pre-fix defect, or the fold
 // skipped at its call site) would silently reproduce. This is the kill
 // target for the "skipped reduction" mutation: removing the call to
 // `fold_and_reduce_source_coverage` makes `min_src_coverage` stay at
@@ -1611,7 +1607,7 @@ TEST(NativeHaloDistributedCoverage, BuildWeightsAttemptsTheFoldRatherThanJudging
   // above: with MPI compiled in, build_weights reaches the fold, the fold
   // builds a real exchanger on the placeholder handle below, and MPICH
   // aborts the process on MPI_Comm_size ("Invalid communicator") -- measured
-  // on the owner's MOAB+MPI tree 2026-10-19 (backend.native_halo and its two
+  // on a MOAB+MPI build (backend.native_halo and its two
   // OpenMP variants red). The multi-rank leg is parallel.native_remap_halo_
   // runner.{2,3}'s; this test pins the no-MPI refusal only.
   GTEST_SKIP() << "build_weights reaches the fold's real-MPI leg under FUSE_HAVE_MPI; the "
@@ -1635,7 +1631,7 @@ TEST(NativeHaloDistributedCoverage, BuildWeightsAttemptsTheFoldRatherThanJudging
   // EMPTY view under CONSUMER's -- `supermesh_side()` resolves the SOURCE
   // side through `plan.placement` (consumer), so without a real commit the
   // source view it reads is that EMPTY one, not rank 0's real 4 cells
-  // (round 3's own two-placement fix is precisely what replaces it).
+  // (the two-placement commit is precisely what replaces it).
   NativeMeshBackend backend(/*rank=*/0, /*num_ranks=*/2);
   backend.set_communicator(/*placeholder, never dereferenced -- see BackendFixture above*/ 1);
   ASSERT_TRUE(backend.load(MeshDecl{.name = "U", .source = "generated:quad:2x2"}, graph).ok());

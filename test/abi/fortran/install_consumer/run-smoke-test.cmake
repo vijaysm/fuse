@@ -8,12 +8,9 @@
 # Required -D arguments: FUSE_BUILD_DIR, FUSE_INSTALL_PREFIX, CONSUMER_SRC_DIR,
 # CONSUMER_BUILD_DIR, CMAKE_COMMAND, CMAKE_GENERATOR, CMAKE_PREFIX_PATH.
 # Optional: REFERENCE_OUTPUT -- a file holding the C consumer's own stdout
-# (test/abi/install_consumer/, the other S6-phase-2 track) to byte-diff
-# against. At the time this file was written that sibling did not exist yet
-# (neither did libfuse-abi, which this Fortran binding's only undefined
-# symbol needs at final link -- fortran/CMakeLists.txt's own header), so
-# this script runs the comparison ONLY when a REFERENCE_OUTPUT is actually
-# supplied, and says so plainly rather than inventing a golden of its own.
+# (test/abi/install_consumer/) to byte-diff against. This script runs the
+# comparison ONLY when a REFERENCE_OUTPUT is actually supplied, and says so
+# plainly rather than inventing a golden of its own.
 foreach(_fuse_required FUSE_BUILD_DIR FUSE_INSTALL_PREFIX CONSUMER_SRC_DIR
                         CONSUMER_BUILD_DIR CMAKE_COMMAND CMAKE_GENERATOR)
   if(NOT DEFINED ${_fuse_required})

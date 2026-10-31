@@ -1,4 +1,4 @@
-// "Krylov" track: fuse::linalg::gmres at tier 0, one rank.
+// fuse::linalg::gmres at tier 0, one rank.
 //
 // WHAT EACH CASE CHECKS.
 //   Requirement 2 -- iterate-for-iterate agreement (identity
@@ -277,7 +277,7 @@ TEST(GmresRefusals, NoConvergenceWithinATinyIterationCapNamesTheIterationCountAn
       << "message should carry the iteration count: " << result.error().message;
 }
 
-// Review 2026-10-11 NL-2: restart == 0 means the Arnoldi loop (the `for
+// restart == 0 means the Arnoldi loop (the `for
 // (k = 0; k < mrestart; ...)` below gmres.hpp's restart boundary) never
 // executes a single step, so `total_iter` never advances past 0 and the
 // outer `while (true)` restart loop never reaches its own

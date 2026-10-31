@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Refuse any tracked source file that is not pure ASCII.
 
-Owner's ruling (2026-10-15): no non-ASCII code point anywhere in code, comments,
-docs, commit messages. Markdown prose is explicitly exempted from this gate by
-the same ruling -- *.md is still allowed to carry Unicode (section signs, an em
+Rule: no non-ASCII code point anywhere in code, comments,
+docs, commit messages. Markdown prose is explicitly exempted from this gate
+-- *.md is still allowed to carry Unicode (section signs, an em
 dash, author names) and is reviewed by eye, not by this tool.
 
 Walks `git ls-files` (or an explicit file list passed on the command line),
@@ -39,7 +39,7 @@ EXCLUDE_DIR_PREFIXES = [
 ]
 
 EXCLUDE_SUFFIXES = [
-    (".md", "doc prose; owner's 2026-10-15 ruling excludes Markdown from this gate"),
+    (".md", "doc prose; Markdown is excluded from this gate"),
 ]
 
 # Binary fixtures: captured raw bytes (an IR accumulator snapshot, a packed
@@ -70,8 +70,7 @@ def is_declared_binary_fixture(rel_posix: str) -> bool:
 def tracked_files(root: Path) -> list[Path]:
     """Every tracked file, or every regular file when `root` is not a git
     checkout (a `git archive` export, which is how the CI legs and verify.sh
-    run the gates: the first local run of the CI gates leg died here with a
-    CalledProcessError, 2026-10-18). The walk skips directories git would
+    run the gates, where `git ls-files` fails). The walk skips directories git would
     never track or that hold build output."""
     proc = subprocess.run(["git", "ls-files"], cwd=root,
                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)

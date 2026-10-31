@@ -1,6 +1,5 @@
-// Window seed track, Stage E (KNOWN_ISSUES.md D76): a dense, from-
-// scratch, TEST-ONLY reference implementation of Anderson acceleration
-// Type II (window m, mixing parameter 1, least squares via Eigen's
+// A dense, from-scratch, TEST-ONLY reference implementation of Anderson
+// acceleration Type II (window m, mixing parameter 1, least squares via Eigen's
 // ColPivHouseholderQR on the residual-difference matrix, no column
 // filter), checked against the library's own QuasiNewtonAccel
 // (src/num/accel_quasi_newton.cpp) configured AccelKind::IQN_ILS,
@@ -100,9 +99,8 @@ Eigen::Vector3d small_nonlinear_g(const Eigen::Vector3d& x) {
 // Window = 3, equal to this problem's own state dimension n = 3: the
 // largest window for which the secant-difference matrix V (n x k) can
 // still be full rank, so argmin||V*alpha + r|| has a UNIQUE minimiser
-// and the comparison is well posed. MEASURED (this round, scratch,
-// not landed -- reported in this track's own delivered report, not
-// asserted here): re-running this same comparison with window = 8 (so
+// and the comparison is well posed. Measured but not asserted here:
+// re-running this same comparison with window = 8 (so
 // k exceeds n = 3 from sweep 4 on) still passes while k <= n, then
 // fails by up to ~9e8 times this test's own bound at the sweeps where
 // k first exceeds n, narrowing as the driven trajectory converges (down
@@ -120,8 +118,8 @@ Eigen::Vector3d small_nonlinear_g(const Eigen::Vector3d& x) {
 // confirms to machine precision wherever that formula has a unique
 // answer; a window larger than the state dimension is simply a case
 // neither this reference nor that comment's own derivation defines
-// uniquely without an explicit tie-breaking rule, and this track did
-// not invent one to force agreement there.
+// uniquely without an explicit tie-breaking rule, and none is invented
+// here to force agreement there.
 TEST(AndersonReference, MatchesIqnIlsFilterNoneOnASmallNonlinearProblem) {
   constexpr int kWindow = 3;
   constexpr int kSweeps = 14;
@@ -131,7 +129,7 @@ TEST(AndersonReference, MatchesIqnIlsFilterNoneOnASmallNonlinearProblem) {
   // to the bootstrap (no-history) step too -- a plain Picard substitution,
   // not an under-relaxed one. AccelConfig's own default (0.1) under-
   // relaxes the first sweep, which is a DIFFERENT, unrelated parameter
-  // choice from this track's "mixing parameter 1", not a structural
+  // choice from "mixing parameter 1", not a structural
   // disagreement between the two formulas; matching it here is required
   // for a fair comparison, not a tuned-to-pass fudge.
   const auto made = make_accelerator(AccelConfig{.kind = AccelKind::IQN_ILS,

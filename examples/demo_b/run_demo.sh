@@ -25,7 +25,7 @@ done
 
 mkdir -p "$(dirname "$PORT_FILE")" "$(dirname "$HDF5_FILE")"
 # Per-run output files next to the port file, so concurrent runs cannot
-# overwrite each other (fixed /tmp names before 2026-10-14).
+# overwrite each other.
 OUT_DIR=$(dirname "$PORT_FILE")
 # A file left by an earlier run that fell back to real I/O would make the
 # consumer's "nothing reached disk" check fail for a reason unrelated to

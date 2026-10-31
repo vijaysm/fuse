@@ -35,7 +35,7 @@
 #include <fuse/runtime/runner.hpp>
 #include <fuse/runtime/window_coupler.hpp>
 
-// S7.2b (PetscSelect track): see examples/dn_heat/main.cpp's own identical
+// See examples/dn_heat/main.cpp's own identical
 // comment on this pair -- fuse/petsc/solve.hpp names no PETSc type and
 // compiles either way, but fuse::petsc::install() is defined only in
 // fuse-coupler-petsc (FUSE_ENABLE_PETSC), so both the include and every
@@ -72,30 +72,30 @@ struct Args {
   std::string out = "results";
   /// "window" (default, unchanged): `fuse::WindowCoupler`, driven directly
   /// as this example always has. "runner": the SAME graph compiled
-  /// through `fuse::Runner`, the Time windows track's compiled path
+  /// through `fuse::Runner`, the compiled path
   /// (docs/user/coupling-windows.md "Through schedule() and the
   /// Runner") -- see main()'s own comment at the branch.
   std::string driver = "window";
-  /// S7.2 WindowNewton (newton-krylov.md Sec. 9.6): "jacobi" (default,
-  /// unchanged -- every window channel lagged) or "gauss-seidel" (the
-  /// v2u channel lagged, u2v resolved within the sweep it is fed from --
-  /// `brusselator_graph.hpp::add_window_coupling()`'s own `iteration_
-  /// mode` parameter, never exposed on this CLI before this track).
+  /// "jacobi" (default -- every window channel lagged) or "gauss-seidel"
+  /// (the v2u channel lagged, u2v resolved within the sweep it is fed from
+  /// -- `brusselator_graph.hpp::add_window_coupling()`'s own `iteration_
+  /// mode` parameter; newton-krylov.md Sec. 9.6).
   /// Read by BOTH drivers: `--driver window` builds its own
   /// `WindowCouplerConfig::iteration` from it directly; `--driver
   /// runner` threads it into the graph.
   std::string iteration_mode = "jacobi";
-  /// S7.2 WindowNewton (newton-krylov.md Sec. 9.5): whether `--accel
+  /// Whether `--accel
   /// newton` additionally asks for the per-species block-Jacobi
-  /// preconditioner (`NewtonConfig::use_block_jacobi_preconditioner`).
+  /// preconditioner (`NewtonConfig::use_block_jacobi_preconditioner`;
+  /// newton-krylov.md Sec. 9.5).
   /// Defaulting to ON (not NewtonConfig's own OFF default) is this
   /// example's own choice, not the library's: demonstrating the
-  /// physics-based preconditioner IS this track's own point, so a
+  /// physics-based preconditioner IS the point, so a
   /// reader who types `--accel newton` and nothing else sees it;
   /// `--no-block-jacobi` reproduces the plain, unpreconditioned solve
   /// for comparison.
   bool block_jacobi = true;
-  /// S7.2b (PetscSelect track): "native" (default, unchanged -- every
+  /// "native" (default -- every
   /// existing invocation of this binary keeps running the library's own
   /// JFNK coupler) or "petsc" (`NewtonConfig::substrate`, read only
   /// when `--accel newton` is also selected -- the auto-trigger that
@@ -160,10 +160,9 @@ struct Args {
 
 /// `--accel`'s names: the shared table (examples/common/accel_names.hpp)
 /// plus `newton`. A name in neither is `std::nullopt`; main() refuses it
-/// before any mesh is built (E-EXAMPLE-ACCEL). Until 2026-10-20 an
-/// unrecognised name silently ran with no acceleration.
+/// before any mesh is built (E-EXAMPLE-ACCEL).
 [[nodiscard]] std::optional<AccelKind> try_parse_accel(const std::string& s) {
-  // S7.2 WindowNewton (newton-krylov.md Sec. 7): `AccelKind::Newton`,
+  // newton-krylov.md Sec. 7: `AccelKind::Newton`,
   // never routed through `make_accelerator()` -- `resolve_regions()`'s
   // own `if (decl.acceleration.kind == AccelKind::Newton)` branch takes
   // the Newton path before `R.accel` is ever touched (iteration.cpp).
@@ -179,7 +178,7 @@ struct Args {
   std::exit(1);
 }
 
-/// S7.2 WindowNewton (newton-krylov.md Sec. 9.6): the `--iteration-mode`
+/// newton-krylov.md Sec. 9.6: the `--iteration-mode`
 /// flag's own parser -- `fuse::WaveformIteration::Jacobi` is the default
 /// for any value other than exactly "gauss-seidel", matching every other
 /// flag on this CLI's own "unrecognised value falls back to the default"
@@ -191,7 +190,7 @@ struct Args {
   return fuse::WaveformIteration::Jacobi;
 }
 
-/// S7.2b (PetscSelect track): the `--substrate` flag's own parser, same
+/// The `--substrate` flag's own parser, same
 /// "unrecognised value falls back to the default" convention as
 /// `parse_accel()`/`parse_iteration_mode()` above -- anything other
 /// than exactly "petsc" is `NewtonSubstrate::Native`.
@@ -274,15 +273,13 @@ int main(int argc, char** argv) {
   // Both the native mesh backend's own Kokkos::View allocations
   // (MeshArrays<Kokkos::HostSpace>) and this example's own reaction kernel
   // (brusselator_physics.hpp's `reaction_kokkos`) need Kokkos initialised
-  // first. KNOWN_ISSUES.md D11 (closing): fuse_example_gray_scott/mms_pair/
-  // dn_heat/fsi_channel now ALSO need this -- the Runner's own coupling hot
-  // loop moved onto Kokkos' default host execution space
-  // (fuse/num/space_kernels.hpp), so every one of them gained its own
-  // `Kokkos::ScopeGuard` at the same place this one has always had it.
-  // Same pattern as test/support/fuse_test_main.cpp's.
+  // first. fuse_example_gray_scott/mms_pair/dn_heat/fsi_channel ALSO need
+  // this -- the Runner's own coupling hot loop runs on Kokkos' default host
+  // execution space (fuse/num/space_kernels.hpp), so every one of them has
+  // its own `Kokkos::ScopeGuard` at the same place this one has. Same pattern as test/support/fuse_test_main.cpp's.
   Kokkos::ScopeGuard kokkos_guard(argc, argv);
 
-  // S7.2b (PetscSelect track): registers NewtonSubstrate::Petsc against
+  // Registers NewtonSubstrate::Petsc against
   // fuse::petsc::solve() -- a no-op for every `--substrate native`
   // invocation (every existing ctest row), and what makes `--substrate
   // petsc --accel newton` resolve instead of refusing with
@@ -331,7 +328,7 @@ int main(int argc, char** argv) {
   // selected (see main()'s own branch, below the window loop setup). The
   // --driver window path never consults these declarations: WindowCoupler
   // is handed `mu`/`mv`/`channels` directly and never looks at `graph`.
-  // S7.2 WindowNewton (newton-krylov.md Sec. 9.6): `newton_cfg.use_block_
+  // newton-krylov.md Sec. 9.6: `newton_cfg.use_block_
   // jacobi_preconditioner` is read by `add_window_coupling()` only when
   // `parse_accel(args.accel) == AccelKind::Newton` (that function's own
   // auto-trigger) -- harmlessly ignored otherwise, so passing it
@@ -367,7 +364,7 @@ int main(int argc, char** argv) {
   // as 2-6 iterations per step once the trajectory settles into its
   // oscillatory regime, `--end 1.0` measurement, 50/50 windows).
   newton_cfg.eta_min = 1e-4;
-  // S7.2b (PetscSelect track): read only when --accel newton is also
+  // Read only when --accel newton is also
   // selected (NewtonConfig's own "declared but unused until Newton is
   // selected" convention) -- a region naming NewtonSubstrate::Petsc with
   // nothing registered for it (no FUSE_ENABLE_PETSC, or this process
@@ -418,7 +415,7 @@ int main(int argc, char** argv) {
   phys_cfg.diffusion = args.alpha;
   phys_cfg.forcing = args.forcing;
 
-  // S7.2 WindowNewton (newton-krylov.md Sec. 9.5): the window metadata
+  // newton-krylov.md Sec. 9.5: the window metadata
   // `UComponent`/`VComponent`'s own `evaluate_residual()`/`linearization()`
   // need -- harmless to pass unconditionally (every pre-existing `--accel`
   // value never calls either; `capabilities()` gates on it being set, not
@@ -492,7 +489,7 @@ int main(int argc, char** argv) {
       cfg.window_length = len;
       cfg.max_iterations = args.max_iterations;
       cfg.acceleration = AccelConfig{.kind = parse_accel(args.accel)};
-      // S7.2 WindowNewton (newton-krylov.md Sec. 9.6): --accel newton is
+      // newton-krylov.md Sec. 9.6: --accel newton is
       // Runner-only (make_accelerator() has no case for it, and
       // WindowCoupler never gained a Newton solve of its own) -- a
       // caller asking for both refuses cleanly, with E-ACCEL-KIND, from
@@ -501,12 +498,9 @@ int main(int argc, char** argv) {
       // far: main() refuses it with E-EXAMPLE-ACCEL.)
       const fuse::WaveformIteration iteration_mode = parse_iteration_mode(args.iteration_mode);
       cfg.iteration = iteration_mode;
-      // The user's decision (relayed 2026-09-29): a convergence measure
-      // names a field TRANSFER (a WindowChannel, by its own `name`), not
-      // the whole coupled system. Split into the two real transfers, same
-      // kind/tolerance as the single aggregate measure this replaces; both
-      // must be satisfied. Not byte-identical to before by the user's own
-      // choice -- see this program's before/after diagnostics.
+      // A convergence measure names a field TRANSFER (a WindowChannel, by
+      // its own `name`), not the whole coupled system. Split into the two
+      // real transfers, same kind/tolerance; both must be satisfied.
       fuse::ConvergenceMeasure measure_u;
       measure_u.kind = fuse::MeasureKind::Relative;
       measure_u.tolerance = args.tolerance;
@@ -521,7 +515,7 @@ int main(int argc, char** argv) {
       cfg.waveform_capacity =
           static_cast<std::size_t>(std::ceil(len.to_double() / std::max(min_dt, 1e-9))) + 8;
 
-      // S7.2 WindowNewton (newton-krylov.md Sec. 9.6): under
+      // newton-krylov.md Sec. 9.6: under
       // GaussSeidel, "v_out" (V -> U) is the lagged direction --
       // `brusselator_graph.hpp::add_window_coupling()`'s own identical
       // choice for `ch_v2u` under the same mode, reproduced here so the

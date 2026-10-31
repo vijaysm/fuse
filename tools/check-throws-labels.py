@@ -6,7 +6,7 @@ A test that calls EXPECT_THROW/ASSERT_THROW (or catches fuse::Refusal /
 fuse::InvalidArgument by hand) cannot pass in a FUSE_ENABLE_EXCEPTIONS=OFF
 build: the refusal aborts the process instead, and ctest reports
 "Subprocess aborted". Three such tests sat unlabelled until the leg first ran
-as a leg (2026-10-18: model.multiscale, model.component,
+as a leg (model.multiscale, model.component,
 verification.brusselator_species_core_decomposition); this gate finds them
 statically from test/CMakeLists.txt, both the direct fuse_add_gtest calls and
 the foreach loops, so the leg never has to.

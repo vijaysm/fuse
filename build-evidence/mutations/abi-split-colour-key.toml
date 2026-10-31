@@ -1,8 +1,7 @@
-# Mutations for KNOWN_ISSUES.md D61 round 4's per-component split decision
+# Mutations for the per-component split decision
 # (include/fuse/abi/collective_reconcile.hpp's decide_split_colour_key(),
 # src/abi/participant.cpp's own MPI_Comm_split call site that consumes
-# it). Own file per the review-fix protocol: do not edit build-evidence/
-# mutations.toml directly while other fixers hold it dirty.
+# it).
 #
 # Applied by hand, rebuilt, run, confirmed to fail EXACTLY the named
 # rows, then restored byte-for-byte (cmp against the pre-mutation file
@@ -11,10 +10,10 @@
 [[mutation]]
 id = "decide-split-colour-key-forces-uniform-colour"
 area = "abi-split-colour-key"
-describes = "decide_split_colour_key()'s own colour is forced to a uniform 0 regardless of which component this rank represents -- the EXACT bug round 3's make_participant_set_reducer call had, measured on the host as every component landing on one shared communicator and deadlocking once their own call counts per window diverged (KNOWN_ISSUES.md D61's own round-4 paragraph)"
+describes = "decide_split_colour_key()'s own colour is forced to a uniform 0 regardless of which component this rank represents -- the EXACT bug an earlier make_participant_set_reducer call had, measured on the host as every component landing on one shared communicator and deadlocking once their own call counts per window diverged"
 file = "include/fuse/abi/collective_reconcile.hpp"
 old = """  return SplitColourKey{static_cast<int>(*component_value), position_in_rankset};"""
 new = """  return SplitColourKey{0, position_in_rankset};  // MUTATION: colour forced to a uniform 0"""
 target = "fuse_abi_collective_reconcile_test"
 test = "abi.collective_reconcile"
-result = "CONFIRMED 2026-10-19: 2 of 6 DecideSplitColourKey cases failed -- ColourIsExactlyTheComponentValue (expected 3, got 0) and TwoDifferentComponentsNeverShareAColour (expected different colours, both came back 0, reproducing round 3's own bug exactly). The other 4 DecideSplitColourKey cases and all 7 ReconcileLocalStatuses cases still passed (none of them depends on the colour varying by component). Restored; cmp against the pre-mutation file reported no difference, md5 6271a00c800f82aac433b0034dd10dd9 matches the restored file."
+result = "CONFIRMED: 2 of 6 DecideSplitColourKey cases failed -- ColourIsExactlyTheComponentValue (expected 3, got 0) and TwoDifferentComponentsNeverShareAColour (expected different colours, both came back 0, reproducing that bug exactly). The other 4 DecideSplitColourKey cases and all 7 ReconcileLocalStatuses cases still passed (none of them depends on the colour varying by component). Restored; cmp against the pre-mutation file reported no difference, md5 6271a00c800f82aac433b0034dd10dd9 matches the restored file."

@@ -1,13 +1,12 @@
-// KNOWN_ISSUES.md D57 ("Collectives" track), Round 2. Companion to
+// Companion to
 // brusselator_period_rollover_test.cpp's own TEST, which mirrors
 // `u_loop_step()`'s/`v_loop_step()`'s zeroing logic VERBATIM in a
 // standalone helper (`drive_one_step()`, that file) rather than calling
 // the real `examples/brusselator/participants/u_loop.c`/`v_loop.f90`
 // functions -- deliberately, to keep that file's own grid trivial and
 // fast. A mirror can drift from the file it was copied from without
-// anyone noticing (exactly the risk this track's own standing rule
-// against "a model of it that could silently stop matching" warns
-// about), so THIS file exists to close that gap: it drives the REAL
+// anyone noticing (the risk of "a model of it that could silently stop
+// matching"), so THIS file exists to close that gap: it drives the REAL
 // `u_loop_step()` (u_loop.h) and the REAL `bruss_v_loop_step()`
 // (v_loop.h, v_loop.f90's own `bind(C, name="bruss_v_loop_step")`
 // export) directly, through real `bruss_u_handle`/`bruss_v_handle`
@@ -178,13 +177,13 @@ SetupResult build_and_initialize(fuse::CouplingGraph& g) {
 
 }  // namespace
 
-// KNOWN_ISSUES.md D57, Round 2. Drives the REAL u_loop_step()/
+// Drives the REAL u_loop_step()/
 // bruss_v_loop_step() -- not a mirror -- through a fixed, 2-period outer
 // bound exactly like u_main.c's/v_main.f90's own `for (p = 0; p <
 // periods; ++p)`, with the only period-closed signal either real driver
 // ever reads (`rep.next_component == -1`, u_loop.c's/v_main.f90's own
-// `out_rep`/`end_rep`). Mutating away the fix this entry's own u_loop.c/
-// v_loop.f90 change made (`out_rep->next_component = out_begin_rep->
+// `out_rep`/`end_rep`). Mutating away the fix the u_loop.c/
+// v_loop.f90 change makes (`out_rep->next_component = out_begin_rep->
 // next_component;`, guarded by `!out_begin_rep->step_opened`) must make
 // this FAIL the same way brusselator_period_rollover_test.cpp's own
 // mirror-based test does -- a real step of period index kRequestedPeriods
@@ -274,8 +273,7 @@ TEST(BrusselatorULoopStepFix, RealShimFunctionsNeverSeeThePeriodBoundaryThroughT
   EXPECT_FALSE(observed_unauthorized_period)
       << "a real step of period " << unauthorized_period_value
       << " ran (kRequestedPeriods=" << kRequestedPeriods
-      << ") through the REAL u_loop_step()/bruss_v_loop_step() -- "
-         "KNOWN_ISSUES.md D57";
+      << ") through the REAL u_loop_step()/bruss_v_loop_step()";
   EXPECT_LT(steps_taken, kSafetyCapSteps)
       << "never reached " << kRequestedPeriods << " periods done (global_"
          "periods_done=" << global_periods_done << ") within " << kSafetyCapSteps
@@ -286,7 +284,7 @@ TEST(BrusselatorULoopStepFix, RealShimFunctionsNeverSeeThePeriodBoundaryThroughT
   if (setup.vh != nullptr) bruss_v_destroy(setup.vh);
 }
 
-// KNOWN_ISSUES.md D57, Round 2. v_loop.f90's own counterpart to the test
+// v_loop.f90's own counterpart to the test
 // above: TRACED (is_u/begin_rep.next_component/begin_rep.period printed
 // at every step_opened == 0 call in the test above, both
 // WaveformIteration::Jacobi and ::GaussSeidel, and with kDtU/kDtV
@@ -402,7 +400,7 @@ TEST(BrusselatorULoopStepFix, RealVLoopFortranFunctionNeverSeesThePeriodBoundary
       << ") -- component 0 (\"U\"), driven by the REAL bruss_v_loop_step() "
          "(v_loop.f90), reached the schedule's own structurally-terminal "
          "slot in this graph shape and failed to propagate the genuine "
-         "close -- KNOWN_ISSUES.md D57";
+         "close";
   EXPECT_LT(steps_taken, kSafetyCapSteps)
       << "never reached " << kRequestedPeriods << " periods done (global_"
          "periods_done=" << global_periods_done << ") within " << kSafetyCapSteps

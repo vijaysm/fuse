@@ -1,4 +1,4 @@
-# The two examples named in S4's exit criteria, ported from the coupler parent.
+# The first two examples (mms_pair and dn_heat), ported from the coupler parent.
 #
 # They are EXAMPLES, and they are also the only code in the tree that drives
 # the library the way a user would -- building a graph with the fluent API,
@@ -10,7 +10,7 @@
 # for this directory and the examples build but are never run. The parent
 # recorded that trap and it applies unchanged.
 
-# review-2026-10-11 BC-1: FUSE_LINALG_BACKEND=builtin configures the library
+# FUSE_LINALG_BACKEND=builtin configures the library
 # with no Eigen3::Eigen target at all (cmake/FuseDependencies.cmake creates
 # it only when the backend is eigen). Several example executables below link
 # Eigen3::Eigen directly (Gray-Scott, Brusselator, FSI channel -- all via
@@ -31,7 +31,7 @@ target_include_directories(fuse_example_mms_pair PRIVATE mms_pair)
 add_executable(fuse_example_dn_heat dn_heat/main.cpp)
 target_link_libraries(fuse_example_dn_heat PRIVATE fuse::runtime fuse::backend)
 target_include_directories(fuse_example_dn_heat PRIVATE dn_heat)
-# S7.2b (PetscSelect track): dn_heat/main.cpp's own --newton-petsc path
+# dn_heat/main.cpp's own --newton-petsc path
 # (guarded by #if FUSE_HAVE_PETSC, fuse/base/config.hpp) calls
 # fuse::petsc::install(), which is defined only in fuse-coupler-petsc.
 # Linking it unconditionally would be fine too (the symbol is simply
@@ -43,7 +43,7 @@ if(FUSE_ENABLE_PETSC)
   target_link_libraries(fuse_example_dn_heat PRIVATE fuse::petsc)
 endif()
 
-# S7.4 (owner decision 2026-10-21, Option C): the smallest real port of an
+# The smallest real port of an
 # ImplicitComponent onto a PETSc-object-backed LinearizationToken (real
 # Mat/Vec, MatMult/MatMultTranspose, never MATMFFD), paired with an
 # existing native-substrate implementation of the SAME physics in one
@@ -99,7 +99,7 @@ if(FUSE_ENABLE_TESTS)
   set_tests_properties(example.mms_pair example.dn_heat
     example.mms_pair.dump example.dn_heat.dump PROPERTIES LABELS "example")
 
-  # S7.2b (PetscSelect track): the PETSc-substrate rows, gated the same
+  # The PETSc-substrate rows, gated the same
   # way every other PETSc-dependent ctest row in this tree is -- the
   # target does not exist, and --newton-petsc refuses at runtime with a
   # clear message, in a build without FUSE_ENABLE_PETSC (dn_heat/main.
@@ -111,17 +111,16 @@ if(FUSE_ENABLE_TESTS)
     set_tests_properties(example.dn_heat.newton_petsc PROPERTIES LABELS "example;petsc")
   endif()
 
-  # S7.4: the native-twin leg always runs (no PETSc, no MPI) and is gated
+  # The native-twin leg always runs (no PETSc, no MPI) and is gated
   # on the physics the SAME way dn_heat/mms_pair are -- exits non-zero if
   # the converged answer misses the manufactured solution by more than
-  # the track's own derived bound (main.cpp's own kAgreementBound
+  # the example's own derived bound (main.cpp's own kAgreementBound
   # comment). The --petsc leg additionally builds AND RUNS the PETSc-
   # substrate half; registered ONLY when FUSE_ENABLE_PETSC, for the exact
   # reason example.dn_heat.newton_petsc is gated just above, and expected
-  # to FAIL in a sandbox that cannot complete a bare MPI_Init()
-  # (KNOWN_ISSUES.md D32) -- the SAME already-documented, host-pending
-  # status every other petsc.*/example.dn_heat.newton_petsc row carries,
-  # not a new one this track introduces.
+  # to FAIL in a sandbox that cannot complete a bare MPI_Init() -- the
+  # SAME host-pending status every other petsc.*/
+  # example.dn_heat.newton_petsc row carries.
   add_test(NAME example.petsc_reaction_diffusion
            COMMAND fuse_example_petsc_reaction_diffusion)
   set_tests_properties(example.petsc_reaction_diffusion PROPERTIES LABELS "example")
@@ -133,13 +132,12 @@ if(FUSE_ENABLE_TESTS)
 
   # Thread-count determinism of the two physics examples, bit for bit: each is
   # run at one OpenMP thread and at every core and the two outputs compared
-  # exactly (tools/compare-runs.cmake). Since D11 closed (2026-09-28) the
+  # exactly (tools/compare-runs.cmake). The
   # Runner's own hot loop runs on Kokkos' host execution space with a
   # fixed-order reduction scheme, so these legs are load-bearing: they are
   # what the components' `DeterminismLevel::Bitwise` declarations rest on.
-  # (Until the same day, test/CMakeLists.txt's FUSE_KOKKOS_HAS_OPENMP was not
-  # exported to this sibling directory and every leg here silently registered
-  # nothing.)
+  # (test/CMakeLists.txt must export FUSE_KOKKOS_HAS_OPENMP to this sibling
+  # directory, or every leg here silently registers nothing.)
   if(COMMAND fuse_add_omp_legs AND FUSE_KOKKOS_HAS_OPENMP)
     foreach(ex mms_pair dn_heat)
       add_test(NAME example.${ex}.omp_identical
@@ -154,7 +152,7 @@ if(FUSE_ENABLE_TESTS)
 endif()
 
 # ---------------------------------------------------------------------------
-# processor-processor-layout driver (plan-track-d). MPI-only: it links fuse::transport for
+# processor-processor-layout driver. MPI-only: it links fuse::transport for
 # MpiTransport and needs mpiexec to mean anything, so the whole block is
 # gated on FUSE_ENABLE_MPI, exactly as test/CMakeLists.txt gates its own
 # parallel/ targets.
@@ -172,8 +170,8 @@ add_library(fuse_examples_common INTERFACE)
 add_library(fuse::examples_common ALIAS fuse_examples_common)
 target_include_directories(fuse_examples_common INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/common)
 target_link_libraries(fuse_examples_common INTERFACE fuse::base)
-# review-2026-10-11 BC-1: fuse::examples_common is an INTERFACE target, so
-# this one unguarded Eigen3::Eigen link used to fail every consumer's
+# fuse::examples_common is an INTERFACE target, so
+# an unguarded Eigen3::Eigen link here would fail every consumer's
 # configure at once under FUSE_LINALG_BACKEND=builtin (test/CMakeLists.txt's
 # own comment on this target makes the same observation about its reach).
 if(FUSE_LINALG_BACKEND_IS_EIGEN)
@@ -185,10 +183,10 @@ if(FUSE_ENABLE_CUSPARSE)
 endif()
 
 # ---------------------------------------------------------------------------
-# review-2026-10-11 BC-1: gated on the eigen backend -- this example's
+# Gated on the eigen backend -- this example's
 # Newton solves use Eigen::SparseLU and have no builtin-backend substitute.
 if(FUSE_LINALG_BACKEND_IS_EIGEN)
-  # Gray-Scott (Time windows track): U and V on one structured grid, coupled
+  # Gray-Scott: U and V on one structured grid, coupled
   # implicitly at independent time steps through fuse::WindowCoupler. Needs
   # Eigen3::Eigen directly (its Newton solves use Eigen::SparseLU) -- available
   # because FUSE_LINALG_BACKEND=eigen is the default (cmake/FuseDependencies.cmake).
@@ -215,7 +213,7 @@ if(FUSE_LINALG_BACKEND_IS_EIGEN)
     add_test(NAME example.gray_scott COMMAND fuse_example_gray_scott --n 24 --ratio 2 --t-end 4 --dt 0.1 --check)
     set_tests_properties(example.gray_scott PROPERTIES LABELS "example")
     # An unknown --accel name is refused before any setup (examples/common/
-    # accel_names.hpp). Until 2026-10-20 this program ran Aitken for it.
+    # accel_names.hpp), rather than silently running Aitken.
     add_test(NAME example.gray_scott.accel_refused
              COMMAND fuse_example_gray_scott --accel no-such-method)
     set_tests_properties(example.gray_scott.accel_refused PROPERTIES
@@ -244,11 +242,11 @@ else()
 endif()
 
 # ---------------------------------------------------------------------------
-# review-2026-10-11 BC-1: gated on the eigen backend -- this example's
+# Gated on the eigen backend -- this example's
 # periodic-diffusion backward-Euler solve uses Eigen::SimplicialLDLT and
 # has no builtin-backend substitute.
 if(FUSE_LINALG_BACKEND_IS_EIGEN)
-  # Brusselator (Time windows track, "a code FUSE has never met"): U and V on
+  # Brusselator ("a code FUSE has never met"): U and V on
   # two INDEPENDENT, non-nested native meshes ("generated:quad:NxM"), coupled
   # at independent time steps through fuse::WindowCoupler and exchanged
   # through FUSE's conservative supermesh remap (fuse::build_weights /
@@ -265,7 +263,7 @@ if(FUSE_LINALG_BACKEND_IS_EIGEN)
     fuse::runtime fuse::backend Eigen3::Eigen Kokkos::kokkos
     fuse::examples_common)
   target_include_directories(fuse_example_brusselator PRIVATE brusselator)
-  # S7.2b (PetscSelect track): main.cpp's own unconditional (guarded by #if
+  # main.cpp's own unconditional (guarded by #if
   # FUSE_HAVE_PETSC) fuse::petsc::install() call -- same reasoning as
   # fuse_example_dn_heat's own identical conditional link, just above in
   # this file.
@@ -285,14 +283,14 @@ if(FUSE_LINALG_BACKEND_IS_EIGEN)
     # test/verification/brusselator_*_test.cpp.
     add_test(NAME example.brusselator COMMAND fuse_example_brusselator --end 0.5 --check)
     set_tests_properties(example.brusselator PROPERTIES LABELS "example")
-    # An unknown --accel name is refused before any setup. Until 2026-10-20
-    # this program ran with no acceleration for it.
+    # An unknown --accel name is refused before any setup, rather than
+    # silently running with no acceleration.
     add_test(NAME example.brusselator.accel_refused
              COMMAND fuse_example_brusselator --accel no-such-method)
     set_tests_properties(example.brusselator.accel_refused PROPERTIES
       LABELS "example" PASS_REGULAR_EXPRESSION "E-EXAMPLE-ACCEL: unknown --accel 'no-such-method'")
 
-    # Time windows track (Conformance, Unit 1): `--driver runner` (main.cpp)
+    # `--driver runner` (main.cpp)
     # runs the SAME graph through fuse::Runner instead of fuse::WindowCoupler
     # (docs/user/coupling-windows.md "Through schedule() and the Runner"), at
     # this example's own default parameters (--window 0.02, --dt-u 0.002,
@@ -316,8 +314,8 @@ if(FUSE_LINALG_BACKEND_IS_EIGEN)
     # newton_test.cpp): the Eisenstat-Walker floor the window needs
     # (docs/dev/newton-krylov.md Sec. 9.9.2, 10.3) shows only on the
     # example's own first window -- the rig's window passed without it on
-    # the host, the example's first window reported DivergedLinearSolve
-    # (2026-10-11). Five windows, --check on.
+    # the host, the example's first window reported DivergedLinearSolve.
+    # Five windows, --check on.
     add_test(NAME example.brusselator.newton
              COMMAND fuse_example_brusselator --driver runner --accel newton --end 0.1 --check)
     set_tests_properties(example.brusselator.newton PROPERTIES LABELS "example")
@@ -330,7 +328,7 @@ if(FUSE_LINALG_BACKEND_IS_EIGEN)
 
     # Thread-count determinism of the Kokkos reaction kernel, bit for bit --
     # the same convention mms_pair/dn_heat use (tools/compare-runs.cmake),
-    # and, since D11 closed, load-bearing for every example: `reaction_kokkos`
+    # and load-bearing for every example: `reaction_kokkos`
     # is a genuine Kokkos::parallel_for over the OpenMP execution space on top
     # of the Runner's own kernels.
     if(COMMAND fuse_add_omp_legs AND FUSE_KOKKOS_HAS_OPENMP)
@@ -349,9 +347,8 @@ else()
   list(APPEND _fuse_eigen_gated_examples fuse_example_brusselator)
 endif()
 
-# Conformance, Unit 2 ("Brusselator as separately built participants"):
-# graph AUTHORING, kept deliberately separate from PARTICIPATING (the
-# lead's own Q2 ruling) -- this tool calls brusselator_graph.hpp's own
+# "Brusselator as separately built participants": graph AUTHORING, kept
+# deliberately separate from PARTICIPATING -- this tool calls brusselator_graph.hpp's own
 # add_window_coupling() and writes the result as text YAML
 # (fuse::to_yaml(), include/fuse/model/yaml_io.hpp), so u_main.c/
 # v_main.f90 (examples/brusselator/participants, built only under
@@ -384,7 +381,7 @@ if(FUSE_ENABLE_TESTS)
   set_tests_properties(verification.brusselator.graph_tool.reproduces_reference
                        PROPERTIES LABELS "verification")
 
-  # S6 phase 3 ("LowFive" track), Unit 3: the SAME {3}-rank mpmd layout,
+  # The SAME {3}-rank mpmd layout,
   # plus --transport lowfive -- byte-for-byte against examples/
   # brusselator/participants/reference_mpmd_3_lowfive.yaml, exactly the
   # same convention as the row above. Needs no MPI, no LowFive and no
@@ -400,16 +397,12 @@ if(FUSE_ENABLE_TESTS)
   set_tests_properties(verification.brusselator.graph_tool.reproduces_reference_lowfive
                        PROPERTIES LABELS "verification")
 
-  # KNOWN_ISSUES.md D36: the accept-mode layout had NO committed reference
-  # at all before this fix (confirmed by listing this directory -- only
-  # the two mpmd rows above ever had one), so nothing caught a regression
-  # in brusselator_graph_tool.cpp's own accept branch the way the mpmd
-  # rows above do for theirs. Added now, alongside the fix, at both world
-  # sizes the tool already supports: --ranks-u 1 --ranks-v 1
-  # --ranks-coupler 1 (world 3, the row that timed out on the host) and
-  # --ranks-u 2 --ranks-v 2 --ranks-coupler 1 (world 5, never run --
-  # KNOWN_ISSUES.md D18's own "build it but never run it" ruling for the
-  # 5-rank accept row, unchanged by this track).
+  # The accept-mode layout has committed references too, so a regression
+  # in brusselator_graph_tool.cpp's own accept branch is caught the way the
+  # mpmd rows above catch theirs, at both world sizes the tool supports:
+  # --ranks-u 1 --ranks-v 1 --ranks-coupler 1 (world 3) and
+  # --ranks-u 2 --ranks-v 2 --ranks-coupler 1 (world 5, built but never
+  # run).
   add_test(NAME verification.brusselator.graph_tool.reproduces_reference_accept_3
            COMMAND ${CMAKE_COMMAND}
                    -DBIN=$<TARGET_FILE:brusselator_graph_tool>
@@ -431,8 +424,7 @@ if(FUSE_ENABLE_TESTS)
                        PROPERTIES LABELS "verification")
 
   # The SAME {3}-rank accept layout, plus --transport lowfive -- exactly the
-  # combination KNOWN_ISSUES.md D36's own second defect (the LowFive
-  # skip-list gap) was measured against, mirrored here the way
+  # combination that exercises the LowFive skip-list handling, mirrored here the way
   # reproduces_reference_lowfive mirrors reproduces_reference for mpmd.
   add_test(NAME verification.brusselator.graph_tool.reproduces_reference_accept_3_lowfive
            COMMAND ${CMAKE_COMMAND}
@@ -445,7 +437,7 @@ if(FUSE_ENABLE_TESTS)
                        PROPERTIES LABELS "verification")
 endif()
 
-# Conformance, Unit 2 (Q3): the --check assembler, run against u_main.c's
+# The --check assembler, run against u_main.c's
 # and v_main.f90's own printed per-window logs after a real host run
 # (ctest rows registered in test/CMakeLists.txt pipe both executables'
 # logs into this tool as their last step). Needs no MPI -- it is pure
@@ -457,42 +449,39 @@ add_executable(brusselator_check
   brusselator/participants/brusselator_check.cpp
   brusselator/participants/brusselator_check_core.cpp)
 
-# The three participant/coupler executables themselves (Conformance,
-# Unit 2) -- tier 1 (FUSE_ENABLE_MPI) only, since each genuinely needs
+# The three participant/coupler executables themselves
+# -- tier 1 (FUSE_ENABLE_MPI) only, since each genuinely needs
 # MPI (u_main.c's/coupler_main.c's own MPI_Init/MPI_Comm_c2f,
 # v_main.f90's own `use mpi`), unlike the two tools above. Each is PURE
 # C (u_main.c, coupler_main.c, u_loop.c) or PURE FORTRAN (v_main.f90,
 # v_loop.f90) in its own coupling-facing code -- only the shared physics
 # (shim.cpp) is C++ (u_main.c's own header comment has the full
-# rationale). Never run in THIS sandbox (KNOWN_ISSUES.md C1: MPI cannot
-# start here at all) -- build-verified only; test/CMakeLists.txt's own
+# rationale). Never run in a sandbox where MPI cannot
+# start -- build-verified only there; test/CMakeLists.txt's own
 # verification.brusselator.participants.{mpmd,accept}.{3,5} rows below
 # register the real host invocations.
 if(FUSE_ENABLE_MPI)
   add_executable(brusselator_coupler_main
     brusselator/participants/coupler_main.c)
   target_link_libraries(brusselator_coupler_main PRIVATE fuse::abi MPI::MPI_C)
-  # ---- D14 Stage B (KNOWN_ISSUES.md), additive: begin --------------------
-  # brusselator_coupler_main now ALSO joins the single collective split
+  # ---- LowFive local split: begin ----------------------------------------
+  # brusselator_coupler_main ALSO joins the single collective split
   # bruss_lowfive_join_local_split() performs (lowfive_attach.cpp, compiles
   # to a trivial, always-local_comm_f=0 stub when FUSE_HAVE_LOWFIVE is 0,
-  # exactly like u_main.c's/v_main.f90's own additive hunks below) -- never
-  # bruss_lowfive_attach() itself (round 9's own ruling, unchanged: this
-  # target still never constructs a real LowFive VOL object). Needs
-  # fuse::model (fuse::build_lowfive_bindings(), fuse::load_yaml_file())
-  # AND, corrected here after a tier-1 (-DFUSE_ENABLE_LOWFIVE=ON) build
-  # caught the gap this comment's own earlier claim missed:
+  # exactly like u_main.c's/v_main.f90's own hunks below) -- never
+  # bruss_lowfive_attach() itself (this target never constructs a real
+  # LowFive VOL object). Needs fuse::model (fuse::build_lowfive_bindings(),
+  # fuse::load_yaml_file()) AND fuse::lowfive:
   # lowfive_attach.cpp's own top-of-file #include block (outside any
   # FUSE_HAVE_LOWFIVE guard, so EVERY target compiling this source needs
   # it) names <lowfive/H5VOLProperty.hpp> directly -- a HEADER search
-  # path only `fuse::lowfive` provides, which KNOWN_ISSUES.md D39 Round
-  # 10's own finding (liblowfive/liblowfive-dist already linked
-  # transitively via fuse::abi -> fuse-coupler-transport) does NOT: a
-  # transitive LINK dependency carries no transitive include directory
-  # in this build graph. Mirrors brusselator_u_main's own identical
-  # fuse_link_lowfive_with_fmt_fix() call below, same reason (shim.cpp's
-  # own header comment on that function has the full fmt-version
-  # account).
+  # path only `fuse::lowfive` provides (liblowfive/liblowfive-dist are
+  # already linked transitively via fuse::abi -> fuse-coupler-transport,
+  # but a transitive LINK dependency carries no transitive include
+  # directory in this build graph). Mirrors brusselator_u_main's own
+  # identical fuse_link_lowfive_with_fmt_fix() call below, same reason
+  # (shim.cpp's own header comment on that function has the full
+  # fmt-version account).
   target_sources(brusselator_coupler_main PRIVATE brusselator/participants/lowfive_attach.cpp)
   target_link_libraries(brusselator_coupler_main PRIVATE fuse::model)
   if(TARGET fuse::lowfive)
@@ -501,9 +490,9 @@ if(FUSE_ENABLE_MPI)
   if(LOWFIVE_HAVE_DIST)
     target_compile_definitions(brusselator_coupler_main PRIVATE FUSE_LOWFIVE_DIST_LIB_FOUND=1)
   endif()
-  # ---- D14 Stage B: end ---------------------------------------------------
+  # ---- LowFive local split: end ------------------------------------------
 
-  # review-2026-10-11 BC-1: brusselator_u_main/brusselator_v_main link
+  # brusselator_u_main/brusselator_v_main link
   # Eigen3::Eigen directly (shim.cpp's physics), so both -- and the two
   # host rows below that are already conditioned on
   # "TARGET brusselator_u_main AND TARGET brusselator_v_main" -- are gated
@@ -518,42 +507,39 @@ if(FUSE_ENABLE_MPI)
       fuse::abi MPI::MPI_C Eigen3::Eigen Kokkos::kokkos)
     target_include_directories(brusselator_u_main PRIVATE brusselator)
 
-    # S6 phase 3 (Conformance, "LowFive" track), Unit 3b: shim.cpp's own
+    # shim.cpp's own
     # bruss_lowfive_write/read (behind FUSE_HAVE_LOWFIVE) call the real
     # HDF5 C API -- fuse::lowfive (cmake/FuseDependencies.cmake, which this
     # directory's own fuse_resolve_dependencies() call already ran before
     # add_subdirectory(examples) reached here, CMakeLists.txt) carries
-    # HDF5 plus the LowFive libraries themselves. This unit first attached the
-    # connector through the HDF5_VOL_CONNECTOR/HDF5_PLUGIN_PATH env-var
-    # mechanism (docs/user/lowfive.md), which needed no LowFive SYMBOL in THIS
-    # executable at all -- only ordinary HDF5 calls (the participants now attach
-    # programmatically, see the note after the Unit 3b rows) -- but linking the one
-    # `fuse::lowfive` target already resolved is simpler than teasing the
-    # raw HDF5-only half back out, and costs nothing an ordinary HDF5
-    # dependency does not already cost.
+    # HDF5 plus the LowFive libraries themselves. The participants attach
+    # the connector programmatically (see the note after the host rows
+    # below), so shim.cpp itself needs only ordinary HDF5 calls -- but
+    # linking the one `fuse::lowfive` target already resolved is simpler
+    # than teasing the raw HDF5-only half back out, and costs nothing an
+    # ordinary HDF5 dependency does not already cost.
     # fuse_link_lowfive_with_fmt_fix (cmake/FuseDependencies.cmake): plain
     # target_link_libraries(... fuse::lowfive ...) here is not enough --
     # shim.cpp also includes fuse/base/rational.hpp (-> result.hpp -> fmt
     # 12), in the SAME translation unit as <hdf5.h>, and fuse::lowfive's
     # own include directory carries a bundled, incompatible fmt. See that
-    # function's own comment and KNOWN_ISSUES.md D14's Unit 3b account for
-    # the full measured record (an earlier, single-link-order version of
-    # this fix broke under a different CMAKE_PREFIX_PATH ordering).
+    # function's own comment for the full measured record (a
+    # single-link-order version of this fix breaks under a different
+    # CMAKE_PREFIX_PATH ordering).
     if(TARGET fuse::lowfive)
       fuse_link_lowfive_with_fmt_fix(brusselator_u_main)
     endif()
 
-    # ---- S6 phase 3 (Conformance, "LowFive attach" track): begin --------
+    # ---- Programmatic LowFive attach: begin ------------------------------
     # lowfive_attach.cpp (examples/brusselator/participants) constructs the
     # VOL connector PROGRAMMATICALLY instead of through the HDF5_VOL_
     # CONNECTOR/HDF5_PLUGIN_PATH env-var route -- see that file's own
-    # header comment and KNOWN_ISSUES.md D39 for why. Always added to this
+    # header comment for why. Always added to this
     # executable's own sources (like shim.cpp, it compiles to a trivial
     # "not built with LowFive" stub when FUSE_HAVE_LOWFIVE is 0), needing
     # fuse::model (fuse/model/yaml_io.hpp, CouplingGraph) in addition to
-    # shim.cpp's own fuse::lowfive -- a dependency this executable did not
-    # need before this track, since shim.cpp's own bruss_lowfive_write/
-    # read never parsed the graph themselves.
+    # shim.cpp's own fuse::lowfive -- shim.cpp's own bruss_lowfive_write/
+    # read never parse the graph themselves.
     target_sources(brusselator_u_main PRIVATE brusselator/participants/lowfive_attach.cpp)
     target_link_libraries(brusselator_u_main PRIVATE fuse::model)
     # FUSE_LOWFIVE_DIST_LIB_FOUND: this executable's own copy of the SAME
@@ -564,7 +550,7 @@ if(FUSE_ENABLE_MPI)
     if(LOWFIVE_HAVE_DIST)
       target_compile_definitions(brusselator_u_main PRIVATE FUSE_LOWFIVE_DIST_LIB_FOUND=1)
     endif()
-    # ---- "LowFive attach" track: end (brusselator_u_main half) ----------
+    # ---- Programmatic LowFive attach: end (brusselator_u_main half) ------
 
     if(TARGET fuse-abi-fortran)
       add_executable(brusselator_v_main
@@ -583,45 +569,44 @@ if(FUSE_ENABLE_MPI)
       if(TARGET fuse::lowfive)
         fuse_link_lowfive_with_fmt_fix(brusselator_v_main)
       endif()
-      # ---- "LowFive attach" track: begin (brusselator_v_main half) ------
+      # ---- Programmatic LowFive attach: begin (brusselator_v_main half) --
       # Mirrors brusselator_u_main's own additive hunk just above exactly.
       target_sources(brusselator_v_main PRIVATE brusselator/participants/lowfive_attach.cpp)
       target_link_libraries(brusselator_v_main PRIVATE fuse::model)
       if(LOWFIVE_HAVE_DIST)
         target_compile_definitions(brusselator_v_main PRIVATE FUSE_LOWFIVE_DIST_LIB_FOUND=1)
       endif()
-      # ---- "LowFive attach" track: end -----------------------------------
+      # ---- Programmatic LowFive attach: end ------------------------------
     else()
       message(STATUS "fuse: FUSE_ENABLE_MPI is ON but no Fortran compiler was found; "
-                     "brusselator_v_main (Conformance Unit 2) will not be built")
+                     "brusselator_v_main will not be built")
     endif()
   else()
-    message(STATUS "fuse: brusselator_u_main/brusselator_v_main (Conformance Unit 2) not "
+    message(STATUS "fuse: brusselator_u_main/brusselator_v_main not "
                    "built under FUSE_LINALG_BACKEND=builtin (shim.cpp needs Eigen3::Eigen)")
     list(APPEND _fuse_eigen_gated_examples brusselator_u_main brusselator_v_main)
   endif()
 endif()
 
 
-# ---- Conformance Unit 2, "Brusselator as separately built participants":
-# host rows begin -----------------------------------------------------------
-# MPI cannot start in this sandbox at all (KNOWN_ISSUES.md C1), so --
+# ---- "Brusselator as separately built participants": host rows begin ----
+# MPI cannot start in every sandbox, so --
 # exactly like test/CMakeLists.txt's own parallel.connect.* rows, whose
 # host_verification_needed convention this mirrors -- every row below is
-# a host_verification_needed item; what IS verified here is that every
-# executable involved builds at tier 1 (confirmed this session) and that
+# a host_verification_needed item; what IS verified without a host is that
+# every executable involved builds at tier 1 and that
 # brusselator_graph_tool reproduces its own committed reference YAML byte
 # for byte (verification.brusselator.graph_tool.reproduces_reference,
 # registered just above). Registered HERE, not in test/CMakeLists.txt,
 # because add_subdirectory(test) runs before add_subdirectory(examples)
 # at the top level (CMakeLists.txt) -- a TARGET check against these
-# executables in test/CMakeLists.txt would always be false (found this
-# session: the rows silently failed to register there).
+# executables in test/CMakeLists.txt would always be false (the rows
+# would silently fail to register there).
 #
 # {3,5} name each row's total world size. mpmd: ranks_u + ranks_v +
 # ranks_coupler = 3 (1+1+1) or 5 (2+2+1), three app segments. accept:
 # U's own executable carries ranks_u + ranks_coupler (2 or 3), V's
-# carries ranks_v (1 or 2) -- Q1's ruling, KNOWN_ISSUES.md D18.
+# carries ranks_v (1 or 2).
 if(FUSE_ENABLE_TESTS AND FUSE_ENABLE_MPI AND TARGET brusselator_u_main AND TARGET brusselator_v_main)
   set(_fuse_bp_world_3_u 1)
   set(_fuse_bp_world_3_v 1)
@@ -663,7 +648,7 @@ if(FUSE_ENABLE_TESTS AND FUSE_ENABLE_MPI AND TARGET brusselator_u_main AND TARGE
       set_tests_properties(${_name} PROPERTIES
         LABELS "parallel;mpi;verification;brusselator" TIMEOUT 120
         ENVIRONMENT "OMPI_MCA_coll_tuned_use_dynamic_rules=1;OMPI_MCA_coll_tuned_alltoallv_algorithm=2;OMPI_MCA_rmaps_base_oversubscribe=1;PRTE_MCA_rmaps_default_mapping_policy=:oversubscribe")
-      # KNOWN_ISSUES.md D23's final account: U bundles the coupler's own
+      # U bundles the coupler's own
       # ranks and is the Connect-mode acceptor (brusselator_graph_tool.cpp's
       # own accept branch), so this row's real layout is (ranks_u +
       # ranks_coupler) accepting against ranks_v connecting -- not
@@ -679,10 +664,10 @@ if(FUSE_ENABLE_TESTS AND FUSE_ENABLE_MPI AND TARGET brusselator_u_main AND TARGE
         if(NOT _fuse_row_working)
           if("${_fuse_row_record}" STREQUAL "")
             set(_fuse_row_reason
-                "accept/connect layout ${_fuse_bp_na}+${_fuse_bp_nb} has no measurement on this MPI (KNOWN_ISSUES.md D23)")
+                "accept/connect layout ${_fuse_bp_na}+${_fuse_bp_nb} has no measurement on this MPI")
           else()
             set(_fuse_row_reason
-                "accept/connect layout ${_fuse_bp_na}+${_fuse_bp_nb} measured ${_fuse_row_record} on this MPI (KNOWN_ISSUES.md D23)")
+                "accept/connect layout ${_fuse_bp_na}+${_fuse_bp_nb} measured ${_fuse_row_record} on this MPI")
           endif()
           set_tests_properties(${_name} PROPERTIES
             LABELS "parallel;mpi;verification;brusselator;accept-unreliable-on-this-mpi"
@@ -693,18 +678,15 @@ if(FUSE_ENABLE_TESTS AND FUSE_ENABLE_MPI AND TARGET brusselator_u_main AND TARGE
     endforeach()
   endforeach()
 endif()
-# ---- Conformance Unit 2 host rows: end -------------------------------------
+# ---- Brusselator participants host rows: end -------------------------------
 
-# ---- S6 phase 3 (Conformance, "LowFive" track), Unit 3b host rows:
-# begin -----------------------------------------------------------------
+# ---- LowFive participants host rows: begin ------------------------------
 # Same host_verification_needed status as the plain rows just above.
-# The host's LowFive fmt-12 rebuild (KNOWN_ISSUES.md D14 "what remains"
-# item 1) is DONE -- `fuse-lowfive-vol` loads and `.lowfive.mpmd.3` passes
-# (D39 Round 10). `.lowfive.accept.3` still needs a host run of D14 Stage
-# B's own ABI-gap fix (D14's "what remains" item 3) before it can pass.
-# World size 3 only (1+1+1): item 3's own ask names .lowfive.{mpmd,accept}.3,
-# not .5; the degenerate reference graph (brusselator_graph_tool.cpp's own
-# kDtU == kWindow) this track measured against never needed more than one
+# `fuse-lowfive-vol` loads, and `.lowfive.mpmd.3` and `.lowfive.accept.3`
+# pass on the host.
+# World size 3 only (1+1+1): the rows are
+# .lowfive.{mpmd,accept}.3, not .5; the reference graph
+# (brusselator_graph_tool.cpp) needs no more than one
 # rank per component to prove the wiring, and a second world size would
 # only repeat it.
 #
@@ -715,8 +697,7 @@ endif()
 # harmful: libMOAB's static initialiser (_GLOBAL__sub_I_WriteHDF5.cpp) calls
 # H5open before main, HDF5 then reads HDF5_VOL_CONNECTOR and registers the
 # LowFive connector in the coupler, and at exit that connector's teardown
-# reaches an already-destroyed spdlog registry and aborts (KNOWN_ISSUES.md
-# D39). Measured 2026-10-13 on the owner's machine: the mpmd row fails with the
+# reaches an already-destroyed spdlog registry and aborts. Measured: the mpmd row fails with the
 # three variables set and passes with them unset, and also passes with only
 # FUSE_LOWFIVE_BINDINGS set. The env-route plugin (fuse-lowfive-vol) stays in
 # the tree; the TARGET guard below is kept so the rows are registered under
@@ -749,7 +730,7 @@ if(FUSE_ENABLE_TESTS AND FUSE_ENABLE_MPI AND FUSE_ENABLE_LOWFIVE
       LABELS "parallel;mpi;lowfive;verification;brusselator"
       TIMEOUT 120
       ENVIRONMENT "OMPI_MCA_coll_tuned_use_dynamic_rules=1;OMPI_MCA_coll_tuned_alltoallv_algorithm=2;OMPI_MCA_rmaps_base_oversubscribe=1;PRTE_MCA_rmaps_default_mapping_policy=:oversubscribe")
-    # KNOWN_ISSUES.md D23's final account, same check as the non-LowFive
+    # Same check as the non-LowFive
     # participants rows above: ranks_u=1, ranks_coupler=1 bundled onto U
     # (the acceptor), ranks_v=1 connecting -- layout 2+1.
     if(_mode STREQUAL "accept")
@@ -757,9 +738,9 @@ if(FUSE_ENABLE_TESTS AND FUSE_ENABLE_MPI AND FUSE_ENABLE_LOWFIVE
       fuse_mpi_dynamic_layout_working("${_fuse_row_record}" _fuse_row_working)
       if(NOT _fuse_row_working)
         if("${_fuse_row_record}" STREQUAL "")
-          set(_fuse_row_reason "accept/connect layout 2+1 has no measurement on this MPI (KNOWN_ISSUES.md D23)")
+          set(_fuse_row_reason "accept/connect layout 2+1 has no measurement on this MPI")
         else()
-          set(_fuse_row_reason "accept/connect layout 2+1 measured ${_fuse_row_record} on this MPI (KNOWN_ISSUES.md D23)")
+          set(_fuse_row_reason "accept/connect layout 2+1 measured ${_fuse_row_record} on this MPI")
         endif()
         set_tests_properties(${_name} PROPERTIES
           LABELS "parallel;mpi;lowfive;verification;brusselator;accept-unreliable-on-this-mpi"
@@ -769,31 +750,29 @@ if(FUSE_ENABLE_TESTS AND FUSE_ENABLE_MPI AND FUSE_ENABLE_LOWFIVE
     endif()
   endforeach()
 endif()
-# ---- S6 phase 3 Unit 3b host rows: end ---------------------------------
+# ---- LowFive participants host rows: end --------------------------------
 
-# ---- LowFive attach note (revised 2026-10-13) ---------------------------
+# ---- LowFive attach note -------------------------------------------------
 # Both brusselator_u_main and brusselator_v_main attach LowFive
 # programmatically (examples/brusselator/participants/lowfive_attach.cpp) for
 # every --transport lowfive row, mpmd and accept alike: every
 # bruss_lowfive_write()/bruss_lowfive_read() call passes an explicit fapl_id
 # and refuses if it is negative, so neither row's H5Fcreate/H5Fopen reaches
 # HDF5_VOL_CONNECTOR's default-VOL resolution. The three env-route variables
-# were therefore removed from these two rows' ENVIRONMENT (see the comment
-# above the block for the measurement). The mpmd row passes (D39 Round 10,
-# 1.70 s). The accept row's own blanket E-LOWFIVE-ATTACH-ACCEPT refusal is
-# replaced, D14 Stage B (2026-10-13): decide_attach_mode() now accepts a
-# Connect-mode channel when the base communicator is exposed (the new
-# base_communicator() ABI entry) and at most two Connect-mode components
-# are declared (D18), refusing only those two narrower conditions by name.
-# Host-run 2026-10-13: both LowFive rows Passed (accept 1.26 s, mpmd 2.37 s),
-# KNOWN_ISSUES.md D14 item 3.
-# ---- "LowFive attach" track note: end ----------------------------------
+# are therefore absent from these two rows' ENVIRONMENT (see the comment
+# above the block for the measurement). The mpmd row passes. In the accept
+# row, decide_attach_mode() accepts a Connect-mode channel when the base
+# communicator is exposed (the base_communicator() ABI entry) and at most
+# two Connect-mode components are declared, refusing only those two
+# narrower conditions by name. Both LowFive rows pass on the host (accept
+# and mpmd).
+# ---- LowFive attach note: end --------------------------------------------
 
-# review-2026-10-11 BC-1: gated on the eigen backend -- both FSI channel
+# Gated on the eigen backend -- both FSI channel
 # solvers factor through Eigen::SparseLU with no builtin-backend substitute.
 if(FUSE_LINALG_BACKEND_IS_EIGEN)
   # ---------------------------------------------------------------------------
-  # FSI channel (FSI track): a 2D unsteady-Stokes channel with an Euler-
+  # FSI channel: a 2D unsteady-Stokes channel with an Euler-
   # Bernoulli wall beam, strongly coupled on a non-matching 1D interface
   # (consistent H, conservative H^T -- fuse/backend/consistent_interp.hpp).
   # Needs Eigen3::Eigen directly for both solvers' SparseLU factorisations,
@@ -822,7 +801,7 @@ if(FUSE_LINALG_BACKEND_IS_EIGEN)
              COMMAND fuse_example_fsi_channel --accel no-such-method)
     set_tests_properties(example.fsi_channel.accel_refused PROPERTIES
       LABELS "example" PASS_REGULAR_EXPRESSION "E-EXAMPLE-ACCEL: unknown --accel 'no-such-method'")
-    # An off-grid --dt is stepped as the delivered value (D34 item C). With
+    # An off-grid --dt is stepped as the delivered value. With
     # t_end = 0.10004 the step count itself differs: 0.10004 / 0.00351 = 28.5014
     # rounds to 29 steps, 0.10004 / 0.0035104283866 = 28.4979 rounds to 28, and
     # the last time is 29 x 0.00351 = 0.10179. The regular expression pins both
@@ -855,10 +834,7 @@ if(FUSE_LINALG_BACKEND_IS_EIGEN)
       set_tests_properties(example.fsi_channel.omp_identical PROPERTIES LABELS "example;omp")
     endif()
     # FUSE_ENABLE_CUSPARSE=ON: these two rows are DISABLED (ctest reports them
-    # as "Not Run (Disabled)", not hidden), KNOWN_ISSUES.md D43 (review
-    # 2026-10-11 used the pre-rebase number D36 for this finding; D36 in the
-    # current KNOWN_ISSUES.md is the unrelated accept-mode RankSet fix).
-    # Measured 2026-10-11: the example's IQN-ILS coupling is marginally stable
+    # as "Not Run (Disabled)", not hidden). Measured: the example's IQN-ILS coupling is marginally stable
     # at the step nearest the beam's first natural period (step 7 of the
     # default run). With Eigen it passes that step in 46 sweeps, twice its
     # usual count; with the cusolverRf backend -- whose solutions agree with
@@ -927,7 +903,7 @@ if(FUSE_ENABLE_MPI)
   fuse_add_layout_test(layout.4.c1-1-3.c2-0-2 4 ARGS --comp1 1:3 --comp2 0:2 --check)
   fuse_add_layout_test(layout.4.c1-0-3.c2-0-3 4 ARGS --comp1 0:3 --comp2 0:3 --check)
 
-  # --coupler: the coupler-placement track (design C). The field transfer always
+  # --coupler: coupler placement (docs/dev/coupler-placement.md). The field transfer always
   # gets RemapFlags::Conservative (main.cpp's own comment on why), so
   # --check still verifies the same "every destination entity holds its own
   # global id" property as the rows above, now routed source -> coupler ->
@@ -980,8 +956,8 @@ if(FUSE_ENABLE_MPI)
     ARGS --comp1 0:1 --comp2 0:1 --coupler 0:1 --mesh hexbox:4x4x4)
 endif()
 
-# ---- S6 phase 3, "LowFive" track: begin -----------------------------------
-# Demo B (docs/user/lowfive.md, KNOWN_ISSUES.md section D): two SEPARATE
+# ---- Demo B (LowFive): begin ----------------------------------------------
+# Demo B (docs/user/lowfive.md): two SEPARATE
 # executables, demo_b_producer and demo_b_consumer, coupled purely by
 # LowFive's HDF5-VOL interception across an MPI intercommunicator the two
 # form themselves (examples/demo_b/rendezvous.hpp) -- not launched as one
@@ -1029,9 +1005,9 @@ else()
                  "-DFUSE_ENABLE_LOWFIVE=ON -DFUSE_ENABLE_MPI=ON and a "
                  "LowFive install shipping liblowfive-dist; not built")
 endif()
-# ---- S6 phase 3, "LowFive" track: end -------------------------------------
+# ---- Demo B (LowFive): end ------------------------------------------------
 
-# review-2026-10-11 BC-1: one line naming every example this configure
+# one line naming every example this configure
 # skipped because FUSE_LINALG_BACKEND is not eigen, same convention as
 # test/CMakeLists.txt's own skip summary at the bottom of its audit section.
 if(NOT FUSE_LINALG_BACKEND_IS_EIGEN)

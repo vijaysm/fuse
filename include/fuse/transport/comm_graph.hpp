@@ -4,15 +4,15 @@
 /// holds, or wants, this data", for two components whose rank sets may be
 /// disjoint, identical, or partially overlapping.
 ///
-/// Spec: docs/specs/2026-09-11-comm-graph-design.md. Closes R5 for the
-/// fully-disjoint case: `MpiTransport::build_plan()` already redistributes
+/// Spec: docs/history/soma/specs/2026-09-11-comm-graph-design.md. For the
+/// fully-disjoint case, `MpiTransport::build_plan()` redistributes
 /// correctly given `TransportSpec::src_ranks`/`dst_ranks`/`global_ids`, and
-/// `Runner::Impl::attach_comm_graphs` (`src/runtime/runner.cpp`) is now the
+/// `Runner::Impl::attach_comm_graphs` (`src/runtime/runner.cpp`) is the
 /// consumer that populates those three from a `CommGraph`, at `setup()`, for
-/// every disjoint-rank `Transport` instruction that compilation into the dataflow graph emits. Overlapping
-/// rank sets are supported: the peer-wise plan below is consumed by
-/// `MpiTransport::build_plan_from_peers`, and the same-rank matches by its
-/// local-copy pass (R31, closed 2026-09-16).
+/// every disjoint-rank `Transport` instruction that compilation into the
+/// dataflow graph emits. Overlapping rank sets are supported: the peer-wise
+/// plan below is consumed by `MpiTransport::build_plan_from_peers`, and the
+/// same-rank matches by its local-copy pass.
 /// mishandled -- see the spec's status section for the complete list of what
 /// ships and what is rejected.
 ///
@@ -83,7 +83,7 @@ struct CommGraphOptions {
 /// A matched pair whose source and destination live on the same rank.
 ///
 /// LOAD BEARING, NOT AN OPTIMIZATION. `MpiTransport` rejects overlapping
-/// source/destination rank sets by design (R24, and the note on
+/// source/destination rank sets by design (see the note on
 /// `MpiTransport` in transport.hpp): one `global_ids` list cannot describe a
 /// rank that is in both. Splitting same-rank matches out here -- they never
 /// reach `MpiTransport` -- is what makes a partially-overlapping component
@@ -162,7 +162,7 @@ struct CommGraphStats {
 ///
 /// WHY THAT MATTERS. `MpiTransport`'s destructor is collective because it
 /// frees a duplicated communicator, which makes asymmetric destruction across
-/// ranks a hang (R24). A `CommGraph` has no such hazard: it can be copied,
+/// ranks a hang. A `CommGraph` has no such hazard: it can be copied,
 /// stored, transposed and destroyed on one rank without any other rank
 /// noticing.
 class CommGraph {
@@ -264,7 +264,7 @@ class CommGraph {
   /// FALSE IS NOT AN ERROR, AND IT IS NOT RARE. Under full or partial overlap
   /// one `global_ids` list per rank cannot describe a rank that is a source
   /// for some entities and a destination for others, which is exactly why
-  /// `MpiTransport::build_plan` rejects overlapping rank sets (R24). Under
+  /// `MpiTransport::build_plan` rejects overlapping rank sets. Under
   /// FULL overlap every match is a `local_pairs()` entry and there is nothing
   /// left to transport. Under PARTIAL overlap there is: use `send_plan()` and
   /// `recv_plan()`, which describe it exactly.
@@ -341,15 +341,14 @@ class CommGraph {
 /// exactly what a target vertex at an interior source-partition boundary
 /// has.
 ///
-/// Review 2026-10-11 TR-11: `Runner::Impl::reduce_nodal_remap_target`, named
-/// below until this note, was deleted (runner_impl.hpp's own comment on the
-/// NodalReduceInfo/NodalReduceMode redesign records it); this primitive's
-/// only callers today are `test/parallel/nodal_field_test.cpp`'s own direct
-/// exercises. The lead's ruling of 2026-09-24 (docs/dev/nodal-fields.md)
-/// that this is not gated by `RunnerConfig::check_conservation` -- which
+/// This primitive's only callers today are
+/// `test/parallel/nodal_field_test.cpp`'s own direct exercises
+/// (runner_impl.hpp's comment on the NodalReduceInfo/NodalReduceMode design
+/// records the runtime consumer that was removed). It is not gated by
+/// `RunnerConfig::check_conservation` (docs/dev/nodal-fields.md) -- which
 /// controls a CHECK, not the physics, so a distributed Extensive Remap
-/// target's reduction always runs -- stands for whatever runtime consumer
-/// eventually replaces the deleted one.
+/// target's reduction always runs -- and that holds for whatever runtime
+/// consumer uses it.
 [[nodiscard]] Result<void> accumulate_shared_rows(const MeshView& view, int dim,
                                                   std::size_t components,
                                                   std::vector<double>& local_values,

@@ -1,5 +1,4 @@
-// Time windows track (Conformance, Unit 2): graph AUTHORING, separate
-// from PARTICIPATING (the lead's own ruling on Q2). u_main.c and
+// Graph AUTHORING, separate from PARTICIPATING. u_main.c and
 // v_main.f90 never build a fuse::CouplingGraph themselves -- they call
 // fuse_load_graph() on a YAML file and nothing else, exactly the way a
 // real user hands a coupled job a graph someone else wrote. This tool
@@ -9,10 +8,8 @@
 // with the ranks and LaunchSpecs a particular launch layout needs, then
 // writes the result through fuse::to_yaml() (include/fuse/model/
 // yaml_io.hpp) -- text YAML, not
-// fuse::serialize()'s binary descriptor (this file's own "what
-// fuse_save_graph produces" distinction matters here: a human-readable
-// committed reference has to be the TEXT format, found this session
-// while locating a format for the committed example).
+// fuse::serialize()'s binary descriptor (a human-readable committed
+// reference has to be the TEXT format).
 //
 // --launch mpmd: three app segments (U, V, coupler when --ranks-coupler
 // is nonzero), each LaunchMode::Mpmd with appnum 0/1/2 in that order,
@@ -21,49 +18,40 @@
 // `mpiexec -n ranks-u ./u_main : -n ranks-v ./v_main : -n ranks-coupler
 // ./coupler_main`.
 //
-// --launch accept: Q1's ruling (KNOWN_ISSUES.md D18) -- a processor set
+// --launch accept: a processor set
 // is ranks, not executables, and connect_pairwise() supports exactly
 // two Connect-mode components, so the coupler cannot be its own third
 // Connect-mode participant here. Its ranks instead live INSIDE the
-// acceptor's (U's) own MPI_COMM_WORLD, exactly as before; what changed
-// (KNOWN_ISSUES.md D36) is which ranks each of the three DECLARES.
-// Through 2026-10-09, U's declared RankSet spanned its FULL local
-// executable world (its own physics ranks plus the bundled coupler
-// ranks), with the coupler's own RankSet the trailing, overlapping
-// subset of it (`fuse::RankSet`'s own documented "overlap is legal").
-// `validate_launch_layout()` accepted that because it skipped
-// InProcess components (the coupler) entirely when checking that
-// Connect/Mpmd blocks were consecutive -- but D24's fix (a placement is
-// decomposed over its OWN declared RankSet, not the whole run) then
-// reads that same declared count back on the next host run: U's own
-// field was planned at 1/2 its real size on the host that first ran
-// with ranks-coupler > 0, because U's declared RankSet said "2 ranks"
-// while `u_main.c` decomposes its physics over `--ranks-u` (1 rank)
-// alone. A component's RankSet must be exactly the ranks that HOST it,
-// which for U no longer includes the coupler's bundled rank.
+// acceptor's (U's) own MPI_COMM_WORLD. Each of the three components
+// DECLARES exactly the ranks that HOST it: a component's RankSet must
+// be exactly those ranks, because a placement is decomposed over its
+// OWN declared RankSet, not the whole run. (If U's declared RankSet
+// spanned its full local executable world, i.e. its own physics ranks
+// plus the bundled coupler ranks, U's own field would be planned at
+// 1/2 its real size when ranks-coupler > 0, because U's declared
+// RankSet would say "2 ranks" while `u_main.c` decomposes its physics
+// over `--ranks-u` (1 rank) alone.)
 //
-// So, since D36: U's declared RankSet is `{0, ranks_u}` -- its own
-// physics ranks only; the coupler's is `{ranks_u, ranks_coupler}` --
-// the GAP this leaves between U's own block and V's; V's is
-// `{ranks_u + ranks_coupler, ranks_v}`, unchanged. `validate_launch_
-// layout()`'s own D36 fix is the other half of this: a gap between two
-// Connect/Mpmd blocks is now legal exactly when an in-process
-// component's own RankSet covers it exactly, which is precisely what
-// the coupler's new declaration does. `u_main.c` itself (not this
-// tool) still decides, per rank, whether it is one of U's own physics
-// ranks or one of the coupler's bundled placeholder ranks (its own
-// --ranks-u argument) -- only the GRAPH's own account of which ranks
-// belong to which declared component changed, not which physical ranks
-// anything runs on.
+// So U's declared RankSet is `{0, ranks_u}` -- its own physics ranks
+// only; the coupler's is `{ranks_u, ranks_coupler}` -- the GAP this
+// leaves between U's own block and V's; V's is
+// `{ranks_u + ranks_coupler, ranks_v}`. `validate_launch_layout()`
+// accepts a gap between two Connect/Mpmd blocks exactly when an
+// in-process component's own RankSet covers it exactly, which is
+// precisely what the coupler's declaration does. `u_main.c` itself
+// (not this tool) still decides, per rank, whether it is one of U's
+// own physics ranks or one of the coupler's bundled placeholder ranks
+// (its own --ranks-u argument) -- the GRAPH's own account of which
+// ranks belong to which declared component is separate from which
+// physical ranks anything runs on.
 //
-// NOT YET CONFIRMED BY A HOST RUN beyond D36's own fix (MPI cannot
-// start in this sandbox -- KNOWN_ISSUES.md C1): whether a rank inside
+// NOT YET CONFIRMED BY A HOST RUN (MPI cannot start in the sandbox
+// this was written in): whether a rank inside
 // the coupler's declared RankSet that registers none of U's fields (a
 // bundled coupler placeholder rank) is tolerated by the rest of the
 // participant ABI/Runner the way a component's own sparsely-populated
 // RankSet already is elsewhere in the suite (examples/layout_driver's
-// own uneven splits). Flagged in the Unit 2 report as the one open
-// mechanical question beyond Q1-Q3, unchanged by D36.
+// own uneven splits).
 
 #include <cstdio>
 #include <cstdlib>
@@ -84,25 +72,22 @@ namespace {
 // Mirrors test/verification/brusselator_participants_test.cpp's own
 // kNxU/kNyU/kNxV/kNyV/kDtU/kDtV/kWindow/kTolerance/kMaxIterations, so a
 // graph this tool writes and a graph that test builds in-process
-// describe the identical physics problem -- the point of Unit 2's own
+// describe the identical physics problem -- the point of the
 // conformance claim. Duplicated here rather than shared through a
 // header because the two are different translation units with
 // different link graphs (this tool links no gtest, the test links no
 // CLI-argument parsing) and the values are few.
 //
-// S6 phase 3 (Conformance, Unit 3b), item 2(b): the REAL Brusselator
+// The values are the REAL Brusselator
 // example's own parameters (examples/brusselator/main.cpp's own Args
 // defaults: --nx-u 16 --ny-u 16 --nx-v 24 --ny-v 24 --dt-u 0.002
 // --dt-v 0.003 --window 0.02 --tolerance 1e-11 --max-iterations 60),
-// not the small/degenerate placeholder this tool and the two
-// conformance tests used through Unit 3a -- dt_u/dt_v/window are no
-// longer all equal, so this is genuinely multi-substep-per-window now
-// (10 U-substeps, ~6.67 -> 7 V-substeps per window; `delivery_pending`,
-// item 2(a) of this same round, is what makes a caller no longer need
-// to track that ratio itself). `reference_mpmd_3.yaml`/
-// `reference_mpmd_3_lowfive.yaml` (this tool's own golden outputs) were
-// regenerated against these values -- see this round's own report for
-// the before/after `reproduces_reference` byte-identity measurement.
+// not a small/degenerate placeholder -- dt_u/dt_v/window are not all
+// equal, so this is genuinely multi-substep-per-window (10 U-substeps,
+// ~6.67 -> 7 V-substeps per window; `delivery_pending` is what makes a
+// caller not need to track that ratio itself).
+// `reference_mpmd_3.yaml`/`reference_mpmd_3_lowfive.yaml` (this tool's
+// own golden outputs) are generated against these values.
 constexpr int kNxU = BRUSS_NX_U, kNyU = BRUSS_NY_U, kNxV = BRUSS_NX_V, kNyV = BRUSS_NY_V;  // brusselator_grid.h
 const fuse::Rational kDtU{2, 1000}, kDtV{3, 1000}, kWindow{2, 100};
 constexpr double kTolerance = 1e-11;
@@ -115,8 +100,7 @@ struct Args {
   std::string launch;  // "mpmd" | "accept"
   std::string out;
   std::string port_file = "brusselator_connect.port";
-  // S6 phase 3 ("LowFive" track), Unit 3: "fuse" (the default, every run
-  // before this track) moves u_out/v_out through FUSE's own ordinary
+  // "fuse" (the default) moves u_out/v_out through FUSE's own ordinary
   // Transport; "lowfive" additionally sets FieldSpec::hdf5_path on both
   // and adds a LowFive-launched component so validate() accepts it (this
   // file's own `write_lowfive_declarations` below has the full account).
@@ -221,14 +205,14 @@ int main(int argc, char** argv) {
       coupler_launch = fuse::LaunchSpec{.mode = fuse::LaunchMode::Mpmd, .appnum = 2};
     }
   } else {  // accept
-    // KNOWN_ISSUES.md D36: U's declared range is exactly its own
+    // U's declared range is exactly its own
     // physics ranks -- the ranks it actually hosts, which is what
-    // NativeMeshBackend::register_default_placements() (D24) decomposes
+    // NativeMeshBackend::register_default_placements() decomposes
     // a placement over. The coupler's bundled ranks still ride along
     // inside the acceptor's (U's) own local MPI_COMM_WORLD, physically
     // unchanged, but the GRAPH now declares them as the coupler's own
     // RankSet -- the gap this leaves between U's block and V's, which
-    // validate_launch_layout()'s own D36 fix accepts because an
+    // validate_launch_layout() accepts because an
     // in-process component's RankSet covers it exactly. V's range is
     // unchanged: it still starts right after every rank U's executable
     // carries, physics and bundled coupler alike.
@@ -245,10 +229,9 @@ int main(int argc, char** argv) {
       coupler_ranks = fuse::RankSet{args.ranks_u, args.ranks_coupler};
       // coupler_launch left at its default (LaunchMode::InProcess):
       // its ranks ride along inside U's own local world; connect() is
-      // never called on its behalf (KNOWN_ISSUES.md D18). Its declared
-      // RankSet is unchanged by D36 -- it already named exactly the
-      // bundled ranks; only U's own declaration (above) shrank to stop
-      // including them.
+      // never called on its behalf. Its declared
+      // RankSet names exactly the bundled ranks; U's own declaration
+      // (above) does not include them.
     }
   }
 
@@ -258,7 +241,7 @@ int main(int argc, char** argv) {
       u_ranks, v_ranks, u_launch, v_launch, coupler_launch);
   (void)handles;
 
-  // S6 phase 3 ("LowFive" track), Unit 3. A SEPARATE, fieldless component
+  // A SEPARATE, fieldless component
   // declares LaunchMode::LowFive -- not U or V's own launch mode, which
   // stays whatever --launch chose (mpmd/accept): "where do my ranks come
   // from" (U/V's own launch story) and "does ANY component here need
@@ -281,19 +264,16 @@ int main(int argc, char** argv) {
     const_cast<fuse::FieldSpec&>(graph.field(*v_out)).hdf5_path =
         "brusselator_v.h5/grid/v_out";
     const int total_ranks = args.ranks_u + args.ranks_v + args.ranks_coupler;
-    // Unit 3 (S6 phase 3, Conformance): MEASURED (brusselator_lowfive_
-    // harness_test.cpp's own first run that ever drove this fieldless
-    // marker through a live Runner/ABI): with no explicit `.kind` -- the
+    // MEASURED (brusselator_lowfive_
+    // harness_test.cpp driving this fieldless marker through a live
+    // Runner/ABI): with no explicit `.kind` -- the
     // ComponentDecl default, ComponentKind::Physics -- fuse_initialize()'s
     // own wiring loop (src/abi/participant.cpp) does not exempt it the
     // way it exempts a real ComponentKind::Coupler entry
     // (`if (decl.kind == ComponentKind::Coupler) continue;`), so it
     // becomes a THIRD externally driven component and any caller's own
-    // begin_step() loop has no step call for it. brusselator_graph_tool_
-    // lowfive_test.cpp never caught this because neither of its own
-    // tests drives the generated graph through a live Runner/ABI at all
-    // -- this component had the identical omission from the day it was
-    // added until this fix, unobserved for exactly that reason.
+    // begin_step() loop has no step call for it. The component is
+    // therefore declared ComponentKind::Coupler explicitly.
     (void)graph.add_component(
         {.name = "lowfive", .ranks = fuse::RankSet{0, total_ranks},
          .interval = fuse::Rational{1},

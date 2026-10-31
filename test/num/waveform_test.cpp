@@ -16,8 +16,8 @@ using fuse::TemporalBasis;
 using fuse::Waveform;
 
 // ---------------------------------------------------------------------------
-// Allocation counting, as in test/num/accelerator_test.cpp. REVIEW.md R-48,
-// pass 2: `WaveformOrder.DgAndSplineEvaluateAllocationIsIndependentOfElement
+// Allocation counting, as in test/num/accelerator_test.cpp.
+// `WaveformOrder.DgAndSplineEvaluateAllocationIsIndependentOfElement
 // Count` below is the fence that MEASURES the per-element solve buffers
 // being hoisted, rather than asserting it in a comment. This is the only
 // translation unit in this test binary, so defining global operator
@@ -593,14 +593,14 @@ TEST(Waveform, LargeAbsoluteTimesDoNotDegradeTheFit) {
 }
 
 // ---------------------------------------------------------------------------
-// REVIEW.md R-48, pass 2: the disclosed remaining per-element allocation.
+// The per-element allocation fence.
 // ---------------------------------------------------------------------------
 //
-// The first R-48 pass hoisted the shared factorization (`PolynomialFitPlan`/
-// `SplineMomentPlan`) out of the per-element loop, but `solve_polynomial_fit`/
-// `solve_cubic_spline_moments` still allocated their own `rhs`/`c` (resp.
-// `r`/`m`) scratch on every element -- the pass2 re-review's PARTIAL outcome.
-// This pass closes it with the `_into` entry points. The fence: one
+// The shared factorization (`PolynomialFitPlan`/`SplineMomentPlan`) is
+// hoisted out of the per-element loop, and `solve_polynomial_fit`/
+// `solve_cubic_spline_moments` use the `_into` entry points with caller
+// scratch rather than allocating their own `rhs`/`c` (resp. `r`/`m`) on
+// every element. The fence: one
 // `evaluate()` call's allocation count must not depend on the element count,
 // since every allocation left in the per-element loop would make it scale
 // with `elements_`.
@@ -619,9 +619,9 @@ std::size_t count_allocations_for_one_evaluate(TemporalBasis basis, int degree,
   std::vector<double> out(elements);
   const AllocationCounter counter;
   EXPECT_TRUE(w.evaluate(Rational{3, 2}, out.data()).ok());
-  // integrate_dg / integrate_spline received the same hoist as the evaluate
-  // pair (R-48) but were not under this fence, so a per-element buffer
-  // reintroduced there would have passed (pass-3 review, N-num-linalg-field-2).
+  // integrate_dg / integrate_spline get the same hoist as the evaluate
+  // pair, so they are under this fence too: a per-element buffer
+  // reintroduced there would otherwise pass.
   EXPECT_TRUE(w.integrate(Rational{1, 2}, Rational{5, 2}, out.data()).ok());
   return counter.count();
 }

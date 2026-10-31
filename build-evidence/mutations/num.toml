@@ -1,16 +1,13 @@
-# Mutation evidence for S7.2, the native Jacobian-free Newton-Krylov coupler
+# Mutation evidence for the native Jacobian-free Newton-Krylov coupler
 # (fuse::num::solve(), fuse/num/newton_krylov.hpp + fuse/num/line_search.hpp).
-# Own file per the review-fix protocol (see linalg-least-squares.toml's own
-# header comment): do not edit build-evidence/mutations.toml directly while
-# other tracks hold it dirty. Discovered automatically by tools/mutate.py's
+# Discovered automatically by tools/mutate.py's
 # load_manifest() (every build-evidence/mutations/*.toml), no separate
 # registration needed.
 #
 # All seven rows were HAND-PROVEN, not run through tools/mutate.py itself:
-# this track's own working tree carries untracked new files throughout (the
-# standing rule against any state-changing git), and tools/mutate.py refuses
-# to start against a tree that is not git-clean (its own header comment).
-# The exact sequence tools/mutate.py would run was followed by hand instead:
+# tools/mutate.py refuses to start against a tree that is not git-clean
+# (its own header comment). The exact sequence tools/mutate.py would run
+# was followed by hand instead:
 # a byte-for-byte backup of the file was taken BEFORE any row's `old`->`new`
 # text was applied; `cmake --build <dir> --target <target>` rebuilt the one
 # changed translation unit; the WHOLE target binary was run UNFILTERED (no
@@ -18,21 +15,20 @@
 # measured directly from that run); the file was restored from the backup and
 # `cmp`-verified byte-identical before the next row began. Seven iterations
 # ran (and were restored) in strict sequence against the SAME
-# backup-and-restore discipline every prior track's mutation rows in this
-# directory use -- the sixth and seventh rows both target the same
+# backup-and-restore discipline every other mutation row in this
+# directory uses -- the sixth and seventh rows both target the same
 # block-Jacobi coverage check's two halves (trailing vs. interior gap; the
-# first attempt at the trailing-gap row's own counterpart, grepping for a
-# DIFFERENT line, found the existing suite did not kill it, so a second test
-# and a second row were added rather than reporting a false kill).
+# trailing-gap row's own counterpart, on a DIFFERENT line, is not killed
+# by the existing suite, so a second test and a second row exist rather than
+# reporting a false kill).
 #
 # This is not the full coverage every refusal and branch in
 # newton_krylov.cpp/line_search.cpp could in principle carry -- seven rows
-# were chosen to cover each of the six mechanisms the task named at least
-# once (MFFD action, Eisenstat-Walker forcing, line search, the named
+# cover each of six mechanisms at least once (MFFD action,
+# Eisenstat-Walker forcing, line search, the named
 # convergence/divergence tests, the block-Jacobi preconditioner's coverage
 # check twice over, and the preconditioner lag schedule), not every
-# individual branch inside each. Recorded as an open item in this track's
-# own report rather than left silent.
+# individual branch inside each.
 
 [[mutation]]
 id = "newton-mffd-divided-difference-sign-flipped"
@@ -43,7 +39,7 @@ old = """  jv.axpy(-1.0, *fx_);"""
 new = """  jv.axpy(1.0, *fx_);"""
 target = "fuse_num_newton_krylov_test"
 test = "num.newton_krylov"
-# Hand-proved 2026-10-10 against a byte-identical backup: 25 cases in the
+# Hand-proved against a byte-identical backup: 25 cases in the
 # target before mutation (all pass); after mutation, applied by hand and the
 # WHOLE binary run unfiltered, 12 fail (Mffd.ActionAgreesWithAnalyticJacobianAtTheWalkerPerniceStep,
 # NewtonKrylovLineSearch.BtEngagesAndRecoversOnAPoorInitialGuess, both
@@ -63,7 +59,7 @@ old = """  if (safeguard > opt.safeguard_threshold) {"""
 new = """  if (false) {"""
 target = "fuse_num_newton_krylov_test"
 test = "num.newton_krylov"
-# Hand-proved 2026-10-10: 25 pass before; after mutation, 1 fails
+# Hand-proved: 25 pass before; after mutation, 1 fails
 # (EisenstatWalker.OverSolvingSafeguardEngages, which recomputes the floored
 # value directly and finds eta un-floored), 24 pass. File restored and
 # `cmp`-verified byte-identical; rebuilt and reran to confirm all 25 pass
@@ -78,7 +74,7 @@ old = """  if (f_cur <= (1.0 - 2.0 * opt.armijo_alpha * lambda) * f0) {"""
 new = """  if (f_cur <= 2.0 * f0) {"""
 target = "fuse_num_line_search_test"
 test = "num.line_search"
-# Hand-proved 2026-10-10: fuse_num_line_search_test has 7 cases, all pass
+# Hand-proved: fuse_num_line_search_test has 7 cases, all pass
 # before; after mutation, 2 fail (LineSearchBT.EngagesAndRecoversOnAPoorInitialGuess,
 # LineSearchBT.FailsWhenNoStepAboveLambdaMinIsAcceptable), 5 pass.
 # fuse_num_newton_krylov_test (25 cases, all pass before) independently loses
@@ -90,13 +86,13 @@ test = "num.line_search"
 [[mutation]]
 id = "newton-relative-convergence-test-duplicates-absolute"
 area = "num"
-describes = "solve()'s relative-convergence test (||F|| <= rtol*||F0||) is replaced by a second copy of the absolute test (||F|| <= atol), so a region that never reaches atol is reported DivergedMaxIterations/etc. instead of ConvergedRelative even when it has genuinely reduced the residual by rtol -- the 'relative test duplicates absolute' mutation row, a silent-misreport class the task's own standing rule (never a silent outcome) is meant to prevent."
+describes = "solve()'s relative-convergence test (||F|| <= rtol*||F0||) is replaced by a second copy of the absolute test (||F|| <= atol), so a region that never reaches atol is reported DivergedMaxIterations/etc. instead of ConvergedRelative even when it has genuinely reduced the residual by rtol -- the 'relative test duplicates absolute' mutation row, a silent-misreport class the rule that no outcome is ever silent is meant to prevent."
 file = "src/num/newton_krylov.cpp"
 old = """    if (norm_f_new <= opt.rtol * norm_f0) return finish(NewtonStatus::ConvergedRelative);"""
 new = """    if (norm_f_new <= opt.atol) return finish(NewtonStatus::ConvergedRelative);"""
 target = "fuse_num_newton_krylov_test"
 test = "num.newton_krylov"
-# Hand-proved 2026-10-10: 25 pass before; after mutation, 2 fail
+# Hand-proved: 25 pass before; after mutation, 2 fail
 # (NewtonKrylovConvergence.RelativeFiresWhenAtolIsUnreachable, which sets
 # atol=0 specifically to prove the relative test is the one that must fire,
 # and NewtonKrylovPreconditioner.IdentityNeedsMoreGmresIterationsThanTheExactBlockInverse,
@@ -113,7 +109,7 @@ old = """  if (cursor != n) {"""
 new = """  if (false) {"""
 target = "fuse_num_newton_krylov_test"
 test = "num.newton_krylov"
-# Hand-proved 2026-10-10, re-measured against the 26-test baseline after
+# Hand-proved, re-measured against the 26-test baseline after
 # NewtonKrylovPreconditioner.InteriorCoverageGapIsRefused was added: 26 pass
 # before; after mutation, 1 fails (NewtonKrylovPreconditioner.CoverageGapIsRefused,
 # the trailing-gap case), 25 pass. File restored and `cmp`-verified
@@ -128,7 +124,7 @@ old = """    if (lo != cursor) {"""
 new = """    if (false) {"""
 target = "fuse_num_newton_krylov_test"
 test = "num.newton_krylov"
-# Hand-proved 2026-10-10 against the 26-test baseline (with
+# Hand-proved against the 26-test baseline (with
 # InteriorCoverageGapIsRefused already added): 26 pass before; after
 # mutation, 1 fails (NewtonKrylovPreconditioner.InteriorCoverageGapIsRefused),
 # 25 pass. File restored and `cmp`-verified byte-identical; rebuilt and
@@ -144,7 +140,7 @@ old = """    if (refresh_precond && (k == 0 || opt.preconditioner_lag <= 0 ||
 new = """    if (refresh_precond) {"""
 target = "fuse_num_newton_krylov_test"
 test = "num.newton_krylov"
-# Hand-proved 2026-10-10 against the 27-test baseline (with
+# Hand-proved against the 27-test baseline (with
 # LagScheduleRefreshesExactlyAtTheDeclaredInterval already added): 27 pass
 # before; after mutation, 1 fails
 # (NewtonKrylovPreconditioner.LagScheduleRefreshesExactlyAtTheDeclaredInterval),

@@ -90,7 +90,7 @@ TEST(FsiBeam, UniformLoadMaxDeflectionMatchesTheTextbookFormula) {
   EXPECT_NEAR(got, want, 1e-12 * want);
 }
 
-// KNOWN_ISSUES.md D9, this round: `BeamSolver::step_midpoint_load` replaces
+// `BeamSolver::step_midpoint_load` replaces
 // `step()`'s "force at t_{n+1}" convention with a load already representing
 // t_{n+1/2} (matching Crank-Nicolson's own trapezoidal terms on the fluid
 // side). Substituting the midpoint value for the trapezoidal average of end-

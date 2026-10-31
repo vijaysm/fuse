@@ -1,5 +1,5 @@
-// KNOWN_ISSUES.md D57, "the period contract" (docs/dev/abi-design.md's own
-// section of that name; fuse::Runner::run_period()'s own doc comment,
+// "The period contract" (docs/dev/abi-design.md's section of that name;
+// fuse::Runner::run_period()'s own doc comment,
 // include/fuse/runtime/runner.hpp). The invariant stated there, generic
 // to the ABI rather than to any one example graph: the Runner must never
 // execute a period's real instructions beyond the last one the caller
@@ -8,7 +8,7 @@
 // would cost nothing to look up.
 //
 // WHY THIS FILE EXISTS ALONGSIDE brusselator_period_rollover_test.cpp.
-// That file pins the defect as it was FOUND -- through u_loop.c's/
+// That file pins the hazard through u_loop.c's/
 // v_loop.f90's own real caller-loop shape, with the Brusselator's own
 // multirate timing, checking that a FOLLOW-UP fuse_begin_step() call
 // never resolves a cached request for an unrequested period. This file
@@ -16,8 +16,8 @@
 // driving loop, directly on every REAL step as it happens: a step that
 // actually opens (`fuse_step_report::step_opened == 1`, meaning real
 // instructions -- including this region's own Constrain, which is what
-// hung a multi-rank run in its own base-communicator MPI_Allreduce,
-// D57's own "How it surfaced") must report a period strictly less than
+// would hang a multi-rank run in its own base-communicator MPI_Allreduce)
+// must report a period strictly less than
 // the number of periods this test actually asked for. No Runner-level
 // oracle is needed to state this: the bound is read directly off the
 // SAME report field every real caller already reads.
@@ -28,9 +28,9 @@
 // channel compiles to OpKind::ExternalDelivery, never Transport) --
 // reused rather than re-derived, because getting a coupling window's
 // own setup right from scratch is exactly the kind of duplicated-and-
-// drifting logic this project's own standing rule warns against
-// (KNOWN_ISSUES.md D57's own "Fix" section, on why a parallel model of
-// prime_next_request()'s control flow was deliberately not written).
+// drifting logic this project's own standing rule warns against (a
+// parallel model of prime_next_request()'s control flow is deliberately not
+// written).
 #include <gtest/gtest.h>
 
 #include <cstdio>
@@ -151,7 +151,7 @@ const fuse_participant_abi_v1* Table() {
   return t;
 }
 
-// u_loop.c's own u_loop_step() propagation fix (D57 Round 2), generalised
+// u_loop.c's own u_loop_step() propagation, generalised
 // past "U"/"V": standing in for the real caller loop's own "has a period
 // closed" check, which reads ONLY this function's own out_rep (never the
 // begin_step() report directly) -- see brusselator_period_rollover_test.
@@ -194,9 +194,9 @@ TEST(AbiPeriodBoundary, NeverRunsAPeriodTheCallerDidNotRequestOnceStateHasReache
   ASSERT_EQ(t->load_graph(ctx, &src, nullptr), FUSE_OK);
 
   // No fuse_setup_options::has_end_time -- the real row's own choice
-  // (u_main.c/v_main.f90, grepped in KNOWN_ISSUES.md D57's own account),
-  // reproduced deliberately: this is the one combination (no end time,
-  // base communicator configured) that put D57's real row at risk.
+  // (u_main.c/v_main.f90), reproduced deliberately: this is the one
+  // combination (no end time, base communicator configured) that puts the
+  // real row at risk.
   fuse_setup_options opts{.struct_size = sizeof(opts)};
   ASSERT_EQ(t->setup(ctx, &opts, nullptr), FUSE_OK);
 
@@ -274,8 +274,8 @@ TEST(AbiPeriodBoundary, NeverRunsAPeriodTheCallerDidNotRequestOnceStateHasReache
   // is_coupling_ongoing() mid-period, which that same doc comment says
   // is not a free read once a step is already open or a rollover is in
   // play -- exactly the field this test's own drive_one_step() (and the
-  // real u_loop.c/v_loop.f90, D57 Round 2's own fix) already propagates
-  // for precisely this purpose.
+  // real u_loop.c/v_loop.f90) already propagates for precisely this
+  // purpose.
   fuse_ongoing ongoing{.struct_size = sizeof(ongoing)};
   ASSERT_EQ(t->is_coupling_ongoing(ctx, nullptr, &ongoing), FUSE_OK);
   std::int32_t next = ongoing.next_component;
@@ -284,12 +284,12 @@ TEST(AbiPeriodBoundary, NeverRunsAPeriodTheCallerDidNotRequestOnceStateHasReache
   // inferred afterward from an aggregate count): a step actually opened
   // (step_opened == 1, meaning real instructions -- including this
   // region's own Constrain -- just ran for it) must report a period
-  // strictly less than kRequestedPeriods. Before D57's fix,
-  // prime_next_request()'s rollover could resolve and RUN an
-  // unrequested further period's own first real step the instant this
-  // loop asked for one more step than strictly needed to observe the
-  // boundary -- which is exactly a step_opened == 1 report whose own
-  // `period` is kRequestedPeriods or more.
+  // strictly less than kRequestedPeriods. Were prime_next_request()'s
+  // rollover to resolve and RUN an unrequested further period's own first
+  // real step the instant this loop asked for one more step than strictly
+  // needed to observe the boundary, that would be exactly a
+  // step_opened == 1 report whose own `period` is kRequestedPeriods or
+  // more.
   bool done = (next == -1);
   constexpr int kSafetyCapSteps = 500;
   for (int i = 0; i < kSafetyCapSteps && !done; ++i) {
@@ -303,7 +303,7 @@ TEST(AbiPeriodBoundary, NeverRunsAPeriodTheCallerDidNotRequestOnceStateHasReache
           << "a real step of component '" << comp << "' ran for period "
           << begin_rep.period << ", which was never requested (only "
           << kRequestedPeriods << " periods were asked for) -- this is "
-             "exactly D57's own defect, had it regressed";
+             "exactly the period-contract violation";
     }
     next = rep.next_component;
     if (next == -1) {

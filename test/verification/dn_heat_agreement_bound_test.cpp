@@ -1,13 +1,12 @@
-// AgreementBounds track: a tier-0 unit test of examples/dn_heat/
-// agreement_bound.hpp's own `agreement_bound()` (the SHARP, round-4
-// per-period-sum formula) and `legacy_agreement_bound()` (round 2's own
-// formula, kept only for the informational `[agreement-bound legacy]`
-// print), with hand-built numbers -- proving the derivation that
-// replaced dn_heat's own 20x safety margin (round 1), then its own
-// stopping-criterion mismatch (round 2), then its own single-period-only
-// bound applied across a 20-period run (round 3, KNOWN_ISSUES.md D32),
-// without needing a full PETSc run (this sandbox cannot run one -- D32's
-// own "cannot complete a bare MPI_Init()" note). No FUSE library
+// A tier-0 unit test of examples/dn_heat/
+// agreement_bound.hpp's own `agreement_bound()` (the SHARP per-period-sum
+// formula) and `legacy_agreement_bound()` (the earlier formula, kept only
+// for the informational `[agreement-bound legacy]` print), with hand-built
+// numbers -- proving the derivation, without needing a full PETSc run. The
+// bound sums the per-period terminal residuals over the whole run, so it is
+// not a single-period-only bound applied across a 20-period run, and it
+// carries no ad-hoc 20x safety margin or stopping-criterion mismatch. No
+// FUSE library
 // dependency: the header under test is a pair of pure free functions,
 // one over two vectors of doubles and one over five doubles.
 
@@ -46,8 +45,8 @@ TEST(DnHeatAgreementBound, EmptyVectorsGiveAZeroBound) {
 
 TEST(DnHeatAgreementBound, ZeroBothTerminalResidualsGivesAZeroBound) {
   // With every period's own terminal residual exactly zero the bound is
-  // exactly zero -- round 3/4 carry NO separate inter-Krylov or safety
-  // term, unlike round 2's own formula (see LegacyAgreementBound tests
+  // exactly zero -- the sharp bound carries NO separate inter-Krylov or
+  // safety term, unlike the legacy formula (see LegacyAgreementBound tests
   // below).
   EXPECT_DOUBLE_EQ(dn_heat::agreement_bound({0.0, 0.0}, {0.0}), 0.0);
 }
@@ -64,8 +63,7 @@ TEST(DnHeatAgreementBound, SumIsOrderIndependent) {
 // build-evidence/mutations/agreement-bounds.toml's own
 // `dn-heat-agreement-bound-sums-only-the-last-period` row replaces
 // `agreement_bound()`'s own per-vector summation with "take only the
-// last element of each vector" -- exactly round 3's own defect
-// (KNOWN_ISSUES.md D32's owner-found correction): a bound that only
+// last element of each vector". A bound that only
 // ever looks at the final period says nothing about what periods
 // 1..N-1 may have contributed. A pair of per-period vectors whose
 // EARLIER entries are much larger than their LAST entries must report a
@@ -99,10 +97,10 @@ TEST(DnHeatAgreementBound, AsymmetricTerminalResidualsSumLinearly) {
   EXPECT_NEAR(dn_heat::agreement_bound({2e-10}, {1e-10, 4e-10}), (4.0 / 3.0) * 7e-10, 1e-24);
 }
 
-// LEGACY (round 2's own formula) -- kept here only so its own arithmetic
+// LEGACY (the earlier formula) -- kept here only so its own arithmetic
 // stays pinned for the informational `[agreement-bound legacy]` print;
-// NEVER the asserted bound (see agreement_bound.hpp's own "WHAT WAS
-// WRONG" section for why).
+// NEVER the asserted bound (see agreement_bound.hpp's own comments for
+// why).
 TEST(DnHeatLegacyAgreementBound, MatchesHandComputedValueForRepresentativeInputs) {
   // rtol = 1e-8 for both solvers, ||F_0|| = 100 (native) and 80 (petsc),
   // native solution norm = 50:

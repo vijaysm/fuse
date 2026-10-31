@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # tools/probe-hdf5-images.sh -- the acceptance test for the two-HDF5-image
-# hazard (KNOWN_ISSUES.md section D, docs/user/lowfive.md).
+# hazard (docs/user/lowfive.md).
 #
 # Builds tools/probe-hdf5-images.c against a given LowFive installation and
 # MOAB (both are needed to reproduce the hazard: it does not occur with
@@ -50,7 +50,7 @@
 #   FUSE_PROBE_KEEP_BUILD=1         keep FUSE_PROBE_BUILD_DIR instead of
 #                                   deleting it on exit (for inspection)
 #
-# MEASURED on this host, 2026-10-02 (see docs/user/lowfive.md for the full
+# MEASURED on a development host (see docs/user/lowfive.md for the full
 # record and the exact commands):
 #   ./probe-hdf5-images.sh /opt/lowfive                 -> PASS (one image
 #     each; the stock /opt/lowfive liblowfive.dylib already links MOAB's own

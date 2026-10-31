@@ -1,4 +1,4 @@
-// Demo A of spec Section 11, at the Phase 4 milestone: two in-process C++ components
+// Demo A of spec Section 11: two in-process C++ components
 // exchanging a field through graph -> lower -> schedule -> run, with an
 // analytic answer to check the result against.
 //
@@ -11,7 +11,7 @@
 // explicit and lagged by one coupling cycle (see Runner::Impl::step_period), which is
 // the dominant error in `right`'s answer and the thing this example measures.
 //
-// Both meshes are coincident 64-cell lines: Phase 4's Remap is an identity
+// Both meshes are coincident 64-cell lines: the Remap is an identity
 // copy, so that is the only configuration in which it is the correct operator.
 //
 // Exit status is 0 only if the run succeeded, no conservation violation was
@@ -102,12 +102,12 @@ int main(int argc, char** argv) {
   // environment is parsed by nothing and the built-in defaults apply.
   fuse::initialize();
 
-  // KNOWN_ISSUES.md D11 (closing): the Runner's coupling hot loop now runs
-  // on Kokkos' default host execution space (fuse/num/space_kernels.hpp),
-  // so every caller -- including this one, which ran no Kokkos kernel at
-  // all before this closing -- must initialise Kokkos before touching a
-  // Runner. Same pattern as test/support/fuse_test_main.cpp's
-  // `Kokkos::ScopeGuard` and examples/brusselator/main.cpp's.
+  // The Runner's coupling hot loop runs on Kokkos' default host execution
+  // space (fuse/num/space_kernels.hpp), so every caller -- including this
+  // one, which runs no Kokkos kernel of its own -- must initialise Kokkos
+  // before touching a Runner. Same pattern as
+  // test/support/fuse_test_main.cpp's `Kokkos::ScopeGuard` and
+  // examples/brusselator/main.cpp's.
   Kokkos::ScopeGuard kokkos_guard(argc, argv);
 
   bool dump = false;
@@ -149,11 +149,10 @@ int main(int argc, char** argv) {
   if (dump) {
     std::cout << "=== IR ===\n" << dump_text(lowered.dag)
               << "\n=== PLAN ===\n" << sched.plan.to_string() << "\n";
-    // Review 2026-10-11 TD-3: docs/user/mms-pair.md claims --dump prints
-    // "without running anything, then exits 0"; prior to this fix every
-    // run still fell through into the full gated physics run below,
-    // costing the entire run and returning the gates' own exit status
-    // rather than an unconditional 0.
+    // docs/user/mms-pair.md says --dump prints "without running anything,
+    // then exits 0": return here rather than falling through into the
+    // full gated physics run below, which would cost the entire run and
+    // return the gates' own exit status rather than an unconditional 0.
     return 0;
   }
 

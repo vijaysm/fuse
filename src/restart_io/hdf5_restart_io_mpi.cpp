@@ -1,6 +1,5 @@
-/// Restart track round 2, item 3 -- see include/fuse/restart_io/
-/// hdf5_restart_io_mpi.hpp's own header comment for the design and this
-/// round's own declared scope. This translation unit is compiled only
+/// See include/fuse/restart_io/hdf5_restart_io_mpi.hpp's own header comment
+/// for the design and declared scope. This translation unit is compiled only
 /// under FUSE_ENABLE_MPI, for the SAME reason collective_check_mpi.cpp
 /// is a separate file from hdf5_restart_io.cpp (that file's own
 /// src/CMakeLists.txt comment).
@@ -65,8 +64,8 @@ using HProp = Hid<H5Pclose>;
 using HAttr = Hid<H5Aclose>;
 using HType = Hid<H5Tclose>;
 
-/// This round's own declared scope (hdf5_restart_io_mpi.hpp's own header
-/// comment): Binary64 and Int64 only. Returns the native HDF5 type and
+/// The declared scope (hdf5_restart_io_mpi.hpp's own header comment):
+/// Binary64 and Int64 only. Returns the native HDF5 type and
 /// element byte size, or a Failure naming the unsupported type.
 [[nodiscard]] Result<std::pair<hid_t, std::size_t>> native_type_for(
     fuse::ElementType type) {
@@ -79,7 +78,7 @@ using HType = Hid<H5Tclose>;
     default:
       return Failure{"E-RESTART-TYPE-MISMATCH",
                      "collective restart writer supports only Binary64 and "
-                     "Int64 this round (docs/dev/restart.md Section 4.3's "
+                     "Int64 (docs/dev/restart.md Section 4.3's "
                      "own declared scope) -- got element type " +
                          std::to_string(static_cast<int>(type))};
   }
@@ -147,14 +146,13 @@ template <class T>
 
 /// The seven per-field type attributes the reader's own
 /// read_and_verify_type_metadata() requires (hdf5_restart_io.cpp,
-/// write_type_metadata). The collective writer was built against the
-/// pre-typed reader and wrote none of them. Found by reading the reader
+/// write_type_metadata). The collective writer was built against the pre-typed
+/// reader and wrote none of them. Found by reading the reader
 /// (read_and_verify_type_metadata opens "element_type" first), not by a
-/// measurement: on the owner's machine the two earlier defects in this file
-/// (KNOWN_ISSUES.md D75, items 1 and 2) refused every collectively written
-/// file before the type check was reached, so this omission was never seen
-/// as its own error. Attribute creation is collective in parallel HDF5;
-/// every task calls this with the same values, as for the dataset itself.
+/// measurement: other defects in this file refused every collectively written
+/// file before the type check was reached, so this omission could not be seen
+/// as its own error. Attribute creation is collective in parallel HDF5; every
+/// task calls this with the same values, as for the dataset itself.
 [[nodiscard]] Result<void> write_type_metadata_collective(
     hid_t loc, const fuse::ElementTypeInfo& info) {
   Result<void> r = write_scalar_attr_str_collective(loc, "element_type", info.name);
@@ -273,10 +271,9 @@ class CollectivePointWriterImpl final : public PointWriter, public RestartWriter
   [[nodiscard]] static Result<void> scalar_unsupported(std::string_view name) {
     return Failure{"E-RESTART-COLLECTIVE-SCALAR-UNSUPPORTED",
                    "collective restart writer does not support scalars, "
-                   "rationals, or blobs this round ('" + std::string(name) +
+                   "rationals, or blobs ('" + std::string(name) +
                    "') -- HDF5 metadata operations are collective-required "
-                   "even for a value one task alone would host; see the "
-                   "delivered report's own open_questions"};
+                   "even for a value one task alone would host"};
   }
 
   Result<void> put_field_bytes(std::string_view name,
@@ -351,14 +348,13 @@ class CollectivePointWriterImpl final : public PointWriter, public RestartWriter
     return scalar_unsupported(name);
   }
 
-  /// The LOCAL (this task's own) half of owner decision 2's batched
-  /// check -- already folded into put_field_bytes() above (the
-  /// per-call duplicate-id-within-one-call check) for this writer, so
-  /// there is nothing further to do here; the GLOBAL, cross-task half
-  /// is finish() below's own collective_duplicate_and_coverage_check()
-  /// call, run once after every put_field() call for this point has
-  /// returned, exactly matching RestartWriter::finish_point()'s own
-  /// header contract.
+  /// The LOCAL (this task's own) half of the batched check -- already folded
+  /// into put_field_bytes() above (the per-call duplicate-id-within-one-call
+  /// check) for this writer, so there is nothing further to do here; the
+  /// GLOBAL, cross-task half is finish() below's own
+  /// collective_duplicate_and_coverage_check() call, run once after every
+  /// put_field() call for this point has returned, exactly matching
+  /// RestartWriter::finish_point()'s own header contract.
   Result<void> finish_point() override { return Result<void>::success(); }
 
   Result<std::vector<std::int64_t>> recorded_ids(
@@ -396,11 +392,10 @@ class CollectivePointWriterImpl final : public PointWriter, public RestartWriter
     // With the MPI-IO driver the default close degree is semi: H5Fclose
     // fails while any object in the file is still open, Hid::reset()
     // discards that failure, and the file stays open with its metadata
-    // unflushed when rank 0 renames it. Measured on the owner's machine
-    // 2026-10-17: every collectively written file was refused on read
-    // with E-RESTART-TRUNCATED ("does not open as a valid HDF5 file").
-    // H5Fclose is collective; its result is checked so a failed close is
-    // a refusal, never a renamed partial file.
+    // unflushed when rank 0 renames it. Without this, every collectively
+    // written file is refused on read with E-RESTART-TRUNCATED ("does not open as a valid HDF5
+    // file"). H5Fclose is collective; its result is checked so a failed close is a refusal, never a
+    // renamed partial file.
     group_.reset();
     const hid_t file_id = file_.release();
     if (file_id >= 0 && H5Fclose(file_id) < 0) {
@@ -444,8 +439,8 @@ Result<std::unique_ptr<PointWriter>> create_restart_point_collective(
   if (layout != FileLayout::SeparateMeshAndPoints) {
     return Failure{"E-RESTART-COLLECTIVE-LAYOUT-UNSUPPORTED",
                    "create_restart_point_collective: only "
-                   "FileLayout::SeparateMeshAndPoints is supported this "
-                   "round (docs/dev/restart.md Section 4.3's own declared "
+                   "FileLayout::SeparateMeshAndPoints is supported "
+                   "(docs/dev/restart.md Section 4.3's own declared "
                    "scope)"};
   }
   MPI_Comm comm = MPI_Comm_f2c(comm_f);
@@ -471,14 +466,13 @@ Result<std::unique_ptr<PointWriter>> create_restart_point_collective(
   // The SAME six file attributes, under the SAME names, as the serial
   // writer (hdf5_restart_io.cpp, create_restart_point): the reader asks
   // for "format_version" and the rest by these exact names. The collective
-  // writer first wrote "@"-prefixed names and a different version key, and
-  // every file it produced was refused with E-RESTART-TRUNCATED "missing
-  // attribute format_version" (owner's machine, 2026-10-17). D62
-  // (KNOWN_ISSUES.md) added "descriptor_version" as its own sixth
+  // writer must not use "@"-prefixed names or a different version key: a
+  // file written that way is refused with E-RESTART-TRUNCATED "missing
+  // attribute format_version". "descriptor_version" is the sixth
   // attribute (open_restart_point() reads it unconditionally regardless
   // of which writer produced the file, so this path must write it too --
-  // a file missing it is refused the same way a pre-D62 file missing
-  // "format_version" was).
+  // a file missing it is refused the same way a file missing
+  // "format_version" is).
   Result<void> r = write_scalar_attr_u32_collective(file, "format_version",
                                                     provenance.format_version);
   if (!r.ok()) return r.error();

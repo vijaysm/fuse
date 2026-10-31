@@ -1,14 +1,12 @@
 #pragma once
 
-/// Distributed general consistent interpolation (nodal-remap track, step
-/// "Distributed rows and the exact transpose") -- lifts KNOWN_ISSUES D8 for
-/// the two consistent methods ("consistent", "consistent-transpose") by
-/// building H's rows, and applying H / H^T D, when the nodal source and the
-/// evaluation points are each spread across possibly different rank sets.
+/// Distributed general consistent interpolation for the two consistent
+/// methods ("consistent", "consistent-transpose"): builds H's rows, and
+/// applies H / H^T D, when the nodal source and the evaluation points are
+/// each spread across possibly different rank sets.
 ///
-/// THE OWNERSHIP RULE (unchanged from the task's own spec). Each evaluation
-/// entity is owned by exactly one rank (`MeshView::is_owned`); only that
-/// rank ever holds, or computes, that entity's row of H. This file's
+/// THE OWNERSHIP RULE. Each evaluation entity is owned by exactly one rank
+/// (`MeshView::is_owned`); only that rank ever holds, or computes, that entity's row of H. This file's
 /// `build_distributed_interp_rows` produces exactly one `DistributedRow` per
 /// OWNED evaluation entity on the calling rank -- never one per local
 /// (owned + ghost) entity, and never a row for an entity this rank does not
@@ -24,7 +22,7 @@
 /// in-memory replica every rank holds in full, and then locates each of its
 /// own owned evaluation points against that replica with EXACTLY the same
 /// per-cell primitives `general_interp.hpp`'s serial builder already uses
-/// and this track already validated (`invert_reference_map`,
+/// and are already validated (`invert_reference_map`,
 /// `basis_weights`, the lowest-global-id tie-break) -- no new distributed
 /// geometric algorithm at all. `apply_distributed_H`/`apply_distributed_HT`
 /// make the SAME trade for the field VALUES, on every call: one
@@ -38,56 +36,47 @@
 /// contributor rank, then ascending local index) gives one answer,
 /// independent of which rank asks.
 ///
-/// This is a robustness-over-efficiency trade this project's own standing
-/// priority explicitly asks for ("robustness and accuracy beats efficiency
-/// always... once we have a verified workflow, we can spend time making it
-/// more efficient"): it replicates the WHOLE source mesh's geometry (not the
-/// field data of every OTHER field transfer, only this one interpolation's own
-/// source mesh entity set) on every rank, which does not scale to a source mesh too
-/// large to fit on one rank, and every `apply_*` call is a fresh
-/// `MPI_Allgatherv`, not a cached point-to-point plan. Revisiting this for a
-/// directory-based, point-to-point implementation once the workflow above is
-/// verified is exactly the kind of efficiency work that priority defers, not
-/// forbids -- see `open_questions` in this task's report for the concrete
-/// next step (reusing `fuse::search::query_points_distributed`, already
-/// built and available, for the row-location step only).
+/// This is a robustness-over-efficiency trade: it replicates the WHOLE
+/// source mesh's geometry (not the field data of every OTHER field
+/// transfer, only this one interpolation's own source mesh entity set) on
+/// every rank, which does not scale to a source mesh too large to fit on
+/// one rank, and every `apply_*` call is a fresh `MPI_Allgatherv`, not a
+/// cached point-to-point plan. A directory-based, point-to-point
+/// implementation is the natural efficiency follow-up; its concrete next step is reusing
+/// `fuse::search::query_points_distributed`, already built and available,
+/// for the row-location step only.
 ///
 /// WHAT REMAINS OPEN. `InterfaceDomainPolicy::ClampToBoundary` is not
 /// implemented here -- only `Refuse` -- since nothing in this replicated
 /// design needs it to be different from the serial builder's own open
-/// question on the same policy, and this track's time did not extend to it.
-/// `MeshBackend::placed_view` per-placement weight building (D5 item 3) is
+/// question on the same policy.
+/// `MeshBackend::placed_view` per-placement weight building is
 /// this file's caller's responsibility, not this file's: every function
 /// below takes the two SIDES' already-placed `MeshView`s directly, exactly
 /// as `resolve_side`/`build_consistent_weights_for_plan` do for the serial
 /// path, and does not itself call `backend.view()`/`backend.placed_view()`.
 ///
-/// WIRED INTO Runner::Impl::resolve_remap since KNOWN_ISSUES.md D8 round 4
-/// (REVIEW.md TF-6: this paragraph previously said "not yet," which the
-/// 2026-09-25 wiring made false): `Runner` builds one `DistributedInterpRows`
-/// per matching nodal Remap instruction at `initialize()` (`runner.cpp`'s
-/// `build_nodal_dist_remap`) and applies it allocation-free per coupling
-/// cycle, exactly the design this file originally described as pending.
-/// The wiring covers the two consistent-interpolation methods this track's
-/// scope names -- "consistent" with a nodal SOURCE, "consistent-transpose"
+/// WIRED INTO Runner::Impl::resolve_remap: `Runner` builds one
+/// `DistributedInterpRows` per matching nodal Remap instruction at
+/// `initialize()` (`runner.cpp`'s `build_nodal_dist_remap`) and applies it
+/// allocation-free per coupling cycle. The wiring covers the two
+/// consistent-interpolation methods -- "consistent" with a nodal SOURCE, "consistent-transpose"
 /// with a nodal TARGET -- and only when the orientation matches the method;
 /// `resolve_remap` still refuses `E-RT-REMAP-NODAL-PARALLEL` for a
 /// nodal-to-nodal channel on more than one rank (neither orientation
 /// implemented), for an orientation/method mismatch, and for any other
 /// method against a partitioned nodal side (the supermesh conservative
 /// methods build FV<->FV weights only; per-placement supermesh weights for
-/// a nodal side remain unimplemented, KNOWN_ISSUES D5 item 3) -- each a
-/// deliberate, named remaining limitation, not evidence the wiring itself
-/// is missing.
+/// a nodal side remain unimplemented) -- each a
+/// deliberate, named limitation.
 ///
-/// NO BLANKET `#if FUSE_HAVE_MPI` GATE (round 2 change from the first
-/// submission): the declarations below are ALWAYS visible, mirroring
+/// NO BLANKET `#if FUSE_HAVE_MPI` GATE: the declarations below are ALWAYS visible, mirroring
 /// `fuse::partition::detail::collectives.hpp`'s own convention (its own
 /// header comment: "mpi.h appears only in the .cpp, never in a header...
 /// comm == kNullComm is a local no-op / identity ... touches no MPI
 /// symbol"). `comm_handle` is a `fuse::search::CommHandle`
 /// (fuse/search/types.hpp): `fuse::search::kNullComm` (0) means exactly one
-/// process -- the base-build-configuration (no-MPI) path this track's Runner test exercises
+/// process -- the base-build-configuration (no-MPI) path the Runner test exercises
 /// -- and touches no MPI symbol at all; any other value is a REAL
 /// communicator (`MPI_Comm_c2f`'d by the caller) and requires
 /// `FUSE_HAVE_MPI`, rejecting `E-RT-NODAL-DIST-NOMPI` otherwise. This is what
@@ -212,13 +201,11 @@ struct DistributedInterpRows {
                                                 std::vector<double>& out_src_nodal_local,
                                                 search::CommHandle comm_handle);
 
-/// runtime-exchange track, follow-up round (lead's layering decision):
-/// the ONE-TIME resolved exchange `apply_distributed_H`/`apply_distributed_HT`
-/// above do NOT use -- those two functions are UNCHANGED (every caller
-/// that already depends on their per-call Allgatherv-and-replicate
-/// behaviour, including the `comm_handle == fuse::search::kNullComm`
-/// single-rank path, keeps it) -- this is the alternative a REAL
-/// communicator's caller may build ONCE, at the same point
+/// The ONE-TIME resolved exchange `apply_distributed_H`/`apply_distributed_HT`
+/// above do NOT use -- those two functions keep their per-call
+/// Allgatherv-and-replicate behaviour, including the
+/// `comm_handle == fuse::search::kNullComm` single-rank path -- this is
+/// the alternative a REAL communicator's caller may build ONCE, at the same point
 /// `build_distributed_interp_rows` itself is called, and reuse every
 /// period: `apply_distributed_H`'s index resolution (which rank owns
 /// each row's `src_global_ids`, and at what LOCAL position) does not
@@ -273,13 +260,10 @@ struct DistributedRemapPlan {
   /// ghost of the OUTPUT to refresh there.
   std::shared_ptr<const linalg::GhostExchanger> ghost_fill_exchanger;
 
-  /// Lead's determinism follow-up (2026-10-15): the H^T scatter-add's own
-  /// FIXED summation order, resolved ONCE here instead of leaving it to
+  /// The H^T scatter-add's own FIXED summation order, resolved ONCE here instead of leaving it to
   /// `Kokkos::atomic_add`'s MPI-arrival order -- recovers
   /// `apply_distributed_HT`'s own "bit-identical across rank counts"
-  /// guarantee (this struct's original round 2 submission traded that
-  /// guarantee away; see KNOWN_ISSUES/report-exchange-2.md for the
-  /// history) for this plan-based path too, at a one-time setup cost
+  /// guarantee for this plan-based path too, at a one-time setup cost
   /// instead of paying for it every period.
   ///
   /// Built from `exchanger`'s own `PackedExchanger::pack_index()`

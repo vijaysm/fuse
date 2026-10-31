@@ -131,13 +131,13 @@ TEST(Descriptor, SerializationIsDeterministic) {
   EXPECT_EQ(serialize(rich_graph()), serialize(rich_graph()));
 }
 
-// IMPORTANT 5 (post-review): ComponentDecl::regions is harmless today only
+// ComponentDecl::regions is harmless today only
 // because nothing in the public API populates it (there is no
 // add_region_to_component()-style call). Since structurally_equal() is
 // defined in terms of serialize(), it cannot detect a field neither side
 // writes -- so this pins the choice explicitly: populating `regions`
-// directly on a graph must not change what serialize() produces. If Phase 2
-// starts populating this field through the graph API, this test should be
+// directly on a graph must not change what serialize() produces. If the graph
+// API starts populating this field, this test should be
 // replaced with round-trip coverage, and the writer/reader extended to
 // carry it -- see the comment on ComponentDecl::regions.
 TEST(Descriptor, RegionsFieldIsIntentionallyNotSerialized) {
@@ -151,7 +151,7 @@ TEST(Descriptor, RegionsFieldIsIntentionallyNotSerialized) {
   EXPECT_EQ(serialize(a), serialize(b));
 }
 
-// ---- merge transforms (S2.1/S2.3) --------------------------------------
+// ---- merge transforms --------------------------------------
 
 // The waist is version 3 with magic "FUSE": two changes from the inherited v2,
 // both invisible to a reader that guessed. A v2 buffer must be REFUSED, not
@@ -203,7 +203,7 @@ TEST(Descriptor, UnitScaleAndOffsetAreInTheCanonicalBytes) {
   EXPECT_TRUE(round_tripped.value().field(fuse::FieldId{0}).units.same_dimensions(pascal));
 }
 
-// REVIEW.md R-19: Units has no constructor of its own to gate a non-positive
+// Units has no constructor of its own to gate a non-positive
 // scale at (every call site aggregate-initializes it), so deserialize() is
 // the narrowest choke point available for the one input in this scope that
 // crosses a real trust boundary. Both the zero (annihilator) and negative
@@ -224,12 +224,12 @@ TEST(Descriptor, RejectsNonPositiveUnitScale) {
   }
 }
 
-// REVIEW.md R-04: deserialize() used to read MeasureKind/AccelKind/FilterKind
-// straight off the wire with no range check, so an out-of-range byte (a bit
-// flip, truncation, or adversarial construction of a descriptor buffer --
-// deserialize() is the ABI narrow waist every language binding funnels
-// through) round-tripped into a CouplingGraph and only became undefined
-// behavior later, at to_yaml()'s unchecked array index. This patches each
+// deserialize() must range-check MeasureKind/AccelKind/FilterKind read off
+// the wire: an out-of-range byte (a bit flip, truncation, or adversarial
+// construction of a descriptor buffer -- deserialize() is the ABI narrow
+// waist every language binding funnels through) would otherwise round-trip
+// into a CouplingGraph and only become undefined behavior later, at
+// to_yaml()'s unchecked array index. This patches each
 // enum byte to an out-of-range value in a known-good buffer, mirroring
 // InheritedVersionIsRefusedNotReinterpreted's technique, and relies on the
 // iteration region (with exactly one convergence measure, a one-character
@@ -317,7 +317,7 @@ TEST(Descriptor, RejectsCorruptedIterationRegionEnums) {
   ASSERT_TRUE(deserialize(bytes).ok());
 }
 
-// ---- the waist freeze (S2.3) -------------------------------------------
+// ---- the waist freeze -------------------------------------------
 
 // Every optional member at a NON-DEFAULT value. A round-trip over defaults
 // proves nothing about a member: zero bytes written and zero read agree.
@@ -345,7 +345,7 @@ TEST(Descriptor, RoundTripPreservesEveryNonDefaultMember) {
   EXPECT_EQ(read_back.value().region(fuse::RegionId{0}).dimension, 2);
   EXPECT_EQ(read_back.value().component(fuse::ComponentId{1}).interval, fuse::Rational(1, 3));
 
-  // The coupler-placement track's two new members: a Coupler-kind component
+  // The coupler-placement members: a Coupler-kind component
   // (freeze_fixture's "midpoint"), and the "flux" channel's remap_on naming
   // it.
   const auto midpoint = read_back.value().find_component("midpoint");
@@ -384,7 +384,7 @@ TEST(Descriptor, RoundTripPreservesEveryNonDefaultMember) {
   // read, not just defaulted.
   EXPECT_EQ(scope.iteration, fuse::WaveformIteration::GaussSeidel);
 
-  // v11's reason for the version bump ("LowFive" track, Unit 3):
+  // v11's reason for the version bump:
   // FieldSpec::hdf5_path and LaunchMode::LowFive.
   ASSERT_TRUE(f.hdf5_path.has_value());
   EXPECT_EQ(*f.hdf5_path, "fluid_out.h5/grid/heat_flux");
@@ -393,7 +393,7 @@ TEST(Descriptor, RoundTripPreservesEveryNonDefaultMember) {
   EXPECT_EQ(read_back.value().component(*probe).launch.mode,
             fuse::LaunchMode::LowFive);
 
-  // v12's reason for the version bump (S7.2, the native Jacobian-free
+  // v12's reason for the version bump (the native Jacobian-free
   // Newton-Krylov coupler): the second region's acceleration.kind and its
   // NewtonConfig. Spot-check a value of each serialized type (the two enum
   // bytes, a double from each of the three groups the struct's comment
@@ -416,10 +416,10 @@ TEST(Descriptor, RoundTripPreservesEveryNonDefaultMember) {
   EXPECT_EQ(cfg.max_nonlinear_iterations, 9);
   EXPECT_EQ(cfg.gmres_max_iterations, 500u);
   EXPECT_TRUE(cfg.use_block_jacobi_preconditioner);
-  // v13's reason for the version bump (S7.2b, PetscSelect track):
+  // v13's reason for the version bump:
   // NewtonConfig::substrate, appended at the end of the block.
   EXPECT_EQ(cfg.substrate, fuse::NewtonSubstrate::Petsc);
-  // v14's reason for the version bump (NewtonModel track):
+  // v14's reason for the version bump:
   // NewtonConfig::norm/::residual_path, appended after substrate.
   EXPECT_EQ(cfg.norm, fuse::NewtonNorm::MeasureWeighted);
   EXPECT_EQ(cfg.residual_path, fuse::NewtonResidualPath::Direct);
@@ -495,9 +495,8 @@ TEST(Descriptor, RejectsCorruptedWindowScopeIteration) {
   EXPECT_EQ(r.error().code, "E-DESC-ENUM");
 }
 
-// descriptor v9 (S6 phase 3, "MPI connect" track): a component's launch
-// mode byte, same REVIEW.md R-04 pattern as every other enum byte on this
-// wire -- set directly via an out-of-range static_cast rather than by
+// descriptor v9: a component's launch mode byte, range-checked like every
+// other enum byte on this wire -- set directly via an out-of-range static_cast rather than by
 // searching serialized bytes for the right offset, since LaunchMode (like
 // every enum class here) accepts an explicit cast to any underlying value.
 TEST(Descriptor, RejectsCorruptedLaunchMode) {
@@ -554,13 +553,10 @@ TEST(Descriptor, TheFrozenV1BytesAreRefusedByThisReader) {
   EXPECT_EQ(r.error().code, "E-DESC-VERSION");
 }
 
-// ---- D62 (KNOWN_ISSUES.md): the descriptor byte-order fix ---------------
+// ---- the descriptor byte-order guarantee --------------------------------
 //
-// The task's own owner decision named the version bump "4 to 5"; this
-// repository's actual kGraphVersion was 14 at the time this fix landed
-// (ten intervening version bumps from other tracks), so the checks below
-// are written against the REAL versions, 14 (superseded) and 15 (current),
-// not the stale 4/5 the task text names. See this track's own deviations.
+// The checks below are written against versions 14 (superseded) and 15
+// (current).
 
 // The ONLY difference, on this (little-endian) host, between the frozen
 // v14 golden's bytes and what this build's serialize() now writes for the
@@ -609,9 +605,8 @@ TEST(Descriptor, V14AndV15BytesOfTheSameGraphDifferOnlyInTheVersionWord) {
       << "v15 bytes, relabeled back to version 14, do not match the frozen v14 golden";
 }
 
-// The checker this task asked for: decode the superseded version's bytes
-// and the current version's bytes for the SAME graph, and show the two
-// decode to the SAME graph. deserialize() itself refuses a v14 buffer by
+// Decode the superseded version's bytes and the current version's bytes
+// for the SAME graph, and show the two decode to the SAME graph. deserialize() itself refuses a v14 buffer by
 // version (SupersededFrozenBytesAreRefusedByThisReader, above) -- by
 // design, not a limitation this checker works around by inventing a
 // second reader. It instead relabels the frozen v14 payload's version
@@ -645,22 +640,21 @@ TEST(Descriptor, V14AndV15BytesOfTheSameGraphDecodeIdentically) {
          "decode to different graphs for the identical fixture";
 }
 
-// This sandbox has no big-endian host to build or run on (the task's own
-// constraint). This test instead shows, by construction rather than by
-// executing on real big-endian hardware, that `fuse::detail::Writer::pod`
-// (now routed through `bytes::put_integer`/`bytes::put_signed`, D62) can
-// no longer depend on the host's native byte order the way the pre-D62
-// memcpy-based `pod()` did: `bytes::put_integer`/`put_signed` build their
-// output from the VALUE through right-shifts and masks -- an operation
+// There is no big-endian host to build or run on here. This test instead
+// shows, by construction rather than by executing on real big-endian
+// hardware, that `fuse::detail::Writer::pod` (routed through
+// `bytes::put_integer`/`bytes::put_signed`) cannot depend on the host's
+// native byte order the way a memcpy-based `pod()` would:
+// `bytes::put_integer`/`put_signed` build their output from the VALUE through right-shifts and masks -- an operation
 // the C++ standard defines on the abstract integer value, not on its
 // storage layout -- so a second encoder written the SAME way (shifts, no
 // `reinterpret_cast`, no `memcpy`) must agree with `Writer::pod` on every
-// host, including one this sandbox cannot reach. The BYTE-SWAPPING WRITER
-// STUB stands in for the superseded, memcpy-based `pod()` AS IF it ran on
+// host, including one not reachable here. The BYTE-SWAPPING WRITER
+// STUB stands in for a memcpy-based `pod()` AS IF it ran on
 // a big-endian host: a big-endian host's native memcpy of a value is the
 // byte-reverse of this (little-endian) host's own native memcpy of the
 // same value, so reversing this host's memcpy output reproduces exactly
-// what the OLD `pod()` would have written there.
+// a memcpy-based `pod()` would have written there.
 namespace {
 template <class T>
 std::vector<std::byte> shift_based_reference_encoding(T v) {
@@ -683,7 +677,7 @@ std::vector<std::byte> shift_based_reference_encoding(T v) {
 
 template <class T>
 std::vector<std::byte> memcpy_based_stub_as_if_big_endian(T v) {
-  // What the SUPERSEDED (pre-D62) memcpy-based pod() would have written
+  // What a memcpy-based pod() would have written
   // on a big-endian host: the byte-reverse of what it writes HERE (this
   // host's own native memcpy), because flipping every bit of a two's-
   // complement integer's or an IEEE-754 float's byte ORDER is exactly
@@ -761,8 +755,7 @@ CouplingGraph minimal_channel_graph() {
 }
 }  // namespace
 
-// BM-3 (review 2026-10-11): four of the six previously-unguarded enum
-// bytes live in a channel record -- AccumOp, and Window::Kind twice
+// Four of the six range-checked enum bytes live in a channel record -- AccumOp, and Window::Kind twice
 // (once per accumulate/spacetime window). Offsets computed by hand from
 // `minimal_channel_graph()`'s own field sizes (name "c" => a 1-byte
 // string, empty remap_method and time_level_mismatch_reason): name(5) +
@@ -799,10 +792,9 @@ TEST(Descriptor, RejectsCorruptedChannelEnums) {
       << "corrupted spacetime window kind byte was not refused";
 }
 
-// BM-3: the remaining two of the six, Discretization and Conservation,
-// plus Intent (named alongside them in the same review finding), all
-// live in the field record, which in `minimal_channel_graph()` is
-// immediately followed by the 95-byte channel record above (also the
+// The remaining two of the six, Discretization and Conservation,
+// plus Intent, all live in the field record, which in
+// `minimal_channel_graph()` is immediately followed by the 95-byte channel record above (also the
 // end of the buffer): field name "q" (len 1) => name(5) + owner(4) +
 // region(4) + disc(1) + order(4) + components(4) + units(39) +
 // conservation(1) + intent(1) + hdf5_presence(1) = 64 bytes, so disc
@@ -827,14 +819,13 @@ TEST(Descriptor, RejectsCorruptedFieldEnums) {
       << "corrupted intent byte was not refused";
 }
 
-// BM-4 (review 2026-10-11): an iteration-region channel id was accepted
-// off the wire with no bounds check, unlike the merge table's field ids
-// a few lines below it in deserialize() (E-DESC-MERGE); the first
-// dereference was a raw std::vector::at() in build_iteration_regions()/
-// has_unbroken_cycle(), a per-rank throw ahead of later collectives.
+// An iteration-region channel id off the wire must be bounds-checked, like
+// the merge table's field ids a few lines below it in deserialize()
+// (E-DESC-MERGE); otherwise the first dereference is a raw
+// std::vector::at() in build_iteration_regions()/has_unbroken_cycle(), a
+// per-rank throw ahead of later collectives.
 // Built directly through the raw API (add_iteration_region() has no
-// bounds check of its own either -- that is this finding's whole point)
-// rather than through a byte patch, since the defect is in what
+// bounds check of its own either) rather than through a byte patch, since the defect is in what
 // deserialize() ACCEPTS, not in corrupting an otherwise-valid buffer.
 TEST(Descriptor, RejectsOutOfRangeIterationRegionChannelId) {
   CouplingGraph g;
@@ -852,10 +843,10 @@ TEST(Descriptor, RejectsOutOfRangeIterationRegionChannelId) {
   EXPECT_EQ(r.error().code, "E-DESC-CHANNEL");
 }
 
-// BM-18 (review 2026-10-11): deserialize() used to reserve() an
-// attacker-controlled count before reading any of the data it describes
-// -- a truncated buffer claiming a huge count either failed cleanly with
-// E-DESC-TRUNC (if the allocator happened to refuse) or threw a raw
+// deserialize() must not reserve() an attacker-controlled count before
+// reading any of the data it describes -- a truncated buffer claiming a
+// huge count would either fail cleanly with E-DESC-TRUNC (if the
+// allocator happened to refuse) or throw a raw
 // std::bad_alloc/std::length_error out of a Result-returning function.
 // Patches the wire count in place (via memcpy, so this is endianness-
 // agnostic regardless of the host's byte order) rather than hand-
@@ -881,10 +872,10 @@ TEST(Descriptor, RejectsImpossiblyLargeComponentRankCount) {
   EXPECT_EQ(r.error().code, "E-DESC-TRUNC");
 }
 
-// BM-7 (review 2026-10-11): Reader::rational() used to accept and
-// silently renormalize a negative-denominator or unreduced wire pair,
-// the same trust boundary Rational::from_record() refuses the identical
-// shape on (E-BASE-TIME-DENOMINATOR/E-BASE-TIME-UNREDUCED). Patches a
+// Reader::rational() must not accept and silently renormalize a
+// negative-denominator or unreduced wire pair; it refuses at the same trust
+// boundary Rational::from_record() refuses the identical shape on
+// (E-BASE-TIME-DENOMINATOR/E-BASE-TIME-UNREDUCED). Patches a
 // component's interval (the first Rational written after the header and
 // the ranks table) to an unreduced pair (2/4) and to a negative
 // denominator, checking both are now refused rather than silently
@@ -923,7 +914,7 @@ TEST(Descriptor, RejectsNonCanonicalWireRational) {
   }
 }
 
-// BM-18: the same unchecked-reserve shape as
+// The same unchecked-reserve shape as
 // RejectsImpossiblyLargeComponentRankCount above, for the iteration
 // region's own channel-id count. The region's "outer" name (len 5) and
 // an empty channel list are the only fields patched around: header(36)

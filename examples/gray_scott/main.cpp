@@ -102,9 +102,9 @@ struct Args {
 }
 
 /// `--accel`'s names come from the shared table
-/// (examples/common/accel_names.hpp). Until 2026-10-20 any name other than
-/// `none` and `iqn-ils` silently ran with Aitken; main() now refuses an
-/// unknown name (E-EXAMPLE-ACCEL) before any setup.
+/// (examples/common/accel_names.hpp). main() refuses an unknown name
+/// (E-EXAMPLE-ACCEL) before any setup, rather than silently running with
+/// Aitken.
 [[nodiscard]] AccelKind parse_accel(const std::string& s) {
   if (const auto k = fuse_examples::accel_kind_from_name(s)) return *k;
   std::fprintf(stderr, "FAIL: E-EXAMPLE-ACCEL: unknown --accel '%s'\n", s.c_str());
@@ -168,12 +168,12 @@ int main(int argc, char** argv) {
   // environment is parsed by nothing and the built-in defaults apply.
   fuse::initialize();
 
-  // KNOWN_ISSUES.md D11 (closing): the Runner's coupling hot loop now runs
-  // on Kokkos' default host execution space (fuse/num/space_kernels.hpp),
-  // so every caller -- including this one, which ran no Kokkos kernel at
-  // all before this closing -- must initialise Kokkos before touching a
-  // Runner. Same pattern as test/support/fuse_test_main.cpp's
-  // `Kokkos::ScopeGuard` and examples/brusselator/main.cpp's.
+  // The Runner's coupling hot loop runs on Kokkos' default host execution
+  // space (fuse/num/space_kernels.hpp), so every caller -- including this
+  // one, which runs no Kokkos kernel of its own -- must initialise Kokkos
+  // before touching a Runner. Same pattern as
+  // test/support/fuse_test_main.cpp's `Kokkos::ScopeGuard` and
+  // examples/brusselator/main.cpp's.
   Kokkos::ScopeGuard kokkos_guard(argc, argv);
 
   const Args args = parse_args(argc, argv);
@@ -222,12 +222,9 @@ int main(int argc, char** argv) {
   cfg.window_length = u_interval;
   cfg.max_iterations = 100;
   cfg.acceleration = AccelConfig{.kind = parse_accel(args.accel)};
-  // The user's decision (relayed 2026-09-29): a convergence measure names
-  // a field TRANSFER (a WindowChannel, by its own `name`), not the whole
-  // coupled system. Split into the two real transfers, same kind/
-  // tolerance as the single aggregate measure this replaces; both must
-  // be satisfied. Not byte-identical to before by the user's own choice
-  // -- see this program's before/after diagnostics.
+  // A convergence measure names a field TRANSFER (a WindowChannel, by its
+  // own `name`), not the whole coupled system. Split into the two real
+  // transfers, same kind/tolerance; both must be satisfied.
   fuse::ConvergenceMeasure measure_u;
   measure_u.kind = fuse::MeasureKind::Relative;
   measure_u.tolerance = args.coupling_tol;
@@ -321,7 +318,7 @@ int main(int argc, char** argv) {
       max_diff = std::max(max_diff, std::abs(cu->state()[m] - mono.u()[m]));
       max_diff = std::max(max_diff, std::abs(cv->state()[m] - mono.v()[m]));
     }
-    // Spec requirement (delegated task, step 3): "at m=1 the coupled
+    // Spec requirement: "at m=1 the coupled
     // windowed result must match [the monolithic reference] to the
     // iteration tolerance" -- a TIGHT bound, not one scaled to dt. It is
     // only exactly true in the dt -> 0 limit (measured in

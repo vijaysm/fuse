@@ -234,7 +234,7 @@ flux = g.add_channel("flux", q_out, q_in)
 (g.channel(flux)
    .conservative()                                   # check the integral on the way
    .remap(pfuse.RemapFlags.Conservative | pfuse.RemapFlags.Monotone)
-   .remap_method("mono3")
+   .remap_method("intx")
    .remap_on(hub)                                    # build and apply the weights on the coupler
    .relax(0.7))                                      # under-relax inside the iteration region
 temp = g.add_channel("wall_temperature", t_out, t_in)
@@ -295,7 +295,7 @@ keyword: `pfuse.Conservation.None_`, `pfuse.AccelKind.None_`, `pfuse.RemapFlags.
 | `.accumulate(op, window=None)` | reduce a faster source over the target's step: `AccumOp.Sum`, `Mean`, `Min`, `Max`, `Integral` (`Instant` is the default, no reduction). `window` is a `Window`: `Window.coupling_period()`, `Window.from_component(cid)` or `Window.explicit_length("2/5")` |
 | `.conservative()` | insert a conservation check; required when the target field is `Extensive` |
 | `.remap(flags)` | request remap properties: `RemapFlags.Conservative`, `Monotone`, `HighOrder`, combined with `\|` |
-| `.remap_method(name)` | pin a specific remap method, for example `"mono3"` |
+| `.remap_method(name)` | pin a specific remap method, for example `"intx"`; a name no weight builder recognises is refused by `validate()` with `E-CHANNEL-REMAP-METHOD` |
 | `.remap_on(coupler)` | build and apply the weights on that coupler component |
 | `.spacetime(basis, degree, window=None)` | interpolate the source in time: `TemporalBasis.Constant`, `Linear`, `DG`, `Spline` |
 | `.extrapolate(order)` | extrapolate the source forward in time (order 0, 1 or 2) |
@@ -842,7 +842,7 @@ buffer 0   %0  elements=32  components=1  region=r0  owner=component  persistent
 ...
   4  t=1/4  Transport  node=4  in=[%0]  out=%2  {0->2}  enter=0
   5  t=1/4  Epoch  node=5  in=[%2]  out=%3  {reason=after-transport}
-  6  t=1/4  Remap  node=6  in=[%3]  out=%4  {remap=CM, method=mono3}
+  6  t=1/4  Remap  node=6  in=[%3]  out=%4  {remap=CM, method=intx}
 ...
 ```
 
@@ -1357,7 +1357,9 @@ except pfuse.FuseError as e:
 :::{note}
 A thrown C++ error also prints its own report (message, location and backtrace) on `stderr` at
 the moment it is thrown, before it arrives as a Python exception. That output is not the
-exception; catching the exception does not suppress it. `pfuse` does not read `FUSE_ON_ERROR`.
+exception; catching the exception does not suppress it. `import pfuse` calls `fuse::initialize()`,
+so `FUSE_ON_ERROR` and its companions apply to the interpreter process (`throw` and `backtrace` raise
+the exception, `debugger` attaches one first, `abort` ends the process).
 :::
 
 Codes you are likely to meet, and what to do:

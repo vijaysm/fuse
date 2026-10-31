@@ -33,7 +33,7 @@ std::size_t WeightsOperator::cols() const noexcept { return w_->n_cols; }
 OperatorClaims WeightsOperator::claims() const noexcept {
   return OperatorClaims{
       .preserves_constants = w_->max_row_defect <= kClaimTolerance,
-      // REVIEW.md TF-16: `max_col_defect` alone is not enough -- it is only
+      // `max_col_defect` alone is not enough -- it is only
       // a conservation residual, the property this flag promises, when the
       // builder that produced it says so (RemapWeights::
       // col_defect_is_measure_weighted; false for the consistent-

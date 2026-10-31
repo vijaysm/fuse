@@ -1,5 +1,5 @@
-// Unit 2b (D19), step (c) -- AGREED CONVERGENCE for a window-scoped
-// iteration region, checked without MPI.
+// AGREED CONVERGENCE for a window-scoped iteration region, checked
+// without MPI.
 //
 // A mistake in `decide_window_convergence()` is a WRONG NUMBER, falsifiable
 // right here with hand-built `gathered` data -- exactly the reason it is
@@ -182,10 +182,10 @@ TEST(WindowConvergence, BlockFirstIsCapturedFromTheAgreedResidualNotALocalOne) {
 }
 
 TEST(WindowConvergence, MutationDecidingFromOneRanksOwnPairsOnlyDisagrees) {
-  // The lead's own suggested mutation for this step: "a rank deciding
-  // from its local pairs only" instead of the agreed sum. Demonstrated
+  // The mutation "a rank deciding from its local pairs only" instead of
+  // the agreed sum. Demonstrated
   // here as a direct comparison rather than a code mutation, since
-  // `decide_window_convergence()` is new code with no PRIOR behaviour to
+  // `decide_window_convergence()` has no PRIOR behaviour to
   // revert to (unlike window-runner-hosting-ignored/-priming-through-
   // transfer-disabled, which mutate an EXISTING line) -- feeding the
   // SAME gathered data but only rank 0's own slice (`{gathered[0]}`,
@@ -221,18 +221,17 @@ TEST(WindowConvergence, MutationDecidingFromOneRanksOwnPairsOnlyDisagrees) {
 
 TEST(WindowConvergence,
     OwnershipSplitAcrossParticipantsAgreesWithTheSingleParticipantDecision) {
-  // Unit 2b (D19) correction's own pure-function case (this step's own rule
-  // is `WindowMemberConfig::export_consumer_hosted`, iteration.cpp/
-  // runner_impl.hpp; `decide_window_convergence()` itself is unchanged by
-  // that fix -- it already summed only the OWNING entries, whichever rank
-  // they happened to be on. This pins that `decide_window_convergence()`
-  // does not care WHICH participant owns a block, only THAT exactly one
-  // real measurement reaches it per block): the exact two-rank shape a
-  // disjoint-ranks window channel produces -- block 0 (say, a2b) owned
-  // only by participant 1 (B's own rank, the consumer of A's export),
-  // block 1 (b2a) owned only by participant 0 (A's own rank, the consumer
-  // of B's export) -- must reach IDENTICAL block_residual/block_value and
-  // IDENTICAL `converged` as the single-participant case with both blocks
+  // The pure-function case (the rule is
+  // `WindowMemberConfig::export_consumer_hosted`, iteration.cpp/
+  // runner_impl.hpp; `decide_window_convergence()` itself sums only the
+  // OWNING entries, whichever rank they happen to be on. This pins that
+  // `decide_window_convergence()` does not care WHICH participant owns a
+  // block, only THAT exactly one real measurement reaches it per block): the
+  // exact two-rank shape a disjoint-ranks window channel produces -- block 0
+  // (say, a2b) owned only by participant 1 (B's own rank, the consumer of A's
+  // export), block 1 (b2a) owned only by participant 0 (A's own rank, the
+  // consumer of B's export) -- must reach IDENTICAL block_residual/block_value
+  // and IDENTICAL `converged` as the single-participant case with both blocks
   // owned locally, since the non-owning participant's own entry for each
   // block contributes nothing (owned == false, excluded before any
   // arithmetic touches it, `EachBlockIsSummedOnlyFromItsOwningRanks`'s own

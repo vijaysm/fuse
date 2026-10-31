@@ -1,22 +1,22 @@
 #pragma once
 
-/// S7.4 (owner decision 2026-10-21, Option C). Two `fuse::ImplicitComponent`
+/// Two `fuse::ImplicitComponent`
 /// halves of the reaction-diffusion problem `reaction_diffusion_physics.hpp`
 /// documents: `DirichletHalf` (always native) and `NeumannHalf<Substrate>`
 /// (native OR petsc, selected at construction) -- the SAME physics, so the
 /// native-substrate run of `NeumannHalf` is both "the existing native
-/// ImplicitComponent partner" this track pairs its PETSc component against
+/// ImplicitComponent partner" this example pairs its PETSc component against
 /// AND the "native twin" the acceptance criteria compare the PETSc
 /// substrate to (design_notes.md Section 2 explains why these are one
 /// requirement, not two, for a region with exactly one PETSc-eligible
 /// participant).
 ///
 /// n = 1 STATION (one shared interface, no lateral parallelism): this
-/// track's own region exchanges a single scalar Dirichlet/Neumann pair,
+/// the region exchanges a single scalar Dirichlet/Neumann pair,
 /// exactly dn_heat's own per-station convention collapsed to one station
 /// -- the region-level `LinearizationToken` is therefore a REAL but SMALL
 /// (1x1) PETSc `Mat`; the genuinely multi-point sparse `Mat`/`Vec`/`KSP`
-/// PETSc machinery this track demonstrates is the INNER Newton solve
+/// PETSc machinery this example demonstrates is the INNER Newton solve
 /// (reaction_diffusion_physics.hpp's own `right_residual_jacobian`, m
 /// interior points, tridiagonal), not the outer token.
 
@@ -37,9 +37,9 @@ namespace petsc_reaction_diffusion {
 /// Slab-1 analogue (examples/dn_heat/dn_component.hpp's own DirichletSlab):
 /// receives the interface value, provides the flux. ALWAYS native (plain
 /// `std::vector`, `thomas_solve`) -- this is the "existing native
-/// ImplicitComponent" half of the pair; nothing in this track makes it
+/// ImplicitComponent" half of the pair; nothing here makes it
 /// PETSc-selectable, because the region needs exactly one PETSc-eligible
-/// participant to demonstrate the seam this track is about.
+/// participant to demonstrate the seam this example is about.
 class DirichletHalf final : public fuse::Component, public fuse::ImplicitComponent {
  public:
   DirichletHalf(std::string name, int m, PhysicsParams params)

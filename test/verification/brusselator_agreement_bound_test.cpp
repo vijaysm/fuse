@@ -1,13 +1,12 @@
-// AgreementBounds track: a tier-0 unit test of examples/brusselator/
-// agreement_bound.hpp's own `agreement_bound()` (the SHARP, round-3
-// formula) and `legacy_agreement_bound()` (round 2's own formula, kept
-// only for the informational `[agreement-bound legacy]` print), with
-// hand-built numbers -- proving the calibrated formula's own arithmetic
-// (the error term's `(1 + residual_ratio)` scaling) without needing the
-// native-only calibration (test/petsc/brusselator_newton_test.cpp's own
-// `MeasuredErrorAgainstATightReference`, which this track verified
-// separately) or a PETSc run this sandbox cannot execute (KNOWN_ISSUES.md
-// D32's own "cannot complete a bare MPI_Init()" note). No FUSE library
+// A tier-0 unit test of examples/brusselator/
+// agreement_bound.hpp's own `agreement_bound()` (the SHARP formula) and
+// `legacy_agreement_bound()` (an earlier formula, kept only for the
+// informational `[agreement-bound legacy]` print), with hand-built
+// numbers -- proving the calibrated formula's own arithmetic (the error
+// term's `(1 + residual_ratio)` scaling) without needing the native-only
+// calibration (test/petsc/brusselator_newton_test.cpp's own
+// `MeasuredErrorAgainstATightReference`) or a PETSc run (a bare
+// MPI_Init() cannot complete in the sandbox). No FUSE library
 // dependency: the header under test is a pair of pure free functions
 // over doubles.
 
@@ -33,8 +32,8 @@ TEST(BrusselatorAgreementBound, EqualResidualsGiveExactlyTwiceEn) {
 
 TEST(BrusselatorAgreementBound, ZeroErrorGivesAZeroBound) {
   // With e_n == 0 the bound is exactly zero (regardless of the residual
-  // ratio) -- round 3 carries NO separate inter-Krylov or safety term,
-  // unlike round 2's own formula (see LegacyAgreementBound tests below).
+  // ratio) -- the sharp formula carries NO separate inter-Krylov or safety
+  // term, unlike the legacy formula (see LegacyAgreementBound tests below).
   EXPECT_DOUBLE_EQ(brusselator_bound::agreement_bound(0.0, 1.0, 1.0), 0.0);
 }
 
@@ -65,10 +64,9 @@ TEST(BrusselatorAgreementBound, LargerPetscResidualGrowsTheBoundLinearly) {
   EXPECT_NEAR(bound_ratio_10, 2.2e-4, 1e-18);  // 2e-5 * (1+10)
 }
 
-// LEGACY (round 2's own formula) -- kept here only so its own arithmetic
-// stays pinned for the informational `[agreement-bound legacy]` print;
-// NEVER the asserted bound (see agreement_bound.hpp's own "ROUND 3"
-// section for why).
+// LEGACY formula -- kept here only so its own arithmetic stays pinned for
+// the informational `[agreement-bound legacy]` print; NEVER the asserted
+// bound (see agreement_bound.hpp for why).
 TEST(BrusselatorLegacyAgreementBound, MatchesHandComputedValueForRepresentativeInputs) {
   // e_n=1e-6, f_final_native=1e-7, f_final_petsc=2e-7, native_norm=10:
   //   residual_ratio = 2e-7/1e-7 = 2

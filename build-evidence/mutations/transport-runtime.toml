@@ -1,29 +1,25 @@
-# Mutations for REVIEW.md's transport-runtime findings (TR-*, unified R-09,
-# R-10, R-30, R-32) and the pass-2 findings N-transport-runtime-1 and -2.
+# Mutations for the runtime/transport layer.
 # Schema: build-evidence/mutations.toml.
 
 [[mutation]]
 id = "cross-rank-region-check-fires-unconditionally"
 area = "runtime"
-describes = "R-10: the cross-rank implicit-coupling-group rejection (E-RT-REGION-MPI) fires even with no RunnerConfig::base_communicator configured, wrongly rejecting every single-process caller that places a region's components on different declared ranks"
+describes = "the cross-rank implicit-coupling-group rejection (E-RT-REGION-MPI) fires even with no RunnerConfig::base_communicator configured, wrongly rejecting every single-process caller that places a region's components on different declared ranks"
 file = "src/runtime/iteration.cpp"
 old = "    if (config.base_communicator.has_value()) {"
 new = "    if (true) {"
 target = "fuse_runtime_runner_test"
 test = "runtime.runner"
-# N-transport-runtime-3 (REVIEW.md pass2): `requires = "mpi"` and the note this
-# replaces were both wrong -- iteration.cpp has zero #if/#ifdef guards around
-# this block, and R.participants comes from the DECLARED graph placement, not
-# from a real communicator (re-transport-runtime.md's own rebuild-and-rerun
-# found verification.iteration and example.dn_heat both fail at Tier 0 under
-# this exact mutation, E-RT-REGION-MPI firing where it should not -- taken on
-# their evidence, not independently re-run in this pass). Already Tier-0-
-# killed; the old tag was understating this port's mutation coverage.
+# This row carries no `requires = "mpi"`: iteration.cpp has no #if/#ifdef guards
+# around this block, and R.participants comes from the DECLARED graph placement,
+# not from a real communicator (a rebuild-and-rerun found verification.iteration
+# and example.dn_heat both fail at Tier 0 under this exact mutation,
+# E-RT-REGION-MPI firing where it should not). It is killed at Tier 0.
 
 [[mutation]]
 id = "build-plan-skips-the-components-agreement"
 area = "transport"
-describes = "R-30: MpiTransport::build_plan() stops checking that every rank in the src/dst rank set agrees on TransportSpec::components, so two ranks calling it with different component counts size MPI_Alltoallv's count arrays inconsistently instead of rejecting at setup"
+describes = "MpiTransport::build_plan() stops checking that every rank in the src/dst rank set agrees on TransportSpec::components, so two ranks calling it with different component counts size MPI_Alltoallv's count arrays inconsistently instead of rejecting at setup"
 file = "src/transport/mpi_transport.cpp"
 old = "      if (!agreement.agreed()) {"
 new = "      if (false) {"
@@ -34,10 +30,10 @@ requires = "mpi"
 [[mutation]]
 id = "region-residual-skips-the-cross-rank-reduction"
 area = "runtime"
-describes = "R-10: run_region() stops agreeing the residual across the region's participants and falls back to each rank's own local Euclidean sum, exactly the defect the fix closes. On RunnerTransport.RegionConvergesInTheSerialIterationCount's unequal 2/1/1-style split this desynchronises which sweep each rank exits on -- the expected kill is the iteration-count assertion failing outright on the ranks that finish before the timeout, or the whole job timing out (a slower rank's partners move on to the region's own exit instructions while it is still sweeping, which is the hang rank-agreement.md's Epoch exists to prevent and this reduction is the region-local analogue of); either is a correct kill for this mutation, and the 120s TIMEOUT test property makes the second case an unambiguous FAILED rather than a silent PASS."
+describes = "run_region() stops agreeing the residual across the region's participants and falls back to each rank's own local Euclidean sum, exactly the defect the fix closes. On RunnerTransport.RegionConvergesInTheSerialIterationCount's unequal 2/1/1-style split this desynchronises which sweep each rank exits on -- the expected kill is the iteration-count assertion failing outright on the ranks that finish before the timeout, or the whole job timing out (a slower rank's partners move on to the region's own exit instructions while it is still sweeping, which is the hang rank-agreement.md's Epoch exists to prevent and this reduction is the region-local analogue of); either is a correct kill for this mutation, and the 120s TIMEOUT test property makes the second case an unambiguous FAILED rather than a silent PASS."
 file = "src/runtime/iteration.cpp"
-# Anchor updated 2026-10-03, Unit 2b (D19) step (c): this ordinary-
-# region gate is now the SECOND arm of an if/window_scoped/else-if
+# This ordinary-
+# region gate is the SECOND arm of an if/window_scoped/else-if
 # chain (a window-scoped region's own agreement, `decide_window_
 # convergence()`, is the first arm) -- same condition, same effect for
 # an ordinary region, different surrounding punctuation only.
@@ -50,7 +46,7 @@ requires = "mpi"
 [[mutation]]
 id = "conservation-check-not-reduced-across-ranks"
 area = "runtime"
-describes = "KNOWN_ISSUES D10: Constrain compares this rank's owned share of each integral without the Allreduce over the base communicator. On a disjoint two-component placement the source share lives on one rank and the target share on another, so every rank sees a spurious violation (or misses a real one) -- the defect N-transport-runtime-1 named, which the rejection it replaced used to prevent by declining the check altogether."
+describes = "Constrain compares this rank's owned share of each integral without the Allreduce over the base communicator. On a disjoint two-component placement the source share lives on one rank and the target share on another, so every rank sees a spurious violation (or misses a real one) -- the defect that the rejection it replaced used to prevent by declining the check altogether."
 file = "src/runtime/runner.cpp"
 old = "  const bool reduce = config.base_communicator.has_value();"
 new = "  const bool reduce = false;"
@@ -58,7 +54,7 @@ target = "fuse_parallel_nodal_remap_runner_test"
 test = "parallel.nodal_remap_runner.2"
 requires = "mpi"
 # SURVIVED explained, verified by hand: Constrain (runner.cpp's OpKind::
-# Constrain case) only REPORTS ("Phase 4 reports; it does not correct" --
+# Constrain case) only REPORTS (it does not correct --
 # the field values downstream are copied through unchanged either way).
 # RunnerConfig::abort_on_violation defaults to FALSE (runner.hpp), and
 # DisjointRankSets never sets it nor reads runner.stats() -- its own
@@ -95,95 +91,52 @@ test = "ir.ir_op"
 [[mutation]]
 id = "region-failure-abandons-the-rest-of-the-period"
 area = "runtime"
-describes = "N-transport-runtime-2 / R-09 (REVIEW.md pass2): step_period() returns straight out of the instruction stream the moment an implicit coupling group fails, instead of carrying the failure forward and continuing to walk the stream -- abandoning every later instruction in the same period, including an unrelated field transfer's Transport/Epoch. Tier 0 (fuse_runtime_runner_test, ASecondChannelStillAdvancesAfterAnUnrelatedRegionFails) cannot distinguish this mutant: with no MPI communicator configured there is no partner rank to abandon, so the SURVIVED outcome there is expected and recorded, not a gap. The real kill is the MPI test below: consumer_b's rank(s), on a disjoint RankSet from the region's, block in linkB's Epoch waiting for a partner that already returned -- the 120s TIMEOUT test property is what turns that into a correct kill rather than a silent PASS."
+describes = "step_period() returns straight out of the instruction stream the moment an implicit coupling group fails, instead of carrying the failure forward and continuing to walk the stream -- abandoning every later instruction in the same period, including an unrelated field transfer's Transport/Epoch. Tier 0 (fuse_runtime_runner_test, ASecondChannelStillAdvancesAfterAnUnrelatedRegionFails) cannot distinguish this mutant: with no MPI communicator configured there is no partner rank to abandon, so the SURVIVED outcome there is expected and recorded, not a gap. The real kill is the MPI test below: consumer_b's rank(s), on a disjoint RankSet from the region's, block in linkB's Epoch waiting for a partner that already returned -- the 120s TIMEOUT test property is what turns that into a correct kill rather than a silent PASS."
 file = "src/runtime/runner.cpp"
 old = "        if (!step_failure.has_value()) step_failure = rr.error();"
 new = "        return rr.error();  // abandon the rest of the period"
 target = "fuse_parallel_runner_transport_test"
 test = "parallel.runner_transport.3"
 requires = "mpi"
-# The test EXISTS: RunnerTransport.StillRunsASecondChannelAfterARegionFailsUnderMpi
+# History of this row: RunnerTransport.StillRunsASecondChannelAfterARegionFailsUnderMpi
 # (test/parallel/runner_transport_test.cpp), TwoComponentJob(with_iteration_
 # region=true, with_independent_channel=true, fail_fluid_after=0, shape=
-# Overlap::Disjoint), FUSE_REQUIRE_AT_LEAST_RANKS(2). Traced this row's OWN
-# "block in linkB's Epoch waiting for a partner that already returned"
-# premise against it and found it does NOT describe this fixture: "solid"
-# (one of the region's own two checkpointed components, per Overlap::
-# Disjoint) is NOT disjoint from the region -- it IS the region, together
-# with "fluid". R-10's own reduce_region_residuals() (merge_region_payload's
-# `acc[0] = std::min(acc[0], peer[0])`, a tree reduce-then-broadcast) already
-# synchronises the pass/fail outcome to EVERY region participant on the SAME
-# sweep, so fluid's AND solid's ranks both see `run_region()` fail
-# SYMMETRICALLY, at the SAME point -- consumer_b (co-located with "solid")
-# never reaches "linkB"'s Epoch expecting a partner that already left,
-# because ITS OWN rank ALSO returns (correct code) or continues (mutant)
-# at the identical point. This test's OWN header comment already says so
-# plainly ("no hang is even needed for the mutant to be visibly wrong
-# here") -- this row's shorter describes field, written by analogy to a
-# genuinely hang-based sibling mutation, is the imprecise one, not the
-# test.
-#
-# Given that, the test's actual kill is `EXPECT_GE(cons_b->calls(), 2)`:
-# under the fix, step_period() carries the failure forward and reaches
-# producer_b/consumer_b's SECOND (t=1/2) tick; under the mutation it
-# returns at t=0 and that tick is never taken, so calls() should read 1,
-# not >=2. Traced the whole call chain by hand (step_period -> run_region
-# -> reduce_region_residuals -> merge_region_payload) and found NO flaw in
-# this mechanism that would produce SURVIVED -- I could not reproduce this
-# analytically further, and MPI cannot initialise in this sandbox to run
-# it. One OPEN QUESTION surfaced along the way, orthogonal to calls(): 
-# run_region()'s post-reduction branch reports a DIFFERENT Failure CODE on
-# a rank that owns the failure locally ("E-TEST-ADVANCE-REFUSED", fluid's
-# rank) than on a peer that learns of it only via the MIN-reduce
-# ("E-RT-REGION-PEER", solid's rank) -- the same "-PEER" convention
-# reconcile_epoch()'s own comment documents explicitly ("This rank is fine
-# and a partner is not... The rank that actually failed reports its own
-# diagnostic"). The test's `EXPECT_EQ(r.error().code, "E-TEST-ADVANCE-
-# REFUSED")` runs identically on every rank with no world_rank() branch, so
-# it may already read "E-RT-REGION-PEER" on solid's/consumer_b's rank --
-# independent of, and pre-existing before, this mutation, so it would not
-# explain SURVIVED by itself. RECOMMENDED HOST ACTION: re-run this ONE test
-# in isolation (`ctest -R parallel.runner_transport.2 --output-on-failure`
-# or the equivalent `--gtest_filter=*StillRunsASecondChannelAfterARegionFailsUnderMpi*`
-# at exactly 2 ranks) on BOTH the clean tree and the mutant, and report (a)
-# which EXPECT/ASSERT actually fires or does not, per rank, and (b) whether
-# the mutated binary was actually rebuilt before that run -- a stale binary
-# would produce exactly a false SURVIVED with no code-level explanation,
-# which is the one class of cause my trace cannot rule out from here.
-# SURVIVED on the host at .2 (2026-09-28), explained by the host's own stream
-# print: the region is entered at t=1, after consumer_b's ticks, and every
-# rank of linkB was also a region participant, so every rank returned
-# together and nothing blocked. Re-pointed at .3, where
+# Overlap::Disjoint), FUSE_REQUIRE_AT_LEAST_RANKS(2), SURVIVED on the host at
+# .2: the region is entered at t=1, after consumer_b's ticks, and every rank
+# of linkB was also a region participant, so every rank returned together and
+# nothing blocked. (The "block in linkB's Epoch waiting for a partner that
+# already returned" premise does not describe that fixture: "solid" is one of
+# the region's own two checkpointed components, and the reduce-then-broadcast
+# of reduce_region_residuals() already synchronises the pass/fail outcome to
+# EVERY region participant on the SAME sweep.) The row is therefore
+# re-pointed at .3, where
 # RunnerTransport.AChannelOutsideTheRegionStillCompletesAfterTheRegionFails
 # puts consumer_b on a rank outside the region: the mutant leaves that rank
 # blocked in linkB's Transport until ctest's TIMEOUT. Traced, compiled, not
 # yet run.
 #
-# D3 close-out session (2026-10-18/19, tree exported at 01a6d25, tier 0,
-# system compiler /usr/bin/c++): this row stays `requires = "mpi"` --
+# This row stays `requires = "mpi"` --
 # AChannelOutsideTheRegionStillCompletesAfterTheRegionFails has its own
 # FUSE_REQUIRE_AT_LEAST_RANKS(3) guard, so Tier 0 (no communicator) cannot
 # reach it; `tools/mutate.py --check-anchors` confirms both `old` anchors in
-# this file occur exactly once, and the full Tier 0 sweep in this session
-# reports it NOT-ASSESSED (needs MPI), never SURVIVED or KILLED, matching
-# `requires = "mpi"`'s own courtesy. Separately configured an MPI+Fortran
-# build (-DFUSE_ENABLE_MPI=ON -DFUSE_ENABLE_FORTRAN=ON) against the same
-# exported tree and built `fuse_parallel_runner_transport_test` to
-# completion (link succeeded) without running it -- MPI cannot initialise a
-# process in this sandbox (KNOWN_ISSUES.md C1), so the host run this row has
-# asked for since 2026-10-02 is still the only way to close it. Host
-# command (same shape as the row's own RECOMMENDED HOST ACTION, generalised
-# to the gate): `FUSE_MUTATE_MPI=1 tools/mutate.py --build-dir <mpi-build>
+# this file occur exactly once, and the full Tier 0 sweep reports it
+# NOT-ASSESSED (needs MPI), never SURVIVED or KILLED, matching
+# `requires = "mpi"`'s own courtesy. An MPI+Fortran build
+# (-DFUSE_ENABLE_MPI=ON -DFUSE_ENABLE_FORTRAN=ON) builds
+# `fuse_parallel_runner_transport_test` to completion (link succeeded)
+# without running it -- MPI cannot initialise a process in this sandbox, so
+# a host run is still the only way to close it. Host
+# command: `FUSE_MUTATE_MPI=1 tools/mutate.py --build-dir <mpi-build>
 # --area runtime` picks up both this row and
 # coupler-region-participants-missing-its-ranks (below) in one pass, or
 # isolate this one row with `ctest --test-dir <mpi-build> -R
 # '^parallel.runner_transport.3$' --output-on-failure` before and after
-# hand-applying the mutation, per the RECOMMENDED HOST ACTION above.
+# hand-applying the mutation.
 
 [[mutation]]
 id = "one-transport-shared-across-every-plan"
 area = "transport"
-describes = "D2's fix: every CommGraph-backed plan gets its OWN Transport. Sharing one instance across plans puts the second field transfer's move() on a Transport planned for the first, which MpiTransport::prepare() rejects -- so the second field transfer stops working while the first still does."
+describes = "Every CommGraph-backed plan gets its OWN Transport. Sharing one instance across plans puts the second field transfer's move() on a Transport planned for the first, which MpiTransport::prepare() rejects -- so the second field transfer stops working while the first still does."
 file = "src/runtime/runner.cpp"
 old = "    graph_transports[pi] = std::move(own);"
 new = "    if (pi == 0) graph_transports[pi] = std::move(own);"
@@ -194,7 +147,7 @@ requires = "mpi"
 [[mutation]]
 id = "a-failed-step-blocks-every-later-advance"
 area = "runtime"
-describes = "The 2026-09-21 dependence rule, first half: a failing period still advances components that read nothing the failed step provides. Blocking all of them is the behaviour the rule replaced, and for a plan whose ticks all fall in step_period()'s trailing loop it meant NO component advanced."
+describes = "The dependence rule, first half: a failing period still advances components that read nothing the failed step provides. Blocking all of them is the behaviour the rule replaced, and for a plan whose ticks all fall in step_period()'s trailing loop it meant NO component advanced."
 file = "src/runtime/runner.cpp"
 old = "  if (advance_blocked.empty()) return true;"
 new = "  return advance_blocked.empty();"
@@ -214,7 +167,7 @@ test = "runtime.runner"
 [[mutation]]
 id = "both-commgraph-sides-share-one-view"
 area = "runtime"
-describes = "KNOWN_ISSUES D5: attach_comm_graphs() gives each CommGraph side its own component's decomposition. Reverting the destination side to the source component's view is the old one-view wiring, under which two partially overlapping placements cannot both cover the region."
+describes = "attach_comm_graphs() gives each CommGraph side its own component's decomposition. Reverting the destination side to the source component's view is the old one-view wiring, under which two partially overlapping placements cannot both cover the region."
 file = "src/runtime/runner.cpp"
 old = "    dst_side.mesh        = in_dst ? dst_view.value() : nullptr;"
 new = "    dst_side.mesh        = in_dst ? src_view.value() : nullptr;"
@@ -225,7 +178,7 @@ requires = "mpi"
 [[mutation]]
 id = "peer-plan-staged-through-the-matched-path"
 area = "runtime"
-describes = "The latent defect D5's harness exposed: the hot loop ran the matched path's gather and scatter on a peer plan, where both are empty, so the exchange sent zeros and delivered nothing. Removing the peer branch restores it."
+describes = "The latent defect the harness exposed: the hot loop ran the matched path's gather and scatter on a peer plan, where both are empty, so the exchange sent zeros and delivered nothing. Removing the peer branch restores it."
 file = "src/runtime/runner.cpp"
 old = """      if (p.from_peers) {
         // A peer plan indexes both buffers by local entity index and performs
@@ -259,7 +212,7 @@ requires = "mpi"
 [[mutation]]
 id = "remap-ignores-the-placement-decomposition"
 area = "backend"
-describes = "KNOWN_ISSUES D5, the defect the retired E-RT-REMAP-PLACEMENT rejection stood in front of: the supermesh builder resolving a side from the mesh's DEFAULT view instead of the placement's. Weights then index the wrong local entities on any backend that decomposes per placement -- plausible numbers, no diagnostic. Killed by the reversed-numbering view, where the wrong matrix is the un-permuted one."
+describes = "The defect the retired E-RT-REMAP-PLACEMENT rejection stood in front of: the supermesh builder resolving a side from the mesh's DEFAULT view instead of the placement's. Weights then index the wrong local entities on any backend that decomposes per placement -- plausible numbers, no diagnostic. Killed by the reversed-numbering view, where the wrong matrix is the un-permuted one."
 file = "src/backend/intx_weights.cpp"
 old = "  const auto view = backend.placed_view(mid.value(), placement);"
 new = "  const auto view = backend.view(mid.value());"
@@ -269,7 +222,7 @@ test = "backend.supermesh"
 [[mutation]]
 id = "transport-held-to-equal-extents"
 area = "runtime"
-describes = "The regression of 2026-09-23: with per-placement decomposition a Transport's two ends are one region in two components' decompositions, so on a rank in one placement and not the other they differ (12 and 0). Holding Transport to resolve_instructions' equal-size rule rejects every cross-placement plan with E-RT-SIZE before any CommGraph exists; its sizes are reconciled per plan kind in check_transport_extents() instead."
+describes = "The regression: with per-placement decomposition a Transport's two ends are one region in two components' decompositions, so on a rank in one placement and not the other they differ (12 and 0). Holding Transport to resolve_instructions' equal-size rule rejects every cross-placement plan with E-RT-SIZE before any CommGraph exists; its sizes are reconciled per plan kind in check_transport_extents() instead."
 file = "src/runtime/runner.cpp"
 old = "    if (ins.kind != OpKind::Remap && ins.kind != OpKind::Transport) {"
 new = "    if (ins.kind != OpKind::Remap) {"
@@ -277,20 +230,17 @@ target = "fuse_parallel_runner_transport_test"
 test = "parallel.runner_transport.2"
 requires = "mpi"
 
-# Time windows track (Implement windowed temporal coupling across clocks).
+# Windowed temporal coupling across clocks.
 # Mutations below guard fuse/runtime/window_coupler.hpp's straddle
 # rollback/replay and its conservative mean-forcing split. NOT
-# hand-verified by rebuilding: the shared tier-0 build disk was exhausted
-# by three concurrent tracks for the whole of this session (see the
-# report this change's commit carries). Anchors are confirmed present
+# hand-verified by rebuilding. Anchors are confirmed present
 # (`tools/mutate.py --check-anchors`) and the expected failure mode is
 # derived from a from-scratch Python re-implementation of the identical
 # algorithm, run and checked against a closed-form exact solution and,
 # for the rollback mutation specifically, against a from-scratch
 # fixed-point solve of the same discretized equations (fsolve) that the
-# unmutated algorithm was confirmed to match to round-off. The lead
-# should re-verify by actually applying each mutation once tier-0 disk is
-# available.
+# unmutated algorithm was confirmed to match to round-off. Each mutation
+# should be re-verified by actually applying it.
 
 [[mutation]]
 id = "window-straddle-fixup-skips-rollback"
@@ -305,20 +255,19 @@ test = "runtime.window_coupler"
 [[mutation]]
 id = "window-straddle-tail-mean-drops-boundary-value"
 area = "runtime"
-describes = "the straddling substep's tail portion (beyond the window boundary T1, where the partner has no converged data yet) is fed the MEAN of the boundary value v_bnd (the partner's real, converged value at T1) and v_tail (the partner's value at the substep's true end, from extrapolation) -- dropping v_bnd and feeding v_tail alone breaks that mean, so the tail's forcing no longer represents its true time-average, which the delegated task's asymptotic-regime order tests catch as an accuracy regression. Superseded from an earlier anchor (window-straddle-tail-mean-not-length-weighted) that targeted a single-advance blended-mean formula this file no longer has: sweep_window's straddling substep is now split into two advance() calls at T1 (one on each side) rather than one advance() over a blended mean, so the length-weighted denominator this mutation originally hit does not exist anymore -- see the class comment at that split for why."
+describes = "the straddling substep's tail portion (beyond the window boundary T1, where the partner has no converged data yet) is fed the MEAN of the boundary value v_bnd (the partner's real, converged value at T1) and v_tail (the partner's value at the substep's true end, from extrapolation) -- dropping v_bnd and feeding v_tail alone breaks that mean, so the tail's forcing no longer represents its true time-average, which the asymptotic-regime order tests catch as an accuracy regression. Superseded from an earlier anchor (window-straddle-tail-mean-not-length-weighted) that targeted a single-advance blended-mean formula this file no longer has: sweep_window's straddling substep is now split into two advance() calls at T1 (one on each side) rather than one advance() over a blended mean, so the length-weighted denominator this mutation originally hit does not exist anymore -- see the class comment at that split for why."
 file = "src/runtime/window_coupler.cpp"
 old = "      member.required[e] = 0.5 * (bv.value() + v_tail);"
 new = "      member.required[e] = v_tail;"
 target = "fuse_runtime_window_coupler_test"
 test = "runtime.window_coupler"
-# Re-pointed 2026-09-29: b83eaf6 moved this split into the shared
-# fuse::detail::advance_straddle_split(), which both the sweep and the
-# replay of a step crossing the window end now call.
+# This split lives in the shared fuse::detail::advance_straddle_split(),
+# which both the sweep and the replay of a step crossing the window end call.
 
 [[mutation]]
 id = "window-longstep-refusal-disabled"
 area = "runtime"
-describes = "KNOWN_ISSUES D7: a Fixed member whose step is longer than the window spans a window end it cannot replay, and returned a non-converging answer with no diagnostic. Removing the refusal lets it run."
+describes = "A Fixed member whose step is longer than the window spans a window end it cannot replay, and returned a non-converging answer with no diagnostic. Removing the refusal lets it run."
 file = "src/runtime/window_coupler.cpp"
 old = "      if (m.interval > cfg.window_length) {"
 new = "      if (false) {"
@@ -328,7 +277,7 @@ test = "runtime.window_coupler"
 [[mutation]]
 id = "window-straddle-envelope-counts-dividing-steps"
 area = "runtime"
-describes = "KNOWN_ISSUES D7: only a Fixed member whose step does not divide the window can straddle. Counting dividing steps too refuses a configuration that is safe and verified."
+describes = "Only a Fixed member whose step does not divide the window can straddle. Counting dividing steps too refuses a configuration that is safe and verified."
 file = "src/runtime/window_coupler.cpp"
 old = "      if ((cfg.window_length / m.interval).is_integer()) continue;"
 new = "      if (false) continue;"
@@ -338,7 +287,7 @@ test = "runtime.window_coupler"
 [[mutation]]
 id = "window-straddle-refusal-disabled"
 area = "runtime"
-describes = "KNOWN_ISSUES D7: two Fixed members that can straddle one window end replay against each other's unresolved trajectories. Removing the refusal lets them run."
+describes = "Two Fixed members that can straddle one window end replay against each other's unresolved trajectories. Removing the refusal lets them run."
 file = "src/runtime/window_coupler.cpp"
 old = "      if (first_straddler != nullptr) {"
 new = "      if (false) {"
@@ -355,7 +304,7 @@ new = "      const auto at = [&](std::size_t e, std::size_t s) { return base + s
 target = "fuse_runtime_window_coupler_test"
 test = "runtime.window_coupler"
 
-# The coupler-placement track (design C, docs/dev/coupler-placement.md).
+# Coupler placement (docs/dev/coupler-placement.md).
 
 [[mutation]]
 id = "coupler-treated-as-physics-component"
@@ -385,13 +334,12 @@ new = """      for (std::size_t i = R.enter; i < R.enter; ++i) {  // MUTATED: em
 target = "fuse_parallel_runner_transport_test"
 test = "parallel.runner_transport.4"
 requires = "mpi"
-# Test written: NodalRemapRunnerMpi -- no, RunnerTransport.
+# The test is RunnerTransport.
 # IterationRegionParticipantsIncludeADisjointCoupler (test/parallel/
 # runner_transport_test.cpp), reusing TwoComponentJob's EXISTING
-# Overlap::Full + CouplerShape::Disjoint combination (already supported by
-# that class, no new fixture code needed): fluid AND solid COINCIDE on
-# RankSet{0, world_size()-1} while the coupler alone holds the one
-# remaining rank, disjoint from both. `FUSE_REQUIRE_AT_LEAST_RANKS(2)`.
+# Overlap::Full + CouplerShape::Disjoint combination: fluid AND solid
+# COINCIDE on RankSet{0, world_size()-1} while the coupler alone holds the
+# one remaining rank, disjoint from both. `FUSE_REQUIRE_AT_LEAST_RANKS(2)`.
 #
 # Traced kill mechanism, no hang required (verified by READING the code,
 # not by execution -- MPI cannot initialise in this sandbox): with fluid/
@@ -424,38 +372,34 @@ requires = "mpi"
 # a host run at >= 2 ranks is what confirms the E-RT-REGION outcome on the
 # coupler's rank.
 #
-# D3 close-out session (2026-10-18/19, tree exported at 01a6d25, tier 0,
-# system compiler /usr/bin/c++): confirmed IterationRegionParticipantsInclu-
-# deADisjointCoupler is reachable only under a real communicator --
-# `FUSE_REQUIRE_AT_LEAST_RANKS(2)` skips it at Tier 0, and this session's
+# The test is reachable only under a real communicator --
+# `FUSE_REQUIRE_AT_LEAST_RANKS(2)` skips it at Tier 0, and the
 # full Tier 0 mutation sweep reports this row NOT-ASSESSED (needs MPI), the
 # same courtesy `requires = "mpi"` gives every row in this file that needs a
 # launcher this sandbox does not have. `tools/mutate.py --check-anchors`
-# confirms the `old` loop-bound anchor above occurs exactly once. Separately
-# built (not run) `fuse_parallel_runner_transport_test` to completion under
+# confirms the `old` loop-bound anchor above occurs exactly once.
+# `fuse_parallel_runner_transport_test` builds (not run) to completion under
 # an MPI+Fortran configuration (-DFUSE_ENABLE_MPI=ON
-# -DFUSE_ENABLE_FORTRAN=ON) against the same exported tree, confirming the
-# test compiles against the CURRENT iteration.cpp/runner_transport_test.cpp,
-# not just against the tree it was written on. Host command: `FUSE_MUTATE_
+# -DFUSE_ENABLE_FORTRAN=ON). Host command: `FUSE_MUTATE_
 # MPI=1 tools/mutate.py --build-dir <mpi-build> --area runtime` (covers this
 # row and region-failure-abandons-the-rest-of-the-period together), or
 # isolate this row with `ctest --test-dir <mpi-build> -R
 # '^parallel.runner_transport.4$' --output-on-failure` before and after
 # hand-applying the mutation.
 
-# KNOWN_ISSUES.md D11 (closing) / matrix cell A-SPACES-TRANSPORT: the
+# The coupling hot loop moved onto Kokkos' default host execution space
 # coupling hot loop moved onto Kokkos' default host execution space
 # (fuse/num/space_kernels.hpp), and the deterministic-reduction scheme that
 # makes its reductions thread-count-independent is what the two rows below
 # guard. Both hand-verified (apply the `old`->`new` text by hand, rebuild,
-# run, restore byte-for-byte via cmp -- tools/mutate.py was not run, per
-# this file's own standing note elsewhere in the tree that it edits
-# repository sources in place and is unsafe against a shared checkout).
+# run, restore byte-for-byte via cmp -- tools/mutate.py was not run,
+# because it edits repository sources in place and is unsafe against a
+# shared checkout).
 
 [[mutation]]
 id = "runtime-reduction-not-deterministic"
 area = "runtime"
-describes = "space_kernels.hpp's deterministic_dot/deterministic_norm_squared_diff -- the fixed-chunk, serial-combine scheme iteration.cpp's block value/residual norms use so run_region()'s convergence decision is bit-for-bit independent of the execution space's thread count -- reverts to a plain Kokkos::parallel_reduce over the whole range. A parallel_reduce's summation order is the threads', not the deterministic scheme's, so the SAME input gives a DIFFERENT last-bit answer at different OMP_NUM_THREADS, which is exactly the property D11 closes."
+describes = "space_kernels.hpp's deterministic_dot/deterministic_norm_squared_diff -- the fixed-chunk, serial-combine scheme iteration.cpp's block value/residual norms use so run_region()'s convergence decision is bit-for-bit independent of the execution space's thread count -- reverts to a plain Kokkos::parallel_reduce over the whole range. A parallel_reduce's summation order is the threads', not the deterministic scheme's, so the SAME input gives a DIFFERENT last-bit answer at different OMP_NUM_THREADS, which is exactly the property this row guards."
 file = "include/fuse/num/space_kernels.hpp"
 old = "  Kokkos::parallel_for(\"fuse::det_dot\", Kokkos::RangePolicy<Space>(0, n_chunks),"
 new = "  double result = 0.0; Kokkos::parallel_reduce(\"fuse::det_dot_MUT\", Kokkos::RangePolicy<Space>(0, a.extent(0)), KOKKOS_LAMBDA(const std::size_t i, double& acc) { acc += a(i) * b(i); }, result); return result; if (false) Kokkos::parallel_for(\"fuse::det_dot\", Kokkos::RangePolicy<Space>(0, n_chunks),"
@@ -493,8 +437,7 @@ copy was empty)."""
 # "runtime-scale-runs-serial-loop" -- asked for by name, deliberately NOT
 # registered as a [[mutation]] row here: tools/mutate.py's load_manifest()
 # requires every row (id, area, describes, file, old, new, target, test) or
-# raises SystemExit for the WHOLE manifest across every area (its own
-# comment: "found 2026-09-21 by adding two rows without target"), and there
+# raises SystemExit for the WHOLE manifest across every area, and there
 # is no honest `new`/`target`/`test` to give this one -- see below.
 #
 # HONEST NON-KILL, hand-verified rather than assumed: reverted OpKind::
@@ -515,14 +458,12 @@ copy was empty)."""
 # half, Interpolate/Sample's copies, Accumulate's finalize) for the
 # identical reason -- Scale is the one instance, not a special case among
 # them. Recorded here, in prose, as the honest answer rather than a
-# fabricated row; see KNOWN_ISSUES.md D11's closing entry for the same
-# statement made where a reader of the capability gap is more likely to
-# look for it first.
+# fabricated row.
 
 [[mutation]]
 id = "restore-state-failure-returns-instead-of-carrying-forward"
 area = "runtime"
-describes = "RT-2(c) (review 2026-10-11): run_region()'s mid-sweep restore_state() failure handling reverts from recording step_failure and falling through (so the deliver/re-advance code right below, already gated on step_failure via is_collective(), carries it to the next sweep's residual agreement) back to co_return-ing straight out of the function. A partner whose own restore_state() succeeds on the SAME sweep never learns of this rank's failure and proceeds into the next sweep's body Transport alone -- exactly the N-transport-runtime-2/RT-11 class REVIEW.md names (a rank-local verdict returned ahead of a collective its partner still reaches), here for restore_state() rather than the advance()-failure site R-09 already fixed."
+describes = "run_region()'s mid-sweep restore_state() failure handling reverts from recording step_failure and falling through (so the deliver/re-advance code right below, already gated on step_failure via is_collective(), carries it to the next sweep's residual agreement) back to co_return-ing straight out of the function. A partner whose own restore_state() succeeds on the SAME sweep never learns of this rank's failure and proceeds into the next sweep's body Transport alone -- exactly the class of defect where a rank-local verdict is returned ahead of a collective its partner still reaches, here for restore_state() rather than the advance()-failure site."
 file = "src/runtime/iteration.cpp"
 old = "        if (!step_failure.has_value()) step_failure = rs.error();"
 new = "        co_return rs;  // MUTATED: bare early return undoes RT-2(c)'s carry-forward"
@@ -537,10 +478,10 @@ requires = "mpi"
 # agreement), so B's rank -- whose own restore succeeded -- enters the
 # NEXT sweep's body Transport with no partner there, which the test's own
 # 120s TIMEOUT ctest property turns into a correct kill rather than a
-# silent PASS. NOT-ASSESSED in this sandbox: MPI cannot initialise here
-# (KNOWN_ISSUES.md C1); traced by hand against the carry-forward mechanism
-# this same file's own "region-failure-abandons-the-rest-of-the-period"
-# row already documents for the analogous Epoch/advance-failure case, and
+# silent PASS. NOT-ASSESSED in this sandbox: MPI cannot initialise here;
+# traced by hand against the carry-forward mechanism
+# the "region-failure-abandons-the-rest-of-the-period" row in this file
+# already documents for the analogous Epoch/advance-failure case, and
 # the anchor is confirmed present (`tools/mutate.py --check-anchors`). A
 # host run applying this mutation, rebuilding, and re-running the row at
 # 2 ranks is what would confirm TIMEOUT/kill directly.
@@ -548,7 +489,7 @@ requires = "mpi"
 [[mutation]]
 id = "healthy-rank-leaves-at-the-epoch"
 area = "runtime"
-describes = "reconcile_epoch() returns E-RT-EPOCH-PEER on a rank that was fine, instead of recording it: that rank leaves the period at the agreement point while the failing rank walks on through the remaining collective operations, so the failing rank waits forever in the next Transport. The hang the host found on 2026-10-01 once each component is stepped only on its own processes."
+describes = "reconcile_epoch() returns E-RT-EPOCH-PEER on a rank that was fine, instead of recording it: that rank leaves the period at the agreement point while the failing rank walks on through the remaining collective operations, so the failing rank waits forever in the next Transport. This is the hang the host found once each component is stepped only on its own processes."
 file = "src/runtime/runner.cpp"
 old = "    step_failure = Failure{\"E-RT-EPOCH-PEER\","
 new = "    return Failure{\"E-RT-EPOCH-PEER\","
@@ -556,5 +497,5 @@ target = "fuse_parallel_runner_transport_test"
 test = "parallel.runner_transport.2"
 requires = "mpi"
 # Expected kill: RunnerTransport.StillRunsASecondChannelAfterARegionFailsUnderMpi
-# times out at 2 processes (the host's 2026-10-01 run on 9cafbd1 is this
+# times out at 2 processes (the host's run on 9cafbd1 is this
 # mutant's behaviour). NOT-ASSESSED in the sandbox: MPI cannot start here.

@@ -1,7 +1,6 @@
-// S6 phase 3 (Conformance, "LowFive" track), "LowFive attach" track: see
-// lowfive_attach.h's own header comment for WHY this exists (the env-
-// route null dereference measured on the host, KNOWN_ISSUES.md D38/D39)
-// and lowfive_attach_decision.hpp's own header comment for the pure
+// See lowfive_attach.h's own header comment for WHY this exists (the env-
+// route null dereference measured on the host) and
+// lowfive_attach_decision.hpp's own header comment for the pure
 // decision this file wraps with the real graph load, MPI rendezvous, and
 // LowFive/HDF5 calls.
 //
@@ -10,27 +9,23 @@
 // headers (whose include directory historically carried a bundled,
 // incompatible fmt 8.1.1) -- UNLIKE src/transport/lowfive_plugin_vol.cpp/
 // lowfive_plugin_graph.cpp's own two-translation-unit split. That split
-// was necessary when it was written (KNOWN_ISSUES.md D14's own Unit 3b
-// account); it is not necessary now. The actual root cause was never "two
-// fmt versions in one translation unit" -- it was `fuse_require(fmt ...)`
-// having no minimum version, so with `/opt/lowfive` first on
-// `CMAKE_PREFIX_PATH`, `find_package(fmt)` resolved LowFive's own bundled
-// 8.1.1 project-wide. `fuse_require(fmt VERSION 9 ...)`
-// (cmake/FuseDependencies.cmake, commit f59b446) fixed that at the
-// source, measured end to end (KNOWN_ISSUES.md D14's "root cause" account,
-// item 5: a fresh configure in EITHER CMAKE_PREFIX_PATH ordering builds
-// every target clean, INCLUDING lowfive_transport.cpp itself, which also
-// names both header families in one file and always has). This file
+// is not necessary. The actual root cause was never "two fmt versions in
+// one translation unit" -- it was `fuse_require(fmt ...)` having no
+// minimum version, so with `/opt/lowfive` first on `CMAKE_PREFIX_PATH`,
+// `find_package(fmt)` resolved LowFive's own bundled 8.1.1 project-wide.
+// `fuse_require(fmt VERSION 9 ...)` (cmake/FuseDependencies.cmake) fixes
+// that at the source: a fresh configure in EITHER CMAKE_PREFIX_PATH
+// ordering builds every target clean, INCLUDING lowfive_transport.cpp
+// itself, which also names both header families in one file. This file
 // relies on that same floor, not on a second instance of the two-TU
 // split -- `cmake/FuseDependencies.cmake`'s own comment calls the split
-// "redundant... correctness rests on the VERSION 9 floor alone," which is
-// the lead's own ruling on the existing plugin, not a license to skip
-// re-deriving it: this file DOES reuse the plugin's own graph-side
-// building blocks (`fuse::build_lowfive_bindings()`, `fuse::
-// plan_lowfive_rendezvous()`), just not lowfive_plugin_internal.hpp's own
-// plain-data Config indirection, which existed ONLY to cross the
-// (now-unnecessary) TU boundary and has nothing else to offer a caller
-// that does not need that boundary.
+// "redundant... correctness rests on the VERSION 9 floor alone". This file
+// DOES reuse the plugin's own graph-side building blocks
+// (`fuse::build_lowfive_bindings()`, `fuse::plan_lowfive_rendezvous()`),
+// just not lowfive_plugin_internal.hpp's own plain-data Config
+// indirection, which exists ONLY to cross the (unnecessary) TU boundary
+// and has nothing else to offer a caller that does not need that
+// boundary.
 //
 // WHY ONE INTERCOMMUNICATOR SERVES A BIDIRECTIONAL EXCHANGE. The
 // Brusselator's own two HDF5-bound channels (u_out: U writes, V reads;
@@ -56,18 +51,16 @@
 // MPI_Comm_split() in this file, by `bruss_lowfive_join_local_split()` --
 // but of the BRIDGE (the base communicator fuse_setup() formed for this
 // process's own Connect- or Mpmd-launched component, now readable through
-// the base_communicator() ABI entry, D14 Stage B, 2026-10-13), never of
+// the base_communicator() ABI entry), never of
 // MPI_COMM_WORLD directly, and never the caller's own already-formed
 // physics-only communicator (u_main.c's own u_comm / v_main.f90's own
-// v_comm) either -- an EARLIER version of this file tried both of those
-// in turn and both were found wrong: splitting MPI_COMM_WORLD directly
-// hangs when the bundled coupler/placeholder rank does not take part
-// (KNOWN_ISSUES.md D39's own "found while implementing" paragraph), and
-// reusing u_comm/v_comm assumes, rather than derives, that their local
-// rank numbering already matches plan.split_key's own expectation -- true
-// for U (MPI_Intercomm_merge's own high/low rule keeps U's ranks
-// unchanged) but NOT for V, whose merged position is offset by U's local
-// world size (the owner's own ruling against reusing them; see
+// v_comm) either -- both of those are wrong: splitting MPI_COMM_WORLD
+// directly hangs when the bundled coupler/placeholder rank does not take
+// part, and reusing u_comm/v_comm assumes, rather than derives, that
+// their local rank numbering already matches plan.split_key's own
+// expectation -- true for U (MPI_Intercomm_merge's own high/low rule
+// keeps U's ranks unchanged) but NOT for V, whose merged position is
+// offset by U's local world size (see
 // WrongThisRankFromLocalWorldInsteadOfBridgeMisclassifiesV in
 // test/verification/brusselator_lowfive_attach_test.cpp for the tier-0
 // proof). The fresh split costs one extra collective per process, paid
@@ -75,65 +68,46 @@
 // body below for how the resulting `local_comm_f` is then verified
 // against the plan's own expected size/position exactly as before.
 //
-// DEADLOCK-AVOIDANCE DECISION -- ROUND 2, SECOND ATTEMPT, supersedes
-// both round 1's own ruling AND this round's own FIRST attempt (both
-// quoted in full in KNOWN_ISSUES.md D39 for the record -- including the
-// first attempt's own claim, right here, that role-ordered serving was
-// "the one order that cannot leave both sides waiting on each other".
-// That claim was WRONG and is not repeated below).
-//
-// Round 1 placed serve_after_write()/receive_before_read() at the
-// "natural" points -- serve right after H5Fclose, receive right before
-// H5Fopen -- and the host measured a 120s hang: `serve_on_close`
-// (include/lowfive/vol-dist-metadata.hpp:33) defaults true, so `file_
-// close()` (src/vol-dist-metadata.cpp:320-364) already calls `serve_
-// all()` INSIDE H5Fclose, before round 1's own hook call (placed AFTER
-// H5Fclose) ever ran -- both sides raced into `serve_all()` together,
-// neither having received first.
-//
-// This round's FIRST attempt set `serve_on_close = false` and moved the
-// first-reader's own flush into the PRE-open hook (`receive_before_
-// read()`, called right before H5Fopen) -- and was reviewed against
-// LowFive's own source and rejected before any host run: a process
-// blocked inside `serve_all()` for file K is released only when the PEER
+// DEADLOCK AVOIDANCE. `serve_on_close` (include/lowfive/
+// vol-dist-metadata.hpp:33) defaults true, so `file_close()`
+// (src/vol-dist-metadata.cpp:320-364) already calls `serve_all()` INSIDE
+// H5Fclose -- a serve hook placed AFTER H5Fclose runs too late: both
+// sides race into `serve_all()` together, neither having received first
+// (a 120 s hang). So `serve_on_close = false` is set (below), and the
+// flush of a first-reader's deferred serve happens at the event
+// LowFive's own source ties the release to: AFTER this process's own
+// H5Fclose of the peer's file (`kImportClosed`, a hook called from
+// shim.cpp's own bruss_lowfive_read(), right after EVERY H5Fclose on a
+// path where H5Fopen already succeeded -- see shim.cpp's own comment for
+// why every such path, not only the success path). A process blocked
+// inside `serve_all()` for file K is released only when the PEER
 // completes its own OPEN-AND-CLOSE of file K (`DistMetadataVOL::
 // file_close()`'s own `RemoteFile` branch calling `finish(0)`, src/
 // vol-dist-metadata.cpp line ~342) -- not by the peer merely reaching a
-// pre-open hook. Flushing there ran the first-reader's own blocking
+// pre-open hook. Flushing in the pre-open hook (`receive_before_read()`,
+// called right before H5Fopen) would run the first-reader's own blocking
 // serve BEFORE it had done anything that could release the first-
-// server's own pending one, and vice versa: circular wait, one write/
-// read cycle later than round 1's, same two LowFive-level stacks.
-// lowfive_attach_decision.hpp's own "ROUND 2 REVIEW" comment has the
-// full citations and the corrected argument.
+// server's own pending one, and vice versa: circular wait. So
+// `receive_before_read()` flushes nothing and does not call
+// `broadcast_files()` either (lowfive_attach_decision.hpp's own "RECEIVE
+// AND RELEASE" comment has the full citations, including why that call is
+// not justified for this row's own one-rank-per-component layout). This
+// necessarily serializes the two transfers (never both sides serving in
+// the same window); the helper-thread follow-up that would let them
+// overlap again is not done, because Index::serve()'s own barrier/
+// ibarrier path and Query::get_filenames()'s own broadcast share one
+// `local` communicator, and this build's HDF5 is Threadsafety:no with a
+// plain MPI_Init.
 //
-// THE FIX, this version: `serve_on_close = false` is kept (below); the
-// flush moves again, this time to a NEW event fired AFTER this
-// process's own H5Fclose of the peer's file (`kImportClosed`, a new
-// hook called from shim.cpp's own bruss_lowfive_read(), right after
-// EVERY H5Fclose on a path where H5Fopen already succeeded -- see
-// shim.cpp's own comment for why every such path, not only the success
-// path) -- the event LowFive's own source actually ties the release to.
-// `receive_before_read()` (the pre-open hook) no longer flushes
-// anything and no longer calls `broadcast_files()` either (lowfive_
-// attach_decision.hpp's own comment has the citation for why that call
-// was never justified for this row's own one-rank-per-component
-// layout). This necessarily serializes the two transfers (never both
-// sides serving in the same window); the helper-thread follow-up that
-// would let them overlap again stays NOT started this round, for the
-// same reason recorded before (Index::serve()'s own barrier/ibarrier
-// path and Query::get_filenames()'s own broadcast share one `local`
-// communicator, and this build's HDF5 is Threadsafety:no with a plain
-// MPI_Init) -- KNOWN_ISSUES.md D39 records it.
-//
-// Checked, this time, against an explicit-state simulation of the
-// blocking semantics above (lowfive_attach_model_check.hpp), not only
-// against a word-of-mouth argument -- see that header's own top comment
+// Checked against an explicit-state simulation of the blocking semantics
+// above (lowfive_attach_model_check.hpp), not only against a
+// word-of-mouth argument -- see that header's own top comment
 // for exactly what it does and does not establish.
 #include "lowfive_attach.h"
 
 #include "fuse/base/config.hpp"
 
-// D14 Stage B (KNOWN_ISSUES.md): these four need only fuse::model/
+// These four need only fuse::model/
 // fuse::transport and <mpi.h> -- NEVER a LowFive/HDF5 header -- so they
 // are available regardless of FUSE_HAVE_LOWFIVE, unlike everything
 // below. bruss_lowfive_join_local_split() (defined below, outside the
@@ -197,7 +171,7 @@ struct AttachState {
   bool attached = false;
   hid_t fapl = H5I_INVALID_HID;
   bool distributed = false;
-  // ROUND 5 (diagnostic trace track): a base-class pointer valid in
+  // A base-class pointer valid in
   // EITHER branch of bruss_lowfive_attach() (LowFive::DistMetadataVOL
   // derives from LowFive::MetadataVOL, and MetadataVOL::files is what
   // bruss_lowfive_attach_file_count() reads -- lowfive_attach.h's own
@@ -207,13 +181,13 @@ struct AttachState {
   LowFive::MetadataVOL* vol = nullptr;
 #if FUSE_EXAMPLES_LOWFIVE_ATTACH_HAVE_DIST
   LowFive::DistMetadataVOL* dist_vol = nullptr;  // never owned/deleted; see VolSingleton's own note
-  // Round 2 ("role-ordered serve"): the pure state machine this
+  // The "role-ordered serve" pure state machine this
   // process's own write/read events drive -- meaningful only when
   // `distributed` is true (single-process mode never defers anything,
   // since LowFive::MetadataVOL has no serve_on_close/serve_all() of
   // this kind at all).
   fuse_examples::lowfive_attach::ServeState serve_state;
-  // ROUND 6: this component's own exported file name(s) -- lowfive_
+  // This component's own exported file name(s) -- lowfive_
   // attach_decision.hpp's own FindOwnExportedFiles(), computed once at
   // attach time from the SAME binding table/this_name the attach
   // already derives, never recomputed per write/read call. Dropped,
@@ -221,23 +195,21 @@ struct AttachState {
   // own two call sites below) -- never the peer's own file, which this
   // rank never owns the lifetime of.
   std::vector<std::string> own_exported_files;
-  // ROUND 8: the per-process LOCAL order assertion's own tracker
+  // The per-process LOCAL order assertion's own tracker
   // (lowfive_attach_decision.hpp's own CheckAndAdvanceOrder()) --
   // checked, and advanced, before EVERY serve_state_step() call below,
-  // never after (task 3b's own "before the next blocking call").
+  // never after (always before the next blocking call).
   fuse_examples::lowfive_attach::OrderTracker order_tracker;
-  // ROUND 8, task 6: a monotonically increasing per-process event
+  // A monotonically increasing per-process event
   // index (every real hook call below increments it once, in trace
   // order) -- distinct from order_tracker's own exchange_index/slot
-  // (which resets every exchange -- round 9 renamed this from
-  // "period," this header's own "ROUND 9" comment has the full
-  // account); this one never resets, so two trace lines can be
+  // (which resets every exchange; see lowfive_attach_decision.hpp's own
+  // "EXCHANGE vs. PERIOD" comment); this one never resets, so two trace lines can be
   // compared for "did anything happen in between" even across
   // exchanges.
   long long event_index = 0;
-  // D14 Stage B, owner's own ruling (decision 2): "free every
-  // communicator you create, on every rank, in the order that cannot
-  // hang" -- `local_comm` is the fresh split bruss_lowfive_join_local_
+  // Every communicator created is freed, on every rank, in the order
+  // that cannot hang -- `local_comm` is the fresh split bruss_lowfive_join_local_
   // split() formed from the bridge (stashed there, before this rank ever
   // calls bruss_lowfive_attach() at all); `intercomm` is the one
   // MPI_Intercomm_create() forms inside bruss_lowfive_attach(). Both
@@ -304,14 +276,14 @@ void ApplyBindings(LowFive::MetadataVOL& vol, const fuse::LowFiveFieldBindingTab
                   "] " + split.error().message;
       return;
     }
-    // ROUND 4, DEFECT B fix: `split.value().second` (straight from
+    // `split.value().second` (straight from
     // split_hdf5_path(), e.g. "grid/u_out") has no leading slash, but
     // LowFive::Object::fullname() -- what MetadataVOL::dataset_create()'s
     // own is_memory check actually compares against -- always produces
     // one ("/grid/u_out"). Without normalizing, is_memory is false for
     // every Brusselator dataset this attach registers, and the dataset
     // is never attached as in-memory at all: see lowfive_attach_
-    // decision.hpp's own "DEFECT B" comment for the full citations.
+    // decision.hpp's own "Slash normalisation" comment for the full citations.
     // Applied here, in the ONE place both the distributed and the
     // single-process branches of bruss_lowfive_attach() already share,
     // rather than at either call site -- both need the same fix.
@@ -324,8 +296,7 @@ void ApplyBindings(LowFive::MetadataVOL& vol, const fuse::LowFiveFieldBindingTab
       return;
     }
     vol.set_memory(split.value().first, normalized.value());
-    // ROUND 5 (diagnostic trace track): the attach-time trace (item 1
-    // of the brief) wants the EXACT (file, dataset) pairs passed to
+    // The attach-time trace wants the EXACT (file, dataset) pairs passed to
     // set_memory() above -- collecting them here, in the one place
     // that already computes the normalized value, is the single
     // source of truth; re-deriving the same list a second time at the
@@ -335,9 +306,8 @@ void ApplyBindings(LowFive::MetadataVOL& vol, const fuse::LowFiveFieldBindingTab
   }
 }
 
-// ROUND 5 (diagnostic trace track): item 1's own cached-bool
-// requirement ("Keep the trace code out of the hot path when
-// disabled") -- getenv() runs exactly once per process, the FIRST
+// Cached-bool trace switch (the trace code stays out of the hot path when
+// disabled) -- getenv() runs exactly once per process, the FIRST
 // time ANY of this file's/shim.cpp's own trace call sites asks.
 // fuse_examples::lowfive_attach::ParseTraceEnabledEnv() is the pure
 // half (lowfive_attach_decision.hpp); this wraps it with the one
@@ -349,29 +319,28 @@ bool TraceEnabledCached() {
   return enabled;
 }
 
-// ROUND 6: `LowFive::MetadataVOL::drop(std::string)` (src/vol-
+// `LowFive::MetadataVOL::drop(std::string)` (src/vol-
 // metadata.cpp, cited in lowfive_attach_decision.hpp's own "ROOT CAUSE"
 // comment) dereferences `files.find(name)` WITHOUT checking `end()` --
 // undefined behaviour on an absent name. This wrapper guards that;
-// `files` is a PUBLIC member (confirmed round 5, reused here). Absent
-// is treated as a harmless no-op, not a refusal: this round's own
-// protocol only ever calls this right after a file this SAME rank just
+// `files` is a PUBLIC member. Absent
+// is treated as a harmless no-op, not a refusal: this protocol only ever
+// calls this right after a file this SAME rank just
 // served, so the name should always be present -- but a double-drop
-// (a future bug, or a mutation of the call-site guard this round's own
-// mutation rows below test for) finding the file already gone is
-// exactly what we wanted anyway, not a new problem to report.
+// (a future bug, or a mutation of the call-site guard) finding the file
+// already gone is exactly what we wanted anyway, not a new problem to
+// report.
 template <typename Vol>
 void GuardedDropOwnExportedFile(Vol& vol, const std::string& file) {
   if (vol.files.find(file) != vol.files.end()) vol.drop(file);
 }
 
-// ROUND 5 (diagnostic trace track), item 5 of the brief: `FUSE_LOWFIVE_
+// `FUSE_LOWFIVE_
 // LOG=<level>` turns on LowFive's own spdlog-based tracing
-// (`LowFive::create_logger(level)`, include/lowfive/log.hpp) -- "With
+// (`LowFive::create_logger(level)`, include/lowfive/log.hpp) -- with
 // 'trace' LowFive prints 'enter serve_all, files.size = N' and Index
-// logs, which settle H2/H4 directly" (vol-dist-metadata.cpp:42,
-// src/vol-dist/index.cpp:13 on this host's own LowFive checkout, both
-// read above). Read src/log.cpp first: `create_logger()` calls
+// logs (vol-dist-metadata.cpp:42, src/vol-dist/index.cpp:13 in the
+// LowFive checkout). Read src/log.cpp first: `create_logger()` calls
 // `spd::stderr_color_mt("lowfive")`, which THROWS `spdlog::spdlog_ex`
 // (derived from std::exception) if a logger named "lowfive" is already
 // registered in spdlog's own global registry -- `get_logger()`
@@ -386,8 +355,7 @@ void GuardedDropOwnExportedFile(Vol& vol, const std::string& file) {
 // by catching any std::exception rather than naming spdlog::spdlog_ex
 // explicitly (which would need <spdlog/spdlog.h> on this translation
 // unit's own include path; this file has no other reason to add that
-// dependency, so it does not), because the lead's own brief asked this
-// to be handled, not assumed unreachable. On the caught-duplicate path
+// dependency, so it does not). On the caught-duplicate path
 // this function does NOT call set_level() on the already-registered
 // logger (no handle to it without spdlog::get(), which needs the same
 // header): that logger keeps whichever level ITS OWN create_logger()
@@ -410,7 +378,7 @@ void EnableLowFiveLoggerOnce() {
 
 extern "C" {
 
-// D14 Stage B (KNOWN_ISSUES.md): the collective EVERY rank of the bridge
+// The collective EVERY rank of the bridge
 // must join, coupler/placeholder included -- lowfive_attach.h's own doc
 // comment on this function has the full account of why, and of why it
 // is safe and cheap to call unconditionally (an ordinary, non-LowFive
@@ -520,8 +488,8 @@ int bruss_lowfive_join_local_split(const char* graph_path, long long bridge_comm
                  "color=%d key=%d\n",
                  this_rank, choice.participates ? 1 : 0, color, key);
   }
-  // D14 Stage B, owner's own ruling (decision 2): "free every
-  // communicator you create" -- `local` is stashed in AttachState here,
+  // Every communicator created is freed -- `local` is stashed in
+  // AttachState here,
   // for bruss_lowfive_attach() to hand to MPI_Intercomm_create() and for
   // bruss_lowfive_finalize() to free, in that order, AFTER this rank's
   // own H5close() and BEFORE the caller's own MPI_Finalize (that
@@ -584,7 +552,7 @@ int bruss_lowfive_attach(const char* graph_path, long long bridge_comm_f,
                      errbuf_len);
     return 1;
   }
-  // D14 Stage A section 3(A) item 3, FIXED here: this rank's own
+  // This rank's own
   // position in the BRIDGE, never MPI_COMM_WORLD -- the two coincide for
   // Mpmd (connect_mpmd() merely dups MPI_COMM_WORLD) and for U in an
   // accept launch (MPI_Intercomm_merge's own high=0 side keeps its local
@@ -596,8 +564,7 @@ int bruss_lowfive_attach(const char* graph_path, long long bridge_comm_f,
   // mode.
   int this_rank = 0;
   MPI_Comm_rank(bridge, &this_rank);
-  // ROUND 5 (diagnostic trace track), item 5: before any LowFive VOL is
-  // constructed, so its own ctor-time trace lines (if FUSE_LOWFIVE_LOG
+  // Before any LowFive VOL is constructed, so its own ctor-time trace lines (if FUSE_LOWFIVE_LOG
   // is set) are captured too.
   EnableLowFiveLoggerOnce();
 
@@ -625,7 +592,7 @@ int bruss_lowfive_attach(const char* graph_path, long long bridge_comm_f,
     return 1;
   }
 
-  // D14 Stage B: the per-rank channel-collection loop is now
+  // The per-rank channel-collection loop is
   // CollectChannelsForRank() (lowfive_attach_decision.hpp), shared with
   // bruss_lowfive_join_local_split() above so the two calls -- which
   // MUST agree on this rank's own role, since join_local_split()'s own
@@ -633,7 +600,7 @@ int bruss_lowfive_attach(const char* graph_path, long long bridge_comm_f,
   // silently diverge.
   const auto channels = fuse_examples::lowfive_attach::CollectChannelsForRank(graph, this_rank);
 
-  // ROUND 8, task 3a: the STATIC order check, at attach time, before
+  // The STATIC order check, at attach time, before
   // decide_attach_mode() or anything else that could block -- refuses
   // by name (E-LOWFIVE-ATTACH-ORDER-UNVALIDATED) unless this graph's
   // own channel order/component names/rank counts EXACTLY match the
@@ -658,7 +625,7 @@ int bruss_lowfive_attach(const char* graph_path, long long bridge_comm_f,
     }
   }
 
-  // D14 Stage B, scope B: `connect_mode_component_count` is this rank's
+  // `connect_mode_component_count` is this rank's
   // own, independent read of the SAME graph every rank already loaded --
   // a count, not a RankSet membership test, so it needs no per-rank
   // filtering of its own (every rank sees the identical graph-wide
@@ -668,9 +635,8 @@ int bruss_lowfive_attach(const char* graph_path, long long bridge_comm_f,
   // when formed==0, the same gating that keeps the coupler/placeholder
   // out of this function entirely) -- so `bridge_formed=true` always,
   // from THIS call site; decide_attach_mode()'s own `false` branch is
-  // reachable only from a direct, pure-function test, by design (this
-  // track's own standing rule: a refusal is verified only if a test
-  // makes it fire).
+  // reachable only from a direct, pure-function test, by design (a refusal is
+  // verified only if a test makes it fire).
   int connect_mode_component_count = 0;
   for (std::uint32_t i = 0; i < graph.component_count(); ++i) {
     if (graph.component(fuse::ComponentId{i}).launch.mode == fuse::LaunchMode::Connect) {
@@ -702,14 +668,12 @@ int bruss_lowfive_attach(const char* graph_path, long long bridge_comm_f,
   if (decision.value().mode == fuse_examples::lowfive_attach::AttachMode::kDistributed) {
 #if FUSE_EXAMPLES_LOWFIVE_ATTACH_HAVE_DIST
     const fuse::LowFiveRendezvousPlan& plan = decision.value().rendezvous;
-    // D14 Stage B, owner's own ruling (decision 2): `local` is the
-    // FRESH split bruss_lowfive_join_local_split() already formed from
-    // the bridge (NEVER u_comm/v_comm reused -- see lowfive_attach.h's
-    // own header comment on bruss_lowfive_join_local_split() for why
-    // that reuse was this track's own, rejected Stage A proposal), keyed
-    // by RankSet membership exactly as plan_lowfive_rendezvous() itself
-    // expects. The intercommunicator is formed over the BRIDGE, never
-    // MPI_COMM_WORLD (D14 Stage A's own open item, closed here): in an
+    // `local` is the FRESH split bruss_lowfive_join_local_split()
+    // already formed from the bridge (NEVER u_comm/v_comm reused -- see
+    // lowfive_attach.h's own header comment on
+    // bruss_lowfive_join_local_split() for why), keyed by RankSet
+    // membership exactly as plan_lowfive_rendezvous() itself expects. The
+    // intercommunicator is formed over the BRIDGE, never MPI_COMM_WORLD: in an
     // Mpmd launch the two are one and the same (connect_mpmd() merely
     // dups MPI_COMM_WORLD), but in an accept (Connect) launch they are
     // NOT -- MPI_COMM_WORLD spans only one of the two separately
@@ -770,32 +734,31 @@ int bruss_lowfive_attach(const char* graph_path, long long bridge_comm_f,
           errbuf, errbuf_len);
       return 1;
     }
-    // D14 Stage B, owner's own ruling (decision 2): "free every
-    // communicator you create" -- stashed here for bruss_lowfive_
+    // Stashed here for bruss_lowfive_
     // finalize() to free, AFTER H5close() and BEFORE MPI_Finalize (that
     // function's own doc comment has the full account of the order).
     s.intercomm = intercomm;
     LowFive::DistMetadataVOL& vol = LowFive::DistMetadataVOL::create_DistMetadataVOL(local, intercomm);
-    // ROUND 2 ("role-ordered serve"), the measured fix: `serve_on_close`
+    // `serve_on_close`
     // is a PUBLIC bool member, default true (lowfive/vol-dist-
-    // metadata.hpp:33 on this host's own /Users/mahadevan/Code/hdf5/
-    // LowFive, rev 7f3a58b), and `DistMetadataVOL::file_close()` calls
+    // metadata.hpp:33 in /Users/mahadevan/Code/hdf5/LowFive, rev
+    // 7f3a58b), and `DistMetadataVOL::file_close()` calls
     // `serve_all()` for every local in-memory file whenever it is true
     // (vol-dist-metadata.cpp:355-358) -- BEFORE this process's own code
-    // ever runs a line, which made round 1's own bruss_lowfive_serve_
-    // after_write() (placed AFTER H5Fclose) a no-op and is the measured
-    // cause of the host's own 120s hang (lowfive_attach_decision.hpp's
-    // own "Round 2" comment has the full stack). Setting it false here
-    // makes serving an explicit decision this file's own serve_state_
-    // step() calls make, never H5Fclose's.
+    // ever runs a line, which makes a bruss_lowfive_serve_after_write()
+    // placed AFTER H5Fclose a no-op and is the cause of a 120 s hang
+    // (lowfive_attach_decision.hpp's own "WHY THE SERVE IS ROLE-ORDERED"
+    // comment has the full stack). Setting it false here makes serving an
+    // explicit decision this file's own serve_state_step() calls make,
+    // never H5Fclose's.
     //
-    // ROUND 6: `serve_on_close=false` ALONE is not enough -- lowfive_
+    // `serve_on_close=false` ALONE is not enough -- lowfive_
     // attach_decision.hpp's own "ROOT CAUSE" comment has the full
-    // account, measured on the host: without `keep=true` too, `H5Fclose
-    // ()`'s own tail call into `MetadataVOL::file_close()` erases and
-    // deletes the file BEFORE this process's own explicit serve_after_
-    // write() hook ever runs, so that hook's own serve_all() finds
-    // files.size()==0 and returns without serving (the round-5 hang).
+    // account: without `keep=true` too, `H5Fclose()`'s own tail call
+    // into `MetadataVOL::file_close()` erases and deletes the file BEFORE
+    // this process's own explicit serve_after_write() hook ever runs, so
+    // that hook's own serve_all() finds files.size()==0 and returns
+    // without serving (a hang).
     // `decide_vol_settings()` is the ONE place that decides BOTH
     // settings together, so the invariant it keeps
     // (VolSettingsSatisfyInvariant()) is checked once, not re-derived
@@ -810,13 +773,11 @@ int bruss_lowfive_attach(const char* graph_path, long long bridge_comm_f,
       CopyErrorMessage(build_error, errbuf, errbuf_len);
       return 1;
     }
-    // ROUND 4, DEFECT A fix: nothing before this line ever called
-    // LowFive's own DistMetadataVOL::set_intercomm(), so a CONSUMER's
-    // first remote H5Fopen on this process threw file_open(): no
-    // intercomm found -- the exact exception the host measured on both
-    // sides. lowfive_attach_decision.hpp's own "DEFECT A"/"DEFECT B"
-    // comment has the full citations for both this fix and the
-    // normalization already applied inside ApplyBindings() above.
+    // Without this call, a CONSUMER's first remote H5Fopen on this process
+    // throws file_open(): no intercomm found.
+    // lowfive_attach_decision.hpp's own "set_intercomm()" and "Slash
+    // normalisation" comments have the full citations for both this and
+    // the normalization already applied inside ApplyBindings() above.
     // Intercomm index 0 is explicit here, not hidden inside
     // BuildIntercommRegistrations() itself -- see that function's own
     // doc for why this attach's own architecture can never need a
@@ -837,7 +798,7 @@ int bruss_lowfive_attach(const char* graph_path, long long bridge_comm_f,
       CopyErrorMessage(build_error, errbuf, errbuf_len);
       return 1;
     }
-    // Role-ordered serve (round 2): which of this channel's own two
+    // Role-ordered serve: which of this channel's own two
     // COMPONENTS serves immediately at write and which defers -- from
     // their own RankSets alone, identical on every rank of either
     // component (the collective-safety requirement serve_all()'s own
@@ -862,7 +823,7 @@ int bruss_lowfive_attach(const char* graph_path, long long bridge_comm_f,
     s.dist_vol = &vol;
     s.vol = &vol;
     distributed_now = true;
-    // ROUND 6: the file(s) this rank's own two serve call sites below
+    // The file(s) this rank's own two serve call sites below
     // must drop, one at a time, right after each is actually served --
     // computed once, here, from the SAME table/this_name already in
     // scope (lowfive_attach_decision.hpp's own FindOwnExportedFiles()
@@ -875,25 +836,19 @@ int bruss_lowfive_attach(const char* graph_path, long long bridge_comm_f,
       return 1;
     }
     s.own_exported_files = own_files.value();
-    // ROUND 5 (diagnostic trace track), item 1 of the brief: one line
-    // with everything the lead asked for -- bridge rank, component,
-    // role, distributed flag, the registered (file, dataset_pattern,
-    // intercomm_index) list, the (file, dataset) memory patterns, and
-    // the serve_on_close value actually set. `intercomms.size()`/
-    // `files.size()` are not in the brief's own enumerated list but are
-    // directly diagnostic for H4 (wrong/empty intercomm selection) and
-    // cost nothing extra to read (both are public members, confirmed
-    // from the installed headers) -- included for that reason. ROUND 6,
-    // item 6 of the brief: `keep=` added alongside the already-printed
-    // `serve_on_close=`, so the next host run's own attach-time line
-    // shows the full pair this round's own fix applies together. D14
-    // Stage B: `bridge_rank=` replaces `world_rank=` (the field now
-    // names this rank's own position in the BRIDGE, not necessarily
-    // MPI_COMM_WORLD -- see this function's own `this_rank` comment
-    // above); a NEW `intercomm_formed=1` confirms MPI_Intercomm_create()
-    // itself completed before anything else in this branch could run
-    // (task F's own request: the first MPI-level fact a host run should
-    // separate from everything downstream of it).
+    // Attach-time trace: one line with bridge rank, component, role,
+    // distributed flag, the registered (file, dataset_pattern,
+    // intercomm_index) list, the (file, dataset) memory patterns, and the
+    // serve_on_close and keep values actually set. `intercomms.size()`/
+    // `files.size()` are directly diagnostic for a wrong/empty intercomm
+    // selection and cost nothing extra to read (both are public members,
+    // confirmed from the installed headers). `bridge_rank=` names this
+    // rank's own position in the BRIDGE, not necessarily MPI_COMM_WORLD
+    // (see this function's own `this_rank` comment above);
+    // `intercomm_formed=1` confirms MPI_Intercomm_create() itself
+    // completed before anything else in this branch could run (the first
+    // MPI-level fact a host run should separate from everything
+    // downstream of it).
     if (TraceEnabledCached()) {
       std::fprintf(stderr,
                    "TRACE(bruss_lowfive_attach): bridge_rank=%d component=%s role=%s "
@@ -933,19 +888,16 @@ int bruss_lowfive_attach(const char* graph_path, long long bridge_comm_f,
     // H5Fclose and the read leg's H5Fopen finds nothing -- the identical
     // reasoning VolSingleton::VolSingleton's own comment gives.
     //
-    // ROUND 6: unchanged by this round, per the lead's own instruction
-    // -- this branch already needed, and already had, exactly what
-    // decide_vol_settings(false).keep now names explicitly for the
-    // distributed branch (both branches' own `keep` requirement traces
-    // to the SAME MetadataVOL::file_close() behaviour this header's own
-    // "ROOT CAUSE" comment cites). `serve_on_close` does not apply here
-    // at all: `LowFive::MetadataVOL` (this branch's own VOL type, unlike
-    // the distributed branch's DistMetadataVOL) has no such member, and
-    // nothing in this branch ever calls serve_all()/drop() either --
-    // this VOL never serves anyone, so files simply accumulate in
-    // `files` for this process's own lifetime (the single-process path
-    // round 4's own citation already measured end to end; this round
-    // does not revisit that measurement).
+    // This branch needs exactly what decide_vol_settings(false).keep
+    // names explicitly for the distributed branch (both branches' own
+    // `keep` requirement traces to the SAME MetadataVOL::file_close()
+    // behaviour this header's own "ROOT CAUSE" comment cites).
+    // `serve_on_close` does not apply here at all: `LowFive::MetadataVOL`
+    // (this branch's own VOL type, unlike the distributed branch's
+    // DistMetadataVOL) has no such member, and nothing in this branch ever
+    // calls serve_all()/drop() either -- this VOL never serves anyone, so
+    // files simply accumulate in `files` for this process's own lifetime
+    // (the single-process path is measured end to end).
     vol.set_keep(true);
     if (!BuildVerifiedFapl(vol, &fapl, &build_error)) {
       CopyErrorMessage(build_error, errbuf, errbuf_len);
@@ -953,7 +905,7 @@ int bruss_lowfive_attach(const char* graph_path, long long bridge_comm_f,
     }
     distributed_now = false;
     s.vol = &vol;
-    // ROUND 5 (diagnostic trace track): the single-process branch has
+    // The single-process branch has
     // no role/serve choreography at all (LowFive::MetadataVOL has no
     // serve_on_close/serve_all()), so this line is deliberately
     // shorter than the distributed branch's own -- there is nothing
@@ -994,7 +946,7 @@ int bruss_lowfive_serve_after_write(char* errbuf, long long errbuf_len) {
                      errbuf, errbuf_len);
     return 1;
   }
-  // ROUND 8, task 3b: the LOCAL per-event order assertion, checked and
+  // The LOCAL per-event order assertion, checked and
   // advanced BEFORE serve_state_step() -- a deviation is refused here,
   // before the kServeNow branch below's own blocking serve_all() call
   // ever runs, never after.
@@ -1009,7 +961,7 @@ int bruss_lowfive_serve_after_write(char* errbuf, long long errbuf_len) {
     }
     s.order_tracker = order_check.value();
   }
-  // ROUND 8, task 6: the policy decision and its own reason, BEFORE
+  // The policy decision and its own reason, BEFORE
   // calling serve_state_step() (which mutates serve_state.deferred_
   // pending but not completed_any_read for THIS event) -- decide_
   // serve_action()'s own condition, read directly, not re-derived.
@@ -1023,10 +975,10 @@ int bruss_lowfive_serve_after_write(char* errbuf, long long errbuf_len) {
                  this_event_index, s.order_tracker.exchange_index,
                  cold_start_first_reader ? "cold-start-first-reader" : "steady-state");
   }
-  // Unchanged by the round-2 review: the WRITE side's own event/action
-  // pair (kExportWrittenAndClosed -> kServeNow/kDeferServe) was never
-  // the part that was wrong -- only the READ side's own flush placement
-  // was. See lowfive_attach_decision.hpp's own "ROUND 2 REVIEW" comment.
+  // The WRITE side's own event/action pair (kExportWrittenAndClosed ->
+  // kServeNow/kDeferServe); only the READ side's own flush placement is
+  // subtle. See lowfive_attach_decision.hpp's own "RECEIVE AND RELEASE"
+  // comment.
   auto action = fuse_examples::lowfive_attach::serve_state_step(
       &s.serve_state, fuse_examples::lowfive_attach::ServeEvent::kExportWrittenAndClosed);
   if (!action.ok()) {
@@ -1034,28 +986,26 @@ int bruss_lowfive_serve_after_write(char* errbuf, long long errbuf_len) {
                      errbuf_len);
     return 1;
   }
-  // ROUND 5 (diagnostic trace track), item 4 of the brief: one line
-  // before and after each serve_all() call, with the action taken and
-  // monotonic elapsed seconds -- "a serve_all that returns in
-  // microseconds is the H2 signature; one that blocks until the peer
-  // opens is the healthy signature." The kDeferServe branch also
-  // traces (no serve_all() call at all), so H3 ("the hook returned
-  // another action") shows up as a trace line with NO matching "exit
-  // elapsed=" line, as distinct from H2's own near-zero elapsed line.
+  // Trace: one line before and after each serve_all() call, with the
+  // action taken and monotonic elapsed seconds. A serve_all() that returns
+  // in microseconds served nothing; one that blocks until the peer opens
+  // is the healthy case. The kDeferServe branch also traces (no
+  // serve_all() call at all), so a hook that returned another action
+  // shows up as a trace line with NO matching "exit elapsed=" line, as
+  // distinct from a near-zero elapsed line.
   switch (action.value()) {
     case fuse_examples::lowfive_attach::ServeAction::kServeNow: {
       if (TraceEnabledCached())
         std::fprintf(stderr, "TRACE(bruss_lowfive_serve_after_write): action=kServeNow enter\n");
       const auto t0 = std::chrono::steady_clock::now();
       s.dist_vol->serve_all();
-      // ROUND 6: this component's own exported file(s) are only now
-      // safe to drop -- SERVED, not merely written -- so the next
-      // exchange's own H5Fcreate(TRUNC) of the same name does not meet
-      // a stale copy (round 9 renamed "period" to "exchange" here,
-      // task 2 -- this file is recreated on every write, i.e. every
-      // exchange, not once per coupling window; lowfive_attach_
-      // decision.hpp's own "ROOT CAUSE" comment has the full citation
-      // on file_create()'s own emplace()-on-duplicate-key behaviour).
+      // This component's own exported file(s) are only now safe to drop
+      // -- SERVED, not merely written -- so the next exchange's own
+      // H5Fcreate(TRUNC) of the same name does not meet a stale copy
+      // (this file is recreated on every write, i.e. every exchange, not
+      // once per coupling window; lowfive_attach_decision.hpp's own
+      // "ROOT CAUSE" comment has the full citation on file_create()'s own
+      // emplace()-on-duplicate-key behaviour).
       for (const auto& f : s.own_exported_files) GuardedDropOwnExportedFile(*s.dist_vol, f);
       if (TraceEnabledCached()) {
         const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
@@ -1101,26 +1051,26 @@ int bruss_lowfive_receive_before_read(char* errbuf, long long errbuf_len) {
                      errbuf, errbuf_len);
     return 1;
   }
-  // ROUND 2 REVIEW: this hook no longer flushes anything, and no longer
-  // calls broadcast_files() either -- lowfive_attach_decision.hpp's own
-  // "ROUND 2 REVIEW" comment has the full account, with LowFive-source
-  // citations, of why: the real receive is H5Fopen itself (about to run,
-  // right after this call returns), and broadcast_files() propagates an
-  // already-known file registry to a multi-rank component's OWN sibling
-  // ranks over `local`, never to the peer component over the intercomm
-  // -- not needed for this row's own one-rank-per-component layout, and
-  // not reachable from any code path inside DistMetadataVOL::file_open()/
-  // file_close() themselves (grep confirms zero internal callers in the
-  // LowFive checkout this cites). `serve_state_step()` is still called,
-  // purely so the event sequence stays validated end to end (a future
-  // mutation that makes kImportAboutToOpen return anything other than
-  // kReceiveOnly is caught by this switch's own `default` case, and by
+  // This hook flushes nothing and does not call broadcast_files() either
+  // -- lowfive_attach_decision.hpp's own "RECEIVE AND RELEASE" comment has
+  // the full account, with LowFive-source citations, of why: the real
+  // receive is H5Fopen itself (about to run, right after this call
+  // returns), and broadcast_files() propagates an already-known file
+  // registry to a multi-rank component's OWN sibling ranks over `local`,
+  // never to the peer component over the intercomm -- not needed for this
+  // row's own one-rank-per-component layout, and not reachable from any
+  // code path inside DistMetadataVOL::file_open()/file_close() themselves
+  // (grep confirms zero internal callers in the LowFive checkout this
+  // cites). `serve_state_step()` is still called, purely so the event
+  // sequence stays validated end to end (a future mutation that makes
+  // kImportAboutToOpen return anything other than kReceiveOnly is caught
+  // by this switch's own `default` case, and by
   // lowfive_attach_model_check.hpp's own search).
   //
-  // ROUND 8, task 3b: checked (NOT advanced -- CheckAndAdvanceOrder()'s
-  // own doc comment on why kImportAboutToOpen only checks) BEFORE this
-  // process's own H5Fopen, which runs right after this call returns --
-  // "before the next blocking call" for the READ side specifically.
+  // Checked (NOT advanced -- CheckAndAdvanceOrder()'s own doc comment says
+  // why kImportAboutToOpen only checks) BEFORE this process's own H5Fopen,
+  // which runs right after this call returns -- "before the next blocking
+  // call" for the READ side specifically.
   {
     auto order_check = fuse_examples::lowfive_attach::CheckAndAdvanceOrder(
         s.serve_state.role, s.order_tracker,
@@ -1146,12 +1096,12 @@ int bruss_lowfive_receive_before_read(char* errbuf, long long errbuf_len) {
                      errbuf_len);
     return 1;
   }
-  // ROUND 5 (diagnostic trace track), item 4: this hook never calls
-  // serve_all() at all (ROUND 2 REVIEW's own account above), so its
-  // own trace line is a single "enter/is about to open" marker with no
-  // matching elapsed-time line -- a real H5Fopen-blocks-here signature
-  // in the surrounding write/read trace (shim.cpp) is what settles
-  // whether the peer is actually serving at this point, not this hook.
+  // This hook never calls serve_all() at all (see the "RECEIVE AND
+  // RELEASE" account above), so its own trace line is a single "enter/is
+  // about to open" marker with no matching elapsed-time line -- a real
+  // H5Fopen-blocks-here signature in the surrounding write/read trace
+  // (shim.cpp) is what settles whether the peer is actually serving at
+  // this point, not this hook.
   switch (action.value()) {
     case fuse_examples::lowfive_attach::ServeAction::kReceiveOnly:
       if (TraceEnabledCached())
@@ -1162,8 +1112,8 @@ int bruss_lowfive_receive_before_read(char* errbuf, long long errbuf_len) {
     default:
       CopyErrorMessage(
           "internal: serve_state_step() returned an action not valid for kImportAboutToOpen "
-          "(expected kReceiveOnly always; see lowfive_attach_decision.hpp's own ROUND 2 "
-          "REVIEW comment)",
+          "(expected kReceiveOnly always; see lowfive_attach_decision.hpp's own RECEIVE AND "
+          "RELEASE comment)",
           errbuf, errbuf_len);
       return 1;
   }
@@ -1190,16 +1140,16 @@ int bruss_lowfive_after_read_close(char* errbuf, long long errbuf_len) {
                      errbuf, errbuf_len);
     return 1;
   }
-  // NEW this round, replacing the flush the FIRST round-2 attempt placed
-  // in the pre-open hook above: this process has now completed its OWN
-  // open-and-close of the peer's file, which -- read from LowFive's own
-  // source (lowfive_attach_decision.hpp's own "ROUND 2 REVIEW" comment)
-  // -- is exactly the event that would release a PEER's own pending
-  // serve_all(); only now is it safe for a first-reader to enter its own.
+  // This process has now completed its OWN open-and-close of the peer's
+  // file, which -- read from LowFive's own source
+  // (lowfive_attach_decision.hpp's own "RECEIVE AND RELEASE" comment) --
+  // is exactly the event that would release a PEER's own pending
+  // serve_all(); only now is it safe for a first-reader to enter its own
+  // (the pre-open hook above deliberately flushes nothing).
   //
-  // ROUND 8, task 3b: checked and advanced BEFORE serve_state_step(),
-  // same discipline as the write side above -- a deviation is refused
-  // before the kFlushDeferred branch's own blocking serve_all() call.
+  // Checked and advanced BEFORE serve_state_step(), same discipline as
+  // the write side above -- a deviation is refused before the
+  // kFlushDeferred branch's own blocking serve_all() call.
   {
     auto order_check = fuse_examples::lowfive_attach::CheckAndAdvanceOrder(
         s.serve_state.role, s.order_tracker,
@@ -1226,7 +1176,7 @@ int bruss_lowfive_after_read_close(char* errbuf, long long errbuf_len) {
                      errbuf_len);
     return 1;
   }
-  // ROUND 5 (diagnostic trace track), item 4: same before/after/
+  // Trace: same before/after/
   // elapsed-time shape as serve_after_write()'s own kServeNow case
   // above -- this is the FIRST-READER's own (deferred) serve_all()
   // call, the other of the two places this process ever blocks in it.
@@ -1236,7 +1186,7 @@ int bruss_lowfive_after_read_close(char* errbuf, long long errbuf_len) {
         std::fprintf(stderr, "TRACE(bruss_lowfive_after_read_close): action=kFlushDeferred enter\n");
       const auto t0 = std::chrono::steady_clock::now();
       s.dist_vol->serve_all();
-      // ROUND 6: same reasoning as serve_after_write()'s own kServeNow
+      // Same reasoning as serve_after_write()'s own kServeNow
       // case above -- this is the FIRST-READER's own deferred serve,
       // now actually served, so its own exported file is safe to drop.
       for (const auto& f : s.own_exported_files) GuardedDropOwnExportedFile(*s.dist_vol, f);
@@ -1279,8 +1229,8 @@ int bruss_lowfive_finalize(char* errbuf, long long errbuf_len) {
   // operation gated on an attach having already happened.
   if (!s.attached || !s.distributed) {
 #if FUSE_EXAMPLES_LOWFIVE_ATTACH_HAVE_DIST
-    // D14 Stage B, owner's own ruling (decision 2): free whatever THIS
-    // rank itself created even on this early-return path -- a rank that
+    // Free whatever THIS rank itself created even on this early-return
+    // path -- a rank that
     // joined the split (bruss_lowfive_join_local_split()) but never
     // reached a successful bruss_lowfive_attach() (the only way
     // `s.attached` is false with `local_comm` non-null: u_main.c/
@@ -1300,15 +1250,16 @@ int bruss_lowfive_finalize(char* errbuf, long long errbuf_len) {
                      errbuf_len);
     return 1;
   }
-  // ROUND 9, task 1(b): a DETERMINISTIC, explicit H5close() -- NOT an
+  // A DETERMINISTIC, explicit H5close() -- NOT an
   // atexit()-registered one -- called here, strictly BEFORE this
   // function's own caller's MPI_Finalize() (confirmed by reading both
   // u_main.c's and v_main.f90's own call sites: bruss_lowfive_
   // finalize() always precedes MPI_Finalize() there), while the
   // process is still in ORDINARY execution. decide_exit_hygiene_plan()
   // says an attaching participant (U or V, the only role this
-  // function's own caller ever runs in) always wants this -- see this
-  // file's own "ROUND 9, task 1" header comment for why this is sound
+  // function's own caller ever runs in) always wants this -- see
+  // lowfive_attach_decision.hpp's own "EXIT HYGIENE" comment for why
+  // this is sound
   // (spdlog's own static registry cannot have been torn down yet,
   // since no exit()-time unwind has begun) and why the PRE-EXISTING
   // std::atexit(+[]{H5close();}) in bruss_lowfive_attach() is KEPT,
@@ -1324,13 +1275,12 @@ int bruss_lowfive_finalize(char* errbuf, long long errbuf_len) {
     }
     H5close();
   }
-  // D14 Stage B, owner's own ruling (decision 2): "free every
-  // communicator you create, on every rank, in the order that cannot
-  // hang" -- AFTER H5close() (the VOL class is torn down; neither
+  // Free every communicator this rank creates, in the order that cannot
+  // hang -- AFTER H5close() (the VOL class is torn down; neither
   // communicator needs to stay alive for that call) and BEFORE the
   // caller's own MPI_Finalize (read, not assumed: both u_main.c's and
   // v_main.f90's own call sites call this function strictly before
-  // MPI_Finalize(), the same ordering round 9's own H5close() fix
+  // MPI_Finalize(), the same ordering the H5close() above
   // already relies on). Intercomm first, local second -- the reverse of
   // creation order, the usual stack discipline, though MPI itself places
   // no ordering requirement between freeing two otherwise-unrelated
@@ -1345,7 +1295,7 @@ int bruss_lowfive_finalize(char* errbuf, long long errbuf_len) {
 #endif
 }
 
-// ROUND 5 (diagnostic trace track): lowfive_attach.h's own doc comment
+// Trace helpers: lowfive_attach.h's own doc comment
 // on each of these three has the full account of what it reports and
 // why it is shaped this way; TraceEnabledCached()/ParseTraceEnabledEnv()
 // are the single getenv()/pure-parse pair every trace call site (this
@@ -1358,9 +1308,9 @@ long long bruss_lowfive_attach_file_count(void) {
   return static_cast<long long>(s.vol->files.size());
 }
 
-// ROUND 6: see lowfive_attach.h's own doc comment on this function for
-// why it exists (replacing the round-5 trace's unreliable H5Lexists()
-// check) and why it is FILE-level, not dataset-level.
+// See lowfive_attach.h's own doc comment on this function for why it
+// exists (H5Lexists() is unreliable for this check) and why it is
+// FILE-level, not dataset-level.
 int bruss_lowfive_attach_has_real_file(const char* file) {
   AttachState& s = State();
   if (!s.attached || !s.vol || !file) return -1;
@@ -1398,8 +1348,7 @@ void CopyErrorMessageNoLowFive(char* errbuf, long long errbuf_len) {
 
 extern "C" {
 
-// D14 Stage B: UNLIKE every other stub in this branch, this one
-// SUCCEEDS -- lowfive_attach.h's own doc comment on
+// UNLIKE every other stub in this branch, this one SUCCEEDS -- lowfive_attach.h's own doc comment on
 // bruss_lowfive_join_local_split() states the contract plainly: without
 // -DFUSE_ENABLE_LOWFIVE=ON, no graph this build could ever load carries
 // an hdf5_path field, so every caller (physics rank or coupler/
@@ -1444,10 +1393,10 @@ int bruss_lowfive_finalize(char*, long long) {
   return 0;
 }
 
-// ROUND 5 (diagnostic trace track): the three functions below do not
+// The three functions below do not
 // depend on HDF5/LowFive at all (plain getenv()/fprintf()), so they
 // work the same in this build configuration -- u_main.c's/v_main.f90's
-// own skip-guard trace (item 3 of the brief) fires regardless of
+// own skip-guard trace fires regardless of
 // -DFUSE_ENABLE_LOWFIVE, same as bruss_lowfive_available() above.
 // This duplicates (rather than shares) the env-parsing logic the
 // FUSE_HAVE_LOWFIVE branch's own TraceEnabledCached() uses, because
@@ -1456,7 +1405,7 @@ int bruss_lowfive_finalize(char*, long long) {
 // FUSE_HAVE_LOWFIVE` above (it pulls in fuse/base/result.hpp and
 // friends this translation unit has no other reason to need here) --
 // restructuring that include guard just to share one string
-// comparison was judged not worth the risk for this round.
+// comparison is not worth the risk.
 namespace {
 bool TraceEnabledCachedNoLowFive() {
   static const bool enabled = [] {
@@ -1476,7 +1425,7 @@ long long bruss_lowfive_attach_file_count(void) {
   return -1;
 }
 
-// ROUND 6: same reasoning as bruss_lowfive_attach_file_count() above.
+// Same reasoning as bruss_lowfive_attach_file_count() above.
 int bruss_lowfive_attach_has_real_file(const char*) { return -1; }
 
 void bruss_lowfive_trace_skip(const char* which, long long window_samples, long long count,

@@ -98,8 +98,8 @@ struct Layout {
       // [i*stride, i*stride + (nc-1)*cs] to never reach element (i+1)'s block
       // at (i+1)*stride is stride > (nc-1)*cs, i.e. stride >= (nc-1)*cs + 1 --
       // not stride >= nc*cs, which is one full `cs` more conservative than
-      // necessary and wrongly rejects a valid padded/strided layout (REVIEW.md
-      // R-29). Symmetrically for the blocked case: cs > (count-1)*stride.
+      // necessary and wrongly rejects a valid padded/strided layout.
+      // Symmetrically for the blocked case: cs > (count-1)*stride.
       const bool interleaved =
           stride > detail::sat_mul(nc - 1, cs);
       const bool blocked =

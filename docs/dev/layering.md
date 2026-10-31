@@ -21,11 +21,11 @@ base        Rational · units · TimeLevel · SemanticVersion · ids · Result/D
 
 `(*) linalg`, `field`, `search` and `partition` are real, separately-ranked layers in
 `tools/check-layering.py`'s `LAYERS` list, easy to omit from a hand-drawn version of
-this diagram (REVIEW.md R-39 / BT-F13 caught `linalg`/`field` missing once already).
+this diagram (`linalg`/`field` have been missed from it before).
 None of the four sits strictly "under" its neighbour the way the rest of the column
 does: `linalg` is a peer utility `num` depends on (nothing depends on `num` from
 here); `field` is included only by `backend` and `runtime`, not by anything below
-them; `search` sits directly below `backend` *by task requirement* (`backend`'s own
+them; `search` sits directly below `backend` *by design* (`backend`'s own
 nodal-remap code calls into it), which puts its own `mesh_adapter.hpp` (the one
 building element bounding boxes from a `fuse::MeshView`) in tension with that
 position, since `fuse::MeshView` is defined one layer ABOVE `search` — an
@@ -48,7 +48,7 @@ no directory ever matched `interface`.
 `physics-kit/` is a separate optional component. It **depends on FUSE and never the reverse** — that
 direction is what keeps FUSE adoptable by a code that already has its own discretisation.
 
-Enforced by `tools/check-layering.py`'s `check_physics_kit_boundary` (added at the S8.1 skeleton):
+Enforced by `tools/check-layering.py`'s `check_physics_kit_boundary` (added with the physics-kit skeleton):
 nothing under `include/fuse/`, `src/`, `python/` or `examples/` — fuse proper — may include a
 `fuse_physics/` header (physics-kit's own include root, outside `include/fuse/` entirely) or name
 `fuse::physics_kit` in a `target_link_libraries()` call; `physics-kit/` itself is exempt from both,
@@ -58,8 +58,7 @@ and `physics-kit/` is not under `include/fuse/` for the walk in `main()` to reac
 place, so the direction is checked as its own pass instead. Proven to fire against a probe header
 (`#include "fuse_physics/version.hpp"` placed under `include/fuse/base/`) and a probe
 `target_link_libraries(... fuse::physics_kit)` (placed under `src/`), both producing a violation
-line and both removed once the proof was captured — the S8.1 skeleton track's `measured_results`
-has the verbatim output. `docs/dev/physics-kit.md` is this component's own page; naming
+line and both removed once the proof was captured. `docs/dev/physics-kit.md` is this component's own page; naming
 (`KARMA*`/`karma_`/`.C`) under `physics-kit/` is a separate gate, `tools/check-physics-kit-
 naming.py`, because `tools/check-layering.py`'s own naming check (`check_legacy`) is scoped to the
 four fuse-proper directories by a fixed tuple and physics-kit is deliberately not a fifth member of
@@ -72,18 +71,18 @@ minimalism for its own sake: it is what makes the fast CI leg fast, and what let
 MOAB nor PETSc use the coupler. MPI enters at `transport`; everything heavier enters at `backend`,
 behind one directory and one build option each.
 
-## MPI outside `transport` (2026-10-29)
+## MPI outside `transport`
 
 "MPI enters at `transport`," above, names where the ROUTING of field values between ranks lives; it
 has never meant that no `.cpp` below `transport` may call an MPI function at all. Two translation
 units do, both deliberately, both PRIVATE to the layer whose own invariant the call protects, and
-neither reachable from a public header (since 2026-10-30 both run through one helper,
-`src/field/collective_agreement.cpp`, which is now the translation unit of `field` that calls MPI;
-`src/field/transaction.cpp` no longer names it): `src/abi/participant.cpp`'s `reconcile_plugin_agreement()`
+neither reachable from a public header (both run through one helper,
+`src/field/collective_agreement.cpp`, the translation unit of `field` that calls MPI;
+`src/field/transaction.cpp` does not name it): `src/abi/participant.cpp`'s `reconcile_plugin_agreement()`
 (an `MPI_Allreduce(MPI_MINLOC)` agreeing a plugin-mount verdict across the base communicator, `abi`
 sitting at the TOP of the stack) and `src/field/transaction.cpp`'s `FieldTransaction::
 commit_collective()` (an `MPI_Allreduce(MPI_MAXLOC)` agreeing a staged-commit verdict, `field`
-sitting BELOW `transport`, S8 Stage B Field semantics track). Both exist for the same reason: a
+sitting BELOW `transport`). Both exist for the same reason: a
 collective AGREEMENT about whether an operation may proceed is not the same thing as MOVING field
 values between ranks, and it belongs in the layer that owns the invariant being agreed on -- the
 plugin-mount invariant is `abi`'s own, and the staged-commit invariant ("no caller-visible value

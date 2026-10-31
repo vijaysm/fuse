@@ -1,77 +1,69 @@
-# Mutations for the "Nodal remap" track's distributed builder
-# (nodal_remap_distributed.hpp, KNOWN_ISSUES D8's not-yet-Runner-wired
-# primitive). Schema: build-evidence/mutations.toml. Own file per the
-# review-fix protocol.
+# Mutations for the nodal remap's distributed builder
+# (nodal_remap_distributed.hpp). Schema: build-evidence/mutations.toml.
 #
 # The first two rows are NOT-ASSESSED: MPI cannot initialise in this sandbox
 # (docs/dev/testing.md), and a test that cannot start exits non-zero whether
 # or not the mutation had an effect -- recording that as a kill would be
-# evidence worse than none (the same posture KNOWN_ISSUES.md section C takes
-# for the "nodal fields" track's own five MPI-gated rows). These are the two
-# rows this step's own task explicitly named ("the transpose scatter summing
-# on the wrong rank, a row computed on every holder instead of the owner"),
-# translated into this file's actual design (an MPI_Allgatherv-replicated
-# assembly, not a point-to-point scatter to a named owner rank -- see
-# nodal_remap_distributed.hpp's file header for why). Round 2 added a
-# null-communicator (Tier 0, no MPI) code path to this same file
+# evidence worse than none (the same posture as the "nodal fields" MPI-gated
+# rows). The two rows are "the transpose scatter summing on the wrong rank"
+# and "a row computed on every holder instead of the owner", translated
+# into this file's actual design (an MPI_Allgatherv-replicated assembly,
+# not a point-to-point scatter to a named owner rank -- see
+# nodal_remap_distributed.hpp's file header for why). A null-communicator
+# (Tier 0, no MPI) code path in this same file
 # (`fuse::search::kNullComm`, exercised by the PLAIN, RUNNABLE
-# `fuse_backend_nodal_remap_distributed_nullcomm_test`) -- but it does NOT
+# `fuse_backend_nodal_remap_distributed_nullcomm_test`) does NOT
 # make these first two rows assessable: both failure modes are properties of
 # MULTIPLE participants (a shared boundary entity that is owned by one rank
 # and a ghost on another; a floating-point sum whose order must agree
 # across DIFFERENT rank counts), and a single participant has no ghosts and
 # no "other rank count" to compare against by construction. The third row
-# below IS a genuine Tier 0 catch, added in round 2: it targets the
-# null-comm branch itself, which the new test can reach without any MPI
-# dependency at all.
+# below IS a genuine Tier 0 catch: it targets the null-comm branch itself,
+# which the test can reach without any MPI dependency at all.
 #
-# Round 3 (2026-09-25): considered, and deliberately did NOT, retargeting
-# these two rows' `target`/`test` at the new Runner-level
-# `parallel.nodal_remap_runner` (nodal_remap_runner_test.cpp) the same
-# round added, and it is worth stating exactly why rather than silently
-# leaving the old target in place unexplained:
+# The first two rows' `target`/`test` are not retargeted at the Runner-level
+# `parallel.nodal_remap_runner` (nodal_remap_runner_test.cpp), for these
+# reasons:
 #   * Row 1 ("row-built-on-every-holder") needs a genuinely SHARED
 #     evaluation-side entity to have anything to bite on. In BOTH this
-#     file's own DisjointRankSets/PartiallyOverlappingRankSets AND the new
-#     Runner test's beam/fluid field transfer pair, the evaluation side of every
-#     distributed row build is the FLUID mesh -- cell-based (FV), and
+#     file's own DisjointRankSets/PartiallyOverlappingRankSets AND the
+#     Runner test's beam/fluid field transfer pair, the evaluation side of
+#     every distributed row build is the FLUID mesh -- cell-based (FV), and
 #     `GeometricLineMesh`'s cells are ALWAYS a plain, non-overlapping
 #     partition (only VERTICES, always the NODAL side in this codebase's
-#     field transfer shapes, are ever ownership-shared). Retargeting to the new
-#     test would not make this row assessable; it would just move the SAME
-#     absence of a shared-eval-entity case to a different test. A genuine
-#     target for this row needs a NODE-TO-NODE "consistent" field transfer (both
-#     sides nodal, so the eval side's OWN vertices are shared too) -- not
-#     built this round, since it is not the shape "H/H^T as the FSI uses
-#     them" (this round's own instruction) actually needs; recorded as an
-#     open item instead of a cosmetic retarget.
+#     field transfer shapes, are ever ownership-shared). Retargeting to the
+#     Runner test would not make this row assessable; it would just move the
+#     SAME absence of a shared-eval-entity case to a different test. A
+#     genuine target for this row needs a NODE-TO-NODE "consistent" field
+#     transfer (both sides nodal, so the eval side's OWN vertices are shared
+#     too); that is not built, since it is not the shape "H/H^T as the FSI
+#     uses them" needs; it is an open item.
 #   * Row 2 ("transpose-sums-in-rank-order-not-contributor-gid") is, by
-#     its OWN pre-existing comment below, not assessable by ANY single
+#     its OWN comment below, not assessable by ANY single
 #     test run at a FIXED rank count regardless of which test -- it needs
 #     TWO SEPARATE job launches (e.g. rank counts 2 and 4) compared
 #     against each other, "the parallel matrix's own job, not one gtest
-#     binary". The new Runner test does not change this: it is a richer
+#     binary". The Runner test does not change this: it is a richer
 #     END-TO-END instance of exactly the same comparison a host would run,
 #     but the comparison itself is still external to any one test binary.
 #     Both `target`s (the primitive-level and, once compared pairwise
 #     across rank counts by a host, the Runner-level) are equally valid
 #     surfaces for that host-side comparison; naming just one would
 #     understate the check's real scope, so both are named in this row's
-#     own comment below instead of a mechanical retarget.
+#     own comment below.
 
 [[mutation]]
 id = "nodal-remap-dist-row-built-on-every-holder"
 area = "backend"
-describes = "build_distributed_interp_rows drops the is_owned(eval_dim, j) guard, so every LOCAL evaluation entity (owned AND ghost) gets a row computed and returned on every rank that holds a copy of it -- the shape the task's own ownership rule ('each target entity is owned by exactly one rank; ONLY that rank holds its row') exists to forbid. A shared evaluation entity at a rank-set boundary would then have its row computed, and later applied, redundantly on more than one rank."
+describes = "build_distributed_interp_rows drops the is_owned(eval_dim, j) guard, so every LOCAL evaluation entity (owned AND ghost) gets a row computed and returned on every rank that holds a copy of it -- the shape the ownership rule ('each target entity is owned by exactly one rank; ONLY that rank holds its row') exists to forbid. A shared evaluation entity at a rank-set boundary would then have its row computed, and later applied, redundantly on more than one rank."
 file = "src/backend/nodal_remap_distributed.cpp"
 old = "    if (!eval_points.is_owned(eval_dim, j)) continue;"
 new = "    // MUTATED: no ownership guard -- every local entity gets a row"
 target = "fuse_parallel_nodal_remap_distributed_test"
 test = "parallel.nodal_remap_distributed.2"
 requires = "mpi"
-# SURVIVED on the host's real np=2 run (2026-09-28), traced by hand and fixed
-# in the test, not here -- the row above's OWN "expected kill" reasoning was
-# wrong. At np=2 `IdenticalRankSets` (`check_affine_exact_and_conservative(9,
+# The conservation check alone cannot kill this mutation on a real np=2 run
+# (traced by hand); the test's direct row-count assertion does. At np=2 `IdenticalRankSets` (`check_affine_exact_and_conservative(9,
 # all, 13, all)`) DOES hit a genuine ghost: `GeometricLineMesh`'s
 # overlap-by-one-vertex rule (test/support/partitioned_test_backend.hpp) puts
 # rank 1's own local index 0 as a non-owned copy of rank 0's last owned
@@ -85,8 +77,7 @@ requires = "mpi"
 # once, so `EXPECT_NEAR(total_sent, total_received, ...)` still holds. The
 # check tests "H and H^T are exact transposes of whatever rows exist", not
 # "exactly one row per owned target entity", despite its own comment's claim.
-# FIX (this row's `test`, same target/test names, no manifest field changed):
-# test/parallel/nodal_remap_distributed_test.cpp now asserts
+# test/parallel/nodal_remap_distributed_test.cpp asserts
 # `EXPECT_EQ(rows.rows.size(), tgt_view->owned_count(0))` right after
 # `rows_r` is obtained -- a direct, local, independent-ground-truth check of
 # the exact invariant this mutation breaks, with no load-conservation
@@ -116,11 +107,10 @@ new = """  std::sort(order.begin(), order.end(), [&](std::size_t, std::size_t) {
 target = "fuse_parallel_nodal_remap_distributed_test"
 test = "parallel.nodal_remap_distributed.2"
 requires = "mpi"
-# Fixed 2026-09-28: the previous `old`/`new` pair replaced only the sort
-# call's first line, leaving the original lambda's BODY (which reads named
-# parameters `a`/`b`) after a new lambda declared with unnamed parameters --
-# an unbound-identifier compile error the host correctly reported as
-# INCONCLUSIVE. `old`/`new` now each span the full statement.
+# `old`/`new` each span the full sort statement (replacing only its first
+# line would leave the original lambda's BODY, which reads named
+# parameters `a`/`b`, after a new lambda declared with unnamed parameters --
+# an unbound-identifier compile error, reported as INCONCLUSIVE).
 # NOT-ASSESSED in this sandbox, and not fully assessable even on a host by a
 # SINGLE test run: the property this breaks -- bit-identical totals across
 # DIFFERENT rank counts -- needs two separate job launches (e.g. rank counts
@@ -133,7 +123,7 @@ requires = "mpi"
 # a FIXED rank count, and its kill is necessarily deferred to a two-run
 # rank-count comparison a host performs separately, not to
 # `parallel.nodal_remap_distributed`'s own pass/fail at one rank count.
-# Round 3: `parallel.nodal_remap_runner`'s `NodalRemapRunnerMpi.*`
+# `parallel.nodal_remap_runner`'s `NodalRemapRunnerMpi.*`
 # (test/parallel/nodal_remap_runner_test.cpp) is an EQUALLY valid surface
 # for that same two-launch comparison, now through a real Runner-driven
 # beam vertex load rather than the bare primitive's own row -- run it at
@@ -156,7 +146,7 @@ requires = "no-mpi"
 # applied, rebuilt, RealCommunicatorWithoutMpiRefuses fails (2/3 pass) because
 # build_distributed_interp_rows(..., kNullComm + 1) now succeeds instead of
 # rejecting E-RT-NODAL-DIST-NOMPI; file restored byte-for-byte, all 3 passing
-# again. SURVIVED on the user's `build-all` (2026-09-28) for a reason that is
+# again. SURVIVED on a `build-all` tree for a reason that is
 # not a gap: RealCommunicatorWithoutMpiRefuses's own body is
 # `#if !FUSE_HAVE_MPI ... #else GTEST_SKIP() ... #endif`, and `build-all` has
 # MPI on, so the test SKIPS (ctest exit 0) whether or not the mutation is
@@ -167,7 +157,7 @@ requires = "no-mpi"
 [[mutation]]
 id = "nodal-remap-dist-domain-verdict-not-agreed-across-ranks"
 area = "backend"
-describes = "build_distributed_interp_rows returns its local scan's own outcome directly (E-INTERP-DOMAIN/E-INTERP-NEWTON/E-INTERP-DEGENERATE on local_failed, success otherwise) instead of calling agree_on_local_failure -- exactly the round-4 defect a real host MPI run found: a rank whose OWN local evaluation entities all lie inside the assembled source returns success while a DIFFERENT rank, holding a genuinely out-of-domain point, returns failure, so at 3+ ranks some ranks refuse and their partners do not, skipping a collective the failing rank never reaches"
+describes = "build_distributed_interp_rows returns its local scan's own outcome directly (E-INTERP-DOMAIN/E-INTERP-NEWTON/E-INTERP-DEGENERATE on local_failed, success otherwise) instead of calling agree_on_local_failure -- exactly the defect a real host MPI run found: a rank whose OWN local evaluation entities all lie inside the assembled source returns success while a DIFFERENT rank, holding a genuinely out-of-domain point, returns failure, so at 3+ ranks some ranks refuse and their partners do not, skipping a collective the failing rank never reaches"
 file = "src/backend/nodal_remap_distributed.cpp"
 old = '''  const auto agreed = agree_on_local_failure(comm_handle, local_failed, local_fail_code_id,
                                              local_fail_entity_gid, "build_distributed_interp_rows");
@@ -184,7 +174,7 @@ target = "fuse_parallel_nodal_remap_distributed_test"
 test = "parallel.nodal_remap_distributed.3"
 requires = "mpi"
 # NOT-ASSESSED in this sandbox, and VERIFIED HERE not to be assessable even
-# through the Tier-0 null-communicator path this track otherwise uses to
+# through the Tier-0 null-communicator path this file otherwise uses to
 # dodge the "MPI cannot initialise here" limit for everything else in this
 # file: `agree_on_local_failure`'s whole point is to make every rank of
 # `comm_handle` agree on ONE outcome, and with `kNullComm`'s exactly ONE
@@ -209,14 +199,14 @@ requires = "mpi"
 # checks the logic in isolation; it is not a substitute for this row's own
 # KILL, which needs a genuine 3+-rank launch:
 #   ctest --test-dir <build> -R 'parallel\\.nodal_remap_distributed\\.[3-5]'
-# Expected kill on the host: with the round-4 fix in place (unmutated),
+# Expected kill on the host: with the fix in place (unmutated),
 # that command should PASS -- every rank of a 3+-rank job agrees on ONE
 # E-INTERP-DOMAIN outcome. Apply this mutation on top of the fix, rebuild,
 # rerun the same command: it should FAIL again, reproducing the ORIGINAL
 # symptom the host run that found this defect reported (`rows_r.ok()`
 # true on a rank whose own local points all lie inside the source, false
 # on a rank that owns the genuinely out-of-domain one) -- this mutation's
-# `new` IS, almost verbatim, the pre-round-4 code. A clean host run of
+# `new` IS, almost verbatim, the code before the fix. A clean host run of
 # BOTH the unmutated fix (expect PASS) and this mutation (expect the
 # original FAIL to reappear) is the one outcome this sandbox cannot supply
 # for itself.
@@ -224,7 +214,7 @@ requires = "mpi"
 [[mutation]]
 id = "nodal-remap-dist-tie-break-picks-highest-global-id"
 area = "backend"
-describes = "build_distributed_interp_rows' own tier-(a) tie-break among GENUINELY-containing candidates (its own comment: 'tie-broken by lowest source global id ONLY among tight matches', mirroring general_interp.hpp's identical rule for the serial builder) is inverted to pick the HIGHEST global id instead, so a target point exactly on a shared face/edge/vertex between two candidate cells is assigned the wrong cell's weights depending on which id happens to be higher rather than a rule every rank computes identically from global ids alone (KNOWN_ISSUES.md D67/D74)."
+describes = "build_distributed_interp_rows' own tier-(a) tie-break among GENUINELY-containing candidates (its own comment: 'tie-broken by lowest source global id ONLY among tight matches', mirroring general_interp.hpp's identical rule for the serial builder) is inverted to pick the HIGHEST global id instead, so a target point exactly on a shared face/edge/vertex between two candidate cells is assigned the wrong cell's weights depending on which id happens to be higher rather than a rule every rank computes identically from global ids alone."
 file = "src/backend/nodal_remap_distributed.cpp"
 old = "        if (!have_tight || gid < tight_gid) {"
 new = "        if (!have_tight || gid > tight_gid) {"

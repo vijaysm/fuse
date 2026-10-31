@@ -8,11 +8,10 @@ and SubcyclingAdvancesTheFastComponentMoreOften, so a discrepancy between the C+
 front-ends shows up as a value mismatch, not as silence.
 
 Upstream's second half, ContextIsTheCAbi, is NOT carried over: pfuse does not bind
-fuse_coupler_abi()/a Context mirror at all (the owner's own choice of pybind11 over the ABI --
+fuse_coupler_abi()/a Context mirror at all (a deliberate choice of pybind11 over the ABI --
 see docs/dev/python-surface.md, "What this does not expose").
 
-STATUS: acceptance test, written against the surface in docs/dev/python-surface.md; `pfuse` does
-not exist yet (Stage B builds it).
+STATUS: acceptance test, written against the surface in docs/dev/python-surface.md.
 """
 
 import gc
@@ -20,7 +19,7 @@ import gc
 import numpy as np
 import pytest
 
-pfuse = pytest.importorskip("pfuse", reason="Stage B has not built the _pfuse extension yet")
+pfuse = pytest.importorskip("pfuse", reason="the _pfuse extension is not built")
 
 
 class Producer(pfuse.Component):
@@ -242,7 +241,7 @@ class TestSessionDrivesPythonPeers:
 
     def test_an_unbound_field_is_refused_before_the_hot_loop(self):
         """fuse::Runner::initialize()'s E-RT-UNBOUND is a fuse::Result failure -- a bare
-        pfuse.FuseError carrying .code, per the owner's ruling (docs/dev/python-surface.md)."""
+        pfuse.FuseError carrying .code (docs/dev/python-surface.md)."""
         class Lazy(Producer):
             def register_fields(self, registry, graph):
                 pass  # binds nothing
@@ -287,8 +286,8 @@ class TestSessionDrivesPythonPeers:
     def test_run_before_initialize_is_a_sequencing_error(self):
         """Session.run_period()/run() before initialize(): a thrown fuse::InvalidArgument
         from pfuse's own binding code (Session::require_initialized), not a dedicated
-        "state" class -- the six fuse::Error-mirroring classes have none (the owner's
-        ruling fixes that list at exactly six; see test_graph.py::TestExceptionHierarchy)."""
+        "state" class -- the six fuse::Error-mirroring classes have none (that list is
+        fixed at exactly six; see test_graph.py::TestExceptionHierarchy)."""
         session = pfuse.Session(line_pair())
         session.add_component(Producer(8))
         session.add_component(Consumer(8))

@@ -49,6 +49,7 @@ user/coupling-windows
 user/multiscale
 user/surrogates
 user/linear-algebra
+user/integrators
 user/interface-transfer
 user/gray-scott
 user/brusselator
@@ -96,11 +97,9 @@ dev/conformance
 dev/python-surface
 dev/runner-device-dispatch
 dev/device-resident-arcs
-dev/physics-kit-disposition
 dev/integrators-design
 dev/field-semantics-matrix
 dev/physics-kit
-dev/roadmap
 dev/soma-import
 ```
 

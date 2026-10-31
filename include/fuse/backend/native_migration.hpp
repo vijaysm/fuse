@@ -22,32 +22,27 @@
 /// simulated ranks, hand each destination's buffers directly to
 /// `unpack_migrated_mesh` (skipping `exchange_migration_buffers`
 /// entirely, since in-process there is nothing to exchange), and check
-/// the recombined result -- exactly how the partition track tests RCB
+/// the recombined result -- exactly how the partition tests exercise RCB
 /// against an emulated-rank oracle.
 ///
-/// GPU-AWARE MPI (Migration track, 2026-10-15; superseding the paragraph
-/// this replaces -- see KNOWN_ISSUES.md and docs/dev/native-mesh.md's own
-/// updated section). `fuse::native::mpi_is_gpu_aware()` is now a thin
+/// GPU-AWARE MPI (see docs/dev/native-mesh.md).
+/// `fuse::native::mpi_is_gpu_aware()` is a thin
 /// wrapper over `fuse::linalg::mpi_is_gpu_aware()` (comm.hpp,
 /// src/linalg/mpi_gpu_aware.cpp) -- the SAME run-time probe
 /// (`MPIX_Query_cuda_support()` where this MPI's own extension declares
 /// it, falling back to `cmake/FuseMpiGpuAware.cmake`'s configure-time
-/// constant where it does not), no longer duplicated between `backend`
-/// and `transport`: both now call the one copy in `fuse::linalg`, a layer
+/// constant where it does not), not duplicated between `backend`
+/// and `transport`: both call the one copy in `fuse::linalg`, a layer
 /// below each of them (tools/check-layering.py) that `backend` already
 /// links PRIVATE.
 ///
 /// The `std::vector<std::byte>`-based `exchange_migration_buffers` below
-/// is UNCHANGED and still what `migrate`/`build_native_remap_halo` call:
-/// it always stages through host buffers, per the OLD "robustness before
-/// efficiency" policy this paragraph used to state as a standing
-/// priority -- a priority the user's own instruction (mesh and topology
-/// operations run on the device) now supersedes, but wiring the
-/// replacement all the way through `migrate`/`build_native_remap_halo`
-/// needs `unpack_migrated_mesh`/`merge_halo_cells` to stop requiring a
-/// host-resident `std::vector<std::byte>` buffer first (KNOWN_ISSUES
-/// D51's own remaining gap). This track adds the GPU-aware REPLACEMENT
-/// as a Space-templated overload, `exchange_migration_buffers<Space>`,
+/// is what `migrate`/`build_native_remap_halo` call: it always stages
+/// through host buffers. Wiring a GPU-aware replacement all the way
+/// through `migrate`/`build_native_remap_halo` needs
+/// `unpack_migrated_mesh`/`merge_halo_cells` to stop requiring a
+/// host-resident `std::vector<std::byte>` buffer first. The GPU-aware
+/// REPLACEMENT is a Space-templated overload, `exchange_migration_buffers<Space>`,
 /// taking and returning `Kokkos::View<std::byte*, Space>` buffers --
 /// `MPI_Alltoallv` on the raw device pointer when `Space` is a device
 /// memory space and the probe above says this MPI build may take one
@@ -56,11 +51,9 @@
 /// shape the `std::vector` overload already uses) otherwise -- verified
 /// byte-for-byte against the `std::vector` overload at 1/2/3 ranks, both
 /// settings of `FUSE_TRANSPORT_HOST_STAGING`
-/// (test/backend/native_migration_mpi_test.cpp), but NOT YET called by
-/// `pack_for_migration`/`migrate` (same reason `pack_to`/`dedup_by_gid`
-/// were added and tested standalone before this round wired the first
-/// of them in): the primitive is proven; wiring it end-to-end is this
-/// track's own next increment, narrowing KNOWN_ISSUES D51 accordingly.
+/// (test/backend/native_migration_mpi_test.cpp), but NOT called by
+/// `pack_for_migration`/`migrate`: the primitive is proven; wiring it
+/// end-to-end is future work.
 
 #include <cstddef>
 #include <cstdint>
@@ -107,7 +100,7 @@ inline constexpr CommHandle kNullComm = -1;
 /// destination outside `[0, num_ranks)`. This is the LOCAL half of the
 /// collective rejection `migrate` performs -- see its own comment.
 ///
-/// DEVICE-RESIDENT (Migration track, 2026-10-15). The wire records are
+/// DEVICE-RESIDENT. The wire records are
 /// built from `mesh.device_arrays()` via
 /// `fuse::native::device::pack_to<false, Space>`
 /// (include/fuse/backend/native/mesh_pack_device.hpp) -- no
@@ -118,8 +111,7 @@ inline constexpr CommHandle kNullComm = -1;
 /// not mesh geometry); the one remaining host round trip is the packed
 /// WIRE BYTES themselves, copied back to this function's own
 /// `std::vector<std::byte>` return type for `exchange_migration_
-/// buffers` below, which is not yet GPU-aware (this track's own
-/// follow-up item).
+/// buffers` below, which is not yet GPU-aware.
 [[nodiscard]] Result<std::vector<std::vector<std::byte>>> pack_for_migration(
     const NativeMeshView& mesh, const std::vector<int>& dest, int num_ranks);
 

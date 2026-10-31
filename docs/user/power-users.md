@@ -207,12 +207,12 @@ Every variable, with the exact lines each prints, is in
 Set them in the environment of every rank. Output is verbose; redirect it to a file per rank.
 
 The error-policy variables (`FUSE_ON_ERROR=throw|backtrace|debugger|abort`, `FUSE_DEBUGGER`,
-`FUSE_DEBUGGER_RANKS`, `FUSE_BACKTRACE`) are different: they take effect only in a program that
-installs the environment policy. None of the examples does, so put this at the top of your own
-`main()`:
+`FUSE_DEBUGGER_RANKS`, `FUSE_BACKTRACE`) are read by `fuse::initialize()`. The examples, the test
+harness, `import pfuse` and the C ABI's `fuse_create()` call it for you; in your own `main()` put
+this at the top, after MPI is up if you want the rank in every report:
 
 ```cpp
-fuse::set_error_policy(fuse::error_policy_from_environment());
+fuse::initialize(rank);                // rank = -1 when there is no MPI
 fuse::install_terminate_handler();
 ```
 

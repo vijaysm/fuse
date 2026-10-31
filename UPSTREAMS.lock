@@ -1,6 +1,6 @@
 # fuse upstream import baselines. Bump ONLY through tools/sync-upstream.py (sync protocol).
 # state: imported = byte-identical subtree | diverged = transformed in fuse since import
-# Host-run verification of the merged library: 2026-09-16, 843 tests, 0
+# Host-run verification of the merged library: 843 tests, 0
 # failures, all 16 parallel legs at 2/3/4/5 ranks (docs/dev/testing.md).
 
 [soma]
@@ -16,12 +16,12 @@ imported  = "upstream/soma"          # byte-identical; proven by tools/verify-im
 diverged  = []                       # paths transformed in fuse since import
 superseded = [
   "test/verification/mms_transfer_test.cpp",
-  "test/verification/iteration_test.cpp",                       # upstream paths fuse has replaced (S1, fuse::base)
+  "test/verification/iteration_test.cpp",                       # upstream paths fuse has replaced (fuse::base)
   "include/soma/base/rational.hpp", "include/soma/base/time_level.hpp",
   "include/soma/base/result.hpp",   "include/soma/base/ids.hpp", "include/soma/base/units.hpp",
   "test/unit/rational_test.cpp", "test/unit/time_level_test.cpp", "test/unit/result_test.cpp",
   "test/unit/ids_test.cpp", "test/unit/units_test.cpp",
-  # S2, fuse::model
+  # fuse::model
   "include/soma/graph/field_spec.hpp", "include/soma/graph/region.hpp",
   "include/soma/graph/component.hpp", "include/soma/graph/channel.hpp",
   "include/soma/graph/coupling_graph.hpp", "include/soma/graph/validate.hpp",
@@ -35,25 +35,25 @@ superseded = [
   "include/soma/ir/", "src/ir/",               # lowering, rules, checkpoint derivation
   "include/soma/schedule/", "src/schedule/",   # clocks, acyclicity, expand, plan, slab
   "test/golden/",                              # three golden IR dumps
-  # S4, the runtime import (fuse::num, fuse::runtime, fuse::transport, fuse::backend)
+  # the runtime import (fuse::num, fuse::runtime, fuse::transport, fuse::backend)
   "include/soma/num/", "src/num/",
   "include/soma/runtime/", "src/runtime/",
   "include/soma/transport/", "src/transport/",
-  "include/soma/mesh/", "src/mesh/",           # mesh_view, serial backend, and (S5.2) the MOAB backend
-  "include/soma/remap/", "src/remap/",         # remap_plan, intx_weights, spacetime, (S5.2) tempest_weights
-  "test/unit/moab_mesh_test.cpp",              # S5.2 -> test/backend/moab_mesh_test.cpp
+  "include/soma/mesh/", "src/mesh/",           # mesh_view, serial backend, and the MOAB backend
+  "include/soma/remap/", "src/remap/",         # remap_plan, intx_weights, spacetime, tempest_weights
+  "test/unit/moab_mesh_test.cpp",              # -> test/backend/moab_mesh_test.cpp
   "test/parallel/runner_transport_test.cpp", "test/parallel/comm_graph_test.cpp",
   "test/parallel/mpi_transport_test.cpp",
-  # NOT yet superseded, and the reason upstream/soma cannot retire at S6 as written:
+  # NOT yet superseded, and the reason upstream/soma cannot be retired yet:
   #   test/parallel/moab_parallel_test.cpp, the remaining test/unit/*.cpp (order studies,
-  #   remap_parallel and its four siblings that backend comments still cite -- REVIEW.md BK-M1)
+  #   remap_parallel and its four siblings that backend comments still cite)
 ]
-retire_at = "S6"                     # subtree deleted whole when every path is superseded
-retired   = "2026-10-12 @ f3cbc00: build/tooling detachment complete (FUSE_BUILD_UPSTREAM_SOMA removed, soma-import track). NOT the S6 bar above (\"every path superseded\"): 86/181 paths remain ported, missing, or moved to docs/history -- see docs/dev/soma-import.md for the full per-file/per-case record. Do not delete this subtree on the strength of this field alone."
-open      = ["X2 rules_channel.cpp overlaps()", "X5 validate.hpp abs(lag)", "X7 soma_c.h int32_t comm",
-             "R31 overlapping rank sets refused (untested)",
+retire_at = "all superseded"          # subtree deleted whole when every path is superseded
+retired   = "2026-10-12 @ f3cbc00: build/tooling detachment complete (FUSE_BUILD_UPSTREAM_SOMA removed). NOT the retire_at bar above (\"every path superseded\"): 86/181 paths remain ported, missing, or moved to docs/history -- see docs/dev/soma-import.md for the full per-file/per-case record. Do not delete this subtree on the strength of this field alone."
+open      = ["rules_channel.cpp overlaps()", "validate.hpp abs(lag)", "soma_c.h int32_t comm",
+             "overlapping rank sets refused (untested)",
              "untested refusals: E-RT-TRANSPORT-{NOMPI,COMM,XREGION,OVERLAP}, E-RT-REMAP-HALO, E-MESH-HALO-GEOMETRY"]
-# Measured in fuse at import, 2026-09-15, Apple clang 21 / CMake 4.3.2:
+# Measured in fuse at import, Apple clang 21 / CMake 4.3.2:
 #   Debug, no MPI / no MOAB: configures, builds with 0 errors, ctest 770/770 pass
 #   (4 skipped: MOAB-dependent, reporting themselves as skipped). 3.3 s.
 #   Needs -DCMAKE_POLICY_VERSION_MINIMUM=3.5 when it must fetch yaml-cpp 0.8.0,
@@ -73,14 +73,14 @@ diverged  = [                        # paths transformed in fuse since import
   ".gitignore",                      # build*/ and bare Makefile were also matching
                                       # build-evidence/ and test/unit/Makefile, which
                                       # tools/verify-import.py's own manifest expects
-                                      # tracked (CI run 36124149902, 2026-09-25)
+                                      # tracked (CI run 36124149902)
 ]
-superseded = [                       # upstream paths fuse has replaced (S1, fuse::base)
+superseded = [                       # upstream paths fuse has replaced (fuse::base)
   "include/coupling/karma_semantic_version.h", "src/coupling/karma_semantic_version.C",
   "include/coupling/karma_byte_writer.h",
   "include/base/karma_exceptions.h",           # -> include/fuse/base/error.hpp
   "test/semantic_version_test.C", "test/byte_writer_test.C",
-  # S2, fuse::model
+  # fuse::model
   "include/coupling/karma_semantics.h",        # -> include/fuse/model/semantics.hpp
   "src/coupling/karma_semantics.C",            # less its rational arithmetic
   "test/coupling_semantics_test.C",            # 5 of 9 groups; see the port's header comment
@@ -88,12 +88,12 @@ superseded = [                       # upstream paths fuse has replaced (S1, fus
   "include/coupling/karma_transform.h", "src/coupling/karma_transform.C",
   "test/coupling_compatibility_test.C", "test/transform_inference_test.C",
 ]
-retire_at = "S8"                     # subtree deleted whole when every path is superseded
+retire_at = "all superseded"          # subtree deleted whole when every path is superseded
 retired   = ""                       # "<date> @ <fuse sha>" once done
 open      = ["PETSc-backed native component unregistered",
-             "distorted-pyramid quadrature unverified (KNOWN_ISSUES #1)",
+             "distorted-pyramid quadrature unverified",
              "DEBUG BUILD IS BROKEN: src/numerics/spatial/karma_domain.C:32,54,77 uses unqualified Hexagon/Unstructured from the scoped enum KARMA::DomainShape, inside assert(). All three verified presets (release, asan=RelWithDebInfo, no-exceptions) define NDEBUG, so the line has never been compiled. The assertion is also vacuous: (Type != Hexagon || Type != Unstructured) is a tautology. Fix when porting, as a real invariant (I6), not an assert."]
-# Measured in fuse at import, 2026-09-15, Apple clang 21 / CMake 4.3.2, with
+# Measured in fuse at import, Apple clang 21 / CMake 4.3.2, with
 # MOAB 5.6.0 + PETSc + MPICH from /opt:
 #   Release: configures, builds with 0 errors, 418 ctest entries registered
 #   (bare -DCMAKE_BUILD_TYPE=Release; the `release` preset adds examples and
@@ -101,25 +101,25 @@ open      = ["PETSc-backed native component unregistered",
 #   Debug: does NOT compile, see the last `open` entry.
 #   Its suite was NOT run here: this sandbox cannot initialize MPI at all, so
 #   every PETSc/MPI test fails for environmental reasons. Running it is a host
-#   action and the only way to satisfy the S0 exit for this parent.
-verified  = "Release builds clean, 418 tests registered; host run 2026-09-15: 796/796 pass (4 MOAB-dependent skips) in a Tier 1 build with both parents"
+#   action and the only way to verify this parent.
+verified  = "Release builds clean, 418 tests registered; host run: 796/796 pass (4 MOAB-dependent skips) in a Tier 1 build with both parents"
 
 [arborx]
 # NOT a subtree import like [soma]/[karma] above: ArborX is an ordinary
 # third-party CMake dependency, resolved by cmake/FuseDependencies.cmake's
 # fuse_resolve_arborx() (find_package first, pinned FetchContent otherwise --
 # find_package/FetchContent, never an upstream/ subtree). Recorded here
-# anyway, per the ArborX track's own instruction, so the exact commit this was
+# anyway, so the exact commit this was
 # last proven against a specific Kokkos version survives independently of
 # git history on what may be a shallow clone.
 repo      = "https://github.com/arborx/arborx.git"
 tag       = "v2.1"                                              # == ARBORX_VERSION 2.1.0
-sha       = "8f89be60bc3797670b9be8843da7dcdbc5f2333f"          # verified by the lead; tag's tip
+sha       = "8f89be60bc3797670b9be8843da7dcdbc5f2333f"          # tag's tip
 date      = "2026-04-28"
 kokkos_required = "4.5"          # ArborX's own find_package(Kokkos 4.5 REQUIRED CONFIG)
 kokkos_verified_against = "5.1.0"  # /opt/kokkos here; AnyNewer version file satisfies >= 4.5
 verified  = """Standalone configure + build proven against Kokkos 5.1.0 / AppleClang 21 /
-CMake 4.3.2 before any fuse:: code was written (the task's own requirement): a
+CMake 4.3.2 before any fuse:: code was written: a
 BoundingVolumeHierarchy built over 100 boxes, an intersects (point-in-box) CRS
 query, and a k-nearest CRS query, all via ArborX::Experimental::attach_indices
 plus a custom index-extracting callback -- ArborX 2.1's own DefaultCallback

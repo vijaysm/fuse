@@ -1,9 +1,7 @@
-// KNOWN_ISSUES.md D30: Apple clang (and GNU/Clang generally) fuse a*b+c
+// Apple clang (and GNU/Clang generally) fuse a*b+c
 // into a single-rounded fused multiply-add BY DEFAULT AT EVERY
-// OPTIMIZATION LEVEL, including -O0 -- confirmed directly
-// (docs/dev/testing.md's "Floating-point contraction policy" has the
-// instruction counts), contrary to an earlier, wrong account in this
-// file and in D30 itself that claimed -O0 never contracts. This probe's
+// OPTIMIZATION LEVEL, including -O0 (docs/dev/testing.md's "Floating-point
+// contraction policy" has the instruction counts). This probe's
 // own `contracted_expression` below (a single, unvectorized expression,
 // not a reduction loop) is therefore sensitive to the flag in EVERY
 // build type, Debug included -- hand-proved in both
@@ -73,8 +71,8 @@ TEST(FpPolicy, ProbeTripleActuallyDistinguishesContraction) {
 // EVERY build type when the flag-applying call is removed (the mutation
 // in build-evidence/mutations/fp-policy.toml), because this expression's
 // contraction is governed by -ffp-contract alone, which defaults to `on`
-// at -O0 exactly as it does at -O2/-O3 (docs/dev/testing.md's corrected
-// account of D30).
+// at -O0 exactly as it does at -O2/-O3 (see docs/dev/testing.md's
+// "Floating-point contraction policy").
 TEST(FpPolicy, ContractionIsOffWhenReproducible) {
   EXPECT_EQ(contracted_expression(kA, kB, kC), two_step_rounded(kA, kB, kC));
 }

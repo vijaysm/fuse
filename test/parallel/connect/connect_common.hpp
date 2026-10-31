@@ -1,7 +1,7 @@
 #pragma once
 
-// Shared by connect_a.cpp and connect_b.cpp (S6 phase 3, "MPI connect"
-// track). Both executables build the IDENTICAL two-component graph --
+// Shared by connect_a.cpp and connect_b.cpp. Both executables build the
+// IDENTICAL two-component graph --
 // component "a" (the producer) and component "b" (the consumer) -- declare
 // their own LaunchSpec per the command line (mpmd segment, or connect
 // acceptor/connector), call fuse::transport::connect(), and drive
@@ -285,12 +285,10 @@ struct Args {
     launch_b = fuse::LaunchSpec{.mode = fuse::LaunchMode::Mpmd, .appnum = 1};
   } else {
     // Exactly one side is the acceptor, and BOTH executables must say the
-    // same one: each builds this graph from its own command line, and the
-    // first host run (2026-10-02, connect-scratch/accept-1+1/b.log) showed
-    // the connector publishing a port file, because this used to read
-    // `a_is_acceptor = (args.launch == Accept)` -- true on connect_a's
-    // command line, false on connect_b's, so each side made itself the
-    // acceptor and both waited in MPI_Comm_accept. Component "a" is the
+    // same one: each builds this graph from its own command line, and deriving
+    // the acceptor from `args.launch == Accept` would be true on connect_a's
+    // command line and false on connect_b's, so each side would make itself
+    // the acceptor and both would wait in MPI_Comm_accept. Component "a" is the
     // acceptor by the graph, full stop; the --launch flag only names which
     // executable this is, and must agree with the side being played.
     launch_a = fuse::LaunchSpec{.mode = fuse::LaunchMode::Connect,

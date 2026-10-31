@@ -1,12 +1,11 @@
 #pragma once
 
 /// The supermesh's candidate-pair broad phase
-/// (docs/dev/device-resident-arcs.md Phase 2: "last the supermesh
+/// (docs/dev/device-resident-arcs.md: "last the supermesh
 /// intersection"), moved to a Kokkos device kernel, standing ALONGSIDE
 /// `build_supermesh_weights` (src/backend/supermesh.cpp) rather than
-/// replacing any of its code -- see this track's report
-/// (report-weight-builders.md) for exactly why, and for the r3d/r2d
-/// device-feasibility finding this header's own comment below summarizes.
+/// replacing any of its code. The r3d/r2d device-feasibility finding is
+/// summarized below.
 ///
 /// `build_supermesh_weights`'s own brute-force box test -- "O(n_t * n_s)
 /// box tests ... the honest starting point" (supermesh.cpp's own comment)
@@ -21,15 +20,15 @@
 /// compile-time count, because the 2D/3D split happens the same way it
 /// does there, by how many axes the caller passes in.
 ///
-/// WHY THE CLIP ITSELF STAYS ON THE HOST (the feasibility assessment the
-/// task asked for, not assumed): `build_supermesh_weights` calls exactly
+/// WHY THE CLIP ITSELF STAYS ON THE HOST (a feasibility assessment, not an
+/// assumption): `build_supermesh_weights` calls exactly
 /// three r3d functions for a 3D pair (`r3d_init_tet`, `r3d_clip`,
 /// `r3d_reduce`) and three r2d functions for a 2D pair
 /// (`r2d_init_poly`, `r2d_clip`, `r2d_reduce`). Read in full
 /// (`_deps/r3d-src/src/r3d.c`/`r2d.c`) for this assessment:
 ///   - Every buffer on this call path is a FIXED-size stack array bounded
 ///     by `R3D_MAX_VERTS`/`R2D_MAX_VERTS` (compile-time constants from
-///     `r3d-config.h`/`r2d.h`) -- no VLA, and this track's test meshes
+///     `r3d-config.h`/`r2d.h`) -- no VLA, and the test meshes
 ///     (tets, quads) never approach that bound.
 ///   - No recursion on this call path (`r3d_clip` is a plain nested-loop
 ///     function; verified by reading its body, not inferred).
@@ -51,8 +50,8 @@
 ///   vendored copy (and keeping that patch across an `UPSTREAMS.lock`
 ///   bump) or hand-porting the small subset FUSE actually calls into a
 ///   FUSE-owned, Kokkos-native header. (2) `r3d_clip`'s debug path has an
-///   `fprintf(stderr, ...)` guarded only by `#if !defined(NDEBUG)` -- this
-///   track's build type is Debug (`NDEBUG` unset), and `fprintf` to a
+///   `fprintf(stderr, ...)` guarded only by `#if !defined(NDEBUG)` -- a
+///   Debug build (`NDEBUG` unset) is one such configuration, and `fprintf` to a
 ///   host `FILE*` is not device-callable, so even an annotated `r3d_clip`
 ///   would fail to compile for device in exactly this build configuration
 ///   without also stripping or reworking that guard. (3) `r3d.c`/`r2d.c`
@@ -63,9 +62,8 @@
 ///
 ///   None of these three is a correctness or algorithmic obstacle --
 ///   they are packaging/build-system work on a vendored dependency, which
-///   this track's time budget did not extend to (see report's
-///   `deviations`). The candidate-pair/CSR-assembly split below is
-///   exactly the task's own fallback for this situation: accelerate what
+///   is not done here. The candidate-pair/CSR-assembly split below is
+///   the fallback for this situation: accelerate what
 ///   does not touch r3d/r2d, leave the clip itself host-side, and report
 ///   the blocker precisely rather than assume it either way.
 
@@ -99,10 +97,9 @@ struct CandidatePairs {
 /// overlaps target simplex `t`'s, dim-limited exactly as `boxes_overlap`
 /// (supermesh.cpp) is. O(n_t * n_s) box tests, same complexity as the host
 /// brute force -- this is a parallelization of that loop, not a different
-/// (e.g. spatially indexed) algorithm, matching the task's own "the index
-/// is a performance task ... replacing this before it is measured would be
-/// replacing something correct with something unmeasured" posture for the
-/// equivalent host code.
+/// (e.g. spatially indexed) algorithm, matching the host code: a spatial index is a
+/// performance optimisation, and replacing the brute force before it is
+/// measured would replace something correct with something unmeasured.
 template <class Space>
 [[nodiscard]] CandidatePairs<Space> candidate_pairs(const Kokkos::View<double* [3], Space>& t_lo,
                                                      const Kokkos::View<double* [3], Space>& t_hi,

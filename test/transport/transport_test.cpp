@@ -48,12 +48,12 @@ TEST(CopyTransport, RejectsNullPointers) {
   EXPECT_FALSE(t.move(v.data(), nullptr, 4).ok());
 }
 
-// Review 2026-10-11 TR-16. MpiTransport::move() (transport.hpp's own doc)
+// MpiTransport::move() (transport.hpp's own doc)
 // accepts null exactly when n is zero -- a rank owning no elements of a mesh
 // entity set is ordinary in parallel, and an empty std::vector<double>'s
-// data() is permitted to be null. CopyTransport used to refuse null
-// unconditionally, so the same zero-element, same-process channel was
-// refused by this backend and accepted by the MPI one.
+// data() is permitted to be null. CopyTransport must do the same, so
+// the same zero-element, same-process channel is not refused by this backend
+// and accepted by the MPI one.
 TEST(CopyTransport, AcceptsNullPointersWhenNIsZero) {
   CopyTransport t;
   ASSERT_TRUE(t.prepare(TransportSpec{.elements = 0}).ok());
@@ -120,9 +120,9 @@ TEST(TransportRegistry, ReRegisteringAnExistingNameReplacesIt) {
 // here rather than left to whoever adds the next one.
 TEST(Tags, AreDistinctAndWithinTheGuaranteedBound) {
   using namespace fuse::tags;
-  // kIterationRegion (REVIEW.md R-10): the residual-agreement reduction an
+  // kIterationRegion: the residual-agreement reduction an
   // implicit coupling group's sweep loop runs on the same base communicator.
-  // kWindowConvergence (Unit 2b, D19, step (c)): a window-scoped region's
+  // kWindowConvergence: a window-scoped region's
   // own per-sweep convergence agreement, same communicator.
   const std::array<int, 5> all{kCrystalRouter, kUnionCommCreate, kEpoch,
                                kIterationRegion, kWindowConvergence};
@@ -147,7 +147,7 @@ TEST(Tags, AreDistinctAndWithinTheGuaranteedBound) {
 
 // ---- flat source-offer deduplication (pure rule, no MPI) --------------
 
-// The 3-rank shape KNOWN_ISSUES.md D73 round 9 measured: rank 0 owns 4
+// The 3-rank shape: rank 0 owns 4
 // source cells (global ids 0-3); two different adopting ranks (destination
 // peers 1 and 2) each independently committed a remap halo over cell 2,
 // so rank 0's own per-peer want records both name cell 2, each under its
@@ -173,8 +173,8 @@ TEST(DedupeFlatSourceOffers, TwoDifferentPeersWantingTheSameOwnedCellCollapseToO
   EXPECT_EQ(idxs, (std::vector<std::size_t>{0, 1, 2, 3}));
 }
 
-// Without this function (the pre-fix behaviour: flatten every peer's own
-// entries unconditionally, as the RECV side still correctly does), the SAME
+// Without this function (flatten every peer's own
+// entries unconditionally, as the RECV side correctly does), the SAME
 // input reproduces the exact duplicate MpiTransport::build_plan's own Phase
 // D refuses: global id 2 appears twice in rank 0's own declared list.
 TEST(DedupeFlatSourceOffers, WithoutDedupingTheSameInputWouldDeclareTheSharedCellTwice) {
@@ -220,12 +220,10 @@ TEST(DedupeFlatSourceOffers, EmptyInputIsEmptyOutput) {
 
 // ---- component agreement (pure rule, no MPI) ---------------------------
 
-// The two-rank job that failed on the host: rank 0 is the source with 1
+// A two-rank job: rank 0 is the source with 1
 // component, rank 1 the destination with 2. Both ranks gather the same
 // array, so both must reach the same outcome -- and that outcome must be a
-// disagreement. Added 2026-09-20: the rule read as though it could not fail
-// to fire, and the host run showed both ranks accepting the spec, so the
-// rule is now checked where it can be run.
+// disagreement. The rule is checked here, where it can be run without MPI.
 TEST(ComponentAgreement, SourceAndDestinationDisagreeing) {
   const auto a = fuse::transport::check_component_agreement(
       /*all_components=*/{1, 2}, /*is_src=*/{1, 0}, /*is_dst=*/{0, 1});

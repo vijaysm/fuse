@@ -1,12 +1,10 @@
-// Grid track, tier 1: test/verification/brusselator_grid_decomposition_test.cpp's
+// Tier 1: test/verification/brusselator_grid_decomposition_test.cpp's
 // requirements 2-4 (halo exchange, explicit-quantity agreement, placement
 // count) repeated on 2 REAL MPI ranks instead of an in-process two-
-// partition simulation. Per this track's standing instructions, MPI
-// cannot start in this sandbox at all (KNOWN_ISSUES.md C1) -- this file is
-// build-verified only here; the host runs it as
+// partition simulation. It needs a working MPI launcher and runs as
 // parallel.brusselator_grid_mpi.2. The MPI reducer/exchanger below are
 // test-local, hand-written for exactly 2 ranks (not a general
-// fuse::linalg implementation -- that is a different track's work); no
+// fuse::linalg implementation); no
 // example header includes mpi.h, so the tier-0 build this test does not
 // participate in stays MPI-free.
 
@@ -101,9 +99,8 @@ class TwoRankMpiHaloExchanger final : public GridHaloExchanger {
     // FIRST row becomes the other's "above" ghost -- tag 0/1 names which.
     // The send and the receive of ONE call carry the same tag: both ranks
     // send their last row (tag 0) and receive the peer's last row in the
-    // same call, then the same for the first row (tag 1). The first host
-    // run (2026-10-10) hung here with the receives crossed (call 1 sending
-    // tag 0 and waiting for tag 1): each rank's first MPI_Sendrecv then
+    // same call, then the same for the first row (tag 1). Crossed receives
+    // (call 1 sending tag 0 and waiting for tag 1) hang: each rank's first MPI_Sendrecv then
     // needed the message the peer only sends from its SECOND call, which
     // the peer reaches only after its first completes -- both ranks sampled
     // inside MPIR_Sendrecv_impl, neither returning.

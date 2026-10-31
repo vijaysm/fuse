@@ -1,4 +1,4 @@
-# Mutations for the Demo B fixes (KNOWN_ISSUES.md D14 item 5, 2026-10-14).
+# Mutations for the Demo B transport fixes.
 # Rows 2 and 3 need a launcher (requires = "mpi") and a LowFive build; run
 # with FUSE_MUTATE_MPI=1 tools/mutate.py --area demo_b --build-dir build-lowfive.
 
@@ -23,7 +23,7 @@ test = "transport.lowfive"
 # lowfive_test.cpp`'s own `LowFiveTransport.SetLocationIsNotBlockedByA
 # PeersProbe`, which already asserts the correct contract and DOES kill
 # this mutation, hand-verified against a LowFive-enabled, MPI-disabled-
-# at-runtime build -- build-evidence's own report for this track).
+# at-runtime build).
 requires = "lowfive"
 
 [[mutation]]

@@ -72,8 +72,7 @@ C++ callers never see any of this; `fuse::Graph` and `fuse::run` are the primary
 
 ## How arguments cross the boundary: structs, and the rules for growing them
 
-Decided 2026-10-02, with the user's requirement that "any new args do not break the API in the
-future". Every entry point has one shape,
+The design requirement is that new arguments never break the API. Every entry point has one shape,
 
 ```c
 fuse_status name(fuse_ctx* ctx, const IN* in, OUT* out);
@@ -121,29 +120,28 @@ descriptor.hpp`) is also described as "the ABI narrow waist", but it is a separa
 from the C-ABI struct rules above and does not follow them in how it crosses the C ABI's own
 narrow waist (`fuse_graph_source`/`fuse_graph_sink`, `include/fuse/abi/entries.def`) -- raw
 bytes, not a `struct_size`-negotiated struct. It DOES now follow `bytes.hpp`'s own canonical
-encoding, as of `kGraphVersion` 15 (KNOWN_ISSUES.md D62, fixed 2026-10-18).
+encoding, as of `kGraphVersion` 15.
 
-**History.** `detail::Writer::pod`/`detail::Reader::pod` used to write a value's native
+**Earlier behaviour.** `detail::Writer::pod`/`detail::Reader::pod` used to write a value's native
 in-memory representation via `memcpy` -- host-endian, not the little-endian rule
 `include/fuse/base/bytes.hpp` states for every OTHER canonical encoding in the library (the
-field-entry key, the semantic model, the operator chain). BM-5 (review 2026-10-11): this was
-undocumented and untested; every machine this library had built on so far was little-endian,
-so the gap was never visible. Recorded rather than fixed immediately (`bytes.hpp`'s own note
-at the time): the descriptor was host-endian and same-host-family only until a version bump
-routed it through `bytes::put_integer` deliberately, at a point where the golden-file churn
-that bump causes was expected. A big-endian host building and exchanging descriptors with a
+field-entry key, the semantic model, the operator chain). This was undocumented and untested;
+every machine this library had built on was little-endian, so the gap was never visible. The
+descriptor stayed host-endian and same-host-family only until a version bump routed it through
+`bytes::put_integer` deliberately, at a point where the golden-file churn that bump causes was
+expected. A big-endian host building and exchanging descriptors with a
 little-endian peer would have silently disagreed about every multi-byte field.
 
-**The fix (D62).** `Writer::pod`/`Reader::pod` now route every POD through `bytes::
+**The current encoding.** `Writer::pod`/`Reader::pod` now route every POD through `bytes::
 put_integer`/`bytes::get_integer` (unsigned), `bytes::put_signed`/`bytes::get_signed` (signed,
 two's-complement), or `std::bit_cast` to/from an equal-width unsigned integer through the same
 pair (floating-point -- only `double` appears in this file). `bytes.hpp` gained `get_integer`/
-`get_signed` as part of this fix: before D62 it was write-only (used for canonical hashing in
+`get_signed` as part of this change: before it, it was write-only (used for canonical hashing in
 `src/backend/weights_operator.cpp`, `src/model/semantics.cpp`, `src/model/transform.cpp`), with
 no decode side at all, because nothing round-tripped through it until the descriptor did.
-`kGraphVersion` bumped 14 -> 15. No field changed width or position: on a little-endian host
+`kGraphVersion` went from 14 to 15. No field changed width or position: on a little-endian host
 (every host this library has ever built on) the wire bytes for a given graph are unchanged
-except for the version word itself -- the fix changes the GUARANTEE (host-independence), not
+except for the version word itself -- the change is to the GUARANTEE (host-independence), not
 the bytes a little-endian host happens to produce, which is exactly why the bug was invisible
 here and would not have been on a big-endian host. `test/model/descriptor_test.cpp`'s
 `V14AndV15BytesOfTheSameGraphDifferOnlyInTheVersionWord` and
@@ -152,34 +150,33 @@ big-endian host to build or run on, so `PodBytesNoLongerDependOnHostByteOrderVia
 demonstrates the host-independence by construction (a byte-swapping writer stub standing in for
 the superseded host) instead of by executing on one.
 
-The ABI's own negotiation of this version is unchanged by the fix: `fuse_load_graph()`
+The ABI's own negotiation of this version is unchanged: `fuse_load_graph()`
 (`src/abi/participant.cpp`) hands raw bytes straight to `fuse::deserialize()`, which refuses a
-`kGraphVersion` mismatch by name (`E-DESC-VERSION`) before this fix and still does after it --
-`test/abi/negotiation_test.cpp`'s `LoadGraphRefusesAnOutdatedDescriptorVersionByName` exercises
+`kGraphVersion` mismatch by name (`E-DESC-VERSION`) -- `test/abi/negotiation_test.cpp`'s `LoadGraphRefusesAnOutdatedDescriptorVersionByName` exercises
 this through the ABI boundary explicitly. The restart-to-disk provenance check gained its own,
-independent version/hash distinction for the SAME reason -- see KNOWN_ISSUES.md D62's own
-closing note and `fuse/restart_io/hdf5_restart_io.hpp`'s `Provenance::descriptor_version` /
+independent version/hash distinction for the SAME reason -- see
+`fuse/restart_io/hdf5_restart_io.hpp`'s `Provenance::descriptor_version` /
 `check_restart_descriptor_hash()`.
 
 ## How the participant ABI reconciles a collective refusal
 
-KNOWN_ISSUES.md D61. `entries.def` marks `setup`, `initialize`, `begin_step`
+`entries.def` marks `setup`, `initialize`, `begin_step`
 and `end_step` COLLECTIVE in their own doc strings (`setup` "COLLECTIVE
 over the communicator"; `initialize` "COLLECTIVE"; `begin_step`/`end_step`
 "COLLECTIVE over the component's processes"), and `run`'s own doc string,
 while not using that literal word, states it "still executes this call's
-own share of the period's collectives" -- the same reason D61 names `run`
-alongside the other four. Before this entry, each of the five decided a
+own share of the period's collectives" -- the same reason `run`
+is grouped with the other four. Each of the five would otherwise decide a
 refusal from this rank's own local state only (a bad `struct_size`, the
-context in the wrong state, an out-of-turn call) and returned, with
+context in the wrong state, an out-of-turn call) and return, with
 nothing agreeing that decision across the rest of the component's ranks.
 On a multi-rank component this is exactly the hazard `docs/dev/
 invariants.md`'s `A4` names for any terminal that does IO or reduction: "a
 rank-subset invocation is a refusal -- reconciled through `Epoch` so that
-the refusal itself cannot hang." The ABI boundary met every OTHER part of
+the refusal itself cannot hang." Without reconciliation the ABI boundary would meet every OTHER part of
 that contract and none of this one.
 
-**The fix.** `src/abi/participant.cpp`'s `reconcile_collective_status()`
+**Mechanism.** `src/abi/participant.cpp`'s `reconcile_collective_status()`
 runs after the entry's own local body has computed its verdict and before
 that verdict reaches the caller: every rank of the communicator being
 reconciled over contributes its own `(fuse_status, rank)` pair to one
@@ -195,9 +192,9 @@ message is rewritten to name the refusing rank and the agreed code, per
 this page's own standing rule that every rank must return the SAME code,
 not merely a code drawn from the same enum.
 
-**LESSON (round 3, the hard way).** The first version of this fix reconciled over the
+**Why not the base communicator.** Reconciling over the
 context's own base communicator (`c.communicator`) -- the MERGED world of
-every component in a multi-executable run. Measured on the host:
+every component in a multi-executable run -- hangs. Measured on the host:
 `verification.brusselator.participants.{mpmd,accept}.{3,5}` all timed
 out, because U, V and the coupler each call `begin_step`/`end_step` a
 DIFFERENT number of times per window, so an `MPI_Allreduce` keyed to "all
@@ -208,11 +205,9 @@ pairs calls ACROSS components can only run on a communicator whose every
 member makes the SAME sequence of calls** -- the base communicator is the
 wrong scope for anything keyed to one component's own call sequence,
 exactly as it would be wrong to run an `MPI_Allreduce` over `MPI_COMM_
-WORLD` for a quantity only some ranks compute. The REVERTED paragraph
-below and D61's own KNOWN_ISSUES.md entry carry the full measurement;
-this page's own fix, below, reconciles over a component-local
-communicator instead, precisely to keep every member of the reduction
-making the identical sequence of calls.
+WORLD` for a quantity only some ranks compute. The reconciliation
+therefore runs over a component-local communicator, precisely to keep every member of the
+reduction making the identical sequence of calls.
 
 The pure arithmetic -- given every rank's own local status, which one
 wins and whose message survives -- lives in `fuse::abi_detail::
@@ -225,7 +220,7 @@ force_fake_collective_peers()`, `test/abi/participant_test.cpp`) and
 calls the real `MPI_Allreduce(MPI_2INT, MPI_MINLOC, ...)` otherwise, so
 the two paths cannot disagree about what "agreed" means.
 
-**Which communicator (round 4, corrected again).** `initialize`/
+**Which communicator.** `initialize`/
 `begin_step`/`end_step`/`run` reconcile over `fuse_ctx::collective_comm_f`
 -- a COMPONENT-LOCAL communicator, split exactly once, inside
 `initialize()`'s own already-existing `if (c.communicator_set)` block, by
@@ -236,48 +231,44 @@ PER COMPONENT) when `my_component` is set, `MPI_UNDEFINED` otherwise;
 (`fuse::abi_detail::decide_split_colour_key`, `include/fuse/abi/
 collective_reconcile.hpp` -- the pure half, tested at tier 0 with no MPI
 dependency, the same split this header's other half already gets for the
-reconciliation arithmetic). Round 3's version of this call went through
-`fuse::linalg::make_participant_set_reducer()` instead (D32's own
-`MPI_Comm_split`, reused rather than reimplemented) -- wrong, for a
-reason the round-4 lesson below explains, not reused as of this round.
+reconciliation arithmetic). The split deliberately does not go through
+`fuse::linalg::make_participant_set_reducer()`, for the reason given below.
 `0` means "nothing to reconcile": the default; whenever `my_component`
 was never named (no component to split by); and, BY CONSTRUCTION, for
 every context `fuse::abi_test::force_communicator_set()` touches, since
 that seam sets `communicator`/`communicator_set` directly and never
 re-runs the real split path (its own doc comment: deliberately callable
 AFTER a successful `initialize()`, to reach a LATER gate in isolation).
-`setup()` is NOT reconciled at all, this round -- `my_component` is
+`setup()` is NOT reconciled at all -- `my_component` is
 itself an ARGUMENT to `setup()`, not yet resolved when its own local
 checks (`struct_size`, `reserved`, an unknown `my_component` name) can
 fail, so there is no component-local communicator for `setup()` to
 reconcile over yet, and reconciling it over anything ELSE (the base
-communicator, round 2's own choice) is exactly the mistake the round-3
-lesson above names. `setup()`'s own refusals are structural, decided from
+communicator) is exactly the mistake described above. `setup()`'s own refusals are structural, decided from
 the same bytes on every rank that is meant to agree, independent of
 reconciliation.
 
-**LESSON (round 4, the same mistake one layer down).** Round 3's own
-colour decision called `make_participant_set_reducer()` with THIS rank's
-OWN component's `RankSet::ranks()` as the "participant set" -- a function
-written for a caller where every rank of a SHARED base communicator
-passes the IDENTICAL set and asks "is my rank a member" (colour `0` if
-yes, `MPI_UNDEFINED` if no). Every rank here passes a DIFFERENT
+**Why not `make_participant_set_reducer()`.** It is the wrong function
+for the colour decision with THIS rank's OWN component's `RankSet::ranks()`
+as the "participant set". It is written for a caller where every rank of a
+SHARED base communicator passes the IDENTICAL set and asks "is my rank a
+member" (colour `0` if yes, `MPI_UNDEFINED` if no). Every rank here passes a DIFFERENT
 component's own set, so every rank trivially answers "yes" about its OWN
 component and computes the SAME colour `0` -- landing every component of
 a multi-component graph on ONE shared communicator, the identical failure
-mode round 3's own fix was written to prevent, reached by a different
-route: the round-3 lesson ("a collective that pairs calls across
+mode as reconciling over the base communicator, reached by a different
+route: the rule ("a collective that pairs calls across
 components can only run on a communicator whose every member makes the
 same sequence of calls") is true of the SPLIT CALL that BUILDS the
 communicator, not only of the reconciliation call that later runs on it.
 A colour that is the same constant for every caller, regardless of which
 set that caller passed, cannot separate anything -- `MPI_Comm_split`
 needs a colour that VARIES with which group a rank belongs to, which is
-why round 4 colours by the component's own identity (`ComponentId::
+why the split colours by the component's own identity (`ComponentId::
 value()`, distinct per component by construction) rather than by a
 yes/no answer that is always yes about one's own set.
 
-**What is not reconciled, and why.** `setup()` (above, round 3), and the
+**What is not reconciled, and why.** `setup()` (above), and the
 other ten participant-table entries (`version`, `capabilities`, `create`,
 `destroy`, `last_error`, `load_graph`, `save_graph`, `field_handle`,
 `register_field`, `view_field`, `base_communicator`,
@@ -298,38 +289,33 @@ entry than its peers on the same step (so `with_ctx()` itself refuses
 handle) has no communicator this reconciliation can read -- there is no
 live `fuse_ctx` to ask. That is a caller confusing which handle or which
 entry to call, not a refusal this entry's own body decided, and is
-outside this fix's scope (KNOWN_ISSUES.md D61's own entry records it as
-the residual exposure).
+outside what this reconciliation covers; it is the residual exposure.
 
-**Cost, accepted as the permanent price of this fix (decided 2026-10-18).**
+**Cost.**
 `begin_step`/`end_step` are step-boundary calls (this page's own "costs"
 section: "every entry point is a setup or step-boundary call, never
 per-degree-of-freedom"), so one small `MPI_Allreduce` added to each is
 bounded, not asymptotic -- but it is one more real collective per step,
 beyond whatever `Transport`/`Epoch`/`Constrain` instructions the compiled
-plan already runs for that step. The owner accepted this as the standing
-cost rather than asking for it to be removed. Follow-up, recorded and not
-pursued further: a cheaper mechanism would piggyback the encoded status
+plan already runs for that step. This is the standing
+cost. A possible cheaper mechanism would piggyback the encoded status
 onto a collective the step already performs instead of a separate
-`MPI_Allreduce`.
+`MPI_Allreduce`; it is not implemented.
 
 ## The period contract (what a window-per-period boundary must not do)
 
 ## How a plugin's mount is agreed across the base communicator
 
-KNOWN_ISSUES.md D15 ("Registry agreement" track, owner decision 2026-10-22, option (b)). The
-"Registry hosting" track fixed a DIFFERENT problem -- `fuse::abi_detail::Registry::mount_dynamic()`
-dlopen()ing a `LaunchMode::Plugin` component's shared object on every rank, not only the ones that
-host it -- but introduced a consequence of its own: a plugin-side refusal (`E-ABI-LOAD`,
-`E-ABI-VERSION`, `E-ABI-DESCRIBE`, a device gate) became visible only to a hosting rank, where it
-used to be re-derived identically everywhere. This violates the SAME standing rule the section above
+`fuse::abi_detail::Registry::mount_dynamic()` dlopen()s a `LaunchMode::Plugin` component's shared
+object only on the ranks that host it, so a plugin-side refusal (`E-ABI-LOAD`,
+`E-ABI-VERSION`, `E-ABI-DESCRIBE`, a device gate) is visible only to a hosting rank. This would violate the SAME standing rule the section above
 states ("agree first, then every rank refuses with the same code"), for a reason that section's own
 mechanism cannot reach: `reconcile_collective_status()` reconciles over `fuse_ctx::
 collective_comm_f`, a communicator split by `my_component`, and `my_component` is documented
 (`entries.def`) to behave as unset for `InProcess`/`Plugin` launch -- so `collective_comm_f` never
 forms at all for a Plugin-only, direct-communicator graph, the exact shape this problem occurs in.
 
-**The fix.** `src/abi/participant.cpp`'s `reconcile_plugin_agreement()` reconciles the plugin-mount
+**Mechanism.** `src/abi/participant.cpp`'s `reconcile_plugin_agreement()` reconciles the plugin-mount
 verdict `impl_initialize_local()`'s own component-wiring loop computes (a hosting rank's own
 mount/extract/register-fields result, or a non-hosting rank's trivial success) across every rank of
 the BASE communicator (`fuse_ctx::communicator`) -- not `collective_comm_f` -- with one
@@ -340,28 +326,27 @@ reconcile_local_statuses`) the section above's own glue calls, so the two reconc
 two different communicators, for two different questions -- cannot disagree about what "agreed"
 means.
 
-Every early `return fail(...)` the component-wiring loop's `Plugin` branch took on a hosting rank's
-own mount/extract/register failure was restructured to record its verdict and `break` the loop
-instead, so every rank -- hosting or not -- still reaches this one reduction point before
-`impl_initialize_local()` returns; without that restructuring, a hosting rank that failed would
-return before a non-hosting rank (which has nothing to fail on locally) ever learned about it,
-reproducing the exact gap this round closes.
+A hosting rank's own mount/extract/register failure in the component-wiring loop's `Plugin` branch
+records its verdict and `break`s the loop instead of returning early, so every rank -- hosting or
+not -- reaches this one reduction point before `impl_initialize_local()` returns; an early return
+would let a hosting rank that failed leave before a non-hosting rank (which has nothing to fail on
+locally) learns about it.
 
-**Why this cannot deadlock the way the round-2 REVERTED fix above did.** That fix's own lesson
-("a collective that pairs calls ACROSS components can only run on a communicator whose every
+**Why this cannot deadlock the way a base-communicator reconciliation of the step entries would.**
+The rule stated above ("a collective that pairs calls ACROSS components can only run on a communicator whose every
 member makes the SAME sequence of calls") is about `begin_step`/`end_step`/`run` -- entries a
 multi-component graph's different components call a DIFFERENT NUMBER OF TIMES, so an
 `MPI_Allreduce` keyed to "all ranks of the base communicator" never finds the same number of
 contributions on every side. `fuse_initialize()` has no such cadence: it is called EXACTLY ONCE,
 synchronously, by every rank of the base communicator, before any step boundary exists at all --
 there is no "which call number is this" question for two ranks to disagree about. The other half of
-what made that same REVERTED fix unsafe -- touching a communicator handle `fuse::abi_test::
+what makes that variant unsafe -- touching a communicator handle `fuse::abi_test::
 force_communicator_set()` faked, with no real MPI behind it, under a real `FUSE_HAVE_MPI` build --
 is avoided the same way the pre-existing `rank`/`num_ranks` derivation at the top of
 `impl_initialize_local()` already relies on: every test that fakes a communicator this way is
 excluded from MPI-enabled test binaries by convention (`test/abi/conformance_test.cpp`'s own
-`NonHostingRankNeverDlopensThePluginOrCallsAnyOfItsEntries`, "Registry hosting" track, is the
-precedent this round's own new tests follow).
+`NonHostingRankNeverDlopensThePluginOrCallsAnyOfItsEntries` is the
+precedent the plugin-agreement tests follow).
 
 **A priori refusal for the one launch shape this cannot cover.** Agreeing a plugin-mount verdict
 needs a communicator that spans every rank with an opinion on it. A multi-executable launch where
@@ -382,8 +367,7 @@ recorded rather than guessed past: a graph with more than one independent `Conne
 this process's own `my_component` connects to one pairing while the `Plugin` component is hosted in
 a DIFFERENT one, is not distinguished from the safe case -- the fully general version would need
 `fuse::transport::validate_launch_layout()`'s own topology check consulted before this point, which
-this round's own function deliberately does not attempt (KNOWN_ISSUES.md D15's own round record has
-the open question).
+this function deliberately does not attempt; it is an open question.
 
 Tested at tier 0 with no MPI runtime (`test/abi/plugin_agreement_test.cpp` for the pure predicate;
 `test/abi/conformance_test.cpp`'s own `PluginAgreementReconciliationNeverRunsForAGraphWithNoPlugin
@@ -391,15 +375,14 @@ Component`, `NonHostingRankAdoptsAHostingPeersPluginMountFailureThroughTheBaseCo
 `HostingRanksOwnPluginMountFailureStillReachesTheBaseCommunicatorReduction`, and
 `APluginAlongsideAConnectComponentWithNoSpanningCommunicatorIsRefusedAPriori` for the real-ABI
 wiring, the last two via a DEDICATED fake-peer seam, `fuse::abi_test::
-force_fake_plugin_agreement_peers()`, kept separate from the D61 one above so the two
+force_fake_plugin_agreement_peers()`, kept separate from the one above so the two
 reconciliations can be faked independently); the real multi-process row,
 `parallel.provider_subset_mpi`'s own `AHostingRanksPluginMountFailureIsAgreedByEveryRankNotOnlyThe
-HostingOnes`, is built under a real `FUSE_ENABLE_MPI=ON` configure and never run (KNOWN_ISSUES.md
-C1).
+HostingOnes`, is built under a real `FUSE_ENABLE_MPI=ON` configure but has not been run in CI.
 
 ## The period contract (what a window-per-period boundary must not do)
 
-KNOWN_ISSUES.md D57. A caller of the participant ABI, or of `fuse::
+A caller of the participant ABI, or of `fuse::
 Runner::run()` directly, is entitled to ask for a COUNT of coupling
 periods -- never a promise that state has "settled" past that count, even
 on a graph whose window-scoped region reaches a fixed point every period.
@@ -421,7 +404,7 @@ with its own bound on how many periods to run (an ABI caller's own `for
 < periods; ++i) run_period();`) stops EXACTLY at that bound and never
 calls in again, while a caller with no such bound (nothing in
 `fuse_setup_options` requires one) may resolve and run a further period
-regardless. D57's own real row measured the consequence: U and V, both
+regardless. A real multi-rank row measured the consequence: U and V, both
 driven through the ABI with no end time declared, each continued a THIRD,
 unrequested period's own base-communicator `Constrain` reduction after a
 converged window reached its fixed point at the end of period 2, while
@@ -436,7 +419,7 @@ chedAFixedPoint`, a tier-0 (no MPI) test through the real public ABI,
 using `fuse::abi_test::force_communicator_set()` to put a single-process
 graph into the `communicator_set == true` state the real, multi-rank row
 is actually in -- the same seam `test/verification/
-brusselator_period_rollover_test.cpp` (D57's own earlier, Brusselator-
+brusselator_period_rollover_test.cpp` (the earlier, Brusselator-
 specific pin) already uses. The decisive assertion in both: at the call
 where the loop's own tracked period count first reaches the requested
 count, `fuse_step_report::next_component` must equal -1 -- the ONLY value
@@ -492,7 +475,7 @@ and the test that proves the two agree is a `C_SIZEOF` table, not a reading.
 
 ## Provider direction
 
-S6 phase 4, "Adapter host" track. The participant ABI above is the coupler being driven; the
+The participant ABI above is the coupler being driven; the
 provider ABI (`include/fuse/abi/provider.h`, user docs at [](../user/providers.md)) is the
 opposite: the coupler drives a plugin, loaded at runtime from a shared object a graph names by
 path (`LaunchMode::Plugin`, `include/fuse/model/launch.hpp`).
@@ -540,9 +523,9 @@ symbols because a function-pointer struct is unergonomic there): a provider-dire
 plugin builds and exports the struct itself, since the struct's CONTENT is the plugin's own code,
 not a table a Fortran caller merely dereferences.
 
-### Device fields: a worked growth, rule 3 (Stage B-2, 2026-10-21)
+### Device fields: a worked growth, rule 3
 
-`fuse_field_spec` (the `describe()` OUT row, `entries.def`) is the struct this round's device-fields
+`fuse_field_spec` (the `describe()` OUT row, `entries.def`) is the struct the device-fields
 work grew, and it is a clean worked example of rule 3 above: measured first, not assumed.
 `fuse_field_spec` has `name`, `components`, `intent`, `element_type`, `struct_size` -- 28 bytes of
 members in a struct whose compiled `sizeof` was already 32, so a naive 4-byte append (just
@@ -563,8 +546,7 @@ a hand edit, and `tools/gen-abi.py --check` reports 0 stale.
 `memspace` defaults to `FUSE_MEMSPACE_HOST` (value 0) for a `struct_size` an old caller set before
 this member existed, the backward-compatible default rule 2 already requires for any new member --
 an existing plugin's `describe()` that never touches `memspace` at all gets a host field, the same
-behaviour it had before this round. The new capability bit, `FUSE_CAP_DEVICE_FIELDS`, and the two
+behaviour it had before the member existed. The new capability bit, `FUSE_CAP_DEVICE_FIELDS`, and the two
 refusal gates `fuse::abi_detail::ProviderAdapter::register_fields()` applies to a
 `FUSE_MEMSPACE_DEVICE` request are documented for plugin authors in
-[](../user/providers.md#device-fields); KNOWN_ISSUES.md D15 (item 1) carries the full round record,
-the mutation rows, and the CUDA run (ssh:higgs, 2026-10-21) of the positive device-resident path.
+[](../user/providers.md#device-fields); the positive device-resident path has been run on CUDA.

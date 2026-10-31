@@ -1,4 +1,4 @@
-// Task 5.4: the MPI transport, run under a real mpiexec with more than one
+// The MPI transport, run under a real mpiexec with more than one
 // rank.
 //
 // WHY THE PATTERNS BELOW ARE NOT THE OBVIOUS ONES. Sources hold CONTIGUOUS
@@ -22,7 +22,7 @@
 #include <fuse/transport/comm_graph.hpp>
 #include <gtest/gtest.h>
 
-// R-50 (REVIEW.md): the documented rank-requirement convention
+// The documented rank-requirement convention
 // (docs/dev/testing.md). `halves()` below is a divisibility check the
 // documented macros cannot express, so it stays hand-rolled.
 #include "fuse_test_main.hpp"
@@ -332,8 +332,8 @@ TEST(MpiTransport, RedistributesVectorFields) {
 // A rank in NEITHER set is ordinary: it still enters MPI_Alltoallv, with zero
 // counts.
 //
-// HONEST LIMIT OF THIS TEST. The brief says a four-rank run with two idle
-// ranks deadlocks if they skip the collective. Measured, that is not true of
+// HONEST LIMIT OF THIS TEST. A four-rank run with two idle
+// ranks is expected to deadlock if they skip the collective. Measured, that is not true of
 // MPICH 5.0: an early `return` for ranks whose counts are all zero was
 // injected into move() and this test still passed in 3 ms, because MPICH's
 // MPI_Alltoallv posts point-to-point traffic only to peers with non-zero
@@ -471,7 +471,7 @@ TEST(MpiTransport, ConcurrentChannelsDoNotCollide) {
 }
 
 // ---------------------------------------------------------------------------
-// The hot loop. Task 4.6's constraint, measured.
+// The hot loop: no per-step allocation, measured.
 // ---------------------------------------------------------------------------
 
 TEST(MpiTransport, PrepareAndMoveAllocateNothingPerStep) {
@@ -566,13 +566,12 @@ TEST(MpiTransport, BuildPlanRejectsOverlappingRankSets) {
   ASSERT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
 }
 
-// R-30 (REVIEW.md): build_plan() has no cross-rank agreement on
-// TransportSpec::components, unlike build_plan_from_peers()'s Phase B
-// numbering check. Rank 0 calls it with components = 1, rank 1 with
+// build_plan() has no cross-rank agreement on
+// TransportSpec::components, unlike build_plan_from_peers()'s numbering
+// check. Rank 0 calls it with components = 1, rank 1 with
 // components = 2, over an otherwise valid disjoint pattern; every rank must
 // reject with E-TRANSPORT-PEERMATCH rather than build a plan whose
-// MPI_Alltoallv count arrays disagree between the two sides. Needs a host
-// run: the sandbox this was written in cannot launch MPI at all.
+// MPI_Alltoallv count arrays disagree between the two sides.
 TEST(MpiTransport, BuildPlanRejectsDisagreeingComponentsAcrossRanks) {
   FUSE_REQUIRE_RANKS(2);
   const int rank = world_rank();
@@ -587,9 +586,9 @@ TEST(MpiTransport, BuildPlanRejectsDisagreeingComponentsAcrossRanks) {
   MpiTransport t;
   ASSERT_TRUE(t.set_communicator(MPI_Comm_c2f(MPI_COMM_WORLD)).ok());
   const auto r = t.build_plan(spec);
-  // Printed on every rank, pass or fail: the 2026-09-20 host run had rank 1
-  // rejecting and rank 0 building a plan, which the assertion alone does not
-  // distinguish from both ranks missing the check.
+  // Printed on every rank, pass or fail: one rank rejecting while another
+  // builds a plan is not distinguishable by the assertion alone from both
+  // ranks missing the check.
   std::printf("[components rank %d/%d] components=%d outcome=%s %s\n", rank,
               world_size(), spec.components, r.ok() ? "OK" : "REFUSED",
               r.ok() ? "" : r.error().code.c_str());
@@ -795,12 +794,12 @@ TEST(MpiTransport, BuildPlanRefusesWithoutACommunicator) {
 }
 
 // ---------------------------------------------------------------------------
-// MpiTransport THROUGH RunnerConfig::transport_setup (Task 8.5's hook).
+// MpiTransport THROUGH RunnerConfig::transport_setup.
 //
-// Everything above drives MpiTransport directly. Task 8.5 added the hook that
-// is supposed to carry `set_communicator` + `build_plan` into a transport the
-// Runner constructed, and wired LowFive through it; that MpiTransport works the
-// same way was argued by symmetry and never run. These three tests run it.
+// Everything above drives MpiTransport directly. The hook is supposed to carry
+// `set_communicator` + `build_plan` into a transport the Runner constructed
+// (LowFive is wired through it); that MpiTransport works the same way was
+// argued by symmetry. These three tests run it.
 //
 // WHAT THEY FOUND, and what they now pin: THE SYMMETRY DOES NOT HOLD. The
 // Runner fills only four fields of the TransportSpec it hands prepare() --
@@ -1029,7 +1028,7 @@ TEST(MpiTransportThroughRunner, PlanningTheRunnersOwnSpecIsRefusedForNoRanks) {
 // Route 2: plan a pattern MpiTransport accepts. initialize() now succeeds --
 // so the hook is genuinely wired -- and the run fails at the FIRST Transport
 // instruction, because the spec the Runner hands prepare() is not the one that
-// was planned. This is the whole of R5's answer: there is no argument to
+// was planned. There is no argument to
 // build_plan() for which this path moves data, and the missing piece is on the
 // Runner's side, in resolve_instructions().
 TEST(MpiTransportThroughRunner, APlannableSpecStillCannotSurvivePrepare) {
@@ -1055,7 +1054,7 @@ TEST(MpiTransportThroughRunner, APlannableSpecStillCannotSurvivePrepare) {
   const auto run = runner.run_period(h->components);
   ASSERT_FALSE(run.ok())
       << "if this ever passes, resolve_instructions() has started to populate "
-         "TransportSpec::src_ranks/dst_ranks/global_ids and R5 is closed -- "
+         "TransportSpec::src_ranks/dst_ranks/global_ids and the gap is closed -- "
          "turn this test into the data-movement check it should have been";
   // One code, two reasons, depending on the rank. On ranks 0 and 1 the planned
   // spec named rank sets and the Runner's does not, so the src_ranks/dst_ranks
@@ -1072,7 +1071,7 @@ TEST(MpiTransportThroughRunner, APlannableSpecStillCannotSurvivePrepare) {
   ASSERT_NE(consumer, nullptr);
   for (const double v : consumer->data()) EXPECT_DOUBLE_EQ(v, 0.0);
 
-  std::printf("[hook rank %d/%d] R5: MpiTransport planned, Runner ran, "
+  std::printf("[hook rank %d/%d] MpiTransport planned, Runner ran, "
               "prepare() rejected the Runner's spec with %s -- the hook is "
               "wired but the spec is not\n",
               rank, world_size(), run.error().code.c_str());
@@ -1109,7 +1108,7 @@ class AbortOnFailure : public ::testing::EmptyTestEventListener {
 // entry point silently loses that.
 
 // ---------------------------------------------------------------------------
-// The peer-wise plan (R31): partial overlap, and the matched plan as oracle
+// The peer-wise plan: partial overlap, and the matched plan as oracle
 // ---------------------------------------------------------------------------
 
 namespace {
@@ -1274,7 +1273,7 @@ TEST(MpiTransportPeers, DeliversWhatTheMatchedPlanDeliversOnADisjointPattern) {
 }
 
 TEST(MpiTransportPeers, DeliversUnderPartialOverlap) {
-  // THE CASE THE MATCHED PATH CANNOT EXPRESS, and the reason R31 was open:
+  // THE CASE THE MATCHED PATH CANNOT EXPRESS, and the reason the peer-wise plan exists:
   // every rank is both a source and a destination, so one global_ids list per
   // rank cannot say which role an entry plays. Each rank ends up with a mix of
   // values received from peers and values copied locally.
@@ -1327,13 +1326,13 @@ TEST(MpiTransportPeers, DisagreeingHalvesAreRefusedBeforeTheRun) {
   ASSERT_EQ(MPI_Barrier(MPI_COMM_WORLD), MPI_SUCCESS);
 }
 
-// Review 2026-10-11 TR-1. rank 0's send plan names rank 2 of a 2-rank
+// Rank 0's send plan names rank 2 of a 2-rank
 // communicator, so Phase A's range check (a purely rank-0-local condition)
 // fails on rank 0 only; rank 1's own plan is empty and never involves rank 0,
-// so rank 1's Phase A passes. Before the fix, rank 0 took the `err !=
+// so rank 1's Phase A passes. Without agreement, rank 0 would take the `err !=
 // Err::None` branch straight to the final agreement while rank 1 entered the
 // Phase B MPI_Alltoall alone -- a hang, which this test turns into a
-// ctest --timeout failure rather than a wrong pass. After the fix, every
+// ctest --timeout failure rather than a wrong pass. With agreement, every
 // rank issues the same Alltoall (rank 0 with a zero-filled sendcounts) and
 // every rank returns E-TRANSPORT-RANKS.
 TEST(MpiTransportPeers, AsymmetricPhaseAFailureIsRefusedByEveryRank) {
@@ -1365,7 +1364,7 @@ TEST(MpiTransportPeers, AsymmetricPhaseAFailureIsRefusedByEveryRank) {
 // returns, every other rank sits inside the collective forever -- whenever
 // the communicator is anything other than MPI_COMM_WORLD itself (a plain
 // MPI_Comm_dup of it is enough), on this exact disjoint-halves pattern.
-// Measured 2026-10-10: reproduced with zero fuse or Kokkos code involved,
+// Reproduced with zero fuse or Kokkos code involved,
 // independent of MPI_THREAD_MULTIPLE (still hangs under MPI_THREAD_FUNNELED
 // and even plain MPI_Init), independent of BTL (vader, tcp) and PML (ob1),
 // and absent on MPI_COMM_WORLD with the identical send/recv pattern. An

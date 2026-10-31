@@ -1,10 +1,9 @@
-// "Schur-slab" track, tier 1: fuse::linalg::SchurSlabSolver and
+// Tier 1: fuse::linalg::SchurSlabSolver and
 // Reducer::allgather's real MPI implementation (src/linalg/comm_mpi.cpp),
 // over a REAL MPI_COMM_WORLD at 2 and 3 ranks.
 //
-// MPI CANNOT START IN THIS SANDBOX (docs/dev/testing.md): this file is
-// compiled -- registered with fuse_add_mpi_test, RANKS 2 3 -- but never run
-// here; outcomes are a host action. The properties measured here are
+// Registered with fuse_add_mpi_test, RANKS 2 3; needs a working MPI
+// launcher (docs/dev/testing.md). The properties measured here are
 // exactly the ones test/linalg/schur_slab_test.cpp already measures with
 // the in-process ring-allgather fake (requirement 2's 2- and 3-partition
 // agreement with the whole-grid reference, and the periodic wrap); this
@@ -165,18 +164,16 @@ TEST(SchurSlabSolverMpi, OneRowRowBandRefuses) {
   auto reducer = fuse::linalg::make_mpi_reducer(comm_f);
   auto result = SchurSlabSolver::factor(nx, ny, j_lo, j_hi, 0.5, owners, reducer);
 
-  // Review 2026-10-11 NL-3: under the fixed factor() (commit c11ac18,
-  // src/linalg/schur_slab.cpp:221-247) every rank scans ALL bands from
-  // `row_ownership` and refuses identically, with zero collectives --
+  // factor() (src/linalg/schur_slab.cpp) has every rank scan ALL bands from
+  // `row_ownership` and refuse identically, with zero collectives --
   // NOT "this rank's own band happens to be fine, so only the undersized
   // rank refuses while its peers' own factor() legitimately succeeds and
-  // carries on" (the comment this replaces, which described the PRE-FIX
-  // behaviour that deadlocked on a real host: one rank refusing locally
-  // while its peers entered the allgather below it never reaches). Every
+  // carries on", which would deadlock: one rank refusing locally while
+  // its peers enter an allgather it never reaches. Every
   // rank here must see the SAME refusal, exactly as the tier-0 sibling
   // (`SchurSlabSolverRefusal.
   // OneRowBandRefusesOnEveryRankWithoutStrandingAnyoneInACollective`,
-  // test/linalg/schur_slab_test.cpp:424-443) already asserts.
+  // test/linalg/schur_slab_test.cpp) already asserts.
   ASSERT_FALSE(result.ok()) << "rank " << rank << ": every rank must refuse together, "
                                                    "regardless of its own band's size";
   EXPECT_EQ(result.error().code, "E-LINALG-SCHUR-SLAB");

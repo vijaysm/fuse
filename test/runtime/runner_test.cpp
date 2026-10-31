@@ -53,16 +53,16 @@ struct ProducerOpts {
   std::size_t bind_count = 0;    // 0 -> cells
   std::size_t bind_stride = 1;   // > 1 registers a strided view
   bool        poison = false;    // write NaN instead of a number
-  /// R-10 (REVIEW.md): an iteration region requires every component it
+  /// An iteration region requires every component it
   /// checkpoints to support rollback (E-ITER-NOROLLBACK); default false
   /// matches every existing caller of this harness, none of which puts this
   /// component in a region.
   bool        rollback = false;
-  /// R-09 (REVIEW.md): refuse every advance() instead of running it. Used to
+  /// Refuse every advance() instead of running it. Used to
   /// put a real Failure on the re-advance path inside an iteration region's
   /// sweep loop.
   bool        fail_advance = false;
-  /// N-transport-runtime-2 (REVIEW.md pass2): the harness's single producer
+  /// The harness's single producer
   /// is always named "producer"; a test that needs a SECOND, independent
   /// producer/channel in the same graph sets this to a distinct name.
   std::string name = "producer";
@@ -98,7 +98,7 @@ class Producer final : public fuse::Component {
   }
 
   fuse::Result<void> advance(const StepContext&) override {
-    // R-09: fails starting from the SECOND call, so the first (establishing
+    // Fails starting from the SECOND call, so the first (establishing
     // y_0, before any region sweep) succeeds and only a RE-advance fails.
     if (opts_.fail_advance && steps > 0) {
       return fuse::Failure{"E-TEST-ADVANCE-REFUSED",
@@ -121,7 +121,7 @@ class Producer final : public fuse::Component {
   [[nodiscard]] const std::vector<double>& data() const { return data_; }
   void poison() { opts_.poison = true; }
 
-  // R-10 (REVIEW.md): opt-in rollback, exercised only by a harness that puts
+  // Opt-in rollback, exercised only by a harness that puts
   // this component in an iteration region. `saved_` is a byte-for-byte copy
   // because rank-agreement.md's E-ITER-ROLLBACK check compares exactly that.
   fuse::Result<void> save_state() override {
@@ -146,9 +146,9 @@ class Producer final : public fuse::Component {
 
 class Consumer final : public fuse::Component {
  public:
-  /// `rollback`: see Producer::rollback_ (R-10, REVIEW.md) -- same opt-in,
+  /// `rollback`: see Producer::rollback_ -- same opt-in,
   /// same reason, default false to match every existing caller.
-  /// `name`: N-transport-runtime-2 (REVIEW.md pass2) -- a second, independent
+  /// `name`: a second, independent
   /// consumer in the same graph needs a name distinct from "consumer".
   explicit Consumer(std::size_t n, bool rollback = false,
                     std::string name = "consumer")
@@ -256,7 +256,7 @@ class Stowaway final : public fuse::Component {
   }
 };
 
-/// Task 8.5's RunnerConfig::transport_setup hook, exercised without dragging
+/// The RunnerConfig::transport_setup hook, exercised without dragging
 /// in MPI or LowFive. A local-transport CopyTransport lookalike, registered
 /// under its own name so it never shadows "copy" in the process-wide
 /// TransportRegistry.
@@ -320,7 +320,7 @@ struct HarnessOpts {
   /// Empty (the default) reproduces the existing behaviour: an iteration
   /// region with no convergence measure, which `initialize()` refuses with
   /// E-ITER-NOCONVERGE. A caller that wants a region that actually runs sets
-  /// this to a real criterion (R-10, REVIEW.md).
+  /// this to a real criterion.
   fuse::ConvergenceCriterion region_convergence;
   /// The region's accelerator. `Constant` (the AccelConfig default) is what
   /// every existing test declares; `Aitken` and the IQN family are the kinds
@@ -329,15 +329,14 @@ struct HarnessOpts {
   /// Non-zero adds a `Bystander` on this interval, which only widens the
   /// common period. See the class comment for why a test would want that.
   Rational      bystander_dt{0};
-  /// N-transport-runtime-1 (REVIEW.md pass2): how many ranks the consumer is
-  /// declared on. 1 (the default) reproduces every existing caller. A
-  /// caller that wants the channel's target on more than one DECLARED rank,
-  /// with no `RunnerConfig::base_communicator` set, is the same
-  /// Tier-0-legitimate "nominal placement, one real process" case
-  /// resolve_regions() already relies on (R-10's own
-  /// StillRunsAnIterationRegionWithNoCommunicatorConfigured).
+  /// How many ranks the consumer is declared on. 1 (the default) reproduces
+  /// every existing caller. A caller that wants the channel's target on more
+  /// than one DECLARED rank, with no `RunnerConfig::base_communicator` set, is
+  /// the same Tier-0-legitimate "nominal placement, one real process" case
+  /// resolve_regions() already relies on
+  /// (StillRunsAnIterationRegionWithNoCommunicatorConfigured).
   int           dst_rank_count = 1;
-  /// The coupler-placement track: when set, the channel's Remap is routed
+  /// When set, the channel's Remap is routed
   /// through a `ComponentKind::Coupler` placed on a rank neither the
   /// producer nor the consumer occupies, via `remap_on`. No
   /// `RunnerConfig::base_communicator` is configured anywhere in this file
@@ -424,7 +423,7 @@ std::unique_ptr<Harness> build(HarnessOpts o) {
 
   ProducerOpts po = o.producer;
   po.cells = o.src_cells;
-  // R-10 (REVIEW.md): a region with a real (non-empty) convergence
+  // A region with a real (non-empty) convergence
   // criterion re-advances its components every sweep, which requires
   // rollback (E-ITER-NOROLLBACK). A region left at the default empty
   // criterion -- the existing RefusesAnIterationRegionWithNoConvergenceMeasure
@@ -439,7 +438,7 @@ std::unique_ptr<Harness> build(HarnessOpts o) {
   return h;
 }
 
-/// Matching 8-cell meshes so Phase 4's identity Remap is meaningful.
+/// Matching 8-cell meshes so the identity Remap is meaningful.
 std::unique_ptr<Harness> make_harness(fuse::AccumOp accum, Rational src_dt,
                                       Rational dst_dt) {
   return build(HarnessOpts{.accum = accum, .src_dt = src_dt, .dst_dt = dst_dt});
@@ -455,7 +454,7 @@ void bind_all(Harness& h) {
 }  // namespace
 
 // ---------------------------------------------------------------------------
-// The brief's tests.
+// Core runner tests.
 // ---------------------------------------------------------------------------
 
 TEST(Runner, InitializesAndAllocatesBuffers) {
@@ -819,12 +818,12 @@ TEST(Runner, PersistentAccumulatorIsNotContaminatedAcrossPeriods) {
 /// `v` was produced over `[(v/2 - 1) * src_dt, (v/2) * src_dt)` and the
 /// contract is `(v/2) * src_dt <= t_begin`.
 ///
-/// This is the test R2's first fix needed and did not have. Marking every
-/// chain instance `BeforeTicks` made a delivery jump the tick boundary even
-/// when its own source step was still running -- on 1 against 1/2 the target's
-/// second sub-step consumed source state from `[0, 1)` at `t = 1/2`, its own
-/// future, and bought nothing for it, because the slab that follows carries
-/// the identical `src_step`. The phase is now conditional on the contract.
+/// Marking every chain instance `BeforeTicks` would make a delivery jump the
+/// tick boundary even when its own source step was still running -- on 1
+/// against 1/2 the target's second sub-step would consume source state from
+/// `[0, 1)` at `t = 1/2`, its own future, and buy nothing for it, because the
+/// slab that follows carries the identical `src_step`. The phase is therefore
+/// conditional on the contract.
 ///
 /// SCOPE, stated because the excluded family is a real defect and not a
 /// convenience. Withholding a target-limited delivery from the tick at its own
@@ -833,7 +832,7 @@ TEST(Runner, PersistentAccumulatorIsNotContaminatedAcrossPeriods) {
 /// `(k+2)*dst_dt`, will read it. That is enough iff a source step spans no
 /// more than two target steps, `src_dt <= 2*dst_dt`. Beyond that the phase
 /// cannot help -- the value would have to not be written at all -- and those
-/// schedules are still acausal, exactly as they were before R2. See
+/// schedules are still acausal. See
 /// `ASourceStepSpanningMoreThanTwoTargetStepsIsStillDeliveredEarly`.
 TEST(Runner, NoTargetStepIntegratesAgainstUnfinishedSourceState) {
   struct Case {
@@ -843,8 +842,8 @@ TEST(Runner, NoTargetStepIntegratesAgainstUnfinishedSourceState) {
   };
   // Refining, coarsening, non-nesting both ways, and lockstep -- every one
   // with src_dt <= 2*dst_dt. Three of these (1/2 -> 1/3, 1/3 -> 1/2,
-  // 1/3 -> 1/4) were acausal before R2 as well, so this is not merely a
-  // restoration of the old behaviour.
+  // 1/3 -> 1/4) would be acausal under a blanket `BeforeTicks` marking, so
+  // this is not merely a restoration of a simpler behaviour.
   const Case cases[] = {
       {"1 -> 1/2", Rational{1}, Rational{1, 2}},
       {"1/2 -> 1/3", Rational{1, 2}, Rational{1, 3}},
@@ -886,9 +885,8 @@ TEST(Runner, NoTargetStepIntegratesAgainstUnfinishedSourceState) {
   }
 }
 
-/// THE RESIDUAL, PINNED RATHER THAN HIDDEN. Not introduced by R2 and not
-/// fixed by it: measured identical on 9902f82, the commit before any of this
-/// work.
+/// THE RESIDUAL, PINNED RATHER THAN HIDDEN. The phase rule does not fix this
+/// case; it is a known limitation of the schedule.
 ///
 /// A source step that spans more than two target steps still reaches a target
 /// step that began before it finished. With `src_dt = 1` and `dst_dt = 1/3`
@@ -903,10 +901,10 @@ TEST(Runner, NoTargetStepIntegratesAgainstUnfinishedSourceState) {
 /// unfinished, state. The fix is to emit an Instant chain once per SOURCE
 /// step, at that step's end, which changes instance counts, the buffer plan
 /// and every plan dump. That is a redesign of slab-based emission, out of
-/// scope here and recorded as R34 in docs/HANDOFF.md.
+/// scope here.
 ///
 /// This test exists so the residual cannot be mistaken for absent, and so that
-/// whoever does R34 has the failing shape already written down. Flip the
+/// whoever redesigns it has the failing shape already written down. Flip the
 /// expectations when it lands.
 TEST(Runner, ASourceStepSpanningMoreThanTwoTargetStepsIsStillDeliveredEarly) {
   auto h = build(HarnessOpts{.src_dt = Rational{1},
@@ -926,7 +924,7 @@ TEST(Runner, ASourceStepSpanningMoreThanTwoTargetStepsIsStillDeliveredEarly) {
   EXPECT_DOUBLE_EQ(rx.seen()[1], 0.0);
   EXPECT_EQ(rx.seen_at()[2], Rational(2, 3));
   EXPECT_DOUBLE_EQ(rx.seen()[2], 2.0)
-      << "the early delivery is gone -- if R34 landed, update this test and "
+      << "the early delivery is gone -- if that redesign landed, update this test and "
          "add 1 -> 1/3 to NoTargetStepIntegratesAgainstUnfinishedSourceState";
   EXPECT_DOUBLE_EQ(rx.seen()[3], 2.0);  // t = 1, now causal
 }
@@ -979,10 +977,9 @@ TEST(Runner, EveryCompletedSourceStepStillReachesTheTarget) {
 ///
 /// The reduction is `BeforeTicks` and the `Sample` `AfterTicks`, so the window
 /// closes over source step 0 alone, exactly as `Instruction::src_step` says.
-/// Before R2's fix the `Sample` ran first -- lower topological rank, and a
-/// bare timestamp could not separate them -- and leaked source step 1 into a
-/// window that had already ended, delivering 0,0,6,6 where the source produced
-/// 2,4,6,8.
+/// If the `Sample` ran first -- lower topological rank, and a bare timestamp
+/// could not separate them -- it would leak source step 1 into a window that
+/// had already ended, delivering 0,0,6,6 where the source produced 2,4,6,8.
 TEST(Runner, ASampleSharingAnInstantWithAReductionDoesNotLeakIntoItsWindow) {
   auto h = build(HarnessOpts{.accum = fuse::AccumOp::Mean,
                              .src_dt = Rational{1, 2},
@@ -1019,7 +1016,7 @@ TEST(Runner, ASampleSharingAnInstantWithAReductionDoesNotLeakIntoItsWindow) {
   EXPECT_DOUBLE_EQ(rx.seen()[3], 6.0);
 }
 
-/// R2 on an ACCUMULATING channel: two target steps per period, and each
+/// The phase rule on an ACCUMULATING channel: two target steps per period, and each
 /// window's reduction must reach the target step that begins where it closes.
 ///
 /// 1/3 against 1/2 gives a period of 1, three source substeps and two target
@@ -1028,7 +1025,7 @@ TEST(Runner, ASampleSharingAnInstantWithAReductionDoesNotLeakIntoItsWindow) {
 /// divide 1/2, and that is the documented window rule ("every source step that
 /// BEGINS inside the target step"), not an artefact.
 ///
-/// On THIS schedule R2's `TickPhase` fix changed only WHO SEES the reduction,
+/// On THIS schedule the `TickPhase` rule affects only WHO SEES the reduction,
 /// not its composition: 1/3 and 1/2 share no instant below their lcm of 1, and
 /// 1 is the period here, so no `Sample` is ever stamped where a reduction is.
 /// That is a property of this pair of intervals and NOT a general one -- with a
@@ -1113,15 +1110,14 @@ TEST(Runner, ReportsANonFiniteValueProducedByAComponent) {
   EXPECT_EQ(r.error().code, "E-RT-NONFINITE");
 }
 
-// Phase 7 Task 7.5 replaced the blanket E-RT-REGION refusal of any plan with
-// an iteration region by a real implementation (src/runtime/iteration.cpp).
-// The harness declares its region with no `.until(...)`, so what initialize()
-// must now refuse is narrower and sharper: an EMPTY ConvergenceCriterion is
-// satisfied by definition (true is the identity of AND), so the region would
-// stop after one sweep and report that it converged -- an explicit scheme
-// wearing an implicit scheme's report. This is the test that proves
-// verify_iteration_region() is actually reached from initialize(); delete the
-// criterion check and it fails.
+// Iteration regions are implemented (src/runtime/iteration.cpp), not
+// blanket-refused. The harness declares its region with no `.until(...)`, so
+// what initialize() must refuse is narrow and sharp: an EMPTY
+// ConvergenceCriterion is satisfied by definition (true is the identity of
+// AND), so the region would stop after one sweep and report that it converged
+// -- an explicit scheme wearing an implicit scheme's report. This is the test
+// that proves verify_iteration_region() is actually reached from initialize();
+// delete the criterion check and it fails.
 TEST(Runner, RefusesAnIterationRegionWithNoConvergenceMeasure) {
   auto h = build(HarnessOpts{.iteration_region = true});
   ASSERT_GT(h->plan.region_count(), 0u)
@@ -1136,7 +1132,7 @@ TEST(Runner, RefusesAnIterationRegionWithNoConvergenceMeasure) {
 }
 
 // ---------------------------------------------------------------------------
-// R-10 (REVIEW.md): the iteration region's convergence decision has no
+// The iteration region's convergence decision has no
 // cross-rank agreement, so a region whose checkpointed components sit on
 // different ranks is refused rather than silently risking a hang or a wrong
 // answer under a real multi-rank run (docs/dev/invariants.md I4). This test
@@ -1147,28 +1143,25 @@ TEST(Runner, RefusesAnIterationRegionWithNoConvergenceMeasure) {
 // checkpointed components declared on different ranks) is NOT tested here:
 // Runner::Impl::attach_comm_graphs() refuses ANY base_communicator in a
 // build without FUSE_HAVE_MPI, before resolve_regions() -- and this check --
-// is ever reached (E-RT-TRANSPORT-NOMPI). Reaching the R-10 refusal needs a
+// is ever reached (E-RT-TRANSPORT-NOMPI). Reaching this refusal needs a
 // Tier 1 (FUSE_HAVE_MPI) build; see
 // test/parallel/runner_transport_test.cpp's
-// RunnerTransport.RefusesACrossRankIterationRegionUnderMpi, "Needs a host
-// run" in the report.
+// RunnerTransport.RefusesACrossRankIterationRegionUnderMpi (needs a host
+// run).
 
-// R-09 (REVIEW.md) regression guard. A component's advance() failing
-// inside an iteration region's body is already carried out correctly by
-// the PRE-EXISTING per-sweep check at the top of run_region()'s k-loop
+// Regression guard. A component's advance() failing
+// inside an iteration region's body is carried out correctly by
+// the per-sweep check at the top of run_region()'s k-loop
 // (`if (step_failure.has_value()) return f;`, right after the body's own
 // instructions execute) -- this test pins that behaviour so it cannot
-// regress. It does NOT exercise this fix's own addition: the
-// accelerator-divergence `break` (same function) skips the REST of the
-// current sweep and relies on the NEXT k-loop iteration to reach that same
-// check, which does not exist when the divergence happens to fall on the
-// last permitted sweep -- exactly the gap R-09's fix (the post-loop
-// `step_failure` check, and the matching change in step_period(),
-// runner.cpp) closes. Deterministically forcing a built-in accelerator to
-// diverge on a specific, low-iteration-count sweep was not constructed in
-// the time available; that path is verified by code inspection only (see
-// the report's "Fixed" section) and by the affected files compiling and
-// every other test in this suite still passing.
+// regress. It does NOT exercise the accelerator-divergence `break` (same
+// function), which skips the REST of the current sweep and relies on the
+// NEXT k-loop iteration to reach that same check; that iteration does not
+// exist when the divergence falls on the last permitted sweep, which the
+// post-loop `step_failure` check (and the matching handling in
+// step_period(), runner.cpp) covers. Deterministically forcing a built-in
+// accelerator to diverge on a specific, low-iteration-count sweep is not
+// constructed here; that path is not covered by a test.
 TEST(Runner, AnAdvanceFailureInsideAnIterationRegionSweepIsReported) {
   ProducerOpts po;
   po.fail_advance = true;
@@ -1188,20 +1181,18 @@ TEST(Runner, AnAdvanceFailureInsideAnIterationRegionSweepIsReported) {
   EXPECT_EQ(r.error().code, "E-TEST-ADVANCE-REFUSED") << r.error().message;
 }
 
-// N-transport-runtime-2 (REVIEW.md pass2, re-transport-runtime.md): the test
-// above pins run_region()'s PRE-EXISTING per-sweep check; it has nothing
-// downstream of the region in the same period, so it cannot tell R-09's own
-// addition -- step_period() carrying a region failure forward
-// (`i = r.exit + 1; continue;`) instead of returning straight out -- apart
-// from the pre-R-09 `return rr;` this pins against. Reverting exactly that
-// one-line change and rerunning this suite showed zero failures (pass2
-// review, confirmed again here): with a SECOND, independent channel present,
-// the reverted line returns before step_period() ever reaches that channel's
-// own instructions, abandoning them -- silent here (Tier 0 has no MPI, so
-// nothing hangs), but the abandonment itself is real and is what causes the
-// partner-rank hang under MPI (test/parallel/runner_transport_test.cpp,
-// RunnerTransport.StillRunsASecondChannelAfterARegionFailsUnderMpi -- "Needs
-// a host run").
+// The test above pins run_region()'s per-sweep check; it has nothing
+// downstream of the region in the same period, so it cannot tell
+// step_period() carrying a region failure forward
+// (`i = r.exit + 1; continue;`) apart from a plain `return rr;`.
+// Reverting exactly that one-line change shows zero failures in the test
+// above: with a SECOND, independent channel present, the reverted line
+// returns before step_period() ever reaches that channel's own
+// instructions, abandoning them -- silent here (Tier 0 has no MPI, so
+// nothing hangs), but the abandonment itself is real and is what causes
+// the partner-rank hang under MPI (test/parallel/runner_transport_test.cpp,
+// RunnerTransport.StillRunsASecondChannelAfterARegionFailsUnderMpi, which
+// needs a host run).
 //
 // linkB is declared on the SAME clock as linkA (both dt=1) but is NOT one of
 // the region's channels, so its Remap/Diagnose land BEFORE the region in the
@@ -1213,12 +1204,12 @@ TEST(Runner, AnAdvanceFailureInsideAnIterationRegionSweepIsReported) {
 // from interleaving INSIDE the region's own run, which the scheduler refuses
 // outright, E-SCHED-REGION, if the declaration order is reversed). Sink is
 // non-collective (fuse::is_collective(), op.hpp) and is skipped once
-// step_failure is set whether or not R-09's fix is present -- so what this
-// test can and does pin is that consumer_b's OWN tick (Consumer::advance(),
+// step_failure is set whether or not that carry-forward is present -- so what
+// this test can and does pin is that consumer_b's OWN tick (Consumer::advance(),
 // scheduled by absolute time and already satisfied before the region's
 // failure exists) is not retroactively undone by a later, unrelated
 // region's failure, and that the period still reports that failure.
-// The dependence rule of 2026-09-21, both halves, with the failure FIRST so
+// The dependence rule, both halves, with the failure FIRST so
 // that every other advance in the period is governed by it.
 //
 // No iteration region here on purpose. In
@@ -1411,7 +1402,7 @@ TEST(Runner, ASecondChannelStillAdvancesAfterAnUnrelatedRegionFails) {
 
 // The companion regression: every existing single-process caller -- no
 // RunnerConfig::base_communicator set at all -- must keep working exactly as
-// before. R-10's fix reads the same declared placement as the test above;
+// before. The guard reads the same declared placement as the test above;
 // only the presence of a communicator distinguishes "unverified multi-rank"
 // from "there is no second rank to desynchronise from".
 TEST(Runner, StillRunsAnIterationRegionWithNoCommunicatorConfigured) {
@@ -1425,12 +1416,12 @@ TEST(Runner, StillRunsAnIterationRegionWithNoCommunicatorConfigured) {
   // (Producer::advance() counts every re-advance, so its output keeps
   // moving) from the one this test asks, which is whether resolve_regions()
   // still accepts a declaratively cross-rank region when no communicator is
-  // configured -- exactly the R-10 fix's own guard condition.
+  // configured -- exactly the guard's own condition.
   const auto init = runner.initialize(h->components, h->registry);
   ASSERT_TRUE(init.ok()) << init.error().code << ": " << init.error().message;
 }
 
-// The refusal's OTHER precondition. R-10's guard refuses a multi-rank region
+// The refusal's OTHER precondition. The guard refuses a multi-rank region
 // only when a communicator is configured AND the accelerator's coefficient
 // would be computed from rank-local history. The test above covers the first
 // half (no communicator: accepted). This one covers the second: a region whose
@@ -1440,7 +1431,7 @@ TEST(Runner, StillRunsAnIterationRegionWithNoCommunicatorConfigured) {
 // the declared placement alone would refuse every serial run of an accelerated
 // multi-rank graph, which is how single-process development of a parallel
 // coupling is done. Without this case the mutation that removes the
-// communicator test survived (mutation gate, 2026-09-20).
+// communicator test would survive.
 TEST(Runner, AcceptsAnAcceleratedMultiRankRegionWhenNoCommunicatorIsConfigured) {
   auto h = build(HarnessOpts{
       .iteration_region = true,
@@ -1454,7 +1445,7 @@ TEST(Runner, AcceptsAnAcceleratedMultiRankRegionWhenNoCommunicatorIsConfigured) 
 }
 
 // ---------------------------------------------------------------------------
-// Spec Section 5.4, Task 5.5: which Remaps the runtime will and will not execute.
+// Spec Section 5.4: which Remaps the runtime will and will not execute.
 //
 // A `Remap` is now either real weights from `build_weights` or an identity
 // that was PROVED correct, and nothing else. The three tests below pin the
@@ -1482,9 +1473,9 @@ TEST(Runner, RemapsBetweenDifferentlySizedRegions) {
 // THE TEST THE OLD SIZE GUARD COULD NOT HAVE PASSED. The box's 24 boundary
 // faces and the line's 24 cells agree on a count and on nothing else: they are
 // different dimensions, different places, and different measures (total area 6
-// against total length 1). Until Task 5.5 that pair was accepted and
-// element-wise copied, which is the whole hazard -- equal counts are not a
-// correspondence. Now it is refused, and the message has to say why, because
+// against total length 1). Accepting and element-wise copying that pair is
+// the whole hazard -- equal counts are not a correspondence. It is refused,
+// and the message has to say why, because
 // "sizes differ" was never the reason and a user told that would go and resize
 // something.
 TEST(Runner, RefusesEqualCountRegionsThatAreNotProvablyCoincident) {
@@ -1510,11 +1501,10 @@ TEST(Runner, RefusesEqualCountRegionsThatAreNotProvablyCoincident) {
       << r.error().message;
 }
 
-// KNOWN_ISSUES D5, closed 2026-09-25: a Remap on a component's OWN
-// decomposition used to be refused (E-RT-REMAP-PLACEMENT) because
-// build_weights() read each mesh's default view. RemapPlan now carries the
-// placement and every builder resolves its sides through placed_view, so the
-// same graph initialises. That the weights really follow the placed view --
+// A Remap on a component's OWN decomposition is accepted: RemapPlan
+// carries the placement and every builder resolves its sides through
+// placed_view (rather than each mesh's default view), so the graph
+// initialises. That the weights really follow the placed view --
 // and not merely that the refusal is gone -- is asserted where the matrix can
 // be read: Supermesh.WeightsAreBuiltOnThePlacementsOwnDecomposition, with a
 // view whose numbering is reversed.
@@ -1569,7 +1559,7 @@ TEST(Runner, AcceptsARemapOnANonDefaultPlacementDecomposition) {
   bind_all(*h);
   const auto r = runner.initialize(h->components, h->registry);
   ASSERT_TRUE(r.ok()) << r.error().code << ": " << r.error().message
-                      << " -- weights are built per placement now (D5)";
+                      << " -- weights are built per placement";
   const auto ran = runner.run_period(h->components);
   ASSERT_TRUE(ran.ok()) << ran.error().code << ": " << ran.error().message;
 }
@@ -1643,7 +1633,7 @@ TEST(Runner, RefusesAnUnknownTransportBackend) {
 }
 
 // ---------------------------------------------------------------------------
-// Task 8.5: RunnerConfig::transport_setup, the hook that closes the gap
+// RunnerConfig::transport_setup, the hook that closes the gap
 // between the Runner and a transport's one-time, backend-specific setup
 // (LowFiveTransport::set_location+build_plan, MpiTransport::set_communicator+
 // build_plan) -- neither of which Transport's virtual interface can express.
@@ -1766,12 +1756,12 @@ TEST(Runner, ConservativeIdentityRemapBetweenCoincidentRegionsReportsNoError) {
   EXPECT_LT(runner.stats().worst_conservation_error, 1e-15);
 }
 
-// A NOTE ON WHAT MOVED, AND WHY.
+// A NOTE ON HOW THE CONSERVATION CHECK IS TESTED.
 //
-// Until Task 5.5 the two tests that showed the conservation check has teeth --
+// The tests that show the conservation check has teeth --
 // that it integrates against each region's own measures, and that a violation
-// can abort the run -- drove it with a box-wall-to-line identity copy whose
-// integral jumped by a factor of six. That pair no longer reaches the
+// can abort the run -- cannot drive it with a box-wall-to-line identity copy
+// whose integral jumps by a factor of six. That pair never reaches the
 // interpreter at all: it is refused at setup, by
 // RefusesEqualCountRegionsThatAreNotProvablyCoincident above, precisely
 // because copying across it was wrong. Producing a genuinely non-conservative
@@ -1781,7 +1771,7 @@ TEST(Runner, ConservativeIdentityRemapBetweenCoincidentRegionsReportsNoError) {
 // leg, where the numbers are the real ones. Nothing here is left unpinned; it
 // is pinned somewhere a real remap exists.
 
-// KNOWN_ISSUES.md D82 (owner decision 2026-10-19): an Extensive field's value
+// An Extensive field's value
 // IS the conserved amount, so the supermesh weights for an Extensive channel
 // are column-normalised and preserve the plain sum; an Intensive field is a
 // density, its weights are row-normalised and preserve the measure-weighted
@@ -1856,23 +1846,22 @@ TEST(Runner, ConservationCheckCanBeTurnedOff) {
 }
 
 // ---------------------------------------------------------------------------
-// N-transport-runtime-1 (REVIEW.md pass2), CLOSED 2026-09-25 as KNOWN_ISSUES.md
-// D10. resolve_constrain() used to REFUSE a conservation check whose Remap
-// target spans more than one rank (E-RT-CONSERVATION-MPI), because the
-// integral it builds is this rank's owned share and reducing it inside a
-// non-collective operator would hang a rank that had already failed. Constrain
-// is collective now (fuse::is_collective) and the shares are summed over the
-// base communicator, so the multi-rank target is ACCEPTED at setup.
+// resolve_constrain() accepts a conservation check whose Remap target
+// spans more than one rank: the integral it builds is this rank's owned
+// share, Constrain is collective (fuse::is_collective), and the shares
+// are summed over the base communicator, so the multi-rank target is
+// ACCEPTED at setup (reducing inside a non-collective operator would hang
+// a rank that had already failed).
 //
-// What Tier 0 can pin: that the refusal is gone -- setup with a 2-rank target
-// no longer fails on E-RT-CONSERVATION-MPI. It cannot run the reduction: with
+// What Tier 0 can pin: that setup with a 2-rank target does not fail on
+// E-RT-CONSERVATION-MPI. It cannot run the reduction: with
 // no MPI in this build, ANY base_communicator is refused one guard later
 // (attach_comm_graphs' "#if !FUSE_HAVE_MPI"), so this test configures none
-// and checks that the same graph, which used to be refused for its placement
-// alone, now initialises and its Constrain runs. The reduction itself is
-// exercised by parallel.nodal_remap_runner at 2-5 ranks, whose wall_force
-// channel is conservative onto a multi-rank target and whose OWN MPI_Allreduce
-// of the same integrals is what the Runner's verdict is checked against.
+// and checks that the graph initialises and its Constrain runs. The reduction
+// itself is exercised by parallel.nodal_remap_runner at 2-5 ranks, whose
+// wall_force channel is conservative onto a multi-rank target and whose OWN
+// MPI_Allreduce of the same integrals is what the Runner's verdict is checked
+// against.
 TEST(Runner, AcceptsAConservationCheckOnAMultiRankTarget) {
   auto h = build(HarnessOpts{.conservation = fuse::Conservation::Extensive,
                              .dst_rank_count = 2});
@@ -1881,8 +1870,8 @@ TEST(Runner, AcceptsAConservationCheckOnAMultiRankTarget) {
   bind_all(*h);
   const auto r = runner.initialize(h->components, h->registry);
   ASSERT_TRUE(r.ok()) << r.error().code << ": " << r.error().message
-                      << " -- a multi-rank conservation target is no longer refused; "
-                         "its integrals are reduced (KNOWN_ISSUES.md D10)";
+                      << " -- a multi-rank conservation target is accepted; "
+                         "its integrals are reduced";
   const auto ran = runner.run_period(h->components);
   ASSERT_TRUE(ran.ok()) << ran.error().code << ": " << ran.error().message;
   EXPECT_GE(runner.stats().conservation_checks, 1u)

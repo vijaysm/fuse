@@ -64,7 +64,7 @@ void write_stderr(const std::string& s) noexcept {
 }
 }  // namespace
 
-// REVIEW.md R-16: policy_storage() is mutated under policy_mutex() by
+// policy_storage() is mutated under policy_mutex() by
 // set_error_policy() below; a reader that returned a reference into it with
 // no lock could observe an ErrorPolicy (two std::string members) mid
 // copy-assignment -- a data race, not merely a stale-read hazard. Taking the
@@ -207,7 +207,7 @@ std::once_flag g_installed;
     write_stderr("[fuse] std::terminate called without an active exception\n  backtrace:\n" +
                  Backtrace::capture(1).format());
   }
-  // REVIEW.md R-35: chain to whatever terminate handler was installed
+  // Chain to whatever terminate handler was installed
   // before ours, rather than silently discarding it. An embedding
   // application (or a third-party library FUSE is linked into -- MOAB,
   // PETSc, Kokkos) may have installed its own handler for its own cleanup

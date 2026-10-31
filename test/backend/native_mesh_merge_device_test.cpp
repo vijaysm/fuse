@@ -1,4 +1,4 @@
-// fuse::native::device::dedup_by_gid (KNOWN_ISSUES D51): the receive-side
+// fuse::native::device::dedup_by_gid: the receive-side
 // merge decision -- which incoming global ids are already held, and which
 // ONE incoming copy of a genuinely new one is canonical -- as a Kokkos
 // kernel on Space. Cross-checked against a from-scratch reference built

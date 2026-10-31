@@ -1,4 +1,4 @@
-// KNOWN_ISSUES.md D67/D74 follow-up: the deterministic, global-id tie-break
+// The deterministic, global-id tie-break
 // for a point exactly on a shared face/edge/vertex, exercised at EVERY
 // boundary vertex of a structured mesh across several resolutions, cross-
 // checked between the two code paths that must agree on it --
@@ -142,7 +142,7 @@ class OnePoint final : public MeshView {
 /// cell (a rank-deficient Jacobian for every natural coordinate, collapsed
 /// along an off-axis diagonal so its own bounding box still varies in both
 /// x and y, exactly like `nodal_remap_distributed_nullcomm_test.cpp`'s own
-/// `ManualQuadMesh`/decoy construction for D74's distributed-side
+/// `ManualQuadMesh`/decoy construction for the distributed-side
 /// regression, `DegenerateDecoyCellDoesNotAbortAnAlreadyFoundMatch`) next to
 /// two genuine unit-square cells. `StructuredQuadMesh` cannot express this:
 /// every one of its own cells is axis-aligned and non-degenerate by
@@ -322,7 +322,7 @@ TEST(NodalTieBreak, EveryBoundaryVertexOfAStructuredMeshAtSeveralResolutionsIsSi
 }
 
 TEST(NodalTieBreak, TheMeshsOwnCornerGlobalIdZeroIsSingleOwnedAtEveryResolution) {
-  // The task's own named case: the corner vertex global id 0 specifically
+  // The corner vertex global id 0 specifically
   // -- StructuredQuadMesh numbers vertices identity (dim 0's global_id
   // returns `i`), so vertex local index 0 (physical corner (0, 0)) IS
   // global id 0 at every resolution.
@@ -376,24 +376,21 @@ TEST(NodalTieBreak, OneUlpPerturbationOfASharedInteriorVertexStillResolvesConsis
 }
 
 
-// KNOWN_ISSUES.md D74 sibling (Stage B, Nodal corner track): D74's own fix
-// (nodal_remap_distributed.cpp, build_distributed_interp_rows) made a
-// per-candidate invert_reference_map failure SKIP just that candidate
+// A per-candidate invert_reference_map failure SKIPS just that candidate
 // instead of aborting the whole evaluation point, once a broad-phase box
-// query has already narrowed the candidate set to the genuinely nearby
-// cells. The SAME fix is mirrored here for this file's other builder under
-// test, fuse::build_general_interp_weights (general_interp.hpp): its own
-// per-candidate loop, just below its own IDENTICAL box-index broad phase,
-// used to do `if (!inv.ok()) return Failure{...};` UNCONDITIONALLY -- so a
-// candidate that merely FAILS TO CONVERGE, however irrelevant, aborted the
-// whole point even after a genuine tight match was already found earlier in
-// the SAME candidate list, exactly D74's own failure mode, just triggered by
-// a NEARBY degenerate cell (one the broad phase cannot exclude, by
-// construction -- see IrregularQuadMesh's own comment above) rather than
-// D74's own FAR, unfiltered one.
+// query has narrowed the candidate set to the genuinely nearby cells
+// (nodal_remap_distributed.cpp, build_distributed_interp_rows does this, and
+// so does this file's other builder under test,
+// fuse::build_general_interp_weights, general_interp.hpp): its per-candidate
+// loop, just below its own IDENTICAL box-index broad phase, must not do
+// `if (!inv.ok()) return Failure{...};` UNCONDITIONALLY -- a candidate that
+// merely FAILS TO CONVERGE, however irrelevant, would abort the whole point
+// even after a genuine tight match was already found earlier in the SAME
+// candidate list. Here it is triggered by a NEARBY degenerate cell (one the
+// broad phase cannot exclude, by construction -- see IrregularQuadMesh's own
+// comment above).
 //
-// RED (pre-fix, Stage A's own finding, confirmed again at the top of Stage B
-// before the fix below was applied): refuses --
+// Without the skip, the builder refuses --
 //   E-INTERP-DEGENERATE: build_general_interp_weights: target point 0,
 //   candidate cell 2: invert_reference_map: the cell's Jacobian is
 //   singular to working precision (a zero-measure or degenerate cell);
@@ -401,9 +398,9 @@ TEST(NodalTieBreak, OneUlpPerturbationOfASharedInteriorVertexStillResolvesConsis
 // even though candidate cell 0 (the genuine tight match, the target
 // point's own centroid) is tested first and already satisfies tier (a).
 //
-// GREEN (post-fix): the degenerate decoy is silently skipped, exactly as
-// D74's own fix already does for build_distributed_interp_rows, and the
-// genuine tight match (cell 0) decides the row.
+// With the skip, the degenerate decoy is silently skipped, exactly as
+// build_distributed_interp_rows does, and the genuine tight match (cell 0)
+// decides the row.
 TEST(NodalTieBreak, DegenerateNearbyCandidateAbortsAnAlreadyFoundTightMatch) {
   // The EXACT construction nodal_remap_distributed_nullcomm_test.cpp's own
   // DegenerateDecoyCellDoesNotAbortAnAlreadyFoundMatch uses on the

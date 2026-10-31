@@ -1,23 +1,20 @@
 #pragma once
 
-/// KNOWN_ISSUES.md B3. The named bit assignments for the ONE 64-bit
+/// The named bit assignments for the ONE 64-bit
 /// capability space `fuse::ComponentSemantics::capabilities`,
 /// `fuse::FieldRequirement::required_capabilities` (both fuse/model/
 /// semantics.hpp) and `fuse::Component::capabilities()` (fuse/runtime/
-/// component.hpp) all carry. Before this file the space existed -- three
-/// `std::uint64_t` fields already passed it around -- but nothing named a
-/// single bit in it: `test/model/compatibility_test.cpp` sets it with
-/// literal patterns like `0b1011` because there was nothing else to set.
-/// This file is where a caller who wants to ask "does the far side support
-/// rollback" (rather than "are bits 0 and 3 set") gets a name for it.
+/// component.hpp) all carry. This file is where a caller who wants to ask
+/// "does the far side support rollback" (rather than "are bits 0 and 3
+/// set") gets a name for it.
 ///
 /// WHY ONE HEADER AND NOT TWO. `Component::capabilities()` is a runtime
 /// property (a C++ vtable call); `ComponentSemantics::capabilities` is a
 /// model-layer declaration serialized into the canonical descriptor
 /// (`serialize_component_semantics`, src/model/semantics.cpp). They are
-/// different TYPES answering different questions, but B3 asks for the
-/// bitmask a component returns to be checked against what a declared
-/// `SurrogateContract` (fuse/model/multiscale.hpp) asks about -- which only
+/// different TYPES answering different questions, but the
+/// bitmask a component returns is checked against what a declared
+/// `SurrogateContract` (fuse/model/multiscale.hpp) asks about, which only
 /// works if a bit means the same thing on both sides of that comparison.
 /// Two separately-numbered spaces could disagree with each other silently;
 /// one shared space cannot.
@@ -57,9 +54,9 @@
 ///               (`R.verify_arcs`) cannot see it. NOT itself a refusal --
 ///               `Component::save_state()`'s own contract already requires
 ///               an implementer to save such state anyway, FUSE simply
-///               cannot check that they did (see the R16 caveat there). The
+///               cannot check that they did (see the caveat there). The
 ///               bit exists so that fact can be READ rather than assumed.
-///   bit 4       kCapabilityResidual     -- S7.1's residual/linearisation
+///   bit 4       kCapabilityResidual     -- the residual/linearisation
 ///               seam: `Component::implicit()` returns a non-null
 ///               `fuse::ImplicitComponent` (fuse/runtime/component.hpp), so
 ///               `evaluate_residual()` may be called. Checked, not trusted,
@@ -70,8 +67,8 @@
 ///               call is usable for this component's own block. Independent
 ///               of bit 4: a component may answer the residual question
 ///               without ever linearising it.
-///   bit 6       kCapabilityRestartFormA -- Restart track (docs/dev/
-///               restart.md), Stage B Slice 1, owner decision 1: the
+///   bit 6       kCapabilityRestartFormA -- (docs/dev/
+///               restart.md): the
 ///               component offers `write_restart()`/`read_restart()`
 ///               (`fuse::Component`, fuse/runtime/component.hpp) keyed by
 ///               its OWN global ids, re-partitionable across a rank-count
@@ -83,13 +80,13 @@
 ///               versioned per-rank byte record, same-decomposition only.
 ///               Independent of bit 6: a component may set EITHER, or
 ///               BOTH (checked at restart-open time, not inferred from one
-///               implying the other) -- owner decision 1's "capability"
+///               implying the other) -- the capability
 ///               is this one 64-bit space carrying two independent bits,
 ///               not a three-way enum, so a future third restart form
 ///               does not have to redefine what the first two already mean.
 ///               A restart on a different rank count is refused BY NAME,
 ///               collectively, if ANY component in the graph sets bit 7
-///               without bit 6 (owner decision 1).
+///               without bit 6.
 ///   bits 8-63   reserved. Must be zero; no current caller sets or checks
 ///               them. A future bit here is additive (an old binary reading
 ///               a newer one sees zero and treats it as absent), so no
@@ -100,17 +97,12 @@
 /// DEFAULT (`capabilities() == 0`, i.e. no override at all): no rollback
 /// (correct -- see `Component::capabilities()`'s own doc comment for why),
 /// determinism UNDECLARED -- NOT `DeterminismLevel::Bitwise` -- and no
-/// hidden state. BM-9 (review 2026-10-11): this paragraph used to read
-/// "`DeterminismLevel::Bitwise` (the determinism field's zero bit
-/// pattern)", which contradicts this file's own encode/decode pair just
-/// above (raw 0 decodes to `std::nullopt`, i.e. undeclared, by design --
-/// see `decode_capability_determinism()`'s own comment for why silence
-/// must not read as the strongest claim in `DeterminismLevel`), the test
-/// that pins it (`Capabilities.ZeroDecodesToUndeclaredNotBitwise`), and
-/// `src/runtime/checkpoint_support.cpp`'s own undeclared-with-warning
-/// handling. A reader of this paragraph alone would assume silence means
-/// `Bitwise` -- the exact assumption KNOWN_ISSUES.md B3 was closed to
-/// forbid. A component that is genuinely nondeterministic (wraps an RNG,
+/// hidden state. Raw 0 decodes to `std::nullopt`, i.e. undeclared, by design
+/// (see `decode_capability_determinism()`'s own comment for why silence
+/// must not read as the strongest claim in `DeterminismLevel`; the test
+/// that pins it is `Capabilities.ZeroDecodesToUndeclaredNotBitwise`, and
+/// `src/runtime/checkpoint_support.cpp` handles undeclared with a warning).
+/// Silence must not be read as `Bitwise`. A component that is genuinely nondeterministic (wraps an RNG,
 /// calls into a library with unspecified reduction order, etc.) MUST set
 /// `kCapabilityDeterminismMask` to `encode_capability_determinism(
 /// DeterminismLevel::Nondeterministic)` explicitly, or the check in
@@ -140,7 +132,7 @@ inline constexpr std::uint64_t kCapabilityDeterminismMask =
 /// verification cannot see it (mirrors `SurrogateContract::carries_hidden_state`).
 inline constexpr std::uint64_t kCapabilityHiddenState = std::uint64_t{1} << 3;
 
-/// S7.1's residual/linearisation seam. The component additionally
+/// The residual/linearisation seam. The component additionally
 /// implements `fuse::ImplicitComponent` (fuse/runtime/component.hpp):
 /// `Component::implicit()` returns non-null, and `evaluate_residual()` can
 /// be called to get this component's own contribution to the coupled
@@ -152,11 +144,11 @@ inline constexpr std::uint64_t kCapabilityHiddenState = std::uint64_t{1} << 3;
 /// pattern `kCapabilityRollback` already follows for `supports_rollback()`.
 inline constexpr std::uint64_t kCapabilityResidual = std::uint64_t{1} << 4;
 
-/// S7.1's residual/linearisation seam. The `LinearizationToken` returned by
+/// The residual/linearisation seam. The `LinearizationToken` returned by
 /// `ImplicitComponent::linearization()` after an `evaluate_residual()` call
 /// is usable for this component's own block -- in particular its
 /// `apply_preconditioner()`, which a Newton region's block-Jacobi
-/// physics-based preconditioner (S7.2) composes from every member's own
+/// physics-based preconditioner composes from every member's own
 /// token. A region whose `IterationRegionDecl::requires_linearization_
 /// capability` is set refuses a member that does not set this bit
 /// (E-NEWTON-CAPABILITY). Independent of `kCapabilityResidual`: a component
@@ -165,12 +157,12 @@ inline constexpr std::uint64_t kCapabilityResidual = std::uint64_t{1} << 4;
 /// derivative for that component's own block.
 inline constexpr std::uint64_t kCapabilityLinearization = std::uint64_t{1} << 5;
 
-/// Restart track (docs/dev/restart.md), owner decision 1: Form A, keyed by
+/// Restart Form A (docs/dev/restart.md), keyed by
 /// the component's own global ids, re-partitionable. See the file header's
 /// BIT LAYOUT entry for bit 6.
 inline constexpr std::uint64_t kCapabilityRestartFormA = std::uint64_t{1} << 6;
 
-/// Restart track (docs/dev/restart.md), owner decision 1: Form B, an
+/// Restart Form B (docs/dev/restart.md), an
 /// opaque versioned per-rank blob, same-decomposition only. See the file
 /// header's BIT LAYOUT entry for bit 7.
 inline constexpr std::uint64_t kCapabilityRestartFormB = std::uint64_t{1} << 7;

@@ -1,10 +1,10 @@
-// Demo B producer driver (S6 phase 3, "LowFive" track). This file, unlike
+// Demo B producer driver. This file, unlike
 // producer_hdf5.cpp, IS allowed to mention the framework -- it is the FUSE
 // side of the split described in docs/user/lowfive.md: attach the
 // intercepting connector, then call into the unmodified HDF5 payload.
 //
-// Run by the ctest row example.demo_b (examples/demo_b/run_demo.sh); first
-// passed on the owner's machine 2026-10-14. See docs/user/demo-b.md.
+// Run by the ctest row example.demo_b (examples/demo_b/run_demo.sh). See
+// docs/user/demo-b.md.
 //
 // Usage: demo_b_producer <port_file> <hdf5_file> <dataset_name>
 

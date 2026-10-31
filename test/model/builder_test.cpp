@@ -1,4 +1,4 @@
-// The authoring-chain rules the charter makes binding (A1/A2, formerly U1/U2),
+// The authoring-chain rules the charter makes binding ),
 // tested here because they are invisible in an implementation that gets them
 // wrong: a builder that threw mid-chain, or returned a status nobody could
 // store, would still pass every other test in this directory.
@@ -26,7 +26,7 @@ bool has(const std::vector<std::string>& v, std::string_view code) {
   return std::find(v.begin(), v.end(), code) != v.end();
 }
 
-// A2: authoring calls return the builder, never a status, and an unhonourable
+// Authoring calls return the builder, never a status, and an unhonourable
 // instruction is RECORDED -- so a chain containing a contradiction still builds,
 // and validate() then reports that contradiction alongside every unrelated
 // defect. First-failure reporting is the behaviour being excluded.
@@ -57,7 +57,7 @@ TEST(Builder, AContradictoryChainStillBuildsAndValidateReportsEveryDefect) {
   EXPECT_GE(d.size(), 3u) << "validate reported fewer defects than the graph has";
 }
 
-// A1/A2 again, from the other side: the fluent and non-fluent spellings of the
+// The same rules from the other side: the fluent and non-fluent spellings of the
 // same graph are the same graph, which the canonical bytes are the definition of.
 TEST(Builder, FluentAndNonFluentSpellingsProduceIdenticalBytes) {
   CouplingGraph fluent;

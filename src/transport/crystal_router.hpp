@@ -23,7 +23,7 @@
 // the transport layer depend on the mesh-backend layer, breaking the "works
 // for SerialMeshBackend too, no MOAB required" property that
 // `mpi_transport.cpp` -- which also depends on no MOAB -- already has. See
-// docs/specs/2026-09-11-comm-graph-design.md Section 3.
+// docs/history/soma/specs/2026-09-11-comm-graph-design.md Section 3.
 
 #if FUSE_HAVE_MPI
 
@@ -63,7 +63,7 @@ struct Envelope {
 /// each rank sends at most `ceil(log2(P))` messages regardless of how many
 /// distinct ranks it addresses. No rank ever holds, or allgathers, the whole
 /// pattern -- which is the property `MpiTransport::build_plan`'s
-/// allgather-everything matching does not have (R24).
+/// allgather-everything matching does not have.
 ///
 /// THE PARTITION, and why the pairing is exact. Round `r` holds a contiguous
 /// rank range `[lo, hi]` (initially `[0, P-1]`), splits it at `mid` with

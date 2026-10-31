@@ -1,12 +1,12 @@
-# The Newton-Krylov seam (S7.1)
+# The Newton-Krylov seam
 
 This page documents the residual/linearisation seam a native Jacobian-free Newton-Krylov
-coupler (S7.2, a separate track) drives. S7.1 gates no correctness result of its own: it is
-the interface the solver will call, proved by the capability-rejection tests firing before
-any Newton code exists and by the fixed-point residual computing the right answer on a known
-coupled problem. The solver itself -- MFFD Jacobian action, right-preconditioned GMRES,
+coupler drives, and the solver itself (§6 onward). The seam gates no correctness result of its
+own: it is the interface the solver calls, proved by the capability-rejection tests firing
+independently of any Newton code and by the fixed-point residual computing the right answer on a
+known coupled problem. The solver -- MFFD Jacobian action, right-preconditioned GMRES,
 Eisenstat-Walker forcing, line search, convergence/divergence tests, the lagged and
-block-Jacobi preconditioners -- is appended to this page by that track, not here.
+block-Jacobi preconditioners -- is described from §6.
 
 ## 1. Two questions a component may additionally answer
 
@@ -58,8 +58,8 @@ whether the author's `implicit()` override and `capabilities()` override actuall
 `fuse::IterationRegionDecl` (`fuse/model/coupling_graph.hpp`) carries two booleans,
 `requires_residual_capability` and `requires_linearization_capability`, both defaulting to
 `false`. They are fields on the declaration, not a new `fuse::AccelKind` enumerator: the
-Newton solver itself (S7.2) adds its own `AccelKind` value and sets these flags when that
-value is chosen, which lets this track's own refusal be tested before any Newton code exists.
+Newton solver itself adds its own `AccelKind` value and sets these flags when that
+value is chosen, which lets the refusal be tested independently of any Newton code.
 
 `fuse::verify_newton_capability_support()` (declared in `fuse/ir/lowering.hpp`, implemented
 in `src/runtime/checkpoint_support.cpp`, alongside `verify_rollback_support()` -- a
@@ -84,8 +84,8 @@ The second refusal, **`E-NEWTON-SHAPE`**, is a pure function over already-known 
 `LinearizationToken`'s own `rows()`/`cols()` agree with the block sizes a region's
 interface-vector assembly derived for the component that returned it. It needs no graph, no
 `ComponentSet` and no running region, which is why it is a free function rather than folded
-into the model-level check above -- the Newton solver (S7.2) calls it once it has both a
-token and the block sizes to check it against; this track's own test calls it directly
+into the model-level check above -- the Newton solver calls it once it has both a
+token and the block sizes to check it against; its test calls it directly
 against a hand-built token of the wrong shape.
 
 ## 4. The fixed-point residual over the Runner
@@ -121,8 +121,8 @@ every block's own feed and value arc; `build-evidence/mutations/runtime.toml`'s
 **Scope.** `evaluate_region_residual()` refuses `E-NEWTON-UNSUPPORTED-REGION` for a
 window-scoped region, a region with more than one cross-rank participant, or a region with an
 externally driven member: none of those have a Picard sweep this seam can run standalone
-without reimplementing `run_region()`'s own window/parallel machinery, which is this track's
-explicit non-goal. Lifting either is the JFNK track's own work. `Runner::
+without reimplementing `run_region()`'s own window/parallel machinery, which this seam does
+not attempt. `Runner::
 region_fixed_point_residual()` additionally refuses `E-RT-REGION` for an out-of-range region
 index or before a successful `initialize()`.
 
@@ -136,7 +136,7 @@ loop gain around dirichlet -> neumann -> dirichlet that the contraction factor n
 
 ## 5. Mapping to the participant ABI
 
-No ABI entry is added by this track -- the exposure is a later step -- but nothing in the
+No ABI entry exposes the seam yet, but nothing in the
 C++ shape above blocks it. Per `docs/dev/abi-design.md`'s versioning rule, a future
 `fuse_evaluate_residual`/`fuse_apply_jacobian`/`fuse_apply_preconditioner` entry would each
 take a `struct_size`-headed argument struct (the same convention every existing ABI entry
@@ -148,15 +148,15 @@ bits cross the descriptor the same way `kCapabilityRollback` and `kCapabilityHid
 already do -- no version bump, since an old binary reading a newer one simply sees the new
 bits unset, which is the honest "does not support Newton" answer.
 
-## 6. S7.2: the native Jacobian-free Newton-Krylov solver
+## 6. The native Jacobian-free Newton-Krylov solver
 
-This section is this track's own work: `fuse::num::solve()` (`fuse/num/newton_krylov.hpp`,
+This section covers `fuse::num::solve()` (`fuse/num/newton_krylov.hpp`,
 `src/num/newton_krylov.cpp`), a matrix-free, inexact Newton-Krylov iteration on the residual
 `F` the seam above (§4) produces, with `fuse::num::line_search` (`fuse/num/line_search.hpp`,
 `src/num/line_search.cpp`) as its own pluggable strategy module. It replicates exactly six
 mechanisms from PETSc's `SNESNEWTONLS` -- the ones that make JFNK robust in practice without
 pulling in the rest of SNES's own machinery (trust region, NGMRES, nonlinear preconditioning;
-none of this track's test problems needed any of those, and none was pre-built against a need
+none of the test problems needed any of those, and none was pre-built against a need
 that was never measured).
 
 ### 6.1 The six mechanisms, and their SNES counterpart
@@ -182,7 +182,7 @@ is SNES's own default for the matching option (`-snes_atol 1e-50`, `-snes_rtol 1
 earlier draft of this page defaulted it to `1e-4` as a judgement call; SNES's own forcing
 term has no nonzero floor at all -- it can reach an exact linear solve, `eta = 0` -- so `0.0`
 is what makes this default actually BE SNES's default, with the option itself still present
-for a caller who wants a nonzero floor the task's own brief named as a possibility).
+for a caller who wants a nonzero floor).
 
 `MffdOptions::min_direction_norm` is NOT an SNES default and does not claim to be one
 (CORRECTED: an earlier draft of this page named this field `umin` and presented its default
@@ -208,13 +208,12 @@ the `Preconditioner` concept) and on nothing above it: no `fuse::runtime`, no `C
 `fuse::runtime`). `BlockJacobiPreconditioner::PreconditionerBlock::apply` is the SAME
 span-based `(std::span<const double> r, std::span<double> z) -> Result<void>` shape
 `LinearizationToken::apply_preconditioner` already uses (`fuse/runtime/component.hpp`), so a
-caller in `fuse::runtime` -- the graph-level wiring a later step of this track adds -- adapts
+caller in `fuse::runtime` -- the graph-level wiring of §7 -- adapts
 a real token into one of these blocks with a one-line lambda; `fuse::num` itself never needs
 to see the token type. The six mechanisms, their tests, and the seven hand-proven mutation
-rows (`build-evidence/mutations/num.toml`) are this file's own deliverable; wiring the
+rows (`build-evidence/mutations/num.toml`) are in `fuse::num`; the wiring of the
 solver into `Runner::Impl::run_region()`'s sweep loop and the dn_heat/Brusselator measured
-results are later sections of this same track, appended as they land. §7 below covers the
-graph-selection half of this same step.
+results are later sections. §7 below covers the graph-selection half.
 
 ## 7. Selectable from the graph
 
@@ -222,10 +221,10 @@ graph-selection half of this same step.
 `IterationRegionDecl`, decided from `AccelKind`'s own declaration site
 (`fuse/model/iteration.hpp`): the header's comment on `AccelKind::Newton` states the
 reasoning in full, repeated here because this is the place a reader comparing the two
-options would look first. In short: this page's own §1 design page (S7.1) had already
-anticipated exactly this choice -- "the Newton solver itself (S7.2) adds its own AccelKind
-value and sets these flags when that value is chosen" -- so a second enum would have
-contradicted a decision the seam's own track already made and documented; and every
+options would look first. In short: §3 already
+anticipates exactly this choice -- the Newton solver adds its own `AccelKind`
+value and sets the capability flags when that value is chosen -- so a second enum would have
+contradicted that design; and every
 consumer that already switches on `IterationRegionDecl::acceleration.kind` (the YAML
 emitter/reader's `kAccelNames` table, `fuse::descriptor`'s binary encoding, `to_cstring`,
 `make_accelerator`) only has to add ONE new case each, rather than learn a second, parallel
@@ -244,7 +243,7 @@ SNES's own (§6.2's table). Read only when `acceleration.kind == AccelKind::Newt
 newton()` both set `requires_residual_capability = true` the moment `AccelKind::Newton` is
 selected (and `requires_linearization_capability` too, when
 `NewtonConfig::use_block_jacobi_preconditioner` is set) -- a graph author cannot select
-Newton and forget the capability gate S7.1 built. The YAML reader (`fuse::from_yaml()`)
+Newton and forget the capability gate of §3. The YAML reader (`fuse::from_yaml()`)
 applies the IDENTICAL auto-trigger after parsing a region's `acceleration`/`newton_config`
 blocks, so a hand-written YAML file gets the same protection a C++-authored graph gets from
 the builder, proven by `build-evidence/mutations/model.toml`'s own
@@ -253,8 +252,7 @@ the builder, proven by `build-evidence/mutations/model.toml`'s own
 trigger and is caught only by `test/runtime/newton_region_test.cpp` or
 `test/model/yaml_io_test.cpp` respectively, confirming the two are independent code paths
 that could otherwise drift apart). `IterationBuilder::requires_residual()`/
-`::requires_linearization()` -- the fluent setters S7.1's own brief named but left for this
-track to add -- exist independently of Newton, for a region that wants the residual seam
+`::requires_linearization()` -- the fluent setters -- exist independently of Newton, for a region that wants the residual seam
 without selecting Newton at all.
 
 **The binary descriptor: `kGraphVersion` 11 -> 12.** `AccelKind::Newton` and `NewtonConfig`
@@ -294,7 +292,7 @@ A Newton-selected region bypasses `run_region()`'s own Picard sweep loop entirel
 replacing just the quasi-Newton update inside it: `Runner::Impl::run_region_newton()`
 (src/runtime/iteration.cpp) hands the WHOLE solve to `fuse::num::solve()` in one call, over an
 `evaluate` built from `Runner::Impl::evaluate_region_residual()` (the SAME side-effect-free
-`F(x) = x - G(x)` primitive S7.1 built, wrapped into `fuse::num::ResidualFn`'s `DistVector`
+`F(x) = x - G(x)` primitive of §4, wrapped into `fuse::num::ResidualFn`'s `DistVector`
 calling convention via `linalg::make_serial_exchanger()`/`make_serial_reducer()` -- Newton is
 restricted to a single cross-rank participant, so no real communication is ever injected).
 `resolve_regions()` never calls `make_accelerator()` for a Newton-selected region -- it has no
@@ -305,7 +303,7 @@ participant, no externally driven member) through one shared function,
 refused with `E-NEWTON-UNSUPPORTED-REGION` at `initialize()` rather than at the first period.
 
 **The verification sweep.** Once `fuse::num::solve()` returns, `evaluate_region_residual()`
-gains a `commit` parameter (default `false`, S7.1's own original meaning: restore everything
+takes a `commit` parameter (default `false`: restore everything
 this call touched, so repeated evaluations are side-effect free). `run_region_newton()` calls
 it exactly once more, with `commit = true`, at the converged iterate -- the SAME deliver/
 advance/execute-body sequence every other evaluation performed, except the restore at the end
@@ -317,16 +315,15 @@ partial advance in place.
 **Non-convergence** is reported the same way the Picard path's own `E-RT-NOCONVERGE` is, naming
 the region and, in addition, Newton's own `NewtonStatus` code
 (`build-evidence/mutations/runtime.toml`'s `newton-nonconvergence-not-reported` row proves this
-check is load-bearing). The block-Jacobi preconditioner hook (Step 1's own mechanism) is wired
-as far as `NewtonConfig::use_block_jacobi_preconditioner` -- neither dn_heat test in this track
+check is load-bearing). The block-Jacobi preconditioner hook (§6's mechanism) is wired
+as far as `NewtonConfig::use_block_jacobi_preconditioner` -- neither dn_heat test
 sets it, so `precond_apply`/`refresh_precond` both stay `nullptr` (the plain, unpreconditioned
 matrix-free iteration); composing one from each region member's own `LinearizationToken` across
-blocks that are not one-per-component, in general, is open scope, recorded in this track's own
-report.
+blocks that are not one-per-component, in general, is open scope.
 
 ### 8.2 Measured: one Newton step is not what SNES's own defaults give
 
-The task's own assumption -- "Newton converges in ONE Newton step" on dn_heat's affine map --
+The expectation that Newton converges in ONE Newton step on dn_heat's affine map
 does not hold under SNES's own default Eisenstat-Walker forcing (`eta_initial = 0.3`). MEASURED
 (`NewtonRegion.ConvergesInThreeNewtonStepsOnTheAffineProblemUnderEwForcing`,
 test/runtime/newton_region_test.cpp): `eta_0 = 0.3` deliberately stops the FIRST linear solve at
@@ -336,16 +333,15 @@ Newton steps are needed (`||F||`: 765.78 -> 68.77 -> 0.288 -> 2.6e-8). This is t
 Newton behaviour -- trading a cheap, loose early linear solve against one or two more nonlinear
 steps overall -- not a defect, and it is exactly what Eisenstat & Walker's own forcing exists to
 do. A `NewtonConfig` with a tighter/near-exact constant forcing term would converge in fewer
-steps, at the cost of more GMRES work on each one; that trade is not this track's own default.
+steps, at the cost of more GMRES work on each one; that trade is not the default.
 
 ### 8.3 The nonlinear variant, and the quadratic rate measured
 
-`DirichletSlab` (examples/dn_heat/dn_component.hpp) gained a nonlinear conductivity,
+`DirichletSlab` (examples/dn_heat/dn_component.hpp) has a nonlinear conductivity,
 `k1_eff(i, T) = k1_at(i, n) * (1 + beta * (T - t_ref) / t_ref)`, `T` the local wall temperature
 being solved for (`u_in_[i]`, or `interface_in[i]` inside `evaluate_residual()` -- the two
 compute the identical formula, duplicated rather than shared, because `evaluate_residual()`'s
-own contract forbids the mutation `advance()` is free to do). `beta = 0.0`, every existing call
-site's own default, makes `k1_eff` reduce to `k1_at(i, n) * 1.0` EXACTLY -- measured directly,
+own contract forbids the mutation `advance()` is free to do). `beta = 0.0`, the default, makes `k1_eff` reduce to `k1_at(i, n) * 1.0` EXACTLY -- measured directly,
 `Dn.NonlinearAtBetaZeroIsBitIdenticalToTheAffineMap` -- so every mode this project already ships
 (picard, aitken, iqn-ils, iqn+qr2, severed) is unaffected.
 
@@ -357,17 +353,16 @@ own working temperatures, so the worst case is `0.96 * 1.03 < 1`) and a near-exa
 under-solving, §8.2 above): `||F||` = 7.284e+02, 8.823e+01, 7.762e-01, 5.659e-05. Fitting
 `q_k = log(||F_{k+1}||/||F_k||) / log(||F_k||/||F_{k-1}||)` over the two triples both still above
 a `1e-10 * ||F_0||` round-off floor: `q_1 ~= 2.24`, `q_2 ~= 2.01` -- **order 2.0 +- 0.24**, the
-spread this track measured rather than assumed. (The run stops at `rtol = 1e-4` rather than
+spread measured rather than assumed. (The run stops at `rtol = 1e-4` rather than
 SNES's own default `1e-8`: reaching `1e-8` from here needs a near-machine-precision LAST linear
 solve this unpreconditioned, matrix-free iteration cannot complete within a sane GMRES budget --
 not a defect in Eisenstat-Walker or GMRES, the ordinary cost of the last couple of orders of
 magnitude with no preconditioner, recorded as an open question: a physics-based block-Jacobi
 preconditioner is the mechanism that would make that last solve cheap.)
 
-### 8.3b A bookkeeping-only defect found and fixed while measuring 8.3
+### 8.3b A bookkeeping invariant: the generic first tick
 
-Measuring §8.3 surfaced a genuine, if numerically harmless, defect in
-`run_region_newton()`'s very first version: `step_period()`'s own top comment
+`run_region_newton()` must undo the generic first tick. `step_period()`'s own top comment
 (src/runtime/runner.cpp) states that by the time control reaches ANY region,
 every participant has already been advanced once by the generic per-period
 tick walk, and `checkpoint_regions()` saves BEFORE that tick specifically so
@@ -375,25 +370,25 @@ a Picard sweep loop's own repeated `restore_state()` calls -- which all
 target `checkpoint_regions()`'s own save point -- undo it along with every
 sweep's own advance. `evaluate_region_residual()`'s own save/restore is
 self-referential: every call restores to what IT most recently saved, never
-to `checkpoint_regions()`'s earlier point. A Newton-selected region therefore
-never undid that first generic tick, and the verification sweep's one
-committed advance landed on top of it: two real advances baked into
-persisted state per period instead of one. MEASURED directly: `dn::
+to `checkpoint_regions()`'s earlier point. Without an explicit restore, a Newton-selected region would
+never undo that first generic tick, and the verification sweep's one
+committed advance would land on top of it: two real advances baked into
+persisted state per period instead of one. This was measured directly: `dn::
 DirichletSlab::history()`/`dn::NeumannSlab::history()` (private, checkpointed
 accumulators the project's own contract -- dn_component.hpp -- states read
 "P exactly" after P coupling cycles) read 40 after 20 periods, not 20.
 
-Numerically harmless: `q_`/`u_` are overwritten from scratch by the LAST
+This is numerically harmless: `q_`/`u_` are overwritten from scratch by the LAST
 (committed) `evaluate_region_residual()` call regardless of what the extra,
 un-rolled-back tick left them at, and the L2-error and beta=0 bit-identical
-gates already in this track's own tests did not move. But `history()`'s own
+gates did not move. But `history()`'s own
 contract is a real invariant examples/dn_heat/main.cpp's own picard/aitken/
-iqn-ils gates already read for every other row, and a Newton-selected
+iqn-ils gates read for every other row, and a Newton-selected
 region silently breaking it is exactly the kind of defect a byte-level
-rollback/bookkeeping discipline exists to catch. Fixed by adding one
+rollback/bookkeeping discipline exists to catch. `run_region_newton()` therefore makes one
 `restore_state()` call over `R.component_slots`, right after seeding `x`
 (already a COPY at that point, so the restore cannot perturb Newton's own
-seed) and before calling `fuse::num::solve()` -- `NewtonRegion.
+seed) and before calling `fuse::num::solve()`. `NewtonRegion.
 HistoryAccumulatesExactlyOncePerPeriodNotTwice` (test/runtime/
 newton_region_test.cpp) is the regression test, and `build-evidence/
 mutations/dn-heat.toml`'s own `dn-heat-newton-generic-tick-restore-removed`
@@ -401,9 +396,9 @@ row hand-proves the fix is load-bearing.
 
 ### 8.4 The line search, shown to engage and recover on dn_heat itself
 
-Step 1's own `NewtonKrylovLineSearch.BtEngagesAndRecoversOnAPoorInitialGuess`
+`NewtonKrylovLineSearch.BtEngagesAndRecoversOnAPoorInitialGuess`
 (test/num/newton_krylov_test.cpp) proves the MECHANISM on a synthetic problem designed to need
-it (`atan`'s own saturating tail). This track's own
+it (`atan`'s own saturating tail). 
 `NewtonRegion.LineSearchEngagesAndRecoversFromADeliberatelyPoorGuess`
 (test/runtime/newton_region_test.cpp) shows the mechanism is correctly REACHED through the real
 runtime wiring on dn_heat itself: `beta = 2.0` and `NeumannSlab`'s own initial interface
@@ -413,33 +408,22 @@ once read, reproduced twice): the first step (`k = 0`) is a full step (`lambda =
 `||F||` 765.78 -> 193.05); the SECOND step's own full Newton step is rejected by Armijo and BT
 backtracks to `lambda = 0.025` after 4 trials (`||F||` -> 189.01 -- genuine recovery, not a free
 ride); every step after that takes a full step again, and the iteration converges in 7 total
-steps (`||F||` -> 7.98e-4). `IterationStats` (fuse/runtime/runner.hpp, outside this track's own
-file ownership) carries `residual_history` but not a per-step accepted lambda, so the lambda
+steps (`||F||` -> 7.98e-4). `IterationStats` (fuse/runtime/runner.hpp) carries `residual_history` but not a per-step accepted lambda, so the lambda
 values themselves are recorded here as a measurement rather than asserted on directly through
 the public `Runner` API; what the test DOES assert is that the run converges (a line-search
 failure the solver cannot recover from reports `NewtonStatus::DivergedLineSearch` instead,
 caught the same way the non-convergence test above catches `DivergedMaxIterations`) and needs
 more than the affine problem's own one-Newton-step case.
 
-## 9. Newton over a coupling window -- design (Stage A), IMPLEMENTED (Stage B, 2026-10-11)
+## 9. Newton over a coupling window
 
-This section began as the WindowNewton track's own Stage A: a design,
-bounded by measurement, for lifting `check_region_supports_newton()`'s
-`E-NEWTON-UNSUPPORTED-REGION` refusal on a window-scoped region
-(`fixed_point_residual.cpp`'s own header comment: "Lifting either is
-follow-on work for the JFNK track (S7.2), not this seam"; `newton_krylov.hpp`'s
-`BlockJacobiPreconditioner` comment names the identical boundary: "a
-cross-rank block-Jacobi preconditioner is a later step's work, once the
-fixed-point residual itself is lifted to a window-scoped, multi-participant
-region"). Sec. 9.1-9.8 below are Stage A's own text, UNCHANGED (the lead's
-own instruction: "keep measurements") -- every claim in them was either a
-line-numbered citation of the window path as it stood before Stage B, or a
-number measured against the UNMODIFIED Brusselator example at Stage A time.
-**Stage B (2026-10-11) built the design Sec. 9.1-9.7 describes**, against
-the SAME checkout (`bbe1a1a` at Stage A time); Sec. 9.9 below is the new,
-Stage-B-only section recording what was actually built, the four open
-questions' own resolutions, and the measurements taken against the NOW
-Newton-capable Brusselator example.
+This section describes how `check_region_supports_newton()`'s
+`E-NEWTON-UNSUPPORTED-REGION` refusal was lifted for a window-scoped region: the design
+(Sec. 9.1-9.8), bounded by measurement, and what was built and measured against the
+Newton-capable Brusselator example (Sec. 9.9-9.10). Sec. 9.1-9.8 keep the design-time
+measurements and line-numbered citations of the window path as it stood when the design was
+written, against an unmodified Brusselator example; the line numbers are therefore indicative,
+not current.
 
 ### 9.1 What `x` is
 
@@ -555,7 +539,7 @@ notion of `Runner::Impl`'s own per-node maps at all). Enumerated against
 | `slots[b.feed_arc]` (the consumer's own `window_import` storage, i.e. `cfg.required`'s backing arc) | the compiled Sink, inside the region body (`b.sink_instruction`) | NO (not a component) | YES, mirrored from the ordinary seam's identical snapshot/restore of `feed_arc`/`value_arc` -- this is where `G(x)` is read back after the body executes |
 | `R.carried_arcs` | region body | same as ordinary | reuse as-is |
 
-**The Seam track's own lesson applies again, pre-emptively.** The first
+**The ordinary seam's lesson applies again.** The first
 version of `evaluate_region_residual()` under-covered the checkpoint set by
 one category (feed/value arcs) and a test caught it; this table identifies
 SIX categories of Runner-owned, non-component state a window sweep touches
@@ -638,8 +622,7 @@ start somewhere else (e.g. the previous window's own converged state, with
 no extrapolation): the predictor path and the "deliver an arbitrary x0"
 path are two different code shapes in `advance_window()` today
 (`use_predictor` true vs. false), and only the FIRST is reachable at
-`iteration == 0`. The design choice this track proposes (open question,
-Sec. 9.8): seed Newton's `x_0` from the SAME predictor-extrapolated vector
+`iteration == 0`. The design choice (Sec. 9.8): seed Newton's `x_0` from the SAME predictor-extrapolated vector
 `advance_window(iteration=0)` already computes internally -- i.e., call it
 once with `iteration = 0` and `x` not yet known, read back what it wrote
 into the export buffer as `x_0`'s block for that member -- rather than
@@ -689,18 +672,15 @@ residuals()`/`gather_window_block_samples()` use point-to-point addressing
 over `part[]` rather than a sub-communicator built from it,
 `runner.cpp:2596-2601`'s own "WHY NOT A SUB-COMMUNICATOR" --
 `MPI_Comm_free` is collective and ties a communicator's lifetime to the
-Runner's own, which this track inherits rather than re-litigates). The
+Runner's own, which this design inherits). The
 window-Newton lift therefore needs a NEW `Reducer` implementation --
 call it `ParticipantSetReducer` for this discussion -- that performs
 `sum`/`max`/`allgather` via the SAME `epoch_schedule()`-driven
 point-to-point exchange `gather_window_block_samples()` already proves
 correct over `R.participants`, not a call to `make_mpi_reducer()`. This is
-a NEW class, not a config choice between two existing `Reducer`s -- flagged
-here rather than left implicit, because it is schedulable, bounded work
+a NEW class, not a config choice between two existing `Reducer`s -- bounded work
 (one class implementing four virtual methods against an already-proven
-communication pattern) but it is not nothing, and Stage B's own scope
-should name it as a deliverable if the lift is approved for this step
-rather than deferred.
+communication pattern) but not nothing.
 
 ### 9.5 The block preconditioner
 
@@ -736,7 +716,7 @@ term is EXPLICIT in both species (`UComponent`'s own file header: "q...
 enters explicitly... keeping U's own linear system LINEAR"; `species_core.
 hpp`'s own `DiffusionSolver` comment: "a right-hand side that changes every
 step", the FACTORIZATION itself depending only on `dt`/`diffusion`, never
-on the coupling term). The honest answer the task anticipates: **the
+on the coupling term). The honest answer: **the
 preconditioner acts PER SAMPLE, through the species' own already-factored
 solve, treating each of the window's `n_sub` output samples as
 independently preconditioned by ONE application of that species' own
@@ -747,7 +727,7 @@ perturbation) and keeps only each sample's own LOCAL diffusion response.
 This is a real approximation, not the exact diagonal block `Linearization
 Token::apply_preconditioner`'s own ordinary-region contract describes (that
 contract is ONE `evaluate_residual()` call at a frozen time level; a window
-member's own residual is `n_sub` chained calls, which S7.1's
+member's own residual is `n_sub` chained calls, which the
 `ImplicitComponent` interface -- built for the single-clock case -- does
 not describe at all). Concretely: `PreconditionerBlock::apply(r, z)` for
 species `i`'s own block calls the identical `DiffusionSolver::solve()`
@@ -776,11 +756,10 @@ same order as a full window advance -- consistent with its purpose
 (reducing the NUMBER of GMRES iterations needed per Newton step), not with
 replacing Picard's own per-sweep cost.
 
-### 9.6 Measurements taken, no library change
+### 9.6 Measurements taken before the lift
 
-All of the following were measured this session against the unmodified
-`examples/brusselator` binary, built at `/tmp/winnewton/b0` (tier 0,
-`-DCMAKE_BUILD_TYPE=Debug`) from this checkout; every number below is from
+All of the following were measured against the unmodified
+`examples/brusselator` binary (tier 0, `-DCMAKE_BUILD_TYPE=Debug`); every number below is from
 that binary's own stdout/`windows.csv`, not estimated.
 
 **Picard (`--accel none`) sweep counts, `--driver runner`, defaults
@@ -790,19 +769,18 @@ approaches its own slowly-decaying transient (confirmed over `--end 1.0`,
 50 windows: the count decreases monotonically from 12 to 7 and stays
 there). Byte-identical between `--driver window` and `--driver runner` at
 every window (both print `max_iterations=12`, identical `windows.csv`
-columns) -- the two drivers agree on Picard exactly, as Conformance
-Units 1/2 already established.
+columns) -- the two drivers agree on Picard exactly, as [](conformance.md) establishes.
 
-**Aitken (`--accel aitken`) reproduces KNOWN_ISSUES D17 exactly.**
+**Aitken (`--accel aitken`) is unstable on this graph.**
 `--driver window --accel aitken --end 0.1`: converges windows 0-1 (16, 16
 sweeps), then FAILS at window index 2 (`t=0.060000`) after the full 60-
-sweep budget -- the identical failure D17 records at `--end 0.5`.
+sweep budget -- the same failure seen at `--end 0.5`.
 `--driver runner --accel aitken --end 0.1`: converges throughout, but the
 sweep count GROWS every window rather than settling -- 16, 17, 24, 28, 31
 -- where Picard's own count over the SAME five windows DECREASES (12, 12,
 9, 9, 9). Aitken is measurably getting WORSE, window over window, on a
 problem Picard itself finds easier over time. This is the clearest
-evidence this session has for Newton's OWN value proposition on this
+evidence for Newton's OWN value proposition on this
 example: not "fewer sweeps than Picard" (Picard is already cheap and
 improving here) but "robust where a quasi-Newton accelerator is not" --
 Aitken's own instability (not merely slowness) on the IDENTICAL graph and
@@ -812,7 +790,7 @@ TRUE Jacobian, not to a rank-1 secant update's own history-dependent
 coefficient).
 
 **No Picard-diverges-or-crawls case was found within the CLI-exposed
-parameter space.** Swept this session: `--window` from 0.02 to 1.0 (12,
+parameter space.** Swept: `--window` from 0.02 to 1.0 (12,
 18 [0.08], 20 [0.16], 26 [0.32], 28 [0.5], 32 [1.0] sweeps -- sub-linear
 growth, no divergence); `--alpha` (diffusion) from 10 to 200 at the
 default window (NO measurable change in sweep count at all -- 12, 12, 9,
@@ -825,10 +803,9 @@ the Brusselator example's own CLI does not expose `WaveformIteration`
 `Jacobi` and is never threaded through `main.cpp`'s argument parser), and
 GaussSeidel -- or a deliberately stiffer reaction constant (`A`/`B` are
 compiled in at `3.4`/`1`, not CLI-tunable either) -- is the more likely
-place Picard's own contraction factor would exceed 1, given that D17
-already shows GaussSeidel-adjacent instability (Aitken diverging under
-the direct `WindowCoupler` driver). **Proposed Newton test case** (for
-Stage B, pending a code change this Stage does not make): add a
+place Picard's own contraction factor would exceed 1, given that Aitken is already
+unstable under the direct `WindowCoupler` driver. **Proposed Newton test case**
+(pending a code change): add a
 `--iteration-mode jacobi|gauss-seidel` flag to `examples/brusselator/
 main.cpp` (a two-line change, threading `WaveformIteration` through to
 `add_window_coupling()`'s existing parameter) and measure Picard/Aitken/
@@ -838,7 +815,7 @@ contraction past 1 (plausible: GaussSeidel's own per-sweep update is a
 STRONGER, not weaker, coupling than Jacobi's, since the unlagged member
 sees the OTHER member's freshest value within the same sweep), that is
 the named Newton case; if it does not, the search continues from there
-rather than from a parameter this session already ruled out.
+rather than from a parameter already ruled out.
 
 **F-evaluation count, relative to Picard's own measured sweep counts.** A
 Newton step needs one `F(x_k)` evaluation, `GMRES`'s own iteration count
@@ -858,13 +835,13 @@ search trials), each `F` evaluation costing roughly what one Picard sweep
 costs (one full window advance of both species). Against Picard's OWN
 measured 9-12 sweeps at the SAME defaults, Newton is therefore PLAUSIBLY
 MORE EXPENSIVE in raw evaluation count on this well-behaved problem --
-consistent with Sec. 9.5's own conclusion and with the task's own
-expectation: Newton's value here is robustness where Picard's contraction
+consistent with Sec. 9.5's own conclusion:
+Newton's value here is robustness where Picard's contraction
 factor is poor (Sec. 9.6's own GaussSeidel proposal) or where a
 quasi-Newton accelerator is unstable (Aitken, measured above), not raw
 sweep count on a problem Picard already handles cheaply.
 
-### 9.7 Test plan, and the files Stage B would touch
+### 9.7 Test plan
 
 **Serial tests pinning Sec. 9.2's re-enterability claim** (new file,
 `test/runtime/window_fixed_point_residual_test.cpp`, mirroring `test/
@@ -907,114 +884,44 @@ runtime/fixed_point_residual_test.cpp`'s own structure):
    standing mutation discipline).
 
 **Brusselator comparison table** (extends `test/verification/brusselator_
-*_test.cpp`, Stage B's own addition): Picard/Aitken/Newton sweep (or
-Newton-step) counts and final `mean_u`/`mean_v` at the SAME defaults this
-session measured, plus the GaussSeidel case Sec. 9.6 proposes once its
-own CLI flag exists, with Newton's own quadratic rate measured the same
+*_test.cpp`): Picard/Aitken/Newton sweep (or
+Newton-step) counts and final `mean_u`/`mean_v` at the SAME defaults
+measured above, plus the GaussSeidel case Sec. 9.6 proposes, with Newton's own quadratic rate measured the same
 way Sec. 8.3 measures it for dn_heat (`q_k` fit over the trailing triples
 of `||F||` still above the `1e-10 * ||F_0||` floor).
 
-**Files Stage B would touch**, if the lead approves this design:
-`src/runtime/iteration.cpp` (`check_region_supports_newton()`'s
-window-scoped refusal narrowed to multi-participant/externally-driven only;
-a new `run_region_newton_window()` sibling to `run_region_newton()`; the
-`x`-block selection of Sec. 9.1 inside a new `evaluate_window_region_
-residual()` sibling to `evaluate_region_residual()`), `src/runtime/
-runner_impl.hpp` (declarations for the above, plus whatever accessor Sec.
-9.7's white-box tests need), `src/linalg/comm_mpi.cpp` and `include/fuse/
-linalg/comm.hpp` (the `ParticipantSetReducer` of Sec. 9.4, if the lead
-wants the multi-rank hook built now rather than left for a later step --
-Sec. 9.8's own open question), `examples/brusselator/species_component.hpp`
-(the `ImplicitComponent` seam, Sec. 9.5 -- note this needs a WINDOW-aware
-residual/linearisation shape S7.1's own `ImplicitComponent` does not
-provide today, Sec. 9.8's own second open question), `examples/brusselator/
-species_core.hpp` (exposing `DiffusionSolver` through a const accessor for
-the preconditioner block), `examples/brusselator/main.cpp` (`--accel
-newton`, and the `--iteration-mode` flag Sec. 9.6 proposes),
-`test/runtime/window_fixed_point_residual_test.cpp` (new, Sec. 9.7),
-`test/verification/brusselator_species_core_decomposition_test.cpp` (one
-Newton case at 2 partitions, per the task's own brief), `build-evidence/
-mutations/{runtime,brusselator}.toml` (new rows), `docs/user/
-brusselator.md` (Newton results).
+### 9.8 Design decisions
 
-### 9.8 Open questions for the lead
+1. **Newton's `x_0` on a window instance's first sweep** (Sec. 9.3) seeds from
+   `advance_window(iteration=0)`'s own predictor output -- no new code path in
+   `advance_window()` itself, only in the residual-function wrapper around it -- rather than a
+   second, caller-chosen-`x0` code path inside `advance_window()` alongside the existing
+   predictor. The alternative would let Newton start from an arbitrary seed on the very first
+   sweep, at the cost of a second branch in already-dense, heavily-commented code.
+2. **The `ParticipantSetReducer` of Sec. 9.4** is new code, not a configuration choice between
+   two existing `Reducer`s. The single-rank window path has the Reducer SEAM
+   (`RegionRuntime::newton_reducer`, `R.participants.size() <= 1`) so the multi-rank lift is a
+   Reducer swap, not a re-plumb; the cross-rank body is Sec. 9.10.
+3. **A window member's residual/linearisation** (Sec. 9.5) is not described by
+   `ImplicitComponent`: `evaluate_residual()` is one call, at a frozen time level, for an ordinary
+   region; a window member's own residual is `n_sub` chained `advance()` calls.
+   `species_component.hpp` builds its own `fuse::LinearizationToken` directly on
+   `UComponent`/`VComponent` -- NOT an `ImplicitComponent` extension;
+   `ImplicitComponent::evaluate_residual()` on a window member is interpreted as computing `G`
+   alone (this member's own exported block from its own window of substeps), not `x - G`,
+   following `dn_component.hpp`'s `DirichletSlab::evaluate_residual()` precedent -- never called
+   by this seam's own runtime wiring either way (Sec. 9.9.3).
+4. **The Newton test case.** No Picard-divergent case exists in CLI-reachable parameter space
+   (Sec. 9.6); an `--iteration-mode` CLI flag was added to the example, and the Newton test case
+   is "every window converges where Aitken's instability does not" (Sec. 9.9.4), not a
+   Picard-divergent one.
 
-1. **Newton's `x_0` on a window instance's first sweep** (Sec. 9.3): seed
-   it from `advance_window(iteration=0)`'s own predictor output (this
-   track's proposal -- no new code path in `advance_window()` itself,
-   only in the new residual-function wrapper around it) rather than adding
-   a second, caller-chosen-`x0` code path inside `advance_window()`
-   alongside the existing predictor. The alternative (a real second path)
-   would let Newton start from an arbitrary seed on the very first sweep,
-   at the cost of a second branch in already-dense, heavily-commented
-   code the Seam/Time-windows tracks fought hard to get right.
-2. **The `ParticipantSetReducer` of Sec. 9.4** is new code, not a
-   configuration choice between two existing `Reducer`s -- should Stage B
-   build it now (so the multi-rank lift truly is "flip the Reducer" when
-   it comes), or defer it and ship Stage B single-rank only (`R.
-   participants.size() <= 1`, mirroring `check_region_supports_newton()`'s
-   OWN existing restriction for an ordinary Newton region), leaving the
-   Reducer for the step that actually exercises 2-3 ranks on the host?
-   This track's recommendation is to defer it: nothing in Sec. 9.1-9.3's
-   design depends on it, and building a communication primitive with no
-   host-side test able to exercise it (this sandbox cannot run `mpiexec`,
-   per the standing rules) risks the SAME kind of unverified-until-the-
-   host-runs defect `KNOWN_ISSUES.md` D24 and D20 both describe.
-3. **S7.1's `ImplicitComponent` interface does not describe a window
-   member's own residual/linearisation** (Sec. 9.5): `evaluate_residual()`
-   is one call, at a frozen time level, for an ordinary region; a window
-   member's own residual is `n_sub` chained `advance()` calls. This design
-   does NOT propose extending `ImplicitComponent` itself (out of this
-   track's own file ownership, `fuse/runtime/component.hpp`) -- it
-   proposes that `species_component.hpp` builds its OWN `LinearizationToken`-
-   shaped object directly, outside the `Component::implicit()` query
-   entirely, read only by the window-Newton seam's own block-Jacobi
-   wiring (a narrower, example-local interface, not a library-wide one).
-   The lead may prefer the opposite: extend `ImplicitComponent` with a
-   window-aware residual method now, so a FUTURE window-Newton component
-   (not just the Brusselator's own species) gets the same seam S7.1 built
-   for the ordinary case. This track did not have evidence (a second
-   window-Newton use case) to justify that generalisation yet.
-4. **The GaussSeidel/stiff-parameter Newton test case** (Sec. 9.6) needs a
-   code change (an `--iteration-mode` CLI flag) this Stage does not make.
-   Confirm before Stage B whether adding that flag is in scope for this
-   step, or whether the Newton case should instead be a NEW, purpose-built
-   test fixture (smaller, hand-constructed, not the Brusselator example)
-   where a divergent Picard contraction factor can be set directly rather
-   than searched for.
-
-**RESOLVED (lead's go-ahead, 2026-10-11) -- see Sec. 9.9 for what each
-decision actually produced:**
-1. ACCEPTED as proposed: `x_0` seeds from `advance_window(iteration=0)`'s
-   own predictor output.
-2. DEFERRED at Stage B time: single-rank only (`R.participants.size() <=
-   1`); the Reducer SEAM was built (`RegionRuntime::newton_reducer`) so a
-   later multi-rank step would be a Reducer swap, not a re-plumb.
-   **Built, Sec. 9.10 (2026-10-12):** the reducer's own cross-rank body
-   (`fuse::linalg::ParticipantSetReducer`) -- exactly the swap Stage B's
-   own seam was designed for, confirmed by how little of `run_region_
-   newton_window()` itself needed to change.
-3. `species_component.hpp` builds its own `fuse::LinearizationToken`
-   directly on `UComponent`/`VComponent` (the library-wide `fuse::
-   LinearizationToken`, not a narrower example-local shape) -- NOT an
-   `ImplicitComponent` extension; `ImplicitComponent::evaluate_residual()`
-   on a window member is interpreted as computing `G` alone (this
-   member's own exported block from its own window of substeps), not
-   `x - G`, following `dn_component.hpp`'s own `DirichletSlab::
-   evaluate_residual()` precedent -- never called by this seam's own
-   runtime wiring either way (Sec. 9.9.3).
-4. No Picard-divergent case was found in CLI-reachable parameter space
-   (Stage A's own finding, Sec. 9.6); the `--iteration-mode` CLI flag WAS
-   added (in scope after all), and the Newton test case became "every
-   window converges where Aitken's own D17 instability does not"
-   (Sec. 9.9.4), not a Picard-divergent one.
-
-### 9.9 Stage B record (2026-10-11): what was built, and what was measured
+### 9.9 What was built, and what was measured
 
 **Implementation.** `Runner::Impl::run_region_newton_window()`/
-`evaluate_window_region_residual()` (src/runtime/iteration.cpp, new,
-alongside the existing `run_region_newton()`/`evaluate_region_residual()`
-the ordinary seam already had) do exactly what Sec. 9.1-9.5 describe:
+`evaluate_window_region_residual()` (src/runtime/iteration.cpp,
+alongside `run_region_newton()`/`evaluate_region_residual()`,
+the ordinary seam) do exactly what Sec. 9.1-9.5 describe:
 `check_region_supports_newton()`'s window-scoped refusal narrowed to the
 two checks it shares with the ordinary seam (participant count,
 externally-driven members); the window-Newton interface vector built
@@ -1026,13 +933,12 @@ coroutine-constraint finding held); the Sec. 9.5 block preconditioner via
 a `fuse::LinearizationToken` on `UComponent`/`VComponent` directly
 (`apply_jacobian`/`apply_jacobian_transpose` refuse `E-NEWTON-NO-JACOBIAN-
 ACTION`, never called by this seam's own MFFD-based Jacobian action).
-`examples/brusselator/main.cpp` gained `--accel newton`, `--iteration-mode
+`examples/brusselator/main.cpp` has `--accel newton`, `--iteration-mode
 {jacobi,gauss-seidel}`, and `--no-block-jacobi`.
 
-**File list correction against Sec. 9.7's own prediction.** Two files
-needed touching beyond that list, for reasons only visible once the wiring
-was actually built: `examples/brusselator/brusselator_graph.hpp`
-(`add_window_coupling()` needed a trailing `NewtonConfig` parameter and
+**Supporting files.** Beyond the files Sec. 9.1-9.7 anticipate, two more are involved:
+`examples/brusselator/brusselator_graph.hpp`
+(`add_window_coupling()` takes a trailing `NewtonConfig` parameter and
 the `requires_residual_capability`/`requires_linearization_capability`
 auto-trigger `IterationBuilder::newton()` already does for a graph built
 through that builder -- `add_window_coupling()` builds its
@@ -1040,10 +946,9 @@ through that builder -- `add_window_coupling()` builds its
 from) and `include/fuse/runtime/runner.hpp`/`include/fuse/runtime/
 fixed_point_residual.hpp` (two new TEST/DIAGNOSTIC-ONLY public accessors,
 `Runner::window_region_fixed_point_residual()`/`debug_window_member_
-snapshots()`, mirroring `region_fixed_point_residual()`'s own S7.1
-precedent for the window seam -- Sec. 9.7's own test plan needed SOME way
-to drive `evaluate_window_region_residual()` from outside `Runner::Impl`,
-and no such door existed yet).
+snapshots()`, mirroring `region_fixed_point_residual()` for the window seam -- the
+test plan of Sec. 9.7 needs a way to drive `evaluate_window_region_residual()` from outside
+`Runner::Impl`).
 
 **9.9.1 Convergence, measured against the real Brusselator.** At the
 example's own defaults (`dt_u=0.002, dt_v=0.003, window=0.02`, `--driver
@@ -1070,11 +975,11 @@ runner --accel newton`), every window instance converges:
   was interrupted. Not a claim about windows 223-575; a claim about the
   222 actually observed.
 
-**9.9.2 A genuine numerical finding: `NewtonConfig::eta_min` needed a
+**9.9.2 A numerical finding: `NewtonConfig::eta_min` needs a
 floor for this problem.** At `eta_min`'s own SNES-matching default
 (`0.0`), the FIRST window's Newton solve diverges:
 `DivergedLinearSolve` after 3 steps, `||F|| = 1.15e-5` (already ~9e-8
-relative to `||F_0|| = 125.2`) -- `FUSE_NEWTON_DEBUG=1` tracing (a new,
+relative to `||F_0|| = 125.2`) -- `FUSE_NEWTON_DEBUG=1` tracing (a
 permanent env-gated diagnostic, `src/runtime/iteration.cpp`, matching the
 codebase's own `FUSE_SCHEDULE_DEBUG`/`FUSE_TRANSPORT_DEBUG`/
 `FUSE_NODAL_DEBUG`/`FUSE_CONSERVATION_DEBUG` convention) shows the 4th
@@ -1087,7 +992,7 @@ EVERY window tried, at a small fraction of the GMRES cost `eta_min =
 1e-6` also removes it at (`examples/brusselator/main.cpp`'s own comment
 has the two measurements side by side). This is exactly the scenario
 `NewtonConfig::eta_min`'s own doc comment names as the reason the field
-exists, not a defect in this track's own wiring -- see that comment
+exists, not a defect in the wiring -- see that comment
 (`fuse/model/iteration.hpp`) and `main.cpp`'s own citation of it.
 
 **9.9.3 The `x` layout, measured exactly as Sec. 9.1 predicted.**
@@ -1100,15 +1005,15 @@ defaults -- the EXACT total Sec. 9.1 computed by hand (U-capacity-11 ×
 the total alone, closing the possibility that the WRONG block was
 excluded while the arithmetic happened to still add up.
 
-**9.9.4 The Newton test case: Aitken's own D17 instability, not a
-Picard-divergent one.** Stage A found no Picard-divergent case in
-CLI-reachable parameter space (Sec. 9.6); Stage B's own Newton run at the
-SAME defaults where `--accel aitken` reproduces `KNOWN_ISSUES.md` D17's
-instability (window index 2, `--driver window`) converges cleanly every
-window instead -- the comparison this track's test case actually is.
+**9.9.4 The Newton test case: Aitken's instability, not a
+Picard-divergent one.** No Picard-divergent case exists in
+CLI-reachable parameter space (Sec. 9.6); Newton at the
+SAME defaults where `--accel aitken` is unstable
+(window index 2, `--driver window`) converges cleanly every
+window instead -- that is the comparison the test case makes.
 
-**9.9.5 Tests added** (`test/runtime/window_fixed_point_residual_test.cpp`,
-new, 6 cases on a synthetic two-member linear-ODE window region -- NOT
+**9.9.5 Tests** (`test/runtime/window_fixed_point_residual_test.cpp`,
+6 cases on a synthetic two-member linear-ODE window region -- NOT
 the Brusselator, so these stay fast and isolated from the Brusselator's
 own straddling/remap complexity): re-enterability (`F` twice at the same
 `x`, bit-identical), the Sec. 9.3 two-call convention (`window_pass_
@@ -1118,26 +1023,21 @@ probe not perturbing the real committed result, the committing-evaluation
 `.history` refresh happening exactly once, the GaussSeidel exclusion rule
 (by channel name, not just by count), and bit-for-bit agreement between
 two full Newton runs from the same inputs. `test/runtime/newton_region_
-test.cpp`'s own pre-existing `AWindowScopedRegionSelectingNewtonIsRefused
-AtSetup` -- which pinned the NOW-LIFTED blanket refusal -- is renamed and
-re-asserted as `AWindowScopedRegionWithNoConfiguredWindowMembersIsANoOp`
+test.cpp`'s `AWindowScopedRegionWithNoConfiguredWindowMembersIsANoOp`
 (a window-scoped region with no real window members resolves `newton_n =
 0` and converges as a no-op, rather than either refusing or crashing).
 `test/verification/brusselator_species_core_decomposition_test.cpp`
-gained a 2-partition case for `apply_diffusion_preconditioner()`
+has a 2-partition case for `apply_diffusion_preconditioner()`
 specifically (not just `step()`, already covered) --
 `TwoPartitionVDiffusionCoreApplyPreconditionerMatchesSingleRank`,
 max_abs_diff `2.168e-18`. `test/verification/brusselator_runner_test.cpp`
-gained `NewtonConvergesInAPinnedIterationCountWithTheBlockJacobiPrecondit
+has `NewtonConvergesInAPinnedIterationCountWithTheBlockJacobiPrecondit
 ioner` (the pinning test `build-evidence/mutations/brusselator.toml`'s
 own `brusselator-preconditioner-solve-replaced-by-identity` row kills).
-Full tier-0 suite: 187/187 (186 + this track's own one new ctest entry),
-100% passing, including every pre-existing Picard/Aitken/IQN-ILS/
+The full tier-0 suite passes, including every Picard/Aitken/IQN-ILS/
 LowFive/omp_identical case.
 
-**9.9.6 What Stage B did NOT verify.** Multi-rank (`KNOWN_ISSUES.md` D31,
-new at Stage B time) -- the `ParticipantSetReducer` was a comment, not
-code, and no test exercised more than one rank. The window_member_state
+**9.9.6 What the single-rank implementation did NOT verify.** Multi-rank (Sec. 9.10). The window_member_state
 `clock`/`straddle_*` restore (Sec. 9.2's table): mutating the `clock`
 restore specifically was tried against both the synthetic fixture and
 the real (straddling) Brusselator and did NOT change either's observed
@@ -1148,13 +1048,10 @@ overwritten by the next sweep's own fresh computation regardless; the
 restore is still correct defensive practice for the ONE place that DOES
 read it directly (`resolve_pending_window_straddles()`, the NEXT window
 instance), but proving that specific path needs a two-window-instance,
-Fixed-policy (genuinely straddling), post-commit-probe fixture this
-track did not build. Reported here rather than claimed via a fabricated
-mutation `result`. **Superseded by Sec. 9.10's own multi-rank lift,
-below** for the `ParticipantSetReducer` item specifically; the
-window_member_state restore gap is unchanged and still open.
+Fixed-policy (genuinely straddling), post-commit-probe fixture that does not exist yet; no mutation `result` is claimed
+for it. The window_member_state restore gap is still open.
 
-### 9.10 Stage C (2026-10-12): lifted to multi-rank (KNOWN_ISSUES.md D31)
+### 9.10 Multi-rank window Newton
 
 **What was built.** `fuse::linalg::ParticipantSetReducer`
 (`src/linalg/comm_mpi.cpp`, declared `include/fuse/linalg/comm.hpp`) --
@@ -1167,10 +1064,9 @@ component-id order" discipline) -- a rank outside `participants` gets
 `MPI_UNDEFINED` as its own colour and no `Reducer` object at all
 (`make_participant_set_reducer()` returns `reducer == nullptr` for it),
 so "a rank outside the participant set must not enter a reduction"
-holds by construction, not by a runtime guard. The split's own lifetime
-is NOT point-to-point addressing over the base communicator the way
-`reduce_region_residuals()`/`gather_window_block_samples()` use (Sec.
-9.4's own original recommendation) -- the task's own explicit choice
+holds by construction, not by a runtime guard. The reducer is NOT point-to-point addressing over the base communicator the way
+`reduce_region_residuals()`/`gather_window_block_samples()` use (the Sec.
+9.4 alternative) -- a deliberate choice
 for this reducer, reasoned through in `comm.hpp`'s header comment on the
 factory and `runner_impl.hpp`'s comment on `RegionRuntime::
 newton_reducer`: a Newton solve's `Reducer` is reused across many
@@ -1232,15 +1128,15 @@ the single-process/no-`this_process` case at all.
 gained the identical early return `reduce_region_residuals()` already
 has: a rank not in `R.participants` returns success immediately, before
 touching `R.newton_reducer` or building a `DistVector` at all
-(`Runner::Impl::region_is_local_participant()`, new, `runner.cpp` --
+(`Runner::Impl::region_is_local_participant()`, `runner.cpp` --
 kept out of `iteration.cpp` so that file still names no MPI type of its
 own). `run_region_newton()`'s own ordinary (non-window) seam ALSO now
 reads `R.newton_reducer` instead of constructing a fresh serial reducer
-every call -- the one place this track found that had not yet been
+every call -- the one place that had not been
 lifted to the Sec. 9.4-established "the region owns the Reducer"
 convention even in the single-rank era.
 
-**fuse::petsc::solve() (D32), lifted alongside.** `fuse::num::
+**fuse::petsc::solve(), lifted alongside.** `fuse::num::
 NewtonSolveFn`'s signature gained a trailing `int comm_f` (Native
 ignores it; PETSc's own registered entry point uses it, falling back to
 `comm_self_f()` when `0` -- the unchanged single-rank behaviour, never a
@@ -1262,28 +1158,27 @@ when the WHOLE communicator is empty); a named refusal,
 `MPI_COMM_NULL`. §11.3's own "Open for a future multi-rank lift" is this
 section.
 
-**What this stage did NOT verify, stated rather than left implicit.**
+**What is not verified.**
 Every one of the above is BUILD-VERIFIED only (tier-0, tier-1 MPI+
 Fortran, and a PETSc-enabled tier-1 tree, 0 compiler errors in each) --
-the sandbox this stage worked in cannot complete a bare `MPI_Init()`
-(the SAME constraint D31's own Stage B entry and D32's own PetscToken
-entry both name), so none of `ParticipantSetReducer`'s own `sum`/`max`/
+a build environment that cannot complete a bare `MPI_Init()`
+cannot run them (the SAME constraint §10.3 names), so none of `ParticipantSetReducer`'s own `sum`/`max`/
 `allgather` correctness, the PETSc substrate's own distributed `Vec`/
 `SNES` behaviour, or the two new host-only tests
 (`parallel.window_newton_mpi.{2,3}`, `parallel.participant_reducer_mpi.
 {2,3}`, plus `petsc.window_newton_mpi.{2,3}` in its own dedicated
 binary) have been RUN anywhere. Sec. 9.9.6's own window_member_state
-restore gap is unchanged by this stage. The per-window-instance measure
+restore gap is unchanged. The per-window-instance measure
 loop in `run_region_newton_window()` (`R.residual_norms`/`R.
 reference_norms`, read by `Runner::region_residual_norms()`-style
 callers) sums a measure's own block ONLY on the rank that hosts it,
 REDUCED across `R.newton_reducer` the same way the block-total itself
 now needs to be, for the diagnostic to read correctly on every
 participant, not only the hosting one -- built, not independently
-mutation-proved beyond the one tier-0 row this stage's own
+mutation-proved beyond the one tier-0 row
 `build-evidence/mutations/newton-parallel.toml` records.
 
-## 10. The PETSc substrate (PetscToken track, S7.2b, 2026-10-11)
+## 10. The PETSc substrate
 
 This section is the second substrate behind the SAME Newton seam §1-§5
 describe: a `fuse::LinearizationToken` whose Jacobian action is PETSc's
@@ -1293,14 +1188,13 @@ preconditioner is a PETSc `PC`, plus a `SNES` (`SNESNEWTONLS`) driver over
 the identical `fuse::num::ResidualFn`/`NewtonResult` shapes the native
 `fuse::num::solve()` already uses. Nothing in §1-§9's own seam is
 PETSc-shaped, and nothing in the native Newton solver (§6-§9) knows which
-substrate a `LinearizationToken` comes from -- this track adds a SECOND
+substrate a `LinearizationToken` comes from -- the PETSc substrate is a SECOND
 implementation behind the same interface, never a change to the first.
 `FUSE_ENABLE_PETSC` has no hard dependency anywhere in the library: a
 build without it carries zero `fuse::petsc::*` symbols (the library target
 `fuse-coupler-petsc`, src/CMakeLists.txt, does not exist at all in that
-configuration) and the existing 187 tier-0 rows are byte-for-byte
-unaffected (verified this track: 187/187 pass, identical row count, with
-`FUSE_ENABLE_PETSC` OFF).
+configuration) and the tier-0 rows are byte-for-byte
+unaffected with `FUSE_ENABLE_PETSC` OFF.
 
 ### 10.1 The token: `fuse::petsc::MffdToken`, `make_assembled_token`
 
@@ -1368,12 +1262,12 @@ links MPI regardless of `FUSE_ENABLE_MPI`, since the PETSc install itself
 was configured with MPI). `cmake/FuseDependencies.cmake`'s old
 `FUSE_ENABLE_PETSC requires FUSE_ENABLE_MOAB` gate (tier 3 requiring tier
 2) is REMOVED: that bundling was for a PETSc+MOAB physics kit (a
-mesh-aware solver integration), never for the solver plugin this track
-builds, which needs neither MOAB nor a mesh at all -- a tier-0 build
+mesh-aware solver integration), never for the solver plugin,
+which needs neither MOAB nor a mesh at all -- a tier-0 build
 (`FUSE_ENABLE_MPI=OFF`, hence `FUSE_ENABLE_MOAB=OFF` too) can therefore
 carry `FUSE_ENABLE_PETSC=ON` alone, confirmed by configuring and building
-exactly that combination this track. `tools/check-layering.py` gained one
-new layer, `petsc`, placed LAST (topmost, after `abi`): it depends on
+exactly that combination. `tools/check-layering.py` has a
+layer `petsc`, placed LAST (topmost, after `abi`): it depends on
 `runtime` (`fuse::LinearizationToken`) and `num`
 (`BlockJacobiPreconditioner`), both already far below `abi`, and nothing
 in the library depends on it, so placing it after every existing entry
@@ -1399,7 +1293,7 @@ never the process command line.
 | `mffd.error_rel` | `MatMFFDSetFunctionError()` on the `MatCreateSNESMF()`-built Jacobian |
 | `mffd.min_direction_norm` | no PETSc counterpart -- `MATMFFD_WP` itself has no floor on `\|\|v\|\|` (§6.2's own correction) |
 | `gmres.restart`/`gmres.max_iterations` | `KSPGMRESSetRestart()`/`KSPSetTolerances()`'s own `maxits`, `KSPSetPCSide(PC_RIGHT)` |
-| `forcing` (choice, gamma, alpha, eta_initial, eta_max) | `SNESKSPSetUseEW()` + `SNESKSPSetParametersEW()`, SAME six constants; `alpha2` (an SNES-only parameter this project's struct has no field for) passed as `alpha` again, an approximation never exercised by Choice2 (this track's own test problems) |
+| `forcing` (choice, gamma, alpha, eta_initial, eta_max) | `SNESKSPSetUseEW()` + `SNESKSPSetParametersEW()`, SAME six constants; `alpha2` (an SNES-only parameter this project's struct has no field for) passed as `alpha` again, an approximation never exercised by Choice2 (the test problems) |
 | `forcing.eta_min` | no PETSc counterpart at all -- SNES's own forcing term has no floor; a measured dn_heat/Brusselator finding (§8.2, §9.9.2) that the native solver needed `eta_min` to avoid stalling near convergence has NO equivalent mitigation on this substrate, an open question below |
 | `line_search.kind` | `SNESLINESEARCHBT`/`CP`/`NONE` (SNES's 3.26 deprecation renamed `BASIC` to `NONE`; same mechanism) |
 | `line_search.damping` (Basic only) | `SNESLineSearchSetDamping()` |
@@ -1426,17 +1320,17 @@ inner solve, every configuration this driver builds.
 region), refusing `E-PETSC-SOLVE-MULTIRANK` otherwise -- the identical
 restriction §4's "Scope" paragraph states for the native seam itself.
 
-*Superseded 2026-10-12 (`000b01c`, KNOWN_ISSUES.md D31/D32): the driver is
+*Superseded (`000b01c`): the driver is
 multi-rank over `SnesOptions::comm_f`, and only a vector carrying a nonzero
 ghost region (`x.owned_size() != x.size()`) is refused, now as
 `E-PETSC-SOLVE-GHOSTED`; `E-PETSC-SOLVE-MULTIRANK` no longer exists. The
 paragraph above describes the driver as first measured (§10.3).*
 
-### 10.3 Measured on the host (2026-10-11)
+### 10.3 Measured on the host
 
-The sandbox this track built in cannot complete a bare `MPI_Init()` (MPICH's
+A sandbox with MPICH cannot complete a bare `MPI_Init()` (MPICH's
 debugger-attach mutex assertion in `dbginit.c`), so every number below was
-obtained on the development host, in two trees: `build-all` (the `all` preset,
+obtained on a development host, in two trees: `build-all` (the `all` preset,
 MPI on, the harness calling `MPI_Init`) and a tier-0 tree with PETSc alone
 (`FUSE_ENABLE_PETSC=ON`, no FUSE MPI, nothing calling `MPI_Init` before PETSc).
 All four rows pass in both: `petsc.init`, `petsc.token` (13 cases),
@@ -1447,10 +1341,9 @@ All four rows pass in both: `petsc.init`, `petsc.token` (13 cases),
 default and `PetscInitialize` calls `MPI_Init` itself; `finalize_if_owned()`
 then releases both (`MPI_Finalized` reads 1 afterwards). In the MPI tree it
 finds MPI up, sets `PETSC_COMM_WORLD` from the caller's handle and
-`PetscFinalize` leaves MPI running. The first draft set `PETSC_COMM_WORLD`
-unconditionally, which made `PetscInitialize` skip `MPI_Init` and fail with
-`PETSC_ERR_SUP` (56) in any tier-0 process -- on every host, not only in the
-sandbox. A third state matters: `MPI_Initialized` stays true after
+`PetscFinalize` leaves MPI running. Setting `PETSC_COMM_WORLD`
+unconditionally makes `PetscInitialize` skip `MPI_Init` and fail with
+`PETSC_ERR_SUP` (56) in any tier-0 process. A third state matters: `MPI_Initialized` stays true after
 `MPI_Finalize`, so a second `ensure_initialized()` after a release would
 walk into a finalised MPICH and abort; it now refuses `E-PETSC-MPI-FINALIZED`,
 and the tier-0 init binary's second case makes that refusal fire.
@@ -1494,10 +1387,10 @@ Jacobian-agreement case; the swapped preconditioner arguments fail exactly
 the block-Jacobi case; the dropped `MPI_Finalized` check aborts the init
 binary after its first case.
 
-### 10.4 Open questions for the lead
+### 10.4 Design notes and open questions
 
-1. ~~**`forcing.eta_min` has no PETSc counterpart**~~ — **resolved 2026-10-11, by
-   measurement.** The Brusselator window on the PETSc substrate did stall exactly
+1. **`forcing.eta_min` has no PETSc counterpart** -- resolved by
+   measurement. The Brusselator window on the PETSc substrate did stall exactly
    as the native one had before its floor (`DivergedLinearSolve after 3 Newton
    iterations` on the first window of `--driver runner --accel newton --substrate
    petsc`). `SNESKSPSetParametersEW()` has no floor, and SNES sets the KSP's
@@ -1514,23 +1407,20 @@ binary after its first case.
    type carries `set_base_point`/`set_block_preconditioner` beyond the
    base `fuse::LinearizationToken` interface, rather than the factory
    returning the base type with the point fixed at construction) --
-   this track's own choice, to let a caller re-linearise a retained token
-   in place (what a Newton loop repeating over many steps needs); the
-   lead may prefer a narrower interface if nothing beyond this track's
-   own tests ever needs the richer one.
+   a deliberate choice, to let a caller re-linearise a retained token
+   in place (what a Newton loop repeating over many steps needs); a
+   narrower interface would do if nothing beyond the tests ever needs the richer one.
 3. **The line-search tolerance fields left at PETSc's own defaults**
    (10.2's own table row) -- propagating `armijo_alpha`/`lambda_min`/
    `max_backtracks`/the safeguard clamps individually is mechanical
-   (`SNESLineSearchSetTolerances()`) but was not done this track, since
+   (`SNESLineSearchSetTolerances()`) but is not done, since
    no test exercises a non-default value on this substrate yet.
-4. **The host run itself**: this track cannot name a date by which
-   `KNOWN_ISSUES.md` D32 closes, since it depends on a host whose
-   `/opt/mpich` (or an alternative MPI) can complete `MPI_Init()` --
-   outside this track's own scope to arrange.
+4. **The host run itself** depends on a host whose
+   `/opt/mpich` (or an alternative MPI) can complete `MPI_Init()`.
 
-## 11. Per-region substrate selection (S7.2b, PetscSelect track, 2026-10-11)
+## 11. Per-region substrate selection
 
-§10 built a SECOND implementation of the Newton seam; this track makes it
+§10 describes a SECOND implementation of the Newton seam; this section covers how it is
 *selectable*, per region, through the SAME `NewtonConfig` every graph already
 carries -- a `fuse::NewtonSubstrate` (`fuse/model/iteration.hpp`: `Native`,
 `Petsc`), mirrored in `fuse::num` (`fuse/num/newton_krylov.hpp`) for the
@@ -1608,33 +1498,31 @@ substrate, both before and after.
 
 ### 11.3 The communicator: `fuse::petsc::install()`'s own decision
 
-**Lifted, Sec. 9.10 (KNOWN_ISSUES.md D31/D32, 2026-10-12).** `fuse::num::
-NewtonSolveFn`'s own signature gained a trailing `int comm_f` carrying the
+**Multi-rank, Sec. 9.10.** `fuse::num::
+NewtonSolveFn`'s own signature has a trailing `int comm_f` carrying the
 region's own participant communicator (`0` when there is none); the
 registered PETSc entry point (`fuse::petsc::install()`, `src/petsc/
 solve.cpp`) reads it and falls back to `comm_self_f()` (`MPI_COMM_SELF`)
-only when it is `0` -- the UNCHANGED single-rank behaviour described
-below, which this paragraph used to describe as the UNCONDITIONAL one.
-`fuse::petsc::solve()` itself now builds its `Vec`/`Mat`/`SNES` on
+only when it is `0` -- the single-rank behaviour described
+below.
+`fuse::petsc::solve()` itself builds its `Vec`/`Mat`/`SNES` on
 whichever communicator it is handed (`VecCreate`+`VecSetSizes`+
 `VecSetType(VECSTANDARD)`, not `VecCreateSeq`), so a multi-rank region's
 own PETSc solve reduces for real across its own participants, not just
 the native substrate's. See Sec. 9.10 for the full account, including
-the host verification (`petsc.window_newton_mpi.{2,3}` passed on the owner's
-machine 2026-10-18, KNOWN_ISSUES.md D31) -- this section's
-own history, unchanged below, explains WHY `MPI_COMM_SELF` was the
-correct and complete answer before that lift, not merely the easy one.
+the host verification (`petsc.window_newton_mpi.{2,3}` passed on a
+host) -- the paragraph below explains WHY `MPI_COMM_SELF` was the
+correct and complete answer for the single-rank case, not merely the easy one.
 
-`fuse::num::NewtonSolveFn`'s own signature carried no communicator
-parameter at Stage B/PetscSelect time -- a deliberate choice then, not an
+Before the multi-rank lift, `fuse::num::NewtonSolveFn`'s own signature carried no communicator
+parameter -- a deliberate choice, not an
 omission. The registered PETSc entry point always built its own
 `SnesOptions` with `comm_f = comm_self_f()` (`MPI_COMM_SELF`), never one
 threaded in from the Runner's own `RunnerConfig::base_communicator`. That
 was sound at the time because every Newton-selected region, on EITHER
 substrate, was restricted by `check_region_supports_newton()` to a single
-cross-rank participant (§4's own "Scope" paragraph; `KNOWN_ISSUES.md`
-D31's own single-rank restriction for the window path, before Sec. 9.10's
-own lift) -- there was no cross-rank reduction for a Newton SOLVE to
+cross-rank participant (§4's own "Scope" paragraph, and the single-rank restriction for the
+window path before Sec. 9.10) -- there was no cross-rank reduction for a Newton SOLVE to
 perform regardless of which rank of the base communicator happened to own
 the region, so `MPI_COMM_SELF` was the honest communicator for a problem
 this seam guaranteed was rank-local, not a scope-reducing shortcut.
@@ -1649,7 +1537,7 @@ same append-only placement every version bump since v7 uses. The block's own
 trailing length grows from 161 to 162 bytes (including the two capability
 bytes); every earlier `NewtonConfig` field keeps its wire offset exactly.
 `deserialize()`'s own bound check refuses `E-DESC-ENUM` for a substrate byte
-past `NewtonSubstrate::Petsc` (ordinal 1), the same `REVIEW.md` R-04 pattern
+past `NewtonSubstrate::Petsc` (ordinal 1), the same pattern
 every other enum on this wire already follows. `test/golden/waist-v13.bin`
 is the new frozen fixture (`freeze_fixture()`'s own "newton" region now also
 pins `substrate = NewtonSubstrate::Petsc`, a non-default value, alongside
@@ -1686,9 +1574,9 @@ derivation. Registered as `example.dn_heat.newton_petsc`
 `native`, read only under `--accel newton`) and an unconditional, idempotent
 `fuse::petsc::install()` call early in `main()` (guarded by
 `FUSE_HAVE_PETSC`, a no-op for every `--substrate native` invocation).
-`test/petsc/brusselator_newton_test.cpp` (NEW, its own dedicated binary --
+`test/petsc/brusselator_newton_test.cpp` (its own dedicated binary --
 NOT one more `TEST()` in `test/verification/brusselator_runner_test.cpp`,
-since a PETSc call that segfaults in this sandbox, §11.7 below, takes
+since a PETSc call that segfaults without a working `MPI_Init`, §10.3, takes
 the whole PROCESS down, which would otherwise take every other,
 PETSc-independent case sharing that binary down with it, the SAME reason
 every `petsc.*` test is already its own binary) gained
@@ -1702,10 +1590,10 @@ implementation is not required to follow the identical path, §10.3's own
 measured step-1 difference). Registered as `petsc.brusselator_newton`
 (`test/CMakeLists.txt`), gated by `FUSE_ENABLE_PETSC`.
 
-### 11.7 Measured on the host (2026-10-11)
+### 11.7 Measured on the host
 
 All `petsc.*` rows and both example rows pass in `build-all` (PETSc on, MPI on)
-and the serial suite is 191/191 there. `example.dn_heat.newton_petsc`: the PETSc
+and the serial suite passes there. `example.dn_heat.newton_petsc`: the PETSc
 row converges in four steps per period like the native one and agrees with Picard
 to 2.717e-10 K (native 6.321e-11 K), max final ‖F‖ 1.649e-10 (native 4.159e-11).
 `example.brusselator.newton_petsc` (five windows, `--check`) and the 50-window run:
@@ -1718,7 +1606,7 @@ dn_heat does not reach the regime. The tier-0 refusal
 `E-NEWTON-PETSC-UNAVAILABLE` fires without PETSc
 (`NewtonRegion.ARegionSelectingAnUnregisteredSubstrateIsRefusedAtSetup`).
 
-## 12. NewtonNorm and NewtonResidualPath (NewtonModel track, 2026-10-12)
+## 12. NewtonNorm and NewtonResidualPath
 
 Two independent, opt-in `NewtonConfig` fields, both appended at the
 struct's own declared end (the append-only convention §7's own
@@ -1726,10 +1614,10 @@ struct's own declared end (the append-only convention §7's own
 Weighted`) scales the stacked residual before every Newton stopping test
 in §6/§9/§10 reads it; `residual_path` (`Advance` default, `Direct`)
 changes HOW `G(x)` is obtained for those same tests, never what they
-compute once obtained. Both default to their pre-existing behaviour, so
-every region declared before this section existed keeps running
-unchanged -- confirmed by the full pre-existing suite (descriptor,
-yaml_io, newton_region) passing unmodified against every new byte
+compute once obtained. Both default to the original behaviour, so
+every region declared without them keeps running
+unchanged -- confirmed by the descriptor,
+yaml_io and newton_region suites passing unmodified against every byte
 `kGraphVersion` 14 appends.
 
 ### 12.1 `NewtonNorm::MeasureWeighted`: the diagonal `D`
@@ -1743,7 +1631,7 @@ conservation machinery, zero for an unowned or ghost entry -- `sum_block_w`
 the SAME weights reduced over the block's own owned entries through the
 region's own `Reducer` (today always `make_serial_reducer()`: §9.4's own
 single-participant restriction applies here too, so a cross-rank sum is
-this track's own open question, §12.5 below), and `s_b` the tolerance
+an open question, §12.5 below), and `s_b` the tolerance
 scale `fuse::ConvergenceCriterion`'s own measures declare for that block.
 
 **Which measure names a block's own scale.** `E-ITER-MEASURE`
@@ -1769,8 +1657,7 @@ target field, with two different tolerances).
 **The preconditioner's own composition.** A region ALSO requesting
 `NewtonConfig::use_block_jacobi_preconditioner` builds a block-Jacobi `M`
 approximating `J^-1` (§9.5's own construction, reused here for an
-ordinary, non-window region -- this track's own extension; §9.5's region
-was the only caller before this). With the scaled operator `D*J`, the
+ordinary, non-window region as well as the window case of §9.5). With the scaled operator `D*J`, the
 right preconditioner the Krylov solve actually needs is `(D*J)^-1 = J^-1
 * D^-1`, not a bare `M`: composing `precond_apply` as `v -> M(D^-1 * v)`
 is the fix (`compose_measure_weighted_preconditioner()`,
@@ -1795,8 +1682,8 @@ asserted of this specific case before being measured.
 
 ### 12.2 Scale invariance and unit independence, measured
 
-**(i) Tight-forcing agreement (informational only, Round 2: see (vi)
-below for the test that replaced this one's own assertion).** Solving
+**(i) Tight-forcing agreement (informational only; see (vi)
+below for the asserted bound).** Solving
 the SAME affine dn_heat problem twice, once `Plain` once
 `MeasureWeighted`, both under a near-exact constant Eisenstat-Walker
 forcing term, should give a CLOSE Newton step up to the forcing term's
@@ -1805,10 +1692,9 @@ left-multiplied by the invertible `D`, the SAME equation, so an EXACT
 linear solve gives the identical `dx` regardless of `D` -- but GMRES at a
 finite, nonzero forcing tolerance does not solve exactly, and no
 closed-form bound on the resulting `dx` difference as a function of that
-forcing tolerance alone was ever derived (the Round 2 review's own
-finding: an earlier version of this test asserted `max diff < 1e-2`
-against the measured `6.78e-4` below with no derivation connecting the
-two numbers). Kept as `NewtonNorm.
+forcing tolerance alone is derived, so an assertion such as `max diff < 1e-2`
+against the measured `6.78e-4` below would have no derivation connecting the
+two numbers. Kept as `NewtonNorm.
 WeightedIteratesAgreeWithPlainUnderTightForcingInformationalOnly` --
 printed, not asserted on. MEASURED (`forcing_eta_constant = 1e-3`, two
 orders of magnitude above the forcing floor this problem's own
@@ -1863,7 +1749,7 @@ the same resolution-independence §2/§3 of this doc already establish for
 `field_norm()`, carried through to Newton's own stopping test.
 
 **(v) Closing a gap the above tests leave open.** Tests (iii) and (iv)
-both recompute this track's own `D` formula INDEPENDENTLY of
+both recompute the `D` formula INDEPENDENTLY of
 `build_newton_measure_weights()`, by design, as a cross-check of the
 MATH -- neither one calls it, so neither exercises the PRODUCTION array a
 real Newton solve actually scales `F` by, and a mutation to that function
@@ -1871,19 +1757,17 @@ would reproduce itself in the test's own hand-derived comparison and go
 uncaught (measured directly: `build-evidence/mutations/newton-model.
 toml`'s own `newton-norm-weights-not-applied` and `newton-norm-block-
 scale-dropped` rows do not fail (i)/(iii)/(iv) at all). `Runner::debug_
-newton_scale()` (new, TEST/DIAGNOSTIC-ONLY, the same convention `debug_
+newton_scale()` (TEST/DIAGNOSTIC-ONLY, the same convention `debug_
 window_member_snapshots()` already established, `fuse/runtime/
 runner.hpp`) reads `RegionRuntime::newton_scale` directly;
 `NewtonNorm.ProductionDiagonalMatchesTheFormulaEntryForEntry` compares it
 against the formula entry for entry and is what those two mutation rows
 actually fail against.
 
-**(vi) Round 2 (GAP 3): a derivable bound, replacing (i)'s own
-unjustified one.** The Round 2 review found (i)'s original `max diff <
-1e-2` bound, set above the `6.78e-4` it was actually measured against
-with no derivation connecting the two, unacceptable. `NewtonNorm.
-ExactDenseSolveAgreesToRoundoffTimesConditionNumber` (new) replaces it
-with a bound that IS derivable: the exact `n=8` Jacobian of the affine
+**(vi) A derivable bound.** (i)'s measured `6.78e-4` has no derivation
+connecting it to any asserted bound. `NewtonNorm.
+ExactDenseSolveAgreesToRoundoffTimesConditionNumber` asserts a
+bound that IS derivable: the exact `n=8` Jacobian of the affine
 `DiagonalFixture` pair, assembled through `DiagonalComponent::
 ExactToken::apply_jacobian()` (production `LinearizationToken`
 machinery, not a hand-written shortcut) rather than approximated by
@@ -1900,16 +1784,16 @@ MEASURED: `max|dx_plain - dx_weighted| = 2.84217e-14`, `cond_inf(J) =
 magnitude of margin (the measured difference is ~4.5e-6 of the bound,
 not a near miss).
 
-**(vii) Round 2 (GAP 2): Plain's own masking failure, shown end-to-end
+**(vii) Plain's own masking failure, shown end-to-end
 against an analytically known root.** §12.1's own derivation motivates
 `MeasureWeighted`; this closes the gap between that motivation and an
 actual demonstration that Plain's OWN stopping test is satisfied while
 a badly-scaled field is still far from converged -- not just that the
 INITIAL residual looks unit-dependent (test (ii) above), but that the
 SOLVE ITSELF stops too early. A synthetic two-field region,
-`MixedScaleFixture` (`test/runtime/newton_norm_test.cpp`, new): field
+`MixedScaleFixture` (`test/runtime/newton_norm_test.cpp`): field
 "a" linear (`DiagonalComponent`, re-used), field "b" GENUINELY nonlinear
-(`QuadraticComponent`, new: `B_out = coeff*A_in^2 + offset`), "a"'s own
+(`QuadraticComponent`: `B_out = coeff*A_in^2 + offset`), "a"'s own
 units `1e4` times "b"'s (`tol_a = 1.0`, `tol_b = 1e-4`), coupled into a
 fixed point whose exact root is known analytically (the smaller root of
 the quadratic the two update rules substitute into one another into).
@@ -1970,8 +1854,8 @@ also agrees to the bit
 (`NewtonDirect.FullNewtonTrajectoryIsIdenticalBetweenAdvanceAndDirect`),
 as does the persisted state (`q`/`u`) the committing sweep leaves behind.
 
-**The rollback question, measured rather than assumed.** This track's own
-plan asked whether a member WITHOUT rollback could run Newton on `Direct`
+**The rollback question, measured rather than assumed.** Could a member WITHOUT rollback
+run Newton on `Direct`
 specifically, since `Direct` itself never calls `save_state()`/
 `restore_state()` on anything. MEASURED: no -- `verify_rollback_support()`
 (`src/runtime/checkpoint_support.cpp`) unconditionally refuses `E-ITER-
@@ -1991,18 +1875,17 @@ proving this is `verify_rollback_support()`'s own pre-existing,
 path-independent rule, not a limitation `Direct` introduces, and NOT a
 benefit `Direct` grants either. Lifting this restriction, if ever wanted,
 is a change to the generic first-tick's own rollback requirement, not to
-`NewtonResidualPath` -- out of this track's own scope, recorded as an
-open question (§12.5) rather than attempted.
+`NewtonResidualPath`; it is recorded as an
+open question (§12.5).
 
 **Cost, measured.** One `F` evaluation, Advance vs Direct, median of 11
 repetitions after a warm-up call, `n = 8` (dn_heat's own affine map):
 `advance = 212000.0 ns`, `direct = 210375.0 ns`, ratio (direct/advance)
-`0.9923`, `load1 = 6.72` at the time of this run (this host's own
-12-core machine, with two other tracks building concurrently -- the
-task's own standing condition). An earlier run under heavier concurrent
+`0.9923`, `load1 = 6.72` at the time of this run (a 12-core machine with
+other builds running concurrently). An earlier run under heavier concurrent
 load (`load1 = 8.41`) measured a DIFFERENT ratio, `1.1485`, flagged
 `NOISY` by this same test's own `load1 > 8.0` threshold -- recorded
-honestly rather than discarded: on this shared, concurrently-building
+rather than discarded: on this shared, concurrently-building
 host, the measured ratio moves with system load, and the two numbers
 above do not by themselves establish that Direct is reliably faster or
 slower than Advance; both evaluations do the SAME work (deliver `x`, run
@@ -2015,10 +1898,10 @@ result.
 
 Both fields appended at `NewtonConfig`'s own declared end, after
 `substrate` (v13's own last field) -- `kGraphVersion` 13 -> 14, following
-v12's and v13's own append-only pattern exactly: `write()`/`read()` add
+the append-only pattern of v12 and v13: `write()`/`read()` add
 two bytes (`norm`, `residual_path`), each bound-checked against its own
 enum's cardinality with `E-DESC-ENUM`; every earlier version's own byte
-layout is untouched. `test/golden/waist-v14.bin` (new, generated via
+layout is untouched. `test/golden/waist-v14.bin` (generated via
 `fuse_write_golden_descriptor`) replaces `waist-v13.bin` as the frozen
 byte comparison (`Descriptor.MatchesTheFrozenWaistBytes`); `waist-v13.bin`
 moves to the superseded list alongside v12/v11/..., still decodable, per
@@ -2032,56 +1915,46 @@ keys, enumerators spelled verbatim (`Plain`/`MeasureWeighted`,
 `Advance`/`Direct`), an unknown name refused `E-YAML-PARSE`
 (`YamlIo.RejectsUnknownNewtonConfigNorm`, `...ResidualPath`).
 
-### 12.5 Open questions for the lead
+### 12.5 Window-scoped `MeasureWeighted` and open questions
 
-**Window-scoped `MeasureWeighted`, Round 2 GAP 1: verified against the
-real Brusselator, and a real bug found and fixed in the process.**
+**Window-scoped `MeasureWeighted`: verified against the
+real Brusselator.**
 `decide_window_convergence()` (`fuse/runtime/window_convergence.hpp`)
 is, read directly rather than assumed, an UNWEIGHTED flat sum of squared
 per-block samples across owning ranks -- no spatial measure weighting of
 its own, and no weighting by which substep within the window a sample
-belongs to; this still directly contradicts this track's own ORIGINAL
-plan, which assumed window regions already use "the weights it already
-uses" -- they do not use any, and `build_newton_measure_weights()`'s own
+belongs to; window regions do not already use "the weights" the ordinary path uses,
+and `build_newton_measure_weights()`'s own
 `window_scoped` branch repeats each element's own spatial measure
-UNIFORMLY across every sample for exactly that reason, unchanged from
-the Stage A framing above.
+UNIFORMLY across every sample for exactly that reason.
 
-What Round 1 could not verify, Round 2 did, with a new file
-(`test/verification/brusselator_newton_norm_test.cpp`), built from the
+Verification against the real example uses
+`test/verification/brusselator_newton_norm_test.cpp`, built from the
 same Rig/NewtonConfig conventions as `brusselator_runner_test.cpp`'s own
 `NewtonConvergesInAPinnedIterationCountWithTheBlockJacobiPreconditioner`,
 against two grid sizes: that file's own small 5x5/7x7 one (fast, for the
 convergence and GMRES-count checks) and the EXAMPLE's own real defaults,
 16x16/24x24 (the one configuration §9.1's own `n=4864` is about).
-Running `NewtonNorm::MeasureWeighted` against that real grid for the
-FIRST time (not the ordinary-region-only tests §12.2 ran) immediately
-refused every window with `E-NEWTON-NORM-SCALE`: `weights_for()` is
+Running `NewtonNorm::MeasureWeighted` against that real grid (rather than the
+ordinary-region-only tests of §12.2) exposes the window-sample dimension: `weights_for()` is
 called with `elements = slots[b.feed_arc].elements` (the mesh's own
 entity count) and `components = slots[...].components`, and for a
 window-scoped consumer arc `src/ir/window_lowering.cpp` sets
 `components = field_components * window_sample_capacity()` -- so
-`weights_for()` had ALREADY replicated each element's own measure across
+`weights_for()` has ALREADY replicated each element's own measure across
 every sample column (`w_base.size() == b.length`, not `b.length /
-capacity`) before `build_newton_measure_weights()` ever saw it; the
-Round 1 code treated `w_base` as purely spatial and re-expanded it by
-`capacity` a SECOND time, double-counting the window dimension in both
-the per-entry normalisation (`local_sum *= capacity`, now removed) and
-the length check it failed. The fixture Round 1 verified against
-(`NewtonDnHeatFixture`'s own window-scoped test, where this doc's prior
-revision said "only the ordinary-region tests... ran") evidently never
-exercised a window with `capacity > 1` for this norm -- EVERY real
-multi-sample window (which is to say, every window this feature would
-ever actually be used on) was broken from the day it was written, until
-this gap's own verification run caught it. Fixed in
-`build_newton_measure_weights()` (`src/runtime/iteration.cpp`): `w_base`
-is now read as already including the window-sample dimension when
-`window_scoped`, with a defended (not merely assumed) check that it really
-is uniform across each element's own sample run, refusing
+capacity`) before `build_newton_measure_weights()` sees it. Treating `w_base` as purely
+spatial and re-expanding it by `capacity` a SECOND time would double-count the window
+dimension in both the per-entry normalisation and the length check, and would refuse every
+real multi-sample window with `E-NEWTON-NORM-SCALE`; a fixture with
+`capacity == 1` cannot catch this. `build_newton_measure_weights()`
+(`src/runtime/iteration.cpp`) therefore reads `w_base` as already including the
+window-sample dimension when `window_scoped`, with a defended (not merely assumed) check that it
+really is uniform across each element's own sample run, refusing
 `E-NEWTON-NORM-SCALE` rather than silently misweighting if a future
 change to `weights_for()`'s own replication order ever breaks that.
 
-MEASURED, after the fix, at the real grid (`n_u = 256`, `cap_u = 11`,
+MEASURED at the real grid (`n_u = 256`, `cap_u = 11`,
 `cap_v = 8`, `newton_n = 4864` -- §9.1's own hand-derived total,
 confirmed exactly):
 - **(a) Convergence and agreement.** Plain and MeasureWeighted both
@@ -2106,12 +1979,11 @@ confirmed exactly):
   needs one more outer Newton iteration (4 vs. 3) -- the SAME direction
   `brusselator_runner_test.cpp`'s own header already measured at the
   full-size grid ("fewer outer iterations... (3, not 4)... without" the
-  preconditioner); an initial assertion written the OTHER way (composed
-  cannot cost more) was wrong and was corrected to a regression pin
-  reporting both numbers as measured, before the mutation row below was
-  proved.
-- **The window path's own `D^-1` composition, mutation-proved.** A NEW
-  row, `newton-norm-window-precond-not-composed-with-inverse-diagonal`
+  preconditioner); the test is a regression pin
+  reporting both numbers as measured, not an assertion that composed
+  cannot cost more.
+- **The window path's own `D^-1` composition, mutation-proved.** The
+  row `newton-norm-window-precond-not-composed-with-inverse-diagonal`
   (`build-evidence/mutations/newton-model.toml`), at `run_region_newton_
   window()`'s own call site (distinct from `run_region_newton()`'s,
   proved in §12.2(v)): dropping the composition moves the composed
@@ -2120,20 +1992,16 @@ confirmed exactly):
   on a REAL window, not only on the ordinary-region synthetic fixture
   §12.2(v) proved it against.
 
-No further open question remains for this gap: the window D was wrong,
-it is now fixed, and the fix is verified against the real example and
+The window `D` is verified against the real example and
 mutation-proved on the window path specifically, not merely inferred
 from the ordinary-region proof.
 
-**Cross-rank reduction of `sum_block_w`.** §9.4's own single-participant
-restriction (`check_region_supports_newton()`) means `build_newton_
-measure_weights()`'s own `reducer.sum()` call is, today, unconditionally
-`make_serial_reducer()` -- never a reduction over more than one rank's own
-contribution. Lifting §9.4's own restriction (this doc's own long-stated
-next step for the window track) would need `R.newton_reducer` to become a
-real cross-rank reducer for `MeasureWeighted` to keep computing `D`
-correctly over a genuinely multi-participant region; this track did not
-need to make that change and did not.
+**Cross-rank reduction of `sum_block_w`.** `build_newton_
+measure_weights()`'s `reducer.sum()` call has only been exercised with a
+serial reducer -- never a reduction over more than one rank's own
+contribution. A real cross-rank `R.newton_reducer` (Sec. 9.10) is what
+`MeasureWeighted` needs to keep computing `D`
+correctly over a genuinely multi-participant region; this is open.
 
 **The rollback restriction's own scope.** §12.3's own measured finding
 (`E-ITER-NOROLLBACK` fires identically for Advance and Direct) is a
@@ -2141,27 +2009,26 @@ property of `step_period()`'s own generic first tick, not of either
 residual path -- lifting it, if ever wanted, means teaching that generic
 tick itself to skip the rollback bracket for a region whose OWN residual
 path never needs to undo it (`Direct` specifically), which is a change to
-shared scheduling code well outside this track's own owned files, and is
-recorded here rather than attempted.
+shared scheduling code, and is recorded here rather than attempted.
 
-## 13. Two Newton regions, two substrates, in one graph (Substrate track, plan S7.2b phase 2 closing)
+## 13. Two Newton regions, two substrates, in one graph
 
-Section 11 built the per-region selector itself (the registry, the eager
+Section 11 describes the per-region selector itself (the registry, the eager
 refusal, the descriptor field) and measured it on dn_heat/Brusselator runs
 each solved WHOLLY by one substrate at a time -- `--newton-petsc`/
 `--substrate petsc` pick the substrate for the entire graph's one Newton
 region, so every existing measurement compares two SEPARATE Runner
 invocations of the SAME graph, never two regions dispatched independently
-inside the SAME invocation. Nothing in Section 11's own tests built a
-graph with more than one Newton-selected region, so the one property
-plan S7.2b phase 2 actually names -- substrate chosen "per iteration
-region, from the graph" -- had a registry and a refusal that support it,
+inside the SAME invocation. Section 11's own tests do not build a
+graph with more than one Newton-selected region, so the property
+that the substrate is chosen "per iteration
+region, from the graph" would have a registry and a refusal that support it,
 but no test or example that EXERCISES it with two regions whose own
-substrates genuinely differ. This section closes that gap.
+substrates genuinely differ. This section covers that case.
 
 ### 13.1 The test: two regions, two substrates, one Runner, without PETSc or MPI
 
-`test/runtime/newton_region_test.cpp` gained a second, independent
+`test/runtime/newton_region_test.cpp` has a second, independent
 dirichlet-neumann Newton region ("dirichlet_neumann_a"/
 "dirichlet_neumann_b", `make_two_newton_region_setup()`) in the SAME
 `CouplingGraph`/`Runner` as `make_newton_setup()`'s own single-region
@@ -2206,7 +2073,7 @@ declared earlier in the file than anything that touches the registry.
 
 ### 13.2 The example: dn_heat, `--newton-petsc`, one graph, both substrates
 
-`examples/dn_heat/main.cpp`'s own `--newton-petsc` path (Sec. 11.6) gained
+`examples/dn_heat/main.cpp`'s own `--newton-petsc` path (Sec. 11.6) has
 `build_dual_substrate_graph()`/`run_dual_substrate_case()`: a SECOND,
 independent dirichlet-neumann pair in the SAME graph as the existing
 `newton`/`newton-petsc` comparison, region "dirichlet_neumann_a" on
@@ -2216,19 +2083,16 @@ coupling cycles. The printed `[dual-substrate]` lines carry both regions'
 own residual histories for the final period and both regions' own
 `converged` flags; the agreement check between the two regions' own
 converged interface temperatures uses the SAME sharp, per-period-summed
-bound (`dn_heat::agreement_bound()`, Sec. "AgreementBounds track" above,
-round 4) the native/petsc comparison above already uses, applied to
+bound (`dn_heat::agreement_bound()`, Sec. 11.6) the native/petsc comparison above already uses, applied to
 region a/region b instead of to two separate invocations. Still gated
 `#if FUSE_HAVE_PETSC` and still run only under `--newton-petsc`, so the
 default invocation's output is unaffected and the existing
 `example.dn_heat.newton_petsc` ctest row (`examples/CMakeLists.txt`,
-`FUSE_ENABLE_PETSC`-gated) is what runs this case; no new ctest row was
-added. This sandbox cannot execute it (PETSc's own `PetscInitialize`
-calls `MPI_Init`, which cannot complete here -- the SAME constraint Sec.
-10's own "Where the measurements came from" paragraph and
-`KNOWN_ISSUES.md` D32 already record for every other `petsc.*` row); it
-is BUILT, not run, here. A host run of `example.dn_heat.newton_petsc`
-is what closes this.
+`FUSE_ENABLE_PETSC`-gated) is what runs this case; there is no separate ctest row.
+A build environment that cannot complete `MPI_Init` (PETSc's own `PetscInitialize`
+calls it -- the SAME constraint Sec. 10.3 records for every other `petsc.*` row)
+can build it but not run it; a host run of `example.dn_heat.newton_petsc`
+is what exercises it.
 
 ### 13.3 Why the refusal needs no cross-rank agreement step
 
@@ -2261,13 +2125,10 @@ every rank computes the SAME answer independently, with no `MPI_
 Allreduce`/`MPI_Bcast` needed to make that true, the same "agree by
 construction, not by communication" shape `to_num_newton_substrate()`'s
 own translation (Sec. 11.2) already has for any other graph-derived
-field. This is not itself new evidence that D55 (`KNOWN_ISSUES.md`,
-higgs's Open MPI 4.1.5 hang) is unrelated to Newton substrate selection --
-D55 is window-Newton's own bystander-rank question, orthogonal to this
-one -- it is recorded here because this track's own task brief asked the
-collective-refusal question directly and the answer is a property of
-WHERE the two inputs come from, not an additional runtime check this
-track added.
+field. The answer is a property of
+WHERE the two inputs come from, not an additional runtime check. (It is
+separate from window-Newton's bystander-rank behaviour under Open MPI 4.1.5,
+which is orthogonal to substrate selection.)
 
 ### 13.4 What this section does not change
 
@@ -2275,23 +2136,19 @@ track added.
 model field, so there is nothing to append to the descriptor. The
 registry, the eager refusal, the YAML key, and the communicator decision
 are all exactly as Sections 11.1-11.3 describe; this section adds
-coverage of a case those sections' own tests did not build, not a new
+coverage of a case those sections' own tests do not build, not a new
 mechanism.
 
-## 14. A real PETSc-object LinearizationToken: single-variable reaction-diffusion (S7.4 retitled, owner decision 2026-10-21)
+## 14. A real PETSc-object LinearizationToken: single-variable reaction-diffusion
 
-**What S7.4 used to name, and what this section closes instead.** The parent plan's own S7.4
-("The first implicit participant: KARMA's PETSc-backed native component (today unregistered)")
-asked for KARMA's FEM component to be wired into the S7 Newton seam. A read-first design pass
-(this track's own Stage A, not reproduced here) found that KARMA's own field-commit hazard the
-plan's parenthetical names is already narrowed in KARMA's current code (`KARMAField::commit_
-petsc_values` routes through `PetscVectorStorage`, which REFUSES rather than races on an
-off-process index), and that FEM elements/quadrature/assembly/DOF-maps are plan Section 8's own
-S8.1 scope, not S7's. The owner's decision (2026-10-21): retitle S7.4 to the smaller, concrete
-thing below -- a real PETSc `Mat`/`Vec`-backed `fuse::LinearizationToken` (never `MATMFFD`),
-paired with a native-substrate implementation of the SAME physics, demonstrating the seam's
-PETSc-object path end to end without importing a FEM mesh kit. KARMA's FEM import stays S8.1,
-untouched by this section.
+**Scope.** This section demonstrates a real PETSc `Mat`/`Vec`-backed `fuse::LinearizationToken`
+(never `MATMFFD`), paired with a native-substrate implementation of the SAME physics, exercising the
+seam's PETSc-object path end to end without importing a FEM mesh kit. Wiring KARMA's PETSc-backed FEM
+component into the Newton seam is a different, larger piece of work: FEM elements, quadrature,
+assembly and DOF maps belong to the optional finite-element component, and KARMA's field-commit
+hazard is already narrowed in KARMA's current code (`KARMAField::commit_petsc_values` routes through
+`PetscVectorStorage`, which REFUSES rather than races on an off-process index). None of that is
+imported here.
 
 ### 14.1 The problem, and the two substrates
 
@@ -2307,11 +2164,10 @@ and the PETSc one (a real `Vec`/`Mat`/`KSP` Newton solve, `MatCreateAIJ` with th
 tridiagonal nonzero count, `KSPPREONLY`+`PCLU` direct factorisation). Both the native-twin region
 (`DirichletHalf` + `NeumannHalfNative`) and the mixed region (`DirichletHalf` + `NeumannHalfPetsc`)
 run through the SAME native `fuse::num::solve()` outer Newton-Krylov driver this file's own Sec. 6-9
-already describe -- `NewtonConfig::substrate` (Sec. 11) is NOT used by this track at all, because the
+already describe -- `NewtonConfig::substrate` (Sec. 11) is NOT used by this example at all, because the
 PETSc-ness here is a COMPONENT-level implementation choice (which concrete class a region
-instantiates), never a region-level "which solver drives the outer loop" choice. This is a
-deliberate correction of an earlier, wrong assumption this track's own design notes recorded before
-writing any component code (design_notes.md Section 3).
+instantiates), never a region-level "which solver drives the outer loop" choice. The substrate choice for the outer loop is therefore not
+confused with the component-level choice.
 
 ### 14.2 The outer `LinearizationToken`: `dG/d(interface datum)` by implicit differentiation
 
@@ -2326,20 +2182,20 @@ own token wraps this scalar directly (`rows() == cols() == 1`: one shared interf
 station parallelism, dn_heat's own per-station convention collapsed to one station);
 `NeumannHalfPetsc`'s own token reuses `fuse::petsc::make_assembled_token()` (Sec. 10.1) verbatim on a
 freshly built 1x1 triplet list -- the smallest-footprint reuse of an already-reviewed library
-primitive for exactly this shape, rather than hand-rolling a second `Mat`. MEASURED (a throwaway
-Python/C++ prototype of this exact discretisation, design_notes.md Section 5): the analytic
+primitive for exactly this shape, rather than hand-rolling a second `Mat`. MEASURED (against a throwaway
+Python/C++ prototype of this exact discretisation): the analytic
 sensitivity agrees with a central finite difference of the composed solve to 9+ significant digits,
 PROVIDED the ghost boundary value's own self-dependence is correctly folded into the inner Jacobian's
-row-0 diagonal -- a bug the prototype caught (the first draft used the generic interior-row diagonal
-unconditionally, which left the inner Newton solve converging only linearly, not quadratically, and
-the implicit-differentiation sensitivity off by about 0.4%) before any component code existed.
+row-0 diagonal -- using the generic interior-row diagonal
+unconditionally leaves the inner Newton solve converging only linearly, not quadratically, and
+the implicit-differentiation sensitivity off by about 0.4%.
 `test/linalg/reaction_diffusion_derivative_gate_test.cpp`'s own
-`UncorrectedGhostJacobianMeasuresOrderOneNotTwo` reproduces this exact historical bug as a permanent
+`UncorrectedGhostJacobianMeasuresOrderOneNotTwo` reproduces this exact bug as a permanent
 regression control.
 
 ### 14.3 A second numerical finding, independent of the first: `NewtonConfig::eta_min`
 
-Running the native-twin region end to end (no PETSc) the FIRST time produced `DivergedLinearSolve`
+Running the native-twin region end to end (no PETSc) without a forcing floor produces `DivergedLinearSolve`
 after exactly one accepted Newton step, with `residual_history = [4.02e-2, 5.96e-8, 5.96e-8]` --
 the step had ALREADY driven `||F||` to the matrix-free Jacobian action's own noise floor, but the
 region's `Converged::Relative` criterion (measuring the NAMED FIELD's own relative change between
@@ -2349,31 +2205,28 @@ sweep whose own linear solve then had nothing left to resolve past round-off -- 
 `forcing.eta_min` gap Sec. 9.9.2 already measured and fixed for the Brusselator's own window
 (`eta_min = 1e-4`, two orders of headroom above the noise floor that measurement found, EVERY window
 tried). `examples/petsc_reaction_diffusion/main.cpp` reuses that SAME value, for the SAME reason,
-verbatim -- not a new tolerance invented for this track; with it, the native-twin region converges in
-3 Newton iterations per period (matching the prototype's own measured count, design_notes.md Section
-6), for every one of the 20 periods run.
+verbatim -- not a new tolerance; with it, the native-twin region converges in
+3 Newton iterations per period (matching the prototype's own measured count), for every one of
+the 20 periods run.
 
-### 14.4 What is measured in this sandbox, and what is host-pending
+### 14.4 What is measured, and what needs a host run
 
-This sandbox builds `FUSE_ENABLE_PETSC=ON` tier-0 trees cleanly (PETSc 3.25.99 via `pkg-config`,
-`/opt/petsc/download-moab`) and links every `petsc.*` target, including this track's own new ones,
-with zero compiler errors -- the FIRST CHECK this track's own task brief required before writing any
-component code. Running a PETSc-initialised binary SEGFAULTS the instant `PetscInitialize()` calls
-`MPI_Init()` (KNOWN_ISSUES.md D32's own already-documented, already-measured constraint, reproduced
-directly by this track before design began: `fuse_petsc_init_test` run standalone, no `mpiexec`,
+A sandbox with MPICH builds `FUSE_ENABLE_PETSC=ON` tier-0 trees cleanly (PETSc 3.25.99 via `pkg-config`,
+`/opt/petsc/download-moab`) and links every `petsc.*` target with zero compiler errors. Running a
+PETSc-initialised binary there SEGFAULTS the instant `PetscInitialize()` calls
+`MPI_Init()` (the constraint Sec. 10.3 records: `fuse_petsc_init_test` run standalone, no `mpiexec`,
 aborts with MPICH's `dbginit.c` assertion). `NeumannHalfPetsc`'s own constructor calls `fuse::petsc::
-ensure_initialized()`, so EVERY path through it carries this SAME, pre-existing barrier -- not a new
-one. `example.petsc_reaction_diffusion` (the native-twin run, no PETSc) is MEASURED in this sandbox:
+ensure_initialized()`, so EVERY path through it carries this SAME barrier. `example.petsc_reaction_diffusion` (the native-twin run, no PETSc) is MEASURED there:
 20 periods, `t_final = 0.2`, max|error| against the manufactured solution 7.31e-2 (Left) / 5.34e-2
 (Right) / 1.18e-1 (interface), against a derived bound of 2.37e-1 (2x the largest measured figure).
 `example.petsc_reaction_diffusion.petsc` and `petsc.reaction_diffusion` (the structural PETSc-object
-test) are BUILT and ctest-REGISTERED here, never RUN here -- a host run (mirroring how D32's own
-`petsc.window_newton_mpi.{2,3}` and every other `petsc.*` row were measured) is what would show the
-native-vs-PETSc-substrate agreement this track's own `main.cpp` checks against a derived bound
+test) are BUILT and ctest-REGISTERED there but not run -- a host run (as for `petsc.window_newton_mpi.{2,3}` and
+every other `petsc.*` row) is what shows the
+native-vs-PETSc-substrate agreement `main.cpp` checks against a derived bound
 (`kSubstrateAgreementBound = 100 * 1e-8`, the Newton `rtol` default times a conditioning headroom of
 100 -- both substrates solve the IDENTICAL discrete system by a DIRECT linear solve, so the only
-disagreement possible is round-off, the same reasoning D32 Sec. "Measured on the host 2026-10-11"
-used for dn_heat/Brusselator's own native-vs-petsc comparison).
+disagreement possible is round-off, the same reasoning Sec. 11.7
+uses for dn_heat/Brusselator's own native-vs-petsc comparison).
 
 ### 14.5 What this section does not change
 
@@ -2382,5 +2235,5 @@ registry and communicator decision (Sec. 11), `NewtonNorm`/`NewtonResidualPath` 
 two-substrates-one-graph test (Sec. 13) are all unchanged -- this section adds a NEW consumer of
 `make_assembled_token()` and a NEW, independently-discovered `eta_min` finding for a DIFFERENT
 problem (reaction-diffusion, not dn_heat's affine map or the Brusselator's window), not a new
-mechanism in `fuse::petsc` or `fuse::num` itself. `kGraphVersion` stays at 14: this track's own
+mechanism in `fuse::petsc` or `fuse::num` itself. `kGraphVersion` stays at 14: the
 `NewtonConfig` usage sets no field beyond what Sec. 12.4's own descriptor already carries.

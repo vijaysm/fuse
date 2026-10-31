@@ -1,7 +1,7 @@
-// S7.2's line search: BT cubic backtracking, CP critical-point secant,
+// The line search: BT cubic backtracking, CP critical-point secant,
 // Basic damping.
 //
-// WHAT EACH CASE CHECKS (the task's own per-mechanism test requirement).
+// WHAT EACH CASE CHECKS (one test per mechanism).
 //   LineSearchBT.EngagesAndRecoversOnAPoorInitialGuess -- the full Newton
 //   step overshoots a steep quadratic badly enough that the Armijo test
 //   rejects lambda=1, forcing at least one backtrack; the accepted lambda
@@ -58,7 +58,7 @@ TEST(LineSearchBT, EngagesAndRecoversOnAPoorInitialGuess) {
   // F(t) = 50*(t - 1); Newton step from the Jacobian J=50 at x0=10 is
   // d = -F(x0)/J = -(50*9)/50 = -9, landing exactly on the root -- too
   // convenient. Perturb the step to UNDERSHOOT the Jacobian's own slope
-  // (an inexact/MFFD Jacobian the task's own scenario): d = -20, so
+  // (an inexact/MFFD Jacobian): d = -20, so
   // lambda=1 overshoots the root at t=1 out to t = 10 - 20 = -10, whose
   // merit is larger than a tamer step would give, and Armijo must reject
   // it.
@@ -134,7 +134,7 @@ TEST(LineSearchBT, FailsWhenNoStepAboveLambdaMinIsAcceptable) {
 
 TEST(LineSearchCP, FindsTheSecantRootOnAOneDProblemWithAnEnergy) {
   // Phi(t) = 1/2 (t - 3)^2, F = grad(Phi) = t - 3 (a genuine gradient
-  // field: "a problem with an energy", the task's own phrase). From
+  // field: "a problem with an energy"). From
   // x0=0, d=1: g(lambda) = <F(x0 + lambda d), d> = (lambda - 3) * 1, whose
   // root is exactly lambda=3, the critical point of Phi along the line.
   const double x0 = 0.0, d = 1.0;

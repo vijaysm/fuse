@@ -286,15 +286,15 @@ TEST(WindowRegionGolden, TwoMemberWindowWithNeitherChannelLaggedIsRefusedUnderGa
 }
 
 // NOTE on what this file does NOT re-verify: two_member_window_graph()
-// above has only ONE channel, so it was never a case mark_regions()
-// refused in the first place -- a one-channel region's single member
+// above has only ONE channel, so it is not a case mark_regions()
+// refuses -- a one-channel region's single member
 // chain cannot interleave with anything else in a graph that contains
 // nothing else. Confirming "the multirate probe still refuses the same
-// graph without the window_scope opt-in" (this pass's own requirement)
+// graph without the window_scope opt-in"
 // therefore means test/schedule/multirate_region_test.cpp's OWN two-
 // channel (accumulate + relax) shape, which DOES trigger E-SCHED-REGION at
-// ratio != 1 -- unmodified by this pass and re-run directly
-// (ctest -R multirate_region) as part of this pass's own verification.
+// ratio != 1 -- unmodified and runnable directly
+// (ctest -R multirate_region).
 //
 // This test instead pins the same invariant at THIS file's own ratio
 // (13:7, matching the golden fixture above) with a genuine two-way,
@@ -354,12 +354,12 @@ TEST(WindowRegionGolden, TheTwoChannelMultirateShapeAtThisRatioIsStillRefused) {
   EXPECT_TRUE(saw_region_error) << r.diags.to_string();
 }
 
-// Pins schedule()'s own CALL to detail::check_window_causality() (Unit P),
+// Pins schedule()'s own CALL to detail::check_window_causality(),
 // which test/schedule/window_causality_test.cpp's own tests -- by that
 // file's own header comment -- deliberately do NOT cover, since they feed
 // a hand-built instruction stream straight to the function and never go
-// through lower()/expand()/schedule() at all. Now that this pass compiles
-// a real window-scoped region (build_window_regions(), src/ir/
+// through lower()/expand()/schedule() at all. Since a real window-scoped region compiles
+// (build_window_regions(), src/ir/
 // window_lowering.cpp), that gap can be closed: this DAG is ALSO hand-
 // built (bypassing lower(), matching window_causality_test.cpp's own
 // convention, since forcing an invalid window_import out of the real
@@ -420,7 +420,7 @@ TEST(WindowRegionGolden, SchedulerCallsWindowCausalityOnARealCompiledWindow) {
   EXPECT_TRUE(saw_causality_error) << r.diags.to_string();
 }
 
-// KNOWN_ISSUES.md / the plan's own standing ruling against a disguised
+// The standing rule against a disguised
 // least-common-multiple window: examples/brusselator/main.cpp's own
 // defaults (--dt-u 0.002 --dt-v 0.003 --window 0.02) are exactly the
 // shape that ruling rejects if a window-scoped member's own fine
@@ -496,19 +496,17 @@ TEST(WindowRegionGolden, BrusselatorsOwnDtAndWindowScheduleWithoutAnLcmPeriod) {
   }
 }
 
-// Conformance Unit 2, defect found by the lead reading ClockSet's own
-// constructor: a ComponentKind::Coupler entry's ComponentDecl::interval
+// A ComponentKind::Coupler entry's ComponentDecl::interval
 // defaults to Rational{1} (a coupler declares no interval of its own at
-// all -- component.hpp's own comment), and before this fix every
+// all -- component.hpp's own comment), so no
 // ClockSet aggregate (common_period/finest_interval/
-// checked_common_period/is_lockstep/earliest_next/due_at) folded that
-// default straight into its answer, same as any physics component's
+// checked_common_period/is_lockstep/earliest_next/due_at) may fold that
+// default into its answer, as it would any physics component's
 // real interval. Adding a coupler to the SAME graph the test immediately
-// above builds (window 1/50) silently pulled lcm(1/50, 1) = 1 into the
+// above builds (window 1/50) must not pull lcm(1/50, 1) = 1 into the
 // compiled period -- 50 window instances per period instead of one --
-// which is exactly what Conformance Unit 2's own tier-0 harness measured
-// as "is_coupling_ongoing()'s period/now never advance" before this fix
-// was identified. MUTATION: reverting ClockSet's own coupler exclusion
+// which would make "is_coupling_ongoing()'s period/now never advance".
+// MUTATION: reverting ClockSet's own coupler exclusion
 // (letting the coupler's Clock back into the lcm/gcd again) must make
 // this fail -- EXPECT_EQ(result.plan.period(), 1/50) would instead see
 // 1, and the two-component sibling test below would see 6 instead of 1.
@@ -540,7 +538,7 @@ TEST(WindowRegionGolden, ACouplerDoesNotEnterTheWindowPeriod) {
   g.channel(back).lag(1).allow_time_level_mismatch(
       "resolved by the window's own sweep, not a real-time lag");
 
-  // Conformance Unit 2's own ruling: the identity-remap shape -- a
+  // The identity-remap shape -- a
   // coupler on its own processor set, both channels routed through it.
   const auto coupler =
       g.add_coupler(fuse::CouplerDecl{.name = "coupler", .ranks = RankSet{0, 1}});

@@ -47,7 +47,7 @@ FEATURE_MACRO = re.compile(
 # Every feature macro is `#cmakedefine01`: ALWAYS defined, as 0 or 1. So a
 # presence test on one is unconditionally true, and `#ifdef FUSE_HAVE_MOAB`
 # compiles the MOAB branch into a build without MOAB -- or, when config.hpp is
-# not included, compiles it OUT of every build. Both happened (REVIEW.md 2.3).
+# not included, compiles it OUT of every build. Both have happened.
 # Only `#if FUSE_HAVE_X` / `#if !FUSE_HAVE_X` is a valid test.
 #
 # This alternation is deliberately wider than FEATURE_MACRO above: it also
@@ -56,7 +56,7 @@ FEATURE_MACRO = re.compile(
 # 0/1 the same way a `#cmakedefine01` macro does (here, via
 # target_compile_definitions(... PUBLIC NAME=$<BOOL:...>)) -- a presence test
 # on them is exactly as unconditionally-true-and-wrong. Checked against the
-# tree (2026-10-11): no other `FUSE_ENABLE_*`/`FUSE_HAVE_*` name is ever
+# tree: no other `FUSE_ENABLE_*`/`FUSE_HAVE_*` name is ever
 # tested with `#ifdef`/`#ifndef`/`defined()` outside the one exempted guard
 # below, so broadening this (ifdef-misuse) alternation to a bare
 # `ENABLE_[A-Z0-9_]+` carries none of FEATURE_MACRO's string-literal risk.
@@ -83,7 +83,7 @@ DEVICE_HINT = re.compile(r"KOKKOS_(INLINE_)?FUNCTION|KOKKOS_LAMBDA")
 # return only at a synchronisation point where every rank is present. Phase D used
 # to clear `err` so it could reuse it as its own loop accumulator, which was
 # harmless while every outcome before it had already been agreed -- and then
-# silently destroyed the components agreement (R-30), an outcome recorded after
+# silently destroyed the components agreement, an outcome recorded after
 # that agreement and read only two phases later. The check ran, was right on
 # every rank, and its answer was thrown away; `build_plan()` returned success
 # on ranks that had just rejected, and it took an instrumented run to see it.
@@ -110,11 +110,11 @@ def scan(root: Path) -> list[str]:
     # `include` and `src` carry every rule. `test` and `examples` carry only the
     # feature-macro rules: a test may legitimately throw a std:: type in a
     # fixture, but a test that reads FUSE_HAVE_MOAB without config.hpp compiles
-    # to a skip stub in every configuration and reads like a pass (REVIEW.md
-    # R-06: 38 MOAB cases, never once executed). Found 2026-09-19 -- the same
-    # scope gap the layering gate closed on 09-17, in the other tool.
+    # to a skip stub in every configuration and reads like a pass (38 MOAB cases
+    # were once never executed). This is the same scope gap the layering gate
+    # closes, in the other tool.
     #
-    # `tools/src` joined this list 2026-10-12: its two generators link
+    # `tools/src` is in this list: its two generators link
     # fuse::model/fuse::num and could misread a feature macro exactly as a
     # test or example can, and nothing scanned them before. They are not
     # `library_code`, on purpose and symmetrically with test/examples: they
@@ -207,9 +207,9 @@ def scan(root: Path) -> list[str]:
                 # library's own fprintf cannot be redirected is exactly the
                 # kind of note this project wants, and a gate that fires on it
                 # pressures the author to delete the explanation rather than
-                # fix any code. Found 2026-09-18, when the check fired on a
+                # fix any code. (The check once fired on a
                 # doc comment in the ported high-order backend while the
-                # feature-macro check on the same file did not.
+                # feature-macro check on the same file did not.)
                 code = COMMENT_LINE.sub(
                     lambda m: m.group(1) + " " * len(m.group(2)), line)
                 if PRINTF.search(code) and "Kokkos::printf" not in code and not device_file and not raw_ok:

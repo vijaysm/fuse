@@ -1,11 +1,9 @@
-# Mutation for the backend fix pass (REVIEW.md R-13).
-# Own file per the review-fix protocol: do not edit build-evidence/mutations.toml
-# directly while other fixers hold it dirty.
+# Mutations for the supermesh path.
 
 [[mutation]]
 id = "supermesh-no-over-coverage-audit"
 area = "backend"
-describes = "the supermesh path's per-cell coverage audit checks only the minimum, so a cell assigned more area than it has (R-12's defect class, or any other overlap-inflation bug) passes silently instead of rejecting E-REMAP-INTX (R-13)"
+describes = "the supermesh path's per-cell coverage audit checks only the minimum, so a cell assigned more area than it has (or any other overlap-inflation bug) passes silently instead of rejecting E-REMAP-INTX"
 file = "src/backend/supermesh.cpp"
 old = "return moments[0] > 0.0 ? moments[0] : 0.0;\n  }"
 new = "return moments[0] > 0.0 ? moments[0] * 1.5 : 0.0;\n  }"
@@ -15,7 +13,7 @@ test = "backend.supermesh"
 [[mutation]]
 id = "map-coverage-check-does-nothing"
 area = "backend"
-describes = "S5.4's distribution check: localise() rejects when a target entity this rank owns has no row in the map. Without it a map written for another partition localises to a matrix with missing rows, and apply() writes zero into a field the map exists to fill -- indistinguishable from a field that transferred and happened to be zero."
+describes = "The distribution check: localise() rejects when a target entity this rank owns has no row in the map. Without it a map written for another partition localises to a matrix with missing rows, and apply() writes zero into a field the map exists to fill -- indistinguishable from a field that transferred and happened to be zero."
 file = "src/backend/transfer_map_io.cpp"
 old = "  if (missing != 0) {"
 new = "  if (false) {"
@@ -45,7 +43,7 @@ test = "backend.transfer_map_io"
 [[mutation]]
 id = "map-accumulates-in-local-column-order"
 area = "backend"
-describes = "Bit-for-bit across rank counts (the user's requirement, 2026-09-21) rests on localise() summing each row in ascending source GLOBAL id. Local column indices depend on how many entities the rank holds, so summing in that order makes the answer depend on the partition in the last bits. If this mutation ever survives, the bit-for-bit test has stopped distinguishing the two orders -- check its weights are still unequal before believing it."
+describes = "Bit-for-bit across rank counts rests on localise() summing each row in ascending source GLOBAL id. Local column indices depend on how many entities the rank holds, so summing in that order makes the answer depend on the partition in the last bits. If this mutation ever survives, the bit-for-bit test has stopped distinguishing the two orders -- check its weights are still unequal before believing it."
 file = "src/backend/transfer_map_io.cpp"
 old = "    return a.src_gid < b.src_gid;"
 new = "    return a.col < b.col;"
@@ -55,7 +53,7 @@ test = "backend.transfer_map_io"
 [[mutation]]
 id = "supermesh-normalises-extensive-the-same-as-intensive"
 area = "backend"
-describes = "KNOWN_ISSUES.md D82 (owner decision 2026-10-19): Extensive's weights must normalise by source measure (columns sum to 1, the transferred amount conserves); Intensive's weights normalise by target measure (rows sum to 1, the field value interpolates). Flipping the sense of the conservation-kind test makes build_supermesh_weights apply Intensive's row normalisation to an Extensive channel (or vice versa): the per-row-sum/monotone diagnostics still pass (they do not know which convention is being asked for), so only an assertion that checks the CONSERVED QUANTITY -- total transferred amount for Extensive, a constant field's value for Intensive -- catches this."
+describes = "Extensive's weights must normalise by source measure (columns sum to 1, the transferred amount conserves); Intensive's weights normalise by target measure (rows sum to 1, the field value interpolates). Flipping the sense of the conservation-kind test makes build_supermesh_weights apply Intensive's row normalisation to an Extensive channel (or vice versa): the per-row-sum/monotone diagnostics still pass (they do not know which convention is being asked for), so only an assertion that checks the CONSERVED QUANTITY -- total transferred amount for Extensive, a constant field's value for Intensive -- catches this."
 file = "src/backend/supermesh.cpp"
 old = "const bool extensive = conservation == Conservation::Extensive;"
 new = "const bool extensive = conservation != Conservation::Extensive;"

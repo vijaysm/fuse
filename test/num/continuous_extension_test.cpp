@@ -1,8 +1,8 @@
-// S8 physics-kit, track "Integrators", Stage B Round 2 (task item 5: dense output).
+// Dense output.
 //
 // continuous_extension.hpp's own top comment states the deviation: this ships the
 // cubic Hermite interpolant, not DOPRI5's own method-specific quartic (a reliable
-// source for that polynomial's exact coefficients was not found this round). This
+// source for that polynomial's exact coefficients was not found). This
 // file MEASURES the cubic Hermite's actual interior order rather than asserting a
 // label -- the project's own standing rule, "measured, not asserted".
 
@@ -35,7 +35,7 @@ TemporalProblem<double> dahlquist_real(double lambda) {
 // One accepted DOPRI45 step of size h from (t0, y0), returning (y1, f0, f1) -- f0/f1
 // are the SAME rhs evaluations continuous_extension.hpp's own top comment describes a
 // caller as already holding (f0 is the tableau's own first-stage evaluation, f1 the
-// FSAL last stage DOPRI45 already carries per Round 1's own is_FSAL correction); this
+// FSAL last stage DOPRI45 already carries per the corrected is_FSAL); this
 // test does not reach into ExplicitIntegrator's own internals for them, it simply
 // evaluates the SAME rhs function at the two endpoints, which is externally
 // observable and all continuous_extension.hpp's own interface requires.
@@ -61,7 +61,7 @@ SteppedInterval take_one_dopri45_step(double lambda, double t0, double y0, doubl
   return out;
 }
 
-// Same log-log least-squares slope fit used throughout Round 1/2's own order tests
+// Same log-log least-squares slope fit used throughout the integrator order tests
 // (explicit_integrator_test.cpp, dirk_integrator_test.cpp, rosenbrock_integrator_test.cpp).
 struct OrderFit {
   double slope = 0.0;
@@ -98,7 +98,7 @@ OrderFit fit_order(const std::vector<double>& hs, const std::vector<double>& err
   return fit;
 }
 
-// kOrderToleranceMultiplier=8.0: same multiplier used throughout Round 1/2 (the
+// kOrderToleranceMultiplier=8.0: same multiplier used throughout the order tests (the
 // regression's own standard error scaled up to absorb the fact that only a decade of
 // h values is sampled, not an asymptotic family) -- not a number tuned to this test.
 constexpr double kOrderToleranceMultiplier = 8.0;

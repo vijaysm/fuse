@@ -18,11 +18,10 @@
 #include "fuse/num/integrator.hpp"
 #include "fuse/num/newton_krylov.hpp"
 
-/// S8 physics-kit, track "Integrators", Stage B Round 2, task item 3: the Rosenbrock
-/// family.
+/// The Rosenbrock family.
 ///
-/// IMPLEMENTATION NOTE on which equation this header solves (a correction against the
-/// task's own prose formula, MEASURED, not a judgement call): the task's literal
+/// IMPLEMENTATION NOTE on which equation this header solves (MEASURED, not a
+/// judgement call): the literal form
 /// "(I/(h gamma) - J) k_i = f(y + sum_j a_ij k_j) + sum_j (c_ij/h) k_j" was coded
 /// first and found, by direct numerical comparison against the SAME tableau's own
 /// independently-validated stability function (`rosenbrock_classical_form()` +
@@ -30,8 +29,7 @@
 /// published R(-inf) values for five tableaus), to give a DIFFERENT one-step result
 /// than the validated R(z)*y0 prediction on ROS22/Dahlquist (0.96542+0.05012i vs the
 /// correct 0.97976+0.02940i at h=0.01) -- confirmed by hand re-deriving both sides in
-/// exact arithmetic (recorded in the Round 2 submission's own measured_results, not
-/// repeated here). This header instead implements the CLASSICAL Rosenbrock/ROW-method
+/// exact arithmetic. This header instead implements the CLASSICAL Rosenbrock/ROW-method
 /// recurrence directly (Hairer & Wanner, Solving ODEs II, IV.7, eq. (7.2)-(7.4)) on
 /// the RECOVERED (alpha, Gamma, b) triple (the SAME recovery `rosenbrock_classical_form`
 /// already performs for the stability/order tests, extended here to expose `alpha` and
@@ -47,18 +45,17 @@
 /// own compiled code) to reproduce the validated R(z)*y0 prediction exactly at
 /// h = 0.01 on ROS22/Dahlquist before being trusted for the order tests.
 ///
-/// J is the Jacobian, held FIXED for the WHOLE step (owner's standing decision, task
-/// item 3: "one MatrixFreeOperator set_point plus gmres per stage"): `problem.
+/// J is the Jacobian, held FIXED for the WHOLE step (one
+/// MatrixFreeOperator set_point plus gmres per stage): `problem.
 /// jacobian_action`, evaluated at `(t, state)`, when present; `fuse::num::
 /// MffdJacobianAction` (reused directly from newton_krylov.hpp, wrapping `problem.rhs`
-/// at FIXED `t`) otherwise -- task item 2's own "jacobian_action() used when present
-/// else MFFD" is satisfied here exactly as asked (DIRK's own header explains why
-/// `fuse::num::solve()`'s fixed signature cannot take one there).
+/// at FIXED `t`) otherwise, so `jacobian_action()` is used when present, else MFFD (DIRK's own header
+/// explains why `fuse::num::solve()`'s fixed signature cannot take one there).
 ///
 /// Each stage's own linear solve runs `fuse::linalg::gmres` directly against a
 /// `MatrixFreeOperator` built from `I - h*gamma*J`, identity-preconditioned, at
-/// `GmresOptions::rel_tol = step_rtol * stage_tolerance_factor` -- owner decision (5),
-/// Stage A design Section 7: "stage GMRES rtol = step rtol times a fixed factor
+/// `GmresOptions::rel_tol = step_rtol * stage_tolerance_factor` (design doc
+/// Section 7): "stage GMRES rtol = step rtol times a fixed factor
 /// starting at 1e-2, verified by the per-method order test, tightened never loosened".
 namespace fuse::num {
 
@@ -149,8 +146,8 @@ class RosenbrockIntegrator final : public Integrator<Value> {
   /// folded into the step: the test RosenbrockIntegrator.
   /// StageSolveFailureIsRefusedNotFoldedIntoTheStep fires that refusal with a
   /// budget of one step on a 2x2 system with complex eigenvalues, where no real
-  /// one-dimensional Krylov space can reach the stage tolerance (lead,
-  /// 2026-10-31; the refusal's mutation row survived round 2 without this).
+  /// one-dimensional Krylov space can reach the stage tolerance (the
+  /// refusal's mutation row needs this to be killable).
   void set_stage_gmres_max_iterations(std::size_t n) noexcept { stage_gmres_max_iterations_ = n; }
 
   [[nodiscard]] const std::vector<std::size_t>& last_step_gmres_iterations() const noexcept {

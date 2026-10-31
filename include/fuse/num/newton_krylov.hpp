@@ -1,14 +1,9 @@
 #pragma once
 
-/// S7.2: a native, Jacobian-free Newton-Krylov (JFNK) coupler on
+/// A native, Jacobian-free Newton-Krylov (JFNK) coupler on
 /// fuse::linalg, replicating the mechanisms that make PETSc's SNESNEWTONLS
-/// robust in practice -- without depending on PETSc. The user's own brief
-/// (docs/dev/newton-krylov.md's design page, which this header's own
-/// implementation is appended to): "take note of line search based Newton
-/// iterations and all the advanced algorithms to make JFNK converge well
-/// in PETSc and try to replicate as elegantly as possible without
-/// overwhelming the support... robust for most problems... eliminate any
-/// hard dependency on PETSc".
+/// robust in practice -- without depending on PETSc (see
+/// docs/dev/newton-krylov.md's design page).
 ///
 /// EXACTLY SIX MECHANISMS, nothing else from SNES (no trust region, no
 /// NGMRES, no nonlinear preconditioning):
@@ -26,7 +21,7 @@
 ///      own taxonomy (SNESConvergedReason), reproduced as an enum rather
 ///      than a bare bool so no outcome is ever silent.
 ///   6. A lagged, block-Jacobi preconditioner (BlockJacobiPreconditioner)
-///      -- the physics-based preconditioning the user named: each region
+///      -- the physics-based preconditioning: each region
 ///      member's own LinearizationToken::apply_preconditioner
 ///      (fuse/runtime/component.hpp), composed over its own block of the
 ///      stacked interface vector. Rebuilt every `preconditioner_lag`
@@ -39,11 +34,11 @@
 /// SAME duck-typed, span-based shape `LinearizationToken::
 /// apply_preconditioner` already uses (`std::span<const double> r,
 /// std::span<double> z`), so a caller in `fuse::runtime` (the graph-level
-/// wiring, a separate step of this same track) adapts a real token into
+/// wiring) adapts a real token into
 /// one with a one-line lambda; this header never needs to see the token
 /// type itself.
 ///
-/// RANK AGREEMENT (the project's own standing rule). Every quantity this
+/// RANK AGREEMENT. Every quantity this
 /// file's convergence/divergence tests branch on -- `||F||`, `||dx||`,
 /// the GMRES residual -- is read from `DistVector::norm2()`/`dot()`,
 /// which already reduce across every participant inside `comm.hpp`'s
@@ -90,7 +85,7 @@ using fuse::linalg::DistVector;
 // ===========================================================================
 
 /// `F(x)`: the coupled residual a Newton step zeroes
-/// (`fuse::FixedPointResidual`, a later step of this track, adapts
+/// (`fuse::FixedPointResidual` adapts
 /// `fuse::Runner::region_fixed_point_residual()`'s span-based evaluate
 /// into exactly this `DistVector`-based shape). Non-const `x` because an
 /// implementation may need `x.update_ghosts()` first, the same reason
@@ -191,7 +186,7 @@ class MffdJacobianAction {
 
 enum class EisenstatWalkerChoice {
   /// A fixed `eta` every step -- no adaptivity. Exists as the simplest
-  /// alternative the task names, and as the control a test compares the
+  /// alternative, and as the control a test compares the
   /// other two choices against.
   Constant,
   /// Eisenstat & Walker's choice 1: `eta_k = |  ||F_k|| - ||F_{k-1} +
@@ -222,8 +217,8 @@ struct EisenstatWalkerOptions {
   double eta_max = 0.9;
   /// Floor. SNES's own forcing-term code clamps only at `eta_max`, not
   /// below -- its forcing term can reach exactly zero (an exact linear
-  /// solve). The OPTION exists because the task's own brief named "a cap
-  /// eta_max = 0.9 and floor" as a possibility, but the DEFAULT is `0.0`
+  /// solve). The OPTION exists so a cap `eta_max = 0.9` and a floor can be
+  /// chosen, but the DEFAULT is `0.0`
   /// precisely so that it is SNES's own default (CORRECTED: an earlier
   /// draft defaulted this to `1e-4` as a judgement call, presented
   /// alongside options that are genuinely SNES's own defaults, which
@@ -310,11 +305,11 @@ struct PreconditionerBlock {
 /// (NewtonKrylovOptions::preconditioner_lag decides how often that is);
 /// `apply()` itself issues no new evaluation of anything -- it is a pure
 /// local recombination of each block's own `apply`, over the OWNED
-/// portion of the vector (this track's own scope, matching
+/// portion of the vector (matching
 /// `fuse::Runner::region_fixed_point_residual()`'s single-participant
-/// restriction -- a cross-rank block-Jacobi preconditioner is a later
-/// step's work, once the fixed-point residual itself is lifted to a
-/// window-scoped, multi-participant region).
+/// restriction; a cross-rank block-Jacobi preconditioner would need the
+/// fixed-point residual itself lifted to a window-scoped,
+/// multi-participant region).
 class BlockJacobiPreconditioner {
  public:
   /// Refuses `E-NEWTON-PRECOND-COVERAGE` when the blocks do not exactly
@@ -423,7 +418,7 @@ struct NewtonResult {
                                          const NewtonKrylovOptions& opt = {});
 
 // ===========================================================================
-// S7.2b (PetscSelect track): the Newton substrate registry.
+// The Newton substrate registry.
 // ===========================================================================
 
 /// Mirrors `fuse::NewtonSubstrate` (fuse/model/iteration.hpp) -- declared
@@ -456,7 +451,7 @@ enum class NewtonSubstrate { Native, Petsc };
 /// dispatches through the registry calls either substrate the same way,
 /// with no `if` on which one it got.
 ///
-/// `comm_f` (KNOWN_ISSUES.md D31/D32): an `MPI_Comm_c2f` handle for the
+/// `comm_f`: an `MPI_Comm_c2f` handle for the
 /// region's own participant communicator, `0` when there is none (a
 /// single-rank region, or no communicator configured at all) -- the ONE
 /// thing `fuse::num`'s own comm-free abstraction (`fuse::linalg::

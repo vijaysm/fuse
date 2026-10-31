@@ -1,34 +1,21 @@
-// KNOWN_ISSUES.md D15, round 2, item 3 (the lead's own instruction): "a
-// plugin on a rank subset" -- the one item of D15's own three missing
-// pieces that is pure MPI and needs no device support. Every provider-
-// direction fixture before this round ran single-process
-// (test/abi/conformance_test.cpp's own GraphDeclaredPluginIsAutoMounted
-// AndRun, which this file's own graph and driving sequence mirror); this
-// one places the `LaunchMode::Plugin` component on a STRICT SUBSET of a
-// real multi-rank base communicator and confirms both halves: the
-// hosting rank(s) actually call through the plugin, and the NON-hosting
-// rank runs `fuse_run()` to completion without ever touching it.
+// A plugin on a rank subset: the `LaunchMode::Plugin` component is placed
+// on a STRICT SUBSET of a real multi-rank base communicator and this file
+// confirms both halves: the hosting rank(s) actually call through the
+// plugin, and the NON-hosting rank runs `fuse_run()` to completion without
+// ever touching it. This is pure MPI and needs no device support. Its graph
+// and driving sequence mirror test/abi/conformance_test.cpp's own
+// GraphDeclaredPluginIsAutoMountedAndRun, which runs single-process.
 //
-// Compiled under FUSE_ENABLE_MPI only; MPI cannot start in this sandbox
-// (KNOWN_ISSUES.md C1), so this row is BUILT, never run here. This
-// file's own existence surfaced a design question (Registry::
-// mount_dynamic() dlopen()s the plugin on every rank, not only the
-// hosting ones) that was NOT decided when this file was first written
-// -- it is decided and fixed now (KNOWN_ISSUES.md D15, "Registry
-// hosting" track, owner decision 2026-10-22: "NO. This should not
-// happen."): only a hosting rank dlopen()s the plugin's shared object.
-// The `dlopen(..., RTLD_NOLOAD)` check below pins that, for rank 0,
-// never a member of "upstream"'s own RankSet in this fixture; the
-// tier-0 twin with no MPI is test/abi/conformance_test.cpp's own
+// Compiled under FUSE_ENABLE_MPI only and needs a working MPI launcher.
+// Registry::mount_dynamic() dlopen()s the plugin only on a hosting rank:
+// the `dlopen(..., RTLD_NOLOAD)` check below pins that, for rank 0, never a
+// member of "upstream"'s own RankSet in this fixture; the tier-0 twin with
+// no MPI is test/abi/conformance_test.cpp's own
 // ConformanceTest.NonHostingRankNeverDlopensThePluginOrCallsAnyOfItsEntries.
 //
-// The "Registry hosting" fix above left one gap open, recorded in its
-// own KNOWN_ISSUES.md D15 paragraph ("Open after the mount-everywhere
-// fix"): a plugin-side refusal became visible only to a hosting rank,
-// so a non-hosting rank of the SAME base communicator proceeded past
-// it, violating the project's standing "agree first, then every rank
-// refuses with the same code" rule. Closed now ("Registry agreement"
-// track, owner decision 2026-10-22, option (b)):
+// A plugin-side refusal must be visible to every rank of the base
+// communicator, not only a hosting one, per the project's standing "agree
+// first, then every rank refuses with the same code" rule.
 // AHostingRanksPluginMountFailureIsAgreedByEveryRankNotOnlyTheHostingOnes
 // below places a deliberately BROKEN plugin (the BAD_VERSION variant)
 // on every hosting rank and confirms EVERY rank -- hosting or not --
@@ -74,15 +61,11 @@ const fuse_participant_abi_v1* Table() {
 /// plugin is independently observable without reaching into the
 /// plugin's own C source.
 ///
-/// KNOWN_ISSUES.md D15, round 4 (host measurement): this class always
-/// registered a FULL, 1-entry view REGARDLESS of rank -- exactly
-/// ProviderAdapter's own round-3 bug (D24: "a component that does not
-/// live on this rank gets an empty view"), except here on the OTHER
-/// side of this test's own channel. "downstream" is placed at RankSet
-/// {0, 1} (rank 0 only); on a 2-rank world, rank 1 is NOT in it, so this
-/// class registering count=1 there disagreed with the real plan's own
-/// 0-entry expectation -- the E-RT-SETUP-PEER host failure this entry's
-/// own round-4 paragraph measures. `hosted` (constructor argument, the
+/// A component that does not live on this rank gets an empty view.
+/// "downstream" is placed at RankSet {0, 1} (rank 0 only); on a 2-rank
+/// world, rank 1 is NOT in it, so registering count=1 there would disagree
+/// with the real plan's own 0-entry expectation (an E-RT-SETUP-PEER
+/// failure). `hosted` (constructor argument, the
 /// caller's own `graph.component(...).ranks.contains(rank)` check,
 /// mirroring ProviderAdapter::set_hosting_rank()'s own convention)
 /// decides whether this rank registers the real size or an empty view.
@@ -133,8 +116,8 @@ TEST(ProviderSubsetMpi, APluginOnARankSubsetRunsOnlyOnItsOwnHostingRanksWithNoHa
   ASSERT_GE(world_size, 2) << "this row needs at least 2 ranks (RANKS 2 3)";
 
   // "upstream" (the plugin) is placed on every rank EXCEPT rank 0 --
-  // {1} of a 2-rank world, {1,2} of a 3-rank world, per this round's own
-  // task. "downstream" (native, injected below) stays on rank 0 alone.
+  // {1} of a 2-rank world, {1,2} of a 3-rank world.
+  // "downstream" (native, injected below) stays on rank 0 alone.
   fuse::CouplingGraph g;
   const auto m1 = g.add_mesh(fuse::MeshDecl{.name = "m1", .source = "generated:line:1"});
   const auto m2 = g.add_mesh(fuse::MeshDecl{.name = "m2", .source = "generated:line:1"});
@@ -174,12 +157,12 @@ TEST(ProviderSubsetMpi, APluginOnARankSubsetRunsOnlyOnItsOwnHostingRanksWithNoHa
   fuse_setup_options opts{.struct_size = sizeof(opts)};
   opts.communicator = static_cast<std::int64_t>(MPI_Comm_c2f(MPI_COMM_WORLD));
   // Open MPI's Fortran handle for MPI_COMM_WORLD is 0, which the ABI reads as
-  // "none" unless has_communicator says the handle is deliberate (KNOWN_ISSUES.md D86, D85).
+  // "none" unless has_communicator says the handle is deliberate.
   opts.has_communicator = 1;
   ASSERT_EQ(t->setup(ctx, &opts, nullptr), FUSE_OK);
 
   // "downstream" is placed at RankSet{0, 1} -- rank 0 only (see `down`
-  // above); every other rank must register an EMPTY view, D15 round 4.
+  // above); every other rank must register an EMPTY view.
   auto sink = std::make_unique<DownstreamSink>(/*hosted=*/rank == 0);
   DownstreamSink* sink_ptr = sink.get();
   ASSERT_TRUE(fuse::abi_test::inject_component(ctx, "downstream", std::move(sink)));
@@ -191,17 +174,15 @@ TEST(ProviderSubsetMpi, APluginOnARankSubsetRunsOnlyOnItsOwnHostingRanksWithNoHa
     err.buffer = buf;
     err.capacity = sizeof(buf);
     t->last_error(ctx, nullptr, &err);
-    // KNOWN_ISSUES.md D15, round 4 (host measurement): test/support/
-    // fuse_test_main.cpp's own main() deletes every NON-ZERO rank's own
-    // GoogleTest result printer (so an MPI job's own log is not N copies
-    // of the same test names) -- which ALSO silently swallows a FAIL()
-    // message's own text on any rank but 0. The one rank whose own
+    // test/support/fuse_test_main.cpp's own main() deletes every NON-ZERO
+    // rank's own GoogleTest result printer (so an MPI job's own log is not
+    // N copies of the same test names) -- which ALSO silently swallows a
+    // FAIL() message's own text on any rank but 0. The one rank whose own
     // fuse_initialize() genuinely failed is exactly the rank most likely
     // to be non-zero here ("upstream" is hosted on ranks 1..world_size-1,
-    // never rank 0) -- its own diagnostic was lost this way on the host
-    // (E-RT-SETUP-PEER's own message, printed correctly on rank 0, said
-    // only "see that rank's own error", and rank 1's log had nothing).
-    // Printed to stderr directly, bypassing GoogleTest's own printer
+    // never rank 0), and E-RT-SETUP-PEER's own message, printed on rank 0,
+    // says only "see that rank's own error". Printed to stderr directly, bypassing
+    // GoogleTest's own printer
     // entirely, so it reaches this rank's own captured log regardless of
     // which rank is 0.
     std::fprintf(stderr, "rank %d: fuse_initialize failed: %s\n", rank, buf);
@@ -209,16 +190,14 @@ TEST(ProviderSubsetMpi, APluginOnARankSubsetRunsOnlyOnItsOwnHostingRanksWithNoHa
     FAIL() << "rank " << rank << ": fuse_initialize failed: " << buf;
   }
 
-  // KNOWN_ISSUES.md D15 ("Registry hosting" track, owner decision
-  // 2026-10-22): "upstream"'s own RankSet is {1, world_size - 1} --
+  // "upstream"'s own RankSet is {1, world_size - 1} --
   // rank 0 is NEVER a member of it, on either a 2- or a 3-rank world,
   // so rank 0 is ALWAYS the non-hosting case for this fixture. Direct,
   // OS-level evidence that this rank's own ProviderAdapter never
   // dlopen()'d "upstream"'s shared object at all -- the tier-0
   // conformance test (test/abi/conformance_test.cpp's own
   // NonHostingRankNeverDlopensThePluginOrCallsAnyOfItsEntries) pins the
-  // identical check with no MPI; this is its real-multi-process twin,
-  // built here but never run (KNOWN_ISSUES.md C1 -- see host_pending).
+  // identical check with no MPI; this is its real-multi-process twin.
   if (rank == 0) {
     void* resident = dlopen(FUSE_TEST_C_PROVIDER_PLUGIN, RTLD_NOLOAD | RTLD_LAZY);
     EXPECT_EQ(resident, nullptr)
@@ -232,8 +211,8 @@ TEST(ProviderSubsetMpi, APluginOnARankSubsetRunsOnlyOnItsOwnHostingRanksWithNoHa
   // own RankSet on a 3-rank world there is none here, but rank 0 hosts
   // only "downstream", never "upstream") and must still execute its own
   // share of the period's collectives, per entries.def's own doc on
-  // `run` (and D61's own reconciliation, round 1, if this rank's call
-  // ever refused locally while others did not).
+  // `run` (and the reconciliation, if this rank's call ever refused
+  // locally while others did not).
   fuse_run_request rr{.struct_size = sizeof(rr)};
   rr.periods = 3;
   const fuse_status run_rc = t->run(ctx, &rr, nullptr);
@@ -258,8 +237,7 @@ TEST(ProviderSubsetMpi, APluginOnARankSubsetRunsOnlyOnItsOwnHostingRanksWithNoHa
 }
 
 
-// KNOWN_ISSUES.md D15 ("Registry agreement" track, owner decision
-// 2026-10-22, option (b)): the real multi-process twin of test/abi/
+// The real multi-process twin of test/abi/
 // conformance_test.cpp's own NonHostingRankAdoptsAHostingPeersPluginMount
 // FailureThroughTheBaseCommunicatorReduction and HostingRanksOwnPlugin
 // MountFailureStillReachesTheBaseCommunicatorReduction -- no fake peers
@@ -267,8 +245,7 @@ TEST(ProviderSubsetMpi, APluginOnARankSubsetRunsOnlyOnItsOwnHostingRanksWithNoHa
 // (the plugin) is placed on every rank EXCEPT rank 0, exactly as the
 // happy-path row above, but its own plugin_path is the already-built
 // BAD_VERSION variant (test/CMakeLists.txt), so EVERY hosting rank's own
-// mount_dynamic() fails for real. Built, never run (KNOWN_ISSUES.md C1
-// -- see host_pending).
+// mount_dynamic() fails for real.
 TEST(ProviderSubsetMpi,
     AHostingRanksPluginMountFailureIsAgreedByEveryRankNotOnlyTheHostingOnes) {
   const auto* t = Table();
@@ -305,7 +282,7 @@ TEST(ProviderSubsetMpi,
   fuse_setup_options opts{.struct_size = sizeof(opts)};
   opts.communicator = static_cast<std::int64_t>(MPI_Comm_c2f(MPI_COMM_WORLD));
   // Open MPI's Fortran handle for MPI_COMM_WORLD is 0, which the ABI reads as
-  // "none" unless has_communicator says the handle is deliberate (KNOWN_ISSUES.md D86, D85).
+  // "none" unless has_communicator says the handle is deliberate.
   opts.has_communicator = 1;
   ASSERT_EQ(t->setup(ctx, &opts, nullptr), FUSE_OK);
 
@@ -317,8 +294,7 @@ TEST(ProviderSubsetMpi,
   // every hosting rank's own real E-ABI-VERSION failure, through the
   // base-communicator MPI_Allreduce(MPI_MINLOC) reconcile_plugin_
   // agreement() runs, never through collective_comm_f (which stays 0
-  // for this plugin-only, my_component-unset graph, D15's own "Open
-  // after the mount-everywhere fix" paragraph).
+  // for this plugin-only, my_component-unset graph).
   std::vector<std::int32_t> all_rc(static_cast<std::size_t>(world_size));
   const std::int32_t mine = init_rc;
   MPI_Allgather(&mine, 1, MPI_INT32_T, all_rc.data(), 1, MPI_INT32_T, MPI_COMM_WORLD);
@@ -341,7 +317,7 @@ TEST(ProviderSubsetMpi,
     err.capacity = sizeof(buf);
     ASSERT_EQ(t->last_error(ctx, nullptr, &err), FUSE_OK);
     EXPECT_STREQ(err.code, "E-ABI-PLUGIN-AGREEMENT-REFUSED");
-    // D97 (2026-10-30): the peer's message carries the ORIGIN's own code and
+    // The peer's message carries the ORIGIN's own code and
     // text, not only the rank: the hosting rank refused with E-ABI-VERSION.
     const std::string message(buf);  // last_error() writes the message into the caller's buffer
     EXPECT_NE(message.find("E-ABI-VERSION"), std::string::npos) << message;

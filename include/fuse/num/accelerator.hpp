@@ -187,7 +187,7 @@ class Accelerator {
     return field_offsets_;
   }
 
-  /// Round 2 fix 1 (docs/dev/restart.md, NO SILENT RESET). Whether
+  /// NO SILENT RESET (docs/dev/restart.md). Whether
   /// `export_restart_state()`/`import_restart_state()` below are a REAL
   /// implementation for this accelerator kind -- even a trivial one,
   /// because the kind provably has no learned state to restart at all.
@@ -214,10 +214,9 @@ class Accelerator {
     return false;
   }
 
-  /// Restart track (docs/dev/restart.md), owner decision 4: accelerator
-  /// memory is keyed by (field, global id) so it MOVES across a
-  /// rank-count change rather than being reset. Round 2's own EXACT-KEY
-  /// fix: `blocks` is the region's own stacked interface vector broken
+  /// Accelerator memory (docs/dev/restart.md) is keyed by (field, global
+  /// id) so it MOVES across a rank-count change rather than being reset.
+  /// Exact keys: `blocks` is the region's own stacked interface vector broken
   /// into the SAME per-field sub-ranges `fuse::Runner` already tracks
   /// (`detail::RegionBlock`, src/runtime/runner_impl.hpp) -- block `k`'s
   /// `ids` are THAT block's OWNING component's own global ids, used
@@ -245,19 +244,17 @@ class Accelerator {
     return Result<void>::success();
   }
 
-  /// The read-back counterpart. `allow_reset_on_mismatch` is the owner's
+  /// The read-back counterpart. `allow_reset_on_mismatch` is an
   /// explicit, off-by-default run option (docs/dev/restart.md's
   /// `@written_by_stacked_vector_layout_hash` refusal): `false` (the
   /// default) means a row with no matching entry in the file is
   /// `Failure` (E-RESTART-BAD-NUMBERING); `true` means `reset()` runs
   /// instead and `did_reset` is set to `true`, for the caller to report
-  /// at restart (owner decision 4: "when used it is reported at
-  /// restart").
+  /// at restart (when used it is reported at restart).
   ///
   /// Default: UNCONDITIONAL `Failure` (E-RESTART-NOT-IMPLEMENTED) --
-  /// round 2 fix 1's own "the default no-op must not be able to look
-  /// like success" requirement, stated here as literally as the
-  /// interface allows: the base class itself refuses rather than
+  /// the default no-op must not be able to look like success, so the
+  /// base class itself refuses rather than
   /// returning a success a caller could mistake for "nothing to
   /// restore". `fuse::Runner::restore_restart_fields()` already checks
   /// `restart_state_implemented()` before reaching this call at all (so
@@ -314,11 +311,10 @@ void relax_into(double w, const double* x_old, const double* x_new,
 void field_weights(const std::vector<std::size_t>& offsets, const double* r,
                    std::size_t n, std::vector<double>& out);
 
-/// Round 2 EXACT-KEY fix (docs/dev/restart.md). Shared by every
+/// Exact-key restart helper (docs/dev/restart.md). Shared by every
 /// Accelerator implementation that restarts a flat, stacked-interface-
 /// vector buffer (AitkenAccel::r_prev_, SteffensenAccel::r_prev_/
-/// x_old_prev_, QuasiNewtonAccel's own buffers if a future round
-/// implements them): writes `flat` -- one value per row, `components`
+/// x_old_prev_, QuasiNewtonAccel's own buffers if implemented): writes `flat` -- one value per row, `components`
 /// doubles per row, laid out in the SAME block order as `blocks` --  as
 /// one `put_field()` call PER BLOCK, under `name_prefix + "/" +
 /// block.field_name`, using that block's own unmodified ids. Two

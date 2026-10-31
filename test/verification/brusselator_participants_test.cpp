@@ -1,12 +1,11 @@
-// Time windows track (Conformance, Unit 2): the tier-0 harness the lead
-// specified -- drives the SAME two step functions `examples/brusselator/
-// participants/u_main.c` and `v_main.f90` call (the extern "C" shim,
-// shim.h/shim.cpp) through the participant ABI (fuse_begin_step()/
-// fuse_end_step()), in ONE process, with EXPECT_EQ against Unit 1's own
-// in-process fuse::Runner run.
+// The tier-0 harness: drives the SAME two step functions
+// `examples/brusselator/participants/u_main.c` and `v_main.f90` call (the
+// extern "C" shim, shim.h/shim.cpp) through the participant ABI
+// (fuse_begin_step()/fuse_end_step()), in ONE process, with EXPECT_EQ
+// against brusselator_runner_test.cpp's in-process fuse::Runner run.
 //
-// THE GRAPH IS UNIT 1's GRAPH, plus only add_coupler()/remap_on() (the
-// lead's own ruling): brusselator_graph.hpp's `add_window_coupling`,
+// THE GRAPH IS brusselator_runner_test.cpp's GRAPH, plus only
+// add_coupler()/remap_on(): brusselator_graph.hpp's `add_window_coupling`,
 // called with `coupler_ranks` set. Both transfer fields stay on
 // `u_region` (species_component.hpp's own file header explains why), so
 // the coupler-routed Remap this compiles is the IDENTITY.
@@ -17,49 +16,41 @@
 // functions u_main.c/v_main.f90 call) through the SAME coupler-routed,
 // EXPLICIT-interval window region together.
 // AbiParticipant.ExternallyDrivenWindowMemberMatchesInProcessRunner
-// (test/abi/participant_test.cpp) proved the single-member case.
+// (test/abi/participant_test.cpp) covers the single-member case.
 //
-// History (left here because it explains why this file still uses the
-// degenerate window == dt_u == dt_v case, kDtU=kDtV=kWindow=1/500,
-// rather than Unit 1's own dt_u != dt_v != window shape): this test was
-// originally DISABLED on two findings, both reported to the lead rather
-// than guessed past. Finding A -- is_coupling_ongoing()'s own period/now
-// never advanced, and U's own state staircased through several window
-// instances before settling -- was a real library defect, not a test
-// bug: ClockSet's own aggregates (common_period/finest_interval/
-// checked_common_period/is_lockstep/earliest_next/due_at) folded a
-// coupler's default interval (Rational{1}, since it declares none of
-// its own) into the lcm/gcd like any physics component's real interval,
-// silently inflating this graph's own compiled period to lcm(1/50, 1) =
-// 1 -- 50 window instances per period instead of one.
-// include/fuse/schedule/clock.hpp's own ClockSet constructor comment has
-// the full account; fixed there (Conformance Unit 2, Defect 1), covered
-// by test/schedule/clock_test.cpp's ClockSet.ACouplersDefaultInterval
-// NeverEntersTheLcmOrGcd and test/schedule/window_region_golden_test.cpp's
-// WindowRegionGolden.ACouplerDoesNotEnterTheWindowPeriod. RE-MEASURED
-// after that fix: this test now PASSES outright with no further change
-// needed here -- is_coupling_ongoing()'s period/now track correctly once
-// the period itself is right, so there is no second defect in
-// impl_is_coupling_ongoing.
+// The small degenerate window == dt_u == dt_v case (kDtU=kDtV=kWindow=
+// 1/500) is a useful structural shape here, but the non-degenerate
+// dt_u != dt_v != window shape is the real one. Two things it relies on:
 //
-// Finding B (window spans more than one of a member's own substeps) was
-// a SEPARATE defect from Finding A: strict U-then-V alternation once
-// per Picard sweep gets E-ABI-STEP-ORDER (component asked out of turn)
-// the moment a window spans more than one of a member's own substeps,
-// because there is then no single fixed alternation that is right for
-// every sweep. FIXED as Defect 3 by growing the ABI: `next_component`
-// appended to fuse_step_report/fuse_ongoing (entries.def's own comment
-// on that field has the full account), resolved for free inside
-// fuse_end_step()'s own pre-existing resume_period() call -- no new
-// cost, no retry loop. ExternallyDrivenMultiSubstepWindowDrivenByNext
-// Component below is the non-degenerate case this mechanism was built
-// for: window == 4*dt_u == 4*dt_v, so each Picard sweep takes four U
-// ticks and four V ticks, in whatever order the Runner's own schedule
-// actually interleaves them -- driven with ZERO guessing anywhere,
-// including the very first call of each period: fuse_is_coupling_
-// ongoing() resolves next_component straight from the compiled plan
-// (Runner::components_due_at_period_start(), no side effect) rather
-// than this test assuming declaration order.
+// - ClockSet's own aggregates (common_period/finest_interval/
+//   checked_common_period/is_lockstep/earliest_next/due_at) must not fold
+//   a coupler's default interval (Rational{1}, since it declares none of
+//   its own) into the lcm/gcd like any physics component's real interval;
+//   doing so would inflate this graph's own compiled period to
+//   lcm(1/50, 1) = 1 -- 50 window instances per period instead of one.
+//   include/fuse/schedule/clock.hpp's own ClockSet constructor comment
+//   has the account; covered by test/schedule/clock_test.cpp's
+//   ClockSet.ACouplersDefaultIntervalNeverEntersTheLcmOrGcd and
+//   test/schedule/window_region_golden_test.cpp's
+//   WindowRegionGolden.ACouplerDoesNotEnterTheWindowPeriod. With the
+//   period right, is_coupling_ongoing()'s period/now track correctly.
+//
+// - When a window spans more than one of a member's own substeps, strict
+//   U-then-V alternation once per Picard sweep gets E-ABI-STEP-ORDER
+//   (component asked out of turn), because there is then no single fixed
+//   alternation that is right for every sweep. `next_component`, on
+//   fuse_step_report/fuse_ongoing (entries.def's own comment on that field
+//   has the account), is resolved for free inside fuse_end_step()'s own
+//   resume_period() call -- no new cost, no retry loop.
+//   ExternallyDrivenMultiSubstepWindowDrivenByNextComponent below is the
+//   non-degenerate case this mechanism serves: window == 4*dt_u ==
+//   4*dt_v, so each Picard sweep takes four U ticks and four V ticks, in
+//   whatever order the Runner's own schedule actually interleaves them --
+//   driven with ZERO guessing anywhere, including the very first call of
+//   each period: fuse_is_coupling_ongoing() resolves next_component
+//   straight from the compiled plan (Runner::components_due_at_period_
+//   start(), no side effect) rather than this test assuming declaration
+//   order.
 #include <gtest/gtest.h>
 
 #include <ios>
@@ -93,32 +84,28 @@ using fuse::RankSet;
 using fuse::Result;
 using fuse::WaveformIteration;
 
-// S6 phase 3 (Conformance, Unit 3b), item 2(c): the REAL Brusselator
-// example's own grid (examples/brusselator/main.cpp's own Args
-// defaults: --nx-u 16 --ny-u 16 --nx-v 24 --ny-v 24), not the small/
-// degenerate placeholder this file used through Unit 3a -- mirrors
-// brusselator_graph_tool.cpp's own item 2(b) update exactly, so the
-// graph this file builds in-process and the graph that tool writes
-// still describe the identical physics problem.
+// The REAL Brusselator example's own grid (examples/brusselator/main.cpp's
+// own Args defaults: --nx-u 16 --ny-u 16 --nx-v 24 --ny-v 24), mirroring
+// brusselator_graph_tool.cpp exactly, so the graph this file builds
+// in-process and the graph that tool writes describe the identical
+// physics problem.
 constexpr int kNxU = 16, kNyU = 16, kNxV = 24, kNyV = 24;
 
-// dt_u != dt_v != window (the REAL example's own values, no longer the
-// degenerate dt_u == dt_v == window case Finding A/B's own history
-// above used): dt_u=0.002 divides window=0.02 exactly (10 substeps);
-// dt_v=0.003 does not (0.02/0.003 = 6.67), so DtPolicy::Adjustable
-// (CouplingWindowScope's own default, add_window_coupling) rounds V's
-// own substep count UP to 7 and shrinks each substep to fit the window
-// exactly -- confirmed below as `kExpectedVSubstepsPerWindow`, not
-// assumed. `ExternallyDrivenBothMembersMatchInProcessRunner{Jacobi,
-// GaussSeidel}` below are the first conformance tests anywhere in this
-// suite to drive this genuinely non-integer, two-member multirate
-// shape end to end -- the lead's own flagged risk ("the first time the
-// externally driven window path meets a 10:7 substep ratio").
+// dt_u != dt_v != window (the REAL example's own values, not the
+// degenerate dt_u == dt_v == window case): dt_u=0.002 divides
+// window=0.02 exactly (10 substeps); dt_v=0.003 does not
+// (0.02/0.003 = 6.67), so DtPolicy::Adjustable (CouplingWindowScope's own
+// default, add_window_coupling) rounds V's own substep count UP to 7 and
+// shrinks each substep to fit the window exactly -- confirmed below as
+// `kExpectedVSubstepsPerWindow`, not assumed.
+// `ExternallyDrivenBothMembersMatchInProcessRunner{Jacobi,GaussSeidel}`
+// below are the first conformance tests anywhere in this suite to drive
+// this genuinely non-integer, two-member multirate shape end to end (the
+// externally driven window path meeting a 10:7 substep ratio).
 const Rational kDtU{2, 1000}, kDtV{3, 1000}, kWindow{2, 100};
 constexpr double kTolerance = 1e-11;
 constexpr int kMaxIterations = 60;
-// --end 3 at window=1/50 (0.02): 3 / 0.02 = 150 windows exactly, the
-// lead's own instruction.
+// --end 3 at window=1/50 (0.02): 3 / 0.02 = 150 windows exactly.
 constexpr int kPeriods = 150;
 
 /// Everything `main.cpp` builds once, shared by the reference Runner and
@@ -184,7 +171,7 @@ const fuse_participant_abi_v1* Table() {
 
 }  // namespace
 
-// S6 phase 3 (Conformance, Unit 3b), item 2(c): the REAL Brusselator
+// The REAL Brusselator
 // example's own parameters (file-level kNxU/kDtU/kDtV/kWindow above),
 // both waveform iterations, driven for kPeriods=150 windows (--end 3
 // at window=1/50) -- the first conformance test anywhere in this suite
@@ -201,12 +188,11 @@ const fuse_participant_abi_v1* Table() {
 void RunBothMembersMatchInProcessRunner(WaveformIteration wi) {
   const brusselator::PhysicsConfig cfg;  // defaults: diffusion=10, A=3.4, B=1, forcing=true
 
-  // --- Reference: fuse::Runner driven directly, Unit 1's own graph
-  // (plus the coupler), Unit 1's own UComponent/VComponent. ---
+  // --- Reference: fuse::Runner driven directly, brusselator_runner_test.cpp's
+  // own graph (plus the coupler) and UComponent/VComponent. ---
   GraphAndWeights ref = build_graph_and_weights(kDtU, kDtV, kWindow, wi);
   // ONE call, on u_mesh only -- brusselator_runner_test.cpp's own
-  // make_rig()+run_via_runner() precedent (this session's earlier item 2
-  // work): every component's placement on a tier-0 backend is the same
+  // make_rig()+run_via_runner() precedent: every component's placement on a tier-0 backend is the same
   // deterministic (rank_, num_ranks_) view regardless of which mesh asks,
   // so registering against u_mesh alone already covers every component
   // this test's graph has.
@@ -254,7 +240,7 @@ void RunBothMembersMatchInProcessRunner(WaveformIteration wi) {
 
   // --- Same graph, driven entirely through the ABI: BOTH U and V
   // externally driven, stepped by the SAME shim functions u_main.c/
-  // v_main.f90 call -- the Unit 2 shape in miniature, in one process.
+  // v_main.f90 call -- the participants shape in miniature, in one process.
   GraphAndWeights abi_setup = build_graph_and_weights(kDtU, kDtV, kWindow, wi);
   const auto bytes = fuse::serialize(abi_setup.graph);
 
@@ -315,7 +301,8 @@ void RunBothMembersMatchInProcessRunner(WaveformIteration wi) {
   };
   register_one("U", "u_out", u_out.data(), nu);
   register_one("U", "u_in", u_in.data(), nu);
-  // v_out/v_in live on u_region too (Unit 1's own graph shape) -- length
+  // v_out/v_in live on u_region too (brusselator_runner_test.cpp's graph
+  // shape) -- length
   // nu, NOT nv.
   register_one("V", "v_out", v_out.data(), nu);
   register_one("V", "v_in", v_in.data(), nu);
@@ -364,8 +351,7 @@ void RunBothMembersMatchInProcessRunner(WaveformIteration wi) {
   // Confirmed, not assumed (this test's own header comment above): V's
   // own substep count per window, counted directly off the step
   // sequence below (u_substeps/v_substeps), must come out to exactly 10
-  // and 7 respectively for period 0 -- the "10:7" ratio the lead's own
-  // instruction named.
+  // and 7 respectively for period 0 -- the "10:7" ratio.
   constexpr int kExpectedUSubstepsPerWindow = 10;
   constexpr int kExpectedVSubstepsPerWindow = 7;
 
@@ -406,10 +392,10 @@ void RunBothMembersMatchInProcessRunner(WaveformIteration wi) {
     }
     ASSERT_EQ(ref_iterations[p] * kExpectedUSubstepsPerWindow, u_substeps)
         << "period " << p << ": U substep count did not match "
-           "ref_iterations[p] * 10 -- the sweep count itself diverged from Unit 1's own";
+           "ref_iterations[p] * 10 -- the sweep count itself diverged from the reference's own";
     ASSERT_EQ(ref_iterations[p] * kExpectedVSubstepsPerWindow, v_substeps)
         << "period " << p << ": V substep count did not match "
-           "ref_iterations[p] * 7 -- the sweep count itself diverged from Unit 1's own";
+           "ref_iterations[p] * 7 -- the sweep count itself diverged from the reference's own";
 
     fuse_ongoing ongoing{.struct_size = sizeof(ongoing)};
     ASSERT_EQ(t->is_coupling_ongoing(ctx, nullptr, &ongoing), FUSE_OK);
@@ -426,7 +412,7 @@ void RunBothMembersMatchInProcessRunner(WaveformIteration wi) {
           << "window " << (p + 1) << " U state[" << i << "]: harness="
           << std::hexfloat << u_state[i] << " ref=" << ref_u_state[p][static_cast<int>(i)]
           << std::defaultfloat
-          << " -- stopping at the first divergence, per the lead's own instruction";
+          << " -- stopping at the first divergence";
     }
     ASSERT_EQ(static_cast<int>(v_state.size()), ref_v_state[p].size());
     for (std::size_t i = 0; i < v_state.size(); ++i) {
@@ -434,7 +420,7 @@ void RunBothMembersMatchInProcessRunner(WaveformIteration wi) {
           << "window " << (p + 1) << " V state[" << i << "]: harness="
           << std::hexfloat << v_state[i] << " ref=" << ref_v_state[p][static_cast<int>(i)]
           << std::defaultfloat
-          << " -- stopping at the first divergence, per the lead's own instruction";
+          << " -- stopping at the first divergence";
     }
   }
 

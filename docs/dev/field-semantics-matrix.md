@@ -1,20 +1,18 @@
 # Field semantics: KARMA and SOMA against the current FUSE tree
 
-Track "Field semantics", Stage S8.1. Scratch-only, read-only against the owner's live
-checkout (`/tmp/s8fields`, unpacked from `git archive HEAD` at `8820aed`); nothing under
-`/Users/mahadevan/Code/AI/coupling` was touched. No code was written for this track; every
-claim below is READ (file:line) or MEASURED (a grep/count run in this task), and is marked
-as such. Nothing is INFERRED without being labeled.
+This page compares the field-level semantics of the vendored KARMA coupling headers and SOMA's
+field layer against the current FUSE tree, records which differences are real gaps, and states
+the design FUSE adopted where a gap was closed (Section 6). Every claim is READ (file:line) or
+MEASURED (a grep or count run against the tree); nothing is inferred without being labeled.
 
-Subject: the eight KARMA coupling headers whose porting.md successors could not be matched
-by symbol name in `docs/dev/physics-kit-disposition.md` Section 1.2 (physics-kit-disposition.md:118-130):
-`karma_field_coverage.h`, `karma_field_entry_encoding.h`, `karma_field_identity.h`,
-`karma_field_transaction.h`, `karma_field_transfer.h`, `karma_semantics_adapter.h`,
-`karma_transfer_diagnostics.h`, `karma_reference_components.h`, each read in full together
-with its `.C` file (`karma_field_identity.h` has no `.C`, confirmed by a MEASURED grep:
-`find upstream/karma -iname "karma_field_identity*"` returns only the header).
+Subject: the eight KARMA coupling headers whose successors cannot be matched by symbol name in the
+current FUSE tree: `karma_field_coverage.h`, `karma_field_entry_encoding.h`,
+`karma_field_identity.h`, `karma_field_transaction.h`, `karma_field_transfer.h`,
+`karma_semantics_adapter.h`, `karma_transfer_diagnostics.h`, `karma_reference_components.h`, each
+read in full together with its `.C` file (`karma_field_identity.h` has no `.C`, confirmed by a
+MEASURED grep: `find upstream/karma -iname "karma_field_identity*"` returns only the header).
 
-This document does not use `docs/dev/porting.md`'s historical successor names as evidence;
+This page does not use `docs/dev/porting.md`'s historical successor names as evidence;
 every claim of presence or absence in FUSE is a grep and a read of the CURRENT tree.
 
 ## 1. Plain verdict (8 rows)
@@ -28,7 +26,7 @@ every claim of presence or absence in FUSE is a grep and a read of the CURRENT t
 | 5 | `karma_field_transfer.h` | GAP | No probed-capability registry over transfer backends (`TransferCapabilities`, a diagnostic string naming why one is unavailable, an explicit `TransferState` machine) exists; FUSE's `TransferSemantics`/`ConnectionCompatibility` is a richer DECLARATIVE classification of what a channel promises, not a query of what is actually buildable. |
 | 6 | `karma_semantics_adapter.h` | GAP (narrow) | The field/port/component adaptation core (`to_semantics`, units-undeclared-not-dimensionless, temporal totality) is SUPERSET-CONFIRMED with FUSE tests; the one missing piece is the bounded-dyadic-double-to-Rational conversion with named refusal codes (`exact_time`/`rational_from_dyadic_bounded`) -- `fuse::Rational` has no double-ingesting constructor at all. |
 | 7 | `karma_transfer_diagnostics.h` | GAP | The measure-weighted relative-conservation check is SUPERSET-CONFIRMED and collectively verified (`Constrain`, runner.cpp:5112-5230) with one verified numerical DIFFERENCE (zero-reference floor); the PETSc mass-matrix residual-based transfer-accuracy check (`transfer_residual_report`, backward-error scale) has no FUSE equivalent at all. |
-| 8 | `karma_reference_components.h` | GAP | No component registry with named-contract selection, ambiguous-selection refusal, duplicate-registration refusal, or a reusable compliance harness that cross-checks a record's claims against the running component exists in FUSE; this is the same gap `physics-kit-disposition.md`'s own open question 6 names for `karma_registry.h`. |
+| 8 | `karma_reference_components.h` | GAP | No component registry with named-contract selection, ambiguous-selection refusal, duplicate-registration refusal, or a reusable compliance harness that cross-checks a record's claims against the running component exists in FUSE; `karma_registry.h` provides the same mechanism in KARMA. |
 
 No header in this set is PORT: in every case the SEMANTIC the header carries is well-defined
 and independently motivated (not merely a container KARMA happened to need), so the right
@@ -90,16 +88,16 @@ exists, the FUSE test that pins it; `MISSING` means a MEASURED grep found nothin
 | A relative integral error with an explicit zero-reference convention (reference 0, value 0 gives 0; reference 0, value nonzero gives `+infinity`, never a finite-but-meaningless ratio) | `relative_integral_error`, karma_transfer_diagnostics.C:12-18 | MISSING | **DIFFERENT, not superset.** `Constrain`'s own relative error (runner.cpp, around the `scale`/`rel` computation) uses `scale = |before| if nonzero else 1.0`, so a zero-reference, nonzero-after case reports a FINITE number (`|after|`) rather than KARMA's `+infinity`. Both are defensible backward-error-style conventions; they are NOT the same number for the same inputs. Flagged as a verified numerical difference, not assumed equivalent. |
 | A per-component integral conservation report (source / target-full / target-covered / fill-or-extension integrals, and the relative error of each against the source) | `TransferIntegralReport`, `make_transfer_integral_report`, karma_transfer_diagnostics.h:13-21,32-34, .C:20-40 | MISSING | Collapsed into a single collectively-reduced scalar per `Constrain` instruction (one before/after pair, `ConstrainInfo`, runner.cpp): no per-component breakdown, no separate "covered" vs "full" vs "fill-or-extension" integral -- a coarser report of the same underlying measured-integral concern |
 | The conservation check is COLLECTIVE and reduced before the verdict is formed, so every rank reaches the same accept/refuse decision from the same totals, and a partner's already-failed period does not turn into a spurious local conservation error | Not explicit in `karma_transfer_diagnostics.h` itself (the header's functions are local, PETSc-collective-norm-based, not multi-rank-reduced by this code) | MISSING | **Superset.** `Constrain`'s `MPI_Allreduce` of `{before, after, step_failure flag}` (runner.cpp) happens BEFORE the tolerance comparison, and a failed-elsewhere flag suppresses a spurious local violation -- a stronger collective-agreement discipline than KARMA's own diagnostics header provides, matching this project's standing rule that a collective path never returns on a locally computed condition |
-| A mass-matrix RESIDUAL check for a projected/transferred field: recompute `residual = mass*solution - rhs`, test `\|\|residual\|\|_inf <= tolerance * scale` with `scale = max(\|\|rhs\|\|_inf, \|\|mass\|\|_inf*\|\|solution\|\|_inf, eps)` -- a backward-error-style bound, not a flat tolerance on the raw residual | `transfer_residual_report`/`transfer_residual_within_tolerance`, karma_transfer_diagnostics.h:36-42, .C:42-75; used with a flat `1.0e-11` at `cg_transfer_accuracy_test.C:290` (itself flagged elsewhere, `physics-kit-disposition.md:244`, as "no derivation shown" for that constant) | MISSING | **MISSING.** MEASURED grep for "residual_within_tolerance", "transfer_residual", "MatMult.*residual" under include/fuse, src: zero hits. There is no PETSc-mass-matrix-residual-based transfer-accuracy check anywhere in the current FUSE tree. |
+| A mass-matrix RESIDUAL check for a projected/transferred field: recompute `residual = mass*solution - rhs`, test `\|\|residual\|\|_inf <= tolerance * scale` with `scale = max(\|\|rhs\|\|_inf, \|\|mass\|\|_inf*\|\|solution\|\|_inf, eps)` -- a backward-error-style bound, not a flat tolerance on the raw residual | `transfer_residual_report`/`transfer_residual_within_tolerance`, karma_transfer_diagnostics.h:36-42, .C:42-75; used with a flat `1.0e-11` at `cg_transfer_accuracy_test.C:290` (a flat constant with no derivation shown; Section 6.3 derives the bound) | MISSING | **MISSING.** MEASURED grep for "residual_within_tolerance", "transfer_residual", "MatMult.*residual" under include/fuse, src: zero hits. There is no PETSc-mass-matrix-residual-based transfer-accuracy check anywhere in the current FUSE tree. |
 
 ### 2.6 Reference component registry and compliance (karma_reference_components.h)
 
 | Semantic | KARMA | SOMA | FUSE |
 |---|---|---|---|
-| A component registry maps a named, versioned implementation id to a factory, grouped under a CONTRACT id; registering the same implementation id twice is refused by name (`DuplicateImplementationId`) rather than silently replacing it | `register_native_component`/`ComponentRegistry`, exercised via `register_reference_components`, karma_reference_components.C:198-205; tested `static_registration`, component_compliance_test.C:48-61 | MISSING | **MISSING.** MEASURED grep for "ComponentRegistry", "SelectionRequest", "SelectionPolicy" under include/fuse, src: zero hits. `fuse::Component` (runtime/component.hpp:265) is a single abstract base with no registry, no implementation-id namespace, and no selection layer above it. This is the same gap `physics-kit-disposition.md` Section "open questions" item 6 names for `karma_registry.h` (not one of this track's 8 headers, but the hard dependency `karma_reference_components.h` sits on): still open as of this analysis. |
+| A component registry maps a named, versioned implementation id to a factory, grouped under a CONTRACT id; registering the same implementation id twice is refused by name (`DuplicateImplementationId`) rather than silently replacing it | `register_native_component`/`ComponentRegistry`, exercised via `register_reference_components`, karma_reference_components.C:198-205; tested `static_registration`, component_compliance_test.C:48-61 | MISSING | **MISSING.** MEASURED grep for "ComponentRegistry", "SelectionRequest", "SelectionPolicy" under include/fuse, src: zero hits. `fuse::Component` (runtime/component.hpp:265) is a single abstract base with no registry, no implementation-id namespace, and no selection layer above it. `karma_registry.h` provides the same mechanism in KARMA; it is not one of the eight headers compared here, but `karma_reference_components.h` depends on it. |
 | Selecting by CONTRACT id alone, when two implementations satisfy it, is refused as `Ambiguous` rather than resolved by registration order; selecting an absent implementation id is `NotFound`, never substituted | component_compliance_test.C:62-68 (`by_contract` request -> `Ambiguous`; absent id -> `NotFound`) | MISSING | MISSING |
 | A reusable COMPLIANCE HARNESS drives a component through the full ABI lifecycle (create, bind_host, initialize, import_field, advance, commit, export_field) and checks the RUNNING component's behavior against what its OWN registry record claims, catching a record that overstates its capabilities or disagrees about its version | `check_component_compliance`, exercised in `compliance_harness`/`harness_detects_a_lying_record`, component_compliance_test.C:64-108 (checks > 20 per component; an overstated `KARMA_CAPABILITY_CANCELLATION` bit and a forged version are both caught, each with a named failure message) | MISSING | **MISSING.** No compliance-harness function exists anywhere in FUSE; `fuse::Component::capabilities()` (model/capabilities.hpp) is declared BY the component and consumed directly (`check_capabilities()`, src/model/compatibility.cpp, per model/semantics.hpp:142-149's own comment), with no independent runtime check that a component's declared bits match what it actually does. |
-| At least one dependency-free, analytically-steppable, bitwise-reproducible reference component exists in-tree purely to exercise the runtime contract end-to-end, with no PETSc or MPI dependency, so the compliance harness is runnable anywhere the library builds | `ReferenceDecayComponent` (exponential decay, exact per-step factor `exp(-rate*dt)`), karma_reference_components.C:15-116; two registered instances on purpose (`baseline`, `extended`) specifically so a selection test can prove ambiguity is refused rather than resolved silently, karma_reference_components.C:198-205 | MISSING | **MISSING.** No in-tree "reference" component exists purely to exercise `fuse::Component`'s own contract; FUSE's existing minimal examples (dn_heat, Brusselator, etc, per `physics-kit-disposition.md`'s own S7 citation) are physics examples, not contract-exercise fixtures, and none is registered twice under one contract to prove an ambiguity refusal. |
+| At least one dependency-free, analytically-steppable, bitwise-reproducible reference component exists in-tree purely to exercise the runtime contract end-to-end, with no PETSc or MPI dependency, so the compliance harness is runnable anywhere the library builds | `ReferenceDecayComponent` (exponential decay, exact per-step factor `exp(-rate*dt)`), karma_reference_components.C:15-116; two registered instances on purpose (`baseline`, `extended`) specifically so a selection test can prove ambiguity is refused rather than resolved silently, karma_reference_components.C:198-205 | MISSING | **MISSING.** No in-tree "reference" component exists purely to exercise `fuse::Component`'s own contract; FUSE's existing minimal examples (dn_heat, Brusselator, petsc_reaction_diffusion) are physics examples, not contract-exercise fixtures, and none is registered twice under one contract to prove an ambiguity refusal. |
 | The capability-bit vocabulary a component declares and a caller's `required_capabilities` demand are the SAME 64-bit space, so a selection and a requirement never silently disagree about what a bit means | `KARMA_CAPABILITY_*` bits shared between `ComponentSemantics::capabilities` and a port's requirement (karma_reference_components.C:118-120) | MISSING | Present and explicitly documented as shared: `FieldRequirement::required_capabilities` and `ComponentSemantics::capabilities` are "the SAME 64-bit space ... `check_capabilities()` ... tests this against a connection's `available_capabilities` bit for bit" (model/semantics.hpp:142-149,168-169); the bit NAMES themselves (`kCapabilityRollback`, `kCapabilityResidual`, etc, model/capabilities.hpp:128-183) are FUSE's own fixed-point/Newton/restart vocabulary, not KARMA's, but the ONE-SPACE discipline is the same semantic and is present |
 
 ### 2.7 Field coverage and fill policy (karma_field_coverage.h)
@@ -125,18 +123,16 @@ returns zero hits on direct re-check of each pattern (one earlier combined grep 
 `src/runtime/runner.cpp` was traced to the substring "resi"+"dual<Space>" inside
 `num::residual<Space>(...)` -- not a real match, confirmed by re-running each pattern
 separately against that file). These names appear ONLY in
-`docs/dev/physics-kit-disposition.md` (lines 14, 389, 561, 732) and
-`docs/dev/integrators-design.md`, describing the numtypes track (D-E) as landing IN
-PARALLEL, not yet in this tree.
+`docs/dev/integrators-design.md`, which describes a value-typing layer that has not been added
+to this tree.
 
 Consequence for this matrix: there is currently no value-typing layer to compare against
 KARMA's or SOMA's field semantics, because every field in the current tree is a `double`
 (`fuse::FieldRef`/`FieldSpan` are built on `Kokkos::View<double**, ...>`, field/field_ref.hpp,
 field/pipeline.hpp) exactly as KARMA's `Real` and SOMA's `double*` are. No current FUSE
-semantic is "expressed differently" by value-typing, because value-typing has not landed.
+semantic is "expressed differently" by value-typing, because no value-typing layer exists.
 
-The one forward-looking risk this track's own semantics surface, worth naming as an open
-question now rather than after `BasicFieldRef<T>` lands: KARMA's `FieldTransaction`
+One forward-looking risk, worth recording before `BasicFieldRef<T>` exists: KARMA's `FieldTransaction`
 accumulation canonicalization (Section 2.2 above) is defined in terms of a TOTAL ORDER on
 `double` (magnitude, then bit pattern, karma_field_transaction.C:48-54) specifically so a
 sum is bitwise independent of arrival order. A `dual<S,N>` (an AD-forward value carrying a
@@ -153,7 +149,7 @@ record before anyone builds the gap-closing addition on a scalar-only assumption
 Each names the SMALLEST addition and the layer it belongs in (`model`, `field`, or
 `runtime`, per this project's own layering document, `docs/dev/layering.md`, referenced at
 `include/fuse/model/restart.hpp`'s own layering comment). None of this is a decision to
-build; each is an `open_questions` entry below, for the owner.
+build; each is a candidate design, not a commitment.
 
 1. **Bounded double-to-Rational conversion** (closes the narrow gap in Section 2.4). Smallest:
    a free function in `fuse/base/rational.hpp`, `Result<Rational> rational_from_dyadic_bounded
@@ -175,9 +171,8 @@ build; each is an `open_questions` entry below, for the owner.
 4. **Mass-matrix residual transfer-accuracy check** (closes the second half of Section 2.5,
    row 7). Smallest: a free function beside FUSE's existing PETSc-facing code (`fuse/petsc/`),
    computing the same backward-error-style bound (`||residual||_inf <= tolerance*scale`)
-   KARMA's `transfer_residual_report` does, with the tolerance DERIVED per this project's own
-   standing rule (not the flat `1e-11` KARMA used uncommented) -- this needs the owner's
-   derivation, not a copied constant. Layer: `petsc` (gated, matching D-B's "PETSc optional").
+   KARMA's `transfer_residual_report` does, with the tolerance DERIVED (not the flat `1e-11` KARMA used uncommented; Section 6.3 gives the
+   derivation). Layer: `petsc` (gated; PETSc is optional for physics-kit).
 5. **Field-entry identity and canonical encoding** (closes Section 2.1, rows 2-3). Smallest: a
    closed variant type in `fuse/model` (or `fuse/field`) naming a mesh-global identity vs a
    DOF-basis identity, with a canonical fixed-width encode/decode pair and an FNV-1a hash,
@@ -192,94 +187,82 @@ build; each is an `open_questions` entry below, for the owner.
    (5): a transaction needs a stable per-entry key to stage against (`stage_by_key`) as well as
    a dense-index hot path (`stage`). Smallest: a `FieldTransaction`-shaped type over FUSE's own
    `FieldRef`/`FieldRegistry`, in `fuse/field`, implementing the three update modes and the
-   canonical accumulation order (Section 3's open dependency on numtypes applies here: build
-   it over `double` now, and decide the `dual<S,N>` extension when the numtypes track lands,
+   canonical accumulation order (Section 3's open dependency on value typing applies here: build
+   it over `double` now, and decide the `dual<S,N>` extension if a value-typing layer is added,
    not before). Layer: `field`.
 7. **Component registry, selection, and a compliance harness** (closes Section 2.6, the second-
-   largest gap). This is the one addition `physics-kit-disposition.md`'s own open question 6
-   already asks the owner about for a DIFFERENT KARMA header (`karma_registry.h`); this track's
-   finding is that `karma_reference_components.h`'s own semantics depend on exactly that same
-   missing mechanism, which sharpens the open question rather than answering it. No smallest-
-   addition proposal is offered here beyond pointing at the existing open question: building a
-   registry is a design decision (ambiguity-refusal policy, priority semantics) the owner
-   should make once, not twice.
-
-## 5. What was NOT verified
+   largest gap). `karma_reference_components.h`'s own semantics depend on the same
+   mechanism `karma_registry.h` provides in KARMA. No smallest-addition proposal is offered:
+   building a registry is a design decision (ambiguity-refusal policy, priority semantics) to
+   make once, for both consumers.
+## 5. Limits of the comparison
 
 - The FUSE test counts cited (test/model/semantics_test.cpp, connect_test.cpp,
   compatibility_test.cpp, runtime/field_ref_test.cpp, test/model/validate_test.cpp) were
   grepped for `TEST(...)` names and read for the specific assertions cited; `validate_test.cpp`
   (1060 lines) was not read past the sections grepped for `E-UNITS`/`E-CONSERV`/
-  `E-MULTI-WRITER`/`E-SELF`/`E-SHAPE` context (model/validate.hpp:385-608) and the matching
-  test names were not individually opened -- the citations above are to the PRODUCTION
-  validate.hpp lines, confirmed present, not to a read of every corresponding test assertion.
+  `E-MULTI-WRITER`/`E-SELF`/`E-SHAPE` context (model/validate.hpp:385-608), so the citations are
+  to the production validate.hpp lines, not to every corresponding test assertion.
 - KARMA's `karma_registry.h` (ComponentRegistry/SelectionRequest/RegistryReason) was read only
-  through its USE in `karma_reference_components.C`/`component_compliance_test.C`, not as a
-  header in its own right (it is not one of the 8 headers this track covers).
+  through its use in `karma_reference_components.C`/`component_compliance_test.C`.
 - SOMA's `coupling_graph.hpp`, `descriptor.hpp`, `yaml_io.hpp` were not read; the SOMA columns
-  above rest on `field_ref.hpp`, `registry.hpp`, `field_spec.hpp`, `region.hpp`, `component.hpp`,
+  rest on `field_ref.hpp`, `registry.hpp`, `field_spec.hpp`, `region.hpp`, `component.hpp`,
   `channel.hpp`, `validate.hpp` (partial, lines 1-232), `base/units.hpp`, `base/ids.hpp`, and
   `test/unit/field_ref_test.cpp`, all read in full or to the cited line range.
 
----
+## 6. Implemented and specified
 
-## 6. Built (Stage B, 2026-10-28)
+Of the eight verdicts in Section 1, the staged field commit (row 4, Section 2.2) and the bounded
+double-to-Rational conversion (the narrow gap in row 6, Section 2.4) are implemented, and the
+transfer-accuracy residual bound (the second half of row 7, Section 2.5) is specified by a
+derivation and an interface signature, with no implementation. The component registry and
+compliance harness (Section 2.6) and field-entry identity (Section 2.1) are not implemented; the
+smallest-addition text in Section 4 is the design for each, to be built when a consumer needs it.
 
-The owner's 2026-10-28 decision closed gap (1) (`karma_field_transaction.h`, Section 2.2) and
-narrow gaps (a) and (b) (Section 2.4's double-to-Rational conversion, and half of Section 2.5's
-PETSc residual diagnostic) as follows. Gaps (2) and (3) (Section 2.6's component registry/
-compliance harness, Section 2.1's field-entry identity) are DEFERRED; their own KNOWN_ISSUES.md
-entries (D95, D96) carry this page's smallest-addition text and name the consumer that would force
-each one, per the owner's instruction, rather than repeating that text here.
-
-### 6.1 FieldTransaction (gap 1, BUILT; round 2, 2026-10-29)
+### 6.1 FieldTransaction
 
 `include/fuse/field/transaction.hpp` + `src/field/transaction.cpp`: `FieldStorage` (an abstract
 publish/read-into contract), `FieldRefStorage` (the one implementation, over the existing
 `fuse::FieldRef`), and `FieldTransaction` itself, carrying KARMA's own invariant
 (karma_field_transaction.h:11-23) -- no caller-visible value change until every staged value has
 passed local validation, and in the collective form until every rank has agreed. `UpdateMode`
-keeps KARMA's three modes, renaming `SparseReplace` to `Insert` per the owner's decision.
+keeps KARMA's three modes, with `SparseReplace` renamed `Insert`.
 
-**The numtypes seam.** Every value in this file is `double`; the header's own file comment names
+**The value-typing seam.** Every value in this file is `double`; the header's own file comment names
 exactly where a future `template <class Value>` parameter would go (`FieldStorage`,
 `FieldRefStorage`, `FieldTransaction`, all three) and records that the canonical accumulation
 order (below) will NOT transfer unchanged to a `dual<S,N>` value, since it is defined on a
 `double`'s own magnitude, sign and (as a tie-break) raw bit pattern, none of which has a single
 meaning for a multi-component value type.
 
-**Layering: DECIDED, round 2 (the lead's own instruction, 2026-10-29).** `field` sits below
-`transport`, the layer this project's own `docs/dev/layering.md` names as where MPI "enters", and
-`tools/check-layering.py`'s `ALLOWED_PUBLIC_THIRD_PARTY["field"]` permits only `Kokkos_Core.hpp` in
-a public `field` header -- `mpi.h` is forbidden there at every layer. `commit_collective()`
-therefore takes `std::optional<int>`, the same Fortran-handle convention `fuse::RunnerConfig::
-base_communicator` (include/fuse/runtime/runner.hpp) already uses, never a raw `MPI_Comm`; the
-`MPI_Allreduce` itself lives in `src/field/transaction.cpp` behind `#if FUSE_HAVE_MPI`, in the same
-`MPI_2INT`/`MPI_MAXLOC` shape `reconcile_plugin_agreement()` (src/abi/participant.cpp) already uses
-for a different collective agreement. Round 1 flagged keeping MPI in `field`'s own `.cpp` (never
-its public header) as an open question rather than deciding it silently; the lead's round-2
-instruction decided it, NOT restructured: `docs/dev/layering.md`'s new "MPI outside `transport`"
-section (2026-10-29) names both `field/transaction.cpp` and `abi/participant.cpp` as the two
-translation units this applies to, and why -- a collective agreement belongs to the layer whose own
-invariant it protects, not to the layer that merely routes values between ranks.
+**Layering.** `field` sits below `transport`, the layer this project's own `docs/dev/layering.md`
+names as where MPI "enters", and `tools/check-layering.py`'s `ALLOWED_PUBLIC_THIRD_PARTY["field"]`
+permits only `Kokkos_Core.hpp` in a public `field` header -- `mpi.h` is forbidden there at every
+layer. `commit_collective()` therefore takes `std::optional<int>`, the same Fortran-handle
+convention `fuse::RunnerConfig::base_communicator` (include/fuse/runtime/runner.hpp) already
+uses, never a raw `MPI_Comm`; the `MPI_Allreduce` itself lives in `src/field/collective_agreement.cpp`
+behind `#if FUSE_HAVE_MPI`, in the same `MPI_2INT`/`MPI_MAXLOC` shape `reconcile_plugin_agreement()`
+(src/abi/participant.cpp) uses for a different collective agreement. Keeping MPI in `field`'s own
+`.cpp` (never its public header) is deliberate: `docs/dev/layering.md`'s "MPI outside `transport`"
+section names both `field` and `abi/participant.cpp` as the translation units this applies to, and
+why -- a collective agreement belongs to the layer whose own invariant it protects, not to the layer
+that merely routes values between ranks.
 
-**The canonical accumulation order: changed, round 2 (the owner's standing rule -- accuracy over
-efficiency).** Round 1 summed a slot's contributions in a VALUE-determined but accuracy-indifferent
-order (ascending raw IEEE-754 bit pattern). Round 2 replaces it with KARMA's own magnitude-first
-scheme (karma_field_transaction.C:48-54), precisely stated in `src/field/transaction.cpp`'s own
-comment and summarised here: ascending `|value|` first, then (equal magnitude) sign with the
-NEGATIVE value first, then (an exact duplicate) the raw bit pattern as a final, formally-complete
-tie-break. This bounds the accumulated rounding by the classical recursive-summation error bound
-(Higham, *Accuracy and Stability of Numerical Algorithms*, 2nd ed., Theorem 4.2) more tightly than
-an accuracy-indifferent order, by keeping each running partial sum close to the magnitude of the
-terms still to be added rather than letting one disproportionately large term swamp many smaller
-ones one at a time -- `FieldTransaction.MagnitudeFirstOrderBeatsANaiveArrivalOrderSumOnACaseWhereIt
-Matters` (test/field/transaction_test.cpp) derives and asserts one concrete case where this changes
-the EXACT published bits (worked below). This IS still independent of staging order (the order is a
-function of WHICH VALUES were staged to a slot, never of WHEN) -- the arrival-dependence mutation
-stays killable, since swapping the comparator's keys for raw push order breaks the sort just as
-surely as it broke round 1's simpler one. It is NOT a correctly-rounded sum (still a plain
-left-to-right fold, no Kahan compensation, no pairwise tree) and NOT pairwise/tree summation.
+**The canonical accumulation order.** Accuracy takes priority over efficiency. The order is KARMA's
+own magnitude-first scheme (karma_field_transaction.C:48-54), stated precisely in
+`src/field/transaction.cpp`'s own comment and summarised here: ascending `|value|` first, then
+(equal magnitude) sign with the NEGATIVE value first, then (an exact duplicate) the raw bit pattern
+as a final, formally-complete tie-break. This bounds the accumulated rounding by the classical
+recursive-summation error bound (Higham, *Accuracy and Stability of Numerical Algorithms*, 2nd ed.,
+Theorem 4.2) more tightly than an accuracy-indifferent order, by keeping each running partial sum
+close to the magnitude of the terms still to be added rather than letting one disproportionately
+large term swamp many smaller ones one at a time --
+`FieldTransaction.MagnitudeFirstOrderBeatsANaiveArrivalOrderSumOnACaseWhereItMatters`
+(test/field/transaction_test.cpp) derives and asserts one concrete case where this changes the
+EXACT published bits (worked below). The order is independent of staging order (it is a function
+of WHICH VALUES were staged to a slot, never of WHEN), so an arrival-dependence mutation stays
+killable. It is NOT a correctly-rounded sum (still a plain left-to-right fold, no Kahan
+compensation, no pairwise tree).
 
 **The worked case (derivation).** The field starts at `0.0` (Accumulate mode allows starting
 fresh); three contributions are STAGED, in this order: `huge = 2^60` (`ulp(huge) = 2^8 = 256`,
@@ -303,65 +286,48 @@ staging-order sum gives exactly `huge`; magnitude-first order gives exactly `hug
 correctly-rounded value, one full representable step above `huge` -- the two differ, and the test
 asserts both exact values, not merely that they differ.
 
-**Collective agreement: fixed, round 2 (the lead's own instruction).** Round 1's
-`commit_collective()` let the ORIGINATING rank -- the one whose own local validation or publication
-is what failed -- return its own raw local `Result`, while every OTHER rank got a uniform,
-rewritten `E-FIELD-TXN-AGREEMENT-REFUSED` naming that rank; a caller comparing every rank's return
-value therefore saw a MIX of one detailed local diagnostic and N-1 identical rewrites, which is
-also a `collective path ... return[ing] on a locally computed condition`, the standing rule this
-function's own `MPI_Allreduce` comment already invokes and the pre-fix code violated on exactly the
-one rank that condition belonged to. Round 2 drops the special case: every rank, failing one
-included, returns the IDENTICAL `Failure{"E-FIELD-TXN-AGREEMENT-REFUSED", ...}` naming the failing
-rank, for both the validation-agreement and the publication-agreement phase. This is a DIFFERENT
-convention from `reconcile_plugin_agreement()`'s own (which keeps the originating rank's raw
-message, KNOWN_ISSUES.md D85) -- a deliberate difference for THIS collective, not an inconsistency
-to reconcile with the ABI layer's.
+**Collective agreement.** Both phases of `commit_collective()` (validation agreement and
+publication agreement) run through `fuse::agree_outcome()`
+(`include/fuse/field/collective_agreement.hpp`): after the verdict is reduced, the originating rank
+broadcasts its own `Failure`, and every rank returns the identical `Failure` with
+`code = E-FIELD-TXN-AGREEMENT-REFUSED`, `origin_rank`, `origin_code` (the origin's own code, e.g.
+`E-FIELD-TXN-INCOMPLETE`) and a message that names the rank, the number of refusing ranks and the
+origin's own message verbatim. A caller comparing every rank's return value therefore sees one
+identical record, never a mix of one detailed local diagnostic and N-1 rewrites; a collective path
+must not return on a locally computed condition. The ABI's `reconcile_plugin_agreement()` and
+`reconcile_collective_status()` run through the same helper, so there is one convention: ranks that
+refused keep their own record; every other rank gets the origin's.
 
-**Superseded 2026-10-30 (owner's rule, KNOWN_ISSUES.md D97):** the uniform status above dropped the
-failing rank's own code from what the other ranks saw. Both phases of `commit_collective()` now run
-through `fuse::agree_outcome()` (`include/fuse/field/collective_agreement.hpp`): after the verdict is
-reduced, the originating rank broadcasts its own `Failure`, and every rank returns the identical
-`Failure` with `code = E-FIELD-TXN-AGREEMENT-REFUSED`, `origin_rank`, `origin_code` (the origin's own
-code, e.g. `E-FIELD-TXN-INCOMPLETE`) and a message that names the rank, the number of refusing ranks
-and the origin's own message verbatim. The ABI's `reconcile_plugin_agreement()` and
-`reconcile_collective_status()` run through the same helper, so there is one convention, not two:
-ranks that refused keep their own record; every other rank gets the origin's.
+**Tests.** `test/field/transaction_test.cpp` mirrors `field_transaction_test.C`'s own cases
+one-for-one where one exists (cited per case in the test file);
+`test/parallel/field_transaction_mpi_test.cpp` (RANKS 2 3) is the real-communicator twin of the
+`CommitCollectiveWith*` cases. The mutation row `field-transaction-collective-agreement-skipped` in
+`build-evidence/mutations/field-transaction.toml` is killed by the multi-rank case
+`ValidationDisagreementAgreesTheSameRefusalOnEveryRankAndPublishesNowhere` (every non-failing rank
+would publish under the mutation, which that case's "unchanged on every rank" assertion catches);
+`tools/mutate.py --area field-transaction` reports it NOT-ASSESSED on a host without a working
+multi-rank MPI launcher (set `FUSE_MUTATE_MPI=1` on one that has it).
 
-**Tested red-then-green and mutation-killed.** `test/field/transaction_test.cpp` (16 cases, 14 from
-round 1 plus 2 new this round) mirrors `field_transaction_test.C`'s own cases one-for-one where one
-exists (cited per case in the test file); `test/parallel/field_transaction_mpi_test.cpp` (new this
-round, 3 cases, RANKS 2 3) is the real-communicator twin of the `CommitCollectiveWith*` cases,
-closing the one hole round 1 left: `build-evidence/mutations/field-transaction.toml`'s
-`field-transaction-collective-agreement-skipped` row is KILLED by this file's own
-`ValidationDisagreementAgreesTheSameRefusalOnEveryRankAndPublishesNowhere` case (every non-failing
-rank would publish under the mutation, which that case's own "unchanged on every rank" assertion
-catches) -- `tools/mutate.py --area field-transaction` still reports it NOT-ASSESSED in THIS
-sandbox (no working multi-rank MPI launcher here), per `FUSE_MUTATE_MPI=1` on a host that has one;
-see `host_pending`. `tools/mutate.py --area field-transaction`, this sandbox: 3 of 4 KILLED (one
-row's own anchor text updated this round for the new comparator function name), 1 NOT-ASSESSED --
-see `measured_results` for the exact run.
-
-### 6.2 `rational_from_double` (narrow gap (a), BUILT)
+### 6.2 `rational_from_double`
 
 `include/fuse/base/rational.hpp` gains `Result<Rational> rational_from_double(double x,
 std::int64_t max_denominator)`: exact whenever `x`'s reduced denominator fits `max_denominator`
 (every finite `double` IS a dyadic rational, so exactness itself is never the question -- see the
-function's own doc comment), refused by name otherwise. Three refusal codes, matching the task's
-own naming: `E-RATIONAL-NONFINITE` (NaN/infinity), `E-RATIONAL-INEXACT` (the exact value's
+function's own doc comment), refused by name otherwise. Three refusal codes: `E-RATIONAL-NONFINITE` (NaN/infinity), `E-RATIONAL-INEXACT` (the exact value's
 denominator exceeds the caller's bound -- KARMA's own `NotDyadic`, renamed because every finite
 double genuinely IS dyadic; the bound, not dyadicity, is what fails), `E-RATIONAL-OVERFLOW` (the
 exact numerator/denominator does not fit `int64_t` even after reduction). No best-approximation
 mode, matching KARMA's own `rational_from_dyadic_bounded` discipline (karma_semantics.h:90-99) and
 this project's own standing rule against silently admitting an inexact time. Reuses
 `Rational::from_i128` for the reduction and the int64 fit check rather than re-deriving either.
-Tested in `test/base/rational_test.cpp` (8 new cases: round-trip exactness on `2^-k` for k in
+Tested in `test/base/rational_test.cpp` (8 cases: round-trip exactness on `2^-k` for k in
 [0,20], negative/integer values, each of the three refusal codes by name, the no-best-
 approximation claim, and the `max_denominator <= 0` precondition throw).
 
-### 6.3 Transfer-accuracy residual bound (narrow gap (b)): DERIVATION, interface signature only, NO implementation
+### 6.3 Transfer-accuracy residual bound: derivation and interface (not implemented)
 
-The owner's instruction for this round: derive the bound, name every quantity, propose the
-interface, and put the derived bound to the owner in `open_questions` -- do not implement it.
+This section derives the bound, names every quantity and proposes the interface; the check itself
+is not implemented.
 
 **What KARMA checks (karma_transfer_diagnostics.h:36-42, .C:42-75).** Given a mass-matrix solve
 `M u = b` for a field transfer (a consistent/variational projection: `M` the target mesh's own
@@ -378,9 +344,8 @@ Theorem 7.1's componentwise/normwise backward error for a linear system): the sm
 relative perturbation of `(M, b)` for which `u` is an EXACT solution is `eta(u) = ||r|| /
 (||M|| ||u|| + ||b||)`, and `max(a, b) <= a + b <= 2 max(a, b)` relates KARMA's own `max`-based
 scale to this quantity within a factor of 2. KARMA's own test (`cg_transfer_accuracy_test.C:290`)
-calls this with a flat, uncommented `tolerance = 1.0e-11` -- already flagged, independently of this
-track, in `physics-kit-disposition.md:244` as "stated as a flat relative bound, no derivation
-shown". This section supplies the derivation that row names as missing.
+calls this with a flat, uncommented `tolerance = 1.0e-11` -- a flat relative bound with no derivation shown.
+This section supplies the derivation.
 
 **The derivation.** Let:
 - `n` -- the number of degrees of freedom in the target field (the mass matrix's own dimension).
@@ -427,7 +392,7 @@ ever needed. (A matrix-conditioning-dependent bound WOULD be needed for a tighte
 `||u||_inf` alone, e.g. `||u||_inf <= ||M^{-1}||_inf ||b||_inf`, but nothing in KARMA's own check,
 or in this derivation's conclusion, requires bounding `||u||_inf` that way.)
 
-**Proposed interface (signature only; not implemented this round):**
+**Proposed interface (signature only; not implemented):**
 
 ```cpp
 // fuse/petsc, gated like every other PETSc-facing signature in that layer
@@ -449,32 +414,13 @@ struct TransferResidualReport {
 tolerance is a function of the solve's own configured `rtol` and the problem's own `n`, both
 available to the caller that set up the solve, so there is no honest default to supply here.
 
-Put to the owner in `open_questions`: does `rtol_solver * sqrt(n)` read as the right bound, or
-should the `sqrt(n)` norm-equivalence factor instead be derived against the ACTUAL `KSPNormType`
-the physics-kit tier-0-with-PETSc-optional solves will use (D-B), once one is chosen, rather than
-assumed here against PETSc's documented default?
+Open point: the `sqrt(n)` norm-equivalence factor is derived against PETSc's documented default
+`KSPNormType`; it should be re-derived against the `KSPNormType` the physics-kit solves actually
+use (PETSc is optional for physics-kit) once one is chosen.
 
-### 6.4 Constrain's finite floor (decision (c)): documented, not changed
+### 6.4 Constrain's finite floor
 
-The owner's decision: FUSE's existing `Constrain` floor (`scale = |before| if nonzero else 1.0`,
-`src/runtime/runner.cpp`) STAYS as it is. Recorded as a deliberate difference from KARMA's own
-`relative_integral_error` (which returns `+infinity` for a zero reference and a nonzero value,
-karma_transfer_diagnostics.C:12-18) in `KNOWN_ISSUES.md` D97 (see that entry; this page's own
-Section 2.5 already named the two as DIFFERENT, not superset, before this decision was taken).
-Fixed in round 2 (the reviewer's own finding, 2026-10-29): this section previously cited "the S8
-record" instead of naming D97 directly.
-
----
-
-## Lead's review (2026-10-28)
-
-Spot-checked against the tree: `fuse::Rational` has `to_double()` and no constructor or factory
-from a double (MEASURED, `include/fuse/base/rational.hpp`); the field layer and the runtime component
-interface carry no staging, commit or publish vocabulary outside the restart and rollback paths
-(MEASURED, grep over `include/fuse/field` and `include/fuse/runtime`); `src/abi/registry.cpp` refuses
-null, duplicate and not-found mounts but has no selection among several implementations. The
-track's declared depth: `karma_registry.h` read only through its users; SOMA's `coupling_graph.hpp`,
-`descriptor.hpp` and `yaml_io.hpp` not read; `test/model/validate_test.cpp` not read in full. The
-eight verdicts stand as the track delivered them; each GAP is an owner decision recorded under the
-S8 entry in `KNOWN_ISSUES.md` once taken. Nothing is retired on the strength of this page.
-
+FUSE's existing `Constrain` floor (`scale = |before| if nonzero else 1.0`, `src/runtime/runner.cpp`)
+is kept as it is. It is a deliberate difference from KARMA's own `relative_integral_error` (which
+returns `+infinity` for a zero reference and a nonzero value, karma_transfer_diagnostics.C:12-18);
+Section 2.5 names the two as DIFFERENT, not superset.

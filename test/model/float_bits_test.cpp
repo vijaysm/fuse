@@ -15,17 +15,15 @@ namespace fd = fuse::detail;
 namespace {
 
 /// Builds the x86-64 extended-precision `long double` layout BY HAND,
-/// from raw bytes -- the owner's own instruction (docs/dev/restart.md
-/// Section 11, item 6): "construct an x86-64-style 80-bit long double
-/// dataset on this Mac by building the file type by hand ... from raw
-/// bytes". 64-bit EXPLICIT significand (no implicit leading one -- x86's
-/// own convention, `H5T_NORM_MSBSET` in HDF5's own vocabulary,
+/// from raw bytes (docs/dev/restart.md Section 11, item 6): an
+/// x86-64-style 80-bit long double dataset built on this Mac by constructing
+/// the file type by hand from raw bytes. 64-bit EXPLICIT significand (no
+/// implicit leading one -- x86's own convention, `H5T_NORM_MSBSET` in HDF5's own vocabulary,
 /// `H5Tpublic.h`), 15-bit exponent, bias 16383, 16-byte storage (10
 /// meaningful bytes + 6 padding, matching this test's own raw buffers
 /// below). NEVER the real `fuse::ElementType::LongDouble` on this build
 /// (whose OWN `element_type_info()` reflects THIS Mac's platform, not
-/// x86's) -- a hand-built stand-in, exactly as the owner's instruction
-/// asks for.
+/// x86's) -- a hand-built stand-in.
 ElementTypeInfo x86_long_double_info() {
   ElementTypeInfo info;
   info.element_type = ElementType::LongDouble;
@@ -55,7 +53,7 @@ std::array<unsigned char, 16> pack_x86_ld(std::uint64_t mantissa,
 
 }  // namespace
 
-/// THE owner's own required scenario (docs/dev/restart.md Section 11,
+/// The required scenario (docs/dev/restart.md Section 11,
 /// item 6): a hand-built x86-64-style 80-bit `long double`, value
 /// `1 + 2^-63` (mantissa `0x8000000000000001`, biased exponent 16383 =
 /// unbiased 0), narrowed to THIS Mac's own `double`/`long double` (both

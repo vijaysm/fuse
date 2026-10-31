@@ -1,8 +1,6 @@
 #pragma once
 
-/// S7.4 (retitled; see docs/dev/roadmap.md and docs/dev/newton-krylov.md
-/// Sec. 14), owner decision 2026-10-21, Option C: the smallest real port of
-/// an `ImplicitComponent` onto a PETSc-object-backed `LinearizationToken`
+/// The smallest real port of an `ImplicitComponent` onto a PETSc-object-backed `LinearizationToken`
 /// (a real `Mat`/`Vec`, `apply_jacobian`/`apply_jacobian_transpose` as
 /// `MatMult`/`MatMultTranspose`, never `MATMFFD`), paired with an existing
 /// native-substrate implementation of the SAME physics in one
@@ -31,14 +29,14 @@
 /// Both outer ends are homogeneous Dirichlet (u = 0). Each half is
 /// discretized by `m` interior, backward-Euler, centered-difference grid
 /// points (dx_half = L_half / (m + 1)) -- "no new mesh type, no new DOF
-/// map" (owner's own Section 4 wording): this is a plain array with two
+/// map": this is a plain array with two
 /// boundary conventions, the same level of abstraction
 /// examples/dn_heat/dn_component.hpp's own registered arrays already use,
 /// not `fuse::native::NativeMeshBackend`/`NativeGrid`
 /// (examples/brusselator/brusselator_physics.hpp), which is multi-rank,
 /// MOAB-mesh-adjacent machinery built for a different (2-D, decomposed,
 /// remapped) problem and would be a disproportionately large dependency
-/// for a single-variable, single-rank demonstration. See this track's own
+/// for a single-variable, single-rank demonstration. See
 /// design_notes.md Section 3 for the full reasoning and the alternatives
 /// (literal reuse of DirichletSlab/NeumannSlab or
 /// UComponent/VComponent) this rejected, and why.
@@ -60,10 +58,10 @@
 ///
 /// Composing the two gives the SAME kind of fixed-point map dn_heat's own
 /// header documents (u_I <- G_right(G_left(u_I))), with a measured
-/// Picard contraction factor whose magnitude EXCEEDS 1 at this track's own
-/// default parameters (measured ~1.40, see design_notes.md Section 5) --
+/// Picard contraction factor whose magnitude EXCEEDS 1 at the default
+/// parameters (measured ~1.40, see design_notes.md Section 5) --
 /// i.e., naive Picard diverges here, by construction, demonstrating
-/// exactly the case S7.2's native Newton-Krylov coupler (and this
+/// exactly the case the native Newton-Krylov coupler (and this
 /// component's own analytic `LinearizationToken`) exists for: Newton's
 /// local quadratic convergence does not depend on the Picard contraction
 /// rate, only on linearizing about a nearby point (the previous time
@@ -82,7 +80,7 @@
 /// This is exact (not a finite-difference approximation) and reuses the
 /// SAME linear algebra the last Newton step already paid for.
 ///
-/// MEASURED (this track, this session, a throwaway Python prototype of
+/// MEASURED (a throwaway Python prototype of
 /// this exact discretization and sign convention, NOT this C++ file --
 /// see design_notes.md Section 5): the analytic `dG/du_I`/`dG/dq_I`
 /// formulas below agree with a central finite difference of the composed
@@ -123,7 +121,7 @@ struct PhysicsParams {
 
 /// The manufactured solution u(x,t) = u0 sin(pi x / Ltot) exp(-t/tau).
 /// EXACTLY satisfies u_t = D u_xx - k u^3 + f with `manufactured_source`
-/// below, by direct substitution (verified symbolically, this track's own
+/// below, by direct substitution (verified symbolically; see
 /// design_notes.md Section 5) -- u(0,t) = u(Ltot,t) = 0 for every t, so it
 /// also satisfies both outer boundary conditions exactly, for any D, k,
 /// u0, tau.
@@ -133,7 +131,7 @@ struct PhysicsParams {
 
 /// du/dx of `manufactured_u`, used only to confirm (design_notes.md,
 /// never at run time by a component) that the interface flux is
-/// nonzero at this track's own default parameters.
+/// nonzero at the default parameters.
 [[nodiscard]] inline double manufactured_u_x(double x, double t, const PhysicsParams& p) {
   const double Ltot = p.Ltot();
   return p.u0 * (M_PI / Ltot) * std::cos(M_PI * x / Ltot) * std::exp(-t / p.tau);
@@ -226,7 +224,7 @@ struct ResidualJacobian {
 /// AS A BUG CAUGHT BY THE PROTOTYPE -- omitting it still converges (the
 /// residual is unaffected, only the Jacobian is), but only linearly, and
 /// throws the implicit-differentiation sensitivity below off by about
-/// 0.4% at this track's own defaults (measured, design_notes.md Section 5).
+/// 0.4% at the default parameters (measured, design_notes.md Section 5).
 [[nodiscard]] inline ResidualJacobian right_residual_jacobian(
     const std::vector<double>& u, const std::vector<double>& u_old, double q_I, double dt,
     double dx, double t_new, const PhysicsParams& p) {

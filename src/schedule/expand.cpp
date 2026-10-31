@@ -77,15 +77,15 @@ bool any_spacetime(const CouplingGraph& g) {
 /// Does this channel carry a `Sample`, i.e. does its chain straddle two clocks
 /// rather than lying on the slab decomposition?
 ///
-/// Two constructions do. Accumulation is the original one. A SPACE-TIME
-/// channel (spec Section 7.3) is the second and was added by Task 6.3: the temporal
-/// operator `T` of `M = T (x) W` has one coefficient per (target step, source
-/// step) pair over the whole window, and its column index runs over EVERY
-/// source step -- including, for any reconstruction degree above zero, source
-/// steps that do not overlap the target step being written. Only a node on the
-/// source clock sees them all, so lowering gives a space-time channel a
-/// `Sample` for exactly the reason an accumulating one has one, and everything
-/// downstream of it closes a target step.
+/// Two constructions do. Accumulation is the original one. A SPACE-TIME channel
+/// (spec Section 7.3) is the second: the temporal operator `T` of `M = T (x) W`
+/// has one coefficient per (target step, source step) pair over the whole
+/// window, and its column index runs over EVERY source step -- including, for
+/// any reconstruction degree above zero, source steps that do not overlap the
+/// target step being written. Only a node on the source clock sees them all, so
+/// lowering gives a space-time channel a `Sample` for exactly the reason an
+/// accumulating one has one, and everything downstream of it closes a target
+/// step.
 ///
 /// Laying the chain on the slabs instead would be incomplete rather than
 /// merely inconvenient: a slab lies inside one target step by construction, so
@@ -175,7 +175,7 @@ bool has_sample(const Channel& ch) {
   return n.origin.valid() && n.origin.value() < g.channel_count();
 }
 
-/// Time windows track: the window-scoped IterationRegionDecl that declares
+/// Time windows: the window-scoped IterationRegionDecl that declares
 /// `cid` among its channels, or nullptr if none does. Every node whose
 /// origin is such a channel -- the WindowAdvance node finish_window_regions()
 /// (src/ir/window_lowering.cpp) built from it, that channel's own ordinary
@@ -266,11 +266,11 @@ bool has_sample(const Channel& ch) {
 /// The `TickPhase` a Merge's input is attributed at the merge instant
 /// `(dst_step + 1) * dst_dt` -- the same causality contract the per-channel
 /// loop below applies to that writer's own tail node, re-derived here because
-/// a Merge has no single origin channel to look the answer up on (review
-/// 2026-10-11 IS-1: the boundary pass previously stamped every Merge
-/// `BeforeTicks` unconditionally, so a source-limited writer whose tail is
-/// still `AfterTicks` at this instant sorted AFTER a Merge that read it,
-/// failing `check_dependence_order()` with `E-SCHED-ORDER` on a legal graph).
+/// a Merge has no single origin channel to look the answer up on (stamping
+/// every Merge `BeforeTicks` unconditionally would sort a source-limited
+/// writer whose tail is still `AfterTicks` at this instant AFTER a Merge that
+/// read it, failing `check_dependence_order()` with `E-SCHED-ORDER` on a
+/// legal graph).
 ///
 /// `input` is one of the Merge node's `inputs` arcs. Three shapes reach here:
 ///   - a window-closing chain (accumulation or space-time): always
@@ -374,7 +374,7 @@ bool has_sample(const Channel& ch) {
 ///     `TickPhase::AfterTicks`;
 ///   * a `Merge` -- claimed by no single channel, since it combines two or
 ///     more -- also runs at `t = period`, the same instant as the
-///     Epoch/Transport/Remap outputs it reads (N-ir-schedule-2);
+///     Epoch/Transport/Remap outputs it reads;
 ///   * every other node no channel claimed (`Source`, an unwritten `Sink`)
 ///     runs at its component's only tick, `t = 0`.
 ///
@@ -411,10 +411,10 @@ bool has_sample(const Channel& ch) {
     Rational t{0};
     TickPhase phase = TickPhase::BeforeTicks;
     if (n.kind == OpKind::BuildRemapHalo) {
-      // D73: carries no SSA value and is not one more instance of its
-      // origin channel's own chain -- it runs once, at the front of the
-      // stream, the same instant `Source` gets (the defaults already set
-      // above), regardless of which channel named it.
+      // Carries no SSA value and is not one more instance of its origin
+      // channel's own chain -- it runs once, at the front of the stream, the
+      // same instant `Source` gets (the defaults already set above), regardless
+      // of which channel named it.
     } else if (claimed_by_channel(g, n)) {
       const Channel& ch = g.channel_at(ChannelId{n.origin.value()});
       if (has_sample(ch) && on_source_clock[i]) {
@@ -425,13 +425,12 @@ bool has_sample(const Channel& ch) {
       }
     } else if (n.kind == OpKind::Merge) {
       // A Merge combining two or more channels has no single owning channel
-      // (fuse/ir/lowering.cpp gives it ChannelId{} on purpose -- it is not
-      // any one of them), but it is a chain-CLOSING node like the rest of
-      // those channels' own non-Sample tails, not a component-tick-opening
-      // one. Falling into the `boundary_owner()` branch below placed it at
-      // its component's tick START, sorting it before the Epoch/Transport
-      // outputs it reads and failing the scheduler's own dependence check --
-      // REVIEW.md N-ir-schedule-2.
+      // (fuse/ir/lowering.cpp gives it ChannelId{} on purpose -- it is not any
+      // one of them), but it is a chain-CLOSING node like the rest of those
+      // channels' own non-Sample tails, not a component-tick-opening one.
+      // Falling into the `boundary_owner()` branch below placed it at its
+      // component's tick START, sorting it before the Epoch/Transport outputs
+      // it reads and failing the scheduler's own dependence check.
       t = out.period;
     } else {
       const Result<ComponentId> owner = boundary_owner(g, dag, i, n);
@@ -472,8 +471,7 @@ Result<TimedDag> expand(const CouplingGraph& g, const OperatorDAG& dag,
   //
   // Not refused in `lower()`: the DAG for such a channel is well formed (it is
   // the *schedule* that does not exist), and `fuse_initialize()`
-  // (`impl_initialize`, src/abi/participant.cpp -- review 2026-10-11 IS-11,
-  // correcting a stale `soma_initialize` citation) lowers without
+  // (`impl_initialize`, src/abi/participant.cpp) lowers without
   // scheduling, so rejecting it there would make a graph unloadable for a
   // reason that only shows up one layer down.
   for (std::uint32_t c = 0; c < g.channel_count(); ++c) {
@@ -536,9 +534,9 @@ Result<TimedDag> expand(const CouplingGraph& g, const OperatorDAG& dag,
     // constructor is the thing that guarantees they are positive, and the
     // ClockSet is what the runtime will actually advance.
     //
-    // Time windows track: a window-scoped region's own channel carries
+    // Time windows: a window-scoped region's own channel carries
     // the WHOLE window's waveform as one value (K samples as K field
-    // components, the user's chosen design) -- it changes once per
+    // components) -- it changes once per
     // window, not once per either endpoint's own native tick, so BOTH
     // ends of its slab decomposition are overridden to the window's own
     // length instead. This is the ENTIRE accommodation this channel's
@@ -597,11 +595,11 @@ Result<TimedDag> expand(const CouplingGraph& g, const OperatorDAG& dag,
       const Node& n = dag.node(nid);
       if (n.origin != cid) continue;
 
-      // D73: `BuildRemapHalo` carries no SSA value (op.hpp's own doc
-      // comment) and is not laid out on this channel's slab decomposition
-      // at all -- one instance, at `t = 0`, `TickPhase::BeforeTicks`, the
-      // same instant `Source` gets below in the boundary pass. Checked
-      // before `sampled`/`decomp` so it never reaches either.
+      // `BuildRemapHalo` carries no SSA value (op.hpp's own doc comment) and is
+      // not laid out on this channel's slab decomposition at all -- one
+      // instance, at `t = 0`, `TickPhase::BeforeTicks`, the same instant
+      // `Source` gets below in the boundary pass. Checked before
+      // `sampled`/`decomp` so it never reaches either.
       if (n.kind == OpKind::BuildRemapHalo) {
         if (!emit(nid, Rational{0}, 0, 0, TickPhase::BeforeTicks)) {
           return explode_error();
@@ -609,7 +607,7 @@ Result<TimedDag> expand(const CouplingGraph& g, const OperatorDAG& dag,
         continue;
       }
 
-      // Time windows track: a WindowAdvance node (finish_window_regions(),
+      // Time windows: a WindowAdvance node (finish_window_regions(),
       // src/ir/window_lowering.cpp) has this SAME channel as its origin
       // too, and flows through this loop exactly like the channel's own
       // Transport/Remap/Epoch/Sink chain -- it has no Sample and no
@@ -656,7 +654,7 @@ Result<TimedDag> expand(const CouplingGraph& g, const OperatorDAG& dag,
         // precisely so that step k+1 can consume it. Emitting it after that
         // tick -- which is what a bare timestamp used to mean -- delayed every
         // delivery by two target steps and dropped one write per period
-        // unread, because the next write overtook it. That was R2;
+        // unread, because the next write overtook it;
         // `SpacetimeRunner.EveryTargetStepProjectionReachesTheTargetComponent`
         // in test/unit/spacetime_conservation_test.cpp fails if it comes back.
         //
@@ -696,7 +694,7 @@ Result<TimedDag> expand(const CouplingGraph& g, const OperatorDAG& dag,
   // part of its channel's chain above and must not be emitted twice. A Merge
   // combining two or more channels also has no single origin and lands here,
   // but -- unlike Source/Sink -- it closes its destination component's tick
-  // rather than opening it (N-ir-schedule-2, see the loop body below).
+  // rather than opening it (see the loop body below).
   //
   // `BeforeTicks`, like every non-`Sample` instance. `Source` moves no data --
   // its arc already aliases the component's own storage (see
@@ -704,7 +702,7 @@ Result<TimedDag> expand(const CouplingGraph& g, const OperatorDAG& dag,
   // on is not observable; what would be observable is the reverse choice,
   // because a `Source` stamped at the same instant as a delivery sorts first
   // (it is a DAG root) and would drag the receiving component's tick forward
-  // past the delivery. That is R2 again, reached from the boundary pass.
+  // past the delivery. That is the same defect, reached from the boundary pass.
   for (std::uint32_t i = 0; i < dag.node_count(); ++i) {
     const NodeId nid{i};
     const Node& n = dag.node(nid);
@@ -713,7 +711,7 @@ Result<TimedDag> expand(const CouplingGraph& g, const OperatorDAG& dag,
     const Result<ComponentId> owner = boundary_owner(g, dag, i, n);
     if (!owner.ok()) return owner.error();
     Rational dt = clocks.clock(owner.value()).interval();
-    // Time windows track: `owner` is stepped ONLY by its own WindowAdvance
+    // Time windows: `owner` is stepped ONLY by its own WindowAdvance
     // instruction (build_ticks()'s own window_member_components()
     // exclusion, src/runtime/runner.cpp -- no ordinary per-native-interval
     // Tick ever fires for it), so this boundary-rule node -- unrelated to
@@ -741,17 +739,17 @@ Result<TimedDag> expand(const CouplingGraph& g, const OperatorDAG& dag,
     // rather than opening it, so it is stamped at each tick's END,
     // `(k+1)*dt`, the same instant a channel's own non-Sample tail lands on
     // for that tick. Source and an unwritten Sink genuinely open the tick,
-    // `k*dt`, which is the one case this loop was written for.
-    // REVIEW.md N-ir-schedule-2: placing Merge at the tick's start sorted it
-    // before the Epoch/Transport outputs it reads.
+    // `k*dt`, which is the one case this loop was written for. Placing Merge
+    // at the tick's start would sort it before the Epoch/Transport outputs it
+    // reads.
     //
-    // Review 2026-10-11 IS-1: the tick's END is one instant, but which SIDE
-    // of it the Merge sits on is not fixed at `BeforeTicks` the way Source's
-    // is. A multirate writer whose own tail is target-limited at this same
-    // instant is `AfterTicks` (its source step has not finished), and the
-    // Merge reads that writer, so it cannot be ready any earlier than the
-    // writer it depends on: its phase is the LATEST (max) of its writers'
-    // phases at this instant, derived by `merge_writer_phase_at()`.
+    // The tick's END is one instant, but which SIDE of it the Merge sits on is
+    // not fixed at `BeforeTicks` the way Source's is. A multirate writer whose
+    // own tail is target-limited at this same instant is `AfterTicks` (its
+    // source step has not finished), and the Merge reads that writer, so it
+    // cannot be ready any earlier than the writer it depends on: its phase is
+    // the LATEST (max) of its writers' phases at this instant, derived by
+    // `merge_writer_phase_at()`.
     const bool tick_closing = (n.kind == OpKind::Merge);
     for (std::int64_t k = 0; k < nk.value(); ++k) {
       const Result<Rational> t = scaled_tick(tick_closing ? k + 1 : k, dt);

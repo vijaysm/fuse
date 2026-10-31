@@ -1,6 +1,6 @@
 #pragma once
 
-/// S7.2's pluggable line search: three strategies, mirroring the three
+/// The pluggable line search: three strategies, mirroring the three
 /// forms of SNESLineSearch the native Newton-Krylov coupler
 /// (fuse/num/newton_krylov.hpp) composes with. Deliberately scalar: every
 /// function here takes and returns `double`s and callables over `double
@@ -57,8 +57,7 @@ struct LineSearchOptions {
   /// `-snes_linesearch_minlambda`.
   double lambda_min = 1e-12;
   /// BT: the backtrack budget. SNESLINESEARCHBT's own
-  /// `-snes_linesearch_max_it` default is lower (40 here matches this
-  /// track's own brief).
+  /// `-snes_linesearch_max_it` default is lower (40 here).
   int max_backtracks = 40;
   /// BT: every accepted trial is additionally clamped into
   /// `[safeguard_low, safeguard_high] * (previous trial)`, Dennis &
@@ -98,9 +97,8 @@ struct LineSearchResult {
   double lambda = 1.0;
   int steps = 0;
   LineSearchStatus status = LineSearchStatus::FullStep;
-  /// Every trial lambda, in the order they were tried -- what the task's
-  /// own test requirement ("record the accepted lambdas") and
-  /// "record the accepted step lengths" read.
+  /// Every trial lambda, in the order they were tried (the accepted lambdas
+  /// and step lengths are read from here).
   std::vector<double> trials;
 };
 

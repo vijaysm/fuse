@@ -1,4 +1,4 @@
-/// S7.1's residual/linearisation seam: fuse::ImplicitComponent,
+/// The residual/linearisation seam: fuse::ImplicitComponent,
 /// fuse::LinearizationToken and Component::implicit() themselves --
 /// test/model/newton_capability_test.cpp covers the model-level capability
 /// refusal (E-NEWTON-CAPABILITY, E-NEWTON-SHAPE); this file covers the
@@ -146,7 +146,7 @@ TEST(ImplicitComponent, EvaluateResidualComputesTheExpectedValue) {
   EXPECT_DOUBLE_EQ(out[2], 2.0 * 3.0 - 1.0);
 }
 
-// The capability-rejection brief's own no-side-effect test: evaluate_residual()
+// The no-side-effect test: evaluate_residual()
 // must leave the component's state bit-identical. "State" here is every
 // member evaluate_residual() is contractually forbidden to touch -- scale_,
 // offset_ and advance_calls -- read directly rather than through

@@ -1,18 +1,17 @@
 #pragma once
 
-/// Restart track round 2, item 5 (docs/dev/restart.md, owner decision 2's
-/// cross-rank half): "FUSE verifies uniqueness and coverage of the
+/// The cross-rank half of batched global-id verification
+/// (docs/dev/restart.md): "FUSE verifies uniqueness and coverage of the
 /// declared global size for ALL arrays of a restart point in ONE
 /// collective (one sort and reduction over every array's ids together,
 /// never one collective per array)". `Hdf5GroupWriter::finish_point()`
 /// (src/restart_io/hdf5_restart_io.cpp) already does the SINGLE-RANK half
 /// of this -- a local sort-and-check over this rank's own (name, id)
-/// pairs, with no communication (Stage B Slice 1, tier 0, no MPI in this
-/// sandbox). This header is the cross-rank extension: it reaches the
+/// pairs, with no communication (tier 0, no MPI). This header is the cross-rank extension: it reaches the
 /// SAME verdict a single combined rank would reach, by gathering every
 /// rank's own local view into one shared global view FIRST (a single
 /// `MPI_Allgatherv` over the combined buffer, not N separate collectives
-/// per field, per the owner's own "never one collective per array" rule)
+/// per field, per the "never one collective per array" rule)
 /// and then running the IDENTICAL check against that shared view on every
 /// rank -- so every rank's verdict is the identical answer to the
 /// identical question, never a separate agreement reduction on top of it
@@ -20,13 +19,12 @@
 /// condition" rule is satisfied by construction here: nothing is locally
 /// computed past the gather).
 ///
-/// NOT WIRED INTO Hdf5GroupWriter THIS ROUND. Slice 1's own tier-0
+/// NOT WIRED INTO Hdf5GroupWriter. The tier-0
 /// `create_restart_point()`/`Hdf5GroupWriter` surface (every test in
-/// test/runtime/restart_test.cpp) stays exactly as built and verified;
-/// this is a standalone utility a FUTURE round's parallel-aware writer
-/// calls before its own single-rank check, matching `finish_point()`'s
-/// own header comment ("Slice 2 extends this into a single collective...
-/// rather than replacing it"). `test/parallel/restart_collective_mpi_
+/// test/runtime/restart_test.cpp) is separate from this standalone
+/// utility, which a parallel-aware writer calls before its own single-rank
+/// check, extending `finish_point()`'s check into a single collective
+/// rather than replacing it. `test/parallel/restart_collective_mpi_
 /// test.cpp` exercises this function directly, not through a full
 /// parallel HDF5 write (which would additionally need the collective
 /// MPI-IO property lists docs/dev/restart.md Section 4.3 describes --
@@ -77,7 +75,7 @@ namespace fuse::restart_io {
 ///     its agreed `declared_global_size`.
 /// The underlying `MPI_Allgatherv` is called exactly twice (once for the
 /// id buffer, once for the declared-size buffer), never once per field
-/// -- the owner's own "never one collective per array" rule, restated
+/// -- the "never one collective per array" rule, restated
 /// for this function specifically.
 [[nodiscard]] Result<void> collective_duplicate_and_coverage_check(
     int comm_f,

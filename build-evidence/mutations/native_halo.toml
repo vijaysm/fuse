@@ -1,11 +1,9 @@
-# Mutations for KNOWN_ISSUES D27: fuse::native::accumulate_remap_halo's
-# argument-validation and no-op refusals (src/backend/native_halo.cpp). Own
-# file per the review-fix protocol: do not edit build-evidence/mutations.toml
-# directly while other fixers hold it dirty.
+# Mutations for fuse::native::accumulate_remap_halo's argument-validation
+# and no-op refusals (src/backend/native_halo.cpp).
 #
 # The REAL Alltoallv-based summation inside accumulate_remap_halo's
 # `#if FUSE_HAVE_MPI` branch needs a real communicator to exercise at all
-# (this sandbox cannot initialise MPI, KNOWN_ISSUES.md C1), so it is NOT
+# (this sandbox cannot initialise MPI), so it is NOT
 # mutation-tested here -- only the argument validation and no-op paths
 # `NativeHaloAccumulate`'s tier-0 rows (test/backend/native_halo_test.cpp)
 # actually run are. test/parallel/native_halo_mpi_test.cpp's own
@@ -25,7 +23,7 @@ test = "backend.native_halo"
 [[mutation]]
 id = "accumulate-remap-halo-zero-ghost-noop-skipped"
 area = "backend"
-describes = "Round 3's own fix moved this check to the non-MPI (#else) branch of accumulate_remap_halo, the one a tier-0 (FUSE_HAVE_MPI=0) build actually compiles: removing it here flips a documented successful no-op (make_serial_exchanger(), ghost_n == 0) into an E-MESH-HALO 'no MPI' refusal. The MPI-build sibling check (inside the packed == nullptr branch, same function) is NOT independently mutated: it is unreachable in a tier-0 build for the identical reason mutation accumulate-remap-halo-missing-packed-exchanger-facet-not-checked below is."
+describes = "This check lives in the non-MPI (#else) branch of accumulate_remap_halo, the one a tier-0 (FUSE_HAVE_MPI=0) build actually compiles: removing it here flips a documented successful no-op (make_serial_exchanger(), ghost_n == 0) into an E-MESH-HALO 'no MPI' refusal. The MPI-build sibling check (inside the packed == nullptr branch, same function) is NOT independently mutated: it is unreachable in a tier-0 build for the identical reason mutation accumulate-remap-halo-missing-packed-exchanger-facet-not-checked below is."
 file = "src/backend/native_halo.cpp"
 old = "  if (ghost_n == 0) return Result<void>::success();"
 new = "  if (false) return Result<void>::success();"
@@ -35,18 +33,18 @@ test = "backend.native_halo"
 [[mutation]]
 id = "accumulate-remap-halo-null-buffer-not-checked"
 area = "backend"
-describes = "Round 3's own fix narrowed this guard to ghost_n > 0 (a real PackedExchanger with ghost_n == 0 must still reach the exchange below to receive a peer's contribution, round 3's measured fix for KNOWN_ISSUES D27's host-reported FAIL 1); removing the whole condition here still drops the ghost_n > 0 case the ORIGINAL mutation intended -- a caller handing a null buffer with outstanding ghosts is not refused E-MESH-ARG before the function would otherwise dereference it."
+describes = "The guard is narrowed to ghost_n > 0 (a real PackedExchanger with ghost_n == 0 must still reach the exchange below to receive a peer's contribution); removing the whole condition here still drops the ghost_n > 0 case -- a caller handing a null buffer with outstanding ghosts is not refused E-MESH-ARG before the function would otherwise dereference it."
 file = "src/backend/native_halo.cpp"
 old = "  if (ghost_n > 0 && ghosts == nullptr) {"
 new = "  if (false) {"
 target = "fuse_backend_native_halo_test"
 test = "backend.native_halo"
-# Re-anchored 2026-10-19 (lead): the single `owned == nullptr || ghosts == nullptr` check split into a ghost_n-conditioned ghost check and an owned_n-conditioned owned check (KNOWN_ISSUES.md D73 round 8).
+# The single `owned == nullptr || ghosts == nullptr` check is split into a ghost_n-conditioned ghost check and an owned_n-conditioned owned check.
 
 [[mutation]]
 id = "accumulate-remap-halo-missing-packed-exchanger-facet-not-checked"
 area = "backend"
-describes = "The PackedExchanger dynamic_cast null-check is removed, so a GhostExchanger that reports outstanding ghosts but implements no PackedExchanger facet (a caller/factory mismatch native_halo.hpp's own contract names explicitly) is not refused E-MESH-HALO -- the function proceeds to call through a null pointer instead. Lives inside accumulate_remap_halo's own `#if FUSE_HAVE_MPI` branch (native_halo.cpp), so a tier-0 (no-MPI) build never compiles this line at all -- confirmed empirically: the SAME test (NoPackedExchangerFacetRefusesWithEMeshHalo) passes unchanged with this mutation applied under fuse_backend_native_halo_test's tier-0 configuration, because the mutated line is dead code there, not because the test is weak. requires = \"mpi\" marks it NOT-ASSESSED rather than falsely KILLED, the same courtesy the transport mutations already use (KNOWN_ISSUES D5's own history)."
+describes = "The PackedExchanger dynamic_cast null-check is removed, so a GhostExchanger that reports outstanding ghosts but implements no PackedExchanger facet (a caller/factory mismatch native_halo.hpp's own contract names explicitly) is not refused E-MESH-HALO -- the function proceeds to call through a null pointer instead. Lives inside accumulate_remap_halo's own `#if FUSE_HAVE_MPI` branch (native_halo.cpp), so a tier-0 (no-MPI) build never compiles this line at all -- confirmed empirically: the SAME test (NoPackedExchangerFacetRefusesWithEMeshHalo) passes unchanged with this mutation applied under fuse_backend_native_halo_test's tier-0 configuration, because the mutated line is dead code there, not because the test is weak. requires = \"mpi\" marks it NOT-ASSESSED rather than falsely KILLED, the same courtesy the transport mutations already use."
 file = "src/backend/native_halo.cpp"
 old = "  if (packed == nullptr) {"
 new = "  if (false) {"
@@ -57,7 +55,7 @@ requires = "mpi"
 [[mutation]]
 id = "accumulate-remap-halo-real-exchanger-null-owned-not-checked"
 area = "backend"
-describes = "Round 3's own new owned == nullptr check, inside the packed != nullptr (real MpiExchanger) branch, is removed: a caller handing a null owned buffer to a REAL exchanger with ghost_n == 0 (the exact case round 3's fix newly allows past the ghost_n > 0 guard above) is not refused E-MESH-ARG, and the function proceeds to dereference owned through pack_index() instead. Lives inside accumulate_remap_halo's own `#if FUSE_HAVE_MPI` branch, reachable only through a real make_mpi_exchanger() result -- a tier-0 (no-MPI) build never compiles this line. requires = \"mpi\" marks it NOT-ASSESSED, not falsely KILLED, for the same reason as the facet-check mutation below."
+describes = "The owned == nullptr check inside the packed != nullptr (real MpiExchanger) branch is removed: a caller handing a null owned buffer to a REAL exchanger with ghost_n == 0 (the exact case allowed past the ghost_n > 0 guard above) is not refused E-MESH-ARG, and the function proceeds to dereference owned through pack_index() instead. Lives inside accumulate_remap_halo's own `#if FUSE_HAVE_MPI` branch, reachable only through a real make_mpi_exchanger() result -- a tier-0 (no-MPI) build never compiles this line. requires = \"mpi\" marks it NOT-ASSESSED, not falsely KILLED, for the same reason as the facet-check mutation below."
 file = "src/backend/native_halo.cpp"
 old = "  if (owned_n > 0 && owned == nullptr) {"
 new = "  if (false) {"
@@ -65,24 +63,23 @@ target = "fuse_backend_native_halo_test"
 test = "backend.native_halo"
 
 # ---------------------------------------------------------------------------
-# KNOWN_ISSUES D5/D73 ROUND 3 (owner's host measurement, 2026-10-18): the
-# two-placement build_native_remap_halo overload (HALO BRIDGING). The real
-# cross-rank exchange this fix touches lives past the ranks<=1 short-
+# The two-placement build_native_remap_halo overload (HALO BRIDGING). The real
+# cross-rank exchange lives past the ranks<=1 short-
 # circuit, inside the SAME `#if FUSE_HAVE_MPI` multi-rank body this file's
 # own header comment already excludes from mutation testing (needs a real
-# communicator, KNOWN_ISSUES.md C1) -- one row below is marked
+# communicator) -- one row below is marked
 # `requires = "mpi"` for exactly that reason, and names the real target
 # (test/parallel/native_remap_halo_runner_test.cpp) this sandbox cannot run.
 # The short-circuit's own commit-key plumbing IS tier-0 testable and IS
 # tested below.
 # ---------------------------------------------------------------------------
-# Re-anchored 2026-10-19 (lead): the unconditional `owned == nullptr` check after the packed cast was replaced by the owned_n-conditioned check at the top of the function; a rank with owned_n == 0 has nothing to receive and its empty buffer is legitimately null (KNOWN_ISSUES.md D73 round 8).
-# 2026-10-19 (lead): no longer requires MPI -- NativeHaloAccumulate.NullOwnedBufferWithOwnedEntriesRefusesWithEMeshArg reaches the owned_n-conditioned check with a fake exchanger at tier 0.
+# The `owned == nullptr` check after the packed cast is the owned_n-conditioned check at the top of the function; a rank with owned_n == 0 has nothing to receive and its empty buffer is legitimately null.
+# No MPI is required -- NativeHaloAccumulate.NullOwnedBufferWithOwnedEntriesRefusesWithEMeshArg reaches the owned_n-conditioned check with a fake exchanger at tier 0.
 
 [[mutation]]
 id = "two-placement-halo-commits-under-source-placement-not-target"
 area = "backend"
-describes = "The two-placement build_native_remap_halo overload's own ranks<=1 short-circuit commit_remap_halo call (the one a single-process caller like this track's own new tier-0 test actually reaches) is mutated to key by source_placement instead of placement (the target's own) -- every existing lookup by the target's placement (has_remap_halo, native_view, placed_view, supermesh_side in intx_weights.cpp) would then find nothing, reintroducing exactly the refusal the halo build was supposed to satisfy."
+describes = "The two-placement build_native_remap_halo overload's own ranks<=1 short-circuit commit_remap_halo call (the one a single-process caller like the tier-0 test actually reaches) is mutated to key by source_placement instead of placement (the target's own) -- every existing lookup by the target's placement (has_remap_halo, native_view, placed_view, supermesh_side in intx_weights.cpp) would then find nothing, reintroducing exactly the refusal the halo build was supposed to satisfy."
 file = "src/backend/native_halo.cpp"
 old = """    const Result<void> rec = backend.commit_remap_halo(source, placement, nullptr, target, dim,
                                                        fuse::linalg::GhostPattern{});"""
@@ -91,31 +88,23 @@ new = """    const Result<void> rec = backend.commit_remap_halo(source, source_p
 target = "fuse_backend_native_halo_test"
 test = "backend.native_halo"
 # Expected kill: NativeHaloCrossPlacement.TwoPlacementOverloadsShortCircuit
-# StillCommitsUnderTheTargetsPlacement (new this round) -- calls the
+# StillCommitsUnderTheTargetsPlacement -- calls the
 # two-placement overload at ranks<=1 (this sandbox's own only reachable
-# path, no MPI needed at all). VERIFIED 2026-10-18 (this track's own
-# round-3 session): first attempt mutated the WRONG one of this
-# function's two commit_remap_halo call sites (the one past the real
-# multi-rank exchange, which a ranks<=1 test never reaches) and measured
-# a false negative -- 23/23 still passed, caught by re-reading the test's
-# own short-circuit condition against which call site it actually
-# executes, not by trusting the row's own first draft. Corrected to this
-# line, re-applied by hand, fuse_backend_native_halo_test rebuilt, re-run
-# -- the new test's own has_remap_halo assertions invert exactly as
+# path, no MPI needed at all). VERIFIED: the mutation must target the short-circuit's commit_remap_halo
+# call site, not the function's other call site (the one past the real
+# multi-rank exchange, which a ranks<=1 test never reaches; mutating that
+# one is a false negative -- 23/23 still pass). Applied by hand, fuse_backend_native_halo_test rebuilt, re-run
+# -- the test's own has_remap_halo assertions invert exactly as
 # described (true under source_placement, false under placement, the
 # opposite of what the test checks) and the test fails; every other test
 # in the binary, unaffected by this one line, still passes (22/23). File
 # restored and re-verified byte-identical, full suite green again
-# (23/23). Re-verified a second time after this round's own later
-# printf-to-fmt (check-invariants) and attribution-wording fixes touched
-# the same file: same apply/build/run/confirm-kill (22/23)/restore/
-# byte-identical/re-verify-green (23/23) cycle, repeated end to end on
-# the file's own final text.
+# (23/23).
 
 [[mutation]]
 id = "two-placement-halo-resolves-source-through-targets-placement"
 area = "backend"
-describes = "The two-placement build_native_remap_halo overload's own fix -- resolving the SOURCE view through source_placement rather than placement -- is reverted, reproducing the exact defect measured on the owner's host 2026-10-18 (parallel.native_remap_halo_runner.{2,3}: initialize() succeeds, remap_weight_builds == 1, remap_weight_nonzeros == 0, the conservation check at :393 fails by the full source total). This line sits past the ranks<=1 short-circuit, inside the #if FUSE_HAVE_MPI multi-rank exchange body this file's own header comment already excludes from mutation testing (needs a real communicator to reach at all, KNOWN_ISSUES.md C1)."
+describes = "The two-placement build_native_remap_halo overload's own fix -- resolving the SOURCE view through source_placement rather than placement -- is reverted, reproducing the exact defect measured on the host (parallel.native_remap_halo_runner.{2,3}: initialize() succeeds, remap_weight_builds == 1, remap_weight_nonzeros == 0, the conservation check at :393 fails by the full source total). This line sits past the ranks<=1 short-circuit, inside the #if FUSE_HAVE_MPI multi-rank exchange body this file's own header comment already excludes from mutation testing (needs a real communicator to reach at all)."
 file = "src/backend/native_halo.cpp"
 old = "  auto src_r = backend.native_view(source, source_placement);"
 new = "  auto src_r = backend.native_view(source, placement);"
@@ -123,17 +112,14 @@ target = "fuse_parallel_native_remap_halo_runner_test"
 test = "parallel.native_remap_halo_runner"
 requires = "mpi"
 # NOT ASSESSED in this sandbox (cannot start MPI) -- host_pending. On the
-# owner's host, expect: with this mutation applied, NativeRemapHalo.
+# host, expect: with this mutation applied, NativeRemapHalo.
 # DisjointGeneralWeightedRemapConservesOnceTheHaloIsBuilt fails identically to
-# the UNFIXED behaviour already measured 2026-10-18 (remap_weight_
-# nonzeros == 0, the :352/:393 EXPECT failures quoted in the round-3 task
-# message); with it reverted (this round's own committed fix), that same
-# row is expected to go GREEN for the first time -- the one measurement
-# this round's own patch cannot make for itself.
+# the unfixed behaviour already measured on the host (remap_weight_
+# nonzeros == 0, the :352/:393 EXPECT failures); with it reverted (the
+# committed fix), that same row is expected to go GREEN.
 
 # ---------------------------------------------------------------------------
-# KNOWN_ISSUES.md D73 ROUND 5 (owner's host measurement, 2026-10-19): the
-# empty-local-mesh CSR-copy defect in `device::merge_halo_cells_device`
+# The empty-local-mesh CSR-copy defect in `device::merge_halo_cells_device`
 # (mesh_merge_device.hpp) and the exception-safety gap this exposed in
 # `build_native_remap_halo`'s own collective structure (native_halo.cpp).
 # One row below is tier-0 testable with NO MPI at all (merge_halo_cells is
@@ -145,7 +131,7 @@ requires = "mpi"
 [[mutation]]
 id = "merge-halo-cells-empty-local-mesh-cell-vertex-offsets-not-guarded"
 area = "backend"
-describes = "The E_cells > 0 guard around merge_halo_cells_device's own cell_vertex_offsets deep_copy is removed, reproducing the exact Kokkos deep_copy shape-mismatch the owner's host measured ('merge_cvo(1) (0)') when a rank whose local mesh genuinely has zero cells (the 'rank hosts only the target' case every disjoint-placement run has) receives its first halo copies from a peer."
+describes = "The E_cells > 0 guard around merge_halo_cells_device's own cell_vertex_offsets deep_copy is removed, reproducing the exact Kokkos deep_copy shape-mismatch the host measured ('merge_cvo(1) (0)') when a rank whose local mesh genuinely has zero cells (the 'rank hosts only the target' case every disjoint-placement run has) receives its first halo copies from a peer."
 file = "include/fuse/backend/native/mesh_merge_device.hpp"
 old = """  if (E_cells > 0) {
     Kokkos::deep_copy(Kokkos::subview(out.cell_vertex_offsets, Kokkos::make_pair(0, E_cells + 1)),
@@ -156,14 +142,13 @@ new = """  Kokkos::deep_copy(Kokkos::subview(out.cell_vertex_offsets, Kokkos::ma
 target = "fuse_backend_native_halo_test"
 test = "backend.native_halo"
 # Expected kill: NativeHaloPackMerge.RoundTripIntoAnEmptyLocalMeshAdopts
-# TheReceivedCellsWithoutThrowing (new this round) -- calls merge_halo_
+# TheReceivedCellsWithoutThrowing -- calls merge_halo_
 # cells (the HostSpace instantiation) directly with a hand-built, all-
 # default (0-extent) local MeshArrays receiving a real 4-cell packed
-# buffer, no MPI needed at all. VERIFIED 2026-10-19 (this track's own
-# round-5 session): applied by hand (reverted the guard, restoring the
+# buffer, no MPI needed at all. VERIFIED: applied by hand (reverted the guard, restoring the
 # unconditional deep_copy), rebuilt fuse_backend_native_halo_test, ran --
 # the new test's own EXPECT_NO_THROW fires and reports the EXACT error
-# text the owner's host measured ("Deprecation Error: Kokkos::deep_copy
+# text the host measured ("Deprecation Error: Kokkos::deep_copy
 # extents of views don't match: fuse::native::device::merge_cvo(1) (0)"),
 # character for character; every other test in the binary unaffected
 # (23/24 pass, only the new test fails as expected). File restored by
@@ -173,7 +158,7 @@ test = "backend.native_halo"
 [[mutation]]
 id = "build-native-remap-halo-merge-not-exception-safe"
 area = "backend"
-describes = "The catch clause build_native_remap_halo's own merge-and-view-creation segment uses to turn a local exception into post_check (rather than letting it unwind out of the function, past the post-exchange verdict Allreduce its peers are waiting inside) is defeated by rethrowing instead of recording the Failure -- reproducing the exact hang the owner's host measured (rank 0 blocked in MPI_Allreduce forever once rank 1's exception skipped its own call) whenever the segment genuinely throws (the empty-local-mesh defect above is one concrete trigger, but any other throw in device::merge_halo_cells_device or NativeMeshView::create would do the same)."
+describes = "The catch clause build_native_remap_halo's own merge-and-view-creation segment uses to turn a local exception into post_check (rather than letting it unwind out of the function, past the post-exchange verdict Allreduce its peers are waiting inside) is defeated by rethrowing instead of recording the Failure -- reproducing the exact hang the host measured (rank 0 blocked in MPI_Allreduce forever once rank 1's exception skipped its own call) whenever the segment genuinely throws (the empty-local-mesh defect above is one concrete trigger, but any other throw in device::merge_halo_cells_device or NativeMeshView::create would do the same)."
 file = "src/backend/native_halo.cpp"
 old = """  } catch (const std::exception& e) {
     post_check = Failure{"E-MESH-HALO-MERGE","""
@@ -186,10 +171,10 @@ requires = "mpi"
 # NOT ASSESSED in this sandbox (cannot start MPI, build_native_remap_
 # halo's own ranks<=1 short-circuit means this try/catch is unreachable
 # at any rank count this sandbox can run) -- host_pending. On the
-# owner's host, expect: applying this mutation TOGETHER WITH the
+# host, expect: applying this mutation TOGETHER WITH the
 # "merge-halo-cells-empty-local-mesh-cell-vertex-offsets-not-guarded"
 # row above (so the merge genuinely throws again) reproduces the exact
-# hang measured 2026-10-18/19 (rank 0 blocked in MPI_Allreduce inside
+# hang measured on the host (rank 0 blocked in MPI_Allreduce inside
 # build_native_remap_halo ~638, rank 1 already past its own test body
 # with an uncaught Kokkos deep_copy exception, now rethrown instead of
 # caught) -- this mutation alone, without reverting the CSR-offset fix,
@@ -201,7 +186,6 @@ requires = "mpi"
 # shows the first one alone compiles and passes clean).
 
 # ---------------------------------------------------------------------------
-# KNOWN_ISSUES.md D73 ROUND 6 (owner's host measurement, 2026-10-19):
 # build_weights_via_supermesh's own E-REMAP-PARALLEL check (intx_weights.cpp)
 # queried has_remap_halo without plan.placement, the same key commit_remap_
 # halo uses (native_backend.hpp's own documented 4th-argument default,
@@ -215,24 +199,23 @@ requires = "mpi"
 [[mutation]]
 id = "build-weights-via-supermesh-has-remap-halo-missing-placement-argument"
 area = "backend"
-describes = "build_weights_via_supermesh's own E-REMAP-PARALLEL check (intx_weights.cpp) drops the plan.placement argument from its has_remap_halo call, reverting to querying under ComponentId{} (that argument's own documented default) regardless of what placement the halo was actually committed under -- reproducing the exact defect the owner's host measured 2026-10-19: Runner::initialize() refused E-REMAP-PARALLEL on every rank of a run whose own trace had already shown the halo building and committing cleanly (adopted_source_cells printed correctly, no exception), because the query asked under a key nothing was ever committed to."
+describes = "build_weights_via_supermesh's own E-REMAP-PARALLEL check (intx_weights.cpp) drops the plan.placement argument from its has_remap_halo call, reverting to querying under ComponentId{} (that argument's own documented default) regardless of what placement the halo was actually committed under -- reproducing the exact defect the host measured: Runner::initialize() refused E-REMAP-PARALLEL on every rank of a run whose own trace had already shown the halo building and committing cleanly (adopted_source_cells printed correctly, no exception), because the query asked under a key nothing was ever committed to."
 file = "src/backend/intx_weights.cpp"
 old = "!native_backend->has_remap_halo(s.value().mid, d.value().mid, s.value().dim, plan.placement)) {"
 new = "!native_backend->has_remap_halo(s.value().mid, d.value().mid, s.value().dim)) {"
 target = "fuse_backend_native_halo_test"
 test = "backend.native_halo"
 # Expected kill: NativeHaloBuildWeights.BuildWeightsFindsAHaloCommittedUnder
-# AnActualComponentPlacement (new this round) -- commits a halo under a
+# AnActualComponentPlacement -- commits a halo under a
 # real, non-default graph component ("consumer", RankSet spanning every
 # simulated rank) via commit_remap_halo directly (run_halo_pipeline's own
 # in-process allgather computes the pattern, no MPI needed), fakes
 # communicator_size() > 1 via set_communicator() on a placeholder handle
 # (BackendFixture's own existing convention), and calls fuse::build_weights
-# with plan.placement set to that SAME component. VERIFIED 2026-10-19 (this
-# track's own round-6 session): applied by hand, fuse_backend_native_halo_
+# with plan.placement set to that SAME component. VERIFIED: applied by hand, fuse_backend_native_halo_
 # test rebuilt, ran (full, unfiltered binary, not --gtest_filter-restricted)
 # -- the new test's own ASSERT_TRUE(w.ok()) fails at rank 0 and reports the
-# EXACT E-REMAP-PARALLEL text the owner's host measured, character for
+# EXACT E-REMAP-PARALLEL text the host measured, character for
 # character; every other test in the binary unaffected (24/25 pass, only the
 # new test fails). ASSERT_TRUE returns out of the test function on its
 # first failure, so that run alone only reaches rank 0; a SEPARATE full,
@@ -244,8 +227,7 @@ test = "backend.native_halo"
 # green again (25/25) both times.
 
 # ---------------------------------------------------------------------------
-# KNOWN_ISSUES.md D73 ROUND 8 (owner's host measurement, 2026-10-19): the
-# conservative coverage check (min_src_coverage), DISTRIBUTED. Two rows are
+# The conservative coverage check (min_src_coverage), DISTRIBUTED. Two rows are
 # tier-0 testable (the fold's own no-MPI refusal, and the CALL SITE that
 # must not skip asking for the fold at all); the third -- agreeing the
 # folded minimum across the WHOLE base communicator, not just the ranks one
@@ -256,26 +238,24 @@ test = "backend.native_halo"
 [[mutation]]
 id = "build-weights-via-supermesh-skips-the-distributed-coverage-fold"
 area = "backend"
-describes = "The call site in build_weights_via_supermesh's own NativeMeshBackend branch (intx_weights.cpp) that asks fold_and_reduce_source_coverage to fold a partitioned source cell's own coverage across the halo before the Conservative check reads it is disabled entirely (the whole guarding `if` forced false) -- reproducing the owner's host measurement EXACTLY: rank 0 (no target cells of its own) judges Conservative coverage from ITS OWN local supermesh alone (0%, nothing intersects an empty target view) and refuses E-REMAP-COVERAGE, the identical defect this round's own fix closes, instead of E-REMAP-PARALLEL (the fix's own honest 'I would need to fold across ranks and this build has no MPI' refusal)."
+describes = "The call site in build_weights_via_supermesh's own NativeMeshBackend branch (intx_weights.cpp) that asks fold_and_reduce_source_coverage to fold a partitioned source cell's own coverage across the halo before the Conservative check reads it is disabled entirely (the whole guarding `if` forced false) -- reproducing the host measurement EXACTLY: rank 0 (no target cells of its own) judges Conservative coverage from ITS OWN local supermesh alone (0%, nothing intersects an empty target view) and refuses E-REMAP-COVERAGE, the identical defect the fix closes, instead of E-REMAP-PARALLEL (the fix's own honest 'I would need to fold across ranks and this build has no MPI' refusal)."
 file = "src/backend/intx_weights.cpp"
 old = "  if (has(plan.flags, RemapFlags::Conservative) && native_backend != nullptr &&"
 new = "  if (false && has(plan.flags, RemapFlags::Conservative) && native_backend != nullptr &&"
 target = "fuse_backend_native_halo_test"
 test = "backend.native_halo"
 # Expected kill: NativeHaloDistributedCoverage.BuildWeightsAttemptsTheFold
-# RatherThanJudgingFromLocalCoverageAlone (new this round) -- a disjoint
+# RatherThanJudgingFromLocalCoverageAlone -- a disjoint
 # provider/consumer 2-rank fixture (CrossPlacement's own convention,
 # generated:quad:2x2 -> generated:quad:3x3), rank 0 owning all 4 source
 # cells and no target cells, Conservative requested, communicator faked to
 # 2 ranks (set_communicator() on a placeholder handle, no real MPI). The
 # real merge (merge_halo_cells with an empty received list, the no-op
 # rank 0's own build_native_remap_halo would produce) is committed by hand,
-# no MPI needed at all. VERIFIED 2026-10-19 (this track's own round-7
-# session): applied by hand, fuse_backend_native_halo_test rebuilt, ran --
+# no MPI needed at all. VERIFIED: applied by hand, fuse_backend_native_halo_test rebuilt, ran --
 # the test's own EXPECT_EQ(w.error().code, "E-REMAP-PARALLEL") fails,
 # reporting "E-REMAP-COVERAGE" instead, with the EXACT "0.000000% of the
-# worst source cell (of 4)" text the owner's host measured before this
-# round's own fix, character for character; every other test in the binary
+# worst source cell (of 4)" text the host measured before the fix, character for character; every other test in the binary
 # unaffected (28/29 pass). File restored by hand and re-verified
 # byte-identical (md5 c65afcd4c5b4eeeb8fef7d00a351d242), full suite green
 # again (29/29).
@@ -283,7 +263,7 @@ test = "backend.native_halo"
 [[mutation]]
 id = "fold-and-reduce-source-coverage-silently-substitutes-serial-exchanger-without-mpi"
 area = "backend"
-describes = "fold_and_reduce_source_coverage's own no-MPI refusal (native_halo.cpp), reached whenever communicator_size() > 1 and this build has no MPI to perform the real collective fold, is replaced with a SILENT fallback to make_serial_exchanger() -- the same exchanger a genuinely single-rank run correctly uses, but here papering over a halo this rank's own pattern says has real ghosts, rather than refusing. accumulate_remap_halo's own ghost_n-must-match-the-exchanger's-own-pattern check (native_halo.cpp, unchanged by this round) catches the resulting mismatch (the serial exchanger's own ghost_size() is always 0) and refuses E-MESH-ARG instead -- a different code from this fix's own honest E-REMAP-PARALLEL, so a caller distinguishing the two sees the wrong one."
+describes = "fold_and_reduce_source_coverage's own no-MPI refusal (native_halo.cpp), reached whenever communicator_size() > 1 and this build has no MPI to perform the real collective fold, is replaced with a SILENT fallback to make_serial_exchanger() -- the same exchanger a genuinely single-rank run correctly uses, but here papering over a halo this rank's own pattern says has real ghosts, rather than refusing. accumulate_remap_halo's own ghost_n-must-match-the-exchanger's-own-pattern check (native_halo.cpp) catches the resulting mismatch (the serial exchanger's own ghost_size() is always 0) and refuses E-MESH-ARG instead -- a different code from this fix's own honest E-REMAP-PARALLEL, so a caller distinguishing the two sees the wrong one."
 file = "src/backend/native_halo.cpp"
 old = """  } else {
 #if FUSE_HAVE_MPI
@@ -308,10 +288,9 @@ new = """  } else {
 target = "fuse_backend_native_halo_test"
 test = "backend.native_halo"
 # Expected kill: NativeHaloDistributedCoverage.FoldRefusesRatherThanGuess
-# WithoutMpiWhenAHaloHasGhosts (new this round) -- a fake 2-rank
+# WithoutMpiWhenAHaloHasGhosts -- a fake 2-rank
 # communicator with ONE real committed ghost (owner_rank={0},
-# remote_local_index={0}), no MPI needed. VERIFIED 2026-10-19 (this
-# track's own round-7 session): applied by hand, fuse_backend_native_halo_
+# remote_local_index={0}), no MPI needed. VERIFIED: applied by hand, fuse_backend_native_halo_
 # test rebuilt, ran -- the test's own EXPECT_EQ(folded.error().code,
 # "E-REMAP-PARALLEL") fails, reporting "E-MESH-ARG" instead (accumulate_
 # remap_halo's own ghost_n != exchanger.ghost_size() check, 1 != 0); every
@@ -335,7 +314,7 @@ requires = "mpi"
 # compiles it reachably in the sense of exercising it -- confirmed by
 # reading: `communicator_size() > 1` with no MPI returns at the exchanger-
 # building step, several lines earlier in the SAME function, before this
-# line is ever reached. On the owner's host (>= 3 ranks, source cells
+# line is ever reached. On the host (>= 3 ranks, source cells
 # split unevenly across ranks so at least one rank's own owned-cell
 # minimum genuinely differs from another's): expect this mutation to let
 # at least one rank accept a Conservative map a peer, judging from a worse

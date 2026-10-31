@@ -1,7 +1,6 @@
-// S5.4. The acceptance criterion in the plan is a map persisted at 2 ranks
-// that reloads at 4 and reproduces 1e-13, plus a distribution check that
-// rejects a mismatched partition. MPI cannot initialise in the sandbox where
-// this was written, so the rank-count change is modelled the way the format
+// Acceptance criterion: a map persisted at 2 ranks that reloads at 4 and
+// reproduces 1e-13, plus a distribution check that rejects a mismatched
+// partition. No MPI is needed: the rank-count change is modelled the way the format
 // itself sees it: a partition is nothing but a set of global ids, and two
 // "ranks" are two MeshViews over disjoint id sets. The parallel run adds the
 // launcher, not a new code path -- `localise()` cannot tell how many ranks
@@ -282,7 +281,7 @@ TEST(TransferMapIo, TwoWritersReloadAsFourReadersAndReproduceTheValues) {
 
 // ---- bit-for-bit across rank counts ------------------------------------
 
-// The requirement, stated by the user 2026-09-21: 1/2/3/4/5 "tasks" must give
+// The property: 1/2/3/4/5 "tasks" must give
 // bit-for-bit the same answer, with accumulation ordered by global id.
 //
 // EXPECT_EQ on doubles, not NEAR: a tolerance would pass for the wrong

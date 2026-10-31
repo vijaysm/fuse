@@ -12,7 +12,8 @@
 /// Spec Section 7.3: the `T` of `M = T (x) W`. This header builds the temporal half
 /// of a tier-1 (tensor-product) space-time remap: the matrix that carries a
 /// field from the source component's time partition onto the target's over one
-/// window. `W`, the spatial supermesh operator, is Phase 5's job.
+/// window. `W`, the spatial supermesh operator, comes from the spatial remap
+/// (remap_plan.hpp).
 ///
 /// ---------------------------------------------------------------------------
 /// WHICH OPERATOR IS THIS? (read before using the weights)
@@ -49,11 +50,11 @@
 ///      same span, to round-off.
 ///
 /// Property 2 is a COLUMN sum, and it is the one the space-time conservation
-/// check of spec Section 7.4 rides on. (Task 6.2's brief stated the conservation
-/// property as `sum_j T_ij * dt_src == dt_tgt`, a *row* sum. That identity is
-/// false for the weights the same brief prescribes: under 4x subcycling every
-/// `T_0j` is 1/4 and `dt_src` is 1/4, so the left side is 1/4 while `dt_tgt` is
-/// 1. The two true identities are the ones above.)
+/// check of spec Section 7.4 rides on. (The tempting statement
+/// `sum_j T_ij * dt_src == dt_tgt` is a *row* sum, and that identity is
+/// false for these weights: under 4x subcycling every `T_0j` is 1/4 and
+/// `dt_src` is 1/4, so the left side is 1/4 while `dt_tgt` is 1. The two
+/// true identities are the ones above.)
 ///
 /// The interpolatory (pointwise) temporal operator -- sample `Waveform` at the
 /// target step centres -- is a genuinely different matrix and is deliberately
@@ -188,15 +189,10 @@ struct TemporalProjection {
 
 /// Non-owning COO view of a spatial remap operator `W`.
 ///
-/// DEVIATION FROM THE BRIEF, stated because it matters to whoever lands Phase
-/// 5: the brief has `apply_spacetime` take `const RemapWeights&` from
-/// `fuse/backend/remap_plan.hpp`. Neither the type nor the header exists in the
-/// tree -- Phase 5's spatial remap has not landed (`grep -r RemapWeights
-/// include src` is empty, and no commit on any branch adds it). Rather than
-/// squat on the Phase 5 name with a guessed definition that would then have to
-/// be reconciled, this takes a non-owning *view* of the same COO triplets.
-/// When `RemapWeights` lands, the adapter is one aggregate initialisation and
-/// no signature here changes.
+/// `apply_spacetime` takes this non-owning *view* of the COO triplets rather
+/// than `const RemapWeights&` from `fuse/backend/remap_plan.hpp`, so it does
+/// not depend on the remap builders. Adapting a `RemapWeights` is one
+/// aggregate initialisation.
 struct SpatialWeightsView {
   const std::int32_t* row    = nullptr;  ///< target spatial index
   const std::int32_t* col    = nullptr;  ///< source spatial index
@@ -234,11 +230,10 @@ struct SpatialWeightsView {
 /// Tier 2 (true 4D intersection for moving meshes, spec Section 7.2) would replace
 /// this with a non-factorising operator; the seam is here.
 ///
-/// DEVIATION FROM THE BRIEF: the brief returns `void`. Every precondition
-/// here (null buffers, out-of-range steps, a spatial operator whose column
-/// count disagrees with `n_src_space`) is a memory-safety precondition, and an
-/// unchecked one vanishes under `-O3 -DNDEBUG`. It returns `Result<void>` so
-/// the checks survive Release.
+/// Every precondition here (null buffers, out-of-range steps, a spatial
+/// operator whose column count disagrees with `n_src_space`) is a memory-safety
+/// precondition, and an unchecked one vanishes under `-O3 -DNDEBUG`. It
+/// returns `Result<void>` so the checks survive Release.
 [[nodiscard]] Result<void> apply_spacetime(const SpatialWeightsView& spatial,
                                            const TemporalProjection& temporal,
                                            const double* src, double* dst,

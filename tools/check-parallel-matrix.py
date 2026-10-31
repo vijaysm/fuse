@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Check that every cell of the parallel matrix has coverage that exists.
 
-S5.5. The rank counts were already enumerated in test/CMakeLists.txt and the
-CommGraph rows already had tests; what was missing was anything that asserted
-the matrix was COVERED. A test can be deleted, renamed, or left unregistered
-and nothing said the matrix had lost a row -- and that has happened in this
-tree before: a whole parallel file compiled to nothing behind a stale guard
-while the legs reported passing.
+The rank counts are enumerated in test/CMakeLists.txt and the
+CommGraph rows have tests; this check asserts the matrix is COVERED.
+A test can be deleted, renamed, or left unregistered and nothing else would
+say the matrix had lost a row -- and that has happened in this tree before:
+a whole parallel file compiled to nothing behind a stale guard while the legs
+reported passing.
 
 So this gate reads build-evidence/parallel-matrix.toml and, for each cell,
 checks that what the cell CLAIMS is really there:

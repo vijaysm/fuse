@@ -1,7 +1,6 @@
 #pragma once
 
-/// Restart-to-disk writer/reader interfaces (docs/dev/restart.md, Stage B
-/// Slice 1). Abstract and backend-agnostic: no HDF5 type appears here.
+/// Restart-to-disk writer/reader interfaces (docs/dev/restart.md). Abstract and backend-agnostic: no HDF5 type appears here.
 ///
 /// WHY fuse::model, NOT fuse::runtime. `tools/check-layering.py` ranks
 /// `model` below both `runtime` and `num` (docs/dev/layering.md). A
@@ -30,11 +29,11 @@
 /// collisions with another component's field of the same name -- see that
 /// header's own `QualifyingRestartWriter`.
 ///
-/// OWNER DECISION 2 (batched global-id verification). `put_field()` is a
+/// BATCHED GLOBAL-ID VERIFICATION. `put_field()` is a
 /// LOCAL, per-rank, per-field call: it checks only that `ids` has no
 /// duplicate WITHIN this one call (free, and catches an authoring mistake
 /// before anything leaves this rank) and stages the data. The verification
-/// the owner asked for -- "uniqueness and coverage of the declared global
+/// -- "uniqueness and coverage of the declared global
 /// size for ALL arrays of a restart point in ONE collective (one sort and
 /// reduction over every array's ids together), never one collective per
 /// array" -- happens once, in `finish_point()`, after every component (and
@@ -46,13 +45,12 @@
 /// `declared_global_size` every caller for that field reported (which
 /// must therefore agree across every caller of the SAME field -- `finish_
 /// point()` refuses, by name, if two calls for the same field declared
-/// different global sizes). At a single rank (Slice 1, no MPI in this
-/// sandbox) this degenerates to a purely local sort with no communication;
-/// Slice 2 extends `finish_point()`'s own combined sort into one collective
-/// (a single `Allgatherv` over the SAME combined buffer, not N separate
-/// ones per field) rather than replacing it, so the tier-0 code path this
-/// slice tests is not thrown away when MPI is added -- see docs/dev/
-/// restart.md Section 7(iv)'s own tier split.
+/// different global sizes). At a single rank (no MPI) this
+/// degenerates to a purely local sort with no communication; under MPI
+/// the combined sort extends into one collective (a single `Allgatherv`
+/// over the SAME combined buffer, not N separate ones per field) rather
+/// than replacing it, so the tier-0 code path stays in use -- see
+/// docs/dev/restart.md Section 7(iv)'s own tier split.
 
 #include <cstddef>
 #include <cstdint>
@@ -87,21 +85,14 @@ namespace fuse {
 /// restart, and gated by `fuse::deserialize()`'s own `kGraphVersion` check
 /// (fuse/model/descriptor.hpp), which already refuses a version mismatch
 /// before this hash would even be compared.
-///
-/// CAVEAT (KNOWN_ISSUES.md D62, OPEN): `fuse::serialize()`'s own
-/// `Writer::pod()` is host-endian, not little-endian like the rest of
-/// `fuse/base/bytes.hpp` -- this hash is therefore only comparable
-/// between hosts of the same endianness, a limitation this function
-/// inherits rather than fixes (D62 is owned elsewhere).
 [[nodiscard]] inline std::uint64_t restart_descriptor_hash(
     const CouplingGraph& graph) {
   return bytes::fnv1a(serialize(graph));
 }
 
 /// One named sub-range of an accelerated region's stacked interface
-/// vector (docs/dev/restart.md, Stage B Slice 1 round 2, owner decision 4's
-/// EXACT-KEY fix). `field_name` is the OWNING component's own qualified
-/// field name -- already unique within one graph: `fuse::Runner`'s own
+/// vector (docs/dev/restart.md; exact-key design). `field_name` is the
+/// OWNING component's own qualified field name -- already unique within one graph: `fuse::Runner`'s own
 /// `build_field_owner_map()` (src/runtime/runner.cpp) refuses
 /// E-RESTART-AMBIGUOUS-FIELD-NAME before any accelerator call is ever
 /// reached if two components declared the same field name, so no two
@@ -114,18 +105,13 @@ namespace fuse {
 /// by `field_name` itself (`name_prefix + "/" + field_name`), so two
 /// blocks' rows can never collide: they are not even candidates for the
 /// same key, because they are not written under the same name. This
-/// replaces round 1's `combine_field_and_local_id()` (a hash of
-/// `field_name` folded into the id's high bits, flagged there as a
-/// bridging measure, not collision-proof) with a construction that cannot
-/// collide by definition, not merely "collision-free for every graph this
-/// project builds so far".
+/// construction cannot collide by definition, rather than being merely
+/// "collision-free for every graph this project builds so far".
 struct RestartRowBlock {
   std::string field_name;
   std::vector<std::int64_t> ids;
-  /// Restart track round 2, MUST-FIX 2 (KNOWN_ISSUES.md D69): 0 (the
-  /// default) means this block is an ORDINARY (non-window-scoped)
-  /// block, unchanged since Stage B Slice 1 -- `ids.size()` rows,
-  /// exactly as before. A window-scoped region's own accelerated
+  /// 0 (the default) means this block is an ORDINARY (non-window-scoped)
+  /// block -- `ids.size()` rows. A window-scoped region's own accelerated
   /// buffer is the WHOLE stacked window-transfer buffer, K samples per
   /// element (K = `window_capacity`), not the single-sample size this
   /// field's own `ids` names -- `detail::put_field_per_block`/
@@ -138,7 +124,7 @@ struct RestartRowBlock {
 /// Returned by every typed `get_field<T>()`/`get_scalar<T>()` call --
 /// never only `Result<void>` -- so a caller using `ReadConversion::
 /// AllowNarrowing` (the only mode under which any field below is ever
-/// nonzero) gets the owner's own required disclosure: "the read reports
+/// nonzero) gets a disclosure: "the read reports
 /// the largest change it made, measured over the values actually read"
 /// (docs/dev/restart.md Section 11). `ReadConversion::Exact`/`Widening`
 /// always report `converted_any == false` with both magnitudes at their
@@ -194,10 +180,10 @@ class RestartWriter {
   /// SAME `qualified_name` must declare the SAME value, or `finish_point()`
   /// refuses by name (E-RESTART-GLOBAL-SIZE-MISMATCH).
   ///
-  /// TYPED (Stage B Slice 1b, docs/dev/restart.md Section 11): `T` is any
+  /// TYPED (docs/dev/restart.md Section 11): `T` is any
   /// type `fuse::ElementTypeOf<T>` (fuse/model/element_type.hpp) names --
   /// an unsupported `T` is a compile-time `static_assert` there, never a
-  /// runtime failure here, per the owner's own instruction. The stored
+  /// runtime failure here. The stored
   /// `ElementType` becomes part of this field's own on-disk metadata; a
   /// LATER `get_field<U>()` call with a DIFFERENT `U` is resolved by
   /// `ReadConversion`, never silently reinterpreted.
@@ -225,12 +211,11 @@ class RestartWriter {
   /// caller agrees, not "whoever wrote last".
   ///
   /// TYPED, same reasoning as `put_field<T>()` above -- and the reason
-  /// this exists as a template rather than the round-1 `put_scalar(name,
+  /// this exists as a template rather than a `put_scalar(name,
   /// double)` overload: an `std::int64_t` counter (e.g. `fuse::runtime`'s
   /// own period index, `src/runtime/restart.cpp`) going through `double`
   /// loses precision for any magnitude `double`'s 53-bit significand
-  /// cannot cover exactly, which the owner's own instruction names
-  /// directly ("int64 counters must not go through double").
+  /// cannot cover exactly (int64 counters must not go through double).
   template <class T>
   Result<void> put_scalar(std::string_view qualified_name, T value) {
     return put_scalar_bytes(qualified_name, kElementTypeOf<T>,
@@ -247,23 +232,22 @@ class RestartWriter {
   virtual Result<void> put_scalar_rational(std::string_view qualified_name,
                                            const Rational& value) = 0;
 
-  /// Form B (owner decision 1): an opaque, versioned byte record,
+  /// Form B: an opaque, versioned byte record,
   /// same-decomposition only. `version` is the writer's own declared
   /// `restart_blob_version()` (fuse::Component, fuse/runtime/
   /// component.hpp), recorded so a reader can refuse an incompatible
   /// blob by name rather than by a corrupted read -- the same posture
   /// `kGraphVersion` (fuse/model/descriptor.hpp) already takes for the
-  /// coupling graph. UNCHANGED by Slice 1b's typed-fields work (owner's
-  /// own instruction: "the opaque byte record (form B) is unchanged") --
-  /// an opaque blob has no element type for this scheme to tag.
+  /// coupling graph. Unaffected by typed fields: an opaque blob (form B)
+  /// has no element type for this scheme to tag.
   virtual Result<void> put_blob(std::string_view qualified_name,
                                 std::span<const std::byte> bytes,
                                 std::uint32_t version) = 0;
 
-  /// Owner decision 2's own batched check -- see this file's header
+  /// The batched check -- see this file's header
   /// comment. Called exactly once, after every `put_field()`/`put_scalar()`
   /// `put_scalar_rational()`/`put_blob()` call for this restart point has
-  /// returned successfully; refuses (collectively, when Slice 2 adds MPI)
+  /// returned successfully; refuses
   /// on a duplicate id within one field across callers, a global-size
   /// disagreement, or (E-RESTART-BAD-NUMBERING) a field whose received
   /// count never reaches its declared global size.
@@ -284,8 +268,7 @@ class RestartWriter {
 /// The read side of `RestartWriter`. `get_field()` asks for exactly the
 /// rows the CALLER's own ids name -- the reader resolves them against
 /// whatever the file actually holds, which may have been written at a
-/// DIFFERENT rank count (owner decision 1's whole point: Form A is
-/// re-partitionable). A requested id absent from the file is `Failure`
+/// DIFFERENT rank count (Form A is re-partitionable). A requested id absent from the file is `Failure`
 /// (E-RESTART-MISSING-ID), never a default-filled row, because a
 /// silently-zero row is numerically indistinguishable from a
 /// legitimately-zero one.
@@ -327,9 +310,8 @@ class RestartReader {
       std::string_view qualified_name, ElementType requested_type,
       std::span<std::byte> out, ReadConversion conversion) = 0;
 
-  /// Out-parameter, not a return-by-value `Result<T>` (round 1's own
-  /// `get_scalar(name) -> Result<double>` shape) -- `ReadConversionReport`
-  /// is the call's own `Result<>` payload now, and a value AND a report
+  /// Out-parameter, not a return-by-value `Result<T>` -- `ReadConversionReport`
+  /// is the call's own `Result<>` payload, and a value AND a report
   /// cannot both occupy that one slot without inventing a pair type this
   /// project has no other use for; every call site already had to check
   /// `.ok()` before reading the value, so reading `out` after a
@@ -355,7 +337,7 @@ class RestartReader {
   /// row the current layout needs is actually present; `get_field()`
   /// itself refuses on a missing id rather than silently skip it, so a
   /// caller that may legitimately not find one (the accelerator path,
-  /// when the owner's reset-on-mismatch option is set) checks first.
+  /// when the reset-on-mismatch option is set) checks first.
   virtual Result<bool> has_id(std::string_view qualified_name,
                              std::int64_t id) = 0;
 };

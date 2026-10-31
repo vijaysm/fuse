@@ -225,8 +225,8 @@ Result<void> put_field_per_block(RestartWriter& writer,
     const std::size_t n_elem = block.ids.size();
     const std::string qualified = name_prefix + "/" + block.field_name;
     if (block.window_capacity == 0) {
-      // Ordinary case, UNCHANGED since round 2's own EXACT-KEY fix: one
-      // row per id, contiguous in `flat`.
+      // Ordinary case (EXACT-KEY scheme): one row per id, contiguous in
+      // `flat`.
       const Result<void> r = writer.put_field(
           qualified, block.ids,
           flat.subspan(off * static_cast<std::size_t>(components),
@@ -236,7 +236,7 @@ Result<void> put_field_per_block(RestartWriter& writer,
       off += n_elem;
       continue;
     }
-    // Window-scoped case (KNOWN_ISSUES.md D69, formerly D68): this
+    // Window-scoped case: this
     // block's own slice of `flat` is `n_elem * window_capacity` rows,
     // element-major sample-minor (index(e, s) = e*window_capacity + s).
     // Demux into `window_capacity` separate, per-sample, per-element-id
@@ -348,10 +348,10 @@ void Accelerator::set_field_partition(std::vector<std::size_t> offsets) {
     // field_weights() nothing -- its inner loops simply do not execute and
     // the block's weight is never read. A *decrease* remains a programmer
     // error: the blocks would overlap.
-    // Found 2026-09-20 by the host run of the MPI-enabled build configuration at 5 ranks, where 4 entities
-    // leave ranks with none and initialize() threw out of resolve_regions()
-    // on one rank while the others waited in a collective -- the rejection was
-    // not merely wrong, it hung the job.
+    // With 4 entities on 5 ranks, some ranks hold none, and rejecting that
+    // would throw out of initialize() in resolve_regions() on one rank while
+    // the others waited in a collective -- the rejection would not merely be
+    // wrong, it would hang the job.
     for (std::size_t i = 1; i < offsets.size(); ++i) {
       if (offsets[i] < offsets[i - 1]) {
         FUSE_THROW(InvalidArgument, "{}", 
@@ -374,7 +374,7 @@ class NoneAccel final : public Accelerator {
   [[nodiscard]] std::string name() const override { return "None"; }
   [[nodiscard]] std::size_t columns() const override { return 0; }
 
-  /// Restart track round 2: plain Picard carries no state at all between
+  /// Plain Picard carries no state at all between
   /// calls (x_out = x_new, nothing retained) -- trivially, correctly
   /// restartable by doing nothing, which is exactly what the base class's
   /// no-op export/import already do. Overridden here only so the Runner's
@@ -384,18 +384,15 @@ class NoneAccel final : public Accelerator {
     return true;
   }
 
-  /// Latent bug fixed this round: the base class's export_restart_state()
-  /// default IS a success no-op (correct here), but its
-  /// import_restart_state() default is an UNCONDITIONAL Failure (by
-  /// design -- Accelerator::import_restart_state()'s own doc comment),
-  /// meant to be unreachable once restart_state_implemented() reports
-  /// true. Declaring true above without overriding THIS method meant any
-  /// real Runner-driven restore through a None-accelerated region hit
-  /// that unconditional Failure -- never caught before because no prior
-  /// test completed a real restore all the way to the accelerator-restore
-  /// call for an explicit AccelKind::None region. Genuinely nothing to
-  /// restore (no learned state at all), so this is a real no-op, not a
-  /// workaround.
+  /// The base class's export_restart_state() default IS a success no-op
+  /// (correct here), but its import_restart_state() default is an
+  /// UNCONDITIONAL Failure (by design -- Accelerator::import_restart_state()'s
+  /// own doc comment), meant to be unreachable once
+  /// restart_state_implemented() reports true. Declaring true above without
+  /// overriding THIS method would mean any real Runner-driven restore through
+  /// a None-accelerated region hit that unconditional Failure. Genuinely
+  /// nothing to restore (no learned state at all), so this is a real no-op,
+  /// not a workaround.
   Result<void> import_restart_state(RestartReader&, std::string_view,
                                     std::span<const RestartRowBlock>, bool,
                                     bool& did_reset) override {
@@ -421,7 +418,7 @@ class ConstantAccel final : public Accelerator {
   [[nodiscard]] std::string name() const override { return "Constant"; }
   [[nodiscard]] std::size_t columns() const override { return 0; }
 
-  /// Restart track round 2: `omega_` is a FIXED run option supplied at
+  /// `omega_` is a FIXED run option supplied at
   /// construction (AccelConfig::omega, restored identically by the
   /// graph/config the owning run re-reads, not by this interface) --
   /// never learned history, so there is genuinely nothing for restart to
@@ -519,36 +516,34 @@ class AitkenAccel final : public Accelerator {
 
     for (std::size_t i = 0; i < n; ++i) r_[i] = x_new[i] - x_old[i];
 
-    // Window seed track, Stage D/E (KNOWN_ISSUES.md D76): the unguarded
-    // formula below accepted any finite, nonzero omega, including a
-    // negative one -- measured (Stage C/D): at D17's window 3 the second
-    // omega is negative (-0.031, then -0.18), the residual then stops
-    // decreasing (frozen at 0.0162 from sweep 4 on, 59 sweeps burned) and
-    // omega drifts toward zero. WHY the secant denominator collapses there
-    // is INFERRED, not measured: Stage C called it rounding noise, but its
-    // own numbers (denominator 3e-7 against ||r||^2 of 2.6e-4) are not at
-    // rounding level. A convergent real relaxation factor for a STATIONARY scalar
+    // The omega recursion must reject a non-positive omega: an unguarded
+    // formula accepts any finite, nonzero omega, including a negative one.
+    // Measured in a 25-window coupling run: at window 3 the second omega is
+    // negative (-0.031, then -0.18), the residual then stops decreasing
+    // (frozen at 0.0162 from sweep 4 on, 59 sweeps burned) and omega drifts
+    // toward zero. WHY the secant denominator collapses there is INFERRED, not
+    // measured: it is not at rounding level (denominator 3e-7 against ||r||^2
+    // of 2.6e-4). A convergent real relaxation factor for a STATIONARY scalar
     // iteration with spectrum lambda must lie in (0, 2(1 - Re lambda) /
-    // |1 - lambda|^2) (rationale for the RULE, not a proof for this
-    // dynamic, nonlinear scheme): a non-positive omega is never in that
-    // interval, so rejecting one outright is sound. Stage E measured three
-    // candidate fallbacks for a rejected candidate, on D17's configuration,
-    // all 25 windows including the one (window 9) the other two do not
-    // fix: keep the last accepted positive omega (fixes windows 3, 6; not
-    // 9), the residual-minimising scalar -<r_prev,dr>/||dr||^2 for the
-    // same two residuals, without the recursive omega_ factor (same
-    // result: fixes 3, 6; not 9), and restart to omega0_ (fixes all
-    // three, 3/6/9, and leaves every other window's sweep count changed by
-    // at most a few sweeps). Restart to omega0_ is implemented below;
-    // measured to disturb neither of the two bit-identical restart
-    // round-trip tests the other candidates were also checked against
-    // (test/verification/brusselator_restart_test.cpp
+    // |1 - lambda|^2) (rationale for the RULE, not a proof for this dynamic,
+    // nonlinear scheme): a non-positive omega is never in that interval, so
+    // rejecting one outright is sound. Three candidate fallbacks for a
+    // rejected candidate were measured on that configuration, over all 25
+    // windows including the one (window 9) the other two do not fix: keep the
+    // last accepted positive omega (fixes windows 3, 6; not 9), the
+    // residual-minimising scalar -<r_prev,dr>/||dr||^2 for the same two
+    // residuals, without the recursive omega_ factor (same result: fixes 3, 6;
+    // not 9), and restart to omega0_ (fixes all three, 3/6/9, and leaves every
+    // other window's sweep count changed by at most a few sweeps). Restart to
+    // omega0_ is implemented below; it disturbs neither of the two
+    // bit-identical restart round-trip tests the other candidates were also
+    // checked against (test/verification/brusselator_restart_test.cpp
     // SeparateLayoutJacobiAitken, GrowingLayoutJacobiAitken) -- unlike a
-    // noise-threshold-triggered restart variant also measured this round,
-    // which fixes window 9 too but breaks both of those tests by making
-    // the restart decision sensitive to ordinary round-off differences
-    // between two code paths meant to agree only bit-for-bit, not to a
-    // tolerance; this rule takes no such threshold and needs none.
+    // noise-threshold-triggered restart variant, which fixes window 9 too but
+    // breaks both of those tests by making the restart decision sensitive to
+    // ordinary round-off differences between two code paths meant to agree
+    // only bit-for-bit, not to a tolerance; this rule takes no such threshold
+    // and needs none.
     double w = omega0_;
     if (have_prev_) {
       double num = 0.0;
@@ -589,7 +584,7 @@ class AitkenAccel final : public Accelerator {
     return Result<void>::success();
   }
 
-  /// Restart track round 2: `r_prev_`/`omega_`/`have_prev_` are exactly
+  /// `r_prev_`/`omega_`/`have_prev_` are exactly
   /// the state the NEXT update() call reads (`r_` itself is recomputed
   /// fresh from x_new-x_old every call, so it carries nothing forward
   /// and is not restarted). `have_prev_ == false` (no sweep has
@@ -745,7 +740,7 @@ class SteffensenAccel final : public Accelerator {
     return Result<void>::success();
   }
 
-  /// Restart track round 2: `r_prev_`/`x_old_prev_`/`have_prev_` are the
+  /// `r_prev_`/`x_old_prev_`/`have_prev_` are the
   /// state the NEXT update() call reads (`omega0_` is a fixed run
   /// option, `r_` is recomputed fresh every call). EXACT-KEY fix: both
   /// arrays are written per BLOCK (detail::put_field_per_block), one

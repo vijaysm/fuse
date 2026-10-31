@@ -1,6 +1,6 @@
 // Tier-0 unit tests for include/fuse/transport/connect.hpp: everything that
-// does not need a second process (KNOWN_ISSUES.md C1 -- this sandbox cannot
-// initialise MPI at all, even at one rank). `connect()` itself is exercised
+// does not need a second process (so it needs no working MPI launcher).
+// `connect()` itself is exercised
 // only by test/parallel/connect's host-run executables.
 
 #include "fuse/transport/connect.hpp"
@@ -125,11 +125,11 @@ TEST(ValidateLaunchLayout, InProcessComponentsAreIgnored) {
   EXPECT_TRUE(r.ok()) << (r.ok() ? "" : r.error().message);
 }
 
-// S6 phase 4, "Adapter host" track: a Plugin component shares the host
+// A Plugin component shares the host
 // process exactly like an InProcess one (launch.hpp's own doc on
 // LaunchMode::Plugin), so it imposes no requirement on the launched
 // components' numbering either.
-// KNOWN_ISSUES.md D15, round 2 (item 3, "a plugin on a rank subset"): the
+// A plugin on a rank subset: the
 // existing PluginComponentsAreIgnored case below only ever gives Plugin a
 // RankSet spanning the WHOLE run; this one gives it a STRICT SUBSET of a
 // larger world and confirms validate_launch_layout() needs no special
@@ -162,25 +162,24 @@ TEST(ValidateLaunchLayout, PluginComponentsAreIgnored) {
   EXPECT_TRUE(r.ok()) << (r.ok() ? "" : r.error().message);
 }
 
-// ---- validate_launch_layout: D36's gap rule --------------------------
+// ---- validate_launch_layout: the gap rule --------------------------
 //
-// Accept mode's fix (KNOWN_ISSUES.md D36): a component's declared RankSet
-// must be exactly the ranks that host it, so U's own block no longer
-// spans the coupler's bundled ranks too -- it stops one rank short of
-// V's own block, with the coupler's own in-process RankSet filling the
-// gap between them. These pin validate_launch_layout()'s own half of
-// that fix: the new shape validates, each of the two new refusals fires
-// on exactly the row that should trip it, and the OLD shape (U's own
-// declared range already including the coupler's) still validates
-// unchanged -- nothing that passed before this fix stops passing.
+// Accept mode: a component's declared RankSet must be exactly the ranks
+// that host it, so U's own block does not span the coupler's bundled ranks
+// too -- it stops one rank short of V's own block, with the coupler's own
+// in-process RankSet filling the gap between them. These pin
+// validate_launch_layout()'s handling of that: the gap shape validates,
+// each of the two refusals fires on exactly the row that should trip it,
+// and the OVERLAPPING shape (U's own declared range already including the
+// coupler's) still validates.
 
-// The pre-D36 shape: U declares the FULL local executable world (its own
+// The overlapping shape: U declares the FULL local executable world (its own
 // physics rank plus the coupler's bundled one), the coupler a trailing,
 // overlapping subset of it, no gap between U's and V's own blocks at
 // all. Never reaches check_gap_filled_by_in_process_components() --
-// this is the row that row's own doc comment calls out as continuing to
-// validate unchanged.
-TEST(ValidateLaunchLayout, ThePreD36OverlappingDeclarationStillValidates) {
+// this is the row that row's own doc comment calls out as validating
+// unchanged.
+TEST(ValidateLaunchLayout, TheOverlappingDeclarationStillValidates) {
   CouplingGraph g;
   g.add_component({.name = "U",
                    .ranks = RankSet{0, 2},  // U's own physics rank 0 + coupler's bundled rank 1
@@ -195,7 +194,7 @@ TEST(ValidateLaunchLayout, ThePreD36OverlappingDeclarationStillValidates) {
   EXPECT_TRUE(r.ok()) << (r.ok() ? "" : r.error().message);
 }
 
-// The D36 shape itself: U declares only its own physics rank, the
+// The gap shape itself: U declares only its own physics rank, the
 // coupler's own in-process RankSet exactly fills the gap between U's
 // block and V's, V starts right after the gap.
 TEST(ValidateLaunchLayout, AGapExactlyCoveredByAnInProcessComponentValidates) {
@@ -339,27 +338,26 @@ TEST(ValidateLaunchLayout, RefusesAnInProcessComponentStraddlingOutOfTheGap) {
   EXPECT_NE(r.error().message.find("straddle"), std::string::npos) << r.error().message;
 }
 
-// ---- validate_launch_layout: the LowFive marker (D36's second defect) -----
+// ---- validate_launch_layout: the LowFive marker -----
 //
-// Measured on the owner's host, 2026-10-12 (a LowFive-enabled tree):
-// verification.brusselator.participants.lowfive.mpmd.3 refused E-CONNECT-SPEC
-// at fuse_setup() -- "component 'lowfive' starts at rank 0, but the launched
-// components before it in the graph's own order occupy ranks [0, 3)" -- on a
-// graph that validate() itself accepts cleanly
+// Without the skip, verification.brusselator.participants.lowfive.mpmd.3
+// would refuse E-CONNECT-SPEC at fuse_setup() -- "component 'lowfive' starts
+// at rank 0, but the launched components before it in the graph's own order
+// occupy ranks [0, 3)" -- on a graph that validate() itself accepts cleanly
 // (BrusselatorGraphToolLowFive.TheGeneratedGraphValidatesClean). The skip
 // list validate_launch_layout() uses for components needing no rank block of
-// their own (InProcess, Plugin) omitted LaunchMode::LowFive, even though
+// their own (InProcess, Plugin) includes LaunchMode::LowFive, as
 // connect()'s own `case LaunchMode::LowFive` (src/transport/connect.cpp) and
 // launch.hpp's own doc on that value both say a LowFive-launched component's
 // ranks "come from whatever OTHER launch story this run uses" -- the
-// identical behaviour InProcess/Plugin already get here. These pin the fix
+// identical behaviour InProcess/Plugin get here. These pin that
 // against the REAL shape that graph came from (mirrored here, not built
 // through brusselator_graph_tool.cpp: that tool links fuse::model only, and
 // test/verification/brusselator_graph_tool_lowfive_test.cpp's own
 // build_lowfive_graph() already is this mirror for the mpmd case -- these
 // cases reuse its exact component/rank shape rather than a third copy, and
 // add the accept-mode one that tool's own --transport lowfive --launch
-// accept combination would produce once this track's own D36 fix applies).
+// accept combination produces).
 
 TEST(ValidateLaunchLayout, ALowFiveMarkerAlongsideConsecutiveMpmdBlocksValidates) {
   CouplingGraph g;
@@ -378,7 +376,7 @@ TEST(ValidateLaunchLayout, ALowFiveMarkerAlongsideConsecutiveMpmdBlocksValidates
 }
 
 TEST(ValidateLaunchLayout, ALowFiveMarkerAlongsideTheAcceptLayoutsGapValidates) {
-  // The D36 accept-mode shape (U={0,ranks_u}, coupler fills the gap, V
+  // The accept-mode shape (U={0,ranks_u}, coupler fills the gap, V
   // after it) plus the SAME whole-run lowfive marker. The marker's own
   // ranks touch the gap AND both launched blocks on either side of it --
   // confirming it is not treated as a gap-filling candidate at all (which
@@ -434,11 +432,10 @@ TEST(CheckMpmdLayout, AcceptsAMatchingLayout) {
 // RankSets, on its own fifth rank -- not by stealing a rank from "a" or
 // "b"'s own count, which would ALSO fire
 // RefusesWhenTheDeclaredRankSetDisagreesWithTheActualOne and mask whether
-// THIS check (the undeclared-appnum lookup) ran at all. Found by the
-// mutation itself: the first version of this test shifted a rank out of
-// "b"'s reporting set, and `check_mpmd_layout(g, appnum_by_rank)` still
-// refused under the mutated (checked-in-removed) code, via the unrelated
-// mismatch check, with the SAME error code -- a false pass.
+// THIS check (the undeclared-appnum lookup) ran at all. Shifting a rank out
+// of "b"'s reporting set would let `check_mpmd_layout(g, appnum_by_rank)`
+// still refuse with the check removed, via the unrelated mismatch check,
+// with the SAME error code -- a false pass.
 TEST(CheckMpmdLayout, RefusesAnAppnumNoComponentDeclares) {
   const auto g = two_component_graph(
       LaunchSpec{.mode = LaunchMode::Mpmd, .appnum = 0},
@@ -517,21 +514,16 @@ TEST(WaitForPortFile, RefusesWhenTheFileExistsButIsEmpty) {
   EXPECT_EQ(r.error().code, "E-CONNECT-TIMEOUT");
 }
 
-// ---- the two-connect-mode-component rule (D18, review 2026-10-11 TR-17) --
+// ---- the connect-mode-component rule --
 //
-// D18's own limit on connect_pairwise(): exactly two `Connect`-mode
-// components. Before this, the rule lived inside connect_pairwise() itself,
-// behind `#if FUSE_HAVE_MPI` and `MPI_Initialized()` -- a real, reachable
-// refusal with no test anywhere in the tree, because its only caller needed
-// a live MPI world to reach at all (test/transport/transport.md's own
-// finding). Pulled out to connect.hpp as a pure function so it fires here.
+// connect_pairwise()'s limit on `Connect`-mode components. The rule is a
+// pure function in connect.hpp rather than living inside connect_pairwise()
+// itself behind `#if FUSE_HAVE_MPI` and `MPI_Initialized()`, so it fires
+// here without a live MPI world.
 
-// KNOWN_ISSUES.md D18: connect_mode_components() used to refuse anything
-// other than exactly two Connect-mode components (RefusesAThirdConnect
-// ModeComponent's own old name and assertion, before this round); the
-// N-way chain generalisation (connect_chain_plan(), immediately below)
-// means three -- or any count >= 2 -- is now accepted here, in the
-// graph's own declaration order. The chain's OWN per-step rules (each
+// connect_mode_components() accepts three -- or any count >= 2 -- in the
+// graph's own declaration order (the N-way chain, connect_chain_plan(),
+// immediately below). The chain's OWN per-step rules (each
 // joining component beyond the first must declare is_acceptor and a
 // port_file) are connect_chain_plan()'s job, tested separately below;
 // this function's only remaining limit is "at least two".
@@ -580,10 +572,10 @@ TEST(ConnectModeComponents, AcceptsExactlyTwoInGraphOrder) {
   EXPECT_EQ(r.value()[1], ComponentId{1});
 }
 
-// ---- connect_chain_plan() (KNOWN_ISSUES.md D18's N-way generalisation) ---
+// ---- connect_chain_plan() (the N-way generalisation) ---
 
-// Three components: step 1 (a/b) is today's two-component rule,
-// unchanged; step 2 (the chain so far, joined by c) requires c itself
+// Three components: step 1 (a/b) is the two-component rule;
+// step 2 (the chain so far, joined by c) requires c itself
 // to declare is_acceptor and a port_file -- "each component publishes
 // its port name once", connect.hpp's own rule.
 TEST(ConnectChainPlan, ThreeComponentsProduceTwoSteps) {
@@ -681,7 +673,7 @@ TEST(ConnectChainPlan, RefusesWithFewerThanTwoConnectModeComponents) {
 
 // validate_launch_layout() is unaffected by the chain generalisation: a
 // 3- or 4-component Connect chain is still one consecutive block per
-// component in graph order (D36's gap rule, tested above with mpmd/
+// component in graph order (the gap rule, tested above with mpmd/
 // in-process blocks, applies identically regardless of how many
 // Connect-mode blocks there are).
 TEST(ValidateLaunchLayout, AcceptsThreeConsecutiveConnectBlocksInGraphOrder) {
@@ -706,7 +698,7 @@ TEST(ValidateLaunchLayout, AcceptsFourConsecutiveConnectBlocksWithAGapFilledByIn
                               .port_file = "/tmp/ab"}});
   g.add_component({.name = "b", .ranks = {1, 1},
                    .launch = {.mode = LaunchMode::Connect, .port_file = "/tmp/ab"}});
-  // A gap at rank 2, covered by an in-process component (D36's own
+  // A gap at rank 2, covered by an in-process component (the gap
   // rule), before the third and fourth Connect-mode blocks.
   g.add_component({.name = "filler", .ranks = {2, 1}});  // InProcess default
   g.add_component({.name = "c", .ranks = {3, 1},
@@ -719,7 +711,7 @@ TEST(ValidateLaunchLayout, AcceptsFourConsecutiveConnectBlocksWithAGapFilledByIn
   EXPECT_TRUE(r.ok()) << r.error().message;
 }
 
-// ---- the accept/connect capability gate (KNOWN_ISSUES D23) ---------------
+// ---- the accept/connect capability gate ---------------
 
 // The verdict itself is settled at configure time, so the refusal is reached
 // in a normal build only on a machine whose MPI cannot carry the mode. Taking
@@ -737,7 +729,7 @@ TEST(ConnectAcceptCapability, RefusesAConnectComponentWhenTheModeIsUnavailable) 
       << r.error().message;
   EXPECT_NE(r.error().message.find("MPMD"), std::string::npos)
       << r.error().message;
-  EXPECT_NE(r.error().message.find("D23"), std::string::npos)
+  EXPECT_NE(r.error().message.find("FUSE_ENABLE_CONNECT_ACCEPT"), std::string::npos)
       << r.error().message;
 }
 

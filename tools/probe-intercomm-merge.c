@@ -1,5 +1,5 @@
-/* Minimal reproducer for the accept/connect/merge intermittency recorded in
- * KNOWN_ISSUES.md D23 (measured 2026-10-19 on the owner's machine, MPICH
+/* Minimal reproducer for the accept/connect/merge intermittency
+ * (measured on a development machine, MPICH
  * 5.0.0a1, FI_PROVIDER="tcp;ofi_rxm" FI_TCP_IFACE=en0). No FUSE code: one
  * MPI_Comm_accept / MPI_Comm_connect pair over a port file, then
  * MPI_Intercomm_merge. Build: mpicc -O0 -g probe-intercomm-merge.c -o merge.
@@ -10,7 +10,7 @@
  * rank" hung in the merge. Measured rates (OK of 6): 1+1: 5, 2+1: 3, 2+3: 2,
  * 3+2: 1. With the default libfabric provider connect never completes.
  *
- * KNOWN_ISSUES.md D23's final account: tools/probe-mpi-dynamic.c (the
+ * tools/probe-mpi-dynamic.c (the
  * program cmake/FuseDependencies.cmake actually compiles and launches at
  * configure time, via tools/probe-mpi-dynamic.sh) now repeats the SAME
  * accept/connect/merge sequence at every rank layout a registered row

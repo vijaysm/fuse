@@ -1,7 +1,7 @@
 // Repartition migration, emulated in one process: pack() and unpack() are
 // called directly (no exchange() -- see native_migration.hpp's own comment
 // on why this needs no MPI), splitting a mesh into P pieces and recombining
-// it under a different assignment, exactly as the partition track tests
+// it under a different assignment, exactly as the partition tests exercise
 // RCB against an emulated-rank oracle.
 
 #include "fuse/backend/native_migration.hpp"
@@ -104,7 +104,7 @@ TEST(NativeMigration, EmulatedRoundTripThroughTwoDifferentPartitionsReproducesTh
     original_gids.insert(static_cast<std::int64_t>(view0.value()->global_id(3, c)));
   }
 
-  // Round 1: split onto 3 ranks by (cell_gid % 3).
+  // First pass: split onto 3 ranks by (cell_gid % 3).
   std::vector<int> dest1(ncells);
   for (std::size_t c = 0; c < ncells; ++c) dest1[c] = static_cast<int>(c % 3);
   auto packed1 = pack_for_migration(*view0.value(), dest1, 3);
@@ -120,13 +120,12 @@ TEST(NativeMigration, EmulatedRoundTripThroughTwoDifferentPartitionsReproducesTh
     round1.push_back(std::move(view.value()));
   }
 
-  // Round 2: from round1's 3-way split, migrate everything onto a SINGLE
+  // Second pass: from round1's 3-way split, migrate everything onto a SINGLE
   // rank (a different partition than the original: a 3->1 gather).
   //
   // Each sender's packed buffer is its own entry in `per_dest_round2`, not
-  // raw-byte-concatenated into one: the wire-format-v2 header (Migration
-  // track, 2026-10-15; mesh_pack_device.hpp's own "WIRE FORMAT v2"
-  // comment) makes every `pack_for_migration` buffer self-describing
+  // raw-byte-concatenated into one: the wire-format-v2 header
+  // (mesh_pack_device.hpp's own "WIRE FORMAT v2" comment) makes every `pack_for_migration` buffer self-describing
   // (record count + offsets from ITS OWN start), so concatenating two
   // senders' buffers byte-for-byte -- valid under the old header-less
   // format, which this test originally relied on -- hides every record
@@ -159,7 +158,7 @@ TEST(NativeMigration, EmulatedRoundTripThroughTwoDifferentPartitionsReproducesTh
 }
 
 TEST(NativeMigration, PackForMigrationMaterializesNoHostMirror) {
-  // Migration track, 2026-10-15: pack_for_migration now builds its wire
+  // pack_for_migration builds its wire
   // records from device_arrays() via fuse::native::device::pack_to, never
   // from the view's own lazy host mirror (cell_vertices/vertex_x/
   // cell_faces) -- host_mirrors_materialized() must stay 0 across the
@@ -226,8 +225,8 @@ TEST(NativeMigration, MigrateAtKNullCommIsTheIdentityUpToLocalOrdering) {
   }
 }
 
-// Migration track, 2026-10-15 (KNOWN_ISSUES D51, device-resident merge):
-// `migrate` now rebuilds the RESULT view through `device::pack_to` ->
+// Device-resident merge:
+// `migrate` rebuilds the RESULT view through `device::pack_to` ->
 // `exchange_migration_buffers<Space>` -> `device::unpack_migrated_mesh_
 // device<Space>` -> `resolve_vertex_ownership_device<Space>` ->
 // `NativeMeshView::create<Space>` end to end -- checked here with EAGER
@@ -270,8 +269,7 @@ TEST(NativeMigration, MigrateRefusesAnIncompleteAssignmentAtKNullComm) {
   EXPECT_EQ(migrated.error().code, "E-MESH-MIGRATE-INCOMPLETE");
 }
 
-// Migration track, 2026-10-15 (KNOWN_ISSUES D51, device-resident merge,
-// POLYHEDRON LIMITATION): no OTHER test in this suite's migration/halo/
+// Device-resident merge, POLYHEDRON LIMITATION: no OTHER test in this suite's migration/halo/
 // repartition coverage exercises `CellType::Polyhedron` at all (every
 // generator here is hexbox/line/quad -- fixed-shape Hex/Segment/Quad),
 // so this is the first evidence the device-resident unpack's Polyhedron

@@ -1,5 +1,5 @@
-# Standalone consumer project for the install/find_package() smoke test
-# (REVIEW.md R-25/BT-F9): NOT part of the main superbuild -- test/CMakeLists.txt's
+# Standalone consumer project for the install/find_package() smoke test:
+# NOT part of the main superbuild -- test/CMakeLists.txt's
 # "# ---- install" section configures this as its own independent project,
 # against an install prefix, exactly the way a real downstream consumer would.
 cmake_minimum_required(VERSION 3.24)

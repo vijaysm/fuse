@@ -6,10 +6,9 @@
 
 #include "fuse/base/result.hpp"
 
-/// S8 physics-kit, track "Integrators", Stage B Round 1
-/// (docs/dev/integrators-design.md Section 4.2).
+/// Embedded step-size controllers (docs/dev/integrators-design.md Section 4.2).
 ///
-/// The two embedded step-size controllers Section 2 of the Stage A design found living,
+/// The two embedded step-size controllers Section 2 of the design doc found living,
 /// independently and un-shared, inside two different KARMA integrator drivers --
 /// DOPRI45Integrator's own PI (Gustafsson) controller
 /// (upstream/karma/src/numerics/temporal/dopri45_integrator.C:198-276) and
@@ -18,7 +17,7 @@
 /// reusable component, ControllerKind naming which formula runs rather than two
 /// hand-inlined copies.
 ///
-/// CONVENTION (task item 4): both kinds take an ALREADY rtol/atol-scaled error norm,
+/// CONVENTION: both kinds take an ALREADY rtol/atol-scaled error norm,
 /// err_norm, with the step accepted iff err_norm <= 1 -- the same convention
 /// DOPRI45Integrator::core_integrator's own "if (err <= 1.0)" uses (dopri45_integrator.C:
 /// 258). The caller (explicit_integrator.hpp's step()) computes err_norm through a
@@ -60,14 +59,14 @@ enum class ControllerKind { PI, I };
 /// embedded_order carry (butcher_tableau.hpp) -- a caller builds this from the
 /// tableau it is stepping, not from a separately-chosen pair, so the controller's own
 /// exponent can never drift from the method it is actually controlling (the defect
-/// Section 6.1 of the Stage A design found in DOPRI45Integrator itself, which hardcodes
+/// Section 6.1 of the design doc found in DOPRI45Integrator itself, which hardcodes
 /// its exponent rather than reading n_secondary_order()).
 ///
 /// safety/fac_min/fac_max/beta: TemporalIntegrator::set_adaptive_params's own
 /// defaults (temporal_integrator.C:101-107, "safety=0.8, facr=4.0, facl=0.2") and
 /// DOPRI45Integrator's own constructor default (dopri45_integrator.C:34-46,
 /// "safetyfac=0.9, beta=0.08 recommended by Hairer") -- two different safety-factor
-/// defaults genuinely coexist in the vendored source (Stage A design Section 2); this
+/// defaults genuinely coexist in the vendored source (design doc Section 2); this
 /// struct carries ONE value per instance rather than picking a winner, so a caller
 /// building a DOPRI45-equivalent controller passes 0.9 and one building a generic
 /// embedded-DIRK-equivalent one passes 0.8, each citing which vendored default it reads.
@@ -118,7 +117,7 @@ class EmbeddedController {
   [[nodiscard]] const ControllerOptions& options() const noexcept { return opt_; }
 
   /// Refuses E-INTEGRATOR-NONFINITE-ERROR when err_norm is NaN or infinite --
-  /// KARMA never checks this (Stage A design Section 4.5: an Inf err compares false
+  /// KARMA never checks this (design doc Section 4.5: an Inf err compares false
   /// to err <= 1.0 in C++ and is silently treated as a REJECT by accident, not by
   /// design); refuses E-INTEGRATOR-STEP-TOO-SMALL when a REJECTED step's own proposed
   /// h_next would already be below opt.h_min -- retrying a step this small is
@@ -160,7 +159,7 @@ class EmbeddedController {
       // embedded_dirk_integrator.C:328-390, same variable names: order_power, facerr,
       // newdelt. order_power is read from the tableau's OWN order/embedded_order
       // (ControllerOptions), never hardcoded -- the fix for the DOPRI45 metadata defect
-      // (Stage A design Section 6.1) generalised to every method that uses this kind.
+      // (design doc Section 6.1) generalised to every method that uses this kind.
       const double order_power = 1.0 / (std::min(opt_.order, opt_.embedded_order) + 1);
       const double facerr = std::pow(1.0 / err_norm, order_power);
       const double newdelt = opt_.safety * h * facerr;

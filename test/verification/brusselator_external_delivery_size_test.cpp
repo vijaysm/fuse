@@ -1,56 +1,51 @@
-// KNOWN_ISSUES.md D38 (S6 phase 3, "LowFive" track, follow-up to D14/D24/
-// D36): a tier-0 regression for the host failure that found it --
-// `verification.brusselator.participants.lowfive.{mpmd,accept}.3`
-// (2026-10-12, MPICH 5.0.0a1/ch4:ofi, the first run where both rows got
-// past D36's launch-layout fix and reached `initialize()`).
-// `u_stdout.0.log` (the `lowfive-mpmd-3` scratch directory) printed
-// `FAIL(u_main): initialize: status=-4 ExternalDelivery instruction 1
-// reads 2816 values from arc %0 into 0 at arc %2`; `v_stdout.1.log`
-// printed `ExternalDelivery instruction 1 reads 0 values from arc %0
-// into 2816 at arc %2`.
+// A tier-0 regression for the host failure
+// `verification.brusselator.participants.lowfive.{mpmd,accept}.3` (MPICH
+// ch4:ofi, the first run where both rows got past the launch-layout check
+// and reached `initialize()`). `u_stdout.0.log` (the `lowfive-mpmd-3`
+// scratch directory) printed `FAIL(u_main): initialize: status=-4
+// ExternalDelivery instruction 1 reads 2816 values from arc %0 into 0 at
+// arc %2`; `v_stdout.1.log` printed `ExternalDelivery instruction 1 reads 0
+// values from arc %0 into 2816 at arc %2`.
 //
 // WHY THIS LEVEL. `src/runtime/runner.cpp`'s generic per-instruction
-// buffer-size reconciliation (the loop that already exempts `Remap` and
-// `Transport`, KNOWN_ISSUES.md D5) did not exempt `OpKind::
-// ExternalDelivery`, so it compared an ExternalDelivery instruction's
-// input arc (the EXPORTING component's own decomposition) against its
-// output arc (the IMPORTING component's own decomposition, D24: "a
-// placement is decomposed over its own RankSet" -- a DIFFERENT
-// component's RankSet here, by `src/ir/rules_channel.cpp`'s own design:
-// the delivered value lands on the consumer's placement, never the
-// producer's). On a rank hosting exactly one end of the channel the two
-// decompositions legitimately differ (one side's planned size, the
-// other's empty view, D24's own "every rank resolves every placement,
-// only a hosting rank reads one") -- exactly the D24/D36 class of
-// mistake: a size equality that held before per-placement decomposition
-// (or, here, before a LowFive-bound channel ever reached a REAL
-// NativeMeshBackend partition) no longer does.
+// buffer-size reconciliation (the loop that exempts `Remap` and
+// `Transport`) must also exempt `OpKind::ExternalDelivery`; otherwise it
+// compares an ExternalDelivery instruction's input arc (the EXPORTING
+// component's own decomposition) against its output arc (the IMPORTING
+// component's own decomposition -- "a placement is decomposed over its own
+// RankSet", a DIFFERENT component's RankSet here, by
+// `src/ir/rules_channel.cpp`'s own design: the delivered value lands on the
+// consumer's placement, never the producer's). On a rank hosting exactly
+// one end of the channel the two decompositions legitimately differ (one
+// side's planned size, the other's empty view -- every rank resolves every
+// placement, only a hosting rank reads one): a size equality that held
+// before per-placement decomposition (or, here, before a LowFive-bound
+// channel ever reached a REAL NativeMeshBackend partition) no longer does.
 //
 // WHY THIS GRAPH SHAPE. `brusselator_graph_tool.cpp`'s accept branch,
 // `--ranks-u 1 --ranks-coupler 1 --ranks-v 1 --launch accept --transport
 // lowfive` -- the exact row `examples/CMakeLists.txt` registers as
 // `verification.brusselator.participants.lowfive.accept.3`: U's own
-// RankSet is `{0, 1}`, the remap coupler's `{1, 1}`, V's `{2, 1}` (D36's
-// own fix to accept-mode layout). `brusselator_accept_layout_test.cpp`'s
-// own header comment found that the IDENTICAL accept-layout graph with
-// an ORDINARY (non-LowFive) transfer channel cannot reach
-// `Runner::initialize()` at tier 0 at all -- two different partitions of
-// one mesh need a real CommGraph, which needs MPI. Setting
-// `FieldSpec::hdf5_path` on both transfer fields (`brusselator_graph_
-// tool.cpp`'s own `--transport lowfive` wiring) compiles each transfer
-// channel as `OpKind::ExternalDelivery` instead: FUSE moves no data on
-// either channel (op.hpp's own header comment on `ExternalDelivery`), so
-// nothing here ever needs a CommGraph -- which is exactly what lets this
-// graph reach `Runner::initialize()` at tier 0, on either end, with no
-// MPI at all.
+// RankSet is `{0, 1}`, the remap coupler's `{1, 1}`, V's `{2, 1}` (the
+// accept-mode layout). `brusselator_accept_layout_test.cpp`'s own header
+// comment explains that the IDENTICAL accept-layout graph with an ORDINARY
+// (non-LowFive) transfer channel cannot reach `Runner::initialize()` at
+// tier 0 at all -- two different partitions of one mesh need a real
+// CommGraph, which needs MPI. Setting `FieldSpec::hdf5_path` on both
+// transfer fields (`brusselator_graph_tool.cpp`'s own `--transport lowfive`
+// wiring) compiles each transfer channel as `OpKind::ExternalDelivery`
+// instead: FUSE moves no data on either channel (op.hpp's own header
+// comment on `ExternalDelivery`), so nothing here ever needs a CommGraph --
+// which is exactly what lets this graph reach `Runner::initialize()` at
+// tier 0, on either end, with no MPI at all.
 //
-// NO MPI ANYWHERE (KNOWN_ISSUES.md C1: this sandbox cannot start it).
-// `fuse::RunnerConfig::force_this_process` (test/runtime/window_hosting_
-// test.cpp's own convention) gives `initialize()` a specific rank's own
-// `this_process` with no communicator; `fuse::native::NativeMeshBackend`'s
-// own `(rank, num_ranks)` constructor arguments are set to agree with it,
-// which is what `make_region_sizes()` and the per-rank decomposition
-// this test is pinning actually consult.
+// NO MPI ANYWHERE. `fuse::RunnerConfig::force_this_process`
+// (test/runtime/window_hosting_test.cpp's own convention) gives
+// `initialize()` a specific rank's own `this_process` with no
+// communicator; `fuse::native::NativeMeshBackend`'s own `(rank, num_ranks)`
+// constructor arguments are set to agree with it, which is what
+// `make_region_sizes()` and the per-rank decomposition this test is pinning
+// actually consult.
 #include <gtest/gtest.h>
 
 #include <fuse/backend/native_backend.hpp>
@@ -161,7 +156,7 @@ struct LowFiveAcceptGraph {
   brusselator::WindowGraphHandles handles;
 };
 
-// The D36/D38 shape: `brusselator_graph_tool.cpp`'s own accept branch
+// The accept-layout shape: `brusselator_graph_tool.cpp`'s own accept branch
 // (`--ranks-u 1 --ranks-coupler 1 --ranks-v 1 --launch accept --transport
 // lowfive`), built the same way `brusselator_accept_layout_test.cpp`'s
 // own `build()` does (same RankSets, same `add_window_coupling()` call),
@@ -257,28 +252,26 @@ Result<void> initialize_on_rank(int this_rank) {
 
 }  // namespace
 
-// KNOWN_ISSUES.md D38. Before the fix (`src/runtime/runner.cpp`'s
-// per-instruction size check exempting `OpKind::ExternalDelivery` the
-// same way it already exempts `Remap`/`Transport`), this fails on BOTH
-// ranks with the host's own two messages verbatim -- recorded in this
-// round's report, reproduced by hand with the fix reverted, not asserted
-// here (asserting the defect's own message would make this test pass
-// both with AND without the fix, which proves nothing about which one is
-// running).
+// `src/runtime/runner.cpp`'s per-instruction size check exempts
+// `OpKind::ExternalDelivery` the same way it exempts `Remap`/`Transport`;
+// without that exemption this fails on BOTH ranks with the host's own two
+// messages (asserting the defect's own message would make this test pass
+// both with AND without the exemption, which proves nothing about which
+// one is running).
 //
-// WHY THIS ASSERTS `E-RT-REGION`, NOT SUCCESS. With the fix, `initialize()`
-// on this REAL graph (the window-coupled Brusselator, an `IterationRegion`
-// with convergence measures on BOTH `u_out` and `v_out`) gets PAST the
-// `ExternalDelivery` check on both ranks and fails LATER, on a SEPARATE,
-// pre-existing tier-0 limitation found while writing this test:
+// WHY THIS ASSERTS `E-RT-REGION`, NOT SUCCESS. `initialize()` on this REAL
+// graph (the window-coupled Brusselator, an `IterationRegion` with
+// convergence measures on BOTH `u_out` and `v_out`) gets PAST the
+// `ExternalDelivery` check on both ranks and fails LATER, on a SEPARATE
+// tier-0 limitation:
 // `src/runtime/iteration.cpp`'s own `R.participants` (the region's
 // cross-rank residual-reduction set) is populated ONLY `if (config.
 // base_communicator.has_value())` (iteration.cpp, the `resolve_regions()`
 // block starting "Checked against `config.base_communicator` rather than
 // the graph's declared `RankSet` cardinality alone"); with no real MPI
 // communicator (`RunnerConfig::force_this_process` alone, the only tier-0
-// override that exists, KNOWN_ISSUES.md C1: this sandbox cannot start
-// MPI), `R.participants` stays empty on EVERY rank, so the SAME function's
+// override that exists; MPI cannot start in the sandbox),
+// `R.participants` stays empty on EVERY rank, so the SAME function's
 // own "an empty coupling value... the region would report convergence
 // after one sweep" refusal (iteration.cpp, `if (b.length == 0 &&
 // R.participants.size() <= 1)`) fires for whichever convergence measure
@@ -290,13 +283,12 @@ Result<void> initialize_on_rank(int this_rank) {
 // `config.base_communicator` IS set, `R.participants` holds all 3 ranks
 // (U, the coupler, V), `R.participants.size() > 1`, and this refusal
 // never fires -- so this is a sandbox-only ceiling on DRIVING this real,
-// multi-rank iteration region at tier 0, not a defect this task's fix
-// leaves behind; `InitializeSucceedsOnDisjointRanksWithNoIterationRegion`
-// below is the "narrowest reachable function" this task's own escape
-// valve asks for, isolating the fix's own effect with no iteration region
-// in the way, and asserts the SUCCESS the host's own real multi-process
-// run (ctest -R participants.lowfive in build-lowfive) is the one thing
-// that can still demonstrate for this exact graph.
+// multi-rank iteration region at tier 0, not a defect;
+// `InitializeSucceedsOnDisjointRanksWithNoIterationRegion` below isolates
+// the ExternalDelivery exemption's own effect with no iteration region in
+// the way, and asserts the SUCCESS that only the host's own real
+// multi-process run (ctest -R participants.lowfive in build-lowfive) can
+// demonstrate for this exact graph.
 TEST(ExternalDeliverySizeReconciliation, ReachesPastExternalDeliveryOnBothRanks) {
   const Result<void> u_side = initialize_on_rank(0);
   ASSERT_FALSE(u_side.ok()) << "expected the tier-0-only E-RT-REGION ceiling below, not success";
@@ -304,7 +296,7 @@ TEST(ExternalDeliverySizeReconciliation, ReachesPastExternalDeliveryOnBothRanks)
   EXPECT_NE(u_side.error().message.find("empty coupling value"), std::string::npos)
       << u_side.error().message;
   EXPECT_EQ(u_side.error().message.find("ExternalDelivery"), std::string::npos)
-      << "the ExternalDelivery-specific defect (D38) must be gone: " << u_side.error().message;
+      << "the ExternalDelivery-specific defect must be absent: " << u_side.error().message;
 
   const Result<void> v_side = initialize_on_rank(2);
   ASSERT_FALSE(v_side.ok()) << "expected the tier-0-only E-RT-REGION ceiling below, not success";
@@ -312,23 +304,21 @@ TEST(ExternalDeliverySizeReconciliation, ReachesPastExternalDeliveryOnBothRanks)
   EXPECT_NE(v_side.error().message.find("empty coupling value"), std::string::npos)
       << v_side.error().message;
   EXPECT_EQ(v_side.error().message.find("ExternalDelivery"), std::string::npos)
-      << "the ExternalDelivery-specific defect (D38) must be gone: " << v_side.error().message;
+      << "the ExternalDelivery-specific defect must be absent: " << v_side.error().message;
 }
 
 namespace {
 
-// The "narrowest reachable function" this task's own escape valve asks
-// for when the real graph above cannot reach a clean `initialize()`
-// success at tier 0 (the `E-RT-REGION` ceiling just above, unrelated to
-// this fix). Minimal shape that still compiles a channel as `OpKind::
+// The narrowest reachable function, for when the real graph above cannot
+// reach a clean `initialize()` success at tier 0 (the `E-RT-REGION`
+// ceiling just above, unrelated to the exemption). Minimal shape that still compiles a channel as `OpKind::
 // ExternalDelivery` on two DISJOINT ranks: two plain (non-window)
 // components, A (`RankSet{0, 1}`) and B (`RankSet{1, 1}`), one ordinary
 // channel A -> B whose source field carries `hdf5_path`, NO
 // `IterationRegion` at all -- so `resolve_regions()`'s own convergence-
 // measure/`R.participants` machinery above never runs, and `initialize()`
 // exercises exactly, and only, the per-instruction size reconciliation
-// this task's fix touches (`src/runtime/runner.cpp`'s `resolve_
-// instructions()`, the function `Runner::initialize()` calls this file's
+// (`src/runtime/runner.cpp`'s `resolve_instructions()`, the function `Runner::initialize()` calls this file's
 // own real-graph test above also reaches, just without anything AFTER it
 // to fail on).
 struct DisjointExternalDeliveryGraph {
@@ -386,8 +376,8 @@ class DisjointStubBlock final : public fuse::Component {
   // buffers()`, no hosting exemption): the registered `Layout::count`
   // must equal `b.elements` -- `sizes(region, this component's own
   // rank_set)` -- EXACTLY, on EVERY rank, which is the region's whole
-  // extent where this component is hosted and D24's own "empty view of
-  // the right dimension" (0) where it is not. `register_fields()` has no
+  // extent where this component is hosted and an "empty view of the right
+  // dimension" (0) where it is not. `register_fields()` has no
   // other way to learn which this rank is, so it is passed in here.
   DisjointStubBlock(std::string name, int this_rank)
       : name_(std::move(name)), this_rank_(this_rank) {}
@@ -451,9 +441,8 @@ Result<void> initialize_disjoint_on_rank(int this_rank) {
 
 }  // namespace
 
-// The literal ask this task's TO-DO #2 makes ("assert initialize
-// succeeds on both"), delivered at the narrowest level that can actually
-// reach it for an `ExternalDelivery` channel on disjoint ranks with no
+// Asserts that initialize succeeds on both sides, at the narrowest level
+// that can actually reach it for an `ExternalDelivery` channel on disjoint ranks with no
 // real MPI communicator: A alone (rank 0, the exporter) and B alone
 // (rank 1, the importer).
 TEST(ExternalDeliverySizeReconciliation, InitializeSucceedsOnDisjointRanksWithNoIterationRegion) {

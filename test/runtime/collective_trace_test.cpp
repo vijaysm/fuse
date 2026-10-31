@@ -1,4 +1,4 @@
-// KNOWN_ISSUES.md D57 ("Collectives" track). Pins the exact text
+// Pins the exact text
 // FUSE_COLLECTIVE_TRACE=1 prints for one collective instruction's own
 // execution (fuse::format_collective_trace_line(), include/fuse/runtime/
 // collective_trace.hpp). No coroutine, no communicator, no graph: this is
@@ -21,10 +21,10 @@ TEST(CollectiveTrace, FormatsEveryFieldInTheDocumentedOrder) {
             "instr=42 kind=Constrain comm=base ordinal=7");
 }
 
-// The one case a host diff actually keys on (KNOWN_ISSUES.md D57's own
-// diagnosis): a rank with no base communicator configured prints rank=-1
-// rather than some default-constructed MPI_COMM_WORLD rank, so a trace
-// line can never be silently misread as "rank 0 agrees".
+// The one case a host diff actually keys on: a rank with no base communicator
+// configured prints rank=-1 rather than some default-constructed
+// MPI_COMM_WORLD rank, so a trace line can never be silently misread as "rank
+// 0 agrees".
 TEST(CollectiveTrace, NoCommunicatorPrintsRankMinusOne) {
   const std::string line = fuse::format_collective_trace_line(
       /*rank=*/-1, /*region=*/"solo", /*period=*/0, /*sweep=*/0,

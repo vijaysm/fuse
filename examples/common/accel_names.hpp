@@ -19,7 +19,7 @@
 /// least-squares quasi-Newton method documented in
 /// `src/num/accel_quasi_newton.cpp`; whether it coincides with Anderson
 /// acceleration (type II) is a claim to be measured against a reference
-/// implementation, not assumed here (KNOWN_ISSUES.md D76).
+/// implementation, not assumed here.
 
 #include <optional>
 #include <string_view>

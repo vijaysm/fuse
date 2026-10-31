@@ -6,7 +6,7 @@
 /// conservative one built from an exact simplex supermesh, and later the MOAB
 /// and TempestRemap tiers, which produce the same triplet structure -- an
 /// operator like any other. Nothing about it is remap-specific beyond the
-/// source of the triplets, so a persisted map reloaded from disk (S5.4) and a
+/// source of the triplets, so a persisted map reloaded from disk and a
 /// map built in memory give the same operator.
 ///
 /// It does NOT copy the weights. The plan holds one of these per remap for the

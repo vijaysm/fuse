@@ -1,6 +1,5 @@
-# Mutations for KNOWN_ISSUES.md D18's N-way connect chain generalisation
-# (connect_chain_plan(), include/fuse/transport/connect.hpp). Own file
-# per the review-fix protocol.
+# Mutations for the N-way connect chain generalisation
+# (connect_chain_plan(), include/fuse/transport/connect.hpp).
 #
 # Applied by hand, rebuilt, run, confirmed to fail EXACTLY the named
 # row, then restored byte-for-byte (cmp against the pre-mutation file
@@ -17,4 +16,4 @@ new = """    if (false) {  // MUTATION: is_acceptor check removed
       return Failure{"""
 target = "fuse_transport_connect_test"
 test = "transport.connect"
-result = "CONFIRMED 2026-10-18: ConnectChainPlan.RefusesAStepTwoJoinerThatDoesNotDeclareIsAcceptor failed (ASSERT_FALSE(r.ok()) -- connect_chain_plan() returned success instead of E-CONNECT-SPEC for a step-2 joiner with is_acceptor=false). All other 38 tests in the binary, including the port_file-empty sibling check (RefusesAStepTwoJoinerWithNoPortFile, a separate conditional) and every ConnectModeComponents/ValidateLaunchLayout case, still passed. Restored; cmp against the pre-mutation file reported no difference, md5 2b5bf615677de67a9ebdf5837cf29b04 matches the restored file."
+result = "CONFIRMED: ConnectChainPlan.RefusesAStepTwoJoinerThatDoesNotDeclareIsAcceptor failed (ASSERT_FALSE(r.ok()) -- connect_chain_plan() returned success instead of E-CONNECT-SPEC for a step-2 joiner with is_acceptor=false). All other 38 tests in the binary, including the port_file-empty sibling check (RefusesAStepTwoJoinerWithNoPortFile, a separate conditional) and every ConnectModeComponents/ValidateLaunchLayout case, still passed. Restored; cmp against the pre-mutation file reported no difference, md5 2b5bf615677de67a9ebdf5837cf29b04 matches the restored file."

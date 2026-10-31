@@ -2,7 +2,7 @@
 
 // Before the #if: without this the macro is undefined, the preprocessor reads
 // 0, and all 38 cases below compile to the skip stub at the bottom -- which is
-// exactly what happened from the day this file was ported (REVIEW.md R-06).
+// exactly what happened from the day this file was ported.
 #include "fuse/base/config.hpp"
 
 #if FUSE_HAVE_MOAB
@@ -135,7 +135,7 @@ std::string write_mixed_vtk() {
 }  // namespace
 
 // ===========================================================================
-// The brief's tests
+// Core behaviour
 // ===========================================================================
 
 TEST(MoabMesh, LoadsAGeneratedBox) {
@@ -524,7 +524,7 @@ TEST(MoabMesh, RejectsTheSameMalformedSourcesAsTheSerialBackend) {
 }
 
 // ===========================================================================
-// mesh_id, the name-to-id lookup Task 4.2 flagged as missing
+// mesh_id, the name-to-id lookup
 // ===========================================================================
 
 TEST(MoabMesh, MeshIdResolvesByNameRegardlessOfLoadOrder) {
@@ -615,7 +615,7 @@ TEST(MoabMesh, SetCommunicatorAfterLoadIsRefused) {
 }
 
 // ===========================================================================
-// KNOWN_ISSUES D5, the MOAB half: per-placement decomposition.
+// The MOAB half of per-placement decomposition.
 //
 // Every test below runs with NO communicator adopted -- moab_backend.hpp's
 // "Mode A", where "this rank" is rank 0 of an effective size-1 base

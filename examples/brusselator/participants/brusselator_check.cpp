@@ -1,7 +1,6 @@
-// Time windows track (Conformance, Unit 2, Q3): thin CLI wrapper around
-// brusselator_check_core's own run_brusselator_check() -- the lead's own
-// "the assembler is not a shell script but a small C++ tool" ruling.
-// Reads u_main.c's and v_main.f90's own per-window log files (format:
+// Thin CLI wrapper around brusselator_check_core's own
+// run_brusselator_check() (the assembler is a small C++ tool, not a shell
+// script). Reads u_main.c's and v_main.f90's own per-window log files (format:
 // brusselator_check_core.hpp's own header comment) and prints the SAME
 // summary line examples/brusselator/main.cpp's own --check block prints,
 // exiting 0 on a pass and 1 otherwise (matching that file's own

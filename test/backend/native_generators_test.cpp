@@ -242,7 +242,7 @@ TEST(NativeBackend, PlacedViewIsReachableAfterSetPlacedView) {
   EXPECT_EQ(v.value()->entity_count(2), 9u);  // the OTHER decomposition, not the default's 4
 }
 
-// ---- each placement over its OWN ranks (KNOWN_ISSUES D24) ----------------
+// ---- each placement over its OWN ranks ------------------------------
 
 // The defect this pins needs no MPI to reproduce, because the backend takes
 // its position in the run as a constructor argument: a process at rank 2 of
@@ -317,8 +317,8 @@ TEST(NativeBackend, APlacementSpanningSeveralRanksStillSplitsAmongThem) {
 // The ctest rows backend.native_generators, .omp1 and .omp8 run this same
 // binary, and `ctest -j` runs them at once; a fixed name under TempDir()
 // made two of them write and remove the same file, failing the round trip
-// once in every few full-suite runs (first seen 2026-09-30, reproduced
-// 2026-10-04 with eight concurrent copies on a clean HEAD). The process id
+// once in every few full-suite runs (reproduced with eight concurrent
+// copies). The process id
 // makes the path this process's own.
 [[nodiscard]] static std::string scratch_vtk_path(const char* stem) {
   return std::string(::testing::TempDir()) + "native_mesh_roundtrip_" + stem + "_" +
@@ -380,9 +380,9 @@ TEST(NativeMeshIo, VtkRoundTripReproducesAPolyhedralMeshExactly) {
 }
 
 // ---------------------------------------------------------------------------
-// NM-7: `native_backend.hpp` documents `E-MESH-SIZE` for a spec whose
-// count does not fit; before this fix nothing produced it, and a spec
-// this large instead crashed inside `VertexLookup::local.assign` as an
+// `native_backend.hpp` documents `E-MESH-SIZE` for a spec whose
+// count does not fit; a spec this large must not instead crash inside
+// `VertexLookup::local.assign` as an
 // uncaught `std::bad_alloc`/`std::length_error`. Both specs are far past
 // the int-indexed builder's limit but cheap to refuse -- no allocation is
 // attempted before the check fires.
@@ -406,7 +406,7 @@ TEST(NativeMeshIo, RefusesAFileThatDoesNotExist) {
 }
 
 // ---------------------------------------------------------------------------
-// NM-1: the writer's stream precision must be `max_digits10` for `double`
+// The writer's stream precision must be `max_digits10` for `double`
 // (17), or ids and coordinates past 6 significant digits are silently
 // rounded on write. A gid at or beyond 1e6 is dense in the generators, so a
 // rounded gid collides with a DIFFERENT real vertex/cell instead of merely
@@ -460,7 +460,7 @@ TEST(NativeMeshIo, VtkRoundTripReproducesGidsAndCoordinatesAtFullPrecision) {
   }
 }
 
-// NM-1: the writer must refuse (as an invariant, not a data-dependent
+// The writer must refuse (as an invariant, not a data-dependent
 // refusal: a gid this large is this backend's own id assignment going
 // wrong, never a caller input) rather than silently truncate a gid past
 // the format's documented bound (native_mesh_io.hpp: "every integer up to

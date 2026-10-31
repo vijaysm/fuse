@@ -36,9 +36,7 @@ namespace fuse {
 ///   It is a MEASURE-WEIGHTED sum down a column.
 ///
 /// The two are easy to state backwards, and a matrix that is wrong one way
-/// still looks right on a uniform field. REVIEW.md R-11: there is no
-/// `RemapRow.*`/`RemapColumn.*` suite -- that cited `test/unit/remap_test.cpp`,
-/// which does not exist under `test/backend/`. The order-1 supermesh path is
+/// still looks right on a uniform field. The order-1 supermesh path is
 /// exercised for both properties by `Supermesh.AConstantSurvivesAndTotal
 /// MassIsPreserved` (row) and the `*IsExactlyConservative` tests (column) in
 /// `test/backend/supermesh_test.cpp`; the MOAB and high-order builder paths
@@ -46,7 +44,7 @@ namespace fuse {
 /// residuals are reported in `RemapWeights::max_row_defect` and
 /// `max_col_defect`. This is the same orientation `TemporalProjection` uses
 /// (`fuse/backend/spacetime.hpp`): row sums unity, column sums carrying the
-/// integral. Task 6.4 composes the two and needs them to agree.
+/// integral. Composing the two needs them to agree.
 ///
 /// ===========================================================================
 /// THE TWO PROPERTIES ARE NOT ALWAYS SIMULTANEOUSLY ATTAINABLE
@@ -136,22 +134,18 @@ struct RemapWeights {
 
   // --- what the map actually is ----------------------------------------------
   //
-  // Added in Task 5.3, when a second builder appeared. Two builders that both
-  // return a `RemapWeights` do NOT return the same kind of object, and the
-  // difference is not visible in the triplets. These fields say which one you
-  // were handed. REVIEW.md R-11: no test in this tree reads either field --
-  // `RemapOrder.*`/`RemapMonotone.*` cited here previously do not exist.
-  // Implemented, untested (docs/dev/testing.md state).
+  // Two builders that both return a `RemapWeights` do NOT return the same
+  // kind of object, and the difference is not visible in the triplets.
+  // These fields say which one you were handed. No test reads either field;
+  // implemented, untested (docs/dev/testing.md state).
 
   /// The polynomial order of the reconstruction the weights were built from:
   /// 1 = piecewise constant (exact for constants), 2 = exact for linears, and
-  /// so on. NOT a promise about the observed convergence rate. REVIEW.md
-  /// R-11: order 1 is measured by
+  /// so on. NOT a promise about the observed convergence rate. Order 1 is measured by
   /// `Supermesh.ObservedOrderOnANonMatchingPairIsAtLeastOne`
   /// (`test/backend/supermesh_test.cpp`); order > 1 is implemented,
   /// untested here -- this build has no TempestRemap to build a high-order
-  /// map to measure. `test/unit/remap_order_test.cpp`, cited here
-  /// previously, does not exist.
+  /// map to measure.
   int order = 1;
 
   /// True only when the map is bound preserving BY CONSTRUCTION and that has
@@ -199,20 +193,18 @@ struct RemapWeights {
   /// degree of freedom has no measure to weight a column sum by, so their
   /// `max_col_defect` is the plain, UNWEIGHTED column-sum residual --
   /// informative as a diagnostic (and left populated for that reason), but
-  /// not the property `conservative` names. REVIEW.md TF-16: before this
-  /// field existed, `claims()` read `max_col_defect` directly regardless
-  /// of which builder produced it, so a coincident node-to-node H pair
-  /// (column sum exactly 1 by accident of geometry, not by the property H
-  /// actually has) would certify `conservative` -- exactly the claim both
-  /// H headers say H never makes.
+  /// not the property `conservative` names. Without this field, `claims()`
+  /// would read `max_col_defect` regardless of which builder produced it,
+  /// so a coincident node-to-node H pair (column sum exactly 1 by accident
+  /// of geometry, not by the property H actually has) would certify
+  /// `conservative` -- exactly the claim both H headers say H never makes.
   bool col_defect_is_measure_weighted = true;
 
   [[nodiscard]] std::size_t nnz() const noexcept { return val.size(); }
 };
 
-/// Adapt to the non-owning view `apply_spacetime` takes. `spacetime.hpp`
-/// promised this would be "one aggregate initialisation" once `RemapWeights`
-/// landed; it is spelled once, here, because the field order of
+/// Adapt to the non-owning view `apply_spacetime` takes. It is "one
+/// aggregate initialisation", spelled once, here, because the field order of
 /// `SpatialWeightsView` puts `nnz` between the pointers and the shape and a
 /// hand-written brace list gets it wrong silently.
 [[nodiscard]] inline SpatialWeightsView spatial_view(
@@ -224,8 +216,8 @@ struct RemapWeights {
 /// Spec Section 5.4: (source mesh entity set, target mesh entity set, discretization pair, method) ->
 /// weights, hash-keyed so identical field transfers share one build.
 ///
-/// `temporal` and `temporal_degree` are unused until Phase 6 Task 6.3. They are
-/// declared now so the struct shape does not change later, and they take part
+/// `temporal` and `temporal_degree` are unused so far. They are
+/// declared so the struct shape does not change later, and they take part
 /// in `key()` and `operator==` so a plan that differs only in its temporal half
 /// is a different cache entry.
 struct RemapPlan {
@@ -244,14 +236,13 @@ struct RemapPlan {
   /// gives each processor set its own decomposition (`MeshBackend::placed_view`)
   /// returns a different local numbering per component, and weights built
   /// on the default view would index the wrong entities -- plausible numbers,
-  /// no diagnostic (that was the E-RT-REMAP-PLACEMENT rejection, KNOWN_ISSUES
-  /// D5, closed 2026-09-25). Every builder resolves its sides through
+  /// no diagnostic. Every builder resolves its sides through
   /// `placed_view(id, placement)`; invalid means the default decomposition,
   /// which is what `placed_view`'s default implementation returns anyway.
   /// Part of `key()`: the same plan on two processor sets is two matrices.
   ComponentId    placement{};
 
-  /// KNOWN_ISSUES.md D82 (owner decision 2026-10-19): which amount<->matrix
+  /// Which amount<->matrix
   /// convention the general (non-nodal) weighted FV<->FV path normalises
   /// by. `Extensive` (the field's VALUE directly IS the conserved amount)
   /// needs column normalisation (`val = overlap_measure / source_cell_
@@ -259,10 +250,9 @@ struct RemapPlan {
   /// redistributed); `Intensive` (value = density, amount = value *
   /// measure) needs row normalisation (`val = overlap_measure /
   /// target_cell_measure`, so each target row sums to 1), which is what
-  /// `build_supermesh_weights` always built before this field existed.
+  /// `build_supermesh_weights` builds.
   /// `None` (the default, no caller sets it today) falls back to the
-  /// Intensive convention -- unchanged behaviour for anyone who does not
-  /// yet pass this field. Read once in `Runner::Impl::resolve_remap()`
+  /// Intensive convention. Read once in `Runner::Impl::resolve_remap()`
   /// from the Remap arc's own `ValueType::conservation` (lowering.cpp's
   /// `source_type()` sets it from the channel's own `FieldSpec::
   /// conservation`, and it survives unmodified through every ValueType
@@ -301,12 +291,12 @@ struct RemapPlan {
 /// components`, both entity-major with the component index fastest -- the same
 /// layout `apply_spacetime` uses. `dst` is overwritten, not accumulated.
 ///
-/// DEVIATION FROM THE BRIEF, which had this return `void`. Every precondition
+/// Returns `Result<void>` rather than `void`. Every precondition
 /// below is a memory-safety precondition on raw pointers, and an unchecked one
 /// vanishes under Release's `-O3 -DNDEBUG`; `components <= 0` in particular
 /// would make `n_rows * components` wrap when widened to `std::size_t` and the
-/// zeroing loop would run for ~2^64 iterations. `apply_spacetime` deviated the
-/// same way and for the same reason. Errors, never throws:
+/// zeroing loop would run for ~2^64 iterations. `apply_spacetime` returns
+/// `Result<void>` for the same reason. Errors, never throws:
 ///
 ///   * `E-REMAP-ARG`  -- null `src`/`dst`, or `components < 1`.
 ///   * `E-REMAP-COO`  -- the triplet arrays disagree in length, or an index
@@ -370,10 +360,10 @@ struct RemapPlan {
 /// TWO BUILDERS BEHIND ONE ENTRY POINT. The plan chooses; the geometry vetoes.
 ///
 ///   * `method` = "" (the default), "intx" or "conservative"
-///     -- the SUPERMESH builder of Task 5.2. First order (exact for constants),
+///     -- the SUPERMESH builder. First order (exact for constants),
 ///        conservative in `MeshView::measure`, weights non-negative.
 ///   * `method` = "tempest", or `method` = "" with an order above 1
-///     -- the TEMPESTREMAP builder of Task 5.3. Orders 1 to 4, or a monotone
+///     -- the TEMPESTREMAP builder. Orders 1 to 4, or a monotone
 ///        first-order map. Conservative in TempestRemap's own exact spherical
 ///        areas; see `RemapWeights::max_col_defect_native`.
 ///
@@ -385,10 +375,8 @@ struct RemapPlan {
 /// ignored.
 ///
 /// WHICH PROPERTIES EACH CONFIGURATION ACTUALLY GUARANTEES. Measured residuals
-/// below are for a 6x24^2 against 6x16^2 cubed-sphere pair, from the task
-/// report that introduced this table. REVIEW.md R-11: `test/unit/remap_test.cpp`,
-/// cited here previously as where these numbers are asserted, does not exist
-/// under `test/backend/`; the MOAB-backed configurations below are
+/// below are for a 6x24^2 against 6x16^2 cubed-sphere pair, from a
+/// measurement. The MOAB-backed configurations below are
 /// implemented, untested (docs/dev/testing.md state) -- only the order-1
 /// supermesh row is exercised, by `test/backend/supermesh_test.cpp`.
 ///
@@ -482,8 +470,8 @@ struct RemapPlan {
 /// that the diagnostics can be captured -- TempestRemap catches its own
 /// exceptions and returns success, so the captured text is the ONLY signal that
 /// a build failed or silently dropped to first order. That makes this path,
-/// and the remap path generally, serial and non-reentrant -- and, as of R10,
-/// that is now ENFORCED rather than merely documented: a process-wide
+/// and the remap path generally, serial and non-reentrant -- and that is
+/// ENFORCED rather than merely documented: a process-wide
 /// `std::mutex` in `tempest_weights.cpp` (`announce_mutex()`) is held for the
 /// entire span from before the capturing object is constructed to after it is
 /// destroyed and its text consumed, so two threads calling into the high-order
@@ -509,12 +497,8 @@ struct RemapPlan {
 /// quantity at two ranks and 91.2% at four, returned as SUCCESS unless
 /// `RemapFlags::Conservative` happens to be set. So `build_weights` rejects a
 /// partitioned pair for which no halo was built (`E-REMAP-PARALLEL`), and with
-/// one it conserves to 1.2e-15 at two ranks and 7.4e-16 at four, from the
-/// task report that measured this. REVIEW.md TF-7: this used to say neither
-/// number is pinned by any test and both the rejection and the halo path
-/// were implemented-but-untested -- half-stale since
-/// `test/parallel/remap_halo_mpi_test.cpp` ported (host-verified per that
-/// file's own header): `ERemapParallelRefusesAboveOneRankAndNotAtOne` fires
+/// one it conserves to 1.2e-15 at two ranks and 7.4e-16 at four, as measured.
+/// `test/parallel/remap_halo_mpi_test.cpp`: `ERemapParallelRefusesAboveOneRankAndNotAtOne` fires
 /// the rejection by name at every registered rank count, and
 /// `BuildRemapHaloDeliversExactHaloValuesAndRoundTripsExactly` checks the
 /// halo's own forward/reverse round trip by exact global id and bookkeeping
@@ -634,11 +618,9 @@ struct RemapPlan {
                                                    const CouplingGraph& graph,
                                                    MeshBackend& backend);
 
-/// KNOWN_ISSUES D5's "last half" (round 2 ruling, HALO BRIDGING, not a
-/// two-placement RemapPlan): the OVERLOAD this design needs, kept separate
+/// HALO BRIDGING (not a two-placement RemapPlan): the OVERLOAD this design needs, kept separate
 /// from the one above rather than adding a second placement field to
-/// `RemapPlan` itself (`plan.placement` stays the TARGET's placement, its
-/// existing, already-closed meaning). `source_placement` names which
+/// `RemapPlan` itself (`plan.placement` stays the TARGET's placement). `source_placement` names which
 /// processor set OWNS the source cells -- generally DIFFERENT from
 /// `plan.placement`, and possibly rank-disjoint from it entirely. On a
 /// rank that participates in `plan.placement` (the target's own processor
@@ -648,13 +630,12 @@ struct RemapPlan {
 /// the source's as halo -- exactly as the single-placement case already
 /// does. A rank outside `plan.placement` does nothing (the Runner's own
 /// BuildRemapHalo instruction is what is expected to not call this there
-/// at all; this function still tolerates being asked, per this track's own
-/// `resolve()` fix, rather than refusing).
+/// at all; this function still tolerates being asked, rather than refusing).
 ///
 /// NOT YET A FULL IMPLEMENTATION for the case the two placements' own
 /// `moab::Core`s actually differ (`MoabMeshBackend::set_placements`'s own
 /// "one moab::Core per processor set" contract, moab_backend.hpp) -- see
-/// this function's own body and KNOWN_ISSUES.md D5 for the measured reason
+/// this function's own body for the measured reason
 /// (MOAB's `Intx2MeshOnSphere` covering-set construction needs BOTH file
 /// sets in the SAME `moab::Interface`; bridging two independent Cores needs
 /// a migrate-by-global-id exchange, the MOAB-specific analogue of

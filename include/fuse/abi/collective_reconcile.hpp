@@ -1,6 +1,6 @@
 #pragma once
 
-/// D61 (KNOWN_ISSUES.md): the participant ABI's own agreement rule for a
+/// The participant ABI's own agreement rule for a
 /// collective entry point (docs/dev/abi-design.md, "How the participant
 /// ABI reconciles a collective refusal"). SPLIT FOR TESTABILITY, the same
 /// reasoning include/fuse/transport/connect.hpp and include/fuse/runtime/
@@ -64,14 +64,13 @@ struct ReconciledStatus {
   return out;
 }
 
-/// This rank's own colour and key for the round-4 per-component
+/// This rank's own colour and key for the per-component
 /// MPI_Comm_split (src/abi/participant.cpp's own impl_initialize_local()),
 /// decided here as pure arithmetic for the same "split for testability"
 /// reason this header's other half already gives: the decision that was
-/// WRONG in round 3 (every rank computing the SAME colour 0, landing every
-/// component on one shared communicator -- KNOWN_ISSUES.md D61's own
-/// round-4 paragraph) is exactly the part worth pinning directly, with no
-/// MPI call in the way.
+/// wrong once (every rank computing the SAME colour 0, landing every
+/// component on one shared communicator) is exactly the part worth pinning
+/// directly, with no MPI call in the way.
 struct SplitColourKey {
   int colour = 0;
   int key = 0;
@@ -91,8 +90,8 @@ struct SplitColourKey {
 /// `{colour, key}` pair `MPI_Comm_split` partitions the base communicator
 /// with: `colour` is `component_value` itself (DISTINCT per component --
 /// never a uniform value two different components could both produce,
-/// which is exactly the property round 3's `make_participant_set_reducer`
-/// call did not have); `key` is `position_in_rankset` unchanged, ordering
+/// which is exactly the property a single shared `make_participant_set_reducer`
+/// call would not have); `key` is `position_in_rankset` unchanged, ordering
 /// ranks within the resulting sub-communicator by their own position in
 /// the component's declared RankSet.
 [[nodiscard]] inline std::optional<SplitColourKey> decide_split_colour_key(

@@ -3,20 +3,20 @@
 [[mutation]]
 id = "yaml-coupler-index-ignored"
 area = "model"
-describes = "from_yaml() ignores a coupler's `index` and appends every coupler after the physics components, as the writer's two-section layout did before 2026-10-02; a coupler authored between two physics components comes back after them, every later placement index shifts, and the canonical bytes of the reloaded graph differ from the authored one"
+describes = "from_yaml() ignores a coupler's `index` and appends every coupler after the physics components, as the writer's former two-section layout did; a coupler authored between two physics components comes back after them, every later placement index shifts, and the canonical bytes of the reloaded graph differ from the authored one"
 file = "src/model/yaml_io.cpp"
 old = """    const std::uint32_t at = n["index"] ? n["index"].as<std::uint32_t>()
                                         : std::numeric_limits<std::uint32_t>::max();"""
 new = """    const std::uint32_t at = std::numeric_limits<std::uint32_t>::max();  // MUTATED: index ignored"""
 target = "fuse_model_yaml_io_test"
 test = "model.yaml_io"
-# KILLED by hand 2026-10-02 in a clean export: only
+# KILLED by hand in a clean export: only
 # YamlIo.ACouplerAuthoredBetweenPhysicsComponentsKeepsItsIndex fails (17 others pass).
 
 [[mutation]]
 id = "a-couplers-launch-mode-is-dropped-by-the-writer"
 area = "model/yaml_io (the couplers section)"
-describes = "A coupler's LaunchSpec must survive the YAML round trip. It is the same launch record every component record carries -- a coupler IS a component-array entry -- and the program launched on the coupler's own ranks reads its mode from the file to decide whether to call connect(). Dropped, the coupler loads as in-process, never joins connect()'s collective over the whole world, and every other program waits in it forever: the Brusselator's MPMD participant rows hung their full 120 s with an empty combined.log (host, 2026-10-08). Killed by the round-trip test, which also compares the canonical bytes."
+describes = "A coupler's LaunchSpec must survive the YAML round trip. It is the same launch record every component record carries -- a coupler IS a component-array entry -- and the program launched on the coupler's own ranks reads its mode from the file to decide whether to call connect(). Dropped, the coupler loads as in-process, never joins connect()'s collective over the whole world, and every other program waits in it forever: the Brusselator's MPMD participant rows hung their full 120 s with an empty combined.log (host). Killed by the round-trip test, which also compares the canonical bytes."
 file = "src/model/yaml_io.cpp"
 old = "    if (const char* mode_name = launch_mode_name(c.launch)) {"
 new = "    if (const char* mode_name = nullptr) {  // MUTATED: coupler launch dropped"

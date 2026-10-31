@@ -43,23 +43,21 @@ struct FakeV2Table {
   decltype(fuse_participant_abi_v1::begin_step) begin_step;
   decltype(fuse_participant_abi_v1::end_step) end_step;
   decltype(fuse_participant_abi_v1::run) run;
-  // Unit 3 (S6 phase 3, Conformance), appended 2026-10-04 to entries.def
-  // LAST (the table's own "appended to, never reordered" rule) -- this
+  // Appended to entries.def LAST (the table's own "appended to, never
+  // reordered" rule) -- this
   // fixture's own top comment requires matching the real member order
   // exactly, or the static_assert below (sizeof(FakeV2Table) > sizeof
   // (fuse_participant_abi_v1)) would start failing the moment the real
   // table grows to the same entry count this fixture always enumerated
   // by hand.
   decltype(fuse_participant_abi_v1::view_field) view_field;
-  // D14 (KNOWN_ISSUES.md), appended 2026-10-13 to entries.def LAST --
-  // base_communicator() is now PART of the real v1 table's own prefix,
-  // not the fixture's simulated "v2" addition below; folded into
-  // FakeV2Table for the identical reason view_field's own comment just
-  // gave for itself, one entry later.
+  // Appended to entries.def LAST -- base_communicator() is PART of the real v1
+  // table's own prefix, not the fixture's simulated "v2" addition below;
+  // folded into FakeV2Table for the identical reason view_field's own comment
+  // just gave for itself, one entry later.
   decltype(fuse_participant_abi_v1::base_communicator) base_communicator;
-  // docs/dev/restart.md round 2, item 4 -- appended to entries.def LAST,
-  // same reason: request_restart_point() is now part of the real v1
-  // table's own prefix too, one entry later again.
+  // Appended to entries.def LAST, same reason: request_restart_point() is
+  // part of the real v1 table's own prefix too, one entry later again.
   decltype(fuse_participant_abi_v1::request_restart_point) request_restart_point;
   // The appended v2 member. Never read by a v1 caller (struct_size says it
   // isn't there) and never read by this test's "v2 caller" EITHER, when the
@@ -140,7 +138,7 @@ void DriveOnePeriod(const fuse_participant_abi_v1* t, fuse_ctx* ctx,
 
 }  // namespace
 
-// D62 (KNOWN_ISSUES.md): the coupling-graph descriptor crosses the C ABI
+// The coupling-graph descriptor crosses the C ABI
 // through fuse_graph_source/fuse_graph_sink (include/fuse/abi/entries.def,
 // docs/dev/abi-design.md's "The graph descriptor's byte order"), and its
 // own version is negotiated the SAME way the ABI table's own abi_version

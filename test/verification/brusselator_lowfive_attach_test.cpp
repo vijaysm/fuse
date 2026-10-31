@@ -1,12 +1,10 @@
-// S6 phase 3 (Conformance, "LowFive" track), "LowFive attach" track. The
-// pure, MPI-free and HDF5-free half of the participants' programmatic VOL
+// The pure, MPI-free and HDF5-free half of the participants' programmatic VOL
 // attach -- examples/brusselator/participants/lowfive_attach_decision.hpp's
 // own header comment has the full account of what `decide_attach_mode()`
 // decides and why. Nothing in this file touches LowFive, HDF5, or a live
 // MPI communicator: every RankSet/LaunchMode/ChannelRoles value below is
 // hand-built, the same "force a shape by hand, no real communicator"
-// discipline KNOWN_ISSUES.md C1 already documents for this codebase's
-// other MPI-shaped pure functions.
+// discipline this codebase's other MPI-shaped pure functions follow.
 
 #include <gtest/gtest.h>
 
@@ -55,9 +53,9 @@ using fuse_examples::lowfive_attach::ExitHygienePlan;
 using fuse_examples::lowfive_attach::decide_exit_hygiene_plan;
 using fuse_examples::lowfive_attach_model::WouldReuseStaleFileOnRecreate;
 using fuse_examples::lowfive_attach_model::EventKind;
-using fuse_examples::lowfive_attach_model::Round8Order;
+using fuse_examples::lowfive_attach_model::ExchangeOrder;
 using fuse_examples::lowfive_attach_model::BuildEventSequence;
-using fuse_examples::lowfive_attach_model::RunSimulationRound8;
+using fuse_examples::lowfive_attach_model::RunSimulationForOrder;
 using fuse_examples::lowfive_attach_model::static_check_accepts;
 using fuse_examples::lowfive_attach_model::model_completes;
 using fuse_examples::lowfive_attach_model::ProcessPolicy;
@@ -130,17 +128,11 @@ TEST(DecideAttachMode, NoChannelsIsRefused) {
   EXPECT_EQ(d.error().code, "E-LOWFIVE-ATTACH-NOCHANNELS");
 }
 
-// D14 Stage B (KNOWN_ISSUES.md): REPLACES AcceptModeOnWriterIsRefused/
-// AcceptModeOnReaderIsRefused (the SAME two shapes, not deleted outright
-// -- this track's own repeated convention when a falsified or superseded
-// model is replaced, not silently dropped) -- a Connect-mode channel
-// with a FORMED bridge and a supported topology (<=2 Connect-mode
-// components graph-wide) now reaches the IDENTICAL kDistributed
-// decision Mpmd already did, never refused by launch mode alone. This
-// is D14's own "what remains" item 3, closed in decide_attach_mode()'s
-// own pure logic (the host run that would close it in practice is a
-// separate, host-only question -- host_pending in this track's own
-// report).
+// A Connect-mode channel with a FORMED bridge and a supported topology
+// (<=2 Connect-mode components graph-wide) reaches the IDENTICAL
+// kDistributed decision Mpmd does, never refused by launch mode alone.
+// This is decide_attach_mode()'s own pure logic (the host run that
+// exercises it in practice is a separate, host-only question).
 TEST(DecideAttachMode, AcceptModeOnWriterWithFormedBridgeIsDistributed) {
   const std::vector<ChannelRoles> channels{
       MakeChannel("U.u_out", RankSet{0, 1}, RankSet{1, 1}, LaunchMode::Connect, LaunchMode::Mpmd)};
@@ -182,9 +174,9 @@ TEST(DecideAttachMode, ConnectModeWithNoBridgeFormedIsRefused) {
   EXPECT_EQ(d.error().code, "E-LOWFIVE-ATTACH-ACCEPT-NO-BRIDGE");
 }
 
-// D18 (KNOWN_ISSUES.md, not pursued): connect_pairwise() itself supports
-// exactly two Connect-mode components; this is the SAME limit, checked
-// here too, as defence in depth for a caller that reaches this function
+// connect_pairwise() itself supports exactly two Connect-mode components;
+// this is the SAME limit, checked here too, as defence in depth for a
+// caller that reaches this function
 // without having gone through connect() first.
 TEST(DecideAttachMode, MoreThanTwoConnectModeComponentsIsRefused) {
   const std::vector<ChannelRoles> channels{
@@ -226,19 +218,18 @@ TEST(DecideAttachMode, MpmdOnlyChannelIgnoresBridgeContextEntirely) {
   EXPECT_EQ(d.value().mode, AttachMode::kDistributed);
 }
 
-// D14 Stage A section 3(A) item 3, now a REGRESSION test: `this_rank`
-// must come from the BRIDGE, never from a rank's own local
+// `this_rank` must come from the BRIDGE, never from a rank's own local
 // MPI_COMM_WORLD, in an accept (Connect) launch -- MPI_Intercomm_merge's
 // own high/low rule offsets V's own position by U's local world size, so
 // V's own local-world rank number and its bridge-relative one are
 // DIFFERENT integers. This test builds the EXACT accept-3 layout (U
 // physics rank 0, a bundled coupler/placeholder rank 1 naming no channel
-// at all, V at bridge rank 2) and shows the OLD derivation (V's own
+// at all, V at bridge rank 2) and shows the local-world derivation (V's own
 // local MPI_COMM_WORLD rank, 0, since V's own one-rank executable always
 // numbers itself from 0) does not refuse and does not crash -- it
 // silently misclassifies V as the WRITER instead of the reader, because
 // U's own writer_ranks={0} happens to contain 0 too. A refusal would
-// have been a kinder failure than this.
+// be a kinder failure than this.
 TEST(DecideAttachMode, WrongThisRankFromLocalWorldInsteadOfBridgeMisclassifiesV) {
   const std::vector<ChannelRoles> channels{
       MakeChannel("U.u_out", /*writer=*/RankSet{0, 1}, /*reader=*/RankSet{2, 1},
@@ -252,15 +243,14 @@ TEST(DecideAttachMode, WrongThisRankFromLocalWorldInsteadOfBridgeMisclassifiesV)
   ASSERT_TRUE(d_correct.ok()) << d_correct.error().code << ": " << d_correct.error().message;
   EXPECT_FALSE(d_correct.value().rendezvous.is_writer) << "V is the reader, correctly";
 
-  // WRONG: this_rank = 0, V's own LOCAL MPI_COMM_WORLD rank -- the
-  // derivation this track's own Stage A code used before this fix.
+  // WRONG: this_rank = 0, V's own LOCAL MPI_COMM_WORLD rank.
   const auto d_wrong = decide_attach_mode(channels, /*this_rank=*/0, bridge);
   ASSERT_TRUE(d_wrong.ok()) << d_wrong.error().code << ": " << d_wrong.error().message;
   EXPECT_TRUE(d_wrong.value().rendezvous.is_writer)
-      << "the OLD derivation's own silent failure mode: V misclassified as the writer";
+      << "the local-world derivation's silent failure mode: V misclassified as the writer";
 }
 
-// D14 Stage B: DecideLocalSplitChoice() -- the pure color/key decision
+// DecideLocalSplitChoice() -- the pure color/key decision
 // bruss_lowfive_join_local_split() turns into a real MPI_Comm_split().
 TEST(DecideLocalSplitChoice, EmptyChannelsDoesNotParticipate) {
   const std::vector<ChannelRoles> channels;
@@ -296,7 +286,7 @@ TEST(DecideLocalSplitChoice, NonMemberRankDoesNotParticipate) {
 
 namespace {
 
-// D14 Stage B: the smallest graph that exercises CollectChannelsForRank()
+// The smallest graph that exercises CollectChannelsForRank()
 // on a REAL fuse::CouplingGraph -- U (RankSet{0,1}, writer of u_out,
 // hdf5_path set), a fieldless Coupler-kind placeholder (RankSet{1,1},
 // named "coupler" in a channel neither writer nor reader -- the accept-
@@ -359,9 +349,8 @@ TEST(CollectChannelsForRank, ReaderRankSeesTheOneQualifyingChannel) {
   ASSERT_EQ(channels.size(), 1u);
 }
 
-// The companion fix's own foundation: the bundled coupler/placeholder
-// rank (1) is neither writer nor reader of the one channel this graph
-// declares -- CollectChannelsForRank() must return it EMPTY, not the
+// The bundled coupler/placeholder rank (1) is neither writer nor reader of
+// the one channel this graph declares -- CollectChannelsForRank() must return it EMPTY, not the
 // channel by accident (a Coupler-kind component is never a field owner
 // at all, validate()'s own E-COUPLER-FIELDS rule, so this is a property
 // of the RankSet membership test alone, not of ComponentKind).
@@ -371,7 +360,7 @@ TEST(CollectChannelsForRank, BundledPlaceholderRankSeesNoChannelAtAll) {
   EXPECT_TRUE(channels.empty());
 }
 
-// D14 Stage B, scope C: the real Brusselator exchange is BIDIRECTIONAL
+// The real Brusselator exchange is BIDIRECTIONAL
 // (u_out: U writes, V reads; v_out: V writes, U reads) -- MakeAcceptLikeGraph()
 // above has only one channel, enough for the three CollectChannelsForRank
 // tests it serves, but not enough to compute the FULL two-channel order
@@ -428,16 +417,14 @@ fuse::CouplingGraph MakeAcceptLikeGraphBidirectional() {
   return g;
 }
 
-// D14 Stage B, scope C (task decision: extend ValidatedGraphOrderSignatures()
-// ONLY if the accept layout's own derived signature is identical to the
-// validated MPMD one -- otherwise leave it refused and say so). PROVEN
+// ValidatedGraphOrderSignatures() covers the accept layout only because its
+// derived signature is identical to the validated MPMD one. PROVEN
 // identical here, from an ACTUAL fuse::CouplingGraph matching the real
 // accept-3 layout's own component names, RankSets and channel order
 // (brusselator_graph_tool.cpp's own accept branch: u_ranks={0,1},
 // v_ranks={u_ranks_u+ranks_coupler,1}, both launch modes share the SAME
 // add_window_coupling() call that declares u_out/v_out in the SAME order)
-// -- so NO code change to ValidatedGraphOrderSignatures() is needed; the
-// existing {U,V,1,1},{V,U,1,1} entry already covers both launch modes,
+// -- so the one {U,V,1,1},{V,U,1,1} entry covers both launch modes,
 // because the check is signature-based, never launch-mode-based.
 TEST(ComputeGraphOrderSignature, AcceptLayoutPhysicsRanksMatchTheValidatedMpmdSignature) {
   const auto g = MakeAcceptLikeGraphBidirectional();
@@ -501,9 +488,9 @@ TEST(DecideAttachMode, OverlappingWriterReaderPropagatesOverlap) {
 }
 
 // ---------------------------------------------------------------------
-// Round 2 ("role-ordered serve"): decide_serve_roles(). See lowfive_
-// attach_decision.hpp's own "Round 2" comment for the measured deadlock
-// this exists to avoid.
+// Role-ordered serve: decide_serve_roles(). See lowfive_
+// attach_decision.hpp's own comment for the deadlock this exists to
+// avoid.
 
 TEST(DecideServeRoles, LowerMinRankWinsRegardlessOfArgumentOrder) {
   // U = {0, 1} (ranks 0-1, min_rank 0), V = {2} (min_rank 2): U must win
@@ -533,16 +520,9 @@ TEST(DecideServeRoles, EmptyRankSetIsRefused) {
 }
 
 // ---------------------------------------------------------------------
-// Round 2 REVIEW: serve_state_step(). The event model changed from the
-// first round-2 attempt -- kImportAboutToOpen is now ALWAYS kReceiveOnly
-// (never flushes, any role or state) and a NEW event, kImportClosed,
-// is where a first-reader's own deferred serve is flushed instead. Every
-// test below that exercised the OLD (wrong) kReceiveThenFlushDeferred-
-// at-kImportAboutToOpen expectation is REPLACED, not deleted outright --
-// FirstReaderDefersThenReceivesAndFlushesRepeatedly below is the direct
-// replacement for the test of the same name that asserted the bug's own
-// expectation, now asserting the corrected one instead (see this file's
-// own git history / the round-2-review report for the diff). Exercises
+// serve_state_step(). kImportAboutToOpen is ALWAYS kReceiveOnly (never
+// flushes, any role or state) and a separate event, kImportClosed, is
+// where a first-reader's own deferred serve is flushed. Exercises
 // both roles across the Jacobi row's own repeated write/write-then-
 // read/read cycle, plus every refusal the state machine makes.
 
@@ -569,15 +549,14 @@ TEST(ServeStateStep, FirstServerServesThenReceivesThenFinalizesCleanRepeatedly) 
   EXPECT_EQ(fin.value(), ServeAction::kNoopFinalizeClean);
 }
 
-// REPLACES the test of the same name, which asserted EVERY iteration's
-// own write defers -- round 2/3's own FALSIFIED model (lowfive_attach_
-// decision.hpp's own "ROUND 8" comment): the host's own measured
+// Not every iteration's own write defers (lowfive_attach_decision.hpp's
+// own comment on the measured order): the host's own measured
 // steady-state order shows a first-reader deferring ONLY at the cold
-// start, serving immediately every write after. The corrected cycle,
-// repeated: iteration 0 defers (cold start, nothing completed yet) and
-// flushes at its own kImportClosed, exactly as before; iterations 1+
-// serve immediately at write (decide_serve_action()'s own policy,
-// since a read has already completed) and have nothing left to flush.
+// start, serving immediately every write after. The cycle, repeated:
+// iteration 0 defers (cold start, nothing completed yet) and flushes at
+// its own kImportClosed; iterations 1+ serve immediately at write
+// (decide_serve_action()'s own policy, since a read has already
+// completed) and have nothing left to flush.
 TEST(ServeStateStep, FirstReaderDefersOnlyTheColdStartThenServesImmediatelyEveryLaterWrite) {
   ServeState st;
   st.role = ServeRole::kFirstReader;
@@ -612,7 +591,7 @@ TEST(ServeStateStep, FirstReaderDefersOnlyTheColdStartThenServesImmediatelyEvery
   EXPECT_EQ(fin.value(), ServeAction::kNoopFinalizeClean);
 }
 
-// The DIRECT regression test for the exact bug this review caught:
+// The DIRECT test for the flush placement:
 // kImportAboutToOpen must return kReceiveOnly and leave deferred_pending
 // UNTOUCHED even when a serve genuinely is pending -- the mutation row
 // "serve-state-step-flush-moved-back-to-pre-open" (build-evidence/
@@ -657,7 +636,8 @@ TEST(ServeStateStep, FirstReaderSecondExportBeforeFlushIsRefused) {
   ASSERT_TRUE(a1.ok());
   EXPECT_EQ(a1.value(), ServeAction::kDeferServe);
 
-  // A second export with no intervening kImportClosed -- I1 violated.
+  // A second export with no intervening kImportClosed -- violates the
+  // one-deferred-serve-at-a-time rule.
   const auto a2 = serve_state_step(&st, ServeEvent::kExportWrittenAndClosed);
   ASSERT_FALSE(a2.ok());
   EXPECT_EQ(a2.error().code, "E-LOWFIVE-ATTACH-SERVE-DOUBLE-DEFER");
@@ -711,7 +691,7 @@ TEST(ServeStateStep, FirstServerNeverDefersSoFinalizeIsAlwaysCleanEvenMidCycle) 
 }
 
 // ---------------------------------------------------------------------
-// Round 2 REVIEW: model-check tests. lowfive_attach_model_check.hpp's
+// Model-check tests. lowfive_attach_model_check.hpp's
 // own top comment has the full account of what these do and do not
 // establish (a check of the PROTOCOL against the blocking semantics AS
 // READ from LowFive's source -- not a measurement of LowFive itself).
@@ -728,58 +708,30 @@ TEST(ModelCheck, ShippedProtocolCompletesFor1Iteration) {
   EXPECT_TRUE(r.completed) << (r.stuck_example ? *r.stuck_example : "");
 }
 
-// REPLACES ShippedProtocolCompletesFor2Iterations/For60Iterations/
-// RegardlessOfWhichPositionIsFirstServer (RunSimulation()'s own
-// N-exchange BuildScript() put BOTH roles through write-then-read every
-// exchange -- a shape round 8's own task 1 found no real graph can ever
-// produce for N>=2 exchanges: the two components' own steady-state
-// orders are COMPLEMENTARY (lowfive_attach_decision.hpp's own "ROUND
-// 8" comment), never identical. That shape was round 2/3's own
-// FALSIFIED assumption applied to the MODEL too, not only to
-// serve_state_step() -- it happened to complete under the OLD,
-// defer-every-write policy (nothing ever blocked on a write it could
-// not immediately resolve), but round 8's own corrected
-// decide_serve_action() now (CORRECTLY) reports it stuck for N>=2 --
-// see ModelCheck.Round8BothSidesWriteReadSteadyGetsStuck below, the
-// DIRECT test for exactly this shape, now named for what it is instead
-// of asserting it completes. The replacement below uses `RunSimulationRound8()`
-// with the MEASURED order (lowfive_attach_model::Round8Order::
-// kMeasured) -- the one shape task 1 confirms the real graph produces --
-// for the SAME N values and the SAME position-independence check.
-TEST(ModelCheck, Round8MeasuredOrderCompletesFor2Exchanges) {
+// Uses `RunSimulationForOrder()` with the MEASURED order
+// (lowfive_attach_model::ExchangeOrder::kMeasured) -- the one shape the real
+// graph produces for N>=2 exchanges: the two components' own steady-state
+// orders are COMPLEMENTARY (lowfive_attach_decision.hpp's own comment on
+// the measured order), never identical. A shape that put BOTH roles
+// through write-then-read every exchange is reported stuck for N>=2 by
+// decide_serve_action() -- see ModelCheck.BothSidesWriteReadSteadyGetsStuck
+// below, the DIRECT test for exactly that shape.
+TEST(ModelCheck, MeasuredOrderCompletesFor2Exchanges) {
   using namespace fuse_examples::lowfive_attach_model;
-  const auto r = RunSimulationRound8(Round8Order::kMeasured, 2,
+  const auto r = RunSimulationForOrder(ExchangeOrder::kMeasured, 2,
                                      ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstServer},
                                      ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstReader});
   EXPECT_TRUE(r.completed) << (r.stuck_example ? *r.stuck_example : "");
 }
 
 // 60: this row's own kMaxIterations (brusselator_graph_tool.cpp) --
-// reused here as an exchange count, a pre-round-9 stress value, not a
-// claim about any measured sweep count on any head. Round 9 (task 3)
-// closed the question round 8 left unsettled using a figure measured
-// on commit 7aec9c8 (BEFORE the owner's device-branch merge): ~61
-// exchanges per coupling window (122 U writes / 2 windows), i.e. once
-// per Jacobi sweep. Round 10 (task D) found the SAME row measures a
-// DIFFERENT figure on HEAD 0dc8c70 (after BOTH the device-branch
-// merge and the Collectives track's own fix for the unrequested-
-// period hang): 12 sweeps per period, 25 writes/25 reads per rank
-// for a `--periods 2` run, now SYMMETRIC between U and V (a mid-fix
-// measurement on b98777d, while the row still hung on an unrequested
-// third period, saw an asymmetric 26 U writes/25 reads -- superseded
-// by this completed-row figure, not an independent data point). The
-// CAUSE of the change from 61 to 12 is still NOT fully established,
-// though the Collectives track's own D57 entry refutes the earlier
-// "61 = kMaxIterations + 1" hypothesis outright and traces 61 to a
-// commit predating that fix (lowfive_attach_decision.hpp's own
-// "ROUND 10" comment has the full account, including D57's own
-// arithmetic-only observation that 122 is also consistent with 12
-// sweeps/period over TEN periods, not two); both figures are
-// measured, neither re-derived here, and neither is this row's own
-// number specifically.
-TEST(ModelCheck, Round8MeasuredOrderCompletesFor60Exchanges) {
+// reused here as an exchange count, a stress value, not a claim about any
+// measured sweep count (the measured per-run exchange counts are in
+// lowfive_attach_decision.hpp's comment on the measured order and are not
+// derived here).
+TEST(ModelCheck, MeasuredOrderCompletesFor60Exchanges) {
   using namespace fuse_examples::lowfive_attach_model;
-  const auto r = RunSimulationRound8(Round8Order::kMeasured, 60,
+  const auto r = RunSimulationForOrder(ExchangeOrder::kMeasured, 60,
                                      ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstServer},
                                      ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstReader});
   EXPECT_TRUE(r.completed) << (r.stuck_example ? *r.stuck_example : "");
@@ -787,20 +739,19 @@ TEST(ModelCheck, Round8MeasuredOrderCompletesFor60Exchanges) {
 
 // Which SEARCH POSITION (A or B) carries the first-server role must not
 // matter -- the search itself has no preferred side.
-TEST(ModelCheck, Round8MeasuredOrderCompletesRegardlessOfWhichPositionIsFirstServer) {
+TEST(ModelCheck, MeasuredOrderCompletesRegardlessOfWhichPositionIsFirstServer) {
   using namespace fuse_examples::lowfive_attach_model;
-  const auto r = RunSimulationRound8(Round8Order::kMeasured, 3,
+  const auto r = RunSimulationForOrder(ExchangeOrder::kMeasured, 3,
                                      ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstReader},
                                      ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstServer});
   EXPECT_TRUE(r.completed) << (r.stuck_example ? *r.stuck_example : "");
 }
 
-// The REJECTED first round-2 attempt (flush at kAboutToOpen instead of
+// A REJECTED placement (flush at kAboutToOpen instead of
 // kImportClosed) -- illustrative evidence that this search is
 // discriminating, not evidence about the shipped protocol (which the
 // tests above alone speak for). Expressed as a canned policy, NOT
-// through serve_state_step() (today's own function can no longer take
-// this path at all, by this round's own fix).
+// through serve_state_step() (which cannot take this path at all).
 TEST(ModelCheck, RejectedPreOpenFlushPlacementDeadlocks) {
   using namespace fuse_examples::lowfive_attach_model;
   const auto r =
@@ -810,9 +761,8 @@ TEST(ModelCheck, RejectedPreOpenFlushPlacementDeadlocks) {
   ASSERT_TRUE(r.stuck_example.has_value());
 }
 
-// Round 1's own "natural placement" (serve at every write, both sides,
-// never defer) -- illustrative; round 1 never tested this directly
-// because this header did not exist yet.
+// The "natural placement" (serve at every write, both sides, never defer)
+// -- illustrative.
 TEST(ModelCheck, OriginalNaturalPlacementDeadlocks) {
   using namespace fuse_examples::lowfive_attach_model;
   const auto r = RunSimulation(1, ProcessPolicy{PolicyKind::kOriginalNatural, ServeRole::kFirstServer},
@@ -834,12 +784,10 @@ TEST(ModelCheck, BothSidesDeferDeadlocks) {
 }
 
 // ---------------------------------------------------------------------
-// Round 4: DEFECT A (missing LowFive::DistMetadataVOL::set_intercomm()
-// registration) and DEFECT B (fuse::split_hdf5_path()'s own unslashed
-// dataset component never matching LowFive::Object::fullname()'s own
-// slashed form) -- lowfive_attach_decision.hpp's own "ROUND 4" comment
-// has the full citations for both, confirmed by reading LowFive's
-// source before writing either fix.
+// The LowFive::DistMetadataVOL::set_intercomm() registration, and
+// fuse::split_hdf5_path()'s unslashed dataset component, which must match
+// LowFive::Object::fullname()'s own slashed form --
+// lowfive_attach_decision.hpp's own comment has the citations for both.
 
 TEST(NormalizeDatasetPattern, UnslashedGetsALeadingSlash) {
   const auto r = NormalizeDatasetPattern("grid/u_out");
@@ -905,9 +853,9 @@ TEST(BuildIntercommRegistrations, EmptyTableIsEmptyResultNotARefusal) {
 }
 
 // ---------------------------------------------------------------------
-// Round 6: VolSettings/decide_vol_settings()/VolSettingsSatisfyInvariant()
-// -- the pure decision this round's own fix routes BOTH LowFive-level
-// settings through, instead of setting them separately.
+// VolSettings/decide_vol_settings()/VolSettingsSatisfyInvariant() -- the
+// pure decision BOTH LowFive-level settings are routed through, instead of
+// being set separately.
 
 TEST(DecideVolSettings, DistributedWantsServeOnCloseFalseAndKeepTrue) {
   const auto s = decide_vol_settings(/*distributed=*/true);
@@ -918,8 +866,7 @@ TEST(DecideVolSettings, DistributedWantsServeOnCloseFalseAndKeepTrue) {
 TEST(DecideVolSettings, SingleProcessStillWantsKeepTrue) {
   // serve_on_close is meaningless for the single-process branch's own
   // LowFive::MetadataVOL (no such member) -- only `keep` is ever
-  // actually consumed there, and it must still be true (round 4's own
-  // reasoning, unchanged).
+  // actually consumed there, and it must be true.
   const auto s = decide_vol_settings(/*distributed=*/false);
   EXPECT_TRUE(s.keep);
 }
@@ -930,9 +877,8 @@ TEST(VolSettingsSatisfyInvariant, DecideVolSettingsOwnOutputSatisfiesIt) {
 }
 
 TEST(VolSettingsSatisfyInvariant, ServeOnCloseFalseAndKeepFalseViolatesIt) {
-  // Round 5's own actual (wrong) configuration, fed directly: the
-  // lead's own instruction, "the invariant test killing a settings
-  // pair with serve_on_close=false and keep=false."
+  // A wrong configuration, fed directly: a settings pair with
+  // serve_on_close=false and keep=false.
   EXPECT_FALSE(VolSettingsSatisfyInvariant(VolSettings{/*serve_on_close=*/false, /*keep=*/false}));
 }
 
@@ -950,7 +896,7 @@ TEST(VolSettingsSatisfyInvariant, ServeOnCloseTrueAndKeepFalseSatisfiesIt) {
 }
 
 // ---------------------------------------------------------------------
-// Round 6: FindOwnExportedFiles() -- the binding-table-derived file
+// FindOwnExportedFiles() -- the binding-table-derived file
 // name(s) this rank's own attach must drop after each is served.
 
 TEST(FindOwnExportedFiles, USOwnFileIsBrusselatorU) {
@@ -984,13 +930,11 @@ TEST(FindOwnExportedFiles, EmptyTableOwnsNothing) {
 }
 
 // ---------------------------------------------------------------------
-// Round 6: the model check's own file-lifetime cases, renamed from
-// round 4's own ProcessPolicy::nothing_indexed (wrong guessed
-// mechanism, corrected by round 5's own source re-reading) to
-// ProcessPolicy::file_deleted_at_close (round 6's own confirmed one),
-// and driven from decide_vol_settings() directly, not a hand-set bool
-// disconnected from it -- "the model must be driven from decide_vol_
-// settings so that a mutation of the setting changes the verdict."
+// The model check's own file-lifetime cases
+// (ProcessPolicy::file_deleted_at_close), driven from
+// decide_vol_settings() directly, not a hand-set bool disconnected from it
+// -- the model must be driven from decide_vol_settings so that a mutation
+// of the setting changes the verdict.
 
 TEST(ModelCheck, ShippedConfigurationCompletesFor1Iteration) {
   using namespace fuse_examples::lowfive_attach_model;
@@ -1001,29 +945,26 @@ TEST(ModelCheck, ShippedConfigurationCompletesFor1Iteration) {
   EXPECT_TRUE(r.completed) << (r.stuck_example ? *r.stuck_example : "");
 }
 
-// REPLACES ShippedConfigurationCompletesFor2And60Iterations/
-// RegardlessOfWhichPositionIsFirstServer -- same reason as the three
-// Round8MeasuredOrder* replacements above (RunSimulation()'s own
-// BuildScript() shape is unrealistic for N>=2); still driven from
-// decide_vol_settings() (round 6's own standing instruction), now via
-// RunSimulationRound8() and the measured order.
-TEST(ModelCheck, Round8MeasuredOrderWithDecideVolSettingsCompletesFor2And60Exchanges) {
+// Driven from decide_vol_settings() via RunSimulationForOrder() and the
+// measured order (RunSimulation()'s own BuildScript() shape is unrealistic
+// for N>=2).
+TEST(ModelCheck, MeasuredOrderWithDecideVolSettingsCompletesFor2And60Exchanges) {
   using namespace fuse_examples::lowfive_attach_model;
   const auto settings = fuse_examples::lowfive_attach::decide_vol_settings(/*distributed=*/true);
   ProcessPolicy server{PolicyKind::kShipped, ServeRole::kFirstServer, !settings.keep};
   ProcessPolicy reader{PolicyKind::kShipped, ServeRole::kFirstReader, !settings.keep};
   for (int n : {2, 60}) {
-    const auto r = RunSimulationRound8(Round8Order::kMeasured, n, server, reader);
+    const auto r = RunSimulationForOrder(ExchangeOrder::kMeasured, n, server, reader);
     EXPECT_TRUE(r.completed) << "n=" << n << " " << (r.stuck_example ? *r.stuck_example : "");
   }
 }
 
-TEST(ModelCheck, Round8MeasuredOrderWithDecideVolSettingsCompletesRegardlessOfWhichPositionIsFirstServer) {
+TEST(ModelCheck, MeasuredOrderWithDecideVolSettingsCompletesRegardlessOfWhichPositionIsFirstServer) {
   using namespace fuse_examples::lowfive_attach_model;
   const auto settings = fuse_examples::lowfive_attach::decide_vol_settings(/*distributed=*/true);
   ProcessPolicy a{PolicyKind::kShipped, ServeRole::kFirstReader, !settings.keep};
   ProcessPolicy b{PolicyKind::kShipped, ServeRole::kFirstServer, !settings.keep};
-  const auto r = RunSimulationRound8(Round8Order::kMeasured, 2, a, b);
+  const auto r = RunSimulationForOrder(ExchangeOrder::kMeasured, 2, a, b);
   EXPECT_TRUE(r.completed) << (r.stuck_example ? *r.stuck_example : "");
 }
 
@@ -1032,8 +973,8 @@ TEST(ModelCheck, Round8MeasuredOrderWithDecideVolSettingsCompletesRegardlessOfWh
 // true and the shipped configuration gets stuck -- failing the
 // EXPECT_TRUE(r.completed) tests above, not a separate hand-set case.
 // Pinned directly here too, for a config that is NOT what decide_vol_
-// settings() actually returns, so H2's own confirmed round-5 mechanism
-// stays pinned even if decide_vol_settings() itself is never wrong.
+// settings() actually returns, so this mechanism stays pinned even if
+// decide_vol_settings() itself is never wrong.
 TEST(ModelCheck, FileDeletedAtCloseConfigurationGetsStuck) {
   using namespace fuse_examples::lowfive_attach_model;
   ProcessPolicy server{PolicyKind::kShipped, ServeRole::kFirstServer, /*file_deleted_at_close=*/true};
@@ -1046,9 +987,9 @@ TEST(ModelCheck, FileDeletedAtCloseConfigurationGetsStuck) {
 // Sanity check on the flag itself: leaving it at its own default (false)
 // must reproduce the ordinary, already-passing shipped-protocol result
 // -- i.e. this field cannot have silently changed the nominal case.
-// REPLACES the RunSimulation()-based version of this test (same reason
-// as the Round8MeasuredOrder* replacements above).
-TEST(ModelCheck, Round8ShippedProtocolDefaultsToKeptAndStillCompletes) {
+// Uses the measured order (RunSimulation()'s own BuildScript() shape is
+// unrealistic for N>=2, as above).
+TEST(ModelCheck, ShippedProtocolDefaultsToKeptAndStillCompletes) {
   using namespace fuse_examples::lowfive_attach_model;
   ProcessPolicy server{PolicyKind::kShipped, ServeRole::kFirstServer};
   ProcessPolicy reader{PolicyKind::kShipped, ServeRole::kFirstReader};
@@ -1056,16 +997,15 @@ TEST(ModelCheck, Round8ShippedProtocolDefaultsToKeptAndStillCompletes) {
   EXPECT_FALSE(reader.file_deleted_at_close);
   EXPECT_TRUE(server.drop_after_serve);
   EXPECT_TRUE(reader.drop_after_serve);
-  const auto r = RunSimulationRound8(Round8Order::kMeasured, 2, server, reader);
+  const auto r = RunSimulationForOrder(ExchangeOrder::kMeasured, 2, server, reader);
   EXPECT_TRUE(r.completed) << (r.stuck_example ? *r.stuck_example : "");
 }
 
 // ---------------------------------------------------------------------
-// Round 6: WouldReuseStaleFileOnRecreate() -- the THIRD named
-// configuration ("keep=true without the drop"), reported as a stale-
-// data-reuse failure, NOT as a stuck/diverging search result: the
-// lead's own instruction names it as a DIFFERENT failure mode, and
-// this header's own doc comment on the function explains why no
+// WouldReuseStaleFileOnRecreate() -- the THIRD named configuration
+// ("keep=true without the drop"), reported as a stale-data-reuse failure,
+// NOT as a stuck/diverging search result: it is a DIFFERENT failure mode,
+// and this header's own doc comment on the function explains why no
 // interleaving search is needed or able to detect it (it is not a
 // blocking/liveness issue at all).
 
@@ -1092,8 +1032,7 @@ TEST(WouldReuseStaleFileOnRecreate, ShippedConfigurationNeverReusesAStaleFile) {
 }
 
 TEST(WouldReuseStaleFileOnRecreate, FileDeletedAtCloseHasNothingToReuseEither) {
-  // If the file was never kept at all (round 5's own actual
-  // misconfiguration), there is nothing left to reuse stale -- the two
+  // If the file was never kept at all, there is nothing left to reuse stale -- the two
   // failure modes are mutually exclusive, not compounding.
   using namespace fuse_examples::lowfive_attach_model;
   ProcessPolicy server{PolicyKind::kShipped, ServeRole::kFirstServer, /*file_deleted_at_close=*/true,
@@ -1103,10 +1042,9 @@ TEST(WouldReuseStaleFileOnRecreate, FileDeletedAtCloseHasNothingToReuseEither) {
 
 
 // ---------------------------------------------------------------------
-// Round 5 (diagnostic trace track): the three PURE functions the real
-// trace call sites (lowfive_attach.cpp/shim.cpp's own getenv()/
-// fprintf() calls, not testable here -- see this round's own report
-// for what is only measurable on a host) go through.
+// Diagnostic trace: the three PURE functions the real trace call sites
+// (lowfive_attach.cpp/shim.cpp's own getenv()/fprintf() calls, not
+// testable here; only measurable on a host) go through.
 
 TEST(ParseTraceEnabledEnv, ExactlyOneCharOneIsEnabled) {
   EXPECT_TRUE(ParseTraceEnabledEnv("1"));
@@ -1125,7 +1063,7 @@ TEST(ParseTraceEnabledEnv, ZeroIsDisabled) {
 }
 
 TEST(ParseTraceEnabledEnv, WordFormsAreDisabled) {
-  // The brief's own literal spec is "FUSE_LOWFIVE_ATTACH_TRACE=1" --
+  // The spec is "FUSE_LOWFIVE_ATTACH_TRACE=1" --
   // deliberately NOT a permissive grammar; "true"/"TRUE"/"yes"/"10"
   // must all be treated the same as unset, not guessed at.
   EXPECT_FALSE(ParseTraceEnabledEnv("true"));
@@ -1166,7 +1104,7 @@ TEST(FormatMemoryPatternsForTrace, TwoEntriesCommaSeparated) {
            "[(brusselator_u.h5, /grid/u_out), (brusselator_v.h5, /grid/v_out)]");
 }
 
-// ROUND 7: SplitDatasetGroupPath() tests. "/grid/u_out" is the exact
+// SplitDatasetGroupPath() tests. "/grid/u_out" is the exact
 // path both u_main.c's U_LOWFIVE_OWN_DATASET and v_main.f90's
 // kOwnDataset/kPeerDataset use.
 TEST(SplitDatasetGroupPath, NestedPathSplitsGroupAndLeaf) {
@@ -1205,7 +1143,7 @@ TEST(SplitDatasetGroupPath, MultiSegmentPathKeepsWholeGroupPrefix) {
 }
 
 // ---------------------------------------------------------------------
-// ROUND 8 (task 5): decide_serve_action() -- the policy itself.
+// decide_serve_action() -- the policy itself.
 
 TEST(DecideServeAction, FirstServerAlwaysServesNowRegardlessOfHistory) {
   EXPECT_EQ(decide_serve_action(ServeRole::kFirstServer, /*completed_any_read=*/false),
@@ -1222,13 +1160,10 @@ TEST(DecideServeAction, FirstReaderDefersOnlyBeforeAnyCompletedRead) {
 }
 
 // ---------------------------------------------------------------------
-// ROUND 8 (task 3b): ExpectedOrderForExchange() / CheckAndAdvanceOrder()
-// -- the LOCAL per-event assertion. Round 9 (task 2) renamed
-// ExpectedOrderForPeriod()/OrderTracker::period_index to
-// ExpectedOrderForExchange()/exchange_index -- the unit tracked is one
-// write-then-read (or read-then-write) pair, not a coupling window
-// (lowfive_attach_decision.hpp's own "ROUND 9" comment has the full
-// account); none of the test ASSERTIONS below changed, only the names.
+// ExpectedOrderForExchange() / CheckAndAdvanceOrder() -- the LOCAL
+// per-event assertion. The unit tracked is one write-then-read (or
+// read-then-write) pair (an exchange), not a coupling window
+// (lowfive_attach_decision.hpp's own comment has the account).
 
 TEST(ExpectedOrderForExchange, ColdStartIsWriteReadOnBothRoles) {
   EXPECT_EQ(ExpectedOrderForExchange(ServeRole::kFirstServer, 0)[0], ExpectedEventKind::kWrite);
@@ -1325,9 +1260,9 @@ TEST(CheckAndAdvanceOrder, FinalizeNeverChangesTheTracker) {
 }
 
 // ---------------------------------------------------------------------
-// ROUND 8 (task 3a): ComputeGraphOrderSignature() / CheckGraphOrderValidated() --
-// the STATIC check, one refusal test per property task 1 found (channel
-// writer/reader name, channel count, rank count).
+// ComputeGraphOrderSignature() / CheckGraphOrderValidated() -- the STATIC
+// check, one refusal test per property (channel writer/reader name,
+// channel count, rank count).
 
 namespace {
 std::vector<ChannelRoles> MeasuredChannels() {
@@ -1389,94 +1324,80 @@ TEST(CheckGraphOrderValidated, MultiRankComponentIsRefused) {
 }
 
 // ---------------------------------------------------------------------
-// ROUND 8 (task 4): the event-sequence-driven model check. Scenarios
+// The event-sequence-driven model check. Scenarios
 // (i)-(iv), each with its own assertion, plus the soundness link
 // (static_check_accepts(order) implies model_completes(order)).
 
-TEST(ModelCheck, Round8MeasuredOrderCompletesFor1And2And60And122And25Exchanges) {
-  // Scenario (i). 122 was round 9's own MEASURED exchange count for a
-  // `--periods 2` run on commit 7aec9c8 (BEFORE the owner's device-
-  // branch merge): 122 U writes total, i.e. ~61 exchanges per coupling
-  // window across 2 windows. Round 10 (task D) found the SAME row
-  // measures 25 writes (U and V both, symmetric) per rank on HEAD
-  // 0dc8c70, once the row COMPLETES (after both the device-branch
-  // merge and the Collectives track's own hang fix) -- a mid-fix
-  // measurement on b98777d, taken while the row still hung on an
-  // unrequested third period, saw an asymmetric 26 U writes/25 reads;
-  // that figure is superseded here by the completed-row 25, not kept
-  // as a separate scenario. The cause of the change from 122 to 25 is
-  // still NOT fully established (lowfive_attach_decision.hpp's own
-  // "ROUND 10" comment has the full account, including the
-  // Collectives track's own D57 findings). 122 is NOT this round's
-  // own real count and is labelled as 7aec9c8's own figure, not
-  // restated as current; 25 (HEAD's own completed-row figure) is
-  // added to the SAME loop, confirming the existing, N-generic
-  // machinery already covers it without any new scenario type --
-  // neither figure is a derived one (the Collectives track owns the
-  // Runner's own sweep-count machinery that would be needed to derive
-  // either). 60 remains ALSO covered as the pre-round-9 stress value
-  // (this row's own kMaxIterations, reused as an exchange count, not
-  // a claim it equals a Jacobi sweep count on either head).
+TEST(ModelCheck, MeasuredOrderCompletesFor1And2And60And122And25Exchanges) {
+  // Scenario (i). 25 is the measured per-rank write count (U and V both,
+  // symmetric) of a completed `--periods 2` run; 122 is an earlier
+  // measured figure (U writes of a `--periods 2` run) that is no longer
+  // the current count. Neither is derived here (that would need the
+  // Runner's own sweep-count machinery); the existing N-generic machinery
+  // covers both without any new scenario type
+  // (lowfive_attach_decision.hpp's own comment on the measured order has
+  // the account). 60 is ALSO covered as a stress value (this row's own
+  // kMaxIterations, reused as an exchange count, not a claim it equals a
+  // Jacobi sweep count).
   for (int n : {1, 2, 25, 60, 122}) {
-    const auto r = RunSimulationRound8(Round8Order::kMeasured, n,
+    const auto r = RunSimulationForOrder(ExchangeOrder::kMeasured, n,
                                        ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstServer},
                                        ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstReader});
     EXPECT_TRUE(r.completed) << "n=" << n << " " << (r.stuck_example ? *r.stuck_example : "");
   }
 }
 
-TEST(ModelCheck, Round8MeasuredOrderUnderRegressedPolicyReproducesTheMeasuredHang) {
+TEST(ModelCheck, MeasuredOrderUnderRegressedPolicyReproducesTheMeasuredHang) {
   // Scenario (ii) -- the DIRECT regression test for the host's own
   // measured 120 s timeout: the SAME order the real graph produces,
-  // but round 2/3's own falsified "always defer" policy instead of
+  // but a falsified "always defer" policy instead of
   // decide_serve_action(). Must get stuck, and the stuck position
   // must be U in read(v#1) (first-server's own kOpenClose at
   // exchange 1) with the first-reader parked at its own exchange-1
-  // sync -- exactly what the lead's own brief names as the measured
-  // cycle.
-  const auto r = RunSimulationRound8(
-      Round8Order::kMeasured, 2,
+  // sync -- exactly the measured cycle.
+  const auto r = RunSimulationForOrder(
+      ExchangeOrder::kMeasured, 2,
       ProcessPolicy{PolicyKind::kRegressedAlwaysDeferFirstReader, ServeRole::kFirstServer},
       ProcessPolicy{PolicyKind::kRegressedAlwaysDeferFirstReader, ServeRole::kFirstReader});
   EXPECT_FALSE(r.completed);
   ASSERT_TRUE(r.stuck_example.has_value());
 }
 
-TEST(ModelCheck, Round8BothSidesWriteReadSteadyGetsStuck) {
+TEST(ModelCheck, BothSidesWriteReadSteadyGetsStuck) {
   // Scenario (iii): both components happen to write-then-read in
   // steady state (a shape no real graph under the current channel-
-  // order mechanism can produce, task 1's own finding) -- the shipped
+  // order mechanism can produce) -- the shipped
   // policy, applied to this hypothetical shape, reports the
   // mutual-serve stuck state: both block on their OWN write's serve
   // at the SAME exchange, neither has reached the read that would
   // release the other.
-  const auto r = RunSimulationRound8(Round8Order::kBothWriteReadSteady, 3,
+  const auto r = RunSimulationForOrder(ExchangeOrder::kBothWriteReadSteady, 3,
                                      ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstServer},
                                      ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstReader});
   EXPECT_FALSE(r.completed);
   ASSERT_TRUE(r.stuck_example.has_value());
 }
 
-TEST(ModelCheck, Round8BothSidesReadWriteSteadyGetsStuck) {
+TEST(ModelCheck, BothSidesReadWriteSteadyGetsStuck) {
   // Scenario (iv): nobody writes first in steady state -- also a
   // shape no real graph produces; reported stuck (neither side's read
   // can find anything served yet).
-  const auto r = RunSimulationRound8(Round8Order::kBothReadWriteSteady, 3,
+  const auto r = RunSimulationForOrder(ExchangeOrder::kBothReadWriteSteady, 3,
                                      ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstServer},
                                      ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstReader});
   EXPECT_FALSE(r.completed);
   ASSERT_TRUE(r.stuck_example.has_value());
 }
 
-TEST(ModelCheck, Round8StaticCheckAcceptsImpliesModelCompletesForEveryCatalogueEntry) {
-  // The soundness link (task 4): the static check must never validate
+TEST(ModelCheck, StaticCheckAcceptsImpliesModelCompletesForEveryCatalogueEntry) {
+  // The soundness link: the static check must never validate
   // an order the model shows stuck. Checked against EVERY catalogue
   // entry, not only the one real graph -- static_check_accepts() is
   // false for the two strawman shapes, so the implication holds there
   // vacuously; it is TRUE (and must be matched by completion) only for
   // kMeasured.
-  for (Round8Order order :
-       {Round8Order::kMeasured, Round8Order::kBothWriteReadSteady, Round8Order::kBothReadWriteSteady}) {
+  for (ExchangeOrder order :
+       {ExchangeOrder::kMeasured, ExchangeOrder::kBothWriteReadSteady, ExchangeOrder::kBothReadWriteSteady}) {
     const bool accepts = static_check_accepts(order);
     const bool completes = model_completes(order, 3);
     EXPECT_TRUE(!accepts || completes)
@@ -1485,19 +1406,18 @@ TEST(ModelCheck, Round8StaticCheckAcceptsImpliesModelCompletesForEveryCatalogueE
   }
 }
 
-TEST(ModelCheck, Round8MeasuredOrderIsTheOnlyAcceptedCatalogueEntry) {
-  EXPECT_TRUE(static_check_accepts(Round8Order::kMeasured));
-  EXPECT_FALSE(static_check_accepts(Round8Order::kBothWriteReadSteady));
-  EXPECT_FALSE(static_check_accepts(Round8Order::kBothReadWriteSteady));
+TEST(ModelCheck, MeasuredOrderIsTheOnlyAcceptedCatalogueEntry) {
+  EXPECT_TRUE(static_check_accepts(ExchangeOrder::kMeasured));
+  EXPECT_FALSE(static_check_accepts(ExchangeOrder::kBothWriteReadSteady));
+  EXPECT_FALSE(static_check_accepts(ExchangeOrder::kBothReadWriteSteady));
 }
 
 // ---------------------------------------------------------------------
-// ROUND 8: BuildEventSequence() itself -- the per-component event
-// sequences are DATA now (task 4's own "a list of events"), pinned
-// directly.
+// BuildEventSequence() itself -- the per-component event sequences are
+// DATA (a list of events), pinned directly.
 
 TEST(BuildEventSequence, FirstServerIsWriteReadEveryExchangeIncludingColdStart) {
-  const auto seq = BuildEventSequence(Round8Order::kMeasured, ServeRole::kFirstServer, 3);
+  const auto seq = BuildEventSequence(ExchangeOrder::kMeasured, ServeRole::kFirstServer, 3);
   const std::vector<EventKind> expected{
       EventKind::kWrite, EventKind::kRead,                                // exchange 0 (cold start)
       EventKind::kWrite, EventKind::kRead, EventKind::kSync,              // exchange 1
@@ -1509,7 +1429,7 @@ TEST(BuildEventSequence, FirstServerIsWriteReadEveryExchangeIncludingColdStart) 
 }
 
 TEST(BuildEventSequence, FirstReaderIsWriteReadAtColdStartThenReadWriteSteady) {
-  const auto seq = BuildEventSequence(Round8Order::kMeasured, ServeRole::kFirstReader, 3);
+  const auto seq = BuildEventSequence(ExchangeOrder::kMeasured, ServeRole::kFirstReader, 3);
   const std::vector<EventKind> expected{
       EventKind::kWrite, EventKind::kRead,                                // exchange 0 (cold start)
       EventKind::kRead, EventKind::kWrite, EventKind::kSync,              // exchange 1 (steady)
@@ -1521,16 +1441,15 @@ TEST(BuildEventSequence, FirstReaderIsWriteReadAtColdStartThenReadWriteSteady) {
 }
 
 TEST(BuildEventSequence, ZeroExchangesIsEmpty) {
-  EXPECT_TRUE(BuildEventSequence(Round8Order::kMeasured, ServeRole::kFirstServer, 0).empty());
+  EXPECT_TRUE(BuildEventSequence(ExchangeOrder::kMeasured, ServeRole::kFirstServer, 0).empty());
 }
 
 // ---------------------------------------------------------------------
-// ROUND 9 (task 1): the coupler exit crash -- which teardown steps run
-// for which role, as a PURE function (decide_exit_hygiene_plan()), and
-// the literal env-route variable list (EnvRouteVolVariableNames())
-// coupler_main.c's own unsetenv() calls mirror by hand (this header's
-// own "ROUND 9, task 1" comment has the full crash trace, root cause,
-// and ranked-fix reasoning).
+// The coupler exit: which teardown steps run for which role, as a PURE
+// function (decide_exit_hygiene_plan()), and the literal env-route
+// variable list (EnvRouteVolVariableNames()) coupler_main.c's own
+// unsetenv() calls mirror by hand (the header's own comment has the
+// crash trace, root cause, and fix reasoning).
 
 TEST(EnvRouteVolVariableNames, ListsExactlyTheThreeEnvRouteVariables) {
   const auto names = EnvRouteVolVariableNames();
@@ -1553,32 +1472,31 @@ TEST(DecideExitHygienePlan, AttachingParticipantCallsExplicitH5closeAndDoesNotUn
 }
 
 
-// D14 Stage B (KNOWN_ISSUES.md), scope C: the accept-layout scenario --
-// lowfive_attach_model_check.hpp's own "RunSimulationAcceptLayout"
-// comment has the full account of why this reuses RunSimulationRound8's
+// The accept-layout scenario -- lowfive_attach_model_check.hpp's own
+// "RunSimulationAcceptLayout"
+// comment has the full account of why this reuses RunSimulationForOrder's
 // existing third-actor machinery under an explicit name, rather than a
 // new, duplicate actor type.
 TEST(ModelCheck, AcceptLayoutPlaceholderJoiningCompletesLikeTheCouplerScenario) {
   for (int n : {1, 2, 25}) {
     const auto r = fuse_examples::lowfive_attach_model::RunSimulationAcceptLayout(
-        Round8Order::kMeasured, n, ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstServer},
+        ExchangeOrder::kMeasured, n, ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstServer},
         ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstReader},
         /*third_actor_joins=*/true);
     EXPECT_TRUE(r.completed) << "n=" << n << " " << (r.stuck_example ? *r.stuck_example : "");
   }
 }
 
-// The known-bad placement scope C also asks for: a real third actor
-// (the bundled coupler/placeholder rank) that EXISTS but never joins
-// the collective at all -- the exact bug the companion fix (decision 3)
-// closes. This is the model-level mirror of
+// The known-bad placement: a real third actor (the bundled
+// coupler/placeholder rank) that EXISTS but never joins the collective at
+// all. This is the model-level mirror of
 // test/verification/brusselator_lowfive_attach_test.cpp's own
 // BundledPlaceholderRankSeesNoChannelAtAll (CollectChannelsForRank)
 // test: here it is the SYNC collective, not channel membership, that
 // is missing a participant.
 TEST(ModelCheck, AcceptLayoutPlaceholderNeverJoiningGetsStuck) {
   const auto r = fuse_examples::lowfive_attach_model::RunSimulationAcceptLayout(
-      Round8Order::kMeasured, /*n_exchanges=*/2,
+      ExchangeOrder::kMeasured, /*n_exchanges=*/2,
       ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstServer},
       ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstReader},
       /*third_actor_joins=*/false);
@@ -1589,12 +1507,11 @@ TEST(ModelCheck, AcceptLayoutPlaceholderNeverJoiningGetsStuck) {
 // n_exchanges=1 never reaches a kSyncBarrier at all (BuildEventSequence()
 // 's own cold-start-only shape for n<=1) -- the third actor's own
 // non-participation therefore has nothing to get stuck ON, a boundary
-// this track's own standing rule ("do not write a test that cannot
-// fail") asks to be stated explicitly rather than silently merged into
-// the n=2 case above.
+// stated explicitly (a test that cannot fail is not written) rather than
+// silently merged into the n=2 case above.
 TEST(ModelCheck, AcceptLayoutPlaceholderNeverJoiningStillCompletesAtOneExchange) {
   const auto r = fuse_examples::lowfive_attach_model::RunSimulationAcceptLayout(
-      Round8Order::kMeasured, /*n_exchanges=*/1,
+      ExchangeOrder::kMeasured, /*n_exchanges=*/1,
       ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstServer},
       ProcessPolicy{PolicyKind::kShipped, ServeRole::kFirstReader},
       /*third_actor_joins=*/false);

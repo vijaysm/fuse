@@ -1,6 +1,6 @@
-! Time windows track (Conformance, Unit 2): the Fortran participant for
-! component "V". PURE FORTRAN -- no C, no C++, anywhere in this file (the
-! lead's own constraint: "a foreign code never touches C++"). Uses ffuse
+! The Fortran participant for
+! component "V". PURE FORTRAN -- no C, no C++, anywhere in this file
+! (a foreign code never touches C++). Uses ffuse
 ! (fortran/ffuse.f90, generated from the same include/fuse/abi/entries.def
 ! the C header is) and v_loop_mod (v_loop.f90 -- the SAME v_loop_step the
 ! tier-0 harness, test/verification/brusselator_participants_test.cpp,
@@ -8,7 +8,7 @@
 ! v_loop_mod's own `bruss_v_*` interfaces onto shim.cpp's C-ABI physics
 ! wrapper.
 !
-! GRAPH AUTHORING vs PARTICIPATING (Q2): this program never builds a
+! GRAPH AUTHORING vs PARTICIPATING: this program never builds a
 ! fuse::CouplingGraph -- it calls fuse_load_graph() on a YAML path a
 ! SEPARATE tool, brusselator_graph_tool, already wrote, and nothing else
 ! constructs the graph.
@@ -23,8 +23,8 @@
 ! and fuse_setup_options::my_component's own comment in entries.def, have
 ! the full account).
 !
-! UNLIKE u_main.c, this program never bundles coupler ranks: Q1's ruling
-! bundles the coupler only into the ACCEPTOR side (U's executable); V's
+! UNLIKE u_main.c, this program never bundles coupler ranks: the coupler
+! is bundled only into the ACCEPTOR side (U's executable); V's
 ! own executable is always "pure V", in both mpmd and accept layouts
 ! (brusselator_graph_tool.cpp's own header comment has the layout
 ! rationale). So every rank of this program's own MPI_COMM_WORLD is a
@@ -61,7 +61,7 @@ program v_main
 
   character(len=512) :: graph_path, log_path, arg
   character(len=16) :: transport
-  ! Physics track: --ranks-u is the OFFSET into this program's own
+  ! --ranks-u is the OFFSET into this program's own
   ! MPI_COMM_WORLD at which V's own block starts (0 in accept mode,
   ! where this executable's local world contains only V's own ranks;
   ! the real ranks_u in mpmd mode, where MPI_COMM_WORLD is the SHARED
@@ -70,13 +70,13 @@ program v_main
   ! --ranks-v is V's own component size, -1 (the default) meaning
   ! "world_size - ranks_u", correct whenever V's own block is the LAST
   ! one in this program's own world (accept mode always; mpmd mode only
-  ! when there is no bundled-coupler segment AFTER V, which is this
-  ! track's own layout -- brusselator_graph_tool.cpp's component order
+  ! when there is no bundled-coupler segment AFTER V --
+  ! brusselator_graph_tool.cpp's component order
   ! is U, V, coupler, so an mpmd run genuinely needs ranks_v passed
   ! explicitly whenever ranks_coupler > 0, which test/parallel/
-  ! brusselator_participants/run_participants.sh now does). Halo track:
-  ! v_size (handed to bruss_v_create below) now comes from the REAL
-  ! `v_comm` (the color-1 split, below), not purely from these flags --
+  ! brusselator_participants/run_participants.sh does). v_size
+  ! (handed to bruss_v_create below) comes from the REAL
+  ! `v_comm` (the color-1 split, below), not from these flags --
   ! `ranks_u_offset`/`ranks_v_declared` are kept only as a CROSS-CHECK
   ! against it (a disagreement aborts loudly) and for the diagnostic
   ! message if `bruss_v_create` itself refuses. --solver mirrors
@@ -105,7 +105,7 @@ program v_main
   integer(c_int) :: io_rc
   character(len=2048), target :: errbuf
 
-  ! S6 phase 3 (Conformance, "LowFive" track), Unit 3b. Mirrors u_main.c's
+  ! Mirrors u_main.c's
   ! own hardcoded hdf5_path/window constants (that file's own header
   ! comment has the full rationale: no ABI query exists for a field's own
   ! hdf5_path, or for the graph's own window length, so both participant
@@ -120,7 +120,7 @@ program v_main
   ! assigned once, just below, and never changed again.
   character(len=17), target :: kOwnFile, kPeerFile
   character(len=12), target :: kOwnDataset, kPeerDataset
-  ! ROUND 5 (diagnostic trace track): the two `which` labels bruss_
+  ! The two `which` labels bruss_
   ! lowfive_trace_skip() prints, one per call site below -- same
   ! c_loc()-needs-a-target reasoning as kOwnFile/kOwnDataset above, not
   ! because the TEXT varies, only because c_loc() needs an addressable
@@ -128,18 +128,18 @@ program v_main
   character(len=25), target :: kTraceWhichWriteExport
   character(len=24), target :: kTraceWhichReadImport
 
-  ! S6 phase 3 (Conformance, "LowFive attach" track): the file-access
+  ! The file-access
   ! property list bruss_lowfive_attach() hands back, set once below
-  ! (right after MPI_Init()/the physics-communicator split) and read by
+  ! (after fuse_setup() succeeds) and read by
   ! v_lowfive_write_export()/v_lowfive_read_import() on every call
-  ! thereafter -- shim.h's own updated contract (-1 means "not attached
+  ! thereafter -- shim.h's own contract (-1 means "not attached
   ! yet", refused by bruss_lowfive_write()/bruss_lowfive_read()
   ! themselves). graph_path_cstr is graph_path NUL-terminated for the
   ! bind(C) call, the same c_loc()-of-a-target-buffer convention
   ! kOwnFile/kPeerFile/solver_cstr already use just above.
   integer(c_long_long) :: fapl_id
   character(len=513), target :: graph_path_cstr
-  ! D14 Stage B (KNOWN_ISSUES.md): the bridge base_communicator() (ffuse,
+  ! The bridge base_communicator() (ffuse,
   ! generated) reports for this context, and the local communicator
   ! bruss_lowfive_join_local_split()'s own fresh split of it produces --
   ! see this program's own post-setup block below for the full account.
@@ -174,7 +174,7 @@ program v_main
       integer(c_int) :: rc
     end function bruss_lowfive_read
 
-    ! D14 Stage B (KNOWN_ISSUES.md): the collective EVERY rank of the
+    ! The collective EVERY rank of the
     ! bridge must join -- lowfive_attach.h's own header comment on this
     ! function has the full account. `local_comm_f_out` is `intent(out)`
     ! on the C side, spelled the same by-reference way fapl_id_out
@@ -188,15 +188,15 @@ program v_main
       integer(c_int) :: rc
     end function bruss_lowfive_join_local_split
 
-    ! S6 phase 3 (Conformance, "LowFive attach" track): programmatic VOL
+    ! Programmatic VOL
     ! attach, once per process -- lowfive_attach.h's own header comment
     ! has the full account. `fapl_id_out` is `intent(out)` on the C side
     ! (a `long long*`), which Fortran's own bind(C) spells as a by-
     ! reference INTEGER argument (no `value`), identical to how ffuse's
-    ! own generated interfaces already pass an ABI out-parameter. D14
-    ! Stage B: `bridge_comm_f`/`local_comm_f` replace the single
-    ! `physics_comm_f` this interface used to take -- never called by a
-    ! rank with nothing to attach now (the companion fix); see this
+    ! own generated interfaces already pass an ABI out-parameter.
+    ! `bridge_comm_f`/`local_comm_f` are the bridge and local
+    ! communicators -- never called by a
+    ! rank with nothing to attach; see this
     ! program's own call site below for why.
     function bruss_lowfive_attach(graph_path, bridge_comm_f, local_comm_f, fapl_id_out, &
         errbuf, errbuf_len) result(rc) bind(C, name="bruss_lowfive_attach")
@@ -207,7 +207,7 @@ program v_main
       integer(c_int) :: rc
     end function bruss_lowfive_attach
 
-    ! Round 2 ("role-ordered serve"), new in this track: called
+    ! Called
     ! unconditionally at the very end of this program (lowfive_attach.h's
     ! own header comment has the full account of what this catches --
     ! harmless no-op when LowFive was never attached in this process).
@@ -219,7 +219,7 @@ program v_main
       integer(c_int) :: rc
     end function bruss_lowfive_finalize
 
-    ! ROUND 5 (diagnostic trace track), item 3 of the brief: a no-op
+    ! A no-op
     ! unless FUSE_LOWFIVE_ATTACH_TRACE=1 -- lowfive_attach.h's own doc
     ! comment has the full account. A SUBROUTINE (void return), unlike
     ! every other interface above, because this is purely a diagnostic
@@ -307,36 +307,35 @@ program v_main
   call MPI_Comm_rank(MPI_COMM_WORLD, world_rank, ierr)
   call MPI_Comm_size(MPI_COMM_WORLD, world_size, ierr)
 
-  ! Physics track: COLLECTIVE over MPI_COMM_WORLD, matching u_main.c's
+  ! COLLECTIVE over MPI_COMM_WORLD, matching u_main.c's
   ! own MPI_Comm_split and coupler_main.c's own -- in mpmd mode
   ! MPI_COMM_WORLD is the SHARED world every ':'-segment's ranks (U, V,
   ! the coupler) number into, so each program's own split is a
   ! collective over ALL of them, not just its own ranks; a rank that
   ! never called a matching split would strand the other two programs'
-  ! own ranks inside theirs (this track's own standing lesson: a
+  ! own ranks inside theirs (a
   ! collective must never be skipped).
   !
   ! COLOR = COMPONENT INDEX (U 0, V 1, coupler 2), key = world rank --
-  ! replacing the earlier "V calls MPI_UNDEFINED to opt out of U's own
-  ! split" form with ONE uniform call shape every program makes, each
+  ! ONE uniform call shape every program makes (not "V calls
+  ! MPI_UNDEFINED to opt out of U's own split"), each
   ! naming its own fixed color (u_main.c's and coupler_main.c's own
-  ! comments on their own identical-shaped calls have the full account,
-  ! including the choreography mismatch this exact collective caused on
-  ! the host once already when the three programs entered it in
-  ! different orders). UNLIKE the old MPI_UNDEFINED form, this result IS
-  ! used now: `v_comm` is V's own real physics-only communicator,
+  ! comments on their own identical-shaped calls have the full account;
+  ! the three programs entering this collective in different orders
+  ! mismatches it on the host). The result IS
+  ! used: `v_comm` is V's own real physics-only communicator,
   ! handed to `bruss_v_create` below as `comm_f` so a decomposed V's own
   ! `NativeMeshBackend::set_communicator` has something real to adopt.
   ! In accept mode this program's own MPI_COMM_WORLD contains only V's
-  ! own ranks (Q1's ruling, this file's own header comment), so `v_comm`
+  ! own ranks (this file's own header comment), so `v_comm`
   ! there is isomorphic to MPI_COMM_WORLD itself -- a harmless, correct
   ! no-op split, not a special case.
   call MPI_Comm_split(MPI_COMM_WORLD, 1, world_rank, v_comm, ierr)
   call MPI_Comm_rank(v_comm, v_rank, ierr)
   call MPI_Comm_size(v_comm, v_size, ierr)
 
-  ! D14 Stage B: fapl_id's own "not attached yet" default -- the real
-  ! attach call moves to AFTER fuse_setup() succeeds, below (decision 5).
+  ! fapl_id's own "not attached yet" default -- the real
+  ! attach call comes AFTER fuse_setup() succeeds, below.
   fapl_id = -1_c_long_long
 
   ! Cross-check against --ranks-u/--ranks-v (above): the two mechanisms
@@ -370,7 +369,7 @@ program v_main
   ! from the loaded graph and connects accordingly.
   my_component_name = "V" // c_null_char
   setup%communicator = int(MPI_COMM_WORLD, c_int64_t)
-  ! KNOWN_ISSUES.md D76: MPI_COMM_WORLD's own Fortran handle is 0 under
+  ! MPI_COMM_WORLD's own Fortran handle is 0 under
   ! Open MPI, which this struct's older sentinel read as "no communicator"
   ! -- set has_communicator so fuse_setup() knows 0 really is this
   ! process's own world, not an absent one.
@@ -379,29 +378,26 @@ program v_main
   status = fuse_setup(ctx, setup, nothing)
   call check(status, "setup")
 
-  ! D14 Stage B (KNOWN_ISSUES.md), decision 5: the attach call moves
+  ! The attach call comes
   ! HERE, after fuse_setup() succeeds, uniformly for mpmd and accept (not
   ! mode-conditional) -- base_communicator() (ffuse, generated) has
   ! nothing to report before setup()'s own collective has run. Cold-start
   ! priming (this program's own first write-then-read, after
-  ! bruss_v_create() below) is UNAFFECTED: it already runs after this
-  ! point in program order, so moving the attach call earlier in this
-  ! same post-setup region changes nothing about when priming happens,
-  ! only when the VOL registration it depends on does -- strictly
-  ! before, same as before.
+  ! bruss_v_create() below) runs after this point in program order,
+  ! strictly after the VOL registration it depends on.
   !
-  ! is_mpmd_launch, decision 5's own ruling: mpmd keeps MPI_COMM_WORLD
+  ! is_mpmd_launch: mpmd uses MPI_COMM_WORLD
   ! literally for the bridge (connect_mpmd() merely dups it -- congruent,
   ! same rank for same process, by construction, but not the SAME
-  ! communicator object, and this track found no way to show the two are
+  ! communicator object, and nothing shows the two are
   ! interchangeable for MPI_Intercomm_create's own peer_comm argument
-  ! without a host measurement this sandbox cannot make; the mpmd row
-  ! already PASSES on the host with MPI_COMM_WORLD, so nothing here risks
-  ! that regression for zero measured benefit). ranks_u_offset is 0 in
+  ! without a host measurement; the mpmd row
+  ! passes on the host with MPI_COMM_WORLD, so nothing here risks
+  ! a regression for zero measured benefit). ranks_u_offset is 0 in
   ! accept mode (this program's own header comment on it, above) and > 0
-  ! in mpmd mode (the real U rank count, always >= 1) -- the ONE existing
-  ! CLI signal this program already carries for which launch mode this
-  ! is, unchanged by argument parsing between there and here.
+  ! in mpmd mode (the real U rank count, always >= 1) -- the ONE
+  ! CLI signal this program carries for which launch mode this
+  ! is.
   is_mpmd_launch = (ranks_u_offset > 0)
   if (is_mpmd_launch) then
     bridge_comm_f = int(MPI_COMM_WORLD, c_long_long)
@@ -423,9 +419,9 @@ program v_main
     bridge_comm_f = bci%communicator
   end if
 
-  ! D14 Stage B, decision 3 (the companion fix's own mirror image): V's
-  ! own executable has no bundled placeholder rank at all (Q1's ruling,
-  ! this file's own header comment) -- every rank of it is real
+  ! V's
+  ! own executable has no bundled placeholder rank at all
+  ! (this file's own header comment) -- every rank of it is real
   ! V-physics -- but it still calls bruss_lowfive_join_local_split()
   ! unconditionally, the same collective every rank of the bridge must
   ! join (lowfive_attach.h's own header comment on that function has the
@@ -458,13 +454,12 @@ program v_main
   ! Both of V's window-transfer fields live on U's own grid
   ! (species_component.hpp's file header explains why; brusselator_graph.hpp
   ! mirrors it) -- and on THIS rank's band of it. The Runner sizes every
-  ! field of a placement by the placement's own decomposition (D24), so a
+  ! field of a placement by the placement's own decomposition, so a
   ! V on two ranks owns half of U's 16x16 grid per rank, 128 cells, exactly
-  ! as u_main.c sizes its own storage with bruss_owned_size. The first
-  ! 5-rank host run (2026-10-10) registered the whole grid here and was
-  ! refused: "registered 256 values for its export, but the plan sizes that
-  ! field at 128 on this rank" (E-RT-SIZE, the window member's size check).
-  ! On one rank this is nx_u*ny_u, as before.
+  ! as u_main.c sizes its own storage with bruss_owned_size. Registering
+  ! the whole grid here would be refused: "registered 256 values for its
+  ! export, but the plan sizes that field at 128 on this rank" (E-RT-SIZE,
+  ! the window member's size check). On one rank this is nx_u*ny_u.
   nu = bruss_owned_size(nx_u, ny_u, v_rank, v_size)
   allocate(v_out(nu), v_in(nu))
   v_out = 0.0d0
@@ -569,8 +564,8 @@ program v_main
       ! read F if consuming it, then begin_step() again -- never
       ! elsewhere, and never both unconditionally (a graph with more
       ! than one independently-paced LowFive-bound channel can report a
-      ! field THIS component is neither producing nor consuming at all,
-      ! this round's own corrected rule). fuse_view_field(v_out_ref),
+      ! field THIS component is neither producing nor consuming at all).
+      ! fuse_view_field(v_out_ref),
       ! not v_out itself, still holds the sweep that JUST completed
       ! (nothing has overwritten it yet, since this call's own physics
       ! -- if any ran -- is for the NEXT sweep, not this report's).
@@ -597,7 +592,7 @@ program v_main
   status = fuse_destroy(ctx, nothing, nothing)
   call check(status, "destroy")
 
-  ! Round 2 ("role-ordered serve"), new in this track: called
+  ! Called
   ! unconditionally (harmless no-op when !use_lowfive or the attach was
   ! never reached) after this process's own last v_lowfive_write_export/
   ! v_lowfive_read_import call and before tearing down MPI --
@@ -622,8 +617,7 @@ contains
     integer(c_int32_t) :: detail_status
     if (status_in /= FUSE_OK) then
       ! The status alone names a class (-4 is FUSE_ERR_RUNTIME, "an exception
-      ! was contained at the boundary"), not the cause. The first 5-rank host
-      ! run (2026-10-10) printed exactly that and nothing else from V, so
+      ! was contained at the boundary"), not the cause, so
       ! the library's own message is read back the way u_main.c's fail()
       ! does with t->last_error. The context may be unset when `what` is
       ! "create"; then there is no message to read and the status stands.
@@ -671,9 +665,9 @@ contains
         call MPI_Abort(MPI_COMM_WORLD, 1, ierr)
       end if
     else
-      ! ROUND 5 (diagnostic trace track), item 3: u_main.c's own
+      ! Skip-guard trace: u_main.c's own
       ! u_lowfive_write_export() mirrors this with the identical guard
-      ! and the identical call, settling H1 for V's own write side too.
+      ! and the identical call.
       call bruss_lowfive_trace_skip(c_loc(kTraceWhichWriteExport), &
           int(view%window_samples, c_long_long), int(view%count, c_long_long), &
           int(view%components, c_long_long))
@@ -682,7 +676,7 @@ contains
 
   ! fuse_view_field(v_in_ref), NOT v_in itself -- the window Sink copies
   ! from there into v_in as part of the SAME mechanics it already uses
-  ! for an ordinary channel (docs/user/lowfive.md's own Unit 3 account).
+  ! for an ordinary channel (see docs/user/lowfive.md).
   subroutine v_lowfive_read_import()
     status = fuse_view_field(ctx, v_in_ref, view)
     call check(status, "view_field(v_in)")
@@ -695,7 +689,7 @@ contains
         call MPI_Abort(MPI_COMM_WORLD, 1, ierr)
       end if
     else
-      ! ROUND 5 (diagnostic trace track), item 3: the READ side's own
+      ! Skip-guard trace: the READ side's own
       ! counterpart, same reasoning as v_lowfive_write_export()'s own
       ! else branch above.
       call bruss_lowfive_trace_skip(c_loc(kTraceWhichReadImport), &

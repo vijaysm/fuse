@@ -1,5 +1,4 @@
-// KNOWN_ISSUES.md D15 ("Registry agreement" track, owner decision
-// 2026-10-22). Tier-0, MPI-free tests of the pure graph-shape predicate
+// Tier-0, MPI-free tests of the pure graph-shape predicate
 // src/abi/participant.cpp's impl_initialize_local() consults a priori,
 // before any Plugin-mount work runs -- include/fuse/abi/plugin_agreement.
 // hpp's own header comment has the full account of why this check cannot
@@ -117,8 +116,8 @@ TEST(PluginMountAgreementNeedsAMissingSpanningCommunicator,
       g, std::nullopt, /*communicator_set=*/true));
 }
 
-// Plugin alone (today's working, already-fixed shape, "Registry hosting"
-// track) -- never refused, regardless of my_component.
+// Plugin alone (the working shape) -- never refused, regardless of
+// my_component.
 TEST(PluginMountAgreementNeedsAMissingSpanningCommunicator,
     DoesNotRefusePluginAlone) {
   const fuse::CouplingGraph g = build_graph_with_modes({fuse::LaunchMode::Plugin});

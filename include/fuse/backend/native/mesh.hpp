@@ -37,26 +37,27 @@
 /// closed set of instantiations, which `native_view.hpp` provides for the
 /// pairs that physically occur.
 ///
-/// THE MEMORY SPACE (REVIEW.md R-03). `Mesh` also takes a `MemorySpace`
+/// THE MEMORY SPACE. `Mesh` also takes a `MemorySpace`
 /// template parameter, defaulting to `Kokkos::DefaultExecutionSpace::
-/// memory_space`. Earlier, the views had no explicit space, so on a build
-/// whose default execution space has discrete device memory (CUDA without
-/// UVM, HIP, SYCL) they allocated there -- and `finalize()`'s host-side
-/// assembly loop, which rejects via `Result<void>`/`std::string` and cannot
-/// run on a device, dereferenced them directly: an illegal host access to
-/// device memory, undefined behaviour, not caught at compile time. Now:
+/// memory_space`. Views with no explicit space would allocate in the
+/// default execution space's memory on a build where that is discrete
+/// device memory (CUDA without UVM, HIP, SYCL), and `finalize()`'s
+/// host-side assembly loop, which rejects via `Result<void>`/`std::string`
+/// and cannot run on a device, would dereference them directly: an illegal
+/// host access to device memory, undefined behaviour, not caught at
+/// compile time. So:
 ///
 ///   * The views are `Kokkos::View<..., MemorySpace>`, so a caller that
 ///     wants everything on the host (every caller in this codebase today,
 ///     since the build's default execution space is OpenMP/Serial and
-///     therefore host-accessible) gets exactly the type it had before.
+///     therefore host-accessible) gets plain host-accessible views.
 ///   * `finalize()` assembles through `Kokkos::create_mirror_view` --
 ///     a no-op alias of the same view when `MemorySpace` is already
 ///     host-accessible, and an explicit host allocation plus `deep_copy`
 ///     otherwise -- so the rejection logic always runs on host memory it can
 ///     legally touch, regardless of where the views actually live.
 ///   * `measure()`, `centroid()` and `normal()` are `KOKKOS_INLINE_FUNCTION`
-///     (R-14 below), so a kernel that built a device-resident `Mesh` can
+///     (see below), so a kernel that built a device-resident `Mesh` can
 ///     read them from inside a `Kokkos::parallel_for`.
 ///
 /// THREE DEPARTURES FROM THE REFERENCE MODEL.
@@ -82,7 +83,7 @@
 ///     Kokkos threads call it, and the whole point of this layer is to be used
 ///     from parallel kernels. They are computed in one pass by `finalize()`
 ///     and are read-only thereafter -- `measure()` and `centroid()` read the
-///     precomputed value; `normal()` (R-14) recomputes from the vertices on
+///     precomputed value; `normal()` recomputes from the vertices on
 ///     every call, which is cheap enough (one cross product) that caching it
 ///     would cost more in storage than it saves in arithmetic, and it keeps
 ///     `finalize()` free of the `kCodimension == 1` branch `normal()` alone
@@ -170,7 +171,7 @@ class Mesh {
   /// vertex would otherwise read arbitrary memory and produce a measure that
   /// looks like a number.
   ///
-  /// REVIEW.md R-03: this is host-only code by necessity -- `Result<void>`,
+  /// This is host-only code by necessity -- `Result<void>`,
   /// `Failure` and `std::to_string` are not device-callable -- so it works
   /// through `Kokkos::create_mirror_view` rather than `points_`/`cells_`/
   /// `parent_` directly. When `MemorySpace` is host-accessible (every
@@ -242,7 +243,7 @@ class Mesh {
   /// according to the MANIFOLD dimension, never the spatial one. A triangle in
   /// 3D has an area, and that is what this returns.
   ///
-  /// REVIEW.md R-14: `KOKKOS_INLINE_FUNCTION`, so a kernel can read a
+  /// `KOKKOS_INLINE_FUNCTION`, so a kernel can read a
   /// precomputed measure without leaving the device. The `finalized_` check
   /// is `FUSE_DEBUG_ASSERT`, not `FUSE_ASSERT` -- the latter formats a
   /// string and throws, neither of which is device-callable -- per
@@ -255,7 +256,7 @@ class Mesh {
   }
 
   /// Component `k` of the centroid of simplex `c`. See `measure()` for the
-  /// `KOKKOS_INLINE_FUNCTION`/`FUSE_DEBUG_ASSERT` rationale (R-14).
+  /// `KOKKOS_INLINE_FUNCTION`/`FUSE_DEBUG_ASSERT` rationale.
   [[nodiscard]] KOKKOS_INLINE_FUNCTION double centroid(std::size_t c,
                                                        int k) const {
     FUSE_DEBUG_ASSERT(finalized_);
@@ -268,7 +269,7 @@ class Mesh {
   /// does not compile, which is the intent: "the normal of a tetrahedron" has
   /// no answer, and a runtime rejection would be a worse way to learn that.
   ///
-  /// REVIEW.md R-14: `KOKKOS_INLINE_FUNCTION`, and degeneracy is
+  /// `KOKKOS_INLINE_FUNCTION`, and degeneracy is
   /// `FUSE_DEBUG_ASSERT`, not `FUSE_ASSERT` -- see `measure()`. The
   /// non-degenerate case was already checked once, when this simplex's
   /// measure was computed in `finalize()`, so this is a cheap redundant
@@ -317,7 +318,7 @@ class Mesh {
   /// reduces to |det|/M!, and for a surface or curve it gives the area or
   /// length rather than zero, which a naive determinant would.
   ///
-  /// REVIEW.md R-03: templated on the point/cell view types, rather than
+  /// Templated on the point/cell view types, rather than
   /// reading `points_`/`cells_` directly, because `finalize()` calls this on
   /// its HOST MIRRORS (which may or may not be `points_`/`cells_`
   /// themselves, depending on whether `MemorySpace` is host-accessible).

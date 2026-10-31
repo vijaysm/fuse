@@ -1,6 +1,6 @@
-/// S7.2's own graph-level wiring test: "the declaration sets
+/// The graph-level wiring test: "the declaration sets
 /// requires_residual_capability (and linearization when a block
-/// preconditioner is requested)" (this track's own plan step 2), proved
+/// preconditioner is requested)", proved
 /// through the SAME `verify_iteration_region()` entry point
 /// `Runner::Impl::resolve_regions()` calls at `initialize()`
 /// (src/runtime/iteration.cpp), fed the ACTUAL
@@ -9,7 +9,7 @@
 /// `IterationBuilder::newton()`/`::accelerate()` produced -- never a
 /// hand-set bool standing in for what the builder is supposed to do. Same
 /// two-way fixture and `Stub`/`has_code` idioms as
-/// test/model/newton_capability_test.cpp (S7.1's own test, which fixed the
+/// test/model/newton_capability_test.cpp (which fixes the
 /// two booleans directly); duplicated locally for the same reason that
 /// file states its own duplication: neither file exports them.
 #include <gtest/gtest.h>
@@ -167,7 +167,7 @@ TEST(NewtonRegion, SelectingAnyOtherKindLeavesBothCapabilityFlagsUntouched) {
 }
 
 TEST(NewtonRegion, ExplicitRequiresResidualSetterWorksIndependentlyOfNewton) {
-  // S7.1's own fluent setters, added by this track: a region can ask for
+  // The fluent setters: a region can ask for
   // the residual capability WITHOUT selecting Newton at all.
   CouplingGraph g = iterated_two_way_graph();
   fuse::IterationBuilder(g, fuse::IterationRegionIdx{0}).requires_residual(true);
@@ -252,8 +252,8 @@ TEST(NewtonRegion, GraphLevelNewtonWithBlockJacobiRefusesAComponentLackingLinear
 // affine Dirichlet-Neumann pair by Newton (run_region_newton(),
 // src/runtime/iteration.cpp), rather than hand-feeding
 // verify_iteration_region() the capability flags a builder call produced.
-// Same fixture shape as test/runtime/fixed_point_residual_test.cpp (S7.1's
-// own test of the F = x - G(x) seam this wiring drives): that file's own
+// Same fixture shape as test/runtime/fixed_point_residual_test.cpp (the
+// test of the F = x - G(x) seam this wiring drives): that file's own
 // header comment derives the affine closed form and the per-station 2x2
 // Jacobian {{1, r_i}, {-1, 1}} this section's own test relies on.
 // ---------------------------------------------------------------------------
@@ -270,7 +270,7 @@ constexpr std::size_t kNewtonN = dn::kStrips;
 /// src/runtime/fixed_point_residual.cpp) -- which kills
 /// build-evidence/mutations/runtime.toml's
 /// newton-region-eager-validation-skipped now that the window-scoped
-/// refusal it used to kill through has been lifted (S7.2 WindowNewton).
+/// refusal it used to kill through no longer applies.
 class ExternallyDrivenNeumann final : public fuse::Component {
  public:
   explicit ExternallyDrivenNeumann(std::unique_ptr<dn::NeumannSlab> inner)
@@ -309,8 +309,8 @@ struct NewtonDnHeatFixture {
   /// `Runner` here and then calls `initialize()` AFTER the fixture has
   /// been returned (and, with it, `graph` and every other member
   /// POSSIBLY relocated by the return's own move) risks the Runner's own
-  /// reference outliving the object it was taken from. Measured directly
-  /// (2026-10-10): calling `initialize()` from the test body instead of
+  /// reference outliving the object it was taken from. Measured directly:
+  /// calling `initialize()` from the test body instead of
   /// from here failed with E-RT-UNBOUND ("does not resolve to a field")
   /// on a graph that is otherwise identical byte for byte.
   fuse::Result<void> init = fuse::Result<void>::success();
@@ -420,25 +420,23 @@ NewtonDnHeatFixture make_newton_setup(
 
 }  // namespace
 
-// MEASURED (2026-10-10, this test, trace printed by hand and removed once
-// read): with SNES's own default Eisenstat-Walker forcing (eta_0 = 0.3,
-// choice 2 thereafter), this affine F converges in THREE Newton steps,
-// not one -- eta_0 = 0.3 deliberately stops the FIRST linear solve at 30%
-// relative accuracy (GMRES took 2 of a possible many iterations), so the
-// first Newton direction is not the exact affine root even though F's own
-// Jacobian is exact; the SECOND step's eta (computed from the observed
-// residual RATIO, (68.77/765.78)^2 * 0.9 ~= 0.0073) is tight enough that
-// the THIRD step's own eta rounds to 0 (an exact solve) and the iteration
-// converges at that point. This is textbook inexact-Newton behaviour, not
-// a defect: trading a cheap, loose early linear solve against needing one
-// or two more nonlinear steps overall is exactly what Eisenstat-Walker
-// forcing is FOR (eisenstat_walker_eta()'s own citation, newton_krylov.
-// hpp). This track's brief named "Newton converges in ONE Newton step"
-// for the affine map as its own assumption; the measurement here
-// corrects it, recorded as an open question in this track's own report
-// (a NewtonConfig with a tighter/near-zero constant forcing term WOULD
-// converge in one step, at the cost of more GMRES work on that one step
-// -- not this track's own default, and not measured here).
+// MEASURED (trace printed by hand and removed once read): with SNES's own
+// default Eisenstat-Walker forcing (eta_0 = 0.3, choice 2 thereafter), this
+// affine F converges in THREE Newton steps, not one -- eta_0 = 0.3
+// deliberately stops the FIRST linear solve at 30% relative accuracy (GMRES
+// took 2 of a possible many iterations), so the first Newton direction is not
+// the exact affine root even though F's own Jacobian is exact; the SECOND
+// step's eta (computed from the observed residual RATIO, (68.77/765.78)^2 *
+// 0.9 ~= 0.0073) is tight enough that the THIRD step's own eta rounds to 0 (an
+// exact solve) and the iteration converges at that point. This is textbook
+// inexact-Newton behaviour, not a defect: trading a cheap, loose early linear
+// solve against needing one or two more nonlinear steps overall is exactly
+// what Eisenstat-Walker forcing is FOR (eisenstat_walker_eta()'s own citation,
+// newton_krylov. hpp). One might expect "Newton converges in ONE Newton step"
+// for the affine map; the measurement here shows otherwise (a NewtonConfig with a
+// tighter/near-zero constant forcing term WOULD converge in one step, at
+// the cost of more GMRES work on that one step -- not the default, and
+// not measured here).
 TEST(NewtonRegion, ConvergesInThreeNewtonStepsOnTheAffineProblemUnderEwForcing) {
   NewtonDnHeatFixture s = make_newton_setup(/*max_iterations=*/30);
   ASSERT_TRUE(s.init.ok()) << s.init.error().message;
@@ -466,9 +464,9 @@ TEST(NewtonRegion, ConvergesInThreeNewtonStepsOnTheAffineProblemUnderEwForcing) 
 // coupling cycles a correct run has history() == P exactly"
 // (dn_component.hpp's own contract, already relied on by examples/dn_heat/
 // main.cpp's own picard/aitken/iqn-ils gates) -- reads 2P instead of P for a
-// Newton-selected region. MEASURED directly before this track's own fix
-// (run_region_newton()'s own restore_state() loop, right after seeding x):
-// history() = 40 after 20 periods, not 20; with the fix, exactly 20 --
+// Newton-selected region. MEASURED directly with run_region_newton()'s own
+// restore_state() loop (right after seeding x) absent: history() = 40
+// after 20 periods, not 20; with it, exactly 20 --
 // bookkeeping-only, not a residual/seed correctness issue, since `x` is
 // already a COPY by the time that restore runs and every evaluate_region_
 // residual() call re-delivers it and re-executes the body from scratch
@@ -509,16 +507,12 @@ TEST(NewtonRegion, VerificationSweepDeliversTheConvergedStateToTheComponents) {
   }
 }
 
-// S7.2 WindowNewton, CORRECTED (newton-krylov.md Sec. 9.7, 2026-10): this
-// test's own ORIGINAL name/assertion ("...IsRefusedAtSetup", `ASSERT_
-// FALSE(s.init.ok())`, `E-NEWTON-UNSUPPORTED-REGION`) pinned the
-// blanket "window-scoped is always refused for Newton" rule that rule
-// existed ONLY as a placeholder for this track's own work --
-// `check_region_supports_newton()`'s own comment (src/runtime/fixed_
-// point_residual.cpp) says so directly. Lifting it is this track's
-// entire point, so the assertion flips: `initialize()` now ACCEPTS a
-// window-scoped Newton region (window_fixed_point_residual_test.cpp's
-// own fixture proves a PROPERLY configured one solves correctly).
+// Window Newton (newton-krylov.md Sec. 9.7): `initialize()` ACCEPTS a
+// window-scoped Newton region; there is no blanket "window-scoped is
+// always refused for Newton" rule (see `check_region_supports_newton()`'s
+// own comment, src/runtime/fixed_point_residual.cpp).
+// window_fixed_point_residual_test.cpp's own fixture proves a PROPERLY
+// configured one solves correctly.
 //
 // This fixture specifically, though, bolts a bare `CouplingWindowScope`
 // onto dirichlet/neumann -- two components `add_window_coupling()`
@@ -529,17 +523,16 @@ TEST(NewtonRegion, VerificationSweepDeliversTheConvergedStateToTheComponents) {
 // `R.newton_n = 0`: `run_region_newton_window()`'s own Newton solve
 // over a ZERO-length interface vector converges in zero iterations
 // without ever calling `advance()` on either component -- a silent,
-// well-defined NO-OP, not a crash and not a refusal. MEASURED (2026-10-
-// 10): `run_period()` succeeds; `dirichlet`/`neumann`'s own `time()`
+// well-defined NO-OP, not a crash and not a refusal. MEASURED:
+// `run_period()` succeeds; `dirichlet`/`neumann`'s own `time()`
 // stays at the pre-run initial value, `history()` stays 0 -- proof
 // nothing advanced, a real test rather than resting on "it didn't
 // throw". A genuinely-configured window region failing to validate
 // THIS way (rather than refusing with a clear diagnostic naming the
-// missing member configuration) is this test's own documented gap,
-// not something Stage B closes -- it is not the scenario any real
-// caller (this track's own Brusselator wiring, add_window_coupling())
-// can reach, since that function always configures every member it
-// declares.
+// missing member configuration) is a documented gap -- it is not the
+// scenario any real caller (the Brusselator wiring,
+// add_window_coupling()) can reach, since that function always configures
+// every member it declares.
 // The eager validation at setup: a Newton-selected region with a member
 // the Runner does not drive itself (an ABI participant, here stood in for
 // by a wrapper reporting is_externally_driven()) is refused at
@@ -555,7 +548,7 @@ TEST(NewtonRegion, AnExternallyDrivenMemberIsRefusedAtSetup) {
   EXPECT_NE(s.init.error().message.find("externally"), std::string::npos) << s.init.error().message;
 }
 
-// S7.2b (PetscSelect track): a region naming a Newton substrate nothing
+// A region naming a Newton substrate nothing
 // has registered in THIS process refuses at initialize(), by name, with
 // E-NEWTON-PETSC-UNAVAILABLE -- fired here tier-0, WITHOUT PETSc, by the
 // most common real case: a graph selecting NewtonSubstrate::Petsc in a
@@ -615,8 +608,7 @@ TEST(NewtonRegion, ExhaustingTheNewtonIterationBudgetReportsNonConvergence) {
   EXPECT_EQ(r.error().code, "E-RT-NOCONVERGE") << r.error().message;
   // Mirrors the Picard path's own E-RT-NOCONVERGE message (iteration.cpp,
   // run_region()'s own tail): names the region and, for Newton, the
-  // status code too, the "mirror with Newton's code name in the message"
-  // this track's brief asks for.
+  // status code too (Newton's code name appears in the message).
   EXPECT_NE(r.error().message.find("dirichlet_neumann"), std::string::npos)
       << r.error().message;
   EXPECT_NE(r.error().message.find("DivergedMaxIterations"), std::string::npos)
@@ -624,8 +616,8 @@ TEST(NewtonRegion, ExhaustingTheNewtonIterationBudgetReportsNonConvergence) {
 }
 
 // ---------------------------------------------------------------------------
-// The nonlinear variant (S7.2's own reason for measuring a convergence
-// RATE, not just a converged/not-converged outcome): DirichletSlab's
+// The nonlinear variant (measuring a convergence RATE, not just a
+// converged/not-converged outcome): DirichletSlab's
 // conductivity k1_eff(i, T) = k1_at(i, n) * (1 + beta*(T - t_ref)/t_ref).
 // beta = 0.0 -- every mode this project already ships (picard, aitken,
 // iqn-ils, iqn+qr2, severed) constructs DirichletSlab with the 3-arg
@@ -666,7 +658,7 @@ TEST(Dn, NonlinearAtBetaZeroIsBitIdenticalToTheAffineMap) {
   }
 }
 
-// The track's own headline claim: Newton's quadratic rate, measured on
+// Newton's quadratic rate, measured on
 // the nonlinear k1_eff() problem (beta = 0.1, t_ref = 300 K -- a 10%
 // conductivity swing over the slab's own working range, mild enough that
 // Picard's own per-station contraction stays comfortably below 1 at
@@ -677,7 +669,7 @@ TEST(Dn, NonlinearAtBetaZeroIsBitIdenticalToTheAffineMap) {
 // merely "whatever Newton happens to still solve").
 //
 // SNES's own default outer rtol (1e-8) is loosened to 1e-4 for this
-// measurement ONLY. MEASURED directly (2026-10-10, a trace printed by
+// measurement ONLY. MEASURED directly (a trace printed by
 // hand and removed once read): at SNES's own default forcing (Eisenstat-
 // Walker choice 2), this problem's own ||F_k|| sequence is 7.284e+02,
 // 8.823e+01, 7.762e-01, 5.659e-05 -- already a clean quadratic sequence
@@ -698,7 +690,7 @@ TEST(Dn, NonlinearAtBetaZeroIsBitIdenticalToTheAffineMap) {
 // preconditioner, left false by both dn_heat Newton tests in this file,
 // is the mechanism that would make the tight-rtol run cheap; wiring a
 // physics-based preconditioner onto dn_heat's own components is outside
-// this track's own measured scope, recorded as an open question).
+// the scope measured here).
 TEST(NewtonRegion, QuadraticRateMeasuredOnTheNonlinearProblem) {
   fuse::NewtonConfig cfg;
   cfg.rtol = 1e-4;
@@ -716,8 +708,8 @@ TEST(NewtonRegion, QuadraticRateMeasuredOnTheNonlinearProblem) {
   // only consecutive TRIPLES that are all above a round-off floor: once
   // ||F|| is within a couple of orders of magnitude of machine epsilon
   // relative to ||F_0||, the ratio is dominated by noise, not the
-  // quadratic model, and reports a q_k that means nothing (this track's
-  // own brief: "claim 'order 2.0 +- measured' with the floor named").
+  // quadratic model, and reports a q_k that means nothing (the order is
+  // claimed as "2.0 +- measured" with the floor named).
   const std::vector<double>& h = st.residual_history;
   ASSERT_GE(h.size(), 4u) << "need at least 4 residual samples to fit an "
                              "order from two consecutive ratios";
@@ -741,21 +733,20 @@ TEST(NewtonRegion, QuadraticRateMeasuredOnTheNonlinearProblem) {
 }
 
 // "The line search must be shown to engage and recover on a deliberately
-// poor initial guess" (this track's own brief, repeated from Step 1's
-// text because Step 1's own line-search tests -- NewtonKrylovLineSearch.
-// BtEngagesAndRecoversOnAPoorInitialGuess, test/num/newton_krylov_test.
-// cpp -- prove the MECHANISM on a synthetic problem, not that it is
-// correctly REACHED through the real runtime wiring this track adds).
+// poor initial guess" -- the line-search tests
+// NewtonKrylovLineSearch.BtEngagesAndRecoversOnAPoorInitialGuess
+// (test/num/newton_krylov_test.cpp) prove the MECHANISM on a synthetic
+// problem, not that it is correctly REACHED through the real runtime
+// wiring.
 //
 // neumann_initial_u = 2000 K (dn_heat's own physical range is a few
 // hundred K either side of 300) is the poor guess; beta = 2.0 the
 // nonlinearity strong enough to make a full Newton step from it overshoot.
-// `IterationStats` (fuse/runtime/runner.hpp, outside this track's own file
-// ownership) carries `residual_history` but not a per-step accepted
-// lambda, so the lambda itself is not something a test built from THIS
-// track's own files can assert on through the public Runner API -- it is
+// `IterationStats` (fuse/runtime/runner.hpp) carries `residual_history`
+// but not a per-step accepted lambda, so the lambda itself is not
+// something a test can assert on through the public Runner API -- it is
 // recorded here as a MEASUREMENT instead (a trace printed by hand and
-// removed once read, 2026-10-10, reproduced twice): k = 0 takes the
+// removed once read, reproduced twice): k = 0 takes the
 // full step (lambda = 1, ||F|| 765.78 -> 193.05); k = 1's own full step is
 // rejected by Armijo and BT backtracks to lambda = 0.025 after 4 trials
 // (||F|| -> 189.01, barely moving -- genuine recovery from a step that
@@ -788,17 +779,16 @@ TEST(NewtonRegion, LineSearchEngagesAndRecoversFromADeliberatelyPoorGuess) {
 
 
 // ---------------------------------------------------------------------------
-// S7.2b phase 2 (Substrate track, plan S7.2b): TWO Newton regions in ONE
+// TWO Newton regions in ONE
 // graph, each naming a DIFFERENT NewtonConfig::substrate, dispatched
 // through resolve_newton_substrate()'s registry lookup (src/runtime/
-// iteration.cpp) independently per region. The PetscSelect track's own
-// tests (ARegionSelectingAnUnregisteredSubstrateIsRefusedAtSetup, above)
-// prove the refusal fires for a SINGLE Newton-selected region; nothing in
-// that track's own tests exercises TWO Newton regions in the SAME graph/
-// Runner naming substrates that genuinely differ, so this section adds
-// that case directly, with evidence that the Runner reaches a DIFFERENT
-// registered function for each region rather than one substrate choice
-// applying to the whole graph or the whole process.
+// iteration.cpp) independently per region.
+// ARegionSelectingAnUnregisteredSubstrateIsRefusedAtSetup
+// (above) proves the refusal fires for a SINGLE Newton-selected region;
+// this section exercises TWO Newton regions in the SAME graph/Runner
+// naming substrates that genuinely differ, with evidence that the Runner
+// reaches a DIFFERENT registered function for each region rather than one
+// substrate choice applying to the whole graph or the whole process.
 //
 // `fuse::num::register_newton_substrate()`'s own header comment
 // (fuse/num/newton_krylov.hpp) names "a test double" as the documented

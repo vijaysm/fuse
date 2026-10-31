@@ -1,12 +1,9 @@
-// S8 physics-kit, track "Integrators", Stage B Round 2, task item 3.
-//
-// GRK4A's embedded "d prime" row: task item 3 asks to re-derive it from Kaps &
-// Rentrop 1979 (Numer. Math. 33, 55-68) if the paper is reachable. The paper itself
-// IS locatable (numerik.mi.fu-berlin.de's own scanned reproduction), but its own
-// numeric table was not reliably extractable to full precision from this round's own
-// search tooling (a scanned 1979 paper, not a machine-readable table) -- the task's
-// own fallback applies: embedded_order stays nullopt for GRK4A (unchanged from
-// Round 1), recorded here rather than silently left unexplained.
+// GRK4A's embedded "d prime" row could be re-derived from Kaps & Rentrop 1979
+// (Numer. Math. 33, 55-68). The paper itself IS locatable (numerik.mi.fu-berlin.de's
+// own scanned reproduction), but its numeric table was not reliably extractable to
+// full precision (a scanned 1979 paper, not a machine-readable table), so
+// embedded_order stays nullopt for GRK4A, recorded here rather than silently left
+// unexplained.
 
 #include "fuse/num/rosenbrock_integrator.hpp"
 
@@ -271,18 +268,18 @@ TEST(RosenbrockIntegrator, InexactStageSolveOrderDegradationMeasuredAtTwoRatios)
   // Section 6.2's own degradation: a LOOSER stage GMRES tolerance leaks linear-solve
   // error into the step, corrupting the method's own classical order once that error
   // is no longer small relative to the smallest h's own truncation error. MEASURED
-  // directly: `step_rtol * factor` with the owner's own starting factor (1e-2) and a
+  // directly: `step_rtol * factor` with the design's starting factor (1e-2) and a
   // tighter one (1e-4) both solve the n=2 Dahlquist system to round-off regardless
   // (GMRES is EXACT within 2 Arnoldi steps for a 2-dimensional system, so neither
   // factor binds) -- a genuinely LOOSE tolerance (`rel_tol ~= 0.3`, far above the
-  // owner's own starting factor) is the one that visibly degrades the fitted order
+  // design's starting factor) is the one that visibly degrades the fitted order
   // below 3 here, which is the comparison this test actually needs to show the EFFECT
   // exists, not merely that two already-tight settings agree.
   auto problem = dahlquist_problem(-2.0, 3.0);
   const auto tableau = ros3p_tableau();  // order 3, a representative Rosenbrock case
   struct Setting { const char* label; double step_rtol; double factor; };
   const std::vector<Setting> settings = {
-      {"tight (owner default, 1e-2)", 1e-10, 1e-2},
+      {"tight (default, 1e-2)", 1e-10, 1e-2},
       {"tighter (1e-4)", 1e-10, 1e-4},
       {"loose (rel_tol~0.3)", 1.0, 0.3},
   };

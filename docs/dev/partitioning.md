@@ -76,7 +76,7 @@ parity with the oracle below is verified end to end, including on the user's hos
 `rcb_partition`'s entry-point rejections (`E-PART-SIZE-MISMATCH`, `E-PART-NUM-PARTS`,
 `E-PART-WEIGHT`) are each a RANK-LOCAL computation -- a per-rank view's own length, a per-rank
 `RcbOptions::num_parts`, a per-rank weights array's sign -- but never a rank-local RETURN when
-`comm != kNullComm`. Found 2026-10-11: they used to throw directly, before
+`comm != kNullComm`. They used to throw directly, before
 `detail::recursive_bisect`'s first Allreduce, so a caller's precondition bug on exactly one rank
 hung every other rank waiting in that collective. The fix mirrors `centroids_of`'s and
 `fuse::native::migrate`'s own recipe: this rank's combined verdict is Allreduce(MIN)-agreed with
@@ -129,7 +129,7 @@ element by the sign of that coordinate, so `rcb_partition` refuses `E-PART-WEIGH
 Deferred, and absent rather than silently ignored:
 
 * `rcb_moab`'s **coarse-projected RCB** path (`N_global > 1,000,000`, a `G^3` grid pre-pass) --
-  the single-level path is the one the task asked to port faithfully first; the coarse path is a
+  the single-level path is the one ported faithfully; the coarse path is a
   distinct algorithm, not a variant of this one, and adding it means a second oracle.
 * **Pole-cap handling** and **face-aware RCB** (`rcb_moab`'s skew-triggered per-cube-face dispatch
   in `RCBPartitioner::partition()`) -- both are refinements *on top of* the gnomonic transform this
@@ -137,7 +137,7 @@ Deferred, and absent rather than silently ignored:
   RCB, pole-aware RCB and face-aware RCB per input is not.
 * **The post-partition refinement pass** (`rcb_moab`'s `PartitionRefine`, a Kernighan-Lin-style
   local-swap improvement) and **partition scopes** (per-region independent partitioning) -- neither
-  changes the recursion this task ported; both are separate features layered on top of it.
+  changes the recursion that is ported; both are separate features layered on top of it.
 
 None of the above is called from anywhere in `fuse::partition`; there is no ignored option field
 standing in for them.
@@ -145,8 +145,7 @@ standing in for them.
 ## What is verified where
 
 * **Bit-for-bit parity with the oracle**, at the library's Tier 0 path (`comm == kNullComm`,
-  `num_parts` independent of the (single) participant count), across every fixture family named in
-  the task: a 1D line, 2D planar (a jittered grid, standing in for a mixed tri/quad mesh), a
+  `num_parts` independent of the (single) participant count), across these fixture families: a 1D line, 2D planar (a jittered grid, standing in for a mixed tri/quad mesh), a
   cubed-sphere-like point set on the unit sphere (with `CoordTransform::Gnomonic`), a 3D structured
   hex box, and a 3D unstructured point cloud (standing in for a mixed tet/prism/pyramid/polyhedral
   mesh) -- `test/partition/rcb_partition_test.cpp`, typed over every enabled Kokkos execution
@@ -163,7 +162,7 @@ standing in for them.
   legitimately has owned entities at both its cell dimension and its boundary-skin dimension at
   once, and a scan-based design would misread that as mixed-dimension input on every ordinary
   volumetric mesh.
-* **Every refusal named in the task** -- `E-PART-NUM-PARTS` (negative `num_parts`),
+* **Every refusal** -- `E-PART-NUM-PARTS` (negative `num_parts`),
   `E-PART-SIZE-MISMATCH` (centroids/weights/gids length disagreement), `E-PART-WEIGHT` (a negative
   element weight), and (in a Tier 0 build only) `E-PART-NO-MPI` (a non-null communicator handle
   with no MPI compiled in) -- fires under a test in `test/partition/refusals_test.cpp`, which is

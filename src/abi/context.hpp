@@ -6,7 +6,7 @@
 /// one (the same contract SOMA's `soma_ctx_s`, upstream/soma/src/capi/soma_c.cpp,
 /// states for its own context struct).
 ///
-/// HOW begin_step()/end_step() DRIVE THE REAL RUNNER (KNOWN_ISSUES.md D13).
+/// HOW begin_step()/end_step() DRIVE THE REAL RUNNER.
 ///
 /// `fuse::Runner::resume_period()` (include/fuse/runtime/runner.hpp,
 /// implemented as a C++20 coroutine over the ordinary instruction-stream
@@ -43,10 +43,10 @@
 /// externally driven component may be open (begin_step() called, end_step()
 /// not yet) at a time on a given context: `fuse_ctx::open_component` is
 /// that invariant, enforced as `E-ABI-STEP-ALREADY-OPEN`. This is a real
-/// tightening versus the deferred, end-of-period scheme D12 replaced --
-/// that scheme let every externally driven component's begin_step()/
+/// tightening versus a deferred, end-of-period scheme --
+/// that scheme would let every externally driven component's begin_step()/
 /// end_step() pair interleave freely, because nothing it did actually
-/// advanced the Runner until the last one reported in. The replacement
+/// advanced the Runner until the last one reported in. This design
 /// cannot offer that: the Runner is one shared, ordered instruction
 /// stream, and there is exactly one "current suspension point" to resume
 /// from. A process hosting more than one externally driven component must
@@ -130,14 +130,10 @@ struct fuse_ctx {
   /// `fuse_initialize()` time, well after `fuse_ctx` itself is
   /// constructed); `impl_initialize` (participant.cpp) constructs it in
   /// place, exactly once, before the mesh-loading loop that is its first
-  /// use. Found and fixed this session (Conformance Unit 2): the hardcoded
-  /// SerialMeshBackend this replaced could not express the above at all.
-  /// The full ABI suite needs re-running against this swap before it can
-  /// be called verified -- track that against the ctest run this change
-  /// is reported with, not this comment.
+  /// use. A hardcoded SerialMeshBackend could not express the above at all.
   std::optional<fuse::native::NativeMeshBackend> backend;
 
-  /// S6 phase 4, "Adapter host" track: mounts every `LaunchMode::Plugin`
+  /// Mounts every `LaunchMode::Plugin`
   /// component's shared object at initialize() time
   /// (fuse::abi_detail::Registry::mount_dynamic). DECLARED BEFORE
   /// `components` BELOW, DELIBERATELY: members are destroyed in REVERSE
@@ -160,8 +156,8 @@ struct fuse_ctx {
   /// Built at initialize() and handed to fuse::schedule() -- the schedule
   /// itself is derived from it, so it must stay alive for the Runner's
   /// whole lifetime even though begin_step()/end_step() no longer read it
-  /// directly (KNOWN_ISSUES.md D13: resume_period()'s own StepContext is
-  /// the real bounds now, not a separately bookkept copy of them).
+  /// directly (resume_period()'s own StepContext is
+  /// the real bounds, not a separately bookkept copy of them).
   std::optional<fuse::ClockSet> clocks;
   std::optional<fuse::Runner>   runner;
   fuse::ComponentSet            components;
@@ -172,7 +168,7 @@ struct fuse_ctx {
   /// How many of `ext` are NOT in_process. Cached at initialize() so run()
   /// does not rescan on every call.
   std::size_t external_count = 0;
-  /// KNOWN_ISSUES.md D13: the request the most recent `resume_period()`
+  /// The request the most recent `resume_period()`
   /// call yielded and nobody has consumed yet -- set by whichever of
   /// `fuse_begin_step()` (priming the very first one, or re-reading one a
   /// mismatched name left behind) or `fuse_end_step()` (resuming past the
@@ -193,7 +189,7 @@ struct fuse_ctx {
   /// afterwards.
   std::unordered_map<std::string, std::unique_ptr<fuse::Component>> injected;
 
-  /// Unit 2b (D19), step (d): `fuse::abi_test::force_this_process`'s own
+  /// `fuse::abi_test::force_this_process`'s own
   /// override, consumed (passed into `fuse::RunnerConfig::
   /// force_this_process`) at initialize() time -- the SAME test-only
   /// seam `injected` is, for the SAME reason (`inject_component()`'s own
@@ -205,14 +201,14 @@ struct fuse_ctx {
   /// meaning exactly what it always meant.
   std::optional<int> test_force_this_process;
 
-  // --- D61 (KNOWN_ISSUES.md) test-only seam ---
+  // --- collective reconciliation: test-only seam ---
   /// fuse::abi_test::force_fake_collective_peers(): when set,
   /// reconcile_collective_status() (participant.cpp) uses THIS rank's
   /// position and the peer statuses below, through the SAME pure
   /// arithmetic (fuse::abi_detail::reconcile_local_statuses, include/
   /// fuse/abi/collective_reconcile.hpp) the real MPI_Allreduce(MPI_MINLOC)
   /// glue uses, instead of calling MPI -- the only way a tier-0 test (no
-  /// MPI runtime, C1) can exercise the full reconciliation path,
+  /// MPI runtime) can exercise the full reconciliation path,
   /// including the message a non-originating rank gets rewritten to.
   /// `std::nullopt` (the default) changes nothing: every context that
   /// never calls this seam reconciles for real (over `collective_comm_f`
@@ -223,7 +219,7 @@ struct fuse_ctx {
   std::optional<int>            test_fake_collective_self_rank;
   std::vector<std::int32_t>     test_fake_collective_peer_statuses;
 
-  // --- D15 ("Registry agreement" track) test-only seam ---
+  // --- registry agreement: test-only seam ---
   /// fuse::abi_test::force_fake_plugin_agreement_peers(): the SAME idea
   /// as test_fake_collective_self_rank/test_fake_collective_peer_statuses
   /// above, but DELIBERATELY SEPARATE fields, not a reuse of those two --
@@ -231,9 +227,8 @@ struct fuse_ctx {
   /// BASE communicator (c.communicator), never over collective_comm_f, so
   /// a test that wants to fake ONE of the two reconciliations without
   /// also perturbing the other (e.g. a plugin-only graph, where
-  /// collective_comm_f never forms at all -- KNOWN_ISSUES.md D15's own
-  /// "Open after the mount-everywhere fix" paragraph) needs its own knob.
-  /// Reusing the D61 pair would make setting it fire BOTH reconciliations
+  /// collective_comm_f never forms at all) needs its own knob.
+  /// Reusing the collective pair would make setting it fire BOTH reconciliations
   /// off the SAME fake data on every call that sets it, an unrelated
   /// coupling neither function's own tests should have to reason about.
   /// `std::nullopt` (the default) changes nothing: every context that
@@ -251,9 +246,9 @@ struct fuse_ctx {
   /// tier-0 test can confirm two things no return-value check alone can
   /// tell apart: (1) that a graph with NO Plugin component triggers NO
   /// extra collective at all (the count stays exactly what it was), which
-  /// is this round's own explicit requirement, and (2) that a hosting
+  /// is required, and (2) that a hosting
   /// rank's OWN mount/extract/register failure, inside the component-
-  /// wiring loop's Plugin branch, is restructured to REACH this call
+  /// wiring loop's Plugin branch, REACHES this call
   /// rather than returning immediately from inside the loop (count
   /// becomes 1, not 0), even on a run where the reconciled outcome would
   /// have been identical to an immediate return either way (this rank's
@@ -273,8 +268,8 @@ struct fuse_ctx {
   /// real base communicator (see impl_setup's own `my_component`
   /// handling) -- so initialize() has one place to read it from
   /// regardless of which branch set it. `std::nullopt` (the default)
-  /// means no caller ever named one: KNOWN_ISSUES.md D61's own component-
-  /// local reconciliation communicator (`collective_comm_f` below) then
+  /// means no caller ever named one: the component-local reconciliation
+  /// communicator (`collective_comm_f` below) then
   /// never forms, exactly as if no communicator were configured at all.
   std::optional<fuse::ComponentId> my_component;
 
@@ -289,7 +284,7 @@ struct fuse_ctx {
   bool               has_end_time = false;
   fuse::Rational     end_time{0};
 
-  // --- D61 (KNOWN_ISSUES.md) collective reconciliation, round 3 ---
+  // --- collective reconciliation ---
   /// The component-local communicator `reconcile_collective_status()`
   /// (participant.cpp) reconciles initialize()/begin_step()/end_step()/
   /// run() over -- an `MPI_Comm_split()` of the REAL base communicator by
@@ -306,12 +301,11 @@ struct fuse_ctx {
   /// directly and never runs initialize()'s own real communicator-
   /// resolution path again (its own doc comment: callable AFTER a
   /// successful initialize() specifically so it does NOT retrigger that
-  /// path). KNOWN_ISSUES.md D61's own REVERTED paragraph is why this
-  /// field exists at all: the first fix reconciled over `c.communicator`
-  /// directly, which a faked `force_communicator_set(ctx, 1)` handle
-  /// fed straight into `MPI_Comm_f2c`/`MPI_Comm_rank`, aborting three
-  /// tier-0 rows on the host (no MPI in this sandbox, so the sandbox
-  /// never caught it). Freed at destroy() via `MPI_Comm_free()`.
+  /// path). This field exists because reconciling over `c.communicator`
+  /// directly is wrong: a faked `force_communicator_set(ctx, 1)` handle
+  /// fed straight into `MPI_Comm_f2c`/`MPI_Comm_rank`, aborting
+  /// tier-0 rows on a host with MPI. Freed at destroy() via
+  /// `MPI_Comm_free()`.
   int                collective_comm_f = 0;
 
   // --- last_error() state ---

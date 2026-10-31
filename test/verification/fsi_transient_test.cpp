@@ -1,6 +1,5 @@
 // Transient self-convergence of the strongly-coupled FSI channel in dt, in
-// the ASYMPTOTIC regime (docs/dev/testing.md / this task's own verification-
-// discipline note: dt small enough, relative to the beam's own first
+// the ASYMPTOTIC regime (docs/dev/testing.md: dt small enough, relative to the beam's own first
 // period, that the coupled system's memory between steps is genuinely
 // resolved -- not a regime where the answer is dominated by the initial
 // transient's decay, which would measure decay rather than the scheme's
@@ -11,7 +10,7 @@
 // Expected order: CN (fluid) and Newmark average-acceleration (beam) are
 // both second order, so the coupled transient should self-converge with an
 // observed order inside [1.8, 2.2] -- NOT loosened if it misses; a miss is
-// reported, not widened away (this task's standing instruction).
+// reported, not widened away.
 
 #include <gtest/gtest.h>
 
@@ -220,14 +219,14 @@ double run_to_midspan_deflection(std::size_t nx_beam, std::size_t nx_fluid,
 
 }  // namespace
 
-// Enabled 2026-09-25 with KNOWN_ISSUES.md D9 fixed (the wall traction carried
-// the sign of the force on the FLUID; the coupled step map's spectral radius
-// is 1.000000 with it corrected). Two things had been conflated in the old
-// 0.82 order: that growth, and the impulsive start the fixture used -- fluid
-// at rest, inflow switched on at t=0. With the sign fixed alone the impulsive
+// The wall traction carries the force on the WALL (with the opposite sign the
+// coupled step map grows; its spectral radius is 1.000000 with the correct
+// sign). Two effects must not be conflated in the observed order: any such
+// growth, and the impulsive start -- fluid
+// at rest, inflow switched on at t=0. With the correct sign alone the impulsive
 // start still measures 0.87 (kept below as its own labelled case). From
 // consistent initial data the order is what CN + Newmark average acceleration
-// promise. The bound is unchanged from the day the test was written.
+// promise.
 TEST(FsiTransient, SelfConvergenceInDtIsSecondOrderInTheAsymptoticRegime) {
   constexpr double rho_s = 1.0, h_s = 0.5, EI = 2.0, L = 1.0;
   const double omega1 = fsi::clamped_beam_first_frequency(L, EI, rho_s, h_s);
@@ -240,7 +239,7 @@ TEST(FsiTransient, SelfConvergenceInDtIsSecondOrderInTheAsymptoticRegime) {
   const double t_final = T1 / 4.0;
   constexpr std::size_t nx_beam = 8, nx_fluid = 10, ny_fluid = 6;
 
-  // Levels T1/160 .. T1/2560. Measured 2026-09-25 from the smooth start: at
+  // Levels T1/160 .. T1/2560. Measured from the smooth start: at
   // T1/40 .. T1/640 the successive differences were 1.82e-6, 1.49e-6,
   // 5.90e-7, 1.64e-7 -- pairwise orders 0.29, 1.33, 1.85 -- so the two
   // coarsest levels are pre-asymptotic (a first-mode period resolved by 40
@@ -292,11 +291,11 @@ TEST(FsiTransient, SelfConvergenceInDtIsSecondOrderInTheAsymptoticRegime) {
 // levels only (T1/40, T1/80, T1/160). Not an assertion on the order: an
 // impulsive start of an incompressible system is not second-order data, and
 // the number is recorded so that a future reader comparing against the enabled
-// test above knows the two differ by the start, not by the scheme. Measured
-// 2026-09-25 with the sign fix: |dw| = 1.037e-4, 9.349e-5, i.e. order 0.15
-// over these two differences. (The five-level regression over T1/40..T1/640
-// that the disabled test used to run from the same impulsive start measured
-// 0.87 -- a different construction; the two numbers are not comparable.)
+// test above knows the two differ by the start, not by the scheme. Measured:
+// |dw| = 1.037e-4, 9.349e-5, i.e. order 0.15
+// over these two differences. (A five-level regression over T1/40..T1/640
+// from the same impulsive start measures 0.87 -- a different construction;
+// the two numbers are not comparable.)
 TEST(FsiTransient, ImpulsiveStartIsMeasuredNotAsserted) {
   constexpr double rho_s = 1.0, h_s = 0.5, EI = 2.0, L = 1.0;
   const double omega1 = fsi::clamped_beam_first_frequency(L, EI, rho_s, h_s);

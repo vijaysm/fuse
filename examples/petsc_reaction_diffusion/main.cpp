@@ -1,4 +1,4 @@
-// S7.4 (owner decision 2026-10-21, Option C): the smallest real port of an
+// The smallest real port of an
 // ImplicitComponent onto a PETSc-object-backed LinearizationToken (real
 // Mat/Vec, MatMult/MatMultTranspose, never MATMFFD), paired with an
 // existing native-substrate implementation of the SAME physics in one
@@ -10,7 +10,7 @@
 // (DirichletHalf + NeumannHalfNative, BOTH native), compared against the
 // closed-form manufactured solution -- fully runnable in any sandbox, no
 // PETSc, no MPI. Exits non-zero if the converged answer misses the
-// manufactured solution by more than this track's own derived bound (see
+// manufactured solution by more than its own derived bound (see
 // `kAgreementBound`'s own comment).
 //
 // --petsc additionally builds AND RUNS the native+petsc graph
@@ -18,7 +18,7 @@
 // answer against the native twin's -- exactly dn_heat's own
 // `--newton-petsc` convention (examples/dn_heat/main.cpp), including that
 // this crashes (SEGFAULT, not a logic error) in a sandbox that cannot
-// complete a bare MPI_Init() (KNOWN_ISSUES.md D32): a HOST run is what
+// complete a bare MPI_Init(): a HOST run is what
 // measures this comparison's own numbers, the same already-established
 // pattern every other petsc.* row and example.dn_heat.newton_petsc row
 // already follows.
@@ -122,16 +122,16 @@ fuse::CouplingGraph build_graph(const prd::PhysicsParams& params, int max_iterat
   cfg.eta_min = 1e-4;
   // substrate left at its default (Native): the
                            // OUTER region-level Newton-Krylov driver is
-                           // ALWAYS fuse::num::solve() in this track --
+                           // ALWAYS fuse::num::solve() here --
                            // the PETSc substrate lives entirely INSIDE
                            // NeumannHalfPetsc's own linearization(),
                            // invisible to this driver (component.hpp's
                            // own LinearizationToken is substrate-blind by
-                           // design). NewtonConfig::substrate (D32 Sec.
-                           // 11) is a DIFFERENT axis -- which solver
-                           // drives the REGION, fuse::num::solve() or
+                           // design). NewtonConfig::substrate is a
+                           // DIFFERENT axis -- which solver drives the
+                           // REGION, fuse::num::solve() or
                            // fuse::petsc::solve()/SNES -- not used by
-                           // this track at all.
+                           // this example at all.
   g.iterate({flux, temp})
       .name("reaction_diffusion")
       .until(std::move(crit))
@@ -217,8 +217,7 @@ RunOutcome run_case(const prd::PhysicsParams& params, const std::string& neumann
 /// A tolerance derived from a MEASUREMENT taken in THIS build, not a
 /// hand-picked constant: at m=4 interior points/half, dt=0.01, over the
 /// kPeriods=20 steps this binary actually runs (t_final=0.2), the
-/// max|error| against the manufactured solution was measured (this
-/// sandbox, this session; design_notes.md Section 6 records the exact
+/// max|error| against the manufactured solution was measured (design_notes.md Section 6 records the exact
 /// run) at 7.306612e-02 (Left) / 5.338220e-02 (Right) / 1.184185e-01
 /// (interface) -- first-order, backward-Euler-dominated accumulation
 /// over 20 steps, consistent with the ~2x-per-halving convergence rate
@@ -228,8 +227,8 @@ RunOutcome run_case(const prd::PhysicsParams& params, const std::string& neumann
 /// 1.184185e-01) -- enough headroom to not be a tripwire on ordinary
 /// floating-point/iteration-count variation across a rebuild, while
 /// still catching a real regression (a coupling or sign error moves
-/// this error by orders of magnitude, not a factor of 2, as the Stage A
-/// prototype's own bug -- this file's header comment -- demonstrated).
+/// this error by orders of magnitude, not a factor of 2, as an early
+/// prototype's own bug demonstrated).
 constexpr double kAgreementBound = 2.0 * 1.184185e-01;
 
 int run_native_twin(const prd::PhysicsParams& params) {
@@ -271,7 +270,7 @@ int run_petsc_case(const prd::PhysicsParams& params, const RunOutcome& native_re
   // the only disagreement possible is round-off and KSP's own default
   // convergence test, so the bound is the Newton rtol (1e-8, NewtonConfig's
   // own default) times a conditioning headroom of 100, the SAME style of
-  // derivation D32 used for dn_heat's own native-vs-petsc comparison.
+  // derivation dn_heat uses for its own native-vs-petsc comparison.
   constexpr double kSubstrateAgreementBound = 100.0 * 1e-8;
   double max_diff = 0.0;
   for (int i = 0; i < kM; ++i) {
@@ -297,9 +296,9 @@ int main(int argc, char** argv) {
 
   Kokkos::ScopeGuard kokkos_guard(argc, argv);  // Runner's hot loop runs on
                                                  // Kokkos' host execution
-                                                 // space (KNOWN_ISSUES.md
-                                                 // D11); examples/dn_heat/
-                                                 // main.cpp's own pattern.
+                                                 // space;
+                                                 // examples/dn_heat/main.cpp's
+                                                 // own pattern.
   bool run_petsc = false;
   for (int i = 1; i < argc; ++i) {
     if (std::strcmp(argv[i], "--petsc") == 0) run_petsc = true;

@@ -1,7 +1,4 @@
-# Mutations for the soma-import track (docs/dev/soma-import.md). Own file per
-# the review-fix protocol (build-evidence/mutations/backend-supermesh.toml's
-# own header comment): do not edit build-evidence/mutations.toml directly
-# while other tracks hold it dirty.
+# Mutations for the soma import (docs/dev/soma-import.md).
 
 [[mutation]]
 id = "remap-apply-zero-components-not-rejected"

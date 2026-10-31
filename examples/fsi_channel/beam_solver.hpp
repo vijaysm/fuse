@@ -124,8 +124,7 @@ class BeamSolver {
   /// mid-step load q_mid (already representing the load at t_{n+1/2}, the
   /// same time level Crank-Nicolson's own trapezoidal terms live at -- see
   /// docs/user/fsi-channel.md's "Partitioned time-level consistency: the
-  /// force side, round 2" for the KNOWN_ISSUES.md D9 derivation this
-  /// implements). No end-point force is evaluated or stored, and this
+  /// force side" for the derivation this implements). No end-point force is evaluated or stored, and this
   /// needs no `wddot_` in its OWN recurrence (only w, wdot) -- the
   /// superseded force-at-t_{n+1} Newmark scheme this replaced did need
   /// wddot_ in its recurrence, but that scheme has been removed (no

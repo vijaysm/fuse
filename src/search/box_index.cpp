@@ -46,8 +46,7 @@ using ArborPoint = ArborX::Point<3, Coordinate>;
 // IS the index (a plain box/point tree deduces Value = the geometry itself,
 // and DefaultCallback::operator() then tries to write that geometry into an
 // integer output view, which does not compile -- found empirically against
-// this exact ArborX 2.1 / Kokkos 5.1.0 pair while proving the dependency; see
-// the ArborX track's dependency-resolution report). Attaching the index
+// this exact ArborX 2.1 / Kokkos 5.1.0 pair). Attaching the index
 // explicitly and extracting it with our own callback (ExtractIndex below)
 // sidesteps that entirely, and works identically for spatial and nearest
 // predicates, and for a host or a device tree -- PairValueIndex names no
@@ -375,7 +374,7 @@ Result<QueryResult> BoxIndex::query_nearest(const std::vector<Point>& points, in
   empty_result.offsets.assign(points.size() + 1, 0);
   if (empty() || points.empty()) return empty_result;
 
-  // PS-7: cap explicitly rather than relying on ArborX::nearest's own
+  // Cap explicitly rather than relying on ArborX::nearest's own
   // internal clamp -- box_index.hpp's doc promises "k capped to size()" as
   // THIS facade's contract, not a property borrowed from whatever ArborX
   // version happens to be linked. Applies to both the device and host

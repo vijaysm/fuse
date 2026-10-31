@@ -64,9 +64,8 @@ struct MeshArrays {
   /// LayoutRight in EVERY memory space: a rank-2 View's default layout is
   /// the space's own (LayoutRight on the host, LayoutLeft on CUDA), and
   /// `Kokkos::deep_copy` cannot change memory space and layout in one call,
-  /// so `to_memory_space<Device>()` on a host mesh threw (KNOWN_ISSUES.md
-  /// D54). Pinning the layout keeps the host arrays as they always were
-  /// and makes the device copy a plain contiguous memcpy.
+  /// so `to_memory_space<Device>()` on a host mesh threw. Pinning the layout keeps the host arrays
+  /// unchanged and makes the device copy a plain contiguous memcpy.
   Kokkos::View<double* [3], Kokkos::LayoutRight, MemorySpace> vertex_coords;
   Kokkos::View<std::int64_t*, MemorySpace> vertex_gid;
   Kokkos::View<int*, MemorySpace> vertex_owner;
@@ -174,7 +173,7 @@ class NativeMeshBuilder {
   ///                            vertex SET a previous cell already
   ///                            recorded, in an order that is neither a
   ///                            cyclic match nor a cyclic reversal of the
-  ///                            stored one (NM-10: ambiguous, never
+  ///                            stored one (ambiguous, never
   ///                            silently reused)
   [[nodiscard]] Result<MeshArrays<Kokkos::HostSpace>> build() const;
 
@@ -205,7 +204,7 @@ class NativeMeshBuilder {
   // recorded but in neither the stored cyclic order nor its reversal;
   // `build()` returns this (code, message) rather than ever reaching the
   // geometry pass with a face reused under an order that does not
-  // actually match (NM-10).
+  // actually match.
   std::optional<std::pair<std::string, std::string>> face_mismatch_error_;
 
   int find_or_add_face(const std::vector<int>& local_vertices_outward, bool* flip);
@@ -239,7 +238,7 @@ class NativeMeshView final : public MeshView {
   /// Validates, never throws: `E-MESH-DIM` if `arrays.dim` is outside
   /// `[0, 3]`, `E-MESH-CONNECTIVITY` if a fixed-shape cell's corner count
   /// disagrees with its type or a corner names a vertex index out of
-  /// range (NM-8: every in-tree producer already goes through
+  /// range (every in-tree producer already goes through
   /// `NativeMeshBuilder::build()`, which checks the same two things, so
   /// these guard only a caller that reaches this factory directly).
   [[nodiscard]] static Result<std::unique_ptr<NativeMeshView>> create_from_host(

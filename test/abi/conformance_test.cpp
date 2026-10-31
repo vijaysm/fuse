@@ -1,5 +1,5 @@
 /// ABI-PROVIDER-CONFORMANCE and its negative rows (build-evidence/abi-matrix.toml,
-/// S6 phase 4 "Adapter host" track): ONE graph -- the two-component lag-1
+/// the adapter host): ONE graph -- the two-component lag-1
 /// fixture, then the subcycled-mean fixture, both from graph_fixture.hpp --
 /// run four ways: native C++ components, the same "upstream" component as a
 /// C plugin built as a shared object in this test tree, the same component
@@ -64,7 +64,7 @@
 #ifndef FUSE_TEST_C_PROVIDER_PLUGIN_BAD_ADVANCE
 #error "FUSE_TEST_C_PROVIDER_PLUGIN_BAD_ADVANCE must be defined"
 #endif
-// review-2026-10-11 abi: TD-6/AB-6's own plugin variants.
+// Plugin variants for the provider-adapter refusal rows.
 #ifndef FUSE_TEST_C_PROVIDER_PLUGIN_BAD_CREATE
 #error "FUSE_TEST_C_PROVIDER_PLUGIN_BAD_CREATE must be defined"
 #endif
@@ -95,8 +95,7 @@
 #ifndef FUSE_TEST_FORTRAN_PROVIDER_PLUGIN
 #error "FUSE_TEST_FORTRAN_PROVIDER_PLUGIN (the built linear_provider_f shared object path) must be defined"
 #endif
-// "Provider parity" track (KNOWN_ISSUES.md D15), Stage B-1, item 2: the
-// affine_provider.c plugin built for
+// The affine_provider.c plugin built for
 // ConformanceTest.PluginBackedComponentInAnIterationRegionConvergesLikeAllNative,
 // below.
 #ifndef FUSE_TEST_AFFINE_PROVIDER_PLUGIN
@@ -105,8 +104,7 @@
 #ifndef FUSE_TEST_HOSTING_PROBE_PROVIDER_PLUGIN
 #error "FUSE_TEST_HOSTING_PROBE_PROVIDER_PLUGIN (the built hosting_probe_provider shared object path) must be defined"
 #endif
-// "Provider parity" track (KNOWN_ISSUES.md D15), Stage B-2, item 1: the
-// mixed_memspace_provider.c plugin and its two CMake-target variants,
+// The mixed_memspace_provider.c plugin and its two CMake-target variants,
 // built for the device-fields capability-gate and mixed-path tests below.
 #ifndef FUSE_TEST_MIXED_MEMSPACE_PROVIDER_PLUGIN
 #error "FUSE_TEST_MIXED_MEMSPACE_PROVIDER_PLUGIN (the built mixed_memspace_provider shared object path) must be defined"
@@ -230,8 +228,7 @@ class DownstreamSink final : public fuse::Component {
   std::vector<double>     storage_;
 };
 
-// KNOWN_ISSUES.md D15 item 1 ("Provider parity" track, Stage B-2, Option
-// A): DownstreamSink above binds EVERY field of its own hardcoded
+// DownstreamSink above binds EVERY field of its own hardcoded
 // "downstream" component to the SAME single storage_ buffer -- correct
 // for a component with exactly one field, wrong for "sink" in
 // build_mixed_memspace_graph() (two independently-bound fields, "host_in"
@@ -284,8 +281,7 @@ class MixedMemspaceSink final : public fuse::Component {
   std::vector<double>     device_storage_;
 };
 
-// "Provider parity" track (KNOWN_ISSUES.md D15), Stage B-1, item 2: the
-// SAME affine component test/abi/participant_test.cpp's own AffineComponent
+// The SAME affine component test/abi/participant_test.cpp's own AffineComponent
 // implements (that file's own class, not shared here: every conformance/
 // participant test file in this tree defines its own native test
 // components locally, DownstreamSink above being this file's own
@@ -574,7 +570,7 @@ TEST(ConformanceTest, LagOneGraphAllFourKindsMatchNative) {
 
 // ConformanceTest.SubcycledMeanGraphAllFourKindsMatchNative: upstream
 // subcycles 4x per common period and exports under AccumOp::Mean
-// (KNOWN_ISSUES.md D12's own fixture) -- "downstream" must see the MEAN of
+// -- "downstream" must see the MEAN of
 // upstream's four substep values for every kind, not just the native one.
 TEST(ConformanceTest, SubcycledMeanGraphAllFourKindsMatchNative) {
   const auto bytes = fuse::abi_test::build_subcycled_mean_bytes(
@@ -679,14 +675,14 @@ TEST(ConformanceTest, PluginAdvanceErrorSurfacesAsComponentFailure) {
   EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
 }
 
-// Review 2026-10-11 AB-3: a plugin whose advance() writes the pre-growth
+// A plugin whose advance() writes the pre-growth
 // fuse_step_report struct_size (64 bytes, the layout that shipped before
 // next_component/step_opened/period/delivery_pending/delivery_field were
 // appended -- c-abi.md's own growth table) must still be ACCEPTED: this
 // host only ever reads t_begin/t_end off a plugin's own report, both
-// inside that original 64 bytes. Before this fix, provider_adapter.cpp's
-// struct_size_ok<fuse_step_report> demanded >= sizeof(current) = 104 and
-// refused this exact, backward-compatible plugin with E-ABI-VERSION.
+// inside that original 64 bytes. (Demanding >= sizeof(current) = 104 in
+// provider_adapter.cpp's struct_size_ok<fuse_step_report> would refuse
+// this exact, backward-compatible plugin with E-ABI-VERSION.)
 TEST(ConformanceTest, OldPluginStepReportStructSizeIsAccepted) {
   const auto bytes = fuse::abi_test::build_two_component_lag1_bytes(fuse::Rational{1},
                                                                     /*cells=*/1);
@@ -726,13 +722,13 @@ TEST(ConformanceTest, OldPluginStepReportStructSizeIsAccepted) {
   EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
 }
 
-// Review 2026-10-11 TD-6: a one-rank "mount a misbehaving plugin as
+// A one-rank "mount a misbehaving plugin as
 // upstream, then drive it through fuse_initialize()/fuse_run()" harness,
 // parametrised over which single plugin entry misbehaves, firing each of
-// the provider-adapter refusal codes TD-6 found untested by anything in
-// the tree. Mirrors PluginAdvanceErrorSurfacesAsComponentFailure and
-// PluginDescribeDisagreeingWithTheGraphIsRefused above; only the plugin
-// path and the expected code/call differ per row.
+// the provider-adapter refusal codes. Mirrors
+// PluginAdvanceErrorSurfacesAsComponentFailure and
+// PluginDescribeDisagreeingWithTheGraphIsRefused above; only the plugin path
+// and the expected code/call differ per row.
 struct ProviderAdapterRefusalCase {
   std::string test_name;
   const char* plugin_path;
@@ -841,11 +837,11 @@ TEST(ConformanceTest, PluginRestoreStateErrorIsRefused) {
   EXPECT_EQ(restored.error().code, "E-ABI-PROVIDER-RESTORE");
 }
 
-// docs/dev/restart.md round 2, item 4: "a C consumer test of the new
-// entries at tier 0." Exercises fuse_provider_abi_v1::save_restart_blob/
-// load_restart_blob end to end through the REAL stack this project's
-// own C ABI defines -- a dlopen()'d C plugin (test/abi/plugins/
-// linear_provider.c), ProviderAdapter's query-then-fill CALLER side
+// A C consumer test of the restart-blob entries at tier 0. Exercises
+// fuse_provider_abi_v1::save_restart_blob/ load_restart_blob end to end
+// through the REAL stack this project's own C ABI defines -- a dlopen()'d C
+// plugin (test/abi/plugins/ linear_provider.c), ProviderAdapter's
+// query-then-fill CALLER side
 // (src/abi/provider_adapter.cpp), and fuse::Component's own interface
 // (fuse/runtime/component.hpp) -- never calling the generated struct
 // layout directly, which would only prove the header compiles.
@@ -912,18 +908,17 @@ TEST(ConformanceTest, ProviderAdapterRefusesATableMissingARequiredEntry) {
 }
 
 TEST(ConformanceTest, ProviderAdapterRegistersAnEmptyViewWhenThisRankDoesNotHostIt) {
-  // KNOWN_ISSUES.md D15, round 3 (host measurement): a Plugin component
-  // placed on a rank SUBSET registered its own field's FULL region size
-  // (from this adapter's own private, rank-unaware fuse::SerialMeshBackend
-  // -- this class's own header comment) on a NON-hosting rank, where the
-  // real plan (built from the rank-aware fuse::native::NativeMeshBackend)
-  // correctly expects an EMPTY view there -- "field 'upstream.out' is
-  // registered with 1x1 values but the plan sizes its region at 0x1".
-  // D24 (KNOWN_ISSUES.md, closed 2026-10-09): "a component that does not
-  // live on this rank gets an empty view of the right dimension ...
-  // because every rank resolves every placement ... while only hosting
-  // ranks read one." This pins the fix: set_hosting_rank() to a rank
-  // OUTSIDE the component's own declared RankSet ({0,1} here --
+  // A Plugin component placed on a rank SUBSET must not register its own
+  // field's FULL region size (from this adapter's own private,
+  // rank-unaware fuse::SerialMeshBackend -- this class's own header
+  // comment) on a NON-hosting rank, where the real plan (built from the
+  // rank-aware fuse::native::NativeMeshBackend) correctly expects an
+  // EMPTY view there -- otherwise: "field 'upstream.out' is registered
+  // with 1x1 values but the plan sizes its region at 0x1". A component
+  // that does not live on this rank gets an empty view of the right
+  // dimension, because every rank resolves every placement while only
+  // hosting ranks read one. This pins that behaviour: set_hosting_rank() to a
+  // rank OUTSIDE the component's own declared RankSet ({0,1} here --
   // build_two_component_lag1_graph()'s own "upstream" placement,
   // test/abi/graph_fixture.hpp), and register_fields() must bind a
   // ZERO-count view instead of asking backend_ for the region's full
@@ -954,21 +949,21 @@ TEST(ConformanceTest, ProviderAdapterRegistersAnEmptyViewWhenThisRankDoesNotHost
 }
 
 TEST(ConformanceTest, ProviderAdapterSplitsAMultiRankComponentsRegionByPosition) {
-  // KNOWN_ISSUES.md D15, round 5 (host measurement): round 3's fix above
+  // The test above
   // (ProviderAdapterRegistersAnEmptyViewWhenThisRankDoesNotHostIt) only
   // covers RankSet MEMBERSHIP -- "hosted or not", a binary question that
-  // happens to be the whole answer for a ONE-rank component (every
-  // fixture before this round). provider_subset_mpi_test.cpp's own
+  // happens to be the whole answer for a ONE-rank component.
+  // provider_subset_mpi_test.cpp's own
   // 3-rank graph places "upstream" on RankSet{1, 2} (TWO ranks): the
   // real plan decomposes its one-cell region over THOSE two ranks by
-  // POSITION (D24's own rule, applied by NativeMeshBackend to every
-  // placement), giving rank 1 (position 0 of 2) the one cell and rank 2
-  // (position 1 of 2) none -- but round 3's rule answers `hosted = true`
-  // for BOTH (both are RankSet members) and registered the FULL region
-  // size on rank 2 too, measured on the host as "field 'upstream.out' is
+  // POSITION (the rule NativeMeshBackend applies to every placement),
+  // giving rank 1 (position 0 of 2) the one cell and rank 2 (position 1
+  // of 2) none -- a membership-only rule would answer `hosted = true` for
+  // BOTH (both are RankSet members) and register the FULL region size on
+  // rank 2 too, measured on the host as "field 'upstream.out' is
   // registered with 1x1 values but the plan sizes its region at 0x1".
-  // Fixed by applying the SAME per-position split the plan's own backend
-  // already applies (fuse::abi_detail::even_rank_share(), include/fuse/
+  // The adapter instead applies the SAME per-position split the plan's own
+  // backend already applies (fuse::abi_detail::even_rank_share(), include/fuse/
   // abi/rank_share.hpp) whenever `hosting_rank_` is set and the
   // component's own RankSet has more than one member.
   fuse::abi_detail::Registry registry;
@@ -1005,9 +1000,8 @@ TEST(ConformanceTest, ProviderAdapterSplitsAMultiRankComponentsRegionByPosition)
   const fuse::Result<fuse::FieldRef> bound2 = freg_rank2.get(*fid);
   ASSERT_TRUE(bound2.ok()) << (bound2.ok() ? "" : bound2.error().message);
   EXPECT_EQ(bound2.value().size(), 0u)
-      << "rank 2 is a RankSet member (round 3's binary rule would have registered the full "
-         "size here) but owns none of the one-cell region at this position -- the bug "
-         "round 5 fixes";
+      << "rank 2 is a RankSet member (a membership-only rule would have registered the full "
+         "size here) but owns none of the one-cell region at this position";
 }
 
 TEST(ConformanceTest, ProviderAdapterRegisterFieldsExceptionBecomesAFailure) {
@@ -1183,8 +1177,7 @@ TEST(ConformanceTest, DlopenFailureIsRefusedWithDlerrorText) {
   EXPECT_FALSE(mounted.error().message.empty());
 }
 
-// ---- "Provider parity" track (KNOWN_ISSUES.md D15), Stage B-1, item 2:
-// checkpoint/restore through an iteration region driven by a MIX of a
+// ---- checkpoint/restore through an iteration region driven by a MIX of a
 // native component and a plugin-backed one. Mirrors
 // AbiParticipant.ImplicitCouplingConvergesLikeInProcess's own reference
 // construction (test/abi/participant_test.cpp) exactly, but drives the
@@ -1352,10 +1345,10 @@ TEST(ConformanceTest, PluginBackedComponentInAnIterationRegionConvergesLikeAllNa
                              .value().at(static_cast<std::size_t>(i));
     const double b_out_i = mixed_registry->get(mixed_g.component(*b_f).fields[1])
                               .value().at(static_cast<std::size_t>(i));
-    // Zero tolerance, not EXPECT_DOUBLE_EQ's 4-ULP allowance: the owner's
-    // own Stage B-1 instruction for this comparison is bit-identical
-    // equality, the same standard ImplicitCouplingConvergesLikeInProcess's
-    // own EXPECT_DOUBLE_EQ relaxes slightly, deliberately not followed
+    // Zero tolerance, not EXPECT_DOUBLE_EQ's 4-ULP allowance: this
+    // comparison requires bit-identical equality, which
+    // ImplicitCouplingConvergesLikeInProcess's own EXPECT_DOUBLE_EQ
+    // relaxes slightly, deliberately not followed
     // here -- every value compared below is a direct copy out of a bound
     // double[], with no reduction or intermediate re-rounding on either
     // side of the comparison, so there is no accumulation path a 4-ULP
@@ -1369,8 +1362,7 @@ TEST(ConformanceTest, PluginBackedComponentInAnIterationRegionConvergesLikeAllNa
   EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
 }
 
-// ---- KNOWN_ISSUES.md D15 item 1 ("Provider parity" track, Stage B-2,
-// Option A): the device-fields capability gate, the host-only-build
+// ---- The device-fields capability gate, the host-only-build
 // refusal, and the mixed host/device registration path.
 // -------------------------------------------------------------------------
 
@@ -1400,7 +1392,7 @@ TEST(ConformanceTest, PluginDeviceFieldWithoutCapabilityIsRefused) {
 }
 
 TEST(ConformanceTest, PluginDeviceCapabilityWithNoDeviceFieldIsAccepted) {
-  // The opposite direction the owner's own task names explicitly: a
+  // The opposite direction: a
   // provider may set FUSE_CAP_DEVICE_FIELDS while no field it actually
   // declares asks for FUSE_MEMSPACE_DEVICE -- unremarkable, since a
   // provider is always free to offer more than any one graph uses. A
@@ -1464,20 +1456,15 @@ TEST(ConformanceTest, PluginDeviceCapabilityWithNoDeviceFieldIsAccepted) {
 }
 
 TEST(ConformanceTest, PluginDeviceFieldOnAHostOnlyBuildIsRefused) {
-  // The owner's own explicit instruction, which this track's own Stage A
-  // report did NOT originally recommend (corrected here, not silently
-  // reversed -- see docs/dev/abi-design.md's own device-fields
-  // subsection): a build with no real device backend must refuse a
+  // See docs/dev/abi-design.md's own device-fields subsection: a build
+  // with no real device backend must refuse a
   // FUSE_MEMSPACE_DEVICE request by name, never silently hand back host-
   // addressable memory under the device label. This sandbox has no
   // CUDA/HIP/SYCL compiled into Kokkos, so the CORRECT plugin variant
   // (capabilities() sets FUSE_CAP_DEVICE_FIELDS correctly, describe()
   // asks for FUSE_MEMSPACE_DEVICE on "device_out") is refused here too --
   // on a real device build this SAME graph and plugin is exactly
-  // MixedHostAndDeviceFieldsOnOneProviderConvergeThroughChannels, below
-  // (renamed from DISABLED_MixedHostAndDeviceFieldsOnOneProviderConverge-
-  // ThroughChannels by the "Mixed plugin" track, 2026-10-21, once it
-  // could pass for real on a device build).
+  // MixedHostAndDeviceFieldsOnOneProviderConvergeThroughChannels, below.
 #if defined(KOKKOS_ENABLE_CUDA) || defined(KOKKOS_ENABLE_HIP) || defined(KOKKOS_ENABLE_SYCL)
   GTEST_SKIP() << "this build has a real device backend; the host-only "
                   "refusal this test checks for does not apply here -- see "
@@ -1509,9 +1496,7 @@ TEST(ConformanceTest, PluginDeviceFieldOnAHostOnlyBuildIsRefused) {
 #endif
 }
 
-// Fixed by the "Mixed plugin" track (2026-10-21), renamed from
-// DISABLED_MixedHostAndDeviceFieldsOnOneProviderConvergeThroughChannels to
-// drop that prefix: the TRUE positive mixed host/device path -- both
+// The TRUE positive mixed host/device path -- both
 // "host_out" and "device_out" bound, bind()'s own fuse_field_view.memspace
 // genuinely reporting FUSE_MEMSPACE_DEVICE, advance() writing through a
 // device pointer (mixed_memspace_provider.c's own p_advance(), through
@@ -1522,10 +1507,8 @@ TEST(ConformanceTest, PluginDeviceFieldOnAHostOnlyBuildIsRefused) {
 // "device_out" is refused outright by PluginDeviceFieldOnAHostOnlyBuildIs-
 // Refused above before this test's own body could ever run, so this test
 // skips there by the same #if this file's own device-field tests already
-// use. On a real device build (measured on ssh:higgs, GTX 1050 Ti, sm_61,
-// this track): PASSES -- see this track's own measured_results for the
-// verbatim ctest output and the RED-first scratch break that confirms the
-// row can fail.
+// use. On a real device build (measured on a CUDA host, GTX 1050 Ti, sm_61):
+// PASSES.
 TEST(ConformanceTest, MixedHostAndDeviceFieldsOnOneProviderConvergeThroughChannels) {
 #if !(defined(KOKKOS_ENABLE_CUDA) || defined(KOKKOS_ENABLE_HIP) || defined(KOKKOS_ENABLE_SYCL))
   GTEST_SKIP() << "no device backend on this build; see "
@@ -1566,10 +1549,10 @@ TEST(ConformanceTest, MixedHostAndDeviceFieldsOnOneProviderConvergeThroughChanne
   // separately (host_history, device_history), one entry per period. Both
   // channels in build_mixed_memspace_graph() are one hop (producer ->
   // sink, no intermediate component), and this tree's own channel
-  // delivery is lagged by one period per hop (measured by the "Device
-  // layout" track on a different graph; re-measured here, not assumed,
-  // because this graph's resolution and plugin differ): history[0] is the
-  // Sink's own cold-start default (-1.0, register_fields()'s own initial
+  // delivery is lagged by one period per hop (measured on a
+  // different graph in device_layout_test.cpp; re-measured here, not
+  // assumed, because this graph's resolution and plugin differ): history[0] is
+  // the Sink's own cold-start default (-1.0, register_fields()'s own initial
   // fill); history[period] for period >= 1 is the mixed provider's own
   // t_end from period `period` (t_begin = period - 1, t_end = period,
   // Rational{1} intervals, so t_end as a double is exactly
@@ -1605,9 +1588,8 @@ struct HostingProbeCounts {
 /// probe plugin) placed at `ranks`, so the only variable between the two
 /// tests below is which ranks the SAME graph shape declares -- the
 /// smallest fixture that exercises src/abi/participant.cpp's own
-/// impl_initialize_local() component-wiring loop (KNOWN_ISSUES.md D15,
-/// "Registry hosting" track) without a second component or a channel,
-/// which this round's own test needs none of.
+/// impl_initialize_local() component-wiring loop without a second
+/// component or a channel, which the tests below need none of.
 fuse::CouplingGraph build_hosting_probe_graph(
     fuse::RankSet ranks, const char* plugin_path = FUSE_TEST_HOSTING_PROBE_PROVIDER_PLUGIN) {
   fuse::CouplingGraph g;
@@ -1623,12 +1605,11 @@ fuse::CouplingGraph build_hosting_probe_graph(
   return g;
 }
 
-/// KNOWN_ISSUES.md D15 ("Registry agreement" track): the SAME one-field
-/// shape as build_hosting_probe_graph() above, but with NO Plugin
-/// component at all -- "upstream" defaults to LaunchMode::InProcess and
+/// The SAME one-field shape as build_hosting_probe_graph() above, but with NO
+/// Plugin component at all -- "upstream" defaults to LaunchMode::InProcess and
 /// is driven as a plain ExternalStepComponent, never touching Registry::
 /// mount_dynamic() or reconcile_plugin_agreement() at all. Exists so a
-/// test can confirm the one new collective this round adds truly never
+/// test can confirm the plugin-agreement collective truly never
 /// runs for a graph that does not declare a Plugin component.
 fuse::CouplingGraph build_no_plugin_graph() {
   fuse::CouplingGraph g;
@@ -1647,13 +1628,12 @@ TEST(ConformanceTest, NonHostingRankNeverDlopensThePluginOrCallsAnyOfItsEntries)
 #if FUSE_HAVE_MPI
   GTEST_SKIP() << "this case hands fuse_initialize() a placeholder communicator handle (force_communicator_set, "
                   "1234), which a no-MPI build never dereferences but an MPI build passes to MPI_Comm_rank and "
-                  "aborts (measured on the host, MPICH 5.0.2rc3, 2026-10-22). The same property is asserted on a "
+                  "aborts (measured on the host, MPICH 5.0.2rc3). The same property is asserted on a "
                   "real communicator by parallel.provider_subset_mpi.{2,3}.";
 #endif
-  // KNOWN_ISSUES.md D15 ("Registry hosting" track, owner decision
-  // 2026-10-22, verbatim: "NO. This should not happen."): "upstream" is
+  // A non-hosting rank must never load the plugin. "upstream" is
   // placed at RankSet{1, 1} -- rank 1 only. A build with no MPI
-  // (FUSE_HAVE_MPI off, this sandbox: KNOWN_ISSUES.md C1) hardcodes this
+  // (FUSE_HAVE_MPI off) hardcodes this
   // process's own rank to 0 (src/abi/participant.cpp's impl_initialize_
   // local(), the `#if FUSE_HAVE_MPI` block that would read a REAL rank
   // from the communicator is compiled out), so this process is ALWAYS
@@ -1685,11 +1665,10 @@ TEST(ConformanceTest, NonHostingRankNeverDlopensThePluginOrCallsAnyOfItsEntries)
   const fuse_status init_rc = t->initialize(ctx, nullptr, nullptr);
   // NOT asserted FUSE_OK: forcing communicator_set at tier 0 (no MPI)
   // makes fuse_initialize() itself pick the "mpi" transport
-  // (src/abi/participant.cpp, right after this round's own component-
-  // wiring loop) and then refuse E-TRANSPORT-BACKEND ("no transport
-  // backend named 'mpi'") -- a PRE-EXISTING, unrelated tier-0 limitation
-  // this round neither introduces nor can work around (open_questions),
-  // confirmed identical on the HOSTING twin below. The component-wiring
+  // (src/abi/participant.cpp, right after the component-wiring loop)
+  // and then refuse E-TRANSPORT-BACKEND ("no transport backend named
+  // 'mpi'") -- an unrelated tier-0 limitation, confirmed identical on
+  // the HOSTING twin below. The component-wiring
   // loop this test is actually about already ran to completion, and its
   // side effects (dlopen'd or not, each entry called or not) are already
   // final by the time this LATER, unrelated failure happens.
@@ -1737,14 +1716,14 @@ TEST(ConformanceTest, HostingTwin_HostingRankDlopensThePluginAndCallsItsEntries)
 #if FUSE_HAVE_MPI
   GTEST_SKIP() << "this case hands fuse_initialize() a placeholder communicator handle (force_communicator_set, "
                   "1234), which a no-MPI build never dereferences but an MPI build passes to MPI_Comm_rank and "
-                  "aborts (measured on the host, MPICH 5.0.2rc3, 2026-10-22). The same property is asserted on a "
+                  "aborts (measured on the host, MPICH 5.0.2rc3). The same property is asserted on a "
                   "real communicator by parallel.provider_subset_mpi.{2,3}.";
 #endif
   // The contrasting twin to the test above: the IDENTICAL one-field
   // graph shape, except "upstream" is placed at RankSet{0, 1} -- rank 0
   // only, which this tier-0 process always is -- so this run IS the
-  // hosting case. Confirms this round's fix did not also stop mounting
-  // the plugin on a rank that DOES host it.
+  // hosting case. Confirms the plugin is still mounted on a rank that
+  // DOES host it.
   //
   // Counts are read as a DELTA (before this test's own fuse_initialize()
   // call vs after), not an absolute value: this plugin's own file-static
@@ -1784,7 +1763,7 @@ TEST(ConformanceTest, HostingTwin_HostingRankDlopensThePluginAndCallsItsEntries)
   // (no "mpi" transport backend) -- confirmed identical here, which is
   // the point: this failure does not depend on hosting vs non-hosting
   // at all, only on communicator_set being forced on a build with no
-  // MPI, so it is not evidence either way about this round's own fix.
+  // MPI, so it is not evidence either way about the hosting behaviour.
   fuse_error err{sizeof(err)};
   char buf[512] = {0};
   err.buffer = buf;
@@ -1822,14 +1801,13 @@ TEST(ConformanceTest, HostingTwin_HostingRankDlopensThePluginAndCallsItsEntries)
 }
 
 
-// KNOWN_ISSUES.md D15 ("Registry agreement" track, owner decision
-// 2026-10-22, option (b)). Three tests below pin reconcile_plugin_
-// agreement() (src/abi/participant.cpp): the ONE collective this round
-// adds never runs for a graph with no Plugin component; a non-hosting
+// Three tests below pin reconcile_plugin_
+// agreement() (src/abi/participant.cpp): the ONE plugin-agreement
+// collective never runs for a graph with no Plugin component; a non-hosting
 // rank's own trivially-successful local verdict is overridden by a
-// (faked) hosting peer's failure, closing the EXACT gap KNOWN_ISSUES.md
-// D15's own "Open after the mount-everywhere fix" paragraph names; and a
-// hosting rank's OWN real mount failure still reaches the reduction
+// (faked) hosting peer's failure, closing the gap where a non-hosting rank
+// would otherwise report success; and a hosting rank's OWN real mount failure
+// still reaches the reduction
 // (the restructuring impl_initialize_local()'s own component-wiring
 // loop needed), not merely produces the same answer an immediate return
 // would have.
@@ -1926,8 +1904,7 @@ TEST(ConformanceTest,
   // was FUSE_OK (nothing failed here), yet fuse_initialize() returns the
   // FAKE hosting peer's failure -- "a non-hosting rank's own success
   // never masks a hosting rank's own refusal", the standing collective-
-  // discipline rule the "Registry hosting" round's own fix had left
-  // unmet for exactly this scenario.
+  // discipline rule.
   EXPECT_EQ(init_rc, FUSE_ERR_RUNTIME);
   EXPECT_STREQ(err.code, "E-ABI-PLUGIN-AGREEMENT-REFUSED");
   EXPECT_NE(std::string(buf).find("rank 1"), std::string::npos)
@@ -1945,13 +1922,12 @@ TEST(ConformanceTest, HostingRanksOwnPluginMountFailureStillReachesTheBaseCommun
   // "upstream" at RankSet{0, 1}: rank 0 (this process, hardcoded at tier
   // 0) is the HOSTING case this time, and its own plugin_path is the
   // real, already-built BAD_VERSION plugin (test/CMakeLists.txt), so
-  // mount_dynamic() fails for REAL -- no fake peer at all. Before this
-  // round's own restructuring, that failure would `return fail(...)`
-  // immediately, from inside the component-wiring loop, never reaching
-  // reconcile_plugin_agreement() -- indistinguishable from the fix by
-  // this rank's own return code alone (its status already IS the
-  // agreed minimum, with only one rank in play), which is exactly why
-  // this test reads the white-box call counter instead.
+  // mount_dynamic() fails for REAL -- no fake peer at all. A failure
+  // here must not `return fail(...)` immediately, from inside the
+  // component-wiring loop, never reaching reconcile_plugin_agreement() --
+  // which would be indistinguishable by this rank's own return code alone (its
+  // status already IS the agreed minimum, with only one rank in play), which
+  // is exactly why this test reads the white-box call counter instead.
   const auto* t = fuse_coupler_abi(FUSE_ABI_VERSION);
   ASSERT_NE(t, nullptr);
 
@@ -1985,14 +1961,13 @@ TEST(ConformanceTest, HostingRanksOwnPluginMountFailureStillReachesTheBaseCommun
   EXPECT_EQ(init_rc, FUSE_ERR_RUNTIME);
   EXPECT_STREQ(err.code, "E-ABI-VERSION");
   EXPECT_EQ(fuse::abi_test::plugin_agreement_reconcile_call_count(ctx), 1)
-      << "the restructured early return must still reach reconcile_plugin_agreement()";
+      << "the early return must still reach reconcile_plugin_agreement()";
 
   EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
 }
 
 
-// KNOWN_ISSUES.md D15 ("Registry agreement" track, owner decision
-// 2026-10-22): the real-ABI integration twin of test/abi/plugin_
+// The real-ABI integration twin of test/abi/plugin_
 // agreement_test.cpp's own pure-predicate unit tests -- confirms
 // src/abi/participant.cpp's impl_initialize_local() actually WIRES
 // fuse::abi_detail::plugin_mount_agreement_needs_a_missing_spanning_
@@ -2039,7 +2014,7 @@ TEST(ConformanceTest, APluginAlongsideAConnectComponentWithNoSpanningCommunicato
 
   // my_component left unset (NULL, the default): this process never
   // calls fuse::transport::connect() for either component -- exactly
-  // the shape this round's own task names.
+  // the shape that needs a spanning communicator.
   fuse_setup_options opts{sizeof(opts)};
   ASSERT_EQ(t->setup(ctx, &opts, nullptr), FUSE_OK);
   ASSERT_TRUE(fuse::abi_test::force_communicator_set(ctx, 1234));

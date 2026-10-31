@@ -137,8 +137,7 @@ class Waveform {
   /// in `fit_polynomial` the degree-3 fit reproduces an exact cubic to ~1e-14
   /// independently of the window length (measured), but the loss grows quickly
   /// with degree, and returning a fit that does not deliver its claimed order
-  /// is worse than rejecting. Task 6.3 should move to an orthogonal basis if it
-  /// needs more.
+  /// is worse than rejecting. An orthogonal basis would be needed for more.
   static constexpr int kMaxDgDegree = 4;
 
   /// `elements` may be 0 (an empty mesh partition on this rank is legal).
@@ -480,13 +479,13 @@ class Waveform {
     const double              x   = local(t);
     // The normal-equations build-and-eliminate depends only on `tt`/`deg`,
     // not on any element's values, so it is hoisted out of the per-element
-    // loop below (REVIEW.md R-48): every element replays the same
+    // loop below: every element replays the same
     // factorization on its own right-hand side instead of rebuilding it.
     const num::PolynomialFitPlan plan = num::prepare_polynomial_fit(tt, deg, 0.0);
     std::vector<double>       ff(times_.size());
-    // REVIEW.md R-48, pass 2: `coeffs`/`rhs_scratch` are hoisted here and
-    // reused every element via the `_into` entry point, so the disclosed
-    // per-element solve allocation is gone too, not just the factorization.
+    // `coeffs`/`rhs_scratch` are hoisted here and reused every element via
+    // the `_into` entry point, so there is no per-element solve allocation,
+    // not just no per-element factorization.
     std::vector<double>       coeffs;
     std::vector<double>       rhs_scratch;
     for (std::size_t e = 0; e < elements_; ++e) {
@@ -500,11 +499,11 @@ class Waveform {
     const std::vector<double> tt = local_times();
     const double              x  = local(t);
     // The tridiagonal moment matrix depends only on `tt`, so its
-    // factorization is hoisted out of the per-element loop (REVIEW.md R-48),
+    // factorization is hoisted out of the per-element loop,
     // matching evaluate_dg's plan/solve split above.
     const num::SplineMomentPlan plan = num::prepare_cubic_spline_moments(tt);
     std::vector<double>       ff(times_.size());
-    // REVIEW.md R-48, pass 2: same hoisting as evaluate_dg above.
+    // Same hoisting as evaluate_dg above.
     std::vector<double>       moments;
     std::vector<double>       r_scratch;
     for (std::size_t e = 0; e < elements_; ++e) {
@@ -554,10 +553,10 @@ class Waveform {
     const int                 deg = effective_dg_degree();
     const double              xa  = local(a);
     const double              xb  = local(b);
-    // Hoisted for the same reason as evaluate_dg above (REVIEW.md R-48).
+    // Hoisted for the same reason as evaluate_dg above.
     const num::PolynomialFitPlan plan = num::prepare_polynomial_fit(tt, deg, 0.0);
     std::vector<double>       ff(times_.size());
-    // REVIEW.md R-48, pass 2: same hoisting as evaluate_dg above.
+    // Same hoisting as evaluate_dg above.
     std::vector<double>       coeffs;
     std::vector<double>       rhs_scratch;
     for (std::size_t e = 0; e < elements_; ++e) {
@@ -571,10 +570,10 @@ class Waveform {
     const std::vector<double> tt = local_times();
     const double              xa = local(a);
     const double              xb = local(b);
-    // Hoisted for the same reason as evaluate_spline above (REVIEW.md R-48).
+    // Hoisted for the same reason as evaluate_spline above.
     const num::SplineMomentPlan plan = num::prepare_cubic_spline_moments(tt);
     std::vector<double>       ff(times_.size());
-    // REVIEW.md R-48, pass 2: same hoisting as evaluate_dg above.
+    // Same hoisting as evaluate_dg above.
     std::vector<double>       moments;
     std::vector<double>       r_scratch;
     for (std::size_t e = 0; e < elements_; ++e) {

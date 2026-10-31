@@ -177,7 +177,7 @@ TEST(Pipeline, AnOutOfRangeExtentIsRefusedRatherThanClamped) {
 }
 
 TEST(Pipeline, AnUnboundFieldIsRefusedNotDereferenced) {
-  // REVIEW.md R-08: a default-constructed `Layout{}` has `count == 0`, which
+  // A default-constructed `Layout{}` has `count == 0`, which
   // is bit-for-bit the same state as a legitimately-bound empty partition
   // (see AnEmptyFieldFromABoundZeroCountFieldRefDoesNotRefuse below) -- so it
   // cannot be used to pin "genuinely unbound" here. A non-empty null FieldRef
@@ -187,7 +187,7 @@ TEST(Pipeline, AnUnboundFieldIsRefusedNotDereferenced) {
   EXPECT_THROW((void)fuse::FieldSpan<>::from(unbound), fuse::Refusal);
 }
 
-// The complement of the above (REVIEW.md R-08): a rank that legitimately owns
+// The complement of the above: a rank that legitimately owns
 // zero elements of a mesh entity set binds a null pointer with `count == 0`
 // (FieldRegistry::bind()'s own allowance, registry.hpp:38-46), and
 // FieldSpan::from() must accept it as an ordinary, empty view rather than
@@ -269,16 +269,15 @@ TEST(Pipeline, NoTypeIsBothABuilderAndAPipeline) {
   SUCCEED();
 }
 
-// ---- REVIEW.md R-29: Layout::well_formed()'s padded/strided boundary -----
+// ---- Layout::well_formed()'s padded/strided boundary ---------------------
 //
 // These pin the tightened disjointness bound in field_ref.hpp. They live
-// here rather than in test/runtime/field_ref_test.cpp (this file's owner
-// during the review-fix pass does not hold that path) -- Layout is
+// here rather than in test/runtime/field_ref_test.cpp -- Layout is
 // header-only and pipeline_test.cpp already includes field_ref.hpp directly.
 
 TEST(Layout, WellFormedAcceptsATightPaddedInterleavedLayout) {
   // offsets: component 0 at {0,5,10,15}, component 1 at {2,7,12,17} -- disjoint,
-  // confirmed by brute force in the review (NL-A1). The old bound
+  // confirmed by brute force. The old bound
   // (stride >= nc*cs = 6) wrongly rejected this.
   EXPECT_TRUE((fuse::Layout{.stride = 5, .component_stride = 2, .count = 4,
                             .components = 3}

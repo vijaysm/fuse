@@ -2,10 +2,8 @@
 
 FUSE unifies two verified code bases: a coupling compiler and runtime, and a coupling spine
 contributing the semantic model, compatibility inference, collective reconciliation and provider ABI.
-The import baselines are pinned in `UPSTREAMS.lock` at the repository root. [](roadmap.md) is the
-staged build order and where the tree currently stands against it — read it second if you want the
-state of the project before the design pages below; everything else here is organized to be read in
-order, foundations first.
+The import baselines are pinned in `UPSTREAMS.lock` at the repository root. Everything here is
+organized to be read in order, foundations first.
 
 ## Foundations — read these first
 
@@ -65,33 +63,29 @@ extent (`ContinuousGLL` order 1 is sized by vertex count, not cell count) and wh
 vertex ownership means for a nodal field in parallel. [](coupler-placement.md) covers the
 separately-placed coupler: the `ComponentKind` representation decision, the rule that lowers
 `source -> C -> target`, and every `component_count()` call site checked against it.
-[](runner-device-dispatch.md) covers the in-progress effort to give `Runner::Impl::execute()` a
-real Kokkos device (Cuda) path and a cuSPARSE/cuSOLVER sparse-solve backend, including why the
-device-dispatch scope narrowed twice before settling on templating just `execute()`'s elementwise
-`OpKind` cases. [](device-resident-arcs.md) is the approved follow-on design: arcs, `previous[]`,
+[](runner-device-dispatch.md) covers how `Runner::Impl::execute()` gets a
+real Kokkos device (Cuda) path, and the optional cuSPARSE/cuSOLVER sparse-solve backend, including why the
+device-dispatch scope is limited to templating `execute()`'s elementwise `OpKind` cases.
+[](device-resident-arcs.md) is the follow-on design: arcs, `previous[]`,
 history and the reduction scratch resident in the execution space's memory, host memory touched only
 at named boundaries, the mesh/topology builders made Space-generic, and the GPU-aware transport path
 for multi-rank device runs.
 
-## physics-kit (S8)
+## physics-kit
 
-[](physics-kit-disposition.md) is the S8.0 inventory of the vendored KARMA tree: the per-file
-supersession table, the include graph and import order, the test mapping and the baselines the
-port must reproduce, with the lead's corrections after review at the end. [](integrators-design.md)
-is the read-first design for porting KARMA's 22 Runge-Kutta and Rosenbrock tableaus into `fuse::num`
+[](integrators-design.md)
+is the design for porting KARMA's 22 Runge-Kutta and Rosenbrock tableaus into `fuse::num`
 as templates with a separate embedded-error controller, the contract with the coupling window, and
-the owner's decisions on its open questions. [](field-semantics-matrix.md) is the
+the decisions on its open questions. [](field-semantics-matrix.md) is the
 read-only comparison of KARMA's eight coupling headers and SOMA's field layer against the current
 fuse field semantics: eight verdicts, a per-concern matrix with file and line, and the smallest
-addition proposed for each gap. [](physics-kit.md) is the component page once the
-skeleton landed (S8.1): what physics-kit is, its tier and build option, and the two gates
+addition proposed for each gap. [](physics-kit.md) is the component page: what physics-kit is, its tier and build option, and the two gates
 (`tools/check-layering.py`'s boundary check, `tools/check-physics-kit-naming.py`) that keep the
-direction of dependency and the naming honest while the port is in progress.
+direction of dependency and the naming honest.
 
 ## Holding an external path to the bar
 
 [](conformance.md) defines what "conformance" means for an external code coupling through the
-participant ABI, and is the record of every Runner and window-path defect the Conformance track
-found holding an external path to that bar — the Brusselator, as a separately-launched,
-multi-executable participant, is the external code that track and every one since has measured
-against.
+participant ABI, and is the record of every Runner and window-path defect found holding an external
+path to that bar — the Brusselator, as a separately-launched, multi-executable participant, is the
+external code that has been measured against it.

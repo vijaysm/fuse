@@ -489,11 +489,11 @@ Result<void> apply_spacetime(const SpatialWeightsView& spatial,
 
   const double w = temporal.coefficient(tgt_step, src_step);
 
-  // REVIEW.md R-33: `w == 0.0` used to return here, before the triplet-index
-  // validation loop below ran at all -- so a malformed `spatial` array (an
-  // out-of-range row/column index) was only ever caught on a call whose
-  // temporal coefficient happened to be nonzero. The validation now runs on
-  // EVERY call regardless of `w`; only the accumulation itself -- which a
+  // `w == 0.0` must not return before the triplet-index validation loop
+  // below runs -- otherwise a malformed `spatial` array (an out-of-range
+  // row/column index) would only be caught on a call whose temporal
+  // coefficient happened to be nonzero. The validation runs on EVERY call
+  // regardless of `w`; only the accumulation itself -- which a
   // zero coefficient would zero out anyway -- is skipped per triplet.
   const auto nc = static_cast<std::size_t>(components);
   for (std::size_t k = 0; k < spatial.nnz; ++k) {

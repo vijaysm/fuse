@@ -1,6 +1,6 @@
 """Python reimplementations of examples/dn_heat/dn_component.hpp's DirichletSlab/NeumannSlab.
 
-Per the owner's ruling (2026-10-12): the dn_heat byte-for-byte driver test reimplements the
+The dn_heat byte-for-byte driver test reimplements the
 two slabs as Python pfuse.Component subclasses rather than wrapping the existing native
 classes in a test-only extension. The formulas below are copied from dn_component.hpp
 line-for-line (not approximated), and the arithmetic grouping matches the C++ expressions'

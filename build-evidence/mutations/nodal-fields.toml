@@ -1,11 +1,9 @@
-# Mutations for the "Nodal fields" track. Schema: build-evidence/mutations.toml.
-# Own file per the review-fix protocol: do not edit build-evidence/mutations.toml
-# directly while other fixers hold it dirty.
+# Mutations for nodal fields. Schema: build-evidence/mutations.toml.
 
 [[mutation]]
 id = "nodal-field-extent-uses-cell-count"
 area = "backend"
-describes = "make_region_sizes()'s Vertex-kind branch (mesh_view.hpp's field_extent/region_extent_kind decided the region carries a ContinuousGLL order-1 field) reads the region's own (cell) dimension instead of the mesh's vertex count, exactly the defect the acceptance test (InterfaceTransfer.ConsistentPairRunsThroughTheRunnerExactlyAndBalancesPower) failed on with E-RT-SIZE before this track's fix"
+describes = "make_region_sizes()'s Vertex-kind branch (mesh_view.hpp's field_extent/region_extent_kind decided the region carries a ContinuousGLL order-1 field) reads the region's own (cell) dimension instead of the mesh's vertex count, exactly the defect the acceptance test (InterfaceTransfer.ConsistentPairRunsThroughTheRunnerExactlyAndBalancesPower) failed on with E-RT-SIZE before the fix"
 file = "src/backend/serial_backend.cpp"
 old = "      return view.value()->entity_count(0);\n    }"
 new = "      return view.value()->entity_count(resolved.dimension >= 0 ? resolved.dimension\n                                                                 : view.value()->dimension());\n    }"
@@ -23,7 +21,7 @@ test = "backend.field_extent"
 [[mutation]]
 id = "shared-vertex-owner-picks-highest-rank"
 area = "backend"
-describes = "SharedVertexLineMesh::is_owned(0, i) inverts docs/dev/native-mesh.md's rule for the boundary slot this rank shares with its LEFT neighbour, claiming ownership for the HIGHER of the two ranks holding a shared vertex instead of the lower one -- exactly the inversion mutation this track's own test backend exists to catch, since resolve_vertex_ownership (native_migration.cpp) itself is reused unmodified and has no comparable local mutation point in this track's owned files"
+describes = "SharedVertexLineMesh::is_owned(0, i) inverts docs/dev/native-mesh.md's rule for the boundary slot this rank shares with its LEFT neighbour, claiming ownership for the HIGHER of the two ranks holding a shared vertex instead of the lower one -- exactly the inversion mutation the test backend exists to catch, since resolve_vertex_ownership (native_migration.cpp) itself is reused unmodified and has no comparable local mutation point here"
 file = "test/support/partitioned_test_backend.hpp"
 old = "    if (i == 0) return owner_of_first_ == my_rank_;"
 new = "    if (i == 0) return true;  // MUTATED: every rank claims its own first vertex"
@@ -98,12 +96,12 @@ new = """  std::unordered_map<std::int64_t, std::vector<double>> total_of;
 target = "fuse_parallel_nodal_field_test"
 test = "parallel.nodal_field.2"
 requires = "mpi"
-# Fixed 2026-09-28: the original `old`/`new` pair doubled `local_count`
+# The `old`/`new` pair must not double `local_count`
 # without doubling the `local_gids`/`local_component` buffers it sizes the
 # Allgatherv send from -- an out-of-bounds read (undefined behaviour), which
 # SURVIVED on the host because the few `int64_t`/`double` slots just past a
 # small heap allocation are typically harmless garbage or zero, not
-# necessarily a crash or a visible difference. Rewritten to duplicate the
+# necessarily a crash or a visible difference. The mutation duplicates the
 # CONTRIBUTION deterministically instead of the buffer size: after the
 # normal (correct) gather-and-sum, this rank's own local values are added a
 # second time directly into `total_of`. No undefined behaviour anywhere, and
@@ -114,15 +112,15 @@ requires = "mpi"
 [[mutation]]
 id = "nodal-parallel-remap-refusal-disabled"
 area = "runtime"
-describes = "KNOWN_ISSUES D8: resolve_remap's whole nodal-distributed trigger (both the build_nodal_dist_remap success path and the E-RT-REMAP-NODAL-PARALLEL rejection for any other method/orientation) is disabled, so a nodal Remap on a multi-rank component falls through unconditionally to the OLD rank-local path -- the exact shape a real host MPI run found silently mis-answering or failing with the wrong diagnostic (round 4)"
+describes = "resolve_remap's whole nodal-distributed trigger (both the build_nodal_dist_remap success path and the E-RT-REMAP-NODAL-PARALLEL rejection for any other method/orientation) is disabled, so a nodal Remap on a multi-rank component falls through unconditionally to the OLD rank-local path -- the exact shape a real host MPI run found silently mis-answering or failing with the wrong diagnostic"
 file = "src/runtime/runner.cpp"
 old = "    if ((!both_on_one_rank || moves_placement || config.force_distributed_nodal_remap) &&\n        (src_nodal || tgt_nodal)) {"
 new = "    if (false) {  // MUTATED: the whole nodal-distributed trigger disabled"
 target = "fuse_verification_interface_transfer_test"
 test = "verification.interface_transfer"
-# KILLED (re-verified round 4, after resolve_remap's trigger was generalized
-# to check BOTH regions' kind and BOTH components' rank count -- see
-# nodal-remap-runner.toml's own preamble for why this anchor moved). Applied
+# KILLED (resolve_remap's trigger checks BOTH regions' kind and BOTH
+# components' rank count -- see nodal-remap-runner.toml's own preamble for
+# the anchor). Applied
 # by hand, rebuilt, and run: InterfaceTransfer.
 # ARemapIntoANodalFieldOnSeveralRanksViaASupermeshMethodStillRefuses fails
 # (the graph-level E-RT-REMAP-NODAL-PARALLEL never fires; initialize() throws
@@ -138,7 +136,7 @@ test = "verification.interface_transfer"
 [[mutation]]
 id = "nodal-trigger-misses-two-single-rank-placements"
 area = "runtime"
-describes = "The round-5 condition. `src_ranks > 1 || dst_ranks > 1` asks whether either placement is partitioned; what matters is whether the two TOGETHER sit on one rank. At exactly two ranks a disjoint pair is one rank EACH, so the old form took the rank-local path even though no rank held both sides, and a real host run failed with E-INTERP-NOGEOMETRY ('they hold 7 and 0 entities'). Reverting to it restores that."
+describes = "The current condition. `src_ranks > 1 || dst_ranks > 1` asks whether either placement is partitioned; what matters is whether the two TOGETHER sit on one rank. At exactly two ranks a disjoint pair is one rank EACH, so the old form took the rank-local path even though no rank held both sides, and a real host run failed with E-INTERP-NOGEOMETRY ('they hold 7 and 0 entities'). Reverting to it restores that."
 file = "src/runtime/runner.cpp"
 old = """    const bool both_on_one_rank =
         src_ranks == 1U && dst_ranks == 1U &&
@@ -183,7 +181,7 @@ requires = "mpi"
 [[mutation]]
 id = "distributed-remap-lowered-behind-a-transport"
 area = "compiler"
-describes = "The host-run defect of 2026-09-25: a consistent-interpolation remap on a nodal side was lowered as Transport-then-Remap like every other, so the source values were delivered onto the target placement's (empty, on a disjoint placement) view of the source mesh and the distributed operator summed nothing -- H exact, H^T D zero. With the predicate forced false the default lowering returns."
+describes = "The host-run defect: a consistent-interpolation remap on a nodal side was lowered as Transport-then-Remap like every other, so the source values were delivered onto the target placement's (empty, on a disjoint placement) view of the source mesh and the distributed operator summed nothing -- H exact, H^T D zero. With the predicate forced false the default lowering returns."
 file = "src/ir/rules_channel.cpp"
 old = "  const bool remap_moves =\n      remap_moves_placement(ch.remap.method_override, g.field(ch.source), g.field(ch.target));"
 new = "  const bool remap_moves = false;"

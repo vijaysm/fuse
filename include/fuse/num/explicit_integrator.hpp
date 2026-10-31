@@ -11,8 +11,7 @@
 #include "fuse/num/embedded_controller.hpp"
 #include "fuse/num/integrator.hpp"
 
-/// S8 physics-kit, track "Integrators", Stage B Round 1
-/// (docs/dev/integrators-design.md Section 4.1, task item 4): the explicit family --
+/// The explicit integrator family (docs/dev/integrators-design.md Section 4.1):
 /// FE, KUTTA22, KUTTA44 (fixed step, no embedded estimate) and DOPRI45 (embedded, FSAL
 /// per the correction in butcher_tableau.hpp's own top comment) -- as ONE class over
 /// any `ButcherTableau` whose `family` is `Erk` or `ErkEmbedded`, replacing
@@ -21,13 +20,13 @@
 /// dopri45_integrator.*) with one stage loop parameterised by the tableau.
 ///
 /// NOT ported from `ExplicitRKIntegrator`: its own "adaptive" branch is the
-/// dynamical-time-scale controller (Stage A design Section 2, mechanism 1), a
-/// PHYSICS callback (`KARMAInterface::compute_dynamical_timescales`) this track's own
-/// scope never asked for (task item 4 names only "error norm as the rtol/atol-scaled
-/// RMS" -- the Hairer-style embedded mechanism, mechanisms 2/3 of that same section,
-/// never mechanism 1). A component that wants dynamical-time-scale control is a later
-/// track's own scope, layered on TOP of this one (it would call `step()` with an `h` it
-/// chose itself, the same way a fixed-step caller does), not inside it.
+/// dynamical-time-scale controller (design doc Section 2, mechanism 1), a
+/// PHYSICS callback (`KARMAInterface::compute_dynamical_timescales`) that is out of
+/// scope here (the error norm is the rtol/atol-scaled RMS -- the Hairer-style
+/// embedded mechanism, mechanisms 2/3 of that same section, never mechanism 1). A
+/// component that wants dynamical-time-scale control layers it on TOP of this one
+/// (it calls `step()` with an `h` it chose itself, the same way a fixed-step caller
+/// does), not inside it.
 ///
 /// NOT ported either: the FSAL reuse optimisation (DOPRI45's own stage-7 result equals
 /// the next step's stage-0 evaluation, so a correctly-done FSAL implementation skips
@@ -41,7 +40,7 @@ namespace fuse::num {
 
 /// `ExplicitIntegrator<Value>::step()`'s own refusals, beyond the ones
 /// `EmbeddedController::propose` already names. `kNoRhsCode`/`kWrongFamilyCode`/
-/// `kDimensionMismatchCode` moved to `integrator.hpp` in Round 2 (shared by every
+/// `kDimensionMismatchCode` live in `integrator.hpp` (shared by every
 /// family); `kMassUnsupportedCode` stays here, since only THIS family refuses on a
 /// mass matrix rather than honouring it.
 inline constexpr const char* kMassUnsupportedCode = "E-INTEGRATOR-MASS-UNSUPPORTED";
@@ -59,7 +58,7 @@ class ExplicitIntegrator final : public Integrator<Value> {
   /// Adaptive construction (DOPRI45 -- `family == ErkEmbedded`). `rtol`/`atol` are
   /// Hairer's own per-run tolerances (dopri45_integrator.C:118-119's own `atoli`/
   /// `rtoli`, read once from the tableau's caller rather than once per vendored
-  /// integrator instance, same meaning); `norm` is the task's own "norm functor the
+  /// integrator instance, same meaning); `norm` is the "norm functor the
   /// caller supplies" (this header's own top comment; `serial_rms_norm`,
   /// integrator.hpp, is the default).
   ExplicitIntegrator(ButcherTableau tableau, EmbeddedController controller, Scalar rtol,
@@ -89,7 +88,7 @@ class ExplicitIntegrator final : public Integrator<Value> {
     if (problem.has_mass()) {
       return Failure{kMassUnsupportedCode,
                      "ExplicitIntegrator::step: a mass-matrix problem (M != I) needs a "
-                     "linear solve per stage, round-2 scope (DIRK/Rosenbrock); the "
+                     "linear solve per stage (use the DIRK/Rosenbrock family); the "
                      "explicit family never reads TemporalProblem::mass"};
     }
     if (tableau_.family != ButcherFamily::Erk && tableau_.family != ButcherFamily::ErkEmbedded) {

@@ -1,6 +1,6 @@
 // Numerical order-of-accuracy study for the temporal bases.
 //
-// Whatever order a basis claims, Phase 6.5's convergence study will measure it,
+// Whatever order a basis claims, the convergence study will measure it,
 // and a basis that claims p and delivers p-1 has to fail HERE, not there. Every
 // order stated in waveform.hpp's header comment is measured below.
 //

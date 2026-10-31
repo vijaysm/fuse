@@ -1,17 +1,16 @@
 #ifndef FUSE_EXAMPLES_BRUSSELATOR_PARTICIPANTS_U_LOOP_H_
 #define FUSE_EXAMPLES_BRUSSELATOR_PARTICIPANTS_U_LOOP_H_
 
-/* Time windows track (Conformance, Unit 2): the ONE place "drive one
+/* The ONE place "drive one
  * externally-driven step of U" is written IN C -- fuse_begin_step(), the
  * checkpoint/restore dance fuse_step_report::requires_checkpoint/
- * requires_restore asks for (KNOWN_ISSUES.md D12), the shim's own
+ * requires_restore asks for, the shim's own
  * bruss_u_step(), then fuse_end_step() -- so u_main.c's own time loop and
  * test/verification/brusselator_participants_test.cpp's own tier-0
  * harness call the SAME code rather than two hand-copies that could
- * drift. PURE C, deliberately: u_main.c is the half of Conformance Unit 2
- * that demonstrates a C code driving FUSE through the ABI in C, so the
- * loop body itself -- not just main() -- has to be C, not a thin wrapper
- * around a C++ helper (the lead's own correction on this point).
+ * drift. PURE C, deliberately: u_main.c demonstrates a C code driving
+ * FUSE through the ABI in C, so the loop body itself -- not just main() --
+ * has to be C, not a thin wrapper around a C++ helper.
  * Resolves fuse_coupler_abi(FUSE_ABI_VERSION) internally; takes `ctx`
  * only, never the `fuse_participant_abi_v1*` table itself.
  */

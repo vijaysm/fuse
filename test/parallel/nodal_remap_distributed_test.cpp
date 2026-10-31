@@ -1,5 +1,4 @@
-// Nodal-remap track, step 2: "Distributed rows and the exact transpose"
-// (KNOWN_ISSUES D8). Exercises `fuse::build_distributed_interp_rows`,
+// "Distributed rows and the exact transpose". Exercises `fuse::build_distributed_interp_rows`,
 // `apply_distributed_H` and `apply_distributed_HT`
 // (nodal_remap_distributed.hpp) directly -- not yet through the Runner, see
 // that header's own file comment for exactly why -- against
@@ -7,9 +6,7 @@
 // distributed 1D interface with real coordinates and connectivity, at three
 // rank-set shapes: disjoint, identical, and partially overlapping.
 //
-// MPI CANNOT INITIALISE IN THIS SANDBOX (docs/dev/testing.md): every case
-// here is compiled, never run, in the environment this file was written in.
-// outcomes are a host action.
+// Needs a working MPI launcher (docs/dev/testing.md).
 //
 // WHAT THIS FILE DOES NOT CHECK: bit-identical results ACROSS DIFFERENT rank
 // counts needs two separate job launches compared against each other (the
@@ -127,7 +124,7 @@ void check_affine_exact_and_conservative(std::size_t n_src, fuse::RankSet src_ra
       << "H^T must conserve the total load globally";
 }
 
-/// Review 2026-10-11 TF-1: `gather_global_source`'s per-rank vertex/cell
+/// `gather_global_source`'s per-rank vertex/cell
 /// buffer-building loops (inside `build_distributed_interp_rows`, the only
 /// entry point that reaches it) can fail -- or throw -- rank-locally BEFORE
 /// their own `MPI_Allgatherv`, which is a hang (or an uncaught exception) at
@@ -231,11 +228,11 @@ void check_one_rank_bad_source_agrees(std::size_t n_src, SourceFault fault, int 
 
 }  // namespace
 
-// Review 2026-10-11 TF-1. Pre-fix signature: the faulty rank either throws
-// uncaught (the `kVertexGidThrows` case) or returns `Failure` directly from
+// Without agreement, the faulty rank would either throw
+// uncaught (the `kVertexGidThrows` case) or return `Failure` directly from
 // inside `gather_global_source`'s loop (the `kUnsupportedShape` case) BEFORE
-// that loop's own `MPI_Allgatherv` -- in either case every OTHER rank blocks
-// forever inside the collective it entered on schedule. Post-fix: every rank
+// that loop's own `MPI_Allgatherv` -- in either case every OTHER rank would block
+// forever inside the collective it entered on schedule. With agreement, every rank
 // returns the identical `Failure` within the test's own TIMEOUT.
 TEST(NodalRemapDistributed, UnsupportedShapeSourceCellAgreesAcrossRanks) {
   if (world_size() < 3) GTEST_SKIP() << "needs >= 3 ranks for a one-rank-bad row";

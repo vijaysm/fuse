@@ -1,4 +1,4 @@
-// S6 phase 3 ("LowFive" track), Unit 3. brusselator_graph_tool.cpp's own
+// brusselator_graph_tool.cpp's own
 // `--transport lowfive` wiring is exercised end to end by the committed
 // reference YAML + verify-graph-tool-reference.cmake (examples/
 // CMakeLists.txt: verification.brusselator.graph_tool.reproduces_
@@ -106,7 +106,7 @@ TEST(BrusselatorGraphToolLowFive, OmittingTheLowFiveComponentIsRefused) {
   }()) << d.to_string();
 }
 
-// Unit 3 (S6 phase 3, Conformance), IR/runtime half: the real tool-built
+// IR/runtime half: the real tool-built
 // graph -- window-scoped (add_window_coupling()), u_mesh/v_mesh genuinely
 // different (3x3 vs 4x4, so Remap is actually needed), u_ranks/v_ranks
 // genuinely different ({0,1} vs {1,1}) -- lowers with no OpKind::Transport
@@ -129,10 +129,8 @@ TEST(BrusselatorGraphToolLowFive, LowersWithExternalDeliveryAndNoTransport) {
       ++external_delivery_count;
       // ONE input, an ORDERING edge onto the source field's own
       // producer -- here, a window-scoped export, so WindowAdvance
-      // (OpKind::ExternalDelivery's own comment, op.hpp; the scheduling-
-      // order fix this comment documents, MEASURED a later session,
-      // needs this edge to place the node after the exporting member's
-      // own last substep this sweep) -- never a data dependency
+      // (OpKind::ExternalDelivery's own comment, op.hpp; this edge places the
+      // node after the exporting member's own last substep this sweep) -- never a data dependency
       // (execute()'s own ExternalDelivery case, src/runtime/runner.cpp,
       // does not read it).
       ASSERT_EQ(n.inputs.size(), 1u);

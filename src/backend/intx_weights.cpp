@@ -156,11 +156,11 @@ constexpr double kCoverageTol = 1e-9;
 /// only. This is the entirety of `build_weights()` when the library is
 /// compiled without MOAB, and it is ALSO what a MOAB-enabled build must fall
 /// back to when the backend handed to `build_weights()` is not a
-/// `MoabMeshBackend` (REVIEW.md N-BACKEND-4: before this fix, a MOAB build's
-/// `build_weights()` always took the MOAB-only path -- via `resolve()`'s
-/// `dynamic_cast<const MoabMeshBackend*>` -- and rejected E-REMAP-BACKEND for
-/// a serial mesh pair that a base build configuration would have served, a capability a
-/// MOAB-enabled build configuration must not lose just because it CAN also do more).
+/// `MoabMeshBackend` (otherwise a MOAB build's `build_weights()` would always
+/// take the MOAB-only path -- via `resolve()`'s
+/// `dynamic_cast<const MoabMeshBackend*>` -- and reject E-REMAP-BACKEND for
+/// a serial mesh pair that a base build configuration serves, a capability a
+/// MOAB-enabled build must not lose just because it CAN also do more).
 [[nodiscard]] Result<RemapWeights> build_weights_via_supermesh(
     const RemapPlan& plan, const CouplingGraph& graph,
     const MeshBackend& backend) {
@@ -201,25 +201,23 @@ constexpr double kCoverageTol = 1e-9;
   // same region on both sides): every one of the source's cells IS a target
   // cell already, local by construction, so no halo is ever needed for it.
   // ==========================================================================
-  // Hoisted out of the `if` below (round 7, RemapHalo track): the
+  // Hoisted out of the `if` below: the
   // conservative-coverage fold further down needs this SAME pointer, not a
   // second `dynamic_cast`, and `nullptr` on a non-native backend is exactly
   // the "this check does not apply" guard that code needs too.
   const auto* native_backend = dynamic_cast<const native::NativeMeshBackend*>(&backend);
   if (native_backend != nullptr) {
-    // KNOWN_ISSUES.md D73 (RemapHalo track round 6, host measurement 2026-10-19): `plan.placement`
-    // is the ONLY argument missing here -- `has_remap_halo`'s own 4th parameter defaults to
+    // `plan.placement` is the ONLY argument needed here -- `has_remap_halo`'s own 4th parameter defaults to
     // `ComponentId{}` (the "unplaced decomposition", that default parameter's own doc comment,
     // native_backend.hpp), but `fuse::native::build_native_remap_halo`'s own `commit_remap_halo`
     // call (native_halo.cpp) records the triple under `placement` -- the TARGET's own, real
-    // ComponentId, round 3's own fix, never the default. A halo genuinely built and committed under
-    // a real placement is therefore invisible to this exact check, which asked under a DIFFERENT
-    // key (the default) that was never written to -- measured on the owner's host: `initialize()`
-    // refused E-REMAP-PARALLEL on BOTH ranks of a GREEN row whose own trace already showed the halo
-    // had built cleanly (adopted_source_cells printed correctly, no exception) moments earlier.
-    // Passing `plan.placement` here is the SAME placement `supermesh_side()` already resolved both
-    // `s`/`d` through, two lines above -- the query now asks under the identical key the commit
-    // wrote.
+    // ComponentId, never the default. A halo genuinely built and committed under
+    // a real placement would be invisible to a check asking under a DIFFERENT
+    // key (the default) that was never written to: `initialize()` would
+    // refuse E-REMAP-PARALLEL on every rank even though the halo had built
+    // cleanly. `plan.placement` is the SAME placement `supermesh_side()`
+    // already resolved both `s`/`d` through, above -- the query asks under
+    // the identical key the commit wrote.
     if (native_backend->communicator_size() > 1 && s.value().mid.value() != d.value().mid.value() &&
         !native_backend->has_remap_halo(s.value().mid, d.value().mid, s.value().dim, plan.placement)) {
       return Failure{
@@ -240,21 +238,19 @@ constexpr double kCoverageTol = 1e-9;
   auto built = build_supermesh_weights(*s.value().view, *d.value().view,
                                        s.value().dim, plan.conservation);
   if (!built.ok()) return built.error();
-  // Soma-import finding (docs/dev/soma-import.md, RemapPartial.* rows), same
-  // defect as REVIEW.md TF-5: this path computed min_src_coverage all along
-  // (build_supermesh_weights's own audit) but never read it against
-  // RemapFlags::Conservative -- only the FUSE_HAVE_MOAB half of this file
-  // enforced the refusal, so a tier-0 (no-MOAB) build silently dropped
-  // uncovered source mass on a channel explicitly marked Conservative, and a
+  // (docs/dev/soma-import.md, RemapPartial.* rows): this path computes
+  // min_src_coverage (build_supermesh_weights's own audit) and must read it
+  // against RemapFlags::Conservative -- were only the FUSE_HAVE_MOAB half of
+  // this file to enforce the refusal, a tier-0 (no-MOAB) build would silently
+  // drop uncovered source mass on a channel explicitly marked Conservative, and a
   // MOAB-capable build whose backend happens not to be MoabMeshBackend
-  // (N-BACKEND-4's own dispatch just above routes here) silently accepted
-  // the flag and then ignored it: the exact I4 shape (a documented
+  // (the dispatch just above routes here) would silently accept
+  // the flag and then ignore it: the exact I4 shape (a documented
   // guarantee quietly not enforced). Same check, same tolerance, same error
   // code as the MOAB path below, so a plan rejected there is rejected here
   // for the identical reason.
   //
-  // KNOWN_ISSUES.md D73 (RemapHalo track round 7, host measurement
-  // 2026-10-19): `min_src_coverage`, as `build_supermesh_weights` just
+  // `min_src_coverage`, as `build_supermesh_weights` just
   // returned it, is the coverage of the intersections THIS rank's own
   // merged views produced -- correct on a single rank, but on a partitioned
   // read a source cell this rank OWNS may have every one of its
@@ -270,7 +266,7 @@ constexpr double kCoverageTol = 1e-9;
   // never a refusal one rank reaches alone from a locally computed 0%.
   if (has(plan.flags, RemapFlags::Conservative) && native_backend != nullptr &&
       native_backend->communicator_size() > 1 && s.value().mid.value() != d.value().mid.value()) {
-    // KNOWN_ISSUES.md D82 (owner decision 2026-10-19): recovers the RAW
+    // Recovers the RAW
     // intersection measure from the (already divided) weight -- undo
     // whichever division build_supermesh_weights just applied: Extensive
     // divided by the SOURCE cell's own measure, Intensive by the target's.
@@ -424,10 +420,8 @@ using V3 = std::array<double, 3>;
 
 // ---------------------------------------------------------------------------
 // Tolerances. All relative; each is justified by a measurement recorded in
-// the commit that introduced it. REVIEW.md R-11: no test in this tree reads
-// any of them directly -- `test/unit/remap_test.cpp`, cited here previously
-// as reproducing that measurement, does not exist under `test/backend/`.
-// Implemented, untested (docs/dev/testing.md state).
+// the commit that introduced it. No test in this tree reads
+// any of them directly. Implemented, untested (docs/dev/testing.md state).
 // ---------------------------------------------------------------------------
 
 /// Relative slack when deciding that a coordinate sits on a cell's bounding
@@ -577,8 +571,7 @@ struct Side {
 /// local cell orientation) and can therefore fail on one rank without
 /// failing on a peer; without this, the ranks that did not fail walk into
 /// the next MOAB collective (`FindMaxEdges`, `reduce_audit`'s
-/// `MPI_Allreduce`, ...) and hang waiting for the one that did (REVIEW.md
-/// R-01). This is the same shape as `reduce_audit` below, applied earlier,
+/// `MPI_Allreduce`, ...) and hang waiting for the one that did. This is the same shape as `reduce_audit` below, applied earlier,
 /// to the checks that run before it.
 ///
 /// `pcomm_raw` is a `moab::ParallelComm*`, or null (serial, or this rank's
@@ -647,7 +640,7 @@ template <class T>
 #endif
 }
 
-/// REVIEW.md N-BACKEND-1: `reconcile<T>` above agrees whether a per-rank
+/// `reconcile<T>` above agrees whether a per-rank
 /// computation SUCCEEDED; it says nothing about whether the ranks that all
 /// succeeded computed the SAME value. `Side::dim` is exactly such a value --
 /// `moab_backend.hpp`'s own documented `MeshView::dimension()` limitation
@@ -753,7 +746,7 @@ template <class T>
   const auto mid = moab_backend->mesh_id(graph.mesh(r.mesh).name);
   if (!mid.ok()) return mid.error();
 
-  // D5, the fix this track's round 2 found necessary: the VIEW (what
+  // The VIEW (what
   // entities exist, local-index addressed) and the Core/file_set/
   // communicator TRIPLE it is read through must come from the SAME
   // placement -- `native_mesh(mid, placement)` (moab_backend.hpp), not the
@@ -765,8 +758,7 @@ template <class T>
   // STRUCTURAL emptiness (this rank is outside `placement`'s own processor
   // set, mesh_view.hpp's documented "empty view, never the default"
   // contract) is derived from the plan's placement itself
-  // (`placement_participates`), never from a local size -- exactly what
-  // this track's round-2 brief requires, so a genuinely empty mesh (a data
+  // (`placement_participates`), never from a local size, so a genuinely empty mesh (a data
   // problem) is not silently accepted just because its local count also
   // happens to be zero. There is no Core to ask for a native handle when
   // this rank does not participate at all, so `native_mesh` is skipped in
@@ -822,7 +814,7 @@ template <class T>
                // default-constructed, and correctly so: nothing here.
   }
 
-  // REVIEW.md N-BACKEND-1: agree on the DIMENSION ITSELF before it feeds any
+  // Agree on the DIMENSION ITSELF before it feeds any
   // further local computation or a downstream a.dim/b.dim comparison in
   // build_remap_halo/build_weights -- reconcile<T> below only agrees whether
   // resolve() succeeded, not what value a rank that succeeded computed.
@@ -832,7 +824,7 @@ template <class T>
     s.dim = reconciled_dim.value();
   }
 
-  // REVIEW.md R-01: everything from here on reads data that is local to
+  // Everything from here on reads data that is local to
   // THIS RANK's partition -- its cell count at this dimension, its own copy
   // of each cell's measure -- and, per moab_backend.hpp's own documented
   // limitation on MeshView::dimension(), can legitimately disagree with a
@@ -881,8 +873,8 @@ template <class T>
       // contribution rather than a hard refusal here. NOT keyed on
       // `has_remap_halo` (this function resolves ONE region at a time and
       // does not have the (source, target) PAIR id to ask it with) --
-      // `allow_empty` is this track's own, narrower approximation of "the
-      // plan's placement and the halo's presence" the design calls for;
+      // `allow_empty` is a narrower approximation of "the
+      // plan's placement and the halo's presence";
       // every EXISTING caller still passes the default `false` and is
       // completely unaffected.
       if (allow_empty) return s;
@@ -1413,8 +1405,8 @@ void discard_supermesh(moab::Interface& mb, moab::EntityHandle set) {
 
   // --- orientation -----------------------------------------------------------
   //
-  // REVIEW.md TF-2: `orient()` reorients THIS rank's own local cells only
-  // (the exact R-01 hazard `build_remap_halo`'s own orient calls already
+  // `orient()` reorients THIS rank's own local cells only
+  // (the hazard `build_remap_halo`'s own orient calls already
   // reconcile), and `intersect_surfaces` is reached from `build_weights`'
   // first-order path, ahead of `assemble()`'s collectives below in that
   // caller -- so a per-cell connectivity read/write failure here must be
@@ -1453,7 +1445,7 @@ void discard_supermesh(moab::Interface& mb, moab::EntityHandle set) {
     discard_supermesh(mb, out_set);
     return intx_error(mb, "Intx2Mesh::FindMaxEdges failed", rval);
   }
-  // D82 round 15: `Intx2Mesh::intersect_meshes` is an advancing-front
+  // `Intx2Mesh::intersect_meshes` is an advancing-front
   // algorithm -- it discovers (source, target) intersecting pairs by
   // walking cell adjacency (MOAB's `srcNeighTag`/`tgtNeighTag`, populated
   // from shared vertex handles) outward from a small number of KD-tree
@@ -1471,8 +1463,8 @@ void discard_supermesh(moab::Interface& mb, moab::EntityHandle set) {
   // target cell that overlaps ONLY such an adopted cell is marked
   // resolved (`TgtFlagTag`) the moment any other, reachable, source cell
   // satisfies it, and the adopted cell's own contribution is silently
-  // dropped. The round-14/15 probes (`trace_remap_halo_probe`,
-  // `point_in_convex_spherical_polygon`) confirmed this directly: every
+  // dropped. The probes (`trace_remap_halo_probe`,
+  // `point_in_convex_spherical_polygon`) confirm this directly: every
   // zero-coverage cell was present on its covering rank and geometrically
   // contained by a local target cell there, yet
   // `Intx2Mesh::intersect_meshes` computed zero overlap area for it.
@@ -1631,32 +1623,30 @@ struct Audit {
 /// rank that owns the cell, and add it there. A no-op without a halo, so the
 /// serial path is bit-for-bit what it was.
 ///
-/// KNOWN_ISSUES D82 round 12 (HOST-MEASURED, RemapHaloMpiSphere.Extensive...,
-/// 2/3 ranks): this USED to early-return on `src.not_owned == 0` -- "this
-/// rank holds no halo copies, so nothing of mine needs folding" -- which is
-/// true for EVERY rank only in the serial/no-halo case this comment's own
-/// intent names, but is a LOCALLY evaluated condition in a genuinely
-/// partitioned halo, where it is entirely possible for rank A to hold zero
-/// halo copies (so it skipped the call) while rank B holds some that belong
-/// to cells A OWNS -- B's own accumulate_remap_halo call still runs (it is
-/// the collective's one and only call on B), but A, having never called it
-/// at all, never receives the contribution MOAB routes to its owner. The
-/// owned slot A reads afterwards is still whatever LOCAL intersection A's
-/// own rank computed -- zero, for a source cell whose only intersection
-/// happened on B's adopted copy -- which is exactly `min_src_coverage=0`
-/// "a source cell on this rank whose covering target cells all live on
-/// another rank" the host measured. This is the same class of bug D27
-/// (`accumulate_remap_halo`'s own since-fixed `ghost_n==0` skip) and round
-/// 7 (`adopt_remap_halo`'s collective-agreement branch) were about: a
-/// per-rank, not collectively-agreed, condition deciding whether to enter a
-/// collective. Fixed by removing it: `accumulate_remap_halo` (via
-/// `run_halo_exchange`) already has its OWN collectively-consistent
-/// short-circuits (`halo() == nullptr`, `ex.req_counts.empty()`,
-/// `!pr.participates`), each evaluated from state every rank in the same
-/// communicator necessarily agrees on (the halo was built, or not, by the
-/// SAME collective `build_remap_halo` call) -- calling it unconditionally
-/// whenever a backend exists is the serial-path no-op this function's own
-/// header already promises, now made safe for the general partitioned case.
+/// This must NOT early-return on `src.not_owned == 0` ("this rank holds no
+/// halo copies, so nothing of mine needs folding"): that is true for EVERY
+/// rank only in the serial/no-halo case, but is a LOCALLY evaluated condition
+/// in a genuinely partitioned halo, where rank A may hold zero halo copies
+/// (so it would skip the call) while rank B holds some that belong to cells A
+/// OWNS -- B's own accumulate_remap_halo call still runs (it is the
+/// collective's one and only call on B), but A, having never called it at
+/// all, never receives the contribution MOAB routes to its owner. The owned
+/// slot A reads afterwards is then still whatever LOCAL intersection A's own
+/// rank computed -- zero, for a source cell whose only intersection happened
+/// on B's adopted copy -- which is exactly `min_src_coverage=0`, "a source
+/// cell on this rank whose covering target cells all live on another rank"
+/// (seen in RemapHaloMpiSphere.Extensive..., 2/3 ranks). This is the same
+/// class of bug as `accumulate_remap_halo`'s `ghost_n==0` skip and
+/// `adopt_remap_halo`'s collective-agreement branch: a per-rank, not
+/// collectively-agreed, condition deciding whether to enter a collective.
+/// `accumulate_remap_halo` (via `run_halo_exchange`) already has its OWN
+/// collectively-consistent short-circuits (`halo() == nullptr`,
+/// `ex.req_counts.empty()`, `!pr.participates`), each evaluated from state
+/// every rank in the same communicator necessarily agrees on (the halo was
+/// built, or not, by the SAME collective `build_remap_halo` call) -- calling
+/// it unconditionally whenever a backend exists is the serial-path no-op this
+/// function's own header promises, and is safe for the general partitioned
+/// case.
 [[nodiscard]] Result<void> fold_halo_contributions(const Side& src,
                                                    std::vector<double>& covered,
                                                    std::vector<double>& col_sum) {
@@ -1671,14 +1661,14 @@ struct Audit {
 }
 
 // ---------------------------------------------------------------------------
-// KNOWN_ISSUES D82 round 13: instrumentation only, behind FUSE_REMAP_HALO_
+// Instrumentation only, behind FUSE_REMAP_HALO_
 // TRACE=1 (the SAME switch native_halo.cpp's own trace uses, off by
 // default; cached once per process, exactly as remap_halo_trace_enabled()
 // there does, so getenv is paid at most once). Nothing in this section
 // changes a single computed value -- it reads state `assemble()` already
 // has in hand and, for the ONE genuinely cross-rank piece (which rank's
 // target region a given centroid falls in), performs its own small
-// Allgather. The round-12 lesson applies here too: that Allgather is
+// Allgather. The same rule applies here: that Allgather is
 // EVERY rank's own call whenever tracing is on and the communicator has
 // more than one rank, never conditioned on whether THIS rank personally
 // has anything to report.
@@ -1689,11 +1679,10 @@ struct Audit {
   return enabled;
 }
 
-/// Everything round 13's own dispatch asked for, in one place because all
-/// four pieces read the SAME per-call state (`covered_before_fold`,
-/// `covered_after_fold`, `intersected_src`, `sm`, `src`, `tgt`) and the
-/// owner's own three hypotheses are only separable by reading them
-/// together:
+/// Coverage diagnostics, in one place because all four pieces read the SAME
+/// per-call state (`covered_before_fold`, `covered_after_fold`,
+/// `intersected_src`, `sm`, `src`, `tgt`) and three hypotheses about an
+/// uncovered cell are only separable by reading them together:
 ///
 ///   (A) the covering set misses boundary cells -- look at whether an
 ///       uncovered cell's centroid falls inside ANOTHER rank's target box
@@ -1864,7 +1853,7 @@ void trace_remap_halo_coverage(const Side& src, const Side& tgt,
   }
 }
 
-/// KNOWN_ISSUES D82 round 14: a point is INSIDE a CONVEX spherical polygon
+/// A point is INSIDE a CONVEX spherical polygon
 /// (CCW as seen from outside the sphere -- the orientation `orient()`
 /// already established on both sides before any covering-set construction
 /// ran, not re-derived here) when it sits on the inner side of every one
@@ -1890,13 +1879,11 @@ void trace_remap_halo_coverage(const Side& src, const Side& tgt,
   return true;
 }
 
-/// KNOWN_ISSUES D82 round 14 (owner's own per-cell probe request,
-/// 2026-10-19): behind the SAME FUSE_REMAP_HALO_TRACE=1 switch, separates
-/// hypotheses (A)/(B)/(C) for each of round 13's own uncovered/partially-
-/// covered owned cells. Every rank answers, for every probed cell (gid +
+/// Per-cell probe: behind the SAME FUSE_REMAP_HALO_TRACE=1 switch, separates
+/// hypotheses (A)/(B)/(C) (above) for each uncovered/partially-covered
+/// owned cell. Every rank answers, for every probed cell (gid +
 /// owner rank + centroid, exchanged via one Allgatherv every rank in the
-/// communicator joins UNCONDITIONALLY, round 12's own lesson applied
-/// rather than relearned a third time):
+/// communicator joins UNCONDITIONALLY, as the halo fold does):
 ///
 ///   present_locally          a local cell (owned OR an adopted halo copy)
 ///                             carries this gid at all.
@@ -1913,15 +1900,15 @@ void trace_remap_halo_coverage(const Side& src, const Side& tgt,
 ///                             except the already-established orientation
 ///                             and the (read-only) target cell geometry.
 ///
-/// Verdict, per the owner's own framing: `independent_overlap_here` true
+/// Verdict: `independent_overlap_here` true
 /// and `present_locally` false on a rank is hypothesis (A) (the covering
 /// set should have sent this cell here and did not); `present_locally`
 /// true (and not the owner) with `intersected_area_here == 0` while
 /// `independent_overlap_here` is true is (B) (the adopted copy sits here
 /// but never intersected anything, despite genuinely overlapping);
 /// `independent_overlap_here` false on EVERY rank that answers is the
-/// "genuinely uncovered by the geometry itself" case the owner named as
-/// impossible given the 1-rank pass.
+/// "genuinely uncovered by the geometry itself" case, which is impossible
+/// given a 1-rank pass.
 void trace_remap_halo_probe(const Side& src, const Side& tgt,
                             const Supermesh& sm,
                             const std::vector<double>& covered_after_fold) {
@@ -1960,7 +1947,7 @@ void trace_remap_halo_probe(const Side& src, const Side& tgt,
     }
 
     // This rank's own candidates: owned cells uncovered or partially
-    // covered after the fold, capped at 20 (owner's own instruction).
+    // covered after the fold, capped at 20.
     struct Candidate {
       std::size_t gid;
       double x, y, z;
@@ -2075,7 +2062,7 @@ void trace_remap_halo_probe(const Side& src, const Side& tgt,
   auto* pc = static_cast<moab::ParallelComm*>(src.pcomm);
   const MPI_Comm comm = pc->comm();
   int nproc = 1;
-  // REVIEW.md TF-8 (N-BACKEND-3 class): an unchecked MPI_Comm_size leaves
+  // An unchecked MPI_Comm_size leaves
   // `nproc` at its initialiser value of 1 on failure, which this function
   // would then read as "no peers to reconcile with" and return success
   // having skipped every Allreduce below -- exactly the silent fallback
@@ -2148,9 +2135,9 @@ void trace_remap_halo_probe(const Side& src, const Side& tgt,
 /// Turn raw overlaps into the sorted, merged, normalised COO matrix and fill
 /// the conservation audit.
 ///
-///     Conservation::Intensive (and None), UNCHANGED:
+///     Conservation::Intensive (and None):
 ///         W_ji = (overlap_ij / parent_i) * (m^s_i / m^t_j)
-///     Conservation::Extensive, KNOWN_ISSUES D82 (round 11):
+///     Conservation::Extensive:
 ///         W_ji = overlap_ij / m^s_i
 ///
 /// `normalize_remap_weight` (fuse/backend/remap_weight_normalize.hpp) is the
@@ -2179,7 +2166,7 @@ void trace_remap_halo_probe(const Side& src, const Side& tgt,
   std::vector<double> covered_tgt(w.n_rows, 0.0);
   std::vector<double> row_sum(w.n_rows, 0.0);
   std::vector<double> col_sum(w.n_cols, 0.0);
-  // KNOWN_ISSUES D82 round 13 instrumentation (hypothesis (B), "adopted
+  // Instrumentation (hypothesis (B), "adopted
   // cells are not intersected"): every source local index that appears as
   // the `col` of at least one entry in `sm.entries` -- i.e. Intx2MeshOnSphere
   // found SOME overlap for it, regardless of which rank's target cell. Cost
@@ -2210,8 +2197,8 @@ void trace_remap_halo_probe(const Side& src, const Side& tgt,
     intersected_src[i] = 1;
     row_sum[j] += weight;
     // Extensive: `weight` is already the fraction of source cell i's AMOUNT
-    // this entry carries, so the column total that must read 1 (round 11's
-    // own "source total == target total" test) is the raw weight sum, not
+    // this entry carries, so the column total that must read 1 (the
+    // "source total == target total" test) is the raw weight sum, not
     // a measure-weighted one -- multiplying by tgt.measure[j] here would
     // re-introduce exactly the density conversion Extensive exists to drop.
     // Intensive/None: unchanged (the amount leaving source cell i, checked
@@ -2243,7 +2230,7 @@ void trace_remap_halo_probe(const Side& src, const Side& tgt,
   //     decides an error below is reduced over the communicator first, so all
   //     ranks reach the same outcome.
   // ==========================================================================
-  // KNOWN_ISSUES D82 round 13 instrumentation: snapshot BEFORE the fold --
+  // Instrumentation: snapshot BEFORE the fold --
   // hypothesis (C), "the fold does not reach the owner", is read off the
   // difference between this and covered_src AFTER the call below.
   const std::vector<double> covered_src_before_fold = covered_src;
@@ -2281,7 +2268,7 @@ void trace_remap_halo_probe(const Side& src, const Side& tgt,
     // Extensive: col_sum[i] is already the raw weight-sum (should read 1,
     // the fraction of source cell i's amount that was fully distributed);
     // Intensive/None: col_sum[i] is tgt.measure-weighted (should read
-    // src.measure[i], unchanged from before round 11).
+    // src.measure[i]).
     audit.max_col_defect =
         std::max(audit.max_col_defect,
                  extensive ? std::fabs(col_sum[i] - 1.0)
@@ -2369,7 +2356,7 @@ void trace_remap_halo_probe(const Side& src, const Side& tgt,
 constexpr double kMonotoneRowTol = 1e-12;
 
 /// The coverage tolerance for the HIGH-ORDER path, three decades looser than
-/// `kCoverageTol` (1e-9) which Task 5.2 justified for its own supermesh.
+/// `kCoverageTol` (1e-9) justified for the first-order supermesh.
 ///
 /// Not slack for its own sake: it is a property of the backend's areas, and it
 /// was measured. On a 32x4 latitude-longitude source the sum of the overlap
@@ -2604,7 +2591,7 @@ constexpr double kHighOrderCoverageTol = 1e-6;
 
 namespace {
 
-/// KNOWN_ISSUES D81 round 8: the number of ranks a covering-set
+/// The number of ranks a covering-set
 /// construction over `pcomm` will ACTUALLY run with -- `pcomm`'s own
 /// communicator, never `MoabMeshBackend::communicator_size()`'s answer
 /// (always the BACKEND's base communicator, `impl_->pcomm`'s own size,
@@ -2638,7 +2625,7 @@ int active_comm_size(void* pcomm) {
 }  // namespace
 
 // ===========================================================================
-// The remap halo (R3). See remap_plan.hpp for the contract and moab_backend.hpp
+// The remap halo. See remap_plan.hpp for the contract and moab_backend.hpp
 // for the mesh-layer half.
 //
 // WHAT THIS DOES, in one sentence: it asks MOAB for the source cells that
@@ -2651,14 +2638,12 @@ int active_comm_size(void* pcomm) {
 // MOAB's 3456-cell cubed sphere (8 partition sets) against a 1536-cell partner
 // (4 partition sets, deliberately misaligned): the ORDINARY serial
 // intersection over the halo-extended source gives target coverage 1.0 to
-// 1e-16 at 1, 2 and 4 ranks, from the task report that measured this.
-// REVIEW.md TF-7: this used to say no test in the tree pins any of this --
-// half-stale since `test/parallel/remap_halo_mpi_test.cpp` ported
-// (host-verified per that file's own header): the halo's own forward/
-// reverse round trip is checked there by EXACT global id and bookkeeping
+// 1e-16 at 1, 2 and 4 ranks, as measured.
+// `test/parallel/remap_halo_mpi_test.cpp` checks the halo's own forward/
+// reverse round trip by EXACT global id and bookkeeping
 // identity (not a tolerance), and E-REMAP-PARALLEL's rejection boundary
 // fires by name at every registered rank count. Only the specific 1.0-to-
-// 1e-16 coverage FIGURE quoted above remains diagnostic-only: that file
+// 1e-16 coverage FIGURE quoted above is diagnostic-only: that file
 // prints, but does not gate on, the corresponding number on its own real
 // spherical pair, since this exact cubed-sphere/partner pair's true
 // overlap has not been independently measured to gate against.
@@ -2722,32 +2707,25 @@ Result<std::size_t> build_remap_halo(const RemapPlan& plan,
   // make the call unconditionally and `build_weights` can key its rejection on
   // "was this asked for" rather than on "did it find anything".
   //
-  // KNOWN_ISSUES D81 round 8 (MEASURED 2026-10-19, host): this guard used
-  // to read `moab_backend->communicator_size()` -- the BACKEND's base
-  // communicator, always correct for the single-Core/no-placements case
-  // (where `a.pcomm` IS `impl_->pcomm`), but WRONG for a placement whose
-  // own sub-communicator is smaller than the base one:
+  // This guard reads `active_comm_size(a.pcomm)` -- the size of the
+  // communicator THIS CONSTRUCTION will actually run over -- NOT
+  // `moab_backend->communicator_size()`, the BACKEND's base communicator:
+  // that is always correct for the single-Core/no-placements case (where
+  // `a.pcomm` IS `impl_->pcomm`), but WRONG for a placement whose own
+  // sub-communicator is smaller than the base one.
   // `SamePlacementOnBothSidesDelegatesToTheSinglePlacementPath`'s own
   // placement A is a genuine 1-rank communicator at a 2-rank run, so
-  // `communicator_size()` read 2 (the BASE communicator) and this guard
-  // did not shortcut -- sending a genuinely 1-rank `ParallelComm` into
-  // `Intx2MeshOnSphere`'s real, cross-rank covering-set construction, a
-  // configuration no PASSING test in this tree had exercised before
-  // (`remap_halo_mpi_test.cpp` always runs the single-Core path over the
-  // FULL base communicator; a 1-rank run THERE takes this same shortcut
-  // before ever reaching the construction, never a 1-rank PLACEMENT inside
-  // a larger job). The resulting covering cell carried no positive
-  // GLOBAL_ID -- `adopt_remap_halo`'s own `E-MESH-HALO` refusal, doing
-  // exactly its job once asked to adopt a cell it cannot trust; kept
-  // unchanged. Fixed by reading `active_comm_size(a.pcomm)` -- the size of
-  // the communicator THIS CONSTRUCTION will actually run over -- instead
-  // of the backend's unrelated base communicator size; the two can only
-  // ever disagree on a placement path, which is exactly the case this
-  // guard's own "one-rank communicator... need no halo" comment already
-  // meant to cover.
+  // `communicator_size()` would read 2 (the BASE communicator) and this
+  // guard would not shortcut -- sending a genuinely 1-rank `ParallelComm`
+  // into `Intx2MeshOnSphere`'s real, cross-rank covering-set construction.
+  // The resulting covering cell would carry no positive GLOBAL_ID --
+  // `adopt_remap_halo`'s own `E-MESH-HALO` refusal, doing exactly its job
+  // once asked to adopt a cell it cannot trust. The two sizes can only ever
+  // disagree on a placement path, which is exactly the case this guard's own
+  // "one-rank communicator... need no halo" comment covers.
   const int ranks = active_comm_size(a.pcomm);
   if (ranks <= 1 || a.pcomm == nullptr || a.file_set == b.file_set) {
-    // KNOWN_ISSUES D83: threaded through `plan.placement` so this
+    // Threaded through `plan.placement` so this
     // degenerate no-op is filed under the SAME (mesh, mesh, dim, placement)
     // cache key the real covering-set build below uses for the identical
     // pair -- the default Core and every declared placement each get
@@ -2775,20 +2753,20 @@ Result<std::size_t> build_remap_halo(const RemapPlan& plan,
                      "impossible. Read the meshes without a communicator, or "
                      "add a volumetric covering construction."};
   }
-  // REVIEW.md R-01: fit_surface() reads only this rank's local vertices, so
-  // a rank whose local partition happens to be non-spherical (or empty)
-  // cannot agree with a peer's answer without reconciling first -- otherwise
-  // that rank rejects here while its peers walk into FindMaxEdges below and
-  // hang waiting for it.
+  // fit_surface() reads only this rank's local vertices, so a rank whose
+  // local partition happens to be non-spherical (or empty) cannot agree
+  // with a peer's answer without reconciling first -- otherwise that rank
+  // rejects here while its peers walk into FindMaxEdges below and hang
+  // waiting for it.
   auto fa = reconcile(a.pcomm, fit_surface(a));
   if (!fa.ok()) return fa.error();
   auto fb = reconcile(b.pcomm, fit_surface(b));
   if (!fb.ok()) return fb.error();
-  // REVIEW.md R-01: the classification below is a value computed from each
-  // rank's own local vertices (the SAME hazard fit_surface() itself has, one
-  // level up in the SurfaceFit::ok/kind/radius payload rather than in
-  // Result's error channel), so it is reconciled too before its radius is
-  // used by any collective below.
+  // The classification below is a value computed from each rank's own
+  // local vertices (the same hazard fit_surface() has, one level up in the
+  // SurfaceFit::ok/kind/radius payload rather than in Result's error
+  // channel), so it is reconciled too before its radius is used by any
+  // collective below.
   const Result<double> radius_result =
       reconcile(a.pcomm, [&]() -> Result<double> {
         if (!fa.value().ok || !fb.value().ok ||
@@ -2823,10 +2801,9 @@ Result<std::size_t> build_remap_halo(const RemapPlan& plan,
   // see orient() -- the covering construction and the intersection that
   // follows reach only 0.80 of the target area. Oriented first, 1.0 to 1e-16.
   {
-    // REVIEW.md R-01: orient() reorients this rank's own local cells only,
-    // and a per-cell connectivity read/write failure is exactly as local as
-    // the checks in resolve() -- reconciled the same way, before
-    // FindMaxEdges below.
+    // orient() reorients this rank's own local cells only, and a per-cell
+    // connectivity read/write failure is exactly as local as the checks in
+    // resolve() -- reconciled the same way, before FindMaxEdges below.
     const auto o1 = reconcile(a.pcomm, orient(a, fa.value()));
     if (!o1.ok()) return o1.error();
     const auto o2 = reconcile(b.pcomm, orient(b, fb.value()));
@@ -2887,24 +2864,22 @@ Result<std::size_t> build_remap_halo(const RemapPlan& plan,
   }
   // The SET goes; the cells do not. The backend keeps the ones it adopts, and
   // the rest -- copies of cells this rank already holds -- stay in the
-  // moab::Core as unreferenced geometry, the same bounded leak Task 5.2's
-  // intersection already has (R27). Bounded because this is idempotent per
+  // moab::Core as unreferenced geometry, the same bounded leak the
+  // intersection already has. Bounded because this is idempotent per
   // (source, target, dimension).
   static_cast<void>(mb.delete_entities(&covering, 1));
 
-  // KNOWN_ISSUES D83 (owner decision 2026-10-19: make the adoption
-  // placement-aware): `handles` are `moab::EntityHandle`s in `mb` (= `a.mb`,
-  // resolved above through `plan.placement`) -- `plan.placement` is passed
-  // through so `adopt_remap_halo` reads them back through the SAME Core
-  // that allocated them, never the backend's default one unconditionally.
+  // `handles` are `moab::EntityHandle`s in `mb` (= `a.mb`, resolved above
+  // through `plan.placement`) -- `plan.placement` is passed through so
+  // `adopt_remap_halo` reads them back through the SAME Core that allocated
+  // them, never the backend's default one unconditionally.
   return moab_backend->adopt_remap_halo(a.mid, b.mid, a.dim, handles.data(),
                                         handles.size(), plan.placement);
 #endif
 }
 
 // ---------------------------------------------------------------------------
-// KNOWN_ISSUES D5's last half, round 2: HALO BRIDGING across two
-// independently decomposed placements (the lead's ruling; see this
+// HALO BRIDGING across two independently decomposed placements (see this
 // function's own declaration in remap_plan.hpp for the full design). The
 // target's processor set is `plan.placement`; the source's is
 // `source_placement`, a DIFFERENT processor set in general.
@@ -2920,30 +2895,25 @@ Result<std::size_t> build_remap_halo(const RemapPlan& plan, const CouplingGraph&
                  "backend; this is the '" + backend.name() + "' backend"};
   }
 
-  // KNOWN_ISSUES D81 round 7 (owner, 2026-10-19): "a collective path never
-  // returns on a locally computed condition: agree first, then every rank
-  // refuses with the same code." The ORIGINAL version of this function
-  // decided "delegate to the single-placement path" vs "refuse, the two
-  // placements genuinely differ" by comparing `a.mb == b.mb` -- the TWO
-  // SIDES' OWN moab::Core pointers, resolved per-rank. That comparison is
-  // NOT collectively consistent: for a rank outside `plan.placement`,
-  // `b.mb` reads nullptr regardless of what `source_placement` resolves
-  // to, so the SAME call can read as "same Core" on one rank and
-  // "different Core" on another, depending only on which of the two
-  // placements that particular rank happens to belong to -- READ AGAINST
-  // this file's own test (1), ARankOutsideTheTargetPlacementIsASuccess
-  // fulNoOp: there, a rank outside B (the target) that IS inside A (the
-  // source) would misread as "same Core" under the pointer test even
-  // though source_placement (A) and plan.placement (B) genuinely differ.
-  // The question this branch actually needs answered is GLOBAL to the
-  // CALL, not local to a rank: do `source_placement` and `plan.placement`
-  // name the SAME declared processor set? That is a plain equality of two
-  // `ComponentId` values (the same way `fuse::native::build_native_remap_
-  // halo` decides its own analogous question once, over the backend's
-  // single shared communicator, before any rank branches on its own
-  // local state -- read 2026-10-19, native_halo.cpp, to confirm the
-  // pattern before reusing it here) -- identical, deterministically, on
-  // every rank, with no MOAB/MPI call at all.
+  // A collective path never returns on a locally computed condition: agree
+  // first, then every rank refuses with the same code. So the choice between
+  // "delegate to the single-placement path" and "refuse, the two placements
+  // genuinely differ" cannot compare `a.mb == b.mb`, the two sides' own
+  // moab::Core pointers resolved per rank. That comparison is not
+  // collectively consistent: for a rank outside `plan.placement`, `b.mb`
+  // reads nullptr regardless of what `source_placement` resolves to, so the
+  // same call could read as "same Core" on one rank and "different Core" on
+  // another, depending only on which of the two placements that rank
+  // belongs to. (A rank outside B, the target, that is inside A, the
+  // source, would misread as "same Core" even though source_placement (A)
+  // and plan.placement (B) genuinely differ.) The question this branch
+  // needs answered is global to the call, not local to a rank: do
+  // `source_placement` and `plan.placement` name the same declared
+  // processor set? That is a plain equality of two `ComponentId` values
+  // (the way `fuse::native::build_native_remap_halo` decides its analogous
+  // question once, over the backend's single shared communicator, before
+  // any rank branches on its own local state) -- identical,
+  // deterministically, on every rank, with no MOAB/MPI call at all.
   const bool same_named_placement = (source_placement == plan.placement);
 
   // The target: resolved through plan.placement, exactly as the
@@ -2974,27 +2944,15 @@ Result<std::size_t> build_remap_halo(const RemapPlan& plan, const CouplingGraph&
     // placements declared at all, or both name the identical processor
     // set).
     //
-    // KNOWN_ISSUES D83 round 10 (owner decision 2026-10-19: make the
-    // adoption placement-aware, not a refusal) SUPERSEDES round 7's own
-    // fix here. Round 7 made an off-placement rank call
-    // `adopt_remap_halo(..., nullptr, 0)` to join a collective inside it
-    // that, at the time, ALWAYS ran over `impl_->pcomm->comm()` -- the
-    // backend's BASE communicator -- regardless of placement, because
-    // `adopt_remap_halo` had no way to resolve a placement's own Core at
-    // all. D83's own fix changes WHICH communicator that collective runs
-    // over: `adopt_remap_halo(..., placement)` now resolves
-    // `reconcile_halo`'s own communicator THROUGH `placement` (its own
+    // A rank outside `plan.placement` has nothing to agree on with the
+    // placement's own members and returns a bare, locally decided
+    // `std::size_t{0}`: `adopt_remap_halo(..., placement)` resolves
+    // `reconcile_halo`'s communicator through `placement` (its own
     // `PlacementContext::pcomm`, `moab_backend.cpp`), so the agreement is
-    // scoped to `plan.placement`'s OWN members -- never the base
-    // communicator, and never a rank outside the placement. A rank
-    // outside `plan.placement` therefore has NOTHING to agree on with
-    // placement A's own members any more, and returns a bare, LOCALLY
-    // decided `std::size_t{0}` again -- round 6's original shape, now
-    // correct again because the collective it used to need to join no
-    // longer includes it. (If the agreement had instead stayed on the
-    // base communicator, this rank would still need to join it here --
-    // stated explicitly per the round-10 brief's own instruction to say
-    // which and why.)
+    // scoped to `plan.placement`'s own members -- never the base
+    // communicator, and never a rank outside the placement. (Had the
+    // agreement stayed on the base communicator, this rank would still need
+    // to join it here.)
     if (!moab_backend->placement_participates(plan.placement)) {
       return std::size_t{0};
     }
@@ -3029,17 +2987,15 @@ Result<std::size_t> build_remap_halo(const RemapPlan& plan, const CouplingGraph&
                      "both sides"};
   }
 
-  // The genuinely cross-placement case this track's round
-  // 2 measured and could not complete in the time available (KNOWN_ISSUES
-  // D5). MOAB's own covering-set construction (Intx2MeshOnSphere,
+  // The genuinely cross-placement case is not implemented. MOAB's own
+  // covering-set construction (Intx2MeshOnSphere,
   // FindMaxEdges, construct_covering_set, all used by the single-placement
   // path above) takes ONE moab::Interface and intersects two file sets
   // WITHIN it; it has no notion of a file set living in a DIFFERENT Core,
   // and there is no MOAB entry point that accepts one. Bridging this pair
   // needs a MIGRATE-BY-GLOBAL-ID exchange -- box overlap over the base
   // communicator (the SAME technique `fuse::native::build_native_remap_
-  // halo`/native_halo.cpp already implements and this track's own D27 work
-  // reused for its reverse exchange), packing each needed source cell's
+  // halo`/native_halo.cpp already implements), packing each needed source cell's
   // vertices/connectivity/GLOBAL_ID on its owning rank (in
   // source_placement) and creating fresh MOAB entities for it inside the
   // TARGET placement's own Core (`create_vertices`/the element-creation
@@ -3054,7 +3010,7 @@ Result<std::size_t> build_remap_halo(const RemapPlan& plan, const CouplingGraph&
                "needs both meshes in the SAME moab::Interface; bridging two independent "
                "Cores needs a migrate-by-global-id exchange (the MOAB analogue of "
                "fuse::native::build_native_remap_halo's box-overlap/pack/merge "
-               "architecture), which is not yet implemented. See KNOWN_ISSUES.md D5."};
+               "architecture), which is not yet implemented."};
 }
 
 Result<RemapWeights> build_weights(const RemapPlan& plan,
@@ -3097,12 +3053,12 @@ Result<RemapWeights> build_weights(const RemapPlan& plan,
             "this needs a DOF map on MeshBackend first."};
   }
 
-  // REVIEW.md N-BACKEND-4: dispatch on the ACTUAL backend the caller handed
-  // us, not on which builders this translation unit was compiled with.
-  // Every check below this point assumes the MOAB backend (`resolve()`'s own
-  // `dynamic_cast` rejects otherwise with E-REMAP-BACKEND) -- so a plan whose
-  // meshes are NOT MoabMeshBackend must take the always-available r3d
-  // supermesh path here, exactly as it would in a build with no MOAB at
+  // Dispatch on the ACTUAL backend the caller handed us, not on which
+  // builders this translation unit was compiled with. Every check below
+  // this point assumes the MOAB backend (`resolve()`'s own `dynamic_cast`
+  // rejects otherwise with E-REMAP-BACKEND) -- so a plan whose meshes are
+  // NOT MoabMeshBackend must take the always-available r3d supermesh path
+  // here, exactly as it would in a build with no MOAB at
   // all. Without this, compiling MOAB in silently took away the capability
   // a base build configuration has for the identical plan and the identical serial mesh
   // pair.
@@ -3211,7 +3167,7 @@ Result<RemapWeights> build_weights(const RemapPlan& plan,
   }
 
   // ==========================================================================
-  // THE PARTITIONED CASE (R3). The supermesh below intersects the cells this
+  // THE PARTITIONED CASE. The supermesh below intersects the cells this
   // rank HOLDS. On a partitioned read that is the right answer exactly when
   // the source mesh carries a halo covering this rank's targets, and a silent
   // truncation otherwise -- measured at two thirds of the transferred quantity
@@ -3222,19 +3178,15 @@ Result<RemapWeights> build_weights(const RemapPlan& plan,
   // ordinary MPI job whose mesh happens to be undivided; every cell is local
   // and the serial construction is exactly right. Rejecting it would take
   // remap away from every single-rank MPI run, and no serial test can see
-  // the difference. REVIEW.md TF-7: this used to say no test runs the one-
-  // rank leg to check that -- stale since
-  // `test/parallel/remap_halo_mpi_test.cpp`'s
-  // `ERemapParallelRefusesAboveOneRankAndNotAtOne` ported (host-verified
-  // per that file's own header): `== 1` must succeed and `> 1` must refuse
-  // `E-REMAP-PARALLEL`, checked at every registered rank count 1..5, both
-  // sides of the boundary this paragraph names.
+  // the difference. `== 1` must succeed and `> 1` must refuse
+  // `E-REMAP-PARALLEL`; `test/parallel/remap_halo_mpi_test.cpp`'s
+  // `ERemapParallelRefusesAboveOneRankAndNotAtOne` checks both sides of
+  // this boundary at every registered rank count 1..5.
   // ==========================================================================
-  // KNOWN_ISSUES D83: `plan.placement` passed through -- `build_weights`
-  // always resolves both sides through `plan.placement` alone (this
-  // function's own design, remap_plan.hpp), so the halo this call checks
-  // for is the one filed under THAT placement's own cache entry, not the
-  // default Core's.
+  // `plan.placement` is passed through -- `build_weights` always resolves
+  // both sides through `plan.placement` alone (this function's own design,
+  // remap_plan.hpp), so the halo this call checks for is the one filed
+  // under THAT placement's own cache entry, not the default Core's.
   if (a.backend != nullptr && a.backend->communicator_size() > 1 &&
       a.file_set != b.file_set &&
       !a.backend->has_remap_halo(a.mid, b.mid, a.dim, plan.placement)) {
@@ -3301,7 +3253,7 @@ Result<RemapWeights> build_weights(const RemapPlan& plan,
     // "E-REMAP-INTX: TempestRemap could not build the overlap mesh ...
     // (return code 0, 1024 overlap faces)" -- it does not merely lose accuracy
     // near the fringe, it fails outright, and it fails by printing while
-    // returning success (which is why Task 5.3 reads its Announce stream at
+    // returning success (which is why the Announce stream is read at
     // all). Rejecting here turns that into one clear sentence at the right
     // level instead of a backend diagnostic about overlap faces.
     if (a.backend != nullptr && a.backend->communicator_size() > 1 &&
@@ -3396,24 +3348,23 @@ Result<RemapWeights> build_weights(const RemapPlan& plan,
   }
 
   // =========================================================================
-  // The first-order supermesh builder, unchanged from Task 5.2.
+  // The first-order supermesh builder, unchanged.
   //
-  // REVIEW.md TF-2: `try_boxes`, `intersect_boxes`, `fit_surface` and the
-  // kind/radius/plane-z match below each run a computation (reading this
-  // rank's own local cell corners, tagging GIDs) that can FAIL outright on
-  // one rank -- a MOAB connectivity read error, an out-of-range tag --
-  // while a peer's identical call succeeds, ahead of `assemble()`'s own
-  // collectives (`accumulate_remap_halo`, `reduce_audit`'s
-  // `MPI_Allreduce`). `reconcile<T>` is exactly `resolve()`'s and
-  // `build_remap_halo`'s own fit_surface/orient fix (R-01): it agrees
-  // whether every rank's call SUCCEEDED, so a one-rank error returns the
-  // SAME Failure everywhere instead of that rank returning alone while its
-  // peers walk into those collectives and hang. It does NOT, and cannot,
-  // agree whether ranks that all succeeded classified their OWN local
-  // partition into the SAME box/surface verdict (`BoxTry::ok`,
-  // `SurfaceFit::kind`) -- that is a different, value-level hazard
-  // `reconcile_dim` exists for elsewhere (Side::dim) and TF-2 does not
-  // claim to close it here.
+  // `try_boxes`, `intersect_boxes`, `fit_surface` and the kind/radius/
+  // plane-z match below each run a computation (reading this rank's own
+  // local cell corners, tagging GIDs) that can FAIL outright on one rank --
+  // a MOAB connectivity read error, an out-of-range tag -- while a peer's
+  // identical call succeeds, ahead of `assemble()`'s own collectives
+  // (`accumulate_remap_halo`, `reduce_audit`'s `MPI_Allreduce`).
+  // `reconcile<T>` is the same fix `resolve()` and `build_remap_halo` apply
+  // to fit_surface/orient: it agrees whether every rank's call SUCCEEDED,
+  // so a one-rank error returns the SAME Failure everywhere instead of that
+  // rank returning alone while its peers walk into those collectives and
+  // hang. It does NOT, and cannot, agree whether ranks that all succeeded
+  // classified their OWN local partition into the SAME box/surface verdict
+  // (`BoxTry::ok`, `SurfaceFit::kind`) -- that is a different, value-level
+  // hazard `reconcile_dim` exists for elsewhere (Side::dim) and is not
+  // closed here.
   // =========================================================================
   auto ba_r = reconcile(a.pcomm, to_result(try_boxes(a)));
   if (!ba_r.ok()) return ba_r.error();

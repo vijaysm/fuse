@@ -1,6 +1,4 @@
-# Mutations for D62 (KNOWN_ISSUES.md), the graph descriptor byte-order fix
-# (Descriptor track). Own file per the review-fix protocol: do not edit
-# build-evidence/mutations.toml directly while other fixers hold it dirty.
+# Mutations for the graph descriptor byte-order fix.
 #
 # Every row below was applied by hand against the named file, rebuilt, run,
 # and confirmed to fail EXACTLY the named test before being restored
@@ -10,13 +8,13 @@
 [[mutation]]
 id = "descriptor-version-bump-reverted"
 area = "descriptor"
-describes = "kGraphVersion is reverted from 15 back to 14, so this build's own serialize()/deserialize() silently behave as the SUPERSEDED version instead of refusing the mismatch -- the version bump itself is the thing D62 depends on to mark the byte-order fix as a deliberate, versioned change rather than a silent one"
+describes = "kGraphVersion is reverted from 15 back to 14, so this build's own serialize()/deserialize() silently behave as the SUPERSEDED version instead of refusing the mismatch -- the version bump itself is what marks the byte-order fix as a deliberate, versioned change rather than a silent one"
 file = "include/fuse/model/descriptor.hpp"
 old = """inline constexpr std::uint32_t kGraphVersion = 15u;"""
 new = """inline constexpr std::uint32_t kGraphVersion = 14u;"""
 target = "fuse_model_descriptor_test"
 test = "model.descriptor"
-result = "CONFIRMED 2026-10-18: 3 of 30 Descriptor tests failed -- SupersededFrozenBytesAreRefusedByThisReader (waist-v14.bin, now matching kGraphVersion again, was accepted instead of refused with E-DESC-VERSION), V14AndV15BytesOfTheSameGraphDifferOnlyInTheVersionWord (the version word this test's own offset-4 check expects no longer differs from the v14 golden at all), and MatchesTheFrozenWaistBytes (serialize() now writes version 14 at the frozen graph's bytes, not the 15 waist-v15.bin was regenerated under). The other 27 Descriptor tests, which do not depend on the specific version NUMBER (only on consistent self-agreement between this build's own serialize()/deserialize()), still passed. Restored; rebuilt; all 30 Descriptor tests passed again; the restored file matched the pre-mutation text exactly (single old/new string reverted verbatim)."
+result = "CONFIRMED: 3 of 30 Descriptor tests failed -- SupersededFrozenBytesAreRefusedByThisReader (waist-v14.bin, now matching kGraphVersion again, was accepted instead of refused with E-DESC-VERSION), V14AndV15BytesOfTheSameGraphDifferOnlyInTheVersionWord (the version word this test's own offset-4 check expects no longer differs from the v14 golden at all), and MatchesTheFrozenWaistBytes (serialize() now writes version 14 at the frozen graph's bytes, not the 15 waist-v15.bin was regenerated under). The other 27 Descriptor tests, which do not depend on the specific version NUMBER (only on consistent self-agreement between this build's own serialize()/deserialize()), still passed. Restored; rebuilt; all 30 Descriptor tests passed again; the restored file matched the pre-mutation text exactly (single old/new string reverted verbatim)."
 
 [[mutation]]
 id = "get-signed-sign-extension-removed"
@@ -41,12 +39,12 @@ new = """inline std::int64_t get_signed(std::span<const std::byte> buf, std::siz
 }"""
 target = "fuse_base_bytes_test"
 test = "base.bytes"
-result = "CONFIRMED 2026-10-18: Bytes.GetSignedIsTheInverseOfPutSignedIncludingSignExtension failed -- get_signed(width=1) of a byte encoding -1 returned 255, not -1 (the message 'get_signed did not sign-extend from the field's own width'). The other 7 Bytes tests still passed. NOTABLE: fuse_model_descriptor_test's full 30-test suite ALSO still passed under this same mutation -- descriptor.hpp's Reader::pod<T>() always calls get_signed with width == sizeof(T) (never a narrower width than its own return type T), so the subsequent `static_cast<T>(raw)` narrowing conversion back down to the SAME width reproduces the correct two's-complement bit pattern regardless of whether get_signed sign-extended in between; the sign-extension step is only externally observable when get_signed's own int64_t return is read directly without being narrowed back to the stored width, which is exactly what the bytes_test row above does and the descriptor-level round trip never does. Recorded here rather than treated as a gap: this is an honest property of the current call pattern, not a reason to widen test coverage for a case descriptor.hpp does not exercise. Restored; rebuilt; all 8 Bytes tests and all 30 Descriptor tests passed again; the restored file matched the pre-mutation text exactly."
+result = "CONFIRMED: Bytes.GetSignedIsTheInverseOfPutSignedIncludingSignExtension failed -- get_signed(width=1) of a byte encoding -1 returned 255, not -1 (the message 'get_signed did not sign-extend from the field's own width'). The other 7 Bytes tests still passed. NOTABLE: fuse_model_descriptor_test's full 30-test suite ALSO still passed under this same mutation -- descriptor.hpp's Reader::pod<T>() always calls get_signed with width == sizeof(T) (never a narrower width than its own return type T), so the subsequent `static_cast<T>(raw)` narrowing conversion back down to the SAME width reproduces the correct two's-complement bit pattern regardless of whether get_signed sign-extended in between; the sign-extension step is only externally observable when get_signed's own int64_t return is read directly without being narrowed back to the stored width, which is exactly what the bytes_test row above does and the descriptor-level round trip never does. Recorded here rather than treated as a gap: this is an honest property of the current call pattern, not a reason to widen test coverage for a case descriptor.hpp does not exercise. Restored; rebuilt; all 8 Bytes tests and all 30 Descriptor tests passed again; the restored file matched the pre-mutation text exactly."
 
 [[mutation]]
 id = "restart-descriptor-version-refusal-removed"
 area = "descriptor"
-describes = "open_restart_point()'s own descriptor_version refusal (D62) is removed -- the attribute is still read into Provenance::descriptor_version, but a point written under a DIFFERENT descriptor kGraphVersion is accepted instead of refused with E-RESTART-DESCRIPTOR-VERSION"
+describes = "open_restart_point()'s own descriptor_version refusal is removed -- the attribute is still read into Provenance::descriptor_version, but a point written under a DIFFERENT descriptor kGraphVersion is accepted instead of refused with E-RESTART-DESCRIPTOR-VERSION"
 file = "src/restart_io/hdf5_restart_io.cpp"
 old = """  if (!dv.ok()) return dv.error();
   prov.descriptor_version = dv.value();
@@ -63,12 +61,12 @@ new = """  if (!dv.ok()) return dv.error();
   Result<std::uint64_t> dh = read_attr_u64(file, \"descriptor_hash\");"""
 target = "fuse_runtime_restart_test"
 test = "runtime.restart"
-result = "CONFIRMED 2026-10-18 (tier 0, FUSE_ENABLE_HDF5=ON, no MPI -- MPI cannot start in this sandbox): 1 of 23 Restart tests failed -- DescriptorVersionMismatchRefuses, which writes a point with descriptor_version = fuse::kGraphVersion - 1 and asserts open_restart_point() refuses with E-RESTART-DESCRIPTOR-VERSION; with the check removed, open_restart_point() succeeded instead. The other 22 Restart tests, including DescriptorHashMismatchIsCaughtByTheCaller and DescriptorVersionDefaultsToTheCurrentBuildAndOpensCleanly (neither of which writes a mismatched descriptor_version), still passed. Restored; rebuilt; all 23 Restart tests passed again; the restored file matched the pre-mutation text exactly."
+result = "CONFIRMED (tier 0, FUSE_ENABLE_HDF5=ON, no MPI -- MPI cannot start in this sandbox): 1 of 23 Restart tests failed -- DescriptorVersionMismatchRefuses, which writes a point with descriptor_version = fuse::kGraphVersion - 1 and asserts open_restart_point() refuses with E-RESTART-DESCRIPTOR-VERSION; with the check removed, open_restart_point() succeeded instead. The other 22 Restart tests, including DescriptorHashMismatchIsCaughtByTheCaller and DescriptorVersionDefaultsToTheCurrentBuildAndOpensCleanly (neither of which writes a mismatched descriptor_version), still passed. Restored; rebuilt; all 23 Restart tests passed again; the restored file matched the pre-mutation text exactly."
 
 [[mutation]]
 id = "restart-descriptor-hash-check-weakened"
 area = "descriptor"
-describes = "check_restart_descriptor_hash() (fuse::restart_io, the CONTENT half of D62's provenance distinction) no longer compares provenance.descriptor_hash against the current graph's own restart_descriptor_hash() -- it computes the current hash but always returns success, so a restart point written for a DIFFERENT graph under the SAME descriptor version is accepted"
+describes = "check_restart_descriptor_hash() (fuse::restart_io, the CONTENT half of the provenance distinction) no longer compares provenance.descriptor_hash against the current graph's own restart_descriptor_hash() -- it computes the current hash but always returns success, so a restart point written for a DIFFERENT graph under the SAME descriptor version is accepted"
 file = "src/restart_io/hdf5_restart_io.cpp"
 old = """Result<void> check_restart_descriptor_hash(const CouplingGraph& current_graph,
                                            const Provenance& provenance) {
@@ -94,4 +92,4 @@ new = """Result<void> check_restart_descriptor_hash(const CouplingGraph& current
 }"""
 target = "fuse_runtime_restart_test"
 test = "runtime.restart"
-result = "CONFIRMED 2026-10-18 (tier 0, FUSE_ENABLE_HDF5=ON, no MPI): 1 of 23 Restart tests failed -- DescriptorHashMismatchIsCaughtByTheCaller, whose own ASSERT_FALSE(checked.ok()) failed because check_restart_descriptor_hash() now always succeeds even for a graph (max_iterations 11 vs 10) whose hash provably differs from the one written into the point. The other 22 Restart tests, including DescriptorVersionMismatchRefuses (the version half of the SAME D62 distinction, caught inside open_restart_point() itself rather than this function), still passed. Restored; rebuilt; all 23 Restart tests passed again; the restored file matched the pre-mutation text exactly."
+result = "CONFIRMED (tier 0, FUSE_ENABLE_HDF5=ON, no MPI): 1 of 23 Restart tests failed -- DescriptorHashMismatchIsCaughtByTheCaller, whose own ASSERT_FALSE(checked.ok()) failed because check_restart_descriptor_hash() now always succeeds even for a graph (max_iterations 11 vs 10) whose hash provably differs from the one written into the point. The other 22 Restart tests, including DescriptorVersionMismatchRefuses (the version half of the SAME distinction, caught inside open_restart_point() itself rather than this function), still passed. Restored; rebuilt; all 23 Restart tests passed again; the restored file matched the pre-mutation text exactly."

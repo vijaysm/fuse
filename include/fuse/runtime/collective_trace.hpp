@@ -1,8 +1,7 @@
 #pragma once
 
-// KNOWN_ISSUES.md D57 ("Collectives" track). FUSE_COLLECTIVE_TRACE=1 is an
-// off-by-default, per-rank diagnostic for exactly the class of defect this
-// entry fixes: a rank entering a base-communicator collective (OpKind::
+// FUSE_COLLECTIVE_TRACE=1 is an off-by-default, per-rank diagnostic for the
+// class of defect where a rank enters a base-communicator collective (OpKind::
 // Constrain's reduction, fuse::is_collective(), include/fuse/ir/op.hpp) that
 // another rank's own schedule does not also reach. Printed from the one
 // place that has both the region's own name and the current sweep index

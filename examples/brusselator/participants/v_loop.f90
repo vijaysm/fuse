@@ -1,4 +1,4 @@
-! Time windows track (Conformance, Unit 2): the ONE place "drive one
+! The ONE place "drive one
 ! externally-driven step of V" is written IN FORTRAN -- fuse_begin_step()
 ! (through ffuse's own Fortran wrapper), the checkpoint/restore dance,
 ! the shim's own bruss_v_step() (called here through a bind(C) interface
@@ -6,13 +6,11 @@
 ! own time loop and test/verification/brusselator_participants_test.cpp's
 ! own tier-0 harness (a C++ gtest binary) call the SAME code rather than
 ! two hand-copies that could drift. PURE FORTRAN, deliberately: v_main.f90
-! is the half of Conformance Unit 2 that demonstrates a Fortran code
-! driving FUSE through the ABI in Fortran, so the loop body itself -- not
-! just the program -- has to be Fortran (the lead's own correction on
-! this point; an earlier version of this session's own work had this
-! loop body shared as C++, which made both mains thin wrappers around a
-! C++ helper and never exercised ffuse's own Fortran bindings with a real
-! time loop).
+! demonstrates a Fortran code driving FUSE through the ABI in Fortran, so
+! the loop body itself -- not just the program -- has to be Fortran (a
+! loop body shared as C++ would make both mains thin wrappers around a C++
+! helper and never exercise ffuse's own Fortran bindings with a real time
+! loop).
 !
 ! v_loop_step is `bind(C, name="bruss_v_loop_step")` so the C++ tier-0
 ! harness can call it through an ordinary `extern "C"` prototype
@@ -36,7 +34,7 @@ module v_loop_mod
   ! translation unit exporting extern "C" -- this interface block is
   ! what lets pure Fortran call them without ever seeing a C++ type). ----
   interface
-    ! Physics track: `rank`/`num_ranks` are V's own component placement;
+    ! `rank`/`num_ranks` are V's own component placement;
     ! `comm_f` the Fortran-integer value of V's own physics-only
     ! communicator (ignored when num_ranks<=1 -- shim.h's own doc
     ! comment). Fortran's MPI binding already represents a communicator
@@ -95,7 +93,7 @@ module v_loop_mod
 
     ! The grid of brusselator_grid.h -- the one place it lives (that
     ! header's own comment), read through the shim because Fortran cannot
-    ! include it. This file carried its own `nx_u = 3` until 2026-10-09.
+    ! include it.
     subroutine bruss_grid_dims(nx_u, ny_u, nx_v, ny_v) bind(C, name="bruss_grid_dims")
       import :: c_int
       integer(c_int) :: nx_u, ny_u, nx_v, ny_v
@@ -195,22 +193,22 @@ contains
     if (out_begin_rep%step_opened == 0) then
       out_rep = fuse_step_report()
       out_rep%struct_size = int(c_sizeof(out_rep), c_int32_t)
-      ! KNOWN_ISSUES.md D57, Round 2. v_main.f90's own loop has exactly
+      ! v_main.f90's own loop has exactly
       ! one way to notice a period has closed: `if (rep%next_component
       ! == -1) exit` -- out_rep, never out_begin_rep, which this
       ! function's own doc comment above already says is what names who
       ! IS due instead. Leaving next_component at its default-
-      ! constructed zero here was wrong, for the identical reason
+      ! constructed zero here would be wrong, for the identical reason
       ! u_loop_step()'s own sibling fix (u_loop.c) states in full: 0 is
       ! also a valid ComponentId, so v_main.f90's own check can never
       ! tell "nothing is due, the run just ended" from "component 0 is
       ! due" -- in particular never seeing fuse_begin_step()'s own
       ! correctly-reported next_component == -1 at a genuine period
       ! boundary with no end_time declared (src/abi/participant.cpp's
-      ! prime_next_request(), KNOWN_ISSUES.md D57's own fix), so the
-      ! loop never exits, calls fuse_begin_step() again, and that FRESH
-      ! call's own ordinary (unbounded when !has_end_time) first
-      ! resume_period() call starts a period the caller never requested.
+      ! prime_next_request()), so the
+      ! loop would never exit, would call fuse_begin_step() again, and that
+      ! FRESH call's own ordinary (unbounded when !has_end_time) first
+      ! resume_period() call would start a period the caller never requested.
       out_rep%next_component = out_begin_rep%next_component
       status = FUSE_OK
       return

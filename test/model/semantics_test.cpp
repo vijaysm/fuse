@@ -1,7 +1,7 @@
 // Ported from the spine's semantics test. Five of its nine groups survive: its
 // rational-arithmetic and dyadic-conversion groups tested a rational type this
 // library replaced (fuse::Rational carries its own suite), and its two adaptation
-// groups test an adapter header that arrives with compatibility inference at S2.4.
+// groups test an adapter header that arrives with compatibility inference.
 //
 // DROPPED CAPABILITY, recorded rather than lost: the spine could convert a double
 // to an exact rational dyadically (`rational_from_dyadic`), which is how a legacy
@@ -22,7 +22,7 @@ namespace {
 using namespace fuse;
 
 // Upstream's require() threw on first failure; EXPECT_TRUE reports every failure
-// in the group (U2) and carries the same message.
+// in the group and carries the same message.
 void require(bool condition, const char* message) { EXPECT_TRUE(condition) << message; }
 
 FieldSemantics temperature_field()
@@ -178,7 +178,7 @@ void structural_validation()
     bad_scale.ports[0].field.units.scale = Rational{0};
     rejects(bad_scale, SemanticDiagnosticCode::NonfiniteScale, "zero unit scale accepted");
 
-    // REVIEW.md R-19: a unit's scale relative to SI base units is never
+    // A unit's scale relative to SI base units is never
     // negative; distinct from the zero/annihilator case just above.
     auto negative_scale = two_port_component();
     negative_scale.ports[0].field.units.scale = Rational{-1};

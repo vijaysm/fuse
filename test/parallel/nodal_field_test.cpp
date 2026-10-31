@@ -1,10 +1,9 @@
-// "Nodal fields" track, step 2: parallel nodal fields under a real mpiexec.
+// Parallel nodal fields under a real mpiexec.
 //
-// NOT YET RUN: this sandbox cannot initialize MPI (docs/dev/testing.md's
-// harness note; see also test/model/descriptor_mpi_test.cpp's identical
-// disclaimer). Every case here is registered at the MPI-enabled build configuration via
-// fuse_add_mpi_test and compiles under FUSE_ENABLE_MPI=ON; outcomes are a
-// host action.
+// Needs a working MPI launcher (docs/dev/testing.md's harness note; see also
+// test/model/descriptor_mpi_test.cpp). Every case here is registered at the
+// MPI-enabled build configuration via fuse_add_mpi_test and compiles under
+// FUSE_ENABLE_MPI=ON.
 //
 // WHAT THIS FILE COVERS, AND WHAT IT HONESTLY DOES NOT:
 //
@@ -21,9 +20,8 @@
 //       accumulate_shared_rows) does this correctly for a deliberately
 //       non-uniform per-rank partial pattern. It is NOT run through Runner:
 //       docs/dev/nodal-fields.md's "H^T on a distributed interface" records
-//       why wiring it into Runner::Impl::execute needed a scope decision
-//       this track did not make unilaterally (see this task's
-//       open_questions). AccumulateSharedRows.ManuallyAssembledPowerBalances
+//       why wiring it into Runner::Impl::execute is a separate scope
+//       decision. AccumulateSharedRows.ManuallyAssembledPowerBalances
 //       demonstrates, by calling the primitive directly rather than through
 //       Runner, that WHEN it is wired in, power balances globally -- this is
 //       the closest this file comes to property (e), and it is explicitly a
@@ -39,7 +37,7 @@
 #include <gtest/gtest.h>
 #include <mpi.h>
 
-// R-50 (REVIEW.md): the documented rank-requirement convention
+// The documented rank-requirement convention
 // (docs/dev/testing.md).
 #include "fuse_test_main.hpp"
 
@@ -287,11 +285,10 @@ TEST(AccumulateSharedRows, SumsEveryRanksPartialExactlyOnceAndDeliversTheSameTot
 /// each side, and accumulate_shared_rows must sum those onto the owner exactly
 /// once. The owned-only sum across ranks then equals the force sent.
 ///
-/// The first version of this test wrote a full per-vertex share into every
-/// holder's copy of a shared vertex. That input already counted each shared
-/// vertex twice before any reduction ran, so the test failed by exactly
-/// (ranks - 1) / (n_cells + 1), which is what the host measured (3/14 at 4
-/// ranks, 4/14 at 5). The primitive was right; the input was not a load.
+/// The input must therefore not write a full per-vertex share into every
+/// holder's copy of a shared vertex: that input would already count each
+/// shared vertex twice before any reduction ran, and the test would fail by
+/// exactly (ranks - 1) / (n_cells + 1) (3/14 at 4 ranks, 4/14 at 5).
 TEST(AccumulateSharedRows, ManuallyAssembledPowerBalances) {
   const int size = world_size();
   const std::size_t n_cells = 13;

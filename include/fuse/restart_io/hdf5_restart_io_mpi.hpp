@@ -1,7 +1,6 @@
 #pragma once
 
-/// Restart track round 2, item 3 (the brief's own main item): the
-/// collective multi-task WRITE half of rank-count-independent restart.
+/// The collective multi-task WRITE half of rank-count-independent restart.
 /// `fuse::restart_io::create_restart_point()` (hdf5_restart_io.hpp) is
 /// fundamentally single-writer -- its own `Hdf5GroupWriter::
 /// put_field_bytes()` refuses a SECOND `put_field()` call for the same
@@ -15,22 +14,21 @@
 ///
 /// The READ side needs NO new code: every task already independently
 /// calls the existing, unchanged `open_restart_point()`/`get_field()`
-/// with its own local ids (proven correct in round 1,
+/// with its own local ids (verified by
 /// `Restart.GetFieldResolvesRowsByIdNotByFilePosition`,
 /// test/runtime/restart_test.cpp) -- a reader at a different task count
 /// than the writer simply asks for a different set of ids and gets back
 /// exactly those rows, regardless of which task wrote them or where they
 /// sit in the file.
 ///
-/// This round's own declared scope: `ElementType::Binary64`/`Int64`
+/// Scope: `ElementType::Binary64`/`Int64`
 /// fields only (anything else refuses E-RESTART-TYPE-MISMATCH); only
 /// `FileLayout::SeparateMeshAndPoints` (GrowingFile refuses
 /// E-RESTART-COLLECTIVE-LAYOUT-UNSUPPORTED); scalars, rationals, and
 /// blobs all refuse with E-RESTART-COLLECTIVE-SCALAR-UNSUPPORTED --
 /// HDF5's own metadata operations are collective-required even for a
-/// value one task alone would otherwise host, and this round's own time
-/// did not extend to that path (recorded in the delivered report's own
-/// open_questions).
+/// value one task alone would otherwise host, and that path is not
+/// implemented.
 ///
 /// NO <mpi.h> HERE (tools/check-layering.py's FORBIDDEN_PUBLIC, the SAME
 /// convention collective_check_mpi.hpp already follows): `comm_f` is an

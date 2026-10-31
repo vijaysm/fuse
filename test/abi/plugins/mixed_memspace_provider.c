@@ -1,6 +1,4 @@
-/* A provider plugin for test/abi/conformance_test.cpp: KNOWN_ISSUES.md D15
- * item 1 ("Provider parity" track, Stage B-2, Option A; fixed by the
- * "Mixed plugin" track, 2026-10-21). Declares TWO Provides fields --
+/* A provider plugin for test/abi/conformance_test.cpp. Declares TWO Provides fields --
  * "host_out" (FUSE_MEMSPACE_HOST) and "device_out" (FUSE_MEMSPACE_DEVICE)
  * -- on the SAME provider instance, to exercise the mixed host/device
  * path fuse::abi_detail::ProviderAdapter::register_fields() supports:
@@ -27,13 +25,12 @@
  * own C++ translation unit, exported as a plain C-callable function and
  * compiled into this plugin's shared object alongside this file; see that
  * file's own header comment for why the fence this write relies on lives
- * in src/abi/provider_adapter.cpp and not here). Measured on ssh:higgs
- * (GTX 1050 Ti, sm_61): this is the fix for a defect the "Device layout"
- * track found by running the ORIGINAL version of this file's own
- * advance() (an ordinary C store through the device pointer) on that
- * hardware -- it segfaulted (exit code 139), because that store is valid
- * only on tier 0, where the pointer is secretly host-dereferenceable; see
- * KNOWN_ISSUES.md D15 for that measurement. What this plugin now proves,
+ * in src/abi/provider_adapter.cpp and not here). Measured on a CUDA host
+ * (GTX 1050 Ti, sm_61): an earlier version of this file's own advance()
+ * (an ordinary C store through the device pointer) segfaulted on that
+ * hardware (exit code 139), because that store is valid only on tier 0,
+ * where the pointer is secretly host-dereferenceable. What this plugin
+ * now proves,
  * on either tier 0 or a real device build: the describe()/capabilities()/
  * bind()/fence MACHINERY around a device-resident field is wired
  * correctly end to end, AND the field is actually touched through a
@@ -41,7 +38,7 @@
  *
  * capabilities() reports FUSE_CAP_DEVICE_FIELDS, required before
  * ProviderAdapter will honour "device_out"'s own describe()-row request
- * for FUSE_MEMSPACE_DEVICE at all (the capability gate this track adds).
+ * for FUSE_MEMSPACE_DEVICE at all (the capability gate).
  *
  * FUSE_TEST_NO_DEVICE_CAPABILITY (its own CMake target, mirroring
  * linear_provider.c's own "behaviours selected at compile time" table):
@@ -52,10 +49,9 @@
  *
  * FUSE_TEST_HOST_ONLY_FIELDS (its own CMake target): describe() reports
  * ONLY "host_out" (written=1, "device_out" dropped), while capabilities()
- * STILL sets FUSE_CAP_DEVICE_FIELDS -- the opposite direction the owner's
- * own task names explicitly ("the opposite: bit set, no field asks, is
- * accepted"): a provider is always free to offer more than any one graph
- * uses, so this must register successfully with no refusal at all.
+ * STILL sets FUSE_CAP_DEVICE_FIELDS -- the opposite direction (bit set, no
+ * field asks, is accepted): a provider is always free to offer more than any
+ * one graph uses, so this must register successfully with no refusal at all.
  */
 #include "fuse/abi/provider.h"
 
@@ -133,7 +129,7 @@ static fuse_status p_describe(fuse_provider_ctx* self, const fuse_null* in, fuse
  * affine_provider.c's own header comment for the full account of why
  * this is bind() call order, not describe()'s row order). The graph
  * fixture this plugin serves (test/abi/graph_fixture.hpp's own
- * build_mixed_memspace_graph(), added for this track) declares
+ * build_mixed_memspace_graph()) declares
  * "host_out" before "device_out" -- matching describe()'s own row order
  * above, so this plugin's own bind_calls counter and describe() table
  * agree, the same way affine_provider.c's own two fields do. */

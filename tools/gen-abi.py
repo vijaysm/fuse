@@ -364,7 +364,7 @@ def _fortran_entry_names(spec: Spec) -> dict[str, tuple[str, bool]]:
     same name in one scope (unlike C's separate tag/ordinary namespaces), so
     an entry whose `fuse_<name>` collides with any type the module declares
     is REFUSED here: the fix is a different type name in entries.def (which
-    is what happened on 2026-10-02 to fuse_capability_set, fuse_setup_options
+    is what happened to fuse_capability_set, fuse_setup_options
     and fuse_semantic_version), never a mangled procedure name. See
     docs/dev/abi-design.md, "Fortran: ffuse".
     """
@@ -485,7 +485,7 @@ def _fortran_convenience(name: str, inp: str, out: str) -> list[str]:
             "    out%buffer = c_loc(buf)",
             "    out%capacity = int(len(message), c_int64_t)",
             "    status = fuse_last_error_struct(ctx, in, out)",
-            # Review 2026-10-11 AB-5: on the truncated path the C side
+            # On the truncated path the C side
             # (impl_last_error, src/abi/participant.cpp) writes only
             # capacity-1 message bytes, then a NUL at buf(capacity) --
             # copying min(length, capacity) (the old expression) included
@@ -498,7 +498,7 @@ def _fortran_convenience(name: str, inp: str, out: str) -> list[str]:
             "      n = min(out%length, out%capacity)",
             "    end if",
             "    message = ' '",
-            # AB-5's second half (generator note, not fixed here): `buf` is
+            # Generator note: `buf` is
             # declared `kind=c_char` (the ISO_C_BINDING companion, matched
             # to the C `char` this module's `c_loc()` calls bind against)
             # while `message`, the caller's own dummy argument, is plain
@@ -634,18 +634,15 @@ def _fortran_provider_abstract_interface(name: str, inp: str, out: str) -> list[
 
 
 def gen_fortran_provider_module(spec: Spec) -> str:
-    # BUG FOUND AND FIXED (docs/dev/restart.md round 2, item 4): this
-    # `use` list was hardcoded rather than computed from spec.provider_
-    # entries' own (inp, out) struct types, so the Fortran provider
-    # module silently omitted any struct a NEWLY APPENDED provider entry
-    # introduced -- exactly what happened when save_restart_blob/
-    # load_restart_blob were appended: ffuse_provider.f90 referenced
-    # fuse_restart_blob_sink/fuse_restart_blob_source without importing
-    # either, and gfortran's own "Cannot IMPORT ... does not exist"
-    # caught it immediately (a real build failure, not a lint warning).
-    # Computed here instead, so the next appended provider entry's own
-    # struct types are picked up automatically, never needing a second
-    # hand-edit to this list.
+    # The `use` list is computed from spec.provider_entries' own (inp, out)
+    # struct types rather than hardcoded: a fixed list silently omits any
+    # struct a newly appended provider entry introduces (appending
+    # save_restart_blob/load_restart_blob once left ffuse_provider.f90
+    # referencing fuse_restart_blob_sink/fuse_restart_blob_source without
+    # importing either, which gfortran reports as "Cannot IMPORT ... does
+    # not exist" -- a build failure, not a lint warning). Computed here, the
+    # next appended provider entry's struct types are picked up
+    # automatically.
     needed_structs = sorted({t for (_, inp, out, _) in spec.provider_entries
                              for t in (inp, out)})
     # Wrapped across Fortran free-form continuation lines (gfortran's

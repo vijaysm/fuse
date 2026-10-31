@@ -1,4 +1,4 @@
-// S7.4 (owner decision 2026-10-21, Option C). Direct, component-level
+// Direct, component-level
 // tests of DirichletHalf/NeumannHalfNative's own
 // fuse::ImplicitComponent/LinearizationToken wiring (reaction_diffusion_
 // component.hpp) -- NOT through a full CouplingGraph/Runner (that is
@@ -97,8 +97,8 @@ TEST(PetscReactionDiffusionComponent, DirichletHalfTokenApplyJacobianMatchesSens
   EXPECT_DOUBLE_EQ(y[0], yt[0]) << "a 1x1 operator's transpose must equal itself";
 
   // A finite-difference cross-check against evaluate_residual itself --
-  // the SAME check this track's own Python/C++ prototypes ran before
-  // any of this file existed (design_notes.md Section 5), now permanent.
+  // the same check the Python/C++ prototypes ran (design_notes.md
+  // Section 5).
   const double h = 1e-6;
   std::array<double, 1> in2{in[0] + h};
   std::array<double, 1> out2{0.0};

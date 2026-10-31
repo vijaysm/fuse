@@ -1,25 +1,21 @@
-# Mutation evidence for S7.4 (owner decision 2026-10-21, Option C): the
-# PETSc-object-backed reaction-diffusion component
+# Mutation evidence for the PETSc-object-backed reaction-diffusion component
 # (examples/petsc_reaction_diffusion/).
 #
 # HONEST DISCLOSURE, read before the rows below -- the SAME sandbox
 # limitation build-evidence/mutations/petsc.toml's own header already
-# documents, reproduced directly by THIS track before writing a line of
-# reaction_diffusion_component_petsc.hpp (design_notes.md Section 1): this
-# sandbox's /opt/mpich cannot complete a bare MPI_Init() (MPICH's
-# debugger-attach mutex assertion in dbginit.c), and
+# documents: this sandbox's /opt/mpich cannot complete a bare MPI_Init()
+# (MPICH's debugger-attach mutex assertion in dbginit.c), and
 # fuse::petsc::ensure_initialized() (src/petsc/init.cpp, as of commit
 # 70b3d16) deliberately lets MPI_Init() run rather than skip it -- so
 # EVERY path through reaction_diffusion_component_petsc.hpp fails in this
 # sandbox before reaching any code a mutation row below touches. The
-# failure's exact signature (a signal versus an MPICH assertion abort) was
-# reported inconsistently by the track and was not re-measured by the lead. The two PETSc-specific
-# rows below are therefore ARGUED BY CODE INSPECTION ONLY, exactly
-# petsc.toml's own convention for the identical reason, not a new gap this
-# track introduces. The THIRD row (transpose action, on the NATIVE
-# DirichletHalf::Token -- reaction_diffusion_component.hpp, no PETSc
-# involved) IS hand-proved, in this sandbox, this session: see its own
-# `result` field.
+# failure's exact signature (a signal versus an MPICH assertion abort) has
+# been reported inconsistently and was not re-measured. The two
+# PETSc-specific rows below are therefore ARGUED BY CODE INSPECTION ONLY,
+# exactly petsc.toml's own convention for the identical reason. The THIRD
+# row (transpose action, on the NATIVE DirichletHalf::Token --
+# reaction_diffusion_component.hpp, no PETSc involved) IS hand-proved in
+# this sandbox: see its own `result` field.
 
 [[mutation]]
 id = "reaction-diffusion-native-token-transpose-sign-flipped"
@@ -30,12 +26,12 @@ old = "      y[0] = slope_ * x[0];  // 1x1: transpose is itself"
 new = "      y[0] = -slope_ * x[0];  // MUTATION: sign flipped, not kept"
 target = "fuse_runtime_petsc_reaction_diffusion_component_test"
 test = "runtime.petsc_reaction_diffusion_component"
-result = "Hand-proved this session (sandbox tier-0, no PETSc, no MPI needed -- DirichletHalf is native-only): under the mutation, PetscReactionDiffusionComponent.DirichletHalfTokenApplyJacobianMatchesSensitivity FAILED (apply_jacobian/apply_jacobian_transpose disagreed, EXPECT_DOUBLE_EQ fired), 4/5 PASSED; clean tree 5/5. File restored byte-identically (md5 5c83c9c28062ceb3696781cdfee30ceb before and after)."
+result = "Hand-proved (sandbox tier-0, no PETSc, no MPI needed -- DirichletHalf is native-only): under the mutation, PetscReactionDiffusionComponent.DirichletHalfTokenApplyJacobianMatchesSensitivity FAILED (apply_jacobian/apply_jacobian_transpose disagreed, EXPECT_DOUBLE_EQ fired), 4/5 PASSED; clean tree 5/5. File restored byte-identically (md5 5c83c9c28062ceb3696781cdfee30ceb before and after)."
 
 [[mutation]]
 id = "reaction-diffusion-petsc-ownership-local-write-replaced-by-global-setvalues"
 area = "petsc-reaction-diffusion"
-describes = "right_newton_solve_petsc's own residual assembly (VecGetArray into this rank's OWNED portion only) replaced by a global-index VecSetValues call -- on a communicator with more than one rank, VecSetValues with a GLOBAL row index not owned by the calling rank either refuses (PETSC_ERR_ARG_OUTOFRANGE, with -vecscatter_alltoall-style checking on) or silently routes the write to whichever rank DOES own that index, overwriting a value the owning rank itself is concurrently computing -- the exact off-process-write hazard this track's own header comment (reaction_diffusion_component_petsc.hpp) and the owner's own Stage B correction (src/petsc/token.cpp:340's MatSetValues, into a SEQUENTIAL MatCreateSeqAIJ, cannot do this) both name."
+describes = "right_newton_solve_petsc's own residual assembly (VecGetArray into this rank's OWNED portion only) replaced by a global-index VecSetValues call -- on a communicator with more than one rank, VecSetValues with a GLOBAL row index not owned by the calling rank either refuses (PETSC_ERR_ARG_OUTOFRANGE, with -vecscatter_alltoall-style checking on) or silently routes the write to whichever rank DOES own that index, overwriting a value the owning rank itself is concurrently computing -- the exact off-process-write hazard the header comment (reaction_diffusion_component_petsc.hpp) and the sequential MatSetValues in src/petsc/token.cpp:340 (into a SEQUENTIAL MatCreateSeqAIJ, which cannot do this) both name."
 file = "examples/petsc_reaction_diffusion/reaction_diffusion_component_petsc.hpp"
 old = """    ierr = VecGetArray(r_vec, &rarr);
     if (auto r = check_petsc(ierr, "VecGetArray(r)"); !r.ok()) { cleanup(); return r.error(); }
@@ -50,8 +46,8 @@ new = """    for (PetscInt i = 0; i < m; ++i) {
 target = "fuse_petsc_reaction_diffusion_test"
 test = "petsc.reaction_diffusion"
 requires = "petsc"
-result = "ARGUED BY CODE INSPECTION ONLY (this sandbox cannot run ANY petsc.* row -- NeumannHalfPetsc's own constructor calls ensure_initialized(), which segfaults on MPI_Init() before this line is ever reached, the SAME barrier petsc.toml's own header documents for every row there). On a single-rank communicator (this component's own region, per D31's single-rank-per-participant restriction) VecSetValues with a LOCAL-and-global-identical index would not visibly misbehave either -- the mutation's hazard is specifically the multi-rank case this track's own header comment names as the reason the real code never does this; a host run with FUSE_ENABLE_MPI and more than one rank per participant (not possible under D31's current restriction for this track's own single-participant-per-rank region) would be needed to exercise the differential this row describes for real."
-equivalent = "right_newton_solve_petsc builds every PETSc object on PETSC_COMM_SELF (the one assignment `MPI_Comm comm = PETSC_COMM_SELF;` and every VecCreate, MatCreateAIJ and KSPCreate takes that `comm`), a one-process communicator on which a global index is the local index, so an INSERT_VALUES write of the owned range followed by assembly stores the same values as the VecGetArray write. The off-process hazard this row names needs a communicator with more than one rank, which this function cannot receive. Read from the source 2026-10-21 and measured: the tool reported SURVIVED on the host (MPICH 5.0.2rc3)."
+result = "ARGUED BY CODE INSPECTION ONLY (this sandbox cannot run ANY petsc.* row -- NeumannHalfPetsc's own constructor calls ensure_initialized(), which segfaults on MPI_Init() before this line is ever reached, the SAME barrier petsc.toml's own header documents for every row there). On a single-rank communicator (this component's own region, given the single-rank-per-participant restriction) VecSetValues with a LOCAL-and-global-identical index would not visibly misbehave either -- the mutation's hazard is specifically the multi-rank case the header comment names as the reason the real code never does this; a host run with FUSE_ENABLE_MPI and more than one rank per participant (not possible under the current single-participant-per-rank restriction) would be needed to exercise the differential this row describes for real."
+equivalent = "right_newton_solve_petsc builds every PETSc object on PETSC_COMM_SELF (the one assignment `MPI_Comm comm = PETSC_COMM_SELF;` and every VecCreate, MatCreateAIJ and KSPCreate takes that `comm`), a one-process communicator on which a global index is the local index, so an INSERT_VALUES write of the owned range followed by assembly stores the same values as the VecGetArray write. The off-process hazard this row names needs a communicator with more than one rank, which this function cannot receive. Read from the source and measured: the tool reported SURVIVED on the host (MPICH 5.0.2rc3)."
 
 [[mutation]]
 id = "reaction-diffusion-petsc-assembly-no-zero-before-reassembly"
@@ -65,7 +61,7 @@ new = """    // MatZeroEntries(J);  -- MUTATION: removed, not kept
 target = "fuse_petsc_reaction_diffusion_test"
 test = "petsc.reaction_diffusion"
 requires = "petsc"
-result = "MEASURED ON THE HOST 2026-10-21 (lead). Unmutated: 4 Newton iterations, dG_dq_I = 4.592106385435e-01. With MatZeroEntries removed: the loop hits its 40-iteration cap and dG_dq_I = 4.293374124325e-01, so petsc.reaction_diffusion FAILS at reaction_diffusion_test.cpp:49 against its 1e-6 bound; the converged solution u is unchanged to 1e-8 (u0 = 1.306213895455 against 1.306213874354), which is why the example row example.petsc_reaction_diffusion.petsc, whose check compares u only, cannot kill it. The row was first wired to that example row and tools/mutate.py correctly reported SURVIVED in two logged runs; it is now wired to the gtest that compares dG_dq_I. Its kill run through the tool, 2026-10-21 on the host (two logged runs, FUSE_MUTATE_LOGDIR): KILLED both times by petsc.reaction_diffusion at reaction_diffusion_test.cpp:49, dG_dq_I 0.42933741243245555 against 0.45921063854352084, bound 9.9999999999999995e-07; area gate 3 killed, 1 declared equivalent, 0 not killed, of 4."
+result = "MEASURED ON THE HOST. Unmutated: 4 Newton iterations, dG_dq_I = 4.592106385435e-01. With MatZeroEntries removed: the loop hits its 40-iteration cap and dG_dq_I = 4.293374124325e-01, so petsc.reaction_diffusion FAILS at reaction_diffusion_test.cpp:49 against its 1e-6 bound; the converged solution u is unchanged to 1e-8 (u0 = 1.306213895455 against 1.306213874354), which is why the example row example.petsc_reaction_diffusion.petsc, whose check compares u only, cannot kill it. The row was first wired to that example row and tools/mutate.py correctly reported SURVIVED in two logged runs; it is now wired to the gtest that compares dG_dq_I. Its kill run through the tool, on the host (two logged runs, FUSE_MUTATE_LOGDIR): KILLED both times by petsc.reaction_diffusion at reaction_diffusion_test.cpp:49, dG_dq_I 0.42933741243245555 against 0.45921063854352084, bound 9.9999999999999995e-07; area gate 3 killed, 1 declared equivalent, 0 not killed, of 4."
 
 [[mutation]]
 id = "reaction-diffusion-petsc-free-solve-without-ensure-initialized"
@@ -80,4 +76,4 @@ new = """  const PetscInt m = static_cast<PetscInt>(u_old.size());"""
 target = "fuse_petsc_reaction_diffusion_test"
 test = "petsc.reaction_diffusion"
 requires = "petsc"
-result = "MEASURED BY THE UNMUTATED CODE ON THE HOST, 2026-10-21 (lead): before the call was added, petsc.reaction_diffusion aborted in its first case, PetscReactionDiffusion.PetscInnerSolveAgreesWithNativeAtOnePoint, with MPI_Comm_get_attr invalid keyval from the first VecCreate (MPICH 5.0.2rc3). The mutation restores exactly that code, so the row is expected killed (by a process abort); its own kill run on a PETSc build is pending."
+result = "MEASURED BY THE UNMUTATED CODE ON THE HOST: before the call was added, petsc.reaction_diffusion aborted in its first case, PetscReactionDiffusion.PetscInnerSolveAgreesWithNativeAtOnePoint, with MPI_Comm_get_attr invalid keyval from the first VecCreate (MPICH 5.0.2rc3). The mutation restores exactly that code, so the row is expected killed (by a process abort); its own kill run on a PETSc build is pending."

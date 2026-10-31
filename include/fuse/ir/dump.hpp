@@ -12,7 +12,7 @@ namespace detail {
 
 /// std::to_string(double) formats through the global locale, so its output
 /// varies with LC_NUMERIC (e.g. "0,7" under de_DE) even though the dump is a
-/// byte-for-byte golden-file artifact (Task 2.8). Route every floating-point
+/// byte-for-byte golden-file artifact. Route every floating-point
 /// value in the dump through a stream imbued with the classic "C" locale
 /// instead, so the format is fixed regardless of the process locale.
 inline std::string format_double(double v) {
@@ -123,13 +123,8 @@ inline std::string pad(std::string s, std::size_t width) {
 [[nodiscard]] inline std::string dump_graphviz(const OperatorDAG& d) {
   std::ostringstream os;
   os.imbue(std::locale::classic());
-  // Review 2026-10-11 IS-11: this used to say "soma_ir", legacy upstream
-  // residue in a public output artifact -- the same class R-46 fixed for the
-  // LowFive probe dataset name (src/transport/lowfive_transport.cpp),
-  // conventions.md's own ban on soma-prefixed names. (A DIFFERENT sentinel
-  // suffix, ".soma-writable-probe" at lowfive_transport.cpp:568, is this
-  // same class's own still-open instance, tracked separately as TR-13 --
-  // not touched here, not R-46's own fix.)
+  // The graph name is "fuse_ir", not a soma-prefixed one (conventions.md
+  // bans soma-prefixed names in public output artifacts).
   os << "digraph fuse_ir {\n  rankdir=LR;\n  node [shape=box];\n";
   for (const NodeId nid : d.topological_order()) {
     const Node& n = d.node(nid);

@@ -17,8 +17,8 @@ int demo_b_produce(const char* file, const char* dataset, long long fapl_in,
 
   // H5Dcreate2 does not create intermediate groups: "/grid/values" needs
   // "/grid" first, in plain HDF5 as under any VOL connector (LowFive's
-  // metadata VOL otherwise records a single root child named "grid/values",
-  // KNOWN_ISSUES.md D39 round 7). Create every missing parent in one call.
+  // metadata VOL otherwise records a single root child named "grid/values").
+  // Create every missing parent in one call.
   const std::string path(dataset);
   const std::size_t last = path.find_last_of('/');
   if (last != std::string::npos && last > 0) {

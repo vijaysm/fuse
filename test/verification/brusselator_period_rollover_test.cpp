@@ -1,23 +1,22 @@
-// KNOWN_ISSUES.md D57 ("Collectives" track). Root cause, established by
-// reading src/abi/participant.cpp's own Runner::Impl::resume_period()
-// (src/runtime/runner.cpp) and its two callers: for a window-coupled,
-// ExternalDelivery-bound coupling region driven by fuse_begin_step()/
-// fuse_end_step() with NO end_time declared (fuse_setup_options::
-// has_end_time left at its zero default -- examples/brusselator/
-// participants/u_main.c's own `fuse_setup_options setup; memset(&setup,
-// 0, sizeof(setup)); ...; t->setup(ctx, &setup, NULL);`, mirrored by
-// v_main.f90), `prime_next_request()`'s own rollover (the branch that
-// fires when its own first `resume_period()` call finds the current
-// period already drained) has NOTHING bounding how many further periods
-// it may silently start and run before answering fuse_begin_step()'s own
-// caller -- it is gated ONLY by `c.has_end_time`, and with that false the
-// gate never applies at all (`if (c.has_end_time && ...)`, both
-// occurrences in the function, are no-ops). The SAME discovery, reached
-// instead through `fuse_end_step()`'s own direct, unconditional
-// `resume_period()` call, is reported immediately (next_component == -1,
-// deferring the next period's own start to a LATER call) -- this entry's
-// own fix makes `prime_next_request()`'s rollover behave identically
-// instead of eagerly continuing.
+// The period rollover in `prime_next_request()` (src/abi/participant.cpp),
+// reached through Runner::Impl::resume_period() (src/runtime/runner.cpp)
+// and its two callers: for a window-coupled, ExternalDelivery-bound
+// coupling region driven by fuse_begin_step()/fuse_end_step() with NO
+// end_time declared (fuse_setup_options::has_end_time left at its zero
+// default -- examples/brusselator/participants/u_main.c's own
+// `fuse_setup_options setup; memset(&setup, 0, sizeof(setup)); ...;
+// t->setup(ctx, &setup, NULL);`, mirrored by v_main.f90),
+// `prime_next_request()`'s own rollover (the branch that fires when its
+// own first `resume_period()` call finds the current period already
+// drained) must not silently start and run further periods before
+// answering fuse_begin_step()'s own caller. The `c.has_end_time` gate
+// (`if (c.has_end_time && ...)`, both occurrences in the function) does
+// not apply when that is false, so the rollover is instead stopped by the
+// `else if (c.communicator_set)` branch. The SAME discovery, reached
+// through `fuse_end_step()`'s own direct, unconditional `resume_period()`
+// call, is reported immediately (next_component == -1, deferring the next
+// period's own start to a LATER call); `prime_next_request()`'s rollover
+// behaves identically instead of eagerly continuing.
 //
 // WHY THIS GRAPH SHAPE. examples/brusselator/participants/
 // brusselator_graph_tool.cpp's own kDtU/kDtV/kWindow (genuinely
@@ -176,12 +175,9 @@ fuse_status drive_one_step(const fuse_participant_abi_v1* t, fuse_ctx* ctx,
   if (!out_begin_rep->step_opened) {
     std::memset(out_rep, 0, sizeof(*out_rep));
     out_rep->struct_size = sizeof(*out_rep);
-    // KNOWN_ISSUES.md D57, Round 2's own fix to u_loop.c's/v_loop.f90's
-    // real counterpart, mirrored here VERBATIM (this function's own
-    // header comment) now that the fix exists: propagate the one field
+    // u_loop.c's/v_loop.f90's real counterpart, mirrored here VERBATIM
+    // (this function's own header comment): propagate the one field
     // either real caller loop's "has a period closed" check reads.
-    // Round 1's own version of this helper did not do this -- the exact
-    // gap Round 2's own host measurement traced back to the real files.
     out_rep->next_component = out_begin_rep->next_component;
     return FUSE_OK;
   }
@@ -223,13 +219,12 @@ SetupResult build_and_initialize(fuse::CouplingGraph& graph_storage) {
   // no coupler, both transfer fields share one region and the channel
   // is a bare identity with NEITHER (brusselator_graph.hpp's own "WHY
   // BOTH TRANSFER FIELDS LIVE ON u_region" header comment), which is
-  // what this entry's own first-draft version of this test measured
-  // (fuse::RunStats::conservation_checks stayed 0 for every period
-  // count, discriminating nothing). The real participants row DOES
+  // what would leave fuse::RunStats::conservation_checks at 0 for every
+  // period count, discriminating nothing. The real participants row DOES
   // declare a coupler (brusselator_graph_tool.cpp's own `--ranks-
   // coupler 1`), so this is the faithful choice, not a simplification
   // of convenience -- it is what makes a Constrain instruction (and,
-  // on the real multi-rank graph, D57's own base-communicator
+  // on the real multi-rank graph, the base-communicator
   // MPI_Allreduce) exist in this region's body at all.
   const brusselator::WindowGraphHandles handles = brusselator::add_window_coupling(
       g, region, kDtU, kDtV, kWindow, kTolerance, kMaxIterations,
@@ -340,7 +335,7 @@ SetupResult build_and_initialize(fuse::CouplingGraph& graph_storage) {
   return out;
 }
 
-// The reference this entry's own claim is checked against: the IDENTICAL
+// The reference the claim is checked against: the IDENTICAL
 // graph shape (same add_window_coupling() call, same hdf5_path fields,
 // same StubBlock pair), run `periods` times through fuse::Runner::run()
 // directly (src/runtime/runner.cpp's own `for (i = 0; i < periods; ++i)
@@ -349,8 +344,8 @@ SetupResult build_and_initialize(fuse::CouplingGraph& graph_storage) {
 // exactly `periods` periods take" oracle: fuse::RunStats::
 // conservation_checks (one increment per OpKind::Constrain instruction
 // `execute()` actually runs, src/runtime/runner.cpp) counts a quantity
-// that is EXACTLY what KNOWN_ISSUES.md D57's own real host failure could
-// not finish paying for a third, unrequested time -- the base-
+// that is EXACTLY what a real host failure could not finish paying for a
+// third, unrequested time -- the base-
 // communicator MPI_Allreduce a Constrain instruction with `ci.reduce`
 // set issues over EVERY rank of `config.base_communicator`, which this
 // single-process reference has none of, so counting instructions rather
@@ -414,42 +409,39 @@ std::int64_t reference_conservation_checks(int periods) {
 
 }  // namespace
 
-// KNOWN_ISSUES.md D57, Round 2. Round 1's own test checked
-// `begin_rep.next_component` directly -- a field `impl_begin_step()`
-// (src/abi/participant.cpp) DOES report correctly (-1, genuinely nothing
-// cached) once this entry's own `else if (c.communicator_set)` branch
-// stops the rollover. That is not what the real row's own callers ever
-// read, though: `examples/brusselator/participants/u_loop.c`'s
+// Checking `begin_rep.next_component` directly is not enough: that field
+// `impl_begin_step()` (src/abi/participant.cpp) reports correctly (-1,
+// genuinely nothing cached) once the `else if (c.communicator_set)`
+// branch stops the rollover, but it is not what the real row's own
+// callers read: `examples/brusselator/participants/u_loop.c`'s
 // `u_loop_step()` (mirrored in Fortran by `v_loop.f90`'s
-// `v_loop_step()`) zeroes `*out_rep` WHOLESALE -- including
-// `out_rep->next_component` -- whenever `!out_begin_rep->step_opened`,
-// and NEVER copies `out_begin_rep->next_component` across before
-// returning. `u_main.c`'s own loop (`for (p = 0; p < periods; ++p) {
-// for (;;) { ...; if (rep.next_component == -1) break; } }`,
-// `v_main.f90`'s own `do p = 0, periods - 1 ... if (rep%next_component
-// == -1) exit`) checks exactly that zeroed field -- `rep`/`out_rep`,
-// never `begin_rep`/`out_begin_rep` -- to decide when a period has
-// closed. `rep.next_component` is therefore 0 (zeroed), not -1, on
-// EVERY `step_opened == 0` report, including the genuine, correctly-
-// reported-by-this-entry's-own-fix period-boundary one, so the inner
-// `for(;;)` loop never breaks there: it calls `begin_step()` again,
-// `prime_next_request()` finds `c.next_request` still empty (left that
-// way by this entry's own fix) and makes its FIRST, ORDINARY
-// `resume_period()` call -- the one call site `prime_next_request()`
-// has NO bound on at all when `!c.has_end_time` (the bound check at the
-// TOP of that function only fires `if (c.has_end_time && ...)`) --
-// which happily starts period index `kRequestedPeriods` (2), the one
-// `Runner::run(components, kRequestedPeriods)` (the coupler's own
-// driver) never requests. This is NOT the eager SECOND call inside ONE
-// `prime_next_request()` invocation this entry's own fix already closes
-// (confirmed: that gate still fires correctly, `begin_rep.next_component
-// == -1` below IS observed) -- it is a FRESH, separate `fuse_begin_step()`
-// call the caller's own loop makes because `u_loop_step()`/`v_loop_step()`
-// threw away the one signal that would have stopped it.
+// `v_loop_step()`) zeroes `*out_rep` WHOLESALE whenever
+// `!out_begin_rep->step_opened`, except for `next_component`, which it
+// copies across from `out_begin_rep`. `u_main.c`'s own loop (`for (p = 0;
+// p < periods; ++p) { for (;;) { ...; if (rep.next_component == -1) break;
+// } }`, `v_main.f90`'s own `do p = 0, periods - 1 ... if
+// (rep%next_component == -1) exit`) checks exactly that field --
+// `rep`/`out_rep`, never `begin_rep`/`out_begin_rep` -- to decide when a
+// period has closed. Without the copy, `rep.next_component` would be 0
+// (zeroed), not -1, on EVERY `step_opened == 0` report, including the
+// genuine period-boundary one, so the inner `for(;;)` loop would never
+// break there: it would call `begin_step()` again, `prime_next_request()`
+// would find `c.next_request` still empty and make its FIRST, ORDINARY
+// `resume_period()` call -- the one call site `prime_next_request()` has
+// NO bound on at all when `!c.has_end_time` (the bound check at the TOP
+// of that function only fires `if (c.has_end_time && ...)`) -- which
+// would start period index `kRequestedPeriods` (2), the one
+// `Runner::run(components, kRequestedPeriods)` (the coupler's own driver)
+// never requests. This is NOT the eager SECOND call inside ONE
+// `prime_next_request()` invocation, which the rollover gate already
+// closes (that gate still fires correctly, `begin_rep.next_component ==
+// -1` below IS observed) -- it is a FRESH, separate `fuse_begin_step()`
+// call the caller's own loop would make because the wrapper threw away
+// the one signal that would have stopped it.
 //
-// This test mirrors `u_loop_step()`'s own zeroing exactly (`drive_one_
-// step()`, this file, unchanged from Round 1) but, unlike Round 1,
-// drives TWO independent per-component loop cursors shaped exactly like
+// This test mirrors `u_loop_step()`'s own zeroing and propagation exactly
+// (`drive_one_step()`, this file) and drives TWO independent
+// per-component loop cursors shaped exactly like
 // `u_main.c`'s/`v_main.f90`'s own outer `for (p = 0; p < periods; ++p)`
 // loop, and the ONLY signal either cursor ever consults to decide a
 // period has closed is `end_rep.next_component == -1` (`rep`'s own
@@ -470,9 +462,9 @@ TEST(BrusselatorPeriodRollover, CallerLoopNeverSeesThePeriodBoundaryThroughTheZe
   // Small and bounded: if the defect fires, a REAL step of period index
   // kRequestedPeriods (one the coupler's own Runner::run(periods) never
   // requests) is reached within a handful of extra calls, per this
-  // entry's own Round 1 measurement that the eager continuation's own
-  // first new-period suspend point is an ordinary external substep, not
-  // many sweeps deep. A fixed build is expected to need close to
+  // measurement that the eager continuation's own first new-period
+  // suspend point is an ordinary external substep, not many sweeps deep.
+  // A correct build is expected to need close to
   // 2 * (one driver's own calls per period) and then stop; this cap
   // only guards against a genuinely unbounded loop producing no
   // assertion failure at all within a reasonable test runtime.
@@ -547,22 +539,23 @@ TEST(BrusselatorPeriodRollover, CallerLoopNeverSeesThePeriodBoundaryThroughTheZe
       // keep the window's own convergence correct) -- `delivery_pending`
       // is handled by doing nothing, exactly as a no-op write/read would.
       //
-      // THE BUG, reproduced exactly: u_main.c's/v_main.f90's own ONLY
-      // period-closed check reads `rep`/`out_rep` (`end_rep` here) --
-      // `drive_one_step()` (this file, mirroring u_loop_step()/
-      // v_loop_step() verbatim) zeroes it whenever `!step_opened`, so
-      // `end_rep.next_component` is 0 here, NEVER -1, even on the exact
-      // call where `begin_rep.next_component` (unzeroed, read only as
-      // an observation above and via the diagnostic below, never to
-      // decide anything) correctly says -1.
+      // THE HAZARD: u_main.c's/v_main.f90's own ONLY period-closed check
+      // reads `rep`/`out_rep` (`end_rep` here) -- `drive_one_step()` (this
+      // file, mirroring u_loop_step()/v_loop_step() verbatim) zeroes it
+      // whenever `!step_opened`, except for the propagated
+      // `next_component`; without that propagation `end_rep.next_component`
+      // would be 0 here, NEVER -1, even on the exact call where
+      // `begin_rep.next_component` (unzeroed, read only as an observation
+      // above and via the diagnostic below, never to decide anything)
+      // correctly says -1.
       if (end_rep.next_component == -1) {
         ++global_periods_done;
       } else if (begin_rep.next_component == -1) {
         // Diagnostic only, not part of the decision: this is the exact
         // call where the REAL signal (begin_rep) says "period closed,
         // nothing cached" but the zeroed one (end_rep, what the real
-        // callers actually read) does not -- the moment this entry's
-        // Round 1 fix's own correct report gets silently dropped.
+        // callers actually read) does not -- the moment the correct
+        // rollover report would get silently dropped.
         observed_unauthorized_via_rollover_report = true;
       }
       next_hint = begin_rep.next_component;  // dispatch artifact only.
@@ -584,10 +577,10 @@ TEST(BrusselatorPeriodRollover, CallerLoopNeverSeesThePeriodBoundaryThroughTheZe
           observed_unauthorized_via_rollover_report ? 1 : 0,
           observed_unauthorized_period ? 1 : 0, unauthorized_period_value);
 
-  // KNOWN_ISSUES.md D57's own Round 2 claim: on HEAD, this FAILS -- a
-  // real step of an unrequested period runs, because neither caller
-  // loop can observe the correctly-reported -1 through the zeroed
-  // report its own wrapper hands it.
+  // Were the zeroed report all a caller loop could see, a real step of an
+  // unrequested period would run, because neither caller loop could
+  // observe the correctly-reported -1 through the zeroed report its own
+  // wrapper hands it.
   EXPECT_FALSE(observed_unauthorized_period)
       << "a real step of period " << unauthorized_period_value
       << " ran (kRequestedPeriods=" << kRequestedPeriods
@@ -595,7 +588,7 @@ TEST(BrusselatorPeriodRollover, CallerLoopNeverSeesThePeriodBoundaryThroughTheZe
       << " -- u_loop_step()'s/v_loop_step()'s own zeroed end-step report "
          "never let either caller loop observe period "
       << kRequestedPeriods << "'s own correctly-reported close "
-         "(KNOWN_ISSUES.md D57)";
+         "(the period contract)";
   EXPECT_LT(steps_taken, kSafetyCapSteps)
       << "never reached " << kRequestedPeriods << " periods done (global_"
          "periods_done=" << global_periods_done << ") within " << kSafetyCapSteps

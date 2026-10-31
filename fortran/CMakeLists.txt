@@ -7,7 +7,7 @@
 #
 # STATIC, deliberately: the shim's only undefined symbol is
 # fuse_coupler_abi(), declared in include/fuse/abi/participant.h but DEFINED
-# in libfuse-abi (src/abi, the sibling track of this ABI phase). An archive
+# in libfuse-abi (src/abi, the sibling library of this ABI). An archive
 # does not need that symbol resolved to be built, only a program that links
 # it does -- so this library, and everything that does not itself need
 # libfuse-abi (the generator, the module compile, the sizes test, the shim
@@ -22,7 +22,7 @@
 # not by the configure of this project itself.
 include(GNUInstallDirs)
 
-# ffuse_provider.f90 (S6 phase 4, "Adapter host" track): the provider
+# ffuse_provider.f90 (the adapter host): the provider
 # direction's own Fortran binding -- a Fortran PLUGIN `use`s it to build a
 # fuse_provider_abi_v1 table out of its own bind(C) procedures and export
 # fuse_provider_abi (docs/dev/abi-design.md, "Provider direction"). It `use`s

@@ -1,4 +1,4 @@
-// KNOWN_ISSUES.md D31/D32 -- window Newton over the region's REAL
+// Window Newton over the region's REAL
 // participant ranks, PETSc substrate. Its OWN dedicated binary, not
 // appended to test/parallel/window_newton_mpi_test.cpp, for the SAME
 // reason test/petsc/brusselator_newton_test.cpp's own header comment
@@ -6,9 +6,9 @@
 // sharing a process with otherwise-PETSc-independent coverage would
 // take that coverage's own ctest row down with it.
 //
-// Not run in this sandbox (same MPI_Init constraint every other
-// parallel.*/petsc.* MPI test here names) -- build-verified only;
-// registered as a host row, `petsc.window_newton_mpi.{2,3}`.
+// Needs a host where MPI_Init completes (the same constraint every other
+// parallel.*/petsc.* MPI test names); registered as a host row,
+// `petsc.window_newton_mpi.{2,3}`.
 //
 // THE FIXTURE: test/parallel/window_newton_mpi_test.cpp's own
 // LinearOdeComponent/build_window_newton_graph(), reproduced verbatim
@@ -17,12 +17,12 @@
 // `fuse::NewtonSubstrate::Petsc` and `fuse::petsc::install()` called
 // once before the first `Runner::initialize()`.
 //
-// THE COMMUNICATOR. `fuse::petsc::solve()` (src/petsc/solve.cpp) now
+// THE COMMUNICATOR. `fuse::petsc::solve()` (src/petsc/solve.cpp)
 // builds its own `Vec`/`Mat`/`SNES` on `RegionRuntime::newton_comm_f`
 // -- the SAME split `ParticipantSetReducer` reduces over -- rather than
-// `fuse::petsc::comm_self_f()` unconditionally (D32's own pre-D31
-// scope). The comparison mirrors the native substrate's own MPI test
-// exactly: Newton's own outer-iteration count agreed EXACTLY across
+// `fuse::petsc::comm_self_f()` unconditionally. The comparison mirrors
+// the native substrate's own MPI test exactly: Newton's own outer-iteration count
+// agreed EXACTLY across
 // participants (an integer, decided by SNES's own `VecNorm` over a
 // properly-distributed `Vec`, immune to the `n = 2`-term reduction's
 // own Higham round-off at this problem's `rtol`), and the final member
@@ -195,8 +195,7 @@ CouplingGraph build_window_newton_petsc_graph(RankSet a_ranks, RankSet b_ranks) 
   decl.window_scope = scope;
   decl.acceleration.kind = AccelKind::Newton;
   decl.newton_config = NewtonConfig{};
-  // KNOWN_ISSUES.md D31/D32: the one difference from the native
-  // substrate's own fixture.
+  // The one difference from the native substrate's own fixture.
   decl.newton_config.substrate = NewtonSubstrate::Petsc;
   g.add_iteration_region(decl);
   return g;

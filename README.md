@@ -156,7 +156,9 @@ clone to a running coupling; `docs/user/index.md` lists every page by task.
 - Surrogate substitution: swapping a learned model for a declared component under a reviewed
   contract (applicability, out-of-distribution detection, determinism, derivatives). Learned models
   already run as ordinary components, see [surrogates](docs/user/surrogates.md).
-- `physics-kit`: an optional finite-element component library built on FUSE.
+- Ready-made physics components: an optional finite-element component library on top of FUSE, so
+  a coupled problem such as heat conduction against fluid flow needs no hand-written solver. Time
+  integrators for your own components are available today, see [integrators](docs/user/integrators.md).
 - Broader GPU support through Kokkos device backends, with performance and scaling measurements,
   and a device-capable linear-algebra backend.
 - Newton-Krylov iteration over coupling windows on more than one rank.

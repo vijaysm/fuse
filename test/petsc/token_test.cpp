@@ -113,7 +113,7 @@ TEST(MffdToken, ApplyJacobianAgreesWithAnalyticJacobianAndRecordsHAlongsideTheNa
 
   // The native action's own h, at the IDENTICAL point/direction/error_rel,
   // for direct comparison -- recorded to 17 digits (round-trip precision
-  // for a double) as this track's own report requires.
+  // for a double).
   DistVector xv = vec_from(x0);
   DistVector fxv = vec_sized(2);
   ASSERT_TRUE(quadratic_distvec(c)(xv, fxv).ok());

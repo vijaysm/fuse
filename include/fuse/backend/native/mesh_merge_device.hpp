@@ -1,13 +1,13 @@
 #pragma once
 
-/// Device-resident dedup-by-global-id (KNOWN_ISSUES D51): the receive-side
+/// Device-resident dedup-by-global-id: the receive-side
 /// MERGE decision `unpack_migrated_mesh`'s vertex dedup and
 /// `merge_halo_cells`'s cell dedup both make -- "is this global id already
 /// held, and if not, which ONE of possibly several incoming copies is the
 /// canonical new record" -- as Kokkos kernels on `Space`, with no
 /// `std::unordered_map`/`std::unordered_set` and no host round trip.
 ///
-/// ALGORITHM (the task's own two named choices: stated here, not assumed).
+/// ALGORITHM (stated here, not assumed).
 /// A sort-and-compact pass, not a sorted binary search: concatenate
 /// `existing_gids` (already held, E entries) and `incoming_gids` (candidates
 /// from the wire, N entries, possibly containing cross-sender duplicates of
@@ -47,13 +47,12 @@
 /// (trivial), and renumber each canonical new entry by `E +` its own rank
 /// among canonical entries in ASCENDING ORIGINAL INCOMING INDEX (a second
 /// `parallel_scan` over `incoming_is_new`, not over the gid-sorted order).
-/// Not implemented here: this track's remaining time went to proving the
-/// dedup DECISION itself (which gids are new, which incoming copy is
-/// canonical) is correct and reusable, which is the genuinely new
-/// algorithmic piece KNOWN_ISSUES D51 asks for; the renumbering pass is a
-/// mechanical follow-on sketched here, not a second algorithm.
+/// Not implemented in this routine: it provides the dedup DECISION itself
+/// (which gids are new, which incoming copy is canonical), the genuinely
+/// algorithmic piece; the renumbering pass is a mechanical follow-on
+/// sketched here, not a second algorithm.
 ///
-/// WHAT THIS DOES NOT DO (yet, see KNOWN_ISSUES D51's own narrowing): the
+/// WHAT THIS DOES NOT DO: the
 /// wire format's records are VARIABLE length with no byte-length prefix, so
 /// locating each record's start offset within a received buffer (the step
 /// before this header's own gid array even exists) is only discoverable by
@@ -144,10 +143,9 @@ template <class Space>
   // INCLUSIVE in `running` (incremented BEFORE the write, not after): a run
   // of several equal keys must all read the SAME slot, which an exclusive
   // scan that increments after writing gets wrong for every member past
-  // the first (measured: a first draft used the exclusive-scan order and
-  // `native_mesh_merge_device` caught it immediately -- a duplicate run's
-  // second-and-later members landed one slot ahead of its first, merging
-  // the WRONG pair of distinct values into one slot). Incrementing first
+  // the first (`native_mesh_merge_device` covers it -- a duplicate run's
+  // second-and-later members would land one slot ahead of its first,
+  // merging the WRONG pair of distinct values into one slot). Incrementing first
   // makes `running` the 1-based count of DISTINCT keys seen through `p`
   // inclusive, so `running - 1` is the right 0-based slot for every member
   // of the run `p` belongs to, including its first.
@@ -229,9 +227,8 @@ template <class Space>
 }
 
 // =========================================================================
-// Migration track, 2026-10-15 (KNOWN_ISSUES D51, wiring): the renumbering
-// pass and the record-boundary parser the header comment above names as
-// not yet implemented.
+// The renumbering pass and the record-boundary parser the header comment
+// above describes.
 // =========================================================================
 
 /// The append-order renumbering pass the "SLOT NUMBERING" paragraph above
@@ -366,7 +363,7 @@ template <class Space>
 /// Cost: `O(num_buffers)` small kernel launches (one per buffer, each
 /// over that buffer's own record range only -- avoids needing an array
 /// of raw pointers into several independently-allocated buffers for one
-/// unified kernel, at this track's own test scale of a handful of
+/// unified kernel, at the scale of a handful of
 /// buffers) for the fixed-size fields, plus two scan+extract passes for
 /// the variable-length vertex closure and (only when a record is a
 /// `Polyhedron`) two more for its face section -- each inner loop over
@@ -692,8 +689,8 @@ template <bool kHaloRecord, class Space>
 /// Host's for an input mesh containing Polyhedron cells. No row in the
 /// existing migration/halo/repartition suite exercises a Polyhedron cell
 /// (confirmed by reading every `generate_native_mesh` spec those tests
-/// pass); see KNOWN_ISSUES D51 and docs/dev/native-halo.md for this
-/// track's own narrower test of the limitation.
+/// pass); see docs/dev/native-halo.md for the narrower test of this
+/// limitation.
 template <class Space>
 [[nodiscard]] MeshArrays<Space> unpack_migrated_mesh_device(
     const std::vector<Kokkos::View<std::byte*, Space>>& received, int dim, int my_rank) {
@@ -1060,13 +1057,12 @@ template <class Space>
   out.cell_vertex_offsets = Kokkos::View<int*, Space>(
       Kokkos::view_alloc("fuse::native::device::merge_cvo", Kokkos::WithoutInitializing),
       n_cells_out + 1);
-  // KNOWN_ISSUES.md D73 (RemapHalo track round 5, host measurement 2026-10-19): an EMPTY
-  // local mesh (E_cells == 0, the "rank hosts only the target" case `MeshArrays::
+  // An EMPTY local mesh (E_cells == 0, the "rank hosts only the target" case `MeshArrays::
   // cell_count()`'s own `cell_vertex_offsets.extent(0) == 0 ? 0 : ...` branch documents)
   // reports its OWN `cell_vertex_offsets` at extent 0, NOT the canonical size-1 `{0}`
   // singleton a non-empty mesh's "ncells + 1" CSR invariant would suggest -- copying
   // `E_cells + 1 == 1` elements FROM a 0-extent source throws a Kokkos deep_copy shape
-  // mismatch ("merge_cvo(1) (0)"), measured on the owner's host at exactly this line.
+  // mismatch ("merge_cvo(1) (0)"), measured at exactly this line.
   // Skipped entirely when there is nothing existing to preserve: position 0 of `out`'s
   // own array (and every other position through `n_cells_out`) is still written
   // unconditionally below, either by the new-cells scan (when `n_new_cells > 0`) or by
@@ -1206,8 +1202,8 @@ template <class Space>
   // Same empty-local-mesh guard, same "ncells + 1"-style CSR convention, this time over
   // FACES rather than cells (`E_faces == 0` for any non-Polyhedron mesh regardless of
   // cell count, per `MeshArrays`'s own "meaningless ... for a non-Polyhedron cell"
-  // comment -- so this guard is live on every quad/FV mesh this track's own fixture
-  // uses, empty or not, not only the empty-local-mesh case `cell_vertex_offsets`/
+  // comment -- so this guard is live on every quad/FV mesh the test fixtures use,
+  // empty or not, not only the empty-local-mesh case `cell_vertex_offsets`/
   // `cell_face_offsets` above need it for).
   if (E_faces > 0) {
     Kokkos::deep_copy(Kokkos::subview(out.face_vertex_offsets, Kokkos::make_pair(0, E_faces + 1)),
@@ -1279,10 +1275,10 @@ template <class Space>
 /// is the ONE validation callers of either (`migrate`, native_migration.cpp;
 /// `build_native_remap_halo`, native_halo.cpp) run explicitly afterward, on
 /// `Space`, before deciding whether the mesh they just unpacked/merged is
-/// fit to hand to `NativeMeshView::create<Space>` -- see this track's
-/// report for the one Host-side check (`NativeMeshBuilder::build()`'s
-/// fixed-shape corner-count refusal, `E-MESH-CONNECTIVITY`) this does NOT
-/// reproduce, because no test here exercises data that would need it.
+/// fit to hand to `NativeMeshView::create<Space>`. The one Host-side check
+/// (`NativeMeshBuilder::build()`'s fixed-shape corner-count refusal,
+/// `E-MESH-CONNECTIVITY`) is NOT reproduced, because no test here
+/// exercises data that would need it.
 template <class Space>
 [[nodiscard]] bool all_cells_match_dimension(const MeshArrays<Space>& arrays) {
   using ExecSpace = typename Space::execution_space;

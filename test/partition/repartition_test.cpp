@@ -28,9 +28,9 @@ TEST(Repartition, AtKNullCommIsTheIdentityUpToLocalOrdering) {
   EXPECT_NEAR(total, original_total, 1e-10);
 }
 
-// PS-6: at kNullComm, comm_size is always 1, so only the num_parts >
+// At kNullComm, comm_size is always 1, so only the num_parts >
 // comm_size direction of the mismatch is reachable here -- the num_parts <
-// comm_size direction (the one that used to be silently accepted) needs a
+// comm_size direction (which must not be silently accepted) needs a
 // real communicator with more than one rank; see
 // repartition_mpi_test.cpp's RefusesNumPartsLessThanCommSize.
 TEST(Repartition, RefusesNumPartsGreaterThanCommSizeAtKNullComm) {

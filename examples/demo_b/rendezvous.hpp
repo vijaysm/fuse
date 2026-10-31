@@ -9,15 +9,11 @@
 // graph-aware base communicator the WHOLE coupled run's rank numbering
 // depends on (merging via MPI_Intercomm_merge in the graph's own component
 // order, per its own header comment) -- considerably more than a
-// self-contained two-process demo needs, and it is a different track's file
-// for this phase (this track's ownership list explicitly excludes it).
-// Whether Demo B's rendezvous should eventually BECOME a `connect()` call
-// instead of this local one is exactly the open question this track's
-// report raises for the lead; see docs/user/lowfive.md and KNOWN_ISSUES.md
-// section D.
+// self-contained two-process demo needs. Whether Demo B's rendezvous should
+// eventually BECOME a `connect()` call instead of this local one is an open
+// question; see docs/user/lowfive.md.
 //
-// Measured by the ctest row example.demo_b (2026-10-14); see
-// docs/user/demo-b.md.
+// Exercised by the ctest row example.demo_b; see docs/user/demo-b.md.
 
 #include <mpi.h>
 

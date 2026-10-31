@@ -1,7 +1,6 @@
 #pragma once
 
-/// runtime-exchange track (layering decision from the lead, recorded in
-/// docs/dev/device-resident-arcs.md): a device-resident drive of
+/// A device-resident drive of
 /// `fuse::linalg::GhostExchanger::update()`'s own exchange, for a caller
 /// whose `owned`/`ghosts` arrays live in a Kokkos execution space's
 /// memory rather than always on the host. `fuse::linalg` itself stays
@@ -14,8 +13,7 @@
 /// drive the identical exchange without `update()`'s own host-side
 /// pack/unpack loop.
 ///
-/// NOT WIRED INTO AN EXISTING PRODUCTION CALLER (stated here, and in
-/// report-runtime-exchange.md, as a deviation): `fuse::linalg::DistVector`
+/// NOT WIRED INTO AN EXISTING PRODUCTION CALLER: `fuse::linalg::DistVector`
 /// is the one place `GhostExchanger::update()` is called today
 /// (src/linalg/dist_vector.cpp), and it is plain-host `std::vector`
 /// storage by design (component-internal Newton-Krylov linear algebra,
@@ -26,8 +24,8 @@
 /// example code outside this library). This class is new infrastructure
 /// for the next device-resident consumer, built and tested on its own
 /// terms (test/parallel/device_ghost_exchange_test.cpp) rather than
-/// retrofitted onto a caller that does not yet need it. (This round's
-/// OWN Task 2, `nodal_remap_distributed.cpp`'s plan-based exchange, DOES
+/// retrofitted onto a caller that does not yet need it. (`nodal_remap_
+/// distributed.cpp`'s plan-based exchange, however, DOES
 /// use this class's `update<Space>()`/`exchange_adjoint_raw<Space>()` as
 /// its underlying engine -- a different, purpose-built consumer of a
 /// SPECIFIC nodal-remap pattern, not the generic mesh-halo-field use
@@ -72,8 +70,8 @@ namespace fuse::backend {
 /// `last_update_took_device_direct_path()` reports which of paths 2/3
 /// the MOST RECENT `update()` call took -- the same role
 /// `RunStats::device_transport_moves` plays for
-/// `fuse::transport::MpiTransport` (docs/dev/device-resident-arcs.md
-/// Phase 3), for a test to assert against.
+/// `fuse::transport::MpiTransport` (docs/dev/device-resident-arcs.md),
+/// for a test to assert against.
 class DeviceGhostExchanger {
  public:
   explicit DeviceGhostExchanger(std::shared_ptr<const linalg::GhostExchanger> exchanger)
@@ -122,7 +120,7 @@ class DeviceGhostExchanger {
         // no device cache needed, a Host-space kernel reads them
         // directly (the same "no Kokkos View required for correctness
         // on the host leg" posture execute_on<Host>'s own branches take
-        // elsewhere in this track).
+        // elsewhere in this layer).
         const std::int64_t* pack_p = pack_idx.data();
         const std::int64_t* unpack_p = unpack_idx.data();
         Kokkos::parallel_for(

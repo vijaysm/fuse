@@ -1,35 +1,25 @@
-# Mutations for the Brusselator track (examples/brusselator/**,
-# test/verification/brusselator_*). Own file per the review-fix protocol.
+# Mutations for the Brusselator (examples/brusselator/**,
+# test/verification/brusselator_*).
 #
 # Each row below was proved BY HAND (tools/mutate.py was not run except
-# --check-anchors, per this delegation's constraints): the edit in `old`/
-# `new` was applied directly to the named file with edit_file, the named
-# target was rebuilt, the named test was run and observed to fail with the
-# message quoted in its own comment, then the file was restored and
-# verified byte-identical to a backup with `cmp` before the next row.
+# --check-anchors): the edit in `old`/`new` was applied directly to the
+# named file, the named target was rebuilt, the named test was run and
+# observed to fail with the message quoted in its own comment, then the
+# file was restored and verified byte-identical to a backup with `cmp`
+# before the next row.
 #
-# Conformance Unit 2 (examples/brusselator/participants/ work): the three
-# rows whose `old`/`new` text names UComponent::advance()/VComponent::
-# advance() internals had their `file` updated from species_component.hpp
-# to species_core.hpp -- the physics refactor that session moved this
-# exact code (UCore::step(), VDiffusionCore::step()) out of
-# species_component.hpp verbatim, which is why `--check-anchors` found all
-# three `old` strings at 0 occurrences in the old file. The lines
-# themselves, and what proved each row originally, are unchanged.
+# The rows whose `old`/`new` text names UComponent::advance()/VComponent::
+# advance() internals target species_core.hpp (UCore::step(),
+# VDiffusionCore::step()), where this code lives.
 #
-# Species-core decomposition track (this delegation): the two rows whose
-# `old`/`new` text touches exchange_out_'s own trapezoidal bookkeeping
-# (`brusselator-exchange-bookkeeping-drops-trapezoid`,
-# `brusselator-exchange-out-reports-start-of-step-rate`) had their
-# anchors updated from `q_prev_.mean()`/`q_new.mean()` to
-# `global_mean(q_prev_)`/`global_mean(q_new)` -- this session's own
-# UCore rewrite (owned_size()-sized state under decomposition) replaced
-# every bare `.mean()` on a SlabField with a `global_mean()` helper that
-# routes through the injected Reducer, since a plain `.mean()` would
-# average only this rank's own owned band once num_ranks() > 1. Both
-# rows were re-proved by hand against the SAME targets/thresholds as
-# before (`--check-anchors` confirms no other row in this file went
-# stale from that same rewrite).
+# The two rows whose `old`/`new` text touches exchange_out_'s own
+# trapezoidal bookkeeping (`brusselator-exchange-bookkeeping-drops-trapezoid`,
+# `brusselator-exchange-out-reports-start-of-step-rate`) are anchored on
+# `global_mean(q_prev_)`/`global_mean(q_new)`: UCore keeps owned_size()-sized
+# state under decomposition, so every mean over a SlabField goes through a
+# `global_mean()` helper that routes through the injected Reducer (a plain
+# `.mean()` would average only this rank's own owned band once
+# num_ranks() > 1).
 
 [[mutation]]
 id = "brusselator-v-exchange-wrong-sign"
@@ -40,8 +30,7 @@ old = "    Vector rhs = state_ - dt * q_on_v;"
 new = "    Vector rhs = state_ + dt * q_on_v;"
 target = "fuse_example_brusselator"
 test = "example.brusselator"
-# PROVED (thresholds then 5e-3 / 1e-2; now 1e-11 / 1e-9, so the margin is
-# larger still): at --end 0.5 (the registered example.brusselator
+# PROVED (thresholds 1e-11 / 1e-9): at --end 0.5 (the registered example.brusselator
 # arguments), --check failed with max_window_balance_error=7.670e-02
 # and global_balance_error=1.265e+00 -- both roughly 20x
 # to 100x over their measured-margin thresholds; max_window_exchange_error
@@ -59,11 +48,10 @@ old = "    exchange_out_ += 0.5 * dt * (global_mean(q_prev_) + global_mean(q_new
 new = "    exchange_out_ += dt * global_mean(q_new);"
 target = "fuse_example_brusselator"
 test = "example.brusselator"
-# PROVED (re-proved this session against the `global_mean()` anchor
-# above; the original run, against the pre-decomposition `.mean()` text,
-# measured 1.686e-03 -- the two differ in the fourth digit, consistent
-# with `global_mean()` reducing through `reducer_->sum()` rather than
-# calling `SlabField::mean()` directly, a different but mathematically
+# PROVED (against the `global_mean()` anchor above; an earlier run against a
+# plain `.mean()` measured 1.686e-03 -- the two differ in the fourth digit,
+# consistent with `global_mean()` reducing through `reducer_->sum()` rather
+# than calling `SlabField::mean()` directly, a different but mathematically
 # equivalent summation order at `num_ranks() == 1`): at --end 0.5,
 # --check failed with max_window_exchange_error=1.691e-03 against the
 # round-off threshold 1e-9 (max_window_balance_error=1.703e-13 and
@@ -79,7 +67,7 @@ test = "example.brusselator"
 [[mutation]]
 id = "brusselator-exchange-out-reports-start-of-step-rate"
 area = "examples/brusselator/participants"
-describes = "Conformance Unit 2, Q3's own mutation ('restore dt*q_prev in the shim'): replaces the SAME trapezoidal exchange_out_ bookkeeping the sibling row above tests (0.5*dt*(global_mean(q_prev_)+global_mean(q_new))) with dt*global_mean(q_prev_) -- the start-of-step rate, not the Riemann-on-q_new variant the sibling row exercises. Proven against brusselator_check_core's own assembler (test/verification/brusselator_check_test.cpp), not against main.cpp's in-process --check: U's own reported exchange_out and V's own reported exchange_in, read from two SEPARATE logs the way u_main.c/v_main.f90 would really produce them, stop agreeing once U measures its own export at the wrong end of the step."
+describes = "Replaces the SAME trapezoidal exchange_out_ bookkeeping the sibling row above tests (0.5*dt*(global_mean(q_prev_)+global_mean(q_new))) with dt*global_mean(q_prev_) -- the start-of-step rate, not the Riemann-on-q_new variant the sibling row exercises. Proven against brusselator_check_core's own assembler (test/verification/brusselator_check_test.cpp), not against main.cpp's in-process --check: U's own reported exchange_out and V's own reported exchange_in, read from two SEPARATE logs the way u_main.c/v_main.f90 would really produce them, stop agreeing once U measures its own export at the wrong end of the step."
 file = "examples/brusselator/species_core.hpp"
 old = "    exchange_out_ += 0.5 * dt * (global_mean(q_prev_) + global_mean(q_new));"
 new = "    exchange_out_ += dt * global_mean(q_prev_);"
@@ -91,7 +79,7 @@ test = "verification.brusselator_check"
 # against the 1e-9 threshold (max_window_balance_error and
 # global_balance_error stayed under their own thresholds -- this
 # mutation's own effect is isolated to the U/V exchange-agreement check,
-# exactly the diagnostic Q3's own "assembler" tool exists to catch,
+# exactly the diagnostic the "assembler" tool exists to catch,
 # consistent with the sibling row's own note that this bookkeeping does
 # not change U's simulated trajectory, only what it REPORTS exchanging).
 # Restored and verified byte-identical with `cmp` before the next row.
@@ -99,19 +87,17 @@ test = "verification.brusselator_check"
 [[mutation]]
 id = "brusselator-u-consumes-start-of-step-reaction"
 area = "examples/brusselator"
-describes = "The first version of this port: U's step consumed dt*q_prev (the start-of-step rate) while WindowCoupler delivered V the trapezoid 0.5*dt*(q_prev+q_new) of the same samples, so the two species exchanged different amounts of one reaction and the Toy's discrete budget identity held only to first order (1.686e-3 per window). Restoring it must fail the round-off budget thresholds."
+describes = "U's step consumes dt*q_prev (the start-of-step rate) while WindowCoupler delivers V the trapezoid 0.5*dt*(q_prev+q_new) of the same samples, so the two species exchange different amounts of one reaction and the Toy's discrete budget identity holds only to first order (1.686e-3 per window). This must fail the round-off budget thresholds."
 file = "examples/brusselator/species_core.hpp"
 old = "      const Vector rhs = rhs_base + (0.5 * dt) * (q_prev_ + q_new);"
 new = "      const Vector rhs = rhs_base + dt * q_prev_;"
 target = "fuse_example_brusselator"
 test = "example.brusselator"
 
-# Grid track (NativeGrid decomposition, ghost halo, explicit-parts
-# parallelisation over owned+ghost storage). Own rows per the review-fix
-# protocol: file is examples/brusselator/brusselator_physics.hpp, which
-# this track owns and which did not exist in this mutation set before
-# this session. Every row below was proved BY HAND exactly as the
-# protocol above requires: `cp` a backup, apply the edit with a scripted
+# NativeGrid decomposition, ghost halo, explicit-parts parallelisation over
+# owned+ghost storage: file is examples/brusselator/brusselator_physics.hpp.
+# Every row below was proved BY HAND exactly as the protocol above
+# requires: `cp` a backup, apply the edit with a scripted
 # string replacement (not a manual retype, to rule out a typo being what
 # actually failed), rebuild `fuse_verification_brusselator_grid_decomposition_test`,
 # run the WHOLE binary unfiltered, record exactly which cases failed and
@@ -135,7 +121,7 @@ new = """      pattern.owner_rank[static_cast<std::size_t>(i)] = above_owner;
           static_cast<std::int64_t>((below_owned_rows - 1) * nx_ + i);"""
 target = "fuse_verification_brusselator_grid_decomposition_test"
 test = "verification.brusselator_grid_decomposition"
-# PROVED (this session): of the 4 cases in the unfiltered binary, 2 FAILED
+# PROVED: of the 4 cases in the unfiltered binary, 2 FAILED
 # -- BrusselatorGridDecomposition.SingleRankOwnsTheWholeGridAndHalosAreTheWrapRows
 # (expected remote_local_index entries 8*13+i/i for the below/above halves,
 # got the swapped i/8*13+i, caught entry-by-entry) and
@@ -148,8 +134,8 @@ test = "verification.brusselator_grid_decomposition"
 # .OwnedPlusGhostExplicitQuantitiesMatchTheSinglePartitionResult) still
 # PASSED, because neither reads a ghost VALUE -- a ghost-only defect does
 # not perturb a placement-count check or a purely-pointwise/reduction
-# explicit-quantity check, which is exactly why this track's own test file
-# needed a THIRD test (the exchange one) beyond those two to pin ghost
+# explicit-quantity check, which is exactly why this test file
+# needs a THIRD test (the exchange one) beyond those two to pin ghost
 # correctness at all. Restored and verified byte-identical with `cmp`
 # before the next row.
 
@@ -162,7 +148,7 @@ old = "    return reducer.sum(local_sum) / static_cast<double>(global_n);"
 new = "    return local_sum / static_cast<double>(global_n);"
 target = "fuse_verification_brusselator_grid_decomposition_test"
 test = "verification.brusselator_grid_decomposition"
-# PROVED (this session): of the 4 cases, 1 FAILED --
+# PROVED: of the 4 cases, 1 FAILED --
 # .OwnedPlusGhostExplicitQuantitiesMatchTheSinglePartitionResult, with
 # `mean0`=0 (rank 0's own 4x8 band of the forcing mask has no nonzero
 # cell) against `mean1`=0.15625 (rank 1's own partial, which happens to
@@ -181,7 +167,7 @@ old = "    const int canonical = g.local_index(i, j);"
 new = "    const int canonical = g.index(i, j);"
 target = "fuse_verification_brusselator_grid_decomposition_test"
 test = "verification.brusselator_grid_decomposition"
-# PROVED (this session): of the 4 cases, 3 FAILED and 1 PASSED. The one
+# PROVED: of the 4 cases, 3 FAILED and 1 PASSED. The one
 # that passed, .SingleRankOwnsTheWholeGridAndHalosAreTheWrapRows, is
 # EXACTLY the num_ranks()==1 case this row's own description says is
 # invisible (j_lo()==0 there, so the mutation computes the identical
@@ -201,8 +187,7 @@ test = "verification.brusselator_grid_decomposition"
 # caught, not a crash. Stated as observed on this build/compiler, not as
 # a guaranteed detection mechanism a different allocator would reproduce.
 
-# Species-core solver track (this delegation: "put the solvers into the
-# species cores" -- SchurDiffusionSolver/KrylovDiffusionSolver,
+# Species-core solvers (SchurDiffusionSolver/KrylovDiffusionSolver,
 # species_core.hpp): proved against the new in-process N-partition
 # harness (brusselator_species_core_decomposition_test.cpp's own
 # thread-barrier collective simulator), not against a real MPI run --
@@ -223,7 +208,7 @@ old = "      const double coefficient = dt * diffusion / scale;"
 new = "      const double coefficient = -dt * diffusion / scale;"
 target = "fuse_verification_brusselator_species_core_decomposition_test"
 test = "verification.brusselator_species_core_decomposition"
-# PROVED (this session): of the 9 cases, 3 FAILED -- the Schur-based ones,
+# PROVED: of the 9 cases, 3 FAILED -- the Schur-based ones,
 # .TwoPartitionSchurMatchesSingleRankUCore (max_abs_diff=3.079e+175),
 # .ThreePartitionSchurMatchesSingleRankUCore (UCore's own reaction loop
 # itself reported "UCore: diffusion solve failed or produced a non-finite
@@ -245,7 +230,7 @@ old = "          triplets.push_back({row, row, scale + dt * diffusion * 2.0 * (x
 new = "          triplets.push_back({row, row, dt * diffusion * 2.0 * (xx + yy)});"
 target = "fuse_verification_brusselator_species_core_decomposition_test"
 test = "verification.brusselator_species_core_decomposition"
-# PROVED (this session): of the 9 cases, 3 FAILED -- all three that reach
+# PROVED: of the 9 cases, 3 FAILED -- all three that reach
 # KrylovDiffusionSolver's own factor(): .DeriveKrylovSolverTolerance (the
 # sweep itself failed partway through with repeated "UCore: diffusion
 # solve failed or produced a non-finite state" -- pcg/gmres stopped
@@ -260,13 +245,13 @@ test = "verification.brusselator_species_core_decomposition"
 [[mutation]]
 id = "brusselator-krylov-matrix-drops-global-row-offset"
 area = "examples/brusselator"
-describes = "KrylovDiffusionSolver::factor's own DistSparseMatrix::from_triplets call passes the LOCAL row band (0, (j_hi-j_lo)*nx) instead of the GLOBAL one (j_lo*nx, j_hi*nx) -- the exact RowOwnership convention mismatch this track's own measurement work found once already (DistSparseMatrix::from_triplets interprets row_lo/row_hi in GLOBAL cell units; SchurSlabSolver::factor's own j_lo/j_hi argument is a SEPARATE, grid-row-unit convention -- NativeGrid::row_ownership() vs ::row_ownership_by_grid_row()), reproduced here on the Krylov path's own assembly instead."
+describes = "KrylovDiffusionSolver::factor's own DistSparseMatrix::from_triplets call passes the LOCAL row band (0, (j_hi-j_lo)*nx) instead of the GLOBAL one (j_lo*nx, j_hi*nx) -- the exact RowOwnership convention mismatch (found once already during measurement; DistSparseMatrix::from_triplets interprets row_lo/row_hi in GLOBAL cell units; SchurSlabSolver::factor's own j_lo/j_hi argument is a SEPARATE, grid-row-unit convention -- NativeGrid::row_ownership() vs ::row_ownership_by_grid_row()), reproduced here on the Krylov path's own assembly instead."
 file = "examples/brusselator/species_core.hpp"
 old = "      auto built = fuse::linalg::DistSparseMatrix::from_triplets(\n          j_lo_ * nx_, j_hi_ * nx_, global_n, triplets, reducer_, row_ownership_);"
 new = "      auto built = fuse::linalg::DistSparseMatrix::from_triplets(\n          0, (j_hi_ - j_lo_) * nx_, global_n, triplets, reducer_, row_ownership_);"
 target = "fuse_verification_brusselator_species_core_decomposition_test"
 test = "verification.brusselator_species_core_decomposition"
-# PROVED (this session): this row does NOT fail cleanly -- it HANGS.
+# PROVED: this row does NOT fail cleanly -- it HANGS.
 # Every rank still believes it owns global rows [0, (j_hi-j_lo)*nx) (every
 # rank's own LOCAL band, relabelled as if it started at row 0), so the
 # ranks' own row claims now overlap instead of tiling the global index
@@ -276,8 +261,7 @@ test = "verification.brusselator_species_core_decomposition"
 # confirms the two Schur cases ahead of it in registration order still
 # pass and print normally, then nothing more is printed before the
 # timeout kills the process. This is the collective-stranding failure
-# mode this track's own "LESSONS FROM TODAY'S HOST RUNS" warns about, not
-# a wrong-answer one: a rank whose row claim disagrees with its peers'
+# mode, not a wrong-answer one: a rank whose row claim disagrees with its peers'
 # own view of the global index space can leave one of the matrix's own
 # ghost-pattern/allgather calls waiting on a peer that already moved on,
 # or on one that never participates at all. Restored and verified
@@ -294,7 +278,7 @@ old = "    if (!backend.has_remap_halo(u_mid, v_mid, 2)) {"
 new = "    if (backend.has_remap_halo(u_mid, v_mid, 2)) {"
 target = "fuse_verification_brusselator_species_core_decomposition_test"
 test = "verification.brusselator_species_core_decomposition"
-# PROVED (this session): of the 11 cases, 2 FAILED -- both the
+# PROVED: of the 11 cases, 2 FAILED -- both the
 # single-rank REFERENCE construction inside .TwoPartitionVParticipantMatchesSingleRank
 # and .ThreePartitionVParticipantMatchesSingleRank (each builds its own num_ranks()==1
 # reference via the SAME VParticipant::make -> make_from_grids path the mutation hits):
@@ -312,29 +296,29 @@ test = "verification.brusselator_species_core_decomposition"
 [[mutation]]
 id = "brusselator-vparticipant-stale-adopted-ghost-not-exchanged"
 area = "examples/brusselator"
-describes = "KNOWN_ISSUES D29 (CLOSED): VParticipant::step() must actually call the U->V remap halo's own GhostExchanger::update() before apply_weights -- skipping it (leaving the adopted/ghost slots at their zero-initialized default instead of the real cross-rank values, the 'exchanger update skipped before apply -> stale adopted values' failure mode named when the fix landed) must be caught by the misaligned decomposition test, not only by the aligned ones (which adopt zero cells and so cannot distinguish a skipped update from a correct one -- every ghost slot is empty either way). Hand-proved 2026-10-10 on the unfiltered test binary: with this mutation applied, ThreePartitionVParticipantMatchesSingleRankMisaligned's max_abs_diff rises from 1.732e-14 to 3.170e-03 and ThreePartitionVParticipantMatchesSingleRankMisalignedPcg's from 5.262e-14 to 8.408e-03, both far past the 1e-11 bound; both FAIL. File restored and verified byte-identical with cmp before submission."
+describes = "VParticipant::step() must actually call the U->V remap halo's own GhostExchanger::update() before apply_weights -- skipping it (leaving the adopted/ghost slots at their zero-initialized default instead of the real cross-rank values, the 'exchanger update skipped before apply -> stale adopted values' failure mode named when the exchange was added) must be caught by the misaligned decomposition test, not only by the aligned ones (which adopt zero cells and so cannot distinguish a skipped update from a correct one -- every ghost slot is empty either way). Hand-proved on the unfiltered test binary: with this mutation applied, ThreePartitionVParticipantMatchesSingleRankMisaligned's max_abs_diff rises from 1.732e-14 to 3.170e-03 and ThreePartitionVParticipantMatchesSingleRankMisalignedPcg's from 5.262e-14 to 8.408e-03, both far past the 1e-11 bound; both FAIL. File restored and verified byte-identical with cmp before submission."
 file = "examples/brusselator/species_core.hpp"
 old = "    auto updated = exchanger_uv_->update(q_native_owned_u.data(), q_native_owned_u.size(),\n                                         q_native_u.data() + q_native_owned_u.size(),\n                                         exchanger_uv_->ghost_size());\n    if (!updated.ok()) return updated.error();"
 new = "    auto updated = fuse::Result<void>::success();\n    if (!updated.ok()) return updated.error();"
 target = "fuse_verification_brusselator_species_core_decomposition_test"
 test = "verification.brusselator_species_core_decomposition"
 
-# S7.2 WindowNewton (newton-krylov.md Sec. 9.5, 9.7's own test plan): the
+# Window Newton (newton-krylov.md Sec. 9.5, 9.7's own test plan): the
 # per-sample block-Jacobi preconditioner solve `UCore::apply_diffusion_
 # preconditioner()` performs, read by `UComponent::apply_preconditioner()`
 # (species_component.hpp) once per window sample. `VDiffusionCore::
 # apply_diffusion_preconditioner()` carries the identical defect class
 # (same shape, separate function) but is not repeated as its own row,
 # because at this rig's problem scale it is NOT independently killable:
-# measured 2026-10-11 (this row's own `result`) that mutating U's function
+# measured (this row's own `result`) that mutating U's function
 # alone moves the pinned count, mutating V's alone does not (the test still
 # passes), and mutating both does -- U's preconditioner dominates here. One
-# row on U represents the pattern; V's is covered only in combination. Hand-proved
-# 2026-10-11: backed up (md5 75b1d8825dd6924e2de99348236292ba), rebuilt
+# row on U represents the pattern; V's is covered only in combination. Hand-proved:
+# backed up (md5 75b1d8825dd6924e2de99348236292ba), rebuilt
 # (`ninja fuse_verification_brusselator_runner_test`), run UNFILTERED,
 # restored, cmp-verified byte-identical, rebuilt and reran to confirm the
-# test passes again. Build directory: /tmp/winnewton/b0 (tier 0, this
-# track's own scratch build).
+# test passes again. Build directory: /tmp/winnewton/b0 (tier 0, a
+# scratch build).
 
 [[mutation]]
 id = "brusselator-preconditioner-solve-replaced-by-identity"
@@ -345,35 +329,35 @@ old = "  [[nodiscard]] fuse::Result<Vector> apply_diffusion_preconditioner(doubl
 new = "  [[nodiscard]] fuse::Result<Vector> apply_diffusion_preconditioner(double dt, const Vector& r) {\n    (void)dt;\n    return r;\n  }"
 target = "fuse_verification_brusselator_runner_test"
 test = "verification.brusselator_runner"
-result = "Hand-proved 2026-10-11: with ONLY UCore's own function mutated to the identity (the old/new pair above, VDiffusionCore's own function untouched), BrusselatorRunner.NewtonConvergesInAPinnedIterationCountWithTheBlockJacobiPreconditioner FAILS -- with_bj.iterations_per_window.front() reads 3 instead of the pinned 4, identical to the without_bj (no-preconditioner) path's own count. (Separately tried: mutating ONLY VDiffusionCore's own function, UCore's left alone, does NOT move the count -- the test still PASSES; U's own preconditioner solve alone is sufficient to be load-bearing for the pinned count, V's own alone is not, at this Rig's problem scale -- mutating BOTH at once, tried earlier in this same session, does fail it, consistent with U's own contribution dominating.) File restored and cmp-verified byte-identical; rebuilt and reran to confirm the test passes again."
+result = "Hand-proved: with ONLY UCore's own function mutated to the identity (the old/new pair above, VDiffusionCore's own function untouched), BrusselatorRunner.NewtonConvergesInAPinnedIterationCountWithTheBlockJacobiPreconditioner FAILS -- with_bj.iterations_per_window.front() reads 3 instead of the pinned 4, identical to the without_bj (no-preconditioner) path's own count. (Separately tried: mutating ONLY VDiffusionCore's own function, UCore's left alone, does NOT move the count -- the test still PASSES; U's own preconditioner solve alone is sufficient to be load-bearing for the pinned count, V's own alone is not, at this Rig's problem scale -- mutating BOTH at once does fail it, consistent with U's own contribution dominating.) File restored and cmp-verified byte-identical; rebuilt and reran to confirm the test passes again."
 
 [[mutation]]
 id = "brusselator-u-loop-step-drops-next-component-at-period-close"
 area = "examples/brusselator"
-describes = "removes u_loop_step()'s own propagation of out_begin_rep->next_component into out_rep->next_component when fuse_begin_step() reports step_opened == 0 -- restores the pre-Round-2 HEAD behaviour where *out_rep is zeroed wholesale, so u_main.c's own loop-exit check (`if (rep.next_component == -1) break;`) can never observe a genuine, correctly-reported (KNOWN_ISSUES.md D57's own participant.cpp fix) period-boundary close: next_component reads 0 (a valid ComponentId, not a close signal) instead of -1, the loop calls fuse_begin_step() again, and that fresh call's own ordinary (unbounded when !has_end_time) resume_period() starts a period the caller never requested."
+describes = "removes u_loop_step()'s own propagation of out_begin_rep->next_component into out_rep->next_component when fuse_begin_step() reports step_opened == 0 -- restores the behaviour where *out_rep is zeroed wholesale, so u_main.c's own loop-exit check (`if (rep.next_component == -1) break;`) can never observe a genuine, correctly-reported (participant.cpp's own fix) period-boundary close: next_component reads 0 (a valid ComponentId, not a close signal) instead of -1, the loop calls fuse_begin_step() again, and that fresh call's own ordinary (unbounded when !has_end_time) resume_period() starts a period the caller never requested."
 file = "examples/brusselator/participants/u_loop.c"
 old = """  if (!out_begin_rep->step_opened) {
     memset(out_rep, 0, sizeof(*out_rep));
     out_rep->struct_size = sizeof(*out_rep);
-    /* KNOWN_ISSUES.md D57, Round 2. u_main.c's own loop (its header
+    /* u_main.c's own loop (its header
      * comment's own account) has exactly one way to notice a period has
      * closed: `if (rep.next_component == -1) break;` -- *out_rep*, never
      * *out_begin_rep*, which this function's own doc comment above
      * already says is what names who IS due instead. Leaving next_
-     * component at its zeroed default (0) here was wrong: 0 is also a
+     * component at its zeroed default (0) here would be wrong: 0 is also a
      * valid ComponentId, so u_main.c's own check can never distinguish
      * "nothing is due, the run just ended" from "component 0 is due" --
      * and in particular can never see the one case that matters most,
      * fuse_begin_step()'s own correctly-reported next_component == -1 at
-     * a genuine, no-end-time-declared period boundary (KNOWN_ISSUES.md
-     * D57's own fix, src/abi/participant.cpp's prime_next_request()):
-     * with that signal silently zeroed to 0 here, u_main.c's loop never
-     * breaks, calls fuse_begin_step() again, and that FRESH call's own
-     * ordinary (never-bounded-when-!has_end_time) first resume_period()
-     * call starts a period the caller's own loop never asked for --
-     * measured on the host as U/V hanging in that unrequested period's
-     * own base-communicator Constrain reduction while the coupler's own
-     * bounded Runner::run(periods) had already exited. Copying this one
+     * a genuine, no-end-time-declared period boundary
+     * (src/abi/participant.cpp's prime_next_request()):
+     * with that signal silently zeroed to 0 here, u_main.c's loop would
+     * never break, would call fuse_begin_step() again, and that FRESH
+     * call's own ordinary (never-bounded-when-!has_end_time) first
+     * resume_period() call would start a period the caller's own loop
+     * never asked for -- U/V hang in that unrequested period's own
+     * base-communicator Constrain reduction while the coupler's own
+     * bounded Runner::run(periods) has already exited. Copying this one
      * field across is enough: every OTHER case this branch also covers
      * (a delivery-pending stop, an ordinary rollover naming a real
      * component) already has out_begin_rep->next_component set to that
@@ -389,7 +373,7 @@ new = """  if (!out_begin_rep->step_opened) {
   }"""
 target = "fuse_verification_brusselator_u_loop_step_fix_test"
 test = "verification.brusselator_u_loop_step_fix"
-result = "CONFIRMED 2026-10-13 (Collectives track, Round 2, tier 0, /tmp/collectives/b0): applying the mutation by hand and rebuilding the target made BrusselatorULoopStepFix.RealShimFunctionsNeverSeeThePeriodBoundaryThroughTheZeroedReport FAIL (a real step of period 2 ran against kRequestedPeriods=2: steps_taken=44, global_periods_done=0, observed_unauthorized_period=1, unauthorized_period_value=2; whole unfiltered binary: [PASSED] 1 test, [FAILED] 1 test -- the companion crossed-shim test, which drives this same graph's component 0 through bruss_v_loop_step() instead and never calls the mutated u_loop_step() for it, PASSED unchanged, confirming isolation). File restored from the pre-mutation text and confirmed byte-identical via cmp (both MD5 a034a5bddf203694ea8ff3b522bd2d4d). Clean rebuild of the same target then passed again ([PASSED] 2 tests, global_periods_done=2, observed_unauthorized_period=0 on both cases)."
+result = "CONFIRMED (tier 0, /tmp/collectives/b0): applying the mutation by hand and rebuilding the target made BrusselatorULoopStepFix.RealShimFunctionsNeverSeeThePeriodBoundaryThroughTheZeroedReport FAIL (a real step of period 2 ran against kRequestedPeriods=2: steps_taken=44, global_periods_done=0, observed_unauthorized_period=1, unauthorized_period_value=2; whole unfiltered binary: [PASSED] 1 test, [FAILED] 1 test -- the companion crossed-shim test, which drives this same graph's component 0 through bruss_v_loop_step() instead and never calls the mutated u_loop_step() for it, PASSED unchanged, confirming isolation). File restored from the pre-mutation text and confirmed byte-identical via cmp (both MD5 a034a5bddf203694ea8ff3b522bd2d4d). Clean rebuild of the same target then passed again ([PASSED] 2 tests, global_periods_done=2, observed_unauthorized_period=0 on both cases)."
 
 [[mutation]]
 id = "brusselator-v-loop-step-drops-next-component-at-period-close"
@@ -399,22 +383,22 @@ file = "examples/brusselator/participants/v_loop.f90"
 old = """    if (out_begin_rep%step_opened == 0) then
       out_rep = fuse_step_report()
       out_rep%struct_size = int(c_sizeof(out_rep), c_int32_t)
-      ! KNOWN_ISSUES.md D57, Round 2. v_main.f90's own loop has exactly
+      ! v_main.f90's own loop has exactly
       ! one way to notice a period has closed: `if (rep%next_component
       ! == -1) exit` -- out_rep, never out_begin_rep, which this
       ! function's own doc comment above already says is what names who
       ! IS due instead. Leaving next_component at its default-
-      ! constructed zero here was wrong, for the identical reason
+      ! constructed zero here would be wrong, for the identical reason
       ! u_loop_step()'s own sibling fix (u_loop.c) states in full: 0 is
       ! also a valid ComponentId, so v_main.f90's own check can never
       ! tell "nothing is due, the run just ended" from "component 0 is
       ! due" -- in particular never seeing fuse_begin_step()'s own
       ! correctly-reported next_component == -1 at a genuine period
       ! boundary with no end_time declared (src/abi/participant.cpp's
-      ! prime_next_request(), KNOWN_ISSUES.md D57's own fix), so the
-      ! loop never exits, calls fuse_begin_step() again, and that FRESH
-      ! call's own ordinary (unbounded when !has_end_time) first
-      ! resume_period() call starts a period the caller never requested.
+      ! prime_next_request()), so the
+      ! loop would never exit, would call fuse_begin_step() again, and that
+      ! FRESH call's own ordinary (unbounded when !has_end_time) first
+      ! resume_period() call would start a period the caller never requested.
       out_rep%next_component = out_begin_rep%next_component
       status = FUSE_OK
       return
@@ -427,4 +411,4 @@ new = """    if (out_begin_rep%step_opened == 0) then
     end if"""
 target = "fuse_verification_brusselator_u_loop_step_fix_test"
 test = "verification.brusselator_u_loop_step_fix"
-result = "CONFIRMED 2026-10-13 (Collectives track, Round 2, tier 0, /tmp/collectives/b0): u_loop_step()'s own mutation row (brusselator-u-loop-step-drops-next-component-at-period-close, above) proved the identical C-side defect/fix, but this graph's own compiled schedule (traced: is_u/begin_rep.next_component/begin_rep.period at every step_opened == 0 call, confirmed unchanged under both WaveformIteration::Jacobi/::GaussSeidel and with kDtU/kDtV swapped) ALWAYS routes the genuine, next_component == -1 period-close observation through graph component 0 (named \"U\" in this test's own graph) -- an artifact of this tier-0 test's single fuse_ctx sharing ONE c.next_request cache for both components (the real multi-rank row has no such tie: each rank runs its own independent prime_next_request()), so a straight mutation of this file through the natural U/V role assignment is never observed. BrusselatorULoopStepFix.RealVLoopFortranFunctionNeverSeesThePeriodBoundaryThroughTheZeroedReport (this target's own second TEST) isolates it instead, by driving graph component 0 through the REAL bruss_v_loop_step() (this file) in place of u_loop_step() -- legal because neither shim wrapper reads the component name the ABI itself resolves it from `req->component`, never the shim. Applying this mutation by hand and rebuilding made that test FAIL (steps_taken=44, global_periods_done=0, observed_unauthorized_period=1, unauthorized_period_value=2; whole unfiltered binary: [PASSED] 1 test, [FAILED] 1 test -- the companion natural-role test, which never calls the mutated bruss_v_loop_step() for component 0, PASSED unchanged). File restored from the pre-mutation text and confirmed byte-identical via cmp (both MD5 5266fee6a7d5e06dbe75d93ff0a18f3a). Clean rebuild of the same target then passed again ([PASSED] 2 tests)."
+result = "CONFIRMED (tier 0, /tmp/collectives/b0): u_loop_step()'s own mutation row (brusselator-u-loop-step-drops-next-component-at-period-close, above) proved the identical C-side defect/fix, but this graph's own compiled schedule (traced: is_u/begin_rep.next_component/begin_rep.period at every step_opened == 0 call, confirmed unchanged under both WaveformIteration::Jacobi/::GaussSeidel and with kDtU/kDtV swapped) ALWAYS routes the genuine, next_component == -1 period-close observation through graph component 0 (named \"U\" in this test's own graph) -- an artifact of this tier-0 test's single fuse_ctx sharing ONE c.next_request cache for both components (the real multi-rank row has no such tie: each rank runs its own independent prime_next_request()), so a straight mutation of this file through the natural U/V role assignment is never observed. BrusselatorULoopStepFix.RealVLoopFortranFunctionNeverSeesThePeriodBoundaryThroughTheZeroedReport (this target's own second TEST) isolates it instead, by driving graph component 0 through the REAL bruss_v_loop_step() (this file) in place of u_loop_step() -- legal because neither shim wrapper reads the component name the ABI itself resolves it from `req->component`, never the shim. Applying this mutation by hand and rebuilding made that test FAIL (steps_taken=44, global_periods_done=0, observed_unauthorized_period=1, unauthorized_period_value=2; whole unfiltered binary: [PASSED] 1 test, [FAILED] 1 test -- the companion natural-role test, which never calls the mutated bruss_v_loop_step() for component 0, PASSED unchanged). File restored from the pre-mutation text and confirmed byte-identical via cmp (both MD5 5266fee6a7d5e06dbe75d93ff0a18f3a). Clean rebuild of the same target then passed again ([PASSED] 2 tests)."

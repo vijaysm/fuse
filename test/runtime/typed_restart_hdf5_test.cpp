@@ -1,4 +1,4 @@
-/// Stage B Slice 1b (docs/dev/restart.md Section 11): the refusals that
+/// (docs/dev/restart.md Section 11): the refusals that
 /// can only be reached by corrupting a file -- `fuse::restart_io`'s own
 /// typed-field metadata is INTERNALLY CONSISTENT by construction on
 /// every write this project's own public interface can make, so testing
@@ -70,8 +70,8 @@ void write_u64_attr(hid_t loc, const char* name, std::uint64_t v) {
 
 }  // namespace
 
-// "a reader that finds a byte other than 0/1 refuses by name" (owner's
-// own words, docs/dev/restart.md Section 11, item 3).
+// "a reader that finds a byte other than 0/1 refuses by name"
+// (docs/dev/restart.md Section 11, item 3).
 TEST(TypedRestartHdf5, BoolByteNotZeroOrOneRefuses) {
   const std::string path = temp_path("typed_bool_corrupt.h5");
   std::remove(path.c_str());
@@ -105,8 +105,8 @@ TEST(TypedRestartHdf5, BoolByteNotZeroOrOneRefuses) {
 }
 
 // "verify the attribute and the dataset type agree on read; disagreement
-// refuses by name -- it means a corrupted or foreign file" (owner's own
-// words, item 5) -- here, CORRUPTED: the attribute is changed but the
+// refuses by name -- it means a corrupted or foreign file"
+// (item 5) -- here, CORRUPTED: the attribute is changed but the
 // real underlying HDF5 datatype is untouched, so the file's own two
 // descriptions of itself disagree.
 TEST(TypedRestartHdf5, AttributeDatasetTypeDisagreementRefuses) {
@@ -183,14 +183,13 @@ TEST(TypedRestartHdf5, UnknownElementTypeNameFromANewerFileVersionRefuses) {
 }
 
 namespace {
-/// Writes the owner's own hand-built x86-64-style 80-bit extended `long
+/// Writes a hand-built x86-64-style 80-bit extended `long
 /// double` dataset directly (docs/dev/restart.md Section 11, item 6) --
 /// 64-bit EXPLICIT significand (`H5T_NORM_MSBSET`), 15-bit exponent,
 /// bias 16383, 16-byte storage. THIS Mac cannot itself produce this
 /// representation (its own `long double` is 53-bit, bit-identical to
-/// `double`) -- bypasses `put_field`/`put_scalar` entirely, exactly as
-/// the owner's instruction asks for. `mantissa`/`biased_exponent`/`sign`
-/// name the ONE value this dataset holds.
+/// `double`) -- bypasses `put_field`/`put_scalar` entirely.
+/// `mantissa`/`biased_exponent`/`sign` name the ONE value this dataset holds.
 void write_hand_built_x86_long_double(hid_t file, const char* path,
                                       std::uint64_t mantissa,
                                       std::uint16_t biased_exponent,
@@ -228,7 +227,7 @@ void write_hand_built_x86_long_double(hid_t file, const char* path,
 }
 }  // namespace
 
-// THE owner's own full end-to-end scenario (docs/dev/restart.md Section
+// The full end-to-end scenario (docs/dev/restart.md Section
 // 11, item 6), through the REAL public RestartReader: Exact refuses,
 // Widening refuses, AllowNarrowing reads with the reported maximum
 // change equal to an independently computed value.
@@ -265,9 +264,7 @@ TEST(TypedRestartHdf5, HandBuiltX86LongDoubleExactAndWideningRefuseAllowNarrowin
   // all see the SAME type and every read is exact: the value 1 + 2^-63
   // is representable and comes back unchanged, and AllowNarrowing has
   // nothing to narrow (converted_any false, zero reported change). The
-  // 53-bit branch below is the owner's original scenario on arm64 macOS;
-  // this one was added when the test first ran on an x86-64 host
-  // (higgs, 2026-10-18) and refused a read it had no reason to refuse.
+  // 53-bit branch below covers the arm64 macOS case.
   const long double expected = 1.0L + std::ldexp(1.0L, -63);
   {
     long double restored = 0.0L;

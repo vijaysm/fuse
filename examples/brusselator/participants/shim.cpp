@@ -32,7 +32,7 @@ std::string ToStdString(const fuse::Failure& f) {
   return f.code + ": " + f.message;
 }
 
-// Physics track: the communication pair a decomposed (`num_ranks > 1`)
+// The communication pair a decomposed (`num_ranks > 1`)
 // participant needs, built from the caller's own `comm_f` (an
 // `MPI_Comm_c2f` handle of THIS component's physics-only communicator --
 // shim.h's own doc comment on `bruss_u_create`/`bruss_v_create` has the
@@ -213,7 +213,7 @@ bruss_v_handle* bruss_v_create(int nx_u, int ny_u, int nx_v, int ny_v, double di
   if (!kind_r.ok()) return nullptr;
 
   fuse::native::NativeMeshBackend backend(rank, num_ranks);
-  // Halo track: set BEFORE loading U/V (native_halo_mpi_test.cpp's own
+  // Set BEFORE loading U/V (native_halo_mpi_test.cpp's own
   // Fixture order) so `fuse::build_remap_halo`'s own `communicator_size()`
   // check, made inside `VParticipant::make`, sees the real value. A
   // single rank never adopts anything regardless (`communicator_size()`
@@ -337,9 +337,7 @@ std::string Hdf5CallFailed(const char* what, const char* file, const char* datas
 // only one branch per build, and an extern "C" opened inside a branch
 // that the OTHER build's preprocessor pass skips entirely would leave
 // this file's one closing brace (the end of this translation unit)
-// unmatched in that configuration. Caught by this session's own
-// standalone syntax check against FUSE_HAVE_LOWFIVE=0 before it reached
-// a real build.
+// unmatched in that configuration.
 extern "C" {
 
 int bruss_lowfive_available(void) { return FUSE_HAVE_LOWFIVE; }
@@ -350,17 +348,15 @@ int bruss_lowfive_write(const char* file, const char* dataset,
                         const double* data, long long n,
                         long long fapl_id,
                         char* errbuf, long long errbuf_len) {
-  // ROUND 5 (diagnostic trace track), item 2 of the brief: one line
-  // before and after this whole call, off by default (bruss_lowfive_
-  // trace_enabled() is the single cached getenv() every trace call
-  // site in this file and lowfive_attach.cpp shares).
+  // Diagnostic trace: one line before and after this whole call, off by
+  // default (bruss_lowfive_trace_enabled() is the single cached getenv()
+  // every trace call site in this file and lowfive_attach.cpp shares).
   const int traced = bruss_lowfive_trace_enabled();
   if (traced) {
     std::fprintf(stderr, "TRACE(bruss_lowfive_write): file=%s dataset=%s nvals=%lld enter\n",
                  file, dataset, n);
   }
-  // `fapl_id`, not H5P_DEFAULT, per shim.h's own updated comment ("LowFive
-  // attach" track): the VOL that makes this interception rather than a
+  // `fapl_id`, not H5P_DEFAULT, per shim.h's own comment: the VOL that makes this interception rather than a
   // real file on disk is attached PROGRAMMATICALLY, by bruss_lowfive_
   // attach() (lowfive_attach.h), and this call's own fapl_id argument is
   // the file-access property list that carries it. A negative fapl_id
@@ -384,7 +380,7 @@ int bruss_lowfive_write(const char* file, const char* dataset,
     if (traced) std::fprintf(stderr, "TRACE(bruss_lowfive_write): exit rc=1 (H5Fcreate failed)\n");
     return 1;
   }
-  // ROUND 7: a dataset path with a parent group (every Brusselator
+  // A dataset path with a parent group (every Brusselator
   // dataset: "/grid/u_out", "/grid/v_out") needs that group to exist as
   // a REAL `LowFive::Group` object before H5Dcreate2 -- otherwise
   // `LowFive::Object::search()`'s segment-by-segment walk never finds a
@@ -393,9 +389,9 @@ int bruss_lowfive_write(const char* file, const char* dataset,
   // flattens the dataset into one child of the FILE/root literally
   // named "grid/u_out". That flattening is harmless for THIS write
   // (the in-memory check below and the is_memory pattern match both
-  // compare the whole string, round 4/6's own citations), but it is
+  // compare the whole string), but it is
   // NOT harmless for the READER's own H5Dopen2 later: lowfive_attach_
-  // decision.hpp's own "ROUND 7" comment has the full citations for
+  // decision.hpp's own "WHY THE DATASET'S PARENT GROUP IS CREATED" comment has the full citations for
   // why an unresolvable dataset_open() lookup falls back to a
   // DummyDataset placeholder whose never-populated `space` is what
   // crashes the reader's own H5Dget_space(). SplitDatasetGroupPath() is
@@ -437,21 +433,19 @@ int bruss_lowfive_write(const char* file, const char* dataset,
   }
   const herr_t wrc =
       H5Dwrite(did, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, data);
-  // ROUND 6: REPLACES round 5's own H5Lexists()-based
-  // `dataset_exists_before_close` check -- confirmed UNRELIABLE this
-  // round (lowfive_attach.h's own doc comment on bruss_lowfive_attach_
-  // has_real_file() has the full citation: H5Lexists() walks the
-  // dataset's own path segment by segment, but this shim's own
-  // H5Dcreate2 call, with no prior H5Gcreate, attaches the dataset as
-  // ONE FLAT child whose name literally contains the slash --
-  // H5Lexists() reports false negatives for exactly this shape, which
-  // is why round 5's own host trace printed `dataset_exists_before_
-  // close=0` even though the write just succeeded). `has_real_file()`
-  // is FILE-level, not dataset-level (nothing public exposes a
-  // dataset-level check at all -- Object/Dataset are opaque in the
-  // installed headers), but it is RELIABLE, unlike the check it
+  // File-level reliability check, not dataset-level: an H5Lexists()-based
+  // `dataset_exists_before_close` check is UNRELIABLE (lowfive_attach.h's
+  // own doc comment on bruss_lowfive_attach_has_real_file() has the full
+  // citation: H5Lexists() walks the dataset's own path segment by
+  // segment, but this shim's own H5Dcreate2 call, with no prior
+  // H5Gcreate, would attach the dataset as ONE FLAT child whose name
+  // literally contains the slash -- H5Lexists() reports false negatives
+  // for exactly this shape, even though the write just succeeded).
+  // `has_real_file()` is FILE-level, not dataset-level (nothing public
+  // exposes a dataset-level check at all -- Object/Dataset are opaque in
+  // the installed headers), but it is RELIABLE, unlike the check it
   // replaces: a diagnostic that reports false negatives is worse than
-  // none, the lead's own instruction.
+  // none.
   if (traced) {
     std::fprintf(stderr, "TRACE(bruss_lowfive_write): file_has_real_entry_before_close=%d\n",
                  bruss_lowfive_attach_has_real_file(file));
@@ -480,12 +474,12 @@ int bruss_lowfive_write(const char* file, const char* dataset,
   return 0;
 }
 
-// "LowFive attach" track, ROUND 2 REVIEW: every path below that reaches
+// Every path below that reaches
 // a successful H5Fopen calls H5Fclose(fid) before returning, success or
 // a later dataset-level failure alike -- and EVERY one of those H5Fclose
 // calls is what, in distributed mode, sends the RPC that releases a
-// PEER's own pending serve (lowfive_attach_decision.hpp's own "ROUND 2
-// REVIEW" comment has the LowFive-source citations). So `AfterReadClose`
+// PEER's own pending serve (lowfive_attach_decision.hpp's own "RECEIVE AND
+// RELEASE" comment has the LowFive-source citations). So `AfterReadClose`
 // below is called after EVERY one of them, not only the success path --
 // a dataset-level failure (H5Dopen2, the extent check, H5Dread) must not
 // leave this process's own serve-state bookkeeping silently behind,
@@ -522,8 +516,7 @@ int bruss_lowfive_read(const char* file, const char* dataset,
                        double* data, long long n,
                        long long fapl_id,
                        char* errbuf, long long errbuf_len) {
-  // ROUND 5 (diagnostic trace track), item 2 of the brief: same shape
-  // as bruss_lowfive_write()'s own trace above.
+  // Diagnostic trace: same shape as bruss_lowfive_write()'s own above.
   const int traced = bruss_lowfive_trace_enabled();
   if (traced) {
     std::fprintf(stderr, "TRACE(bruss_lowfive_read): file=%s dataset=%s nvals=%lld enter\n",
@@ -541,22 +534,20 @@ int bruss_lowfive_read(const char* file, const char* dataset,
   // "called by the CONSUMER side BEFORE its own, unmodified H5Fopen" --
   // fuse::LowFiveTransport::receive_as_consumer()'s own placement
   // (fuse/transport/transport.hpp), mirrored here; a no-op when the
-  // live attach is single-process. ROUND 2 REVIEW: no longer performs
+  // live attach is single-process. It does not perform
   // the receive itself in distributed mode either -- H5Fopen just below
-  // does, automatically; see lowfive_attach.h's own updated doc on this
+  // does, automatically; see lowfive_attach.h's own doc on this
   // function's own counterpart.
   if (bruss_lowfive_receive_before_read(errbuf, errbuf_len) != 0) {
     if (traced) std::fprintf(stderr, "TRACE(bruss_lowfive_read): exit rc=1 (receive_before_read failed)\n");
     return 1;
   }
   const hid_t fapl = static_cast<hid_t>(fapl_id);
-  // ROUND 5: this H5Fopen is the single call this round's own report
-  // settles is where the host measured both U and V block (item 2's
-  // own "before/after" wording covers the WHOLE call including this
-  // one, which is the one that actually hangs -- a trace line printed
-  // BEFORE this call and never followed by its own "H5Fopen_ok=" line
-  // IS the hang signature, no timer needed to see it in u_stdout.*.log/
-  // v_stdout.*.log).
+  // Trace placement: this H5Fopen is where a host run blocks if the
+  // peer's serve never arrives -- a trace line printed BEFORE this call
+  // and never followed by its own "H5Fopen_ok=" line IS the hang
+  // signature, no timer needed to see it in u_stdout.*.log/
+  // v_stdout.*.log.
   if (traced) std::fprintf(stderr, "TRACE(bruss_lowfive_read): H5Fopen about to call\n");
   const hid_t fid = H5Fopen(file, H5F_ACC_RDONLY, fapl);
   if (traced) std::fprintf(stderr, "TRACE(bruss_lowfive_read): H5Fopen_ok=%d\n", fid >= 0 ? 1 : 0);
@@ -564,7 +555,7 @@ int bruss_lowfive_read(const char* file, const char* dataset,
     // No H5Fclose to call (nothing was opened), so no AfterReadClose
     // call either -- nothing was sent to a peer that could be owed a
     // matching bookkeeping update (lowfive_attach_decision.hpp's own
-    // "ROUND 2 REVIEW" comment: the receive IS H5Fopen; if it failed,
+    // "RECEIVE AND RELEASE" comment: the receive IS H5Fopen; if it failed,
     // nothing was received).
     CopyErrorMessage(Hdf5CallFailed("H5Fopen", file, dataset), errbuf, errbuf_len);
     if (traced) std::fprintf(stderr, "TRACE(bruss_lowfive_read): exit rc=1 (H5Fopen failed)\n");
@@ -599,7 +590,7 @@ int bruss_lowfive_read(const char* file, const char* dataset,
     std::fprintf(stderr, "TRACE(bruss_lowfive_read): extent dims[0]=%llu rank=1\n",
                  static_cast<unsigned long long>(dims[0]));
   }
-  // ROUND 7: reuses `space` (already validated above against `n`) as
+  // Reuses `space` (already validated above against `n`) as
   // BOTH the file and memory dataspace for H5Dread, instead of H5S_ALL.
   // `LowFive::DistMetadataVOL::dataset_read()`'s own RemoteDataset
   // branch (LowFive/src/vol-dist-metadata.cpp) has an explicit,
@@ -627,9 +618,8 @@ int bruss_lowfive_read(const char* file, const char* dataset,
   }
   const herr_t rrc =
       H5Dread(did, H5T_NATIVE_DOUBLE, space, space, H5P_DEFAULT, data);
-  // ROUND 7, task 4: "after H5Dread print rc and the first and last
-  // value read (so a data mismatch is visible)" -- printed regardless
-  // of rrc (a failed read's own buffer contents are still worth seeing
+  // After H5Dread, print rc and the first and last value read (so a data
+  // mismatch is visible) -- printed regardless of rrc (a failed read's own buffer contents are still worth seeing
   // when diagnosing a next failure on the host; they are ordinary
   // caller-owned memory, not uninitialized in the UB sense, just
   // possibly stale).

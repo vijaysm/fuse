@@ -1,4 +1,4 @@
-// S7.2b (PetscSelect track): the Brusselator's own window-Newton region
+// The Brusselator's own window-Newton region
 // (examples/brusselator, docs/dev/newton-krylov.md Sec. 9), solved by the
 // PETSc substrate (fuse::petsc::solve(), Sec. 10/11) instead of the native
 // one -- NewtonConfig::substrate is the only difference between this file
@@ -11,19 +11,17 @@
 //
 // WHY A SEPARATE BINARY, not one more TEST() in brusselator_runner_test.cpp.
 // fuse::petsc::ensure_initialized() reaches PETSc's own PetscInitialize(),
-// which calls MPI_Init() when nothing has -- and in THIS sandbox (KNOWN_
-// ISSUES.md D32) that SEGFAULTS the whole process, not merely fails one
-// gtest case. Measured directly: an earlier draft of this track put this
-// exact case inside brusselator_runner_test.cpp, and running it there
-// took down EVERY other case in that binary (JacobiMatchesDriver,
+// which calls MPI_Init() when nothing has -- and where MPI cannot start
+// that SEGFAULTS the whole process, not merely fails one gtest case.
+// Putting this case inside brusselator_runner_test.cpp would take down
+// EVERY other case in that binary (JacobiMatchesDriver,
 // NewtonConvergesInAPinnedIterationCountWithTheBlockJacobiPreconditioner,
 // etc. -- otherwise-passing, PETSc-independent coverage) via one shared-
 // process crash. Every existing petsc.* test (test/petsc/{init,token,
-// derivative_gate,snes}_test.cpp) is ALREADY its own dedicated binary for
+// derivative_gate,snes}_test.cpp) is its own dedicated binary for
 // precisely this reason (token.hpp's own comment on why init_test.cpp in
-// particular is never shared); this file follows the SAME convention
-// rather than reproducing the collateral-damage defect the first draft
-// had. `fuse_add_gtest(petsc brusselator_newton ...)` (test/CMakeLists.txt)
+// particular is never shared); this file follows the SAME convention.
+// `fuse_add_gtest(petsc brusselator_newton ...)` (test/CMakeLists.txt)
 // registers it as its own process, `petsc.brusselator_newton`.
 
 #include <gtest/gtest.h>
@@ -69,7 +67,7 @@ struct RunResult {
   std::string error;
   brusselator::Vector u_final, v_final;
   int iterations = 0;
-  // AgreementBounds track. The window-Newton region's own residual
+  // The window-Newton region's own residual
   // history (IterationStats::residual_history, fuse/runtime/runner.hpp):
   // one entry per Newton step's own pre-step ||F||, in order, followed by
   // the solve's own final ||F|| -- run_region_newton_window() (src/
@@ -147,10 +145,9 @@ struct Rig {
 }
 
 // `max_nonlinear_iterations_cap`/`abort_on_nonconvergence`/`rtol_override`:
-// AgreementBounds track additions, all additive (every existing call site
-// keeps its own behaviour: no cap, i.e. `NewtonConfig`'s own default of
-// 50 steps; abort on non-convergence; `NewtonConfig`'s own default
-// `rtol` of 1e-8). `rtol_override`, when set, is this function's own way
+// Defaults keep the plain behaviour: no cap, i.e. `NewtonConfig`'s own
+// default of 50 steps; abort on non-convergence; `NewtonConfig`'s own
+// default `rtol` of 1e-8. `rtol_override`, when set, is this function's own way
 // of running the IDENTICAL window at a tighter or looser relative
 // convergence test than `ConvergesAgreeingWithNative`'s own native/PETSc
 // solves use -- `measure_native_reference_error()` below is the only
@@ -240,14 +237,14 @@ struct Rig {
   return out;
 }
 
-// AgreementBounds track. The error-term calibration
+// The error-term calibration
 // `brusselator_bound::agreement_bound()` needs (examples/brusselator/
 // agreement_bound.hpp carries the full derivation): the native solver's
 // own measured error at the CHECK's own `rtol`, against a tight
 // reference solve of the IDENTICAL window -- same grid, same
 // preconditioner, same everything except `rtol`. Runs entirely on the
 // NATIVE substrate, never touching PETSc, so it is always safe to call
-// in a sandbox that cannot complete `MPI_Init()` (KNOWN_ISSUES.md D32).
+// where `MPI_Init()` cannot complete.
 struct ReferenceCalibration {
   bool ok = false;
   std::string error;
@@ -262,8 +259,8 @@ struct ReferenceCalibration {
   double reference_final_residual = 0.0;
   int check_iterations = 0;
   int reference_iterations = 0;
-  /// ||reference_1 - reference_2||_inf, over both fields -- the lead's
-  /// own required cross-check: the two tight references must agree to
+  /// ||reference_1 - reference_2||_inf, over both fields -- the
+  /// required cross-check: the two tight references must agree to
   /// far less than `e_n`, or this measurement is not trustworthy.
   double reference_cross_check_diff = 0.0;
   bool reference_stable = false;
@@ -313,11 +310,11 @@ struct ReferenceCalibration {
   out.e_n_v = inf_norm_diff(check.v_final, ref1.v_final);
   out.e_n = std::max(out.e_n_u, out.e_n_v);
 
-  // The lead's own required stability check, step 1: the two references
+  // Stability check: the two references
   // must agree to far less than the error about to be measured. A
-  // round, stated threshold -- 1% of e_n -- never loosened to make this
+  // stated threshold -- 1% of e_n -- never loosened to make this
   // pass. If it fails, `ok` stays false and the caller must not build
-  // on this measurement (the lead's own instruction: "say so and stop").
+  // on this measurement.
   out.reference_stable = out.reference_cross_check_diff <= 0.01 * out.e_n;
   if (!out.reference_stable) {
     out.error = "reference solves at rtol=" + std::to_string(reference_rtol_1) + " and rtol=" +
@@ -336,7 +333,7 @@ struct ReferenceCalibration {
   return out;
 }
 
-// AgreementBounds track reference values. `kReferenceRtol1`/`kReferenceRtol2`
+// Reference values. `kReferenceRtol1`/`kReferenceRtol2`
 // are deliberately far tighter than the check's own `rtol` (NewtonConfig's
 // default, 1e-8) -- five and six orders of magnitude tighter. Whether they
 // are tight enough is never assumed: `MeasuredErrorAgainstATightReference`
@@ -349,16 +346,14 @@ constexpr double kReferenceRtol2 = 1e-14;
 
 }  // namespace
 
-// AgreementBounds track. UNLIKE `ConvergesAgreeingWithNative` below, this
+// UNLIKE `ConvergesAgreeingWithNative` below, this
 // case never calls `fuse::petsc::install()` or selects
 // `NewtonSubstrate::Petsc` -- it exercises ONLY the native substrate, so
-// it is safe to run in a sandbox that cannot complete `MPI_Init()`
-// (KNOWN_ISSUES.md D32): built and run here directly with
+// it is safe to run where `MPI_Init()` cannot complete, directly with
 // `--gtest_filter=BrusselatorNewtonPetsc.MeasuredErrorAgainstATightReference`
-// (the ctest row `petsc.brusselator_newton` still runs the WHOLE binary,
-// including `ConvergesAgreeingWithNative`, so that row is still expected
-// to crash here by the same construction -- this case merely happens not
-// to be the one responsible).
+// (the ctest row `petsc.brusselator_newton` runs the WHOLE binary,
+// including `ConvergesAgreeingWithNative`, so that row still crashes
+// where MPI cannot start).
 //
 // Reports the SAME calibration `ConvergesAgreeingWithNative` below
 // consumes, as its own measurement rather than a value buried inside
@@ -381,11 +376,10 @@ TEST(BrusselatorNewtonPetsc, MeasuredErrorAgainstATightReference) {
   EXPECT_TRUE(calib.reference_stable);
 }
 
-// HOST-ONLY: this sandbox cannot complete a bare MPI_Init() (KNOWN_
-// ISSUES.md D32), reached by fuse::petsc::ensure_initialized() the first
-// time this test calls fuse::petsc::install()/the registry resolves
-// NewtonSubstrate::Petsc. Built and registered everywhere FUSE_ENABLE_
-// PETSC is on; not expected to pass IN THIS SANDBOX. Does NOT assert the
+// Needs a host where a bare MPI_Init() completes; it is reached by
+// fuse::petsc::ensure_initialized() the first time this test calls
+// fuse::petsc::install()/the registry resolves NewtonSubstrate::Petsc.
+// Built and registered everywhere FUSE_ENABLE_PETSC is on. Does NOT assert the
 // two substrates take the same outer-iteration count (SNES's own GMRES/
 // line-search implementation is not required to follow the identical
 // path, docs/dev/newton-krylov.md Section 10.3's own measured step-1
@@ -396,14 +390,13 @@ TEST(BrusselatorNewtonPetsc, MeasuredErrorAgainstATightReference) {
 // (`measure_native_reference_error()` above, never a hardcoded number
 // from a prior session) times a stated scaling assumption (the error of
 // a Newton iterate scales with its own terminal residual, both solvers
-// near the SAME root under the SAME operator). ROUND 3 (the owner's own
-// correction to round 2): the separate 3.9e-8 inter-Krylov term is GONE
-// from the asserted bound -- it measured a SYNTHETIC problem's own
-// first-Newton-step solver disagreement, not a bound on two CONVERGED
-// Brusselator solutions; `examples/brusselator/agreement_bound.hpp`'s
-// own "ROUND 3" section has the full diagnosis. The legacy (round 2)
-// formula is still computed and printed, labelled `[agreement-bound
-// legacy]`, purely informationally -- never asserted against.
+// near the SAME root under the SAME operator). The asserted bound has no
+// separate inter-Krylov term: such a term would measure a SYNTHETIC
+// problem's own first-Newton-step solver disagreement, not a bound on two
+// CONVERGED Brusselator solutions; `examples/brusselator/agreement_bound.hpp`
+// has the full diagnosis. The legacy formula is computed and printed,
+// labelled `[agreement-bound legacy]`, purely informationally -- never
+// asserted against.
 TEST(BrusselatorNewtonPetsc, ConvergesAgreeingWithNative) {
   fuse::petsc::install();
 
@@ -428,7 +421,7 @@ TEST(BrusselatorNewtonPetsc, ConvergesAgreeingWithNative) {
                calib.e_n, calib.f_final_native, f_final_petsc,
                f_final_petsc / calib.f_final_native, bound);
 
-  // INFORMATIONAL ONLY, never asserted: round 2's own (legacy) formula,
+  // INFORMATIONAL ONLY, never asserted: the legacy formula,
   // printed alongside the sharp bound so a host run can report BOTH
   // observed/sharp and observed/legacy -- agreement_bound.hpp's own
   // "LEGACY" section.
@@ -444,8 +437,7 @@ TEST(BrusselatorNewtonPetsc, ConvergesAgreeingWithNative) {
   // The largest element-wise disagreement over both species, printed before the
   // assertions below so a host run records observed/sharp. The assertions
   // themselves are per element, and a pass says only that this maximum is at
-  // most `bound`: until this line existed the run reported no observed value
-  // (the 2026-10-12 host run, 1220.8 s, passed without one).
+  // most `bound`; without this line a passing run reports no observed value.
   double max_disagreement = 0.0;
   for (Eigen::Index i = 0; i < native.u_final.size(); ++i) {
     max_disagreement = std::max(max_disagreement, std::abs(native.u_final[i] - petsc.u_final[i]));

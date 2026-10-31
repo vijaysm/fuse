@@ -15,7 +15,7 @@
 // below -- U never straddles, so testing U at both policies would not
 // exercise anything the straddle logic touches.
 //
-// THE ENVELOPE (KNOWN_ISSUES.md D7, E-RT-WINDOW-STRADDLE / -LONGSTEP).
+// THE ENVELOPE (E-RT-WINDOW-STRADDLE / -LONGSTEP).
 // WindowCoupler::create rejects a Fixed member whose interval exceeds the
 // window (E-RT-WINDOW-LONGSTEP) and rejects two members that could both
 // straddle the same window end (E-RT-WINDOW-STRADDLE). Every configuration
@@ -124,7 +124,7 @@ struct MultirateResult {
   cfg.window_length = window;
   cfg.max_iterations = 200;
   cfg.acceleration = AccelConfig{.kind = accel};
-  // The user's decision (relayed 2026-09-29): a convergence measure names
+  // A convergence measure names
   // a field TRANSFER (a WindowChannel, by its own `name`), not the whole
   // coupled system -- see gray_scott_reference_test.cpp's identical
   // comment. Split into the two real transfers, same kind/tolerance as
@@ -191,7 +191,7 @@ TEST(GrayScottMultirate, CommensurateRatiosConverge) {
 
 TEST(GrayScottMultirate, CommensurateRatiosFixedVDivideNeverStraddles) {
   // V's interval divides the window exactly at m=2,4, so DtPolicy::Fixed
-  // never triggers a straddle for V either (KNOWN_ISSUES.md D7's own
+  // never triggers a straddle for V either (the window coupler's own
   // "AFixedStepThatDividesTheWindowNeverStraddlesAndIsAccepted" case) --
   // exercised here with the real Gray-Scott components, not the linear ODE.
   const Rational window{1, 20};
@@ -207,7 +207,7 @@ TEST(GrayScottMultirate, CommensurateRatiosFixedVDivideNeverStraddles) {
 TEST(GrayScottMultirate, IncommensurateSevenThirteenBothVPolicies) {
   // Window = 13 parts (U, the window-definer); V = 7 parts, which does not
   // divide 13, so V is the one member that can straddle. Both of its
-  // DtPolicy values are exercised, per the task's item (c).
+  // DtPolicy values are exercised.
   const Rational unit{1, 2000};  // 13*unit = 0.0065, small enough to keep Newton in its basin
   const Rational window = unit * Rational{13};
   const Rational v_interval = unit * Rational{7};
@@ -238,19 +238,16 @@ TEST(GrayScottMultirate, IterationCountsAcrossAccelerators) {
     for (int it : r.iterations) *total += it;
   }
   // MEASURED: 9/13/12 sweeps total (None/Aitken/IQN-ILS) over 4 windows.
-  // (It was 14/17/16 while WindowCoupler wrote its sweep vector
-  // transposed, then 9/13/12 once that was fixed. An intermediate Unit
-  // C3 attempt re-seeded window N>0's own first sweep from V's real
+  // (Re-seeding window N>0's own first sweep from V's real
   // previous-window trajectory directly, shifted one window back,
   // instead of the driver's documented extrapolate_boundary_value()
-  // predictor -- measured to raise this pin to 12/16/15, i.e. MORE
-  // sweeps, which is the tell: that seed was persistence, a
+  // predictor raises this pin to 12/16/15, i.e. MORE
+  // sweeps, which is the tell: that seed is persistence, a
   // zeroth-order predictor in time, not the second-order-or-better
   // extrapolation the class is documented to use, and a strictly more
-  // accurate initial guess cannot need more iterations. Reverted; this
-  // pin is back to 9/13/12. Splitting the single aggregate convergence
-  // measure into the two real per-channel transfers (u_out/v_out, Unit
-  // C3's per-field-transfer stopping rule) measured NO change to this
+  // accurate initial guess cannot need more iterations. Splitting the
+  // single aggregate convergence measure into the two real per-channel
+  // transfers (u_out/v_out) changes NO part of this
   // pin -- on this problem the two channels' own residuals track each
   // other closely enough that testing them separately rather than
   // combined never changes which sweep first satisfies tolerance.)
@@ -274,7 +271,7 @@ TEST(GrayScottMultirate, IterationCountsAcrossAccelerators) {
 
 TEST(GrayScottMultirate, RespectsTheStraddleEnvelope) {
   // Both members Fixed, both intervals fail to divide the window: outside
-  // the D7 envelope, rejected at create() with E-RT-WINDOW-STRADDLE --
+  // the straddle envelope, rejected at create() with E-RT-WINDOW-STRADDLE --
   // demonstrating (not merely asserting) that every configuration ABOVE,
   // which never does this, sits inside it.
   const Grid grid{kN, kL};

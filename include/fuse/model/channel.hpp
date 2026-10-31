@@ -84,7 +84,7 @@ struct Channel {
 };
 
 /// Fluent mutator. Deliberately does not validate: spec Global Constraints
-/// require all problems to be reported together by validate() (Task 1.5).
+/// require all problems to be reported together by validate().
 ///
 /// Holds `(CouplingGraph&, ChannelId)` rather than a `Channel&`: the graph's
 /// backing `std::vector<Channel>` can reallocate on any subsequent
@@ -100,7 +100,7 @@ class ChannelBuilder {
   ChannelBuilder& accumulate(AccumOp op, Window w = Window::coupling_period());
   ChannelBuilder& remap(RemapFlags flags);
   ChannelBuilder& remap_method(std::string method);
-  /// Spec: the separately-placed coupler track. `c` must be a
+  /// Spec: the separately-placed coupler. `c` must be a
   /// `ComponentKind::Coupler` component or this channel's own source/target
   /// component; `validate()`'s `E-CHANNEL-REMAP-ON` enforces it, not this
   /// fluent setter (spec Global Constraints: every problem is reported

@@ -1,37 +1,35 @@
-# Mutation evidence for the PetscToken track (S7.2b): the PETSc substrate
-# behind S7's Newton seam (src/petsc/*.cpp, fuse/petsc/*.hpp).
+# Mutation evidence for the PETSc token (the PETSc substrate behind the
+# Newton seam, src/petsc/*.cpp, fuse/petsc/*.hpp).
 #
 # HONEST DISCLOSURE, read before the rows below. Every row here is
 # ARGUED BY CODE INSPECTION ONLY, not hand-proven by actually running the
 # baseline-then-mutated binary the way build-evidence/mutations/num.toml's
-# own header describes for that track. The reason is a measured,
+# own header describes. The reason is a measured,
 # reproducible environment limitation, not a shortcut taken for
 # convenience: this sandbox's /opt/mpich cannot complete MPI_Init() at
 # all -- a bare `MPI_Init()` call (no PETSc involved) deadlocks/crash-
 # loops in MPICH's own debugger-attach code (`dbginit.c`'s
 # `pthread_mutex_destroy: Invalid argument` assertion, which then
 # recurses through its own abort handler instead of terminating; measured
-# directly, this track, by a throwaway MPI-only C program under a
+# directly by a throwaway MPI-only C program under a
 # kill-guard). `fuse::petsc::ensure_initialized()` (src/petsc/init.cpp)
 # avoids that CRASH specifically because it pre-sets `PETSC_COMM_WORLD`
 # before calling `PetscInitialize()`, which makes PETSc skip its own
 # internal `MPI_Init()` call (the documented behaviour for a caller that
 # has already arranged its own communicator) -- but MPI genuinely is not
 # initialized in that case either, so `PetscInitialize()` itself then
-# fails cleanly with `PETSC_ERR_SUP` (56). CONSEQUENCE: every one of this
-# track's own test binaries (test/petsc/{init,token,derivative_gate,snes}
+# fails cleanly with `PETSC_ERR_SUP` (56). CONSEQUENCE: every one of the
+# PETSc test binaries (test/petsc/{init,token,derivative_gate,snes}
 # _test.cpp) fails at `ensure_initialized()`'s own call, before reaching
-# ANY of the code a mutation row below touches -- confirmed directly,
-# this session, by running all four under a timeout guard (ctest's own
+# ANY of the code a mutation row below touches -- confirmed directly
+# by running all four under a timeout guard (ctest's own
 # petsc.* rows: 4/4 FAILED, in under 1 second each, no hang). A baseline
 # run and a mutated run therefore fail IDENTICALLY at the same earlier
 # barrier, with no differential signal this sandbox can observe for any
 # row below -- the opposite of what the mutation discipline needs
-# (KNOWN_ISSUES.md D32 and docs/dev/newton-krylov.md Sec. 10 both record
-# this as the track's own dominant, blocking finding, not a note buried
-# here). A host with a working MPI runtime (the h-value/derivative-gate/
-# SNES measurements this track's own report needed are gated on the same
-# fix) can hand-prove every row below the same way num.toml's own rows
+# (docs/dev/newton-krylov.md Sec. 10 records
+# this as the dominant, blocking finding). A host with a working MPI
+# runtime can hand-prove every row below the same way num.toml's own rows
 # were proven: apply `old` -> `new`, rebuild, run the WHOLE unfiltered
 # target, record the exact FAILED/PASSED counts and case names, restore,
 # `cmp` byte-identical.
@@ -39,14 +37,14 @@
 [[mutation]]
 id = "petsc-forcing-floor-not-applied"
 area = "petsc"
-describes = "The Eisenstat-Walker floor is never installed on the KSP: SNES's own forcing has no floor, so on the Brusselator window the forcing term tightens past the finite-difference Jacobian's accuracy and GMRES exhausts its budget -- the example's first window reports DivergedLinearSolve, exactly what the host run showed before the floor existed (2026-10-11)."
+describes = "The Eisenstat-Walker floor is never installed on the KSP: SNES's own forcing has no floor, so on the Brusselator window the forcing term tightens past the finite-difference Jacobian's accuracy and GMRES exhausts its budget -- the example's first window reports DivergedLinearSolve, exactly what the host run showed before the floor existed."
 file = "src/petsc/solve.cpp"
 old = "    if (opt.newton.forcing.eta_min > 0.0) {"
 new = "    if (false) {"
 target = "fuse_example_brusselator"
 test = "example.brusselator.newton_petsc"
 requires = "petsc"
-result = "Hand-proved 2026-10-11 on the host (build-all, PETSc on): under the mutation example.brusselator.newton_petsc FAILS in its first window ('DivergedLinearSolve after 3 Newton iterations') while example.brusselator.newton (native) still passes; clean tree both pass. File restored byte-identically."
+result = "Hand-proved on the host (build-all, PETSc on): under the mutation example.brusselator.newton_petsc FAILS in its first window ('DivergedLinearSolve after 3 Newton iterations') while example.brusselator.newton (native) still passes; clean tree both pass. File restored byte-identically."
 
 [[mutation]]
 id = "petsc-init-does-not-refuse-after-mpi-finalize"
@@ -60,18 +58,18 @@ new = """  if (false) {
 target = "fuse_petsc_init_test"
 test = "petsc.init"
 requires = "no-mpi"
-result = "Hand-proved 2026-10-11 on the host's tier-0 PETSc tree (/tmp/fuse-p0): under the mutation fuse_petsc_init_test aborts in its second case after 1 OK (exit -6, MPICH: 'Attempting to use an MPI routine ... after finalizing MPICH'); clean binary 2/2 pass. File restored byte-identically."
+result = "Hand-proved on the host's tier-0 PETSc tree (/tmp/fuse-p0): under the mutation fuse_petsc_init_test aborts in its second case after 1 OK (exit -6, MPICH: 'Attempting to use an MPI routine ... after finalizing MPICH'); clean binary 2/2 pass. File restored byte-identically."
 
 [[mutation]]
 id = "petsc-assembled-token-transpose-swapped-for-apply"
 area = "petsc"
-describes = "AssembledTokenImpl::apply_jacobian_transpose calls MatMult instead of MatMultTranspose -- on a SQUARE operator (every test fixture this track built: 2x2, 4x4) the vector sizes still agree, so PETSc raises no shape error at all; the token silently returns A v instead of A^T v. Argued to be caught by PetscDerivativeGate.AdjointIdentityHoldsOnTheAssembledToken (the adjoint defect would jump to O(||A - A^T||), many orders above the gate's own eps-scaled bound, for every one of this track's non-symmetric fixtures) and by AssembledToken.ApplyJacobianAndTransposeMatchAHandComputedMatrix (the hand-computed A^T w values would no longer match)."
+describes = "AssembledTokenImpl::apply_jacobian_transpose calls MatMult instead of MatMultTranspose -- on a SQUARE operator (every test fixture: 2x2, 4x4) the vector sizes still agree, so PETSc raises no shape error at all; the token silently returns A v instead of A^T v. Argued to be caught by PetscDerivativeGate.AdjointIdentityHoldsOnTheAssembledToken (the adjoint defect would jump to O(||A - A^T||), many orders above the gate's own eps-scaled bound, for every non-symmetric fixture) and by AssembledToken.ApplyJacobianAndTransposeMatchAHandComputedMatrix (the hand-computed A^T w values would no longer match)."
 file = "src/petsc/token.cpp"
 old = """    ierr = MatMultTranspose(A_, v_in_r_, v_out_c_);"""
 new = """    ierr = MatMult(A_, v_in_r_, v_out_c_);"""
 target = "fuse_petsc_derivative_gate_test"
 test = "petsc.derivative_gate"
-result = "Hand-proved 2026-10-11 on the host's tier-0 PETSc tree: fuse_petsc_derivative_gate_test FAILED 1 (PetscDerivativeGate.AdjointIdentityHoldsOnTheAssembledToken), PASSED 4; clean 5/5. File restored byte-identically."
+result = "Hand-proved on the host's tier-0 PETSc tree: fuse_petsc_derivative_gate_test FAILED 1 (PetscDerivativeGate.AdjointIdentityHoldsOnTheAssembledToken), PASSED 4; clean 5/5. File restored byte-identically."
 
 [[mutation]]
 id = "petsc-mffd-base-point-not-communicated-to-petsc"
@@ -82,15 +80,15 @@ old = """    ierr = MatMFFDSetBase(J_, base_vec_, fu);"""
 new = """    ierr = 0;  // MUTATED: base point intentionally not communicated to PETSc"""
 target = "fuse_petsc_token_test"
 test = "petsc.token"
-result = "Hand-proved 2026-10-11 on the host's tier-0 PETSc tree: fuse_petsc_token_test FAILED 1 (MffdToken.ApplyJacobianAgreesWithAnalyticJacobianAndRecordsHAlongsideTheNativeAction), PASSED 12; clean 13/13. File restored byte-identically."
+result = "Hand-proved on the host's tier-0 PETSc tree: fuse_petsc_token_test FAILED 1 (MffdToken.ApplyJacobianAgreesWithAnalyticJacobianAndRecordsHAlongsideTheNativeAction), PASSED 12; clean 13/13. File restored byte-identically."
 
 [[mutation]]
 id = "petsc-block-preconditioner-apply-arguments-swapped"
 area = "petsc"
-describes = "block_pc_apply() (the PCSHELL callback composing a caller's PreconditionerBlock list via the reused fuse::num::BlockJacobiPreconditioner, src/petsc/token.cpp) calls ctx->precond.apply(zv, rv) instead of apply(rv, zv) -- the OUTPUT scratch vector (zero by construction, never yet written) is read as the preconditioner's own INPUT, and the genuine input r is overwritten as if it were the output nobody reads back (z is copied from zv afterward, which the swapped call never touches: the PCSHELL's own z stays at whatever PCApply handed it in, typically r's own prior content or zero). For EVERY block apply in this track's own fixtures (each one linear, M^-1 0 = 0), the observable result collapses to all-zero output regardless of the true input r -- a wrong-by-construction result this track's own exact-inverse test is built to catch, not a subtle numerical drift."
+describes = "block_pc_apply() (the PCSHELL callback composing a caller's PreconditionerBlock list via the reused fuse::num::BlockJacobiPreconditioner, src/petsc/token.cpp) calls ctx->precond.apply(zv, rv) instead of apply(rv, zv) -- the OUTPUT scratch vector (zero by construction, never yet written) is read as the preconditioner's own INPUT, and the genuine input r is overwritten as if it were the output nobody reads back (z is copied from zv afterward, which the swapped call never touches: the PCSHELL's own z stays at whatever PCApply handed it in, typically r's own prior content or zero). For EVERY block apply in the fixtures (each one linear, M^-1 0 = 0), the observable result collapses to all-zero output regardless of the true input r -- a wrong-by-construction result the exact-inverse test is built to catch, not a subtle numerical drift."
 file = "src/petsc/token.cpp"
 old = """  Result<void> res = ctx->precond.apply(rv, zv);"""
 new = """  Result<void> res = ctx->precond.apply(zv, rv);"""
 target = "fuse_petsc_token_test"
 test = "petsc.token"
-result = "Hand-proved 2026-10-11 on the host's tier-0 PETSc tree: fuse_petsc_token_test FAILED 1 (MffdToken.BlockPreconditionerMatchesTheExactPerBlockInverse), PASSED 12; clean 13/13. File restored byte-identically."
+result = "Hand-proved on the host's tier-0 PETSc tree: fuse_petsc_token_test FAILED 1 (MffdToken.BlockPreconditionerMatchesTheExactPerBlockInverse), PASSED 12; clean 13/13. File restored byte-identically."

@@ -1,4 +1,4 @@
-// Time windows track (Conformance, Unit 1): the Brusselator's own graph
+// Conformance: the Brusselator's own graph
 // (brusselator_graph.hpp), compiled through fuse::Runner, reproduces BIT
 // FOR BIT (EXPECT_EQ, no tolerance) the existing fuse::WindowCoupler-
 // driven path (examples/brusselator/main.cpp's `--driver window`,
@@ -8,79 +8,42 @@
 // components with a real implicit (Picard) reaction fixed point inside
 // every advance().
 //
-// STATUS (Unit 1 exit, see the lead's own ledger): building this test
-// found and FIXED FOUR real `fuse::Runner` defects, every one
-// regression-tested against the full existing window_runner_* suite
-// (unaffected) --
-//   (a) `Runner::Impl::advance_window()`'s own "first sweep of a new
-//       window instance" detection compared `Instruction::dst_step`
-//       (period-RELATIVE) directly, with no period counter -- every
-//       window after the first silently did not run at all. Fixed by
-//       commit 7939643 (`window_absolute_instance()`).
-//   (b) `ClockSet`'s own constructor fed a window-scoped member's own
-//       fine subcycling interval into `checked_common_period()`'s LCM
-//       instead of its region's window length, reintroducing a disguised
-//       least-common-multiple window (E-SCHED-PERIOD on the example's own
-//       --dt-u 0.002/--dt-v 0.003/--window 0.02, since 0.02 does not
-//       divide lcm(0.002,0.003)=0.006). Fixed by commit c083ea6.
-//   (c) `advance_window()`'s own window-start "Sample 0" re-stamp read
-//       `cfg.provided[e]` LIVE at the top of every sweep instead of a
-//       value captured once, before any sweep in the pass could mutate
-//       it: `Component::restore_state()` is only contractually required
-//       to restore what `save_state()` captured (the component's own
-//       hidden state), never to resynchronize a `Provides` field that is
-//       itself a function of that state -- so a rejected sweep's own
-//       last `advance()` output silently became "the window-start value"
-//       from the SECOND sweep of every window on. This is the EXACT
-//       defect `WindowCoupler::sweep_window()`'s own `start_value[i][e]`
-//       (window_coupler.cpp's own comment, "captured ONCE, right after
-//       save_state(), before any advance() this window can mutate
-//       `provided`") was already fixed to remove on the driver side --
-//       found here (not guessed) by an element-by-element, sweep-by-
-//       sweep hexfloat trace of the example's own first window against
-//       the driver on the example's own real parameters: sweeps 0 and 1
-//       of window 0 matched bit for bit; sweep 2's own import samples
-//       diverged completely, traced to the exporting member's own
-//       "Sample 0" silently holding sweep 1's own last output instead of
-//       the true window-start checkpoint. `Runner::Impl::window_start_
-//       value` (src/runtime/runner_impl.hpp/iteration.cpp) is the fix:
-//       cached once on `first_sweep_of_pass`, mirroring `window_pass_
-//       start_clock`'s own existing pattern for the identical class of
-//       bug in the clock instead of the exported value. Before this fix,
-//       `--driver runner --end 0.1` on the example's own real parameters
-//       measured max_window_balance_error=1.686e-03 -- to four digits,
-//       the EXACT historical pre-fix conservation defect examples/
-//       brusselator's own 2026-09-26 history (docs/user/brusselator.md,
-//       KNOWN_ISSUES) already named and fixed once, on the driver side,
-//       for the identical reason. After the fix: 1.703e-13 (round-off),
-//       bit-for-bit identical to the driver's own figure.
-//   (d) `run_region()`'s own per-block, named-measure residual norm
-//       (`MeasureKind::Relative`, the only kind the Brusselator's own
-//       graph uses) summed the window-scoped value arc's FULL
-//       `capacity`-wide buffer -- window-START sample included -- while
-//       `WindowCoupler::sweep_window()`'s own named-measure residual
-//       (its own comment: "each measure is tested against the residual
-//       of the field transfer it names, as the Runner does") sums
-//       EXACTLY the consumer's own substep count, never +1 for the
-//       window-start sample. That sample never changes within one
-//       window instance (fix (c)'s own `window_start_value`), so it
-//       never moved the RESIDUAL, but inflated the Runner's own
-//       reference norm by a constant every sweep, loosening a Relative
-//       tolerance just enough to converge one sweep earlier than the
-//       driver on the example's own window 20 -- the two sides'
-//       hexfloat `ref` values disagreeing from the third significant
-//       digit (`0x1.6be7e489b2a8cp+5` vs `0x1.5b510b3c3ad89p+5` at
-//       sweep k=1), confirmed NOT a repeat of (c) by the fixed-
-//       iterations bisection below (`PerWindowStateMatchesDriverWith
-//       StoppingRuleRemoved`): every one of the 150 windows' own
-//       committed state matched bit for bit with the stopping rule
-//       removed, so only the DECISION, never the state, disagreed.
-//       `RegionBlock::window_export_capacity`/`window_export_valid_
-//       substeps` (src/runtime/runner_impl.hpp) and the stripped-
-//       gather norm in `run_region()` (src/runtime/iteration.cpp) are
-//       the fix. After it, `JacobiMatchesDriver`/`GaussSeidelMatches
-//       Driver` below pass EXPECT_EQ bit for bit over the full
-//       150-window span, both waveform iterations.
+// Properties this test depends on in `fuse::Runner` (each was a real
+// defect once and is pinned by the tests below):
+//   (a) The "first sweep of a new window instance" detection in
+//       `Runner::Impl::advance_window()` uses the absolute window
+//       instance (`window_absolute_instance()`), not the period-relative
+//       `Instruction::dst_step`, so every window after the first runs.
+//   (b) `ClockSet` feeds a window-scoped member's region window length
+//       (not its fine subcycling interval) into `checked_common_period()`,
+//       so no disguised least-common-multiple window arises (the
+//       example's --dt-u 0.002/--dt-v 0.003/--window 0.02 would otherwise
+//       fail with E-SCHED-PERIOD, since 0.02 does not divide
+//       lcm(0.002,0.003)=0.006).
+//   (c) The window-start "Sample 0" re-stamp in `advance_window()` uses a
+//       value captured once, before any sweep in the pass can mutate it
+//       (`Runner::Impl::window_start_value`, cached on
+//       `first_sweep_of_pass`), mirroring `window_pass_start_clock`.
+//       `Component::restore_state()` is only required to restore what
+//       `save_state()` captured, never to resynchronize a `Provides`
+//       field that is itself a function of that state, so reading
+//       `cfg.provided[e]` live would let a rejected sweep's last
+//       `advance()` output become the window-start value from the second
+//       sweep of every window on. `WindowCoupler::sweep_window()` captures
+//       its `start_value[i][e]` the same way.
+//   (d) The per-block named-measure residual norm in `run_region()`
+//       (`MeasureKind::Relative`, the only kind the Brusselator's graph
+//       uses) sums exactly the consumer's substep count, as
+//       `WindowCoupler::sweep_window()` does, not the window-scoped value
+//       arc's full `capacity`-wide buffer including the window-start
+//       sample. Including that sample inflates the reference norm by a
+//       constant every sweep and loosens a Relative tolerance enough to
+//       converge a sweep earlier than the driver
+//       (`RegionBlock::window_export_capacity`/`window_export_valid_
+//       substeps` in src/runtime/runner_impl.hpp and the stripped-gather
+//       norm in src/runtime/iteration.cpp).
+// `JacobiMatchesDriver`/`GaussSeidelMatchesDriver` below pass EXPECT_EQ bit
+// for bit over the full 150-window span, both waveform iterations.
 //
 // Grid: small (mutually non-nested, not a divisor/multiple of one
 // another, so the supermesh remap genuinely overlaps cells) -- this
@@ -92,7 +55,7 @@
 // boundary-insertion logic `examples/brusselator/main.cpp`'s own
 // `window_boundaries()` handles. dt_u/dt_v/window are the example's own
 // real values (0.002/0.003/0.02, not an LCM-equal diagnostic substitute
-// -- defect (b) above is what made the real values schedule at all), and
+// -- property (b) above is what makes the real values schedule at all), and
 // kNumWindows spans the example's own `--check` acceptance span (--end
 // 3 / window 0.02 = 150 windows).
 
@@ -135,7 +98,7 @@ constexpr int kNxU = 5, kNyU = 5, kNxV = 7, kNyV = 7;
 // The example's own real values (examples/brusselator/main.cpp's own
 // defaults): dt_u does not divide dt_v's own lcm relationship specially,
 // and the window (0.02) divides neither member's own fine interval's lcm
-// (0.006) evenly -- defect (b) in this file's own header is exactly what
+// (0.006) evenly -- property (b) in this file's own header is exactly what
 // makes this schedule at all; ClockSet now gives a window-scoped member's
 // clock its region's window length instead of its own fine interval, so
 // the compiled period is 0.02, not 0.006.
@@ -169,7 +132,7 @@ struct Rig {
       : backend(std::move(backend_in)), u_grid(std::move(u)), v_grid(std::move(v)) {}
 };
 
-// `with_window_metadata`: S7.2 WindowNewton's own trailing UComponent/
+// `with_window_metadata`: window Newton's own trailing UComponent/
 // VComponent constructor args (own_interval/partner_interval/window_
 // length), needed only so `capabilities()` reports `kCapabilityResidual`
 // (and `kCapabilityLinearization` when the preconditioner is requested)
@@ -228,7 +191,7 @@ struct Rig {
   return std::move(rig);
 }
 
-// Diagnostic knob (Unit 1 debugging, temporary): when > 0, both paths use
+// Diagnostic knob: when > 0, both paths use
 // an unreachable tolerance and exactly this many sweeps per window --
 // window_runner_straddle_test.cpp's own technique for telling "the two
 // stopping rules disagree" apart from "the underlying physics disagree".
@@ -370,7 +333,7 @@ int g_fixed_iterations = 0;
   return out;
 }
 
-// S7.2 WindowNewton (newton-krylov.md Sec. 9.6-9.7): the SAME `--driver
+// Window Newton (newton-krylov.md Sec. 9.6-9.7): the SAME `--driver
 // runner` path `run_via_runner()` above exercises for Picard, selecting
 // `AccelKind::Newton` instead and building the Rig WITH window metadata
 // (`make_rig(/*with_window_metadata=*/true)`) -- the trailing UComponent/
@@ -403,7 +366,7 @@ int g_fixed_iterations = 0;
   fuse::NewtonConfig newton_cfg;
   newton_cfg.use_block_jacobi_preconditioner = use_block_jacobi_preconditioner;
   newton_cfg.eta_min = 1e-4;  // examples/brusselator/main.cpp's own choice; see that file's comment
-  // S7.2b (PetscSelect track): Native by every existing call site's own
+  // Native by every existing call site's own
   // default argument -- this parameter changes nothing for them.
   newton_cfg.substrate = substrate;
   const brusselator::WindowGraphHandles handles = brusselator::add_window_coupling(
@@ -468,31 +431,15 @@ void expect_vectors_equal(const brusselator::Vector& a, const brusselator::Vecto
 
 }  // namespace
 
-// Historical (kept DISABLED, not deleted): this file's header, defect (c),
-// has the full account -- this is the "pin the sweep count, remove the
+// Kept DISABLED as a diagnostic: the "pin the sweep count, remove the
 // stopping rule from the comparison" technique (window_runner_straddle_
-// test.cpp's own convention) that FIRST isolated defect (c)'s own fixed-
-// point disagreement from a stopping-rule difference. CURRENT STATUS
-// (measured, not claimed): with defect (c) fixed, this exact diagnostic
-// (g_fixed_iterations=30, one window) passes -- but JacobiMatchesDriver/
-// GaussSeidelMatchesDriver below, run over the example's own real
-// --end-3 span (150 windows) with the REAL stopping rule, still FAIL,
-// by a MUCH smaller and qualitatively DIFFERENT margin than defect (c)
-// ever showed: bit-for-bit identical through window 19, then a one-ULP-
-// level difference in U/V's own committed state from window 20 on,
-// accompanied by a one-sweep iteration-count disagreement at window 20
-// itself (Jacobi: 7 vs 9; GaussSeidel: 5 vs 6). Re-running the SAME
-// 150-window comparison with g_fixed_iterations pinned (bypassing the
-// stopping rule entirely) found ZERO divergence across all 150 windows
-// -- so this is a convergence-DECISION sensitivity (the Runner's and
-// driver's own residual-norm computations, while using the SAME
-// deterministic_norm_squared[_diff] formula by the user's own 2026-09-29
-// ruling, apparently sum this field's own multiple elements/substeps in
-// a different order, producing a last-ULP-different norm that crosses
-// the 1e-10 threshold on a different sweep for a multi-element,
-// multi-substep field), not a repeat of defect (c)'s own state
-// corruption. Left DISABLED, not yet fixed; see this file's own report
-// to the lead for the measured first-differing window and value.
+// test.cpp's own convention) isolates a fixed-point disagreement from a
+// stopping-rule difference. With property (c) in the header holding, this
+// exact diagnostic (g_fixed_iterations=30, one window) passes; the
+// full-span comparisons with the real stopping rule are
+// JacobiMatchesDriver/GaussSeidelMatchesDriver below, and the 150-window
+// fixed-sweep comparison is
+// PerWindowStateMatchesDriverWithStoppingRuleRemoved.
 TEST(BrusselatorRunner, DISABLED_DiagnosticFixedIterations) {
   g_fixed_iterations = 30;
   const RunResult via_runner = run_via_runner(WaveformIteration::Jacobi);
@@ -504,23 +451,18 @@ TEST(BrusselatorRunner, DISABLED_DiagnosticFixedIterations) {
   expect_vectors_equal(via_runner.v_final, via_driver.v_final, "V state (fixed-iterations)");
 }
 
-// Isolated defect (d) above (JacobiMatchesDriver/GaussSeidelMatchesDriver's
-// own one-sweep convergence-decision divergence from window 20 on, before
-// that fix) from defect (c): the SAME 150-window comparison, with the
+// The same 150-window comparison as JacobiMatchesDriver, with the
 // stopping rule taken out of the picture entirely (window_runner_
 // straddle_test.cpp's own "unreachable tolerance, fixed sweep count"
-// technique -- this file's own DISABLED_DiagnosticFixedIterations used it
-// for defect (c)). PASSES: every one of the 150 windows' own committed
-// U[0] is bit-for-bit identical between the Runner and the driver when
-// neither side's own convergence check is ever consulted -- this is what
-// proved defect (d) a convergence-DECISION sensitivity (a residual/
-// reference-norm difference occasionally crossing the 1e-10 threshold on
-// a different sweep), not a second instance of defect (c)'s own state
-// corruption, which this exact technique already proved present at EVERY
-// window once forced sweeps were used. Kept, post-fix, as a standing
-// regression distinct from JacobiMatchesDriver below: it isolates STATE
-// from the DECISION, so a future regression in either shows up as a
-// failure in the test that actually isolates it.
+// technique). Every one of the 150 windows' own committed U[0] is bit-for-
+// bit identical between the Runner and the driver when neither side's own
+// convergence check is ever consulted. This separates a convergence-
+// DECISION sensitivity (a residual/reference-norm difference crossing the
+// 1e-10 threshold on a different sweep, property (d) in the header) from
+// a state corruption (property (c)). Kept as a standing regression
+// distinct from JacobiMatchesDriver below: it isolates STATE
+// from the DECISION, so a regression in either shows up as a failure in
+// the test that actually isolates it.
 TEST(BrusselatorRunner, PerWindowStateMatchesDriverWithStoppingRuleRemoved) {
   g_fixed_iterations = 15;
   const RunResult via_runner = run_via_runner(WaveformIteration::Jacobi);
@@ -534,13 +476,10 @@ TEST(BrusselatorRunner, PerWindowStateMatchesDriverWithStoppingRuleRemoved) {
   }
 }
 
-// Unit 1's own acceptance bar: the Runner, driven by the real stopping
-// rule (not the fixed-iterations bisection above), bit for bit against
-// the driver over the full 150-window span -- committed state AND
-// iteration count both. Depends on all four defects in this file's own
-// header being fixed; before defect (d)'s own fix this failed first at
-// window 20 (a one-sweep iteration-count disagreement), after matching
-// bit for bit through window 19.
+// Acceptance bar: the Runner, driven by the real stopping rule (not the
+// fixed-iterations comparison above), bit for bit against the driver over
+// the full 150-window span -- committed state AND iteration count both.
+// Depends on all four properties in this file's header.
 TEST(BrusselatorRunner, JacobiMatchesDriver) {
   const RunResult via_runner = run_via_runner(WaveformIteration::Jacobi);
   ASSERT_TRUE(via_runner.ok) << via_runner.error;
@@ -576,7 +515,7 @@ TEST(BrusselatorRunner, GaussSeidelMatchesDriver) {
 // pin for their own problems) -- confirms this test actually exercises
 // two distinct algorithms, not one mode silently falling back to the
 // other.
-// S7.2 WindowNewton (newton-krylov.md Sec. 9.6-9.7): the window-Newton
+// Window Newton (newton-krylov.md Sec. 9.6-9.7): the window-Newton
 // seam converges this graph in a PINNED outer-Newton-iteration count
 // with the real per-species block-Jacobi preconditioner --
 // `build-evidence/mutations/brusselator.toml`'s own

@@ -110,7 +110,7 @@ TEST(SearchDistributedMpi, MatchesSerialOnTheGatheredInput) {
   }
 }
 
-// Determinism (task requirement): hits within one query, sorted by
+// Determinism: hits within one query, sorted by
 // (rank, index) -- checked directly, independent of what the values are.
 TEST(SearchDistributedMpi, HitsWithinOneQuerySortedByRankThenIndex) {
   const auto boxes = global_boxes();
@@ -128,12 +128,12 @@ TEST(SearchDistributedMpi, HitsWithinOneQuerySortedByRankThenIndex) {
   }
 }
 
-// PS-1: rank 0 alone submits a mixed-dimension local_boxes array; every
-// other rank's own local_boxes are perfectly well-formed. Before the fix
-// rank 0 refused locally and returned while its peers entered
+// Rank 0 alone submits a mixed-dimension local_boxes array; every
+// other rank's own local_boxes are perfectly well-formed. Rank 0 must not
+// refuse locally and return while its peers enter
 // ArborX::DistributedTree's collective construction -- a hang that
-// ctest's TIMEOUT (not a passing/failing assertion) was the only thing
-// that could ever report. This test asserts the refusal itself, which is
+// ctest's TIMEOUT (not a passing/failing assertion) would be the only thing
+// to report. This test asserts the refusal itself, which is
 // only observable once every rank returns it.
 TEST(SearchDistributedMpi, RefusesWhenOnlyOneRankSubmitsMixedDimensionBoxes) {
   FUSE_REQUIRE_AT_LEAST_RANKS(2);
@@ -158,10 +158,10 @@ TEST(SearchDistributedMpi, RefusesWhenOnlyOneRankSubmitsMixedDimensionBoxes) {
   EXPECT_EQ(r.error().code, "E-SEARCH-MIXED-DIM");
 }
 
-// PS-5: no single rank's own local_boxes are internally mixed-dimension,
+// No single rank's own local_boxes are internally mixed-dimension,
 // but rank 0's are uniformly 2D while every other rank's are uniformly
 // 3D -- a cross-rank disagreement classify_local alone cannot see.
-// Before the fix this was accepted silently and produced hits the caller
+// Accepting this silently would produce hits the caller
 // has no consistent way to interpret.
 TEST(SearchDistributedMpi, RefusesWhenRanksDisagreeAboutDimension) {
   FUSE_REQUIRE_AT_LEAST_RANKS(2);

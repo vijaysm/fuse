@@ -4,7 +4,7 @@
 // on the user's host with no message this sandbox could obtain: MPI cannot
 // initialise here at all, not even at one process. But a single participant
 // needs no MPI to be meaningful -- every processor set below is the whole mesh,
-// the distributed path is not reached, and MultiMeshGeometricBackend now
+// the distributed path is not reached, and MultiMeshGeometricBackend
 // compiles without MPI (test/support/partitioned_test_backend.hpp). So the
 // same graph, the same backend and the same field transfers run here, where they can
 // actually be debugged.
@@ -186,10 +186,9 @@ Outcome run_pair(std::size_t n_beam, std::size_t n_fluid, double vel_a, double v
   RunnerConfig cfg;  // no base_communicator: one participant, no MPI in this build
   // Both remap paths, from one test. At one participant the Runner takes the
   // rank-local weights; the MPI fixture's cross-rank cases take
-  // build_nodal_dist_remap / apply_distributed_H(T). The first host run that
-  // reached run_period (2026-09-25) had H exact and H^T D delivering ZERO on
-  // the distributed path while this test, on the local path, passed -- so
-  // the distributed operator had no serial coverage at all. It is a correct
+  // build_nodal_dist_remap / apply_distributed_H(T). A distributed
+  // operator that delivers ZERO from H^T D while the local path passes would
+  // otherwise have no serial coverage at all. It is a correct
   // remap at any participant count, so it must give the same answer here.
   cfg.force_distributed_nodal_remap = distributed_path;
   {
@@ -233,8 +232,7 @@ TEST(NodalRemapRunnerSerial, TheOneRankCaseOfTheMpiFixtureRunsAndIsExact) {
           << c.name << ": H is not exact at fluid cell " << j;
     }
     const std::vector<double> ref = compute_reference(c.n_beam, c.n_fluid);
-    // KNOWN_ISSUES.md D67 (lead's determinism follow-up, 2026-10-15/16):
-    // `beam_load` here and `ref` are now both ultimately an Edge-cell hat
+    // `beam_load` here and `ref` are both ultimately an Edge-cell hat
     // weight run through ONE shared predicate
     // (general_interp_detail::edge_hat_weights) regardless of which of the
     // two code paths this test's own `dist` flag selects (the rank-local
@@ -243,8 +241,8 @@ TEST(NodalRemapRunnerSerial, TheOneRankCaseOfTheMpiFixtureRunsAndIsExact) {
     // build_distributed_interp_rows's Gauss-Newton, which constructs an
     // algebraically identical synthetic Edge cell) -- so this is EXACT
     // bitwise equality, not a tolerance, at every resolution this file's
-    // own cases cover, closing the 1-ULP gap a real host run measured
-    // between a one-rank reference and a real multi-rank run.
+    // own cases cover (a real multi-rank run must match a one-rank
+    // reference to the last bit).
     for (std::size_t i = 0; i < o.beam_load.size(); ++i) {
       EXPECT_EQ(o.beam_load[i], ref.at(i))
           << c.name << ": beam vertex " << i << " differs from the serial reference";

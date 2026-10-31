@@ -1,20 +1,20 @@
 """The dn_heat driver test: byte-for-byte agreement with examples/dn_heat/main.cpp.
 
-Per the owner's ruling (2026-10-12): examples/dn_heat/dn_component.hpp's DirichletSlab/
+examples/dn_heat/dn_component.hpp's DirichletSlab/
 NeumannSlab are reimplemented as Python pfuse.Component subclasses (dn_heat_components.py,
 copied from the C++ formulas line-for-line, same arithmetic grouping) and driven through the
 REAL fuse::Runner via pfuse.Session -- only the physics components are Python; the graph
 authoring, the accelerator, the scheduler and the runtime are the identical fuse:: C++ code
 examples/dn_heat/main.cpp's binary ran when golden/dn_heat_full_output.txt was captured.
 
-MEASURED FIRST, as instructed, before any assertion was written:
+Measured before any assertion was written:
 
   1. C++'s std::sin()/the kPi literal and Python's math.sin()/math.pi produce BIT-IDENTICAL
      doubles on this machine (arm64 macOS, AppleClang, both built/run with -ffp-contract=off)
      for the t values examples/dn_heat/main.cpp's own 20-coupling-cycle grid actually uses --
      checked directly with a byte-for-byte hex-of-the-IEEE-754-bit-pattern comparison between
-     a standalone C++ probe and this interpreter (see this track's structured report for the
-     exact hex values compared).
+     a standalone C++ probe and this interpreter (the exact hex values compared are not
+     recorded here).
   2. Given (1), every non-Newton row this file runs (explicit/picard/aitken/iqn-ils/iqn+qr2/
      severed/expl-long/iqn-long) was run once, by hand, before this file was written, and its
      formatted row AND its final-period residual history were found to match
@@ -32,7 +32,7 @@ import pathlib
 
 import pytest
 
-pfuse = pytest.importorskip("pfuse", reason="Stage B has not built the _pfuse extension yet")
+pfuse = pytest.importorskip("pfuse", reason="the _pfuse extension is not built")
 import dn_heat_components as dn  # noqa: E402  (after the importorskip, deliberately)
 
 GOLDEN = pathlib.Path(__file__).parent / "golden" / "dn_heat_full_output.txt"

@@ -1,6 +1,6 @@
 # Standalone consumer project for the Fortran install/find_package() smoke
 # test (ABI-FORTRAN-CONSUMER, build-evidence/abi-matrix.toml), modelled on
-# test/install_consumer/CMakeLists.txt (REVIEW.md R-25/BT-F9): NOT part of
+# test/install_consumer/CMakeLists.txt: NOT part of
 # the main superbuild -- test/CMakeLists.txt's "abi.install_consumer_fortran"
 # registration configures this as its own independent project, against an
 # install prefix, exactly the way a real downstream Fortran code would.

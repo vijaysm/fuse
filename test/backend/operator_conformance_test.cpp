@@ -149,7 +149,7 @@ std::vector<Case> operators() {
     cases.push_back({"weights-conservative-4x3 o weights-3x4", nullptr, c});
   }
 
-  // Interface-operators task: the consistent-interpolation H on a genuinely
+  // The consistent-interpolation H on a genuinely
   // non-matching 1D pair (5 beam vertices, 8 fluid cells) -- built through
   // `SerialMeshBackend`'s real "generated:line:n" meshes, not a hand-typed
   // matrix, so a bug in the geometry code (axis choice, node ordering) would
@@ -319,16 +319,16 @@ TEST(OperatorConformance, AnUnsatisfiedClaimFails) {
 }
 
 TEST(OperatorConformance, AnHStyleColumnSumIsNotClaimedConservative) {
-  // REVIEW.md TF-16: the consistent-interpolation (H) builders'
+  // The consistent-interpolation (H) builders'
   // `max_col_defect` is an UNWEIGHTED column-sum residual (a nodal degree
   // of freedom has no measure to weight it by), not a conservation
   // residual -- their own headers say H never claims to be conservative in
-  // that sense. Before `RemapWeights::col_defect_is_measure_weighted`
-  // existed, `claims()` could not tell this matrix apart from a genuinely
+  // that sense. Without `RemapWeights::col_defect_is_measure_weighted`,
+  // `claims()` could not tell this matrix apart from a genuinely
   // conservative one: a coincident node-to-node H pair's column sum is
   // exactly 1 by accident of geometry (every source vertex is also a
   // target vertex, weight exactly 1, nothing else contributes), and that
-  // alone used to be enough to certify `conservative`.
+  // alone would be enough to certify `conservative`.
   RemapWeights w = rectangular();
   // An exact identity-style column sum (every column sums to exactly 1) --
   // what AnUnsatisfiedClaimFails above calls "a false audit" when it is
@@ -515,8 +515,8 @@ TEST(OperatorConformance, ComposingWithANonConservativeFactorDropsTheClaim) {
 // ===========================================================================
 // ConsistentInterp: the domain-specific properties `operators()` above does
 // not check (per this file's own "WHAT IT DOES NOT CHECK" -- these need real
-// meshes and closed-form solutions, not just algebra). Task: "Consistent H
-// and conservative H^T on 1D interfaces". Uses `SerialMeshBackend`'s real
+// meshes and closed-form solutions, not just algebra). Covers consistent H
+// and conservative H^T on 1D interfaces. Uses `SerialMeshBackend`'s real
 // "generated:line:n" meshes throughout, exactly as
 // `test/verification/interface_transfer_test.cpp` does for the P0 path, so a
 // geometry bug (axis choice, node ordering, degenerate-tolerance) shows up

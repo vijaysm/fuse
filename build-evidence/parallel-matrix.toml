@@ -1,9 +1,8 @@
-#  The parallel coverage matrix -- S5.5.
+#  The parallel coverage matrix.
 #
-#  The plan's S5.5 asks that every cell of the parallel matrix "has a named
-#  test or a named refusal", and records that this was "partly satisfied in
-#  practice, absent as a gate": rank counts were enumerated by hand in
-#  test/CMakeLists.txt and nothing asserted the matrix was covered.
+#  Every cell of the parallel matrix must have a named test or a named
+#  refusal. Rank counts used to be enumerated by hand in test/CMakeLists.txt
+#  and nothing asserted the matrix was covered.
 #
 #  This file is that assertion's input, and `tools/check-parallel-matrix.py`
 #  checks it. Each cell claims either
@@ -25,7 +24,7 @@
 #  it -- the tests referred to "test 14 of the matrix" while the matrix itself
 #  was reachable only through a parent's spec directory.
 #
-#  Rows A-* are the axes S5.5 names that are not in that spec.
+#  Rows A-* are the axes that are not in that spec.
 
 #  HOW TO ADD A CELL -- and why this warning is here.
 #
@@ -75,7 +74,7 @@ test = [
 [[cell]]
 id = "7"
 axis = "same-rank shortcut"
-pins = "a match with both ends on one rank never reaches MpiTransport -- load bearing, not an optimisation, because MpiTransport refuses the spec such a graph produces (R24)"
+pins = "a match with both ends on one rank never reaches MpiTransport -- load bearing, not an optimisation, because MpiTransport refuses the spec such a graph produces"
 file = "test/parallel/comm_graph_test.cpp"
 kind = "mpi"
 ranks = [1, 2, 3, 4, 5]
@@ -131,7 +130,7 @@ ranks = [1, 2, 3, 4, 5]
 test = ["CommGraph.TwoIndependentlySplitCommunicatorsAreEnoughToBuildTheGraph"]
 
 # ---------------------------------------------------------------------------
-# Rows A-*: the axes S5.5 names beyond the CommGraph spec
+# Rows A-*: the axes beyond the CommGraph spec
 # ---------------------------------------------------------------------------
 
 [[cell]]
@@ -153,7 +152,7 @@ axis = "partially overlapping rank sets, end to end"
 pins = """the shape that needs a peer-to-peer plan and same-rank local copies in \
 one exchange, through Runner::initialize + run_period: fluid on 0..W-2, solid \
 on 1..W-1, each with ITS OWN decomposition of the shared mesh \
-(MeshBackend::placed_view, ruled 2026-09-22), and every destination entity \
+(MeshBackend::placed_view), and every destination entity \
 checked to hold its own global id. The same helper runs the full and disjoint \
 shapes, so the three differ only in placement."""
 file = "test/parallel/runner_transport_test.cpp"
@@ -168,8 +167,8 @@ note = """Ranks 3-5 only: at 2 ranks {0..W-2}/{1..W-1} is {0}/{1}, which is \
 disjoint. Compiled here, verdict from a host run -- MPI cannot initialise in \
 this sandbox. MOAB's own per-placement decomposition (one ParallelComm per \
 component communicator) is not yet implemented, so this is exercised with the \
-test backend. Remap weights follow the placement's decomposition since \
-2026-09-25 (RemapPlan::placement; Supermesh.WeightsAreBuiltOnThePlacementsOwnDecomposition)."""
+test backend. Remap weights follow the placement's decomposition \
+(RemapPlan::placement; Supermesh.WeightsAreBuiltOnThePlacementsOwnDecomposition)."""
 
 [[cell]]
 id = "A-RANKS"
@@ -178,16 +177,16 @@ pins = "every MPI leg runs at each registered rank count; 3 and 5 are the odd on
 file = "test/CMakeLists.txt"
 kind = "registration"
 ranks = [1, 2, 3, 4, 5]
-note = """One deliberate exception, which the gate prints as MATRIX-OVERRIDE: `epoch_reconcile` is registered from 2 up. Its first case asserts `world_size() >= 2` rather than skipping, on the written grounds that there is nothing to reconcile on one rank -- so the honest fix when rank 1 was added was to keep that premise true, not to convert the file into three skips. A host run on 2026-09-21 is what surfaced it, along with two other legs whose rank-1 behaviour is still being resolved."""
+note = """One deliberate exception, which the gate prints as MATRIX-OVERRIDE: `epoch_reconcile` is registered from 2 up. Its first case asserts `world_size() >= 2` rather than skipping, on the written grounds that there is nothing to reconcile on one rank -- so the honest fix when rank 1 was added was to keep that premise true, not to convert the file into three skips. A host run is what surfaced it, along with two other legs whose rank-1 behaviour is still being resolved."""
 
 [[cell]]
 id = "A-LAYOUT"
 axis = "command-line PE layout: rank count x placement shape"
-pins = """the S4 PE-layout driver (examples/layout_driver/main.cpp) built and \
+pins = """the PE-layout driver (examples/layout_driver/main.cpp) built and \
 registered at 2, 3 and 4 ranks over identical, disjoint and \
 partially-overlapping --comp1/--comp2 placements (partial needs >= 3 ranks), \
 with an arrangement at 3 and 4 ranks that puts comp2 on the LOWER range, plus \
-the --coupler rows (design C, docs/dev/coupler-placement.md): a coupler \
+the --coupler rows (docs/dev/coupler-placement.md): a coupler \
 disjoint from both comp1 and comp2 (3 ranks), a coupler identical to \
 comp2's own range (3 ranks -- the coupler->target hop elides), and a \
 coupler overlapping comp1 without being identical to it (4 ranks). Plus \
@@ -212,8 +211,8 @@ layout.coupler.{3.disjoint,3.equals-target,4.overlaps-comp1} (3 --coupler \
 layouts), layout.migrate.{2,3,4}.c1-<lo>-<hi>.c2-<lo>-<hi>* (3 --mesh/--migrate \
 layouts), and layout.refuse.{min-nonzero,max-not-last,reversed-range,coupler-with-mesh} \
 (4 WILL_FAIL). Compiled and linked in the sandbox (tier 1, -DFUSE_ENABLE_MPI=ON, \
-including the coupler-placement track's code); mpiexec cannot \
-initialise MPI here (KNOWN_ISSUES C1), so every rank's run and every \
+including the coupler-placement code); mpiexec cannot \
+initialise MPI here, so every rank's run and every \
 refusal's exit code are a host action, not a sandbox one. The coupler rows' \
 byte-exact and delivery-identical claims are pinned at Tier 0 instead \
 (CouplerLowering.CouplerEqualToTargetReproducesTodaysIRExactly, \
@@ -249,7 +248,7 @@ test = [
   "RunnerTransport.ACouplerOverlappingTheSourceDeliversEveryEntity",
 ]
 note = """Added after the first host run of the layout.coupler.* driver rows failed \
-on every shape (2026-09-27): the driver had registered two placements with \
+on every shape: the driver had registered two placements with \
 its backend and the coupler was the third, so initialize refused with \
 E-MESH-PLACEMENT. The library was right to refuse; the gap was that no gtest \
 exercised a coupler on a backend with per-placement decompositions -- the \
@@ -296,7 +295,7 @@ test = [
   "RemapHalo.TheExchangeChecksItsArgumentsBeforeAnythingElse",
   "RemapHalo.AnExchangeWithNoHaloLeavesTheBufferAlone",
 ]
-note = """Compiles at tier 2 and is UNRUN in the sandbox -- MOAB here is MPI-linked and calls MPI_Init_thread when the backend is constructed, which cannot succeed where MPI will not initialise (KNOWN_ISSUES C1). Its verdict comes from a host run like every other tier-2 test."""
+note = """Compiles at tier 2 and is UNRUN in the sandbox -- MOAB here is MPI-linked and calls MPI_Init_thread when the backend is constructed, which cannot succeed where MPI will not initialise. Its verdict comes from a host run like every other tier-2 test."""
 
 [[cell]]
 id = "A-PARTITIONED"
@@ -311,11 +310,11 @@ test = [
   "RemapHaloMpiSphere.TheNonMatchingPairLoadsProjectsAndIsSphericalAtEveryRankCount",
   "RemapHaloMpiSphere.BuildRemapHaloDeliversExactHaloValuesAndRoundTripsExactly",
 ]
-note = """Compiles at tier 2 under FUSE_ENABLE_MOAB AND FUSE_ENABLE_MPI; UNRUN in the sandbox -- MOAB here is MPI-linked and calls MPI_Init_thread when the backend is constructed, which cannot succeed where MPI will not initialise even at one rank (KNOWN_ISSUES C1). The two RemapHaloMpiSphere cases additionally need `wholeATM_T.h5m` / `recMeshOcn.h5m` discovered via -DFUSE_MOAB_MESHFILES (A-PARTITIONED-SERIAL's own note); absent, they are not compiled at all, never silently skipped. Its verdict comes from a host run like every other tier-2 mpi cell in this matrix."""
+note = """Compiles at tier 2 under FUSE_ENABLE_MOAB AND FUSE_ENABLE_MPI; UNRUN in the sandbox -- MOAB here is MPI-linked and calls MPI_Init_thread when the backend is constructed, which cannot succeed where MPI will not initialise even at one rank. The two RemapHaloMpiSphere cases additionally need `wholeATM_T.h5m` / `recMeshOcn.h5m` discovered via -DFUSE_MOAB_MESHFILES (A-PARTITIONED-SERIAL's own note); absent, they are not compiled at all, never silently skipped. Its verdict comes from a host run like every other tier-2 mpi cell in this matrix."""
 [[cell]]
 id = "A-SPACES-TRANSPORT"
 axis = "host-parallel space, transport and runtime paths"
-pins = """KNOWN_ISSUES.md D11, CLOSED 2026-09-28: the coupling hot loop \
+pins = """the coupling hot loop \
 (src/runtime/runner.cpp's execute(), src/runtime/iteration.cpp's run_region()) \
 now calls the same typed, space-portable kernels A-SPACES verifies on every \
 enabled execution space -- Runner::Impl::HostExecSpace is Kokkos:: \
@@ -331,7 +330,7 @@ deterministic_dot/deterministic_norm_squared/deterministic_norm_squared_diff). \
 Verified at the kernel level (typed, every enabled space, adversarial-magnitude \
 data) and at the Runner level (a real 2048-element iteration region -- large \
 enough to span several fixed chunks -- registered at every OMP_NUM_THREADS from \
-1 to the host's core count). What remains under A5: a device execution space, \
+1 to the host's core count). What remains: a device execution space, \
 which needs the host-only finalising sum these reductions still do (deep_copy \
 first) and the component-boundary host/device mirrors a device build would add."""
 file = "test/num/space_kernels_test.cpp"
@@ -340,8 +339,7 @@ kind = "typed"
 test = [
   "SpaceKernels.CopyScaleAndResidualMatchThePlainArithmetic",
   "SpaceKernels.RemapApplyMultiComponentMatchesApplyWeightsOrder",
-  # Renamed by the FpPolicy track (KNOWN_ISSUES.md D30): the test also
-  # checks a derived forward-error bound when FUSE_FP_REPRODUCIBLE=OFF, so
+  # The test also checks a derived forward-error bound when FUSE_FP_REPRODUCIBLE=OFF, so
   # "...Exactly" alone overstated it in that configuration.
   "SpaceKernels.DeterministicReductionsMatchTheChunkedReferenceExactlyOrWithinTheFpContractionBound",
   "RunnerDeterminism.LargeIterationRegionIsBitIdenticalAcrossThreadCounts",
@@ -349,7 +347,7 @@ test = [
 
 [[cell]]
 id = "A-NODAL-OWNERSHIP"
-axis = "lowest-rank vertex ownership (Nodal fields track)"
+axis = "lowest-rank vertex ownership (nodal fields)"
 pins = "a vertex shared by two ranks -- SharedVertexLineMesh's one-vertex overlap at every internal boundary -- is owned by the LOWER of the two, on every rank count, and both neighbours agree on where the boundary itself sits"
 file = "test/parallel/nodal_field_test.cpp"
 kind = "mpi"
@@ -389,10 +387,8 @@ ranks = [2, 3, 4, 5]
 test = [
   "NodalRemapRunnerMpi.DisjointRankSets",
 ]
-note = """CLOSED in this manifest (Maps track, round 5): the cell's own prior text \
-(rounds 2-4, preserved in full in KNOWN_ISSUES.md D8) named DisjointRankSets as \
-written, its one-rank reference cross-checked without MPI, but never claimed by a \
-matrix row -- this row is that claim. DisjointRankSets drives the real beam/fluid \
+note = """DisjointRankSets is written, with its one-rank reference cross-checked \
+without MPI; this row is the matrix claim for it. DisjointRankSets drives the real beam/fluid \
 "consistent" (H) / "consistent-transpose" (H^T D) channel pair through a real \
 Runner at beam_ranks and fluid_ranks DISJOINT (FUSE_REQUIRE_AT_LEAST_RANKS(2)), \
 asserting H exact pointwise for an affine field (1e-12) and H^T D equal to a \
@@ -406,16 +402,15 @@ test at world size 1 (a disjoint split needs two non-empty halves), so claiming 
 rank 1 here would not be what check-parallel-matrix.py's own `ranks` check \
 promises (every claimed count is registered for the file, which 1 also is -- but \
 the DISJOINT axis itself is not exercised there). \
-What is STILL open, unchanged from D8's own "What is still open, honestly": no \
+What is STILL open: no \
 REAL multi-process (2+ actual ranks) MPI host run has verified this Runner wiring; \
-the two round-2 NOT-ASSESSED distributed-builder mutations and the round-4 \
+two not-assessed distributed-builder mutations and the \
 "domain verdict is not agreed across ranks" one all need a genuine multi-rank \
 launch; the 50-allocations-per-coupling-cycle measurement is a number to reduce, \
 not yet a fix; and InterfaceDomainPolicy::ClampToBoundary remains unimplemented \
 in the distributed builder. None of those bear on THIS cell's own claim (a named, \
-registered test exists and asserts the axis), which is what the gate checks -- \
-see KNOWN_ISSUES.md D8 for the full round-by-round history and the exact host \
-command: \
+registered test exists and asserts the axis), which is what the gate checks. \
+The host command is: \
 `ctest --test-dir <mpi-build-dir> -R 'parallel\\.nodal_remap_runner' -V`."""
 
 [[cell]]

@@ -42,7 +42,7 @@ content of a quadrature table, and `easily-swappable-parameters` is inherent to 
 
 ## Character encoding
 
-Owner's ruling (2026-10-15): every tracked source file is pure ASCII -- code, comments, CMake, YAML, TOML, shell, and prose in files other than Markdown. `tools/check-ascii.py` enforces it: it walks `git ls-files`, skips `*.md` (Markdown prose is reviewed by eye and may carry a section sign, an em dash, or an author's own name) and skips `upstream/` (vendored parent trees staged for removal, not edited), decodes every remaining tracked file as UTF-8, and refuses with `file:line:col` and the Unicode character name for the first code point above U+007F it finds in each file. A tracked file that is not valid UTF-8 at all is refused too, unless its path matches one of the binary-fixture globs named in the script (the golden `.bin` snapshots under `test/golden/` and `python/tests/golden/`) -- an undecodable file that is not on that list is far more likely to be a newly added fixture nobody told the gate about than a deliberate binary artifact, so the default is to refuse, not to guess.
+Every tracked source file is pure ASCII -- code, comments, CMake, YAML, TOML, shell, and prose in files other than Markdown. `tools/check-ascii.py` enforces it: it walks `git ls-files`, skips `*.md` (Markdown prose is reviewed by eye and may carry a section sign, an em dash, or an author's own name) and skips `upstream/` (vendored parent trees staged for removal, not edited), decodes every remaining tracked file as UTF-8, and refuses with `file:line:col` and the Unicode character name for the first code point above U+007F it finds in each file. A tracked file that is not valid UTF-8 at all is refused too, unless its path matches one of the binary-fixture globs named in the script (the golden `.bin` snapshots under `test/golden/` and `python/tests/golden/`) -- an undecodable file that is not on that list is far more likely to be a newly added fixture nobody told the gate about than a deliberate binary artifact, so the default is to refuse, not to guess.
 
 Run it the same way as the other static gates:
 
@@ -66,7 +66,7 @@ allocate formats into a caller-provided buffer with `fmt::format_to`.
 
 There is no process-wide logger. `fmtlog` was fetched (`cmake/FuseDependencies.cmake`) and a
 `fuse_resolve_logging()` macro built an interface target for it, but nothing in `include/` or
-`src/` ever included it or called the macro — removed 2026-10-12 rather than left as dead fetch
+`src/` ever included it or called the macro — removed rather than left as dead fetch
 weight. `fuse::initialize`/`fuse::finalize` set the process-wide error policy and the rank reported
 in diagnostics (`include/fuse/base/error.hpp`); they do not start or drain a logger.
 Diagnostic text today goes through `FUSE_THROW`/`FUSE_REFUSE` (errors) or directly through `fmt` at

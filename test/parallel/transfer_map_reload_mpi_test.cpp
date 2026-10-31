@@ -1,19 +1,18 @@
-// S5.4's real-MPI acceptance item (plans/2026-09-15-fuse-plan.md): a transfer
+// Real-MPI acceptance: a transfer
 // map built by the REAL supermesh (conservative) builder on two non-matching
 // meshes, persisted at N real ranks and reloaded at M real ranks (N != M,
 // both >= 2), reproduces the directly-built map's own result; and the
-// distribution check refuses a partition mismatch by name. The sandbox-
-// executable twin of this scenario, with "ranks" modelled rather than
-// launched (MPI cannot initialise here, docs/dev/testing.md), is
+// distribution check refuses a partition mismatch by name. The
+// no-MPI twin of this scenario, with "ranks" modelled rather than
+// launched (docs/dev/testing.md), is
 // test/backend/transfer_map_real_builder_reload_test.cpp -- see that file's
 // own header for the Higham recursive-summation bound both files assert,
 // and for why a single-entry row is checked bit-identical rather than to a
 // tolerance.
 //
-// MPI CANNOT START IN THIS SANDBOX: this file is compiled -- registered
-// with fuse_add_mpi_test, RANKS 2 3 -- but never run here; host_pending
-// names the exact two-invocation mpirun sequence and what each rank prints
-// on success and on each foreseeable failure.
+// Registered with fuse_add_mpi_test, RANKS 2 3; needs a working MPI
+// launcher and a two-invocation mpirun sequence (write at 2 ranks, then
+// read at 3).
 //
 // TWO-INVOCATION PROTOCOL, copied from
 // test/parallel/brusselator_restart_mpi_test.cpp's own
@@ -52,7 +51,7 @@ namespace {
 /// The write side of the two-invocation sequence always runs at this many
 /// ranks; the read side always runs at `kReadRanks`. Both are named here,
 /// once, rather than read from an environment variable, so the two
-/// invocations in host_pending and the two constants in this file cannot
+/// invocations and the two constants in this file cannot
 /// drift apart silently.
 constexpr int kWriteRanks = 2;
 constexpr int kReadRanks = 3;
@@ -108,8 +107,7 @@ TEST(TransferMapReloadMpi, WriteAtTwoRanksReadAtThreeReproducesTheDirectBuild) {
     GTEST_SKIP() << "needs FUSE_TRANSFER_MAP_RELOAD_MPI_FIXED_PATH set and this "
                     "binary run once at "
                  << kWriteRanks << " ranks (role=write) and once at " << kReadRanks
-                 << " ranks (role=read) against the same path -- see host_pending "
-                    "in the delivered report for the exact two commands";
+                 << " ranks (role=read) against the same path";
   }
   const std::string path(fixed);
   const char* role = std::getenv("FUSE_TRANSFER_MAP_RELOAD_MPI_ROLE");

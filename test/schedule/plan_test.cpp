@@ -64,7 +64,7 @@ bool has_code(const fuse::Diagnostics& d, const char* code) {
 /// declared Sum merge -- an entirely ordinary use of spec Section 5.1's Merge that
 /// used to compile past lower() as one 5-input Merge node and then fail
 /// schedule() with E-SCHED-ARITY, blaming a "lower Merge as a left-fold"
-/// step that lower() never performed (REVIEW.md R-27). All writers are
+/// step that lower() never performed. All writers are
 /// colocated with the target so no Transport/Epoch pair complicates the
 /// count of Merge nodes below. `lagged_writer` (or -1 for none) names the
 /// one writer, by index, that lags one step behind the rest.
@@ -90,7 +90,7 @@ CouplingGraph five_writer_merge(int lagged_writer) {
                              .intent = fuse::Intent::Provides});
     const auto ch = g.add_channel("ch" + std::to_string(i), out, in);
     if (i == lagged_writer) {
-      g.channel(ch).lag(1).allow_time_level_mismatch("explicit lag, R-27 fixture");
+      g.channel(ch).lag(1).allow_time_level_mismatch("explicit lag fixture");
     }
   }
   g.merge(in, fuse::MergeOp::Sum);
@@ -104,11 +104,9 @@ CouplingGraph five_writer_merge(int lagged_writer) {
 /// accident: with no Transport/Epoch, every node in the graph landed at the
 /// same instant and NodeId order alone kept Merge after its inputs. The
 /// moment a writer is NOT colocated, its Transport/Epoch pair runs at the
-/// destination's tick END while the boundary pass placed Merge at the tick
-/// START, so Merge sorted before the Epoch outputs it reads and the
-/// scheduler's own dependence check refused the plan with E-SCHED-ORDER --
-/// docs/dev/reviews/2026-09-19/pass2/re-ir-schedule.md's N-ir-schedule-2,
-/// found by the sweep this fix report also extends to call schedule().
+/// destination's tick END, so Merge must not be placed at the tick START:
+/// it would sort before the Epoch outputs it reads and the scheduler's own
+/// dependence check would refuse the plan with E-SCHED-ORDER.
 CouplingGraph merge_across_ranks() {
   CouplingGraph g;
   const auto m = g.add_mesh(fuse::MeshDecl{.name = "m"});
@@ -144,14 +142,14 @@ CouplingGraph merge_across_ranks() {
 /// already covers that). W1's channel carries a real chain node (`.relax`)
 /// so its tail is not the bare Source/Sink arc.
 ///
-/// Review 2026-10-11 IS-1: W1's slab decomposition against M's interval
+/// W1's slab decomposition against M's interval
 /// (`decompose(2, 1, period)`) makes its FIRST merge instant target-limited
 /// -- the source step has not finished when M's first tick ends, so the
 /// causality contract in expand.hpp stamps W1's tail `AfterTicks` there --
-/// while the boundary pass stamped every Merge `BeforeTicks` unconditionally.
-/// Same instant, wrong relative order: `check_dependence_order()` refused
-/// this legal graph with `E-SCHED-ORDER`, reading it as "Merge ran before
-/// the input it combines."
+/// so the boundary pass must not stamp every Merge `BeforeTicks`
+/// unconditionally: at the same instant that is the wrong relative order, and
+/// `check_dependence_order()` would refuse this legal graph with
+/// `E-SCHED-ORDER`, reading it as "Merge ran before the input it combines."
 CouplingGraph multirate_merge() {
   CouplingGraph g;
   const auto m = g.add_mesh(fuse::MeshDecl{.name = "m"});
@@ -207,7 +205,7 @@ std::size_t dependence_violations(const fuse::OperatorDAG& dag,
 }  // namespace
 
 // ---------------------------------------------------------------------------
-// Task 3.6 brief
+// Basic plans
 // ---------------------------------------------------------------------------
 
 TEST(ExecutionPlan, BuildsFromAValidGraph) {
@@ -285,17 +283,17 @@ TEST(ExecutionPlan, RejectsCyclicSchedules) {
   EXPECT_EQ(r.plan.region_count(), 0u);
 }
 
-// Review 2026-10-11 IS-2: a window member's own export is produced by
+// A window member's own export is produced by
 // OpKind::WindowAdvance -- an SSA root with empty inputs, exactly like
 // Source, finish_window_regions() in src/ir/window_lowering.cpp -- not by
 // Source itself. The acyclicity prover's black-box component-edge rule
-// (src/schedule/acyclicity.cpp) built that edge only from Source/Sink
-// endpoints, so no component edge was ever formed for a window member's
-// step. An unlagged loop through the member via ORDINARY channels declared
+// (src/schedule/acyclicity.cpp) must build that edge from WindowAdvance
+// endpoints as well as Source/Sink, or no component edge is formed for a
+// window member's step. An unlagged loop through the member via ORDINARY channels declared
 // OUTSIDE the window-scoped region -- which neither the window gate's own
 // `has_unbroken_cycle()` (src/schedule/window.cpp, scans only
-// `region.channels`) nor the prover's endpoint scan could see -- was
-// wrongly certified acyclic. `a` is the window member; `a2c`/`c2a` are
+// `region.channels`) nor the prover's endpoint scan could see -- would
+// be wrongly certified acyclic. `a` is the window member; `a2c`/`c2a` are
 // ordinary, unlagged, and not in the region's channel list.
 TEST(ExecutionPlan, WindowMemberGatesAnOrdinaryCycleOutsideTheRegion) {
   CouplingGraph g;
@@ -397,13 +395,13 @@ TEST(ExecutionPlan, WindowMemberGatesAnOrdinaryCycleOutsideTheRegion) {
   EXPECT_TRUE(saw_cycle_code) << r.diags.to_string();
 }
 
-// Review 2026-10-11 IS-7: a component claimed by two DIFFERENT window-scoped
-// regions used to be silently resolved first-wins -- ClockSet's ctor
+// A component claimed by two DIFFERENT window-scoped
+// regions must not be silently resolved first-wins -- ClockSet's ctor
 // (include/fuse/schedule/clock.hpp) takes the first region's window length
 // and `break`s, and owning_window_region_for_component() (src/schedule/
-// expand.cpp) `return`s on the first match -- a wrong-but-deterministic
+// expand.cpp) `return`s on the first match, which would give a wrong-but-deterministic
 // schedule with no diagnostic. `b` is a member of both `ab` (with `a`) and
-// `bc` (with `c`) below; schedule() must refuse it with the new
+// `bc` (with `c`) below; schedule() must refuse it with
 // E-SCHED-WINDOW-OVERLAP rather than silently pick one.
 TEST(ExecutionPlan, ComponentInTwoWindowRegionsIsRefused) {
   CouplingGraph g;
@@ -510,13 +508,13 @@ TEST(ExecutionPlan, DumpIsStable) {
 }
 
 // ---------------------------------------------------------------------------
-// Regressions found by probing the brief's implementation
+// Ordering and error-reporting regressions
 // ---------------------------------------------------------------------------
 
 /// expand() emits in (time, NodeId) order, which is a dependence order only
 /// while ascending NodeId is a topological order of the untimed DAG. Here it
-/// is not: node 0 consumes what node 1 writes, at the same time. The brief
-/// emitted the stream as-is, so its first instruction read an arc its second
+/// is not: node 0 consumes what node 1 writes, at the same time. Emitting the
+/// stream as-is would make its first instruction read an arc its second
 /// instruction writes. The scheduler must *derive* the order from dependence
 /// and fix it -- not merely detect it, and certainly not reject the graph.
 TEST(ExecutionPlan, OrdersByDependenceNotByNodeId) {
@@ -652,7 +650,7 @@ TEST(ExecutionPlan, InstructionsAreInDependenceOrderWhenAccumulating) {
 
 /// plan_buffers() reports by throwing. schedule() has a Diagnostics channel,
 /// so an init-time setup error must arrive there instead of as an exception
-/// unwinding out of the scheduler. The brief called plan_buffers() bare.
+/// unwinding out of the scheduler.
 TEST(ExecutionPlan, ReportsAnEmptyRegionSizesCallbackAsADiagnostic) {
   const CouplingGraph g = pair(Rational{1}, Rational{1});
   const auto lowered = lower(g);
@@ -714,7 +712,7 @@ TEST(ExecutionPlan, RejectsAnOperatorWithMoreInputsThanAnInstructionHolds) {
 // A real 5-writer Merge, produced by lower() itself rather than hand-built
 // like the test above, must fold into a chain of 2-input Merge nodes and
 // then schedule successfully -- the case the hand-built arity test above
-// cannot cover, since it never calls lower() (REVIEW.md R-27).
+// cannot cover, since it never calls lower().
 TEST(ExecutionPlan, FiveWriterMergeFoldsToPairwiseMergesAndSchedules) {
   const CouplingGraph g = five_writer_merge(/*lagged_writer=*/-1);
   const auto lowered = lower(g);
@@ -740,8 +738,7 @@ TEST(ExecutionPlan, FiveWriterMergeFoldsToPairwiseMergesAndSchedules) {
 // contribution when one of several writers is lagged -- and that must hold
 // at EVERY node in the fold chain, not just the pairwise Merge that happens
 // to consume the lagged writer directly, or the acyclicity prover's
-// lag-cutting rule would see the wrong level partway through (REVIEW.md
-// R-27's note on intermediate types).
+// lag-cutting rule would see the wrong level partway through.
 TEST(ExecutionPlan, FiveWriterMergeKeepsNewestTimeLevelThroughTheFoldWhenOneIsLagged) {
   const CouplingGraph g = five_writer_merge(/*lagged_writer=*/2);
   const auto lowered = lower(g);
@@ -764,8 +761,7 @@ TEST(ExecutionPlan, FiveWriterMergeKeepsNewestTimeLevelThroughTheFoldWhenOneIsLa
 // and its instruction stream must be a real dependence order -- not just
 // "schedule() returned ok", since a wrong-but-lucky order could still pass
 // r.ok() if nothing downstream happened to read the misordered arc first.
-// N-ir-schedule-2 (docs/dev/reviews/2026-09-19/pass2/re-ir-schedule.md): this
-// used to fail E-SCHED-ORDER, Merge sorted before the Epoch outputs it reads.
+// Merge must not sort before the Epoch outputs it reads (E-SCHED-ORDER).
 TEST(ExecutionPlan, MergeAcrossRanksSchedulesInDependenceOrder) {
   const CouplingGraph g = merge_across_ranks();
   const auto lowered = lower(g);
@@ -787,13 +783,12 @@ TEST(ExecutionPlan, MergeAcrossRanksSchedulesInDependenceOrder) {
   EXPECT_EQ(dependence_violations(lowered.dag, r.plan), 0u);
 }
 
-// Review 2026-10-11 IS-1: a Merge combining writers at different intervals
+// A Merge combining writers at different intervals
 // must schedule, and the stream must be a real dependence order, not an
-// accident of E-SCHED-ORDER happening not to fire. Before the fix this
-// refused with E-SCHED-ORDER (Merge's boundary-pass phase was unconditionally
-// BeforeTicks, sorting it ahead of W1's target-limited, AfterTicks tail at
-// their shared first instant); after the fix Merge's phase tracks the latest
-// of its writers' phases at that instant and the plan is a valid order.
+// accident of E-SCHED-ORDER happening not to fire. Merge's phase tracks the
+// latest of its writers' phases at the shared first instant (an
+// unconditional BeforeTicks would sort it ahead of W1's target-limited,
+// AfterTicks tail), so the plan is a valid order.
 TEST(ExecutionPlan, MultirateMergeSchedulesInDependenceOrder) {
   const CouplingGraph g = multirate_merge();
   const auto lowered = lower(g);
@@ -809,16 +804,11 @@ TEST(ExecutionPlan, MultirateMergeSchedulesInDependenceOrder) {
 // Iteration regions become explicit loop boundaries (spec Section 2 layer 3)
 // ---------------------------------------------------------------------------
 
-// The declaration-order limitation, pinned so it cannot regress silently and
-// so the refusal's advice can be checked against what actually cures it.
+// Declaration order must not decide whether a coupling schedules.
 //
 // Two independent channels on the SAME clock, one of them iterated. Nothing
-// couples them, so an order exists that keeps the region's body contiguous --
-// and when the unrelated channel is declared FIRST the scheduler finds it.
-// Declared second, its chain sorts into the middle of the region's and the
-// plan is refused. That is a limitation of this scheduler, not of the graph:
-// the two spellings describe the same coupling. Found 2026-09-20 when a
-// parallel fixture declared them in the losing order (KNOWN_ISSUES.md D1).
+// couples them, so an order exists that keeps the region's body contiguous.
+// The two declaration orders describe the same coupling.
 namespace {
 
 /// `region_first`: declare the iterated channel's components and channel
@@ -866,17 +856,12 @@ CouplingGraph two_channels_one_iterated(bool region_first) {
 
 }  // namespace
 
-// KNOWN_ISSUES D1, now fixed. This test was written as a reproducer: the same
-// coupling scheduled when the unrelated channel was declared first and was
-// refused when it was declared second, and it asserted BOTH -- with a note to
-// delete the refusing half rather than relax it if the limitation was ever
-// fixed. It was, by grouping a region's members inside their instant
-// (`group_regions_within_instants`), so the halves have become one assertion
-// made twice: declaration order does not decide whether a coupling schedules.
+// A region's members are grouped inside their instant
+// (`group_regions_within_instants`), so one assertion is made twice:
+// declaration order does not decide whether a coupling schedules.
 //
 // Keep both spellings. The point is not that one order works; it is that they
-// agree, which is the property a user relies on and the one that regressed
-// invisibly before.
+// agree, which is the property a user relies on.
 TEST(ExecutionPlan, ARegionSchedulesWhicheverOrderItsNeighbourIsDeclaredIn) {
   for (const bool region_first : {false, true}) {
     const CouplingGraph g = two_channels_one_iterated(region_first);
@@ -1028,7 +1013,7 @@ TEST(ExecutionPlan, DumpIsIndependentOfTheGlobalLocale) {
 
   const std::string classic = r.plan.to_string();
   // 20480, not 16384: the agreement point after the data move carries a
-  // buffer of its own until in-place operators land (S4).
+  // buffer of its own until in-place operators land.
   ASSERT_NE(classic.find("coupler_elements=20480"), std::string::npos)
       << classic.substr(0, 200);
 
@@ -1068,7 +1053,7 @@ TEST(ExecutionPlan, DumpShowsWhichInstructionsRunAfterTheTicks) {
   const auto first = dump.find("  0  t=");
   ASSERT_NE(first, std::string::npos);
   EXPECT_EQ(dump.substr(first),
-            // D73 (automatic remap halo, owner decision 2026-10-18): this
+            // Automatic remap halo: this
             // channel is a cross-rank weighted (non-nodal, non-consistent,
             // {remap=C}) transfer between disjoint placements, so the
             // lowering now emits one `BuildRemapHalo` instruction for it,
@@ -1100,7 +1085,7 @@ TEST(ExecutionPlan, DumpIsByteExact) {
   const auto r = build(pair(Rational{1}, Rational{1}));
   ASSERT_TRUE(r.ok()) << r.diags.to_string();
   EXPECT_EQ(r.plan.to_string(),
-            // D73: this channel is a cross-rank weighted ({remap=C})
+            // This channel is a cross-rank weighted ({remap=C})
             // transfer between disjoint placements, so `lower()` emits one
             // `BuildRemapHalo` instruction for it (node 0, t=0, no buffer
             // of its own -- OpKind::BuildRemapHalo's own doc comment,
@@ -1118,7 +1103,7 @@ TEST(ExecutionPlan, DumpIsByteExact) {
             // the plan has no notion yet of an operator whose output aliases
             // its input; it copies rather than allocates nothing. That costs
             // one interface-sized buffer per data move and is fixed when
-            // in-place operators land with the runtime (S4), not by removing
+            // in-place operators land with the runtime, not by removing
             // the agreement point.
             "buffer 2   %2  elements=64  components=1  region=r0  "
             "owner=coupler  persistent=no  \"c/epoch\"\n"

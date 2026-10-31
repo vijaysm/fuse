@@ -1,12 +1,11 @@
-// "Krylov" track, tier 1: fuse::linalg::pcg/gmres (both header-only
+// Tier 1: fuse::linalg::pcg/gmres (both header-only
 // templates -- include/fuse/linalg/{pcg,gmres}.hpp) over a REAL
 // MPI_COMM_WORLD, exercising make_mpi_reducer/make_mpi_exchanger
 // (src/linalg/comm_mpi.cpp) through every dot, norm and ghost update the
 // solvers issue.
 //
-// MPI CANNOT START IN THIS SANDBOX (docs/dev/testing.md): this file is
-// compiled -- registered with fuse_add_mpi_test, RANKS 2 -- but never run
-// here; outcomes are a host action.
+// Registered with fuse_add_mpi_test, RANKS 2; needs a working MPI
+// launcher (docs/dev/testing.md).
 //
 // THE REFERENCE. Unlike test/parallel/linalg_mpi_test.cpp's own
 // closed-form checks (every entry a pure function of its global index, so

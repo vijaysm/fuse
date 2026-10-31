@@ -1,4 +1,4 @@
-// S6 phase 3, "MPI connect" track. Plays component "a" (the producer) of
+// Plays component "a" (the producer) of
 // test/parallel/connect's two-executable field transfer. See
 // connect_common.hpp for the shared graph/backend/runner driver and
 // run_pair.sh / test/CMakeLists.txt for how this and connect_b.cpp are

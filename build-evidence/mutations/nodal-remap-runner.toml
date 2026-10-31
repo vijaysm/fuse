@@ -1,10 +1,9 @@
-# Mutations for the "Nodal remap" track's round-2 Runner wiring
+# Mutations for the nodal remap's Runner wiring
 # (Runner::Impl::build_nodal_dist_remap/apply_nodal_dist_remap,
-# src/runtime/runner.cpp -- KNOWN_ISSUES.md D8). Schema:
-# build-evidence/mutations.toml. Own file per the review-fix protocol.
+# src/runtime/runner.cpp). Schema: build-evidence/mutations.toml.
 #
 # Both rows below were KILLED, observed directly in this sandbox (Tier 0, no
-# MPI needed -- the whole point of round 2's null-communicator path is that
+# MPI needed -- the whole point of the null-communicator path is that
 # this Runner wiring is testable without MPI at all): each was applied by
 # hand to src/runtime/runner.cpp, rebuilt, and run against the filtered
 # `*NodalField*` subset (the 3 cases this file's own dispatch logic can
@@ -26,12 +25,9 @@ old = "      if (method_matches_orientation) {"
 new = "      if (true) {  // MUTATED: every method takes the distributed nodal path"
 target = "fuse_verification_interface_transfer_test"
 test = "verification.interface_transfer"
-# KILLED (re-verified round 4, after resolve_remap grew the
-# `method_matches_orientation` name to cover BOTH the nodal-target
-# ("consistent-transpose") and the newly-added nodal-source ("consistent")
-# orientations -- the anchor text itself moved from the round-2 method
-# string comparison to this named boolean, but the mutation's INTENT is
-# unchanged). Applied by hand, rebuilt, and run:
+# KILLED (resolve_remap's `method_matches_orientation` covers BOTH the
+# nodal-target ("consistent-transpose") and the nodal-source ("consistent")
+# orientations; the anchor is this named boolean). Applied by hand, rebuilt, and run:
 # InterfaceTransfer.ARemapIntoANodalFieldOnSeveralRanksViaASupermeshMethodStillRefuses
 # fails (14/15 InterfaceTransfer-suite cases pass): initialize() throws
 # E-INTERP-DISC ("method 'consistent' builds H... the source field is not a

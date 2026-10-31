@@ -1,5 +1,5 @@
-// S6 phase 3 ("LowFive" track), Unit 3. build_lowfive_bindings() needs no
-// HDF5, no LowFive and no MPI -- it is pure CouplingGraph traversal, same
+// build_lowfive_bindings() needs no HDF5, no LowFive and no MPI -- it is pure
+// CouplingGraph traversal, same
 // tier as everything in test/transport/lowfive_test.cpp, just split into
 // its own binary because it needs fuse/model/coupling_graph.hpp and that
 // file's own tests deliberately do not (see this file's header comment,
@@ -90,7 +90,7 @@ TEST(BuildLowFiveBindings, SameLocalFieldNameOnTwoComponentsDoesNotCollide) {
 TEST(BuildLowFiveBindings, FieldsWithNoHdf5PathAreSkipped) {
   Fixture f;
   // Neither field sets hdf5_path -- the ordinary case for every graph
-  // before this track, and still the common case for a channel that
+  // that predates hdf5_path, and still the common case for a channel that
   // moves its bytes through an ordinary Transport.
   const auto r = fuse::build_lowfive_bindings(f.g);
   ASSERT_TRUE(r.ok()) << r.error().message;

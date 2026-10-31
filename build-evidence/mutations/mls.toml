@@ -1,20 +1,15 @@
-# Mutations for the "Point clouds" track (fuse/backend/mls_weights.hpp/.cpp).
-# Own file per the mutation-manifest protocol (tools/mutate.py's own doc
-# comment, and search.toml's own header): do not edit
-# build-evidence/mutations.toml directly while another track holds it dirty.
+# Mutations for point clouds (fuse/backend/mls_weights.hpp/.cpp).
 #
-# Applied and restored BY HAND, one at a time, against the tier-0 build
-# described in this task's own build instructions -- not via
-# `tools/mutate.py` in mutating mode, because other agents hold this same
-# checkout dirty on disjoint files at the same time and that mode rewrites
-# sources in place. `tools/mutate.py --check-anchors` (read-only, no build,
-# no git) DOES verify both `old` strings below occur exactly once in their
-# file, and was run clean against the state these rows describe.
+# Applied and restored BY HAND, one at a time, against the tier-0 build --
+# not via `tools/mutate.py` in mutating mode, which rewrites sources in
+# place. `tools/mutate.py --check-anchors` (read-only, no build, no git)
+# DOES verify both `old` strings below occur exactly once in their file,
+# and was run clean against the state these rows describe.
 
 [[mutation]]
 id = "mls-neighbor-count-refusal-disabled"
 area = "backend"
-describes = "build_mls_weights's E-MLS-NEIGHBORS check for a declared k below the degree's polynomial basis size is disabled. The task's own required row: MlsRefusals.KBelowBasisSizeIsEMlsNeighbors asserts the rejection's CODE, so disabling it is caught even though the local PxP moment matrix built from only k < P neighbours is still mathematically rank-deficient and the least-squares solve two calls later rejects it too -- with the WRONG code (E-MLS-RANK, not E-MLS-NEIGHBORS), which is exactly what the test's EXPECT_EQ on the code catches. Verified to fire: with this mutation applied, KBelowBasisSizeIsEMlsNeighbors fails (actual code E-MLS-RANK, expected E-MLS-NEIGHBORS); TooFewSourcePointsIsEMlsNeighbors (a source side with fewer than k points overall, checked on the very next line, left untouched by this mutation) still passes on its own, confirming the two E-MLS-NEIGHBORS call sites are independently exercised."
+describes = "build_mls_weights's E-MLS-NEIGHBORS check for a declared k below the degree's polynomial basis size is disabled. MlsRefusals.KBelowBasisSizeIsEMlsNeighbors asserts the rejection's CODE, so disabling it is caught even though the local PxP moment matrix built from only k < P neighbours is still mathematically rank-deficient and the least-squares solve two calls later rejects it too -- with the WRONG code (E-MLS-RANK, not E-MLS-NEIGHBORS), which is exactly what the test's EXPECT_EQ on the code catches. Verified to fire: with this mutation applied, KBelowBasisSizeIsEMlsNeighbors fails (actual code E-MLS-RANK, expected E-MLS-NEIGHBORS); TooFewSourcePointsIsEMlsNeighbors (a source side with fewer than k points overall, checked on the very next line, left untouched by this mutation) still passes on its own, confirming the two E-MLS-NEIGHBORS call sites are independently exercised."
 file = "src/backend/mls_weights.cpp"
 old = "  if (static_cast<std::size_t>(opt.k) < basis_size) {"
 new = "  if (false) {  // opt.k < basis_size -- neighbour-count refusal disabled"

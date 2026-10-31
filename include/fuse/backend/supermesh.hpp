@@ -11,7 +11,7 @@
 /// WHAT IT COMPUTES. For every target cell `j` and source cell `i` it computes
 /// the exact measure of their intersection, `|T_j intersect S_i|`, and
 /// normalises by ONE of two conventions, chosen by the `Conservation`
-/// argument (KNOWN_ISSUES.md D82, owner decision 2026-10-19):
+/// argument:
 ///
 ///     Intensive: W_ji = |T_j intersect S_i| / m_j   (m_j = target cell j's own measure)
 ///     Extensive: W_ji = |T_j intersect S_i| / n_i   (n_i = source cell i's own measure)
@@ -40,7 +40,7 @@
 ///
 /// WHAT IT IS NOT. Order 1. The reconstruction is piecewise constant per
 /// source cell, so the map is exact for constants and first order for anything
-/// else. That is what the ruling asked for as the floor; higher order on the
+/// else. That is the floor; higher order on the
 /// sphere is what the TempestRemap tier adds.
 
 #include "fuse/backend/mesh_view.hpp"

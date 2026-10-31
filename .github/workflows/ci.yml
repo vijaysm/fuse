@@ -20,9 +20,8 @@ jobs:
       # function's docstring).
       - run: python3 tools/check-physics-kit-naming.py
       - run: python3 tools/check-invariants.py
-      # Owner's 2026-10-15 ASCII-only ruling: every tracked source file
-      # decodes as pure ASCII except *.md (reviewed by eye) and upstream/
-      # (vendored, not edited). Static, sub-second, no build.
+      # ASCII-only rule: every tracked source file decodes as pure ASCII
+      # except *.md (reviewed by eye) and upstream/ (vendored, not edited). Static, sub-second, no build.
       - run: python3 tools/check-ascii.py
       - run: python3 tools/check-throws-labels.py
       # Byte-identity of upstream/ against the manifest (invariant I8). The
@@ -31,7 +30,7 @@ jobs:
       # I9's mutation-evidence record: static, sub-second, no build and no
       # git-clean requirement (--check-anchors only reads build-evidence/*.toml
       # against the source tree). Does not run the mutations themselves --
-      # that needs a configured build and runs on the owner's machine (see
+      # that needs a configured build and runs on a developer machine (see
       # docs/dev/testing.md) -- but an anchor that drifted out from under its
       # KILLED evidence is now caught here instead of nowhere.
       - run: python3 tools/mutate.py --check-anchors
@@ -49,9 +48,8 @@ jobs:
       # The wiki pages are generated from docs/; make sure they still convert.
       - run: python3 tools/docs-to-wiki.py "$RUNNER_TEMP/wiki-out"
 
-  # The upstream-soma leg (imported coupler suite, standalone build) was
-  # removed 2026-10-12 (soma-import track): FUSE_BUILD_UPSTREAM_SOMA no longer
-  # exists (see CMakeLists.txt), so there is nothing for this leg to configure
+  # There is no upstream-soma leg (imported coupler suite, standalone build):
+  # FUSE_BUILD_UPSTREAM_SOMA no longer exists (see CMakeLists.txt), so there is nothing for this leg to configure
   # against. UPSTREAMS.lock's [soma].retired field and docs/dev/soma-import.md
   # record the detachment and what fuse:: still needs from the subtree.
 
@@ -64,14 +62,14 @@ jobs:
   # built on a host, not here -- see UPSTREAMS.lock.
   #
   # Linear-algebra backends: FUSE_LINALG_BACKEND is builtin|eigen. There is no
-  # Kokkos(Kernels) backend to build (REVIEW.md R-05/R-24); Kokkos itself, the
+  # Kokkos(Kernels) backend to build; Kokkos itself, the
   # execution layer, is in every leg.
   #
   # MPI is Open MPI, not MPICH: Ubuntu 24.04's MPICH 4.2.0 starts every rank
   # under mpiexec as a singleton ("rank 0 of 1" twice for -n 2, measured), so no
   # multi-rank row could pass, and its wrappers leak the package's own
   # -flto=auto into every MPI target through FindMPI. An mpi leg spends ~12
-  # minutes in configure: the accept/connect probe (KNOWN_ISSUES.md D23) times
+  # minutes in configure: the accept/connect probe times
   # out each of its runs on this MPI and then disables that launch mode's rows.
   build:
     name: ${{ matrix.family }}+gnu (${{ matrix.linalg }}, ${{ matrix.build }})

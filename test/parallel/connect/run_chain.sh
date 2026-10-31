@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# KNOWN_ISSUES.md D18, round 2. The host-run driver behind
+# The host-run driver behind
 # parallel.connect.chain.{3,4} -- run_pair.sh's own "accept" mode,
 # generalised to 3 or 4 separately launched executables instead of 2.
 #
@@ -19,52 +19,36 @@
 #                <chain_a_exe> <chain_b_exe> <chain_c_exe> <chain_d_exe> \
 #                <golden_file> <scratch_dir> [timeout_s] [periods]
 #
-# KNOWN_ISSUES.md D18, round 5 (the lead's own instruction): this row
-# reused golden-1+1.txt (the PAIR test's own golden, na=1 -- one entity,
-# global id 0, value 0) for the chain unchanged, on the WRONG assumption
-# that the chain writes the same thing; it does not (connect_chain_
-# common.hpp's own kEntities is 4, and the chain's LAST component sits at
-# merged rank count-1, not always 1 -- see connect_golden.cpp's own
-# --chain mode, which computes this chain's own golden from the SAME
-# partition_block() the chain itself calls, not a hand reasoned-through
-# guess). The CALLER now passes a chain-specific golden file (golden-
-# chain-<count>.txt) instead. `[periods]` (new, default 1 -- unchanged
-# from before this round for any caller that omits it) exists because
-# the measured host failure showed every value arriving as ZERO: with
-# the default of one period, this sandbox could not determine by reading
-# the code alone whether a multi-hop Connect-mode chain delivers a
-# producer's value to the LAST component within the SAME period it is
-# written, or only after one additional period PER HOP (this project's
-# own "lag" convention elsewhere, for a feedback coupling, is NOT
-# documented as applying to a one-way Connect chain, but was not ruled
-# out either -- C1 means this sandbox cannot run the chain to settle it
-# empirically). Running `periods = count` is a SAFE, not merely
-# plausible, fix either way: "a"'s own advance() recomputes the SAME
-# fixed global ids from a static mesh every period (connect_chain_
+# The golden file is chain-specific (golden-chain-<count>.txt), NOT the
+# PAIR test's golden-1+1.txt: the chain writes a different thing (connect_
+# chain_common.hpp's own kEntities is 4, and the chain's LAST component
+# sits at merged rank count-1, not always 1). connect_golden.cpp's own
+# --chain mode computes this chain's golden from the SAME partition_block()
+# the chain itself calls.
+#
+# `[periods]` (default 1) sets how many periods the chain runs. Whether a
+# multi-hop Connect-mode chain delivers a producer's value to the LAST
+# component within the SAME period it is written, or only after one
+# additional period PER HOP, is not something the code alone settles
+# (this project's own "lag" convention for a feedback coupling is not
+# documented as applying to a one-way Connect chain). Running
+# `periods = count` is safe either way: "a"'s own advance() recomputes the
+# SAME fixed global ids from a static mesh every period (connect_chain_
 # common.hpp's own ChainLinkComponent::advance()), so extra periods
 # beyond whatever is actually needed just re-deliver the SAME steady-
-# state value -- there is no way for more periods to make a correct
-# chain wrong, only for too few periods to make a correct chain look
-# like a delivery failure.
+# state value -- more periods cannot make a correct chain wrong, only too
+# few periods can make a correct chain look like a delivery failure.
 #
-# KNOWN_ISSUES.md D18, round 4 (the lead's own instruction): a 2026-10-19
-# host re-run with FUSE_CONNECT_CHAIN_TRACE=1 set printed NOTHING in
-# a.log/b.log/c.log. Unlike test/parallel/brusselator_participants/
-# run_participants.sh's own FUSE_LOWFIVE_ATTACH_TRACE (which is never
-# forwarded by this project's own CMake registrations at all -- a plain
-# manually-set shell variable, relying entirely on ctest's own default
-# environment inheritance through this script down to mpiexec's launched
-# ranks), this script now forwards FUSE_CONNECT_CHAIN_TRACE EXPLICITLY,
-# via `-genv`, to every rank it launches -- not because inheritance is
-# known to be broken here (this sandbox cannot run mpiexec at all, C1, so
-# that could not be measured), but because `-genv` removes the ambient-
-# inheritance question entirely as a possible cause, and the diagnostic
-# line below SAYS, in the ctest row's own captured output (not a.log/b.
-# log/c.log, which are per-rank, post-launch), whether this script's own
-# shell ever saw the variable at all -- the other candidate the task
-# named ("the failure happens before the first traced step") is still
-# possible and this script cannot rule it out; only the trace lines
-# themselves (now definitely reaching every rank's own environment) can.
+# FUSE_CONNECT_CHAIN_TRACE is forwarded EXPLICITLY, via `-genv`, to every
+# rank this script launches, so the trace does not depend on ambient
+# environment inheritance through ctest and mpiexec. Unlike test/parallel/
+# brusselator_participants/run_participants.sh's own
+# FUSE_LOWFIVE_ATTACH_TRACE (a plain manually-set shell variable that
+# relies on that inheritance), the diagnostic line below says, in the
+# ctest row's own captured output (not a.log/b.log/c.log, which are
+# per-rank, post-launch), whether this script's own shell saw the
+# variable at all. If the trace is still empty, the failure happens
+# before the first traced step.
 set -u
 
 COUNT="$1"; MPIEXEC="$2"

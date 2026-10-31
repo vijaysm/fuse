@@ -15,7 +15,7 @@
 ///     U's OWN state at the START of its step (`state_` before this call)
 ///     and the partner mean it just received -- an explicit, backward-
 ///     Euler-LAGGED reaction, matching "backward Euler for diffusion and
-///     the U decay" (the task's model statement says nothing about an
+///     the U decay" (the model statement says nothing about an
 ///     implicit reaction) while keeping U's own linear system LINEAR, at
 ///     the cost of resolving q at only U's own step resolution, not the
 ///     Toy's union-of-both-schedules knot resolution. See
@@ -34,7 +34,7 @@
 /// DIAGNOSTIC ACCUMULATORS AND THE WINDOW-COUPLER CHECKPOINT RULE. Every
 /// value below that accumulates across `advance()` calls
 /// (`external_total_`, `exchange_out_`/`exchange_in_`) is part of
-/// `save_state()`/`restore_state()`. A prior track's Gray-Scott component
+/// `save_state()`/`restore_state()`. The Gray-Scott component
 /// (examples/gray_scott/species_component.hpp's `coupling_flux_`) found
 /// this the hard way: left outside the checkpoint, such a value is
 /// incremented on every Picard sweep and every straddle replay, so it
@@ -69,18 +69,18 @@
 
 namespace brusselator {
 
-/// S7.2 WindowNewton (newton-krylov.md Sec. 9.5-9.6): a FNV-1a-style
-/// combine of a fixed-size list of doubles' own bit patterns, into the
+/// A FNV-1a-style combine of a fixed-size list of doubles' own bit
+/// patterns (newton-krylov.md Sec. 9.5-9.6), into the
 /// `std::uint64_t` `fuse::LinearizationToken::signature()` returns.
 /// `UComponent`/`VComponent`'s own tokens never actually linearise AT a
 /// point (Sec. 9.5: the preconditioner is a FIXED operator, independent
 /// of the Newton iterate) -- `LinearizationToken::signature()`'s own
 /// doc licenses exactly this: "for a component that only ever linearises
-/// once, a fixed constant". Built from (dt, diffusion) per the lead's
-/// own instruction, rather than literally returning a constant, so a
-/// genuine change to either (a different `--dt-u`/`--dt-v`/`--alpha` run)
-/// is reflected, even though nothing downstream of this track's own
-/// wiring ever compares two signatures against each other today.
+/// once, a fixed constant". Built from (dt, diffusion)
+/// rather than literally returning a constant, so a genuine change to
+/// either (a different `--dt-u`/`--dt-v`/`--alpha` run) is reflected, even
+/// though nothing downstream ever compares two signatures against each
+/// other today.
 [[nodiscard]] inline std::uint64_t fnv1a_combine_doubles(
     std::initializer_list<double> values) {
   std::uint64_t h = 0xcbf29ce484222325ULL;
@@ -96,16 +96,16 @@ namespace brusselator {
 /// U_t = a*Lap(U) + B - U + q + f. Backward Euler for diffusion and the
 /// U decay; q and f enter explicitly (f exactly integrated over its
 /// active duration within the step; q is the lagged reaction described
-/// in the file header). The solve itself is `UCore` (species_core.hpp,
-/// Time windows track Unit 2) -- this class is now a thin fuse::Component
-/// wrapper around it, keeping ONLY the storage FUSE itself must bind
-/// through (`provided_`/`required_`, read/written by raw pointer by both
-/// `fuse::WindowCoupler` and `fuse::Runner`'s own FieldRegistry).
+/// in the file header). The solve itself is `UCore` (species_core.hpp)
+/// -- this class is a thin fuse::Component wrapper around it, keeping ONLY
+/// the storage FUSE itself must bind through (`provided_`/`required_`,
+/// read/written by raw pointer by both `fuse::WindowCoupler` and
+/// `fuse::Runner`'s own FieldRegistry).
 class UComponent final : public fuse::Component,
                          public fuse::ImplicitComponent,
                          public fuse::LinearizationToken {
  public:
-  /// S7.2 WindowNewton (newton-krylov.md Sec. 9.5): `own_interval`/
+  /// newton-krylov.md Sec. 9.5: `own_interval`/
   /// `partner_interval`/`window_length` are new, TRAILING, DEFAULTED
   /// parameters -- every existing caller (examples/brusselator/main.cpp's
   /// `--driver window` construction, and every `test/verification/
@@ -203,7 +203,7 @@ class UComponent final : public fuse::Component,
   /// state that is not bound through register_fields() (the clock, the
   /// history, the solver's internals), which the runtime's byte-for-byte
   /// rollback verification cannot see; save_state() is what carries it.
-  /// S7.2 WindowNewton (newton-krylov.md Sec. 9.5): `kCapabilityResidual`/
+  /// newton-krylov.md Sec. 9.5: `kCapabilityResidual`/
   /// `kCapabilityLinearization` are set ONLY when the window metadata
   /// constructor parameters were actually passed (`own_interval_ >
   /// Rational{0}`) -- a `UComponent` built by a caller that never set
@@ -220,7 +220,7 @@ class UComponent final : public fuse::Component,
     if (own_interval_ > fuse::Rational{0}) {
       caps |= fuse::kCapabilityResidual | fuse::kCapabilityLinearization;
     }
-    // Restart track (docs/dev/restart.md Section 9 item 1, Slice 2):
+    // docs/dev/restart.md Section 9 item 1:
     // Form A over this component's own U-grid global ids (write_restart()/
     // read_restart() below) -- unconditional, unlike the window-metadata
     // bits above, because every UComponent (both drivers, every existing
@@ -229,8 +229,8 @@ class UComponent final : public fuse::Component,
     return caps;
   }
 
-  /// Restart track (docs/dev/restart.md Section 9 item 1, Section 2.3's
-  /// own "Brusselator example" row; Slice 2). Every array this
+  /// (docs/dev/restart.md Section 9 item 1, Section 2.3's own
+  /// "Brusselator example" row.) Every array this
   /// component owns, keyed by `grid_->global_id(e)` -- the SAME
   /// `cell_gid = ix + iy*nx` the native quad generator assigns, unique
   /// and contiguous over the whole logical grid independent of this
@@ -312,7 +312,7 @@ class UComponent final : public fuse::Component,
     return fuse::Result<void>::success();
   }
 
-  /// S7.2 WindowNewton (newton-krylov.md Sec. 9): the window-member
+  /// newton-krylov.md Sec. 9: the window-member
   /// generalisation of `fuse::ImplicitComponent::evaluate_residual()` --
   /// see that method's own comment (component.hpp) for what "a frozen
   /// time level" means here: `ctx` spans the WHOLE window `[T0, T1)`;
@@ -322,8 +322,8 @@ class UComponent final : public fuse::Component,
   /// member's own stacked EXPORT over the SAME window (`n_` elements by
   /// `own_interval_`'s own capacity) -- this component's own `G`, run by
   /// hand over its own substep grid, NEVER the genuine residual `x - G`
-  /// (only the Runner assembles that, one level up). NOT called by this
-  /// track's own Newton runtime wiring (`Runner::Impl::evaluate_window_
+  /// (only the Runner assembles that, one level up). NOT called by the
+  /// Newton runtime wiring (`Runner::Impl::evaluate_window_
   /// region_residual()` reaches this member's own `G` through
   /// `advance_window()` directly, mirroring the ordinary seam's own
   /// `DirichletSlab::evaluate_residual()` precedent, examples/dn_heat/
@@ -406,14 +406,14 @@ class UComponent final : public fuse::Component,
   [[nodiscard]] fuse::ImplicitComponent* implicit() override { return this; }
   [[nodiscard]] fuse::LinearizationToken* linearization() override { return this; }
 
-  /// S7.2 WindowNewton (newton-krylov.md Sec. 9.5): neither this
+  /// newton-krylov.md Sec. 9.5: neither this
   /// component's own `evaluate_residual()`'s true Jacobian action NOR
   /// its transpose is ever computed -- this token exists only for
   /// `apply_preconditioner()` below (a FIXED, per-sample diffusion
   /// solve, never a function of a linearisation point); the Newton
   /// solver's own matrix-free action (`fuse::num::MffdJacobianAction`,
-  /// over `F` directly) is what computes the real one, and this track's
-  /// own wiring (`Runner::Impl::run_region_newton_window()`) never calls
+  /// over `F` directly) is what computes the real one, and the
+  /// Newton wiring (`Runner::Impl::run_region_newton_window()`) never calls
   /// either of these two -- confirmed by `UComponentToken.
   /// ApplyJacobianIsNeverCalledDuringAWindowNewtonSolve` (test/
   /// verification/brusselator_species_core_decomposition_test.cpp).
@@ -429,11 +429,11 @@ class UComponent final : public fuse::Component,
                                               std::span<double>) override {
     return fuse::Failure{"E-NEWTON-NO-JACOBIAN-ACTION",
                          "UComponent's own LinearizationToken exists only for its "
-                         "apply_preconditioner(); nothing in this track's own wiring "
+                         "apply_preconditioner(); nothing in the Newton wiring "
                          "calls the transpose action either"};
   }
 
-  /// S7.2 WindowNewton (newton-krylov.md Sec. 9.5): `z = M^-1 r`, PER
+  /// newton-krylov.md Sec. 9.5: `z = M^-1 r`, PER
   /// SAMPLE of this component's own window-export block -- a block-
   /// DIAGONAL-IN-TIME approximation of the genuinely lower-triangular-
   /// in-time window Jacobian (Sec. 9.5's own derivation), each sample
@@ -471,7 +471,7 @@ class UComponent final : public fuse::Component,
     return fuse::Result<void>::success();
   }
 
-  /// S7.2 WindowNewton (newton-krylov.md Sec. 9.5): `rows() == cols()`,
+  /// newton-krylov.md Sec. 9.5: `rows() == cols()`,
   /// both this component's own EXPORT block length -- DELIBERATELY NOT
   /// `evaluate_residual()`'s own (import-length, export-length) pair
   /// (which genuinely differ here): `fuse::num::BlockJacobiPreconditioner::
@@ -501,7 +501,7 @@ class UComponent final : public fuse::Component,
 
   std::string name_;
   int n_;
-  /// Restart track (Slice 2): the grid `write_restart()`/`read_restart()`
+  /// The grid `write_restart()`/`read_restart()`
   /// read global ids from. Non-owning: `grid` outlives this component in
   /// every caller (`Rig`/`main.cpp` both hold their own `NativeGrid`
   /// outside the `ComponentSet`), the same convention `weights_uv_`/
@@ -511,7 +511,7 @@ class UComponent final : public fuse::Component,
   Vector required_;   ///< P_VU(V) mean over this step, on the U grid -- FUSE-bound storage
   Vector provided_;   ///< q, on the U grid, valid at ctx.t_end -- FUSE-bound storage
   double diffusion_;  ///< cfg.diffusion, captured for LinearizationToken::signature() only
-  /// S7.2 WindowNewton: this member's own window metadata -- `Rational{0}`
+  /// This member's own window metadata -- `Rational{0}`
   /// (unset) unless the constructor's own trailing parameters were given
   /// real values. See `capabilities()`'s own comment for why the two
   /// Newton capability bits are gated on `own_interval_ > Rational{0}`.
@@ -527,7 +527,7 @@ class VComponent final : public fuse::Component,
                          public fuse::ImplicitComponent,
                          public fuse::LinearizationToken {
  public:
-  /// S7.2 WindowNewton (newton-krylov.md Sec. 9.5): `own_interval`/
+  /// newton-krylov.md Sec. 9.5: `own_interval`/
   /// `partner_interval`/`window_length`, trailing and defaulted, mirror
   /// `UComponent`'s own identical addition -- see that constructor's own
   /// comment for why every existing caller is unaffected.
@@ -629,13 +629,13 @@ class VComponent final : public fuse::Component,
     if (own_interval_ > fuse::Rational{0}) {
       caps |= fuse::kCapabilityResidual | fuse::kCapabilityLinearization;
     }
-    // Restart track: see `UComponent::capabilities()`'s own comment --
+    // See `UComponent::capabilities()`'s own comment --
     // the identical unconditional bit, on the identical sentinel.
     caps |= fuse::kCapabilityRestartFormA;
     return caps;
   }
 
-  /// Restart track (docs/dev/restart.md Section 9 item 1, Slice 2).
+  /// docs/dev/restart.md Section 9 item 1.
   /// TWO DIFFERENT global-id spaces in one component, by construction
   /// (the file header's own "both members use WindowMember::length =
   /// N_u"): `"v_out"`/`"v_in"` are this component's own FUSE-bound
@@ -704,7 +704,7 @@ class VComponent final : public fuse::Component,
     return fuse::Result<void>::success();
   }
 
-  /// S7.2 WindowNewton (newton-krylov.md Sec. 9): `UComponent::evaluate_
+  /// newton-krylov.md Sec. 9: `UComponent::evaluate_
   /// residual()`'s own account applies verbatim, with ONE addition this
   /// member's own `advance()` already has to make and this override must
   /// mirror: every substep's own import mean is remapped U grid -> V grid
@@ -802,11 +802,11 @@ class VComponent final : public fuse::Component,
                                               std::span<double>) override {
     return fuse::Failure{"E-NEWTON-NO-JACOBIAN-ACTION",
                          "VComponent's own LinearizationToken exists only for its "
-                         "apply_preconditioner(); nothing in this track's own wiring "
+                         "apply_preconditioner(); nothing in the Newton wiring "
                          "calls the transpose action either"};
   }
 
-  /// S7.2 WindowNewton (newton-krylov.md Sec. 9.5): `UComponent::apply_
+  /// newton-krylov.md Sec. 9.5: `UComponent::apply_
   /// preconditioner()`'s own account, with the SAME U-grid/V-grid remap
   /// `evaluate_residual()` above needs: `r`/`z` are on the U grid (this
   /// member's own export block, like every one of its window-transfer

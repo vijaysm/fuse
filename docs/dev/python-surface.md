@@ -1,20 +1,17 @@
 # Python bindings (`pfuse`)
 
 :::{note}
-**Built.** Stage A (2026-10-12) specified this surface before `python/` existed. Stage B
-(2026-10-12) built `python/` under `FUSE_ENABLE_PYTHON` against that specification, with three
-scope decisions the owner made between the stages (flat error hierarchy, native-only Newton
-confirmed, the `dn_heat` driver reproduced by Python reimplementation rather than a test-only
-extension — see the sections below, each updated in place rather than left as the Stage A
-proposal). Every acceptance test cited on this page is measured to pass against the built
-`_pfuse` extension, not merely designed to.
+**Built.** `python/` is built under `FUSE_ENABLE_PYTHON`, with three scope decisions (flat error
+hierarchy, native-only Newton, the `dn_heat` driver reproduced by Python reimplementation rather
+than a test-only extension — see the sections below). Every acceptance test cited on this page is
+measured to pass against the built `_pfuse` extension, not merely designed to.
 :::
 
 ## Scope and binding choice
 
 Two bindings could expose FUSE to Python: a `pybind11` module over the C++ model and runtime
 directly, or a `cffi`/`ctypes` shim over the flat C ABI (`fuse_coupler_abi()`, the same table
-`cfuse.h` names). The repository owner chose `pybind11` over the C++ model and `fuse::Runner`.
+`cfuse.h` names). The choice is `pybind11` over the C++ model and `fuse::Runner`.
 A `cffi` shim over the ABI is an explicitly later, separate decision — not addressed here.
 
 This means `pfuse` binds `fuse::CouplingGraph`, `fuse::Component`, `fuse::Runner` and friends
@@ -24,19 +21,17 @@ for that reason; see the evidence table below (row `Context`, classification **d
 external driver that wants the ABI surface from Python should use the future `cffi` shim, not
 `pfuse`.
 
-Package name: **`pfuse`**, both the PyPI distribution name and the `import` name. Ruled
-2026-09-17 in `KNOWN_ISSUES.md` A3 and `docs/dev/porting.md`; re-confirmed for this track with
-the climate-vis interpreter's pip (`pip index versions pfuse` → "No matching distribution
-found", the same signal that cleared the name the first time, checked here against both a
-known-existing package and a known-nonexistent control so the absence is informative and not a
-network artefact).
+Package name: **`pfuse`**, both the PyPI distribution name and the `import` name. See
+`docs/dev/porting.md`; availability was checked with pip (`pip index versions pfuse` → "No matching
+distribution found", checked against both a known-existing package and a known-nonexistent control
+so the absence is informative and not a network artefact).
 
 ## Module layout
 
-Stage A proposed one extension submodule per `fuse::` layer (ten files). Built, that split added
+One extension submodule per `fuse::` layer (ten files) would add
 file boundaries with nothing layer-specific to enforce across them — every binding file links
-the same five `fuse::` libraries and none is ever compiled or used without the others — so Stage
-B consolidated to five source files, named by what they bind rather than by a layer that turned
+the same five `fuse::` libraries and none is ever compiled or used without the others — so the
+bindings are consolidated into five source files, named by what they bind rather than by a layer that turned
 out not to gate anything:
 
 ```
@@ -87,21 +82,20 @@ python/
                                         # byte against the Python-authored equivalent
 ```
 
-`descriptor_bindings.cpp`/`yaml_bindings.cpp`/`ir_bindings.cpp`/`schedule_bindings.cpp`/
-`backend_bindings.cpp`/`runtime_bindings.cpp` from the Stage A sketch do not exist as separate
-files; their functions are in `model_bindings.cpp` and `component_bindings.cpp` as described
+There are no separate `descriptor_bindings.cpp`/`yaml_bindings.cpp`/`ir_bindings.cpp`/
+`schedule_bindings.cpp`/`backend_bindings.cpp`/`runtime_bindings.cpp`; their functions are in `model_bindings.cpp` and `component_bindings.cpp` as described
 above. The compiled extension is still named `_pfuse`, and `pfuse/__init__.py` is `from _pfuse
 import *` with no pure-Python additions — none of the acceptance tests ended up needing a
 Python-level convenience the compiled module could not provide directly (`pfuse.rational()` and
 `pfuse.units` are themselves bindings, in `base_bindings.cpp`, not `__init__.py` code).
 
-**Build integration, as built.** `FUSE_ENABLE_PYTHON`, default `OFF`. When `ON`:
+**Build integration.** `FUSE_ENABLE_PYTHON`, default `OFF`. When `ON`:
 `find_package(pybind11 REQUIRED)`, `pybind11_add_module(_pfuse MODULE ${sources})`, linking
 `fuse::model`, `fuse::runtime`, `fuse::backend`, `fuse::ir`, `fuse::schedule`. No MPI link:
 `pfuse` v1 drives only `fuse::SerialMeshBackend` and leaves `RunnerConfig::base_communicator`
-unset (see "What this does not expose", below; `KNOWN_ISSUES.md` D37).
+unset (see "What this does not expose", below).
 
-**A `find_package` gotcha measured in this sandbox, not in general.** `pybind11` 3.1's own
+**A `find_package` gotcha measured in one sandbox, not in general.** `pybind11` 3.1's own
 `pybind11Tools.cmake` calls `find_package(Python ...)` — the un-suffixed name, not `Python3` —
 to locate the interpreter/headers/libraries it builds against. A `VIRTUAL_ENV` environment
 variable pointing at an unrelated virtualenv (left set by this sandbox's own Python tooling)
@@ -159,14 +153,14 @@ equivalent) · **drop** (deliberately not bound, with the reason).
 | `RankSet` (`{first, count}` only) | `fuse::RankSet` — `{first, count}` **plus** an arbitrary sorted/de-duplicated rank list (`RankSet(std::vector<int>)`), `overlaps`, `same_as`, `is_contiguous`, `index_of`, `min_rank`/`max_rank` | `model/component.hpp` | carry over + **new** (arbitrary rank lists; the richer query set spec's processor-set overlap reasoning needs, `docs/user/glossary.md`'s "disjoint / partially overlapping / coincident processor sets") |
 | `ComponentDecl` | `fuse::ComponentDecl` — plus `kind` (`ComponentKind::Physics`/`Coupler`) and `launch` (`LaunchSpec`, MPMD) | `model/component.hpp` | carry over + **new** (`kind`, `launch`) |
 | *(none — no coupler concept)* | `fuse::CouplerDecl`, `CouplingGraph::add_coupler()` — a placement with no fields and no clock that a channel's `RemapSpec::remap_on` can name (the CESM/E3SM hub-and-spoke pattern, `docs/user/glossary.md` "coupler processor set") | `model/component.hpp` | **new** |
-| `FieldSpec` | `fuse::FieldSpec` — plus `hdf5_path` (LowFive track) | `model/field_spec.hpp` | carry over + new field, **not bound** in v1 (see "What this does not expose") |
+| `FieldSpec` | `fuse::FieldSpec` — plus `hdf5_path` | `model/field_spec.hpp` | carry over + new field, **not bound** in v1 (see "What this does not expose") |
 | `Window` (+ `Kind`) | `fuse::Window` (+ `Kind`) — identical shape (`CouplingPeriod`/`FromComponent`/`Explicit`) | `model/component.hpp` | carry over |
 | `Channel`/`ChannelBuilder` (`accumulate`/`remap`/`remap_method`/`conservative`/`spacetime`/`relax`/`extrapolate`/`lag`/`allow_time_level_mismatch`) | `fuse::Channel`/`ChannelBuilder` — the same fluent setters **plus** `remap_on(ComponentId)` (route a transfer's remap through a separately-placed coupler) | `model/channel.hpp` | carry over + **new** (`remap_on`) |
 | `CouplingGraph` (`add_mesh/region/component/field/channel/iteration_region`, accessors, `to_yaml`, `__copy__`) | `fuse::CouplingGraph` — same accessors plus `add_coupler()` | `model/coupling_graph.hpp` | carry over + new (`add_coupler`) |
 | *(`IterationRegionDecl`: channels + a convergence criterion only — no `.accelerate()`/`.newton()` on its builder)* | `fuse::IterationBuilder` — `until()`, `max_iterations()`, `accelerate(AccelConfig)`, `newton(NewtonConfig)`, `initial_relaxation()`, `name()`, `requires_residual()`, `requires_linearization()` | `model/coupling_graph.hpp`, `model/iteration.hpp` | **new** (the whole convergence-acceleration and Newton-selection vocabulary; `soma`'s iteration region had no accelerator and no Newton path at all) |
 | *(none)* | `fuse::ConvergenceMeasure`/`ConvergenceCriterion`, `fuse::Converged::Relative/Absolute/AbsoluteOrRelative/ResidualRelative`, `operator&` composition | `model/iteration.hpp` | **new** |
 | *(none)* | `fuse::AccelConfig` (`AccelKind::None/Constant/Aitken/Secant/Steffensen/IQN_ILS/IQN_IMVJ/Newton`, `FilterKind::None/QR1/QR2/QR3`, `reuse`, `initial_relaxation`, `omega`) | `model/iteration.hpp` | **new** |
-| *(none)* | `fuse::NewtonConfig` — 28 fields: line search (`LineSearchKind::BT/CP/Basic` + its tuning constants), Eisenstat-Walker forcing (`EisenstatWalkerChoice::Constant/Choice1/Choice2` + 6 tuning constants), stopping (`atol/rtol/stol/divergence_tolerance/max_nonlinear_iterations/max_function_evaluations`), GMRES (`gmres_restart/gmres_max_iterations`), `preconditioner_lag`, `use_block_jacobi_preconditioner`, `substrate` (`NewtonSubstrate::Native/Petsc`), `norm` (`NewtonNorm::Plain/MeasureWeighted` — the "measure-weighted" norm named in this task's brief), `residual_path` (`NewtonResidualPath::Advance/Direct`) | `model/iteration.hpp` | **new** |
+| *(none)* | `fuse::NewtonConfig` — 28 fields: line search (`LineSearchKind::BT/CP/Basic` + its tuning constants), Eisenstat-Walker forcing (`EisenstatWalkerChoice::Constant/Choice1/Choice2` + 6 tuning constants), stopping (`atol/rtol/stol/divergence_tolerance/max_nonlinear_iterations/max_function_evaluations`), GMRES (`gmres_restart/gmres_max_iterations`), `preconditioner_lag`, `use_block_jacobi_preconditioner`, `substrate` (`NewtonSubstrate::Native/Petsc`), `norm` (`NewtonNorm::Plain/MeasureWeighted` — the "measure-weighted" norm), `residual_path` (`NewtonResidualPath::Advance/Direct`) | `model/iteration.hpp` | **new** |
 | *(none)* | `fuse::ImplicitComponent` (`evaluate_residual`), `fuse::LinearizationToken` (`apply_jacobian`/`apply_jacobian_transpose`/`apply_preconditioner`/`rows`/`cols`/`signature`), `fuse::verify_linearization_shape()` | `runtime/component.hpp` | **new**, deliberately **not exposed** to a Python `Component` subclass in v1 (see "What this does not expose") |
 | `Diagnostic`/`Diagnostics` | `fuse::Diagnostic`/`Diagnostics` (`Severity::Warning/Error`) | `base/result.hpp` | carry over |
 | `soma::validate(graph)` | `fuse::validate(graph, policy={})` | `model/validate.hpp` | carry over (fuse's `ConnectPolicy` default-constructs; not bound as a tunable in v1 — every graph the acceptance tests build uses the default policy) |
@@ -184,8 +178,8 @@ equivalent) · **drop** (deliberately not bound, with the reason).
 | `RunnerConfig` (`transport`, conservation fields) | `fuse::RunnerConfig` — same fields, plus `force_distributed_nodal_remap`, `base_communicator`, `force_this_process`, `transport_setup` | `runtime/runner.hpp` | carry over the conservation/transport fields; the four MPI/transport-setup fields are **not bound** in v1 (see below) |
 | `RunStats` | `fuse::RunStats` — same accounting plus `total_iterations`, `windows_not_converged` | `runtime/runner.hpp` | carry over + new fields |
 | `Session` (owns a graph copy + registry + `Runner`; `add_component`/`initialize`/`run_period`/`run`) | needs a fresh `Session` wrapper over `fuse::Runner` + `fuse::ComponentSet` — **the ownership pattern (the session holds its own copy of the graph, because `Runner` holds a `const CouplingGraph&` for its whole life) transplants directly** | `runtime/runner.hpp`, `model/coupling_graph.hpp` | carry over (design) |
-| `Context` (one Python method per `soma_c.h` entry point, driven with `begin_step`/`end_step`) | *(none bound)* — `fuse`'s C ABI is `fuse_coupler_abi()`, the `cfuse` binding target, not `pfuse`'s | `(soma_c.h has no fuse analogue bound here)` | **drop** — the owner chose `pybind11` over the C++ model and `Runner`, explicitly not the ABI; an external driver wanting the ABI surface from Python is a `cffi` shim's job, a separate, later decision |
-| 5-way `SOMA_ERR_*` → 5 Python exception classes | `fuse::Result<T>`'s free-form string codes (dozens, e.g. `E-FIELD-REBIND`, `E-UNITS`, `E-RT-UNBOUND`) **and** the separate `fuse::Error` C++ exception hierarchy (`InvariantViolation`/`InvalidArgument`/`NullPointer`/`Refusal`/`NotImplemented`/`IoError`) | `base/result.hpp`, `base/error.hpp` | **new shape**, no 1:1 rename possible — see "Errors", below (the owner's ruling: a flat `pfuse.FuseError` plus six subclasses mirroring `fuse::Error`'s own tree, no triage of `Result` failure codes) |
+| `Context` (one Python method per `soma_c.h` entry point, driven with `begin_step`/`end_step`) | *(none bound)* — `fuse`'s C ABI is `fuse_coupler_abi()`, the `cfuse` binding target, not `pfuse`'s | `(soma_c.h has no fuse analogue bound here)` | **drop** — `pybind11` was chosen over the C++ model and `Runner`, explicitly not the ABI; an external driver wanting the ABI surface from Python is a `cffi` shim's job, a separate, later decision |
+| 5-way `SOMA_ERR_*` → 5 Python exception classes | `fuse::Result<T>`'s free-form string codes (dozens, e.g. `E-FIELD-REBIND`, `E-UNITS`, `E-RT-UNBOUND`) **and** the separate `fuse::Error` C++ exception hierarchy (`InvariantViolation`/`InvalidArgument`/`NullPointer`/`Refusal`/`NotImplemented`/`IoError`) | `base/result.hpp`, `base/error.hpp` | **new shape**, no 1:1 rename possible — see "Errors", below (a flat `pfuse.FuseError` plus six subclasses mirroring `fuse::Error`'s own tree, no triage of `Result` failure codes) |
 
 ### Why `soma`'s iteration-region and Newton vocabulary is "new," not "renamed"
 
@@ -195,8 +189,8 @@ methods are `add_iteration_region`, `channel_at`, `iteration_region`, and the bo
 `newton`, no `until`. `soma`'s implicit coupling groups (the glossary's term) could declare
 *which channels* iterate together, but not *how* the fixed point is accelerated or solved; every
 run converged by plain Picard sweeps. The entire `AccelConfig`/`NewtonConfig`/
-`ConvergenceCriterion` vocabulary — Aitken, IQN-ILS, IQN-IMVJ, and the Newton-Krylov path this
-task's desired final outputs ask for ("Window Newton running...") — is new in `fuse` relative to
+`ConvergenceCriterion` vocabulary — Aitken, IQN-ILS, IQN-IMVJ, and the Newton-Krylov path, including
+window Newton — is new in `fuse` relative to
 what the upstream binding ever had to express.
 
 ## Errors: two sources, one Python hierarchy
@@ -222,14 +216,14 @@ exception — never a return code a caller can forget to check (the project's ow
    `py::register_exception_translator` in `module.cpp` that catches `const fuse::Error&` and
    re-raises the matching Python type below with `.code`, `.message` and `.report()` populated.
 
-**The owner's ruling (2026-10-12): flat, not triaged.** Stage A proposed four behavioural
+**Flat, not triaged.** Four behavioural
 `Result`-failure classes (`InvalidArgument`/`StateError`/`NotFoundError`, plus the `fuse::Error`
-side) as a default ergonomics/precision trade-off and left the choice open. Decided instead:
+side) would be an ergonomics/precision trade-off. Instead,
 every `fuse::Result` failure, with no exception, becomes a **bare** `pfuse.FuseError` carrying
 `.code` and `.message` only — no triage of the free-form `E-*` string into a behavioural
 subclass, and no `StateError`/`NotFoundError`/`ValidationError` classes. This removes the
-open-ended "which category does this new `E-*` code belong in" maintenance burden Stage A's
-proposal would have created as `fuse` grows, at the cost of upstream's `except ValueError:`
+open-ended "which category does this new `E-*` code belong in" maintenance burden a triage
+would create as `fuse` grows, at the cost of upstream's `except ValueError:`
 ergonomics for a `Result` failure specifically (a thrown `fuse::Error` still subclasses the
 matching builtin — see the table below).
 
@@ -248,7 +242,7 @@ working for a caller who never imports `pfuse`'s own hierarchy):
 | `pfuse.NotImplementedFeature` | `FuseError, NotImplementedError` | `fuse::NotImplemented` |
 | `pfuse.IoError` | `FuseError, OSError` | `fuse::IoError` |
 
-`pfuse.NotImplementedFeature` keeps the `Feature` suffix from the Stage A proposal rather than
+`pfuse.NotImplementedFeature` keeps the `Feature` suffix rather than
 reusing `NotImplementedError`'s own name: `NotImplemented` is already a Python builtin
 **singleton value** (not an exception), and shadowing that name in `pfuse`'s own namespace
 would be a standing trap for a `from pfuse import *` caller.
@@ -375,7 +369,7 @@ shapes. Three members `soma::PyComponent` never had to address:
   always an in-process peer, never a participant-ABI `ExternalStepComponent`; not an override
   point in v1.
 - **`implicit()` → `ImplicitComponent*`.** **Not exposed to a Python `Component` subclass —
-  confirmed by the owner (2026-10-12) as a v1 scope decision, not left open.** `ForwardingComponent
+  a v1 scope decision.** `ForwardingComponent
   ::implicit()` always returns `nullptr`. Reasons, stated rather than assumed: (1)
   `LinearizationToken::apply_jacobian()`/`apply_preconditioner()` are called from inside a Krylov
   inner loop — potentially hundreds of times per Newton step — and each call would reacquire the
@@ -391,13 +385,13 @@ shapes. Three members `soma::PyComponent` never had to address:
 **Two refusal paths cover the restriction, not one, and `test_newton.py` exercises both.**
 (1) A Python component honest about its capabilities (no `CAPABILITIES` attribute claiming
 `CAP_RESIDUAL`) added to a Newton region is refused by `fuse::Runner::initialize()`'s own
-pre-existing `E-NEWTON-CAPABILITY` check (`src/runtime/checkpoint_support.cpp`) — this track did
-not add a second check for that case; the existing one already covers it, measured by
+`E-NEWTON-CAPABILITY` check (`src/runtime/checkpoint_support.cpp`) — there is no second check for
+that case; the existing one already covers it, measured by
 `TestNewtonCapabilityGate`. That check's own message says "override `Component::implicit()` to
 return it" — correct advice for a C++ author, impossible advice for a Python one, since `pfuse`
 exposes no such override point; `test_newton.py` records the exact message rather than treating
-the mismatch as fixed, for the owner to judge whether a Python-specific wording belongs in that
-C++ message (`KNOWN_ISSUES.md` D37). (2) A Python component that *claims* `CAP_RESIDUAL` or
+the mismatch as fixed; whether a Python-specific wording belongs in that
+C++ message is open. (2) A Python component that *claims* `CAP_RESIDUAL` or
 `CAP_LINEARIZATION` via `CAPABILITIES` without the C++ hooks to back it — the case the honest
 check above cannot see, since it only tests for an *unclaimed* capability — is refused
 immediately when `add_component()` is called, before `initialize()` ever runs
@@ -405,29 +399,27 @@ immediately when `add_component()` is called, before `initialize()` ever runs
 
 ## What this does not expose, and why
 
-- **`fuse_coupler_abi()` / `soma.Context`'s mirror.** The owner's own choice of `pybind11` over
+- **`fuse_coupler_abi()` / `soma.Context`'s mirror.** The choice of `pybind11` over
   the C++ model, not the ABI (Scope, above). A `cffi` shim is the ABI's binding, separately.
 - **MPI.** `RunnerConfig::base_communicator`/`force_this_process`/`transport_setup` are not
-  bound. mpi4py is not installed in the target interpreter and MPI-from-Python is explicitly out
-  of this task's scope; `RunnerConfig{}`'s defaults (`transport = "copy"`, no communicator) move
+  bound. mpi4py is not installed in the target interpreter and MPI-from-Python is out
+  of scope; `RunnerConfig{}`'s defaults (`transport = "copy"`, no communicator) move
   whole arcs without ever touching MPI, which is what every acceptance test below runs against,
   and matches how `examples/dn_heat`'s own binary runs (`examples/CMakeLists.txt` links it
   against `fuse::runtime`/`fuse::backend` only — no MPI, no PETSc, no Fortran; confirmed by
-  configuring and building it in this track's own tier-0 tree, see "The `dn_heat` driver test").
+  configuring and building it in a tier-0 tree, see "The `dn_heat` driver test").
 - **`fuse::NativeMeshBackend`, `fuse::MoabBackend`.** Only `fuse::SerialMeshBackend` is bound in
   v1 — every upstream test and every acceptance test below needs nothing richer than
   `"generated:line:N"`/`"generated:box:NxMxP"`, and the native/MOAB backends' own Python surface
   (if ever wanted) is a separate decision with its own dependency story.
-- **`FieldSpec::hdf5_path`** (the LowFive track). Nothing in `pfuse` v1 launches a
+- **`FieldSpec::hdf5_path`** (LowFive). Nothing in `pfuse` v1 launches a
   `LaunchMode::LowFive` component, so a bound field could never legally set this; binding an
   always-`None` field would be dead surface.
 - **`ImplicitComponent`/`LinearizationToken` for Python `Component` subclasses.** See
-  "Components implemented in Python," above — confirmed by the owner, not left open.
+  "Components implemented in Python," above.
 - **`validate()`'s `ConnectPolicy` tunables.** Bound with its default; no acceptance test needs
   a non-default policy. Extending the binding to accept one is additive and can wait.
 
-See also `KNOWN_ISSUES.md` D37, which records this list (plus the `dump_graphviz()` naming bug
-found while writing `test_graph.py`, below) as the v1/v2 scope boundary for the owner.
 
 ## Build/CMake integration
 
@@ -497,18 +489,18 @@ code 0.
 `examples/dn_heat/main.cpp` prints a 12-row comparison table (explicit/Picard/Aitken/IQN-ILS/
 IQN-ILS+QR2/severed/two "long" variants/Newton/Newton-nonlinear) plus residual histories and
 summary statistics. The reference was captured by actually building and running the example in
-this track's tier-0 tree (flags per the task's standing rules, plus two
-`FETCHCONTENT_SOURCE_DIR` overrides pointing at the owner's own already-populated `_deps/` to
+a tier-0 tree (with two
+`FETCHCONTENT_SOURCE_DIR` overrides pointing at an already-populated `_deps/` to
 avoid a network clone of r3d/yaml-cpp), with `OMP_PROC_BIND=false OMP_PLACES=threads`: Kokkos'
 own OpenMP initialization prints a 5-line, environment-dependent advisory banner only when
 `OMP_PROC_BIND` is unset, and with it set the remaining 48 lines reproduced byte for byte across
 three separate runs. The full captured output is `python/tests/golden/dn_heat_full_output.txt`.
 
-**The owner's ruling (2026-10-12): reimplement the slabs in Python, not a test-only native
-extension.** Stage A proposed exposing the existing native `dn::DirichletSlab`/`NeumannSlab`
-(`examples/dn_heat/dn_component.hpp`) through a small test-only pybind11 target as the only way
-to honestly claim "byte for byte," leaving a Python reimplementation with a derived tolerance as
-the cheaper alternative (open question 3). Decided instead: reimplement the two components'
+**Reimplement the slabs in Python, not a test-only native
+extension.** Exposing the existing native `dn::DirichletSlab`/`NeumannSlab`
+(`examples/dn_heat/dn_component.hpp`) through a small test-only pybind11 target is the only way
+to honestly claim "byte for byte"; a Python reimplementation with a derived tolerance is
+the cheaper alternative. The choice here: reimplement the two components'
 closed-form physics as Python `pfuse.Component` subclasses (`python/tests/
 dn_heat_components.py`), drive them through the real `fuse::Runner` via `pfuse.Session`, and
 measure whether the result is bit-identical before writing a single assertion — rather than
@@ -540,20 +532,19 @@ graph authored from Python produces `g.to_bytes()` that matches this reference b
 Newton *configuration* compiles to the identical descriptor a native one would, independent of
 the fact that running it is out of scope.
 
-### A naming bug found while writing these tests, not fixed
+### A naming bug the tests record
 
 `include/fuse/ir/dump.hpp:126`, inside `dump_graphviz()`, still emits the literal header
 `"digraph soma_ir {"` — a leftover from the soma → fuse rename that `dump_text()` (line 73, same
-header) already carries correctly as `"# fuse-ir v1"`. This track does not edit `src/`/
+header) already carries correctly as `"# fuse-ir v1"`. The Python tests do not edit `src/`/
 `include/`; `test_graph.py` records the finding as an `xfail(strict=True)` test citing both line
-numbers (`KNOWN_ISSUES.md` D37), so the suite documents it rather than silently working around
+numbers, so the suite documents it rather than silently working around
 it, and will fail loudly (an unexpected XPASS) the day someone fixes `dump_graphviz()` without
 updating that test.
 
 ## The analytic problem
 
-A second coupled problem (`test_analytic_problem.py`), per the owner's third ruling
-(2026-10-12): small enough to solve by hand, with a tolerance *derived* from that solution
+A second coupled problem (`test_analytic_problem.py`), small enough to solve by hand, with a tolerance *derived* from that solution
 rather than picked by trial and error. Two single-station components — `Source` (`x_new = RHO *
 y_in + C`) and `Mirror` (`y_new = x_in`, a pure relay) — wired through the same "one channel
 lagged, one not" two-channel shape `dn_heat_components.build_graph()` uses, Picard-only
@@ -569,10 +560,9 @@ a-posteriori identity (`|value − y*| = RHO/(1−RHO) · |value_k − value_{k�
 approximate, and the test checks it as measured equality (with an explicit, stated floating-point
 allowance — not a fitted margin) rather than an inequality loose enough to always pass.
 
-## Signature conventions fixed while writing the acceptance tests
+## Signature conventions
 
-Two binding-signature choices the test files above already assume, recorded here so Stage B
-does not have to re-derive them from the tests alone:
+Two binding-signature choices the test files above assume:
 
 - **`add_component(name, ranks, interval=1, kind=ComponentKind.Physics)` takes a `RankSet`
   object for `ranks`, not upstream's `first_rank=`/`rank_count=` keyword pair.** `fuse::RankSet`

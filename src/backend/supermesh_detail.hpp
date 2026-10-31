@@ -3,8 +3,7 @@
 // PRIVATE to src/backend/: not under include/fuse/, because nothing outside
 // this translation unit and its whitebox test needs it. Exists so
 // test/backend/supermesh_test.cpp can call `inward_plane` directly with a
-// manufactured degenerate face (REVIEW.md R-12/BK-M2's "Test to add", which
-// the fix pass's own report flagged as impractical through the public
+// manufactured degenerate face (impractical through the public
 // MeshView grammar alone -- SerialMeshBackend has no explicit point/cell
 // source form to build a degenerate cell with). Reached the same way
 // test/parallel/comm_graph_test.cpp reaches the transport layer's private
@@ -22,14 +21,13 @@
 
 namespace fuse::supermesh_detail {
 
-/// REVIEW.md R-13 (BK-M3): the per-cell coverage audit's rejection, factored
-/// out so it is unit-testable on a synthetic ratio directly -- the defect
-/// class it guards against (overlap inflated past the cell it came from,
-/// R-12's family) cannot be produced through the public MeshView grammar by
-/// a well-formed, non-self-intersecting mesh, which is why the original fix
-/// pass could only add a mutation (`supermesh-no-over-coverage-audit`) and
-/// not a permanent GoogleTest case. Testing the boundary condition and the
-/// error shape directly closes that gap without needing to manufacture
+/// The per-cell coverage audit's rejection, factored out so it is
+/// unit-testable on a synthetic ratio directly -- the defect class it guards
+/// against (overlap inflated past the cell it came from) cannot be produced
+/// through the public MeshView grammar by a well-formed,
+/// non-self-intersecting mesh, so a mutation
+/// (`supermesh-no-over-coverage-audit`) is the other evidence. Testing the
+/// boundary condition and the error shape directly needs no manufactured
 /// invalid geometry.
 constexpr double kSupermeshCoverageTol = 1e-9;
 
@@ -78,7 +76,7 @@ namespace detail {
 /// Face `i` of a simplex omits vertex `i`. Fills the inward plane and
 /// returns whether the face was non-degenerate.
 ///
-/// REVIEW.md R-12: a zero-length edge (2D) or zero-area face (3D) has no
+/// A zero-length edge (2D) or zero-area face (3D) has no
 /// normal to give -- `n` comes out `(0,0,0)`, and with it `d == 0`
 /// regardless of the vertex used to compute it (`d = -(0 . v[a]) == 0`).
 /// r2d/r3d's clip keeps the side where `dot(n, x) + d >= 0`, so an

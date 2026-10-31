@@ -1,5 +1,3 @@
-// S8 physics-kit, track "Integrators", Stage B Round 1 (task item 5).
-//
 // Every tolerance below is DERIVED and printed next to the assertion that uses it
 // (the project's own standing rule): the convergence-order bound comes from the
 // least-squares fit's own standard error on the slope, not a number chosen after a
@@ -195,7 +193,7 @@ TEST(ExplicitIntegrator, Dopri45IsFifthOrderOnDahlquistAtFixedStep) {
   expect_order(fit_order(hs, errors), 5.0, "DOPRI45 (fixed step)");
 }
 
-// The nonlinear check (task item 5): Dahlquist alone cannot distinguish a correctly
+// The nonlinear check: Dahlquist alone cannot distinguish a correctly
 // adapted nonlinear stage loop from one that only happens to work because lambda is a
 // scalar constant -- the logistic equation's own right-hand side depends on y itself.
 TEST(ExplicitIntegrator, Kutta44IsFourthOrderOnTheLogisticEquation) {
@@ -243,7 +241,7 @@ TEST(ExplicitIntegrator, APerturbedKutta44CoefficientFailsTheOrderFourBand) {
 
 // ===========================================================================
 // DOPRI45 adaptive: reaches the window end EXACTLY (Rational equality, via
-// SubStepClock -- the owner's own decision), with step rejections exercised under a
+// SubStepClock), with step rejections exercised under a
 // tight tolerance.
 // ===========================================================================
 TEST(ExplicitIntegrator, Dopri45AdaptiveLandsExactlyOnTheWindowEndViaSubStepClock) {
@@ -315,7 +313,7 @@ TEST(ExplicitIntegrator, Dopri45RejectsAnOversizedInitialStepUnderATightToleranc
 
 // ===========================================================================
 // Byte-identical agreement against an independent 40-line reference RK loop, on the
-// SAME fixed step sequence (task item 5) -- the reference uses the SAME tableau
+// SAME fixed step sequence -- the reference uses the SAME tableau
 // (butcher_tableau.hpp), never a second, separately-typed copy of the coefficients, so
 // this test checks ExplicitIntegrator::step()'s own ARITHMETIC, not whether two
 // independently-transcribed coefficient sets happen to agree.
@@ -408,7 +406,7 @@ TEST(ExplicitIntegrator, RefusesADimensionMismatch) {
 TEST(ExplicitIntegrator, RefusesAnEmbeddedControllerOverANonEmbeddedTableau) {
   ControllerOptions opt;
   opt.order = 2; opt.embedded_order = 1;
-  // forward_euler_tableau() has no embedded estimate (Round 1 misuse case).
+  // forward_euler_tableau() has no embedded estimate (misuse case).
   ExplicitIntegrator<double> integrator(forward_euler_tableau(), EmbeddedController(opt), 1e-6, 1e-8);
   auto p = dahlquist_problem(-1.0, 0.0);
   std::vector<double> y{1.0, 0.0};
@@ -420,13 +418,12 @@ TEST(ExplicitIntegrator, RefusesAnEmbeddedControllerOverANonEmbeddedTableau) {
 }  // namespace
 }  // namespace fuse::num
 
-// S8 physics-kit, Stage B Round 2, task item 4 (SSP methods): SSPRK33/SSPRK104 run
+// SSP methods: SSPRK33/SSPRK104 run
 // through ExplicitIntegrator unchanged (both are plain Erk-family tableaus); their
 // SSP property is verified here by a monotonicity test, not re-proving the order
-// (order_conditions_test.cpp's own RoundTwoTableaus suite already does that
+// (order_conditions_test.cpp's own ExtendedTableaus suite already does that
 // algebraically) and not the SSP coefficient itself (ssp_coefficient.hpp's own
-// computation, cross-checked in butcher_tableau_test.cpp... actually verified via the
-// factory functions' own use of `ssp_coefficient_from_shu_osher`, reproducing the
+// computation, verified via the factory functions' own use of `ssp_coefficient_from_shu_osher`, reproducing the
 // published 1 and 6 -- see butcher_tableau.hpp's own ssprk33_tableau()/
 // ssprk104_tableau() doc comments).
 namespace fuse::num {
@@ -469,11 +466,11 @@ std::vector<double> step_function_initial_data(int n) {
 
 }  // namespace
 
-// The task's own BOTH-DIRECTIONS instruction: h <= C * h_FE preserves the initial
+// Both directions are checked: h <= C * h_FE preserves the initial
 // total variation (no new oscillation can appear from a TVD scheme); h > C * h_FE is
 // NOT guaranteed to, and MEASURED here to actually violate it for a step comfortably
-// past the method's own SSP coefficient -- both halves run for every SSP tableau this
-// round adds, over several steps (one step alone can be deceptively forgiving).
+// past the method's own SSP coefficient -- both halves run for every SSP tableau,
+// over several steps (one step alone can be deceptively forgiving).
 TEST(ExplicitIntegrator, SspMethodsPreserveMonotonicityWithinTheirCoefficientAndViolateItBeyond) {
   struct Case { const char* name; ButcherTableau tableau; };
   const std::vector<Case> cases = {
@@ -544,7 +541,7 @@ TEST(ExplicitIntegrator, SspMethodsPreserveMonotonicityWithinTheirCoefficientAnd
 // in a DIFFERENT order (the recursion's own chained intermediate "u" values vs the
 // derived A/B/C matrix's row-by-row stage loop), so floating-point non-associativity
 // can differ in the last bit or two even though both are mathematically identical --
-// unlike round 1's own byte-identical reference checks, which ran the IDENTICAL
+// unlike the byte-identical reference checks above, which ran the IDENTICAL
 // stage-by-stage Butcher loop both times.
 TEST(ExplicitIntegrator, Ssprk104MatchesTheShuOsherRecursion) {
   constexpr double h = 0.1;

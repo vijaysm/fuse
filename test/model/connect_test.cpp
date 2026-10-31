@@ -63,9 +63,8 @@ TEST(Connect, IntentBecomesRoleAndExtensiveFieldsRequireConservation) {
             ConservationGuarantee::None);
 }
 
-// BM-1 (review 2026-10-11): `declared_transfer()` is what `check_channel()`
-// used to replace with a hardcoded `TransferKind::Copy`. These tests pin
-// its own contract directly, against a channel's real `RemapSpec` and
+// `declared_transfer()` is what `check_channel()` uses in place of a
+// hardcoded `TransferKind::Copy`. These tests pin its own contract directly, against a channel's real `RemapSpec` and
 // region, independent of `check_connection()`'s stages (those are
 // `Compatibility.ConservationRules`'s job, test/model/compatibility_test.cpp).
 namespace {

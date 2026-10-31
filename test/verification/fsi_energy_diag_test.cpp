@@ -1,7 +1,8 @@
-// KNOWN_ISSUES.md D9 diagnosis: "Find where the coupled FSI gains energy".
+// Diagnosis of the coupled FSI energy growth: "Find where the coupled FSI
+// gains energy".
 //
-// The lead's method (docs/user/fsi-channel.md's "Known open issues", this
-// task's own instructions): make the question linear-algebraic. Both halves
+// Method (docs/user/fsi-channel.md's "Known open issues"): make the
+// question linear-algebraic. Both halves
 // of examples/fsi_channel are LINEAR per step (Stokes and Euler-Bernoulli are
 // both linear PDEs, discretised linearly; every boundary function here is a
 // FIXED function of (position, time) only, never of the solution) and the
@@ -15,21 +16,21 @@
 // steady 0), M and b are the SAME every coupling cycle: this is genuinely a fixed
 // linear recurrence, not merely "linearised about a waveform point". Its
 // spectral radius rho(M) is therefore the exact per-coupling-cycle growth factor
-// this whole test suite has been chasing: rho(M) > 1 confirms a genuine
+// this whole test suite measures: rho(M) > 1 confirms a genuine
 // SCHEME instability, independent of the coupling iteration (which the
 // existing tests already established converges tightly every window), and
 // the dominant eigenvector says WHICH carried-state entries carry it.
 //
-// "The full carried state" (this task's own phrasing) is exactly what each
+// "The full carried state" is exactly what each
 // component's own save_state()/restore_state() pair checkpoints:
 //   - BeamComponent: BeamSolver::State { w, wdot, wddot } (interior nodes
 //     only -- the clamped ends are permanently 0, never perturbed);
 //   - FluidComponent: FlowState { u, v, p }, AND `velocity_in_t0_` --
 //     save_state()'s own body treats the wall-velocity-at-this-coupling-cycle's-t0
 //     snapshot as part of what it captures (see fsi_components.hpp), so it
-//     is "anything else the component checkpoints" this task's instructions
-//     call out, not an incidental detail. `FluidComponent::
-//     set_velocity_in_for_test()` (added this round) is the seam that
+//     is "anything else the component checkpoints", not an incidental
+//     detail. `FluidComponent::
+//     set_velocity_in_for_test()` is the seam that
 //     makes it independently perturbable -- normally only the "wall_
 //     velocity" field transfer delivery (H applied to the beam's CURRENT
 //     velocity) ever writes it, which is unreachable from outside the
@@ -42,21 +43,22 @@
 // `tol`) and ordinary floating-point round-off, since the map is genuinely
 // linear, not merely well-approximated as such.
 //
-// OUTCOME (KNOWN_ISSUES.md D9 has the full numbers): rho(M) = 1.108145 on
-// the production grid, rho^2 matching the measured 1.22796 per-step
-// energy ratio to ~4 figures; on the smaller grid the tests below
+// OUTCOME: with the wall traction carrying the force ON the wall, the
+// coupled step map is neutrally stable (rho(M) = 1.000000, the |lambda| = 1
+// mode being Newmark's acceleration passenger). A wall traction that
+// carried the force on the fluid (a negative added mass) gave rho(M) =
+// 1.108145 on the production grid, rho^2 matching the measured 1.22796
+// per-step energy ratio to ~4 figures; on the smaller grid the tests below
 // actually run (for runtime), rho(M) = 1.115-1.116 and rho^2 agrees only
 // to ~2 figures -- same qualitative mechanism, weaker quantitative match
-// at coarser resolution. Either way this confirms the growth is a
-// genuine scheme instability. The dominant eigenvector is ~85-96% pressure, ~4-15% the
-// beam's own first bending mode; its velocity field is divergence-free
-// everywhere except the outflow column, where the pressure-outlet
-// condition's own documented trade-off leaves a local mass source. A
-// global mass-conservation correction (StokesSolver::step) was added and
-// verified harmless, but does NOT resolve D9 (rho and the long-run energy
-// ratio both move by under 1%; see DISABLED_LongRunEnergyGrowth... below).
-// Direct ablation shows the instability is carried almost entirely by
-// wall_traction()'s pressure term. D9 stays OPEN.
+// at coarser resolution. The dominant eigenvector of that unstable map was
+// ~85-96% pressure, ~4-15% the beam's own first bending mode; its velocity
+// field is divergence-free everywhere except the outflow column, where the
+// pressure-outlet condition's own documented trade-off leaves a local mass
+// source. The global mass-conservation correction (StokesSolver::step) is
+// harmless but moves rho and the long-run energy ratio by under 1%. Direct
+// ablation showed the instability was carried almost entirely by
+// wall_traction()'s pressure term.
 
 #include <gtest/gtest.h>
 
@@ -171,8 +173,8 @@ Eigen::MatrixXd beam_alone_map(const fsi::BeamParams& p, double dt, double eps) 
 // ---------------------------------------------------------------------------
 // Fluid alone: wall velocity held at a FIXED (state-independent) value at
 // both CN time levels -- decoupled from any beam, exactly the "fluid under
-// a prescribed wall velocity" configuration KNOWN_ISSUES.md/fsi-channel.md
-// already call bounded. The fixed value itself does not affect M (only b),
+// a prescribed wall velocity" configuration docs/user/fsi-channel.md
+// already calls bounded. The fixed value itself does not affect M (only b),
 // so 0 is as good as any other choice for isolating the linear operator.
 // ---------------------------------------------------------------------------
 Eigen::MatrixXd fluid_alone_map(const fsi::ChannelParams& p, double dt, double eps) {
@@ -201,11 +203,10 @@ Eigen::MatrixXd fluid_alone_map(const fsi::ChannelParams& p, double dt, double e
 }
 
 // ---------------------------------------------------------------------------
-// D9 round 3: the lead's elimination argument, measured directly.
+// Elimination argument for the fluid-alone energy identity, measured
+// directly.
 //
-// WHAT WAS DERIVED AND VALIDATED (not merely assumed -- see this file's own
-// git history for the derivation and the numerical cross-check that caught
-// two sign/attribution errors in an earlier draft of this comment).
+// WHAT IS DERIVED AND VALIDATED (not merely assumed):
 // Dotting every INTERIOR momentum row (u at 1<=i<=nx-1, v at 1<=j<=ny-1 --
 // the DOFs with a genuine governing equation) with its own CN-averaged
 // velocity and summing gives, EXACTLY (validated to round-off, this test's
@@ -242,10 +243,10 @@ Eigen::MatrixXd fluid_alone_map(const fsi::ChannelParams& p, double dt, double e
 // splits into "hypothesis A's own contribution" vs "hypothesis B's own
 // contribution" the way the viscous term does. Consequence: there is no
 // clean R_A + R_B = 0 split to report for the PRESSURE field transfer the way
-// there is for viscosity -- see this task's own submission for how this
-// was resolved (direct measurement of rho(M) under each candidate
-// traction/outflow formula, rather than insisting on a closed-form local
-// split that this discretization's own pressure term does not support).
+// there is for viscosity -- rho(M) is instead measured directly under each
+// candidate traction/outflow formula, rather than insisting on a
+// closed-form local split that this discretization's own pressure term
+// does not support.
 /// Runs ONE cn_step from rest (u0=v0=0 except v0's own WALL slot, which
 /// must carry v_wall_old -- cn_step's explicit-side Laplacian reads it as
 /// row j=ny-1's north neighbour at t0), zero inflow, no-slip bottom, a
@@ -269,9 +270,9 @@ struct FullIdentityResult {
   // Higham gamma_n bound input for W_wall_current: sum_i |dx*(-p_wall_current
   // + 2*mu*dvdy_current_mid)*vw_avg|, UNSCALED (pre-dt, same convention as
   // beam_wall_power in the caller). Populated only by
-  // measure_full_energy_identity_general (track InterfaceBound, D34 item
-  // (B)); the simpler measure_full_energy_identity leaves this at 0.0,
-  // which is fine since no caller of that overload reads this field.
+  // measure_full_energy_identity_general; the simpler
+  // measure_full_energy_identity leaves this at 0.0, which is fine since
+  // no caller of that overload reads this field.
   double W_wall_current_abs_sum = 0.0;
 };
 
@@ -561,7 +562,7 @@ struct CoupledCase {
   int max_iterations = 800;
   // Peak inflow velocity. Defaults to 1.0 (every EXISTING use of this
   // struct/`run_one_coupled_period` relies on that default and is
-  // unaffected). Round 4's own diagnostic sets this to 0.0: since the
+  // unaffected). The coupled-mode budget diagnostic sets this to 0.0: since the
   // beam has no external forcing of its own, zero inflow is the ONLY
   // way to make the coupled step's additive/inhomogeneous term `b`
   // (`run_one_coupled_period`'s output on the zero state) vanish
@@ -671,12 +672,10 @@ CoupledDims coupled_dims(const CoupledCase& c) {
 /// carried state in the same layout.
 Eigen::VectorXd run_one_coupled_period(const CoupledCase& c, const CoupledDims& d,
                                        const Eigen::VectorXd& x) {
-  // Stage-by-stage tracing used to isolate this round's use-after-free
-  // (fixed: FluidComponent::set_velocity_in_for_test, fsi_components.hpp)
-  // and a checkpoint-consistency failure at an over-tight tol (fixed: this
-  // function's own `c.tol`/`c.max_iterations`, plumbed from CoupledCase
-  // rather than hardcoded). Left as a compile-time-eliminated switch,
-  // cheap to flip back on for the next person who needs it.
+  // Step-by-step tracing, for isolating use-after-free or
+  // checkpoint-consistency failures (this function's own
+  // `c.tol`/`c.max_iterations` are plumbed from CoupledCase). A
+  // compile-time-eliminated switch, cheap to flip on.
   constexpr bool kTrace = false;
   if (kTrace) { std::printf("  [trace] build_fsi_graph\n"); std::fflush(stdout); }
   fuse::CouplingGraph graph = build_fsi_graph(c);
@@ -817,7 +816,8 @@ void print_eigenvector_block_breakdown(const CoupledDims& d,
 }  // namespace
 
 TEST(FsiEnergyDiag, BeamAloneStepMapSpectralRadiusIsAtMostOne) {
-  // Same material parameters as the D9 measurement (mass_ratio 2.5).
+  // Same material parameters as the coupled-map measurements below
+  // (mass_ratio 2.5).
   constexpr double L = 1.0, EI = 2.0, rho_s = 1.0, h_s = 0.5;
   const double omega1 = fsi::clamped_beam_first_frequency(L, EI, rho_s, h_s);
   const double T1 = 2.0 * M_PI / omega1;
@@ -877,7 +877,7 @@ TEST(FsiEnergyDiag, FluidAloneStepMapSpectralRadiusIsAtMostOne) {
   }
 }
 
-// D9 round 3: the lead's elimination argument, measured directly (not
+// The fluid-alone elimination argument, measured directly (not
 // inferred from rho(M)). See measure_energy_identity()'s own header
 // comment for the derivation of why R_A and R_B are each independently
 // computable without needing a separate bulk-dissipation formula.
@@ -909,12 +909,11 @@ TEST(FsiEnergyDiag, EnergyIdentityResidualRevealsWhichHypothesisHolds) {
       r.ke_change_u_outflow, r.closure_residual, r.W_wall_viscous_natural,
       r.B_out_viscous_natural, r.W_wall_current, r.W_wall_conjugate,
       r.B_out_natural_form, r.B_out_donothing_form);
-  // Reporting only -- see this task's own submission for what these
-  // numbers mean for D9. `closure_residual` is the one number that MUST
+  // Reporting only. `closure_residual` is the one number that MUST
   // be near round-off for the rest of this measurement to be trusted (it
   // validates that the direct, mechanical Laplacian/divergence sums above
   // correctly mirror cn_step's own stencils, INCLUDING the boundary_bt_term
-  // correction derived and cross-checked this round) -- if it is NOT
+  // correction) -- if it is NOT
   // small, the remaining numbers are not meaningful evidence either way.
   EXPECT_LT(std::abs(r.closure_residual), 1e-9 * std::max(r.E1, 1e-12))
       << "closure_residual should be round-off relative to E1; if this "
@@ -922,41 +921,23 @@ TEST(FsiEnergyDiag, EnergyIdentityResidualRevealsWhichHypothesisHolds) {
          "stencils and the reported numbers below are not trustworthy";
 }
 
-// The main diagnostic. Reports the coupled scheme's own step-map spectral
-// radius on a small grid (kept small so a dense eigensolve over ~35 states,
-// run ~2*D+1 times through the full FUSE graph, stays well inside this
-// task's 30s-per-test budget) at the D9 mass ratio and dt, and breaks the
-// dominant eigenvector down by physical block. NOT gated on rho<=1: this
-// test's job is to MEASURE and REPORT, matching the "Find where" title --
-// the fix itself is verified afterwards by FsiTransient's own re-enabled
-// bound and by a direct rho(M) check post-fix (see below).
-// DISABLED, not loosened: KNOWN_ISSUES.md D9 remains open. Direct, non-
-// linearised cross-check of the round's affine-map finding: reproduces the
-// D9 long-run measurement (mass_ratio 2.5, dt=T1/40, 480 steps = 12 beam
-// periods) and reports the SAME per-step total-energy ratio, averaged over
-// periods 3-12 exactly as the original measurement was windowed, with this
-// round's outflow mass-conservation correction applied (StokesSolver::step,
-// see its own comment). Total energy = beam KE + beam strain energy + fluid
-// KE (StokesSolver::kinetic_energy(), added this round).
-//
-// Measured (this round): geometric-mean per-step ratio 1.226473 over
-// periods 3-12 -- statistically the SAME as D9's original, unfixed 1.22796
-// (a <0.2% difference, consistent with the affine-map spectral radius
-// moving by well under 1% for the same correction). The outflow mass fix
-// does NOT resolve D9; see KNOWN_ISSUES.md D9 for what was ruled out and
-// what the affine-map eigenvector analysis actually points at. Left
-// DISABLED with these numbers, not loosened, exactly as this task's
-// standing instruction requires. Re-enable (tightening EXPECT_LE back to a
-// bound near 1) once a genuine fix is found -- the bound below documents
-// the target, not today's result.
+// Direct, non-linearised cross-check of the affine-map finding: reproduces the
+// long-run measurement (mass_ratio 2.5, dt=T1/40, 480 steps = 12 beam
+// periods) and reports the per-step total-energy ratio, averaged over
+// periods 3-12, with the outflow mass-conservation correction applied
+// (StokesSolver::step, see its own comment). Total energy = beam KE + beam
+// strain energy + fluid KE (StokesSolver::kinetic_energy()). The bound
+// below pins the energy as non-growing; a wall traction that carried the
+// force on the fluid instead of on the wall measured a ratio of 1.22796
+// here.
 TEST(FsiEnergyDiag, LongRunEnergyIsBounded) {
 #if FUSE_HAVE_CUSPARSE
-  // KNOWN_ISSUES.md D44: with the cusolverRf fluid solve this 480-period run
+  // With the cusolverRf fluid solve this 480-period run
   // is not reproducible run to run (traces fork at ~1e-12 after ~70 periods)
   // and 11 of 15 measured runs failed to converge at period 140. Flag off,
   // the same binary is bitwise reproducible and passes. Skipped, not
   // loosened; the other five cases in this binary still run under the flag.
-  GTEST_SKIP() << "D44: nondeterministic under FUSE_ENABLE_CUSPARSE (cusolverRf solve)";
+  GTEST_SKIP() << "nondeterministic under FUSE_ENABLE_CUSPARSE (cusolverRf solve)";
 #endif
   constexpr double L = 1.0, H = 0.2, mu = 0.01, rho_f = 1.0;
   constexpr double EI = 2.0, rho_s = 1.0, h_s = 0.5;
@@ -964,7 +945,7 @@ TEST(FsiEnergyDiag, LongRunEnergyIsBounded) {
   const double omega1 = fsi::clamped_beam_first_frequency(L, EI, rho_s, h_s);
   const double T1 = 2.0 * M_PI / omega1;
   const double dt = T1 / 40.0;
-  constexpr std::size_t n_steps = 480;  // 12 beam periods, D9's own window
+  constexpr std::size_t n_steps = 480;  // 12 beam periods
 
   CoupledCase c;
   c.nx_beam = nx_beam;
@@ -1044,10 +1025,10 @@ TEST(FsiEnergyDiag, LongRunEnergyIsBounded) {
   std::printf("energy[0]=%.6e energy[120]=%.6e energy[480]=%.6e\n", energy[0],
              energy[120], energy[480]);
   std::printf("geometric-mean per-step energy ratio over periods 3-12: %.6f "
-             "(D9's unfixed measurement: 1.22796)\n",
+             "(without the wall-traction fix: 1.22796)\n",
              mean_ratio);
   EXPECT_LE(mean_ratio, 1.01)
-      << "energy still grows by " << mean_ratio << " per step -- D9 not fixed";
+      << "energy still grows by " << mean_ratio << " per step";
 }
 
 TEST(FsiEnergyDiag, CoupledStepMapRevealsTheGrowthMechanism) {
@@ -1114,7 +1095,7 @@ TEST(FsiEnergyDiag, CoupledStepMapRevealsTheGrowthMechanism) {
   // Cross-check against a real multi-period run on this SAME small grid: if
   // rho(M) truly is the per-period growth factor, N periods from a generic
   // (here: the eigenvector-aligned) perturbation should grow like rho^N.
-  // KNOWN_ISSUES.md D9, fixed 2026-09-25: with the wall traction carrying
+  // With the wall traction carrying
   // the force ON the wall (it carried the force on the fluid, a negative
   // added mass), the coupled step map is neutrally stable -- rho = 1.000000
   // measured, the |lambda| = 1 mode being Newmark's acceleration passenger
@@ -1123,7 +1104,7 @@ TEST(FsiEnergyDiag, CoupledStepMapRevealsTheGrowthMechanism) {
   // defect it guards against measured 1.115466 on this very grid.
   EXPECT_LE(eig.rho, 1.0 + 1e-6)
       << "the coupled step map amplifies: rho = " << eig.rho
-      << " (D9's defect gave 1.115466 here)";
+      << " (a wall traction carrying the force on the fluid gave 1.115466 here)";
 
   if (const char* dump_dir = std::getenv("FSI_DIAG_DUMP_DIR")) {
     const std::string base = dump_dir;
@@ -1161,10 +1142,10 @@ TEST(FsiEnergyDiag, CoupledStepMapRevealsTheGrowthMechanism) {
 }
 
 // ============================================================================
-// ROUND 4: full discrete energy budget evaluated ON THE UNSTABLE MODE ITSELF.
+// Full discrete energy budget evaluated ON A MODE OF THE COUPLED MAP ITSELF.
 // ============================================================================
-// Round 3 validated a fluid-alone energy identity from a hand-picked (rest,
-// synthetic wall velocity) initial condition. This round evaluates the SAME
+// The fluid-alone test above validates an energy identity from a hand-picked
+// (rest, synthetic wall velocity) initial condition. This test evaluates the SAME
 // kind of identity -- extended to the FULL coupled system (fluid + beam,
 // via the beam's own exact Newmark energy identity) and to the mass
 // correction that sits outside `cn_step`'s own saddle point -- but on the
@@ -1178,13 +1159,13 @@ TEST(FsiEnergyDiag, CoupledStepMapRevealsTheGrowthMechanism) {
 
 /// Generalises `measure_full_energy_identity` (which hard-codes a rest
 /// initial fluid state and a synthetic top-wall velocity, both convenient
-/// for round 3's specific elimination argument but not applicable to an
+/// for the rest-state elimination argument but not applicable to an
 /// arbitrary carried state) to ARBITRARY t0 fluid data and ARBITRARY wall
 /// velocities. Same mechanical-sum method and stencils (mirrors `cn_step`
-/// exactly, not any closed-form shortcut); the one substantive fix
-/// relative to the round-3 version is `ke_change_u_outflow`, which must
+/// exactly, not any closed-form shortcut); the one substantive difference
+/// from the rest-state version is `ke_change_u_outflow`, which must
 /// become u1^2-u0^2 once u0 is no longer assumed zero. Always run with
-/// zero inflow (`bcs.left.u=0`) matching round 4's `Umax=0` diagnostic --
+/// zero inflow (`bcs.left.u=0`) matching the `Umax=0` diagnostic --
 /// NOT a general-Umax fluid identity. Returns the RAW (uncorrected)
 /// `cn_step` solution alongside the budget so the caller can isolate any
 /// post-solve correction (StokesSolver's own outflow mass-conservation
@@ -1199,7 +1180,7 @@ GeneralIdentityResult measure_full_energy_identity_general(
     const fsi::ChannelParams& c, double dt, const std::vector<double>& u0,
     const std::vector<double>& v0_in, const std::vector<double>& v_wall_old,
     const std::vector<double>& v_wall_new,
-    // DIAGNOSTIC ONLY (track FsiMassCorr): if non-null, filled with the
+    // DIAGNOSTIC ONLY: if non-null, filled with the
     // assembled saddle-point matrix cn_step() solved, for a condition-number
     // measurement (the mass-correction isolation tolerance below is derived
     // from it). Null by default; no existing call site is affected.
@@ -1211,10 +1192,10 @@ GeneralIdentityResult measure_full_energy_identity_general(
   std::vector<double> v0 = v0_in;
   // v0's own wall slot (j=ny) must carry the t0 wall velocity -- cn_step's
   // explicit-side Laplacian reads it as row j=ny-1's north neighbour at
-  // t0 (round 3's bug #1). The caller's v0 is the carried-state array,
+  // t0. The caller's v0 is the carried-state array,
   // which (like `run_one_coupled_period`'s own v0 seeding) does NOT
   // necessarily have this slot populated with the correct t0 value, so
-  // set it explicitly here, exactly as round 3's version did.
+  // set it explicitly here, as the rest-state version does.
   for (std::size_t i = 0; i < nx; ++i) v0[idx_v(c, i, ny)] = v_wall_old[i];
   const double dx = c.L / static_cast<double>(nx);
   const double dy = c.H / static_cast<double>(ny);
@@ -1231,7 +1212,7 @@ GeneralIdentityResult measure_full_energy_identity_general(
         std::clamp<long long>(ii, 0, static_cast<long long>(nx) - 1));
     return (t < t_mid) ? v_wall_old[i] : v_wall_new[i];
   };
-  bcs.left.u = [](double, double) { return 0.0; };  // Umax=0, round 4's own run
+  bcs.left.u = [](double, double) { return 0.0; };  // Umax=0
   bcs.left.v = [](double, double) { return 0.0; };
   bcs.right.outflow = true;
 
@@ -1270,7 +1251,7 @@ GeneralIdentityResult measure_full_energy_identity_general(
   }
   r.ke_change_v_wall = 0.5 * c.rho * cell * kev;
 
-  // FIX relative to round 3's version: u0 is NOT assumed zero here, so
+  // u0 is NOT assumed zero here, so
   // this must be the CHANGE u1^2-u0^2, not u1^2 alone.
   double keu0 = 0.0, keu1 = 0.0;
   for (std::size_t j = 0; j < ny; ++j) {
@@ -1439,7 +1420,7 @@ GeneralIdentityResult measure_full_energy_identity_general(
 
 /// Everything `run_one_coupled_period` returns, PLUS the intermediate
 /// component-level state (beam energies, delivered load, fluid t0/t1
-/// state and wall velocities) round 4's budget needs -- captured from
+/// state and wall velocities) the coupled-mode budget needs -- captured from
 /// the SAME real Runner/IQN-ILS run, not a second/replayed one.
 struct CoupledPeriodDiag {
   Eigen::VectorXd y_final;
@@ -1453,7 +1434,7 @@ struct CoupledPeriodDiag {
 
 CoupledPeriodDiag run_one_coupled_period_with_budget(
     const CoupledCase& c, const CoupledDims& d, const Eigen::VectorXd& x,
-    // DIAGNOSTIC ONLY (track FsiMassCorr). When non-null, filled with the
+    // DIAGNOSTIC ONLY. When non-null, filled with the
     // wall velocity actually fed into the LAST fluid advance() call of
     // this period -- see FluidComponent::debug_last_velocity_in_used's own
     // comment (examples/fsi_channel/fsi_components.hpp). Null by default,
@@ -1589,8 +1570,8 @@ CoupledPeriodDiag run_one_coupled_period_with_budget(
 /// FluidComponent objects and calling set_state() directly -- the SAME
 /// formulas CoupledPeriodDiag::beam_KE0/beam_PE0/fluid_KE0 (and the *1
 /// counterparts) use inside run_one_coupled_period_with_budget, confirmed
-/// identical to machine precision (MEASURED 2026-10-12, FpPolicy track,
-/// round 4: Q(x) computed this way vs. diag.beam_KE0+beam_PE0+fluid_KE0
+/// identical to machine precision (MEASURED: Q(x) computed this way vs.
+/// diag.beam_KE0+beam_PE0+fluid_KE0
 /// from a REAL production run on the same x, both before and after the
 /// period -- relative difference 0.000e+00 on both the chosen mode's real
 /// and imaginary parts). No dependence on wdd/p/vin, confirmed by
@@ -1635,9 +1616,8 @@ TEST(FsiEnergyDiag, FullBudgetOnTheDominantModeCloses) {
   const double T1 = 2.0 * M_PI / omega1;
 
   // Same small grid as CoupledStepMapRevealsTheGrowthMechanism, so this
-  // test's rho reproduces that test's already-validated 1.115466 exactly
-  // (a regression check on this round's own CoupledCase::Umax addition:
-  // Umax defaults to 1.0, so M is unaffected).
+  // test's rho reproduces that test's exactly (Umax defaults to 1.0, so M
+  // is unaffected by the CoupledCase::Umax field).
   CoupledCase c;
   c.nx_beam = 6;
   c.nx_fluid = 5;
@@ -1665,18 +1645,17 @@ TEST(FsiEnergyDiag, FullBudgetOnTheDominantModeCloses) {
   const EigResult eig = eig_analysis(M1);
 
   // ---- The passenger mode: a retained sanity check, no closure ----------
-  // MEASURED 2026-10-12/13 (FpPolicy track, rounds 3-4): the dominant
+  // MEASURED: the dominant
   // eigenvalue (real, lambda=-1) is Newmark's acceleration passenger and
   // carries no energy of its own -- E0 = 6.755e-22 (default, contracted
   // arithmetic) / 3.043e-20 (FUSE_FP_REPRODUCIBLE=ON) against a noise
   // floor of 100*eig_quality^2*|x|^2 = 1.010e-19 / 5.646e-20 respectively
-  // (round 3's measurement, on the single real eigenvector this mode
+  // (on the single real eigenvector this mode
   // produces) -- E0 is within 1-2 orders of magnitude of its OWN noise
   // floor in both policies, the signature of a mode whose "energy" is
   // just the eigenvector's own finite-difference error, not a physical
-  // quantity. No energy-budget closure is evaluated on it any more (that
-  // used to compare noise with noise, see KNOWN_ISSUES.md D30's FpPolicy
-  // closing note); what is kept is the cheap, policy-independent growth-
+  // quantity. No energy-budget closure is evaluated on it (that
+  // would compare noise with noise); what is kept is the cheap, policy-independent growth-
   // rate check this mode still usefully performs.
   const double lambda_dominant_im = eig.solver.eigenvalues()[eig.dominant].imag();
   ASSERT_LT(std::abs(lambda_dominant_im), 1e-6)
@@ -1694,8 +1673,7 @@ TEST(FsiEnergyDiag, FullBudgetOnTheDominantModeCloses) {
   // The passenger mode above is energetically empty by construction (it is
   // Newmark's own acceleration bookkeeping, not a physical state), so no
   // energy-budget assertion can be evaluated on it without comparing noise
-  // with noise. KNOWN_ISSUES.md D30's FpPolicy closing note (user decision
-  // 2026-10-12): evaluate the budget instead on a mode that carries real
+  // with noise. The budget is evaluated instead on a mode that carries real
   // energy -- the beam's own bending oscillation, which appears in this
   // one-coupling-step map as a COMPLEX-CONJUGATE eigenvalue pair near
   // exp(+-i*omega1*dt) (the phase a free oscillator at the beam's own
@@ -1708,7 +1686,7 @@ TEST(FsiEnergyDiag, FullBudgetOnTheDominantModeCloses) {
   // numerical-noise pairs that could coincidentally have a nearby phase),
   // pick the one whose argument is closest to omega1*dt.
   //
-  // MEASURED 2026-10-12: omega1*dt = 9.0000 deg exactly (2*pi/40, dt being
+  // MEASURED: omega1*dt = 9.0000 deg exactly (2*pi/40, dt being
   // 1/40 of the beam's own closed-form period). The discrete 5-interior-
   // node beam ALONE (no fluid) has its own fundamental frequency at 8.09
   // deg/step (natural_frequencies(1), vs. the continuum closed-form 9.00
@@ -1772,26 +1750,24 @@ TEST(FsiEnergyDiag, FullBudgetOnTheDominantModeCloses) {
 
   // `x` (the real part) and `x_im` (the imaginary part) of the chosen
   // eigenvector. `x` deliberately reuses the name the beam-side/fluid-side
-  // identity code below already expects (see that code's own comments,
-  // unchanged from before this round): it is fed exactly ONE real state
-  // vector and one real production run, same as it always was -- that
-  // state vector is now x_re of the chosen oscillatory mode rather than
-  // the old passenger mode's own (real) dominant eigenvector, but nothing
-  // in the identity derivations below assumed anything about WHICH real
-  // state vector `x` was pending this substitution.
+  // identity code below already expects (see that code's own comments): it
+  // is fed exactly ONE real state
+  // vector and one real production run -- x_re of the chosen oscillatory
+  // mode; nothing in the identity derivations below assumes anything
+  // about WHICH real state vector `x` is.
   Eigen::VectorXd x(n), x_im(n);
   for (Eigen::Index i = 0; i < n; ++i) {
     x[i] = evecs.col(chosen)[i].real();
     x_im[i] = evecs.col(chosen)[i].imag();
   }
 
-  // Round 4's own homogeneous run: Umax=0 so b=0 exactly (only inflow
+  // Homogeneous run: Umax=0 so b=0 exactly (only inflow
   // forces this system; the beam has none of its own), letting TWO real
   // production coupling cycles (one from x, one from x_im) stand in for
   // the complex eigenvector's own one-step map.
   CoupledCase c0 = c;
   c0.Umax = 0.0;
-  // DIAGNOSTIC (track FsiMassCorr): capture the wall velocity actually fed
+  // DIAGNOSTIC: capture the wall velocity actually fed
   // into the LAST fluid advance() call of this period, as distinct from
   // whatever fluid_ptr->velocity_in() reads back once run_period() has
   // returned (diag.vwall1, below). See FluidComponent::
@@ -1822,7 +1798,7 @@ TEST(FsiEnergyDiag, FullBudgetOnTheDominantModeCloses) {
   ASSERT_LT(eig_quality_im, 1e-6);
   // `eig_quality` (re-part) becomes the basis for the two downstream
   // closure tolerances below (dE_beam identity, mass-correction
-  // isolation), exactly as before this round: `x` itself carries this much
+  // isolation): `x` itself carries this much
   // relative error, so no downstream identity built on `x` alone (the
   // beam-side/fluid-side sections, which only ever look at ONE real
   // production run) can close tighter than a small multiple of THIS
@@ -1853,8 +1829,7 @@ TEST(FsiEnergyDiag, FullBudgetOnTheDominantModeCloses) {
   // beam_KE+beam_PE+fluid_KE functional's own, PSD, matrix -- a sum of
   // physical kinetic/potential energies, never negative) and a REAL
   // matrix M with M v = lambda v, decomposing v = x + i*x_im gives
-  // EXACTLY (algebra in the derivation this round's report carries,
-  // verified numerically on this M1/mode to a relative difference of
+  // EXACTLY (verified numerically on this M1/mode to a relative difference of
   // 7.3e-17, i.e. machine precision):
   //   Q(M x) + Q(M x_im) = |lambda|^2 * (Q(x) + Q(x_im))
   // with the cross term between the real and imaginary parts cancelling
@@ -1883,7 +1858,7 @@ TEST(FsiEnergyDiag, FullBudgetOnTheDominantModeCloses) {
   // <u,w>_A = u^T A w (A positive semi-definite, as it is here) gives, for
   // the SAME M/lambda/Q combination as the identity above:
   //   |Q(y) - |lambda|^2 Q(x)| <= 2|lambda| sqrt(Q(x)) sqrt(Q(r)) + Q(r)
-  // (full derivation in this round's own report; the cross terms between
+  // (the cross terms between
   // the "re" and "im" contributions cancel in the SUM the same way the
   // exact identity's do, which is why this bound, too, is stated for the
   // COMBINED Q(x)=Q(x_re)+Q(x_im), Q(r)=Q(r_re)+Q(r_im), not per-part).
@@ -1909,16 +1884,16 @@ TEST(FsiEnergyDiag, FullBudgetOnTheDominantModeCloses) {
   ASSERT_LT(mismatch_total, closure_tol)
       << "the energy budget does not close on the beam's own oscillatory "
          "mode to within the tolerance its own eigenvector accuracy "
-         "permits -- this is the actual finding this test now reports, "
-         "not a pre-existing property to work around";
+         "permits -- a genuine finding, not a "
+         "property to work around";
 
   // ---- Non-vacuity: this mode must actually carry energy -----------------
-  // The point of this round: fail LOUDLY, not pass silently, if this test
+  // Fail LOUDLY, not pass silently, if this test
   // ever lands on an energetically-empty mode (like the old passenger
-  // mode) instead of a real one. MEASURED 2026-10-12/13: the passenger
-  // mode's own E0/(eig_quality^2*|x|^2) ratio was at most ~54 across both
-  // contraction policies and 48 perturbed runs (round 3); THIS mode
-  // measures ~1.0e12 to 4.5e12 (round 4, both policies) -- 10+ orders of
+  // mode) instead of a real one. MEASURED: the passenger
+  // mode's own E0/(eig_quality^2*|x|^2) ratio is at most ~54 across both
+  // contraction policies and 48 perturbed runs; THIS mode
+  // measures ~1.0e12 to 4.5e12 (both policies) -- 10+ orders of
   // magnitude higher. The factor below (1e6) sits comfortably between the
   // two: 4-5 orders of magnitude above the passenger mode's worst measured
   // value, and 6+ orders of magnitude below this mode's own measured
@@ -1938,12 +1913,11 @@ TEST(FsiEnergyDiag, FullBudgetOnTheDominantModeCloses) {
          "needs a different selection, not a passing result";
 
 
-  // ---- From here on: UNCHANGED from before this round, except that
-  // `x`/`diag`/`eig_quality`/`E0` now refer to the chosen oscillatory
-  // mode's REAL PART specifically (one genuine real production run),
-  // not the old passenger mode's own dominant eigenvector -- nothing in
-  // the beam-side/fluid-side derivations below assumed anything about
-  // WHICH real state vector and production run they were given, only
+  // ---- From here on: `x`/`diag`/`eig_quality`/`E0` refer to the chosen
+  // oscillatory mode's REAL PART specifically (one genuine real production
+  // run). Nothing in
+  // the beam-side/fluid-side derivations below assumes anything about
+  // WHICH real state vector and production run they are given, only
   // that there IS one. The imaginary-part run (`diag_im`) is not used
   // again past this point; it already did its job in the combined
   // closure check above.
@@ -1987,7 +1961,7 @@ TEST(FsiEnergyDiag, FullBudgetOnTheDominantModeCloses) {
   // does NOT move rho(M) (the state-space growth rate rho=1.115466 is
   // computed straight from the carried state, never through kinetic_
   // energy()/strain_energy()), so it cannot be the (or the whole)
-  // mechanism sustaining D9; verified with numbers below, not assumed.
+  // mechanism sustaining the energy growth; verified with numbers below, not assumed.
   double beam_wall_power = 0.0;
   for (std::size_t i = 0; i < d.m_beam; ++i) {
     const double wdot_avg = 0.5 * (diag.wd0[i] + diag.wd1[i]);
@@ -1996,7 +1970,6 @@ TEST(FsiEnergyDiag, FullBudgetOnTheDominantModeCloses) {
   beam_wall_power *= 1.0;  // dt applied explicitly below, kept as a plain sum here
   const double dx_beam = c.L / static_cast<double>(c.nx_beam);
   const double dPE = diag.beam_PE1 - diag.beam_PE0;
-  // CORRECTED 2026-10-12 (FpPolicy track, final round, KNOWN_ISSUES.md D34):
   // build_fsi_graph() above does not hand the coupling graph c.dt itself --
   // it quantizes it first, through this very file's rationalize_dt()
   // (8-decimal-place rational; defined near build_fsi_graph(), ~60 lines
@@ -2040,27 +2013,20 @@ TEST(FsiEnergyDiag, FullBudgetOnTheDominantModeCloses) {
          "coincidence?); re-examine before trusting the 'corrected' "
          "identity below";
   // ---- Tolerance: Higham recursive-summation/inner-product bound --------
-  // HISTORY (condensed; superseded below): this tolerance used to be
-  // `1.0 * eig_quality * std::abs(E0)`, on the theory that `x` is an
-  // eigenvector only to relative accuracy eig_quality so no identity
-  // evaluated on it can close tighter. RE-EXAMINED 2026-10-12 (round 4):
-  // on the beam's oscillatory mode that factor narrowly FAILED under the
-  // default (contracted) policy (mismatch/tolerance=1.029); two
-  // independent sweeps (CoupledCase::tol over 6 decades; x's direction
-  // perturbed to move eig_quality by 4919x) both showed the mismatch does
-  // NOT track eig_quality -- dE_beam/dE_beam_predicted are read off ONE
-  // production run's own data with no dependence on x being an
-  // eigenvector of anything, so eig_quality was never the right scale for
-  // this identity's own evaluation error. No derivation was found that
-  // round; the factor was left at 1.0 (expected to fail OFF) rather than
-  // be widened without one.
+  // This tolerance is not `1.0 * eig_quality * std::abs(E0)`, although `x`
+  // is an eigenvector only to relative accuracy eig_quality. dE_beam and
+  // dE_beam_predicted are read off ONE production run's own data with no
+  // dependence on x being an eigenvector of anything, so eig_quality is
+  // not the right scale for this identity's own evaluation error (two
+  // independent sweeps -- CoupledCase::tol over 6 decades, and x's
+  // direction perturbed to move eig_quality by 4919x -- both show the
+  // mismatch does NOT track eig_quality). With the dt_delivered handling
+  // above, the mismatch itself is round-off (measured ~1e-16-1e-17
+  // relative to E0, both policies); a ~1e-12 floor would indicate the
+  // dt-literal/dt-delivered bookkeeping defect, not a genuine eig_quality
+  // or conditioning limit.
   //
-  // CORRECTED 2026-10-12 (final round, KNOWN_ISSUES.md D34): with the
-  // dt_delivered fix above, the mismatch itself dropped to round-off
-  // (measured ~1e-16-1e-17 relative to E0, both policies) -- the ~1e-12
-  // floor this history describes was entirely the dt-literal/dt-delivered
-  // bookkeeping defect, not a genuine eig_quality or conditioning limit.
-  // The tolerance below replaces eig_quality with the actual floating-
+  // The tolerance below uses the actual floating-
   // point evaluation-error bound for the identity's own arithmetic, via
   // Higham's recursive-summation/inner-product result ("Accuracy and
   // Stability of Numerical Algorithms", 2nd ed., Sec. 3.1: for an n-term
@@ -2078,7 +2044,7 @@ TEST(FsiEnergyDiag, FullBudgetOnTheDominantModeCloses) {
   // conditions; this test has no access to the solver's private K_, so
   // it rebuilds the SAME public, documented construction (EI/dx_beam^4
   // times the 5-point stencil {1,-4,6,-4,1}) independently below --
-  // confirmed elsewhere (investigation scratch, not shipped) to match
+  // confirmed to match
   // BeamSolver::K_ to 0.0 in the matrix norm for this exact
   // (nx_beam, L, EI). The quadratic form's own sum of absolute products
   // cancels substantially against its final (small) value -- measured
@@ -2206,13 +2172,13 @@ TEST(FsiEnergyDiag, FullBudgetOnTheDominantModeCloses) {
 
   // ---- Fluid-side: isolate the post-solve mass correction ----------------
   //
-  // MECHANISM, measured directly (track FsiMassCorr, not assumed): this
-  // identity used to key its tolerance to `eig_quality` (the eigensolver's
-  // own residual), on the theory that `u_raw` -- an INDEPENDENT `cn_step`
-  // solve fed the SAME `diag.u0`/`diag.v0`/`diag.vwall0`/`diag.vwall1`
-  // extracted from the production run -- differs from `diag.u1` only by
-  // the eigenvector's own inaccuracy. Three alternative mechanisms were
-  // tested directly, in order, each by a measurement that isolates it:
+  // MECHANISM, measured directly (not assumed): `u_raw` -- an INDEPENDENT
+  // `cn_step` solve fed the SAME `diag.u0`/`diag.v0`/`diag.vwall0`/
+  // `diag.vwall1` extracted from the production run -- differs from
+  // `diag.u1` (away from the outflow column) by round-off only, not by the
+  // eigenvector's own inaccuracy (the eigensolver's `eig_quality`, which is
+  // therefore not the tolerance scale). Alternative mechanisms were ruled
+  // out directly, each by a measurement that isolates it:
   //
   //  (1) hypothesis (c), a test sampling artifact ("u1 and u_raw sampled
   //      at different states"): `diag.vwall1` is `fluid_ptr->velocity_in()`
@@ -2229,35 +2195,34 @@ TEST(FsiEnergyDiag, FullBudgetOnTheDominantModeCloses) {
   //  (2) the cross-call cached saddle-point factorisation (`StokesSolver::
   //      lu_cache_`): `step()` reuses it; this reconstruction's own
   //      `cn_step` call always refactorises. Forcing `step()` to always
-  //      refactorise too (temporarily, in isolation) reproduced the
+  //      refactorise too (temporarily, in isolation) reproduces the
   //      IDENTICAL 1.081237e-10 to every printed digit. REJECTED.
   //  (3) `diag.u0`/`diag.v0` not being bit-identical to the (u_, v_) the
   //      last `advance()` actually restored and solved from --
   //      `StokesSolver::debug_last_u0_used`/`debug_last_v0_used` measure
   //      this directly: both gaps are EXACTLY 0.0. REJECTED.
   //
-  // What remained, and confirmed the mechanism: this call passed the
-  // LITERAL `c.dt` as `cn_step`'s own `dt` argument, while every
-  // PRODUCTION `cn_step` call in this run executed on `dt_delivered =
+  // What remains, and confirms the mechanism: passing the LITERAL `c.dt`
+  // as `cn_step`'s own `dt` argument would mismatch, since every PRODUCTION
+  // `cn_step` call in this run executes on `dt_delivered =
   // rationalize_dt(c.dt).to_double()` -- the SAME test-owned
-  // rationalize_dt()/dt_delivered split D34 (above) already found and
-  // fixed for the beam-side identity, reintroduced here for the fluid
-  // side. `cn_step`'s own matrix carries `dt` through the time-derivative
+  // rationalize_dt()/dt_delivered split as in the beam-side identity
+  // (above). `cn_step`'s own matrix carries `dt` through the time-derivative
   // (O(1/dt)) coefficient, so a relative dt error of
   // |c.dt - dt_delivered| / dt_delivered = 4.596e-7 (measured above, beam
   // section) perturbs EVERY column of the solve, not just the outflow
-  // one the correction touches -- exactly an across-the-board leak, not a
-  // defect confined to one column. Feeding `dt_delivered` instead of the
-  // literal `c.dt` collapsed the non-outflow mismatch from 1.081e-10 to
-  // 4.443e-15 (round-off, ~4 orders of magnitude below `u_raw_scale`
-  // times machine epsilon) -- CONFIRMED. Fixed below by using
+  // one the correction touches -- an across-the-board leak, not a
+  // defect confined to one column. Feeding the literal `c.dt` gives a
+  // non-outflow mismatch of 1.081e-10; feeding `dt_delivered` collapses it
+  // to 4.443e-15 (round-off, ~4 orders of magnitude below `u_raw_scale`
+  // times machine epsilon). The call below therefore uses
   // `dt_delivered` directly; hypotheses (a) [this one] vs. (b) [a genuine
   // defect in the correction's own column-restriction] are thereby
   // distinguished: (b) is REJECTED too, since the correction's own code
   // (examples/fsi_channel/stokes_solver.hpp, the outflow-mass-conservation
   // block) writes to exactly one `idx_u(p_, p_.nx, j)` per row and no
   // other index, and the non-outflow mismatch vanishes once the INPUT
-  // bookkeeping (not the correction) is fixed.
+  // bookkeeping (not the correction) is right.
   const fsi::ChannelParams fc{.nx = c.nx_fluid, .ny = c.ny_fluid, .L = c.L,
                               .H = c.H, .mu = c.mu, .rho = c.rho_f};
   // Evidence for the mechanism story above (hypotheses (c) and the
@@ -2310,8 +2275,8 @@ TEST(FsiEnergyDiag, FullBudgetOnTheDominantModeCloses) {
   // Tolerance DERIVED from the solve's own backward stability, not from
   // eig_quality (eig_quality is the EIGENSOLVER's residual; the
   // eigenvector x and the fluid saddle-point solve are unrelated linear
-  // algebra, and tying one's tolerance to the other's residual was the
-  // original defect this round replaced). With the dt bookkeeping fixed
+  // algebra, and tying one's tolerance to the other's residual would be
+  // wrong). With the dt bookkeeping fixed
   // above, `diag.u1` (away from the outflow column) and `u_raw` are two
   // INDEPENDENT solves of the IDENTICAL assembled system `A x = rhs`
   // (production's cached factorisation vs. this call's fresh one) --
@@ -2364,26 +2329,22 @@ TEST(FsiEnergyDiag, FullBudgetOnTheDominantModeCloses) {
   const double cellf = (c.L / c.nx_fluid) * (c.H / c.ny_fluid);
   correction_energy *= 0.5 * c.rho_f * cellf;
 
-  // KNOWN_ISSUES.md D34 item (A), FIXED (track FsiAdjointness, 2026-10-22):
-  // this used to read `const double dt = c.dt;` here -- the LITERAL dt,
-  // not `dt_delivered` -- while every gen.id.* quantity below was computed
-  // by `measure_full_energy_identity_general`'s own cn_step-style
-  // reconstruction called with `dt_delivered` a few lines above (D80's own
-  // fix). Same mechanism D34 already found and fixed for the beam-side
-  // identity, reintroduced here for this fluid-side one. Measured
-  // directly (not assumed): using the literal dt here contributes
+  // `dt` here is `dt_delivered`, not the LITERAL `c.dt`: every gen.id.*
+  // quantity below was computed by `measure_full_energy_identity_general`'s
+  // own cn_step-style reconstruction called with `dt_delivered` a few
+  // lines above. Same mechanism as for the beam-side identity. Measured
+  // directly (not assumed): using the literal dt here would contribute
   // |c.dt-dt_delivered|*|interior_viscous_power+pressure_div_power-
   // boundary_bt_term| = 6.361e-13 to this identity's mismatch under the
   // default (ON) policy -- 99% of the identity's OWN measured mismatch
   // (6.444e-13) and 59% of the existing `1e-9*|E0|+1e-12` tolerance
   // budget (1.077e-12); under FP_REPRODUCIBLE=OFF it is 1.6e-14, 100% of
   // that run's own mismatch (1.6e-14) but only 1.2% of its (looser,
-  // bigger-E0) tolerance. The tolerance was never breached -- this is
-  // NOT a currently-failing test -- but it was absorbing a real,
-  // non-round-off bookkeeping error rather than the round-off the
-  // ASSERT_NEAR's comment implies. Fixed below by using `dt_delivered`;
-  // collapses the mismatch to 8.26e-15 (ON) / 4.51e-17 (OFF), both >=2
-  // orders of magnitude tighter against the SAME, UNCHANGED tolerance.
+  // bigger-E0) tolerance. The literal dt would not breach the tolerance,
+  // but it would absorb a real, non-round-off bookkeeping error rather
+  // than the round-off the ASSERT_NEAR's comment implies. Using
+  // `dt_delivered` gives a mismatch of 8.26e-15 (ON) / 4.51e-17 (OFF),
+  // both >=2 orders of magnitude tighter against the SAME tolerance.
   const double dt_literal_for_record = c.dt;  // kept ONLY for the recorded (not asserted) comparison below
   const double dt = dt_delivered;
   const double bulk_dissipation =
@@ -2393,7 +2354,7 @@ TEST(FsiEnergyDiag, FullBudgetOnTheDominantModeCloses) {
              "cn_step solution; correction handled as a separate term) "
              "====\n");
   std::printf("interior_viscous_power*dt         = %+.9e\n", dt * gen.id.interior_viscous_power);
-  std::printf("pressure_div_power*dt (GLOBAL, per round 3, not locally "
+  std::printf("pressure_div_power*dt (GLOBAL, not locally "
              "attributable) = %+.9e\n",
              dt * gen.id.pressure_div_power);
   std::printf("boundary_bt_term*dt                = %+.9e\n", dt * gen.id.boundary_bt_term);
@@ -2449,11 +2410,9 @@ TEST(FsiEnergyDiag, FullBudgetOnTheDominantModeCloses) {
   }
 
   // ---- Fluid-side vs beam-side delivered power (H/H^T adjointness) -------
-  // KNOWN_ISSUES.md D34 item (B), FIXED (track InterfaceBound, 2026-10-22,
-  // building on track FsiAdjointness, 2026-10-22 earlier the same day):
-  // this used to compare `dE_beam_naive - gen.id.W_wall_current` and label
-  // a nonzero result "a non-adjoint interface remap". Three hypotheses,
-  // all tested directly rather than assumed:
+  // Comparing `dE_beam_naive - gen.id.W_wall_current` and labelling a
+  // nonzero result "a non-adjoint interface remap" would be wrong. Three
+  // hypotheses, all tested directly rather than assumed:
   //
   //  (h1) non-adjoint H/H^T D under nx_beam != nx_fluid: FALSIFIED. A
   //       standalone program built H (fuse::build_consistent_interp_weights)
@@ -2470,8 +2429,8 @@ TEST(FsiEnergyDiag, FullBudgetOnTheDominantModeCloses) {
   //       `diag.load_in_interior` to round-off (relative <= 1e-9, limited
   //       by how many digits of the production vectors were copied into
   //       the check, not by the matrix itself).
-  //  (h2) dt_delivered/literal-c.dt bookkeeping (same class as item (A)):
-  //       FALSIFIED. Both `dE_beam_naive` and `gen.id.W_wall_current`
+  //  (h2) dt_delivered/literal-c.dt bookkeeping (same class as the
+  //       fluid-side dt bookkeeping above): FALSIFIED. Both `dE_beam_naive` and `gen.id.W_wall_current`
   //       already use `dt_delivered` consistently. Moving `c.dt` exactly
   //       onto the rationalize_dt() 1e-8 grid (so diff=0 identically)
   //       left this section's mismatch bit-for-bit unchanged.
@@ -2490,14 +2449,13 @@ TEST(FsiEnergyDiag, FullBudgetOnTheDominantModeCloses) {
   //       correct identity is `dE_beam_naive + gen.id.W_wall_current == 0`,
   //       not their difference.
   //
-  // GATED (this round): the first attempt at a tolerance for the SUM
-  // under-bounded the OFF-policy measurement by ~20x using only (i) the
+  // GATED: a tolerance for the SUM built only from (i) the
   // w_current sum's own Higham arithmetic error and (ii) the fluid
   // solve's forward error ("two independent solves of the identical
-  // system", `4*kappa_2(A)*u`, D80's own form) propagated through the
-  // wall-traction formula's linear sensitivity to p1/v1. Per this track's
-  // own method (measure, don't scale): instrumented every term and found
-  // the missing source --
+  // system", `4*kappa_2(A)*u`) propagated through the
+  // wall-traction formula's linear sensitivity to p1/v1 under-bounds the
+  // OFF-policy measurement by ~20x. Instrumenting every term (measure,
+  // don't scale) finds the missing source --
   //
   //  (iii) `vwall1 == H*wd1` to round-off (confirmed directly: max gap
   //        0.0 in BOTH policies -- `velocity_in_` IS the H-remap of the
@@ -2637,9 +2595,8 @@ TEST(FsiEnergyDiag, FullBudgetOnTheDominantModeCloses) {
              "into-fluid-sign W_wall_current) = %+.6e (ratio to tolerance = "
              "%.4f)\n",
              interface_sum, std::abs(interface_sum) / interface_tol);
-  std::printf("[recorded, not asserted: the OLD (mislabelled) difference "
-             "beam_received-fluid_delivered = %+.9e -- this is the number "
-             "KNOWN_ISSUES.md D34 originally reported nonzero; it is "
+  std::printf("[recorded, not asserted: the (mislabelled) difference "
+             "beam_received-fluid_delivered = %+.9e -- it is "
              "EXPECTED to be nonzero -- see derivation above, it is not "
              "the quantity that should vanish]\n",
              dE_beam_naive - gen.id.W_wall_current);

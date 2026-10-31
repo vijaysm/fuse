@@ -4,9 +4,8 @@
 #include <limits>
 #include <vector>
 
-/// S8 physics-kit, track "Integrators", Stage B Round 2, task item 4, owner decision
-/// (b): "the SSP coefficient is carried as tableau metadata... must be REPRODUCED by
-/// the computation, not copied" from the paper. This header is that computation: a
+/// The SSP coefficient is carried as tableau metadata and must be REPRODUCED by the
+/// computation, not copied from the paper. This header is that computation: a
 /// Shu-Osher combination's own strong-stability-preserving coefficient (Shu & Osher,
 /// "Efficient implementation of essentially non-oscillatory shock-capturing schemes",
 /// J. Comput. Phys. 77 (1988) 439-471) is the largest r for which the combination is a
@@ -15,12 +14,12 @@
 /// minimum over every stage's own combination (Gottlieb, Shu & Tadmor, "Strong
 /// Stability-Preserving High-Order Time Discretization Methods", SIAM Review 43
 /// (2001), Section 2's own composition argument: a chain is only as SSP as its most
-/// restrictive single link). The task's own "the standard optimisation is unnecessary
-/// for the methods listed" is why this takes a GIVEN Shu-Osher form (the one the
+/// restrictive single link). The standard optimisation is unnecessary
+/// for the methods listed, which is why this takes a GIVEN Shu-Osher form (the one the
 /// paper itself publishes, reproduced in `ssprk33_shu_osher()`/`ssprk104_shu_osher()`
 /// below) rather than searching for the optimal one among every decomposition a given
 /// Butcher tableau admits (a harder problem, Ketcheson's own `optimal_shu_osher.py`-
-/// style search, out of this round's scope).
+/// style search, out of scope).
 namespace fuse::num {
 
 /// One term of a Shu-Osher combination: `alpha * point + beta * h * f(point)`, added

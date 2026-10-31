@@ -15,15 +15,15 @@ into the boxes it indexes.
 on `FUSE_ALLOW_FETCH`: ArborX is required, and a default configure must not fail for want of it. It
 is hand-written rather than routed through `fuse_require()` because the fetch path needs
 `ARBORX_ENABLE_MPI` set to `FUSE_ENABLE_MPI` *before* `FetchContent_MakeAvailable` runs. The pin is by commit
-(`8f89be60bc3797670b9be8843da7dcdbc5f2333f`, exactly tag `v2.1`; verified by the lead;
+(`8f89be60bc3797670b9be8843da7dcdbc5f2333f`, exactly tag `v2.1`;
 `UPSTREAMS.lock`'s `[arborx]` entry), built against the SAME Kokkos target this build already
 resolved -- ArborX's own `CMakeLists.txt` calls `find_package(Kokkos 4.5 REQUIRED CONFIG)`, which
 reuses the existing imported targets once Kokkos is already resolved rather than fetching a second
 copy.
 
 ArborX v2.1 asks for Kokkos >= 4.5; `/opt/kokkos` here is 5.1.0, whose `AnyNewer`
-`KokkosConfigVersion.cmake` satisfies that request at configure time. It had never been compiled
-against 5.1.0 before this track, so per the task's own requirement that was proven FIRST, standalone,
+`KokkosConfigVersion.cmake` satisfies that request at configure time. It had not been compiled
+against 5.1.0 before, so that was proven FIRST, standalone,
 before any `fuse::` code was written: a `BoundingVolumeHierarchy` built over 100 boxes, an
 `intersects` (point-in-box) CRS query, and a `nearest` (k-NN) CRS query all compiled and gave the
 expected indices.
@@ -43,7 +43,7 @@ respectively.
 
 ### An installed MPI-enabled ArborX pulls MPI into a Tier-0 build
 
-Found 2026-09-25 against an installed ArborX 2.1.99 built with `ARBORX_ENABLE_MPI ON`
+Found against an installed ArborX 2.1.99 built with `ARBORX_ENABLE_MPI ON`
 (`/opt/arborx/share/cmake/ArborX`). Two things follow, and both bit:
 
 1. **Its config needs MPI to resolve at all.** `ArborXConfig.cmake` runs
@@ -70,13 +70,13 @@ MPI available the installed 2.1.99 is still preferred.
 `docs/dev/layering.md` / `tools/check-layering.py`'s `LAYERS` list places `search` directly below
 `backend` (between `field` and `backend`) -- the *opposite* direction from `fuse::partition`'s own
 `mesh_adapter.hpp`, which sits above `backend` and freely includes `fuse/backend/mesh_view.hpp`.
-The task's own placement requirement is that `fuse::backend` must be able to depend on
-`fuse::search` (the next phase's nodal remap, which lives at or above `backend`, needs to call into
+The placement requirement is that `fuse::backend` must be able to depend on
+`fuse::search` (the nodal remap, which lives at or above `backend`, needs to call into
 it), which fixes the direction: `search`'s rank must be *less than* `backend`'s.
 
 That creates a real tension `mesh_adapter.hpp` (this layer's, not partition's) has to resolve:
-task item 2 explicitly wants "an adapter that builds element bounding boxes from any fuse
-MeshView", and `fuse::MeshView` is defined one layer *above* `search`. An `#include
+the layer needs an adapter that builds element bounding boxes from any fuse
+MeshView, and `fuse::MeshView` is defined one layer *above* `search`. An `#include
 "fuse/backend/mesh_view.hpp"` here would be exactly the upward dependency the gate exists to
 catch.
 
@@ -84,7 +84,7 @@ catch.
 concept**, over the exact shape `mesh_view.hpp` documents (`dimension()`, `entity_count()`,
 `is_owned()`, `simplex_count()`, `simplex_points()`, `centroid()` -- used only to deduce the point
 type via `decltype`, never named). A caller that already has a concrete `fuse::MeshView&` in scope
-(`fuse::backend` itself, once the nodal-remap track wires this in; a test that links
+(`fuse::backend` itself, once the nodal remap wires this in; a test that links
 `fuse::backend`) instantiates the template there. Ordinary C++ template duck typing makes it
 compile against the real class with no cast and no new virtual dispatch -- `element_boxes` never
 sees `fuse::MeshView`'s name, only its shape, at the point it is instantiated by someone who does.
@@ -93,14 +93,11 @@ meshes; `test/search/refusals_test.cpp`'s `FakeMesh` proves the concept is genui
 just satisfied by inheriting from `fuse::MeshView`) by instantiating the SAME template against an
 unrelated hand-written type.
 
-This is a substantive, not incidental, design decision worth the lead's confirmation -- see
-`open_questions` in this track's report.
-
 ## Tolerance and padding: where "shared face finds both cells" actually lives
 
 `BoxIndex` itself is **tolerance-agnostic**: `BoxIndex::build` takes boxes and indexes exactly what
 it is given, with no relative-tolerance concept of its own. The "a point exactly on a shared face
-between two elements is found in both of their boxes" property the task asks for is a single,
+between two elements is found in both of their boxes" property is a single,
 explicit, separately-testable function instead: `geometry.hpp::padded(box, tol)`, which grows a box
 by `max(tol.relative * diagonal(box), tol.absolute_floor)` -- but **only on the box's own ACTIVE
 axes**, leaving a degenerate one (an embedded-lower-dimension box's unused coordinate, which
@@ -120,7 +117,7 @@ shared coordinate is already found in both unpadded boxes by the closed boundary
 `PointJustOutsideTheExactBoxIsFoundOnlyThroughPadding` test is the one that actually exercises
 `padded()`'s growth, with a point that is not on any exactly-representable coordinate.
 
-**"The containment decision proper belongs to the caller"** (the task's own words): `BoxIndex`'s
+**The containment decision proper belongs to the caller.** `BoxIndex`'s
 point query is a broad-phase, tolerance-widened AABB test, not a final geometric verdict. A caller
 that needs, e.g., true barycentric or natural-coordinate containment for a curved or non-convex
 element makes that decision itself, using `BoxIndex`'s candidates as the set worth checking rather
@@ -187,7 +184,7 @@ construction AND index construction for that mesh's elements never touch the hos
 (`run_distributed_query<Space>`, distributed.cpp), copying `local_boxes`/`points` to the resolved
 space's memory the same way the local facade does, and copying the ranked `(rank, index)` hits back
 to host memory to assemble the `std::vector`-based `DistributedQueryResult` (no device-resident
-overload for the distributed path -- out of this track's scope).
+overload for the distributed path -- out of scope here).
 
 ## Rank agreement in the distributed query
 
@@ -198,12 +195,11 @@ with another rank's, does not refuse alone. Both cases are reconciled with an `M
 across the whole communicator (`MIN` of a locally-computed validity flag, then `MAX`/`MIN` of the
 agreed dimension) BEFORE `ArborX::DistributedTree` is constructed -- the same agree-before-collective
 recipe `fuse::native::migrate` and `fuse::partition::centroids_of` use for their own per-rank
-rejections. A rank with zero local boxes casts no vote in the cross-rank comparison. Found
-2026-10-11: the check used to run before the comm == kNullComm branch and return immediately on a
+rejections. A rank with zero local boxes casts no vote in the cross-rank comparison. Earlier, the check ran before the comm == kNullComm branch and returned immediately on a
 rank-local failure, which left every OTHER rank in `comm` entering the distributed tree's
 collective construction -- a hang, not a refusal -- and the cross-rank disagreement case was not
 checked at all. `test/search/distributed_mpi_test.cpp`'s `RefusesWhenOnlyOneRankSubmitsMixed...`
-and `...DisagreeAboutDimension...` are the firing tests this fix added.
+and `...DisagreeAboutDimension...` are the firing tests for this.
 
 ## Determinism
 
@@ -236,7 +232,7 @@ checks.
   tests, not a regression introduced here), so no MPI test in this repository has ever produced a
   pass/fail verdict from inside it. Its verdict comes from a host run.
 * **Compiled and run here (Tier 0, device)**: `BoxIndex::build`/`query_points`/`query_nearest` on
-  `Kokkos::DefaultExecutionSpace` (Cuda on higgs's build), compared value-for-value against the Host
+  `Kokkos::DefaultExecutionSpace` (Cuda on a CUDA build), compared value-for-value against the Host
   build in the same process (`box_index_test.cpp`'s `DeviceBuildMatchesHostBuildForPointAndNearestQueries`),
   plus the `Kokkos::View`-based build/query overloads end to end against the `std::vector`-based
   result on the same index (`ViewBasedBuildAndQueryMatchVectorBasedOnTheSameIndex`). Every existing
@@ -247,8 +243,7 @@ checks.
   same pre-existing Tier 1 constraint the Host path already carries, above), so the device-mode
   `ArborX::DistributedTree` path has never produced a pass/fail verdict from inside this sandbox
   either.
-* **NOT covered by this track**: anything the nodal-remap track builds on top of `BoxIndex`'s API
-  (see `api_for_next_phase` in this track's report) -- true geometric (natural-coordinate)
+* **NOT covered here**: anything the nodal remap builds on top of `BoxIndex`'s API -- true geometric (natural-coordinate)
   containment. `element_boxes` (the mesh adapter) stays host-only by construction
   (`Kokkos::DefaultHostExecutionSpace`), matching `fuse::partition::centroids_of`'s own scoping: it
   reads a `fuse::MeshView`'s `simplex_points`, which is itself a host-only accessor (see

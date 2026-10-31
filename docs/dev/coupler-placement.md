@@ -1,8 +1,6 @@
-# The coupler-placement track
+# Coupler placement
 
-Design C of `plans/2026-09-23-coupler-placement-and-migration.md` (plans/ is
-gitignored; this page is the durable record). The user's own statement of the
-requirement: *"The coupler by design is distributed and target PEs act as
+The requirement: *"The coupler by design is distributed and target PEs act as
 coupler PEs as well. However, there are several workflows that may require
 the coupler to be defined separately as a component, in which case we need
 to make the connection from source to coupler, and then coupler to target
@@ -61,14 +59,14 @@ with state and a clock" rather than "a placement", checked against
 
 | Site | What it does | Coupler-safe? |
 |---|---|---|
-| `include/fuse/schedule/clock.hpp` `ClockSet` | one `Clock` per component, dense array | **Fixed** (Conformance Unit 2): a coupler gets a `Clock` object (kept dense so `ComponentId` indexing stays valid) and nothing ever calls `advance()` on it, true -- but the original text stopped there, and missed that `common_period()`/`finest_interval()`/`checked_common_period()`/`is_lockstep()`/`earliest_next()`/`due_at()` all folded EVERY clock's own `interval()` into their answer regardless of whether `advance()` is ever called on it. `ComponentDecl::interval` defaults to `Rational{1}` (a coupler declares no interval of its own), so adding a coupler to a window-scoped graph whose real period was shorter than 1 silently pulled `lcm(period, 1) = 1` into the compiled schedule (measured: the Brusselator's own 1/50 window re-ran 50 times before one period elapsed). Every one of those six methods now skips a `ComponentKind::Coupler` entry explicitly (`coupler_[i]`, parallel to `clocks_`) |
+| `include/fuse/schedule/clock.hpp` `ClockSet` | one `Clock` per component, dense array | **Fixed**: a coupler gets a `Clock` object (kept dense so `ComponentId` indexing stays valid) and nothing ever calls `advance()` on it, true -- but the original text stopped there, and missed that `common_period()`/`finest_interval()`/`checked_common_period()`/`is_lockstep()`/`earliest_next()`/`due_at()` all folded EVERY clock's own `interval()` into their answer regardless of whether `advance()` is ever called on it. `ComponentDecl::interval` defaults to `Rational{1}` (a coupler declares no interval of its own), so adding a coupler to a window-scoped graph whose real period was shorter than 1 silently pulled `lcm(period, 1) = 1` into the compiled schedule (measured: the Brusselator's own 1/50 window re-ran 50 times before one period elapsed). Every one of those six methods now skips a `ComponentKind::Coupler` entry explicitly (`coupler_[i]`, parallel to `clocks_`) |
 | `src/runtime/runner.cpp` `build_ticks()` | matches every graph component to a supplied `Component`, generates its `Tick`s | **Fixed**: `ComponentKind::Coupler` entries are skipped in both directions — no `Component` implementation is required, and no `Tick` is generated. Pinned by `Runner.ACouplerNeedsNoComponentAndDeliversTheIdenticalValue`, `Runner.ACouplerContributesNoTicks` |
 | `src/runtime/runner.cpp` `attach_comm_graphs()` | one `MPI_Comm_split` per component, colored by its `RankSet` | Already coupler-safe: loops over every `component_count()` entry unconditionally, so a coupler's ranks get a communicator exactly like any physics component's — this is what lets a channel's Transport/Epoch reach them at all |
 | `src/runtime/runner.cpp` `resolve_remap()` (the identity check, `moves_placement`, `RemapPlan::placement`) | decides where the operator runs and whether it moves data itself | Already coupler-safe: reads the **arc's own** `type.rank_set` (set by lowering to `C`), never re-derives the placement from the channel's declared source/target |
 | `src/runtime/runner.cpp` `resolve_remap()`'s MLS-serial and nodal-parallel-refusal checks (`src_component`/`dst_component`, ~line 594) | decides whether a method needs the distributed path, sized by rank COUNT | **Open question, not fixed** — see below |
 | `src/runtime/runner.cpp` `resolve_epoch_participants()` (~line 2260) | the ranks that must reach one rank-agreement point | Already coupler-safe: reads `ins.attrs.src_rank_set`/`dst_rank_set` directly, so a coupler-routed Epoch's participants resolve correctly with no change |
 | `src/schedule/scheduler.cpp` `rank_participates()`/`epoch_sequence()` | per-rank Epoch sequence, and the Transport/Epoch rank-set-match check | Already coupler-safe: purely a function of `attrs.src_rank_set`/`dst_rank_set`, which name whatever placement lowering put there |
-| `src/runtime/iteration.cpp` `resolve_regions()`'s `R.participants` | the ranks a region's residual reduction runs over | **Fixed**: was built only from `derive_checkpoint_set()`'s `components` (a coupler is never one — it owns no state, so no `Source` node ever names it), which misses a coupler's ranks even though its Transport/Epoch instructions sit inside the region body. Now also unions in every in-region Transport/Epoch's rank sets. Needs `RunnerConfig::base_communicator`, i.e. real MPI, to exercise — **not assessed**, no host run available this track |
+| `src/runtime/iteration.cpp` `resolve_regions()`'s `R.participants` | the ranks a region's residual reduction runs over | **Fixed**: was built only from `derive_checkpoint_set()`'s `components` (a coupler is never one — it owns no state, so no `Source` node ever names it), which misses a coupler's ranks even though its Transport/Epoch instructions sit inside the region body. Now also unions in every in-region Transport/Epoch's rank sets. Needs `RunnerConfig::base_communicator`, i.e. real MPI, to exercise — **not assessed**, it needs a host MPI run |
 | `src/ir/checkpoint.cpp` `derive_checkpoint_set()` | which components need `save_state()`/`restore_state()` | Correct by construction: keyed off `OpKind::Source` provenance, and a coupler has no fields and therefore no `Source` node, so it can never be named |
 | `src/runtime/runner.cpp` `spacetime_window()`/the slab decomposition (~lines 1145, 1232) | a channel's temporal interval, from its OWN source/target component's clock | Correctly NOT coupler-aware: a coupler has no clock, and space-time timing is about the channel's declared endpoints, never about `remap_on` |
 | `src/model/yaml_io.cpp` | text (de)serialization | **New code**: couplers get their own `couplers:` list (no `fields`/`interval` to nest); `remap_on:` resolves through the SAME name table `source`/`target` use |
@@ -88,12 +86,10 @@ when the coupler is a genuinely separate, multi-rank placement, the
 refusal's rank COUNT should come from the coupler, not from the target.
 
 This was deliberately **not changed**. The existing derivation was tuned
-through several rounds of real host MPI debugging (the function's own
-comments name "Round 4", "Round 5" — each fixing a case only a genuine
-multi-rank run exposed), and this sandbox cannot start MPI at all, not even
-`-np 1`. A change here that cannot be verified against a real multi-rank run
-risks reintroducing exactly the class of bug those rounds fixed. Flagged for
-whoever has host access to test it: build a coupler-routed nodal
+through repeated host MPI debugging (each fixing a case only a genuine
+multi-rank run exposed). A change here that cannot be verified against a real
+multi-rank run risks reintroducing exactly the class of bug those fixes
+addressed. It needs a host MPI run to test: build a coupler-routed nodal
 `"consistent"`/`"consistent-transpose"` channel where the coupler spans more
 than one rank and the channel's declared source/target are each on a single
 rank, and check whether the refusal (or its absence) is still correct.

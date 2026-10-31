@@ -9,8 +9,7 @@
 // sweeps rather than being a hard SSA cycle -- the same mechanism
 // `Acyclicity.IterationRegionWithACarriedValueBreaksTheCycle` uses at m = 1).
 //
-// The plan capabilities task (step 1) requires this behaviour recorded
-// before anything changes. Do not "fix" this file when waveform iteration
+// This behaviour is recorded as it stands today. Do not "fix" this file when waveform iteration
 // lands -- update the expectations deliberately, with a comment saying so,
 // because `MultiClockRegion.RatioOneMatchesTodaysSingleClockRegion` is the
 // equivalence anchor for that later change.

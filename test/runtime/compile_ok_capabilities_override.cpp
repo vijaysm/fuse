@@ -1,5 +1,5 @@
 // The CONTROL for compile_fail_stale_rollback_override.cpp: the same shape,
-// written the way KNOWN_ISSUES.md B3 permits -- override `capabilities()`,
+// written the way the interface permits -- override `capabilities()`,
 // not the retired `bool supports_rollback()`. Must compile, which is what
 // proves the other file's failure is the missing virtual and not a broken
 // include or an unrelated typo.

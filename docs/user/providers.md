@@ -452,7 +452,7 @@ entries as the explicit "nothing to capture" default. The two-field `bind()` is 
 
 ```{literalinclude} ../../test/abi/plugins/affine_provider.c
 :language: c
-:lines: 98-237,260-293,311-350
+:lines: 97-236,258-291,309-348
 ```
 
 ## Writing a plugin in Fortran

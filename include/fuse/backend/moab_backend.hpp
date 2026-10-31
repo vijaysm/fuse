@@ -22,7 +22,7 @@ struct SphereRadiusReport {
   /// radius is from `mean_radius`, the same reduced extent. Zero for a
   /// mathematically perfect sphere; a few times `1e-16 * mean_radius` for
   /// a real mesh file's own floating-point round-off (measured on
-  /// `wholeATM_T.h5m`/`recMeshOcn.h5m`, 2026-09-28).
+  /// `wholeATM_T.h5m`/`recMeshOcn.h5m`).
   double max_deviation = 0.0;
 };
 
@@ -135,7 +135,7 @@ class MoabMeshBackend final : public MeshBackend {
   [[nodiscard]] Result<std::size_t> region_size(const Region& r) const override;
   [[nodiscard]] std::string name() const override { return "moab"; }
 
-  /// KNOWN_ISSUES D5, the MOAB half: declare one `RankSet` per graph
+  /// Declare one `RankSet` per graph
   /// component, indexed by `ComponentId` -- mirrors
   /// `PartitionedTestBackend::set_placements`
   /// (test/support/partitioned_test_backend.hpp) and `NativeMeshBackend::
@@ -159,8 +159,8 @@ class MoabMeshBackend final : public MeshBackend {
   ///     -- including its rejections -- is exercised at the base build configuration.
   ///   * A communicator IS adopted -- one `moab::ParallelComm`, on its own
   ///     `moab::Core`, split from the BASE communicator over exactly each
-  ///     processor set's ranks (iMOAB's application-id model, the ruling of
-  ///     2026-09-22). Requires `FUSE_ENABLE_MPI` and an MPI-enabled MOAB;
+  ///     processor set's ranks (iMOAB's application-id model).
+  ///     Requires `FUSE_ENABLE_MPI` and an MPI-enabled MOAB;
   ///     `E-MOAB-NOMPI` otherwise, the same boundary `set_communicator`
   ///     itself draws.
   ///
@@ -216,8 +216,8 @@ class MoabMeshBackend final : public MeshBackend {
   /// `set_communicator` adopted a communicator, and then that communicator's
   /// size.
   ///
-  /// ADDED FOR THE REMAP PATH (Task 5.5), which needs it to reject work it
-  /// cannot do correctly rather than to do it differently. `build_weights`
+  /// USED BY THE REMAP PATH, which needs it to reject work it cannot do
+  /// correctly rather than to do it differently. `build_weights`
   /// intersects the cells THIS RANK holds; on a partitioned read that is a
   /// piece of the domain with no halo coverage, so a source cell straddling a
   /// partition boundary would have the part living on a neighbour silently
@@ -234,13 +234,11 @@ class MoabMeshBackend final : public MeshBackend {
   /// local, and the serial construction is exactly right. Rejecting it would
   /// take remap away from every MPI run and no serial test could see the
   /// difference. Guard on the property that breaks correctness -- the mesh
-  /// being DIVIDED -- not on "a communicator exists". REVIEW.md TF-7: this
-  /// used to say no test in the tree exercises either side of this
-  /// boundary -- stale since `test/parallel/remap_halo_mpi_test.cpp`'s
-  /// `RemapHaloMpi.ERemapParallelRefusesAboveOneRankAndNotAtOne` ported
-  /// (checked, host-verified per that file's own header, at every
-  /// registered rank count 1..5): `== 1` must succeed, `> 1` must refuse
-  /// `E-REMAP-PARALLEL`, both sides of the boundary this paragraph names.
+  /// being DIVIDED -- not on "a communicator exists".
+  /// `test/parallel/remap_halo_mpi_test.cpp`'s
+  /// `RemapHaloMpi.ERemapParallelRefusesAboveOneRankAndNotAtOne` exercises
+  /// both sides of the boundary at every registered rank count 1..5:
+  /// `== 1` must succeed, `> 1` must refuse `E-REMAP-PARALLEL`.
   ///
   /// 1 on a moved-from backend, which holds no meshes for anyone to remap.
   /// Never throws.
@@ -272,10 +270,9 @@ class MoabMeshBackend final : public MeshBackend {
   [[nodiscard]] Result<int> partition_rank_of(const Region& r,
                                               std::size_t local_index) const;
 
-  /// DRIVER-SIDE GEOMETRY SEAM (KNOWN_ISSUES D81, owner ruling 2026-10-19:
-  /// "this should not be assumed at the library level and the driver needs
-  /// to explicitly invoke it"). `build_remap_halo`'s covering-set
-  /// construction rejects a spherical pair whose two meshes fit to
+  /// DRIVER-SIDE GEOMETRY SEAM. This should not be assumed at the library
+  /// level; the driver needs to explicitly invoke it. `build_remap_halo`'s
+  /// covering-set construction rejects a spherical pair whose two meshes fit to
   /// DIFFERENT radii (`E-REMAP-GEOMETRY`, "not the same domain") --
   /// correctly, and this library-level refusal is NEVER bypassed by
   /// anything below: grep `src/` for `project_onto_unit_sphere` finds no
@@ -348,7 +345,7 @@ class MoabMeshBackend final : public MeshBackend {
                                                                         ComponentId placement);
 
   // =========================================================================
-  // THE REMAP HALO (R3).
+  // THE REMAP HALO.
   //
   // On a partitioned read, the cells of the SOURCE mesh that overlap this
   // rank's target cells are, in general, spread over every rank. A conservative
@@ -374,7 +371,7 @@ class MoabMeshBackend final : public MeshBackend {
   /// remap layer) has been run for this triple AT `placement` (default: the
   /// unplaced/default-Core decomposition, matching every caller that does
   /// not pass one). Never throws; false on a moved-from backend or an
-  /// unknown id. KNOWN_ISSUES D83: `placement` is part of the bookkeeping
+  /// unknown id. `placement` is part of the bookkeeping
   /// key precisely because `build_remap_halo` can run once per placement on
   /// the SAME (source, target, dim) triple (a component's own decomposition
   /// is its own halo); omitting it would make the default Core and every
@@ -433,20 +430,20 @@ class MoabMeshBackend final : public MeshBackend {
   /// `dim`, skipping any whose global id this rank already holds. Nothing but
   /// `build_remap_halo` may call it.
   ///
-  /// KNOWN_ISSUES D83 (owner decision 2026-10-19): `placement` (default: the
+  /// `placement` (default: the
   /// unplaced/default-Core decomposition) names WHICH Core/communicator
   /// `cells` were built in -- the caller's own `native_mesh(source,
   /// placement)` resolution, which it must pass the SAME `placement` to, so
   /// the `moab::EntityHandle`s in `cells` are read back through the Core
   /// that actually allocated them. Reading them through a DIFFERENT Core
-  /// (the gap this item records) is undefined by MOAB's own contract, not
+  /// is undefined by MOAB's own contract, not
   /// merely wrong bookkeeping.
   Result<std::size_t> adopt_remap_halo(MeshId source, MeshId target, int dim,
                                        const std::uint64_t* cells,
                                        std::size_t count,
                                        ComponentId placement = ComponentId{});
 
-  /// INTERNAL SEAM, added for Task 5.2 (`src/backend/intx_weights.cpp`) and used
+  /// INTERNAL SEAM for `src/backend/intx_weights.cpp`, used
   /// nowhere else. `MeshView` deliberately exposes no connectivity and no
   /// coordinates, which is right for the runtime but leaves a supermesh
   /// builder unable to do its job: an intersection needs the actual polygons.
@@ -454,11 +451,9 @@ class MoabMeshBackend final : public MeshBackend {
   /// then have to care -- the MOAB-specific remap path reaches through here,
   /// and it is the only thing that may.
   ///
-  /// DEVIATION FROM THE TASK 5.2 BRIEF, which specified `Result<void*>
-  /// native_handle(MeshId)` returning the `moab::Core*` alone. That is not
-  /// enough to identify a mesh: this backend keeps every loaded mesh in ONE
-  /// `moab::Core`, distinguished only by its file set, so a bare interface
-  /// pointer would leave the caller intersecting the union of everything
+  /// A bare `moab::Core*` would not be enough to identify a mesh: this
+  /// backend keeps every loaded mesh in ONE `moab::Core`, distinguished only by
+  /// its file set, so a bare interface pointer would leave the caller intersecting the union of everything
   /// loaded. The file set is returned alongside it.
   ///
   /// The pointer's lifetime is the backend's, exactly as for `view()`.
@@ -466,8 +461,8 @@ class MoabMeshBackend final : public MeshBackend {
   /// Never throws.
   [[nodiscard]] Result<MoabNativeMesh> native_mesh(MeshId id) const;
 
-  /// KNOWN_ISSUES D5's MOAB half, the mismatch `resolve()` (intx_weights.cpp)
-  /// had until this overload existed: `native_mesh(id)` above ALWAYS answers
+  /// The mismatch `resolve()` (intx_weights.cpp) would otherwise have:
+  /// `native_mesh(id)` above ALWAYS answers
   /// the backend's DEFAULT `moab::Core` (`impl_->mb`), regardless of
   /// `placed_view(id, placement)` having answered a DIFFERENT processor
   /// set's OWN `moab::Core` (`set_placements`'s own "one moab::Core per
@@ -489,7 +484,7 @@ class MoabMeshBackend final : public MeshBackend {
 
   /// Whether THIS RANK is inside `placement`'s own declared processor set --
   /// the same test `placed_view`/`native_mesh(id, placement)` already make
-  /// internally (KNOWN_ISSUES D5), exposed so a caller (intx_weights.cpp's
+  /// internally, exposed so a caller (intx_weights.cpp's
   /// `resolve()`) can derive "structurally outside this placement" from the
   /// PLACEMENT itself rather than from a local entity count, which a
   /// genuinely empty (but in-placement) mesh could also produce. `false`

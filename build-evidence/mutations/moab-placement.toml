@@ -1,27 +1,27 @@
-# KNOWN_ISSUES D5, the MOAB half: MoabMeshBackend::set_placements /
+# The MOAB half of placements: MoabMeshBackend::set_placements /
 # placed_view / placed_region_size (src/backend/moab_backend.cpp,
 # include/fuse/backend/moab_backend.hpp).
 #
-# NOT HAND-VERIFIED THIS ROUND, for a reason specific to this sandbox rather
-# than to these rows: ANY MOAB-linked binary aborts on construction here --
+# NOT HAND-VERIFIED, for a reason specific to this sandbox rather than to
+# these rows: ANY MOAB-linked binary aborts on construction here --
 # moab::Core's constructor calls MPI_Init_thread, and this sandbox cannot
-# initialise MPI at all, not even at one rank (docs/dev/testing.md;
-# KNOWN_ISSUES.md C1). Confirmed empirically against the PRE-EXISTING
-# fuse_backend_moab_mesh_test binary (crashes identically on tests this
-# change did not touch), not assumed. tools/mutate.py's own baseline check
-# would therefore report every row below NO-BASELINE (the un-mutated test
-# already "fails" here, for a reason that has nothing to do with the
-# mutation), which is not evidence either way -- so per the standing rule
-# against running mutate.py outside --check-anchors, these rows were
-# written and reasoned through by hand but their kill/not-killed verdict is
-# entirely a host-run responsibility, including the ones marked below as
-# Tier-0-shaped (single rank, no mpiexec) -- Tier 0 in the usual sense of
-# "no MPI job" does not mean "runs in THIS sandbox" for a MOAB target.
+# initialise MPI at all, not even at one rank (docs/dev/testing.md).
+# Confirmed empirically against the fuse_backend_moab_mesh_test binary
+# (crashes identically on tests that were not touched), not assumed.
+# tools/mutate.py's own baseline check would therefore report every row
+# below NO-BASELINE (the un-mutated test already "fails" here, for a
+# reason that has nothing to do with the mutation), which is not evidence
+# either way -- so per the standing rule against running mutate.py outside
+# --check-anchors, these rows were written and reasoned through by hand
+# but their kill/not-killed verdict is entirely a host-run responsibility,
+# including the ones marked below as Tier-0-shaped (single rank, no
+# mpiexec) -- Tier 0 in the usual sense of "no MPI job" does not mean
+# "runs in THIS sandbox" for a MOAB target.
 
 [[mutation]]
 id = "moab-placed-view-outside-placement-falls-back-to-default-mode-a"
 area = "backend"
-describes = "KNOWN_ISSUES D5, MOAB half, no-communicator mode: a placement not containing rank 0 must answer the EMPTY view, never the default one. Making it fall back to view(id) is exactly the silent-wrong-answer this item exists to remove."
+describes = "No-communicator mode: a placement not containing rank 0 must answer the EMPTY view, never the default one. Making it fall back to view(id) is exactly the silent-wrong-answer this item exists to remove."
 file = "src/backend/moab_backend.cpp"
 old = "  if (impl_->placements[placement.value()].contains(0)) return view(id);\n  return &empty_mesh_view();"
 new = "  if (impl_->placements[placement.value()].contains(0)) return view(id);\n  return view(id);"
@@ -81,7 +81,7 @@ test = "backend.moab_mesh"
 [[mutation]]
 id = "moab-placed-view-ignores-non-participation-under-a-real-communicator"
 area = "backend"
-describes = "KNOWN_ISSUES D5, MOAB half, real-communicator mode: a rank outside its placement's sub-communicator (core == nullptr) must answer the empty view. Disabling the check routes it into the meshes-lookup branch instead, which for a non-participating rank finds a null entry and refuses E-MESH-PLACEMENT rather than answering empty -- a different, also-wrong, answer that the partition test below still catches (it asserts placed_view().ok())."
+describes = "Real-communicator mode: a rank outside its placement's sub-communicator (core == nullptr) must answer the empty view. Disabling the check routes it into the meshes-lookup branch instead, which for a non-participating rank finds a null entry and refuses E-MESH-PLACEMENT rather than answering empty -- a different, also-wrong, answer that the partition test below still catches (it asserts placed_view().ok())."
 file = "src/backend/moab_backend.cpp"
 old = "    if (!ctx.participates()) {\n      // This rank is outside the placement: the EMPTY view, never the"
 new = "    if (false) {\n      // This rank is outside the placement: the EMPTY view, never the"
