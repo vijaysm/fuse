@@ -1,11 +1,21 @@
 // physics.fe_quadrature -- ported from the quadrature-exactness portions of
-// KARMA's fe_test.C/fe_face_test.C (item 6's pyramid-quadrature section is
-// explicitly NOT ported -- no pyramid variant exists this wave, see
-// quadrature.hpp's header comment). Verifies exact integration of
+// KARMA's fe_test.C/fe_face_test.C. Verifies exact integration of
 // monomials up to the rule's declared degree, with a round-off TOLERANCE
 // DERIVED from the rule's own data (Quadrature::round_off_bound), per the
 // task's standing rule that a tolerance must be derived, not chosen after
 // a failure.
+//
+// (item 1): Prism and Pyramid join
+// the exactness checks, each with its own closed-form reference integral
+// and its own exactness CLAIM (is_hybrid_product/is_tensor_product
+// below) -- the prism decouples cleanly into a triangle rule times an
+// independent line rule (its own Jacobian has no z dependence, unlike
+// the pyramid's), so its exactness is stronger than a plain total-degree
+// claim: exact whenever (degree in x,y) <= declared degree AND
+// (degree in z) <= declared degree INDEPENDENTLY, not only when their
+// SUM is bounded. The pyramid's single collapse has no such decoupling
+// (quadrature.cpp's own Jacobian derivation), so it keeps the plain
+// total-degree claim the triangle and tetrahedron already use.
 //
 // REFERENCE VALUES. The analytic integral of a monomial over each
 // reference cell is a closed form, not re-derived numerically:
@@ -15,6 +25,17 @@
 //       integral x^a y^b dA = a! b! / (a+b+2)!
 //   tetrahedron (same identity over the unit 3-simplex):
 //       integral x^a y^b z^c dV = a! b! c! / (a+b+c+3)!
+//   prism (triangle base x line [0,1]): the triangle formula above,
+//       times the edge formula on z: a! b! / (a+b+2)! / (c+1)
+//   pyramid (base [-1,1]x[-1,1] at z=0, apex (0,0,1); collapsed map
+//       x=X(1-z), y=Y(1-z), Jacobian (1-z)^2, quadrature.cpp's own
+//       derivation): the X and Y integrals vanish for odd a or b
+//       (symmetric interval) and are 2/(a+1) for even a (same for b);
+//       the z integral is a Beta function, Beta(c+1,a+b+3) =
+//       c! (a+b+2)! / (a+b+c+3)!:
+//       integral x^a y^b z^c dV = [a even ? 2/(a+1) : 0] *
+//                                   [b even ? 2/(b+1) : 0] *
+//                                   c! (a+b+2)! / (a+b+c+3)!
 
 #include "fuse_physics/fe/quadrature.hpp"
 
@@ -56,6 +77,16 @@ double analytic_integral(CellFamily family, unsigned a, unsigned b, unsigned c) 
     case CellFamily::Tetrahedron:
       return factorial(static_cast<int>(a)) * factorial(static_cast<int>(b)) * factorial(static_cast<int>(c)) /
              factorial(static_cast<int>(a + b + c + 3));
+    case CellFamily::Prism:
+      return factorial(static_cast<int>(a)) * factorial(static_cast<int>(b)) /
+             factorial(static_cast<int>(a + b + 2)) / (c + 1);
+    case CellFamily::Pyramid: {
+      const double x_part = (a % 2 == 0) ? 2.0 / (a + 1) : 0.0;
+      const double y_part = (b % 2 == 0) ? 2.0 / (b + 1) : 0.0;
+      const double z_part =
+          factorial(static_cast<int>(c)) * factorial(static_cast<int>(a + b + 2)) / factorial(static_cast<int>(a + b + c + 3));
+      return x_part * y_part * z_part;
+    }
   }
   return 0.0;
 }
@@ -63,13 +94,20 @@ double analytic_integral(CellFamily family, unsigned a, unsigned b, unsigned c) 
 /// For a tensor-product cell (edge/quad/hex), exactness is required
 /// independently on each axis up to `degree` (total monomial degree can
 /// reach dim*degree and still integrate exactly, since each 1-D factor is
-/// separately exact to `degree`). For a simplex cell (triangle/tet), only
-/// the TOTAL degree a+b+c <= degree is guaranteed exact -- the collapsed-
-/// coordinate construction (quadrature.cpp) is built for that, not for
-/// per-axis degree independently.
+/// separately exact to `degree`). For a simplex cell (triangle/tet) or
+/// the pyramid's single collapse, only the TOTAL degree a+b+c <= degree
+/// is guaranteed exact -- the collapsed-coordinate construction
+/// (quadrature.cpp) is built for that, not for per-axis degree
+/// independently.
 bool is_tensor_product(CellFamily family) {
   return family == CellFamily::Edge || family == CellFamily::Quadrilateral || family == CellFamily::Hexahedron;
 }
+
+/// The prism's own hybrid guarantee (this file's header comment): exact
+/// whenever a+b <= degree (the triangle base's own total-degree claim)
+/// AND c <= degree (the axial line's own independent claim) -- neither
+/// is_tensor_product's nor the plain simplex loop's shape.
+bool is_hybrid_product(CellFamily family) { return family == CellFamily::Prism; }
 
 // The largest |error| / bound ratio seen across every monomial of every
 // rule in this file; printed by the last test so the derivation's slack is
@@ -103,6 +141,12 @@ void check_exact_to_degree(CellFamily family, int degree) {
         for (unsigned c = 0; c <= (dim >= 3 ? d : 0); ++c) check_one_monomial(rule, family, degree, a, b, c);
     return;
   }
+  if (is_hybrid_product(family)) {
+    for (unsigned a = 0; a <= d; ++a)
+      for (unsigned b = 0; a + b <= d; ++b)
+        for (unsigned c = 0; c <= d; ++c) check_one_monomial(rule, family, degree, a, b, c);
+    return;
+  }
   for (unsigned a = 0; a <= d; ++a)
     for (unsigned b = 0; a + b <= d; ++b) {
       if (dim == 2) {
@@ -128,6 +172,12 @@ TEST(QuadratureTest, TriangleExactToDeclaredDegree) {
 TEST(QuadratureTest, TetrahedronExactToDeclaredDegree) {
   for (int degree = 0; degree <= 5; ++degree) check_exact_to_degree(CellFamily::Tetrahedron, degree);
 }
+TEST(QuadratureTest, PrismExactToDeclaredDegree) {
+  for (int degree = 0; degree <= 5; ++degree) check_exact_to_degree(CellFamily::Prism, degree);
+}
+TEST(QuadratureTest, PyramidExactToDeclaredDegree) {
+  for (int degree = 0; degree <= 5; ++degree) check_exact_to_degree(CellFamily::Pyramid, degree);
+}
 
 // physics.fe_quadrature.GaussLegendreMatchesClassicalRecurrence -- a
 // smoke check that the degree-0 edge rule (one point) is the midpoint
@@ -139,11 +189,11 @@ TEST(QuadratureTest, DegreeZeroEdgeRuleIsMidpoint) {
   EXPECT_NEAR(rule.weights()[0], 1.0, 1.0e-14);
 }
 
-// physics.fe_quadrature.RefusesUnsupportedFamily -- pyramid/prism are not
-// implemented this wave (quadrature.hpp's own scope note); there is no
-// CellFamily enumerator for them (reference_topology.hpp only names the
-// five implemented families), so the refusal surface is the out-of-range
-// degree check instead -- verified here that it actually fires.
+// physics.fe_quadrature.ZZZ_DerivedBoundHasMeasuredMargin -- every cell
+// family this wave implements is now exercised above (including Prism
+// and Pyramid item 1); the refusal surface
+// left to verify is the out-of-range degree check (RefusesOutOfRangeDegree,
+// below).
 // Runs last (gtest runs a file's tests in definition order): the slack of the
 // derived bound as a measured number. A ratio above 1 anywhere would already
 // have failed the test that saw it; a ratio near 1 would mean the derivation

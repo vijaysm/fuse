@@ -183,6 +183,14 @@ Rule1D gauss_jacobi_01(unsigned n_points, double alpha) {
   return rule;
 }
 
+/// Plain Gauss-Legendre on [-1,1] (alpha = 0, unscaled): the pyramid's
+/// base axes (reference_topology.hpp's own Pyramid5 corners at
+/// (+-1,+-1,0)) span [-1,1], not [0,1], so no rescaling is wanted here --
+/// gauss_jacobi(n, 0.0) already returns nodes on [-1,1] with weights
+/// summing to 2 (the interval's own length), which is the correct total
+/// mass for the unweighted measure on [-1,1].
+Rule1D gauss_legendre_m1_1(unsigned n_points) { return gauss_jacobi(n_points, 0.0); }
+
 }  // namespace
 
 Quadrature::Quadrature(CellFamily family, int degree) : family_(family), degree_(degree) {
@@ -247,6 +255,54 @@ Quadrature::Quadrature(CellFamily family, int degree) : family_(family), degree_
           const double a = ra.nodes[i], b = rb.nodes[j], c = rc.nodes[k];
           points_.push_back(Point(a * (1.0 - b) * (1.0 - c), b * (1.0 - c), c));
           weights_.push_back(ra.weights[i] * rb.weights[j] * rc.weights[k]);
+        }
+    return;
+  }
+  if (family == CellFamily::Prism) {
+    // Triangle base (a,b as above) times a plain line in the third
+    // (axial) direction -- item 1 ("prism =
+    // triangle x line tensor"): the reference prism (reference_topology.
+    // cpp's Prism6 corners) is exactly the unit triangle cross [0,1], so
+    // the Jacobian factors into (triangle's own (1-b)) times (the line's
+    // own 1), with no interaction between them -- a plain tensor product
+    // of the triangle rule already derived above and a third
+    // Gauss-Legendre line rule.
+    const auto ra = gauss_legendre_01(n), rb = gauss_jacobi_01(n, 1.0), rz = gauss_legendre_01(n);
+    sweeps_ = std::max({ra.sweeps, rb.sweeps, rz.sweeps});
+    for (std::size_t k = 0; k < n; ++k)
+      for (std::size_t j = 0; j < n; ++j)
+        for (std::size_t i = 0; i < n; ++i) {
+          const double a = ra.nodes[i], b = rb.nodes[j], z = rz.nodes[k];
+          points_.push_back(Point(a * (1.0 - b), b, z));
+          weights_.push_back(ra.weights[i] * rb.weights[j] * rz.weights[k]);
+        }
+    return;
+  }
+  if (family == CellFamily::Pyramid) {
+    // Single collapse (X,Y,z) in [-1,1]x[-1,1]x[0,1] -> (x,y,z) =
+    // (X(1-z), Y(1-z), z) -- item 1
+    // ("pyramid = collapsed-coordinate Gauss-Jacobi(alpha=2)") --
+    // matching reference_topology.cpp's own Pyramid5 corners at
+    // (+-1,+-1,0) and apex (0,0,1). Jacobian d(x,y,z)/d(X,Y,z) = (1-z)^2
+    // (the 3x3 Jacobian's bottom row is (0,0,1), so the determinant
+    // reduces to the top-left 2x2 block's (1-z)*(1-z)): X and Y need no
+    // baked-in weight (plain Gauss-Legendre on [-1,1], their own native
+    // range), z carries the full (1-z)^2 via Gauss-Jacobi(alpha=2) on
+    // [0,1] -- the same alpha-absorbs-the-Jacobian-power technique as the
+    // triangle's and tetrahedron's collapsed axes above, with the
+    // remaining (1-z)^(i+j) power of any monomial x^i y^j z^k folded into
+    // the polynomial argument the Gauss-Jacobi rule is handed (Karniadakis
+    // and Sherwin, 2nd ed., section 2.3's own remark that Gauss-Jacobi
+    // exactness holds for the weight times ANY polynomial of the stated
+    // degree, not only one normalised to the weight's own power).
+    const auto rx = gauss_legendre_m1_1(n), ry = gauss_legendre_m1_1(n), rz = gauss_jacobi_01(n, 2.0);
+    sweeps_ = std::max({rx.sweeps, ry.sweeps, rz.sweeps});
+    for (std::size_t k = 0; k < n; ++k)
+      for (std::size_t j = 0; j < n; ++j)
+        for (std::size_t i = 0; i < n; ++i) {
+          const double x = rx.nodes[i], y = ry.nodes[j], z = rz.nodes[k];
+          points_.push_back(Point(x * (1.0 - z), y * (1.0 - z), z));
+          weights_.push_back(rx.weights[i] * ry.weights[j] * rz.weights[k]);
         }
     return;
   }
