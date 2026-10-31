@@ -107,6 +107,19 @@ if(NOT _fuse_rc EQUAL 0)
 endif()
 message(STATUS "abi.install_consumer_fortran: ${_fuse_posit_output}")
 
+message(STATUS "abi.install_consumer_fortran: running the reverse sweep consumer")
+execute_process(
+  COMMAND "${CONSUMER_BUILD_DIR}/adjoint_consumer_fortran"
+  WORKING_DIRECTORY "${CONSUMER_BUILD_DIR}"
+  OUTPUT_VARIABLE _fuse_adjoint_output
+  ERROR_VARIABLE _fuse_adjoint_error
+  RESULT_VARIABLE _fuse_rc)
+if(NOT _fuse_rc EQUAL 0)
+  message(FATAL_ERROR "the reverse sweep Fortran consumer exited ${_fuse_rc}:\n"
+                      "${_fuse_adjoint_output}\n${_fuse_adjoint_error}")
+endif()
+message(STATUS "abi.install_consumer_fortran: ${_fuse_adjoint_output}")
+
 if(DEFINED REFERENCE_OUTPUT)
   if(NOT EXISTS "${REFERENCE_OUTPUT}")
     message(FATAL_ERROR "REFERENCE_OUTPUT was given but does not exist: ${REFERENCE_OUTPUT}")

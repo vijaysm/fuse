@@ -75,3 +75,13 @@ add_custom_command(TARGET posit_consumer_fortran POST_BUILD
           ${CMAKE_CURRENT_SOURCE_DIR}/posit_two_component.yaml
           $<TARGET_FILE_DIR:posit_consumer_fortran>/posit_two_component.yaml
 )
+
+# The reverse sweep program (adjoint_consumer.f90): the adjoint arrays of a coupling the caller steps
+# itself, reversed between begin_adjoint_step and end_adjoint_step, checked by the adjoint identity.
+add_executable(adjoint_consumer_fortran ../adjoint_consumer.f90)
+target_link_libraries(adjoint_consumer_fortran PRIVATE fuse::abi-fortran fuse::abi)
+add_custom_command(TARGET adjoint_consumer_fortran POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy
+          ${CMAKE_CURRENT_SOURCE_DIR}/two_component.yaml
+          $<TARGET_FILE_DIR:adjoint_consumer_fortran>/two_component.yaml
+)
