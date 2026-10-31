@@ -626,6 +626,10 @@ add_library(fuse::runtime ALIAS fuse-coupler-runtime)
 target_compile_features(fuse-coupler-runtime PUBLIC cxx_std_20)
 target_link_libraries(fuse-coupler-runtime PUBLIC
   fuse::schedule fuse::num fuse::transport fuse::backend)
+# make_agreed_failure() (fuse/field/collective_agreement.hpp), the one message shape of an agreed
+# refusal, for the agreement at the end of a reverse period (runner.cpp). Private: no public
+# header of the runtime names it.
+target_link_libraries(fuse-coupler-runtime PRIVATE fuse::field)
 set_target_properties(fuse-coupler-runtime PROPERTIES
   EXPORT_NAME runtime
   CXX_VISIBILITY_PRESET hidden

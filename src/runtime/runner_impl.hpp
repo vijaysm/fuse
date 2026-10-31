@@ -1907,6 +1907,14 @@ struct Runner::Impl {
   /// rank there is nobody to disagree with.
   Result<void> reconcile_epoch(const Instruction& ins);
 
+  /// The agreement at the end of a reverse period: the status of every rank that takes part in
+  /// any agreement point of the plan is reduced, and a rank that did not fail records
+  /// `E-RT-EPOCH-PEER` if another did, so that the period fails (and is reversed again by the
+  /// next call) on all of them together. The reverse order puts a component's step AFTER the
+  /// exchanges that follow it in the forward order, so a failure at a step has no agreement point
+  /// behind it in the sweep. A no-op without a base communicator or without an `Epoch`.
+  Result<void> agree_on_adjoint_period();
+
   /// Set when an instruction fails mid-period. The period loop keeps going
   /// from there but executes ONLY `Epoch` instructions, so the failing rank
   /// still reaches every agreement point its partners are waiting at. Without

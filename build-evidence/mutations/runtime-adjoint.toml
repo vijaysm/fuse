@@ -234,6 +234,11 @@ new = "const Result<void> agreed = Result<void>::success();"
 target = "fuse_parallel_adjoint_runner_mpi_test"
 test = "parallel.adjoint_runner_mpi.3"
 requires = "mpi"
+# NOT KILLED (higgs, 2026-10-31, 2 and 3 ranks): the plan of the failure test (traced) puts every step of a period
+# ahead of every exchange of it, so in the reverse sweep a failing step is reversed after the last Epoch and the failure is
+# carried by the agreement at the end of the period (RuntimeAdjointMpi.AFailureOnOneRank...). What this Epoch
+# agreement changes is the moment a healthy rank learns of a failure that came before it, which takes a
+# failing instruction (an exchange that errors) ahead of an Epoch; no test builds one.
 
 [[mutation]]
 id = "runtime-adjoint-sweep-reports-success-after-a-failure"
@@ -264,6 +269,65 @@ describes = "a rank that has failed skips the exchanges as well as the local wor
 file = "src/runtime/runner_adjoint.cpp"
 old = "if (step_failure.has_value() && !is_collective(stream[ev.index].kind)) continue;"
 new = "if (step_failure.has_value()) continue;"
+target = "fuse_parallel_adjoint_runner_mpi_test"
+test = "parallel.adjoint_runner_mpi.3"
+requires = "mpi"
+# NOT KILLED (higgs, 2026-10-31, 2 and 3 ranks): a failing step is reversed after every exchange of the period
+# in the plan of the failure test (traced), so no exchange follows it and skipping the exchanges after a failure leaves nobody
+# waiting. It takes a failing instruction ahead of an exchange (or a plan that steps a component after an
+# exchange); no test builds one.
+
+[[mutation]]
+id = "runtime-adjoint-sweep-skips-the-agreement-of-the-period"
+area = "runtime_adjoint_agreement"
+describes = "the ranks are not asked to agree on the status of a reverse period, so a rank whose partner failed at a step returns success"
+file = "src/runtime/runner_adjoint.cpp"
+old = "const Result<void> agreed = agree_on_adjoint_period();"
+new = "const Result<void> agreed = Result<void>::success();"
+target = "fuse_parallel_adjoint_runner_mpi_test"
+test = "parallel.adjoint_runner_mpi.3"
+requires = "mpi"
+
+[[mutation]]
+id = "runtime-adjoint-period-agreement-does-not-record-the-peer-failure"
+area = "runtime_adjoint_agreement"
+describes = "a rank that learns at the end of a reverse period that another failed does not record it"
+file = "src/runtime/runner.cpp"
+old = "  if (!step_failure.has_value()) {\n    AgreedRefusal refusal;"
+new = "  if (false) {\n    AgreedRefusal refusal;"
+target = "fuse_parallel_adjoint_runner_mpi_test"
+test = "parallel.adjoint_runner_mpi.3"
+requires = "mpi"
+
+[[mutation]]
+id = "runtime-adjoint-period-agreement-omits-the-origin-rank"
+area = "runtime_adjoint_agreement"
+describes = "the failure a rank records at the end of a reverse period does not name the rank it came from"
+file = "src/runtime/runner.cpp"
+old = "    refusal.origin_rank = origin;\n"
+new = ""
+target = "fuse_parallel_adjoint_runner_mpi_test"
+test = "parallel.adjoint_runner_mpi.3"
+requires = "mpi"
+
+[[mutation]]
+id = "runtime-adjoint-period-agreement-omits-the-origin-message"
+area = "runtime_adjoint_agreement"
+describes = "the failure a rank records at the end of a reverse period does not carry the message the origin failed with"
+file = "src/runtime/runner.cpp"
+old = "    refusal.origin_message = std::move(message);\n"
+new = ""
+target = "fuse_parallel_adjoint_runner_mpi_test"
+test = "parallel.adjoint_runner_mpi.3"
+requires = "mpi"
+
+[[mutation]]
+id = "runtime-adjoint-period-agreement-reports-the-wrong-origin"
+area = "runtime_adjoint_agreement"
+describes = "the origin named is the highest-numbered rank that failed instead of the lowest"
+file = "src/runtime/runner.cpp"
+old = "    agreed[0] = std::min(agreed[0], peer[0]);"
+new = "    agreed[0] = std::max(agreed[0] == kNoRank ? peer[0] : agreed[0], peer[0] == kNoRank ? agreed[0] : peer[0]);"
 target = "fuse_parallel_adjoint_runner_mpi_test"
 test = "parallel.adjoint_runner_mpi.3"
 requires = "mpi"
