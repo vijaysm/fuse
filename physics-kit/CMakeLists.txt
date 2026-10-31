@@ -20,6 +20,14 @@
 
 add_library(fuse_physics_kit
   src/version.cpp
+  src/fe/reference_topology.cpp
+  src/fe/quadrature.cpp
+  src/fe/basis.cpp
+  src/fe/geometry_map.cpp
+  src/fe/fe_base.cpp
+  src/spatial/domain.cpp
+  src/spatial/mesh.cpp
+  src/spatial/mesh_utils.cpp
 )
 add_library(fuse::physics_kit ALIAS fuse_physics_kit)
 
