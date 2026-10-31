@@ -10,10 +10,9 @@
 # its FUSE_ENABLE_TESTS block's add_subdirectory(test) for exactly this
 # reason.
 #
-# NO_LAYER_LIB + explicit LIBS: the ctest name the task names is
+# NO_LAYER_LIB + explicit LIBS: the ctest name is
 # "physics.skeleton" (fuse::physics is the component's NAMESPACE), but the
-# CMake target alias is "fuse::physics_kit" (the task's own name for it) --
-# the two are deliberately different, so fuse_add_gtest's default
+# CMake target alias is "fuse::physics_kit" -- the two are deliberately different, so fuse_add_gtest's default
 # "fuse::${layer}" link (which would look for a nonexistent "fuse::physics"
 # target) is turned off and the real target named explicitly.
 #

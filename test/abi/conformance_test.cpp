@@ -1507,7 +1507,7 @@ TEST(ConformanceTest, PluginDeviceFieldOnAHostOnlyBuildIsRefused) {
 // "device_out" is refused outright by PluginDeviceFieldOnAHostOnlyBuildIs-
 // Refused above before this test's own body could ever run, so this test
 // skips there by the same #if this file's own device-field tests already
-// use. On a real device build (measured on ssh:higgs, GTX 1050 Ti, sm_61):
+// use. On a real device build (measured on a CUDA host, GTX 1050 Ti, sm_61):
 // PASSES.
 TEST(ConformanceTest, MixedHostAndDeviceFieldsOnOneProviderConvergeThroughChannels) {
 #if !(defined(KOKKOS_ENABLE_CUDA) || defined(KOKKOS_ENABLE_HIP) || defined(KOKKOS_ENABLE_SYCL))

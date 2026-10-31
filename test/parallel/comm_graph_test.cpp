@@ -3,8 +3,7 @@
 // This is the regression matrix of docs/history/soma/specs/2026-09-11-comm-graph-design.md
 // Section 7. Every test here is named after what it pins rather than after the
 // function it calls, and every load-bearing one was checked against a
-// deliberately broken build before being trusted -- the discipline
-// docs/HANDOFF.md "Lessons paid for" item 2 exists for.
+// deliberately broken build before being trusted.
 //
 // WHY THIS IS NOT A fuse_add_mpi_test(), for the same three reasons
 // parallel/mpi_transport_test.cpp gives: it calls MPI_Init, it is launched by
@@ -301,7 +300,7 @@ void deliver(const CommGraph& g, const std::vector<double>& src_vals,
     return;
   }
 
-  // Overlapping rank sets: `MpiTransport` cannot express them (R24), so the
+  // Overlapping rank sets: `MpiTransport` cannot express them, so the
   // per-peer plan is executed directly. `send_plan()`/`recv_plan()` are
   // ordered on the same key at both ends, which is what makes this line up.
   std::vector<MPI_Request> reqs;
@@ -741,7 +740,7 @@ TEST(CommGraph, PartiallyOverlappingRanksMatchByNearestNeighbor) {
 // With identical partitions on both sides, every match has both ends on one
 // rank. Nothing at all may reach MpiTransport -- and the proof that it cannot
 // is that MpiTransport REJECTS the spec this graph produces: the two rank sets
-// are identical, which is the overlap it rejects by design (R24). If the
+// are identical, which is the overlap it rejects by design. If the
 // shortcut were removed, those matches would have to travel through exactly
 // the mechanism that will not carry them.
 TEST(CommGraph, AMatchWithBothEndsOnOneRankNeverReachesMpiTransport) {

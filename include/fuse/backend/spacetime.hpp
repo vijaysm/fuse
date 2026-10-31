@@ -230,11 +230,10 @@ struct SpatialWeightsView {
 /// Tier 2 (true 4D intersection for moving meshes, spec Section 7.2) would replace
 /// this with a non-factorising operator; the seam is here.
 ///
-/// DEVIATION FROM THE BRIEF: the brief returns `void`. Every precondition
-/// here (null buffers, out-of-range steps, a spatial operator whose column
-/// count disagrees with `n_src_space`) is a memory-safety precondition, and an
-/// unchecked one vanishes under `-O3 -DNDEBUG`. It returns `Result<void>` so
-/// the checks survive Release.
+/// Every precondition here (null buffers, out-of-range steps, a spatial
+/// operator whose column count disagrees with `n_src_space`) is a memory-safety
+/// precondition, and an unchecked one vanishes under `-O3 -DNDEBUG`. It
+/// returns `Result<void>` so the checks survive Release.
 [[nodiscard]] Result<void> apply_spacetime(const SpatialWeightsView& spatial,
                                            const TemporalProjection& temporal,
                                            const double* src, double* dst,

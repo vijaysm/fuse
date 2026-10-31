@@ -49,7 +49,7 @@
 /// adjoint property for the one operator family it was written for (a
 /// RELATIVE defect, floored at a denominator of 1) -- this file does not
 /// duplicate it or change it; `adjoint_gate` below is the ABSOLUTE,
-/// norm-derived bound the task that produced this file asked for, usable
+/// norm-derived bound this file provides, usable
 /// across every operator family in the project, backend::LinearOperator
 /// included (test/linalg/derivative_gate_test.cpp runs both checks over the
 /// backend cases, so a WeightsOperator is held to both bounds at once).

@@ -130,7 +130,7 @@ part is ONLY the exchange, matching `fuse::partition::detail::collectives.cpp`'s
 - `migrate(mesh, dest, comm)` composes all four, with a COLLECTIVE refusal: `pack_for_migration`'s
   refusal is local, but a caller must never let one rank refuse and return while its neighbours proceed
   into the alltoall expecting every rank to participate -- exactly the "divergent early return causing
-  hangs" failure mode `rcb_moab`'s `MeshMigration.cpp` (see `HANDOFF.md`) met. So `migrate` reduces its
+  hangs" failure mode `rcb_moab`'s `MeshMigration.cpp` met. So `migrate` reduces its
   own local verdict with every other rank via one `MPI_Allreduce(MIN)` BEFORE the exchange: if any rank
   is invalid, EVERY rank returns the refusal, none of them touching the alltoall.
 
@@ -144,7 +144,7 @@ checks a full round trip through two DIFFERENT partitions (a 1-rank mesh split t
 back onto one rank) reproduces the original global cell id set and total measure exactly.
 
 **`fuse::partition::repartition`** (`include/fuse/partition/repartition.hpp`, header-only) is the
-convenience the task asked for: `centroids_of` (already existing, `mesh_adapter.hpp`) + `rcb_partition`
+convenience entry point: `centroids_of` (already existing, `mesh_adapter.hpp`) + `rcb_partition`
 (uniform per-cell weight) + `migrate`, sharing one communicator across all three. A caller wanting
 load-imbalance-aware weights calls `rcb_partition`/`migrate` directly instead.
 

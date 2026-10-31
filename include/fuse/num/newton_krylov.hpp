@@ -186,7 +186,7 @@ class MffdJacobianAction {
 
 enum class EisenstatWalkerChoice {
   /// A fixed `eta` every step -- no adaptivity. Exists as the simplest
-  /// alternative the task names, and as the control a test compares the
+  /// alternative, and as the control a test compares the
   /// other two choices against.
   Constant,
   /// Eisenstat & Walker's choice 1: `eta_k = |  ||F_k|| - ||F_{k-1} +
@@ -217,8 +217,8 @@ struct EisenstatWalkerOptions {
   double eta_max = 0.9;
   /// Floor. SNES's own forcing-term code clamps only at `eta_max`, not
   /// below -- its forcing term can reach exactly zero (an exact linear
-  /// solve). The OPTION exists because the task's own brief named "a cap
-  /// eta_max = 0.9 and floor" as a possibility, but the DEFAULT is `0.0`
+  /// solve). The OPTION exists so a cap `eta_max = 0.9` and a floor can be
+  /// chosen, but the DEFAULT is `0.0`
   /// precisely so that it is SNES's own default (CORRECTED: an earlier
   /// draft defaulted this to `1e-4` as a judgement call, presented
   /// alongside options that are genuinely SNES's own defaults, which

@@ -67,8 +67,8 @@
 /// WHAT THIS DOES NOT DO: the neighbour search itself stays outside this
 /// header (`fuse::search::BoxIndex::query_nearest`, called by the caller --
 /// `build_mls_weights`, mls_weights.cpp -- which copies the results to
-/// `Space` and hands them here, per the task's own "copy results to the
-/// device yourself behind one function" allowance; the search runs on
+/// `Space` and hands them here (the results are copied to the device
+/// behind one function); the search runs on
 /// `BoxIndex`'s own resolved space, Host or Device, independently of this
 /// header). This header's own elimination
 /// (`solve_square_system_partial_pivot`) reports only a per-target PASS/FAIL

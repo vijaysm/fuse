@@ -29,7 +29,7 @@
 /// `MeshView`, so the nodes are ordered by that coordinate, which is exactly
 /// right for a 1D interface and wrong for anything with more than one
 /// tangential direction. This header does not attempt the 2D (surface)
-/// case; see `open_questions` in the task report that introduced this file.
+/// case.
 ///
 /// THE MATRIX. For `n` source nodes sorted by coordinate `x_0 < x_1 < ... <
 /// x_{n-1}` and a target point `x`, `H` has AT MOST TWO nonzeros per row: the

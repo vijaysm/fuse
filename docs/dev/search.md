@@ -97,7 +97,7 @@ unrelated hand-written type.
 
 `BoxIndex` itself is **tolerance-agnostic**: `BoxIndex::build` takes boxes and indexes exactly what
 it is given, with no relative-tolerance concept of its own. The "a point exactly on a shared face
-between two elements is found in both of their boxes" property the task asks for is a single,
+between two elements is found in both of their boxes" property is a single,
 explicit, separately-testable function instead: `geometry.hpp::padded(box, tol)`, which grows a box
 by `max(tol.relative * diagonal(box), tol.absolute_floor)` -- but **only on the box's own ACTIVE
 axes**, leaving a degenerate one (an embedded-lower-dimension box's unused coordinate, which
@@ -117,7 +117,7 @@ shared coordinate is already found in both unpadded boxes by the closed boundary
 `PointJustOutsideTheExactBoxIsFoundOnlyThroughPadding` test is the one that actually exercises
 `padded()`'s growth, with a point that is not on any exactly-representable coordinate.
 
-**"The containment decision proper belongs to the caller"** (the task's own words): `BoxIndex`'s
+**The containment decision proper belongs to the caller.** `BoxIndex`'s
 point query is a broad-phase, tolerance-widened AABB test, not a final geometric verdict. A caller
 that needs, e.g., true barycentric or natural-coordinate containment for a curved or non-convex
 element makes that decision itself, using `BoxIndex`'s candidates as the set worth checking rather

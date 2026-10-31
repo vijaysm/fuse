@@ -213,7 +213,7 @@ class AnnounceCapture {
 }
 
 /// The mutex serializing every high-order build against `AnnounceCapture`'s
-/// process-wide `FILE*` hazard (R10). Function-local static so it is
+/// process-wide `FILE*` hazard. Function-local static so it is
 /// constructed exactly once, on first use, with no static-init-order question
 /// against anything else in this translation unit.
 std::mutex& announce_mutex() {

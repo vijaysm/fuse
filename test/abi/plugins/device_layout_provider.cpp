@@ -6,7 +6,7 @@
  * store through a device pointer is undefined behaviour there (measured
  * directly: the MixedHostAndDeviceFieldsOnOneProviderConvergeThroughChannels
  * row, run with that original plugin, segfaulted inside
- * mixed_memspace_provider.c's own advance() on ssh:higgs, exit code 139,
+ * mixed_memspace_provider.c's own advance() on a CUDA host, exit code 139,
  * because that plugin's own header comment already named the gap -- "a build
  * with a REAL device backend ... would need a device kernel launch to touch
  * that pointer instead"). That plugin now uses the same approach

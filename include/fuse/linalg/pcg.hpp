@@ -29,8 +29,7 @@
 /// replacement strategies for Krylov subspace iterative methods for the
 /// convergence of true residuals", Numer. Lin. Alg. Appl. 7, 2000) and the
 /// search direction restarts from the corrected residual -- robustness
-/// over the one extra `apply` a replacement costs, per the task's own
-/// standing rule.
+/// over the one extra `apply` a replacement costs.
 ///
 /// NO SILENT CAP. Exhausting `PcgOptions::max_iterations` without either
 /// the recurrence or a recomputed residual meeting the tolerance returns

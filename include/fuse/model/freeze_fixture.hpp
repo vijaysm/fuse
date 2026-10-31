@@ -59,7 +59,7 @@ inline CouplingGraph freeze_fixture() {
   // above is the member that actually needs a LowFive-launched component
   // to be present for validate() to accept it, but freeze_fixture is never
   // run through validate() (this file's own opening comment), so the two
-  // are independent for this round trip's purposes.
+  // are independent for the purposes of this round trip.
   (void)g.add_component(
       {.name = "probe", .ranks = {10, 1}, .interval = Rational{1},
        .launch = LaunchSpec{.mode = LaunchMode::LowFive}});

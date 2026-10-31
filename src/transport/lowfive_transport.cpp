@@ -3,9 +3,9 @@
 // THIS FILE IS COMPILED IN EVERY CONFIGURATION. Only its body is conditional.
 // `LowFiveTransport` is declared unconditionally in the public header, so
 // every one of its members must link everywhere; on a build without LowFive
-// they return E-TRANSPORT-NOLOWFIVE and name the CMake option. Task 5.2's
-// failure was the other arrangement -- an always-visible header declaring a
-// function that only exists in some configurations.
+// they return E-TRANSPORT-NOLOWFIVE and name the CMake option. The
+// alternative -- an always-visible header declaring a function that only
+// exists in some configurations -- fails to link elsewhere.
 //
 // THREE THINGS IN HERE ARE NOT OBVIOUS, AND EACH ONE WAS MEASURED.
 //

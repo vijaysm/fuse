@@ -289,7 +289,7 @@ void recursive_bisect(
 
 /// Entry point. Rejects rather than guesses on a malformed call
 /// (E-PART-SIZE-MISMATCH, E-PART-NUM-PARTS, E-PART-NO-MPI, E-PART-WEIGHT,
-/// E-PART-OPTS); every other degenerate case named in the task -- all
+/// E-PART-OPTS); every other degenerate case -- all
 /// points identical, an empty local input, zero total weight, a single
 /// part -- is handled by the SAME code path as the general case, not a
 /// special branch (see docs/dev/partitioning.md).
@@ -360,7 +360,7 @@ RcbResult<ExecutionSpace> rcb_partition(
 
   if (opts.comm == kNullComm) {
     // Exactly one process: nothing to agree with, so the local verdict IS
-    // the global one -- refuse directly, in the order the task named them.
+    // the global one -- refuse directly, in the order below.
     if (!locally_size_ok) {
       FUSE_REFUSE("E-PART-SIZE-MISMATCH",
                  "centroids/weights/gids must have the same length; got {} / {} / {}", n,

@@ -97,9 +97,8 @@ struct LineSearchResult {
   double lambda = 1.0;
   int steps = 0;
   LineSearchStatus status = LineSearchStatus::FullStep;
-  /// Every trial lambda, in the order they were tried -- what the task's
-  /// own test requirement ("record the accepted lambdas") and
-  /// "record the accepted step lengths" read.
+  /// Every trial lambda, in the order they were tried (the accepted lambdas
+  /// and step lengths are read from here).
   std::vector<double> trials;
 };
 

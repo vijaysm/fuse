@@ -137,7 +137,7 @@ void expect_identical_status_code_on_every_rank(const Result<void>& outcome, int
 // collective cases have no counterpart upstream (KARMA never had a
 // collective commit over a REAL communicator in its own test suite,
 // docs/dev/field-semantics-matrix.md Section 2.2) -- this file's own three
-// cases are this round's own addition, not a translation of an existing one.
+// cases are new, not a translation of an existing one.
 
 // --- Case 1: validation disagreement -----------------------------------
 //

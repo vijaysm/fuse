@@ -973,7 +973,7 @@ TEST(QnLeastSquares, HandlesAZeroColumnAndAnEmptyProblem) {
 }
 
 // ---------------------------------------------------------------------------
-// Task 7.4: QR column filtering.
+// QR column filtering.
 //
 // Every test here is written to fail against the no-op filter it replaced:
 // each one either compares a QR filter against FilterKind::None on the same

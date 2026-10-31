@@ -196,7 +196,7 @@ result = "Hand-proved, /tmp/petscselect/b0 (tier-0 without PETSc): 17 cases, all
 [[mutation]]
 id = "newton-petsc-unavailable-refusal-waved-through"
 area = "runtime"
-describes = "resolve_regions()'s own eager substrate-availability check (added alongside check_region_supports_newton()'s call) is short-circuited to never refuse (`false && !substrate_fn.ok()` instead of `!substrate_fn.ok()`), so a Newton-selected region naming an unavailable substrate is accepted at initialize() -- the refusal the task brief required to fire tier-0, without PETSc, would never fire at setup; the SAME region would only be caught (or not) the first time run_region_newton()/run_region_newton_window() itself re-checks the registry, far later than initialize()."
+describes = "resolve_regions()'s own eager substrate-availability check (added alongside check_region_supports_newton()'s call) is short-circuited to never refuse (`false && !substrate_fn.ok()` instead of `!substrate_fn.ok()`), so a Newton-selected region naming an unavailable substrate is accepted at initialize() -- the refusal that must fire at tier 0, without PETSc, would never fire at setup; the SAME region would only be caught (or not) the first time run_region_newton()/run_region_newton_window() itself re-checks the registry, far later than initialize()."
 file = "src/runtime/iteration.cpp"
 old = """      if (const Result<const num::NewtonSolveFn*> substrate_fn =
               resolve_newton_substrate(R.name, decl.newton_config.substrate);

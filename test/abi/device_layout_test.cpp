@@ -1,5 +1,5 @@
 /// Field layout and host/device copies on a real CUDA/HIP/SYCL backend
-/// (run on ssh:higgs, the GPU host). The existing
+/// (run on a CUDA host). The existing
 /// MixedHostAndDeviceFieldsOnOneProviderConvergeThroughChannels row
 /// (test/abi/conformance_test.cpp) is NOT extended here: that row's plugin
 /// (test/abi/plugins/mixed_memspace_provider.c) originally dereferenced a
@@ -97,7 +97,7 @@ constexpr std::size_t kCells = 4;
 // cold start) have more than one period to assert against.
 constexpr int kPeriods = 5;
 
-// Measured directly on this build (FUSE_DEVICE_DEBUG=1, on ssh:higgs), not
+// Measured directly on this build (FUSE_DEVICE_DEBUG=1, on a CUDA host), not
 // assumed: each channel hop in this graph delivers
 // its exported value with a ONE-PERIOD lag (the same "lag-1" convention
 // this tree's own graph_fixture.hpp names throughout,
@@ -572,7 +572,7 @@ TEST(DeviceLayoutAndCopies, HostDeviceHostRoundTripMatchesHostReferenceExactly) 
 
   // RunStats::device_boundary_copies (docs/dev/device-resident-arcs.md,
   // "The boundary rule"), derived from this graph's own instruction
-  // list -- measured with FUSE_DEVICE_DEBUG=1 on ssh:higgs to confirm
+  // list -- measured with FUSE_DEVICE_DEBUG=1 on a CUDA host to confirm
   // which arcs actually cross, not assumed from the field declarations
   // alone. The trace's own "[device-place] arc"
   // lines, one per arc:

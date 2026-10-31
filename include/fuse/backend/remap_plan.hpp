@@ -291,12 +291,12 @@ struct RemapPlan {
 /// components`, both entity-major with the component index fastest -- the same
 /// layout `apply_spacetime` uses. `dst` is overwritten, not accumulated.
 ///
-/// DEVIATION FROM THE BRIEF, which had this return `void`. Every precondition
+/// Returns `Result<void>` rather than `void`. Every precondition
 /// below is a memory-safety precondition on raw pointers, and an unchecked one
 /// vanishes under Release's `-O3 -DNDEBUG`; `components <= 0` in particular
 /// would make `n_rows * components` wrap when widened to `std::size_t` and the
-/// zeroing loop would run for ~2^64 iterations. `apply_spacetime` deviated the
-/// same way and for the same reason. Errors, never throws:
+/// zeroing loop would run for ~2^64 iterations. `apply_spacetime` returns
+/// `Result<void>` for the same reason. Errors, never throws:
 ///
 ///   * `E-REMAP-ARG`  -- null `src`/`dst`, or `components < 1`.
 ///   * `E-REMAP-COO`  -- the triplet arrays disagree in length, or an index

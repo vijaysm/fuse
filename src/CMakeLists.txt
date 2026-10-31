@@ -249,8 +249,8 @@ set_target_properties(fuse-coupler-num PROPERTIES
 # header-only) plus the one
 # translation unit FieldTransaction needs (field/transaction.hpp ->
 # src/field/transaction.cpp): staged, all-or-nothing field updates over
-# fuse::FieldRef (docs/dev/field-semantics-matrix.md Section 2.2, gap 1,
-# BUILT this round). Depends on fuse::base only (Result/Failure, the
+# fuse::FieldRef (docs/dev/field-semantics-matrix.md Section 2.2, gap 1).
+# Depends on fuse::base only (Result/Failure, the
 # Fortran-handle communicator convention) -- `field` is ranked directly
 # above `num` and below `search` in tools/check-layering.py's LAYERS list,
 # and its public headers may name only Kokkos_Core.hpp

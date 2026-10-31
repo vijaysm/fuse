@@ -89,7 +89,7 @@ Three cases, all residuals built directly from this test's own fixtures rather t
   `brusselator::periodic_laplacian` and the reaction Jacobian `d/du (u^2 v - A u) = 2 u v - A`
   written by hand -- `BrusselatorSpeciesResidualMeasuresOrderTwo` measures order in `(1.8, 2.3)`.
 - **A backward-Euler-shaped AFFINE residual**, `r(u) = (I - dt*D*Lap) u - rhs` (the "dn_heat-shaped"
-  case the originating task names, built directly from the same `periodic_laplacian` rather than
+  case, built directly from the same `periodic_laplacian` rather than
   from the `dn_heat` example itself) -- exactly linear in `u`, so its exact Jacobian's remainder is
   mathematically zero at every `h`. `BackwardEulerAffineResidualIsAtTheFloorForEveryH` asserts
   `at_floor_everywhere` and every measured remainder below `1e-8`.

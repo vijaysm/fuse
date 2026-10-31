@@ -207,7 +207,7 @@ TEST(GrayScottMultirate, CommensurateRatiosFixedVDivideNeverStraddles) {
 TEST(GrayScottMultirate, IncommensurateSevenThirteenBothVPolicies) {
   // Window = 13 parts (U, the window-definer); V = 7 parts, which does not
   // divide 13, so V is the one member that can straddle. Both of its
-  // DtPolicy values are exercised, per the task's item (c).
+  // DtPolicy values are exercised.
   const Rational unit{1, 2000};  // 13*unit = 0.0065, small enough to keep Newton in its basin
   const Rational window = unit * Rational{13};
   const Rational v_interval = unit * Rational{7};

@@ -203,7 +203,7 @@ process of the communicator (or of the component) must make the call.
 |---|---|---|---|
 | `version` | `fuse_null` → `fuse_version_info` | any, `ctx` may be `NULL` | library semantic version, `abi_version`, and a descriptive string |
 | `capabilities` | `fuse_null` → `fuse_capability_set` | any, `ctx` may be `NULL` | `FUSE_CAP_*` bits; see [What capabilities reports](#what-capabilities-reports) |
-| `create` | `fuse_null` → `fuse_context_out` | `ctx` must be `NULL` | new context; initialises Kokkos once per process (`E-ABI-CREATE`) |
+| `create` | `fuse_null` → `fuse_context_out` | `ctx` must be `NULL` | new context; initialises Kokkos and reads the error-policy variables once per process (`E-ABI-CREATE`) |
 | `destroy` | `fuse_null` → `fuse_null` | any | ends the context, disconnects a connect-formed world; second call `FUSE_ERR_INVALID` |
 | `last_error` | `fuse_null` → `fuse_error` | any, `ctx` may be `NULL` | see above |
 | `load_graph` | `fuse_graph_source` → `fuse_null` | Empty | YAML path or canonical bytes, exactly one (`E-ABI-LOAD-SOURCE`, `E-ABI-LOAD-STATE`) |
@@ -523,6 +523,15 @@ context; an exit handler finalises it when the process ends. There is no `argv` 
 the device a rank uses comes from the environment variable `KOKKOS_DEVICE_ID` when set; otherwise
 FUSE picks `local_rank % device_count`, or device 0 when no device is visible. A participant's own
 fields are host memory in any case.
+
+## Error-policy variables
+
+The first `create()` in a process also calls `fuse::initialize()`, so `FUSE_ON_ERROR`,
+`FUSE_DEBUGGER`, `FUSE_DEBUGGER_RANKS`, `FUSE_BACKTRACE` and the rest of the family
+([](environment.md#error-policy-variables)) apply to a C or Fortran participant without any further
+call. They are read once per process: a second context does not re-read them. An unrecognised
+value makes `create()` fail with `E-ABI-CREATE`. After `setup()` has formed the base communicator,
+the errors this process reports carry its rank in it.
 
 ## Version compatibility
 
