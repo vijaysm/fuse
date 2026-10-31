@@ -74,7 +74,7 @@ test = [
 [[cell]]
 id = "7"
 axis = "same-rank shortcut"
-pins = "a match with both ends on one rank never reaches MpiTransport -- load bearing, not an optimisation, because MpiTransport refuses the spec such a graph produces (R24)"
+pins = "a match with both ends on one rank never reaches MpiTransport -- load bearing, not an optimisation, because MpiTransport refuses the spec such a graph produces"
 file = "test/parallel/comm_graph_test.cpp"
 kind = "mpi"
 ranks = [1, 2, 3, 4, 5]

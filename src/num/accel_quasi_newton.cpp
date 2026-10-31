@@ -198,7 +198,7 @@ void qn_remainder_norms(const std::vector<double>& v, std::size_t n,
   }
 }
 
-/// SEAM FOR TASK 7.4 -- QR column filtering. Implemented.
+/// SEAM: QR column filtering.
 ///
 /// Called once per iteration, after the new column pair has been appended and
 /// before the least-squares solve, with the authority to drop any column from

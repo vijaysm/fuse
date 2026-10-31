@@ -25,7 +25,7 @@ struct PointHit {
 
 /// CSR-style batched result: query `q`'s hits are
 /// `hits[offsets[q] .. offsets[q + 1])`, sorted ascending by `(rank, index)`
-/// -- the ordering the task's determinism requirement names explicitly, so
+/// -- a deterministic ordering, so
 /// downstream code never depends on which rank's ArborX traversal happened
 /// to answer first.
 struct DistributedQueryResult {

@@ -1,4 +1,4 @@
-// Task 5.4: the MPI transport, run under a real mpiexec with more than one
+// The MPI transport, run under a real mpiexec with more than one
 // rank.
 //
 // WHY THE PATTERNS BELOW ARE NOT THE OBVIOUS ONES. Sources hold CONTIGUOUS
@@ -471,7 +471,7 @@ TEST(MpiTransport, ConcurrentChannelsDoNotCollide) {
 }
 
 // ---------------------------------------------------------------------------
-// The hot loop. Task 4.6's constraint, measured.
+// The hot loop: no per-step allocation, measured.
 // ---------------------------------------------------------------------------
 
 TEST(MpiTransport, PrepareAndMoveAllocateNothingPerStep) {
@@ -794,12 +794,12 @@ TEST(MpiTransport, BuildPlanRefusesWithoutACommunicator) {
 }
 
 // ---------------------------------------------------------------------------
-// MpiTransport THROUGH RunnerConfig::transport_setup (Task 8.5's hook).
+// MpiTransport THROUGH RunnerConfig::transport_setup.
 //
-// Everything above drives MpiTransport directly. Task 8.5 added the hook that
-// is supposed to carry `set_communicator` + `build_plan` into a transport the
-// Runner constructed, and wired LowFive through it; that MpiTransport works the
-// same way was argued by symmetry and never run. These three tests run it.
+// Everything above drives MpiTransport directly. The hook is supposed to carry
+// `set_communicator` + `build_plan` into a transport the Runner constructed
+// (LowFive is wired through it); that MpiTransport works the same way was
+// argued by symmetry. These three tests run it.
 //
 // WHAT THEY FOUND, and what they now pin: THE SYMMETRY DOES NOT HOLD. The
 // Runner fills only four fields of the TransportSpec it hands prepare() --
@@ -1108,7 +1108,7 @@ class AbortOnFailure : public ::testing::EmptyTestEventListener {
 // entry point silently loses that.
 
 // ---------------------------------------------------------------------------
-// The peer-wise plan (R31): partial overlap, and the matched plan as oracle
+// The peer-wise plan: partial overlap, and the matched plan as oracle
 // ---------------------------------------------------------------------------
 
 namespace {

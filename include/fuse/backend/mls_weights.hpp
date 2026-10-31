@@ -188,8 +188,7 @@
 ///                            and exactly the number available without a
 ///                            second factorisation. Two or more neighbours
 ///                            occupying the SAME position is exactly one way
-///                            to trigger this (the case the task calls out by
-///                            name) -- it degrades the moment matrix's rank
+///                            to trigger this -- it degrades the moment matrix's rank
 ///                            like any other loss of geometric information,
 ///                            rather than dividing by a coincident distance:
 ///                            the radial weight is a compactly supported RBF

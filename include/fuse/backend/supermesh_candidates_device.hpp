@@ -97,10 +97,9 @@ struct CandidatePairs {
 /// overlaps target simplex `t`'s, dim-limited exactly as `boxes_overlap`
 /// (supermesh.cpp) is. O(n_t * n_s) box tests, same complexity as the host
 /// brute force -- this is a parallelization of that loop, not a different
-/// (e.g. spatially indexed) algorithm, matching the task's own "the index
-/// is a performance task ... replacing this before it is measured would be
-/// replacing something correct with something unmeasured" posture for the
-/// equivalent host code.
+/// (e.g. spatially indexed) algorithm, matching the host code: a spatial index is a
+/// performance optimisation, and replacing the brute force before it is
+/// measured would replace something correct with something unmeasured.
 template <class Space>
 [[nodiscard]] CandidatePairs<Space> candidate_pairs(const Kokkos::View<double* [3], Space>& t_lo,
                                                      const Kokkos::View<double* [3], Space>& t_hi,

@@ -17,8 +17,7 @@ already defines "slab" as a TIME-domain concept (an interval of the common
 refinement); re-using it for a SPATIAL row partition here would recreate the
 "one word meaning two things" collision `docs/dev/conventions.md`'s own
 Vocabulary section names as a known hazard. `SchurSlabSolver`'s own class
-name and this file's own name were fixed by the task that produced them
-before this note was written, so they keep "Slab"; nothing else does.
+name and this file's own name predate this note, so they keep "Slab"; nothing else does.
 
 ## The operator
 

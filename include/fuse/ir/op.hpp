@@ -197,8 +197,7 @@ enum class OpKind {
     // collective" here would be a guess about an operator nobody has written.
     case OpKind::Map: case OpKind::Reduce: case OpKind::Closure:
       return true;
-    // Subcycling runs on the member's own ranks only (the task brief's own
-    // wording): it calls that member's component directly and involves no
+    // Subcycling runs on the member's own ranks only: it calls that member's component directly and involves no
     // other rank set. The exchange that delivers a PARTNER's waveform to it
     // is the ordinary field-transfer chain (Remap/Transport/Epoch), each
     // classified on its own merits above; WindowAdvance itself moves nothing

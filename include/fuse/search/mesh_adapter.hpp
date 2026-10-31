@@ -34,8 +34,7 @@
 /// the same shape of resolution `partition::centroids_of` uses for the
 /// opposite direction (a function that DOES depend on backend, isolated in
 /// its own file so the rest of that layer does not) -- here the dependency
-/// is avoided altogether instead, because avoiding it is what the task's
-/// placement requires.
+/// is avoided altogether instead, because this layer's placement requires it.
 namespace fuse::search {
 
 /// `M` need not be `fuse::MeshView` -- it only has to shape-match it. The

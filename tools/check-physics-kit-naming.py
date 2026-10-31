@@ -43,7 +43,7 @@ from pathlib import Path
 # Same three regexes check-layering.py's check_legacy() applies to fuse
 # proper (include/fuse/, src/, test/, examples/), applied here to
 # physics-kit/ instead. KARMA_* macros and the soma/KARMA namespaces are
-# NOT checked here: the task that created this gate names exactly "any
+# NOT checked here: the gate covers exactly "any
 # KARMA type prefix, any karma_ file prefix and any .C extension" -- the
 # three rows of docs/dev/porting.md's naming map a stray copy-paste from
 # upstream/karma would trip first (a type name, a filename, a source

@@ -103,12 +103,10 @@ struct GhostPattern {
 /// repeats only the data motion, which is why it takes no `GhostPattern`
 /// argument of its own.
 ///
-/// DEVIATION FROM THE TASK'S INTERFACE CONTRACT, reported per that task's
-/// own instruction ("any deviation... must be stated"): the contract's
-/// `GhostExchanger` has exactly one method, `update`, and its `DistVector`
-/// constructor takes only `(owned_n, exchanger, reducer)` -- with nothing,
-/// anywhere, telling a freshly constructed `DistVector` how many ghost
-/// slots to allocate. `ghost_size()` is added here so the vector can ask
+/// `ghost_size()` exists because `update` is the only data-motion method and
+/// the `DistVector` constructor takes only `(owned_n, exchanger, reducer)`:
+/// nothing else tells a freshly constructed `DistVector` how many ghost
+/// slots to allocate. It lets the vector ask
 /// the one object that already knows (the exchanger was built from a
 /// `GhostPattern`, which fixes the ghost count) rather than needing a
 /// fourth constructor argument that would have to agree with the
@@ -138,11 +136,9 @@ class GhostExchanger {
 };
 
 /// Zero ghosts, update() a no-op: the "no ghosts at all" exchanger a
-/// single-rank `DistVector` is built with. Not named in the task's
-/// interface contract (only `make_serial_reducer` is) -- added because
-/// requirement 1 ("serial reducer/exchanger, no ghosts") names both a
-/// serial reducer AND a serial exchanger, and nothing else in the
-/// contract supplies the latter.
+/// single-rank `DistVector` is built with. A single-rank vector needs both a
+/// serial reducer (`make_serial_reducer`) AND a serial exchanger, and
+/// nothing else supplies the latter.
 [[nodiscard]] std::shared_ptr<const GhostExchanger> make_serial_exchanger();
 
 #if FUSE_HAVE_MPI

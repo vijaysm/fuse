@@ -26,7 +26,7 @@ namespace u = fuse::units;
 
 // ---------------------------------------------------------------------------
 // Allocation counting. Spec Section 2 layer 3 requires the interpreted loop to
-// allocate nothing, and Task 4.6 proved that for a plan with no implicit coupling group by
+// allocate nothing, and that is proved for a plan with no implicit coupling group by
 // replacing the global operator new. A sweep loop that allocates per iteration
 // would slip past that test entirely, so the same instrument is used here.
 // ---------------------------------------------------------------------------

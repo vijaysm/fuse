@@ -776,8 +776,8 @@ struct TaggedSetPrefix {
   const char* tag_name;
 };
 
-/// The brief's rule -- "a NEUMANN_SET / DIRICHLET_SET / MATERIAL_SET tag
-/// whose value matches a trailing integer" -- does not say WHICH of the three
+/// The rule "a NEUMANN_SET / DIRICHLET_SET / MATERIAL_SET tag
+/// whose value matches a trailing integer" does not say WHICH of the three
 /// to look in, and trying all three makes "sideset_3" ambiguous the moment a
 /// mesh has both a sideset 3 and a block 3, which Exodus meshes routinely do.
 /// The prefix picks the tag; nothing is guessed.
@@ -964,7 +964,7 @@ struct MoabMeshBackend::Impl {
   [[nodiscard]] Result<void> load_into_placements(const MeshDecl& decl);
 #endif
 
-  // --- the remap halo (R3) --------------------------------------------------
+  // --- the remap halo --------------------------------------------------
   //
   // Kept on the backend and not on the view: a halo is a property of a PAIR of
   // meshes, and the exchange plan needs the communicator, which the view has
@@ -2503,7 +2503,7 @@ int MoabMeshBackend::communicator_size() const noexcept {
 }
 
 // ===========================================================================
-// The remap halo (R3). See moab_backend.hpp for the contract.
+// The remap halo. See moab_backend.hpp for the contract.
 // ===========================================================================
 
 Result<void> MoabMeshBackend::Impl::regather_with_halo(std::size_t mesh,

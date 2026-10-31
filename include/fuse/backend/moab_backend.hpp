@@ -451,11 +451,9 @@ class MoabMeshBackend final : public MeshBackend {
   /// then have to care -- the MOAB-specific remap path reaches through here,
   /// and it is the only thing that may.
   ///
-  /// DEVIATION FROM THE TASK 5.2 BRIEF, which specified `Result<void*>
-  /// native_handle(MeshId)` returning the `moab::Core*` alone. That is not
-  /// enough to identify a mesh: this backend keeps every loaded mesh in ONE
-  /// `moab::Core`, distinguished only by its file set, so a bare interface
-  /// pointer would leave the caller intersecting the union of everything
+  /// A bare `moab::Core*` would not be enough to identify a mesh: this
+  /// backend keeps every loaded mesh in ONE `moab::Core`, distinguished only by
+  /// its file set, so a bare interface pointer would leave the caller intersecting the union of everything
   /// loaded. The file set is returned alongside it.
   ///
   /// The pointer's lifetime is the backend's, exactly as for `view()`.

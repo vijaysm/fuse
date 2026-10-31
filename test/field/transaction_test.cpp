@@ -304,7 +304,7 @@ TEST(FieldTransaction, AccumulationIsBitwiseIndependentOfStagingOrderAcrossSixte
 // THEN adds the large one: `0+200+huge`; `200 > half-ulp`, so this rounds
 // to the NEAREST representable double, `huge + 200` evaluated directly --
 // which IS the correctly-rounded value of the true mathematical sum
-// (MEASURED in Python IEEE-754 binary64 during this round's own
+// (MEASURED in Python IEEE-754 binary64 during the
 // derivation: `huge+200` rounds to the double one bit-pattern step above
 // `huge`, landing on `huge`'s own next representable neighbour at this
 // magnitude's `ulp`, not back on `huge` itself).

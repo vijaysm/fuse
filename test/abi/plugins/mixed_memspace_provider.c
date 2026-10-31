@@ -25,7 +25,7 @@
  * own C++ translation unit, exported as a plain C-callable function and
  * compiled into this plugin's shared object alongside this file; see that
  * file's own header comment for why the fence this write relies on lives
- * in src/abi/provider_adapter.cpp and not here). Measured on ssh:higgs
+ * in src/abi/provider_adapter.cpp and not here). Measured on a CUDA host
  * (GTX 1050 Ti, sm_61): an earlier version of this file's own advance()
  * (an ordinary C store through the device pointer) segfaulted on that
  * hardware (exit code 139), because that store is valid only on tier 0,

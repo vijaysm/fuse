@@ -13,8 +13,7 @@
 /// settled on "row band" for one rank's contiguous range of `j`, keeping
 /// `docs/user/glossary.md`'s own "slab" entry (an interval of the common
 /// refinement, a TIME-domain concept) unambiguous. `SchurSlabSolver`'s own
-/// name and this file's own name were fixed by the task that produced them
-/// before this note was written; every doc comment below says "row band",
+/// name and this file's own name predate this note; every doc comment below says "row band",
 /// never "slab", for the partition itself.
 ///
 /// `docs/dev/schur-slab-solver.md` has the full derivation: which rows are

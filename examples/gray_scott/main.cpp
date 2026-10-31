@@ -318,7 +318,7 @@ int main(int argc, char** argv) {
       max_diff = std::max(max_diff, std::abs(cu->state()[m] - mono.u()[m]));
       max_diff = std::max(max_diff, std::abs(cv->state()[m] - mono.v()[m]));
     }
-    // Spec requirement (delegated task, step 3): "at m=1 the coupled
+    // Spec requirement: "at m=1 the coupled
     // windowed result must match [the monolithic reference] to the
     // iteration tolerance" -- a TIGHT bound, not one scaled to dt. It is
     // only exactly true in the dt -> 0 limit (measured in

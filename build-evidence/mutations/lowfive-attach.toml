@@ -112,7 +112,7 @@ test = "verification.brusselator_lowfive_attach"
 [[mutation]]
 id = "parse-trace-enabled-env-accepts-anything-nonempty"
 area = "examples"
-describes = "ParseTraceEnabledEnv() accepts any non-empty string as enabled, not just the literal \"1\" the brief's own spec names -- would make FUSE_LOWFIVE_ATTACH_TRACE=0 (or any other accidental non-empty value) silently turn tracing ON, the opposite of the documented contract"
+describes = "ParseTraceEnabledEnv() accepts any non-empty string as enabled, not just the literal \"1\" the contract specifies -- would make FUSE_LOWFIVE_ATTACH_TRACE=0 (or any other accidental non-empty value) silently turn tracing ON, the opposite of the documented contract"
 file = "examples/brusselator/participants/lowfive_attach_decision.hpp"
 old = """[[nodiscard]] inline bool ParseTraceEnabledEnv(const char* raw) {
   return raw != nullptr && raw[0] == '1' && raw[1] == '\\0';
@@ -200,7 +200,7 @@ test = "verification.brusselator_lowfive_attach"
 [[mutation]]
 id = "check-graph-order-validated-accepts-any-graph"
 area = "examples"
-describes = "CheckGraphOrderValidated() accepts any graph's order signature, not just the one measured configuration -- would let the LowFive participants attach to a swapped channel order, a third channel, or a multi-rank component with no warning at all, exactly the silent-assumption failure mode task 3a's own E-LOWFIVE-ATTACH-ORDER-UNVALIDATED exists to name instead"
+describes = "CheckGraphOrderValidated() accepts any graph's order signature, not just the one measured configuration -- would let the LowFive participants attach to a swapped channel order, a third channel, or a multi-rank component with no warning at all, exactly the silent-assumption failure mode E-LOWFIVE-ATTACH-ORDER-UNVALIDATED exists to name instead"
 file = "examples/brusselator/participants/lowfive_attach_decision.hpp"
 old = """  const std::vector<ChannelOrderSignature> validated = ValidatedGraphOrderSignatures();
   if (signature.size() != validated.size()) {"""

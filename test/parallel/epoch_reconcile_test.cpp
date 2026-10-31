@@ -105,7 +105,7 @@ class PartitionedTestMesh final : public fuse::MeshView {
 
 /// One mesh, split into a contiguous block per rank within whichever of
 /// `fluid_`/`solid_` contains the calling rank; empty on a rank in neither.
-/// `entity_set` on the `Region` is what Task 3's guard checks -- this backend
+/// `entity_set` on the `Region` is what the region guard checks -- this backend
 /// does not itself narrow by it, unlike SerialMeshBackend's real one
 /// (src/mesh/serial_backend.cpp:438-457).
 class PartitionedTestBackend final : public fuse::MeshBackend {
@@ -173,8 +173,8 @@ class PartitionedTestBackend final : public fuse::MeshBackend {
     // LOCAL STORAGE index, making source_indices()/dest_indices() (and so
     // Runner's p.gather/p.scatter) the identity permutation on every rank at
     // every rank count this suite tries. That made TheDeliveredFieldDoesNot-
-    // DependOnTheRankCount's mutation checks (Task 6 Steps 4-5, replacing
-    // p.gather[k]/p.scatter[k] with plain k) pass when they should fail: a
+    // DependOnTheRankCount's mutation checks (replacing
+    // p.gather[k]/p.scatter[k] with plain k) passed when they should fail: a
     // dropped index map went undetected because k already equalled the right
     // answer. Reversing this rank's local order (local index 0 holds the
     // block's LARGEST global id, not its smallest) decouples "sorted-by-gid
@@ -231,7 +231,7 @@ class StubComponent final : public fuse::Component {
 /// Scope Decision -- so there is exactly one to read).
 class TwoComponentJob {
  public:
-  /// `entity_set`, when non-empty, is set on the shared mesh entity set. Task 3's
+  /// `entity_set`, when non-empty, is set on the shared mesh entity set. The
   /// E-RT-TRANSPORT-REGION test passes "wall"; every other test passes "".
   explicit TwoComponentJob(const std::string& entity_set)
       // MEMBER DECLARATION ORDER, NOT INITIALIZER-LIST ORDER, decides when

@@ -1,9 +1,9 @@
 // End-to-end verification of the strongly-coupled FSI channel through a
 // REAL two-component `fuse::Runner` graph (beam <-> fluid, consistent H /
 // conservative H^T on a non-matching 1D interface) -- not a hand-simulated
-// shortcut. Covers four of the five items in the task's coupled-FSI
-// verification list (the fifth, transient self-convergence in dt, is
-// test/verification/fsi_transient_test.cpp):
+// shortcut. Covers the coupled-FSI verification list except transient
+// self-convergence in dt, which is in
+// test/verification/fsi_transient_test.cpp:
 //
 //   FsiCoupled.SteadyStateBeamDeflectionMatchesTheAnalyticLinearLoad
 //   FsiCoupled.InterfacePowerBalancesToRoundoff
@@ -559,7 +559,7 @@ AccelOutcome run_one_period(FsiCase c) {
   return out;
 }
 
-// The classical added-mass instability, at the task's headline mass ratio
+// The classical added-mass instability, at the headline mass ratio
 // rho_s h_s / (rho_f H) = 1: Gauss-Seidel (no acceleration) diverges (its
 // residual GROWS, not merely converges too slowly); IQN-ILS's quasi-Newton
 // update converges at the SAME mass ratio, grid and tolerance.
@@ -578,8 +578,8 @@ TEST(FsiCoupled, GaussSeidelDivergesWhileIqnIlsConvergesAtMassRatioOne) {
   base.nx_fluid = 14;
   base.rho_f = 1.0;
   base.H = 0.2;
-  const double mass_ratio = 1.0;  // rho_s h_s / (rho_f H) -- the task's own
-                                  // headline value for this demonstration
+  const double mass_ratio = 1.0;  // rho_s h_s / (rho_f H) -- the headline
+                                  // value for this demonstration
   base.h_s = mass_ratio * base.rho_f * base.H / base.rho_s;
   base.tol = 1e-6;
 

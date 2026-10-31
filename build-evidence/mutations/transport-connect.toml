@@ -14,7 +14,7 @@
 [[mutation]]
 id = "connect-merge-order-not-enforced"
 area = "transport"
-describes = "validate_launch_layout()'s requirement that a launched component start exactly where the previous one (in the graph's own declaration order) ended is removed, so two components whose RankSets are disjoint and cover the world but are NOT consecutive blocks in that order -- the layout MPI_Intercomm_merge's high/low argument and MPMD's own appnum partitioning actually produce when fixed by component order -- are accepted instead of refused. This is the row the task names 'merge order swapped': a graph that declared its two connect-mode components in one order but whose real launch merged them in the other would silently get a base communicator numbered backwards relative to what the graph says, with nothing to catch it."
+describes = "validate_launch_layout()'s requirement that a launched component start exactly where the previous one (in the graph's own declaration order) ended is removed, so two components whose RankSets are disjoint and cover the world but are NOT consecutive blocks in that order -- the layout MPI_Intercomm_merge's high/low argument and MPMD's own appnum partitioning actually produce when fixed by component order -- are accepted instead of refused. This is the 'merge order swapped' case: a graph that declared its two connect-mode components in one order but whose real launch merged them in the other would silently get a base communicator numbered backwards relative to what the graph says, with nothing to catch it."
 file = "include/fuse/transport/connect.hpp"
 old = """    if (b.start < expected_start) {
       return Failure{
@@ -43,7 +43,7 @@ result = "CONFIRMED: ValidateLaunchLayout.RefusesRanksNotStartingWhereThePreviou
 [[mutation]]
 id = "connect-appnum-not-checked"
 area = "transport"
-describes = "check_mpmd_layout()'s check that every appnum a rank actually reports at runtime names a declared Mpmd component is replaced with a silent `continue`, so a rank misclassified by the launcher's own argument order (an appnum no component in the graph names at all) runs as a stray, uncoupled participant instead of failing the job. This is the row the task names 'appnum check removed'."
+describes = "check_mpmd_layout()'s check that every appnum a rank actually reports at runtime names a declared Mpmd component is replaced with a silent `continue`, so a rank misclassified by the launcher's own argument order (an appnum no component in the graph names at all) runs as a stray, uncoupled participant instead of failing the job. This is the 'appnum check removed' case."
 file = "include/fuse/transport/connect.hpp"
 old = """    const auto it = component_by_appnum.find(appnum);
     if (it == component_by_appnum.end()) {
@@ -65,7 +65,7 @@ result = "CONFIRMED: CheckMpmdLayout.RefusesAnAppnumNoComponentDeclares failed e
 [[mutation]]
 id = "connect-timeout-not-checked"
 area = "transport"
-describes = "wait_for_port_file()'s deadline check is removed, so a partner that never publishes its port file is polled forever instead of being refused with E-CONNECT-TIMEOUT once timeout_s has elapsed -- a hang instead of a named refusal, which is exactly the failure mode connect.hpp's own module comment says this function exists to prevent. This is the row the task names 'timeout check removed'."
+describes = "wait_for_port_file()'s deadline check is removed, so a partner that never publishes its port file is polled forever instead of being refused with E-CONNECT-TIMEOUT once timeout_s has elapsed -- a hang instead of a named refusal, which is exactly the failure mode connect.hpp's own module comment says this function exists to prevent. This is the 'timeout check removed' case."
 file = "include/fuse/transport/connect.hpp"
 old = """    if (std::chrono::steady_clock::now() >= deadline) {
       return Failure{
