@@ -52,7 +52,7 @@ new = """  if (MPI_Allreduce(&in, &out, 1, MPI_2INT, MPI_MINLOC, comm) != MPI_SU
 target = "fuse_parallel_provider_subset_mpi_test"
 test = "parallel.provider_subset_mpi.2"
 requires = "mpi"
-result = "KILLED on the host 2026-10-22 (build-all at 8e88f9c, MPICH 5.0.2rc3, FUSE_MUTATE_MPI=1, tools/mutate.py --area abi-registry-agreement): 'KILLED participant-plugin-agreement-minloc-to-maxloc-mpi test fails'; area gate 1 killed, 0 declared equivalent, 2 not assessed here (the two no-mpi rows, by design on an MPI build), 0 without a baseline, 0 not killed, of 3; checkout clean afterwards."
+result = "KILLED on the host 2026-10-31 (build-all at 9180f9e, MPICH, FUSE_MUTATE_MPI=1, hostrun/out11): 'KILLED participant-plugin-agreement-minloc-to-maxloc-mpi test fails'."
 # 2026-10-30 (lead, D97): re-anchored into fuse::agree_outcome(), which the plugin-mount
 # agreement now runs through; the helper reduces {refused, rank} with MAXLOC, so the
 # wrong-direction mutation is MAXLOC -> MINLOC (a non-refusing rank wins and no rank refuses).

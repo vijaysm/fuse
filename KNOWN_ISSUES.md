@@ -13327,7 +13327,7 @@ what a setup-time `stage_by_key()` would resolve to a dense index, and `transact
 this round (S8 Stage B) deliberately has NO such method, staging only by dense `(entry,
 component)` position, for exactly this reason.
 
-### D97. FUSE's `Constrain` conservation-check floor differs from KARMA's own zero-reference convention -- DECIDED 2026-10-28, kept as documented (S8 Field semantics track, Stage B, decision (c))
+### ~~D97. FUSE's `Constrain` conservation-check floor differs from KARMA's own zero-reference convention -- DECIDED 2026-10-28, kept as documented (S8 Field semantics track, Stage B, decision (c))~~ -- CLOSED 2026-10-31 (host run passed; provenance rule implemented and measured)
 
 `docs/dev/field-semantics-matrix.md` Section 2.5 (row 1) found, by reading both, that KARMA's
 `relative_integral_error` (`karma_transfer_diagnostics.C:12-18`) returns `+infinity` when the
@@ -13371,6 +13371,13 @@ status not carried) and the re-anchored `participant-plugin-agreement-minloc-to-
 MPI rows (`parallel.field_transaction_mpi.{2,3}`, `parallel.provider_subset_mpi.2`, `parallel.abi_reconcile_mpi.2`)
 and the MPI-gated mutation rows have not run since this change; `hostrun/run-30oct-ft.sh` now covers them.
 
+**Host run (lead, 2026-10-31, owner-started, `build-all` at `9180f9e`, MPICH, `hostrun/out11`):** `parallel.field_transaction_mpi.2`
+and `.3` pass; `field.transaction`, `field.collective_agreement`, `parallel.abi_reconcile_mpi.2`, `parallel.provider_subset_mpi.2` and
+`abi.conformance` pass; field-transaction mutation area 7 of 7 killed under `FUSE_MUTATE_MPI=1` (the collective-agreement row and the
+three provenance rows included); `participant-plugin-agreement-minloc-to-maxloc-mpi` killed (the two no-MPI rows of that area are
+not assessable on an MPI build, by design); checkout clean afterwards. Nothing of D97's landing is host-pending; the heading closes.
+The 3-rank ABI rows (`abi_reconcile_mpi.3`, `abi_reconcile_disjoint_mpi.3`, `provider_subset_mpi.3`) are registered but were not in
+this script's row list; they ran in earlier host runs before the D97 change and are the first thing to add to the next host script.
 ### D98. `fuse::num::sdirk44_tableau()` shipped Round 1 with `order = 4`; the method is actually order 3 -- FOUND AND FIXED, S8 Integrators track, Round 2 (2026-10-30)
 
 Round 1 (Stage B) copied KARMA's own `order` field for every tableau, including SDIRK44's vendored
