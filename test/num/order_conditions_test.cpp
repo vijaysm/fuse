@@ -7,9 +7,13 @@
 
 #include "fuse/num/order_conditions.hpp"
 
+#include "fuse/base/error.hpp"
+
 #include <cmath>
 #include <limits>
 #include <vector>
+
+#include <stdexcept>
 
 #include <gtest/gtest.h>
 
@@ -49,24 +53,36 @@ bool is_classical_family(ButcherFamily f) {
   return false;
 }
 
-constexpr int kMaxCatalogOrder = 5;
+constexpr int kMaxCatalogOrder = 6;  // 6 since 2026-10-31: ESDIRK548L2SA is order 5 and its order-6 defect must be checked
 
 }  // namespace
 
-// OEIS A000081 (rooted trees by node count): 1, 1, 2, 4, 9 for n = 1..5. A generator
+// OEIS A000081 (rooted trees by node count): 1, 1, 2, 4, 9, 20 for n = 1..6. A generator
 // that is missing a tree, or double-generating one as two "different" catalog entries,
 // is caught here before it ever grades a single tableau.
 TEST(OrderConditions, CatalogSizesMatchOeisA000081) {
   RootedTreeCatalog cat(kMaxCatalogOrder);
-  const std::vector<std::size_t> expected{1, 1, 2, 4, 9};
+  const std::vector<std::size_t> expected{1, 1, 2, 4, 9, 20};
   for (int n = 1; n <= kMaxCatalogOrder; ++n) {
     EXPECT_EQ(cat.of_order(n).size(), expected[static_cast<std::size_t>(n - 1)])
         << "order " << n;
   }
   std::size_t total = 0;
   for (int n = 1; n <= kMaxCatalogOrder; ++n) total += cat.of_order(n).size();
-  EXPECT_EQ(total, 17u);
-  EXPECT_EQ(cat.trees().size(), 17u);
+  EXPECT_EQ(total, 37u);
+  EXPECT_EQ(cat.trees().size(), 37u);
+}
+
+// An order the catalog was not built to is refused, not read past the end of the
+// per-order table (lead, 2026-10-31: on a catalog built to 5, of_order(6) returned an
+// empty range through out-of-bounds indexing, so a "next order must fail" check
+// passed with a defect of exactly 0).
+TEST(OrderConditions, AnOrderBeyondTheCatalogIsRefused) {
+  RootedTreeCatalog cat(3);
+  EXPECT_EQ(cat.of_order(3).size(), 2u);
+  EXPECT_THROW((void)cat.of_order(4), fuse::InvalidArgument);
+  EXPECT_THROW((void)cat.of_order(0), fuse::InvalidArgument);
+  EXPECT_THROW(max_defect_at_order(cat, kutta44_tableau().A, kutta44_tableau().B, 4), fuse::InvalidArgument);
 }
 
 // Butcher's density for the first eight trees (orders 1-4), pinned against the
@@ -146,7 +162,13 @@ TEST(OrderConditions, PerChildProductMatchesTheLiteratureConditions) {
       }
     }
   }
-  constexpr double kTol = 1e-13;
+  // Derived (lead, 2026-10-31; round 2 had a chosen 1e-13): the two evaluations
+  // of one elementary weight differ only in operation order, each being at most
+  // s^3 + s products-and-sums of operands of magnitude at most 1 (|A|, |B|, |C| <= 1
+  // for Kutta44), so the difference is at most 2 * (s^3 + s) * eps * (sum of the
+  // magnitudes of the terms), and the summed magnitudes are each at most 1 here
+  // (the weights sum to 1 and every factor is in [0, 1]).
+  const double kTol = 2.0 * (static_cast<double>(s * s * s + s)) * std::numeric_limits<double>::epsilon();
   EXPECT_NEAR(tree_c3, hand_c3, kTol);
   EXPECT_NEAR(tree_cAc, hand_cAc, kTol);
   EXPECT_NEAR(tree_Ac2, hand_Ac2, kTol);
@@ -266,6 +288,105 @@ TEST(RoundTwoTableaus, Ssprk104SatisfiesOrderFourConditions) {
   EXPECT_LT(thru4, order_tolerance(t.stages)) << "defect through order 4 = " << thru4;
   const double at5 = max_defect_at_order(cat, t.A, t.B, 5);
   EXPECT_GT(at5, 1e-6) << "order 5 should NOT hold for a declared order-4 method";
+}
+
+// S8 physics-kit, track "Integrators", Stage B Round 3 (task items 1-3): the two new
+// Kennedy & Carpenter ESDIRK pairs, proved the SAME way as every tableau this project
+// ships -- row sums, order conditions through the declared order, embedded weights to
+// embedded order, stiff accuracy, and (new this round) the dense-output table's own
+// b_i(1)=b_i reproduction. "A tableau that fails any of these is NOT shipped" (the
+// task's own instruction). Both pairs resolve cleanly: ESDIRK436L2SA holds through
+// order 4 exactly and fails order 5 by 9.2e-3; ESDIRK548L2SA holds through order 5
+// at the 1e-27 precision of its published rationals and fails order 6 by 4.2e-3
+// (lead, 2026-10-31; the round-3 track had declared it order 4 and this test
+// "unresolvable" for it after misreading the passing order-5 conditions).
+TEST(RoundThreeTableaus, EsdirkPairsPassEveryCheckTheAlgebraicCheckerCanResolve) {
+  RootedTreeCatalog cat(kMaxCatalogOrder);
+  struct Case { const char* name; ButcherTableau t; bool order_distinction_resolvable; };
+  std::vector<Case> cases;
+  cases.push_back({"ESDIRK436L2SA", esdirk436l2sa_tableau(), true});
+  cases.push_back({"ESDIRK548L2SA", esdirk548l2sa_tableau(), true});
+  for (const auto& c : cases) {
+    const ButcherTableau& t = c.t;
+    const double tol = order_tolerance(t.stages);
+    // Row sums (consistency): max_i |C[i] - sum_j A[i][j]|.
+    double row_defect = 0.0;
+    for (int i = 0; i < t.stages; ++i) {
+      double s = 0.0;
+      for (int j = 0; j < t.stages; ++j) s += t.A[static_cast<std::size_t>(i)][static_cast<std::size_t>(j)];
+      row_defect = std::max(row_defect, std::fabs(s - t.C[static_cast<std::size_t>(i)]));
+    }
+    EXPECT_LT(row_defect, tol) << c.name << ": row-sum defect = " << row_defect;
+    // Stiff accuracy: last row of A equals B.
+    EXPECT_EQ(t.A.back(), t.B) << c.name << ": last row of A must equal B (stiffly accurate)";
+    // Order through the declared order, and the next order must FAIL.
+    const double thru = max_defect_through_order(cat, t.A, t.B, t.order);
+    EXPECT_LT(thru, tol) << c.name << ": defect through order " << t.order << " = " << thru;
+    if (c.order_distinction_resolvable) {
+      const double next = max_defect_at_order(cat, t.A, t.B, t.order + 1);
+      EXPECT_GT(next, 1000.0 * tol)
+          << c.name << ": order " << (t.order + 1) << " should NOT hold, defect = " << next;
+    }
+    // Embedded order.
+    ASSERT_TRUE(t.has_embedded_estimate()) << c.name << ": must carry an embedded estimate";
+    const auto b_hat = embedded_weights(t);
+    const double ethru = max_defect_through_order(cat, t.A, b_hat, *t.embedded_order);
+    EXPECT_LT(ethru, tol) << c.name << ": embedded defect through order " << *t.embedded_order
+                          << " = " << ethru;
+    // Dense-output b_i(1) = b_i (eq. 54's own row-sum property).
+    ASSERT_TRUE(t.has_dense_output()) << c.name << ": must carry a dense-output table";
+    double dense_defect = 0.0;
+    for (std::size_t i = 0; i < t.dense_output->size(); ++i) {
+      double s = 0.0;
+      for (double coeff : (*t.dense_output)[i]) s += coeff;
+      dense_defect = std::max(dense_defect, std::fabs(s - t.B[i]));
+    }
+    // Derived bound: each row sums k coefficients already rounded to double, so the
+    // computed sum differs from the exact one by at most (k + 1) * eps * sum|coeff|
+    // (Higham, recursive summation, plus the rounding of B[i] itself); the published
+    // rationals' own 1e-27 residual is far below that. The round-3 track had used a
+    // chosen 1e-13 here (lead, 2026-10-31).
+    double dense_bound = 0.0;
+    for (std::size_t i = 0; i < t.dense_output->size(); ++i) {
+      double abs_sum = std::fabs(t.B[i]);
+      for (double coeff : (*t.dense_output)[i]) abs_sum += std::fabs(coeff);
+      dense_bound = std::max(dense_bound, (static_cast<double>((*t.dense_output)[i].size()) + 1.0) *
+                                              std::numeric_limits<double>::epsilon() * abs_sum);
+    }
+    EXPECT_LT(dense_defect, dense_bound)
+        << c.name << ": dense-output b_i(1)=b_i defect = " << dense_defect << " (bound " << dense_bound << ")";
+  }
+}
+
+// The ARK3(2)4L[2]SA dense-output addition (task item 3) to the ALREADY-shipped
+// ESDIRK324L2SA tableau -- same b_i(1)=b_i check, same tolerance reasoning.
+TEST(RoundThreeTableaus, Esdirk324l2saDenseOutputReproducesB) {
+  const ButcherTableau t = esdirk324l2sa_tableau();
+  ASSERT_TRUE(t.has_dense_output());
+  double worst = 0.0, bound = 0.0;
+  for (std::size_t i = 0; i < t.dense_output->size(); ++i) {
+    double s = 0.0, abs_sum = std::fabs(t.B[i]);
+    for (double coeff : (*t.dense_output)[i]) { s += coeff; abs_sum += std::fabs(coeff); }
+    worst = std::max(worst, std::fabs(s - t.B[i]));
+    // Same derived bound as EsdirkPairsPassEveryCheckTheAlgebraicCheckerCanResolve.
+    bound = std::max(bound, (static_cast<double>((*t.dense_output)[i].size()) + 1.0) *
+                                std::numeric_limits<double>::epsilon() * abs_sum);
+  }
+  EXPECT_LT(worst, bound) << "ESDIRK324L2SA dense-output b_i(1)=b_i defect = " << worst << " (bound " << bound << ")";
+}
+
+// SSPRK(10,4)'s own embedded pair (task item 4, Conde/Fekete/Shadid 2018) -- order 3,
+// algebraically distinct from the propagated order 4.
+TEST(RoundThreeTableaus, Ssprk104EmbeddedPairIsOrderThree) {
+  const ButcherTableau t = ssprk104_tableau();
+  ASSERT_TRUE(t.has_embedded_estimate());
+  RootedTreeCatalog cat(kMaxCatalogOrder);
+  const auto b_hat = embedded_weights(t);
+  const double thru3 = max_defect_through_order(cat, t.A, b_hat, 3);
+  EXPECT_LT(thru3, order_tolerance(t.stages)) << "embedded defect through order 3 = " << thru3;
+  const double at4 = max_defect_at_order(cat, t.A, b_hat, 4);
+  EXPECT_GT(at4, 1e-6) << "the embedded pair's own order 4 should NOT hold (it is an "
+                          "order-3 ERROR ESTIMATE, not a second order-4 method)";
 }
 
 }  // namespace fuse::num

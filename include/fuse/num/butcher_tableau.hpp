@@ -174,6 +174,16 @@ struct ButcherTableau {
   /// task's own instruction ("must be REPRODUCED by the computation, not copied").
   std::optional<double> ssp_coefficient;
 
+  /// Round 3 (task items 1-3): the Kennedy & Carpenter dense-output table, `b*_ij`
+  /// (NASA TM-2001-211038 Appendix D, eq. 54 of the TM's own main text: `b_i(theta) =
+  /// sum_{j=1}^{p*} b*_ij * theta^j`). `dense_output[i]` is stage i's own row of `p*`
+  /// coefficients (j=1..p*, in order); `dense_output_order` is `p*`. `nullopt` for
+  /// every tableau this project ships that does not publish one of its own (every
+  /// classical/SDIRK/Rosenbrock tableau, and the explicit family, all fall back to
+  /// `CubicHermiteExtension`, continuous_extension.hpp's own top comment).
+  std::optional<std::vector<std::vector<double>>> dense_output;
+  std::optional<int> dense_output_order;
+
   /// The honest query Section 4.2 of the design doc (EmbeddedController) and
   /// embedded_controller.hpp's own refusals are built on: true only when both an
   /// embedded order AND a (not-necessarily-nonzero, but AT LEAST present) `E` are on
@@ -181,6 +191,12 @@ struct ButcherTableau {
   /// remembering to special-case it.
   [[nodiscard]] bool has_embedded_estimate() const noexcept {
     return embedded_order.has_value() && E.has_value();
+  }
+
+  /// The SAME kind of honest query for Round 3's own dense-output addition: true only
+  /// when both the table AND its order are on record.
+  [[nodiscard]] bool has_dense_output() const noexcept {
+    return dense_output.has_value() && dense_output_order.has_value();
   }
 };
 
@@ -943,6 +959,17 @@ struct ClassicalForm {
   t.is_L_stable = true;
   t.is_S_stable = true;
   t.is_FSAL = true;
+  // Round 3 (task item 3): the TM's own "Second-Order Dense Output" table for
+  // ARK3(2)4L[2]SA (eq. 49 of the main text, p* = 2), Appendix D, cross-validated
+  // against PETSc's own src/ts/impls/arkimex/arkimex.c (`TSARKIMEX3`'s own
+  // `binterpt`, which matches the TM's own image byte-for-byte here -- no correction
+  // needed, unlike the two higher-order pairs below).
+  t.dense_output = std::vector<std::vector<double>>{
+      {4655552711362.0 / 22874653954995.0, -215264564351.0 / 13552729205753.0},
+      {-18682724506714.0 / 9892148508045.0, 17870216137069.0 / 13817060693119.0},
+      {34259539580243.0 / 13192909600954.0, -28141676662227.0 / 17317692491321.0},
+      {584795268549.0 / 6622622206610.0, 2508943948391.0 / 7218656332882.0}};
+  t.dense_output_order = 2;
   return t;
 }
 
@@ -1042,7 +1069,23 @@ struct ClassicalForm {
   t.B = std::vector<double>{0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1};
   t.C = std::vector<double>{0.0, 1.0 / 6.0, 1.0 / 3.0, 0.5, 2.0 / 3.0,
                             1.0 / 3.0, 0.5, 2.0 / 3.0, 5.0 / 6.0, 1.0};
-  t.E = std::nullopt;
+  // Round 3 (task item 4): Conde, Fekete and Shadid 2018 (arXiv:1806.08693), Section
+  // 2.3's own "Embedded pairs for the SSPERK(10,4) method": eight candidate embedded
+  // ERK(10,3) rows are given (the propagated SSPRK(10,4) method does not admit a
+  // non-defective embedded pair of its own order, per the paper's own section 2.2-2.3
+  // argument); the paper's OWN recommendation, b~_3 (chosen for its own stability-
+  // radius and error-control measurements, not by this round), is the one shipped
+  // here. NOT the classical 3-stage SSPRK(3,3) the task also names: that method has
+  // only 3 stages, and this paper's own SSPERK(s,3) embedded-pair family requires
+  // s = n^2 (a perfect square, Section 2.2) -- 3 is not one, so no embedded pair for
+  // the literal 3-stage method exists in this source; recorded as an open question
+  // rather than substituted or fabricated.
+  t.embedded_order = 3;
+  const std::vector<double> b_hat10{0.0, 2.0 / 9.0, 0.0, 0.0, 5.0 / 18.0, 1.0 / 3.0,
+                                    0.0, 0.0, 0.0, 1.0 / 6.0};
+  std::vector<double> e10(10);
+  for (std::size_t i = 0; i < 10; ++i) e10[i] = t.B[i] - b_hat10[i];
+  t.E = e10;
   t.gamma = std::nullopt;
   t.is_A_stable = false;
   t.is_L_stable = false;
@@ -1056,6 +1099,163 @@ struct ClassicalForm {
 /// methods this round added rather than ported).
 [[nodiscard]] inline std::vector<ButcherTableau> all_round2_tableaus() {
   return {esdirk324l2sa_tableau(), ssprk33_tableau(), ssprk104_tableau()};
+}
+
+/// Kennedy & Carpenter's ESDIRK4(3)6L[2]SA (NASA TM-2001-211038 Appendix D, the
+/// ESDIRK half of their ARK4(3)6L[2]SA pair -- the ERK half, used only internally by
+/// the additive IMEX pair, is out of this track's own scope, Round 3 task item 2).
+/// Coefficients cross-validated against TWO independent machine-readable sources
+/// (PETSc src/ts/impls/arkimex/arkimex.c's own `TSARKIMEX4` -- `kennedy_2003` cited
+/// in its own doc comment -- and the `qmat` Python package's own
+/// `qmat/qcoeff/butcher.py`), after this round's own direct read of the TM's scanned
+/// Appendix D image disagreed with both of those on two digits of the dense-output
+/// table below (noted at the dense-output assignment itself) -- the two independent,
+/// machine-readable sources were trusted over the image read, per the same standard
+/// Round 2 held ESDIRK3(2)4L[2]SA's own transcription to.
+[[nodiscard]] inline ButcherTableau esdirk436l2sa_tableau() {
+  ButcherTableau t;
+  t.name = "ESDIRK436L2SA";
+  t.family = ButcherFamily::DirkEmbedded;
+  t.stages = 6;
+  t.order = 4;
+  t.embedded_order = 3;
+  const double g = 1.0 / 4.0;
+  t.A = std::vector<std::vector<double>>{
+      {0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+      {g, g, 0.0, 0.0, 0.0, 0.0},
+      {8611.0 / 62500.0, -1743.0 / 31250.0, g, 0.0, 0.0, 0.0},
+      {5012029.0 / 34652500.0, -654441.0 / 2922500.0, 174375.0 / 388108.0, g, 0.0, 0.0},
+      {15267082809.0 / 155376265600.0, -71443401.0 / 120774400.0, 730878875.0 / 902184768.0,
+       2285395.0 / 8070912.0, g, 0.0},
+      {82889.0 / 524892.0, 0.0, 15625.0 / 83664.0, 69875.0 / 102672.0, -2260.0 / 8211.0, g}};
+  t.B = std::vector<double>{82889.0 / 524892.0, 0.0, 15625.0 / 83664.0, 69875.0 / 102672.0,
+                            -2260.0 / 8211.0, g};
+  t.C = std::vector<double>{0.0, 1.0 / 2.0, 83.0 / 250.0, 31.0 / 50.0, 17.0 / 20.0, 1.0};
+  const std::vector<double> b_hat{4586570599.0 / 29645900160.0, 0.0, 178811875.0 / 945068544.0,
+                                  814220225.0 / 1159782912.0, -3700637.0 / 11593932.0,
+                                  61727.0 / 225920.0};
+  std::vector<double> e(6);
+  for (std::size_t i = 0; i < 6; ++i) e[i] = t.B[i] - b_hat[i];
+  t.E = e;
+  t.gamma = std::nullopt;
+  t.is_A_stable = true;   // L-stable per the TM's own text (Section 5, "L stable, stage order 2")
+  t.is_L_stable = true;
+  t.is_S_stable = false;  // not computed this round; not claimed either way in the TM's own text
+  t.is_FSAL = true;       // Structural property: A's last row equals B, c_s = 1 -- genuinely
+                          // stiffly accurate. Round 3, item 6: DirkIntegrator's own FSAL reuse
+                          // mechanism exists and is tested (dirk_integrator_test.cpp's own FSAL
+                          // suite) but ships OPT-IN, not triggered by this flag alone -- MEASURED
+                          // not bit-identical to full recomputation for the implicit family (see
+                          // DirkIntegrator::set_fsal_enabled()'s own comment for the finding).
+  // Round 3 (task item 2a): the TM's own "Third-Order Dense Output" table (eq. 54, p* = 3),
+  // Appendix D. Two digits corrected against the TM's own image read, using PETSc's `binterpt`
+  // and `qmat`'s cross-agreeing values: stage 1's third-column numerator
+  // (6818779370841 -> 6818779379841) and stage 3's third-column numerator
+  // (2173542090792 -> 2173542590792).
+  t.dense_output = std::vector<std::vector<double>>{
+      {6943876665148.0 / 7220017795957.0, -54480133.0 / 30881146.0, 6818779379841.0 / 7100303317025.0},
+      {0.0, 0.0, 0.0},
+      {7640104374378.0 / 9702883013639.0, -11436875.0 / 14766696.0, 2173542590792.0 / 12501825683035.0},
+      {-20649996744609.0 / 7521556579894.0, 174696575.0 / 18121608.0, -31592104683404.0 / 5083833661969.0},
+      {8854892464581.0 / 2390941311638.0, -12120380.0 / 966161.0, 61146701046299.0 / 7138195549469.0},
+      {-11397109935349.0 / 6675773540249.0, 3843.0 / 706.0, -17219254887155.0 / 4939391667607.0}};
+  t.dense_output_order = 3;
+  return t;
+}
+
+/// ESDIRK5(4)8L[2]SA: the ESDIRK half of ARK5(4)8L[2]SA, Kennedy and Carpenter, NASA
+/// TM-2001-211038 (Appl. Numer. Math. 44 (2003) 139-181), Appendix D, read from the
+/// scanned page images; cross-checked against PETSc's TSARKIMEX5 and qmat's
+/// ARK548L2SAESDIRK (NOT ARK548L2SAESDIRK2, a different 2019 tableau) where the scan's
+/// text layer showed OCR damage. Order 5, embedded order 4, stiffly accurate,
+/// L-stable, stage order 2, gamma = 41/200, dense output of order 3 (eq. 54's
+/// b_i(theta) rows, verified by the continuous order conditions).
+///
+/// Order, verified exactly (lead, 2026-10-31, fractions.Fraction on the shipped
+/// rationals): every rooted-tree condition through order 5 holds with a residual of
+/// at most 5.3e-27 -- the same magnitude as orders 1 to 4 (1.1e-26 to 5.3e-27), the
+/// precision of the published 13-digit rational approximations of the true
+/// coefficients -- and order 6 fails by 4.2e-3; the embedded weights hold through
+/// order 4 at 7.3e-27 and fail order 5 by 1.3e-4. The round-3 track had declared
+/// this tableau order 4 with embedded order 3 after reading "the order-5 conditions
+/// also pass" as an unresolvable 4-versus-5 distinction; it is order 5, as its name
+/// says, and the measured orders agree (logistic 4.991 +/- 0.006, non-autonomous
+/// 5.004 +/- 0.001, Dahlquist 4.97 +/- 0.04 on the truncation-limited range).
+[[nodiscard]] inline ButcherTableau esdirk548l2sa_tableau() {
+  ButcherTableau t;
+  t.name = "ESDIRK548L2SA";
+  t.family = ButcherFamily::DirkEmbedded;
+  t.stages = 8;
+  t.order = 5;
+  t.embedded_order = 4;
+  const double g = 41.0 / 200.0;
+  t.A = std::vector<std::vector<double>>{
+      {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+      {g, g, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+      {41.0 / 400.0, -567603406766.0 / 11931857230679.0, g, 0.0, 0.0, 0.0, 0.0, 0.0},
+      {683785636431.0 / 9252920307686.0, 0.0, -110385047103.0 / 1367015193373.0, g, 0.0, 0.0, 0.0, 0.0},
+      {3016520224154.0 / 10081342136671.0, 0.0, 30586259806659.0 / 12414158314087.0,
+       -22760509404356.0 / 11113319521817.0, g, 0.0, 0.0, 0.0},
+      {218866479029.0 / 1489978393911.0, 0.0, 638256894668.0 / 5436446318841.0,
+       -1179710474555.0 / 5321154724896.0, -60928119172.0 / 8023461067671.0, g, 0.0, 0.0},
+      {1020004230633.0 / 5715676835656.0, 0.0, 25762820946817.0 / 25263940353407.0,
+       -2161375909145.0 / 9755907335909.0, -211217309593.0 / 5846859502534.0,
+       -4269925059573.0 / 7827059040749.0, g, 0.0},
+      {-872700587467.0 / 9133579230613.0, 0.0, 0.0, 22348218063261.0 / 9555858737531.0,
+       -1143369518992.0 / 8141816002931.0, -39379526789629.0 / 19018526304540.0,
+       32727382324388.0 / 42900044865799.0, g}};
+  t.B = std::vector<double>{-872700587467.0 / 9133579230613.0, 0.0, 0.0,
+                            22348218063261.0 / 9555858737531.0, -1143369518992.0 / 8141816002931.0,
+                            -39379526789629.0 / 19018526304540.0, 32727382324388.0 / 42900044865799.0, g};
+  t.C = std::vector<double>{0.0, 41.0 / 100.0, 2935347310677.0 / 11292855782101.0,
+                            1426016391358.0 / 7196633302097.0, 92.0 / 100.0, 24.0 / 100.0,
+                            3.0 / 5.0, 1.0};
+  const std::vector<double> b_hat{-975461918565.0 / 9796059967033.0, 0.0, 0.0,
+                                  78070527104295.0 / 32432590147079.0, -548382580838.0 / 3424219808633.0,
+                                  -33438840321285.0 / 15594753105479.0, 3629800801594.0 / 4656183773603.0,
+                                  4035322873751.0 / 18575991585200.0};
+  std::vector<double> e(8);
+  for (std::size_t i = 0; i < 8; ++i) e[i] = t.B[i] - b_hat[i];
+  t.E = e;
+  t.gamma = std::nullopt;
+  t.is_A_stable = true;
+  t.is_L_stable = true;
+  t.is_S_stable = false;
+  t.is_FSAL = true;       // Structural property (same basis as esdirk436l2sa_tableau()'s own
+                          // comment above): stiffly accurate, A's last row equals B, c_s = 1.
+                          // DirkIntegrator's own FSAL reuse ships opt-in, not default, for the
+                          // same measured reason.
+  // Round 3 (task item 2b): the TM's own "Third-Order Dense Output" table (p* = 3),
+  // Appendix D. Several digits corrected against the TM's own image read using PETSc's
+  // `binterpt` (this round's own image read of this specific 8-stage table proved
+  // UNRELIABLE across several entries, confirming the 2-independent-source bar's own
+  // worth): stage 4 (numerator/denominator digits in columns 1-2), stage 5 (digits in
+  // all three columns), stage 7 (column-2 denominator and column-3 numerator).
+  t.dense_output = std::vector<std::vector<double>>{
+      {-17674230611817.0 / 10670229744614.0, 43486358583215.0 / 12773830924787.0,
+       -9257016797708.0 / 5021505065439.0},
+      {0.0, 0.0, 0.0},
+      {0.0, 0.0, 0.0},
+      {65168852399939.0 / 7868540260826.0, -91478233927265.0 / 11067650958493.0,
+       26096422576131.0 / 11239449250142.0},
+      {15494834004392.0 / 5936557850923.0, -79368583304911.0 / 10890268929626.0,
+       92396832856987.0 / 20362823103730.0},
+      {-99329723586156.0 / 26959484932159.0, -12239297817655.0 / 9152339842473.0,
+       30029262896817.0 / 10175596800299.0},
+      {-19024464361622.0 / 5461577185407.0, 115839755401235.0 / 10719374521269.0,
+       -26136350496073.0 / 3983972220547.0},
+      {-6511271360970.0 / 6095937251113.0, 5843115559534.0 / 2180450260947.0,
+       -5289405421727.0 / 3760307252460.0}};
+  t.dense_output_order = 3;
+  return t;
+}
+
+/// The Round 3 additions, as a group (parallel to `all_round2_tableaus()`): the two
+/// new ESDIRK pairs. SSPRK33/SSPRK104 are unchanged tableaus (their own Round 2
+/// factory functions now also carry a dense-output or embedded row, but are still the
+/// SAME ButcherTableau objects, not duplicated here).
+[[nodiscard]] inline std::vector<ButcherTableau> all_round3_tableaus() {
+  return {esdirk436l2sa_tableau(), esdirk548l2sa_tableau()};
 }
 
 /// Every factory above, for a test or a report that wants "all 21" without naming each

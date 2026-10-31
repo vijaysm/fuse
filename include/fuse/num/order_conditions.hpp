@@ -4,10 +4,12 @@
 #include <cstddef>
 #include <vector>
 
+#include "fuse/base/error.hpp"
+
 #include "fuse/num/butcher_tableau.hpp"
 
 /// S8 physics-kit, track "Integrators", Stage B Round 2, task item 1: "Order-condition
-/// checker (rooted trees to order 5, Butcher's conditions) as a tier-0 test over all
+/// checker (rooted trees to any requested order; the tests build to 6, Butcher's conditions) as a tier-0 test over all
 /// tableaus, with the embedded weights checked to embedded_order. This is also how you
 /// prove every new tableau."
 ///
@@ -33,7 +35,7 @@
 /// "sum b_i c_i = 1/2", etc. -- the task's own instruction, "do not hand-check").
 ///
 /// Order-5 trees: OEIS A000081 (rooted trees by node count) gives 1, 1, 2, 4, 9 for
-/// n = 1..5 -- 17 trees total up to order 5, pinned by
+/// n = 1..6 -- 17 trees up to order 5, 37 up to order 6, pinned by
 /// OrderConditions.CatalogSizesMatchOeisA000081 (order_conditions_test.cpp) as a
 /// mechanical check that the generator itself is not missing or double-counting any
 /// tree before it is trusted to grade a single tableau.
@@ -81,7 +83,16 @@ class RootedTreeCatalog {
   }
 
   [[nodiscard]] const std::vector<RootedTree>& trees() const noexcept { return trees_; }
+  /// Refuses an order the catalog was not built to (E-NUM-ORDER-CATALOG): until
+  /// 2026-10-31 this indexed past `by_order_` and read whatever lay there, which
+  /// for a catalog built to 5 happened to be an empty range, so an order-6 "defect"
+  /// came back as exactly 0 and a next-order-must-fail assertion passed vacuously
+  /// (found when ESDIRK548L2SA, order 5, needed order 6 checked).
   [[nodiscard]] const std::vector<int>& of_order(int order) const {
+    if (order < 1 || order > max_order()) {
+      FUSE_THROW(InvalidArgument, "E-NUM-ORDER-CATALOG: order {} is outside this catalog's range 1..{}",
+                 order, max_order());
+    }
     return by_order_[static_cast<std::size_t>(order)];
   }
   [[nodiscard]] int max_order() const noexcept {

@@ -494,7 +494,7 @@ fuse_add_gtest(num integrator THROWS)
 fuse_add_gtest(num explicit_integrator)
 # Round 2 (task item 1): the generic rooted-tree order-condition checker, run
 # against every classical tableau and against the Round 2 Rosenbrock scope note.
-fuse_add_gtest(num order_conditions)
+fuse_add_gtest(num order_conditions THROWS)
 # Round 2 (task item 2): DIRK/ESDIRK family, stage solve through fuse::num::solve
 # (Newton-Krylov), so this needs fuse::linalg the same way num.newton_krylov does.
 fuse_add_gtest(num dirk_integrator LIBS fuse::linalg)
