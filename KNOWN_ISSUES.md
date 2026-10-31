@@ -13396,3 +13396,47 @@ needs 1/4), with b.c^2 = 1/3 and b.A.c = 1/6 exact, so the method is order 3 exa
 integrators round 2 from a clean export (tier 0 237/237). The round's one surviving mutation
 (`integrators-rosenbrock-stage-solve-failed-refusal`) was killed by a lead-added test before landing; see
 docs/dev/integrators-design.md, "Lead's review of round 2".
+
+### D99. KARMA's `KARMADomain` constructor asserts a vacuous condition that never refuses an unsupported shape -- FOUND AND FIXED during the port, S8.3 wave 1 (2026-10-31)
+
+`upstream/karma/src/numerics/spatial/karma_domain.C` lines 32, 54 and 77 (all three
+constructors) assert `Type != Hexagon || Type != Unstructured`. For ANY value of `Type`, at
+most one of the two equalities can hold, so the OR is TRUE unconditionally and the assert
+never fires, in Debug or Release -- a vendored defect, not a disposition question. The
+surrounding comment ("currently only cubic shapes are supported...this restriction will be
+lifted off") states the INTENDED invariant plainly: Hexagon and Unstructured are not yet
+supported and construction should refuse them, which needs AND, not OR. Found while porting
+`karma_domain.h/.C` to `fuse_physics::spatial::Domain` (`physics-kit/include/fuse_physics/
+spatial/domain.hpp`, `physics-kit/src/spatial/domain.cpp`); fixed in the port as a real
+refusal (fuse's exception-based error convention) rather than carried forward as a second
+vacuous assert. `physics.spatial_domain`'s `RefusesUnsupportedShapes` case constructs a
+`Domain` with `Shape::Hexagon`/`Shape::Unstructured` and asserts the throw; the mutation row
+`domain-i6-fix-reverts-to-vacuous-or` (`build-evidence/mutations/physics-kit-fe.toml`) reverts
+the fix back to KARMA's own OR and confirms the test catches the regression (KILLED, measured
+2026-10-31). The upstream KARMA source is unchanged (read-only, `upstream/karma/`); only the
+fuse-side port carries the fix.
+
+### D100. Distorted-pyramid quadrature accuracy (KARMA's own KNOWN_ISSUES.md item 1) is UNVERIFIED RISK, carried forward -- NOT YET APPLICABLE in physics-kit (S8.3 wave 1, 2026-10-31), tracked for when a pyramid variant is ported
+
+`upstream/karma/KNOWN_ISSUES.md` item 1 states: distorted pyramids under KARMA's resized
+quadrature (`include/numerics/fe/karma_quadrature.h`'s `create_product_quadrature()`) are
+verified exact for monomials and reference-cell gradients to ~2e-16, but accuracy on a
+DISTORTED (non-reference-shaped) pyramid is "a question of relative accuracy, not of
+exactness, and no test currently isolates it" -- it would present as a pyramid or prism MMS
+convergence-rate shift, not a test failure. `docs/dev/physics-kit-disposition.md` Section 6
+cross-references this as the authoritative statement (not
+`docs/developer-guide/pyramid-quadrature-cost.md`, which only echoes it) and directs that the
+risk be carried forward into fuse's own KNOWN_ISSUES.md rather than closed silently when
+`karma_quadrature.h` ports. This wave's port (`physics-kit/include/fuse_physics/fe/
+quadrature.hpp`) does NOT implement a pyramid or prism cell family at all (reference_topology.
+hpp's own scope note: the rational pyramid basis and its collapsed-coordinate quadrature are a
+separate numerical undertaking, deferred along with prism) -- so the risk is not yet
+APPLICABLE to any physics-kit code that exists today, but is recorded here now so a future
+wave that adds the pyramid family inherits the warning rather than rediscovering it. Watch
+convergence RATES on a distorted pyramid/prism mesh once that wave lands, not pass/fail.
+
+**Lead's note on the wave-1 landing (2026-10-31):** D99 verified against `karma_domain.C` lines 32, 54, 77. Two
+corrections before landing: the quadrature exactness tolerance's `1e-13` floor was removed in favour of a fully
+derived bound (measured margin: largest |error|/bound = 1.25e-1), and the basis-registry early refusal gained the
+test that fires it (its mutation row was declared equivalent without one). See docs/dev/physics-kit.md, "Lead's review
+of wave 1".
