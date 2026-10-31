@@ -1601,3 +1601,13 @@ controller combining by minimum (an owner question, below), FSAL reuse enabled f
 only (bit-identical) and opt-in for the DIRK family (a 1.6e-15 gap that does not shrink with
 Newton tolerance; the owner's rule "verify before optimise" forbids a default), SSPRK(3,3)
 having no Conde-Fekete-Shadid embedded pair, and Kvaerno 2004 deferred for want of the paper.
+
+## Owner decision on controller combination (2026-10-31)
+
+When the embedded and the dynamical-time-scale controller are both attached, the step is the
+MINIMUM of their proposals -- confirmed by the owner as the default. The owner's generalisation,
+for round 4: expose the list of proposals to the caller through a combination policy (a callable
+over the proposals that returns the step), so a user may choose minimum, maximum, a mean, or a rule
+of their own; the minimum stays the default when no policy is given. The policy is a design
+decision on the StepController interface and lands with a test for each built-in policy and a
+refusal for a policy that returns a non-positive or non-finite step.
