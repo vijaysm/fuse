@@ -311,6 +311,10 @@ struct HarnessOpts {
   int           src_dim = 1;
   int           dst_dim = 1;
   fuse::Conservation conservation = fuse::Conservation::None;
+  /// The two fields' units. Equal by default; an `AccumOp::Integral`
+  /// channel needs the target in [source] x [time].
+  fuse::Units   src_units = fuse::units::kKelvin;
+  fuse::Units   dst_units = fuse::units::kKelvin;
   ProducerOpts  producer{};
   bool          iteration_region = false;
   /// Empty (the default) reproduces the existing behaviour: an iteration
@@ -369,11 +373,11 @@ std::unique_ptr<Harness> build(HarnessOpts o) {
       .name = "consumer", .ranks = fuse::RankSet{1, o.dst_rank_count},
       .interval = o.dst_dt});
   const auto s = g.add_field(
-      p, fuse::FieldSpec{.name = "out", .region = r1, .units = u::kKelvin,
+      p, fuse::FieldSpec{.name = "out", .region = r1, .units = o.src_units,
                          .conservation = o.conservation,
                          .intent = fuse::Intent::Provides});
   const auto t = g.add_field(
-      c, fuse::FieldSpec{.name = "in", .region = r2, .units = u::kKelvin,
+      c, fuse::FieldSpec{.name = "in", .region = r2, .units = o.dst_units,
                          .conservation = o.conservation,
                          .intent = fuse::Intent::Requires});
   const auto ch = g.add_channel("link", s, t);
@@ -1064,6 +1068,22 @@ TEST(Runner, MaxAccumulationTakesTheLargestSampleOfTheWindow) {
   EXPECT_DOUBLE_EQ(h->consumer()->data()[0], 8.0);
 }
 
+// The time integral over the window, by left-rectangle quadrature: the sum of
+// the samples times the interval between them (the source's own step), so
+// four samples 2, 4, 6, 8 at dt = 1/4 integrate to 5.0 -- not the sum 20.0
+// the interpreter used to deliver under the name "Integral", and in the
+// target's own time-integrated units (J here, from a W source).
+TEST(Runner, IntegralAccumulationIsTheSampleSumTimesTheSourceStep) {
+  auto h = build(HarnessOpts{.accum = fuse::AccumOp::Integral,
+                             .src_dt = Rational{1, 4}, .dst_dt = Rational{1},
+                             .src_units = u::kWatt, .dst_units = u::kJoule});
+  Runner runner{h->graph, h->dag, h->plan, h->backend};
+  bind_all(*h);
+  ASSERT_TRUE(runner.initialize(h->components, h->registry).ok());
+  ASSERT_TRUE(runner.run_period(h->components).ok());
+  EXPECT_DOUBLE_EQ(h->consumer()->data()[0], (2.0 + 4.0 + 6.0 + 8.0) * 0.25);
+}
+
 TEST(Runner, SumAccumulationAddsEverySampleInTheWindow) {
   auto h = make_harness(fuse::AccumOp::Sum, Rational{1, 4}, Rational{1});
   Runner runner{h->graph, h->dag, h->plan, h->backend};
@@ -1750,6 +1770,64 @@ TEST(Runner, ConservativeIdentityRemapBetweenCoincidentRegionsReportsNoError) {
 // Both tests therefore live in test/unit/remap_runtime_test.cpp, on the MOAB
 // leg, where the numbers are the real ones. Nothing here is left unpinned; it
 // is pinned somewhere a real remap exists.
+
+// KNOWN_ISSUES.md D82 (owner decision 2026-10-19): an Extensive field's value
+// IS the conserved amount, so the supermesh weights for an Extensive channel
+// are column-normalised and preserve the plain sum; an Intensive field is a
+// density, its weights are row-normalised and preserve the measure-weighted
+// integral. The Runner's own Constrain check must integrate with the SAME
+// convention the weights were built to, or it reports the correct result as
+// a violation: it used to weight every cell field by measure regardless of
+// kind, so this exact pair (8 line cells of 2.0 onto 5) -- delivered total
+// 16 against source total 16 -- was flagged with a relative error of 0.6
+// (the measure-weighted integrals 2.0 against 3.2).
+TEST(Runner, ExtensiveRemapBetweenNonMatchingRegionsConservesThePlainSum) {
+  auto h = build(HarnessOpts{.src_cells = 8, .dst_cells = 5,
+                             .conservation = fuse::Conservation::Extensive});
+  ASSERT_TRUE(h->arc_of("link/constrain").valid());
+  Runner runner{h->graph, h->dag, h->plan, h->backend};
+  bind_all(*h);
+  RunnerConfig cfg;
+  cfg.abort_on_violation = true;
+  const auto init = runner.initialize(h->components, h->registry, cfg);
+  ASSERT_TRUE(init.ok()) << init.error().code << ": " << init.error().message;
+  const auto run = runner.run(h->components, 2);
+  ASSERT_TRUE(run.ok()) << run.error().code << ": " << run.error().message;
+
+  EXPECT_EQ(runner.stats().conservation_checks, 2);
+  EXPECT_EQ(runner.stats().conservation_violations, 0);
+  EXPECT_LT(runner.stats().worst_conservation_error, 1e-12);
+  // The amount convention, read back directly: the producer writes
+  // `value * step` (2.0 x 2 after two periods), and 8 x 4.0 redistributed
+  // over 5 cells is 6.4 per cell, the totals agreeing.
+  const double source_value = 2.0 * 2;
+  double delivered = 0.0;
+  for (const double v : h->consumer()->data()) {
+    EXPECT_NEAR(v, 8 * source_value / 5, 1e-12);
+    delivered += v;
+  }
+  EXPECT_NEAR(delivered, 8 * source_value, 1e-12);
+}
+
+TEST(Runner, IntensiveRemapBetweenNonMatchingRegionsConservesTheIntegral) {
+  auto h = build(HarnessOpts{.src_cells = 8, .dst_cells = 5,
+                             .conservation = fuse::Conservation::Intensive});
+  ASSERT_TRUE(h->arc_of("link/constrain").valid());
+  Runner runner{h->graph, h->dag, h->plan, h->backend};
+  bind_all(*h);
+  RunnerConfig cfg;
+  cfg.abort_on_violation = true;
+  ASSERT_TRUE(runner.initialize(h->components, h->registry, cfg).ok());
+  ASSERT_TRUE(runner.run(h->components, 2).ok());
+
+  EXPECT_EQ(runner.stats().conservation_checks, 2);
+  EXPECT_EQ(runner.stats().conservation_violations, 0);
+  EXPECT_LT(runner.stats().worst_conservation_error, 1e-12);
+  // The density convention: a constant density (`value * step`, 2.0 x 2
+  // after two periods) is reproduced cell for cell, and the integral over
+  // the unit line is what both sides agree on.
+  for (const double v : h->consumer()->data()) EXPECT_NEAR(v, 2.0 * 2, 1e-12);
+}
 
 TEST(Runner, ConservationCheckCanBeTurnedOff) {
   auto h = build(HarnessOpts{.conservation = fuse::Conservation::Extensive});

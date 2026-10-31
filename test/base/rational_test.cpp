@@ -310,3 +310,101 @@ TEST(Rational, TheNonThrowingSpellingReportsTheSameCases) {
   ASSERT_TRUE(sum.has_value());
   EXPECT_EQ(*sum, fuse::Rational(1, 2));
 }
+
+
+// -----------------------------------------------------------------------
+// rational_from_double: S8 Stage B, Field semantics track -- narrow gap (a).
+// Bounded double-to-Rational factory with named refusals, no best-
+// approximation mode (docs/dev/field-semantics-matrix.md Section 4 item 1).
+// -----------------------------------------------------------------------
+
+TEST(RationalFromDouble, RoundTripsExactlyOnDyadicMultiples) {
+  // 2^-k for k in [0, 20]: every one is exactly representable with a
+  // denominator 2^k -- the bound must cover the WIDEST one tested (2^20),
+  // not an arbitrary round number smaller than it.
+  for (int k = 0; k <= 20; ++k) {
+    const double x = std::ldexp(1.0, -k);
+    const auto r = fuse::rational_from_double(x, static_cast<std::int64_t>(1) << 20);
+    ASSERT_TRUE(r.ok()) << "k=" << k << " code=" << (r.ok() ? "" : r.error().code);
+    EXPECT_EQ(r.value(), fuse::Rational(1, static_cast<std::int64_t>(1) << k))
+        << "k=" << k;
+    EXPECT_EQ(r.value().to_double(), x) << "k=" << k;
+  }
+  // A halved dyadic step, matching the scheduler's own positions: 3/1024.
+  const auto step = fuse::rational_from_double(3.0 / 1024.0, 1'000'000);
+  ASSERT_TRUE(step.ok());
+  EXPECT_EQ(step.value(), fuse::Rational(3, 1024));
+}
+
+TEST(RationalFromDouble, NegativeAndIntegerValuesConvertExactly) {
+  EXPECT_EQ(fuse::rational_from_double(-0.125, 1000).value(), fuse::Rational(-1, 8));
+  EXPECT_EQ(fuse::rational_from_double(2.5, 1000).value(), fuse::Rational(5, 2));
+  EXPECT_EQ(fuse::rational_from_double(-3.0, 1000).value(), fuse::Rational(-3, 1));
+  EXPECT_EQ(fuse::rational_from_double(0.0, 1).value(), fuse::Rational(0));
+  EXPECT_EQ(fuse::rational_from_double(1024.0, 1).value(), fuse::Rational(1024, 1));
+}
+
+TEST(RationalFromDouble, NonfiniteIsRefusedByName) {
+  const auto nan_result = fuse::rational_from_double(
+      std::numeric_limits<double>::quiet_NaN(), 1000);
+  ASSERT_FALSE(nan_result.ok());
+  EXPECT_EQ(nan_result.error().code, "E-RATIONAL-NONFINITE");
+
+  const auto inf_result = fuse::rational_from_double(
+      std::numeric_limits<double>::infinity(), 1000);
+  ASSERT_FALSE(inf_result.ok());
+  EXPECT_EQ(inf_result.error().code, "E-RATIONAL-NONFINITE");
+
+  const auto neg_inf_result = fuse::rational_from_double(
+      -std::numeric_limits<double>::infinity(), 1000);
+  ASSERT_FALSE(neg_inf_result.ok());
+  EXPECT_EQ(neg_inf_result.error().code, "E-RATIONAL-NONFINITE");
+}
+
+TEST(RationalFromDouble, ADenominatorWiderThanTheBoundIsRefusedAsInexact) {
+  // The double nearest 0.1's exact value has a denominator near 2^55 --
+  // mirroring karma_semantics_adapter.h's own test fixture
+  // (coupling_semantics_test.C:89-96): a 32-bit bound refuses it.
+  const auto bounded = fuse::rational_from_double(0.1, static_cast<std::int64_t>(1) << 32);
+  ASSERT_FALSE(bounded.ok());
+  EXPECT_EQ(bounded.error().code, "E-RATIONAL-INEXACT");
+
+  // A clean dyadic position is never refused regardless of how tight the
+  // bound is, as long as the bound covers its own (small) exact denominator.
+  const auto clean = fuse::rational_from_double(0.125, 8);
+  EXPECT_TRUE(clean.ok());
+  const auto too_tight = fuse::rational_from_double(0.125, 7);
+  ASSERT_FALSE(too_tight.ok());
+  EXPECT_EQ(too_tight.error().code, "E-RATIONAL-INEXACT");
+}
+
+TEST(RationalFromDouble, ThereIsNoBestApproximationMode) {
+  // rational_from_double never returns a NEARBY rational when the exact one
+  // is refused -- the Result is a Failure, never a value with a different
+  // denominator than the input's own exact one.
+  const auto refused = fuse::rational_from_double(0.1, 1000);
+  ASSERT_FALSE(refused.ok());
+  EXPECT_EQ(refused.error().code, "E-RATIONAL-INEXACT");
+}
+
+TEST(RationalFromDouble, AMagnitudeTooLargeForInt64IsRefusedAsOverflow) {
+  // 2^70 as an integer needs a numerator past INT64_MAX (~2^63) even before
+  // any denominator is involved.
+  const double huge = std::ldexp(1.0, 70);
+  const auto result = fuse::rational_from_double(huge, std::numeric_limits<std::int64_t>::max());
+  ASSERT_FALSE(result.ok());
+  EXPECT_EQ(result.error().code, "E-RATIONAL-OVERFLOW");
+}
+
+TEST(RationalFromDouble, AMagnitudeTooSmallForInt64DenominatorIsRefusedAsOverflow) {
+  // 2^-70 needs a denominator past INT64_MAX.
+  const double tiny = std::ldexp(1.0, -70);
+  const auto result = fuse::rational_from_double(tiny, std::numeric_limits<std::int64_t>::max());
+  ASSERT_FALSE(result.ok());
+  EXPECT_EQ(result.error().code, "E-RATIONAL-OVERFLOW");
+}
+
+TEST(RationalFromDouble, NonPositiveMaxDenominatorThrows) {
+  EXPECT_THROW((void)fuse::rational_from_double(0.5, 0), fuse::InvalidArgument);
+  EXPECT_THROW((void)fuse::rational_from_double(0.5, -1), fuse::InvalidArgument);
+}

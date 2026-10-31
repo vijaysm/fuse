@@ -71,8 +71,12 @@ Graph authoring is the fluent `CouplingGraph` API directly in `build_graph()` (s
 
 `fuse::Conservation::Extensive` on `T`/`T_bc` is what makes `lower()` emit the `Constrain` operator
 in the dataflow graph. Without it the conservation-check count would be zero and the conservation
-gate vacuous. `g.channel(ch).accumulate(fuse::AccumOp::Mean)` is the field transfer's time treatment
-(glossary: *time integration*): the mean of `left`'s waveform over `right`'s step.
+gate vacuous. Because the target is Extensive, `validate()` requires the channel to declare that
+its transfer conserves the field (`.conservative()`, `E-CONN-CONSERVATION` otherwise); between
+these two coincident meshes the remap is the identity, which does.
+`g.channel(ch).accumulate(fuse::AccumOp::Mean)` is the field transfer's time treatment
+(glossary: *time integration*): the mean of `left`'s waveform over `right`'s step. The example
+calls `fuse::validate()` before `lower()`, as [](quickstart.md) does.
 
 `left` and `right` are each an ordinary `fuse::Component`. `HeatComponent` (`heat_component.hpp`)
 registers its state array `t_` as `Intent::Provides`, writes the next time level into a scratch

@@ -96,6 +96,10 @@ dev/conformance
 dev/python-surface
 dev/runner-device-dispatch
 dev/device-resident-arcs
+dev/physics-kit-disposition
+dev/integrators-design
+dev/field-semantics-matrix
+dev/physics-kit
 dev/soma-import
 ```
 

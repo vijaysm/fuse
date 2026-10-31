@@ -317,6 +317,11 @@ TEST(ProviderSubsetMpi,
     err.capacity = sizeof(buf);
     ASSERT_EQ(t->last_error(ctx, nullptr, &err), FUSE_OK);
     EXPECT_STREQ(err.code, "E-ABI-PLUGIN-AGREEMENT-REFUSED");
+    // D97 (2026-10-30): the peer's message carries the ORIGIN's own code and
+    // text, not only the rank: the hosting rank refused with E-ABI-VERSION.
+    const std::string message(buf);  // last_error() writes the message into the caller's buffer
+    EXPECT_NE(message.find("E-ABI-VERSION"), std::string::npos) << message;
+    EXPECT_NE(message.find("refusing rank"), std::string::npos) << message;
   }
 
   EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);

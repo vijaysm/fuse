@@ -671,14 +671,18 @@ void Runner::Impl::build_constrain_device_buffers() {
 Result<std::uint32_t> Runner::Impl::weights_for(RegionId region,
                                                 int rank_set,
                                                 std::size_t elements,
-                                                int components) {
+                                                int components,
+                                                Conservation conservation) {
   // Keyed by placement too: on a rank in two placements one region has two
   // decompositions, so two different measure vectors. `components` is small
-  // (checked >= 1 by plan_buffers), the placement a component index.
+  // (checked >= 1 by plan_buffers), the placement a component index. Keyed
+  // by the conservation kind as well, because an Extensive and an Intensive
+  // field on the same region integrate with different weights (below).
   const auto key = (static_cast<std::uint64_t>(region.value()) << 32) |
                    (static_cast<std::uint64_t>(
                         static_cast<std::uint16_t>(rank_set + 1)) << 16) |
-                   static_cast<std::uint16_t>(components);
+                   (static_cast<std::uint64_t>(static_cast<std::uint8_t>(conservation)) << 8) |
+                   static_cast<std::uint8_t>(components);
   const auto cached = weights_by_region.find(key);
   if (cached != weights_by_region.end()) return cached->second;
 
@@ -726,19 +730,42 @@ Result<std::uint32_t> Runner::Impl::weights_for(RegionId region,
   }
 
   // Which of field_extent()'s two shapes the field on this region implies
-  // (mesh_view.hpp). A cell field's conserved amount is its measure-weighted
-  // sum, unchanged from before; a NODAL Extensive field carries no cell
-  // measure to weight by at all (MeshView::measure(0, i) throws by
-  // contract -- a vertex has none), and its conserved amount is documented
-  // (consistent_interp.hpp's "DENSITY VS LOAD") to be the amount ITSELF: the
-  // H^T D builder already converts a density source to a load before this
-  // ever sees it, so the target-side integral this Constrain checks is the
-  // plain sum of owned nodal loads -- weight 1 per owned vertex, 0 per ghost,
-  // same "zero a ghost rather than truncate the range" rule the cell path
-  // uses to avoid double-counting another rank's copy.
+  // (mesh_view.hpp), and which conservation convention the field follows.
+  //
+  // The conserved quantity depends on the field's `Conservation` kind, the
+  // same convention the weight builder normalises by (KNOWN_ISSUES.md D82,
+  // owner decision 2026-10-19; `RemapPlan::conservation`, remap_plan.hpp):
+  //
+  //   * `Conservation::Extensive`: the field's VALUE IS the conserved amount
+  //     (not a density), so the conserved total is the plain sum of owned
+  //     values -- weight 1 per owned entity, cell or vertex alike. The
+  //     Extensive supermesh weights are column-normalised by the SOURCE
+  //     cell's measure so that exactly this sum is preserved. For a NODAL
+  //     Extensive load the same statement was always the documented one
+  //     (consistent_interp.hpp's "DENSITY VS LOAD": the H^T D builder
+  //     converts a density source to a load before this ever sees it).
+  //   * `Conservation::Intensive`: the field is a density and the conserved
+  //     total is its measure-weighted integral -- weight = cell measure per
+  //     owned cell. The Intensive supermesh weights are row-normalised by
+  //     the TARGET cell's measure, which preserves exactly this integral.
+  //     `resolve_constrain()` already refuses an Intensive field on a
+  //     vertex region, since a vertex has no measure.
+  //
+  // Until this was made conditional, every CELL field integrated with
+  // measure weights regardless of its kind, so a conservative Extensive
+  // remap between non-matching meshes -- whose weights redistribute the
+  // amounts correctly, plain sum preserved -- was reported as a violation
+  // by the one check meant to confirm it (a 8-cell -> 5-cell line, 2.0 per
+  // source cell: delivered 3.2 per target cell, sums 16 = 16, "relative
+  // error 0.6" against the measure-weighted integrals 2.0 vs 3.2).
+  //
+  // Weight 0 per ghost in either convention: "zero a ghost rather than
+  // truncate the range" (MeshView contract point 2), so another rank's
+  // copy is never double counted.
   const auto kind = region_extent_kind(graph, region);
   if (!kind.ok()) return kind.error();
   const bool nodal = kind.value() == RegionExtentKind::Vertex;
+  const bool amount = conservation == Conservation::Extensive;
   const int dim = nodal ? 0 : (reg.dimension >= 0 ? reg.dimension : mv->dimension());
   if (mv->entity_count(dim) != elements) {
     return Failure{"E-RT-MEASURE",
@@ -758,7 +785,7 @@ Result<std::uint32_t> Runner::Impl::weights_for(RegionId region,
       // ghost is zeroed individually rather than by truncating the range.
       // Including one would double count against another rank's copy.
       const double m =
-          !mv->is_owned(dim, i) ? 0.0 : (nodal ? 1.0 : mv->measure(dim, i));
+          !mv->is_owned(dim, i) ? 0.0 : ((nodal || amount) ? 1.0 : mv->measure(dim, i));
       for (std::size_t c = 0; c < nc; ++c) w.push_back(m);
     }
   } catch (const std::exception& e) {
@@ -818,10 +845,10 @@ Result<void> Runner::Impl::resolve_constrain(const Instruction& ins,
   // Allreduce of three doubles per conservative channel per period.
   const bool reduce = config.base_communicator.has_value();
 
-  // weights_for() integrates a NODAL field as the plain sum of its owned
-  // values (weight 1 per vertex): correct for an Extensive nodal load, which
-  // is already an amount, and meaningless for an Intensive nodal field, whose
-  // integral needs a vertex measure this library does not define. Refuse
+  // weights_for() integrates an Extensive field as the plain sum of its
+  // owned values (weight 1 per entity) and an Intensive field as its
+  // measure-weighted integral. A NODAL Intensive field has no integral: it
+  // would need a vertex measure this library does not define. Refuse
   // rather than compare a vertex sum with an integral.
   for (const ArcId a : {before, ins.out}) {
     const ValueType& t = dag.arc(a).type;
@@ -841,11 +868,11 @@ Result<void> Runner::Impl::resolve_constrain(const Instruction& ins,
   const Slot& out_slot = slots[ins.out.value()];
   const Result<std::uint32_t> wb = weights_for(
       dag.arc(before).type.region, dag.arc(before).type.rank_set,
-      in_slot.elements, in_slot.components);
+      in_slot.elements, in_slot.components, dag.arc(before).type.conservation);
   if (!wb.ok()) return wb.error();
   const Result<std::uint32_t> wa = weights_for(
       dag.arc(ins.out).type.region, dag.arc(ins.out).type.rank_set,
-      out_slot.elements, out_slot.components);
+      out_slot.elements, out_slot.components, dag.arc(ins.out).type.conservation);
   if (!wa.ok()) return wa.error();
 
   r.constrain = static_cast<std::int32_t>(constrains.size());
@@ -4540,6 +4567,16 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
       if (ins.attrs.accum == AccumOp::Mean && count != 0) {
         const double inv = 1.0 / static_cast<double>(count);
         num::scale<Space>(inv, span_c(out, n), span_m(out, n));
+      }
+      // `num::accumulate_finalize_integral` (kernels.hpp), in place: the
+      // samples' running sum times the interval between samples, which
+      // lowering recorded exactly in `attrs.scale` (src/ir/rules_channel.cpp:
+      // the source component's interval). Without this the "integral" was
+      // the plain sum of the samples -- 4 samples of 2.0 at dt = 1/4
+      // delivered 8.0, not 2.0 -- in the source's own units, which the
+      // arc's type (now [source] x [time]) did not even claim.
+      if (ins.attrs.accum == AccumOp::Integral) {
+        num::scale<Space>(ins.attrs.scale.to_double(), span_c(out, n), span_m(out, n));
       }
       sample_count[ins.in[0].value()] = 0;  // reset for the next window
       break;

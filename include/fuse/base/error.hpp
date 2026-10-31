@@ -134,6 +134,34 @@ void set_error_policy(ErrorPolicy policy) noexcept;
 void set_error_rank(int rank) noexcept;
 [[nodiscard]] int error_rank() noexcept;
 
+/// Process-wide set-up of the diagnostics layer -- the `fuse::initialize`
+/// docs/dev/conventions.md and docs/dev/debugging.md describe. Reads the
+/// FUSE_ON_ERROR family of variables once (`error_policy_from_environment()`),
+/// installs the result (`set_error_policy()`) and announces `rank`
+/// (`set_error_rank()`; -1 = no rank, the default for a process not under
+/// MPI), so every Error raised afterwards follows the environment's policy
+/// and carries the rank. Until a program calls it, the built-in defaults
+/// apply and the environment is NOT read: FUSE_ON_ERROR and its companions
+/// are effective only through this call (or a program's own
+/// `set_error_policy(error_policy_from_environment())`).
+///
+/// Every entry point in this tree calls it: the examples' `main()`, the test
+/// harness (test/support/fuse_test_main.cpp), pfuse's module import
+/// (python/src/module.cpp) and the C ABI's `fuse_create()`/`fuse_setup()`
+/// (src/abi/participant.cpp). A program that embeds the library directly
+/// must call it itself, after MPI is up if it wants the rank.
+///
+/// An unrecognised variable value is the `InvalidArgument`
+/// `error_policy_from_environment()` raises (I4): it propagates out of here
+/// under the DEFAULT policy, which is still in force, and nothing is
+/// installed. Calling it again re-reads the environment and re-announces.
+void initialize(int rank = -1);
+
+/// Restores the built-in default policy and rank -1. Nothing in the library
+/// requires it; a program that pairs it with `initialize()` gets a process
+/// whose diagnostics are back to the state before the environment was read.
+void finalize() noexcept;
+
 /// The command line `attach_debugger` would run, as a pure function so it
 /// can be tested without spawning anything. `pid` is the process to attach.
 [[nodiscard]] std::string debugger_command(const ErrorPolicy& policy, long pid);

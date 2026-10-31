@@ -485,7 +485,9 @@ collective leaves them blocked there; the library does not detect that divergenc
 
 When the graph declares a plugin component, `initialize()` additionally agrees the plugin mount
 across every rank of the base communicator (`E-ABI-PLUGIN-AGREEMENT-REFUSED` names the refusing
-rank). A plugin component together with a `connect`-launched component is refused with
+rank and carries that rank's own error code and message). The same holds for every collective entry
+point's per-component reconciliation (`E-ABI-COLLECTIVE-REFUSED`): a rank that did not refuse learns
+which rank did and what it refused with, not only a number. A plugin component together with a `connect`-launched component is refused with
 `E-ABI-PLUGIN-NO-SPANNING-COMM` unless this process's own `my_component` is one of the connecting
 components; see [](providers.md#a-known-failure-case).
 

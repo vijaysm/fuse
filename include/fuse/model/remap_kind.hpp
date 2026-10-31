@@ -80,6 +80,32 @@ namespace fuse {
   return method == "consistent" || method == "mls" || method.substr(0, 4) == "mls:";
 }
 
+/// Every remap method string a weight builder in this library recognises:
+///   * "" (the default): the conservative supermesh remap below order 2,
+///     the high-order TempestRemap backend at order 2 and above;
+///   * "intx" / "conservative": the first-order conservative supermesh;
+///   * "tempest": the high-order backend (MOAB/TempestRemap builds only);
+///   * "consistent" / "consistent-transpose": nodal interpolation H and its
+///     exact transpose H^T D (fuse/backend/consistent_interp.hpp);
+///   * "mls" / "mls:degree=<int>,k=<int>,radial=<...>": moving least squares
+///     (fuse/backend/mls_weights.hpp; the options are checked there).
+/// `validate()` refuses any other string at authoring time
+/// (`E-CHANNEL-REMAP-METHOD`), and both `build_weights()` paths refuse it
+/// again at build time, so a misspelt method can never fall through to the
+/// default builder and be silently computed as something else.
+[[nodiscard]] constexpr bool is_known_remap_method(std::string_view method) noexcept {
+  return method.empty() || method == "intx" || method == "conservative" ||
+         method == "tempest" || method == "consistent" ||
+         method == "consistent-transpose" || method == "mls" ||
+         method.substr(0, 4) == "mls:";
+}
+
+/// The list `is_known_remap_method()` accepts, for diagnostics.
+[[nodiscard]] constexpr std::string_view known_remap_methods_text() noexcept {
+  return "'' (default), 'intx', 'conservative', 'tempest', 'consistent', "
+         "'consistent-transpose', 'mls', 'mls:degree=<int>,k=<int>,radial=<...>'";
+}
+
 [[nodiscard]] constexpr bool could_ever_emit_remap(RemapFlags flags,
                                                    const FieldSpec& source,
                                                    const FieldSpec& target,

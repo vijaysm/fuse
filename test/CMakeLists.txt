@@ -227,10 +227,37 @@ function(fuse_add_gtest layer name)
   # needs an optional dependency carries its name (e.g. `moab`) so the
   # whole set can be selected with `ctest -L moab` -- the first host run
   # asked exactly that and found no tests, because nothing carried it.
-  cmake_parse_arguments(ARG "THROWS;NO_LAYER_LIB" "" "LIBS;LABELS" ${ARGN})
+  #
+  # SRC_DIR: directory holding "<name>_test.cpp", in place of the default
+  # "<layer>/" -- resolved the same way the default is, i.e. relative to
+  # the CALLER's own CMAKE_CURRENT_SOURCE_DIR (a function call does not
+  # push a new directory scope in CMake, so this macro always sees
+  # whichever directory's listfile is currently executing). test/partition/
+  # CMakeLists.txt's own header comment already names this exact limit --
+  # "${layer}/${name}_test.cpp" resolves against the CALLER's directory,
+  # so a caller whose test tree is not test/<layer>/ cannot use this macro
+  # unchanged -- and works around it there with a hand-duplicated wrapper
+  # (fuse_partition_add_gtest) instead, because test/partition/ is still a
+  # child of test/ and its sources must keep landing in the audit's
+  # test/*/*_test.cpp glob at the "partition/<name>_test.cpp" path either
+  # way. physics-kit/test/ is the first caller from OUTSIDE test/'s own
+  # directory tree entirely (physics-kit/CMakeLists.txt's own
+  # add_subdirectory(test), a sibling of the root's add_subdirectory(test),
+  # not a descendant of it) and is not, and does not need to be, covered by
+  # that audit -- see physics-kit/test/CMakeLists.txt's own comment. One
+  # optional keyword argument is the minimal extension: every existing call
+  # site passes no SRC_DIR and sees no change in behaviour (verified: grep
+  # -c "fuse_add_gtest(" test/CMakeLists.txt finds 117 call sites, none of
+  # which names SRC_DIR).
+  cmake_parse_arguments(ARG "THROWS;NO_LAYER_LIB" "SRC_DIR" "LIBS;LABELS" ${ARGN})
+  if(ARG_SRC_DIR)
+    set(_fuse_gtest_src_dir "${ARG_SRC_DIR}")
+  else()
+    set(_fuse_gtest_src_dir "${layer}")
+  endif()
   set(target fuse_${layer}_${name}_test)
-  add_executable(${target} ${layer}/${name}_test.cpp)
-  fuse_record_test_source(${layer}/${name}_test.cpp)
+  add_executable(${target} ${_fuse_gtest_src_dir}/${name}_test.cpp)
+  fuse_record_test_source(${_fuse_gtest_src_dir}/${name}_test.cpp)
   if(ARG_NO_LAYER_LIB)
     target_link_libraries(${target} PRIVATE fuse_test_main ${ARG_LIBS})
   else()
@@ -450,6 +477,25 @@ endforeach()
 foreach(t temporal_basis waveform accelerator)
   fuse_add_gtest(num ${t} THROWS)
 endforeach()
+# Integrators (docs/dev/integrators-design.md): the integrator foundation (butcher_tableau.hpp, embedded_controller.hpp,
+# integrator.hpp) and the explicit family (explicit_integrator.hpp). THROWS: integrator
+# exercises FUSE_ASSERT/FUSE_THROW paths (SubStepClock's own invariants);
+# butcher_tableau/embedded_controller/explicit_integrator only ever return a Result,
+# never throw, so they need no THROWS label.
+fuse_add_gtest(num butcher_tableau)
+fuse_add_gtest(num embedded_controller)
+fuse_add_gtest(num integrator THROWS)
+fuse_add_gtest(num explicit_integrator)
+# The generic rooted-tree order-condition checker, run against every classical
+# tableau and against the Rosenbrock scope note.
+fuse_add_gtest(num order_conditions)
+# DIRK/ESDIRK family, stage solve through fuse::num::solve
+# (Newton-Krylov), so this needs fuse::linalg the same way num.newton_krylov does.
+fuse_add_gtest(num dirk_integrator LIBS fuse::linalg)
+# Rosenbrock family, one gmres/MatrixFreeOperator solve per
+# stage (not fuse::num::solve), so this needs fuse::linalg the same way DIRK does.
+fuse_add_gtest(num rosenbrock_integrator LIBS fuse::linalg)
+fuse_add_gtest(num continuous_extension)
 # The native Newton-Krylov coupler. line_search is pure scalar
 # arithmetic (no DistVector), so it needs nothing beyond fuse::num itself;
 # newton_krylov drives fuse::linalg::gmres/DistVector directly, so it needs
@@ -1509,9 +1555,25 @@ fuse_add_gtest(backend remap_apply)
 
 # ---------------------------------------------------------------- field
 # THROWS: the extent refusals are the point of half these cases.
-# field/ is header-only (the pipeline is templates over Kokkos views), so there
-# is no fuse::field library for the helper to derive from the directory name.
+# The pipeline (field_ref.hpp/extent.hpp/pipeline.hpp) stays header-only (it
+# is templates over Kokkos views), so this one row still has no fuse::field
+# library to derive from the directory name -- NO_LAYER_LIB as before.
 fuse_add_gtest(field pipeline THROWS NO_LAYER_LIB LIBS fuse::model fuse::base)
+# S8 Stage B, Field semantics track: FieldTransaction (field/transaction.hpp,
+# src/field/transaction.cpp) is fuse::field's first real translation unit,
+# so this row links the new library like any other layer's own tests do.
+fuse_add_gtest(field transaction LIBS fuse::field)
+fuse_add_gtest(field collective_agreement LIBS fuse::field)
+# S8 Stage B, Field semantics track, round 2 (the lead's own instruction):
+# the real-communicator twin of the CommitCollectiveWith* cases above --
+# a genuine MPI_Allreduce over MPI_COMM_WORLD, where the tier-0 suite
+# cannot run one. Closes the field-transaction-collective-agreement-
+# skipped mutation row's own NOT-ASSESSED status (needs a working
+# multi-rank MPI launcher this sandbox does not have -- host_pending).
+fuse_tests_gated_by(FUSE_ENABLE_MPI parallel/field_transaction_mpi_test.cpp)
+if(FUSE_ENABLE_MPI)
+  fuse_add_mpi_test(parallel field_transaction_mpi LIBS fuse::field RANKS 2 3)
+endif()
 fuse_add_gtest(num space_kernels)
 fuse_add_omp_legs(num.space_kernels fuse_num_space_kernels_test)
 

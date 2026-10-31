@@ -48,12 +48,54 @@ no directory ever matched `interface`.
 `physics-kit/` is a separate optional component. It **depends on FUSE and never the reverse** — that
 direction is what keeps FUSE adoptable by a code that already has its own discretisation.
 
+Enforced by `tools/check-layering.py`'s `check_physics_kit_boundary` (added at the S8.1 skeleton):
+nothing under `include/fuse/`, `src/`, `python/` or `examples/` — fuse proper — may include a
+`fuse_physics/` header (physics-kit's own include root, outside `include/fuse/` entirely) or name
+`fuse::physics_kit` in a `target_link_libraries()` call; `physics-kit/` itself is exempt from both,
+since depending on FUSE is exactly what it is for. physics-kit is not given a rank in `LAYERS`
+above: a rank taller than every fuse:: layer would still let a fuse:: layer be mis-ranked above it,
+and `physics-kit/` is not under `include/fuse/` for the walk in `main()` to reach in the first
+place, so the direction is checked as its own pass instead. Proven to fire against a probe header
+(`#include "fuse_physics/version.hpp"` placed under `include/fuse/base/`) and a probe
+`target_link_libraries(... fuse::physics_kit)` (placed under `src/`), both producing a violation
+line and both removed once the proof was captured — the S8.1 skeleton track's `measured_results`
+has the verbatim output. `docs/dev/physics-kit.md` is this component's own page; naming
+(`KARMA*`/`karma_`/`.C`) under `physics-kit/` is a separate gate, `tools/check-physics-kit-
+naming.py`, because `tools/check-layering.py`'s own naming check (`check_legacy`) is scoped to the
+four fuse-proper directories by a fixed tuple and physics-kit is deliberately not a fifth member of
+it (this paragraph's own enforcement is the opposite direction from that check).
+
 ## Why the bottom half is dependency-light
 
 `base` through `num` need only a C++20 compiler, Kokkos and a linear-algebra backend. That is not
 minimalism for its own sake: it is what makes the fast CI leg fast, and what lets a code with neither
 MOAB nor PETSc use the coupler. MPI enters at `transport`; everything heavier enters at `backend`,
 behind one directory and one build option each.
+
+## MPI outside `transport` (2026-10-29)
+
+"MPI enters at `transport`," above, names where the ROUTING of field values between ranks lives; it
+has never meant that no `.cpp` below `transport` may call an MPI function at all. Two translation
+units do, both deliberately, both PRIVATE to the layer whose own invariant the call protects, and
+neither reachable from a public header (since 2026-10-30 both run through one helper,
+`src/field/collective_agreement.cpp`, which is now the translation unit of `field` that calls MPI;
+`src/field/transaction.cpp` no longer names it): `src/abi/participant.cpp`'s `reconcile_plugin_agreement()`
+(an `MPI_Allreduce(MPI_MINLOC)` agreeing a plugin-mount verdict across the base communicator, `abi`
+sitting at the TOP of the stack) and `src/field/transaction.cpp`'s `FieldTransaction::
+commit_collective()` (an `MPI_Allreduce(MPI_MAXLOC)` agreeing a staged-commit verdict, `field`
+sitting BELOW `transport`, S8 Stage B Field semantics track). Both exist for the same reason: a
+collective AGREEMENT about whether an operation may proceed is not the same thing as MOVING field
+values between ranks, and it belongs in the layer that owns the invariant being agreed on -- the
+plugin-mount invariant is `abi`'s own, and the staged-commit invariant ("no caller-visible value
+changes until every rank has agreed," `include/fuse/field/transaction.hpp`'s own file comment) is
+`field`'s own. Moving that one collective up to `transport` would not remove it from the layer that
+needs it; it would make `field` (or `abi`) depend upward on `transport` to get back a capability
+`transport` itself has no stake in, which is the inversion `tools/check-layering.py` exists to catch
+in the direction that matters -- a layer's PUBLIC header naming a layer above it. Neither of these two
+`.cpp` files' own public header names `mpi.h` (`tools/check-layering.py`'s
+`ALLOWED_PUBLIC_THIRD_PARTY` forbids it for every layer); each links `MPI::MPI_CXX` conditionally,
+under `FUSE_ENABLE_MPI`, exactly the way every layer AT OR ABOVE `transport` already does. Not
+restructured: this paragraph records the exception, it does not propose closing it.
 
 ## Enforcement
 

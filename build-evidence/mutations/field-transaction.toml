@@ -1,0 +1,102 @@
+# Mutations for the S8 Stage B Field semantics track's FieldTransaction
+# (include/fuse/field/transaction.hpp, src/field/transaction.cpp). Own file
+# per the review-fix protocol: do not edit build-evidence/mutations.toml
+# directly while other fixers hold it dirty.
+#
+# Applied by tools/mutate.py, rebuilt, run, confirmed to fail EXACTLY the
+# named test, then restored byte-for-byte (the tool's own restore-check).
+
+[[mutation]]
+id = "field-transaction-duplicate-refusal-removed"
+area = "field-transaction"
+describes = "FieldTransaction::stage()'s own ambiguity refusal (a second value for one slot under Replace/Insert) is replaced with `if (false)`, so a duplicate silently overwrites the first value instead of being refused by name -- the exact failure mode karma_field_transaction.h's own UpdateMode contract exists to prevent"
+file = "src/field/transaction.cpp"
+old = """  if (has_staged_[slot]) {
+    return Failure{"E-FIELD-TXN-DUPLICATE",
+                   "FieldTransaction::stage: a second value for one slot is ambiguous under "
+                   "Replace/Insert and is refused rather than resolved by arrival order"};
+  }"""
+new = """  if (false) {  // MUTATION: ambiguity refusal removed
+    return Failure{"E-FIELD-TXN-DUPLICATE",
+                   "FieldTransaction::stage: a second value for one slot is ambiguous under "
+                   "Replace/Insert and is refused rather than resolved by arrival order"};
+  }"""
+target = "fuse_field_transaction_test"
+test = "field.transaction"
+
+[[mutation]]
+id = "field-transaction-accumulation-order-arrival-dependent"
+area = "field-transaction"
+describes = "build_published_values()'s own canonical (magnitude, sign, bit-pattern) tie-break within one slot's contributions is removed, so Accumulate mode sums each slot's values in the order they were STAGED rather than in a value-determined order -- the exact property FieldTransaction.AccumulationIsBitwiseIndependentOfStagingOrder exists to pin. Round 2 (2026-10-29): anchor updated for the renamed comparator (bit_pattern_before -> magnitude_then_sign_then_bits_before, the owner's own accuracy-over-efficiency instruction); the property this mutation breaks is unchanged, since swapping the comparator's keys for raw push order breaks the sort regardless of which keys it sorts by."
+file = "src/field/transaction.cpp"
+old = """    std::sort(slot_values.begin(), slot_values.end(), magnitude_then_sign_then_bits_before);"""
+new = """    // MUTATION: canonical order removed; summed in arrival (push) order instead."""
+target = "fuse_field_transaction_test"
+test = "field.transaction"
+
+[[mutation]]
+id = "field-transaction-rollback-leaks-staged-state"
+area = "field-transaction"
+describes = "rollback()'s own clearing of staged_/has_staged_ is skipped (guarded by `if (false)`), so a rolled-back transaction keeps its staged values and staged_count() still reports them -- the exact failure FieldTransaction.RollbackDiscardsStagedStateWithoutTouchingTheTarget exists to catch"
+file = "src/field/transaction.cpp"
+old = """void FieldTransaction::rollback() noexcept {
+  if (mode_ != UpdateMode::Accumulate) {
+    std::fill(staged_.begin(), staged_.end(), 0.0);
+    std::fill(has_staged_.begin(), has_staged_.end(), false);
+  }
+  contributions_.clear();
+}"""
+new = """void FieldTransaction::rollback() noexcept {
+  if (false) {  // MUTATION: staged/has_staged clearing removed, leaking staged state
+    std::fill(staged_.begin(), staged_.end(), 0.0);
+    std::fill(has_staged_.begin(), has_staged_.end(), false);
+  }
+  contributions_.clear();
+}"""
+target = "fuse_field_transaction_test"
+test = "field.transaction"
+
+[[mutation]]
+id = "field-transaction-collective-agreement-skipped"
+area = "field-transaction"
+describes = "agree_outcome()'s own post-Allreduce verdict check (`if (out.refused == 0) return success`) is replaced with an unconditional success, so a rank whose local validation failed is ignored and every rank publishes. Re-anchored 2026-10-30 (D97): the agreement moved from commit_collective() into fuse::agree_outcome() (src/field/collective_agreement.cpp), which the ABI's two reconciles now share. Killed by parallel.field_transaction_mpi.2's ValidationDisagreement case (every rank asserts its own values unchanged) and by parallel.provider_subset_mpi.2."
+file = "src/field/collective_agreement.cpp"
+old = """  if (out.refused == 0) return Result<void>::success();"""
+new = """  if (true) return Result<void>::success();  // MUTATION: collective agreement check skipped"""
+target = "fuse_parallel_field_transaction_mpi_test"
+test = "parallel.field_transaction_mpi.2"
+requires = "mpi"
+
+[[mutation]]
+id = "field-agreement-origin-not-carried"
+area = "field-transaction"
+describes = "The origin's own code is not carried to the other ranks (D97, 2026-10-30): the broadcast bytes are received but origin_code is cleared, so a non-originating rank knows the rank that refused and not what it refused with. Killed by parallel.field_transaction_mpi.2, which asserts origin_code == E-FIELD-TXN-INCOMPLETE on EVERY rank and that the message carries the origin's own text."
+file = "src/field/collective_agreement.cpp"
+old = """  refusal.origin_code = bytes.substr(0, static_cast<std::size_t>(lengths[0]));"""
+new = """  refusal.origin_code.clear();  // MUTATION: origin code not carried to the other ranks"""
+target = "fuse_parallel_field_transaction_mpi_test"
+test = "parallel.field_transaction_mpi.2"
+requires = "mpi"
+
+[[mutation]]
+id = "field-agreement-message-omits-origin-rank"
+area = "field-transaction"
+describes = "format_agreed_refusal() drops the origin rank from the message (D97, 2026-10-30: the original error AND the rank it came from must be in what every rank returns). Killed at tier 0 by field.collective_agreement, which pins the exact message for a known AgreedRefusal."
+file = "src/field/collective_agreement.cpp"
+old = """  out.append(std::to_string(refusal.origin_rank));
+  out.append(" of ");"""
+new = """  out.append("?");  // MUTATION: origin rank omitted from the message
+  out.append(" of ");"""
+target = "fuse_field_collective_agreement_test"
+test = "field.collective_agreement"
+
+[[mutation]]
+id = "field-agreement-origin-status-not-carried"
+area = "field-transaction"
+describes = "The origin's numeric status is not carried (D97): header[2] is left 0 on the origin, so a non-originating ABI rank would return FUSE_OK's number with a refusal message. Killed at tier 0 by field.collective_agreement's make_agreed_failure check together with parallel.provider_subset_mpi.2 on a host (the peer asserts a non-OK status)."
+file = "src/field/collective_agreement.cpp"
+old = """    header[2] = local_status_number;"""
+new = """    header[2] = 0;  // MUTATION: origin numeric status not carried"""
+target = "fuse_parallel_provider_subset_mpi_test"
+test = "parallel.provider_subset_mpi.2"
+requires = "mpi"

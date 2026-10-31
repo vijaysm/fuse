@@ -178,15 +178,10 @@ class TestLowering:
         assert "Accumulate" in text
         assert "Remap" in text
 
-    @pytest.mark.xfail(
-        reason="include/fuse/ir/dump.hpp:126 still writes 'digraph soma_ir {' -- a leftover "
-               "from the soma->fuse rename that dump_text()'s '# fuse-ir v1' banner (line 73 "
-               "of the same header) already got. Measured directly against this build, not "
-               "assumed; not edited here, since src/ and "
-               "include/ are outside this test directory.",
-        strict=True,
-    )
     def test_graphviz_dump_is_a_digraph(self):
+        # Was a strict xfail while include/fuse/ir/dump.hpp still wrote 'digraph soma_ir {'
+        # (a leftover from the soma->fuse rename); the header has been fixed, so this is
+        # now a plain assertion on the renamed banner.
         result = pfuse.lower(build_pair())
         assert pfuse.dump_graphviz(result.dag).startswith("digraph fuse_ir")
 

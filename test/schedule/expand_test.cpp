@@ -3,6 +3,7 @@
 #include <fuse/base/error.hpp>
 #include <fuse/ir/lowering.hpp>
 #include <fuse/schedule/expand.hpp>
+#include <fuse/schedule/plan.hpp>
 
 #include <algorithm>
 #include <cstdint>
@@ -401,5 +402,106 @@ TEST(Expand, MergeNeverPrecedesItsProducers) {
     ASSERT_TRUE(have_merge);
     EXPECT_GE(merge_time, latest_input_time)
         << "mode=" << static_cast<int>(mode);
+  }
+}
+
+namespace {
+
+/// `pair()` with the source field in kilopascals and the target in pascals:
+/// `validate()`/`lower()` insert an exact unit `Scale` (x1000) at the head
+/// of the chain, BEFORE the channel's `Sample`.
+CouplingGraph scaled_pair(Rational src_dt, Rational dst_dt, fuse::AccumOp accum) {
+  CouplingGraph g;
+  const auto mf = g.add_mesh(fuse::MeshDecl{.name = "mf"});
+  const auto ms = g.add_mesh(fuse::MeshDecl{.name = "ms"});
+  const auto rf = g.add_region(fuse::Region{.name = "rf", .mesh = mf});
+  const auto rs = g.add_region(fuse::Region{.name = "rs", .mesh = ms});
+  const auto a = g.add_component(ComponentDecl{
+      .name = "a", .ranks = fuse::RankSet{0, 1}, .interval = src_dt});
+  const auto b = g.add_component(ComponentDecl{
+      .name = "b", .ranks = fuse::RankSet{1, 1}, .interval = dst_dt});
+  fuse::Units kilopascal = u::kPascal;
+  kilopascal.scale = Rational{1000};
+  const auto s = g.add_field(a, fuse::FieldSpec{
+      .name = "p", .region = rf, .units = kilopascal,
+      .intent = fuse::Intent::Provides});
+  const auto t = g.add_field(b, fuse::FieldSpec{
+      .name = "p_in", .region = rs, .units = u::kPascal,
+      .intent = fuse::Intent::Requires});
+  const auto ch = g.add_channel("c", s, t);
+  g.channel(ch).accumulate(accum);
+  return g;
+}
+
+}  // namespace
+
+// A node upstream of the `Sample` in an accumulating channel's chain is read
+// at every source tick, so it must be produced on the source clock, at the
+// same instants and in the same phase as the `Sample` itself. The inserted
+// unit `Scale` is the case lowering produces today: placed on the target
+// clock (as every non-`Sample` node used to be) it was written once, at the
+// end of the target step, after every `Sample` that read it -- and
+// `schedule()` refused the plan with `E-SCHED-ORDER`, blaming itself.
+TEST(Expand, NodesUpstreamOfTheSampleRunOnTheSourceClock) {
+  const CouplingGraph g = scaled_pair(Rational{1, 4}, Rational{1}, fuse::AccumOp::Mean);
+  const auto lowered = lower(g);
+  ASSERT_TRUE(lowered.ok()) << lowered.diags.to_string();
+  const fuse::ClockSet cs{g};
+
+  const auto td = expand(g, lowered.dag, cs);
+  ASSERT_TRUE(td.ok()) << td.error().message;
+  const auto& d = lowered.dag;
+
+  // One Scale per source tick, exactly like the Sample it feeds ...
+  EXPECT_EQ(count_kind(td.value(), d, OpKind::Scale), 4);
+  EXPECT_EQ(count_kind(td.value(), d, OpKind::Sample), 4);
+  EXPECT_EQ(count_kind(td.value(), d, OpKind::Accumulate), 1);
+
+  // ... at the same instants, in the same phase, and sorted before it.
+  std::vector<Rational> scale_times, sample_times;
+  for (std::size_t i = 0; i < td.value().nodes.size(); ++i) {
+    const auto& tn = td.value().nodes[i];
+    const OpKind k = d.node(tn.node).kind;
+    if (k == OpKind::Scale) {
+      scale_times.push_back(tn.time);
+      EXPECT_EQ(tn.phase, fuse::TickPhase::AfterTicks);
+      ASSERT_LT(i + 1, td.value().nodes.size());
+      const auto& next = td.value().nodes[i + 1];
+      EXPECT_EQ(d.node(next.node).kind, OpKind::Sample)
+          << "the Sample must directly follow the Scale it reads";
+      EXPECT_EQ(next.time, tn.time);
+      EXPECT_EQ(next.src_step, tn.src_step);
+    } else if (k == OpKind::Sample) {
+      sample_times.push_back(tn.time);
+    }
+  }
+  EXPECT_EQ(scale_times, sample_times);
+}
+
+// Both expansion paths must agree on the placement, and the plan built from
+// either must pass the scheduler's own dependence-order check. The lockstep
+// shortcut used to fail the same way as the general path.
+TEST(Expand, UnitScaledAccumulatingChannelSchedulesInLockstepAndMultirate) {
+  for (const Rational src_dt : {Rational{1}, Rational{1, 4}}) {
+    const CouplingGraph g = scaled_pair(src_dt, Rational{1}, fuse::AccumOp::Mean);
+    const auto lowered = lower(g);
+    ASSERT_TRUE(lowered.ok()) << lowered.diags.to_string();
+    const fuse::ClockSet cs{g};
+
+    const auto fast = expand(g, lowered.dag, cs, fuse::ExpandMode::Auto);
+    const auto general = expand(g, lowered.dag, cs, fuse::ExpandMode::ForceGeneral);
+    ASSERT_TRUE(fast.ok()) << fast.error().message;
+    ASSERT_TRUE(general.ok()) << general.error().message;
+    ASSERT_EQ(fast.value().nodes.size(), general.value().nodes.size());
+    for (std::size_t i = 0; i < fast.value().nodes.size(); ++i) {
+      EXPECT_EQ(fast.value().nodes[i].node, general.value().nodes[i].node) << "i=" << i;
+      EXPECT_EQ(fast.value().nodes[i].time, general.value().nodes[i].time) << "i=" << i;
+      EXPECT_EQ(fast.value().nodes[i].phase, general.value().nodes[i].phase) << "i=" << i;
+    }
+
+    const auto plan = schedule(
+        g, lowered.dag, cs, [](fuse::RegionId, int /*placement*/) -> std::size_t { return 8; });
+    EXPECT_TRUE(plan.ok()) << "src_dt=" << src_dt.to_string() << ": "
+                           << plan.diags.to_string();
   }
 }

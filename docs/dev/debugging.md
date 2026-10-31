@@ -60,8 +60,13 @@ people debugging parallel codes already know.
 | `FUSE_BACKTRACE` | `0` · `1` | disable capture entirely (an `Error` then carries an empty trace) |
 
 An unrecognised value is an `InvalidArgument`, not a silent default (I4). The same policy is
-settable in code through `fuse::set_error_policy`. `fuse::initialize` reads the environment
-once and announces the rank; until then errors carry rank −1.
+settable in code through `fuse::set_error_policy`. `fuse::initialize(rank)` (`fuse/base/error.hpp`)
+reads the environment once and announces the rank; until a program calls it the built-in defaults
+apply, the variables above are read by nothing, and errors carry rank -1. Every entry point in this
+tree calls it: the examples' `main()`, the test harness (`test/support/fuse_test_main.cpp`), pfuse's
+module import, and the C ABI's `fuse_create()` (the rank follows in `fuse_setup()`, once the base
+communicator is formed). A program that embeds the library directly must call it itself, after
+`MPI_Init` if it wants the rank in its reports; `fuse::finalize()` restores the defaults.
 
 ```bash
 FUSE_ON_ERROR=debugger FUSE_DEBUGGER_RANKS=2 mpiexec -n 4 ./my_coupling

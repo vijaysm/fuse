@@ -181,6 +181,13 @@ struct WindowGraphHandles {
 
   const fuse::ChannelId ch_u2v = g.add_channel("u2v", u_out, v_in);
   const fuse::ChannelId ch_v2u = g.add_channel("v2u", v_out, u_in);
+  // `v_in` is Conservation::Extensive, and validate() requires a channel into
+  // an Extensive field to declare that its transfer conserves it
+  // (E-CONN-CONSERVATION, KNOWN_ISSUES.md D94). Both fields live on
+  // `u_region`, so the transfer is the identity, which does; the coupler
+  // branch below adds the same flag together with its placement, so the
+  // graph it writes (the reference_*.yaml files) is unchanged by this line.
+  g.channel(ch_u2v).conservative();
   if (iteration_mode == fuse::WaveformIteration::GaussSeidel) {
     g.channel(ch_v2u).lag(1).allow_time_level_mismatch(
         "resolved by the U-V coupling window's own sweep, not a real-time lag");

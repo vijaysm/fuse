@@ -218,17 +218,64 @@ TEST(ChannelLowering, LagShiftsTimeLevelWithoutEmittingANode) {
 
 TEST(ChannelLowering, AccumulateRecordsItsOpInAttrs) {
   Pair p = make_pair();
-  p.g.channel(p.ch).accumulate(AccumOp::Integral);
+  p.g.channel(p.ch).accumulate(AccumOp::Mean);
   const auto r = lower(p.g);
   ASSERT_TRUE(r.ok()) << r.diags.to_string();
   for (std::uint32_t i = 0; i < r.dag.node_count(); ++i) {
     const auto& n = r.dag.node(fuse::NodeId{i});
     if (n.kind == OpKind::Accumulate) {
-      EXPECT_EQ(n.attrs.accum, AccumOp::Integral);
+      EXPECT_EQ(n.attrs.accum, AccumOp::Mean);
+      EXPECT_EQ(n.attrs.scale, Rational{1}) << "a Mean carries no time scale";
       return;
     }
   }
   FAIL() << "no Accumulate node emitted";
+}
+
+// `AccumOp::Integral` delivers the time integral of the source over each
+// target step: `(sum of samples) * dt`, dt the interval between samples,
+// which is the SOURCE component's own interval because `Sample` runs once
+// per source tick. Lowering records that dt exactly on the Accumulate node
+// (`OpAttrs::scale`) and types its output arc in [source] x [time], so the
+// target field must be declared in those units. The interpreter used to
+// deliver the bare sum, in the source's units, with nothing in the plan
+// saying so (kernels.hpp's `accumulate_finalize_integral` was never called).
+TEST(ChannelLowering, IntegralRecordsTheSourceIntervalAndIntegratesTheUnits) {
+  Pair p;
+  auto& g = p.g;
+  const auto mf = g.add_mesh(MeshDecl{.name = "mf"});
+  const auto ms = g.add_mesh(MeshDecl{.name = "ms"});
+  const auto rf = g.add_region(Region{.name = "rf", .mesh = mf, .dimension = 2});
+  const auto rs = g.add_region(Region{.name = "rs", .mesh = ms, .dimension = 2});
+  const auto fluid = g.add_component(ComponentDecl{
+      .name = "fluid", .ranks = fuse::RankSet{0, 2}, .interval = Rational{1, 4}});
+  const auto solid = g.add_component(ComponentDecl{
+      .name = "solid", .ranks = fuse::RankSet{2, 2}, .interval = Rational{1}});
+  const auto s = g.add_field(fluid, FieldSpec{
+      .name = "heat_flux", .region = rf, .units = u::kHeatFluxDensity,
+      .conservation = Conservation::Extensive, .intent = Intent::Provides});
+  // Energy per area: the flux density's time integral.
+  const auto t = g.add_field(solid, FieldSpec{
+      .name = "q_wall", .region = rs, .units = u::kHeatFluxDensity * u::kSecond,
+      .conservation = Conservation::Extensive, .intent = Intent::Requires});
+  p.ch = g.add_channel("flux", s, t);
+  g.channel(p.ch).accumulate(AccumOp::Integral).conservative();
+
+  const auto r = lower(p.g);
+  ASSERT_TRUE(r.ok()) << r.diags.to_string();
+  bool found = false;
+  for (std::uint32_t i = 0; i < r.dag.node_count(); ++i) {
+    const auto& n = r.dag.node(fuse::NodeId{i});
+    if (n.kind != OpKind::Accumulate) continue;
+    found = true;
+    EXPECT_EQ(n.attrs.accum, AccumOp::Integral);
+    EXPECT_EQ(n.attrs.scale, (Rational{1, 4})) << "dt is the source interval";
+    EXPECT_TRUE(r.dag.arc(n.output).type.units == u::kHeatFluxDensity * u::kSecond)
+        << r.dag.arc(n.output).type.units.to_string();
+    EXPECT_TRUE(r.dag.arc(n.inputs.front()).type.units == u::kHeatFluxDensity)
+        << r.dag.arc(n.inputs.front()).type.units.to_string();
+  }
+  EXPECT_TRUE(found) << "no Accumulate node emitted";
 }
 
 TEST(ChannelLowering, RelaxRecordsOmega) {

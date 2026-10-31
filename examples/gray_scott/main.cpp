@@ -30,6 +30,8 @@
 
 #include <Kokkos_Core.hpp>
 
+#include <fuse/base/error.hpp>
+
 #include <fuse/runtime/window_coupler.hpp>
 
 #include "accel_names.hpp"
@@ -161,6 +163,11 @@ void write_csv(const std::string& path, const gray_scott::Grid& g,
 }  // namespace
 
 int main(int argc, char** argv) {
+  // Process-wide diagnostics set-up (fuse/base/error.hpp): reads FUSE_ON_ERROR
+  // and its companions (docs/dev/debugging.md) once. Without this call the
+  // environment is parsed by nothing and the built-in defaults apply.
+  fuse::initialize();
+
   // The Runner's coupling hot loop runs on Kokkos' default host execution
   // space (fuse/num/space_kernels.hpp), so every caller -- including this
   // one, which runs no Kokkos kernel of its own -- must initialise Kokkos

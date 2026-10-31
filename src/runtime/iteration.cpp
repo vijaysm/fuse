@@ -340,6 +340,11 @@ Result<std::vector<double>> Runner::Impl::build_newton_measure_weights(
     // storage (feed_arc) lives on, one weight per (element, component) --
     // weights_for()'s own convention (zero for an unowned/ghost entry;
     // Conservation checks already route through this same function).
+    // `Conservation::Intensive` selects the measure weights regardless of
+    // the field's own kind: this is a NORM weight (the measure-weighted
+    // 2-norm NewtonNorm::MeasureWeighted names), not a statement about
+    // what the field conserves, so an Extensive block is weighted by its
+    // entity measures here exactly as an Intensive one is.
     if (b.feed_arc >= dag.arc_count() || b.feed_arc >= slots.size()) {
       return Failure{"E-NEWTON-NORM-SCALE",
                    "iteration region '" + region_name + "': block '" +
@@ -348,7 +353,8 @@ Result<std::vector<double>> Runner::Impl::build_newton_measure_weights(
     const ArcId feed{b.feed_arc};
     const Result<std::uint32_t> widx =
         weights_for(dag.arc(feed).type.region, dag.arc(feed).type.rank_set,
-                   slots[b.feed_arc].elements, slots[b.feed_arc].components);
+                   slots[b.feed_arc].elements, slots[b.feed_arc].components,
+                   Conservation::Intensive);
     if (!widx.ok()) {
       return Failure{"E-NEWTON-NORM-SCALE",
                    "iteration region '" + region_name + "': NewtonNorm::"

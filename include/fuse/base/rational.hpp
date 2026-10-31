@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cmath>
 #include <compare>
 #include <cstdint>
 #include <limits>
@@ -343,5 +344,118 @@ class Rational {
   return *g;
 }
 
+/// Exact conversion from a binary floating-point value, bounded so a value
+/// whose exact denominator is wider than the caller's own stated bound is
+/// REFUSED rather than silently approximated.
+///
+/// Every finite `double` is already a dyadic rational: `x = mantissa *
+/// 2^exponent` for an integer mantissa within the type's 53-bit precision,
+/// so the conversion below never rounds -- `std::frexp` plus a power-of-two
+/// `std::ldexp` extract the exact integer mantissa and binary exponent, and
+/// `Rational::from_i128` reduces the resulting `mantissa / 2^k` (or `mantissa
+/// * 2^k` for a non-negative exponent) to lowest terms in a 128-bit
+/// intermediate, the same reduction every other `Rational` entry point uses.
+/// EXACTNESS IS THEREFORE NOT THE INTERESTING PROPERTY: a value exists and is
+/// exact for every finite `x`. What is refused is a value whose REDUCED
+/// denominator exceeds `max_denominator` -- `rational_from_double(0.1,
+/// 1'000'000'000)` has an exact value (`3602879701896397 /
+/// 36028797018963968`) whose denominator is near `2^55`, too wide for the
+/// caller's own bound, and the first `Rational` addition of two such values
+/// would overflow before any of that is ever noticed. There is deliberately
+/// no best-approximation mode: a caller that wants `0.1` exactly must declare
+/// the value as a rational directly (`Rational{1, 10}`) rather than convert
+/// it from a `double` literal that was never meant to be exact, and widening
+/// `max_denominator` to make a specific failing call pass is choosing a
+/// tolerance after the fact, which this project does not do.
+///
+/// Refusals, each with a named reason distinguishable by a test:
+///   - `E-RATIONAL-NONFINITE`: `x` is NaN or +-infinity.
+///   - `E-RATIONAL-INEXACT`: `x`'s exact value's reduced denominator exceeds
+///     `max_denominator`.
+///   - `E-RATIONAL-OVERFLOW`: the exact numerator or denominator (before or
+///     after reduction) does not fit `int64_t` -- unreachable for any `x` an
+///     IEEE-754 `double` can hold with a `max_denominator` that itself fits
+///     `int64_t` and is positive, since the exact mantissa is always within
+///     53 bits and `Rational::from_i128`'s own int64 check is what actually
+///     fires first in every case this header's own tests construct; kept as
+///     a distinct, checked branch rather than an assumption, the same
+///     posture this file already takes toward every other narrowing
+///     (`detail::check_fits_i64`, `Rational::from_i128`).
+///
+/// `max_denominator` itself must be positive: zero or negative is a caller
+/// contract violation (there is no such thing as a non-positive denominator
+/// bound), reported the same way `Rational`'s own constructor reports a zero
+/// denominator -- by throwing, not by a `Failure`, because it is a precondition
+/// on the CALL, not a property of `x`.
+[[nodiscard]] inline Result<Rational> rational_from_double(double x,
+                                                            std::int64_t max_denominator) {
+  if (max_denominator <= 0) {
+    FUSE_THROW(InvalidArgument,
+              "rational_from_double: max_denominator must be positive, got {}",
+              max_denominator);
+  }
+  if (!std::isfinite(x)) {
+    return Failure{"E-RATIONAL-NONFINITE",
+                   ::fmt::format("rational_from_double: {} is not finite", x)};
+  }
+  if (x == 0.0) {
+    return Rational{0};
+  }
+
+  int exp2 = 0;
+  const double mantissa = std::frexp(x, &exp2);  // x == mantissa * 2^exp2, 0.5 <= |mantissa| < 1
+  // A power-of-two scale of an already-exact mantissa is itself exact (no
+  // rounding): `frexp`'s own contract bounds the result's magnitude strictly
+  // below 2^53, comfortably inside int64_t, but the cast below is checked
+  // rather than assumed, matching this header's own posture everywhere else.
+  const double scaled = std::ldexp(mantissa, 53);
+  if (!(scaled > -9223372036854775808.0 && scaled < 9223372036854775808.0)) {
+    return Failure{"E-RATIONAL-OVERFLOW",
+                   ::fmt::format("rational_from_double: {} produced an unrepresentable mantissa", x)};
+  }
+  const std::int64_t int_mantissa = static_cast<std::int64_t>(scaled);
+  const int pow2 = exp2 - 53;  // x == int_mantissa * 2^pow2, exactly
+
+  detail::Int128 numerator = int_mantissa;
+  detail::Int128 denominator = 1;
+  // Bounded well below Int128's own ~127-bit range before the shift, not
+  // merely before the final int64 check: `int_mantissa` is already up to 53
+  // bits, so an unchecked shift close to 128 would overflow the Int128
+  // intermediate itself (undefined behaviour for a signed type), not just
+  // fail the int64 narrowing `Rational::from_i128` performs afterwards. Any
+  // `x` that needs a shift this large is refused here, before that UB can
+  // happen, with the same E-RATIONAL-OVERFLOW a smaller but still
+  // int64-unrepresentable shift reaches via `Rational::from_i128` below.
+  if (pow2 >= 0) {
+    if (pow2 > 73) {
+      return Failure{"E-RATIONAL-OVERFLOW",
+                     ::fmt::format("rational_from_double: {} is too large to represent", x)};
+    }
+    numerator <<= pow2;
+  } else {
+    const unsigned shift = static_cast<unsigned>(-pow2);
+    if (shift > 100) {
+      return Failure{"E-RATIONAL-OVERFLOW",
+                     ::fmt::format("rational_from_double: {} is too small to represent", x)};
+    }
+    denominator <<= shift;
+  }
+
+  const auto reduced = Rational::from_i128(numerator, denominator);
+  if (!reduced) {
+    return Failure{"E-RATIONAL-OVERFLOW",
+                   ::fmt::format("rational_from_double: {} does not fit an int64_t numerator "
+                                "and denominator even after reduction",
+                                x)};
+  }
+  if (reduced->den() > max_denominator) {
+    return Failure{"E-RATIONAL-INEXACT",
+                   ::fmt::format("rational_from_double: {} is exactly {}, whose denominator "
+                                "exceeds the caller's bound {}; declare the value as a rational "
+                                "directly rather than widening the bound",
+                                x, reduced->to_string(), max_denominator)};
+  }
+  return *reduced;
+}
 
 }  // namespace fuse
