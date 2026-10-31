@@ -87,6 +87,50 @@ superseded = [                       # upstream paths fuse has replaced (S1, fus
   "include/coupling/karma_compatibility.h", "src/coupling/karma_compatibility.C",
   "include/coupling/karma_transform.h", "src/coupling/karma_transform.C",
   "test/coupling_compatibility_test.C", "test/transform_inference_test.C",
+  # S8.3 wave 1 (docs/dev/physics-kit-disposition.md, physics-kit/): numerics/fe
+  # ported-adapted to fuse_physics::fe (D-A); tests restated as gtest, see
+  # docs/dev/physics-kit.md's Wave 1 section for the per-file tolerance table.
+  "include/numerics/fe/karma_reference_topology.h", "src/numerics/fe/karma_reference_topology.C",
+  "include/numerics/fe/karma_quadrature.h",          # PETSc PetscDT calls replaced; native Golub-Welsch (D-A)
+  "include/numerics/fe/karma_basis.h", "src/numerics/fe/karma_basis.C",
+  "include/numerics/fe/karma_geometry_map.h", "src/numerics/fe/karma_geometry_map.C",
+  "include/numerics/fe/karma_fe_base.h", "src/numerics/fe/karma_fe_base.C",
+  "test/basis_test.C", "test/fe_test.C", "test/fe_face_test.C",
+  "test/geometry_test.C",                            # partial: the undecided BoundingBox/ArborX::Box
+                                                      # question (Section 7, Open Question 7) is not this
+                                                      # file's own concern (karma_geometry.h, base/, not
+                                                      # fe/) but geometry_test.C itself ports only the
+                                                      # properties this wave's cell families exercise
+  "test/geometry_inverse_map_contract_test.C",
+  # numerics/spatial (D-A): Domain fully ported (with the I6 fix); Mesh/mesh_utils
+  # ported NATIVELY (no MOAB/MPI binding yet -- an explicit, named open gap, not a
+  # silent one; see docs/dev/physics-kit.md's Wave 1 section and open_questions).
+  "include/numerics/spatial/karma_domain.h", "src/numerics/spatial/karma_domain.C",
+  "include/numerics/spatial/karma_mesh.h",           # topology surface only; MOAB/MPI binding is future work
+  "src/numerics/spatial/karma_mesh.C",               # same: the generic (non-MOAB) query logic this file's
+                                                      # KARMAMesh also implements, native-reimplemented
+  "include/numerics/spatial/karma_mesh_utils.h",
+  "src/numerics/spatial/karma_mesh_extract_face.C",  # extract_edge.C (2-D source) is NOT ported, see below
+  "test/mesh_test.C",                                # re-expressed as a topology-only test against the
+                                                      # native mesh; upstream's own file is a 2-rank MOAB/MPI
+                                                      # test this wave's sandbox cannot run (standing rule)
+  # numerics/algebra (D-A): fuse::linalg's DistVector/DistSparseMatrix + dense
+  # least-squares facade (S7) already covers every file's role; nothing here
+  # needed a thin physics-kit adaptation type. RETIRE, not port-adapt.
+  "include/numerics/algebra/imatrix.h", "include/numerics/algebra/ivector.h",
+  "include/numerics/algebra/karma_dense.h", "include/numerics/algebra/karma_matrix.h",
+  "include/numerics/algebra/karma_vector.h", "include/numerics/algebra/linear_algebra_factory.h",
+  "src/numerics/algebra/linear_algebra_factory.C",
+  "include/numerics/algebra/petsc_block_matrix.h", "src/numerics/algebra/petsc_block_matrix.C",
+  "include/numerics/algebra/petsc_block_vector.h", "src/numerics/algebra/petsc_block_vector.C",
+  "include/numerics/algebra/petsc_native_matrix.h", "src/numerics/algebra/petsc_native_matrix.C",
+  "include/numerics/algebra/petsc_native_scatter.h", "src/numerics/algebra/petsc_native_scatter.C",
+  "include/numerics/algebra/petsc_native_vector.h", "src/numerics/algebra/petsc_native_vector.C",
+  "include/numerics/algebra/petsc_raii.h",
+  "test/dense_test.C",                               # D-C: named fuse test test/linalg/least_squares_test.cpp
+                                                      # already covers karma_dense.h's own behaviour (the
+                                                      # Builtin dense QR least-squares solve), so this
+                                                      # retires rather than ports -- see physics-kit.md
 ]
 retire_at = "S8"                     # subtree deleted whole when every path is superseded
 retired   = ""                       # "<date> @ <fuse sha>" once done
