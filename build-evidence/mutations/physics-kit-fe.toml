@@ -1,0 +1,75 @@
+# Mutations for S8.3 wave 1 (physics-kit numerics/fe, numerics/spatial).
+# Own file per the review-fix protocol (base-model.toml's own header
+# comment: do not edit a shared mutations.toml while other tracks hold it
+# dirty). area = "physics-kit" throughout, tier 0, no MPI.
+
+[[mutation]]
+id = "domain-i6-fix-reverts-to-vacuous-or"
+area = "physics-kit"
+describes = "Domain::check_shape_supported reverts from the I6 fix (AND) back to KARMA's own vacuous OR (karma_domain.C lines 32,54,77), which never refuses anything -- the exact bug domain.hpp's header comment documents. Spatial.RefusesUnsupportedShapes exists to catch exactly this regression."
+file = "physics-kit/src/spatial/domain.cpp"
+old = "  if (shape == Shape::Hexagon || shape == Shape::Unstructured)"
+new = "  if (shape == Shape::Hexagon && shape == Shape::Unstructured)"
+target = "fuse_physics_spatial_domain_test"
+test = "physics.spatial_domain"
+
+[[mutation]]
+id = "quadrature-degree-upper-bound-widened"
+area = "physics-kit"
+describes = "Quadrature's constructor refuses degree > 64; widened to > 128 here, which admits a degree this wave's own stated bound (quadrature.hpp: 'quadrature degree must be in [0, 64]') says must refuse."
+file = "physics-kit/src/fe/quadrature.cpp"
+old = "  if (degree < 0 || degree > 64) refuse(\"quadrature degree must be in [0, 64]\");"
+new = "  if (degree < 0 || degree > 128) refuse(\"quadrature degree must be in [0, 64]\");"
+target = "fuse_physics_fe_quadrature_test"
+test = "physics.fe_quadrature"
+
+[[mutation]]
+id = "reference-topology-side-bound-off-by-one"
+area = "physics-kit"
+describes = "ReferenceTopology::side_nodes accepts one side index past the end (off-by-one on the >= bound), which EdgeSideTopologyRefuses / SideTopologyMatchesCorners' own side_count()-bounded loop would not otherwise exercise, but side_topology's own range check (called with side == side_count(), one past the valid range) catches directly."
+file = "physics-kit/src/fe/reference_topology.cpp"
+old = "  if (side >= sides.size()) refuse(\"side index is out of range\");"
+new = "  if (side > sides.size()) refuse(\"side index is out of range\");"
+target = "fuse_physics_fe_reference_topology_test"
+test = "physics.fe_reference_topology"
+
+[[mutation]]
+id = "geometry-map-degenerate-scale-check-disabled"
+area = "physics-kit"
+describes = "GeometryMap::validate's zero-scale refusal is disabled (scale <= 0.0 check dropped). MEASURED SURVIVED (not a declared-on-paper guess): ZeroScaleGeometryRefuses (three coincident Tri3 nodes) still throws with the mutation applied, because the downstream degeneracy check independently catches it. WHY, proved rather than assumed: jacobian.col(d) = sum_i derivatives_i(d) * nodes_i; when every node_i equals the same point P, this is (sum_i derivatives_i(d)) * P, and sum_i derivatives_i == Vector3::zero() is exactly the DerivativesSumToZero identity (fe_reference_topology_test.cpp) applied componentwise -- so the Jacobian is the exact zero matrix whenever all nodes coincide, IN EVERY DIMENSION, independent of which check is being exercised. The later 'value <= limit' check (limit itself scales with scale^dim, so limit becomes exactly 0 too) then refuses on value == 0 <= limit == 0 regardless of the early scale<=0 check's presence. The early check is therefore REDUNDANT for the all-coincident-nodes case specifically (it still matters for OTHER degenerate inputs, e.g. a single nonfinite coordinate, which is why it is not removed outright)."
+file = "physics-kit/src/fe/geometry_map.cpp"
+old = "  if (!std::isfinite(scale) || scale <= 0.0) refuse(\"geometry has zero or nonfinite scale\");"
+new = "  if (!std::isfinite(scale)) refuse(\"geometry has zero or nonfinite scale\");"
+target = "fuse_physics_fe_geometry_map_test"
+test = "physics.fe_geometry_map"
+equivalent = "the downstream degeneracy check ('value <= limit', limit = scaled_tolerance*scale^dim = 0 when scale = 0) independently refuses whenever every node coincides, because the Jacobian is provably the exact zero matrix then (DerivativesSumToZero applied componentwise) -- verified by measurement (SURVIVED) and by this general argument, not assumed"
+
+[[mutation]]
+id = "fe-base-cell-family-mismatch-check-disabled"
+area = "physics-kit"
+describes = "FEBase's constructor drops its cell_family(geometry_variant) == basis.key().cell check, which MismatchedBasisCellRefuses exists to catch: a basis built for the wrong reference cell would otherwise bind to a geometry variant it cannot evaluate consistently."
+file = "physics-kit/src/fe/fe_base.cpp"
+old = "  if (cell_family(geometry_variant) != basis_.key().cell)"
+new = "  if (false)"
+target = "fuse_physics_fe_test"
+test = "physics.fe"
+
+[[mutation]]
+id = "basis-registry-unknown-key-not-refused"
+area = "physics-kit"
+describes = "BasisRegistry::create's valid_key() precheck (the EARLY refusal, 'invalid basis key') is dropped. Declared equivalent by the wave-1 track because UnknownKeyRefuses (a Lagrange key, which valid_key accepts at any order) could not distinguish it from the factory-map refusal; the lead found that no test reached the early refusal at all (2026-10-31) and added InvalidKeyIsRefusedBeforeTheLookup, a non-Lagrange family above maximum_basis_order asserting the early message, which kills this row."
+file = "physics-kit/src/fe/basis.cpp"
+old = "Basis BasisRegistry::create(const BasisKey& key) const {\n  if (!valid_key(key)) refuse(\"invalid basis key\");"
+new = "Basis BasisRegistry::create(const BasisKey& key) const {\n  (void)valid_key(key);"
+target = "fuse_physics_fe_basis_test"
+test = "physics.fe_basis"
+
+[[mutation]]
+id = "mesh-neighbor-canonical-id-comparison-weakened"
+area = "physics-kit"
+describes = "Mesh::neighbor compares canonical side-vertex ID sets with a sorted-vector equality; mutated to compare only the FIRST id (a strictly weaker, order-dependent check), which InteriorSideHasANeighborSharingItsVertexSet exists to catch: it would accept a side whose first vertex id happens to match but whose other vertices differ, in a larger mesh where that is possible."
+file = "physics-kit/src/spatial/mesh.cpp"
+old = "      if (canonical_side_vertex_ids(candidate, s) == target) return candidate;"
+new = "      if (canonical_side_vertex_ids(candidate, s).front() == target.front()) return candidate;"
+target = "fuse_physics_spatial_mesh_test"
+test = "physics.spatial_mesh"
