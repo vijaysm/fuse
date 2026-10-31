@@ -27,6 +27,7 @@ target_compile_features(fuse_physics_kit PUBLIC cxx_std_20)
 
 target_include_directories(fuse_physics_kit PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 
 target_link_libraries(fuse_physics_kit PUBLIC
@@ -54,6 +55,36 @@ set_target_properties(fuse_physics_kit PROPERTIES
 # this is the first caller of that machinery from OUTSIDE test/'s own
 # directory tree -- see test/CMakeLists.txt's fuse_add_gtest SRC_DIR
 # argument and physics-kit/test/CMakeLists.txt's own comment.
+# Install and export (S8.2, 2026-10-31). The main export set,
+# fuse-coupler-targets, is closed inside src/CMakeLists.txt before this
+# directory is added, so physics-kit ships in its OWN export set, written
+# beside the main one. cmake/fuse-couplerConfig.cmake.in includes it only
+# when the install was configured with FUSE_ENABLE_PHYSICS_KIT, and exposes
+# it as the find_package component `physics_kit`:
+#   find_package(fuse-coupler CONFIG REQUIRED COMPONENTS physics_kit)
+#   target_link_libraries(app PRIVATE fuse::physics_kit)
+# Every target this library links PUBLIC (fuse::runtime, fuse::backend,
+# fuse::num, fuse::linalg) and PRIVATE (fuse::petsc, which a static build
+# carries as $<LINK_ONLY:...>) is in fuse-coupler-targets, which the config
+# file includes first; CMake checks that closure at generate time.
+include(GNUInstallDirs)
+install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/fuse_physics
+  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+  FILES_MATCHING PATTERN "*.hpp"
+)
+install(TARGETS fuse_physics_kit
+  EXPORT fuse-physics-kit-targets
+  LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+  INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+)
+install(EXPORT fuse-physics-kit-targets
+  FILE fuse-physics-kit-targets.cmake
+  NAMESPACE fuse::
+  DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/fuse-coupler
+)
+
 if(FUSE_ENABLE_TESTS)
   add_subdirectory(test)
 endif()

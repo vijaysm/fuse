@@ -125,4 +125,17 @@ endif()
 
 include("${CMAKE_CURRENT_LIST_DIR}/fuse-coupler-targets.cmake")
 
+# physics-kit (docs/dev/physics-kit.md) is an optional component: its export
+# set is written only when the install was configured with
+# FUSE_ENABLE_PHYSICS_KIT. `find_package(fuse-coupler COMPONENTS physics_kit)`
+# fails cleanly, through check_required_components, against an install built
+# without it instead of leaving fuse::physics_kit undefined at link time.
+set(FUSE_ENABLE_PHYSICS_KIT @FUSE_ENABLE_PHYSICS_KIT@)
+if(FUSE_ENABLE_PHYSICS_KIT AND EXISTS "${CMAKE_CURRENT_LIST_DIR}/fuse-physics-kit-targets.cmake")
+  include("${CMAKE_CURRENT_LIST_DIR}/fuse-physics-kit-targets.cmake")
+  set(fuse-coupler_physics_kit_FOUND TRUE)
+else()
+  set(fuse-coupler_physics_kit_FOUND FALSE)
+endif()
+
 check_required_components(fuse-coupler)
