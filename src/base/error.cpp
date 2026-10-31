@@ -84,6 +84,20 @@ void set_error_policy(ErrorPolicy policy) noexcept {
 void set_error_rank(int rank) noexcept { g_rank.store(rank, std::memory_order_relaxed); }
 int error_rank() noexcept { return g_rank.load(std::memory_order_relaxed); }
 
+void initialize(int rank) {
+  // Parse first, install second: a refused variable leaves the policy that
+  // was in force, and the InvalidArgument it raises is itself reported under
+  // that policy.
+  ErrorPolicy from_environment = error_policy_from_environment();
+  set_error_policy(std::move(from_environment));
+  set_error_rank(rank);
+}
+
+void finalize() noexcept {
+  set_error_policy(ErrorPolicy{});
+  set_error_rank(-1);
+}
+
 namespace {
 const char* env(const char* name) noexcept {
   const char* v = std::getenv(name);  // NOLINT(concurrency-mt-unsafe): read once at startup

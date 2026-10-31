@@ -107,6 +107,8 @@
 #include <fuse/base/config.hpp>
 #include <fuse/ir/dump.hpp>
 #include <fuse/ir/lowering.hpp>
+#include <fuse/base/error.hpp>
+#include <fuse/model/validate.hpp>
 #include <fuse/backend/serial_backend.hpp>
 #include <fuse/runtime/runner.hpp>
 
@@ -201,6 +203,11 @@ fuse::CouplingGraph build_graph(fuse::AccelConfig accel, int max_iterations) {
       .intent = fuse::Intent::Provides});
 
   const auto flux = g.add_channel("flux", q_out, q_in);
+  // Both flux fields are Conservation::Extensive, and validate() requires a
+  // channel into an Extensive field to declare that its transfer conserves
+  // the field (E-CONN-CONSERVATION); between two coincident meshes the
+  // remap is the identity, which does.
+  g.channel(flux).conservative();
   const auto temp = g.add_channel("wall_temperature", u_out, u_in);
   // The two field transfers close a cycle, so one of them must carry a lag for the
   // graph to be schedulable at all. Inside an implicit coupling group that lag is
@@ -282,6 +289,11 @@ fuse::CouplingGraph build_graph(fuse::NewtonConfig cfg, int max_iterations) {
       .intent = fuse::Intent::Provides});
 
   const auto flux = g.add_channel("flux", q_out, q_in);
+  // Both flux fields are Conservation::Extensive, and validate() requires a
+  // channel into an Extensive field to declare that its transfer conserves
+  // the field (E-CONN-CONSERVATION); between two coincident meshes the
+  // remap is the identity, which does.
+  g.channel(flux).conservative();
   const auto temp = g.add_channel("wall_temperature", u_out, u_in);
   g.channel(temp).lag(1).allow_time_level_mismatch(
       "resolved by the Dirichlet-Neumann implicit coupling group");
@@ -353,6 +365,7 @@ fuse::CouplingGraph build_dual_substrate_graph(fuse::NewtonSubstrate substrate_a
         .intent = fuse::Intent::Provides});
 
     const auto flux = g.add_channel("flux_" + tag, q_out, q_in);
+    g.channel(flux).conservative();  // as in build_graph() above
     const auto temp = g.add_channel("wall_temperature_" + tag, u_out, u_in);
     g.channel(temp).lag(1).allow_time_level_mismatch(
         "resolved by the Dirichlet-Neumann implicit coupling group");
@@ -430,6 +443,10 @@ DualOutcome run_dual_substrate_case(fuse::NewtonSubstrate substrate_a,
     if (!r.ok()) { o.error = "mesh load: " + r.error().message; return o; }
   }
 
+  // Validate before lowering (docs/user/quickstart.md): lower() assumes a
+  // graph validate() accepted, and reports one it did not in its own, less
+  // direct terms.
+  if (const auto d = fuse::validate(graph); d.has_errors()) { o.error = d.to_string(); return o; }
   const auto lowered = lower(graph);
   if (!lowered.ok()) { o.error = lowered.diags.to_string(); return o; }
 
@@ -566,6 +583,10 @@ Outcome run_case(fuse::AccelConfig accel, int max_iterations,
     if (!r.ok()) { o.error = "mesh load: " + r.error().message; return o; }
   }
 
+  // Validate before lowering (docs/user/quickstart.md): lower() assumes a
+  // graph validate() accepted, and reports one it did not in its own, less
+  // direct terms.
+  if (const auto d = fuse::validate(graph); d.has_errors()) { o.error = d.to_string(); return o; }
   const auto lowered = lower(graph);
   if (!lowered.ok()) { o.error = lowered.diags.to_string(); return o; }
 
@@ -684,6 +705,10 @@ Outcome run_case(fuse::NewtonConfig cfg, int max_iterations,
     if (!r.ok()) { o.error = "mesh load: " + r.error().message; return o; }
   }
 
+  // Validate before lowering (docs/user/quickstart.md): lower() assumes a
+  // graph validate() accepted, and reports one it did not in its own, less
+  // direct terms.
+  if (const auto d = fuse::validate(graph); d.has_errors()) { o.error = d.to_string(); return o; }
   const auto lowered = lower(graph);
   if (!lowered.ok()) { o.error = lowered.diags.to_string(); return o; }
 
@@ -843,6 +868,11 @@ void check(bool cond, const std::string& what) {
 }  // namespace
 
 int main(int argc, char** argv) {
+  // Process-wide diagnostics set-up (fuse/base/error.hpp): reads FUSE_ON_ERROR
+  // and its companions (docs/dev/debugging.md) once. Without this call the
+  // environment is parsed by nothing and the built-in defaults apply.
+  fuse::initialize();
+
   // The Runner's coupling hot loop runs on Kokkos' default host execution
   // space (fuse/num/space_kernels.hpp), so every caller -- including this
   // one, which runs no Kokkos kernel of its own -- must initialise Kokkos

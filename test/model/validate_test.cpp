@@ -958,6 +958,53 @@ TEST(Validate, ExtensiveTargetOverAPlainCopyIsRefused) {
       << d.to_string();
 }
 
+// `AccumOp::Integral` delivers the time integral of the source, in
+// [source] x [time] (connect.hpp's `delivered_units()`): a channel that
+// integrates a power must land in an energy. Declared with the source's own
+// units on both ends it is refused, and the refusal says why, instead of a
+// plain sum of the samples arriving in a field whose units never changed.
+// A remap method string nothing recognises is refused at authoring time.
+// Before this check the dependency-free weight builder fell through to the
+// default conservative supermesh for any string it did not match, so a
+// misspelt method was silently a different remap.
+TEST(Validate, UnknownRemapMethodIsRefused) {
+  ExtensiveFixture f(/*same_region=*/false);
+  f.g.channel(f.ch).conservative().remap_method("supermesh");
+  const Diagnostics d = validate(f.g);
+  EXPECT_TRUE(has_code(d, "E-CHANNEL-REMAP-METHOD")) << d.to_string();
+  bool names_method = false;
+  for (const auto& item : d.items()) {
+    if (item.code != "E-CHANNEL-REMAP-METHOD") continue;
+    names_method = item.message.find("'supermesh'") != std::string::npos &&
+                   item.message.find("consistent-transpose") != std::string::npos;
+  }
+  EXPECT_TRUE(names_method) << d.to_string();
+
+  for (const char* good : {"", "intx", "conservative", "tempest", "consistent",
+                           "consistent-transpose", "mls", "mls:degree=1,k=4,radial=wendland2"}) {
+    f.g.channel(f.ch).remap_method(good);
+    EXPECT_FALSE(has_code(validate(f.g), "E-CHANNEL-REMAP-METHOD")) << good;
+  }
+}
+
+TEST(Validate, IntegralChannelDeliversTimeIntegratedUnits) {
+  ExtensiveFixture f(/*same_region=*/false);
+  f.g.channel(f.ch).conservative().accumulate(AccumOp::Integral);
+  {
+    const Diagnostics d = validate(f.g);
+    EXPECT_TRUE(has_code(d, "E-UNITS")) << d.to_string();
+    bool names_integral = false;
+    for (const auto& item : d.items()) {
+      if (item.code != "E-UNITS") continue;
+      names_integral = item.message.find("Integral") != std::string::npos;
+    }
+    EXPECT_TRUE(names_integral) << d.to_string();
+  }
+  const_cast<FieldSpec&>(f.g.field(f.dst)).units = u::kHeatFluxDensity * u::kSecond;
+  const Diagnostics d = validate(f.g);
+  EXPECT_FALSE(d.has_errors()) << d.to_string();
+}
+
 TEST(Validate, ExtensiveTargetOverAConservativeRemapIsAccepted) {
   ExtensiveFixture f(/*same_region=*/false);
   f.g.channel(f.ch).conservative();

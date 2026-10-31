@@ -23,6 +23,8 @@
 #include <Kokkos_Core.hpp>
 
 #include <fuse/ir/lowering.hpp>
+#include <fuse/base/error.hpp>
+#include <fuse/model/validate.hpp>
 #include <fuse/backend/consistent_interp.hpp>
 #include <fuse/backend/serial_backend.hpp>
 #include <fuse/runtime/runner.hpp>
@@ -181,6 +183,11 @@ fuse::CouplingGraph build_graph(std::size_t nx_beam, std::size_t nx_fluid,
 }  // namespace
 
 int main(int argc, char** argv) {
+  // Process-wide diagnostics set-up (fuse/base/error.hpp): reads FUSE_ON_ERROR
+  // and its companions (docs/dev/debugging.md) once. Without this call the
+  // environment is parsed by nothing and the built-in defaults apply.
+  fuse::initialize();
+
   // The Runner's coupling hot loop runs on Kokkos' default host execution
   // space (fuse/num/space_kernels.hpp), so every caller -- including this
   // one, which runs no Kokkos kernel of its own -- must initialise Kokkos
@@ -240,6 +247,10 @@ int main(int argc, char** argv) {
       std::fprintf(stderr, "mesh load: %s\n", r.error().message.c_str());
       return 1;
     }
+  }
+  if (const auto d = fuse::validate(graph); d.has_errors()) {
+    std::fprintf(stderr, "validate: %s\n", d.to_string().c_str());
+    return 1;
   }
   const auto lowered = lower(graph);
   if (!lowered.ok()) {

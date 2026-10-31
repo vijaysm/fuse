@@ -29,6 +29,8 @@
 #include <fuse/backend/remap_plan.hpp>
 #include <fuse/base/config.hpp>
 #include <fuse/ir/lowering.hpp>
+#include <fuse/base/error.hpp>
+#include <fuse/model/validate.hpp>
 #include <fuse/model/coupling_graph.hpp>
 #include <fuse/runtime/runner.hpp>
 #include <fuse/runtime/window_coupler.hpp>
@@ -262,6 +264,11 @@ int main(int argc, char** argv) {
   // or weight setup, not only to walk `boundaries` afterwards.
   const Rational window = to_rational(args.window);
   const Rational end = to_rational(args.end);
+
+  // Process-wide diagnostics set-up (fuse/base/error.hpp): reads FUSE_ON_ERROR
+  // and its companions (docs/dev/debugging.md) once. Without this call the
+  // environment is parsed by nothing and the built-in defaults apply.
+  fuse::initialize();
 
   // Both the native mesh backend's own Kokkos::View allocations
   // (MeshArrays<Kokkos::HostSpace>) and this example's own reaction kernel
@@ -617,6 +624,10 @@ int main(int argc, char** argv) {
       return 1;
     }
 
+    if (const auto d = fuse::validate(graph); d.has_errors()) {
+      std::fprintf(stderr, "FAIL: validate(graph): %s\n", d.to_string().c_str());
+      return 1;
+    }
     const auto lowered = lower(graph);
     if (!lowered.ok()) {
       std::fprintf(stderr, "FAIL: lower(graph): %s\n", lowered.diags.to_string().c_str());

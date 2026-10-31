@@ -27,10 +27,52 @@ bool any_spacetime(const CouplingGraph& g) {
   return false;
 }
 
-/// Does this node run on the source clock rather than the target clock?
-/// Sample is the only interior op that does: accumulation samples every source
-/// tick and reduces once per target tick.
-bool runs_on_source_clock(OpKind k) { return k == OpKind::Sample; }
+/// Which nodes run on the SOURCE clock rather than the target clock: one
+/// flag per node of `dag`.
+///
+/// A channel's `Sample` does -- accumulation samples every source tick and
+/// reduces once per target tick -- and so does every node of the SAME
+/// channel's chain upstream of it, because the `Sample` reads their output
+/// at every source tick. Today that is the unit `Scale` lowering inserts
+/// before the `Sample` when the two fields differ by an exact scale
+/// (src/ir/rules_channel.cpp, step 1); it used to be placed on the target
+/// clock like every other non-`Sample` node, so on a unit-scaled
+/// accumulating channel the `Sample` at `t = 0` read an arc the `Scale`
+/// only wrote at the end of the target step, and `check_dependence_order()`
+/// refused the plan with `E-SCHED-ORDER` -- in the lockstep shortcut as
+/// well as the general path. Marking the whole upstream run rather than
+/// one more `OpKind` keeps the rule structural: whatever lowering puts
+/// before the `Sample` is read on the source clock and must be produced
+/// there.
+///
+/// The walk stops at the channel boundary (`Node::origin` differs: the
+/// boundary `Source` has no origin, a `Merge` has none either), so nothing
+/// outside the channel's own chain is touched.
+[[nodiscard]] std::vector<bool> source_clock_nodes(const CouplingGraph& g,
+                                                   const OperatorDAG& dag) {
+  std::vector<bool> on_source(dag.node_count(), false);
+  std::vector<NodeId> stack;
+  for (std::uint32_t i = 0; i < dag.node_count(); ++i) {
+    const Node& sample = dag.node(NodeId{i});
+    if (sample.kind != OpKind::Sample) continue;
+    if (!sample.origin.valid() || sample.origin.value() >= g.channel_count()) continue;
+    stack.assign(1, NodeId{i});
+    while (!stack.empty()) {
+      const NodeId cur = stack.back();
+      stack.pop_back();
+      if (on_source[cur.value()]) continue;
+      on_source[cur.value()] = true;
+      for (const ArcId in : dag.node(cur).inputs) {
+        if (!in.valid() || in.value() >= dag.arc_count()) continue;
+        const NodeId producer = dag.arc(in).producer;
+        if (!producer.valid() || producer.value() >= dag.node_count()) continue;
+        if (!(dag.node(producer).origin == sample.origin)) continue;
+        stack.push_back(producer);
+      }
+    }
+  }
+  return on_source;
+}
 
 /// Does this channel carry a `Sample`, i.e. does its chain straddle two clocks
 /// rather than lying on the slab decomposition?
@@ -326,8 +368,10 @@ bool has_sample(const Channel& ch) {
 ///
 ///   * a node a channel claims runs at the end of that channel's only slab,
 ///     `t = period`; the one exception is the `Sample` of an accumulating
-///     channel, which runs on the *source* clock at the start of its only
-///     tick, `t = 0`, and therefore carries `TickPhase::AfterTicks`;
+///     channel -- together with the nodes of its chain upstream of it
+///     (`source_clock_nodes()`) -- which runs on the *source* clock at the
+///     start of its only tick, `t = 0`, and therefore carries
+///     `TickPhase::AfterTicks`;
 ///   * a `Merge` -- claimed by no single channel, since it combines two or
 ///     more -- also runs at `t = period`, the same instant as the
 ///     Epoch/Transport/Remap outputs it reads;
@@ -342,6 +386,7 @@ bool has_sample(const Channel& ch) {
 /// comparison in test/unit/lockstep_test.cpp are what hold it to that.
 [[nodiscard]] Result<void> emit_lockstep(const CouplingGraph& g,
                                          const OperatorDAG& dag,
+                                         const std::vector<bool>& on_source_clock,
                                          TimedDag& out) {
   // The general path validates every channel's endpoints -- and rejects the
   // graph if one is unowned -- before it emits anything for that channel.
@@ -372,7 +417,7 @@ bool has_sample(const Channel& ch) {
       // of which channel named it.
     } else if (claimed_by_channel(g, n)) {
       const Channel& ch = g.channel_at(ChannelId{n.origin.value()});
-      if (has_sample(ch) && runs_on_source_clock(n.kind)) {
+      if (has_sample(ch) && on_source_clock[i]) {
         t = Rational{0};
         phase = TickPhase::AfterTicks;
       } else {
@@ -469,8 +514,10 @@ Result<TimedDag> expand(const CouplingGraph& g, const OperatorDAG& dag,
   // machinery. One instance per node, `decompose()` never called. The result
   // is sorted by the same comparator as the general path, below, and is
   // required to be identical to it -- see emit_lockstep().
+  const std::vector<bool> on_source_clock = source_clock_nodes(g, dag);
+
   if (out.lockstep && mode == ExpandMode::Auto) {
-    const Result<void> fast = emit_lockstep(g, dag, out);
+    const Result<void> fast = emit_lockstep(g, dag, on_source_clock, out);
     if (!fast.ok()) return fast.error();
     std::stable_sort(out.nodes.begin(), out.nodes.end(), by_time_then_node);
     return out;
@@ -571,8 +618,10 @@ Result<TimedDag> expand(const CouplingGraph& g, const OperatorDAG& dag,
       // instance, which is the only thing that made this node need
       // different treatment in the first place.
 
-      if (sampled && runs_on_source_clock(n.kind)) {
-        // One Sample per source tick, inside whichever target step it falls.
+      if (sampled && on_source_clock[i]) {
+        // One Sample per source tick, inside whichever target step it falls
+        // -- and one instance of each node upstream of it in this chain
+        // (`source_clock_nodes()` above), at the same instants.
         // Stamped at the tick's START and marked `AfterTicks`, which together
         // mean "the value that tick produces": the source step's own value,
         // available only once the source has advanced over it. Stamping it at

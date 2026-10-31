@@ -190,6 +190,24 @@ COMMENT_LINE = re.compile(r"(^|[^:])(//[^\n]*)")
 INCLUDE_FUSE = re.compile(r"^\s*#\s*include\s*[<\"]fuse/([a-z_]+)/")
 INCLUDE_ANY = re.compile(r"^\s*#\s*include\s*[<\"]([^>\"]+)[>\"]")
 
+# physics-kit boundary (docs/dev/layering.md: "physics-kit/ is a separate
+# optional component. It depends on FUSE and never the reverse."). Unlike
+# LAYERS above, physics-kit is not itself one of the fuse:: layers (it has
+# its own include root, physics-kit/include/fuse_physics/, outside
+# include/fuse/ entirely) -- so it cannot be checked by giving it a rank in
+# that list; a directory with a HIGHER rank than every fuse:: layer would
+# still let a fuse:: layer be ranked ABOVE it by mistake, and a rank BELOW
+# every layer would let physics-kit depend on nothing, which the design
+# (physics-kit links fuse::runtime/backend/num/linalg) requires it to.
+# Checked separately instead: fuse proper (include/fuse/, src/, python/,
+# examples/) may never include a fuse_physics/ header or link fuse::physics_kit;
+# physics-kit/ itself is exempt (it is the one place allowed to depend on
+# FUSE, by construction) and is not one of the four directories this walks.
+INCLUDE_FUSE_PHYSICS = re.compile(r'^\s*#\s*include\s*[<"]fuse_physics/')
+LINK_PHYSICS_KIT = re.compile(r"fuse::physics_kit\b")
+PHYSICS_KIT_BOUNDARY_AREAS = ("include/fuse", "src", "python", "examples")
+PHYSICS_KIT_HEADER_SUFFIXES = {".hpp", ".h", ".cpp", ".cc", ".C", ".inl", ".ipp"}
+
 
 def main() -> int:
     root = Path(__file__).resolve().parent.parent
@@ -281,11 +299,56 @@ def main() -> int:
                     )
 
     problems += check_legacy(root)
+    problems += check_physics_kit_boundary(root)
 
     for p in problems:
         print(f"error: {p}")
     print(f"check-layering: {len(problems)} violation(s)")
     return 1 if problems else 0
+
+
+def check_physics_kit_boundary(root: Path) -> list[str]:
+    """physics-kit depends on FUSE and FUSE never depends on it back.
+
+    Walks include/fuse/, src/, python/ and examples/ -- fuse proper --
+    and refuses two things nowhere in them: a '#include ".../fuse_physics/...'
+    header (physics-kit's own include root) and a CMakeLists.txt naming
+    'fuse::physics_kit' as something to link. physics-kit/ itself is not
+    one of the four areas walked, so it may freely do both -- that
+    asymmetry is the whole point (docs/dev/layering.md).
+
+    Proof this fires: a probe file placed under include/fuse/base/ with
+    '#include "fuse_physics/version.hpp"' and a probe CMakeLists.txt under
+    src/ naming 'fuse::physics_kit' in a target_link_libraries() call both
+    produced a violation line here, then were removed; see this track's
+    measured_results for the verbatim output.
+    """
+    problems: list[str] = []
+    for area in PHYSICS_KIT_BOUNDARY_AREAS:
+        area_dir = root / area
+        if not area_dir.is_dir():
+            continue
+        for f in sorted(area_dir.rglob("*")):
+            if not f.is_file():
+                continue
+            rel = f.relative_to(root)
+            if f.suffix in PHYSICS_KIT_HEADER_SUFFIXES:
+                for lineno, line in enumerate(f.read_text(errors="replace").splitlines(), 1):
+                    if INCLUDE_FUSE_PHYSICS.match(line):
+                        problems.append(
+                            f"{rel}:{lineno}: fuse:: code includes a physics-kit "
+                            f"header (fuse_physics/...) -- physics-kit depends on "
+                            f"FUSE, never the reverse (docs/dev/layering.md)"
+                        )
+            if f.name == "CMakeLists.txt" or f.suffix == ".cmake":
+                for lineno, line in enumerate(f.read_text(errors="replace").splitlines(), 1):
+                    if LINK_PHYSICS_KIT.search(line):
+                        problems.append(
+                            f"{rel}:{lineno}: fuse:: build file links fuse::physics_kit "
+                            f"-- physics-kit depends on FUSE, never the reverse "
+                            f"(docs/dev/layering.md)"
+                        )
+    return problems
 
 
 def check_legacy(root: Path) -> list[str]:

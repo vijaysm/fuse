@@ -56,6 +56,20 @@ through its builder. Read it back with `mesh()`, `region()`, `component()`, `fie
 `channel_at()`, `iteration_region()`, the `*_count()` functions, `owner_of(FieldId)`,
 `find_component(name)` and `find_field(component, name)`.
 
+Two of them carry rules `validate()` enforces that are easy to miss:
+
+- `accumulate(op)` reduces the source's samples over each target step. `Sum`, `Mean`, `Min` and
+  `Max` deliver a value in the source's own units; `Integral` delivers the left-rectangle time
+  integral, `(sum of samples) * dt` with `dt` the source component's interval, whose units are
+  the source's times time -- so an `Integral` channel from a power (W) must land in an energy (J),
+  and one declared with equal units on both ends is refused with `E-UNITS` (the message names the
+  integrated units).
+- `remap_method(name)` must name a method a weight builder recognises: `""` (the default
+  conservative supermesh), `"intx"`/`"conservative"`, `"tempest"`, `"consistent"`,
+  `"consistent-transpose"`, `"mls"`/`"mls:..."`. Any other string is `E-CHANNEL-REMAP-METHOD`, and
+  the weight builders refuse it again at run time (`E-REMAP-UNSUPPORTED`) instead of silently
+  building the default remap under the misspelt name.
+
 (diagnostics-accumulate)=
 ## Diagnostics accumulate
 
