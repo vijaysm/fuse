@@ -15,6 +15,14 @@ namespace {
 
 [[noreturn]] void refuse(const char* message) { throw std::invalid_argument(message); }
 
+/// The shape `quadrature_` itself is built for. Prism and Pyramid have
+/// sides of TWO different shapes (fe_base.hpp's own note); this names
+/// the one `quadrature_` (the always-present member) is built for --
+/// Quadrilateral, matching every OTHER side shape this wave's cell
+/// families ever mix with a quadrilateral face (a Hex's sides are
+/// uniformly Quadrilateral already) -- with the other shape's rule held
+/// separately in triangle_quadrature_, constructed in the body below
+/// only when it is actually needed.
 CellFamily side_family(CellFamily parent) {
   switch (parent) {
     case CellFamily::Edge:
@@ -25,6 +33,8 @@ CellFamily side_family(CellFamily parent) {
     case CellFamily::Tetrahedron:
       return CellFamily::Triangle;
     case CellFamily::Hexahedron:
+    case CellFamily::Prism:
+    case CellFamily::Pyramid:
       return CellFamily::Quadrilateral;
   }
   refuse("unknown cell family");
@@ -64,9 +74,24 @@ FEBase::FEBase(const spatial::Mesh& mesh, GeometryVariant geometry_variant, Basi
     refuse("geometry and field basis reference cells must match");
 
   invalidate();
+  // A Prism or Pyramid has sides of two different shapes (fe_base.hpp's
+  // own note): quadrature_ above was already sized for the
+  // Quadrilateral-side rule (side_family()'s own choice for these two
+  // families); triangle_quadrature_ gets the matching Triangle-side
+  // rule here, built to the SAME degree so its point count equals
+  // quadrature_'s own (both are an n x n tensor/collapsed-coordinate
+  // product for the same n = points_per_axis(degree), quadrature.cpp's
+  // own construction) -- set_active_size and every fixed-capacity
+  // buffer below stay valid regardless of which side is active.
+  if (domain_ == FEIntegrationDomain::Face &&
+      (geometry_reference_.family() == CellFamily::Prism || geometry_reference_.family() == CellFamily::Pyramid))
+    triangle_quadrature_ = std::make_unique<Quadrature>(CellFamily::Triangle, quadrature_.degree());
   if (domain_ == FEIntegrationDomain::Face)
     for (unsigned side = 0; side < geometry_reference_.side_count(); ++side) {
-      const auto side_points = quadrature_.points();
+      const auto& side_quadrature = quadrature_for_side(side);
+      const auto side_points = side_quadrature.points();
+      if (side_points.size() != capacity_)
+        refuse("a mixed-shape face's triangle and quadrilateral quadrature rules must share a point count");
       for (std::size_t q = 0; q < side_points.size(); ++q) {
         const std::size_t index = side * capacity_ + q;
         if (geometry_reference_.dimension() == 1) {
@@ -77,6 +102,12 @@ FEBase::FEBase(const spatial::Mesh& mesh, GeometryVariant geometry_variant, Basi
         side_parent_jacobians_[index] = geometry_reference_.side_reference_jacobian(side, side_points[q]);
       }
     }
+}
+
+const Quadrature& FEBase::quadrature_for_side(unsigned side) const {
+  if (triangle_quadrature_ && geometry_reference_.side_topology(side).family() == CellFamily::Triangle)
+    return *triangle_quadrature_;
+  return quadrature_;
 }
 
 void FEBase::set_active_size(std::size_t count) {
@@ -156,8 +187,9 @@ void FEBase::reinit(spatial::EntityHandle element, unsigned side) {
     if (nconn != geometry_reference_.node_count()) refuse("element connectivity does not match bound geometry variant");
     geometry_.reinit(std::span<const Point>(geometry_nodes_scratch_.data(), nconn));
 
-    const auto weights = quadrature_.weights();
-    set_active_size(quadrature_.n_points());
+    const auto& side_quadrature = quadrature_for_side(side);
+    const auto weights = side_quadrature.weights();
+    set_active_size(side_quadrature.n_points());
     invalidate();
     for (std::size_t q = 0; q < active_qpoints_; ++q) {
       const std::size_t side_offset = side * capacity_ + q;

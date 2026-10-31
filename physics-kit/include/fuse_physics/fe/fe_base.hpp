@@ -16,15 +16,19 @@
 /// reinit still sees valid (if now NaN-filled) storage rather than a
 /// dangling one.
 ///
-/// WAVE 1 SCOPE: FEIntegrationDomain::Volume is fully ported and tested
-/// against spatial::Mesh's native Hex8 elements (physics.fe_test). Face
-/// integration is ported (the geometry/quadrature plumbing is identical in
-/// kind to KARMA's own) but this wave's own spatial::Mesh only generates
-/// Hex8 volumes, so physics.fe_face_test exercises it via a directly
-/// constructed GeometryMap on explicit hexahedron-face node coordinates
-/// rather than mesh-bound face elements -- the mesh-bound face path is
-/// otherwise identical code and is exercised the moment spatial::Mesh gains
-/// a non-volume element type.
+/// WAVE 1b SCOPE: FEIntegrationDomain::Volume and Face are both ported
+/// and tested, now including Prism and Pyramid (owner instruction
+/// 2026-10-31, item 1), whose sides have MIXED shapes (Prism: 3
+/// quadrilateral + 2 triangular; Pyramid: 4 triangular + 1
+/// quadrilateral) -- the single `quadrature_` member a Tet- or Hex-only
+/// wave 1 could get away with is not enough once one parent cell's own
+/// sides are not all the same shape. `quadrature_` holds the
+/// Quadrilateral-side rule (every family this wave supports has at most
+/// one side SHAPE that is not Quadrilateral: Tet's sides are uniformly
+/// Triangle, handled the same way `quadrature_` always was); `triangle_
+/// quadrature_` -- present but unused since wave 1 -- now holds the
+/// matching Triangle-side rule for Prism and Pyramid's triangular
+/// sides, selected per side by fe_base.cpp's own quadrature_for_side().
 
 #include <array>
 #include <cstddef>
@@ -84,6 +88,10 @@ class FEBase {
   void set_active_size(std::size_t count);
   void evaluate_reference_points(const GeometryMap& geometry, std::span<const Point> points,
                                   std::span<const double> weights, bool compute_weights);
+  /// The quadrature rule to use on `side`: quadrature_ for a quadrilateral
+  /// side, triangle_quadrature_ (always non-null when any side is
+  /// triangular -- constructor's own invariant) for a triangular one.
+  [[nodiscard]] const Quadrature& quadrature_for_side(unsigned side) const;
 
   const spatial::Mesh& mesh_;
   GeometryVariant geometry_variant_;
@@ -91,7 +99,7 @@ class FEBase {
   Basis basis_;
   GeometryMap geometry_;
   Quadrature quadrature_;
-  std::unique_ptr<Quadrature> triangle_quadrature_;  // non-null only for a pyramid/prism face mix (not this wave)
+  std::unique_ptr<Quadrature> triangle_quadrature_;  // non-null only for a Face FEBase on a Prism or Pyramid
   FEIntegrationDomain domain_;
   std::size_t n_basis_;
   std::size_t capacity_;

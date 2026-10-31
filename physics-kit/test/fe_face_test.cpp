@@ -1,11 +1,16 @@
 // physics.fe_face_test -- ported from KARMA's fe_face_test.C (face-
-// integration portions; the mixed triangle/quad face case, which only
-// arises for prism/pyramid parents, is not ported -- this wave's only
-// face-capable parent is Hex8, whose faces are uniformly quadrilateral).
+// integration portions). WAVE 1b (owner instruction 2026-10-31, item 1)
+// ports the mixed triangle/quad face case too, now that Prism and
+// Pyramid are in scope: EveryFaceAreaOfPrismAndPyramidMatchesItsOwnShape
+// exercises fe_base.cpp's own quadrature_for_side() dispatch directly --
+// every quad side goes through `quadrature_`, every triangular side
+// through `triangle_quadrature_`, on the SAME FEBase instance.
 
 #include "fuse_physics/fe/fe_base.hpp"
 
+#include <array>
 #include <cmath>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -79,6 +84,81 @@ TEST(FEFaceTest, FaceReinitOnVolumeFiniteElementRefuses) {
             registry.create({CellFamily::Hexahedron, FieldBasisFamily::LagrangeNodal, 1, BasisContinuity::cG}), 2,
             FEIntegrationDomain::Volume);
   EXPECT_THROW(fe.reinit(1, 0), std::invalid_argument);
+}
+
+// physics.fe_face_test.EveryFaceAreaOfPrismAndPyramidMatchesItsOwnShape
+// -- the reference Prism6 and Pyramid5 (identity-mapped), each face's
+// area computed by hand from its own corner coordinates (reference_
+// topology.cpp's side_table: Prism6 sides 0-2 are the three
+// quadrilateral side faces, 3-4 the two triangular caps; Pyramid5 sides
+// 0-3 are the four triangular sides, 4 the quadrilateral base).
+TEST(FEFaceTest, EveryFaceAreaOfPrismAndPyramidMatchesItsOwnShape) {
+  const BasisRegistry registry;
+  {
+    Mesh mesh(3);
+    const std::array<Point, 6> corners{Point(0, 0, 0), Point(1, 0, 0), Point(0, 1, 0),
+                                        Point(0, 0, 1), Point(1, 0, 1), Point(0, 1, 1)};
+    std::vector<fuse::physics::spatial::EntityHandle> vertices;
+    for (const auto& corner : corners) vertices.push_back(mesh.add_vertex(corner));
+    mesh.add_element(GeometryVariant::Prism6, vertices);
+    FEBase fe(mesh, GeometryVariant::Prism6,
+              registry.create({CellFamily::Prism, FieldBasisFamily::LagrangeNodal, 1, BasisContinuity::cG}), 2,
+              FEIntegrationDomain::Face);
+    const std::array<double, 5> expected_area{1.0, std::sqrt(2.0), 1.0, 0.5, 0.5};
+    for (unsigned side = 0; side < 5; ++side) {
+      fe.reinit(1, side);
+      ASSERT_TRUE(fe.is_valid()) << "prism side " << side;
+      double area = 0.0;
+      for (const double jxw : fe.get_JxW()) area += jxw;
+      EXPECT_NEAR(area, expected_area[side], 1.0e-10) << "prism side " << side;
+    }
+  }
+  {
+    Mesh mesh(3);
+    const std::array<Point, 5> corners{Point(-1, -1, 0), Point(1, -1, 0), Point(1, 1, 0), Point(-1, 1, 0),
+                                        Point(0, 0, 1)};
+    std::vector<fuse::physics::spatial::EntityHandle> vertices;
+    for (const auto& corner : corners) vertices.push_back(mesh.add_vertex(corner));
+    mesh.add_element(GeometryVariant::Pyramid5, vertices);
+    FEBase fe(mesh, GeometryVariant::Pyramid5,
+              registry.create({CellFamily::Pyramid, FieldBasisFamily::LagrangeNodal, 1, BasisContinuity::cG}), 2,
+              FEIntegrationDomain::Face);
+    const std::array<double, 5> expected_area{std::sqrt(2.0), std::sqrt(2.0), std::sqrt(2.0), std::sqrt(2.0), 4.0};
+    for (unsigned side = 0; side < 5; ++side) {
+      fe.reinit(1, side);
+      ASSERT_TRUE(fe.is_valid()) << "pyramid side " << side;
+      double area = 0.0;
+      for (const double jxw : fe.get_JxW()) area += jxw;
+      EXPECT_NEAR(area, expected_area[side], 1.0e-9) << "pyramid side " << side;
+    }
+  }
+}
+
+// physics.fe_face_test.PrismAndPyramidNormalsPointAwayFromCentroid --
+// the same orientation convention NormalsPointAwayFromCentroid checks
+// on a Hex8, checked here on a mixed-face Prism6 -- the quad and
+// triangular sides both go through side_from_parent's own canonical-
+// co-normal check (geometry_map.cpp), regardless of which quadrature
+// rule supplied the side's own points.
+TEST(FEFaceTest, PrismAndPyramidNormalsPointAwayFromCentroid) {
+  const BasisRegistry registry;
+  Mesh mesh(3);
+  const std::array<Point, 6> corners{Point(0, 0, 0), Point(1, 0, 0), Point(0, 1, 0),
+                                      Point(0, 0, 1), Point(1, 0, 1), Point(0, 1, 1)};
+  std::vector<fuse::physics::spatial::EntityHandle> vertices;
+  for (const auto& corner : corners) vertices.push_back(mesh.add_vertex(corner));
+  mesh.add_element(GeometryVariant::Prism6, vertices);
+  FEBase fe(mesh, GeometryVariant::Prism6,
+            registry.create({CellFamily::Prism, FieldBasisFamily::LagrangeNodal, 1, BasisContinuity::cG}), 2,
+            FEIntegrationDomain::Face);
+  const Point centroid = mesh.centroid(1);
+  for (unsigned side = 0; side < 5; ++side) {
+    fe.reinit(1, side);
+    for (std::size_t q = 0; q < fe.n_quadrature_points(); ++q) {
+      const Point outward = fe.get_xyz()[q] - centroid;
+      EXPECT_GT(dot(fe.get_normals()[q], outward), 0.0) << "side " << side << " point " << q;
+    }
+  }
 }
 
 }  // namespace
