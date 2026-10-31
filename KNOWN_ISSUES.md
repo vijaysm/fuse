@@ -13370,3 +13370,29 @@ the four field-transaction mutation rows plus three new ones (origin code not ca
 status not carried) and the re-anchored `participant-plugin-agreement-minloc-to-maxloc-mpi`. HOST-PENDING: the
 MPI rows (`parallel.field_transaction_mpi.{2,3}`, `parallel.provider_subset_mpi.2`, `parallel.abi_reconcile_mpi.2`)
 and the MPI-gated mutation rows have not run since this change; `hostrun/run-30oct-ft.sh` now covers them.
+
+### D98. `fuse::num::sdirk44_tableau()` shipped Round 1 with `order = 4`; the method is actually order 3 -- FOUND AND FIXED, S8 Integrators track, Round 2 (2026-10-30)
+
+Round 1 (Stage B) copied KARMA's own `order` field for every tableau, including SDIRK44's vendored
+comment ("Fourth order L-stable and stiffly accurate scheme", `sdirk44.C:25`), without an independent
+algebraic check -- no such checker existed yet. Round 2's own generic rooted-tree order-condition
+checker (`include/fuse/num/order_conditions.hpp`, task item 1) found, by running it against the
+tableau `fuse::num::sdirk44_tableau()` itself ships (not a vendored-source question: the `A`/`B`/`C`
+entered in Round 1 are byte-identical to `sdirk44.C`, and remain so), that the order-4 condition
+`sum_i b_i c_i^3 = 1/4` fails by EXACTLY `1/18` in exact rational arithmetic (`b.c^3 = 11/36`); every
+condition through order 3 holds to round-off. This is a defect in FUSE's OWN metadata (the `order`
+field this project's own Round 1 wrote), not a vendored KARMA defect being carried forward -- hence a
+D entry, not a Round 1/2 design-doc footnote. `order` is corrected to 3 in `butcher_tableau.hpp`;
+`order_conditions_test.cpp`'s own `OrderConditions.Sdirk44sDeclaredOrderIsCorrectedFromFourToThree`
+pins both the round-off agreement through order 3 and the exact `1/18` defect at order 4, so a future
+accidental "fix" of the coefficients that happened to also satisfy `b.c^3 = 1/4` would change the
+pinned number and prompt a second look, rather than the test silently continuing to pass. SDIRK44 is
+not wired into any integrator this round (the DIRK family's own named method list, task item 2, does
+not include it), so no downstream code changed behaviour from this correction -- it is a data fix
+only, found before the method was ever used for anything beyond the Round 1 data layer.
+
+**Lead's confirmation (2026-10-31):** exact rational arithmetic on the shipped coefficients gives b.c^3 = 11/36 (order 4
+needs 1/4), with b.c^2 = 1/3 and b.A.c = 1/6 exact, so the method is order 3 exactly as the checker found. Landed with
+integrators round 2 from a clean export (tier 0 237/237). The round's one surviving mutation
+(`integrators-rosenbrock-stage-solve-failed-refusal`) was killed by a lead-added test before landing; see
+docs/dev/integrators-design.md, "Lead's review of round 2".
