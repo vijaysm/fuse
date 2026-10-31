@@ -417,6 +417,7 @@ TEST(ExplicitIntegrator, RefusesAnEmbeddedControllerOverANonEmbeddedTableau) {
   EXPECT_EQ(r.error().code, kWrongFamilyCode);
 }
 
+
 }  // namespace
 }  // namespace fuse::num
 
@@ -608,6 +609,509 @@ TEST(ExplicitIntegrator, Ssprk104MatchesTheShuOsherRecursion) {
   EXPECT_NEAR(y_recursion[0], y_tableau[0], 1e-13)
       << "SSPRK104's Butcher-form step must match the literal Shu-Osher recursion to "
          "round-off, over " << n_steps << " steps on a nonlinear test problem";
+}
+
+// ===========================================================================
+// Round 3 (task item 4): the SSPRK(10,4) embedded pair (Conde, Fekete and Shadid
+// 2018, their own recommended ~b_3 row, butcher_tableau.hpp's own ssprk104_tableau()
+// top comment) -- "the monotonicity test of round 2 extended to the pair": adaptive
+// stepping (EmbeddedController active, not the fixed-step monotonicity test above)
+// must still leave every ACCEPTED step's own total variation non-increasing, using
+// the SAME periodic upwind advection problem, confirming the embedded pair's own
+// error estimate does not silently let a non-monotone step through.
+// ===========================================================================
+TEST(ExplicitIntegrator, Ssprk104EmbeddedPairKeepsAdaptiveStepsMonotone) {
+  const ButcherTableau t = ssprk104_tableau();
+  ASSERT_TRUE(t.has_embedded_estimate())
+      << "ssprk104_tableau() must carry the Conde/Fekete/Shadid embedded pair for this test";
+  constexpr int n = 20;
+  constexpr double dx = 1.0;
+  auto problem = periodic_upwind_advection(n, dx);
+  auto y0 = step_function_initial_data(n);
+  const double tv0 = total_variation_periodic(y0);
+
+  ControllerOptions opt;
+  opt.kind = ControllerKind::I;
+  opt.order = t.order;
+  opt.embedded_order = *t.embedded_order;
+  ExplicitIntegrator<double> integ(t, EmbeddedController(opt), 1e-4, 1e-6);
+  std::vector<double> y = y0;
+  double worst_tv = tv0;
+  double t_now = 0.0;
+  // Start comfortably INSIDE the SSP coefficient's own step bound (C=6) so the first
+  // few steps are accepted and the controller has real error data to adapt from.
+  double h = 0.9 * (*t.ssp_coefficient) * dx;
+  int accepted = 0, rejected = 0;
+  for (int iter = 0; iter < 30 && accepted < 10; ++iter) {
+    auto r = integ.step(problem, t_now, h, y);
+    ASSERT_TRUE(r.ok()) << r.error().code << ": " << r.error().message;
+    if (r.value().accepted) {
+      ++accepted;
+      t_now = r.value().t_new;
+      worst_tv = std::max(worst_tv, total_variation_periodic(y));
+    } else {
+      ++rejected;
+    }
+    h = r.value().h_next;
+  }
+  std::printf("Ssprk104EmbeddedPairKeepsAdaptiveStepsMonotone: accepted=%d rejected=%d "
+              "tv0=%.6f worst=%.6f\n", accepted, rejected, tv0, worst_tv);
+  EXPECT_GT(accepted, 0) << "the controller must accept at least one step for this to test anything";
+  EXPECT_LE(worst_tv, tv0 + 1e-9)
+      << "an accepted adaptive step, using the embedded pair's own error estimate, "
+      << "must not increase total variation: tv0=" << tv0 << " worst=" << worst_tv;
+}
+
+
+// ===========================================================================
+// Round 3 (task item 5): DynamicalTimeScaleController (docs/dev/integrators-design.md
+// Section 2, mechanism 1; dynamical_time_scale_controller.hpp). A problem with a
+// KNOWN, constant time scale (linear decay y' = -lambda*y, scale = 1/|lambda|) must
+// have its chosen step PINNED to that scale -- an exact (not statistical) check,
+// since the formula is a closed-form clamp, not a measured convergence rate.
+// ===========================================================================
+
+namespace {
+
+TemporalProblem<double> linear_decay_problem(double lambda) {
+  TemporalProblem<double> problem;
+  problem.dimension = 1;
+  problem.rhs = [lambda](double, std::span<const double> y,
+                         std::span<double> out) -> Result<void> {
+    out[0] = -lambda * y[0];
+    return Result<void>::success();
+  };
+  problem.dynamical_time_scales = [lambda](double, std::span<const double>,
+                                           std::vector<double>& out) -> Result<void> {
+    out.clear();
+    out.push_back(1.0 / lambda);
+    return Result<void>::success();
+  };
+  return problem;
+}
+
+}  // namespace
+
+TEST(ExplicitIntegrator, DynamicalControllerAlonePinsStepToTheProblemsOwnTimeScale) {
+  // No EmbeddedController: a KARMA-mechanism-1-only path (Section 2 item 1's own
+  // "it needs no embedded tableau at all (it runs even for plain FE/BE)"). FE has
+  // no embedded estimate at all, which is exactly the point of this test.
+  ButcherTableau fe;
+  fe.name = "FE";
+  fe.family = ButcherFamily::Erk;
+  fe.order = 1;
+  fe.A = {{0.0}};
+  fe.B = {1.0};
+  fe.C = {0.0};
+
+  const double lambda = 4.0;
+  const DynamicalControllerOptions opt{/*safety=*/0.8, /*fac_min=*/0.2, /*fac_max=*/4.0};
+  ExplicitIntegrator<double> integ(fe);
+  integ.set_dynamical_controller(DynamicalTimeScaleController(opt));
+
+  auto problem = linear_decay_problem(lambda);
+  std::vector<double> state = {1.0};
+  const double h = 0.1;
+  auto rec = integ.step(problem, 0.0, h, std::span<double>(state));
+  ASSERT_TRUE(rec.ok()) << rec.error().code << ": " << rec.error().message;
+
+  // h_cfl = safety / lambda = 0.8 * 0.25 = 0.2, within [fac_min*h, fac_max*h] =
+  // [0.02, 0.4], so unclamped: the PINNED value this test exists to check.
+  const double expected = opt.safety / lambda;
+  std::printf("DynamicalControllerAlonePinsStepToTheProblemsOwnTimeScale: h_next=%.10f "
+              "expected=%.10f\n", static_cast<double>(rec.value().h_next), expected);
+  EXPECT_TRUE(rec.value().accepted)
+      << "mechanism 1 has no accept/reject notion of its own: every step is accepted";
+  EXPECT_NEAR(static_cast<double>(rec.value().h_next), expected, 1e-13)
+      << "exact closed-form clamp result, not a measured rate: round-off tolerance only";
+}
+
+TEST(ExplicitIntegrator, DynamicalControllerUsesTheMostRestrictiveOfSeveralScales) {
+  // A problem reporting TWO time scales (two decay modes, lambda1 != lambda2): the
+  // controller must bound h by the SMALLER scale (the faster/more restrictive mode),
+  // not the larger one -- a single-scale problem cannot distinguish a min-vs-max bug
+  // in the selection itself (either comparator picks the only element), so this test
+  // exists specifically to catch that class of defect.
+  ButcherTableau fe;
+  fe.name = "FE";
+  fe.family = ButcherFamily::Erk;
+  fe.order = 1;
+  fe.A = {{0.0}};
+  fe.B = {1.0};
+  fe.C = {0.0};
+  const double lambda_fast = 10.0, lambda_slow = 1.0;  // scales 0.1 and 1.0
+  const DynamicalControllerOptions opt{0.5, 0.01, 100.0};  // wide band: result is h_cfl, unclamped
+  ExplicitIntegrator<double> integ(fe);
+  integ.set_dynamical_controller(DynamicalTimeScaleController(opt));
+  TemporalProblem<double> problem;
+  problem.dimension = 1;
+  problem.rhs = [](double, std::span<const double> y, std::span<double> out) -> Result<void> {
+    out[0] = -y[0];
+    return Result<void>::success();
+  };
+  problem.dynamical_time_scales = [lambda_fast, lambda_slow](
+      double, std::span<const double>, std::vector<double>& out) -> Result<void> {
+    out.clear();
+    out.push_back(1.0 / lambda_slow);  // 1.0, listed FIRST (not the answer)
+    out.push_back(1.0 / lambda_fast);  // 0.1, the more restrictive scale
+    return Result<void>::success();
+  };
+  std::vector<double> state = {1.0};
+  auto rec = integ.step(problem, 0.0, 0.1, std::span<double>(state));
+  ASSERT_TRUE(rec.ok()) << rec.error().code << ": " << rec.error().message;
+  const double expected = opt.safety * (1.0 / lambda_fast);
+  std::printf("DynamicalControllerUsesTheMostRestrictiveOfSeveralScales: h_next=%.10f "
+              "expected=%.10f (bound by the SMALLER of the two scales)\n",
+              static_cast<double>(rec.value().h_next), expected);
+  EXPECT_NEAR(static_cast<double>(rec.value().h_next), expected, 1e-13);
+}
+
+TEST(ExplicitIntegrator, DynamicalControllerClampsToTheFacMinFacMaxBandAroundCurrentH) {
+  // A time scale far SMALLER than fac_min*h would allow must be clamped UP to
+  // fac_min*h, not followed past the band -- the same clamp EmbeddedController's
+  // own proposal is held to (embedded_controller.hpp).
+  ButcherTableau fe;
+  fe.name = "FE";
+  fe.family = ButcherFamily::Erk;
+  fe.order = 1;
+  fe.A = {{0.0}};
+  fe.B = {1.0};
+  fe.C = {0.0};
+  const double lambda = 1.0e6;  // scale = 1e-6, far below fac_min*h = 0.02
+  const DynamicalControllerOptions opt{0.8, 0.2, 4.0};
+  ExplicitIntegrator<double> integ(fe);
+  integ.set_dynamical_controller(DynamicalTimeScaleController(opt));
+  auto problem = linear_decay_problem(lambda);
+  std::vector<double> state = {1.0};
+  const double h = 0.1;
+  auto rec = integ.step(problem, 0.0, h, std::span<double>(state));
+  ASSERT_TRUE(rec.ok()) << rec.error().code << ": " << rec.error().message;
+  const double expected = opt.fac_min * h;
+  std::printf("DynamicalControllerClampsToTheFacMinFacMaxBandAroundCurrentH: h_next=%.10f "
+              "expected=%.10f (fac_min*h floor)\n",
+              static_cast<double>(rec.value().h_next), expected);
+  EXPECT_NEAR(static_cast<double>(rec.value().h_next), expected, 1e-13);
+}
+
+TEST(ExplicitIntegrator, DynamicalControllerRefusesWhenTheProblemHasNoCallback) {
+  ButcherTableau fe;
+  fe.name = "FE";
+  fe.family = ButcherFamily::Erk;
+  fe.order = 1;
+  fe.A = {{0.0}};
+  fe.B = {1.0};
+  fe.C = {0.0};
+  ExplicitIntegrator<double> integ(fe);
+  integ.set_dynamical_controller(DynamicalTimeScaleController({}));
+  TemporalProblem<double> problem;  // dynamical_time_scales left unset
+  problem.dimension = 1;
+  problem.rhs = [](double, std::span<const double> y, std::span<double> out) -> Result<void> {
+    out[0] = -y[0];
+    return Result<void>::success();
+  };
+  std::vector<double> state = {1.0};
+  auto rec = integ.step(problem, 0.0, 0.1, std::span<double>(state));
+  ASSERT_FALSE(rec.ok())
+      << "a DynamicalTimeScaleController attached to an integrator whose problem "
+         "supplies no dynamical_time_scales callback is a misconfiguration, not a "
+         "silently-ignored option";
+  EXPECT_EQ(rec.error().code, kNoDynamicalScalesCode);
+}
+
+TEST(ExplicitIntegrator, DynamicalControllerOwnRefusalPropagatesThroughStep) {
+  // Every reported scale non-positive: DynamicalTimeScaleController's OWN refusal
+  // (dynamical_time_scale_controller.hpp), not the integrator's misconfiguration one
+  // -- the two refusal codes this round introduces must stay distinguishable.
+  ButcherTableau fe;
+  fe.name = "FE";
+  fe.family = ButcherFamily::Erk;
+  fe.order = 1;
+  fe.A = {{0.0}};
+  fe.B = {1.0};
+  fe.C = {0.0};
+  ExplicitIntegrator<double> integ(fe);
+  integ.set_dynamical_controller(DynamicalTimeScaleController({}));
+  TemporalProblem<double> problem;
+  problem.dimension = 1;
+  problem.rhs = [](double, std::span<const double> y, std::span<double> out) -> Result<void> {
+    out[0] = -y[0];
+    return Result<void>::success();
+  };
+  problem.dynamical_time_scales = [](double, std::span<const double>,
+                                     std::vector<double>& out) -> Result<void> {
+    out.clear();
+    out.push_back(0.0);
+    out.push_back(-1.0);
+    return Result<void>::success();
+  };
+  std::vector<double> state = {1.0};
+  auto rec = integ.step(problem, 0.0, 0.1, std::span<double>(state));
+  ASSERT_FALSE(rec.ok());
+  EXPECT_NE(rec.error().code, kNoDynamicalScalesCode)
+      << "this must be the CONTROLLER's own refusal (every scale non-positive), "
+         "distinct from the integrator's misconfiguration refusal above";
+  std::printf("DynamicalControllerOwnRefusalPropagatesThroughStep: code=%s\n",
+              rec.error().code.c_str());
+}
+
+TEST(ExplicitIntegrator, EmbeddedAndDynamicalControllersCombineByTakingTheMinimum) {
+  // Round 3's own combination rule (open_questions): with both attached, the
+  // accept/reject call stays the embedded controller's, but h_next is the MINIMUM
+  // of the two proposals. Constructed so the two proposals are clearly different
+  // (confirmed against each controller's own solo result) so the test cannot pass
+  // by coincidence.
+  const ButcherTableau t = dopri45_tableau();
+  ControllerOptions eopt;
+  eopt.kind = ControllerKind::PI;
+  eopt.order = t.order;
+  eopt.embedded_order = *t.embedded_order;
+  const double lambda = 4.0;
+  const double h0 = 0.01;
+
+  // Solo embedded-controller proposal (tiny error on this easy problem -> grows h).
+  {
+    ExplicitIntegrator<double> solo(t, EmbeddedController(eopt), 1e-6, 1e-9);
+    auto problem = linear_decay_problem(lambda);
+    std::vector<double> state = {1.0};
+    auto rec = solo.step(problem, 0.0, h0, std::span<double>(state));
+    ASSERT_TRUE(rec.ok());
+    ASSERT_GT(static_cast<double>(rec.value().h_next), h0)
+        << "the embedded controller's own solo proposal must be GROWING h on this "
+           "easy problem, or this test does not actually exercise the minimum";
+  }
+
+  const DynamicalControllerOptions dopt{/*safety=*/0.001, 0.2, 4.0};  // deliberately tiny
+  ExplicitIntegrator<double> combined(t, EmbeddedController(eopt), 1e-6, 1e-9);
+  combined.set_dynamical_controller(DynamicalTimeScaleController(dopt));
+  auto problem = linear_decay_problem(lambda);
+  std::vector<double> state = {1.0};
+  auto rec = combined.step(problem, 0.0, h0, std::span<double>(state));
+  ASSERT_TRUE(rec.ok()) << rec.error().code << ": " << rec.error().message;
+
+  // Dynamical solo proposal, clamped: h_cfl = 0.001*0.25 = 0.00025, floor =
+  // fac_min*h0 = 0.002, so the clamped dynamical proposal is 0.002.
+  const double dynamical_floor = dopt.fac_min * h0;
+  std::printf("EmbeddedAndDynamicalControllersCombineByTakingTheMinimum: "
+              "combined_h_next=%.8f dynamical_floor=%.8f\n",
+              static_cast<double>(rec.value().h_next), dynamical_floor);
+  EXPECT_TRUE(rec.value().accepted)
+      << "accept/reject stays the embedded controller's; this problem's error is tiny";
+  EXPECT_NEAR(static_cast<double>(rec.value().h_next), dynamical_floor, 1e-13)
+      << "the combined h_next must equal the smaller (dynamical) proposal, not the "
+         "larger (embedded) one measured above";
+}
+
+
+// ===========================================================================
+// Round 3 (task item 6): FSAL reuse for DOPRI45 (explicit_integrator.hpp's own
+// fsal_cached_*/fsal_enabled_, ButcherTableau::is_FSAL). Unlike DirkIntegrator's
+// own implicit-family attempt (dirk_integrator_test.cpp's own FSAL suite, where
+// bit-identity was NOT achievable), an ERK method's last stage is an EXACT,
+// non-iterative f() evaluation: DOPRI45's own B[6] == 0.0 and A[6] == B
+// (butcher_tableau.hpp) mean the last stage's own y_stage accumulation and y_new's
+// own b-weighted sum are the IDENTICAL floating-point expression, not merely an
+// algebraically equivalent one -- so they round identically BY CONSTRUCTION, with
+// no Newton solve anywhere to introduce a convergence-tolerance gap. This IS the
+// part of item 6 that meets the task's own "lands ONLY with a test that FSAL and
+// non-FSAL paths produce bit-identical states" bar, and ships enabled by default.
+// ===========================================================================
+
+namespace {
+
+TemporalProblem<double> fsal_logistic_problem() {
+  TemporalProblem<double> p;
+  p.dimension = 1;
+  p.rhs = [](double, std::span<const double> y, std::span<double> out) -> Result<void> {
+    out[0] = y[0] * (1.0 - y[0]);
+    return Result<void>::success();
+  };
+  return p;
+}
+
+}  // namespace
+
+TEST(ExplicitIntegrator, Dopri45FsalReuseProducesBitIdenticalStatesFixedStep) {
+  const ButcherTableau t = dopri45_tableau();
+  ASSERT_TRUE(t.is_FSAL) << "DOPRI45 must be declared FSAL for this test to exercise anything";
+  ExplicitIntegrator<double> fsal_on(t);
+  ExplicitIntegrator<double> fsal_off(t);
+  fsal_off.set_fsal_enabled(false);
+  ASSERT_TRUE(fsal_on.fsal_enabled());
+  ASSERT_FALSE(fsal_off.fsal_enabled());
+
+  auto problem_on = fsal_logistic_problem();
+  auto problem_off = fsal_logistic_problem();
+  std::vector<double> y_on = {0.5}, y_off = {0.5};
+  double t_on = 0.0, t_off = 0.0;
+  const double h = 0.05;
+  constexpr int n_steps = 60;
+  std::size_t total_on = 0, total_off = 0;
+  for (int i = 0; i < n_steps; ++i) {
+    auto r_on = fsal_on.step(problem_on, t_on, h, y_on);
+    auto r_off = fsal_off.step(problem_off, t_off, h, y_off);
+    ASSERT_TRUE(r_on.ok()) << r_on.error().message;
+    ASSERT_TRUE(r_off.ok()) << r_off.error().message;
+    ASSERT_EQ(y_on[0], y_off[0])
+        << "step " << i << ": FSAL reuse produced a DIFFERENT float64 value than "
+        << "recomputing stage 0 from scratch -- these must be bit-identical";
+    total_on += r_on.value().function_evaluations;
+    total_off += r_off.value().function_evaluations;
+    t_on = r_on.value().t_new;
+    t_off = r_off.value().t_new;
+  }
+  std::printf("Dopri45FsalReuseProducesBitIdenticalStatesFixedStep: fevals_on=%zu "
+              "fevals_off=%zu saved=%zu (expect %d)\n",
+              total_on, total_off, total_off - total_on, n_steps - 1);
+  EXPECT_EQ(total_off - total_on, static_cast<std::size_t>(n_steps - 1))
+      << "FSAL reuse must save exactly one function evaluation per step after the first";
+}
+
+TEST(ExplicitIntegrator, Dopri45FsalReuseProducesBitIdenticalStatesUnderAdaptiveStepping) {
+  const ButcherTableau t = dopri45_tableau();
+  ControllerOptions opt;
+  opt.kind = ControllerKind::PI;
+  opt.order = t.order;
+  opt.embedded_order = *t.embedded_order;
+  ExplicitIntegrator<double> fsal_on(t, EmbeddedController(opt), 1e-6, 1e-9);
+  ExplicitIntegrator<double> fsal_off(t, EmbeddedController(opt), 1e-6, 1e-9);
+  fsal_off.set_fsal_enabled(false);
+
+  auto problem_on = fsal_logistic_problem();
+  auto problem_off = fsal_logistic_problem();
+  std::vector<double> y_on = {0.5}, y_off = {0.5};
+  double t_on = 0.0, t_off = 0.0, h_on = 0.05, h_off = 0.05;
+  int accepted = 0, rejected = 0;
+  std::size_t total_on = 0, total_off = 0;
+  for (int i = 0; i < 200 && accepted < 40; ++i) {
+    auto r_on = fsal_on.step(problem_on, t_on, h_on, y_on);
+    auto r_off = fsal_off.step(problem_off, t_off, h_off, y_off);
+    ASSERT_TRUE(r_on.ok()) << r_on.error().message;
+    ASSERT_TRUE(r_off.ok()) << r_off.error().message;
+    ASSERT_EQ(r_on.value().accepted, r_off.value().accepted)
+        << "step " << i << ": enabling FSAL reuse must not change the accept/reject "
+           "DECISION (only which rhs calls are skipped on an accepted step)";
+    if (r_on.value().accepted) {
+      ++accepted;
+      ASSERT_EQ(y_on[0], y_off[0])
+          << "accepted step " << i << ": FSAL reuse must still be bit-identical "
+             "under adaptive stepping, including after a rejected-then-retried step";
+    } else {
+      ++rejected;
+    }
+    total_on += r_on.value().function_evaluations;
+    total_off += r_off.value().function_evaluations;
+    t_on = r_on.value().t_new;
+    t_off = r_off.value().t_new;
+    h_on = static_cast<double>(r_on.value().h_next);
+    h_off = static_cast<double>(r_off.value().h_next);
+  }
+  std::printf("Dopri45FsalReuseProducesBitIdenticalStatesUnderAdaptiveStepping: "
+              "accepted=%d rejected=%d fevals_on=%zu fevals_off=%zu saved=%zu\n",
+              accepted, rejected, total_on, total_off, total_off - total_on);
+  EXPECT_GT(accepted, 0) << "the controller must accept at least one step for this to test anything";
+  // The cache updates ONLY on acceptance, but a REJECTED step retries from the
+  // SAME (t, y) (state is left untouched, integrator.hpp's own contract) -- so a
+  // retry still matches whatever the last ACCEPTED step cached, and gets the same
+  // reuse benefit. Every `step()` CALL except the very first (which has no cache
+  // yet) therefore saves one evaluation, regardless of accept/reject.
+  const int total_calls = accepted + rejected;
+  EXPECT_EQ(total_off - total_on, static_cast<std::size_t>(total_calls - 1))
+      << "FSAL reuse must save exactly one rhs call on every step() CALL after the "
+         "first (accepted=" << accepted << " rejected=" << rejected << ")";
+}
+
+TEST(ExplicitIntegrator, Dopri45FsalCacheGuardsAgainstADifferentlySizedState) {
+  // If a caller reuses the SAME integrator instance across two UNRELATED problems
+  // of different dimension (TemporalProblem::dimension left at its default 0 means
+  // no mismatch refusal fires), the cache's own size guard
+  // (fsal_cached_y_->size() == n, explicit_integrator.hpp) must stop a reuse
+  // attempt BEFORE the element-by-element comparison loop would read past the
+  // cached vector's own end -- this test exercises exactly that transition.
+  const ButcherTableau t = dopri45_tableau();
+  ExplicitIntegrator<double> integ(t);
+  TemporalProblem<double> problem1;
+  problem1.rhs = [](double, std::span<const double> y, std::span<double> out) -> Result<void> {
+    out[0] = y[0] * (1.0 - y[0]);
+    return Result<void>::success();
+  };
+  std::vector<double> y1 = {0.5};
+  auto r1 = integ.step(problem1, 0.0, 0.05, y1);
+  ASSERT_TRUE(r1.ok());
+  const double t_after_1 = static_cast<double>(r1.value().t_new);
+
+  // A SECOND, unrelated 2-dimensional problem, stepped from the SAME t the cache
+  // holds (deliberately, to try to trigger a reuse attempt) but a state of a
+  // DIFFERENT size than the cache's own cached vector.
+  TemporalProblem<double> problem2;
+  problem2.rhs = [](double, std::span<const double> y, std::span<double> out) -> Result<void> {
+    out[0] = -y[0];
+    out[1] = -2.0 * y[1];
+    return Result<void>::success();
+  };
+  std::vector<double> y2 = {1.0, 1.0};
+  auto r2 = integ.step(problem2, t_after_1, 0.05, y2);
+  ASSERT_TRUE(r2.ok()) << r2.error().message;
+
+  ExplicitIntegrator<double> reference(t);
+  reference.set_fsal_enabled(false);
+  TemporalProblem<double> problem2_ref;
+  problem2_ref.rhs = problem2.rhs;
+  std::vector<double> y2_ref = {1.0, 1.0};
+  auto r2_ref = reference.step(problem2_ref, t_after_1, 0.05, y2_ref);
+  ASSERT_TRUE(r2_ref.ok());
+  EXPECT_EQ(y2[0], y2_ref[0])
+      << "a 2-dimensional step must not be corrupted by a 1-dimensional cache";
+  EXPECT_EQ(y2[1], y2_ref[1])
+      << "a 2-dimensional step must not be corrupted by a 1-dimensional cache";
+
+  // The direction that only the SIZE guard can catch (lead, 2026-10-31): the cache
+  // now holds problem2's 2-vector state at t2; a 1-dimensional problem stepped from
+  // that same t2 with a state EQUAL to the cache's first entry makes the
+  // element-by-element loop (which runs over the NEW state's n = 1 entries) report
+  // a match, so without the size guard the cached 2-vector derivative of problem2
+  // (-y) would be reused as stage 0 of problem1 (y (1 - y)), and the result would
+  // differ from a fresh integrator's. The mutation row
+  // integrators-dopri45-fsal-cache-match-check-broken had been declared equivalent
+  // because the 1 -> 2 transition above cannot see the guard; this 2 -> 1 transition can.
+  const double t2 = static_cast<double>(r2.value().t_new);
+  std::vector<double> y3 = {y2[0]};
+  auto r3 = integ.step(problem1, t2, 0.05, y3);
+  ASSERT_TRUE(r3.ok()) << r3.error().message;
+  ExplicitIntegrator<double> reference3(t);
+  reference3.set_fsal_enabled(false);
+  std::vector<double> y3_ref = {y2[0]};
+  auto r3_ref = reference3.step(problem1, t2, 0.05, y3_ref);
+  ASSERT_TRUE(r3_ref.ok());
+  EXPECT_EQ(y3[0], y3_ref[0])
+      << "a 1-dimensional step must not reuse a 2-dimensional cache whose first entry matches";
+}
+
+TEST(ExplicitIntegrator, Dopri45FsalReuseIsBypassedAfterANonContinguousStep) {
+  const ButcherTableau t = dopri45_tableau();
+  ExplicitIntegrator<double> integ(t);
+  auto problem = fsal_logistic_problem();
+  std::vector<double> y = {0.5};
+  auto r1 = integ.step(problem, 0.0, 0.05, y);
+  ASSERT_TRUE(r1.ok());
+  const double t_after_1 = static_cast<double>(r1.value().t_new);
+  // Cache now holds (t_after_1, y after step 1). Step again at the SAME t
+  // (t_after_1) but a DIFFERENT y (deliberately perturbed, not continuing from
+  // where step 1 left off) -- the cache's own t-match alone must NOT be enough to
+  // trigger reuse; a t-only check (this test's own reason for existing) would
+  // incorrectly reuse a derivative evaluated at the WRONG y.
+  std::vector<double> y_perturbed = {y[0] + 0.1};
+  ExplicitIntegrator<double> integ_reference(t);
+  integ_reference.set_fsal_enabled(false);
+  auto r_cached = integ.step(problem, t_after_1, 0.05, y_perturbed);
+  auto problem_ref = fsal_logistic_problem();
+  std::vector<double> y_ref = {y[0] + 0.1};
+  auto r_ref = integ_reference.step(problem_ref, t_after_1, 0.05, y_ref);
+  ASSERT_TRUE(r_cached.ok());
+  ASSERT_TRUE(r_ref.ok());
+  EXPECT_EQ(y_perturbed[0], y_ref[0])
+      << "stepping from a point whose t matches the cache but whose y does NOT "
+         "must give the SAME answer as fsal_enabled(false) -- the cache's own y "
+         "check, not just its t check, must gate reuse";
 }
 
 }  // namespace fuse::num

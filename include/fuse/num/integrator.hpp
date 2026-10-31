@@ -116,12 +116,27 @@ struct TemporalProblem {
   /// rosenbrock_integrator.h:41).
   std::function<Result<void>(Scalar t, std::span<const Value> y, std::span<Value> out)> dfdt;
 
+  /// out <- the problem's own LOCAL dynamical time scales at (t, y): one rate per
+  /// entry (e.g. |lambda_i| for a locally-linearised decay/oscillation mode), NOT
+  /// necessarily `dimension`-sized -- a caller may report fewer scales than state
+  /// components (one global rate) or more (per-mode rates from its own physics).
+  /// Round 3 scope (task item 5, `DynamicalTimeScaleController`,
+  /// dynamical_time_scale_controller.hpp): KARMA's own "mechanism 1" step-size
+  /// control, docs/dev/integrators-design.md Section 2. Absent means no dynamical
+  /// time-scale control is available for this problem -- a caller falls back to the
+  /// embedded (Richardson/error-based) controller alone, or a fixed step.
+  std::function<Result<void>(Scalar t, std::span<const Value> y, std::vector<double>& out)>
+      dynamical_time_scales;
+
   std::size_t dimension = 0;
 
   [[nodiscard]] bool has_rhs() const noexcept { return static_cast<bool>(rhs); }
   [[nodiscard]] bool has_mass() const noexcept { return static_cast<bool>(mass); }
   [[nodiscard]] bool has_jacobian_action() const noexcept { return static_cast<bool>(jacobian_action); }
   [[nodiscard]] bool has_dfdt() const noexcept { return static_cast<bool>(dfdt); }
+  [[nodiscard]] bool has_dynamical_time_scales() const noexcept {
+    return static_cast<bool>(dynamical_time_scales);
+  }
 };
 
 /// One accepted-or-rejected step's own record. `error_norm`/`h_used`/`h_next` are
