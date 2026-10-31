@@ -1,0 +1,311 @@
+# Mutations for the adjoint (reverse mode) through the C and Fortran entry points (plans/2026-10-22-universal-number-types.md, stage U6).
+
+[[mutation]]
+id = "abi-adjoint-provider-adjoint-offered-without-the-capability-bit"
+area = "abi_adjoint"
+describes = "a plugin that does not set FUSE_CAP_ADJOINT is offered to the reverse sweep when its table has the entries"
+file = "src/abi/provider_adapter.cpp"
+old = "adjoint_offered_ = adjoint_capability_ && table_covers("
+new = "adjoint_offered_ = table_covers("
+target = "fuse_abi_adjoint_provider_test"
+test = "abi.adjoint_provider"
+
+[[mutation]]
+id = "abi-adjoint-provider-adjoint-entries-read-past-the-table-end"
+area = "abi_adjoint"
+describes = "the adjoint entries of a table whose struct_size ends before them are read"
+file = "src/abi/provider_adapter.cpp"
+old = "table_covers(table_, offsetof(fuse_provider_abi_v1, advance_adjoint)) &&\n                       table_->bind_adjoint"
+new = "true &&\n                       table_->bind_adjoint"
+target = "fuse_abi_adjoint_provider_test"
+test = "abi.adjoint_provider"
+
+[[mutation]]
+id = "abi-adjoint-provider-adjoint-offered-with-null-entries"
+area = "abi_adjoint"
+describes = "a plugin that sets FUSE_CAP_ADJOINT and leaves the two entries null is offered to the reverse sweep"
+file = "src/abi/provider_adapter.cpp"
+old = "table_->bind_adjoint != nullptr && table_->advance_adjoint != nullptr;"
+new = "true;"
+target = "fuse_abi_adjoint_provider_test"
+test = "abi.adjoint_provider"
+
+[[mutation]]
+id = "abi-adjoint-provider-bind-adjoint-never-called"
+area = "abi_adjoint"
+describes = "the plugin is never handed its adjoint arrays"
+file = "src/abi/provider_adapter.cpp"
+old = "if (r.count > 0 && !unhosted_shell_) {"
+new = "if (false) {"
+target = "fuse_abi_adjoint_provider_test"
+test = "abi.adjoint_provider"
+
+[[mutation]]
+id = "abi-adjoint-provider-adjoint-array-not-zeroed"
+area = "abi_adjoint"
+describes = "the adjoint arrays start at one, not zero"
+file = "src/abi/provider_adapter.cpp"
+old = "static_cast<std::size_t>(r.row_components), 0.0);"
+new = "static_cast<std::size_t>(r.row_components), 1.0);"
+target = "fuse_abi_adjoint_provider_test"
+test = "abi.adjoint_provider"
+
+[[mutation]]
+id = "abi-adjoint-provider-advance-adjoint-window-check-removed"
+area = "abi_adjoint"
+describes = "a plugin that reports another window than the one it was asked to reverse is accepted"
+file = "src/abi/provider_adapter.cpp"
+old = "    // Rule 6, as for advance(): the window the plugin reports is exactly the one it was asked to reverse.\n    if (!same_time(rep.t_begin, req.t_begin) || !same_time(rep.t_end, req.t_end)) {"
+new = "    // Rule 6, as for advance(): the window the plugin reports is exactly the one it was asked to reverse.\n    if (false) {"
+target = "fuse_abi_adjoint_provider_test"
+test = "abi.adjoint_provider"
+
+[[mutation]]
+id = "abi-adjoint-provider-advance-adjoint-step-index-lost"
+area = "abi_adjoint"
+describes = "advance_adjoint is told step 0 for every step"
+file = "src/abi/provider_adapter.cpp"
+old = "    req.t_end = to_abi_time(ctx.t_end);\n    req.step = ctx.step;\n    req.iteration = ctx.iteration;\n    req.requires_checkpoint = 0;\n    req.requires_restore = 0;\n    req.reserved = 0;\n    fuse_step_report rep{sizeof(fuse_step_report)};\n    const fuse_status rc = table_->advance_adjoint("
+new = "    req.t_end = to_abi_time(ctx.t_end);\n    req.step = 0;\n    req.iteration = ctx.iteration;\n    req.requires_checkpoint = 0;\n    req.requires_restore = 0;\n    req.reserved = 0;\n    fuse_step_report rep{sizeof(fuse_step_report)};\n    const fuse_status rc = table_->advance_adjoint("
+target = "fuse_abi_adjoint_provider_test"
+test = "abi.adjoint_provider"
+
+[[mutation]]
+id = "abi-adjoint-provider-storage-type-refusal-removed"
+area = "abi_adjoint"
+describes = "a field that is not binary64 gets an adjoint array"
+file = "src/abi/provider_adapter.cpp"
+old = "if (r.element_type != FUSE_ELEMENT_F64) {"
+new = "if (false) {"
+target = "fuse_abi_adjoint_provider_test"
+test = "abi.adjoint_provider"
+
+[[mutation]]
+id = "abi-adjoint-provider-adjoint-registered-before-the-fields"
+area = "abi_adjoint"
+describes = "adjoint arrays are registered for a plugin whose fields were never registered"
+file = "src/abi/provider_adapter.cpp"
+old = "if (!unhosted_shell_ && (table_ == nullptr || self_ == nullptr)) {"
+new = "if (false) {"
+target = "fuse_abi_adjoint_provider_test"
+test = "abi.adjoint_provider"
+
+[[mutation]]
+id = "abi-adjoint-provider-unhosted-shell-has-no-adjoint"
+area = "abi_adjoint"
+describes = "a rank that does not host a plugin does not offer its adjoint"
+file = "src/abi/provider_adapter.hpp"
+old = "return (adjoint_offered_ || unhosted_shell_) ? this : nullptr;"
+new = "return adjoint_offered_ ? this : nullptr;"
+target = "fuse_abi_adjoint_provider_test"
+test = "abi.adjoint_provider"
+
+[[mutation]]
+id = "abi-adjoint-registry-table-minimum-raised"
+area = "abi_adjoint"
+describes = "a provider table of exactly the layout before the adjoint entries is refused"
+file = "src/abi/registry.cpp"
+old = "table->struct_size < kFirstFrozenTableSize"
+new = "table->struct_size <= kFirstFrozenTableSize"
+target = "fuse_abi_conformance_test"
+test = "abi.conformance"
+
+[[mutation]]
+id = "abi-adjoint-registry-table-minimum-lowered"
+area = "abi_adjoint"
+describes = "a provider table shorter than the layout before the adjoint entries is accepted"
+file = "src/abi/registry.cpp"
+old = "table->struct_size < kFirstFrozenTableSize"
+new = "table->struct_size + 8 < kFirstFrozenTableSize"
+target = "fuse_abi_conformance_test"
+test = "abi.conformance"
+
+[[mutation]]
+id = "abi-adjoint-participant-register-element-check-removed"
+area = "abi_adjoint"
+describes = "an adjoint array of another element type than binary64 is registered"
+file = "src/abi/participant.cpp"
+old = "if (in->element_type != FUSE_ELEMENT_F64) {\n      return fail(&c, FUSE_ERR_UNSUPPORTED, \"E-ABI-ADJOINT-REGISTER-ELEMENT\","
+new = "if (false) {\n      return fail(&c, FUSE_ERR_UNSUPPORTED, \"E-ABI-ADJOINT-REGISTER-ELEMENT\","
+target = "fuse_abi_adjoint_participant_test"
+test = "abi.adjoint_participant"
+
+[[mutation]]
+id = "abi-adjoint-participant-register-memspace-check-removed"
+area = "abi_adjoint"
+describes = "an adjoint array in device memory is registered"
+file = "src/abi/participant.cpp"
+old = "if (in->memspace != FUSE_MEMSPACE_HOST) {\n      return fail(&c, FUSE_ERR_UNSUPPORTED, \"E-ABI-ADJOINT-REGISTER-MEMSPACE\","
+new = "if (false) {\n      return fail(&c, FUSE_ERR_UNSUPPORTED, \"E-ABI-ADJOINT-REGISTER-MEMSPACE\","
+target = "fuse_abi_adjoint_participant_test"
+test = "abi.adjoint_participant"
+
+[[mutation]]
+id = "abi-adjoint-participant-register-handle-check-removed"
+area = "abi_adjoint"
+describes = "an adjoint array is registered for a handle that is no field"
+file = "src/abi/participant.cpp"
+old = "if (in->handle < 0 || static_cast<std::uint32_t>(in->handle) >= c.graph.field_count()) {\n      return fail(&c, FUSE_ERR_NOTFOUND, \"E-ABI-ADJOINT-REGISTER-HANDLE\","
+new = "if (false) {\n      return fail(&c, FUSE_ERR_NOTFOUND, \"E-ABI-ADJOINT-REGISTER-HANDLE\","
+target = "fuse_abi_adjoint_participant_test"
+test = "abi.adjoint_participant"
+
+[[mutation]]
+id = "abi-adjoint-participant-register-layout-check-removed"
+area = "abi_adjoint"
+describes = "an adjoint array with another layout than its field's is registered"
+file = "src/abi/participant.cpp"
+old = "if (layout.count != fwd.count || layout.components != fwd.components || layout.stride != fwd.stride ||\n        layout.component_stride != fwd.component_stride) {"
+new = "if (false) {"
+target = "fuse_abi_adjoint_participant_test"
+test = "abi.adjoint_participant"
+
+[[mutation]]
+id = "abi-adjoint-participant-register-duplicate-check-removed"
+area = "abi_adjoint"
+describes = "a second adjoint array for a field replaces the first"
+file = "src/abi/participant.cpp"
+old = "    if (!c.adjoint_views.emplace(id.value(),\n                                 fuse::FieldRef(static_cast<double*>(in->data), layout,\n                                                fuse::MemorySpace::Host))\n             .second) {"
+new = "    c.adjoint_views.insert_or_assign(id.value(),\n                                 fuse::FieldRef(static_cast<double*>(in->data), layout,\n                                                fuse::MemorySpace::Host));\n    if (false) {"
+target = "fuse_abi_adjoint_participant_test"
+test = "abi.adjoint_participant"
+
+[[mutation]]
+id = "abi-adjoint-participant-register-owner-check-removed"
+area = "abi_adjoint"
+describes = "an adjoint array is registered for a field of a component FUSE hosts"
+file = "src/abi/participant.cpp"
+old = "if (owner.value() >= c.ext.size() || c.ext[owner.value()].in_process) {"
+new = "if (owner.value() >= c.ext.size()) {"
+target = "fuse_abi_adjoint_plugin_test"
+test = "abi.adjoint_plugin"
+
+[[mutation]]
+id = "abi-adjoint-participant-initialize-adjoint-twice-allowed"
+area = "abi_adjoint"
+describes = "the reverse sweep is initialized twice"
+file = "src/abi/participant.cpp"
+old = "if (c.adjoint_initialized) {\n      return fail(&c, FUSE_ERR_STATE, \"E-ABI-ADJOINT-STATE\",\n                  \"fuse_initialize_adjoint: the reverse sweep is already initialized\");"
+new = "if (false) {\n      return fail(&c, FUSE_ERR_STATE, \"E-ABI-ADJOINT-STATE\",\n                  \"fuse_initialize_adjoint: the reverse sweep is already initialized\");"
+target = "fuse_abi_adjoint_plugin_test"
+test = "abi.adjoint_plugin"
+
+[[mutation]]
+id = "abi-adjoint-participant-run-adjoint-accepts-a-driven-component"
+area = "abi_adjoint"
+describes = "run_adjoint reverses a run with a component the caller drives"
+file = "src/abi/participant.cpp"
+old = "if (external_hosted_here(c)) {"
+new = "if (false) {"
+target = "fuse_abi_adjoint_participant_test"
+test = "abi.adjoint_participant"
+
+[[mutation]]
+id = "abi-adjoint-participant-begin-adjoint-accepts-a-component-out-of-turn"
+area = "abi_adjoint"
+describes = "begin_adjoint_step opens the step of a component the sweep is not at"
+file = "src/abi/participant.cpp"
+old = "if (c.next_adjoint_request->component != in->component) {"
+new = "if (false) {"
+target = "fuse_abi_adjoint_participant_test"
+test = "abi.adjoint_participant"
+
+[[mutation]]
+id = "abi-adjoint-participant-begin-adjoint-opens-a-step-twice"
+area = "abi_adjoint"
+describes = "begin_adjoint_step is accepted with a reverse step already open"
+file = "src/abi/participant.cpp"
+old = "if (c.open_adjoint_component.has_value()) {"
+new = "if (false) {"
+target = "fuse_abi_adjoint_participant_test"
+test = "abi.adjoint_participant"
+
+[[mutation]]
+id = "abi-adjoint-participant-end-adjoint-closes-another-component"
+area = "abi_adjoint"
+describes = "end_adjoint_step closes a step opened on another component"
+file = "src/abi/participant.cpp"
+old = "*c.open_adjoint_component != cid"
+new = "false"
+target = "fuse_abi_adjoint_participant_test"
+test = "abi.adjoint_participant"
+
+[[mutation]]
+id = "abi-adjoint-participant-end-adjoint-report-next-component"
+area = "abi_adjoint"
+describes = "end_adjoint_step does not report -1 at the start of the period"
+file = "src/abi/participant.cpp"
+old = "std::int32_t next_component = -1;\n    if (outcome.value().has_value()) {"
+new = "std::int32_t next_component = -2;\n    if (outcome.value().has_value()) {"
+target = "fuse_abi_adjoint_participant_test"
+test = "abi.adjoint_participant"
+
+[[mutation]]
+id = "abi-adjoint-participant-reversed-period-not-counted"
+area = "abi_adjoint"
+describes = "a period reversed step by step is not counted, so the next one is numbered as the same"
+file = "src/abi/participant.cpp"
+old = "    } else {\n      ++c.periods_reversed;\n      c.next_adjoint_request.reset();\n    }"
+new = "    } else {\n      c.next_adjoint_request.reset();\n    }"
+target = "fuse_abi_adjoint_participant_test"
+test = "abi.adjoint_participant"
+
+[[mutation]]
+id = "abi-adjoint-participant-adjoint-report-window-end"
+area = "abi_adjoint"
+describes = "the report of a reverse step carries the start of the window as its end"
+file = "src/abi/participant.cpp"
+old = "out->t_end = to_abi_time(req.ctx.t_end);"
+new = "out->t_end = to_abi_time(req.ctx.t_begin);"
+target = "fuse_abi_adjoint_participant_test"
+test = "abi.adjoint_participant"
+
+[[mutation]]
+id = "abi-adjoint-participant-view-adjoint-field-returns-the-forward-array"
+area = "abi_adjoint"
+describes = "view_adjoint_field returns the array of the field itself"
+file = "src/abi/participant.cpp"
+old = "c.adjoint_fields.get_scalars(field)"
+new = "c.fields.get_scalars(field)"
+target = "fuse_abi_adjoint_participant_test"
+test = "abi.adjoint_participant"
+
+[[mutation]]
+id = "abi-adjoint-participant-capabilities-without-the-adjoint-bit"
+area = "abi_adjoint"
+describes = "the coupler does not report FUSE_CAP_ADJOINT"
+file = "src/abi/participant.cpp"
+old = "FUSE_CAP_YAML | FUSE_CAP_ADJOINT"
+new = "FUSE_CAP_YAML"
+target = "fuse_abi_adjoint_participant_test"
+test = "abi.adjoint_participant"
+
+[[mutation]]
+id = "abi-adjoint-external-adjoint-offered-without-arrays"
+area = "abi_adjoint"
+describes = "a component the caller drives is offered to the sweep when the caller registered no adjoint array at all"
+file = "src/abi/external_step_component.hpp"
+old = "return (adjoint_views_ != nullptr && !adjoint_views_->empty()) ? this : nullptr;"
+new = "return adjoint_views_ != nullptr ? this : nullptr;"
+target = "fuse_abi_adjoint_participant_test"
+test = "abi.adjoint_participant"
+
+[[mutation]]
+id = "abi-adjoint-runner-external-tick-not-suspended"
+area = "abi_adjoint"
+describes = "the sweep reverses the step of a component driven from outside as a no-op instead of handing it to the caller"
+file = "src/runtime/runner_adjoint.cpp"
+old = "if (suspended != nullptr && components.at(ticks[ev.index].slot).is_externally_driven()) {"
+new = "if (false) {"
+target = "fuse_abi_adjoint_participant_test"
+test = "abi.adjoint_participant"
+
+[[mutation]]
+id = "abi-adjoint-runner-external-in-region-accepted"
+area = "abi_adjoint"
+describes = "a component driven from outside inside an iteration region is accepted"
+file = "src/runtime/runner_adjoint.cpp"
+old = "      if (components.at(slot).is_externally_driven()) {\n        return refuse(\"E-ADJ-REGION\","
+new = "      if (false) {\n        return refuse(\"E-ADJ-REGION\","
+target = "fuse_abi_adjoint_participant_test"
+test = "abi.adjoint_participant"
