@@ -77,6 +77,28 @@ typedef struct fuse_provider_abi_v1 {
   /* current build does not recognise -- the same posture kGraphVersion already */
   /* takes for the coupling graph (fuse/model/descriptor.hpp) */
   fuse_status (*load_restart_blob)(fuse_provider_ctx* self, const fuse_restart_blob_source* in, fuse_null* out);
+
+  /* adjoint (reverse mode), appended LAST per this table's own append-only */
+  /* rule: only called when capabilities() set FUSE_CAP_ADJOINT, after the */
+  /* reverse sweep was initialised and before the first advance_adjoint(); once */
+  /* for every field bind() was called for, in the same order, with the same */
+  /* handle, element_type, components, count, owned_count, stride and memspace, */
+  /* and data pointing at the ADJOINT array of that field, which holds zero at */
+  /* that point and must stay valid until destroy. The adjoint array of a field */
+  /* holds the derivative of the scalar being differentiated with respect to */
+  /* each entry of the field */
+  fuse_status (*bind_adjoint)(fuse_provider_ctx* self, const fuse_field_view* in, fuse_null* out);
+
+  /* adjoint (reverse mode): the adjoint of advance() for the step with the */
+  /* window in->t_begin to in->t_end, reversed once per step in the reverse of */
+  /* the order advance() ran. On entry the adjoint array of a Provides field */
+  /* holds the adjoint of the field as the step left it, with the adjoint of */
+  /* every later read already added; on return it must hold the adjoint as it */
+  /* was before the step. A Requires field's adjoint array is ADDED to, never */
+  /* overwritten. The plugin keeps whatever forward values its own adjoint */
+  /* needs; FUSE stores none. out echoes the window exactly (rule 6), as */
+  /* advance() does */
+  fuse_status (*advance_adjoint)(fuse_provider_ctx* self, const fuse_step_request* in, fuse_step_report* out);
 } fuse_provider_abi_v1;
 
 /* THE ONE EXPORTED SYMBOL A PLUGIN PROVIDES. Returns the table for

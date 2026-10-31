@@ -81,6 +81,7 @@
 #include "fuse/schedule/plan.hpp"
 #include "fuse/transport/connect.hpp"
 
+#include "external_step_component.hpp"
 #include "registry.hpp"
 
 namespace fuse::abi_detail {
@@ -186,6 +187,23 @@ struct fuse_ctx {
   /// header comment on why at most one may be open at a time.
   std::optional<fuse::ComponentId> open_component;
   std::int64_t periods_completed = 0;
+
+  // --- reverse mode (docs/user/c-abi.md, "Reverse mode") ---
+  /// The adjoint arrays fuse_register_adjoint_field() was given, by FieldId value; the
+  /// ExternalStepComponent of each component driven from outside binds its own from here.
+  fuse::abi_detail::AdjointViews adjoint_views;
+  /// The registry the Runner's adjoint arrays are bound in: those the context's components
+  /// register (a provider plugin's own, the caller's through `adjoint_views`).
+  fuse::FieldRegistry adjoint_fields;
+  bool adjoint_initialized = false;
+  /// Forward periods reversed so far; the next period to reverse is `periods_completed - 1 -
+  /// periods_reversed`.
+  std::int64_t periods_reversed = 0;
+  /// begin_adjoint_step()/end_adjoint_step() as begin_step()/end_step() are: the step the sweep
+  /// suspended at and nobody has taken yet, and the component between a begin and its end.
+  std::optional<fuse::ExternalAdvanceRequest> next_adjoint_request;
+  std::optional<fuse::ComponentId> open_adjoint_component;
+  std::optional<fuse::ExternalAdvanceRequest> open_adjoint_request;
 
   /// Components the test harness supplied directly
   /// (fuse::abi_test::inject_component), keyed by the graph component name
