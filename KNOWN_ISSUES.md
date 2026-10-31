@@ -13423,27 +13423,88 @@ the fix back to KARMA's own OR and confirms the test catches the regression (KIL
 2026-10-31). The upstream KARMA source is unchanged (read-only, `upstream/karma/`); only the
 fuse-side port carries the fix.
 
-### D100. Distorted-pyramid quadrature accuracy (KARMA's own KNOWN_ISSUES.md item 1) is UNVERIFIED RISK, carried forward -- NOT YET APPLICABLE in physics-kit (S8.3 wave 1, 2026-10-31), tracked for when a pyramid variant is ported
+### D100. Distorted-pyramid quadrature accuracy (KARMA's own KNOWN_ISSUES.md item 1) -- MEASURED, S8.3 wave 1b (2026-10-31); the basic case (volume / low-order-polynomial integrand) is CLOSED, a genuinely non-polynomial integrand's convergence rate is CLOSED too (both measured), curved (order-2 geometry) pyramids remain OPEN
 
 `upstream/karma/KNOWN_ISSUES.md` item 1 states: distorted pyramids under KARMA's resized
 quadrature (`include/numerics/fe/karma_quadrature.h`'s `create_product_quadrature()`) are
 verified exact for monomials and reference-cell gradients to ~2e-16, but accuracy on a
 DISTORTED (non-reference-shaped) pyramid is "a question of relative accuracy, not of
 exactness, and no test currently isolates it" -- it would present as a pyramid or prism MMS
-convergence-rate shift, not a test failure. `docs/dev/physics-kit-disposition.md` Section 6
-cross-references this as the authoritative statement (not
-`docs/developer-guide/pyramid-quadrature-cost.md`, which only echoes it) and directs that the
-risk be carried forward into fuse's own KNOWN_ISSUES.md rather than closed silently when
-`karma_quadrature.h` ports. This wave's port (`physics-kit/include/fuse_physics/fe/
-quadrature.hpp`) does NOT implement a pyramid or prism cell family at all (reference_topology.
-hpp's own scope note: the rational pyramid basis and its collapsed-coordinate quadrature are a
-separate numerical undertaking, deferred along with prism) -- so the risk is not yet
-APPLICABLE to any physics-kit code that exists today, but is recorded here now so a future
-wave that adds the pyramid family inherits the warning rather than rediscovering it. Watch
-convergence RATES on a distorted pyramid/prism mesh once that wave lands, not pass/fail.
+convergence-rate shift, not a test failure. Carried forward as an unverified, not-yet-applicable
+risk in wave 1 (no pyramid variant existed to test). Owner instruction 2026-10-31, item 1,
+closes it: prism and pyramid are now implemented
+(`physics-kit/include/fuse_physics/fe/quadrature.hpp`'s Prism/Pyramid cases), so the risk is
+applicable and testable.
+
+**MEASUREMENT** (`physics-kit/test/fe_test.cpp`,
+`FEBaseTest.DistortedPyramidQuadratureAccuracy_D100`, printed by `ZZZ_D100MeasurementIsPrinted`):
+a markedly distorted straight-edged pyramid (planar quadrilateral base, irregular -- not a
+square -- and an apex well off-centre and off-axis: corners `(-1,-1,0)`, `(1.3,-0.9,0)`,
+`(1.1,1.4,0)`, `(-0.8,1.2,0)`, apex `(0.5,0.4,1.6)`), against an analytic volume computed
+independently of this port's own GeometryMap/Quadrature code entirely (the standard
+two-tetrahedron decomposition of a straight-edged pyramid, which gives the identical total,
+2.52, from EITHER diagonal split of the base -- confirming the base is planar and the volume
+is unambiguous, not an artifact of which diagonal happened to be chosen).
+
+1. Volume (the constant integrand, 1): quadrature-vs-analytic error is **0 at degree 1 and
+   8.9e-16 to 1.8e-15 (double-precision round-off) at degrees 2 through 5** -- no detectable
+   truncation error, and no growth with degree or with the distortion itself. CLOSED for this
+   case: a straight-edged pyramid's own isoparametric map is rational in the collapsed
+   coordinate, but the volume integral (the Jacobian determinant alone) apparently does not
+   carry the rational behaviour through to a measurable truncation error at any of this wave's
+   own basis orders (P0-P2 need quadrature degree <= 2).
+2. A genuinely non-polynomial smooth integrand (`exp(x+y+z)`), the case KARMA's own wording
+   ("a question of relative accuracy, not of exactness") is actually about: measured against a
+   degree-16 reference value on the SAME distorted cell, error **shrinks monotonically with
+   degree -- 1.96 (degree 1), 4.06e-2 (degree 2-3), 4.98e-4 (degree 4-5), 2.4e-10 (degree
+   10)** -- clean, non-plateaued convergence, not a persistent bias. CLOSED in the sense that
+   the risk named ("relative accuracy" degrading in a way exactness tests would not catch) is
+   demonstrably a normal, convergent truncation error here, not a hidden flaw -- at this wave's
+   own degrees (<= 2) the error is still O(1e-2), which is why D100 is not closed outright: a
+   caller integrating a non-polynomial quantity on a markedly distorted pyramid at this wave's
+   own basis orders should expect percent-level quadrature error, and raise the quadrature
+   degree (independent of the basis order, `Quadrature`'s own constructor argument) if that is
+   not enough.
+3. NOT measured, remaining OPEN: an order-2 (curved, `Pyramid14`) pyramid with genuinely curved
+   (not just straight-edge-interpolated) mid-edge geometry -- this wave's own tests (including
+   this one) only exercise STRAIGHT-edged pyramids (physical mid-edge nodes at the arithmetic
+   mean of their corners, reference_topology.cpp's own `nodes_for`), which is what every
+   `spatial::Mesh`-generated or `from_mesh_view`-read pyramid in this wave's own scope actually
+   is. A later wave that reads curved pyramid geometry from an external mesh file should re-run
+   this same measurement on a curved example before assuming it carries over.
 
 **Lead's note on the wave-1 landing (2026-10-31):** D99 verified against `karma_domain.C` lines 32, 54, 77. Two
 corrections before landing: the quadrature exactness tolerance's `1e-13` floor was removed in favour of a fully
 derived bound (measured margin: largest |error|/bound = 1.25e-1), and the basis-registry early refusal gained the
 test that fires it (its mutation row was declared equivalent without one). See docs/dev/physics-kit.md, "Lead's review
 of wave 1".
+
+
+### D101. `fe::BasisRegistry::valid_key()`'s `||` accepted any Lagrange key regardless of order -- FOUND AND FIXED during the port, S8.3 wave 1b (2026-10-31)
+
+Found while reading the lead's review of wave 1 (docs/dev/physics-kit.md, "Lead's review of
+wave 1"), which had already worked around it (the `InvalidKeyIsRefusedBeforeTheLookup` test it
+added uses a non-Lagrange family specifically so the bug does not hide the behaviour the test
+means to check) without fixing the underlying condition itself.
+`physics-kit/src/fe/basis.cpp`'s `valid_key()` read:
+
+```cpp
+return key.family == FieldBasisFamily::LagrangeNodal || key.order <= maximum_basis_order;
+```
+
+The `||` makes the whole expression true for ANY `LagrangeNodal` key, whatever its `order` --
+the clause meant to bound order only ever applies to a NON-Lagrange family. A `BasisKey{cell,
+FieldBasisFamily::LagrangeNodal, maximum_basis_order + 1, continuity}` was therefore accepted as
+"valid" by `supports()`/`create()`'s own early check, reaching the factory-map lookup instead of
+being refused immediately; it still ultimately failed (no factory is registered for an order
+that high), but with the WRONG refusal -- "unknown basis key" rather than "invalid basis key" --
+which is a different code and, for a caller that branches on it, a different recovery path.
+
+Fixed by dropping the family clause: `return key.order <= maximum_basis_order;` -- the order
+bound applies uniformly to every family, matching KARMA's own `validate_key()` intent (the
+disjunction was not present in the upstream source; it was introduced during the wave-1 port of
+this specific function and never caught because the wave-1 test used a non-Lagrange family for
+the "early refusal" case, which the bug did not affect). Regression test:
+`physics-kit/test/fe_basis_test.cpp`'s `BasisTest.LagrangeKeyAboveMaximumOrderIsAlsoRefused`,
+added this wave -- the exact case (`LagrangeNodal`, order above the maximum) that distinguishes
+the fix from the bug, which the wave-1 test could not have caught by construction.
