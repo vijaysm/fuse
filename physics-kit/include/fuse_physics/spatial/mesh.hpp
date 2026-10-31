@@ -1,37 +1,43 @@
 #pragma once
 
-/// A native, serial, tier-0 computational mesh, adapted from the GENERIC
-/// topology surface of KARMA's karma_mesh.h/.C (docs/dev/physics-kit-
-/// disposition.md Appendix A, port-adapt, owner decision D-A).
+/// A computational mesh, adapted from the GENERIC topology surface of
+/// KARMA's karma_mesh.h/.C (docs/dev/physics-kit-disposition.md Appendix A,
+/// port-adapt, owner decision D-A).
 ///
-/// WHY NATIVE, NOT MOAB-BACKED (the gap this header names per Appendix A's
-/// own instruction: "no fuse::backend equivalent (MeshView is remap-
-/// oriented, not FE-assembly-oriented)"). KARMA's KARMAMesh owns a
-/// moab::Core, is constructed with an MPI_Comm, and most of its substance
-/// (resolve_shared_entities, ParallelComm, ghost layers, GLOBAL_ID/
-/// LOCAL_ID tags) is genuinely about a DISTRIBUTED, MOAB-backed mesh.
-/// physics-kit is tier 0 (docs/dev/physics-kit.md: nothing beyond Kokkos
-/// and fmt) and this track's own standing rules forbid MPI runs in this
-/// sandbox, so a build/test of that distributed, MOAB-bound surface is not
-/// something this wave can produce AND verify here -- not a disposition
-/// decision, a verification-budget one, named as an open gap rather than
-/// guessed at (see design_notes/open_questions for the explicit statement).
+/// WAVE 1b (owner instruction 2026-10-31): "physics-kit reaches MOAB only
+/// through fuse::backend ... exactly as the layering page says." This mesh
+/// now binds to `fuse::MeshView` (mesh_view.hpp) -- the SAME abstract
+/// interface `fuse::native::NativeMeshView` and `MoabMeshView` both
+/// implement -- rather than to MOAB directly or to the native backend's own
+/// concrete types. `from_mesh_view()` below reads ownership
+/// (`is_owned`/`owned_count`), global ids (`global_id`), and connectivity
+/// (`cell_vertices`) through that one interface, so a mesh built from
+/// `fuse::native::NativeMeshView::create_from_host()` and a (future) mesh
+/// built from a real MOAB file reach IDENTICAL physics-kit code. Partition-
+/// aware queries (owned vs ghost vertex/cell, global ids) are part of the
+/// public surface now -- the owner's own words: "Using with just
+/// MPI_COMM_SELF is dumb. This has to run in parallel to split up the
+/// compute work."
 ///
-/// What IS ported, natively: the shape of query KARMAMesh exposes that does
-/// not actually need MOAB or MPI underneath it -- element/vertex storage,
-/// side-vertex lookup in CN order (via ReferenceTopology's own side
-/// tables), neighbor-by-shared-side, boundary classification, structured-
-/// box generation, bounding box and centroid, and KARMA's own private
-/// global/local id numbering scheme (assign_ids). A FUSE_HAVE_MOAB-gated
-/// translation unit that binds this same query surface onto a real MOAB
-/// database -- so a mesh read from a .h5m/.vtk/.exo file reaches the same
-/// FEBase code this wave's own mesh does -- is future work, named here
-/// rather than attempted without MOAB/MPI to build or test it against.
+/// The self-generated box constructors (`generate_box`, 3-D Hex8;
+/// `generate_2d_box`, new this wave, 2-D Quad4) still mark every vertex and
+/// cell owned with an identity global id, matching this header's wave-1
+/// note on why that is the CORRECT numbering for a single-rank, self-
+/// generated mesh, not a simplification of a richer one.
 ///
-/// WAVE 1 SCOPE: hexahedral (Hex8) structured-box elements only
-/// (generate_box), matching this wave's ReferenceTopology/Basis coverage.
-/// karma_mesh_extract_edge.C / karma_mesh_extract_face.C (mesh_utils.hpp)
-/// are ported against this same native Mesh.
+/// STILL NATIVE AT TIER 0. Building and testing an ACTUAL multi-rank
+/// `fuse::native::NativeMeshView` or a MOAB-backed one needs MPI (MOAB
+/// itself is fine without MPI, but this tree's own tier ladder requires
+/// FUSE_ENABLE_MPI before FUSE_ENABLE_MOAB, and no MPI runs here). The
+/// tier-0 verification of `from_mesh_view` therefore uses a HAND-BUILT,
+/// two-"rank" `fuse::native::MeshArrays` fixture (via `NativeMeshBuilder`,
+/// which needs no MPI call at all: `add_vertex`/`add_cell` take `owner`/
+/// `is_owned` directly) -- see spatial_mesh_test.cpp's
+/// FromMeshViewReadsOwnershipAndGlobalIds. The genuine multi-rank case (an
+/// actual partitioned box built and exchanged across real MPI ranks) is
+/// `test/parallel/physics_mesh_mpi_test.cpp`: compiled in this tree with
+/// FUSE_ENABLE_MPI=ON, never executed in this sandbox (host_pending has the
+/// exact mpirun commands).
 
 #include <array>
 #include <cstddef>
@@ -44,13 +50,25 @@
 #include "fuse_physics/fe/reference_topology.hpp"
 #include "fuse_physics/geometry.hpp"
 
+// Forward-declared, never #included here: fuse::MeshView is fuse::backend's
+// own public type (mesh_view.hpp), and the only thing this header's public
+// API needs to name about it is a reference parameter in from_mesh_view()'s
+// declaration, which a forward declaration covers. The #include itself
+// lives in mesh.cpp, keeping this header's own third-party-header surface
+// unchanged (tools/check-layering.py's FORBIDDEN_PUBLIC rule is about
+// third-party headers specifically; fuse::MeshView is a fuse:: type, not a
+// third party, so naming it here would be fine either way -- forward
+// declaration is simply the lighter include).
+namespace fuse {
+class MeshView;
+}
+
 namespace fuse::physics::spatial {
 
 using GlobalId = std::uint64_t;
 using LocalId = std::uint64_t;
-/// An opaque per-mesh element or vertex handle. 0 is reserved as "no
-/// entity", matching KARMA's own moab::EntityHandle convention (its
-/// reinit()s and constructors refuse a zero handle).
+/// An opaque per-mesh element or vertex handle, 1-based (0 reserved as "no
+/// entity", matching KARMA's own moab::EntityHandle convention).
 using EntityHandle = std::size_t;
 
 struct SideId {
@@ -60,9 +78,11 @@ struct SideId {
   [[nodiscard]] bool operator==(const SideId&) const = default;
 };
 
-/// A native hexahedral structured-grid mesh, read/write surface restricted
-/// to what this wave's FE core and tests need. See this header's own
-/// comment for what is, and is not, ported from KARMAMesh.
+/// A mesh: vertex positions, variable-arity element connectivity (each
+/// element carries its own fe::GeometryVariant, at Lagrange order 1 --
+/// Edge2/Tri3/Quad4/Tet4/Pyramid5/Prism6/Hex8), ownership flags and global
+/// ids. Self-generated (generate_box/generate_2d_box) or read from a
+/// fuse::MeshView (from_mesh_view).
 class Mesh {
  public:
   explicit Mesh(unsigned dimension) : dimension_(dimension) {}
@@ -72,45 +92,98 @@ class Mesh {
   [[nodiscard]] std::size_t n_elements() const noexcept { return elements_.size(); }
 
   /// Generate a structured box of nx*ny*nz Hex8 elements spanning [lo,hi].
+  /// Every vertex and element is owned, with an identity global id.
   void generate_box(unsigned nx, unsigned ny, unsigned nz, const Point& lo, const Point& hi);
 
-  [[nodiscard]] unsigned n_sides(EntityHandle element) const { return fe::ReferenceTopology(fe::GeometryVariant::Hex8).side_count(); }
+  /// Generate a structured 2-D box of nx*ny Quad4 elements spanning
+  /// [lo,hi] (z ignored). New this wave: gives
+  /// `extract_boundary_edges` (mesh_utils.hpp, the karma_mesh_extract_edge.C
+  /// port) a 2-D source mesh to extract a 1-D boundary from, which did not
+  /// exist in wave 1.
+  void generate_2d_box(unsigned nx, unsigned ny, const Point& lo, const Point& hi);
+
+  /// Build from an arbitrary fuse::MeshView's TOP-dimension entities
+  /// (`view.dimension()`), reading ownership, global ids and connectivity
+  /// through the view's own abstract interface (owned_count/is_owned/
+  /// global_id/cell_vertices, mesh_view.hpp) -- works identically whether
+  /// `view` is `fuse::native::NativeMeshView` or a MOAB-backed one, since
+  /// both implement the same interface. Refuses (E-PHYSICS-MESH-CELL-SHAPE)
+  /// if a cell's own CellShape has no fe::GeometryVariant equivalent at
+  /// order 1 (Polygon, Polyhedron) -- named so the message says which shape
+  /// was rejected, not just "unsupported".
+  [[nodiscard]] static Mesh from_mesh_view(const MeshView& view);
+
+  [[nodiscard]] fe::GeometryVariant element_kind(EntityHandle element) const {
+    return element_kind_.at(element - 1);
+  }
+  [[nodiscard]] unsigned n_sides(EntityHandle element) const {
+    return fe::ReferenceTopology(element_kind(element)).side_count();
+  }
   /// Global vertex handles of one side, in the SAME CN order
-  /// ReferenceTopology::side_nodes() returns for Hex8.
+  /// ReferenceTopology::side_nodes() returns for this element's own kind.
   [[nodiscard]] std::vector<EntityHandle> side_vertices(EntityHandle element, unsigned side) const;
   [[nodiscard]] std::vector<GlobalId> canonical_side_vertex_ids(EntityHandle element, unsigned side) const;
   [[nodiscard]] std::optional<EntityHandle> neighbor(EntityHandle element, unsigned side) const;
-  [[nodiscard]] bool is_boundary_side(EntityHandle element, unsigned side) const { return !neighbor(element, side).has_value(); }
+  [[nodiscard]] bool is_boundary_side(EntityHandle element, unsigned side) const {
+    return !neighbor(element, side).has_value();
+  }
   [[nodiscard]] SideId side_id(EntityHandle element, unsigned side) const { return {element, side}; }
 
   /// KARMA numbers entities in its own private tags rather than relying on
-  /// a file-provided GLOBAL_ID (karma_mesh.h's own comment: GLOBAL_ID
-  /// belongs to the file and KARMA never writes it). This native mesh has
-  /// no file-provided numbering to preserve, so assign_ids() simply assigns
-  /// the handle itself as both global and local id -- the identity map is
-  /// the CORRECT idempotent numbering here, not a simplification of a
-  /// richer one, since every element/vertex in this mesh already has a
-  /// dense, contiguous handle by construction (generate_box's own loop
-  /// order).
+  /// a file-provided GLOBAL_ID (karma_mesh.h's own comment). A self-
+  /// generated mesh's identity numbering is assigned at construction
+  /// already; assign_ids() stays a no-op for it, matching wave 1.
   void assign_ids() noexcept {}
-  [[nodiscard]] GlobalId global_id(EntityHandle entity) const noexcept { return static_cast<GlobalId>(entity); }
+  /// Ambiguous on its own (vertex handle 5 and element handle 5 are
+  /// different entities, and a self-generated mesh gives both the same
+  /// identity id, which hid this): kept for the wave-1 call sites that
+  /// only ever used it on a self-generated mesh, where vertex and element
+  /// ids happen to coincide. A caller that can tell which space it means
+  /// -- every from_mesh_view()-sourced mesh, where the two spaces
+  /// genuinely differ -- uses vertex_global_id/element_global_id instead.
+  [[nodiscard]] GlobalId global_id(EntityHandle entity) const noexcept { return global_id_of(entity); }
+  [[nodiscard]] GlobalId vertex_global_id(EntityHandle vertex) const noexcept { return vertex_gid_.at(vertex - 1); }
+  [[nodiscard]] GlobalId element_global_id(EntityHandle element) const noexcept { return element_gid_.at(element - 1); }
   [[nodiscard]] LocalId local_id(EntityHandle entity) const noexcept { return static_cast<LocalId>(entity); }
 
+  // ---- partition-aware queries (owner instruction 2026-10-31) -----------
+  [[nodiscard]] bool is_vertex_owned(EntityHandle vertex) const noexcept { return vertex_owned_.at(vertex - 1); }
+  [[nodiscard]] bool is_element_owned(EntityHandle element) const noexcept { return element_owned_.at(element - 1); }
+  [[nodiscard]] std::size_t owned_vertex_count() const noexcept;
+  [[nodiscard]] std::size_t owned_element_count() const noexcept;
+
   /// Vertex coordinates of one element, in reference-node order; returns
-  /// the count written (8 for Hex8).
+  /// the count written.
   [[nodiscard]] std::size_t element_coordinates(EntityHandle element, std::span<Point> coordinates) const;
   [[nodiscard]] Point centroid(EntityHandle element) const;
   [[nodiscard]] std::pair<Point, Point> bounding_box() const;
 
   [[nodiscard]] const std::vector<Point>& vertex_positions() const noexcept { return vertices_; }
-  [[nodiscard]] const std::array<EntityHandle, 8>& element_connectivity(EntityHandle element) const {
+  [[nodiscard]] const std::vector<EntityHandle>& element_connectivity(EntityHandle element) const {
     return elements_.at(element - 1);
   }
 
+  /// Appends one vertex (owned, identity global id unless overridden) and
+  /// returns its handle. Exposed so mesh_utils.hpp's boundary-extraction
+  /// functions can build a lower-dimensional Mesh directly, without going
+  /// through a box generator.
+  EntityHandle add_vertex(const Point& position, bool owned = true,
+                           std::optional<GlobalId> gid = std::nullopt);
+  EntityHandle add_element(fe::GeometryVariant kind, std::vector<EntityHandle> connectivity, bool owned = true,
+                            std::optional<GlobalId> gid = std::nullopt);
+
  private:
+  [[nodiscard]] GlobalId global_id_of(EntityHandle entity) const noexcept;
+
   unsigned dimension_;
-  std::vector<Point> vertices_;                       // handle i -> vertices_[i-1]
-  std::vector<std::array<EntityHandle, 8>> elements_;  // handle i -> elements_[i-1], Hex8 connectivity
+  std::vector<Point> vertices_;
+  std::vector<bool> vertex_owned_;
+  std::vector<GlobalId> vertex_gid_;  // identity (handle) unless from_mesh_view overrides
+
+  std::vector<std::vector<EntityHandle>> elements_;
+  std::vector<fe::GeometryVariant> element_kind_;
+  std::vector<bool> element_owned_;
+  std::vector<GlobalId> element_gid_;
 };
 
 }  // namespace fuse::physics::spatial
