@@ -43,6 +43,7 @@ enum {
   FUSE_CAP_LOWFIVE = 16,  /* coupling between executables through LowFive's in-memory HDF5 path */
   FUSE_CAP_YAML = 32,  /* load_graph accepts a YAML path */
   FUSE_CAP_RESTART_FORM_B = 64,  /* save_restart_blob/load_restart_blob are real, not the default no-op (docs/dev/restart.md round 2, item 4) */
+  FUSE_CAP_ADJOINT = 128,  /* reverse mode. Reported by a provider: bind_adjoint/advance_adjoint are real, so it can reverse its own advance() under the Runner's reverse sweep. Reported by the coupler: register_adjoint_field, initialize_adjoint, view_adjoint_field, run_adjoint, begin_adjoint_step and end_adjoint_step are real (docs/dev/abi-design.md, \"Adjoint\") */
   FUSE_ABI_VERSION = 1,  /* the table version this header describes */
   FUSE_ABI_MAX_STRUCT_SIZE = 65536  /* a struct_size above this is a corrupt header, not a future one */
 };

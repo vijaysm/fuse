@@ -138,10 +138,10 @@ TEST(AbiGolden, NoStructHasTrailingPaddingALaterMemberCouldHide) {
   FUSE_NO_TRAILING_PADDING(fuse_ongoing, next_component);
   FUSE_NO_TRAILING_PADDING(fuse_run_request, periods);
   FUSE_NO_TRAILING_PADDING(fuse_base_communicator_info, reserved);
-  FUSE_NO_TRAILING_PADDING(fuse_participant_abi_v1, request_restart_point);
+  FUSE_NO_TRAILING_PADDING(fuse_participant_abi_v1, end_adjoint_step);
   FUSE_NO_TRAILING_PADDING(fuse_field_spec, gradient_size);
   FUSE_NO_TRAILING_PADDING(fuse_field_table, written);
   FUSE_NO_TRAILING_PADDING(fuse_provider_instance, self);
-  FUSE_NO_TRAILING_PADDING(fuse_provider_abi_v1, load_restart_blob);
+  FUSE_NO_TRAILING_PADDING(fuse_provider_abi_v1, advance_adjoint);
 }
 #undef FUSE_NO_TRAILING_PADDING

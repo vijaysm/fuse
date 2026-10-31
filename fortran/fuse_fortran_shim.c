@@ -138,3 +138,39 @@ FUSE_FORTRAN_EXPORT fuse_status ffuse_request_restart_point(fuse_ctx* ctx, const
   if (!table || !table->request_restart_point) return FUSE_ERR_UNSUPPORTED;
   return table->request_restart_point(ctx, in, out);
 }
+
+FUSE_FORTRAN_EXPORT fuse_status ffuse_register_adjoint_field(fuse_ctx* ctx, const fuse_field_view* in, fuse_null* out) {
+  const fuse_participant_abi_v1* table = fuse_fortran_shim_table();
+  if (!table || !table->register_adjoint_field) return FUSE_ERR_UNSUPPORTED;
+  return table->register_adjoint_field(ctx, in, out);
+}
+
+FUSE_FORTRAN_EXPORT fuse_status ffuse_initialize_adjoint(fuse_ctx* ctx, const fuse_null* in, fuse_null* out) {
+  const fuse_participant_abi_v1* table = fuse_fortran_shim_table();
+  if (!table || !table->initialize_adjoint) return FUSE_ERR_UNSUPPORTED;
+  return table->initialize_adjoint(ctx, in, out);
+}
+
+FUSE_FORTRAN_EXPORT fuse_status ffuse_view_adjoint_field(fuse_ctx* ctx, const fuse_field_ref* in, fuse_field_view* out) {
+  const fuse_participant_abi_v1* table = fuse_fortran_shim_table();
+  if (!table || !table->view_adjoint_field) return FUSE_ERR_UNSUPPORTED;
+  return table->view_adjoint_field(ctx, in, out);
+}
+
+FUSE_FORTRAN_EXPORT fuse_status ffuse_run_adjoint(fuse_ctx* ctx, const fuse_run_request* in, fuse_null* out) {
+  const fuse_participant_abi_v1* table = fuse_fortran_shim_table();
+  if (!table || !table->run_adjoint) return FUSE_ERR_UNSUPPORTED;
+  return table->run_adjoint(ctx, in, out);
+}
+
+FUSE_FORTRAN_EXPORT fuse_status ffuse_begin_adjoint_step(fuse_ctx* ctx, const fuse_step_request* in, fuse_step_report* out) {
+  const fuse_participant_abi_v1* table = fuse_fortran_shim_table();
+  if (!table || !table->begin_adjoint_step) return FUSE_ERR_UNSUPPORTED;
+  return table->begin_adjoint_step(ctx, in, out);
+}
+
+FUSE_FORTRAN_EXPORT fuse_status ffuse_end_adjoint_step(fuse_ctx* ctx, const fuse_step_request* in, fuse_step_report* out) {
+  const fuse_participant_abi_v1* table = fuse_fortran_shim_table();
+  if (!table || !table->end_adjoint_step) return FUSE_ERR_UNSUPPORTED;
+  return table->end_adjoint_step(ctx, in, out);
+}
