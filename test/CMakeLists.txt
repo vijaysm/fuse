@@ -300,7 +300,15 @@ endfunction()
 # MOAB rows where the build registers twelve), which is exactly the kind of
 # gap that makes a selector read as coverage it does not have.
 function(fuse_add_mpi_test layer name)
-  cmake_parse_arguments(ARG "DEVICE_TWIN" "" "LIBS;RANKS;LABELS" ${ARGN})
+  # SRC_DIR: the directory holding <name>_test.cpp when it is not <layer>/ --
+  # physics-kit/test/ registers its own MPI rows through this function with
+  # SRC_DIR., the same option fuse_add_gtest has.
+  cmake_parse_arguments(ARG "DEVICE_TWIN" "SRC_DIR" "LIBS;RANKS;LABELS" ${ARGN})
+  if(ARG_SRC_DIR)
+    set(_fuse_mpi_src_dir "${ARG_SRC_DIR}")
+  else()
+    set(_fuse_mpi_src_dir "${layer}")
+  endif()
   if(NOT ARG_RANKS)
     # 1 included deliberately (build-evidence/parallel-matrix.toml row
     # A-RANKS). A single task is not a trivial case of the others: every match
@@ -312,8 +320,8 @@ function(fuse_add_mpi_test layer name)
     set(ARG_RANKS 1 2 3 4 5)
   endif()
   set(target fuse_${layer}_${name}_test)
-  add_executable(${target} ${layer}/${name}_test.cpp)
-  fuse_record_test_source(${layer}/${name}_test.cpp)
+  add_executable(${target} ${_fuse_mpi_src_dir}/${name}_test.cpp)
+  fuse_record_test_source(${_fuse_mpi_src_dir}/${name}_test.cpp)
   target_link_libraries(${target} PRIVATE fuse_test_main ${ARG_LIBS})
   target_compile_definitions(${target} PRIVATE FUSE_TEST_GOLDEN_DIR="${FUSE_TEST_GOLDEN_DIR}"
                                              FUSE_TEST_DATA_DIR="${FUSE_TEST_DATA_DIR}")
@@ -1599,6 +1607,7 @@ fuse_tests_gated_by(FUSE_ENABLE_MPI parallel/field_transaction_mpi_test.cpp)
 if(FUSE_ENABLE_MPI)
   fuse_add_mpi_test(parallel field_transaction_mpi LIBS fuse::field RANKS 2 3)
 endif()
+
 fuse_add_gtest(num space_kernels)
 fuse_add_omp_legs(num.space_kernels fuse_num_space_kernels_test)
 
