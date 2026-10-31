@@ -14,13 +14,15 @@
 /// mesh type supplies the coordinates -- fuse_physics::fe::FEBase
 /// (fe_base.hpp) does exactly that against fuse_physics::spatial::Mesh.
 ///
-/// SCOPE: the five CellFamily values reference_topology.hpp
-/// implements. The quad4 affine fast path and the MBPYRAMID-specific
-/// collapsed-coordinate validation sampling KARMA's own geometry_map.C
-/// carries are both pyramid/prism-adjacent optimisations this wave's
-/// scope does not need; the quad4 affine cache IS ported (sees real use:
-/// every structured-grid quad element is affine) but the pyramid sampling
-/// path is not (no pyramid variant exists to sample).
+/// SCOPE: all seven CellFamily values reference_topology.hpp
+/// implements, including Prism and Pyramid (
+/// 2026-10-31, item 1). The quad4 affine fast path (every structured-
+/// grid quad element is affine) stays Quad4-only (no analogous affine
+/// case exists for a 3-D cell in this wave's own generator). Pyramid's
+/// own carve-outs are now in scope and ported: in_reference_cell's
+/// taper condition (non-box reference cell), the matching sampling-grid
+/// bounds in validate(), and inverse_map's apex fast path -- all in
+/// geometry_map.cpp, each citing the KARMA source line it reproduces.
 
 #include <array>
 #include <cstddef>
