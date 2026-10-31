@@ -28,10 +28,14 @@
 /// domains"). See quadrature.cpp's header comment for the recurrence-
 /// coefficient formulas used.
 ///
-/// WAVE 1 SCOPE. Edge, triangle, quadrilateral, tetrahedron and hexahedron
-/// (CellFamily, reference_topology.hpp) at any requested polynomial degree.
-/// Prism and pyramid are not implemented (reference_topology.hpp's own
-/// scope note); a request for one refuses.
+/// WAVE 1b SCOPE. Edge, triangle, quadrilateral, tetrahedron, hexahedron,
+/// prism and pyramid (CellFamily, reference_topology.hpp) at any
+/// requested polynomial degree. Prism is a triangle-base x line tensor
+/// product (its own Gauss-Jacobi(1) triangle axis plus a plain
+/// Gauss-Legendre axial line); pyramid is the single-collapse
+/// Gauss-Jacobi(alpha=2) construction (owner instruction 2026-10-31, item
+/// 1) -- see quadrature.cpp's Prism/Pyramid cases for the Jacobian
+/// derivation of each.
 
 #include <cstddef>
 #include <span>
