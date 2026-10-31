@@ -35,6 +35,16 @@
 /// below is read from the SAME quoted shape fuse::CoupledValue will have.
 namespace fuse::num {
 
+/// Refusal codes shared by every `Integrator<Value>` family (Round 2: moved here from
+/// `explicit_integrator.hpp`, which defined them first, so `DirkIntegrator`/
+/// `RosenbrockIntegrator` can refuse the SAME named conditions without a duplicate
+/// symbol definition -- `kMassUnsupportedCode` stays local to `explicit_integrator.hpp`
+/// since only the explicit family actually refuses on a mass matrix; DIRK and
+/// Rosenbrock both honour `TemporalProblem::mass` instead (task item 2/3)).
+inline constexpr const char* kNoRhsCode = "E-INTEGRATOR-NO-RHS";
+inline constexpr const char* kWrongFamilyCode = "E-INTEGRATOR-WRONG-FAMILY";
+inline constexpr const char* kDimensionMismatchCode = "E-INTEGRATOR-DIMENSION-MISMATCH";
+
 /// Primary template: T IS its own scalar type (the case for `double`/`float` -- the
 /// only case this checkout can exercise). Specialised for `dual<S, N>` once
 /// fuse/num/dual.hpp lands, mirroring `value_traits<T>::scalar_type`'s own convention
