@@ -2697,7 +2697,7 @@ fuse_status impl_run(fuse_ctx* ctx, const fuse_run_request* in, fuse_null* out) 
 
 // ----------------------------------------------------------- the table
 
-// Member-count cross-check (abi-design.md point 5 / task instructions):
+// Member-count cross-check (abi-design.md point 5):
 // counts FUSE_ABI_ENTRY expansions in entries.def independently of the
 // table initialiser below, so a hand-edited participant.h that silently
 // drops or duplicates an entry is caught here at compile time rather than

@@ -378,7 +378,7 @@ function(fuse_add_mpi_test layer name)
   # DEVICE_TWIN (docs/dev/device-resident-arcs.md): re-registers
   # this row under FUSE_EXECUTION_SPACE=device at 1, 2 and 3 ranks --
   # several ranks sharing however many devices this build's Kokkos reports
-  # (one, on higgs; fuse::abi::resolve_device_id() is what maps a local
+  # (one, on the CUDA host; fuse::abi::resolve_device_id() is what maps a local
   # rank onto one when there are fewer devices than ranks). Absent, not
   # skipped, on a build with no device backend (fuse_add_device_twin's own
   # FUSE_KOKKOS_HAS_DEVICE guard, reused here) and at a rank count this
@@ -1773,7 +1773,7 @@ if(FUSE_LINALG_BACKEND_IS_EIGEN)
     target_include_directories(fuse_verification_${t}_test PRIVATE
       ${CMAKE_SOURCE_DIR}/examples/brusselator)
   endforeach()
-  # Measured on higgs (Debug, device interpreter, machine loaded by three
+  # Measured on a CUDA host (Debug, device interpreter, machine loaded by three
   # concurrent builds): the first two cases alone took 57 min, so the twin's
   # timeout is three hours; the window-scoped region still stages every arc per
   # instruction (docs/dev/device-resident-arcs.md, step 3), which is what makes

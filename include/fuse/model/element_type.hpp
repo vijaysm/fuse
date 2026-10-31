@@ -40,7 +40,7 @@
 
 /// Set when THIS translation unit can use the native `_Float16`. The host
 /// compiler's `__FLT16_MANT_DIG__` is necessary but not sufficient: nvcc's
-/// front end (CUDA 12.5, measured on higgs) accepts the type in a type
+/// front end (CUDA 12.5, measured) accepts the type in a type
 /// trait but fails with an internal compiler error ("unsupported float
 /// variant") as soon as a value of that type is formed, so a translation
 /// unit compiled by nvcc never sees the `_Float16` specialisations below.

@@ -110,7 +110,7 @@ TEST(SearchDistributedMpi, MatchesSerialOnTheGatheredInput) {
   }
 }
 
-// Determinism (task requirement): hits within one query, sorted by
+// Determinism: hits within one query, sorted by
 // (rank, index) -- checked directly, independent of what the values are.
 TEST(SearchDistributedMpi, HitsWithinOneQuerySortedByRankThenIndex) {
   const auto boxes = global_boxes();

@@ -6,8 +6,8 @@
 // acceleration. The physics, the analytic solution and the reason the error is
 // attributable to the coupler are all in dn_component.hpp.
 //
-// WHAT THIS BINARY IS FOR. An example that merely runs proves nothing. Task
-// 4.7's demo printed an authoritative-looking "L2 error 1.30e-06" that was
+// WHAT THIS BINARY IS FOR. An example that merely runs proves nothing. An
+// earlier demo printed an authoritative-looking "L2 error 1.30e-06" that was
 // completely insensitive to whether the coupling happened at all, because the
 // component it measured had been accidentally uncoupled. This one therefore
 // runs the SAME graph in several configurations and gates its exit status on

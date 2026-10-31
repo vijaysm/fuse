@@ -20,9 +20,9 @@ namespace fuse::abi_detail {
 ///
 /// WHY DUPLICATED, NOT REUSED. `native_backend.hpp` pulls in Kokkos
 /// (`native_mesh.hpp`'s own `MeshArrays<Kokkos::HostSpace>`) -- a
-/// dependency `src/abi/provider_adapter.cpp` has never needed, and this
-/// round's own task explicitly excludes touching `src/backend` to factor
-/// a shared, Kokkos-free primitive out of `rank_slice` instead. The
+/// dependency `src/abi/provider_adapter.cpp` has never needed, and
+/// a shared, Kokkos-free primitive factored out of `rank_slice` is not in
+/// place. The
 /// formula is reproduced EXACTLY (`rank_slice`'s own two branches,
 /// `position < extra` taking one extra element), not approximated; `0`
 /// and `1` `group_size` both degenerate to the whole range, matching

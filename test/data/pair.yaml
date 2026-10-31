@@ -1,12 +1,11 @@
-# R14: this fixture is YAML-round-trip / initialize()-only, and is NOT a
+# This fixture is YAML-round-trip / initialize()-only, and is NOT a
 # runnable graph. The "flux" channel below sets both `accumulate: {op: Mean}`
 # and a `spacetime:` basis on the same channel, which `schedule()` refuses
 # with E-SCHED-SPACETIME (two temporal operators on one channel -- see
 # src/schedule/expand.cpp and SpacetimeRefusal.AccumulationCombinedWith-
 # SpacetimeIsRejected in test/unit/spacetime_runtime_test.cpp for the same
 # rule exercised directly). Every current caller of this file (grepped across
-# test/, python/, src/ -- see the R14 investigation this comment accompanies)
-# stops at load()/parse()/initialize()/begin_step()/end_step(): the C ABI's
+# test/, python/, src/) stops at load()/parse()/initialize()/begin_step()/end_step(): the C ABI's
 # soma_initialize() (used by the C, Fortran and Python `Context` tests) never
 # calls soma::schedule() at all, and the C++/Python paths that DO call
 # schedule() (Runner, Session) never load this file. If you are adding a

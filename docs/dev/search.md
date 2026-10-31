@@ -232,7 +232,7 @@ checks.
   tests, not a regression introduced here), so no MPI test in this repository has ever produced a
   pass/fail verdict from inside it. Its verdict comes from a host run.
 * **Compiled and run here (Tier 0, device)**: `BoxIndex::build`/`query_points`/`query_nearest` on
-  `Kokkos::DefaultExecutionSpace` (Cuda on higgs's build), compared value-for-value against the Host
+  `Kokkos::DefaultExecutionSpace` (Cuda on a CUDA build), compared value-for-value against the Host
   build in the same process (`box_index_test.cpp`'s `DeviceBuildMatchesHostBuildForPointAndNearestQueries`),
   plus the `Kokkos::View`-based build/query overloads end to end against the `std::vector`-based
   result on the same index (`ViewBasedBuildAndQueryMatchVectorBasedOnTheSameIndex`). Every existing

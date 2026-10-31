@@ -266,7 +266,7 @@ CouplingGraph make_graph(AccelConfig accel, int max_iters,
   // Grouped by owner. `to_yaml` nests a field inside its component, so an
   // interleaved declaration order does not survive the YAML round trip as
   // identical FieldIds -- a pre-existing property of the schema, not of this
-  // task, but one the structural comparison below would trip over.
+  // test, but one the structural comparison below would trip over.
   const auto a_out = g.add_field(ca, fuse::FieldSpec{
       .name = "a_out", .region = r1, .units = u::kKelvin,
       .intent = fuse::Intent::Provides});

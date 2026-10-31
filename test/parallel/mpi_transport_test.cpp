@@ -1028,7 +1028,7 @@ TEST(MpiTransportThroughRunner, PlanningTheRunnersOwnSpecIsRefusedForNoRanks) {
 // Route 2: plan a pattern MpiTransport accepts. initialize() now succeeds --
 // so the hook is genuinely wired -- and the run fails at the FIRST Transport
 // instruction, because the spec the Runner hands prepare() is not the one that
-// was planned. This is the whole of R5's answer: there is no argument to
+// was planned. There is no argument to
 // build_plan() for which this path moves data, and the missing piece is on the
 // Runner's side, in resolve_instructions().
 TEST(MpiTransportThroughRunner, APlannableSpecStillCannotSurvivePrepare) {
@@ -1054,7 +1054,7 @@ TEST(MpiTransportThroughRunner, APlannableSpecStillCannotSurvivePrepare) {
   const auto run = runner.run_period(h->components);
   ASSERT_FALSE(run.ok())
       << "if this ever passes, resolve_instructions() has started to populate "
-         "TransportSpec::src_ranks/dst_ranks/global_ids and R5 is closed -- "
+         "TransportSpec::src_ranks/dst_ranks/global_ids and the gap is closed -- "
          "turn this test into the data-movement check it should have been";
   // One code, two reasons, depending on the rank. On ranks 0 and 1 the planned
   // spec named rank sets and the Runner's does not, so the src_ranks/dst_ranks
@@ -1071,7 +1071,7 @@ TEST(MpiTransportThroughRunner, APlannableSpecStillCannotSurvivePrepare) {
   ASSERT_NE(consumer, nullptr);
   for (const double v : consumer->data()) EXPECT_DOUBLE_EQ(v, 0.0);
 
-  std::printf("[hook rank %d/%d] R5: MpiTransport planned, Runner ran, "
+  std::printf("[hook rank %d/%d] MpiTransport planned, Runner ran, "
               "prepare() rejected the Runner's spec with %s -- the hook is "
               "wired but the spec is not\n",
               rank, world_size(), run.error().code.c_str());
@@ -1273,7 +1273,7 @@ TEST(MpiTransportPeers, DeliversWhatTheMatchedPlanDeliversOnADisjointPattern) {
 }
 
 TEST(MpiTransportPeers, DeliversUnderPartialOverlap) {
-  // THE CASE THE MATCHED PATH CANNOT EXPRESS, and the reason R31 was open:
+  // THE CASE THE MATCHED PATH CANNOT EXPRESS, and the reason the peer-wise plan exists:
   // every rank is both a source and a destination, so one global_ids list per
   // rank cannot say which role an entry plays. Each rank ends up with a mix of
   // values received from peers and values copied locally.
