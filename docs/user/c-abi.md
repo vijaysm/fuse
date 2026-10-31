@@ -259,6 +259,12 @@ process of the communicator (or of the component) must make the call.
 | `view_field` | `fuse_field_ref` → `fuse_field_view` | Loaded or later | FUSE's own view of a field's storage, including window buffers (`E-ABI-VIEW-FIELD-HANDLE`, `FUSE_ERR_NOTFOUND`) |
 | `base_communicator` | `fuse_null` → `fuse_base_communicator_info` | any; local | the base communicator `setup()` formed, and whether one was formed |
 | `request_restart_point` | `fuse_null` → `fuse_null` | Initialized | raises a flag asking for a restart point; no effect before `initialize` |
+| `register_adjoint_field` | `fuse_field_view` -> `fuse_null` | Initialized, before `initialize_adjoint` | binds your adjoint array for a field of a component you drive (`E-ABI-ADJOINT-REGISTER-{STATE,ELEMENT,MEMSPACE,HANDLE,OWNER,FIELD,LAYOUT,NULL,DUPLICATE}`); see [Reverse mode](#reverse-mode) |
+| `initialize_adjoint` | `fuse_null` -> `fuse_null` | Initialized; collective | checks the run can be reversed and allocates the adjoint arrays FUSE owns (`E-ABI-ADJOINT-STATE`, `E-ADJ-*`) |
+| `view_adjoint_field` | `fuse_field_ref` -> `fuse_field_view` | after `initialize_adjoint` | the adjoint array of a field: yours, or FUSE's own for a plugin's field (`E-ABI-ADJOINT-STATE`) |
+| `run_adjoint` | `fuse_run_request` -> `fuse_null` | after `initialize_adjoint`; collective | reverses `periods` forward periods, newest first (`-1`: every period not yet reversed); refused where a component you drive is hosted (`E-ABI-RUN-EXTERNAL`, `E-ADJ-ORDER`) |
+| `begin_adjoint_step` | `fuse_step_request` -> `fuse_step_report` | after `initialize_adjoint`; collective over the component | returns at the newest step of the named component not yet reversed, with the adjoint of its exports current (`E-ABI-STEP-{ORDER,ALREADY-OPEN}`) |
+| `end_adjoint_step` | `fuse_step_request` -> `fuse_step_report` | after `begin_adjoint_step`; collective over the component | reverses everything below that step, up to the next step you drive or the start of the period (`E-ABI-STEP-NOT-OPEN`) |
 
 Field intents and the other enumerators are defined in `fuse/abi/types.h`:
 `FUSE_ELEMENT_{F64,I64,F32,BF16,F16,DD,QD,POSIT16,POSIT32}`, `FUSE_MEMSPACE_{HOST,DEVICE}`,
@@ -551,9 +557,70 @@ produce a restart file; restart-to-disk is available to C++ programs that own a 
 ([](restart.md)) and, on the provider side, through `save_restart_blob`/`load_restart_blob`
 ([](providers.md)).
 
+## Reverse mode
+
+A run can be differentiated in reverse mode: the derivative of one scalar of the final state with
+respect to every entry of the initial state, in one reverse pass over the periods the run took, however
+many entries there are. FUSE supplies the adjoint of every coupling operator it applies (the transpose
+of a remap, the factor of a unit conversion, the fan-out of a sum); each component supplies the
+adjoint of its own step. For a component you drive, that is your code, and what crosses this interface
+is arrays of binary64 adjoint variables, one per field, laid out as the field itself. The adjoint array
+`Fbar` of a field F holds the derivative of the scalar with respect to each entry of F.
+
+The sequence, after the forward run (`begin_step`/`end_step` or `run`) for the periods to reverse:
+
+1. `register_adjoint_field` once for each field of each component you drive, with the layout of the
+   array you gave `register_field` for it (`count`, `components`, `stride`, `component_stride`) and
+   `FUSE_ELEMENT_F64` values in host memory. A field of a component FUSE hosts, a provider plugin's,
+   has its adjoint array allocated by FUSE: do not register one (`E-ABI-ADJOINT-REGISTER-OWNER`).
+2. `initialize_adjoint` (collective). It refuses, by name, a run it cannot reverse: a field of one of
+   your components with no adjoint array (`E-ADJ-UNBOUND`), a component with none at all
+   (`E-ADJ-COMPONENT`), a plugin that does not offer the adjoint (`E-ADJ-COMPONENT`), an operator with
+   no adjoint, fields that are not binary64, and the other cases listed in the design note
+   ([](../dev/adjoint-schedule.md)).
+3. Seed: write the adjoint of the final state into the adjoint arrays, through the arrays you
+   registered or through `view_adjoint_field` for a plugin's.
+4. Reverse the periods, newest first. With nothing driven by you on this process, `run_adjoint`
+   (`periods = -1` for every period not yet reversed). Otherwise, for each period, take the steps in
+   the reverse of the order `begin_step` named them, each as
+
+   ```c
+   fuse_begin_adjoint_step(ctx, "q", &report);   /* the adjoint of what q exported is current */
+   /* reverse q's step in the adjoint arrays you registered */
+   fuse_end_adjoint_step(ctx, "q", &report);     /* everything below q's step is reversed */
+   ```
+
+   `report.next_component` after `end_adjoint_step` names the next component to reverse in the same
+   period, or is `-1` when the period is reversed and the next `begin_adjoint_step` opens the one
+   before it. The reports of the forward and reverse steps agree exactly: the window, `step` and
+   `iteration` of a reverse step are those of the forward step it reverses.
+5. Read the adjoint of the initial state from the adjoint arrays.
+
+**What your reverse step does.** On entry to a reverse step, for a field the component provides, the
+adjoint array holds the adjoint of the field as the step left it, to which FUSE has already added the
+adjoint of every read of it at or after the end of that step; on return it must hold the adjoint as it
+was before the step (the forward step overwrote the field, so the reverse step overwrites the array).
+For a field the component requires, the reverse step **adds** to the array the adjoint of every value
+it read during the step, and must not overwrite what is there: a field read by several steps between
+two deliveries gets one contribution from each, and FUSE consumes it, setting it to zero, when it
+reverses the delivery. The step must keep whatever forward values its adjoint needs (a tape, a
+checkpoint, nothing at all for a linear step): FUSE stores none. `test/abi/fortran/adjoint_consumer.f90`
+and `test/abi/adjoint_participant_test.cpp` are complete examples.
+
+**What is reversed.** Everything the forward run applies between the steps, host and device execution
+of the Runner, iteration regions solved by a fixed point on one process, transports between ranks, and
+the plugins of the graph. Not reversed, and refused by name: regions solved by Newton's method or
+scoped to a time window or spanning ranks, minimum and maximum accumulation, space-time
+interpolation, a distributed nodal remap, fields of the storage and arithmetic element types, a
+component you drive inside an iteration region (`E-ADJ-REGION`), and a plugin field in device memory
+(`E-ADJ-SPACE`). `run_period_adjoint` of a graph with a component you drive is refused
+(`E-ADJ-EXTERNAL`) at the C++ level; here that is `E-ABI-RUN-EXTERNAL` from `run_adjoint`. The adjoint
+of a provider plugin is described in [](providers.md#adjoint-of-a-plugin).
+
 ## What `capabilities()` reports
 
-`capabilities(NULL, NULL, &caps)` reports `FUSE_CAP_YAML`, plus `FUSE_CAP_MPI` when the library was
+`capabilities(NULL, NULL, &caps)` reports `FUSE_CAP_YAML` and `FUSE_CAP_ADJOINT` (the six reverse mode
+entries above are real), plus `FUSE_CAP_MPI` when the library was
 built with MPI. It reports nothing else: `FUSE_CAP_MPI_CONNECT`, `FUSE_CAP_CHECKPOINT`,
 `FUSE_CAP_DEVICE_FIELDS` and `FUSE_CAP_LOWFIVE` are never set by this table, although MPMD and
 connect launches work through `setup().my_component` and iteration regions work through
@@ -592,7 +659,7 @@ Current sizes of the structs this page discusses (`test/abi/struct_sizes.golden`
 
 | Struct | `sizeof` |
 |---|---|
-| `fuse_participant_abi_v1` | 152 |
+| `fuse_participant_abi_v1` | 200 |
 | `fuse_step_request` | 72 |
 | `fuse_step_report` | 104 |
 | `fuse_ongoing` | 40 |
@@ -661,7 +728,12 @@ as the table, so the two cannot disagree. See [](fortran.md).
 - Without an `end_time`, `is_coupling_ongoing` never reports `0`; the caller bounds the run.
 - `request_restart_point` only raises a flag; no entry of this table writes or reads a restart
   file.
-- `capabilities()` reports only `FUSE_CAP_YAML` and `FUSE_CAP_MPI`.
+- `capabilities()` reports only `FUSE_CAP_YAML`, `FUSE_CAP_ADJOINT` and `FUSE_CAP_MPI`.
+- Reverse mode: adjoint arrays are `FUSE_ELEMENT_F64` in host memory (`E-ABI-ADJOINT-REGISTER-ELEMENT`,
+  `-MEMSPACE`); the periods are reversed newest first, once each, and a forward period between two
+  reverse calls is refused (`E-ADJ-ORDER`); a component you drive inside an iteration region cannot
+  be reversed (`E-ADJ-REGION`); the reverse of a graph with a distributed nodal remap is refused
+  (`E-ADJ-NODAL-DIST`).
 - Kokkos is initialised once per process; the device comes from `KOKKOS_DEVICE_ID` or the rank.
 - A native C++ `fuse::Component` cannot be added to a context created through this table; the
   components of an ABI context are externally driven participants and plugins.

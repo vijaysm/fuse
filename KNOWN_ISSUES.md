@@ -13466,34 +13466,45 @@ before it runs. Tests: `ArithmeticFieldRunner.AnIterationRegionOverAnArithmeticF
 (`test/runtime/arithmetic_field_runner_test.cpp`).
 
 
-### D102. Reverse mode (the adjoint schedule) covers binary64 fields: iteration regions, time histories, minimum and maximum accumulation, the distributed nodal remap, a LowFive transport, dd/qd/Storage fields and components behind the C ABI are refused or absent -- OPEN by design, 2026-10-30 (number-types track, stage U6)
+### D102. Reverse mode (the adjoint schedule) covers binary64 fields: Newton and time-window regions, regions across ranks, time histories, minimum and maximum accumulation, the distributed nodal remap, a LowFive transport, dd/qd/Storage fields, device fields of a plugin and any Python entry point are refused or absent -- OPEN by design, 2026-10-30 (number-types track, stage U6)
 
 **What happens.** `Runner::initialize_adjoint()` (`src/runtime/runner_adjoint.cpp`) refuses by name, with an
-`E-ADJ-*` code, a plan that has an iteration region (`E-ADJ-REGION`), a minimum or maximum accumulation
+`E-ADJ-*` code, an iteration region solved by Newton's method, scoped to a time window or spanning ranks
+(`E-ADJ-REGION`; an ordinary region is reversed as the fixed point it converged to, and an adjoint
+iteration that does not converge is `E-ADJ-REGION-NOCONVERGE`), a minimum or maximum accumulation
 (`E-ADJ-ACCUM`), a space-time Sample or Interpolate (`E-ADJ-SPACETIME`), a Transport between processes
 whose backend has no adjoint (`E-ADJ-TRANSPORT`; copy and MPI have one), a distributed nodal Remap
 (`E-ADJ-NODAL-DIST`), a field of an Arithmetic or Storage
 value type (`E-ADJ-FIELD-TYPE`), an adjoint array in a different memory space than its field
 (`E-ADJ-SPACE`), an instruction with no adjoint such as Relax or Residual (`E-ADJ-OP`) and a component without an
-`AdjointComponent` (`E-ADJ-COMPONENT`). A component behind the C ABI, Fortran or Python has no
-`advance_adjoint` entry point at all, so it cannot take part. Every plan the refusals let through is
+`AdjointComponent` (`E-ADJ-COMPONENT`). Through the C ABI and Fortran a component takes part in two
+ways: a provider plugin that sets `FUSE_CAP_ADJOINT` and fills `bind_adjoint`/`advance_adjoint`, and a
+participant the caller drives that registers its adjoint arrays and reverses its own steps between
+`begin_adjoint_step` and `end_adjoint_step`; what those two leave out is a plugin or participant field
+in device memory or of a storage or arithmetic element type, a participant step inside an iteration
+region (`E-ADJ-REGION`), a Fortran plugin example, and any test of the participant entries under MPI
+(the entries use the forward entries' collective agreement and no run exercised it). Python has no
+entry point at all. Every plan the refusals let through is
 reversed exactly: the adjoint identity holds within the derivative gate's bound for every case in
-`test/runtime/adjoint_runner_test.cpp`.
+`test/runtime/adjoint_runner_test.cpp`, `test/abi/adjoint_provider_test.cpp`,
+`test/abi/adjoint_participant_test.cpp` and `test/abi/adjoint_plugin_test.cpp`.
 
 **Why it is not fixed here.** Each excluded item is its own piece of work and none is data movement alone.
-A fixed-point iteration is differentiated implicitly (a linear solve with the transposed interface
-Jacobian) or by unrolling the sweeps, which needs every sweep's forward values; a minimum or maximum
+A Newton solve is differentiated by a linear solve with the transposed interface Jacobian, a time-window
+region by a waveform iteration, and a region across ranks needs the ranks to agree on each pass of the
+adjoint iteration; a minimum or maximum
 needs to know which sample was picked, and the coupler keeps no forward values; the adjoint of the
 distributed nodal remap (`apply_distributed_HT` where the forward run applied `H`) cannot be checked
 while its forward test fails on higgs -- `parallel.nodal_remap_runner.{1..5}` and `.1` to `.3` on the
 device give `E-RT-CONSERVATION: relative conservation error 0.909091 (integral 11.000000 -> 1.000000)`
 at 8820aed2, a main commit before any number-type change, and again at the head of the number-types branch (the 2026-10-20
-host run recorded above has them passing; the cause was not investigated); and an entry point in the C ABI is a change to `entries.def`, the generated header, the Fortran
-module and the conformance suite.
+host run recorded above has them passing; the cause was not investigated); a field in device memory of a plugin needs a device
+adjoint view handed through `bind_adjoint` and a fence after `advance_adjoint`, and a storage or
+arithmetic element type needs the Runner's own reverse for those types first.
 
 **What to do meanwhile.** Differentiate a coupling that is binary64, in host or device memory, in one process
 or across ranks through the copy or MPI transport (the exchange is reversed and tested at 2 and 3 ranks), with
 sum, mean, integral or instant accumulation, remap, unit conversion and merge; take the derivative through
-an iteration region by differentiating the converged fixed point yourself (implicit function theorem) and
-hand the result to the component as the adjoint of its step. Tests: `RuntimeAdjoint.Refuses*`
+a Newton or window region, or a region across ranks, by differentiating the converged fixed point yourself
+(implicit function theorem) and hand the result to the component as the adjoint of its step. Tests: `RuntimeAdjoint.Refuses*`
 (`test/runtime/adjoint_runner_test.cpp`). Design and evidence: `docs/dev/adjoint-schedule.md`.

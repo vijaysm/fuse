@@ -108,6 +108,8 @@ typedef struct fuse_provider_abi_v1 {
   fuse_status (*capabilities)(fuse_provider_ctx* self, const fuse_null* in, fuse_capability_set* out);
   fuse_status (*save_restart_blob)(fuse_provider_ctx* self, const fuse_null* in, fuse_restart_blob_sink* out);
   fuse_status (*load_restart_blob)(fuse_provider_ctx* self, const fuse_restart_blob_source* in, fuse_null* out);
+  fuse_status (*bind_adjoint)(fuse_provider_ctx* self, const fuse_field_view* in, fuse_null* out);
+  fuse_status (*advance_adjoint)(fuse_provider_ctx* self, const fuse_step_request* in, fuse_step_report* out);
 } fuse_provider_abi_v1;
 ```
 
@@ -115,8 +117,11 @@ Every member has the shape `fuse_status f(fuse_provider_ctx* self, const IN* in,
 same rule as the participant table, with `self` (your own opaque instance, `create()`'s output)
 taking the `ctx` slot. `self` is a different C type from the participant direction's `fuse_ctx*`,
 so the two tables' handles cannot be passed to each other by accident. `struct_size` and
-`abi_version` must be filled in: `sizeof(fuse_provider_abi_v1)` (96 on a 64-bit platform) and
-`FUSE_ABI_VERSION`.
+`abi_version` must be filled in: `sizeof(fuse_provider_abi_v1)` (112 on a 64-bit platform) and
+`FUSE_ABI_VERSION`. A plugin built against the header from before `bind_adjoint` and
+`advance_adjoint` were appended has a table of 96 bytes that ends at `load_restart_blob`; FUSE accepts
+it, reads no entry past its `struct_size`, and treats the plugin as offering no adjoint. A table
+shorter than 96 bytes is refused (`E-ABI-VERSION`).
 
 | Entry | Required | Called |
 |---|---|---|
@@ -129,6 +134,7 @@ so the two tables' handles cannot be passed to each other by accident. `struct_s
 | `save_state`, `restore_state` | no | by iteration regions, when `capabilities` reports `FUSE_CAP_CHECKPOINT` |
 | `capabilities` | no | once, after `create` |
 | `save_restart_blob`, `load_restart_blob` | no | by restart-to-disk; see [Restart blobs](#restart-blobs) |
+| `bind_adjoint`, `advance_adjoint` | no | by the reverse sweep, when `capabilities` reports `FUSE_CAP_ADJOINT`; see [Adjoint of a plugin](#adjoint-of-a-plugin) |
 
 A table missing one of the required entries is refused with `E-ABI-PROVIDER-TABLE`.
 
@@ -200,8 +206,52 @@ themselves are `E-ABI-PROVIDER-SAVE` and `E-ABI-PROVIDER-RESTORE`.
 | `FUSE_CAP_CHECKPOINT` | `save_state`/`restore_state` are real, so the component may sit inside an iteration region |
 | `FUSE_CAP_RESTART_FORM_B` | `save_restart_blob`/`load_restart_blob` are real |
 | `FUSE_CAP_DEVICE_FIELDS` | `describe` rows may ask for `FUSE_MEMSPACE_DEVICE`; see [Device fields](#device-fields) |
+| `FUSE_CAP_ADJOINT` | `bind_adjoint`/`advance_adjoint` are real; see [Adjoint of a plugin](#adjoint-of-a-plugin) |
 
 Other bits are ignored on the provider side.
+
+### Adjoint of a plugin
+
+A plugin can be reversed: the derivative of one scalar of the final state of a run with respect to
+every entry of its initial state, by one reverse pass over the periods, driven from the participant
+side through `fuse_initialize_adjoint` and `fuse_run_adjoint` ([](c-abi.md#reverse-mode)). FUSE reverses
+everything it applies between the steps (remaps, unit conversions, accumulation, transports); the
+plugin reverses its own `advance()`, with whatever automatic differentiation tool or hand-derived
+formula it prefers. Only arrays of binary64 adjoint variables cross the interface, one per field, laid
+out as the field itself; the adjoint array of a field holds the derivative of the scalar with respect to
+each entry of the field. A plugin offers this by setting `FUSE_CAP_ADJOINT` in `capabilities()` and
+filling two entries, appended to the table after `load_restart_blob`:
+
+- `bind_adjoint(self, view, NULL)` is called once for every field `bind()` was called for, in the same
+  order, after the reverse sweep was initialised and before the first `advance_adjoint`. `view` is the
+  view `bind()` was handed (same `handle`, `element_type`, `components`, `count`, `stride`) with `data`
+  pointing at the adjoint array of that field, which FUSE owns, holds zero at that point, and keeps valid
+  until `destroy`. As for `bind()`, a field with no entities on this process is not bound.
+- `advance_adjoint(self, request, report)` reverses one `advance()`: `request` is the one `advance()`
+  was given for that step (`t_begin`, `t_end`, `step`, `iteration`), and `report` echoes the window
+  exactly, as `advance()` does (`E-ABI-PROVIDER-WINDOW`). The steps are reversed once each, in the
+  reverse of the order `advance()` ran. On entry, the adjoint array of a field the plugin provides holds
+  the adjoint of the field as the step left it, with the adjoint of every later read already added; on
+  return it must hold the adjoint as it was before the step, since the forward step overwrote the field.
+  For a field the plugin requires, the step **adds** to the array the adjoint of every value it read, and
+  never overwrites what is there. The plugin keeps whatever forward values its adjoint needs; FUSE
+  stores none.
+
+The `out <- A out + C in` step of `test/abi/plugins/adjoint_provider.c` is reversed by
+
+```c
+for (i = 0; i < n; ++i) {
+  in_bar[i]  += C * out_bar[i];   /* the adjoint of the value read */
+  out_bar[i] *= A;                /* the adjoint of the value before the step */
+}
+```
+
+A plugin that does not set `FUSE_CAP_ADJOINT`, or whose table ends before the two entries, or leaves
+them NULL, makes `fuse_initialize_adjoint` refuse the run by name (`E-ADJ-COMPONENT`); nothing else
+about it changes. Not supported, and refused by name: fields that are not binary64
+(`E-ADJ-FIELD-TYPE`) and fields in device memory (`E-ADJ-SPACE`). A rank that does not host the plugin
+cannot ask it anything, so it registers the same empty adjoint views the forward registration did, and a
+plugin that offers no adjoint is refused only on the ranks that host it.
 
 ### Restart blobs
 
@@ -503,6 +553,8 @@ See [](build.md) for enabling the Fortran bindings.
 | `E-ABI-PROVIDER-DESCRIBE` | the `describe()` call itself (the size query or the fill) returned a non-`FUSE_OK` status |
 | `E-ABI-PROVIDER-GRAPH` | the provider's component name is not a component of the loaded graph |
 | `E-ABI-PROVIDER-RESTART-SAVE` / `-RESTART-LOAD` | `save_restart_blob()`/`load_restart_blob()` returned a non-`FUSE_OK` status, or the size query and the fill disagreed |
+| `E-ABI-PROVIDER-BIND-ADJOINT` / `-ADVANCE-ADJOINT` | `bind_adjoint()`/`advance_adjoint()` returned a non-`FUSE_OK` status (a failed `advance_adjoint` is reported by `fuse_run_adjoint` or `fuse_end_adjoint_step`; the period is not counted as reversed) |
+| `E-ADJ-COMPONENT` / `E-ADJ-FIELD-TYPE` / `E-ADJ-SPACE` | the plugin does not offer the adjoint; a field is not binary64; a field is in device memory (all three from `fuse_initialize_adjoint`) |
 | `E-ABI-PROVIDER-EXCEPTION` | a `std::exception` was caught around a plugin call |
 | `E-ABI-REGISTRY-NULL` / `-DUPLICATE` / `-INSTALL` / `-NOTFOUND` | the mount table was given a null table, a second provider under a name already in use, failed to install a mounted provider, or was asked for a name nothing is mounted under |
 | `E-LAUNCH-PLUGIN-PATH` | a `plugin`-launched component declares an empty `plugin_path` |
@@ -554,6 +606,10 @@ objects; FUSE does not apply either to plugins you build.
   in some process configurations; see [A known failure case](#a-known-failure-case).
 - A plugin inside an iteration region needs real `save_state()`/`restore_state()` entries and
   `FUSE_CAP_CHECKPOINT` in its `capabilities()`.
+- The adjoint of a plugin covers binary64 fields in host memory ([Adjoint of a plugin](#adjoint-of-a-plugin));
+  a plugin inside an iteration region is reversed as the fixed point the region converged to, and
+  `advance_adjoint` is then called once per pass for the same step with the same request, so it may not
+  consume what it recorded.
 
 ## See also
 
