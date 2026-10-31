@@ -492,6 +492,16 @@ fuse_add_gtest(num butcher_tableau)
 fuse_add_gtest(num embedded_controller)
 fuse_add_gtest(num integrator THROWS)
 fuse_add_gtest(num explicit_integrator)
+# Round 2 (task item 1): the generic rooted-tree order-condition checker, run
+# against every classical tableau and against the Round 2 Rosenbrock scope note.
+fuse_add_gtest(num order_conditions)
+# Round 2 (task item 2): DIRK/ESDIRK family, stage solve through fuse::num::solve
+# (Newton-Krylov), so this needs fuse::linalg the same way num.newton_krylov does.
+fuse_add_gtest(num dirk_integrator LIBS fuse::linalg)
+# Round 2 (task item 3): Rosenbrock family, one gmres/MatrixFreeOperator solve per
+# stage (not fuse::num::solve), so this needs fuse::linalg the same way DIRK does.
+fuse_add_gtest(num rosenbrock_integrator LIBS fuse::linalg)
+fuse_add_gtest(num continuous_extension)
 # S7.2: the native Newton-Krylov coupler. line_search is pure scalar
 # arithmetic (no DistVector), so it needs nothing beyond fuse::num itself;
 # newton_krylov drives fuse::linalg::gmres/DistVector directly, so it needs

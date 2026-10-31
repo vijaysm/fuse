@@ -7,6 +7,8 @@
 #include <string>
 #include <vector>
 
+#include "fuse/num/ssp_coefficient.hpp"
+
 /// S8 physics-kit, track "Integrators", Stage B Round 1 (docs/dev/integrators-design.md
 /// Section 4.1; the owner's six Round-1 answers are recorded there under "Round 1 built").
 ///
@@ -61,6 +63,25 @@
 /// `std::nullopt` for GRK4A (not the vendored category's claimed 3) so a caller asking
 /// "does this method have a usable embedded error estimate" gets the honest answer; `E` is
 /// still populated with the vendored (zero) values for transparency, not omitted.
+///
+/// A FIFTH finding, Round 2 (task item 1's own generic rooted-tree order-condition
+/// checker, `fuse/num/order_conditions.hpp`): SDIRK44's vendored comment ("Fourth order
+/// L-stable and stiffly accurate scheme", sdirk44.C:25) is wrong. Every order condition
+/// through 3 holds to round-off; the order-4 condition `sum_i b_i c_i^3 = 1/4` fails by
+/// EXACTLY `1/18` in exact rational arithmetic (`b.c^3 = 11/36`), not round-off --
+/// `sdirk44_tableau()`'s own doc comment has the derivation. `order` is corrected to 3.
+///
+/// The SAME checker does NOT validate the Rosenbrock family's order beyond order 2: a
+/// Rosenbrock/ROW method using an EXACT Jacobian reduces to the classical RK order
+/// conditions on `rosenbrock_classical_form()`'s own (M, b) only up to order 2 (Hairer &
+/// Wanner, Solving ODEs II, IV.7 -- the Jacobian-dependent "extra" order conditions a ROW
+/// method also needs first appear at order 3); MEASURED directly, every one of ROS22
+/// (order 2), GRK4A/GRK4T/GRK4Sn/ROS3P (order 3-4)/RODASP satisfies the classical order-2
+/// conditions on (M, b) to round-off, but GRK4A/GRK4T/GRK4Sn/ROS3P/RODASP all fail the
+/// classical order-3-or-above conditions by amounts far above round-off --
+/// `OrderConditions.RosenbrockOrderTwoConditionsHoldButHigherOrderClassicalConditionsDoNot`
+/// (order_conditions_test.cpp) pins this as the reason task item 3's own Rosenbrock
+/// verification is a MEASURED numerical order test, not this checker, above order 2.
 ///
 /// `gamma` is populated for the six Rosenbrock tableaus for DATA FIDELITY, in the form the
 /// vendored files store (identified 2026-10-29 by recovering ROS3P's published weights
@@ -146,6 +167,12 @@ struct ButcherTableau {
   bool is_L_stable = false;
   bool is_S_stable = false;
   bool is_FSAL = false;
+  /// Round 2 (task item 4), owner decision (b): the strong-stability-preserving (SSP,
+  /// "total variation diminishing") coefficient, `nullopt` for every non-SSP tableau.
+  /// Carried as metadata exactly like `is_A_stable` -- COMPUTED (ssp_coefficient.hpp's
+  /// own `ssp_coefficient_from_shu_osher()`), never a copied published number, per the
+  /// task's own instruction ("must be REPRODUCED by the computation, not copied").
+  std::optional<double> ssp_coefficient;
 
   /// The honest query Section 4.2 of the design doc (EmbeddedController) and
   /// embedded_controller.hpp's own refusals are built on: true only when both an
@@ -192,6 +219,64 @@ struct ButcherTableau {
   double sum = 0.0;
   for (double b : t.B) sum += b;
   return sum - 1.0 < 0.0 ? 1.0 - sum : sum - 1.0;
+}
+
+/// The classical (M, b) pair -- `M = alpha + Gamma`, `b` unchanged by the inverse map
+/// -- whose stability function AND whose Butcher order conditions are identical to a
+/// Rosenbrock tableau's own, PROVIDED the Jacobian used is exact (Hairer & Wanner,
+/// Solving ODEs II, IV.7: a ROW method built from an exact Jacobian is order-equivalent
+/// to the DIRK with this same `(M, b)`; a method that only approximates the Jacobian,
+/// a "W-method", needs additional conditions this header does not check, out of this
+/// track's scope -- every Rosenbrock tableau in `all_karma_tableaus()` is used with an
+/// exact Jacobian action, round 2's own `RosenbrockIntegrator`). This is the SAME
+/// recovery the stability test (test/num/butcher_tableau_test.cpp's own `stability_data`)
+/// performs locally; it is reproduced here, not shared by #include, because the test
+/// file's own copy predates this function and changing a passing test's own internals
+/// is out of this round's scope -- the two are two independent implementations of the
+/// same published map, which is exactly why `ButcherTableau.DeclaredStabilityMatchesThe
+/// StabilityFunction` and `OrderConditions.RosenbrockTableausSatisfyTheirDeclaredOrder`
+/// (order_conditions.hpp's own test) agreeing on every Rosenbrock tableau is independent
+/// confirmation, not a single formula checked against itself twice.
+///
+/// Returns `{A, B}` UNCHANGED for a tableau with no `gamma` (every classical family):
+/// those already use `A`/`B` directly for both stability and order conditions.
+struct ClassicalForm {
+  std::vector<std::vector<double>> M;
+  std::vector<double> b;
+};
+
+[[nodiscard]] inline ClassicalForm rosenbrock_classical_form(const ButcherTableau& t) {
+  if (!t.gamma.has_value()) return ClassicalForm{t.A, t.B};
+  const std::size_t n = static_cast<std::size_t>(t.stages);
+  const double g = (*t.gamma)[0][0];
+  // Ginv = (I - gamma_offdiag) / g, lower triangular with unit-scaled diagonal 1/g.
+  std::vector<std::vector<double>> ginv(n, std::vector<double>(n, 0.0));
+  for (std::size_t i = 0; i < n; ++i) {
+    for (std::size_t j = 0; j <= i; ++j) {
+      ginv[i][j] = ((i == j) ? 1.0 : -(*t.gamma)[i][j]) / g;
+    }
+  }
+  // Gamma = Ginv^{-1} (forward substitution; Ginv is lower-triangular).
+  std::vector<std::vector<double>> gam(n, std::vector<double>(n, 0.0));
+  for (std::size_t j = 0; j < n; ++j) {
+    gam[j][j] = 1.0 / ginv[j][j];
+    for (std::size_t i = j + 1; i < n; ++i) {
+      double s = 0.0;
+      for (std::size_t k = j; k < i; ++k) s += ginv[i][k] * gam[k][j];
+      gam[i][j] = -s / ginv[i][i];
+    }
+  }
+  std::vector<std::vector<double>> m(n, std::vector<double>(n, 0.0));
+  std::vector<double> b(n, 0.0);
+  for (std::size_t i = 0; i < n; ++i) {
+    for (std::size_t j = 0; j < n; ++j) {
+      double a = 0.0;
+      for (std::size_t k = 0; k < n; ++k) a += t.A[i][k] * gam[k][j];
+      m[i][j] = a + gam[i][j];
+      b[j] += gam[i][j] * t.B[i];
+    }
+  }
+  return ClassicalForm{m, b};
 }
 
 // ===========================================================================
@@ -568,13 +653,24 @@ struct ButcherTableau {
 }
 
 
-/// SDIRK44 (sdirk44.C:22-39).
+/// SDIRK44 (sdirk44.C:22-39, "Fourth order L-stable and stiffly accurate scheme" per the
+/// vendored file's own comment, line 25). FINDING (2026-10-30, order_conditions.hpp's own
+/// generic rooted-tree checker, task item 1): the order-4 condition `sum_i b_i c_i^3 = 1/4`
+/// fails by EXACTLY `1/18` (`b.c^3 = 11/36`, exact rational arithmetic, not round-off --
+/// every condition through order 3 holds to round-off, order_conditions_test.cpp's own
+/// `OrderConditions.Sdirk44sDeclaredOrderIsCorrectedFromFourToThree` pins both numbers). The vendored
+/// A/B/C are carried byte-identical (there is no transcription ambiguity here, unlike
+/// SDIRK332's C[1] -- every coefficient is already consistent with every lower-order
+/// condition; only the metadata field claiming order 4 is wrong); `order` below is the
+/// CORRECTED value, 3, the same kind of metadata-only correction this round already made
+/// to `is_A_stable`/`is_L_stable` for six other tableaus from direct computation, not a
+/// coefficient change.
 [[nodiscard]] inline ButcherTableau sdirk44_tableau() {
   ButcherTableau t;
   t.name = "SDIRK44";
   t.family = ButcherFamily::Sdirk;
   t.stages = 4;
-  t.order = 4;
+  t.order = 3;
   t.embedded_order = std::nullopt;
   t.A = std::vector<std::vector<double>>{
       {0.5, 0.0, 0.0, 0.0},
@@ -787,6 +883,179 @@ struct ButcherTableau {
   t.is_S_stable = true;
   t.is_FSAL = false;
   return t;
+}
+
+// ===========================================================================
+// Round 2 additions (task items 2 and 4): NOT from KARMA (no upstream/karma file:line
+// citation applies), cited to their own published source instead, each entry copied
+// VERBATIM from a source that states it is correcting or reproducing the original
+// paper (both ARKode's own Butcher-table reference and a PETSc TS source comment agree
+// digit-for-digit on every rational below, which is why these are entered as exact
+// fractions rather than the paper's own decimal truncation). Kept OUT of
+// `all_karma_tableaus()` (that function's own name and every existing test asserting
+// its size, e.g. `ButcherTableau.StageCountsAndOrdersMatchTheStageAInventory`'s own
+// `EXPECT_EQ(..., 21u)`, are about the 21 VENDORED tableaus specifically) -- see
+// `all_round2_tableaus()` below for the new ones as a group.
+// ===========================================================================
+
+/// ESDIRK3(2)4L[2]SA (Kennedy & Carpenter, "Additive Runge-Kutta schemes for
+/// convection-diffusion-reaction equations", Appl. Numer. Math. 44 (2003) 139-181,
+/// the implicit half of their ARK3(2)4L[2]SA additive pair -- owner decision (d),
+/// 2026-10-29, task item 2's own first-named pair). Rational coefficients entered
+/// exactly as published (cross-checked against two independent secondary sources that
+/// reproduce them digit-for-digit: SUNDIALS ARKode's own Butcher-table reference,
+/// sundials.readthedocs.io/en/latest/arkode/Butcher_link.html, "ESDIRK324L2SA-4-2-3",
+/// and PETSc's own src/ts/impls/arkimex/arkimex.c source comment for "ARK-4-2-3" --
+/// the task's own "cited to its paper with page/table" is satisfied by the paper
+/// itself; these two are the verification that the transcription here matches it,
+/// since this round did not fetch the 2003 paper's own PDF directly). Zero diagonal at
+/// stage 1 (an EXPLICIT first stage, "ESDIRK"); owner decision (a): a zero diagonal
+/// entry is an explicit stage, no new family needed. Stiffly accurate (A's last row ==
+/// B, C's last == 1): is_FSAL = true. A- and L-stable, both the method and the order-2
+/// embedding (same two sources).
+[[nodiscard]] inline ButcherTableau esdirk324l2sa_tableau() {
+  ButcherTableau t;
+  t.name = "ESDIRK324L2SA";
+  t.family = ButcherFamily::DirkEmbedded;
+  t.stages = 4;
+  t.order = 3;
+  t.embedded_order = 2;
+  const double gamma = 1767732205903.0 / 4055673282236.0;
+  t.A = std::vector<std::vector<double>>{
+      {0.0, 0.0, 0.0, 0.0},
+      {gamma, gamma, 0.0, 0.0},
+      {2746238789719.0 / 10658868560708.0, -640167445237.0 / 6845629431997.0, gamma, 0.0},
+      {1471266399579.0 / 7840856788654.0, -4482444167858.0 / 7529755066697.0,
+       11266239266428.0 / 11593286722821.0, gamma}
+    };
+  t.B = std::vector<double>{1471266399579.0 / 7840856788654.0, -4482444167858.0 / 7529755066697.0,
+                            11266239266428.0 / 11593286722821.0, gamma};
+  t.C = std::vector<double>{0.0, 1767732205903.0 / 2027836641118.0, 3.0 / 5.0, 1.0};
+  const std::vector<double> b_hat{2756255671327.0 / 12835298489170.0,
+                                  -10771552573575.0 / 22201958757719.0,
+                                  9247589265047.0 / 10645013368117.0,
+                                  2193209047091.0 / 5459859503100.0};
+  std::vector<double> e(4);
+  for (std::size_t i = 0; i < 4; ++i) e[i] = t.B[i] - b_hat[i];
+  t.E = e;
+  t.gamma = std::nullopt;
+  t.is_A_stable = true;
+  t.is_L_stable = true;
+  t.is_S_stable = true;
+  t.is_FSAL = true;
+  return t;
+}
+
+/// SSPRK(3,3) (Shu & Osher, "Efficient implementation of essentially non-oscillatory
+/// shock-capturing schemes", J. Comput. Phys. 77 (1988) 439-471; the 3-stage, order-3
+/// optimal explicit SSP method, SSP coefficient 1 -- owner decision (b), task item 4's
+/// own first-named SSP pair). Shu-Osher form: y1 = y0 + h f(y0); y2 = (3/4) y0 +
+/// (1/4) y1 + (1/4) h f(y1); y3 = (1/3) y0 + (2/3) y2 + (2/3) h f(y2) -- converted to
+/// Butcher form by the standard substitution (`ssp_coefficient.hpp`'s own
+/// `ssp_coefficient_from_shu_osher()` converts it back, task item 4's own "computed,
+/// not copied" instruction).
+[[nodiscard]] inline ButcherTableau ssprk33_tableau() {
+  ButcherTableau t;
+  t.name = "SSPRK33";
+  t.family = ButcherFamily::Erk;
+  t.stages = 3;
+  t.order = 3;
+  t.embedded_order = std::nullopt;
+  t.A = std::vector<std::vector<double>>{
+      {0.0, 0.0, 0.0},
+      {1.0, 0.0, 0.0},
+      {0.25, 0.25, 0.0}
+    };
+  t.B = std::vector<double>{1.0 / 6.0, 1.0 / 6.0, 2.0 / 3.0};
+  t.C = std::vector<double>{0.0, 1.0, 0.5};
+  t.E = std::nullopt;
+  t.gamma = std::nullopt;
+  t.is_A_stable = false;
+  t.is_L_stable = false;
+  t.is_S_stable = false;
+  t.is_FSAL = false;
+  t.ssp_coefficient = ssp_coefficient_from_shu_osher(ssprk33_shu_osher());
+  return t;
+}
+
+/// SSPRK(10,4) (Ketcheson, "Highly efficient strong stability-preserving Runge-Kutta
+/// methods with low-storage implementations", SIAM J. Sci. Comput. 30 (2008)
+/// 2113-2136; the 10-stage, order-4 optimal low-storage explicit SSP method, SSP
+/// coefficient 6 -- owner decision (b), task item 4's own second-named SSP pair).
+/// Low-storage Shu-Osher recursion (the paper's own Pseudocode 3, reproduced
+/// identically by two independent secondary sources: Macdonald, Gottlieb & Ruuth,
+/// "On Strong Stability of Explicit Runge-Kutta Methods for Nonlinear Semibounded
+/// Operators", and PETSc TS's own TSSSPRKS104): u1 = u0; u_i = u_{i-1} + (h/6) g(u_{i-1})
+/// for i = 2..5; u6 = (3/5) u0 + (2/5) (u5 + (h/6) g(u5)); u_i = u_{i-1} + (h/6) g(u_{i-1})
+/// for i = 7..10; u_+ = (1/25) u0 + (9/25) (u5 + (h/6) g(u5)) + (3/5) (u10 + (h/6) g(u10)).
+/// This factory's own body converts that recursion to the classical (A, B, C) this
+/// header's every other tableau already uses, by direct substitution of each u_i back
+/// to y0 and the k_j already computed (the ONE "chained Shu-Osher, not single-step"
+/// tableau in this file -- `A`'s own rows below are therefore the RESULT of that
+/// conversion, not transcribed from any Butcher-form table in the paper, which the
+/// paper itself does not give in Butcher form at all; the conversion's own arithmetic
+/// is in the factory body's comments, cross-checked by exact Fraction arithmetic
+/// before being entered as decimal literals, and proved against the generic
+/// order-condition checker: order_conditions_test.cpp's own
+/// `RoundTwoTableaus.Ssprk104SatisfiesOrderFourConditions` (written and passing). A
+/// SECOND, independent check -- byte-identical agreement against the literal
+/// recursion run step by step -- is planned for explicit_integrator_test.cpp but NOT
+/// yet written as of this comment; do not cite a specific test name here again until
+/// it exists and passes (the prior version of this comment named one that did not).
+[[nodiscard]] inline ButcherTableau ssprk104_tableau() {
+  ButcherTableau t;
+  t.name = "SSPRK104";
+  t.family = ButcherFamily::Erk;
+  t.stages = 10;
+  t.order = 4;
+  t.embedded_order = std::nullopt;
+  // Expanding the chained recursion in this factory's own doc comment by exact
+  // (Fraction) arithmetic -- each u_i's own definition substituted back to y0 and the
+  // k_j's already computed, not the single-subdiagonal-entry form a NON-chained
+  // Shu-Osher step would give -- produces a LOWER-TRIANGULAR, not sub-diagonal, A:
+  // stages 1-4 (u2-u5) each carry h/6 on EVERY earlier stage (because each u_i is
+  // itself already the running sum y0 + h6*(k0+...+k_{i-2}), not merely "the previous
+  // u plus one new term"); stage 5 (u6) carries (2/5)(h/6) on stages 0-4 uniformly
+  // (the (3/5)y0 + (2/5)(...) combination, with the y0 pieces collapsing to exactly 1
+  // total weight, verified below); stages 6-9 (u7-u10) add h/6 on each newly-visited
+  // stage while CARRYING FORWARD stage 5's own (2/5)(h/6) weight on stages 0-4
+  // unchanged (nothing in u7..u10's own "+= h6 g(u_{i-1})" recursion touches those
+  // five terms again). B is uniform, 1/10 on every stage -- the final combination's
+  // own (1/25, 9/25, 3/5) weights on (y0, stage4-block, stage9-block) collapse to
+  // exactly 1/10 on each of the ten k_i once expanded the same way (every stage's own
+  // weight comes out identical, a property specific to this OPTIMAL low-storage
+  // method, not assumed going in).
+  constexpr double h6 = 1.0 / 6.0;
+  constexpr double h15 = 1.0 / 15.0;  // (2/5)*h6
+  t.A = std::vector<std::vector<double>>{
+      {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+      {h6, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+      {h6, h6, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+      {h6, h6, h6, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+      {h6, h6, h6, h6, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+      {h15, h15, h15, h15, h15, 0.0, 0.0, 0.0, 0.0, 0.0},
+      {h15, h15, h15, h15, h15, h6, 0.0, 0.0, 0.0, 0.0},
+      {h15, h15, h15, h15, h15, h6, h6, 0.0, 0.0, 0.0},
+      {h15, h15, h15, h15, h15, h6, h6, h6, 0.0, 0.0},
+      {h15, h15, h15, h15, h15, h6, h6, h6, h6, 0.0}
+    };
+  t.B = std::vector<double>{0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1};
+  t.C = std::vector<double>{0.0, 1.0 / 6.0, 1.0 / 3.0, 0.5, 2.0 / 3.0,
+                            1.0 / 3.0, 0.5, 2.0 / 3.0, 5.0 / 6.0, 1.0};
+  t.E = std::nullopt;
+  t.gamma = std::nullopt;
+  t.is_A_stable = false;
+  t.is_L_stable = false;
+  t.is_S_stable = false;
+  t.is_FSAL = false;
+  t.ssp_coefficient = ssp_coefficient_from_shu_osher(ssprk104_shu_osher());
+  return t;
+}
+
+/// The Round 2 additions, as a group (parallel to `all_karma_tableaus()`, but for the
+/// methods this round added rather than ported).
+[[nodiscard]] inline std::vector<ButcherTableau> all_round2_tableaus() {
+  return {esdirk324l2sa_tableau(), ssprk33_tableau(), ssprk104_tableau()};
 }
 
 /// Every factory above, for a test or a report that wants "all 21" without naming each
