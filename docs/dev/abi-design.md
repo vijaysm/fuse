@@ -607,3 +607,45 @@ holds the bit patterns (`uint16_t`, `uint32_t`; `integer(c_int16_t)`, `integer(c
 Fortran), `view.components` counts values as for any Storage type, and `fuse_view_field` reports the
 element type that was registered. The one declaration is `include/fuse/abi/entries.def`; `types.h`,
 `ffuse.f90` and the goldens came from `tools/gen-abi.py --write`.
+
+### Adjoint: a fourth growth, rules 2 and 3 (2026-10-30)
+
+Reverse mode (docs/dev/adjoint-schedule.md) reaches both directions by appending entries, and changes
+no existing layout. One capability bit, `FUSE_CAP_ADJOINT` (128), is reported by both: by a provider in
+its `capabilities()` (its two entries are real) and by the coupler's own (the participant entries are
+real).
+
+*Participant direction.* Six entries are appended after `request_restart_point`:
+`register_adjoint_field(fuse_field_view)`, `initialize_adjoint`, `view_adjoint_field(fuse_field_ref ->
+fuse_field_view)`, `run_adjoint(fuse_run_request)`, `begin_adjoint_step` and `end_adjoint_step`
+(`fuse_step_request -> fuse_step_report`). They reuse every argument struct, so no struct grows; the
+table does, from 152 to 200 bytes (`struct_sizes.golden`), and a caller built against the old header
+never reads the new slots. `begin_adjoint_step`/`end_adjoint_step` are `begin_step`/`end_step` run
+backwards: the same refusals (`E-ABI-STEP-ORDER` for a component out of turn, with the request left
+for the correctly named call, `E-ABI-STEP-ALREADY-OPEN`, `E-ABI-STEP-NOT-OPEN`), the same report with
+the window of the forward step, and the same collective agreement
+(`reconcile_collective_status`). Their continuation is `Runner::resume_period_adjoint()`, whose cursor
+makes the suspension a return instead of a coroutine. `next_component` of the `end_adjoint_step` report
+names the next component to reverse in the period or is -1 when the period is reversed. The Fortran
+module gets the string overloads of `begin_step` for the two step entries (`FORTRAN_STEP_ENTRIES` in
+`tools/gen-abi.py`). The adjoint arrays of the fields of a component a caller drives are the caller's
+(`register_adjoint_field` binds them into the context's own adjoint registry through
+`ExternalStepComponent`); the plugins' are the adapters', visible through `view_adjoint_field`.
+
+*Provider direction.* Two entries are appended after `load_restart_blob`: `bind_adjoint(fuse_field_view)`,
+called once per field in the order `bind()` was, with the same view and `data` pointing at the adjoint
+array; and `advance_adjoint(fuse_step_request -> fuse_step_report)`, reversing one `advance()`, the window
+echoed exactly. The table grows from 96 to 112 bytes. Unlike the participant table, which FUSE owns, the
+provider table is the plugin's, so rule 2 is applied to it: the mount accepts a table from the
+layout before the two entries (`struct_size` of at least `offsetof(fuse_provider_abi_v1, bind_adjoint)`,
+96), `ProviderAdapter` reads an entry only when `struct_size` covers it, and a plugin built before them
+is run forward exactly as before and refused for the reverse sweep by name (`E-ADJ-COMPONENT`). Before
+this change the mount refused any table shorter than the current `sizeof`, so every earlier append
+(`save_restart_blob`) also needed the plugins rebuilt; the minimum is now fixed at the layout before the
+adjoint entries and `test/abi/conformance_test.cpp` pins both sides (a table of 95 bytes is refused, one of
+96 is accepted). `ProviderAdapter` is both the plugin's `fuse::Component` and its
+`fuse::AdjointComponent`: it keeps the layout it bound each field with (`FieldRecord`), allocates
+one zeroed binary64 array per field of the same layout, registers it in the adjoint registry and hands it
+to `bind_adjoint`. A rank that does not host the plugin registers the empty views the forward
+registration did and cannot ask the plugin whether it offers the adjoint, so a plugin without it is
+refused on the ranks that host it only.

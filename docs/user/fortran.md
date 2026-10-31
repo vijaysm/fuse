@@ -226,10 +226,16 @@ can set `struct_size`; pass variables, not expressions.
 | `fuse_view_field(ctx, in, out)` | `fuse_field_ref` | `fuse_field_view` | |
 | `fuse_base_communicator(ctx, in, out)` | `fuse_null` | `fuse_base_communicator_info` | |
 | `fuse_request_restart_point(ctx, in, out)` | `fuse_null` | `fuse_null` | |
+| `fuse_register_adjoint_field(ctx, in, out)` | `fuse_field_view` | `fuse_null` | the adjoint array of a field you drive; see [](c-abi.md#reverse-mode) |
+| `fuse_initialize_adjoint(ctx, in, out)` | `fuse_null` | `fuse_null` | collective |
+| `fuse_view_adjoint_field(ctx, in, out)` | `fuse_field_ref` | `fuse_field_view` | |
+| `fuse_run_adjoint(ctx, in, out)` | `fuse_run_request` | `fuse_null` | collective |
+| `fuse_begin_adjoint_step(ctx, in, out)` | `fuse_step_request` | `fuse_step_report` | struct form; the name form is below |
+| `fuse_end_adjoint_step(ctx, in, out)` | `fuse_step_request` | `fuse_step_report` | struct form; the name form is below |
 
 ### Generic overloads for strings
 
-Five names are generic interfaces with a second, string-taking specific, so you never build a
+Seven names are generic interfaces with a second, string-taking specific, so you never build a
 NUL-terminated `c_ptr` by hand at the common call sites:
 
 ```fortran
@@ -237,6 +243,8 @@ status = fuse_load_graph(ctx, yaml_path, out)             ! character(len=*) :: 
 status = fuse_field_handle(ctx, component, field, out)    ! character(len=*) :: component, field
 status = fuse_begin_step(ctx, component, out)             ! character(len=*) :: component
 status = fuse_end_step(ctx, component, out)
+status = fuse_begin_adjoint_step(ctx, component, out)
+status = fuse_end_adjoint_step(ctx, component, out)
 status = fuse_last_error(ctx, message, truncated)         ! character(len=*), intent(out) :: message
                                                           ! logical, intent(out), optional :: truncated
 ```
@@ -349,8 +357,9 @@ this section is the Fortran mechanics.
 `type, bind(C) :: fuse_provider_abi_v1`
 : The table, bit-for-bit the C layout: `struct_size`, `abi_version`, then one `type(c_funptr)`
   per entry in table order: `version`, `create`, `destroy`, `describe`, `bind`, `advance`,
-  `save_state`, `restore_state`, `capabilities`, `save_restart_blob`, `load_restart_blob`. All
-  default to `c_null_funptr`.
+  `save_state`, `restore_state`, `capabilities`, `save_restart_blob`, `load_restart_blob`,
+  `bind_adjoint`, `advance_adjoint` (the last two for the reverse sweep, [](providers.md#adjoint-of-a-plugin)).
+  All default to `c_null_funptr`.
 
 `ffuse_provider_<entry>_proc`
 : One abstract interface per entry, so your own `bind(C)` procedure is checked against the expected

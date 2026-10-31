@@ -39,6 +39,7 @@ class AdjointComponent {
 
 Result<void> Runner::initialize_adjoint(ComponentSet&, FieldRegistry& adjoint_registry);
 Result<void> Runner::run_period_adjoint(ComponentSet&);
+Result<std::optional<ExternalAdvanceRequest>> Runner::resume_period_adjoint(ComponentSet&);
 ```
 
 `register_adjoint_fields` binds, for every field of the component, an array of adjoint variables
@@ -62,6 +63,28 @@ those of the forward step. After the last call the Provides arrays hold the adjo
 state. Running a forward period between two calls, calling more times than there are forward
 periods, and calling before any forward period are refused (`E-ADJ-ORDER`); a fresh sweep starts
 after the forward run continues.
+
+**Components driven from outside.** The participant ABI (`fuse_begin_step()`/`fuse_end_step()`) wraps
+each component its caller drives in an `ExternalStepComponent`, whose `advance()` is a no-op and whose
+forward walk suspends at its step (`Runner::resume_period()`). The reverse sweep does the same, so that
+the caller reverses its own step in its own adjoint arrays: `resume_period_adjoint()` reverses the open
+period (the newest one not yet reversed, when none is open) until the step of the next such component
+and returns it, as an `ExternalAdvanceRequest` with the `StepContext` of the forward step; calling it
+again carries on below that step, and `std::nullopt` means the period is reversed completely. The sweep
+is a cursor into the period's list of events (`AdjointState::cursor`), so a suspension is a return and
+nothing is kept on a stack. Everything the sweep reverses before returning is what the forward run did
+after that step, so on return the adjoint arrays of the component's Provides fields hold what
+`advance_adjoint()` would be given. `run_period_adjoint()` is the same loop without suspension and
+refuses a run with such a component (`E-ADJ-EXTERNAL`). The adjoint arrays of such a component are the
+caller's, registered with `fuse_register_adjoint_field()` and bound under the field's `FieldId` by
+`ExternalStepComponent::register_adjoint_fields()`; a component with none at all is refused
+(`E-ADJ-COMPONENT`), one with some missing is refused at the field (`E-ADJ-UNBOUND`). A component
+driven from outside inside an iteration region is refused (`E-ADJ-REGION`): the adjoint iteration
+repeats the steps of the region, once per pass, and cannot ask the caller for each. A failure on a rank
+is carried to the end of the period as before; the failing call is the `end_adjoint_step()` that
+reaches it. The entry points built on this are in [](../user/c-abi.md#reverse-mode) (participant
+direction) and [](../user/providers.md#adjoint-of-a-plugin) (provider direction, where
+`ProviderAdapter` is the plugin's `AdjointComponent`).
 
 ## 3. The rule for each instruction
 
@@ -108,6 +131,36 @@ fence precedes every call to `advance_adjoint` and ends the sweep, so a componen
 kernels must have finished when it returns, sees complete adjoint arrays and the next instruction
 sees its result.
 
+**Iteration regions.** A region is reversed as the fixed point its forward sweeps converged to, not
+sweep by sweep. At the fixed point `y* = F(y*, x)`, with `x` everything the region reads from
+outside (the checkpointed states, the drives, the values delivered before it), the derivative of
+the converged values is `(I - F_y)^-1 F_x` whatever way the iteration reached `y*` (plain,
+relaxed, accelerated), so the adjoint is `lambda = ybar + F_y^T lambda`, `xbar += F_x^T lambda`.
+One pass of the reverse of the region's interval of the period (the component steps the region
+re-advances, the instructions between them and the body, which ends at the value `G(y)` that the
+delivery after the region copies into the components' inputs), seeded with `lambda` on the
+values of the body, leaves `F_y^T lambda` on the delivered values and `F_x^T lambda` in the
+adjoint arrays of everything else. The sweep therefore repeats that pass to a fixed point
+(Christianson's reverse accumulation, 1994): before each pass every adjoint array the interval
+can change is restored from a copy taken before the first, so the contribution to `xbar` is that
+of the last pass only; the new iterate is the seed plus what the pass added to the delivered
+values; and the iteration is held to the convergence criterion of the region (the same
+measures, applied to the change of the iterate). The initial iterate does not influence
+the fixed point, so what the last pass added to the delivered values is not passed on. The
+`Residual` of the body, which only feeds the convergence test, has no adjoint to apply.
+
+A component the region steps is therefore reversed once per pass: `advance_adjoint(ctx)` is called
+J times for the same `ctx`, with the adjoint arrays as they were found except for the delivered
+values, and must give the same result each time (it may not consume what it recorded). The
+forward run advanced the step several times for the same `ctx.step` (after `restore_state()`,
+with `ctx.iteration` counting the sweeps); the component's adjoint is the adjoint of the last
+advance, and `ctx.iteration` is 0 in the reverse calls. The plain iteration converges when the
+forward iteration does without acceleration; a region whose forward iteration needed an accelerator
+to converge fails with `E-ADJ-REGION-NOCONVERGE` rather than return a derivative. The adjoint is
+that of the iteration stopped at the criterion: the last pass is seeded with the iterate before
+the last, so the error is of the order of the criterion times the contraction factor over one
+minus it.
+
 **Between ranks.** The reverse of a Transport between processes is the same exchange run
 backwards, by the backend that ran it forward. `Transport::move_adjoint(dst_bar, src_bar, n)`
 (`fuse/transport/transport.hpp`) overwrites `src_bar` with `P^T dst_bar`, where `dst = P src` is the
@@ -127,8 +180,19 @@ failure and goes on to execute only the collective instructions (`is_collective`
 ranks it exchanges with are not left waiting for it, skips the local work, and returns its failure
 at the end of the period; the reverse of an `Epoch` takes part in the agreement, so that a rank
 whose partner failed earlier in the sweep fails too (`E-RT-EPOCH-PEER`) rather than pass on an
-adjoint derived from an exchange that did not complete. A period that failed did not happen: the
-next `run_period_adjoint()` reverses it again.
+adjoint derived from an exchange that did not complete. The reverse order puts a component's step
+after the exchanges that follow it in the forward order, so a failure at a step has no `Epoch` behind
+it in the sweep (measured on higgs: with the failing step reversed last, the rank that does not hold
+the component returned success and its partners were left waiting in the next period); the end of
+the period is therefore an agreement point of its own (`agree_on_adjoint_period`), the reduction of
+`reconcile_epoch` over the ranks that take part in any `Epoch` of the plan, and a rank that did not
+fail records `E-RT-EPOCH-PEER` when another did. Following the rule the issue tracker (the
+original error and the rank it came from are known on every rank), the lowest-numbered rank that
+failed sends its own code and message to the others, and the failure a healthy rank records is the
+agreed refusal of `fuse::make_agreed_failure()` with `origin_rank` and `origin_code` set; a rank that
+failed itself keeps its own failure. (The `Epoch` agreement of the forward run, which the reverse of
+an `Epoch` also takes part in, does not carry the origin's message; it was not changed.) A period
+that failed did not happen: the next `run_period_adjoint()` reverses it again, on every rank.
 
 **Order.** The sweep reproduces the merged walk of `Runner::Impl::step_period()` -- ticks before the
 instructions stamped later, `AfterTicks` instructions after the ticks at their own time -- by
@@ -146,11 +210,14 @@ codes), so a graph that asks for more is stopped before anything is differentiat
 |---|---|
 | `E-ADJ-INIT` | `initialize_adjoint()` before `initialize()`, or `run_period_adjoint()` before `initialize_adjoint()` |
 | `E-ADJ-ORDER` | a sweep call with no forward period to reverse, after every period was reversed, or after a forward period ran in the middle of the sweep |
-| `E-ADJ-COMPONENT` | a component that advances has no `AdjointComponent` (`Component::adjoint()` is null), or is driven from outside the Runner |
+| `E-ADJ-COMPONENT` | a component that advances has no `AdjointComponent` (`Component::adjoint()` is null): a native component without one, a plugin that does not offer the adjoint, or a component driven from outside the Runner whose caller registered no adjoint array at all |
+| `E-ADJ-EXTERNAL` | `run_period_adjoint()` on a run with a component driven from outside the Runner (use `resume_period_adjoint()`) |
 | `E-ADJ-UNBOUND` | a component-owned arc has no adjoint array in the registry |
 | `E-ADJ-LAYOUT` | an adjoint array is not a flat, component-fastest array with the field's count and components |
 | `E-ADJ-ALIAS` | an adjoint array is the field's own array |
-| `E-ADJ-REGION` | the plan has an iteration region (the adjoint of a fixed-point iteration is implicit differentiation, or the unrolled sweeps: not implemented) |
+| `E-ADJ-REGION` | an iteration region that is solved by Newton's method, is scoped to a time window, spans several ranks, overlaps another region in the order of a period, or whose interval holds the step of a component the region does not step |
+| `E-ADJ-REGION-NOCONVERGE` | the adjoint iteration of a region did not meet the region's convergence criterion within its `max_iterations` passes (the forward iteration was not a contraction, or converged only through its accelerator) |
+| `E-ADJ-REGION-DIVERGED` | the adjoint iteration of a region left the finite numbers |
 | `E-ADJ-ACCUM` | a minimum or maximum accumulation (the adjoint selects a sample and needs the forward values) |
 | `E-ADJ-SPACETIME` | a space-time Sample or Interpolate (a time history) |
 | `E-ADJ-TRANSPORT` | a Transport between processes whose backend has no `move_adjoint` (LowFive), or a Transport that resolved to no plan |
@@ -225,15 +292,40 @@ recovered from the forward run (a unit vector in, a column out).
 `E-ADJ-TRANSPORT`, `E-ADJ-NODAL-DIST` and `E-ADJ-WINDOW`, which need an MPI plan or a configuration
 not known to exist.
 
-**Mutation coverage.** `build-evidence/mutations/runtime-adjoint.toml`, area `runtime_adjoint`:
-51 rows, against `src/runtime/runner_adjoint.cpp` and `include/fuse/num/adjoint_kernels.hpp`: the
-transposed matrix of a remap and the accumulation and the take of an adjoint (the three kernels),
-the rule of each reduction (sample, accumulate, merge, scale), the window bookkeeping, the order of
-the sweep and the step contexts, each copy-type instruction, each refusal, and the device path
-(the memory an arc's adjoint array is in, the dispatch to the device space, the staging of a host
-operand in and out, the mirror of the transposed matrix). Six rows exist only for the device path
-and are marked `requires = "device"`: the tests that kill them are compiled only against a device
-backend, and the Mac tier-0 build reports them NOT-ASSESSED; the other 45 are killed on the Mac.
+**Mutation coverage.** Three areas in `build-evidence/mutations/`: `runtime_adjoint` (83 rows) and
+`runtime_adjoint_agreement` (5 rows), both in `runtime-adjoint.toml`, and `abi_adjoint` (31 rows,
+`abi-adjoint.toml`). The first runs against `src/runtime/runner_adjoint.cpp`,
+`include/fuse/num/adjoint_kernels.hpp` and the two transports: the transposed matrix of a remap and
+the accumulation and the take of an adjoint (the three kernels), the rule of each reduction (sample,
+accumulate, merge, scale), the window bookkeeping, the order of the sweep and the step contexts, each
+copy-type instruction, each refusal, the device path (the memory an arc's adjoint array is in, the
+dispatch to the device space, the staging of a host operand in and out, the mirror of the transposed
+matrix), the exchange between ranks (the index maps of the send and the receive, the zeroing of what
+was passed back, adding against overwriting, the local matches, the size and null checks) and the
+region sweep (the number of passes, the convergence test, the seed, the restore of the arrays, the
+feedback of the iterate). The second holds the agreement of the end of a reverse period (the
+reduction, the recording of the peer's failure, the origin's rank and message, the lowest rank as
+origin). `abi_adjoint` holds the provider adapter (10 rows), the table-size check of the registry (2), the participant entries (16), the
+external step component (1) and the Runner's suspension at an external step (2). Six rows of the
+first area are marked `requires = "device"` and 22 `requires = "mpi"`: the tests that kill them are
+compiled only against a device backend or run only under a launcher, and the Mac tier-0 build
+reports them NOT-ASSESSED (the tool runs the MPI rows only with `FUSE_MUTATE_MPI=1`).
+
+Results. On the Mac (tier 0, before the rebase onto the main that carries the field transaction):
+the 55 host rows of `runtime_adjoint` and all 31 rows of `abi_adjoint` are killed. On higgs (CUDA, OpenMP and Open MPI; the rebased stack, with
+`FUSE_MUTATE_MPI=1`): `runtime_adjoint_agreement` 5 killed of 5; `runtime_adjoint` 80 killed, 1
+declared equivalent and 2 not killed of 83; `abi_adjoint` 29 killed and 2 without a baseline of 31
+(`abi.conformance`, the test of the two rows on the table size, fails on higgs at the base, with
+`MPI_ERR_COMM` from the handles it fakes; both rows are killed on the Mac). The equivalent row,
+`runtime-adjoint-device-arc-in-host-memory`: an arc the forward run keeps in device memory whose
+adjoint array is in host memory is staged through the lanes of `reverse_on`, which gives the same
+result as the adjoint array in device memory. The two not killed, `epoch-reverse-skips-the-agreement`
+and `sweep-skips-the-exchanges-after-a-failure`, both concern a failure that is followed by a
+collective instruction in the sweep: the failing step of the tests' plan is reversed after the last
+exchange of the period (traced on higgs), so the agreement at the end of the period carries the
+failure and nothing collective follows it. They need a test with a failing instruction (an exchange
+that errors) ahead of an exchange, or a plan that steps a component after an exchange; none is
+built here, and the rows stay in the table, with that note, as the open gap.
 
 Three candidate rows were dropped as equivalent mutants, not as tested. Replacing the accumulation of
 a remap's input adjoint by an assignment changes nothing, because each arc is read by one
@@ -262,13 +354,25 @@ component depends on.
   (`TransportPlan::local_src`) are reversed by code that mirrors the forward loop and that no test is
   known to reach: the Runner plans a partially overlapping placement peer-wise, and the tests'
   placements with same-rank matches are partially overlapping.
-- **Iteration regions and time windows.** Reverse mode through a fixed-point iteration is implicit
-  differentiation (a linear solve with the transposed interface Jacobian, for which the
-  `ImplicitComponent` linearization already offers `apply_jacobian_transpose`) or the unrolled
-  sweeps (which need the number the forward run reached and every sweep's forward values).
+- **Regions solved by Newton's method, regions scoped to a time window, regions across ranks.**
+  A Newton region is differentiated by a linear solve with the transposed interface Jacobian
+  (`ImplicitComponent::apply_jacobian_transpose` already exists); a window region has several
+  passes per period and a waveform iteration; an adjoint iteration across ranks would need every
+  rank to agree on the criterion after each pass, as the forward run does with
+  `reduce_region_residuals`. Each is refused by name (`E-ADJ-REGION`). A forward iteration that
+  converges only through its accelerator has no plain adjoint iteration
+  (`E-ADJ-REGION-NOCONVERGE`); reversing the accelerator's own scheme is not implemented.
 - **Time histories** (space-time Sample and Interpolate), **minimum and maximum accumulation**,
   and **Arithmetic and Storage field types**: refused above. The last two are mechanical (the
   adjoint of a widening is a rounding, of an Arithmetic remap the transpose in the type).
-- **The C ABI, Fortran and Python.** A component through the C ABI has no `advance_adjoint` entry
-  and no adjoint array registration yet; `Component::adjoint()` is a C++ interface only.
+- **Python, and what the C and Fortran entry points leave out.** The participant ABI has the six
+  reverse mode entries and a provider plugin has `bind_adjoint`/`advance_adjoint`; Python has none.
+  Not done through them: a provider plugin's field in device memory (`E-ADJ-SPACE`) and a plugin or
+  participant field of a storage or arithmetic element type (`E-ADJ-FIELD-TYPE`,
+  `E-ABI-ADJOINT-REGISTER-ELEMENT`); a participant's step inside an iteration region (`E-ADJ-REGION`);
+  and no test drives the participant entries on more than one process, so the collective agreement of
+  `initialize_adjoint`, `run_adjoint`, `begin_adjoint_step` and `end_adjoint_step` (the same
+  `reconcile_collective_status` as the forward entries) is wired and not exercised under MPI. There
+  is no Fortran plugin example of an adjoint (the generated `ffuse_provider` module has the setters,
+  `ffuse_provider_set_bind_adjoint` and `ffuse_provider_set_advance_adjoint`).
 - **Gradients with respect to the mesh** (U8).

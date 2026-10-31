@@ -450,11 +450,19 @@ the middle of a sweep does not leave the ranks it exchanges with waiting: they a
 told at the next agreement point and every rank returns an error. What is supported today:
 binary64 fields, in one process or across ranks, remap, unit
 conversion, sum, mean and integral accumulation, merge by first, sum or mean, and
-lagged channels. Refused by name (`E-ADJ-*`) at `initialize_adjoint`: iteration
-regions, minimum and maximum accumulation, time histories (space-time channels),
+lagged channels, and ordinary iteration regions on one rank (reversed as the fixed point
+they converged to: the components they step have `advance_adjoint` called several times for the same
+step, and an adjoint iteration that does not converge is an error, not a derivative). Refused by name
+(`E-ADJ-*`) at `initialize_adjoint`: Newton and time-window regions, regions across ranks, minimum and
+maximum accumulation, time histories (space-time channels),
 a transport that has no adjoint (LowFive), distributed nodal remaps, fields of the dd, qd and
 Storage types, an adjoint array in another memory space than its field, and the
-operators with no adjoint (relaxation, residual). C, Fortran and Python components have no adjoint entry points yet.
+operators with no adjoint (relaxation, residual). A component the C++ Runner steps that is driven from
+outside (the participant ABI) is reversed with `Runner::resume_period_adjoint()`, which hands the caller
+each of its steps in turn. From C and Fortran, a code that drives its own components registers their
+adjoint arrays and reverses its steps between `fuse_begin_adjoint_step` and `fuse_end_adjoint_step`
+([](c-abi.md#reverse-mode), [](fortran.md)), and a provider plugin implements `bind_adjoint` and
+`advance_adjoint` ([](providers.md#adjoint-of-a-plugin)). Python has no adjoint entry points yet.
 
 ### Double-double and quad-double
 
