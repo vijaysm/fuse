@@ -38,6 +38,7 @@ execute_process(
           -G "${CMAKE_GENERATOR}"
           "-Dfuse-coupler_DIR=${FUSE_INSTALL_PREFIX}/lib/cmake/fuse-coupler"
           "-DCMAKE_PREFIX_PATH=${_fuse_consumer_prefix_path}"
+          "-DWITH_PHYSICS_KIT=${FUSE_WITH_PHYSICS_KIT}"
           # <pkg>_DIR for every package this build's configure found, so the
           # consumer resolves the same ones (test/CMakeLists.txt, optional).
           ${FUSE_CONSUMER_DEP_ARGS}
@@ -61,4 +62,13 @@ execute_process(
   RESULT_VARIABLE _fuse_rc)
 if(NOT _fuse_rc EQUAL 0)
   message(FATAL_ERROR "the installed-and-linked consumer exited ${_fuse_rc}")
+endif()
+if(FUSE_WITH_PHYSICS_KIT)
+  message(STATUS "install.consumer_find_package: running the physics_kit consumer")
+  execute_process(
+    COMMAND "${CONSUMER_BUILD_DIR}/consumer_physics"
+    RESULT_VARIABLE _fuse_rc)
+  if(NOT _fuse_rc EQUAL 0)
+    message(FATAL_ERROR "the installed-and-linked physics_kit consumer exited ${_fuse_rc}")
+  endif()
 endif()
