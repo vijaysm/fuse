@@ -2420,7 +2420,7 @@ if(TARGET fuse-abi-fortran)
             -DAR=${CMAKE_AR}
             -DLIBRARY=$<TARGET_FILE:fuse-abi-fortran>
             -DMEMBER=fuse_fortran_shim.c.o
-            "-DENTRY_NAMES=version;capabilities;create;destroy;last_error;load_graph;save_graph;setup;field_handle;register_field;initialize;is_coupling_ongoing;begin_step;end_step;run"
+            "-DENTRY_NAMES=version;capabilities;create;destroy;last_error;load_graph;save_graph;setup;field_handle;register_field;initialize;is_coupling_ongoing;begin_step;end_step;run;register_adjoint_field;initialize_adjoint;view_adjoint_field;run_adjoint;begin_adjoint_step;end_adjoint_step"
             -P ${CMAKE_CURRENT_SOURCE_DIR}/abi/fortran/check_exports.cmake)
   set_tests_properties(abi.fortran_exports PROPERTIES LABELS "abi;fortran")
 
@@ -2461,10 +2461,22 @@ if(TARGET fuse-abi-fortran)
     DEPENDS fuse-abi-fortran ${CMAKE_CURRENT_SOURCE_DIR}/abi/fortran/posit_consumer.f90
     COMMENT "Compiling test/abi/fortran/posit_consumer.f90 against ffuse (no link)"
   )
+  # adjoint_consumer.f90 (the reverse sweep: register_adjoint_field, initialize_adjoint,
+  # begin_adjoint_step, end_adjoint_step): the same strict compile; its full run is in the install smoke test.
+  add_custom_command(
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/fuse_abi_fortran_adjoint_check.o
+    COMMAND ${CMAKE_Fortran_COMPILER} -std=f2008 -Wall -Wextra -Werror -fimplicit-none
+            -I$<TARGET_PROPERTY:fuse-abi-fortran,Fortran_MODULE_DIRECTORY>
+            -c ${CMAKE_CURRENT_SOURCE_DIR}/abi/fortran/adjoint_consumer.f90
+            -o ${CMAKE_CURRENT_BINARY_DIR}/fuse_abi_fortran_adjoint_check.o
+    DEPENDS fuse-abi-fortran ${CMAKE_CURRENT_SOURCE_DIR}/abi/fortran/adjoint_consumer.f90
+    COMMENT "Compiling test/abi/fortran/adjoint_consumer.f90 against ffuse (no link)"
+  )
   add_custom_target(fuse_abi_fortran_consumer_check ALL
     DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/fuse_abi_fortran_consumer_check.o
             ${CMAKE_CURRENT_BINARY_DIR}/fuse_abi_fortran_arithmetic_check.o
-            ${CMAKE_CURRENT_BINARY_DIR}/fuse_abi_fortran_posit_check.o)
+            ${CMAKE_CURRENT_BINARY_DIR}/fuse_abi_fortran_posit_check.o
+            ${CMAKE_CURRENT_BINARY_DIR}/fuse_abi_fortran_adjoint_check.o)
   add_test(NAME abi.fortran_consumer_compiles
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
             --target fuse_abi_fortran_consumer_check)
@@ -2591,6 +2603,28 @@ target_include_directories(fuse_abi_arithmetic_element_test PRIVATE ${CMAKE_SOUR
 # A provider plugin's fields in the element types the host allocates for them, and gradient_size.
 fuse_add_gtest(abi typed_provider NO_LAYER_LIB LIBS fuse::abi-static fuse_abi_test_support)
 target_include_directories(fuse_abi_typed_provider_test PRIVATE ${CMAKE_SOURCE_DIR}/src/abi)
+# A provider plugin that implements bind_adjoint and advance_adjoint under the Runner's reverse sweep:
+# the derivative gate's identity, the views the plugin is handed, the reversed windows and every refusal
+# (plans/2026-10-22-universal-number-types.md, U6; docs/dev/abi-design.md, "Adjoint").
+fuse_add_gtest(abi adjoint_provider NO_LAYER_LIB LIBS fuse::abi-static fuse::runtime fuse_abi_test_support)
+target_include_directories(fuse_abi_adjoint_provider_test PRIVATE ${CMAKE_SOURCE_DIR}/src/abi)
+# The reverse sweep through the C table: a caller that drives two components itself reverses each
+# step between begin_adjoint_step and end_adjoint_step; the derivative gate's identity, the reports,
+# the views and every refusal (plans/2026-10-22-universal-number-types.md, U6; docs/user/c-abi.md).
+fuse_add_gtest(abi adjoint_participant LIBS fuse_abi_test_support)
+# A C plugin with an adjoint (abi/plugins/adjoint_provider.c, built once for each of the two components
+# of the coupling), mounted from the graph and reversed through fuse_run_adjoint().
+add_library(fuse_test_provider_adjoint_p SHARED abi/plugins/adjoint_provider.c)
+target_include_directories(fuse_test_provider_adjoint_p PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_compile_definitions(fuse_test_provider_adjoint_p PRIVATE FUSE_TEST_ADJOINT_ROLE=0)
+add_library(fuse_test_provider_adjoint_q SHARED abi/plugins/adjoint_provider.c)
+target_include_directories(fuse_test_provider_adjoint_q PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_compile_definitions(fuse_test_provider_adjoint_q PRIVATE FUSE_TEST_ADJOINT_ROLE=1)
+fuse_add_gtest(abi adjoint_plugin LIBS fuse_abi_test_support)
+add_dependencies(fuse_abi_adjoint_plugin_test fuse_test_provider_adjoint_p fuse_test_provider_adjoint_q)
+target_compile_definitions(fuse_abi_adjoint_plugin_test PRIVATE
+  FUSE_TEST_ADJOINT_PLUGIN_P="$<TARGET_FILE:fuse_test_provider_adjoint_p>"
+  FUSE_TEST_ADJOINT_PLUGIN_Q="$<TARGET_FILE:fuse_test_provider_adjoint_q>")
 
 # review-2026-10-11 abi: AB-9's table-driven negative-test sweep over the
 # participant-ABI refusal codes no test fired.
