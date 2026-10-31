@@ -263,6 +263,14 @@ class AdjointComponent {
                                                const CouplingGraph& graph) = 0;
 
   /// The adjoint of `Component::advance(ctx)`, under the conventions above.
+  ///
+  /// A component that an iteration region steps is reversed once per pass of the adjoint
+  /// iteration of the region (docs/dev/adjoint-schedule.md): this is called several times for
+  /// the same `ctx`, each time with the adjoint arrays restored to what they were on the first call
+  /// except for the delivered values, and must give the same result each time, so it may not
+  /// consume the forward information it recorded. The adjoint is that of the LAST `advance()` of
+  /// that step (the forward run advanced it again after each `restore_state()`), and
+  /// `ctx.iteration` is 0.
   virtual Result<void> advance_adjoint(const StepContext& ctx) = 0;
 };
 
