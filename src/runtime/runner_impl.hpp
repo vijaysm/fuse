@@ -761,6 +761,18 @@ struct AdjointState {
   bool         open = false;
   std::int64_t forward_periods = 0;
   std::int64_t next = -1;
+
+  /// A period is part way through its reverse: `period` is its index and `cursor` the number of
+  /// events of `events` still to reverse (the sweep takes them from the back). A sweep that
+  /// suspends at the step of a component driven from outside (`Runner::resume_period_adjoint()`)
+  /// leaves the period open and carries on from the cursor the next time it is called.
+  bool         in_period = false;
+  std::int64_t period = 0;
+  std::size_t  cursor = 0;
+  /// Some component that steps is driven from outside the Runner (its `advance()` is a no-op and
+  /// the caller does the work): `run_period_adjoint()` refuses such a run, which only
+  /// `resume_period_adjoint()` can reverse.
+  bool         has_external = false;
 };
 
 /// One component advance the runtime owes within a period.
@@ -1824,7 +1836,12 @@ struct Runner::Impl {
   /// and `Runner::run_period_adjoint()` are these, and the adjoint of one
   /// coupling instruction.
   Result<void> init_adjoint(ComponentSet& components, FieldRegistry& adjoint_registry);
-  Result<void> sweep_adjoint_period(ComponentSet& components);
+  /// Reverses events of the open period (opening the next one when none is open) until the end of
+  /// the period, or, when `suspended` is not null, until the step of a component driven from
+  /// outside, which it reports through `suspended` and leaves for the caller to reverse.
+  Result<void> sweep_adjoint(ComponentSet& components, std::optional<ExternalAdvanceRequest>* suspended);
+  /// The context the forward step of this tick had in `period`.
+  StepContext reverse_context(std::size_t tick_index, std::int64_t period) const;
   Result<void> reverse_instruction(std::size_t index);
   Result<void> reverse_tick(ComponentSet& components, std::size_t tick_index, std::int64_t period);
   Result<void> reverse_region(ComponentSet& components, std::size_t loop_index, std::int64_t period);

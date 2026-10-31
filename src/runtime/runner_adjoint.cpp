@@ -80,8 +80,28 @@ Result<void> Runner::run_period_adjoint(ComponentSet& components) {
                   "run_period_adjoint() called before a successful "
                   "initialize_adjoint()");
   }
+  if (impl_->adjoint->has_external) {
+    return refuse("E-ADJ-EXTERNAL",
+                  "run_period_adjoint(): a component is driven from outside the Runner; its adjoint "
+                  "is reversed by the caller between the steps resume_period_adjoint() returns");
+  }
   try {
-    return impl_->sweep_adjoint_period(components);
+    return impl_->sweep_adjoint(components, nullptr);
+  } catch (const std::exception& e) {
+    return refuse("E-ADJ-RUN", std::string{"adjoint period failed: "} + e.what());
+  }
+}
+
+Result<std::optional<ExternalAdvanceRequest>> Runner::resume_period_adjoint(ComponentSet& components) {
+  if (!impl_->initialized || impl_->adjoint == nullptr) {
+    return refuse("E-ADJ-INIT",
+                  "resume_period_adjoint() called before a successful initialize_adjoint()");
+  }
+  try {
+    std::optional<ExternalAdvanceRequest> request;
+    const Result<void> r = impl_->sweep_adjoint(components, &request);
+    if (!r.ok()) return r.error();
+    return request;
   } catch (const std::exception& e) {
     return refuse("E-ADJ-RUN", std::string{"adjoint period failed: "} + e.what());
   }
@@ -220,22 +240,37 @@ Result<void> Runner::Impl::init_adjoint(ComponentSet& components,
   }
 
   // 3. Every component that advances can be reversed.
+  // A component driven from outside the Runner (the participant ABI's begin_step()/end_step()) is
+  // reversed by its caller, between the steps `resume_period_adjoint()` returns; it has an adjoint
+  // when the caller registered one for each of its fields.
+  bool has_external = false;
   for (const Tick& t : ticks) {
     Component& c = components.at(t.slot);
-    if (c.is_externally_driven()) {
-      return refuse("E-ADJ-COMPONENT",
-                    "component '" + c.name() + "' is driven from outside the Runner");
-    }
     if (c.adjoint() == nullptr) {
       return refuse("E-ADJ-COMPONENT",
                     "component '" + c.name() +
-                        "' advances but has no adjoint (Component::adjoint() is null)");
+                        (c.is_externally_driven()
+                             ? "' is driven from outside the Runner and was given no adjoint arrays"
+                             : "' advances but has no adjoint (Component::adjoint() is null)"));
+    }
+    if (c.is_externally_driven()) has_external = true;
+  }
+  for (const detail::RegionRuntime& R : regions) {
+    for (const std::size_t slot : R.component_slots) {
+      if (components.at(slot).is_externally_driven()) {
+        return refuse("E-ADJ-REGION", "iteration region '" + R.name + "' steps component '" +
+                                          components.at(slot).name() +
+                                          "', which is driven from outside the Runner; the adjoint "
+                                          "iteration of a region repeats its steps and cannot ask "
+                                          "the caller for each pass");
+      }
     }
   }
 
   // 4. One adjoint array per arc: the component's own for an arc that aliases
   //    a field, the coupler's for the rest.
   auto st = std::make_unique<AdjointState>();
+  st->has_external = has_external;
   st->bar.assign(slots.size(), nullptr);
   st->bar_device.assign(slots.size(), 0);
   st->owned.assign(slots.size(), {});
@@ -467,13 +502,17 @@ Result<void> Runner::Impl::init_adjoint(ComponentSet& components,
 // The reverse sweep
 // ---------------------------------------------------------------------------
 
-Result<void> Runner::Impl::sweep_adjoint_period(ComponentSet& components) {
+Result<void> Runner::Impl::sweep_adjoint(ComponentSet& components,
+                                         std::optional<ExternalAdvanceRequest>* suspended) {
   AdjointState& A = *adjoint;
+  if (suspended != nullptr) suspended->reset();
 
   // A sweep reverses the periods the forward run completed, newest first. It is
   // opened by the first call after a forward run; running forward again in the
   // middle would pair adjoint steps with the wrong forward ones.
-  if (!A.open || (A.next < 0 && period_index != A.forward_periods)) {
+  if (A.in_period) {
+    // carrying on with a period that suspended at the step of a component driven from outside
+  } else if (!A.open || (A.next < 0 && period_index != A.forward_periods)) {
     if (period_index < 1) {
       return refuse("E-ADJ-ORDER", "run_period_adjoint(): no forward period has run");
     }
@@ -486,11 +525,17 @@ Result<void> Runner::Impl::sweep_adjoint_period(ComponentSet& components) {
                   "began (" + std::to_string(A.forward_periods) + " periods then, " +
                       std::to_string(period_index) + " now)");
   }
-  if (A.next < 0) {
+  if (!A.in_period && A.next < 0) {
     return refuse("E-ADJ-ORDER",
                   "run_period_adjoint(): every forward period has already been reversed");
   }
-  const std::int64_t p = A.next;
+  if (!A.in_period) {
+    A.in_period = true;
+    A.period = A.next;
+    A.cursor = A.events.size();
+    step_failure.reset();
+  }
+  const std::int64_t p = A.period;
 
   // A failure on one rank is carried to the end of the sweep, as `step_period` carries one: the
   // rank goes on executing the collective instructions (an exchange, an agreement point), so
@@ -498,8 +543,8 @@ Result<void> Runner::Impl::sweep_adjoint_period(ComponentSet& components) {
   // local arithmetic on a sweep being abandoned. The failing rank reports its own cause at the
   // end. Without a communicator this is a sweep that stops doing work at its first failure.
   const std::vector<Instruction>& stream = plan.instructions();
-  step_failure.reset();
-  for (std::size_t e = A.events.size(); e-- > 0;) {
+  while (A.cursor > 0) {
+    const std::size_t e = --A.cursor;
     const AdjointState::Event& ev = A.events[e];
     // An iteration region is reversed as a whole when the sweep reaches the end of its interval.
     if (const std::int32_t loop = A.event_loop[e]; loop >= 0) {
@@ -514,14 +559,28 @@ Result<void> Runner::Impl::sweep_adjoint_period(ComponentSet& components) {
       if (!r.ok()) {
         if (!step_failure.has_value()) step_failure = r.error();
         // An Epoch that fails has already reconciled: nothing is left to tell the partners.
-        if (stream[ev.index].kind == OpKind::Epoch) break;
+        if (stream[ev.index].kind == OpKind::Epoch) {
+          A.cursor = 0;
+          break;
+        }
       }
       continue;
     }
     if (step_failure.has_value()) continue;
+    if (suspended != nullptr && components.at(ticks[ev.index].slot).is_externally_driven()) {
+      // The step of a component driven from outside: its adjoint is the caller's to compute, from
+      // the adjoint arrays as they stand now. The sweep carries on below this event when called again.
+      ExternalAdvanceRequest request;
+      request.component = components.at(ticks[ev.index].slot).name();
+      request.ctx = reverse_context(ev.index, p);
+      Kokkos::fence("fuse::adjoint_before_external");
+      *suspended = std::move(request);
+      return Result<void>::success();
+    }
     const Result<void> r = reverse_tick(components, ev.index, p);
     if (!r.ok()) step_failure = r.error();
   }
+  A.in_period = false;
   Kokkos::fence("fuse::adjoint_sweep");
   if (step_failure.has_value()) {
     // A period that failed did not happen: the next call reverses it again.
@@ -533,14 +592,20 @@ Result<void> Runner::Impl::sweep_adjoint_period(ComponentSet& components) {
   return Result<void>::success();
 }
 
-Result<void> Runner::Impl::reverse_tick(ComponentSet& components, std::size_t tick_index,
-                                        std::int64_t period) {
+StepContext Runner::Impl::reverse_context(std::size_t tick_index, std::int64_t period) const {
   const Tick& tick = ticks[tick_index];
   StepContext ctx;  // the context the forward step had (Impl::advance)
   ctx.t_begin = Rational{period} * plan.period() + tick.time;
   ctx.t_end = ctx.t_begin + tick.dt;
   ctx.step = period * tick.per_period + tick.local_step;
   ctx.iteration = 0;
+  return ctx;
+}
+
+Result<void> Runner::Impl::reverse_tick(ComponentSet& components, std::size_t tick_index,
+                                        std::int64_t period) {
+  const Tick& tick = ticks[tick_index];
+  const StepContext ctx = reverse_context(tick_index, period);
   Component& comp = components.at(tick.slot);
   if (!ctx.valid()) {
     return refuse("E-RT-STEP", "step context [" + ctx.t_begin.to_string() + ", " +

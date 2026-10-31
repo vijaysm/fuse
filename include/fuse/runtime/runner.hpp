@@ -526,19 +526,22 @@ class Runner {
   ///
   /// The coupling operators are linear with weights that do not depend on the
   /// field values, so their adjoint needs no stored forward values. What this
-  /// supports in this stage: binary64 fields in host memory; Source, Sink,
-  /// Remap (through `LinearOperator::apply_transpose`, the transpose verified by
-  /// the derivative gate), Sample and Accumulate by sum, mean, integral or
-  /// instant value, Merge by first, sum or mean, Scale, Extrapolate of order 0,
-  /// Interpolate without a time history, Transport within one process,
-  /// Constrain, Diagnose and Epoch. Refused by name (E-ADJ-*, listed in the
-  /// design note): iteration regions, minimum and maximum accumulation,
-  /// space-time Interpolate and Sample, a Transport between processes, a
-  /// distributed nodal Remap, Arithmetic and Storage value types, device
-  /// execution, an accumulation window that straddles a period boundary, and
-  /// every operator with no adjoint (Relax, Residual, ExternalDelivery, ...).
-  /// Every component that advances must return an `AdjointComponent` from
-  /// `Component::adjoint()` (E-ADJ-COMPONENT).
+  /// supports: binary64 fields in host or device memory (the sweep runs on the
+  /// execution space of the Runner); Source, Sink, Remap (through
+  /// `LinearOperator::apply_transpose`, the transpose verified by the
+  /// derivative gate), Sample and Accumulate by sum, mean, integral or instant
+  /// value, Merge by first, sum or mean, Scale, Extrapolate of order 0,
+  /// Interpolate without a time history, Transport between processes
+  /// (`Transport::move_adjoint`), Constrain, Diagnose and Epoch, and an
+  /// ordinary iteration region on one process, reversed as the fixed point it
+  /// converged to. Refused by name (E-ADJ-*, listed in the design note):
+  /// minimum and maximum accumulation, space-time Interpolate and Sample, a
+  /// region solved by Newton's method, scoped to a time window or spanning
+  /// several processes, a distributed nodal Remap, Arithmetic and Storage value
+  /// types, an accumulation window that straddles a period boundary, and every
+  /// operator with no adjoint (Relax, Residual outside a region,
+  /// ExternalDelivery, ...). Every component that advances must return an
+  /// `AdjointComponent` from `Component::adjoint()` (E-ADJ-COMPONENT).
   Result<void> initialize_adjoint(ComponentSet& components,
                                   FieldRegistry& adjoint_registry);
 
@@ -550,8 +553,22 @@ class Runner {
   /// forward periods reverses period N-1, the next N-2, and so on. The adjoint
   /// variables of the final state are the seed: the caller writes them into the
   /// components' adjoint arrays before the first call. Running a forward period
-  /// between two calls is refused (E-ADJ-ORDER).
+  /// between two calls is refused (E-ADJ-ORDER). A run with a component driven from
+  /// outside the Runner (`Component::is_externally_driven()`) is refused here
+  /// (E-ADJ-EXTERNAL): use `resume_period_adjoint()`.
   Result<void> run_period_adjoint(ComponentSet& components);
+
+  /// The reverse of `resume_period()`: reverses the open period (the newest one not yet
+  /// reversed, when none is open) up to the step of the next component driven from outside the
+  /// Runner and returns that step, with the `StepContext` the forward step had; every instruction
+  /// after it in the forward order has been reversed, so the adjoint arrays of the component's
+  /// Provides fields hold what `AdjointComponent::advance_adjoint()` is given. The caller reverses
+  /// the step itself (the component's own adjoint, in the adjoint arrays it registered) and calls
+  /// again to carry on below that step. `std::nullopt` means the period is reversed completely.
+  /// The component must have an `AdjointComponent` (E-ADJ-COMPONENT) so that its adjoint arrays
+  /// are bound; its `advance_adjoint()` is never called. Refused for a component inside an
+  /// iteration region (E-ADJ-REGION).
+  Result<std::optional<ExternalAdvanceRequest>> resume_period_adjoint(ComponentSet& components);
 
   /// the issue tracker fix: resumes the current period's instruction
   /// stream from wherever it last suspended (or begins a new period, if
