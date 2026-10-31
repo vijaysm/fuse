@@ -90,6 +90,7 @@ struct Spec {
   double a_f = 0.0, c_f = 0.0, a_s = 0.0, c_s = 0.0;
   Fault fluid_fault = Fault::None;
   Fault solid_fault = Fault::None;
+  bool region = false;  // the channel across ranks is iterated to a convergence measure
 };
 
 fuse::RankSet fluid_ranks(Shape s) {
@@ -120,6 +121,17 @@ class MpiLin final : public fuse::Component, public fuse::AdjointComponent {
   [[nodiscard]] std::string name() const override { return name_; }
   [[nodiscard]] fuse::AdjointComponent* adjoint() override { return this; }
   [[nodiscard]] std::uint64_t capabilities() const override { return fuse::kCapabilityRollback; }
+
+  fuse::Result<void> save_state() override {
+    saved_out_ = out_;
+    saved_in_ = in_;
+    return fuse::Result<void>::success();
+  }
+  fuse::Result<void> restore_state() override {
+    out_ = saved_out_;
+    in_ = saved_in_;
+    return fuse::Result<void>::success();
+  }
 
   fuse::Result<void> register_fields(FieldRegistry& reg, const CouplingGraph& g) override {
     const auto cid = g.find_component(name_);
@@ -180,6 +192,7 @@ class MpiLin final : public fuse::Component, public fuse::AdjointComponent {
   double a_, c_;
   Fault fault_;
   bool has_out_ = false, has_in_ = false;
+  std::vector<double> saved_out_, saved_in_;
 };
 
 std::function<fuse::Result<void>(fuse::Transport&)> mpi_comm_setup() {
@@ -232,6 +245,12 @@ struct Net {
                                                        .intent = fuse::Intent::Requires});
       const auto back = g.add_channel("back", sout, fin);
       g.channel(back).lag(1).allow_time_level_mismatch("the loop is closed by one step of lag");
+    }
+    if (s.region) {
+      fuse::ConvergenceCriterion crit;
+      crit.add(fuse::Converged::Relative(1e-6, "link"));
+      g.add_iteration_region(fuse::IterationRegionDecl{
+          .name = "outer", .channels = {link}, .max_iterations = 4, .convergence = crit});
     }
     // each component's own decomposition, laid out over its own ranks
     std::vector<fuse::RankSet> placements;
@@ -614,6 +633,23 @@ TEST(RuntimeAdjointMpi, AFailureOnOneRankEndsTheSweepOnEveryRankThatExchangesWit
   // the failed period did not happen: asking again reverses it again (and fails again, the same way)
   const auto again = n->runner->run_period_adjoint(n->components);
   EXPECT_FALSE(again.ok());
+}
+
+// An iteration region whose components are on different ranks agrees its convergence over the ranks,
+// and its adjoint iteration would have to as well: refused, on every rank, by name.
+TEST(RuntimeAdjointMpi, AnIterationRegionAcrossRanksIsRefused) {
+  FUSE_REQUIRE_AT_LEAST_RANKS(2);
+  Spec s;
+  s.region = true;
+  s.a_f = 0.5;
+  s.a_s = 0.5;
+  auto n = std::make_unique<Net>(s);
+  ASSERT_TRUE(n->init_forward().ok());
+  ASSERT_TRUE(n->runner->run_period(n->components).ok());
+  const auto r = n->init_adjoint();
+  ASSERT_FALSE(r.ok()) << "rank " << world_rank();
+  EXPECT_EQ(r.error().code, "E-ADJ-REGION") << r.error().message;
+  EXPECT_NE(r.error().message.find("spans several ranks"), std::string::npos) << r.error().message;
 }
 
 // ---------------------------------------------------------------------------

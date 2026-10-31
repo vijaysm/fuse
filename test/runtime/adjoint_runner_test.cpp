@@ -326,7 +326,11 @@ struct Spec {
   int p_steps_per_period = 1;  // the number of steps of p in one period, by construction
   bool second = false;         // a second producer into q's field, merged with the first
   MergeOp merge = MergeOp::Sum;
-  bool region = false;
+  bool region = false;       // the channel p -> q is iterated to a convergence measure
+  bool region_both = false;  // with a loop, the channel q -> p is iterated with it
+  double region_tolerance = 1e-6;
+  int region_max_iterations = 12;
+  fuse::AccelKind region_accel = fuse::AccelKind::None;
   bool spacetime = false;    // a linear space-time projection on the channel p -> q
   double relax = 0.0;        // an under-relaxation factor on the channel p -> q, 0 for none
   bool same_region = false;  // q's fields are on p's region (no remap); q_cells is then p_cells
@@ -370,6 +374,7 @@ std::unique_ptr<Net> make_net(const Spec& s) {
                                                  .units = s.q_units, .conservation = s.conservation,
                                                  .intent = fuse::Intent::Requires});
   const auto link = g.add_channel("link", out, in);
+  std::vector<std::remove_cv_t<decltype(link)>> region_channels{link};
   if (s.accum != AccumOp::Instant) g.channel(link).accumulate(s.accum);
   if (s.extrapolate >= 0) g.channel(link).extrapolate(s.extrapolate);
   if (s.spacetime) g.channel(link).spacetime(fuse::TemporalBasis::Linear, 1);
@@ -388,12 +393,15 @@ std::unique_ptr<Net> make_net(const Spec& s) {
                                                     .units = s.p_units, .intent = fuse::Intent::Requires});
     const auto back = g.add_channel("back", qout, pin);
     g.channel(back).lag(1).allow_time_level_mismatch("the loop is closed by one step of lag");
+    if (s.region_both) region_channels.push_back(back);
   }
   if (s.region) {
     fuse::ConvergenceCriterion crit;
-    crit.add(fuse::Converged::Relative(1e-6, "link"));
+    crit.add(fuse::Converged::Relative(s.region_tolerance, "link"));
+    if (s.region_both) crit.add(fuse::Converged::Relative(s.region_tolerance, "back"));
     g.add_iteration_region(fuse::IterationRegionDecl{
-        .name = "outer", .channels = {link}, .max_iterations = 12, .convergence = crit});
+        .name = "outer", .channels = region_channels, .max_iterations = s.region_max_iterations,
+        .convergence = crit, .acceleration = fuse::AccelConfig{.kind = s.region_accel}});
   }
   EXPECT_TRUE(n->backend.load(g.mesh(m1)).ok());
   EXPECT_TRUE(n->backend.load(g.mesh(m2)).ok());
@@ -555,7 +563,7 @@ struct GateRun {
 };
 
 /// The derivative gate's adjoint identity for the composed coupling of `s`.
-GateRun gate(const Spec& s, int periods, int draws = 3) {
+GateRun gate(const Spec& s, int periods, int draws = 3, double c = fuse::linalg::kAdjointGateConstant) {
   GateRun out;
   const Dims d = dims_of(s, periods);
   const fuse::linalg::HostApplyFn fwd = [&](std::span<const double> x, std::span<double> y) -> fuse::Result<void> {
@@ -581,7 +589,7 @@ GateRun gate(const Spec& s, int periods, int draws = 3) {
   for (int k = 0; k < draws; ++k) {
     const std::vector<double> x = random_vector(d.nx, 100 + static_cast<std::uint64_t>(k));
     const std::vector<double> y = random_vector(d.ny, 200 + static_cast<std::uint64_t>(k));
-    const auto r = fuse::linalg::adjoint_gate(d.ny, d.nx, fwd, adj, x, y, norm.value());
+    const auto r = fuse::linalg::adjoint_gate(d.ny, d.nx, fwd, adj, x, y, norm.value(), c);
     if (!r.ok()) {
       out.error = r.error().code + ": " + r.error().message;
       out.all_passed = false;
@@ -1089,10 +1097,217 @@ TEST(RuntimeAdjointDevice, RefusesADeviceAdjointArrayForAFieldInHostMemory) {
 }
 #endif
 
-TEST(RuntimeAdjoint, RefusesAnIterationRegion) {
+// ---------------------------------------------------------------------------
+// Iteration regions: the adjoint of the fixed point the forward sweeps converged to
+// ---------------------------------------------------------------------------
+
+namespace {
+
+struct RegionCase {
+  const char* name;
+  Spec spec;
+  int periods;
+};
+
+/// Regions that converge to a tight tolerance, so that what the identity measures is the adjoint
+/// iteration and not the forward stopping criterion.
+std::vector<RegionCase> region_cases() {
+  std::vector<RegionCase> c;
+  {
+    Spec s;  // one channel in the region: the iterate does not depend on itself
+    s.region = true;
+    s.a_p = 0.9;
+    s.a_q = 1.0;
+    s.c_q = 0.4;
+    c.push_back({"region_one_way", s, 2});
+  }
+  {
+    Spec s;  // a two-way coupling, weak
+    s.topology = Topology::Loop;
+    s.region = true;
+    s.region_both = true;
+    s.a_p = 0.9;
+    s.c_p = 0.4;
+    s.a_q = 0.8;
+    s.c_q = 0.3;
+    c.push_back({"region_two_way_weak", s, 3});
+  }
+  {
+    Spec s;  // stronger: more sweeps forward and more passes backward
+    s.topology = Topology::Loop;
+    s.region = true;
+    s.region_both = true;
+    s.a_p = 0.95;
+    s.c_p = 0.8;
+    s.a_q = 0.7;
+    s.c_q = 0.7;
+    c.push_back({"region_two_way_strong", s, 2});
+  }
+  {
+    Spec s;  // through a remap and with three values per cell
+    s.topology = Topology::Loop;
+    s.region = true;
+    s.region_both = true;
+    s.comps = 3;
+    s.a_p = 0.9;
+    s.c_p = 0.5;
+    s.a_q = 0.8;
+    s.c_q = 0.4;
+    c.push_back({"region_two_way_remap_3_components", s, 2});
+  }
+  for (RegionCase& rc : c) {
+    rc.spec.region_tolerance = 1e-13;
+    rc.spec.region_max_iterations = 400;
+  }
+  return c;
+}
+
+}  // namespace
+
+TEST(RuntimeAdjoint, AdjointIdentityHoldsThroughAnIterationRegion) {
+  const double eps = std::numeric_limits<double>::epsilon();
+  double worst = 0.0;
+  for (const RegionCase& rc : region_cases()) {
+    // The gate's bound plus an allowance for the stopping criterion of the two iterations, in
+    // units of eps: twice tolerance / eps. The defect measured over these cases is at most 0.2
+    // of tolerance / eps, so the allowance is a factor of ten above what is observed.
+    const double c = fuse::linalg::kAdjointGateConstant + 2.0 * rc.spec.region_tolerance / eps;
+    const GateRun r = gate(rc.spec, rc.periods, 3, c);
+    EXPECT_TRUE(r.error.empty()) << rc.name << ": " << r.error;
+    EXPECT_TRUE(r.all_passed) << rc.name << ": worst ratio " << r.worst_ratio << " against c = " << c;
+    EXPECT_GT(r.norm, 0.0) << rc.name;
+    worst = std::max(worst, r.worst_ratio);
+    std::fprintf(stderr, "[adjoint] %-34s ||G||_est = %-10.4g worst ratio = %.3f (c = %.0f)\n", rc.name, r.norm,
+                 r.worst_ratio, c);
+  }
+  std::fprintf(stderr, "[adjoint] max observed adjoint ratio through a region = %.3f\n", worst);
+}
+
+namespace {
+
+/// Forward run to the end of `periods`, then the whole reverse sweep seeded with ones on every
+/// field, and the code of the error of the first call that fails (empty when none does).
+std::string sweep_code(const Spec& s, int periods) {
+  auto n = make_net(s);
+  if (auto r = init_forward(*n); !r.ok()) return "forward:" + r.error().code;
+  if (auto r = n->runner->run(n->components, periods); !r.ok()) return "forward-run:" + r.error().code;
+  if (auto r = init_adjoint(*n); !r.ok()) return r.error().code;
+  for (Lin* c : members(*n)) {
+    for (double& v : c->out_bar_) v = 1.0;
+    for (double& v : c->in_bar_) v = 1.0;
+  }
+  for (int i = 0; i < periods; ++i) {
+    if (auto r = n->runner->run_period_adjoint(n->components); !r.ok()) return r.error().code;
+  }
+  return "";
+}
+
+}  // namespace
+
+// The adjoint of the converged iteration is the matrix the forward run applied, transposed, entry
+// by entry: the matrix is recovered from the forward run (a unit vector in, a column out) and each
+// row of it is compared with the adjoint of the unit vector that selects it. The identity above
+// could be met by two wrong maps that are each other's transpose; this cannot.
+TEST(RuntimeAdjoint, TheAdjointThroughAnIterationRegionIsTheTransposeOfTheMatrixTheForwardRunApplied) {
   Spec s;
+  s.topology = Topology::Loop;
   s.region = true;
-  EXPECT_EQ(refusal_code(s), "E-ADJ-REGION");
+  s.region_both = true;
+  s.same_region = true;
+  s.p_cells = 2;
+  s.q_cells = 2;
+  s.a_p = 0.9;
+  s.c_p = 0.4;
+  s.a_q = 0.8;
+  s.c_q = 0.3;
+  s.region_tolerance = 1e-13;
+  s.region_max_iterations = 400;
+  const int periods = 2;
+  const Dims d = dims_of(s, periods);
+  std::vector<std::vector<double>> g(d.nx);  // column j of G
+  for (std::size_t j = 0; j < d.nx; ++j) {
+    std::vector<double> e(d.nx, 0.0);
+    e[j] = 1.0;
+    auto y = forward_map(s, periods, e);
+    ASSERT_TRUE(y.ok()) << y.error().message;
+    g[j] = y.value();
+  }
+  double worst = 0.0, scale = 0.0;
+  for (std::size_t i = 0; i < d.ny; ++i) {
+    std::vector<double> w(d.ny, 0.0);
+    w[i] = 1.0;
+    auto xbar = adjoint_map(s, periods, w);
+    ASSERT_TRUE(xbar.ok()) << xbar.error().message;
+    for (std::size_t j = 0; j < d.nx; ++j) {
+      worst = std::max(worst, std::abs(xbar.value()[j] - g[j][i]));
+      scale = std::max(scale, std::abs(g[j][i]));
+    }
+  }
+  // Measured: a difference of 0.2 tolerance times the largest entry; twice that is allowed, the
+  // same allowance as the gate's above.
+  std::fprintf(stderr, "[adjoint] region: largest entry %.4g, largest difference of G^T and the adjoint %.3g\n", scale, worst);
+  EXPECT_GT(scale, 0.5);
+  EXPECT_LE(worst, 2.0 * s.region_tolerance * scale);
+}
+
+// The control for the iteration: the loop with a component whose adjoint leaves out the factor of
+// its state fails the same gate through a region, by more than the whole allowance.
+TEST(RuntimeAdjoint, AWrongComponentAdjointIsDetectedThroughAnIterationRegion) {
+  RegionCase rc = region_cases()[1];
+  rc.spec.p_fault = Fault::SkipRecurrence;
+  const double c = fuse::linalg::kAdjointGateConstant + 2.0 * rc.spec.region_tolerance / std::numeric_limits<double>::epsilon();
+  const GateRun r = gate(rc.spec, rc.periods, 3, c);
+  EXPECT_TRUE(r.error.empty()) << r.error;
+  EXPECT_FALSE(r.all_passed);
+  EXPECT_GT(r.worst_ratio, 100.0 * c) << "worst ratio " << r.worst_ratio;
+}
+
+// A forward iteration that is not a contraction has no fixed point to differentiate: the adjoint
+// iteration does not converge, and that is an error, not a derivative.
+TEST(RuntimeAdjoint, AnAdjointIterationThatDoesNotConvergeIsAnErrorNotADerivative) {
+  Spec s;
+  s.topology = Topology::Loop;
+  s.region = true;
+  s.region_both = true;
+  s.same_region = true;
+  s.p_cells = 2;
+  s.q_cells = 2;
+  s.c_p = 1.5;
+  s.c_q = 1.2;
+  s.region_max_iterations = 30;
+  EXPECT_EQ(sweep_code(s, 1), "E-ADJ-REGION-NOCONVERGE");
+  s.c_p = 0.4;
+  s.c_q = 0.3;
+  EXPECT_EQ(sweep_code(s, 1), "") << "the same coupling, with a contraction";
+}
+
+TEST(RuntimeAdjoint, RefusesAnIterationRegionSolvedByNewton) {
+  Spec s;
+  s.topology = Topology::Loop;
+  s.region = true;
+  s.region_both = true;
+  s.same_region = true;
+  s.region_accel = fuse::AccelKind::Newton;
+  std::fprintf(stderr, "[adjoint] newton region: %s\n", sweep_code(s, 1).c_str());
+  EXPECT_EQ(sweep_code(s, 1), "E-ADJ-REGION");
+}
+
+// The component steps of a region are reversed once per pass, each time for the same step.
+TEST(RuntimeAdjoint, TheStepsOfARegionAreReversedOncePerPassForTheSameStep) {
+  RegionCase rc = region_cases()[1];
+  const Dims d = dims_of(rc.spec, 1);
+  const auto run = reverse_run(rc.spec, 1, std::vector<double>(d.ny, 1.0));
+  ASSERT_TRUE(run.ok()) << run.error().message;
+  int reverse_steps = 0;
+  std::int64_t step = -1;
+  for (const Call& c : run.value()->log) {
+    if (c.who != "p" || !c.reverse) continue;
+    ++reverse_steps;
+    if (step < 0) step = c.step;
+    EXPECT_EQ(c.step, step);
+  }
+  std::fprintf(stderr, "[adjoint] region: the step of p was reversed %d times in one period\n", reverse_steps);
+  EXPECT_GE(reverse_steps, 2);
 }
 
 TEST(RuntimeAdjoint, RefusesAComponentWithoutAnAdjoint) {
