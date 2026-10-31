@@ -419,3 +419,195 @@ TEST(ExplicitIntegrator, RefusesAnEmbeddedControllerOverANonEmbeddedTableau) {
 
 }  // namespace
 }  // namespace fuse::num
+
+// S8 physics-kit, Stage B Round 2, task item 4 (SSP methods): SSPRK33/SSPRK104 run
+// through ExplicitIntegrator unchanged (both are plain Erk-family tableaus); their
+// SSP property is verified here by a monotonicity test, not re-proving the order
+// (order_conditions_test.cpp's own RoundTwoTableaus suite already does that
+// algebraically) and not the SSP coefficient itself (ssp_coefficient.hpp's own
+// computation, cross-checked in butcher_tableau_test.cpp... actually verified via the
+// factory functions' own use of `ssp_coefficient_from_shu_osher`, reproducing the
+// published 1 and 6 -- see butcher_tableau.hpp's own ssprk33_tableau()/
+// ssprk104_tableau() doc comments).
+namespace fuse::num {
+namespace {
+
+// A periodic first-order upwind advection discretisation, y_i' = (y_{i-1} - y_i)/dx
+// (Gottlieb, Shu & Tadmor's own standard SSP test problem, SIAM Review 43 (2001),
+// Section 2's own illustration): forward Euler on this LINEAR system is a CONVEX
+// COMBINATION of y_i and y_{i-1} whenever 0 <= h/dx <= 1 (h_FE = dx exactly), which is
+// what makes it total-variation-diminishing (TVD) there -- the textbook h_FE this
+// SSP coefficient's own "h <= C * h_FE" bound refers to.
+TemporalProblem<double> periodic_upwind_advection(int n, double dx) {
+  TemporalProblem<double> p;
+  p.dimension = static_cast<std::size_t>(n);
+  p.rhs = [n, dx](double, std::span<const double> y, std::span<double> out) -> Result<void> {
+    for (int i = 0; i < n; ++i) {
+      const int im1 = (i == 0) ? n - 1 : i - 1;
+      out[static_cast<std::size_t>(i)] = (y[static_cast<std::size_t>(im1)] - y[static_cast<std::size_t>(i)]) / dx;
+    }
+    return Result<void>::success();
+  };
+  return p;
+}
+
+double total_variation_periodic(const std::vector<double>& y) {
+  double tv = 0.0;
+  const std::size_t n = y.size();
+  for (std::size_t i = 0; i < n; ++i) {
+    const std::size_t im1 = (i == 0) ? n - 1 : i - 1;
+    tv += std::fabs(y[i] - y[im1]);
+  }
+  return tv;
+}
+
+std::vector<double> step_function_initial_data(int n) {
+  std::vector<double> y(static_cast<std::size_t>(n), 0.0);
+  for (int i = 0; i < n / 2; ++i) y[static_cast<std::size_t>(i)] = 1.0;
+  return y;
+}
+
+}  // namespace
+
+// The task's own BOTH-DIRECTIONS instruction: h <= C * h_FE preserves the initial
+// total variation (no new oscillation can appear from a TVD scheme); h > C * h_FE is
+// NOT guaranteed to, and MEASURED here to actually violate it for a step comfortably
+// past the method's own SSP coefficient -- both halves run for every SSP tableau this
+// round adds, over several steps (one step alone can be deceptively forgiving).
+TEST(ExplicitIntegrator, SspMethodsPreserveMonotonicityWithinTheirCoefficientAndViolateItBeyond) {
+  struct Case { const char* name; ButcherTableau tableau; };
+  const std::vector<Case> cases = {
+      {"SSPRK33", ssprk33_tableau()},
+      {"SSPRK104", ssprk104_tableau()},
+  };
+  constexpr int n = 20;
+  constexpr double dx = 1.0;
+  for (const auto& c : cases) {
+    ASSERT_TRUE(c.tableau.ssp_coefficient.has_value());
+    const double C = *c.tableau.ssp_coefficient;
+
+    // Within the coefficient: h = 0.9 * C * h_FE, 10 steps.
+    {
+      auto problem = periodic_upwind_advection(n, dx);
+      auto y0 = step_function_initial_data(n);
+      const double tv0 = total_variation_periodic(y0);
+      ExplicitIntegrator<double> integ(c.tableau);
+      std::vector<double> y = y0;
+      const double h = 0.9 * C * dx;
+      double t = 0.0;
+      double worst_tv = tv0;
+      for (int step = 0; step < 10; ++step) {
+        auto r = integ.step(problem, t, h, y);
+        ASSERT_TRUE(r.ok()) << c.name << ": " << r.error().code;
+        t = r.value().t_new;
+        worst_tv = std::max(worst_tv, total_variation_periodic(y));
+      }
+      EXPECT_LE(worst_tv, tv0 + 1e-9)
+          << c.name << ": h = 0.9*C*h_FE (C=" << C << ") must not increase total variation, "
+          << "initial TV = " << tv0 << ", worst observed = " << worst_tv;
+      std::printf("[SSP within] %-9s C=%.4g h=%.4g tv0=%.6f worst=%.6f\n", c.name, C, h, tv0, worst_tv);
+    }
+
+    // Beyond the coefficient: h = 1.5 * C * h_FE -- MEASURED to actually violate
+    // monotonicity (not merely "not guaranteed to preserve it"), over enough steps
+    // that a one-step fluke cannot hide the effect.
+    {
+      auto problem = periodic_upwind_advection(n, dx);
+      auto y0 = step_function_initial_data(n);
+      const double tv0 = total_variation_periodic(y0);
+      ExplicitIntegrator<double> integ(c.tableau);
+      std::vector<double> y = y0;
+      const double h = 1.5 * C * dx;
+      double t = 0.0;
+      double worst_tv = tv0;
+      for (int step = 0; step < 10; ++step) {
+        auto r = integ.step(problem, t, h, y);
+        ASSERT_TRUE(r.ok()) << c.name << ": " << r.error().code;
+        t = r.value().t_new;
+        worst_tv = std::max(worst_tv, total_variation_periodic(y));
+      }
+      EXPECT_GT(worst_tv, tv0 * 1.01)
+          << c.name << ": h = 1.5*C*h_FE should measurably violate the TV bound "
+          << "(initial TV = " << tv0 << ", worst observed = " << worst_tv << ") -- "
+          << "if this fails, the chosen step/problem does not exercise the SSP limit "
+          << "the way intended and needs a different multiplier, not a removed assertion";
+      std::printf("[SSP beyond] %-9s C=%.4g h=%.4g tv0=%.6f worst=%.6f\n", c.name, C, h, tv0, worst_tv);
+    }
+  }
+}
+
+// SSPRK104's own Butcher form was derived by hand (Shu-Osher substitution,
+// butcher_tableau.hpp's own ssprk104_tableau() doc comment), not copied from a
+// published Butcher table -- proved here against the LITERAL recursion (Ketcheson
+// 2008's own Pseudocode 3) run step by step on the same fixed step sequence.
+// EXPECT_NEAR at 1e-13, not EXPECT_EQ: the two computations accumulate the SAME sums
+// in a DIFFERENT order (the recursion's own chained intermediate "u" values vs the
+// derived A/B/C matrix's row-by-row stage loop), so floating-point non-associativity
+// can differ in the last bit or two even though both are mathematically identical --
+// unlike round 1's own byte-identical reference checks, which ran the IDENTICAL
+// stage-by-stage Butcher loop both times.
+TEST(ExplicitIntegrator, Ssprk104MatchesTheShuOsherRecursion) {
+  constexpr double h = 0.1;
+  const int n_steps = 5;
+  auto rhs = [](double, const std::vector<double>& y) {
+    std::vector<double> out(y.size());
+    for (std::size_t i = 0; i < y.size(); ++i) out[i] = -2.0 * y[i] + 0.3 * y[i] * y[i];
+    return out;
+  };
+  std::vector<double> y_recursion{1.0};
+  const double h6 = h / 6.0;
+  for (int step = 0; step < n_steps; ++step) {
+    std::vector<double> u0 = y_recursion;
+    std::vector<double> u = u0;
+    std::vector<std::vector<double>> stages;  // u1..u5 (0-indexed 0..4)
+    stages.push_back(u);  // u1 = u0
+    for (int i = 0; i < 4; ++i) {
+      auto g = rhs(0.0, stages.back());
+      std::vector<double> next(u0.size());
+      for (std::size_t m = 0; m < u0.size(); ++m) next[m] = stages.back()[m] + h6 * g[m];
+      stages.push_back(next);
+    }
+    // stages[4] = u5
+    auto g5 = rhs(0.0, stages[4]);
+    std::vector<double> u6(u0.size());
+    for (std::size_t m = 0; m < u0.size(); ++m) {
+      u6[m] = 0.6 * u0[m] + 0.4 * (stages[4][m] + h6 * g5[m]);
+    }
+    stages.push_back(u6);  // stages[5] = u6
+    for (int i = 0; i < 4; ++i) {  // u7, u8, u9, u10 -- FOUR stages, not three
+      auto g = rhs(0.0, stages.back());
+      std::vector<double> next(u0.size());
+      for (std::size_t m = 0; m < u0.size(); ++m) next[m] = stages.back()[m] + h6 * g[m];
+      stages.push_back(next);
+    }
+    // stages[9] = u10
+    auto g10 = rhs(0.0, stages[9]);
+    std::vector<double> u_plus(u0.size());
+    for (std::size_t m = 0; m < u0.size(); ++m) {
+      u_plus[m] = (1.0 / 25.0) * u0[m] + (9.0 / 25.0) * (stages[4][m] + h6 * g5[m]) +
+                 (3.0 / 5.0) * (stages[9][m] + h6 * g10[m]);
+    }
+    y_recursion = u_plus;
+  }
+
+  TemporalProblem<double> problem;
+  problem.dimension = 1;
+  problem.rhs = [](double, std::span<const double> y, std::span<double> out) -> Result<void> {
+    out[0] = -2.0 * y[0] + 0.3 * y[0] * y[0];
+    return Result<void>::success();
+  };
+  ExplicitIntegrator<double> integ(ssprk104_tableau());
+  std::vector<double> y_tableau{1.0};
+  double t = 0.0;
+  for (int step = 0; step < n_steps; ++step) {
+    auto r = integ.step(problem, t, h, y_tableau);
+    ASSERT_TRUE(r.ok()) << r.error().code;
+    t = r.value().t_new;
+  }
+  ASSERT_EQ(y_recursion.size(), y_tableau.size());
+  EXPECT_NEAR(y_recursion[0], y_tableau[0], 1e-13)
+      << "SSPRK104's Butcher-form step must match the literal Shu-Osher recursion to "
+         "round-off, over " << n_steps << " steps on a nonlinear test problem";
+}
+
+}  // namespace fuse::num

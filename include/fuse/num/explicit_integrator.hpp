@@ -40,11 +40,11 @@
 namespace fuse::num {
 
 /// `ExplicitIntegrator<Value>::step()`'s own refusals, beyond the ones
-/// `EmbeddedController::propose` already names.
-inline constexpr const char* kNoRhsCode = "E-INTEGRATOR-NO-RHS";
+/// `EmbeddedController::propose` already names. `kNoRhsCode`/`kWrongFamilyCode`/
+/// `kDimensionMismatchCode` moved to `integrator.hpp` in Round 2 (shared by every
+/// family); `kMassUnsupportedCode` stays here, since only THIS family refuses on a
+/// mass matrix rather than honouring it.
 inline constexpr const char* kMassUnsupportedCode = "E-INTEGRATOR-MASS-UNSUPPORTED";
-inline constexpr const char* kWrongFamilyCode = "E-INTEGRATOR-WRONG-FAMILY";
-inline constexpr const char* kDimensionMismatchCode = "E-INTEGRATOR-DIMENSION-MISMATCH";
 
 template <IntegratorValue Value>
 class ExplicitIntegrator final : public Integrator<Value> {
