@@ -2239,6 +2239,7 @@ add_test(NAME install.consumer_find_package
           -DCMAKE_GENERATOR=${CMAKE_GENERATOR}
           "-DCMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}"
           "-DFUSE_CONSUMER_DEP_ARGS=${_fuse_consumer_dep_args}"
+          "-DFUSE_WITH_PHYSICS_KIT=${FUSE_ENABLE_PHYSICS_KIT}"
           -P ${CMAKE_CURRENT_SOURCE_DIR}/install_consumer/run-smoke-test.cmake
 )
 set_tests_properties(install.consumer_find_package PROPERTIES
