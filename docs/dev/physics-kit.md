@@ -190,3 +190,115 @@ be built or run at tier 0 in the sandbox, so the gap is named, not guessed); pri
 2-D edge extraction and `OrientationTransform` are deferred to with the track's reasons. (the
 vendored `Type != Hexagon || Type != Unstructured` tautology) was checked against the vendored lines
 and is a real defect, fixed in the port as a refusal with a test and a reverting mutation row.
+
+##: prism, pyramid, orientation and the MeshView binding
+
+Owner instruction 2026-10-31: "Execute FE first completely and then" -- every item
+ deferred (above) closes in this wave (DOF map, algebraic system, assembly,
+`numerics/linear`, `numerics/nonlinear`) does not start.
+
+### What is added
+
+`fe::GeometryVariant`/`ReferenceTopology`: Prism6/15/18 and Pyramid5/13/14 (node tables, side
+tables -- Prism6's sides are 3 quadrilateral + 2 triangular, Pyramid5's are 4 triangular + 1
+quadrilateral), the serendipity `Quad8` (needed only as Prism15's/Pyramid13's one quadrilateral
+side, never a stand-alone basis family), the pyramid's rational collapsed-coordinate basis
+(`pyramid_candidates`/`pyramid_nodal_coefficients`, a native Gauss-Jordan matrix inversion with a
+derived condition-number refusal threshold, replacing KARMA's Eigen `ColPivHouseholderQR` --
+justified because the pyramid's own candidate-term count equals its node count exactly at both
+order 1 and 2, verified by hand, so KARMA's column-pivoted selection reduces to pure inversion
+here).
+
+`fe::Quadrature`: Prism (triangle-base Gauss-Jacobi(1) times an independent Gauss-Legendre line --
+a stronger, HYBRID exactness guarantee than a plain total-degree claim, since the two axes are
+Jacobian-decoupled) and Pyramid (single-collapse Gauss-Jacobi(alpha=2), the technique KARMA's own
+`create_product_quadrature()` comment already named for this axis).
+
+`fe::Basis`: `OrientationTransform`/`apply_orientation`/`apply_orientation_inverse`
+(`EdgeOrientation`/`TriangleOrientation`/`QuadrilateralOrientation`, `local_to_canonical_vertices`),
+ported from `karma_basis.h`'s identical construction. At this wave's basis orders (<= 2) every
+built-in basis places at most ONE dof on any shared edge or face, so every generated
+`OrientationTransform` is PROVABLY the identity permutation with sign +1 -- verified directly
+(`BasisTest.OrientationTransformsAreIdentityAtThisWavesOrders`), not assumed, and the round-trip
+test's bound is therefore EXACT (0), not a derived epsilon.
+
+`fe::GeometryMap`: `in_reference_cell`'s pyramid taper condition (its own non-box reference cell),
+the matching per-family sampling bounds in `validate()`, `inverse_map`'s apex fast path, and the
+extended `reference_outward_normal` table -- all four cite the exact KARMA source line they
+reproduce (`geometry_map.cpp`'s own comments).
+
+`fe::FEBase`: mixed-shape face quadrature (`quadrature_for_side()` -- `quadrature_` for a
+quadrilateral side, `triangle_quadrature_` for a triangular one, selected per side; both rules
+share a point count by construction since they are built to the same degree).
+
+`spatial::Mesh`: bound to `fuse::MeshView` (not MOAB directly -- `docs/dev/layering.md`'s
+"physics-kit reaches MOAB only through `fuse::backend`"), generalized from fixed Hex8-only
+connectivity to variable-arity, per-element-tagged connectivity; `generate_2d_box` (2-D structured
+Quad4, the source `karma_mesh_extract_edge.C` needs); `from_mesh_view` (reads ownership, global
+ids, and cell-to-vertex connectivity through `MeshView::cell_vertices`); ownership/global-id
+accessors (`is_vertex_owned`/`is_element_owned`/`owned_vertex_count`/`owned_element_count`/
+`vertex_global_id`/`element_global_id`).
+
+`spatial::mesh_utils`: `extract_edge_at_coordinate`, adapted (not a literal port -- KARMA's own
+`karma_mesh_extract_edge.C` is legacy libMesh-era code in a visibly older style than the rest of
+this port) from `karma_mesh_extract_edge.C`'s own operation: the 1-D boundary of a 2-D mesh at a
+constant coordinate.
+
+### Tolerance provenance
+
+| test | tolerance | derivation |
+|---|---|---|
+| `reference_topology.cpp`'s pyramid Vandermonde-like matrix inversion refusal | `cond > 1/sqrt(eps)` ~= 1.49e8 | derived here: Golub & Van Loan, *Matrix Computations*, 4th ed., Section 2.3.3's standard rule of thumb (`Ax=b`'s relative error is `O(cond * eps)`) -- a linear solve loses ~`log10(cond)` decimal digits to rounding, so `cond >= 1/sqrt(eps)` is exactly the point at which fewer than the eps-to-sqrt(eps) crossover's ~8 significant digits remain; the measured condition number is named in the refusal message, not silently dropped |
+| `physics.fe_quadrature`'s Prism/Pyramid monomial-exactness checks | `Quadrature::round_off_bound(...)`, same formula as table | the formula is generic in `dimension()`/`n_points()`/`generation_sweeps()`, already covers the new cell families without modification -- re-verified (not re-derived): measured largest \|error\|/bound ratio is 1.25e-1, same order as own measurement, printed by `QuadratureTest.ZZZ_DerivedBoundHasMeasuredMargin` |
+| `physics.fe_basis`'s orientation round-trip (`ApplyOrientationRoundTripsExactlyAcrossOppositeLocalOrder`) | exact equality (0), not an epsilon | derived here: `OrientationTransformsAreIdentityAtThisWavesOrders` proves every transform this wave's bases generate is the identity permutation with sign +1 at this order, so `apply_orientation` followed by its inverse is the same floating-point value read twice, not an arithmetic result that could accumulate rounding |
+| `physics.fe_test`'s `DistortedPyramidQuadratureAccuracy_D100` | measured, not asserted against a derived bound: `EXPECT_LT(error, 1e-10)` for the volume case is a round-off-scale sanity floor, not a derivation | the issue tracker own measurement write-up has the full numbers (volume: 0 to 1.8e-15 across degree 1-5; `exp(x+y+z)`: 1.96 down to 2.4e-10 across degree 1-10, converging to a degree-16 reference) |
+| `physics.spatial_mesh`'s `ExtractEdgeAtCoordinateFindsTheRightLine` coordinate-match tolerance | `1e-9` | a plain equality tolerance on a structured box generator's own exact grid coordinates (no accumulated rounding to bound; chosen comfortably above double-precision round-off on O(1) coordinates, not derived from an error-propagation argument since none applies here) |
+
+###
+
+the issue tracker (distorted-pyramid quadrature accuracy) is now measured: the basic case
+(volume, and a genuinely non-polynomial integrand's convergence rate) is closed; curved
+(order-2 geometry) pyramids remain an open item for whenever that is read from an external
+source. the issue tracker (new): the review of had worked around, but not
+fixed, a bug in `valid_key()`'s `||` that accepted any Lagrange key regardless of order; fixed
+this wave, with the regression test the wave-1 workaround could not have been.
+
+### Scope note: orientation's own bound is honestly vacuous at this order
+
+`OrientationTransformsAreIdentityAtThisWavesOrders` is a genuine proof, not a tautology dressed
+up as one: it holds because this wave's own basis orders (<= 2) never place more than one dof on
+a shared sub-entity, which is a fact about THIS wave's scope, not about the orientation
+machinery itself (`local_to_canonical_vertices`' six- and eight-way permutation tables are ported
+and exercised by the round-trip test's own code path, just never asked to permute more than a
+one-element array). An order-3-or-higher basis (two or more dofs per shared edge) is the first
+case that would exercise a genuinely non-identity permutation; the machinery is in place for that
+wave to extend `BuiltinBasis::orientation_transforms()` without changing the surrounding
+`Basis`/`apply_orientation` contract at all.
+
+## Lead's review of (2026-10-31)
+
+Landed from a clean export after three changes:
+
+- **The MPI mesh test is registered where the target exists.** The track had compiled three
+  physics-kit sources into a `test/`-side executable because `fuse::physics_kit` is defined
+  after `test/` is added. `fuse_add_mpi_test` gained the `SRC_DIR` option `fuse_add_gtest`
+  already had, and `physics-kit/test/CMakeLists.txt` registers `parallel.physics_mesh_mpi.{2,3}`
+  against the real target. The row is host-pending (the sandbox cannot launch MPI); it builds
+  against MPICH with `FUSE_ENABLE_MPI=ON`.
+- **physics-kit/test has its own unregistered-test audit.** `test/CMakeLists.txt`'s audit globs
+  `test/*/*_test.cpp` and never sees this directory; the skeleton's comment justified that with
+  "exactly one source file, in full view", which stopped being true at. The same audit
+  now runs here (proved by a probe file: configure fails naming it).
+- **Verified, not re-derived:** the pyramid rule's exactness is by construction (n = (d+2)/2
+  points per axis gives 2n-1 >= d, and the collapsed monomial x^i y^j z^k has z-degree i+j+k
+  against the (1-z)^2 weight; the test checks every monomial to degree 5 against the exact
+  integrals, volume 4/3); the condition-number threshold `1/sqrt(eps)` follows from the
+  O(cond * eps) forward-error bound and the 1e-10 pointwise floor the tests use.
+
+Accepted as the track declared them: the pyramid inversion refusal has no firing test because
+the matrix is a fixed reference-node matrix (named, not covered by a mutation row); closed
+for straight-edged pyramids only; `DofAssociation`'s face numbering for the new families is
+cross-checked only for Pyramid14 (a wave-2 item); the two-space global-id convention
+(vertices and cells numbered separately, as `MeshView` does) is carried into unless the
+owner prefers a tagged id type.
+

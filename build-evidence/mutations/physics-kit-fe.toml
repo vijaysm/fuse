@@ -73,3 +73,76 @@ old = "      if (canonical_side_vertex_ids(candidate, s) == target) return candi
 new = "      if (canonical_side_vertex_ids(candidate, s).front() == target.front()) return candidate;"
 target = "fuse_physics_spatial_mesh_test"
 test = "physics.spatial_mesh"
+
+# -- additions (2026-10-31): prism, pyramid, orientation, the
+# MeshView binding. Same file, same protocol; new rows only below this line.
+
+[[mutation]]
+id = "basis-valid-key-or-bug-reintroduced"
+area = "physics-kit"
+describes = "the issue tracker own fix (valid_key() dropping the 'key.family == LagrangeNodal ||' clause) reverted to the original bug: any Lagrange key is accepted regardless of order. LagrangeKeyAboveMaximumOrderIsAlsoRefused exists specifically to catch this -- it is the regression test for, not a general-purpose check."
+file = "physics-kit/src/fe/basis.cpp"
+old = "  return key.order <= maximum_basis_order;"
+new = "  return key.family == FieldBasisFamily::LagrangeNodal || key.order <= maximum_basis_order;"
+target = "fuse_physics_fe_basis_test"
+test = "physics.fe_basis"
+
+[[mutation]]
+id = "fe-base-quadrature-for-side-always-returns-main-rule"
+area = "physics-kit"
+describes = "FEBase::quadrature_for_side always returns quadrature_ (the quadrilateral-side rule), never triangle_quadrature_ -- which EveryFaceAreaOfPrismAndPyramidMatchesItsOwnShape catches directly: a prism's triangular cap (side 3 or 4) integrated with the quadrilateral rule's own points/weights would not recover that cap's own analytic area (0.5), since the two rules' reference coordinates are not interchangeable."
+file = "physics-kit/src/fe/fe_base.cpp"
+old = "  if (triangle_quadrature_ && geometry_reference_.side_topology(side).family() == CellFamily::Triangle)\n    return *triangle_quadrature_;\n  return quadrature_;"
+new = "  return quadrature_;"
+target = "fuse_physics_fe_face_test"
+test = "physics.fe_face"
+
+[[mutation]]
+id = "geometry-map-pyramid-taper-check-dropped"
+area = "physics-kit"
+describes = "in_reference_cell's pyramid branch drops the taper condition (|x|,|y| <= 1-z), falling through to the generic per-axis [-1,1]x[-1,1]x[0,1] box check alone -- which PyramidTaperIsNotJustItsBoundingBox exists to catch: a point inside the bounding box but outside the true tapered cell would then be wrongly accepted as Located."
+file = "physics-kit/src/fe/geometry_map.cpp"
+old = "  if (reference.family() == CellFamily::Pyramid)\n    return point(2) >= -tolerance && point(2) <= 1 + tolerance && std::abs(point(0)) <= 1 - point(2) + tolerance &&\n           std::abs(point(1)) <= 1 - point(2) + tolerance;"
+new = "  if (reference.family() == CellFamily::Pyramid) { /* taper check removed */ }"
+target = "fuse_physics_fe_geometry_map_test"
+test = "physics.fe_geometry_map"
+
+[[mutation]]
+id = "basis-apply-orientation-unknown-code-not-refused"
+area = "physics-kit"
+describes = "find_transform's own 'unknown orientation state' refusal is dropped (returns the end() sentinel dereferenced as if found), which ApplyOrientationRefusesAnUnknownSubEntityOrCode exists to catch: an out-of-range orientation_code (99) must refuse, not silently read past the transforms list."
+file = "physics-kit/src/fe/basis.cpp"
+old = "  if (found == transforms.end()) refuse(\"unknown orientation state for this basis's sub-entity\");"
+new = "  if (false) refuse(\"unknown orientation state for this basis's sub-entity\");"
+target = "fuse_physics_fe_basis_test"
+test = "physics.fe_basis"
+
+[[mutation]]
+id = "mesh-utils-extract-edge-dimension-check-dropped"
+area = "physics-kit"
+describes = "extract_edge_at_coordinate's 2-D-source-only guard is dropped, which ExtractEdgeAtCoordinateRefusesOnA3dMesh exists to catch: calling it on a 3-D volume mesh must refuse rather than silently misinterpret 3-D sides as edges."
+file = "physics-kit/src/spatial/mesh_utils.cpp"
+old = "  if (surface.dimension() != 2) throw std::invalid_argument(\"extract_edge_at_coordinate requires a 2-D source mesh\");"
+new = "  if (false) throw std::invalid_argument(\"extract_edge_at_coordinate requires a 2-D source mesh\");"
+target = "fuse_physics_spatial_mesh_test"
+test = "physics.spatial_mesh"
+
+[[mutation]]
+id = "quadrature-pyramid-wrong-collapse-alpha"
+area = "physics-kit"
+describes = "Pyramid's z-axis Gauss-Jacobi weight is changed from alpha=2 (the derived Jacobian power, quadrature.cpp's own comment) to alpha=1 -- which PyramidExactToDeclaredDegree catches: the rule would no longer integrate the pyramid's own collapsed-coordinate monomials exactly to the declared degree, since the weight no longer matches the map's true Jacobian (1-z)^2."
+file = "physics-kit/src/fe/quadrature.cpp"
+old = "    const auto rx = gauss_legendre_m1_1(n), ry = gauss_legendre_m1_1(n), rz = gauss_jacobi_01(n, 2.0);"
+new = "    const auto rx = gauss_legendre_m1_1(n), ry = gauss_legendre_m1_1(n), rz = gauss_jacobi_01(n, 1.0);"
+target = "fuse_physics_fe_quadrature_test"
+test = "physics.fe_quadrature"
+
+[[mutation]]
+id = "mesh-from-mesh-view-vertex-index-shift-dropped"
+area = "physics-kit"
+describes = "from_mesh_view's 0-based-to-1-based vertex handle shift (+1) is dropped, which FromMeshViewReadsOwnershipAndGlobalIds catches: every element's connectivity would then point one vertex handle too low (handle 0, which this Mesh's own 1-based convention treats as invalid/off-by-one), corrupting element_coordinates for every element read from a MeshView."
+file = "physics-kit/src/spatial/mesh.cpp"
+old = "    for (std::size_t i = 0; i < cell_vertices.vertices.size(); ++i) connectivity[i] = cell_vertices.vertices[i] + 1;"
+new = "    for (std::size_t i = 0; i < cell_vertices.vertices.size(); ++i) connectivity[i] = cell_vertices.vertices[i];"
+target = "fuse_physics_spatial_mesh_test"
+test = "physics.spatial_mesh"
