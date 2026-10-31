@@ -18,6 +18,7 @@ many MPI ranks, in one executable or several.
 | Write your own coupled problem | [Graph programming](user/graph-programming.md), [Writing a component](user/component-interface.md), [Drivers](user/drivers.md), [YAML reference](user/yaml.md) |
 | Understand what FUSE compiles and runs | [IR and execution plan](user/ir.md), [Runtime](user/runtime.md), [Environment variables](user/environment.md) |
 | Couple codes in C, Fortran or Python | [Mixing languages](user/mixing-languages.md), [C ABI](user/c-abi.md), [Fortran](user/fortran.md), [Python](user/python.md) |
+| Use a Runge-Kutta or Rosenbrock integrator inside a component | [Time integrators](user/integrators.md) |
 | Look up a word | [Glossary](user/glossary.md) |
 | Contribute | [CONTRIBUTING](../CONTRIBUTING.md) and the [developer guide](dev/index.md) |
 

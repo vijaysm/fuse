@@ -17,6 +17,7 @@ Every FUSE program goes through the same five stages:
 
 ```cpp
 #include <Kokkos_Core.hpp>
+#include <fuse/base/error.hpp>
 #include <fuse/ir/dump.hpp>
 #include <fuse/ir/lowering.hpp>
 #include <fuse/backend/serial_backend.hpp>
@@ -33,10 +34,16 @@ alive for the whole program:
 
 ```cpp
 int main(int argc, char** argv) {
+  fuse::initialize();                              // first: reads FUSE_ON_ERROR and friends
   Kokkos::ScopeGuard kokkos_guard(argc, argv);
   // ...
 }
 ```
+
+`fuse::initialize()` makes the error-policy environment variables take effect
+(`FUSE_ON_ERROR=debugger` stops in a debugger at the first thrown error, for example). Every
+shipped example calls it first; do the same in your own `main()`
+([](environment.md#error-policy-variables)).
 
 ## 1. Describe the coupling
 
@@ -56,14 +63,15 @@ What this declares:
 - One field on each side: `left` *provides* `T`, `right` *requires* `T_bc`. Both are in kelvin, so no
   unit conversion is inserted.
 - One channel linking them, with `Mean` as its time treatment: `right` receives the mean of `left`'s
-  four sub-steps.
+  four sub-steps. `.conservative()` declares that the transfer conserves the field, which
+  `validate()` requires of a channel into an `Extensive` field.
 - `Conservation::Extensive` on both fields. That is what makes FUSE add a conservation check to the
   transfer. Without it the check would not exist and the example's "conservation checks" line would
   read zero.
 
 Every `add_*` call takes a designated-initialiser struct and returns an id. `g.channel(ch)` returns a
 builder you chain; none of those calls can fail. To catch defects early, check the whole graph before
-compiling. Nothing calls `validate()` for you:
+compiling. `lower()` does not call `validate()` for you, so call it yourself:
 
 ```cpp
 #include <fuse/model/validate.hpp>
@@ -75,11 +83,10 @@ if (fuse::Diagnostics d = fuse::validate(graph); d.has_errors()) {
 ```
 
 :::{note}
-`mms_pair` itself skips this call, and `validate()` does have something to say about its graph: both
-fields are `Extensive` but the channel does not declare `.conservative()`, so it reports
-`E-CONN-CONSERVATION`. Your own graphs should pass `validate()` cleanly: add `.conservative()` to a
-channel whose transfer must conserve the field, or mark the fields `Intensive` if it need not.
-[](graph-programming.md) lists every validation code and its fix.
+`mms_pair` calls it before `lower()`, and its graph passes cleanly. Yours should too: a channel
+into an `Extensive` field must declare `.conservative()` (otherwise `E-CONN-CONSERVATION`), or the
+fields should be `Intensive` if the transfer need not conserve. [](graph-programming.md) lists every
+validation code and its fix.
 :::
 
 ## 2. Write the components
@@ -115,7 +122,7 @@ rejected iteration can be re-run. `save_state()` and `capabilities()` are shown 
 :end-before: "if (dump) {"
 ```
 
-`lower()` returns a `LoweringResult`: `.dag` is the dataflow graph and `.diags` carries any errors.
+The block validates the graph first, then `lower()` returns a `LoweringResult`: `.dag` is the dataflow graph and `.diags` carries any errors.
 `schedule()` returns the instruction stream in `.plan`, or errors in `.diags`. It refuses a coupling
 it cannot prove free of deadlock, naming the cycle.
 

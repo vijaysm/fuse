@@ -10,7 +10,7 @@ include/fuse/, src/, test/ and examples/ -- fuse proper. physics-kit/ is
 none of those four directories (docs/dev/layering.md: "physics-kit/ is a
 separate optional component"), so nothing there was ever checked for this
 until now, and physics-kit/ is exactly where a KARMA-derived file is going
-to land first (docs/dev/physics-kit-disposition.md's D-A/D-B ports).
+to land first.
 
 Not folded into tools/check-layering.py itself: that script's check_legacy()
 is already scoped to the four fuse-proper directories by a loop over a fixed
@@ -30,8 +30,7 @@ convention as tools/check-layering.py and tools/check-invariants.py.
 Proof this fires: a probe header (KARMAProbeType, under physics-kit/include/
 fuse_physics/karma_probe.h) and its copy at physics-kit/src/karma_probe.C
 produced five violation lines (file prefix x2, type prefix x2, extension x1)
-here, then were removed; see this track's measured_results for the verbatim
-output.
+here, then were removed.
 """
 
 from __future__ import annotations

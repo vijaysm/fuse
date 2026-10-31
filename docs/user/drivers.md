@@ -41,8 +41,9 @@ the C ABI loads it for you. The rest of this page is about the first shape.
 
 The program below loads any graph whose components it knows how to build, compiles it, runs it
 and prints the run statistics. It handles `--graph <file>`, `--periods N`, `--dump`,
-`--transport copy|mpi`, `--no-check-conservation` and Kokkos' own `--kokkos-*` flags, and it opts
-in to the `FUSE_ON_ERROR` family of variables ([](environment.md#error-policy-variables)).
+`--transport copy|mpi`, `--no-check-conservation` and Kokkos' own `--kokkos-*` flags, and it calls
+`fuse::initialize()` so that the `FUSE_ON_ERROR` family of variables takes effect
+([](environment.md#error-policy-variables)).
 
 Two things are yours to change: the `ArrayComponent` class (a placeholder with no physics) and
 the `kRegistry` map from graph component name to factory. Everything else is the fixed pipeline.
@@ -135,8 +136,8 @@ int usage(const char* argv0) {
 int main(int argc, char** argv) {
   // Kokkos strips its own --kokkos-* flags here, so the loop below never sees them.
   Kokkos::ScopeGuard kokkos_guard(argc, argv);
-  // Opt in to FUSE_ON_ERROR / FUSE_DEBUGGER* / FUSE_BACKTRACE for this process.
-  fuse::set_error_policy(fuse::error_policy_from_environment());
+  // Read FUSE_ON_ERROR / FUSE_DEBUGGER* / FUSE_BACKTRACE for this process. Call it first.
+  fuse::initialize();
   fuse::install_terminate_handler();
 
   Options opt;

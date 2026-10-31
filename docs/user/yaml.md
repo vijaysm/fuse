@@ -384,14 +384,16 @@ incompatible ones are refused by `validate()` ([](cookbook.md#describe-a-couplin
 
 **`accumulate`.** `op` is one of `Instant`, `Sum`, `Mean`, `Min`, `Max`, `Integral`; `window` is a
 [window value](#window-values). Use `Mean` for a state and `Integral` for a flux
-([](concepts.md#time)).
+([](concepts.md#time)). `Integral` multiplies the sum of the samples by the source component's
+interval, so the target field's units must be the source's times time (`E-UNITS` otherwise); `Sum`
+does not scale.
 
 **`remap`.**
 
 | Sub-key | Type | Notes |
 |---|---|---|
 | `flags` | list of `Conservative`, `Monotone`, `HighOrder` | `Conservative` is what `ChannelBuilder::conservative()` sets; there is no separate `conservative:` key |
-| `method` | string | overrides the method FUSE would derive from the discretisation pair and conservation kinds, for example `mono3`. Not checked at parse time |
+| `method` | string | overrides the method FUSE would derive from the discretisation pair and conservation kinds, for example `intx`. The parser does not check it; `validate()` refuses a name no weight builder recognises with `E-CHANNEL-REMAP-METHOD` |
 | `remap_on` | component or coupler name | where the remap runs ([](placement.md)); unknown is `E-YAML-REF`, an illegal choice is `E-CHANNEL-REMAP-ON` from `validate()` |
 
 There is no "remap kind" key: the kind follows from the two fields' `disc` and `conservation`
@@ -407,7 +409,7 @@ channels:
     source: fluid.heat_flux
     target: solid.q_wall
     accumulate: {op: Mean, window: {kind: from_component, component: fluid}}
-    remap: {flags: [Conservative, Monotone], method: mono3, remap_on: coupler}
+    remap: {flags: [Conservative, Monotone], method: intx, remap_on: coupler}
     relax: 0.7
     lag: 1
 ```

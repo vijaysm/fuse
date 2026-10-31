@@ -96,7 +96,7 @@ if(FUSE_ENABLE_TESTS)
   target_link_libraries(fuse_write_golden_descriptor PRIVATE fuse::model)
 endif()
 
-# physics-kit (docs/dev/physics-kit.md), S8's optional finite-element
+# physics-kit (docs/dev/physics-kit.md), the optional finite-element
 # component -- a separate component, not a fuse:: layer (docs/dev/
 # layering.md), so it is added here rather than from inside src/
 # CMakeLists.txt's layer list. AFTER the FUSE_ENABLE_TESTS block just

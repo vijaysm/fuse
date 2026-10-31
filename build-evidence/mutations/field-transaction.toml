@@ -1,4 +1,4 @@
-# Mutations for the Field semantics track's FieldTransaction
+# Mutations for FieldTransaction
 # (include/fuse/field/transaction.hpp, src/field/transaction.cpp). Own file
 # per the review-fix protocol: do not edit build-evidence/mutations.toml
 # directly while other fixers hold it dirty.
@@ -27,7 +27,7 @@ test = "field.transaction"
 [[mutation]]
 id = "field-transaction-accumulation-order-arrival-dependent"
 area = "field-transaction"
-describes = "build_published_values()'s own canonical (magnitude, sign, bit-pattern) tie-break within one slot's contributions is removed, so Accumulate mode sums each slot's values in the order they were STAGED rather than in a value-determined order -- the exact property FieldTransaction.AccumulationIsBitwiseIndependentOfStagingOrder exists to pin. (2026-10-29): anchor updated for the renamed comparator (bit_pattern_before -> magnitude_then_sign_then_bits_before, the owner's own accuracy-over-efficiency instruction); the property this mutation breaks is unchanged, since swapping the comparator's keys for raw push order breaks the sort regardless of which keys it sorts by."
+describes = "build_published_values()'s own canonical (magnitude, sign, bit-pattern) tie-break within one slot's contributions is removed, so Accumulate mode sums each slot's values in the order they were STAGED rather than in a value-determined order -- the exact property FieldTransaction.AccumulationIsBitwiseIndependentOfStagingOrder exists to pin. The comparator orders by magnitude, then sign, then bits (magnitude_then_sign_then_bits_before, chosen for accuracy over efficiency); the property this mutation breaks is unchanged, since swapping the comparator's keys for raw push order breaks the sort regardless of which keys it sorts by."
 file = "src/field/transaction.cpp"
 old = """    std::sort(slot_values.begin(), slot_values.end(), magnitude_then_sign_then_bits_before);"""
 new = """    // MUTATION: canonical order removed; summed in arrival (push) order instead."""
@@ -59,7 +59,7 @@ test = "field.transaction"
 [[mutation]]
 id = "field-transaction-collective-agreement-skipped"
 area = "field-transaction"
-describes = "agree_outcome()'s own post-Allreduce verdict check (`if (out.refused == 0) return success`) is replaced with an unconditional success, so a rank whose local validation failed is ignored and every rank publishes. Re-anchored 2026-10-30: the agreement moved from commit_collective() into fuse::agree_outcome() (src/field/collective_agreement.cpp), which the ABI's two reconciles now share. Killed by parallel.field_transaction_mpi.2's ValidationDisagreement case (every rank asserts its own values unchanged) and by parallel.provider_subset_mpi.2."
+describes = "agree_outcome()'s own post-Allreduce verdict check (`if (out.refused == 0) return success`) is replaced with an unconditional success, so a rank whose local validation failed is ignored and every rank publishes. The agreement lives in fuse::agree_outcome() (src/field/collective_agreement.cpp), which the ABI's two reconciles share. Killed by parallel.field_transaction_mpi.2's ValidationDisagreement case (every rank asserts its own values unchanged) and by parallel.provider_subset_mpi.2."
 file = "src/field/collective_agreement.cpp"
 old = """  if (out.refused == 0) return Result<void>::success();"""
 new = """  if (true) return Result<void>::success();  // MUTATION: collective agreement check skipped"""
@@ -81,7 +81,7 @@ requires = "mpi"
 [[mutation]]
 id = "field-agreement-message-omits-origin-rank"
 area = "field-transaction"
-describes = "format_agreed_refusal() drops the origin rank from the message. Killed at tier 0 by field.collective_agreement, which pins the exact message for a known AgreedRefusal."
+describes = "format_agreed_refusal() drops the origin rank from the message (the original error AND the rank it came from must be in what every rank returns). Killed at tier 0 by field.collective_agreement, which pins the exact message for a known AgreedRefusal."
 file = "src/field/collective_agreement.cpp"
 old = """  out.append(std::to_string(refusal.origin_rank));
   out.append(" of ");"""

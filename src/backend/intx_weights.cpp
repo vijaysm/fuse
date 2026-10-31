@@ -2625,7 +2625,7 @@ int active_comm_size(void* pcomm) {
 }  // namespace
 
 // ===========================================================================
-// The remap halo (R3). See remap_plan.hpp for the contract and moab_backend.hpp
+// The remap halo. See remap_plan.hpp for the contract and moab_backend.hpp
 // for the mesh-layer half.
 //
 // WHAT THIS DOES, in one sentence: it asks MOAB for the source cells that
@@ -3167,7 +3167,7 @@ Result<RemapWeights> build_weights(const RemapPlan& plan,
   }
 
   // ==========================================================================
-  // THE PARTITIONED CASE (R3). The supermesh below intersects the cells this
+  // THE PARTITIONED CASE. The supermesh below intersects the cells this
   // rank HOLDS. On a partitioned read that is the right answer exactly when
   // the source mesh carries a halo covering this rank's targets, and a silent
   // truncation otherwise -- measured at two thirds of the transferred quantity
