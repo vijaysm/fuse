@@ -18,20 +18,47 @@ namespace {
 
 constexpr double scaled_tolerance = 256.0 * std::numeric_limits<double>::epsilon();
 
+/// Pyramid's reference cell is NOT the [0,1]^3 box every other family
+/// uses: its base spans [-1,1]x[-1,1] at z=0 and tapers linearly to the
+/// apex (0,0,1) (reference_topology.cpp's own Pyramid5 corners), so a
+/// point is inside iff 0<=z<=1 and |x|<=1-z, |y|<=1-z (KARMA's own
+/// in_reference_cell, MBPYRAMID branch) -- the SAME special-case KARMA
+/// itself carves out ahead of its generic per-axis [0,1] loop, ported
+/// unchanged, rather than folded into a per-family bounding box that
+/// would still miss the taper.
 bool in_reference_cell(const ReferenceTopology& reference, const Point& point, double tolerance) {
+  if (reference.family() == CellFamily::Pyramid)
+    return point(2) >= -tolerance && point(2) <= 1 + tolerance && std::abs(point(0)) <= 1 - point(2) + tolerance &&
+           std::abs(point(1)) <= 1 - point(2) + tolerance;
   for (unsigned d = 0; d < reference.dimension(); ++d)
     if (point(d) < -tolerance || point(d) > 1 + tolerance) return false;
-  if (reference.family() == CellFamily::Triangle || reference.family() == CellFamily::Tetrahedron) {
+  // Triangle, Tetrahedron and Prism all have a triangular cross-section
+  // in (x,y) (Prism's z axis is a plain line, uncoupled from the
+  // triangle constraint, so no z term is added for it, same as KARMA's
+  // own MBPRISM branch).
+  if (reference.family() == CellFamily::Triangle || reference.family() == CellFamily::Tetrahedron ||
+      reference.family() == CellFamily::Prism) {
     const double sum = point(0) + point(1) + (reference.family() == CellFamily::Tetrahedron ? point(2) : 0.0);
     if (sum > 1 + tolerance) return false;
   }
   return true;
 }
 
+/// The axis-aligned box validate()'s recursive sampler subdivides: [0,1]
+/// on every axis for every family except Pyramid, whose base spans
+/// [-1,1]x[-1,1] (this file's in_reference_cell comment); the sampler
+/// still relies on in_reference_cell to reject points outside the
+/// triangular/taper cross-section within that box, same as before this
+/// wave added Pyramid.
+std::pair<Point, Point> reference_cell_bounds(CellFamily family) {
+  if (family == CellFamily::Pyramid) return {Point(-1, -1, 0), Point(1, 1, 1)};
+  return {Point(0, 0, 0), Point(1, 1, 1)};
+}
+
 /// Outward reference-space co-normal for a side, used only to fix the sign
 /// of the computed physical normal (the KARMA source's own
-/// reference_outward_normal table, restricted to this wave's five cell
-/// families).
+/// reference_outward_normal table, extended to Prism and Pyramid this
+/// wave).
 Point reference_outward_normal(CellFamily family, unsigned side) {
   switch (family) {
     case CellFamily::Triangle:
@@ -43,6 +70,10 @@ Point reference_outward_normal(CellFamily family, unsigned side) {
     case CellFamily::Hexahedron:
       return std::array{Point(0, -1, 0), Point(1, 0, 0),  Point(0, 1, 0),
                          Point(-1, 0, 0), Point(0, 0, -1), Point(0, 0, 1)}[side];
+    case CellFamily::Prism:
+      return std::array{Point(0, -1, 0), Point(1, 1, 0), Point(-1, 0, 0), Point(0, 0, -1), Point(0, 0, 1)}[side];
+    case CellFamily::Pyramid:
+      return std::array{Point(0, -1, 1), Point(1, 0, 1), Point(0, 1, 1), Point(-1, 0, 1), Point(0, 0, -1)}[side];
     case CellFamily::Edge:
       refuse("an edge side has no 3-D reference co-normal");
   }
@@ -158,6 +189,18 @@ Point GeometryMap::inverse_map(const Point& physical_point) const {
   double scale = 0.0;
   for (std::size_t i = 0; i < node_count_; ++i)
     for (std::size_t j = i + 1; j < node_count_; ++j) scale = std::max(scale, distance(nodes_[i], nodes_[j]));
+
+  // KARMA's own carve-out (karma_geometry_map.C's inverse_map): right at
+  // the apex node, the pyramid's Jacobian is genuinely rank-deficient
+  // (geometry_map.hpp's own note on the apex's path-dependent
+  // derivative), so Newton's own correction step can fail to converge
+  // from a cell-centre start even though the answer is known exactly --
+  // the apex node's own reference coordinate is (0,0,1) by construction
+  // (reference_topology.cpp's Pyramid5 node 4). Short-circuits before
+  // the iteration for that one query point rather than special-casing
+  // the iteration's own degeneracy test.
+  if (reference_.family() == CellFamily::Pyramid && distance(physical_point, nodes_[4]) <= 2.e-12 * scale)
+    return Point(0, 0, 1);
 
   Point reference = reference_.center();
   constexpr int maximum_iterations = 40;
@@ -289,6 +332,16 @@ void GeometryMap::validate() const {
   }
   const auto checked_geometry = [&](const Point& point) -> std::pair<double, double> {
     if (!in_reference_cell(reference_, point, 0.0)) return {std::numeric_limits<double>::quiet_NaN(), 0.0};
+    // The pyramid's own sampling grid (reference_cell_bounds's [-1,1]
+    // span in steps of 1/4) lands exactly on the apex (0,0,1) at one
+    // grid corner (x=y=0 falls on a step boundary); the apex is where
+    // jacobian() itself refuses (its derivative is genuinely path-
+    // dependent there, reference_topology.hpp's own carve-out), not a
+    // point this recursive sampler can usefully evaluate -- skipped the
+    // same way an outside-the-cell point already is, rather than let an
+    // unrelated exception escape validate() and abort construction.
+    if (reference_.family() == CellFamily::Pyramid && point == Point(0, 0, 1))
+      return {std::numeric_limits<double>::quiet_NaN(), 0.0};
     const Matrix3 j = jacobian(point);
     const Matrix3 metric_tensor = matmul(transpose(j), j);
     const unsigned dim = reference_.dimension();
@@ -336,12 +389,15 @@ void GeometryMap::validate() const {
       inspect(child_low, child_high, depth + 1);
     }
   };
+  const auto [cell_low, cell_high] = reference_cell_bounds(reference_.family());
+  const double span_x = cell_high.x - cell_low.x, span_y = cell_high.y - cell_low.y, span_z = cell_high.z - cell_low.z;
   for (unsigned k = 0; k < (reference_.dimension() == 3 ? initial_subdivisions : 1); ++k)
     for (unsigned j = 0; j < (reference_.dimension() >= 2 ? initial_subdivisions : 1); ++j)
       for (unsigned i = 0; i < initial_subdivisions; ++i) {
-        Point low(i / 8.0, j / 8.0, k / 8.0);
-        Point high((i + 1) / 8.0, reference_.dimension() >= 2 ? (j + 1) / 8.0 : 0.0,
-                   reference_.dimension() == 3 ? (k + 1) / 8.0 : 0.0);
+        Point low(cell_low.x + i * span_x / 8.0, cell_low.y + j * span_y / 8.0, cell_low.z + k * span_z / 8.0);
+        Point high(cell_low.x + (i + 1) * span_x / 8.0,
+                   reference_.dimension() >= 2 ? cell_low.y + (j + 1) * span_y / 8.0 : cell_low.y,
+                   reference_.dimension() == 3 ? cell_low.z + (k + 1) * span_z / 8.0 : cell_low.z);
         inspect(low, high, 0);
       }
 }
