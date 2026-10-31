@@ -347,6 +347,35 @@ def check_physics_kit_boundary(root: Path) -> list[str]:
                             f"-- physics-kit depends on FUSE, never the reverse "
                             f"(docs/dev/layering.md)"
                         )
+    # physics-kit's OWN public headers (physics-kit/include/fuse_physics/),
+    # installed since S8.2 (2026-10-31) and read by every consumer of the
+    # fuse::physics_kit component: the same third-party rule as a fuse::
+    # layer's public header. FORBIDDEN_PUBLIC applies unchanged (no PETSc,
+    # MPI, MOAB, HDF5, Eigen or Kokkos-Kernels type may leak into a header
+    # a consumer compiles; PETSc stays behind the translation units, as
+    # version.hpp's has_petsc() comment states), and of Kokkos only
+    # Kokkos_Core.hpp, the same allowance as `num` and `field`. Proof this
+    # fires: a probe header under physics-kit/include/fuse_physics/ with
+    # '#include <petscsys.h>' produced one violation line here on
+    # 2026-10-31 and was removed.
+    pk_include = root / "physics-kit" / "include" / "fuse_physics"
+    if pk_include.is_dir():
+        for header in sorted(pk_include.rglob("*.hpp")):
+            rel = header.relative_to(root)
+            for lineno, line in enumerate(header.read_text(errors="replace").splitlines(), 1):
+                if FORBIDDEN_PUBLIC.match(line):
+                    inc = INCLUDE_ANY.match(line).group(1)
+                    problems.append(
+                        f"{rel}:{lineno}: third-party header '{inc}' in a public "
+                        f"physics-kit header (I7; installed with the physics_kit component)"
+                    )
+                    continue
+                m = INCLUDE_ANY.match(line)
+                if m and m.group(1).startswith("Kokkos") and m.group(1) != "Kokkos_Core.hpp":
+                    problems.append(
+                        f"{rel}:{lineno}: '{m.group(1)}' is not permitted in a public "
+                        f"physics-kit header (only Kokkos_Core.hpp is)"
+                    )
     return problems
 
 

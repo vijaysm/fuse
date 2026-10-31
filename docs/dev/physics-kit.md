@@ -60,13 +60,29 @@ the `fuse::physics_kit` target with one placeholder translation unit, the `physi
 and this page. [](physics-kit-disposition.md) and [](integrators-design.md) are the read-first design
 pages for what a later track ports here.
 
-## Not yet installed (lead, 2026-10-28)
+## Installation and the `physics_kit` component (S8.2, lead, 2026-10-31)
 
-`fuse_physics_kit` is not in the package's `install(TARGETS ... EXPORT fuse-coupler-targets)` set:
-that export is closed inside `src/CMakeLists.txt` (`install(EXPORT ...)` at its end), which runs before
-the root adds `physics-kit/`, so a contribution from here would arrive after the export is written.
-Shipping physics-kit needs its own export set and a `find_package` component, which is S8.2 work once
-the component carries code a consumer would link. `tools/check-invariants.py` scans `physics-kit/`
-from the skeleton on; `tools/check-layering.py`'s third-party-header rules for physics-kit's own public
-headers are not yet applied and are an S8.2 item too.
+`fuse_physics_kit` ships in its own export set, `fuse-physics-kit-targets`, written beside the main
+`fuse-coupler-targets` in `lib/cmake/fuse-coupler/` (the main set is closed inside `src/CMakeLists.txt`
+before the root adds `physics-kit/`, so it cannot be joined). The package configuration includes the
+second set only when the install was configured with `FUSE_ENABLE_PHYSICS_KIT`, and exposes it as a
+`find_package` component:
+
+```cmake
+find_package(fuse-coupler CONFIG REQUIRED COMPONENTS physics_kit)
+target_link_libraries(app PRIVATE fuse::physics_kit)
+```
+
+Against an install built without physics-kit, `COMPONENTS physics_kit` fails at configure time through
+`check_required_components`, and `OPTIONAL_COMPONENTS physics_kit` reports
+`fuse-coupler_physics_kit_FOUND` false; the target is never left undefined. The headers install under
+`include/fuse_physics/`. Both directions are measured by `install.consumer_find_package`
+(`test/install_consumer/`): with physics-kit on, a second consumer links the component and runs; with it
+off, the consumer asks optionally and refuses if the component appears.
+
+`tools/check-layering.py` applies the public-header third-party rule to `physics-kit/include/fuse_physics/`
+as to any `fuse::` layer: none of PETSc, MPI, MOAB, HDF5, Eigen or Kokkos-Kernels may be named in a header a
+consumer compiles, and of Kokkos only `Kokkos_Core.hpp`; a probe header naming `petscsys.h` and
+`Kokkos_Random.hpp` produced two violation lines and was removed. `tools/check-invariants.py` has
+scanned `physics-kit/` since the skeleton.
 

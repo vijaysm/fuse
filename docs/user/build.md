@@ -261,7 +261,10 @@ target_link_libraries(my_coupling PRIVATE fuse::runtime fuse::backend)
 ```
 
 Link only the layers you use: `fuse::model` to describe a coupling, `fuse::runtime` to run one,
-`fuse::backend` for meshes and remap, `fuse::abi` for the C interface. Your project must find the same
+`fuse::backend` for meshes and remap, `fuse::abi` for the C interface. The optional physics-kit
+component is requested by name, `find_package(fuse-coupler CONFIG REQUIRED COMPONENTS physics_kit)`,
+and linked as `fuse::physics_kit`; the request fails at configure time against an install built with
+`FUSE_ENABLE_PHYSICS_KIT=OFF`. Your project must find the same
 Kokkos and fmt that FUSE was built against; the package configuration does this for you when both
 ship a CMake config. MPI and MOAB are required by a consumer only when FUSE was built with them, and a
 consumer of a MOAB build needs MOAB at the same path.
