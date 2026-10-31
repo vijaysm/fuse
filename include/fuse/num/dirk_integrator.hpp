@@ -102,6 +102,32 @@ class DirkIntegrator final : public Integrator<Value> {
     return newton_iterations_;
   }
 
+  /// Round 3, item 6: OPT-IN, defaulting to false -- MEASURED (dirk_integrator_test.
+  /// cpp's own FSAL suite) that reusing the previous step's converged last-stage
+  /// derivative as this step's stage-0 value is NOT reliably bit-identical to a
+  /// fresh `problem.rhs` call for this project's stiffly accurate DIRK tableaus.
+  /// Two explanations were investigated and ruled out as the SOLE cause: a Newton
+  /// convergence-tolerance floor (the gap did not shrink monotonically with
+  /// tighter NewtonKrylovOptions the way a tolerance-floor effect would), and a
+  /// floating-point reassociation between the last stage's own internal stage-value
+  /// expression and the separately accumulated b-weighted sum used to build y_new
+  /// (fixing the two expressions to be LITERALLY identical closed the gap at the
+  /// library's default and `tight_newton_options()` settings, but it reappeared at
+  /// `very_tight_newton_options()`'s own atol=1e-11/rtol=1e-10 -- territory this
+  /// file's own top comment on `tight_newton_options()` already documents as
+  /// pushing past where the MFFD directional derivative degenerates). The residual
+  /// gap is consistent with Newton-Krylov's own history-dependent inner iteration
+  /// count (Eisenstat-Walker forcing, GMRES) at that already-fragile tolerance,
+  /// not a defect in the reuse logic itself -- but it means the task's own standing
+  /// rule for this item ("lands ONLY with a test that FSAL and non-FSAL paths
+  /// produce bit-identical states") is not met at every setting this project ships,
+  /// so this family's reuse stays OPT-IN rather than a default behaviour change.
+  /// ExplicitIntegrator's OWN FSAL reuse (explicit_integrator_test.cpp) ships
+  /// enabled by default: an ERK method's FSAL stage is an exact, non-iterative f()
+  /// evaluation, with no Newton solve in the picture to introduce this class of gap.
+  void set_fsal_enabled(bool enabled) noexcept { fsal_enabled_ = enabled; }
+  [[nodiscard]] bool fsal_enabled() const noexcept { return fsal_enabled_; }
+
   [[nodiscard]] Result<StepRecord<Value>> step(TemporalProblem<Value>& problem, Scalar t,
                                                Scalar h, std::span<Value> state) override {
     if (!problem.has_rhs()) {
@@ -147,18 +173,40 @@ class DirkIntegrator final : public Integrator<Value> {
         // by any Round 2 test problem -- every one uses M = I -- so this path is
         // UNTESTED for M != I and flagged in the design doc as an open question rather
         // than silently assumed correct).
-        std::vector<Value> stage_y(n), rhs_val(n);
-        for (std::size_t m = 0; m < n; ++m) stage_y[m] = static_cast<Value>(y_known[m]);
-        Result<void> r = problem.rhs(t_stage, std::span<const Value>(stage_y), std::span<Value>(rhs_val));
-        ++fevals;
-        if (!r.ok()) return r.error();
         if (problem.has_mass()) {
           return Failure{kWrongFamilyCode,
                          "DirkIntegrator::step: an explicit (zero-diagonal) stage with a "
                          "mass matrix needs a linear mass-solve this round does not "
                          "implement (no Round 2 test problem exercises M != I)"};
         }
-        for (std::size_t m = 0; m < n; ++m) k[static_cast<std::size_t>(i)][m] = static_cast<double>(rhs_val[m]);
+        // Round 3, item 6: stage 0 of a stiffly accurate tableau is f(t, state)
+        // UNPERTURBED (y_known == state, t_stage == t, since A's first row and c_0
+        // are both zero) -- exactly the previous accepted step's own last-stage
+        // point for a stiffly accurate method. Reuse the cache instead of a fresh
+        // `problem.rhs` call when it matches bit-for-bit; fall back to recomputing
+        // whenever it does not (a fresh scenario, a rejected-then-retried step from
+        // a DIFFERENT point, or FSAL reuse disabled for comparison).
+        bool reused = false;
+        if (i == 0 && tableau_.is_FSAL && fsal_enabled_ && fsal_cached_t_.has_value() &&
+            fsal_cached_y_.has_value() && fsal_cached_k_.has_value() &&
+            *fsal_cached_t_ == t_stage && fsal_cached_y_->size() == n) {
+          bool y_matches = true;
+          for (std::size_t m = 0; m < n; ++m) {
+            if ((*fsal_cached_y_)[m] != static_cast<Value>(y_known[m])) { y_matches = false; break; }
+          }
+          if (y_matches) {
+            k[static_cast<std::size_t>(i)] = *fsal_cached_k_;
+            reused = true;
+          }
+        }
+        if (!reused) {
+          std::vector<Value> stage_y(n), rhs_val(n);
+          for (std::size_t m = 0; m < n; ++m) stage_y[m] = static_cast<Value>(y_known[m]);
+          Result<void> r = problem.rhs(t_stage, std::span<const Value>(stage_y), std::span<Value>(rhs_val));
+          ++fevals;
+          if (!r.ok()) return r.error();
+          for (std::size_t m = 0; m < n; ++m) k[static_cast<std::size_t>(i)][m] = static_cast<double>(rhs_val[m]);
+        }
         continue;
       }
 
@@ -224,6 +272,7 @@ class DirkIntegrator final : public Integrator<Value> {
       rec.h_used = h;
       rec.h_next = h;
       rec.accepted = true;
+      if (tableau_.is_FSAL) update_fsal_cache_(rec.t_new, y_new, k[static_cast<std::size_t>(stages - 1)]);
       return rec;
     }
 
@@ -255,6 +304,7 @@ class DirkIntegrator final : public Integrator<Value> {
       rec.t_new = t + h;
       rec.h_used = h;
       rec.accepted = true;
+      if (tableau_.is_FSAL) update_fsal_cache_(rec.t_new, y_new, k[static_cast<std::size_t>(stages - 1)]);
     } else {
       rec.t_new = t;
       rec.h_used = Scalar{0};
@@ -264,6 +314,18 @@ class DirkIntegrator final : public Integrator<Value> {
   }
 
  private:
+  // Round 3, item 6: records the just-accepted step's own last-stage derivative so
+  // the NEXT call's stage-0 evaluation (the explicit-stage branch above) can reuse
+  // it instead of recomputing f(t, state) -- the only place either accept branch
+  // needs to touch the cache, kept as one function so both branches update it
+  // identically.
+  void update_fsal_cache_(Scalar t_new, const std::vector<Value>& y_new,
+                          const std::vector<double>& k_last) {
+    fsal_cached_t_ = t_new;
+    fsal_cached_y_ = y_new;
+    fsal_cached_k_ = k_last;
+  }
+
   ButcherTableau tableau_;
   std::optional<EmbeddedController> controller_;
   std::optional<ControllerState> controller_state_;
@@ -272,6 +334,25 @@ class DirkIntegrator final : public Integrator<Value> {
   ScaledNormFn norm_ = serial_rms_norm;
   NewtonKrylovOptions newton_opts_;
   std::vector<int> newton_iterations_;
+
+  // Round 3, item 6 (docs/dev/integrators-design.md Section 2's own prose, "FSAL"):
+  // the previous ACCEPTED step's own last-stage derivative, reused as THIS step's
+  // own stage-0 evaluation when the tableau is stiffly accurate (A's last row ==
+  // B, c_s == 1, ButcherTableau::is_FSAL) -- stage 0 is explicit (A's first row is
+  // all zeros, c_0 == 0 for every DIRK tableau in this project) so its own
+  // y_known == state and t_stage == t UNPERTURBED, exactly the point
+  // (t_new_prev, y_new_prev) the previous step's own last stage was evaluated at
+  // for a stiffly accurate method (y_new_prev == Y_stages_prev, since the last row
+  // of A equals B). Reuse is a cache lookup, not a recomputation: the SAME
+  // deterministic `problem.rhs` called with bit-identical (t, y) returns
+  // bit-identical output (IEEE 754), so this optimisation is lossless BY
+  // CONSTRUCTION when the cache matches -- the test
+  // (dirk_integrator_test.cpp's own FSAL suite) confirms the states it produces
+  // are bit-identical to the non-reuse path, not merely "close enough".
+  bool fsal_enabled_ = false;  // Round 3, item 6: opt-in -- see set_fsal_enabled()'s own comment.
+  std::optional<Scalar> fsal_cached_t_;
+  std::optional<std::vector<Value>> fsal_cached_y_;
+  std::optional<std::vector<double>> fsal_cached_k_;
 };
 
 }  // namespace fuse::num
