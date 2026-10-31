@@ -281,7 +281,7 @@ TEST(TransferMapIo, TwoWritersReloadAsFourReadersAndReproduceTheValues) {
 
 // ---- bit-for-bit across rank counts ------------------------------------
 
-// The requirement: 1/2/3/4/5 "tasks" must give
+// The property: 1/2/3/4/5 "tasks" must give
 // bit-for-bit the same answer, with accumulation ordered by global id.
 //
 // EXPECT_EQ on doubles, not NEAR: a tolerance would pass for the wrong

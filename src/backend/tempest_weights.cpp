@@ -60,7 +60,7 @@
 // the primary error channel, not a nicety. It is also why the remap path is
 // serial and non-reentrant: `g_fpAnnounceOutput` is a process-wide `FILE*`.
 //
-// R10 hardening: two threads each constructing an `AnnounceCapture`
+// Hardening: two threads each constructing an `AnnounceCapture`
 // concurrently could previously corrupt each other's diagnostics --
 // thread B's constructor could capture thread A's temp file as `previous_`
 // instead of the true prior buffer, and thread A's destructor could then
@@ -413,7 +413,7 @@ Result<HighOrderResult> build_high_order_weights(const HighOrderRequest& request
   out.order = request.order;
   out.monotone = request.monotone;
 
-  // R10: held from before `capture` is constructed to after it is destroyed
+  // Held from before `capture` is constructed to after it is destroyed
   // (declared first in this scope, so it is destroyed LAST on every path out
   // of this function -- normal return or early `return Failure{...}` alike,
   // per C++'s reverse-order-of-construction guarantee for locals). Every
@@ -503,7 +503,7 @@ Result<HighOrderResult> build_high_order_weights(const HighOrderRequest& request
     }
     // The silent one. Not a warning to be relayed: the map that came back is a
     // first-order map wearing an order-N label, which is precisely the thing
-    // this task exists to prevent.
+    // this check exists to prevent.
     if (contains(out.log, "dropping to 1st order")) {
       return Failure{
           "E-REMAP-DEGRADED",

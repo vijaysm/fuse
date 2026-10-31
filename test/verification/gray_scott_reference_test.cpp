@@ -48,8 +48,8 @@
 // source for Pearson's own table). Used verbatim in section (4) and as the
 // example driver's defaults (examples/gray_scott/main.cpp).
 //
-// ASYMPTOTIC REGIME (task requirement: "choose parameters so that the
-// reaction rates times dt are well below 1"). Sections (1)-(3) use
+// ASYMPTOTIC REGIME (parameters are chosen so that the
+// reaction rates times dt are well below 1). Sections (1)-(3) use
 // F=0.04, k=0.06 (order-1 with Pearson's own values, chosen round for
 // readability). dt (or, for the multi-subcycling step members in sections (2)/
 // (3), the coarsest member's own window) ranges from 0.0025 (section (1)'s

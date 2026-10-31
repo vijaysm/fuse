@@ -149,7 +149,7 @@ std::vector<Case> operators() {
     cases.push_back({"weights-conservative-4x3 o weights-3x4", nullptr, c});
   }
 
-  // Interface-operators task: the consistent-interpolation H on a genuinely
+  // The consistent-interpolation H on a genuinely
   // non-matching 1D pair (5 beam vertices, 8 fluid cells) -- built through
   // `SerialMeshBackend`'s real "generated:line:n" meshes, not a hand-typed
   // matrix, so a bug in the geometry code (axis choice, node ordering) would
@@ -515,8 +515,8 @@ TEST(OperatorConformance, ComposingWithANonConservativeFactorDropsTheClaim) {
 // ===========================================================================
 // ConsistentInterp: the domain-specific properties `operators()` above does
 // not check (per this file's own "WHAT IT DOES NOT CHECK" -- these need real
-// meshes and closed-form solutions, not just algebra). Task: "Consistent H
-// and conservative H^T on 1D interfaces". Uses `SerialMeshBackend`'s real
+// meshes and closed-form solutions, not just algebra). Covers consistent H
+// and conservative H^T on 1D interfaces. Uses `SerialMeshBackend`'s real
 // "generated:line:n" meshes throughout, exactly as
 // `test/verification/interface_transfer_test.cpp` does for the P0 path, so a
 // geometry bug (axis choice, node ordering, degenerate-tolerance) shows up

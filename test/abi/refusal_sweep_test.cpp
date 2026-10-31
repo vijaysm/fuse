@@ -181,7 +181,7 @@ TEST(AbiRefusalSweep, SetupRefusesAnMpmdComponentWithNoCommunicator) {
 // here IS set, so impl_setup() really does call fuse::transport::connect()
 // for this Mpmd-launched component -- safe even outside mpiexec because
 // Open MPI's singleton MPI_Init already sets MPI_APPNUM=0 for a one-process
-// job (measured on higgs: both a bare singleton MPI_Init and
+// job (measured: both a bare singleton MPI_Init and
 // `mpiexec -n 1` report MPI_APPNUM flag=1, appnum=0), matching the single
 // rank this graph's own RankSet{0, 1} and LaunchSpec::appnum=0 declare.
 #if FUSE_HAVE_MPI

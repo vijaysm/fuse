@@ -1218,8 +1218,7 @@ TEST(CommGraph, TwoIndependentlySplitCommunicatorsAreEnoughToBuildTheGraph) {
   const CommGraph& g = built.value();
 
   // The union is the whole world for this shape, and it is disjoint, so the
-  // graph is expressible as one MpiTransport plan -- the R5 path that had no
-  // working caller at all before this.
+  // graph is expressible as one MpiTransport plan.
   EXPECT_TRUE(g.specs_are_disjoint());
   EXPECT_EQ(g.union_size(), world_size());
   EXPECT_EQ(g.source_spec().src_ranks, members_of(Shape::FullyDisjoint,

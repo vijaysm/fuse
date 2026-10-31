@@ -106,8 +106,8 @@ of about 0.36 at `c = 1`, so `c = 20` carries about 55x headroom.
 Two cases: `AssembledDiffusionMatrixAgreesWithEigenProductOnOneRank` (the `DistSparseMatrix` against
 a plain `Eigen::SparseMatrix` product, one rank) and
 `AssembledDiffusionMatrixAgreesWithHandWrittenStencilApply` (against the hand-written stencil
-kernel). **Deviation from the originating task's wording**: that task describes the matrix-free
-reference as "the Kokkos stencil kernel", but `examples/brusselator/brusselator_physics.hpp`'s only
+kernel). **Deviation from a Kokkos stencil kernel**: one might expect the matrix-free
+reference to be "the Kokkos stencil kernel", but `examples/brusselator/brusselator_physics.hpp`'s only
 Kokkos kernel (`reaction_kokkos_span`) computes the pointwise *reaction* term, `u^2 v - A u`, not
 diffusion -- there is no existing Kokkos diffusion stencil in the codebase for this check to call.
 The "matrix-free kernel" compared against is therefore a plain hand-written function

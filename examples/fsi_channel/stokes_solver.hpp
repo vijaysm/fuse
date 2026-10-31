@@ -794,7 +794,7 @@ class StokesSolver {
     // an incompressible channel with a moving (transpiring) top wall
     // reads Q_out(t) = Q_in(t) + Q_wall(t), Q_wall(t) = integral of the
     // wall's own normal velocity over the channel length -- exactly the
-    // "transpiration volume source" this task named. `cn_step`'s outflow
+    // "transpiration volume source". `cn_step`'s outflow
     // treatment leaves `Q_out` floating (a zero-curvature extrapolation)
     // with nothing tying it to `Q_in + Q_wall`; this correction ties it,
     // by a single uniform shift of the outflow column's own `u` (the ONE

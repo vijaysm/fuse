@@ -7,7 +7,7 @@
 ///
 /// Header-only and framework-free on purpose: `resolve_device_id()` below
 /// is pure arithmetic, so a test can assert the binding rule with a mocked
-/// device count as well as the real one. a single-GPU host (higgs) has
+/// device count as well as the real one. A single-GPU host has
 /// exactly one GPU, so nothing running there can exercise
 /// `local_rank % device_count > 1` against a real device backend; the
 /// mock is how that branch gets covered at all.

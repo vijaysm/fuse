@@ -1668,7 +1668,7 @@ TEST(RunnerTransport, ADeviceResidentRunDeliversTheSourceValuesGpuAwareOrNot) {
   long long total_moves = 0, total_boundary = 0;
   MPI_Allreduce(&local_moves, &total_moves, 1, MPI_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
   MPI_Allreduce(&local_boundary, &total_boundary, 1, MPI_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
-  // Whichever branch this host's MPI took (GPU-aware OpenMPI on higgs, or
+  // Whichever branch this host's MPI took (GPU-aware OpenMPI, or
   // FUSE_TRANSPORT_HOST_STAGING=1 forcing the fallback in the row below) is
   // moot here: no rank in THIS job ever reaches the both-device branch
   // (`device_transport_moves`) at all, only the mixed-pair one.
@@ -1678,7 +1678,7 @@ TEST(RunnerTransport, ADeviceResidentRunDeliversTheSourceValuesGpuAwareOrNot) {
 }
 
 // The host-staged fallback, forced via FUSE_TRANSPORT_HOST_STAGING=1 so it
-// has a test on higgs's genuinely GPU-aware OpenMPI too, not only on a
+// has a test on a genuinely GPU-aware OpenMPI too, not only on a
 // machine whose MPI happens not to be GPU-aware. Delivery must still agree
 // bitwise with the GPU-aware path above and with Host: nothing here is
 // floating-point arithmetic, only data movement, so there is no rounding

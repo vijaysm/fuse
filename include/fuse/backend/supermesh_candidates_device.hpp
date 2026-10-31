@@ -20,8 +20,8 @@
 /// compile-time count, because the 2D/3D split happens the same way it
 /// does there, by how many axes the caller passes in.
 ///
-/// WHY THE CLIP ITSELF STAYS ON THE HOST (the feasibility assessment the
-/// task asked for, not assumed): `build_supermesh_weights` calls exactly
+/// WHY THE CLIP ITSELF STAYS ON THE HOST (a feasibility assessment, not an
+/// assumption): `build_supermesh_weights` calls exactly
 /// three r3d functions for a 3D pair (`r3d_init_tet`, `r3d_clip`,
 /// `r3d_reduce`) and three r2d functions for a 2D pair
 /// (`r2d_init_poly`, `r2d_clip`, `r2d_reduce`). Read in full

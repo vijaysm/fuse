@@ -25,7 +25,7 @@ this diagram (`linalg`/`field` have been missed from it before).
 None of the four sits strictly "under" its neighbour the way the rest of the column
 does: `linalg` is a peer utility `num` depends on (nothing depends on `num` from
 here); `field` is included only by `backend` and `runtime`, not by anything below
-them; `search` sits directly below `backend` *by task requirement* (`backend`'s own
+them; `search` sits directly below `backend` *by design* (`backend`'s own
 nodal-remap code calls into it), which puts its own `mesh_adapter.hpp` (the one
 building element bounding boxes from a `fuse::MeshView`) in tension with that
 position, since `fuse::MeshView` is defined one layer ABOVE `search` — an

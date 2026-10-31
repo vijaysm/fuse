@@ -166,7 +166,7 @@ through whatever new entry point this design adds (Section 3), never read it dir
 
 `Component::capabilities()`'s own doc comment names this directly: `kCapabilityHiddenState`
 marks "any state `advance()` mutates outside what `register_fields()` bound"
-(`include/fuse/runtime/component.hpp:442-446`, bit meaning documented at `:401-417`). The R16
+(`include/fuse/runtime/component.hpp:442-446`, bit meaning documented at `:401-417`). The
 caveat on `save_state()`/`restore_state()` (`component.hpp:355-367`) is explicit that FUSE's
 rollback verification is "a `memcmp` against REGISTERED field storage only... It cannot see, and
 therefore cannot verify" anything a component never registered. **Every one of the four worked
@@ -355,10 +355,10 @@ class Component {
   component's own call (an O(n log n) check at write time, cheap next to the I/O it guards) and
   that every id the file claims for a field was actually written by SOME rank (a collective
   count-and-compare, not a local one). FUSE **cannot** verify that the values are a faithful
-  serialization of the component's full state -- exactly the R16 caveat already stated for
+  serialization of the component's full state -- exactly the caveat already stated for
   rollback (`component.hpp:355-367`) applied to a new context: "FUSE verifies restart found
   everything it was told to expect" is a different, strictly weaker claim than "FUSE verifies
-  the restart is correct," and documentation for this method must say so as plainly as the R16
+  the restart is correct," and documentation for this method must say so as plainly as the
   comment already does for rollback.
 
 ### Option B -- an opaque, versioned byte record per rank, refused by name on a different rank count
@@ -639,7 +639,7 @@ for matching, not for position -- applied to a file format instead of to in-memo
 Run N periods uninterrupted; separately, run k < N periods, write a restart-to-disk point,
 start a NEW process at the same rank count, restore, run N-k more periods. Compare: every
 registered field (bit-identical `memcmp`, the same standard `run_region`'s own rollback
-verification already uses, `include/fuse/runtime/component.hpp:360-367`'s R16 comment names the
+verification already uses, `include/fuse/runtime/component.hpp:360-367`'s comment names the
 mechanism), every component's private state surfaced via Option A/B's own value (bit-identical,
 since nothing about re-partitioning enters at the same rank count), the Runner's own
 `period_index` and `RunStats` (`include/fuse/runtime/runner.hpp` -- `stats()`), and stdout/log
