@@ -606,13 +606,16 @@ TEST(RuntimeAdjointMpi, TheExchangeReturnsEachAdjointToTheEntityItCameFrom) {
 // ---------------------------------------------------------------------------
 
 // The consumer refuses the adjoint of its step. The ranks that hold the consumer return that error
-// at the end of the sweep; the ranks that only exchange with them are told at the agreement point
-// and return an error too, and none is left waiting in the exchange (the ctest timeout is the
-// witness: a rank that returned early would leave the others blocked in MPI_Alltoallv).
+// at the end of the sweep; the ranks that only exchange with them are told at the agreement of the
+// end of the period and return an error too, and none is left waiting in the exchange (the ctest
+// timeout is the witness: a rank that returned early would leave the others blocked in
+// MPI_Alltoallv). The step is reversed AFTER the exchanges that follow it in the forward order
+// (the trace of the sweep ends with it), so no agreement point of the plan is behind it: it is
+// the agreement of the end of the period that carries the failure to the other ranks.
 TEST(RuntimeAdjointMpi, AFailureOnOneRankEndsTheSweepOnEveryRankThatExchangesWithIt) {
   FUSE_REQUIRE_AT_LEAST_RANKS(2);
   Spec s;
-  s.loop = true;  // the lagged channel's exchange comes after the consumer's step in the reverse order
+  s.loop = true;
   s.a_f = 0.5;
   s.c_f = 0.2;
   s.a_s = 0.5;
@@ -628,7 +631,20 @@ TEST(RuntimeAdjointMpi, AFailureOnOneRankEndsTheSweepOnEveryRankThatExchangesWit
   if (holds_solid) {
     EXPECT_EQ(r.error().code, "E-TEST-ADJOINT-REFUSED") << "rank " << world_rank() << ": " << r.error().message;
   } else {
+    // The rank that did not fail learns the original error and the rank it came from (the issue tracker
+    //): the lowest-numbered rank that holds the consumer, with the code it refused with.
+    int lowest_solid = -1;
+    for (int rk = 0; rk < world_size() && lowest_solid < 0; ++rk) {
+      if (n->solid_set.contains(rk)) lowest_solid = rk;
+    }
     EXPECT_EQ(r.error().code, "E-RT-EPOCH-PEER") << "rank " << world_rank() << ": " << r.error().message;
+    EXPECT_EQ(r.error().origin_rank, lowest_solid) << r.error().message;
+    EXPECT_EQ(r.error().origin_code, "E-TEST-ADJOINT-REFUSED") << r.error().message;
+    EXPECT_NE(r.error().message.find("E-TEST-ADJOINT-REFUSED"), std::string::npos) << r.error().message;
+    EXPECT_NE(r.error().message.find("'solid' refuses the adjoint of its step"), std::string::npos)
+        << r.error().message;
+    EXPECT_NE(r.error().message.find("rank " + std::to_string(lowest_solid)), std::string::npos)
+        << r.error().message;
   }
   // the failed period did not happen: asking again reverses it again (and fails again, the same way)
   const auto again = n->runner->run_period_adjoint(n->components);

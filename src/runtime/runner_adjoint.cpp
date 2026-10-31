@@ -582,6 +582,11 @@ Result<void> Runner::Impl::sweep_adjoint(ComponentSet& components,
   }
   A.in_period = false;
   Kokkos::fence("fuse::adjoint_sweep");
+  // The failure of a step is known to the ranks it exchanges with only through this agreement:
+  // the exchanges of the forward order that follow the step have all been reversed by now.
+  if (const Result<void> agreed = agree_on_adjoint_period(); !agreed.ok() && !step_failure.has_value()) {
+    step_failure = agreed.error();
+  }
   if (step_failure.has_value()) {
     // A period that failed did not happen: the next call reverses it again.
     const Failure f = *step_failure;

@@ -1,5 +1,6 @@
 #include "fuse/base/config.hpp"
 #include "fuse/runtime/epoch_schedule.hpp"
+#include "fuse/field/collective_agreement.hpp"
 #include "fuse/transport/tags.hpp"
 #include "fuse/runtime/runner.hpp"
 
@@ -4169,6 +4170,115 @@ Result<void> Runner::Impl::reconcile_epoch(const Instruction& ins) {
   }
 #else
   (void)ins;
+#endif
+  return Result<void>::success();
+}
+
+Result<void> Runner::Impl::agree_on_adjoint_period() {
+#if FUSE_HAVE_MPI
+  if (!config.base_communicator.has_value() || epoch_participants.empty()) {
+    return Result<void>::success();
+  }
+  // The ranks that take part in any agreement point of the plan: derived from the graph, so the
+  // same list on every rank. A rank that exchanges with nobody is not asked to join.
+  std::vector<int> part;
+  for (const auto& entry : epoch_participants) {
+    part.insert(part.end(), entry.second.begin(), entry.second.end());
+  }
+  std::sort(part.begin(), part.end());
+  part.erase(std::unique(part.begin(), part.end()), part.end());
+
+  const MPI_Comm base = MPI_Comm_f2c(static_cast<MPI_Fint>(*config.base_communicator));
+  if (base == MPI_COMM_NULL) {
+    return Failure{"E-RT-EPOCH-COMM",
+                   "RunnerConfig::base_communicator is MPI_COMM_NULL at the end of a reverse period"};
+  }
+  int me = 0;
+  if (MPI_Comm_rank(base, &me) != MPI_SUCCESS) {
+    return Failure{"E-RT-EPOCH-COMM", "MPI_Comm_rank failed at the end of a reverse period"};
+  }
+  const auto self = std::find(part.begin(), part.end(), me);
+  if (self == part.end() || part.size() < 2) return Result<void>::success();
+  const auto n = static_cast<int>(part.size());
+  const auto my_index = static_cast<int>(std::distance(part.begin(), self));
+
+  // The schedule of reconcile_epoch() (fuse/runtime/epoch_schedule.hpp), over the whole list, for
+  // two integers at once: the lowest rank that failed (minimum) and how many ranks failed (sum).
+  constexpr int kNoRank = std::numeric_limits<int>::max();
+  std::array<int, 2> agreed{step_failure.has_value() ? me : kNoRank, step_failure.has_value() ? 1 : 0};
+  const EpochSchedule sched = epoch_schedule(n, my_index);
+  const auto comm_failure = [](const char* what) {
+    return Failure{"E-RT-EPOCH-COMM", std::string(what) + " failed while agreeing the status of a reverse period"};
+  };
+  for (int ri = 0; ri < sched.reduce_recv_count; ++ri) {
+    const int from = sched.reduce_recv_from[static_cast<std::size_t>(ri)];
+    std::array<int, 2> peer{kNoRank, 0};
+    if (MPI_Recv(peer.data(), 2, MPI_INT, part[static_cast<std::size_t>(from)], kEpochTag, base,
+                 MPI_STATUS_IGNORE) != MPI_SUCCESS) {
+      return comm_failure("MPI_Recv");
+    }
+    agreed[0] = std::min(agreed[0], peer[0]);
+    agreed[1] += peer[1];
+  }
+  if (sched.reduce_send_to >= 0 &&
+      MPI_Send(agreed.data(), 2, MPI_INT, part[static_cast<std::size_t>(sched.reduce_send_to)],
+               kEpochTag, base) != MPI_SUCCESS) {
+    return comm_failure("MPI_Send");
+  }
+  if (sched.result_recv_from >= 0 &&
+      MPI_Recv(agreed.data(), 2, MPI_INT, part[static_cast<std::size_t>(sched.result_recv_from)],
+               kEpochTag, base, MPI_STATUS_IGNORE) != MPI_SUCCESS) {
+    return comm_failure("MPI_Recv");
+  }
+  for (int to = 1; to <= sched.result_send_count; ++to) {
+    if (MPI_Send(agreed.data(), 2, MPI_INT, part[static_cast<std::size_t>(to)], kEpochTag, base) !=
+        MPI_SUCCESS) {
+      return comm_failure("MPI_Send");
+    }
+  }
+  if (agreed[1] == 0) return Result<void>::success();
+
+  // The lowest-numbered rank that failed tells every other rank what it failed with, so that the
+  // original error and the rank it came from are known everywhere.
+  const int origin = agreed[0];
+  std::string code;
+  std::string message;
+  if (me == origin) {
+    code = step_failure->code;
+    message = step_failure->message;
+    int header[2] = {static_cast<int>(code.size()), static_cast<int>(message.size())};
+    for (const int to : part) {
+      if (to == me) continue;
+      if (MPI_Send(header, 2, MPI_INT, to, kEpochTag, base) != MPI_SUCCESS ||
+          MPI_Send(code.data(), header[0], MPI_CHAR, to, kEpochTag, base) != MPI_SUCCESS ||
+          MPI_Send(message.data(), header[1], MPI_CHAR, to, kEpochTag, base) != MPI_SUCCESS) {
+        return comm_failure("MPI_Send");
+      }
+    }
+  } else {
+    int header[2] = {0, 0};
+    if (MPI_Recv(header, 2, MPI_INT, origin, kEpochTag, base, MPI_STATUS_IGNORE) != MPI_SUCCESS) {
+      return comm_failure("MPI_Recv");
+    }
+    code.resize(static_cast<std::size_t>(header[0]));
+    message.resize(static_cast<std::size_t>(header[1]));
+    if (MPI_Recv(code.data(), header[0], MPI_CHAR, origin, kEpochTag, base, MPI_STATUS_IGNORE) != MPI_SUCCESS ||
+        MPI_Recv(message.data(), header[1], MPI_CHAR, origin, kEpochTag, base, MPI_STATUS_IGNORE) !=
+            MPI_SUCCESS) {
+      return comm_failure("MPI_Recv");
+    }
+  }
+  // A rank that failed itself keeps its own failure, which is an original; the others record the
+  // origin's, in the one message shape the agreements of the tree share.
+  if (!step_failure.has_value()) {
+    AgreedRefusal refusal;
+    refusal.origin_rank = origin;
+    refusal.refusing_ranks = agreed[1];
+    refusal.communicator_size = n;
+    refusal.origin_code = std::move(code);
+    refusal.origin_message = std::move(message);
+    step_failure = make_agreed_failure("E-RT-EPOCH-PEER", "end of a reverse period", refusal);
+  }
 #endif
   return Result<void>::success();
 }
