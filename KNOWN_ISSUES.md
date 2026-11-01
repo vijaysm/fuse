@@ -13509,21 +13509,45 @@ the "early refusal" case, which the bug did not affect). Regression test:
 added this wave -- the exact case (`LagrangeNodal`, order above the maximum) that distinguishes
 the fix from the bug, which the wave-1 test could not have caught by construction.
 
-### D102. `fe::DofMap`'s shared-sub-entity ownership ("owned here iff every corner vertex is owned here") can leave a face or edge DoF owned by no rank -- OPEN, S8.3 wave 2 round 1 (2026-11-01)
+### D102. `fe::DofMap`'s shared-sub-entity ownership ("owned here iff every corner vertex is owned here") can leave a face or edge DoF owned by no rank -- FOUND AND FIXED, S8.3 wave 2 round 2 (2026-11-01)
 
 **What.** For a codimension-1 DoF (a P2 face centre in 3-D, an edge midpoint in 2-D) `DofMap` (physics-kit/src/fe/dof_map.cpp)
-declares the DoF owned on this rank iff every corner vertex of the side is owned here. On a partition where the side's corners are
+declared the DoF owned on this rank iff every corner vertex of the side is owned here. On a partition where the side's corners are
 split across ranks (the usual case for a face on a partition boundary that itself cuts through a vertex layer), no rank owns every
-corner, so no rank owns the DoF; the collective numbering then refuses with `E-PHYSICS-DOFMAP-GHOST-UNRESOLVED` (the ghost cannot be
-resolved against any owner table). The refusal is correct -- the DoF is not silently dropped or double-counted -- but it refuses a
-legitimate partition. KARMA resolves the same question through MOAB's `get_owner` on the DoF's entity (karma_dof_map.C:849), a rule
-every sharing rank agrees on, with a hash of the entity identity as the fallback (line 852); the port did not carry that because
-`spatial::Mesh` exposes `is_vertex_owned` but no owner rank, and `fuse::MeshView` has no owner-rank query either.
+corner, so no rank owns the DoF; the collective numbering then refused with `E-PHYSICS-DOFMAP-GHOST-UNRESOLVED` (the ghost was not
+silently dropped or double-counted, but a legitimate partition was refused). KARMA resolves the same question through MOAB's
+`get_owner` on the DoF's entity (karma_dof_map.C:849), a rule every sharing rank agrees on, with a hash of the entity identity as the
+fallback (line 852); the port did not carry that because `spatial::Mesh` exposed `is_vertex_owned` but no owner rank, and
+`fuse::MeshView` had no owner-rank query either.
 
-**Fix (round 2).** Owner of a shared sub-entity = the minimum over its corner vertices' owner ranks (deterministic, gap-free,
-computable on every sharing rank from vertex owner ranks alone). Needs `MeshView::owner(dim, i)` (implemented by the native and MOAB
-backends; `native_mesh.hpp` already stores `vertex_owner`), `spatial::Mesh::vertex_owner()`, and a two-"rank" `MeshArrays` fixture
-whose shared face has corners owned by both ranks, which today must refuse and after the fix must number the DoF once.
+**Fix (round 2, closed).** Owner of a shared sub-entity = the minimum over its corner vertices' own owner ranks (deterministic,
+gap-free, computable on every sharing rank from vertex owner ranks alone, no further communication) -- `fe::shared_sub_entity_owned_
+here(mesh, corners)` (dof_map.hpp/.cpp), exposed as a free function (not a DofMap-private detail) so it is directly unit-testable
+against a hand-built `Mesh` with split vertex ownership, without needing a real multi-rank communicator. Needs `MeshView::owner(dim,
+i)` (added to mesh_view.hpp with a rejecting default, mirroring `cell_vertices`'s own precedent; implemented by `fuse::native::
+NativeMeshView` from its own stored `vertex_owner`/`cell_owner` arrays, the serial backend's view -- always rank 0 -- and
+`MoabMeshView` under `FUSE_HAVE_MOAB`, compile-only, reading `ParallelComm::get_owner`, not yet wired to a real `ParallelComm` at any
+construction call site -- a named follow-up) and `spatial::Mesh::vertex_owner()`. `physics.dof_map.D102SharedSideOwnedByTheMinimumCornerOwnerRank`
+tests the rule directly: a two-corner side split 0/1 is owned here (min = 0, this rank) where the round-1 rule would have said no.
 
-**Status.** Open. The multi-rank path is build-verified only (no MPI in the sandbox); the single-rank path, the only one tier 0 runs,
-is unaffected (every vertex is owned).
+**Status.** Closed. The rule itself is tested directly (not through DofMap's full single-rank constructor, which refuses ANY ghost
+vertex outright regardless of which sub-entity rule is in effect -- the two rules are observationally identical on that path, since
+nothing is a ghost there at all); the COLLECTIVE path that actually exercises the fix under a real partition is still build-verified
+only (no MPI in this sandbox).
+
+### D103. `fe::DofMap`'s ghost-resolution allgather padding never carried a sentinel for `[owned_keys.size(), max_owned)` -- FOUND AND FIXED during a transport rewrite, S8.3 wave 2 round 2 (2026-11-01)
+
+**What.** Round 1's `DofMap` constructor marked `send[i * kRecordWidth]` with a sentinel value for `i` in `[0, owned_keys.size())`,
+then immediately overwrote those SAME positions with real record data in the following loop -- so no slot in
+`[owned_keys.size(), max_owned)`, the actual PADDING range (present whenever one rank owns fewer dofs than the per-rank maximum),
+was ever marked sentinel. Each padding slot kept its zero-initialised bit pattern, which decoded as a bogus all-zero `DofKey`
+(`variable=0, component=0, entity_dimension=0, corners=[], slot=0`) with `global_index=0` and was inserted into every receiving
+rank's own `global_table`. Unreachable by any tier-0 test (padding only exists when `max_owned > n_owned_here` across ranks, never
+true on the single-rank path this sandbox runs); found while rewriting the block for item B's own native-integer-transport change,
+not by a failing test.
+
+**Fix.** The sentinel-marking loop now runs over `[0, max_owned)` (the record width's own full range) before the real-record loop
+writes over `[0, owned_keys.size())`, so every padding slot is correctly marked and skipped on every receiving rank.
+
+**Status.** Fixed. Like D102's own fix, this is in code the collective (multi-rank) path alone exercises -- build-verified only, no
+MPI in this sandbox; no tier-0 test could have caught either the bug or the fix directly, named rather than claimed covered.
