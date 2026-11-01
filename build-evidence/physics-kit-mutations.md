@@ -1,6 +1,6 @@
 # Mutation evidence -- `physics-kit`
 
-Run 2026-10-31 against build `build-tier0`. Regenerate with `tools/mutate.py --write-log`; do not edit.
+Run 2026-11-01 against build `build-tier0`. Regenerate with `tools/mutate.py --write-log`; do not edit.
 
 | Mutation | File | Outcome | Killed by |
 |---|---|---|---|
