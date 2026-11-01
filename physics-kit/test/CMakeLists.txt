@@ -44,6 +44,7 @@ fuse_add_gtest(physics dof_map SRC_DIR . NO_LAYER_LIB LIBS fuse::physics_kit)
 fuse_add_gtest(physics algebraic_system SRC_DIR . NO_LAYER_LIB LIBS fuse::physics_kit)
 fuse_add_gtest(physics mass_assembly SRC_DIR . NO_LAYER_LIB LIBS fuse::physics_kit)
 fuse_add_gtest(physics diffusion_assembly SRC_DIR . NO_LAYER_LIB LIBS fuse::physics_kit)
+fuse_add_gtest(physics transient_reaction_diffusion_assembly SRC_DIR . NO_LAYER_LIB LIBS fuse::physics_kit)
 
 # The collective mesh contract over a real communicator: owned
 # counts sum to the global total and a ghost vertex's global id agrees with its
