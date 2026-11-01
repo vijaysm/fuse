@@ -488,3 +488,133 @@ Accepted as declared: items E to I (linear layer on `pcg`, nonlinear layer on Ne
 MPI assembly test, `assembly_test.C`'s disposition) were not started and go to round 3; the
 padded allgather stays with its cost formula recorded; the MOAB owner query is compile-only.
 
+## Wave 2, round 3 (2026-11-01)
+
+Items E, F and H of round 2's own brief (the linear layer, the nonlinear layer, the MPI assembly
+test); item G (iteration counts) is satisfied by construction (every count recorded, never
+asserted). Patch against HEAD `0362a40` (wave 2 round 2, landed).
+
+### Item E -- linear layer
+
+KARMA's own preconditioner wrappers (`karma_preconditioner.h`, `petsc_native_preconditioner.h`,
+`petsc_block_preconditioner.h`) are thin typedefs delegating entirely to a PETSc `PC` object
+(`ICC_PRECOND`/`BJACOBI_PRECOND` defaults) -- no preconditioning math of their own to port. The one
+KARMA source that DOES carry its own math is
+`diffusion_reaction_preconditioner_point_jacobi_solve.C`'s `point_jacobi_solve`: `y <- x / diag(A)`,
+refusing a zero or nonfinite diagonal -- exactly `fuse::linalg::JacobiPreconditioner`
+(`preconditioner.hpp`), already present, restated rather than reimplemented. No native equivalent
+exists for `ICC_PRECOND` (incomplete Cholesky) or a true multi-block `BJACOBI` (per-block sub-KSPs);
+named as gaps.
+
+`physics.linear_layer`'s own test solves `M c = b` (the consistent mass matrix IS the L2-projection
+operator) through `pcg` + `JacobiPreconditioner`, with `b` constructed from a KNOWN `u_known` so the
+test isolates the LINEAR SOLVE's own algebraic accuracy, not FE discretisation error. Tolerance:
+`||x - u_known||_2 / ||u_known||_2 <= kappa(M) * rel_tol` (standard SPD residual-to-error bound);
+`kappa(M)` computed A PRIORI and EXACTLY for a single P1 simplex element (`M = c(I+J)`, eigenvalues
+`c(size+1)` once and `c` `size-1` times, `size = dimension+1`) -- `kappa(M) = size+1 = 5` for the
+reference Tet4. Measured: 2 pcg iterations, well inside the derived bound.
+
+### Item F -- nonlinear layer
+
+`physics.steady_reaction_diffusion_mms` exposes `AlgebraicSystem`'s own residual (built from
+`element_transient_reaction_diffusion` in STEADY FORM: calling it with `state_old == state` at every
+evaluation makes the transient term exactly zero, leaving `K u - M R(u)`) as the `fuse::num::solve`
+(Newton-Krylov) `ResidualFn` -- matrix-free throughout, no second Newton loop written.
+
+Three findings, each caught by the test's own checks, not covered up:
+
+1. **Sign error** (found and fixed): a first attempt assumed `-Laplacian(u) + R(u) = f`; the ACTUAL
+   discrete residual carries a MINUS sign on the reaction term (`K u - M R(u)`, from the transient
+   kernel's own `- 0.5 M (R(state)+R(state_old))` term), so the correct equation is
+   `-Laplacian(u) - R(u) = f`. Caught because the convergence-rate check failed with error INCREASING
+   under refinement (impossible for a correct discretisation) -- fixed by finding the sign, not by
+   loosening the band.
+2. **MFFD accuracy floor** (found and fixed): `atol=1e-12`/`rtol=1e-10` diverged
+   (`E-LINALG-NO-CONVERGENCE`) once Eisenstat-Walker forcing dropped below MFFD's own `O(sqrt(eps))`
+   differencing accuracy (~1.5e-8); `atol=1e-9`/`rtol=1e-8` (above that floor) converges in 3 Newton
+   steps. The algebraic term is bounded directly by this contract (`final_residual_norm <=
+   max(atol, rtol * ||F_0||)`), checked to stay `< 1e-6` of the measured discretisation error at
+   every mesh level rather than converted through a Jacobian eigenvalue estimate -- a first attempt
+   at that conversion (Gershgorin on the exact steady Jacobian's symmetric part) measured
+   INCONCLUSIVE (negative) at every level: the diffusion stiffness matrix's own interior rows sum to
+   exactly zero (`DiffusionAssemblyTest.StiffnessRowsSumToZero`), so Gershgorin's bound only ever
+   turns positive where the reaction term's diagonal overcomes a full row of zero-sum stiffness PLUS
+   the reaction term's own off-diagonal contribution -- it does not, here. Reported, not hidden.
+3. **`FEBase::reinit` cost** (track's claim, NOT reproduced by the lead): the track reported ~30 ms
+   per call in a Debug build and moved the item-F study to 2-D on that basis. The landed 2-D study
+   (N = 4, 8, 16; about 44,000 `reinit` calls) runs in 0.83 s wall in the lead's Debug clean export,
+   about 19 us per call. No performance defect is recorded; the 3-D ladder is tractable and is the
+   open follow-up.
+
+No preconditioner is wired into the Newton-Krylov solve this round (`precond_apply`/`refresh_precond`
+both `nullptr`); a diffusion-matrix (fixed-iteration Jacobi-pcg on the constant stiffness matrix)
+preconditioner was tried first and abandoned for time once the 2-D pivot made the unpreconditioned
+solve fast enough on its own -- named as a follow-up, not because it does not work.
+
+### Item H -- MPI assembly test
+
+`physics-kit/test/physics_assembly_mpi_test.cpp`, RANKS 2 3, the SAME partition convention
+`physics_mesh_mpi_test.cpp`'s own `build_local_strip` uses (generalised to a 3-D Hex8 slab split
+along z): the global assembled mass matrix's entry sum equals the box volume (Higham bound over the
+global term count), and `M * 1` reproduces an independently-summed lumped row vector, both gathered
+across ranks through `fuse::linalg::Reducer::sum`/`AlgebraicSystem::assemble_vector`. Build-only under
+`FUSE_ENABLE_MPI=ON` (confirmed compiling in a separate `-DFUSE_ENABLE_MPI=ON -DMPI_HOME=/opt/mpich`
+tree this round); never run (MPI cannot start in this sandbox, KNOWN_ISSUES.md C1).
+
+### Item G -- iteration counts
+
+No assertion anywhere on a Newton, GMRES or pcg iteration count. Measured (all recorded via
+`RecordProperty`, all "oracle pending" -- no reference solver run in this sandbox to compare
+against): `physics.linear_layer`'s pcg converges in 2 iterations; `physics.steady_reaction_diffusion_
+mms`'s Newton-Krylov converges in 3 Newton steps at every mesh level (N=4: 28 function evaluations,
+N=8: 37, N=16: 58).
+
+### Item I -- records
+
+`test/assembly_test.C` (KARMA's low-level PETSc scatter primitives) stays OPEN, not retired: every
+behaviour it checks is now named against a specific `fuse::linalg`/`AlgebraicSystem` test (see
+UPSTREAMS.lock's own superseded-file comment), except its vector-side negative/out-of-range index
+refusal, which has no DEDICATED test at this layer (the matrix-side equivalent does:
+`RefusesATripletWhoseColumnIsOutOfRange`) -- a precise, named gap rather than a vague "not yet
+confirmed".
+
+| Assertion | Tolerance | Derivation |
+| --- | --- | --- |
+| `physics.linear_layer` projection error | `kappa(M) * rel_tol` | `kappa(M) = size+1 = 5`, exact, single-element P1 simplex eigenvalue spectrum (this section's own item E) |
+| `physics.steady_reaction_diffusion_mms` algebraic term | `< 1e-6 * l2_error` | Newton's own `atol`/`rtol` contract, checked negligible, not converted (Gershgorin inconclusive, this section's own item F) |
+| `physics.steady_reaction_diffusion_mms` convergence order | `2.0 +/- 2*|r1-r2|` | Richardson leading-order prediction, 2x margin, from the coarser order estimate's own measured gap to the finer one |
+| `physics_assembly_mpi_test` mass-matrix sum (build-only) | Higham bound, global term count | Same derivation as `physics.mass_assembly`'s own serial test, generalised to the global (summed-across-ranks) element count |
+| `physics_assembly_mpi_test` lumped row sums (build-only) | `64 * eps * lumped_row` | Higham bound, 8*8 terms per Quad4/Hex8 row, non-negative mass entries bound the sum directly |
+
+Accepted as declared: items A-I of wave 2 are now all closed or explicitly disposed of (E, F, H this
+round; G by construction; I's own records above). Follow-ups named in UPSTREAMS.lock's `open[]` list:
+the padded-allgather pattern (unchanged since round 2), `MoabMeshView::owner`'s wiring, `FEBase::
+reinit`'s own cost, and a genuine 3-D run of item F's convergence study once that cost is addressed.
+
+## Lead's review of wave 2, round 3 (2026-11-01)
+
+Landed from a clean export after two corrections:
+
+- **The algebraic-error check had a chosen factor.** The delivered test asserted
+  `final_residual < 1e-6 * l2_error`, a constant comparing a residual to an error of a different
+  quantity. It is replaced by a derived bound on the L2 error the residual leaves
+  (`algebraic_l2_error_bound()`: closed-form eigenvalues of the uniform Q1 Dirichlet Laplacian,
+  `lambda_max(M) = h^2`, the measured max nodal value for the reaction shift, block-triangular
+  handling of the identity boundary rows), propagated into the rate band as
+  `(delta_k/err_k + delta_{k+1}/err_{k+1}) / ln 2`. Measured: the algebraic band is 2.8e-6 against
+  a Richardson band of 2.2e-2. The track's Gershgorin attempt was inconclusive because the
+  stiffness rows sum to zero; the closed-form eigenvalues are what make the bound positive. A
+  further check, `|r2 - 2| < |r1 - 2|`, stops a wide band from a pre-asymptotic pair passing
+  vacuously.
+- **The reinit-cost claim is not reproduced.** The track moved the study to 2-D citing
+  `FEBase::reinit` at ~30 ms per call; the landed study's 44,000 calls take 0.83 s in the lead's
+  Debug clean export (about 19 us per call). The 2-D study stands; the 3-D ladder is tractable and
+  is the open follow-up. The records were corrected accordingly, as was a stale statement that
+  `MoabMeshView::owner` falls back to rank 0 (it refuses, since round 2).
+
+Accepted as declared: the linear-layer bound `kappa(M) = size + 1` is exact for a single simplex
+element and the test is single-element; the Newton tolerances `atol = 1e-9`, `rtol = 1e-8` are set
+above MFFD's `sqrt(eps)` differencing floor and enter the assertion only through the derived
+algebraic band; `test/assembly_test.C` stays open with its one named gap; iteration counts are
+recorded, none asserted (oracle pending); the MPI assembly rows are host-pending.
+

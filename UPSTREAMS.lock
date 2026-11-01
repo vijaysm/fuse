@@ -187,16 +187,49 @@ superseded = [                       # upstream paths fuse has replaced (S1, fus
                                                          # both replaced -- a quadratic model and a DERIVED
                                                          # tolerance (generic_operators.hpp's own header comment:
                                                          # the forward-difference truncation/round-off balance).
+
+  # S8.3 wave 2 round 3 (2026-11-01), items E-H of the round-2 brief's
+  # remaining items (the linear layer, the nonlinear layer, iteration-count
+  # recording, the MPI assembly test). Item G (iteration counts) names no
+  # file of its own -- every count is recorded, never asserted, in
+  # measured_results, not a KARMA porting decision.
+  "include/numerics/linear/preconditioner/karma_preconditioner.h",       # disposition only, no
+  "include/numerics/linear/preconditioner/petsc_native_preconditioner.h", # math of their own to
+  "include/numerics/linear/preconditioner/petsc_block_preconditioner.h", # port: both are thin
+                                                                          # typedefs/wrappers
+                                                                          # delegating entirely to a
+                                                                          # PETSc PC object
+                                                                          # (ICC_PRECOND /
+                                                                          # BJACOBI_PRECOND
+                                                                          # defaults) -- neither has a
+                                                                          # fuse::linalg equivalent
+                                                                          # (no native ICC, no true
+                                                                          # multi-block BJACOBI with
+                                                                          # per-block sub-KSPs), named
+                                                                          # as gaps in design_notes.
+  "src/physics/diffusion-reaction/diffusion_reaction_preconditioner_point_jacobi_solve.C",  # port-adapt:
+                                                                          # y <- x / diag(A), a zero/
+                                                                          # nonfinite-diagonal refusal
+                                                                          # -- fuse::linalg::
+                                                                          # JacobiPreconditioner
+                                                                          # (preconditioner.hpp)
+                                                                          # restates this exactly,
+                                                                          # tested by physics.linear_
+                                                                          # layer's own projection-
+                                                                          # solve assertion.
 ]
 retire_at = "S8"                     # subtree deleted whole when every path is superseded
 retired   = ""                       # "<date> @ <fuse sha>" once done
 open      = ["PETSc-backed native component unregistered",
              "distorted-pyramid quadrature MEASURED wave 1b (KNOWN_ISSUES.md D100): volume and a non-polynomial integrand's convergence both closed for a straight-edged pyramid; a curved (order-2 geometry) pyramid remains open",
              "DEBUG BUILD IS BROKEN: src/numerics/spatial/karma_domain.C:32,54,77 uses unqualified Hexagon/Unstructured from the scoped enum KARMA::DomainShape, inside assert(). All three verified presets (release, asan=RelWithDebInfo, no-exceptions) define NDEBUG, so the line has never been compiled. The assertion is also vacuous: (Type != Hexagon || Type != Unstructured) is a tautology. Fix when porting, as a real invariant (I6), not an assert.",
-             "wave 2 round 1 (2026-10-31) left test/assembly_test.C (low-level PETSc scatter primitives, not FE content -- likely retirable against fuse::linalg::DistSparseMatrix::from_triplets's own existing coverage, not yet confirmed) and test/diffusion_assembly_test.C's elaborate BC-manager machinery (physics/diffusion-reaction/'s own Dirichlet/Neumann/Robin condition discovery -- judged out of scope for numerics/'s own core assembly track; only its stiffness-operator mathematics is ported) unaddressed; round 2 ports the transient reaction-diffusion kernel (closing that item) but leaves the first two open still",
-             "wave 2 round 2 (2026-11-01) closes D102 and D103 but leaves items E-I of its own task open: the linear layer (pcg + JacobiPreconditioner disposition), the nonlinear layer (fuse::num::solve MMS test), iteration-count recording, the MPI assembly test, and the full records sweep across the whole wave -- delivered items A-D complete and said so, per the task's own explicit permission",
+             "test/assembly_test.C (low-level PETSc scatter primitives) is CONFIRMED, not retired: DuplicateEntriesAreSummed (test/linalg/dist_sparse_matrix_test.cpp) covers its repeated-INSERT-then-ADD accumulation behaviour; RefusesATripletWhoseRowIsNotOwnedHere and RefusesATripletWhoseColumnIsOutOfRange cover its negative/out-of-range index refusals, but only on the MATRIX side -- its OWN negative/out-of-range refusal checks on the VECTOR scatter (KARMA::scatter on a Vec) have no DEDICATED fuse::linalg test naming them, even though AlgebraicSystem::assemble_vector shares the identical exchange_foreign_entries machinery (and its own in_range_fn check) the matrix path uses; its ISLocalToGlobalMapping permuted-local-ordering behaviour has no direct analogue at this layer at all (DofMap::local_to_global, tested by dof_map_test.cpp, is where that concern actually lives in this port). Stays open with this precise gap, not retired, per the round-3 task's own instruction",
+             "test/diffusion_assembly_test.C's elaborate BC-manager machinery (physics/diffusion-reaction/'s own Dirichlet/Neumann/Robin condition discovery) remains out of scope for numerics/'s own core assembly track; only its stiffness-operator mathematics is ported",
+             "wave 2 round 3 (2026-11-01) closes items E, F and H of the round-2 brief (the linear layer, the nonlinear layer via fuse::num::solve, and a build-only MPI assembly test); item G (iteration counts) is satisfied by construction (every Newton/GMRES/pcg count is recorded, never asserted, measured_results); item F's own convergence-rate study runs in 2-D (Quad4), not 3-D, and without a preconditioner -- both named below",
+             "FEBase::reinit cost: the round-3 track reported ~30 ms/call in a Debug build and moved item F's convergence study to 2-D on that basis; the lead measured the landed 2-D study (N = 4, 8, 16; about 44,000 reinit calls) at 0.83 s wall in the same Debug configuration, about 19 us per call -- the claim is NOT reproduced and no performance defect is recorded. A 3-D ratio-2 ladder (N = 4, 8, 16 Hex8, 4096 elements at the finest level) is therefore tractable and is the open follow-up for item F; the 2-D study stands on its own as the same production code path.",
+             "item F's fuse::num::solve call runs UNPRECONDITIONED (precond_apply/refresh_precond both nullptr) -- a documented-legal combination, but the steady Jacobian's own best-available fuse_physics::fe construction (K - M diag(R'(state)), built directly from element_mass_matrix/element_stiffness_matrix/reaction_derivative, NOT element_transient_reaction_diffusion's own Jacobian output under the state=state_old substitution, which is only half the correct steady Jacobian plus an M/h term -- a found, not assumed, subtlety) was never wired into a BlockJacobiPreconditioner this round; a diffusion-matrix (fixed-iteration Jacobi-pcg) preconditioner was tried first and abandoned for time, not because it does not work",
              "DofMap's multi-rank ghost-dof resolution and AlgebraicSystem's foreign-entry exchange both still use a padded-allgather broadcast (every rank's own table sent to every other rank), O(global dof/entry count) communication and memory per rank -- correct, build-verified only (FUSE_ENABLE_MPI=ON, never run in this sandbox), not scalable; wave 2 round 2's own item B changed only the TRANSPORT (native std::int64_t, not std::bit_cast<double>), not this exchange PATTERN; a point-to-point exchange sized to what each rank actually needs (mirroring fuse::backend's own native_halo.hpp pattern) is the scalable alternative, not built this round",
-             "MoabMeshView::owner (D102's fix) is implemented but not wired to a real moab::ParallelComm at any view-construction call site -- compile-only, falls back to rank 0 until wired, a named follow-up"]
+             "MoabMeshView::owner (D102's fix) is implemented but not wired to a real moab::ParallelComm at any view-construction call site -- compile-only; without an attached ParallelComm it REFUSES with E-MESH-NO-OWNER (lead, round 2) rather than answering rank 0; wiring set_parallel_comm() at the view's construction site is the named follow-up"]
 # Measured in fuse at import, 2026-09-15, Apple clang 21 / CMake 4.3.2, with
 # MOAB 5.6.0 + PETSc + MPICH from /opt:
 #   Release: configures, builds with 0 errors, 418 ctest entries registered
