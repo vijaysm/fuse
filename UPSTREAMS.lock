@@ -144,12 +144,39 @@ superseded = [# upstream paths fuse has replaced
                                                       # already covers karma_dense.h's own behaviour (the
                                                       # Builtin dense QR least-squares solve), so this
                                                       # retires rather than ports -- see physics-kit.md
+  # (2026-10-31) (items 1-3 of 8; docs/dev/physics-kit.md's
+  # section): DOF map and algebraic system port-adapted (D-A) to
+  # fuse_physics::fe::DofMap / fe::AlgebraicSystem; mass and stiffness element
+  # operators ported from the GENERIC (physics-agnostic) abstraction level, not
+  # from karma_algebraic_system.h's own PETSc Mat/Vec assembly loop.
+  "include/numerics/karma_dof_map.h", "src/numerics/karma_dof_map.C",
+  "include/numerics/karma_algebraic_system.h", "src/numerics/karma_algebraic_system.C",
+  "test/algebraic_system_test.C",                    # re-expressed: KARMA's own file exercises PETSc Vec/Mat
+                                                      # creation and a multi-vector (solution/current_solution/
+                                                      # old_solution/...) bookkeeping contract this port's
+                                                      # AlgebraicSystem does not hold (design_notes: that
+                                                      # bookkeeping belongs to a later wave's time-stepper, which
+                                                      # consumes AlgebraicSystem::new_vector()); the ownership-
+                                                      # range and global-dof-count properties it DOES check are
+                                                      # restated as physics.algebraic_system's own assertions.
+  "include/physics/common/generic_mass_operator.h", # port-adapted: fuse_physics::fe::element_mass_matrix
+  "test/mass_assembly_test.C",                       # the P1-simplex analytic mass-matrix formula (check_
+                                                      # simplex_mass) is restated as physics.mass_assembly's own
+                                                      # assertion; the golden-reference-file / serial-vs-
+                                                      # partitioned comparison infrastructure (MassReference) is
+                                                      # MPI/partition test scaffolding, not ported here -- the
+                                                      # SAME global-volume invariant it checks is exercised
+                                                      # serially in physics.mass_assembly and (build-only, item 7)
+                                                      # across real ranks in physics_assembly_mpi_test.cpp.
 ]
 retire_at = "S8"                     # subtree deleted whole when every path is superseded
 retired   = ""                       # "<date> @ <fuse sha>" once done
 open      = ["PETSc-backed native component unregistered",
              "distorted-pyramid quadrature MEASURED: volume and a non-polynomial integrand's convergence both closed for a straight-edged pyramid; a curved (order-2 geometry) pyramid remains open",
-             "DEBUG BUILD IS BROKEN: src/numerics/spatial/karma_domain.C:32,54,77 uses unqualified Hexagon/Unstructured from the scoped enum KARMA::DomainShape, inside assert(). All three verified presets (release, asan=RelWithDebInfo, no-exceptions) define NDEBUG, so the line has never been compiled. The assertion is also vacuous: (Type != Hexagon || Type != Unstructured) is a tautology. Fix when porting, as a real invariant (I6), not an assert."]
+             "DEBUG BUILD IS BROKEN: src/numerics/spatial/karma_domain.C:32,54,77 uses unqualified Hexagon/Unstructured from the scoped enum KARMA::DomainShape, inside assert(). All three verified presets (release, asan=RelWithDebInfo, no-exceptions) define NDEBUG, so the line has never been compiled. The assertion is also vacuous: (Type != Hexagon || Type != Unstructured) is a tautology. Fix when porting, as a real invariant (I6), not an assert.",
+             " (2026-10-31) leaves test/assembly_test.C (low-level PETSc scatter primitives, not FE content -- likely retirable against fuse::linalg::DistSparseMatrix::from_triplets's own existing coverage, not yet confirmed) and test/diffusion_assembly_test.C's elaborate BC-manager machinery (physics/diffusion-reaction/'s own Dirichlet/Neumann/Robin condition discovery -- judged out of scope for numerics/'s own core assembly track; only its stiffness-operator mathematics is ported) unaddressed; test/transient_reaction_diffusion_assembly_test.C (Crank-Nicolson residual/Jacobian) is also not yet ported -- deferred to a later wave-2 round",
+             "DofMap (fe/dof_map.hpp) numbers only vertex dofs, codimension-1 face/edge dofs, and cell-interior dofs; a shared dof strictly between a vertex and a codimension-1 side (a 3-D cell's interior edge, e.g. a Tet10/Hex27 edge midpoint) refuses by name (E-PHYSICS-DOFMAP-SUBENTITY-UNSUPPORTED) rather than being numbered -- no corner-vertex identity table for that case exists anywhere in this wave's public Mesh/ReferenceTopology surface",
+             "DofMap's multi-rank ghost-dof resolution and AlgebraicSystem's foreign-triplet exchange both use a padded-allgather broadcast (every rank's own table sent to every other rank), O(global dof/triplet count) communication and memory per rank -- correct, build-verified only (FUSE_ENABLE_MPI=ON, never run in this sandbox), not scalable; a point-to-point exchange sized to what each rank actually needs (mirroring fuse::backend's own native_halo.hpp pattern) is the scalable alternative, not built this round"]
 # Measured in fuse at import, 2026-09-15, Apple clang 21 / CMake 4.3.2, with
 # MOAB 5.6.0 + PETSc + MPICH from /opt:
 #   Release: configures, builds with 0 errors, 418 ctest entries registered

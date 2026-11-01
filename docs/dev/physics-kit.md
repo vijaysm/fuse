@@ -302,3 +302,96 @@ cross-checked only for Pyramid14 (a wave-2 item); the two-space global-id conven
 (vertices and cells numbered separately, as `MeshView` does) is carried into unless the
 owner prefers a tagged id type.
 
+
+##: the DOF map, algebraic system, and mass/stiffness kernels
+
+Items 1-3 of the task's own eight (DOF map; algebraic system; assembly kernels and tests)
+delivered as. Items 4-8 (linear layer, nonlinear layer, iteration counts, the MPI
+assembly test, and the full records sweep beyond what itself needs) are explicitly
+DEFERRED to a later round -- the task's own permission: "If the wave is too large for one round,
+deliver items 1-3 complete as and say so; do not deliver all eight half-done." Within
+items 1-3 themselves, the transient reaction-diffusion kernel (`transient_reaction_diffusion_
+assembly_test.C`'s own Crank-Nicolson residual/Jacobian with a derived finite-difference
+tolerance) is also deferred -- the DOF map, algebraic system, and the mass/stiffness kernels
+plus their tests are complete and tested; see "What is added" below.
+
+### What is added
+
+- `fuse_physics::fe::DofMap` (`fe/dof_map.hpp`/`.cpp`): global DoF numbering over a `spatial::
+  Mesh`, one or more `Variable`s. Keys a DoF by an EXACT (never hashed) record -- variable,
+  component, entity dimension, the sub-entity's own sorted corner GLOBAL vertex ids, slot --
+  rather than KARMA's own coordinate-bit or MOAB-identity keying (`dof_map.hpp`'s own header
+  comment has the full comparison). Numbers vertex dofs, codimension-1 face/edge dofs, and
+  cell-interior dofs; REFUSES by name (`E-PHYSICS-DOFMAP-SUBENTITY-UNSUPPORTED`) a dof on a 3-D
+  cell's own interior edge (order >= 2 on a Tetrahedron/Hexahedron/Prism/Pyramid), since no
+  corner-vertex table for that case exists anywhere in this wave's public Mesh/ReferenceTopology
+  surface -- named, tested (`RefusesSharedEdgeDofsOnAThreeDimensionalCell`), not silently
+  mis-numbered. Single-rank convenience path (no communicator) and a collective path (built
+  under `FUSE_ENABLE_MPI=ON`, never run in this sandbox) both exist; the collective path's ghost-
+  dof resolution uses a padded-allgather broadcast (every rank's own owned-dof table sent to
+  every other rank) rather than a point-to-point exchange -- a stated, non-hidden scalability
+  limitation (open_questions). CLOSES the open item: `DofAssociation`'s face-centre
+  numbering is cross-checked geometrically against `ReferenceTopology::side_topology`'s own side
+  order for Hex27, Prism18, and Pyramid14 (`FaceCentreAssociationIndexMatchesSideTopologyOrder*`);
+  no disagreement found.
+- `fuse_physics::fe::AlgebraicSystem` (`fe/algebraic_system.hpp`/`.cpp`): assembles a
+  `fuse::linalg::DistSparseMatrix`/`DistVector` from a caller's per-element triplet/entry
+  callback, looping `DofMap::owns_element_for_assembly`'s own elements and exchanging foreign-
+  row contributions to their owners in ONE collective step (the SAME padded-allgather technique
+  `DofMap`'s own ghost resolution uses, for the same stated reason) before calling
+  `DistSparseMatrix::from_triplets` -- no second sparse-matrix type introduced. `eliminate_
+  dirichlet_rows`: SYMMETRIC row/column elimination with the known value moved to the RHS (KARMA's
+  own `constrain()`, `karma_dof_map.h` lines 143-144, is a no-op -- this is not that), scoped this
+  round to the single-rank/global-system case (a distributed version needs a cross-rank RHS
+  exchange not built this round, named in open_questions).
+- `fuse_physics::fe::element_mass_matrix` / `element_stiffness_matrix` (`fe/generic_operators.
+  hpp`/`.cpp`): the physics-agnostic bilinear-form kernels, ported from KARMA's own `include/
+  physics/common/generic_mass_operator.h` (the abstraction level `test/mass_assembly_test.C`
+  itself exercises, not `karma_algebraic_system.h` directly) and, for stiffness, the textbook FE
+  form `integral(grad(phi_i) . grad(phi_j)) dV` -- no KARMA diffusion-operator file exists to port
+  from in this export, cited and derived as such.
+
+### Tolerance provenance
+
+| test | tolerance | derivation |
+|---|---|---|
+| `physics.mass_assembly`'s P1-simplex and Quad4 element mass matrix checks | `16 * eps * (largest analytic entry)` | Higham (2002) Thm 8.1-style summation bound over the (at most 16) quadrature-point products a degree-2-exact rule uses on an affine element; the analytic comparison value itself is KARMA's own cited closed form (`mass_assembly_test.C`'s `check_simplex_mass`, and the Quad4 consistent-mass table `transient_reaction_diffusion_assembly_test.C` hand-codes), not re-derived |
+| `physics.mass_assembly`'s global entry-sum-equals-domain-volume invariant | `n_elements * 8 * 8 * eps * domain_volume` | Higham summation bound over every element's own 8x8 contribution, using the partition-of-unity identity `sum_i phi_i = 1` (so `sum_{i,j} M(i,j) = integral(1) dV`) rather than an empirical constant |
+| `physics.diffusion_assembly`'s reference-Tet4 closed-form check | `8 * eps * max(1, |expected|)` | a single constant-gradient dot product and one JxW multiply on a degree-0-exact (constant integrand) element -- a few ULPs, not an empirical floor |
+| `physics.diffusion_assembly`'s stiffness symmetry check | exact equality (no tolerance) | `dot(a,b)` reads the SAME two operands in the SAME order regardless of which index is `i` and which is `j` -- IEEE 754 guarantees bit-identical results, so no rounding bound applies at all |
+| `physics.diffusion_assembly`'s stiffness row-sum-to-zero check | `8 * eps * (largest entry magnitude)` | Higham summation bound over 8 terms, using the partition-of-unity identity `grad(sum_i phi_i) = grad(1) = 0` |
+| `physics.algebraic_system`'s Dirichlet-elimination symmetry check | exact equality (no tolerance) | every triplet value in the test is an exact dyadic double (`-1.0`, `2.0`, `5.0`, ...); the elimination arithmetic (`fl(a - b*c)`) involves no inexact input, so the result is exactly reproducible, not merely close |
+
+### Deferred this round (open_questions has the full list)
+
+The transient reaction-diffusion kernel and its finite-difference Jacobian check (item 3's own
+remaining test); items 4 (linear layer / `pcg` and preconditioner retirement writeup), 5
+(nonlinear layer / Newton-Krylov MMS test), 6 (iteration-count recording), 7 (the MPI assembly
+test, build-only), and 8 beyond what itself needed (full tolerance table across the whole
+wave; a PETSc Mat/Vec sink behind `FUSE_HAVE_PETSC`).
+
+## Lead's review of (2026-11-01)
+
+Landed from a clean export (tier 0 249/249, tier 1 builds, all gates, docs; physics-kit mutations
+17 killed and 1 verified equivalent) after three changes:
+
+- **A surviving mutation.** `dof-map-3d-edge-unsupported-refusal-disabled` survived here though the
+  track reported it killed: with the refusal disabled, the empty corner list fell through to the
+  "ghost without communicator" refusal, and the test accepted any `std::invalid_argument`. The test
+  now checks the message for `E-PHYSICS-DOFMAP-SUBENTITY-UNSUPPORTED`; the mutant fails by hand.
+- **A chosen tolerance.** A `1e-15` comparison on exact dyadic sums (one or two 1.0 contributions)
+  became exact equality.
+- ** opened** for the sub-entity ownership convention ("owned here iff every corner is owned
+  here"), which refuses a legitimate partition whose shared face has corners owned by two ranks.
+  KARMA used MOAB's `get_owner`; the gap-free rule is the minimum owner rank over the corners, which
+  needs an owner-rank query on `fuse::MeshView` and `spatial::Mesh`. item; the single-rank
+  path tier 0 runs is unaffected.
+
+Accepted as the track declared them, each a named round-2 item: the padded-allgather ghost and
+foreign-row exchange (O(global count) per rank, correct, not scalable; a point-to-point exchange
+follows `native_halo.hpp`'s pattern), integer transport through `std::bit_cast<double>` over the
+Reducer's double-only allgather (correct for an allgather, which moves bytes without arithmetic;
+an integer allgather on the Reducer is the clean form), interior-edge DoFs of 3-D cells refused by
+name (needs an edge-to-corner table on `ReferenceTopology`), `eliminate_dirichlet_rows` scoped to
+a single rank, and the transient reaction-diffusion kernel deferred to.
+

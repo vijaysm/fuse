@@ -146,3 +146,51 @@ old = "    for (std::size_t i = 0; i < cell_vertices.vertices.size(); ++i) conne
 new = "    for (std::size_t i = 0; i < cell_vertices.vertices.size(); ++i) connectivity[i] = cell_vertices.vertices[i];"
 target = "fuse_physics_spatial_mesh_test"
 test = "physics.spatial_mesh"
+
+# -- (numerics/fe's dof map and algebraic system) ---------
+
+[[mutation]]
+id = "dof-map-ghost-without-communicator-refusal-disabled"
+area = "physics-kit"
+describes = "DofMap's single-rank convenience constructor drops its 'ghost_keys is non-empty' refusal, which RefusesAGhostDofWithoutACommunicator (a straddling-element fixture whose owned element touches a ghost vertex) exists to catch -- without it, the ghost dof would silently get no global index at all (never pushed into key_to_global_), so the very next dof_indices() call on that element would itself refuse on E-PHYSICS-DOFMAP-DOF-NOT-VISIBLE instead, a DIFFERENT and later failure than the constructor's own contract promises."
+file = "physics-kit/src/fe/dof_map.cpp"
+old = "    if (!ghost_keys.empty())"
+new = "    if (false)"
+target = "fuse_physics_dof_map_test"
+test = "physics.dof_map"
+
+[[mutation]]
+id = "dof-map-3d-edge-unsupported-refusal-disabled"
+area = "physics-kit"
+describes = "DofMap's classify() drops its refusal for a sub-entity strictly between a vertex and a codimension-1 side (a 3-D cell's interior edge, e.g. a Tet10 edge midpoint), which RefusesSharedEdgeDofsOnAThreeDimensionalCell (a P2 variable on a Hex8 box) exists to catch -- this port has no corner-vertex table for that case (dof_map.hpp's own header comment), so without the refusal the key would be built with an EMPTY corners vector and silently collide with every other such key on the same element."
+file = "physics-kit/src/fe/dof_map.cpp"
+old = """  } else {
+    refuse(
+        \"DofMap: a shared sub-entity strictly between a vertex and a codimension-1 side (an \""""
+new = """  } else if (false) {
+    refuse(
+        \"DofMap: a shared sub-entity strictly between a vertex and a codimension-1 side (an \""""
+target = "fuse_physics_dof_map_test"
+test = "physics.dof_map"
+result = "SURVIVED in the lead's clean export (2026-11-01): the empty corner list fell through to E-PHYSICS-DOFMAP-GHOST-WITHOUT-COMMUNICATOR, the same std::invalid_argument the type-only test accepted. KILLED after RefusesSharedEdgeDofsOnAThreeDimensionalCell checks the message for E-PHYSICS-DOFMAP-SUBENTITY-UNSUPPORTED (verified by hand: the mutant now fails with 'refused for another reason')."
+
+
+[[mutation]]
+id = "eliminate-dirichlet-rows-size-check-disabled"
+area = "physics-kit"
+describes = "eliminate_dirichlet_rows drops its 'dirichlet_rows.size() != values.size()' refusal, which EliminateDirichletRowsRefusesSizeMismatch exists to catch -- without it, the mismatched values vector would be read out of bounds (values[i] for i beyond its own size) the first time dirichlet_rows is longer, undefined behaviour rather than a named refusal."
+file = "physics-kit/src/fe/algebraic_system.cpp"
+old = "  if (dirichlet_rows.size() != values.size())"
+new = "  if (false)"
+target = "fuse_physics_algebraic_system_test"
+test = "physics.algebraic_system"
+
+[[mutation]]
+id = "assemble-vector-size-check-disabled"
+area = "physics-kit"
+describes = "AlgebraicSystem::assemble_vector drops its 'out does not match this system's own row distribution' refusal, which AssembleVectorRefusesMismatchedVectorSize exists to catch -- without it, a caller's wrongly-sized DistVector would be written out of bounds by the final accumulation loop instead of being refused up front."
+file = "physics-kit/src/fe/algebraic_system.cpp"
+old = "  if (out.owned_size() != static_cast<std::size_t>(dof_map_->n_local_dofs()))"
+new = "  if (false)"
+target = "fuse_physics_algebraic_system_test"
+test = "physics.algebraic_system"
