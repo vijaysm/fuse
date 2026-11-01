@@ -909,6 +909,11 @@ std::size_t NativeMeshView::global_id(int dim, std::size_t i) const {
   return static_cast<std::size_t>((dim == 0) ? vertex_gid_[i] : cell_gid_[i]);
 }
 
+Result<int> NativeMeshView::owner(int dim, std::size_t i) const {
+  check(dim, i, "owner");
+  return (dim == 0) ? vertex_owner_[i] : cell_owner_[i];
+}
+
 std::size_t NativeMeshView::simplex_count(int dim, std::size_t i) const {
   check(dim, i, "simplex_count");
   if (dim == 0) return 0;
