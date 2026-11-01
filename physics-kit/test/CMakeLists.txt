@@ -45,6 +45,8 @@ fuse_add_gtest(physics algebraic_system SRC_DIR . NO_LAYER_LIB LIBS fuse::physic
 fuse_add_gtest(physics mass_assembly SRC_DIR . NO_LAYER_LIB LIBS fuse::physics_kit)
 fuse_add_gtest(physics diffusion_assembly SRC_DIR . NO_LAYER_LIB LIBS fuse::physics_kit)
 fuse_add_gtest(physics transient_reaction_diffusion_assembly SRC_DIR . NO_LAYER_LIB LIBS fuse::physics_kit)
+fuse_add_gtest(physics linear_layer SRC_DIR . NO_LAYER_LIB LIBS fuse::physics_kit)
+fuse_add_gtest(physics steady_reaction_diffusion_mms SRC_DIR . NO_LAYER_LIB LIBS fuse::physics_kit)
 
 # The collective mesh contract over a real communicator (S8.3 wave 1b): owned
 # counts sum to the global total and a ghost vertex's global id agrees with its
@@ -54,6 +56,15 @@ fuse_add_gtest(physics transient_reaction_diffusion_assembly SRC_DIR . NO_LAYER_
 fuse_tests_gated_by(FUSE_ENABLE_MPI physics_mesh_mpi_test.cpp)
 if(FUSE_ENABLE_MPI)
   fuse_add_mpi_test(parallel physics_mesh_mpi SRC_DIR . RANKS 2 3 LIBS fuse::physics_kit fuse::field)
+endif()
+
+# Item H (wave 2 round 3): the GLOBAL assembled mass matrix over a real,
+# multi-rank partitioned 3-D box -- physics_assembly_mpi_test.cpp's own
+# header comment. Same gating convention as physics_mesh_mpi_test.cpp
+# above; never run in this sandbox.
+fuse_tests_gated_by(FUSE_ENABLE_MPI physics_assembly_mpi_test.cpp)
+if(FUSE_ENABLE_MPI)
+  fuse_add_mpi_test(parallel physics_assembly_mpi SRC_DIR . RANKS 2 3 LIBS fuse::physics_kit fuse::field)
 endif()
 
 # The same audit test/CMakeLists.txt runs over test/<layer>/: a *_test.cpp in
