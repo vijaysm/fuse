@@ -49,6 +49,21 @@ std::vector<double> element_stiffness_matrix(FEBase& fe, spatial::EntityHandle e
   return stiffness;
 }
 
+std::vector<double> element_load_vector(FEBase& fe, spatial::EntityHandle element,
+                                         const std::function<double(const Point&)>& source) {
+  fe.reinit(element);
+  const auto& phi = fe.get_phi();
+  const auto& jxw = fe.get_JxW();
+  const auto& xyz = fe.get_xyz();
+  const std::size_t n = phi.size();
+  std::vector<double> load(n, 0.0);
+  for (std::size_t q = 0; q < fe.n_quadrature_points(); ++q) {
+    const double weighted_source = jxw[q] * source(xyz[q]);
+    for (std::size_t i = 0; i < n; ++i) load[i] += weighted_source * phi[i][q];
+  }
+  return load;
+}
+
 
 ElementResidualJacobian element_transient_reaction_diffusion(FEBase& fe, spatial::EntityHandle element,
                                                                const TransientReactionDiffusionModel& model,

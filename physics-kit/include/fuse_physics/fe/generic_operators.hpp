@@ -27,9 +27,11 @@
 /// posture took for KARMA gaps with no upstream file to port
 /// from.
 
+#include <functional>
 #include <vector>
 
 #include "fuse_physics/fe/fe_base.hpp"
+#include "fuse_physics/geometry.hpp"
 #include "fuse_physics/spatial/mesh.hpp"
 
 namespace fuse::physics::fe {
@@ -51,6 +53,28 @@ namespace fuse::physics::fe {
 /// gradient is CONSTANT per element, so `grad(phi_i) . grad(phi_j)` has
 /// degree 0 and even a single-point rule integrates it exactly.
 [[nodiscard]] std::vector<double> element_stiffness_matrix(FEBase& fe, spatial::EntityHandle element);
+
+/// `load(i) = integral(phi_i * source(x)) dV` over `element`, the SAME
+/// quadrature-sum construction `element_mass_matrix` uses (`fe.get_xyz()`
+/// in place of a second basis function), generalised to an arbitrary
+/// (possibly position-dependent) scalar `source`. No KARMA source ports
+/// this -- `generic_mass_operator.h` has no load-vector method of its own
+/// -- so this is the textbook consistent Galerkin load vector, cited as
+/// such (design_notes), the same posture took for
+/// `element_stiffness_matrix` (its own header comment states the
+/// identical reasoning for a different missing KARMA file). Used by
+/// item F's own manufactured-solution forcing term:
+/// evaluating `source` at each quadrature point's PHYSICAL coordinate
+/// keeps the forcing term's own discretisation at the SAME quadrature
+/// order as the bilinear forms it is added against, rather than the
+/// coarser nodal (collocated) evaluation `reaction`/`reaction_derivative`
+/// above use for the nonlinear term -- a deliberate difference, stated:
+/// the forcing is DATA (known exactly, so quadrature-evaluating it adds
+/// no new approximation question), while the reaction term is the
+/// UNKNOWN solution itself, where KARMA's own nodal convention is round
+/// 1's finding, kept for round 3's own nonlinear term unchanged.
+[[nodiscard]] std::vector<double> element_load_vector(FEBase& fe, spatial::EntityHandle element,
+                                                       const std::function<double(const Point&)>& source);
 
 /// A Crank-Nicolson transient reaction-diffusion model, adapted from
 /// KARMA's own test/transient_reaction_diffusion_assembly_test.C
