@@ -75,6 +75,14 @@ class StructuredMesh final : public MeshView {
     return true;
   }
 
+  /// a serial run has exactly one rank, so every entity's owner is
+  /// rank 0 -- the trivial case `is_owned` returning `true` unconditionally
+  /// already states; `owner` just names the rank number that fact implies.
+  [[nodiscard]] Result<int> owner(int dim, std::size_t i) const override {
+    check(dim, i, "owner");
+    return 0;
+  }
+
   [[nodiscard]] Point centroid(int dim, std::size_t i) const override {
     check(dim, i, "centroid");
     Point p;
