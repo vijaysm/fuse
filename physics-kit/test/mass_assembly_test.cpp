@@ -70,14 +70,14 @@ TEST(MassAssemblyTest, P1SimplexElementMassMatrixMatchesAnalyticFormula) {
   constexpr unsigned size = 4;  // dimension + 1
   const double diagonal = volume / (size * (size + 1)) * 2.0;
   const double off_diagonal = volume / (size * (size + 1)) * 1.0;
-  // Higham (2002) Thm 8.1-style bound for summing n products of two
-  // doubles each exactly representable to working precision here
-  // (quadrature weights and shape values at a degree-2-exact rule):
-  // |computed - exact| <= n * eps * |exact|, eps = 2^-52. n here is the
-  // number of quadrature points a degree-2 Tet4 rule uses (<= 8,
-  // quadrature.cpp's own table) -- a generous n=16 is used for margin.
+  // Higham (2002) Thm 8.1: summing n_q products w_q phi_i phi_j (three
+  // operations per term) gives |computed - exact| <= (n_q + 3) eps S, with
+  // S = sum_q |w_q phi_i phi_j| <= sum_q w_q = volume for a P1 basis (shape
+  // values in [0, 1] at interior points). n_q is read from the rule the
+  // kernel used, not assumed (the round-1 version had "n <= 8, a generous
+  // 16 for margin"; lead, 2026-11-01).
   const double eps = std::numeric_limits<double>::epsilon();
-  const double tolerance = 16.0 * eps * diagonal;
+  const double tolerance = (static_cast<double>(fe.n_quadrature_points()) + 3.0) * eps * volume;
   for (unsigned i = 0; i < 4; ++i) {
     for (unsigned j = 0; j < 4; ++j) {
       const double expected = i == j ? diagonal : off_diagonal;
@@ -113,8 +113,10 @@ TEST(MassAssemblyTest, Quad4UnitBoxElementMassMatrixMatchesKnownFormula) {
       {1 * unit, 2 * unit, 4 * unit, 2 * unit},
       {2 * unit, 1 * unit, 2 * unit, 4 * unit},
   };
+  // Same derivation as the Tet4 case: (n_q + 3) eps S with S <= the unit
+  // square's area 1.
   const double eps = std::numeric_limits<double>::epsilon();
-  const double tolerance = 16.0 * eps * (4 * unit);
+  const double tolerance = (static_cast<double>(fe.n_quadrature_points()) + 3.0) * eps * 1.0;
   for (unsigned i = 0; i < 4; ++i)
     for (unsigned j = 0; j < 4; ++j) EXPECT_NEAR(mass.at(i * 4 + j), expected_table[i][j], tolerance);
 }
