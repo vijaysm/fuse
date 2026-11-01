@@ -38,6 +38,13 @@ fuse_add_gtest(physics fe_face SRC_DIR . NO_LAYER_LIB LIBS fuse::physics_kit)
 fuse_add_gtest(physics spatial_mesh SRC_DIR . NO_LAYER_LIB LIBS fuse::physics_kit)
 fuse_add_gtest(physics spatial_domain SRC_DIR . NO_LAYER_LIB LIBS fuse::physics_kit)
 
+# S8.3 wave 2 (numerics/fe's dof map): see docs/dev/physics-kit.md's own
+# tolerance-provenance table for this test's assertions.
+fuse_add_gtest(physics dof_map SRC_DIR . NO_LAYER_LIB LIBS fuse::physics_kit)
+fuse_add_gtest(physics algebraic_system SRC_DIR . NO_LAYER_LIB LIBS fuse::physics_kit)
+fuse_add_gtest(physics mass_assembly SRC_DIR . NO_LAYER_LIB LIBS fuse::physics_kit)
+fuse_add_gtest(physics diffusion_assembly SRC_DIR . NO_LAYER_LIB LIBS fuse::physics_kit)
+
 # The collective mesh contract over a real communicator (S8.3 wave 1b): owned
 # counts sum to the global total and a ghost vertex's global id agrees with its
 # owner's; refusals through fuse::agree_outcome (D97). Registered HERE, where

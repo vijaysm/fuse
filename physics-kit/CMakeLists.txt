@@ -28,6 +28,9 @@ add_library(fuse_physics_kit
   src/spatial/domain.cpp
   src/spatial/mesh.cpp
   src/spatial/mesh_utils.cpp
+  src/fe/dof_map.cpp
+  src/fe/algebraic_system.cpp
+  src/fe/generic_operators.cpp
 )
 add_library(fuse::physics_kit ALIAS fuse_physics_kit)
 
