@@ -31,6 +31,7 @@
 /// where physics-kit eventually needs one for a MOAB-backed mesh binding, is
 /// left to that translation unit.
 
+#include <array>
 #include <cstddef>
 #include <optional>
 #include <span>
@@ -76,6 +77,26 @@ enum class CellFamily { Edge, Triangle, Quadrilateral, Tetrahedron, Hexahedron, 
 [[nodiscard]] CellFamily cell_family(GeometryVariant variant) noexcept;
 [[nodiscard]] unsigned cell_dimension(CellFamily family) noexcept;
 [[nodiscard]] unsigned geometry_order(GeometryVariant variant) noexcept;
+
+/// How many EDGES (1-D sub-entities, distinct from a codimension-1
+/// "side") `family`'s reference cell has, and which two of its own P1
+/// CORNER indices bound edge `edge` -- the SAME tables (by content and
+/// by order) KARMA's own nodes_for() uses to place an order-2 basis's
+/// edge-midpoint nodes (karma_reference_topology.C), confirmed here by
+/// matching this port's OWN nodes_for() (reference_topology.cpp) edge
+/// midpoint coordinates against each table entry, so a caller indexing
+/// by `edge` here and a caller indexing by `DofAssociation::local_
+/// entity_index` into the order-2 node list (basis.cpp's own
+/// dof_associations(), which pushes EXACTLY `edge_count(family)` edge
+/// associations, one per edge, in this same order) agree on which edge
+/// is which. For `Edge`, `Triangle`, and `Quadrilateral` an "edge" is
+/// the SAME sub-entity `ReferenceTopology::side_nodes`/`side_topology`
+/// already name a "side" (a 2-D or 1-D cell's own codimension-1
+/// facets); `edge_vertices` still answers for those families (reading
+/// the corner pair directly, no side machinery involved) so a caller
+/// never needs to branch on dimension to find an edge's two corners.
+[[nodiscard]] unsigned edge_count(CellFamily family) noexcept;
+[[nodiscard]] std::array<std::size_t, 2> edge_vertices(CellFamily family, unsigned edge);
 
 /// Shape values and derivatives at one reference point, parallel to the
 /// node ordering of the ReferenceTopology that produced them.

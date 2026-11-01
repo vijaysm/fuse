@@ -97,6 +97,24 @@ struct DofRecord {
   bool element_local;
 };
 
+/// D102 (KNOWN_ISSUES.md), wave 2 round 2 item A: whether a shared
+/// sub-entity (an edge or a face, named by its `corners` -- the LOCAL
+/// vertex handles of every one of its corner vertices, in any order)
+/// is owned HERE, under the rule every sharing rank can compute from
+/// `Mesh::vertex_owner`/`is_vertex_owned` alone, with no further
+/// communication: the sub-entity's owner is the MINIMUM over its
+/// corners' own owner ranks. Deterministic and gap-free -- unlike the
+/// round-1 rule ("owned here iff every corner is owned here"), which
+/// left a legitimate partition (a shared face whose corners are split
+/// across two or more ranks) owned by NO rank at all. Exposed as a
+/// free function (not kept as a DofMap-private implementation detail)
+/// so it is DIRECTLY testable against a hand-built Mesh with split
+/// vertex ownership, without needing the full collective numbering
+/// path (which this sandbox cannot run under real MPI) to exercise
+/// the rule itself. `corners` empty is never owned anywhere.
+[[nodiscard]] bool shared_sub_entity_owned_here(const spatial::Mesh& mesh,
+                                                 const std::vector<spatial::EntityHandle>& corners);
+
 /// Global DoF numbering over `mesh`'s elements, one or more `variables`.
 ///
 /// OWNERSHIP CONVENTION (stated, not hidden -- open_questions names its

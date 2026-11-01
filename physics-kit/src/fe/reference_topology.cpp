@@ -457,6 +457,68 @@ unsigned geometry_order(GeometryVariant variant) noexcept {
   }
 }
 
+unsigned edge_count(CellFamily family) noexcept {
+  // Edge, Triangle, Quadrilateral, Tetrahedron, Hexahedron, Prism, Pyramid --
+  // the SAME table basis.cpp's own (private) edge_count_of duplicates;
+  // kept in sync by this file's own test (fe_reference_topology_test.cpp's
+  // EdgeVerticesMatchNodesForMidpoints cross-checks every entry against
+  // nodes_for()'s own edge-midpoint construction above).
+  constexpr std::array<unsigned, 7> counts{1, 3, 4, 6, 12, 9, 8};
+  return counts[static_cast<std::size_t>(family)];
+}
+
+std::array<std::size_t, 2> edge_vertices(CellFamily family, unsigned edge) {
+  // Edge/Triangle/Quadrilateral: an "edge" is that family's own side
+  // (ReferenceTopology::side_nodes' own corner-pair/triple/quad), read
+  // directly here rather than through side machinery so a caller never
+  // branches on dimension. Tetrahedron/Hexahedron/Prism/Pyramid: the
+  // SAME {corner, corner} tables this file's own nodes_for() uses to
+  // place each family's order-2 edge-midpoint nodes (KARMA's
+  // karma_reference_topology.C has the identical tables, by content and
+  // by order -- this port's own nodes_for() comment already notes the
+  // corner/side ordering agrees with KARMA's MOAB/Exodus convention).
+  switch (family) {
+    case CellFamily::Edge:
+      if (edge >= 1) break;
+      return {0, 1};
+    case CellFamily::Triangle: {
+      constexpr std::array<std::array<std::size_t, 2>, 3> edges{{{0, 1}, {1, 2}, {2, 0}}};
+      if (edge >= edges.size()) break;
+      return edges[edge];
+    }
+    case CellFamily::Quadrilateral: {
+      constexpr std::array<std::array<std::size_t, 2>, 4> edges{{{0, 1}, {1, 2}, {2, 3}, {3, 0}}};
+      if (edge >= edges.size()) break;
+      return edges[edge];
+    }
+    case CellFamily::Tetrahedron: {
+      constexpr std::array<std::array<std::size_t, 2>, 6> edges{
+          {{0, 1}, {1, 2}, {2, 0}, {0, 3}, {1, 3}, {2, 3}}};
+      if (edge >= edges.size()) break;
+      return edges[edge];
+    }
+    case CellFamily::Hexahedron: {
+      constexpr std::array<std::array<std::size_t, 2>, 12> edges{{{0, 1}, {1, 2}, {2, 3}, {3, 0}, {0, 4}, {1, 5},
+                                                                     {2, 6}, {3, 7}, {4, 5}, {5, 6}, {6, 7}, {7, 4}}};
+      if (edge >= edges.size()) break;
+      return edges[edge];
+    }
+    case CellFamily::Prism: {
+      constexpr std::array<std::array<std::size_t, 2>, 9> edges{
+          {{0, 1}, {1, 2}, {2, 0}, {0, 3}, {1, 4}, {2, 5}, {3, 4}, {4, 5}, {5, 3}}};
+      if (edge >= edges.size()) break;
+      return edges[edge];
+    }
+    case CellFamily::Pyramid: {
+      constexpr std::array<std::array<std::size_t, 2>, 8> edges{
+          {{0, 1}, {1, 2}, {2, 3}, {3, 0}, {0, 4}, {1, 4}, {2, 4}, {3, 4}}};
+      if (edge >= edges.size()) break;
+      return edges[edge];
+    }
+  }
+  refuse("edge index is out of range");
+}
+
 ReferenceTopology::ReferenceTopology(GeometryVariant variant) : variant_(variant), nodes_(nodes_for(variant)) {}
 
 Point ReferenceTopology::center() const noexcept {

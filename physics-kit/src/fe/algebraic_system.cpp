@@ -6,7 +6,6 @@
 #include "fuse_physics/fe/algebraic_system.hpp"
 
 #include <algorithm>
-#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <stdexcept>
@@ -39,10 +38,24 @@ int owner_of(const std::vector<std::int64_t>& row_lo, std::int64_t index) {
 /// range when one rank owns every row, matching every tier-0 test this
 /// wave exercises; a leftover out-of-range entry there is a caller
 /// mistake, refused by name rather than silently dropped.
-template <class Entry, class InRange, class Pack, class Unpack>
+/// Exchanges every rank's own OUT-OF-RANGE entries to their owners, same
+/// contract and same STATED scalability limitation as before (this
+/// function's own earlier header comment, carried to dof_map.cpp's
+/// identical note on its own ghost resolution) -- wave 2 round 2 item B
+/// changes only the TRANSPORT: an entry's INTEGER fields (`n_int_fields`
+/// of them, via `pack_ints`) travel through `Reducer`'s native
+/// `std::int64_t` allgather (comm.hpp), and its one genuine `double`
+/// VALUE field (via `value_of`) travels through the existing `double`
+/// allgather UNCHANGED -- it was always a real float, never an integer
+/// wearing a double's bit pattern, so it never needed `std::bit_cast`
+/// and still does not. The round-1 version cast row/col (or the vector
+/// index) through `std::bit_cast<double>` to fit them into the SAME
+/// double-only channel the value field also used; this version simply
+/// gives the integer fields their own, correctly-typed channel instead.
+template <class Entry, class InRange, class PackInts, class ValueOf, class Unpack>
 std::vector<Entry> exchange_foreign_entries(const std::vector<Entry>& local, const linalg::Reducer& reducer,
-                                             InRange in_range_fn, Pack pack, Unpack unpack,
-                                             std::size_t record_width) {
+                                             InRange in_range_fn, PackInts pack_ints, ValueOf value_of,
+                                             Unpack unpack, std::size_t n_int_fields) {
   std::vector<Entry> in_range;
   std::vector<Entry> out_of_range;
   in_range.reserve(local.size());
@@ -58,22 +71,29 @@ std::vector<Entry> exchange_foreign_entries(const std::vector<Entry>& local, con
     return in_range;
   }
 
-  constexpr std::uint64_t kSentinelMarker = ~std::uint64_t{0};
+  constexpr std::int64_t kSentinelMarker = -1;  // field 0 of every real record is a row/col/index, never negative
   const auto max_count =
       static_cast<std::size_t>(std::llround(reducer.max(static_cast<double>(out_of_range.size()))));
-  std::vector<double> send(max_count * record_width, 0.0);
-  for (std::size_t i = 0; i < max_count; ++i) send[i * record_width] = std::bit_cast<double>(kSentinelMarker);
-  for (std::size_t i = 0; i < out_of_range.size(); ++i) pack(&send[i * record_width], out_of_range[i]);
 
-  std::vector<double> recv(max_count * record_width * static_cast<std::size_t>(reducer.size()), 0.0);
-  reducer.allgather(send.data(), max_count * record_width, recv.data());
+  std::vector<std::int64_t> send_ints(max_count * n_int_fields, 0);
+  for (std::size_t i = 0; i < max_count; ++i) send_ints[i * n_int_fields] = kSentinelMarker;
+  std::vector<double> send_values(max_count, 0.0);
+  for (std::size_t i = 0; i < out_of_range.size(); ++i) {
+    pack_ints(&send_ints[i * n_int_fields], out_of_range[i]);
+    send_values[i] = value_of(out_of_range[i]);
+  }
+
+  std::vector<std::int64_t> recv_ints(max_count * n_int_fields * static_cast<std::size_t>(reducer.size()), 0);
+  reducer.allgather(send_ints.data(), max_count * n_int_fields, recv_ints.data());
+  std::vector<double> recv_values(max_count * static_cast<std::size_t>(reducer.size()), 0.0);
+  reducer.allgather(send_values.data(), max_count, recv_values.data());
 
   std::vector<Entry> result = in_range;
   const std::size_t n_slots = max_count * static_cast<std::size_t>(reducer.size());
   for (std::size_t slot = 0; slot < n_slots; ++slot) {
-    const double* record = &recv[slot * record_width];
-    if (std::bit_cast<std::uint64_t>(record[0]) == kSentinelMarker) continue;
-    const Entry entry = unpack(record);
+    const std::int64_t* int_record = &recv_ints[slot * n_int_fields];
+    if (int_record[0] == kSentinelMarker) continue;
+    const Entry entry = unpack(int_record, recv_values[slot]);
     if (in_range_fn(entry)) result.push_back(entry);
   }
   return result;
@@ -166,17 +186,15 @@ Result<linalg::DistSparseMatrix> AlgebraicSystem::assemble_matrix(const ElementC
     contribution(element, indices, local);
   }
 
-  const auto pack = [](double* record, const linalg::Triplet& t) {
-    record[0] = std::bit_cast<double>(static_cast<std::uint64_t>(t.row));
-    record[1] = std::bit_cast<double>(static_cast<std::uint64_t>(t.col));
-    record[2] = t.value;
+  const auto pack_ints = [](std::int64_t* record, const linalg::Triplet& t) {
+    record[0] = t.row;
+    record[1] = t.col;
   };
-  const auto unpack = [](const double* record) {
-    return linalg::Triplet{static_cast<std::int64_t>(std::bit_cast<std::uint64_t>(record[0])),
-                            static_cast<std::int64_t>(std::bit_cast<std::uint64_t>(record[1])), record[2]};
-  };
+  const auto value_of = [](const linalg::Triplet& t) { return t.value; };
+  const auto unpack = [](const std::int64_t* record, double value) { return linalg::Triplet{record[0], record[1], value}; };
   const auto in_range = [&](const linalg::Triplet& t) { return t.row >= row_lo && t.row < row_hi; };
-  const auto resolved = exchange_foreign_entries<linalg::Triplet>(local, *reducer_, in_range, pack, unpack, 3);
+  const auto resolved =
+      exchange_foreign_entries<linalg::Triplet>(local, *reducer_, in_range, pack_ints, value_of, unpack, 2);
 
   linalg::RowOwnership owners;
   owners.row_lo = dof_map_->row_lo_by_rank();
@@ -200,15 +218,11 @@ Result<void> AlgebraicSystem::assemble_vector(const ElementVectorContribution& c
     contribution(element, indices, local);
   }
 
-  const auto pack = [](double* record, const Entry& e) {
-    record[0] = std::bit_cast<double>(static_cast<std::uint64_t>(e.first));
-    record[1] = e.second;
-  };
-  const auto unpack = [](const double* record) -> Entry {
-    return {static_cast<std::int64_t>(std::bit_cast<std::uint64_t>(record[0])), record[1]};
-  };
+  const auto pack_ints = [](std::int64_t* record, const Entry& e) { record[0] = e.first; };
+  const auto value_of = [](const Entry& e) { return e.second; };
+  const auto unpack = [](const std::int64_t* record, double value) -> Entry { return {record[0], value}; };
   const auto in_range = [&](const Entry& e) { return e.first >= row_lo && e.first < row_hi; };
-  const auto resolved = exchange_foreign_entries<Entry>(local, *reducer_, in_range, pack, unpack, 2);
+  const auto resolved = exchange_foreign_entries<Entry>(local, *reducer_, in_range, pack_ints, value_of, unpack, 1);
 
   out.set_zero();
   for (const auto& [global_index, value] : resolved) out.data()[global_index - row_lo] += value;

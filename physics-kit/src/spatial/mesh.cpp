@@ -50,9 +50,10 @@ fe::GeometryVariant geometry_variant_for_shape(fuse::CellShape shape) {
 }
 }  // namespace
 
-EntityHandle Mesh::add_vertex(const Point& position, bool owned, std::optional<GlobalId> gid) {
+EntityHandle Mesh::add_vertex(const Point& position, bool owned, std::optional<GlobalId> gid, int owner_rank) {
   vertices_.push_back(position);
   vertex_owned_.push_back(owned);
+  vertex_owner_.push_back(owner_rank);
   const EntityHandle handle = vertices_.size();
   vertex_gid_.push_back(gid.value_or(static_cast<GlobalId>(handle)));
   return handle;
@@ -155,9 +156,12 @@ Mesh Mesh::from_mesh_view(const MeshView& view) {
   Mesh mesh(view.dimension());
   const int top = view.dimension();
   const std::size_t n_vertices = view.entity_count(0);
-  for (std::size_t v = 0; v < n_vertices; ++v)
+  for (std::size_t v = 0; v < n_vertices; ++v) {
+    const auto owner_result = view.owner(0, v);
+    if (!owner_result) refuse(("Mesh::from_mesh_view: " + owner_result.error().message).c_str());
     mesh.add_vertex(from_backend_point(view.centroid(0, v)), view.is_owned(0, v),
-                     static_cast<GlobalId>(view.global_id(0, v)));
+                     static_cast<GlobalId>(view.global_id(0, v)), owner_result.value());
+  }
 
   const std::size_t n_cells = view.entity_count(top);
   for (std::size_t c = 0; c < n_cells; ++c) {
@@ -186,6 +190,23 @@ std::vector<EntityHandle> Mesh::side_vertices(EntityHandle element, unsigned sid
 
 std::vector<GlobalId> Mesh::canonical_side_vertex_ids(EntityHandle element, unsigned side) const {
   auto ids = side_vertices(element, side);
+  std::vector<GlobalId> result(ids.size());
+  std::transform(ids.begin(), ids.end(), result.begin(), [this](EntityHandle h) { return vertex_global_id(h); });
+  std::sort(result.begin(), result.end());
+  return result;
+}
+
+std::vector<EntityHandle> Mesh::edge_vertices(EntityHandle element, unsigned edge) const {
+  const auto& connectivity = element_connectivity(element);
+  const auto cell = fe::cell_family(element_kind(element));
+  const auto local = fe::edge_vertices(cell, edge);
+  std::vector<EntityHandle> result(local.size());
+  for (std::size_t i = 0; i < local.size(); ++i) result[i] = connectivity[local[i]];
+  return result;
+}
+
+std::vector<GlobalId> Mesh::canonical_edge_vertex_ids(EntityHandle element, unsigned edge) const {
+  auto ids = edge_vertices(element, edge);
   std::vector<GlobalId> result(ids.size());
   std::transform(ids.begin(), ids.end(), result.begin(), [this](EntityHandle h) { return vertex_global_id(h); });
   std::sort(result.begin(), result.end());

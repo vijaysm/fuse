@@ -6,9 +6,9 @@
 
 #include <algorithm>
 #include <array>
-#include <bit>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 
@@ -89,20 +89,37 @@ Classified classify(const spatial::Mesh& mesh, spatial::EntityHandle element, un
   } else if (association.entity_dimension + 1 == top_dim) {
     const unsigned side = association.local_entity_index;
     key.corners = mesh.canonical_side_vertex_ids(element, side);  // sorted -- identity only, see dof_map.hpp
-    const auto local_corners = mesh.side_vertices(element, side);
-    owned = !local_corners.empty();
-    for (const auto corner : local_corners) owned = owned && mesh.is_vertex_owned(corner);
+    owned = shared_sub_entity_owned_here(mesh, mesh.side_vertices(element, side));
+  } else if (association.entity_dimension == 1 && top_dim == 3) {
+    // wave 2 round 2 item C: a 3-D cell's own INTERIOR edge (e.g. a
+    // Tet10/Hex27 edge midpoint) -- closes the round-1 gap
+    // (E-PHYSICS-DOFMAP-SUBENTITY-UNSUPPORTED) now that
+    // Mesh::canonical_edge_vertex_ids/edge_vertices exist
+    // (ReferenceTopology's own edge-to-corner table, reference_
+    // topology.hpp's own header comment).
+    const unsigned edge = association.local_entity_index;
+    key.corners = mesh.canonical_edge_vertex_ids(element, edge);  // sorted -- identity only
+    owned = shared_sub_entity_owned_here(mesh, mesh.edge_vertices(element, edge));
   } else {
     refuse(
-        "DofMap: a shared sub-entity strictly between a vertex and a codimension-1 side (an "
-        "interior edge of a 3-D cell, e.g. a Tet10/Hex27 edge midpoint) has no corner-vertex "
-        "identity this port exposes (E-PHYSICS-DOFMAP-SUBENTITY-UNSUPPORTED); only vertex dofs, "
-        "codimension-1 face/edge dofs, and cell-interior dofs are numbered this wave");
+        "DofMap: a sub-entity dimension this port does not recognize for a cell of this "
+        "dimension (E-PHYSICS-DOFMAP-SUBENTITY-UNSUPPORTED) -- unreachable for the four cell "
+        "dimensions (0, 1, 2, 3) this port's ReferenceTopology implements, kept as a named "
+        "defensive refusal rather than an unchecked assumption");
   }
   return {std::move(key), owned};
 }
 
 }  // namespace
+
+bool shared_sub_entity_owned_here(const spatial::Mesh& mesh, const std::vector<spatial::EntityHandle>& corners) {
+  if (corners.empty()) return false;
+  int minimum_owner = std::numeric_limits<int>::max();
+  for (const auto corner : corners) minimum_owner = std::min(minimum_owner, mesh.vertex_owner(corner));
+  for (const auto corner : corners)
+    if (mesh.is_vertex_owned(corner) && mesh.vertex_owner(corner) == minimum_owner) return true;
+  return false;
+}
 
 bool DofKey::operator<(const DofKey& rhs) const noexcept {
   if (variable != rhs.variable) return variable < rhs.variable;
@@ -200,31 +217,46 @@ DofMap::DofMap(const spatial::Mesh& mesh, std::vector<Variable> variables, const
   }
 
   // ---- Pass 3: ghost resolution, one more allgather --------------------
-  // Fixed-width record, each field an EXACT bit-for-bit transport of one
-  // std::uint64_t/std::int64_t through std::bit_cast<double> (never a
-  // numeric double conversion, which would lose bits above 2^53) --
-  // KARMA's own coordinate_bits() trick (karma_dof_map.C), ported for the
-  // same reason: Reducer::allgather's channel is doubles, the payload
-  // here is integers that must survive the round trip exactly. A
-  // STATED, non-hidden scalability limitation (open_questions): this
-  // broadcasts every rank's own owned-dof table to every other rank
-  // (O(global_dof_count) memory and communication per rank), rather than
-  // a point-to-point exchange that would send a rank only the ghost
-  // records it actually needs (the scale `fuse::backend`'s own
-  // native_halo.hpp pattern reaches for); correct, not scalable, named
-  // as a follow-up rather than built this round.
+  // Fixed-width record, NATIVE std::int64_t transport through Reducer's
+  // own int64_t allgather overload (comm.hpp, wave 2 round 2 item B) --
+  // the round-1 std::bit_cast<double> packing is gone: an allgather
+  // moves bytes, not arithmetic, so the integer payload now travels
+  // directly, never reinterpreted as a double at all. A STATED,
+  // non-hidden scalability limitation (open_questions), UNCHANGED by
+  // this round's own item B (which addresses the TRANSPORT type, not
+  // the exchange PATTERN): this broadcasts every rank's own owned-dof
+  // table to every other rank (O(global_dof_count) memory and
+  // communication per rank), rather than a point-to-point exchange that
+  // would send a rank only the ghost records it actually needs (the
+  // scale `fuse::backend`'s own native_halo.hpp pattern reaches for);
+  // correct, not scalable, named as a follow-up rather than built this
+  // round. MEASURED COST (design_notes): max_owned * kRecordWidth * 8
+  // bytes sent per rank, max_owned * kRecordWidth * n_ranks * 8 bytes
+  // received per rank -- a formula in n_ranks and max_owned (the
+  // largest owned-key count across ranks), not a per-run number, since
+  // this sandbox runs the single-rank path only.
+  //
+  // ALSO FIXES a round-1 padding bug found while rewriting this block
+  // (KNOWN_ISSUES.md D103): the old sentinel-marking loop ran only over
+  // `[0, owned_keys.size())`, the SAME range the following loop then
+  // overwrote with real records, so no slot in `[owned_keys.size(),
+  // max_owned)` -- the actual padding -- was ever marked sentinel; it
+  // kept its zero-initialised bit pattern, which decoded as a bogus
+  // all-zero DofKey with global_index 0 and was inserted into
+  // global_table on every receiving rank. Unreachable in this round's
+  // own tier-0 testing (padding exists only when `max_owned >
+  // n_owned_here`, never true on the single-rank path), so no test
+  // caught it; fixed here by marking every slot in `[0, max_owned)`
+  // sentinel FIRST, matching the record width's own range.
   constexpr std::size_t kMaxCorners = 4;  // the widest built-in sub-entity is a quadrilateral face/side
   constexpr std::size_t kRecordWidth = 4 + kMaxCorners + 2;  // variable,component,entity_dim,n_corners + corners + slot,index
-  constexpr std::uint64_t kSentinelVariable = ~std::uint64_t{0};
-
-  const auto pack_u64 = [](std::uint64_t value) { return std::bit_cast<double>(value); };
-  const auto unpack_u64 = [](double word) { return std::bit_cast<std::uint64_t>(word); };
+  constexpr std::int64_t kSentinelVariable = -1;  // no DofKey::variable is ever negative
 
   const auto max_owned =
       static_cast<std::size_t>(std::llround(reducer->max(static_cast<double>(n_owned_here))));
 
-  std::vector<double> send(max_owned * kRecordWidth, pack_u64(0));
-  for (std::size_t i = 0; i < owned_keys.size(); ++i) send[i * kRecordWidth] = pack_u64(kSentinelVariable);
+  std::vector<std::int64_t> send(max_owned * kRecordWidth, 0);
+  for (std::size_t i = 0; i < max_owned; ++i) send[i * kRecordWidth] = kSentinelVariable;
   for (std::size_t i = 0; i < owned_keys.size(); ++i) {
     const auto& key = owned_keys[i];
     if (key.corners.size() > kMaxCorners)
@@ -232,36 +264,34 @@ DofMap::DofMap(const spatial::Mesh& mesh, std::vector<Variable> variables, const
           "DofMap: a dof key with more than 4 corner vertices cannot be packed for ghost "
           "resolution (E-PHYSICS-DOFMAP-KEY-TOO-WIDE) -- no built-in basis this wave places a dof "
           "on a sub-entity with more than 4 corners (a quadrilateral face)");
-    double* record = &send[i * kRecordWidth];
-    record[0] = pack_u64(key.variable);
-    record[1] = pack_u64(key.component);
-    record[2] = pack_u64(key.entity_dimension);
-    record[3] = pack_u64(key.corners.size());
+    std::int64_t* record = &send[i * kRecordWidth];
+    record[0] = static_cast<std::int64_t>(key.variable);
+    record[1] = static_cast<std::int64_t>(key.component);
+    record[2] = static_cast<std::int64_t>(key.entity_dimension);
+    record[3] = static_cast<std::int64_t>(key.corners.size());
     for (std::size_t c = 0; c < kMaxCorners; ++c)
-      record[4 + c] = pack_u64(c < key.corners.size() ? key.corners[c] : std::uint64_t{0});
-    record[4 + kMaxCorners] = pack_u64(key.slot);
-    record[4 + kMaxCorners + 1] =
-        pack_u64(static_cast<std::uint64_t>(first_owned_ + static_cast<std::int64_t>(i)));
+      record[4 + c] = static_cast<std::int64_t>(c < key.corners.size() ? key.corners[c] : spatial::GlobalId{0});
+    record[4 + kMaxCorners] = static_cast<std::int64_t>(key.slot);
+    record[4 + kMaxCorners + 1] = first_owned_ + static_cast<std::int64_t>(i);
   }
 
-  std::vector<double> recv(max_owned * kRecordWidth * static_cast<std::size_t>(n_ranks), 0.0);
+  std::vector<std::int64_t> recv(max_owned * kRecordWidth * static_cast<std::size_t>(n_ranks), 0);
   reducer->allgather(send.data(), max_owned * kRecordWidth, recv.data());
 
   std::map<DofKey, std::int64_t> global_table;
   const std::size_t n_slots = max_owned * static_cast<std::size_t>(n_ranks);
   for (std::size_t slot = 0; slot < n_slots; ++slot) {
-    const double* record = &recv[slot * kRecordWidth];
-    const auto variable_word = unpack_u64(record[0]);
-    if (variable_word == kSentinelVariable) continue;
+    const std::int64_t* record = &recv[slot * kRecordWidth];
+    if (record[0] == kSentinelVariable) continue;
     DofKey key;
-    key.variable = static_cast<unsigned>(variable_word);
-    key.component = static_cast<unsigned>(unpack_u64(record[1]));
-    key.entity_dimension = static_cast<unsigned>(unpack_u64(record[2]));
-    const auto n_corners = static_cast<std::size_t>(unpack_u64(record[3]));
+    key.variable = static_cast<unsigned>(record[0]);
+    key.component = static_cast<unsigned>(record[1]);
+    key.entity_dimension = static_cast<unsigned>(record[2]);
+    const auto n_corners = static_cast<std::size_t>(record[3]);
     key.corners.resize(n_corners);
-    for (std::size_t c = 0; c < n_corners; ++c) key.corners[c] = unpack_u64(record[4 + c]);
-    key.slot = static_cast<unsigned>(unpack_u64(record[4 + kMaxCorners]));
-    const auto global_index = static_cast<std::int64_t>(unpack_u64(record[4 + kMaxCorners + 1]));
+    for (std::size_t c = 0; c < n_corners; ++c) key.corners[c] = static_cast<spatial::GlobalId>(record[4 + c]);
+    key.slot = static_cast<unsigned>(record[4 + kMaxCorners]);
+    const auto global_index = record[4 + kMaxCorners + 1];
     global_table.emplace(std::move(key), global_index);
   }
 
