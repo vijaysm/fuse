@@ -15,6 +15,7 @@
 /// `fuse/transport/comm_graph.hpp` does: the factories exist as symbols
 /// only in a build that can define them).
 
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -80,6 +81,35 @@ class Reducer {
   /// authorised explicitly, reported here as instructed rather than left
   /// to be discovered as an undocumented diff.
   virtual void allgather(const double* send, std::size_t n_each, double* recv) const = 0;
+
+  /// The exact INTEGER analogue of `allgather` above: `recv[r*n_each ..
+  /// (r+1)*n_each)` becomes participant `r`'s own `send`, in rank order.
+  /// Added for `fe::DofMap`'s own ghost-dof resolution and `fe::
+  /// AlgebraicSystem`'s own foreign-entry exchange (round 2,
+  /// lead's review of round 1): an allgather moves BYTES, not
+  /// arithmetic, so a caller whose payload is already `std::int64_t`
+  /// (a dof key's packed fields, a global index) transports it directly
+  /// rather than through a `std::bit_cast<double>` reinterpretation at
+  /// the CALL SITE -- correct either way (the bit pattern survives the
+  /// round trip exactly), but the native form is the clean one, and
+  /// doing the cast ONCE here instead of at every call site is strictly
+  /// better.
+  ///
+  /// DEFAULT: layers on the `double` overload via the SAME exact
+  /// bit_cast this method exists to let a caller stop writing directly --
+  /// a generic fallback for a `Reducer` that has not (yet) overridden
+  /// this, never duplicated per call site. `make_serial_reducer()`'s own
+  /// reducer (a plain `memcpy`-equivalent copy, needing no cast at all)
+  /// and the MPI reducer `make_mpi_reducer()` returns (`MPI_Allgather`
+  /// with `MPI_INT64_T`, never touching a `double`) both override this
+  /// with a native transport.
+  virtual void allgather(const std::int64_t* send, std::size_t n_each, std::int64_t* recv) const {
+    std::vector<double> send_as_double(n_each);
+    for (std::size_t i = 0; i < n_each; ++i) send_as_double[i] = std::bit_cast<double>(send[i]);
+    std::vector<double> recv_as_double(n_each * static_cast<std::size_t>(size()));
+    allgather(send_as_double.data(), n_each, recv_as_double.data());
+    for (std::size_t i = 0; i < recv_as_double.size(); ++i) recv[i] = std::bit_cast<std::int64_t>(recv_as_double[i]);
+  }
 };
 
 /// One rank, no MPI symbol touched: `sum`/`max` are the identity, `rank()

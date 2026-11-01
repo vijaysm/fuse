@@ -1414,6 +1414,7 @@ fuse_add_gtest(linalg least_squares THROWS)
 # DistSparseMatrix::apply/diagonal) as caller mistakes.
 fuse_add_gtest(linalg dist_vector THROWS)
 fuse_add_gtest(linalg dist_sparse_matrix THROWS)
+fuse_add_gtest(linalg comm)
 #: native preconditioned conjugate gradient and restarted,
 # right-preconditioned GMRES(m) (include/fuse/linalg/{pcg,gmres}.hpp),
 # checked one rank against Eigen::ConjugateGradient and Eigen's unsupported

@@ -104,6 +104,18 @@ class MpiReducer : public Reducer {
                  MPI_DOUBLE, comm_);
   }
 
+  /// The int64_t analogue, native (comm.hpp's own header comment: an
+  /// allgather moves bytes, not arithmetic, so the integer payload
+  /// travels through MPI_INT64_T directly, never through MPI_DOUBLE's
+  /// own wire format). Same INT_MAX boundary as the double overload.
+  void allgather(const std::int64_t* send, std::size_t n_each, std::int64_t* recv) const override {
+    FUSE_ASSERT(n_each <= static_cast<std::size_t>(std::numeric_limits<int>::max()),
+               "MpiReducer::allgather: {} entries exceeds MPI's int count limit ({})", n_each,
+               std::numeric_limits<int>::max());
+    MPI_Allgather(send, static_cast<int>(n_each), MPI_INT64_T, recv, static_cast<int>(n_each),
+                 MPI_INT64_T, comm_);
+  }
+
  private:
   MPI_Comm comm_;
   int rank_ = 0;
