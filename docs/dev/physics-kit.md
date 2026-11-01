@@ -355,7 +355,7 @@ plus their tests are complete and tested; see "What is added" below.
 
 | test | tolerance | derivation |
 |---|---|---|
-| `physics.mass_assembly`'s P1-simplex and Quad4 element mass matrix checks | `16 * eps * (largest analytic entry)` | Higham (2002) Thm 8.1-style summation bound over the (at most 16) quadrature-point products a degree-2-exact rule uses on an affine element; the analytic comparison value itself is KARMA's own cited closed form (`mass_assembly_test.C`'s `check_simplex_mass`, and the Quad4 consistent-mass table `transient_reaction_diffusion_assembly_test.C` hand-codes), not re-derived |
+| `physics.mass_assembly`'s P1-simplex and Quad4 element mass matrix checks | `(n_q + 3) * eps * S`, `n_q` read from `fe.n_quadrature_points()`, `S` = volume (Tet4) or area 1 (Quad4) | Higham (2002) Thm 8.1: `n_q` products of three operations each, summed; `S` bounds the sum of the absolute terms since a P1 shape value lies in `[0, 1]`. The landed round-1 row had `16 * eps`, "a generous n = 16 for margin" -- a chosen constant, replaced by the lead 2026-11-01. The analytic comparison value itself is KARMA's own cited closed form (`mass_assembly_test.C`'s `check_simplex_mass`, and the Quad4 consistent mass table) |
 | `physics.mass_assembly`'s global entry-sum-equals-domain-volume invariant | `n_elements * 8 * 8 * eps * domain_volume` | Higham summation bound over every element's own 8x8 contribution, using the partition-of-unity identity `sum_i phi_i = 1` (so `sum_{i,j} M(i,j) = integral(1) dV`) rather than an empirical constant |
 | `physics.diffusion_assembly`'s reference-Tet4 closed-form check | `8 * eps * max(1, |expected|)` | a single constant-gradient dot product and one JxW multiply on a degree-0-exact (constant integrand) element -- a few ULPs, not an empirical floor |
 | `physics.diffusion_assembly`'s stiffness symmetry check | exact equality (no tolerance) | `dot(a,b)` reads the SAME two operands in the SAME order regardless of which index is `i` and which is `j` -- IEEE 754 guarantees bit-identical results, so no rounding bound applies at all |
@@ -394,4 +394,97 @@ Reducer's double-only allgather (correct for an allgather, which moves bytes wit
 an integer allgather on the Reducer is the clean form), interior-edge DoFs of 3-D cells refused by
 name (needs an edge-to-corner table on `ReferenceTopology`), `eliminate_dirichlet_rows` scoped to
 a single rank, and the transient reaction-diffusion kernel deferred to.
+
+
+##:, native integer transport, 3-D edge dofs, and the transient kernel
+
+Items A-D of the round-1 review's own four-item list delivered as; items E-I (linear layer,
+nonlinear layer, iteration-count recording, the MPI assembly test, and the full wave-wide records
+sweep) are explicitly DEFERRED to a later round -- the task's own permission, carried over from
+ identical wording.
+
+### What is added
+
+- **Item A, CLOSED.** `fuse::MeshView::owner(dim, i)` (mesh_view.hpp, a rejecting default
+  mirroring `cell_vertices`' own precedent), implemented by `fuse::native::NativeMeshView` (its own
+  stored `vertex_owner`/`cell_owner`), the serial backend's view (always rank 0), and `MoabMeshView`
+  under `FUSE_HAVE_MOAB` (compile-only, reads `ParallelComm::get_owner`, not yet wired to a real
+  `ParallelComm` at any construction site -- a named follow-up). `spatial::Mesh::vertex_owner()`
+  reads it through `from_mesh_view`. `fe::shared_sub_entity_owned_here(mesh, corners)` replaces
+  `DofMap`'s own round-1 ownership rule with fix (owner = the MINIMUM over corner owner
+  ranks), exposed as a free function so it is directly unit-tested against a hand-built `Mesh` with
+  split vertex ownership (`physics.dof_map.D102SharedSideOwnedByTheMinimumCornerOwnerRank`) rather
+  than through the full collective numbering path this sandbox cannot run under real MPI.
+- **Item B.** `fuse::linalg::Reducer` gained a native `std::int64_t` `allgather` overload
+  (comm.hpp), with a generic `std::bit_cast`-based default (so no existing `Reducer` implementor
+  needed to change) and NATIVE overrides in `SerialReducer` (a plain copy) and `MpiReducer`
+  (`MPI_Allgather` with `MPI_INT64_T`). `DofMap`'s own ghost-dof resolution and `AlgebraicSystem`'s
+  own foreign-entry exchange both now transport their INTEGER fields through this native channel;
+  the one genuine `double` field each record carries (a triplet's `value`, a vector entry's own
+  value) still travels through the existing `double` allgather, unchanged, since it was never cast
+  at all. `linalg.comm.SerialReducerInt64AllgatherIsAnExactCopy` (test/linalg/comm_test.cpp) tests
+  the new overload directly. **FOUND AND FIXED while rewriting this code:**
+ padding-sentinel loop in `DofMap`'s own ghost resolution never actually marked the
+  padding range sentinel, a latent bug unreachable by any tier-0 test (it needs `max_owned >
+  n_owned_here` across ranks); fixed in the same pass.
+- **Item C.** `fe::edge_count(family)`/`fe::edge_vertices(family, edge)` (reference_topology.hpp/
+  .cpp) expose the edge-to-corner tables KARMA's own `karma_reference_topology.C` uses to place
+  order-2 edge-midpoint nodes (Tetrahedron, Hexahedron, Prism, Pyramid) -- cross-checked against
+  this port's own `nodes_for()` construction in `EdgeVerticesMatchNodesForMidpoints{Tet,Hex,Prism,
+  Pyramid}`. `Mesh::edge_vertices`/`canonical_edge_vertex_ids` expose them per-element. `DofMap`'s
+  `E-PHYSICS-DOFMAP-SUBENTITY-UNSUPPORTED` refusal for a 3-D cell's own interior edge is REMOVED --
+  those dofs are now numbered, using the SAME `shared_sub_entity_owned_here` rule item A's own fix
+  provides. `physics.dof_map.P2Hex27DofMapCountsVerticesEdgesFacesAndCells` and
+  `P2Tet10DofMapNumbersEachSharedEdgeDofOnce` test the closed gap directly, including that a shared
+  edge dof is numbered EXACTLY ONCE across the two elements that share it.
+- **Item D.** `fe::element_transient_reaction_diffusion`/`TransientReactionDiffusionModel`
+  (generic_operators.hpp/.cpp): the Crank-Nicolson residual and analytic Jacobian, ported from
+  KARMA's own `test/transient_reaction_diffusion_assembly_test.C`. NOT a literal port of KARMA's own
+  AFFINE reaction model: a QUADRATIC one is used instead (`R(u) = alpha*u^2 + beta*coupled +
+  source`), because an affine model's `R'' == 0` exactly would collapse item D's own required
+  derivation (the finite-difference Jacobian check's tolerance from "the truncation term h/2*|f''|
+  bound plus the round-off term eps*|f|/h, the step chosen to balance them") to round-off alone.
+  `jacobian_finite_difference_tolerance` implements that derivation exactly (the balancing step `h*
+  = sqrt(2*eps*|f|/|f''|)`, the bound `E(h*) = sqrt(2*eps*|f|*|f''|)`), replacing KARMA's own
+  underived `1e-6` (transient_reaction_diffusion_assembly_test.C:101).
+
+### Tolerance provenance
+
+| test | tolerance | derivation |
+|---|---|---|
+| `physics.transient_reaction_diffusion_assembly`'s forward-difference Jacobian check | `2 sqrt(delta |f''|) + |J_ik| eps |u_k| / h*`, `delta = (3n + n_q + 4) eps S_i`, `S_i` = sum of the absolute terms of `residual_i` (returned by the kernel), `f'' = 0.5 M_ik R''` exactly, `h* = 2 sqrt(delta / |f''|)` | Three terms (generic_operators.hpp): truncation `(h/2)|f''|`, two evaluations' round-off `2 delta / h` by Higham Thm 8.1 over the absolute terms (the residual itself cancels, so `|residual_i|` understates it), and the rounding of `u_k + h`. The track's round-2 version used `|residual_i|` and an "evaluation noise factor" raised from 1 to 16 after the check failed by 3%; the lead replaced it 2026-11-01. MEASURED margin: worst `|error| / bound` over the 16 entries = 5.05e-1 (clean export) |
+| `physics.transient_reaction_diffusion_assembly`'s affine special case (`alpha=0`) | `8 * eps * max(1, \|expected\|)` | `R''=0` exactly when `alpha=0`, so the Jacobian reduces to `M/h + 0.5*K` with no reaction term at all -- EXACT (no FD check needed), tolerance is the same few-ULP floor diffusion_assembly's own closed-form test uses for an analogous exact-arithmetic comparison |
+| `physics.dof_map`'s `EdgeVerticesMatchNodesForMidpoints*` | `1e-12` | round-off floor for an analytic (exact-rational) reference-node average in double precision, the same floor `fe_reference_topology_test.cpp`'s other analytic checks already use |
+
+### Deferred this round (open_questions has the full list)
+
+Items E (linear layer), F (nonlinear layer), G (iteration-count recording -- moot without E/F),
+H (the MPI assembly test), and I beyond what itself needed (the wave-wide records sweep,
+`test/assembly_test.C`'s own retirement confirmation).
+
+## Lead's review of (2026-11-01)
+
+Landed from a clean export after four changes:
+
+- ** verified in the round-1 code before accepting the fix**: line 227 of the landed
+  `dof_map.cpp` wrote the sentinel into the slots the record loop then overwrote, so the padding
+  slots `[owned_keys.size(), max_owned)` decoded as a DoF with index 0 on every rank with fewer
+  owned DoFs than the maximum. The track's fix (sentinel on the padding, native int64 transport)
+  stands; the row is host-pending like every multi-rank row of this wave.
+- **`MoabMeshView::owner()` refuses without a `ParallelComm`** (`E-MESH-NO-OWNER`) instead of
+  answering rank 0. A view that cannot know the owner must not invent one for a distributed
+  numbering to build on.
+- **The finite-difference tolerance rederived.** The delivered derivation balanced the truncation
+  term against `eps |residual_i| / h` and then raised an "evaluation noise factor" from 1 to 16
+  when the check failed by 3%. That constant was chosen after a failure. The round-off term was
+  wrong in kind: `residual_i` is a cancelling sum, so Higham's bound applies to the sum of its
+  absolute terms (now returned by the kernel as `residual_abs_terms`), with the operation count
+  `3n + n_q + 4` written out, and the rounding of `u_k + h` contributes `|J_ik| eps |u_k| / h`. With
+  every input measured or exact the check passes at a worst ratio of 0.505 to the bound.
+- **The round-1 mass-matrix tolerance** (`16 * eps`, "a generous n = 16 for margin", which the
+  lead let through in) became `(n_q + 3) eps S` with `n_q` read from the rule.
+
+Accepted as declared: items E to I (linear layer on `pcg`, nonlinear layer on Newton-Krylov,
+MPI assembly test, `assembly_test.C`'s disposition) were not started and go to; the
+padded allgather stays with its cost formula recorded; the MOAB owner query is compile-only.
 

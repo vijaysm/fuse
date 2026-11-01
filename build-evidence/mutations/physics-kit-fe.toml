@@ -159,20 +159,15 @@ new = "    if (false)"
 target = "fuse_physics_dof_map_test"
 test = "physics.dof_map"
 
-[[mutation]]
-id = "dof-map-3d-edge-unsupported-refusal-disabled"
-area = "physics-kit"
-describes = "DofMap's classify() drops its refusal for a sub-entity strictly between a vertex and a codimension-1 side (a 3-D cell's interior edge, e.g. a Tet10 edge midpoint), which RefusesSharedEdgeDofsOnAThreeDimensionalCell (a P2 variable on a Hex8 box) exists to catch -- this port has no corner-vertex table for that case (dof_map.hpp's own header comment), so without the refusal the key would be built with an EMPTY corners vector and silently collide with every other such key on the same element."
-file = "physics-kit/src/fe/dof_map.cpp"
-old = """  } else {
-    refuse(
-        \"DofMap: a shared sub-entity strictly between a vertex and a codimension-1 side (an \""""
-new = """  } else if (false) {
-    refuse(
-        \"DofMap: a shared sub-entity strictly between a vertex and a codimension-1 side (an \""""
-target = "fuse_physics_dof_map_test"
-test = "physics.dof_map"
-result = "SURVIVED in the lead's clean export (2026-11-01): the empty corner list fell through to E-PHYSICS-DOFMAP-GHOST-WITHOUT-COMMUNICATOR, the same std::invalid_argument the type-only test accepted. KILLED after RefusesSharedEdgeDofsOnAThreeDimensionalCell checks the message for E-PHYSICS-DOFMAP-SUBENTITY-UNSUPPORTED (verified by hand: the mutant now fails with 'refused for another reason')."
+# RETIRED: dof-map-3d-edge-unsupported-refusal-disabled
+# targeted the E-PHYSICS-DOFMAP-SUBENTITY-UNSUPPORTED refusal for a 3-D cell's
+# interior edge dofs, which item C REMOVED -- that case is now numbered (ReferenceTopology's
+# own edge-to-corner table, Mesh::canonical_edge_vertex_ids/edge_vertices), not refused, so
+# the `old` text this row named no longer exists in dof_map.cpp (mutate.py reports it
+# INVALID, "old occurs 0 times", rather than a false KILLED/SURVIVED verdict). The lead's
+# own fix for this row (checking the refusal's MESSAGE, not only its type) is preserved as
+# the house style for every refusal test added since (dof_map_test.cpp's own
+# RefusesAGhostDofWithoutACommunicator, algebraic_system_test.cpp's two refusal tests).
 
 
 [[mutation]]
@@ -194,3 +189,36 @@ old = "  if (out.owned_size() != static_cast<std::size_t>(dof_map_->n_local_dofs
 new = "  if (false)"
 target = "fuse_physics_algebraic_system_test"
 test = "physics.algebraic_system"
+
+# -- ----------------
+
+[[mutation]]
+id = "d102-minimum-owner-rule-reverted"
+area = "physics-kit"
+describes = "shared_sub_entity_owned_here reverts from fix (owner = MINIMUM over corner owner ranks) back to the round-1 rule (owned here iff EVERY corner is owned here), which D102SharedSideOwnedByTheMinimumCornerOwnerRank exists to catch directly: for corners {v0 (owner 0, owned here), v2 (owner 1, not owned here)}, the round-1 rule returns false (not every corner owned here) where own fix returns true (min(0,1) == 0, this rank)."
+file = "physics-kit/src/fe/dof_map.cpp"
+old = """bool shared_sub_entity_owned_here(const spatial::Mesh& mesh, const std::vector<spatial::EntityHandle>& corners) {
+  if (corners.empty()) return false;
+  int minimum_owner = std::numeric_limits<int>::max();
+  for (const auto corner : corners) minimum_owner = std::min(minimum_owner, mesh.vertex_owner(corner));
+  for (const auto corner : corners)
+    if (mesh.is_vertex_owned(corner) && mesh.vertex_owner(corner) == minimum_owner) return true;
+  return false;
+}"""
+new = """bool shared_sub_entity_owned_here(const spatial::Mesh& mesh, const std::vector<spatial::EntityHandle>& corners) {
+  bool owned = !corners.empty();
+  for (const auto corner : corners) owned = owned && mesh.is_vertex_owned(corner);
+  return owned;
+}"""
+target = "fuse_physics_dof_map_test"
+test = "physics.dof_map"
+
+[[mutation]]
+id = "edge-vertices-tetrahedron-table-corrupted"
+area = "physics-kit"
+describes = "fe::edge_vertices' Tetrahedron table swaps its first two entries ({0,1} and {1,2}), which EdgeVerticesMatchNodesForMidpointsTet exists to catch: edge 0's reported corners would then average to the WRONG reference point (the midpoint of {1,2}, not {0,1}), disagreeing with nodes_for()'s own Tet10 edge-midpoint construction at that index."
+file = "physics-kit/src/fe/reference_topology.cpp"
+old = "          {{0, 1}, {1, 2}, {2, 0}, {0, 3}, {1, 3}, {2, 3}}};"
+new = "          {{1, 2}, {0, 1}, {2, 0}, {0, 3}, {1, 3}, {2, 3}}};"
+target = "fuse_physics_fe_reference_topology_test"
+test = "physics.fe_reference_topology"
