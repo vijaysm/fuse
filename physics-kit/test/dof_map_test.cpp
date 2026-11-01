@@ -148,7 +148,17 @@ TEST(DofMapTest, RefusesAGhostDofWithoutACommunicator) {
   ASSERT_FALSE(mesh.is_vertex_owned(5));  // v4, a ghost
 
   BasisRegistry registry;
-  EXPECT_THROW({ DofMap dof_map(mesh, {scalar_p1("u")}, registry); }, std::invalid_argument);
+  // The refusal's own code, not merely its type (lead's review of
+  // round 1, 2026-11-01: a type-only EXPECT_THROW let a mutation that
+  // fell through to a DIFFERENT, later std::invalid_argument survive
+  // undetected).
+  try {
+    DofMap dof_map(mesh, {scalar_p1("u")}, registry);
+    FAIL() << "a ghost dof without a communicator must be refused";
+  } catch (const std::invalid_argument& e) {
+    EXPECT_NE(std::string(e.what()).find("E-PHYSICS-DOFMAP-GHOST-WITHOUT-COMMUNICATOR"), std::string::npos)
+        << "refused for another reason: " << e.what();
+  }
 }
 
 // physics.dof_map.FaceCentreAssociationIndexMatchesSideTopologyOrder --
@@ -263,32 +273,126 @@ TEST(DofMapTest, OrientationCodeAgreesBetweenTwoElementsSharingAFace) {
 }
 
 
-// physics.dof_map.RefusesSharedEdgeDofsOnAThreeDimensionalCell -- a P2
-// (order 2) Lagrange basis on a Tetrahedron places a dof on each of its
-// 6 EDGES (entity_dimension 1, cell_dimension 3) -- dof_map.hpp's own
-// header comment states this port exposes no corner-vertex identity for
-// that case (no edge-to-corner table anywhere in this wave's public
-// Mesh/ReferenceTopology surface, unlike the codimension-1 side case
-// Mesh::canonical_side_vertex_ids covers): DofMap's own constructor,
-// which classifies every dof an owned element touches, must refuse by
-// name the first time it tries, rather than silently reading past the
-// unsupported association.
-TEST(DofMapTest, RefusesSharedEdgeDofsOnAThreeDimensionalCell) {
+// physics.dof_map.P2Hex27DofMapCountsVerticesEdgesFacesAndCells -
+// round 2 item C CLOSES the round-1 gap the test above used to name: a
+// 3-D cell's own interior-edge dofs (e.g. a Hex27 edge midpoint) are
+// now numbered, via ReferenceTopology's own edge-to-corner table and
+// Mesh::canonical_edge_vertex_ids (reference_topology.hpp's own header
+// comment) -- E-PHYSICS-DOFMAP-SUBENTITY-UNSUPPORTED no longer fires
+// for this case at all. A 2x1x1 Hex8 box's P2 (Hex27) global dof count
+// is the STANDARD structured-grid entity count -- derived, not
+// guessed:
+//   vertices: (nx+1)(ny+1)(nz+1) = 3*2*2 = 12
+//   edges:    nx*(ny+1)*(nz+1) + (nx+1)*ny*(nz+1) + (nx+1)*(ny+1)*nz
+//           = 2*2*2 + 3*1*2 + 3*2*1 = 8 + 6 + 6 = 20
+//   faces:    (nx+1)*ny*nz + nx*(ny+1)*nz + nx*ny*(nz+1)
+//           = 3*1*1 + 2*2*1 + 2*1*2 = 3 + 4 + 4 = 11
+//   cells:    nx*ny*nz = 2
+// total = 12 + 20 + 11 + 2 = 45 (Hex27's 27th node is a cell-interior
+// dof, basis.cpp's own dof_associations(); Tet10 below has none).
+TEST(DofMapTest, P2Hex27DofMapCountsVerticesEdgesFacesAndCells) {
   Mesh mesh(3);
-  mesh.generate_box(1, 1, 1, Point(0, 0, 0), Point(1, 1, 1));
+  mesh.generate_box(2, 1, 1, Point(0, 0, 0), Point(2, 1, 1));
   BasisRegistry registry;
   Variable u{"u", FieldBasisFamily::LagrangeNodal, 2, BasisContinuity::cG, 1};
-  // The refusal's own code, not merely its type: with the named refusal
-  // disabled, the empty corner list reaches a later std::invalid_argument,
-  // so a type-only check let the mutant dof-map-3d-edge-unsupported-
-  // refusal-disabled survive in the lead's clean export (2026-11-01).
-  try {
-    DofMap dof_map(mesh, {u}, registry);
-    FAIL() << "a P2 basis on a 3-D cell must be refused";
-  } catch (const std::invalid_argument& e) {
-    EXPECT_NE(std::string(e.what()).find("E-PHYSICS-DOFMAP-SUBENTITY-UNSUPPORTED"), std::string::npos)
-        << "refused for another reason: " << e.what();
-  }
+  DofMap dof_map(mesh, {u}, registry);
+  EXPECT_EQ(dof_map.n_dofs(), 45);
+}
+
+// physics.dof_map.P2Tet10DofMapNumbersEachSharedEdgeDofOnce -- two Tet4
+// elements sharing one triangular FACE (so three of their edges --
+// {v0,v1}, {v1,v2}, {v2,v0} -- are shared): element 1 =
+// {v0,v1,v2,v3} (apex (0,0,1)), element 2 = {v0,v1,v2,v4} (apex
+// (0,0,-1)), both using the SAME local corner order 0,1,2 for the
+// shared face, so fe::edge_vertices(Tetrahedron, e)'s own table
+// ({0,1},{1,2},{2,0},...) names the SAME three physical edges at local
+// edge index 0, 1, 2 in BOTH elements' own connectivity. Tet10 has no
+// interior (cell) dof at all (basis.cpp's own dof_associations():
+// size() == 4 vertices + 6 edges exactly, nothing left over) -- total
+// dof count = 5 vertices + 9 distinct edges (3 shared + 3 unique to
+// each element) = 14, and the three SHARED edges' global dof indices
+// must agree between the two elements' own dof_indices() (the point of
+// this item: a shared edge dof is numbered ONCE, not twice).
+TEST(DofMapTest, P2Tet10DofMapNumbersEachSharedEdgeDofOnce) {
+  Mesh mesh(3);
+  mesh.add_vertex(Point(0, 0, 0));   // v0 (handle 1)
+  mesh.add_vertex(Point(1, 0, 0));   // v1 (handle 2)
+  mesh.add_vertex(Point(0, 1, 0));   // v2 (handle 3)
+  mesh.add_vertex(Point(0, 0, 1));   // v3, element 1's own apex (handle 4)
+  mesh.add_vertex(Point(0, 0, -1));  // v4, element 2's own apex (handle 5)
+  mesh.add_element(GeometryVariant::Tet4, {1, 2, 3, 4});
+  mesh.add_element(GeometryVariant::Tet4, {1, 2, 3, 5});
+
+  BasisRegistry registry;
+  Variable u{"u", FieldBasisFamily::LagrangeNodal, 2, BasisContinuity::cG, 1};
+  DofMap dof_map(mesh, {u}, registry);
+  EXPECT_EQ(dof_map.n_dofs(), 14);
+
+  std::vector<std::int64_t> indices_1;
+  std::vector<std::int64_t> indices_2;
+  dof_map.dof_indices(1, indices_1, 0);
+  dof_map.dof_indices(2, indices_2, 0);
+  ASSERT_EQ(indices_1.size(), 10u);
+  ASSERT_EQ(indices_2.size(), 10u);
+
+  // Edge positions 4, 5, 6 (after the 4 vertex dofs) are edges {0,1},
+  // {1,2}, {2,0} in fe::edge_vertices' own order -- the three SHARED
+  // edges, which must carry the SAME global index in both elements.
+  for (unsigned e = 0; e < 3; ++e) EXPECT_EQ(indices_1.at(4 + e), indices_2.at(4 + e)) << "shared edge " << e;
+  // Edge positions 7, 8, 9 are {0,3}, {1,3}, {2,3} -- each element's
+  // own edge to its OWN apex, which must be DISTINCT dofs (element 1's
+  // apex v3 and element 2's apex v4 are different vertices).
+  for (unsigned e = 3; e < 6; ++e) EXPECT_NE(indices_1.at(4 + e), indices_2.at(4 + e)) << "own edge " << e;
+}
+
+
+// physics.dof_map.D102SharedSideOwnedByTheMinimumCornerOwnerRank --
+// CLOSES the issue tracker, tested DIRECTLY against
+// fe::shared_sub_entity_owned_here rather than through DofMap's own
+// full single-rank constructor: that constructor's "convenience path"
+// refuses ANY ghost vertex outright (no communicator to resolve one),
+// so a fixture with a genuinely split-owned CORNER vertex always
+// throws there regardless of which sub-entity-ownership RULE is under
+// test -- the rule itself only matters once a ghost is tolerated and
+// resolved through a real communicator (the collective path, build-
+// verified only, never run in this sandbox; host_pending has the
+// commands). This test instead builds a Mesh via from_mesh_view with
+// THREE vertices of known, DIFFERENT owner ranks and checks the rule's
+// own three cases directly:
+//   * every corner owned by rank 0 (the local rank) -- owned here
+//     under BOTH the old and the new rule (no partition question);
+//   * corners split 0/1, minimum owner 0 -- fix: owned here
+//     (the round-1 rule would have been false, since not EVERY corner
+//     is locally owned);
+//   * corners split 1/2 (neither is this rank) -- not owned here,
+//     correctly, under either rule.
+TEST(DofMapTest, D102SharedSideOwnedByTheMinimumCornerOwnerRank) {
+  fuse::native::NativeMeshBuilder builder(2);
+  const int v0 = builder.add_vertex(100, 0, 0, 0, /*owner=*/0, /*is_owned=*/true);
+  const int v1 = builder.add_vertex(101, 1, 0, 0, /*owner=*/0, /*is_owned=*/true);
+  const int v2 = builder.add_vertex(102, 2, 0, 0, /*owner=*/1, /*is_owned=*/false);
+  const int v3 = builder.add_vertex(103, 3, 0, 0, /*owner=*/2, /*is_owned=*/false);
+  // A single triangle so the builder has a valid cell to finalize; its
+  // own ownership is irrelevant to this test (shared_sub_entity_owned_
+  // here reads only vertex_owner/is_vertex_owned, never element data).
+  builder.add_cell(fuse::native::CellType::Triangle, {v0, v1, v2}, 200, /*owner=*/0, /*is_owned=*/true);
+
+  const auto built = builder.build();
+  ASSERT_TRUE(built.ok()) << built.error().message;
+  const auto view = fuse::native::NativeMeshView::create(built.value(), /*my_rank=*/0);
+  ASSERT_TRUE(view.ok()) << view.error().message;
+  const Mesh mesh = Mesh::from_mesh_view(*view.value());
+  ASSERT_EQ(mesh.vertex_owner(1), 0);  // v0
+  ASSERT_EQ(mesh.vertex_owner(2), 0);  // v1
+  ASSERT_EQ(mesh.vertex_owner(3), 1);  // v2
+  ASSERT_TRUE(mesh.is_vertex_owned(1));
+  ASSERT_TRUE(mesh.is_vertex_owned(2));
+  ASSERT_FALSE(mesh.is_vertex_owned(3));
+
+  EXPECT_TRUE(fuse::physics::fe::shared_sub_entity_owned_here(mesh, {1, 2}));   // v0,v1: both owner 0
+  EXPECT_TRUE(fuse::physics::fe::shared_sub_entity_owned_here(mesh, {1, 3}));   // v0,v2: min(0,1)=0 -- fix
+  EXPECT_FALSE(fuse::physics::fe::shared_sub_entity_owned_here(mesh, {3}));     // v2 alone: owner 1, not here
+  EXPECT_FALSE(fuse::physics::fe::shared_sub_entity_owned_here(mesh, {}));      // no corners: owned nowhere
 }
 
 }  // namespace

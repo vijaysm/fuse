@@ -123,6 +123,16 @@ class Mesh {
   /// ReferenceTopology::side_nodes() returns for this element's own kind.
   [[nodiscard]] std::vector<EntityHandle> side_vertices(EntityHandle element, unsigned side) const;
   [[nodiscard]] std::vector<GlobalId> canonical_side_vertex_ids(EntityHandle element, unsigned side) const;
+  /// Local vertex HANDLES of one EDGE (a 1-D sub-entity, distinct from a
+  /// codimension-1 "side" on a 3-D cell -- fe::edge_vertices' own header
+  /// comment), in `fe::edge_vertices`' own corner order. round 2
+  ///: closes the gap
+  /// `fe::DofMap` used to refuse by name (E-PHYSICS-DOFMAP-SUBENTITY-
+  /// UNSUPPORTED) for a 3-D cell's interior edge dofs.
+  [[nodiscard]] std::vector<EntityHandle> edge_vertices(EntityHandle element, unsigned edge) const;
+  /// Sorted (order-independent) GLOBAL vertex ids of one edge, the exact
+  /// identity-matching role `canonical_side_vertex_ids` plays for a side.
+  [[nodiscard]] std::vector<GlobalId> canonical_edge_vertex_ids(EntityHandle element, unsigned edge) const;
   [[nodiscard]] std::optional<EntityHandle> neighbor(EntityHandle element, unsigned side) const;
   [[nodiscard]] bool is_boundary_side(EntityHandle element, unsigned side) const {
     return !neighbor(element, side).has_value();
@@ -149,6 +159,14 @@ class Mesh {
   // ---- partition-aware queries () -----------
   [[nodiscard]] bool is_vertex_owned(EntityHandle vertex) const noexcept { return vertex_owned_.at(vertex - 1); }
   [[nodiscard]] bool is_element_owned(EntityHandle element) const noexcept { return element_owned_.at(element - 1); }
+  /// The RANK that owns `vertex` -- `is_vertex_owned(vertex) == (vertex_owner(vertex) ==
+  /// <this rank's own number>)`. a shared sub-entity's owner is
+  /// the MINIMUM over its corner vertices' own `vertex_owner`, computable on every
+  /// sharing rank from this query alone. A self-generated mesh (generate_box/
+  /// generate_2d_box) or one built through add_vertex with no explicit owner_rank: 0
+  /// (this port's own single-rank convention, matching the serial MeshView backend's
+  /// identical `owner` override, mesh_view.hpp's own header comment).
+  [[nodiscard]] int vertex_owner(EntityHandle vertex) const noexcept { return vertex_owner_.at(vertex - 1); }
   [[nodiscard]] std::size_t owned_vertex_count() const noexcept;
   [[nodiscard]] std::size_t owned_element_count() const noexcept;
 
@@ -168,7 +186,7 @@ class Mesh {
   /// functions can build a lower-dimensional Mesh directly, without going
   /// through a box generator.
   EntityHandle add_vertex(const Point& position, bool owned = true,
-                           std::optional<GlobalId> gid = std::nullopt);
+                           std::optional<GlobalId> gid = std::nullopt, int owner_rank = 0);
   EntityHandle add_element(fe::GeometryVariant kind, std::vector<EntityHandle> connectivity, bool owned = true,
                             std::optional<GlobalId> gid = std::nullopt);
 
@@ -178,6 +196,7 @@ class Mesh {
   unsigned dimension_;
   std::vector<Point> vertices_;
   std::vector<bool> vertex_owned_;
+  std::vector<int> vertex_owner_;     // the rank that owns each vertex
   std::vector<GlobalId> vertex_gid_;  // identity (handle) unless from_mesh_view overrides
 
   std::vector<std::vector<EntityHandle>> elements_;

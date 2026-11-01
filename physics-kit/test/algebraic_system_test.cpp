@@ -6,6 +6,7 @@
 #include "fuse_physics/fe/algebraic_system.hpp"
 
 #include <cmath>
+#include <string>
 
 #include <gtest/gtest.h>
 
@@ -100,7 +101,15 @@ TEST(AlgebraicSystemTest, EliminateDirichletRowsStaysSymmetric) {
 TEST(AlgebraicSystemTest, EliminateDirichletRowsRefusesSizeMismatch) {
   std::vector<Triplet> triplets;
   std::vector<double> rhs{0.0, 0.0};
-  EXPECT_THROW({ eliminate_dirichlet_rows(triplets, 2, {0, 1}, {1.0}, rhs); }, std::invalid_argument);
+  // The refusal's own message, not merely its type (lead's review of
+  // round 1, 2026-11-01's own rule, applied here too).
+  try {
+    eliminate_dirichlet_rows(triplets, 2, {0, 1}, {1.0}, rhs);
+    FAIL() << "a dirichlet_rows/values size mismatch must be refused";
+  } catch (const std::invalid_argument& e) {
+    EXPECT_NE(std::string(e.what()).find("dirichlet_rows and values must have the same size"), std::string::npos)
+        << "refused for another reason: " << e.what();
+  }
 }
 
 // physics.algebraic_system.AssembleMatrixSumsElementContributionsToAGlobalLaplacian
@@ -192,15 +201,17 @@ TEST(AlgebraicSystemTest, AssembleVectorRefusesMismatchedVectorSize) {
 
   fuse::linalg::DistVector wrong_size(dof_map.n_local_dofs() + 1, fuse::linalg::make_serial_exchanger(),
                                        fuse::linalg::make_serial_reducer());
-  EXPECT_THROW(
-      {
-        const auto result = system.assemble_vector(
-            [](fuse::physics::spatial::EntityHandle, const std::vector<std::int64_t>&,
-               std::vector<std::pair<std::int64_t, double>>&) {},
-            wrong_size);
-        (void)result;
-      },
-      std::invalid_argument);
+  try {
+    const auto result = system.assemble_vector(
+        [](fuse::physics::spatial::EntityHandle, const std::vector<std::int64_t>&,
+           std::vector<std::pair<std::int64_t, double>>&) {},
+        wrong_size);
+    (void)result;
+    FAIL() << "a mismatched-size vector must be refused";
+  } catch (const std::invalid_argument& e) {
+    EXPECT_NE(std::string(e.what()).find("does not match this system's own row distribution"), std::string::npos)
+        << "refused for another reason: " << e.what();
+  }
 }
 
 }  // namespace

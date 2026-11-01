@@ -226,4 +226,54 @@ TEST(ReferenceTopologyTest, SideIndexAtExactUpperBoundRefuses) {
   EXPECT_THROW((void)tri.side_reference_map(at_bound, Point(0.5)), std::invalid_argument);
 }
 
+
+// physics.fe_reference_topology.EdgeVerticesMatchNodesForMidpoints --
+//: fe::edge_vertices' own table (reference_
+// topology.hpp's own header comment) must agree with nodes_for()'s
+// OWN construction of each order-2 variant's edge-midpoint nodes
+// (reference_topology.cpp): edge `e`'s midpoint node, at index
+// `node_count(order-1 variant) + e` in the order-2 node list, must
+// equal the AVERAGE of the two P1 corner positions edge_vertices(e)
+// names, read off the SAME ReferenceTopology's own reference_nodes().
+// Tetrahedron, Hexahedron, Prism, Pyramid (the four families with a
+// 3-D interior-edge dof this item closes the gap for); Triangle and
+// Quadrilateral are covered by SideTopologyMatchesCorners above (their
+// "edges" are sides).
+void check_edge_midpoints(GeometryVariant order1, GeometryVariant order2) {
+  const ReferenceTopology linear(order1);
+  const ReferenceTopology quadratic(order2);
+  const auto cell = linear.family();
+  const unsigned n_corners = linear.node_count();
+  const unsigned n_edges = fuse::physics::fe::edge_count(cell);
+  for (unsigned e = 0; e < n_edges; ++e) {
+    const auto corners = fuse::physics::fe::edge_vertices(cell, e);
+    const Point expected = 0.5 * (quadratic.reference_nodes().at(corners[0]) + quadratic.reference_nodes().at(corners[1]));
+    const Point actual = quadratic.reference_nodes().at(n_corners + e);
+    const Point diff = actual - expected;
+    EXPECT_NEAR(diff.x, 0.0, 1e-12) << "edge " << e;
+    EXPECT_NEAR(diff.y, 0.0, 1e-12) << "edge " << e;
+    EXPECT_NEAR(diff.z, 0.0, 1e-12) << "edge " << e;
+  }
+}
+
+TEST(ReferenceTopologyTest, EdgeVerticesMatchNodesForMidpointsTet) {
+  check_edge_midpoints(GeometryVariant::Tet4, GeometryVariant::Tet10);
+}
+TEST(ReferenceTopologyTest, EdgeVerticesMatchNodesForMidpointsHex) {
+  check_edge_midpoints(GeometryVariant::Hex8, GeometryVariant::Hex27);
+}
+TEST(ReferenceTopologyTest, EdgeVerticesMatchNodesForMidpointsPrism) {
+  check_edge_midpoints(GeometryVariant::Prism6, GeometryVariant::Prism18);
+}
+TEST(ReferenceTopologyTest, EdgeVerticesMatchNodesForMidpointsPyramid) {
+  check_edge_midpoints(GeometryVariant::Pyramid5, GeometryVariant::Pyramid14);
+}
+
+// physics.fe_reference_topology.EdgeVertexIndexAtExactUpperBoundRefuses --
+// the same named-refusal contract side_topology's own range check
+// states (SideIndexAtExactUpperBoundRefuses above), for edge_vertices.
+TEST(ReferenceTopologyTest, EdgeVertexIndexAtExactUpperBoundRefuses) {
+  EXPECT_THROW((void)fuse::physics::fe::edge_vertices(CellFamily::Tetrahedron, 6), std::invalid_argument);
+}
+
 }  // namespace
