@@ -5,6 +5,7 @@
 #include "fuse/linalg/comm.hpp"
 
 #include <algorithm>
+#include <cstdint>
 
 #include "fuse/base/error.hpp"
 
@@ -30,6 +31,14 @@ class SerialReducer : public Reducer {
     // One participant: the concatenation over `[0, size())` is this
     // participant's own `send`, copied once, same as every other
     // `SerialReducer` operation being its argument's identity.
+    std::copy(send, send + n_each, recv);
+  }
+
+  /// The int64_t analogue, native (comm.hpp's own header comment on why
+  /// this override exists rather than falling through to the base
+  /// class's bit_cast-based default): one participant, so the answer is
+  /// again a plain copy, needing no cast at all either way.
+  void allgather(const std::int64_t* send, std::size_t n_each, std::int64_t* recv) const override {
     std::copy(send, send + n_each, recv);
   }
 };
