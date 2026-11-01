@@ -13508,3 +13508,22 @@ the "early refusal" case, which the bug did not affect). Regression test:
 `physics-kit/test/fe_basis_test.cpp`'s `BasisTest.LagrangeKeyAboveMaximumOrderIsAlsoRefused`,
 added this wave -- the exact case (`LagrangeNodal`, order above the maximum) that distinguishes
 the fix from the bug, which the wave-1 test could not have caught by construction.
+
+### D102. `fe::DofMap`'s shared-sub-entity ownership ("owned here iff every corner vertex is owned here") can leave a face or edge DoF owned by no rank -- OPEN, S8.3 wave 2 round 1 (2026-11-01)
+
+**What.** For a codimension-1 DoF (a P2 face centre in 3-D, an edge midpoint in 2-D) `DofMap` (physics-kit/src/fe/dof_map.cpp)
+declares the DoF owned on this rank iff every corner vertex of the side is owned here. On a partition where the side's corners are
+split across ranks (the usual case for a face on a partition boundary that itself cuts through a vertex layer), no rank owns every
+corner, so no rank owns the DoF; the collective numbering then refuses with `E-PHYSICS-DOFMAP-GHOST-UNRESOLVED` (the ghost cannot be
+resolved against any owner table). The refusal is correct -- the DoF is not silently dropped or double-counted -- but it refuses a
+legitimate partition. KARMA resolves the same question through MOAB's `get_owner` on the DoF's entity (karma_dof_map.C:849), a rule
+every sharing rank agrees on, with a hash of the entity identity as the fallback (line 852); the port did not carry that because
+`spatial::Mesh` exposes `is_vertex_owned` but no owner rank, and `fuse::MeshView` has no owner-rank query either.
+
+**Fix (round 2).** Owner of a shared sub-entity = the minimum over its corner vertices' owner ranks (deterministic, gap-free,
+computable on every sharing rank from vertex owner ranks alone). Needs `MeshView::owner(dim, i)` (implemented by the native and MOAB
+backends; `native_mesh.hpp` already stores `vertex_owner`), `spatial::Mesh::vertex_owner()`, and a two-"rank" `MeshArrays` fixture
+whose shared face has corners owned by both ranks, which today must refuse and after the fix must number the DoF once.
+
+**Status.** Open. The multi-rank path is build-verified only (no MPI in the sandbox); the single-rank path, the only one tier 0 runs,
+is unaffected (every vertex is owned).
