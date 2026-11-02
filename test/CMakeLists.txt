@@ -713,7 +713,8 @@ else()
   set(FUSE_ENABLE_MOAB_MPI OFF)
 endif()
 fuse_tests_gated_by(FUSE_ENABLE_MOAB_MPI parallel/remap_halo_mpi_test.cpp
-  parallel/moab_placed_view_mpi_test.cpp parallel/moab_placed_weights_mpi_test.cpp)
+  parallel/moab_placed_view_mpi_test.cpp parallel/moab_placed_weights_mpi_test.cpp
+  parallel/moab_owner_mpi_test.cpp)
 
 if(FUSE_ENABLE_MOAB)
   # MOAB_LIBRARY_DIRS (cmake/FuseDependencies.cmake) is this project's own
@@ -865,6 +866,22 @@ if(FUSE_ENABLE_MOAB)
       set_tests_properties(parallel.moab_placed_view_mpi.${_fuse_moab_mpi_rank} PROPERTIES
         ENVIRONMENT_MODIFICATION "${_fuse_moab_env_mods}")
     endforeach()
+
+    # Wave 2 round 4, item M: set_parallel_comm wiring at MoabMeshView's
+    # construction (this file's own header comment on moab_placed_view_mpi
+    # above states why a generated box mesh cannot exercise this -- no
+    # real sharing/ghost information exists on one, so the same real
+    # sphere fixture is reused). RANKS 2, named explicitly (item M's own
+    # instruction): see test/parallel/moab_owner_mpi_test.cpp's own header
+    # for why exactly two ranks make the cross-check a plain
+    # MPI_Sendrecv rather than a count-keyed Allgather.
+    fuse_add_mpi_test(parallel moab_owner_mpi RANKS 2 LIBS fuse::backend fuse::field MPI::MPI_CXX LABELS moab)
+    if(FUSE_SPHERE_ATM_FILE)
+      target_compile_definitions(fuse_parallel_moab_owner_mpi_test PRIVATE
+        FUSE_SPHERE_ATM="${FUSE_SPHERE_ATM_FILE}")
+    endif()
+    set_tests_properties(parallel.moab_owner_mpi.2 PROPERTIES
+      ENVIRONMENT_MODIFICATION "${_fuse_moab_env_mods}")
 
     # KNOWN_ISSUES D5's last remaining half: per-placement remap WEIGHTS on
     # two independently (and, here, disjointly) decomposed MOAB processor
@@ -1415,6 +1432,7 @@ fuse_add_gtest(linalg least_squares THROWS)
 fuse_add_gtest(linalg dist_vector THROWS)
 fuse_add_gtest(linalg dist_sparse_matrix THROWS)
 fuse_add_gtest(linalg comm)
+fuse_add_gtest(linalg preconditioner THROWS)
 # "Krylov" track: native preconditioned conjugate gradient and restarted,
 # right-preconditioned GMRES(m) (include/fuse/linalg/{pcg,gmres}.hpp),
 # checked one rank against Eigen::ConjugateGradient and Eigen's unsupported
