@@ -85,10 +85,52 @@
 /// which is cheap because failures are expected to be rare (this header's
 /// own fast path exists on that premise) and reproduces `E-MLS-RANK`'s
 /// exact message, target index and condition estimate.
+///
+/// SCALAR TYPE AND SHAPE GRADIENTS (plans/2026-10-22-universal-number-types.md,
+/// stage U8). `solve_mls_on_space<Space, T>` is templated on the scalar type `T`
+/// of the point coordinates and of everything computed from them (distances,
+/// moment matrices, the solution, the weights). `T = double` is the default and
+/// is the previous kernel, operation for operation. With `T =
+/// fuse::num::dual<S, N>` (include/fuse/num/dual.hpp, forward-mode automatic
+/// differentiation with N directions) and each coordinate seeded as its value
+/// together with its gradient in the N design parameters, every returned weight
+/// carries its gradient in those parameters: the shape gradient of the weights,
+/// i.e. the derivative of the weights with respect to the positions of the
+/// source and target points (Griewank and Walther, "Evaluating Derivatives", 2nd
+/// ed., SIAM 2008, chapter 3). A weighted sum `y_i = sum_j w_ij f_j` then has the
+/// gradient `sum_j (dw_ij) f_j` by the product rule, with no further code.
+///
+/// WHAT IS DIFFERENTIATED. The algorithm as written, for a FIXED neighbour list
+/// (`nbr_index`, chosen by the caller's search, which is not differentiated):
+/// the distances, the support radius (1.1 times the largest neighbour distance),
+/// the compactly supported radial function, the moment matrix, the elimination
+/// and the back substitution. Every branch that selects among alternatives (the
+/// largest neighbour distance, the pivot row, the sign and the clamp at 1 of the
+/// radial argument, the pivot floor) is decided on the value part
+/// (`mls_primal`), so the gradient is that of the branch the value lies on. The
+/// weights are piecewise smooth in the coordinates and the gradient is exact
+/// except at the following points, where it is one-sided or undefined:
+///   - two neighbours are equally far from the target and both are the
+///     farthest (the support radius has a kink there);
+///   - the neighbour list changes (a discrete change of the stencil);
+///   - a neighbour coincides with the target (distance 0). The gradient of the
+///     distance is taken as 0 there (`mls_norm_of_squares`), which is the exact
+///     gradient of the weight for Wendland2/4/6, whose radial function has zero
+///     slope at the origin, and a subgradient for Wendland0, which has a cone.
+/// The pivot row does not appear in the list: it does not change the solution of
+/// `A x = e_1`, hence not its gradient.
+///
+/// One branch is decided on more than the value: the elimination skips the row
+/// update of a zero multiplier only if the gradient of the multiplier is zero as
+/// well (`mls_is_zero`). A symmetric stencil produces multipliers that are zero
+/// in value and not in gradient, and skipping those would drop their share of the
+/// gradient.
 
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
+#include <type_traits>
 #include <vector>
 
 #include <Kokkos_Core.hpp>
@@ -97,19 +139,70 @@
 
 namespace fuse::device {
 
-template <class ViewType>
-KOKKOS_INLINE_FUNCTION void mls_basis_into(int dim, int degree, double x, double y, double z,
+// ---- number-type helpers (see "SCALAR TYPE AND SHAPE GRADIENTS" above) ----
+//
+// The scalar type `T` of this header is either a built-in arithmetic type
+// (`double`) or a forward-mode automatic-differentiation type with the members
+// `value()`, `gradient(k)` and `gradient_size` (`fuse::num::dual<S, N>`). The
+// four helpers below are the only places that tell the two apart; everything
+// else in this header is written once, as arithmetic on `T`.
+
+/// The value part of `x`: `x` itself for an arithmetic type, `x.value()` for a
+/// forward-mode type. Every comparison that selects a branch uses this.
+template <class T>
+[[nodiscard]] KOKKOS_INLINE_FUNCTION auto mls_primal(const T& x) {
+  if constexpr (std::is_arithmetic_v<T>) {
+    return x;
+  } else {
+    return x.value();
+  }
+}
+
+/// True when `x` is exactly zero: for a forward-mode type, when its value AND every
+/// gradient entry are zero. The elimination skips a row update only in that case,
+/// because a multiplier whose value is zero but whose gradient is not still
+/// contributes to the gradient of the result.
+template <class T>
+[[nodiscard]] KOKKOS_INLINE_FUNCTION bool mls_is_zero(const T& x) {
+  if constexpr (std::is_arithmetic_v<T>) {
+    return x == T(0);
+  } else {
+    if (x.value() != 0) return false;
+    for (int k = 0; k < T::gradient_size; ++k) {
+      if (x.gradient(k) != 0) return false;
+    }
+    return true;
+  }
+}
+
+/// `sqrt(s)` for the sum of squares `s` of a coordinate difference. For a
+/// forward-mode type a zero value gives the number zero (value and gradient), not
+/// the 0/0 of differentiating the square root at its branch point: the distance
+/// from a neighbour that coincides with the target has gradient 0 in the sense of
+/// the header comment.
+template <class T>
+[[nodiscard]] KOKKOS_INLINE_FUNCTION T mls_norm_of_squares(const T& s) {
+  if constexpr (std::is_arithmetic_v<T>) {
+    return Kokkos::sqrt(s);
+  } else {
+    if (s.value() == 0) return T();
+    return sqrt(s);  // found by argument-dependent lookup
+  }
+}
+
+template <class ViewType, class T>
+KOKKOS_INLINE_FUNCTION void mls_basis_into(int dim, int degree, T x, T y, T z,
                                            const ViewType& row) {
   int idx = 0;
   for (int total = 0; total <= degree; ++total) {
     if (dim == 1) {
-      double v = 1.0;
+      T v(1.0);
       for (int i = 0; i < total; ++i) v *= x;
       row(idx++) = v;
     } else if (dim == 2) {
       for (int a = total; a >= 0; --a) {
         const int b = total - a;
-        double v = 1.0;
+        T v(1.0);
         for (int i = 0; i < a; ++i) v *= x;
         for (int i = 0; i < b; ++i) v *= y;
         row(idx++) = v;
@@ -118,7 +211,7 @@ KOKKOS_INLINE_FUNCTION void mls_basis_into(int dim, int degree, double x, double
       for (int a = total; a >= 0; --a) {
         for (int b = total - a; b >= 0; --b) {
           const int cc = total - a - b;
-          double v = 1.0;
+          T v(1.0);
           for (int i = 0; i < a; ++i) v *= x;
           for (int i = 0; i < b; ++i) v *= y;
           for (int i = 0; i < cc; ++i) v *= z;
@@ -133,29 +226,35 @@ KOKKOS_INLINE_FUNCTION void mls_basis_into(int dim, int degree, double x, double
 /// `KOKKOS_INLINE_FUNCTION`: that one is a plain host function and cannot
 /// be called from a device kernel, but the four Wendland polynomials
 /// themselves have no host-only dependency at all.
-KOKKOS_INLINE_FUNCTION double mls_crbf_device(MlsRadial r, double x) {
-  const double t = x < 0.0 ? -x : x;
-  const double tt = t > 1.0 ? 1.0 : t;
-  const double q = 1.0 - tt;
+///
+/// Templated on the scalar type `T` of the argument (see the header comment): the
+/// branches on the sign of `x` and on `|x| > 1` look at the value part, so the
+/// gradient is that of the branch the value lies on. The four polynomials have a
+/// zero slope at `|x| = 1`, so the clamp does not put a kink in the gradient.
+template <class T>
+KOKKOS_INLINE_FUNCTION T mls_crbf_device(MlsRadial r, T x) {
+  const T t = mls_primal(x) < 0.0 ? -x : x;
+  const T tt = mls_primal(t) > 1.0 ? T(1.0) : t;
+  const T q = 1.0 - tt;
   switch (r) {
     case MlsRadial::Wendland0:
       return q * q;
     case MlsRadial::Wendland2: {
-      const double q2 = q * q;
+      const T q2 = q * q;
       return q2 * q2 * (4.0 * tt + 1.0);
     }
     case MlsRadial::Wendland4: {
-      const double q3 = q * q * q;
-      const double q6 = q3 * q3;
+      const T q3 = q * q * q;
+      const T q6 = q3 * q3;
       return q6 * (35.0 * tt * tt + 18.0 * tt + 3.0);
     }
     case MlsRadial::Wendland6: {
-      const double q4 = q * q * q * q;
-      const double q8 = q4 * q4;
+      const T q4 = q * q * q * q;
+      const T q8 = q4 * q4;
       return q8 * (32.0 * tt * tt * tt + 25.0 * tt * tt + 8.0 * tt + 1.0);
     }
   }
-  return 0.0;
+  return T(0.0);
 }
 
 /// In-place Gaussian elimination with partial pivoting of the `P x P`
@@ -169,15 +268,26 @@ KOKKOS_INLINE_FUNCTION double mls_crbf_device(MlsRadial r, double x) {
 /// `operator()`, host or device; every index used is local to this one
 /// target's own `P x P` block, so this function has no Kokkos::subview of
 /// its own.
+///
+/// The scalar type `T` is that of the entries (`std::remove_cvref_t` of
+/// `bvec(0)`): `double`, or a forward-mode type, in which case the elimination
+/// carries the gradient through every operation. The pivot row is chosen, and the
+/// pivot floor tested, on the value parts; a row update is skipped only when the
+/// multiplier is exactly zero in value and gradient (`mls_is_zero`). The pivot
+/// choice does not change the mathematical solution, so the gradient is that of
+/// `A^{-1} b` whichever row is chosen.
 template <class MatView, class VecView>
 KOKKOS_INLINE_FUNCTION int solve_square_system_partial_pivot(const MatView& Amat,
                                                               const VecView& bvec, int P) {
+  using T = std::remove_cvref_t<decltype(bvec(0))>;
   constexpr double kPivotFloor = 1e-300;
   for (int col = 0; col < P; ++col) {
     int piv = col;
-    double best = Amat(col, col) < 0 ? -Amat(col, col) : Amat(col, col);
+    double best = mls_primal(Amat(col, col)) < 0 ? -mls_primal(Amat(col, col))
+                                                   : mls_primal(Amat(col, col));
     for (int row = col + 1; row < P; ++row) {
-      const double v = Amat(row, col) < 0 ? -Amat(row, col) : Amat(row, col);
+      const double v = mls_primal(Amat(row, col)) < 0 ? -mls_primal(Amat(row, col))
+                                                       : mls_primal(Amat(row, col));
       if (v > best) {
         best = v;
         piv = row;
@@ -186,25 +296,25 @@ KOKKOS_INLINE_FUNCTION int solve_square_system_partial_pivot(const MatView& Amat
     if (best < kPivotFloor) return 1;
     if (piv != col) {
       for (int c2 = 0; c2 < P; ++c2) {
-        const double t = Amat(col, c2);
+        const T t = Amat(col, c2);
         Amat(col, c2) = Amat(piv, c2);
         Amat(piv, c2) = t;
       }
-      const double tb = bvec(col);
+      const T tb = bvec(col);
       bvec(col) = bvec(piv);
       bvec(piv) = tb;
     }
-    const double diag = Amat(col, col);
+    const T diag = Amat(col, col);
     for (int row = col + 1; row < P; ++row) {
-      const double factor = Amat(row, col) / diag;
-      if (factor != 0.0) {
+      const T factor = Amat(row, col) / diag;
+      if (!mls_is_zero(factor)) {
         for (int c2 = col; c2 < P; ++c2) Amat(row, c2) -= factor * Amat(col, c2);
         bvec(row) -= factor * bvec(col);
       }
     }
   }
   for (int row = P - 1; row >= 0; --row) {
-    double sum = bvec(row);
+    T sum = bvec(row);
     for (int c2 = row + 1; c2 < P; ++c2) sum -= Amat(row, c2) * bvec(c2);
     bvec(row) = sum / Amat(row, row);
   }
@@ -216,17 +326,17 @@ KOKKOS_INLINE_FUNCTION int solve_square_system_partial_pivot(const MatView& Amat
 /// directly -- no `Kokkos::subview` anywhere in the solve step, which is
 /// what sidesteps the layout-deduction issues above entirely rather than
 /// routing around them.
-template <class Space>
+template <class Space, class T = double>
 struct MatAtBatch {
-  Kokkos::View<double***, Kokkos::LayoutRight, Space> A;
+  Kokkos::View<T***, Kokkos::LayoutRight, Space> A;
   int t;
-  KOKKOS_INLINE_FUNCTION double& operator()(int a, int c) const { return A(t, a, c); }
+  KOKKOS_INLINE_FUNCTION T& operator()(int a, int c) const { return A(t, a, c); }
 };
-template <class Space>
+template <class Space, class T = double>
 struct VecAtBatch {
-  Kokkos::View<double**, Kokkos::LayoutRight, Space> X;
+  Kokkos::View<T**, Kokkos::LayoutRight, Space> X;
   int t;
-  KOKKOS_INLINE_FUNCTION double& operator()(int a) const { return X(t, a); }
+  KOKKOS_INLINE_FUNCTION T& operator()(int a) const { return X(t, a); }
 };
 
 /// Solves every target's moment-matrix system on `Space` and extracts the
@@ -254,19 +364,26 @@ struct VecAtBatch {
 /// header's own partial-pivot elimination reports only a pass/fail flag per
 /// target, not a rank or condition number (see this header's own "WHAT THIS
 /// DOES NOT DO" section above).
-template <class Space>
+template <class Space, class T = double>
 struct MlsDeviceResult {
   Kokkos::View<std::int32_t*, Space> row;
   Kokkos::View<std::int32_t*, Space> col;
-  Kokkos::View<double*, Space> val;
+  Kokkos::View<T*, Space> val;
   Kokkos::View<int*, Space> status;
   int n_fail = 0;
 };
 
-template <class Space>
-[[nodiscard]] MlsDeviceResult<Space> solve_mls_on_space(
+/// `T` is the scalar type of the coordinates and of the returned `val` (see the
+/// header comment, "SCALAR TYPE AND SHAPE GRADIENTS"): `double` for the weights
+/// alone, `fuse::num::dual<double, N>` for the weights together with their
+/// gradient in N parameters. `src_pts` and `tgt_pts` have the same `T`, so a point
+/// that does not move is a coordinate with a zero gradient (a `dual` constructed
+/// from its value). `T` is deduced from the views; `solve_mls_on_space<Space>(...)`
+/// with `double` views is the previous interface unchanged.
+template <class Space, class T = double>
+[[nodiscard]] MlsDeviceResult<Space, T> solve_mls_on_space(
     int dim, int degree, int k, MlsRadial radial,
-    const Kokkos::View<double* [3], Space>& src_pts, const Kokkos::View<double* [3], Space>& tgt_pts,
+    const Kokkos::View<T* [3], Space>& src_pts, const Kokkos::View<T* [3], Space>& tgt_pts,
     const Kokkos::View<int*, Space>& nbr_index) {
   using ExecSpace = typename Space::execution_space;
   const int n_rows = static_cast<int>(tgt_pts.extent(0));
@@ -277,40 +394,40 @@ template <class Space>
   // the rest) stays LayoutRight -- contiguous, with its stride computed
   // formulaically from the extents, rather than LayoutStride (verified
   // locally: a LayoutLeft batch view's same slice comes back LayoutStride).
-  Kokkos::View<double***, Kokkos::LayoutRight, Space> A("fuse::device::mls_A", n_rows, P, P);
-  Kokkos::View<double**, Kokkos::LayoutRight, Space> X("fuse::device::mls_X", n_rows, P);
-  Kokkos::View<double**, Space> phi("fuse::device::mls_phi", n_rows, k);
-  Kokkos::View<double***, Space> basis_rows("fuse::device::mls_basis_rows", n_rows, k, P);
+  Kokkos::View<T***, Kokkos::LayoutRight, Space> A("fuse::device::mls_A", n_rows, P, P);
+  Kokkos::View<T**, Kokkos::LayoutRight, Space> X("fuse::device::mls_X", n_rows, P);
+  Kokkos::View<T**, Space> phi("fuse::device::mls_phi", n_rows, k);
+  Kokkos::View<T***, Space> basis_rows("fuse::device::mls_basis_rows", n_rows, k, P);
 
   Kokkos::parallel_for(
       "fuse::device::mls_assemble", Kokkos::RangePolicy<ExecSpace>(0, n_rows),
       KOKKOS_LAMBDA(const int t) {
-        double max_dist = 0.0;
+        T max_dist(0.0);
         for (int j = 0; j < k; ++j) {
           const int s = nbr_index(t * k + j);
-          const double dx = src_pts(s, 0) - tgt_pts(t, 0);
-          const double dy = src_pts(s, 1) - tgt_pts(t, 1);
-          const double dz = src_pts(s, 2) - tgt_pts(t, 2);
-          const double d = Kokkos::sqrt(dx * dx + dy * dy + dz * dz);
-          if (d > max_dist) max_dist = d;
+          const T dx = src_pts(s, 0) - tgt_pts(t, 0);
+          const T dy = src_pts(s, 1) - tgt_pts(t, 1);
+          const T dz = src_pts(s, 2) - tgt_pts(t, 2);
+          const T d = mls_norm_of_squares(dx * dx + dy * dy + dz * dz);
+          if (mls_primal(d) > mls_primal(max_dist)) max_dist = d;
         }
-        const double radius = 1.1 * (max_dist > 1e-300 ? max_dist : 1e-300);
+        const T radius = 1.1 * (mls_primal(max_dist) > 1e-300 ? max_dist : T(1e-300));
 
         for (int a = 0; a < P; ++a) {
           // X doubles as the RHS going in (e_1, "evaluate at the target")
           // and the solution coming out of solve_square_system_partial_pivot,
           // which solves in place -- the same in/out role `VectorType X`
           // plays in KokkosBatched::SerialGesv's own signature.
-          X(t, a) = (a == 0) ? 1.0 : 0.0;
-          for (int c = 0; c < P; ++c) A(t, a, c) = 0.0;
+          X(t, a) = (a == 0) ? T(1.0) : T(0.0);
+          for (int c = 0; c < P; ++c) A(t, a, c) = T(0.0);
         }
         for (int j = 0; j < k; ++j) {
           const int s = nbr_index(t * k + j);
-          const double dx = src_pts(s, 0) - tgt_pts(t, 0);
-          const double dy = src_pts(s, 1) - tgt_pts(t, 1);
-          const double dz = src_pts(s, 2) - tgt_pts(t, 2);
-          const double d = Kokkos::sqrt(dx * dx + dy * dy + dz * dz);
-          const double p = mls_crbf_device(radial, d / radius);
+          const T dx = src_pts(s, 0) - tgt_pts(t, 0);
+          const T dy = src_pts(s, 1) - tgt_pts(t, 1);
+          const T dz = src_pts(s, 2) - tgt_pts(t, 2);
+          const T d = mls_norm_of_squares(dx * dx + dy * dy + dz * dz);
+          const T p = mls_crbf_device(radial, d / radius);
           phi(t, j) = p;
           auto row = Kokkos::subview(basis_rows, t, j, Kokkos::ALL);
           mls_basis_into(dim, degree, dx, dy, dz, row);
@@ -324,21 +441,21 @@ template <class Space>
   Kokkos::parallel_for(
       "fuse::device::mls_solve", Kokkos::RangePolicy<ExecSpace>(0, n_rows),
       KOKKOS_LAMBDA(const int t) {
-        MatAtBatch<Space> Amat{A, t};
-        VecAtBatch<Space> Xvec{X, t};
+        MatAtBatch<Space, T> Amat{A, t};
+        VecAtBatch<Space, T> Xvec{X, t};
         status(t) = solve_square_system_partial_pivot(Amat, Xvec, P);
       });
 
-  MlsDeviceResult<Space> out;
+  MlsDeviceResult<Space, T> out;
   out.row = Kokkos::View<std::int32_t*, Space>("fuse::device::mls_row", n_rows * k);
   out.col = Kokkos::View<std::int32_t*, Space>("fuse::device::mls_col", n_rows * k);
-  out.val = Kokkos::View<double*, Space>("fuse::device::mls_val", n_rows * k);
+  out.val = Kokkos::View<T*, Space>("fuse::device::mls_val", n_rows * k);
   out.status = status;
   Kokkos::parallel_for(
       "fuse::device::mls_extract", Kokkos::RangePolicy<ExecSpace>(0, n_rows),
       KOKKOS_LAMBDA(const int t) {
         for (int j = 0; j < k; ++j) {
-          double dotc = 0.0;
+          T dotc(0.0);
           for (int a = 0; a < P; ++a) dotc += X(t, a) * basis_rows(t, j, a);
           out.row(t * k + j) = t;
           out.col(t * k + j) = nbr_index(t * k + j);
