@@ -2157,9 +2157,9 @@ if(TARGET fuse-abi-fortran AND FUSE_LINALG_BACKEND_IS_EIGEN)
   # CMakeLists.txt directory compiles it -- examples/CMakeLists.txt's
   # own brusselator_u_main/brusselator_v_main already link fuse::lowfive
   # for exactly this; every OTHER target below that also lists shim.cpp
-  # as a source needs the identical link, found only once this session
-  # actually configured -DFUSE_ENABLE_LOWFIVE=ON (bafter's own tier-0
-  # tree never has it ON, so compiling shim.cpp there never needed it).
+  # as a source needs the identical link, which only a configure with
+  # -DFUSE_ENABLE_LOWFIVE=ON exercises (a tier-0 tree never has it ON, so
+  # compiling shim.cpp there never needs it).
   if(TARGET fuse::lowfive)
     fuse_link_lowfive_with_fmt_fix(fuse_verification_brusselator_participants_test)
   endif()

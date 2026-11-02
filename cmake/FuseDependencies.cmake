@@ -1317,7 +1317,7 @@ macro(fuse_resolve_dependencies)
       endif()
       # /opt/lowfive's own include directory carries a bundled fmt
       # 8.1.1 whose own fmt/format-inl.h fails this host's C++20
-      # consteval checking OUTRIGHT -- measured this session in a
+      # consteval checking OUTRIGHT -- measured in a
       # translation unit that names ONLY <lowfive/vol-metadata.hpp>,
       # no FUSE header at all (src/transport/lowfive_plugin_vol.cpp):
       # this is not "two fmt versions disagree," it is "fmt 8.1.1 does

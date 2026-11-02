@@ -32,9 +32,9 @@ enum class Shape { Edge, Square, Cube, Hexagon, Unstructured };
 /// A box-shaped domain: dimension, shape, extents and per-axis symmetry
 /// flags. Structured-grid generation (spatial::Mesh::generate_box) reads
 /// extents directly; Shape::Hexagon and Shape::Unstructured are accepted by
-/// the enum (a later wave's unstructured-mesh path needs to name them) but
+/// the enum (an unstructured-mesh path needs to name them) but
 /// refused by this constructor until that support exists -- see this
-/// header's own comment above for the I6 fix this corrects.
+/// header's own comment above for the upstream assert this corrects.
 class Domain {
  public:
   Domain(unsigned dimension, Shape shape, double length_x, double length_y, double length_z, bool symmetric);

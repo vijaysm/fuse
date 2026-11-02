@@ -1,5 +1,5 @@
 // fuse_physics::spatial::Domain -- adapted from KARMA's karma_domain.h/.C
-// and enums/domain_shape.h. See domain.hpp's header comment for the I6 fix.
+// and enums/domain_shape.h. See domain.hpp's header comment for the fix to the upstream assert.
 
 #include "fuse_physics/spatial/domain.hpp"
 
@@ -8,7 +8,7 @@
 namespace fuse::physics::spatial {
 
 void Domain::check_shape_supported(Shape shape) {
-  // The I6 fix: the upstream assert's intended condition (see domain.hpp)
+  // The fix: the upstream assert's intended condition (see domain.hpp)
   // rejects BOTH unsupported shapes, not at most one of them.
   if (shape == Shape::Hexagon || shape == Shape::Unstructured)
     throw std::invalid_argument("Domain: only Edge/Square/Cube shapes are supported");

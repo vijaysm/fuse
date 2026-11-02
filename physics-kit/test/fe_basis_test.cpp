@@ -129,8 +129,8 @@ TEST(BasisTest, RegisterFactoryRejectsDuplicateByDefault) {
 
 // physics.fe_basis.OrientationTransformsAreIdentityAtThisWavesOrders --
 // basis.hpp's own derivation: every P0-P2 built-in basis places at most
-// one DOF on any shared edge or face, so every OrientationTransform this
-// wave's registry generates is PROVABLY the identity permutation with
+// one DOF on any shared edge or face, so every OrientationTransform the
+// registry generates is PROVABLY the identity permutation with
 // sign +1, for every orientation code the sub-entity's own shape
 // presents -- checked directly here (not assumed) for one representative
 // P2 key from each of the five 3-D-adjacent families the basis

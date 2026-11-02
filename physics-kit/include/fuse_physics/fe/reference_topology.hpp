@@ -69,8 +69,8 @@ enum class GeometryVariant {
 };
 
 /// Which reference cell a GeometryVariant belongs to, irrespective of
-/// order. Appended (Prism, Pyramid) rather than inserted, so the five
-/// wave-1 enumerators keep their original integral values.
+/// order. Prism and Pyramid are appended rather than inserted, so the first
+/// five enumerators keep their integral values.
 enum class CellFamily { Edge, Triangle, Quadrilateral, Tetrahedron, Hexahedron, Prism, Pyramid };
 
 [[nodiscard]] CellFamily cell_family(GeometryVariant variant) noexcept;

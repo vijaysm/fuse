@@ -200,8 +200,8 @@ def main() -> int:
     # those, and they are assessed on a host with a working launcher.
     mpi_available = os.environ.get("FUSE_MUTATE_MPI", "") == "1"
 
-    # The SAME courtesy, for `requires = "petsc"`: the PetscToken/PetscSelect
-    # tracks' own test binaries (test/petsc/*_test.cpp) call
+    # The SAME courtesy, for `requires = "petsc"`: the PETSc
+    # tests' own test binaries (test/petsc/*_test.cpp) call
     # fuse::petsc::ensure_initialized(), which calls PETSc's own
     # PetscInitialize() -- and PetscInitialize() calls MPI_Init() when MPI is
     # not already up (fuse/petsc/token.hpp's own ensure_initialized() comment).

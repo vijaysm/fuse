@@ -234,7 +234,7 @@ new = "const Result<void> agreed = Result<void>::success();"
 target = "fuse_parallel_adjoint_runner_mpi_test"
 test = "parallel.adjoint_runner_mpi.3"
 requires = "mpi"
-# NOT KILLED (higgs, 2026-10-31, 2 and 3 ranks): the plan of the failure test (traced) puts every step of a period
+# NOT KILLED (at 2 and 3 ranks): the plan of the failure test (traced) puts every step of a period
 # ahead of every exchange of it, so in the reverse sweep a failing step is reversed after the last Epoch and the failure is
 # carried by the agreement at the end of the period (RuntimeAdjointMpi.AFailureOnOneRank...). What this Epoch
 # agreement changes is the moment a healthy rank learns of a failure that came before it, which takes a
@@ -272,7 +272,7 @@ new = "if (step_failure.has_value()) continue;"
 target = "fuse_parallel_adjoint_runner_mpi_test"
 test = "parallel.adjoint_runner_mpi.3"
 requires = "mpi"
-# NOT KILLED (higgs, 2026-10-31, 2 and 3 ranks): a failing step is reversed after every exchange of the period
+# NOT KILLED (at 2 and 3 ranks): a failing step is reversed after every exchange of the period
 # in the plan of the failure test (traced), so no exchange follows it and skipping the exchanges after a failure leaves nobody
 # waiting. It takes a failing instruction ahead of an exchange (or a plan that steps a component after an
 # exchange); no test builds one.

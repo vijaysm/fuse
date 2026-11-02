@@ -1,10 +1,10 @@
 // physics.linear_layer -- the consistent mass
 // matrix's own projection solve, through fuse::linalg::pcg +
 // fuse::linalg::JacobiPreconditioner, over AlgebraicSystem's own
-// DistSparseMatrix/DistVector. Disposition of KARMA's own preconditioner
+// DistSparseMatrix/DistVector. KARMA's own preconditioner
 // wrappers (karma_preconditioner.h, petsc_block_preconditioner.*,
-// petsc_native_preconditioner.*) is in design_notes; the gist (full
-// citation there): karma_preconditioner.h is a bare typedef selecting
+// petsc_native_preconditioner.*) are not ported; the gist:
+// karma_preconditioner.h is a bare typedef selecting
 // PetscNativePreconditioner (PETSc's own PC object, default type
 // ICC_PRECOND) or, under USE_PETSC_BLOCK_EXTENSIONS,
 // PetscBlockPreconditioner (PETSc's own PCBJACOBI) -- neither wrapper

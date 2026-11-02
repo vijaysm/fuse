@@ -168,7 +168,7 @@ struct ButcherTableau {
   /// REPRODUCED by the computation, not copied.
   std::optional<double> ssp_coefficient;
 
-  /// Round 3 (task items 1-3): the Kennedy & Carpenter dense-output table, `b*_ij`
+  /// The Kennedy & Carpenter dense-output table, `b*_ij`
   /// (NASA TM-2001-211038 Appendix D, eq. 54 of the TM's own main text: `b_i(theta) =
   /// sum_{j=1}^{p*} b*_ij * theta^j`). `dense_output[i]` is stage i's own row of `p*`
   /// coefficients (j=1..p*, in order); `dense_output_order` is `p*`. `nullopt` for
@@ -187,7 +187,7 @@ struct ButcherTableau {
     return embedded_order.has_value() && E.has_value();
   }
 
-  /// The SAME kind of honest query for Round 3's own dense-output addition: true only
+  /// The SAME kind of honest query for the dense-output table: true only
   /// when both the table AND its order are on record.
   [[nodiscard]] bool has_dense_output() const noexcept {
     return dense_output.has_value() && dense_output_order.has_value();
@@ -952,7 +952,7 @@ struct ClassicalForm {
   t.is_L_stable = true;
   t.is_S_stable = true;
   t.is_FSAL = true;
-  // Round 3 (task item 3): the TM's own "Second-Order Dense Output" table for
+  // The TM's own "Second-Order Dense Output" table for
   // ARK3(2)4L[2]SA (eq. 49 of the main text, p* = 2), Appendix D, cross-validated
   // against PETSc's own src/ts/impls/arkimex/arkimex.c (`TSARKIMEX3`'s own
   // `binterpt`, which matches the TM's own image byte-for-byte here -- no correction
@@ -1060,16 +1060,16 @@ struct ClassicalForm {
   t.B = std::vector<double>{0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1};
   t.C = std::vector<double>{0.0, 1.0 / 6.0, 1.0 / 3.0, 0.5, 2.0 / 3.0,
                             1.0 / 3.0, 0.5, 2.0 / 3.0, 5.0 / 6.0, 1.0};
-  // Round 3 (task item 4): Conde, Fekete and Shadid 2018 (arXiv:1806.08693), Section
+  // Conde, Fekete and Shadid 2018 (arXiv:1806.08693), Section
   // 2.3's own "Embedded pairs for the SSPERK(10,4) method": eight candidate embedded
   // ERK(10,3) rows are given (the propagated SSPRK(10,4) method does not admit a
   // non-defective embedded pair of its own order, per the paper's own section 2.2-2.3
   // argument); the paper's OWN recommendation, b~_3 (chosen for its own stability-
-  // radius and error-control measurements, not by this round), is the one shipped
-  // here. NOT the classical 3-stage SSPRK(3,3) the task also names: that method has
+  // radius and error-control measurements), is the one shipped
+  // here. NOT the classical 3-stage SSPRK(3,3): that method has
   // only 3 stages, and this paper's own SSPERK(s,3) embedded-pair family requires
   // s = n^2 (a perfect square, Section 2.2) -- 3 is not one, so no embedded pair for
-  // the literal 3-stage method exists in this source; recorded as an open question
+  // the literal 3-stage method exists in this source; left unsupported
   // rather than substituted or fabricated.
   t.embedded_order = 3;
   const std::vector<double> b_hat10{0.0, 2.0 / 9.0, 0.0, 0.0, 5.0 / 18.0, 1.0 / 3.0,
@@ -1094,15 +1094,15 @@ struct ClassicalForm {
 
 /// Kennedy & Carpenter's ESDIRK4(3)6L[2]SA (NASA TM-2001-211038 Appendix D, the
 /// ESDIRK half of their ARK4(3)6L[2]SA pair -- the ERK half, used only internally by
-/// the additive IMEX pair, is out of this track's own scope, Round 3 task item 2).
+/// the additive IMEX pair, is out of scope).
 /// Coefficients cross-validated against TWO independent machine-readable sources
 /// (PETSc src/ts/impls/arkimex/arkimex.c's own `TSARKIMEX4` -- `kennedy_2003` cited
 /// in its own doc comment -- and the `qmat` Python package's own
-/// `qmat/qcoeff/butcher.py`), after this round's own direct read of the TM's scanned
+/// `qmat/qcoeff/butcher.py`), because a direct read of the TM's scanned
 /// Appendix D image disagreed with both of those on two digits of the dense-output
 /// table below (noted at the dense-output assignment itself) -- the two independent,
 /// machine-readable sources were trusted over the image read, per the same standard
-/// Round 2 held ESDIRK3(2)4L[2]SA's own transcription to.
+/// ESDIRK3(2)4L[2]SA's own transcription is held to.
 [[nodiscard]] inline ButcherTableau esdirk436l2sa_tableau() {
   ButcherTableau t;
   t.name = "ESDIRK436L2SA";
@@ -1131,14 +1131,14 @@ struct ClassicalForm {
   t.gamma = std::nullopt;
   t.is_A_stable = true;   // L-stable per the TM's own text (Section 5, "L stable, stage order 2")
   t.is_L_stable = true;
-  t.is_S_stable = false;  // not computed this round; not claimed either way in the TM's own text
+  t.is_S_stable = false;  // not computed; not claimed either way in the TM's own text
   t.is_FSAL = true;       // Structural property: A's last row equals B, c_s = 1 -- genuinely
-                          // stiffly accurate. Round 3, item 6: DirkIntegrator's own FSAL reuse
+                          // stiffly accurate. DirkIntegrator's own FSAL reuse
                           // mechanism exists and is tested (dirk_integrator_test.cpp's own FSAL
                           // suite) but ships OPT-IN, not triggered by this flag alone -- MEASURED
                           // not bit-identical to full recomputation for the implicit family (see
                           // DirkIntegrator::set_fsal_enabled()'s own comment for the finding).
-  // Round 3 (task item 2a): the TM's own "Third-Order Dense Output" table (eq. 54, p* = 3),
+  // The TM's own "Third-Order Dense Output" table (eq. 54, p* = 3),
   // Appendix D. Two digits corrected against the TM's own image read, using PETSc's `binterpt`
   // and `qmat`'s cross-agreeing values: stage 1's third-column numerator
   // (6818779370841 -> 6818779379841) and stage 3's third-column numerator
@@ -1162,14 +1162,12 @@ struct ClassicalForm {
 /// L-stable, stage order 2, gamma = 41/200, dense output of order 3 (eq. 54's
 /// b_i(theta) rows, verified by the continuous order conditions).
 ///
-/// Order, verified exactly (lead, 2026-10-31, fractions.Fraction on the shipped
+/// Order, verified exactly (fractions.Fraction on the shipped
 /// rationals): every rooted-tree condition through order 5 holds with a residual of
 /// at most 5.3e-27 -- the same magnitude as orders 1 to 4 (1.1e-26 to 5.3e-27), the
 /// precision of the published 13-digit rational approximations of the true
 /// coefficients -- and order 6 fails by 4.2e-3; the embedded weights hold through
-/// order 4 at 7.3e-27 and fail order 5 by 1.3e-4. The round-3 track had declared
-/// this tableau order 4 with embedded order 3 after reading "the order-5 conditions
-/// also pass" as an unresolvable 4-versus-5 distinction; it is order 5, as its name
+/// order 4 at 7.3e-27 and fail order 5 by 1.3e-4. It is order 5, as its name
 /// says, and the measured orders agree (logistic 4.991 +/- 0.006, non-autonomous
 /// 5.004 +/- 0.001, Dahlquist 4.97 +/- 0.04 on the truncation-limited range).
 [[nodiscard]] inline ButcherTableau esdirk548l2sa_tableau() {
@@ -1216,9 +1214,9 @@ struct ClassicalForm {
                           // comment above): stiffly accurate, A's last row equals B, c_s = 1.
                           // DirkIntegrator's own FSAL reuse ships opt-in, not default, for the
                           // same measured reason.
-  // Round 3 (task item 2b): the TM's own "Third-Order Dense Output" table (p* = 3),
+  // The TM's own "Third-Order Dense Output" table (p* = 3),
   // Appendix D. Several digits corrected against the TM's own image read using PETSc's
-  // `binterpt` (this round's own image read of this specific 8-stage table proved
+  // `binterpt` (a direct image read of this specific 8-stage table proved
   // UNRELIABLE across several entries, confirming the 2-independent-source bar's own
   // worth): stage 4 (numerator/denominator digits in columns 1-2), stage 5 (digits in
   // all three columns), stage 7 (column-2 denominator and column-3 numerator).
@@ -1241,11 +1239,10 @@ struct ClassicalForm {
   return t;
 }
 
-/// The Round 3 additions, as a group (parallel to `all_round2_tableaus()`): the two
-/// new ESDIRK pairs. SSPRK33/SSPRK104 are unchanged tableaus (their own Round 2
-/// factory functions now also carry a dense-output or embedded row, but are still the
-/// SAME ButcherTableau objects, not duplicated here).
-[[nodiscard]] inline std::vector<ButcherTableau> all_round3_tableaus() {
+/// The two high-order ESDIRK pairs, as a group. SSPRK33/SSPRK104 are listed with
+/// the earlier tableaus (their own factory functions also carry a dense-output or
+/// embedded row, but are still the SAME ButcherTableau objects, not duplicated here).
+[[nodiscard]] inline std::vector<ButcherTableau> all_esdirk_dense_output_tableaus() {
   return {esdirk436l2sa_tableau(), esdirk548l2sa_tableau()};
 }
 

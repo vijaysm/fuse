@@ -19,12 +19,11 @@
 # These tests are NOT swept by test/CMakeLists.txt's own end-of-file audit
 # (file(GLOB_RECURSE ... ${CMAKE_CURRENT_SOURCE_DIR}/*/*_test.cpp) globs
 # relative to test/ and never descends into physics-kit/), so this file
-# runs the same audit over its own directory at its end (added 2026-10-31,
-# when the directory grew from one test source to ten).
+# runs the same audit over its own directory at its end.
 fuse_add_gtest(physics skeleton SRC_DIR . NO_LAYER_LIB LIBS fuse::physics_kit)
 
-# numerics/fe, numerics/spatial: the five test rows named in
-# docs/dev/physics-kit-disposition.md's porting scope, plus the spatial
+# numerics/fe, numerics/spatial: the five ported test rows
+# (see docs/dev/physics-kit.md), plus the spatial
 # layer's own domain/mesh tests. Same NO_LAYER_LIB + explicit LIBS pattern
 # as physics.skeleton above, for the same reason (fuse::physics_kit is the
 # CMake target; fuse::physics is only the C++ namespace).

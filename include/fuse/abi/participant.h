@@ -85,22 +85,20 @@ typedef struct fuse_participant_abi_v1 {
   /* field in the loaded graph */
   fuse_status (*view_field)(fuse_ctx* ctx, const fuse_field_ref* in, fuse_field_view* out);
 
-  /* D14 (KNOWN_ISSUES.md), appended 2026-10-13 -- LAST, per this table's own */
-  /* append-only rule above, same reason view_field states for itself: a local, */
-  /* non-collective read of this context's own c.communicator/ */
-  /* c.communicator_set, already agreed identically on every rank by setup()'s */
-  /* own collective (connect.hpp's own module comment); lets a Connect-mode */
-  /* (accept/connect) caller recover the merged base communicator setup() */
-  /* formed internally and never exposed before this entry, the gap D14's own */
-  /* \"what remains\" item 3 named. Legal before setup() (formed=0, */
-  /* communicator=0) and for every launch mode, not Connect alone: */
+  /* Appended LAST, per this table's own append-only rule above, same reason */
+  /* view_field states for itself: a local, non-collective read of this */
+  /* context's own c.communicator/ c.communicator_set, already agreed */
+  /* identically on every rank by setup()'s own collective (connect.hpp's own */
+  /* module comment); lets a Connect-mode (accept/connect) caller recover the */
+  /* merged base communicator setup() forms internally. Legal before setup() */
+  /* (formed=0, communicator=0) and for every launch mode, not Connect alone: */
   /* InProcess/Plugin/Mpmd callers get back their own, already-trivial base */
   /* communicator the same way. */
   fuse_status (*base_communicator)(fuse_ctx* ctx, const fuse_null* in, fuse_base_communicator_info* out);
 
-  /* docs/dev/restart.md round 2, item 4 -- appended LAST per this table's own */
-  /* append-only rule above. An externally-driven (ABI) participant's own way */
-  /* to ask that a restart point be taken: SETS A FLAG */
+  /* docs/dev/restart.md -- appended LAST per this table's own append-only rule */
+  /* above. An externally-driven (ABI) participant's own way to ask that a */
+  /* restart point be taken: SETS A FLAG */
   /* (fuse::Runner::request_restart_point()), never writes a file itself -- */
   /* write_restart_point() needs a RestartWriter the embedding host process */
   /* configures (a file path, which HDF5 layout), which this entry's fixed */

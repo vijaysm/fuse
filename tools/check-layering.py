@@ -350,7 +350,7 @@ def check_physics_kit_boundary(root: Path) -> list[str]:
                             f"(docs/dev/layering.md)"
                         )
     # physics-kit's OWN public headers (physics-kit/include/fuse_physics/),
-    # installed since S8.2 (2026-10-31) and read by every consumer of the
+    # installed and read by every consumer of the
     # fuse::physics_kit component: the same third-party rule as a fuse::
     # layer's public header. FORBIDDEN_PUBLIC applies unchanged (no PETSc,
     # MPI, MOAB, HDF5, Eigen or Kokkos-Kernels type may leak into a header
@@ -358,8 +358,7 @@ def check_physics_kit_boundary(root: Path) -> list[str]:
     # version.hpp's has_petsc() comment states), and of Kokkos only
     # Kokkos_Core.hpp, the same allowance as `num` and `field`. Proof this
     # fires: a probe header under physics-kit/include/fuse_physics/ with
-    # '#include <petscsys.h>' produced one violation line here on
-    # 2026-10-31 and was removed.
+    # '#include <petscsys.h>' produces one violation line here.
     pk_include = root / "physics-kit" / "include" / "fuse_physics"
     if pk_include.is_dir():
         for header in sorted(pk_include.rglob("*.hpp")):

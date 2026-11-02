@@ -11,8 +11,7 @@
 // defined after test/ is added).
 //
 // MPI CANNOT START IN THIS SANDBOX: this file is
-// compiled here, never run; host_pending names the exact `mpirun`
-// commands to run on a host with MPI.
+// compiled here, never run; run it with `mpirun` on a host with MPI.
 //
 // REGISTRATION. physics-kit/test/CMakeLists.txt's own fuse_add_gtest calls
 // run AFTER add_subdirectory(test) at the root (root CMakeLists.txt's own
