@@ -143,7 +143,7 @@ void eliminate_dirichlet_rows(std::vector<linalg::Triplet>& triplets, std::int64
 
 AlgebraicSystem::AlgebraicSystem(const spatial::Mesh& mesh, const DofMap& dof_map,
                                   std::optional<int> fortran_communicator)
-    : mesh_(&mesh), dof_map_(&dof_map) {
+    : mesh_(&mesh), dof_map_(&dof_map), fortran_communicator_(fortran_communicator) {
   if (!fortran_communicator.has_value()) {
     reducer_ = linalg::make_serial_reducer();
     exchanger_ = linalg::make_serial_exchanger();
@@ -169,6 +169,23 @@ AlgebraicSystem::AlgebraicSystem(const spatial::Mesh& mesh, const DofMap& dof_ma
 
 linalg::DistVector AlgebraicSystem::new_vector() const {
   linalg::DistVector v(static_cast<std::size_t>(dof_map_->n_local_dofs()), exchanger_, reducer_);
+  v.set_zero();
+  return v;
+}
+
+linalg::DistVector AlgebraicSystem::new_vector_for(const linalg::DistSparseMatrix& matrix) const {
+  const auto owned_n = static_cast<std::size_t>(dof_map_->n_local_dofs());
+  std::shared_ptr<const linalg::GhostExchanger> exchanger;
+  if (!fortran_communicator_.has_value()) {
+    exchanger = linalg::make_serial_exchanger();
+  } else {
+#if FUSE_HAVE_MPI
+    exchanger = linalg::make_mpi_exchanger(*fortran_communicator_, matrix.ghost_pattern(), owned_n);
+#else
+    refuse("AlgebraicSystem::new_vector_for: a communicator was given but this build has no MPI (FUSE_HAVE_MPI=0)");
+#endif
+  }
+  linalg::DistVector v(owned_n, std::move(exchanger), reducer_);
   v.set_zero();
   return v;
 }
