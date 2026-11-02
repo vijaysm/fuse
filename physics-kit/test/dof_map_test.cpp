@@ -149,10 +149,9 @@ TEST(DofMapTest, RefusesAGhostDofWithoutACommunicator) {
   ASSERT_FALSE(mesh.is_vertex_owned(5));  // v4, a ghost
 
   BasisRegistry registry;
-  // The refusal's own code, not merely its type (lead's review of wave 2
-  // round 1, 2026-11-01: a type-only EXPECT_THROW let a mutation that
-  // fell through to a DIFFERENT, later std::invalid_argument survive
-  // undetected).
+  // The refusal's own code, not merely its type (a type-only EXPECT_THROW
+  // would let a mutation that fell through to a DIFFERENT, later
+  // std::invalid_argument survive undetected).
   try {
     DofMap dof_map(mesh, {scalar_p1("u")}, registry);
     FAIL() << "a ghost dof without a communicator must be refused";
@@ -274,13 +273,11 @@ TEST(DofMapTest, OrientationCodeAgreesBetweenTwoElementsSharingAFace) {
 }
 
 
-// physics.dof_map.P2Hex27DofMapCountsVerticesEdgesFacesAndCells -- wave 2
-// round 2 item C CLOSES the round-1 gap the test above used to name: a
+// physics.dof_map.P2Hex27DofMapCountsVerticesEdgesFacesAndCells -- a
 // 3-D cell's own interior-edge dofs (e.g. a Hex27 edge midpoint) are
-// now numbered, via ReferenceTopology's own edge-to-corner table and
+// numbered, via ReferenceTopology's own edge-to-corner table and
 // Mesh::canonical_edge_vertex_ids (reference_topology.hpp's own header
-// comment) -- E-PHYSICS-DOFMAP-SUBENTITY-UNSUPPORTED no longer fires
-// for this case at all. A 2x1x1 Hex8 box's P2 (Hex27) global dof count
+// comment), so this case is never refused. A 2x1x1 Hex8 box's P2 (Hex27) global dof count
 // is the STANDARD structured-grid entity count -- derived, not
 // guessed:
 //   vertices: (nx+1)(ny+1)(nz+1) = 3*2*2 = 12
@@ -348,7 +345,7 @@ TEST(DofMapTest, P2Tet10DofMapNumbersEachSharedEdgeDofOnce) {
 
 
 // physics.dof_map.D102SharedSideOwnedByTheMinimumCornerOwnerRank --
-// CLOSES KNOWN_ISSUES.md D102, tested DIRECTLY against
+// tested DIRECTLY against
 // fe::shared_sub_entity_owned_here rather than through DofMap's own
 // full single-rank constructor: that constructor's "convenience path"
 // refuses ANY ghost vertex outright (no communicator to resolve one),
@@ -362,8 +359,8 @@ TEST(DofMapTest, P2Tet10DofMapNumbersEachSharedEdgeDofOnce) {
 // own three cases directly:
 //   * every corner owned by rank 0 (the local rank) -- owned here
 //     under BOTH the old and the new rule (no partition question);
-//   * corners split 0/1, minimum owner 0 -- D102's fix: owned here
-//     (the round-1 rule would have been false, since not EVERY corner
+//   * corners split 0/1, minimum owner 0 -- owned here
+//     (the "every corner owned" rule would have been false, since not EVERY corner
 //     is locally owned);
 //   * corners split 1/2 (neither is this rank) -- not owned here,
 //     correctly, under either rule.
@@ -391,7 +388,7 @@ TEST(DofMapTest, D102SharedSideOwnedByTheMinimumCornerOwnerRank) {
   ASSERT_FALSE(mesh.is_vertex_owned(3));
 
   EXPECT_TRUE(fuse::physics::fe::shared_sub_entity_owned_here(mesh, {1, 2}));   // v0,v1: both owner 0
-  EXPECT_TRUE(fuse::physics::fe::shared_sub_entity_owned_here(mesh, {1, 3}));   // v0,v2: min(0,1)=0 -- D102's fix
+  EXPECT_TRUE(fuse::physics::fe::shared_sub_entity_owned_here(mesh, {1, 3}));   // v0,v2: min(0,1)=0
   EXPECT_FALSE(fuse::physics::fe::shared_sub_entity_owned_here(mesh, {3}));     // v2 alone: owner 1, not here
   EXPECT_FALSE(fuse::physics::fe::shared_sub_entity_owned_here(mesh, {}));      // no corners: owned nowhere
 }

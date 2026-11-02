@@ -102,8 +102,7 @@ TEST(AlgebraicSystemTest, EliminateDirichletRowsStaysSymmetric) {
 TEST(AlgebraicSystemTest, EliminateDirichletRowsRefusesSizeMismatch) {
   std::vector<Triplet> triplets;
   std::vector<double> rhs{0.0, 0.0};
-  // The refusal's own message, not merely its type (lead's review of
-  // wave 2 round 1, 2026-11-01's own rule, applied here too).
+  // The refusal's own message, not merely its type.
   try {
     eliminate_dirichlet_rows(triplets, 2, {0, 1}, {1.0}, rhs);
     FAIL() << "a dirichlet_rows/values size mismatch must be refused";
@@ -174,7 +173,7 @@ TEST(AlgebraicSystemTest, AssembleVectorSumsElementContributionsAtSharedVertices
   int shared_count = 0, unshared_count = 0;
   for (std::size_t i = 0; i < vector.owned_size(); ++i) {
     // Exact equality: each entry is a sum of one or two 1.0 contributions, an
-    // exact dyadic sum in IEEE 754 (the track had a chosen 1e-15 here; lead, 2026-11-01).
+    // exact dyadic sum in IEEE 754 (so no tolerance is needed).
     if (vector.data()[i] == 2.0)
       ++shared_count;
     else if (vector.data()[i] == 1.0)
