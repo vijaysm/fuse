@@ -78,8 +78,7 @@ void write_u64_attr(hid_t loc, const char* name, std::uint64_t v) {
 
 }  // namespace
 
-// "a reader that finds a byte other than 0/1 refuses by name"
-// (docs/dev/restart.md Section 11, item 3).
+// "a reader that finds a byte other than 0/1 refuses by name".
 TEST(TypedRestartHdf5, BoolByteNotZeroOrOneRefuses) {
   const std::string path = temp_path("typed_bool_corrupt.h5");
   std::remove(path.c_str());
@@ -114,7 +113,7 @@ TEST(TypedRestartHdf5, BoolByteNotZeroOrOneRefuses) {
 
 // "verify the attribute and the dataset type agree on read; disagreement
 // refuses by name -- it means a corrupted or foreign file"
-// (item 5) -- here, CORRUPTED: the attribute is changed but the
+// -- here, CORRUPTED: the attribute is changed but the
 // real underlying HDF5 datatype is untouched, so the file's own two
 // descriptions of itself disagree.
 TEST(TypedRestartHdf5, AttributeDatasetTypeDisagreementRefuses) {
@@ -192,7 +191,7 @@ TEST(TypedRestartHdf5, UnknownElementTypeNameFromANewerFileVersionRefuses) {
 
 namespace {
 /// Writes a hand-built x86-64-style 80-bit extended `long
-/// double` dataset directly (docs/dev/restart.md Section 11, item 6) --
+/// double` dataset directly --
 /// 64-bit EXPLICIT significand (`H5T_NORM_MSBSET`), 15-bit exponent,
 /// bias 16383, 16-byte storage. THIS Mac cannot itself produce this
 /// representation (its own `long double` is 53-bit, bit-identical to
@@ -235,8 +234,7 @@ void write_hand_built_x86_long_double(hid_t file, const char* path,
 }
 }  // namespace
 
-// The full end-to-end scenario (docs/dev/restart.md Section
-// 11, item 6), through the REAL public RestartReader: Exact refuses,
+// The full end-to-end scenario, through the REAL public RestartReader: Exact refuses,
 // Widening refuses, AllowNarrowing reads with the reported maximum
 // change equal to an independently computed value.
 TEST(TypedRestartHdf5, HandBuiltX86LongDoubleExactAndWideningRefuseAllowNarrowingReportsDelta) {

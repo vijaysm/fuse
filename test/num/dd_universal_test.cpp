@@ -1,5 +1,5 @@
 // fuse::num::dd and fuse::num::qd against stillwater-sc/universal's dd and qd
-// (plans/2026-10-22-universal-number-types.md, stage U4). Universal is the
+//. Universal is the
 // reference implementation the two types are measured against; it is host only and
 // never included by FUSE itself. Its headers do not compile under nvcc, so they are
 // compiled into a separate program (test/num/universal_oracle.cpp, built with a host

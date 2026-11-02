@@ -1,5 +1,4 @@
-// Shape gradients of the moving-least-squares weights (plans/2026-10-22-
-// universal-number-types.md, stage U8): fuse::device::solve_mls_on_space<Space, T>
+// Shape gradients of the moving-least-squares weights: fuse::device::solve_mls_on_space<Space, T>
 // (include/fuse/backend/mls_weights_device.hpp) with T = fuse::num::dual<S, N>
 // returns, for each weight, its gradient with respect to the coordinates of the
 // source and target points. The stage's gate is a Taylor-remainder test of

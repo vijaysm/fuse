@@ -1,5 +1,4 @@
-// The reverse sweep through the participant ABI (plans/2026-10-22-universal-number-types.md, stage
-// U6, the C and Fortran entry points; docs/user/c-abi.md, "Reverse mode"). Everything here goes
+// The reverse sweep through the participant ABI. Everything here goes
 // through the C table fuse_coupler_abi() returns, as a C or Fortran driver would: two components
 // the caller drives itself with begin_step()/end_step(), each the linear step
 //

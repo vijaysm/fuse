@@ -1,5 +1,4 @@
-// Reverse mode through the Runner (plans/2026-10-22-universal-number-types.md,
-// stage U6; docs/dev/adjoint-schedule.md).
+// Reverse mode through the Runner.
 //
 // The composed coupling is a linear map G from the inputs of a run to its final
 // state: the initial state of each component and the values each producer is

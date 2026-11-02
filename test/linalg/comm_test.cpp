@@ -1,15 +1,15 @@
 // linalg.comm -- fuse::linalg::Reducer's int64_t allgather overload
-// (physics-kit's own fe::DofMap/
-// AlgebraicSystem review): an allgather moves bytes, not arithmetic,
+// (used by physics-kit's fe::DofMap/
+// AlgebraicSystem): an allgather moves bytes, not arithmetic,
 // so an integer payload travels through this NATIVE overload rather
 // than a std::bit_cast<double> reinterpretation at the call site.
 //
-// adds `alltoallv`: the point-to-point
+// `alltoallv` is the point-to-point
 // exchange `fe::DofMap`'s ghost resolution and `fe::AlgebraicSystem`'s
-// foreign-entry exchange now route through instead of a padded
+// foreign-entry exchange route through instead of a padded
 // allgather. `SerialReducer`'s own one-participant case is exercised
 // here at tier 0; the real multi-rank MPI_Alltoall/MPI_Alltoallv path
-// (`MpiReducer::alltoallv`) is exercised by the new
+// (`MpiReducer::alltoallv`) is exercised by the
 // `physics_dof_map_mpi` test row (RANKS 2 3), build-only in this
 // sandbox, since a genuine point-to-point exchange has nothing to
 // show across one rank.
@@ -33,10 +33,9 @@ using fuse::linalg::make_serial_reducer;
 /// `alltoallv` for its own discoverability reasons (that file's own
 /// header comment) and so never actually calls the BASE CLASS default
 /// this test exists to exercise. A mutation of comm.hpp's own
-/// `alltoallv` default survived once (round 4, caught by this
-/// project's own mutation gate) specifically because every test used
-/// `SerialReducer`, whose override shadows it completely -- this class
-/// is the fix: a `Reducer` with no `alltoallv` override of its own, so
+/// `alltoallv` default can be mutated without failing any test that only
+/// uses `SerialReducer`, whose override shadows it completely -- this class
+/// closes that gap: a `Reducer` with no `alltoallv` override of its own, so
 /// `BareReducerAlltoallv*` below is the ONLY code path that actually
 /// calls comm.hpp's default implementation.
 class BareReducer : public Reducer {

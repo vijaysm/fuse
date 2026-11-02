@@ -1,5 +1,4 @@
-// fuse::detail::SmallFloat (plans/2026-10-22-universal-number-types.md, stage
-// U3): the generic binary64 <-> small-format conversion is instantiated for
+// fuse::detail::SmallFloat: the generic binary64 <-> small-format conversion is instantiated for
 // binary32, where the hardware conversion is the independent answer, and for
 // bfloat16, where the answer is the exact definition (a bit shift for widening,
 // and a table search for narrowing).

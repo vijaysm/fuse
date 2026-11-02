@@ -1,5 +1,4 @@
-// fuse::num::dual and the view of a field as scalars (plans/2026-10-22-universal-number-types.md,
-// stage U2): closed-form derivatives, independence of the number of parameters
+// fuse::num::dual and the view of a field as scalars: closed-form derivatives, independence of the number of parameters
 // carried, a field of dual numbers crossing the registry as scalars, a
 // gradient through the remap kernel equal to the remap of the gradient (bitwise),
 // and the Taylor-remainder order of a residual whose derivative action is

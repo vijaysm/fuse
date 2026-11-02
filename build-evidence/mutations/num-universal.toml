@@ -1,6 +1,5 @@
 # Mutations of dd that keep it accurate to about its own round-off and change its bits; the
-# bit-for-bit comparison with Universal kills them (plans/2026-10-22-universal-number-types.md,
-# stage U4). Needs a build with FUSE_ENABLE_UNIVERSAL=ON (the test num.dd_universal), so it is
+# bit-for-bit comparison with Universal kills them. Needs a build with FUSE_ENABLE_UNIVERSAL=ON (the test num.dd_universal), so it is
 # not part of a default mutation run.
 
 [[mutation]]

@@ -127,7 +127,7 @@ TEST(BasisTest, RegisterFactoryRejectsDuplicateByDefault) {
   EXPECT_NO_THROW(registry.register_factory(key, [&registry, key] { return registry.create(key); }, DuplicatePolicy::Replace));
 }
 
-// physics.fe_basis.OrientationTransformsAreIdentityAtThisWavesOrders --
+// physics.fe_basis.OrientationTransformsAreIdentityAtTheSupportedOrders --
 // basis.hpp's own derivation: every P0-P2 built-in basis places at most
 // one DOF on any shared edge or face, so every OrientationTransform the
 // registry generates is PROVABLY the identity permutation with
@@ -136,7 +136,7 @@ TEST(BasisTest, RegisterFactoryRejectsDuplicateByDefault) {
 // P2 key from each of the five 3-D-adjacent families the basis
 // supports (Hexahedron, Tetrahedron, Prism, Pyramid) plus Quadrilateral
 // (2-D, included for its own single orientation axis).
-TEST(BasisTest, OrientationTransformsAreIdentityAtThisWavesOrders) {
+TEST(BasisTest, OrientationTransformsAreIdentityAtTheSupportedOrders) {
   const BasisRegistry registry;
   for (const auto cell : {CellFamily::Quadrilateral, CellFamily::Hexahedron, CellFamily::Tetrahedron,
                            CellFamily::Prism, CellFamily::Pyramid}) {

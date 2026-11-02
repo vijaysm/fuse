@@ -1,5 +1,5 @@
 // fuse::num::posit<16, 2> and posit<32, 2> against the definition of the format
-// (plans/2026-10-22-universal-number-types.md, stage U5). Nothing here uses the type's own
+//. Nothing here uses the type's own
 // decoding or rounding as its reference: `posit_ref_value` (test/num/posit_reference.hpp) decodes a pattern bit by
 // bit from the definition (any width, so it also gives the boundary between two adjacent posits,
 // which is the value of the one-bit-wider pattern with a one appended), and the rounding of

@@ -1,5 +1,4 @@
-// The Storage conversions on every enabled execution space (plans/2026-10-22-
-// universal-number-types.md, stage U3): widening and narrowing of binary32,
+// The Storage conversions on every enabled execution space: widening and narrowing of binary32,
 // bfloat16 and binary16 inside a Kokkos kernel give the same bits as the host
 // functions, over every 16-bit pattern, over every midpoint between adjacent
 // values of each 16-bit format (and one binary64 step either side of it), and

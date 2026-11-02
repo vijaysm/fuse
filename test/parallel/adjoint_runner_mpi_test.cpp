@@ -1,5 +1,5 @@
 // Reverse mode through the Runner when the components are on different ranks
-// (plans/2026-10-22-universal-number-types.md, stage U6; docs/dev/adjoint-schedule.md).
+//.
 //
 // The coupling of adjoint_runner_test.cpp, with the producer and the consumer on
 // disjoint ranks (the Transport between them is an MPI_Alltoallv, `MpiTransport::move`)
@@ -631,8 +631,8 @@ TEST(RuntimeAdjointMpi, AFailureOnOneRankEndsTheSweepOnEveryRankThatExchangesWit
   if (holds_solid) {
     EXPECT_EQ(r.error().code, "E-TEST-ADJOINT-REFUSED") << "rank " << world_rank() << ": " << r.error().message;
   } else {
-    // The rank that did not fail learns the original error and the rank it came from (the issue tracker
-    //): the lowest-numbered rank that holds the consumer, with the code it refused with.
+    // The rank that did not fail learns the original error and the rank it came from:
+    // the lowest-numbered rank that holds the consumer, with the code it refused with.
     int lowest_solid = -1;
     for (int rk = 0; rk < world_size() && lowest_solid < 0; ++rk) {
       if (n->solid_set.contains(rk)) lowest_solid = rk;

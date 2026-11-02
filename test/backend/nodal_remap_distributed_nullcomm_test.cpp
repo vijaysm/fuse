@@ -337,7 +337,7 @@ TEST(NodalRemapDistributedNullComm, DegenerateDecoyCellDoesNotAbortAnAlreadyFoun
 // at this vertex, no tie at all) -- it is purely two different arithmetic
 // expressions for the same ratio, invoked depending on which of the two
 // code paths above a caller's placement happens to select.
-TEST(NodalRemapDistributedNullComm, D67SerialAndDistributedEdgeWeightsAgreeAtTheDomainBoundary) {
+TEST(NodalRemapDistributedNullComm, SerialAndDistributedEdgeWeightsAgreeAtTheDomainBoundary) {
   // n_beam=7 (source, nodal DOFs), n_fluid=11 (target, cell centroids) --
   // the exact resolution pair of the original host run.
   LocalLineMesh beam(7, 0.0, 1.0);

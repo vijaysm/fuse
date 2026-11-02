@@ -1,5 +1,5 @@
 // fuse::num::posit<16, 2> and posit<32, 2> against stillwater-sc/universal's
-// posit<16, 2> and posit<32, 2> (plans/2026-10-22-universal-number-types.md, stage U5).
+// posit<16, 2> and posit<32, 2>.
 // Universal is a second implementation of the same format, measured against, host only
 // and never included by FUSE itself; as for the double-double comparison, its headers
 // are compiled into a separate program (test/num/universal_oracle.cpp) that this test

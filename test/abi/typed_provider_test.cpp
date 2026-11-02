@@ -1,7 +1,6 @@
 // A provider plugin's fields in the element types the host allocates for it: binary64, the
 // storage types (binary32, bfloat16, binary16, posit16, posit32) and the arithmetic types (double-double,
-// quad-double), and a field's gradient_size (plans/2026-10-22-universal-number-types.md,
-// stage U4). The plugin is an in-memory table, so that the adapter's own decisions are what
+// quad-double), and a field's gradient_size. The plugin is an in-memory table, so that the adapter's own decisions are what
 // the test sees: the type each field is bound in, the view the plugin is handed, and the
 // refusals by name. A row counts values of its element type; the graph counts binary64
 // values, so a double-double row of 1 value is a graph field of 2 components.

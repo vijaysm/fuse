@@ -1,6 +1,6 @@
 // FUSE_ELEMENT_F32, FUSE_ELEMENT_BF16, FUSE_ELEMENT_F16 and, from stage U5,
 // FUSE_ELEMENT_POSIT16 and FUSE_ELEMENT_POSIT32 through the plain-C
-// participant table (plans/2026-10-22-universal-number-types.md, stage U3): a
+// participant table: a
 // C or Fortran component that keeps single, half or posit precision arrays registers
 // them as they are. The coupler widens them to binary64 when the component has
 // written them and rounds once into them on delivery, so the value a downstream

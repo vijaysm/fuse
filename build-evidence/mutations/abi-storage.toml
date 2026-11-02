@@ -1,5 +1,5 @@
 # Mutations for FUSE_ELEMENT_F32, FUSE_ELEMENT_BF16 and FUSE_ELEMENT_F16 in the C
-# interface (plans/2026-10-22-universal-number-types.md, stage U3).
+# interface.
 
 [[mutation]]
 id = "abi-register-binds-binary32-as-binary64"

@@ -1,5 +1,4 @@
-# Mutations for the small-format conversions (plans/2026-10-22-universal-number-types.md,
-# stage U3): fuse::detail::SmallFloat and the binary16 and bfloat16 types built on it.
+# Mutations for the small-format conversions: fuse::detail::SmallFloat and the binary16 and bfloat16 types built on it.
 
 [[mutation]]
 id = "small-float-ties-do-not-go-to-even"

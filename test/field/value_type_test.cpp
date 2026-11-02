@@ -1,4 +1,4 @@
-// Field value types (plans/2026-10-22-universal-number-types.md, stage U1):
+// Field value types:
 // fuse::value_traits / fuse::CoupledValue, the type-erased registry, the typed
 // pipeline views, and the correctly rounded binary64 -> bfloat16 conversion.
 

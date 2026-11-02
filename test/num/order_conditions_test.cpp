@@ -52,7 +52,7 @@ bool is_classical_family(ButcherFamily f) {
   return false;
 }
 
-constexpr int kMaxCatalogOrder = 6;  // 6 since 2026-10-31: ESDIRK548L2SA is order 5 and its order-6 defect must be checked
+constexpr int kMaxCatalogOrder = 6;  // ESDIRK548L2SA is order 5 and its order-6 defect must be checked
 
 }  // namespace
 
@@ -73,9 +73,9 @@ TEST(OrderConditions, CatalogSizesMatchOeisA000081) {
 }
 
 // An order the catalog was not built to is refused, not read past the end of the
-// per-order table (lead, 2026-10-31: on a catalog built to 5, of_order(6) returned an
+// per-order table (on a catalog built to 5, of_order(6) would return an
 // empty range through out-of-bounds indexing, so a "next order must fail" check
-// passed with a defect of exactly 0).
+// would pass with a defect of exactly 0).
 TEST(OrderConditions, AnOrderBeyondTheCatalogIsRefused) {
   RootedTreeCatalog cat(3);
   EXPECT_EQ(cat.of_order(3).size(), 2u);
@@ -161,7 +161,7 @@ TEST(OrderConditions, PerChildProductMatchesTheLiteratureConditions) {
       }
     }
   }
-  // Derived (lead, 2026-10-31; round 2 had a chosen 1e-13): the two evaluations
+  // Derived (not a chosen 1e-13): the two evaluations
   // of one elementary weight differ only in operation order, each being at most
   // s^3 + s products-and-sums of operands of magnitude at most 1 (|A|, |B|, |C| <= 1
   // for Kutta44), so the difference is at most 2 * (s^3 + s) * eps * (sum of the
@@ -288,16 +288,13 @@ TEST(ExtendedTableaus, Ssprk104SatisfiesOrderFourConditions) {
   EXPECT_GT(at5, 1e-6) << "order 5 should NOT hold for a declared order-4 method";
 }
 
-//  physics-kit,   (task items 1-3): the two new
-// Kennedy & Carpenter ESDIRK pairs, proved the SAME way as every tableau this project
-// ships -- row sums, order conditions through the declared order, embedded weights to
-// embedded order, stiff accuracy, and (new this round) the dense-output table's own
-// b_i(1)=b_i reproduction. "A tableau that fails any of these is NOT shipped" (the
-// task's own instruction). Both pairs resolve cleanly: ESDIRK436L2SA holds through
+// The two Kennedy & Carpenter ESDIRK pairs, proved the SAME way as every tableau this
+// project ships -- row sums, order conditions through the declared order, embedded
+// weights to embedded order, stiff accuracy, and the dense-output table's own
+// b_i(1)=b_i reproduction. A tableau that fails any of these is NOT shipped. Both pairs resolve cleanly: ESDIRK436L2SA holds through
 // order 4 exactly and fails order 5 by 9.2e-3; ESDIRK548L2SA holds through order 5
 // at the 1e-27 precision of its published rationals and fails order 6 by 4.2e-3
-// (lead, 2026-10-31; the round-3 track had declared it order 4 and this test
-// "unresolvable" for it after misreading the passing order-5 conditions).
+// (so it is resolvable, and is order 5, not 4).
 TEST(TableauPairs, EsdirkPairsPassEveryCheckTheAlgebraicCheckerCanResolve) {
   RootedTreeCatalog cat(kMaxCatalogOrder);
   struct Case { const char* name; ButcherTableau t; bool order_distinction_resolvable; };
@@ -342,8 +339,7 @@ TEST(TableauPairs, EsdirkPairsPassEveryCheckTheAlgebraicCheckerCanResolve) {
     // Derived bound: each row sums k coefficients already rounded to double, so the
     // computed sum differs from the exact one by at most (k + 1) * eps * sum|coeff|
     // (Higham, recursive summation, plus the rounding of B[i] itself); the published
-    // rationals' own 1e-27 residual is far below that. The round-3 track had used a
-    // chosen 1e-13 here (lead, 2026-10-31).
+    // rationals' own 1e-27 residual is far below that, so no chosen 1e-13 is used.
     double dense_bound = 0.0;
     for (std::size_t i = 0; i < t.dense_output->size(); ++i) {
       double abs_sum = std::fabs(t.B[i]);
@@ -356,7 +352,7 @@ TEST(TableauPairs, EsdirkPairsPassEveryCheckTheAlgebraicCheckerCanResolve) {
   }
 }
 
-// The ARK3(2)4L[2]SA dense-output addition to the ALREADY-shipped
+// The ARK3(2)4L[2]SA dense-output table of the
 // ESDIRK324L2SA tableau -- same b_i(1)=b_i check, same tolerance reasoning.
 TEST(TableauPairs, Esdirk324l2saDenseOutputReproducesB) {
   const ButcherTableau t = esdirk324l2sa_tableau();

@@ -1,6 +1,5 @@
 // Fields of a Storage value type (binary32, bfloat16, binary16, posit16, posit32) through the
-// Runner and a real remap (plans/2026-10-22-universal-number-types.md, stage
-// U3). The components hold their arrays in the narrow type; everything the
+// Runner and a real remap. The components hold their arrays in the narrow type; everything the
 // coupler does between them is binary64. So the value a consumer receives is the
 // binary64 result of the same graph run with binary64 fields, rounded ONCE to the
 // consumer's type -- bit for bit -- and a producer's value reaches the remap

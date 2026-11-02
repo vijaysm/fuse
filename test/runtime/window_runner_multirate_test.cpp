@@ -373,7 +373,7 @@ TEST(WindowRunnerMultirate, SevenThirteenAdjustableAdjustableJacobiMatchesDriver
   EXPECT_EQ(via_runner.advance_count_b, 13 * via_runner.iterations);
 }
 
-// BOTH straddle policies (item 4's own wording): Fixed/Fixed here never
+// BOTH straddle policies: Fixed/Fixed here never
 // actually straddles -- 91 is a multiple of both 13 and 7, exactly the
 // "a Fixed step that divides the window never straddles" case
 // window_coupler_test.cpp's own AFixedStepThatDividesTheWindowNever
@@ -463,8 +463,8 @@ TEST(WindowRunnerMultirate, SevenThirteenGaussSeidelMatchesDriver) {
   EXPECT_LT(via_runner.iterations, jacobi.iterations);
 }
 
-// GaussSeidel declared in NON-default (non-topological) member order --
-// item 4's own wording. WindowCoupler::create() (and, through the Runner,
+// GaussSeidel declared in NON-default (non-topological) member order.
+// WindowCoupler::create() (and, through the Runner,
 // the compiled schedule's own topological_sweep_order()) must derive the
 // sweep order from the unlagged channel's own direction, never from
 // declaration order (GaussSeidelResultIsIndependentOfDeclaration

@@ -1,6 +1,6 @@
 // Fields of any coupled value type in a restart file: double-double, quad-double and
 // dual numbers stored as their scalars, the storage formats as themselves
-// (plans/2026-10-22-universal-number-types.md, stage U4). The writer and reader here keep
+//. The writer and reader here keep
 // what they are given in memory, with the checks the HDF5 ones make on the type and the
 // component count, so the test is of what put_values and get_values hand to the restart
 // interface: the stored type, the components per row, the bytes.

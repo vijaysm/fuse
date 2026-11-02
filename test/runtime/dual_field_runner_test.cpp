@@ -1,5 +1,5 @@
 // A field of forward-mode dual numbers through the Runner and a real remap
-// (plans/2026-10-22-universal-number-types.md, stage U2): the gradient that
+//: the gradient that
 // arrives equals the remap of the gradient, bitwise, because a field of dual
 // numbers reaches every operation as a field with value and gradient as
 // components. Also the two refusals that keep that honest: a minimum or maximum

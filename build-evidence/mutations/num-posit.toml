@@ -1,4 +1,4 @@
-# Mutations for fuse::num::posit (plans/2026-10-22-universal-number-types.md, stage U5): the
+# Mutations for fuse::num::posit: the
 # rounding of a binary64 value to a posit, the decoding of a pattern, the rounding of the
 # arithmetic, and the comparison of patterns. The test is num.posit (every pattern and
 # boundary of the 16-bit format, a sample of the 32-bit format, the arithmetic against exact values).

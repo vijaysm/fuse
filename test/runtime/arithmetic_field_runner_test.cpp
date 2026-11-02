@@ -1,5 +1,5 @@
 // Fields of double-double and quad-double values through the Runner and a real
-// remap (plans/2026-10-22-universal-number-types.md, stage U4). Such a field is
+// remap. Such a field is
 // carried as limbs and every operator that adds or multiplies values does it in
 // the field's type, so what arrives is the remap of the data to the round-off of
 // that type, not to binary64's. The remap weights are recovered from the Runner

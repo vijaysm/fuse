@@ -91,7 +91,7 @@ TEST(BFloat16, ToFloatIsAlwaysExactWidening) {
   }
 }
 
-/// The binary64 side (plans/2026-10-22-universal-number-types.md, stage U3):
+/// The binary64 side:
 /// widening is exact, and a widen followed by a narrow is the identity, over
 /// all 65536 patterns; the rounding itself is compared with an independent
 /// search in test/model/small_float_test.cpp and, through

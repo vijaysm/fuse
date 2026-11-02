@@ -1,4 +1,4 @@
-// fuse::binary16 (plans/2026-10-22-universal-number-types.md, stage U3): the
+// fuse::binary16: the
 // conversions are checked against an oracle that shares no code with them -- a
 // table of the 31744 finite non-negative binary16 values decoded with ldexp,
 // searched for the nearest -- at every midpoint, one binary64 step either side

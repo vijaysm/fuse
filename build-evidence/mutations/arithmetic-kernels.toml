@@ -1,4 +1,4 @@
-# Mutations for the kernels that do arithmetic on dd and qd fields (plans/2026-10-22-universal-number-types.md, stage U4).
+# Mutations for the kernels that do arithmetic on dd and qd fields.
 
 [[mutation]]
 id = "arith-remap-reads-with-the-output-stride"

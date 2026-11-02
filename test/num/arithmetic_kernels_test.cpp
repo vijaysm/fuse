@@ -1,5 +1,5 @@
 // The arithmetic kernels for double-double and quad-double fields on every enabled
-// execution space (plans/2026-10-22-universal-number-types.md, stage U4).
+// execution space.
 //
 // Two checks on each kernel, for both accumulator types and for the three limb
 // combinations (limbs in, limbs out; one limb in, one out: a binary64 field summed

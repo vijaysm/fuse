@@ -1,5 +1,5 @@
 ! Double-double values and a forward-mode gradient through the Fortran participant interface
-! (plans/2026-10-22-universal-number-types.md, stage U4). Drives the same "upstream" ->
+!. Drives the same "upstream" ->
 ! "downstream" coupling as consumer.f90, over two channels:
 !
 !   dd:   a double-double value per cell, FUSE_ELEMENT_DD. The graph declares components: 2

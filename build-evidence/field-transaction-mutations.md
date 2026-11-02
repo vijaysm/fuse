@@ -1,6 +1,6 @@
 # Mutation evidence -- `field-transaction`
 
-Run 2026-10-30 against build `s8ft2_build0`. Regenerate with `tools/mutate.py --write-log`; do not edit.
+Run against a tier-0 build. Regenerate with `tools/mutate.py --write-log`; do not edit.
 
 | Mutation | File | Outcome | Killed by |
 |---|---|---|---|

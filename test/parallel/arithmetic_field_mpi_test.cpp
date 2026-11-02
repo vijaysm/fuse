@@ -1,5 +1,5 @@
 // A field of double-double values between two components on MPI ranks, through a
-// real distributed remap (plans/2026-10-22-universal-number-types.md, stage U4):
+// real distributed remap:
 // a general weighted conservative channel between two differently resolved native
 // quad meshes, as in native_remap_halo_runner_test.cpp, with the components on
 // disjoint ranks (provider on the first half, consumer on the rest). Overlapping

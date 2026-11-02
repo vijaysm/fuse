@@ -15,7 +15,7 @@ namespace fd = fuse::detail;
 namespace {
 
 /// Builds the x86-64 extended-precision `long double` layout BY HAND,
-/// from raw bytes (docs/dev/restart.md Section 11, item 6): an
+/// from raw bytes: an
 /// x86-64-style 80-bit long double dataset built on this Mac by constructing
 /// the file type by hand from raw bytes. 64-bit EXPLICIT significand (no
 /// implicit leading one -- x86's own convention, `H5T_NORM_MSBSET` in HDF5's own vocabulary,
@@ -53,8 +53,7 @@ std::array<unsigned char, 16> pack_x86_ld(std::uint64_t mantissa,
 
 }  // namespace
 
-/// The required scenario (docs/dev/restart.md Section 11,
-/// item 6): a hand-built x86-64-style 80-bit `long double`, value
+/// The scenario: a hand-built x86-64-style 80-bit `long double`, value
 /// `1 + 2^-63` (mantissa `0x8000000000000001`, biased exponent 16383 =
 /// unbiased 0), narrowed to THIS Mac's own `double`/`long double` (both
 /// 53-bit significand, identical layout) -- AllowNarrowing reads it with
