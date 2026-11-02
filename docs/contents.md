@@ -38,6 +38,7 @@ user/transfer-maps
 user/point-cloud-remap
 user/combining-writers
 user/field-pipeline
+user/number-types
 user/examples
 user/portfolio
 user/mms-pair
@@ -50,6 +51,7 @@ user/multiscale
 user/surrogates
 user/linear-algebra
 user/integrators
+user/physics-kit
 user/interface-transfer
 user/gray-scott
 user/brusselator

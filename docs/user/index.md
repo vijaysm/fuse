@@ -20,7 +20,8 @@ Pages are grouped by what you are trying to do. [](glossary.md) defines every te
 [](graph-programming.md) is the complete guide to building a coupling graph in code and
 [](yaml.md) the reference for the same graph as a file. [](api-overview.md) maps the public namespaces. [](fluent-api.md) covers the chaining idiom and its
 rules, [](placement.md) and [](layouts.md) where components run, [](combining-writers.md) several
-sources into one field, and [](field-pipeline.md) reading field data lazily.
+sources into one field, [](field-pipeline.md) reading field data lazily, and [](number-types.md)
+fields in single, half, posit, double-double or dual-number types.
 
 ## Compiling and running
 
@@ -39,7 +40,8 @@ coupled interface between differently discretised solvers.
 [](convergence.md) explains how an implicit coupling decides it is done,
 [](coupling-windows.md) couples components that do not share a time grid, and
 [](linear-algebra.md) covers the solvers behind Newton-Krylov coupling and [](integrators.md) the
-Runge-Kutta and Rosenbrock time integrators a component can step with. [](multiscale.md) covers
+Runge-Kutta and Rosenbrock time integrators a component can step with. [](physics-kit.md) is the
+optional finite-element library for writing a discretisation-based component. [](multiscale.md) covers
 multiscale coupling and [](surrogates.md) learned models as components.
 
 ## Bringing your own code
