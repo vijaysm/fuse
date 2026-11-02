@@ -61,10 +61,28 @@ result changes with the thread count. FUSE exists to make those problems visible
 - In-memory rollback within an iteration, and restart to disk (HDF5) that can resume on a different
   number of ranks.
 
-**Linear algebra**
+**Linear algebra, time integration and finite elements**
 - Row-distributed vectors and sparse matrices, preconditioned CG and GMRES(*m*), and an exact
   distributed direct solver for periodic banded systems. A derivative-checking toolkit (adjoint
   identity, Taylor remainder) for any operator that claims a Jacobian or a transpose.
+- Runge-Kutta (explicit, SDIRK/ESDIRK, SSP) and Rosenbrock time integrators with embedded-pair and
+  time-scale step control, for use inside your own components ([guide](docs/user/integrators.md)).
+- `physics-kit`, an optional finite-element library: reference cells, quadrature, bases, meshes,
+  global degree-of-freedom numbering and assembly into the distributed matrices above
+  ([guide](docs/user/physics-kit.md)).
+
+**Number types and derivatives**
+- Fields in the type each component wants: binary32, bfloat16, binary16, posit16 and posit32 (the
+  coupler widens exactly and rounds once on delivery), and double-double and quad-double (remapped,
+  accumulated and conservation-checked in their own type). Also from C, Fortran and plugins, and in
+  restart files ([guide](docs/user/number-types.md)).
+- Forward-mode derivatives: a field of dual numbers carries its gradient through remaps and linear accumulations, and
+  the derivative of the remap weights with respect to the point positions is available for
+  moving-least-squares point clouds.
+- Reverse-mode derivatives: the adjoint of a coupled run (binary64 fields; the guide lists what is
+  supported), with FUSE supplying the transpose of
+  each coupling operator and a component, a C or Fortran participant or a plugin supplying the
+  adjoint of its own step ([guide](docs/user/field-pipeline.md#reverse-mode-adjoints)).
 
 **Language bindings and launch modes**
 - C and Fortran participant interfaces (your code drives FUSE) and provider interfaces (FUSE drives
@@ -126,6 +144,8 @@ Features are added one dependency family at a time, so the minimal build stays s
 | `-DFUSE_ENABLE_LOWFIVE=ON` | Coupling unmodified HDF5 codes through intercepted I/O |
 | `-DFUSE_ENABLE_HDF5=ON` | Restart to disk |
 | `-DFUSE_ENABLE_PYTHON=ON` | The `pfuse` Python module (needs pybind11) |
+| `-DFUSE_ENABLE_PHYSICS_KIT=OFF` | Leave out the finite-element library, which is on by default and needs nothing extra |
+| `-DFUSE_ENABLE_UNIVERSAL=ON` | Also run the tests that compare double-double, quad-double and posit arithmetic bit for bit with a stillwater-sc/universal checkout |
 | `-DFUSE_LINALG_BACKEND=builtin` | Replace Eigen with the built-in dense kernels (some examples need Eigen and are skipped) |
 | `-DKokkos_ENABLE_OPENMP=ON` | Threaded kernels (when Kokkos is fetched) |
 
@@ -156,9 +176,12 @@ clone to a running coupling; `docs/user/index.md` lists every page by task.
 - Surrogate substitution: swapping a learned model for a declared component under a reviewed
   contract (applicability, out-of-distribution detection, determinism, derivatives). Learned models
   already run as ordinary components, see [surrogates](docs/user/surrogates.md).
-- Ready-made physics components: an optional finite-element component library on top of FUSE, so
-  a coupled problem such as heat conduction against fluid flow needs no hand-written solver. Time
-  integrators for your own components are available today, see [integrators](docs/user/integrators.md).
+- Ready-made physics components built on the finite-element library (for example diffusion and
+  reaction-diffusion modules wrapped as FUSE components), so a coupled problem such as heat conduction
+  against fluid flow needs no hand-written solver. The building blocks exist today (reference
+  cells, quadrature, bases, meshes, degree-of-freedom numbering and assembly into distributed
+  matrices, see [physics-kit](docs/user/physics-kit.md)), and so do time integrators for your own
+  components ([integrators](docs/user/integrators.md)); the ready-made modules do not.
 - Broader GPU support through Kokkos device backends, with performance and scaling measurements,
   and a device-capable linear-algebra backend.
 - Newton-Krylov iteration over coupling windows on more than one rank.

@@ -104,6 +104,23 @@ A driver that loads a YAML file, takes command-line options, installs the enviro
 and runs: [](drivers.md). Every environment variable and `RunnerConfig` field: [](environment.md).
 The full component contract: [](component-interface.md); the Runner API: [](runtime.md).
 
+## Choose a precision, or take derivatives
+
+| You need | Read |
+|---|---|
+| One component in float, bfloat16, binary16 or a posit while its partner stays binary64 | [](number-types.md) |
+| More than 15 digits in a coupled field and its conservation check (double-double, quad-double) | [](field-pipeline.md#double-double-and-quad-double) |
+| The sensitivity of a coupled run to a parameter, forward mode (dual numbers) | [](field-pipeline.md#forward-mode-gradients) |
+| The sensitivity of one output to every input, reverse mode (adjoints) | [](field-pipeline.md#reverse-mode-adjoints) |
+| The derivative of point-cloud remap weights with respect to the point positions | [](point-cloud-remap.md#gradients-with-respect-to-the-point-positions) |
+| Typed state in a restart file | [](restart.md#fields-of-double-double-quad-double-and-dual-values) |
+
+## Step a component in time, or discretise it with finite elements
+
+Pick a Runge-Kutta or Rosenbrock method by name for the ODE system inside a component:
+[](integrators.md). Reference cells, quadrature, meshes, degree-of-freedom numbering and assembly
+for a finite-element component: [](physics-kit.md).
+
 ## Couple scales, or a learned model
 
 Macro-micro coupling with the features that exist today: [](multiscale.md). A PyTorch,

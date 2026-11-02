@@ -305,7 +305,7 @@ time. Its members:
 
 ```{literalinclude} ../../examples/brusselator/participants/u_main.c
 :language: c
-:lines: 324-346,351-354
+:lines: 324-343
 ```
 
 ### Recovering the base communicator
@@ -467,7 +467,7 @@ Resolve the handles of the fields you produce and consume once with `field_handl
 
 ```{literalinclude} ../../examples/brusselator/participants/u_main.c
 :language: c
-:lines: 625-633,642-645,657-666
+:lines: 630-646
 ```
 
 ## `view_field` and window buffers
