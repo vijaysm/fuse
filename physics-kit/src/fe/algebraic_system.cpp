@@ -6,11 +6,11 @@
 #include "fuse_physics/fe/algebraic_system.hpp"
 
 #include <algorithm>
-#include <cmath>
 #include <cstdint>
 #include <stdexcept>
 
 #include "fuse/base/config.hpp"
+#include "fuse/base/error.hpp"
 
 namespace fuse::physics::fe {
 
@@ -27,35 +27,41 @@ int owner_of(const std::vector<std::int64_t>& row_lo, std::int64_t index) {
 
 /// Exchanges every rank's own OUT-OF-RANGE entries (failing `in_range`)
 /// to their owners, returning this rank's own in-range entries UNIONED
-/// with everyone else's entries `in_range` now accepts. A STATED ROUND-1
-/// SIMPLIFICATION (algebraic_system.hpp's own header comment on
-/// assemble_matrix): every rank's own out-of-range buffer is broadcast
-/// to every other rank via the same padded-allgather technique
-/// fe::DofMap's own ghost resolution uses (that file's header comment
-/// states the identical scalability caveat), rather than a point-to-
-/// point exchange sized to what each rank actually needs. Single-rank
-/// (`reducer.size() == 1`) is the identity check: nothing is ever out of
-/// range when one rank owns every row, matching every tier-0 test this
-/// wave exercises; a leftover out-of-range entry there is a caller
-/// mistake, refused by name rather than silently dropped.
-/// Exchanges every rank's own OUT-OF-RANGE entries to their owners, same
-/// contract and same STATED scalability limitation as before (this
-/// function's own earlier header comment, carried to dof_map.cpp's
-/// identical note on its own ghost resolution) -
-/// changes only the TRANSPORT: an entry's INTEGER fields (`n_int_fields`
-/// of them, via `pack_ints`) travel through `Reducer`'s native
-/// `std::int64_t` allgather (comm.hpp), and its one genuine `double`
-/// VALUE field (via `value_of`) travels through the existing `double`
-/// allgather UNCHANGED -- it was always a real float, never an integer
-/// wearing a double's bit pattern, so it never needed `std::bit_cast`
-/// and still does not. The round-1 version cast row/col (or the vector
-/// index) through `std::bit_cast<double>` to fit them into the SAME
-/// double-only channel the value field also used; this version simply
-/// gives the integer fields their own, correctly-typed channel instead.
-template <class Entry, class InRange, class PackInts, class ValueOf, class Unpack>
+/// with everyone else's entries `in_range` now accepts. ROUND 4
+/// ITEM X replaces the round-1/round-2 padded-allgather transport
+/// (every rank's out-of-range buffer broadcast to every other rank,
+/// padded to the largest buffer anyone holds -- the scalability caveat
+/// this function's own header comment used to carry, mirrored in
+/// dof_map.cpp's identical note on its own ghost resolution) with a
+/// genuine point-to-point exchange: each out-of-range entry is routed,
+/// via the new `owner_of_fn`, ONLY to the one participant that owns it,
+/// through `Reducer::alltoallv` (comm.hpp) -- one `MPI_Alltoall` for the
+/// per-rank counts, one `MPI_Alltoallv` for the payload, no padding and
+/// no sentinel record, since every participant now knows exactly how
+/// many records every other one is sending it. `n_int_fields` of an
+/// entry's INTEGER fields travel through the native `std::int64_t`
+/// channel (own reasoning for keeping an
+/// integer payload off `double`'s bit pattern applies unchanged here);
+/// its one genuine `double` VALUE field travels through the `double`
+/// channel. Single-rank (`reducer.size() == 1`) is still the identity
+/// check: nothing is ever out of range when one rank owns every row,
+/// matching every tier-0 test this wave exercises; a leftover
+/// out-of-range entry there is a caller mistake, refused by name rather
+/// than silently dropped.
+///
+/// MESSAGE VOLUME, before vs after (R participants, this rank sending
+/// `k` out-of-range entries of `n_int_fields` int64 fields + 1 double
+/// each): the allgather version moved `max_k * R` records on EVERY
+/// participant regardless of how many entries any of them actually
+/// wanted (`max_k` being the largest `k` any participant holds, so one
+/// unbalanced rank inflates every other rank's exchange too); this
+/// version moves exactly `k` records out and exactly as many in as this
+/// rank's own ownership range actually receives, with no `max()`
+/// collective needed to size a shared buffer at all.
+template <class Entry, class InRange, class OwnerOf, class PackInts, class ValueOf, class Unpack>
 std::vector<Entry> exchange_foreign_entries(const std::vector<Entry>& local, const linalg::Reducer& reducer,
-                                             InRange in_range_fn, PackInts pack_ints, ValueOf value_of,
-                                             Unpack unpack, std::size_t n_int_fields) {
+                                             InRange in_range_fn, OwnerOf owner_of_fn, PackInts pack_ints,
+                                             ValueOf value_of, Unpack unpack, std::size_t n_int_fields) {
   std::vector<Entry> in_range;
   std::vector<Entry> out_of_range;
   in_range.reserve(local.size());
@@ -71,29 +77,66 @@ std::vector<Entry> exchange_foreign_entries(const std::vector<Entry>& local, con
     return in_range;
   }
 
-  constexpr std::int64_t kSentinelMarker = -1;  // field 0 of every real record is a row/col/index, never negative
-  const auto max_count =
-      static_cast<std::size_t>(std::llround(reducer.max(static_cast<double>(out_of_range.size()))));
-
-  std::vector<std::int64_t> send_ints(max_count * n_int_fields, 0);
-  for (std::size_t i = 0; i < max_count; ++i) send_ints[i * n_int_fields] = kSentinelMarker;
-  std::vector<double> send_values(max_count, 0.0);
-  for (std::size_t i = 0; i < out_of_range.size(); ++i) {
-    pack_ints(&send_ints[i * n_int_fields], out_of_range[i]);
-    send_values[i] = value_of(out_of_range[i]);
+  const int n_ranks = reducer.size();
+  // Bucket this rank's own out-of-range entries by destination, ranks
+  // ascending -- the grouping both `Reducer::alltoallv` calls below
+  // (int channel and value channel) must agree on, since the k-th
+  // received value in one channel must be the k-th received record in
+  // the other.
+  std::vector<std::vector<const Entry*>> by_rank(static_cast<std::size_t>(n_ranks));
+  for (const auto& entry : out_of_range) {
+    const int dest = owner_of_fn(entry);
+    FUSE_ASSERT(dest >= 0 && dest < n_ranks,
+               "AlgebraicSystem::exchange_foreign_entries: owner_of_fn returned rank {} outside [0, {})", dest,
+               n_ranks);
+    by_rank[static_cast<std::size_t>(dest)].push_back(&entry);
   }
 
-  std::vector<std::int64_t> recv_ints(max_count * n_int_fields * static_cast<std::size_t>(reducer.size()), 0);
-  reducer.allgather(send_ints.data(), max_count * n_int_fields, recv_ints.data());
-  std::vector<double> recv_values(max_count * static_cast<std::size_t>(reducer.size()), 0.0);
-  reducer.allgather(send_values.data(), max_count, recv_values.data());
+  std::vector<int> send_int_counts(static_cast<std::size_t>(n_ranks), 0);
+  std::vector<int> send_value_counts(static_cast<std::size_t>(n_ranks), 0);
+  for (int r = 0; r < n_ranks; ++r) {
+    send_value_counts[static_cast<std::size_t>(r)] = static_cast<int>(by_rank[static_cast<std::size_t>(r)].size());
+    send_int_counts[static_cast<std::size_t>(r)] =
+        send_value_counts[static_cast<std::size_t>(r)] * static_cast<int>(n_int_fields);
+  }
+
+  std::vector<std::int64_t> send_ints;
+  std::vector<double> send_values;
+  send_ints.reserve(out_of_range.size() * n_int_fields);
+  send_values.reserve(out_of_range.size());
+  std::vector<std::int64_t> record(n_int_fields);
+  for (int r = 0; r < n_ranks; ++r) {
+    for (const Entry* entry : by_rank[static_cast<std::size_t>(r)]) {
+      pack_ints(record.data(), *entry);
+      for (std::size_t k = 0; k < n_int_fields; ++k) send_ints.push_back(record[k]);
+      send_values.push_back(value_of(*entry));
+    }
+  }
+
+  std::vector<int> recv_int_counts;
+  std::vector<int> recv_value_counts;
+  const auto recv_ints = reducer.alltoallv(send_ints, send_int_counts, recv_int_counts);
+  const auto recv_values = reducer.alltoallv(send_values, send_value_counts, recv_value_counts);
+
+  const std::size_t n_received = recv_values.size();
+  FUSE_ASSERT(recv_ints.size() == n_received * n_int_fields,
+             "AlgebraicSystem::exchange_foreign_entries: int channel ({} values) and value channel ({} "
+             "entries) disagree on how many records were received -- the two alltoallv calls above must "
+             "use proportional per-rank counts (n_int_fields x the entry count) to stay in lock-step",
+             recv_ints.size(), n_received);
 
   std::vector<Entry> result = in_range;
-  const std::size_t n_slots = max_count * static_cast<std::size_t>(reducer.size());
-  for (std::size_t slot = 0; slot < n_slots; ++slot) {
+  for (std::size_t slot = 0; slot < n_received; ++slot) {
     const std::int64_t* int_record = &recv_ints[slot * n_int_fields];
-    if (int_record[0] == kSentinelMarker) continue;
     const Entry entry = unpack(int_record, recv_values[slot]);
+    // Defensive, not load-bearing: owner_of_fn routed this record here
+    // because it believes THIS rank owns it, so in_range_fn should
+    // always agree; kept as a plain filter (not an assert) only because
+    // the allgather version this replaces had the identical filter for
+    // the identical reason -- a caller whose owner_of_fn disagrees with
+    // its own in_range_fn has a wiring bug, not a legitimate case for
+    // the record to be silently dropped forever, but diagnosing that
+    // mismatch is outside this function's own contract.
     if (in_range_fn(entry)) result.push_back(entry);
   }
   return result;
@@ -194,6 +237,8 @@ Result<linalg::DistSparseMatrix> AlgebraicSystem::assemble_matrix(const ElementC
   const std::int64_t row_lo = dof_map_->first_owned_dof();
   const std::int64_t row_hi = dof_map_->end_owned_dof();
   const std::int64_t global_n = dof_map_->n_dofs();
+  std::vector<std::int64_t> row_lo_by_rank = dof_map_->row_lo_by_rank();
+  if (row_lo_by_rank.empty()) row_lo_by_rank = {row_lo};  // serial convenience path: one participant
 
   std::vector<linalg::Triplet> local;
   std::vector<std::int64_t> indices;
@@ -210,12 +255,17 @@ Result<linalg::DistSparseMatrix> AlgebraicSystem::assemble_matrix(const ElementC
   const auto value_of = [](const linalg::Triplet& t) { return t.value; };
   const auto unpack = [](const std::int64_t* record, double value) { return linalg::Triplet{record[0], record[1], value}; };
   const auto in_range = [&](const linalg::Triplet& t) { return t.row >= row_lo && t.row < row_hi; };
-  const auto resolved =
-      exchange_foreign_entries<linalg::Triplet>(local, *reducer_, in_range, pack_ints, value_of, unpack, 2);
+  // Item X: a triplet's destination is whichever rank owns ITS ROW
+  // (row_lo_by_rank's own ascending contract, the same `owner_of`
+  // helper AlgebraicSystem's own constructor uses to build the ghost
+  // pattern) -- not a broadcast, since the row's owner is derivable
+  // locally from row_lo_by_rank alone.
+  const auto owner_of_entry = [&](const linalg::Triplet& t) { return owner_of(row_lo_by_rank, t.row); };
+  const auto resolved = exchange_foreign_entries<linalg::Triplet>(local, *reducer_, in_range, owner_of_entry,
+                                                                    pack_ints, value_of, unpack, 2);
 
   linalg::RowOwnership owners;
-  owners.row_lo = dof_map_->row_lo_by_rank();
-  if (owners.row_lo.empty()) owners.row_lo = {row_lo};  // serial convenience path: one participant
+  owners.row_lo = row_lo_by_rank;
   return linalg::DistSparseMatrix::from_triplets(row_lo, row_hi, global_n, resolved, reducer_, owners);
 }
 
@@ -239,7 +289,11 @@ Result<void> AlgebraicSystem::assemble_vector(const ElementVectorContribution& c
   const auto value_of = [](const Entry& e) { return e.second; };
   const auto unpack = [](const std::int64_t* record, double value) -> Entry { return {record[0], value}; };
   const auto in_range = [&](const Entry& e) { return e.first >= row_lo && e.first < row_hi; };
-  const auto resolved = exchange_foreign_entries<Entry>(local, *reducer_, in_range, pack_ints, value_of, unpack, 1);
+  std::vector<std::int64_t> row_lo_by_rank = dof_map_->row_lo_by_rank();
+  if (row_lo_by_rank.empty()) row_lo_by_rank = {row_lo};  // serial convenience path: one participant
+  const auto owner_of_entry = [&](const Entry& e) { return owner_of(row_lo_by_rank, e.first); };
+  const auto resolved =
+      exchange_foreign_entries<Entry>(local, *reducer_, in_range, owner_of_entry, pack_ints, value_of, unpack, 1);
 
   out.set_zero();
   for (const auto& [global_index, value] : resolved) out.data()[global_index - row_lo] += value;

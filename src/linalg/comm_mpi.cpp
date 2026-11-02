@@ -47,6 +47,7 @@
 #include "fuse/base/error.hpp"
 
 #include <limits>
+#include <vector>
 
 #if FUSE_HAVE_MPI
 #include <algorithm>
@@ -114,6 +115,67 @@ class MpiReducer : public Reducer {
                std::numeric_limits<int>::max());
     MPI_Allgather(send, static_cast<int>(n_each), MPI_INT64_T, recv, static_cast<int>(n_each),
                  MPI_INT64_T, comm_);
+  }
+
+  /// The real two-collective exchange comm.hpp's own `alltoallv` header
+  /// comment describes: one `MPI_Alltoall` for the counts (every
+  /// participant learns how many entries every OTHER participant is
+  /// about to send it), then one `MPI_Alltoallv` for the payload itself,
+  /// using displacements derived from an exclusive prefix sum of each
+  /// side's own counts -- the SAME two-phase shape `make_mpi_exchanger`
+  /// above builds once and reuses; this one pays both phases on every
+  /// call, since (per this method's own contract) nothing here is
+  /// assumed to repeat along a fixed pattern.
+  std::vector<std::int64_t> alltoallv(const std::vector<std::int64_t>& send,
+                                       const std::vector<int>& send_counts,
+                                       std::vector<int>& recv_counts) const override {
+    FUSE_ASSERT(static_cast<int>(send_counts.size()) == size_,
+               "MpiReducer::alltoallv(int64_t): send_counts.size()={} != size()={}",
+               send_counts.size(), size_);
+    recv_counts.assign(static_cast<std::size_t>(size_), 0);
+    MPI_Alltoall(send_counts.data(), 1, MPI_INT, recv_counts.data(), 1, MPI_INT, comm_);
+
+    std::vector<int> send_displs(static_cast<std::size_t>(size_), 0);
+    std::vector<int> recv_displs(static_cast<std::size_t>(size_), 0);
+    for (int r = 1; r < size_; ++r) {
+      send_displs[static_cast<std::size_t>(r)] =
+          send_displs[static_cast<std::size_t>(r) - 1] + send_counts[static_cast<std::size_t>(r) - 1];
+      recv_displs[static_cast<std::size_t>(r)] =
+          recv_displs[static_cast<std::size_t>(r) - 1] + recv_counts[static_cast<std::size_t>(r) - 1];
+    }
+    const int recv_total = size_ == 0 ? 0 : recv_displs.back() + recv_counts.back();
+    std::vector<std::int64_t> recv(static_cast<std::size_t>(recv_total));
+    MPI_Alltoallv(send.data(), send_counts.data(), send_displs.data(), MPI_INT64_T, recv.data(),
+                 recv_counts.data(), recv_displs.data(), MPI_INT64_T, comm_);
+    return recv;
+  }
+
+  /// The `double` analogue, native for the same reason the `double`
+  /// overload of `allgather` above is: the payload travels through
+  /// MPI_DOUBLE's own wire format directly rather than a bit_cast
+  /// detour through the int64 path (which would also work, but is not
+  /// the native transport).
+  std::vector<double> alltoallv(const std::vector<double>& send, const std::vector<int>& send_counts,
+                                 std::vector<int>& recv_counts) const override {
+    FUSE_ASSERT(static_cast<int>(send_counts.size()) == size_,
+               "MpiReducer::alltoallv(double): send_counts.size()={} != size()={}",
+               send_counts.size(), size_);
+    recv_counts.assign(static_cast<std::size_t>(size_), 0);
+    MPI_Alltoall(send_counts.data(), 1, MPI_INT, recv_counts.data(), 1, MPI_INT, comm_);
+
+    std::vector<int> send_displs(static_cast<std::size_t>(size_), 0);
+    std::vector<int> recv_displs(static_cast<std::size_t>(size_), 0);
+    for (int r = 1; r < size_; ++r) {
+      send_displs[static_cast<std::size_t>(r)] =
+          send_displs[static_cast<std::size_t>(r) - 1] + send_counts[static_cast<std::size_t>(r) - 1];
+      recv_displs[static_cast<std::size_t>(r)] =
+          recv_displs[static_cast<std::size_t>(r) - 1] + recv_counts[static_cast<std::size_t>(r) - 1];
+    }
+    const int recv_total = size_ == 0 ? 0 : recv_displs.back() + recv_counts.back();
+    std::vector<double> recv(static_cast<std::size_t>(recv_total));
+    MPI_Alltoallv(send.data(), send_counts.data(), send_displs.data(), MPI_DOUBLE, recv.data(),
+                 recv_counts.data(), recv_displs.data(), MPI_DOUBLE, comm_);
+    return recv;
   }
 
  private:
