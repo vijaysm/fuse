@@ -124,8 +124,8 @@ def scan(root: Path) -> list[str]:
     # written-file confirmation) is the same kind of harness-facing text
     # test/examples are already exempt for -- rewriting it through fmt would
     # buy this gate nothing it does not already enforce in library code.
-    # physics-kit joined this list 2026-10-28 at the skeleton stage (lead), so
-    # the I6 / bare-throw / fmt-only rules apply to it from its first real file.
+    # physics-kit is on this list so the I6 / bare-throw / fmt-only rules
+    # apply to it from its first real file.
     for area in ("include", "src", "test", "examples", "tools/src", "physics-kit"):
         library_code = area in ("include", "src")
         area_dir = root / area

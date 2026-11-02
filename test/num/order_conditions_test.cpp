@@ -298,7 +298,7 @@ TEST(ExtendedTableaus, Ssprk104SatisfiesOrderFourConditions) {
 // at the 1e-27 precision of its published rationals and fails order 6 by 4.2e-3
 // (lead, 2026-10-31; the round-3 track had declared it order 4 and this test
 // "unresolvable" for it after misreading the passing order-5 conditions).
-TEST(RoundThreeTableaus, EsdirkPairsPassEveryCheckTheAlgebraicCheckerCanResolve) {
+TEST(TableauPairs, EsdirkPairsPassEveryCheckTheAlgebraicCheckerCanResolve) {
   RootedTreeCatalog cat(kMaxCatalogOrder);
   struct Case { const char* name; ButcherTableau t; bool order_distinction_resolvable; };
   std::vector<Case> cases;
@@ -358,7 +358,7 @@ TEST(RoundThreeTableaus, EsdirkPairsPassEveryCheckTheAlgebraicCheckerCanResolve)
 
 // The ARK3(2)4L[2]SA dense-output addition to the ALREADY-shipped
 // ESDIRK324L2SA tableau -- same b_i(1)=b_i check, same tolerance reasoning.
-TEST(RoundThreeTableaus, Esdirk324l2saDenseOutputReproducesB) {
+TEST(TableauPairs, Esdirk324l2saDenseOutputReproducesB) {
   const ButcherTableau t = esdirk324l2sa_tableau();
   ASSERT_TRUE(t.has_dense_output());
   double worst = 0.0, bound = 0.0;
@@ -375,7 +375,7 @@ TEST(RoundThreeTableaus, Esdirk324l2saDenseOutputReproducesB) {
 
 // SSPRK(10,4)'s own embedded pair (Conde/Fekete/Shadid 2018) -- order 3,
 // algebraically distinct from the propagated order 4.
-TEST(RoundThreeTableaus, Ssprk104EmbeddedPairIsOrderThree) {
+TEST(TableauPairs, Ssprk104EmbeddedPairIsOrderThree) {
   const ButcherTableau t = ssprk104_tableau();
   ASSERT_TRUE(t.has_embedded_estimate());
   RootedTreeCatalog cat(kMaxCatalogOrder);

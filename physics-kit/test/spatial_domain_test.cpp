@@ -1,5 +1,5 @@
 // physics.spatial_domain -- ported from KARMA's karma_domain.h/.C, proving
-// the I6 fix (domain.hpp's own header comment: the upstream assert was
+// the fix (domain.hpp's own header comment: the upstream assert was
 // vacuous and never fired) as a real, firing refusal.
 
 #include "fuse_physics/spatial/domain.hpp"
@@ -35,7 +35,7 @@ TEST(SpatialDomainTest, PerAxisSymmetryFlagsAreIndependent) {
   EXPECT_FALSE(mixed.is_symmetric());
 }
 
-// physics.spatial_domain.RefusesUnsupportedShapes -- the I6 fix: both
+// physics.spatial_domain.RefusesUnsupportedShapes -- the fix: both
 // Hexagon and Unstructured must refuse construction (the upstream
 // assert's INTENDED condition, not the vacuous OR it actually wrote).
 TEST(SpatialDomainTest, RefusesUnsupportedShapes) {

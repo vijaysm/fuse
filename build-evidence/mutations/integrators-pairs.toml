@@ -1,11 +1,11 @@
-#  physics-kit,   (docs/dev/integrators-design.md):
-# one row per new tableau/formula this round adds, proved by tools/mutate.py against
-# this round's own build-tier0 (MEASURED).
+# Mutations for the ESDIRK436L2SA and ESDIRK548L2SA pairs, the dense-output tables,
+# the dynamical time-scale controller and FSAL reuse (docs/dev/integrators-design.md):
+# one row per tableau/formula, proved by tools/mutate.py against build-tier0.
 
 [[mutation]]
 id = "integrators-esdirk436l2sa-coefficient-perturbation"
 area = "num"
-describes = "perturbs esdirk436l2sa_tableau()'s own A[2][1] (-1743/31250) by roughly 2 percent -- RoundThreeTableaus.EsdirkPairsPassEveryCheckTheAlgebraicCheckerCanResolve catches the broken order-4 condition and/or the broken row-sum consistency this introduces."
+describes = "perturbs esdirk436l2sa_tableau()'s own A[2][1] (-1743/31250) by roughly 2 percent -- TableauPairs.EsdirkPairsPassEveryCheckTheAlgebraicCheckerCanResolve catches the broken order-4 condition and/or the broken row-sum consistency this introduces."
 file = "include/fuse/num/butcher_tableau.hpp"
 old = "      {8611.0 / 62500.0, -1743.0 / 31250.0, g, 0.0, 0.0, 0.0},"
 new = "      {8611.0 / 62500.0, -1743.0 / 31250.0 * 1.02, g, 0.0, 0.0, 0.0},"
@@ -15,7 +15,7 @@ test = "num.order_conditions"
 [[mutation]]
 id = "integrators-esdirk548l2sa-order-declared-wrong"
 area = "num"
-describes = "Declares esdirk548l2sa_tableau() order 4, as the round-3 track had shipped it (the method is order 5: every rooted-tree condition through 5 holds at the 1e-27 precision of the published rationals and order 6 fails by 4.2e-3; lead, 2026-10-31). Killed twice over: RoundThreeTableaus.EsdirkPairsPassEveryCheckTheAlgebraicCheckerCanResolve requires the order after the declared one to FAIL, and order 5 does not; DirkIntegrator.TwoNewEsdirkPairsConvergeAtTheirDeclaredOrderOnDahlquist asserts the test literal 5 equals the declared order."
+describes = "Declares esdirk548l2sa_tableau() order 4 (the method is order 5: every rooted-tree condition through 5 holds at the 1e-27 precision of the published rationals and order 6 fails by 4.2e-3). Killed twice over: TableauPairs.EsdirkPairsPassEveryCheckTheAlgebraicCheckerCanResolve requires the order after the declared one to FAIL, and order 5 does not; DirkIntegrator.TwoNewEsdirkPairsConvergeAtTheirDeclaredOrderOnDahlquist asserts the test literal 5 equals the declared order."
 file = "include/fuse/num/butcher_tableau.hpp"
 old = '''  t.name = "ESDIRK548L2SA";
   t.family = ButcherFamily::DirkEmbedded;
@@ -31,7 +31,7 @@ test = "num.order_conditions"
 [[mutation]]
 id = "integrators-ark3-dense-output-perturbation"
 area = "num"
-describes = "perturbs esdirk324l2sa_tableau()'s own Second-Order Dense Output table: stage-1's own b*_1,1 entry, from 4655552711362/22874653954995 to a value 5 percent larger -- RoundThreeTableaus.Esdirk324l2saDenseOutputReproducesB (the b_i(1)=b_i row-sum check) fails because the dense-output row no longer sums to the propagated B[0]."
+describes = "perturbs esdirk324l2sa_tableau()'s own Second-Order Dense Output table: stage-1's own b*_1,1 entry, from 4655552711362/22874653954995 to a value 5 percent larger -- TableauPairs.Esdirk324l2saDenseOutputReproducesB (the b_i(1)=b_i row-sum check) fails because the dense-output row no longer sums to the propagated B[0]."
 file = "include/fuse/num/butcher_tableau.hpp"
 old = "      {4655552711362.0 / 22874653954995.0, -215264564351.0 / 13552729205753.0},"
 new = "      {4655552711362.0 / 22874653954995.0 * 1.05, -215264564351.0 / 13552729205753.0},"
@@ -41,7 +41,7 @@ test = "num.order_conditions"
 [[mutation]]
 id = "integrators-ssprk104-embedded-pair-perturbation"
 area = "num"
-describes = "perturbs ssprk104_tableau()'s own Conde/Fekete/Shadid embedded row: b_hat10[1] from 2/9 to 0.25 -- RoundThreeTableaus.Ssprk104EmbeddedPairIsOrderThree catches the broken order-3 embedded condition this introduces."
+describes = "perturbs ssprk104_tableau()'s own Conde/Fekete/Shadid embedded row: b_hat10[1] from 2/9 to 0.25 -- TableauPairs.Ssprk104EmbeddedPairIsOrderThree catches the broken order-3 embedded condition this introduces."
 file = "include/fuse/num/butcher_tableau.hpp"
 old = "  const std::vector<double> b_hat10{0.0, 2.0 / 9.0, 0.0, 0.0, 5.0 / 18.0, 1.0 / 3.0,"
 new = "  const std::vector<double> b_hat10{0.0, 0.25, 0.0, 0.0, 5.0 / 18.0, 1.0 / 3.0,"
@@ -71,7 +71,7 @@ test = "num.continuous_extension"
 [[mutation]]
 id = "integrators-dynamical-controller-min-combination-flipped"
 area = "num"
-describes = "flips ExplicitIntegrator::step()'s own min() combination of the embedded and dynamical proposals ('s own combination rule) to std::max -- ExplicitIntegrator.EmbeddedAndDynamicalControllersCombineByTakingTheMinimum fails because the reported h_next becomes the LARGER (embedded) proposal instead of the smaller (dynamical) one the test's own two solo measurements pin."
+describes = "flips ExplicitIntegrator::step()'s own min() combination of the embedded and dynamical proposals to std::max -- ExplicitIntegrator.EmbeddedAndDynamicalControllersCombineByTakingTheMinimum fails because the reported h_next becomes the LARGER (embedded) proposal instead of the smaller (dynamical) one the test's own two solo measurements pin."
 file = "include/fuse/num/explicit_integrator.hpp"
 old = "        rec.h_next = std::min(rec.h_next, static_cast<Scalar>(h_dyn.value()));"
 new = "        rec.h_next = std::max(rec.h_next, static_cast<Scalar>(h_dyn.value()));"
@@ -107,16 +107,16 @@ old = "          *fsal_cached_t_ == t && fsal_cached_y_->size() == n) {"
 new = "          *fsal_cached_t_ == t) {"
 target = "fuse_num_explicit_integrator_test"
 test = "num.explicit_integrator"
-# 2026-10-31 (lead): no longer equivalent. Dopri45FsalCacheGuardsAgainstADifferentlySizedState gained the 2 -> 1 dimension transition, where the value loop over the smaller new state matches the cache's leading entry and only the size guard stops the reuse; the step then differs from a fresh integrator's.
+# Not equivalent: Dopri45FsalCacheGuardsAgainstADifferentlySizedState gained the 2 -> 1 dimension transition, where the value loop over the smaller new state matches the cache's leading entry and only the size guard stops the reuse; the step then differs from a fresh integrator's.
 
 
 [[mutation]]
 id = "integrators-dirk-fsal-default-flipped-to-enabled"
 area = "num"
-describes = "flips DirkIntegrator's own fsal_enabled_ default from false to true -- DirkIntegrator.FsalReuseDefaultsToDisabled catches the default no longer matching this round's own documented finding (the implicit family does not meet the bit-identical bar at every setting this project ships, so it must stay opt-in)."
+describes = "flips DirkIntegrator's own fsal_enabled_ default from false to true -- DirkIntegrator.FsalReuseDefaultsToDisabled catches the default no longer matching the documented finding (the implicit family does not meet the bit-identical bar at every setting this project ships, so it must stay opt-in)."
 file = "include/fuse/num/dirk_integrator.hpp"
-old = "  bool fsal_enabled_ = false;  //, item 6: opt-in -- see set_fsal_enabled()'s own comment."
-new = "  bool fsal_enabled_ = true;  //, item 6: opt-in -- see set_fsal_enabled()'s own comment."
+old = "  bool fsal_enabled_ = false;  // Opt-in -- see set_fsal_enabled()'s own comment."
+new = "  bool fsal_enabled_ = true;  // Opt-in -- see set_fsal_enabled()'s own comment."
 target = "fuse_num_dirk_integrator_test"
 test = "num.dirk_integrator"
 
@@ -133,10 +133,10 @@ test = "num.dirk_integrator"
 [[mutation]]
 id = "order-catalog-out-of-range-not-refused"
 area = "num"
-describes = "RootedTreeCatalog::of_order's range check is removed, restoring the round-2 behaviour: an order beyond the catalog indexes past by_order_ (undefined behaviour that read an empty range in practice), so max_defect_at_order returns 0 for an order nobody built and a 'next order must fail' assertion passes vacuously. Found by the lead on 2026-10-31 when ESDIRK548L2SA (order 5) needed order 6 checked on a catalog built to 5."
+describes = "RootedTreeCatalog::of_order's range check is removed, restoring the unchecked behaviour: an order beyond the catalog indexes past by_order_ (undefined behaviour that read an empty range in practice), so max_defect_at_order returns 0 for an order nobody built and a 'next order must fail' assertion passes vacuously. This matters when ESDIRK548L2SA (order 5) needs order 6 checked on a catalog built to 5."
 file = "include/fuse/num/order_conditions.hpp"
 old = """    if (order < 1 || order > max_order()) {"""
 new = """    if (false) {  // MUTATION: range check removed"""
 target = "fuse_num_order_conditions_test"
 test = "num.order_conditions"
-result = "KILLED (lead's tree, 2026-10-31): OrderConditions.AnOrderBeyondTheCatalogIsRefused expects std::invalid_argument from of_order(4) on a catalog built to 3."
+result = "KILLED: OrderConditions.AnOrderBeyondTheCatalogIsRefused expects std::invalid_argument from of_order(4) on a catalog built to 3."

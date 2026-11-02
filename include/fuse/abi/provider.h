@@ -60,7 +60,7 @@ typedef struct fuse_provider_abi_v1 {
   /* real, not the default no-op */
   fuse_status (*capabilities)(fuse_provider_ctx* self, const fuse_null* in, fuse_capability_set* out);
 
-  /* docs/dev/restart.md round 2, item 4 -- restart-to-disk Option B, appended */
+  /* docs/dev/restart.md -- restart-to-disk as an opaque byte record, appended */
   /* LAST per this table's own append-only rule above: an opaque, versioned */
   /* byte record capturing whatever save_state()'s in-memory rollback cannot */
   /* reach (component-private state outside register_fields()' own storage). */

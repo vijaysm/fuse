@@ -9,7 +9,7 @@
 // 2 3 (physics-kit/test/CMakeLists.txt), build-only under
 // FUSE_ENABLE_MPI=ON -- MPI cannot start in this sandbox,
 // matching every other *_mpi_test.cpp in this
-// tree; host_pending names the exact mpirun commands.
+// tree.
 //
 // PARTITION. A 1-D line of Edge2 elements, split so RANK r OWNS
 // (r + 1) ELEMENTS -- 1, 2, 3, ... -- strictly increasing, so no two

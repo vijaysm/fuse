@@ -146,8 +146,8 @@ TEST(GeometryMapTest, PyramidInverseMapApexFastPathIsExact) {
 // physics.fe_geometry_map.MapRoundTripsThroughInverseMapOnAShearedPrismAndPyramid
 // -- the SAME contract as MapRoundTripsThroughInverseMap above, on
 // genuinely non-affine physical cells (no affine-quad4-style fast path
-// exists for either), exercising the general Newton iteration this
-// wave's Prism and Pyramid branches of in_reference_cell/jacobian feed
+// exists for either), exercising the general Newton iteration the
+// Prism and Pyramid branches of in_reference_cell/jacobian feed
 // into.
 TEST(GeometryMapTest, MapRoundTripsThroughInverseMapOnAShearedPrismAndPyramid) {
   {

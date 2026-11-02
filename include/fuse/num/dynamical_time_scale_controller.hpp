@@ -6,9 +6,8 @@
 
 #include "fuse/base/result.hpp"
 
-///  physics-kit,, item 5
-/// (docs/dev/integrators-design.md Section 2, mechanism 1; Round 2's own open
-/// question 12).
+/// Dynamical-time-scale step-size control (docs/dev/integrators-design.md
+/// Section 2, mechanism 1).
 ///
 /// KARMA's mechanism 1 (`ExplicitRKIntegrator::core_integrator`,
 /// upstream/karma/src/numerics/temporal/explicit_rk_integrator.C:213-296) proposes
@@ -18,17 +17,17 @@
 /// `ControllerState::fac_old` plays for `EmbeddedController`'s own PI kind
 /// (embedded_controller.hpp).
 ///
-/// ROUND 3 SIMPLIFICATION (recorded as a deviation, open_questions): this class
+/// SIMPLIFICATION (a deviation from KARMA's formula): this class
 /// ships the memory-less (I-type, in this project's own ControllerKind naming)
 /// half of that formula, `h_next = safety * min_i(scales[i])`, clamped to
 /// `[fac_min, fac_max] * h_current` the same way EmbeddedController clamps its own
 /// proposal. The PI extension needs a persisted `prev_scale` the same shape as
-/// `ControllerState::fac_old`; it is not added here because no test in this round
-/// exercises two CONSECUTIVE steps with a time-VARYING dynamical scale (the task's
-/// own verification problem, linear decay with scale 1/|lambda|, is constant step
+/// `ControllerState::fac_old`; it is not added here because no test
+/// exercises two CONSECUTIVE steps with a time-VARYING dynamical scale (the
+/// verification problem, linear decay with scale 1/|lambda|, is constant step
 /// to step, for which the PI ratio term is identically 1 and the two formulas
 /// agree) -- adding the memory term untested would be exactly the "verify before
-/// you optimise" violation Round 1/2 avoided elsewhere. Flagged for the owner.
+/// you optimise" violation the rest of this directory avoids.
 ///
 /// `scales[i]` are the PROBLEM's own local dynamical time scales (TemporalProblem::
 /// dynamical_time_scales, integrator.hpp), one physical TIME per entry (e.g.
@@ -54,8 +53,8 @@ struct DynamicalControllerOptions {
 /// A pure function of (scales, h_current) -- same shape as EmbeddedController's own
 /// propose(), so a caller (explicit_integrator.hpp) can hold an
 /// std::optional<DynamicalTimeScaleController> beside its
-/// std::optional<EmbeddedController> and combine the two proposals (Round 3's own
-/// combination rule: the minimum of whichever are present, explicit_integrator.hpp's
+/// std::optional<EmbeddedController> and combine the two proposals (the combination
+/// rule is the minimum of whichever are present, explicit_integrator.hpp's
 /// own step()).
 class DynamicalTimeScaleController {
  public:
@@ -64,7 +63,7 @@ class DynamicalTimeScaleController {
 
   /// Returns a refusal (not a silent fallback) if `scales` is empty or every entry
   /// is non-positive -- the same "a refusal counts as verified only when a test
-  /// fires it" standard every other named refusal in this track meets
+  /// fires it" standard every other named refusal in this directory meets
   /// (docs/dev/integrators-design.md Section 4.5).
   template <typename Scalar>
   [[nodiscard]] fuse::Result<Scalar> propose(const std::vector<double>& scales,

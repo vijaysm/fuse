@@ -299,8 +299,11 @@ What this does not cover:
   field. MPI and the transport move binary64, not the narrow format.
 - **A field in a time window or an iteration region window** must still be
   binary64; the window code refuses a Storage field with `E-FIELD-VALUE-TYPE`.
-- **Restart files** do not take these formats through the coupling interface yet.
-  A provider plugin's fields may have them, in host memory (see
+- **Restart files.** A component stores a field of one of these formats with the
+  restart writer and reads it back with the reader, as the format itself
+  ([](restart.md#typed-fields)). The Runner does not write a component's arrays
+  to a restart file, and no entry of the C and Fortran participant interface does
+  either. A provider plugin's fields may have these formats, in host memory (see
   [](providers.md)).
 - **Minimum and maximum accumulation** work: the minimum of the widened values
   is the widened minimum, and it is rounded once on delivery.
@@ -383,17 +386,21 @@ What this does not cover:
   minimum is that of the sample picked, which comparing the gradient scalar by
   scalar does not give. Sum, mean and integral are linear and are accepted.
 - **An affine unit conversion** (an offset, such as degrees Celsius to kelvin)
-  would add the offset to the gradient as well. The compiler refuses that step
-  for every field today (`E-IR-UNLOWERABLE`), so it cannot happen; whoever makes
-  it lowerable has to apply the offset to the value scalars only.
+  would add the offset to the gradient as well, so the compiler refuses that step
+  for every field (`E-IR-UNLOWERABLE`); a gradient is never offset.
 - **The components must be interleaved** (`component_stride` 0 or 1). A blocked
   layout is refused with `E-FIELD-SCALAR-LAYOUT` rather than permuted.
-- **Only typed C++ registration tells the runtime a field has a gradient.** A C
-  or Fortran participant, or a provider plugin, can carry a gradient as extra
-  components of a plain binary64 field and it will move correctly, but the
-  runtime cannot tell them from values, so it will not refuse a minimum or
-  maximum accumulation of them. Restart files, iteration-region window members
-  and the C ABI's own field description do not know about a gradient yet.
+- **A field must say it has a gradient.** Typed C++ registration does, through
+  `value_traits`. A C or Fortran participant or a provider plugin says it with
+  `gradient_size` in its field view or row
+  ([](c-abi.md#fields-field_handle-and-register_field)), and the runtime then
+  refuses a minimum or maximum accumulation of that field too. A gradient
+  carried as extra components with `gradient_size` left at `0` moves correctly,
+  but the runtime cannot tell it from values, so it does not refuse that
+  accumulation. A field in an iteration region or a time window must be
+  binary64, so it cannot be a field of dual numbers.
+- **Restart files** store a field of dual numbers as its scalars with
+  `fuse::put_values()` ([](restart.md#fields-of-double-double-quad-double-and-dual-values)).
 - **Reverse mode** is a separate mechanism, below: a field with a gradient is
   forward mode, and reverse mode needs the component to supply its own adjoint.
 
@@ -407,7 +414,7 @@ a remap, the factor of a unit conversion, the fan-out of a sum or a mean); the
 component supplies the adjoint of its own `advance()` with whatever tool it uses.
 No tape crosses the coupler: only arrays of binary64 adjoint variables move between a
 component and FUSE, which is what lets the same design reach components written in
-other languages and running in other processes (neither is implemented yet).
+other languages (C and Fortran, see below) and running in other processes.
 
 A component that can be reversed returns itself from `Component::adjoint()` and
 implements `fuse::AdjointComponent` (`fuse/runtime/component.hpp`):
@@ -447,7 +454,7 @@ The adjoint array of a field is in the memory the field is in, host or device, a
 reverse sweep runs on the execution space the forward run used. Across ranks the
 exchange of a channel (the MPI transport) is run backwards, and a rank that fails in
 the middle of a sweep does not leave the ranks it exchanges with waiting: they are
-told at the next agreement point and every rank returns an error. What is supported today:
+told at the next agreement point and every rank returns an error. Supported:
 binary64 fields, in one process or across ranks, remap, unit
 conversion, sum, mean and integral accumulation, merge by first, sum or mean, and
 lagged channels, and ordinary iteration regions on one rank (reversed as the fixed point
@@ -462,7 +469,8 @@ outside (the participant ABI) is reversed with `Runner::resume_period_adjoint()`
 each of its steps in turn. From C and Fortran, a code that drives its own components registers their
 adjoint arrays and reverses its steps between `fuse_begin_adjoint_step` and `fuse_end_adjoint_step`
 ([](c-abi.md#reverse-mode), [](fortran.md)), and a provider plugin implements `bind_adjoint` and
-`advance_adjoint` ([](providers.md#adjoint-of-a-plugin)). Python has no adjoint entry points yet.
+`advance_adjoint` ([](providers.md#adjoint-of-a-plugin)). The Python bindings (`pfuse`) have no adjoint
+entry points.
 
 ### Double-double and quad-double
 
@@ -549,8 +557,10 @@ What this does not cover:
   `fuse/num/arithmetic_kernels.hpp`, and a row in the kernel tests.
 - **Results near the ends of the exponent range** (a product or a square of a limb
   that overflows or goes subnormal) are not specified, as in the QD library.
-- **Restart files** do not know the types yet, and `RunnerConfig::accumulation_type`
-  is not reachable from the C and Fortran interface.
+- **Restart files** store them with `fuse::put_values()` and `fuse::get_values()`
+  ([](restart.md#fields-of-double-double-quad-double-and-dual-values)).
+  `RunnerConfig::accumulation_type` is not reachable from the C and Fortran
+  interface.
 - **A field registered through the C or Fortran interface** is a `dd` or `qd` field
   only if it says so, with `FUSE_ELEMENT_DD` or `FUSE_ELEMENT_QD`
   ([](c-abi.md#fields-field_handle-and-register_field)). The same array registered

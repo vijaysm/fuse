@@ -55,7 +55,7 @@ template <class T>
 using integrator_scalar_t = typename integrator_scalar<T>::type;
 
 /// A state-element type an Integrator can step. `double` satisfies this today; a future
-/// `dual<S, N>` (numtypes) satisfies it once `integrator_scalar<dual<S,N>>` is
+/// `dual<S, N>` satisfies it once `integrator_scalar<dual<S,N>>` is
 /// specialised to `S` -- this concept does not need to change for that, since every
 /// requirement below is phrased in terms of `integrator_scalar_t<T>`, never `T` alone,
 /// for exactly the quantities (scaling by a step size or a Butcher coefficient) that a
@@ -116,9 +116,9 @@ struct TemporalProblem {
   /// entry (e.g. |lambda_i| for a locally-linearised decay/oscillation mode), NOT
   /// necessarily `dimension`-sized -- a caller may report fewer scales than state
   /// components (one global rate) or more (per-mode rates from its own physics).
-  /// Round 3 scope (`DynamicalTimeScaleController`,
-  /// dynamical_time_scale_controller.hpp): KARMA's own "mechanism 1" step-size
-  /// control, docs/dev/integrators-design.md Section 2. Absent means no dynamical
+  /// `DynamicalTimeScaleController` (dynamical_time_scale_controller.hpp):
+  /// KARMA's own "mechanism 1" step-size control,
+  /// docs/dev/integrators-design.md Section 2. Absent means no dynamical
   /// time-scale control is available for this problem -- a caller falls back to the
   /// embedded (Richardson/error-based) controller alone, or a fixed step.
   std::function<Result<void>(Scalar t, std::span<const Value> y, std::vector<double>& out)>

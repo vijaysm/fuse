@@ -18,8 +18,7 @@
 /// but it belongs to the native MESH BACKEND's own simplex-decomposition
 /// code, not to a generic small-vector vocabulary physics-kit can depend on
 /// without taking on a backend-specific include. This header is therefore a
-/// thin physics-kit-own type, named here per D-A's instruction to name the
-/// gap: a plain-struct Point/Vector3 and a row-major-free Matrix3, with the
+/// thin physics-kit-own type, a plain-struct Point/Vector3 and a row-major-free Matrix3, with the
 /// handful of dense operations (determinant, inverse, symmetric eigenvalue
 /// bounds) the ported FE core's geometry maps need, implemented natively so
 /// that physics-kit/include/fuse_physics/ never names "Eigen/" (tools/check-

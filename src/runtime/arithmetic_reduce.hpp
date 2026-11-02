@@ -2,8 +2,7 @@
 
 /// The cross-rank sum of the conservation integrals of an Arithmetic field
 /// (double-double, quad-double), and of a binary64 field summed in double-double
-/// (RunnerConfig::accumulation_type). plans/2026-10-22-universal-number-types.md,
-/// stage U4. Internal to the runtime; a header so that the MPI test can drive it
+/// (RunnerConfig::accumulation_type). Internal to the runtime; a header so that the MPI test can drive it
 /// without a Runner (test/parallel/arithmetic_reduce_mpi_test.cpp).
 ///
 /// WHY NOT A USER-DEFINED MPI_Op. Addition in dd or qd is not associative, so an

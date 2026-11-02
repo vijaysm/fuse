@@ -140,8 +140,8 @@ class Mesh {
   void assign_ids() noexcept {}
   /// Ambiguous on its own (vertex handle 5 and element handle 5 are
   /// different entities, and a self-generated mesh gives both the same
-  /// identity id, which hid this): kept for the wave-1 call sites that
-  /// only ever used it on a self-generated mesh, where vertex and element
+  /// identity id, which hid this): kept for call sites that
+  /// only ever use it on a self-generated mesh, where vertex and element
   /// ids happen to coincide. A caller that can tell which space it means
   /// -- every from_mesh_view()-sourced mesh, where the two spaces
   /// genuinely differ -- uses vertex_global_id/element_global_id instead.
