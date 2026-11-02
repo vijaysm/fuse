@@ -1770,6 +1770,14 @@ Result<void> MoabMeshBackend::load(const MeshDecl& decl) {
   }
 
   auto view = std::make_unique<MoabMeshView>(impl_->mb, file_set);
+  //: wire this backend's own base ParallelComm (set
+  // at adopt_communicator() time, impl_->pcomm, null in Mode A / a serial
+  // load) into the view at construction, rather than leaving owner()
+  // refusing E-MESH-NO-OWNER until a caller finds and calls
+  // set_parallel_comm() separately. Reuses the SAME handle every other
+  // impl_->pcomm != nullptr check in this file already reads -- no second
+  // lookup, no new moab::ParallelComm::get_pcomm() call.
+  view->set_parallel_comm(impl_->pcomm.get());
   const auto gathered = impl_->base_loader.gather(*view);
   if (!gathered.ok()) {
     impl_->base_loader.discard(file_set);
@@ -2698,6 +2706,12 @@ Result<void> MoabMeshBackend::Impl::load_into_placements(const MeshDecl& decl) {
       std::unique_ptr<MoabMeshView> view;
       if (built.ok()) {
         view = std::make_unique<MoabMeshView>(*ctx.core, file_set);
+        // Item M (as above): this placement's OWN ParallelComm (ctx.pcomm,
+        // split from the base communicator over exactly this processor
+        // set's ranks, non-null iff ctx.core is) -- not the backend's base
+        // impl_->pcomm, which is a different communicator entirely once a
+        // processor set has been declared.
+        view->set_parallel_comm(ctx.pcomm.get());
         built = ctx.loader->gather(*view);
       }
       if (built.ok()) {
