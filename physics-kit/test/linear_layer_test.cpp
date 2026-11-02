@@ -171,7 +171,7 @@ TEST(LinearLayerTest, MassMatrixProjectionSolveRecoversKnownVectorWithinDerivedB
 // Jacobi leaves kappa = O(h^-2), iterations O(n); SSOR with any fixed
 // omega in (0, 2) gives kappa = O(h^-1) for this class of FE matrices,
 // iterations O(sqrt(n)), so the ratio jacobi/ssor GROWS with n (1.04,
-// 1.22, 1.55 at omega 1.5 above). Consistent ordering governs SOR as a
+// 1.39, 1.55 at omega 1.5 above; 0.90, 1.04, 1.22 at omega 1.0). Consistent ordering governs SOR as a
 // stationary iteration, not SSOR as a CG preconditioner.
 //
 // Asserted: on the 32 x 32 and 64 x 64 meshes SSOR at omega = 1.0 takes
