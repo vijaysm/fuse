@@ -618,3 +618,55 @@ above MFFD's `sqrt(eps)` differencing floor and enter the assertion only through
 algebraic band; `test/assembly_test.C` stays open with its one named gap; iteration counts are
 recorded, none asserted (oracle pending); the MPI assembly rows are host-pending.
 
+## Wave 2, round 4: preconditioners, point-to-point exchange, MOAB ownership (S8.3, 2026-11-02)
+
+Owner's order of 2026-11-02, all three items delivered by the FE track and landed by the lead:
+
+- **`fuse::linalg::SsorPreconditioner`** (symmetric SOR on each rank's diagonal block, block-Jacobi
+  across ranks), with `DistSparseMatrix::local_diagonal_block()` for read access; `omega` outside
+  `(0, 2)` refused (`E-LINALG-SSOR-OMEGA-RANGE`), a zero diagonal refused as Jacobi does. Hand-checked
+  at `omega = 1` on a 3 x 3 Poisson matrix; Young's `omega_opt` on the 1-D Poisson matrix gives
+  jacobi 15, ssor 8.
+- **Preconditioned nonlinear layer.** `physics.steady_reaction_diffusion_mms` assembles the steady
+  Jacobian `K - M diag(R'(u))` from the element operators (the transient kernel's Jacobian is not the
+  steady one) and wires Jacobi and SSOR through `fuse::num::solve`; a two-field coupled row wires
+  `BlockJacobiPreconditioner` with one Jacobi block per variable, after confirming `DofMap` numbers
+  variables contiguously (variable-major `DofKey` order). Each preconditioned solve agrees with the
+  unpreconditioned one within the sum of the two derived algebraic bounds; counts are recorded, oracle
+  pending.
+- **Point-to-point exchange.** `Reducer::alltoallv` (counts by `MPI_Alltoall`, payload by
+  `MPI_Alltoallv`) replaces the padded allgathers in `DofMap`'s ghost resolution (request to the
+  candidate owner, one answer back) and `AlgebraicSystem`'s foreign-entry exchange (bucketed by row
+  owner). Volume per rank goes from `max_count * n_ranks` records to exactly what the rank sends and
+  owns. `physics_dof_map_mpi` (ranks own 1, 2, 3 elements: the D103 shape) is the new host-pending row.
+- **MOAB ownership.** `MoabMeshView::set_parallel_comm` is called at both construction sites with the
+  backend's adopted `ParallelComm`; `moab_owner_mpi` (2 ranks, sphere fixture) is host-pending.
+
+### Lead's review of round 4
+
+Three corrections, each measured:
+
+- **The SSOR-versus-Jacobi conclusion was a small-system artifact.** The track measured jacobi 9,
+  ssor 15 on a 6 x 6 mesh (49 dofs), dropped the inequality the brief asked for, and attributed the
+  result to the Q1 stencil lacking Property A. An independent scipy measurement with the same element
+  matrices, then the landed C++ test, give identical counts and show the trend reverse with size:
+  n = 32: 57 vs 55; n = 64: 110 vs 90 (71 at omega 1.5). That is the textbook O(h^-2) vs O(h^-1)
+  behaviour; consistent ordering governs SOR as a stationary iteration, not SSOR as a CG
+  preconditioner. The test now runs n = 6, 32, 64, asserts ssor < jacobi at 32 and 64 and that the
+  ratio grows, and records all six counts.
+- **SSOR "doubling" the GMRES count was caused by the preconditioner's Dirichlet rows.** The track
+  left the boundary rows of the preconditioner Jacobian as `K - M R'` while the operator has identity
+  rows there, called it a simplification, and measured 61 GMRES iterations against 29. With the rows
+  matched, SSOR takes 24 against 29 (Newton 3 steps in both). Jacobi stays at 29: on a uniform mesh its
+  interior diagonal is constant, so it is a scaling.
+- **The unresolved-ghost refusal in the new exchange was local.** It is now agreed through one
+  `Reducer::sum` before any rank refuses, per the D97 rule; the message carries the total and the
+  rank's own share. The key-width refusal before the first collective is unreachable (interior keys
+  carry the element id; the widest sub-entity has four corners) and stays as a structural guard.
+
+Accepted as declared: the coupled row's algebraic bound sums two single-field bounds (not a coupled
+coercivity bound) and its load vector uses the continuum coupling term against an element-average in
+the residual, so no order claim is made for it; `moab_owner_mpi`'s real branch is syntax-checked
+only; the exchange's `E-PHYSICS-DOFMAP-GHOST-UNRESOLVED` has no firing test (it needs a multi-rank
+partition the sandbox cannot run). The stale comment pointer the reviewer flagged was fixed.
+
