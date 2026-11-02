@@ -15,12 +15,14 @@
 /// `fuse/transport/comm_graph.hpp` does: the factories exist as symbols
 /// only in a build that can define them).
 
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <vector>
 
 #include "fuse/base/config.hpp"
+#include "fuse/base/error.hpp"
 #include "fuse/base/result.hpp"
 
 namespace fuse::linalg {
@@ -77,6 +79,92 @@ class Reducer {
   /// operation beyond the sum/max facades (comm.hpp's header comment) that
   /// the Schur-complement solver needs.
   virtual void allgather(const double* send, std::size_t n_each, double* recv) const = 0;
+
+  /// The exact INTEGER analogue of `allgather` above: `recv[r*n_each ..
+  /// (r+1)*n_each)` becomes participant `r`'s own `send`, in rank order.
+  /// Added for `fe::DofMap`'s own ghost-dof resolution and `fe::
+  /// AlgebraicSystem`'s own foreign-entry exchange (S8.3 wave 2 round 2,
+  /// lead's review of round 1): an allgather moves BYTES, not
+  /// arithmetic, so a caller whose payload is already `std::int64_t`
+  /// (a dof key's packed fields, a global index) transports it directly
+  /// rather than through a `std::bit_cast<double>` reinterpretation at
+  /// the CALL SITE -- correct either way (the bit pattern survives the
+  /// round trip exactly), but the native form is the clean one, and
+  /// doing the cast ONCE here instead of at every call site is strictly
+  /// better.
+  ///
+  /// DEFAULT: layers on the `double` overload via the SAME exact
+  /// bit_cast this method exists to let a caller stop writing directly --
+  /// a generic fallback for a `Reducer` that has not (yet) overridden
+  /// this, never duplicated per call site. `make_serial_reducer()`'s own
+  /// reducer (a plain `memcpy`-equivalent copy, needing no cast at all)
+  /// and the MPI reducer `make_mpi_reducer()` returns (`MPI_Allgather`
+  /// with `MPI_INT64_T`, never touching a `double`) both override this
+  /// with a native transport.
+  virtual void allgather(const std::int64_t* send, std::size_t n_each, std::int64_t* recv) const {
+    std::vector<double> send_as_double(n_each);
+    for (std::size_t i = 0; i < n_each; ++i) send_as_double[i] = std::bit_cast<double>(send[i]);
+    std::vector<double> recv_as_double(n_each * static_cast<std::size_t>(size()));
+    allgather(send_as_double.data(), n_each, recv_as_double.data());
+    for (std::size_t i = 0; i < recv_as_double.size(); ++i) recv[i] = std::bit_cast<std::int64_t>(recv_as_double[i]);
+  }
+
+  /// POINT-TO-POINT exchange of a variable-length payload: every
+  /// participant routes directly to whichever other participant(s) it
+  /// addresses, unlike `allgather` above (which broadcasts to every
+  /// participant whether it wants the data or not) -- wave 2 round 4,
+  /// item X, replacing `fe::DofMap`'s ghost resolution and `fe::
+  /// AlgebraicSystem`'s foreign-entry exchange's own padded allgathers.
+  /// `send` holds THIS participant's own outgoing payload, grouped by
+  /// DESTINATION rank ascending: participant `r`'s own slice is
+  /// `send[d .. d + send_counts[r])` where `d` is the running sum of
+  /// `send_counts[0..r)` (the caller's own responsibility, matching
+  /// `req_values`'s own grouping in `comm_mpi.cpp`'s `make_mpi_exchanger`,
+  /// read before writing this). `send_counts.size() == size()`.
+  /// `recv_counts` (resized to `size()`) is filled with how many int64s
+  /// every OTHER participant sent THIS one, ascending by SOURCE rank; the
+  /// returned vector holds that payload concatenated the same way. Two
+  /// collectives: one `MPI_Alltoall` for the counts (`make_mpi_exchanger`'s
+  /// own phase 2), one `MPI_Alltoallv` for the payload (phase 3) -- no
+  /// third phase, since (unlike a `GhostPattern`'s own request/answer
+  /// shape) nothing here is built once and reused: a caller that needs a
+  /// REPEATED exchange along a FIXED pattern should build one instead
+  /// (comm.hpp's own `GhostExchanger`), not call this every time.
+  ///
+  /// DEFAULT (`size() == 1`): the only participant is this one, so
+  /// whatever is "sent" to it is already here -- `recv_counts = send_
+  /// counts`, the payload returned unchanged. Asserts rather than
+  /// silently misrouting for `size() > 1` with no native override (the
+  /// SAME posture `allgather`'s own bit_cast default could not take,
+  /// since an N-rank Alltoallv has no single-process free lunch the way
+  /// a double-to-int64 reinterpretation does): `make_serial_reducer()`'s
+  /// own `size() == 1` satisfies this default directly; `make_mpi_
+  /// reducer()` overrides it with the real two-collective exchange.
+  virtual std::vector<std::int64_t> alltoallv(const std::vector<std::int64_t>& send,
+                                               const std::vector<int>& send_counts,
+                                               std::vector<int>& recv_counts) const {
+    FUSE_ASSERT(size() == 1,
+               "Reducer::alltoallv(int64_t): no native override for size() == {} participants",
+               size());
+    recv_counts = send_counts;
+    return send;
+  }
+
+  /// The `double` analogue of `alltoallv` above -- the genuine VALUE
+  /// channel `fe::AlgebraicSystem`'s foreign-entry exchange needs
+  /// alongside the int64 one (its own Triplet/vector-Entry payload is
+  /// mixed: integer row/col/index fields plus one `double` value field;
+  /// round 2's own `exchange_foreign_entries` already splits transport
+  /// this same way for `allgather`, item B). Same default, same
+  /// single-participant posture.
+  virtual std::vector<double> alltoallv(const std::vector<double>& send, const std::vector<int>& send_counts,
+                                         std::vector<int>& recv_counts) const {
+    FUSE_ASSERT(size() == 1,
+               "Reducer::alltoallv(double): no native override for size() == {} participants",
+               size());
+    recv_counts = send_counts;
+    return send;
+  }
 };
 
 /// One rank, no MPI symbol touched: `sum`/`max` are the identity, `rank()

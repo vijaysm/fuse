@@ -5,6 +5,8 @@
 #include "fuse/linalg/comm.hpp"
 
 #include <algorithm>
+#include <cstdint>
+#include <vector>
 
 #include "fuse/base/error.hpp"
 
@@ -31,6 +33,32 @@ class SerialReducer : public Reducer {
     // participant's own `send`, copied once, same as every other
     // `SerialReducer` operation being its argument's identity.
     std::copy(send, send + n_each, recv);
+  }
+
+  /// The int64_t analogue, native (comm.hpp's own header comment on why
+  /// this override exists rather than falling through to the base
+  /// class's bit_cast-based default): one participant, so the answer is
+  /// again a plain copy, needing no cast at all either way.
+  void allgather(const std::int64_t* send, std::size_t n_each, std::int64_t* recv) const override {
+    std::copy(send, send + n_each, recv);
+  }
+
+  /// One participant: whatever is "sent" to anyone is sent to this one
+  /// rank, so the payload returns unchanged and `recv_counts` mirrors
+  /// `send_counts` -- the base class's own default does exactly this;
+  /// overridden explicitly here only for the SAME discoverability reason
+  /// round 2's int64 allgather override was (comm.hpp's own header
+  /// comment on this class).
+  std::vector<std::int64_t> alltoallv(const std::vector<std::int64_t>& send,
+                                       const std::vector<int>& send_counts,
+                                       std::vector<int>& recv_counts) const override {
+    recv_counts = send_counts;
+    return send;
+  }
+  std::vector<double> alltoallv(const std::vector<double>& send, const std::vector<int>& send_counts,
+                                 std::vector<int>& recv_counts) const override {
+    recv_counts = send_counts;
+    return send;
   }
 };
 
