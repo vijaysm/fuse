@@ -654,6 +654,11 @@ fuse_add_device_twin(backend.mls_weights fuse_backend_mls_weights_test)
 # weight-builders entry for the exact compiler errors), so this test needs
 # no KokkosKernels dependency at all.
 fuse_add_gtest(backend mls_weights_device LIBS $<BUILD_LOCAL_INTERFACE:ArborX::ArborX>)
+# Plans/2026-10-22-universal-number-types.md stage U8: the same batched solve
+# with T = fuse::num::dual<S, N>, the shape gradient of the MLS weights. Runs
+# the kernel on the host space and, in a build with a device backend, on the
+# device memory space (a typed test; no ArborX, the neighbour lists are given).
+fuse_add_gtest(backend mls_weights_gradient)
 # Nodal-remap track, step 1: general consistent interpolation on any
 # supported cell (general_interp.hpp), reached through
 # build_consistent_interp_weights (consistent_interp.hpp) exactly like
