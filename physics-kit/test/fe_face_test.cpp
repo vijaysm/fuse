@@ -10,6 +10,7 @@
 
 #include <array>
 #include <cmath>
+#include <stdexcept>
 #include <vector>
 
 #include <gtest/gtest.h>

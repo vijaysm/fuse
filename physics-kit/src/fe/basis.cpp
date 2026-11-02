@@ -38,11 +38,10 @@ namespace {
 [[noreturn]] void refuse(const char* message) { throw std::invalid_argument(message); }
 
 bool valid_key(const BasisKey& key) noexcept {
-  // the review of (docs/dev/physics-kit.md) found this OR
-  // was a bug: it accepted ANY key.order for a LagrangeNodal key,
-  // regardless of maximum_basis_order, because the family clause alone
-  // made the whole disjunction true. Dropped --
-  // the order bound applies uniformly to every family.
+  // The order bound applies uniformly to every family. An earlier
+  // `key.family == LagrangeNodal ||` clause accepted ANY key.order for a
+  // LagrangeNodal key, regardless of maximum_basis_order, because the
+  // family clause alone made the whole disjunction true.
   return key.order <= maximum_basis_order;
 }
 

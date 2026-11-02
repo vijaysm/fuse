@@ -40,6 +40,7 @@
 #include "fuse_physics/fe/quadrature.hpp"
 
 #include <cmath>
+#include <stdexcept>
 #include <vector>
 
 #include <cstdio>

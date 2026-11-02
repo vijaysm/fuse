@@ -39,6 +39,7 @@
 #include <mpi.h>
 
 #include <cstdint>
+#include <stdexcept>
 #include <vector>
 
 #include "fuse/backend/native_mesh.hpp"

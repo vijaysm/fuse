@@ -23,7 +23,7 @@
 # when the directory grew from one test source to ten).
 fuse_add_gtest(physics skeleton SRC_DIR . NO_LAYER_LIB LIBS fuse::physics_kit)
 
-# (numerics/fe, numerics/spatial): the five test rows named in
+# numerics/fe, numerics/spatial: the five test rows named in
 # docs/dev/physics-kit-disposition.md's porting scope, plus the spatial
 # layer's own domain/mesh tests. Same NO_LAYER_LIB + explicit LIBS pattern
 # as physics.skeleton above, for the same reason (fuse::physics_kit is the
@@ -37,7 +37,7 @@ fuse_add_gtest(physics fe_face SRC_DIR . NO_LAYER_LIB LIBS fuse::physics_kit)
 fuse_add_gtest(physics spatial_mesh SRC_DIR . NO_LAYER_LIB LIBS fuse::physics_kit)
 fuse_add_gtest(physics spatial_domain SRC_DIR . NO_LAYER_LIB LIBS fuse::physics_kit)
 
-# (numerics/fe's dof map): see docs/dev/physics-kit.md's own
+# numerics/fe's dof map: see docs/dev/physics-kit.md's own
 # tolerance-provenance table for this test's assertions.
 fuse_add_gtest(physics dof_map SRC_DIR . NO_LAYER_LIB LIBS fuse::physics_kit)
 fuse_add_gtest(physics algebraic_system SRC_DIR . NO_LAYER_LIB LIBS fuse::physics_kit)
@@ -47,7 +47,7 @@ fuse_add_gtest(physics transient_reaction_diffusion_assembly SRC_DIR . NO_LAYER_
 fuse_add_gtest(physics linear_layer SRC_DIR . NO_LAYER_LIB LIBS fuse::physics_kit)
 fuse_add_gtest(physics steady_reaction_diffusion_mms SRC_DIR . NO_LAYER_LIB LIBS fuse::physics_kit)
 
-# The collective mesh contract over a real communicator: owned
+# The collective mesh contract over a real communicator owned
 # counts sum to the global total and a ghost vertex's global id agrees with its
 # owner's; refusals through fuse::agree_outcome. Registered HERE, where
 # fuse::physics_kit exists, rather than compiling physics-kit sources into a
@@ -57,7 +57,7 @@ if(FUSE_ENABLE_MPI)
   fuse_add_mpi_test(parallel physics_mesh_mpi SRC_DIR . RANKS 2 3 LIBS fuse::physics_kit fuse::field)
 endif()
 
-# Item H: the GLOBAL assembled mass matrix over a real,
+# The GLOBAL assembled mass matrix over a real,
 # multi-rank partitioned 3-D box -- physics_assembly_mpi_test.cpp's own
 # header comment. Same gating convention as physics_mesh_mpi_test.cpp
 # above; never run in this sandbox.
@@ -66,10 +66,9 @@ if(FUSE_ENABLE_MPI)
   fuse_add_mpi_test(parallel physics_assembly_mpi SRC_DIR . RANKS 2 3 LIBS fuse::physics_kit fuse::field)
 endif()
 
-# Item X: DofMap's own ghost resolution (dof_map.cpp
+# DofMap's own ghost resolution (dof_map.cpp
 # pass 3) over a partition with UNEQUAL owned-dof counts per rank --
-# the padding shape -- now resolved point-to-point instead of a
-# padded allgather. Same gating convention as physics_mesh_mpi_test.cpp
+# the shape that breaks a padded allgather -- resolved point-to-point. Same gating convention as physics_mesh_mpi_test.cpp
 # above; never run in this sandbox.
 fuse_tests_gated_by(FUSE_ENABLE_MPI physics_dof_map_mpi_test.cpp)
 if(FUSE_ENABLE_MPI)

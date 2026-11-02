@@ -15,6 +15,7 @@
 #include <cmath>
 
 #include <gtest/gtest.h>
+#include <stdexcept>
 
 namespace {
 

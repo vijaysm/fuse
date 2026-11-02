@@ -59,6 +59,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <stdexcept>
 #include <vector>
 
 #include "fuse/backend/native_mesh.hpp"

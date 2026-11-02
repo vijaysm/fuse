@@ -19,6 +19,7 @@
 #include "fuse_physics/fe/reference_topology.hpp"
 
 #include <cmath>
+#include <stdexcept>
 #include <vector>
 
 #include <gtest/gtest.h>

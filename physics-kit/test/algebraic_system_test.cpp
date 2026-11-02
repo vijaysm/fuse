@@ -6,6 +6,7 @@
 #include "fuse_physics/fe/algebraic_system.hpp"
 
 #include <cmath>
+#include <stdexcept>
 #include <string>
 
 #include <gtest/gtest.h>

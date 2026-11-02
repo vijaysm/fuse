@@ -60,10 +60,10 @@ namespace fuse::physics::fe {
 /// (possibly position-dependent) scalar `source`. No KARMA source ports
 /// this -- `generic_mass_operator.h` has no load-vector method of its own
 /// -- so this is the textbook consistent Galerkin load vector, cited as
-/// such (design_notes), the same posture took for
+/// such (design_notes), the same posture taken for
 /// `element_stiffness_matrix` (its own header comment states the
 /// identical reasoning for a different missing KARMA file). Used by
-/// item F's own manufactured-solution forcing term:
+/// the manufactured-solution forcing term:
 /// evaluating `source` at each quadrature point's PHYSICAL coordinate
 /// keeps the forcing term's own discretisation at the SAME quadrature
 /// order as the bilinear forms it is added against, rather than the
@@ -71,14 +71,14 @@ namespace fuse::physics::fe {
 /// above use for the nonlinear term -- a deliberate difference, stated:
 /// the forcing is DATA (known exactly, so quadrature-evaluating it adds
 /// no new approximation question), while the reaction term is the
-/// UNKNOWN solution itself, where KARMA's own nodal convention is round
-/// 1's finding, kept for round 3's own nonlinear term unchanged.
+/// UNKNOWN solution itself, where KARMA's own nodal convention is kept
+/// for the nonlinear term unchanged.
 [[nodiscard]] std::vector<double> element_load_vector(FEBase& fe, spatial::EntityHandle element,
                                                        const std::function<double(const Point&)>& source);
 
 /// A Crank-Nicolson transient reaction-diffusion model, adapted from
 /// KARMA's own test/transient_reaction_diffusion_assembly_test.C
-/// (which this port's round 1 analysis found the right
+/// (which this port found the right
 /// abstraction level for -- KARMA's own model evaluates `R(state) =
 /// alpha * state + beta * coupled + source`, AFFINE in `state`).
 ///

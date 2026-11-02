@@ -13,16 +13,14 @@
 /// contribution to a row this rank does not own -- and, after the full
 /// element loop, exchanges the foreign-row triplets to their owners in
 /// ONE collective step before calling
-/// fuse::linalg::DistSparseMatrix::from_triplets, exactly item 2's own
-/// instruction. No second sparse-matrix type is introduced (item 2's
-/// instruction): fuse::linalg::DistSparseMatrix is the sink, read in
-/// full before writing this file.
+/// fuse::linalg::DistSparseMatrix::from_triplets. No second sparse-matrix
+/// type is introduced: fuse::linalg::DistSparseMatrix is the sink.
 ///
-/// SCOPE THIS WAVE: assemble_matrix/assemble_vector
-/// over a caller-supplied per-element contribution callback, and
-/// eliminate_dirichlet_rows (symmetric row elimination, tested). A PETSc
-/// Mat/Vec sink behind FUSE_HAVE_PETSC is explicitly NOT in this wave
-/// (item 2's own instruction) -- named as a follow-up in design_notes.
+/// SCOPE: assemble_matrix/assemble_vector over a caller-supplied
+/// per-element contribution callback, and eliminate_dirichlet_rows
+/// (symmetric row elimination, tested). A PETSc Mat/Vec sink behind
+/// FUSE_HAVE_PETSC is explicitly NOT provided -- named as a follow-up in
+/// design_notes.
 
 #include <cstdint>
 #include <functional>
@@ -129,9 +127,9 @@ class AlgebraicSystem {
   /// ghost columns are a superset of the dof map's ghosts: a row this rank
   /// owns on a partition face couples to the neighbour's INTERIOR dofs,
   /// which no element of this rank touches. On one rank both patterns are
-  /// empty and the two vectors coincide, which is why was invisible
-  /// at tier 0 and surfaced on the first host run of
-  /// parallel.physics_assembly_mpi (2026-11-01).
+  /// empty and the two vectors coincide, which is why a vector built from
+  /// the dof map's pattern works at tier 0 and fails only on a real
+  /// multi-rank run (parallel.physics_assembly_mpi).
   [[nodiscard]] linalg::DistVector new_vector_for(const linalg::DistSparseMatrix& matrix) const;
 
   [[nodiscard]] Result<void> assemble_vector(const ElementVectorContribution& contribution,

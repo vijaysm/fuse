@@ -24,7 +24,7 @@
 /// bounds) the ported FE core's geometry maps need, implemented natively so
 /// that physics-kit/include/fuse_physics/ never names "Eigen/" (tools/check-
 /// layering.py's FORBIDDEN_PUBLIC regex bans it in any public header, fuse::
-/// or physics-kit's own, since).
+/// or physics-kit's own).
 ///
 /// SCOPE. Just enough linear algebra for a reference-cell map's Jacobian,
 /// metric tensor, and inverse map: construction, componentwise arithmetic,

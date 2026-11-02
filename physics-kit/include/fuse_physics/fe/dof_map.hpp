@@ -31,7 +31,7 @@
 ///   - is collective through fuse::agree_outcome
 ///     when built with a communicator, not an ISLocalToGlobalMapping.
 ///
-/// SCOPE THIS WAVE: single-variable and multi-
+/// SCOPE: single-variable and multi-
 /// variable numbering, contiguous per-rank ownership, the ghost index
 /// list, element dof_indices (all variables, one variable), and the
 /// row/column sparsity pattern for AlgebraicSystem. See dof_map.cpp's
@@ -97,14 +97,14 @@ struct DofRecord {
   bool element_local;
 };
 
-///: whether a shared
+/// Whether a shared
 /// sub-entity (an edge or a face, named by its `corners` -- the LOCAL
 /// vertex handles of every one of its corner vertices, in any order)
 /// is owned HERE, under the rule every sharing rank can compute from
 /// `Mesh::vertex_owner`/`is_vertex_owned` alone, with no further
 /// communication: the sub-entity's owner is the MINIMUM over its
 /// corners' own owner ranks. Deterministic and gap-free -- unlike the
-/// round-1 rule ("owned here iff every corner is owned here"), which
+/// rule "owned here iff every corner is owned here", which
 /// left a legitimate partition (a shared face whose corners are split
 /// across two or more ranks) owned by NO rank at all. Exposed as a
 /// free function (not kept as a DofMap-private implementation detail)
@@ -136,7 +136,7 @@ class DofMap {
   /// path (every refusal below is a plain local throw, since there is no
   /// peer to disagree with); set to an `MPI_Comm_c2f` handle for the
   /// collective path (every refusal routes through `fuse::agree_outcome`,
-  /// the issue tracker, naming `agreed_code`
+  /// naming `agreed_code`
   /// "E-PHYSICS-DOFMAP-AGREEMENT-REFUSED" and comm-failure code
   /// "E-PHYSICS-DOFMAP-AGREEMENT-COMM-FAILURE").
   DofMap(const spatial::Mesh& mesh, std::vector<Variable> variables, const BasisRegistry& registry,

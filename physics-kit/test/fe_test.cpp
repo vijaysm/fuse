@@ -16,6 +16,7 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <stdexcept>
 #include <vector>
 
 #include <gtest/gtest.h>
