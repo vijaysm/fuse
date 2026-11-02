@@ -58,6 +58,9 @@ order of the backward sweep, checked by that same adjoint identity; and
 [](newton-krylov.md) is the residual/linearisation seam, the native Jacobian-free Newton-Krylov
 solver with its SNES counterparts tabulated, and the measured convergence on dn_heat and the
 Brusselator's coupling window.
+[](mls-shape-gradient.md) is the moving-least-squares weight kernel templated on its scalar type:
+the gradient of the weights with respect to the positions of the points by forward-mode dual
+numbers, what is and is not differentiable, and the Taylor-remainder gate it passes.
 
 ## Runtime features
 
