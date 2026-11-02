@@ -1,13 +1,12 @@
 #pragma once
 
 /// Reference cells and their analytic shape-function interpolation, adapted
-/// from KARMA's karma_reference_topology.h/.C (docs/dev/physics-kit-
-/// disposition.md Appendix A, port-adapt, owner decision D-A).
+/// from KARMA's karma_reference_topology.h/.C (port-adapted; see
+/// docs/dev/physics-kit.md).
 ///
-/// WAVE 1b SCOPE (owner instruction 2026-10-31, "execute FE wave 1 first
-/// completely"): this port now covers all seven element families KARMA's
+/// SCOPE: this port covers all seven element families KARMA's
 /// own GeometryVariant names -- Edge, Triangle, Quadrilateral, Tetrahedron,
-/// Hexahedron (wave 1) plus Prism and Pyramid (wave 1b) -- at Lagrange
+/// Hexahedron, Prism and Pyramid -- at Lagrange
 /// order 1 and 2 (the complete tensor/simplex family, e.g. Quad9/Tet10/
 /// Hex27/Prism18/Pyramid14, not the Quad8 serendipity variant).
 ///

@@ -456,23 +456,20 @@ class MoabMeshView final : public MeshView {
     return dd.global_ids[i];
   }
 
-  /// D102: the owner rank this entity's `is_owned` bit was itself derived
+  /// The owner rank this entity's `is_owned` bit was itself derived
   /// from at setup time (KARMA's own `get_owner` call, karma_dof_map.C:849).
   /// `pcomm_` is null for a view built with no parallel context (a serial
   /// load, or one not yet wired to `set_parallel_comm` below) -- rank 0
   /// owning everything is then the correct, not merely convenient, answer
   /// (mirroring the serial backend's own `owner` override), since there is
-  /// only one rank to own anything. COMPILE-ONLY this round: no MOAB build
-  /// in this sandbox exercises it; `set_parallel_comm`'s own call site
-  /// (wiring a real `ParallelComm` into every constructed view) is a
-  /// follow-up, named in open_questions, not done this round.
+  /// only one rank to own anything.
   [[nodiscard]] Result<int> owner(int dim, std::size_t i) const override {
     check(dim, i, "owner");
     if (pcomm_ == nullptr) {
       // No ParallelComm attached: this view cannot know who owns the entity.
-      // Returning 0 here (the round-2 draft) would be a locally invented
-      // ownership that a distributed DofMap would number against; refuse
-      // until set_parallel_comm() has been called (lead, 2026-11-01).
+      // Returning 0 here would be a locally invented ownership that a
+      // distributed DofMap would number against; refuse until
+      // set_parallel_comm() has been called.
       return Failure{"E-MESH-NO-OWNER",
                      "MoabMeshView::owner: no moab::ParallelComm is attached to this view "
                      "(set_parallel_comm() has not been called), so entity ownership is unknown"};
@@ -489,9 +486,9 @@ class MoabMeshView final : public MeshView {
   }
 
   /// Wires a real parallel context into an already-constructed view, the
-  /// same deferred-setup pattern `set_top_dim` above already uses. Not
-  /// called anywhere yet this round (compile-only) -- a follow-up at the
-  /// construction call site that has a `ParallelComm` in scope.
+  /// same deferred-setup pattern `set_top_dim` above already uses. The
+  /// backend's load path calls it at view construction, where a
+  /// `ParallelComm` is in scope.
   void set_parallel_comm(moab::ParallelComm* pcomm) { pcomm_ = pcomm; }
 
   // --- geometry as simplices (MeshView's clipping contract) ----------------
@@ -1767,7 +1764,7 @@ Result<void> MoabMeshBackend::load(const MeshDecl& decl) {
   }
 
   auto view = std::make_unique<MoabMeshView>(impl_->mb, file_set);
-  // Wave 2 round 4, item M: wire this backend's own base ParallelComm (set
+  // Wire this backend's own base ParallelComm (set
   // at adopt_communicator() time, impl_->pcomm, null in Mode A / a serial
   // load) into the view at construction, rather than leaving owner()
   // refusing E-MESH-NO-OWNER until a caller finds and calls

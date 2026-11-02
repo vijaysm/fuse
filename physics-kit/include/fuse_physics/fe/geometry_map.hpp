@@ -1,11 +1,10 @@
 #pragma once
 
 /// Isoparametric element geometry (reference-to-physical map, Jacobian,
-/// inverse map), adapted from KARMA's karma_geometry_map.h/.C (docs/dev/
-/// physics-kit-disposition.md Appendix A, port-adapt, owner decision D-A).
+/// inverse map), adapted from KARMA's karma_geometry_map.h/.C (port-adapted; see
+/// docs/dev/physics-kit.md).
 ///
-/// DECOUPLED FROM A MESH (docs/dev/physics-kit-disposition.md Appendix A:
-/// "no fuse::backend equivalent"). KARMA's KARMAGeometryMap has a
+/// DECOUPLED FROM A MESH (there is no fuse::backend equivalent). KARMA's KARMAGeometryMap has a
 /// mesh-bound constructor (KARMAGeometryMap(const KARMAMesh&,
 /// moab::EntityHandle)) alongside its explicit-nodes constructor. This port
 /// keeps only the explicit-nodes form in the public header: the mesh-bound
@@ -14,12 +13,11 @@
 /// mesh type supplies the coordinates -- fuse_physics::fe::FEBase
 /// (fe_base.hpp) does exactly that against fuse_physics::spatial::Mesh.
 ///
-/// WAVE 1b SCOPE: all seven CellFamily values reference_topology.hpp
-/// implements, including Prism and Pyramid (owner instruction
-/// 2026-10-31, item 1). The quad4 affine fast path (every structured-
-/// grid quad element is affine) stays Quad4-only (no analogous affine
-/// case exists for a 3-D cell in this wave's own generator). Pyramid's
-/// own carve-outs are now in scope and ported: in_reference_cell's
+/// SCOPE: all seven CellFamily values reference_topology.hpp
+/// implements, including Prism and Pyramid. The quad4 affine fast path
+/// (every structured-grid quad element is affine) is Quad4-only (no
+/// analogous affine case exists for a 3-D cell in the mesh generator).
+/// Pyramid's own carve-outs are ported: in_reference_cell's
 /// taper condition (non-box reference cell), the matching sampling-grid
 /// bounds in validate(), and inverse_map's apex fast path -- all in
 /// geometry_map.cpp, each citing the KARMA source line it reproduces.

@@ -3,7 +3,7 @@
 // elaborate BC-manager machinery (Dirichlet/Neumann/Robin condition
 // discovery, replicated/asymmetric boundary conditions -- a full
 // physics/diffusion-reaction/ example application, not numerics/'s own
-// core scope) is OUT OF SCOPE this wave (design_notes states so); this
+// core scope) is OUT OF SCOPE; this
 // file ports only the mathematical stiffness-operator content: the
 // standard FE bilinear form integral(grad(phi_i) . grad(phi_j)) dV
 // (generic_operators.hpp's own element_stiffness_matrix) and its
@@ -39,7 +39,7 @@ using fuse::physics::spatial::Mesh;
 // points, volume = 1/6), the four P1 shape-function GRADIENTS are the
 // constant vectors grad(N0) = (-1,-1,-1), grad(N1) = (1,0,0),
 // grad(N2) = (0,1,0), grad(N3) = (0,0,1) -- a textbook closed form
-// (design_notes cites it; no KARMA source has a diffusion-operator
+// (no KARMA source has a diffusion-operator
 // equivalent to port from, generic_operators.hpp's own header comment).
 // stiffness(i,j) = volume * dot(grad_i, grad_j), computed here by hand
 // and compared to element_stiffness_matrix's own output. Quadrature

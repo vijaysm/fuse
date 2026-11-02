@@ -1,7 +1,6 @@
 #pragma once
 
-/// The value type of a coupled field (plans/2026-10-22-universal-number-types.md,
-/// stage U1): the compile-time trait `fuse::value_traits<T>`, the concept
+/// The value type of a coupled field: the compile-time trait `fuse::value_traits<T>`, the concept
 /// `fuse::CoupledValue<T>` every field value type satisfies, and the run-time
 /// descriptor `fuse::FieldValueType` a type-erased field carries so that a request
 /// for the wrong type is refused by name instead of reinterpreting bytes.
@@ -35,7 +34,7 @@
 ///               of an unevaluated sum (double-double: two binary64 values,
 ///               quad-double: four), so the arithmetic is not that of each
 ///               scalar separately. An operator that does arithmetic on the
-///               values is instantiated for `T` from a closed list (stage U4);
+///               values is instantiated for `T` from a closed list;
 ///               one with no instantiation refuses the field by name, and an
 ///               operator that only moves values (a halo copy, a transfer)
 ///               moves the limbs. `FieldRegistry::get_limbs` is the view as

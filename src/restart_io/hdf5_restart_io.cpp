@@ -650,8 +650,7 @@ void encode_posit_bytes(const fuse::ElementTypeInfo& info, double x, std::span<s
 /// Converts ONE element's worth of bytes from `stored` (`src`) to
 /// `requested` (`dst`), per `conversion` -- the one dispatch every
 /// `get_field_bytes()`/`get_scalar_bytes()` row goes through, whether
-/// `stored == requested` (the fast, copy-only path every call takes
-/// before Slice 1b existed) or not. Accumulates into `report` --
+/// `stored == requested` (the fast, copy-only path) or not. Accumulates into `report` --
 /// `changed`/`abs_change` are per-element; the caller aggregates
 /// `max_absolute_change`/`changed_count`/`converted_any` across every
 /// element a single call reads (docs/dev/restart.md Section 11's own

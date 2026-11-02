@@ -27,28 +27,26 @@ int owner_of(const std::vector<std::int64_t>& row_lo, std::int64_t index) {
 
 /// Exchanges every rank's own OUT-OF-RANGE entries (failing `in_range`)
 /// to their owners, returning this rank's own in-range entries UNIONED
-/// with everyone else's entries `in_range` now accepts. WAVE 2 ROUND 4
-/// ITEM X replaces the round-1/round-2 padded-allgather transport
-/// (every rank's out-of-range buffer broadcast to every other rank,
-/// padded to the largest buffer anyone holds -- the scalability caveat
-/// this function's own header comment used to carry, mirrored in
-/// dof_map.cpp's identical note on its own ghost resolution) with a
-/// genuine point-to-point exchange: each out-of-range entry is routed,
-/// via the new `owner_of_fn`, ONLY to the one participant that owns it,
+/// with everyone else's entries `in_range` accepts. The transport is
+/// point-to-point rather than a padded allgather (every rank's
+/// out-of-range buffer broadcast to every other rank, padded to the
+/// largest buffer anyone holds; dof_map.cpp's ghost resolution makes the
+/// same choice): each out-of-range entry is routed,
+/// via `owner_of_fn`, ONLY to the one participant that owns it,
 /// through `Reducer::alltoallv` (comm.hpp) -- one `MPI_Alltoall` for the
 /// per-rank counts, one `MPI_Alltoallv` for the payload, no padding and
-/// no sentinel record, since every participant now knows exactly how
+/// no sentinel record, since every participant knows exactly how
 /// many records every other one is sending it. `n_int_fields` of an
 /// entry's INTEGER fields travel through the native `std::int64_t`
 /// channel (an integer payload is kept off `double`'s bit pattern);
 /// its one genuine `double` VALUE field travels through the `double`
 /// channel. Single-rank (`reducer.size() == 1`) is still the identity
 /// check: nothing is ever out of range when one rank owns every row,
-/// matching every tier-0 test this wave exercises; a leftover
+/// matching every tier-0 test; a leftover
 /// out-of-range entry there is a caller mistake, refused by name rather
 /// than silently dropped.
 ///
-/// MESSAGE VOLUME, before vs after (R participants, this rank sending
+/// MESSAGE VOLUME, versus a padded allgather (R participants, this rank sending
 /// `k` out-of-range entries of `n_int_fields` int64 fields + 1 double
 /// each): the allgather version moved `max_k * R` records on EVERY
 /// participant regardless of how many entries any of them actually

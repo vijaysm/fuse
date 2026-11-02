@@ -11,7 +11,7 @@ void Domain::check_shape_supported(Shape shape) {
   // The I6 fix: the upstream assert's intended condition (see domain.hpp)
   // rejects BOTH unsupported shapes, not at most one of them.
   if (shape == Shape::Hexagon || shape == Shape::Unstructured)
-    throw std::invalid_argument("Domain: only Edge/Square/Cube shapes are supported in this wave");
+    throw std::invalid_argument("Domain: only Edge/Square/Cube shapes are supported");
 }
 
 Domain::Domain(unsigned dimension, Shape shape, double length_x, double length_y, double length_z, bool symmetric)

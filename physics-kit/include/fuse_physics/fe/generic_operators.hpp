@@ -3,18 +3,15 @@
 /// Geometry-independent, physics-agnostic element operators: the mass
 /// and stiffness (diffusion) bilinear forms every physics built on
 /// fuse_physics::fe shares. Adapted from KARMA's own
-/// include/physics/common/generic_mass_operator.h (docs/dev/physics-kit-
-/// disposition.md's own D-A: "port-adapt"), the abstraction level
-/// test/mass_assembly_test.C's own KARMA source actually exercises --
-/// see that file's own comment history for why this, not
-/// karma_algebraic_system.h itself, is where a per-element bilinear form
-/// belongs.
+/// include/physics/common/generic_mass_operator.h (port-adapted), the abstraction level
+/// test/mass_assembly_test.C's own KARMA source actually exercises:
+/// this, not karma_algebraic_system.h itself, is where a per-element
+/// bilinear form belongs.
 ///
 /// NOT A LITERAL PORT. KARMA's own element_mass_matrix(system, element,
 /// degree) reads its FEBase/basis/quadrature objects out of a
 /// KARMAAlgebraicSystem's own per-variable bookkeeping; this port takes
-/// an already-reinit-able fe::FEBase directly (fe_base.hpp, wave 1's own
-/// evaluator), so the SAME two functions below serve a caller that
+/// an already-reinit-able fe::FEBase directly (fe_base.hpp), so the SAME two functions below serve a caller that
 /// built its FEBase from fe::AlgebraicSystem's own DofMap or from
 /// neither (a standalone quadrature check, as fe_basis_test.cpp and this
 /// file's own test do).
@@ -23,8 +20,8 @@
 /// operator parallel to generic_mass_operator.h) does not exist in the
 /// upstream/karma export this port builds from -- element_stiffness_
 /// matrix below is the textbook FE bilinear form integral(grad(phi_i) .
-/// grad(phi_j)) dV, derived and cited as such (design_notes), the same
-/// posture wave 1 took for KARMA gaps with no upstream file to port
+/// grad(phi_j)) dV, derived and cited as such, the same
+/// posture taken for KARMA gaps with no upstream file to port
 /// from.
 
 #include <functional>
@@ -42,9 +39,8 @@ namespace fuse::physics::fe {
 /// in; this function calls `fe.reinit(element)` itself. Exact for a
 /// polynomial `phi_i * phi_j` of degree <= `fe`'s own quadrature degree
 /// on an AFFINE element (constant Jacobian) -- the caller's own
-/// responsibility to pick a high enough degree (design_notes states the
-/// derivation this wave's tests use: 2 * basis order, exact for `phi_i *
-/// phi_j` itself, on the affine box elements those tests build).
+/// responsibility to pick a high enough degree (the tests use 2 * basis order, exact for `phi_i *
+/// phi_j` itself, on the affine box elements they build).
 [[nodiscard]] std::vector<double> element_mass_matrix(FEBase& fe, spatial::EntityHandle element);
 
 /// `stiffness(i, j) = integral(grad(phi_i) . grad(phi_j)) dV` over
@@ -60,7 +56,7 @@ namespace fuse::physics::fe {
 /// (possibly position-dependent) scalar `source`. No KARMA source ports
 /// this -- `generic_mass_operator.h` has no load-vector method of its own
 /// -- so this is the textbook consistent Galerkin load vector, cited as
-/// such (design_notes), the same posture taken for
+/// such, the same posture taken for
 /// `element_stiffness_matrix` (its own header comment states the
 /// identical reasoning for a different missing KARMA file). Used by
 /// the manufactured-solution forcing term:
@@ -78,18 +74,16 @@ namespace fuse::physics::fe {
 
 /// A Crank-Nicolson transient reaction-diffusion model, adapted from
 /// KARMA's own test/transient_reaction_diffusion_assembly_test.C
-/// (which this port found the right
-/// abstraction level for -- KARMA's own model evaluates `R(state) =
+/// (KARMA's own model evaluates `R(state) =
 /// alpha * state + beta * coupled + source`, AFFINE in `state`).
 ///
 /// NOT a literal port of KARMA's own affine model. `R(state) = alpha *
 /// state^2 + beta * coupled + source` -- QUADRATIC in `state` -- is
-/// used here instead, because item D's own instruction (wave 2 round
-/// 2) requires the finite-difference Jacobian check's tolerance to be
-/// DERIVED from "the step size and the reaction term's second-
-/// derivative bound": an affine reaction has R''(state) == 0 exactly,
+/// used here instead, because the finite-difference Jacobian check's tolerance is
+/// DERIVED from the step size and the reaction term's second-
+/// derivative bound: an affine reaction has R''(state) == 0 exactly,
 /// which collapses that derivation to round-off alone (exercising
-/// nothing about the truncation term the task names). The quadratic
+/// nothing about the truncation term). The quadratic
 /// term keeps R''(state) == 2*alpha, a known, nonzero, EXACT constant
 /// -- the derivation in element_transient_reaction_diffusion's own
 /// header comment below is exact, not an estimate, because of this
@@ -127,7 +121,7 @@ struct TransientReactionDiffusionModel {
 ///
 /// (M = element_mass_matrix, K = element_stiffness_matrix, R =
 /// `reaction` above, evaluated NODALLY -- not via quadrature, KARMA's
-/// own construction, round-1 analysis's own finding) and
+/// own construction) and
 ///
 ///   jacobian_ik = d(residual_i)/d(state_k)
 ///               = M_ik / h + 0.5 * K_ik - 0.5 * M_ik * R'(state_k)
@@ -149,9 +143,9 @@ struct ElementResidualJacobian {
     const std::vector<double>& state, const std::vector<double>& state_old);
 
 /// Derived step and error bound for checking one Jacobian entry J_ik by a
-/// FORWARD difference of residual_i in state_k (lead's derivation,
-/// 2026-11-01, replacing a version whose round-off term used |residual_i|
-/// and carried an adjustable "evaluation noise factor").
+/// FORWARD difference of residual_i in state_k (the round-off term uses
+/// the sum of absolute values of residual_i's terms, with no adjustable
+/// "evaluation noise factor").
 ///
 /// Three error terms, every input measured or exact:
 ///  (1) truncation: (h/2) |f''|, with f'' = d^2 residual_i / d state_k^2 =

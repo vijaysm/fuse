@@ -1,8 +1,7 @@
 #pragma once
 
 /// The kernels that do arithmetic on Arithmetic field values (double-double and
-/// quad-double), on a Kokkos execution space. plans/2026-10-22-universal-number-
-/// types.md, stage U4.
+/// quad-double), on a Kokkos execution space.
 ///
 /// WHAT AN ARITHMETIC FIELD IS HERE. A field of `dd` or `qd` values is a flat
 /// array of binary64 limbs, the limbs of one value consecutive: value v of a

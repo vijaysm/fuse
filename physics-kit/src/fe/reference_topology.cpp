@@ -2,7 +2,7 @@
 // karma_reference_topology.h/.C (see reference_topology.hpp's header
 // comment for the MOAB-decoupling rationale).
 //
-// WAVE 1b (owner instruction 2026-10-31): adds Prism6/15/18 and
+// Covers Prism6/15/18 and
 // Pyramid5/13/14 (node tables, side tables, and the wedge/pyramid branches
 // of evaluate()), plus the serendipity GeometryVariant::Quad8 -- needed
 // only as the face shape of Prism15's and Pyramid13's one quadrilateral
@@ -248,7 +248,7 @@ PyramidCandidates pyramid_candidates(const Point& point, unsigned order) {
 /// Loan Section 2.3.3's standard rule of thumb, `Ax=b`'s relative error
 /// bound is O(cond * eps)), so cond >= 1/sqrt(eps) is the exact point at
 /// which fewer than the eps-to-sqrt(eps) crossover's ~8 significant digits
-/// survive -- below this wave's own 1e-10 pointwise tolerance floor
+/// survive -- below the 1e-10 pointwise tolerance floor
 /// (fe_reference_topology_test.cpp's Kronecker/partition-of-unity checks),
 /// so a coefficient computed past this threshold could not be trusted to
 /// that floor regardless of which test exercises it.

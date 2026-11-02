@@ -1,8 +1,7 @@
 // fuse_physics::fe::Basis / BasisRegistry -- adapted from KARMA's
-// karma_basis.h/.C. See basis.hpp's header comment for the wave's scope.
+// karma_basis.h/.C. See basis.hpp's header comment for the scope.
 //
-// ORIENTATION (owner instruction 2026-10-31, item 5; superseding wave 1's
-// "not ported this wave" note, which this wave closes): KARMA's
+// ORIENTATION: KARMA's
 // OrientationTransform / apply_orientation / apply_orientation_inverse,
 // letting a basis function's local DOF be re-signed/permuted to agree
 // with a shared edge or face's GLOBAL orientation when two elements see
@@ -10,14 +9,14 @@
 // own shape (to size orientation_count: 2 for an edge, 6 for a triangular
 // face, 8 for a quadrilateral face) via moab::CN::SubEntityType;
 // physics-kit has no MOAB dependency (docs/dev/layering.md), so
-// subentity_shape() below reads the SAME fact off this wave's own
+// subentity_shape() below reads the SAME fact off
 // ReferenceTopology::side_topology(side).family() instead -- the two are
-// the same classification (reference_topology.cpp confirmed the cell
-// corner/side ordering already agrees with MOAB/Exodus convention
-// exactly, wave 1b's own note), just read through a native accessor
+// the same classification (reference_topology.cpp's cell
+// corner/side ordering agrees with MOAB/Exodus convention
+// exactly), just read through a native accessor
 // rather than a MOAB one.
 //
-// This wave's built-in bases (order <= 2) place at most ONE DOF on any
+// The built-in bases (order <= 2) place at most ONE DOF on any
 // edge or face, so every generated OrientationTransform is PROVABLY the
 // identity permutation with sign +1 (basis.hpp's own header comment) --
 // ported with KARMA's identical general-purpose construction (it does
@@ -110,7 +109,7 @@ std::string continuity_name(BasisContinuity continuity) {
 }
 
 /// Lagrange nodal basis of order 0 (cell-local constant), 1 or 2, on one of
-/// this wave's five cell families. Order 1/2 shape values and gradients are
+/// the supported cell families. Order 1/2 shape values and gradients are
 /// delegated to ReferenceTopology's own analytic evaluation (the Lagrange
 /// nodal basis on a simplex/tensor cell IS the reference shape-function
 /// set by construction); order 0 is a single constant function.
@@ -176,7 +175,7 @@ class BuiltinBasis {
     for (unsigned i = 0; i < face_centers; ++i) result.push_back({2, i, 0});
     // The pyramid's one extra P2 node (Pyramid14's 14th, at the base
     // centre p(0,0,0)) lies ON the base QUAD face -- side index 4 in
-    // this wave's side_topology ordering (4 triangular sides first, the
+    // side_topology's ordering (4 triangular sides first, the
     // quad base last) -- so it is a genuine face dof, not a cell-
     // interior one: it must be covered by an orientation transform when
     // two pyramids share a base face, same as the hexahedron's and
@@ -192,7 +191,7 @@ class BuiltinBasis {
   /// sub-entity's shape can present, emit the IDENTITY permutation with
   /// sign +1 -- correct by construction whenever the sub-entity carries
   /// at most one dof (basis.hpp's header comment derives why that holds
-  /// for every key this wave's registry builds), ported unchanged rather
+  /// for every key the registry builds), ported unchanged rather
   /// than special-cased so a future higher-order basis only needs to
   /// override this method, not re-derive the surrounding bookkeeping.
   [[nodiscard]] std::vector<OrientationTransform> orientation_transforms() const {

@@ -667,7 +667,7 @@ using AdjointDeviceMemSpace = Kokkos::DefaultHostExecutionSpace::memory_space;
 #endif
 
 /// Everything `Runner::run_period_adjoint()` needs beyond the forward state
-/// (stage U6, docs/dev/adjoint-schedule.md). Built by `initialize_adjoint()`;
+/// (docs/dev/adjoint-schedule.md). Built by `initialize_adjoint()`;
 /// absent (`Impl::adjoint` null) on a Runner that only runs forward.
 struct AdjointState {
   /// One event of a period, in the order the forward walk (`step_period()`)
@@ -1451,9 +1451,9 @@ struct Runner::Impl {
   std::vector<std::vector<double>> transport_in_scratch, transport_out_scratch;
   RunStats                         stats;
   std::int64_t                     period_index = 0;
-  /// Stage U6: non-null once `initialize_adjoint()` has succeeded.
+  /// Non-null once `initialize_adjoint()` has succeeded.
   std::unique_ptr<detail::AdjointState> adjoint;
-  /// Restart track round 2, Runner::request_restart_point()'s own
+  /// Runner::request_restart_point()'s own
   /// backing flag -- see that method's doc comment (fuse/runtime/
   /// runner.hpp) for why this is a flag, not a trigger.
   bool                              restart_point_requested = false;
@@ -1805,8 +1805,8 @@ struct Runner::Impl {
 
   Result<void> setup(ComponentSet& components, FieldRegistry& registry);
 
-  /// Stage U6 (src/runtime/runner_adjoint.cpp): `Runner::initialize_adjoint()`
-  /// and `Runner::run_period_adjoint()` are these, and the adjoint of one
+  /// `Runner::initialize_adjoint()` and `Runner::run_period_adjoint()`
+  /// (src/runtime/runner_adjoint.cpp) are these, and the adjoint of one
   /// coupling instruction.
   Result<void> init_adjoint(ComponentSet& components, FieldRegistry& adjoint_registry);
   /// Reverses events of the open period (opening the next one when none is open) until the end of

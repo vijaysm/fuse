@@ -1,8 +1,8 @@
 #pragma once
 
 /// The assembled linear algebra system over a fe::DofMap, adapted from
-/// KARMA's karma_algebraic_system.h/.C (docs/dev/physics-kit-
-/// disposition.md's own D-A: "port-adapt ... algebraic system").
+/// KARMA's karma_algebraic_system.h/.C (port-adapted; see
+/// docs/dev/physics-kit.md).
 ///
 /// NOT A LITERAL PORT. KARMA's own KARMAAlgebraicSystem owns a PETSc Mat
 /// (preallocated from KARMADofMap's diagonal_nnz/off_diagonal_nnz) and a
@@ -19,8 +19,7 @@
 /// SCOPE: assemble_matrix/assemble_vector over a caller-supplied
 /// per-element contribution callback, and eliminate_dirichlet_rows
 /// (symmetric row elimination, tested). A PETSc Mat/Vec sink behind
-/// FUSE_HAVE_PETSC is explicitly NOT provided -- named as a follow-up in
-/// design_notes.
+/// FUSE_HAVE_PETSC is explicitly NOT provided.
 
 #include <cstdint>
 #include <functional>
@@ -44,17 +43,16 @@ namespace fuse::physics::fe {
 /// routine zeroes is removed by the SAME rule the row is, not by a
 /// one-sided row-only elimination that would leave pcg's own symmetry
 /// assumption violated). KARMA's own `constrain()` (karma_dof_map.h
-/// lines 143-144) is a no-op -- this is NOT that, stated in
-/// design_notes.
+/// lines 143-144) is a no-op -- this is NOT that.
 ///
-/// SCOPE THIS WAVE: `triplets` and `rhs` are the FULL global system (COO
+/// SCOPE: `triplets` and `rhs` are the FULL global system (COO
 /// triplets in [0, global_n), a dense `rhs` of that same size) -- the
 /// single-rank/serial case every tier-0 test here exercises. Extending
 /// this to the distributed case (a triplet's dirichlet COLUMN may be
 /// owned by a DIFFERENT rank than the row it is being subtracted from,
 /// needing a collective exchange of the subtracted amounts before each
-/// rank's own `rhs` block is correct) is NOT implemented this round --
-/// named as a follow-up (open_questions), not hidden; `assemble_matrix`'s
+/// rank's own `rhs` block is correct) is NOT implemented;
+/// `assemble_matrix`'s
 /// own multi-rank triplet exchange is unaffected (it runs before this
 /// function, which refuses on a mismatched size).
 ///
@@ -69,7 +67,7 @@ void eliminate_dirichlet_rows(std::vector<linalg::Triplet>& triplets, std::int64
 /// its assembly needs. `fortran_communicator` unset selects the
 /// single-rank convenience path (fuse::linalg::make_serial_reducer(),
 /// matching DofMap's own convention); set, the collective path (built,
-/// never run in this sandbox -- host_pending names the MPI build).
+/// never run in this sandbox).
 class AlgebraicSystem {
  public:
   /// `mesh` is the SAME mesh `dof_map` was built over (both outlive this
@@ -90,20 +88,16 @@ class AlgebraicSystem {
   /// append zero or more (row, col, value) triplets to `out` -- rows and
   /// columns need not be rows this rank owns; `assemble_matrix` below
   /// exchanges foreign rows to their owners in ONE collective step
-  /// after the whole element loop (item 2's own instruction).
+  /// after the whole element loop.
   using ElementContribution = std::function<void(spatial::EntityHandle element,
                                                    const std::vector<std::int64_t>& dof_indices,
                                                    std::vector<linalg::Triplet>& out)>;
 
   /// Loops every element `dof_map().owns_element_for_assembly()` names,
   /// calls `contribution`, exchanges foreign-row triplets to their
-  /// owners (a stated ROUND-1 SIMPLIFICATION -- see the .cpp's own
-  /// header comment: every rank's own foreign-triplet buffer is
-  /// broadcast to every other rank via the same padded-allgather
-  /// technique DofMap's own ghost resolution uses, O(total triplet
-  /// count) communication rather than a point-to-point exchange sized
-  /// to what each rank actually needs; named as a follow-up, not
-  /// hidden), merges the result with its own already-owned triplets,
+  /// owners (point-to-point through `Reducer::alltoallv`, sized to what
+  /// each rank actually sends -- see the .cpp's own header comment),
+  /// merges the result with its own already-owned triplets,
   /// and calls `fuse::linalg::DistSparseMatrix::from_triplets`.
   [[nodiscard]] Result<linalg::DistSparseMatrix> assemble_matrix(const ElementContribution& contribution) const;
 

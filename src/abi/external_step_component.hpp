@@ -62,7 +62,7 @@ class ExternalStepComponent final : public fuse::Component, public fuse::Adjoint
     return fuse::Result<void>::success();
   }
 
-  /// KNOWN_ISSUES.md D12: the one thing this override does is collect, not
+  /// The one thing this override does is collect, not
   /// bind -- every field this component owns is already bound directly by
   /// fuse_register_field() (src/abi/participant.cpp), before
   /// fuse_initialize() ever constructs a fuse::Runner. What this records

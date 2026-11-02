@@ -1,12 +1,10 @@
 // physics.fe_test -- ported from KARMA's fe_test.C (the volume-
 // integration portions). Exercises FEBase against a real mesh element
 // (fuse_physics::spatial::Mesh's native Hex8 generate_box), the one
-// place this wave's FE core, basis and geometry-map ports all run
+// place the FE core, basis and geometry-map ports all run
 // together.
 //
-// WAVE 1b (owner instruction 2026-10-31, item 1): KARMA's own item 6
-// pyramid-gradients section, not ported in wave 1 (no pyramid variant
-// existed), is ported now -- PhiSumsToOne and GradientsSumToZero both
+// KARMA's own pyramid-gradients section is ported too -- PhiSumsToOne and GradientsSumToZero both
 // get a Prism and a Pyramid case, built directly via Mesh::add_vertex/
 // add_element (generate_box is still Hex8-only) rather than through a
 // box generator neither cell has one for.
@@ -138,9 +136,7 @@ TEST(FEBaseTest, MismatchedBasisCellRefuses) {
 }
 
 // physics.fe_test.PhiSumsToOneAndGradientsSumToZeroOnPrismAndPyramid --
-// KARMA's own fe_test.C item 6 (pyramid gradients), ported now that
-// Prism and Pyramid are both in scope (owner instruction 2026-10-31,
-// item 1): the same two identities PhiSumsToOneAtEveryQuadraturePoint
+// KARMA's own fe_test.C pyramid-gradients section: the same two identities PhiSumsToOneAtEveryQuadraturePoint
 // and GradientsSumToZero above check on a Hex8, checked here on a
 // single Prism6 and a single Pyramid5 element.
 TEST(FEBaseTest, PhiSumsToOneAndGradientsSumToZeroOnPrismAndPyramid) {
@@ -193,16 +189,15 @@ TEST(FEBaseTest, SumOfJxWEqualsElementVolumeOnPrismAndPyramid) {
   }
 }
 
-// physics.fe_test.DistortedPyramidQuadratureAccuracy_D100 -- KNOWN_ISSUES.md
-// D100 (KARMA's own KNOWN_ISSUES.md item 1, carried forward since wave 1
-// as an unverified risk because no pyramid variant existed to test it):
+// physics.fe_test.DistortedPyramidQuadratureAccuracy_D100 --
+// KARMA documents this as a risk:
 // a DISTORTED (non-reference-shaped) pyramid's isoparametric map is a
 // genuinely RATIONAL function of the reference coordinate (not a
 // polynomial, even for a straight-edged pyramid -- the collapsed-
 // coordinate basis itself is rational), so the quadrature rule's own
 // polynomial exactness (QuadratureTest.PyramidExactToDeclaredDegree)
 // does not immediately carry over to the Jacobian-weighted integrand on
-// a distorted cell; KARMA's own KNOWN_ISSUES.md item 1 states this is
+// a distorted cell; KARMA's own documentation states this is
 // "a question of relative accuracy, not of exactness." MEASURED here:
 // the quadrature-integrated volume of a markedly distorted (planar
 // base, but irregular quadrilateral, apex off-centre and not above the
@@ -212,8 +207,7 @@ TEST(FEBaseTest, SumOfJxWEqualsElementVolumeOnPrismAndPyramid) {
 // pyramid, exact in closed form for ANY planar-base pyramid regardless
 // of distortion -- this is genuinely independent ground truth, not a
 // value produced by GeometryMap/Quadrature). g_pyramid_distortion_errors
-// is read back by the ZZZ test below to put the actual numbers in the
-// submission's measured_results and KNOWN_ISSUES.md D100's update.
+// is read back by the ZZZ test below to print the actual numbers.
 std::vector<double> g_pyramid_distortion_errors;
 std::vector<double> g_pyramid_smooth_errors;
 
@@ -247,15 +241,15 @@ TEST(FEBaseTest, DistortedPyramidQuadratureAccuracy_D100) {
     const double error = std::abs(quadrature_volume - analytic_volume);
     g_pyramid_distortion_errors.push_back(error);
   }
-  // The risk D100 names is a persistent, non-shrinking bias; demonstrate
+  // The risk named above is a persistent, non-shrinking bias; demonstrate
   // there is none here (error shrinks, and is already tiny well before
-  // the quadrature degree this wave's own basis orders need, degree 2).
+  // the quadrature degree the basis orders here need, degree 2).
   for (std::size_t i = 1; i < g_pyramid_distortion_errors.size(); ++i)
     EXPECT_LE(g_pyramid_distortion_errors[i], g_pyramid_distortion_errors[i - 1] + 1.0e-13)
         << "degree " << (i + 1) << " was less accurate than degree " << i;
   EXPECT_LT(g_pyramid_distortion_errors.back(), 1.0e-10);
 
-  // KARMA's own D100 wording ("a question of relative accuracy, not of
+  // KARMA's own wording ("a question of relative accuracy, not of
   // exactness") is squarely about a NON-polynomial integrand, which the
   // constant-function volume check above cannot exercise (a constant is
   // degree 0, trivially exact at any degree even through a rational
@@ -290,18 +284,17 @@ TEST(FEBaseTest, DistortedPyramidQuadratureAccuracy_D100) {
 // physics.fe_test.ZZZ_D100MeasurementIsPrinted -- runs last (gtest's
 // definition-order rule, same device fe_quadrature_test.cpp's own ZZZ
 // test uses), so the five degree -> error pairs DistortedPyramidQuadrature
-// Accuracy_D100 measured are a plain, greppable line in the test log for
-// KNOWN_ISSUES.md D100's update and the submission's measured_results,
+// Accuracy_D100 measured are a plain, greppable line in the test log,
 // not a number this file's own comments would otherwise only assert
 // silently passed.
 TEST(FEBaseTest, ZZZ_D100MeasurementIsPrinted) {
   ASSERT_EQ(g_pyramid_distortion_errors.size(), 5u);
   for (std::size_t i = 0; i < g_pyramid_distortion_errors.size(); ++i)
-    std::printf("D100 distorted pyramid: degree %zu volume error = %.3e\n", i + 1, g_pyramid_distortion_errors[i]);
+    std::printf("distorted pyramid: degree %zu volume error = %.3e\n", i + 1, g_pyramid_distortion_errors[i]);
   const std::array<int, 7> smooth_degrees{1, 2, 3, 4, 5, 10, 16};
   ASSERT_EQ(g_pyramid_smooth_errors.size(), smooth_degrees.size());
   for (std::size_t i = 0; i < g_pyramid_smooth_errors.size(); ++i)
-    std::printf("D100 distorted pyramid: degree %d exp(x+y+z) error vs degree-16 reference = %.3e\n",
+    std::printf("distorted pyramid: degree %d exp(x+y+z) error vs degree-16 reference = %.3e\n",
                 smooth_degrees[i], g_pyramid_smooth_errors[i]);
 }
 

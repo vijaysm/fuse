@@ -4212,7 +4212,7 @@ Result<void> Runner::Impl::agree_on_adjoint_period() {
   if (agreed[1] == 0) return Result<void>::success();
 
   // The lowest-numbered rank that failed tells every other rank what it failed with, so that the
-  // original error and the rank it came from are known everywhere (KNOWN_ISSUES.md D97).
+  // original error and the rank it came from are known everywhere.
   const int origin = agreed[0];
   std::string code;
   std::string message;

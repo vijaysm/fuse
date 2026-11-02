@@ -2,7 +2,7 @@
 
 /// `fuse::num::dual<S, N>`: a forward-mode automatic-differentiation number,
 /// the value of a quantity together with its gradient with respect to N
-/// parameters. Plans/2026-10-22-universal-number-types.md, stage U2.
+/// parameters.
 ///
 /// WHAT IT IS. A truncated first-order Taylor expansion in N directions: for a
 /// quantity f(p) of N parameters seeded with `variable(p0, k)`, the result of

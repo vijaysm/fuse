@@ -1,7 +1,6 @@
 #pragma once
 
-/// A field of values of any coupled value type in a restart file
-/// (plans/2026-10-22-universal-number-types.md, stage U4).
+/// A field of values of any coupled value type in a restart file.
 ///
 /// `RestartWriter::put_field<T>()` stores arrays of the types `ElementTypeOf`
 /// names: the integer types, `bool`, binary32, binary64, `long double`, and the

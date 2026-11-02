@@ -48,8 +48,7 @@ bool in_reference_cell(const ReferenceTopology& reference, const Point& point, d
 /// on every axis for every family except Pyramid, whose base spans
 /// [-1,1]x[-1,1] (this file's in_reference_cell comment); the sampler
 /// still relies on in_reference_cell to reject points outside the
-/// triangular/taper cross-section within that box, same as before this
-/// wave added Pyramid.
+/// triangular/taper cross-section within that box, same as for the other families.
 std::pair<Point, Point> reference_cell_bounds(CellFamily family) {
   if (family == CellFamily::Pyramid) return {Point(-1, -1, 0), Point(1, 1, 1)};
   return {Point(0, 0, 0), Point(1, 1, 1)};
@@ -57,8 +56,7 @@ std::pair<Point, Point> reference_cell_bounds(CellFamily family) {
 
 /// Outward reference-space co-normal for a side, used only to fix the sign
 /// of the computed physical normal (the KARMA source's own
-/// reference_outward_normal table, extended to Prism and Pyramid this
-/// wave).
+/// reference_outward_normal table, extended to Prism and Pyramid).
 Point reference_outward_normal(CellFamily family, unsigned side) {
   switch (family) {
     case CellFamily::Triangle:

@@ -8,38 +8,34 @@
 
 #include "fuse/num/integrator.hpp"
 
-/// S8 physics-kit, track "Integrators", Stage B Round 3 (task item 1): dense output.
+/// Dense output (continuous extensions) for the integrators.
 ///
-/// Round 2 shipped only the cubic Hermite interpolant (a stated deviation from DOPRI5's
-/// own published quartic, after this track declined to transcribe it from a garbled
-/// secondary source). Round 3 has the primary sources in hand: Hairer's own `dopri5.f`
-/// (the author's reference FORTRAN, github.com/pv/dopri5_interface) for DOPRI5's own
-/// quartic continuous extension, and the Kennedy & Carpenter NASA TM (artifact
-/// 6dd464e5-d3ed-411c-8e99-ccd5ca95087d, Appendix D) for the new ESDIRK pairs' own
-/// dense-output rows -- both reproduced below, neither re-derived.
+/// The primary sources are Hairer's own `dopri5.f` (the author's reference FORTRAN,
+/// github.com/pv/dopri5_interface) for DOPRI5's own quartic continuous extension, and the
+/// Kennedy & Carpenter NASA TM (Appendix D) for the ESDIRK pairs' own dense-output
+/// rows -- both reproduced below, neither re-derived.
 ///
-/// Three concrete interpolants now exist behind one reporting wrapper,
-/// `ContinuousExtension<Value>`, which tells a caller WHICH one it used (task's own
-/// instruction) rather than silently picking one:
+/// Three concrete interpolants exist behind one reporting wrapper,
+/// `ContinuousExtension<Value>`, which tells a caller WHICH one it used rather than
+/// silently picking one:
 ///   - `Dopri5QuarticExtension`: DOPRI5's own 4th-order "free" interpolant (Shampine
 ///     1986, cited explicitly in `dopri5.f`'s own comment -- the published choice, not
-///     this round's own derivation), needing all 7 of DOPRI45's own stage derivatives.
+///     a derivation of this project's own), needing all 7 of DOPRI45's own stage
+///     derivatives.
 ///   - `PolynomialDenseOutput`: the generic `b_i(theta) = sum_j b*_ij * theta^j` form
 ///     Kennedy & Carpenter publish for their own ESDIRK pairs (eq. 54 of the TM's main
 ///     text), driven by a tableau's own `dense_output` table (butcher_tableau.hpp).
-///   - `CubicHermiteExtension`: Round 2's own fallback, unchanged, used when neither of
+///   - `CubicHermiteExtension`: the fallback, used when neither of
 ///     the above has data for the tableau at hand (STILL the only option for every
 ///     classical/SDIRK/Rosenbrock tableau this project ships, none of which publish a
 ///     b*_ij dense-output table of their own).
 namespace fuse::num {
 
-/// Which concrete interpolant a `ContinuousExtension` ended up using -- the task's own
-/// "reports WHICH it used" instruction, read literally: a caller inspects this rather
-/// than needing to know in advance which family a tableau belongs to.
+/// Which concrete interpolant a `ContinuousExtension` ended up using: a caller
+/// inspects this rather than needing to know in advance which family a tableau
+/// belongs to.
 enum class DenseOutputKind { CubicHermite, Dopri5Quartic, PolynomialBStar };
 
-/// Unchanged from Round 2 except for the one-line addition of `kind()`, so existing
-/// Round 2 callers (none outside this file and its own test) keep compiling.
 template <IntegratorValue Value>
 class CubicHermiteExtension {
  public:
@@ -77,10 +73,10 @@ class CubicHermiteExtension {
 
 /// DOPRI5's own quartic dense output, EXACTLY as `dopri5.f`'s own `CONTD5` function and
 /// `CDOPRI` subroutine compute it (Hairer & Wanner's reference implementation) -- not
-/// algebraically simplified or re-derived by this round, to avoid introducing a
+/// algebraically simplified or re-derived, to avoid introducing a
 /// transcription slip of its own on top of the primary source. `k` holds DOPRI45's own
 /// seven stage derivatives for the step (`k[0]` = f(t0,y0), `k[6]` = the FSAL stage
-/// f(t0+h, y1); DOPRI45's own Round 1 correction to `is_FSAL` is exactly what makes
+/// f(t0+h, y1); DOPRI45's own `is_FSAL` flag is exactly what makes
 /// `k[6]` free). `y0`, `y1` are the step's own endpoints.
 template <IntegratorValue Value>
 class Dopri5QuarticExtension {
@@ -131,8 +127,8 @@ class Dopri5QuarticExtension {
 /// The generic Kennedy & Carpenter dense-output form (the TM's own eq. 54,
 /// butcher_tableau.hpp's own `ButcherTableau::dense_output` doc comment):
 /// `b_i(theta) = sum_{j=1}^{p*} b*_ij * theta^j`, driven entirely by a tableau's own
-/// `dense_output` table -- no tableau-specific code here, so adding a FOURTH pair's own
-/// dense output later (Round 4's deferred ESDIRK/Kvaerno pairs) needs no new class.
+/// `dense_output` table -- no tableau-specific code here, so adding another pair's own
+/// dense output later (e.g. further ESDIRK/Kvaerno pairs) needs no new class.
 /// `k` holds the RAW stage derivatives `f(t_i, y_i)` (the Butcher-tableau convention
 /// every family in this project already uses for `k`, NOT an h-scaled stage increment).
 template <IntegratorValue Value>
@@ -173,8 +169,7 @@ class PolynomialDenseOutput {
   std::vector<std::vector<double>> b_star_;
 };
 
-/// The reporting wrapper (task item 1's own "ContinuousExtension reports WHICH it
-/// used" instruction): one type a caller holds regardless of which concrete
+/// The reporting wrapper: one type a caller holds regardless of which concrete
 /// interpolant backs a given step, with `kind()` naming it.
 template <IntegratorValue Value>
 class ContinuousExtension {

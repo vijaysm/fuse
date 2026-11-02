@@ -16,8 +16,7 @@
 // can name an HDF5 dataset the way it names a field) is an open design
 // question -- see docs/user/lowfive.md.
 //
-// The string format mirrors Wilkins's own data-centric port model (named in
-// docs/plans/soma-phase-8.md): a "port" is an HDF5
+// The string format mirrors Wilkins's own data-centric port model: a "port" is an HDF5
 // path pattern, `"<file>.h5/<dataset path>"`. A leading `*` in the file
 // component is a wildcard (matches LowFive's own `set_memory("*", "*")`
 // pattern, already used unconditionally in lowfive_transport.cpp); nothing

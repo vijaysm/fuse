@@ -498,7 +498,7 @@ class Runner {
   Result<void> run_period(ComponentSet& components);
   Result<void> run(ComponentSet& components, std::int64_t periods);
 
-  /// Reverse mode (stage U6, docs/dev/adjoint-schedule.md). Binds the adjoint
+  /// Reverse mode (docs/dev/adjoint-schedule.md). Binds the adjoint
   /// arrays of every component-owned arc from `adjoint_registry` (filled by
   /// each component's `AdjointComponent::register_adjoint_fields()`), allocates
   /// the adjoint of every coupler-owned arc, and works out the order of one
@@ -553,7 +553,7 @@ class Runner {
   /// iteration region (E-ADJ-REGION).
   Result<std::optional<ExternalAdvanceRequest>> resume_period_adjoint(ComponentSet& components);
 
-  /// KNOWN_ISSUES.md D12's fix: resumes the current period's instruction
+  /// Resumes the current period's instruction
   /// stream from wherever it last suspended (or begins a new period, if
   /// the previous one ran to completion), executing every instruction up
   /// to the NEXT externally driven component's own `advance()` point and

@@ -5,7 +5,6 @@
 /// (unit roundoff u2 = 2^-106, so a relative error of a few 2^-106 per
 /// operation) over binary64's exponent range. Callable from host and device
 /// code, never throws, trivially copyable, 16 bytes.
-/// plans/2026-10-22-universal-number-types.md, stage U4.
 ///
 /// ALGORITHMS. The error-free transformations in fuse/num/eft.hpp and the
 /// double-double and quad-double algorithms of Hida, Li and Bailey, "Algorithms

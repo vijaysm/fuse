@@ -1,11 +1,10 @@
 #pragma once
 
 /// A box-shaped computational domain descriptor, adapted from KARMA's
-/// karma_domain.h/.C and enums/domain_shape.h (docs/dev/physics-kit-
-/// disposition.md Appendix A, port-adapt, owner decision D-A).
+/// karma_domain.h/.C and enums/domain_shape.h (port-adapted; see
+/// docs/dev/physics-kit.md).
 ///
-/// I6 FIX (docs/dev/physics-kit-disposition.md Section 1.1 / Appendix A row
-/// for src/numerics/spatial/karma_domain.C): the upstream constructor
+/// FIX relative to upstream (src/numerics/spatial/karma_domain.C): the upstream constructor
 /// asserts `Type != Hexagon || Type != Unstructured`, three times
 /// (karma_domain.C lines 32, 54, 77). That is vacuous: for ANY value of
 /// Type, at most one of the two equalities can hold, so the OR is true
@@ -19,8 +18,7 @@
 /// Domain constructed with Shape::Hexagon or Shape::Unstructured throws,
 /// verified by Spatial.DomainRefusesUnsupportedShapes
 /// (physics-kit/test/spatial_domain_test.cpp) actually triggering it --
-/// the task's own rule that "a refusal counts as verified only when a test
-/// makes it fire".
+/// a refusal counts as verified only when a test makes it fire.
 
 #include <stdexcept>
 

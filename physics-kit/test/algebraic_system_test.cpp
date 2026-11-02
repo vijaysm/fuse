@@ -33,7 +33,7 @@ using fuse::linalg::Triplet;
 // (Neumann at both ends, so K is singular -- irrelevant here, only its
 // SYMMETRY and the elimination's own arithmetic are under test),
 // Dirichlet-eliminated at row 0 to value 5. The textbook symmetric
-// elimination this wave implements (NOT KARMA's own no-op constrain(),
+// elimination implemented here (NOT KARMA's own no-op constrain(),
 // algebraic_system.hpp's own header comment) must: (a) replace row 0
 // with exactly {(0,0,1)}; (b) remove the (1,0) entry that named the
 // eliminated COLUMN, moving its value (-1 * 5 = -5) into rhs[1]; (c)

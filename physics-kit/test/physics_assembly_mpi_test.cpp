@@ -1,11 +1,10 @@
-// physics-kit/test/physics_assembly_mpi_test.cpp -- item H (wave 2
-// round 3): the GLOBAL assembled mass matrix over a REAL, multi-rank
+// physics-kit/test/physics_assembly_mpi_test.cpp -- the GLOBAL assembled mass matrix over a REAL, multi-rank
 // partitioned 3-D box, built through fuse_physics::fe::AlgebraicSystem's
 // own collective path (DofMap/AlgebraicSystem given a real
 // fortran_communicator). Registered with RANKS 2 3
 // (physics-kit/test/CMakeLists.txt), build-only under FUSE_ENABLE_MPI=ON
 // (host_pending has the exact mpirun commands) -- MPI cannot start in
-// this sandbox (KNOWN_ISSUES.md C1), matching every other *_mpi_test.cpp
+// this sandbox, matching every other *_mpi_test.cpp
 // in this tree.
 //
 // PARTITION. The SAME device physics_mesh_mpi_test.cpp's own
@@ -177,9 +176,9 @@ TEST(PhysicsAssemblyMpi, GlobalMassMatrixEntrySumEqualsBoxVolume) {
       });
   ASSERT_TRUE(matrix.ok()) << matrix.error().message;
 
-  auto ones = system.new_vector_for(matrix.value());  // D104: the matrix's own ghost pattern
+  auto ones = system.new_vector_for(matrix.value());  // the matrix's own ghost pattern
   for (std::size_t i = 0; i < ones.owned_size(); ++i) ones.data()[i] = 1.0;
-  auto result = system.new_vector_for(matrix.value());  // D104: the matrix's own ghost pattern
+  auto result = system.new_vector_for(matrix.value());  // the matrix's own ghost pattern
   const auto apply_result = matrix.value().apply(ones, result);
   ASSERT_TRUE(apply_result.ok()) << apply_result.error().message;
 
@@ -240,9 +239,9 @@ TEST(PhysicsAssemblyMpi, LumpedRowSumsAgreeWithMassMatrixActionOnOnes) {
           for (std::size_t j = 0; j < n; ++j) out.push_back(Triplet{indices[i], indices[j], local[i * n + j]});
       });
   ASSERT_TRUE(matrix.ok()) << matrix.error().message;
-  auto ones = system.new_vector_for(matrix.value());  // D104: the matrix's own ghost pattern
+  auto ones = system.new_vector_for(matrix.value());  // the matrix's own ghost pattern
   for (std::size_t i = 0; i < ones.owned_size(); ++i) ones.data()[i] = 1.0;
-  auto m_times_ones = system.new_vector_for(matrix.value());  // D104: the matrix's own ghost pattern
+  auto m_times_ones = system.new_vector_for(matrix.value());  // the matrix's own ghost pattern
   const auto apply_result = matrix.value().apply(ones, m_times_ones);
   ASSERT_TRUE(apply_result.ok()) << apply_result.error().message;
 

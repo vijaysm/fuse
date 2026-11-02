@@ -1,6 +1,6 @@
 # The adjoint schedule (reverse mode through the coupler)
 
-Stage U6 of `plans/2026-10-22-universal-number-types.md`. `Runner::initialize_adjoint()` and
+`Runner::initialize_adjoint()` and
 `Runner::run_period_adjoint()` run one period of a coupling backwards: the adjoint of every coupling
 operator is applied by FUSE, and the adjoint of every component step by the component. The user
 guide section is [](../user/field-pipeline.md) ("Reverse mode"); this note is the contract and the
@@ -182,12 +182,12 @@ at the end of the period; the reverse of an `Epoch` takes part in the agreement,
 whose partner failed earlier in the sweep fails too (`E-RT-EPOCH-PEER`) rather than pass on an
 adjoint derived from an exchange that did not complete. The reverse order puts a component's step
 after the exchanges that follow it in the forward order, so a failure at a step has no `Epoch` behind
-it in the sweep (measured on higgs: with the failing step reversed last, the rank that does not hold
+it in the sweep (with the failing step reversed last, the rank that does not hold
 the component returned success and its partners were left waiting in the next period); the end of
 the period is therefore an agreement point of its own (`agree_on_adjoint_period`), the reduction of
 `reconcile_epoch` over the ranks that take part in any `Epoch` of the plan, and a rank that did not
-fail records `E-RT-EPOCH-PEER` when another did. Following the rule of KNOWN_ISSUES.md D97 (the
-original error and the rank it came from are known on every rank), the lowest-numbered rank that
+fail records `E-RT-EPOCH-PEER` when another did. Following the rule that the
+original error and the rank it came from are known on every rank, the lowest-numbered rank that
 failed sends its own code and message to the others, and the failure a healthy rank records is the
 agreed refusal of `fuse::make_agreed_failure()` with `origin_rank` and `origin_code` set; a rank that
 failed itself keeps its own failure. (The `Epoch` agreement of the forward run, which the reverse of
@@ -265,7 +265,7 @@ Sink, Remap, Sample, Accumulate, Merge, Scale, Extrapolate, Interpolate, Transpo
 and Diagnose (BuildRemapHalo, which carries no value, is in every plan).
 
 The test prints each case's worst ratio `defect / (eps ||G||_est ||x|| ||w||)` over three draws;
-the largest over the cases, measured on the Mac (AppleClang 21, Debug, tier 0), was **0.351**
+the largest over the cases, measured with AppleClang 21 in a Debug tier-0 build, was **0.351**
 against `c = 50`, the same order as the 0.235 the gate measured for its own operators.
 `AWrongComponentAdjointIsDetected` is the control: the loop with a component whose adjoint leaves
 out the factor of its state fails the same gate by more than 100 times `c`.
@@ -273,7 +273,7 @@ out the factor of its state fails the same gate by more than 100 times `c`.
 **On the device.** The test binary is registered a second time as `runtime.adjoint_runner.device`
 (`FUSE_EXECUTION_SPACE=device`) in a build with a device backend, so every test above also runs
 with the sweep as device kernels: the fields the test components register are in host memory and
-are staged. On higgs (CUDA 12.5, sm_61) the worst ratio is the same 0.351. Four tests exist only
+are staged. On a CUDA 12.5 device (sm_61) the worst ratio is the same 0.351. Four tests exist only
 in such a build (`RuntimeAdjointDevice.*`): the identity for the same sixteen cases with the
 fields and the adjoint arrays of the components in device memory, with the components' own steps
 and adjoints as kernels (worst ratio 0.480); the adjoint of each case under the host and under the
@@ -308,21 +308,21 @@ reduction, the recording of the peer's failure, the origin's rank and message, t
 origin). `abi_adjoint` holds the provider adapter (10 rows), the table-size check of the registry (2), the participant entries (16), the
 external step component (1) and the Runner's suspension at an external step (2). Six rows of the
 first area are marked `requires = "device"` and 22 `requires = "mpi"`: the tests that kill them are
-compiled only against a device backend or run only under a launcher, and the Mac tier-0 build
+compiled only against a device backend or run only under a launcher, and the tier-0 build
 reports them NOT-ASSESSED (the tool runs the MPI rows only with `FUSE_MUTATE_MPI=1`).
 
-Results. On the Mac (tier 0, before the rebase onto the main that carries the field transaction):
-the 55 host rows of `runtime_adjoint` and all 31 rows of `abi_adjoint` are killed. On higgs (CUDA, OpenMP and Open MPI; the rebased stack, with
-`FUSE_MUTATE_MPI=1`): `runtime_adjoint_agreement` 5 killed of 5; `runtime_adjoint` 80 killed, 1
-declared equivalent and 2 not killed of 83; `abi_adjoint` 29 killed and 2 without a baseline of 31
-(`abi.conformance`, the test of the two rows on the table size, fails on higgs at the base, with
-`MPI_ERR_COMM` from the handles it fakes; both rows are killed on the Mac). The equivalent row,
+Results. In a tier-0 build the 55 host rows of `runtime_adjoint` and all 31 rows of `abi_adjoint` are
+killed. In a CUDA, OpenMP and Open MPI build with `FUSE_MUTATE_MPI=1`: `runtime_adjoint_agreement` 5
+killed of 5; `runtime_adjoint` 80 killed, 1 declared equivalent and 2 not killed of 83; `abi_adjoint`
+29 killed and 2 without a baseline of 31 (`abi.conformance`, the test of the two rows on the table
+size, fails in that build with `MPI_ERR_COMM` from the handles it fakes; both rows are killed in the
+tier-0 build). The equivalent row,
 `runtime-adjoint-device-arc-in-host-memory`: an arc the forward run keeps in device memory whose
 adjoint array is in host memory is staged through the lanes of `reverse_on`, which gives the same
 result as the adjoint array in device memory. The two not killed, `epoch-reverse-skips-the-agreement`
 and `sweep-skips-the-exchanges-after-a-failure`, both concern a failure that is followed by a
 collective instruction in the sweep: the failing step of the tests' plan is reversed after the last
-exchange of the period (traced on higgs), so the agreement at the end of the period carries the
+exchange of the period (traced), so the agreement at the end of the period carries the
 failure and nothing collective follows it. They need a test with a failing instruction (an exchange
 that errors) ahead of an exchange, or a plan that steps a component after an exchange; none is
 built here, and the rows stay in the table, with that note, as the open gap.
@@ -342,12 +342,10 @@ component depends on.
 - **Distributed nodal Remap.** Its adjoint is `apply_distributed_HT` where the forward run applied
   `H`, and `apply_distributed_H` followed by the diagonal `D` where it applied `H^T D` (the
   consistent transpose), each with the exchange inside it run the other way. It is not written
-  because it cannot be verified here: the forward test of the same path,
-  `parallel.nodal_remap_runner.{1..5}` (and `.1` to `.3` on the device), fails on higgs at 8820aed2
-  (a main commit before any change for number types) and at the head of the number-types branch,
-  with `E-RT-CONSERVATION: relative conservation error 0.909091 (integral 11.000000 -> 1.000000)`.
+  because it cannot be verified: the forward test of the same path,
+  `parallel.nodal_remap_runner.{1..5}` (and `.1` to `.3` on the device), fails on a CUDA, Open MPI
+  host with `E-RT-CONSERVATION: relative conservation error 0.909091 (integral 11.000000 -> 1.000000)`.
   An adjoint of a forward map that does not pass its own test would be checked against nothing.
-  KNOWN_ISSUES.md D102 has the record.
 - **Transports other than copy and MPI.** A LowFive transport has no `move_adjoint` and is refused;
   the device-direct exchange (`move_packed`, GPU-aware MPI) is not used in the reverse sweep, which
   exchanges through host buffers. The same-rank matches of a plan that is not peer-wise
@@ -375,7 +373,7 @@ component depends on.
   `reconcile_collective_status` as the forward entries) is wired and not exercised under MPI. There
   is no Fortran plugin example of an adjoint (the generated `ffuse_provider` module has the setters,
   `ffuse_provider_set_bind_adjoint` and `ffuse_provider_set_advance_adjoint`).
-- **Gradients with respect to the mesh** (U8). Forward mode exists for the moving-least-squares
+- **Gradients with respect to the mesh.** Forward mode exists for the moving-least-squares
   weights ([](mls-shape-gradient.md)). Reverse mode does not: this schedule treats every remap weight
   as a constant of the problem, so a reverse sweep returns gradients with respect to fields and never
   with respect to the positions of points or the vertices of a mesh, and the weights of the supermesh

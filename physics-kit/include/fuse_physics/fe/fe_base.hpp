@@ -2,13 +2,12 @@
 
 /// Mesh-bound finite-element evaluator: basis values, physical gradients
 /// and quadrature weights at an element's quadrature points, adapted from
-/// KARMA's karma_fe_base.h/.C (docs/dev/physics-kit-disposition.md
-/// Appendix A, port-adapt, owner decision D-A).
+/// KARMA's karma_fe_base.h/.C (port-adapted; see
+/// docs/dev/physics-kit.md).
 ///
 /// DECOUPLED FROM PETSc's PetscQuadrature (quadrature.hpp's own note) and
 /// bound to fuse_physics::spatial::Mesh rather than KARMA's MOAB-backed
-/// KARMAMesh (spatial/mesh.hpp's own note on why that mesh is native this
-/// wave). The public surface -- reinit(element), reinit(element, side),
+/// KARMAMesh (spatial/mesh.hpp's own note on why that mesh is native). The public surface -- reinit(element), reinit(element, side),
 /// reinit_at_physical_points, and the getters -- mirrors KARMAFEBase's
 /// contract exactly: output storage is allocated at construction and stays
 /// address-stable across successful and failed reinitialisation, so a
@@ -16,17 +15,14 @@
 /// reinit still sees valid (if now NaN-filled) storage rather than a
 /// dangling one.
 ///
-/// WAVE 1b SCOPE: FEIntegrationDomain::Volume and Face are both ported
-/// and tested, now including Prism and Pyramid (owner instruction
-/// 2026-10-31, item 1), whose sides have MIXED shapes (Prism: 3
-/// quadrilateral + 2 triangular; Pyramid: 4 triangular + 1
-/// quadrilateral) -- the single `quadrature_` member a Tet- or Hex-only
-/// wave 1 could get away with is not enough once one parent cell's own
-/// sides are not all the same shape. `quadrature_` holds the
-/// Quadrilateral-side rule (every family this wave supports has at most
-/// one side SHAPE that is not Quadrilateral: Tet's sides are uniformly
-/// Triangle, handled the same way `quadrature_` always was); `triangle_
-/// quadrature_` -- present but unused since wave 1 -- now holds the
+/// SCOPE: FEIntegrationDomain::Volume and Face are both ported
+/// and tested, including Prism and Pyramid, whose sides have MIXED
+/// shapes (Prism: 3 quadrilateral + 2 triangular; Pyramid: 4 triangular
+/// + 1 quadrilateral) -- a single `quadrature_` member is not enough
+/// once one parent cell's own sides are not all the same shape.
+/// `quadrature_` holds the Quadrilateral-side rule (every supported
+/// family has at most one side SHAPE that is not Quadrilateral: Tet's
+/// sides are uniformly Triangle); `triangle_quadrature_` holds the
 /// matching Triangle-side rule for Prism and Pyramid's triangular
 /// sides, selected per side by fe_base.cpp's own quadrature_for_side().
 
@@ -50,8 +46,8 @@
 // walks include/fuse/, src/, python/, examples/ -- never physics-kit/
 // itself), and physics-kit/CMakeLists.txt already builds fe/ and spatial/
 // into the SAME target, so there is no separate-library ordering to
-// preserve either. See design_notes for the one place this matters: a
-// future FUSE_HAVE_MOAB-bound mesh type would still satisfy this same
+// preserve either. A future
+// FUSE_HAVE_MOAB-bound mesh type would still satisfy this same
 // #include, since spatial::Mesh is physics-kit's own type either way.
 
 namespace fuse::physics::fe {

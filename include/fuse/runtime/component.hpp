@@ -217,9 +217,8 @@ class ImplicitComponent {
   [[nodiscard]] virtual LinearizationToken* linearization() { return nullptr; }
 };
 
-/// Reverse mode (adjoint) interface of a component (plans/2026-10-22-universal-
-/// number-types.md, stage U6; docs/dev/adjoint-schedule.md). Queried through
-/// `Component::adjoint()`, like `ImplicitComponent`, rather than as a second
+/// Reverse mode (adjoint) interface of a component (docs/dev/adjoint-schedule.md).
+/// Queried through `Component::adjoint()`, like `ImplicitComponent`, rather than as a second
 /// base class.
 ///
 /// FUSE supplies the adjoint of every coupling operator it applies (the
@@ -274,7 +273,7 @@ class AdjointComponent {
   virtual Result<void> advance_adjoint(const StepContext& ctx) = 0;
 };
 
-/// S7.1's E-NEWTON-SHAPE check: whether `token`'s own `rows()`/`cols()`
+/// The E-NEWTON-SHAPE check: whether `token`'s own `rows()`/`cols()`
 /// agree with the block sizes a region's interface-vector assembly derived
 /// for the component that returned it. A pure function of already-known
 /// sizes, so it needs no graph, no `ComponentSet` and no running region --
@@ -660,7 +659,7 @@ class Component {
   /// does not implement `ImplicitComponent`.
   [[nodiscard]] virtual ImplicitComponent* implicit() { return nullptr; }
 
-  /// Stage U6: this component's reverse mode (adjoint) interface, or
+  /// This component's reverse mode (adjoint) interface, or
   /// `nullptr` if it has none. A separate query for the reason `implicit()`
   /// gives: most components never differentiate, and a second base class would
   /// make every one of them override two pure virtuals. `Runner::

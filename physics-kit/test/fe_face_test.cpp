@@ -1,7 +1,6 @@
 // physics.fe_face_test -- ported from KARMA's fe_face_test.C (face-
-// integration portions). WAVE 1b (owner instruction 2026-10-31, item 1)
-// ports the mixed triangle/quad face case too, now that Prism and
-// Pyramid are in scope: EveryFaceAreaOfPrismAndPyramidMatchesItsOwnShape
+// integration portions). The mixed triangle/quad face case is ported too
+// (Prism and Pyramid): EveryFaceAreaOfPrismAndPyramidMatchesItsOwnShape
 // exercises fe_base.cpp's own quadrature_for_side() dispatch directly --
 // every quad side goes through `quadrature_`, every triangular side
 // through `triangle_quadrature_`, on the SAME FEBase instance.

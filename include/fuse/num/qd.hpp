@@ -4,7 +4,7 @@
 /// numbers x[0] + x[1] + x[2] + x[3] with |x[i+1]| <= ulp(x[i]), about 212
 /// bits of significand (unit roundoff 2^-212) over binary64's exponent range.
 /// Callable from host and device code, never throws, trivially copyable, 32
-/// bytes. plans/2026-10-22-universal-number-types.md, stage U4.
+/// bytes.
 ///
 /// ALGORITHMS. Those of Hida, Li and Bailey, "Algorithms for quad-double
 /// precision floating point arithmetic" (15th IEEE Symposium on Computer

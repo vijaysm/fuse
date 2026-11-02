@@ -116,7 +116,7 @@ class DistSparseMatrix {
 
   /// This participant's own DIAGONAL block, in CSR over LOCAL row/column
   /// indices (both in `[0, local_rows())`) -- the off-process block is not
-  /// exposed here (wave 2 round 4, item P1: `fuse::linalg::
+  /// exposed here (`fuse::linalg::
   /// SsorPreconditioner` reads this to run a symmetric SOR sweep against
   /// its OWN diagonal block alone, making it block-Jacobi ACROSS ranks
   /// with SSOR INSIDE each block -- the standard parallel SSOR, stated as

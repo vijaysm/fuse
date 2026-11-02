@@ -162,7 +162,6 @@ TEST(DofMapTest, RefusesAGhostDofWithoutACommunicator) {
 }
 
 // physics.dof_map.FaceCentreAssociationIndexMatchesSideTopologyOrder --
-// CLOSES the wave 1b open item (docs/dev/physics-kit.md's review):
 // cross-check DofAssociation's entity_dimension=2 local_entity_index
 // numbering against ReferenceTopology::side_topology()'s own side
 // order, for every cell family with a P2 face-centre dof (Hexahedron,
@@ -176,14 +175,14 @@ TEST(DofMapTest, RefusesAGhostDofWithoutACommunicator) {
 // (two different sides of a Hexahedron/Prism/Pyramid have different
 // centroids).
 void check_face_centres_match_side_topology(GeometryVariant variant, unsigned n_quad_face_centres) {
-  // Every face this wave's built-in P2 bases place a centre dof on (the
+  // Every face the built-in P2 bases place a centre dof on (the
   // Hexahedron's 6, the Prism's 3 quad side faces, the Pyramid's 1 quad
   // base) is a QUADRILATERAL -- its corner count is 4, read directly from
   // side_nodes(side)'s own "corners first" CN convention
   // (reference_topology.hpp's own comment) rather than through
   // side_topology(side), which for a quadratic cell returns the FACE'S
   // OWN quadratic shape (Quad9) -- averaging all 9 of ITS nodes would
-  // happen to also land on the centre by symmetry for this wave's
+  // happen to also land on the centre by symmetry for the
   // reference elements, but would be the wrong check to rely on; reading
   // only the first 4 (corner) indices out of the TOP cell's own node
   // array is correct independent of that symmetry.
