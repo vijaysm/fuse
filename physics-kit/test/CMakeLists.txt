@@ -67,6 +67,16 @@ if(FUSE_ENABLE_MPI)
   fuse_add_mpi_test(parallel physics_assembly_mpi SRC_DIR . RANKS 2 3 LIBS fuse::physics_kit fuse::field)
 endif()
 
+# Item X (wave 2 round 4): DofMap's own ghost resolution (dof_map.cpp
+# pass 3) over a partition with UNEQUAL owned-dof counts per rank --
+# the D103 padding shape -- now resolved point-to-point instead of a
+# padded allgather. Same gating convention as physics_mesh_mpi_test.cpp
+# above; never run in this sandbox.
+fuse_tests_gated_by(FUSE_ENABLE_MPI physics_dof_map_mpi_test.cpp)
+if(FUSE_ENABLE_MPI)
+  fuse_add_mpi_test(parallel physics_dof_map_mpi SRC_DIR . RANKS 2 3 LIBS fuse::physics_kit fuse::field)
+endif()
+
 # The same audit test/CMakeLists.txt runs over test/<layer>/: a *_test.cpp in
 # this directory that is neither registered above nor declared gated would
 # run nowhere, silently. fuse_add_gtest / fuse_add_mpi_test record the
