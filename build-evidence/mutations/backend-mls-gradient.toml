@@ -1,0 +1,118 @@
+# Mutations for the shape gradient of the MLS weights (plans/2026-10-22-universal-
+# number-types.md, stage U8): fuse::device::solve_mls_on_space<Space, T> with
+# T = fuse::num::dual<S, N> (include/fuse/backend/mls_weights_device.hpp), tested by
+# test/backend/mls_weights_gradient_test.cpp. Own file per the mutation-manifest
+# protocol (tools/mutate.py). Every row changes only what a dual-number run
+# computes (a gradient), never the value part, so the double tests of
+# mls_weights_device_test.cpp cannot see it -- the rows are the proof that the
+# new tests, and only they, hold the gradient.
+
+[[mutation]]
+id = "mls-gradient-zero-multiplier-skipped-on-value-only"
+area = "backend_mls_gradient"
+describes = "The elimination skips the row update of a zero multiplier on its VALUE alone. A symmetric stencil makes the multipliers of one column zero in value and nonzero in gradient, so their share of the gradient of the solution is lost."
+file = "include/fuse/backend/mls_weights_device.hpp"
+old = "      if (!mls_is_zero(factor)) {"
+new = "      if (mls_primal(factor) != 0.0) {  // mutated: skip on the value alone"
+target = "fuse_backend_mls_weights_gradient_test"
+test = "backend.mls_weights_gradient"
+
+[[mutation]]
+id = "mls-gradient-is-zero-ignores-the-gradient"
+area = "backend_mls_gradient"
+describes = "mls_is_zero tests no gradient entry (the loop bound is 0), so it is a test of the value alone for a forward-mode type. Same effect as the call-site row above, reached through the helper."
+file = "include/fuse/backend/mls_weights_device.hpp"
+old = "    for (int k = 0; k < T::gradient_size; ++k) {"
+new = "    for (int k = 0; k < 0; ++k) {  // mutated: gradient entries not tested"
+target = "fuse_backend_mls_weights_gradient_test"
+test = "backend.mls_weights_gradient"
+
+[[mutation]]
+id = "mls-gradient-support-radius-held-constant"
+area = "backend_mls_gradient"
+describes = "The support radius, 1.1 times the largest neighbour distance, is built from the value of that distance, so the weights lose the dependence of the radius on the coordinates of the farthest neighbour and of the target."
+file = "include/fuse/backend/mls_weights_device.hpp"
+old = "        const T radius = 1.1 * (mls_primal(max_dist) > 1e-300 ? max_dist : T(1e-300));"
+new = "        const T radius = T(1.1 * (mls_primal(max_dist) > 1e-300 ? mls_primal(max_dist) : 1e-300));  // mutated"
+target = "fuse_backend_mls_weights_gradient_test"
+test = "backend.mls_weights_gradient"
+
+[[mutation]]
+id = "mls-gradient-distance-without-gradient"
+area = "backend_mls_gradient"
+describes = "The distance from a neighbour to the target is returned as a constant, so the radial function and the support radius lose their dependence on the coordinates; only the polynomial basis still moves with them."
+file = "include/fuse/backend/mls_weights_device.hpp"
+old = "    return sqrt(s);  // found by argument-dependent lookup"
+new = "    return T(sqrt(s).value());  // mutated: no gradient"
+target = "fuse_backend_mls_weights_gradient_test"
+test = "backend.mls_weights_gradient"
+
+[[mutation]]
+id = "mls-gradient-coincident-neighbour-guard-removed"
+area = "backend_mls_gradient"
+describes = "A neighbour that coincides with the target has distance 0, and the gradient of a square root at 0 is 0/0. Without the guard in mls_norm_of_squares the gradient of every weight of that target is NaN."
+file = "include/fuse/backend/mls_weights_device.hpp"
+old = "    if (s.value() == 0) return T();"
+new = "    if (false) return T();  // mutated: no guard at the branch point"
+target = "fuse_backend_mls_weights_gradient_test"
+test = "backend.mls_weights_gradient"
+
+[[mutation]]
+id = "mls-gradient-wendland2-second-factor-without-gradient"
+area = "backend_mls_gradient"
+describes = "The factor (4 t + 1) of the Wendland2 radial function is evaluated on the value of t, so the gradient of the radial function is wrong by that factor's share. The weights still sum to 1 and still reproduce polynomials for ANY positive radial values, so only the comparison with the central difference and the Taylor remainder can see this."
+file = "include/fuse/backend/mls_weights_device.hpp"
+old = "      return q2 * q2 * (4.0 * tt + 1.0);"
+new = "      return q2 * q2 * (4.0 * mls_primal(tt) + 1.0);  // mutated"
+target = "fuse_backend_mls_weights_gradient_test"
+test = "backend.mls_weights_gradient"
+
+[[mutation]]
+id = "mls-gradient-one-dimensional-basis-without-gradient"
+area = "backend_mls_gradient"
+describes = "The one-dimensional monomial basis is built from the value of the coordinate difference, so the basis rows lose their dependence on the coordinates."
+file = "include/fuse/backend/mls_weights_device.hpp"
+old = "      for (int i = 0; i < total; ++i) v *= x;"
+new = "      for (int i = 0; i < total; ++i) v *= T(mls_primal(x));  // mutated"
+target = "fuse_backend_mls_weights_gradient_test"
+test = "backend.mls_weights_gradient"
+
+[[mutation]]
+id = "mls-gradient-moment-matrix-without-radial-gradient"
+area = "backend_mls_gradient"
+describes = "The moment matrix is assembled from the value of the radial function, so its gradient lacks the radial function's share. The partition of unity and the polynomial reproduction hold for any positive radial values, so these identities do not see it; the central difference and the Taylor remainder do."
+file = "include/fuse/backend/mls_weights_device.hpp"
+old = "            for (int c = 0; c < P; ++c) A(t, a, c) += p * row(a) * row(c);"
+new = "            for (int c = 0; c < P; ++c) A(t, a, c) += T(mls_primal(p)) * row(a) * row(c);  // mutated"
+target = "fuse_backend_mls_weights_gradient_test"
+test = "backend.mls_weights_gradient"
+
+[[mutation]]
+id = "mls-gradient-weight-extraction-without-radial-gradient"
+area = "backend_mls_gradient"
+describes = "The returned weight is the VALUE of the radial function times the solution dotted with the basis row, so the gradient of the final multiplication by the radial function is dropped."
+file = "include/fuse/backend/mls_weights_device.hpp"
+old = "          out.val(t * k + j) = phi(t, j) * dotc;"
+new = "          out.val(t * k + j) = T(mls_primal(phi(t, j))) * dotc;  // mutated"
+target = "fuse_backend_mls_weights_gradient_test"
+test = "backend.mls_weights_gradient"
+
+[[mutation]]
+id = "mls-gradient-pivot-row-swap-loses-the-right-hand-side-gradient"
+area = "backend_mls_gradient"
+describes = "When the elimination swaps two rows, the right-hand-side entry that moves carries only its value, so its gradient is dropped."
+file = "include/fuse/backend/mls_weights_device.hpp"
+old = "      const T tb = bvec(col);"
+new = "      const T tb = T(mls_primal(bvec(col)));  // mutated"
+target = "fuse_backend_mls_weights_gradient_test"
+test = "backend.mls_weights_gradient"
+
+[[mutation]]
+id = "mls-gradient-back-substitution-pivot-without-gradient"
+area = "backend_mls_gradient"
+describes = "The back substitution divides by the value of the diagonal entry, so the gradient of the solution lacks the quotient rule's share from the diagonal."
+file = "include/fuse/backend/mls_weights_device.hpp"
+old = "    bvec(row) = sum / Amat(row, row);"
+new = "    bvec(row) = sum / T(mls_primal(Amat(row, row)));  // mutated"
+target = "fuse_backend_mls_weights_gradient_test"
+test = "backend.mls_weights_gradient"
