@@ -92,7 +92,7 @@ class FieldRegistry {
 
   /// The limbs of an Arithmetic field (double-double, quad-double), as scalars of
   /// type `S`, `components * scalar_count` per element. For the operators that
-  /// are instantiated for the Arithmetic type from a closed list (stage U4);
+  /// are instantiated for the Arithmetic type from a closed list;
   /// `get_scalars` refuses such a field, because an operator that acts on each
   /// scalar separately must not see its limbs as independent numbers. A field
   /// that is not an Arithmetic type over `S` is refused with `E-FIELD-VALUE-TYPE`.

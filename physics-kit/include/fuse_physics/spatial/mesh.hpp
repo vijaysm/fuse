@@ -1,12 +1,11 @@
 #pragma once
 
 /// A computational mesh, adapted from the GENERIC topology surface of
-/// KARMA's karma_mesh.h/.C (docs/dev/physics-kit-disposition.md Appendix A,
-/// port-adapt, decision).
+/// KARMA's karma_mesh.h/.C (port-adapted; see
+/// docs/dev/physics-kit.md).
 ///
-/// (): "physics-kit reaches MOAB only
-/// through fuse::backend ... exactly as the layering page says." This mesh
-/// now binds to `fuse::MeshView` (mesh_view.hpp) -- the SAME abstract
+/// physics-kit reaches MOAB only through fuse::backend, as the layering
+/// page says. This mesh binds to `fuse::MeshView` (mesh_view.hpp) -- the SAME abstract
 /// interface `fuse::native::NativeMeshView` and `MoabMeshView` both
 /// implement -- rather than to MOAB directly or to the native backend's own
 /// concrete types. `from_mesh_view()` below reads ownership
@@ -15,15 +14,14 @@
 /// `fuse::native::NativeMeshView::create_from_host()` and a (future) mesh
 /// built from a real MOAB file reach IDENTICAL physics-kit code. Partition-
 /// aware queries (owned vs ghost vertex/cell, global ids) are part of the
-/// public surface now -- the owner's own words: "Using with just
-/// MPI_COMM_SELF is dumb. This has to run in parallel to split up the
-/// compute work."
+/// public surface, so that physics can run in parallel over a real
+/// communicator rather than on MPI_COMM_SELF alone.
 ///
 /// The self-generated box constructors (`generate_box`, 3-D Hex8;
-/// `generate_2d_box`, new this wave, 2-D Quad4) still mark every vertex and
-/// cell owned with an identity global id, matching this header's wave-1
-/// note on why that is the CORRECT numbering for a single-rank, self-
-/// generated mesh, not a simplification of a richer one.
+/// `generate_2d_box`, 2-D Quad4) mark every vertex and
+/// cell owned with an identity global id, which is the CORRECT numbering
+/// for a single-rank, self-generated mesh, not a simplification of a
+/// richer one.
 ///
 /// STILL NATIVE AT TIER 0. Building and testing an ACTUAL multi-rank
 /// `fuse::native::NativeMeshView` or a MOAB-backed one needs MPI (MOAB
@@ -36,8 +34,7 @@
 /// FromMeshViewReadsOwnershipAndGlobalIds. The genuine multi-rank case (an
 /// actual partitioned box built and exchanged across real MPI ranks) is
 /// `test/parallel/physics_mesh_mpi_test.cpp`: compiled in this tree with
-/// FUSE_ENABLE_MPI=ON, never executed in this sandbox (host_pending has the
-/// exact mpirun commands).
+/// FUSE_ENABLE_MPI=ON, never executed in this sandbox.
 
 #include <array>
 #include <cstddef>
@@ -96,10 +93,9 @@ class Mesh {
   void generate_box(unsigned nx, unsigned ny, unsigned nz, const Point& lo, const Point& hi);
 
   /// Generate a structured 2-D box of nx*ny Quad4 elements spanning
-  /// [lo,hi] (z ignored). New this wave: gives
+  /// [lo,hi] (z ignored). Gives
   /// `extract_boundary_edges` (mesh_utils.hpp, the karma_mesh_extract_edge.C
-  /// port) a 2-D source mesh to extract a 1-D boundary from, which did not
-  /// exist in.
+  /// port) a 2-D source mesh to extract a 1-D boundary from.
   void generate_2d_box(unsigned nx, unsigned ny, const Point& lo, const Point& hi);
 
   /// Build from an arbitrary fuse::MeshView's TOP-dimension entities
@@ -140,7 +136,7 @@ class Mesh {
   /// KARMA numbers entities in its own private tags rather than relying on
   /// a file-provided GLOBAL_ID (karma_mesh.h's own comment). A self-
   /// generated mesh's identity numbering is assigned at construction
-  /// already; assign_ids() stays a no-op for it, matching.
+  /// already; assign_ids() stays a no-op for it.
   void assign_ids() noexcept {}
   /// Ambiguous on its own (vertex handle 5 and element handle 5 are
   /// different entities, and a self-generated mesh gives both the same
@@ -154,7 +150,7 @@ class Mesh {
   [[nodiscard]] GlobalId element_global_id(EntityHandle element) const noexcept { return element_gid_.at(element - 1); }
   [[nodiscard]] LocalId local_id(EntityHandle entity) const noexcept { return static_cast<LocalId>(entity); }
 
-  // ---- partition-aware queries () -----------
+  // ---- partition-aware queries ------------------------------------------
   [[nodiscard]] bool is_vertex_owned(EntityHandle vertex) const noexcept { return vertex_owned_.at(vertex - 1); }
   [[nodiscard]] bool is_element_owned(EntityHandle element) const noexcept { return element_owned_.at(element - 1); }
   /// The RANK that owns `vertex` -- `is_vertex_owned(vertex) == (vertex_owner(vertex) ==

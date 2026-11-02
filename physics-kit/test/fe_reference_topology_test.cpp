@@ -3,9 +3,9 @@
 // files check against KARMAReferenceTopology/KARMABasis directly, before
 // either touches a mesh). Partition of unity, the Kronecker property at
 // nodes, and derivative sums to zero are the three properties
-// docs/dev/porting.md's own task brief names for this wave's basis tests.
+// checked for every basis.
 //
-// (item 1): Prism6/15/18 and
+// Prism6/15/18 and
 // Pyramid5/13/14 join the variant list this file's properties are
 // checked against, plus the serendipity Quad8 (needed as Prism15's and
 // Pyramid13's one quadrilateral side, basis.hpp's own note) -- the same
@@ -193,7 +193,7 @@ TEST(ReferenceTopologyTest, SerendipityQuadSideOfOrder2PrismAndPyramid) {
 // evaluate_values() returns the known limit (only the apex node's own
 // function is 1) but evaluate() (which also wants the DERIVATIVE, which
 // is genuinely path-dependent there) refuses -- a refusal counts as
-// verified only when a test fires it (this wave's own rule), so this is
+// verified only when a test fires it , so this is
 // that test, for all three pyramid variants the apex singularity applies
 // to.
 TEST(ReferenceTopologyTest, ApexValuesAreWellDefinedButDerivativesRefuse) {
@@ -207,8 +207,8 @@ TEST(ReferenceTopologyTest, ApexValuesAreWellDefinedButDerivativesRefuse) {
 
 // physics.fe_reference_topology.EdgeSideTopologyRefuses -- an edge's sides
 // are vertices, which have no ReferenceTopology of their own; this must
-// refuse rather than return something meaningless. (D-C: "a refusal counts
-// as verified only when a test makes it fire".)
+// refuse rather than return something meaningless. (A refusal counts
+// as verified only when a test makes it fire.)
 TEST(ReferenceTopologyTest, EdgeSideTopologyRefuses) {
   const ReferenceTopology edge(GeometryVariant::Edge2);
   EXPECT_THROW((void)edge.side_topology(0), std::invalid_argument);
@@ -229,7 +229,7 @@ TEST(ReferenceTopologyTest, SideIndexAtExactUpperBoundRefuses) {
 
 
 // physics.fe_reference_topology.EdgeVerticesMatchNodesForMidpoints --
-//: fe::edge_vertices' own table (reference_
+// fe::edge_vertices' own table (reference_
 // topology.hpp's own header comment) must agree with nodes_for()'s
 // OWN construction of each order-2 variant's edge-midpoint nodes
 // (reference_topology.cpp): edge `e`'s midpoint node, at index

@@ -5,6 +5,5 @@
 // do arithmetic on it; adding one is adding a line here, with the type's
 // `limb_count`/`load_value`/`store_value` in fuse/num/arithmetic_kernels.hpp, and
 // its row in test/num/arithmetic_kernels_test.cpp.
-// plans/2026-10-22-universal-number-types.md, stage U4.
 FUSE_ARITHMETIC_TYPE(fuse::num::dd, "dd")
 FUSE_ARITHMETIC_TYPE(fuse::num::qd, "qd")

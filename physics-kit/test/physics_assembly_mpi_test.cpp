@@ -1,5 +1,4 @@
-// physics-kit/test/physics_assembly_mpi_test.cpp -- item H (
-// round 3): the GLOBAL assembled mass matrix over a REAL, multi-rank
+// physics-kit/test/physics_assembly_mpi_test.cpp -- the GLOBAL assembled mass matrix over a REAL, multi-rank
 // partitioned 3-D box, built through fuse_physics::fe::AlgebraicSystem's
 // own collective path (DofMap/AlgebraicSystem given a real
 // fortran_communicator). Registered with RANKS 2 3

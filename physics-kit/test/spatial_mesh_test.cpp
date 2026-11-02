@@ -1,20 +1,19 @@
 // physics.spatial_mesh -- ported from the mesh-topology portions of
 // KARMA's mesh_test.C.
 //
-// (item 2) closes the MOAB/MPI gap
-// left open: spatial::Mesh now binds to fuse::backend's MeshView
+// spatial::Mesh binds to fuse::backend's MeshView
 // (not MOAB directly, per docs/dev/layering.md's "physics-kit reaches
 // MOAB only through fuse::backend"), so FromMeshViewReadsOwnershipAndGlobalIds
 // below builds a hand-made TWO-"rank" fuse::native::MeshArrays fixture
 // (NativeMeshBuilder, owner/is_owned set as if ranks 0 and 1 each loaded
 // their own half) and reads it through spatial::Mesh::from_mesh_view --
-// entirely at tier 0, no MPI_Init anywhere in this file (the owner's own
-// rule quoted in the task: partition-aware queries belong on the public
-// surface, exercised without needing MPI to prove it). The genuine
+// entirely at tier 0, no MPI_Init anywhere in this file (partition-aware
+// queries belong on the public surface, exercised without needing MPI to
+// prove it). The genuine
 // multi-rank collective test (test/parallel/physics_mesh_mpi_test.cpp,
-// RANKS 2 3) is build-only in this sandbox, listed in host_pending.
+// RANKS 2 3) is build-only in this sandbox.
 // generate_2d_box and extract_edge_at_coordinate (karma_mesh_extract_
-// edge.C, adapted) are new this wave too.
+// edge.C, adapted) are tested here too.
 
 #include "fuse_physics/spatial/mesh.hpp"
 
@@ -115,8 +114,8 @@ TEST(SpatialMeshTest, AssignIdsIsIdempotentIdentity) {
 }
 
 // physics.spatial_mesh.Generate2dBoxProducesExpectedCounts -- the 2-D
-// structured Quad4 box (item 2: the source
-// karma_mesh_extract_edge.C needs and had no 2-D mesh to build):
+// structured Quad4 box (the source mesh
+// karma_mesh_extract_edge.C needs):
 // an nx*ny box has nx*ny elements and (nx+1)(ny+1) vertices, same
 // counting rule as generate_box's own 3-D test above.
 TEST(SpatialMeshTest, Generate2dBoxProducesExpectedCounts) {
@@ -149,7 +148,7 @@ TEST(SpatialMeshTest, ExtractEdgeAtCoordinateFindsTheRightLine) {
   EXPECT_EQ(empty.n_elements(), 0u);
 }
 
-// physics.spatial_mesh.ExtractEdgeAtCoordinateRefusesOnA3dMesh -- D-C:
+// physics.spatial_mesh.ExtractEdgeAtCoordinateRefusesOnA3dMesh --
 // a refusal counts as verified only when a test fires it.
 TEST(SpatialMeshTest, ExtractEdgeAtCoordinateRefusesOnA3dMesh) {
   Mesh volume(3);
@@ -164,9 +163,9 @@ TEST(SpatialMeshTest, ExtractEdgeAtCoordinateRefusesOnA3dMesh) {
 // TWO-"rank" fuse::native::MeshArrays fixture directly (NativeMeshBuilder,
 // owner/is_owned flags set by hand, as if rank 0 owns vertices 0-3/cell 0
 // and rank 1 owns vertex 4/cell 1, with vertex 3 a GHOST on rank 0's own
-// view of rank 1's cell) -- entirely at tier 0, no MPI_Init: the owner's
-// own instruction ("this has to run in parallel...so partition-aware
-// queries are part of the public surface") is about the QUERY surface,
+// view of rank 1's cell) -- entirely at tier 0, no MPI_Init: the
+// requirement that partition-aware queries be part of the public
+// surface is about the QUERY surface,
 // which a single-process NativeMeshView already exercises fully; the
 // actual collective behaviour across real ranks is
 // test/parallel/physics_mesh_mpi_test.cpp (RANKS 2 3, build-only here).

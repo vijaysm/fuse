@@ -3,8 +3,8 @@
 /// Small, fixed-size spatial vectors and 3x3 matrices for finite-element
 /// reference-cell geometry (physics-kit/fe/, physics-kit/spatial/).
 ///
-/// WHY A NEW TYPE HERE (docs/dev/physics-kit-disposition.md, decision
-/// D-A). KARMA's numerics/fe and numerics/spatial use Eigen fixed-size types
+/// WHY A NEW TYPE HERE (docs/dev/physics-kit.md).
+/// KARMA's numerics/fe and numerics/spatial use Eigen fixed-size types
 /// for this (upstream/karma/include/base/karma_geometry.h: Point = Vector3 =
 /// Eigen::Matrix<Real,3,1>, Matrix3 = Eigen::Matrix<Real,3,3>). fuse has no
 /// counterpart: fuse::linalg's public header names nothing third-party at

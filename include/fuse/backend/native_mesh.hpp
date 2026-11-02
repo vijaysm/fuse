@@ -251,7 +251,7 @@ class NativeMeshView final : public MeshView {
   [[nodiscard]] Point centroid(int dim, std::size_t i) const override;
   [[nodiscard]] double measure(int dim, std::size_t i) const override;
   [[nodiscard]] std::size_t global_id(int dim, std::size_t i) const override;
-  /// reads the SAME `vertex_owner_`/`cell_owner_` arrays `vertex_owner_of`/
+  /// Reads the SAME `vertex_owner_`/`cell_owner_` arrays `vertex_owner_of`/
   /// `cell_owner_of` already expose as concrete accessors -- this override
   /// is the polymorphic MeshView path to the identical data, for a caller
   /// that only has a `const MeshView&` (spatial::Mesh::from_mesh_view).

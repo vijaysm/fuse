@@ -83,8 +83,7 @@ class Reducer {
   /// The exact INTEGER analogue of `allgather` above: `recv[r*n_each ..
   /// (r+1)*n_each)` becomes participant `r`'s own `send`, in rank order.
   /// Added for `fe::DofMap`'s own ghost-dof resolution and `fe::
-  /// AlgebraicSystem`'s own foreign-entry exchange (round 2,
-  /// lead's review of round 1): an allgather moves BYTES, not
+  /// AlgebraicSystem`'s own foreign-entry exchange: an allgather moves BYTES, not
   /// arithmetic, so a caller whose payload is already `std::int64_t`
   /// (a dof key's packed fields, a global index) transports it directly
   /// rather than through a `std::bit_cast<double>` reinterpretation at
@@ -112,8 +111,8 @@ class Reducer {
   /// POINT-TO-POINT exchange of a variable-length payload: every
   /// participant routes directly to whichever other participant(s) it
   /// addresses, unlike `allgather` above (which broadcasts to every
-  /// participant whether it wants the data or not) - round 4,
-  /// item X, replacing `fe::DofMap`'s ghost resolution and `fe::
+  /// participant whether it wants the data or not). Replaces
+  /// `fe::DofMap`'s ghost resolution and `fe::
   /// AlgebraicSystem`'s foreign-entry exchange's own padded allgathers.
   /// `send` holds THIS participant's own outgoing payload, grouped by
   /// DESTINATION rank ascending: participant `r`'s own slice is
@@ -154,8 +153,8 @@ class Reducer {
   /// channel `fe::AlgebraicSystem`'s foreign-entry exchange needs
   /// alongside the int64 one (its own Triplet/vector-Entry payload is
   /// mixed: integer row/col/index fields plus one `double` value field;
-  /// round 2's own `exchange_foreign_entries` already splits transport
-  /// this same way for `allgather`, item B). Same default, same
+  /// its own `exchange_foreign_entries` already splits transport
+  /// this same way for `allgather`). Same default, same
   /// single-participant posture.
   virtual std::vector<double> alltoallv(const std::vector<double>& send, const std::vector<int>& send_counts,
                                          std::vector<int>& recv_counts) const {

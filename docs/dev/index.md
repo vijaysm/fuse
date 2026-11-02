@@ -84,9 +84,10 @@ as templates with a separate embedded-error controller, the contract with the co
 the decisions on its open questions. [](field-semantics-matrix.md) is the
 read-only comparison of KARMA's eight coupling headers and SOMA's field layer against the current
 fuse field semantics: eight verdicts, a per-concern matrix with file and line, and the smallest
-addition proposed for each gap. [](physics-kit.md) is the component page: what physics-kit is, its tier and build option, and the two gates
+addition proposed for each gap. [](physics-kit.md) is the component page: what physics-kit is, its tier and build option, the two gates
 (`tools/check-layering.py`'s boundary check, `tools/check-physics-kit-naming.py`) that keep the
-direction of dependency and the naming honest.
+direction of dependency and the naming honest, and the finite-element core, DOF map, algebraic
+system and linear/nonlinear study layers with the derivation of every test tolerance.
 
 ## Holding an external path to the bar
 

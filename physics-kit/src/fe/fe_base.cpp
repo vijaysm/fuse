@@ -1,6 +1,6 @@
 // fuse_physics::fe::FEBase -- adapted from KARMA's karma_fe_base.h/.C.
 // See fe_base.hpp's header comment for the mesh/quadrature decoupling and
-// this wave's scope.
+// scope.
 
 #include "fuse_physics/fe/fe_base.hpp"
 
@@ -18,7 +18,7 @@ namespace {
 /// The shape `quadrature_` itself is built for. Prism and Pyramid have
 /// sides of TWO different shapes (fe_base.hpp's own note); this names
 /// the one `quadrature_` (the always-present member) is built for --
-/// Quadrilateral, matching every OTHER side shape this wave's cell
+/// Quadrilateral, matching every OTHER side shape the supported cell
 /// families ever mix with a quadrilateral face (a Hex's sides are
 /// uniformly Quadrilateral already) -- with the other shape's rule held
 /// separately in triangle_quadrature_, constructed in the body below

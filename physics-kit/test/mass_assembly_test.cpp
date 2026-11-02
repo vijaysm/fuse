@@ -7,7 +7,7 @@
 // comparison infrastructure KARMA's own test file also carries
 // (MassReference, write_partitioned_mass_reference) is MPI/partition
 // test infrastructure, out of scope here -- physics_assembly_mpi_test.cpp
-// (item 7, build-only in this sandbox) is where that comparison belongs.
+// (build-only in this sandbox) is where that comparison belongs.
 
 #include "fuse_physics/fe/generic_operators.hpp"
 
@@ -47,9 +47,8 @@ using fuse::linalg::Triplet;
 // points, volume = 1/6, size = 4): mass(i,i) = (1/6)/20*2 = 1/60,
 // mass(i,j (i!=j)) = (1/6)/20 = 1/120. Quadrature degree 2 is EXACT for
 // phi_i*phi_j (each a degree-1 polynomial, product degree 2) on this
-// AFFINE element (constant Jacobian) -- design_notes states this
-// derivation; the tolerance below is a Higham-style floating-point
-// summation bound for a sum of `n_quadrature_points` terms, each itself
+// AFFINE element (constant Jacobian); the tolerance below is a Higham-style
+// floating-point summation bound for a sum of `n_quadrature_points` terms, each itself
 // one single-precision-safe double product, not an independent
 // empirical constant.
 TEST(MassAssemblyTest, P1SimplexElementMassMatrixMatchesAnalyticFormula) {
@@ -74,8 +73,7 @@ TEST(MassAssemblyTest, P1SimplexElementMassMatrixMatchesAnalyticFormula) {
   // operations per term) gives |computed - exact| <= (n_q + 3) eps S, with
   // S = sum_q |w_q phi_i phi_j| <= sum_q w_q = volume for a P1 basis (shape
   // values in [0, 1] at interior points). n_q is read from the rule the
-  // kernel used, not assumed (the round-1 version had "n <= 8, a generous
-  // 16 for margin"; lead, 2026-11-01).
+  // kernel used, not assumed (there is no fixed "n <= 8" allowance).
   const double eps = std::numeric_limits<double>::epsilon();
   const double tolerance = (static_cast<double>(fe.n_quadrature_points()) + 3.0) * eps * volume;
   for (unsigned i = 0; i < 4; ++i) {
@@ -122,7 +120,7 @@ TEST(MassAssemblyTest, Quad4UnitBoxElementMassMatrixMatchesKnownFormula) {
 }
 
 // physics.mass_assembly.GlobalAssembledMassMatrixEntrySumEqualsDomainVolume
-// -- the SAME invariant item 7's MPI test checks (build-only there),
+// -- the SAME invariant physics_assembly_mpi_test.cpp checks (build-only there),
 // exercised here SERIALLY: sum_i sum_j M(i,j) = integral((sum_i
 // phi_i)^2) dV = integral(1) dV = domain volume, since a cG Lagrange
 // basis is a partition of unity. Tolerance: a Higham summation bound

@@ -1,12 +1,10 @@
 // physics.fe_quadrature -- ported from the quadrature-exactness portions of
 // KARMA's fe_test.C/fe_face_test.C. Verifies exact integration of
 // monomials up to the rule's declared degree, with a round-off TOLERANCE
-// DERIVED from the rule's own data (Quadrature::round_off_bound), per the
-// task's standing rule that a tolerance must be derived, not chosen after
-// a failure.
+// DERIVED from the rule's own data (Quadrature::round_off_bound), not
+// chosen after a failure.
 //
-// (item 1): Prism and Pyramid join
-// the exactness checks, each with its own closed-form reference integral
+// Prism and Pyramid are in the exactness checks too, each with its own closed-form reference integral
 // and its own exactness CLAIM (is_hybrid_product/is_tensor_product
 // below) -- the prism decouples cleanly into a triangle rule times an
 // independent line rule (its own Jacobian has no z dependence, unlike
@@ -191,8 +189,8 @@ TEST(QuadratureTest, DegreeZeroEdgeRuleIsMidpoint) {
 }
 
 // physics.fe_quadrature.ZZZ_DerivedBoundHasMeasuredMargin -- every cell
-// family this wave implements is now exercised above (including Prism
-// and Pyramid item 1); the refusal surface
+// family implemented is exercised above (including Prism
+// and Pyramid); the refusal surface
 // left to verify is the out-of-range degree check (RefusesOutOfRangeDegree,
 // below).
 // Runs last (gtest runs a file's tests in definition order): the slack of the

@@ -142,7 +142,7 @@ class MeshView {
   /// `owner(dim, i) == <this rank's own number>`, but `is_owned` alone
   /// cannot answer "which rank, specifically" for a GHOST, which is what a
   /// caller resolving a shared sub-entity's ownership across several
-  /// corners needs (the issue tracker a face or edge DoF's owner is
+  /// corners needs (a face or edge DoF's owner is
   /// the MINIMUM over its corner vertices' own owner ranks, a rule every
   /// sharing rank can compute from this query alone, with no further
   /// communication).

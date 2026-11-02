@@ -1,11 +1,9 @@
 // physics.fe_geometry_map -- ported from KARMA's geometry_test.C and
 // geometry_inverse_map_contract_test.C. The inverse-map contract test is
-// the task's own named example ("geometry maps by the inverse-map
-// contract KARMA's own test states") and is ported close to verbatim,
+// the geometry-map check KARMA's own test states, ported close to verbatim,
 // restated as gtest EXPECT_EQ rather than a main()-returning-1 check.
 //
-// (item 1) adds Prism and Pyramid:
-// the pyramid's non-box reference cell (in_reference_cell's taper
+// Prism and Pyramid are covered too: the pyramid's non-box reference cell (in_reference_cell's taper
 // condition), its inverse_map apex fast path, and both cells' own
 // isoparametric identity-map sanity check (UnitCellMeasureMatchesVolume).
 
@@ -108,8 +106,8 @@ TEST(GeometryMapTest, UnitCellMeasureMatchesVolume) {
 // first. The exact failure status is NotContained when inverse_map's
 // own Newton iteration converges to a reference point outside the
 // taper, or InvalidGeometry when the line search's own in-cell
-// constraint (geometry_map.cpp's inverse_map, same clamp already
-// relied on for Triangle/Tet) cannot step there at all and the
+// constraint (geometry_map.cpp's inverse_map, same clamp used
+// for Triangle/Tet) cannot step there at all and the
 // iteration throws -- both are "not usable", and this physical geometry
 // (identity map: physical nodes equal reference nodes) hits the second
 // case, so this test checks the WEAKER, contract-level invariant

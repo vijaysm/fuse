@@ -1,5 +1,5 @@
 // fuse_physics::spatial::Mesh. See mesh.hpp's header comment for the
-// fuse::MeshView binding () and what is/is not
+// fuse::MeshView binding and what is/is not
 // ported from KARMA's karma_mesh.h/.C.
 
 #include "fuse_physics/spatial/mesh.hpp"

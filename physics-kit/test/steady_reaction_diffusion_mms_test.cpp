@@ -1,4 +1,4 @@
-// physics.steady_reaction_diffusion_mms -- item F:
+// physics.steady_reaction_diffusion_mms --
 // the AlgebraicSystem's own residual, assembled from element_transient_
 // reaction_diffusion in STEADY FORM, exposed as the fuse::num::solve
 // (Newton-Krylov, newton_krylov.hpp) ResidualFn -- no second Newton loop
@@ -23,22 +23,19 @@
 // `state` (correct for the transient use the function was written for),
 // so substituting `state_old = state` AFTER differentiating gives half
 // the true steady Jacobian plus an `M_ik/h` term. The solve stays
-// matrix-free throughout (MFFD, via fuse::num::solve) -- no
-// preconditioner is wired this round (precond_apply/refresh_precond
-// both nullptr, a documented-legal combination, newton_krylov.hpp's own
-// solve() comment); host_pending/open_questions name wiring a
-// diffusion-based one as a follow-up.
+// matrix-free throughout (MFFD, via fuse::num::solve); the baseline
+// wires no preconditioner (precond_apply/refresh_precond both nullptr,
+// a documented-legal combination, newton_krylov.hpp's own solve()
+// comment). The preconditioned variants below are separate tests.
 //
-// 2-D, NOT 3-D. The round-3 track moved this study from the brief's 3-D Hex8
-// ladder to 2-D Quad4 after measuring FEBase::reinit at "~30 ms/call" in its
-// Debug build. The lead could not reproduce that: this whole three-level
+// 2-D, NOT 3-D. This whole three-level
 // study (about 44,000 reinit calls) runs in 0.83 s in a Debug clean export,
 // about 19 us per call. The 2-D study stands on its own (the same production
 // code path: element_transient_reaction_diffusion, element_load_vector,
 // fuse::num::solve, DofMap/AlgebraicSystem; P1/Q1's order-2 L2 rate is
 // dimension-independent in its asymptotic statement), and a 3-D ratio-2
-// ladder (N = 4, 8, 16, 4096 Hex8 at the finest level) is the open
-// follow-up now that it is known to be tractable (lead, 2026-11-01).
+// ladder (N = 4, 8, 16, 4096 Hex8 at the finest level) is an open
+// follow-up that is known to be tractable.
 //
 // ALGEBRAIC-ERROR TERM. The residual Newton leaves (NewtonResult::
 // final_residual_norm <= max(atol, rtol * initial_residual_norm), that
@@ -46,8 +43,7 @@
 // leaves in u_h by algebraic_l2_error_bound() below (closed-form Q1
 // Dirichlet Laplacian eigenvalues, measured max nodal value), and that
 // bound is propagated into the rate band instead of being asserted small
-// against a chosen factor (the round-3 draft's `1e-6 * l2_error`; lead,
-// 2026-11-01). The track's own first attempt, a Gershgorin estimate of the
+// against a chosen factor such as `1e-6 * l2_error`. A Gershgorin estimate of the
 // exact steady Jacobian's coercivity, was inconclusive (negative) at every
 // level: the stiffness matrix's interior rows sum to exactly zero, so
 // Gershgorin gives nothing there; the closed-form eigenvalues of the
@@ -73,7 +69,7 @@
 // CONVERGENCE-RATE BAND, DERIVED (not widened after a failure). Three
 // mesh levels (N = 4, 8, 16 Quad4 elements per axis) give TWO order
 // estimates r1 = order(err[4], err[8]), r2 = order(err[8], err[16]) --
-// item F's own "two mesh levels" is the FINEST pair (err[8], err[16]),
+// the "two mesh levels" are the FINEST pair (err[8], err[16]),
 // whose order r2 is asserted against the expected P1 L2 rate (2); the
 // coarsest pair exists ONLY to derive the band, "as the integrators
 // tests do" (test/num/waveform_order_test.cpp's own kTol, derived from
@@ -221,7 +217,7 @@ fuse::Result<void> steady_residual(Level& level, const TransientReactionDiffusio
   return fuse::Result<void>::success();
 }
 
-// item P2: the STEADY Jacobian J = K - M diag(R'(u)),
+// The STEADY Jacobian J = K - M diag(R'(u)),
 // assembled DIRECTLY from element_stiffness_matrix/element_mass_matrix/
 // reaction_derivative (generic_operators.hpp) -- NOT element_transient_
 // reaction_diffusion's own Jacobian output, which (this file's own top
@@ -230,13 +226,13 @@ fuse::Result<void> steady_residual(Level& level, const TransientReactionDiffusio
 // J_ij = K_ij - M_ij * R'(u_j) (M diag(R'(u)) scales column j of M by
 // R'(u_j), since diag(R'(u)) is diagonal). Boundary (Dirichlet) rows are
 // IDENTITY rows, exactly as steady_residual's own boundary handling makes
-// them in the operator (fx[dof] = x[dof]): the round-4 draft left them as
-// their natural K - M diag(R') values, "an approximate preconditioner
-// only", and measured SSOR DOUBLING the GMRES count (29 -> 61 at N = 16).
-// A preconditioner whose boundary rows disagree with the operator's is
-// not an approximation of the operator on those rows at all; with the
-// rows matched the lead measured SSOR at 24 against the unpreconditioned
-// 29, Newton 3 steps in both (lead, 2026-11-02). Each boundary dof's identity entry is
+// them in the operator (fx[dof] = x[dof]). Leaving them as
+// their natural K - M diag(R') values ("an approximate preconditioner
+// only") DOUBLES the SSOR GMRES count (29 -> 61 at N = 16): a
+// preconditioner whose boundary rows disagree with the operator's is
+// not an approximation of the operator on those rows at all. With the
+// rows matched, SSOR takes 24 GMRES iterations against the
+// unpreconditioned 29, Newton 3 steps in both. Each boundary dof's identity entry is
 // emitted once, by the first element that touches it (the triplet merge
 // sums duplicates, so emitting it per element would make it a count).
 fuse::Result<DistSparseMatrix> assemble_steady_jacobian(Level& level, const TransientReactionDiffusionModel& model,
@@ -267,9 +263,8 @@ fuse::Result<DistSparseMatrix> assemble_steady_jacobian(Level& level, const Tran
 }
 
 /// Which preconditioner (if any) solve_mms below wires into fuse::num::
-/// solve's own RefreshPreconditionerFn/PreconditionerApplyFn -- item P2's
-/// own "two test rows" (Jacobi, SSOR), plus the existing unpreconditioned
-/// baseline (None, item F, unchanged).
+/// solve's own RefreshPreconditionerFn/PreconditionerApplyFn -- two test rows
+/// (Jacobi, SSOR), plus the unpreconditioned baseline (None).
 enum class SteadyPreconditionerKind { None, Jacobi, Ssor };
 
 /// Holds whichever ONE of Jacobi/SSOR is live -- rebuilt from scratch on
@@ -288,15 +283,15 @@ struct SteadyPreconditionerState {
 
 struct SolveOutcome {
   double l2_error = 0.0;
-  double algebraic_l2_bound = 0.0;  ///< derived bound on the L2 error the unconverged residual leaves (lead, 2026-11-01)
+  double algebraic_l2_bound = 0.0;  ///< derived bound on the L2 error the unconverged residual leaves
   double max_nodal_value = 0.0;
   fuse::num::NewtonResult newton;
 };
 
 // Derived bound on the L2 norm of the algebraic error e = J^-1 r left by a
-// residual r of 2-norm |r| (lead, 2026-11-01; replaces the round-3 draft's
-// chosen `final_residual < 1e-6 * l2_error`, a constant comparing a residual
-// to an error of a different quantity). Every ingredient is exact or measured:
+// residual r of 2-norm |r| (not a chosen constant such as
+// `final_residual < 1e-6 * l2_error`, which compares a residual to an
+// error of a different quantity). Every ingredient is exact or measured:
 //  - Q1 on the uniform N x N unit square with homogeneous Dirichlet rows: the
 //    interior stiffness block K_II has the closed-form eigenvalues
 //      8/3 - (2/3)(cos a + cos b) - (4/3) cos a cos b, a = i pi/N, b = j pi/N,
@@ -349,7 +344,7 @@ SolveOutcome solve_mms(unsigned n, double alpha, SteadyPreconditionerKind kind =
 
   const fuse::num::ResidualFn residual = [&](DistVector& xv, DistVector& fxv) { return steady_residual(level, model, xv, fxv); };
 
-  // item P2: None (item F, unchanged) leaves both nullptr, the
+  // None leaves both nullptr, the
   // documented-legal "no preconditioning" combination (newton_krylov.
   // hpp's own solve() comment); Jacobi/SSOR assemble the STEADY
   // Jacobian (assemble_steady_jacobian above, not element_transient_
@@ -446,7 +441,7 @@ TEST(SteadyReactionDiffusionMmsTest, NewtonKrylovSolutionConvergesAtOrderTwoInL2
   // The algebraic error perturbs each measured error by at most its bound, so
   // each rate by at most (delta_k/err_k + delta_{k+1}/err_{k+1}) / ln 2
   // (first order in delta/err); added to the band rather than asserted
-  // small against a chosen factor (lead, 2026-11-01).
+  // small against a chosen factor.
   const double algebraic_band = (algebraic_rel[1] + algebraic_rel[2]) / std::log(2.0);
   // Asymptotic approach, so a wide band from a pre-asymptotic pair cannot
   // pass vacuously: the finer pair's rate must be closer to 2 than the coarser pair's.
@@ -461,19 +456,18 @@ TEST(SteadyReactionDiffusionMmsTest, NewtonKrylovSolutionConvergesAtOrderTwoInL2
   EXPECT_NEAR(r2, 2.0, band + algebraic_band) << trace;
 }
 
-// Item P2: one mesh level (N = 16, the main order
+// One mesh level (N = 16, the main order
 // test's own finest level), run once unpreconditioned (kind = None,
-// item F's own baseline) and once with the preconditioner under test.
+// the baseline) and once with the preconditioner under test.
 // Both solves converge to the SAME NewtonKrylovOptions atol/rtol, so
 // both approximate the SAME exact discrete solution on this fixed mesh
 // -- they must therefore agree within the SUM of their own derived
 // algebraic_l2_error_bound()s (each bound already propagates that
-// solve's own leftover residual into an L2-error bound, item F's own
-// derivation; summing two independent bounds on the SAME quantity is
+// solve's own leftover residual into an L2-error bound;
+// summing two independent bounds on the SAME quantity is
 // the triangle inequality, not a chosen margin). Newton/GMRES
-// iteration counts for both are recorded (RecordProperty) as item G's
-// own "oracle pending" posture -- no external reference to compare
-// them against yet, so nothing about their VALUES is asserted, only
+// iteration counts for both are recorded (RecordProperty); there is no
+// external reference to compare them against, so nothing about their VALUES is asserted, only
 // that preconditioning changes neither the converged status nor (within
 // the derived bound) the solution it converges to.
 void assert_preconditioned_solution_agrees_with_baseline(SteadyPreconditionerKind kind, const char* kind_name) {
@@ -516,14 +510,13 @@ TEST(SteadyReactionDiffusionMmsTest, SsorPreconditionedSolutionAgreesWithUnpreco
 }
 
 // =============================================================================
-// Item P3: fuse::num::BlockJacobiPreconditioner for a
+// fuse::num::BlockJacobiPreconditioner for a
 // COUPLED two-variable (u, v) steady reaction-diffusion problem, blocks
 // per VARIABLE. DofMap's own multi-variable numbering was confirmed
-// VARIABLE-MAJOR/CONTIGUOUS before building this (DofKey::operator<
+// VARIABLE-MAJOR/CONTIGUOUS (DofKey::operator<
 // compares `variable` first, dof_map.cpp), so a 2-variable DofMap's
 // owned dofs are [0, n_u) for u THEN [n_u, n_u+n_v) for v, with NO
-// interleaving -- the "STOP, propose the smallest fix" branch the task
-// named does not apply; this is directly buildable.
+// interleaving.
 //
 // COUPLING. TransientReactionDiffusionModel::coupled is documented as
 // "a fixed externally-coupled value, held constant across the element"
@@ -537,7 +530,7 @@ TEST(SteadyReactionDiffusionMmsTest, SsorPreconditionedSolutionAgreesWithUnpreco
 // system, not two independent single-field solves run side by side.
 //
 // BLOCK-JACOBI PRECONDITIONER. Each block treats its OWN variable's
-// steady Jacobian (assemble_steady_jacobian, item P2, reused) IN
+// steady Jacobian (assemble_steady_jacobian, reused) IN
 // ISOLATION -- ignoring the other field's coupling entirely for
 // PRECONDITIONING purposes only; the outer residual stays fully
 // coupled regardless. Built from a STANDALONE single-variable Level
@@ -560,9 +553,9 @@ TEST(SteadyReactionDiffusionMmsTest, SsorPreconditionedSolutionAgreesWithUnpreco
 // two differ by an O(h) term neither cancels exactly, an additional
 // discretisation error this test does NOT attempt to characterise
 // (no order-of-convergence claim is made for the coupled case; only
-// solve-to-solve agreement, the same scope item P2's own preconditioner
-// tests use). ALGEBRAIC BOUND, documented simplification: each field's
-// own `algebraic_l2_error_bound` (item F's derivation) is applied to
+// solve-to-solve agreement, the same scope the preconditioner
+// tests above use). ALGEBRAIC BOUND, documented simplification: each field's
+// own `algebraic_l2_error_bound` is applied to
 // ITS OWN sub-block in isolation (ignoring the coupling term's effect
 // on the true 2x2 block Jacobian's coercivity) and the two bounds are
 // SUMMED -- a derived quantity, not a chosen constant, but not a
@@ -792,10 +785,9 @@ CoupledSolveOutcome solve_coupled_mms(unsigned n, double alpha, double beta, Cou
 // coupled system must agree with the unpreconditioned solve of the
 // SAME coupled system within the summed per-field algebraic bound
 // (the same "two solves of one discrete system agree within their own
-// leftover-residual bounds" argument item P2's own tests use) -- on
+// leftover-residual bounds" argument the tests above use) -- on
 // BOTH fields, since both are part of the one combined solve. Newton/
-// GMRES counts recorded, oracle pending (item G's own posture), not
-// asserted.
+// GMRES counts are recorded, not asserted.
 TEST(SteadyReactionDiffusionMmsTest, BlockJacobiPreconditionedCoupledSolutionAgreesWithUnpreconditionedWithinAlgebraicBound) {
   const double alpha = 1.0;
   const double beta = 0.3;

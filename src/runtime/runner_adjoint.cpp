@@ -1,5 +1,4 @@
-// Reverse mode (adjoint) of one period of the coupling (plans/2026-10-22-
-// universal-number-types.md, stage U6; docs/dev/adjoint-schedule.md).
+// Reverse mode (adjoint) of one period of the coupling (docs/dev/adjoint-schedule.md).
 //
 // A forward period is a sequence of events: component steps (`Tick`) and
 // coupling instructions. Each instruction is linear in the field values, with

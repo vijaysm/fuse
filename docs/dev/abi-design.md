@@ -549,10 +549,9 @@ an existing plugin's `describe()` that never touches `memspace` at all gets a ho
 behaviour it had before the member existed. The new capability bit, `FUSE_CAP_DEVICE_FIELDS`, and the two
 refusal gates `fuse::abi_detail::ProviderAdapter::register_fields()` applies to a
 `FUSE_MEMSPACE_DEVICE` request are documented for plugin authors in
-[](../user/providers.md#device-fields); the issue tracker carries the full round record,
-the mutation rows, and the CUDA run (ssh:higgs, 2026-10-21) of the positive device-resident path.
+[](../user/providers.md#device-fields).
 
-### Element types and gradients: a second worked growth, rules 2 and 3 (2026-10-27)
+### Element types and gradients: a second worked growth, rules 2 and 3
 
 Two enumerators, `FUSE_ELEMENT_DD` (5) and `FUSE_ELEMENT_QD` (6), and one member, `gradient_size`,
 were added so that a C or Fortran participant or provider can register double-double and quad-double
@@ -581,7 +580,7 @@ That is the one place the two meanings of "components" differ, because the graph
 type: it is fixed when a field is bound. `fuse_field_ref.components` keeps reporting the graph's
 count, and `view_field` reports the view's.
 
-### Posit element types: a third growth, rule 2 (2026-10-28)
+### Posit element types: a third growth, rule 2
 
 Two more enumerators, `FUSE_ELEMENT_POSIT16` (7) and `FUSE_ELEMENT_POSIT32` (8), name the 16-bit and
 32-bit posits of the 2022 Posit Standard (`posit<16,2>`, `posit<32,2>`). They change no layout: the
@@ -591,7 +590,7 @@ Fortran), `view.components` counts values as for any Storage type, and `fuse_vie
 element type that was registered. The one declaration is `include/fuse/abi/entries.def`; `types.h`,
 `ffuse.f90` and the goldens came from `tools/gen-abi.py --write`.
 
-### Adjoint: a fourth growth, rules 2 and 3 (2026-10-30)
+### Adjoint: a fourth growth, rules 2 and 3
 
 Reverse mode (docs/dev/adjoint-schedule.md) reaches both directions by appending entries, and changes
 no existing layout. One capability bit, `FUSE_CAP_ADJOINT` (128), is reported by both: by a provider in

@@ -2,18 +2,17 @@
 // bound to a REAL multi-rank fuse::backend::NativeMeshView over
 // MPI_COMM_WORLD, the collective twin of physics-kit/test/spatial_mesh_
 // test.cpp's own FromMeshViewReadsOwnershipAndGlobalIds (a single-process
-// stand-in for the same ownership/global-id contract). Owner instruction
-// 2026-10-31, item 2: "Using with just MPI_COMM_SELF is dumb. This has to
-// run in parallel to split up the compute work" -- registered with RANKS
-// 2 3 through fuse_add_mpi_test(... SRC_DIR .) from physics-kit/test/
-// CMakeLists.txt, where the fuse::physics_kit target exists (the lead moved
-// it here from test/parallel/ on landing; the track had compiled physics-kit
-// sources into a fuse-side executable because the target is defined after
-// test/ is added).
+// stand-in for the same ownership/global-id contract). It runs in
+// parallel over a real communicator (MPI_COMM_SELF alone would not split up
+// the work) -- registered with RANKS 2 3 through
+// fuse_add_mpi_test(... SRC_DIR .) from physics-kit/test/CMakeLists.txt,
+// where the fuse::physics_kit target exists (compiling physics-kit sources
+// into a fuse-side executable is not an option because the target is
+// defined after test/ is added).
 //
 // MPI CANNOT START IN THIS SANDBOX: this file is
 // compiled here, never run; host_pending names the exact `mpirun`
-// commands the lead runs on their own host.
+// commands to run on a host with MPI.
 //
 // REGISTRATION. physics-kit/test/CMakeLists.txt's own fuse_add_gtest calls
 // run AFTER add_subdirectory(test) at the root (root CMakeLists.txt's own
@@ -58,7 +57,7 @@ using fuse::physics::spatial::Mesh;
 // world_size Edge2 elements, element r connecting vertex r to vertex
 // r+1. Rank r owns vertex r and element r; it also holds vertex r+1 --
 // owned if r is the last rank (there is no rank r+1 to own it instead),
-// a GHOST otherwise, matching the owner's own rule: ownership is a
+// a GHOST otherwise, matching the rule that ownership is a
 // per-rank fact about each entity, read through is_owned(), never
 // assumed from a contiguous prefix (mesh_view.hpp's own documented
 // constraint, carried through spatial::Mesh::from_mesh_view unchanged).
@@ -119,10 +118,8 @@ TEST(PhysicsMeshMpi, GhostVertexGlobalIdAgreesWithItsOwner) {
   // Rank r's ghost is its local vertex 2 (v_hi, global r+1); its owner,
   // rank r+1, holds that SAME vertex as its local vertex 1 (v_lo). So the
   // gathered quantity is every rank's v_lo global id and ownership, and
-  // rank r compares its v_hi against rank r+1's v_lo. The round-1b version
-  // gathered v_hi and so compared global r+1 with global r+2; it failed on
-  // its first host run -- a test
-  // defect, not a mesh one.
+  // rank r compares its v_hi against rank r+1's v_lo. Gathering v_hi
+  // instead would compare global r+1 with global r+2 and fail.
   const std::int64_t my_hi_gid = static_cast<std::int64_t>(mesh.vertex_global_id(2));
   const std::int64_t my_lo_gid = static_cast<std::int64_t>(mesh.vertex_global_id(1));
   const std::uint8_t i_own_lo = mesh.is_vertex_owned(1) ? 1 : 0;
@@ -146,8 +143,7 @@ TEST(PhysicsMeshMpi, GhostVertexGlobalIdAgreesWithItsOwner) {
     return fuse::Result<void>::success();
   }();
 
-  // Collective agreement (the issue tracker
-  // 2026-10-31): a disagreement is reported identically on every rank,
+  // Collective agreement: a disagreement is reported identically on every rank,
   // naming the origin, rather than only on the rank that happened to see
   // it -- the same device field_transaction_mpi_test.cpp already uses.
   const auto agreed = fuse::agree_outcome(MPI_Comm_c2f(MPI_COMM_WORLD), local_check, "E-TEST-GHOST-GID-AGREEMENT",

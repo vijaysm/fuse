@@ -281,7 +281,8 @@ of `N` gradient entries `N + 1` of its scalar type.
 
 ```cpp
 std::vector<fuse::num::dd> t_(n_);                       // the component's state
-auto w = fuse::put_values<fuse::num::dd>("t", ids, t_, 1, static_cast<std::int64_t>(n_));
+// writer is the fuse::RestartWriter& and reader the fuse::RestartReader& your component is handed.
+auto w = fuse::put_values<fuse::num::dd>(writer, "t", ids, t_, 1, static_cast<std::int64_t>(n_));
 
 auto r = fuse::get_values<fuse::num::dd>(reader, "t", ids, std::span(t_), 1);
 ```

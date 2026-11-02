@@ -1,9 +1,9 @@
 #pragma once
 
 /// Finite-element quadrature rules, adapted from KARMA's karma_quadrature.h
-/// (docs/dev/physics-kit-disposition.md Appendix A, port-adapt).
+/// (port-adapted; see docs/dev/physics-kit.md).
 ///
-/// NATIVE, NOT PETSc-BACKED (decision + docs/dev/physics-kit.md's
+/// NATIVE, NOT PETSc-BACKED (docs/dev/physics-kit.md's
 /// tier-0 contract). KARMA's KARMAQuadrature generates its points and
 /// weights by calling PETSc's PetscDT* functions (PetscDTGaussTensorQuadrature,
 /// PetscDTSimplexQuadrature, PetscDTGaussJacobiQuadrature) unconditionally --
@@ -13,8 +13,8 @@
 /// Kokkos and fmt; PETSc is OPTIONAL, read only through FUSE_HAVE_PETSC), so
 /// a quadrature generator physics-kit's own tier-0 tests must build and run
 /// without PETSc cannot wrap PetscDT at all -- this is the "KARMA class
-/// wraps [a third party] with no fuse counterpart at this layer" case D-A
-/// anticipates, except the fix is not a facade mapping (there is no
+/// wraps [a third party] with no fuse counterpart at this layer" case,
+/// except the fix is not a facade mapping (there is no
 /// generic small-quadrature facade in fuse::linalg or fuse::petsc) but a
 /// native reimplementation of the SAME textbook construction PETSc's own
 /// PetscDT uses internally for this: Gauss-Legendre/Gauss-Jacobi nodes and
@@ -33,8 +33,7 @@
 /// requested polynomial degree. Prism is a triangle-base x line tensor
 /// product (its own Gauss-Jacobi(1) triangle axis plus a plain
 /// Gauss-Legendre axial line); pyramid is the single-collapse
-/// Gauss-Jacobi(alpha=2) construction (item
-/// 1) -- see quadrature.cpp's Prism/Pyramid cases for the Jacobian
+/// Gauss-Jacobi(alpha=2) construction -- see quadrature.cpp's Prism/Pyramid cases for the Jacobian
 /// derivation of each.
 
 #include <cstddef>
@@ -68,9 +67,8 @@ class Quadrature {
 
   /// The round-off error bound this rule's exactness test (fe_quadrature_
   /// test.cpp) holds an integrated monomial of total degree
-  /// `polynomial_degree` to, DERIVED (lead, 2026-10-31; the wave-1 draft
-  /// bounded only the summation and needed a 1e-13 floor on top, which is a
-  /// chosen constant and is gone):
+  /// `polynomial_degree` to, DERIVED (it bounds more than the summation and
+  /// needs no chosen constant such as a 1e-13 floor):
   ///   |computed - exact| <= eps * [ (n_points + ops) * S  +  (sweeps+1) * n1d * (dim * S + p * V) ]
   /// with S = sum_q |w_q f(x_q)| (`sum_abs_terms`), p = `polynomial_degree`,
   /// V = `cell_measure` (the reference cell's measure, = sum of weights),

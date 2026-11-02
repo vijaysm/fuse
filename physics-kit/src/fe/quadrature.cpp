@@ -260,8 +260,7 @@ Quadrature::Quadrature(CellFamily family, int degree) : family_(family), degree_
   }
   if (family == CellFamily::Prism) {
     // Triangle base (a,b as above) times a plain line in the third
-    // (axial) direction -- item 1 ("prism =
-    // triangle x line tensor"): the reference prism (reference_topology.
+    // (axial) direction (prism = triangle x line tensor): the reference prism (reference_topology.
     // cpp's Prism6 corners) is exactly the unit triangle cross [0,1], so
     // the Jacobian factors into (triangle's own (1-b)) times (the line's
     // own 1), with no interaction between them -- a plain tensor product
@@ -280,9 +279,8 @@ Quadrature::Quadrature(CellFamily family, int degree) : family_(family), degree_
   }
   if (family == CellFamily::Pyramid) {
     // Single collapse (X,Y,z) in [-1,1]x[-1,1]x[0,1] -> (x,y,z) =
-    // (X(1-z), Y(1-z), z) -- item 1
-    // ("pyramid = collapsed-coordinate Gauss-Jacobi(alpha=2)") --
-    // matching reference_topology.cpp's own Pyramid5 corners at
+    // (X(1-z), Y(1-z), z) (pyramid = collapsed-coordinate
+    // Gauss-Jacobi(alpha=2)), matching reference_topology.cpp's own Pyramid5 corners at
     // (+-1,+-1,0) and apex (0,0,1). Jacobian d(x,y,z)/d(X,Y,z) = (1-z)^2
     // (the 3x3 Jacobian's bottom row is (0,0,1), so the determinant
     // reduces to the top-left 2x2 block's (1-z)*(1-z)): X and Y need no

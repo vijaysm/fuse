@@ -23,7 +23,7 @@ namespace {
 /// duplicates for its own verification. Kept here, not shared, for the
 /// same reason that one stayed independent: this is a handful of lines
 /// reading the graph and backend, not logic worth a new coupling between
-/// two tracks' own files.
+/// two translation units.
 [[nodiscard]] Result<std::pair<MeshId, int>> resolve_mesh_and_dim(
     const CouplingGraph& graph, const MeshBackend& backend, RegionId region_id,
     const char* which) {

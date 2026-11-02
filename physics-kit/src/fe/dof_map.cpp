@@ -316,7 +316,7 @@ DofMap::DofMap(const spatial::Mesh& mesh, std::vector<Variable> variables, const
       if (key.corners.size() > kMaxCorners)
         refuse(
             "DofMap: a dof key with more than 4 corner vertices cannot be packed for ghost "
-            "resolution (E-PHYSICS-DOFMAP-KEY-TOO-WIDE) -- no built-in basis this wave places a dof "
+            "resolution (E-PHYSICS-DOFMAP-KEY-TOO-WIDE) -- no built-in basis places a dof "
             "on a sub-entity with more than 4 corners (a quadrilateral face)");
       request_payload.push_back(static_cast<std::int64_t>(key.variable));
       request_payload.push_back(static_cast<std::int64_t>(key.component));

@@ -2,8 +2,8 @@
 
 The moving-least-squares weights of a point cloud (`fuse/backend/mls_weights.hpp`, user guide:
 [](../user/point-cloud-remap.md)) depend smoothly on the coordinates of the source and target points.
-Stage U8 of the number-types plan makes the weight kernel, `fuse::device::solve_mls_on_space`
-(`fuse/backend/mls_weights_device.hpp`), a template on the scalar type `T` of those coordinates, so
+The weight kernel, `fuse::device::solve_mls_on_space`
+(`fuse/backend/mls_weights_device.hpp`), is a template on the scalar type `T` of those coordinates, so
 that with `T = fuse::num::dual<S, N>` (forward-mode automatic differentiation, `fuse/num/dual.hpp`)
 every weight comes back with its gradient in `N` parameters: the **shape gradient** of the weights,
 the derivative of the weights with respect to where the points are. `T = double`, the default, is the
@@ -101,7 +101,7 @@ a build with a device backend, on the device memory space. The cases and what th
    The farthest source is unique, so the central difference is a valid reference there.
 6. **A neighbour coinciding with the target**, finite gradients, and agreement with the central
    difference for Wendland2, 4 and 6.
-7. **The gate of stage U8: the Taylor remainder of the weights, as a function of all the coordinates
+7. **The gate: the Taylor remainder of the weights, as a function of all the coordinates
    (every source and every target), has order 2.** `fuse::linalg::taylor_remainder_order`
    ([](derivative-gate.md)) with `h0 = 1e-2` and 9 decades, along a fixed direction of max-norm 1.
    The clouds are jittered lattices: 6 x 6 sources and 3 targets in two dimensions (degree 2,

@@ -82,8 +82,7 @@
 /// own fast path exists on that premise) and reproduces `E-MLS-RANK`'s
 /// exact message, target index and condition estimate.
 ///
-/// SCALAR TYPE AND SHAPE GRADIENTS (plans/2026-10-22-universal-number-types.md,
-/// stage U8). `solve_mls_on_space<Space, T>` is templated on the scalar type `T`
+/// SCALAR TYPE AND SHAPE GRADIENTS. `solve_mls_on_space<Space, T>` is templated on the scalar type `T`
 /// of the point coordinates and of everything computed from them (distances,
 /// moment matrices, the solution, the weights). `T = double` is the default and
 /// is the previous kernel, operation for operation. With `T =
