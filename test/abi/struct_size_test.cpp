@@ -19,6 +19,10 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+#if FUSE_HAVE_MPI
+#include <mpi.h>
+#endif
+
 #include "fuse/abi/participant.h"
 #include "fuse/model/descriptor.hpp"
 #include "fuse/model/coupling_graph.hpp"
@@ -345,13 +349,10 @@ TEST(AbiStructSize, BaseCommunicatorInfoLongerStructFromANewerCallerIsAccepted) 
 // setup() refuses outright in any build without MPI (E-ABI-SETUP-NOMPI,
 // participant.cpp:609-614) -- exactly this translation unit's own tier-0
 // build (FUSE_HAVE_MPI is 0 here). Guarded so it exists only in an
-// MPI-enabled build; even there it calls no actual MPI function: with
-// my_component left NULL, impl_setup()'s my_component-gated connect()
-// branch (the only place that ever calls MPI_Comm_f2c on this value,
-// participant.cpp:888-894 / :1061) is never reached, so the literal 99
-// below is stored and read back VERBATIM without MPI_Init() ever
-// running -- safe to BUILD-VERIFY here; it is not executed in a sandbox
-// without a real MPI, only on a host that has one.
+// MPI-enabled build. setup() looks the caller's rank up in the communicator
+// it is given, so the handle is MPI_COMM_WORLD's real Fortran handle rather
+// than an arbitrary integer, which an MPI library treats as an invalid
+// communicator and aborts on.
 #if FUSE_HAVE_MPI
 TEST(AbiStructSize, BaseCommunicatorReadsBackAFormedCommunicatorWhenMpiIsAvailable) {
   const auto* t = Table();
@@ -359,14 +360,21 @@ TEST(AbiStructSize, BaseCommunicatorReadsBackAFormedCommunicatorWhenMpiIsAvailab
   fuse_ctx* ctx = LoadedContext(t);
 
   fuse_setup_options setup{.struct_size = sizeof(setup)};
-  setup.communicator = 99;
+  // setup() looks the caller's rank up in this communicator, so it has to be
+  // a real handle: an arbitrary integer is not one to an MPI library.
+  int mpi_up = 0;
+  MPI_Initialized(&mpi_up);
+  if (mpi_up == 0) GTEST_SKIP() << "MPI is not initialised in this process";
+  const int comm = static_cast<int>(MPI_Comm_c2f(MPI_COMM_WORLD));
+  setup.communicator = comm;
+  setup.has_communicator = 1;
   setup.has_end_time = 0;
   EXPECT_EQ(t->setup(ctx, &setup, nullptr), FUSE_OK);
 
   fuse_base_communicator_info info{.struct_size = sizeof(info)};
   EXPECT_EQ(t->base_communicator(ctx, nullptr, &info), FUSE_OK);
   EXPECT_EQ(info.formed, 1);
-  EXPECT_EQ(info.communicator, 99);
+  EXPECT_EQ(info.communicator, comm);
 
   EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
 }
