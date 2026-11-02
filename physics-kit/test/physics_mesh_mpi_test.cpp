@@ -115,26 +115,30 @@ TEST(PhysicsMeshMpi, GhostVertexGlobalIdAgreesWithItsOwner) {
   MPI_Comm_size(MPI_COMM_WORLD, &world_size);
   const Mesh mesh = build_local_strip(rank, world_size);
 
-  // Every rank's own vertex 2 (local handle, 1-based: v_hi) global id,
-  // and whether this rank owns it -- gathered on every rank so each one
-  // can check its OWN ghost (if any) against the owning rank's answer
-  // without a second communication round.
+  // Rank r's ghost is its local vertex 2 (v_hi, global r+1); its owner,
+  // rank r+1, holds that SAME vertex as its local vertex 1 (v_lo). So the
+  // gathered quantity is every rank's v_lo global id and ownership, and
+  // rank r compares its v_hi against rank r+1's v_lo. The round-1b version
+  // gathered v_hi and so compared global r+1 with global r+2; it failed on
+  // its first host run (KNOWN_ISSUES.md D105, 2026-11-02) -- a test
+  // defect, not a mesh one.
   const std::int64_t my_hi_gid = static_cast<std::int64_t>(mesh.vertex_global_id(2));
-  const std::uint8_t i_own_hi = mesh.is_vertex_owned(2) ? 1 : 0;
-  std::vector<std::int64_t> all_hi_gid(static_cast<std::size_t>(world_size));
-  std::vector<std::uint8_t> all_owns_hi(static_cast<std::size_t>(world_size));
-  MPI_Allgather(&my_hi_gid, 1, MPI_INT64_T, all_hi_gid.data(), 1, MPI_INT64_T, MPI_COMM_WORLD);
-  MPI_Allgather(&i_own_hi, 1, MPI_UNSIGNED_CHAR, all_owns_hi.data(), 1, MPI_UNSIGNED_CHAR, MPI_COMM_WORLD);
+  const std::int64_t my_lo_gid = static_cast<std::int64_t>(mesh.vertex_global_id(1));
+  const std::uint8_t i_own_lo = mesh.is_vertex_owned(1) ? 1 : 0;
+  std::vector<std::int64_t> all_lo_gid(static_cast<std::size_t>(world_size));
+  std::vector<std::uint8_t> all_owns_lo(static_cast<std::size_t>(world_size));
+  MPI_Allgather(&my_lo_gid, 1, MPI_INT64_T, all_lo_gid.data(), 1, MPI_INT64_T, MPI_COMM_WORLD);
+  MPI_Allgather(&i_own_lo, 1, MPI_UNSIGNED_CHAR, all_owns_lo.data(), 1, MPI_UNSIGNED_CHAR, MPI_COMM_WORLD);
 
   const bool last_rank = (rank == world_size - 1);
   const fuse::Result<void> local_check = [&]() -> fuse::Result<void> {
     if (last_rank) return fuse::Result<void>::success();  // no ghost to check; this rank owns its own v_hi
     const int owner = rank + 1;
-    if (all_hi_gid[static_cast<std::size_t>(owner)] != my_hi_gid)
+    if (all_lo_gid[static_cast<std::size_t>(owner)] != my_hi_gid)
       return fuse::Failure{"E-TEST-GHOST-GID-MISMATCH",
                             "rank " + std::to_string(rank) + "'s ghost global id disagreed with rank " +
                                 std::to_string(owner) + "'s own owned copy"};
-    if (all_owns_hi[static_cast<std::size_t>(owner)] != 1)
+    if (all_owns_lo[static_cast<std::size_t>(owner)] != 1)
       return fuse::Failure{"E-TEST-GHOST-GID-MISMATCH",
                             "rank " + std::to_string(owner) + " did not report owning the vertex rank " +
                                 std::to_string(rank) + " holds as a ghost"};
