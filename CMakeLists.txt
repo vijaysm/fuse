@@ -47,6 +47,14 @@ option(FUSE_ENABLE_FORTRAN "Build the Fortran participant binding ffuse (needs a
 # after it enables the Fortran language, which needs the
 # FUSE_FP_REPRODUCIBLE option and both functions already defined.
 include(FuseFpPolicy)
+
+# stillwater-sc/universal as a test oracle for fuse::num::dd and qd (host only,
+# never part of the library): the bit-for-bit comparison test builds only when
+# this is ON and FUSE_UNIVERSAL_INCLUDE_DIR names the include/sw directory of a
+# checkout.
+option(FUSE_ENABLE_UNIVERSAL "Build the tests that compare fuse::num::dd and qd with stillwater-sc/universal" OFF)
+set(FUSE_UNIVERSAL_INCLUDE_DIR "" CACHE PATH "include/sw directory of a stillwater-sc/universal checkout")
+set(FUSE_UNIVERSAL_CXX "" CACHE FILEPATH "host C++ compiler for the Universal oracle program (default: CMAKE_CXX_COMPILER; give g++ or clang++ on a CUDA build)")
 include(FuseSlowTests)
 include(FuseFortran)
 

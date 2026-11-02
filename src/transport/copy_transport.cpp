@@ -44,6 +44,12 @@ Result<void> CopyTransport::move(const double* src, double* dst,
   return Result<void>::success();
 }
 
+Result<void> CopyTransport::move_adjoint(const double* dst_bar, double* src_bar,
+                                         std::size_t n) {
+  // The transpose of a copy is a copy, with the roles of the two arrays exchanged.
+  return move(dst_bar, src_bar, n);
+}
+
 void TransportRegistry::register_backend(std::string name, Factory factory) {
   for (auto& [n, f] : factories_) {
     if (n == name) {

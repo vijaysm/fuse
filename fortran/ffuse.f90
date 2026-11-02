@@ -19,6 +19,13 @@ module ffuse
   integer(c_int32_t), parameter, public :: FUSE_ERR_VERSION = -6_c_int32_t
   integer(c_int32_t), parameter, public :: FUSE_ELEMENT_F64 = 0_c_int32_t
   integer(c_int32_t), parameter, public :: FUSE_ELEMENT_I64 = 1_c_int32_t
+  integer(c_int32_t), parameter, public :: FUSE_ELEMENT_F32 = 2_c_int32_t
+  integer(c_int32_t), parameter, public :: FUSE_ELEMENT_BF16 = 3_c_int32_t
+  integer(c_int32_t), parameter, public :: FUSE_ELEMENT_F16 = 4_c_int32_t
+  integer(c_int32_t), parameter, public :: FUSE_ELEMENT_DD = 5_c_int32_t
+  integer(c_int32_t), parameter, public :: FUSE_ELEMENT_QD = 6_c_int32_t
+  integer(c_int32_t), parameter, public :: FUSE_ELEMENT_POSIT16 = 7_c_int32_t
+  integer(c_int32_t), parameter, public :: FUSE_ELEMENT_POSIT32 = 8_c_int32_t
   integer(c_int32_t), parameter, public :: FUSE_MEMSPACE_HOST = 0_c_int32_t
   integer(c_int32_t), parameter, public :: FUSE_MEMSPACE_DEVICE = 1_c_int32_t
   integer(c_int32_t), parameter, public :: FUSE_OWNERSHIP_OWNED = 0_c_int32_t
@@ -31,6 +38,7 @@ module ffuse
   integer(c_int32_t), parameter, public :: FUSE_CAP_LOWFIVE = 16_c_int32_t
   integer(c_int32_t), parameter, public :: FUSE_CAP_YAML = 32_c_int32_t
   integer(c_int32_t), parameter, public :: FUSE_CAP_RESTART_FORM_B = 64_c_int32_t
+  integer(c_int32_t), parameter, public :: FUSE_CAP_ADJOINT = 128_c_int32_t
   integer(c_int32_t), parameter, public :: FUSE_ABI_VERSION = 1_c_int32_t
   integer(c_int32_t), parameter, public :: FUSE_ABI_MAX_STRUCT_SIZE = 65536_c_int32_t
 
@@ -153,6 +161,8 @@ module ffuse
     integer(c_int64_t) :: component_stride = 0_c_int64_t
     type(c_ptr) :: data = c_null_ptr
     integer(c_int32_t) :: window_samples = 0_c_int32_t
+    integer(c_int32_t) :: reserved = 0_c_int32_t
+    integer(c_int32_t) :: gradient_size = 0_c_int32_t
   end type fuse_field_view
 
   type, bind(C), public :: fuse_step_request
@@ -214,7 +224,7 @@ module ffuse
     integer(c_int32_t) :: intent = 0_c_int32_t
     integer(c_int32_t) :: element_type = 0_c_int32_t
     integer(c_int32_t) :: memspace = 0_c_int32_t
-    integer(c_int32_t) :: reserved = 0_c_int32_t
+    integer(c_int32_t) :: gradient_size = 0_c_int32_t
   end type fuse_field_spec
 
   type, bind(C), public :: fuse_field_table
@@ -375,6 +385,54 @@ module ffuse
       type(fuse_null), intent(inout) :: out
       integer(c_int32_t) :: status
     end function ffuse_request_restart_point
+
+    function ffuse_register_adjoint_field(ctx, in, out) result(status) bind(C, name="ffuse_register_adjoint_field")
+      import :: c_int32_t, c_ptr, fuse_field_view, fuse_null
+      type(c_ptr), value :: ctx
+      type(fuse_field_view), intent(in) :: in
+      type(fuse_null), intent(inout) :: out
+      integer(c_int32_t) :: status
+    end function ffuse_register_adjoint_field
+
+    function ffuse_initialize_adjoint(ctx, in, out) result(status) bind(C, name="ffuse_initialize_adjoint")
+      import :: c_int32_t, c_ptr, fuse_null
+      type(c_ptr), value :: ctx
+      type(fuse_null), intent(in) :: in
+      type(fuse_null), intent(inout) :: out
+      integer(c_int32_t) :: status
+    end function ffuse_initialize_adjoint
+
+    function ffuse_view_adjoint_field(ctx, in, out) result(status) bind(C, name="ffuse_view_adjoint_field")
+      import :: c_int32_t, c_ptr, fuse_field_ref, fuse_field_view
+      type(c_ptr), value :: ctx
+      type(fuse_field_ref), intent(in) :: in
+      type(fuse_field_view), intent(inout) :: out
+      integer(c_int32_t) :: status
+    end function ffuse_view_adjoint_field
+
+    function ffuse_run_adjoint(ctx, in, out) result(status) bind(C, name="ffuse_run_adjoint")
+      import :: c_int32_t, c_ptr, fuse_null, fuse_run_request
+      type(c_ptr), value :: ctx
+      type(fuse_run_request), intent(in) :: in
+      type(fuse_null), intent(inout) :: out
+      integer(c_int32_t) :: status
+    end function ffuse_run_adjoint
+
+    function ffuse_begin_adjoint_step(ctx, in, out) result(status) bind(C, name="ffuse_begin_adjoint_step")
+      import :: c_int32_t, c_ptr, fuse_step_report, fuse_step_request
+      type(c_ptr), value :: ctx
+      type(fuse_step_request), intent(in) :: in
+      type(fuse_step_report), intent(inout) :: out
+      integer(c_int32_t) :: status
+    end function ffuse_begin_adjoint_step
+
+    function ffuse_end_adjoint_step(ctx, in, out) result(status) bind(C, name="ffuse_end_adjoint_step")
+      import :: c_int32_t, c_ptr, fuse_step_report, fuse_step_request
+      type(c_ptr), value :: ctx
+      type(fuse_step_request), intent(in) :: in
+      type(fuse_step_report), intent(inout) :: out
+      integer(c_int32_t) :: status
+    end function ffuse_end_adjoint_step
   end interface
 
   public :: fuse_version, &
@@ -394,7 +452,13 @@ module ffuse
             fuse_run, &
             fuse_view_field, &
             fuse_base_communicator, &
-            fuse_request_restart_point
+            fuse_request_restart_point, &
+            fuse_register_adjoint_field, &
+            fuse_initialize_adjoint, &
+            fuse_view_adjoint_field, &
+            fuse_run_adjoint, &
+            fuse_begin_adjoint_step, &
+            fuse_end_adjoint_step
 
   interface fuse_last_error
     module procedure fuse_last_error_struct, fuse_last_error_message
@@ -415,6 +479,14 @@ module ffuse
   interface fuse_end_step
     module procedure fuse_end_step_struct, fuse_end_step_name
   end interface fuse_end_step
+
+  interface fuse_begin_adjoint_step
+    module procedure fuse_begin_adjoint_step_struct, fuse_begin_adjoint_step_name
+  end interface fuse_begin_adjoint_step
+
+  interface fuse_end_adjoint_step
+    module procedure fuse_end_adjoint_step_struct, fuse_end_adjoint_step_name
+  end interface fuse_end_adjoint_step
 
 contains
 
@@ -699,5 +771,97 @@ contains
     out%struct_size = int(c_sizeof(out), c_int32_t)
     status = ffuse_request_restart_point(ctx%ptr, in, out)
   end function fuse_request_restart_point
+
+  function fuse_register_adjoint_field(ctx, in, out) result(status)
+    type(fuse_ctx), intent(in) :: ctx
+    type(fuse_field_view), intent(inout) :: in
+    type(fuse_null), intent(inout) :: out
+    integer(c_int32_t) :: status
+
+    in%struct_size = int(c_sizeof(in), c_int32_t)
+    out%struct_size = int(c_sizeof(out), c_int32_t)
+    status = ffuse_register_adjoint_field(ctx%ptr, in, out)
+  end function fuse_register_adjoint_field
+
+  function fuse_initialize_adjoint(ctx, in, out) result(status)
+    type(fuse_ctx), intent(in) :: ctx
+    type(fuse_null), intent(inout) :: in
+    type(fuse_null), intent(inout) :: out
+    integer(c_int32_t) :: status
+
+    in%struct_size = int(c_sizeof(in), c_int32_t)
+    out%struct_size = int(c_sizeof(out), c_int32_t)
+    status = ffuse_initialize_adjoint(ctx%ptr, in, out)
+  end function fuse_initialize_adjoint
+
+  function fuse_view_adjoint_field(ctx, in, out) result(status)
+    type(fuse_ctx), intent(in) :: ctx
+    type(fuse_field_ref), intent(inout) :: in
+    type(fuse_field_view), intent(inout) :: out
+    integer(c_int32_t) :: status
+
+    in%struct_size = int(c_sizeof(in), c_int32_t)
+    out%struct_size = int(c_sizeof(out), c_int32_t)
+    status = ffuse_view_adjoint_field(ctx%ptr, in, out)
+  end function fuse_view_adjoint_field
+
+  function fuse_run_adjoint(ctx, in, out) result(status)
+    type(fuse_ctx), intent(in) :: ctx
+    type(fuse_run_request), intent(inout) :: in
+    type(fuse_null), intent(inout) :: out
+    integer(c_int32_t) :: status
+
+    in%struct_size = int(c_sizeof(in), c_int32_t)
+    out%struct_size = int(c_sizeof(out), c_int32_t)
+    status = ffuse_run_adjoint(ctx%ptr, in, out)
+  end function fuse_run_adjoint
+
+  function fuse_begin_adjoint_step_struct(ctx, in, out) result(status)
+    type(fuse_ctx), intent(in) :: ctx
+    type(fuse_step_request), intent(inout) :: in
+    type(fuse_step_report), intent(inout) :: out
+    integer(c_int32_t) :: status
+
+    in%struct_size = int(c_sizeof(in), c_int32_t)
+    out%struct_size = int(c_sizeof(out), c_int32_t)
+    status = ffuse_begin_adjoint_step(ctx%ptr, in, out)
+  end function fuse_begin_adjoint_step_struct
+
+  function fuse_begin_adjoint_step_name(ctx, component, out) result(status)
+    type(fuse_ctx), intent(in) :: ctx
+    character(len=*), intent(in) :: component
+    type(fuse_step_report), intent(inout) :: out
+    integer(c_int32_t) :: status
+    type(fuse_step_request) :: in
+    character(kind=c_char, len=len_trim(component)+1), target :: component_buf
+
+    component_buf = trim(component) // c_null_char
+    in%component = c_loc(component_buf)
+    status = fuse_begin_adjoint_step_struct(ctx, in, out)
+  end function fuse_begin_adjoint_step_name
+
+  function fuse_end_adjoint_step_struct(ctx, in, out) result(status)
+    type(fuse_ctx), intent(in) :: ctx
+    type(fuse_step_request), intent(inout) :: in
+    type(fuse_step_report), intent(inout) :: out
+    integer(c_int32_t) :: status
+
+    in%struct_size = int(c_sizeof(in), c_int32_t)
+    out%struct_size = int(c_sizeof(out), c_int32_t)
+    status = ffuse_end_adjoint_step(ctx%ptr, in, out)
+  end function fuse_end_adjoint_step_struct
+
+  function fuse_end_adjoint_step_name(ctx, component, out) result(status)
+    type(fuse_ctx), intent(in) :: ctx
+    character(len=*), intent(in) :: component
+    type(fuse_step_report), intent(inout) :: out
+    integer(c_int32_t) :: status
+    type(fuse_step_request) :: in
+    character(kind=c_char, len=len_trim(component)+1), target :: component_buf
+
+    component_buf = trim(component) // c_null_char
+    in%component = c_loc(component_buf)
+    status = fuse_end_adjoint_step_struct(ctx, in, out)
+  end function fuse_end_adjoint_step_name
 
 end module ffuse

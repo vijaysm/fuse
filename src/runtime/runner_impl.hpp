@@ -13,6 +13,8 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
@@ -21,7 +23,10 @@
 #include "fuse/ir/lowering.hpp"
 #include "fuse/linalg/comm.hpp"
 #include "fuse/num/accelerator.hpp"
+#include "fuse/num/arithmetic_kernels.hpp"
+#include "fuse/num/posit.hpp"
 #include "fuse/num/space_kernels.hpp"
+#include "fuse/num/storage_convert.hpp"
 #include "fuse/model/iteration.hpp"
 #include "fuse/backend/device_ghost_exchange.hpp"
 #include "fuse/backend/nodal_remap_distributed.hpp"
@@ -54,10 +59,88 @@ struct Slot {
   /// execute_on() span helpers. Set at the end of setup() for Device mode
   /// (docs/dev/device-resident-arcs.md); always false under Host.
   bool        device = false;
+  /// The Arithmetic value type of the values on this arc (a `value_traits` name
+  /// from fuse/num/arithmetic_types.def: "dd", "qd"), empty for an arc of
+  /// binary64 scalars. Set at setup for the arcs aliasing an Arithmetic field and
+  /// propagated down the instruction stream (resolve_arithmetic). Such an arc
+  /// holds `limbs` binary64 values per value, so `components` counts limbs:
+  /// the arc of a field of N dd values per entity has components == 2 * N.
+  std::string_view arithmetic;
+  int         limbs = 1;
 
   [[nodiscard]] std::size_t total() const noexcept {
     return elements * static_cast<std::size_t>(components);
   }
+};
+
+/// The Storage value types the runtime converts at the component boundary: a
+/// closed list, because each one is a kernel instantiated on both execution
+/// spaces. A field of any other value type that is not an array of binary64
+/// scalars is refused by name (E-RT-FIELD-TYPE).
+enum class StorageFormat : std::uint8_t { Binary32, BFloat16, Binary16, Posit16, Posit32 };
+
+[[nodiscard]] inline std::optional<StorageFormat> storage_format_of(
+    const AnyFieldRef& f) noexcept {
+  if (f.holds<float>()) return StorageFormat::Binary32;
+  if (f.holds<bfloat16>()) return StorageFormat::BFloat16;
+  if (f.holds<binary16>()) return StorageFormat::Binary16;
+  if (f.holds<num::posit16>()) return StorageFormat::Posit16;
+  if (f.holds<num::posit32>()) return StorageFormat::Posit32;
+  return std::nullopt;
+}
+
+[[nodiscard]] inline std::string_view storage_format_name(StorageFormat f) noexcept {
+  switch (f) {
+    case StorageFormat::Binary32: return value_traits<float>::name;
+    case StorageFormat::BFloat16: return value_traits<bfloat16>::name;
+    case StorageFormat::Binary16: return value_traits<binary16>::name;
+    case StorageFormat::Posit16: return value_traits<num::posit16>::name;
+    case StorageFormat::Posit32: return value_traits<num::posit32>::name;
+  }
+  return {};
+}
+
+/// Significand precision p (the implicit bit included): the unit roundoff of
+/// rounding to nearest in the format is 2^-p. For a posit it is the precision at the value
+/// one, the largest the format has: the precision falls by one bit for each factor of
+/// 2^(2^es) away from one, so a value far from one changes by more (the measured
+/// `max_relative_change` shows by how much).
+[[nodiscard]] inline int storage_format_precision(StorageFormat f) noexcept {
+  switch (f) {
+    case StorageFormat::Binary32: return 24;
+    case StorageFormat::BFloat16: return bfloat16::format::precision;
+    case StorageFormat::Binary16: return binary16::format::precision;
+    case StorageFormat::Posit16: return num::posit16::max_fraction_bits + 1;
+    case StorageFormat::Posit32: return num::posit32::max_fraction_bits + 1;
+  }
+  return 0;
+}
+
+/// Calls `fn(std::type_identity<T>{})` with the C++ type of the format.
+template <class F>
+void visit_storage_format(StorageFormat f, F&& fn) {
+  switch (f) {
+    case StorageFormat::Binary32: fn(std::type_identity<float>{}); return;
+    case StorageFormat::BFloat16: fn(std::type_identity<bfloat16>{}); return;
+    case StorageFormat::Binary16: fn(std::type_identity<binary16>{}); return;
+    case StorageFormat::Posit16: fn(std::type_identity<num::posit16>{}); return;
+    case StorageFormat::Posit32: fn(std::type_identity<num::posit32>{}); return;
+  }
+}
+
+/// A component-owned arc whose field is Storage-typed. The arc's slot does not
+/// alias the component's array (it holds a different type); it is a binary64
+/// image of it. A provided field is widened into its image when component
+/// code has run; a required field is rounded out of its image into the
+/// component's array when the coupler delivers into it.
+struct StorageBinding {
+  std::uint32_t arc = 0;        ///< the slot whose `data` is the image
+  StorageFormat format = StorageFormat::Binary32;
+  bool          delivered = false;  ///< a Sink arc: the runtime writes the field
+  bool          device = false;     ///< the field (and the image) are in device memory
+  void*         field = nullptr;    ///< the component's array
+  std::size_t   count = 0;          ///< values, components included
+  std::size_t   stat = 0;           ///< index into RunStats::storage_fields
 };
 
 /// What a `Constrain` compares, resolved at setup.
@@ -570,6 +653,117 @@ struct Resolved {
   std::int32_t  nodal_dist = -1;
 };
 
+/// The memory space of the device execution space `Runner::Impl` selects (the
+/// same chain of #if as `Impl::DeviceExecSpace`; a static_assert after `Impl`
+/// keeps the two equal). The reverse sweep needs it before `Impl` is defined.
+#if defined(KOKKOS_ENABLE_CUDA)
+using AdjointDeviceMemSpace = Kokkos::Cuda::memory_space;
+#elif defined(KOKKOS_ENABLE_HIP)
+using AdjointDeviceMemSpace = Kokkos::HIP::memory_space;
+#elif defined(KOKKOS_ENABLE_SYCL)
+using AdjointDeviceMemSpace = Kokkos::SYCL::memory_space;
+#else
+using AdjointDeviceMemSpace = Kokkos::DefaultHostExecutionSpace::memory_space;
+#endif
+
+/// Everything `Runner::run_period_adjoint()` needs beyond the forward state
+/// (stage U6, docs/dev/adjoint-schedule.md). Built by `initialize_adjoint()`;
+/// absent (`Impl::adjoint` null) on a Runner that only runs forward.
+struct AdjointState {
+  /// One event of a period, in the order the forward walk (`step_period()`)
+  /// runs them: a component step (`index` into `Impl::ticks`) or a coupling
+  /// instruction (`index` into the plan's stream). The reverse sweep walks the
+  /// list from the back.
+  struct Event {
+    bool        is_tick = false;
+    std::size_t index = 0;
+  };
+  std::vector<Event> events;
+
+  /// An iteration region as the reverse sweep runs it: the closed interval of `events` from the
+  /// first re-advanced component step to the last instruction of the region body, which is
+  /// reversed over and over until the adjoint of the delivered values has converged (the
+  /// reverse accumulation of the fixed point; docs/dev/adjoint-schedule.md). `event_loop` is
+  /// parallel to `events`: -1 outside every interval, else the index in `loops`; the sweep runs a
+  /// loop when it reaches `last_event` and skips the other events of the interval.
+  struct RegionLoop {
+    std::size_t region = 0;  // index into Impl::regions
+    std::size_t first_event = 0;
+    std::size_t last_event = 0;
+  };
+  std::vector<RegionLoop>   loops;
+  std::vector<std::int32_t> event_loop;
+
+  /// Every adjoint array an interval can change, restored from a copy taken before the loop
+  /// before each pass, so that each pass differs from the next only in the seed it is given:
+  /// the adjoint array of every arc, and of every field of a component the region steps.
+  struct ManagedArray {
+    double*     ptr = nullptr;
+    std::size_t len = 0;
+    bool        device = false;
+  };
+  std::vector<ManagedArray>        managed;
+  std::vector<std::vector<double>> snapshot;
+
+  /// Parallel to the instruction stream. For a `Sample`: how many samples of the
+  /// same accumulation window precede it (0 marks the first, which overwrites
+  /// the accumulator). For an `Accumulate`: the number of samples in its window.
+  /// Found once by replaying the forward bookkeeping on the list of events.
+  std::vector<std::size_t> window_index;
+
+  /// The adjoint array of every arc, parallel to `Impl::slots`: the component's
+  /// own adjoint array for a component-owned arc, `owned[i]` (host memory) or
+  /// `owned_device[i]` (device memory) otherwise. `bar_device[i]` says which
+  /// memory space `bar[i]` points into; an arc is on the device exactly when its
+  /// forward slot is (`Slot::device`), so a device-resident field has a
+  /// device-resident adjoint array.
+  std::vector<double*>                                          bar;
+  std::vector<std::uint8_t>                                     bar_device;
+  std::vector<std::vector<double>>                              owned;
+  std::vector<Kokkos::View<double*, AdjointDeviceMemSpace>>     owned_device;
+
+  /// The transpose of each entry of `Impl::remap_weights` as a CSR matrix (rows
+  /// are the columns of the weights), same index. Built once on the host by a
+  /// stable sort, so every row sums its terms in the order `apply_transpose` of
+  /// `WeightsOperator` does; `remap_t_device` is its copy in device memory,
+  /// filled only for device execution.
+  std::vector<RemapCsr>                                         remap_t;
+  std::vector<RemapCsrOf<AdjointDeviceMemSpace>>                remap_t_device;
+
+  /// Scratch lanes of the largest arc, in the memory of the execution space
+  /// (`lanes_device` for device execution, `lanes_host` otherwise): the adjoint
+  /// of the output of the instruction in hand, the operands of another memory
+  /// space staged for a kernel, and the transpose of a remap applied to it.
+  static constexpr std::size_t kLanes = 6;
+  std::vector<std::vector<double>>                              lanes_host;
+  std::vector<Kokkos::View<double*, AdjointDeviceMemSpace>>     lanes_device;
+
+  /// Host scratch for the reverse of a Transport between processes, whose exchange runs on
+  /// host buffers: the adjoint of the destination arc, when that is in device memory, and the
+  /// adjoint the exchange hands back to the source arc. Sized once, to the largest such arc.
+  std::vector<double> transport_out, transport_in;
+
+  /// The reverse sweep: `open` once the first `run_period_adjoint()` call has
+  /// fixed the number of forward periods it reverses (`forward_periods`, the
+  /// value of `Impl::period_index` then); `next` is the period the next call
+  /// reverses, -1 when there is none left.
+  bool         open = false;
+  std::int64_t forward_periods = 0;
+  std::int64_t next = -1;
+
+  /// A period is part way through its reverse: `period` is its index and `cursor` the number of
+  /// events of `events` still to reverse (the sweep takes them from the back). A sweep that
+  /// suspends at the step of a component driven from outside (`Runner::resume_period_adjoint()`)
+  /// leaves the period open and carries on from the cursor the next time it is called.
+  bool         in_period = false;
+  std::int64_t period = 0;
+  std::size_t  cursor = 0;
+  /// Some component that steps is driven from outside the Runner (its `advance()` is a no-op and
+  /// the caller does the work): `run_period_adjoint()` refuses such a run, which only
+  /// `resume_period_adjoint()` can reverse.
+  bool         has_external = false;
+};
+
 /// One component advance the runtime owes within a period.
 struct Tick {
   Rational     time{0};      // period-local, in [0, period)
@@ -991,6 +1185,8 @@ struct Runner::Impl {
   using DeviceExecSpace = HostExecSpace;
 #endif
   using DeviceMemSpace = typename DeviceExecSpace::memory_space;
+  static_assert(std::is_same_v<DeviceMemSpace, detail::AdjointDeviceMemSpace>,
+                "AdjointState names the device memory space by the same rule");
 
   /// Space-aware moves between a Slot and host memory, for the host-side
   /// bookkeeping of iteration.cpp / fixed_point_residual.cpp (gather and
@@ -1093,7 +1289,37 @@ struct Runner::Impl {
   /// through note_component_ran().
   std::uint64_t              component_epoch = 1;
   std::vector<std::uint64_t> device_mirror_epoch;
-  void note_component_ran() noexcept { ++component_epoch; }
+  void note_component_ran() noexcept {
+    ++component_epoch;
+    if (!storage_bindings.empty()) refresh_storage_images();
+  }
+
+  /// Storage-typed fields converted at the component boundary (see
+  /// detail::StorageBinding), and for each arc the index of its binding or -1.
+  std::vector<detail::StorageBinding> storage_bindings;
+  std::vector<std::int32_t>           storage_binding_of_arc;
+
+  /// Arithmetic-typed fields (dd, qd): the arcs carry them as limbs, and the
+  /// instructions that do arithmetic on values run the kernels of
+  /// fuse/num/arithmetic_kernels.hpp (the arc's `Slot::arithmetic`).
+  /// `resolve_arithmetic` gives each instruction's output arc the type of its
+  /// inputs and refuses a mix; `check_arithmetic_ops` refuses the operators that
+  /// have no arithmetic instantiation, by name: among them the Relax and Residual
+  /// of an iteration region, which is why a region over such a field is refused.
+  Result<void> resolve_arithmetic(const Instruction& ins, std::size_t index);
+  Result<void> check_arithmetic_ops(const Instruction& ins, const detail::Resolved& r, std::size_t index) const;
+  /// The partials of the arithmetic conservation sums, `limb_count<qd>` binary64
+  /// values per chunk at most; sized at setup from the largest weight set. The
+  /// per-rank integrals travel with MPI_Allgather and are summed in rank order
+  /// in the accumulator type (`arith_gather` is the receive buffer).
+  std::vector<double> arith_scratch;
+  std::vector<double> arith_gather;
+  /// Widens every provided Storage field into its binary64 image: exact.
+  /// Called after component code has run and at the start of each period.
+  void refresh_storage_images();
+  /// Rounds the image of a required Storage field into the component's array,
+  /// to nearest with ties to even, once. A no-op for an arc that has no binding.
+  void deliver_storage_field(std::uint32_t arc);
   std::vector<detail::Slot>        slots;         // parallel to arcs
   std::vector<std::vector<double>> previous;      // previous iterate, for Relax
   /// Device-resident twin of `previous`, same index: the Relax/Residual
@@ -1225,7 +1451,9 @@ struct Runner::Impl {
   std::vector<std::vector<double>> transport_in_scratch, transport_out_scratch;
   RunStats                         stats;
   std::int64_t                     period_index = 0;
-  /// Runner::request_restart_point()'s own
+  /// Stage U6: non-null once `initialize_adjoint()` has succeeded.
+  std::unique_ptr<detail::AdjointState> adjoint;
+  /// Restart track round 2, Runner::request_restart_point()'s own
   /// backing flag -- see that method's doc comment (fuse/runtime/
   /// runner.hpp) for why this is a flag, not a trigger.
   bool                              restart_point_requested = false;
@@ -1576,6 +1804,22 @@ struct Runner::Impl {
       : graph(g), dag(d), plan(std::move(p)), backend(b) {}
 
   Result<void> setup(ComponentSet& components, FieldRegistry& registry);
+
+  /// Stage U6 (src/runtime/runner_adjoint.cpp): `Runner::initialize_adjoint()`
+  /// and `Runner::run_period_adjoint()` are these, and the adjoint of one
+  /// coupling instruction.
+  Result<void> init_adjoint(ComponentSet& components, FieldRegistry& adjoint_registry);
+  /// Reverses events of the open period (opening the next one when none is open) until the end of
+  /// the period, or, when `suspended` is not null, until the step of a component driven from
+  /// outside, which it reports through `suspended` and leaves for the caller to reverse.
+  Result<void> sweep_adjoint(ComponentSet& components, std::optional<ExternalAdvanceRequest>* suspended);
+  /// The context the forward step of this tick had in `period`.
+  StepContext reverse_context(std::size_t tick_index, std::int64_t period) const;
+  Result<void> reverse_instruction(std::size_t index);
+  Result<void> reverse_tick(ComponentSet& components, std::size_t tick_index, std::int64_t period);
+  Result<void> reverse_region(ComponentSet& components, std::size_t loop_index, std::int64_t period);
+  template <class Space>
+  Result<void> reverse_on(std::size_t index);
   Result<void> resolve_buffers(FieldRegistry& registry);
   /// Device mode only: moves every eligible coupler-owned arc from
   /// `storage` into `device_storage` and flags its Slot. Eligibility is
@@ -1634,6 +1878,14 @@ struct Runner::Impl {
   /// trivially satisfied and this is a no-op -- not a silent omission: with one
   /// rank there is nobody to disagree with.
   Result<void> reconcile_epoch(const Instruction& ins);
+
+  /// The agreement at the end of a reverse period: the status of every rank that takes part in
+  /// any agreement point of the plan is reduced, and a rank that did not fail records
+  /// `E-RT-EPOCH-PEER` if another did, so that the period fails (and is reversed again by the
+  /// next call) on all of them together. The reverse order puts a component's step AFTER the
+  /// exchanges that follow it in the forward order, so a failure at a step has no agreement point
+  /// behind it in the sweep. A no-op without a base communicator or without an `Epoch`.
+  Result<void> agree_on_adjoint_period();
 
   /// Set when an instruction fails mid-period. The period loop keeps going
   /// from there but executes ONLY `Epoch` instructions, so the failing rank

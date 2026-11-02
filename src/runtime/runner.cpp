@@ -1,5 +1,6 @@
 #include "fuse/base/config.hpp"
 #include "fuse/runtime/epoch_schedule.hpp"
+#include "fuse/field/collective_agreement.hpp"
 #include "fuse/transport/tags.hpp"
 #include "fuse/runtime/runner.hpp"
 
@@ -21,6 +22,7 @@
 #include <vector>
 
 #include "runner_impl.hpp"
+#include "arithmetic_reduce.hpp"
 #include <fmt/format.h>
 #include "fuse/num/kernels.hpp"
 #include "fuse/num/residual_norm.hpp"
@@ -271,6 +273,39 @@ Result<void> Runner::Impl::resolve_buffers(FieldRegistry& registry) {
   previous_device.assign(buffers.size(), {});
   sample_count.assign(buffers.size(), 0);
   slot_source_owner.assign(buffers.size(), -1);
+  storage_bindings.clear();
+  storage_binding_of_arc.assign(buffers.size(), -1);
+  stats.storage_fields.clear();
+  stats.arithmetic_fields.clear();
+
+  // A field whose values carry a gradient (a forward-mode dual number's
+  // gradient, fuse/model/value_traits.hpp) moves through every operation here
+  // as scalars, which is exact for all of them except an accumulation by
+  // minimum or maximum: that picks one sample, and the gradient that belongs to
+  // the result is the picked sample's, not the minimum of the gradients. Refuse
+  // it by name rather than return a gradient that is not the gradient of the
+  // result. The channel's two fields are the only ones the accumulation can
+  // touch. (An affine unit conversion has the same problem for the offset; the
+  // compiler already refuses that step for every field, E-IR-UNLOWERABLE.)
+  for (std::uint32_t i = 0; i < graph.channel_count(); ++i) {
+    const auto& ch = graph.channel_at(ChannelId{i});
+    if (ch.accumulate.op != AccumOp::Min && ch.accumulate.op != AccumOp::Max) {
+      continue;
+    }
+    for (const FieldId f : {ch.source, ch.target}) {
+      if (registry.has_gradient(f)) {
+        return Failure{
+            "E-RT-GRADIENT-MINMAX",
+            "channel '" + ch.name + "' accumulates by " +
+                (ch.accumulate.op == AccumOp::Min ? "minimum" : "maximum") +
+                ", but field " + std::to_string(f.value()) +
+                " carries a gradient: the gradient of a minimum or "
+                "maximum is that of the sample picked, which comparing the "
+                "gradient scalar by scalar does not give. Accumulate by sum, "
+                "mean or integral, or bind the field without a gradient"};
+      }
+    }
+  }
 
   // Map each component-owned arc back to the field it aliases. `plan_buffers`
   // marks exactly the Source and Sink outputs component-owned, and lowering
@@ -278,10 +313,14 @@ Result<void> Runner::Impl::resolve_buffers(FieldRegistry& registry) {
   // but a mismatch is a silent wrong-pointer bug, so it is an error, not a
   // fallback to allocating a shadow buffer.
   std::unordered_map<std::uint32_t, FieldId> arc_field;
+  std::vector<std::uint8_t> sink_arc(buffers.size(), 0);
   for (std::uint32_t i = 0; i < dag.node_count(); ++i) {
     const Node& n = dag.node(NodeId{i});
     if (n.kind != OpKind::Source && n.kind != OpKind::Sink) continue;
     if (!n.output.valid()) continue;
+    if (n.kind == OpKind::Sink && n.output.value() < sink_arc.size()) {
+      sink_arc[n.output.value()] = 1;
+    }
     const auto dot = n.label.find('.');
     if (dot == std::string::npos) continue;
     const auto cid = graph.find_component(n.label.substr(0, dot));
@@ -324,15 +363,64 @@ Result<void> Runner::Impl::resolve_buffers(FieldRegistry& registry) {
                    "component-owned arc %" + std::to_string(b.arc.value()) +
                        " (" + b.label + ") does not resolve to a field"};
     }
-    const Result<FieldRef> ref = registry.get(it->second);
-    if (!ref.ok()) {
+    // The field as scalars: a binary64 field as it is, a field of arrays of
+    // binary64 (dual numbers) as `components * scalar_count` scalars, which is
+    // what the plan sized the buffer for. A field of a Storage value type
+    // (binary32, bfloat16, binary16, posit16, posit32) is none of those: it has no binary64
+    // storage to alias, so the arc gets a binary64 image of it, converted at
+    // the component boundary (refresh_storage_images, deliver_storage_field).
+    // Anything else is refused by name; it is bound, so "not bound" would be
+    // the wrong thing to say.
+    // A field of an Arithmetic value type (dd, qd) is bound as its limbs
+    // (`get_limbs`; `get_scalars` refuses it, so nothing meant for independent
+    // scalars sees the limbs of one number), and the arc is marked with the
+    // type so that the instructions that add or multiply values do it in that
+    // type. A type that is Arithmetic but not in the closed list is refused here.
+    std::string_view arithmetic_type;
+    int arithmetic_limbs = 1;
+    const Result<FieldRef> ref = [&]() -> Result<FieldRef> {
+      Result<FieldRef> scalars = registry.get_scalars(it->second);
+      if (scalars.ok() || scalars.error().code == "E-FIELD-UNBOUND") return scalars;
+      const Result<AnyFieldRef> any = registry.get_any(it->second);
+      if (!any.ok() || any.value().value_type().kind != FieldValueKind::Arithmetic) {
+        return scalars;
+      }
+      const FieldValueType vt = any.value().value_type();
+      if (!num::is_arithmetic_type_name(vt.name) || vt.scalar_name != value_traits<double>::name) {
+        return Failure{"E-RT-FIELD-TYPE",
+                       "values of type " + std::string(vt.name) +
+                           " are an Arithmetic type the runtime has no operators "
+                           "for; the Arithmetic types it supports are dd and qd"};
+      }
+      Result<FieldRef> limbs = registry.get_limbs(it->second);
+      if (limbs.ok()) {
+        arithmetic_type = vt.name;
+        arithmetic_limbs = vt.scalar_count;
+      }
+      return limbs;
+    }();
+    std::optional<detail::StorageFormat> storage_format;
+    AnyFieldRef storage_field;
+    if (!ref.ok() && ref.error().code != "E-FIELD-UNBOUND") {
+      const Result<AnyFieldRef> any = registry.get_any(it->second);
+      if (any.ok()) storage_format = detail::storage_format_of(any.value());
+      if (!storage_format.has_value()) {
+        return Failure{"E-RT-FIELD-TYPE",
+                       "field '" + b.label + "': " + ref.error().message};
+      }
+      storage_field = any.value();
+    }
+    if (!ref.ok() && !storage_format.has_value()) {
       return Failure{"E-RT-UNBOUND",
                    "field '" + b.label +
                        "' is not bound; did the component call "
                        "register_fields?"};
     }
-    FieldRef view = ref.value();  // by value: FieldRegistry hands back a copy
-    if (view.space() != MemorySpace::Host &&
+    const Layout   field_layout = storage_format ? storage_field.layout()
+                                                 : ref.value().layout();
+    const MemorySpace field_space = storage_format ? storage_field.space()
+                                                   : ref.value().space();
+    if (field_space != MemorySpace::Host &&
         config.execution_space != RunnerConfig::RunnerExecutionSpace::Device) {
       // docs/dev/device-resident-arcs.md: a device-registered field is only
       // reachable by the Space-generic kernels and the space-aware boundary
@@ -340,39 +428,134 @@ Result<void> Runner::Impl::resolve_buffers(FieldRegistry& registry) {
       // interpreter dereferences slot pointers directly.
       return Failure{"E-RT-SPACE",
                    "field '" + b.label + "' is registered in " +
-                       to_cstring(view.space()) +
+                       to_cstring(field_space) +
                        " memory, but RunnerConfig::execution_space is Host; "
                        "select Device, or register the field in host memory"};
     }
-    if (!is_flat_contiguous(view.layout())) {
+    if (!is_flat_contiguous(field_layout)) {
       return Failure{"E-RT-LAYOUT",
                    "field '" + b.label +
                        "' is registered with a non-contiguous layout (stride=" +
-                       std::to_string(view.layout().stride) +
+                       std::to_string(field_layout.stride) +
                        ", component_stride=" +
-                       std::to_string(view.layout().component_stride) +
+                       std::to_string(field_layout.component_stride) +
                        ", components=" +
-                       std::to_string(view.layout().components) +
+                       std::to_string(field_layout.components) +
                        "); the interpreter walks every buffer as a flat, "
                        "component-fastest array and would silently permute it"};
     }
-    if (view.layout().count != b.elements ||
-        view.layout().components != b.components) {
+    if (field_layout.count != b.elements ||
+        field_layout.components != b.components) {
       return Failure{"E-RT-SIZE",
                    "field '" + b.label + "' is registered with " +
-                       std::to_string(view.layout().count) + "x" +
-                       std::to_string(view.layout().components) +
+                       std::to_string(field_layout.count) + "x" +
+                       std::to_string(field_layout.components) +
                        " values but the plan sizes its region at " +
                        std::to_string(b.elements) + "x" +
                        std::to_string(b.components) +
                        "; a short registration is a heap overflow in the hot "
                        "loop, where there is no bounds check left"};
     }
+    if (storage_format.has_value()) {
+      const std::size_t n = s.total();
+      double* image = nullptr;
+      if (field_space == MemorySpace::Device) {
+        device_storage[i] = Kokkos::View<double*, DeviceMemSpace>(
+            Kokkos::view_alloc("fuse::storage_image"), n);  // zero-initialised
+        image = device_storage[i].data();
+      } else {
+        storage[i].assign(n, 0.0);
+        image = storage[i].data();
+      }
+      detail::StorageBinding sb;
+      sb.arc = static_cast<std::uint32_t>(i);
+      sb.format = *storage_format;
+      sb.delivered = sink_arc[i] != 0;
+      sb.device = field_space == MemorySpace::Device;
+      sb.field = storage_field.data();
+      sb.count = n;
+      sb.stat = stats.storage_fields.size();
+      StorageFieldStats st;
+      st.field = b.label;
+      st.format = std::string(detail::storage_format_name(sb.format));
+      st.delivered = sb.delivered;
+      st.significand_bits = detail::storage_format_precision(sb.format);
+      st.unit_roundoff = std::ldexp(1.0, -st.significand_bits);
+      stats.storage_fields.push_back(std::move(st));
+      storage_binding_of_arc[i] = static_cast<std::int32_t>(storage_bindings.size());
+      storage_bindings.push_back(sb);
+      s.data = image;
+      s.owned_by_component = true;
+      s.device = sb.device;
+      continue;
+    }
+    FieldRef view = ref.value();  // by value: FieldRegistry hands back a copy
     s.data = view.data();
     s.owned_by_component = true;
-    s.device = view.space() == MemorySpace::Device;
+    s.device = field_space == MemorySpace::Device;
+    if (!arithmetic_type.empty()) {
+      s.arithmetic = arithmetic_type;
+      s.limbs = arithmetic_limbs;
+      ArithmeticFieldStats st;
+      st.field = b.label;
+      st.type = std::string(arithmetic_type);
+      st.limbs = arithmetic_limbs;
+      st.unit_roundoff = std::ldexp(1.0, -52 * arithmetic_limbs);
+      stats.arithmetic_fields.push_back(std::move(st));
+    }
   }
+  // The components' initial values are in their arrays already; the images of
+  // the provided Storage fields start from them, not from zero.
+  refresh_storage_images();
   return Result<void>::success();
+}
+
+void Runner::Impl::refresh_storage_images() {
+  for (const detail::StorageBinding& b : storage_bindings) {
+    if (b.delivered) continue;
+    double* const image = slots[b.arc].data;
+    detail::visit_storage_format(b.format, [&]<class T>(std::type_identity<T>) {
+      const auto* in = static_cast<const T*>(b.field);
+      if (b.device) {
+        num::widen<DeviceExecSpace, T>(num::ConstStorageSpanOf<DeviceExecSpace, T>(in, b.count),
+                                       num::SpanOf<DeviceExecSpace>(image, b.count));
+        DeviceExecSpace().fence("fuse::storage_widen");
+      } else {
+        num::widen<HostExecSpace, T>(num::ConstStorageSpanOf<HostExecSpace, T>(in, b.count),
+                                     num::SpanOf<HostExecSpace>(image, b.count));
+        HostExecSpace().fence("fuse::storage_widen");
+      }
+    });
+    ++stats.storage_fields[b.stat].widenings;
+  }
+}
+
+void Runner::Impl::deliver_storage_field(std::uint32_t arc) {
+  if (arc >= storage_binding_of_arc.size() || storage_binding_of_arc[arc] < 0) return;
+  const detail::StorageBinding& b =
+      storage_bindings[static_cast<std::size_t>(storage_binding_of_arc[arc])];
+  const double* const image = slots[b.arc].data;
+  StorageFieldStats& st = stats.storage_fields[b.stat];
+  const bool measure = config.measure_storage_rounding;
+  detail::visit_storage_format(b.format, [&]<class T>(std::type_identity<T>) {
+    auto* const out = static_cast<T*>(b.field);
+    const auto run = [&]<class Space>(Space) {
+      const num::ConstSpanOf<Space> in(image, b.count);
+      const num::StorageSpanOf<Space, T> dst(out, b.count);
+      if (measure) {
+        const num::RoundingReport r = num::narrow_measured<Space, T>(in, dst);
+        st.values += r.values;
+        st.overflow += r.overflow;
+        st.underflow += r.underflow;
+        st.max_relative_change = std::max(st.max_relative_change, r.max_relative_change);
+      } else {
+        num::narrow<Space, T>(in, dst);
+      }
+      Space().fence("fuse::storage_narrow");
+    };
+    if (b.device) run(DeviceExecSpace{}); else run(HostExecSpace{});
+  });
+  ++st.narrowings;
 }
 
 void Runner::Impl::place_arcs_on_device() {
@@ -660,7 +843,9 @@ void Runner::Impl::build_constrain_device_buffers() {
         num::ConstSpanOf<HostExecSpace>(w.data(), w.size()));
     max_len = std::max(max_len, w.size());
   }
-  const std::size_t needed_chunks = num::deterministic_chunks(max_len);
+  // up to four limbs of partial per chunk, for the arithmetic conservation sums
+  const std::size_t needed_chunks =
+      num::deterministic_chunks(max_len) * static_cast<std::size_t>(num::limb_count<num::qd>);
   if (constrain_reduction_scratch.extent(0) < needed_chunks) {
     constrain_reduction_scratch = Kokkos::View<double*, DeviceMemSpace>(
         Kokkos::view_alloc("fuse::constrain_reduction_scratch", Kokkos::WithoutInitializing),
@@ -868,11 +1053,13 @@ Result<void> Runner::Impl::resolve_constrain(const Instruction& ins,
   const Slot& out_slot = slots[ins.out.value()];
   const Result<std::uint32_t> wb = weights_for(
       dag.arc(before).type.region, dag.arc(before).type.rank_set,
-      in_slot.elements, in_slot.components, dag.arc(before).type.conservation);
+      in_slot.elements, in_slot.components / in_slot.limbs,
+      dag.arc(before).type.conservation);
   if (!wb.ok()) return wb.error();
   const Result<std::uint32_t> wa = weights_for(
       dag.arc(ins.out).type.region, dag.arc(ins.out).type.rank_set,
-      out_slot.elements, out_slot.components, dag.arc(ins.out).type.conservation);
+      out_slot.elements, out_slot.components / out_slot.limbs,
+      dag.arc(ins.out).type.conservation);
   if (!wa.ok()) return wa.error();
 
   r.constrain = static_cast<std::int32_t>(constrains.size());
@@ -2748,6 +2935,13 @@ Result<void> Runner::Impl::resolve_instructions() {
 
     r.accum = ins.attrs.accum;
 
+    // The type of the values this instruction's output arc holds, from its
+    // inputs (the conservation check below reads it).
+    {
+      const Result<void> ar = resolve_arithmetic(ins, i);
+      if (!ar.ok()) return ar;
+    }
+
     switch (ins.kind) {
       case OpKind::Interpolate: {
         const auto it = spacetime_by_node.find(ins.origin_node.value());
@@ -2861,8 +3055,138 @@ Result<void> Runner::Impl::resolve_instructions() {
       default:
         break;
     }
+
+    // After the switch, which is what sets r.spacetime and r.nodal_dist.
+    {
+      const Result<void> ar = check_arithmetic_ops(ins, r, i);
+      if (!ar.ok()) return ar;
+    }
+  }
+  // The per-chunk partials of the arithmetic conservation sums (up to four limbs
+  // each), sized here so the step loop allocates nothing.
+  if (config.check_conservation &&
+      (config.accumulation_type == AccumulationType::DoubleDouble || !stats.arithmetic_fields.empty())) {
+    std::size_t max_len = 0;
+    for (const std::vector<double>& w : weight_sets) max_len = std::max(max_len, w.size());
+    arith_scratch.assign(num::deterministic_chunks(max_len) * static_cast<std::size_t>(num::limb_count<num::qd>), 0.0);
   }
   return check_spacetime_schedule();
+}
+
+Result<void> Runner::Impl::resolve_arithmetic(const Instruction& ins, std::size_t index) {
+  Slot& out = slots[ins.out.value()];
+  // A Source has no input; an ExternalDelivery's input is an ordering edge that
+  // nothing reads (its case in execute_on), so its type says nothing.
+  if (ins.kind == OpKind::ExternalDelivery || ins.n_in == 0) return Result<void>::success();
+
+  std::string_view type;
+  bool any_arithmetic = false;
+  bool any_binary64 = false;
+  for (std::uint8_t k = 0; k < ins.n_in; ++k) {
+    const Slot& in = slots[ins.in[k].value()];
+    if (in.arithmetic.empty()) {
+      any_binary64 = true;
+      continue;
+    }
+    if (any_arithmetic && in.arithmetic != type) {
+      return Failure{"E-RT-ARITHMETIC-MIX",
+                     std::string{to_cstring(ins.kind)} + " instruction " + std::to_string(index) +
+                         " reads " + std::string(type) + " values and " + std::string(in.arithmetic) +
+                         " values; an operator combines values of one type"};
+    }
+    type = in.arithmetic;
+    any_arithmetic = true;
+  }
+  if (!any_arithmetic && out.arithmetic.empty()) return Result<void>::success();
+  if (any_arithmetic && any_binary64) {
+    return Failure{"E-RT-ARITHMETIC-MIX",
+                   std::string{to_cstring(ins.kind)} + " instruction " + std::to_string(index) +
+                       " reads " + std::string(type) + " values and binary64 values; an operator "
+                       "combines values of one type"};
+  }
+  if (!any_arithmetic) {
+    return Failure{"E-RT-ARITHMETIC-MIX",
+                   std::string{to_cstring(ins.kind)} + " instruction " + std::to_string(index) +
+                       " writes arc %" + std::to_string(ins.out.value()) + ", which holds " +
+                       std::string(out.arithmetic) + " values, from binary64 values: the "
+                       "coupler does not convert between the types of two fields, so the two "
+                       "ends of a channel must have the same value type"};
+  }
+  if (out.arithmetic.empty()) {
+    if (out.owned_by_component) {
+      return Failure{"E-RT-ARITHMETIC-MIX",
+                     std::string{to_cstring(ins.kind)} + " instruction " + std::to_string(index) +
+                         " delivers " + std::string(type) + " values into arc %" +
+                         std::to_string(ins.out.value()) + ", a field of binary64 values: the "
+                         "coupler does not convert between the types of two fields, so the two "
+                         "ends of a channel must have the same value type"};
+    }
+    int limbs = 1;
+    num::visit_arithmetic_type(type, [&]<class A>(std::type_identity<A>) {
+      limbs = num::limb_count<A>;
+    });
+    out.arithmetic = type;
+    out.limbs = limbs;
+  } else if (out.arithmetic != type) {
+    return Failure{"E-RT-ARITHMETIC-MIX",
+                   std::string{to_cstring(ins.kind)} + " instruction " + std::to_string(index) +
+                       " delivers " + std::string(type) + " values into arc %" +
+                       std::to_string(ins.out.value()) + ", a field of " + std::string(out.arithmetic) +
+                       " values: the coupler does not convert between the types of two fields"};
+  }
+  return Result<void>::success();
+}
+
+Result<void> Runner::Impl::check_arithmetic_ops(const Instruction& ins, const detail::Resolved& r,
+                                                std::size_t index) const {
+  bool arithmetic = ins.out.valid() && !slots[ins.out.value()].arithmetic.empty();
+  for (std::uint8_t k = 0; k < ins.n_in && !arithmetic; ++k) {
+    arithmetic = !slots[ins.in[k].value()].arithmetic.empty();
+  }
+  if (!arithmetic) return Result<void>::success();
+  bool supported = false;
+  const char* why = "";
+  switch (ins.kind) {
+    case OpKind::Source:
+    case OpKind::ExternalDelivery:
+    case OpKind::Sink:
+    case OpKind::Accelerate:
+    case OpKind::Epoch:
+    case OpKind::Extrapolate:
+    case OpKind::Merge:
+    case OpKind::Scale:
+    case OpKind::Accumulate:
+    case OpKind::Transport:
+    case OpKind::Constrain:
+    case OpKind::Diagnose:
+      supported = true;
+      break;
+    case OpKind::Remap:
+      supported = r.nodal_dist < 0;
+      why = " (a distributed nodal remap has no arithmetic for these values)";
+      break;
+    case OpKind::Sample:
+    case OpKind::Interpolate:
+      supported = r.spacetime < 0;
+      why = " (the space-time projection has no arithmetic for these values)";
+      break;
+    case OpKind::Relax:
+    case OpKind::Residual:
+      why = " (an iteration region over these values has no arithmetic: its residuals and "
+            "accelerator are binary64)";
+      break;
+    default:
+      break;
+  }
+  if (supported) return Result<void>::success();
+  std::string type;
+  if (ins.out.valid()) type = std::string(slots[ins.out.value()].arithmetic);
+  return Failure{"E-RT-ARITHMETIC-OP",
+                 std::string{to_cstring(ins.kind)} + " instruction " + std::to_string(index) +
+                     " acts on " + (type.empty() ? "Arithmetic" : type) + " values, and the runtime has "
+                     "no arithmetic for them in that operator" + why + ". Supported: remap, "
+                     "accumulation by sum, mean, integral, minimum and maximum, merge, scaling, "
+                     "the conservation check, and the operators that only move values"};
 }
 
 namespace {
@@ -3823,6 +4147,115 @@ Result<void> Runner::Impl::reconcile_epoch(const Instruction& ins) {
   return Result<void>::success();
 }
 
+Result<void> Runner::Impl::agree_on_adjoint_period() {
+#if FUSE_HAVE_MPI
+  if (!config.base_communicator.has_value() || epoch_participants.empty()) {
+    return Result<void>::success();
+  }
+  // The ranks that take part in any agreement point of the plan: derived from the graph, so the
+  // same list on every rank. A rank that exchanges with nobody is not asked to join.
+  std::vector<int> part;
+  for (const auto& entry : epoch_participants) {
+    part.insert(part.end(), entry.second.begin(), entry.second.end());
+  }
+  std::sort(part.begin(), part.end());
+  part.erase(std::unique(part.begin(), part.end()), part.end());
+
+  const MPI_Comm base = MPI_Comm_f2c(static_cast<MPI_Fint>(*config.base_communicator));
+  if (base == MPI_COMM_NULL) {
+    return Failure{"E-RT-EPOCH-COMM",
+                   "RunnerConfig::base_communicator is MPI_COMM_NULL at the end of a reverse period"};
+  }
+  int me = 0;
+  if (MPI_Comm_rank(base, &me) != MPI_SUCCESS) {
+    return Failure{"E-RT-EPOCH-COMM", "MPI_Comm_rank failed at the end of a reverse period"};
+  }
+  const auto self = std::find(part.begin(), part.end(), me);
+  if (self == part.end() || part.size() < 2) return Result<void>::success();
+  const auto n = static_cast<int>(part.size());
+  const auto my_index = static_cast<int>(std::distance(part.begin(), self));
+
+  // The schedule of reconcile_epoch() (fuse/runtime/epoch_schedule.hpp), over the whole list, for
+  // two integers at once: the lowest rank that failed (minimum) and how many ranks failed (sum).
+  constexpr int kNoRank = std::numeric_limits<int>::max();
+  std::array<int, 2> agreed{step_failure.has_value() ? me : kNoRank, step_failure.has_value() ? 1 : 0};
+  const EpochSchedule sched = epoch_schedule(n, my_index);
+  const auto comm_failure = [](const char* what) {
+    return Failure{"E-RT-EPOCH-COMM", std::string(what) + " failed while agreeing the status of a reverse period"};
+  };
+  for (int ri = 0; ri < sched.reduce_recv_count; ++ri) {
+    const int from = sched.reduce_recv_from[static_cast<std::size_t>(ri)];
+    std::array<int, 2> peer{kNoRank, 0};
+    if (MPI_Recv(peer.data(), 2, MPI_INT, part[static_cast<std::size_t>(from)], kEpochTag, base,
+                 MPI_STATUS_IGNORE) != MPI_SUCCESS) {
+      return comm_failure("MPI_Recv");
+    }
+    agreed[0] = std::min(agreed[0], peer[0]);
+    agreed[1] += peer[1];
+  }
+  if (sched.reduce_send_to >= 0 &&
+      MPI_Send(agreed.data(), 2, MPI_INT, part[static_cast<std::size_t>(sched.reduce_send_to)],
+               kEpochTag, base) != MPI_SUCCESS) {
+    return comm_failure("MPI_Send");
+  }
+  if (sched.result_recv_from >= 0 &&
+      MPI_Recv(agreed.data(), 2, MPI_INT, part[static_cast<std::size_t>(sched.result_recv_from)],
+               kEpochTag, base, MPI_STATUS_IGNORE) != MPI_SUCCESS) {
+    return comm_failure("MPI_Recv");
+  }
+  for (int to = 1; to <= sched.result_send_count; ++to) {
+    if (MPI_Send(agreed.data(), 2, MPI_INT, part[static_cast<std::size_t>(to)], kEpochTag, base) !=
+        MPI_SUCCESS) {
+      return comm_failure("MPI_Send");
+    }
+  }
+  if (agreed[1] == 0) return Result<void>::success();
+
+  // The lowest-numbered rank that failed tells every other rank what it failed with, so that the
+  // original error and the rank it came from are known everywhere (KNOWN_ISSUES.md D97).
+  const int origin = agreed[0];
+  std::string code;
+  std::string message;
+  if (me == origin) {
+    code = step_failure->code;
+    message = step_failure->message;
+    int header[2] = {static_cast<int>(code.size()), static_cast<int>(message.size())};
+    for (const int to : part) {
+      if (to == me) continue;
+      if (MPI_Send(header, 2, MPI_INT, to, kEpochTag, base) != MPI_SUCCESS ||
+          MPI_Send(code.data(), header[0], MPI_CHAR, to, kEpochTag, base) != MPI_SUCCESS ||
+          MPI_Send(message.data(), header[1], MPI_CHAR, to, kEpochTag, base) != MPI_SUCCESS) {
+        return comm_failure("MPI_Send");
+      }
+    }
+  } else {
+    int header[2] = {0, 0};
+    if (MPI_Recv(header, 2, MPI_INT, origin, kEpochTag, base, MPI_STATUS_IGNORE) != MPI_SUCCESS) {
+      return comm_failure("MPI_Recv");
+    }
+    code.resize(static_cast<std::size_t>(header[0]));
+    message.resize(static_cast<std::size_t>(header[1]));
+    if (MPI_Recv(code.data(), header[0], MPI_CHAR, origin, kEpochTag, base, MPI_STATUS_IGNORE) != MPI_SUCCESS ||
+        MPI_Recv(message.data(), header[1], MPI_CHAR, origin, kEpochTag, base, MPI_STATUS_IGNORE) !=
+            MPI_SUCCESS) {
+      return comm_failure("MPI_Recv");
+    }
+  }
+  // A rank that failed itself keeps its own failure, which is an original; the others record the
+  // origin's, in the one message shape the agreements of the tree share.
+  if (!step_failure.has_value()) {
+    AgreedRefusal refusal;
+    refusal.origin_rank = origin;
+    refusal.refusing_ranks = agreed[1];
+    refusal.communicator_size = n;
+    refusal.origin_code = std::move(code);
+    refusal.origin_message = std::move(message);
+    step_failure = make_agreed_failure("E-RT-EPOCH-PEER", "end of a reverse period", refusal);
+  }
+#endif
+  return Result<void>::success();
+}
+
 Result<void> Runner::Impl::reduce_region_residuals(
     const detail::RegionRuntime& r, std::vector<double>& payload,
     bool& participant_out) {
@@ -4344,6 +4777,22 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
     }
   };
 
+  // The Arithmetic value type of this instruction's values (empty: binary64) and
+  // its limbs, from the output arc (resolve_arithmetic gave it the inputs'
+  // type). The cases that add or multiply values run the kernels of
+  // fuse/num/arithmetic_kernels.hpp when it is not empty; the cases that only move
+  // values are the binary64 ones over the limbs.
+  const std::string_view arith_type =
+      ins.out.valid() ? slots[ins.out.value()].arithmetic : std::string_view{};
+  const int arith_limbs = ins.out.valid() ? slots[ins.out.value()].limbs : 1;
+  const auto with_arithmetic = [&](std::string_view type, auto&& f) -> Result<void> {
+    if (!num::visit_arithmetic_type(type, f)) {
+      return Failure{"E-RT-ARITHMETIC-OP",
+                     "no arithmetic for values of type '" + std::string(type) + "'"};
+    }
+    return Result<void>::success();
+  };
+
   switch (ins.kind) {
     case OpKind::Source:
       // The arc already aliases component storage; nothing to do. In Device
@@ -4380,6 +4829,9 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
     case OpKind::Accelerate: {
       if (ins.n_in == 0 || !ins.out.valid()) break;
       copy_arc(in_ptr(0), out_ptr(), n);
+      // A Storage-typed Requires field: the arc is its binary64 image, and the
+      // component's array takes the value rounded once from it.
+      if (ins.kind == OpKind::Sink) deliver_storage_field(ins.out.value());
       break;
     }
 
@@ -4511,6 +4963,20 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
           col = num::IndexSpanOf<Space>(csr.col.data(), csr.col.extent(0));
           val = num::ConstSpanOf<Space>(csr.val.data(), csr.val.extent(0));
         }
+        // The sums of an Arithmetic field are accumulated in its own type; those of
+        // a binary64 field in double-double when the run asks for it, rounded
+        // once into the binary64 row.
+        if (!arith_type.empty() || config.accumulation_type == AccumulationType::DoubleDouble) {
+          const std::string_view type = arith_type.empty() ? std::string_view{"dd"} : arith_type;
+          const int limbs = arith_type.empty() ? 1 : arith_limbs;
+          const Result<void> done = with_arithmetic(type, [&]<class A>(std::type_identity<A>) {
+            num::arith_remap_apply<Space, A>(row_begin, col, val, span_c(in_ptr(0), w.n_cols * nc),
+                                             span_m(out_ptr(), w.n_rows * nc),
+                                             nc / static_cast<std::size_t>(limbs), limbs, limbs);
+          });
+          if (!done.ok()) return done;
+          break;
+        }
         num::remap_apply<Space>(row_begin, col, val,
                                 span_c(in_ptr(0), w.n_cols * nc),
                                 span_m(out_ptr(), w.n_rows * nc), nc);
@@ -4543,6 +5009,16 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
         num::copy<Space>(span_c(in_ptr(0), n), span_m(out_ptr(), n));
         break;
       }
+      if (!arith_type.empty()) {
+        const std::size_t first_idx = sample_count[ins.out.value()];
+        const Result<void> done = with_arithmetic(arith_type, [&]<class A>(std::type_identity<A>) {
+          num::arith_accumulate<Space, A>(r.accum, span_c(in_ptr(0), n), span_m(out_ptr(), n),
+                                          first_idx == 0, arith_limbs, arith_limbs);
+        });
+        if (!done.ok()) return done;
+        if (!staging_fault) sample_count[ins.out.value()] = first_idx + 1;
+        break;
+      }
       const std::size_t idx = sample_count[ins.out.value()];
       // r.accum, not ins.attrs.accum: see resolve_instructions(). `first`
       // mirrors `num::accumulate_into`'s own `sample_index == 0` rule.
@@ -4564,6 +5040,45 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
       // (kernels.hpp) does nothing outside AccumOp::Mean with a nonzero
       // count; the elementwise equivalent is exactly that scale, in place.
       const std::size_t count = sample_count[ins.in[0].value()];
+      if (!arith_type.empty() && ins.attrs.accum == AccumOp::Mean && count != 0) {
+        // the mean of a field of Arithmetic values: one division in its type
+        const Result<void> done = with_arithmetic(arith_type, [&]<class A>(std::type_identity<A>) {
+          num::arith_scale<Space, A>(static_cast<double>(count), true, span_c(out, n),
+                                     span_m(out, n), arith_limbs, arith_limbs);
+        });
+        if (!done.ok()) return done;
+        sample_count[ins.in[0].value()] = 0;
+        break;
+      }
+      if (!arith_type.empty() && ins.attrs.accum == AccumOp::Integral) {
+        // the integral of a field of Arithmetic values: the running sum times the interval
+        // between samples, which lowering recorded as the ratio of two integers. It is applied
+        // as one multiplication by the numerator and one division by the denominator, both
+        // in the field's type: scaling the limbs by the interval rounded to binary64 would
+        // leave the result with the precision of binary64. An integer beyond 2^53 is not a
+        // binary64 value, so such an interval is refused instead of rounded. The interval is
+        // positive (the schedule refuses any other, E-SCHED-INTERVAL), so only its size is checked.
+        const Rational dt = ins.attrs.scale;
+        constexpr std::int64_t exact_limit = std::int64_t{1} << 53;
+        if (dt.num() > exact_limit || dt.den() > exact_limit) {
+          return Failure{"E-RT-ARITHMETIC-OP",
+                         "Accumulate instruction acts on " + std::string(arith_type) +
+                             " values with the interval " + std::to_string(dt.num()) + "/" +
+                             std::to_string(dt.den()) + ", whose numerator or denominator is not "
+                             "a binary64 integer, so the integral cannot be scaled exactly"};
+        }
+        const Result<void> done = with_arithmetic(arith_type, [&]<class A>(std::type_identity<A>) {
+          num::arith_scale<Space, A>(static_cast<double>(dt.num()), false, span_c(out, n),
+                                     span_m(out, n), arith_limbs, arith_limbs);
+          if (dt.den() != 1) {
+            num::arith_scale<Space, A>(static_cast<double>(dt.den()), true, span_c(out, n),
+                                       span_m(out, n), arith_limbs, arith_limbs);
+          }
+        });
+        if (!done.ok()) return done;
+        sample_count[ins.in[0].value()] = 0;
+        break;
+      }
       if (ins.attrs.accum == AccumOp::Mean && count != 0) {
         const double inv = 1.0 / static_cast<double>(count);
         num::scale<Space>(inv, span_c(out, n), span_m(out, n));
@@ -4603,6 +5118,20 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
           break;
         case MergeOp::Sum:
         case MergeOp::Mean: {
+          if (!arith_type.empty()) {
+            const Result<void> done = with_arithmetic(arith_type, [&]<class A>(std::type_identity<A>) {
+              for (std::uint8_t k = 0; k < ins.n_in; ++k) {
+                num::arith_accumulate<Space, A>(AccumOp::Sum, span_c(in_ptr(k), n), span_m(out, n),
+                                                k == 0, arith_limbs, arith_limbs);
+              }
+              if (ins.attrs.merge == MergeOp::Mean) {
+                num::arith_scale<Space, A>(static_cast<double>(ins.n_in), true, span_c(out, n),
+                                           span_m(out, n), arith_limbs, arith_limbs);
+              }
+            });
+            if (!done.ok()) return done;
+            break;
+          }
           // `accumulate<HostExecSpace>(AccumOp::Sum, ..., first)` (already
           // verified for every AccumOp by
           // SpaceKernels.AccumulateMatchesTheSerialOracleForEveryOp) sets
@@ -4634,6 +5163,14 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
       // here, at the one point where it has to. Converting per element, or
       // carrying a double through the plan, would round it repeatedly.
       const double f = ins.attrs.scale.to_double();
+      if (!arith_type.empty()) {
+        const Result<void> done = with_arithmetic(arith_type, [&]<class A>(std::type_identity<A>) {
+          num::arith_scale<Space, A>(f, false, span_c(in_ptr(0), n), span_m(out_ptr(), n),
+                                     arith_limbs, arith_limbs);
+        });
+        if (!done.ok()) return done;
+        break;
+      }
       num::scale<Space>(f, span_c(in_ptr(0), n), span_m(out_ptr(), n));
       break;
     }
@@ -5117,6 +5654,97 @@ Result<void> Runner::Impl::execute_on(const Instruction& ins, const Resolved& r)
       // device mirror (`weight_sets_device`, built once in
       // build_constrain_device_buffers()) and reducing into
       // `constrain_reduction_scratch`.
+      if (!arith_type.empty() || config.accumulation_type == AccumulationType::DoubleDouble) {
+        // The integrals of an Arithmetic field are accumulated in its own type, and
+        // those of a binary64 field in double-double when the run asks for it: summed
+        // over the ranks in that type (reduce_arithmetic_integrals) and compared in it,
+        // so that the error reported is that of the stored values and not the rounding
+        // error of the sums that measure it.
+        const std::string_view type = arith_type.empty() ? std::string_view{"dd"} : arith_type;
+        const int limbs = arith_type.empty() ? 1 : arith_limbs;
+        double before_d = 0.0, after_d = 0.0, rel_a = 0.0;
+        double own_before_d = 0.0, own_after_d = 0.0;  // this rank's shares, before the reduction
+        bool lost = false;
+        Result<void> status = Result<void>::success();
+        const Result<void> done = with_arithmetic(type, [&]<class A>(std::type_identity<A>) {
+          const auto L = static_cast<std::size_t>(limbs);
+          A before_a(0.0), after_a(0.0);
+          if constexpr (kHostAccessible) {
+            const num::SpanOf<Space> scratch(arith_scratch.data(), arith_scratch.size());
+            before_a = num::arith_weighted_sum<Space, A>(
+                num::ConstSpanOf<Space>(src.data, wb.size() * L),
+                num::ConstSpanOf<Space>(wb.data(), wb.size()), scratch, limbs);
+            after_a = num::arith_weighted_sum<Space, A>(
+                num::ConstSpanOf<Space>(out, wa.size() * L),
+                num::ConstSpanOf<Space>(wa.data(), wa.size()), scratch, limbs);
+          } else {
+            const auto span_any = [&](const Slot& s, std::size_t len) {
+              if (s.device) {
+                used_device_arc = true;
+                return num::ConstSpanOf<Space>(s.data, len);
+              }
+              double* const lane = stage(s.data, len, nullptr);
+              return num::ConstSpanOf<Space>(lane, staging_fault ? 0 : len);
+            };
+            const num::SpanOf<Space> scratch(constrain_reduction_scratch.data(),
+                                             constrain_reduction_scratch.extent(0));
+            const num::ConstSpanOf<Space> wb_span(weight_sets_device[ci.weights_before].data(),
+                                                  wb.size());
+            const num::ConstSpanOf<Space> wa_span(weight_sets_device[ci.weights_after].data(),
+                                                  wa.size());
+            before_a = num::arith_weighted_sum<Space, A>(span_any(src, wb.size() * L), wb_span,
+                                                         scratch, limbs);
+            after_a = num::arith_weighted_sum<Space, A>(
+                num::ConstSpanOf<Space>(out_span.data(), wa.size() * L), wa_span, scratch, limbs);
+          }
+          own_before_d = before_a.to_double();
+          own_after_d = after_a.to_double();
+          if (ci.reduce) {
+            bool partner_lost = false;
+            status = detail::reduce_arithmetic_integrals<A>(*config.base_communicator,
+                                                            step_failure.has_value(), arith_gather,
+                                                            ins.out.value(), before_a, after_a,
+                                                            partner_lost);
+            if (!status.ok()) return;
+            if (partner_lost) {  // a partner's period is already lost
+              lost = true;
+              return;
+            }
+          }
+          before_d = before_a.to_double();
+          after_d = after_a.to_double();
+          const double scale = std::abs(before_d) > 0.0 ? std::abs(before_d) : 1.0;
+          rel_a = std::abs((after_a - before_a).to_double()) / scale;
+        });
+        if (!done.ok()) return done;
+        if (!status.ok()) return status;
+        if (lost) break;
+        // Opt-in, as for the binary64 check below: this rank's shares next to the totals.
+        if (std::getenv("FUSE_CONSERVATION_DEBUG") != nullptr) {
+          int me = -1;
+#if FUSE_HAVE_MPI
+          if (config.base_communicator.has_value()) {
+            MPI_Comm_rank(MPI_Comm_f2c(static_cast<MPI_Fint>(*config.base_communicator)), &me);
+          }
+#endif
+          fmt::print(stderr,
+                     "[conservation rank {} period {} arc %{}<-%{} {}] own before={:.17g} own "
+                     "after={:.17g} total before={:.17g} after={:.17g} reduced={}\n",
+                     me, period_index, ins.out.value(), ci.before_arc, std::string(type),
+                     own_before_d, own_after_d, before_d, after_d, ci.reduce ? 1 : 0);
+        }
+        if (rel_a > stats.worst_conservation_error) stats.worst_conservation_error = rel_a;
+        if (rel_a > config.conservation_tolerance) {
+          ++stats.conservation_violations;
+          if (config.abort_on_violation) {
+            return Failure{"E-RT-CONSERVATION",
+                           fmt::format("relative conservation error {:.3e} (integral {:.17g} -> "
+                                       "{:.17g}) exceeds tolerance {:.3e}",
+                                       rel_a, before_d, after_d, config.conservation_tolerance)};
+          }
+        }
+        break;
+      }
       double before, after;
       if constexpr (kHostAccessible) {
         before = num::weighted_sum(src.data, wb.data(), wb.size());
@@ -5347,6 +5975,7 @@ detail::Task<Result<void>> Runner::Impl::advance(ComponentSet& components,
 
 detail::Task<Result<void>> Runner::Impl::step_period(ComponentSet& components) {
   const std::vector<Instruction>& stream = plan.instructions();
+
 
   // The period is one merged walk over two pre-built, pre-sorted sequences:
   // the component ticks and the instruction stream.

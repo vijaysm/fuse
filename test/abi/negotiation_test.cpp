@@ -59,6 +59,14 @@ struct FakeV2Table {
   // Appended to entries.def LAST, same reason: request_restart_point() is
   // part of the real v1 table's own prefix too, one entry later again.
   decltype(fuse_participant_abi_v1::request_restart_point) request_restart_point;
+  // The six reverse mode entries (docs/user/c-abi.md, "Reverse mode"), appended to entries.def LAST
+  // after request_restart_point, so part of the real v1 table's prefix for the same reason.
+  decltype(fuse_participant_abi_v1::register_adjoint_field) register_adjoint_field;
+  decltype(fuse_participant_abi_v1::initialize_adjoint) initialize_adjoint;
+  decltype(fuse_participant_abi_v1::view_adjoint_field) view_adjoint_field;
+  decltype(fuse_participant_abi_v1::run_adjoint) run_adjoint;
+  decltype(fuse_participant_abi_v1::begin_adjoint_step) begin_adjoint_step;
+  decltype(fuse_participant_abi_v1::end_adjoint_step) end_adjoint_step;
   // The appended v2 member. Never read by a v1 caller (struct_size says it
   // isn't there) and never read by this test's "v2 caller" EITHER, when the
   // table it was handed turns out to be a real v1 one -- see

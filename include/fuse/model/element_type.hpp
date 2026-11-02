@@ -58,6 +58,7 @@
 #include <type_traits>
 
 #include "fuse/model/bfloat16.hpp"
+#include "fuse/model/binary16.hpp"
 
 namespace fuse {
 
@@ -76,9 +77,11 @@ enum class ElementType : std::uint8_t {
   UInt16 = 5,
   UInt32 = 6,
   UInt64 = 7,
-  Binary16 = 8,   ///< IEEE 754-2019 binary16 ("half"). Only ever WRITTEN by a
-                  ///< build whose compiler provides `_Float16` (see the file
-                  ///< header comment); always a valid enumerator to READ.
+  Binary16 = 8,   ///< IEEE 754-2019 binary16 ("half"). Written from
+                  ///< `fuse::binary16` (fuse/model/binary16.hpp, on every
+                  ///< compiler) and, where the compiler provides it, from
+                  ///< `_Float16` (see the file header comment); always a
+                  ///< valid enumerator to READ.
   BFloat16 = 9,   ///< `fuse::bfloat16` (fuse/model/bfloat16.hpp) -- no C++
                   ///< standard type backs this on any compiler this project
                   ///< has measured (`__bf16`/`std::bfloat16_t` both absent,
@@ -100,6 +103,11 @@ enum class ElementType : std::uint8_t {
   Bool = 13,      ///< Stored as one `UInt8` byte, 0 or 1 -- `element_type`
                   ///< says `Bool`, not `UInt8`, so a reader can refuse a
                   ///< byte that is neither (docs/dev/restart.md Section 11).
+  Posit16 = 14,   ///< `fuse::num::posit<16, 2>` (fuse/num/posit.hpp, the 2022
+                  ///< Posit Standard), stored as the unsigned 16-bit integer
+                  ///< of its bit pattern.
+  Posit32 = 15,   ///< `fuse::num::posit<32, 2>`, stored as the unsigned 32-bit
+                  ///< integer of its bit pattern.
 };
 
 /// How a `get_field`/`get_scalar` request's own C++ type may differ from
@@ -146,6 +154,11 @@ struct ElementTypeInfo {
   bool        is_signed_integer = false;    ///< meaningful only if !is_float
   bool        is_unsigned_integer = false;  ///< meaningful only if !is_float
   bool        is_bool = false;
+  /// A posit (`Posit16`, `Posit32`): stored as an unsigned integer of its
+  /// pattern but not an integer for any conversion. `significand_bits` is its
+  /// largest precision (the fraction bits of the value one, and the leading bit),
+  /// `exponent_bits` its exponent size es, and `exponent_bias` is 0.
+  bool        is_posit = false;
   std::size_t significand_bits = 0;  ///< INCLUDING any implicit leading bit
   std::size_t exponent_bits = 0;
   std::int64_t exponent_bias = 0;
@@ -222,6 +235,12 @@ struct ElementTypeOf<std::uint64_t> {
 template <>
 struct ElementTypeOf<fuse::bfloat16> {
   static constexpr ElementType value = ElementType::BFloat16;
+};
+/// `fuse::binary16` is the IEEE binary16 bit pattern in a `uint16_t`, so it is stored as
+/// `Binary16` byte for byte on every compiler, with no `_Float16` involved.
+template <>
+struct ElementTypeOf<fuse::binary16> {
+  static constexpr ElementType value = ElementType::Binary16;
 };
 template <>
 struct ElementTypeOf<float> {

@@ -426,7 +426,7 @@ foreach(t rational units error)
 endforeach()
 
 # ---------------------------------------------------------------- model
-foreach(t semantics transform compatibility connect builder yaml_io region channel coupling_graph descriptor capabilities bfloat16 element_type float_bits)
+foreach(t semantics transform compatibility connect builder yaml_io region channel coupling_graph descriptor capabilities bfloat16 binary16 small_float element_type float_bits)
   fuse_add_gtest(model ${t})
 endforeach()
 # multiscale and component assert a Refusal is raised (OverlapSpec::total's
@@ -662,6 +662,11 @@ fuse_add_device_twin(backend.mls_weights fuse_backend_mls_weights_test)
 # weight-builders entry for the exact compiler errors), so this test needs
 # no KokkosKernels dependency at all.
 fuse_add_gtest(backend mls_weights_device LIBS $<BUILD_LOCAL_INTERFACE:ArborX::ArborX>)
+# Plans/2026-10-22-universal-number-types.md stage U8: the same batched solve
+# with T = fuse::num::dual<S, N>, the shape gradient of the MLS weights. Runs
+# the kernel on the host space and, in a build with a device backend, on the
+# device memory space (a typed test; no ArborX, the neighbour lists are given).
+fuse_add_gtest(backend mls_weights_gradient)
 # Nodal-remap track, step 1: general consistent interpolation on any
 # supported cell (general_interp.hpp), reached through
 # build_consistent_interp_weights (consistent_interp.hpp) exactly like
@@ -1009,6 +1014,25 @@ fuse_add_omp_legs(runtime.runner_determinism fuse_runtime_runner_determinism_tes
 # Device cases assert the E-RT-DEVICE refusal instead of skipping silently.
 # See docs/dev/runner-device-dispatch.md.
 fuse_add_gtest(runtime runner_device)
+# A field of dual numbers through the Runner and a real remap (plans/2026-10-22-
+# universal-number-types.md, U2), and the two refusals that keep it honest.
+fuse_add_gtest(runtime dual_field_runner)
+
+# Fields of a Storage value type (binary32, bfloat16, binary16) through the Runner and
+# a real remap, host and device (plans/2026-10-22-universal-number-types.md, U3).
+fuse_add_gtest(runtime storage_field_runner)
+fuse_add_device_twin(runtime.storage_field_runner fuse_runtime_storage_field_runner_test)
+
+# Fields of an Arithmetic value type (double-double, quad-double) through the Runner and
+# a real remap, host and device (plans/2026-10-22-universal-number-types.md, U4).
+fuse_add_gtest(runtime arithmetic_field_runner)
+fuse_add_device_twin(runtime.arithmetic_field_runner fuse_runtime_arithmetic_field_runner_test)
+
+# Reverse mode through the Runner: the adjoint identity for the composed coupling within
+# the derivative gate's bound, the adjoint of each coupling rule, the sweep order, and every
+# refusal (plans/2026-10-22-universal-number-types.md, U6; docs/dev/adjoint-schedule.md).
+fuse_add_gtest(runtime adjoint_runner)
+fuse_add_device_twin(runtime.adjoint_runner fuse_runtime_adjoint_runner_test)
 
 # KNOWN_ISSUES.md B3: `bool supports_rollback() const override` no longer
 # names a virtual to override, once `Component::capabilities()` is the one
@@ -1570,6 +1594,26 @@ if(FUSE_ENABLE_MPI)
   fuse_add_mpi_test(parallel native_remap_halo_runner LIBS fuse::runtime fuse::backend
                     MPI::MPI_CXX RANKS 2 3 DEVICE_TWIN)
 endif()
+# The ordered cross-rank sum of dd and qd conservation integrals, at 1 to 5 ranks
+# (plans/2026-10-22-universal-number-types.md, U4).
+fuse_tests_gated_by(FUSE_ENABLE_MPI parallel/arithmetic_reduce_mpi_test.cpp)
+if(FUSE_ENABLE_MPI)
+  fuse_add_mpi_test(parallel arithmetic_reduce_mpi LIBS fuse::runtime fuse::linalg MPI::MPI_CXX)
+  target_include_directories(fuse_parallel_arithmetic_reduce_mpi_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+endif()
+# Reverse mode through the Runner with the components on different ranks: the adjoint identity
+# across an MPI exchange (disjoint and partially overlapping placements), the exchange by exact
+# value, and a failure on one rank in the middle of a sweep, 2 and 3 ranks, host and device
+# (plans/2026-10-22-universal-number-types.md, U6; docs/dev/adjoint-schedule.md).
+fuse_tests_gated_by(FUSE_ENABLE_MPI parallel/adjoint_runner_mpi_test.cpp)
+if(FUSE_ENABLE_MPI)
+  fuse_add_mpi_test(parallel adjoint_runner_mpi LIBS fuse::runtime MPI::MPI_CXX RANKS 2 3 DEVICE_TWIN)
+endif()
+# A dd field between components on disjoint ranks through a distributed remap, 2 and 3 ranks.
+fuse_tests_gated_by(FUSE_ENABLE_MPI parallel/arithmetic_field_mpi_test.cpp)
+if(FUSE_ENABLE_MPI)
+  fuse_add_mpi_test(parallel arithmetic_field_mpi LIBS fuse::runtime fuse::backend MPI::MPI_CXX RANKS 2 3 DEVICE_TWIN)
+endif()
 fuse_add_gtest(backend supermesh THROWS)
 # Device-resident-arcs Phase 2, "weight-builders" track (KNOWN_ISSUES D53,
 # narrowed): build_supermesh_weights' broad phase dispatches to
@@ -1627,8 +1671,67 @@ fuse_tests_gated_by(FUSE_ENABLE_MPI parallel/field_transaction_mpi_test.cpp)
 if(FUSE_ENABLE_MPI)
   fuse_add_mpi_test(parallel field_transaction_mpi LIBS fuse::field RANKS 2 3)
 endif()
-
+# Field value types (plans/2026-10-22-universal-number-types.md, U1): the
+# value_traits/CoupledValue concept, the type-erased registry, typed pipeline
+# views and the correctly rounded binary64 -> bfloat16 conversion.
+fuse_add_gtest(field value_type NO_LAYER_LIB LIBS fuse::model fuse::base)
 fuse_add_gtest(num space_kernels)
+# fuse::num::dual and the view of a field of dual numbers as scalars (plans/2026-10-22-
+# universal-number-types.md, U2). One definition per enabled execution space.
+fuse_add_gtest(num dual LIBS fuse::linalg)
+
+# The Storage conversions (binary32, bfloat16, binary16) as kernels on every enabled
+# execution space, bit for bit against the host functions (plans/2026-10-22-
+# universal-number-types.md, U3).
+fuse_add_gtest(num storage LIBS fuse::linalg)
+
+# fuse::num::dd and qd against exact arithmetic (plans/2026-10-22-universal-number-types.md, U4).
+fuse_add_gtest(num dd LIBS fuse::linalg)
+fuse_add_gtest(num qd LIBS fuse::linalg)
+# The kernels that do arithmetic on dd and qd fields, on every enabled execution space.
+fuse_add_gtest(num arithmetic_kernels LIBS fuse::linalg)
+# fuse::num::posit16 and posit32 against the definition of the format, and on every execution space.
+fuse_add_gtest(num posit LIBS fuse::linalg)
+# Fields of double-double, quad-double and dual values in a restart file, and the 16-bit formats.
+fuse_add_gtest(num restart_values LIBS fuse::linalg)
+# The bit-for-bit comparison of dd and qd (num.dd_universal) and of posit16 and posit32
+# (num.posit_universal) with stillwater-sc/universal: host only, and
+# only when the build is pointed at a checkout (FUSE_ENABLE_UNIVERSAL). Universal's
+# headers do not compile under nvcc, so they are built into a separate program
+# (test/num/universal_oracle.cpp) with a plain host compiler, and the test compares
+# against what that program computes. FUSE_UNIVERSAL_CXX names that compiler; it
+# defaults to the project's own, which is right when that is a host compiler and wrong
+# for a CUDA build (CMAKE_CXX_COMPILER is then nvcc_wrapper): pass g++ or clang++.
+fuse_tests_gated_by(FUSE_ENABLE_UNIVERSAL num/dd_universal_test.cpp num/posit_universal_test.cpp)
+if(FUSE_ENABLE_UNIVERSAL)
+  if(NOT EXISTS "${FUSE_UNIVERSAL_INCLUDE_DIR}/universal/number/dd/dd.hpp")
+    message(FATAL_ERROR "FUSE_ENABLE_UNIVERSAL is ON but FUSE_UNIVERSAL_INCLUDE_DIR "
+                        "('${FUSE_UNIVERSAL_INCLUDE_DIR}') is not the include/sw directory of a "
+                        "stillwater-sc/universal checkout (universal/number/dd/dd.hpp not found)")
+  endif()
+  if(FUSE_UNIVERSAL_CXX)
+    set(_fuse_universal_cxx "${FUSE_UNIVERSAL_CXX}")
+  else()
+    set(_fuse_universal_cxx "${CMAKE_CXX_COMPILER}")
+  endif()
+  set(_fuse_universal_oracle "${CMAKE_CURRENT_BINARY_DIR}/fuse_universal_oracle")
+  # -ffp-contract=off: the same floating-point contract as the code it is compared with
+  add_custom_command(
+    OUTPUT "${_fuse_universal_oracle}"
+    COMMAND "${_fuse_universal_cxx}" -std=c++20 -O1 -ffp-contract=off
+            "-I${FUSE_UNIVERSAL_INCLUDE_DIR}"
+            -o "${_fuse_universal_oracle}" "${CMAKE_CURRENT_SOURCE_DIR}/num/universal_oracle.cpp"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/num/universal_oracle.cpp"
+    COMMENT "Building the Universal oracle with ${_fuse_universal_cxx}"
+    VERBATIM)
+  add_custom_target(fuse_universal_oracle DEPENDS "${_fuse_universal_oracle}")
+  fuse_add_gtest(num dd_universal LIBS fuse::linalg LABELS universal)
+  add_dependencies(fuse_num_dd_universal_test fuse_universal_oracle)
+  target_compile_definitions(fuse_num_dd_universal_test PRIVATE FUSE_UNIVERSAL_ORACLE="${_fuse_universal_oracle}")
+  fuse_add_gtest(num posit_universal LIBS fuse::linalg LABELS universal)
+  add_dependencies(fuse_num_posit_universal_test fuse_universal_oracle)
+  target_compile_definitions(fuse_num_posit_universal_test PRIVATE FUSE_UNIVERSAL_ORACLE="${_fuse_universal_oracle}")
+endif()
 fuse_add_omp_legs(num.space_kernels fuse_num_space_kernels_test)
 
 # ---------------------------------------------------------------- search
@@ -1702,6 +1805,34 @@ set_tests_properties(field.compile_ok.owning_chain PROPERTIES
 if(_fuse_nested_build_env_mods)
   set_tests_properties(field.compile_ok.owning_chain PROPERTIES
     ENVIRONMENT_MODIFICATION "${_fuse_nested_build_env_mods}")
+endif()
+
+# A device kernel that calls a host-only function must not compile
+# (cmake/FuseDependencies.cmake, --Werror=cross-execution-space-call): nvcc
+# would otherwise warn and emit a binary whose call does the wrong thing on the
+# device. nvcc-specific, so registered only when Kokkos has the CUDA backend.
+# The pair has the same shape as field.compile_fail.dangling_span: the control
+# is the same kernel calling a KOKKOS_INLINE_FUNCTION and MUST build.
+if(TARGET Kokkos::CUDA)
+  foreach(case compile_fail_device_host_call compile_ok_device_host_call)
+    add_executable(fuse_base_${case} EXCLUDE_FROM_ALL base/${case}.cpp)
+    target_link_libraries(fuse_base_${case} PRIVATE fuse::base)
+  endforeach()
+  add_test(NAME base.compile_fail.device_host_call
+    COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
+            --target fuse_base_compile_fail_device_host_call)
+  set_tests_properties(base.compile_fail.device_host_call PROPERTIES
+    WILL_FAIL TRUE LABELS "compile_fail;device" RESOURCE_LOCK fuse_build_tree)
+  add_test(NAME base.compile_ok.device_host_call
+    COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
+            --target fuse_base_compile_ok_device_host_call)
+  set_tests_properties(base.compile_ok.device_host_call PROPERTIES
+    LABELS "compile_fail;device" RESOURCE_LOCK fuse_build_tree)
+  if(_fuse_nested_build_env_mods)
+    set_tests_properties(base.compile_fail.device_host_call
+                         base.compile_ok.device_host_call PROPERTIES
+      ENVIRONMENT_MODIFICATION "${_fuse_nested_build_env_mods}")
+  endif()
 endif()
 
 # ---------------------------------------------------------------- verification
@@ -2323,7 +2454,7 @@ if(TARGET fuse-abi-fortran)
             -DAR=${CMAKE_AR}
             -DLIBRARY=$<TARGET_FILE:fuse-abi-fortran>
             -DMEMBER=fuse_fortran_shim.c.o
-            "-DENTRY_NAMES=version;capabilities;create;destroy;last_error;load_graph;save_graph;setup;field_handle;register_field;initialize;is_coupling_ongoing;begin_step;end_step;run"
+            "-DENTRY_NAMES=version;capabilities;create;destroy;last_error;load_graph;save_graph;setup;field_handle;register_field;initialize;is_coupling_ongoing;begin_step;end_step;run;register_adjoint_field;initialize_adjoint;view_adjoint_field;run_adjoint;begin_adjoint_step;end_adjoint_step"
             -P ${CMAKE_CURRENT_SOURCE_DIR}/abi/fortran/check_exports.cmake)
   set_tests_properties(abi.fortran_exports PROPERTIES LABELS "abi;fortran")
 
@@ -2342,8 +2473,44 @@ if(TARGET fuse-abi-fortran)
     DEPENDS fuse-abi-fortran ${CMAKE_CURRENT_SOURCE_DIR}/abi/fortran/consumer.f90
     COMMENT "Compiling test/abi/fortran/consumer.f90 against ffuse (no link)"
   )
+  # arithmetic_consumer.f90 (double-double values and a gradient, FUSE_ELEMENT_DD and
+  # gradient_size): the same strict compile; its full run is in the install smoke test.
+  add_custom_command(
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/fuse_abi_fortran_arithmetic_check.o
+    COMMAND ${CMAKE_Fortran_COMPILER} -std=f2008 -Wall -Wextra -Werror -fimplicit-none
+            -I$<TARGET_PROPERTY:fuse-abi-fortran,Fortran_MODULE_DIRECTORY>
+            -c ${CMAKE_CURRENT_SOURCE_DIR}/abi/fortran/arithmetic_consumer.f90
+            -o ${CMAKE_CURRENT_BINARY_DIR}/fuse_abi_fortran_arithmetic_check.o
+    DEPENDS fuse-abi-fortran ${CMAKE_CURRENT_SOURCE_DIR}/abi/fortran/arithmetic_consumer.f90
+    COMMENT "Compiling test/abi/fortran/arithmetic_consumer.f90 against ffuse (no link)"
+  )
+  # posit_consumer.f90 (the integer patterns of posit16 and posit32 fields, FUSE_ELEMENT_POSIT16 and
+  # POSIT32): the same strict compile.
+  add_custom_command(
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/fuse_abi_fortran_posit_check.o
+    COMMAND ${CMAKE_Fortran_COMPILER} -std=f2008 -Wall -Wextra -Werror -fimplicit-none
+            -I$<TARGET_PROPERTY:fuse-abi-fortran,Fortran_MODULE_DIRECTORY>
+            -c ${CMAKE_CURRENT_SOURCE_DIR}/abi/fortran/posit_consumer.f90
+            -o ${CMAKE_CURRENT_BINARY_DIR}/fuse_abi_fortran_posit_check.o
+    DEPENDS fuse-abi-fortran ${CMAKE_CURRENT_SOURCE_DIR}/abi/fortran/posit_consumer.f90
+    COMMENT "Compiling test/abi/fortran/posit_consumer.f90 against ffuse (no link)"
+  )
+  # adjoint_consumer.f90 (the reverse sweep: register_adjoint_field, initialize_adjoint,
+  # begin_adjoint_step, end_adjoint_step): the same strict compile; its full run is in the install smoke test.
+  add_custom_command(
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/fuse_abi_fortran_adjoint_check.o
+    COMMAND ${CMAKE_Fortran_COMPILER} -std=f2008 -Wall -Wextra -Werror -fimplicit-none
+            -I$<TARGET_PROPERTY:fuse-abi-fortran,Fortran_MODULE_DIRECTORY>
+            -c ${CMAKE_CURRENT_SOURCE_DIR}/abi/fortran/adjoint_consumer.f90
+            -o ${CMAKE_CURRENT_BINARY_DIR}/fuse_abi_fortran_adjoint_check.o
+    DEPENDS fuse-abi-fortran ${CMAKE_CURRENT_SOURCE_DIR}/abi/fortran/adjoint_consumer.f90
+    COMMENT "Compiling test/abi/fortran/adjoint_consumer.f90 against ffuse (no link)"
+  )
   add_custom_target(fuse_abi_fortran_consumer_check ALL
-    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/fuse_abi_fortran_consumer_check.o)
+    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/fuse_abi_fortran_consumer_check.o
+            ${CMAKE_CURRENT_BINARY_DIR}/fuse_abi_fortran_arithmetic_check.o
+            ${CMAKE_CURRENT_BINARY_DIR}/fuse_abi_fortran_posit_check.o
+            ${CMAKE_CURRENT_BINARY_DIR}/fuse_abi_fortran_adjoint_check.o)
   add_test(NAME abi.fortran_consumer_compiles
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
             --target fuse_abi_fortran_consumer_check)
@@ -2459,6 +2626,39 @@ fuse_add_gtest(abi negotiation)
 
 fuse_add_gtest(abi participant LIBS fuse_abi_test_support)
 target_include_directories(fuse_abi_participant_test PRIVATE ${CMAKE_SOURCE_DIR}/src/abi)
+
+# FUSE_ELEMENT_F32/BF16/F16 through the participant table (plans/2026-10-22-
+# universal-number-types.md, U3).
+fuse_add_gtest(abi storage_element LIBS fuse_abi_test_support)
+target_include_directories(fuse_abi_storage_element_test PRIVATE ${CMAKE_SOURCE_DIR}/src/abi)
+# FUSE_ELEMENT_DD and FUSE_ELEMENT_QD, and a registered field's gradient_size, through the C table.
+fuse_add_gtest(abi arithmetic_element LIBS fuse_abi_test_support)
+target_include_directories(fuse_abi_arithmetic_element_test PRIVATE ${CMAKE_SOURCE_DIR}/src/abi)
+# A provider plugin's fields in the element types the host allocates for them, and gradient_size.
+fuse_add_gtest(abi typed_provider NO_LAYER_LIB LIBS fuse::abi-static fuse_abi_test_support)
+target_include_directories(fuse_abi_typed_provider_test PRIVATE ${CMAKE_SOURCE_DIR}/src/abi)
+# A provider plugin that implements bind_adjoint and advance_adjoint under the Runner's reverse sweep:
+# the derivative gate's identity, the views the plugin is handed, the reversed windows and every refusal
+# (plans/2026-10-22-universal-number-types.md, U6; docs/dev/abi-design.md, "Adjoint").
+fuse_add_gtest(abi adjoint_provider NO_LAYER_LIB LIBS fuse::abi-static fuse::runtime fuse_abi_test_support)
+target_include_directories(fuse_abi_adjoint_provider_test PRIVATE ${CMAKE_SOURCE_DIR}/src/abi)
+# The reverse sweep through the C table: a caller that drives two components itself reverses each
+# step between begin_adjoint_step and end_adjoint_step; the derivative gate's identity, the reports,
+# the views and every refusal (plans/2026-10-22-universal-number-types.md, U6; docs/user/c-abi.md).
+fuse_add_gtest(abi adjoint_participant LIBS fuse_abi_test_support)
+# A C plugin with an adjoint (abi/plugins/adjoint_provider.c, built once for each of the two components
+# of the coupling), mounted from the graph and reversed through fuse_run_adjoint().
+add_library(fuse_test_provider_adjoint_p SHARED abi/plugins/adjoint_provider.c)
+target_include_directories(fuse_test_provider_adjoint_p PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_compile_definitions(fuse_test_provider_adjoint_p PRIVATE FUSE_TEST_ADJOINT_ROLE=0)
+add_library(fuse_test_provider_adjoint_q SHARED abi/plugins/adjoint_provider.c)
+target_include_directories(fuse_test_provider_adjoint_q PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_compile_definitions(fuse_test_provider_adjoint_q PRIVATE FUSE_TEST_ADJOINT_ROLE=1)
+fuse_add_gtest(abi adjoint_plugin LIBS fuse_abi_test_support)
+add_dependencies(fuse_abi_adjoint_plugin_test fuse_test_provider_adjoint_p fuse_test_provider_adjoint_q)
+target_compile_definitions(fuse_abi_adjoint_plugin_test PRIVATE
+  FUSE_TEST_ADJOINT_PLUGIN_P="$<TARGET_FILE:fuse_test_provider_adjoint_p>"
+  FUSE_TEST_ADJOINT_PLUGIN_Q="$<TARGET_FILE:fuse_test_provider_adjoint_q>")
 
 # review-2026-10-11 abi: AB-9's table-driven negative-test sweep over the
 # participant-ABI refusal codes no test fired.

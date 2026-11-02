@@ -37,7 +37,10 @@ OUT_FORTRAN_SHIM = ROOT / "fortran/fuse_fortran_shim.c"
 # generated alongside the plain struct-taking one; all are gathered under one
 # PUBLIC generic interface named after the entry, so `fuse_<name>(...)` always
 # dispatches to whichever specific procedure matches the actual arguments.
-FORTRAN_STRING_ENTRIES = {"load_graph", "field_handle", "begin_step", "end_step", "last_error"}
+FORTRAN_STRING_ENTRIES = {"load_graph", "field_handle", "begin_step", "end_step", "last_error",
+                          "begin_adjoint_step", "end_adjoint_step"}
+# The step entries among them: the IN struct is a fuse_step_request whose `component` is the string.
+FORTRAN_STEP_ENTRIES = ("begin_step", "end_step", "begin_adjoint_step", "end_adjoint_step")
 
 # ---------------------------------------------------------------- parsing
 
@@ -453,7 +456,7 @@ def _fortran_convenience(name: str, inp: str, out: str) -> list[str]:
             "  end function fuse_field_handle_name",
             "",
         ]
-    elif name in ("begin_step", "end_step"):
+    elif name in FORTRAN_STEP_ENTRIES:
         o += [
             f"  function fuse_{name}_name(ctx, component, out) result(status)",
             "    type(fuse_ctx), intent(in) :: ctx",
@@ -584,7 +587,7 @@ def gen_fortran_module(spec: Spec) -> str:
                 specifics.append("fuse_load_graph_path")
             elif name == "field_handle":
                 specifics.append("fuse_field_handle_name")
-            elif name in ("begin_step", "end_step"):
+            elif name in FORTRAN_STEP_ENTRIES:
                 specifics.append(f"fuse_{name}_name")
             elif name == "last_error":
                 specifics.append("fuse_last_error_message")

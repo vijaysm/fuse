@@ -90,3 +90,23 @@ TEST(BFloat16, ToFloatIsAlwaysExactWidening) {
         << "bits=0x" << std::hex << bits;
   }
 }
+
+/// The binary64 side (plans/2026-10-22-universal-number-types.md, stage U3):
+/// widening is exact, and a widen followed by a narrow is the identity, over
+/// all 65536 patterns; the rounding itself is compared with an independent
+/// search in test/model/small_float_test.cpp and, through
+/// `value_traits<bfloat16>`, in test/field/value_type_test.cpp.
+TEST(BFloat16, ExhaustiveBinary64WidenIsExactAndNarrowingItBackIsTheIdentity) {
+  for (unsigned v = 0; v <= 0xFFFFu; ++v) {
+    const fuse::bfloat16 b = fuse::bfloat16::from_bits(static_cast<std::uint16_t>(v));
+    const double d = b.to_double();
+    if (std::isnan(b.to_float())) {
+      EXPECT_TRUE(std::isnan(d)) << std::hex << v;
+      EXPECT_TRUE(std::isnan(fuse::bfloat16::from_double(d).to_float())) << std::hex << v;
+      continue;
+    }
+    EXPECT_EQ(d, static_cast<double>(b.to_float())) << std::hex << v;
+    EXPECT_EQ(std::signbit(d), (v & 0x8000u) != 0) << std::hex << v;
+    EXPECT_EQ(fuse::bfloat16::from_double(d).bits(), v) << std::hex << v;
+  }
+}

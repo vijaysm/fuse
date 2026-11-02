@@ -38,7 +38,7 @@
 
 namespace fuse::abi_detail {
 
-class ProviderAdapter final : public fuse::Component {
+class ProviderAdapter final : public fuse::Component, public fuse::AdjointComponent {
  public:
   /// `table` is borrowed and must outlive this object; `component_name`
   /// must equal a `ComponentDecl::name` of the graph `register_fields()`
@@ -81,6 +81,14 @@ class ProviderAdapter final : public fuse::Component {
   /// this adapter from the plugin registry) -- never again after.
   void set_hosting_rank(std::optional<int> rank) { hosting_rank_ = rank; }
 
+  /// The bytes FUSE allocated in host memory for the `index`-th field this
+  /// component declares (graph order), after register_fields(); 0 for a field
+  /// in device memory or an index past the last. For tests and diagnostics: it
+  /// is what an element type's size and a row's component count must add up to.
+  [[nodiscard]] std::size_t host_storage_bytes(std::size_t index) const noexcept {
+    return index < storage_.size() ? storage_[index].size() * sizeof(double) : 0;
+  }
+
   [[nodiscard]] std::string name() const override { return name_; }
 
   fuse::Result<void> register_fields(fuse::FieldRegistry& registry,
@@ -102,7 +110,48 @@ class ProviderAdapter final : public fuse::Component {
   }
   [[nodiscard]] std::uint64_t capabilities() const override { return capabilities_; }
 
+  /// Reverse mode (docs/dev/abi-design.md, "Adjoint"). This adapter is the plugin's
+  /// `fuse::AdjointComponent` when the plugin offers the adjoint: `capabilities()` set
+  /// FUSE_CAP_ADJOINT and the table's own `struct_size` covers `bind_adjoint` and
+  /// `advance_adjoint`, both non-null. Otherwise `adjoint()` is null and the Runner refuses the
+  /// reverse sweep by name (E-ADJ-COMPONENT). An unhosted shell (a rank that does not host the
+  /// component) cannot ask the plugin anything, so it returns itself and registers the same empty
+  /// views the forward registration did; a plugin that offers no adjoint is then refused only on
+  /// the ranks that host it (the rank-local caveat register_fields() already documents for describe()).
+  [[nodiscard]] fuse::AdjointComponent* adjoint() override {
+    return (adjoint_offered_ || unhosted_shell_) ? this : nullptr;
+  }
+  /// One adjoint array of binary64 values per field, laid out as the field itself, zeroed, bound
+  /// into `registry` under the field's `FieldId` and handed to the plugin through `bind_adjoint()`
+  /// in the order `bind()` was called. Refuses (by name) a field that is not binary64 (E-ADJ-FIELD-TYPE)
+  /// or lives in device memory (E-ADJ-SPACE); the Runner's own checks of the arrays follow.
+  fuse::Result<void> register_adjoint_fields(fuse::FieldRegistry& registry,
+                                             const fuse::CouplingGraph& graph) override;
+  /// `advance_adjoint()` of the plugin for the window `ctx` describes; the window the plugin
+  /// echoes must be exactly the one it was asked for, as for `advance()`.
+  fuse::Result<void> advance_adjoint(const fuse::StepContext& ctx) override;
+
  private:
+  /// What register_fields() decided about one field, kept for register_adjoint_fields(): the
+  /// adjoint array has the field's own layout, and the view the plugin is handed for it is the
+  /// view bind() was handed with another pointer.
+  struct FieldRecord {
+    fuse::FieldId id;
+    fuse::Layout layout;
+    std::int32_t element_type = FUSE_ELEMENT_F64;
+    std::int32_t row_components = 0;  // values of the element type per entity
+    std::int32_t gradient_size = 0;
+    bool device = false;
+    std::uint64_t count = 0;
+    std::string name;
+  };
+  std::vector<FieldRecord> records_;
+  /// One buffer per field of the adjoint arrays, parallel to `records_`; never resized after
+  /// register_adjoint_fields() returns successfully.
+  std::vector<std::vector<double>> adjoint_storage_;
+  bool adjoint_capability_ = false;  // the plugin set FUSE_CAP_ADJOINT
+  bool adjoint_offered_ = false;     // and the table has the entries; set at the end of register_fields()
+  bool adjoint_registered_ = false;  // register_adjoint_fields() succeeded
   std::string                 name_;
   const fuse_provider_abi_v1* table_;
   /// True only for the unhosted-shell constructor above; false (default)

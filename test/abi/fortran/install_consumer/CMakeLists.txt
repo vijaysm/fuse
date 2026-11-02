@@ -55,3 +55,33 @@ add_custom_command(TARGET consumer_fortran POST_BUILD
           ${CMAKE_CURRENT_SOURCE_DIR}/two_component.yaml
           $<TARGET_FILE_DIR:consumer_fortran>/two_component.yaml
 )
+
+# The double-double and gradient program (arithmetic_consumer.f90) is linked and run the same way,
+# with its own two-channel graph beside it. It checks its values itself and exits 1 on a mismatch.
+add_executable(arithmetic_consumer_fortran ../arithmetic_consumer.f90)
+target_link_libraries(arithmetic_consumer_fortran PRIVATE fuse::abi-fortran fuse::abi)
+add_custom_command(TARGET arithmetic_consumer_fortran POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy
+          ${CMAKE_CURRENT_SOURCE_DIR}/dd_two_component.yaml
+          $<TARGET_FILE_DIR:arithmetic_consumer_fortran>/dd_two_component.yaml
+)
+
+# The posit program (posit_consumer.f90): the patterns of posit16 and posit32 fields, and a
+# binary64 field rounded to posit16 on delivery, with its own graph beside it.
+add_executable(posit_consumer_fortran ../posit_consumer.f90)
+target_link_libraries(posit_consumer_fortran PRIVATE fuse::abi-fortran fuse::abi)
+add_custom_command(TARGET posit_consumer_fortran POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy
+          ${CMAKE_CURRENT_SOURCE_DIR}/posit_two_component.yaml
+          $<TARGET_FILE_DIR:posit_consumer_fortran>/posit_two_component.yaml
+)
+
+# The reverse sweep program (adjoint_consumer.f90): the adjoint arrays of a coupling the caller steps
+# itself, reversed between begin_adjoint_step and end_adjoint_step, checked by the adjoint identity.
+add_executable(adjoint_consumer_fortran ../adjoint_consumer.f90)
+target_link_libraries(adjoint_consumer_fortran PRIVATE fuse::abi-fortran fuse::abi)
+add_custom_command(TARGET adjoint_consumer_fortran POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy
+          ${CMAKE_CURRENT_SOURCE_DIR}/two_component.yaml
+          $<TARGET_FILE_DIR:adjoint_consumer_fortran>/two_component.yaml
+)

@@ -60,21 +60,45 @@ typedef struct fuse_provider_abi_v1 {
   /* real, not the default no-op */
   fuse_status (*capabilities)(fuse_provider_ctx* self, const fuse_null* in, fuse_capability_set* out);
 
-  /* an opaque, versioned byte record capturing whatever save_state()'s */
-  /* in-memory rollback cannot reach (component-private state outside */
-  /* register_fields()' own storage). Same-decomposition restore only: the */
-  /* rank-count refusal that gates this happens above this ABI boundary, in */
-  /* fuse::check_restart_rank_count(). FUSE_CAP_CHECKPOINT has no bearing on */
-  /* this entry; a provider not implementing it reports written=0 and */
-  /* blob_version=0, which the caller treats as nothing to capture, not as an */
-  /* error, exactly as the C++ Component::save_restart_blob() default does */
+  /* docs/dev/restart.md round 2, item 4 -- restart-to-disk Option B, appended */
+  /* LAST per this table's own append-only rule above: an opaque, versioned */
+  /* byte record capturing whatever save_state()'s in-memory rollback cannot */
+  /* reach (component-private state outside register_fields()' own storage). */
+  /* Same-decomposition restore only -- the rank-count refusal that gates this */
+  /* happens ABOVE this ABI boundary, in fuse::check_restart_rank_count(), */
+  /* never here. FUSE_CAP_CHECKPOINT has no bearing on this entry; a provider */
+  /* not implementing it reports written=0 and blob_version=0, which the caller */
+  /* must treat as \"nothing to capture\", not as an error, exactly as the C++ */
+  /* Component::save_restart_blob() default already does */
   fuse_status (*save_restart_blob)(fuse_provider_ctx* self, const fuse_null* in, fuse_restart_blob_sink* out);
 
   /* the read-back counterpart of save_restart_blob(); FUSE_ERR_VERSION (not a */
-  /* silent misread) if blob_version names a version this build does not */
-  /* recognise, the same posture kGraphVersion takes for the coupling graph */
-  /* (fuse/model/descriptor.hpp) */
+  /* silent misread) if blob_version names a version this provider's own */
+  /* current build does not recognise -- the same posture kGraphVersion already */
+  /* takes for the coupling graph (fuse/model/descriptor.hpp) */
   fuse_status (*load_restart_blob)(fuse_provider_ctx* self, const fuse_restart_blob_source* in, fuse_null* out);
+
+  /* adjoint (reverse mode), appended LAST per this table's own append-only */
+  /* rule: only called when capabilities() set FUSE_CAP_ADJOINT, after the */
+  /* reverse sweep was initialised and before the first advance_adjoint(); once */
+  /* for every field bind() was called for, in the same order, with the same */
+  /* handle, element_type, components, count, owned_count, stride and memspace, */
+  /* and data pointing at the ADJOINT array of that field, which holds zero at */
+  /* that point and must stay valid until destroy. The adjoint array of a field */
+  /* holds the derivative of the scalar being differentiated with respect to */
+  /* each entry of the field */
+  fuse_status (*bind_adjoint)(fuse_provider_ctx* self, const fuse_field_view* in, fuse_null* out);
+
+  /* adjoint (reverse mode): the adjoint of advance() for the step with the */
+  /* window in->t_begin to in->t_end, reversed once per step in the reverse of */
+  /* the order advance() ran. On entry the adjoint array of a Provides field */
+  /* holds the adjoint of the field as the step left it, with the adjoint of */
+  /* every later read already added; on return it must hold the adjoint as it */
+  /* was before the step. A Requires field's adjoint array is ADDED to, never */
+  /* overwritten. The plugin keeps whatever forward values its own adjoint */
+  /* needs; FUSE stores none. out echoes the window exactly (rule 6), as */
+  /* advance() does */
+  fuse_status (*advance_adjoint)(fuse_provider_ctx* self, const fuse_step_request* in, fuse_step_report* out);
 } fuse_provider_abi_v1;
 
 /* THE ONE EXPORTED SYMBOL A PLUGIN PROVIDES. Returns the table for

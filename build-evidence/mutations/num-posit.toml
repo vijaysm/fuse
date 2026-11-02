@@ -1,0 +1,184 @@
+# Mutations for fuse::num::posit (plans/2026-10-22-universal-number-types.md, stage U5): the
+# rounding of a binary64 value to a posit, the decoding of a pattern, the rounding of the
+# arithmetic, and the comparison of patterns. The test is num.posit (every pattern and
+# boundary of the 16-bit format, a sample of the 32-bit format, the arithmetic against exact values).
+
+[[mutation]]
+id = "posit-tie-goes-up"
+area = "num_posit"
+describes = "a tie between two posits goes to the larger pattern instead of the even one"
+file = "include/fuse/num/posit_bits.hpp"
+old = "      if (guard) up = sticky || toward > 0 || (toward == 0 && (pattern & 1u) != 0);"
+new = "      if (guard) up = sticky || toward > 0 || toward == 0;"
+target = "fuse_num_posit_test"
+test = "num.posit"
+
+[[mutation]]
+id = "posit-sticky-bits-are-ignored"
+area = "num_posit"
+describes = "bits below the guard bit are ignored, so a value just above a boundary is treated as a tie"
+file = "include/fuse/num/posit_bits.hpp"
+old = "      if (guard) up = sticky || toward > 0 || (toward == 0 && (pattern & 1u) != 0);"
+new = "      if (guard) up = toward > 0 || (toward == 0 && (pattern & 1u) != 0);"
+target = "fuse_num_posit_test"
+test = "num.posit"
+
+[[mutation]]
+id = "posit-directed-tie-ignores-the-error-sign"
+area = "num_posit"
+describes = "a tie is always decided to even, whatever side of it the exact result lies on"
+file = "include/fuse/num/posit_bits.hpp"
+old = "      if (guard) up = sticky || toward > 0 || (toward == 0 && (pattern & 1u) != 0);"
+new = "      if (guard) up = sticky || (pattern & 1u) != 0;"
+target = "fuse_num_posit_test"
+test = "num.posit"
+
+[[mutation]]
+id = "posit-error-sign-of-a-negative-value-is-not-mirrored"
+area = "num_posit"
+describes = "the error sign is applied to the signed value, not to its magnitude, so the direction of a tie is wrong for negative results"
+file = "include/fuse/num/posit_bits.hpp"
+old = "      const int toward = negative ? -direction : direction;  // of the magnitude"
+new = "      const int toward = direction;  // of the magnitude"
+target = "fuse_num_posit_test"
+test = "num.posit"
+
+[[mutation]]
+id = "posit-overflow-becomes-nar"
+area = "num_posit"
+describes = "a value beyond the largest posit becomes NaR instead of saturating at maxpos"
+file = "include/fuse/num/posit_bits.hpp"
+old = "      magnitude = nar_bits - 1u;  // maxpos"
+new = "      magnitude = nar_bits;  // maxpos"
+target = "fuse_num_posit_test"
+test = "num.posit"
+
+[[mutation]]
+id = "posit-underflow-becomes-zero"
+area = "num_posit"
+describes = "a value below the smallest posit becomes zero instead of saturating at minpos"
+file = "include/fuse/num/posit_bits.hpp"
+old = "      magnitude = 1;  // below minpos"
+new = "      magnitude = 0;  // below minpos"
+target = "fuse_num_posit_test"
+test = "num.posit"
+
+[[mutation]]
+id = "posit-negative-pattern-is-ones-complement"
+area = "num_posit"
+describes = "a negative pattern is turned into its magnitude by the ones complement instead of the twos complement"
+file = "include/fuse/num/posit_bits.hpp"
+old = "    const std::uint32_t magnitude = negative ? ((0u - bits) & mask) : bits;"
+new = "    const std::uint32_t magnitude = negative ? ((~bits) & mask) : bits;"
+target = "fuse_num_posit_test"
+test = "num.posit"
+
+[[mutation]]
+id = "posit-negative-value-is-sign-magnitude"
+area = "num_posit"
+describes = "a negative value is encoded with the sign bit set on the magnitude's pattern instead of the twos complement"
+file = "include/fuse/num/posit_bits.hpp"
+old = "    return negative ? ((0u - magnitude) & mask) : magnitude;"
+new = "    return negative ? (magnitude | (1u << (N - 1))) : magnitude;"
+target = "fuse_num_posit_test"
+test = "num.posit"
+
+[[mutation]]
+id = "posit-regime-of-ones-is-one-too-large"
+area = "num_posit"
+describes = "the regime of a run of ones counts one more step than the run"
+file = "include/fuse/num/posit_bits.hpp"
+old = "    const int k = ones ? run - 1 : -run;"
+new = "    const int k = ones ? run : -run;"
+target = "fuse_num_posit_test"
+test = "num.posit"
+
+[[mutation]]
+id = "posit-fraction-starts-at-the-exponent"
+area = "num_posit"
+describes = "the fraction is read from the exponent field's first bit"
+file = "include/fuse/num/posit_bits.hpp"
+old = "    const std::uint32_t fraction = rest << ES;  // left-aligned, zero padded"
+new = "    const std::uint32_t fraction = rest << (ES - 1);  // left-aligned, zero padded"
+target = "fuse_num_posit_test"
+test = "num.posit"
+
+[[mutation]]
+id = "posit-product-ignores-its-rounding-error"
+area = "num_posit"
+describes = "the product is rounded as the binary64 product, so a product a hair past a boundary is taken for a tie"
+file = "include/fuse/num/posit.hpp"
+old = "    return round_directed(product, sign_of(err));"
+new = "    return round_directed(product, 0);"
+target = "fuse_num_posit_test"
+test = "num.posit"
+
+[[mutation]]
+id = "posit-quotient-ignores-the-sign-of-the-divisor"
+area = "num_posit"
+describes = "the sign of the quotient's error is not flipped by a negative divisor"
+file = "include/fuse/num/posit.hpp"
+old = "    return round_directed(q, sign_of(r) * (y < 0.0 ? -1 : 1));"
+new = "    return round_directed(q, sign_of(r));"
+target = "fuse_num_posit_test"
+test = "num.posit"
+
+[[mutation]]
+id = "posit-square-root-ignores-its-rounding-error"
+area = "num_posit"
+describes = "the square root is rounded as the binary64 root, so a root a hair past a boundary is taken for a tie"
+file = "include/fuse/num/posit.hpp"
+old = "    return round_directed(s, sign_of(r));"
+new = "    return round_directed(s, 0);"
+target = "fuse_num_posit_test"
+test = "num.posit"
+
+[[mutation]]
+id = "posit-subtraction-is-addition"
+area = "num_posit"
+describes = "a - b is computed as a + b"
+file = "include/fuse/num/posit.hpp"
+old = "    return a + (-b);"
+new = "    return a + b;"
+target = "fuse_num_posit_test"
+test = "num.posit"
+
+[[mutation]]
+id = "posit-absolute-value-keeps-the-sign"
+area = "num_posit"
+describes = "abs returns its argument"
+file = "include/fuse/num/posit.hpp"
+old = "    return a.is_negative() ? -a : a;"
+new = "    return a;"
+target = "fuse_num_posit_test"
+test = "num.posit"
+
+[[mutation]]
+id = "posit-order-is-the-unsigned-order-of-the-patterns"
+area = "num_posit"
+describes = "a < b compares the patterns as unsigned integers, so every negative value is larger than every positive one"
+file = "include/fuse/num/posit.hpp"
+old = "    return static_cast<signed_bits_type>(a.bits_) < static_cast<signed_bits_type>(b.bits_);"
+new = "    return a.bits_ < b.bits_;"
+target = "fuse_num_posit_test"
+test = "num.posit"
+
+[[mutation]]
+id = "posit-clamped-value-is-not-reported"
+area = "num_posit"
+describes = "a value clamped to the largest posit is not counted as an overflow in the rounding report"
+file = "include/fuse/num/storage_convert.hpp"
+old = "      if (a > T::maxpos().to_double()) {"
+new = "      if (false && a > T::maxpos().to_double()) {"
+target = "fuse_num_posit_test"
+test = "num.posit"
+
+[[mutation]]
+id = "posit-unclamped-small-value-is-counted-as-underflow"
+area = "num_posit"
+describes = "a nonzero value below the smallest posit is not counted as an underflow in the rounding report"
+file = "include/fuse/num/storage_convert.hpp"
+old = "      if (a != 0.0 && a < T::minpos().to_double()) {"
+new = "      if (false && a != 0.0 && a < T::minpos().to_double()) {"
+target = "fuse_num_posit_test"
+test = "num.posit"

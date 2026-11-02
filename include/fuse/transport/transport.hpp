@@ -132,6 +132,34 @@ class Transport {
     return Failure{"E-TRANSPORT-NOPACKED",
                  name() + " has no move_packed(); use move() instead"};
   }
+
+  /// Reverse mode (docs/dev/adjoint-schedule.md). True iff `move_adjoint()` is
+  /// implemented for this backend; the Runner refuses a reverse sweep over a
+  /// transport that answers false (`E-ADJ-TRANSPORT`).
+  [[nodiscard]] virtual bool has_adjoint() const noexcept { return false; }
+
+  /// Reverse mode. `move()` applies a linear map that copies entries of `src` to
+  /// entries of `dst` and leaves every other entry of `dst` alone: `dst = P src` on the
+  /// entries it writes, with `P` a 0/1 matrix, each row holding one 1. This
+  /// overwrites the `n` doubles of `src_bar` with `P^T dst_bar`, the adjoint of
+  /// `src`: the entry of `dst_bar` that `move()` wrote from entry j of `src` is
+  /// added to entry j of `src_bar`, so a source entry sent to several places
+  /// receives the sum of their adjoints. `dst_bar` is read at the entries
+  /// `move()` writes and nowhere else, and is not changed (the caller consumes
+  /// what it passed on). `n` and the buffers are those of `move()`.
+  ///
+  /// COLLECTIVE exactly where `move()` is: the exchange is the one of `move()`
+  /// with the roles of send and receive exchanged. Returns
+  /// `E-TRANSPORT-NOADJOINT` by default.
+  virtual Result<void> move_adjoint(const double* dst_bar, double* src_bar,
+                                    std::size_t n) {
+    (void)dst_bar;
+    (void)src_bar;
+    (void)n;
+    return Failure{"E-TRANSPORT-NOADJOINT",
+                 name() + " has no move_adjoint(); a reverse sweep cannot "
+                          "pass the adjoint through it"};
+  }
 };
 
 /// In-process copy. The "mpi" and "lowfive" transports are the others.
@@ -146,6 +174,9 @@ class CopyTransport final : public Transport {
   Result<void> move(const double* src, double* dst, std::size_t n) override;
   [[nodiscard]] std::string name() const override { return "copy"; }
   [[nodiscard]] bool is_local() const override { return true; }
+  [[nodiscard]] bool has_adjoint() const noexcept override { return true; }
+  /// `src_bar` is overwritten with `dst_bar`: a copy of every entry.
+  Result<void> move_adjoint(const double* dst_bar, double* src_bar, std::size_t n) override;
 
  private:
   // Only the two fields `move` reads, not the whole TransportSpec. `prepare`
@@ -292,6 +323,19 @@ class MpiTransport final : public Transport {
   /// Errors: `E-TRANSPORT-UNPLANNED`, `E-TRANSPORT-NULL`,
   /// `E-TRANSPORT-SIZE`, `E-TRANSPORT-MPI`.
   Result<void> move(const double* src, double* dst, std::size_t n) override;
+
+  [[nodiscard]] bool has_adjoint() const noexcept override { return true; }
+
+  /// Reverse mode: `move()` run backwards. COLLECTIVE. Packs `dst_bar` in the
+  /// order of the receive buffer, runs the `MPI_Alltoallv` of `move()` with its
+  /// send and receive counts and displacements exchanged, and adds what arrives
+  /// to the entries of `src_bar` that `move()` read (a source entry sent to
+  /// several ranks receives the sum, in ascending peer rank and then buffer
+  /// order); the same-rank copies of a partially overlapping plan are added
+  /// directly. `src_bar` is zeroed first.
+  /// Errors: `E-TRANSPORT-UNPLANNED`, `E-TRANSPORT-NULL`, `E-TRANSPORT-SIZE`,
+  /// `E-TRANSPORT-MPI`.
+  Result<void> move_adjoint(const double* dst_bar, double* src_bar, std::size_t n) override;
 
   [[nodiscard]] std::string name() const override { return "mpi"; }
   [[nodiscard]] bool is_local() const override { return false; }

@@ -28,6 +28,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <unordered_set>
 
 #include <Kokkos_Core.hpp>
@@ -53,7 +54,11 @@
 #include "fuse/base/rational.hpp"
 #include "fuse/base/version.hpp"
 #include "fuse/field/field_ref.hpp"
+#include "fuse/model/binary16.hpp"
 #include "fuse/ir/lowering.hpp"
+#include "fuse/num/dd.hpp"
+#include "fuse/num/posit.hpp"
+#include "fuse/num/qd.hpp"
 #include "fuse/model/component.hpp"
 #include "fuse/model/descriptor.hpp"
 #include "fuse/model/field_spec.hpp"
@@ -309,7 +314,7 @@ fuse_status impl_capabilities(fuse_ctx*, const fuse_null*,
   if (out == nullptr) return FUSE_ERR_INVALID;
   const fuse_status sz = check_struct_size(out);
   if (sz != FUSE_OK) return sz;
-  std::uint64_t flags = FUSE_CAP_YAML;
+  std::uint64_t flags = FUSE_CAP_YAML | FUSE_CAP_ADJOINT;
 #if FUSE_HAVE_MPI
   flags |= FUSE_CAP_MPI;
 #endif
@@ -863,10 +868,15 @@ fuse_status impl_register_field(fuse_ctx* ctx, const fuse_field_view* in,
     }
     const fuse_status sz = check_struct_size(in);
     if (sz != FUSE_OK) return sz;
-    if (in->element_type != FUSE_ELEMENT_F64) {
+    if (in->element_type != FUSE_ELEMENT_F64 && in->element_type != FUSE_ELEMENT_F32 &&
+        in->element_type != FUSE_ELEMENT_BF16 && in->element_type != FUSE_ELEMENT_F16 &&
+        in->element_type != FUSE_ELEMENT_DD && in->element_type != FUSE_ELEMENT_QD &&
+        in->element_type != FUSE_ELEMENT_POSIT16 && in->element_type != FUSE_ELEMENT_POSIT32) {
       return fail(&c, FUSE_ERR_UNSUPPORTED, "E-ABI-REGISTER-ELEMENT",
-                 "fuse_register_field: only FUSE_ELEMENT_F64 is supported "
-                 "through this ABI");
+                 "fuse_register_field: only FUSE_ELEMENT_F64, FUSE_ELEMENT_F32, "
+                 "FUSE_ELEMENT_BF16, FUSE_ELEMENT_F16, FUSE_ELEMENT_POSIT16, "
+                 "FUSE_ELEMENT_POSIT32, FUSE_ELEMENT_DD and FUSE_ELEMENT_QD are supported "
+                 "through this ABI (FUSE_ELEMENT_I64 names identifiers, not coupled values)");
     }
     if (in->memspace != FUSE_MEMSPACE_HOST) {
       return fail(&c, FUSE_ERR_UNSUPPORTED, "E-ABI-REGISTER-MEMSPACE",
@@ -888,13 +898,55 @@ fuse_status impl_register_field(fuse_ctx* ctx, const fuse_field_view* in,
                                   static_cast<std::size_t>(in->component_stride),
                               .count = static_cast<std::size_t>(in->count),
                               .components = in->components};
-    const fuse::FieldRef ref{static_cast<double*>(in->data), layout,
-                             fuse::MemorySpace::Host};
-    const fuse::Result<void> bound =
-        c.fields.bind(fuse::FieldId{static_cast<std::uint32_t>(in->handle)}, ref);
+    // The gradient a participant declares for its own layout: how many of the
+    // trailing components of each entity hold the gradient of the leading ones.
+    // The member was appended after window_samples; a caller built before it
+    // has a smaller struct_size, so its value is not read.
+    int gradient = 0;
+    if (struct_size_covers(in->struct_size,
+                           offsetof(fuse_field_view, gradient_size) + sizeof(in->gradient_size))) {
+      gradient = in->gradient_size;
+    }
+    if (gradient < 0 || (gradient > 0 && gradient >= in->components)) {
+      return fail(&c, FUSE_ERR_INVALID, "E-ABI-REGISTER-GRADIENT",
+                 "fuse_register_field: gradient_size " + std::to_string(gradient) +
+                     " must be 0, or at least 1 and less than components (" +
+                     std::to_string(in->components) +
+                     "): the last gradient_size components of each entity hold the gradient of "
+                     "the leading ones, and at least one must be the value itself");
+    }
+    // A FUSE_ELEMENT_F32/BF16/F16 field is bound as its own value type, not
+    // converted here: the Runner widens it to binary64 when the component has
+    // written it and rounds once into it on delivery (RunStats::storage_fields).
+    // A FUSE_ELEMENT_DD/QD field is bound as double-double or quad-double values:
+    // the Runner does its sums, scalings and remaps in that type.
+    const fuse::FieldId id{static_cast<std::uint32_t>(in->handle)};
+    const auto bind_as = [&]<class T>(std::type_identity<T>) {
+      return c.fields.bind(
+          id, fuse::BasicFieldRef<T>(static_cast<T*>(in->data), layout,
+                                     fuse::MemorySpace::Host));
+    };
+    fuse::Result<void> bound = fuse::Result<void>::success();
+    switch (in->element_type) {
+      case FUSE_ELEMENT_F32:  bound = bind_as(std::type_identity<float>{}); break;
+      case FUSE_ELEMENT_BF16: bound = bind_as(std::type_identity<fuse::bfloat16>{}); break;
+      case FUSE_ELEMENT_F16:  bound = bind_as(std::type_identity<fuse::binary16>{}); break;
+      case FUSE_ELEMENT_DD:   bound = bind_as(std::type_identity<fuse::num::dd>{}); break;
+      case FUSE_ELEMENT_QD:   bound = bind_as(std::type_identity<fuse::num::qd>{}); break;
+      case FUSE_ELEMENT_POSIT16: bound = bind_as(std::type_identity<fuse::num::posit16>{}); break;
+      case FUSE_ELEMENT_POSIT32: bound = bind_as(std::type_identity<fuse::num::posit32>{}); break;
+      default:                bound = bind_as(std::type_identity<double>{}); break;
+    }
     if (!bound.ok()) {
       return fail(&c, FUSE_ERR_INVALID, std::string(bound.error().code),
                  bound.error().message);
+    }
+    if (gradient > 0) {
+      const fuse::Result<void> declared = c.fields.declare_gradient(id, gradient);
+      if (!declared.ok()) {
+        return fail(&c, FUSE_ERR_INVALID, std::string(declared.error().code),
+                   declared.error().message);
+      }
     }
     return FUSE_OK;
   });
@@ -926,7 +978,8 @@ fuse_status impl_view_field(fuse_ctx* ctx, const fuse_field_ref* in,
     }
     const fuse::FieldId field{static_cast<std::uint32_t>(in->handle)};
 
-    const double* data = nullptr;
+    const void* data = nullptr;
+    std::int32_t element_type = FUSE_ELEMENT_F64;
     std::uint64_t count = 0;
     std::int32_t window_samples = 0;
     if (c.runner.has_value()) {
@@ -946,13 +999,36 @@ fuse_status impl_view_field(fuse_ctx* ctx, const fuse_field_ref* in,
       // Not window-scoped (or not initialized yet): the native storage
       // this context's own register_field() was given, same as
       // impl_register_field binds from above.
-      const fuse::Result<fuse::FieldRef> ref = c.fields.get(field);
+      const fuse::Result<fuse::AnyFieldRef> ref = c.fields.get_any(field);
       if (!ref.ok()) {
         return fail(&c, FUSE_ERR_INVALID, std::string(ref.error().code),
                    ref.error().message);
       }
-      data = ref.value().data();
-      count = static_cast<std::uint64_t>(ref.value().size());
+      const fuse::AnyFieldRef& any = ref.value();
+      if (any.holds<double>()) {
+        element_type = FUSE_ELEMENT_F64;
+      } else if (any.holds<float>()) {
+        element_type = FUSE_ELEMENT_F32;
+      } else if (any.holds<fuse::bfloat16>()) {
+        element_type = FUSE_ELEMENT_BF16;
+      } else if (any.holds<fuse::binary16>()) {
+        element_type = FUSE_ELEMENT_F16;
+      } else if (any.holds<fuse::num::dd>()) {
+        element_type = FUSE_ELEMENT_DD;
+      } else if (any.holds<fuse::num::qd>()) {
+        element_type = FUSE_ELEMENT_QD;
+      } else if (any.holds<fuse::num::posit16>()) {
+        element_type = FUSE_ELEMENT_POSIT16;
+      } else if (any.holds<fuse::num::posit32>()) {
+        element_type = FUSE_ELEMENT_POSIT32;
+      } else {
+        return fail(&c, FUSE_ERR_UNSUPPORTED, "E-ABI-VIEW-ELEMENT",
+                   "fuse_view_field: the field holds " +
+                       std::string(any.value_type().name) +
+                       " values, which have no FUSE_ELEMENT_* code");
+      }
+      data = any.data();
+      count = static_cast<std::uint64_t>(any.layout().count);
     }
 
     const fuse::FieldSpec& spec = c.graph.field(field);
@@ -975,20 +1051,31 @@ fuse_status impl_view_field(fuse_ctx* ctx, const fuse_field_ref* in,
     // iteration.cpp).
     out->struct_size   = sizeof(fuse_field_view);
     out->handle         = in->handle;
-    out->element_type   = FUSE_ELEMENT_F64;
+    out->element_type   = element_type;
     out->memspace       = FUSE_MEMSPACE_HOST;
     out->ownership      = FUSE_OWNERSHIP_OWNED;
-    out->components     = spec.components *
+    // The graph counts binary64 values; the view counts values of the element type:
+    // a double-double value is two of the graph's, a quad-double value four.
+    const std::int32_t limbs = element_type == FUSE_ELEMENT_DD ? 2
+                               : element_type == FUSE_ELEMENT_QD ? 4 : 1;
+    out->components     = spec.components / limbs *
                           static_cast<int32_t>(window_samples > 0 ? window_samples : 1);
     out->count          = entities;
     out->owned_count    = out->count;
     out->stride         = out->components;
     out->component_stride = 1;
-    out->data           = const_cast<double*>(data);
+    out->data           = const_cast<void*>(data);
     if (struct_size_covers(declared_out_size,
                            offsetof(fuse_field_view, window_samples) +
                                sizeof(out->window_samples))) {
       out->window_samples = window_samples;
+    }
+    if (struct_size_covers(declared_out_size,
+                           offsetof(fuse_field_view, gradient_size) +
+                               sizeof(out->gradient_size))) {
+      const fuse::Result<fuse::AnyFieldRef> declared = c.fields.get_any(field);
+      out->reserved      = 0;
+      out->gradient_size = declared.ok() ? declared.value().gradient_size() : 0;
     }
     return FUSE_OK;
   });
@@ -1226,7 +1313,7 @@ fuse_status impl_initialize_local(fuse_ctx* ctx, const fuse_null*, fuse_null*) {
         c.components.add(std::move(comp));
         c.ext[i].in_process = true;
       } else {
-        auto ext_comp = std::make_unique<ExternalStepComponent>(name);
+        auto ext_comp = std::make_unique<ExternalStepComponent>(name, &c.adjoint_views);
         const fuse::Result<void> r = ext_comp->register_fields(c.fields, c.graph);
         if (!r.ok()) {
           return fail(&c, FUSE_ERR_RUNTIME, std::string(r.error().code),
@@ -2692,6 +2779,364 @@ fuse_status impl_run(fuse_ctx* ctx, const fuse_run_request* in, fuse_null* out) 
   if (!is_live(ctx)) return local;
   return with_ctx(ctx, [&](fuse_ctx& c) -> fuse_status {
     return reconcile_collective_status(c, local, "fuse_run");
+  });
+}
+
+// ------------------------------------------------------- reverse mode
+//
+// The adjoint of a run through this ABI (docs/user/c-abi.md, "Reverse mode"; docs/dev/abi-design.md,
+// "Adjoint"). The caller registers the adjoint array of each field of a component it drives
+// (register_adjoint_field), initializes the reverse sweep (initialize_adjoint), seeds the adjoint of
+// the final state through view_adjoint_field, and reverses the periods newest first: with run_adjoint
+// when nothing on this process is driven from outside, else step by step, begin_adjoint_step and
+// end_adjoint_step bracketing the caller's own reverse of each of its steps, as begin_step and
+// end_step bracket the forward one. The sweep itself is the Runner's (Runner::resume_period_adjoint).
+
+/// True when a component driven through begin_step()/end_step() is hosted on this process.
+[[nodiscard]] bool external_hosted_here(fuse_ctx& c) {
+  for (std::size_t i = 0; i < c.ext.size(); ++i) {
+    const fuse::ComponentId cid{static_cast<std::uint32_t>(i)};
+    if (cid.value() < c.graph.component_count() &&
+        c.graph.component(cid).kind == fuse::ComponentKind::Coupler) {
+      continue;
+    }
+    if (c.ext[i].in_process) continue;
+    if (c.runner->hosts_component(cid)) return true;
+  }
+  return false;
+}
+
+fuse_status impl_register_adjoint_field(fuse_ctx* ctx, const fuse_field_view* in, fuse_null*) {
+  return with_ctx(ctx, [&](fuse_ctx& c) -> fuse_status {
+    if (c.state != fuse_ctx::State::Initialized || c.adjoint_initialized) {
+      return fail(&c, FUSE_ERR_STATE, "E-ABI-ADJOINT-REGISTER-STATE",
+                  "fuse_register_adjoint_field: must be called after fuse_initialize and before "
+                  "fuse_initialize_adjoint");
+    }
+    const fuse_status sz = check_struct_size(in);
+    if (sz != FUSE_OK) return sz;
+    if (in->element_type != FUSE_ELEMENT_F64) {
+      return fail(&c, FUSE_ERR_UNSUPPORTED, "E-ABI-ADJOINT-REGISTER-ELEMENT",
+                  "fuse_register_adjoint_field: an adjoint array is FUSE_ELEMENT_F64 (binary64) values; "
+                  "the reverse sweep is not implemented for the storage and arithmetic element types");
+    }
+    if (in->memspace != FUSE_MEMSPACE_HOST) {
+      return fail(&c, FUSE_ERR_UNSUPPORTED, "E-ABI-ADJOINT-REGISTER-MEMSPACE",
+                  "fuse_register_adjoint_field: only FUSE_MEMSPACE_HOST is supported through this ABI");
+    }
+    if (in->handle < 0 || static_cast<std::uint32_t>(in->handle) >= c.graph.field_count()) {
+      return fail(&c, FUSE_ERR_NOTFOUND, "E-ABI-ADJOINT-REGISTER-HANDLE",
+                  "fuse_register_adjoint_field: handle does not name a field in the loaded graph");
+    }
+    const fuse::FieldId id{static_cast<std::uint32_t>(in->handle)};
+    const fuse::ComponentId owner = c.graph.owner_of(id);
+    if (owner.value() >= c.ext.size() || c.ext[owner.value()].in_process) {
+      return fail(&c, FUSE_ERR_INVALID, "E-ABI-ADJOINT-REGISTER-OWNER",
+                  "fuse_register_adjoint_field: field '" + c.graph.field(id).name +
+                      "' belongs to a component FUSE hosts, whose adjoint arrays are FUSE's own; "
+                      "view them with fuse_view_adjoint_field");
+    }
+    const fuse::Result<fuse::AnyFieldRef> forward = c.fields.get_any(id);
+    if (!forward.ok()) {
+      return fail(&c, FUSE_ERR_INVALID, "E-ABI-ADJOINT-REGISTER-FIELD",
+                  "fuse_register_adjoint_field: field '" + c.graph.field(id).name +
+                      "' has no array registered for the run itself; fuse_register_field comes first");
+    }
+    const fuse::Layout layout{.stride = static_cast<std::size_t>(in->stride),
+                              .component_stride = static_cast<std::size_t>(in->component_stride),
+                              .count = static_cast<std::size_t>(in->count),
+                              .components = in->components};
+    const fuse::Layout& fwd = forward.value().layout();
+    if (layout.count != fwd.count || layout.components != fwd.components || layout.stride != fwd.stride ||
+        layout.component_stride != fwd.component_stride) {
+      return fail(&c, FUSE_ERR_INVALID, "E-ABI-ADJOINT-REGISTER-LAYOUT",
+                  "fuse_register_adjoint_field: the adjoint array of field '" + c.graph.field(id).name +
+                      "' must have the layout of the array registered for the field itself (count, "
+                      "components, stride and component_stride)");
+    }
+    if (in->data == nullptr && in->count > 0) {
+      return fail(&c, FUSE_ERR_INVALID, "E-ABI-ADJOINT-REGISTER-NULL",
+                  "fuse_register_adjoint_field: data is null for a field with entities");
+    }
+    if (!c.adjoint_views.emplace(id.value(),
+                                 fuse::FieldRef(static_cast<double*>(in->data), layout,
+                                                fuse::MemorySpace::Host))
+             .second) {
+      return fail(&c, FUSE_ERR_INVALID, "E-ABI-ADJOINT-REGISTER-DUPLICATE",
+                  "fuse_register_adjoint_field: field '" + c.graph.field(id).name +
+                      "' already has an adjoint array");
+    }
+    return FUSE_OK;
+  });
+}
+
+fuse_status impl_initialize_adjoint_local(fuse_ctx* ctx, const fuse_null*, fuse_null*) {
+  return with_ctx(ctx, [&](fuse_ctx& c) -> fuse_status {
+    if (c.state != fuse_ctx::State::Initialized || !c.runner.has_value()) {
+      return fail(&c, FUSE_ERR_STATE, "E-ABI-ADJOINT-STATE",
+                  "fuse_initialize_adjoint: the context is not initialized");
+    }
+    if (c.adjoint_initialized) {
+      return fail(&c, FUSE_ERR_STATE, "E-ABI-ADJOINT-STATE",
+                  "fuse_initialize_adjoint: the reverse sweep is already initialized");
+    }
+    c.adjoint_fields = fuse::FieldRegistry{};
+    for (auto& comp : c.components) {
+      fuse::AdjointComponent* adj = comp.adjoint();
+      if (adj == nullptr) continue;  // the Runner refuses a component that steps and has none, by name
+      const fuse::Result<void> r = adj->register_adjoint_fields(c.adjoint_fields, c.graph);
+      if (!r.ok()) return fail(&c, FUSE_ERR_RUNTIME, std::string(r.error().code), r.error().message);
+    }
+    const fuse::Result<void> r = c.runner->initialize_adjoint(c.components, c.adjoint_fields);
+    if (!r.ok()) return fail(&c, FUSE_ERR_RUNTIME, std::string(r.error().code), r.error().message);
+    c.adjoint_initialized = true;
+    c.periods_reversed = 0;
+    c.next_adjoint_request.reset();
+    c.open_adjoint_component.reset();
+    c.open_adjoint_request.reset();
+    return FUSE_OK;
+  });
+}
+
+fuse_status impl_view_adjoint_field(fuse_ctx* ctx, const fuse_field_ref* in, fuse_field_view* out) {
+  return with_ctx(ctx, [&](fuse_ctx& c) -> fuse_status {
+    const fuse_status sz = check_struct_size(in);
+    if (sz != FUSE_OK) return sz;
+    if (out == nullptr) return FUSE_ERR_INVALID;
+    const fuse_status osz = check_struct_size(out);
+    if (osz != FUSE_OK) return osz;
+    const std::uint32_t declared_out_size = out->struct_size;
+    if (!c.adjoint_initialized) {
+      return fail(&c, FUSE_ERR_STATE, "E-ABI-ADJOINT-STATE",
+                  "fuse_view_adjoint_field: fuse_initialize_adjoint has not run");
+    }
+    if (in->handle < 0 || static_cast<std::uint32_t>(in->handle) >= c.graph.field_count()) {
+      return fail(&c, FUSE_ERR_NOTFOUND, "E-ABI-VIEW-FIELD-HANDLE",
+                  "fuse_view_adjoint_field: handle does not name a field in the loaded graph");
+    }
+    const fuse::FieldId field{static_cast<std::uint32_t>(in->handle)};
+    const fuse::Result<fuse::FieldRef> ref = c.adjoint_fields.get_scalars(field);
+    if (!ref.ok()) {
+      return fail(&c, FUSE_ERR_NOTFOUND, std::string(ref.error().code), ref.error().message);
+    }
+    fuse::FieldRef view = ref.value();  // by value: data() is not const
+    if (view.space() != fuse::MemorySpace::Host) {
+      return fail(&c, FUSE_ERR_UNSUPPORTED, "E-ABI-VIEW-ADJOINT-MEMSPACE",
+                  "fuse_view_adjoint_field: the adjoint array is not in host memory");
+    }
+    out->struct_size = sizeof(fuse_field_view);
+    out->handle = in->handle;
+    out->element_type = FUSE_ELEMENT_F64;
+    out->memspace = FUSE_MEMSPACE_HOST;
+    out->ownership = FUSE_OWNERSHIP_OWNED;
+    out->components = view.layout().components;
+    out->count = view.layout().count;
+    out->owned_count = out->count;
+    out->stride = static_cast<std::int64_t>(view.layout().stride);
+    out->component_stride = static_cast<std::int64_t>(view.layout().component_stride);
+    out->data = view.data();
+    if (struct_size_covers(declared_out_size,
+                           offsetof(fuse_field_view, window_samples) + sizeof(out->window_samples))) {
+      out->window_samples = 0;
+    }
+    if (struct_size_covers(declared_out_size,
+                           offsetof(fuse_field_view, gradient_size) + sizeof(out->gradient_size))) {
+      out->reserved = 0;
+      out->gradient_size = 0;
+    }
+    return FUSE_OK;
+  });
+}
+
+fuse_status impl_run_adjoint_local(fuse_ctx* ctx, const fuse_run_request* in, fuse_null*) {
+  return with_ctx(ctx, [&](fuse_ctx& c) -> fuse_status {
+    if (c.state != fuse_ctx::State::Initialized || !c.adjoint_initialized) {
+      return fail(&c, FUSE_ERR_STATE, "E-ABI-ADJOINT-STATE",
+                  "fuse_run_adjoint: fuse_initialize_adjoint has not run");
+    }
+    const fuse_status sz = check_struct_size(in);
+    if (sz != FUSE_OK) return sz;
+    if (external_hosted_here(c)) {
+      return fail(&c, FUSE_ERR_UNSUPPORTED, "E-ABI-RUN-EXTERNAL",
+                  "fuse_run_adjoint: an externally driven component (fuse_begin_step/fuse_end_step) is "
+                  "hosted on this process; reverse the run with fuse_begin_adjoint_step/"
+                  "fuse_end_adjoint_step instead");
+    }
+    if (in->periods < -1) {
+      return fail(&c, FUSE_ERR_INVALID, "E-ABI-RUN-PERIODS",
+                  "fuse_run_adjoint: periods must be >= 0, or exactly -1 for \"every period not yet "
+                  "reversed\"");
+    }
+    const std::int64_t n = in->periods == -1 ? c.periods_completed - c.periods_reversed : in->periods;
+    for (std::int64_t i = 0; i < n; ++i) {
+      const fuse::Result<void> r = c.runner->run_period_adjoint(c.components);
+      if (!r.ok()) return fail(&c, FUSE_ERR_RUNTIME, std::string(r.error().code), r.error().message);
+      ++c.periods_reversed;
+    }
+    return FUSE_OK;
+  });
+}
+
+/// What begin_adjoint_step() and end_adjoint_step() report of a forward step: the window, step and
+/// iteration it had, as end_step() echoes them, and the members appended since (next_component,
+/// step_opened, period, delivery_*) only when the caller's struct_size covers them.
+void fill_adjoint_report(fuse_step_report* out, std::uint32_t declared_out_size,
+                         const fuse::ExternalAdvanceRequest& req, std::int32_t next_component,
+                         std::int32_t period) {
+  out->struct_size = sizeof(fuse_step_report);
+  out->requires_checkpoint = 0;
+  out->requires_restore = 0;
+  out->step = req.ctx.step;
+  out->iteration = req.ctx.iteration;
+  out->reserved = 0;
+  out->t_begin = to_abi_time(req.ctx.t_begin);
+  out->t_end = to_abi_time(req.ctx.t_end);
+  if (struct_size_covers(declared_out_size,
+                         offsetof(fuse_step_report, next_component) + sizeof(out->next_component))) {
+    out->next_component = next_component;
+  }
+  if (struct_size_covers(declared_out_size,
+                         offsetof(fuse_step_report, step_opened) + sizeof(out->step_opened))) {
+    out->step_opened = 1;
+  }
+  if (struct_size_covers(declared_out_size, offsetof(fuse_step_report, period) + sizeof(out->period))) {
+    out->period = period;
+  }
+  if (struct_size_covers(declared_out_size,
+                         offsetof(fuse_step_report, delivery_pending) + sizeof(out->delivery_pending))) {
+    out->delivery_pending = 0;
+  }
+  if (struct_size_covers(declared_out_size,
+                         offsetof(fuse_step_report, delivery_field) + sizeof(out->delivery_field))) {
+    out->delivery_field = -1;
+  }
+}
+
+fuse_status impl_begin_adjoint_step_local(fuse_ctx* ctx, const fuse_step_request* in,
+                                          fuse_step_report* out) {
+  return with_ctx(ctx, [&](fuse_ctx& c) -> fuse_status {
+    const fuse_status sz = check_struct_size(in);
+    if (sz != FUSE_OK) return sz;
+    if (out == nullptr) return FUSE_ERR_INVALID;
+    const fuse_status osz = check_struct_size(out);
+    if (osz != FUSE_OK) return osz;
+    const std::uint32_t declared_out_size = out->struct_size;
+    fuse::ComponentId cid;
+    std::string err_code, err_message;
+    if (!resolve_external(c, in->component, "fuse_begin_adjoint_step", &cid, &err_code, &err_message)) {
+      return fail(&c, FUSE_ERR_STATE, err_code, err_message);
+    }
+    if (!c.adjoint_initialized) {
+      return fail(&c, FUSE_ERR_STATE, "E-ABI-ADJOINT-STATE",
+                  "fuse_begin_adjoint_step: fuse_initialize_adjoint has not run");
+    }
+    if (c.open_adjoint_component.has_value()) {
+      return fail(&c, FUSE_ERR_STATE, "E-ABI-STEP-ALREADY-OPEN",
+                  std::string("fuse_begin_adjoint_step: a reverse step is already open on component '") +
+                      c.graph.component(*c.open_adjoint_component).name +
+                      "'; call fuse_end_adjoint_step() first");
+    }
+    if (!c.next_adjoint_request.has_value()) {
+      fuse::Result<std::optional<fuse::ExternalAdvanceRequest>> outcome =
+          c.runner->resume_period_adjoint(c.components);
+      if (!outcome.ok()) {
+        return fail(&c, FUSE_ERR_RUNTIME, std::string(outcome.error().code), outcome.error().message);
+      }
+      if (!outcome.value().has_value()) {
+        ++c.periods_reversed;  // the Runner reversed a period with no step to hand over
+        return fail(&c, FUSE_ERR_STATE, "E-ABI-STEP-ORDER",
+                    "fuse_begin_adjoint_step: the period has no externally driven step left to reverse");
+      }
+      c.next_adjoint_request = std::move(outcome.value());
+    }
+    if (c.next_adjoint_request->component != in->component) {
+      // nothing was reversed: the request stays for the correctly named call that follows
+      return fail(&c, FUSE_ERR_STATE, "E-ABI-STEP-ORDER",
+                  std::string("fuse_begin_adjoint_step: component '") + in->component +
+                      "' is out of turn; the reverse sweep expects '" + c.next_adjoint_request->component +
+                      "' next");
+    }
+    c.open_adjoint_request = std::move(c.next_adjoint_request);
+    c.next_adjoint_request.reset();
+    c.open_adjoint_component = cid;
+    fill_adjoint_report(out, declared_out_size, *c.open_adjoint_request, -2,
+                        static_cast<std::int32_t>(c.periods_completed - 1 - c.periods_reversed));
+    return FUSE_OK;
+  });
+}
+
+fuse_status impl_end_adjoint_step_local(fuse_ctx* ctx, const fuse_step_request* in,
+                                        fuse_step_report* out) {
+  return with_ctx(ctx, [&](fuse_ctx& c) -> fuse_status {
+    const fuse_status sz = check_struct_size(in);
+    if (sz != FUSE_OK) return sz;
+    if (out == nullptr) return FUSE_ERR_INVALID;
+    const fuse_status osz = check_struct_size(out);
+    if (osz != FUSE_OK) return osz;
+    const std::uint32_t declared_out_size = out->struct_size;
+    fuse::ComponentId cid;
+    std::string err_code, err_message;
+    if (!resolve_external(c, in->component, "fuse_end_adjoint_step", &cid, &err_code, &err_message)) {
+      return fail(&c, FUSE_ERR_STATE, err_code, err_message);
+    }
+    if (!c.adjoint_initialized || !c.open_adjoint_component.has_value() || *c.open_adjoint_component != cid) {
+      return fail(&c, FUSE_ERR_STATE, "E-ABI-STEP-NOT-OPEN",
+                  std::string("fuse_end_adjoint_step: no reverse step is open on component '") +
+                      in->component + "'");
+    }
+    const fuse::ExternalAdvanceRequest closed = std::move(*c.open_adjoint_request);
+    const std::int32_t period = static_cast<std::int32_t>(c.periods_completed - 1 - c.periods_reversed);
+    c.open_adjoint_request.reset();
+    c.open_adjoint_component.reset();
+    fuse::Result<std::optional<fuse::ExternalAdvanceRequest>> outcome =
+        c.runner->resume_period_adjoint(c.components);
+    if (!outcome.ok()) {
+      c.next_adjoint_request.reset();
+      return fail(&c, FUSE_ERR_RUNTIME, std::string(outcome.error().code), outcome.error().message);
+    }
+    std::int32_t next_component = -1;
+    if (outcome.value().has_value()) {
+      const auto next = c.graph.find_component(outcome.value()->component);
+      next_component = next.has_value() ? static_cast<std::int32_t>(next->value()) : -2;
+      c.next_adjoint_request = std::move(outcome.value());
+    } else {
+      ++c.periods_reversed;
+      c.next_adjoint_request.reset();
+    }
+    fill_adjoint_report(out, declared_out_size, closed, next_component, period);
+    return FUSE_OK;
+  });
+}
+
+fuse_status impl_initialize_adjoint(fuse_ctx* ctx, const fuse_null* in, fuse_null* out) {
+  const fuse_status local = impl_initialize_adjoint_local(ctx, in, out);
+  if (!is_live(ctx)) return local;
+  return with_ctx(ctx, [&](fuse_ctx& c) -> fuse_status {
+    return reconcile_collective_status(c, local, "fuse_initialize_adjoint");
+  });
+}
+
+fuse_status impl_run_adjoint(fuse_ctx* ctx, const fuse_run_request* in, fuse_null* out) {
+  const fuse_status local = impl_run_adjoint_local(ctx, in, out);
+  if (!is_live(ctx)) return local;
+  return with_ctx(ctx, [&](fuse_ctx& c) -> fuse_status {
+    return reconcile_collective_status(c, local, "fuse_run_adjoint");
+  });
+}
+
+fuse_status impl_begin_adjoint_step(fuse_ctx* ctx, const fuse_step_request* in, fuse_step_report* out) {
+  const fuse_status local = impl_begin_adjoint_step_local(ctx, in, out);
+  if (!is_live(ctx)) return local;
+  return with_ctx(ctx, [&](fuse_ctx& c) -> fuse_status {
+    return reconcile_collective_status(c, local, "fuse_begin_adjoint_step");
+  });
+}
+
+fuse_status impl_end_adjoint_step(fuse_ctx* ctx, const fuse_step_request* in, fuse_step_report* out) {
+  const fuse_status local = impl_end_adjoint_step_local(ctx, in, out);
+  if (!is_live(ctx)) return local;
+  return with_ctx(ctx, [&](fuse_ctx& c) -> fuse_status {
+    return reconcile_collective_status(c, local, "fuse_end_adjoint_step");
   });
 }
 
