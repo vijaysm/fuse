@@ -85,26 +85,84 @@ typedef struct fuse_participant_abi_v1 {
   /* field in the loaded graph */
   fuse_status (*view_field)(fuse_ctx* ctx, const fuse_field_ref* in, fuse_field_view* out);
 
-  /* a local, non-collective read of this context's communicator and */
-  /* communicator_set, already agreed identically on every rank by setup()'s */
-  /* collective (connect.hpp); lets a Connect-mode (accept/connect) caller */
-  /* recover the merged base communicator setup() formed internally. Legal */
-  /* before setup() (formed=0, communicator=0) and for every launch mode: */
-  /* InProcess/Plugin/Mpmd callers get back their own, already trivial, base */
-  /* communicator the same way */
+  /*, appended 2026-10-13 -- LAST, per this table's own */
+  /* append-only rule above, same reason view_field states for itself: a local, */
+  /* non-collective read of this context's own c.communicator/ */
+  /* c.communicator_set, already agreed identically on every rank by setup()'s */
+  /* own collective (connect.hpp's own module comment); lets a Connect-mode */
+  /* (accept/connect) caller recover the merged base communicator setup() */
+  /* formed internally and never exposed before this entry, the gap own */
+  /* \"what remains\" item 3 named. Legal before setup() (formed=0, */
+  /* communicator=0) and for every launch mode, not Connect alone: */
+  /* InProcess/Plugin/Mpmd callers get back their own, already-trivial base */
+  /* communicator the same way. */
   fuse_status (*base_communicator)(fuse_ctx* ctx, const fuse_null* in, fuse_base_communicator_info* out);
 
-  /* an externally driven (ABI) participant's way to ask that a restart point */
-  /* be taken: sets a flag (fuse::Runner::request_restart_point()) and never */
-  /* writes a file itself, because write_restart_point() needs a RestartWriter */
-  /* the embedding host process configures (a file path, an HDF5 layout), which */
-  /* this entry's fixed (ctx, in, out) shape cannot carry. The embedding host */
-  /* polls fuse::Runner::take_restart_point_request() after every */
-  /* run_period()/resume_period() call and decides whether, and how, to act. */
-  /* Idempotent: several calls before the host polls leave exactly one pending */
-  /* request. Legal any time after initialize(); has no effect before it, since */
-  /* no Runner exists yet to hold the flag */
+  /* docs/dev/restart.md round 2, item 4 -- appended LAST per this table's own */
+  /* append-only rule above. An externally-driven (ABI) participant's own way */
+  /* to ask that a restart point be taken: SETS A FLAG */
+  /* (fuse::Runner::request_restart_point()), never writes a file itself -- */
+  /* write_restart_point() needs a RestartWriter the embedding host process */
+  /* configures (a file path, which HDF5 layout), which this entry's fixed */
+  /* (ctx, in, out) shape cannot carry. The embedding host polls */
+  /* fuse::Runner::take_restart_point_request() after every */
+  /* run_period()/resume_period() call and decides whether, and how, to act on */
+  /* it; a participant that never polls back its own host's restart cadence has */
+  /* asked for nothing more than that one bit of intent. Idempotent: calling */
+  /* this more than once before the host polls leaves exactly one pending */
+  /* request, never a queue. Legal at any time after initialize(); has no */
+  /* effect before it, since no Runner exists yet to hold the flag. */
   fuse_status (*request_restart_point)(fuse_ctx* ctx, const fuse_null* in, fuse_null* out);
+
+  /* reverse mode, appended LAST per this table's own append-only rule */
+  /* (docs/user/c-abi.md, \"Reverse mode\"): after initialize and before */
+  /* initialize_adjoint, once for each field of a component this process drives */
+  /* through begin_step/end_step: binds the caller's own ADJOINT array of that */
+  /* field (the derivative of the scalar being differentiated with respect to */
+  /* each entry), zero or holding the seed, with the layout and binary64 values */
+  /* of the array register_field was given for it. The adjoint arrays of the */
+  /* fields of a component FUSE hosts (a provider plugin) are FUSE's own; read */
+  /* and seed them through view_adjoint_field */
+  fuse_status (*register_adjoint_field)(fuse_ctx* ctx, const fuse_field_view* in, fuse_null* out);
+
+  /* reverse mode: after initialize and after every register_adjoint_field; */
+  /* checks the whole run can be reversed (every operator has an adjoint; every */
+  /* component that steps has adjoint arrays, E-ADJ-*) and allocates the */
+  /* adjoint arrays FUSE owns; COLLECTIVE */
+  fuse_status (*initialize_adjoint)(fuse_ctx* ctx, const fuse_null* in, fuse_null* out);
+
+  /* reverse mode: after initialize_adjoint; a view of the adjoint array of the */
+  /* field, binary64 in host memory: the one register_adjoint_field was given, */
+  /* or the one FUSE allocated for a component it hosts. The seed is written */
+  /* through it before the first period is reversed and the result read from it */
+  /* afterwards */
+  fuse_status (*view_adjoint_field)(fuse_ctx* ctx, const fuse_field_ref* in, fuse_field_view* out);
+
+  /* reverse mode: reverses `periods` forward periods, newest first (-1 for */
+  /* every period not yet reversed); FUSE_ERR_UNSUPPORTED (E-ABI-RUN-EXTERNAL) */
+  /* when a component driven from outside is hosted here, which */
+  /* begin_adjoint_step/end_adjoint_step reverse instead; COLLECTIVE */
+  fuse_status (*run_adjoint)(fuse_ctx* ctx, const fuse_run_request* in, fuse_null* out);
+
+  /* reverse mode, the reverse of begin_step: returns when the newest forward */
+  /* step of the named component not yet reversed is next, with every later */
+  /* operation already reversed, so the adjoint arrays of its Provides fields */
+  /* hold the adjoint of the values the step left; the report carries the */
+  /* window, step and iteration of that forward step. Reverse the step in the */
+  /* registered adjoint arrays (overwrite those of the Provides fields with the */
+  /* adjoint before the step, ADD to those of the Requires fields), then call */
+  /* end_adjoint_step; COLLECTIVE over the component's processes */
+  fuse_status (*begin_adjoint_step)(fuse_ctx* ctx, const fuse_step_request* in, fuse_step_report* out);
+
+  /* reverse mode, the reverse of end_step: reverses everything below that step */
+  /* in the forward order, up to the next step of a component driven from */
+  /* outside, which the report's next_component names (the graph-declared */
+  /* component index), or up to the start of the period, when next_component is */
+  /* -1: the period is reversed and the next begin_adjoint_step opens the one */
+  /* before it. The report echoes the window, step and iteration of the step */
+  /* just closed, with step_opened 1 and period the index of its period, as */
+  /* end_step does; COLLECTIVE over the component's processes */
+  fuse_status (*end_adjoint_step)(fuse_ctx* ctx, const fuse_step_request* in, fuse_step_report* out);
 } fuse_participant_abi_v1;
 
 /* THE ONE EXPORTED SYMBOL. Returns the table for `abi_version`, or NULL

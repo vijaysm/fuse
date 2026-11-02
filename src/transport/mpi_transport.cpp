@@ -1267,4 +1267,61 @@ Result<void> MpiTransport::move(const double* src, double* dst,
   return Result<void>::success();
 }
 
+// ---------------------------------------------------------------------------
+// move_adjoint
+// ---------------------------------------------------------------------------
+
+Result<void> MpiTransport::move_adjoint(const double* dst_bar, double* src_bar,
+                                        std::size_t n) {
+  Impl* p = impl_.get();
+  if (p == nullptr || !p->planned) {
+    return Failure{"E-TRANSPORT-UNPLANNED",
+                 "move_adjoint() before a successful build_plan()"};
+  }
+  if (n != p->p_total) {
+    return Failure{"E-TRANSPORT-SIZE",
+                 "move_adjoint of " + std::to_string(n) + " doubles, but the plan for "
+                 "this rank covers exactly " + std::to_string(p->p_total) +
+                     " (elements * components)"};
+  }
+  if (n != 0 && (dst_bar == nullptr || src_bar == nullptr)) {
+    return Failure{"E-TRANSPORT-NULL",
+                 "mpi transport given a null pointer for " +
+                     std::to_string(n) + " doubles"};
+  }
+
+  const auto nc = static_cast<std::size_t>(std::max(p->p_components, 1));
+
+  // Pack the adjoint of the destination in the order of the receive buffer.
+  double* rb = p->recv_buf.data();
+  for (std::size_t k = 0; k < p->recv_index.size(); ++k) {
+    std::memcpy(rb + k * nc, dst_bar + p->recv_index[k] * nc, nc * sizeof(double));
+  }
+
+  // The exchange of move() backwards: what this rank received is now what it
+  // sends, to the ranks it received from, and what it sent is what it receives.
+  double* sb = p->send_buf.data();
+  const int rc = MPI_Alltoallv(rb, p->recvcounts.data(), p->rdispls.data(),
+                               MPI_DOUBLE, sb, p->sendcounts.data(),
+                               p->sdispls.data(), MPI_DOUBLE, p->comm);
+  if (rc != MPI_SUCCESS) {
+    return Failure{"E-TRANSPORT-MPI",
+                 "MPI_Alltoallv failed: " + mpi_error_text(rc)};
+  }
+
+  // Add into the sources. An entry sent to several ranks appears several times
+  // in `send_index`, and each occurrence brings the adjoint of one copy.
+  std::fill(src_bar, src_bar + n, 0.0);
+  for (std::size_t k = 0; k < p->send_index.size(); ++k) {
+    double* const target = src_bar + p->send_index[k] * nc;
+    for (std::size_t c = 0; c < nc; ++c) target[c] += sb[k * nc + c];
+  }
+  // The same-rank matches of a partially overlapping plan, which never travelled.
+  for (const auto& [from, to] : p->local_copy) {
+    double* const target = src_bar + from * nc;
+    for (std::size_t c = 0; c < nc; ++c) target[c] += dst_bar[to * nc + c];
+  }
+  return Result<void>::success();
+}
+
 }  // namespace fuse

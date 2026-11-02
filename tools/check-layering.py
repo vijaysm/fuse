@@ -109,7 +109,9 @@ ALLOWED_PUBLIC_THIRD_PARTY = {
     # headers (Kokkos_Macros for KOKKOS_IF_ON_*, Kokkos_Abort for
     # Kokkos::abort), not Kokkos_Core; both are allowed so the base layer does
     # not pay the full core include for one macro (pass-3 review, N-base-model-3).
-    "base": {"Kokkos_Core.hpp", "Kokkos_Macros.hpp", "Kokkos_Abort.hpp"},
+    # portable.hpp adds Kokkos_BitManipulation.hpp for Kokkos::bit_cast, the one
+    # bit reinterpretation that is defined in device code (value types in `model`).
+    "base": {"Kokkos_Core.hpp", "Kokkos_Macros.hpp", "Kokkos_Abort.hpp", "Kokkos_BitManipulation.hpp"},
     # The linalg facade exists so that a backend is swappable; naming one in
     # its public header would defeat that, so nothing third-party is allowed.
     "linalg": set(),

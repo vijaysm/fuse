@@ -1,0 +1,102 @@
+# Mutations for provider plugin fields in every element type in host memory (FUSE_ELEMENT_F32, BF16, F16,
+# DD, QD) and their gradient_size (plans/2026-10-22-universal-number-types.md, stage U4).
+
+[[mutation]]
+id = "abi-provider-binds-double-double-as-binary64"
+area = "abi_provider_typed"
+describes = "a provider's FUSE_ELEMENT_DD field is registered as doubles"
+file = "src/abi/provider_adapter.cpp"
+old = "        case FUSE_ELEMENT_DD:   bound = bind_as(std::type_identity<fuse::num::dd>{}); break;"
+new = "        case FUSE_ELEMENT_DD:   bound = bind_as(std::type_identity<double>{}); break;"
+target = "fuse_abi_typed_provider_test"
+test = "abi.typed_provider"
+
+[[mutation]]
+id = "abi-provider-sizes-double-double-as-binary64"
+area = "abi_provider_typed"
+describes = "the storage allocated for a provider's double-double field holds half the bytes it needs"
+file = "src/abi/provider_adapter.cpp"
+old = "        case FUSE_ELEMENT_DD:   element_size = sizeof(fuse::num::dd); break;"
+new = "        case FUSE_ELEMENT_DD:   element_size = sizeof(double); break;"
+target = "fuse_abi_typed_provider_test"
+test = "abi.typed_provider"
+
+[[mutation]]
+id = "abi-provider-rounds-the-storage-down"
+area = "abi_provider_typed"
+describes = "the storage of a provider field is its byte count divided by eight, rounded down"
+file = "src/abi/provider_adapter.cpp"
+old = "        storage_[i].assign((bytes + sizeof(double) - 1) / sizeof(double), 0.0);"
+new = "        storage_[i].assign(bytes / sizeof(double), 0.0);"
+target = "fuse_abi_typed_provider_test"
+test = "abi.typed_provider"
+
+[[mutation]]
+id = "abi-provider-counts-two-limbs-in-a-quad-double"
+area = "abi_provider_typed"
+describes = "a quad-double row is taken for a pair of binary64 numbers per value"
+file = "src/abi/provider_adapter.cpp"
+old = "row.element_type == FUSE_ELEMENT_QD ? 4 : 1;"
+new = "row.element_type == FUSE_ELEMENT_QD ? 2 : 1;"
+target = "fuse_abi_typed_provider_test"
+test = "abi.typed_provider"
+
+[[mutation]]
+id = "abi-provider-ignores-the-gradient-of-a-row"
+area = "abi_provider_typed"
+describes = "a gradient_size a provider reports is not declared on the field"
+file = "src/abi/provider_adapter.cpp"
+old = "      if (row.gradient_size > 0) {\n        const fuse::Result<void> declared = registry.declare_gradient"
+new = "      if (false && row.gradient_size > 0) {\n        const fuse::Result<void> declared = registry.declare_gradient"
+target = "fuse_abi_typed_provider_test"
+test = "abi.typed_provider"
+
+[[mutation]]
+id = "abi-provider-accepts-device-storage-of-another-type"
+area = "abi_provider_typed"
+describes = "a device-resident provider field of a type other than binary64 is not refused for its type"
+file = "src/abi/provider_adapter.cpp"
+old = "      if (row.element_type != FUSE_ELEMENT_F64 && row.memspace == FUSE_MEMSPACE_DEVICE) {"
+new = "      if (false) {"
+target = "fuse_abi_typed_provider_test"
+test = "abi.typed_provider"
+
+[[mutation]]
+id = "abi-provider-hands-the-plugin-binary64-components"
+area = "abi_provider_typed"
+describes = "the plugin's view of a double-double field counts the graph's binary64 numbers as its components"
+file = "src/abi/provider_adapter.cpp"
+old = "        view.components        = values_per_entity;"
+new = "        view.components        = spec.components;"
+target = "fuse_abi_typed_provider_test"
+test = "abi.typed_provider"
+
+[[mutation]]
+id = "abi-provider-accepts-an-unknown-element-type"
+area = "abi_provider_typed"
+describes = "a row whose element type is in no list is bound as binary64"
+file = "src/abi/provider_adapter.cpp"
+old = "      if (element_size == 0) {"
+new = "      if (false) {"
+target = "fuse_abi_typed_provider_test"
+test = "abi.typed_provider"
+
+[[mutation]]
+id = "abi-provider-binds-posit16-as-binary16"
+area = "abi_provider_typed"
+describes = "a provider's FUSE_ELEMENT_POSIT16 field is bound as binary16, so the runtime reads posit patterns as half precision"
+file = "src/abi/provider_adapter.cpp"
+old = "        case FUSE_ELEMENT_POSIT16: bound = bind_as(std::type_identity<fuse::num::posit16>{}); break;"
+new = "        case FUSE_ELEMENT_POSIT16: bound = bind_as(std::type_identity<fuse::binary16>{}); break;"
+target = "fuse_abi_typed_provider_test"
+test = "abi.typed_provider"
+
+[[mutation]]
+id = "abi-provider-sizes-a-posit32-field-as-a-posit16"
+area = "abi_provider_typed"
+describes = "a provider's FUSE_ELEMENT_POSIT32 field is sized as 2-byte elements"
+file = "src/abi/provider_adapter.cpp"
+old = "        case FUSE_ELEMENT_POSIT32: element_size = sizeof(fuse::num::posit32); break;"
+new = "        case FUSE_ELEMENT_POSIT32: element_size = sizeof(fuse::num::posit16); break;"
+target = "fuse_abi_typed_provider_test"
+test = "abi.typed_provider"

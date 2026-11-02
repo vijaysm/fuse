@@ -49,6 +49,12 @@ program sizes_test
     type(c_funptr) :: view_field = c_null_funptr
     type(c_funptr) :: base_communicator = c_null_funptr
     type(c_funptr) :: request_restart_point = c_null_funptr
+    type(c_funptr) :: register_adjoint_field = c_null_funptr
+    type(c_funptr) :: initialize_adjoint = c_null_funptr
+    type(c_funptr) :: view_adjoint_field = c_null_funptr
+    type(c_funptr) :: run_adjoint = c_null_funptr
+    type(c_funptr) :: begin_adjoint_step = c_null_funptr
+    type(c_funptr) :: end_adjoint_step = c_null_funptr
   end type fuse_participant_abi_v1_mirror
 
   type(c_ptr) :: a_pointer

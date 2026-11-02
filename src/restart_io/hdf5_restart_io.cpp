@@ -13,6 +13,7 @@
 
 #include "fuse/model/element_type.hpp"
 #include "fuse/model/float_bits.hpp"
+#include "fuse/num/posit_bits.hpp"
 
 namespace fuse::restart_io {
 
@@ -307,6 +308,10 @@ using HType = Hid<H5Tclose>;
     case ElementType::UInt32: return HType(H5Tcopy(H5T_NATIVE_UINT32));
     case ElementType::UInt64: return HType(H5Tcopy(H5T_NATIVE_UINT64));
     case ElementType::Bool:   return HType(H5Tcopy(H5T_NATIVE_UINT8));
+    // A posit is stored as the unsigned integer of its bit pattern; the element_type
+    // attribute says it is a posit.
+    case ElementType::Posit16: return HType(H5Tcopy(H5T_NATIVE_UINT16));
+    case ElementType::Posit32: return HType(H5Tcopy(H5T_NATIVE_UINT32));
     case ElementType::Binary16:
     case ElementType::BFloat16:
     case ElementType::Binary32:
@@ -409,9 +414,25 @@ using HType = Hid<H5Tclose>;
   info.exponent_bits = exp_bits.value();
   info.exponent_bias = static_cast<std::int64_t>(exp_bias.value());
   info.is_bool = (maybe_type.value() == fuse::ElementType::Bool);
-  info.is_float = (sig_bits.value() > 0 || exp_bits.value() > 0) && !info.is_bool;
-  info.is_signed_integer = !info.is_float && !info.is_bool && is_signed_attr.value() != 0;
-  info.is_unsigned_integer = !info.is_float && !info.is_bool && is_signed_attr.value() == 0;
+  info.is_posit = (maybe_type.value() == fuse::ElementType::Posit16 ||
+                   maybe_type.value() == fuse::ElementType::Posit32);
+  info.is_float = (sig_bits.value() > 0 || exp_bits.value() > 0) && !info.is_bool && !info.is_posit;
+  info.is_signed_integer =
+      !info.is_float && !info.is_bool && !info.is_posit && is_signed_attr.value() != 0;
+  info.is_unsigned_integer = !info.is_float && !info.is_bool && !info.is_posit &&
+                             is_signed_attr.value() == 0;
+  // A posit is fully defined by its name: attributes that say otherwise are a corrupted or
+  // foreign file.
+  if (info.is_posit) {
+    const fuse::ElementTypeInfo& canonical = fuse::element_type_info(maybe_type.value());
+    if (info.byte_size != canonical.byte_size || info.significand_bits != canonical.significand_bits ||
+        info.exponent_bits != canonical.exponent_bits || info.exponent_bias != canonical.exponent_bias ||
+        is_signed_attr.value() != 0) {
+      return Failure{"E-RESTART-TYPE-METADATA-MISMATCH",
+                     context + ": the attributes of '" + name.value() +
+                         "' are not those of that posit format"};
+    }
+  }
   // explicit_integer_bit cannot be recovered from the attributes alone
   // (this project does not write one -- it is derived from H5Tget_norm()
   // below, where it matters: the cross-check against the dataset's own
@@ -601,14 +622,41 @@ struct DecodedInt {
   return Result<void>::success();
 }
 
-/// Converts ONE element's worth of bytes from `stored` (`src`) to `requested`
-/// (`dst`), per `conversion` -- the one dispatch every
-/// `get_field_bytes()`/`get_scalar_bytes()` row goes through, whether `stored
-/// == requested` (the fast, copy-only path) or not. Accumulates into `report`
-/// -- `changed`/`abs_change` are per-element; the caller aggregates
-/// `max_absolute_change`/`changed_count`/`converted_any` across every element a
-/// single call reads (docs/dev/restart.md Section 11's own "measured over the
-/// values actually read", not merely declared from the types).
+/// The value of the posit whose pattern is in `src`, exactly (a NaN for NaR).
+[[nodiscard]] double decode_posit_bytes(const fuse::ElementTypeInfo& info,
+                                        std::span<const std::byte> src) {
+  if (info.element_type == fuse::ElementType::Posit16) {
+    std::uint16_t v = 0;
+    std::memcpy(&v, src.data(), 2);
+    return fuse::num::detail::PositCodec<16, 2>::decode(v);
+  }
+  std::uint32_t v = 0;
+  std::memcpy(&v, src.data(), 4);
+  return fuse::num::detail::PositCodec<32, 2>::decode(v);
+}
+
+/// The pattern of the posit nearest to `x` (a tie to the even pattern, saturating, NaR for a
+/// NaN or an infinity), written to `dst`.
+void encode_posit_bytes(const fuse::ElementTypeInfo& info, double x, std::span<std::byte> dst) {
+  if (info.element_type == fuse::ElementType::Posit16) {
+    const auto v = static_cast<std::uint16_t>(fuse::num::detail::PositCodec<16, 2>::encode(x, 0));
+    std::memcpy(dst.data(), &v, 2);
+    return;
+  }
+  const std::uint32_t v = fuse::num::detail::PositCodec<32, 2>::encode(x, 0);
+  std::memcpy(dst.data(), &v, 4);
+}
+
+/// Converts ONE element's worth of bytes from `stored` (`src`) to
+/// `requested` (`dst`), per `conversion` -- the one dispatch every
+/// `get_field_bytes()`/`get_scalar_bytes()` row goes through, whether
+/// `stored == requested` (the fast, copy-only path every call takes
+/// before Slice 1b existed) or not. Accumulates into `report` --
+/// `changed`/`abs_change` are per-element; the caller aggregates
+/// `max_absolute_change`/`changed_count`/`converted_any` across every
+/// element a single call reads (docs/dev/restart.md Section 11's own
+/// "measured over the values actually read", not merely declared from
+/// the types).
 [[nodiscard]] Result<void> convert_one_element(
     const fuse::ElementTypeInfo& from_info, std::span<const std::byte> src,
     fuse::ElementType requested, std::span<std::byte> dst,
@@ -643,6 +691,49 @@ struct DecodedInt {
                        "exact widening -- ReadConversion::Widening does "
                        "not permit this conversion (pass AllowNarrowing "
                        "if a lossy conversion is acceptable)"};
+  }
+
+  if (from_info.is_posit || to_info.is_posit) {
+    // A posit goes through binary64, which holds every posit, and every float format up to
+    // binary64's own, exactly; the one rounding is into the target. A format with more
+    // precision or range than binary64 (an x86 long double), an integer or a bool has no
+    // conversion to or from a posit here.
+    const fuse::ElementTypeInfo& b64 = fuse::element_type_info(fuse::ElementType::Binary64);
+    double x = 0.0;
+    if (from_info.is_posit) {
+      x = decode_posit_bytes(from_info, src);
+    } else if (from_info.is_float && from_info.significand_bits <= b64.significand_bits &&
+               from_info.exponent_bits <= b64.exponent_bits) {
+      alignas(8) std::byte wide[8];
+      const fuse::detail::NarrowingResult nr = fuse::detail::narrow_float(src, from_info, b64);
+      fuse::detail::encode_float_bits(nr.decoded, b64, std::span<std::byte>(wide, 8));
+      std::memcpy(&x, wide, 8);
+    } else {
+      return Failure{"E-RESTART-TYPE-MISMATCH",
+                     context + ": no conversion from '" + from_info.name + "' to '" +
+                         to_info.name + "' is implemented"};
+    }
+    if (to_info.is_posit) {
+      encode_posit_bytes(to_info, x, dst);
+      const double back = decode_posit_bytes(to_info, dst);
+      const bool both_not_numbers = std::isnan(x) && std::isnan(back);
+      changed = !both_not_numbers && !(back == x);
+      abs_change = (changed && std::isfinite(x) && std::isfinite(back)) ? std::fabs(back - x) : 0.0;
+      return Result<void>::success();
+    }
+    if (to_info.is_float) {
+      alignas(8) std::byte wide[8];
+      std::memcpy(wide, &x, 8);
+      const fuse::detail::NarrowingResult nr =
+          fuse::detail::narrow_float(std::span<const std::byte>(wide, 8), b64, to_info);
+      fuse::detail::encode_float_bits(nr.decoded, to_info, dst);
+      changed = nr.changed;
+      abs_change = nr.absolute_change;
+      return Result<void>::success();
+    }
+    return Failure{"E-RESTART-TYPE-MISMATCH",
+                   context + ": no conversion from '" + from_info.name + "' to '" +
+                       to_info.name + "' is implemented"};
   }
 
   if (from_info.is_float && to_info.is_float) {
@@ -953,6 +1044,29 @@ class Hdf5GroupReader final : public RestartReader {
     const fuse::ElementTypeInfo& stored_info = stored_type_r.value();
     const fuse::ElementTypeInfo& requested_info =
         fuse::element_type_info(requested_type);
+
+    // The stored rows are `components` wide. A request for another width would read the
+    // dataset past the buffer sized below, or misread every row, so it is refused by name.
+    // The serial writer stores {rows, components}; the collective writer stores {rows} when a
+    // row is one value, and both are read here.
+    {
+      HDataspace value_space(H5Dget_space(vd));
+      hsize_t dims[2] = {0, 0};
+      const int stored_rank = H5Sget_simple_extent_ndims(value_space);
+      const bool shape_ok =
+          stored_rank >= 1 && stored_rank <= 2 &&
+          H5Sget_simple_extent_dims(value_space, dims, nullptr) == stored_rank &&
+          dims[0] == static_cast<hsize_t>(n) &&
+          (stored_rank == 2 ? dims[1] == static_cast<hsize_t>(components) : components == 1);
+      if (!shape_ok) {
+        const std::string stored_width = stored_rank == 2 ? std::to_string(dims[1]) : "1";
+        return Failure{"E-RESTART-FIELD-SHAPE",
+                       "get_field('" + key + "'): the stored values are " +
+                           std::to_string(dims[0]) + " rows of " + stored_width +
+                           " components, and " + std::to_string(n) + " rows of " +
+                           std::to_string(components) + " were asked for"};
+      }
+    }
 
     std::vector<std::byte> file_values(
         static_cast<std::size_t>(n) * static_cast<std::size_t>(components) *

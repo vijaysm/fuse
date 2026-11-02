@@ -20,6 +20,18 @@
 
 namespace fuse {
 
+/// The type in which the coupler's own sums are accumulated (the plan's
+/// "accumulation type"): the row sums of a remap application and the integrals of
+/// the conservation check. The values themselves stay what the fields hold.
+enum class AccumulationType {
+  /// binary64, as always: each sum is rounded to binary64 at every step.
+  Binary64,
+  /// double-double (fuse::num::dd, about 106 bits): the products of weights and
+  /// values are formed exactly, the sums are accumulated in double-double, and
+  /// the result is rounded once to the type of the field.
+  DoubleDouble,
+};
+
 struct RunnerConfig {
   std::string transport = "copy";
   bool        check_conservation = true;
@@ -47,6 +59,28 @@ struct RunnerConfig {
   /// under a launcher. Not a performance setting; a production run leaves it
   /// false.
   bool        force_distributed_nodal_remap = false;
+
+  /// A field of a Storage value type (binary32, bfloat16, binary16, posit16, posit32) is
+  /// converted at the component boundary: widened to binary64 exactly when a
+  /// component has written it, and rounded once, to nearest with ties to even,
+  /// when the coupler delivers into it (`RunStats::storage_fields`). With this
+  /// set, every delivery also measures what the rounding did -- the largest
+  /// relative change and the number of values that overflowed or underflowed
+  /// -- in the same pass over the data. It costs one reduction per delivery,
+  /// and on a device a fence, so a production run leaves it false; the unit
+  /// roundoff of each format is reported either way.
+  bool        measure_storage_rounding = false;
+
+  /// The accumulation type of the sums of a binary64 field: the rows of a remap
+  /// application (rounded once to binary64 when the row is complete) and the
+  /// integrals of the conservation check (compared, and summed across ranks, in
+  /// double-double, so that the reported error is the error of the stored
+  /// binary64 values and not the rounding error of the sum that measures it).
+  /// The sums of a field whose value type is double-double or quad-double are
+  /// always accumulated in that type, whatever this says. Default Binary64:
+  /// double-double accumulation costs several times the arithmetic of a binary64
+  /// sum.
+  AccumulationType accumulation_type = AccumulationType::Binary64;
 
   /// `MPI_Comm_c2f()` of a communicator whose group contains every rank of
   /// every component in the graph -- `MPI_COMM_WORLD` under spec Section 6 mode 1,
@@ -131,6 +165,41 @@ struct RunnerConfig {
   /// `Default` resolved against the environment as described above; what
   /// `initialize()` stores. `execution_space` itself is left as given.
   [[nodiscard]] Result<RunnerExecutionSpace> resolved_execution_space() const;
+};
+
+/// One Storage-typed field the runtime converts at the component boundary
+/// (include/fuse/num/storage_convert.hpp). A field a component provides is
+/// widened to binary64 when the component has written it; a field a component
+/// requires is rounded from binary64 once, when the coupler delivers into it.
+struct StorageFieldStats {
+  std::string  field;          ///< "component.field"
+  std::string  format;         ///< "binary32", "bfloat16", "binary16", "posit16" or "posit32"
+  bool         delivered = false;  ///< true: the runtime writes (rounds) it; false: it reads (widens) it
+  int          significand_bits = 0;
+  /// 2^-significand_bits: a value in the format's normal range changes by at
+  /// most this fraction when it is rounded to the format. For a posit it is
+  /// the precision at the value one, the largest the format has; a value far
+  /// from one changes by more, which `max_relative_change` measures.
+  double       unit_roundoff = 0.0;
+  std::int64_t widenings = 0;  ///< times the field was read into binary64 (exact)
+  std::int64_t narrowings = 0; ///< times the runtime rounded into it
+  /// The rest is filled only under `RunnerConfig::measure_storage_rounding`,
+  /// summed over every delivery.
+  std::int64_t values = 0;     ///< finite values rounded
+  std::int64_t overflow = 0;   ///< of those, how many became an infinity (a posit: were clamped to its largest value)
+  std::int64_t underflow = 0;  ///< nonzero values that became a zero (a posit: were clamped to its smallest positive value)
+  double       max_relative_change = 0.0;
+};
+
+/// One Arithmetic-typed field (double-double or quad-double) the runtime moves
+/// as limbs and operates on in that type (include/fuse/num/arithmetic_kernels.hpp).
+struct ArithmeticFieldStats {
+  std::string  field;          ///< "component.field"
+  std::string  type;           ///< "dd" or "qd"
+  int          limbs = 0;      ///< binary64 values per value of the field
+  /// The accuracy of the type's operators relative to the result: 2^-104 for
+  /// dd, 2^-208 for qd.
+  double       unit_roundoff = 0.0;
 };
 
 struct RunStats {
@@ -222,6 +291,12 @@ struct RunStats {
   /// `device_staging`-lane staged copy -- a Transport plan's own send/recv
   /// buffers are not `device_staging`'s four lanes.
   std::int64_t device_transport_moves = 0;
+  /// One entry per Storage-typed field arc the runtime converts; empty when
+  /// every bound field is binary64 (or an array of binary64 scalars).
+  std::vector<StorageFieldStats> storage_fields;
+  /// One entry per field of an Arithmetic value type (double-double,
+  /// quad-double) bound to an arc of this plan; empty when there is none.
+  std::vector<ArithmeticFieldStats> arithmetic_fields;
 };
 
 /// Per-region outcome of the most recent period (spec Section 5.3).
@@ -423,7 +498,62 @@ class Runner {
   Result<void> run_period(ComponentSet& components);
   Result<void> run(ComponentSet& components, std::int64_t periods);
 
-  /// Resumes the current period's instruction
+  /// Reverse mode (stage U6, docs/dev/adjoint-schedule.md). Binds the adjoint
+  /// arrays of every component-owned arc from `adjoint_registry` (filled by
+  /// each component's `AdjointComponent::register_adjoint_fields()`), allocates
+  /// the adjoint of every coupler-owned arc, and works out the order of one
+  /// period's component steps and coupling instructions, so that
+  /// `run_period_adjoint()` can traverse it backwards. Call it after
+  /// `initialize()` and before the first `run_period_adjoint()`; the forward run
+  /// may come before or after.
+  ///
+  /// The coupling operators are linear with weights that do not depend on the
+  /// field values, so their adjoint needs no stored forward values. What this
+  /// supports: binary64 fields in host or device memory (the sweep runs on the
+  /// execution space of the Runner); Source, Sink, Remap (through
+  /// `LinearOperator::apply_transpose`, the transpose verified by the
+  /// derivative gate), Sample and Accumulate by sum, mean, integral or instant
+  /// value, Merge by first, sum or mean, Scale, Extrapolate of order 0,
+  /// Interpolate without a time history, Transport between processes
+  /// (`Transport::move_adjoint`), Constrain, Diagnose and Epoch, and an
+  /// ordinary iteration region on one process, reversed as the fixed point it
+  /// converged to. Refused by name (E-ADJ-*, listed in the design note):
+  /// minimum and maximum accumulation, space-time Interpolate and Sample, a
+  /// region solved by Newton's method, scoped to a time window or spanning
+  /// several processes, a distributed nodal Remap, Arithmetic and Storage value
+  /// types, an accumulation window that straddles a period boundary, and every
+  /// operator with no adjoint (Relax, Residual outside a region,
+  /// ExternalDelivery, ...). Every component that advances must return an
+  /// `AdjointComponent` from `Component::adjoint()` (E-ADJ-COMPONENT).
+  Result<void> initialize_adjoint(ComponentSet& components,
+                                  FieldRegistry& adjoint_registry);
+
+  /// Reverses the most recent forward period that has not been reversed yet:
+  /// walks that period's component steps and coupling instructions backwards,
+  /// calling `AdjointComponent::advance_adjoint()` for each step with the
+  /// `StepContext` the forward step had, and applying the adjoint of each
+  /// coupling instruction to the adjoint arrays. The first call after N
+  /// forward periods reverses period N-1, the next N-2, and so on. The adjoint
+  /// variables of the final state are the seed: the caller writes them into the
+  /// components' adjoint arrays before the first call. Running a forward period
+  /// between two calls is refused (E-ADJ-ORDER). A run with a component driven from
+  /// outside the Runner (`Component::is_externally_driven()`) is refused here
+  /// (E-ADJ-EXTERNAL): use `resume_period_adjoint()`.
+  Result<void> run_period_adjoint(ComponentSet& components);
+
+  /// The reverse of `resume_period()`: reverses the open period (the newest one not yet
+  /// reversed, when none is open) up to the step of the next component driven from outside the
+  /// Runner and returns that step, with the `StepContext` the forward step had; every instruction
+  /// after it in the forward order has been reversed, so the adjoint arrays of the component's
+  /// Provides fields hold what `AdjointComponent::advance_adjoint()` is given. The caller reverses
+  /// the step itself (the component's own adjoint, in the adjoint arrays it registered) and calls
+  /// again to carry on below that step. `std::nullopt` means the period is reversed completely.
+  /// The component must have an `AdjointComponent` (E-ADJ-COMPONENT) so that its adjoint arrays
+  /// are bound; its `advance_adjoint()` is never called. Refused for a component inside an
+  /// iteration region (E-ADJ-REGION).
+  Result<std::optional<ExternalAdvanceRequest>> resume_period_adjoint(ComponentSet& components);
+
+  /// the issue tracker fix: resumes the current period's instruction
   /// stream from wherever it last suspended (or begins a new period, if
   /// the previous one ran to completion), executing every instruction up
   /// to the NEXT externally driven component's own `advance()` point and

@@ -1039,13 +1039,24 @@ TEST(ConformanceTest, ProviderAdapterRegisterFieldsExceptionBecomesAFailure) {
 // the participant table). ---------------------------------------------------
 
 TEST(ConformanceTest, ProviderTableStructSizeShortIsRefused) {
+  // shorter than the layout before bind_adjoint and advance_adjoint were appended: refused
   fuse_provider_abi_v1 bad{};
-  bad.struct_size = sizeof(fuse_provider_abi_v1) - 1;
+  bad.struct_size = static_cast<std::uint32_t>(offsetof(fuse_provider_abi_v1, bind_adjoint)) - 1;
   bad.abi_version = FUSE_ABI_VERSION;
   fuse::abi_detail::Registry registry;
   const fuse::Result<void> mounted = registry.mount_table("upstream", &bad);
   ASSERT_FALSE(mounted.ok());
   EXPECT_EQ(mounted.error().code, "E-ABI-VERSION");
+}
+
+TEST(ConformanceTest, ProviderTableOfTheLayoutBeforeTheAdjointEntriesIsAccepted) {
+  // a plugin built against the header before bind_adjoint/advance_adjoint: its table ends at them
+  fuse_provider_abi_v1 old{};
+  old.struct_size = static_cast<std::uint32_t>(offsetof(fuse_provider_abi_v1, bind_adjoint));
+  old.abi_version = FUSE_ABI_VERSION;
+  fuse::abi_detail::Registry registry;
+  const fuse::Result<void> mounted = registry.mount_table("upstream", &old);
+  EXPECT_TRUE(mounted.ok()) << (mounted.ok() ? "" : mounted.error().message);
 }
 
 TEST(ConformanceTest, ProviderTableStructSizeLongFromANewerCallerIsAccepted) {

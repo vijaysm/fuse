@@ -107,7 +107,7 @@ static fuse_status p_describe(fuse_provider_ctx* self, const fuse_null* in, fuse
     out->buffer[0].intent       = 0; /* Provides */
     out->buffer[0].element_type = FUSE_ELEMENT_F64;
     out->buffer[0].memspace     = FUSE_MEMSPACE_HOST;
-    out->buffer[0].reserved     = 0;
+    out->buffer[0].gradient_size = 0;
   }
 #ifndef FUSE_TEST_HOST_ONLY_FIELDS
   if (out->buffer != NULL && out->capacity >= 2) {
@@ -117,7 +117,7 @@ static fuse_status p_describe(fuse_provider_ctx* self, const fuse_null* in, fuse
     out->buffer[1].intent       = 0; /* Provides */
     out->buffer[1].element_type = FUSE_ELEMENT_F64;
     out->buffer[1].memspace     = FUSE_MEMSPACE_DEVICE;
-    out->buffer[1].reserved     = 0;
+    out->buffer[1].gradient_size = 0;
   }
 #endif
   return FUSE_OK;

@@ -12,14 +12,22 @@
 /// library directly to construct a white-box fixture.
 #include <hdf5.h>
 
+#include <algorithm>
 #include <cfloat>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <memory>
+#include <span>
+#include <string>
+#include <vector>
 
 #include <gtest/gtest.h>
 
 #include <fuse/model/element_type.hpp>
+#include <fuse/model/restart_values.hpp>
+#include <fuse/num/dd.hpp>
+#include <fuse/num/posit.hpp>
 #include <fuse/restart_io/hdf5_restart_io.hpp>
 
 namespace {
@@ -324,5 +332,207 @@ TEST(TypedRestartHdf5, HandBuiltX86LongDoubleExactAndWideningRefuseAllowNarrowin
     EXPECT_EQ(static_cast<double>(restored), 1.0);  // rounds down
   }
 #endif
+  std::remove(path.c_str());
+}
+
+// Fields of double-double values and of the 16-bit formats through a real file: put_values
+// stores each value as its scalars, get_values restores the bits, and a read with another
+// number of components than was written is refused by name instead of reading past a buffer.
+namespace {
+std::unique_ptr<fuse::restart_io::PointWriter> make_point(const std::string& path) {
+  std::remove(path.c_str());
+  fuse::restart_io::Provenance prov;
+  prov.format_version = fuse::restart_io::kFormatVersion;
+  prov.fuse_version = "test";
+  auto pw = fuse::restart_io::create_restart_point(
+      fuse::restart_io::FileLayout::SeparateMeshAndPoints, path, prov, "");
+  EXPECT_TRUE(pw.ok());
+  return std::move(pw).value();
+}
+}  // namespace
+
+TEST(TypedRestartHdf5, ADoubleDoubleFieldRoundTripsBitForBitAndReadsAsLimbs) {
+  using fuse::num::dd;
+  const std::string path = temp_path("typed_dd_roundtrip.h5");
+  const std::vector<std::int64_t> ids = {7, 3, 5};
+  const std::vector<dd> x = {dd(1.0, 0x1p-60), dd(-3.0, -0x1p-58), dd(0.1, 0x1p-57)};
+  {
+    auto pw = make_point(path);
+    ASSERT_TRUE(pw != nullptr);
+    ASSERT_TRUE(fuse::put_values<dd>(pw->writer(), "t", ids, x, 1, 3).ok());
+    ASSERT_TRUE(pw->finish().ok());
+  }
+  auto pr = fuse::restart_io::open_restart_point(
+      fuse::restart_io::FileLayout::SeparateMeshAndPoints, path, "");
+  ASSERT_TRUE(pr.ok());
+  std::vector<dd> back(3);
+  ASSERT_TRUE(fuse::get_values<dd>(pr.value()->reader(), "t", ids, back, 1).ok());
+  EXPECT_EQ(std::memcmp(back.data(), x.data(), sizeof(dd) * 3), 0);
+  // a reader that does not know the type reads the limbs
+  std::vector<double> limbs(6);
+  ASSERT_TRUE(pr.value()->reader().get_field<double>("t", ids, std::span(limbs), 2).ok());
+  EXPECT_EQ(limbs[2], -3.0);
+  EXPECT_EQ(limbs[3], -0x1p-58);
+  // and another number of components than was written is refused, both ways
+  std::vector<double> narrow(3);
+  const auto one = pr.value()->reader().get_field<double>("t", ids, std::span(narrow), 1);
+  ASSERT_FALSE(one.ok());
+  EXPECT_EQ(one.error().code, "E-RESTART-FIELD-SHAPE");
+  std::vector<double> wide(12);
+  const auto four = pr.value()->reader().get_field<double>("t", ids, std::span(wide), 4);
+  ASSERT_FALSE(four.ok());
+  EXPECT_EQ(four.error().code, "E-RESTART-FIELD-SHAPE");
+  std::remove(path.c_str());
+}
+
+TEST(TypedRestartHdf5, ABinary16FieldRoundTripsAndWidensExactly) {
+  using H = fuse::binary16;
+  const std::string path = temp_path("typed_binary16_roundtrip.h5");
+  const std::vector<std::int64_t> ids = {0, 1, 2, 3};
+  std::vector<H> h;
+  for (const double v : {0.1, -7.0, 65504.0, 6.1035e-05}) h.push_back(fuse::value_traits<H>::from_binary64(v));
+  {
+    auto pw = make_point(path);
+    ASSERT_TRUE(pw != nullptr);
+    ASSERT_TRUE(fuse::put_values<H>(pw->writer(), "h", ids, h, 1, 4).ok());
+    ASSERT_TRUE(pw->finish().ok());
+  }
+  auto pr = fuse::restart_io::open_restart_point(
+      fuse::restart_io::FileLayout::SeparateMeshAndPoints, path, "");
+  ASSERT_TRUE(pr.ok());
+  std::vector<H> back(4);
+  ASSERT_TRUE(fuse::get_values<H>(pr.value()->reader(), "h", ids, back, 1).ok());
+  EXPECT_EQ(std::memcmp(back.data(), h.data(), sizeof(H) * 4), 0);
+  // widening to binary32 is exact for every binary16 value
+  std::vector<float> wide(4);
+  const auto rw = fuse::get_values<float>(pr.value()->reader(), "h", ids, std::span(wide), 1,
+                                          fuse::ReadConversion::Widening);
+  ASSERT_TRUE(rw.ok()) << (rw.ok() ? "" : rw.error().message);
+  EXPECT_FALSE(rw.value().converted_any && rw.value().changed_count != 0);
+  for (std::size_t i = 0; i < 4; ++i) {
+    EXPECT_EQ(static_cast<double>(wide[i]), fuse::value_traits<H>::to_binary64(h[i])) << i;
+  }
+  std::remove(path.c_str());
+}
+
+// A posit is stored as the unsigned integer of its pattern, tagged posit16 or posit32: the
+// pattern comes back bit for bit, a posit widens exactly to binary64, to binary32 (posit16 only)
+// and to a wider posit, anything the metadata cannot call exact needs AllowNarrowing, and a
+// file whose attributes are not those of the posit format is refused by name.
+TEST(TypedRestartHdf5, APositFieldRoundTripsBitForBitAndConvertsAsTheMetadataAllows) {
+  using fuse::num::posit16;
+  using fuse::num::posit32;
+  const std::string path = temp_path("typed_posit_roundtrip.h5");
+  const std::vector<std::int64_t> ids = {0, 1, 2, 3};
+  std::vector<posit16> a;
+  for (const double v : {0.1, -7.0, 65504.0, 6.1035e-05}) a.push_back(posit16::from_double(v));
+  a[3] = posit16::nar();
+  std::vector<posit32> b;
+  for (const double v : {1.0 / 3.0, -1.0e10, 7.5, 1.0e-9}) b.push_back(posit32::from_double(v));
+  const std::vector<double> d = {0.1, -7.0, 1.0e20, 6.1035e-05};
+  {
+    auto pw = make_point(path);
+    ASSERT_TRUE(pw != nullptr);
+    ASSERT_TRUE(fuse::put_values<posit16>(pw->writer(), "a", ids, a, 1, 4).ok());
+    ASSERT_TRUE(fuse::put_values<posit32>(pw->writer(), "b", ids, b, 1, 4).ok());
+    ASSERT_TRUE(pw->writer().put_field<double>("d", ids, std::span<const double>(d), 1, 4).ok());
+    ASSERT_TRUE(pw->finish().ok());
+  }
+  auto pr = fuse::restart_io::open_restart_point(
+      fuse::restart_io::FileLayout::SeparateMeshAndPoints, path, "");
+  ASSERT_TRUE(pr.ok());
+  auto& rd = pr.value()->reader();
+
+  // the same type: the patterns, NaR included, come back unchanged
+  std::vector<posit16> a_back(4);
+  ASSERT_TRUE(fuse::get_values<posit16>(rd, "a", ids, a_back, 1).ok());
+  EXPECT_EQ(std::memcmp(a_back.data(), a.data(), sizeof(posit16) * 4), 0);
+  std::vector<posit32> b_back(4);
+  ASSERT_TRUE(fuse::get_values<posit32>(rd, "b", ids, b_back, 1).ok());
+  EXPECT_EQ(std::memcmp(b_back.data(), b.data(), sizeof(posit32) * 4), 0);
+
+  // an exact widening of posit16: binary64, binary32 and posit32, with NaR a NaN or NaR
+  std::vector<double> a_wide(4);
+  const auto w64 = fuse::get_values<double>(rd, "a", ids, std::span(a_wide), 1, fuse::ReadConversion::Widening);
+  ASSERT_TRUE(w64.ok()) << (w64.ok() ? "" : w64.error().message);
+  std::vector<float> a_single(4);
+  ASSERT_TRUE(fuse::get_values<float>(rd, "a", ids, std::span(a_single), 1, fuse::ReadConversion::Widening).ok());
+  std::vector<posit32> a_posit32(4);
+  ASSERT_TRUE(fuse::get_values<posit32>(rd, "a", ids, std::span(a_posit32), 1, fuse::ReadConversion::Widening).ok());
+  for (std::size_t i = 0; i < 3; ++i) {
+    EXPECT_EQ(a_wide[i], a[i].to_double()) << i;
+    EXPECT_EQ(static_cast<double>(a_single[i]), a[i].to_double()) << i;
+    EXPECT_EQ(a_posit32[i].to_double(), a[i].to_double()) << i;
+  }
+  EXPECT_TRUE(std::isnan(a_wide[3]));
+  EXPECT_TRUE(std::isnan(a_single[3]));
+  EXPECT_TRUE(a_posit32[3].is_nar());
+
+  // posit32 widens to binary64, not to binary32 (27 fraction bits), not to posit16
+  std::vector<double> b_wide(4);
+  ASSERT_TRUE(fuse::get_values<double>(rd, "b", ids, std::span(b_wide), 1, fuse::ReadConversion::Widening).ok());
+  for (std::size_t i = 0; i < 4; ++i) EXPECT_EQ(b_wide[i], b[i].to_double()) << i;
+  std::vector<float> b_single(4);
+  const auto refuse32 = fuse::get_values<float>(rd, "b", ids, std::span(b_single), 1, fuse::ReadConversion::Widening);
+  ASSERT_FALSE(refuse32.ok());
+  EXPECT_EQ(refuse32.error().code, "E-RESTART-TYPE-MISMATCH");
+  std::vector<posit16> b_narrow(4);
+  const auto refuse16 = fuse::get_values<posit16>(rd, "b", ids, std::span(b_narrow), 1, fuse::ReadConversion::Widening);
+  ASSERT_FALSE(refuse16.ok());
+  EXPECT_EQ(refuse16.error().code, "E-RESTART-TYPE-MISMATCH");
+  // with AllowNarrowing it rounds once and reports the largest change
+  const auto n16 = fuse::get_values<posit16>(rd, "b", ids, std::span(b_narrow), 1, fuse::ReadConversion::AllowNarrowing);
+  ASSERT_TRUE(n16.ok()) << (n16.ok() ? "" : n16.error().message);
+  EXPECT_TRUE(n16.value().converted_any);
+  double largest = 0.0;
+  for (std::size_t i = 0; i < 4; ++i) {
+    EXPECT_EQ(b_narrow[i].bits(), posit16::from_double(b[i].to_double()).bits()) << i;
+    largest = std::max(largest, std::fabs(b_narrow[i].to_double() - b[i].to_double()));
+  }
+  EXPECT_EQ(n16.value().max_absolute_change, largest);
+
+  // a binary64 field into a posit: never an exact widening, one rounding with AllowNarrowing
+  std::vector<posit16> d_posit(4);
+  const auto exact = fuse::get_values<posit16>(rd, "d", ids, std::span(d_posit), 1);
+  ASSERT_FALSE(exact.ok());
+  EXPECT_EQ(exact.error().code, "E-RESTART-TYPE-MISMATCH");
+  const auto widening = fuse::get_values<posit16>(rd, "d", ids, std::span(d_posit), 1, fuse::ReadConversion::Widening);
+  ASSERT_FALSE(widening.ok());
+  EXPECT_EQ(widening.error().code, "E-RESTART-TYPE-MISMATCH");
+  ASSERT_TRUE(fuse::get_values<posit16>(rd, "d", ids, std::span(d_posit), 1, fuse::ReadConversion::AllowNarrowing).ok());
+  for (std::size_t i = 0; i < 4; ++i) EXPECT_EQ(d_posit[i].bits(), posit16::from_double(d[i]).bits()) << i;
+  // 1e20 is beyond posit16 (2^56): clamped to its largest value
+  EXPECT_EQ(d_posit[2].bits(), posit16::maxpos().bits());
+  std::remove(path.c_str());
+}
+
+TEST(TypedRestartHdf5, APositWhoseAttributesAreNotThoseOfTheFormatIsRefused) {
+  using fuse::num::posit16;
+  const std::string path = temp_path("typed_posit_attr.h5");
+  const std::vector<std::int64_t> ids = {0, 1};
+  const std::vector<posit16> a = {posit16::from_double(1.5), posit16::from_double(-2.0)};
+  {
+    auto pw = make_point(path);
+    ASSERT_TRUE(pw != nullptr);
+    ASSERT_TRUE(fuse::put_values<posit16>(pw->writer(), "a", ids, a, 1, 2).ok());
+    ASSERT_TRUE(pw->finish().ok());
+  }
+  edit_file_directly(path, [](hid_t file) {
+    const hid_t d = H5Dopen2(file, "fields/a/values", H5P_DEFAULT);
+    ASSERT_GE(d, 0);
+    const hid_t at = H5Aopen(d, "exponent_bits", H5P_DEFAULT);
+    ASSERT_GE(at, 0);
+    const std::uint32_t wrong = 1;  // posit16 has es = 2 (the one the 2017 draft called posit16 has es = 1)
+    ASSERT_GE(H5Awrite(at, H5T_NATIVE_UINT32, &wrong), 0);
+    H5Aclose(at);
+    H5Dclose(d);
+  });
+  auto pr = fuse::restart_io::open_restart_point(
+      fuse::restart_io::FileLayout::SeparateMeshAndPoints, path, "");
+  ASSERT_TRUE(pr.ok());
+  std::vector<posit16> back(2);
+  const auto rr = fuse::get_values<posit16>(pr.value()->reader(), "a", ids, back, 1);
+  ASSERT_FALSE(rr.ok());
+  EXPECT_EQ(rr.error().code, "E-RESTART-TYPE-METADATA-MISMATCH");
   std::remove(path.c_str());
 }

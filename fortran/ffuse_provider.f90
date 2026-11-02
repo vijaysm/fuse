@@ -35,6 +35,8 @@ module ffuse_provider
     type(c_funptr) :: capabilities = c_null_funptr
     type(c_funptr) :: save_restart_blob = c_null_funptr
     type(c_funptr) :: load_restart_blob = c_null_funptr
+    type(c_funptr) :: bind_adjoint = c_null_funptr
+    type(c_funptr) :: advance_adjoint = c_null_funptr
   end type fuse_provider_abi_v1
 
   ! ---- one abstract interface per entry, so a plugin's own bind(C)
@@ -128,6 +130,22 @@ module ffuse_provider
       type(fuse_null), intent(inout) :: out
       integer(c_int32_t) :: status
     end function ffuse_provider_load_restart_blob_proc
+
+    function ffuse_provider_bind_adjoint_proc(self, in, out) result(status) bind(C)
+      import :: c_int32_t, c_ptr, fuse_field_view, fuse_null
+      type(c_ptr), value :: self
+      type(fuse_field_view), intent(in) :: in
+      type(fuse_null), intent(inout) :: out
+      integer(c_int32_t) :: status
+    end function ffuse_provider_bind_adjoint_proc
+
+    function ffuse_provider_advance_adjoint_proc(self, in, out) result(status) bind(C)
+      import :: c_int32_t, c_ptr, fuse_step_report, fuse_step_request
+      type(c_ptr), value :: self
+      type(fuse_step_request), intent(in) :: in
+      type(fuse_step_report), intent(inout) :: out
+      integer(c_int32_t) :: status
+    end function ffuse_provider_advance_adjoint_proc
   end interface
 
   public :: ffuse_provider_bootstrap, &
@@ -142,6 +160,8 @@ module ffuse_provider
             ffuse_provider_set_capabilities, &
             ffuse_provider_set_save_restart_blob, &
             ffuse_provider_set_load_restart_blob, &
+            ffuse_provider_set_bind_adjoint, &
+            ffuse_provider_set_advance_adjoint, &
             ffuse_provider_version_proc, &
             ffuse_provider_create_proc, &
             ffuse_provider_destroy_proc, &
@@ -152,7 +172,9 @@ module ffuse_provider
             ffuse_provider_restore_state_proc, &
             ffuse_provider_capabilities_proc, &
             ffuse_provider_save_restart_blob_proc, &
-            ffuse_provider_load_restart_blob_proc
+            ffuse_provider_load_restart_blob_proc, &
+            ffuse_provider_bind_adjoint_proc, &
+            ffuse_provider_advance_adjoint_proc
 
 contains
 
@@ -232,6 +254,20 @@ contains
 
     table%load_restart_blob = c_funloc(proc)
   end subroutine ffuse_provider_set_load_restart_blob
+
+  subroutine ffuse_provider_set_bind_adjoint(table, proc)
+    type(fuse_provider_abi_v1), intent(inout) :: table
+    procedure(ffuse_provider_bind_adjoint_proc) :: proc
+
+    table%bind_adjoint = c_funloc(proc)
+  end subroutine ffuse_provider_set_bind_adjoint
+
+  subroutine ffuse_provider_set_advance_adjoint(table, proc)
+    type(fuse_provider_abi_v1), intent(inout) :: table
+    procedure(ffuse_provider_advance_adjoint_proc) :: proc
+
+    table%advance_adjoint = c_funloc(proc)
+  end subroutine ffuse_provider_set_advance_adjoint
 
   ! A plugin's own exported `fuse_provider_abi(abi_version) bind(C,
   ! name="fuse_provider_abi")` (docs/dev/abi-design.md, point 4: the plugin
