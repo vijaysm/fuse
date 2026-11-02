@@ -327,6 +327,40 @@ pins the case where duplicates are present but the fit (degree 0) still succeeds
   local fit (with the condition estimate present in the message), the `Conservative` flag, a
   detectably multi-rank backend, and the `Monotone` flag on a fit that is not bound preserving.
 
+## Gradients with respect to the point positions
+
+The weight kernel behind the builder, `fuse::device::solve_mls_on_space` in
+`fuse/backend/mls_weights_device.hpp`, is a template on the scalar type of the coordinates. With
+`fuse::num::dual<double, N>` (forward-mode automatic differentiation, see [](field-pipeline.md))
+each returned weight carries its gradient in `N` parameters, the derivative of the weight with
+respect to where the points are. The caller gives the neighbour list (the search is not
+differentiated) and the coordinates as views of `dual`, each parameter seeded with
+`dual::variable(x, k)`:
+
+```cpp
+using D = fuse::num::dual<double, 2>;
+using Space = Kokkos::HostSpace;                       // or the device memory space
+
+Kokkos::View<D * [3], Space> src("src", n_src), tgt("tgt", 1);
+Kokkos::View<int*, Space> nbr("nbr", k);               // the k neighbours of target 0
+// ... fill src(i, a) = D(x) and nbr; the sources do not move here
+tgt(0, 0) = D::variable(xt, 0);                        // parameter 0: x of the target
+tgt(0, 1) = D::variable(yt, 1);                        // parameter 1: y of the target
+tgt(0, 2) = D(0.0);
+
+auto w = fuse::device::solve_mls_on_space<Space>(2, 1, k, fuse::MlsRadial::Wendland2,
+                                                 src, tgt, nbr);
+// w.val(j).value() is the weight of source nbr(j); w.val(j).gradient(0) and .gradient(1) are
+// its derivatives with respect to xt and yt. Check w.n_fail == 0 first.
+```
+
+Accumulating `y += w.val(j) * f(nbr(j))` in the same type gives the gradient of the interpolated
+value by the product rule. The kernel with `double` views is what `build_mls_weights` runs, and the
+value part of the `dual` run equals it bit for bit. What is and is not differentiable (a stencil
+change, two equally far farthest neighbours, a source on the target), the cost (`N + 1` times the
+memory and arithmetic), the tests and what is not done, in particular that `build_mls_weights`, the
+`Runner` and the adjoint are not involved, are in [](../dev/mls-shape-gradient.md).
+
 ## Serial only
 
 This builder searches for a target's `k` nearest neighbours only among the source entities this

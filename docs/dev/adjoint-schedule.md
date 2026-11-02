@@ -375,4 +375,8 @@ component depends on.
   `reconcile_collective_status` as the forward entries) is wired and not exercised under MPI. There
   is no Fortran plugin example of an adjoint (the generated `ffuse_provider` module has the setters,
   `ffuse_provider_set_bind_adjoint` and `ffuse_provider_set_advance_adjoint`).
-- **Gradients with respect to the mesh** (U8).
+- **Gradients with respect to the mesh** (U8). Forward mode exists for the moving-least-squares
+  weights ([](mls-shape-gradient.md)). Reverse mode does not: this schedule treats every remap weight
+  as a constant of the problem, so a reverse sweep returns gradients with respect to fields and never
+  with respect to the positions of points or the vertices of a mesh, and the weights of the supermesh
+  and TempestRemap builders have no gradient at all.
