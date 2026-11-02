@@ -1,5 +1,4 @@
-! Posit fields through the Fortran participant interface (plans/2026-10-22-universal-number-types.md,
-! stage U5). Drives the same "upstream" -> "downstream" coupling as consumer.f90, over three channels:
+! Posit fields through the Fortran participant interface. Drives the same "upstream" -> "downstream" coupling as consumer.f90, over three channels:
 !
 !   p16:  posit<16, 2> to posit<16, 2>, FUSE_ELEMENT_POSIT16. A posit array is the integer pattern of its
 !         values: integer(c_int16_t) holds posit16 and integer(c_int32_t) posit32, so Fortran

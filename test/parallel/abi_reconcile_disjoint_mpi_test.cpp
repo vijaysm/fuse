@@ -186,9 +186,9 @@ TEST(AbiReconcileDisjointMpi, DifferentCallCountsPerComponentNeverHang) {
   fuse_step_report rep{.struct_size = sizeof(rep)};
 
   // Rank 0 ("u") drives TWO begin_step/end_step pairs; ranks 1 and 2
-  // ("v") drive exactly ONE. Round 3's bug deadlocks rank 0's SECOND
-  // begin_step() here, in the one-shared-communicator reduction, because
-  // ranks 1 and 2 never issue a matching second call. Round 4's fix
+  // ("v") drive exactly ONE. Reducing on one shared communicator
+  // would deadlock rank 0's SECOND begin_step(), because ranks 1 and 2
+  // never issue a matching second call. Instead the code
   // reduces "u"'s own calls on a one-rank communicator (never blocks on
   // anyone) and "v"'s own call on its own two-rank communicator
   // (unaffected by how many times "u" calls anything).

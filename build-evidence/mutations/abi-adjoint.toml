@@ -1,4 +1,4 @@
-# Mutations for the adjoint (reverse mode) through the C and Fortran entry points (plans/2026-10-22-universal-number-types.md, stage U6).
+# Mutations for the adjoint (reverse mode) through the C and Fortran entry points.
 
 [[mutation]]
 id = "abi-adjoint-provider-adjoint-offered-without-the-capability-bit"

@@ -67,6 +67,8 @@ The options below are independent of the ladder:
 | `FUSE_ENABLE_PYTHON` | OFF | The `pfuse` Python module, needs pybind11 ([](python.md)) |
 | `FUSE_ENABLE_FORTRAN` | ON | The Fortran binding `ffuse` ([](fortran.md)); turned off with a message when no Fortran compiler is found |
 | `FUSE_ENABLE_TESTS` | ON | Build the test suite |
+| `FUSE_ENABLE_PHYSICS_KIT` | ON | The optional finite-element component `fuse::physics_kit` ([](physics-kit.md)); needs nothing beyond the base build |
+| `FUSE_ENABLE_UNIVERSAL` | OFF | The tests that compare `dd`, `qd` and the posit types bit for bit with a stillwater-sc/universal checkout, named by `FUSE_UNIVERSAL_INCLUDE_DIR` (the `include/sw` directory) and compiled with `FUSE_UNIVERSAL_CXX` ([](field-pipeline.md#double-double-and-quad-double)) |
 | `FUSE_ENABLE_EXCEPTIONS` | ON | OFF makes every refusal report and abort instead of throwing |
 | `FUSE_ENABLE_CUSPARSE` | OFF | cuSOLVER/cuSPARSE sparse LU for the FSI and Gray-Scott examples; needs the Kokkos CUDA backend |
 | `FUSE_LINALG_BACKEND` | `eigen` | `eigen` or `builtin` ([below](#choosing-the-linear-algebra-backend)) |
@@ -262,7 +264,7 @@ target_link_libraries(my_coupling PRIVATE fuse::runtime fuse::backend)
 
 Link only the layers you use: `fuse::model` to describe a coupling, `fuse::runtime` to run one,
 `fuse::backend` for meshes and remap, `fuse::abi` for the C interface. The optional physics-kit
-component is requested by name, `find_package(fuse-coupler CONFIG REQUIRED COMPONENTS physics_kit)`,
+component ([](physics-kit.md)) is requested by name, `find_package(fuse-coupler CONFIG REQUIRED COMPONENTS physics_kit)`,
 and linked as `fuse::physics_kit`; the request fails at configure time against an install built with
 `FUSE_ENABLE_PHYSICS_KIT=OFF`. Your project must find the same
 Kokkos and fmt that FUSE was built against; the package configuration does this for you when both

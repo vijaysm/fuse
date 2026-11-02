@@ -1,5 +1,4 @@
-# Mutations for field value types (plans/2026-10-22-universal-number-types.md,
-# stage U1): the type check that keeps a typed field from being reinterpreted,
+# Mutations for field value types: the type check that keeps a typed field from being reinterpreted,
 # the scalar-tiling clause of fuse::CoupledValue, and the correctly rounded
 # binary64 -> bfloat16 conversion.
 

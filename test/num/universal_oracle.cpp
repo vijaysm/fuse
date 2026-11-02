@@ -2,8 +2,7 @@
 // stillwater-sc/universal's dd, qd and posit evaluated on operands read from a file. A
 // separate program, built with a host C++ compiler and nothing else of FUSE (no
 // Kokkos): Universal's headers do not compile under nvcc, which is the compiler of a
-// CUDA build, and the tests that compare the results must. (plans/2026-10-22-universal-number-types.md,
-// stages U4 and U5.)
+// CUDA build, and the tests that compare the results must.
 //
 // Usage: universal_oracle INPUT OUTPUT
 // INPUT is a sequence of records, OUTPUT the same number of results, all binary

@@ -1,4 +1,4 @@
-# Mutations for the Runner path for fields of an Arithmetic value type (plans/2026-10-22-universal-number-types.md, stage U4).
+# Mutations for the Runner path for fields of an Arithmetic value type.
 
 [[mutation]]
 id = "runtime-arith-remap-ignores-the-field-type"

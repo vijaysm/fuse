@@ -1,4 +1,4 @@
-# Mutations for the adjoint (reverse mode) of the Runner (plans/2026-10-22-universal-number-types.md, stage U6).
+# Mutations for the adjoint (reverse mode) of the Runner.
 
 [[mutation]]
 id = "runtime-adjoint-remap-matrix-not-its-transpose"
@@ -90,7 +90,7 @@ new = "if (false) {  // an arc the forward run keeps in device memory"
 target = "fuse_runtime_adjoint_runner_test"
 test = "runtime.adjoint_runner"
 requires = "device"
-equivalent = "An arc the forward run keeps in device memory whose adjoint array is in host memory is reversed through the staging lanes of Runner::Impl::reverse_on (stage(), commit()), which copy it to the device before each kernel and back after it; the values are the same, only the placement and the copy traffic differ, so no test of results can tell the two apart (measured on higgs: the suite stays green)."
+equivalent = "An arc the forward run keeps in device memory whose adjoint array is in host memory is reversed through the staging lanes of Runner::Impl::reverse_on (stage(), commit()), which copy it to the device before each kernel and back after it; the values are the same, only the placement and the copy traffic differ, so no test of results can tell the two apart (measured: the suite stays green)."
 
 [[mutation]]
 id = "runtime-adjoint-refusal-space-removed"

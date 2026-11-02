@@ -1,5 +1,5 @@
 // FUSE_ELEMENT_DD and FUSE_ELEMENT_QD, and the gradient_size of a registered field, through
-// the plain-C participant table (plans/2026-10-22-universal-number-types.md, stage U4): a C
+// the plain-C participant table: a C
 // or Fortran component that keeps double-double or quad-double arrays registers them as
 // arrays of pairs or quadruples of binary64 values, and the coupler does its sums and remaps
 // in that type, so that the low limbs arrive. The graph counts binary64 values per entity (a

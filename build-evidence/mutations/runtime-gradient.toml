@@ -1,5 +1,4 @@
-# Mutations for a field of dual numbers moving through the Runner (plans/2026-10-22-
-# universal-number-types.md, stage U2): the runner reads it as scalars, refuses a
+# Mutations for a field of dual numbers moving through the Runner: the runner reads it as scalars, refuses a
 # minimum or maximum accumulation of gradients, and names a type it cannot move
 # instead of calling the field unbound.
 

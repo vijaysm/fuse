@@ -189,7 +189,7 @@ TEST(FEBaseTest, SumOfJxWEqualsElementVolumeOnPrismAndPyramid) {
   }
 }
 
-// physics.fe_test.DistortedPyramidQuadratureAccuracy_D100 --
+// physics.fe_test.DistortedPyramidQuadratureAccuracy --
 // KARMA documents this as a risk:
 // a DISTORTED (non-reference-shaped) pyramid's isoparametric map is a
 // genuinely RATIONAL function of the reference coordinate (not a
@@ -211,7 +211,7 @@ TEST(FEBaseTest, SumOfJxWEqualsElementVolumeOnPrismAndPyramid) {
 std::vector<double> g_pyramid_distortion_errors;
 std::vector<double> g_pyramid_smooth_errors;
 
-TEST(FEBaseTest, DistortedPyramidQuadratureAccuracy_D100) {
+TEST(FEBaseTest, DistortedPyramidQuadratureAccuracy) {
   // Planar base (z=0, so the solid pyramid's volume is unambiguous --
   // verified by hand: splitting the quad base along EITHER diagonal into
   // two tetrahedra gives the same total, 2.52, to the last digit), apex
@@ -281,13 +281,13 @@ TEST(FEBaseTest, DistortedPyramidQuadratureAccuracy_D100) {
         << "smooth integrand degree index " << i << " regressed";
 }
 
-// physics.fe_test.ZZZ_D100MeasurementIsPrinted -- runs last (gtest's
+// physics.fe_test.ZZZ_DistortedPyramidMeasurementIsPrinted -- runs last (gtest's
 // definition-order rule, same device fe_quadrature_test.cpp's own ZZZ
 // test uses), so the five degree -> error pairs DistortedPyramidQuadrature
 // Accuracy_D100 measured are a plain, greppable line in the test log,
 // not a number this file's own comments would otherwise only assert
 // silently passed.
-TEST(FEBaseTest, ZZZ_D100MeasurementIsPrinted) {
+TEST(FEBaseTest, ZZZ_DistortedPyramidMeasurementIsPrinted) {
   ASSERT_EQ(g_pyramid_distortion_errors.size(), 5u);
   for (std::size_t i = 0; i < g_pyramid_distortion_errors.size(); ++i)
     std::printf("distorted pyramid: degree %zu volume error = %.3e\n", i + 1, g_pyramid_distortion_errors[i]);

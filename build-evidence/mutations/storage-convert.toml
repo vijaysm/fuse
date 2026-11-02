@@ -1,5 +1,5 @@
 # Mutations for the widen and narrow kernels of the Storage types on an execution
-# space (plans/2026-10-22-universal-number-types.md, stage U3).
+# space.
 
 [[mutation]]
 id = "storage-narrow-rounds-through-binary32"

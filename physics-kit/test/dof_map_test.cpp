@@ -343,7 +343,7 @@ TEST(DofMapTest, P2Tet10DofMapNumbersEachSharedEdgeDofOnce) {
 }
 
 
-// physics.dof_map.D102SharedSideOwnedByTheMinimumCornerOwnerRank --
+// physics.dof_map.SharedSideOwnedByTheMinimumCornerOwnerRank --
 // tested DIRECTLY against
 // fe::shared_sub_entity_owned_here rather than through DofMap's own
 // full single-rank constructor: that constructor's "convenience path"
@@ -362,7 +362,7 @@ TEST(DofMapTest, P2Tet10DofMapNumbersEachSharedEdgeDofOnce) {
 //     is locally owned);
 //   * corners split 1/2 (neither is this rank) -- not owned here,
 //     correctly, under either rule.
-TEST(DofMapTest, D102SharedSideOwnedByTheMinimumCornerOwnerRank) {
+TEST(DofMapTest, SharedSideOwnedByTheMinimumCornerOwnerRank) {
   fuse::native::NativeMeshBuilder builder(2);
   const int v0 = builder.add_vertex(100, 0, 0, 0, /*owner=*/0, /*is_owned=*/true);
   const int v1 = builder.add_vertex(101, 1, 0, 0, /*owner=*/0, /*is_owned=*/true);

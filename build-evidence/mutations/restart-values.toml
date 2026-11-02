@@ -1,4 +1,4 @@
-# Mutations for fields of any coupled value type in a restart file (plans/2026-10-22-universal-number-types.md, stage U4).
+# Mutations for fields of any coupled value type in a restart file.
 
 [[mutation]]
 id = "restart-values-store-one-scalar-per-value"

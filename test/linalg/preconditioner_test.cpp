@@ -1,4 +1,4 @@
-// fuse::linalg::SsorPreconditioner -- wave 2 round 4, item P1.
+// fuse::linalg::SsorPreconditioner.
 //
 // WHAT EACH CASE CHECKS.
 //   SsorExactness.OmegaOneOnOneDTridiagonalMatchesHandComputedSweep -- the
@@ -16,16 +16,15 @@
 //     omega_opt = 2 / (1 + sqrt(1 - rho_J^2)), rho_J = cos(pi/(n+1)) -- a
 //     derived constant, not one chosen after a measurement. Measured:
 //     jacobi 15, ssor(omega_opt) 8.
-//     NOTE (lead, 2026-11-02): the round-4 draft of this comment claimed
-//     that SSOR "does not beat Jacobi at any omega" on the 2-D Q1
-//     stiffness+mass system because that system lacks Property A. That
-//     was a pre-asymptotic artifact of the 6 x 6 mesh it was measured on
-//     (49 dofs); on 32 x 32 and 64 x 64 meshes SSOR(1.0) beats Jacobi
+//     NOTE: SSOR does beat Jacobi on the 2-D Q1 stiffness+mass system
+//     despite its lacking Property A; a contrary result on a 6 x 6 mesh
+//     (49 dofs) is a pre-asymptotic artifact. On 32 x 32 and 64 x 64
+//     meshes SSOR(1.0) beats Jacobi
 //     (55 vs 57, 90 vs 110) with the ratio growing as theory predicts
 //     (Axelsson & Barker 1984: O(h^-1) vs O(h^-2) condition numbers).
 //     Consistent ordering governs SOR as a stationary iteration, not
 //     SSOR as a CG preconditioner. physics-kit/test/linear_layer_test.cpp
-//     now asserts the inequality on the asymptotic meshes.
+//     asserts the inequality on the asymptotic meshes.
 
 #include "fuse/linalg/preconditioner.hpp"
 

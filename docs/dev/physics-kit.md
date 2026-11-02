@@ -154,7 +154,7 @@ against a degree-16 reference). A curved (order-2 geometry) pyramid is not cover
 
 At basis orders up to 2 every built-in basis places at most one DOF on any shared edge or face, so every
 generated `OrientationTransform` is the identity permutation with sign +1
-(`BasisTest.OrientationTransformsAreIdentityAtThisWavesOrders` checks this directly) and the round-trip
+(`BasisTest.OrientationTransformsAreIdentityAtTheSupportedOrders` checks this directly) and the round-trip
 test compares for exact equality. That is a fact about the supported orders, not about the machinery:
 `local_to_canonical_vertices`' six- and eight-way permutation tables are exercised by the round-trip
 path but never permute more than a one-element array. An order-3 or higher basis (two or more DOFs per

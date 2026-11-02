@@ -1,5 +1,5 @@
 # Mutations for the ordered cross-rank sum of the conservation integrals of Arithmetic fields
-# (plans/2026-10-22-universal-number-types.md, stage U4). Run under mpiexec: the test is the
+#. Run under mpiexec: the test is the
 # 4-rank row, because the order of the sum shows from four ranks on.
 
 [[mutation]]

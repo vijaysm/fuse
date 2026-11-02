@@ -1,5 +1,4 @@
-! The reverse sweep through the Fortran participant interface (plans/2026-10-22-universal-number-types.md,
-! stage U6, the C and Fortran entry points). Drives the same "upstream" -> "downstream" coupling as
+! The reverse sweep through the Fortran participant interface. Drives the same "upstream" -> "downstream" coupling as
 ! consumer.f90 for a few periods, the upstream component stepping
 !
 !   out <- a out,

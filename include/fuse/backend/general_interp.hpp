@@ -626,7 +626,7 @@ inline constexpr double kRefEpsLoose = kSurfaceTol;
 /// vertices of a 7-cell/11-cell pair (e.g. 0.06611570247933884 from the
 /// direct ratio against 0.06611570247933886 from the Gauss-Newton step, at
 /// the domain's own left edge) -- `NodalRemapDistributedNullComm.
-/// D67SerialAndDistributedEdgeWeightsAgreeAtTheDomainBoundary`
+/// SerialAndDistributedEdgeWeightsAgreeAtTheDomainBoundary`
 /// (test/backend/nodal_remap_distributed_nullcomm_test.cpp) reproduces it
 /// serially, with no MPI at all. Routing BOTH call sites through this one
 /// function closes the gap: whichever code path a caller's placement

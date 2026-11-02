@@ -2,8 +2,8 @@
 
 `fuse::num` ships a set of Runge-Kutta and Rosenbrock time integrators that a component can use
 inside its own `advance()`: explicit RK, diagonally implicit (DIRK and ESDIRK), Rosenbrock, and
-strong-stability-preserving (SSP) methods, with embedded-pair step-size control and a cubic Hermite
-continuous extension. They are plain C++ headers under `fuse/num/` that are installed with the
+strong-stability-preserving (SSP) methods, with embedded-pair step-size control, a step-size
+controller driven by the physics' own time scales, and dense output between steps. They are plain C++ headers under `fuse/num/` that are installed with the
 library. They advance a state vector that you own, one step at a time; they do not know about the
 coupling graph, the schedule or the `Runner`, and they do not replace your component. Use them when
 the physics inside a component is an ODE system `y' = f(t, y)` and you would rather pick a method
@@ -22,7 +22,8 @@ coupling interval keeps its own clock; see [Sub-stepping inside a window](#sub-s
 | `fuse/num/dirk_integrator.hpp` | `DirkIntegrator<Value>`: implicit stages solved with `fuse::num::solve()` (Newton-Krylov), for the `Dirk`, `DirkEmbedded`, `Sdirk` and `SdirkEmbedded` tableaus |
 | `fuse/num/rosenbrock_integrator.hpp` | `RosenbrockIntegrator<Value>`: one Jacobian per step and a GMRES solve per stage, for the `Rosenbrock` and `RosenbrockEmbedded` tableaus |
 | `fuse/num/embedded_controller.hpp` | `EmbeddedController`: PI or I step-size control from an embedded error estimate |
-| `fuse/num/continuous_extension.hpp` | `CubicHermiteExtension<Value>`: dense output between two accepted steps |
+| `fuse/num/dynamical_time_scale_controller.hpp` | `DynamicalTimeScaleController`: a step-size proposal from the time scales your problem reports |
+| `fuse/num/continuous_extension.hpp` | Dense output between two accepted steps: `CubicHermiteExtension<Value>`, `Dopri5QuarticExtension<Value>`, `PolynomialDenseOutput<Value>` and the wrapper `ContinuousExtension<Value>` |
 | `fuse/num/ssp_coefficient.hpp` | The SSP coefficient of a method from its Shu-Osher form (`ssp_coefficient_from_shu_osher()`) |
 
 `Value` is the element type of the state (`double` in all the examples here). The step size, the
@@ -40,7 +41,7 @@ when the method has an error estimate (`has_embedded_estimate()`), the stability
 | Explicit RK | `forward_euler_tableau()`, `kutta22_tableau()`, `kutta44_tableau()`, `dopri45_tableau()` (embedded, order 5(4)) | `ExplicitIntegrator` |
 | SSP explicit RK | `ssprk33_tableau()` (SSP coefficient 1), `ssprk104_tableau()` (SSP coefficient 6) | `ExplicitIntegrator` |
 | SDIRK | `sdirk22_tableau()`, `sdirk23_tableau()`, `sdirk33_tableau()`, `sdirk34_tableau()`, `sdirk44_tableau()`; embedded: `sdirk332_tableau()`, `sdirk543_tableau()`, `sdirk643_tableau()` | `DirkIntegrator` |
-| DIRK / ESDIRK | embedded: `trbe_tableau()`, `esdirk324l2sa_tableau()` (explicit first stage, L-stable, order 3(2)) | `DirkIntegrator` |
+| DIRK / ESDIRK | embedded: `trbe_tableau()`; ESDIRK pairs with an explicit first stage, all L-stable: `esdirk324l2sa_tableau()` (order 3(2), 4 stages), `esdirk436l2sa_tableau()` (order 4(3), 6 stages), `esdirk548l2sa_tableau()` (order 5(4), 8 stages) | `DirkIntegrator` |
 | Rosenbrock | `ros22_tableau()`; embedded: `ros3p_tableau()`, `rodasp_tableau()`, `grk4t_tableau()`, `grk4sn_tableau()` | `RosenbrockIntegrator` |
 | Fully implicit one-stage and two-stage | `backward_euler_tableau()`, `crank_nicolson_tableau()` | not handled by `DirkIntegrator`: a step with them is refused with `E-INTEGRATOR-WRONG-FAMILY` |
 
@@ -49,8 +50,10 @@ solves (`RosenbrockIntegrator<double>(ros22_tableau(), 1e-10)`); the adaptive co
 controller, `rtol`, `atol` and an optional norm, like `ExplicitIntegrator`. `grk4a_tableau()` is
 also available. It carries no usable error estimate
 (`has_embedded_estimate()` is `false`), so use it as a fixed-step method only.
-`all_karma_tableaus()` and `all_round2_tableaus()` return every tableau in a `std::vector` if you
-want to loop over them. The factory functions return plain data; a method that is not in the list is
+Functions in the same header return the tableaus as `std::vector`s if you want to loop over them
+(`all_extended_tableaus()` for `esdirk324l2sa_tableau()` and the two SSP methods,
+`all_esdirk_dense_output_tableaus()` for the two higher-order ESDIRK pairs, and one for the
+classical, SDIRK and Rosenbrock methods). The factory functions return plain data; a method that is not in the list is
 a `ButcherTableau` you fill in yourself, and the integrator for its family will run it.
 
 ## Describing the problem
@@ -63,6 +66,7 @@ A `TemporalProblem<Value>` holds `std::function` members. Only `rhs` is required
 | `mass(v, out)` | `out <- M v`; absent means `M = I` | DIRK, Rosenbrock; an explicit integrator refuses a problem that sets it (`E-INTEGRATOR-MASS-UNSUPPORTED`) |
 | `jacobian_action(t, y, v, out)` | `out <- J(t, y) v`; absent means a finite-difference product of `rhs` | Rosenbrock |
 | `dfdt(t, y, out)` | `out <- df/dt` | Rosenbrock, for non-autonomous problems |
+| `dynamical_time_scales(t, y, out)` | `out <-` the problem's own local time scales, in units of time (for a linear decay mode, `1/|lambda|`); entries that are not positive are ignored | `DynamicalTimeScaleController` through an `ExplicitIntegrator` |
 | `dimension` | state size; `0` skips the check | every family |
 
 Every callback returns a `fuse::Result<void>`; a failure from `rhs` is returned unchanged from
@@ -88,8 +92,7 @@ returned only for a refusal, listed [below](#refusals).
 
 The program below integrates `y' = -y` with Dormand-Prince 5(4) under a PI controller, then a stiff
 problem `y' = -1000 (y - cos t)` with a step 50 times larger than the fast time scale using the
-L-stable ESDIRK method, and finally evaluates the Hermite extension between two points. It is
-compiled and run as part of preparing this page.
+L-stable ESDIRK method, and finally evaluates the Hermite extension between two points.
 
 ```cpp
 #include <cmath>
@@ -203,6 +206,64 @@ functor, and lets the controller decide.
 Passing a controller with a tableau that has no embedded estimate (`has_embedded_estimate()` is
 `false`) is refused with `E-INTEGRATOR-WRONG-FAMILY`.
 
+## Step size from the physics
+
+Some codes know how fast the physics can change without computing an error estimate: a CFL-type
+bound, the fastest decay rate of a locally linearised mode. `DynamicalTimeScaleController` turns
+such numbers into a step size: it takes the smallest positive time scale the problem reports,
+multiplies it by `safety`, and clamps the result to `[fac_min, fac_max]` times the step just taken
+(`DynamicalControllerOptions`: `safety` 0.8, `fac_min` 0.2, `fac_max` 4.0 by default). It keeps no
+history, so the same scales always give the same proposal. Attach it to an `ExplicitIntegrator` with
+`set_dynamical_controller()` and set `TemporalProblem::dynamical_time_scales`:
+
+```cpp
+TemporalProblem<double> problem;
+problem.dimension = 2;
+problem.rhs = [](double, std::span<const double> y, std::span<double> out) {
+  out[0] = -2.0 * y[0];                  // two decay modes: time scales 1/2 and 1/50
+  out[1] = -50.0 * y[1];
+  return fuse::Result<void>::success();
+};
+problem.dynamical_time_scales = [](double, std::span<const double>, std::vector<double>& out) {
+  out = {1.0 / 2.0, 1.0 / 50.0};         // times, not rates; the smallest limits the step
+  return fuse::Result<void>::success();
+};
+
+ExplicitIntegrator<double> rk(kutta44_tableau());
+rk.set_dynamical_controller(DynamicalTimeScaleController(DynamicalControllerOptions{
+    /*safety=*/0.8, /*fac_min=*/0.2, /*fac_max=*/4.0}));
+
+const auto r = rk.step(problem, t, h, y);
+h = r.value().h_next;                    // 0.8 * (1/50) = 0.016 here, within [0.2, 4] x h
+```
+
+With this controller alone (no `EmbeddedController`) every step is accepted and `h_next` is the
+controller's proposal, evaluated at the state the step reached; the controller has no notion of
+rejection, so it works for tableaus with no embedded estimate such as `kutta44_tableau()`. With both
+controllers attached, the embedded controller decides whether a step is accepted, and on an accepted
+step `h_next` is the smaller of the two proposals. A rejected step does not consult the dynamical
+controller. The callback may report any number of scales, one global value or one per mode. If every
+reported scale is non-positive, or the list is empty, the step is refused with
+`E-DYNAMICAL-CONTROLLER-NO-SCALE` rather than proposing an unbounded step; a controller attached to
+a problem that has no `dynamical_time_scales` callback is refused with
+`E-INTEGRATOR-NO-DYNAMICAL-SCALES`. Only `ExplicitIntegrator` accepts the controller.
+
+## Dense output
+
+To evaluate the solution between two accepted points, build an interpolant from the data of the step
+and call `evaluate(theta)` with `theta` in `[0, 1]` (the fraction of the step `h`). The integrators
+do not hand back their stage derivatives, so you provide whatever the interpolant needs.
+
+| Interpolant | Built from | Use |
+|---|---|---|
+| `CubicHermiteExtension<Value>(h, y0, f0, y1, f1)` | the two end states and `f` at both ends | any method; the interpolation error is O(h^4) |
+| `Dopri5QuarticExtension<Value>(h, y0, y1, k)` | the end states and the seven stage derivatives of a `dopri45_tableau()` step | Dormand-Prince 5(4), quartic |
+| `PolynomialDenseOutput<Value>(h, y0, k, b_star)` | the start state, the stage derivatives and a tableau's `dense_output` table | the tableaus whose `has_dense_output()` is true (`esdirk324l2sa_tableau()`, `esdirk436l2sa_tableau()`, `esdirk548l2sa_tableau()`) |
+
+`ContinuousExtension<Value>` holds any of the three and reports which with `kind()`
+(`DenseOutputKind::CubicHermite`, `Dopri5Quartic` or `PolynomialBStar`). Every method without its own
+table falls back to Hermite.
+
 ## Sub-stepping inside a window
 
 An adaptive method proposes `h` as a floating-point number, while FUSE times are exact rationals.
@@ -233,6 +294,8 @@ Failures are returned as a `Result` carrying one of these codes; none is thrown.
 | `E-INTEGRATOR-MASS-UNSUPPORTED` | an explicit method was given a problem with a mass matrix; use DIRK or Rosenbrock |
 | `E-INTEGRATOR-NEWTON-FAILED` | a DIRK stage's nonlinear solve did not converge |
 | `E-INTEGRATOR-STAGE-SOLVE-FAILED` | a Rosenbrock stage's GMRES solve did not reach its tolerance |
+| `E-INTEGRATOR-NO-DYNAMICAL-SCALES` | a `DynamicalTimeScaleController` is attached but `TemporalProblem::dynamical_time_scales` is not set |
+| `E-DYNAMICAL-CONTROLLER-NO-SCALE` | every reported time scale was non-positive, or the list was empty |
 | `E-INTEGRATOR-NONFINITE-ERROR` | the error norm is NaN or infinite |
 | `E-INTEGRATOR-STEP-TOO-SMALL` | a rejected step's next proposal is below `h_min` |
 
@@ -242,8 +305,14 @@ Failures are returned as a `Result` carrying one of these codes; none is thrown.
   between ranks themselves.
 - `DirkIntegrator` always forms its Newton Jacobian products by differencing `rhs`;
   `jacobian_action` is read by the Rosenbrock integrator only.
-- Each step recomputes the first stage even when a method could reuse the last stage of the
-  previous step. The result is the same; one extra right-hand-side evaluation is spent per step.
+- A method whose last stage equals the first stage of the next step (first-same-as-last, FSAL:
+  `dopri45_tableau()` and the ESDIRK pairs) can skip one right-hand-side evaluation per step.
+  `ExplicitIntegrator` does this by default for Dormand-Prince, and the states it produces are
+  identical bit for bit to those of a run without the reuse (`set_fsal_enabled(false)` turns it
+  off). `DirkIntegrator` has the same switch, `set_fsal_enabled(true)`, but it is off by default:
+  with an iterative stage solve the reused value need not match a fresh evaluation bit for bit.
+  Without the reuse the first stage is recomputed every step, which gives the same result for one
+  more evaluation.
 - `ButcherTableau::order` is the method's nominal order, recorded as data. The order of a
   Rosenbrock method beyond two depends on Jacobian-dependent conditions that the generic
   Runge-Kutta order checker used in the test suite does not verify.

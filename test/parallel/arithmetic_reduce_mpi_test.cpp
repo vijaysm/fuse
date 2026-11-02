@@ -1,6 +1,5 @@
 // The ordered cross-rank sum of double-double and quad-double integrals
-// (src/runtime/arithmetic_reduce.hpp; plans/2026-10-22-universal-number-types.md,
-// stage U4), at 1 to 5 ranks. Each rank contributes integrals built to defeat a
+// (src/runtime/arithmetic_reduce.hpp), at 1 to 5 ranks. Each rank contributes integrals built to defeat a
 // binary64 sum (terms of 1e6 that cancel across ranks and leave values of 1e-3
 // down to 1e-18, which a binary64 sum of the leading limbs cannot hold); the total
 // must be

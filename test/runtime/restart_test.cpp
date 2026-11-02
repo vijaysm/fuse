@@ -144,7 +144,7 @@ std::string temp_dir_path(const std::string& leaf) {
 /// Runs N periods on a fixture built fresh; returns the final q/u/time/
 /// history of both components, and the LAST period's own iteration
 /// stats (sweep count) -- the "solution logs and iteration statistics"
-/// item D's own bit-identity claim is checked against.
+/// the bit-identity claim is checked against.
 struct RunResult {
   std::vector<double> q, u;
   double dirichlet_time = 0, neumann_time = 0;

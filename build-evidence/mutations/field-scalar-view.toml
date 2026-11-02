@@ -1,5 +1,4 @@
-# Mutations for the view of a field as scalars and fuse::num::dual (plans/2026-10-22-
-# universal-number-types.md, stage U2): a field of forward-mode dual numbers reaches
+# Mutations for the view of a field as scalars and fuse::num::dual: a field of forward-mode dual numbers reaches
 # the runtime as scalars (the value, then the gradients), and the dual arithmetic
 # carries the gradient.
 

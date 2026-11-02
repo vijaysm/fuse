@@ -1,5 +1,4 @@
-// fuse::num::dd against exact arithmetic (plans/2026-10-22-universal-number-types.md,
-// stage U4): every operation is compared with the exact result computed with
+// fuse::num::dd against exact arithmetic: every operation is compared with the exact result computed with
 // expansions (test/num/exact_expansion.hpp), which share no code with the type,
 // over random operands of many magnitudes, operands that cancel, and the
 // special values. The bit-for-bit comparison with stillwater-sc/universal is

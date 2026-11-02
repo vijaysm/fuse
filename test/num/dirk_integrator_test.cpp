@@ -151,9 +151,9 @@ NewtonKrylovOptions tight_newton_options() {
   return opt;
 }
 
-// Round 3's two new ESDIRK pairs are 4th order (vs Round 2's own 2nd-4th order named
+// The two newer ESDIRK pairs are 4th order (vs the 2nd-4th order named
 // methods) -- their own truncation error crosses below `tight_newton_options()`'s own
-// atol=1e-8 floor at a coarser h than the Round 2 methods needed, corrupting an order
+// atol=1e-8 floor at a coarser h than the other methods need, corrupting an order
 // fit's fine end with a flattened (Newton-limited, not truncation-limited) tail.
 // MEASURED directly (a standalone sweep against both new tableaus, scoped to the
 // SCALAR logistic and non-autonomous problems, before relying on this helper):
@@ -447,13 +447,13 @@ TEST(DirkIntegrator, OrderReductionOnProtheroRobinsonIsMeasuredAgainstStageOrder
   }
 }
 
-// S8 physics-kit, track "Integrators", Stage B Round 3 (task item 2): the two new
-// ESDIRK pairs from the Kennedy & Carpenter NASA TM, run through the SAME convergence,
-// non-autonomous and order-reduction problems Round 2 already used.
+// The two newer ESDIRK pairs from the Kennedy & Carpenter NASA TM, run through the
+// SAME convergence, non-autonomous and order-reduction problems the other DIRK
+// methods use.
 TEST(DirkIntegrator, TwoNewEsdirkPairsConvergeAtTheirDeclaredOrderOnDahlquist) {
   const std::vector<DahlquistCase> cases = {
-      // h ranges MEASURED (lead, 2026-10-31) from the full [0.001, 0.1] sweep the
-      // round-3 track ran: ESDIRK436L2SA's errors 7.0e-6 .. 6.6e-14 are truncation-
+      // h ranges MEASURED from the full [0.001, 0.1] sweep:
+      // ESDIRK436L2SA's errors 7.0e-6 .. 6.6e-14 are truncation-
       // limited throughout (ratio 39 per 2.51x in h, 2.51^4 = 39.8); ESDIRK548L2SA's
       // 3.1e-7, 3.4e-9, 4.5e-11 are fifth order (ratios 92, 75 against 2.51^5 = 99.6)
       // and the next three, 2.7e-12, 4.6e-13, 3.2e-13, sit on the Newton floor, which
@@ -477,7 +477,7 @@ TEST(DirkIntegrator, TwoNewEsdirkPairsConvergeAtTheirDeclaredOrderOnDahlquist) {
     const auto hs = decade_of_h(c.h_max, c.h_min_ratio, c.n_points);
     std::vector<double> errors, actual_hs;
     for (double h : hs) {
-      // tight_newton_options() (Round 2's own atol=1e-8/rtol=1e-7), not
+      // tight_newton_options() (atol=1e-8/rtol=1e-7), not
       // very_tight_newton_options() below: MEASURED that the tighter setting fails
       // DivergedLinearSolve at the coarse end of this complex-Dahlquist sweep for
       // both new tableaus -- the complex-rotation Jacobian GMRES must resolve here
@@ -490,17 +490,16 @@ TEST(DirkIntegrator, TwoNewEsdirkPairsConvergeAtTheirDeclaredOrderOnDahlquist) {
       errors.push_back(err);
       actual_hs.push_back(actual_h);
     }
-    printf("[DIRK/Dahlquist, round3] %-14s h in [%.4g,%.4g] errors: ", c.name, actual_hs.back(), actual_hs.front());
+    printf("[DIRK/Dahlquist, new pairs] %-14s h in [%.4g,%.4g] errors: ", c.name, actual_hs.back(), actual_hs.front());
     for (double e : errors) printf("%.3e ", e);
     printf("\n");
     auto fit = fit_order(actual_hs, errors);
-    printf("[DIRK/Dahlquist, round3] %-14s fitted order = %.5f +/- %.5f (expected %d)\n",
+    printf("[DIRK/Dahlquist, new pairs] %-14s fitted order = %.5f +/- %.5f (expected %d)\n",
            c.name, fit.slope, fit.slope_stderr, c.order);
     // ESDIRK548L2SA is order 5 (its name, Kennedy and Carpenter's convention, and the
     // order-condition checker: every condition through order 5 holds to the
-    // coefficients' own 1e-27 precision and order 6 fails by 4.2e-3; the round-3
-    // track had declared it order 4 after misreading "order 5 also passes" as an
-    // unresolvable distinction -- lead, 2026-10-31).
+    // coefficients' own 1e-27 precision and order 6 fails by 4.2e-3; it is NOT
+    // order 4, and a declared order of 4 would still pass an "at least 4" check).
     const double tol = 8.0 * fit.slope_stderr;
     EXPECT_NEAR(fit.slope, static_cast<double>(c.order), tol)
         << c.name << ": measured order " << fit.slope << " +/- " << fit.slope_stderr;
@@ -508,7 +507,7 @@ TEST(DirkIntegrator, TwoNewEsdirkPairsConvergeAtTheirDeclaredOrderOnDahlquist) {
 }
 
 TEST(DirkIntegrator, TwoNewEsdirkPairsConvergeAtTheirDeclaredOrderOnTheLogisticEquation) {
-  // h_max=0.1 (not Round 2's 0.2): MEASURED that ESDIRK436L2SA's own truncation error
+  // h_max=0.1 (not 0.2): MEASURED that ESDIRK436L2SA's own truncation error
   // at h=0.2 (2.3e-8) already sits close to tight_newton_options()'s own atol floor;
   // narrowing avoids relying on the floor-avoidance alone to keep the fit clean.
   // h_min_ratio=0.3 (not 1e-1): MEASURED that ESDIRK548L2SA's own truncation error
@@ -531,11 +530,11 @@ TEST(DirkIntegrator, TwoNewEsdirkPairsConvergeAtTheirDeclaredOrderOnTheLogisticE
       actual_hs.push_back(actual_h);
     }
     auto fit = fit_order(actual_hs, errors);
-    printf("[DIRK/logistic, round3] %-14s fitted order = %.5f +/- %.5f (expected %d)\n",
+    printf("[DIRK/logistic, new pairs] %-14s fitted order = %.5f +/- %.5f (expected %d)\n",
            c.name, fit.slope, fit.slope_stderr, c.order);
     // Two-sided for both pairs: ESDIRK548L2SA is order 5 (see the Dahlquist test's
-    // comment); the round-3 track's one-sided "at least 4" bound measured 4.991 +/-
-    // 0.006 here and is replaced by the same band every other method is held to.
+    // comment); a one-sided "at least 4" bound would pass (measured 4.991 +/-
+    // 0.006 here), so the same two-sided band every other method is held to applies.
     const double tol = 8.0 * fit.slope_stderr;
     EXPECT_NEAR(fit.slope, static_cast<double>(c.order), tol)
         << c.name << ": measured order " << fit.slope << " +/- " << fit.slope_stderr;
@@ -546,12 +545,12 @@ TEST(DirkIntegrator, TwoNewEsdirkPairsConvergeOnANonAutonomousProblem) {
   const double omega = 3.0;
   auto problem = non_autonomous_problem(omega);
   struct Case { const char* name; ButcherTableau tableau; int order; double h_max; double h_min_ratio; };
-  // h ranges MEASURED (lead, 2026-10-31) from the track's [0.001, 0.1] sweep:
+  // h ranges MEASURED from the [0.001, 0.1] sweep:
   // ESDIRK436L2SA 3.1e-6, 7.4e-8, 1.9e-9, 4.8e-11, 1.3e-12 are fourth order (ratios
   // 42, 39, 39, 37 against 2.51^4 = 39.8) and the sixth point, 2.2e-13, is the Newton
   // floor; ESDIRK548L2SA 1.0e-7, 9.8e-10, 1.0e-11, 1.3e-13 are fifth order (ratios
   // 105, 98, 79 against 99.6) and the last two, 8.3e-14 and 1.9e-13, are the floor.
-  // Each fit stops above its floor; the floor-contaminated fits had read 3.69 +/- 0.17
+  // Each fit stops above its floor; floor-contaminated fits read 3.69 +/- 0.17
   // and 3.06 +/- 0.65.
   const std::vector<Case> cases = {
       {"ESDIRK436L2SA", esdirk436l2sa_tableau(), 4, 0.1, 0.025},
@@ -567,11 +566,11 @@ TEST(DirkIntegrator, TwoNewEsdirkPairsConvergeOnANonAutonomousProblem) {
       errors.push_back(err);
       actual_hs.push_back(actual_h);
     }
-    printf("[DIRK/non-autonomous, round3] %-14s errors: ", c.name);
+    printf("[DIRK/non-autonomous, new pairs] %-14s errors: ", c.name);
     for (double e : errors) printf("%.3e ", e);
     printf("\n");
     auto fit = fit_order(actual_hs, errors);
-    printf("[DIRK/non-autonomous, round3] %-14s fitted order = %.5f +/- %.5f (expected %d)\n",
+    printf("[DIRK/non-autonomous, new pairs] %-14s fitted order = %.5f +/- %.5f (expected %d)\n",
            c.name, fit.slope, fit.slope_stderr, c.order);
     const double tol = 8.0 * fit.slope_stderr;
     EXPECT_NEAR(fit.slope, static_cast<double>(c.order), tol)
@@ -642,11 +641,11 @@ TEST(DirkIntegrator, MassMatrixIsHonouredOnAnImplicitStage) {
 
 
 // ===========================================================================
-// Round 3 (task item 6): FSAL reuse for the stiffly accurate ESDIRKs
+// FSAL reuse for the stiffly accurate ESDIRKs
 // (dirk_integrator.hpp's own update_fsal_cache_/fsal_enabled_, ButcherTableau::
-// is_FSAL). "Verify before optimise", applied as a GATE, not a slogan: the task's
-// own standing rule for this item is "lands ONLY with a test that FSAL and
-// non-FSAL paths produce bit-identical states". MEASURED (this suite): that bar is
+// is_FSAL). "Verify before optimise", applied as a GATE, not a slogan: FSAL reuse
+// lands as a default ONLY with a test that FSAL and non-FSAL paths produce
+// bit-identical states. MEASURED (this suite): that bar is
 // NOT met for the implicit (Newton-based) family, for every stiffly accurate DIRK
 // tableau this project ships, at every NewtonKrylovOptions setting tried (the
 // library's own default, tight_newton_options(), very_tight_newton_options()) --
@@ -661,11 +660,11 @@ TEST(DirkIntegrator, MassMatrixIsHonouredOnAnImplicitStage) {
 // Krylov's own history-dependent inner iteration count (Eisenstat-Walker forcing,
 // GMRES) at a tolerance this file's own top comment on tight_newton_options()
 // already documents as past where the MFFD directional derivative degenerates,
-// not a NEW defect specific to FSAL reuse. Per the task's own gate, this means
-// FSAL reuse for the DIRK family does NOT land as an active default this round:
+// not a NEW defect specific to FSAL reuse. Per that gate, FSAL reuse for the
+// DIRK family is NOT an active default:
 // the mechanism is implemented and tested (opt-in, `set_fsal_enabled(true)`,
 // default false). ExplicitIntegrator's OWN FSAL reuse (explicit_integrator_test.
-// cpp) is the part of this item that DOES meet the bit-identical bar, because an
+// cpp) meets the bit-identical bar, because an
 // ERK method's last stage is an exact f() evaluation with no iterative solve at
 // all -- it ships enabled by default.
 // ===========================================================================
@@ -682,7 +681,7 @@ TEST(DirkIntegrator, FsalReuseDefaultsToDisabled) {
 
 TEST(DirkIntegrator, FsalReuseWhenExplicitlyEnabledSavesExactlyOneFunctionEvaluationPerStep) {
   // The MECHANICAL claim (fewer rhs calls) holds regardless of the bit-identity
-  // finding above -- this is the part of item 6 that DOES work for DIRK, verified
+  // finding above -- this is the part that DOES work for DIRK, verified
   // on its own terms, separately from the (failing) bit-identical claim.
   for (const ButcherTableau& t :
        {esdirk324l2sa_tableau(), esdirk436l2sa_tableau(), esdirk548l2sa_tableau()}) {

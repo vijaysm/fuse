@@ -1,5 +1,5 @@
 # Mutations for provider plugin fields in every element type in host memory (FUSE_ELEMENT_F32, BF16, F16,
-# DD, QD) and their gradient_size (plans/2026-10-22-universal-number-types.md, stage U4).
+# DD, QD) and their gradient_size.
 
 [[mutation]]
 id = "abi-provider-binds-double-double-as-binary64"

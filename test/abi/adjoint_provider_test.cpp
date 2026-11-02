@@ -1,5 +1,4 @@
-// The adjoint of a provider plugin (plans/2026-10-22-universal-number-types.md, stage U6, the
-// C and Fortran entry points; docs/dev/abi-design.md, "Adjoint"). A plugin that sets
+// The adjoint of a provider plugin. A plugin that sets
 // FUSE_CAP_ADJOINT and fills bind_adjoint and advance_adjoint is a fuse::AdjointComponent behind
 // the same ProviderAdapter that hosts it forward, so the Runner's reverse sweep drives it like
 // any native component.

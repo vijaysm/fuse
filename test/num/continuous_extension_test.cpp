@@ -1,13 +1,10 @@
-// S8 physics-kit, track "Integrators", Stage B Round 2 (task item 5) and Round 3
-// (task item 1): dense output.
-//
-// Round 2 shipped the cubic Hermite interpolant as a deviation from DOPRI5's own
-// method-specific quartic (continuous_extension.hpp's own top comment, unchanged).
-// Round 3 adds DOPRI5's own quartic (Dopri5QuarticExtension, Hairer's own dopri5.f) and
+// Dense output: the cubic Hermite interpolant (a deviation from DOPRI5's own
+// method-specific quartic; see continuous_extension.hpp's own top comment),
+// DOPRI5's own quartic (Dopri5QuarticExtension, Hairer's own dopri5.f) and
 // the generic Kennedy & Carpenter polynomial dense output (PolynomialDenseOutput) the
-// new ESDIRK pairs publish, behind the SAME reporting wrapper
-// (ContinuousExtension::kind()). The cubic Hermite's own order measurement from Round
-// 2 is unchanged below; new tests measure the two Round 3 additions the same way.
+// ESDIRK pairs publish, behind the SAME reporting wrapper
+// (ContinuousExtension::kind()). The quartic and the polynomial output are
+// measured the same way as the cubic Hermite's order.
 
 #include "fuse/num/continuous_extension.hpp"
 
@@ -41,7 +38,7 @@ TemporalProblem<double> dahlquist_real(double lambda) {
 // One accepted DOPRI45 step of size h from (t0, y0), returning (y1, f0, f1) -- f0/f1
 // are the SAME rhs evaluations continuous_extension.hpp's own top comment describes a
 // caller as already holding (f0 is the tableau's own first-stage evaluation, f1 the
-// FSAL last stage DOPRI45 already carries per Round 1's own is_FSAL correction); this
+// FSAL last stage DOPRI45 already carries via is_FSAL); this
 // test does not reach into ExplicitIntegrator's own internals for them, it simply
 // evaluates the SAME rhs function at the two endpoints, which is externally
 // observable and all continuous_extension.hpp's own interface requires.
@@ -67,7 +64,7 @@ SteppedInterval take_one_dopri45_step(double lambda, double t0, double y0, doubl
   return out;
 }
 
-// Same log-log least-squares slope fit used throughout Round 1/2's own order tests
+// Same log-log least-squares slope fit used throughout the order tests
 // (explicit_integrator_test.cpp, dirk_integrator_test.cpp, rosenbrock_integrator_test.cpp).
 struct OrderFit {
   double slope = 0.0;
@@ -104,7 +101,7 @@ OrderFit fit_order(const std::vector<double>& hs, const std::vector<double>& err
   return fit;
 }
 
-// kOrderToleranceMultiplier=8.0: same multiplier used throughout Round 1/2 (the
+// kOrderToleranceMultiplier=8.0: same multiplier used throughout the order tests (the
 // regression's own standard error scaled up to absorb the fact that only a decade of
 // h values is sampled, not an asymptotic family) -- not a number tuned to this test.
 constexpr double kOrderToleranceMultiplier = 8.0;
@@ -149,12 +146,12 @@ TEST(ContinuousExtension, EndpointsAreExactToRoundoff) {
 }
 
 // ===========================================================================
-// Round 3 (task item 1): DOPRI5's own quartic, built from the SAME 7 stage
+// DOPRI5's own quartic, built from the SAME 7 stage
 // derivatives DOPRI45's own tableau stepping computes -- this test implements the
 // Butcher recursion directly off `dopri45_tableau()`'s own A/B/C (no re-transcription
 // of the coefficients, only the recursion itself), so it is independent of
-// ExplicitIntegrator's own stepping code the way Round 2's bit-identical reference
-// loop already is for the propagated value.
+// ExplicitIntegrator's own stepping code the way the bit-identical reference
+// loop is for the propagated value.
 // ===========================================================================
 struct Dopri45FullStep {
   double y0 = 0.0, y1 = 0.0;
@@ -224,12 +221,9 @@ TEST(ContinuousExtension, Dopri5QuarticInteriorErrorMeasuredOrder) {
   // step) interior error O(h^5) -- the standard "local = global+1" relationship for
   // one-step methods, the SAME reason a 4th-order RK method's own LOCAL truncation
   // error is O(h^5), not O(h^4). This test measures ONE accepted step's own interior
-  // error, so the expected slope here is 5, not 4 -- first measured as 4.92 +/- 0.10
-  // against an asserted 4.0 (a genuine test bug in this round's own first attempt,
-  // not a defect in Dopri5QuarticExtension itself: a theta-sweep at 0.3/0.5/0.7
-  // confirmed the SAME ~5 slope at every theta, ruling out a theta=0.5-specific
-  // superconvergence artifact before concluding the ASSERTION, not the
-  // implementation, needed the fix).
+  // error, so the expected slope here is 5, not 4 -- measured as 4.92 +/- 0.10.
+  // A theta-sweep at 0.3/0.5/0.7 confirms the SAME ~5 slope at every theta,
+  // ruling out a theta=0.5-specific superconvergence artifact.
   const double tol = kOrderToleranceMultiplier * fit.slope_stderr;
   EXPECT_NEAR(fit.slope, 5.0, tol)
       << "measured order " << fit.slope << " +/- " << fit.slope_stderr
@@ -238,7 +232,7 @@ TEST(ContinuousExtension, Dopri5QuarticInteriorErrorMeasuredOrder) {
 }
 
 // ===========================================================================
-// Round 3 (task item 2/3): the generic Kennedy & Carpenter polynomial dense output,
+// The generic Kennedy & Carpenter polynomial dense output,
 // tested against ESDIRK436L2SA (a 3rd-order one) using DirkIntegrator's own stepping
 // (through its public step() only -- this needs the stage k's a caller of DirkIntegrator
 // does not otherwise see, so this test computes them itself from the tableau's own

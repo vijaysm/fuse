@@ -609,9 +609,9 @@ TEST(ExplicitIntegrator, Ssprk104MatchesTheShuOsherRecursion) {
 }
 
 // ===========================================================================
-// Round 3 (task item 4): the SSPRK(10,4) embedded pair (Conde, Fekete and Shadid
+// The SSPRK(10,4) embedded pair (Conde, Fekete and Shadid
 // 2018, their own recommended ~b_3 row, butcher_tableau.hpp's own ssprk104_tableau()
-// top comment) -- "the monotonicity test of round 2 extended to the pair": adaptive
+// top comment) -- the monotonicity test extended to the pair: adaptive
 // stepping (EmbeddedController active, not the fixed-step monotonicity test above)
 // must still leave every ACCEPTED step's own total variation non-increasing, using
 // the SAME periodic upwind advection problem, confirming the embedded pair's own
@@ -661,7 +661,7 @@ TEST(ExplicitIntegrator, Ssprk104EmbeddedPairKeepsAdaptiveStepsMonotone) {
 
 
 // ===========================================================================
-// Round 3 (task item 5): DynamicalTimeScaleController (docs/dev/integrators-design.md
+// DynamicalTimeScaleController (docs/dev/integrators-design.md
 // Section 2, mechanism 1; dynamical_time_scale_controller.hpp). A problem with a
 // KNOWN, constant time scale (linear decay y' = -lambda*y, scale = 1/|lambda|) must
 // have its chosen step PINNED to that scale -- an exact (not statistical) check,
@@ -818,7 +818,7 @@ TEST(ExplicitIntegrator, DynamicalControllerRefusesWhenTheProblemHasNoCallback) 
 TEST(ExplicitIntegrator, DynamicalControllerOwnRefusalPropagatesThroughStep) {
   // Every reported scale non-positive: DynamicalTimeScaleController's OWN refusal
   // (dynamical_time_scale_controller.hpp), not the integrator's misconfiguration one
-  // -- the two refusal codes this round introduces must stay distinguishable.
+  // -- the two refusal codes must stay distinguishable.
   ButcherTableau fe;
   fe.name = "FE";
   fe.family = ButcherFamily::Erk;
@@ -852,7 +852,7 @@ TEST(ExplicitIntegrator, DynamicalControllerOwnRefusalPropagatesThroughStep) {
 }
 
 TEST(ExplicitIntegrator, EmbeddedAndDynamicalControllersCombineByTakingTheMinimum) {
-  // Round 3's own combination rule (open_questions): with both attached, the
+  // The combination rule: with both attached, the
   // accept/reject call stays the embedded controller's, but h_next is the MINIMUM
   // of the two proposals. Constructed so the two proposals are clearly different
   // (confirmed against each controller's own solo result) so the test cannot pass
@@ -900,7 +900,7 @@ TEST(ExplicitIntegrator, EmbeddedAndDynamicalControllersCombineByTakingTheMinimu
 
 
 // ===========================================================================
-// Round 3 (task item 6): FSAL reuse for DOPRI45 (explicit_integrator.hpp's own
+// FSAL reuse for DOPRI45 (explicit_integrator.hpp's own
 // fsal_cached_*/fsal_enabled_, ButcherTableau::is_FSAL). Unlike DirkIntegrator's
 // own implicit-family attempt (dirk_integrator_test.cpp's own FSAL suite, where
 // bit-identity was NOT achievable), an ERK method's last stage is an EXACT,
@@ -908,9 +908,9 @@ TEST(ExplicitIntegrator, EmbeddedAndDynamicalControllersCombineByTakingTheMinimu
 // (butcher_tableau.hpp) mean the last stage's own y_stage accumulation and y_new's
 // own b-weighted sum are the IDENTICAL floating-point expression, not merely an
 // algebraically equivalent one -- so they round identically BY CONSTRUCTION, with
-// no Newton solve anywhere to introduce a convergence-tolerance gap. This IS the
-// part of item 6 that meets the task's own "lands ONLY with a test that FSAL and
-// non-FSAL paths produce bit-identical states" bar, and ships enabled by default.
+// no Newton solve anywhere to introduce a convergence-tolerance gap. This meets
+// the bar that FSAL and non-FSAL paths produce bit-identical states, so FSAL
+// reuse ships enabled by default.
 // ===========================================================================
 
 namespace {
@@ -1061,7 +1061,7 @@ TEST(ExplicitIntegrator, Dopri45FsalCacheGuardsAgainstADifferentlySizedState) {
   EXPECT_EQ(y2[1], y2_ref[1])
       << "a 2-dimensional step must not be corrupted by a 1-dimensional cache";
 
-  // The direction that only the SIZE guard can catch (lead, 2026-10-31): the cache
+  // The direction that only the SIZE guard can catch: the cache
   // now holds problem2's 2-vector state at t2; a 1-dimensional problem stepped from
   // that same t2 with a state EQUAL to the cache's first entry makes the
   // element-by-element loop (which runs over the NEW state's n = 1 entries) report

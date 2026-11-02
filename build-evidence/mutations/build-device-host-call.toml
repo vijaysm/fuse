@@ -1,6 +1,5 @@
 # Mutation for the nvcc cross-execution-space-call errors added in
-# cmake/FuseDependencies.cmake (plans/2026-10-22-universal-number-types.md,
-# stage U0). Only a CUDA build registers the test, hence requires = "device".
+# cmake/FuseDependencies.cmake. Only a CUDA build registers the test, hence requires = "device".
 # The target is any buildable target: the mutated module is included by the
 # top-level configure, so building it re-runs the configure.
 

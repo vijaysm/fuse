@@ -1,4 +1,4 @@
-# Mutations for the quad-double type (plans/2026-10-22-universal-number-types.md, stage U4).
+# Mutations for the quad-double type.
 
 [[mutation]]
 id = "qd-narrowing-takes-the-leading-limb"

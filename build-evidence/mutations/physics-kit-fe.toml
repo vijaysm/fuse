@@ -192,7 +192,7 @@ test = "physics.algebraic_system"
 [[mutation]]
 id = "shared-sub-entity-minimum-owner-rule-reverted"
 area = "physics-kit"
-describes = "shared_sub_entity_owned_here reverts from the minimum rule (owner = MINIMUM over corner owner ranks) back to the earlier rule (owned here iff EVERY corner is owned here), which D102SharedSideOwnedByTheMinimumCornerOwnerRank exists to catch directly: for corners {v0 (owner 0, owned here), v2 (owner 1, not owned here)}, the earlier rule returns false (not every corner owned here) where the minimum rule returns true (min(0,1) == 0, this rank)."
+describes = "shared_sub_entity_owned_here reverts from the minimum rule (owner = MINIMUM over corner owner ranks) back to the earlier rule (owned here iff EVERY corner is owned here), which SharedSideOwnedByTheMinimumCornerOwnerRank exists to catch directly: for corners {v0 (owner 0, owned here), v2 (owner 1, not owned here)}, the earlier rule returns false (not every corner owned here) where the minimum rule returns true (min(0,1) == 0, this rank)."
 file = "physics-kit/src/fe/dof_map.cpp"
 # min_corner_owner_rank() does the minimum-over-corners computation (dof_map.cpp
 # exposes it so DofMap's own ghost-resolution pass 3 can read a ghost
@@ -226,7 +226,7 @@ test = "physics.fe_reference_topology"
 [[mutation]]
 id = "ssor-omega-upper-bound-widened"
 area = "physics-kit"
-describes = "SsorPreconditioner::from_matrix's omega upper bound (omega < 2) is widened to omega < 3, admitting omega=2.0-2.9 the task's own SOR convergence requirement (Saad Thm 4.5-ish; preconditioner.hpp's own header comment) says must refuse. SsorRefusals.OmegaOutOfRangeIsRefused's own omega=2.0 row exists to catch exactly this."
+describes = "SsorPreconditioner::from_matrix's omega upper bound (omega < 2) is widened to omega < 3, admitting omega=2.0-2.9, which the SOR convergence requirement (Saad Thm 4.5-ish; preconditioner.hpp's own header comment) says must refuse. SsorRefusals.OmegaOutOfRangeIsRefused's own omega=2.0 row exists to catch exactly this."
 file = "include/fuse/linalg/preconditioner.hpp"
 old = "    if (!(omega > 0.0 && omega < 2.0)) {"
 new = "    if (!(omega > 0.0 && omega < 3.0)) {"
