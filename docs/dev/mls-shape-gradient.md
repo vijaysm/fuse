@@ -104,9 +104,10 @@ a build with a device backend, on the device memory space. The cases and what th
 7. **The gate of stage U8: the Taylor remainder of the weights, as a function of all the coordinates
    (every source and every target), has order 2.** `fuse::linalg::taylor_remainder_order`
    ([](derivative-gate.md)) with `h0 = 1e-2` and 9 decades, along a fixed direction of max-norm 1.
-   The clouds are jittered lattices with 3 targets: 6 x 6 sources in two dimensions (degree 2,
-   `k = 10`, all four radial functions), 12 sources in one dimension (degree 2, `k = 6`, Wendland4)
-   and 4 x 4 x 4 sources with 2 targets in three dimensions (degree 1, `k = 10`, Wendland2). The
+   The clouds are jittered lattices: 6 x 6 sources and 3 targets in two dimensions (degree 2,
+   `k = 10`, all four radial functions), 12 sources and 3 targets in one dimension (degree 2,
+   `k = 6`, Wendland4), and 4 x 4 x 4 sources and 2 targets in three dimensions (degree 1,
+   `k = 10`, Wendland2). The
    order is read in `(1.8, 2.3)`.
    The control, the same sweep with the motion of the targets left out of the gradient, must read in
    `(0.7, 1.3)`: a gradient that is wrong by the dependence on the target is seen as order 1, not 2.
