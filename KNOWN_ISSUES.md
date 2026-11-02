@@ -13551,3 +13551,28 @@ writes over `[0, owned_keys.size())`, so every padding slot is correctly marked 
 
 **Status.** Fixed. Like D102's own fix, this is in code the collective (multi-rank) path alone exercises -- build-verified only, no
 MPI in this sandbox; no tier-0 test could have caught either the bug or the fix directly, named rather than claimed covered.
+
+### D104. `fe::AlgebraicSystem::new_vector()` was documented as the operand of `DistSparseMatrix::apply`, but its ghost pattern is the dof map's, not the matrix's -- FOUND ON THE FIRST HOST RUN AND FIXED (2026-11-02)
+
+**What.** `parallel.physics_assembly_mpi.2` and `.3` (S8.3 wave 2 round 3, build-only until the owner's host run of
+2026-11-01, `hostrun/out12`) aborted on rank 1 with `FUSE_ASSERT(x.ghost_size() == ghost_pattern_.owner_rank.size())`:
+"x carries 0 ghosts, this matrix's ghost_pattern() carries 9". The vector came from `new_vector()`, whose exchanger is
+built from `DofMap::ghost_indices()` (the dofs this rank's elements touch but do not own). An assembled matrix's ghost
+COLUMNS are a superset: a row this rank owns on the partition face couples to the neighbour's interior dofs, which
+arrive through the foreign-row exchange and which no element of this rank touches. On one rank both patterns are empty,
+so every tier-0 row passed. fuse::linalg's own convention (test/parallel/krylov_mpi_test.cpp) builds the operand from
+`matrix.ghost_pattern()`.
+
+**Fix.** `AlgebraicSystem::new_vector_for(const DistSparseMatrix&)` builds the operand from the matrix's own ghost
+pattern; `new_vector()` keeps the dof map's pattern for `assemble_vector` and residual callbacks and its doc now says
+so. The MPI assembly test uses `new_vector_for` for every `apply` operand. Host-pending: the two rows must pass on the
+owner's machine before this heading is struck.
+
+### D105. `parallel.physics_mesh_mpi`'s ghost-id check compared rank r's ghost with rank r+1's OTHER vertex -- TEST DEFECT, FIXED (2026-11-02)
+
+**What.** `PhysicsMeshMpi.GhostVertexGlobalIdAgreesWithItsOwner` (wave 1b) gathered every rank's local vertex 2
+(`v_hi`, global r+1) and compared rank r's `v_hi` with rank r+1's `v_hi` (global r+2), so it failed at 2 and 3 ranks on
+its first host run with `E-TEST-GHOST-GID-MISMATCH`. The owner of rank r's ghost holds it as its local vertex 1
+(`v_lo`). The mesh's id translation was therefore never actually checked by this row until now.
+
+**Fix.** The test gathers `v_lo`'s global id and ownership and compares against those. Host-pending like D104.
