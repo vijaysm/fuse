@@ -992,6 +992,7 @@ Result<void> Runner::Impl::resolve_constrain(const Instruction& ins,
   // so failing to find one means the DAG is not the one this plan describes.
   ArcId cur = ins.in[0];
   ArcId before;
+  bool source_is_density = false;
   for (std::size_t guard = 0; guard <= dag.node_count(); ++guard) {
     if (!cur.valid() || cur.value() >= dag.arc_count()) break;
     const NodeId producer = dag.arc(cur).producer;
@@ -1000,6 +1001,11 @@ Result<void> Runner::Impl::resolve_constrain(const Instruction& ins,
     if (n.kind == OpKind::Remap) {
       if (n.inputs.empty()) break;
       before = n.inputs.front();
+      // "consistent-transpose" takes a DENSITY on its source side and
+      // multiplies by that side's cell measure (consistent_interp.hpp's
+      // "DENSITY VS LOAD"), so the amount it conserves is the source's
+      // measure-weighted integral however the field is flagged.
+      source_is_density = n.attrs.method == "consistent-transpose";
       break;
     }
     if (n.inputs.empty()) break;
@@ -1054,7 +1060,7 @@ Result<void> Runner::Impl::resolve_constrain(const Instruction& ins,
   const Result<std::uint32_t> wb = weights_for(
       dag.arc(before).type.region, dag.arc(before).type.rank_set,
       in_slot.elements, in_slot.components / in_slot.limbs,
-      dag.arc(before).type.conservation);
+      source_is_density ? Conservation::Intensive : dag.arc(before).type.conservation);
   if (!wb.ok()) return wb.error();
   const Result<std::uint32_t> wa = weights_for(
       dag.arc(ins.out).type.region, dag.arc(ins.out).type.rank_set,
