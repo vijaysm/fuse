@@ -40,8 +40,7 @@ int owner_of(const std::vector<std::int64_t>& row_lo, std::int64_t index) {
 /// no sentinel record, since every participant now knows exactly how
 /// many records every other one is sending it. `n_int_fields` of an
 /// entry's INTEGER fields travel through the native `std::int64_t`
-/// channel (wave 2 round 2 item B's own reasoning for keeping an
-/// integer payload off `double`'s bit pattern applies unchanged here);
+/// channel (an integer payload is kept off `double`'s bit pattern);
 /// its one genuine `double` VALUE field travels through the `double`
 /// channel. Single-rank (`reducer.size() == 1`) is still the identity
 /// check: nothing is ever out of range when one rank owns every row,

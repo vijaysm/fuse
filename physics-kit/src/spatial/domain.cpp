@@ -3,6 +3,8 @@
 
 #include "fuse_physics/spatial/domain.hpp"
 
+#include <stdexcept>
+
 namespace fuse::physics::spatial {
 
 void Domain::check_shape_supported(Shape shape) {

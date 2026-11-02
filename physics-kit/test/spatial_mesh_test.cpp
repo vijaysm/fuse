@@ -22,6 +22,7 @@
 #include <memory>
 
 #include <gtest/gtest.h>
+#include <stdexcept>
 
 #include "fuse/backend/native_mesh.hpp"
 #include "fuse_physics/spatial/mesh_utils.hpp"

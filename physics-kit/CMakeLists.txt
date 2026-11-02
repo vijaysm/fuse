@@ -65,7 +65,7 @@ set_target_properties(fuse_physics_kit PROPERTIES
 # this is the first caller of that machinery from OUTSIDE test/'s own
 # directory tree -- see test/CMakeLists.txt's fuse_add_gtest SRC_DIR
 # argument and physics-kit/test/CMakeLists.txt's own comment.
-# Install and export (S8.2, 2026-10-31). The main export set,
+# Install and export. The main export set,
 # fuse-coupler-targets, is closed inside src/CMakeLists.txt before this
 # directory is added, so physics-kit ships in its OWN export set, written
 # beside the main one. cmake/fuse-couplerConfig.cmake.in includes it only

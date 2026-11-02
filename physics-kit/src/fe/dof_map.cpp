@@ -57,7 +57,7 @@ struct Classified {
   DofKey key;
   bool owned;
   // Meaningful only when !owned: the rank classify() believes owns
-  // this key -- wave 2 round 4 item X, so DofMap's own ghost
+  // this key, so DofMap's own ghost
   // resolution (pass 3 below) can route each ghost key's resolution
   // request to this ONE participant instead of broadcasting to every
   // one of them. Left at -1 (never read) when owned, since an owned
@@ -71,7 +71,7 @@ struct Classified {
 /// SAME quantity that function computes internally to decide whether
 /// THIS rank is that owner, exposed here under its own name because
 /// `classify()` now needs it even when the answer is "no, somebody
-/// else" (wave 2 round 4 item X: that "somebody else" is exactly the
+/// else" (that "somebody else" is exactly the
 /// ghost key's candidate owner, derivable locally from the corner
 /// vertices this rank already has handles for -- no global-id lookup
 /// or broadcast required). A single corner's own `vertex_owner` is the
@@ -120,10 +120,9 @@ Classified classify(const spatial::Mesh& mesh, spatial::EntityHandle element, un
     owned = shared_sub_entity_owned_here(mesh, side_corners);
     if (!owned) candidate_owner = min_corner_owner_rank(mesh, side_corners);
   } else if (association.entity_dimension == 1 && top_dim == 3) {
-    // wave 2 round 2 item C: a 3-D cell's own INTERIOR edge (e.g. a
-    // Tet10/Hex27 edge midpoint) -- closes the round-1 gap
-    // (E-PHYSICS-DOFMAP-SUBENTITY-UNSUPPORTED) now that
-    // Mesh::canonical_edge_vertex_ids/edge_vertices exist
+    // A 3-D cell's own INTERIOR edge (e.g. a
+    // Tet10/Hex27 edge midpoint), identified through
+    // Mesh::canonical_edge_vertex_ids/edge_vertices
     // (ReferenceTopology's own edge-to-corner table, reference_
     // topology.hpp's own header comment).
     const unsigned edge = association.local_entity_index;
@@ -202,7 +201,7 @@ DofMap::DofMap(const spatial::Mesh& mesh, std::vector<Variable> variables, const
 
   std::vector<DofKey> owned_keys;
   std::vector<DofKey> ghost_keys;
-  std::vector<int> ghost_candidate_owner;  // parallel to ghost_keys -- wave 2 round 4 item X
+  std::vector<int> ghost_candidate_owner;  // parallel to ghost_keys
   for (auto& [key, info] : local_keys) {
     if (info.owned) {
       owned_keys.push_back(key);
@@ -257,13 +256,11 @@ DofMap::DofMap(const spatial::Mesh& mesh, std::vector<Variable> variables, const
   }
 
   // ---- Pass 3: ghost resolution, point-to-point via two alltoallv's ---
-  // WAVE 2 ROUND 4 ITEM X replaces the round-1/round-2 padded allgather
-  // (every rank's own owned-dof table broadcast to every other rank,
-  // O(global_dof_count) memory and communication per rank -- the
-  // scalability limitation this block's own header comment used to
-  // carry, and where KNOWN_ISSUES.md D103's padding bug lived) with a
-  // genuine point-to-point exchange sized to what each rank actually
-  // needs: each ghost key is routed ONLY to its CANDIDATE owner
+  // Ghost resolution is a point-to-point exchange rather than a padded
+  // allgather (every rank's own owned-dof table broadcast to every other
+  // rank, O(global_dof_count) memory and communication per rank, and
+  // prone to mis-packing when ranks own unequal counts), sized to what each
+  // rank actually needs: each ghost key is routed ONLY to its CANDIDATE owner
   // (`ghost_candidate_owner`, computed locally by `classify()` above --
   // the minimum-rank corner owner `shared_sub_entity_owned_here` itself
   // reaches for) rather than resolved against a table every participant
@@ -278,7 +275,7 @@ DofMap::DofMap(const spatial::Mesh& mesh, std::vector<Variable> variables, const
   // (not a pattern meant to be replayed every call the way a
   // `GhostExchanger`'s own `update()` is).
   //
-  // MESSAGE VOLUME, before vs after (R ranks, this rank holding
+  // MESSAGE VOLUME, versus a padded allgather (R ranks, this rank holding
   // `n_ghost` ghost keys of width `kRequestWidth` int64 fields each,
   // `max_owned` the largest owned-key count any rank holds): the
   // allgather version moved `max_owned * kRecordWidth * R` int64
@@ -374,12 +371,12 @@ DofMap::DofMap(const spatial::Mesh& mesh, std::vector<Variable> variables, const
              "get exactly one answer back",
              recv_answers.size(), request_origin_index.size());
 
-  // Agree before refusing (owner's rule, KNOWN_ISSUES.md D97): an unresolved
+  // Agree before refusing: an unresolved
   // ghost is a LOCAL finding, and a local refusal here would leave the
   // other ranks numbering a dof map this rank never finishes. One max
   // reduction carries the worst local count to every rank, and every rank
   // then refuses with the same code; the message names how many ghosts
-  // went unresolved in total (lead, 2026-11-02).
+  // went unresolved in total.
   std::size_t unresolved_here = 0;
   for (const auto global_index : recv_answers)
     if (global_index == kKeyNotOwnedHere) ++unresolved_here;

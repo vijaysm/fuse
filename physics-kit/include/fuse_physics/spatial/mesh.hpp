@@ -125,10 +125,8 @@ class Mesh {
   [[nodiscard]] std::vector<GlobalId> canonical_side_vertex_ids(EntityHandle element, unsigned side) const;
   /// Local vertex HANDLES of one EDGE (a 1-D sub-entity, distinct from a
   /// codimension-1 "side" on a 3-D cell -- fe::edge_vertices' own header
-  /// comment), in `fe::edge_vertices`' own corner order. wave 2 round 2
-  /// (KNOWN_ISSUES.md D102's own sibling item, item C): closes the gap
-  /// `fe::DofMap` used to refuse by name (E-PHYSICS-DOFMAP-SUBENTITY-
-  /// UNSUPPORTED) for a 3-D cell's interior edge dofs.
+  /// comment), in `fe::edge_vertices`' own corner order. Lets
+  /// `fe::DofMap` number a 3-D cell's interior edge dofs.
   [[nodiscard]] std::vector<EntityHandle> edge_vertices(EntityHandle element, unsigned edge) const;
   /// Sorted (order-independent) GLOBAL vertex ids of one edge, the exact
   /// identity-matching role `canonical_side_vertex_ids` plays for a side.
@@ -160,7 +158,7 @@ class Mesh {
   [[nodiscard]] bool is_vertex_owned(EntityHandle vertex) const noexcept { return vertex_owned_.at(vertex - 1); }
   [[nodiscard]] bool is_element_owned(EntityHandle element) const noexcept { return element_owned_.at(element - 1); }
   /// The RANK that owns `vertex` -- `is_vertex_owned(vertex) == (vertex_owner(vertex) ==
-  /// <this rank's own number>)`. D102 (KNOWN_ISSUES.md): a shared sub-entity's owner is
+  /// <this rank's own number>)`. A shared sub-entity's owner is
   /// the MINIMUM over its corner vertices' own `vertex_owner`, computable on every
   /// sharing rank from this query alone. A self-generated mesh (generate_box/
   /// generate_2d_box) or one built through add_vertex with no explicit owner_rank: 0
@@ -196,7 +194,7 @@ class Mesh {
   unsigned dimension_;
   std::vector<Point> vertices_;
   std::vector<bool> vertex_owned_;
-  std::vector<int> vertex_owner_;     // D102: the rank that owns each vertex
+  std::vector<int> vertex_owner_;     // the rank that owns each vertex
   std::vector<GlobalId> vertex_gid_;  // identity (handle) unless from_mesh_view overrides
 
   std::vector<std::vector<EntityHandle>> elements_;

@@ -5,6 +5,7 @@
 #include "fuse_physics/spatial/domain.hpp"
 
 #include <gtest/gtest.h>
+#include <stdexcept>
 
 namespace {
 

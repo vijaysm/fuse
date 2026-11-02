@@ -8,6 +8,7 @@
 #include <array>
 #include <cmath>
 
+#include <stdexcept>
 #include <string>
 
 #include <gtest/gtest.h>
