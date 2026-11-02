@@ -20,6 +20,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <vector>
 
 #include "fuse/base/result.hpp"
@@ -112,6 +113,23 @@ class DistSparseMatrix {
   /// no communication: a participant's own diagonal entries are always
   /// inside its own diagonal block, by the column split's own definition.
   void diagonal(DistVector& d) const;
+
+  /// This participant's own DIAGONAL block, in CSR over LOCAL row/column
+  /// indices (both in `[0, local_rows())`) -- the off-process block is not
+  /// exposed here (`fuse::linalg::
+  /// SsorPreconditioner` reads this to run a symmetric SOR sweep against
+  /// its OWN diagonal block alone, making it block-Jacobi ACROSS ranks
+  /// with SSOR INSIDE each block -- the standard parallel SSOR, stated as
+  /// such in that class's own header comment). Returned as spans over
+  /// this object's own storage, valid for this object's lifetime; no copy.
+  struct DiagonalBlock {
+    std::span<const std::size_t> row_ptr;
+    std::span<const std::size_t> col_idx;
+    std::span<const double> val;
+  };
+  [[nodiscard]] DiagonalBlock local_diagonal_block() const noexcept {
+    return {diag_row_ptr_, diag_col_idx_, diag_val_};
+  }
 
   [[nodiscard]] std::size_t local_rows() const noexcept { return local_rows_; }
   [[nodiscard]] std::int64_t global_rows() const noexcept { return global_n_; }

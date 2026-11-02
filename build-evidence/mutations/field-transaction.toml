@@ -66,6 +66,8 @@ new = """  if (true) return Result<void>::success();  // MUTATION: collective ag
 target = "fuse_parallel_field_transaction_mpi_test"
 test = "parallel.field_transaction_mpi.2"
 requires = "mpi"
+result = "KILLED on the host 2026-10-31 (build-all at 9180f9e, MPICH, FUSE_MUTATE_MPI=1, hostrun/out11): 'KILLED field-transaction-collective-agreement-skipped test fails'."
+
 
 [[mutation]]
 id = "field-agreement-origin-not-carried"
@@ -77,6 +79,8 @@ new = """  refusal.origin_code.clear();  // MUTATION: origin code not carried to
 target = "fuse_parallel_field_transaction_mpi_test"
 test = "parallel.field_transaction_mpi.2"
 requires = "mpi"
+result = "KILLED on the host 2026-10-31 (build-all at 9180f9e, MPICH, FUSE_MUTATE_MPI=1, hostrun/out11): 'KILLED field-agreement-origin-not-carried test fails'."
+
 
 [[mutation]]
 id = "field-agreement-message-omits-origin-rank"
@@ -89,6 +93,8 @@ new = """  out.append("?");  // MUTATION: origin rank omitted from the message
   out.append(" of ");"""
 target = "fuse_field_collective_agreement_test"
 test = "field.collective_agreement"
+result = "KILLED on the host 2026-10-31 (build-all at 9180f9e, MPICH, FUSE_MUTATE_MPI=1, hostrun/out11): 'KILLED field-agreement-message-omits-origin-rank test fails'."
+
 
 [[mutation]]
 id = "field-agreement-origin-status-not-carried"
@@ -100,3 +106,5 @@ new = """    header[2] = 0;  // MUTATION: origin numeric status not carried"""
 target = "fuse_parallel_provider_subset_mpi_test"
 test = "parallel.provider_subset_mpi.2"
 requires = "mpi"
+result = "KILLED on the host 2026-10-31 (build-all at 9180f9e, MPICH, FUSE_MUTATE_MPI=1, hostrun/out11): 'KILLED field-agreement-origin-status-not-carried test fails'."
+

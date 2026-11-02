@@ -138,6 +138,38 @@ class MeshView {
   /// `i >= entity_count(dim)`.
   [[nodiscard]] virtual std::size_t global_id(int dim, std::size_t i) const = 0;
 
+  /// The RANK that owns local entity `i` -- `is_owned(dim, i)` is exactly
+  /// `owner(dim, i) == <this rank's own number>`, but `is_owned` alone
+  /// cannot answer "which rank, specifically" for a GHOST, which is what a
+  /// caller resolving a shared sub-entity's ownership across several
+  /// corners needs (the issue tracker a face or edge DoF's owner is
+  /// the MINIMUM over its corner vertices' own owner ranks, a rule every
+  /// sharing rank can compute from this query alone, with no further
+  /// communication).
+  ///
+  /// DEFAULT: rejects `E-MESH-NO-OWNER`, mirroring `cell_vertices`' own
+  /// default above -- most existing `MeshView`s (every test double and
+  /// every backend not yet listed below) carry no per-entity owner-rank
+  /// data distinct from the `is_owned` bit, and a silent `0` would assert
+  /// "rank 0 owns every ghost" for views that have never tracked who
+  /// actually does. Overridden by `fuse::native::NativeMeshView` (reads
+  /// its own stored `vertex_owner`/`cell_owner` arrays), the serial
+  /// backend's view (always `0` -- a serial run has exactly one rank), and
+  /// `MoabMeshView` under `FUSE_HAVE_MOAB` (reads `ParallelComm`'s own
+  /// owner, matching KARMA's `get_owner` call, karma_dof_map.C:849).
+  ///
+  /// A concrete override throws `std::out_of_range` for a bad `(dim, i)`,
+  /// the same contract `is_owned`/`global_id` state, rather than folding a
+  /// bad index into the rejection this default uses for "not supported".
+  [[nodiscard]] virtual Result<int> owner(int dim, std::size_t i) const {
+    (void)i;
+    return Failure{"E-MESH-NO-OWNER",
+                    "MeshView::owner: this view carries no owner-rank data at dimension " +
+                        std::to_string(dim) +
+                        " (the default MeshView implementation always rejects); a caller needing "
+                        "a shared sub-entity's owner rank needs a concrete backend that overrides it"};
+  }
+
   /// --- cell geometry, as simplices -----------------------------------------
   ///
   /// The supermesh kernel clips polytopes, so it needs real geometry, and a

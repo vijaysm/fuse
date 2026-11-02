@@ -4,11 +4,14 @@
 #include <cstddef>
 #include <vector>
 
+#include "fuse/base/error.hpp"
+
 #include "fuse/num/butcher_tableau.hpp"
 
-/// Order-condition checker (rooted trees to order 5, Butcher's conditions), usable as a
-/// tier-0 test over all tableaus, with the embedded weights checked to embedded_order.
-/// This is also how every new tableau is proved.
+///  physics-kit: "Order-condition
+/// checker (rooted trees to any requested order; the tests build to 6, Butcher's conditions) as a tier-0 test over all
+/// tableaus, with the embedded weights checked to embedded_order. This is also how you
+/// prove every new tableau."
 ///
 /// Butcher's theorem (Hairer, Norsett & Wanner, Solving Ordinary Differential Equations
 /// I, Theorem II.2.6 and Section II.2's own construction of the elementary weights):
@@ -29,10 +32,10 @@
 /// non-decreasing sequence of catalog ids so two orderings of the same multiset never
 /// generate two catalog entries) and evaluates the condition above directly from a
 /// tableau's own A/B, rather than from any hand-derived per-order formula ("b1+b2=1",
-/// "sum b_i c_i = 1/2", etc.; nothing is hand-checked).
+/// "sum b_i c_i = 1/2", etc. -- the task's own instruction, "do not hand-check").
 ///
 /// Order-5 trees: OEIS A000081 (rooted trees by node count) gives 1, 1, 2, 4, 9 for
-/// n = 1..5 -- 17 trees total up to order 5, pinned by
+/// n = 1..6 -- 17 trees up to order 5, 37 up to order 6, pinned by
 /// OrderConditions.CatalogSizesMatchOeisA000081 (order_conditions_test.cpp) as a
 /// mechanical check that the generator itself is not missing or double-counting any
 /// tree before it is trusted to grade a single tableau.
@@ -80,7 +83,16 @@ class RootedTreeCatalog {
   }
 
   [[nodiscard]] const std::vector<RootedTree>& trees() const noexcept { return trees_; }
+  /// Refuses an order the catalog was not built to (E-NUM-ORDER-CATALOG): until
+  /// 2026-10-31 this indexed past `by_order_` and read whatever lay there, which
+  /// for a catalog built to 5 happened to be an empty range, so an order-6 "defect"
+  /// came back as exactly 0 and a next-order-must-fail assertion passed vacuously
+  /// (found when ESDIRK548L2SA, order 5, needed order 6 checked).
   [[nodiscard]] const std::vector<int>& of_order(int order) const {
+    if (order < 1 || order > max_order()) {
+      FUSE_THROW(InvalidArgument, "E-NUM-ORDER-CATALOG: order {} is outside this catalog's range 1..{}",
+                 order, max_order());
+    }
     return by_order_[static_cast<std::size_t>(order)];
   }
   [[nodiscard]] int max_order() const noexcept {
@@ -177,7 +189,8 @@ class RootedTreeCatalog {
 
 /// The worst (maximum) order-condition defect over every tree of EXACTLY `order`
 /// vertices -- used both to confirm a declared order holds (every tree up to that
-/// order should be near round-off) and to confirm it is not UNDERSTATED (a method declared order p must have at least one
+/// order should be near round-off) and to confirm it is not UNDERSTATED (the task's
+/// own "prove every new tableau": a method declared order p must have at least one
 /// order-(p+1) tree whose condition fails by construction, since "order p" means the
 /// largest p for which every condition up to p holds -- OrderConditions::
 /// NoShippedTableauIsCreditedBelowItsActualOrder, order_conditions_test.cpp, checks

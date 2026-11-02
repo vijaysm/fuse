@@ -117,4 +117,115 @@ class JacobiPreconditioner {
   std::vector<double> inv_diag_;
 };
 
+/// Symmetric SOR (SSOR), relaxation `omega`, over THIS PARTICIPANT'S OWN
+/// diagonal block alone (`DistSparseMatrix::local_diagonal_block()`) --
+/// the off-process block is never read, which makes this BLOCK-JACOBI
+/// ACROSS ranks (each rank preconditions only its own rows) with SSOR
+/// INSIDE each block -- the standard parallel SSOR construction (no
+/// cross-rank triangular solve is attempted; a true global SSOR would
+/// need one, and is not what this class does). Symmetric (for a
+/// symmetric `A`, the two triangular sweeps below compose to a symmetric
+/// positive definite `M`, the standard SSOR result, e.g. Saad,
+/// "Iterative Methods for Sparse Linear Systems", 2nd ed., Sec. 4.1) --
+/// legal for `pcg` as well as `gmres`, unlike a plain (non-symmetric)
+/// SOR sweep would be.
+///
+/// SPLITTING. `A = D + L + U` (`D` diagonal, `L`/`U` the strictly lower/
+/// upper parts of the SAME local diagonal-block CSR). The preconditioner
+/// matrix is `M = (D/omega + L) D^-1 (D/omega + U)`; `apply(x, y)` solves
+/// `M y = x` by two triangular sweeps, never forming `M` itself:
+///
+///   (D/omega + L) z = x                      -- forward substitution,
+///                                                rows 0 .. local_rows()-1
+///   (D/omega + U) y = (D/omega) z             -- backward substitution,
+///                                                rows local_rows()-1 .. 0
+///
+/// At `omega = 1` with `L = U = 0` (a diagonal `A`), `M = D`, so `apply`
+/// reduces EXACTLY to `JacobiPreconditioner`'s own `y = D^-1 x` -- the
+/// sanity check this class's own test fires.
+class SsorPreconditioner {
+ public:
+  /// Builds from `a`'s own local diagonal block and `omega`. Refuses:
+  ///
+  ///   * `E-LINALG-SSOR-OMEGA-RANGE` -- `omega` is not in the OPEN
+  ///     interval `(0, 2)`, the classical SOR convergence requirement
+  ///     (Saad, Thm 4.5-ish; `omega <= 0` reverses the sweep's own sign,
+  ///     `omega >= 2` over-relaxes past where `M` stays positive
+  ///     definite for an SPD `A`).
+  ///   * `E-LINALG-ZERO-DIAGONAL` -- the SAME refusal `JacobiPreconditioner`
+  ///     makes (a zero or structurally absent diagonal entry has no
+  ///     reciprocal), named identically since it is the identical problem.
+  [[nodiscard]] static Result<SsorPreconditioner> from_matrix(const DistSparseMatrix& a, double omega = 1.0) {
+    if (!(omega > 0.0 && omega < 2.0)) {
+      return Failure{"E-LINALG-SSOR-OMEGA-RANGE",
+                    fmt::format("SsorPreconditioner::from_matrix: omega {} is not in the open "
+                               "interval (0, 2) SOR convergence requires",
+                               omega)};
+    }
+    const auto block = a.local_diagonal_block();
+    const std::size_t n = a.local_rows();
+    std::vector<double> diag(n, 0.0);
+    for (std::size_t i = 0; i < n; ++i) {
+      for (std::size_t p = block.row_ptr[i]; p < block.row_ptr[i + 1]; ++p) {
+        if (block.col_idx[p] == i) diag[i] = block.val[p];
+      }
+      if (diag[i] == 0.0) {
+        return Failure{"E-LINALG-ZERO-DIAGONAL",
+                      fmt::format("SsorPreconditioner::from_matrix: local row {} has a zero (or "
+                                 "structurally absent) diagonal entry; no reciprocal exists",
+                                 i)};
+      }
+    }
+    return SsorPreconditioner(std::vector<std::size_t>(block.row_ptr.begin(), block.row_ptr.end()),
+                              std::vector<std::size_t>(block.col_idx.begin(), block.col_idx.end()),
+                              std::vector<double>(block.val.begin(), block.val.end()), std::move(diag), omega);
+  }
+
+  [[nodiscard]] Result<void> apply(DistVector& x, DistVector& y) const {
+    const std::size_t n = diag_.size();
+    FUSE_ASSERT(x.owned_size() == n,
+               "SsorPreconditioner::apply: x's owned size {} disagrees with the {} rows this "
+               "preconditioner was built from",
+               x.owned_size(), n);
+    FUSE_ASSERT(y.owned_size() == n,
+               "SsorPreconditioner::apply: y's owned size {} disagrees with the {} rows this "
+               "preconditioner was built from",
+               y.owned_size(), n);
+
+    // Forward sweep: (D/omega + L) z = x, rows ascending (row i's own L
+    // entries, column < i, are already-computed z values).
+    std::vector<double> z(n, 0.0);
+    for (std::size_t i = 0; i < n; ++i) {
+      double rhs = x.data()[i];
+      for (std::size_t p = row_ptr_[i]; p < row_ptr_[i + 1]; ++p) {
+        if (col_idx_[p] < i) rhs -= val_[p] * z[col_idx_[p]];
+      }
+      z[i] = rhs * omega_ / diag_[i];
+    }
+    // Backward sweep: (D/omega + U) y = (D/omega) z, rows DESCENDING (row
+    // i's own U entries, column > i, are already-computed y values).
+    for (std::size_t ii = 0; ii < n; ++ii) {
+      const std::size_t i = n - 1 - ii;
+      double rhs = (diag_[i] / omega_) * z[i];
+      for (std::size_t p = row_ptr_[i]; p < row_ptr_[i + 1]; ++p) {
+        if (col_idx_[p] > i) rhs -= val_[p] * y.data()[col_idx_[p]];
+      }
+      y.data()[i] = rhs * omega_ / diag_[i];
+    }
+    return Result<void>::success();
+  }
+
+ private:
+  SsorPreconditioner(std::vector<std::size_t> row_ptr, std::vector<std::size_t> col_idx, std::vector<double> val,
+                     std::vector<double> diag, double omega)
+      : row_ptr_(std::move(row_ptr)), col_idx_(std::move(col_idx)), val_(std::move(val)), diag_(std::move(diag)),
+        omega_(omega) {}
+
+  std::vector<std::size_t> row_ptr_;
+  std::vector<std::size_t> col_idx_;
+  std::vector<double> val_;
+  std::vector<double> diag_;
+  double omega_;
+};
+
 }  // namespace fuse::linalg
