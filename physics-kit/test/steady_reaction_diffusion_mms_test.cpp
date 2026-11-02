@@ -94,6 +94,8 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <optional>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -101,7 +103,9 @@
 #include <gtest/gtest.h>
 
 #include "fuse/base/result.hpp"
+#include "fuse/linalg/dist_sparse_matrix.hpp"
 #include "fuse/linalg/dist_vector.hpp"
+#include "fuse/linalg/preconditioner.hpp"
 #include "fuse/num/newton_krylov.hpp"
 #include "fuse_physics/fe/basis.hpp"
 #include "fuse_physics/fe/dof_map.hpp"
@@ -118,15 +122,22 @@ using fuse::physics::fe::BasisRegistry;
 using fuse::physics::fe::CellFamily;
 using fuse::physics::fe::DofMap;
 using fuse::physics::fe::element_load_vector;
+using fuse::physics::fe::element_mass_matrix;
+using fuse::physics::fe::element_stiffness_matrix;
 using fuse::physics::fe::element_transient_reaction_diffusion;
 using fuse::physics::fe::FEBase;
 using fuse::physics::fe::FieldBasisFamily;
 using fuse::physics::fe::GeometryVariant;
+using fuse::physics::fe::reaction_derivative;
 using fuse::physics::fe::TransientReactionDiffusionModel;
 using fuse::physics::fe::Variable;
 using fuse::physics::spatial::EntityHandle;
 using fuse::physics::spatial::Mesh;
+using fuse::linalg::DistSparseMatrix;
 using fuse::linalg::DistVector;
+using fuse::linalg::JacobiPreconditioner;
+using fuse::linalg::SsorPreconditioner;
+using fuse::linalg::Triplet;
 
 constexpr double kPi = 3.14159265358979323846;
 
@@ -210,6 +221,71 @@ fuse::Result<void> steady_residual(Level& level, const TransientReactionDiffusio
   return fuse::Result<void>::success();
 }
 
+// item P2 (wave 2 round 4): the STEADY Jacobian J = K - M diag(R'(u)),
+// assembled DIRECTLY from element_stiffness_matrix/element_mass_matrix/
+// reaction_derivative (generic_operators.hpp) -- NOT element_transient_
+// reaction_diffusion's own Jacobian output, which (this file's own top
+// header comment) differentiates treating state_old as independent of
+// state and so is NOT the correct steady Jacobian under state=state_old.
+// J_ij = K_ij - M_ij * R'(u_j) (M diag(R'(u)) scales column j of M by
+// R'(u_j), since diag(R'(u)) is diagonal). Boundary (Dirichlet) rows are
+// IDENTITY rows, exactly as steady_residual's own boundary handling makes
+// them in the operator (fx[dof] = x[dof]): the round-4 draft left them as
+// their natural K - M diag(R') values, "an approximate preconditioner
+// only", and measured SSOR DOUBLING the GMRES count (29 -> 61 at N = 16).
+// A preconditioner whose boundary rows disagree with the operator's is
+// not an approximation of the operator on those rows at all; with the
+// rows matched the lead measured SSOR at 24 against the unpreconditioned
+// 29, Newton 3 steps in both (lead, 2026-11-02). Each boundary dof's identity entry is
+// emitted once, by the first element that touches it (the triplet merge
+// sums duplicates, so emitting it per element would make it a count).
+fuse::Result<DistSparseMatrix> assemble_steady_jacobian(Level& level, const TransientReactionDiffusionModel& model,
+                                                         const DistVector& x) {
+  std::vector<char> is_boundary(static_cast<std::size_t>(level.dof_map.n_local_dofs()), 0);
+  for (const std::int64_t dof : level.boundary_dofs) is_boundary[static_cast<std::size_t>(dof)] = 1;
+  std::vector<char> identity_emitted(is_boundary.size(), 0);
+  return level.system.assemble_matrix(
+      [&](EntityHandle element, const std::vector<std::int64_t>& indices, std::vector<Triplet>& out) {
+        const auto k = element_stiffness_matrix(level.fe, element);
+        const auto m = element_mass_matrix(level.fe, element);
+        const std::size_t n = indices.size();
+        for (std::size_t i = 0; i < n; ++i) {
+          const auto row = static_cast<std::size_t>(indices[i]);
+          if (is_boundary[row]) {
+            if (!identity_emitted[row]) {
+              identity_emitted[row] = 1;
+              out.push_back(Triplet{indices[i], indices[i], 1.0});
+            }
+            continue;
+          }
+          for (std::size_t j = 0; j < n; ++j) {
+            const double r_prime_j = reaction_derivative(model, x.data()[indices[j]]);
+            out.push_back(Triplet{indices[i], indices[j], k[i * n + j] - m[i * n + j] * r_prime_j});
+          }
+        }
+      });
+}
+
+/// Which preconditioner (if any) solve_mms below wires into fuse::num::
+/// solve's own RefreshPreconditionerFn/PreconditionerApplyFn -- item P2's
+/// own "two test rows" (Jacobi, SSOR), plus the existing unpreconditioned
+/// baseline (None, item F, unchanged).
+enum class SteadyPreconditionerKind { None, Jacobi, Ssor };
+
+/// Holds whichever ONE of Jacobi/SSOR is live -- rebuilt from scratch on
+/// every RefreshPreconditionerFn call (NewtonKrylovOptions::
+/// preconditioner_lag = 1 below: every Newton step, the SNES default),
+/// read by PreconditionerApplyFn. A `std::optional` pair rather than a
+/// `std::variant` only because `SsorExactness`'s own from_matrix returns
+/// a `Result<T>` that must be checked before anything is stored; nothing
+/// here needs the single-active-member guarantee a variant would add,
+/// since `kind` alone already decides which one `apply` reads.
+struct SteadyPreconditionerState {
+  SteadyPreconditionerKind kind = SteadyPreconditionerKind::None;
+  std::optional<JacobiPreconditioner> jacobi;
+  std::optional<SsorPreconditioner> ssor;
+};
+
 struct SolveOutcome {
   double l2_error = 0.0;
   double algebraic_l2_bound = 0.0;  ///< derived bound on the L2 error the unconverged residual leaves (lead, 2026-11-01)
@@ -245,7 +321,7 @@ double algebraic_l2_error_bound(unsigned n, double alpha, double umax, double re
   return h * (1.0 + (1.0 + b_norm) / lambda_min_j) * residual_norm;
 }
 
-SolveOutcome solve_mms(unsigned n, double alpha) {
+SolveOutcome solve_mms(unsigned n, double alpha, SteadyPreconditionerKind kind = SteadyPreconditionerKind::None) {
   Level level(n);
   TransientReactionDiffusionModel model{alpha, /*beta=*/0.0, /*source=*/0.0, /*coupled=*/0.0};
 
@@ -272,7 +348,38 @@ SolveOutcome solve_mms(unsigned n, double alpha) {
   opt.gmres.max_iterations = 300;
 
   const fuse::num::ResidualFn residual = [&](DistVector& xv, DistVector& fxv) { return steady_residual(level, model, xv, fxv); };
-  const auto result = fuse::num::solve(residual, x, /*precond_apply=*/nullptr, /*refresh_precond=*/nullptr, opt);
+
+  // item P2: None (item F, unchanged) leaves both nullptr, the
+  // documented-legal "no preconditioning" combination (newton_krylov.
+  // hpp's own solve() comment); Jacobi/SSOR assemble the STEADY
+  // Jacobian (assemble_steady_jacobian above, not element_transient_
+  // reaction_diffusion's own biased one) at the lag boundary and build
+  // the matching linalg preconditioner from it.
+  SteadyPreconditionerState precond_state;
+  precond_state.kind = kind;
+  const fuse::num::RefreshPreconditionerFn refresh = [&](const DistVector& xv, const DistVector&) -> fuse::Result<void> {
+    if (precond_state.kind == SteadyPreconditionerKind::None) return fuse::Result<void>::success();
+    const auto jacobian = assemble_steady_jacobian(level, model, xv);
+    if (!jacobian.ok()) return jacobian.error();
+    if (precond_state.kind == SteadyPreconditionerKind::Jacobi) {
+      auto built = JacobiPreconditioner::from_matrix(jacobian.value());
+      if (!built.ok()) return built.error();
+      precond_state.jacobi = std::move(built).value();
+    } else {
+      auto built = SsorPreconditioner::from_matrix(jacobian.value(), /*omega=*/1.0);
+      if (!built.ok()) return built.error();
+      precond_state.ssor = std::move(built).value();
+    }
+    return fuse::Result<void>::success();
+  };
+  const fuse::num::PreconditionerApplyFn apply = [&](DistVector& r, DistVector& z) -> fuse::Result<void> {
+    if (precond_state.kind == SteadyPreconditionerKind::Jacobi) return precond_state.jacobi->apply(r, z);
+    if (precond_state.kind == SteadyPreconditionerKind::Ssor) return precond_state.ssor->apply(r, z);
+    return fuse::Result<void>::success();  // unreachable: solve() below passes nullptr for None
+  };
+  const bool preconditioned = (kind != SteadyPreconditionerKind::None);
+  const auto result = fuse::num::solve(residual, x, preconditioned ? apply : nullptr,
+                                        preconditioned ? refresh : nullptr, opt);
   if (!result.ok()) throw std::runtime_error("fuse::num::solve: " + result.error().message);
 
   SolveOutcome outcome;
@@ -352,6 +459,372 @@ TEST(SteadyReactionDiffusionMmsTest, NewtonKrylovSolutionConvergesAtOrderTwoInL2
   testing::Test::RecordProperty("order_algebraic_band", std::to_string(algebraic_band));
   std::cout << "  algebraic_band=" << algebraic_band << "\n";
   EXPECT_NEAR(r2, 2.0, band + algebraic_band) << trace;
+}
+
+// Item P2 (wave 2 round 4): one mesh level (N = 16, the main order
+// test's own finest level), run once unpreconditioned (kind = None,
+// item F's own baseline) and once with the preconditioner under test.
+// Both solves converge to the SAME NewtonKrylovOptions atol/rtol, so
+// both approximate the SAME exact discrete solution on this fixed mesh
+// -- they must therefore agree within the SUM of their own derived
+// algebraic_l2_error_bound()s (each bound already propagates that
+// solve's own leftover residual into an L2-error bound, item F's own
+// derivation; summing two independent bounds on the SAME quantity is
+// the triangle inequality, not a chosen margin). Newton/GMRES
+// iteration counts for both are recorded (RecordProperty) as item G's
+// own "oracle pending" posture -- no external reference to compare
+// them against yet, so nothing about their VALUES is asserted, only
+// that preconditioning changes neither the converged status nor (within
+// the derived bound) the solution it converges to.
+void assert_preconditioned_solution_agrees_with_baseline(SteadyPreconditionerKind kind, const char* kind_name) {
+  const double alpha = 1.0;
+  const unsigned n = 16;
+
+  const auto baseline = solve_mms(n, alpha, SteadyPreconditionerKind::None);
+  ASSERT_TRUE(fuse::num::is_converged(baseline.newton.status))
+      << "baseline status=" << fuse::num::to_cstring(baseline.newton.status);
+
+  const auto preconditioned = solve_mms(n, alpha, kind);
+  ASSERT_TRUE(fuse::num::is_converged(preconditioned.newton.status))
+      << kind_name << " status=" << fuse::num::to_cstring(preconditioned.newton.status);
+
+  std::size_t baseline_gmres = 0, preconditioned_gmres = 0;
+  for (const auto& step : baseline.newton.trace) baseline_gmres += step.gmres_iterations;
+  for (const auto& step : preconditioned.newton.trace) preconditioned_gmres += step.gmres_iterations;
+
+  testing::Test::RecordProperty("baseline_newton_iterations", std::to_string(baseline.newton.iterations));
+  testing::Test::RecordProperty("baseline_gmres_iterations", std::to_string(baseline_gmres));
+  testing::Test::RecordProperty(std::string(kind_name) + "_newton_iterations",
+                                 std::to_string(preconditioned.newton.iterations));
+  testing::Test::RecordProperty(std::string(kind_name) + "_gmres_iterations", std::to_string(preconditioned_gmres));
+  std::cout << "[ PRECOND  ] N=" << n << " baseline: newton=" << baseline.newton.iterations
+            << " gmres=" << baseline_gmres << "  " << kind_name << ": newton=" << preconditioned.newton.iterations
+            << " gmres=" << preconditioned_gmres << "\n";
+
+  const double tolerance = baseline.algebraic_l2_bound + preconditioned.algebraic_l2_bound;
+  EXPECT_NEAR(preconditioned.l2_error, baseline.l2_error, tolerance)
+      << kind_name << ": l2_error=" << preconditioned.l2_error << " baseline_l2_error=" << baseline.l2_error
+      << " tolerance=" << tolerance;
+}
+
+TEST(SteadyReactionDiffusionMmsTest, JacobiPreconditionedSolutionAgreesWithUnpreconditionedWithinAlgebraicBound) {
+  assert_preconditioned_solution_agrees_with_baseline(SteadyPreconditionerKind::Jacobi, "jacobi");
+}
+
+TEST(SteadyReactionDiffusionMmsTest, SsorPreconditionedSolutionAgreesWithUnpreconditionedWithinAlgebraicBound) {
+  assert_preconditioned_solution_agrees_with_baseline(SteadyPreconditionerKind::Ssor, "ssor");
+}
+
+// =============================================================================
+// Item P3 (wave 2 round 4): fuse::num::BlockJacobiPreconditioner for a
+// COUPLED two-variable (u, v) steady reaction-diffusion problem, blocks
+// per VARIABLE. DofMap's own multi-variable numbering was confirmed
+// VARIABLE-MAJOR/CONTIGUOUS before building this (DofKey::operator<
+// compares `variable` first, dof_map.cpp), so a 2-variable DofMap's
+// owned dofs are [0, n_u) for u THEN [n_u, n_u+n_v) for v, with NO
+// interleaving -- the "STOP, propose the smallest fix" branch the task
+// named does not apply; this is directly buildable.
+//
+// COUPLING. TransientReactionDiffusionModel::coupled is documented as
+// "a fixed externally-coupled value, held constant across the element"
+// (generic_operators.hpp) -- precisely the hook this test uses: for
+// field u's own element residual, `coupled` is set to the ELEMENT
+// AVERAGE of v's own CURRENT local nodal values (and symmetrically for
+// v, averaging u); recomputed fresh at every residual evaluation
+// (including every MFFD probe), so the matrix-free Jacobian-vector
+// product the outer Newton-Krylov loop differentiates genuinely sees
+// the cross-field coupling -- this is a real two-way-coupled nonlinear
+// system, not two independent single-field solves run side by side.
+//
+// BLOCK-JACOBI PRECONDITIONER. Each block treats its OWN variable's
+// steady Jacobian (assemble_steady_jacobian, item P2, reused) IN
+// ISOLATION -- ignoring the other field's coupling entirely for
+// PRECONDITIONING purposes only; the outer residual stays fully
+// coupled regardless. Built from a STANDALONE single-variable Level
+// per field (the existing P2 `Level`, reused directly): since both
+// variables classify against the SAME mesh with the SAME basis, and
+// DofKey's own sort order for a given variable depends only on
+// (component, entity_dimension, corners, slot) -- mesh-intrinsic
+// quantities unaffected by how many OTHER variables a DofMap happens to
+// register -- a standalone single-variable Level's own local numbering
+// for "u alone" is IDENTICAL to the combined DofMap's own u-block (and
+// "v alone" to the v-block, shifted by n_u), so each standalone
+// preconditioner's own apply() operates on exactly the right span with
+// no renumbering.
+//
+// MANUFACTURED SOLUTIONS, documented simplification: each field's own
+// LOAD vector is built from the CONTINUUM coupling term (the other
+// field's EXACT pointwise manufactured value, matching the PDE -
+// Laplacian(u) - R(u, v) = f_u exactly), while the DISCRETE residual's
+// own coupling term is the ELEMENT-AVERAGE approximation above -- these
+// two differ by an O(h) term neither cancels exactly, an additional
+// discretisation error this test does NOT attempt to characterise
+// (no order-of-convergence claim is made for the coupled case; only
+// solve-to-solve agreement, the same scope item P2's own preconditioner
+// tests use). ALGEBRAIC BOUND, documented simplification: each field's
+// own `algebraic_l2_error_bound` (item F's derivation) is applied to
+// ITS OWN sub-block in isolation (ignoring the coupling term's effect
+// on the true 2x2 block Jacobian's coercivity) and the two bounds are
+// SUMMED -- a derived quantity, not a chosen constant, but not a
+// rigorously re-proven bound for the fully coupled Jacobian either;
+// recorded as an open_question rather than presented as more rigorous
+// than it is.
+double v_exact(const Point& p) { return std::sin(kPi * p.x) * std::sin(2.0 * kPi * p.y); }
+
+double manufactured_source_u(const Point& p, double alpha, double beta) {
+  return 2.0 * kPi * kPi * u_exact(p) - alpha * u_exact(p) * u_exact(p) - beta * v_exact(p);
+}
+double manufactured_source_v(const Point& p, double alpha, double beta) {
+  return 5.0 * kPi * kPi * v_exact(p) - alpha * v_exact(p) * v_exact(p) - beta * u_exact(p);
+}
+
+struct CoupledLevel {
+  Mesh mesh;
+  BasisRegistry registry;
+  DofMap dof_map;  // variables {u, v}, variable-major contiguous (this file's own header comment above)
+  AlgebraicSystem system;
+  fuse::physics::fe::Basis basis;
+  FEBase fe;
+  std::vector<std::int64_t> boundary_dofs;  // both u's and v's own boundary dofs
+  std::size_t n_u = 0;
+  std::size_t n_v = 0;
+
+  explicit CoupledLevel(unsigned n)
+      : mesh(2),
+        dof_map(init_mesh(mesh, n),
+                {Variable{"u", FieldBasisFamily::LagrangeNodal, 1, BasisContinuity::cG, 1},
+                 Variable{"v", FieldBasisFamily::LagrangeNodal, 1, BasisContinuity::cG, 1}},
+                registry),
+        system(mesh, dof_map),
+        basis(registry.create({CellFamily::Quadrilateral, FieldBasisFamily::LagrangeNodal, 1, BasisContinuity::cG})),
+        fe(mesh, GeometryVariant::Quad4, basis, /*quadrature_degree=*/2) {
+    n_u = static_cast<std::size_t>(mesh.n_vertices());  // P1 Lagrange: one dof per vertex per variable
+    n_v = n_u;
+    std::vector<std::int64_t> u_vertex_dof(mesh.n_vertices() + 1, -1), v_vertex_dof(mesh.n_vertices() + 1, -1);
+    std::vector<std::int64_t> u_idx, v_idx;
+    for (EntityHandle e = 1; e <= mesh.n_elements(); ++e) {
+      dof_map.dof_indices(e, u_idx, /*variable=*/0);
+      dof_map.dof_indices(e, v_idx, /*variable=*/1);
+      const auto& connectivity = mesh.element_connectivity(e);
+      for (std::size_t k = 0; k < connectivity.size(); ++k) {
+        u_vertex_dof[connectivity[k]] = u_idx[k];
+        v_vertex_dof[connectivity[k]] = v_idx[k];
+      }
+    }
+    const auto& positions = mesh.vertex_positions();
+    for (std::size_t v = 0; v < positions.size(); ++v) {
+      const Point& p = positions[v];
+      if (p.x == 0.0 || p.x == 1.0 || p.y == 0.0 || p.y == 1.0) {
+        boundary_dofs.push_back(u_vertex_dof[v + 1]);
+        boundary_dofs.push_back(v_vertex_dof[v + 1]);
+      }
+    }
+  }
+
+ private:
+  static Mesh& init_mesh(Mesh& mesh, unsigned n) {
+    mesh.generate_2d_box(n, n, Point(0, 0, 0), Point(1, 1, 0));
+    return mesh;
+  }
+};
+
+fuse::Result<void> coupled_steady_residual(CoupledLevel& level, const TransientReactionDiffusionModel& model_u,
+                                            const TransientReactionDiffusionModel& model_v, DistVector& x,
+                                            DistVector& fx) {
+  const auto assembled = level.system.assemble_vector(
+      [&](EntityHandle element, const std::vector<std::int64_t>&, std::vector<std::pair<std::int64_t, double>>& out) {
+        std::vector<std::int64_t> u_idx, v_idx;
+        level.dof_map.dof_indices(element, u_idx, /*variable=*/0);
+        level.dof_map.dof_indices(element, v_idx, /*variable=*/1);
+        const std::size_t n = u_idx.size();
+        std::vector<double> u_state(n), v_state(n);
+        for (std::size_t i = 0; i < n; ++i) {
+          u_state[i] = x.data()[u_idx[i]];
+          v_state[i] = x.data()[v_idx[i]];
+        }
+        double v_avg = 0.0, u_avg = 0.0;
+        for (double vv : v_state) v_avg += vv;
+        for (double uu : u_state) u_avg += uu;
+        v_avg /= static_cast<double>(n);
+        u_avg /= static_cast<double>(n);
+
+        TransientReactionDiffusionModel mu = model_u;
+        mu.coupled = v_avg;
+        TransientReactionDiffusionModel mv = model_v;
+        mv.coupled = u_avg;
+
+        const auto erj_u = element_transient_reaction_diffusion(level.fe, element, mu, /*h=*/1.0, u_state, u_state);
+        const auto erj_v = element_transient_reaction_diffusion(level.fe, element, mv, /*h=*/1.0, v_state, v_state);
+        const auto load_u = element_load_vector(
+            level.fe, element, [&](const Point& p) { return manufactured_source_u(p, mu.alpha, mu.beta); });
+        const auto load_v = element_load_vector(
+            level.fe, element, [&](const Point& p) { return manufactured_source_v(p, mv.alpha, mv.beta); });
+        for (std::size_t i = 0; i < n; ++i) {
+          out.push_back({u_idx[i], erj_u.residual[i] - load_u[i]});
+          out.push_back({v_idx[i], erj_v.residual[i] - load_v[i]});
+        }
+      },
+      fx);
+  if (!assembled.ok()) return assembled;
+  for (const std::int64_t dof : level.boundary_dofs) fx.data()[dof] = x.data()[dof] - 0.0;
+  return fuse::Result<void>::success();
+}
+
+struct CoupledSolveOutcome {
+  double l2_error_u = 0.0;
+  double l2_error_v = 0.0;
+  double algebraic_l2_bound = 0.0;  ///< the two fields' own bounds summed (this file's own header comment above)
+  fuse::num::NewtonResult newton;
+};
+
+enum class CoupledPreconditionerKind { None, BlockJacobi };
+
+CoupledSolveOutcome solve_coupled_mms(unsigned n, double alpha, double beta, CoupledPreconditionerKind kind) {
+  CoupledLevel level(n);
+  TransientReactionDiffusionModel model_u{alpha, beta, /*source=*/0.0, /*coupled=*/0.0};
+  TransientReactionDiffusionModel model_v{alpha, beta, /*source=*/0.0, /*coupled=*/0.0};
+
+  auto x = level.system.new_vector();
+  x.set_zero();
+
+  fuse::num::NewtonKrylovOptions opt;
+  opt.atol = 1e-9;
+  opt.rtol = 1e-8;
+  opt.max_nonlinear_iterations = 80;
+  opt.gmres.max_iterations = 300;
+
+  const fuse::num::ResidualFn residual = [&](DistVector& xv, DistVector& fxv) {
+    return coupled_steady_residual(level, model_u, model_v, xv, fxv);
+  };
+
+  // Each block's own standalone single-field Level/preconditioner
+  // (this file's own header comment above states why their local
+  // numbering matches the combined DofMap's own per-variable blocks
+  // exactly).
+  Level level_u(n), level_v(n);
+  std::optional<JacobiPreconditioner> precond_u, precond_v;
+  const auto make_scratch = [](std::size_t m) {
+    return DistVector(m, fuse::linalg::make_serial_exchanger(), fuse::linalg::make_serial_reducer());
+  };
+
+  const fuse::num::RefreshPreconditionerFn refresh = [&](const DistVector& xv, const DistVector&) -> fuse::Result<void> {
+    if (kind == CoupledPreconditionerKind::None) return fuse::Result<void>::success();
+    auto x_u = make_scratch(level.n_u);
+    auto x_v = make_scratch(level.n_v);
+    for (std::size_t i = 0; i < level.n_u; ++i) x_u.data()[i] = xv.data()[i];
+    for (std::size_t i = 0; i < level.n_v; ++i) x_v.data()[i] = xv.data()[level.n_u + i];
+
+    const auto jac_u = assemble_steady_jacobian(level_u, model_u, x_u);
+    if (!jac_u.ok()) return jac_u.error();
+    const auto jac_v = assemble_steady_jacobian(level_v, model_v, x_v);
+    if (!jac_v.ok()) return jac_v.error();
+    auto built_u = JacobiPreconditioner::from_matrix(jac_u.value());
+    if (!built_u.ok()) return built_u.error();
+    auto built_v = JacobiPreconditioner::from_matrix(jac_v.value());
+    if (!built_v.ok()) return built_v.error();
+    precond_u = std::move(built_u).value();
+    precond_v = std::move(built_v).value();
+    return fuse::Result<void>::success();
+  };
+
+  const auto block_apply = [&](std::optional<JacobiPreconditioner>& precond, std::size_t m,
+                                std::span<const double> r, std::span<double> z) -> fuse::Result<void> {
+    auto rv = make_scratch(m);
+    auto zv = make_scratch(m);
+    for (std::size_t i = 0; i < m; ++i) rv.data()[i] = r[i];
+    const auto applied = precond->apply(rv, zv);
+    if (!applied.ok()) return applied;
+    for (std::size_t i = 0; i < m; ++i) z[i] = zv.data()[i];
+    return fuse::Result<void>::success();
+  };
+
+  const fuse::num::PreconditionerApplyFn apply = [&](DistVector& r, DistVector& z) -> fuse::Result<void> {
+    std::vector<fuse::num::PreconditionerBlock> blocks;
+    blocks.push_back({0, level.n_u,
+                       [&](std::span<const double> rs, std::span<double> zs) { return block_apply(precond_u, level.n_u, rs, zs); }});
+    blocks.push_back({level.n_u, level.n_v,
+                       [&](std::span<const double> rs, std::span<double> zs) { return block_apply(precond_v, level.n_v, rs, zs); }});
+    const auto built = fuse::num::BlockJacobiPreconditioner::from_blocks(std::move(blocks), level.n_u + level.n_v);
+    if (!built.ok()) return built.error();
+    return built.value().apply(r, z);
+  };
+
+  const bool preconditioned = (kind != CoupledPreconditionerKind::None);
+  const auto result = fuse::num::solve(residual, x, preconditioned ? apply : nullptr,
+                                        preconditioned ? refresh : nullptr, opt);
+  if (!result.ok()) throw std::runtime_error("fuse::num::solve (coupled): " + result.error().message);
+
+  CoupledSolveOutcome outcome;
+  outcome.newton = result.value();
+
+  double error_sq_u = 0.0, error_sq_v = 0.0;
+  for (EntityHandle element = 1; element <= level.mesh.n_elements(); ++element) {
+    level.fe.reinit(element);
+    std::vector<std::int64_t> u_idx, v_idx;
+    level.dof_map.dof_indices(element, u_idx, /*variable=*/0);
+    level.dof_map.dof_indices(element, v_idx, /*variable=*/1);
+    const auto& phi = level.fe.get_phi();
+    const auto& jxw = level.fe.get_JxW();
+    const auto& xyz = level.fe.get_xyz();
+    for (std::size_t q = 0; q < level.fe.n_quadrature_points(); ++q) {
+      double u_h = 0.0, v_h = 0.0;
+      for (std::size_t k = 0; k < u_idx.size(); ++k) {
+        u_h += phi[k][q] * x.data()[u_idx[k]];
+        v_h += phi[k][q] * x.data()[v_idx[k]];
+      }
+      const double diff_u = u_h - u_exact(xyz[q]);
+      const double diff_v = v_h - v_exact(xyz[q]);
+      error_sq_u += jxw[q] * diff_u * diff_u;
+      error_sq_v += jxw[q] * diff_v * diff_v;
+    }
+  }
+  outcome.l2_error_u = std::sqrt(error_sq_u);
+  outcome.l2_error_v = std::sqrt(error_sq_v);
+
+  const double umax = x.norm_inf();  // conservative: shared across both fields' own bound terms
+  const double bound_u = algebraic_l2_error_bound(n, alpha, umax, outcome.newton.final_residual_norm);
+  const double bound_v = algebraic_l2_error_bound(n, alpha, umax, outcome.newton.final_residual_norm);
+  outcome.algebraic_l2_bound = bound_u + bound_v;  // documented simplification, this file's own header comment above
+  return outcome;
+}
+
+// Item P3's own assertion: a BlockJacobi-preconditioned solve of the
+// coupled system must agree with the unpreconditioned solve of the
+// SAME coupled system within the summed per-field algebraic bound
+// (the same "two solves of one discrete system agree within their own
+// leftover-residual bounds" argument item P2's own tests use) -- on
+// BOTH fields, since both are part of the one combined solve. Newton/
+// GMRES counts recorded, oracle pending (item G's own posture), not
+// asserted.
+TEST(SteadyReactionDiffusionMmsTest, BlockJacobiPreconditionedCoupledSolutionAgreesWithUnpreconditionedWithinAlgebraicBound) {
+  const double alpha = 1.0;
+  const double beta = 0.3;
+  const unsigned n = 8;
+
+  const auto baseline = solve_coupled_mms(n, alpha, beta, CoupledPreconditionerKind::None);
+  ASSERT_TRUE(fuse::num::is_converged(baseline.newton.status))
+      << "baseline status=" << fuse::num::to_cstring(baseline.newton.status);
+
+  const auto preconditioned = solve_coupled_mms(n, alpha, beta, CoupledPreconditionerKind::BlockJacobi);
+  ASSERT_TRUE(fuse::num::is_converged(preconditioned.newton.status))
+      << "block_jacobi status=" << fuse::num::to_cstring(preconditioned.newton.status);
+
+  std::size_t baseline_gmres = 0, preconditioned_gmres = 0;
+  for (const auto& step : baseline.newton.trace) baseline_gmres += step.gmres_iterations;
+  for (const auto& step : preconditioned.newton.trace) preconditioned_gmres += step.gmres_iterations;
+  testing::Test::RecordProperty("baseline_newton_iterations", std::to_string(baseline.newton.iterations));
+  testing::Test::RecordProperty("baseline_gmres_iterations", std::to_string(baseline_gmres));
+  testing::Test::RecordProperty("block_jacobi_newton_iterations", std::to_string(preconditioned.newton.iterations));
+  testing::Test::RecordProperty("block_jacobi_gmres_iterations", std::to_string(preconditioned_gmres));
+  std::cout << "[ COUPLED  ] N=" << n << " baseline: newton=" << baseline.newton.iterations
+            << " gmres=" << baseline_gmres << "  block_jacobi: newton=" << preconditioned.newton.iterations
+            << " gmres=" << preconditioned_gmres << "\n";
+
+  const double tolerance = baseline.algebraic_l2_bound + preconditioned.algebraic_l2_bound;
+  EXPECT_NEAR(preconditioned.l2_error_u, baseline.l2_error_u, tolerance)
+      << "u: " << preconditioned.l2_error_u << " vs " << baseline.l2_error_u << " tol=" << tolerance;
+  EXPECT_NEAR(preconditioned.l2_error_v, baseline.l2_error_v, tolerance)
+      << "v: " << preconditioned.l2_error_v << " vs " << baseline.l2_error_v << " tol=" << tolerance;
 }
 
 }  // namespace
