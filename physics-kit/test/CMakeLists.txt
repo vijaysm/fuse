@@ -47,7 +47,7 @@ fuse_add_gtest(physics transient_reaction_diffusion_assembly SRC_DIR . NO_LAYER_
 fuse_add_gtest(physics linear_layer SRC_DIR . NO_LAYER_LIB LIBS fuse::physics_kit)
 fuse_add_gtest(physics steady_reaction_diffusion_mms SRC_DIR . NO_LAYER_LIB LIBS fuse::physics_kit)
 
-# The collective mesh contract over a real communicator owned
+# The collective mesh contract over a real communicator: owned
 # counts sum to the global total and a ghost vertex's global id agrees with its
 # owner's; refusals through fuse::agree_outcome. Registered HERE, where
 # fuse::physics_kit exists, rather than compiling physics-kit sources into a
