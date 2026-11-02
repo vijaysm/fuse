@@ -116,9 +116,23 @@ class AlgebraicSystem {
       spatial::EntityHandle element, const std::vector<std::int64_t>& dof_indices,
       std::vector<std::pair<std::int64_t, double>>& out)>;
 
-  /// A zero DistVector over this system's own row distribution and ghost
-  /// pattern, ready for `assemble_vector` or `DistSparseMatrix::apply`.
+  /// A zero DistVector over this system's own row distribution with the
+  /// DOF MAP's ghost pattern (the dofs this rank's elements touch but do
+  /// not own): the vector `assemble_vector` fills and a residual callback
+  /// reads. NOT the operand of `DistSparseMatrix::apply` on more than one
+  /// rank -- see `new_vector_for`.
   [[nodiscard]] linalg::DistVector new_vector() const;
+
+  /// A zero DistVector built from `matrix`'s OWN ghost pattern, the operand
+  /// `matrix.apply(x, y)` requires (fuse::linalg's convention, the one
+  /// test/parallel/krylov_mpi_test.cpp follows). An assembled matrix's
+  /// ghost columns are a superset of the dof map's ghosts: a row this rank
+  /// owns on a partition face couples to the neighbour's INTERIOR dofs,
+  /// which no element of this rank touches. On one rank both patterns are
+  /// empty and the two vectors coincide, which is why was invisible
+  /// at tier 0 and surfaced on the first host run of
+  /// parallel.physics_assembly_mpi (2026-11-01).
+  [[nodiscard]] linalg::DistVector new_vector_for(const linalg::DistSparseMatrix& matrix) const;
 
   [[nodiscard]] Result<void> assemble_vector(const ElementVectorContribution& contribution,
                                               linalg::DistVector& out) const;
@@ -128,6 +142,7 @@ class AlgebraicSystem {
   const DofMap* dof_map_;
   std::shared_ptr<const linalg::Reducer> reducer_;
   std::shared_ptr<const linalg::GhostExchanger> exchanger_;
+  std::optional<int> fortran_communicator_;  ///< kept for `new_vector_for`'s exchanger
 };
 
 }  // namespace fuse::physics::fe
