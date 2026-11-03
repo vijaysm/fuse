@@ -47,7 +47,7 @@ class SerialReducer : public Reducer {
   /// rank, so the payload returns unchanged and `recv_counts` mirrors
   /// `send_counts` -- the base class's own default does exactly this;
   /// overridden explicitly here only for the SAME discoverability reason
-  /// round 2's int64 allgather override was (comm.hpp's own header
+  /// the int64 allgather override is (comm.hpp's own header
   /// comment on this class).
   std::vector<std::int64_t> alltoallv(const std::vector<std::int64_t>& send,
                                        const std::vector<int>& send_counts,

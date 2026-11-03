@@ -1,7 +1,7 @@
 // physics.fe_basis -- ported from KARMA's basis_test.C (the registry and
-// metadata-consistency portions). (// item 5) adds the orientation-metadata tests deferred, plus
-// Prism/Pyramid to the registry coverage and the regression for the
-// valid_key() OR-bug the review of found.
+// metadata-consistency portions), plus the orientation-metadata tests,
+// Prism/Pyramid registry coverage, and the regression for the
+// valid_key() OR-bug.
 
 #include "fuse_physics/fe/basis.hpp"
 
@@ -65,7 +65,7 @@ TEST(BasisTest, P0ConstantEvaluatesToOne) {
 }
 
 // physics.fe_basis.UnknownKeyRefuses -- a key the registry never seeded
-// (order above this wave's P0-P2 support) refuses, both via supports()
+// (order above the P0-P2 support) refuses, both via supports()
 // returning false and via create() throwing.
 TEST(BasisTest, UnknownKeyRefuses) {
   const BasisRegistry registry;
@@ -76,10 +76,9 @@ TEST(BasisTest, UnknownKeyRefuses) {
 
 // physics.fe_basis.InvalidKeyIsRefusedBeforeTheLookup -- a non-Lagrange
 // family at an order above maximum_basis_order is refused as an invalid
-// key, with that message, before the factory map is consulted (lead,
-// 2026-10-31: the mutation row basis-registry-unknown-key-not-refused had
-// been declared equivalent because no test distinguished the two
-// refusals; this test does, by the message).
+// key, with that message, before the factory map is consulted (the mutation row
+// basis-registry-unknown-key-not-refused is killed by this test, which
+// distinguishes the two refusals by the message).
 TEST(BasisTest, InvalidKeyIsRefusedBeforeTheLookup) {
   const BasisRegistry registry;
   const BasisKey key{CellFamily::Hexahedron, FieldBasisFamily::Hierarchical,
@@ -94,8 +93,8 @@ TEST(BasisTest, InvalidKeyIsRefusedBeforeTheLookup) {
   }
 }
 
-// physics.fe_basis.LagrangeKeyAboveMaximumOrderIsAlsoRefused -- the issue tracker
-// regression. valid_key() used to read `key.family ==
+// physics.fe_basis.LagrangeKeyAboveMaximumOrderIsAlsoRefused -- regression:
+// valid_key() used to read `key.family ==
 // FieldBasisFamily::LagrangeNodal || key.order <= maximum_basis_order`: the
 // OR made the whole test true for ANY LagrangeNodal key regardless of
 // order, so this exact key (LagrangeNodal, order > maximum_basis_order)
@@ -103,8 +102,7 @@ TEST(BasisTest, InvalidKeyIsRefusedBeforeTheLookup) {
 // because no factory happens to be registered for it -- a different,
 // weaker refusal than the one this test now requires). Fixed to drop the
 // family clause; this is the case that distinguishes the fix from the
-// bug, so it is the one the review could not have caught by
-// re-running own tests -- it needed a new one.
+// bug.
 TEST(BasisTest, LagrangeKeyAboveMaximumOrderIsAlsoRefused) {
   const BasisRegistry registry;
   const BasisKey key{CellFamily::Hexahedron, FieldBasisFamily::LagrangeNodal,
@@ -129,16 +127,16 @@ TEST(BasisTest, RegisterFactoryRejectsDuplicateByDefault) {
   EXPECT_NO_THROW(registry.register_factory(key, [&registry, key] { return registry.create(key); }, DuplicatePolicy::Replace));
 }
 
-// physics.fe_basis.OrientationTransformsAreIdentityAtThisWavesOrders --
+// physics.fe_basis.OrientationTransformsAreIdentityAtTheSupportedOrders --
 // basis.hpp's own derivation: every P0-P2 built-in basis places at most
-// one DOF on any shared edge or face, so every OrientationTransform this
-// wave's registry generates is PROVABLY the identity permutation with
+// one DOF on any shared edge or face, so every OrientationTransform the
+// registry generates is PROVABLY the identity permutation with
 // sign +1, for every orientation code the sub-entity's own shape
 // presents -- checked directly here (not assumed) for one representative
-// P2 key from each of the five 3-D-adjacent families this wave's basis
+// P2 key from each of the five 3-D-adjacent families the basis
 // supports (Hexahedron, Tetrahedron, Prism, Pyramid) plus Quadrilateral
 // (2-D, included for its own single orientation axis).
-TEST(BasisTest, OrientationTransformsAreIdentityAtThisWavesOrders) {
+TEST(BasisTest, OrientationTransformsAreIdentityAtTheSupportedOrders) {
   const BasisRegistry registry;
   for (const auto cell : {CellFamily::Quadrilateral, CellFamily::Hexahedron, CellFamily::Tetrahedron,
                            CellFamily::Prism, CellFamily::Pyramid}) {
@@ -156,16 +154,16 @@ TEST(BasisTest, OrientationTransformsAreIdentityAtThisWavesOrders) {
 }
 
 // physics.fe_basis.ApplyOrientationRoundTripsExactlyAcrossOppositeLocalOrder
-// --, item 5: "tested on two adjacent hexes
+// -- tested on two adjacent hexes
 // (and two adjacent tets, two adjacent prisms) whose shared face is
 // traversed in opposite local orders: transformed face DOFs must agree
-// to round-off". Simulates this directly: for the shared face's own
+// to round-off. Simulates this directly: for the shared face's own
 // entity_dimension/local_entity_index on EACH of the two elements'
 // (different, in general) local numbering, apply_orientation from that
 // element's local coefficient to the GLOBAL canonical order, and confirm
 // both elements land on the SAME canonical value. The round-trip bound
 // is EXACT (0, not a derived epsilon): OrientationTransformsAreIdentity
-// AtThisWavesOrders above already proved every transform this wave's
+// AtThisWavesOrders above already proved every transform the
 // bases generate is the identity with sign +1, so applying one and then
 // its inverse is literally the same floating-point value twice, not an
 // arithmetic result that could accumulate rounding.
@@ -174,7 +172,7 @@ TEST(BasisTest, ApplyOrientationRoundTripsExactlyAcrossOppositeLocalOrder) {
   for (const auto cell : {CellFamily::Hexahedron, CellFamily::Tetrahedron, CellFamily::Prism}) {
     const BasisKey key{cell, FieldBasisFamily::LagrangeNodal, 2, BasisContinuity::cG};
     const Basis basis = registry.create(key);
-    // The face dof this wave's P2 bases place (Hex/Prism: a face
+    // The face dof the P2 bases place (Hex/Prism: a face
     // centre; Tet: none at the face level -- Tet10 has no face dof, so
     // skip straight to its edge dofs instead, entity_dimension 1).
     const unsigned face_dimension = cell == CellFamily::Tetrahedron ? 1 : 2;
@@ -196,7 +194,7 @@ TEST(BasisTest, ApplyOrientationRoundTripsExactlyAcrossOppositeLocalOrder) {
       if (t.entity_dimension == face_dimension && t.local_entity_index == entity) code_b = std::max(code_b, t.orientation_code);
     ASSERT_GT(code_b, 0u) << "cell " << static_cast<int>(cell) << " has only one orientation code to test with";
 
-    const std::vector<double> local_a{0.5};  // this wave's face/edge dof count is always 1
+    const std::vector<double> local_a{0.5};  // the face/edge dof count is always 1
     const std::vector<double> local_b{0.5};  // the SAME physical dof, seen from element B's own local order
     std::vector<double> canonical_a(1), canonical_b(1);
     basis.apply_orientation(face_dimension, entity, 0, local_a, canonical_a);
@@ -211,7 +209,7 @@ TEST(BasisTest, ApplyOrientationRoundTripsExactlyAcrossOppositeLocalOrder) {
 }
 
 // physics.fe_basis.ApplyOrientationRefusesAnUnknownSubEntityOrCode --
-// D-C: a refusal counts as verified only when a test fires it. Checks the
+// a refusal counts as verified only when a test fires it. Checks the
 // MESSAGE, not only the exception type: find_transform's own lookup
 // failure and apply_orientation's own storage-size mismatch both throw
 // std::invalid_argument, so a type-only check cannot tell "the lookup's

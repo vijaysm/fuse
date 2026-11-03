@@ -1,0 +1,15 @@
+# Mutation for the nvcc cross-execution-space-call errors added in
+# cmake/FuseDependencies.cmake. Only a CUDA build registers the test, hence requires = "device".
+# The target is any buildable target: the mutated module is included by the
+# top-level configure, so building it re-runs the configure.
+
+[[mutation]]
+id = "nvcc-host-call-is-only-a-warning"
+area = "build_device_host_call"
+describes = "the --Werror=cross-execution-space-call option is dropped, so nvcc again only warns when device code calls a host function and the kernel compiles"
+file = "cmake/FuseDependencies.cmake"
+old = "      $<$<COMPILE_LANGUAGE:CXX>:--Werror=cross-execution-space-call>)"
+new = "      $<$<COMPILE_LANGUAGE:CXX>:>)"
+target = "fuse-coupler-base"
+test = "base.compile_fail.device_host_call"
+requires = "device"

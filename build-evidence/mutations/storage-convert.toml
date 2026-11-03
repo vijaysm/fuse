@@ -1,0 +1,32 @@
+# Mutations for the widen and narrow kernels of the Storage types on an execution
+# space.
+
+[[mutation]]
+id = "storage-narrow-rounds-through-binary32"
+area = "storage_convert"
+describes = "the narrowing kernel rounds through binary32 first, so a value a binary64 step beyond a midpoint of the 16-bit format is rounded twice"
+file = "include/fuse/num/storage_convert.hpp"
+old = "    out(i) = value_traits<T>::from_binary64(in(i));\n  }\n};\n\ntemplate <class Space, class T>\nstruct NarrowMeasuredFunctor"
+new = "    out(i) = value_traits<T>::from_binary64(static_cast<double>(static_cast<float>(in(i))));\n  }\n};\n\ntemplate <class Space, class T>\nstruct NarrowMeasuredFunctor"
+target = "fuse_num_storage_test"
+test = "num.storage"
+
+[[mutation]]
+id = "storage-report-forgets-overflow"
+area = "storage_convert"
+describes = "a value that overflows to infinity is not counted"
+file = "include/fuse/num/storage_convert.hpp"
+old = "      ++r.overflow;\n      return;"
+new = "      return;"
+target = "fuse_num_storage_test"
+test = "num.storage"
+
+[[mutation]]
+id = "storage-report-change-is-absolute"
+area = "storage_convert"
+describes = "the measured change is absolute, not relative, so it exceeds the unit roundoff for large values"
+file = "include/fuse/num/storage_convert.hpp"
+old = "    const double rel = Kokkos::abs(w - x) / Kokkos::abs(x);"
+new = "    const double rel = Kokkos::abs(w - x);"
+target = "fuse_num_storage_test"
+test = "num.storage"

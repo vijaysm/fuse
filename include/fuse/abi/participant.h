@@ -68,47 +68,37 @@ typedef struct fuse_participant_abi_v1 {
   fuse_status (*end_step)(fuse_ctx* ctx, const fuse_step_request* in, fuse_step_report* out);
 
   /* FUSE_ERR_UNSUPPORTED (E-ABI-RUN-EXTERNAL) only when an externally driven */
-  /* component is HOSTED ON THIS PROCESS; legal on a process hosting none at */
-  /* all (a coupler-only placement, or any rank with no externally driven */
-  /* component of its own), which still executes this call's own share of the */
-  /* period's collectives */
+  /* component is hosted on this process; legal on a process hosting none (a */
+  /* coupler-only placement, or any rank with no externally driven component of */
+  /* its own), which still executes its share of the period's collectives */
   fuse_status (*run)(fuse_ctx* ctx, const fuse_run_request* in, fuse_null* out);
 
-  /*, appended 2026-10-04 -- LAST, per this */
-  /* table's own append-only rule above (an entry inserted mid-table would */
-  /* shift every later member's offset, breaking a caller compiled against the */
-  /* previous layout): the reverse of register_field -- FUSE hands back a view */
-  /* of ITS OWN storage for the named handle, rather than the caller handing */
-  /* FUSE a pointer. Named view_field, not field_view, because the latter */
-  /* collides with the fuse_field_view TYPE it returns once Fortran lower-cases */
-  /* both (tools/gen-abi.py's own check). Before initialize, this is the same */
-  /* native storage register_field was already given (an early call is legal */
-  /* but pointless: the application already holds that pointer). After */
-  /* initialize, a window-scoped field (see fuse_field_view's own */
-  /* window_samples comment) returns the window path's own private buffer */
-  /* instead -- the one surface through which an application participating in a */
+  /* the reverse of register_field: FUSE hands back a view of its own storage */
+  /* for the named handle. Named view_field, not field_view, because the latter */
+  /* collides with the fuse_field_view type it returns once Fortran lower-cases */
+  /* both. Before initialize, this is the native storage register_field was */
+  /* given. After initialize, a window-scoped field (see */
+  /* fuse_field_view.window_samples) returns the window path's own private */
+  /* buffer instead -- the surface through which an application on a */
   /* LowFive-bound window channel reads the waveform it must write, or writes */
-  /* the waveform it must deliver, with no other FUSE call involved in the */
-  /* transfer itself. FUSE_ERR_NOTFOUND if the handle names no field in the */
-  /* loaded graph. */
+  /* the waveform it must deliver. FUSE_ERR_NOTFOUND if the handle names no */
+  /* field in the loaded graph */
   fuse_status (*view_field)(fuse_ctx* ctx, const fuse_field_ref* in, fuse_field_view* out);
 
-  /*, appended 2026-10-13 -- LAST, per this table's own */
-  /* append-only rule above, same reason view_field states for itself: a local, */
-  /* non-collective read of this context's own c.communicator/ */
-  /* c.communicator_set, already agreed identically on every rank by setup()'s */
-  /* own collective (connect.hpp's own module comment); lets a Connect-mode */
-  /* (accept/connect) caller recover the merged base communicator setup() */
-  /* formed internally and never exposed before this entry, the gap own */
-  /* \"what remains\" item 3 named. Legal before setup() (formed=0, */
-  /* communicator=0) and for every launch mode, not Connect alone: */
+  /* Appended LAST, per this table's own append-only rule above, same reason */
+  /* view_field states for itself: a local, non-collective read of this */
+  /* context's own c.communicator/ c.communicator_set, already agreed */
+  /* identically on every rank by setup()'s own collective (connect.hpp's own */
+  /* module comment); lets a Connect-mode (accept/connect) caller recover the */
+  /* merged base communicator setup() forms internally. Legal before setup() */
+  /* (formed=0, communicator=0) and for every launch mode, not Connect alone: */
   /* InProcess/Plugin/Mpmd callers get back their own, already-trivial base */
   /* communicator the same way. */
   fuse_status (*base_communicator)(fuse_ctx* ctx, const fuse_null* in, fuse_base_communicator_info* out);
 
-  /* docs/dev/restart.md round 2, item 4 -- appended LAST per this table's own */
-  /* append-only rule above. An externally-driven (ABI) participant's own way */
-  /* to ask that a restart point be taken: SETS A FLAG */
+  /* docs/dev/restart.md -- appended LAST per this table's own append-only rule */
+  /* above. An externally-driven (ABI) participant's own way to ask that a */
+  /* restart point be taken: SETS A FLAG */
   /* (fuse::Runner::request_restart_point()), never writes a file itself -- */
   /* write_restart_point() needs a RestartWriter the embedding host process */
   /* configures (a file path, which HDF5 layout), which this entry's fixed */
@@ -121,6 +111,56 @@ typedef struct fuse_participant_abi_v1 {
   /* request, never a queue. Legal at any time after initialize(); has no */
   /* effect before it, since no Runner exists yet to hold the flag. */
   fuse_status (*request_restart_point)(fuse_ctx* ctx, const fuse_null* in, fuse_null* out);
+
+  /* reverse mode, appended LAST per this table's own append-only rule */
+  /* (docs/user/c-abi.md, \"Reverse mode\"): after initialize and before */
+  /* initialize_adjoint, once for each field of a component this process drives */
+  /* through begin_step/end_step: binds the caller's own ADJOINT array of that */
+  /* field (the derivative of the scalar being differentiated with respect to */
+  /* each entry), zero or holding the seed, with the layout and binary64 values */
+  /* of the array register_field was given for it. The adjoint arrays of the */
+  /* fields of a component FUSE hosts (a provider plugin) are FUSE's own; read */
+  /* and seed them through view_adjoint_field */
+  fuse_status (*register_adjoint_field)(fuse_ctx* ctx, const fuse_field_view* in, fuse_null* out);
+
+  /* reverse mode: after initialize and after every register_adjoint_field; */
+  /* checks the whole run can be reversed (every operator has an adjoint; every */
+  /* component that steps has adjoint arrays, E-ADJ-*) and allocates the */
+  /* adjoint arrays FUSE owns; COLLECTIVE */
+  fuse_status (*initialize_adjoint)(fuse_ctx* ctx, const fuse_null* in, fuse_null* out);
+
+  /* reverse mode: after initialize_adjoint; a view of the adjoint array of the */
+  /* field, binary64 in host memory: the one register_adjoint_field was given, */
+  /* or the one FUSE allocated for a component it hosts. The seed is written */
+  /* through it before the first period is reversed and the result read from it */
+  /* afterwards */
+  fuse_status (*view_adjoint_field)(fuse_ctx* ctx, const fuse_field_ref* in, fuse_field_view* out);
+
+  /* reverse mode: reverses `periods` forward periods, newest first (-1 for */
+  /* every period not yet reversed); FUSE_ERR_UNSUPPORTED (E-ABI-RUN-EXTERNAL) */
+  /* when a component driven from outside is hosted here, which */
+  /* begin_adjoint_step/end_adjoint_step reverse instead; COLLECTIVE */
+  fuse_status (*run_adjoint)(fuse_ctx* ctx, const fuse_run_request* in, fuse_null* out);
+
+  /* reverse mode, the reverse of begin_step: returns when the newest forward */
+  /* step of the named component not yet reversed is next, with every later */
+  /* operation already reversed, so the adjoint arrays of its Provides fields */
+  /* hold the adjoint of the values the step left; the report carries the */
+  /* window, step and iteration of that forward step. Reverse the step in the */
+  /* registered adjoint arrays (overwrite those of the Provides fields with the */
+  /* adjoint before the step, ADD to those of the Requires fields), then call */
+  /* end_adjoint_step; COLLECTIVE over the component's processes */
+  fuse_status (*begin_adjoint_step)(fuse_ctx* ctx, const fuse_step_request* in, fuse_step_report* out);
+
+  /* reverse mode, the reverse of end_step: reverses everything below that step */
+  /* in the forward order, up to the next step of a component driven from */
+  /* outside, which the report's next_component names (the graph-declared */
+  /* component index), or up to the start of the period, when next_component is */
+  /* -1: the period is reversed and the next begin_adjoint_step opens the one */
+  /* before it. The report echoes the window, step and iteration of the step */
+  /* just closed, with step_opened 1 and period the index of its period, as */
+  /* end_step does; COLLECTIVE over the component's processes */
+  fuse_status (*end_adjoint_step)(fuse_ctx* ctx, const fuse_step_request* in, fuse_step_report* out);
 } fuse_participant_abi_v1;
 
 /* THE ONE EXPORTED SYMBOL. Returns the table for `abi_version`, or NULL

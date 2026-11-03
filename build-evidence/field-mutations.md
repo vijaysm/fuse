@@ -1,6 +1,6 @@
 # Mutation evidence — `field`
 
-Run 2026-09-20 against build `build-fuse-s1`. Regenerate with `tools/mutate.py --write-log`; do not edit.
+Run against build `build-fuse-s1`. Regenerate with `tools/mutate.py --write-log`; do not edit.
 
 | Mutation | File | Outcome | Killed by |
 |---|---|---|---|

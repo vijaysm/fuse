@@ -1,0 +1,54 @@
+# Mutations for the ordered cross-rank sum of the conservation integrals of Arithmetic fields
+#. Run under mpiexec: the test is the
+# 4-rank row, because the order of the sum shows from four ranks on.
+
+[[mutation]]
+id = "reduce-drops-the-lo-limbs-of-the-totals"
+area = "runtime_arithmetic_mpi"
+describes = "the ranks' integrals are added as binary64 numbers, so the total keeps none of the lo limbs"
+file = "src/runtime/arithmetic_reduce.hpp"
+old = "    total_before = total_before + num::detail::Limbs<A>::load(g);"
+new = "    total_before = total_before + A(num::detail::Limbs<A>::load(g).to_double());"
+target = "fuse_parallel_arithmetic_reduce_mpi_test"
+test = "parallel.arithmetic_reduce_mpi.4"
+
+[[mutation]]
+id = "reduce-ignores-the-failure-flag"
+area = "runtime_arithmetic_mpi"
+describes = "a rank whose period has failed is not reported to the others"
+file = "src/runtime/arithmetic_reduce.hpp"
+old = "  partner_lost = flag > 0.0;"
+new = "  partner_lost = false;"
+target = "fuse_parallel_arithmetic_reduce_mpi_test"
+test = "parallel.arithmetic_reduce_mpi.4"
+
+[[mutation]]
+id = "reduce-adds-the-ranks-in-descending-order"
+area = "runtime_arithmetic_mpi"
+describes = "the ranks' integrals are added from the last rank to the first, so the total is no longer the ordered sum"
+file = "src/runtime/arithmetic_reduce.hpp"
+old = "  for (int p = 0; p < size; ++p) {\n    const double* g"
+new = "  for (int p = size - 1; p >= 0; --p) {\n    const double* g"
+target = "fuse_parallel_arithmetic_reduce_mpi_test"
+test = "parallel.arithmetic_reduce_mpi.4"
+
+[[mutation]]
+id = "reduce-sends-no-failure-flag"
+area = "runtime_arithmetic_mpi"
+describes = "a rank whose period has failed sends a zero flag, so the others are not told"
+file = "src/runtime/arithmetic_reduce.hpp"
+old = "  local[2 * L] = step_failed ? 1.0 : 0.0;"
+new = "  local[2 * L] = 0.0;"
+target = "fuse_parallel_arithmetic_reduce_mpi_test"
+test = "parallel.arithmetic_reduce_mpi.4"
+
+[[mutation]]
+id = "reduce-reads-the-failure-flag-from-the-last-limb-of-the-after-integral"
+area = "runtime_arithmetic_mpi"
+describes = "the failure flag is read from the last limb of the after integral, so a rank that has not failed is reported as failed"
+file = "src/runtime/arithmetic_reduce.hpp"
+old = "    flag += g[2 * L];"
+new = "    flag += g[2 * L - 1];"
+target = "fuse_parallel_arithmetic_reduce_mpi_test"
+test = "parallel.arithmetic_reduce_mpi.4"
+

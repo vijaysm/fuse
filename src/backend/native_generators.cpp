@@ -123,8 +123,8 @@ struct VertexLookup {
 
 /// `native_backend.hpp` documents `E-MESH-SIZE` for a spec whose rank-local
 /// vertex count would not fit this generator's own int-indexed builder
-/// (NM-12 records the narrowing separately); before this check, nothing
-/// ever produced it -- a huge spec's `sx*sy*sz` product either overflowed
+/// (the narrowing is recorded separately); without this check, nothing
+/// would produce it -- a huge spec's `sx*sy*sz` product either overflowed
 /// silently or stayed representable but vastly exceeded available memory,
 /// so `VertexLookup::local.assign` failed as an uncaught
 /// `std::bad_alloc`/`std::length_error` instead of this library's own

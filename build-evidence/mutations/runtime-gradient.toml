@@ -1,0 +1,33 @@
+# Mutations for a field of dual numbers moving through the Runner: the runner reads it as scalars, refuses a
+# minimum or maximum accumulation of gradients, and names a type it cannot move
+# instead of calling the field unbound.
+
+[[mutation]]
+id = "runner-reads-a-dual-field-as-strict-binary64"
+area = "runtime_gradient"
+describes = "the runner binds component-owned arcs with the strict registry.get() instead of get_scalars(), so a typed field of dual numbers is refused and no gradient reaches the plan"
+file = "src/runtime/runner.cpp"
+old = "      Result<FieldRef> scalars = registry.get_scalars(it->second);"
+new = "      Result<FieldRef> scalars = registry.get(it->second);"
+target = "fuse_runtime_dual_field_runner_test"
+test = "runtime.dual_field_runner"
+
+[[mutation]]
+id = "runner-minimum-maximum-guard-never-fires"
+area = "runtime_gradient"
+describes = "the E-RT-GRADIENT-MINMAX check skips every channel, so a minimum or maximum accumulation of a field with gradients runs and returns a gradient that is not the gradient of anything"
+file = "src/runtime/runner.cpp"
+old = "    if (ch.accumulate.op != AccumOp::Min && ch.accumulate.op != AccumOp::Max) {\n      continue;\n    }"
+new = "    if (true) {\n      continue;\n    }"
+target = "fuse_runtime_dual_field_runner_test"
+test = "runtime.dual_field_runner"
+
+[[mutation]]
+id = "runner-type-refusal-is-reported-as-unbound"
+area = "runtime_gradient"
+describes = "a bound field of a type the runtime cannot move is reported as E-RT-UNBOUND ('did the component call register_fields?') instead of naming its type"
+file = "src/runtime/runner.cpp"
+old = "    if (!ref.ok() && ref.error().code != \"E-FIELD-UNBOUND\") {"
+new = "    if (false) {"
+target = "fuse_runtime_dual_field_runner_test"
+test = "runtime.dual_field_runner"

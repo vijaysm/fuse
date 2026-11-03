@@ -6,6 +6,7 @@
 #include "fuse_physics/fe/algebraic_system.hpp"
 
 #include <cmath>
+#include <stdexcept>
 #include <string>
 
 #include <gtest/gtest.h>
@@ -32,7 +33,7 @@ using fuse::linalg::Triplet;
 // (Neumann at both ends, so K is singular -- irrelevant here, only its
 // SYMMETRY and the elimination's own arithmetic are under test),
 // Dirichlet-eliminated at row 0 to value 5. The textbook symmetric
-// elimination this wave implements (NOT KARMA's own no-op constrain(),
+// elimination implemented here (NOT KARMA's own no-op constrain(),
 // algebraic_system.hpp's own header comment) must: (a) replace row 0
 // with exactly {(0,0,1)}; (b) remove the (1,0) entry that named the
 // eliminated COLUMN, moving its value (-1 * 5 = -5) into rhs[1]; (c)
@@ -101,8 +102,7 @@ TEST(AlgebraicSystemTest, EliminateDirichletRowsStaysSymmetric) {
 TEST(AlgebraicSystemTest, EliminateDirichletRowsRefusesSizeMismatch) {
   std::vector<Triplet> triplets;
   std::vector<double> rhs{0.0, 0.0};
-  // The refusal's own message, not merely its type (lead's review of
-  // round 1, 2026-11-01's own rule, applied here too).
+  // The refusal's own message, not merely its type.
   try {
     eliminate_dirichlet_rows(triplets, 2, {0, 1}, {1.0}, rhs);
     FAIL() << "a dirichlet_rows/values size mismatch must be refused";
@@ -173,7 +173,7 @@ TEST(AlgebraicSystemTest, AssembleVectorSumsElementContributionsAtSharedVertices
   int shared_count = 0, unshared_count = 0;
   for (std::size_t i = 0; i < vector.owned_size(); ++i) {
     // Exact equality: each entry is a sum of one or two 1.0 contributions, an
-    // exact dyadic sum in IEEE 754 (the track had a chosen 1e-15 here; lead, 2026-11-01).
+    // exact dyadic sum in IEEE 754 (so no tolerance is needed).
     if (vector.data()[i] == 2.0)
       ++shared_count;
     else if (vector.data()[i] == 1.0)

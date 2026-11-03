@@ -21,8 +21,7 @@
 ///   first LU (with its pivoting permutations) computed elsewhere and then,
 ///   for any later matrix with the same pattern, redoes only the numeric
 ///   factorisation and the triangular solves on the GPU, reusing the pivot
-///   sequence. That is precisely the shape of both call sites after Phase 1
-///   (`39ad7a7`, `2e9db1f`): one pattern, repeated `factorize()` with new
+///   sequence. That is precisely the shape of both call sites: one pattern, repeated `factorize()` with new
 ///   values. The seed LU comes from cusolverSp's host LU
 ///   (`cusolverSp_LOWLEVEL_PREVIEW.h`), run once per pattern, after an AMD
 ///   fill-reducing symmetric permutation computed with Eigen's own

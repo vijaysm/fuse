@@ -22,13 +22,13 @@ Result<void> CopyTransport::prepare(const TransportSpec& spec) {
 // header is compiled with -O3 -DNDEBUG in release, where an assert vanishes.
 Result<void> CopyTransport::move(const double* src, double* dst,
                                  std::size_t n) {
-  // Review 2026-10-11 TR-16. A rank owning zero elements of a mesh entity
+  // A rank owning zero elements of a mesh entity
   // set is ordinary in parallel, and `std::vector<double>{}.data()` is
   // permitted to be null -- MpiTransport::move() (transport.hpp's own doc)
-  // accepts null exactly when `n` is zero. This backend used to refuse null
-  // unconditionally, so a zero-element, same-process channel whose storage
-  // is an empty vector was refused by the copy backend and accepted by the
-  // MPI one for the identical input.
+  // accepts null exactly when `n` is zero. Refusing null
+  // unconditionally would mean a zero-element, same-process channel whose
+  // storage is an empty vector is refused by the copy backend and accepted by
+  // the MPI one for the identical input.
   if (n != 0 && (src == nullptr || dst == nullptr)) {
     return Failure{"E-TRANSPORT-NULL", "copy transport given a null pointer"};
   }
@@ -42,6 +42,12 @@ Result<void> CopyTransport::move(const double* src, double* dst,
   if (src == dst) return Result<void>::success();  // legitimate no-op
   std::memcpy(dst, src, n * sizeof(double));
   return Result<void>::success();
+}
+
+Result<void> CopyTransport::move_adjoint(const double* dst_bar, double* src_bar,
+                                         std::size_t n) {
+  // The transpose of a copy is a copy, with the roles of the two arrays exchanged.
+  return move(dst_bar, src_bar, n);
 }
 
 void TransportRegistry::register_backend(std::string name, Factory factory) {

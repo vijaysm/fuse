@@ -102,13 +102,13 @@ TEST(RankSet, AnEmptyPlacementIsLegal) {
   EXPECT_TRUE(none.is_contiguous()) << "vacuously, and callers rely on it";
 }
 
-// ---- BM-14 (review 2026-10-11): UB/OOM on an edge-input count ---------
+// ---- UB/OOM on an edge-input count -------------------------------------
 //
-// `RankSet(int, int)` used to `reserve(count)` and loop `count` times with
+// `RankSet(int, int)` must not `reserve(count)` and loop `count` times with
 // no bound at all: a YAML document with `ranks: {first: 0, count:
 // 2000000000}` would reserve ~16 GB before anything looked at it, and
-// `first + count` overflowing `int` was signed-overflow UB in the loop.
-// Both are refused now, before either happens.
+// `first + count` overflowing `int` would be signed-overflow UB in the loop.
+// Both are refused before either happens.
 
 TEST(RankSet, RefusesAnAbsurdlyLargeCount) {
   EXPECT_THROW((void)RankSet(0, 1 << 30), fuse::Refusal);

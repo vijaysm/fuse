@@ -152,11 +152,11 @@ TEST(Expand, RejectsExplosiveExpansion) {
               td.error().code == "E-SCHED-EXPLODE");
 }
 
-// --- regressions for defects in the task brief's reference implementation ---
+// --- regressions ---
 
 // A Sink carries the origin of the channel that wrote it (lowering.cpp step 3),
 // so a channel loop keyed on `origin == cid` claims it as well as the boundary
-// pass keyed on OpKind. The brief did both and emitted every written Sink
+// pass keyed on OpKind. Doing both would emit every written Sink
 // twice.
 TEST(Expand, WrittenSinkIsInstantiatedExactlyOncePerSlab) {
   const CouplingGraph g = pair(Rational{1, 4}, Rational{1}, fuse::AccumOp::Instant);
@@ -247,9 +247,9 @@ TEST(Expand, UnrepresentableCommonPeriodIsAnErrorNotAnException) {
 }
 
 // src_dt = 1/3, dst_dt = 1/2 -> period 1, three source ticks (0, 1/3, 2/3) and
-// two target steps ([0,1/2), [1/2,1)). The brief hard-coded the "other" step
-// index to 0 on both accumulation paths, which is a silent wrong answer as
-// soon as the period holds more than one target step.
+// two target steps ([0,1/2), [1/2,1)). The "other" step index must not be
+// hard-coded to 0 on either accumulation path, which would be a silent wrong
+// answer as soon as the period holds more than one target step.
 TEST(Expand, AccumulationRecordsBothStepIndices) {
   const CouplingGraph g = pair(Rational{1, 3}, Rational{1, 2},
                                fuse::AccumOp::Mean);
@@ -351,9 +351,8 @@ TEST(Expand, RejectsExpansionThatExceedsTheTimedNodeCap) {
 // `ChannelId{}` origin (fuse/ir/lowering.cpp), same as Source, so it is
 // claimed by no channel. Unlike Source it is a chain-CLOSING node: it must
 // land no earlier than the Transport/Epoch outputs it reads, in EITHER
-// expansion path -- docs/dev/reviews/2026-09-19/pass2/re-ir-schedule.md's
-// N-ir-schedule-2 found the fast (lockstep) path stamping it at the tick's
-// START instead, sorting it before its own inputs.
+// expansion path (the fast, lockstep path must not stamp it at the tick's
+// START, which would sort it before its own inputs).
 CouplingGraph merge_across_ranks() {
   CouplingGraph g;
   const auto m = g.add_mesh(fuse::MeshDecl{.name = "m"});

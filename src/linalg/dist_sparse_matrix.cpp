@@ -160,7 +160,7 @@ Result<void> DistSparseMatrix::apply(DistVector& x, DistVector& y) const {
              "DistSparseMatrix::apply: x carries {} ghosts, this matrix's ghost_pattern() "
              "carries {}; x was not built from this matrix's own ghost_pattern()",
              x.ghost_size(), ghost_pattern_.owner_rank.size());
-  // Review 2026-10-11 NL-11: row i's write to y overwrites x's owned
+  // Row i's write to y overwrites x's owned
   // block before every later row has read it as an off-diagonal input
   // column, so apply(v, v) (or any partial overlap) silently computes
   // the wrong answer -- caught here, not left to the header's own

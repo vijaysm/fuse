@@ -41,7 +41,7 @@ program couple
   status = fuse_field_handle(ctx, "fluid", "heat_flux", heat_flux)
 
   view%handle           = heat_flux%handle
-  view%element_type     = FUSE_ELEMENT_F64
+  view%element_type     = FUSE_ELEMENT_F64      ! or FUSE_ELEMENT_F32 for real(c_float) storage
   view%memspace         = FUSE_MEMSPACE_HOST
   view%ownership        = FUSE_OWNERSHIP_OWNED
   view%components       = heat_flux%components
@@ -163,7 +163,9 @@ All of kind `integer(c_int32_t)`, with the values of `fuse/abi/types.h`:
 
 - `FUSE_OK`, `FUSE_ERR_INVALID`, `FUSE_ERR_NOTFOUND`, `FUSE_ERR_STATE`, `FUSE_ERR_RUNTIME`,
   `FUSE_ERR_UNSUPPORTED`, `FUSE_ERR_VERSION`
-- `FUSE_ELEMENT_F64`, `FUSE_ELEMENT_I64`
+- `FUSE_ELEMENT_F64`, `FUSE_ELEMENT_I64`, `FUSE_ELEMENT_F32`, `FUSE_ELEMENT_BF16`,
+  `FUSE_ELEMENT_F16`, `FUSE_ELEMENT_DD`, `FUSE_ELEMENT_QD`, `FUSE_ELEMENT_POSIT16`,
+  `FUSE_ELEMENT_POSIT32`
 - `FUSE_MEMSPACE_HOST`, `FUSE_MEMSPACE_DEVICE`
 - `FUSE_OWNERSHIP_OWNED`, `FUSE_OWNERSHIP_GHOSTED`, `FUSE_OWNERSHIP_REPLICATED`
 - `FUSE_CAP_DEVICE_FIELDS`, `FUSE_CAP_CHECKPOINT`, `FUSE_CAP_MPI`, `FUSE_CAP_MPI_CONNECT`,
@@ -224,10 +226,16 @@ can set `struct_size`; pass variables, not expressions.
 | `fuse_view_field(ctx, in, out)` | `fuse_field_ref` | `fuse_field_view` | |
 | `fuse_base_communicator(ctx, in, out)` | `fuse_null` | `fuse_base_communicator_info` | |
 | `fuse_request_restart_point(ctx, in, out)` | `fuse_null` | `fuse_null` | |
+| `fuse_register_adjoint_field(ctx, in, out)` | `fuse_field_view` | `fuse_null` | the adjoint array of a field you drive; see [](c-abi.md#reverse-mode) |
+| `fuse_initialize_adjoint(ctx, in, out)` | `fuse_null` | `fuse_null` | collective |
+| `fuse_view_adjoint_field(ctx, in, out)` | `fuse_field_ref` | `fuse_field_view` | |
+| `fuse_run_adjoint(ctx, in, out)` | `fuse_run_request` | `fuse_null` | collective |
+| `fuse_begin_adjoint_step(ctx, in, out)` | `fuse_step_request` | `fuse_step_report` | struct form; the name form is below |
+| `fuse_end_adjoint_step(ctx, in, out)` | `fuse_step_request` | `fuse_step_report` | struct form; the name form is below |
 
 ### Generic overloads for strings
 
-Five names are generic interfaces with a second, string-taking specific, so you never build a
+Seven names are generic interfaces with a second, string-taking specific, so you never build a
 NUL-terminated `c_ptr` by hand at the common call sites:
 
 ```fortran
@@ -235,6 +243,8 @@ status = fuse_load_graph(ctx, yaml_path, out)             ! character(len=*) :: 
 status = fuse_field_handle(ctx, component, field, out)    ! character(len=*) :: component, field
 status = fuse_begin_step(ctx, component, out)             ! character(len=*) :: component
 status = fuse_end_step(ctx, component, out)
+status = fuse_begin_adjoint_step(ctx, component, out)
+status = fuse_end_adjoint_step(ctx, component, out)
 status = fuse_last_error(ctx, message, truncated)         ! character(len=*), intent(out) :: message
                                                           ! logical, intent(out), optional :: truncated
 ```
@@ -347,8 +357,9 @@ this section is the Fortran mechanics.
 `type, bind(C) :: fuse_provider_abi_v1`
 : The table, bit-for-bit the C layout: `struct_size`, `abi_version`, then one `type(c_funptr)`
   per entry in table order: `version`, `create`, `destroy`, `describe`, `bind`, `advance`,
-  `save_state`, `restore_state`, `capabilities`, `save_restart_blob`, `load_restart_blob`. All
-  default to `c_null_funptr`.
+  `save_state`, `restore_state`, `capabilities`, `save_restart_blob`, `load_restart_blob`,
+  `bind_adjoint`, `advance_adjoint` (the last two for the reverse sweep, [](providers.md#adjoint-of-a-plugin)).
+  All default to `c_null_funptr`.
 
 `ffuse_provider_<entry>_proc`
 : One abstract interface per entry, so your own `bind(C)` procedure is checked against the expected
@@ -490,10 +501,65 @@ There is no shipped generic driver executable: the Brusselator programs are exam
 physics. See [](drivers.md) for the C++ side of the same question and [](yaml.md) for the file
 format.
 
+## Element types, double-double values and gradients
+
+`view%element_type` says what the storage `view%data` holds; the C interface's
+[element types](c-abi.md#fields-field_handle-and-register_field) apply unchanged. The graph counts
+binary64 numbers per entity, and `view%components` counts values of the element type, so for the
+types that are more than one number the two differ by the number of limbs. A scalar double-double
+field, declared with `components: 2`, is an array of (hi, lo) pairs, which Fortran spells with the
+limb index first:
+
+```fortran
+  real(c_double), target :: d(2, 100)      ! hi = d(1, i), lo = d(2, i), for 100 cells
+  ...
+  view%element_type     = FUSE_ELEMENT_DD
+  view%components       = heat_flux%components / 2   ! values per cell: 1, not 2
+  view%count            = 100_c_int64_t
+  view%owned_count      = 100_c_int64_t
+  view%stride           = 1_c_int64_t                ! counted in values, not in numbers
+  view%component_stride = 1_c_int64_t
+  view%data             = c_loc(d)
+```
+
+A quad-double value is `real(c_double) :: x(4, n)`, `FUSE_ELEMENT_QD`, and the graph declares
+`components: 4`. The coupler does its sums and remaps in the type and delivers every limb.
+
+A posit is its bit pattern: `integer(c_int16_t), target :: p(100)` with `FUSE_ELEMENT_POSIT16`, or
+`integer(c_int32_t)` with `FUSE_ELEMENT_POSIT32`, and the graph declares the ordinary `components: 1`.
+The pattern is a two's complement integer whose order is the order of the values, and the single
+pattern with only the sign bit set (`-32768` as `c_int16_t`) is NaR. Fortran has no posit type, so
+the program that computes in posits converts its own values to and from patterns; the coupler
+converts the pattern to binary64 and back as for the other Storage formats
+([](field-pipeline.md#storage-types-posit16-and-posit32)).
+`test/abi/fortran/posit_consumer.f90` is a complete program that registers `posit16`, `posit32` and
+mixed binary64-to-posit16 channels and checks the patterns that arrive.
+
+A component that carries a forward-mode derivative with respect to two parameters keeps a value
+and its two derivatives together, `real(c_double), target :: u(3, 100)`, declares `components: 3`
+in the graph, and says which of them are gradient:
+
+```fortran
+  view%element_type    = FUSE_ELEMENT_F64
+  view%components      = 3
+  view%stride          = 3_c_int64_t                ! consecutive cells are 3 numbers apart
+  view%component_stride = 1_c_int64_t
+  view%gradient_size   = 2                          ! the last two are the gradient of the first
+```
+
+Remap, delivery and the sum, mean and integral accumulations then carry the gradient along with the
+value; a channel that accumulates the field by minimum or maximum is refused (`E-RT-GRADIENT-MINMAX`).
+`gradient_size` defaults to `0`.
+
+`test/abi/fortran/arithmetic_consumer.f90` is a complete program doing both over one coupling: it
+registers a double-double field and a gradient field on each of two components, checks bit for bit that
+every limb and every gradient entry arrives, and checks what `fuse_view_field` reports back. Its graph
+is `test/abi/fortran/install_consumer/dd_two_component.yaml`.
+
 ## Limitations
 
-- The participant limits in [](c-abi.md#limitations) apply: only `FUSE_ELEMENT_F64` fields in host
-  memory, no `FUSE_OWNERSHIP_GHOSTED`, one open step per context, no restart file from the
+- The participant limits in [](c-abi.md#limitations) apply: no `FUSE_ELEMENT_I64` field, fields in
+  host memory only, no `FUSE_OWNERSHIP_GHOSTED`, one open step per context, no restart file from the
   participant side.
 - A Fortran participant links two ABI libraries (`fuse::abi-fortran` and the shared `fuse::abi`);
   `fuse::abi-static` does not link for an installed consumer.

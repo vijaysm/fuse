@@ -241,8 +241,9 @@ implementation can refuse bytes it no longer understands by name.
 `RestartWriter::put_field<T>()`/`put_scalar<T>()` and `RestartReader::get_field<T>()`/`get_scalar<T>()`
 are templates over one byte-based virtual pair. `T` resolves to a `fuse::ElementType` at compile
 time, and a `static_assert` fires for a `T` outside the supported set: `std::int8_t` to
-`std::int64_t`, `std::uint8_t` to `std::uint64_t`, `fuse::bfloat16`, `float`, `double`,
-`long double`, `bool`, and `_Float16` where the compiler provides it. Every field and scalar carries
+`std::int64_t`, `std::uint8_t` to `std::uint64_t`, `fuse::bfloat16`, `fuse::binary16`, `fuse::num::posit16`,
+`fuse::num::posit32`, `float`, `double`, `long double`, `bool`, and `_Float16` where the compiler provides it (the same format as
+`fuse::binary16`, which every compiler has). Every field and scalar carries
 its element-type metadata in the file (see "Element types" in [](glossary.md)), and the reader never
 assumes its `T` matches what was written.
 
@@ -268,6 +269,43 @@ if (rw.ok() && rw.value().max_absolute_change > 0.0) {
   // is reported here; report and act on it.
 }
 ```
+
+### Fields of double-double, quad-double and dual values
+
+A component whose state is a field of `fuse::num::dd`, `fuse::num::qd` or a `fuse::num::dual<S, N>`
+stores it with `fuse::put_values<T>()` and reads it with `fuse::get_values<T>()`
+(`fuse/model/restart_values.hpp`). They take the arguments of `put_field<T>()` and
+`get_field<T>()`, with `components` counting values of `T`, and store each value as its scalars, bit
+for bit: a double-double value is two binary64 entries, a quad-double value four, and a dual number
+of `N` gradient entries `N + 1` of its scalar type.
+
+```cpp
+std::vector<fuse::num::dd> t_(n_);                       // the component's state
+// writer is the fuse::RestartWriter& and reader the fuse::RestartReader& your component is handed.
+auto w = fuse::put_values<fuse::num::dd>(writer, "t", ids, t_, 1, static_cast<std::int64_t>(n_));
+
+auto r = fuse::get_values<fuse::num::dd>(reader, "t", ids, std::span(t_), 1);
+```
+
+The file holds an ordinary binary64 field with two components per row, so any reader reads it, and
+a program that does not know `dd` reads the pairs. The cost is that the file does not say they are
+double-double: the reader names the type it expects, and the number of components it asks for must
+be the number the writer used (a different one is refused like any component mismatch). A type that
+is already a stored type (`double`, `float`, `bfloat16`, `binary16`) is stored as itself. Restart
+points are written by components, not by the Runner, so there is no field-level restart of the
+Runner's own arrays to extend: what these functions give is the means for a component to restart its
+own typed state exactly.
+
+A posit (`fuse::num::posit16`, `fuse::num::posit32`) is stored as the unsigned 16-bit or 32-bit
+integer of its bit pattern, and its `element_type` metadata says `posit16` or `posit32`: a reader
+that does not know posits sees integers, and a reader that asks for `std::uint16_t` where a `posit16`
+was written is refused (`E-RESTART-TYPE-MISMATCH`), because the element types differ. Under
+`ReadConversion::Widening` a posit is read exactly as a wider posit (`posit16` as `posit32`), as binary64,
+and, for `posit16`, as binary32; nothing is a widening into a posit, so reading a binary64 or binary32
+field as a posit needs `AllowNarrowing`, which rounds to nearest (a tie to the even pattern, saturating,
+NaN and infinity to NaR) and reports the largest change measured. A posit is not read as, or written from,
+a `long double`, an integer or a `bool`. The collective MPI writer takes binary64 and
+`std::int64_t` fields only; a posit field is written by the serial writer.
 
 Accelerator and waveform histories are stored as `double` (binary64). A `Rational` time level is
 stored exactly, as its numerator and denominator (`put_scalar_rational()`/`get_scalar_rational()`),
@@ -303,7 +341,7 @@ Every refusal is a named `fuse::Failure` code, never a silent default.
 | `E-RESTART-MISSING-ID` | the field exists, but not this row |
 | `E-RESTART-DUPLICATE-ID`, `E-RESTART-BAD-NUMBERING` | the batched or per-call id check on write failed: an id written twice, or a numbering that does not cover `declared_global_size` |
 | `E-RESTART-DUPLICATE-CALL` | `put_field()` called twice under one name for the same point |
-| `E-RESTART-FIELD-SHAPE` | `values.size()` is not `ids.size() * components` |
+| `E-RESTART-FIELD-SHAPE` | `values.size()` is not `ids.size() * components`, or a read asks for a number of components other than the file holds |
 | `E-RESTART-AMBIGUOUS-FIELD-NAME` | two components in the graph declare a field of the same name, so an accelerator row cannot be attributed |
 | `E-RESTART-USAGE` | `GrowingFile` used without a `point_label` |
 | `E-RESTART-TRUNCATED` | not a valid HDF5 file, or missing `@format_version` |

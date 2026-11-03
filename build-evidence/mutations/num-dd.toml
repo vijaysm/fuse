@@ -1,0 +1,72 @@
+# Mutations for the double-double type.
+
+[[mutation]]
+id = "dd-add-drops-the-second-lo-limb"
+area = "num_dd"
+describes = "the sum ignores the lo limb of its second operand, so it is accurate only to binary64"
+file = "include/fuse/num/dd.hpp"
+old = "double t2, t1 = eft::two_sum(a.lo, b.lo, t2);"
+new = "double t2, t1 = eft::two_sum(a.lo, 0.0, t2);"
+target = "fuse_num_dd_test"
+test = "num.dd"
+
+[[mutation]]
+id = "dd-mul-drops-lo-times-hi"
+area = "num_dd"
+describes = "the product leaves out lo(a) times hi(b), a term of the first order below the leading product"
+file = "include/fuse/num/dd.hpp"
+old = "    p[3] = eft::two_prod(a.lo, b.hi, p[5]);\n    p[6] = eft::mul(a.lo, b.lo);"
+new = "    p[3] = 0.0;\n    p[6] = eft::mul(a.lo, b.lo);"
+target = "fuse_num_dd_test"
+test = "num.dd"
+
+[[mutation]]
+id = "dd-div-residual-ignores-the-divisor-lo-limb"
+area = "num_dd"
+describes = "the first residual of the division uses only the leading limb of the divisor, so the quotient is accurate to about 2^-54"
+file = "include/fuse/num/dd.hpp"
+old = "  dd r = detail::dd_fma(dd(-q1), b, a);"
+new = "  dd r = detail::dd_fma(dd(-q1), dd(b.hi), a);"
+target = "fuse_num_dd_test"
+test = "num.dd"
+
+[[mutation]]
+id = "dd-narrowing-returns-the-leading-limb"
+area = "num_dd"
+describes = "narrowing to binary64 returns the leading limb, which is not the nearest binary64 value for limbs that are not in normal form"
+file = "include/fuse/num/dd.hpp"
+old = "    return hi + lo;\n  }"
+new = "    return hi;\n  }"
+target = "fuse_num_dd_test"
+test = "num.dd"
+
+[[mutation]]
+id = "dd-order-ignores-the-lo-limb"
+area = "num_dd"
+describes = "the order compares only the leading limbs, so two values that differ in the lo limb compare equal in order"
+file = "include/fuse/num/dd.hpp"
+old = "  return a.hi < b.hi || (a.hi == b.hi && a.lo < b.lo);"
+new = "  return a.hi < b.hi;"
+target = "fuse_num_dd_test"
+test = "num.dd"
+
+[[mutation]]
+id = "dd-sqrt-drops-the-correction"
+area = "num_dd"
+describes = "the square root is the binary64 approximation without Karp's correction, accurate to 2^-53"
+file = "include/fuse/num/dd.hpp"
+old = "  return ldexp(dd::from_sum(bx, corr), k);"
+new = "  return ldexp(dd(bx), k);"
+target = "fuse_num_dd_test"
+test = "num.dd"
+
+[[mutation]]
+id = "dd-traits-narrow-to-the-leading-limb"
+area = "num_dd"
+describes = "value_traits<dd>::to_binary64 returns the leading limb instead of the nearest binary64 value"
+file = "include/fuse/num/dd.hpp"
+old = "    return v.to_double();\n  }\n  /// Exact.\n  [[nodiscard]] KOKKOS_INLINE_FUNCTION static num::dd from_binary64"
+new = "    return v.hi;\n  }\n  /// Exact.\n  [[nodiscard]] KOKKOS_INLINE_FUNCTION static num::dd from_binary64"
+target = "fuse_num_dd_test"
+test = "num.dd"
+

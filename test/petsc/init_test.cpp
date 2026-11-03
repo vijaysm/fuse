@@ -35,8 +35,8 @@ TEST(PetscInit, OwnsAndReleasesMpiWhenNothingElseStartedIt) {
     // An MPI build: the test harness (test/support/fuse_test_main.cpp)
     // has already called MPI_Init, so this case's premise -- nothing has
     // -- is false here, and the branch it pins is the one the sibling
-    // case below covers. Measured on the host 2026-10-11 in the
-    // FUSE_ENABLE_MPI=ON tree: MPI_Initialized reported 1 at this line.
+    // case below covers. In the
+    // FUSE_ENABLE_MPI=ON tree MPI_Initialized reports 1 at this line.
     GTEST_SKIP() << "MPI already initialised by the harness; see "
                     "InitialisesOnTheCallersCommunicatorWhenMpiIsAlreadyUpAndRefusesAfterFinalize";
   }
@@ -100,9 +100,8 @@ TEST(PetscInit, InitialisesOnTheCallersCommunicatorWhenMpiIsAlreadyUpAndRefusesA
   if (mpi_finalized_before != 0) {
     // The tier-0 binary reaches here AFTER the previous case released the
     // MPI this library started: MPI_Initialized still reads 1 (the
-    // standard keeps it so after MPI_Finalize), and the first draft of
-    // this case walked into a finalised MPICH and aborted (host,
-    // 2026-10-11). The property here is the refusal, by name.
+    // standard keeps it so after MPI_Finalize), and calling into a
+    // finalised MPICH aborts. The property here is the refusal, by name.
     fuse::Result<void> refused = ensure_initialized(comm_self_f());
     ASSERT_FALSE(refused.ok());
     EXPECT_EQ(refused.error().code, "E-PETSC-MPI-FINALIZED") << refused.error().message;

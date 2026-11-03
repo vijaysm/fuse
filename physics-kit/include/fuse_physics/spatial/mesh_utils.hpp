@@ -2,13 +2,12 @@
 
 /// Mesh boundary-extraction helpers, adapted from KARMA's
 /// karma_mesh_extract_edge.C / karma_mesh_extract_face.C
-/// (docs/dev/physics-kit-disposition.md Appendix A, port-adapt).
+/// (port-adapted; see docs/dev/physics-kit.md).
 ///
-/// (item 4): extract_edge_at_coordinate
-/// now ports karma_mesh_extract_edge.C's own operation -- collect the 1-D
+/// extract_edge_at_coordinate
+/// ports karma_mesh_extract_edge.C's own operation -- collect the 1-D
 /// edges of a 2-D mesh lying on a line of constant coordinate -- against
-/// this wave's new 2-D spatial::Mesh::generate_2d_box (mesh.hpp), which
-/// did not exist in. ADAPTED, not a
+/// the 2-D spatial::Mesh::generate_2d_box (mesh.hpp). ADAPTED, not a
 /// literal port: KARMA's own karma_mesh_extract_edge.C is legacy libMesh
 /// code (Node/Elem/MeshBase iterators, add_point with a processor id) in a
 /// visibly older style than the rest of numerics/spatial; this reproduces

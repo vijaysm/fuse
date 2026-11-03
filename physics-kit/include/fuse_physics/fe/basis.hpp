@@ -1,32 +1,32 @@
 #pragma once
 
 /// Geometry-independent scalar finite-element bases, adapted from KARMA's
-/// karma_basis.h/.C (docs/dev/physics-kit-disposition.md Appendix A,
-/// port-adapt, decision).
+/// karma_basis.h/.C (port-adapted; see
+/// docs/dev/physics-kit.md).
 ///
 /// SCOPE (reference_topology.hpp's own note applies here too):
 /// built-in Lagrange nodal bases of order 0, 1 or 2 on all seven
-/// CellFamily values this wave's ReferenceTopology implements (Edge,
+/// CellFamily values ReferenceTopology implements (Edge,
 /// Triangle, Quadrilateral, Tetrahedron, Hexahedron, Prism, Pyramid) --
 /// order 2 meaning the complete tensor/simplex family (Quad9, Tet10,
 /// Hex27, Prism18, Pyramid14), not a serendipity variant (Quad8, Prism15,
 /// Pyramid13 -- reference_topology.hpp's own face-shape-only role for
 /// those). FieldBasisFamily/BasisContinuity keep KARMA's full vocabulary
-/// (a later wave's user-defined or hierarchical/Legendre bases plug into
+/// (user-defined or hierarchical/Legendre bases could plug into
 /// the same registry) even though only LagrangeNodal has a built-in
 /// factory so far.
 ///
-/// ORIENTATION (item 5): ported from
+/// ORIENTATION: ported from
 /// KARMA's karma_basis.h EdgeOrientation/TriangleOrientation/
-/// QuadrilateralOrientation and OrientationTransform, ADDED to the Basis
-/// surface below rather than kept out-of-scope as left it. A basis
+/// QuadrilateralOrientation and OrientationTransform, part of the Basis
+/// surface below. A basis
 /// function pinned to a shared edge or face (DofAssociation with
 /// entity_dimension >= 1) may be evaluated by two elements that see that
 /// sub-entity in opposite local vertex order; apply_orientation/
 /// apply_orientation_inverse re-signs/permutes that sub-entity's local
-/// DOF slots into a GLOBAL canonical order so assembly (a later wave) can
+/// DOF slots into a GLOBAL canonical order so assembly can
 /// add contributions from both elements into the same global unknown.
-/// This wave's built-in bases (order <= 2) never place more than ONE DOF
+/// The built-in bases (order <= 2) never place more than ONE DOF
 /// on any shared edge or face (an edge midpoint, a face centre), so every
 /// generated OrientationTransform is PROVABLY the identity permutation
 /// with sign +1 for every orientation code: a permutation of a one- (or
@@ -34,7 +34,7 @@
 /// orientation tests hold the round-trip to EXACT (not approximate)
 /// equality for this reason -- see that file's comment for where the
 /// bound would stop being zero (an order >= 3 basis with two or more DOFs
-/// on one edge, not in this wave's scope).
+/// on one edge, not currently built in).
 
 #include <array>
 #include <cstddef>
@@ -42,6 +42,7 @@
 #include <map>
 #include <memory>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -235,8 +236,8 @@ enum class DuplicatePolicy { Reject, Replace };
 
 /// Builds Basis instances from a BasisKey, pre-populated with the built-in
 /// Lagrange nodal factories (BuiltinBasis, basis.cpp) for every (cell,
-/// order <= 2, continuity) this wave supports; register_factory() lets a
-/// later wave add Hierarchical/Legendre/SpectralElement/UserDefined
+/// order <= 2, continuity) supported; register_factory() lets a
+/// caller add Hierarchical/Legendre/SpectralElement/UserDefined
 /// factories without changing this class.
 class BasisRegistry {
  public:

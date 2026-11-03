@@ -65,8 +65,7 @@ namespace fuse {
 /// Reading the contract as "produced from source steps ending at or before
 /// `time`" instead would force every window-closing chain to `AfterTicks` for
 /// any non-nesting ratio -- 1/5 against 1/3 puts source step 1, [1/5, 2/5),
-/// inside target step 0, which ends at 1/3 -- and that is exactly the R2
-/// defect this phase exists to close.
+/// inside target step 0, which ends at 1/3 -- and that is exactly the defect this contract exists to prevent.
 ///
 /// The ordering `BeforeTicks < AfterTicks` is load-bearing: it is the sort key
 /// both `expand()` and `schedule()` use after `time`, so within one instant

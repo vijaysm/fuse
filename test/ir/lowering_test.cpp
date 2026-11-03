@@ -73,7 +73,7 @@ TEST(LoweringRegistry, BuiltinRegistryIsPopulated) {
   EXPECT_GT(LoweringRegistry::builtin().size(), 0u);
 }
 
-// R8 regression: apply_first_match() used to range-iterate rules_ by
+// Regression: apply_first_match() used to range-iterate rules_ by
 // reference while invoking each rule's callback. A callback that calls add()
 // on the SAME registry mid-iteration reallocates rules_ (push_back +
 // stable_sort), which is a use-after-free if the loop is still walking the
@@ -129,7 +129,7 @@ TEST(Lowering, EmitsSourceForEveryProvidedField) {
   EXPECT_EQ(count_kind(result.dag, OpKind::Source), 1);
 }
 
-// R15 regression: a Bidirectional field no channel ever targets keeps
+// Regression: a Bidirectional field no channel ever targets keeps
 // field_arc[f] bound to the Source arc step 1 seeded it with, so step 3's
 // Sink for that field deliberately consumes the field's own Source output --
 // a degenerate self-copy (see LoweringContext's `field_arc` doc comment in

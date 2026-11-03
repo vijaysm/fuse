@@ -147,7 +147,7 @@ A FUSE program has five stages. The same five appear in every example:
 
 1. **Describe**: build a `fuse::CouplingGraph` of meshes, regions, components, fields and channels.
 2. **Load**: give each mesh to a backend.
-3. **Compile**: `validate()` reports every defect, then `lower()` makes the dataflow graph.
+3. **Compile**: `validate()` reports every defect, then `lower()` makes the dataflow graph. Every example calls both.
 4. **Schedule**: `schedule()` turns it into a fixed instruction order and proves it cannot deadlock.
 5. **Run**: bind each component's storage, `initialize()`, then `run()`.
 

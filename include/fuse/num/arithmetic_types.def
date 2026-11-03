@@ -1,0 +1,9 @@
+// The closed list of Arithmetic field value types (FieldValueKind::Arithmetic): the
+// types an operator is instantiated for when the arithmetic on the values is not
+// that of each scalar separately. FUSE_ARITHMETIC_TYPE(C++ type, value_traits name).
+// A type that is not here is refused by name wherever an operator would have to
+// do arithmetic on it; adding one is adding a line here, with the type's
+// `limb_count`/`load_value`/`store_value` in fuse/num/arithmetic_kernels.hpp, and
+// its row in test/num/arithmetic_kernels_test.cpp.
+FUSE_ARITHMETIC_TYPE(fuse::num::dd, "dd")
+FUSE_ARITHMETIC_TYPE(fuse::num::qd, "qd")

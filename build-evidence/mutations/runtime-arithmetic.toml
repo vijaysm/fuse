@@ -1,0 +1,162 @@
+# Mutations for the Runner path for fields of an Arithmetic value type.
+
+[[mutation]]
+id = "runtime-arith-remap-ignores-the-field-type"
+area = "runtime_arithmetic"
+describes = "a field of dd values is remapped limb by limb in binary64 unless the run asks for double-double accumulation"
+file = "src/runtime/runner.cpp"
+old = "        if (!arith_type.empty() || config.accumulation_type == AccumulationType::DoubleDouble) {\n          const std::string_view type = arith_type.empty() ? std::string_view{\"dd\"} : arith_type;\n          const int limbs = arith_type.empty() ? 1 : arith_limbs;\n          const Result<void> done = with_arithmetic(type, [&]<class A>(std::type_identity<A>) {\n            num::arith_remap_apply"
+new = "        if (config.accumulation_type == AccumulationType::DoubleDouble) {\n          const std::string_view type = arith_type.empty() ? std::string_view{\"dd\"} : arith_type;\n          const int limbs = arith_type.empty() ? 1 : arith_limbs;\n          const Result<void> done = with_arithmetic(type, [&]<class A>(std::type_identity<A>) {\n            num::arith_remap_apply"
+target = "fuse_runtime_arithmetic_field_runner_test"
+test = "runtime.arithmetic_field_runner"
+
+[[mutation]]
+id = "runtime-arith-sample-sums-the-limbs-separately"
+area = "runtime_arithmetic"
+describes = "the samples of a dd field are accumulated limb by limb in binary64"
+file = "src/runtime/runner.cpp"
+old = "      if (!arith_type.empty()) {\n        const std::size_t first_idx"
+new = "      if (false) {\n        const std::size_t first_idx"
+target = "fuse_runtime_arithmetic_field_runner_test"
+test = "runtime.arithmetic_field_runner"
+
+[[mutation]]
+id = "runtime-arith-mean-multiplies-by-the-reciprocal"
+area = "runtime_arithmetic"
+describes = "the mean of a dd field multiplies by a rounded 1/count instead of dividing"
+file = "src/runtime/runner.cpp"
+old = "          num::arith_scale<Space, A>(static_cast<double>(count), true, span_c(out, n),\n                                     span_m(out, n), arith_limbs, arith_limbs);"
+new = "          num::arith_scale<Space, A>(1.0 / static_cast<double>(count), false, span_c(out, n),\n                                     span_m(out, n), arith_limbs, arith_limbs);"
+target = "fuse_runtime_arithmetic_field_runner_test"
+test = "runtime.arithmetic_field_runner"
+
+[[mutation]]
+id = "runtime-arith-merge-sums-the-limbs-separately"
+area = "runtime_arithmetic"
+describes = "a merge of dd fields sums them limb by limb in binary64"
+file = "src/runtime/runner.cpp"
+old = "          if (!arith_type.empty()) {\n            const Result<void> done = with_arithmetic(arith_type, [&]<class A>(std::type_identity<A>) {\n              for (std::uint8_t k = 0;"
+new = "          if (false) {\n            const Result<void> done = with_arithmetic(arith_type, [&]<class A>(std::type_identity<A>) {\n              for (std::uint8_t k = 0;"
+target = "fuse_runtime_arithmetic_field_runner_test"
+test = "runtime.arithmetic_field_runner"
+
+[[mutation]]
+id = "runtime-arith-conservation-compares-narrowed-sums"
+area = "runtime_arithmetic"
+describes = "the conservation check narrows both integrals to binary64 before it subtracts them, so the reported error is binary64's"
+file = "src/runtime/runner.cpp"
+old = "          rel_a = std::abs((after_a - before_a).to_double()) / scale;"
+new = "          rel_a = std::abs(after_d - before_d) / scale;"
+target = "fuse_runtime_arithmetic_field_runner_test"
+test = "runtime.arithmetic_field_runner"
+
+[[mutation]]
+id = "runtime-arith-delivery-into-binary64-is-accepted"
+area = "runtime_arithmetic"
+describes = "dd values delivered into a field of binary64 values are accepted, and the arc is retyped"
+file = "src/runtime/runner.cpp"
+old = "    if (out.owned_by_component) {\n      return Failure{\"E-RT-ARITHMETIC-MIX\","
+new = "    if (false) {\n      return Failure{\"E-RT-ARITHMETIC-MIX\","
+target = "fuse_runtime_arithmetic_field_runner_test"
+test = "runtime.arithmetic_field_runner"
+
+[[mutation]]
+id = "runtime-arith-mixed-inputs-are-accepted"
+area = "runtime_arithmetic"
+describes = "an instruction that reads dd and binary64 values is accepted"
+file = "src/runtime/runner.cpp"
+old = "  if (any_arithmetic && any_binary64) {"
+new = "  if (false) {"
+target = "fuse_runtime_arithmetic_field_runner_test"
+test = "runtime.arithmetic_field_runner"
+
+[[mutation]]
+id = "runtime-arith-iteration-region-is-accepted"
+area = "runtime_arithmetic"
+describes = "the Relax and Residual of an iteration region are allowed on dd values"
+file = "src/runtime/runner.cpp"
+old = "    case OpKind::Relax:\n    case OpKind::Residual:\n      why ="
+new = "    case OpKind::Relax:\n    case OpKind::Residual:\n      supported = true;\n      why ="
+target = "fuse_runtime_arithmetic_field_runner_test"
+test = "runtime.arithmetic_field_runner"
+
+[[mutation]]
+id = "runtime-arith-stats-report-the-wrong-roundoff"
+area = "runtime_arithmetic"
+describes = "the reported unit roundoff of a dd field is that of binary64 times two"
+file = "src/runtime/runner.cpp"
+old = "      st.unit_roundoff = std::ldexp(1.0, -52 * arithmetic_limbs);"
+new = "      st.unit_roundoff = std::ldexp(1.0, -53 * arithmetic_limbs);"
+target = "fuse_runtime_arithmetic_field_runner_test"
+test = "runtime.arithmetic_field_runner"
+
+
+[[mutation]]
+id = "runtime-arith-integral-drops-the-numerator"
+area = "runtime_arithmetic"
+describes = "the integral of a dd field is divided by the denominator of the sample interval but never multiplied by its numerator, so an interval of 2/5 is applied as 1/5"
+file = "src/runtime/runner.cpp"
+old = """          num::arith_scale<Space, A>(static_cast<double>(dt.num()), false, span_c(out, n),
+"""
+new = """          num::arith_scale<Space, A>(static_cast<double>(1), false, span_c(out, n),
+"""
+target = "fuse_runtime_arithmetic_field_runner_test"
+test = "runtime.arithmetic_field_runner"
+
+[[mutation]]
+id = "runtime-arith-integral-drops-the-denominator"
+area = "runtime_arithmetic"
+describes = "the integral of a dd field is multiplied by the numerator of the sample interval but never divided by its denominator, so an interval of 1/3 is applied as 1"
+file = "src/runtime/runner.cpp"
+old = """          if (dt.den() != 1) {
+"""
+new = """          if (dt.den() == 0) {
+"""
+target = "fuse_runtime_arithmetic_field_runner_test"
+test = "runtime.arithmetic_field_runner"
+
+[[mutation]]
+id = "runtime-arith-integral-scales-by-the-rounded-ratio"
+area = "runtime_arithmetic"
+describes = "the integral of a dd field is scaled once by the sample interval rounded to binary64, which leaves the result with the precision of binary64 instead of double-double"
+file = "src/runtime/runner.cpp"
+old = """        const Result<void> done = with_arithmetic(arith_type, [&]<class A>(std::type_identity<A>) {
+          num::arith_scale<Space, A>(static_cast<double>(dt.num()), false, span_c(out, n),
+                                     span_m(out, n), arith_limbs, arith_limbs);
+          if (dt.den() != 1) {
+            num::arith_scale<Space, A>(static_cast<double>(dt.den()), true, span_c(out, n),
+                                       span_m(out, n), arith_limbs, arith_limbs);
+          }
+        });
+"""
+new = """        const Result<void> done = with_arithmetic(arith_type, [&]<class A>(std::type_identity<A>) {
+          num::arith_scale<Space, A>(static_cast<double>(dt.num()) / static_cast<double>(dt.den()), false,
+                                     span_c(out, n), span_m(out, n), arith_limbs, arith_limbs);
+        });
+"""
+target = "fuse_runtime_arithmetic_field_runner_test"
+test = "runtime.arithmetic_field_runner"
+
+[[mutation]]
+id = "runtime-arith-integral-accepts-a-numerator-beyond-2-53"
+area = "runtime_arithmetic"
+describes = "an integral over sub-steps whose interval has a numerator beyond 2^53 is scaled by the rounded numerator instead of being refused"
+file = "src/runtime/runner.cpp"
+old = """        if (dt.num() > exact_limit || dt.den() > exact_limit) {
+"""
+new = """        if (dt.den() > exact_limit) {
+"""
+target = "fuse_runtime_arithmetic_field_runner_test"
+test = "runtime.arithmetic_field_runner"
+
+[[mutation]]
+id = "runtime-arith-integral-accepts-a-denominator-beyond-2-53"
+area = "runtime_arithmetic"
+describes = "an integral over sub-steps whose interval has a denominator beyond 2^53 is scaled by the rounded denominator instead of being refused"
+file = "src/runtime/runner.cpp"
+old = """        if (dt.num() > exact_limit || dt.den() > exact_limit) {
+"""
+new = """        if (dt.num() > exact_limit) {
+"""
+target = "fuse_runtime_arithmetic_field_runner_test"
+test = "runtime.arithmetic_field_runner"

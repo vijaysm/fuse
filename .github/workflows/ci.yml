@@ -20,9 +20,8 @@ jobs:
       # function's docstring).
       - run: python3 tools/check-physics-kit-naming.py
       - run: python3 tools/check-invariants.py
-      # Owner's 2026-10-15 ASCII-only ruling: every tracked source file
-      # decodes as pure ASCII except *.md (reviewed by eye) and upstream/
-      # (vendored, not edited). Static, sub-second, no build.
+      # ASCII-only rule: every tracked source file decodes as pure ASCII
+      # except *.md (reviewed by eye) and upstream/ (vendored, not edited). Static, sub-second, no build.
       - run: python3 tools/check-ascii.py
       - run: python3 tools/check-throws-labels.py
       # Byte-identity of upstream/ against the manifest (invariant I8). The
@@ -31,7 +30,7 @@ jobs:
       # I9's mutation-evidence record: static, sub-second, no build and no
       # git-clean requirement (--check-anchors only reads build-evidence/*.toml
       # against the source tree). Does not run the mutations themselves --
-      # that needs a configured build and runs on the owner's machine (see
+      # that needs a configured build and runs on a developer machine (see
       # docs/dev/testing.md) -- but an anchor that drifted out from under its
       # KILLED evidence is now caught here instead of nowhere.
       - run: python3 tools/mutate.py --check-anchors
@@ -49,9 +48,8 @@ jobs:
       # The wiki pages are generated from docs/; make sure they still convert.
       - run: python3 tools/docs-to-wiki.py "$RUNNER_TEMP/wiki-out"
 
-  # The upstream-soma leg (imported coupler suite, standalone build) was
-  # removed 2026-10-12 (soma-import track): FUSE_BUILD_UPSTREAM_SOMA no longer
-  # exists (see CMakeLists.txt), so there is nothing for this leg to configure
+  # There is no upstream-soma leg (imported coupler suite, standalone build):
+  # FUSE_BUILD_UPSTREAM_SOMA no longer exists (see CMakeLists.txt), so there is nothing for this leg to configure
   # against. UPSTREAMS.lock's [soma].retired field and docs/dev/soma-import.md
   # record the detachment and what fuse:: still needs from the subtree.
 

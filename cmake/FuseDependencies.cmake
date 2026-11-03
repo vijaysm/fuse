@@ -1,6 +1,6 @@
 # FUSE dependency resolution, one tier at a time.
 #
-# Policy, decided 2026-09-15: USE WHAT IS INSTALLED. Every dependency is resolved
+# Policy: USE WHAT IS INSTALLED. Every dependency is resolved
 # by find_package against the prefixes in CMAKE_PREFIX_PATH, and a missing one is a
 # hard error naming what to install -- never a silent download. The machine's
 # prefixes are tuned for it (Kokkos at /opt/kokkos is built for this CPU); a fetched
@@ -23,11 +23,7 @@ set(FETCHCONTENT_QUIET OFF)
 option(FUSE_ALLOW_FETCH "Build a pinned copy of any Tier 0 dependency that is not installed" OFF)
 
 # ---------------------------------------------------------------- LowFive +
-# fmt -- the issue tracker own account for the full
-# measured record of how this was actually diagnosed (three successive,
-# each-time-incomplete theories, this comment included).
-#
-# THE ROOT CAUSE, found last: `fuse_require(fmt ...)` (below, where fmt
+# fmt: `fuse_require(fmt ...)` (below, where fmt
 # itself is resolved) had no minimum version, so with /opt/lowfive FIRST
 # on CMAKE_PREFIX_PATH, find_package(fmt) happily accepted the FIRST
 # config it found -- and /opt/lowfive ships its OWN bundled fmt 8.1.1
@@ -108,7 +104,7 @@ set(FUSE_EIGEN_TAG      "3.4.0")
 set(FUSE_ARBORX_VERSION "2.1")
 # Pinned by COMMIT, not just the tag, so a tag that moves upstream cannot
 # silently change what a fetch build compiles. This is the exact commit v2.1
-# resolves to; verified by the lead, and proven here against Kokkos 5.1.0
+# resolves to, and is proven here against Kokkos 5.1.0
 # (UPSTREAMS.lock's [arborx] entry, docs/dev/search.md).
 set(FUSE_ARBORX_COMMIT  "8f89be60bc3797670b9be8843da7dcdbc5f2333f")
 
@@ -120,14 +116,14 @@ option(FUSE_ENABLE_MPI     "Tier 1: MPI transport, CommGraph, epochs across rank
 option(FUSE_ENABLE_MOAB    "Tier 2: MOAB mesh backend, Intx2Mesh, TempestRemap"    OFF)
 option(FUSE_ENABLE_PETSC   "Tier 3: PETSc solver plugin (optional for physics-kit)"   OFF)
 option(FUSE_ENABLE_LOWFIVE "HDF5-VOL interception transport"                        OFF)
-# Restart track (docs/dev/restart.md), Slice 1. Plain HDF5 I/O for restart-to-
+# Restart (docs/dev/restart.md). Plain HDF5 I/O for restart-to-
 # disk and the XDMF sidecar -- never LowFive's VOL property list, so a restart
 # file genuinely reaches disk (docs/user/lowfive.md: LowFive's own interception
 # is in-memory only). Shares find_package(HDF5) and its resolved target with
 # FUSE_ENABLE_LOWFIVE below (one call, hoisted to run for EITHER option) so
 # the two can never resolve to two different HDF5 images when both are ON --
-# the two-HDF5-image hazard the probe below guards against (the issue tracker
-#) therefore does not gain a new case from this option: restart's own
+# the two-HDF5-image hazard the probe below guards against therefore does not
+# gain a new case from this option: restart's own
 # HDF5 usage IS LowFive's own HDF5 target by construction, not a second one.
 option(FUSE_ENABLE_HDF5    "Restart-to-disk writer/reader (plain HDF5, never LowFive's VOL)" OFF)
 # Not a tier: touches only the two examples' sparse direct solves
@@ -137,7 +133,7 @@ option(FUSE_ENABLE_CUSPARSE "cuSOLVER/cuSPARSE device sparse LU for the FSI and 
 option(FUSE_ENABLE_PYTHON  "pybind11 module"                                        OFF)
 option(FUSE_ENABLE_FORTRAN "Fortran participant shim"                               OFF)
 option(FUSE_ENABLE_TESTS   "Build the test suite"                                   ON)
-# physics-kit (docs/dev/physics-kit.md), S8's optional finite-element
+# physics-kit (docs/dev/physics-kit.md), the optional finite-element
 # component. Default ON, unlike FUSE_ENABLE_PYTHON/FORTRAN just above:
 # those add a real third-party dependency (pybind11, a Fortran compiler)
 # this option does not -- physics-kit links only fuse::runtime,
@@ -152,7 +148,7 @@ option(FUSE_ENABLE_PHYSICS_KIT "physics-kit: the optional finite-element compone
 # on-error policy has run; the types and call sites are unconditional either way.
 option(FUSE_ENABLE_EXCEPTIONS "Throw C++ exceptions on errors (OFF = report and abort)" ON)
 
-# FUSE_FP_REPRODUCIBLE lives NEXT TO this
+# FUSE_FP_REPRODUCIBLE (default ON) lives NEXT TO this
 # block in spirit but is declared in cmake/FuseFpPolicy.cmake and
 # include()'d from CMakeLists.txt BEFORE this file, for the same ordering
 # reason FUSE_ENABLE_FORTRAN is declared early there: FuseFpPolicy.cmake's
@@ -186,11 +182,11 @@ endif()
 if(FUSE_ENABLE_MOAB AND NOT FUSE_ENABLE_MPI)
   message(FATAL_ERROR "FUSE_ENABLE_MOAB (tier 2) requires FUSE_ENABLE_MPI (tier 1)")
 endif()
-# PetscToken track (S7.2b), 2026-10-11: FUSE_ENABLE_PETSC no longer requires
-# FUSE_ENABLE_MOAB. The tier-3 "PETSc AND MOAB" bundle this gate used to
+# FUSE_ENABLE_PETSC does not require FUSE_ENABLE_MOAB. The tier-3 "PETSc AND
+# MOAB" bundle this gate used to
 # enforce was built for a PETSc+MOAB PHYSICS KIT (a mesh-aware solver
-# integration, the issue tracker own "a later rebuild" framing) -- the
-# PETSc SOLVER PLUGIN behind S7's Newton seam (fuse-coupler-petsc,
+# integration) -- the PETSc SOLVER PLUGIN behind the Newton seam
+# (fuse-coupler-petsc,
 # src/petsc/) needs neither MOAB nor a mesh at all: it is a
 # fuse::LinearizationToken (MATMFFD) and a SNES driver over
 # Runner::region_fixed_point_residual()'s plain double arrays, found via
@@ -203,7 +199,7 @@ endif()
 # still links libmpi transitively through PkgConfig::PETSc even with
 # FUSE_HAVE_MPI=0. Whether PetscInitialize() then calls MPI_Init() itself
 # in that case is TO BE MEASURED by test/petsc/init_test.cpp -- see that
-# file and this track's own report for the transition actually observed.
+# file for the transition actually observed.
 # A future MOAB-aware PETSc integration, if one is built, re-adds its OWN
 # FUSE_ENABLE_MOAB requirement at that point rather than this
 # unconditional one.
@@ -246,8 +242,8 @@ FetchContent_Declare(r3d
 # header-only, and its top-level CMakeLists.txt creates an unconditional
 # `uninstall` custom target that collides with the one yaml-cpp creates when
 # both are fetched into one build ("add_custom_target cannot create target
-# uninstall", every tier-0 eigen leg, first local run of the CI legs
-# 2026-10-18). The Eigen3::Eigen target is then made below from the source
+# uninstall", every tier-0 eigen leg). The Eigen3::Eigen target is then made
+# below from the source
 # directory alone.
 FetchContent_Declare(Eigen3
   GIT_REPOSITORY https://gitlab.com/libeigen/eigen.git GIT_TAG ${FUSE_EIGEN_TAG} GIT_SHALLOW ON
@@ -328,9 +324,9 @@ function(fuse_require package)
   # already turned ON -- add_subdirectory() (what FetchContent_MakeAvailable
   # does) reads that same cache variable, so Eigen registered ~830 of its own
   # "Not Run: Unsupported" CTest entries into THIS project's test suite, and a
-  # bare `ctest` failed on them even though every fuse:: test passed (found
-  # running the tier0-eigen legs for the first time, CI run 36124149902,
-  # 2026-09-25). Saved and restored, not just forced OFF, because fuse's own
+  # bare `ctest` failed on them even though every fuse:: test passed (seen
+  # in the tier0-eigen legs, CI run 36124149902). Saved and restored, not just
+  # forced OFF, because fuse's own
   # tests need it back ON afterward.
   set(_fuse_saved_build_testing "${BUILD_TESTING}")
   set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
@@ -340,8 +336,7 @@ function(fuse_require package)
   # Propagate the fetched dependency's version exactly as the find_package
   # branch does. Without it the version is the empty string on the fetch path
   # and Config.KokkosHeadersMatchTheResolvedLibrary fails parsing "" rather
-  # than comparing anything -- found 2026-09-17 running the OpenMP CI leg by
-  # hand, the second defect that leg would have caught and never did.
+  # than comparing anything.
   #
   # The variable has to be read out of the SUBPROJECT's directory scope:
   # FetchContent_MakeAvailable() is an add_subdirectory(), so the `set()` the
@@ -384,10 +379,9 @@ function(fuse_drop_missing_include_dirs)
     # exists -- so skipping aliases loses nothing: a target built in this very
     # build tree cannot have a stale include directory.
     #
-    # Found 2026-09-17 by running the OpenMP CI leg's recipe by hand. The leg
-    # fetches Kokkos, so it would have failed at CONFIGURE, and it has never
-    # run: the defect was invisible to every build done here, all of which used
-    # the installed Kokkos.
+    # The OpenMP CI leg fetches Kokkos, so without this it would fail at
+    # CONFIGURE; the defect is invisible to a build that uses an installed
+    # Kokkos.
     get_target_property(_alias ${target} ALIASED_TARGET)
     if(_alias)
       continue()
@@ -464,7 +458,7 @@ macro(fuse_resolve_arborx)
     # ArborX. The fetched copy below tracks FUSE_ENABLE_MPI by construction;
     # an installed copy has to be checked, or the mismatch surfaces as a
     # compile error in distributed.cpp fifteen minutes into the build
-    # (measured 2026-10-12 against a /opt/arborx built without MPI). A
+    # (measured against an ArborX built without MPI). A
     # configuration error, not a silent fall-back: the find already created
     # the imported target, so the pinned fetch cannot be added behind it.
     if(FUSE_ENABLE_MPI AND NOT ARBORX_ENABLE_MPI)
@@ -518,10 +512,9 @@ macro(fuse_resolve_arborx)
 endmacro()
 
 macro(fuse_resolve_dependencies)
-  # VERSION 9: the actual root cause of this session's own LowFive/fmt
-  # saga, found only after the
-  # earlier "two fmt versions in one translation unit" diagnosis turned
-  # out to be incomplete. fuse_require's own find_package(fmt ...) call
+  # VERSION 9: the root cause of the LowFive/fmt conflict (not merely
+  # "two fmt versions in one translation unit"). fuse_require's own
+  # find_package(fmt ...) call
   # had NO version floor, so with /opt/lowfive FIRST on CMAKE_PREFIX_PATH
   # it happily accepted the FIRST fmt config it found -- and /opt/lowfive
   # ships its OWN bundled fmt 8.1.1 WITH a discoverable fmt-config.cmake
@@ -543,7 +536,7 @@ macro(fuse_resolve_dependencies)
   # OpenMP_CXX_FLAGS OpenMP_CXX_LIB_NAMES)" -- which reads as though Kokkos
   # were broken rather than as a missing hint.
   #
-  # Hit on 2026-09-17 when the installed Kokkos moved to 5.1.0 with
+  # Seen with an installed Kokkos 5.1.0 built with
   # OPENMP;SERIAL. Supplying the conventional prefix here rather than expecting
   # it on every command line: the caller should not have to know that this
   # platform's compiler needs a third-party runtime to honour a standard
@@ -585,7 +578,7 @@ macro(fuse_resolve_dependencies)
   # own Views hit the other: "Kokkos ERROR: View (label=\"native_mesh.
   # vertex_coords\") is being constructed before initialize() has been called",
   # every verification.brusselator.participants.mpmd.* row on a fetch build
-  #. Scoped to this one fetch, saved and restored like
+  # Scoped to this one fetch, saved and restored like
   # BUILD_TESTING in fuse_require(), so fmt/yaml-cpp/googletest and this
   # project's own libraries keep their types. FUSE_FETCHED_KOKKOS_SHARED=OFF
   # restores the static build.
@@ -661,6 +654,19 @@ macro(fuse_resolve_dependencies)
   if(TARGET Kokkos::CUDA)
     target_compile_options(Kokkos::kokkoscore INTERFACE
       $<$<COMPILE_LANGUAGE:CXX>:-extended-lambda -Wext-lambda-captures-this -expt-relaxed-constexpr>)
+    # nvcc reports a host function called from device code (diagnostics
+    # #20011 and #20014, nvcc's "cross-execution-space-call" class) as a
+    # WARNING and still emits a binary. On the device that call does not do
+    # what the source says: measured on a GTX 1050 Ti (CUDA 12.5), a
+    # kernel calling a host-only sqrt/abs returned wrong values for 4096 of
+    # 4096 inputs, and one calling a host-only conversion never returned.
+    # Both are made
+    # errors here, for every CXX translation unit nvcc compiles. nvcc_wrapper
+    # forwards `--Werror=<kind>` to nvcc (a plain `--diag-error` would be
+    # handed to the host compiler instead). base.compile_fail.device_host_call
+    # is the test that this is in force.
+    target_compile_options(Kokkos::kokkoscore INTERFACE
+      $<$<COMPILE_LANGUAGE:CXX>:--Werror=cross-execution-space-call>)
     # Same gap, same reason, for the GPU architecture itself: a project using
     # CMake's native CUDA language gets -arch=sm_NN from CMAKE_CUDA_ARCHITECTURES
     # (which KokkosConfigCommon.cmake's own Kokkos_CUDA_ARCHITECTURES, set from
@@ -759,7 +765,7 @@ macro(fuse_resolve_dependencies)
 
   if(FUSE_ENABLE_MPI)
     if(FUSE_ENABLE_FORTRAN)
-      # Conformance own v_main.f90/v_loop.f90 (examples/
+      # The brusselator participants' v_main.f90/v_loop.f90 (examples/
       # brusselator/participants/) call MPI_Init/MPI_Comm_rank/MPI_Comm_
       # size/MPI_Finalize/MPI_Abort directly through the standard Fortran
       # `mpi` module, needing MPI::MPI_Fortran -- requested only when
@@ -797,8 +803,8 @@ macro(fuse_resolve_dependencies)
     set(_fuse_dyn_verdict "assumed (probe not run)")
 
     # How many times EACH layout is run, and how long one run of one layout
-    # is allowed before it counts as failed. the issue tracker final
-    # account measured this host's intermittency only shows up across
+    # is allowed before it counts as failed. This host's intermittency only shows
+    # up across
     # several runs of a multi-rank layout (a single 1+1 run told it nothing
     # about the 3+2/2+3/chain rows, which then timed out six of six times
     # in the next full suite) -- cache variables so a noisier MPI can be
@@ -821,11 +827,11 @@ macro(fuse_resolve_dependencies)
     set(_fuse_dyn_layouts 1+1 2+1 3+2 2+3 1+2 1+3)
 
     # A cached verdict is reused only if it is a measurement taken on THIS MPI
-    #: "not tested" is not a
+    # (cmake/FuseMpiDynamic.cmake): "not tested" is not a
     # measurement, and a reinstalled MPI is a different one. A verdict from
     # before the per-layout record existed is ALSO not a measurement of any
     # layout, even when it is a measurement of 1+1 and the fingerprint still
-    # matches -- final account: the old single-layout probe reported
+    # matches: the old single-layout probe reported
     # "measured working" on an MPI whose multi-rank layouts were not usable,
     # so a cache carrying that verdict but no layout record must re-probe.
     fuse_mpi_fingerprint(_fuse_dyn_fingerprint)
@@ -909,7 +915,7 @@ macro(fuse_resolve_dependencies)
     endif()
     # The option is cached at the first configure, so on its own it would keep
     # the value of a verdict the probe has since replaced. It follows the probe
-    # unless the owner set it (fuse_mpi_dynamic_option_value says how that is
+    # unless the user set it (fuse_mpi_dynamic_option_value says how that is
     # told apart).
     fuse_mpi_dynamic_option_value("${FUSE_ENABLE_CONNECT_ACCEPT}"
                                   "${FUSE_MPI_DYNAMIC_AUTO}"
@@ -940,7 +946,7 @@ macro(fuse_resolve_dependencies)
     # standard requires it be SET when the launcher supplies one (MPI-3.1
     # 11.9.2) but not that launchers differentiate it, and this host's Open
     # MPI (4.1.5) measured to report appnum 0 for every rank of every segment
-    #. Same three-verdict shape as the probe above, for
+    # Same three-verdict shape as the probe above, for
     # the same reason: "could not test" must leave the mode ON.
     set(_fuse_appnum_script "${PROJECT_SOURCE_DIR}/tools/probe-mpi-appnum.sh")
     set(_fuse_appnum_default ON)
@@ -965,8 +971,8 @@ macro(fuse_resolve_dependencies)
         set(_fuse_appnum_verdict "measured broken")
         message(STATUS
           "fuse: this MPI does not report a distinct MPI_APPNUM per MPMD "
-          "segment, so the mpmd launch mode is DISABLED (the issue tracker "
-          "). accept/connect is unaffected. Probe output:\n"
+          "segment, so the mpmd launch mode is DISABLED. "
+          "accept/connect is unaffected. Probe output:\n"
           "${_fuse_appnum_output}${_fuse_appnum_error}")
       else()
         set(_fuse_appnum_default ON)
@@ -1004,9 +1010,9 @@ macro(fuse_resolve_dependencies)
     # including the gfortran runtime directory of that gcc. When that gcc is
     # upgraded the directory disappears and the config is stale: configure
     # still succeeds, and the failure arrives as `ld: library 'emutls_w' not
-    # found` at the end of a full build, which reads like a FUSE bug. Found
-    # 2026-09-19 after a Homebrew gcc 15 -> 16 upgrade. Checked here so the
-    # message names the actual remedy.
+    # found` at the end of a full build, which reads like a FUSE bug (seen after a Homebrew
+    # gcc 15 -> 16 upgrade). Checked here so the message names the actual
+    # remedy.
     set(_fuse_moab_stale "")
     # MOAB_LIBRARIES is ONE space-separated string (an old-style config), not a
     # CMake list, so it is tokenised on whitespace first.
@@ -1101,8 +1107,8 @@ macro(fuse_resolve_dependencies)
     # NetCDF), so MOAB_LIBRARY_DIRS never names HDF5_DIR/lib at all. That is
     # harmless as long as libMOAB.so's own rpath lists it instead, but this
     # project does not control that rpath, and a MOAB rebuilt against a
-    # different dependency tree can land with one missing (measured
-    # 2026-10-10: libMOAB.so.5's rpath carries only the MPI-stack spack
+    # different dependency tree can land with one missing (seen with
+    # a MOAB where libMOAB.so.5's rpath carries only the MPI-stack spack
     # paths, not NetCDF/PnetCDF/HDF5/TempestRemap/Zoltan at all, breaking
     # every MOAB-linked binary with "libTempestRemap.so.0: cannot open
     # shared object file" even though nothing in this repository had
@@ -1173,7 +1179,7 @@ macro(fuse_resolve_dependencies)
       # fails install(EXPORT) at CMake's Generate step with "requires target
       # fuse-moab that is not in any export set" -- invisible at tier 0/1
       # (MOAB is off there), a BLOCKER the first time tier 2 configures
-      #. Being IMPORTED does not by
+      # Being IMPORTED does not by
       # itself make a downstream consumer's find_package(fuse-coupler) able
       # to reconstruct this target -- fuse-couplerConfig.cmake.in does that
       # explicitly, baking in the same resolved paths, since MOAB's own
@@ -1240,15 +1246,12 @@ macro(fuse_resolve_dependencies)
   endif()
   if(FUSE_ENABLE_HDF5 OR FUSE_ENABLE_LOWFIVE)
     # ------------------------------------------------------- shared HDF5
-    # Restart track (docs/dev/restart.md): hoisted out of the FUSE_ENABLE_
+    # Restart (docs/dev/restart.md): hoisted out of the FUSE_ENABLE_
     # LOWFIVE-only block below so FUSE_ENABLE_HDF5 triggers the IDENTICAL
     # find_package(HDF5) call -- one CMake package-resolution cache entry,
     # so when both options are ON they resolve to the SAME HDF5 image by
-    # construction, never two. This is the direct fix for the Stage-A
-    # open question on this exact point (docs/dev/restart.md's own
-    # open_questions list, "FUSE_ENABLE_HDF5 as a new, separate CMake
-    # option... needs the two-HDF5-image-hazard probe extended"): the
-    # probe needs no extension, because there is no second HDF5 root to
+    # construction, never two. The two-HDF5-image-hazard probe needs no
+    # extension for FUSE_ENABLE_HDF5, because there is no second HDF5 root to
     # compare against -- restart's own target (FUSE_RESTART_HDF5_TARGET,
     # set below) literally IS the target fuse::lowfive links, not a
     # independently-resolved copy of it. A static HDF5 still cannot back
@@ -1256,8 +1259,7 @@ macro(fuse_resolve_dependencies)
     # ON (the pre-existing constraint, restated: nothing about adding
     # FUSE_ENABLE_HDF5 loosens it).
     #
-    # MEASURED 2026-10-15 (Slice 1, building this exact option for
-    # the first time): host facts name /opt/hdf5 as a PARALLEL build
+    # MEASURED: host facts name /opt/hdf5 as a PARALLEL build
     # (H5_HAVE_PARALLEL), and its own public header makes that
     # unconditional on the INCLUDING translation unit, not on anything
     # FUSE controls -- /opt/hdf5/include/H5public.h:65 is a bare
@@ -1300,7 +1302,7 @@ macro(fuse_resolve_dependencies)
 
   if(FUSE_ENABLE_LOWFIVE)
     # ------------------------------------------------------------ LowFive
-    # Task 8.4 /  LowFive track. must be a SHARED HDF5 build; LowFive
+    # LowFive must be a SHARED HDF5 build; LowFive
     # dlopens the VOL, and a static HDF5 cannot back a runtime-loaded plugin.
     find_package(LowFive REQUIRED)   # cmake/FindLowFive.cmake: no vendor config ships one
 
@@ -1315,7 +1317,7 @@ macro(fuse_resolve_dependencies)
       endif()
       # /opt/lowfive's own include directory carries a bundled fmt
       # 8.1.1 whose own fmt/format-inl.h fails this host's C++20
-      # consteval checking OUTRIGHT -- measured this session in a
+      # consteval checking OUTRIGHT -- measured in a
       # translation unit that names ONLY <lowfive/vol-metadata.hpp>,
       # no FUSE header at all (src/transport/lowfive_plugin_vol.cpp):
       # this is not "two fmt versions disagree," it is "fmt 8.1.1 does
@@ -1341,7 +1343,7 @@ macro(fuse_resolve_dependencies)
     endif()
 
     # ---- the two-HDF5-image hazard: DYNAMIC acceptance test, at configure
-    # time, not a warning. the issue tracker section D, docs/user/lowfive.md,
+    # time, not a warning. See docs/user/lowfive.md,
     # tools/probe-hdf5-images.{c,sh}. The hazard needs BOTH libraries linked
     # into the same binary, so it only applies when MOAB is also enabled;
     # with FUSE_ENABLE_MOAB=OFF there is nothing for LowFive's HDF5 to
@@ -1349,7 +1351,7 @@ macro(fuse_resolve_dependencies)
     # Baked into fuse-couplerConfig.cmake.in, as FUSE_MOAB_* are: the installed
     # fuse::transport links $<LINK_ONLY:fuse-lowfive>, a target the export set
     # does not contain, so a find_package(fuse-coupler) consumer must recreate
-    # it. Before 2026-10-14 nothing did, and abi.install_consumer_{c,fortran}
+    # it. Previously nothing did, and abi.install_consumer_{c,fortran}
     # failed in every LowFive-enabled tree with "library 'fuse-lowfive' not
     # found". Entries that are CMake targets (an HDF5 config package's own) are
     # resolved to their files here, since a consumer cannot see this build's
@@ -1393,9 +1395,9 @@ macro(fuse_resolve_dependencies)
       get_filename_component(_fuse_lowfive_root "${LOWFIVE_INCLUDE_DIR}" DIRECTORY)
       # MOAB_LIBRARY_DIRS is a list: MOAB's own library directory first, then
       # the NetCDF/PnetCDF/HDF5/TempestRemap/Zoltan directories appended
-      # above (83665ef). The probe wants MOAB's own prefix, so take element 0;
+      # above. The probe wants MOAB's own prefix, so take element 0;
       # passing the whole list gave the probe a root made of ";"-joined paths
-      # and its compile failed (measured on this host, 2026-10-13).
+      # and its compile failed.
       list(GET MOAB_LIBRARY_DIRS 0 _fuse_moab_lib0)
       get_filename_component(_fuse_moab_root "${_fuse_moab_lib0}" DIRECTORY)
       list(GET HDF5_INCLUDE_DIRS 0 _fuse_hdf5_include0)
@@ -1464,9 +1466,7 @@ macro(fuse_resolve_dependencies)
        "lowfive=${FUSE_ENABLE_LOWFIVE}\nexceptions=${FUSE_ENABLE_EXCEPTIONS}\n")
 endmacro()
 
-# fuse_resolve_logging() (an fmtlog interface target, never called by anyone)
-# removed 2026-10-12: no file under include/ or src/ ever included fmtlog, and
-# nothing called the macro -- a fetched, linked, never-used dependency, the
-# same option-to-nothing shape I4 forbids in library code. See
-# docs/dev/conventions.md's "Output and logging" section for what replaced
-# the contract this macro never actually implemented.
+# There is no fmtlog dependency: no file under include/ or src/ includes it,
+# and a fetched, linked, never-used dependency is the same option-to-nothing
+# shape I4 forbids in library code. See docs/dev/conventions.md's "Output and
+# logging" section for the output contract.

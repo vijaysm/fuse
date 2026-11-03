@@ -8,12 +8,9 @@
 # Required -D arguments: FUSE_BUILD_DIR, FUSE_INSTALL_PREFIX, CONSUMER_SRC_DIR,
 # CONSUMER_BUILD_DIR, CMAKE_COMMAND, CMAKE_GENERATOR, CMAKE_PREFIX_PATH.
 # Optional: REFERENCE_OUTPUT -- a file holding the C consumer's own stdout
-# to byte-diff
-# against. At the time this file was written that sibling did not exist yet
-# (neither did libfuse-abi, which this Fortran binding's only undefined
-# symbol needs at final link -- fortran/CMakeLists.txt's own header), so
-# this script runs the comparison ONLY when a REFERENCE_OUTPUT is actually
-# supplied, and says so plainly rather than inventing a golden of its own.
+# (test/abi/install_consumer/) to byte-diff against. This script runs the
+# comparison ONLY when a REFERENCE_OUTPUT is actually supplied, and says so
+# plainly rather than inventing a golden of its own.
 foreach(_fuse_required FUSE_BUILD_DIR FUSE_INSTALL_PREFIX CONSUMER_SRC_DIR
                         CONSUMER_BUILD_DIR CMAKE_COMMAND CMAKE_GENERATOR)
   if(NOT DEFINED ${_fuse_required})
@@ -80,6 +77,45 @@ if(NOT _fuse_rc EQUAL 0)
   message(FATAL_ERROR "the installed-and-linked Fortran consumer exited ${_fuse_rc}:\n${_fuse_actual_output}")
 endif()
 message(STATUS "abi.install_consumer_fortran: consumer output:\n${_fuse_actual_output}")
+
+message(STATUS "abi.install_consumer_fortran: running the double-double and gradient consumer")
+execute_process(
+  COMMAND "${CONSUMER_BUILD_DIR}/arithmetic_consumer_fortran"
+  WORKING_DIRECTORY "${CONSUMER_BUILD_DIR}"
+  OUTPUT_VARIABLE _fuse_arith_output
+  ERROR_VARIABLE _fuse_arith_error
+  RESULT_VARIABLE _fuse_rc)
+if(NOT _fuse_rc EQUAL 0)
+  message(FATAL_ERROR "the double-double and gradient Fortran consumer exited ${_fuse_rc}:\n"
+                      "${_fuse_arith_output}\n${_fuse_arith_error}")
+endif()
+message(STATUS "abi.install_consumer_fortran: ${_fuse_arith_output}")
+
+message(STATUS "abi.install_consumer_fortran: running the posit consumer")
+execute_process(
+  COMMAND "${CONSUMER_BUILD_DIR}/posit_consumer_fortran"
+  WORKING_DIRECTORY "${CONSUMER_BUILD_DIR}"
+  OUTPUT_VARIABLE _fuse_posit_output
+  ERROR_VARIABLE _fuse_posit_error
+  RESULT_VARIABLE _fuse_rc)
+if(NOT _fuse_rc EQUAL 0)
+  message(FATAL_ERROR "the posit Fortran consumer exited ${_fuse_rc}:\n"
+                      "${_fuse_posit_output}\n${_fuse_posit_error}")
+endif()
+message(STATUS "abi.install_consumer_fortran: ${_fuse_posit_output}")
+
+message(STATUS "abi.install_consumer_fortran: running the reverse sweep consumer")
+execute_process(
+  COMMAND "${CONSUMER_BUILD_DIR}/adjoint_consumer_fortran"
+  WORKING_DIRECTORY "${CONSUMER_BUILD_DIR}"
+  OUTPUT_VARIABLE _fuse_adjoint_output
+  ERROR_VARIABLE _fuse_adjoint_error
+  RESULT_VARIABLE _fuse_rc)
+if(NOT _fuse_rc EQUAL 0)
+  message(FATAL_ERROR "the reverse sweep Fortran consumer exited ${_fuse_rc}:\n"
+                      "${_fuse_adjoint_output}\n${_fuse_adjoint_error}")
+endif()
+message(STATUS "abi.install_consumer_fortran: ${_fuse_adjoint_output}")
 
 if(DEFINED REFERENCE_OUTPUT)
   if(NOT EXISTS "${REFERENCE_OUTPUT}")

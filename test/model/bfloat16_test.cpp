@@ -5,16 +5,14 @@
 
 #include <gtest/gtest.h>
 
-///  Slice 1b (docs/dev/restart.md Section 11). Exhaustive --
-/// `fuse::bfloat16::from_bits()` enumerates all 65536 possible bit
-/// patterns, and every non-NaN one must round-trip through `to_float()`/
-/// `from_float()` exactly (the owner's own instruction: "Test the
-/// conversion exhaustively over all 65536 bit patterns (bf16->float->bf16
-/// identity for every non-NaN pattern, NaN stays NaN)"). A NaN pattern
+/// Exhaustive -- `fuse::bfloat16::from_bits()` enumerates all 65536 possible
+/// bit patterns, and every non-NaN one must round-trip through `to_float()`/
+/// `from_float()` exactly (bf16->float->bf16 identity for every non-NaN
+/// pattern, NaN stays NaN; see docs/dev/restart.md Section 11). A NaN pattern
 /// does not round-trip BIT-FOR-BIT (its sign IS preserved, its payload is
 /// not, by `fuse::bfloat16::from_float()`'s own design -- see that
-/// file's header comment) -- this test checks "stays NaN", exactly the
-/// owner's own weaker requirement for that one case.
+/// file's header comment) -- this test checks "stays NaN", the weaker
+/// requirement for that one case.
 TEST(BFloat16, ExhaustiveBitToFloatToBitIdentityOverEveryNonNanPattern) {
   int nan_count = 0;
   for (unsigned v = 0; v <= 0xFFFFu; ++v) {
@@ -39,7 +37,7 @@ TEST(BFloat16, ExhaustiveBitToFloatToBitIdentityOverEveryNonNanPattern) {
   EXPECT_EQ(nan_count, 254);
 }
 
-/// Round to nearest, ties to even -- the owner's own named rounding rule.
+/// Round to nearest, ties to even.
 /// Constructed directly from float bit patterns (not `bfloat16::
 /// from_bits()`, which does no rounding at all) so each case drives
 /// `from_float()`'s real rounding path on a value exactly halfway
@@ -90,5 +88,25 @@ TEST(BFloat16, ToFloatIsAlwaysExactWidening) {
     std::memcpy(&fbits, &f, sizeof(fbits));
     EXPECT_EQ(fbits, static_cast<std::uint32_t>(bits) << 16)
         << "bits=0x" << std::hex << bits;
+  }
+}
+
+/// The binary64 side:
+/// widening is exact, and a widen followed by a narrow is the identity, over
+/// all 65536 patterns; the rounding itself is compared with an independent
+/// search in test/model/small_float_test.cpp and, through
+/// `value_traits<bfloat16>`, in test/field/value_type_test.cpp.
+TEST(BFloat16, ExhaustiveBinary64WidenIsExactAndNarrowingItBackIsTheIdentity) {
+  for (unsigned v = 0; v <= 0xFFFFu; ++v) {
+    const fuse::bfloat16 b = fuse::bfloat16::from_bits(static_cast<std::uint16_t>(v));
+    const double d = b.to_double();
+    if (std::isnan(b.to_float())) {
+      EXPECT_TRUE(std::isnan(d)) << std::hex << v;
+      EXPECT_TRUE(std::isnan(fuse::bfloat16::from_double(d).to_float())) << std::hex << v;
+      continue;
+    }
+    EXPECT_EQ(d, static_cast<double>(b.to_float())) << std::hex << v;
+    EXPECT_EQ(std::signbit(d), (v & 0x8000u) != 0) << std::hex << v;
+    EXPECT_EQ(fuse::bfloat16::from_double(d).bits(), v) << std::hex << v;
   }
 }

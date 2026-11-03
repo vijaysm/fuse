@@ -1,0 +1,34 @@
+# Mutations of dd that keep it accurate to about its own round-off and change its bits; the
+# bit-for-bit comparison with Universal kills them. Needs a build with FUSE_ENABLE_UNIVERSAL=ON (the test num.dd_universal), so it is
+# not part of a default mutation run.
+
+[[mutation]]
+id = "dd-div-rounds-its-quotient-limbs-with-a-two-sum"
+area = "num_universal"
+describes = "the quotient limbs are combined with one two-sum instead of the three-sum, an equally accurate result that is not the same bits as Universal's"
+file = "include/fuse/num/dd.hpp"
+old = "  eft::three_sum(q1, q2, q3);\n  return dd(q1, q2);"
+new = "  return dd::from_sum(q1, q2 + q3);"
+target = "fuse_num_dd_universal_test"
+test = "num.dd_universal"
+
+[[mutation]]
+id = "dd-add-finishes-with-a-quick-two-sum"
+area = "num_universal"
+describes = "the sum's last step is the cheaper quick-two-sum of the leading limbs, accurate to about the same and not the same bits as Universal's"
+file = "include/fuse/num/dd.hpp"
+old = "    eft::three_sum(hi, lo, t1);\n  } else {\n    lo = 0.0;\n  }\n  return dd(hi, lo);"
+new = "    lo += t1;\n    hi = eft::quick_two_sum(hi, lo, lo);\n  } else {\n    lo = 0.0;\n  }\n  return dd(hi, lo);"
+target = "fuse_num_dd_universal_test"
+test = "num.dd_universal"
+
+[[mutation]]
+id = "dd-div-drops-the-third-quotient-limb"
+area = "num_universal"
+describes = "the quotient has two limbs from the first two residual steps and no third correction, accurate to about 2^-104 and not the same bits as Universal's"
+file = "include/fuse/num/dd.hpp"
+old = "  double q3 = r.hi / b.hi;\n  eft::three_sum(q1, q2, q3);"
+new = "  double q3 = 0.0;\n  eft::three_sum(q1, q2, q3);"
+target = "fuse_num_dd_universal_test"
+test = "num.dd_universal"
+

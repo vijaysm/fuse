@@ -1,6 +1,4 @@
-# Mutations for the field-layer fix pass.
-# Own file per the review-fix protocol: do not edit build-evidence/mutations.toml
-# directly while other fixers hold it dirty.
+# Mutations for the field layer.
 
 [[mutation]]
 id = "fieldspan-from-refuses-empty-partition"

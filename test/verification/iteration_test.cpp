@@ -26,7 +26,7 @@ namespace u = fuse::units;
 
 // ---------------------------------------------------------------------------
 // Allocation counting. Spec Section 2 layer 3 requires the interpreted loop to
-// allocate nothing, and Task 4.6 proved that for a plan with no implicit coupling group by
+// allocate nothing, and that is proved for a plan with no implicit coupling group by
 // replacing the global operator new. A sweep loop that allocates per iteration
 // would slip past that test entirely, so the same instrument is used here.
 // ---------------------------------------------------------------------------
@@ -266,7 +266,7 @@ CouplingGraph make_graph(AccelConfig accel, int max_iters,
   // Grouped by owner. `to_yaml` nests a field inside its component, so an
   // interleaved declaration order does not survive the YAML round trip as
   // identical FieldIds -- a pre-existing property of the schema, not of this
-  // task, but one the structural comparison below would trip over.
+  // test, but one the structural comparison below would trip over.
   const auto a_out = g.add_field(ca, fuse::FieldSpec{
       .name = "a_out", .region = r1, .units = u::kKelvin,
       .intent = fuse::Intent::Provides});
@@ -305,7 +305,7 @@ CouplingGraph make_graph(AccelConfig accel, int max_iters,
 /// the runtime learned to reject it: IQN-ILS zeroed the a2b residual EXACTLY
 /// on sweep 3 while the b2a residual still stood at 0.8, and the implicit coupling group
 /// reported convergence at a_out = 2.25 against a true fixed point of 2.5.
-/// resolve_regions() now rejects a partially measured implicit coupling group with
+/// resolve_regions() rejects a partially measured implicit coupling group with
 /// E-ITER-MEASURE (see RejectsARegionWithAnUnmeasuredChannel).
 fuse::ConvergenceCriterion both_channels(double tol) {
   fuse::ConvergenceCriterion c;
@@ -438,10 +438,11 @@ TEST(Iteration, CheckpointsAreSavedAndRestored) {
       << "every sweep but the last is preceded by a rollback";
 }
 
-// THE test the brief's version cannot fail: every Provides field is written
-// from scratch by advance(), so a runner that never restores anything still
-// converges to 2.5. `history_` accumulates instead, so the state each sweep
-// STARTS from is observable.
+// A test that CAN fail where one with from-scratch Provides fields cannot:
+// there every Provides field is written from scratch by advance(), so a
+// runner that never restores anything still converges to 2.5. Here
+// `history_` accumulates instead, so the state each sweep STARTS from is
+// observable.
 TEST(Iteration, CheckpointsAreRestoredBetweenSweeps) {
   auto f = build(AccelConfig{.kind = AccelKind::None}, 100);
   ASSERT_TRUE(run(*f).ok());
@@ -544,9 +545,9 @@ TEST(Iteration, IqnIlsConvergesInFewIterations) {
 // anywhere in the suite -- the unit tests count columns and retained blocks,
 // the comment above says in as many words that IMVJ "is not used to
 // demonstrate convergence quality anywhere in this suite", and that is how the
-// retained Jacobian came to survive a divergence unnoticed for a whole phase.
+// retained Jacobian came to survive a divergence unnoticed.
 //
-// Two claims, neither of them a pinned iteration count (R22: quasi-Newton
+// Two claims, neither of them a pinned iteration count (quasi-Newton
 // counts are not stable across build types, and this problem is only linear
 // per window):
 //
@@ -565,7 +566,7 @@ TEST(Iteration, IqnIlsConvergesInFewIterations) {
 // passes against an IMVJ with retention disabled (6 4 4 4 4 4 against a true
 // 6 2 2 2 2 2) and would measure nothing.
 //
-// No count is pinned; R22 says quasi-Newton counts are not stable across build
+// No count is pinned; quasi-Newton counts are not stable across build
 // types, and while this problem is linear per window the point here is a
 // comparison, not a number.
 TEST(Iteration, ImvjConvergesToTheSameAnswerAndItsRetainedJacobianPays) {
@@ -807,15 +808,13 @@ TEST(Iteration, ARelaxedChannelInsideTheRegionStillFindsTheFixedPoint) {
   for (const double v : f->b->out()) EXPECT_NEAR(v, 3.0, 1e-8);
 }
 
-// R12 (upgraded by this investigation -- see the commit message). The
-// handoff scoped R12 as "space-time inside an implicit coupling group is untested,"
-// on the assumption that a runnable graph combining the two exists and only
-// lacks a test. It does not exist: EVERY construction attempted here is
-// rejected at `Runner::initialize()`, before a single sweep runs, so there is
-// no idempotency question to answer against the current runtime -- the
-// combination cannot be built, not merely "wasn't tested."
+// A space-time field transfer inside an implicit coupling group cannot be
+// built: EVERY construction attempted here is rejected at
+// `Runner::initialize()`, before a single sweep runs, so there is no
+// idempotency question to answer against the current runtime -- the
+// combination is refused, not merely untested.
 //
-// TWO CONSTRUCTIONS WERE TRIED, both real graphs put through the full
+// TWO CONSTRUCTIONS ARE TRIED, both real graphs put through the full
 // lower -> schedule -> initialize pipeline, not a reading of the code:
 //
 //   1. `.spacetime(...)` directly on `fwd` (A -> B, both already in the
@@ -825,7 +824,7 @@ TEST(Iteration, ARelaxedChannelInsideTheRegionStillFindsTheFixedPoint) {
 //      space-time field transfer's `Sample` node runs "after-ticks" at t=0 -- the
 //      exact instant A itself ticks, because a single-source-step history
 //      (the only kind `E-SCHED-REGION`'s contiguity rule admits inside an
-//      implicit coupling group; see R13's note on the same rule) has nothing to wait for
+//      implicit coupling group) has nothing to wait for
 //      before sampling. That makes `Sample` the implicit coupling group's chronologically
 //      first body-member instruction, which pins `enter_time` to 0, and A's
 //      own tick -- which the implicit coupling group must re-run every sweep for the pair to
@@ -846,28 +845,25 @@ TEST(Iteration, ARelaxedChannelInsideTheRegionStillFindsTheFixedPoint) {
 //      it is A's tick that collides, exactly as in construction 1, just one
 //      hop removed. Every topology tried funnels into the same collision.
 //
-// THE GUARD'S OWN COMMENT IS THEREFORE WRONG. `resolve_regions()`'s tick-time
-// check (src/runtime/iteration.cpp, a few lines above where `R.tick_indices`
-// is built) says: "No graph reaches this today (the coincidence needs an
-// implicit coupling group whose field transfers straddle two time grids, which E-SCHED-REGION rejects
-// first), and that is exactly why the guard must not depend on it." A
-// space-time field transfer's `Sample` node straddles exactly the pair of
-// instants -- "after this tick" and "as the implicit coupling group's own first instruction"
-// -- the comment assumed only two different TIME GRIDS could straddle. The
-// comment is corrected at its source (this file does not carry a copy of
-// it), but the reachability claim is disproved here, concretely, the same
-// way R13 asks `check_region_isolation()`'s reachability to be checked
-// rather than assumed.
+// REACHABILITY OF THE GUARD. `resolve_regions()`'s tick-time check
+// (src/runtime/iteration.cpp, a few lines above where `R.tick_indices`
+// is built) guards a coincidence that does not require an implicit
+// coupling group whose field transfers straddle two time grids (which
+// E-SCHED-REGION rejects first). A space-time field transfer's `Sample`
+// node straddles exactly the pair of instants -- "after this tick" and "as
+// the implicit coupling group's own first instruction" -- so the guard is
+// reachable; this is shown here concretely, the same way
+// `check_region_isolation()`'s reachability is checked below rather than
+// assumed.
 //
-// WHAT THIS MEANS FOR R12 AS ORIGINALLY SCOPED. No idempotency bug was
-// found, and none could be looked for: the runtime rejects the combination
-// safely and with a clear diagnostic (E-RT-REGION) rather than running it
-// incorrectly, so nothing here is unsafe. But the item is not closed by "add
-// a test that exercises it," because nothing exercises it -- the correct
-// closure is the negative regression pinned below (this combination stays
-// rejected, on purpose, until a future change deliberately relaxes the
-// tick-time guard or gives space-time field transfers a different scheduling
-// treatment inside implicit coupling groups) plus the corrected comment.
+// No idempotency bug is found, and none can be looked for: the runtime
+// rejects the combination safely and with a clear diagnostic (E-RT-REGION)
+// rather than running it incorrectly, so nothing here is unsafe. Since
+// nothing exercises the combination, the correct pin is the negative
+// regression below (this combination stays rejected, on purpose, until a
+// future change deliberately relaxes the tick-time guard or gives
+// space-time field transfers a different scheduling treatment inside
+// implicit coupling groups).
 TEST(Iteration, ASpacetimeChannelInAnIterationRegionIsRefusedNotSilentlyWrong) {
   CouplingGraph g = make_graph(AccelConfig{.kind = AccelKind::None}, 300,
                                both_channels(1e-10));
@@ -901,8 +897,8 @@ TEST(Iteration, ASpacetimeChannelInAnIterationRegionIsRefusedNotSilentlyWrong) {
   Runner runner{g, lowered.dag, sched.plan, backend};
   const auto init = runner.initialize(components, registry);
   ASSERT_FALSE(init.ok())
-      << "a space-time field transfer inside an implicit coupling group now runs -- R12 "
-         "needs its idempotency actually tested, not just documented as "
+      << "a space-time field transfer inside an implicit coupling group now runs -- "
+         "its idempotency needs actually testing, not just documenting as "
          "rejected";
   EXPECT_EQ(init.error().code, "E-RT-REGION");
   EXPECT_NE(init.error().message.find("at or after the region begins"),
@@ -963,7 +959,7 @@ TEST(Iteration, RejectsAnExplicitChannelHangingOffAnIteratedComponent) {
   std::printf("isolation:\n  %s\n", sched.diags.to_string().c_str());
 }
 
-// R13, option (a): `check_region_isolation()` (src/runtime/iteration.cpp) is
+// `check_region_isolation()` (src/runtime/iteration.cpp) is
 // documented as "A BACKSTOP, not the first line of defence... catches...
 // any plan that did not come from schedule()." The test above measures that
 // every graph an AUTHOR can build is stopped one layer earlier, by
@@ -980,11 +976,11 @@ TEST(Iteration, RejectsAnExplicitChannelHangingOffAnIteratedComponent) {
 // both public, mutable types (include/fuse/schedule/plan.hpp) built exactly
 // for this: a test seam, not a backdoor.
 //
-// Option (b) -- reaching this through the real schedule() -> Runner path --
-// was tried first and is not achievable: every construction that puts an
+// Reaching this through the real schedule() -> Runner path is not
+// achievable: every construction that puts an
 // out-of-implicit coupling group instruction downstream of a re-advanced component's own
 // output also makes that instruction's node a member of the implicit coupling group body by
-// construction (`build_iteration_regions()`, src/ir/implicit coupling groups.cpp, assigns
+// construction (`build_iteration_regions()`, src/ir/regions.cpp, assigns
 // every node whose origin is a member field transfer to the body), which
 // `E-SCHED-REGION`'s contiguity rule then rejects first -- the same result
 // `RejectsAnExplicitChannelHangingOffAnIteratedComponent` above measures for
@@ -1100,12 +1096,12 @@ TEST(Iteration, TheSweepLoopAllocatesNothing) {
 
 // The accelerator is inside the sweep loop, so the rule above is its rule too.
 //
-// MEASURED BEFORE AND AFTER. AitkenAccel::update() used to build a
-// `std::vector<double> r(n)` on every call (src/num/accel_relaxation.cpp), and
-// the quasi-Newton members allocated their whole least-squares workspace the
-// same way: exactly 56 allocations for the 56 accelerator updates below. Every
-// one of those buffers is now a member of the accelerator, and this asserts
-// the zero rather than a bound -- a `<= updates` bound is satisfied by one
+// AitkenAccel::update() must not build a
+// `std::vector<double> r(n)` on every call (src/num/accel_relaxation.cpp), nor may
+// the quasi-Newton members allocate their whole least-squares workspace per
+// call: that would be exactly 56 allocations for the 56 accelerator updates
+// below. Every one of those buffers is a member of the accelerator, and this
+// asserts the zero rather than a bound -- a `<= updates` bound is satisfied by one
 // allocation per update, which is the defect, and by none, which is the fix,
 // so it cannot tell them apart.
 //

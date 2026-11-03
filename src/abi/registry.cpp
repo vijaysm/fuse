@@ -2,6 +2,8 @@
 
 #include <dlfcn.h>
 
+#include <cstddef>
+
 #include "provider_adapter.hpp"
 
 namespace fuse::abi_detail {
@@ -42,7 +44,11 @@ fuse::Result<void> Registry::mount_table(std::string name,
     return fuse::Failure{"E-ABI-REGISTRY-NULL",
                          "mount_table: null table for provider '" + name + "'"};
   }
-  if (table->struct_size < sizeof(fuse_provider_abi_v1) || table->abi_version != FUSE_ABI_VERSION) {
+  // A plugin built against the header before bind_adjoint and advance_adjoint were appended has a
+  // table that ends at them; it is accepted, and ProviderAdapter reads an entry only when struct_size
+  // covers it (abi-design.md, rule 2). Anything shorter than that layout is refused.
+  constexpr std::size_t kFirstFrozenTableSize = offsetof(fuse_provider_abi_v1, bind_adjoint);
+  if (table->struct_size < kFirstFrozenTableSize || table->abi_version != FUSE_ABI_VERSION) {
     return fuse::Failure{"E-ABI-VERSION",
                          "provider '" + name + "': table struct_size/abi_version (" +
                              std::to_string(table->struct_size) + "/" +

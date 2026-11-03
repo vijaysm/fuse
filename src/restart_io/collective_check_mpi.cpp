@@ -1,5 +1,5 @@
-/// Restart track round 2, item 5 -- see include/fuse/restart_io/
-/// collective_check_mpi.hpp's own header comment for the design and why
+/// See include/fuse/restart_io/collective_check_mpi.hpp's own header
+/// comment for the design and why
 /// an int (MPI_Comm_c2f handle), not MPI_Comm, crosses the public
 /// boundary. This translation unit is the ONLY one in fuse-coupler-
 /// restart-io compiled under FUSE_ENABLE_MPI specifically for a genuine

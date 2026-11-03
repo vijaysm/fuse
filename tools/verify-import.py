@@ -87,13 +87,13 @@ def check_manifest() -> int:
 
 
 def check_parents() -> int:
-    # KNOWN GAP (found 2026-10-12, soma-import track): this function diffs
+    # KNOWN GAP: this function diffs
     # byte-for-byte against the live parent and does not consult `diverged`
     # at all. karma's own `.gitignore` is a documented, intentional divergence
     # (UPSTREAMS.lock's [karma].diverged) and is reported here as an I8
     # violation every time the real karma parent repository is reachable --
     # a known false positive, not a new one. Fixing it (skip any path listed
-    # in `diverged`) is a real but separate change, out of this track's scope.
+    # in `diverged`) is a real but separate change.
     problems, checked = [], 0
     for name, info in read_lock().items():
         retired = str(info.get("retired", ""))

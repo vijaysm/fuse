@@ -8,12 +8,10 @@
 // claims with different evidence:
 //
 //   (1) At m=1 the windowed result matches the monolithic one to the
-//       coupling ITERATION tolerance -- but only at a small enough dt. The
-//       delegated task states this as an unconditional requirement; it is
-//       not one for this model, and this file reports why with a measured
+//       coupling ITERATION tolerance -- but only at a small enough dt. It is
+//       not an unconditional property of this model, and this file reports why with a measured
 //       number rather than silently loosening a bound (see
-//       WindowedMatchesMonolithicAtASufficientlySmallDt and
-//       open_questions in the delivered report). Reaction terms in
+//       WindowedMatchesMonolithicAtASufficientlySmallDt). Reaction terms in
 //       Gray-Scott are QUADRATIC in the partner (u*v^2): the partitioned
 //       scheme freezes the partner at its CN-window MEAN and uses that
 //       SAME frozen value at both the CN step's old and new reaction
@@ -22,7 +20,7 @@
 //       two are not the same expression, so the mismatch does not vanish
 //       at any FIXED dt > 0 -- it is a real, order-2-in-dt discrepancy,
 //       which WindowedVsMonolithicMismatchConvergesAtOrderTwo measures
-//       directly and asserts is in [1.9, 2.1] (the task's own bound for
+//       directly and asserts is in [1.9, 2.1] (the bound used for
 //       every order claim in this file).
 //   (2) For other ratios (commensurate m=2 and incommensurate 7:13), the
 //       windowed scheme's error against a FINE (well-resolved) monolithic
@@ -38,7 +36,7 @@
 //       MassExchangeMismatchConvergesAtOrderTwo measures the SUM (which is
 //       zero iff they cancel) using the SAME refinement runs as (2), and
 //       reports whether it vanishes at the coupling tolerance or converges
-//       at order 2 -- both are asked for by the task; this measures which.
+//       at order 2 -- this measures which.
 //   (4) A long run at Pearson's published self-replicating-spot parameters
 //       stays in [0,1] and develops a non-uniform pattern from a
 //       near-uniform start (LongPatternFormingRunStaysBoundedAndFormsPattern).
@@ -50,8 +48,8 @@
 // source for Pearson's own table). Used verbatim in section (4) and as the
 // example driver's defaults (examples/gray_scott/main.cpp).
 //
-// ASYMPTOTIC REGIME (task requirement: "choose parameters so that the
-// reaction rates times dt are well below 1"). Sections (1)-(3) use
+// ASYMPTOTIC REGIME (parameters are chosen so that the
+// reaction rates times dt are well below 1). Sections (1)-(3) use
 // F=0.04, k=0.06 (order-1 with Pearson's own values, chosen round for
 // readability). dt (or, for the multi-subcycling step members in sections (2)/
 // (3), the coarsest member's own window) ranges from 0.0025 (section (1)'s
@@ -148,7 +146,7 @@ struct WindowedRun {
   cfg.window_length = window;
   cfg.max_iterations = 300;
   cfg.acceleration = AccelConfig{.kind = AccelKind::Aitken};
-  // The user's decision (relayed 2026-09-29): a convergence measure names
+  // A convergence measure names
   // a field TRANSFER (a WindowChannel, by its own `name`), not the whole
   // coupled system -- there is no single channel a combined "gray_scott"
   // measure over BOTH directions could name. Split into the two real
@@ -235,7 +233,7 @@ TEST(GrayScottReference, WindowedMatchesMonolithicAtASufficientlySmallDt) {
     t = t + dt;
   }
   const double diff = state_error(r.u, r.v, mono.u(), mono.v());
-  // Tight, iteration-tolerance-level bound, exactly as the task states --
+  // Tight, iteration-tolerance-level bound --
   // achievable here because dt is small enough for the O(dt^2) mismatch
   // characterized in the next test to already sit below it.
   EXPECT_LE(diff, 100.0 * kCouplingTol) << "diff=" << diff;
@@ -247,7 +245,7 @@ TEST(GrayScottReference, WindowedVsMonolithicMismatchConvergesAtOrderTwo) {
   // constant across the refinement ladder). Fixed T matters here: an
   // earlier draft of this test fixed n_windows instead and let T shrink as
   // dt shrank, which measures a LOCAL (per-step) O(dt^3) truncation term,
-  // not the GLOBAL (accumulated-over-T) O(dt^2) one the task asks about --
+  // not the GLOBAL (accumulated-over-T) O(dt^2) one wanted here --
   // it produced a spurious order ~3. With T fixed, the order below is a
   // clean, repeatable 2.0.
   const Grid grid{kN, kL};

@@ -1,7 +1,7 @@
-// Time windows track: a window-scoped iteration region's field transfers
+// Time windows: a window-scoped iteration region's field transfers
 // compile through the ORDINARY per-channel rule (Remap/Transport/Epoch,
 // src/ir/rules_channel.cpp) at the window's own clock, unchanged, carrying
-// the waveform as K field components -- the user's chosen design. This
+// the waveform as K field components. This
 // file only adds the two things the ordinary rule cannot: the exporting
 // member's own OpKind::WindowAdvance node (a real SSA root, EMPTY inputs,
 // so the channel that reads it as its source cannot close a cycle), and
@@ -62,17 +62,16 @@ std::vector<ComponentId> members_in_first_seen_order(
 }
 
 // How many `components` THIS member's own exported field carries once it
-// crosses a coupling window: `spec.components` scalar/vector/tensor
-// entries per element, TIMES `window_sample_capacity()` (fuse/model/
-// coupling_graph.hpp) samples across the window -- the user's decision,
-// carried through from field width already ("a time window's field
-// transfer carries the provider's K-sample waveform as K components of
-// one field"). `window_sample_capacity()` is the SAME function
+// crosses a coupling window: `spec.components` scalar/vector/tensor entries per
+// element, TIMES `window_sample_capacity()` (fuse/model/coupling_graph.hpp)
+// samples across the window -- carried through from field width already ("a
+// time window's field transfer carries the provider's K-sample waveform as K
+// components of one field"). `window_sample_capacity()` is the SAME function
 // validate_coupling_window()'s own E-SCHED-WINDOW-CAPACITY calls, so a
-// malformed scope that lowering could not resolve above (nullopt) simply
-// leaves the field at its own declared width here -- harmless, since
-// schedule() refuses the malformed scope before anything reads that
-// field's width for real.
+// malformed scope that lowering could not resolve above (nullopt) simply leaves
+// the field at its own declared width here -- harmless, since schedule()
+// refuses the malformed scope before anything reads that field's width for
+// real.
 std::size_t window_export_width(const CouplingGraph& g,
                                 const IterationRegionDecl& decl,
                                 ComponentId member, FieldId exported) {

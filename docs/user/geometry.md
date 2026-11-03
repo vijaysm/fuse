@@ -92,11 +92,11 @@ The strings `build_weights()` (`fuse/backend/remap_plan.hpp`) recognises:
 
 `"consistent"`, `"consistent-transpose"` and `"mls:..."` are dispatched on the
 string alone, before any discretisation check, in every build. Everything
-else must be an FV-to-FV pair (`E-REMAP-UNSUPPORTED` otherwise). Against a
-`MoabMeshBackend`, a string not in this table is `E-REMAP-UNSUPPORTED`,
-naming the known methods; the dependency-free supermesh path, which every
-non-MOAB backend takes, does not inspect the string and builds the order-1
-supermesh for any FV pair.
+else must be an FV-to-FV pair (`E-REMAP-UNSUPPORTED` otherwise). A string not
+in this table is refused on every backend: `validate()` reports it as
+`E-CHANNEL-REMAP-METHOD`, naming the known methods, and `build_weights()`
+refuses it again (`E-REMAP-UNSUPPORTED`) for a plan that never went through
+`validate()`. A misspelt method is never built as the default remap.
 
 ### Where the remap runs
 
@@ -125,8 +125,9 @@ The rest is the ordinary load, lower, schedule, run sequence. `RunStats`
 - `remap_weight_nonzeros`: the total number of entries in those matrices.
 - `conservation_checks` / `conservation_violations` /
   `worst_conservation_error`: the `Constrain` operator the lowering emits after
-  a `Remap` whose fields declare a `Conservation`. It integrates the field
-  against each region's own cell measures before and after the remap and
+  a `Remap` whose fields declare a `Conservation`. It totals the field over each
+  region before and after the remap (the plain sum of owned values for an
+  `Extensive` field, the measure-weighted integral for an `Intensive` one) and
   compares the two (relative tolerance `RunnerConfig::conservation_tolerance`,
   default 1e-12; `abort_on_violation` turns a violation into `E-RT-CONSERVATION`).
 
@@ -314,18 +315,14 @@ node 4   Sink         %3           -> %4 : Instant<r1, K, Intensive, [WindowEnd,
 `{remap=C}` is the `Conservative` flag (`M` and `H` are `Monotone` and
 `HighOrder`); a method override prints as `{method=...}`.
 
-:::{warning}
-With `Conservation::Extensive` on both fields the supermesh map is
-column-normalised and conserves the plain sum of the values (the program above
-prints 39 on both sides), but the runtime's `Constrain` check compares the
-measure-weighted integrals, so on cells of unequal size it reports a violation
-that is not one: the same run with `Extensive` prints
-`conservation_violations : 3` and `worst_conservation_error : 0.6` (8/5 − 1).
-Declare a cell field whose value is a density as `Intensive`; for an
-`Extensive` cell field on non-matching meshes, set
-`RunnerConfig::check_conservation = false` or check the totals yourself.
-The nodal load transfer in [](interface-transfer.md) is the case where
-`Extensive` and the check agree.
+:::{note}
+The program declares a density (`Intensive`), so the conserved total is the measure-weighted
+integral, `sum_i f_i m_i`, which is why the plain sums above differ and the integrals agree. For an
+`Extensive` cell field the value is the amount itself (not a density): the supermesh map is
+column-normalised so that the plain sum of the owned values is preserved, and the `Constrain`
+check compares exactly that sum. The same program with `Conservation::Extensive` on both fields
+prints 39 on both sides and `conservation_violations : 0`. The nodal load transfer in
+[](interface-transfer.md) is the same convention applied to vertices.
 :::
 
 ### The MOAB and TempestRemap path
@@ -363,7 +360,7 @@ was trying to connect.
 | `E-MESH-PLACEMENT` | a remap asked for a processor set the backend was never told about | register the placement first ([](placement.md)) |
 | `E-REMAP-REGION` | a region names an `entity_set` other than empty or `"all"` | remap whole meshes; a sub-set region has no index space for the matrix |
 | `E-REMAP-DIM` | the two regions have different topological dimension | both sides must be cells of the same dimension |
-| `E-REMAP-UNSUPPORTED` | a non-FV pair on an FV-only method, mismatched source and target orders, `Monotone` with order above 1, an unknown method on the MOAB path | see the method table above |
+| `E-REMAP-UNSUPPORTED` | a non-FV pair on an FV-only method, mismatched source and target orders, `Monotone` with order above 1, an unknown method string (on a plan that skipped `validate()`) | see the method table above |
 | `E-REMAP-NOHIGHORDER` | an order above 1 or `HighOrder` without MOAB/TempestRemap | drop the request or build with MOAB |
 | `E-REMAP-NOTEMPEST` | the high-order builder in a MOAB build whose MOAB lacks TempestRemap | rebuild MOAB with TempestRemap |
 | `E-REMAP-NONPLANAR` | the dependency-free kernel was handed a surface in 3D (or a 1D curve varying along more than one axis) | a surface pair needs the TempestRemap tier |

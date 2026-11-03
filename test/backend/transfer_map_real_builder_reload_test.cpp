@@ -1,5 +1,4 @@
-// remaining acceptance item (plans/2026-09-15-fuse-plan.md): the
-// persisted-map round trip proven in transfer_map_io_test.cpp used SYNTHETIC
+// The persisted-map round trip proven in transfer_map_io_test.cpp uses SYNTHETIC
 // triplets, not a map the real builder produced. This file closes that gap
 // at tier 0 (no MPI): the weights come from fuse::build_supermesh_weights
 // (src/backend/supermesh.cpp), the lowest-order conservative builder, on two
@@ -67,7 +66,7 @@ namespace {
 
 /// `n` source cells on `[0, 1]`, never partitioned: every reader and writer
 /// in this file holds the WHOLE source, as a replicated source would -- the
-/// only shape the issue tracker records as reachable today, and the one
+/// only shape reachable today, and the one
 /// `localise()`'s own `E-MAP-COVERAGE` check demands (a kept row's source
 /// entity must be held by the rank applying it).
 ::GeometricLineMesh full_source(std::size_t n) {

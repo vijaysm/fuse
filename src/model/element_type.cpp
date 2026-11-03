@@ -89,6 +89,20 @@ constexpr std::int64_t kLongDoubleExponentBias = LDBL_MAX_EXP - 1;
   return info;
 }
 
+/// A posit<n, 2> of the 2022 Posit Standard: n - 3 - es fraction bits at the value one
+/// and a leading bit make the precision, es is the exponent size.
+[[nodiscard]] ElementTypeInfo make_posit(ElementType t, const char* name, std::size_t bytes) {
+  constexpr std::size_t es = 2;
+  ElementTypeInfo info;
+  info.element_type = t;
+  info.name = name;
+  info.byte_size = bytes;
+  info.is_posit = true;
+  info.significand_bits = bytes * 8 - 3 - es + 1;
+  info.exponent_bits = es;
+  return info;
+}
+
 [[nodiscard]] const std::unordered_map<ElementType, ElementTypeInfo>& table() {
   static const std::unordered_map<ElementType, ElementTypeInfo> t = [] {
     std::unordered_map<ElementType, ElementTypeInfo> m;
@@ -132,6 +146,8 @@ constexpr std::int64_t kLongDoubleExponentBias = LDBL_MAX_EXP - 1;
                         sizeof(long double), kLongDoubleSignificandBits,
                         kLongDoubleExponentBits, kLongDoubleExponentBias,
                         kLongDoubleHasExplicitIntegerBit));
+    m.emplace(ElementType::Posit16, make_posit(ElementType::Posit16, "posit16", 2));
+    m.emplace(ElementType::Posit32, make_posit(ElementType::Posit32, "posit32", 4));
     ElementTypeInfo b;
     b.element_type = ElementType::Bool;
     b.name = "bool";
@@ -190,9 +206,28 @@ bool is_exact_widening(const ElementTypeInfo& f, const ElementTypeInfo& t) {
                  // call) -- kept here only so this function is total.
   }
 
+  if (f.is_posit || t.is_posit) {
+    // A posit is exactly the value of its pattern, so a posit widens exactly to a wider posit
+    // of the same exponent size (the pattern gains zero bits on the right), and to a float
+    // whose significand covers the posit's largest precision and whose normal range
+    // contains its smallest and largest values (2^-max_scale to 2^max_scale, with
+    // max_scale = (n - 2) 2^es). Nothing else is exact by metadata alone: not an integer,
+    // not a bool, and not anything into a posit (its precision falls away from one).
+    if (!f.is_posit) return false;
+    if (t.is_posit) {
+      return t.exponent_bits == f.exponent_bits && t.byte_size >= f.byte_size;
+    }
+    if (!t.is_float) return false;
+    const std::int64_t max_scale =
+        (static_cast<std::int64_t>(f.byte_size * 8) - 2) << f.exponent_bits;
+    const ExponentRange tr = exponent_range(t);
+    return t.significand_bits >= f.significand_bits && tr.min_exp <= -max_scale &&
+           tr.max_exp >= max_scale;
+  }
+
   if (f.is_bool) {
-    // bool -> any integer type: always exact (owner's own rule). bool ->
-    // float is NOT authorized by the owner's design and is deliberately
+    // bool -> any integer type: always exact. bool ->
+    // float is NOT authorized by the design and is deliberately
     // not added here -- see docs/dev/restart.md Section 11's open
     // question on this gap.
     return t.is_signed_integer || t.is_unsigned_integer;
@@ -200,7 +235,7 @@ bool is_exact_widening(const ElementTypeInfo& f, const ElementTypeInfo& t) {
 
   if ((f.is_signed_integer || f.is_unsigned_integer) &&
       (t.is_signed_integer || t.is_unsigned_integer)) {
-    // NEVER signed -> unsigned, at any width (owner's own rule, stated
+    // NEVER signed -> unsigned, at any width (a rule stated
     // unconditionally -- not a per-value check of whether the source
     // happens to be non-negative).
     if (f.is_signed_integer && t.is_unsigned_integer) return false;
@@ -209,7 +244,7 @@ bool is_exact_widening(const ElementTypeInfo& f, const ElementTypeInfo& t) {
     if (f.is_unsigned_integer && t.is_signed_integer) {
       // An N-bit unsigned value's range [0, 2^N - 1] fits an M-bit
       // signed type's range [-2^(M-1), 2^(M-1) - 1] exactly when N <
-      // M - 1, i.e. N <= M - 2... but the owner's own named example,
+      // M - 1, i.e. N <= M - 2... but the named example,
       // uint32 -> int64 (N=32, M=64), needs N <= M-1 to hold (32 <= 63):
       // an N-bit unsigned max is 2^N - 1, which fits an M-bit signed
       // type's max (2^(M-1) - 1) exactly when 2^N - 1 <= 2^(M-1) - 1,
@@ -223,8 +258,8 @@ bool is_exact_widening(const ElementTypeInfo& f, const ElementTypeInfo& t) {
 
   if ((f.is_signed_integer || f.is_unsigned_integer) && t.is_float) {
     // "integer -> float only when the float's significand covers the
-    // integer's width" (owner's own words) -- an N-bit integer (signed
-    // or unsigned; the owner's rule does not distinguish) is exactly
+    // integer's width" -- an N-bit integer (signed
+    // or unsigned; the rule does not distinguish) is exactly
     // representable in a float with >= N significand bits, because every
     // integer with magnitude < 2^(significand_bits) is exactly
     // representable in that format.

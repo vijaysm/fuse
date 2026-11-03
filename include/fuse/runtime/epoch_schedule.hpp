@@ -52,7 +52,7 @@ struct EpochSchedule {
 /// maps positions to ranks. Out-of-range input yields an empty schedule rather
 /// than an assertion, since a rank that does not take part simply does nothing.
 ///
-/// RT-8 (review 2026-10-11): also empty for `participants` at or past
+/// Also empty for `participants` at or past
 /// `kMaxStrideParticipants` (2^30) -- the stride walk below doubles `stride`
 /// (and computes `2 * stride`) as a plain `int`; past this bound the next
 /// doubling would be signed-integer-overflow UB, latent at any MPI job size
@@ -97,13 +97,11 @@ inline constexpr int kMaxStrideParticipants = 1 << 30;
   return s;
 }
 
-/// RT-9 (review 2026-10-11): the pure comparison behind `E-RT-EPOCH-TAG`
+/// The pure comparison behind `E-RT-EPOCH-TAG`
 /// (`resolve_epoch_participants()`, `src/runtime/runner.cpp`), factored
 /// out so it is unit-testable without MPI at all -- rank-agreement.md's
-/// own point about this refusal ("a refusal before the run is a better
-/// failure than 'Invalid tag' raised inside a reduction") had no test
-/// that made the comparison fire, so a regression that deleted or
-/// inverted it would have passed the whole suite silently. `reported_
+/// point about this refusal is that a refusal before the run is a better
+/// failure than 'Invalid tag' raised inside a reduction. `reported_
 /// tag_ub` is whatever `MPI_Comm_get_attr(..., MPI_TAG_UB, ...)`
 /// returned for the communicator in use; `max_used_tag` is `fuse::tags::
 /// kMaxUsed` -- passed in rather than referenced here so this header

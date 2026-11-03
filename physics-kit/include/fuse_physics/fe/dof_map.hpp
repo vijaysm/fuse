@@ -1,8 +1,8 @@
 #pragma once
 
 /// Global degree-of-freedom numbering over a fuse_physics::spatial::Mesh,
-/// adapted from KARMA's karma_dof_map.h/.C (docs/dev/physics-kit-
-/// disposition.md's own D-A: "port-adapt ... degree-of-freedom map").
+/// adapted from KARMA's karma_dof_map.h/.C (port-adapted; see
+/// docs/dev/physics-kit.md).
 ///
 /// NOT A LITERAL PORT. KARMA's own KARMADofMap keys a DoF by a MOAB
 /// GLOBAL_ID or a bit-exact floating-point vertex-coordinate identity
@@ -31,14 +31,13 @@
 ///   - is collective through fuse::agree_outcome
 ///     when built with a communicator, not an ISLocalToGlobalMapping.
 ///
-/// SCOPE THIS WAVE: single-variable and multi-
+/// SCOPE: single-variable and multi-
 /// variable numbering, contiguous per-rank ownership, the ghost index
 /// list, element dof_indices (all variables, one variable), and the
 /// row/column sparsity pattern for AlgebraicSystem. See dof_map.cpp's
 /// own header comment for the GLOBAL NUMBERING algorithm (two
 /// allgather rounds over fuse::linalg::Reducer, a stated scalability
-/// limitation -- host_pending/open_questions names the point-to-point
-/// alternative).
+/// limitation; ghost resolution itself is point-to-point).
 
 #include <cstdint>
 #include <map>
@@ -97,14 +96,14 @@ struct DofRecord {
   bool element_local;
 };
 
-///: whether a shared
+/// Whether a shared
 /// sub-entity (an edge or a face, named by its `corners` -- the LOCAL
 /// vertex handles of every one of its corner vertices, in any order)
 /// is owned HERE, under the rule every sharing rank can compute from
 /// `Mesh::vertex_owner`/`is_vertex_owned` alone, with no further
 /// communication: the sub-entity's owner is the MINIMUM over its
 /// corners' own owner ranks. Deterministic and gap-free -- unlike the
-/// round-1 rule ("owned here iff every corner is owned here"), which
+/// rule "owned here iff every corner is owned here", which
 /// left a legitimate partition (a shared face whose corners are split
 /// across two or more ranks) owned by NO rank at all. Exposed as a
 /// free function (not kept as a DofMap-private implementation detail)
@@ -117,26 +116,24 @@ struct DofRecord {
 
 /// Global DoF numbering over `mesh`'s elements, one or more `variables`.
 ///
-/// OWNERSHIP CONVENTION (stated, not hidden -- open_questions names its
-/// known edge case): a shared sub-entity's DoF is owned on this rank iff
-/// EVERY one of its corner vertices is `mesh.is_vertex_owned()` here; a
+/// OWNERSHIP CONVENTION: a shared sub-entity's DoF is owned by the rank
+/// that `shared_sub_entity_owned_here` selects (the MINIMUM over its
+/// corner vertices' owner ranks); a
 /// vertex DoF's ownership is simply that vertex's own; a dG/SE/interior
 /// DoF's ownership is simply its element's own (`is_element_owned`,
 /// never shared, so never ambiguous). For a mesh partitioned with a
 /// one-layer ghost halo (every element a rank owns has all its OWN
 /// corner vertices visible, owned either here or as a ghost) this
-/// convention assigns each shared sub-entity to exactly one rank; a
-/// partition where neither side of a shared edge/face owns every one of
-/// its corners (possible with some non-vertex-based partitioners) would
-/// leave that sub-entity UNOWNED anywhere, caught by the global dof-count
-/// cross-check below rather than silently miscounted.
+/// convention assigns each shared sub-entity to exactly one rank; any
+/// disagreement is caught by the global dof-count cross-check below
+/// rather than silently miscounted.
 class DofMap {
  public:
   /// `fortran_communicator`: unset for the single-rank/tier-0 convenience
   /// path (every refusal below is a plain local throw, since there is no
   /// peer to disagree with); set to an `MPI_Comm_c2f` handle for the
   /// collective path (every refusal routes through `fuse::agree_outcome`,
-  /// the issue tracker, naming `agreed_code`
+  /// naming `agreed_code`
   /// "E-PHYSICS-DOFMAP-AGREEMENT-REFUSED" and comm-failure code
   /// "E-PHYSICS-DOFMAP-AGREEMENT-COMM-FAILURE").
   DofMap(const spatial::Mesh& mesh, std::vector<Variable> variables, const BasisRegistry& registry,
@@ -209,12 +206,12 @@ class DofMap {
 
   /// NOT PROVIDED: KARMA's own add_element_adjacency/diagonal_nnz/
   /// off_diagonal_nnz existed to preallocate a PETSc Mat's sparsity
-  /// before insertion (karma_dof_map.h lines noted in design_notes).
+  /// before insertion (karma_dof_map.h).
   /// fuse::linalg::DistSparseMatrix::from_triplets infers its sparsity
   /// directly from the assembled triplet list, so this port has no
-  /// equivalent method -- a stated deviation (design_notes), not a
+  /// equivalent method -- a stated deviation, not a
   /// silent drop: AlgebraicSystem's own assemble_matrix is the element-
-  /// adjacency consumer item 1 names, and it reads dof_indices()
+  /// adjacency consumer, and it reads dof_indices()
   /// per element exactly as KARMA's own assembly loop did, it simply
   /// never needs a separate preallocation pass first.
 

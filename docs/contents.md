@@ -38,6 +38,7 @@ user/transfer-maps
 user/point-cloud-remap
 user/combining-writers
 user/field-pipeline
+user/number-types
 user/examples
 user/portfolio
 user/mms-pair
@@ -49,6 +50,8 @@ user/coupling-windows
 user/multiscale
 user/surrogates
 user/linear-algebra
+user/integrators
+user/physics-kit
 user/interface-transfer
 user/gray-scott
 user/brusselator
@@ -88,6 +91,8 @@ dev/linalg-distributed
 dev/linalg-krylov
 dev/schur-slab-solver
 dev/derivative-gate
+dev/adjoint-schedule
+dev/mls-shape-gradient
 dev/newton-krylov
 dev/coupling-windows
 dev/nodal-fields
@@ -96,11 +101,9 @@ dev/conformance
 dev/python-surface
 dev/runner-device-dispatch
 dev/device-resident-arcs
-dev/physics-kit-disposition
 dev/integrators-design
 dev/field-semantics-matrix
 dev/physics-kit
-dev/roadmap
 dev/soma-import
 ```
 

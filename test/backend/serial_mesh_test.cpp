@@ -514,7 +514,7 @@ TEST(SerialMesh, MovedFromBackendIsDiagnosedNotDereferenced) {
 }
 
 // ---------------------------------------------------------------------------
-// make_region_sizes: the seam into Phase 3's buffer planner
+// make_region_sizes: the seam into the buffer planner
 // ---------------------------------------------------------------------------
 
 namespace {
@@ -639,7 +639,7 @@ TEST(SerialMesh, BufferPlanIsSizedByTheRealMesh) {
 }
 
 // ---------------------------------------------------------------------------
-// mesh_id: the name-to-id lookup Task 4.2 flagged as missing
+// mesh_id: the name-to-id lookup
 // ---------------------------------------------------------------------------
 
 TEST(SerialMesh, MeshIdResolvesTheDeclaredName) {
@@ -690,8 +690,8 @@ TEST(SerialMesh, MeshIdOnAMovedFromBackendReports) {
   EXPECT_EQ(other.mesh_id("m").value(), MeshId{0});
 }
 
-// THE BUG THIS CLOSES. make_region_sizes used to pass the GRAPH's MeshId
-// straight to the backend. Load the graph's meshes in any other order -- MOAB
+// make_region_sizes must not pass the GRAPH's MeshId
+// straight to the backend. Otherwise, load the graph's meshes in any other order -- MOAB
 // reading a partitioned set of files, a driver loading on demand -- and every
 // mesh entity set was sized against the wrong mesh: a plausible number, no diagnostic.
 // Resolving by name makes the answer independent of load order.

@@ -12,8 +12,7 @@
 #include "fuse/num/dynamical_time_scale_controller.hpp"
 #include "fuse/num/integrator.hpp"
 
-///  physics-kit,
-/// (docs/dev/integrators-design.md Section 4.1): the explicit family --
+/// The explicit integrator family (docs/dev/integrators-design.md Section 4.1):
 /// FE, KUTTA22, KUTTA44 (fixed step, no embedded estimate) and DOPRI45 (embedded, FSAL
 /// per the correction in butcher_tableau.hpp's own top comment) -- as ONE class over
 /// any `ButcherTableau` whose `family` is `Erk` or `ErkEmbedded`, replacing
@@ -22,13 +21,13 @@
 /// dopri45_integrator.*) with one stage loop parameterised by the tableau.
 ///
 /// NOT ported from `ExplicitRKIntegrator`: its own "adaptive" branch is the
-/// dynamical-time-scale controller (design Section 2, mechanism 1), a
-/// PHYSICS callback (`KARMAInterface::compute_dynamical_timescales`) this track's own
-/// scope never asked for (names only "error norm as the rtol/atol-scaled
-/// RMS" -- the Hairer-style embedded mechanism, mechanisms 2/3 of that same section,
-/// never mechanism 1). A component that wants dynamical-time-scale control is a later
-/// track's own scope, layered on TOP of this one (it would call `step()` with an `h` it
-/// chose itself, the same way a fixed-step caller does), not inside it.
+/// dynamical-time-scale controller (design doc Section 2, mechanism 1), a
+/// PHYSICS callback (`KARMAInterface::compute_dynamical_timescales`) that is out of
+/// scope here (the error norm is the rtol/atol-scaled RMS -- the Hairer-style
+/// embedded mechanism, mechanisms 2/3 of that same section, never mechanism 1). A
+/// component that wants dynamical-time-scale control layers it on TOP of this one
+/// (it calls `step()` with an `h` it chose itself, the same way a fixed-step caller
+/// does), not inside it.
 ///
 /// NOT ported either: the FSAL reuse optimisation (DOPRI45's own stage-7 result equals
 /// the next step's stage-0 evaluation, so a correctly-done FSAL implementation skips
@@ -42,11 +41,11 @@ namespace fuse::num {
 
 /// `ExplicitIntegrator<Value>::step()`'s own refusals, beyond the ones
 /// `EmbeddedController::propose` already names. `kNoRhsCode`/`kWrongFamilyCode`/
-/// `kDimensionMismatchCode` moved to `integrator.hpp` in Round 2 (shared by every
+/// `kDimensionMismatchCode` live in `integrator.hpp` (shared by every
 /// family); `kMassUnsupportedCode` stays here, since only THIS family refuses on a
 /// mass matrix rather than honouring it.
 inline constexpr const char* kMassUnsupportedCode = "E-INTEGRATOR-MASS-UNSUPPORTED";
-/// Round 3, item 5: a DynamicalTimeScaleController is attached but the problem has
+/// A DynamicalTimeScaleController is attached but the problem has
 /// no `dynamical_time_scales` callback -- a misconfiguration refusal, not the
 /// controller's own "every scale non-positive" refusal (dynamical_time_scale_
 /// controller.hpp).
@@ -65,7 +64,7 @@ class ExplicitIntegrator final : public Integrator<Value> {
   /// Adaptive construction (DOPRI45 -- `family == ErkEmbedded`). `rtol`/`atol` are
   /// Hairer's own per-run tolerances (dopri45_integrator.C:118-119's own `atoli`/
   /// `rtoli`, read once from the tableau's caller rather than once per vendored
-  /// integrator instance, same meaning); `norm` is the task's own "norm functor the
+  /// integrator instance, same meaning); `norm` is the "norm functor the
   /// caller supplies" (this header's own top comment; `serial_rms_norm`,
   /// integrator.hpp, is the default).
   ExplicitIntegrator(ButcherTableau tableau, EmbeddedController controller, Scalar rtol,
@@ -87,27 +86,26 @@ class ExplicitIntegrator final : public Integrator<Value> {
     return controller_state_;
   }
 
-  /// Round 3, item 5 (docs/dev/integrators-design.md Section 2, mechanism 1):
-  /// attaches a DynamicalTimeScaleController alongside (or instead of) the embedded
+  /// (docs/dev/integrators-design.md Section 2, mechanism 1):
+  /// Attaches a DynamicalTimeScaleController alongside (or instead of) the embedded
   /// one. With no EmbeddedController, the step is a KARMA-mechanism-1 step: ALWAYS
   /// accepted (this mechanism carries no accept/reject notion of its own, Section 2's
   /// own prose), h_next is the dynamical proposal alone. With BOTH present, the
   /// accept/reject decision stays the embedded controller's; on an accepted step,
-  /// h_next is the MINIMUM of the two proposals (Round 3's own combination rule,
-  /// recorded in open_questions as the owner-facing design decision, implemented as
-  /// the recommendation). Requires `problem.has_dynamical_time_scales()` at step time;
+  /// h_next is the MINIMUM of the two proposals (the combination rule).
+  /// Requires `problem.has_dynamical_time_scales()` at step time;
   /// `step()` refuses (not silently ignores) if this is set but the problem supplies
   /// no callback.
   void set_dynamical_controller(DynamicalTimeScaleController controller) {
     dynamical_controller_ = std::move(controller);
   }
 
-  /// Round 3, item 6: enabled by default for an ERK FSAL tableau (DOPRI45) --
+  /// Enabled by default for an ERK FSAL tableau (DOPRI45) --
   /// MEASURED bit-identical to full recomputation (explicit_integrator_test.cpp's
   /// own FSAL suite; this class's own top comment on fsal_cached_* explains why
   /// an ERK method's FSAL stage achieves this where DirkIntegrator's own
   /// implicit-family attempt could not). `set_fsal_enabled(false)` is the knob
-  /// this round's own bit-identical comparison test uses to construct the
+  /// the bit-identical comparison test uses to construct the
   /// "non-FSAL path" baseline off the SAME tableau and options.
   void set_fsal_enabled(bool enabled) noexcept { fsal_enabled_ = enabled; }
   [[nodiscard]] bool fsal_enabled() const noexcept { return fsal_enabled_; }
@@ -120,7 +118,7 @@ class ExplicitIntegrator final : public Integrator<Value> {
     if (problem.has_mass()) {
       return Failure{kMassUnsupportedCode,
                      "ExplicitIntegrator::step: a mass-matrix problem (M != I) needs a "
-                     "linear solve per stage, round-2 scope (DIRK/Rosenbrock); the "
+                     "linear solve per stage (use the DIRK/Rosenbrock family); the "
                      "explicit family never reads TemporalProblem::mass"};
     }
     if (tableau_.family != ButcherFamily::Erk && tableau_.family != ButcherFamily::ErkEmbedded) {
@@ -142,7 +140,7 @@ class ExplicitIntegrator final : public Integrator<Value> {
     std::vector<Value> y_new(n);
     std::size_t fevals = 0;
 
-    // Round 3, item 6: an ERK FSAL tableau (DOPRI45) has B[last] == 0 AND
+    // An ERK FSAL tableau (DOPRI45) has B[last] == 0 AND
     // A[last] == B (butcher_tableau.hpp's own top comment) -- the structural
     // property that makes stage-0 reuse bit-identical (this class's own top
     // comment on fsal_cached_*): BOTH conditions verified HERE, not merely
@@ -259,10 +257,10 @@ class ExplicitIntegrator final : public Integrator<Value> {
       rec.h_used = h;
       rec.accepted = true;
       if (fsal_structure_ok) update_fsal_cache_(rec.t_new, y_new, k[static_cast<std::size_t>(stages - 1)]);
-      // Round 3, item 5: with BOTH controllers attached, the accept/reject call
+      // With BOTH controllers attached, the accept/reject call
       // stays the embedded controller's (the dynamical mechanism has none of its
       // own, Section 2 item 1's own prose); on acceptance, h_next is the MINIMUM
-      // of the two proposals (Round 3's own combination rule -- open_questions).
+      // of the two proposals (the combination rule).
       // Evaluated on the NEW (post-step) state: the dynamical scale a caller wants
       // bounding the NEXT step is the one at the state that step is taken FROM.
       if (dynamical_controller_.has_value()) {
@@ -282,7 +280,7 @@ class ExplicitIntegrator final : public Integrator<Value> {
   }
 
  private:
-  /// Round 3, item 5: one evaluation of the attached DynamicalTimeScaleController,
+  /// One evaluation of the attached DynamicalTimeScaleController,
   /// shared by both the "dynamical-only" (no EmbeddedController) and the "both
   /// present" branches of step() below. Refuses (not silently falls back) if a
   /// DynamicalTimeScaleController is attached but the problem supplies no
@@ -304,7 +302,7 @@ class ExplicitIntegrator final : public Integrator<Value> {
     return dynamical_controller_->propose(dynamical_scales_scratch_, static_cast<double>(h));
   }
 
-  /// Round 3, item 6: records the just-accepted step's own last-stage derivative
+  /// Records the just-accepted step's own last-stage derivative
   /// (an EXACT f() evaluation for an ERK tableau, not a Newton-converged one) so
   /// the NEXT call's stage-0 evaluation can reuse it bit-for-bit.
   void update_fsal_cache_(Scalar t_new, const std::vector<Value>& y_new,
@@ -323,7 +321,7 @@ class ExplicitIntegrator final : public Integrator<Value> {
   Scalar atol_{};
   ScaledNormFn norm_ = serial_rms_norm;
 
-  // Round 3, item 6: FSAL reuse for an explicit (ERK) FSAL tableau (DOPRI45).
+  // FSAL reuse for an explicit (ERK) FSAL tableau (DOPRI45).
   // Unlike DirkIntegrator's own implicit-family attempt (dirk_integrator.hpp's own
   // set_fsal_enabled() comment), an ERK method's last stage is an EXACT,
   // non-iterative f() evaluation -- no Newton solve, so no convergence-tolerance

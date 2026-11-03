@@ -13,6 +13,8 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
@@ -21,7 +23,10 @@
 #include "fuse/ir/lowering.hpp"
 #include "fuse/linalg/comm.hpp"
 #include "fuse/num/accelerator.hpp"
+#include "fuse/num/arithmetic_kernels.hpp"
+#include "fuse/num/posit.hpp"
 #include "fuse/num/space_kernels.hpp"
+#include "fuse/num/storage_convert.hpp"
 #include "fuse/model/iteration.hpp"
 #include "fuse/backend/device_ghost_exchange.hpp"
 #include "fuse/backend/nodal_remap_distributed.hpp"
@@ -54,10 +59,88 @@ struct Slot {
   /// execute_on() span helpers. Set at the end of setup() for Device mode
   /// (docs/dev/device-resident-arcs.md); always false under Host.
   bool        device = false;
+  /// The Arithmetic value type of the values on this arc (a `value_traits` name
+  /// from fuse/num/arithmetic_types.def: "dd", "qd"), empty for an arc of
+  /// binary64 scalars. Set at setup for the arcs aliasing an Arithmetic field and
+  /// propagated down the instruction stream (resolve_arithmetic). Such an arc
+  /// holds `limbs` binary64 values per value, so `components` counts limbs:
+  /// the arc of a field of N dd values per entity has components == 2 * N.
+  std::string_view arithmetic;
+  int         limbs = 1;
 
   [[nodiscard]] std::size_t total() const noexcept {
     return elements * static_cast<std::size_t>(components);
   }
+};
+
+/// The Storage value types the runtime converts at the component boundary: a
+/// closed list, because each one is a kernel instantiated on both execution
+/// spaces. A field of any other value type that is not an array of binary64
+/// scalars is refused by name (E-RT-FIELD-TYPE).
+enum class StorageFormat : std::uint8_t { Binary32, BFloat16, Binary16, Posit16, Posit32 };
+
+[[nodiscard]] inline std::optional<StorageFormat> storage_format_of(
+    const AnyFieldRef& f) noexcept {
+  if (f.holds<float>()) return StorageFormat::Binary32;
+  if (f.holds<bfloat16>()) return StorageFormat::BFloat16;
+  if (f.holds<binary16>()) return StorageFormat::Binary16;
+  if (f.holds<num::posit16>()) return StorageFormat::Posit16;
+  if (f.holds<num::posit32>()) return StorageFormat::Posit32;
+  return std::nullopt;
+}
+
+[[nodiscard]] inline std::string_view storage_format_name(StorageFormat f) noexcept {
+  switch (f) {
+    case StorageFormat::Binary32: return value_traits<float>::name;
+    case StorageFormat::BFloat16: return value_traits<bfloat16>::name;
+    case StorageFormat::Binary16: return value_traits<binary16>::name;
+    case StorageFormat::Posit16: return value_traits<num::posit16>::name;
+    case StorageFormat::Posit32: return value_traits<num::posit32>::name;
+  }
+  return {};
+}
+
+/// Significand precision p (the implicit bit included): the unit roundoff of
+/// rounding to nearest in the format is 2^-p. For a posit it is the precision at the value
+/// one, the largest the format has: the precision falls by one bit for each factor of
+/// 2^(2^es) away from one, so a value far from one changes by more (the measured
+/// `max_relative_change` shows by how much).
+[[nodiscard]] inline int storage_format_precision(StorageFormat f) noexcept {
+  switch (f) {
+    case StorageFormat::Binary32: return 24;
+    case StorageFormat::BFloat16: return bfloat16::format::precision;
+    case StorageFormat::Binary16: return binary16::format::precision;
+    case StorageFormat::Posit16: return num::posit16::max_fraction_bits + 1;
+    case StorageFormat::Posit32: return num::posit32::max_fraction_bits + 1;
+  }
+  return 0;
+}
+
+/// Calls `fn(std::type_identity<T>{})` with the C++ type of the format.
+template <class F>
+void visit_storage_format(StorageFormat f, F&& fn) {
+  switch (f) {
+    case StorageFormat::Binary32: fn(std::type_identity<float>{}); return;
+    case StorageFormat::BFloat16: fn(std::type_identity<bfloat16>{}); return;
+    case StorageFormat::Binary16: fn(std::type_identity<binary16>{}); return;
+    case StorageFormat::Posit16: fn(std::type_identity<num::posit16>{}); return;
+    case StorageFormat::Posit32: fn(std::type_identity<num::posit32>{}); return;
+  }
+}
+
+/// A component-owned arc whose field is Storage-typed. The arc's slot does not
+/// alias the component's array (it holds a different type); it is a binary64
+/// image of it. A provided field is widened into its image when component
+/// code has run; a required field is rounded out of its image into the
+/// component's array when the coupler delivers into it.
+struct StorageBinding {
+  std::uint32_t arc = 0;        ///< the slot whose `data` is the image
+  StorageFormat format = StorageFormat::Binary32;
+  bool          delivered = false;  ///< a Sink arc: the runtime writes the field
+  bool          device = false;     ///< the field (and the image) are in device memory
+  void*         field = nullptr;    ///< the component's array
+  std::size_t   count = 0;          ///< values, components included
+  std::size_t   stat = 0;           ///< index into RunStats::storage_fields
 };
 
 /// What a `Constrain` compares, resolved at setup.
@@ -73,32 +156,25 @@ struct ConstrainInfo {
   std::uint32_t weights_before = 0;  // index into Impl::weight_sets
   std::uint32_t weights_after = 0;
   /// Whether the two integrals are reduced over the base communicator before
-  /// they are compared. True whenever one is configured:
+  /// they are compared True whenever one is configured:
   /// every rank of it walks the same instruction stream, a rank holding
   /// neither region contributes zero, and the totals -- hence the verdict --
   /// come out identical on every rank, so nothing is decided rank-locally.
   bool reduce = false;
 };
 
-///, round 2: replaces the
-/// NodalReduceInfo/NodalReduceMode/reduce_nodal_remap_target() design this
-/// struct's own predecessor comment described ("the path the refusal will
-/// open"). That design was never wired to a real index (`nodal_reduce_idx`
-/// in `resolve_remap()` was set only inside a branch that always returned a
-/// `Failure` first) and is deleted below, per this round's explicit
-/// instruction to state that decision rather than leave it as unreachable
-/// scaffolding; `accumulate_shared_rows`/`copy_owner_shared_rows`
-/// (fuse/transport/comm_graph.hpp) are UNCHANGED and untouched by this
-/// deletion -- they are general-purpose primitives with their own direct
-/// callers in `test/parallel/nodal_field_test.cpp` (a different track's
-/// Transport-side ownership tests), not exclusive to the deleted function.
+/// Distributed nodal Remap operator. `accumulate_shared_rows`/
+/// `copy_owner_shared_rows` (fuse/transport/comm_graph.hpp) are
+/// general-purpose primitives with their own direct callers in
+/// `test/parallel/nodal_field_test.cpp` (Transport-side ownership tests),
+/// not exclusive to this operator.
 ///
 /// One `OpKind::Remap` instruction whose target is a nodal region on a
 /// component placed on more than one rank, resolved via method `"consistent"`
 /// or `"consistent-transpose"` (any other method still refuses
-/// `E-RT-REMAP-NODAL-PARALLEL` exactly as before this round -- per-placement
-/// weights for the supermesh conservative methods remain unimplemented,
-/// the issue tracker item 3). Built once in `resolve_remap()`, applied
+/// `E-RT-REMAP-NODAL-PARALLEL` -- per-placement
+/// weights for the supermesh conservative methods are not implemented).
+/// Built once in `resolve_remap()`, applied
 /// allocation-free (of THIS struct; `apply_distributed_H`/`HT`'s own
 /// Allgatherv buffers are a distinct, per-call cost -- see
 /// nodal_remap_distributed.hpp) every period from `Resolved::nodal_dist`.
@@ -142,14 +218,14 @@ struct NodalDistRemap {
   /// build function's comment on why.
   int comm_handle = 0;
 
-  /// runtime-exchange track, follow-up round: the one-time resolved
+  /// The one-time resolved
   /// exchange plan (`fuse::build_distributed_remap_plan`,
   /// nodal_remap_distributed.hpp), built in `build_nodal_dist_remap()`
   /// whenever `comm_handle` names a REAL communicator -- `exchanger` is
   /// null when `comm_handle == fuse::search::kNullComm` (a single-rank
   /// run), and `apply_nodal_dist_remap()` falls back to
   /// `apply_distributed_H`/`apply_distributed_HT` directly in that case,
-  /// UNCHANGED, exactly as before this round.
+  /// unchanged.
   DistributedRemapPlan remap_plan;
   /// Drives `remap_plan.exchanger` over Space-resident buffers
   /// (`fuse::backend::DeviceGhostExchanger`'s own header comment); held
@@ -180,7 +256,7 @@ struct NodalDistRemap {
 };
 
 /// One space-time channel's operator and its window of source history
-/// (spec Section 7.3, Task 6.3). Everything here is sized once in `resolve_spacetime`
+/// (spec Section 7.3). Everything here is sized once in `resolve_spacetime`
 /// and never resized afterwards; the sweep loop only indexes it.
 ///
 /// THE OPERATOR. `temporal` is the `T` of `M = T (x) W`, built by
@@ -209,14 +285,13 @@ struct SpacetimeInfo {
   int                       components = 1;
   std::size_t               width = 0;      // elements * components
 
-  /// Device-resident mirror of `history` (round 3, spacetime-history
-  /// track), built once in resolve_spacetime() when
-  /// RunnerConfig::execution_space is Device. Sample's history branch
-  /// writes a row here with a same-space deep_copy -- no host round trip
-  /// -- when its own arc is device-resident. Empty in Host mode.
+  /// Device-resident mirror of `history`, built once in resolve_spacetime()
+  /// when RunnerConfig::execution_space is Device. Sample's history branch
+  /// writes a row here with a same-space deep_copy -- no host round trip --
+  /// when its own arc is device-resident. Empty in Host mode.
   /// `identity_*_device`/`temporal_*_device` (added alongside the device
-  /// Interpolate kernel) mirror the spatial and temporal operators the
-  /// same way; see their own comments where they are declared.
+  /// Interpolate kernel) mirror the spatial and temporal operators the same
+  /// way; see their own comments where they are declared.
   Kokkos::View<double*, Kokkos::DefaultExecutionSpace::memory_space> history_device;
   /// CSR mirror of `identity_row`/`identity_col`/`identity_val` above
   /// (`row_begin` has `elements + 1` entries); flat mirrors of
@@ -237,7 +312,7 @@ struct SpacetimeInfo {
   }
 };
 
-/// the issue tracker (closing) / matrix cell A-SPACES-TRANSPORT: the CSR
+/// The CSR
 /// conversion of one `RemapWeights`' COO triplets, built ONCE alongside the
 /// matching entry of `Impl::remap_weights` -- never per period.
 ///
@@ -266,7 +341,7 @@ struct SpacetimeInfo {
 /// `RemapCsr` (the alias below) lives in `Kokkos::HostSpace` explicitly, not
 /// the default execution space's memory space: `Runner::Impl::HostExecSpace`
 /// is always host (Serial/OpenMP/Threads), whose `memory_space` IS
-/// `Kokkos::HostSpace`. A5 adds the one other instantiation,
+/// `Kokkos::HostSpace`. The one other instantiation is
 /// `RemapCsrOf<Runner::Impl::DeviceMemSpace>` (`Impl::remap_csr_device`), a
 /// byte-for-byte `deep_copy` of the host one made by `mirror_remap_csr()` at
 /// the same point of `resolve_remap()` -- the sort and the prefix scan still
@@ -316,12 +391,12 @@ struct TransportPlan {
 
   /// The region both ends of this Transport live on. Transport preserves
   /// region -- `rules_channel.cpp` changes only `rank_set` -- so there is one,
-  /// not two. Checked, not assumed, in Task 3.
+  /// not two. Checked, not assumed.
   RegionId region;
 
-  /// False until Task 4 attaches a `CommGraph`: no MPI, no
+  /// False until a `CommGraph` is attached: no MPI, no
   /// `base_communicator`, or a `copy` transport. The interpreter then moves
-  /// the whole arc, exactly as it did before this struct existed.
+  /// the whole arc.
   bool has_graph = false;
 
   /// Matches whose two ends are on this rank: `local_dst[k]` takes the value
@@ -340,10 +415,8 @@ struct TransportPlan {
   /// the source block on one side, the destination block on the other -- so
   /// `gather`/`scatter` are empty and the hot loop stages differently:
   /// `send` takes the whole source block, and only `peer_written` is copied
-  /// back out of `recv`. Before this existed the hot loop ran the matched
-  /// path's empty gather and scatter on a peer plan: it sent zeros and
-  /// delivered nothing, unnoticed because no Runner test used partial overlap
-  ///.
+  /// back out of `recv`. (The matched path's empty gather and scatter on a
+  /// peer plan would send zeros and deliver nothing.)
   bool from_peers = false;
 
   /// Peer plans only. How many doubles of the SOURCE block this rank holds
@@ -375,8 +448,8 @@ struct TransportPlan {
 };
 
 /// Device-resident twin of one `TransportPlan`'s matching data, built once
-/// in Device mode alongside the host plan (docs/dev/device-resident-arcs.md
-/// Phase 3: the GPU-aware transport step). Every index array below is
+/// in Device mode alongside the host plan (docs/dev/device-resident-arcs.md:
+/// the GPU-aware transport step). Every index array below is
 /// pre-expanded to DOUBLE granularity -- `index[k*components+c] =
 /// entity_index[k]*components+c` -- so the hot loop's pack/unpack reduces
 /// to `fuse::num::gather`/`scatter`, the same kernels the elementwise
@@ -405,12 +478,12 @@ struct TransportDeviceOf {
   /// extent.
   Kokkos::View<double*, MemSpace>      peer_scratch;
 
-  ///. The MPI-packed
+  /// The MPI-packed
   /// layer BEHIND `Transport::move()`, device-resident so the hot loop can
   /// pack/unpack it on `Space` and hand `Transport::move_packed()` a
   /// device pointer directly, instead of `move()`'s own host-only
   /// `std::memcpy` pack/unpack -- handing THAT a device pointer is exactly
-  /// the segfault this track fixes. `mpi_send_index`/`mpi_recv_index` are
+  /// a segfault. `mpi_send_index`/`mpi_recv_index` are
   /// `Transport::packed_layout()`'s `send_index`/`recv_index`, expanded to
   /// double granularity like every other index view here; `mpi_local_src`/
   /// `mpi_local_dst` are `packed_layout()`'s `local_copy`, split into two
@@ -422,7 +495,7 @@ struct TransportDeviceOf {
   /// packed layout (`has_packed_layout`); a Transport backend with no
   /// packed layout (every one but `MpiTransport`) leaves these at their
   /// default-constructed, zero-extent state and the hot loop falls back
-  /// to `move()` through the pre-existing host-staged path.
+  /// to `move()` through the host-staged path.
   Kokkos::View<std::size_t*, MemSpace> mpi_send_index, mpi_recv_index;
   Kokkos::View<std::size_t*, MemSpace> mpi_local_src, mpi_local_dst;
   Kokkos::View<double*, MemSpace>      mpi_send, mpi_recv;
@@ -479,12 +552,12 @@ template <class MemSpace>
   return d;
 }
 
-/// Transport-direct track. Fills in `d`'s `mpi_*` fields from one
+/// Fills in `d`'s `mpi_*` fields from one
 /// `Transport::packed_layout()` result, mirroring `mirror_transport_plan`'s
 /// own expand-then-deep_copy shape for the index arrays. Called once, at
 /// setup, right after `mirror_transport_plan` builds `d` itself --
 /// `d.has_packed_layout` is what the hot loop checks before taking the
-/// device-direct path over the pre-existing host-staged one.
+/// device-direct path over the host-staged one.
 template <class MemSpace>
 void mirror_transport_packed_layout(TransportDeviceOf<MemSpace>& d,
                                     const TransportPackedLayout& pl) {
@@ -557,7 +630,7 @@ struct Resolved {
   /// channel: the `Sample` that fills the history and the `Interpolate` that
   /// projects it.
   std::int32_t  spacetime = -1;
-  /// Spec Section 5.4 (Task 5.5). Index into `Impl::remap_weights`, or -1.
+  /// Spec Section 5.4. Index into `Impl::remap_weights`, or -1.
   ///
   /// -1 does NOT mean "no remap": it means the PROVED-COINCIDENT identity.
   /// `resolve_remap()` only leaves it at -1 after checking, cell by cell, that
@@ -565,20 +638,130 @@ struct Resolved {
   /// element-wise copy the interpreter then performs IS the conservative map.
   /// Every other `Remap` carries real weights or the setup failed.
   std::int32_t  remap = -1;
-  /// Index into `Impl::nodal_dist_remaps`, or -1 (round 2, replacing the
-  /// deleted `nodal_reduce`/`NodalReduceInfo` design -- see
+  /// Index into `Impl::nodal_dist_remaps`, or -1 (see
   /// `NodalDistRemap`'s own comment). Set on an `OpKind::Remap` instruction
   /// whose target is a nodal region distributed across more than one rank
   /// AND whose method is `"consistent"`/`"consistent-transpose"`; -1 means
   /// either not nodal, a single-rank placement (nothing is shared, the
-  /// Remap's own local answer already IS the answer), or a method this
-  /// round does not build distributed rows for (still refused
+  /// Remap's own local answer already IS the answer), or a method with no
+  /// distributed rows (still refused
   /// `E-RT-REMAP-NODAL-PARALLEL`). When set, `execute()`'s `OpKind::Remap`
   /// case calls `apply_nodal_dist_remap()` INSTEAD OF the normal
   /// `remap`-indexed weights-apply -- `remap` is left at -1 for such an
   /// instruction, since the two are mutually exclusive execution paths, not
   /// a base answer plus a correction.
   std::int32_t  nodal_dist = -1;
+};
+
+/// The memory space of the device execution space `Runner::Impl` selects (the
+/// same chain of #if as `Impl::DeviceExecSpace`; a static_assert after `Impl`
+/// keeps the two equal). The reverse sweep needs it before `Impl` is defined.
+#if defined(KOKKOS_ENABLE_CUDA)
+using AdjointDeviceMemSpace = Kokkos::Cuda::memory_space;
+#elif defined(KOKKOS_ENABLE_HIP)
+using AdjointDeviceMemSpace = Kokkos::HIP::memory_space;
+#elif defined(KOKKOS_ENABLE_SYCL)
+using AdjointDeviceMemSpace = Kokkos::SYCL::memory_space;
+#else
+using AdjointDeviceMemSpace = Kokkos::DefaultHostExecutionSpace::memory_space;
+#endif
+
+/// Everything `Runner::run_period_adjoint()` needs beyond the forward state
+/// (docs/dev/adjoint-schedule.md). Built by `initialize_adjoint()`;
+/// absent (`Impl::adjoint` null) on a Runner that only runs forward.
+struct AdjointState {
+  /// One event of a period, in the order the forward walk (`step_period()`)
+  /// runs them: a component step (`index` into `Impl::ticks`) or a coupling
+  /// instruction (`index` into the plan's stream). The reverse sweep walks the
+  /// list from the back.
+  struct Event {
+    bool        is_tick = false;
+    std::size_t index = 0;
+  };
+  std::vector<Event> events;
+
+  /// An iteration region as the reverse sweep runs it: the closed interval of `events` from the
+  /// first re-advanced component step to the last instruction of the region body, which is
+  /// reversed over and over until the adjoint of the delivered values has converged (the
+  /// reverse accumulation of the fixed point; docs/dev/adjoint-schedule.md). `event_loop` is
+  /// parallel to `events`: -1 outside every interval, else the index in `loops`; the sweep runs a
+  /// loop when it reaches `last_event` and skips the other events of the interval.
+  struct RegionLoop {
+    std::size_t region = 0;  // index into Impl::regions
+    std::size_t first_event = 0;
+    std::size_t last_event = 0;
+  };
+  std::vector<RegionLoop>   loops;
+  std::vector<std::int32_t> event_loop;
+
+  /// Every adjoint array an interval can change, restored from a copy taken before the loop
+  /// before each pass, so that each pass differs from the next only in the seed it is given:
+  /// the adjoint array of every arc, and of every field of a component the region steps.
+  struct ManagedArray {
+    double*     ptr = nullptr;
+    std::size_t len = 0;
+    bool        device = false;
+  };
+  std::vector<ManagedArray>        managed;
+  std::vector<std::vector<double>> snapshot;
+
+  /// Parallel to the instruction stream. For a `Sample`: how many samples of the
+  /// same accumulation window precede it (0 marks the first, which overwrites
+  /// the accumulator). For an `Accumulate`: the number of samples in its window.
+  /// Found once by replaying the forward bookkeeping on the list of events.
+  std::vector<std::size_t> window_index;
+
+  /// The adjoint array of every arc, parallel to `Impl::slots`: the component's
+  /// own adjoint array for a component-owned arc, `owned[i]` (host memory) or
+  /// `owned_device[i]` (device memory) otherwise. `bar_device[i]` says which
+  /// memory space `bar[i]` points into; an arc is on the device exactly when its
+  /// forward slot is (`Slot::device`), so a device-resident field has a
+  /// device-resident adjoint array.
+  std::vector<double*>                                          bar;
+  std::vector<std::uint8_t>                                     bar_device;
+  std::vector<std::vector<double>>                              owned;
+  std::vector<Kokkos::View<double*, AdjointDeviceMemSpace>>     owned_device;
+
+  /// The transpose of each entry of `Impl::remap_weights` as a CSR matrix (rows
+  /// are the columns of the weights), same index. Built once on the host by a
+  /// stable sort, so every row sums its terms in the order `apply_transpose` of
+  /// `WeightsOperator` does; `remap_t_device` is its copy in device memory,
+  /// filled only for device execution.
+  std::vector<RemapCsr>                                         remap_t;
+  std::vector<RemapCsrOf<AdjointDeviceMemSpace>>                remap_t_device;
+
+  /// Scratch lanes of the largest arc, in the memory of the execution space
+  /// (`lanes_device` for device execution, `lanes_host` otherwise): the adjoint
+  /// of the output of the instruction in hand, the operands of another memory
+  /// space staged for a kernel, and the transpose of a remap applied to it.
+  static constexpr std::size_t kLanes = 6;
+  std::vector<std::vector<double>>                              lanes_host;
+  std::vector<Kokkos::View<double*, AdjointDeviceMemSpace>>     lanes_device;
+
+  /// Host scratch for the reverse of a Transport between processes, whose exchange runs on
+  /// host buffers: the adjoint of the destination arc, when that is in device memory, and the
+  /// adjoint the exchange hands back to the source arc. Sized once, to the largest such arc.
+  std::vector<double> transport_out, transport_in;
+
+  /// The reverse sweep: `open` once the first `run_period_adjoint()` call has
+  /// fixed the number of forward periods it reverses (`forward_periods`, the
+  /// value of `Impl::period_index` then); `next` is the period the next call
+  /// reverses, -1 when there is none left.
+  bool         open = false;
+  std::int64_t forward_periods = 0;
+  std::int64_t next = -1;
+
+  /// A period is part way through its reverse: `period` is its index and `cursor` the number of
+  /// events of `events` still to reverse (the sweep takes them from the back). A sweep that
+  /// suspends at the step of a component driven from outside (`Runner::resume_period_adjoint()`)
+  /// leaves the period open and carries on from the cursor the next time it is called.
+  bool         in_period = false;
+  std::int64_t period = 0;
+  std::size_t  cursor = 0;
+  /// Some component that steps is driven from outside the Runner (its `advance()` is a no-op and
+  /// the caller does the work): `run_period_adjoint()` refuses such a run, which only
+  /// `resume_period_adjoint()` can reverse.
+  bool         has_external = false;
 };
 
 /// One component advance the runtime owes within a period.
@@ -642,14 +825,13 @@ struct RegionBlock {
   /// reserves one more slot than it actually fills on a
   /// non-straddling window instance).
   std::size_t window_export_valid_substeps = 0;
-  ///, step (c), CORRECTED (measured against a real host
-  /// MPI run of `parallel.window_runner_mpi.{2,3}`, 2026-10-08): `true`
+  /// `true`
   /// when `value_arc` is NOT a window member's own export (an ordinary
   /// channel, where "owned" is decided by `length > 0` as it always
   /// was), OR when it IS one and the processor set that CONSUMES this
   /// export is hosted here (`WindowMemberConfig::export_consumer_
-  /// hosted` -- the field `window_export_meta` is keyed by, step (a)'s
-  /// correction). `false` only for a window block whose CONSUMER is NOT
+  /// hosted` -- the field `window_export_meta` is keyed by).
+  /// `false` only for a window block whose CONSUMER is NOT
   /// hosted here.
   ///
   /// This is deliberately the CONSUMER's own hosting, not the
@@ -657,12 +839,12 @@ struct RegionBlock {
   /// measures (Transport/Epoch/Remap/Constrain/Diagnose) executes on
   /// the consumer's own processor set, so that is the one rank whose
   /// local `block_residual`/`block_value` for this block are ever
-  /// genuinely written. Storing the EXPORTER's own hosting here (the
-  /// pre-correction code) made the exporter's rank -- which never
+  /// genuinely written. Storing the EXPORTER's own hosting here would
+  /// make the exporter's rank -- which never
   /// writes this block's buffer at all -- claim ownership, and the
   /// consumer's rank -- the only rank that does -- disclaim it; see
   /// `WindowMemberConfig::export_consumer_hosted`'s own comment for the
-  /// measured host symptom this produced
+  /// symptom
   /// (`parallel.window_runner_mpi.{2,3}` converging after exactly one
   /// sweep with the partner's own state never updated).
   ///
@@ -674,7 +856,7 @@ struct RegionBlock {
   /// owned` reads this, not `length`, for a window-scoped region.
   bool window_hosted = true;
 
-  ///  WindowNewton (newton-krylov.md Sec. 9.1's own exclusion rule):
+  /// newton-krylov.md Sec. 9.1's own exclusion rule:
   /// this block's own offset within the WINDOW-NEWTON interface vector
   /// (`RegionRuntime::newton_n` long), or `kNotInNewtonVector` when this
   /// block is excluded from it -- a `WaveformIteration::GaussSeidel`
@@ -706,7 +888,7 @@ struct RegionRuntime {
   std::size_t exit = 0;    // FIRST pass's last, inclusive
   int         max_iterations = 1;
 
-  /// Time windows track: true for a region whose IterationRegionDecl
+  /// True for a region whose IterationRegionDecl
   /// carries a `window_scope` (`fuse::CouplingWindowScope`). Changes two
   /// things resolve_regions()/run_region() otherwise assume: an ORDINARY
   /// region's body appears as exactly one contiguous (enter, exit) run
@@ -721,7 +903,7 @@ struct RegionRuntime {
   /// window, not once per period -- see resolve_regions()'s own comment).
   bool window_scoped = false;
 
-  /// Time windows track: every (enter, exit) run mark_regions() stamped
+  /// Every (enter, exit) run mark_regions() stamped
   /// for this region in ONE schedule period, in stream order. Exactly one
   /// entry for an ordinary region (identical to `enter`/`exit` above,
   /// kept for that case so existing code reading them directly still
@@ -732,7 +914,7 @@ struct RegionRuntime {
   /// pass.
   std::vector<std::pair<std::size_t, std::size_t>> passes;
 
-  /// Time windows track (C3): every LAGGED window_import arc this region
+  /// Every LAGGED window_import arc this region
   /// owns (`Runner::Impl::window_member_config`'s own `import_lagged`).
   /// `run_region()`'s own sweep loop snapshots each of these into
   /// `Impl::previous` at the TOP of every sweep, BEFORE any instruction
@@ -742,7 +924,7 @@ struct RegionRuntime {
   /// the delivering Sink happens to sit in the instruction stream.
   std::vector<ArcId> window_lagged_import_arcs;
 
-  /// Time windows track: every WindowAdvance node this region owns (one
+  /// Every WindowAdvance node this region owns (one
   /// per window member, `Runner::Impl::window_member_config`'s own keys
   /// restricted to this region). `run_region()`'s own straddle-replay
   /// step, at the top of every window instance's own pass (BEFORE that
@@ -756,7 +938,7 @@ struct RegionRuntime {
   ConvergenceCriterion         convergence;
   std::unique_ptr<Accelerator> accel;
 
-  ///: true for a region whose IterationRegionDecl::acceleration.kind
+  /// True for a region whose IterationRegionDecl::acceleration.kind
   /// is AccelKind::Newton. `accel` stays null for such a region --
   /// resolve_regions() never calls make_accelerator() for it, because
   /// Newton is not an Accelerator and make_accelerator() refuses
@@ -802,17 +984,17 @@ struct RegionRuntime {
   std::vector<double> residual_norms;              // per convergence measure
   std::vector<double> reference_norms;             // per convergence measure
 
-  /// the sorted, de-duplicated union of ranks of every
+  /// The sorted, de-duplicated union of ranks of every
   /// component this region checkpoints -- the same derivation
   /// resolve_epoch_participants() uses for an Epoch, computed once here
   /// instead of once per Epoch instruction because a region has exactly one
   /// participant set for its whole lifetime. Empty (the default) means
   /// "no cross-rank reduction": either no communicator is configured, or the
   /// region's components all sit on one rank, and run_region() computes its
-  /// residual purely locally, exactly as it always has.
+  /// residual purely locally.
   std::vector<int> participants;
 
-  ///  WindowNewton (newton-krylov.md Sec. 9.1): the length of the
+  /// newton-krylov.md Sec. 9.1: the length of the
   /// WINDOW-NEWTON interface vector `run_region_newton_window()` builds
   /// for THIS region -- the sum of `RegionBlock::length` over every block
   /// whose own `newton_offset != RegionBlock::kNotInNewtonVector`. Equal
@@ -823,19 +1005,18 @@ struct RegionRuntime {
   /// directly (`run_region_newton()`'s own seed loop, unchanged).
   std::size_t newton_n = 0;
 
-  ///  WindowNewton (newton-krylov.md Sec. 9.4), lifted to multi-rank
-  ///: the `fuse::linalg::Reducer` every norm and
+  /// newton-krylov.md Sec. 9.4: the `fuse::linalg::Reducer` every norm and
   /// inner product `run_region_newton_window()`/`run_region_newton()`'s
   /// own `fuse::num::solve()` call computes goes through -- held HERE,
   /// by the region, built ONCE in `resolve_regions()`, never constructed
-  /// fresh per solve: the single-rank code already routed every
-  /// reduction through a `Reducer` object the region owns ('s own
-  /// ruling), so lifting rank agreement to a real multi-rank region is a
+  /// fresh per solve: every reduction goes through a `Reducer` object the
+  /// region owns, so rank agreement for a multi-rank region is a
+  /// REDUCER SWAP at this one assignment, not a search for every call
   /// REDUCER SWAP at this one assignment, not a search for every call
   /// site that reduces a scalar directly (`fuse::linalg::DistVector::
   /// dot()`/`norm2()` already read through whichever `Reducer` the
   /// vector was constructed with -- `dist_vector.hpp` -- so nothing
-  /// downstream of this field changed at all to make this lift).
+  /// downstream of this field needs to change).
   ///
   /// `fuse::linalg::make_serial_reducer()` when `R.participants.size() <=
   /// 1` (no communicator configured, or every checkpointed component on
@@ -855,7 +1036,7 @@ struct RegionRuntime {
   /// communicator whose lifetime would outlive the function that split
   /// it (`runner.cpp`'s own "WHY NOT A SUB-COMMUNICATOR" comment on
   /// `reconcile_epoch()`), `ParticipantSetReducer` IS a held split --
-  /// the task's own explicit choice for this reducer specifically,
+  /// an explicit choice for this reducer specifically,
   /// because a Newton solve's own `Reducer` is reused across every
   /// evaluation of a window instance's solve (many GMRES iterations,
   /// many line-search trials) where a fresh point-to-point exchange per
@@ -877,8 +1058,7 @@ struct RegionRuntime {
   /// loudly instead of silently reducing over the wrong set.
   std::shared_ptr<const linalg::Reducer> newton_reducer;
 
-  /// S7.2b () communicator plumbing, lifted to multi-rank
-  ///: the `MPI_Comm_c2f` handle of the SAME
+  /// Communicator plumbing: the `MPI_Comm_c2f` handle of the SAME
   /// split `ParticipantSetReducer` above reduces over, for the ONE
   /// substrate that cannot reach a real collective through
   /// `fuse::linalg::Reducer` alone -- `fuse::petsc::solve()`'s own `Vec`/
@@ -887,39 +1067,38 @@ struct RegionRuntime {
   /// "linalg includes only base, so this header never names mpi.h").
   /// `0` when `newton_reducer` is the serial reducer (`R.participants.
   /// size() <= 1`) -- `fuse::petsc::install()`'s own registered entry
-  /// point reads `0` as "fall back to `comm_self_f()`", the UNCHANGED
+  /// point reads `0` as "fall back to `comm_self_f()`", the
   /// single-rank behaviour `docs/dev/newton-krylov.md` Sec. 11.3 already
   /// recorded, never a silent default standing in for a real
   /// communicator a multi-rank region actually has. Meaningless (left at
   /// its default) for a non-Newton region, exactly like `newton_reducer`.
   int newton_comm_f = 0;
 
-  /// NewtonModel track (2026-10-12): the diagonal `D` NewtonNorm::
+  /// The diagonal `D` NewtonNorm::
   /// MeasureWeighted scales the stacked residual by, built ONCE here in
   /// resolve_regions() from each block's own entity measure and
-  /// consumer-field tolerance scale (docs/dev/newton-krylov.md's own new
+  /// consumer-field tolerance scale (docs/dev/newton-krylov.md's own
   /// section has the formula and the E-NEWTON-NORM-SCALE refusal this
   /// building step can raise). Empty when `newton_config.norm` is
-  /// `Plain` -- the only state a Newton region predating this field is
-  /// left in. Length `n` for an ordinary region, `newton_n` for a
+  /// `Plain`. Length `n` for an ordinary region, `newton_n` for a
   /// window-scoped one (both already final by the time this is built).
   std::vector<double> newton_scale;
 
-  /// NewtonModel track (Round 2, GAP 1): `fuse::num::NewtonIterationRecord::
+  /// `fuse::num::NewtonIterationRecord::
   /// gmres_iterations` from the MOST RECENT Newton solve of this region,
   /// one entry per outer Newton iteration, in order -- the one piece of
   /// `fuse::num::NewtonResult::trace` neither `run_region_newton()` nor
-  /// `run_region_newton_window()` kept anywhere a caller could read
-  /// before this (both already extract `rec.norm_f` into `IterationStats::
+  /// `run_region_newton_window()` keeps anywhere a caller could read
+  /// (both extract `rec.norm_f` into `IterationStats::
   /// residual_history`; this is the identical extraction for `rec.
-  /// gmres_iterations`, added so a composed-vs-bare-preconditioner GMRES
+  /// gmres_iterations`, so a composed-vs-bare-preconditioner GMRES
   /// cost comparison does not need `FUSE_NEWTON_DEBUG=1` stderr-scraping
   /// to measure it). Overwritten, not appended, by every Newton solve of
   /// this region -- "most recent" the same way `IterationStats` itself
   /// is overwritten each period/window instance.
   std::vector<std::size_t> newton_gmres_iterations;
 
-  ///: one entry per checkpointed member that PROVIDES
+  /// One entry per checkpointed member that PROVIDES
   /// at least one block of this region, built ONCE here only when
   /// `newton_config.residual_path == Direct` (never for a window-scoped
   /// region, which refuses `Direct` at setup with `E-NEWTON-DIRECT-
@@ -969,7 +1148,7 @@ struct Runner::Impl {
   const MeshBackend&   backend;
   RunnerConfig         config;
 
-  ///: this process's own rank in `config.base_communicator`,
+  /// This process's own rank in `config.base_communicator`,
   /// or unset when no base communicator is configured (tier 0, or a
   /// single-rank run) -- the SAME value `build_ticks()` already computed
   /// locally for the ordinary-tick `hosted[]` check (its own comment there
@@ -979,18 +1158,17 @@ struct Runner::Impl {
   /// hosted` below -- one computation, not two that could drift apart.
   std::optional<int>   this_process;
 
-  /// the issue tracker (closing): the coupling hot loop runs on Kokkos'
+  /// The coupling hot loop runs on Kokkos'
   /// DEFAULT HOST execution space -- OpenMP if the build enabled it, Serial
-  /// otherwise (`Kokkos::DefaultHostExecutionSpace`'s own definition) --
-  /// instead of the hand-rolled serial loops `execute()` used to call
-  /// directly. Every `SpanOf`/`ConstSpanOf` this file wraps over a raw
+  /// otherwise (`Kokkos::DefaultHostExecutionSpace`'s own definition).
+  /// Every `SpanOf`/`ConstSpanOf` this file wraps over a raw
   /// pointer assumes host-accessible memory -- component-owned arrays,
   /// coupler storage, `RemapWeights` triplets -- which is exactly what this
   /// alias's `memory_space` (`Kokkos::HostSpace`) is, for every space it can
   /// resolve to.
   using HostExecSpace = Kokkos::DefaultHostExecutionSpace;
 
-  /// A5: the device counterpart, selected only when `config.execution_space
+  /// The device counterpart, selected only when `config.execution_space
   /// == RunnerConfig::RunnerExecutionSpace::Device` (see `execute_on<Space>`
   /// in runner.cpp and docs/dev/runner-device-dispatch.md). Falls back to
   /// `HostExecSpace` when fuse was built with no device backend at all --
@@ -1007,13 +1185,15 @@ struct Runner::Impl {
   using DeviceExecSpace = HostExecSpace;
 #endif
   using DeviceMemSpace = typename DeviceExecSpace::memory_space;
+  static_assert(std::is_same_v<DeviceMemSpace, detail::AdjointDeviceMemSpace>,
+                "AdjointState names the device memory space by the same rule");
 
   /// Space-aware moves between a Slot and host memory, for the host-side
   /// bookkeeping of iteration.cpp / fixed_point_residual.cpp (gather and
   /// scatter of the accelerator vector, checkpoint and verify snapshots, the
   /// Newton seam's save/restore). For a host slot each is byte for byte the
   /// num::copy / assign it replaced; for a device slot it is one deep_copy.
-  /// docs/dev/device-resident-arcs.md, step 3.
+  /// docs/dev/device-resident-arcs.md.
   static void slot_to_host(const detail::Slot& s, double* dst, std::size_t n) {
     if (!s.device) { num::copy(s.data, dst, n); return; }
     Kokkos::deep_copy(num::SpanOf<HostExecSpace>(dst, n),
@@ -1029,7 +1209,7 @@ struct Runner::Impl {
   /// own sample writes, resolve_pending_window_straddles()'s own publish
   /// loop): the same deep_copy-or-direct-write rule, at n=1, so neither
   /// caller has to stage a whole-slot scratch vector just to set one
-  /// double. docs/dev/device-resident-arcs.md, step 8.
+  /// double. docs/dev/device-resident-arcs.md.
   static void scalar_to_slot(double value, const detail::Slot& s,
                              std::size_t offset) {
     if (!s.device) { s.data[offset] = value; return; }
@@ -1038,23 +1218,22 @@ struct Runner::Impl {
   }
   /// Keeps a Relax/Residual output arc's own previous-iterate buffer
   /// (`previous[arc]` on the host, `previous_device[arc]` when the arc
-  /// itself is device-resident, step 8) in sync with a value this
+  /// itself is device-resident) in sync with a value this
   /// sweep's own GaussSeidel/Newton bookkeeping just committed to that
   /// arc from OUTSIDE execute_on() -- run_region()'s own per-block Sink
   /// delivery and the Newton seam's own commit/deliver-to-lagged-shadow
   /// writes all share this, each a different caller of the SAME role
   /// execute_on()'s own Relax/Residual case already plays at the end of
   /// ITS OWN sweep (this header's own `prev`/`previous_device` comments).
-  /// Missing this device branch left exactly this call's own previous
-  /// round (docs/dev/device-resident-arcs.md, step 8) with a confirmed,
-  /// reproducible divergence: `previous_device` took over as the arc's
-  /// own live carried iterate, but these three callers kept writing the
-  /// now-orphaned host `previous[arc]` instead, so the NEXT sweep's
-  /// Residual read whatever `previous_device[arc]` already held --
-  /// never this commit's own value. `resize`: true grows a mismatched or
-  /// unsized host shadow to `n` (the Newton seam's own deliver-to-
-  /// lagged-shadow write); false skips entirely on a mismatch, the same
-  /// guard run_region()'s own commit write already had.
+  /// Without this device branch the arc would diverge
+  /// (docs/dev/device-resident-arcs.md): `previous_device` takes over as the
+  /// arc's own live carried iterate, but these three callers would keep writing
+  /// the now-orphaned host `previous[arc]` instead, so the NEXT sweep's
+  /// Residual would read whatever `previous_device[arc]` already held -- never
+  /// this commit's own value. `resize`: true grows a mismatched or unsized host
+  /// shadow to `n` (the Newton seam's own deliver-to- lagged-shadow write);
+  /// false skips entirely on a mismatch, the same guard run_region()'s own
+  /// commit write already had.
   void sync_previous(std::uint32_t arc, const double* fed, std::size_t n,
                      bool resize) {
     if (arc >= slots.size()) return;
@@ -1110,7 +1289,37 @@ struct Runner::Impl {
   /// through note_component_ran().
   std::uint64_t              component_epoch = 1;
   std::vector<std::uint64_t> device_mirror_epoch;
-  void note_component_ran() noexcept { ++component_epoch; }
+  void note_component_ran() noexcept {
+    ++component_epoch;
+    if (!storage_bindings.empty()) refresh_storage_images();
+  }
+
+  /// Storage-typed fields converted at the component boundary (see
+  /// detail::StorageBinding), and for each arc the index of its binding or -1.
+  std::vector<detail::StorageBinding> storage_bindings;
+  std::vector<std::int32_t>           storage_binding_of_arc;
+
+  /// Arithmetic-typed fields (dd, qd): the arcs carry them as limbs, and the
+  /// instructions that do arithmetic on values run the kernels of
+  /// fuse/num/arithmetic_kernels.hpp (the arc's `Slot::arithmetic`).
+  /// `resolve_arithmetic` gives each instruction's output arc the type of its
+  /// inputs and refuses a mix; `check_arithmetic_ops` refuses the operators that
+  /// have no arithmetic instantiation, by name: among them the Relax and Residual
+  /// of an iteration region, which is why a region over such a field is refused.
+  Result<void> resolve_arithmetic(const Instruction& ins, std::size_t index);
+  Result<void> check_arithmetic_ops(const Instruction& ins, const detail::Resolved& r, std::size_t index) const;
+  /// The partials of the arithmetic conservation sums, `limb_count<qd>` binary64
+  /// values per chunk at most; sized at setup from the largest weight set. The
+  /// per-rank integrals travel with MPI_Allgather and are summed in rank order
+  /// in the accumulator type (`arith_gather` is the receive buffer).
+  std::vector<double> arith_scratch;
+  std::vector<double> arith_gather;
+  /// Widens every provided Storage field into its binary64 image: exact.
+  /// Called after component code has run and at the start of each period.
+  void refresh_storage_images();
+  /// Rounds the image of a required Storage field into the component's array,
+  /// to nearest with ties to even, once. A no-op for an arc that has no binding.
+  void deliver_storage_field(std::uint32_t arc);
   std::vector<detail::Slot>        slots;         // parallel to arcs
   std::vector<std::vector<double>> previous;      // previous iterate, for Relax
   /// Device-resident twin of `previous`, same index: the Relax/Residual
@@ -1118,7 +1327,7 @@ struct Runner::Impl {
   /// device-resident, so that copy is a same-space num::copy<Space>()
   /// instead of a round trip through `device_staging`. Empty for a slot
   /// `previous[i]` covers that stayed host-resident, and empty outright
-  /// under Host mode. docs/dev/device-resident-arcs.md, step 8.
+  /// under Host mode. docs/dev/device-resident-arcs.md.
   std::vector<Kokkos::View<double*, DeviceMemSpace>> previous_device;
   std::vector<std::size_t>         sample_count;  // per arc, for Accumulate
   std::vector<detail::Resolved>    resolved;      // parallel to instructions
@@ -1145,13 +1354,13 @@ struct Runner::Impl {
   /// setup() at all: the hot loop indexes `remap_weights` and nothing else.
   RemapCache                          remap_cache;
   std::vector<const RemapWeights*>    remap_weights;
-  /// the issue tracker (closing): the CSR conversion of the SAME entry of
+  /// The CSR conversion of the SAME entry of
   /// `remap_weights`, at the same index -- built once, right where that
   /// entry is pushed (resolve_remap()), never per period. See
   /// `detail::RemapCsr`'s own comment. `Resolved::remap` indexes both
   /// vectors together.
   std::vector<detail::RemapCsr>       remap_csr;
-  /// A5: `remap_csr`'s device-resident twin, same index, filled ONLY when
+  /// `remap_csr`'s device-resident twin, same index, filled ONLY when
   /// `config.execution_space == Device` (empty otherwise, never indexed by
   /// the host instantiation of `execute_on`). See `detail::mirror_remap_csr`.
   std::vector<detail::RemapCsrOf<DeviceMemSpace>> remap_csr_device;
@@ -1161,8 +1370,7 @@ struct Runner::Impl {
   /// resolve_remap(), read-only after setup. Holds real `MeshView*`
   /// pointers (owned by `backend`, stable for the Runner's lifetime -- see
   /// `NodalDistRemap::nodal_view`'s own comment) and one already-built
-  /// `DistributedInterpRows`, unlike `nodal_reductions` before it (deleted
-  /// this round; see `NodalDistRemap`'s own comment for why).
+  /// `DistributedInterpRows` (see `NodalDistRemap`'s own comment).
   std::vector<detail::NodalDistRemap> nodal_dist_remaps;
   /// Element measures, expanded to one weight per (element, component) so a
   /// weighted_sum can run straight over a buffer. Built once at setup.
@@ -1182,8 +1390,7 @@ struct Runner::Impl {
   /// built for (`MpiTransport::prepare()` refuses a spec other than the
   /// planned one), so two cross-rank channels cannot take turns on a single
   /// object without re-planning at every step. Two independent cross-rank
-  /// couplings is the ordinary multiphysics case; before 2026-09-20 the
-  /// runner refused any plan with more than one.
+  /// couplings is the ordinary multiphysics case.
   ///
   /// Every rank builds the same number in the same order. That is required,
   /// not incidental: `MpiTransport::set_communicator()` duplicates the
@@ -1192,17 +1399,17 @@ struct Runner::Impl {
   /// comes from the plan, which is identical on every rank.
   std::vector<std::unique_ptr<Transport>> graph_transports;
   /// One entry per `OpKind::Transport` instruction, in instruction order.
-  /// Built in resolve_instructions(); Task 4 fills in the CommGraph-derived
-  /// maps. Never resized after setup.
-  /// Row `s` marks every ComponentSet slot that reads, transitively, something
-  /// slot `s` provides -- the components whose step would consume a value a
-  /// failed step never produced. Square, `components.size()` per side, built
-  /// once in setup() from the channels of the coupling graph.
+  /// Built in resolve_instructions(); attach_comm_graphs() fills in the
+  /// CommGraph-derived maps. Never resized after setup. Row `s` marks every
+  /// ComponentSet slot that reads, transitively, something slot `s` provides --
+  /// the components whose step would consume a value a failed step never
+  /// produced. Square, `components.size()` per side, built once in setup() from
+  /// the channels of the coupling graph.
   ///
   /// It exists so that a failing period can keep advancing the components that
-  /// are NOT downstream of the failure. Before 2026-09-21 a failure anywhere
-  /// stopped every later advance in the period, which for a plan whose ticks
-  /// all fall in the trailing loop meant no component advanced at all --
+  /// are NOT downstream of the failure. Without it a failure anywhere
+  /// would stop every later advance in the period, which for a plan whose ticks
+  /// all fall in the trailing loop would mean no component advanced at all --
   /// including ones on a channel with no relation to the failure.
   ///
   /// Downstream only, deliberately. A component UPSTREAM of the failure reads
@@ -1222,7 +1429,7 @@ struct Runner::Impl {
   std::vector<std::size_t>           transport_instruction;
   /// Device-resident twin of `transport_plans`, same index, built once in
   /// `build_transport_device_buffers()` right after `place_arcs_on_device()`
-  /// (docs/dev/device-resident-arcs.md Phase 3). Empty under Host, and
+  /// (docs/dev/device-resident-arcs.md). Empty under Host, and
   /// empty under Device for a plan whose arcs did not both land on the
   /// device (`execute_on<Space>`'s `OpKind::Transport` case falls back to
   /// the per-arc host-staging path below for that plan and never indexes
@@ -1244,11 +1451,13 @@ struct Runner::Impl {
   std::vector<std::vector<double>> transport_in_scratch, transport_out_scratch;
   RunStats                         stats;
   std::int64_t                     period_index = 0;
-  /// Restart track round 2, Runner::request_restart_point()'s own
+  /// Non-null once `initialize_adjoint()` has succeeded.
+  std::unique_ptr<detail::AdjointState> adjoint;
+  /// Runner::request_restart_point()'s own
   /// backing flag -- see that method's doc comment (fuse/runtime/
   /// runner.hpp) for why this is a flag, not a trigger.
   bool                              restart_point_requested = false;
-  /// the issue tracker (). FUSE_COLLECTIVE_TRACE's
+  /// FUSE_COLLECTIVE_TRACE's
   /// own per-rank, monotonically increasing count of collective
   /// instructions (fuse::is_collective(), include/fuse/ir/op.hpp) this
   /// rank has entered in the whole run so far -- incremented once per
@@ -1264,7 +1473,7 @@ struct Runner::Impl {
   std::vector<IterationStats>        region_stats;   // parallel to regions
   std::vector<std::string>           region_explain;  // parallel to regions
 
-  /// Time windows track (C3): everything about ONE window-scoped member
+  /// Everything about ONE window-scoped member
   /// that `advance_window()` needs and that never changes across sweeps
   /// or window instances -- resolved ONCE, in `resolve_regions()`, from
   /// the graph alone (`CouplingWindowScope`, `ComponentDecl::interval`),
@@ -1274,22 +1483,21 @@ struct Runner::Impl {
   /// builds at most one such node per member per region).
   struct WindowMemberConfig {
     std::size_t component_slot = 0;  ///< this member's own ComponentSet slot
-    ///: whether THIS process hosts this member -- resolved
+    /// Whether THIS process hosts this member -- resolved
     /// once in `resolve_regions()` from `Runner::Impl::this_process` and
     /// this member's own `ComponentDecl::ranks`, the IDENTICAL formula
     /// `build_ticks()`'s own `hosted[]` already uses for ordinary ticks
     /// (that array's own comment has the full account). `true`
     /// unconditionally when `this_process` is unset (tier 0, or a
-    /// single-rank run) -- every existing single-process caller keeps
-    /// meaning exactly what it meant before this field existed.
+    /// single-rank run) -- every single-process caller sees every member as
+    /// hosted.
     /// `advance_window()` reads this FIRST, before anything else: a
     /// non-hosted member takes no substeps, calls neither `advance()`
     /// nor `save_state()`/`restore_state()`, and yields no
     /// `ExternalSuspend` -- its own export arc is left untouched here,
     /// for the field transfer (Transport/Remap/Sink) to deliver instead.
     bool        hosted = true;
-    /// correction, measured against a real host MPI run of
-    /// `parallel.window_runner_mpi.{2,3}` (2026-10-08): whether the
+    /// Whether the
     /// processor set that CONSUMES this member's own export -- the
     /// channel's TARGET component, resolved the identical way `hosted`
     /// above resolves THIS member's own processor set -- includes
@@ -1325,7 +1533,7 @@ struct Runner::Impl {
     /// time), with `got.x_b_per_window[0] == 0.2`, its own unmodified
     /// initial value, since no real exchange ever ran to convergence.
     bool        export_consumer_hosted = true;
-    ///, step (b): the channel this member's own IMPORT
+    /// The channel this member's own IMPORT
     /// came through -- `ChannelId{}` (invalid, the default) when this
     /// member imports nothing. Set in `resolve_regions()`'s first pass
     /// alongside `provider_exported_field`/`cfg.required`, read back in
@@ -1336,8 +1544,7 @@ struct Runner::Impl {
     /// window_lowering.cpp's "ordinary per-channel rule" actually
     /// emitted -- exactly once, so this member's own `window_import`
     /// arc is primed THROUGH that chain and never through a direct
-    /// `registry.get(provider_exported_field)` read (the issue tracker
-    /// own evidence 3).
+    /// `registry.get(provider_exported_field)` read.
     ChannelId   import_channel;
     Rational    interval{1};
     DtPolicy    policy = DtPolicy::Adjustable;
@@ -1358,9 +1565,7 @@ struct Runner::Impl {
     /// import at all (a pure exporter).
     bool        import_lagged = false;
     ArcId       window_import;  ///< this member's own import arc, or invalid
-    ///, MEASURED this session (traced,
-    /// element 0, hexfloat, both channels, period 0 side by side against
-    /// the in-process reference -- the lead's own instruction): the SAME
+    /// The SAME
     /// `import_view_arc` resolve_regions()'s own walk-back already
     /// computes for `window_import_field_arc` (this file's own comment
     /// on that walk has the full account) -- the chain's TRUE root, an
@@ -1369,26 +1574,25 @@ struct Runner::Impl {
     /// ALWAYS holding the application's actual write the instant it
     /// happens, regardless of whether this member's own import CHAIN
     /// (Remap..Sink) has executed yet THIS sweep. `advance_window()`'s
-    /// own t=0 history-correction (this file) needs exactly that: under
-    /// the scheduling-order fix (OpKind::ExternalDelivery's own comment,
+    /// own t=0 history-correction (this file) needs exactly that: given
+    /// the scheduling order (OpKind::ExternalDelivery's own comment,
     /// include/fuse/ir/op.hpp), a member scheduled BEFORE its own
     /// import's source_producer (U, in the two-member Brusselator graph,
     /// since V's own WindowAdvance -- and therefore U's own import
     /// chain, which stands after it -- runs AFTER U's) reaches its own
     /// t=0 correction before that chain has ever run this sweep, so
     /// `window_import`'s own buffer (the Sink's downstream COPY) is
-    /// still unwritten -- MEASURED: the harness's own window 0 sweep 0
-    /// WindowAdvance output for U already diverged from the reference
-    /// at substep 1, by roughly 4 in an O(1) quantity, traced directly
-    /// to this read. `window_import`, by contrast, is read everywhere
-    /// ELSE in this file for the ordinary, LAGGED per-sweep import
-    /// (`previous[]`/`slots[]`, both read deliberately one sweep late
-    /// for Jacobi/GaussSeidel), which this field must never replace:
-    /// only the t=0 correction, which explicitly wants the LIVE value
-    /// the instant it exists, uses it. Equal to `window_import` for an
-    /// ordinary channel (no walk-back needed there, `import_view_arc`'s
-    /// own initializer); invalid when this member imports nothing, the
-    /// same as `window_import`.
+    /// still unwritten -- reading it there made the harness's own window 0
+    /// sweep 0 WindowAdvance output for U diverge from the reference at substep
+    /// 1, by roughly 4 in an O(1) quantity, traced directly to this read.
+    /// `window_import`, by contrast, is read everywhere ELSE in this file for
+    /// the ordinary, LAGGED per-sweep import (`previous[]`/`slots[]`, both read
+    /// deliberately one sweep late for Jacobi/GaussSeidel), which this field
+    /// must never replace: only the t=0 correction, which explicitly wants the
+    /// LIVE value the instant it exists, uses it. Equal to `window_import` for
+    /// an ordinary channel (no walk-back needed there, `import_view_arc`'s own
+    /// initializer); invalid when this member imports nothing, the same as
+    /// `window_import`.
     ArcId       window_import_delivery_arc;
     /// This member's own IMPORT's own PROVIDER's own `ComponentSet`
     /// slot (resolved the same way `component_slot` above is, from
@@ -1429,8 +1633,7 @@ struct Runner::Impl {
     DtPolicy    provider_policy = DtPolicy::Adjustable;
     std::size_t provider_capacity = 1;
 
-    /// Restart track (docs/dev/restart.md Section 9 item 4, window-
-    /// waveform history, Slice 2): this member's own EXPORT field --
+    /// This member's own EXPORT field (docs/dev/restart.md) --
     /// the identical `FieldId` `resolve_regions()`'s local `exported_
     /// field` variable already resolves (this struct's own top comment:
     /// "mirrors member_exported_field()/member_imported_field()") --
@@ -1444,7 +1647,7 @@ struct Runner::Impl {
   };
   std::unordered_map<std::uint32_t, WindowMemberConfig> window_member_config;
 
-  ///: `Runner::field_window_view()`'s own
+  /// `Runner::field_window_view()`'s own
   /// lookup tables, keyed by FieldId (not by the WindowAdvance NodeId
   /// `window_member_config` uses) since the ABI caller names a field, not
   /// a node. Populated alongside `window_member_config` itself, in
@@ -1456,10 +1659,10 @@ struct Runner::Impl {
   std::unordered_map<std::uint32_t, ArcId> window_export_field_arc;
   std::unordered_map<std::uint32_t, ArcId> window_import_field_arc;
 
-  /// Time windows track: one member's own subcycling state, keyed the
+  /// One member's own subcycling state, keyed the
   /// same way as `window_member_config` (the `NodeId` of its own
   /// `OpKind::WindowAdvance` instruction). `fuse::detail::
-  /// WindowMemberState` (fuse/runtime/window_coupler.hpp, Unit A)
+  /// WindowMemberState` (fuse/runtime/window_coupler.hpp)
   /// unchanged -- what `advance_window()` reads and updates every sweep
   /// for THIS member's own trajectory (clock, history, straddle
   /// bookkeeping). Never read by a partner: a partner's own sample TIMES
@@ -1490,7 +1693,7 @@ struct Runner::Impl {
   /// window_runner test (always a single `run_period()` call) had
   /// exercised. `window_absolute_instance()`'s own comment has the fix.
   std::unordered_map<std::uint32_t, std::int64_t> window_last_dst_step;
-  /// Time windows track (C3): the clock `plan_substeps()` starts EVERY
+  /// The clock `plan_substeps()` starts EVERY
   /// sweep of the CURRENT pass from -- fixed once, on that pass's own
   /// first sweep (`iteration == 0`), to either `T0` (no carried
   /// straddle) or wherever the previous window instance's own overshoot
@@ -1498,14 +1701,14 @@ struct Runner::Impl {
   /// later sweep of the SAME pass: `run_region()`'s own generic rollback
   /// restores this member to the SAME window-start checkpoint before
   /// every sweep, so every sweep must replan from the SAME starting
-  /// clock -- reading `WindowMemberState::clock` directly instead (as an
-  /// earlier draft of `advance_window()` did) drifts forward every call,
+  /// clock -- reading `WindowMemberState::clock` directly instead drifts
+  /// forward every call,
   /// since that field is ALSO where this sweep's own `final_clock` gets
   /// recorded, and plans a zero-length (or negative) interval on every
   /// sweep after the first.
   std::unordered_map<std::uint32_t, Rational> window_pass_start_clock;
 
-  /// Time windows track: this member's own PROVIDES value at the window's
+  /// This member's own PROVIDES value at the window's
   /// own start (T0), cached ONCE on the pass's own first sweep
   /// (`first_sweep_of_pass`), keyed the same way as
   /// `window_pass_start_clock`. Read, never written, on every later sweep
@@ -1519,20 +1722,18 @@ struct Runner::Impl {
   /// itself a FUNCTION of that hidden state (e.g. a remap of it), which
   /// stays at whatever the REJECTED sweep's own last `advance()` call
   /// left it holding. Reading `cfg.provided[e]` live at the top of every
-  /// sweep -- as `advance_window()`'s own "Sample 0" write used to --
-  /// therefore mislabels the PREVIOUS sweep's own end-of-window value as
-  /// the window-start one from the second sweep on, exactly the defect
+  /// sweep would therefore mislabel the PREVIOUS sweep's own
+  /// end-of-window value as the window-start one from the second sweep
+  /// on, exactly the defect
   /// `WindowCoupler::sweep_window()`'s own `start_value[i][e]` (window_
   /// coupler.cpp's own comment: "captured ONCE, right after save_state(),
-  /// before any advance() this window can mutate `provided`") was fixed
-  /// to remove on the driver side -- found here by a hexfloat trace
-  /// against that same driver on the Brusselator's own parameters
-  /// (max_window_balance_error 1.686e-03, exactly the pre-fix historical
-  /// defect's own signature, docs/user/gray-scott.md's sibling account
-  /// and docs/user/brusselator.md's own 2026-09-26 history).
+  /// before any advance() this window can mutate `provided`") avoids on
+  /// the driver side (the symptom is a spurious window balance error,
+  /// e.g. max_window_balance_error 1.686e-03 on the Brusselator's own
+  /// parameters, docs/user/gray-scott.md and docs/user/brusselator.md).
   std::unordered_map<std::uint32_t, std::vector<double>> window_start_value;
 
-  /// the issue tracker (closing): scratch for the fixed-chunk
+  /// Scratch for the fixed-chunk
   /// deterministic reductions (fuse/num/space_kernels.hpp's
   /// `deterministic_norm_squared`/`deterministic_norm_squared_diff`) that
   /// replace iteration.cpp's block residual/value norm loop. Sized ONCE in
@@ -1555,10 +1756,10 @@ struct Runner::Impl {
   /// simultaneously with `window_host_scratch` within the same call,
   /// since that correction's own read and the live/unlagged import read
   /// above can name two different arcs at once. docs/dev/device-resident-
-  /// arcs.md, step 8.
+  /// arcs.md.
   std::vector<double> window_t0_scratch;
 
-  /// runtime-exchange track: device-resident twin of `weight_sets`, same
+  /// Device-resident twin of `weight_sets`, same
   /// index, built once in `build_constrain_device_buffers()` right after
   /// `place_arcs_on_device()` (Device mode only; empty under Host). Lets
   /// `OpKind::Constrain`'s conservation sums integrate on the arc's own
@@ -1575,7 +1776,7 @@ struct Runner::Impl {
   /// by the Device-dispatched `execute_on<DeviceExecSpace>` instantiation.
   Kokkos::View<double*, DeviceMemSpace> constrain_reduction_scratch;
 
-  /// A5: the device path's ONLY buffer, allocated once in `setup()` when
+  /// The device path's ONLY buffer, allocated once in `setup()` when
   /// `config.execution_space == Device` (zero-extent otherwise). Every arc
   /// buffer, `previous[]` iterate and space-time history row stays where it
   /// is today -- host memory a component, a Transport, a checkpoint `memcmp`
@@ -1603,6 +1804,22 @@ struct Runner::Impl {
       : graph(g), dag(d), plan(std::move(p)), backend(b) {}
 
   Result<void> setup(ComponentSet& components, FieldRegistry& registry);
+
+  /// `Runner::initialize_adjoint()` and `Runner::run_period_adjoint()`
+  /// (src/runtime/runner_adjoint.cpp) are these, and the adjoint of one
+  /// coupling instruction.
+  Result<void> init_adjoint(ComponentSet& components, FieldRegistry& adjoint_registry);
+  /// Reverses events of the open period (opening the next one when none is open) until the end of
+  /// the period, or, when `suspended` is not null, until the step of a component driven from
+  /// outside, which it reports through `suspended` and leaves for the caller to reverse.
+  Result<void> sweep_adjoint(ComponentSet& components, std::optional<ExternalAdvanceRequest>* suspended);
+  /// The context the forward step of this tick had in `period`.
+  StepContext reverse_context(std::size_t tick_index, std::int64_t period) const;
+  Result<void> reverse_instruction(std::size_t index);
+  Result<void> reverse_tick(ComponentSet& components, std::size_t tick_index, std::int64_t period);
+  Result<void> reverse_region(ComponentSet& components, std::size_t loop_index, std::int64_t period);
+  template <class Space>
+  Result<void> reverse_on(std::size_t index);
   Result<void> resolve_buffers(FieldRegistry& registry);
   /// Device mode only: moves every eligible coupler-owned arc from
   /// `storage` into `device_storage` and flags its Slot. Eligibility is
@@ -1622,7 +1839,7 @@ struct Runner::Impl {
   /// `OpKind::Transport` case falls back to the host-staged path for it,
   /// exactly as under Host. Allocates once, never in the hot loop.
   void build_transport_device_buffers();
-  /// runtime-exchange track: device mode only, called right after
+  /// Device mode only, called right after
   /// `build_transport_device_buffers()`. Mirrors every entry of
   /// `weight_sets` into `weight_sets_device` (built once; `weight_sets`
   /// itself never changes after setup) and sizes
@@ -1647,12 +1864,11 @@ struct Runner::Impl {
   ///
   /// NOT collective, and creates no MPI resource. It reads the graph, which is
   /// identical on every rank, so every rank derives the same lists. That
-  /// matters: an earlier version split a communicator per pair and held it for
-  /// the Runner's lifetime, which would have required a destructor that calls
+  /// matters: splitting a communicator per pair and holding it for the
+  /// Runner's lifetime would require a destructor that calls
   /// `MPI_Comm_free` -- a COLLECTIVE call, and therefore exactly the
   /// asymmetric-destruction hang attach_comm_graphs() is careful to avoid
-  /// ("nothing outlives this function"). The host run that exposed it reported
-  /// unfreed COMM handles at exit.
+  /// ("nothing outlives this function").
   Result<void> resolve_epoch_participants();
 
   /// Reduces this rank's status over the participants of `ins` and fails if any
@@ -1662,6 +1878,14 @@ struct Runner::Impl {
   /// trivially satisfied and this is a no-op -- not a silent omission: with one
   /// rank there is nobody to disagree with.
   Result<void> reconcile_epoch(const Instruction& ins);
+
+  /// The agreement at the end of a reverse period: the status of every rank that takes part in
+  /// any agreement point of the plan is reduced, and a rank that did not fail records
+  /// `E-RT-EPOCH-PEER` if another did, so that the period fails (and is reversed again by the
+  /// next call) on all of them together. The reverse order puts a component's step AFTER the
+  /// exchanges that follow it in the forward order, so a failure at a step has no agreement point
+  /// behind it in the sweep. A no-op without a base communicator or without an `Epoch`.
+  Result<void> agree_on_adjoint_period();
 
   /// Set when an instruction fails mid-period. The period loop keeps going
   /// from there but executes ONLY `Epoch` instructions, so the failing rank
@@ -1686,14 +1910,14 @@ struct Runner::Impl {
   Result<void> attach_comm_graphs();
   [[nodiscard]] Result<void> check_transport_extents() const;
   Result<void> resolve_constrain(const Instruction& ins, detail::Resolved& r);
-  /// Spec Section 5.4 (Task 5.5). Gives one `Remap` instruction its operator: either
+  /// Spec Section 5.4. Gives one `Remap` instruction its operator: either
   /// real weights from `remap_cache`, or the identity -- but only after
   /// PROVING the two regions are the same cells in the same order. Refuses
   /// everything else, because the only remaining alternative is an identity
   /// copy between meshes that merely agree on a count, which is silently
   /// wrong rather than loudly wrong.
   Result<void> resolve_remap(const Instruction& ins, detail::Resolved& r);
-  /// (automatic remap halo, decision 2026-10-18). Called from
+  /// Automatic remap halo. Called from
   /// `resolve_instructions()` for every `OpKind::BuildRemapHalo`
   /// instruction, BEFORE the corresponding channel's own `Remap`
   /// instruction is resolved (program order: `OpKind::BuildRemapHalo`'s
@@ -1712,7 +1936,7 @@ struct Runner::Impl {
   /// did (consistently refused everywhere); no agreement collective is
   /// needed on top of that static fact.
   Result<void> resolve_remap_halo(const Instruction& ins, std::size_t index);
-  /// the issue tracker (closing). Builds the CSR conversion of `weights`'
+  /// Builds the CSR conversion of `weights`'
   /// COO triplets -- see `detail::RemapCsr`'s own comment for the layout --
   /// called from `resolve_remap()` at the point it is about to push a new
   /// entry onto `remap_weights`, so the two vectors stay parallel. Defensive,
@@ -1723,7 +1947,7 @@ struct Runner::Impl {
   /// per call and this checks once, at the point the invariant is consumed
   /// to build a prefix scan instead of re-validated every period.
   Result<detail::RemapCsr> build_remap_csr(const RemapWeights& weights);
-  ///, round 2. Called from
+  /// Called from
   /// `resolve_remap()` in place of the flat `E-RT-REMAP-NODAL-PARALLEL`
   /// refusal, ONLY for a Remap whose target is a nodal region on more than
   /// one rank AND whose method is `"consistent"`/`"consistent-transpose"`.
@@ -1759,7 +1983,7 @@ struct Runner::Impl {
   /// function above -- every period, not just once.
   Result<void> apply_nodal_dist_remap(const Instruction& ins,
                                       const detail::Resolved& r);
-  /// runtime-exchange track, follow-up round: the "consistent" (H)
+  /// The "consistent" (H)
   /// gather half of `apply_nodal_dist_remap()`'s plan-based path, a
   /// member function template (the SAME reason `execute_on<Space>` is
   /// one, not a local lambda: nvcc rejects an extended `__host__
@@ -1779,7 +2003,7 @@ struct Runner::Impl {
   Result<void> nodal_dist_scatter_on(detail::NodalDistRemap& plan, const detail::Slot& out_slot,
                                      std::size_t components,
                                      const std::vector<double>& owned_loads);
-  /// Spec Section 7.3 (Task 6.3). Builds one `SpacetimeInfo` per space-time
+  /// Spec Section 7.3. Builds one `SpacetimeInfo` per space-time
   /// `Interpolate` node and refuses every configuration the interpreter cannot
   /// execute correctly, rather than falling back to a lower-order basis.
   Result<void> resolve_spacetime();
@@ -1799,7 +2023,7 @@ struct Runner::Impl {
 
   Result<void> execute(const Instruction& ins, const detail::Resolved& r);
 
-  /// Newton-Krylov seam. `f_out = x - G(x)` for region
+  /// The Newton-Krylov seam. `f_out = x - G(x)` for region
   /// `region_index`, `G` one Picard sweep of that region's body delivered
   /// with `x` on the interface -- see fuse/runtime/fixed_point_residual.hpp
   /// and src/runtime/fixed_point_residual.cpp (this method's own
@@ -1807,8 +2031,8 @@ struct Runner::Impl {
   /// participant, non-window, non-externally-driven scope it is
   /// restricted to.
   ///
-  /// `commit`: own addition. `false` (the default, and own
-  /// original meaning) restores every component and arc this call touched
+  /// `commit`: `false` (the default) restores every component and arc
+  /// this call touched
   /// before returning, so repeated calls at arbitrary `x` are side-effect
   /// free -- what a Newton iteration's own Jacobian-action and line-search
   /// trial evaluations need. `true` skips that restore, leaving the
@@ -1822,7 +2046,7 @@ struct Runner::Impl {
                                         std::span<double> f_out,
                                         bool commit = false);
 
-  /// NewtonModel track (2026-10-12): `NewtonResidualPath::Direct`'s own
+  /// `NewtonResidualPath::Direct`'s own
   /// `F(x) = x - G(x)` for an ORDINARY (non-window) region -- the same
   /// save/restore contract and signature as `evaluate_region_residual()`
   /// above, except `G(x)` is obtained by calling each providing member's
@@ -1854,7 +2078,7 @@ struct Runner::Impl {
                                                std::span<double> f_out,
                                                bool commit = false);
 
-  /// NewtonModel track (2026-10-12): builds `RegionRuntime::newton_scale`
+  /// Builds `RegionRuntime::newton_scale`
   /// (`D`, the NewtonNorm::MeasureWeighted diagonal) from each block's own
   /// entity measure (`weights_for()`) and consumer-field tolerance scale.
   /// `vector_length` is `R.n` for an ordinary region, `R.newton_n` for a
@@ -1871,7 +2095,7 @@ struct Runner::Impl {
       const std::vector<detail::RegionBlock>& blocks, bool window_scoped,
       std::size_t vector_length, const linalg::Reducer& reducer);
 
-  ///: builds `RegionRuntime::newton_direct_members` for
+  /// Builds `RegionRuntime::newton_direct_members` for
   /// an ORDINARY (non-window) Newton region selecting `NewtonResidualPath::
   /// Direct` -- one entry per checkpointed member that provides at least
   /// one block of this region, its own Requires/Provides block lists, the
@@ -1885,21 +2109,21 @@ struct Runner::Impl {
                               ComponentSet& components,
                               const detail::RegionRuntime& R);
 
-  /// own eager validation: the SAME three checks
+  /// Eager validation: the SAME three checks
   /// evaluate_region_residual() enforces lazily on its first call
   /// (non-window, single cross-rank participant, no externally driven
   /// member), run once at setup from resolve_regions() so a Newton-
   /// selected region this Runner cannot yet solve is refused with
   /// E-NEWTON-UNSUPPORTED-REGION before the first period runs rather than
   /// on it -- resolve_regions()'s own "fail fast" rule (this file's top
-  /// comment, src/runtime/iteration.cpp) applied to this track's own new
+  /// comment, src/runtime/iteration.cpp) applied to the Newton
   /// region shape. One function so the two call sites (here and
   /// evaluate_region_residual() itself) cannot drift apart on what
   /// "supported" means.
   Result<void> check_region_supports_newton(ComponentSet& components,
                                             std::size_t region_index) const;
 
-  ///: the Newton-Krylov solve that replaces the Picard sweep loop
+  /// The Newton-Krylov solve that replaces the Picard sweep loop
   /// entirely for a region with `RegionRuntime::newton` set -- called from
   /// run_region() before any of the Picard-only setup (R.accel->reset(),
   /// the window-scoped checkpoint, the x_old seed) runs, since none of it
@@ -1913,7 +2137,7 @@ struct Runner::Impl {
   Result<void> run_region_newton(ComponentSet& components,
                                  detail::RegionRuntime& R);
 
-  ///  WindowNewton (newton-krylov.md Sec. 9): the window-scoped
+  /// newton-krylov.md Sec. 9: the window-scoped
   /// sibling of `run_region_newton()` above -- called from `run_region()`
   /// in place of the Picard sweep loop for a window-scoped region with
   /// `RegionRuntime::newton` set, AFTER that function's own straddle
@@ -1936,7 +2160,7 @@ struct Runner::Impl {
                                         detail::RegionRuntime& R,
                                         std::size_t enter, std::size_t exit);
 
-  ///  WindowNewton (newton-krylov.md Sec. 9.1-9.2): the window-scoped
+  /// newton-krylov.md Sec. 9.1-9.2: the window-scoped
   /// sibling of `evaluate_region_residual()` above. `x`/`f_out` are
   /// `RegionRuntime::newton_n` long -- the GaussSeidel-excluded blocks
   /// (`RegionBlock::newton_offset == RegionBlock::kNotInNewtonVector`)
@@ -1989,27 +2213,22 @@ struct Runner::Impl {
   /// at the original call site.
   void refresh_window_member_history(detail::RegionRuntime& R);
 
-  /// the issue tracker (owner priority, Restart/):
-  /// re-prime every window-scoped region's own CONSUMER-side transfer
+  /// Re-primes every window-scoped region's own CONSUMER-side transfer
   /// buffer (`window_import`, a coupler-owned slot primed ONCE at
   /// resolve_regions()/initialize() time, before any restore ever
   /// runs) from the restored PROVIDER's own `WindowMemberState::
-  /// last_window_waveform` (now a live producer in advance_
+  /// last_window_waveform` (a live producer in advance_
   /// window(), src/runtime/iteration.cpp) -- called once, from
   /// Runner::restore_restart_fields(), right after every window
-  /// member's own history/waveform has been restored. Two earlier fix
-  /// attempts (re-priming the EXPORT slot only; re-running the import
-  /// channel's own delivery chain through execute()) are recorded in
-  /// the issue tracker and were measured insufficient/harmful
-  /// respectively -- both predate, and so had no genuinely
-  /// restored per-sample trajectory to re-prime FROM: last_window_
-  /// waveform was unconditionally empty on every Runner-driven restore
-  /// until this round. See this function's own definition (iteration.
-  /// cpp) for the full derivation and the measured trace that
-  /// confirmed it.
+  /// member's own history/waveform has been restored. Re-priming the
+  /// EXPORT slot only, or re-running the import channel's own delivery
+  /// chain through execute(), does not work: last_window_waveform is
+  /// the only genuinely restored per-sample trajectory to re-prime FROM.
+  /// See this function's own definition (iteration.
+  /// cpp) for the full derivation.
   [[nodiscard]] Result<void> reprime_window_import_after_restore();
 
-  ///  WindowNewton (newton-krylov.md Sec. 9.5): the `LinearizationToken*`
+  /// newton-krylov.md Sec. 9.5: the `LinearizationToken*`
   /// of the component that PROVIDES the window channel whose consumer-side
   /// `window_import` arc is `feed_arc` -- `nullptr` if no such channel, or
   /// the provider lacks a usable one (`kCapabilityLinearization` unset, or
@@ -2020,7 +2239,7 @@ struct Runner::Impl {
   [[nodiscard]] LinearizationToken* window_block_provider_token(
       ComponentSet& components, std::uint32_t feed_arc);
 
-  /// A5: `execute()`'s whole body, parameterised on the Kokkos execution
+  /// `execute()`'s whole body, parameterised on the Kokkos execution
   /// space its Space-generic cases launch on (`HostExecSpace` or
   /// `DeviceExecSpace`; `execute()` is the one-line dispatcher that picks
   /// from `config.execution_space`). Defined in runner.cpp, where its only
@@ -2029,7 +2248,7 @@ struct Runner::Impl {
   template <class Space>
   Result<void> execute_on(const Instruction& ins, const detail::Resolved& r);
 
-  /// the issue tracker. A coroutine (see src/runtime/resume.hpp):
+  /// A coroutine (see src/runtime/resume.hpp):
   /// suspends via `co_await detail::ExternalSuspend{}`, reporting
   /// `pending_external_request`, when `tick`'s own component is
   /// `is_externally_driven()` -- BEFORE calling its `advance()` (a no-op
@@ -2043,7 +2262,7 @@ struct Runner::Impl {
                                      const detail::Tick& tick, int iteration);
   detail::Task<Result<void>> step_period(ComponentSet& components);
 
-  /// the issue tracker fix, driving `step_period()`'s coroutine from
+  /// Drives `step_period()`'s coroutine from
   /// outside one call: creates a new `period_task` if the previous one
   /// ran to completion (or none has started yet), resumes it, and reports
   /// either the `ExternalAdvanceRequest` it suspended at
@@ -2053,7 +2272,7 @@ struct Runner::Impl {
   Result<std::optional<ExternalAdvanceRequest>> resume_period(
       ComponentSet& components);
 
-  /// Defect 3's own refinement (Conformance): every component the
+  /// Every component the
   /// compiled stream visits at a period's own start (time 0), in the
   /// EXACT order it visits them -- in-process and externally driven
   /// alike, whichever this is called for picks out the one it cares
@@ -2072,8 +2291,7 @@ struct Runner::Impl {
   /// for why `fuse_is_coupling_ongoing()` needed this.
   [[nodiscard]] std::vector<ComponentId> components_due_at_period_start() const;
 
-  ///, the lead's own corrected ruling
-  /// (2026-10-04, superseding an earlier same-day one): resolves what
+  /// Resolves what
   /// `next_component` must report when the cached request is a
   /// delivery proxy (`ExternalAdvanceRequest::is_delivery_due`,
   /// runner.hpp, has the full account of why the proxy's own importer
@@ -2110,9 +2328,7 @@ struct Runner::Impl {
   /// window candidate, arbitrarily but deterministically.
   ///
   /// The `WindowAdvance` scan is bounded, not a plain walk to
-  /// `plan.instructions().size()`: the lead's own ruling (2026-10-04),
-  /// correcting the SAME day's first version of this function, once a
-  /// scheduling-order fix made a delivery instruction's own position
+  /// `plan.instructions().size()`: a delivery instruction's own position can
   /// coincide with the END of a region's per-sweep instruction range.
   /// If `instruction_index` lies inside some `RegionRuntime`'s own
   /// `passes` entry (enter, exit), the forward scan stops at that
@@ -2151,7 +2367,7 @@ struct Runner::Impl {
   /// suspension until the period it is running completes. Recreated by
   /// `resume_period()` once the previous one is done.
   std::optional<detail::Task<Result<void>>> period_task;
-  /// the issue tracker. The handle `resume_period()` must call
+  /// The handle `resume_period()` must call
   /// `.resume()` on NEXT -- see resume.hpp's own comment on
   /// `ExternalSuspend` for why this is never simply `period_task`'s own
   /// handle after the first suspension. Seeded from `period_task->
@@ -2176,7 +2392,7 @@ struct Runner::Impl {
   // --- src/runtime/iteration.cpp (spec Section 5.3) -------------------------------
   /// Builds `regions` and refuses every plan whose shape the sweep loop below
   /// cannot execute correctly. Called from setup().
-  /// Time windows track (C3): also resolves each window member's own
+  /// Also resolves each window member's own
   /// native Provides/Requires field pointers directly from `registry`
   /// (`WindowMemberConfig::provided`/`required` below) -- bypassing the
   /// arc system entirely, since a window-scoped export/import has no
@@ -2192,13 +2408,13 @@ struct Runner::Impl {
   /// re-computes on every sweep.
   Result<void> check_region_isolation(const detail::RegionRuntime& r,
                                       const CheckpointSet& cp);
-  /// Checkpoints, at the top of a period, before anything advances. Time
-  /// windows track: SKIPS a window-scoped region -- see
+  /// Checkpoints, at the top of a period, before anything advances.
+  /// SKIPS a window-scoped region -- see
   /// `RegionRuntime::window_scoped`'s own comment for why that region's
   /// own checkpoint instead happens once per PASS, inside `run_region()`
   /// itself, not once per period here.
-  /// RT-2(e) (review 2026-10-11): the per-region/per-slot walk never
-  /// returns on the first local failure anymore -- it runs to completion
+  /// The per-region/per-slot walk never
+  /// returns on the first local failure -- it runs to completion
   /// (or to the first failure, which stops the walk but does not leave
   /// the function) and then agrees the result with every rank of
   /// `config.base_communicator` through `agree_checkpoint_status()`
@@ -2208,7 +2424,7 @@ struct Runner::Impl {
   /// whose own checkpoint failed returns before reaching any of it.
   Result<void> checkpoint_regions(ComponentSet& components);
 
-  /// RT-2(e): one MPI_Allreduce(MIN) of `local_ok` over the WHOLE
+  /// One MPI_Allreduce(MIN) of `local_ok` over the WHOLE
   /// `config.base_communicator` -- unlike `reduce_region_residuals()`/
   /// `gather_window_block_samples()`, there is no participant subset
   /// here: checkpoint_regions() runs unconditionally, on every rank, at
@@ -2228,7 +2444,7 @@ struct Runner::Impl {
   /// does that window instance's OWN checkpoint (save_state() + the byte-
   /// capture `checkpoint_regions()` does for an ordinary region at
   /// period-top) as the first act, before the sweep loop.
-  /// the issue tracker. A coroutine (src/runtime/resume.hpp): every
+  /// A coroutine (src/runtime/resume.hpp): every
   /// re-advance this function makes (the `R.tick_indices` loop) goes
   /// through `advance()` above, `co_await`ed, so a region member that is
   /// `is_externally_driven()` suspends there exactly like an ordinary
@@ -2253,21 +2469,19 @@ struct Runner::Impl {
   /// contract `resolve_pending_straddles()`'s own comment documents for
   /// the driver). A no-op for a region with no pending straddle.
   ///
-  /// NOT a coroutine, deliberately (the issue tracker own fix
-  /// statement only commits to step_period(), run_region() and the
-  /// window-advance path): its replay calls `comp.advance(ctx)` directly,
-  /// for a member whose PREVIOUS window instance straddled this one's
-  /// boundary, with no `ComponentSet`-tick to suspend through cleanly --
-  /// doing that correctly needs its own accounting of which replayed
-  /// interval an external caller would be asked to redo, which is outside
-  /// this round's scope. Refuses `E-RT-WINDOW-EXTERNAL-STRADDLE` up front
-  /// if the member being replayed `is_externally_driven()`, rather than
-  /// silently calling its (no-op) `advance()` out of the order an
-  /// external caller would see through `fuse_begin_step()`/
-  /// `fuse_end_step()`.
+  /// NOT a coroutine, deliberately (only step_period(), run_region() and
+  /// the window-advance path are): its replay calls `comp.advance(ctx)`
+  /// directly, for a member whose PREVIOUS window instance straddled this one's
+  /// boundary, with no `ComponentSet`-tick to suspend through cleanly -- doing
+  /// that correctly needs its own accounting of which replayed interval an
+  /// external caller would be asked to redo, which is not supported. Refuses
+  /// `E-RT-WINDOW-EXTERNAL-STRADDLE` up front if the member being replayed
+  /// `is_externally_driven()`, rather than silently calling its (no-op)
+  /// `advance()` out of the order an external caller would see through
+  /// `fuse_begin_step()`/ `fuse_end_step()`.
   Result<void> resolve_pending_window_straddles(ComponentSet& components,
                                                 detail::RegionRuntime& r);
-  /// Time windows track: executes exactly one `OpKind::WindowAdvance`
+  /// Executes exactly one `OpKind::WindowAdvance`
   /// instruction, for exactly one sweep of the region it belongs to.
   /// Called from `run_region()`'s own body loop INSTEAD OF `execute()`
   /// for this one instruction kind -- `execute()` has no `ComponentSet&`
@@ -2282,14 +2496,7 @@ struct Runner::Impl {
   /// straddle from the PREVIOUS window instance must be resolved and this
   /// window's own checkpoint/substep grid planned, before any of this
   /// sweep's own work.
-  ///
-  /// STATUS: stub. Returns E-RT-WINDOW-UNWIRED, same as execute()'s own
-  /// former WindowAdvance case (see that case's own comment, updated to
-  /// point here) -- the real subcycling implementation is blocked on a
-  /// design question flagged to the lead (Jacobi vs Gauss-Seidel exchange
-  /// semantics between two window members within one sweep; see this
-  /// pass's own host.submit_output).
-  /// the issue tracker. A coroutine (src/runtime/resume.hpp): its two
+  /// A coroutine (src/runtime/resume.hpp): its two
   /// direct `comp.advance(ctx)` calls each suspend first, via
   /// `co_await detail::ExternalSuspend{}`, when `comp.is_externally_
   /// driven()` -- the same rule `advance()` above applies to an ordinary
@@ -2298,7 +2505,7 @@ struct Runner::Impl {
                                             const Instruction& ins,
                                             const detail::Resolved& r,
                                             int iteration);
-  ///: executes exactly one
+  /// Executes exactly one
   /// `OpKind::ExternalDelivery` instruction, for exactly one sweep of the
   /// region it belongs to. Called from `run_region()`'s own body loop
   /// INSTEAD OF `execute()` for this one instruction kind -- mirrors
@@ -2310,8 +2517,8 @@ struct Runner::Impl {
   /// only emits `ExternalDelivery` for a channel whose source field sets
   /// `hdf5_path`, and every such field in this codebase is window-scoped;
   /// an ExternalDelivery reaching `step_period()`'s own top-level loop
-  /// outside any region is not handled by this fix and falls through to
-  /// `execute()`'s own pre-existing no-op case there, unchanged).
+  /// outside any region is not handled here and falls through to
+  /// `execute()`'s own no-op case there).
   ///
   /// The importing component's own `ComponentId` is read directly off
   /// `dag.arc(ins.out).type.rank_set` -- `lower_channel()`'s own LowFive
@@ -2331,7 +2538,7 @@ struct Runner::Impl {
   /// `component` set to the importer's own name --
   /// `ExternalAdvanceRequest::is_delivery_due`'s own comment
   /// (`include/fuse/runtime/runner.hpp`) has the full ABI-side contract
-  /// this sets up: the lead's own ruling (2026-10-04) is that
+  /// this sets up: namely that
   /// `fuse_begin_step(C)`, WHATEVER `C` names, resumes the Runner past
   /// EVERY pending delivery proxy it encounters while resuming --
   /// whatever component each one names, not only ones matching `C` --
@@ -2371,7 +2578,7 @@ struct Runner::Impl {
   /// division below never has a remainder.
   [[nodiscard]] std::int64_t window_absolute_instance(
       const WindowMemberConfig& cfg, std::int64_t dst_step) const;
-  /// one sweep's cross-rank residual agreement, reached by
+  /// One sweep's cross-rank residual agreement, reached by
   /// every rank in `r.participants` on every sweep -- including one that has
   /// already locally recorded a step_failure, exactly like reconcile_epoch().
   /// `payload` is laid out `[status, (r_value, r_owned, v_value, v_owned) *
@@ -2386,7 +2593,7 @@ struct Runner::Impl {
   /// False once this period has a failure that `slot` is downstream of.
   [[nodiscard]] bool may_advance(std::size_t slot) const;
 
-  /// RT-1 (review 2026-10-11): `participant_out` reports whether this rank
+  /// `participant_out` reports whether this rank
   /// is in `r.participants` at all -- `true` whenever `r.participants.size()
   /// <= 1` (no reduction to perform; this rank's own local payload already
   /// is the agreed value) or when this rank's own address is found in
@@ -2402,7 +2609,7 @@ struct Runner::Impl {
                                        std::vector<double>& payload,
                                        bool& participant_out);
 
-  ///, step (c): gathers every participant's own
+  /// Gathers every participant's own
   /// `WindowBlockSample` array (one per `r.blocks`) for a window-scoped
   /// region's convergence agreement -- `decide_window_convergence()`'s
   /// own input. An all-to-all point-to-point exchange over `r.
@@ -2423,7 +2630,7 @@ struct Runner::Impl {
       std::vector<std::vector<WindowBlockSample>>& gathered_out,
       bool& all_ok_out);
 
-  /// the issue tracker whether THIS rank is one of `r.participants`,
+  /// Whether THIS rank is one of `r.participants`,
   /// the SAME test `reduce_region_residuals()`/`gather_window_block_
   /// samples()` already make before joining either of those two
   /// collectives -- extracted here so `run_region_newton()`/
@@ -2441,7 +2648,7 @@ struct Runner::Impl {
   /// window()`'s own early return reads this BEFORE any of that.
   Result<bool> region_is_local_participant(const detail::RegionRuntime& r) const;
 
-  /// the issue tracker `gather_window_block_samples()` deliberately
+  /// `gather_window_block_samples()` deliberately
   /// reaches only `r.participants` -- but the channels THIS region moves
   /// are exchanged over the run's single shared transport communicator
   /// (`config.base_communicator`, duplicated whole by `MpiTransport::
@@ -2465,7 +2672,7 @@ struct Runner::Impl {
   Result<void> broadcast_window_convergence(const detail::RegionRuntime& r,
                                             bool converged, bool& converged_out);
 
-  /// RT-1 (review 2026-10-11): the ordinary (non-window-scoped) sibling of
+  /// The ordinary (non-window-scoped) sibling of
   /// `broadcast_window_convergence()`, for exactly the analogous gap --
   /// `reduce_region_residuals()` reaches only `r.participants`, but a rank
   /// hosting some OTHER, uncoupled component outside this region still

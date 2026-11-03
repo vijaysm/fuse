@@ -38,7 +38,7 @@
 
 namespace fuse::abi_detail {
 
-class ProviderAdapter final : public fuse::Component {
+class ProviderAdapter final : public fuse::Component, public fuse::AdjointComponent {
  public:
   /// `table` is borrowed and must outlive this object; `component_name`
   /// must equal a `ComponentDecl::name` of the graph `register_fields()`
@@ -46,17 +46,16 @@ class ProviderAdapter final : public fuse::Component {
   /// carries -- component.hpp's own doc on `name()`).
   ProviderAdapter(std::string component_name, const fuse_provider_abi_v1* table);
 
-  /// the issue tracker (decision
-  /// 2026-10-22: the plugin must load only on ranks that host the
-  /// component). Builds an UNHOSTED SHELL for a LaunchMode::Plugin
+  /// The plugin must load only on ranks that host the component.
+  /// Builds an UNHOSTED SHELL for a LaunchMode::Plugin
   /// component this process does NOT host: no table, no dlopen(), no
   /// plugin entry point ever reached -- register_fields() (below)
-  /// recognises this shape and registers exactly the empty views the
-  /// OLD "mount everywhere, then discover count==0" path already
-  /// produced for a non-hosting rank, reading field shape from the
+  /// recognises this shape and registers exactly the empty views a
+  /// "mount everywhere, then discover count==0" path would produce for a
+  /// non-hosting rank, reading field shape from the
   /// GRAPH alone. Deliberately a SEPARATE overload from the two-argument
   /// constructor above, not that constructor called with `nullptr`:
-  /// passing `nullptr` there remains what it always was (a defensive
+  /// passing `nullptr` there is (a defensive
   /// state test/abi/conformance_test.cpp's own
   /// ProviderAdapterRefusesATableMissingARequiredEntry pins), a
   /// genuinely failed mount that must still refuse loudly -- conflating
@@ -72,16 +71,23 @@ class ProviderAdapter final : public fuse::Component {
   ProviderAdapter(ProviderAdapter&&) = delete;
   ProviderAdapter& operator=(ProviderAdapter&&) = delete;
 
-  /// the issue tracker round 3: this process's own base-communicator
+  /// This process's own base-communicator
   /// rank, so register_fields() (below) can tell whether THIS process
   /// actually hosts the component `table` was mounted for. `std::nullopt`
   /// (the default -- every existing, single-process caller never calls
-  /// this) means "assume hosted everywhere", which is what register_
-  /// fields() always did before this round and is exactly right when
+  /// this) means "assume hosted everywhere", which is exactly right when
   /// there is only one rank. Set once, before register_fields() runs
   /// (participant.cpp's impl_initialize_local(), right after extracting
   /// this adapter from the plugin registry) -- never again after.
   void set_hosting_rank(std::optional<int> rank) { hosting_rank_ = rank; }
+
+  /// The bytes FUSE allocated in host memory for the `index`-th field this
+  /// component declares (graph order), after register_fields(); 0 for a field
+  /// in device memory or an index past the last. For tests and diagnostics: it
+  /// is what an element type's size and a row's component count must add up to.
+  [[nodiscard]] std::size_t host_storage_bytes(std::size_t index) const noexcept {
+    return index < storage_.size() ? storage_[index].size() * sizeof(double) : 0;
+  }
 
   [[nodiscard]] std::string name() const override { return name_; }
 
@@ -90,9 +96,8 @@ class ProviderAdapter final : public fuse::Component {
   fuse::Result<void> advance(const fuse::StepContext& ctx) override;
   fuse::Result<void> save_state() override;
   fuse::Result<void> restore_state() override;
-  /// Restart track round 2, item 4: forwards to the plugin's own
-  /// save_restart_blob/load_restart_blob table entries (Option B,
-  /// docs/dev/restart.md Section 3) when FUSE_CAP_RESTART_FORM_B was
+  /// Forwards to the plugin's own save_restart_blob/load_restart_blob
+  /// table entries (docs/dev/restart.md Section 3) when FUSE_CAP_RESTART_FORM_B was
   /// set at create() time; the inherited Component defaults (empty
   /// blob, version 0) apply otherwise, exactly as save_state()/
   /// restore_state() already fall back to a no-op when the table entry
@@ -105,7 +110,48 @@ class ProviderAdapter final : public fuse::Component {
   }
   [[nodiscard]] std::uint64_t capabilities() const override { return capabilities_; }
 
+  /// Reverse mode (docs/dev/abi-design.md, "Adjoint"). This adapter is the plugin's
+  /// `fuse::AdjointComponent` when the plugin offers the adjoint: `capabilities()` set
+  /// FUSE_CAP_ADJOINT and the table's own `struct_size` covers `bind_adjoint` and
+  /// `advance_adjoint`, both non-null. Otherwise `adjoint()` is null and the Runner refuses the
+  /// reverse sweep by name (E-ADJ-COMPONENT). An unhosted shell (a rank that does not host the
+  /// component) cannot ask the plugin anything, so it returns itself and registers the same empty
+  /// views the forward registration did; a plugin that offers no adjoint is then refused only on
+  /// the ranks that host it (the rank-local caveat register_fields() already documents for describe()).
+  [[nodiscard]] fuse::AdjointComponent* adjoint() override {
+    return (adjoint_offered_ || unhosted_shell_) ? this : nullptr;
+  }
+  /// One adjoint array of binary64 values per field, laid out as the field itself, zeroed, bound
+  /// into `registry` under the field's `FieldId` and handed to the plugin through `bind_adjoint()`
+  /// in the order `bind()` was called. Refuses (by name) a field that is not binary64 (E-ADJ-FIELD-TYPE)
+  /// or lives in device memory (E-ADJ-SPACE); the Runner's own checks of the arrays follow.
+  fuse::Result<void> register_adjoint_fields(fuse::FieldRegistry& registry,
+                                             const fuse::CouplingGraph& graph) override;
+  /// `advance_adjoint()` of the plugin for the window `ctx` describes; the window the plugin
+  /// echoes must be exactly the one it was asked for, as for `advance()`.
+  fuse::Result<void> advance_adjoint(const fuse::StepContext& ctx) override;
+
  private:
+  /// What register_fields() decided about one field, kept for register_adjoint_fields(): the
+  /// adjoint array has the field's own layout, and the view the plugin is handed for it is the
+  /// view bind() was handed with another pointer.
+  struct FieldRecord {
+    fuse::FieldId id;
+    fuse::Layout layout;
+    std::int32_t element_type = FUSE_ELEMENT_F64;
+    std::int32_t row_components = 0;  // values of the element type per entity
+    std::int32_t gradient_size = 0;
+    bool device = false;
+    std::uint64_t count = 0;
+    std::string name;
+  };
+  std::vector<FieldRecord> records_;
+  /// One buffer per field of the adjoint arrays, parallel to `records_`; never resized after
+  /// register_adjoint_fields() returns successfully.
+  std::vector<std::vector<double>> adjoint_storage_;
+  bool adjoint_capability_ = false;  // the plugin set FUSE_CAP_ADJOINT
+  bool adjoint_offered_ = false;     // and the table has the entries; set at the end of register_fields()
+  bool adjoint_registered_ = false;  // register_adjoint_fields() succeeded
   std::string                 name_;
   const fuse_provider_abi_v1* table_;
   /// True only for the unhosted-shell constructor above; false (default)
@@ -143,8 +189,7 @@ class ProviderAdapter final : public fuse::Component {
   /// the two holds a given field's real storage.
   std::vector<std::vector<double>> storage_;
 
-  /// the issue tracker item 1 (-2,
-  /// Option A): the device-resident counterpart of `storage_` above, one
+  /// The device-resident counterpart of `storage_` above, one
   /// `Kokkos::View` per field this component declares, parallel-indexed
   /// the same way. Only a field whose describe() row requests
   /// FUSE_MEMSPACE_DEVICE -- and whose provider also sets
@@ -156,8 +201,7 @@ class ProviderAdapter final : public fuse::Component {
   /// CUDA/HIP/SYCL this IS `Kokkos::HostSpace` (device-resident-arcs.md's
   /// own documented "Device mode on a CPU-only build" mechanism), but
   /// this adapter never reaches this branch on such a build at all: the
-  /// host-only refusal (register_fields(), below) fires first, by the
-  /// owner's own explicit instruction that a build with no device
+  /// host-only refusal (register_fields(), below) fires first, because a build with no device
   /// backend must refuse a device-field request by name rather than
   /// silently handing back host-addressable memory under the device
   /// label.
@@ -168,10 +212,8 @@ class ProviderAdapter final : public fuse::Component {
   /// least one field of this component is device-resident. advance()
   /// reads this to decide whether the post-advance Kokkos::fence() below
   /// is needed at all -- unconditional FOR A DEVICE-TOUCHING PROVIDER
-  /// (the owner's own instruction: no escape hatch, not even for a
-  /// provider that claims to fence itself), but never paid by a
-  /// host-only provider, which is every provider in this tree before
-  /// this round.
+  /// (no escape hatch, not even for a provider that claims to fence
+  /// itself), but never paid by a host-only provider.
   bool has_device_fields_ = false;
 };
 

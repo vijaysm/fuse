@@ -1,18 +1,16 @@
-// src/linalg/mpi_gpu_aware.cpp -- the shared GPU-aware MPI probe (Migration
-// track, 2026-10-15; lead's layering decision, 2026-10-15 integration).
+// src/linalg/mpi_gpu_aware.cpp -- the shared GPU-aware MPI probe.
 //
-// BEFORE THIS FILE: `fuse::native::mpi_is_gpu_aware()`
-// (src/backend/native_migration.cpp) and `fuse::transport::MpiTransport::
-// is_gpu_aware()`'s own `transport_mpi_is_gpu_aware()`
-// (src/transport/mpi_transport.cpp) each carried an IDENTICAL run-time
-// probe, duplicated because `backend` could not depend on `transport`'s
-// library and vice versa (cmake/FuseMpiGpuAware.cmake's own header
-// comment states this explicitly). `fuse::linalg` sits BELOW both in the
+// `fuse::native::mpi_is_gpu_aware()` (src/backend/native_migration.cpp) and
+// `fuse::transport::MpiTransport::is_gpu_aware()`'s own
+// `transport_mpi_is_gpu_aware()` (src/transport/mpi_transport.cpp) both
+// need the same run-time probe, and `backend` cannot depend on
+// `transport`'s library or vice versa (cmake/FuseMpiGpuAware.cmake's own
+// header comment states this explicitly). `fuse::linalg` sits BELOW both in the
 // layering order (base < linalg < ... < search < backend < partition <
 // transport < runtime, tools/check-layering.py) and `backend` already
 // links `fuse::linalg` PRIVATE (src/CMakeLists.txt) -- so ONE probe here,
-// in a layer both may depend on, replaces both duplicates; `backend` and
-// `transport` now each call this instead of re-implementing it (see their
+// in a layer both may depend on, replaces duplicate copies; `backend` and
+// `transport` each call this instead of re-implementing it (see their
 // own thin wrappers' comments for why the WRAPPER functions themselves
 // stay, for source compatibility with every existing caller).
 //

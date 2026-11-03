@@ -1,0 +1,22 @@
+# Mutations for the limb view of an Arithmetic field.
+
+[[mutation]]
+id = "field-limb-view-accepts-any-non-storage-type"
+area = "field_limbs"
+describes = "a plain binary64 field is accepted as a field of limbs"
+file = "include/fuse/field/field_ref.hpp"
+old = "    return type_.kind == FieldValueKind::Arithmetic &&\n           type_.scalar_name == value_traits<S>::name &&"
+new = "    return type_.kind != FieldValueKind::Storage &&\n           type_.scalar_name == value_traits<S>::name &&"
+target = "fuse_runtime_arithmetic_field_runner_test"
+test = "runtime.arithmetic_field_runner"
+
+[[mutation]]
+id = "field-scalar-view-accepts-arithmetic-types"
+area = "field_limbs"
+describes = "the view as independent scalars accepts a dd field, so an operator for scalars would act on its limbs one at a time"
+file = "include/fuse/field/field_ref.hpp"
+old = "    return type_.kind == FieldValueKind::ScalarArray &&\n           type_.scalar_name == value_traits<S>::name &&"
+new = "    return type_.kind != FieldValueKind::Storage &&\n           type_.scalar_name == value_traits<S>::name &&"
+target = "fuse_runtime_arithmetic_field_runner_test"
+test = "runtime.arithmetic_field_runner"
+

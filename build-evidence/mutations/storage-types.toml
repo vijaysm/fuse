@@ -1,0 +1,91 @@
+# Mutations for the small-format conversions: fuse::detail::SmallFloat and the binary16 and bfloat16 types built on it.
+
+[[mutation]]
+id = "small-float-ties-do-not-go-to-even"
+area = "storage_types"
+describes = "narrowing rounds a tie up instead of to the even neighbour"
+file = "include/fuse/model/small_float.hpp"
+old = "    if (rem > half || (rem == half && (q & 1ull) != 0)) ++q;"
+new = "    if (rem >= half) ++q;"
+target = "fuse_model_binary16_test"
+test = "model.binary16"
+
+[[mutation]]
+id = "small-float-truncates"
+area = "storage_types"
+describes = "narrowing drops the rounding step and truncates the significand"
+file = "include/fuse/model/small_float.hpp"
+old = "    if (rem > half || (rem == half && (q & 1ull) != 0)) ++q;"
+new = "    if (false) ++q;"
+target = "fuse_model_binary16_test"
+test = "model.binary16"
+
+[[mutation]]
+id = "small-float-flushes-the-top-of-the-subnormal-range"
+area = "storage_types"
+describes = "a value between half the smallest subnormal and the smallest subnormal is flushed to zero instead of rounded up"
+file = "include/fuse/model/small_float.hpp"
+old = "    if (shift >= 54) return sign;"
+new = "    if (shift >= 53) return sign;"
+target = "fuse_model_binary16_test"
+test = "model.binary16"
+
+[[mutation]]
+id = "small-float-carry-does-not-reach-the-exponent"
+area = "storage_types"
+describes = "a significand that rounds up to the next power of two keeps its exponent, so the value just below the overflow midpoint and every rounding carry is wrong"
+file = "include/fuse/model/small_float.hpp"
+old = "             static_cast<std::uint32_t>(q - (1ull << FB));"
+new = "             static_cast<std::uint32_t>(q & ((1ull << FB) - 1ull));"
+target = "fuse_model_binary16_test"
+test = "model.binary16"
+
+[[mutation]]
+id = "small-float-nan-becomes-infinity"
+area = "storage_types"
+describes = "a NaN loses its quiet bit and is encoded as an infinity"
+file = "include/fuse/model/small_float.hpp"
+old = "                    : (sign | exponent_all_ones | quiet_bit);"
+new = "                    : (sign | exponent_all_ones);"
+target = "fuse_model_binary16_test"
+test = "model.binary16"
+
+[[mutation]]
+id = "small-float-overflow-threshold-is-one-binade-late"
+area = "storage_types"
+describes = "a value in the first binade past the largest finite one is encoded with a wrapped exponent instead of becoming infinity"
+file = "include/fuse/model/small_float.hpp"
+old = "    if (exponent > max_exponent) return sign | exponent_all_ones;"
+new = "    if (exponent > max_exponent + 1) return sign | exponent_all_ones;"
+target = "fuse_model_binary16_test"
+test = "model.binary16"
+
+[[mutation]]
+id = "small-float-widen-subnormal-scale-is-off-by-one"
+area = "storage_types"
+describes = "a subnormal widens to twice its value"
+file = "include/fuse/model/small_float.hpp"
+old = "      const double v = static_cast<double>(f) * pow2(min_exponent - FB);"
+new = "      const double v = static_cast<double>(f) * pow2(min_exponent - FB + 1);"
+target = "fuse_model_binary16_test"
+test = "model.binary16"
+
+[[mutation]]
+id = "small-float-widen-drops-the-sign-of-a-subnormal-or-zero"
+area = "storage_types"
+describes = "a negative zero or negative subnormal widens with a positive sign"
+file = "include/fuse/model/small_float.hpp"
+old = "      return Kokkos::bit_cast<double>(sign | Kokkos::bit_cast<std::uint64_t>(v));"
+new = "      return Kokkos::bit_cast<double>(Kokkos::bit_cast<std::uint64_t>(v));"
+target = "fuse_model_binary16_test"
+test = "model.binary16"
+
+[[mutation]]
+id = "bfloat16-from-double-is-binary16s-rounding"
+area = "storage_types"
+describes = "bfloat16::from_double uses the binary16 format, so every bfloat16 conversion from binary64 is wrong"
+file = "include/fuse/model/bfloat16.hpp"
+old = "    return from_bits(static_cast<std::uint16_t>(format::narrow(x)));"
+new = "    return from_bits(static_cast<std::uint16_t>(detail::SmallFloat<5, 10>::narrow(x)));"
+target = "fuse_model_small_float_test"
+test = "model.small_float"

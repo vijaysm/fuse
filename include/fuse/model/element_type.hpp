@@ -1,7 +1,7 @@
 #pragma once
 
-///  (docs/dev/restart.md),  Slice 1b: the closed element-
-/// type enumeration a typed restart field is tagged with, plus the compile-
+/// The closed element-
+/// type enumeration (docs/dev/restart.md) a typed restart field is tagged with, plus the compile-
 /// time trait that maps a C++ type to it and the metadata every HDF5-backed
 /// dataset records so a reader can verify what it is about to interpret
 /// before it interprets it.
@@ -30,9 +30,8 @@
 /// but `element_type_of<_Float16>()` itself would not exist, so no caller
 /// could ask for it -- the enumerator stays in the closed set (a FILE
 /// written by a compiler that has `_Float16` must still be nameable by a
-/// reader that does not) but nothing in THIS build ever WRITES one. This is
-/// the owner's own instruction: "only if the compiler provides _Float16;
-/// otherwise omit it and say so -- do not invent."
+/// reader that does not) but nothing in THIS build ever WRITES one. The type is
+/// provided only if the compiler provides _Float16.
 
 #include <cstddef>
 #include <cstdint>
@@ -41,7 +40,7 @@
 
 /// Set when THIS translation unit can use the native `_Float16`. The host
 /// compiler's `__FLT16_MANT_DIG__` is necessary but not sufficient: nvcc's
-/// front end (CUDA 12.5, measured on higgs) accepts the type in a type
+/// front end (CUDA 12.5, measured) accepts the type in a type
 /// trait but fails with an internal compiler error ("unsupported float
 /// variant") as soon as a value of that type is formed, so a translation
 /// unit compiled by nvcc never sees the `_Float16` specialisations below.
@@ -59,6 +58,7 @@
 #include <type_traits>
 
 #include "fuse/model/bfloat16.hpp"
+#include "fuse/model/binary16.hpp"
 
 namespace fuse {
 
@@ -77,9 +77,11 @@ enum class ElementType : std::uint8_t {
   UInt16 = 5,
   UInt32 = 6,
   UInt64 = 7,
-  Binary16 = 8,   ///< IEEE 754-2019 binary16 ("half"). Only ever WRITTEN by a
-                  ///< build whose compiler provides `_Float16` (see the file
-                  ///< header comment); always a valid enumerator to READ.
+  Binary16 = 8,   ///< IEEE 754-2019 binary16 ("half"). Written from
+                  ///< `fuse::binary16` (fuse/model/binary16.hpp, on every
+                  ///< compiler) and, where the compiler provides it, from
+                  ///< `_Float16` (see the file header comment); always a
+                  ///< valid enumerator to READ.
   BFloat16 = 9,   ///< `fuse::bfloat16` (fuse/model/bfloat16.hpp) -- no C++
                   ///< standard type backs this on any compiler this project
                   ///< has measured (`__bf16`/`std::bfloat16_t` both absent,
@@ -101,10 +103,15 @@ enum class ElementType : std::uint8_t {
   Bool = 13,      ///< Stored as one `UInt8` byte, 0 or 1 -- `element_type`
                   ///< says `Bool`, not `UInt8`, so a reader can refuse a
                   ///< byte that is neither (docs/dev/restart.md Section 11).
+  Posit16 = 14,   ///< `fuse::num::posit<16, 2>` (fuse/num/posit.hpp, the 2022
+                  ///< Posit Standard), stored as the unsigned 16-bit integer
+                  ///< of its bit pattern.
+  Posit32 = 15,   ///< `fuse::num::posit<32, 2>`, stored as the unsigned 32-bit
+                  ///< integer of its bit pattern.
 };
 
 /// How a `get_field`/`get_scalar` request's own C++ type may differ from
-/// the STORED `ElementType`, decision (robustness first; docs/dev/
+/// the STORED `ElementType` (robustness first; docs/dev/
 /// restart.md Section 11's own "READ CONVERSION" heading carries the full
 /// reasoning this comment only summarises):
 ///   Exact           the requested type must equal the stored type (same
@@ -121,7 +128,7 @@ enum class ElementType : std::uint8_t {
 ///   AllowNarrowing  additionally permits a conversion that MAY lose
 ///                   precision for some values: INTEGER narrowing that does
 ///                   not fit still refuses (an integer value change is not
-///                   a rounding -- owner's own words); FLOAT narrowing
+///                   a rounding); FLOAT narrowing
 ///                   (reduced significand and/or exponent range) rounds
 ///                   to nearest, ties to even, and the call reports the
 ///                   largest change it actually made, measured over the
@@ -131,7 +138,7 @@ enum class ReadConversion { Exact, Widening, AllowNarrowing };
 
 /// Per-`ElementType` facts a restart dataset's own metadata records and a
 /// reader's own type-agreement check compares against (docs/dev/restart.md
-/// Section 11, item 5). `significand_bits`/`exponent_bits`/`exponent_bias`
+/// Section 11). `significand_bits`/`exponent_bits`/`exponent_bias`
 /// are 0 for an integer or `Bool` type -- they describe a floating type's
 /// `(sign, exponent, significand)` layout, the SAME three quantities
 /// `H5Tget_fields()`/`H5Tget_ebias()` report for the dataset's own HDF5
@@ -147,6 +154,11 @@ struct ElementTypeInfo {
   bool        is_signed_integer = false;    ///< meaningful only if !is_float
   bool        is_unsigned_integer = false;  ///< meaningful only if !is_float
   bool        is_bool = false;
+  /// A posit (`Posit16`, `Posit32`): stored as an unsigned integer of its
+  /// pattern but not an integer for any conversion. `significand_bits` is its
+  /// largest precision (the fraction bits of the value one, and the leading bit),
+  /// `exponent_bits` its exponent size es, and `exponent_bias` is 0.
+  bool        is_posit = false;
   std::size_t significand_bits = 0;  ///< INCLUDING any implicit leading bit
   std::size_t exponent_bits = 0;
   std::int64_t exponent_bias = 0;
@@ -177,8 +189,7 @@ struct ElementTypeInfo {
 /// The compile-time trait every `put_field<T>()`/`get_field<T>()` call
 /// (fuse/model/restart.hpp) resolves through. Specialised below for every
 /// `T` this project's typed restart interface supports; an UNSUPPORTED `T`
-/// is a `static_assert` at the call site (owner's own instruction: "an
-/// unsupported T is a static_assert, not a runtime error"), via the
+/// is a `static_assert` at the call site, not a runtime error, via the
 /// primary template's own `false` assertion.
 template <class T>
 struct ElementTypeOf {
@@ -186,8 +197,7 @@ struct ElementTypeOf {
                 "fuse::ElementTypeOf<T>: T is not one of the element types "
                 "fuse::put_field<T>()/get_field<T>() support -- see "
                 "fuse/model/element_type.hpp's own specialisation list. "
-                "This is a compile-time refusal, not a runtime one, by the "
-                "owner's own instruction.");
+                "This is a compile-time refusal, not a runtime one.");
 };
 
 template <>
@@ -226,6 +236,12 @@ template <>
 struct ElementTypeOf<fuse::bfloat16> {
   static constexpr ElementType value = ElementType::BFloat16;
 };
+/// `fuse::binary16` is the IEEE binary16 bit pattern in a `uint16_t`, so it is stored as
+/// `Binary16` byte for byte on every compiler, with no `_Float16` involved.
+template <>
+struct ElementTypeOf<fuse::binary16> {
+  static constexpr ElementType value = ElementType::Binary16;
+};
 template <>
 struct ElementTypeOf<float> {
   static constexpr ElementType value = ElementType::Binary32;
@@ -258,7 +274,7 @@ template <class T>
 inline constexpr ElementType kElementTypeOf = ElementTypeOf<T>::value;
 
 /// Decides, from `from`'s and `to`'s own `ElementTypeInfo` ALONE (never a
-/// per-value probe -- owner's own instruction), whether EVERY value `from`
+/// per-value probe), whether EVERY value `from`
 /// can represent converts to `to` with no change at all. The one function
 /// `ReadConversion::Widening` is defined in terms of; `fuse::restart_io`'s
 /// reader calls this, never re-derives the rule itself.
@@ -272,12 +288,12 @@ inline constexpr ElementType kElementTypeOf = ElementTypeOf<T>::value;
 /// file written on a different platform (x86-64's 80-bit `long double`,
 /// read on this Mac's 53-bit one) is internally self-consistent but
 /// DIFFERS from `fuse::element_type_info(ElementType::LongDouble)` on
-/// THIS build -- exactly docs/dev/restart.md Section 11, item 6's own
+/// THIS build -- exactly the docs/dev/restart.md Section 11
 /// scenario, which this signature exists to make possible at all: if
 /// this function instead re-fetched `from`'s metadata from the global
 /// table by enumerator, reading a genuinely foreign file could never
 /// succeed under ANY `ReadConversion`, not even `AllowNarrowing`, which
-/// would misread the owner's OWN requirement backwards.
+/// would get the requirement backwards.
 [[nodiscard]] bool is_exact_widening(const ElementTypeInfo& from,
                                      const ElementTypeInfo& to);
 

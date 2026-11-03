@@ -1,15 +1,13 @@
-// Review 2026-10-11 TD-1: docs/user/brusselator.md:401-402 claims three
-// refusals "tested": `E-BRUSS-MESH-INDEX`, `E-BRUSS-U-REACTION`,
-// `E-BRUSS-DIFFUSION-DIRECT-DECOMPOSED`. Only the third is fired anywhere
-// in test/ (`DirectSolverRefusesWhenDecomposed`,
-// test/verification/brusselator_species_core_decomposition_test.cpp).
-// This file closes the `E-BRUSS-U-REACTION` gap: `UCore::step`'s implicit
+// Refusal coverage for the Brusselator example: of the refusals
+// `E-BRUSS-MESH-INDEX`, `E-BRUSS-U-REACTION` and
+// `E-BRUSS-DIFFUSION-DIRECT-DECOMPOSED`, the last is fired by
+// `DirectSolverRefusesWhenDecomposed`
+// (test/verification/brusselator_species_core_decomposition_test.cpp).
+// This file covers the `E-BRUSS-U-REACTION` case: `UCore::step`'s implicit
 // reaction fixed point (species_core.hpp:605-647) gives up and refuses
 // after `kMaxReactionIterations` (50) solves that never contract to
-// `kReactionTolerance`. `docs/dev/schur-slab-solver.md`'s sibling fix
-// aside, `E-BRUSS-MESH-INDEX` is addressed separately: see this file's
-// own trailing comment and docs/user/brusselator.md's updated wording
-// for why no test here fires it.
+// `kReactionTolerance`. `E-BRUSS-MESH-INDEX` cannot be fired from a test;
+// see this file's own trailing comment for why no test here fires it.
 //
 // FORCING THE REACTION FIXED POINT PAST ITS CAP. On a single cell
 // (nx=ny=1, so the periodic Laplacian's self-loops cancel to exactly

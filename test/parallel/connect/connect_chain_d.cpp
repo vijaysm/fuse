@@ -1,4 +1,4 @@
-// the issue tracker, round 2. Plays link 3 (component "d") of
+// Plays link 3 (component "d") of
 // test/parallel/connect's N-way connect chain. See connect_chain_common.hpp
 // for the shared graph/backend/runner driver and run_chain.sh for how this
 // and its siblings are launched together.

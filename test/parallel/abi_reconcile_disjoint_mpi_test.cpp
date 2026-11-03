@@ -1,11 +1,9 @@
-// the issue tracker (round 4). The minimal model the lead asked for: TWO
-// externally-driven components on DISJOINT rank sets, each calling
-// begin_step()/end_step() a DIFFERENT NUMBER OF TIMES, so a reconciliation
-// that lands every rank on ONE shared communicator (round 3's bug, this
-// file's own header note below) deadlocks on the call where the counts
-// stop lining up, while a reconciliation split PER COMPONENT (round 4's
-// fix) never can, because each component's own collective calls stay on
-// a communicator sized to that component alone.
+// Two externally-driven components on DISJOINT rank sets, each calling
+// begin_step()/end_step() a DIFFERENT NUMBER OF TIMES. A reconciliation
+// that lands every rank on ONE shared communicator deadlocks on the call
+// where the counts stop lining up, while a reconciliation split PER
+// COMPONENT never can, because each component's own collective calls stay
+// on a communicator sized to that component alone.
 //
 // EXACTLY THREE RANKS, BY CONSTRUCTION. Component "u" is RankSet{0, 1}
 // (rank 0 only); component "v" is RankSet{1, 2} (ranks 1 and 2). Rank 0
@@ -16,34 +14,33 @@
 // header comment, for the same reason (no Transport/Epoch/Constrain
 // instruction in the plan, so no cross-rank SIZE agreement is at stake;
 // only the LOCAL per-rank registered count against this rank's own share
-// of its region, the issue tracker).
+// of its region).
 //
-// WHAT ROUND 3's BUG DID HERE. round 3's impl_initialize_local() called
+// WHY A SINGLE SHARED RECONCILIATION COMMUNICATOR FAILS HERE. Suppose
+// impl_initialize_local() called
 // fuse::linalg::make_participant_set_reducer(c.communicator,
 // mc.ranks.ranks()), where `mc` is THIS rank's OWN component's
-// ComponentDecl. On every rank, `mc.ranks.ranks()` is trivially the
-// participant set that reducer was written for one rank's OWN component
-// to test membership against ONE shared region across EVERY caller
-// passing the SAME set -- here, each of the three ranks passes a
-// DIFFERENT component's own ranks (rank 0 passes {0}, ranks 1 and 2 pass
-// {1, 2}), and the reducer's own colour rule (comm_mpi.cpp: `colour =
-// participating ? 0 : MPI_UNDEFINED`) scores every one of them as
-// "participating" in ITS OWN call, landing all three in ONE shared
-// communicator of size 3. Rank 0's SECOND begin_step() then issues a
-// second MPI_Allreduce on that size-3 communicator, but ranks 1 and 2
-// have already made their ONE AND ONLY call and moved on -- rank 0 waits
-// forever for peers that are never coming back. This is exactly the
-// verification.brusselator.participants deadlock the lead's host run
-// measured (U in begin_step -> reconcile -> MPI_Allreduce while V and the
-// coupler had already moved on to MpiTransport::move), reduced to the
-// smallest graph that reproduces it without the brusselator's own
-// participant executables or LowFive plumbing.
+// ComponentDecl. That reducer is meant for callers that all pass the SAME
+// participant set to test membership against ONE shared region. Here each
+// of the three ranks passes a DIFFERENT component's own ranks (rank 0
+// passes {0}, ranks 1 and 2 pass {1, 2}), and the reducer's own colour
+// rule (comm_mpi.cpp: `colour = participating ? 0 : MPI_UNDEFINED`) scores
+// every one of them as "participating" in ITS OWN call, landing all three
+// in ONE shared communicator of size 3. Rank 0's SECOND begin_step() would
+// then issue a second MPI_Allreduce on that size-3 communicator, but ranks
+// 1 and 2 have already made their ONE AND ONLY call and moved on, so rank
+// 0 waits forever for peers that never come back. This is the deadlock
+// seen in verification.brusselator.participants (U in begin_step ->
+// reconcile -> MPI_Allreduce while V and the coupler had already moved on
+// to MpiTransport::move), reduced to the smallest graph that reproduces it
+// without the brusselator's own participant executables or LowFive
+// plumbing.
 //
-// WHAT ROUND 4's FIX DOES HERE. impl_initialize_local() now calls
+// WHAT impl_initialize_local() DOES INSTEAD. It calls
 // MPI_Comm_split(base, colour, key, &sub) directly, with colour set to
 // THIS rank's own component's ComponentId value (a distinct integer per
 // component -- never 0 for every caller the way the reducer's boolean
-// colour was) and key set to this rank's position within its own
+// colour is) and key set to this rank's position within its own
 // component's RankSet. Rank 0 ("u") lands alone on a communicator of
 // size 1; ranks 1 and 2 ("v") land together on a communicator of size 2,
 // entirely independent of "u". Rank 0's two begin_step() calls each
@@ -53,10 +50,9 @@
 // unaffected by how many times "u" calls anything. No rank ever waits
 // for a peer outside its own component.
 //
-// Compiled under FUSE_ENABLE_MPI only (test/CMakeLists.txt); MPI cannot
-// start in this sandbox, so this row is BUILT, never
-// run here -- the issue tracker own round 4 entry for the exact
-// host command and what a pass/hang would mean.
+// Compiled under FUSE_ENABLE_MPI only (test/CMakeLists.txt). A pass means
+// no rank hangs; a hang means the reconciliation communicator is shared
+// across components again.
 #include "fuse/base/config.hpp"
 
 #include <gtest/gtest.h>
@@ -81,7 +77,7 @@ const fuse_participant_abi_v1* Table() {
 /// own share is exactly one cell: "u"'s mesh is decomposed over "u"'s own
 /// one-rank placement (the whole mesh, on rank 0); "v"'s mesh is
 /// decomposed over "v"'s own two-rank placement (one cell each, on ranks
-/// 1 and 2) -- the issue tracker per-placement decomposition rule,
+/// 1 and 2) -- the per-placement decomposition rule,
 /// not the whole three-rank world. No channel connects them.
 fuse::CouplingGraph BuildDisjointComponentsGraph() {
   fuse::CouplingGraph g;
@@ -190,9 +186,9 @@ TEST(AbiReconcileDisjointMpi, DifferentCallCountsPerComponentNeverHang) {
   fuse_step_report rep{.struct_size = sizeof(rep)};
 
   // Rank 0 ("u") drives TWO begin_step/end_step pairs; ranks 1 and 2
-  // ("v") drive exactly ONE. Round 3's bug deadlocks rank 0's SECOND
-  // begin_step() here, in the one-shared-communicator reduction, because
-  // ranks 1 and 2 never issue a matching second call. Round 4's fix
+  // ("v") drive exactly ONE. Reducing on one shared communicator
+  // would deadlock rank 0's SECOND begin_step(), because ranks 1 and 2
+  // never issue a matching second call. Instead the code
   // reduces "u"'s own calls on a one-rank communicator (never blocks on
   // anyone) and "v"'s own call on its own two-rank communicator
   // (unaffected by how many times "u" calls anything).

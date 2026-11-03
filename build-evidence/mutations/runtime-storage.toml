@@ -1,0 +1,62 @@
+# Mutations for the Runner converting a Storage-typed field at the component
+# boundary.
+
+[[mutation]]
+id = "runner-widens-the-delivered-field-and-not-the-provided-one"
+area = "runtime_storage"
+describes = "refresh_storage_images walks the delivered arcs instead of the provided ones, so a component's output never reaches the plan"
+file = "src/runtime/runner.cpp"
+old = "    if (b.delivered) continue;\n    double* const image = slots[b.arc].data;"
+new = "    if (!b.delivered) continue;\n    double* const image = slots[b.arc].data;"
+target = "fuse_runtime_storage_field_runner_test"
+test = "runtime.storage_field_runner"
+
+[[mutation]]
+id = "runner-never-rounds-into-the-requiring-field"
+area = "runtime_storage"
+describes = "the Sink does not write the rounded value into the component's array"
+file = "src/runtime/runner.cpp"
+old = "      if (ins.kind == OpKind::Sink) deliver_storage_field(ins.out.value());"
+new = "      if (false) deliver_storage_field(ins.out.value());"
+target = "fuse_runtime_storage_field_runner_test"
+test = "runtime.storage_field_runner"
+
+[[mutation]]
+id = "runner-storage-image-is-never-refreshed-after-a-component-ran"
+area = "runtime_storage"
+describes = "note_component_ran does not refresh the images of provided Storage fields, so the plan reads the value from before the component ran"
+file = "src/runtime/runner_impl.hpp"
+old = "    if (!storage_bindings.empty()) refresh_storage_images();"
+new = "    if (false) refresh_storage_images();"
+target = "fuse_runtime_storage_field_runner_test"
+test = "runtime.storage_field_runner"
+
+[[mutation]]
+id = "runner-measured-rounding-is-not-accumulated"
+area = "runtime_storage"
+describes = "the per-delivery report overwrites instead of accumulating the number of values and overflows"
+file = "src/runtime/runner.cpp"
+old = "        st.values += r.values;\n        st.overflow += r.overflow;"
+new = "        st.values = r.values;\n        st.overflow = r.overflow;"
+target = "fuse_runtime_storage_field_runner_test"
+test = "runtime.storage_field_runner"
+
+[[mutation]]
+id = "runner-posit-roundoff-is-reported-as-one-bit-better"
+area = "runtime_storage"
+describes = "the unit roundoff reported for a posit16 field is that of one more fraction bit"
+file = "src/runtime/runner_impl.hpp"
+old = "    case StorageFormat::Posit16: return num::posit16::max_fraction_bits + 1;"
+new = "    case StorageFormat::Posit16: return num::posit16::max_fraction_bits + 2;"
+target = "fuse_runtime_storage_field_runner_test"
+test = "runtime.storage_field_runner"
+
+[[mutation]]
+id = "runner-posit32-field-is-converted-as-posit16"
+area = "runtime_storage"
+describes = "a posit32 field is widened and rounded as a posit16 field"
+file = "src/runtime/runner_impl.hpp"
+old = "    case StorageFormat::Posit32: fn(std::type_identity<num::posit32>{}); return;"
+new = "    case StorageFormat::Posit32: fn(std::type_identity<num::posit16>{}); return;"
+target = "fuse_runtime_storage_field_runner_test"
+test = "runtime.storage_field_runner"

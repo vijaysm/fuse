@@ -3,7 +3,7 @@
 
 Run from the repository root. Exits non-zero with a report of every violation,
 never on the first one -- the same accumulate-and-report rule the library's own
-diagnostics follow (design rule A2).
+diagnostics follow.
 """
 
 from __future__ import annotations
@@ -25,7 +25,8 @@ from pathlib import Path
 # across two rank sets needs the global cell ids, which come from the mesh
 # interface.
 # Every directory under include/fuse MUST appear here. Three did not until
-# 2026-09-17 -- `field`, `linalg` and `abi` -- while this list named an
+# the layering gate was written -- `field`, `linalg` and `abi` -- while this
+# list named an
 # `interface` layer that no directory matched. A path that maps to no layer is
 # assigned no rank and no third-party allowance, so the checks below simply
 # never ran on those three: an entire directory could have included <mpi.h> in
@@ -42,13 +43,13 @@ LAYERS = [
     "num",
     "field",
     # `search` (fuse::search, the ArborX-backed spatial index) sits directly
-    # below `backend`, on purpose: the ArborX track's task explicitly places
-    # it there so that `backend` CAN depend on it (the reverse of
+    # below `backend`, on purpose, so that
+    # `backend` CAN depend on it (the reverse of
     # `partition`'s own mesh_adapter.hpp, which reaches UP into `backend`
     # instead). `box_index.hpp` is still pimpl'd against ArborX itself (no
     # `#include <ArborX.hpp>` anywhere under include/) and `distributed.hpp`
     # never names mpi.h, but `box_index.hpp` DOES now name `Kokkos_Core.hpp`
-    # (docs/dev/search.md's "Execution space" section, mesh-search track):
+    # (docs/dev/search.md's "Execution space" section):
     # `BoxIndex::build`/`query_points`/`query_nearest` gained
     # `Kokkos::View<..., Kokkos::DefaultExecutionSpace::memory_space>`
     # overloads so a device-resident caller never round-trips through the
@@ -69,8 +70,8 @@ LAYERS = [
     "transport",
     "runtime",
     "abi",
-    # `petsc` (fuse::petsc, the Newton seam's second substrate,
-    #, 2026-10-11) sits at the TOP: it depends on
+    # `petsc` (fuse::petsc, the Newton seam's second substrate)
+    # sits at the TOP: it depends on
     # `runtime` (fuse::LinearizationToken, fuse/runtime/component.hpp) and
     # `num` (fuse::num::PreconditionerBlock/BlockJacobiPreconditioner,
     # reused rather than reimplemented for the block-Jacobi PCSHELL
@@ -83,8 +84,8 @@ LAYERS = [
     # already-ranked could be made to depend on it by a future layer
     # insertion between `petsc` and whatever used to be the topmost entry.
     "petsc",
-    # `restart_io` (fuse::restart_io,, docs/dev/restart.md,
-    #  Slice 1) sits at the TOP for the SAME reason `petsc` does,
+    # `restart_io` (fuse::restart_io, docs/dev/restart.md)
+    # sits at the TOP for the SAME reason `petsc` does,
     # immediately above: its own library links PUBLIC `fuse::model` only
     # (the abstract fuse::RestartWriter/RestartReader interfaces,
     # fuse/model/restart.hpp) and PRIVATE the HDF5 target -- well below
@@ -108,7 +109,9 @@ ALLOWED_PUBLIC_THIRD_PARTY = {
     # headers (Kokkos_Macros for KOKKOS_IF_ON_*, Kokkos_Abort for
     # Kokkos::abort), not Kokkos_Core; both are allowed so the base layer does
     # not pay the full core include for one macro (pass-3 review, N-base-model-3).
-    "base": {"Kokkos_Core.hpp", "Kokkos_Macros.hpp", "Kokkos_Abort.hpp"},
+    # portable.hpp adds Kokkos_BitManipulation.hpp for Kokkos::bit_cast, the one
+    # bit reinterpretation that is defined in device code (value types in `model`).
+    "base": {"Kokkos_Core.hpp", "Kokkos_Macros.hpp", "Kokkos_Abort.hpp", "Kokkos_BitManipulation.hpp"},
     # The linalg facade exists so that a backend is swappable; naming one in
     # its public header would defeat that, so nothing third-party is allowed.
     "linalg": set(),
@@ -224,15 +227,15 @@ def main() -> int:
         if len(rel_in_fuse.parts) < 2:
             # A header directly under include/fuse/, in no layer directory at
             # all -- not what this loop checks (there is no "fuse/<layer>/"
-            # to rank), and not the BC-9 gap: that gap is a directory this
-            # list does not know, not the absence of one.
+            # to rank), and not the unknown-directory gap below: that gap is a
+            # directory this list does not know, not the absence of one.
             continue
         layer = rel_in_fuse.parts[0]
         if layer not in rank:
-            # This is the gap BC-9 named: LAYERS' own header comment says
-            # "every directory under include/fuse MUST appear here", but
-            # until now an unlisted one was silently skipped below instead
-            # of failing loudly -- exactly how `field`, `linalg` and `abi`
+            # LAYERS' own header comment says
+            # "every directory under include/fuse MUST appear here", so an
+            # unlisted one must fail loudly rather than being silently
+            # skipped -- exactly how `field`, `linalg` and `abi`
             # went unchecked for a release each (see the LAYERS comment).
             # A `continue` here would repeat that: the gate must fail
             # instead, on the fact that a directory exists that it cannot
@@ -319,8 +322,7 @@ def check_physics_kit_boundary(root: Path) -> list[str]:
     Proof this fires: a probe file placed under include/fuse/base/ with
     '#include "fuse_physics/version.hpp"' and a probe CMakeLists.txt under
     src/ naming 'fuse::physics_kit' in a target_link_libraries() call both
-    produced a violation line here, then were removed; see this track's
-    measured_results for the verbatim output.
+    produced a violation line here, then were removed.
     """
     problems: list[str] = []
     for area in PHYSICS_KIT_BOUNDARY_AREAS:
@@ -348,7 +350,7 @@ def check_physics_kit_boundary(root: Path) -> list[str]:
                             f"(docs/dev/layering.md)"
                         )
     # physics-kit's OWN public headers (physics-kit/include/fuse_physics/),
-    # installed since  (2026-10-31) and read by every consumer of the
+    # installed and read by every consumer of the
     # fuse::physics_kit component: the same third-party rule as a fuse::
     # layer's public header. FORBIDDEN_PUBLIC applies unchanged (no PETSc,
     # MPI, MOAB, HDF5, Eigen or Kokkos-Kernels type may leak into a header
@@ -356,8 +358,7 @@ def check_physics_kit_boundary(root: Path) -> list[str]:
     # version.hpp's has_petsc() comment states), and of Kokkos only
     # Kokkos_Core.hpp, the same allowance as `num` and `field`. Proof this
     # fires: a probe header under physics-kit/include/fuse_physics/ with
-    # '#include <petscsys.h>' produced one violation line here on
-    # 2026-10-31 and was removed.
+    # '#include <petscsys.h>' produces one violation line here.
     pk_include = root / "physics-kit" / "include" / "fuse_physics"
     if pk_include.is_dir():
         for header in sorted(pk_include.rglob("*.hpp")):
@@ -382,14 +383,14 @@ def check_physics_kit_boundary(root: Path) -> list[str]:
 def check_legacy(root: Path) -> list[str]:
     """I11: no upstream include, no legacy namespace/prefix.
 
-    test/ IS SCANNED, and was not until 2026-09-16. A stale
+    test/ IS SCANNED. A stale
     `#include <soma/ir/lowering.hpp>` sat committed in test/parallel/ and
     compiled anyway, because building a parent subtree puts its include
     directory on the path -- so the test was quietly consuming a parent header
     while every gate reported clean, and it would have broken the moment the
     subtree retired. A test is fuse:: code for this purpose.
 
-    examples/ is scanned from 2026-09-17 for the same reason, and it matters
+    examples/ is scanned for the same reason, and it matters
     more there: an example is what a user copies. One that included a parent
     header or named a parent namespace would teach the wrong thing and would
     break when the subtree retires. The port of the two parent examples left

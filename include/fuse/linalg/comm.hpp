@@ -36,10 +36,9 @@ namespace fuse::linalg {
 /// THE one probe `fuse::native::mpi_is_gpu_aware()`
 /// (src/backend/native_migration.cpp) and `fuse::transport::
 /// MpiTransport::is_gpu_aware()` (src/transport/mpi_transport.cpp) both
-/// call now, in `fuse::linalg` because that layer sits below both
-/// (tools/check-layering.py) and both already may depend on it --
-///, 2026-10-15; src/linalg/mpi_gpu_aware.cpp's own header
-/// comment has the full history of why this used to be two copies.
+/// call, in `fuse::linalg` because that layer sits below both
+/// (tools/check-layering.py) and both already may depend on it
+/// (src/linalg/mpi_gpu_aware.cpp's own header comment has the details).
 [[nodiscard]] bool mpi_is_gpu_aware();
 
 /// A global reduction over whatever communicator this instance was built
@@ -76,18 +75,15 @@ class Reducer {
   /// (the Schur complement itself, and its reduced interface right-hand
   /// side), from each rank's own contiguous contribution, with no
   /// reduction of the values themselves. `send` carries `n_each` entries;
-  /// `recv` must have room for `n_each * size()`. The "Containers" track's
-  /// own two facades (comm.hpp's header comment) are UNCHANGED otherwise;
-  /// this is the one addition the Schur-complement solver's own task
-  /// authorised explicitly, reported here as instructed rather than left
-  /// to be discovered as an undocumented diff.
+  /// `recv` must have room for `n_each * size()`. This is the one
+  /// operation beyond the sum/max facades (comm.hpp's header comment) that
+  /// the Schur-complement solver needs.
   virtual void allgather(const double* send, std::size_t n_each, double* recv) const = 0;
 
   /// The exact INTEGER analogue of `allgather` above: `recv[r*n_each ..
   /// (r+1)*n_each)` becomes participant `r`'s own `send`, in rank order.
   /// Added for `fe::DofMap`'s own ghost-dof resolution and `fe::
-  /// AlgebraicSystem`'s own foreign-entry exchange (round 2,
-  /// lead's review of round 1): an allgather moves BYTES, not
+  /// AlgebraicSystem`'s own foreign-entry exchange: an allgather moves BYTES, not
   /// arithmetic, so a caller whose payload is already `std::int64_t`
   /// (a dof key's packed fields, a global index) transports it directly
   /// rather than through a `std::bit_cast<double>` reinterpretation at
@@ -115,8 +111,8 @@ class Reducer {
   /// POINT-TO-POINT exchange of a variable-length payload: every
   /// participant routes directly to whichever other participant(s) it
   /// addresses, unlike `allgather` above (which broadcasts to every
-  /// participant whether it wants the data or not) - round 4,
-  /// item X, replacing `fe::DofMap`'s ghost resolution and `fe::
+  /// participant whether it wants the data or not). Replaces
+  /// `fe::DofMap`'s ghost resolution and `fe::
   /// AlgebraicSystem`'s foreign-entry exchange's own padded allgathers.
   /// `send` holds THIS participant's own outgoing payload, grouped by
   /// DESTINATION rank ascending: participant `r`'s own slice is
@@ -157,8 +153,8 @@ class Reducer {
   /// channel `fe::AlgebraicSystem`'s foreign-entry exchange needs
   /// alongside the int64 one (its own Triplet/vector-Entry payload is
   /// mixed: integer row/col/index fields plus one `double` value field;
-  /// round 2's own `exchange_foreign_entries` already splits transport
-  /// this same way for `allgather`, item B). Same default, same
+  /// its own `exchange_foreign_entries` already splits transport
+  /// this same way for `allgather`). Same default, same
   /// single-participant posture.
   virtual std::vector<double> alltoallv(const std::vector<double>& send, const std::vector<int>& send_counts,
                                          std::vector<int>& recv_counts) const {
@@ -194,12 +190,10 @@ struct GhostPattern {
 /// repeats only the data motion, which is why it takes no `GhostPattern`
 /// argument of its own.
 ///
-/// DEVIATION FROM THE TASK'S INTERFACE CONTRACT, reported per that task's
-/// own instruction ("any deviation... must be stated"): the contract's
-/// `GhostExchanger` has exactly one method, `update`, and its `DistVector`
-/// constructor takes only `(owned_n, exchanger, reducer)` -- with nothing,
-/// anywhere, telling a freshly constructed `DistVector` how many ghost
-/// slots to allocate. `ghost_size()` is added here so the vector can ask
+/// `ghost_size()` exists because `update` is the only data-motion method and
+/// the `DistVector` constructor takes only `(owned_n, exchanger, reducer)`:
+/// nothing else tells a freshly constructed `DistVector` how many ghost
+/// slots to allocate. It lets the vector ask
 /// the one object that already knows (the exchanger was built from a
 /// `GhostPattern`, which fixes the ghost count) rather than needing a
 /// fourth constructor argument that would have to agree with the
@@ -229,11 +223,9 @@ class GhostExchanger {
 };
 
 /// Zero ghosts, update() a no-op: the "no ghosts at all" exchanger a
-/// single-rank `DistVector` is built with. Not named in the task's
-/// interface contract (only `make_serial_reducer` is) -- added because
-/// requirement 1 ("serial reducer/exchanger, no ghosts") names both a
-/// serial reducer AND a serial exchanger, and nothing else in the
-/// contract supplies the latter.
+/// single-rank `DistVector` is built with. A single-rank vector needs both a
+/// serial reducer (`make_serial_reducer`) AND a serial exchanger, and
+/// nothing else supplies the latter.
 [[nodiscard]] std::shared_ptr<const GhostExchanger> make_serial_exchanger();
 
 #if FUSE_HAVE_MPI
@@ -244,7 +236,7 @@ class GhostExchanger {
 [[nodiscard]] std::shared_ptr<const Reducer> make_mpi_reducer(int comm_f);
 
 /// A `Reducer` over EXACTLY one iteration region's own participant set --
-/// the issue tracker, `docs/dev/newton-krylov.md` Sec. 9.4's own
+/// `docs/dev/newton-krylov.md` Sec. 9.4's own
 /// `ParticipantSetReducer` name. `make_mpi_reducer()` above reduces over
 /// EVERY rank of the communicator it is handed; this factory is for the
 /// case `RegionRuntime::participants` names -- a region's own rank set is
@@ -299,7 +291,7 @@ struct ParticipantSetReducerResult {
   /// paragraph above.
   std::shared_ptr<const Reducer> reducer;
   /// The split's own `MPI_Comm_c2f` handle, for a caller (`fuse::petsc::
-  /// solve()`,) that needs the raw communicator itself rather than
+  /// solve()`) that needs the raw communicator itself rather than
   /// this comm-free `Reducer` facade -- bundled with `reducer` so the
   /// split is performed EXACTLY ONCE per call, rather than once for the
   /// `Reducer` and again for the handle (`MPI_Comm_split` builds a NEW

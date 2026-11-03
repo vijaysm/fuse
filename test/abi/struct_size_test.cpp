@@ -19,6 +19,10 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+#if FUSE_HAVE_MPI
+#include <mpi.h>
+#endif
+
 #include "fuse/abi/participant.h"
 #include "fuse/model/descriptor.hpp"
 #include "fuse/model/coupling_graph.hpp"
@@ -101,7 +105,7 @@ TEST(AbiStructSize, LongerStructFromANewerCallerIsAccepted) {
 }
 
 // AbiStructSize.OldCallerStructSizeNeverReadsMyComponent (fuse_setup_options'
-// own growth, examples/brusselator/participants: Conformance).
+// own growth, examples/brusselator/participants).
 // Heap-allocates EXACTLY the pre-growth byte count -- the same
 // offsetof-derived expression src/abi/participant.cpp's own
 // FirstFrozenStructSize<fuse_setup_options> specialization uses -- so a
@@ -192,12 +196,12 @@ TEST(AbiStructSize, OldCallerStructSizeNeverReadsPastItsOwnAllocation) {
   ::munmap(region, static_cast<std::size_t>(2) * static_cast<std::size_t>(page));
 }
 
-// the issue tracker has_communicator's own growth, same discipline as
+// has_communicator's own growth, same discipline as
 // OldCallerStructSizeNeverReadsMyComponent just above, one field later.
-// Heap-allocates EXACTLY the pre- byte count (my_component's own last
+// Heap-allocates EXACTLY the pre-growth byte count (my_component's own last
 // pre-growth member, the same expression participant.cpp reads
 // has_communicator under via struct_size_covers()) -- a caller built
-// before never allocated has_communicator, so fuse_setup() must never
+// before has_communicator existed never allocated it, so fuse_setup() must never
 // read the bytes where it would live, and must fall back to the ORIGINAL
 // sentinel (communicator == 0 means none supplied).
 TEST(AbiStructSize, OldCallerStructSizeNeverReadsHasCommunicator) {
@@ -219,22 +223,22 @@ TEST(AbiStructSize, OldCallerStructSizeNeverReadsHasCommunicator) {
   old_opts->end_time     = fuse_exact_time{.numerator = 0, .denominator = 1};
   old_opts->my_component = nullptr;
   // communicator == 0, has_communicator never allocated: setup() must read
-  // this exactly as it did before -- no communicator supplied, no
-  // refusal, no read past kOldSize.
+  // this exactly as it did before has_communicator existed -- no communicator
+  // supplied, no refusal, no read past kOldSize.
   EXPECT_EQ(t->setup(ctx, old_opts, nullptr), FUSE_OK);
 
   fuse_base_communicator_info info{.struct_size = sizeof(info)};
   EXPECT_EQ(t->base_communicator(ctx, nullptr, &info), FUSE_OK);
   EXPECT_EQ(info.formed, 0) << "an old caller's communicator == 0 must still mean "
-                               "\"none supplied\", not new flagged-zero case";
+                               "\"none supplied\", not the new flagged-zero case";
 
   EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
 }
 
 
-// base_communicator(), appended after
-// view_field (entries.def) -- a local, non-collective read of
-// c.communicator/c.communicator_set, legal at ANY context state
+// base_communicator(), appended after view_field (entries.def) -- a local,
+// non-collective read of c.communicator/c.communicator_set, legal at ANY
+// context state
 // (src/abi/participant.cpp's own impl_base_communicator() doc comment).
 // Exercised here, alongside the OTHER struct_size rows this file
 // already covers, because it needs no real MPI_Init() at all when
@@ -304,8 +308,8 @@ TEST(AbiStructSize, BaseCommunicatorInfoShortStructIsRefused) {
 }
 
 // An OLD caller's own, pre-growth struct_size (this struct's own FIRST
-// frozen layout IS its current one -- it was appended whole, Stage
-// B -- so this is the same `sizeof` both the caller and the library
+// frozen layout IS its current one -- it was appended whole --
+// so this is the same `sizeof` both the caller and the library
 // agree on; included for parity with OldCallerStructSizeNeverReadsMyComponent
 // above, proving a caller built against exactly this layout, not a
 // future-grown one, still gets a correct answer).
@@ -345,14 +349,10 @@ TEST(AbiStructSize, BaseCommunicatorInfoLongerStructFromANewerCallerIsAccepted) 
 // setup() refuses outright in any build without MPI (E-ABI-SETUP-NOMPI,
 // participant.cpp:609-614) -- exactly this translation unit's own tier-0
 // build (FUSE_HAVE_MPI is 0 here). Guarded so it exists only in an
-// MPI-enabled build; even there it calls no actual MPI function: with
-// my_component left NULL, impl_setup()'s my_component-gated connect()
-// branch (the only place that ever calls MPI_Comm_f2c on this value,
-// participant.cpp:888-894 / :1061) is never reached, so the literal 99
-// below is stored and read back VERBATIM without MPI_Init() ever
-// running -- safe to BUILD-VERIFY here; per this track's own standing
-// rule against running anything that touches real MPI, it is left for
-// the owner's host run (host_pending), not executed in this sandbox.
+// MPI-enabled build. setup() looks the caller's rank up in the communicator
+// it is given, so the handle is MPI_COMM_WORLD's real Fortran handle rather
+// than an arbitrary integer, which an MPI library treats as an invalid
+// communicator and aborts on.
 #if FUSE_HAVE_MPI
 TEST(AbiStructSize, BaseCommunicatorReadsBackAFormedCommunicatorWhenMpiIsAvailable) {
   const auto* t = Table();
@@ -360,20 +360,27 @@ TEST(AbiStructSize, BaseCommunicatorReadsBackAFormedCommunicatorWhenMpiIsAvailab
   fuse_ctx* ctx = LoadedContext(t);
 
   fuse_setup_options setup{.struct_size = sizeof(setup)};
-  setup.communicator = 99;
+  // setup() looks the caller's rank up in this communicator, so it has to be
+  // a real handle: an arbitrary integer is not one to an MPI library.
+  int mpi_up = 0;
+  MPI_Initialized(&mpi_up);
+  if (mpi_up == 0) GTEST_SKIP() << "MPI is not initialised in this process";
+  const int comm = static_cast<int>(MPI_Comm_c2f(MPI_COMM_WORLD));
+  setup.communicator = comm;
+  setup.has_communicator = 1;
   setup.has_end_time = 0;
   EXPECT_EQ(t->setup(ctx, &setup, nullptr), FUSE_OK);
 
   fuse_base_communicator_info info{.struct_size = sizeof(info)};
   EXPECT_EQ(t->base_communicator(ctx, nullptr, &info), FUSE_OK);
   EXPECT_EQ(info.formed, 1);
-  EXPECT_EQ(info.communicator, 99);
+  EXPECT_EQ(info.communicator, comm);
 
   EXPECT_EQ(t->destroy(ctx, nullptr, nullptr), FUSE_OK);
 }
 #endif  // FUSE_HAVE_MPI
 
-// AbiStructSize.OldCallerFuseStepRequestIsAccepted (Review 2026-10-11 AB-2):
+// AbiStructSize.OldCallerFuseStepRequestIsAccepted:
 // FirstFrozenStructSize<fuse_step_request> was missing, so check_struct_size
 // refused struct_size=16 (the layout shipped before t_begin/t_end/step/
 // iteration/requires_checkpoint/requires_restore/reserved were appended in
@@ -448,7 +455,7 @@ TEST(AbiStructSize, OldCallerFuseStepRequestIsAccepted) {
 
 // The write-side mirror of OldCallerStructSizeNeverReadsPastItsOwnAllocation
 // (docs/dev/abi-design.md rule 2): a caller compiled before next_component
-// was appended to fuse_step_report (2026-10-03) hands begin_step() a report
+// was appended to fuse_step_report hands begin_step() a report
 // whose struct_size stops at t_end. begin_step() must not write
 // next_component (or any later member) into it. The report is placed so that
 // its first byte past the old size is the first byte of a PROT_NONE page: the
@@ -456,9 +463,8 @@ TEST(AbiStructSize, OldCallerFuseStepRequestIsAccepted) {
 // next_component unconditionally (build-evidence/mutations/abi.toml,
 // abi-begin-step-writes-next-component-past-an-old-callers-struct-size)
 // faults on every run, instead of corrupting a heap allocation that may or
-// may not crash at teardown (lead, 2026-10-19: that row survived the gate in a
-// clean tree because the plain-build heap overflow it relied on is
-// allocator-dependent).
+// may not crash at teardown (a plain-build heap overflow is
+// allocator-dependent, so a mutation relying on it can survive).
 TEST(AbiStructSize, OldCallerStepReportIsNeverWrittenPastItsOwnStructSize) {
   constexpr std::size_t kOldSize = offsetof(fuse_step_report, next_component);
   static_assert(kOldSize == offsetof(fuse_step_report, t_end) + sizeof(fuse_exact_time),

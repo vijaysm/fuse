@@ -9,7 +9,9 @@
 /// exchange feeding this component has already run.
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "fuse/field/registry.hpp"
@@ -20,13 +22,47 @@
 
 namespace fuse::abi_detail {
 
-class ExternalStepComponent final : public fuse::Component {
+/// The adjoint arrays a caller registered with fuse_register_adjoint_field(), by the value of the
+/// FieldId they are the adjoint of. Owned by the context (`fuse_ctx::adjoint_views`), which outlives
+/// every component.
+using AdjointViews = std::unordered_map<std::uint32_t, fuse::FieldRef>;
+
+class ExternalStepComponent final : public fuse::Component, public fuse::AdjointComponent {
  public:
-  explicit ExternalStepComponent(std::string name) : name_(std::move(name)) {}
+  explicit ExternalStepComponent(std::string name, const AdjointViews* adjoint_views = nullptr)
+      : name_(std::move(name)), adjoint_views_(adjoint_views) {}
 
   [[nodiscard]] std::string name() const override { return name_; }
 
-  /// the issue tracker the one thing this override does is collect, not
+  /// Reverse mode. The caller reverses this component's steps itself, in the adjoint arrays it
+  /// registered; the Runner's reverse sweep suspends at each step (Runner::resume_period_adjoint)
+  /// instead of calling `advance_adjoint()`. The adjoint is offered once the caller has registered
+  /// any adjoint array at all, so that a field it forgot is refused by name (E-ADJ-UNBOUND).
+  [[nodiscard]] fuse::AdjointComponent* adjoint() override {
+    return (adjoint_views_ != nullptr && !adjoint_views_->empty()) ? this : nullptr;
+  }
+  fuse::Result<void> register_adjoint_fields(fuse::FieldRegistry& registry,
+                                             const fuse::CouplingGraph& graph) override {
+    const auto cid = graph.find_component(name_);
+    if (!cid.has_value()) {
+      return fuse::Failure{"E-ABI-EXTERNAL-COMPONENT",
+                           "ExternalStepComponent '" + name_ +
+                               "' does not name a component in the graph being initialized"};
+    }
+    for (const fuse::FieldId fid : graph.component(*cid).fields) {
+      const auto it = adjoint_views_->find(fid.value());
+      if (it == adjoint_views_->end()) continue;
+      const fuse::Result<void> bound = registry.bind(fid, it->second);
+      if (!bound.ok()) return bound;
+    }
+    return fuse::Result<void>::success();
+  }
+  /// Never reached through the sweep (it suspends at this component's steps); a no-op if called.
+  fuse::Result<void> advance_adjoint(const fuse::StepContext&) override {
+    return fuse::Result<void>::success();
+  }
+
+  /// The one thing this override does is collect, not
   /// bind -- every field this component owns is already bound directly by
   /// fuse_register_field() (src/abi/participant.cpp), before
   /// fuse_initialize() ever constructs a fuse::Runner. What this records
@@ -134,7 +170,7 @@ class ExternalStepComponent final : public fuse::Component {
     return fuse::kCapabilityRollback;
   }
 
-  /// the issue tracker fix: the one override that makes
+  /// The one override that makes
   /// `Runner::Impl::advance()`/`advance_window()` (src/runtime/runner.cpp,
   /// src/runtime/iteration.cpp) suspend at this component's own advance()
   /// point instead of calling the (still here, still a no-op) override
@@ -146,6 +182,7 @@ class ExternalStepComponent final : public fuse::Component {
 
  private:
   std::string name_;
+  const AdjointViews* adjoint_views_ = nullptr;  // borrowed from the context
   /// This component's own `Intent::Provides` fields, resolved once in
   /// register_fields(). Each is a copy of the FieldRef the registry
   /// already holds (FieldRef is a non-owning view; copying it copies the

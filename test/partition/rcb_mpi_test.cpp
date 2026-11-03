@@ -15,8 +15,7 @@
 // point set (owner_by_contiguous_blocks, exactly rcb_oracle.hpp's emulation
 // scheme, now for real ranks instead of emulated ones) and the result is
 // compared against `recursive_bisect_oracle` run ONCE on the full gathered
-// input (P = 1) -- the escape hatch docs/dev/partitioning.md and this
-// track's task both name: "compare against the oracle recomputed on the
+// input (P = 1) -- the escape hatch docs/dev/partitioning.md names: "compare against the oracle recomputed on the
 // gathered input" is exactly rcb_moab's RCBBfBAcrossRanks property, checked
 // the one way this sandbox cannot check it itself.
 
@@ -118,11 +117,11 @@ TEST(RcbPartitionMpi, MatchesOracleRecomputedOnTheGatheredInput) {
   }
 }
 
-// PS-2: rank 0 alone passes a too-short weights array; every other rank's
-// own arrays are well-formed. Before the fix rank 0 threw
-// E-PART-SIZE-MISMATCH directly and returned while its peers entered
-// recursive_bisect's first Allreduce -- a hang, not a refusal. This test
-// only observes a result at all once every rank refuses together.
+// Rank 0 alone passes a too-short weights array; every other rank's
+// own arrays are well-formed. Rank 0 must not throw
+// E-PART-SIZE-MISMATCH directly and return while its peers enter
+// recursive_bisect's first Allreduce -- that would be a hang, not a refusal.
+// This test only observes a result at all once every rank refuses together.
 TEST(RcbPartitionMpi, RefusesWhenOnlyOneRankHasAMismatchedWeightsArray) {
   FUSE_REQUIRE_AT_LEAST_RANKS(2);
   int rank = 0;
@@ -145,11 +144,11 @@ TEST(RcbPartitionMpi, RefusesWhenOnlyOneRankHasAMismatchedWeightsArray) {
       << rank;
 }
 
-// PS-3: every rank's own RcbOptions are individually valid, but rank 0
+// Every rank's own RcbOptions are individually valid, but rank 0
 // asks for a different num_parts than everyone else -- the recursion's
-// own shape, never reduced before this fix. Before the fix this either
-// hung (a differing number of histogram Allreduce levels) or silently
-// produced two different, each internally-consistent, partitions.
+// own shape, which must be reduced across ranks. Otherwise this either
+// hangs (a differing number of histogram Allreduce levels) or silently
+// produces two different, each internally-consistent, partitions.
 TEST(RcbPartitionMpi, RefusesWhenRanksDisagreeAboutNumParts) {
   FUSE_REQUIRE_AT_LEAST_RANKS(2);
   int rank = 0, size = 1;
@@ -170,18 +169,18 @@ TEST(RcbPartitionMpi, RefusesWhenRanksDisagreeAboutNumParts) {
   EXPECT_THROW((void)(rcb_partition<Space>(opts, c, w, g)), fuse::Refusal) << "rank " << rank;
 }
 
-// PS-9: a fully degenerate, fully-duplicated-gid fixture -- every centroid
+// A fully degenerate, fully-duplicated-gid fixture -- every centroid
 // at the origin (so every element becomes a tie at every level) and every
 // gid equal to 0 (so the ENTIRE tie order is decided by the secondary key
 // alone). `rcb_partition` does not require unique gids
 // (docs/dev/partitioning.md "Ties"), and this is the case where an
 // unstable sort's tie resolution is observable in the final assignment,
-// not just an implementation detail. The fix (`std::stable_sort`, both in
+// not just an implementation detail. `std::stable_sort` (both in
 // rcb.hpp and mirrored in rcb_oracle.hpp) is what makes this a GENUINE
 // parity check rather than two independently-unstable sorts that might
 // happen to agree: the library (real ranks) and the oracle (the SAME P,
 // emulated) are expected to assign every element identically because both
-// now resolve the all-ties case by the one well-defined rule the doc
+// resolve the all-ties case by the one well-defined rule the doc
 // names -- gid, then gathered position -- not by whatever an unstable
 // sort's internal algorithm does on each side.
 TEST(RcbPartitionMpi, DuplicateGidTiesMatchOracleAtTheSameRankCount) {
@@ -236,9 +235,9 @@ TEST(RcbPartitionMpi, DuplicateGidTiesMatchOracleAtTheSameRankCount) {
   }
 }
 
-// PS-10: rank 0 alone holds one negative weight; every other rank's own
+// Rank 0 alone holds one negative weight; every other rank's own
 // weights are non-negative. Folded into the SAME agreement Allreduce as
-// PS-2/PS-3, so a rank whose own weights are fine must not proceed while
+// the size and num_parts checks above, so a rank whose own weights are fine must not proceed while
 // rank 0 refuses alone.
 TEST(RcbPartitionMpi, RefusesWhenOnlyOneRankHasANegativeWeight) {
   FUSE_REQUIRE_AT_LEAST_RANKS(2);

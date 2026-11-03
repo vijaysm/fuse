@@ -1,10 +1,10 @@
-// physics.linear_layer -- item E: the consistent mass
+// physics.linear_layer -- the consistent mass
 // matrix's own projection solve, through fuse::linalg::pcg +
 // fuse::linalg::JacobiPreconditioner, over AlgebraicSystem's own
-// DistSparseMatrix/DistVector. Disposition of KARMA's own preconditioner
+// DistSparseMatrix/DistVector. KARMA's own preconditioner
 // wrappers (karma_preconditioner.h, petsc_block_preconditioner.*,
-// petsc_native_preconditioner.*) is in design_notes; the gist (full
-// citation there): karma_preconditioner.h is a bare typedef selecting
+// petsc_native_preconditioner.*) are not ported; the gist:
+// karma_preconditioner.h is a bare typedef selecting
 // PetscNativePreconditioner (PETSc's own PC object, default type
 // ICC_PRECOND) or, under USE_PETSC_BLOCK_EXTENSIONS,
 // PetscBlockPreconditioner (PETSc's own PCBJACOBI) -- neither wrapper
@@ -31,12 +31,12 @@
 //
 // where kappa(M) = lambda_max(M) / lambda_min(M) -- independent of WHICH
 // preconditioner pcg used to get there (that only changes how many
-// iterations it took, item G's own concern, recorded without assertion).
+// iterations it took, which is recorded without assertion).
 // pcg's own stopping test is exactly ||r||_2 <= rel_tol * ||b||_2
 // (pcg.hpp's header comment), so the bound above becomes
 // ||x - u_known||_2 / ||u_known||_2 <= kappa(M) * rel_tol.
 //
-// kappa(M), A-PRIORI (the lumped/consistent mass ratio the task names):
+// kappa(M), A-PRIORI (the lumped/consistent mass ratio):
 // on a SINGLE P1 simplex element (mass_assembly_test.cpp's own closed
 // form, cited there: mass(i,i) = 2c, mass(i,j != i) = c, c = V/(size *
 // (size+1)), size = dimension+1), M = c*(I + J) with J the all-ones
@@ -151,18 +151,15 @@ TEST(LinearLayerTest, MassMatrixProjectionSolveRecoversKnownVectorWithinDerivedB
 }
 
 // physics.linear_layer.SsorBeatsJacobiOnTheAssembledQ1SystemInTheAsymptoticRegime
-// -- item P1(b) round 4, rewritten by the lead (2026-11-02).
 // A = K + M (stiffness + consistent mass, generic_operators.hpp) on a
 // structured Quad4 Q1 mesh of n x n cells: SPD (K is PSD with a 1-D null
 // space the mass contribution removes).
 //
-// The round-4 track measured jacobi = 9, ssor(1.0) = 15 on a 6 x 6 mesh
-// (49 dofs), dropped the inequality, and attributed the result to the
-// 9-point stencil lacking Young's "Property A". The lead's independent
-// measurement (scipy, the same Q1 element matrices, pcg at rel_tol 1e-10)
-// shows the 6 x 6 result is a PRE-ASYMPTOTIC artifact -- at 49 dofs CG's
-// finite termination on a few eigenvalue clusters dominates -- not a
-// property of the stencil:
+// On a 6 x 6 mesh (49 dofs) jacobi = 9 beats ssor(1.0) = 15. That is a
+// PRE-ASYMPTOTIC artifact -- at 49 dofs CG's finite termination on a few
+// eigenvalue clusters dominates -- not a property of the 9-point stencil
+// (which lacks Young's "Property A"). Measured with the same Q1 element
+// matrices, pcg at rel_tol 1e-10:
 //   n =  6 (   49 dofs): jacobi   9, ssor(1.0)  15, ssor(1.5)  17
 //   n = 16 (  289 dofs): jacobi  28, ssor(1.0)  31, ssor(1.5)  27
 //   n = 32 ( 1089 dofs): jacobi  57, ssor(1.0)  55, ssor(1.5)  41
@@ -171,8 +168,9 @@ TEST(LinearLayerTest, MassMatrixProjectionSolveRecoversKnownVectorWithinDerivedB
 // Jacobi leaves kappa = O(h^-2), iterations O(n); SSOR with any fixed
 // omega in (0, 2) gives kappa = O(h^-1) for this class of FE matrices,
 // iterations O(sqrt(n)), so the ratio jacobi/ssor GROWS with n (1.04,
-// 1.39, 1.55 at omega 1.5 above; 0.90, 1.04, 1.22 at omega 1.0). Consistent ordering governs SOR as a
-// stationary iteration, not SSOR as a CG preconditioner.
+// 1.39, 1.55 at omega 1.5 above; 0.90, 1.04, 1.22 at omega 1.0). Consistent
+// ordering governs SOR as a stationary iteration, not SSOR as a CG
+// preconditioner.
 //
 // Asserted: on the 32 x 32 and 64 x 64 meshes SSOR at omega = 1.0 takes
 // strictly fewer pcg iterations than Jacobi (a property, not a count),

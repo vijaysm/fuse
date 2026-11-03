@@ -10,7 +10,7 @@ include/fuse/, src/, test/ and examples/ -- fuse proper. physics-kit/ is
 none of those four directories (docs/dev/layering.md: "physics-kit/ is a
 separate optional component"), so nothing there was ever checked for this
 until now, and physics-kit/ is exactly where a KARMA-derived file is going
-to land first (docs/dev/physics-kit-disposition.md's D-A/D-B ports).
+to land first.
 
 Not folded into tools/check-layering.py itself: that script's check_legacy()
 is already scoped to the four fuse-proper directories by a loop over a fixed
@@ -30,8 +30,7 @@ convention as tools/check-layering.py and tools/check-invariants.py.
 Proof this fires: a probe header (KARMAProbeType, under physics-kit/include/
 fuse_physics/karma_probe.h) and its copy at physics-kit/src/karma_probe.C
 produced five violation lines (file prefix x2, type prefix x2, extension x1)
-here, then were removed; see this track's measured_results for the verbatim
-output.
+here, then were removed.
 """
 
 from __future__ import annotations
@@ -44,7 +43,7 @@ from pathlib import Path
 # Same three regexes check-layering.py's check_legacy() applies to fuse
 # proper (include/fuse/, src/, test/, examples/), applied here to
 # physics-kit/ instead. KARMA_* macros and the soma/KARMA namespaces are
-# NOT checked here: the task that created this gate names exactly "any
+# NOT checked here: the gate covers exactly "any
 # KARMA type prefix, any karma_ file prefix and any .C extension" -- the
 # three rows of docs/dev/porting.md's naming map a stray copy-paste from
 # upstream/karma would trip first (a type name, a filename, a source

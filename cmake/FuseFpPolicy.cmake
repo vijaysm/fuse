@@ -14,11 +14,11 @@
 # instructions instead, fused by default. At -O0 neither transformation
 # happens, so both sides reduce to the SAME textual sequence (fused,
 # ascending) and agree; at -O2/-O3 without the flag they can disagree
-# over the vectorized elements. measured the SYMPTOM of this
-# correctly (fuse::linalg::DistVector::dot against a plain loop;
+# over the vectorized elements. The symptom is that
+# fuse::linalg::DistVector::dot against a plain loop, and
 # fuse::num::deterministic_dot/deterministic_norm_squared against a
-# chunked serial reference differ by one ulp in a Release build and
-# nowhere else) but attributed it to the wrong cause.
+# chunked serial reference, differ by one ulp in a Release build and
+# nowhere else.
 #
 # FUSE_FP_REPRODUCIBLE, default ON (the robustness rule: a build-wide,
 # compiler-default-independent choice is preferred unless there is a
@@ -67,7 +67,7 @@ bound instead."
 # Applied via a function, not inline at each call site, so the compiler-
 # ID guard and its message are written once.
 #
-# Compiler coverage, measured on this machine (2026-10-12): GNU, Clang and
+# Compiler coverage, measured on this machine: GNU, Clang and
 # AppleClang accept -ffp-contract=off identically (`clang --help` lists
 # `-ffp-contract=<value>`; confirmed Apple clang 21.0.0 here). No other
 # C/C++ compiler is probed -- MSVC and Intel's classic/oneAPI compilers

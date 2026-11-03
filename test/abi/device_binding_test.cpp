@@ -1,6 +1,6 @@
-// Rank-to-device binding (docs/dev/device-resident-arcs.md Phase 3):
+// Rank-to-device binding (docs/dev/device-resident-arcs.md):
 // `fuse::abi::resolve_device_id()` is pure arithmetic, tested here with a
-// mocked device count as well as the real one -- higgs (this track's host)
+// mocked device count as well as the real one -- a single-GPU host
 // has exactly one GPU, so `local_rank % device_count > 1` is reachable only
 // through the mock; the real `resolve_device_id_for_this_process()` glue in
 // src/abi/participant.cpp and test/support/fuse_test_main.cpp is not
@@ -26,8 +26,7 @@ TEST(DeviceBinding, ExplicitOverrideWinsRegardlessOfRankOrCount) {
 }
 
 TEST(DeviceBinding, LocalRankModuloDeviceCountOnTheRealOneGpuHost) {
-  // higgs: every rank binds to device 0, the real device_count=1 case this
-  // track actually ran.
+  // Single-GPU host: every rank binds to device 0, the real device_count=1 case.
   EXPECT_EQ(resolve_device_id(0, 1, std::nullopt), 0);
   EXPECT_EQ(resolve_device_id(1, 1, std::nullopt), 0);
   EXPECT_EQ(resolve_device_id(4, 1, std::nullopt), 0);

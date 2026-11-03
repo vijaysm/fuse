@@ -3,8 +3,7 @@
 // dist_vector_test.cpp and dist_sparse_matrix_test.cpp measure DistVector/
 // DistSparseMatrix -- an in-process "fake" multi-partition split, here
 // generalised past 2 partitions to 3 (requirement 2 needs both) via the
-// `two_pass_collective` helper below, since `Reducer::allgather` (this
-// track's own addition to comm.hpp) is a genuine N-way collective and the
+// `two_pass_collective` helper below, since `Reducer::allgather` (comm.hpp) is a genuine N-way collective and the
 // existing FakePeerExchanger/TwoPartitionReducer pattern binds exactly 2
 // peers. MPI cannot start in this sandbox (docs/dev/testing.md):
 // test/parallel/schur_slab_mpi_test.cpp repeats the 2- and 3-rank
@@ -16,7 +15,7 @@
 // `DirectDiffusionSolver::factor` (examples/brusselator/species_core.hpp)
 // does (minus its own physics-specific `extra_diagonal`, which
 // `SchurSlabSolver`'s interface does not carry) -- the Toy's own in-process
-// reference this track's task says to keep untouched.
+// reference.
 
 #include "fuse/linalg/schur_slab.hpp"
 
@@ -111,10 +110,9 @@ Eigen::VectorXd whole_grid_reference_solve(int nx, int ny, double coefficient,
 
 // Keyed by `n_each`: SchurSlabSolver now performs TWO DISTINCT collectives
 // per `factor()`/`solve()` call (the small, 1-double-per-rank AGREEMENT
-// round `ranks_not_ok` -- src/linalg/schur_slab.cpp -- added 2026-10-10
-// after a host run found the row-band-size refusal stranding a peer
-// rank inside the ORIGINAL allgather below it; then that original,
-// much-larger Schur-/rhs-assembly round). A single shared cache vector
+// round `ranks_not_ok` -- src/linalg/schur_slab.cpp -- which keeps the
+// row-band-size refusal from stranding a peer rank inside the allgather
+// below it; then the much-larger Schur-/rhs-assembly round). A single shared cache vector
 // would have one round's own slot overwritten by the other's differently-
 // sized payload mid-call; keying by `n_each` (which differs by
 // CONSTRUCTION between the agreement round and the assembly round, for
@@ -340,8 +338,8 @@ TEST(SchurSlabSolverMultiPartition, ThreePartitionsNySeventeenNotDivisibleByThre
 // Requirement 3: the periodic wrap. 2 partitions, rhs nonzero only in the
 // LAST row of the LAST row band -- the only path from that forcing to the
 // FIRST row band's own FIRST row is the periodic wrap between the last
-// row band and the first. A mutation that drops the wrap coupling (this
-// track's own "wrap coupling dropped" row) must fail this.
+// row band and the first. A mutation that drops the wrap coupling (the
+// "wrap coupling dropped" mutation row) must fail this.
 // ---------------------------------------------------------------------
 
 TEST(SchurSlabSolverPeriodicWrap, ForcingOnlyOnLastRowReachesFirstRowOnlyThroughTheWrap) {
@@ -406,16 +404,16 @@ TEST(SchurSlabSolverRefusal, EmptyRowBandAlsoRefuses) {
 }
 
 // ---------------------------------------------------------------------
-// HOST-FOUND REGRESSION (2026-10-10): factor()'s row-band-size refusal
-// used to be decided from THIS rank's own `local_rows` alone and return
-// immediately -- a collective path (the Schur-assembly allgather)
+// HOST-FOUND REGRESSION: factor()'s row-band-size refusal
+// must not be decided from THIS rank's own `local_rows` alone and return
+// immediately: that is a collective path (the Schur-assembly allgather)
 // returning on a condition computed from only ONE rank's own data, the
 // standing rule's own forbidden pattern. On the host, rank 1's single-row
 // band refused and returned without ever calling that allgather, while
 // rank 0's own fine band sailed past the (per-rank) check and reached it
 // ALONE -- MPICH's own "Message truncated" in MPI_Allgather is exactly
-// one rank waiting inside a collective nobody else entered. Fixed by
-// deciding the refusal from `row_ownership` alone (every rank already
+// one rank waiting inside a collective nobody else entered. The refusal is
+// decided from `row_ownership` alone (every rank already
 // holds the identical array), which needs NO collective at all, so every
 // rank reaches the SAME conclusion with the SAME (zero) number of
 // allgather calls either way -- checked directly below, not inferred.
@@ -509,7 +507,7 @@ TEST(SchurSlabSolverRefusal,
 }
 
 // ---------------------------------------------------------------------
-// Reducer::allgather itself (this track's own addition to comm.hpp):
+// Reducer::allgather itself (comm.hpp):
 // the serial identity, and the N-way in-process fake used by every test
 // above.
 // ---------------------------------------------------------------------

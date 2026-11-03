@@ -1,0 +1,72 @@
+# Mutations for the kernels that do arithmetic on dd and qd fields.
+
+[[mutation]]
+id = "arith-remap-reads-with-the-output-stride"
+area = "arithmetic_kernels"
+describes = "the remap reads its input with the stride of the output, so a binary64 input into a dd output is read at the wrong offsets"
+file = "include/fuse/num/arithmetic_kernels.hpp"
+old = "(col(k) * components + c) * li, limbs_in, val(k))"
+new = "(col(k) * components + c) * lo, limbs_in, val(k))"
+target = "fuse_num_arithmetic_kernels_test"
+test = "num.arithmetic_kernels"
+
+[[mutation]]
+id = "arith-remap-drops-the-last-entry-of-a-row"
+area = "arithmetic_kernels"
+describes = "a row of the remap leaves out its last entry"
+file = "include/fuse/num/arithmetic_kernels.hpp"
+old = "      for (std::size_t k = row_begin(j); k < row_end; ++k) {\n        acc = acc +"
+new = "      for (std::size_t k = row_begin(j); k + 1 < row_end; ++k) {\n        acc = acc +"
+target = "fuse_num_arithmetic_kernels_test"
+test = "num.arithmetic_kernels"
+
+[[mutation]]
+id = "arith-accumulate-combines-with-stale-data-on-the-first"
+area = "arithmetic_kernels"
+describes = "the first sample is combined with whatever the accumulator held"
+file = "include/fuse/num/arithmetic_kernels.hpp"
+old = "    if (!first && op != AccumOp::Instant) {"
+new = "    if (op != AccumOp::Instant) {"
+target = "fuse_num_arithmetic_kernels_test"
+test = "num.arithmetic_kernels"
+
+[[mutation]]
+id = "arith-accumulate-min-keeps-the-larger"
+area = "arithmetic_kernels"
+describes = "the minimum keeps the larger of the two values"
+file = "include/fuse/num/arithmetic_kernels.hpp"
+old = "          r = s < a ? s : a;"
+new = "          r = s < a ? a : s;"
+target = "fuse_num_arithmetic_kernels_test"
+test = "num.arithmetic_kernels"
+
+[[mutation]]
+id = "arith-divide-multiplies"
+area = "arithmetic_kernels"
+describes = "dividing by a count multiplies by it instead"
+file = "include/fuse/num/arithmetic_kernels.hpp"
+old = "    const A r = divide ? A(s / A(factor)) : A(s * A(factor));"
+new = "    const A r = A(s * A(factor));"
+target = "fuse_num_arithmetic_kernels_test"
+test = "num.arithmetic_kernels"
+
+[[mutation]]
+id = "arith-weighted-sum-combines-the-chunks-in-descending-order"
+area = "arithmetic_kernels"
+describes = "the chunk partials are combined from the last to the first, so the result depends on the order and no longer matches the fixed one"
+file = "include/fuse/num/arithmetic_kernels.hpp"
+old = "    for (std::size_t c = 0; c < n_chunks; ++c) total = total + detail::Limbs<A>::load(scratch.data() + c * L);"
+new = "    for (std::size_t c = n_chunks; c-- > 0;) total = total + detail::Limbs<A>::load(scratch.data() + c * L);"
+target = "fuse_num_arithmetic_kernels_test"
+test = "num.arithmetic_kernels"
+
+[[mutation]]
+id = "arith-binary64-product-is-rounded-first"
+area = "arithmetic_kernels"
+describes = "the product of a binary64 weight and a binary64 value is rounded to binary64 before it is accumulated, so a double-double sum has binary64's error"
+file = "include/fuse/num/arithmetic_kernels.hpp"
+old = "  return limbs == 1 ? detail::Limbs<A>::product(p[0], w) : A(load_value<A>(p, limbs) * A(w));"
+new = "  return limbs == 1 ? A(p[0] * w) : A(load_value<A>(p, limbs) * A(w));"
+target = "fuse_num_arithmetic_kernels_test"
+test = "num.arithmetic_kernels"
+

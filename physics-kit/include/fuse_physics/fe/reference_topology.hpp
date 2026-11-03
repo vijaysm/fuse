@@ -1,13 +1,12 @@
 #pragma once
 
 /// Reference cells and their analytic shape-function interpolation, adapted
-/// from KARMA's karma_reference_topology.h/.C (docs/dev/physics-kit-
-/// disposition.md Appendix A, port-adapt, decision).
+/// from KARMA's karma_reference_topology.h/.C (port-adapted; see
+/// docs/dev/physics-kit.md).
 ///
-/// SCOPE ("execute FE first
-/// completely"): this port now covers all seven element families KARMA's
+/// SCOPE: this port covers all seven element families KARMA's
 /// own GeometryVariant names -- Edge, Triangle, Quadrilateral, Tetrahedron,
-/// Hexahedron plus Prism and Pyramid -- at Lagrange
+/// Hexahedron, Prism and Pyramid -- at Lagrange
 /// order 1 and 2 (the complete tensor/simplex family, e.g. Quad9/Tet10/
 /// Hex27/Prism18/Pyramid14, not the Quad8 serendipity variant).
 ///
@@ -70,8 +69,8 @@ enum class GeometryVariant {
 };
 
 /// Which reference cell a GeometryVariant belongs to, irrespective of
-/// order. Appended (Prism, Pyramid) rather than inserted, so the five
-/// wave-1 enumerators keep their original integral values.
+/// order. Prism and Pyramid are appended rather than inserted, so the first
+/// five enumerators keep their integral values.
 enum class CellFamily { Edge, Triangle, Quadrilateral, Tetrahedron, Hexahedron, Prism, Pyramid };
 
 [[nodiscard]] CellFamily cell_family(GeometryVariant variant) noexcept;

@@ -1,5 +1,5 @@
-// test/parallel/moab_owner_mpi_test.cpp -: the
-// set_parallel_comm wiring landed at MoabMeshView's TWO construction call
+// test/parallel/moab_owner_mpi_test.cpp -- the
+// set_parallel_comm wiring at MoabMeshView's TWO construction call
 // sites (moab_backend.cpp's base load() path and load_into_placements(),
 // this file's own header comment states which), exercised here through
 // the BASE (non-placement) load path -- owner() must agree, across ranks,
@@ -25,8 +25,8 @@
 // silently passed, when the fixture is not configured (this sandbox's
 // own MOAB install -- configure's own "spherecube.h5m not found" notice).
 //
-// NOT YET RUN: this sandbox cannot initialise MPI at all (the issue tracker
-// C1; moab_placed_view_mpi_test.cpp's own header comment states the same
+// NOT YET RUN: this sandbox cannot initialise MPI at all
+// (moab_placed_view_mpi_test.cpp's own header comment states the same
 // fact for this MOAB-linked family specifically). Compiled here; the
 // outcome comes from a host run.
 
@@ -73,7 +73,7 @@ TEST(MoabOwnerMpi, GhostEntityOwnerAgreesWithTheOwningRanksOwnReport) {
   const int dim = view.value()->dimension();
 
   // This rank's own first GHOST entity (owner() != this rank), if any --
-  // set_parallel_comm (item M) is exactly what makes owner() answer at
+  // set_parallel_comm is exactly what makes owner() answer at
   // all here rather than refusing E-MESH-NO-OWNER.
   long long my_ghost_gid = -1;  // sentinel: no ghost found on this rank
   int my_ghost_owner = -1;
@@ -113,8 +113,7 @@ TEST(MoabOwnerMpi, GhostEntityOwnerAgreesWithTheOwningRanksOwnReport) {
     return fuse::Result<void>::success();
   }();
 
-  // Collective agreement (the issue tracker
-  //): a disagreement is reported identically on every rank, naming
+  // Collective agreement: a disagreement is reported identically on every rank, naming
   // the origin, rather than only on the rank that happened to see it.
   const auto agreed = fuse::agree_outcome(world_handle(), local_check, "E-TEST-MOAB-OWNER-AGREEMENT",
                                            "E-TEST-MOAB-OWNER-COMM-FAILURE", "moab_owner_mpi_test ghost check");

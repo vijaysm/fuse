@@ -122,7 +122,8 @@ instances inside the component.
 Give the micro component its own short step and the macro component its long one
 (`ComponentDecl::interval`), and let FUSE sample and reduce across the rate difference. Use
 `AccumOp::Integral` for a flux-like closure and `AccumOp::Mean` for a state-like one; the macro
-model then receives the quantity integrated or averaged over exactly its own step:
+model then receives the quantity integrated or averaged over exactly its own step (the integral
+carries the source's units times time, so a flux in W/m^2 arrives declared in J/m^2):
 
 ```cpp
 // micro steps 1/1000, macro steps 1/10 (set on ComponentDecl::interval)
@@ -156,14 +157,16 @@ const auto q_micro = g.add_field(micro, fuse::FieldSpec{
     .name = "q", .region = micro_cells, .units = fuse::units::kWatt,
     .conservation = fuse::Conservation::Extensive, .intent = fuse::Intent::Provides});
 const auto q_macro = g.add_field(macro, fuse::FieldSpec{
-    .name = "q_in", .region = macro_cells, .units = fuse::units::kWatt,
+    .name = "q_in", .region = macro_cells, .units = fuse::units::kJoule,
     .conservation = fuse::Conservation::Extensive, .intent = fuse::Intent::Requires});
 const auto ch = g.add_channel("q_up", q_micro, q_macro);
 g.channel(ch).conservative().accumulate(fuse::AccumOp::Integral);
 ```
 
-This checks that the sum the macro model receives equals the sum the instances produced, over space
-and over the macro step. It does not check coverage: the component's own reduction is responsible
+The `Integral` multiplies the micro samples' sum by the micro step, so the macro field is declared in
+joules while the micro field is in watts (equal units on both ends would be `E-UNITS`). The check
+compares the amount over space, after the time reduction: what the macro model receives equals what
+the instances produced over the macro step. It does not check coverage: the component's own reduction is responsible
 for weighting each instance by its share of the cell.
 
 ## The declared multiscale contract

@@ -1,6 +1,5 @@
-//, round 2, item 3 ("prove the single-rank/null-
-// communicator path via a base-build-configuration Runner test"): this file is the
-// PRIMITIVE-level half of that proof -- it exercises
+// Single-rank/null-communicator proof, primitive level (the Runner-level half
+// is a base-build-configuration Runner test): this file exercises
 // `fuse::build_distributed_interp_rows`/`apply_distributed_H`/
 // `apply_distributed_HT` (nodal_remap_distributed.hpp) directly, with
 // `comm_handle == fuse::search::kNullComm`, in a PLAIN `fuse_add_gtest`
@@ -96,7 +95,7 @@ class LocalLineMesh final : public MeshView {
 /// cell next to well-formed ones, each with an honest (non-fabricated)
 /// bounding box.
 ///
-/// the issue tracker own mechanism, reproduced here without MPI at
+/// The failure mechanism, reproduced here without MPI at
 /// all. The ORIGINAL (unfiltered, every-cell) eval loop in
 /// `build_distributed_interp_rows` tested EVERY source cell against EVERY
 /// evaluation point, in cell order, and aborted the WHOLE evaluation point
@@ -304,13 +303,13 @@ TEST(NodalRemapDistributedNullComm, DegenerateDecoyCellDoesNotAbortAnAlreadyFoun
 }
 
 // ---------------------------------------------------------------------------
-// the issue tracker. Reproduces, WITHOUT any MPI symbol at all (both of
+// Reproduces, WITHOUT any MPI symbol at all (both of
 // this file's own primitives run serially, `comm_handle == kNullComm`), the
-// 1-ULP disagreement the lead's determinism follow-up measured on a real
+// 1-ULP disagreement measured on a real
 // host run between `NodalRemapRunnerMpi.ConsistentTransposeIsBitIdenticalAcrossRankCounts`'s
 // one-rank reference and its two/three-rank runs.
 //
-// THE MEASURED MECHANISM.
+// THE MEASURED MECHANISM (not an earlier, incorrect guess).
 // `Runner::resolve_remap` (runner.cpp) routes a nodal field transfer
 // through `build_nodal_dist_remap`/`build_distributed_interp_rows` (this
 // file's own `fuse::build_distributed_interp_rows`, which always inverts a
@@ -338,15 +337,15 @@ TEST(NodalRemapDistributedNullComm, DegenerateDecoyCellDoesNotAbortAnAlreadyFoun
 // at this vertex, no tie at all) -- it is purely two different arithmetic
 // expressions for the same ratio, invoked depending on which of the two
 // code paths above a caller's placement happens to select.
-TEST(NodalRemapDistributedNullComm, D67SerialAndDistributedEdgeWeightsAgreeAtTheDomainBoundary) {
+TEST(NodalRemapDistributedNullComm, SerialAndDistributedEdgeWeightsAgreeAtTheDomainBoundary) {
   // n_beam=7 (source, nodal DOFs), n_fluid=11 (target, cell centroids) --
-  // the exact resolution pair the lead's host run used.
+  // the exact resolution pair of the original host run.
   LocalLineMesh beam(7, 0.0, 1.0);
   LocalLineMesh fluid(11, 0.0, 1.0);
 
   // Path 1: the DISTRIBUTED primitive, serial (comm_handle == kNullComm) --
   // Gauss-Newton via invert_reference_map, exactly as a multi-rank run
-  // takes (the issue tracker host run confirmed ranks 2 and 3 agree
+  // takes (a host run confirmed ranks 2 and 3 agree
   // with this bit for bit).
   const auto dist_r = fuse::build_distributed_interp_rows(beam, fluid, /*eval_dim=*/1,
                                                            fuse::search::kNullComm);
@@ -361,7 +360,7 @@ TEST(NodalRemapDistributedNullComm, D67SerialAndDistributedEdgeWeightsAgreeAtThe
 
   // Extract H[fluid_cell = row, beam_vertex_gid = col] from each path's own
   // storage shape and compare EVERY entry bit for bit -- not just the one
-  // vertex the issue tracker names, so a regression anywhere in this bracket
+  // boundary vertex, so a regression anywhere in this bracket
   // is caught, not just at global id 0.
   auto bits = [](double v) {
     std::uint64_t u = 0;
@@ -402,7 +401,7 @@ TEST(NodalRemapDistributedNullComm, D67SerialAndDistributedEdgeWeightsAgreeAtThe
     }
   }
   ASSERT_GT(compared, 0u) << "the two builders produced no comparable entries at all";
-  EXPECT_EQ(mismatches, 0u) << "the issue tracker the distributed and serial Edge weight "
+  EXPECT_EQ(mismatches, 0u) << "the distributed and serial Edge weight "
                                "formulas disagree by rounding at " << mismatches << " of "
                             << compared << " compared entries";
 }

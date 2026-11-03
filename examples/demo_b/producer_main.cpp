@@ -3,8 +3,8 @@
 // side of the split described in docs/user/lowfive.md: attach the
 // intercepting connector, then call into the unmodified HDF5 payload.
 //
-// Run by the ctest row example.demo_b (examples/demo_b/run_demo.sh); first
-// passed on the owner's machine 2026-10-14. See docs/user/demo-b.md.
+// Run by the ctest row example.demo_b (examples/demo_b/run_demo.sh). See
+// docs/user/demo-b.md.
 //
 // Usage: demo_b_producer <port_file> <hdf5_file> <dataset_name>
 

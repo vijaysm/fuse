@@ -4,11 +4,17 @@
 #include <cstdint>
 #include <cstring>
 #include <optional>
+#include <type_traits>
 #include <unordered_set>
 
 #include "fuse/abi/rank_share.hpp"
 #include "fuse/base/rational.hpp"
 #include "fuse/field/field_ref.hpp"
+#include "fuse/model/bfloat16.hpp"
+#include "fuse/model/binary16.hpp"
+#include "fuse/num/dd.hpp"
+#include "fuse/num/posit.hpp"
+#include "fuse/num/qd.hpp"
 #include "fuse/model/capabilities.hpp"
 
 namespace fuse::abi_detail {
@@ -19,19 +25,19 @@ namespace {
 // fuse_capability_set, which (c-abi.md's own growth table) have each
 // shipped exactly one frozen layout so far -- "smaller than the oldest
 // known layout" and "smaller than sizeof(T)" agree for those two. NOT
-// correct for fuse_step_report (see step_report_struct_size_ok below,
-// Review 2026-10-11 AB-3): that struct HAS grown, and this template's
+// correct for fuse_step_report (see step_report_struct_size_ok below):
+// that struct HAS grown, and this template's
 // ">= sizeof(T) [current]" bound refuses a plugin built against an
-// older header's smaller-but-still-valid struct_size, the exact
-// backward-compatibility deviation AB-2 found in the opposite
-// direction (participant.cpp's own FirstFrozenStructSize<T>).
+// older header's smaller-but-still-valid struct_size, the same
+// backward-compatibility deviation participant.cpp's own
+// FirstFrozenStructSize<T> avoids in the opposite direction.
 template <class T>
 [[nodiscard]] bool struct_size_ok(const T* s) noexcept {
   return s != nullptr && s->struct_size >= sizeof(T) &&
          s->struct_size <= static_cast<std::uint32_t>(FUSE_ABI_MAX_STRUCT_SIZE);
 }
 
-// Review 2026-10-11 AB-3: the read-side mirror of
+// The read-side mirror of
 // FirstFrozenStructSize<fuse_step_report> (src/abi/participant.cpp) --
 // this is a DIFFERENT translation unit from a plugin's own `advance()`,
 // writing INTO this host's `rep`, so the question is "does the
@@ -48,6 +54,13 @@ template <class T>
       offsetof(fuse_step_report, t_end) + sizeof(fuse_exact_time);
   return s != nullptr && s->struct_size >= kFirstFrozenSize &&
          s->struct_size <= static_cast<std::uint32_t>(FUSE_ABI_MAX_STRUCT_SIZE);
+}
+
+// abi-design.md rule 2 for the provider table itself: an entry exists only when the table's own
+// struct_size reaches the end of its slot, so a table built against an older header (it ends before
+// the entries appended since) is never read past its end.
+[[nodiscard]] bool table_covers(const fuse_provider_abi_v1* t, std::size_t member_offset) noexcept {
+  return t != nullptr && t->struct_size >= member_offset + sizeof(void (*)());
 }
 
 // fuse_exact_time and fuse::ExactTimeRecord are the same two-int64 layout
@@ -107,20 +120,20 @@ fuse::Result<void> ProviderAdapter::register_fields(fuse::FieldRegistry& registr
       return fuse::Failure{"E-ABI-PROVIDER-TABLE",
                            "provider '" + name_ + "': no table (dlopen or version negotiation failed earlier)"};
     }
-    // the issue tracker (): this shell was
+    // This shell was
     // built for a rank that does NOT host the component (src/abi/
     // participant.cpp's own impl_initialize_local(), the caller of this
     // constructor) -- there is no table to describe()/bind() through,
     // by construction, so this branch never reaches the plugin's own
-    // shared object at all. It registers exactly what the OLD
-    // "mount everywhere, then discover count == 0" path already
-    // produced for a non-hosting rank: the SAME fields, in the SAME
+    // shared object at all. It registers exactly what a
+    // "mount everywhere, then discover count == 0" path would
+    // produce for a non-hosting rank: the SAME fields, in the SAME
     // graph-declared order, each an EMPTY (zero-count) Host view --
     // reading each field's shape (components) from the GRAPH's own
     // FieldSpec, the only source of it available here, instead of from
     // the plugin's own describe() response.
     //
-    // WHAT THIS LOSES, STATED (the task's own question): the E-ABI-
+    // WHAT THIS LOSES, STATED: the E-ABI-
     // DESCRIBE cross-check against the graph (does the plugin's own
     // describe() agree with what the graph declares for this
     // component) never runs on this rank, because this rank never asks
@@ -135,9 +148,7 @@ fuse::Result<void> ProviderAdapter::register_fields(fuse::FieldRegistry& registr
     // hosting rank catches it exactly as it always did. What DOES
     // change: a plugin/graph mismatch is now a RANK-LOCAL refusal
     // (only hosting ranks ever see it) rather than one every rank
-    // independently re-derived and agreed on by construction -- see
-    // the issue tracker own "Registry hosting" entry and this
-    // round's open_questions for why no fix for THAT is attempted here.
+    // independently re-derived and agreed on by construction.
     //
     // The SAME field's own `memspace` (FUSE_MEMSPACE_HOST/_DEVICE) is
     // also unavailable here for the identical reason: it is reported by
@@ -147,8 +158,8 @@ fuse::Result<void> ProviderAdapter::register_fields(fuse::FieldRegistry& registr
     // for the SAME field name -- harmless for an empty, zero-count
     // view (nothing is ever read through it: Runner::hosts_component()
     // never calls advance() for a component this rank does not host,
-    // the same existing gate that already made the plugin's own bind()
-    // a no-op for any zero-count field before this round), and it can
+    // the same existing gate that already makes the plugin's own bind()
+    // a no-op for any zero-count field), and it can
     // only ever make src/runtime/runner.cpp's own E-RT-SPACE check
     // STRICTER in this rank's favour (Host never trips that check),
     // never looser.
@@ -157,6 +168,7 @@ fuse::Result<void> ProviderAdapter::register_fields(fuse::FieldRegistry& registr
       return fuse::Failure{"E-ABI-PROVIDER-GRAPH",
                            "provider '" + name_ + "' is not a component of the loaded graph"};
     }
+    records_.clear();
     for (const fuse::FieldId fid : graph.component(*cid).fields) {
       const fuse::FieldSpec& spec = graph.field(fid);
       const fuse::Layout layout{.stride = static_cast<std::size_t>(spec.components),
@@ -166,6 +178,7 @@ fuse::Result<void> ProviderAdapter::register_fields(fuse::FieldRegistry& registr
       fuse::Result<void> bound =
           registry.bind(fid, fuse::FieldRef{nullptr, layout, fuse::MemorySpace::Host});
       if (!bound.ok()) return bound;
+      records_.push_back(FieldRecord{fid, layout, FUSE_ELEMENT_F64, spec.components, 0, false, 0, spec.name});
     }
     return fuse::Result<void>::success();
   }
@@ -201,11 +214,10 @@ fuse::Result<void> ProviderAdapter::register_fields(fuse::FieldRegistry& registr
       fuse_null cin{sizeof(fuse_null)};
       fuse_capability_set caps{sizeof(fuse_capability_set)};
       const fuse_status cs = table_->capabilities(self_, &cin, &caps);
-      // Review 2026-10-11 AB-6(a): an ENTRY THAT EXISTS but returns a
-      // non-OK status (or a struct_size this host does not recognise) was
-      // silently ignored, degrading to "no checkpoint" with no refusal --
-      // indistinguishable from the provider correctly reporting it has
-      // nothing to checkpoint. A plugin that offers the entry and then
+      // An ENTRY THAT EXISTS but returns a non-OK status (or a struct_size
+      // this host does not recognise) is refused: ignoring it would degrade
+      // to "no checkpoint" with no refusal, indistinguishable from the
+      // provider correctly reporting it has nothing to checkpoint. A plugin that offers the entry and then
       // cannot honour it is a defect this ABI boundary must surface, not
       // paper over.
       if (cs != FUSE_OK) {
@@ -225,7 +237,7 @@ fuse::Result<void> ProviderAdapter::register_fields(fuse::FieldRegistry& registr
       // level, so silence must decode to std::nullopt, not a guess.
       capabilities_ = (((caps.flags & FUSE_CAP_CHECKPOINT) != 0) ? fuse::kCapabilityRollback
                                                                   : std::uint64_t{0}) |
-                      // Restart track round 2, item 4: a plugin that sets
+                      // A plugin that sets
                       // FUSE_CAP_RESTART_FORM_B is declaring save_restart_blob()/
                       // load_restart_blob() are real, not the inherited no-op --
                       // the SAME posture FUSE_CAP_CHECKPOINT already takes for
@@ -238,7 +250,7 @@ fuse::Result<void> ProviderAdapter::register_fields(fuse::FieldRegistry& registr
                       // state the plugin keeps that was never described and
                       // bound (component.hpp's own caveat on carries_hidden_state()).
                       fuse::kCapabilityHiddenState;
-      // the issue tracker item 1 (-2, Option A): FUSE_CAP_DEVICE_FIELDS
+      // FUSE_CAP_DEVICE_FIELDS
       // has no fuse::Component-side bit of its own (unlike FUSE_CAP_CHECKPOINT/
       // FUSE_CAP_RESTART_FORM_B above) -- nothing else in the runtime queries
       // "does this component support device fields" as a general capability
@@ -248,6 +260,9 @@ fuse::Result<void> ProviderAdapter::register_fields(fuse::FieldRegistry& registr
       // describe()-row memspace), so it is kept as its own raw bool rather
       // than folded into capabilities_'s fuse::Component bitmask.
       device_fields_capability_ = (caps.flags & FUSE_CAP_DEVICE_FIELDS) != 0;
+      // FUSE_CAP_ADJOINT: bind_adjoint()/advance_adjoint() are real. Whether the table has them at
+      // all is decided at the end of register_fields(), where `adjoint_offered_` is set.
+      adjoint_capability_ = (caps.flags & FUSE_CAP_ADJOINT) != 0;
     }
 
     // ---- describe() ---------------------------------------------------
@@ -291,18 +306,19 @@ fuse::Result<void> ProviderAdapter::register_fields(fuse::FieldRegistry& registr
     device_storage_.clear();
     device_storage_.resize(fields.size());
     has_device_fields_ = false;
+    records_.clear();
+    adjoint_offered_ = false;
+    adjoint_registered_ = false;
 
-    // the issue tracker round 3: whether THIS process actually hosts
-    // this component on the REAL base communicator -- hosting_rank_ is
-    // nullopt (treat as hosted) for every single-process caller, exactly
-    // the behaviour this adapter always had before this round.
+    // Whether THIS process actually hosts this component on the REAL base
+    // communicator -- hosting_rank_ is nullopt (treat as hosted) for every
+    // single-process caller.
     const bool hosted =
         !hosting_rank_.has_value() || graph.component(*cid).ranks.contains(*hosting_rank_);
 
-    // Review 2026-10-11 AB-6(b): the cross-check below only walked the
-    // graph's OWN fields, asking "does describe() report this one" -- a
-    // plugin reporting a SUPERSET (an extra row the graph never declared
-    // for this component) passed silently. providers.md's own text
+    // The cross-check below also refuses a plugin reporting a SUPERSET (an
+    // extra row the graph never declared for this component), not only a
+    // missing field. providers.md's own text
     // ("a describe() that disagrees with the graph's own field
     // declaration ... never silently skipped or substituted") does not
     // carve out an exception for extra rows, so this direction is refused
@@ -343,7 +359,11 @@ fuse::Result<void> ProviderAdapter::register_fields(fuse::FieldRegistry& registr
       }
       const fuse_field_spec& row = *it->second;
       const std::int32_t expected_intent = static_cast<std::int32_t>(spec.intent);
-      if (row.components != spec.components ||
+      // The graph counts binary64 values per entity; a row counts values of its own
+      // element type, and a double-double value is two of the graph's, a quad-double four.
+      const int limbs = row.element_type == FUSE_ELEMENT_DD ? 2 : row.element_type == FUSE_ELEMENT_QD ? 4 : 1;
+      const int values_per_entity = spec.components / limbs;
+      if (spec.components % limbs != 0 || row.components != values_per_entity ||
           (row.intent != expected_intent && row.intent != 2 && expected_intent != 2)) {
         return fuse::Failure{
             "E-ABI-DESCRIBE",
@@ -353,14 +373,42 @@ fuse::Result<void> ProviderAdapter::register_fields(fuse::FieldRegistry& registr
                 "; describe(): components=" + std::to_string(row.components) +
                 " intent=" + std::to_string(row.intent) + ")"};
       }
-      if (row.element_type != FUSE_ELEMENT_F64) {
+      // FUSE allocates the field in the element type the row names and the plugin binds
+      // to it: binary64, the storage types (binary32, bfloat16, binary16, posit16, posit32),
+      // or the arithmetic types (double-double, quad-double).
+      std::size_t element_size = 0;
+      switch (row.element_type) {
+        case FUSE_ELEMENT_F64:  element_size = sizeof(double); break;
+        case FUSE_ELEMENT_F32:  element_size = sizeof(float); break;
+        case FUSE_ELEMENT_BF16: element_size = sizeof(fuse::bfloat16); break;
+        case FUSE_ELEMENT_F16:  element_size = sizeof(fuse::binary16); break;
+        case FUSE_ELEMENT_DD:   element_size = sizeof(fuse::num::dd); break;
+        case FUSE_ELEMENT_QD:   element_size = sizeof(fuse::num::qd); break;
+        case FUSE_ELEMENT_POSIT16: element_size = sizeof(fuse::num::posit16); break;
+        case FUSE_ELEMENT_POSIT32: element_size = sizeof(fuse::num::posit32); break;
+        default: break;
+      }
+      if (element_size == 0) {
+        return fuse::Failure{"E-ABI-PROVIDER-ELEMENT",
+                             "provider '" + name_ + "': field '" + spec.name + "' has element_type " +
+                                 std::to_string(row.element_type) + ", which is not one of "
+                                 "FUSE_ELEMENT_F64, F32, BF16, F16, POSIT16, POSIT32, DD or QD (FUSE_ELEMENT_I64 "
+                                 "names identifiers, not coupled values)"};
+      }
+      if (row.element_type != FUSE_ELEMENT_F64 && row.memspace == FUSE_MEMSPACE_DEVICE) {
         return fuse::Failure{"E-ABI-PROVIDER-ELEMENT",
                              "provider '" + name_ + "': field '" + spec.name +
-                                 "' is not FUSE_ELEMENT_F64, the only element type this host supports"};
+                                 "' asks for device storage with an element type other than "
+                                 "FUSE_ELEMENT_F64; device-resident provider fields are binary64 only"};
+      }
+      if (row.gradient_size < 0 || (row.gradient_size > 0 && row.gradient_size >= values_per_entity)) {
+        return fuse::Failure{"E-ABI-PROVIDER-GRADIENT",
+                             "provider '" + name_ + "': field '" + spec.name + "' reports gradient_size " +
+                                 std::to_string(row.gradient_size) + ", which must be 0, or at least 1 and "
+                                 "less than its " + std::to_string(values_per_entity) + " components"};
       }
 
-      // the issue tracker item 1 (-2, Option A): a field whose
-      // describe() row requests FUSE_MEMSPACE_DEVICE needs BOTH gates
+      // A field whose describe() row requests FUSE_MEMSPACE_DEVICE needs BOTH gates
       // below to pass before this adapter allocates it device-resident --
       // neither one alone is trusted. `row.memspace` defaults to
       // FUSE_MEMSPACE_HOST (0) for a struct_size an old caller set
@@ -396,10 +444,8 @@ fuse::Result<void> ProviderAdapter::register_fields(fuse::FieldRegistry& registr
                   "' describe() reports FUSE_MEMSPACE_DEVICE, but this provider's own "
                   "capabilities() did not report FUSE_CAP_DEVICE_FIELDS"};
         }
-        // Gate 2: this BUILD must compile in a real device backend. The
-        // owner's own explicit instruction (not this track's own
-        // recommendation, which this corrects): a host-only build must
-        // refuse a device-field request by name, never silently hand
+        // Gate 2: this BUILD must compile in a real device backend. A
+        // host-only build must refuse a device-field request by name, never silently hand
         // back host-addressable memory under the device label, even
         // though Kokkos::DefaultExecutionSpace::memory_space legally
         // equals Kokkos::HostSpace on such a build and nothing would
@@ -420,60 +466,51 @@ fuse::Result<void> ProviderAdapter::register_fields(fuse::FieldRegistry& registr
 #endif
       }
 
-      // "a component that does
-      // not live on this rank gets an empty view of the right dimension
-      // ... rather than a failure, because every rank resolves every
-      // placement (the exchange plan is collective) while only hosting
-      // ranks read one." The REAL plan (built from fuse_ctx::backend, a
-      // rank-aware fuse::native::NativeMeshBackend) already follows this
-      // rule; this adapter's own private backend_ (fuse::SerialMeshBackend,
-      // this class's own header comment: a single-address-space backend
-      // with no concept of a rank or a RankSet at all) cannot -- it always
-      // reports the region's FULL size, on every rank, regardless of
-      // whether this component is even placed there. Measured on the
-      // host: a Plugin component mounted
-      // on a rank SUBSET registered the full size on a NON-hosting rank,
-      // disagreeing with the plan's own 0-entry expectation there --
-      // "a short registration is a heap overflow in the hot loop" is the
-      // Runner's own refusal for the OPPOSITE direction; this is that
-      // same contract, violated from the adapter's side instead. Decided
-      // here (round 3): `hosted` (above), not backend_.region_size(),
-      // decides whether this rank registers the region's real size or an
-      // empty view -- the rule applied at the one place in this file
-      // that did not yet follow it, rather than teaching backend_ itself
-      // to understand a RankSet (SerialMeshBackend's whole point, this
-      // class's own header comment, is NOT to).
+      // A component that does not live on this rank gets an empty view of
+      // the right dimension rather than a failure, because every rank
+      // resolves every placement (the exchange plan is collective) while
+      // only hosting ranks read one. The REAL plan (built from
+      // fuse_ctx::backend, a rank-aware fuse::native::NativeMeshBackend)
+      // follows this rule; this adapter's own private backend_
+      // (fuse::SerialMeshBackend, this class's own header comment: a
+      // single-address-space backend with no concept of a rank or a RankSet
+      // at all) cannot -- it always reports the region's FULL size, on every
+      // rank, regardless of whether this component is even placed there.
+      // A Plugin component mounted on a rank SUBSET would register the full
+      // size on a NON-hosting rank, disagreeing with the plan's own 0-entry
+      // expectation there -- "a short registration is a heap overflow in the
+      // hot loop" is the Runner's own refusal for the OPPOSITE direction;
+      // this is that same contract, violated from the adapter's side.
+      // So `hosted` (above), not backend_.region_size(), decides whether
+      // this rank registers the region's real size or an empty view, rather
+      // than teaching backend_ itself to understand a RankSet
+      // (SerialMeshBackend's whole point, this class's own header comment,
+      // is NOT to).
       //
-      // ROUND 3's "hosted ? full size : 0" RULE WAS STILL TOO COARSE,
-      // MEASURED ON THE HOST (the issue tracker own round-5
-      // paragraph): `hosted` only answers RankSet MEMBERSHIP, a binary
-      // question -- correct for a ONE-rank component (every fixture
-      // before this round), wrong for a component spanning MORE than one
-      // rank. A 3-rank run placed "upstream" on RankSet{1, 2} (two
-      // ranks): the REAL plan decomposes its one-cell region over THOSE
-      // two ranks by POSITION (own rule, applied by NativeMeshBackend
-      // to every placement), giving rank 1 (position 0 of 2) the one cell
-      // and rank 2 (position 1 of 2) NONE -- but `hosted` is true for
-      // BOTH (both are RankSet members), so round 3's rule registered
-      // the FULL size (1) on rank 2 too, disagreeing with the plan's own
-      // 0-entry expectation there ("field 'upstream.out' is registered
-      // with 1x1 values but the plan sizes its region at 0x1"). NOT the
-      // dlopen()-everywhere design question round 3 left open
-      // (Registry::mount_dynamic() mounting the plugin on every rank
-      // regardless of RankSet): that question is about WHETHER a
-      // non-hosting rank's own ProviderAdapter exists at all, not about
-      // what a HOSTING rank of a multi-rank component registers -- rank
-      // 2 is squarely a RankSet member here, this is a hosting-rank bug.
+      // `hosted` alone is still too coarse: it only answers RankSet
+      // MEMBERSHIP, a binary question -- correct for a ONE-rank component,
+      // wrong for a component spanning MORE than one rank. A 3-rank run
+      // placed "upstream" on RankSet{1, 2} (two ranks): the REAL plan
+      // decomposes its one-cell region over THOSE two ranks by POSITION
+      // (the rule NativeMeshBackend applies to every placement), giving
+      // rank 1 (position 0 of 2) the one cell and rank 2 (position 1 of 2)
+      // NONE -- but `hosted` is true for BOTH (both are RankSet members), so
+      // registering the FULL size (1) on rank 2 too would disagree with the
+      // plan's own 0-entry expectation there ("field 'upstream.out' is
+      // registered with 1x1 values but the plan sizes its region at 0x1").
+      // This is separate from the question of WHETHER a non-hosting rank's
+      // own ProviderAdapter exists at all (Registry::mount_dynamic() mounts
+      // the plugin on every rank regardless of RankSet): rank 2 is squarely
+      // a RankSet member here.
       //
-      // Fixed by applying the SAME per-position split the plan's own
-      // backend already applies, via fuse::abi_detail::even_rank_share()
+      // So the SAME per-position split the plan's own backend applies is
+      // applied here, via fuse::abi_detail::even_rank_share()
       // (include/fuse/abi/rank_share.hpp -- a duplicate of fuse::native::
       // rank_slice's own formula, not a call to it; see that header's own
       // doc comment for why duplicated rather than reused). For a
       // single-process caller (`hosting_rank_` unset), `group_size` is
       // always effectively 1 (nothing to split), so this degenerates to
-      // the UNCHANGED round-3 behaviour (the full region size) -- no
-      // existing caller's behaviour changes.
+      // the full region size.
       const fuse::Region& region = graph.region(spec.region);
       std::size_t count = 0;
       if (hosted) {
@@ -489,12 +526,11 @@ fuse::Result<void> ProviderAdapter::register_fields(fuse::FieldRegistry& registr
               full, position, static_cast<int>(ranks.size()));
           count = hi - lo;
         } else {
-          count = full;  // single-process caller: unchanged from round 3.
+          count = full;  // single-process caller: the full size.
         }
       }
 
-      // the issue tracker item 1 (-2, Option A): `base` and the
-      // MemorySpace FUSE's own FieldRegistry is told about both depend on
+      // `base` and the MemorySpace FUSE's own FieldRegistry is told about both depend on
       // `wants_device` (validated above, by this point either impossible
       // or already proven to pass both gates) -- exactly ONE of
       // `storage_[i]`/`device_storage_[i]` is ever populated for a given
@@ -507,54 +543,73 @@ fuse::Result<void> ProviderAdapter::register_fields(fuse::FieldRegistry& registr
         field_space = fuse::MemorySpace::Device;
         has_device_fields_ = true;
       } else {
-        storage_[i].assign(count * static_cast<std::size_t>(spec.components), 0.0);
+        // the field's bytes, in whole doubles: every element type here is no more aligned
+        // than a double
+        const std::size_t bytes =
+            count * static_cast<std::size_t>(values_per_entity) * element_size;
+        storage_[i].assign((bytes + sizeof(double) - 1) / sizeof(double), 0.0);
         base = storage_[i].data();
       }
 
-      const fuse::Layout layout{.stride = static_cast<std::size_t>(spec.components),
+      const fuse::Layout layout{.stride = static_cast<std::size_t>(values_per_entity),
                                 .component_stride = 1,
                                 .count = count,
-                                .components = spec.components};
-      fuse::Result<void> bound =
-          registry.bind(fid, fuse::FieldRef{base, layout, field_space});
+                                .components = values_per_entity};
+      const auto bind_as = [&]<class T>(std::type_identity<T>) {
+        return registry.bind(fid, fuse::BasicFieldRef<T>{reinterpret_cast<T*>(base), layout, field_space});
+      };
+      fuse::Result<void> bound = fuse::Result<void>::success();
+      switch (row.element_type) {
+        case FUSE_ELEMENT_F32:  bound = bind_as(std::type_identity<float>{}); break;
+        case FUSE_ELEMENT_BF16: bound = bind_as(std::type_identity<fuse::bfloat16>{}); break;
+        case FUSE_ELEMENT_F16:  bound = bind_as(std::type_identity<fuse::binary16>{}); break;
+        case FUSE_ELEMENT_DD:   bound = bind_as(std::type_identity<fuse::num::dd>{}); break;
+        case FUSE_ELEMENT_QD:   bound = bind_as(std::type_identity<fuse::num::qd>{}); break;
+        case FUSE_ELEMENT_POSIT16: bound = bind_as(std::type_identity<fuse::num::posit16>{}); break;
+        case FUSE_ELEMENT_POSIT32: bound = bind_as(std::type_identity<fuse::num::posit32>{}); break;
+        default:                bound = bind_as(std::type_identity<double>{}); break;
+      }
       if (!bound.ok()) return bound;
+      if (row.gradient_size > 0) {
+        const fuse::Result<void> declared = registry.declare_gradient(fid, row.gradient_size);
+        if (!declared.ok()) return declared;
+      }
+      records_.push_back(FieldRecord{fid, layout, row.element_type, values_per_entity, row.gradient_size,
+                                     wants_device, count, spec.name});
 
-      // round 3: the PLUGIN's own bind() is skipped entirely when
-      // `count == 0` -- `base` (storage_[i].data() on a just-.assign(0,
-      // ...)'d, possibly EMPTY vector) is not guaranteed non-null by the
-      // standard, and linear_provider.c's own p_bind() (this track's own
-      // reference plugin) refuses any bind() whose `data` is NULL, by
-      // design (a defensive check every well-behaved provider is
-      // entitled to make). FUSE's own registry.bind() above already
-      // recorded the empty view -- every rank still resolves this
-      // field's own placement, own rule -- so the plugin loses
+      // The PLUGIN's own bind() is skipped entirely when `count == 0` --
+      // `base` (storage_[i].data() on a just-.assign(0, ...)'d, possibly
+      // EMPTY vector) is not guaranteed non-null by the standard, and
+      // linear_provider.c's own p_bind() (the reference plugin) refuses any
+      // bind() whose `data` is NULL, by design (a defensive check every
+      // well-behaved provider is entitled to make). FUSE's own
+      // registry.bind() above already recorded the empty view -- every rank
+      // still resolves this field's own placement -- so the plugin loses
       // nothing it was ever going to read from (Runner::hosts_component()
       // never calls advance() for this component on a non-hosting rank
       // either).
       //
-      // ROUND 3 GATED THIS ON `hosted` ALONE -- correct for a ONE-rank
-      // component, where `hosted` and `count > 0` always agreed. ROUND 5
-      //: a MULTI-rank
+      // This is gated on `count > 0`, not on `hosted` alone: `hosted` and
+      // `count > 0` agree for a ONE-rank component, but a MULTI-rank
       // component's own hosting rank can still own ZERO elements at this
-      // rank's particular POSITION (the even-split remainder rule above)
-      // -- `hosted` alone would have called the plugin's own bind() with
-      // a NULL `base` here too, refused by the SAME p_bind() check this
-      // comment already describes, for the SAME reason. Gated on `count
-      // > 0` instead, which is exactly the condition `base` is non-null
-      // for in practice (and the condition own rule actually
-      // cares about: whether this rank has anything of the region to
-      // hand the plugin at all, not merely whether it is a RankSet
-      // member).
+      // rank's particular POSITION (the even-split remainder rule above),
+      // and calling the plugin's own bind() with a NULL `base` would be
+      // refused by the SAME p_bind() check, for the SAME reason.
+      // `count > 0` is exactly the condition `base` is non-null for in
+      // practice (and the condition that matters: whether this rank has
+      // anything of the region to hand the plugin at all, not merely
+      // whether it is a RankSet member).
       if (count > 0) {
         fuse_field_view view{sizeof(fuse_field_view)};
         view.handle            = static_cast<std::int32_t>(fid.value());
-        view.element_type      = FUSE_ELEMENT_F64;
+        view.element_type      = row.element_type;
         view.memspace          = wants_device ? FUSE_MEMSPACE_DEVICE : FUSE_MEMSPACE_HOST;
         view.ownership         = FUSE_OWNERSHIP_OWNED;
-        view.components        = spec.components;
+        view.components        = values_per_entity;
+        view.gradient_size     = row.gradient_size;
         view.count             = count;
         view.owned_count       = count;
-        view.stride             = static_cast<std::int64_t>(spec.components);
+        view.stride             = static_cast<std::int64_t>(values_per_entity);
         view.component_stride    = 1;
         view.data               = base;
         fuse_null bout{sizeof(fuse_null)};
@@ -566,6 +621,10 @@ fuse::Result<void> ProviderAdapter::register_fields(fuse::FieldRegistry& registr
         }
       }
     }
+    // The adjoint is offered when the plugin says so AND the table it handed over is long enough to
+    // have the two entries (a table built against an older header ends before them) AND both are filled.
+    adjoint_offered_ = adjoint_capability_ && table_covers(table_, offsetof(fuse_provider_abi_v1, advance_adjoint)) &&
+                       table_->bind_adjoint != nullptr && table_->advance_adjoint != nullptr;
     return fuse::Result<void>::success();
   } catch (const std::exception& e) {
     return fuse::Failure{"E-ABI-PROVIDER-EXCEPTION",
@@ -604,26 +663,22 @@ fuse::Result<void> ProviderAdapter::advance(const fuse::StepContext& ctx) {
       return fuse::Failure{"E-ABI-PROVIDER-WINDOW",
                            "provider '" + name_ + "': advance() echoed a different window than it was asked to run"};
     }
-    // the issue tracker item 1 (-2, Option A): a device-touching
-    // provider's own advance() may have launched an ASYNCHRONOUS device
+    // A device-touching provider's own advance() may have launched an ASYNCHRONOUS device
     // kernel through whichever device pointer bind() handed it -- the
     // table's own fuse_status return says the LAUNCH succeeded, never
     // that the kernel has FINISHED. Without this fence, the Runner's own
     // very next read of that same registered storage (a native kernel,
     // a Transport pack, a Remap) could race the plugin's own kernel.
-    // OWNER DECISION 2026-10-22: this fence is DEFENSIVE. The design
-    // never depends on it, nor on a device pointer being visible across
+    // This fence is DEFENSIVE. The design never depends on it, nor on a device pointer being visible across
     // streams; a plugin completes its own device work before advance()
     // returns, and no test, row or doc states a property in terms of this
     // fence. It stays (robustness over efficiency).
     // Unconditional for ANY provider with at least one device field --
-    // the owner's own instruction, no escape hatch, not even for a
-    // provider that claims to fence internally (a redundant fence from
-    // an already-quiescent device costs one no-op call, not a measurable
-    // regression; see docs/dev/abi-design.md's own device-fields
-    // subsection for the host_pending measurement this sandbox cannot
-    // take). Never paid by a host-only provider (has_device_fields_
-    // stays false for every provider in this tree before this round).
+    // no escape hatch, not even for a provider that claims to fence
+    // internally (a redundant fence from an already-quiescent device costs
+    // one no-op call, not a measurable regression; see docs/dev/abi-design.md's own device-fields
+    // subsection for the host_pending measurement). Never paid by a
+    // host-only provider (has_device_fields_ stays false for it).
     if (has_device_fields_) {
       Kokkos::fence("provider_adapter_advance_fence");
     }
@@ -662,15 +717,15 @@ fuse::Result<void> ProviderAdapter::restore_state() {
   return fuse::Result<void>::success();
 }
 
-/// Restart track round 2, item 4. Two calls to the SAME table entry, the
+/// Two calls to the SAME table entry, the
 /// identical query-then-fill shape fuse_graph_sink's own CALLEE side
 /// already establishes (participant.cpp's impl_save_graph) -- here as the
 /// CALLER: first with buffer=NULL to learn `written`, then with a buffer
 /// of that exact size. `table_->save_restart_blob == nullptr` (the entry
 /// was never offered) and `out.written == 0` (the plugin has nothing to
 /// capture) are BOTH the Component base class's own "empty blob" default
-/// -- never an error, since the owner's design treats "nothing to
-/// restart" as a legitimate answer, not a missing feature.
+/// -- never an error, since "nothing to restart" is a legitimate answer,
+/// not a missing feature.
 fuse::Result<std::vector<std::byte>> ProviderAdapter::save_restart_blob() {
   last_blob_version_ = 0;
   if (table_ == nullptr || table_->save_restart_blob == nullptr) {
@@ -732,6 +787,106 @@ fuse::Result<void> ProviderAdapter::load_restart_blob(
                              std::to_string(rc)};
   }
   return fuse::Result<void>::success();
+}
+
+// ---------------------------------------------------------------------------
+// Adjoint (docs/dev/abi-design.md, "Adjoint")
+// ---------------------------------------------------------------------------
+
+fuse::Result<void> ProviderAdapter::register_adjoint_fields(fuse::FieldRegistry& registry,
+                                                            const fuse::CouplingGraph&) {
+  if (!unhosted_shell_ && (table_ == nullptr || self_ == nullptr)) {
+    return fuse::Failure{"E-ADJ-INIT", "provider '" + name_ +
+                                           "': the adjoint arrays are registered after the fields themselves"};
+  }
+  if (!unhosted_shell_ && !adjoint_offered_) {
+    return fuse::Failure{"E-ADJ-COMPONENT",
+                         "provider '" + name_ + "' does not offer the adjoint (capabilities() did not set "
+                                                "FUSE_CAP_ADJOINT, or the table has no bind_adjoint/advance_adjoint)"};
+  }
+  try {
+    adjoint_registered_ = false;
+    adjoint_storage_.assign(records_.size(), {});
+    for (std::size_t i = 0; i < records_.size(); ++i) {
+      const FieldRecord& r = records_[i];
+      if (r.device) {
+        return fuse::Failure{"E-ADJ-SPACE", "provider '" + name_ + "': field '" + r.name +
+                                                "' is in device memory; the adjoint of a device-resident "
+                                                "provider field is not implemented"};
+      }
+      if (r.element_type != FUSE_ELEMENT_F64) {
+        return fuse::Failure{"E-ADJ-FIELD-TYPE",
+                             "provider '" + name_ + "': field '" + r.name + "' has element_type " +
+                                 std::to_string(r.element_type) +
+                                 "; the adjoint is implemented for binary64 fields only"};
+      }
+      adjoint_storage_[i].assign(static_cast<std::size_t>(r.count) * static_cast<std::size_t>(r.row_components), 0.0);
+      double* const base = adjoint_storage_[i].data();
+      const fuse::Result<void> bound = registry.bind(r.id, fuse::FieldRef{base, r.layout, fuse::MemorySpace::Host});
+      if (!bound.ok()) return bound;
+      if (r.count > 0 && !unhosted_shell_) {
+        fuse_field_view view{sizeof(fuse_field_view)};
+        view.handle = static_cast<std::int32_t>(r.id.value());
+        view.element_type = r.element_type;
+        view.memspace = FUSE_MEMSPACE_HOST;
+        view.ownership = FUSE_OWNERSHIP_OWNED;
+        view.components = r.row_components;
+        view.gradient_size = r.gradient_size;
+        view.count = r.count;
+        view.owned_count = r.count;
+        view.stride = static_cast<std::int64_t>(r.row_components);
+        view.component_stride = 1;
+        view.data = base;
+        fuse_null bout{sizeof(fuse_null)};
+        const fuse_status br = table_->bind_adjoint(self_, &view, &bout);
+        if (br != FUSE_OK) {
+          return fuse::Failure{"E-ABI-PROVIDER-BIND-ADJOINT",
+                               "provider '" + name_ + "': bind_adjoint() of field '" + r.name + "' returned " +
+                                   std::to_string(br)};
+        }
+      }
+    }
+    adjoint_registered_ = true;
+    return fuse::Result<void>::success();
+  } catch (const std::exception& e) {
+    return fuse::Failure{"E-ABI-PROVIDER-EXCEPTION", "provider '" + name_ + "': " + e.what()};
+  }
+}
+
+fuse::Result<void> ProviderAdapter::advance_adjoint(const fuse::StepContext& ctx) {
+  if (table_ == nullptr || !adjoint_offered_ || !adjoint_registered_) {
+    return fuse::Failure{"E-ABI-PROVIDER-TABLE",
+                         "provider '" + name_ + "': advance_adjoint() before its adjoint arrays were registered"};
+  }
+  try {
+    fuse_step_request req{sizeof(fuse_step_request)};
+    req.component = name_.c_str();
+    req.t_begin = to_abi_time(ctx.t_begin);
+    req.t_end = to_abi_time(ctx.t_end);
+    req.step = ctx.step;
+    req.iteration = ctx.iteration;
+    req.requires_checkpoint = 0;
+    req.requires_restore = 0;
+    req.reserved = 0;
+    fuse_step_report rep{sizeof(fuse_step_report)};
+    const fuse_status rc = table_->advance_adjoint(self_, &req, &rep);
+    if (rc != FUSE_OK) {
+      return fuse::Failure{"E-ABI-PROVIDER-ADVANCE-ADJOINT",
+                           "provider '" + name_ + "': advance_adjoint() returned " + std::to_string(rc)};
+    }
+    if (!step_report_struct_size_ok(&rep)) {
+      return fuse::Failure{"E-ABI-VERSION", "provider '" + name_ +
+                                                "': advance_adjoint() wrote a struct_size this host does not recognise"};
+    }
+    // Rule 6, as for advance(): the window the plugin reports is exactly the one it was asked to reverse.
+    if (!same_time(rep.t_begin, req.t_begin) || !same_time(rep.t_end, req.t_end)) {
+      return fuse::Failure{"E-ABI-PROVIDER-WINDOW", "provider '" + name_ +
+                                                        "': advance_adjoint() reported a different window than it was asked to reverse"};
+    }
+    return fuse::Result<void>::success();
+  } catch (const std::exception& e) {
+    return fuse::Failure{"E-ABI-PROVIDER-EXCEPTION", "provider '" + name_ + "': " + e.what()};
+  }
 }
 
 }  // namespace fuse::abi_detail

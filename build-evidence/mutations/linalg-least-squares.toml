@@ -1,6 +1,4 @@
-# Mutation for the linalg fix pass.
-# Own file per the review-fix protocol: do not edit build-evidence/mutations.toml
-# directly while other fixers hold it dirty.
+# Mutation for the linalg least-squares helper.
 
 [[mutation]]
 id = "least-squares-into-checks-shape"

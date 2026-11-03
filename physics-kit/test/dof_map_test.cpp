@@ -8,6 +8,7 @@
 #include <array>
 #include <cmath>
 
+#include <stdexcept>
 #include <string>
 
 #include <gtest/gtest.h>
@@ -148,10 +149,9 @@ TEST(DofMapTest, RefusesAGhostDofWithoutACommunicator) {
   ASSERT_FALSE(mesh.is_vertex_owned(5));  // v4, a ghost
 
   BasisRegistry registry;
-  // The refusal's own code, not merely its type (lead's review of
-  // round 1, 2026-11-01: a type-only EXPECT_THROW let a mutation that
-  // fell through to a DIFFERENT, later std::invalid_argument survive
-  // undetected).
+  // The refusal's own code, not merely its type (a type-only EXPECT_THROW
+  // would let a mutation that fell through to a DIFFERENT, later
+  // std::invalid_argument survive undetected).
   try {
     DofMap dof_map(mesh, {scalar_p1("u")}, registry);
     FAIL() << "a ghost dof without a communicator must be refused";
@@ -162,7 +162,6 @@ TEST(DofMapTest, RefusesAGhostDofWithoutACommunicator) {
 }
 
 // physics.dof_map.FaceCentreAssociationIndexMatchesSideTopologyOrder --
-// CLOSES the open item (docs/dev/physics-kit.md's review):
 // cross-check DofAssociation's entity_dimension=2 local_entity_index
 // numbering against ReferenceTopology::side_topology()'s own side
 // order, for every cell family with a P2 face-centre dof (Hexahedron,
@@ -176,14 +175,14 @@ TEST(DofMapTest, RefusesAGhostDofWithoutACommunicator) {
 // (two different sides of a Hexahedron/Prism/Pyramid have different
 // centroids).
 void check_face_centres_match_side_topology(GeometryVariant variant, unsigned n_quad_face_centres) {
-  // Every face this wave's built-in P2 bases place a centre dof on (the
+  // Every face the built-in P2 bases place a centre dof on (the
   // Hexahedron's 6, the Prism's 3 quad side faces, the Pyramid's 1 quad
   // base) is a QUADRILATERAL -- its corner count is 4, read directly from
   // side_nodes(side)'s own "corners first" CN convention
   // (reference_topology.hpp's own comment) rather than through
   // side_topology(side), which for a quadratic cell returns the FACE'S
   // OWN quadratic shape (Quad9) -- averaging all 9 of ITS nodes would
-  // happen to also land on the centre by symmetry for this wave's
+  // happen to also land on the centre by symmetry for the
   // reference elements, but would be the wrong check to rely on; reading
   // only the first 4 (corner) indices out of the TOP cell's own node
   // array is correct independent of that symmetry.
@@ -273,13 +272,11 @@ TEST(DofMapTest, OrientationCodeAgreesBetweenTwoElementsSharingAFace) {
 }
 
 
-// physics.dof_map.P2Hex27DofMapCountsVerticesEdgesFacesAndCells -
-// round 2 item C CLOSES the round-1 gap the test above used to name: a
+// physics.dof_map.P2Hex27DofMapCountsVerticesEdgesFacesAndCells -- a
 // 3-D cell's own interior-edge dofs (e.g. a Hex27 edge midpoint) are
-// now numbered, via ReferenceTopology's own edge-to-corner table and
+// numbered, via ReferenceTopology's own edge-to-corner table and
 // Mesh::canonical_edge_vertex_ids (reference_topology.hpp's own header
-// comment) -- E-PHYSICS-DOFMAP-SUBENTITY-UNSUPPORTED no longer fires
-// for this case at all. A 2x1x1 Hex8 box's P2 (Hex27) global dof count
+// comment), so this case is never refused. A 2x1x1 Hex8 box's P2 (Hex27) global dof count
 // is the STANDARD structured-grid entity count -- derived, not
 // guessed:
 //   vertices: (nx+1)(ny+1)(nz+1) = 3*2*2 = 12
@@ -346,8 +343,8 @@ TEST(DofMapTest, P2Tet10DofMapNumbersEachSharedEdgeDofOnce) {
 }
 
 
-// physics.dof_map.D102SharedSideOwnedByTheMinimumCornerOwnerRank --
-// CLOSES the issue tracker, tested DIRECTLY against
+// physics.dof_map.SharedSideOwnedByTheMinimumCornerOwnerRank --
+// tested DIRECTLY against
 // fe::shared_sub_entity_owned_here rather than through DofMap's own
 // full single-rank constructor: that constructor's "convenience path"
 // refuses ANY ghost vertex outright (no communicator to resolve one),
@@ -355,18 +352,17 @@ TEST(DofMapTest, P2Tet10DofMapNumbersEachSharedEdgeDofOnce) {
 // throws there regardless of which sub-entity-ownership RULE is under
 // test -- the rule itself only matters once a ghost is tolerated and
 // resolved through a real communicator (the collective path, build-
-// verified only, never run in this sandbox; host_pending has the
-// commands). This test instead builds a Mesh via from_mesh_view with
+// verified only, never run in this sandbox). This test instead builds a Mesh via from_mesh_view with
 // THREE vertices of known, DIFFERENT owner ranks and checks the rule's
 // own three cases directly:
 //   * every corner owned by rank 0 (the local rank) -- owned here
 //     under BOTH the old and the new rule (no partition question);
-//   * corners split 0/1, minimum owner 0 -- fix: owned here
-//     (the round-1 rule would have been false, since not EVERY corner
+//   * corners split 0/1, minimum owner 0 -- owned here
+//     (the "every corner owned" rule would have been false, since not EVERY corner
 //     is locally owned);
 //   * corners split 1/2 (neither is this rank) -- not owned here,
 //     correctly, under either rule.
-TEST(DofMapTest, D102SharedSideOwnedByTheMinimumCornerOwnerRank) {
+TEST(DofMapTest, SharedSideOwnedByTheMinimumCornerOwnerRank) {
   fuse::native::NativeMeshBuilder builder(2);
   const int v0 = builder.add_vertex(100, 0, 0, 0, /*owner=*/0, /*is_owned=*/true);
   const int v1 = builder.add_vertex(101, 1, 0, 0, /*owner=*/0, /*is_owned=*/true);
@@ -390,7 +386,7 @@ TEST(DofMapTest, D102SharedSideOwnedByTheMinimumCornerOwnerRank) {
   ASSERT_FALSE(mesh.is_vertex_owned(3));
 
   EXPECT_TRUE(fuse::physics::fe::shared_sub_entity_owned_here(mesh, {1, 2}));   // v0,v1: both owner 0
-  EXPECT_TRUE(fuse::physics::fe::shared_sub_entity_owned_here(mesh, {1, 3}));   // v0,v2: min(0,1)=0 -- fix
+  EXPECT_TRUE(fuse::physics::fe::shared_sub_entity_owned_here(mesh, {1, 3}));   // v0,v2: min(0,1)=0
   EXPECT_FALSE(fuse::physics::fe::shared_sub_entity_owned_here(mesh, {3}));     // v2 alone: owner 1, not here
   EXPECT_FALSE(fuse::physics::fe::shared_sub_entity_owned_here(mesh, {}));      // no corners: owned nowhere
 }

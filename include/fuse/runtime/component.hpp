@@ -59,7 +59,7 @@ struct StepContext {
   }
 };
 
-/// residual/linearisation seam: a component's own approximate
+/// The residual/linearisation seam: a component's own approximate
 /// linearisation of its `ImplicitComponent::evaluate_residual()` about the
 /// point of its most recent call.
 ///
@@ -119,7 +119,7 @@ class LinearizationToken {
   [[nodiscard]] virtual std::uint64_t signature() const = 0;
 };
 
-/// residual/linearisation seam: an interface a `Component` may
+/// The residual/linearisation seam: an interface a `Component` may
 /// ADDITIONALLY implement, queried through `Component::implicit()` rather
 /// than through a second base class -- see that method's own comment for
 /// why.
@@ -169,8 +169,8 @@ class ImplicitComponent {
   /// Returning an error aborts the Newton step the same way an error from
   /// `advance()` aborts an explicit one; the coupler does not retry.
   ///
-  /// WHAT "A FROZEN TIME LEVEL" MEANS FOR A WINDOW-SCOPED MEMBER (
-  /// WindowNewton, newton-krylov.md Sec. 9). The paragraph above
+  /// WHAT "A FROZEN TIME LEVEL" MEANS FOR A WINDOW-SCOPED MEMBER (window
+  /// Newton, newton-krylov.md Sec. 9). The paragraph above
   /// describes an ORDINARY (single-clock) region, where `ctx.t_end` is
   /// one instant and `interface_in`/`residual_out` are each one field's
   /// worth of plain values. `Runner::Impl::evaluate_window_region_
@@ -217,7 +217,63 @@ class ImplicitComponent {
   [[nodiscard]] virtual LinearizationToken* linearization() { return nullptr; }
 };
 
-/// E-NEWTON-SHAPE check: whether `token`'s own `rows()`/`cols()`
+/// Reverse mode (adjoint) interface of a component (docs/dev/adjoint-schedule.md).
+/// Queried through `Component::adjoint()`, like `ImplicitComponent`, rather than as a second
+/// base class.
+///
+/// FUSE supplies the adjoint of every coupling operator it applies (the
+/// transpose of a remap, the factor of a scaling, the fan-out of a sum); the
+/// component supplies the adjoint of its own `advance()`, with whatever
+/// automatic differentiation tool or hand-derived formula it prefers. FUSE
+/// never sees a tape: the only things that cross the interface are arrays of
+/// binary64 adjoint variables, one per field, laid out like the field itself.
+///
+/// CONVENTIONS. For a field F of this component the adjoint array `Fbar` holds
+/// the derivative of the scalar being differentiated with respect to each entry
+/// of F, at the time of the call.
+///
+///   - A Provides field (the component writes it in `advance()`): on entry to
+///     `advance_adjoint(ctx)` `Fbar` holds the adjoint variable of F as it was
+///     left by the step `ctx` describes, to which the coupler has ALREADY added
+///     the adjoint of every read of F at or after the end of that step. On
+///     return it must hold the adjoint variable of F as it was BEFORE the step
+///     (the forward step overwrote F, so the reverse step overwrites `Fbar`).
+///   - A Requires field (the coupler delivers it before `advance()` reads it):
+///     the component ADDS to `Fbar` the adjoint of every value it read during
+///     the step; it must not overwrite what is there, because a field read by
+///     several steps between two deliveries gets one contribution from each.
+///     The coupler consumes `Fbar` when it reverses the delivery and sets it to
+///     zero.
+///
+/// A step is reversed exactly once, in the reverse of the order in which
+/// `advance()` ran, with the same `StepContext`. The component must keep
+/// whatever forward values its own adjoint needs (a tape, a checkpoint, or
+/// nothing at all for a linear step): FUSE does not store them.
+class AdjointComponent {
+ public:
+  virtual ~AdjointComponent() = default;
+
+  /// Binds the adjoint arrays of this component's fields in `registry`, each
+  /// under the `FieldId` of the field it is the adjoint of and with the same
+  /// layout and value type as that field's own binding. A field with no
+  /// adjoint array is one nothing is differentiated through: the coupler then
+  /// refuses the run by name (E-ADJ-UNBOUND) rather than skip it.
+  virtual Result<void> register_adjoint_fields(FieldRegistry& registry,
+                                               const CouplingGraph& graph) = 0;
+
+  /// The adjoint of `Component::advance(ctx)`, under the conventions above.
+  ///
+  /// A component that an iteration region steps is reversed once per pass of the adjoint
+  /// iteration of the region (docs/dev/adjoint-schedule.md): this is called several times for
+  /// the same `ctx`, each time with the adjoint arrays restored to what they were on the first call
+  /// except for the delivered values, and must give the same result each time, so it may not
+  /// consume the forward information it recorded. The adjoint is that of the LAST `advance()` of
+  /// that step (the forward run advanced it again after each `restore_state()`), and
+  /// `ctx.iteration` is 0.
+  virtual Result<void> advance_adjoint(const StepContext& ctx) = 0;
+};
+
+/// The E-NEWTON-SHAPE check: whether `token`'s own `rows()`/`cols()`
 /// agree with the block sizes a region's interface-vector assembly derived
 /// for the component that returned it. A pure function of already-known
 /// sizes, so it needs no graph, no `ComponentSet` and no running region --
@@ -348,12 +404,11 @@ class Component {
   /// Spec Section 5.3: FUSE derives the checkpoint set from dataflow over the SSA
   /// form, tells the component which of its state crosses the region
   /// boundary, and *verifies at runtime that it was saved* -- unlike preCICE,
-  /// which pushes `requiresWritingCheckpoint()` onto the user. Phase 7
-  /// Task 7.2 raises an error for a component that appears in an iteration
-  /// region with `supports_rollback() == false`; the hooks are declared now so
-  /// the interface does not change under existing implementers later.
+  /// which pushes `requiresWritingCheckpoint()` onto the user. A component that
+  /// appears in an iteration region with `supports_rollback() == false` is
+  /// refused.
   ///
-  /// R16 CAVEAT, because the sentence above reads as a stronger guarantee
+  /// CAVEAT, because the sentence above reads as a stronger guarantee
   /// than it is: the runtime verification is a `memcmp` against REGISTERED
   /// field storage only (the arcs `register_fields()` bound; see
   /// `Runner::Impl::run_region`, src/runtime/iteration.cpp), one per
@@ -385,8 +440,8 @@ class Component {
   /// than restore garbage.
   virtual Result<void> restore_state() { return Result<void>::success(); }
 
-  ///  (docs/dev/restart.md),  Slice 1, decision 1,
-  /// Form A: put every array this component owns into `writer`, keyed by
+  /// Restart (docs/dev/restart.md), Form A: put every array this component
+  /// owns into `writer`, keyed by
   /// THIS COMPONENT'S OWN global ids for the array's index space -- a
   /// component that lives on one rank numbers its own entries `0..n-1`,
   /// trivially satisfying the "re-partitionable" requirement (there is
@@ -399,7 +454,7 @@ class Component {
   /// Deliberately a SEPARATE virtual from `save_state()`/`restore_state()`
   /// above, which this method shares no caller with: those are the
   /// in-memory, single-slot ROLLBACK checkpoint `run_region()` uses to
-  /// re-advance one iteration-region sweep (R16's own caveat on that pair
+  /// re-advance one iteration-region sweep (the caveat on that pair
   /// applies to restart identically and is restated here rather than
   /// assumed: FUSE can verify that every id this call named was written
   /// by SOME rank and that no id repeats, `RestartWriter::finish_point()`'s
@@ -440,11 +495,11 @@ class Component {
     return Result<void>::success();
   }
 
-  /// Form B (decision 1): an opaque, versioned per-rank byte
+  /// Form B: an opaque, versioned per-rank byte
   /// record, same-decomposition only -- `memcpy`-cheap for a component
   /// with no mesh behind it to implement, at the cost that a restart at
-  /// a DIFFERENT rank count refuses this component BY NAME (owner
-  /// decision 1: a graph refuses a rank-count change collectively if ANY
+  /// a DIFFERENT rank count refuses this component BY NAME (a graph
+  /// refuses a rank-count change collectively if ANY
   /// component in it sets `kCapabilityRestartFormB` without also setting
   /// `kCapabilityRestartFormA`). The default returns an empty blob,
   /// correct only for a component that does not set
@@ -577,7 +632,7 @@ class Component {
     return false;
   }
 
-  /// residual/linearisation seam: this component's own
+  /// The residual/linearisation seam: this component's own
   /// `ImplicitComponent` interface, or `nullptr` if it does not implement
   /// one.
   ///
@@ -603,6 +658,15 @@ class Component {
   /// construct, and every component written before this seam existed,
   /// does not implement `ImplicitComponent`.
   [[nodiscard]] virtual ImplicitComponent* implicit() { return nullptr; }
+
+  /// This component's reverse mode (adjoint) interface, or
+  /// `nullptr` if it has none. A separate query for the reason `implicit()`
+  /// gives: most components never differentiate, and a second base class would
+  /// make every one of them override two pure virtuals. `Runner::
+  /// initialize_adjoint()` refuses a run in which a component that advances has
+  /// no adjoint (E-ADJ-COMPONENT). Unlike `implicit()` there is no capability
+  /// bit to keep in step: the query is made once, at `initialize_adjoint()`.
+  [[nodiscard]] virtual AdjointComponent* adjoint() { return nullptr; }
 };
 
 namespace detail {

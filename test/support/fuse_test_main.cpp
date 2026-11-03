@@ -9,7 +9,7 @@
 // as an explicit include of this file's own needs.
 #include <numeric>
 
-// Rank-to-device binding (docs/dev/device-resident-arcs.md Phase 3):
+// Rank-to-device binding (docs/dev/device-resident-arcs.md):
 // <optional>/<string_view> for the glue below; <fmt/format.h> for its
 // FUSE_DEVICE_DEBUG trace, the same convention every other device trace in
 // this tree uses.
@@ -34,7 +34,7 @@ namespace {
 int g_rank = 0;
 int g_size = 1;
 
-// Rank-to-device binding glue (docs/dev/device-resident-arcs.md Phase 3):
+// Rank-to-device binding glue (docs/dev/device-resident-arcs.md):
 // gathers the real inputs fuse::abi::resolve_device_id() needs. Duplicated
 // from src/abi/participant.cpp's own private copy rather than shared --
 // the two live in different libraries (fuse_test_main links fuse::base and
@@ -115,8 +115,8 @@ void MpiFailureReducer::OnTestEnd(const ::testing::TestInfo& info) {
   // count alone is what a reader gets from ctest, and it is not enough: a
   // launcher commonly forwards only one rank's stdout, so the failing rank's
   // own assertion text can be absent from the log entirely and "failed on 1
-  // of 3 rank(s)" is then the whole evidence (measured on the host,
-  // 2026-10-08, parallel.window_runner_mpi.3). Which rank failed is the half
+  // of 3 rank(s)" is then the whole evidence (measured on a host,
+  // parallel.window_runner_mpi.3). Which rank failed is the half
   // of the diagnosis that does survive this reduction, so it is carried.
   // Collective: every rank runs the same tests in the same order, so this matches.
   std::vector<int> per_rank(static_cast<std::size_t>(g_size), 0);
@@ -155,8 +155,7 @@ int main(int argc, char** argv) {
   int provided = 0;
   // THREAD_MULTIPLE requested defensively: nothing in this tree is known to
   // call MPI from more than one thread today (there is no process-wide
-  // logger with its own polling thread -- that was fmtlog, fetched but
-  // never wired in, removed 2026-10-12), but asking for the weakest level
+  // logger with its own polling thread -- that was fmtlog was never wired in), but asking for the weakest level
   // this harness happens to need now would silently narrow what every test
   // registered under it may assume. MULTIPLE is the one request that can
   // only be loosened, never tightened, without re-auditing every test.
@@ -169,7 +168,7 @@ int main(int argc, char** argv) {
                stderr);
   }
 #endif
-  // Rank-to-device binding (docs/dev/device-resident-arcs.md Phase 3):
+  // Rank-to-device binding (docs/dev/device-resident-arcs.md):
   // resolved from the REAL argv/env (so an explicit --kokkos-device-id=N
   // or KOKKOS_DEVICE_ID the caller already gave wins, unchanged), then
   // re-injected as the same flag so Kokkos::ScopeGuard's own argv parser
@@ -203,9 +202,8 @@ int main(int argc, char** argv) {
     // ("the kernels run on more than one execution space") and a reader of a
     // CI log should not have to infer it from the configure flags. A typed
     // test that silently instantiates once looks identical in a summary to
-    // one that covered everything -- which is exactly what happened: the
-    // space list omitted Threads, and every typed test in the project ran on
-    // Serial alone until 2026-09-17.
+    // one that covered everything -- which is what happens when the
+    // space list omits Threads: every typed test then runs on Serial alone.
     if (::fuse::testing::rank() == 0) {
       std::printf("[  spaces  ] enabled:");
 #if defined(KOKKOS_ENABLE_CUDA)

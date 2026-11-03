@@ -65,7 +65,7 @@ TEST(PartitionRefusals, NegativeNumPartsIsRefused) {
   EXPECT_THROW((void)(rcb_partition<Space>(opts, c, w, g)), fuse::Refusal);
 }
 
-// PS-10: a negative weight is not a load-balance metric; without this
+// A negative weight is not a load-balance metric; without this
 // refusal, weighted_median's zero-or-negative-total early return places
 // the split at an arbitrary coordinate and silently sorts every tied
 // element to the right.

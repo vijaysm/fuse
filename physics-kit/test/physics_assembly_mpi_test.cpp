@@ -1,10 +1,9 @@
-// physics-kit/test/physics_assembly_mpi_test.cpp -- item H (
-// round 3): the GLOBAL assembled mass matrix over a REAL, multi-rank
+// physics-kit/test/physics_assembly_mpi_test.cpp -- the GLOBAL assembled mass matrix over a REAL, multi-rank
 // partitioned 3-D box, built through fuse_physics::fe::AlgebraicSystem's
 // own collective path (DofMap/AlgebraicSystem given a real
 // fortran_communicator). Registered with RANKS 2 3
 // (physics-kit/test/CMakeLists.txt), build-only under FUSE_ENABLE_MPI=ON
-// (host_pending has the exact mpirun commands) -- MPI cannot start in
+// -- MPI cannot start in
 // this sandbox, matching every other *_mpi_test.cpp
 // in this tree.
 //
@@ -59,6 +58,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <stdexcept>
 #include <vector>
 
 #include "fuse/backend/native_mesh.hpp"

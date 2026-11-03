@@ -289,7 +289,7 @@ void recursive_bisect(
 
 /// Entry point. Rejects rather than guesses on a malformed call
 /// (E-PART-SIZE-MISMATCH, E-PART-NUM-PARTS, E-PART-NO-MPI, E-PART-WEIGHT,
-/// E-PART-OPTS); every other degenerate case named in the task -- all
+/// E-PART-OPTS); every other degenerate case -- all
 /// points identical, an empty local input, zero total weight, a single
 /// part -- is handled by the SAME code path as the general case, not a
 /// special branch (see docs/dev/partitioning.md).
@@ -327,7 +327,7 @@ RcbResult<ExecutionSpace> rcb_partition(
   const bool locally_size_ok = (weights.extent(0) == n && gids.extent(0) == n);
   const bool locally_num_parts_ok = (opts.num_parts >= 0);
 
-  // PS-10: negative weights are meaningless for load balance (they are not
+  // Negative weights are meaningless for load balance (they are not
   // refused by weighted_median's own degenerate-total handling, which
   // treats a non-positive SUM as "nothing to split" and sorts every
   // element to the right by the sign of an arbitrary coordinate). Checked
@@ -360,7 +360,7 @@ RcbResult<ExecutionSpace> rcb_partition(
 
   if (opts.comm == kNullComm) {
     // Exactly one process: nothing to agree with, so the local verdict IS
-    // the global one -- refuse directly, in the order the task named them.
+    // the global one -- refuse directly, in the order below.
     if (!locally_size_ok) {
       FUSE_REFUSE("E-PART-SIZE-MISMATCH",
                  "centroids/weights/gids must have the same length; got {} / {} / {}", n,
@@ -377,7 +377,7 @@ RcbResult<ExecutionSpace> rcb_partition(
                  "metric; weighted_median would place the split at an arbitrary coordinate)");
     }
   } else {
-    // PS-2/PS-3: agree this rank's own verdict, AND the recursion's own
+    // Agree this rank's own verdict, AND the recursion's own
     // shape -- num_parts, median_buckets, median_refine_iters -- with
     // every other rank in `comm` BEFORE `recursive_bisect`'s first
     // collective. One Allreduce(MAX) and one Allreduce(MIN) over four

@@ -15,6 +15,10 @@ Before changing code, see how a task is done with FUSE today:
 - [Examples](docs/user/examples.md) and the programs under [`examples/`](examples/): complete
   couplings that double as tests.
 - [Concepts](docs/user/concepts.md) and the [glossary](docs/user/glossary.md).
+- [Working with field data](docs/user/field-pipeline.md) and [number types](docs/user/number-types.md)
+  if your change touches how field values are stored, converted or differentiated.
+- [Time integrators](docs/user/integrators.md) and [physics-kit](docs/user/physics-kit.md) if it
+  touches `fuse/num/` integrators or the finite-element library.
 
 ## Set up
 
@@ -27,7 +31,11 @@ ctest --test-dir build --output-on-failure -LE bench
 ```
 
 See the [build guide](docs/user/build.md) for MPI, MOAB, PETSc, HDF5, Python and the other options.
-If your change touches an optional feature, build with that feature on.
+If your change touches an optional feature, build with that feature on. The finite-element library
+under `physics-kit/` is built by default (`-DFUSE_ENABLE_PHYSICS_KIT=ON`); its tests are the
+`physics.*` entries of `ctest`, and with MPI on, `parallel.physics_*`. The tests that compare the
+double-double, quad-double and posit types bit for bit with stillwater-sc/universal build only with
+`-DFUSE_ENABLE_UNIVERSAL=ON -DFUSE_UNIVERSAL_INCLUDE_DIR=<checkout>/include/sw`.
 
 ## Checks that must pass
 
@@ -35,6 +43,7 @@ The static checks need only Python and run in under a second each:
 
 ```bash
 python3 tools/check-layering.py
+python3 tools/check-physics-kit-naming.py
 python3 tools/check-invariants.py
 python3 tools/check-ascii.py
 python3 tools/check-throws-labels.py
@@ -59,6 +68,10 @@ both linear-algebra backends. A pull request needs a green run.
 - **Layering.** Libraries form layers and may include only from layers below them
   (`tools/check-layering.py` enforces it). Read [docs/dev/layering.md](docs/dev/layering.md) before
   adding an include across layers.
+- **physics-kit points one way.** `physics-kit/` may use FUSE; nothing under `include/fuse/`, `src/`,
+  `python/` or `examples/` may include a `fuse_physics/` header or link `fuse::physics_kit`
+  (`tools/check-layering.py` enforces it), and its public headers follow the same third-party-header
+  rule as the FUSE layers.
 - **Invariants.** [docs/dev/invariants.md](docs/dev/invariants.md) lists rules that are checked
   mechanically. Do not weaken a check to make a change pass.
 - **Conventions.** Follow [docs/dev/conventions.md](docs/dev/conventions.md): C++20, namespace

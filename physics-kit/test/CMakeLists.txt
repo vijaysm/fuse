@@ -10,22 +10,20 @@
 # its FUSE_ENABLE_TESTS block's add_subdirectory(test) for exactly this
 # reason.
 #
-# NO_LAYER_LIB + explicit LIBS: the ctest name the task names is
+# NO_LAYER_LIB + explicit LIBS: the ctest name is
 # "physics.skeleton" (fuse::physics is the component's NAMESPACE), but the
-# CMake target alias is "fuse::physics_kit" (the task's own name for it) --
-# the two are deliberately different, so fuse_add_gtest's default
+# CMake target alias is "fuse::physics_kit" -- the two are deliberately different, so fuse_add_gtest's default
 # "fuse::${layer}" link (which would look for a nonexistent "fuse::physics"
 # target) is turned off and the real target named explicitly.
 #
 # These tests are NOT swept by test/CMakeLists.txt's own end-of-file audit
 # (file(GLOB_RECURSE ... ${CMAKE_CURRENT_SOURCE_DIR}/*/*_test.cpp) globs
 # relative to test/ and never descends into physics-kit/), so this file
-# runs the same audit over its own directory at its end (added 2026-10-31,
-# when the directory grew from one test source to ten).
+# runs the same audit over its own directory at its end.
 fuse_add_gtest(physics skeleton SRC_DIR . NO_LAYER_LIB LIBS fuse::physics_kit)
 
-# (numerics/fe, numerics/spatial): the five test rows named in
-# docs/dev/physics-kit-disposition.md's porting scope, plus the spatial
+# numerics/fe, numerics/spatial: the five ported test rows
+# (see docs/dev/physics-kit.md), plus the spatial
 # layer's own domain/mesh tests. Same NO_LAYER_LIB + explicit LIBS pattern
 # as physics.skeleton above, for the same reason (fuse::physics_kit is the
 # CMake target; fuse::physics is only the C++ namespace).
@@ -38,7 +36,7 @@ fuse_add_gtest(physics fe_face SRC_DIR . NO_LAYER_LIB LIBS fuse::physics_kit)
 fuse_add_gtest(physics spatial_mesh SRC_DIR . NO_LAYER_LIB LIBS fuse::physics_kit)
 fuse_add_gtest(physics spatial_domain SRC_DIR . NO_LAYER_LIB LIBS fuse::physics_kit)
 
-# (numerics/fe's dof map): see docs/dev/physics-kit.md's own
+# numerics/fe's dof map: see docs/dev/physics-kit.md's own
 # tolerance-provenance table for this test's assertions.
 fuse_add_gtest(physics dof_map SRC_DIR . NO_LAYER_LIB LIBS fuse::physics_kit)
 fuse_add_gtest(physics algebraic_system SRC_DIR . NO_LAYER_LIB LIBS fuse::physics_kit)
@@ -58,7 +56,7 @@ if(FUSE_ENABLE_MPI)
   fuse_add_mpi_test(parallel physics_mesh_mpi SRC_DIR . RANKS 2 3 LIBS fuse::physics_kit fuse::field)
 endif()
 
-# Item H: the GLOBAL assembled mass matrix over a real,
+# The GLOBAL assembled mass matrix over a real,
 # multi-rank partitioned 3-D box -- physics_assembly_mpi_test.cpp's own
 # header comment. Same gating convention as physics_mesh_mpi_test.cpp
 # above; never run in this sandbox.
@@ -67,10 +65,9 @@ if(FUSE_ENABLE_MPI)
   fuse_add_mpi_test(parallel physics_assembly_mpi SRC_DIR . RANKS 2 3 LIBS fuse::physics_kit fuse::field)
 endif()
 
-# Item X: DofMap's own ghost resolution (dof_map.cpp
+# DofMap's own ghost resolution (dof_map.cpp
 # pass 3) over a partition with UNEQUAL owned-dof counts per rank --
-# the padding shape -- now resolved point-to-point instead of a
-# padded allgather. Same gating convention as physics_mesh_mpi_test.cpp
+# the shape that breaks a padded allgather -- resolved point-to-point. Same gating convention as physics_mesh_mpi_test.cpp
 # above; never run in this sandbox.
 fuse_tests_gated_by(FUSE_ENABLE_MPI physics_dof_map_mpi_test.cpp)
 if(FUSE_ENABLE_MPI)

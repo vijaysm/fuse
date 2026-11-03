@@ -30,8 +30,8 @@
 // data motion: pack `owned[ans_index[k]]` into a send buffer ordered by
 // `ans_counts`/`ans_displs`, one MPI_Alltoallv into a receive buffer
 // ordered by `req_counts`/`req_displs`, then unpack `ghosts[fill_index[k]]
-// = recv[k]`. A single MPI_Alltoallv per update() call is what the task's
-// own contract names explicitly; persistent point-to-point communication
+// = recv[k]`. A single MPI_Alltoallv per update() call is what the
+// contract names explicitly; persistent point-to-point communication
 // would save the (fixed, amortised-once) pattern's setup cost on every
 // call, which Alltoallv already does not pay again -- the only remaining
 // saving would be the Alltoallv call's own internal bookkeeping versus a
@@ -77,7 +77,7 @@ class MpiReducer : public Reducer {
 
   void sum(double* inout, std::size_t n) const override {
     if (n == 0) return;
-    // Review 2026-10-11 NL-14: a count above INT_MAX silently truncates
+    // A count above INT_MAX silently truncates
     // through static_cast<int> into a wrong-size MPI_Allreduce (UB-
     // adjacent at the MPI level, not a refusal) rather than failing
     // loudly here.
@@ -97,7 +97,7 @@ class MpiReducer : public Reducer {
   [[nodiscard]] int size() const override { return size_; }
 
   void allgather(const double* send, std::size_t n_each, double* recv) const override {
-    // Review 2026-10-11 NL-14: same INT_MAX boundary as sum() above.
+    // Same INT_MAX boundary as sum() above.
     FUSE_ASSERT(n_each <= static_cast<std::size_t>(std::numeric_limits<int>::max()),
                "MpiReducer::allgather: {} entries exceeds MPI's int count limit ({})", n_each,
                std::numeric_limits<int>::max());
@@ -215,7 +215,7 @@ class MpiExchanger : public GhostExchanger, public PackedExchanger {
                ghost_n, ghost_n_);
 
     const int send_total = ans_displs_.back();
-    // Review 2026-10-11 NL-14: a total this call accumulated past
+    // A total this call accumulated past
     // INT_MAX wraps to a negative `int` -- caught here (a negative
     // size_t cast below would otherwise allocate a bogus-huge buffer)
     // rather than left as the same silent, UB-adjacent truncation
@@ -234,8 +234,8 @@ class MpiExchanger : public GhostExchanger, public PackedExchanger {
                "MpiExchanger::update: accumulated recv total overflowed int (wrapped to {})",
                recv_total);
     std::vector<double> recv_buf(static_cast<std::size_t>(recv_total), 0.0);
-    // runtime-exchange track: the Alltoallv itself is now exchange_packed()
-    // below, reused rather than re-dialled here -- `update()` is exactly
+    // The Alltoallv itself is exchange_packed() below, reused rather than
+    // re-dialled here -- `update()` is exactly
     // this function's own pack/unpack loops wrapped around that call.
     const auto ex = exchange_packed(send_buf.data(), recv_buf.data());
     if (!ex.ok()) return ex.error();

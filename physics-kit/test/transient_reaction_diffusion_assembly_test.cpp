@@ -1,8 +1,7 @@
 // physics.transient_reaction_diffusion_assembly -- adapted from KARMA's
 // test/transient_reaction_diffusion_assembly_test.C. See generic_
 // operators.hpp's own header comment for why this port's reaction
-// model is quadratic, not KARMA's own affine one (item D's own
-// instruction: the finite-difference Jacobian check's tolerance must
+// model is quadratic, not KARMA's own affine one (the finite-difference Jacobian check's tolerance must
 // be derived from the reaction term's SECOND-derivative bound, which
 // is identically zero for an affine model).
 
@@ -38,8 +37,8 @@ using fuse::physics::spatial::Mesh;
 // AnalyticJacobianMatchesForwardDifferenceWithinDerivedTolerance -- a
 // unit Quad4 element (the SAME element KARMA's own test uses), a
 // quadratic reaction model (alpha != 0, so R'' = 2*alpha != 0 -- the
-// non-affine case item D's own instruction requires to exercise a
-// genuine truncation-term derivation), Crank-Nicolson residual and
+// non-affine case needed to exercise a genuine truncation-term
+// derivation), Crank-Nicolson residual and
 // Jacobian at an arbitrary (non-uniform, so the nodal reaction terms
 // differ node to node) state and old state. Every Jacobian entry
 // (i, k) is checked against a FORWARD difference of residual_i with
@@ -48,7 +47,7 @@ using fuse::physics::spatial::Mesh;
 // comment: the step balancing the h/2*|f''| truncation term against
 // the eps*|f|/h round-off term) -- not KARMA's own underived 1e-6
 // (transient_reaction_diffusion_assembly_test.C:101), replaced here by
-// a derived bound as item D's own instruction requires.
+// a derived bound.
 TEST(TransientReactionDiffusionAssemblyTest, AnalyticJacobianMatchesForwardDifferenceWithinDerivedTolerance) {
   Mesh mesh(2);
   mesh.generate_2d_box(1, 1, Point(0, 0, 0), Point(1, 1, 0));
@@ -71,8 +70,7 @@ TEST(TransientReactionDiffusionAssemblyTest, AnalyticJacobianMatchesForwardDiffe
   // being checked), the row's absolute-term sum from the kernel, n = 4 dofs,
   // n_q = 4 points (degree 2 on a Quad4), state_k and J_ik for the step-rounding
   // term. The worst |error| / tolerance ratio over the 16 entries is printed as
-  // the measured margin (lead, 2026-11-01; the round-2 version carried an
-  // adjustable factor raised from 1 to 16 after a failure, which this replaces).
+  // the measured margin (there is no adjustable factor).
   FEBase fe2(mesh, GeometryVariant::Quad4, basis, /*quadrature_degree=*/2);
   const auto mass_independent = fuse::physics::fe::element_mass_matrix(fe2, 1);
   ASSERT_EQ(fe.n_quadrature_points(), 4u);
@@ -99,14 +97,14 @@ TEST(TransientReactionDiffusionAssemblyTest, AnalyticJacobianMatchesForwardDiffe
 // physics.transient_reaction_diffusion_assembly.
 // AffineSpecialCaseReproducesKarmaOwnClosedForm -- alpha == 0 (no
 // quadratic term) recovers KARMA's own affine model exactly; the
-// closed form round-1's own analysis derived (jacobian = (1/h -
+// closed form (jacobian = (1/h -
 // alpha'/2)*mass, alpha' here the AFFINE coefficient, which this
 // model represents as `beta*coupled + source` held fixed and a
 // *linear* term folded into `alpha` would need -- here alpha=0 means
 // R(u) = beta*coupled + source, a CONSTANT, so R'(u) = 0 and the
 // Jacobian reduces to EXACTLY (1/h)*M + 0.5*K, independent of state
 // entirely) -- checked to EXACT equality (no FD needed: R'' = 0 here
-// too, so this case does not exercise item D's own derivation at all,
+// too, so this case does not exercise the truncation-term derivation at all,
 // which is why the test above uses alpha != 0 instead).
 TEST(TransientReactionDiffusionAssemblyTest, AffineSpecialCaseReproducesKarmaOwnClosedForm) {
   Mesh mesh(2);
