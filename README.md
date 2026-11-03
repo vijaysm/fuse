@@ -187,6 +187,13 @@ clone to a running coupling; `docs/user/index.md` lists every page by task.
 - Newton-Krylov iteration over coupling windows on more than one rank.
 - Cross-rank reductions in the field pipeline.
 
+## Acknowledgements
+
+FUSE was co-developed, reviewed, tested and brainstormed with Claude models. Its design is inspired
+by, and primarily driven by, decisions from earlier codes, among them KARMA, CouPE, MOAB and
+PETSc, and a variety of other computational science codes that the author has had the opportunity
+to work on over the years.
+
 ## Contributing and support
 
 Bug reports and feature requests go to the
