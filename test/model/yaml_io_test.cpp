@@ -54,7 +54,7 @@ CouplingGraph pair_graph() {
   g.channel(ch)
       .accumulate(AccumOp::Mean, Window::from(fluid))
       .remap(RemapFlags::Conservative | RemapFlags::Monotone)
-      .remap_method("mono3")
+      .remap_method("conservative")
       .spacetime(TemporalBasis::DG, 2, Window::explicit_length(Rational{2, 5}))
       .relax(0.7);
   return g;

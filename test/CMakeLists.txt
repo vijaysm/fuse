@@ -544,7 +544,7 @@ if(FUSE_ENABLE_PETSC)
   fuse_add_gtest(petsc snes LIBS fuse::linalg)
   # The structural analogue of
   # runtime.petsc_reaction_diffusion_component for NeumannHalfPetsc --
-  # BUILT and registered here, never RUN in this sandbox (the SAME
+  # BUILT and registered here, never RUN in this environment (the SAME
   # ensure_initialized()/MPI_Init() barrier every petsc.* row above
   # carries); a host run measures it. No Eigen, no Brusselator headers.
   fuse_add_gtest(petsc reaction_diffusion LIBS fuse::linalg PkgConfig::PETSc MPI::MPI_C)
@@ -554,7 +554,7 @@ if(FUSE_ENABLE_PETSC)
   # solved by this substrate -- its own DEDICATED binary, not one more
   # TEST() in test/verification/brusselator_runner_test.cpp, for the
   # reason brusselator_newton_test.cpp's own header comment measures
-  # directly: a PETSc call that segfaults (this sandbox)
+  # directly: a PETSc call that segfaults (this environment)
   # takes the WHOLE PROCESS down, and sharing a process with
   # otherwise-PETSc-independent coverage would take that coverage's own
   # ctest row down with it. Needs the same LIBS brusselator_runner (just
@@ -670,7 +670,7 @@ fuse_add_gtest(backend nodal_interp)
 # public functions test/parallel/nodal_remap_distributed_test.cpp exercises
 # under real MPI, called here with comm_handle == fuse::search::kNullComm --
 # a plain fuse_add_gtest target, no MPI linked, that actually RUNS in this
-# sandbox (the MPI sibling can only be compiled here; see that file's own
+# environment (the MPI sibling can only be compiled here; see that file's own
 # header). Proves the null-comm branch nodal_remap_distributed.cpp's
 # allgatherv_records() takes is not dead code that merely compiles.
 fuse_add_gtest(backend nodal_remap_distributed_nullcomm)
@@ -680,7 +680,7 @@ fuse_add_gtest(backend nodal_remap_distributed_nullcomm)
 # (build_distributed_interp_rows, comm_handle == kNullComm) code paths, at
 # every boundary vertex of a structured mesh across several resolutions,
 # plus a 1-ULP perturbation of a genuinely 4-way shared interior vertex.
-# Plain fuse_add_gtest target, no MPI linked, runs in this sandbox.
+# Plain fuse_add_gtest target, no MPI linked, runs in this environment.
 fuse_add_gtest(backend nodal_tie_break)
 # field_extent()/region_extent_kind() (mesh_view.hpp)
 # and their wiring into make_region_sizes(), on both the serial and native
@@ -1131,13 +1131,13 @@ if(FUSE_ENABLE_MPI)
   # exchanger) over the SAME closed-form reference
   # test/parallel/linalg_mpi_test.cpp's own header comment describes.
   # RANKS 2 only: built here, never run here (MPI cannot
-  # start in this sandbox), run on the host.
+  # start in this environment), run on the host.
   fuse_add_mpi_test(parallel krylov_mpi LIBS fuse::linalg RANKS 2 LABELS linalg)
   # Tier 1: the adjoint dot-product identity
   # over a real MPI_COMM_WORLD DistSparseMatrix/DistVector
   # (include/fuse/linalg/derivative_gate.hpp, docs/dev/derivative-gate.md).
   # RANKS 2 3: built here, never run here (MPI cannot start
-  # in this sandbox), run on the host.
+  # in this environment), run on the host.
   fuse_add_mpi_test(parallel derivative_gate_mpi LIBS fuse::linalg RANKS 2 3 LABELS linalg)
   # SharedVertexLineMesh's lowest-rank
   # ownership, a plain nodal Transport's every-copy-matches-owner property,
@@ -1248,7 +1248,7 @@ endif()
 # modes (launcher-style MPMD, and true separate-executable MPMD via
 # MPI_Open_port/accept/connect). See connect_common.hpp's own header
 # comment for the design and run_pair.sh for how the host actually drives
-# the pair. MPI cannot start in this sandbox at all,
+# the pair. MPI cannot start in this environment at all,
 # so every ctest row below is a host_verification_needed item; what IS
 # verified here is that all three targets build at tier 1.
 
@@ -1367,7 +1367,7 @@ if(FUSE_ENABLE_MPI)
   #   fuse_parallel_connect_golden --chain 3 > golden-chain-3.txt
   #   fuse_parallel_connect_golden --chain 4 > golden-chain-4.txt
   # `periods ${_count}` (new, last positional argument): a safety margin
-  # against a possible per-hop delivery lag this sandbox cannot measure
+  # against a possible per-hop delivery lag this environment cannot measure
   # (run_chain.sh's own header comment has the full reasoning) -- never
   # fewer periods than links, so even a worst-case one-period-per-hop
   # lag has time to fully propagate "a"'s own value to the last
@@ -1544,7 +1544,7 @@ endif()
 # (docs/dev/native-halo.md): the in-process-emulated pure-function pieces,
 # the Brusselator-shaped 16x16/24x24 quad-grid scenario at 2 (aligned) and
 # 3 (misaligned) ranks, and build_weights completeness after the halo --
-# all at tier 0, no MPI linked, actually run in this sandbox. The parallel
+# all at tier 0, no MPI linked, actually run in this environment. The parallel
 # half under a REAL communicator is test/parallel/native_halo_mpi_test.cpp.
 fuse_add_gtest(backend native_halo THROWS)
 fuse_add_omp_legs(backend.native_halo fuse_backend_native_halo_test THROWS)
@@ -1646,7 +1646,7 @@ fuse_add_gtest(field collective_agreement LIBS fuse::field)
 # a genuine MPI_Allreduce over MPI_COMM_WORLD, where the tier-0 suite
 # cannot run one. Backs the field-transaction-collective-agreement-
 # skipped mutation row (needs a working
-# multi-rank MPI launcher this sandbox does not have -- host_pending).
+# multi-rank MPI launcher this environment does not have -- host_pending).
 fuse_tests_gated_by(FUSE_ENABLE_MPI parallel/field_transaction_mpi_test.cpp)
 if(FUSE_ENABLE_MPI)
   fuse_add_mpi_test(parallel field_transaction_mpi LIBS fuse::field RANKS 2 3)

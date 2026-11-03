@@ -1,5 +1,5 @@
 // fuse::petsc::ensure_initialized()/finalize_if_owned() -- the ONE PETSc
-// ownership branch this sandbox can reach (fuse/petsc/token.hpp's own
+// ownership branch this environment can reach (fuse/petsc/token.hpp's own
 // header comment on why only one): nothing in this tier-0 process (no
 // FUSE_ENABLE_MPI harness) has called MPI_Init() before this runs.
 //

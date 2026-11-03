@@ -1,7 +1,7 @@
 // test/search/distributed_mpi_test.cpp -- fuse::search's distributed point
 // query under a REAL mpiexec.
 //
-// NOT YET RUN: this sandbox cannot initialize MPI (docs/dev/testing.md),
+// NOT YET RUN: this environment cannot initialize MPI (docs/dev/testing.md),
 // exactly the posture test/partition/rcb_mpi_test.cpp documents for itself.
 // This file is registered only in a Tier 1 build (test/CMakeLists.txt gates
 // it on FUSE_ENABLE_MPI) and compiled here; its verdict comes from a host

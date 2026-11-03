@@ -1,7 +1,7 @@
 # Mutations for the nodal remap's distributed builder
 # (nodal_remap_distributed.hpp). Schema: build-evidence/mutations.toml.
 #
-# The first two rows are NOT-ASSESSED: MPI cannot initialise in this sandbox
+# The first two rows are NOT-ASSESSED: MPI cannot initialise in this environment
 # (docs/dev/testing.md), and a test that cannot start exits non-zero whether
 # or not the mutation had an effect -- recording that as a kill would be
 # evidence worse than none (the same posture as the "nodal fields" MPI-gated
@@ -86,7 +86,7 @@ requires = "mpi"
 # ghost) no longer equals `owned_count(0)` (which still excludes the ghost),
 # so the new assertion fails under the mutation and passes on the unmutated
 # build (both traced against `GeometricLineMesh::is_owned`/`owned_count`
-# directly; not run in this sandbox -- MPI cannot initialise here). Not
+# directly; not run in this environment -- MPI cannot initialise here). Not
 # marked `equivalent`: the guard is genuinely load-bearing, only the
 # PRE-EXISTING assertion was too weak to say so.
 
@@ -111,7 +111,7 @@ requires = "mpi"
 # line would leave the original lambda's BODY, which reads named
 # parameters `a`/`b`, after a new lambda declared with unnamed parameters --
 # an unbound-identifier compile error, reported as INCONCLUSIVE).
-# NOT-ASSESSED in this sandbox, and not fully assessable even on a host by a
+# NOT-ASSESSED in this environment, and not fully assessable even on a host by a
 # SINGLE test run: the property this breaks -- bit-identical totals across
 # DIFFERENT rank counts -- needs two separate job launches (e.g. rank counts
 # 2 and 4) compared against each other, which is the parallel matrix's own
@@ -142,7 +142,7 @@ new = "  if (true) {  // MUTATED: every comm_handle is treated as local"
 target = "fuse_backend_nodal_remap_distributed_nullcomm_test"
 test = "backend.nodal_remap_distributed_nullcomm"
 requires = "no-mpi"
-# KILLED by hand in a sandbox build with -DFUSE_ENABLE_MPI=OFF: mutation
+# KILLED by hand in an environment build with -DFUSE_ENABLE_MPI=OFF: mutation
 # applied, rebuilt, RealCommunicatorWithoutMpiRefuses fails (2/3 pass) because
 # build_distributed_interp_rows(..., kNullComm + 1) now succeeds instead of
 # rejecting E-RT-NODAL-DIST-NOMPI; file restored byte-for-byte, all 3 passing
@@ -173,7 +173,7 @@ new = '''  // MUTATED: no cross-rank agreement, rank-local verdict only
 target = "fuse_parallel_nodal_remap_distributed_test"
 test = "parallel.nodal_remap_distributed.3"
 requires = "mpi"
-# NOT-ASSESSED in this sandbox, and VERIFIED HERE not to be assessable even
+# NOT-ASSESSED in this environment, and VERIFIED HERE not to be assessable even
 # through the Tier-0 null-communicator path this file otherwise uses to
 # dodge the "MPI cannot initialise here" limit for everything else in this
 # file: `agree_on_local_failure`'s whole point is to make every rank of
@@ -185,7 +185,7 @@ requires = "mpi"
 # (including TargetOutsideSourceDomainRefuses, the single-participant
 # sibling of the real defect's own failing test) still pass -- confirming,
 # empirically rather than just by argument, that this mutation is invisible
-# to every test this sandbox can run. File restored byte-for-byte (cmp
+# to every test this environment can run. File restored byte-for-byte (cmp
 # against a pre-mutation backup) immediately after.
 # What DOES bound confidence in the fix without a live multi-rank kill: a
 # standalone diagnostic (compiled against this file's own real
@@ -208,7 +208,7 @@ requires = "mpi"
 # on a rank that owns the genuinely out-of-domain one) -- this mutation's
 # `new` IS, almost verbatim, the code before the fix. A clean host run of
 # BOTH the unmutated fix (expect PASS) and this mutation (expect the
-# original FAIL to reappear) is the one outcome this sandbox cannot supply
+# original FAIL to reappear) is the one outcome this environment cannot supply
 # for itself.
 
 [[mutation]]
@@ -220,7 +220,7 @@ old = "        if (!have_tight || gid < tight_gid) {"
 new = "        if (!have_tight || gid > tight_gid) {"
 target = "fuse_backend_nodal_tie_break_test"
 test = "backend.nodal_tie_break"
-# KILLED, observed directly in this sandbox (Tier 0, no MPI needed): applied
+# KILLED, observed directly in this environment (Tier 0, no MPI needed): applied
 # by hand to src/backend/nodal_remap_distributed.cpp, rebuilt
 # fuse_backend_nodal_tie_break_test, confirmed the mutation turns
 # NodalTieBreak.EveryBoundaryVertexOfAStructuredMeshAtSeveralResolutionsIsSingleOwned

@@ -2,9 +2,9 @@
 # placed_view / placed_region_size (src/backend/moab_backend.cpp,
 # include/fuse/backend/moab_backend.hpp).
 #
-# NOT HAND-VERIFIED, for a reason specific to this sandbox rather than to
+# NOT HAND-VERIFIED, for a reason specific to this environment rather than to
 # these rows: ANY MOAB-linked binary aborts on construction here --
-# moab::Core's constructor calls MPI_Init_thread, and this sandbox cannot
+# moab::Core's constructor calls MPI_Init_thread, and this environment cannot
 # initialise MPI at all, not even at one rank (docs/dev/testing.md).
 # Confirmed empirically against the fuse_backend_moab_mesh_test binary
 # (crashes identically on tests that were not touched), not assumed.
@@ -16,7 +16,7 @@
 # but their kill/not-killed verdict is entirely a host-run responsibility,
 # including the ones marked below as Tier-0-shaped (single rank, no
 # mpiexec) -- Tier 0 in the usual sense of "no MPI job" does not mean
-# "runs in THIS sandbox" for a MOAB target.
+# "runs in THIS environment" for a MOAB target.
 
 [[mutation]]
 id = "moab-placed-view-outside-placement-falls-back-to-default-mode-a"

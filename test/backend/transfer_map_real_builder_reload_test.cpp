@@ -12,7 +12,7 @@
 // both >= 2), matching the acceptance criterion's own wording. The
 // MPI-launched twin of this scenario is
 // test/parallel/transfer_map_reload_mpi_test.cpp; that file is compiled, not
-// run, in this sandbox (MPI cannot initialise here), so THIS file is the one
+// run, in this environment (MPI cannot initialise here), so THIS file is the one
 // executable evidence for the claim until a host runs that one.
 //
 // WHY A TOLERANCE IS NEEDED AT ALL, AND WHERE ITS NUMBER COMES FROM.

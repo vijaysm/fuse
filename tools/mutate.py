@@ -205,7 +205,7 @@ def main() -> int:
     # fuse::petsc::ensure_initialized(), which calls PETSc's own
     # PetscInitialize() -- and PetscInitialize() calls MPI_Init() when MPI is
     # not already up (fuse/petsc/token.hpp's own ensure_initialized() comment).
-    # A sandbox that cannot complete a bare MPI_Init() at all
+    # An environment that cannot complete a bare MPI_Init() at all
     # (independent of PETSc) therefore cannot run ANY
     # petsc.* test, in ANY build configuration -- unlike `mpi`/`no-mpi`, this
     # is not a question of whether FUSE_ENABLE_MPI was turned on, so it is
@@ -326,7 +326,7 @@ def main() -> int:
         finally:
             path.write_text(original)
         # Confirm the restore put back the exact pre-mutation bytes. In one
-        # sandboxed full sweep (363 rows, Linux overlay file
+        # restricted-environment full sweep (363 rows, Linux overlay file
         # system) ten files were left mutated with no exception and an
         # ordinary verdict; not reproduced elsewhere, but a gate
         # whose contract is "the tree is byte-identical afterwards" must

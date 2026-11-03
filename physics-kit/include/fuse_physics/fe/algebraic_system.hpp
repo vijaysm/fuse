@@ -67,7 +67,7 @@ void eliminate_dirichlet_rows(std::vector<linalg::Triplet>& triplets, std::int64
 /// its assembly needs. `fortran_communicator` unset selects the
 /// single-rank convenience path (fuse::linalg::make_serial_reducer(),
 /// matching DofMap's own convention); set, the collective path (built,
-/// never run in this sandbox).
+/// never run in this environment).
 class AlgebraicSystem {
  public:
   /// `mesh` is the SAME mesh `dof_map` was built over (both outlive this

@@ -53,7 +53,7 @@ test = "partition.refusals"
 [[mutation]]
 id = "partition-mixed-dim-refusal-disabled"
 area = "partition"
-describes = "centroids_of's E-PART-MIXED-DIM rejection (ranks disagreeing about MeshView::dimension()) is disabled. This is a cross-rank property -- comm == kNullComm agrees with itself trivially -- so only a real MPI run can make it fire; requires = mpi, and rcb_mpi_test.cpp's MeshAdapterMpi.RefusesWhenRanksDisagreeAboutMeshDimension is the test, compiled here but not run (docs/dev/partitioning.md: this sandbox cannot start mpiexec)."
+describes = "centroids_of's E-PART-MIXED-DIM rejection (ranks disagreeing about MeshView::dimension()) is disabled. This is a cross-rank property -- comm == kNullComm agrees with itself trivially -- so only a real MPI run can make it fire; requires = mpi, and rcb_mpi_test.cpp's MeshAdapterMpi.RefusesWhenRanksDisagreeAboutMeshDimension is the test, compiled here but not run (docs/dev/partitioning.md: this environment cannot start mpiexec)."
 file = "src/partition/mesh_adapter.cpp"
 old = "  if (max_dim != min_dim) {"
 new = "  if (false) {  // max_dim != min_dim -- refusal disabled"

@@ -118,7 +118,7 @@ if(FUSE_ENABLE_TESTS)
   # comment). The --petsc leg additionally builds AND RUNS the PETSc-
   # substrate half; registered ONLY when FUSE_ENABLE_PETSC, for the exact
   # reason example.dn_heat.newton_petsc is gated just above, and expected
-  # to FAIL in a sandbox that cannot complete a bare MPI_Init() -- the
+  # to FAIL in an environment that cannot complete a bare MPI_Init() -- the
   # SAME host-pending status every other petsc.*/
   # example.dn_heat.newton_petsc row carries.
   add_test(NAME example.petsc_reaction_diffusion
@@ -456,7 +456,7 @@ add_executable(brusselator_check
 # C (u_main.c, coupler_main.c, u_loop.c) or PURE FORTRAN (v_main.f90,
 # v_loop.f90) in its own coupling-facing code -- only the shared physics
 # (shim.cpp) is C++ (u_main.c's own header comment has the full
-# rationale). Never run in a sandbox where MPI cannot
+# rationale). Never run in an environment where MPI cannot
 # start -- build-verified only there; test/CMakeLists.txt's own
 # verification.brusselator.participants.{mpmd,accept}.{3,5} rows below
 # register the real host invocations.
@@ -590,7 +590,7 @@ endif()
 
 
 # ---- "Brusselator as separately built participants": host rows begin ----
-# MPI cannot start in every sandbox, so --
+# MPI cannot start in every environment, so --
 # exactly like test/CMakeLists.txt's own parallel.connect.* rows, whose
 # host_verification_needed convention this mirrors -- every row below is
 # a host_verification_needed item; what IS verified without a host is that

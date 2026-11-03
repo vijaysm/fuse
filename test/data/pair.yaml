@@ -39,7 +39,7 @@ channels:
     source: fluid.heat_flux
     target: solid.q_wall
     accumulate: {op: Mean, window: {kind: from_component, component: fluid}}
-    remap: {flags: [Conservative, Monotone], method: mono3}
+    remap: {flags: [Conservative, Monotone], method: conservative}
     spacetime: {basis: DG, degree: 2, window: {kind: explicit, length: 2/5}}
     relax: 0.7
 iteration_regions: []

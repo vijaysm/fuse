@@ -8,7 +8,7 @@
 //
 // WHAT THIS BINARY RUNS, by default (no flags): the "native twin" graph
 // (DirichletHalf + NeumannHalfNative, BOTH native), compared against the
-// closed-form manufactured solution -- fully runnable in any sandbox, no
+// closed-form manufactured solution -- fully runnable in any environment, no
 // PETSc, no MPI. Exits non-zero if the converged answer misses the
 // manufactured solution by more than its own derived bound (see
 // `kAgreementBound`'s own comment).
@@ -17,7 +17,7 @@
 // (DirichletHalf + NeumannHalfPetsc) and compares its own converged
 // answer against the native twin's -- exactly dn_heat's own
 // `--newton-petsc` convention (examples/dn_heat/main.cpp), including that
-// this crashes (SEGFAULT, not a logic error) in a sandbox that cannot
+// this crashes (SEGFAULT, not a logic error) in an environment that cannot
 // complete a bare MPI_Init(): a HOST run is what
 // measures this comparison's own numbers, the same already-established
 // pattern every other petsc.* row and example.dn_heat.newton_petsc row

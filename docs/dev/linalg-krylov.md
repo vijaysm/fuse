@@ -119,7 +119,7 @@ Measured at tier 0, one rank, against Eigen (`test/linalg/{pcg,gmres}_test.cpp`)
   `E-LINALG-ZERO-DIAGONAL` (`JacobiPreconditioner::from_matrix` on a matrix with a structurally
   absent diagonal entry).
 * `test/parallel/krylov_mpi_test.cpp` (tier 1, `RANKS 2`, built here, never run here -- MPI cannot
-  start in this sandbox, [](testing.md)) repeats convergence and an independently recomputed
+  start in this environment, [](testing.md)) repeats convergence and an independently recomputed
   residual check for both solvers over a real `MPI_COMM_WORLD`. `parallel.krylov_mpi.2` passes on
   the host (0.31 s).
 

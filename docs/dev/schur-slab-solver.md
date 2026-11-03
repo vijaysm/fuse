@@ -362,7 +362,7 @@ which this solver does not own.
 
 ## Measured at tier 0 with an N-way in-process fake, not only the host
 
-MPI cannot start in this sandbox (`docs/dev/testing.md`). The existing
+MPI cannot start in this environment (`docs/dev/testing.md`). The existing
 `FakePeerExchanger`/`TwoPartitionReducer` pattern
 (`test/linalg/dist_vector_test.cpp`, `dist_sparse_matrix_test.cpp`) binds
 exactly 2 peers; requirement 2 needs 2 AND 3 partitions, so

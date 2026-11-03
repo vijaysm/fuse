@@ -3,7 +3,7 @@
 // `fuse::build_distributed_interp_rows`/`apply_distributed_H`/
 // `apply_distributed_HT` (nodal_remap_distributed.hpp) directly, with
 // `comm_handle == fuse::search::kNullComm`, in a PLAIN `fuse_add_gtest`
-// target that links no MPI at all and RUNS in this sandbox (unlike
+// target that links no MPI at all and RUNS in this environment (unlike
 // test/parallel/nodal_remap_distributed_test.cpp, which `#include <mpi.h>`
 // and can only be compiled, never executed, here -- see that file's own
 // header). It proves `allgatherv_records`'s `comm_handle == kNullComm`

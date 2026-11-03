@@ -7,7 +7,7 @@
 // comparison infrastructure KARMA's own test file also carries
 // (MassReference, write_partitioned_mass_reference) is MPI/partition
 // test infrastructure, out of scope here -- physics_assembly_mpi_test.cpp
-// (build-only in this sandbox) is where that comparison belongs.
+// (build-only in this environment) is where that comparison belongs.
 
 #include "fuse_physics/fe/generic_operators.hpp"
 

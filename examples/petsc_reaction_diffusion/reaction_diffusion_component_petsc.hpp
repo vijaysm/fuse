@@ -41,11 +41,11 @@
 /// never `MATMFFD`).
 ///
 /// HOST-PENDING: this
-/// sandbox cannot complete a bare `MPI_Init()`, and `PetscInitialize()`
+/// environment cannot complete a bare `MPI_Init()`, and `PetscInitialize()`
 /// (as of `src/petsc/init.cpp`, commit 70b3d16) deliberately lets
 /// `MPI_Init()` run rather than skip it -- so EVERY path through this
 /// file SEGFAULTS the instant `ensure_initialized()` runs in this
-/// sandbox, the same already-documented, already-measured constraint
+/// environment, the same already-documented, already-measured constraint
 /// every other `petsc.*` row carries, not a new one. This file is
 /// therefore BUILT and ctest-REGISTERED here, never RUN here; see
 /// design_notes.md Section 1 for the direct measurement of that

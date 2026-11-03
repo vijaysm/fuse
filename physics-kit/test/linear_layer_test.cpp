@@ -132,7 +132,7 @@ TEST(LinearLayerTest, MassMatrixProjectionSolveRecoversKnownVectorWithinDerivedB
   EXPECT_TRUE(report.value().converged);
   // Item G: no assertion on the iteration count, recorded for the
   // provenance table only ("oracle pending" -- no reference solver run
-  // in this sandbox to compare against).
+  // in this environment to compare against).
   testing::Test::RecordProperty("pcg_iterations", std::to_string(report.value().iterations));
   testing::Test::RecordProperty("pcg_residual_norm", std::to_string(report.value().residual_norm));
 

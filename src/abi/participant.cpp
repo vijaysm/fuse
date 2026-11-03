@@ -368,10 +368,6 @@ namespace {
 /// runs from `fuse_create()`, not from a `main()`) simply skips the argv
 /// scan and falls through to the environment variable.
 std::optional<int> explicit_device_id_override(int argc, char** argv) {
-  if (const char* env = std::getenv("KOKKOS_DEVICE_ID");
-      env != nullptr && env[0] != '\0') {
-    return std::atoi(env);
-  }
   constexpr std::string_view kPrefix = "--kokkos-device-id=";
   for (int i = 0; i < argc; ++i) {
     if (argv == nullptr || argv[i] == nullptr) continue;
@@ -379,6 +375,10 @@ std::optional<int> explicit_device_id_override(int argc, char** argv) {
     if (a.substr(0, kPrefix.size()) == kPrefix) {
       return std::atoi(std::string(a.substr(kPrefix.size())).c_str());
     }
+  }
+  if (const char* env = std::getenv("KOKKOS_DEVICE_ID");
+      env != nullptr && env[0] != '\0') {
+    return std::atoi(env);
   }
   return std::nullopt;
 }

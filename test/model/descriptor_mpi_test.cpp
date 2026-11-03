@@ -9,7 +9,7 @@
 // and the run is wrong in a way no single-rank test can see. A single-process
 // determinism test (`Descriptor.SerializationIsDeterministic`) cannot catch it.
 //
-// NOT YET RUN: this sandbox cannot initialize MPI, so this test is registered
+// NOT YET RUN: this environment cannot initialize MPI, so this test is registered
 // only in a Tier 1 build and has no result here. Running it is a host action.
 #include <cstddef>
 #include <vector>

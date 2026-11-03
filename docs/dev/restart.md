@@ -1061,7 +1061,7 @@ why, when the variable is absent.
 - **Mesh and provenance replication.** The rank-0-writes, others-zero-size pattern of Section 4.3
   is not implemented; Brusselator restart uses the `mesh_checksum = 0` sentinel.
 - **Multi-rank execution.** The collective writer and the parallel tests have been compiled
-  against an MPI-enabled build but not run in the development sandbox, where MPI cannot start.
+  against an MPI-enabled build but not run in the development environment, where MPI cannot start.
   Writing at one rank and restoring at several is covered by the serial writer and the id-keyed
   reader; writing at several ranks and restoring at a different count needs a host with a working
   MPI.

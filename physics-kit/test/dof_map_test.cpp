@@ -352,7 +352,7 @@ TEST(DofMapTest, P2Tet10DofMapNumbersEachSharedEdgeDofOnce) {
 // throws there regardless of which sub-entity-ownership RULE is under
 // test -- the rule itself only matters once a ghost is tolerated and
 // resolved through a real communicator (the collective path, build-
-// verified only, never run in this sandbox). This test instead builds a Mesh via from_mesh_view with
+// verified only, never run in this environment). This test instead builds a Mesh via from_mesh_view with
 // THREE vertices of known, DIFFERENT owner ranks and checks the rule's
 // own three cases directly:
 //   * every corner owned by rank 0 (the local rank) -- owned here

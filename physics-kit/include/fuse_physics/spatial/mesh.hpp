@@ -34,7 +34,7 @@
 /// FromMeshViewReadsOwnershipAndGlobalIds. The genuine multi-rank case (an
 /// actual partitioned box built and exchanged across real MPI ranks) is
 /// `test/parallel/physics_mesh_mpi_test.cpp`: compiled in this tree with
-/// FUSE_ENABLE_MPI=ON, never executed in this sandbox.
+/// FUSE_ENABLE_MPI=ON, never executed in this environment.
 
 #include <array>
 #include <cstddef>

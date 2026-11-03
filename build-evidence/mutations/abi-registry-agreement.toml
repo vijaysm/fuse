@@ -8,7 +8,7 @@
 # runnable case in the same binary), then restored byte-for-byte (cmp
 # against the pre-mutation file showed no difference). Row 3 is
 # compile-checked only under a real FUSE_ENABLE_MPI=ON configure --
-# MPI cannot start in this sandbox -- so it needs a host kill run, the
+# MPI cannot start in this environment -- so it needs a host kill run, the
 # same posture abi-registry-hosting.toml's own second row took for its
 # MPI-only mutation.
 

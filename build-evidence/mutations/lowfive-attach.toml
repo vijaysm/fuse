@@ -18,7 +18,7 @@ test = "verification.brusselator_lowfive_attach"
 # the measured deadlock (lowfive_attach_decision.hpp's own comment has the
 # full account). `serve_on_close` itself -- left true, this would reproduce
 # the measured hang -- is NOT tier-0 testable (no MPI, no LowFive, in this
-# sandbox) and is not claimed here with no evidence.
+# environment) and is not claimed here with no evidence.
 
 [[mutation]]
 id = "decide-serve-roles-first-server-comparison-swapped"

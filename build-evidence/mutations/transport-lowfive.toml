@@ -64,7 +64,7 @@ test = "transport.lowfive"
 # Needs set_intercomm() to have actually SUCCEEDED (real MPI_Init plus a
 # formed intercommunicator) to reach this branch at all -- the test binary
 # never has one (fuse_test_main is single-process, and MPI cannot start in
-# this sandbox). Same
+# this environment). Same
 # honesty as the five pre-existing `requires = "mpi"` rows in
 # transport-runtime.toml and native-mesh.toml: recording a pass here would
 # be evidence worse than none.

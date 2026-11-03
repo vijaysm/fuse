@@ -227,7 +227,7 @@ checks.
   `fuse::SerialMeshBackend`'s real generated line (1D) and box (3D) meshes.
 * **Compiled here, UNRUN (Tier 1, `FUSE_ENABLE_MPI=ON`)**: `src/search/distributed.cpp`'s
   `ArborX::DistributedTree` path, and `test/search/distributed_mpi_test.cpp` at 1 to 5 ranks
-  (`build-evidence/parallel-matrix.toml`'s `A-SEARCH-DISTRIBUTED` cell) -- this sandbox cannot
+  (`build-evidence/parallel-matrix.toml`'s `A-SEARCH-DISTRIBUTED` cell) -- this environment cannot
   initialise MPI at all (confirmed identically for `fuse::partition`'s own pre-existing Tier 1
   tests, not a regression introduced here), so no MPI test in this repository has ever produced a
   pass/fail verdict from inside it. Its verdict comes from a host run.
@@ -239,9 +239,9 @@ checks.
   Tier-0 property test above also re-runs under `FUSE_EXECUTION_SPACE=device`
   (`fuse_add_device_twin`, test/CMakeLists.txt's `search.{box_index,refusals,mesh_adapter}.device`).
 * **Compiled here, UNRUN (Tier 1, `FUSE_ENABLE_MPI=ON`, device)**: `run_distributed_query<DeviceExecutionSpace>`
-  (distributed.cpp) -- this sandbox cannot initialise MPI at all regardless of execution space (the
+  (distributed.cpp) -- this environment cannot initialise MPI at all regardless of execution space (the
   same pre-existing Tier 1 constraint the Host path already carries, above), so the device-mode
-  `ArborX::DistributedTree` path has never produced a pass/fail verdict from inside this sandbox
+  `ArborX::DistributedTree` path has never produced a pass/fail verdict from inside this environment
   either.
 * **NOT covered here**: anything the nodal remap builds on top of `BoxIndex`'s API -- true geometric (natural-coordinate)
   containment. `element_boxes` (the mesh adapter) stays host-only by construction

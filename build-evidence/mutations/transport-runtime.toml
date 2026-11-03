@@ -124,7 +124,7 @@ requires = "mpi"
 # `requires = "mpi"`'s own courtesy. An MPI+Fortran build
 # (-DFUSE_ENABLE_MPI=ON -DFUSE_ENABLE_FORTRAN=ON) builds
 # `fuse_parallel_runner_transport_test` to completion (link succeeded)
-# without running it -- MPI cannot initialise a process in this sandbox, so
+# without running it -- MPI cannot initialise a process in this environment, so
 # a host run is still the only way to close it. Host
 # command: `FUSE_MUTATE_MPI=1 tools/mutate.py --build-dir <mpi-build>
 # --area runtime` picks up both this row and
@@ -342,7 +342,7 @@ requires = "mpi"
 # one remaining rank, disjoint from both. `FUSE_REQUIRE_AT_LEAST_RANKS(2)`.
 #
 # Traced kill mechanism, no hang required (verified by READING the code,
-# not by execution -- MPI cannot initialise in this sandbox): with fluid/
+# not by execution -- MPI cannot initialise in this environment): with fluid/
 # solid coincident, derive_checkpoint_set()'s own components give
 # `region_ranks.size() == 1` BEFORE the coupler scan runs at all; only the
 # scan this mutation empties can push it to 2. Under the mutation,
@@ -360,14 +360,14 @@ requires = "mpi"
 # 0" no-op) when the coupler is counted instead FIRES there. fluid/solid's
 # own rank never hits it (its block length is > 0). This is an asymmetric,
 # per-rank INITIALIZE()-time outcome split, observable before anything
-# collective runs -- confirmed as far as this sandbox can: a Tier-0 double
+# collective runs -- confirmed as far as this environment can: a Tier-0 double
 # of the SAME shape (PartitionedTestBackend, coupler played by the one
 # simulated rank) reaches `config.base_communicator.has_value()`'s branch
 # correctly (this whole block is NOT #if FUSE_HAVE_MPI-gated, confirmed by
 # reading it) but then fails EARLIER and for an unrelated reason,
 # E-RT-TRANSPORT-NOMPI, because the field transfer's cross-rank data move needs a
 # real Transport that Tier 0 cannot provide -- i.e. Transport attachment
-# in initialize() runs BEFORE resolve_regions(), which this sandbox cannot
+# in initialize() runs BEFORE resolve_regions(), which this environment cannot
 # get past. The test above compiles (Tier 1, MPI-enabled) but was NOT run;
 # a host run at >= 2 ranks is what confirms the E-RT-REGION outcome on the
 # coupler's rank.
@@ -376,7 +376,7 @@ requires = "mpi"
 # `FUSE_REQUIRE_AT_LEAST_RANKS(2)` skips it at Tier 0, and the
 # full Tier 0 mutation sweep reports this row NOT-ASSESSED (needs MPI), the
 # same courtesy `requires = "mpi"` gives every row in this file that needs a
-# launcher this sandbox does not have. `tools/mutate.py --check-anchors`
+# launcher this environment does not have. `tools/mutate.py --check-anchors`
 # confirms the `old` loop-bound anchor above occurs exactly once.
 # `fuse_parallel_runner_transport_test` builds (not run) to completion under
 # an MPI+Fortran configuration (-DFUSE_ENABLE_MPI=ON
@@ -478,7 +478,7 @@ requires = "mpi"
 # agreement), so B's rank -- whose own restore succeeded -- enters the
 # NEXT sweep's body Transport with no partner there, which the test's own
 # 120s TIMEOUT ctest property turns into a correct kill rather than a
-# silent PASS. NOT-ASSESSED in this sandbox: MPI cannot initialise here;
+# silent PASS. NOT-ASSESSED in this environment: MPI cannot initialise here;
 # traced by hand against the carry-forward mechanism
 # the "region-failure-abandons-the-rest-of-the-period" row in this file
 # already documents for the analogous Epoch/advance-failure case, and
@@ -498,4 +498,4 @@ test = "parallel.runner_transport.2"
 requires = "mpi"
 # Expected kill: RunnerTransport.StillRunsASecondChannelAfterARegionFailsUnderMpi
 # times out at 2 processes (the host's run on 9cafbd1 is this
-# mutant's behaviour). NOT-ASSESSED in the sandbox: MPI cannot start here.
+# mutant's behaviour). NOT-ASSESSED in the environment: MPI cannot start here.

@@ -396,7 +396,7 @@ test = "runtime.window_runner_straddle"
 # the real transport" are reading the IDENTICAL single-process data
 # either way. That specific comparison can only be falsified by a real
 # multi-rank run -- `parallel.window_runner_mpi.{2,3}`, a host
-# row never executed in this sandbox. Recorded here rather than as its
+# row never executed in this environment. Recorded here rather than as its
 # own row so a future reader does not mistake "162/162 passed" for
 # "this comparison was proven" -- it demonstrates only that the pass
 # existing/not-existing is what carries tier-0 weight.
@@ -427,7 +427,7 @@ test = "runtime.window_runner"
 # This mutation demonstrates the WIRING matters (the branch must be
 # reached at all); it does NOT by itself demonstrate the CROSS-RANK
 # agreement inside decide_window_convergence() matters, since every
-# fixture in this sandbox has exactly one effective participant
+# fixture in this environment has exactly one effective participant
 # (R.participants.size() <= 1 everywhere -- no real base_communicator is
 # ever configured here). That property IS demonstrated, without MPI, by
 # the pure-function tests in test/runtime/window_convergence_test.cpp

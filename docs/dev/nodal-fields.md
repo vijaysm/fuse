@@ -235,7 +235,7 @@ refused by name, not silently attempted.
 four rows: the ownership rule inverted to max-rank, a halo copy skipped, a
 shared load summed on every holder rather than once, and a nodal field's
 extent read as its region's cell count. The first three need a working MPI
-launcher (`requires = "mpi"`) and are `NOT-ASSESSED` in this sandbox
+launcher (`requires = "mpi"`) and are `NOT-ASSESSED` in this environment
 (`docs/dev/testing.md`'s "Mutations that cannot be assessed locally"). The
 fourth was applied by hand to `serial_backend.cpp` -- the `Vertex`-kind
 branch's `view.value()->entity_count(0)` changed to

@@ -165,7 +165,7 @@ test = [
 ]
 note = """Ranks 3-5 only: at 2 ranks {0..W-2}/{1..W-1} is {0}/{1}, which is \
 disjoint. Compiled here, verdict from a host run -- MPI cannot initialise in \
-this sandbox. MOAB's own per-placement decomposition (one ParallelComm per \
+this environment. MOAB's own per-placement decomposition (one ParallelComm per \
 component communicator) is not yet implemented, so this is exercised with the \
 test backend. Remap weights follow the placement's decomposition \
 (RemapPlan::placement; Supermesh.WeightsAreBuiltOnThePlacementsOwnDecomposition)."""
@@ -210,10 +210,10 @@ layout.{2,3,4}.c1-<lo>-<hi>.c2-<lo>-<hi>* (11 valid comp1/comp2 layouts), \
 layout.coupler.{3.disjoint,3.equals-target,4.overlaps-comp1} (3 --coupler \
 layouts), layout.migrate.{2,3,4}.c1-<lo>-<hi>.c2-<lo>-<hi>* (3 --mesh/--migrate \
 layouts), and layout.refuse.{min-nonzero,max-not-last,reversed-range,coupler-with-mesh} \
-(4 WILL_FAIL). Compiled and linked in the sandbox (tier 1, -DFUSE_ENABLE_MPI=ON, \
+(4 WILL_FAIL). Compiled and linked in the environment (tier 1, -DFUSE_ENABLE_MPI=ON, \
 including the coupler-placement code); mpiexec cannot \
 initialise MPI here, so every rank's run and every \
-refusal's exit code are a host action, not a sandbox one. The coupler rows' \
+refusal's exit code are a host action, not an environment one. The coupler rows' \
 byte-exact and delivery-identical claims are pinned at Tier 0 instead \
 (CouplerLowering.CouplerEqualToTargetReproducesTodaysIRExactly, \
 Runner.ACouplerNeedsNoComponentAndDeliversTheIdenticalValue) -- these three \
@@ -295,7 +295,7 @@ test = [
   "RemapHalo.TheExchangeChecksItsArgumentsBeforeAnythingElse",
   "RemapHalo.AnExchangeWithNoHaloLeavesTheBufferAlone",
 ]
-note = """Compiles at tier 2 and is UNRUN in the sandbox -- MOAB here is MPI-linked and calls MPI_Init_thread when the backend is constructed, which cannot succeed where MPI will not initialise. Its verdict comes from a host run like every other tier-2 test."""
+note = """Compiles at tier 2 and is UNRUN in the environment -- MOAB here is MPI-linked and calls MPI_Init_thread when the backend is constructed, which cannot succeed where MPI will not initialise. Its verdict comes from a host run like every other tier-2 test."""
 
 [[cell]]
 id = "A-PARTITIONED"
@@ -310,7 +310,7 @@ test = [
   "RemapHaloMpiSphere.TheNonMatchingPairLoadsProjectsAndIsSphericalAtEveryRankCount",
   "RemapHaloMpiSphere.BuildRemapHaloDeliversExactHaloValuesAndRoundTripsExactly",
 ]
-note = """Compiles at tier 2 under FUSE_ENABLE_MOAB AND FUSE_ENABLE_MPI; UNRUN in the sandbox -- MOAB here is MPI-linked and calls MPI_Init_thread when the backend is constructed, which cannot succeed where MPI will not initialise even at one rank. The two RemapHaloMpiSphere cases additionally need `wholeATM_T.h5m` / `recMeshOcn.h5m` discovered via -DFUSE_MOAB_MESHFILES (A-PARTITIONED-SERIAL's own note); absent, they are not compiled at all, never silently skipped. Its verdict comes from a host run like every other tier-2 mpi cell in this matrix."""
+note = """Compiles at tier 2 under FUSE_ENABLE_MOAB AND FUSE_ENABLE_MPI; UNRUN in the environment -- MOAB here is MPI-linked and calls MPI_Init_thread when the backend is constructed, which cannot succeed where MPI will not initialise even at one rank. The two RemapHaloMpiSphere cases additionally need `wholeATM_T.h5m` / `recMeshOcn.h5m` discovered via -DFUSE_MOAB_MESHFILES (A-PARTITIONED-SERIAL's own note); absent, they are not compiled at all, never silently skipped. Its verdict comes from a host run like every other tier-2 mpi cell in this matrix."""
 [[cell]]
 id = "A-SPACES-TRANSPORT"
 axis = "host-parallel space, transport and runtime paths"
@@ -353,7 +353,7 @@ file = "test/parallel/nodal_field_test.cpp"
 kind = "mpi"
 ranks = [1, 2, 3, 4, 5]
 test = ["SharedVertexOwnership.LowestRankOwnsEachSharedVertexAndBoundariesAgree"]
-note = "Compiles under FUSE_ENABLE_MPI=ON; UNRUN in the sandbox (MPI cannot initialise here, docs/dev/testing.md). Its verdict comes from a host run like every other mpi cell in this matrix."
+note = "Compiles under FUSE_ENABLE_MPI=ON; UNRUN in the environment (MPI cannot initialise here, docs/dev/testing.md). Its verdict comes from a host run like every other mpi cell in this matrix."
 
 [[cell]]
 id = "A-NODAL-TRANSPORT"
@@ -363,7 +363,7 @@ file = "test/parallel/nodal_field_test.cpp"
 kind = "mpi"
 ranks = [1, 2, 3, 4, 5]
 test = ["NodalTransport.EveryLocalCopyMatchesTheGlobalIdentity"]
-note = "Compiles under FUSE_ENABLE_MPI=ON; UNRUN in the sandbox. Exercises attach_comm_graphs's dim-0 fix and comm_graph.cpp's existing owned-source/every-destination gather; does NOT exercise consistent_interp.hpp's H operator itself (same-region transfer, no non-matching interface)."
+note = "Compiles under FUSE_ENABLE_MPI=ON; UNRUN in the environment. Exercises attach_comm_graphs's dim-0 fix and comm_graph.cpp's existing owned-source/every-destination gather; does NOT exercise consistent_interp.hpp's H operator itself (same-region transfer, no non-matching interface)."
 
 [[cell]]
 id = "A-NODAL-ACCUMULATE"
@@ -376,7 +376,7 @@ test = [
   "AccumulateSharedRows.SumsEveryRanksPartialExactlyOnceAndDeliversTheSameTotalToEveryHolder",
   "AccumulateSharedRows.ManuallyAssembledPowerBalances",
 ]
-note = "Compiles under FUSE_ENABLE_MPI=ON; UNRUN in the sandbox. Verifies the STANDALONE primitive (include/fuse/transport/comm_graph.hpp's accumulate_shared_rows), called directly -- see the A-NODAL-HT-PARALLEL gap below for why it is not yet called from Runner."
+note = "Compiles under FUSE_ENABLE_MPI=ON; UNRUN in the environment. Verifies the STANDALONE primitive (include/fuse/transport/comm_graph.hpp's accumulate_shared_rows), called directly -- see the A-NODAL-HT-PARALLEL gap below for why it is not yet called from Runner."
 
 [[cell]]
 id = "A-NODAL-HT-PARALLEL"
@@ -416,7 +416,7 @@ The host command is: \
 [[cell]]
 id = "A-SEARCH-DISTRIBUTED"
 axis = "fuse::search's distributed point-containment query (ArborX::DistributedTree)"
-pins = "a fixed global box set split into disjoint contiguous per-rank slices, queried with the same global point set on every rank: the gathered (rank, local index) hits, translated back to global box ids, equal BoxIndex's own serial answer over the whole gathered set -- the escape hatch A-RANKS's own note and test/partition/rcb_mpi_test.cpp use for the same reason (comparing against a single-rank reference the sandbox actually CAN run, rather than against another rank's answer this sandbox cannot obtain either); a second cell checks hits within one query are sorted by (rank, index) directly, independent of what the hits are"
+pins = "a fixed global box set split into disjoint contiguous per-rank slices, queried with the same global point set on every rank: the gathered (rank, local index) hits, translated back to global box ids, equal BoxIndex's own serial answer over the whole gathered set -- the escape hatch A-RANKS's own note and test/partition/rcb_mpi_test.cpp use for the same reason (comparing against a single-rank reference the environment actually CAN run, rather than against another rank's answer this environment cannot obtain either); a second cell checks hits within one query are sorted by (rank, index) directly, independent of what the hits are"
 file = "test/search/distributed_mpi_test.cpp"
 kind = "mpi"
 ranks = [1, 2, 3, 4, 5]
@@ -424,4 +424,4 @@ test = [
   "SearchDistributedMpi.MatchesSerialOnTheGatheredInput",
   "SearchDistributedMpi.HitsWithinOneQuerySortedByRankThenIndex",
 ]
-note = "Compiles under FUSE_ENABLE_MPI=ON; UNRUN in the sandbox (MPI cannot initialise here, docs/dev/testing.md) -- the same posture every other mpi cell in this matrix documents for itself. Its verdict comes from a host run."
+note = "Compiles under FUSE_ENABLE_MPI=ON; UNRUN in the environment (MPI cannot initialise here, docs/dev/testing.md) -- the same posture every other mpi cell in this matrix documents for itself. Its verdict comes from a host run."

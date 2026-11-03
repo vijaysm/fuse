@@ -8,7 +8,7 @@
 // shape and signature, and save_state()/restore_state()'s round trip.
 // Tier-0, native only (NeumannHalfPetsc's own structural analogue is
 // test/petsc/reaction_diffusion_test.cpp, gated FUSE_ENABLE_PETSC,
-// build-only in this sandbox).
+// build-only in this environment).
 
 #include <gtest/gtest.h>
 

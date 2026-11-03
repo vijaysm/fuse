@@ -285,7 +285,7 @@ void TraceChainStep(const char* fn, std::size_t step_index, int rank, const char
 // EXACTLY one merge -- step 1 -- so behaviour for every existing two-component
 // caller is unchanged.
 //
-// Built, not run: a sandbox that cannot start mpiexec cannot exercise it.
+// Built, not run: an environment that cannot start mpiexec cannot exercise it.
 // The host rows this entry names (`parallel.connect.chain.{3,4}`) are not
 // registered: the matching N-executable test harness does not exist yet,
 // and test/parallel/connect/connect_common.hpp's own

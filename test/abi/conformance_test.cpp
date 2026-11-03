@@ -1470,7 +1470,7 @@ TEST(ConformanceTest, PluginDeviceFieldOnAHostOnlyBuildIsRefused) {
   // See docs/dev/abi-design.md's own device-fields subsection: a build
   // with no real device backend must refuse a
   // FUSE_MEMSPACE_DEVICE request by name, never silently hand back host-
-  // addressable memory under the device label. This sandbox has no
+  // addressable memory under the device label. This environment has no
   // CUDA/HIP/SYCL compiled into Kokkos, so the CORRECT plugin variant
   // (capabilities() sets FUSE_CAP_DEVICE_FIELDS correctly, describe()
   // asks for FUSE_MEMSPACE_DEVICE on "device_out") is refused here too --

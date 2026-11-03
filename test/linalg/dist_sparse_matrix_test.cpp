@@ -3,7 +3,7 @@
 // two-partition split -- the same FakePeerExchanger device
 // dist_vector_test.cpp uses, duplicated here rather than shared through a
 // new header. MPI cannot start in this
-// sandbox (docs/dev/testing.md): src/linalg/comm_mpi.cpp's real
+// environment (docs/dev/testing.md): src/linalg/comm_mpi.cpp's real
 // MpiExchanger/MpiReducer are built (test/parallel/linalg_mpi_test.cpp)
 // but never run here.
 

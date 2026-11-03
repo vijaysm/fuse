@@ -45,7 +45,7 @@
 // ranks belong to which declared component is separate from which
 // physical ranks anything runs on.
 //
-// NOT YET CONFIRMED BY A HOST RUN (MPI cannot start in the sandbox
+// NOT YET CONFIRMED BY A HOST RUN (MPI cannot start in the environment
 // this was written in): whether a rank inside
 // the coupler's declared RankSet that registers none of U's fields (a
 // bundled coupler placeholder rank) is tolerated by the rest of the

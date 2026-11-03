@@ -10,7 +10,7 @@
 // into a fuse-side executable is not an option because the target is
 // defined after test/ is added).
 //
-// MPI CANNOT START IN THIS SANDBOX: this file is
+// MPI CANNOT START IN THIS ENVIRONMENT: this file is
 // compiled here, never run; run it with `mpirun` on a host with MPI.
 //
 // REGISTRATION. physics-kit/test/CMakeLists.txt's own fuse_add_gtest calls

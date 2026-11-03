@@ -95,10 +95,10 @@ Python-level convenience the compiled module could not provide directly (`pfuse.
 `pfuse` v1 drives only `fuse::SerialMeshBackend` and leaves `RunnerConfig::base_communicator`
 unset (see "What this does not expose", below).
 
-**A `find_package` gotcha measured in one sandbox, not in general.** `pybind11` 3.1's own
+**A `find_package` gotcha measured in one environment, not in general.** `pybind11` 3.1's own
 `pybind11Tools.cmake` calls `find_package(Python ...)` — the un-suffixed name, not `Python3` —
 to locate the interpreter/headers/libraries it builds against. A `VIRTUAL_ENV` environment
-variable pointing at an unrelated virtualenv (left set by this sandbox's own Python tooling)
+variable pointing at an unrelated virtualenv (left set by this environment's own Python tooling)
 hijacks that search even when `-DPython3_EXECUTABLE=...` is passed, because CMake's `FindPython`
 module consults `VIRTUAL_ENV` before `Python3_EXECUTABLE`. The fix applied to reconfigure
 correctly: `unset VIRTUAL_ENV`, put the target interpreter's `bin/` first on `PATH`, and pass
@@ -526,7 +526,7 @@ stays checked against the fixture rather than going stale.
 **The Newton descriptor is still checked, separately, without running Newton.** A standalone
 C++ probe (`newton_descriptor_probe.cpp`) builds the identical mesh/region/component/field/
 channel/remap/spacetime/relax/Newton-configuration graph through the raw C++ API and serializes
-it (`fuse::serialize()`, 769 bytes, `golden/newton_descriptor_reference.bin`). The equivalent
+it (`fuse::serialize()`, 776 bytes, `golden/newton_descriptor_reference.bin`). The equivalent
 graph authored from Python produces `g.to_bytes()` that matches this reference byte for byte
 (`TestDescriptorMatchesNativeReference`, `test_newton.py`) — checking that a Python-authored
 Newton *configuration* compiles to the identical descriptor a native one would, independent of

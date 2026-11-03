@@ -174,7 +174,7 @@ else
   LD_DEBUG=libs "$BIN" >"$RUN_LOG" 2>&1
   RUN_STATUS=$?
   # LD_DEBUG=libs prints lines such as "trying file=/opt/hdf5/lib/libhdf5.so.310".
-  # Not verified on Linux in this sandbox (Darwin-only host) -- see
+  # Not verified on Linux in this environment (Darwin-only host) -- see
   # docs/user/lowfive.md's "Linux" note.
   HDF5_PATHS=$(grep -oE 'file=[^[:space:];]*/libhdf5\.so[0-9.]*' "$RUN_LOG" | sed 's/^file=//' | sort -u)
   HDF5_HL_PATHS=$(grep -oE 'file=[^[:space:];]*/libhdf5_hl\.so[0-9.]*' "$RUN_LOG" | sed 's/^file=//' | sort -u)

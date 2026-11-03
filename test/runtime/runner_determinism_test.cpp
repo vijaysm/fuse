@@ -37,7 +37,7 @@
 // spelled as a gtest assertion instead of a byte-diff of stdout because the
 // value under test is a field inside the process, not stdout. The literals
 // below are MEASURED (this test's own first passing run, at whatever thread
-// count the sandbox gave it), not derived analytically; the property this
+// count the environment gave it), not derived analytically; the property this
 // test pins is that every OTHER thread count reproduces them exactly.
 
 #include <gtest/gtest.h>
@@ -224,7 +224,7 @@ TEST(RunnerDeterminism, LargeIterationRegionIsBitIdenticalAcrossThreadCounts) {
   ASSERT_EQ(out.size(), kCells);
 
   // MEASURED on this test's own first passing run (Kokkos::DefaultHostExecution
-  // Space at whatever thread count the sandbox gave it): the property this
+  // Space at whatever thread count the environment gave it): the property this
   // pins is that every OTHER registered omp leg (OMP_NUM_THREADS 1..N,
   // fuse_add_omp_legs below) reproduces every one of these exactly, not that
   // these particular sixteen digits are independently meaningful.

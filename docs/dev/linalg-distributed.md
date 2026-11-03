@@ -140,7 +140,7 @@ own definition, always inside its own diagonal block.
 
 ## Measured against a tier-0 fake, not only the host
 
-MPI cannot start in this sandbox (docs/dev/testing.md), so the ghost
+MPI cannot start in this environment (docs/dev/testing.md), so the ghost
 pattern and reduction logic are measured at tier 0 with an **in-process
 fake two-partition split**: two `DistVector`s (or two `DistSparseMatrix`
 row blocks) in the SAME process, wired together by a `GhostExchanger` test

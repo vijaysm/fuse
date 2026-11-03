@@ -145,7 +145,7 @@ except for the version word itself -- the change is to the GUARANTEE (host-indep
 the bytes a little-endian host happens to produce, which is exactly why the bug was invisible
 here and would not have been on a big-endian host. `test/model/descriptor_test.cpp`'s
 `V14AndV15BytesOfTheSameGraphDifferOnlyInTheVersionWord` and
-`V14AndV15BytesOfTheSameGraphDecodeIdentically` verify this directly; this sandbox has no
+`V14AndV15BytesOfTheSameGraphDecodeIdentically` verify this directly; this environment has no
 big-endian host to build or run on, so `PodBytesNoLongerDependOnHostByteOrderViaSwapStub`
 demonstrates the host-independence by construction (a byte-swapping writer stub standing in for
 the superseded host) instead of by executing on one.

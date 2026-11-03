@@ -9,7 +9,7 @@ old = "      return view.value()->entity_count(0);\n    }"
 new = "      return view.value()->entity_count(resolved.dimension >= 0 ? resolved.dimension\n                                                                 : view.value()->dimension());\n    }"
 target = "fuse_backend_field_extent_test"
 test = "backend.field_extent"
-# KILLED, observed directly in this sandbox (Tier 0, no MPI needed): applied
+# KILLED, observed directly in this environment (Tier 0, no MPI needed): applied
 # by hand, rebuilt, and confirmed to turn FOUR cases from passing to failing --
 # MakeRegionSizesNodal.LineMeshVertexCountIsCellsPlusOne reports 9 where 10
 # (vertices, on the 9-cell line mesh) is expected, and the box/quad-triangle/
@@ -28,7 +28,7 @@ new = "    if (i == 0) return true;  // MUTATED: every rank claims its own first
 target = "fuse_parallel_nodal_field_test"
 test = "parallel.nodal_field.2"
 requires = "mpi"
-# NOT-ASSESSED in this sandbox: MPI cannot initialise here (docs/dev/
+# NOT-ASSESSED in this environment: MPI cannot initialise here (docs/dev/
 # testing.md). Expected kill: SharedVertexOwnership.
 # LowestRankOwnsEachSharedVertexAndBoundariesAgree's
 # `all_owns_first[r+1] == 0` check fails on every rank pair, at every rank
@@ -46,7 +46,7 @@ new = "    return true;  // MUTATED: no shared vertex is ever non-owned"
 target = "fuse_parallel_nodal_field_test"
 test = "parallel.nodal_field.2"
 requires = "mpi"
-# NOT-ASSESSED in this sandbox. Expected kill: this mutation alone does not
+# NOT-ASSESSED in this environment. Expected kill: this mutation alone does not
 # change NodalTransport.EveryLocalCopyMatchesTheGlobalIdentity's outcome (that
 # test writes the SAME closed form on every rank regardless of ownership, so
 # a ghost that keeps its own locally-written value is still correct by
@@ -108,7 +108,7 @@ requires = "mpi"
 # every locally-held vertex's total is now unconditionally too high by
 # exactly its own local value -- SumsEveryRanksPartialExactlyOnceAndDeliversTheSameTotalToEveryHolder's
 # `EXPECT_DOUBLE_EQ` (exact, not a tolerance) cannot miss it.
-# NOT-ASSESSED in this sandbox (MPI cannot initialise here).
+# NOT-ASSESSED in this environment (MPI cannot initialise here).
 [[mutation]]
 id = "nodal-parallel-remap-refusal-disabled"
 area = "runtime"

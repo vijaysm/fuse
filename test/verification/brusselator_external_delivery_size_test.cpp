@@ -270,7 +270,7 @@ Result<void> initialize_on_rank(int this_rank) {
 // block starting "Checked against `config.base_communicator` rather than
 // the graph's declared `RankSet` cardinality alone"); with no real MPI
 // communicator (`RunnerConfig::force_this_process` alone, the only tier-0
-// override that exists; MPI cannot start in the sandbox),
+// override that exists; MPI cannot start in the environment),
 // `R.participants` stays empty on EVERY rank, so the SAME function's
 // own "an empty coupling value... the region would report convergence
 // after one sweep" refusal (iteration.cpp, `if (b.length == 0 &&
@@ -282,7 +282,7 @@ Result<void> initialize_on_rank(int this_rank) {
 // manifesting through a DIFFERENT check. On a REAL multi-process run
 // `config.base_communicator` IS set, `R.participants` holds all 3 ranks
 // (U, the coupler, V), `R.participants.size() > 1`, and this refusal
-// never fires -- so this is a sandbox-only ceiling on DRIVING this real,
+// never fires -- so this is an environment-only ceiling on DRIVING this real,
 // multi-rank iteration region at tier 0, not a defect;
 // `InitializeSucceedsOnDisjointRanksWithNoIterationRegion` below isolates
 // the ExternalDelivery exemption's own effect with no iteration region in

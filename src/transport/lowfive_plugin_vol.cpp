@@ -6,7 +6,7 @@
 // lowfive.md): this file compiles against real LowFive/HDF5/MPI headers on
 // this host, but neither this plugin nor the H5PL_* loader path it serves
 // has ever been exercised -- the host's LowFive still cannot even dlopen
-// (a libfmt.8 conflict), so there is no way, in this sandbox, to confirm the
+// (a libfmt.8 conflict), so there is no way, in this environment, to confirm the
 // design below past "it compiles against the public header contract as closely
 // as that contract states it." Treat every claim below as a design, not a
 // result.

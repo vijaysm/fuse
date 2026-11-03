@@ -57,7 +57,7 @@
  * size (no bundled coupler at all -- the coupler is coupler_main.c's own
  * separate appnum segment there instead).
  *
- * NOT YET HOST-VERIFIED (MPI cannot start in the sandbox this was
+ * NOT YET HOST-VERIFIED (MPI cannot start in the environment this was
  * written in): whether a coupler placeholder rank skipping
  * begin_step/end_step entirely (rather than calling them with no field
  * registered) is what the Runner's own internal remap collectives

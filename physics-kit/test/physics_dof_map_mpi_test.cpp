@@ -7,7 +7,7 @@
 // needs ranks to disagree on how many dofs they own; a single-rank or
 // equal-split partition can never exercise it). Registered with RANKS
 // 2 3 (physics-kit/test/CMakeLists.txt), build-only under
-// FUSE_ENABLE_MPI=ON -- MPI cannot start in this sandbox,
+// FUSE_ENABLE_MPI=ON -- MPI cannot start in this environment,
 // matching every other *_mpi_test.cpp in this
 // tree.
 //

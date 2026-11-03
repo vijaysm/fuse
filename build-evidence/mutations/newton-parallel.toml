@@ -25,8 +25,8 @@
 # `parallel.participant_reducer_mpi.{2,3}` rows (test/parallel/
 # window_newton_mpi_test.cpp, test/parallel/
 # participant_reducer_mpi_test.cpp) -- the same category as the
-# serial-reducer era ("this sandbox cannot run mpiexec").
-# ("this sandbox cannot run mpiexec").
+# serial-reducer era ("this environment cannot run mpiexec").
+# ("this environment cannot run mpiexec").
 
 [[mutation]]
 id = "window-newton-offset-not-gated-by-hosted"

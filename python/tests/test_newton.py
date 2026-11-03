@@ -213,13 +213,12 @@ class TestDescriptorMatchesNativeReference:
     """Item 4: the Python-authored descriptor of a Newton-configured region compared byte for
     byte against a reference generated directly from the C++ API (not assumed equal).
 
-    Reference generation (recorded here, not invented): a standalone program
-    (/tmp/pybind/probe/newton_descriptor_probe.cpp, not part of this tree's deliverables)
-    built against the tier-0 libfuse-coupler-model.a/libfuse-coupler-base.a and
-    linked with `clang++ -std=c++20 -ffp-contract=off`, constructs the IDENTICAL graph this
-    test builds from Python (same mesh/region/component/field/channel/remap/spacetime/relax
+    Reference generation: a small C++ program linked against the model and base libraries
+    (built with `-ffp-contract=off`) constructs the identical graph this test builds from
+    Python (same mesh, region, component, field, channel, remap, spacetime and relax
     configuration, same NewtonConfig(rtol=1e-9, max_nonlinear_iterations=30)) and writes
-    fuse::serialize(g) to golden/newton_descriptor_reference.bin.
+    fuse::serialize(g) to golden/newton_descriptor_reference.bin. Regenerate the file whenever
+    the descriptor layout or the graph below changes.
     """
 
     def test_python_authored_newton_descriptor_matches_the_cxx_reference(self):
@@ -240,7 +239,7 @@ class TestDescriptorMatchesNativeReference:
         (g.channel(ch)
           .accumulate(pfuse.AccumOp.Mean, pfuse.Window.coupling_period())
           .remap(pfuse.RemapFlags.Conservative | pfuse.RemapFlags.Monotone)
-          .remap_method("mono3")
+          .remap_method("conservative")
           .spacetime(pfuse.TemporalBasis.DG, 2, pfuse.Window.explicit_length("2/5"))
           .relax(0.7))
         g.iterate([ch]).until(pfuse.Converged.Relative(1e-8, "q_wall")).newton(

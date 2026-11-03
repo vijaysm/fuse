@@ -28,7 +28,7 @@
  * rank's participation. fuse_run() executes exactly those collectives,
  * with nothing else to drive.
  *
- * NOT YET HOST-VERIFIED (MPI cannot start in the sandbox this was
+ * NOT YET HOST-VERIFIED (MPI cannot start in the environment this was
  * written in): the mechanism is argued (fuse_run() executes
  * the period's own instruction stream, which is where the coupler's
  * own Transport/Remap participation lives) and build-verified only;

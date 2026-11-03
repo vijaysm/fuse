@@ -10,14 +10,14 @@
 #  `status` records what each row's own test has actually been measured to
 #  do, not merely whether it exists:
 #    measured-tier-0  the named test runs, and passes, in the ordinary
-#                      (no MPI, no LowFive) sandbox ctest suite -- every row
+#                      (no MPI, no LowFive) environment ctest suite -- every row
 #                      below with this status was confirmed passing in a
 #                      single ctest run.
 #    built-only        the named test's own file compiles and links clean in
 #                      SOME configured tier, but has not been run anywhere
-#                      yet -- neither this sandbox (missing a capability it
+#                      yet -- neither this environment (missing a capability it
 #                      needs) nor a host (not yet attempted).
-#    host-only          the named test needs a capability this sandbox
+#    host-only          the named test needs a capability this environment
 #                      cannot provide at all (real MPI, chiefly) -- confirmed
 #                      to BUILD clean where that applies, awaiting a host run
 #                      to turn "builds" into "passes". `requires` names the

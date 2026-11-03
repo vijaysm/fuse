@@ -1,21 +1,21 @@
 # Mutation evidence for the PETSc-object-backed reaction-diffusion component
 # (examples/petsc_reaction_diffusion/).
 #
-# HONEST DISCLOSURE, read before the rows below -- the SAME sandbox
+# HONEST DISCLOSURE, read before the rows below -- the SAME environment
 # limitation build-evidence/mutations/petsc.toml's own header already
-# documents: this sandbox's /opt/mpich cannot complete a bare MPI_Init()
+# documents: this environment's /opt/mpich cannot complete a bare MPI_Init()
 # (MPICH's debugger-attach mutex assertion in dbginit.c), and
 # fuse::petsc::ensure_initialized() (src/petsc/init.cpp, as of commit
 # 70b3d16) deliberately lets MPI_Init() run rather than skip it -- so
 # EVERY path through reaction_diffusion_component_petsc.hpp fails in this
-# sandbox before reaching any code a mutation row below touches. The
+# environment before reaching any code a mutation row below touches. The
 # failure's exact signature (a signal versus an MPICH assertion abort) has
 # been reported inconsistently and was not re-measured. The two
 # PETSc-specific rows below are therefore ARGUED BY CODE INSPECTION ONLY,
 # exactly petsc.toml's own convention for the identical reason. The THIRD
 # row (transpose action, on the NATIVE DirichletHalf::Token --
 # reaction_diffusion_component.hpp, no PETSc involved) IS hand-proved in
-# this sandbox: see its own `result` field.
+# this environment: see its own `result` field.
 
 [[mutation]]
 id = "reaction-diffusion-native-token-transpose-sign-flipped"
@@ -26,7 +26,7 @@ old = "      y[0] = slope_ * x[0];  // 1x1: transpose is itself"
 new = "      y[0] = -slope_ * x[0];  // MUTATION: sign flipped, not kept"
 target = "fuse_runtime_petsc_reaction_diffusion_component_test"
 test = "runtime.petsc_reaction_diffusion_component"
-result = "Hand-proved (sandbox tier-0, no PETSc, no MPI needed -- DirichletHalf is native-only): under the mutation, PetscReactionDiffusionComponent.DirichletHalfTokenApplyJacobianMatchesSensitivity FAILED (apply_jacobian/apply_jacobian_transpose disagreed, EXPECT_DOUBLE_EQ fired), 4/5 PASSED; clean tree 5/5. File restored byte-identically (md5 5c83c9c28062ceb3696781cdfee30ceb before and after)."
+result = "Hand-proved (environment tier-0, no PETSc, no MPI needed -- DirichletHalf is native-only): under the mutation, PetscReactionDiffusionComponent.DirichletHalfTokenApplyJacobianMatchesSensitivity FAILED (apply_jacobian/apply_jacobian_transpose disagreed, EXPECT_DOUBLE_EQ fired), 4/5 PASSED; clean tree 5/5. File restored byte-identically (md5 5c83c9c28062ceb3696781cdfee30ceb before and after)."
 
 [[mutation]]
 id = "reaction-diffusion-petsc-ownership-local-write-replaced-by-global-setvalues"
@@ -46,7 +46,7 @@ new = """    for (PetscInt i = 0; i < m; ++i) {
 target = "fuse_petsc_reaction_diffusion_test"
 test = "petsc.reaction_diffusion"
 requires = "petsc"
-result = "ARGUED BY CODE INSPECTION ONLY (this sandbox cannot run ANY petsc.* row -- NeumannHalfPetsc's own constructor calls ensure_initialized(), which segfaults on MPI_Init() before this line is ever reached, the SAME barrier petsc.toml's own header documents for every row there). On a single-rank communicator (this component's own region, given the single-rank-per-participant restriction) VecSetValues with a LOCAL-and-global-identical index would not visibly misbehave either -- the mutation's hazard is specifically the multi-rank case the header comment names as the reason the real code never does this; a host run with FUSE_ENABLE_MPI and more than one rank per participant (not possible under the current single-participant-per-rank restriction) would be needed to exercise the differential this row describes for real."
+result = "ARGUED BY CODE INSPECTION ONLY (this environment cannot run ANY petsc.* row -- NeumannHalfPetsc's own constructor calls ensure_initialized(), which segfaults on MPI_Init() before this line is ever reached, the SAME barrier petsc.toml's own header documents for every row there). On a single-rank communicator (this component's own region, given the single-rank-per-participant restriction) VecSetValues with a LOCAL-and-global-identical index would not visibly misbehave either -- the mutation's hazard is specifically the multi-rank case the header comment names as the reason the real code never does this; a host run with FUSE_ENABLE_MPI and more than one rank per participant (not possible under the current single-participant-per-rank restriction) would be needed to exercise the differential this row describes for real."
 equivalent = "right_newton_solve_petsc builds every PETSc object on PETSC_COMM_SELF (the one assignment `MPI_Comm comm = PETSC_COMM_SELF;` and every VecCreate, MatCreateAIJ and KSPCreate takes that `comm`), a one-process communicator on which a global index is the local index, so an INSERT_VALUES write of the owned range followed by assembly stores the same values as the VecGetArray write. The off-process hazard this row names needs a communicator with more than one rank, which this function cannot receive. Read from the source and measured: the tool reported SURVIVED on the host (MPICH 5.0.2rc3)."
 
 [[mutation]]

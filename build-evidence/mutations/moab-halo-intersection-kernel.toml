@@ -1,10 +1,10 @@
 # The MOAB-half intersection driver uses the kd-tree kernel rather than the
 # advancing-front kernel.
 #
-# NOT HAND-VERIFIED, for the same sandbox-wide reason every other MOAB
+# NOT HAND-VERIFIED, for the same environment-wide reason every other MOAB
 # mutations file in this tree already states: ANY MOAB-linked binary
 # aborts on construction here (moab::Core's constructor calls
-# MPI_Init_thread; this sandbox cannot initialise MPI at all, not even at
+# MPI_Init_thread; this environment cannot initialise MPI at all, not even at
 # one rank, and FUSE_ENABLE_MOAB hard-requires FUSE_ENABLE_MPI in this
 # tree's own CMakeLists.txt). Written and reasoned through by hand;
 # `requires = "mpi"`, the same NOT-ASSESSED courtesy every other MOAB-only

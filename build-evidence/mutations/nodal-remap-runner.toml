@@ -2,7 +2,7 @@
 # (Runner::Impl::build_nodal_dist_remap/apply_nodal_dist_remap,
 # src/runtime/runner.cpp). Schema: build-evidence/mutations.toml.
 #
-# Both rows below were KILLED, observed directly in this sandbox (Tier 0, no
+# Both rows below were KILLED, observed directly in this environment (Tier 0, no
 # MPI needed -- the whole point of the null-communicator path is that
 # this Runner wiring is testable without MPI at all): each was applied by
 # hand to src/runtime/runner.cpp, rebuilt, and run against the filtered

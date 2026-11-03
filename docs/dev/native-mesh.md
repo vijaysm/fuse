@@ -167,7 +167,7 @@ Open MPI does, so the run-time probe is a real 0/1 decision.)
 
 ## What is verified where
 
-Tier 0 (no MPI; this sandbox): the geometry contract per cell type (`native_distributed_mesh_test.cpp`
+Tier 0 (no MPI; this environment): the geometry contract per cell type (`native_distributed_mesh_test.cpp`
 -- simplex measures sum to the analytic value, the two-differently-numbered-hexes shared-face case, the
 concave-polygon refusal, connectivity/dimension/corner-count refusals, owned-vs-ghost accounting), the
 generators and file round trip (`native_generators_test.cpp`), and the emulated migration properties
@@ -207,7 +207,7 @@ one. See "what is deferred" for why the two are not merged.
 
 Registered at 2, 3 and 4 ranks (`layout.migrate.{2,3,4}.c1-<lo>-<hi>.c2-<lo>-<hi>`,
 `build-evidence/parallel-matrix.toml`'s `A-LAYOUT` cell), on the same disjoint/partially-overlapping
-placement shapes the existing `layout.*` rows already cover. Compiled and linked in this sandbox
+placement shapes the existing `layout.*` rows already cover. Compiled and linked in this environment
 (Tier 1); running them is a host action, same as every other MPI test here.
 
 ## Execution space

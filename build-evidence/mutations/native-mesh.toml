@@ -34,7 +34,7 @@ test = "backend.native_distributed_mesh"
 [[mutation]]
 id = "vertex-ownership-rule-picks-max-not-min-rank"
 area = "backend"
-describes = "resolve_vertex_ownership's cross-rank agreement (a vertex's new owner is the MINIMUM rank holding a copy of it) is flipped to maximum. This is a cross-rank property -- kNullComm agrees with itself trivially -- so only a real MPI run exercises the Allgatherv agreement; requires = mpi, and RepartitionConservesGlobalCellCountAndMeasureAndUniqueIds is the test, compiled here but not run (this sandbox cannot start mpiexec)."
+describes = "resolve_vertex_ownership's cross-rank agreement (a vertex's new owner is the MINIMUM rank holding a copy of it) is flipped to maximum. This is a cross-rank property -- kNullComm agrees with itself trivially -- so only a real MPI run exercises the Allgatherv agreement; requires = mpi, and RepartitionConservesGlobalCellCountAndMeasureAndUniqueIds is the test, compiled here but not run (this environment cannot start mpiexec)."
 file = "src/backend/native_migration.cpp"
 old = "      if (it == min_rank_of.end() || r < it->second) min_rank_of[gid] = r;"
 new = "      if (it == min_rank_of.end() || r > it->second) min_rank_of[gid] = r;"

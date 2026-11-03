@@ -134,6 +134,9 @@ struct Args {
     else if (arg == "--iteration-mode") a.iteration_mode = next(i);
     else if (arg == "--no-block-jacobi") a.block_jacobi = false;
     else if (arg == "--substrate") a.substrate = next(i);
+    // Kokkos' own flags (--kokkos-device-id=N, ...) are consumed later by
+    // Kokkos::ScopeGuard; they are not this example's to refuse.
+    else if (arg.rfind("--kokkos", 0) == 0) continue;
     else if (arg == "--help") {
       std::cout << "Couple independent U/V native-mesh solvers with FUSE's conservative "
                    "supermesh remap and fuse::WindowCoupler.\n"

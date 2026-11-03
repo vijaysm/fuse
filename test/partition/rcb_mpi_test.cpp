@@ -1,6 +1,6 @@
 // test/partition/rcb_mpi_test.cpp -- fuse::partition under a REAL mpiexec.
 //
-// NOT YET RUN: this sandbox cannot initialize MPI (mpiexec cannot bind a
+// NOT YET RUN: this environment cannot initialize MPI (mpiexec cannot bind a
 // port, and a singleton MPI_Init aborts here), so nothing in this file has
 // a result from this environment. It is registered only in an MPI-enabled build
 // (test/CMakeLists.txt gates it on FUSE_ENABLE_MPI); running it is a host
@@ -17,7 +17,7 @@
 // compared against `recursive_bisect_oracle` run ONCE on the full gathered
 // input (P = 1) -- the escape hatch docs/dev/partitioning.md names: "compare against the oracle recomputed on the
 // gathered input" is exactly rcb_moab's RCBBfBAcrossRanks property, checked
-// the one way this sandbox cannot check it itself.
+// the one way this environment cannot check it itself.
 
 #include "fuse/partition/mesh_adapter.hpp"
 #include "fuse/partition/rcb.hpp"

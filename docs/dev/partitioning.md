@@ -93,7 +93,7 @@ disagreement is detectable) alongside the verdict flag, in the SAME pair of coll
 
 `test/partition/rcb_mpi_test.cpp`'s `RefusesWhenOnlyOneRankHasAMismatchedWeightsArray` and
 `RefusesWhenRanksDisagreeAboutNumParts` are the firing tests; both need a real communicator (a
-single rank has no peer to strand), so they are compiled, not run, in this sandbox -- see "What is
+single rank has no peer to strand), so they are compiled, not run, in this environment -- see "What is
 verified where" below.
 
 ## The serial oracle
@@ -189,6 +189,6 @@ standing in for them.
 * **Everything that needs a real communicator** -- the collective sequence itself (the axis-extent
   Allreduce, the median's histogram Allreduce loop, the tie-weight Allreduce, the tie Allgatherv)
   under more than one *real* rank, and the mixed-dimension refusal above -- is compiled in
-  `test/partition/rcb_mpi_test.cpp` and registered as an MPI test, but this sandbox cannot start an
+  `test/partition/rcb_mpi_test.cpp` and registered as an MPI test, but this environment cannot start an
   MPI launcher (`mpiexec` cannot bind a port here, and a singleton `MPI_Init` aborts). Those results
   are "compiled, awaiting host run", not verified, until run on the user's host.
