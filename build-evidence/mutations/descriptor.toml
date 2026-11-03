@@ -61,7 +61,7 @@ new = """  if (!dv.ok()) return dv.error();
   Result<std::uint64_t> dh = read_attr_u64(file, \"descriptor_hash\");"""
 target = "fuse_runtime_restart_test"
 test = "runtime.restart"
-result = "CONFIRMED (tier 0, FUSE_ENABLE_HDF5=ON, no MPI -- MPI cannot start in this sandbox): 1 of 23 Restart tests failed -- DescriptorVersionMismatchRefuses, which writes a point with descriptor_version = fuse::kGraphVersion - 1 and asserts open_restart_point() refuses with E-RESTART-DESCRIPTOR-VERSION; with the check removed, open_restart_point() succeeded instead. The other 22 Restart tests, including DescriptorHashMismatchIsCaughtByTheCaller and DescriptorVersionDefaultsToTheCurrentBuildAndOpensCleanly (neither of which writes a mismatched descriptor_version), still passed. Restored; rebuilt; all 23 Restart tests passed again; the restored file matched the pre-mutation text exactly."
+result = "CONFIRMED (tier 0, FUSE_ENABLE_HDF5=ON, no MPI -- MPI cannot start in this environment): 1 of 23 Restart tests failed -- DescriptorVersionMismatchRefuses, which writes a point with descriptor_version = fuse::kGraphVersion - 1 and asserts open_restart_point() refuses with E-RESTART-DESCRIPTOR-VERSION; with the check removed, open_restart_point() succeeded instead. The other 22 Restart tests, including DescriptorHashMismatchIsCaughtByTheCaller and DescriptorVersionDefaultsToTheCurrentBuildAndOpensCleanly (neither of which writes a mismatched descriptor_version), still passed. Restored; rebuilt; all 23 Restart tests passed again; the restored file matched the pre-mutation text exactly."
 
 [[mutation]]
 id = "restart-descriptor-hash-check-weakened"

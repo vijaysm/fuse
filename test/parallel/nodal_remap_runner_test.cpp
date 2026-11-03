@@ -30,7 +30,7 @@
 // argument, made there for the underlying primitive this file exercises
 // through the Runner instead.
 //
-// MPI CANNOT INITIALISE IN THIS SANDBOX (docs/dev/testing.md): every case
+// MPI CANNOT INITIALISE IN THIS ENVIRONMENT (docs/dev/testing.md): every case
 // here is compiled, never run, in the environment this file was written
 // in. outcomes are a host action, same posture as every other MPI-gated
 // case in this codebase.

@@ -3,7 +3,7 @@
 // decides -- given the channel's `Conservation` kind -- how an intersection
 // measure becomes one remap weight entry. It takes four doubles and an
 // enum, no MOAB or MPI symbol anywhere, so every case here actually RUNS in
-// this sandbox (unlike the MOAB-gated sphere-pair rows in
+// this environment (unlike the MOAB-gated sphere-pair rows in
 // test/parallel/remap_halo_mpi_test.cpp, which only compile here).
 //
 // Three things are checked:

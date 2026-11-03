@@ -1,10 +1,10 @@
 # MoabMeshBackend::sphere_radius / project_onto_unit_sphere
 # (src/backend/moab_backend.cpp, include/fuse/backend/moab_backend.hpp).
 #
-# NOT HAND-VERIFIED, for the same sandbox-wide reason
+# NOT HAND-VERIFIED, for the same environment-wide reason
 # moab-placement.toml's own header already states: ANY MOAB-linked binary
 # aborts on construction here (moab::Core's constructor calls
-# MPI_Init_thread; this sandbox cannot initialise MPI at all, not even at
+# MPI_Init_thread; this environment cannot initialise MPI at all, not even at
 # one rank, and FUSE's own CMakeLists.txt requires FUSE_ENABLE_MPI
 # whenever FUSE_ENABLE_MOAB is on -- confirmed by configure error, not
 # assumed -- so there is no MOAB-without-MPI tier-0 configuration to fall

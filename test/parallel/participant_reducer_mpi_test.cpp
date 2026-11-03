@@ -5,7 +5,7 @@
 // single rank computing the whole problem serially would get, with no
 // extra collective needed to check it).
 //
-// MPI CANNOT START IN THIS SANDBOX (same constraint linalg_mpi_test.cpp
+// MPI CANNOT START IN THIS ENVIRONMENT (same constraint linalg_mpi_test.cpp
 // names): this file is compiled -- registered with fuse_add_mpi_test,
 // RANKS 2 3 -- but never run here; outcomes are a host action.
 //

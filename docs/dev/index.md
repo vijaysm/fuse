@@ -13,7 +13,7 @@ where code goes (the thirteen layers `tools/check-layering.py` enforces, bottom 
 `runtime`, `abi`), [](conventions.md) for how code is written (naming, formatting, commit messages,
 the project's own vocabulary), and [](testing.md) for what "done" means here — the five states
 every capability is in, the test harness, and the host-verified parallel results, since this
-sandbox cannot start MPI at all and every multi-rank result is a host run.
+environment cannot start MPI at all and every multi-rank result is a host run.
 
 ## Correctness mechanisms
 

@@ -6,7 +6,7 @@
 # baseline-then-mutated binary the way build-evidence/mutations/num.toml's
 # own header describes. The reason is a measured,
 # reproducible environment limitation, not a shortcut taken for
-# convenience: this sandbox's /opt/mpich cannot complete MPI_Init() at
+# convenience: this environment's /opt/mpich cannot complete MPI_Init() at
 # all -- a bare `MPI_Init()` call (no PETSc involved) deadlocks/crash-
 # loops in MPICH's own debugger-attach code (`dbginit.c`'s
 # `pthread_mutex_destroy: Invalid argument` assertion, which then
@@ -25,7 +25,7 @@
 # by running all four under a timeout guard (ctest's own
 # petsc.* rows: 4/4 FAILED, in under 1 second each, no hang). A baseline
 # run and a mutated run therefore fail IDENTICALLY at the same earlier
-# barrier, with no differential signal this sandbox can observe for any
+# barrier, with no differential signal this environment can observe for any
 # row below -- the opposite of what the mutation discipline needs
 # (docs/dev/newton-krylov.md Sec. 10 records
 # this as the dominant, blocking finding). A host with a working MPI

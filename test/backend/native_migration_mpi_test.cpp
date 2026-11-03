@@ -1,7 +1,7 @@
 // test/backend/native_migration_mpi_test.cpp -- real migration under a REAL
 // mpiexec, RCB-driven.
 //
-// NOT YET RUN: this sandbox cannot initialize MPI (mpiexec cannot bind a
+// NOT YET RUN: this environment cannot initialize MPI (mpiexec cannot bind a
 // port, and a singleton MPI_Init aborts here). Registered only in the MPI-enabled build configuration
 // build (test/CMakeLists.txt gates it on FUSE_ENABLE_MPI); running it is a
 // host action -- see docs/dev/native-mesh.md "What is verified where".

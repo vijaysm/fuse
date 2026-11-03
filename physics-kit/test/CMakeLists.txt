@@ -50,7 +50,7 @@ fuse_add_gtest(physics steady_reaction_diffusion_mms SRC_DIR . NO_LAYER_LIB LIBS
 # counts sum to the global total and a ghost vertex's global id agrees with its
 # owner's; refusals through fuse::agree_outcome. Registered HERE, where
 # fuse::physics_kit exists, rather than compiling physics-kit sources into a
-# fuse-side test executable; host-only (the sandbox cannot launch MPI).
+# fuse-side test executable; host-only (the environment cannot launch MPI).
 fuse_tests_gated_by(FUSE_ENABLE_MPI physics_mesh_mpi_test.cpp)
 if(FUSE_ENABLE_MPI)
   fuse_add_mpi_test(parallel physics_mesh_mpi SRC_DIR . RANKS 2 3 LIBS fuse::physics_kit fuse::field)
@@ -59,7 +59,7 @@ endif()
 # The GLOBAL assembled mass matrix over a real,
 # multi-rank partitioned 3-D box -- physics_assembly_mpi_test.cpp's own
 # header comment. Same gating convention as physics_mesh_mpi_test.cpp
-# above; never run in this sandbox.
+# above; never run in this environment.
 fuse_tests_gated_by(FUSE_ENABLE_MPI physics_assembly_mpi_test.cpp)
 if(FUSE_ENABLE_MPI)
   fuse_add_mpi_test(parallel physics_assembly_mpi SRC_DIR . RANKS 2 3 LIBS fuse::physics_kit fuse::field)
@@ -68,7 +68,7 @@ endif()
 # DofMap's own ghost resolution (dof_map.cpp
 # pass 3) over a partition with UNEQUAL owned-dof counts per rank --
 # the shape that breaks a padded allgather -- resolved point-to-point. Same gating convention as physics_mesh_mpi_test.cpp
-# above; never run in this sandbox.
+# above; never run in this environment.
 fuse_tests_gated_by(FUSE_ENABLE_MPI physics_dof_map_mpi_test.cpp)
 if(FUSE_ENABLE_MPI)
   fuse_add_mpi_test(parallel physics_dof_map_mpi SRC_DIR . RANKS 2 3 LIBS fuse::physics_kit fuse::field)

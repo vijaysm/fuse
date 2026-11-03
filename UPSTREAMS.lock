@@ -210,7 +210,7 @@ open      = ["PETSc-backed native component unregistered",
 #   (bare -DCMAKE_BUILD_TYPE=Release; the `release` preset adds examples and
 #   registers more -- do not compare this number with a preset-built one).
 #   Debug: does NOT compile, see the last `open` entry.
-#   Its suite was NOT run here: this sandbox cannot initialize MPI at all, so
+#   Its suite was NOT run here: this environment cannot initialize MPI at all, so
 #   every PETSc/MPI test fails for environmental reasons. Running it is a host
 #   action and the only way to verify this parent.
 verified  = "Release builds clean, 418 tests registered; host run 2026-09-15: 796/796 pass (4 MOAB-dependent skips) in a Tier 1 build with both parents"
@@ -237,6 +237,6 @@ plus a custom index-extracting callback -- ArborX 2.1's own DefaultCallback
 does not extract PairValueIndex::index into a plain integer output view (a
 real API-shape finding recorded in docs/dev/search.md and box_index.cpp's own
 header comment, not an ArborX defect). All three gave the expected indices.
-DistributedTree was not run (this sandbox cannot initialize MPI); its headers
+DistributedTree was not run (this environment cannot initialize MPI); its headers
 were proven only to COMPILE under -DFUSE_ENABLE_MPI=ON, in src/search/distributed.cpp."""
 

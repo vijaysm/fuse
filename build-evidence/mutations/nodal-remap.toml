@@ -2,7 +2,7 @@
 # any supported cell, general_interp.hpp / consistent_interp.hpp). Schema:
 # build-evidence/mutations.toml.
 #
-# All four below were KILLED, observed directly in this sandbox (Tier 0, no
+# All four below were KILLED, observed directly in this environment (Tier 0, no
 # MPI needed): each was applied by hand to include/fuse/backend/
 # general_interp.hpp, rebuilt, confirmed to turn the named case(s) from
 # passing to failing (and ONLY those, with the rest of the suite still
@@ -160,7 +160,7 @@ new = '''      if (!inv.ok()) {
       }'''
 target = "fuse_backend_nodal_tie_break_test"
 test = "backend.nodal_tie_break"
-# KILLED, observed directly in this sandbox (Tier 0, no MPI needed): applied
+# KILLED, observed directly in this environment (Tier 0, no MPI needed): applied
 # by hand, rebuilt, and confirmed to turn THREE cases from passing to
 # failing, across BOTH binaries that link this header, not just one:
 #   NodalTieBreak.DegenerateNearbyCandidateAbortsAnAlreadyFoundTightMatch

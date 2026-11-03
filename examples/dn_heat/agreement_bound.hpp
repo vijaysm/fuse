@@ -4,7 +4,7 @@
 // factored out of examples/dn_heat/main.cpp's `--newton-petsc` check so a
 // tier-0 unit test (test/verification/dn_heat_agreement_bound_test.cpp)
 // can hand-build numbers and prove the derivation, rather than asserting
-// it only end to end through a PETSc run this sandbox cannot execute.
+// it only end to end through a PETSc run this environment cannot execute.
 //
 // WHY NOT THE STOPPING CRITERION. A bound of the form
 // `||J^-1|| (rtol_n ||F_0||_n + rtol_p ||F_0||_p)` scales by the SOLVERS'

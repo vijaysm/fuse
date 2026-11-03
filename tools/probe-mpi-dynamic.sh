@@ -81,7 +81,7 @@ if ! "$MPICC" -o "$BIN" "$SRC" > "$BUILD/compile.log" 2>&1; then
 fi
 
 # Can this launcher start an MPI process at all? If not, nothing below
-# measures the capability -- it measures the sandbox -- and every layout
+# measures the capability -- it measures the environment -- and every layout
 # must be reported "could not test", not silently skipped or marked broken.
 if ! "$MPIEXEC" -n 1 "$BIN" selftest > "$BUILD/selftest.log" 2>&1; then
   echo "probe-mpi-dynamic: $MPIEXEC cannot launch an MPI process here, so the" >&2

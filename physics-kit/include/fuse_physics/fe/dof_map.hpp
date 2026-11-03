@@ -109,7 +109,7 @@ struct DofRecord {
 /// free function (not kept as a DofMap-private implementation detail)
 /// so it is DIRECTLY testable against a hand-built Mesh with split
 /// vertex ownership, without needing the full collective numbering
-/// path (which this sandbox cannot run under real MPI) to exercise
+/// path (which this environment cannot run under real MPI) to exercise
 /// the rule itself. `corners` empty is never owned anywhere.
 [[nodiscard]] bool shared_sub_entity_owned_here(const spatial::Mesh& mesh,
                                                  const std::vector<spatial::EntityHandle>& corners);

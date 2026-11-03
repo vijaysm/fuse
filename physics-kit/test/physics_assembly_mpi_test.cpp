@@ -4,7 +4,7 @@
 // fortran_communicator). Registered with RANKS 2 3
 // (physics-kit/test/CMakeLists.txt), build-only under FUSE_ENABLE_MPI=ON
 // -- MPI cannot start in
-// this sandbox, matching every other *_mpi_test.cpp
+// this environment, matching every other *_mpi_test.cpp
 // in this tree.
 //
 // PARTITION. The SAME device physics_mesh_mpi_test.cpp's own

@@ -328,7 +328,7 @@ test = "parallel.native_remap_halo_runner"
 # halo was never built, so there is no larger mesh to size FROM) -- there
 # is no buffer-size mismatch for E-RT-REMAP-SIZE to catch, only a missing
 # halo for E-RT-REMAP-HALO-NOT-BUILT to catch. This row's own named target
-# needs MPI to execute, which this sandbox cannot start; MEASURED instead
+# needs MPI to execute, which this environment cannot start; MEASURED instead
 # via a single-process scratch
 # harness (not a committed test) exercising the SAME production code path
 # -- a CouplingGraph with provider/consumer components declared on

@@ -23,7 +23,7 @@
 // mesh -- no MPI call is needed to know that. Compiling without MPI lets the
 // serial tier drive the same Runner fixtures the MPI tests use, which is the
 // only way a one-rank failure in an MPI-registered test can be debugged in a
-// sandbox where MPI cannot initialise at all.
+// environment where MPI cannot initialise at all.
 #include "fuse/base/config.hpp"
 
 #if FUSE_HAVE_MPI

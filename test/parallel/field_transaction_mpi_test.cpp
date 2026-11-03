@@ -15,7 +15,7 @@
 // fuse_add_mpi_test machinery as test/parallel/provider_subset_mpi_test.cpp
 // (RANKS 2 3).
 //
-// Where MPI cannot start (a restricted sandbox, say) this file is only
+// Where MPI cannot start (a restricted environment, say) this file is only
 // compiled, never run; host_pending names the exact `mpirun` commands to
 // run on a host with a working launcher.
 //

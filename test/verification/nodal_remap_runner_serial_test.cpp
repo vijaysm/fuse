@@ -1,7 +1,7 @@
 // The one-rank case of test/parallel/nodal_remap_runner_test.cpp, without MPI.
 //
 // That file is registered only under FUSE_ENABLE_MPI, and its `.1` case failed
-// on the user's host with no message this sandbox could obtain: MPI cannot
+// on the user's host with no message this environment could obtain: MPI cannot
 // initialise here at all, not even at one process. But a single participant
 // needs no MPI to be meaningful -- every processor set below is the whole mesh,
 // the distributed path is not reached, and MultiMeshGeometricBackend

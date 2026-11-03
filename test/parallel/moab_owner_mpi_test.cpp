@@ -22,10 +22,10 @@
 // no partition/sharing information for ParallelComm to resolve at all --
 // a ghost entity does not exist on it to read owner() from in the first
 // place). Gated identically (#ifdef FUSE_SPHERE_ATM): SKIPPED, not
-// silently passed, when the fixture is not configured (this sandbox's
+// silently passed, when the fixture is not configured (this environment's
 // own MOAB install -- configure's own "spherecube.h5m not found" notice).
 //
-// NOT YET RUN: this sandbox cannot initialise MPI at all
+// NOT YET RUN: this environment cannot initialise MPI at all
 // (moab_placed_view_mpi_test.cpp's own header comment states the same
 // fact for this MOAB-linked family specifically). Compiled here; the
 // outcome comes from a host run.

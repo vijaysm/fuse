@@ -3,7 +3,7 @@
 #
 # The REAL Alltoallv-based summation inside accumulate_remap_halo's
 # `#if FUSE_HAVE_MPI` branch needs a real communicator to exercise at all
-# (this sandbox cannot initialise MPI), so it is NOT
+# (this environment cannot initialise MPI), so it is NOT
 # mutation-tested here -- only the argument validation and no-op paths
 # `NativeHaloAccumulate`'s tier-0 rows (test/backend/native_halo_test.cpp)
 # actually run are. test/parallel/native_halo_mpi_test.cpp's own
@@ -69,7 +69,7 @@ test = "backend.native_halo"
 # own header comment already excludes from mutation testing (needs a real
 # communicator) -- one row below is marked
 # `requires = "mpi"` for exactly that reason, and names the real target
-# (test/parallel/native_remap_halo_runner_test.cpp) this sandbox cannot run.
+# (test/parallel/native_remap_halo_runner_test.cpp) this environment cannot run.
 # The short-circuit's own commit-key plumbing IS tier-0 testable and IS
 # tested below.
 # ---------------------------------------------------------------------------
@@ -89,7 +89,7 @@ target = "fuse_backend_native_halo_test"
 test = "backend.native_halo"
 # Expected kill: NativeHaloCrossPlacement.TwoPlacementOverloadsShortCircuit
 # StillCommitsUnderTheTargetsPlacement -- calls the
-# two-placement overload at ranks<=1 (this sandbox's own only reachable
+# two-placement overload at ranks<=1 (this environment's own only reachable
 # path, no MPI needed at all). VERIFIED: the mutation must target the short-circuit's commit_remap_halo
 # call site, not the function's other call site (the one past the real
 # multi-rank exchange, which a ranks<=1 test never reaches; mutating that
@@ -111,7 +111,7 @@ new = "  auto src_r = backend.native_view(source, placement);"
 target = "fuse_parallel_native_remap_halo_runner_test"
 test = "parallel.native_remap_halo_runner"
 requires = "mpi"
-# NOT ASSESSED in this sandbox (cannot start MPI) -- host_pending. On the
+# NOT ASSESSED in this environment (cannot start MPI) -- host_pending. On the
 # host, expect: with this mutation applied, NativeRemapHalo.
 # DisjointGeneralWeightedRemapConservesOnceTheHaloIsBuilt fails identically to
 # the unfixed behaviour already measured on the host (remap_weight_
@@ -168,9 +168,9 @@ new = """  } catch (const std::exception& e) {
 target = "fuse_parallel_native_remap_halo_runner_test"
 test = "parallel.native_remap_halo_runner"
 requires = "mpi"
-# NOT ASSESSED in this sandbox (cannot start MPI, build_native_remap_
+# NOT ASSESSED in this environment (cannot start MPI, build_native_remap_
 # halo's own ranks<=1 short-circuit means this try/catch is unreachable
-# at any rank count this sandbox can run) -- host_pending. On the
+# at any rank count this environment can run) -- host_pending. On the
 # host, expect: applying this mutation TOGETHER WITH the
 # "merge-halo-cells-empty-local-mesh-cell-vertex-offsets-not-guarded"
 # row above (so the merge genuinely throws again) reproduces the exact
@@ -308,7 +308,7 @@ new = "  if (false) {"
 target = "fuse_parallel_native_remap_halo_runner_test"
 test = "parallel.native_remap_halo_runner"
 requires = "mpi"
-# NOT ASSESSED in this sandbox (cannot start MPI) -- host_pending. This
+# NOT ASSESSED in this environment (cannot start MPI) -- host_pending. This
 # line sits past fold_and_reduce_source_coverage's own first no-MPI
 # refusal (the row above), so no tier-0 (FUSE_HAVE_MPI=0) build ever
 # compiles it reachably in the sense of exercising it -- confirmed by

@@ -464,7 +464,7 @@ format). **Verified on the host: passed at 2, 3, 4 and 5 ranks.** The odd counts
 deliberate: a bug that only appears when ranks do not divide evenly is the usual kind.
 
 It is a Tier 1 test and absent from a Tier 0 build, because there is no MPI to run it with and a
-skipped test reads like a passing one in a summary line. This sandbox cannot launch MPI (`mpiexec`
+skipped test reads like a passing one in a summary line. This environment cannot launch MPI (`mpiexec`
 fails in `HYDU_sock_create_and_listen_portstr`), so running it is a host action:
 
 ```bash
@@ -475,7 +475,7 @@ cmake --build build-tier1 -j && ctest --test-dir build-tier1 -R descriptor_mpi
 
 ## Host-verified parallel results
 
-The sandbox this library is developed in cannot initialise MPI at all, so every
+The environment this library is developed in cannot initialise MPI at all, so every
 Tier 1 leg is compile-verified there and **run on the host**. Recorded results,
 rather than claims:
 
@@ -484,7 +484,7 @@ rather than claims:
 - full suite **845 tests, 0 failures** after the peer-wise transport landed, and both `requires = "mpi"` mutations **killed** under `FUSE_MUTATE_MPI=1` — so the numbering check and the local-copy pass are each load-bearing, not merely present
 - full suite **855 tests, 0 failures**, 36.2 s real; 4 skips, all of them the parent suite's MOAB-dependent cases. Adds the 4 `example`, 2 `compile_fail`, 1 `field` and 1 `num` (typed, per execution space) entries. Both `requires = "mpi"` transport mutations **killed** under `FUSE_MUTATE_MPI=1`.
 - **Kokkos 5.1.0** (`OPENMP;SERIAL`) replaced 4.6.0 (`THREADS;SERIAL`) on the machine. Tier 0 65/65 and Tier 1 builds after two fixes: Apple clang needs a libomp hint, and `FindOpenMP` had selected GNU `libgomp` whose ABI lacks the `__kmpc_*` entry points Kokkos' objects call. Kernels now instantiate on `Kokkos::OpenMP` and `Serial`; **Threads is no longer enabled anywhere**, so that space is currently unexercised.
-- full suite **855 tests, 0 failures**, 49.7 s real, on the upgraded **Kokkos 5.1.0** (`OPENMP;SERIAL`). Same 4 parent-suite MOAB skips. Confirms the two OpenMP resolution fixes on the host, not just in the sandbox.
+- full suite **855 tests, 0 failures**, 49.7 s real, on the upgraded **Kokkos 5.1.0** (`OPENMP;SERIAL`). Same 4 parent-suite MOAB skips. Confirms the two OpenMP resolution fixes on the host, not just in the environment.
 - **MOAB, 12 of 12 rows, no failures**: `parallel.moab_placed_view_mpi.{1..5}` (0.06–0.33 s) alongside `backend.moab_mesh`'s 47 cases and the five `parallel.remap_halo_mpi` legs. `parallel.window_runner_mpi.{2,3}` pass. `parallel.connect.mpmd.*` pass throughout; `parallel.connect.accept.*` fails on this MPICH `ch3:nemesis` build when both programs share a node — not a library defect.
 - `verification.brusselator.participants.mpmd.3` passes: `max_window_balance_error`/`global_balance_error`/`max_window_exchange_error` within threshold, final means within 2 ulp (`mean_u`) and 5 ulp (`mean_v`) of the single-process example. The Schur-complement row-band solver's one-row-band refusal is found to strand a peer inside the Schur-assembly allgather when decided from local data alone, and fixed to decide from `row_ownership` (a pure function every rank already holds) instead — no collective needed for the refusal itself (`docs/dev/schur-slab-solver.md`, commit `3b43bd0`).
 - On `main` `e76881c`, eight rows in one `ctest` invocation, no failures: `parallel.linalg_mpi.2` (0.40 s), `parallel.schur_slab_mpi.2` (0.26 s), `.3` (0.07 s), `parallel.krylov_mpi.2` (0.31 s), `parallel.brusselator_grid_mpi.2` (0.29 s), `parallel.native_halo_mpi.2` (0.37 s), `.3` (0.08 s), `verification.brusselator.participants.mpmd.3` (2.34 s). The first host run of each of the first seven, two days earlier, had each found a defect (a refusal returned on one rank's data before a collective; crossed `MPI_Sendrecv` tags in a test's halo exchange; a test combining vectors of different ghost layouts), all fixed before this run.

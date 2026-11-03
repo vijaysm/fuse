@@ -11,7 +11,7 @@
 // here at tier 0; the real multi-rank MPI_Alltoall/MPI_Alltoallv path
 // (`MpiReducer::alltoallv`) is exercised by the
 // `physics_dof_map_mpi` test row (RANKS 2 3), build-only in this
-// sandbox, since a genuine point-to-point exchange has nothing to
+// environment, since a genuine point-to-point exchange has nothing to
 // show across one rank.
 
 #include "fuse/linalg/comm.hpp"

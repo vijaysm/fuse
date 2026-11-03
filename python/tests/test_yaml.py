@@ -42,7 +42,7 @@ def build_pair():
     (g.channel(ch)
       .accumulate(pfuse.AccumOp.Mean, pfuse.Window.from_component(fluid))
       .remap(pfuse.RemapFlags.Conservative | pfuse.RemapFlags.Monotone)
-      .remap_method("mono3")
+      .remap_method("conservative")
       .spacetime(pfuse.TemporalBasis.DG, 2, pfuse.Window.explicit_length("2/5"))
       .relax(0.7))
     return g, src, dst

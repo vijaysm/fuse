@@ -30,7 +30,7 @@
 // the identical answer rcb_moab's real Allreduce would, for any P.
 //
 // This is what makes RcbBfBAcrossRanks::* testable without a working MPI
-// launcher (this sandbox cannot start one -- see docs/dev/testing.md
+// launcher (this environment cannot start one -- see docs/dev/testing.md
 // "Host-verified parallel results"): the SAME oracle, called with different
 // emulated-P/owner partitions of the SAME global input, either agrees with
 // itself (a property test, no MPI or Kokkos involved at all) or serves as

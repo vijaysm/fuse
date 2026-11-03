@@ -11,7 +11,7 @@
 // queries belong on the public surface, exercised without needing MPI to
 // prove it). The genuine
 // multi-rank collective test (test/parallel/physics_mesh_mpi_test.cpp,
-// RANKS 2 3) is build-only in this sandbox.
+// RANKS 2 3) is build-only in this environment.
 // generate_2d_box and extract_edge_at_coordinate (karma_mesh_extract_
 // edge.C, adapted) are tested here too.
 

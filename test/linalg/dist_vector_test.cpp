@@ -4,7 +4,7 @@
 // its own slab, wired together by local test doubles of GhostExchanger and
 // Reducer that copy/combine directly between them. This measures
 // the PATTERN LOGIC here rather than only on the host:
-// MPI cannot start in this sandbox (docs/dev/testing.md), so the real
+// MPI cannot start in this environment (docs/dev/testing.md), so the real
 // MpiExchanger/MpiReducer (src/linalg/comm_mpi.cpp) are built but never run
 // here; the in-process fakes below exercise the SAME ghost-pattern and
 // reduction contract DistVector itself depends on, with no MPI symbol

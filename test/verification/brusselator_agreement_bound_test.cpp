@@ -6,7 +6,7 @@
 // term's `(1 + residual_ratio)` scaling) without needing the native-only
 // calibration (test/petsc/brusselator_newton_test.cpp's own
 // `MeasuredErrorAgainstATightReference`) or a PETSc run (a bare
-// MPI_Init() cannot complete in the sandbox). No FUSE library
+// MPI_Init() cannot complete in the environment). No FUSE library
 // dependency: the header under test is a pair of pure free functions
 // over doubles.
 

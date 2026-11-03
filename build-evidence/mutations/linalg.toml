@@ -13,7 +13,7 @@
 # None needs `requires = "mpi"`: every one is killed by an in-process
 # two-partition tier-0 test (dist_vector_test.cpp /
 # dist_sparse_matrix_test.cpp), never by test/parallel/linalg_mpi_test.cpp,
-# which this sandbox cannot run at all.
+# which this environment cannot run at all.
 
 [[mutation]]
 id = "linalg-ghost-remote-index-off-by-one"
@@ -86,7 +86,7 @@ test = "linalg.dist_vector"
 # to start against a dirty `include`/`src` tree. None needs `requires = "mpi"`:
 # every one is killed by the tier-0 binary (test/linalg/pcg_test.cpp,
 # test/linalg/gmres_test.cpp), never by test/parallel/krylov_mpi_test.cpp,
-# which this sandbox cannot run at all.
+# which this environment cannot run at all.
 
 [[mutation]]
 id = "krylov-pcg-beta-stale-rz"
@@ -178,7 +178,7 @@ test = "linalg.gmres"
 # None needs `requires = "mpi"`: every one is killed (or, for the third,
 # produces its own documented, verified non-kill) at tier 0 by the
 # in-process N-way ring-allgather fake (test/linalg/schur_slab_test.cpp),
-# never by test/parallel/schur_slab_mpi_test.cpp, which this sandbox cannot
+# never by test/parallel/schur_slab_mpi_test.cpp, which this environment cannot
 # run at all.
 
 [[mutation]]
@@ -338,7 +338,7 @@ test = "linalg.schur_slab"
 # failed and how many passed, restore the original text, `cmp` the restored
 # file against a saved backup to confirm the restore is exact). None needs
 # `requires = "mpi"`: every one is killed at tier 0, never by
-# test/parallel/derivative_gate_mpi_test.cpp, which this sandbox cannot run
+# test/parallel/derivative_gate_mpi_test.cpp, which this environment cannot run
 # at all.
 
 [[mutation]]

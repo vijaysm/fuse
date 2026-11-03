@@ -8,7 +8,7 @@
 // buffers -- the same technique test/backend/native_migration_test.cpp
 // already uses for `pack_for_migration`/`unpack_migrated_mesh`, and
 // test/linalg/dist_vector_test.cpp uses for `GhostExchanger`. MPI cannot
-// start in this sandbox at all (docs/dev/testing.md), so
+// start in this environment at all (docs/dev/testing.md), so
 // `build_native_remap_halo` itself -- which performs a REAL
 // `MPI_Allgather`/`MPI_Allgatherv`/`exchange_migration_buffers` -- is
 // exercised here only at ranks <= 1 or `kNullComm` (its own documented
@@ -1032,7 +1032,7 @@ TEST(NativeHaloSecondTarget, GhostOffsetIndexesTheSecondHaloBlockCorrectly) {
 // ---------------------------------------------------------------------------
 // `fuse::native::accumulate_remap_halo`, the reverse
 // exchange. The nontrivial data motion (the adjoint Alltoallv) needs a
-// REAL `PackedExchanger`, which needs MPI -- not available in this sandbox
+// REAL `PackedExchanger`, which needs MPI -- not available in this environment
 // (docs/dev/testing.md) -- so what is RUN here is (a) the function's own
 // argument validation and no-op short-circuits, against `make_serial_
 // exchanger()` and a minimal test-only `GhostExchanger` that is NOT a
@@ -1207,7 +1207,7 @@ TEST(NativeHaloAccumulate, OracleSumOfOwnedAfterFoldingEveryHaloCopyEqualsCellsP
 // `parallel.native_remap_halo_runner.{2,3}` both failed with a built-but-
 // EMPTY halo (`remap_weight_nonzeros == 0` despite `initialize()`
 // succeeding) -- a silently-empty-matrix failure mode. ROOT CAUSE, proved
-// here WITHOUT needing a real multi-rank MPI run (which this sandbox
+// here WITHOUT needing a real multi-rank MPI run (which this environment
 // cannot start; the full exchange is host_pending): `register_default_
 // placements()` (native_backend.cpp) hands every component a placed view
 // of EVERY mesh, and a component's view of a mesh OUTSIDE its own
@@ -1257,7 +1257,7 @@ TEST(NativeHaloCrossPlacement, SourceMeshViewedThroughTheTargetsPlacementIsEmpty
 // The two-placement overload's own short-circuit path (ranks <= 1, no
 // multi-rank collective reached at all -- tier-0 runnable, unlike the
 // real exchange, which needs a live
-// multi-rank MPI run this sandbox cannot start): `commit_remap_halo`
+// multi-rank MPI run this environment cannot start): `commit_remap_halo`
 // must still key the result by `placement` (the TARGET's own, the
 // single-placement form's existing convention every downstream lookup
 // -- has_remap_halo, native_view, placed_view, supermesh_side in
@@ -1373,7 +1373,7 @@ TEST(NativeHaloBuildWeights, BuildWeightsFindsAHaloCommittedUnderAnActualCompone
 // coverage check, DISTRIBUTED. `fuse::native::fold_and_reduce_source_
 // coverage` (native_halo.cpp) is the production fix; its own real fold (a
 // collective Alltoallv-based exchange, through `fuse::linalg::make_mpi_
-// exchanger`) needs a real multi-rank MPI run this sandbox cannot start --
+// exchanger`) needs a real multi-rank MPI run this environment cannot start --
 // `requires = "mpi"`, host_pending, same reason the real cross-rank halo
 // exchange already is. What IS tier-0 testable, and is tested below: (1)
 // the function refuses SAFELY (no crash, no silently-wrong answer) when a

@@ -57,7 +57,7 @@ CouplingGraph rich_graph() {
   g.channel(ch)
       .accumulate(AccumOp::Integral, fuse::Window::from(a))
       .remap(RemapFlags::Conservative | RemapFlags::HighOrder)
-      .remap_method("mono3")
+      .remap_method("conservative")
       .spacetime(TemporalBasis::DG, 2, fuse::Window::explicit_length(Rational{2, 5}))
       .relax(0.35)
       .extrapolate(2)
@@ -97,7 +97,7 @@ TEST(Descriptor, PreservesChannelSemantics) {
   const auto g = deserialize(serialize(rich_graph())).value();
   const auto& ch = g.channel_at(fuse::ChannelId{0});
   EXPECT_EQ(ch.accumulate.op, AccumOp::Integral);
-  EXPECT_EQ(ch.remap.method_override, "mono3");
+  EXPECT_EQ(ch.remap.method_override, "conservative");
   EXPECT_EQ(ch.spacetime.basis, TemporalBasis::DG);
   EXPECT_EQ(ch.spacetime.degree, 2);
   EXPECT_EQ(ch.spacetime.window.length, Rational(2, 5));

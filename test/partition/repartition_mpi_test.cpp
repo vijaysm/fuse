@@ -1,7 +1,7 @@
 // test/partition/repartition_mpi_test.cpp -- fuse::partition::repartition
 // under a REAL mpiexec.
 //
-// NOT YET RUN: this sandbox cannot initialize MPI, exactly the posture
+// NOT YET RUN: this environment cannot initialize MPI, exactly the posture
 // rcb_mpi_test.cpp documents for itself; running it is a host action.
 //
 // WHAT THIS CHECKS THAT repartition_test.cpp CANNOT: the

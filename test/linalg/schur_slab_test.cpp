@@ -5,7 +5,7 @@
 // generalised past 2 partitions to 3 (requirement 2 needs both) via the
 // `two_pass_collective` helper below, since `Reducer::allgather` (comm.hpp) is a genuine N-way collective and the
 // existing FakePeerExchanger/TwoPartitionReducer pattern binds exactly 2
-// peers. MPI cannot start in this sandbox (docs/dev/testing.md):
+// peers. MPI cannot start in this environment (docs/dev/testing.md):
 // test/parallel/schur_slab_mpi_test.cpp repeats the 2- and 3-rank
 // properties over a real MPI_COMM_WORLD, built here, run on the host.
 //

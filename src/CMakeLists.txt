@@ -713,7 +713,7 @@ if(FUSE_ENABLE_HDF5)
   # file does a real collective" stays visible to a reader of this block,
   # the same separation src/linalg's comm_serial.cpp/comm_mpi.cpp pair
   # already keeps for the identical reason (that CMakeLists.txt block's own
-  # comment). It runs only under an MPI launcher: a sandbox where MPI cannot
+  # comment). It runs only under an MPI launcher: an environment where MPI cannot
   # start compiles it but cannot run it.
   if(FUSE_ENABLE_MPI)
     target_sources(fuse-coupler-restart-io PRIVATE restart_io/collective_check_mpi.cpp)

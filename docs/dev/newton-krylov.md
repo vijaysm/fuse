@@ -1328,7 +1328,7 @@ paragraph above describes the driver as first measured (§10.3).*
 
 ### 10.3 Measured on the host
 
-A sandbox with MPICH cannot complete a bare `MPI_Init()` (MPICH's
+An environment with MPICH cannot complete a bare `MPI_Init()` (MPICH's
 debugger-attach mutex assertion in `dbginit.c`), so every number below was
 obtained on a development host, in two trees: `build-all` (the `all` preset,
 MPI on, the harness calling `MPI_Init`) and a tier-0 tree with PETSc alone
@@ -2211,7 +2211,7 @@ the 20 periods run.
 
 ### 14.4 What is measured, and what needs a host run
 
-A sandbox with MPICH builds `FUSE_ENABLE_PETSC=ON` tier-0 trees cleanly (PETSc 3.25.99 via `pkg-config`,
+An environment with MPICH builds `FUSE_ENABLE_PETSC=ON` tier-0 trees cleanly (PETSc 3.25.99 via `pkg-config`,
 `/opt/petsc/download-moab`) and links every `petsc.*` target with zero compiler errors. Running a
 PETSc-initialised binary there SEGFAULTS the instant `PetscInitialize()` calls
 `MPI_Init()` (the constraint Sec. 10.3 records: `fuse_petsc_init_test` run standalone, no `mpiexec`,
