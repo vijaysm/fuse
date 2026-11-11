@@ -182,6 +182,20 @@ class DofMap {
   [[nodiscard]] std::vector<DofRecord> storage(spatial::EntityHandle element, unsigned variable,
                                                 const Basis& basis) const;
 
+  /// Local indices (0-based, parallel to `dof_indices(element, ., variable)`'s
+  /// own order and to `storage(element, variable, basis)`'s own order) of
+  /// every dof `basis` places on `side`: a vertex dof whose own local
+  /// vertex is one of `side`'s own corners (`ReferenceTopology(mesh's
+  /// own element kind).side_nodes(side)`); a 2-D edge dof whose own edge
+  /// equals `side` (a 2-D cell's own edge and side numbering agree,
+  /// reference_topology.hpp's own header comment); a 3-D edge dof whose
+  /// own edge's two corners are both corners of `side` (an edge bounding
+  /// a face); a 3-D face dof whose own face equals `side`. A cell-
+  /// interior dof (`entity_dimension == element's own topological
+  /// dimension`) is never on any side.
+  void dofs_on_side(spatial::EntityHandle element, unsigned side, unsigned variable, const Basis& basis,
+                     std::vector<unsigned>& local_indices) const;
+
   /// Which local-to-canonical permutation (an EdgeOrientation/
   /// TriangleOrientation/QuadrilateralOrientation value, by its
   /// underlying unsigned -- the same vocabulary Basis::apply_orientation

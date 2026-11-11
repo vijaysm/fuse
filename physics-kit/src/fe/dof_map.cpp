@@ -15,6 +15,7 @@
 // Explicit, not transitive: the feature macro FUSE_HAVE_MPI is read below
 // (same posture as src/field/collective_agreement.cpp's own comment).
 #include "fuse/base/config.hpp"
+#include "fuse_physics/fe/reference_topology.hpp"
 
 #if FUSE_HAVE_MPI
 #include "fuse/linalg/comm.hpp"
@@ -507,6 +508,36 @@ unsigned DofMap::orientation_code(spatial::EntityHandle element, unsigned entity
         "(E-PHYSICS-DOFMAP-ORIENTATION-NOT-FOUND) -- unreachable for a conforming mesh, refused "
         "by name rather than silently returning a wrong code");
   return *code;
+}
+
+void DofMap::dofs_on_side(spatial::EntityHandle element, unsigned side, unsigned variable, const Basis& basis,
+                           std::vector<unsigned>& local_indices) const {
+  local_indices.clear();
+  const unsigned top_dim = cell_dim(*mesh_, element);
+  const CellFamily family = cell_family(mesh_->element_kind(element));
+  const ReferenceTopology geometry(mesh_->element_kind(element));
+  const auto side_corners = geometry.side_nodes(side);
+  const auto on_side_corners = [&side_corners](std::size_t vertex_index) {
+    return std::find(side_corners.begin(), side_corners.end(), vertex_index) != side_corners.end();
+  };
+
+  const auto records = storage(element, variable, basis);
+  for (unsigned k = 0; k < records.size(); ++k) {
+    const auto& association = records[k].association;
+    if (association.entity_dimension == top_dim) continue;  // cell-interior: never on a side
+    if (association.entity_dimension == 0) {
+      if (on_side_corners(association.local_entity_index)) local_indices.push_back(k);
+    } else if (association.entity_dimension == 1 && top_dim == 2) {
+      // A 2-D cell's own edge and side numbering agree (reference_topology.hpp's
+      // own header comment).
+      if (association.local_entity_index == side) local_indices.push_back(k);
+    } else if (association.entity_dimension == 1 && top_dim == 3) {
+      const auto corners = edge_vertices(family, association.local_entity_index);
+      if (on_side_corners(corners[0]) && on_side_corners(corners[1])) local_indices.push_back(k);
+    } else if (association.entity_dimension == 2 && top_dim == 3) {
+      if (association.local_entity_index == side) local_indices.push_back(k);
+    }
+  }
 }
 
 }  // namespace fuse::physics::fe

@@ -30,6 +30,8 @@ add_library(fuse_physics_kit
   src/fe/dof_map.cpp
   src/fe/algebraic_system.cpp
   src/fe/generic_operators.cpp
+  src/fe/boundary_condition.cpp
+  src/fe/diffusion_reaction_system.cpp
 )
 add_library(fuse::physics_kit ALIAS fuse_physics_kit)
 

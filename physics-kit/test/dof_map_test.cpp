@@ -15,6 +15,7 @@
 
 #include "fuse/backend/native_mesh.hpp"
 #include "fuse_physics/fe/basis.hpp"
+#include "fuse_physics/fe/geometry_map.hpp"
 #include "fuse_physics/spatial/mesh.hpp"
 
 namespace {
@@ -26,6 +27,7 @@ using fuse::physics::fe::BasisKey;
 using fuse::physics::fe::BasisRegistry;
 using fuse::physics::fe::cell_dimension;
 using fuse::physics::fe::cell_family;
+using fuse::physics::fe::CellFamily;
 using fuse::physics::fe::DofMap;
 using fuse::physics::fe::FieldBasisFamily;
 using fuse::physics::fe::GeometryVariant;
@@ -389,6 +391,62 @@ TEST(DofMapTest, SharedSideOwnedByTheMinimumCornerOwnerRank) {
   EXPECT_TRUE(fuse::physics::fe::shared_sub_entity_owned_here(mesh, {1, 3}));   // v0,v2: min(0,1)=0
   EXPECT_FALSE(fuse::physics::fe::shared_sub_entity_owned_here(mesh, {3}));     // v2 alone: owner 1, not here
   EXPECT_FALSE(fuse::physics::fe::shared_sub_entity_owned_here(mesh, {}));      // no corners: owned nowhere
+}
+
+
+// physics.dof_map.DofsOnSideMatchesGeometricSideMembershipForP2Quad9 --
+// a single P2 (Quad9) element on the unit square: for every side,
+// dofs_on_side's own local indices map (through the basis's own
+// interpolation point and a GeometryMap built from this element's own
+// physical vertices) to exactly the 3 physical positions on that side
+// (2 corners + 1 edge midpoint for a 2-D quadrilateral side) and no
+// others -- the geometric membership test itself, not a hardcoded
+// index, so the check holds independent of dof_associations()'s own
+// internal ordering.
+TEST(DofMapTest, DofsOnSideMatchesGeometricSideMembershipForP2Quad9) {
+  Mesh mesh(2);
+  mesh.add_vertex(Point(0, 0, 0));
+  mesh.add_vertex(Point(1, 0, 0));
+  mesh.add_vertex(Point(1, 1, 0));
+  mesh.add_vertex(Point(0, 1, 0));
+  mesh.add_element(GeometryVariant::Quad4, {1, 2, 3, 4});
+
+  BasisRegistry registry;
+  Variable u{"u", FieldBasisFamily::LagrangeNodal, 2, BasisContinuity::cG, 1};
+  DofMap dof_map(mesh, {u}, registry);
+  const Basis basis = registry.create(BasisKey{CellFamily::Quadrilateral, FieldBasisFamily::LagrangeNodal, 2,
+                                                BasisContinuity::cG});
+
+  const ReferenceTopology geometry(GeometryVariant::Quad4);
+  const std::vector<Point> element_vertices = {Point(0, 0, 0), Point(1, 0, 0), Point(1, 1, 0), Point(0, 1, 0)};
+  fuse::physics::fe::GeometryMap gmap(geometry, element_vertices);
+
+  const auto& interpolation_points = basis.interpolation_points();
+  ASSERT_EQ(interpolation_points.size(), 9u);  // 4 vertices + 4 edges + 1 interior (Quad9)
+
+  // Every physical interpolation point, computed once.
+  std::vector<Point> physical(interpolation_points.size());
+  for (std::size_t i = 0; i < interpolation_points.size(); ++i) physical[i] = gmap.map(interpolation_points[i]);
+
+  auto on_side = [](const Point& p, unsigned side) {
+    switch (side) {
+      case 0: return std::fabs(p.y - 0.0) < 1e-9;  // y=0 side
+      case 1: return std::fabs(p.x - 1.0) < 1e-9;  // x=1 side
+      case 2: return std::fabs(p.y - 1.0) < 1e-9;  // y=1 side
+      default: return std::fabs(p.x - 0.0) < 1e-9;  // x=0 side
+    }
+  };
+
+  for (unsigned side = 0; side < 4; ++side) {
+    std::vector<unsigned> local_indices;
+    dof_map.dofs_on_side(1, side, 0, basis, local_indices);
+    EXPECT_EQ(local_indices.size(), 3u) << "side " << side;
+    for (const unsigned k : local_indices) EXPECT_TRUE(on_side(physical[k], side)) << "side " << side << " k=" << k;
+    for (std::size_t k = 0; k < physical.size(); ++k) {
+      if (std::find(local_indices.begin(), local_indices.end(), k) == local_indices.end())
+        EXPECT_FALSE(on_side(physical[k], side)) << "side " << side << " k=" << k << " should not be on this side";
+    }
+  }
 }
 
 }  // namespace
