@@ -61,6 +61,18 @@ class GeometryMap {
   [[nodiscard]] std::size_t node_count() const noexcept { return node_count_; }
   [[nodiscard]] const ReferenceTopology& reference_topology() const noexcept { return reference_; }
   [[nodiscard]] std::span<const Point> nodes() const noexcept { return {nodes_.data(), node_count_}; }
+  /// True when the Jacobian of the bound geometry is known, exactly, to be
+  /// the same at every reference point: always for Edge2, Tri3 and Tet4
+  /// (their maps are affine by construction), and for Quad4, Hex8 and
+  /// Prism6 when the Jacobians evaluated at every vertex are bitwise
+  /// identical. Each Jacobian column of those three maps is multilinear in
+  /// the remaining reference coordinates, so it is determined by its vertex
+  /// values. The comparison has no tolerance: a parallelepiped whose edge
+  /// differences round differently reports false and is treated as a
+  /// general cell, which is slower and never wrong. Structured box meshes
+  /// report true. `jacobian`, `metric` and `measure` of such a cell return
+  /// the one value computed when the nodes were bound.
+  [[nodiscard]] bool has_constant_jacobian() const noexcept { return constant_jacobian_; }
 
   [[nodiscard]] Point map(const Point& reference_point) const;
   [[nodiscard]] Matrix3 jacobian(const Point& reference_point) const;
@@ -75,12 +87,17 @@ class GeometryMap {
 
  private:
   void update_affine_quad4_cache();
+  void update_constant_jacobian();
   void validate() const;
 
   ReferenceTopology reference_;
   std::array<Point, 27> nodes_{};
   std::size_t node_count_ = 0;
   bool has_affine_quad4_cache_ = false;
+  bool constant_jacobian_ = false;
+  Matrix3 constant_jacobian_value_ = Matrix3::zero();
+  Matrix3 constant_metric_ = Matrix3::zero();
+  double constant_measure_ = 0.0;
   Point affine_quad4_origin_ = Point::zero();
   Vector3 affine_quad4_r_ = Vector3::zero();
   Vector3 affine_quad4_s_ = Vector3::zero();

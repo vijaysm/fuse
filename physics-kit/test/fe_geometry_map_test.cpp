@@ -14,6 +14,7 @@
 
 #include <gtest/gtest.h>
 #include <stdexcept>
+#include <string>
 
 namespace {
 
@@ -194,6 +195,96 @@ TEST(GeometryMapTest, ZeroScaleGeometryRefuses) {
   const ReferenceTopology topology(GeometryVariant::Tri3);
   const std::array<Point, 3> coincident{Point(1, 1), Point(1, 1), Point(1, 1)};
   EXPECT_THROW(GeometryMap(topology, coincident), std::invalid_argument);
+}
+
+// physics.fe_geometry_map.ConstantJacobianIsDetectedExactly -- the query
+// is true for the maps that are affine by construction and for a
+// structured Quad4, Hex8 and Prism6; it is false as soon as one vertex is
+// moved off the parallelepiped, and for variants whose Jacobian is not
+// determined by vertex values (Quad9, Pyramid5).
+TEST(GeometryMapTest, ConstantJacobianIsDetectedExactly) {
+  const std::array<Point, 8> box{Point(0, 0, 0), Point(2, 0, 0), Point(2, 3, 0), Point(0, 3, 0),
+                                 Point(0, 0, 5), Point(2, 0, 5), Point(2, 3, 5), Point(0, 3, 5)};
+  EXPECT_TRUE(GeometryMap(ReferenceTopology(GeometryVariant::Hex8), box).has_constant_jacobian());
+  auto moved = box;
+  moved[6] = Point(2.25, 3, 5);
+  EXPECT_FALSE(GeometryMap(ReferenceTopology(GeometryVariant::Hex8), moved).has_constant_jacobian());
+
+  const std::array<Point, 6> prism{Point(0, 0, 0), Point(1, 0, 0), Point(0, 1, 0),
+                                   Point(0, 0, 2), Point(1, 0, 2), Point(0, 1, 2)};
+  EXPECT_TRUE(GeometryMap(ReferenceTopology(GeometryVariant::Prism6), prism).has_constant_jacobian());
+  auto twisted = prism;
+  twisted[4] = Point(1.5, 0, 2);
+  EXPECT_FALSE(GeometryMap(ReferenceTopology(GeometryVariant::Prism6), twisted).has_constant_jacobian());
+
+  const std::array<Point, 4> rectangle{Point(0, 0), Point(2, 0), Point(2, 1), Point(0, 1)};
+  EXPECT_TRUE(GeometryMap(ReferenceTopology(GeometryVariant::Quad4), rectangle).has_constant_jacobian());
+  const std::array<Point, 4> trapezoid{Point(0, 0), Point(2, 0), Point(1.5, 1), Point(0, 1)};
+  EXPECT_FALSE(GeometryMap(ReferenceTopology(GeometryVariant::Quad4), trapezoid).has_constant_jacobian());
+
+  const std::array<Point, 4> tet{Point(0, 0, 0), Point(1, 0, 0), Point(0, 1, 0), Point(0.3, 0.2, 1)};
+  EXPECT_TRUE(GeometryMap(ReferenceTopology(GeometryVariant::Tet4), tet).has_constant_jacobian());
+  const std::array<Point, 3> triangle{Point(0, 0), Point(1, 0.1), Point(0.2, 1)};
+  EXPECT_TRUE(GeometryMap(ReferenceTopology(GeometryVariant::Tri3), triangle).has_constant_jacobian());
+
+  const std::array<Point, 9> quad9{Point(0, 0), Point(2, 0), Point(2, 1), Point(0, 1), Point(1, 0),
+                                   Point(2, 0.5), Point(1, 1), Point(0, 0.5), Point(1, 0.5)};
+  EXPECT_FALSE(GeometryMap(ReferenceTopology(GeometryVariant::Quad9), quad9).has_constant_jacobian());
+  const std::array<Point, 5> pyramid{Point(-1, -1, 0), Point(1, -1, 0), Point(1, 1, 0), Point(-1, 1, 0), Point(0, 0, 1)};
+  EXPECT_FALSE(GeometryMap(ReferenceTopology(GeometryVariant::Pyramid5), pyramid).has_constant_jacobian());
+}
+
+// The refusal the validation makes, by its message.
+template <std::size_t N>
+std::string validation_refusal(GeometryVariant variant, const std::array<Point, N>& nodes) {
+  try {
+    const GeometryMap geometry{ReferenceTopology(variant), nodes};
+    (void)geometry;
+  } catch (const std::invalid_argument& e) {
+    return e.what();
+  }
+  return "accepted";
+}
+
+// physics.fe_geometry_map.ConstantJacobianCellsAreStillValidated -- the
+// single evaluation a constant-Jacobian cell is validated by applies the
+// same test as the recursive inspection: an inverted box (the bottom and
+// top faces exchanged, determinant negative everywhere), a flat one (a
+// height of 1e-14 against a unit footprint) and an inverted tetrahedron
+// refuse; the unit cube is accepted.
+TEST(GeometryMapTest, ConstantJacobianCellsAreStillValidated) {
+  const std::array<Point, 8> inverted{Point(0, 0, 1), Point(1, 0, 1), Point(1, 1, 1), Point(0, 1, 1),
+                                      Point(0, 0, 0), Point(1, 0, 0), Point(1, 1, 0), Point(0, 1, 0)};
+  ASSERT_TRUE(validation_refusal(GeometryVariant::Hex8, std::array<Point, 8>{
+                  Point(0, 0, 0), Point(1, 0, 0), Point(1, 1, 0), Point(0, 1, 0),
+                  Point(0, 0, 1), Point(1, 0, 1), Point(1, 1, 1), Point(0, 1, 1)}) == "accepted");
+  EXPECT_NE(validation_refusal(GeometryVariant::Hex8, inverted).find("degenerate, inverted, or ill-conditioned"),
+            std::string::npos)
+      << validation_refusal(GeometryVariant::Hex8, inverted);
+  const std::array<Point, 8> flat{Point(0, 0, 0), Point(1, 0, 0), Point(1, 1, 0), Point(0, 1, 0),
+                                  Point(0, 0, 1e-14), Point(1, 0, 1e-14), Point(1, 1, 1e-14), Point(0, 1, 1e-14)};
+  EXPECT_NE(validation_refusal(GeometryVariant::Hex8, flat).find("degenerate, inverted, or ill-conditioned"),
+            std::string::npos)
+      << validation_refusal(GeometryVariant::Hex8, flat);
+  const std::array<Point, 4> inverted_tet{Point(0, 0, 0), Point(0, 1, 0), Point(1, 0, 0), Point(0, 0, 1)};
+  EXPECT_NE(validation_refusal(GeometryVariant::Tet4, inverted_tet).find("degenerate, inverted, or ill-conditioned"),
+            std::string::npos);
+}
+
+// physics.fe_geometry_map.InvertedCornerOfAGeneralHexIsFoundByTheInspection
+// -- a unit cube with vertex 6 pulled to (0.4, 0.4, 0.4). The Jacobians at
+// vertices 0 and 1 are identical (the bottom and front faces are still
+// parallelograms) and the Jacobian at the cell centre has columns
+// (0.85, -0.15, -0.15) and its two rotations, determinant positive; at
+// vertex 6 the columns are (0.4, -0.6, -0.6) and its rotations, determinant
+// -0.8. Only the inspection of the whole cell finds the inversion, so this
+// cell must not be treated as having a constant Jacobian.
+TEST(GeometryMapTest, InvertedCornerOfAGeneralHexIsFoundByTheInspection) {
+  const std::array<Point, 8> pulled{Point(0, 0, 0), Point(1, 0, 0), Point(1, 1, 0), Point(0, 1, 0),
+                                    Point(0, 0, 1), Point(1, 0, 1), Point(0.4, 0.4, 0.4), Point(0, 1, 1)};
+  EXPECT_NE(validation_refusal(GeometryVariant::Hex8, pulled).find("degenerate, inverted, or ill-conditioned"),
+            std::string::npos)
+      << validation_refusal(GeometryVariant::Hex8, pulled);
 }
 
 }  // namespace

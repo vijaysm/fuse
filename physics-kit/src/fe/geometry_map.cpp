@@ -92,7 +92,42 @@ void GeometryMap::reinit(std::span<const Point> nodes) {
   std::copy(nodes.begin(), nodes.end(), nodes_.begin());
   node_count_ = nodes.size();
   update_affine_quad4_cache();
+  update_constant_jacobian();
   validate();
+}
+
+void GeometryMap::update_constant_jacobian() {
+  constant_jacobian_ = false;
+  switch (reference_.variant()) {
+    case GeometryVariant::Edge2:
+    case GeometryVariant::Tri3:
+    case GeometryVariant::Tet4: {
+      const Point origin = reference_.reference_nodes()[0];
+      constant_jacobian_value_ = jacobian(origin);
+      constant_metric_ = metric(origin);
+      constant_measure_ = measure(origin);
+      constant_jacobian_ = true;
+      return;
+    }
+    case GeometryVariant::Quad4:
+    case GeometryVariant::Hex8:
+    case GeometryVariant::Prism6:
+      break;
+    default:
+      return;
+  }
+  // Non-finite nodes compare unequal (NaN != NaN) and leave the flag false;
+  // validate() refuses them by name.
+  const auto& vertices = reference_.reference_nodes();
+  const Matrix3 first = jacobian(vertices[0]);
+  for (std::size_t i = 1; i < node_count_; ++i)
+    if (!(jacobian(vertices[i]).a == first.a)) return;
+  // Evaluated through the general path, before the flag below redirects
+  // jacobian(), metric() and measure() to these values.
+  constant_jacobian_value_ = first;
+  constant_metric_ = metric(vertices[0]);
+  constant_measure_ = measure(vertices[0]);
+  constant_jacobian_ = true;
 }
 
 void GeometryMap::update_affine_quad4_cache() {
@@ -126,6 +161,7 @@ Point GeometryMap::map(const Point& reference_point) const {
 
 Matrix3 GeometryMap::jacobian(const Point& reference_point) const {
   if (has_affine_quad4_cache_) return affine_quad4_jacobian_;
+  if (constant_jacobian_) return constant_jacobian_value_;
   reference_.evaluate(reference_point, std::span<double>(values_.data(), node_count_),
                        std::span<Point>(derivatives_.data(), node_count_));
   Matrix3 result = Matrix3::zero();
@@ -137,12 +173,14 @@ Matrix3 GeometryMap::jacobian(const Point& reference_point) const {
 
 Matrix3 GeometryMap::metric(const Point& reference_point) const {
   if (has_affine_quad4_cache_) return affine_quad4_metric_;
+  if (constant_jacobian_) return constant_metric_;
   const Matrix3 j = jacobian(reference_point);
   return matmul(transpose(j), j);
 }
 
 double GeometryMap::measure(const Point& reference_point) const {
   if (has_affine_quad4_cache_) return affine_quad4_measure_;
+  if (constant_jacobian_) return constant_measure_;
   const Matrix3 j = jacobian(reference_point);
   if (reference_.dimension() == 1) return norm(j.col(0));
   if (reference_.dimension() == 2) return norm(cross(j.col(0), j.col(1)));
@@ -351,6 +389,15 @@ void GeometryMap::validate() const {
       refuse("geometry is degenerate, inverted, or ill-conditioned at a validation point");
     return {value, std::sqrt(largest / smallest)};
   };
+  // A constant Jacobian gives every sample of the recursive inspection
+  // below the same determinant and the same metric, so one evaluation
+  // decides exactly what the whole inspection would. Without this a
+  // structured Hex8 cell costs 8^3 * 27 Jacobian evaluations on every
+  // reinit, tens of milliseconds per element in an unoptimised build.
+  if (constant_jacobian_) {
+    (void)checked_geometry(reference_.center());
+    return;
+  }
   constexpr unsigned initial_subdivisions = 8;
   constexpr unsigned maximum_depth = 3;
   const std::function<void(const Point&, const Point&, unsigned)> inspect = [&](const Point& low, const Point& high,
