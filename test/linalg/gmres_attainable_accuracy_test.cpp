@@ -22,7 +22,9 @@
 //     residual of the returned x recomputed through the same operator
 //     (the same floating-point operations in the same order); that
 //     residual is above the tolerance and below the initial residual, so
-//     the solve did restart and make true progress before stopping.
+//     the solve did restart and make true progress before stopping. No
+//     Arnoldi step follows an estimate that met the tolerance while the
+//     recomputed residual did not: the cycle ends there.
 //   ExactOperatorStillConverges / ReachableToleranceStillConverges -- no
 //     false positive: the double-precision operator converges at 1e-12,
 //     and the inexact one converges at a tolerance above its error level.
@@ -123,9 +125,22 @@ TEST(GmresAttainableAccuracy, ReturnsTheCycleStartIterateWhenAsked) {
     opt.restart = restart;
     opt.max_iterations = 5000;
     opt.return_at_attainable_accuracy = true;
+    // Once the rotation estimate has met the tolerance and the recomputed
+    // residual has not, the cycle ends: the next monitor report must carry
+    // the SAME iteration count (the restart's fresh residual, or the final
+    // report), never a further Arnoldi step judged by that estimate.
+    std::size_t steps_after_a_refuted_estimate = 0;
+    bool previous_met_tolerance = false;
+    std::size_t previous_iteration = 0;
+    opt.monitor = [&](std::size_t it, double r) {
+      if (previous_met_tolerance && it != previous_iteration) ++steps_after_a_refuted_estimate;
+      previous_met_tolerance = r <= opt.rel_tol * b_norm;
+      previous_iteration = it;
+    };
     const auto result = fuse::linalg::gmres(a, IdentityPreconditioner{}, x, b, opt);
     ASSERT_TRUE(result.ok()) << result.error().message;
     const auto& report = result.value();
+    EXPECT_EQ(steps_after_a_refuted_estimate, 0u) << "restart=" << restart;
     EXPECT_FALSE(report.converged) << "restart=" << restart;
     EXPECT_TRUE(report.at_attainable_accuracy) << "restart=" << restart;
     EXPECT_LT(report.iterations, opt.max_iterations) << "restart=" << restart;

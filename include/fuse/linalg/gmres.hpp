@@ -52,11 +52,14 @@
 /// of a cycle begun from a true residual have produced no true progress
 /// while its recurrence reports convergence. Restarting cannot help (the
 /// cycle already started from a recomputed residual), so the solve stops
-/// there and leaves `x` at the cycle-start iterate. A cycle that DID
-/// reduce the true residual, however little, is unaffected and restarts
-/// as before; a cycle that stagnates WITHOUT its recurrence reporting
-/// convergence (restarted GMRES on a problem that needs a longer cycle)
-/// is not this condition and still ends in `E-LINALG-NO-CONVERGENCE`.
+/// there and leaves `x` at the cycle-start iterate. A cycle whose
+/// recurrence reports convergence while the recomputed residual has
+/// decreased, but not to the tolerance, commits that verified iterate and
+/// restarts at once from its true residual; it does not continue to the
+/// restart boundary on an estimate known to be wrong. A cycle that
+/// stagnates WITHOUT its recurrence reporting convergence (restarted
+/// GMRES on a problem that needs a longer cycle) is not this condition
+/// and still ends in `E-LINALG-NO-CONVERGENCE`.
 /// `GmresOptions::return_at_attainable_accuracy` selects whether this is a
 /// `Failure` (the default) or a report the caller inspects.
 ///
@@ -165,7 +168,6 @@ template <class Op, class Precond>
 
     DistVector z(b);
     DistVector w(b);
-    bool restart_cycle = false;
 
     for (std::size_t k = 0; k < mrestart && total_iter < opt.max_iterations; ++k) {
       ++total_iter;
@@ -269,18 +271,20 @@ template <class Op, class Precond>
       }
       if (opt.monitor) opt.monitor(total_iter, residual_estimate);
 
-      if (at_restart_boundary || breakdown) {
-        // Commit the (unconverged but genuine) progress and restart the
-        // cycle from the corrected residual.
-        x.copy_from(x_trial);
-        restart_cycle = true;
-        break;
-      }
-      // Otherwise the rotation estimate under- or over-reported the true
-      // residual without the cycle being exhausted: keep growing this
-      // cycle's Krylov subspace rather than committing an unverified step.
+      // Every candidate that was not accepted ends the cycle: the restart
+      // boundary and a breakdown as before, and also a rotation estimate
+      // that met the tolerance when the recomputed residual did not. In
+      // that last case the recurrence no longer describes the true
+      // residual, so further Arnoldi steps of this cycle would be judged
+      // by an estimate already known to be wrong, each at the cost of an
+      // extra `apply`; `x_trial` has a recomputed residual below `beta`
+      // (the attainable-accuracy test above returned otherwise), so it is
+      // committed and the next cycle starts from that true residual. This
+      // is the residual-replacement step pcg.hpp takes in the same
+      // situation.
+      x.copy_from(x_trial);
+      break;
     }
-    (void)restart_cycle;
 
     if (total_iter >= opt.max_iterations) {
       return Failure{"E-LINALG-NO-CONVERGENCE",

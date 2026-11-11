@@ -457,3 +457,21 @@ new = """        if (true) {"""
 target = "fuse_linalg_gmres_attainable_accuracy_test"
 test = "linalg.gmres_attainable_accuracy"
 # GmresAttainableAccuracy.ReportsAttainableAccuracyAsAFailureByDefault fails: the result is ok().
+
+[[mutation]]
+id = "krylov-gmres-refuted-estimate-continues-the-cycle"
+area = "linalg"
+describes = "gmres ends a cycle only at the restart boundary or on a breakdown. When the rotation estimate has met the tolerance and the recomputed residual has not, it keeps taking Arnoldi steps of the same cycle, each judged by an estimate already known to be wrong and each costing an extra apply, instead of committing the verified iterate and restarting from its true residual."
+file = "include/fuse/linalg/gmres.hpp"
+old = """      // situation.
+      x.copy_from(x_trial);
+      break;"""
+new = """      // situation.
+      if (at_restart_boundary || breakdown) {
+        x.copy_from(x_trial);
+        break;
+      }"""
+target = "fuse_linalg_gmres_attainable_accuracy_test"
+test = "linalg.gmres_attainable_accuracy"
+# GmresAttainableAccuracy.ReturnsTheCycleStartIterateWhenAsked fails: Arnoldi steps follow an estimate that met the tolerance (the monitor's iteration count advances).
+
