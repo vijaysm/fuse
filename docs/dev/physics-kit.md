@@ -259,6 +259,149 @@ differencing accuracy of the matrix-free Jacobian action: tighter values diverge
 No test asserts a Newton, GMRES or pcg iteration count. Counts are recorded with `RecordProperty`; no
 reference solver exists to compare them against.
 
+## Boundary conditions, properties, and the diffusion-reaction physics module
+
+**Boundary conditions.** `fuse_physics::fe::BoundaryConditionManager` (adapted from KARMA's
+`karma_boundary_condition.h`/`karma_physics_bc_manager.h`) names a boundary GEOMETRICALLY: a
+`BoundaryId` (`XMin`/`XMax`/`YMin`/`YMax`/`ZMin`/`ZMax`) is one of the six faces of a box
+`spatial::Domain`, classified by comparing a vertex or element side's own position against the
+MEASURED lower corner of the mesh's own vertex bounding box (`measured_lower_corner`, a
+componentwise minimum over `mesh.vertex_positions()`) plus the domain's own extents, within a
+tolerance of `2 eps max(M, L)` over the axes, `L` an axis length and `M` the larger magnitude of its
+two face coordinates: with `u = eps / 2`, the generated upper face `fl(lo + fl(hi - lo))` and the
+sought one `fl(lo + L)` differ by at most `u (3 M + L)` when `hi` is `lo + L` to within one rounding.
+The tolerance scales with the coordinates, not only the lengths, so a box far from the origin
+resolves (`ResolveOnABoxFarFromTheOriginMatchesEveryFace`: corner near (1e6, -3e5), where the two
+differ by 1.2e-10). The lower corner is measured, not assumed to be the origin: `generate_box`/`generate_2d_box` both take
+an explicit lower-corner point, and a mesh built away from the origin still classifies correctly.
+This replaces KARMA's own `(element, side)`/node discovery through a MOAB mesh's side sets, which
+physics-kit's self-generated box meshes do not carry at all. `set()` refuses an id beyond the
+domain's own dimension (`E-PHYSICS-BC-UNKNOWN-BOUNDARY`), a second condition on one boundary
+(`E-PHYSICS-BC-DUPLICATE`), and a non-positive Robin coefficient (`E-PHYSICS-BC-ROBIN-COEFFICIENT`
+-- a Robin coefficient of exactly zero is a Neumann condition under a different name and does not
+supply the coercivity a Robin-only boundary needs). `resolve()` is single-rank only, refusing
+`E-PHYSICS-BC-MPI-NOT-SUPPORTED` against a multi-rank `DofMap`, and refuses
+`E-PHYSICS-BC-UNMATCHED` naming the boundary if a registered condition matches no side of the
+mesh at all (a caller's own typo'd or absent boundary, otherwise silently left unconstrained).
+Dirichlet dof resolution goes through `DofMap::dofs_on_side`, not vertex connectivity alone, so a
+higher-order basis's own edge/face dofs on a Dirichlet boundary are constrained too (`physics.
+boundary_condition`'s own `ResolveWithP2BasisIncludesEdgeDofsOnTheBoundary` measures this on a P2
+Quad9 mesh). All refusals are proven firing, with their own code checked, by
+`physics.boundary_condition`.
+
+**Properties.** `DiffusionReactionCoefficients` (`diffusion_reaction_properties.hpp`, adapted from
+KARMA's `diffusion_reaction_assembly.h`) holds diffusion and reaction as `(position, field) ->
+value` callables, with analytic derivatives for an exact (not finite-difference) Newton
+linearization; `set_forcing`'s own `(position, time) -> value` callable is the sole load-term
+mechanism (KARMA's own `source`/`source_derivative` coefficient members are not ported: a
+position-dependent load term is already exactly what `set_forcing` carries, so a second,
+unread mechanism for the same concept would only invite the two to drift apart). KARMA's own
+`DiffusionReactionSystemPropertyManager` (a `map<material_id, DiffusionReactionCoefficients>`) is
+NOT ported as a map: physics-kit's self-generated meshes carry no material/block id at all, so
+`DiffusionReactionSystem` owns exactly ONE `DiffusionReactionCoefficients` for the whole domain --
+still position-dependent, which covers a single manufactured-solution domain.
+
+**The physics-module contract.** `DiffusionReactionSystem` is ONE CONCRETE CLASS, not an abstract
+base: `fuse::num`'s `TemporalProblem`/`solve()` take a struct of `std::function` members or a plain
+residual callable, neither needing a physics module to inherit from anything, so this class's public
+methods (`assemble_residual`, `rhs`, `mass`, `assemble_approximate_jacobian`, `as_temporal_problem`,
+`project_initial_condition`, `l2_error`) ARE the handful of KARMA `KARMAPhysicsBase` virtuals this one
+physics module needs, bound by value rather than by virtual dispatch. The full virtual-by-virtual
+mapping -- `form_initial_guess -> project_initial_condition`, the commented-out `compute_L2_error ->
+l2_error` (implemented here, not left commented out), `find_boundary_conditions ->
+BoundaryConditionManager`, and everything else DROPPED (coupled-physics registry, named-multi-system
+lookup, PETSc Mat preallocation, checkpoint I/O, the nine time-stepping-framework lifecycle hooks,
+material/partition numbering) with its own reason -- lives in `diffusion_reaction_system.hpp`'s own
+header comment, not duplicated here.
+
+**The assembled Jacobian.** `fuse::num::solve` differences the residual for its Jacobian action, so
+no matrix is needed to solve. `assemble_approximate_jacobian` returns `K(k(x)) + M diag(R'(x)) + B`
+with identity Dirichlet rows: the diffusion form with the coefficient evaluated at the state, the
+derivative of the nodal reaction term (the residual adds the reaction, so the block is added), and
+the boundary mass block of the Robin faces. For a diffusion coefficient that does not depend on the
+field it is the Jacobian of `assemble_residual`; otherwise the derivative of the coefficient is left
+out (a Picard linearisation). Its use is as the matrix a Jacobi, SSOR or block-Jacobi preconditioner
+is built from. `AssembledJacobianIsTheDerivativeOfAnAffineResidual` checks it against
+`F(x + v) - F(x)` for an affine residual with a Robin face and a reaction coefficient of 40, where the
+identity holds without differencing error: the largest difference is 8.9e-16 against a derived
+rounding bound of 3.1e-12.
+
+**Dirichlet rows.** The steady residual has the row `x_i - g_i` at a Dirichlet dof, and the assembled
+Jacobian the matching identity row. The transient forms state `u' = g'(t)` there, with `g'` read from
+`BoundaryCondition::value_time_derivative`; with `u(0) = g(0)` this integrates to `u(t) = g(t)` to the
+integrator's own accuracy for every tableau. A Dirichlet condition without a rate is refused in a
+transient evaluation (`E-PHYSICS-DRS-DIRICHLET-RATE-MISSING`): a missing rate cannot be told apart
+from data that is constant in time. `BoundaryCondition::steady_dirichlet` builds the constant case.
+`DiffusionReactionSystem` is single-rank, because `BoundaryConditionManager::resolve` refuses a
+multi-rank `DofMap`.
+
+**Steady solves** (`physics.diffusion_reaction_system`, `physics.diffusion_reaction_steady_order`).
+
+- *Exact residual.* For `u = x + 2y` with a linear reaction and one Dirichlet, one Neumann and one
+  Robin boundary, the residual at the nodal values is 7.2e-16 at most, against a derived rounding
+  bound of 1.7e-12.
+- *Order.* `-Laplacian(u) + u^2 / 2 = f`, `u = prod sin(pi x_k)`, homogeneous Dirichlet, three meshes
+  each. The band is twice the change between the two observed orders plus the effect of the
+  algebraic error, which is bounded from the final residual, the coercivity `d pi^2` less the
+  reaction shift, and the smallest eigenvalue of the mass matrix (the derivation is the header
+  comment of `diffusion_reaction_steady_order_test.cpp`; the bound is below 1e-10 on every level).
+
+  | discretisation | meshes | observed orders | band |
+  |---|---|---|---|
+  | Q1, 2-D | 4, 8, 16 | 2.0024, 2.0005 | 0.0039 |
+  | Q2, 2-D | 4, 8, 16 | 2.977, 2.995 | 0.036 |
+  | Q1, 3-D | 2, 4, 8 | 2.058, 2.012 | 0.092 |
+
+- *Preconditioner.* `SsorFromTheAssembledJacobianReducesGmresIterations` compares the first Newton
+  step alone: the same linear system, the same right-preconditioned residual, the same fixed forcing
+  term of 1e-4. GMRES iterations without and with SSOR are 5 and 5 at n = 8, 9 and 8 at n = 16, 17 and
+  13 at n = 32 (36 and 19 at n = 64, not run by the test). A sum over all Newton steps is not a
+  comparison of preconditioners: the later systems, their forcing terms and the number of steps
+  differ between the two runs.
+
+**Transient forms** (`physics.diffusion_reaction_transient`). The semi-discrete system is
+`sum_j M_ij u'_j = f_i(t, u)` on the free rows (j over all dofs) and `u'_i = g'_i(t)` on the Dirichlet
+rows. Two forms are offered.
+
+- The mass form, `as_temporal_problem()`: `rhs` and `mass`, with nothing solved inside either, for an
+  integrator with mass-matrix support (`DirkIntegrator`).
+- The explicit form, `as_explicit_form_temporal_problem()`: `explicit_rhs` returns `u'` by solving the
+  free rows with the Dirichlet columns of M moved to the right-hand side, a symmetric positive
+  definite system, to the accuracy the arithmetic allows. It is for an integrator without
+  mass-matrix support (the explicit family, `RosenbrockIntegrator`).
+
+Both mass matrices are assembled once by `initialize()`. For a solution in the finite-element space,
+`u = (1 + x + y) exp(-t)`, the semi-discrete system is satisfied by `u' = -u` exactly: the mass form
+leaves 6.3e-16 at most (derived bound 4.8e-13) and the explicit form returns the rate to 4.5e-13 in
+the 2-norm (derived bound 2.5e-9). This checks the mass operator, including the columns that couple
+a free row to Dirichlet dofs, with no discretisation error in the way.
+
+Temporal order is measured by self-convergence on one mesh: the states after `2^k` steps to the same
+final time share their spatial error, so the differences of successive states contain the temporal
+error alone. The band is twice the change between the last two observed orders, and the last order
+must be the closer of the two to the expected one.
+
+| integrator | form | observed orders | band |
+|---|---|---|---|
+| SDIRK22 | mass | 2.067, 2.028, 2.012 | 0.030 |
+| Kutta22 | explicit | 2.043, 2.021, 2.011 | 0.021 |
+| ROS22 | explicit, with a supplied Jacobian action | 1.828, 1.887, 1.937 | 0.100 |
+
+`RosenbrockIntegrator` differences `explicit_rhs` when no Jacobian action is supplied. A Rosenbrock
+stage is one linear solve with no outer residual to judge it by, so a stage tolerance below the
+accuracy of the differenced action is refused (`E-INTEGRATOR-STAGE-SOLVE-FAILED`, naming
+`E-LINALG-ATTAINABLE-ACCURACY`) and the state is left untouched
+(`Ros22RefusesAStageToleranceBelowTheDifferencedActionsAccuracy`). The order study supplies the
+action exactly, from the affine structure of the problem.
+
+**Cost of an element visit.** A Newton-Krylov solve revisits every element on every residual
+evaluation. `GeometryMap` detects a constant Jacobian exactly (always for Edge2, Tri3 and Tet4; for
+Quad4, Hex8 and Prism6 when the Jacobians at every vertex are bitwise identical), validates such a
+cell by one evaluation in place of the recursive inspection, and returns the cached Jacobian, metric
+and measure. A general cell is inspected as before. `Mesh::neighbor` is a lookup in a side index that
+`add_element` maintains; a search over every side of every element made `initialize()` quadratic in
+the number of elements (9.65 s for a 32 x 32 mesh in an unoptimised build, 0.15 s with the index).
+
 ## Tolerance provenance
 
 Every tolerance in the physics-kit tests is derived or exact; none is a chosen constant adjusted after a
@@ -286,6 +429,11 @@ failure. KARMA states no derivation for its own thresholds.
 | `physics.steady_reaction_diffusion_mms` convergence order | `2.0 +/- band` | Richardson leading-order prediction; the band adds the algebraic bound as `(delta_k/err_k + delta_{k+1}/err_{k+1}) / ln 2` (measured 2.8e-6 against a Richardson band of 2.2e-2); the check `|r2 - 2| < |r1 - 2|` stops a wide band from a pre-asymptotic pair passing vacuously |
 | `physics_assembly_mpi_test` mass-matrix sum | Higham bound over the global term count | as `physics.mass_assembly`, over the summed-across-ranks element count |
 | `physics_assembly_mpi_test` lumped row sums | `64 * eps * lumped_row` | Higham bound, 8x8 terms per row; non-negative mass entries bound the sum directly |
+| `physics.boundary_condition` face classification | exact equality | the test coordinates are exactly representable; the manager's own tolerance is derived in "Boundary conditions" above |
+| `physics.diffusion_reaction_system` residual of an affine solution, and `F(x + v) - F(x) - J v` | `gamma_400 * (absolute row sum)` | Higham (2002) Section 3.1: a row is a sum of at most 400 rounded terms (4 elements, 9 quadrature points, 9 basis terms, 4 boundary-face sums, up to 20 operations per term); the absolute row sums are 16/3 for the Q1 stiffness matrix, `h^2` for the mass matrix and `h` for a boundary mass block. Measured 7.2e-16 against 1.7e-12 and 8.9e-16 against 3.1e-12 |
+| `physics.diffusion_reaction_steady_order` convergence order | `2 |r1 - r2|` + algebraic term | header comment of the test: coercivity `d pi^2 - 2 alpha U sqrt(kappa(M))`, `lambda_min(M) >= (c h)^d` from the element mass matrices (Wathen 1987), the nodal bound `U = 2` asserted per level |
+| `physics.diffusion_reaction_transient` exact identities | `gamma_k * (absolute row sum)`; for the explicit form, divided by the smallest mass eigenvalue and with the measured residual of the inner solve added | header comment of the test |
+| `physics.diffusion_reaction_transient` temporal order | `2 |p_last - p_previous|` | leading-order behaviour of an observed order; no allowance for solver tolerances, so loose tolerances can only fail the test |
 
 ## Multi-rank tests
 
@@ -310,4 +458,27 @@ fails by construction.
   it checks is covered by a named `fuse::linalg`/`AlgebraicSystem` test except the vector-side
   negative/out-of-range index refusal, which has no dedicated test at this layer (the matrix-side
   equivalent is `RefusesATripletWhoseColumnIsOutOfRange`).
-- The 3-D ladder of the nonlinear convergence study is not run.
+- A cell whose Jacobian is not constant (a distorted Quad4 or Hex8, every second-order geometry)
+  is validated by the recursive inspection on every reinit; the result is not cached per element.
+- `DiffusionReactionSystem` is single-rank (`E-PHYSICS-BC-MPI-NOT-SUPPORTED`).
+- `RosenbrockIntegrator` on the explicit form needs a supplied Jacobian action for a stage tolerance
+  below the accuracy of a differenced `explicit_rhs` (about 4e-7 relative on the test problem).
+- KARMA's `diffusion_lifecycle_test.C` assertions on material-id property dispatch and on rejecting
+  discontinuous or spectral bases have no counterpart: the class has one coefficient set and takes
+  the continuity of the `DofMap` it is given.
+- No `Component`/`ImplicitComponent` adapter couples two `DiffusionReactionSystem` instances. The
+  boundary dofs of a system are a subset of its dof vector in element-traversal order, neither
+  contiguous nor evenly strided, and `Layout` (`include/fuse/field/field_ref.hpp`) describes a dense,
+  evenly strided run; an adapter needs a gather into a contiguous interface buffer before
+  `register_fields()` and a scatter back after `advance()`.
+- `DiffusionReactionCoefficients` holds `diffusion`/`reaction` (with analytic derivatives); the load
+  term is `set_forcing`'s own `(position, time)` callable, with no second, unread mechanism for the
+  same concept (`diffusion_reaction_properties.hpp`'s own header comment).
+- Material/property dispatch is a single domain-wide `DiffusionReactionCoefficients`, not a
+  material-id-keyed map: physics-kit's self-generated meshes carry no material/block id to key
+  against (`diffusion_reaction_properties.hpp`'s own header comment).
+- `DiffusionReactionSystem`'s nodal reaction evaluation and Dirichlet/initial-condition dof values
+  use each dof's own PHYSICAL position (`dof_physical_positions`, an interpolation-point-through-
+  GeometryMap lookup), valid for any basis order including a P2 basis's own edge/face dofs
+  (`physics.dof_map`'s own `DofsOnSideMatchesGeometricSideMembershipForP2Quad9` and `physics.
+  boundary_condition`'s own `ResolveWithP2BasisIncludesEdgeDofsOnTheBoundary` measure this).

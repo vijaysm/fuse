@@ -63,16 +63,15 @@ target = "fuse_physics_fe_basis_test"
 test = "physics.fe_basis"
 
 [[mutation]]
-id = "mesh-neighbor-canonical-id-comparison-weakened"
+id = "mesh-neighbor-returns-the-querying-element"
 area = "physics-kit"
-describes = "Mesh::neighbor compares canonical side-vertex ID sets with a sorted-vector equality; mutated to compare only the FIRST id (a strictly weaker, order-dependent check), which InteriorSideHasANeighborSharingItsVertexSet exists to catch: it would accept a side whose first vertex id happens to match but whose other vertices differ, in a larger mesh where that is possible."
+describes = "Mesh::neighbor returns the first element recorded on a side without excluding the element that asked, so an element is reported as its own neighbour and no side of the mesh is a boundary side."
 file = "physics-kit/src/spatial/mesh.cpp"
-old = "      if (canonical_side_vertex_ids(candidate, s) == target) return candidate;"
-new = "      if (canonical_side_vertex_ids(candidate, s).front() == target.front()) return candidate;"
+old = """    if (candidate != element) return candidate;"""
+new = """    return candidate;"""
 target = "fuse_physics_spatial_mesh_test"
 test = "physics.spatial_mesh"
-
-# --- prism, pyramid, orientation, the MeshView binding ---------------------
+# SpatialMeshTest.NeighborMatchesAnExhaustiveSearchOverEverySide fails on the first side.
 
 [[mutation]]
 id = "basis-valid-key-or-bug-reintroduced"
@@ -269,3 +268,156 @@ new = """  virtual std::vector<std::int64_t> alltoallv(const std::vector<std::in
 target = "fuse_linalg_comm_test"
 test = "linalg.comm"
 
+
+[[mutation]]
+id = "boundary-condition-robin-coefficient-check-allows-zero"
+area = "physics-kit"
+describes = "BoundaryConditionManager::set's Robin-coefficient refusal (robin_coefficient must be strictly positive) is weakened from > 0.0 to >= 0.0, which would silently accept a zero Robin coefficient (a Neumann condition in disguise, this file's own header comment on why zero specifically must be refused). NonPositiveRobinCoefficientRefusesByName exercises coefficient == 0.0 directly."
+file = "physics-kit/src/fe/boundary_condition.cpp"
+old = "  if (condition.kind == BoundaryConditionKind::Robin && !(condition.robin_coefficient > 0.0))"
+new = "  if (condition.kind == BoundaryConditionKind::Robin && !(condition.robin_coefficient >= 0.0))"
+target = "fuse_physics_boundary_condition_test"
+test = "physics.boundary_condition"
+
+[[mutation]]
+id = "boundary-condition-duplicate-check-disabled"
+area = "physics-kit"
+describes = "BoundaryConditionManager::set's duplicate-registration refusal is disabled, which would silently let a second condition on the SAME boundary id bypass the refusal rather than catching a caller's own registration mistake. DuplicateConditionOnOneBoundaryRefusesByName registers XMin twice."
+file = "physics-kit/src/fe/boundary_condition.cpp"
+old = "  if (conditions_.find(boundary_id) != conditions_.end())"
+new = "  if (false && conditions_.find(boundary_id) != conditions_.end())"
+target = "fuse_physics_boundary_condition_test"
+test = "physics.boundary_condition"
+
+[[mutation]]
+id = "diffusion-reaction-system-scalar-check-disabled"
+area = "physics-kit"
+describes = "DiffusionReactionSystem's constructor refusal for a non-scalar (n_variables() != 1) dof_map is disabled, which would silently construct against a two-variable DofMap whose dof layout this class's own per-element loops assume is scalar. ConstructRefusesNonScalarDofMap passes a two-variable dof_map directly."
+file = "physics-kit/src/fe/diffusion_reaction_system.cpp"
+old = "  if (dof_map.n_variables() != 1)"
+new = "  if (dof_map.n_variables() != 1 && false)"
+target = "fuse_physics_diffusion_reaction_system_test"
+test = "physics.diffusion_reaction_system"
+
+[[mutation]]
+id = "diffusion-reaction-system-not-initialized-check-disabled"
+area = "physics-kit"
+describes = "raw_spatial_operator's not-initialized refusal is disabled, which would silently assemble a residual against an EMPTY (never-resolved) boundary-condition set and faces_by_element_ map rather than refusing a caller that forgot initialize(). AssembleResidualBeforeInitializeRefuses calls assemble_residual immediately after construction."
+file = "physics-kit/src/fe/diffusion_reaction_system.cpp"
+old = "  if (!initialized_)\n    refuse(\"DiffusionReactionSystem: initialize() must run before assemble_residual/rhs (E-PHYSICS-DRS-NOT-INITIALIZED)\");"
+new = "  if (!initialized_ && false)\n    refuse(\"DiffusionReactionSystem: initialize() must run before assemble_residual/rhs (E-PHYSICS-DRS-NOT-INITIALIZED)\");"
+target = "fuse_physics_diffusion_reaction_system_test"
+test = "physics.diffusion_reaction_system"
+
+[[mutation]]
+id = "boundary-condition-unmatched-check-disabled"
+area = "physics-kit"
+describes = "BoundaryConditionManager::resolve's unmatched-boundary refusal is disabled, which would silently accept a registered condition whose boundary id matched no side of the mesh (a caller's own typo'd or absent boundary, previously left unconstrained with no refusal). UnmatchedConditionRefusesByName registers a Dirichlet condition on a boundary id the fixture mesh has no side on."
+file = "physics-kit/src/fe/boundary_condition.cpp"
+old = "    if (matched_ids.find(id) == matched_ids.end())"
+new = "    if (matched_ids.find(id) == matched_ids.end() && false)"
+target = "fuse_physics_boundary_condition_test"
+test = "physics.boundary_condition"
+
+[[mutation]]
+id = "mesh-side-lookup-not-cleared-on-regeneration"
+area = "physics-kit"
+describes = "generate_2d_box keeps the side lookup of the mesh it replaces, so neighbour queries on the new mesh are answered from the old one."
+file = "physics-kit/src/spatial/mesh.cpp"
+old = """  side_elements_.clear();
+  const unsigned px = nx + 1, py = ny + 1;"""
+new = """  const unsigned px = nx + 1, py = ny + 1;"""
+target = "fuse_physics_spatial_mesh_test"
+test = "physics.spatial_mesh"
+# SpatialMeshTest.RegeneratingAMeshReplacesItsSideLookup fails: a side of the single cell is reported interior.
+
+[[mutation]]
+id = "geometry-map-constant-jacobian-vertex-comparison-dropped"
+area = "physics-kit"
+describes = "update_constant_jacobian marks every Quad4, Hex8 and Prism6 as having a constant Jacobian without comparing the Jacobians at the vertices, so a general cell is validated by one evaluation at its centre and an inversion away from the centre is accepted."
+file = "physics-kit/src/fe/geometry_map.cpp"
+old = """    if (!(jacobian(vertices[i]).a == first.a)) return;"""
+new = """    if (false) return;"""
+target = "fuse_physics_fe_geometry_map_test"
+test = "physics.fe_geometry_map"
+# GeometryMapTest.ConstantJacobianIsDetectedExactly and InvertedCornerOfAGeneralHexIsFoundByTheInspection fail.
+
+[[mutation]]
+id = "geometry-map-constant-jacobian-cell-not-validated"
+area = "physics-kit"
+describes = "validate returns for a constant-Jacobian cell without evaluating its geometry at all, so an inverted or flat box, simplex or prism is accepted."
+file = "physics-kit/src/fe/geometry_map.cpp"
+old = """    (void)checked_geometry(reference_.center());
+    return;"""
+new = """    return;"""
+target = "fuse_physics_fe_geometry_map_test"
+test = "physics.fe_geometry_map"
+# GeometryMapTest.ConstantJacobianCellsAreStillValidated fails: the inverted box is accepted.
+
+[[mutation]]
+id = "boundary-condition-face-tolerance-ignores-coordinate-magnitude"
+area = "physics-kit"
+describes = "The distance within which a coordinate counts as lying on a boundary face is scaled by the lengths of the box alone, not by the magnitude of its coordinates, so the upper faces of a box far from the origin are not found."
+file = "physics-kit/src/fe/boundary_condition.cpp"
+old = """    scale = std::max({scale, std::fabs(lower[axis]), std::fabs(lower[axis] + length[axis]), std::fabs(length[axis])});"""
+new = """    scale = std::max({scale, std::fabs(length[axis])});"""
+target = "fuse_physics_boundary_condition_test"
+test = "physics.boundary_condition"
+# BoundaryConditionTest.ResolveOnABoxFarFromTheOriginMatchesEveryFace fails: E-PHYSICS-BC-UNMATCHED for XMax.
+
+[[mutation]]
+id = "diffusion-reaction-jacobian-reaction-sign-reversed"
+area = "physics-kit"
+describes = "assemble_approximate_jacobian subtracts the reaction block M diag(R') where the residual adds the reaction term, so the matrix is not the derivative of the residual and a preconditioner built from it is one for a different operator."
+file = "physics-kit/src/fe/diffusion_reaction_system.cpp"
+old = """k[i * n + j] + m[i * n + j] * r_prime_j + robin[i * n + j]"""
+new = """k[i * n + j] - m[i * n + j] * r_prime_j + robin[i * n + j]"""
+target = "fuse_physics_diffusion_reaction_system_test"
+test = "physics.diffusion_reaction_system"
+# DiffusionReactionSystemTest.AssembledJacobianIsTheDerivativeOfAnAffineResidual fails.
+
+[[mutation]]
+id = "diffusion-reaction-jacobian-robin-block-dropped"
+area = "physics-kit"
+describes = "assemble_approximate_jacobian omits the boundary mass block of the Robin faces, so its rows on a Robin boundary are not the derivative of the residual."
+file = "physics-kit/src/fe/diffusion_reaction_system.cpp"
+old = """robin[i * n + j] += fjxw[q] * c * fphi[i][q] * fphi[j][q];"""
+new = """robin[i * n + j] += 0.0 * fjxw[q] * c * fphi[i][q] * fphi[j][q];"""
+target = "fuse_physics_diffusion_reaction_system_test"
+test = "physics.diffusion_reaction_system"
+# DiffusionReactionSystemTest.AssembledJacobianIsTheDerivativeOfAnAffineResidual fails.
+
+[[mutation]]
+id = "diffusion-reaction-explicit-form-drops-dirichlet-mass-coupling"
+area = "physics-kit"
+describes = "explicit_rhs solves the free rows without moving the Dirichlet columns of the consistent mass matrix to the right-hand side, so the rate of every free dof next to a Dirichlet boundary with time-dependent data is wrong."
+file = "physics-kit/src/fe/diffusion_reaction_system.cpp"
+old = """b.data()[i] = f[i] - coupling.data()[i];"""
+new = """b.data()[i] = f[i];"""
+target = "fuse_physics_diffusion_reaction_transient_test"
+test = "physics.diffusion_reaction_transient"
+# DiffusionReactionTransientTest.ExplicitFormReturnsTheExactRateOfASolutionInTheSpace fails.
+
+[[mutation]]
+id = "diffusion-reaction-mass-form-dirichlet-rows-not-identity"
+area = "physics-kit"
+describes = "mass() returns the consistent mass matrix row at a Dirichlet dof where the mass form states u' = g', so the Dirichlet rows of M u' = f mix the boundary rate with its neighbours."
+file = "physics-kit/src/fe/diffusion_reaction_system.cpp"
+old = """    out[static_cast<std::size_t>(dof)] = v[static_cast<std::size_t>(dof)];"""
+new = """    (void)dof;"""
+target = "fuse_physics_diffusion_reaction_transient_test"
+test = "physics.diffusion_reaction_transient"
+# DiffusionReactionTransientTest.MassFormIsSatisfiedExactlyByASolutionInTheSpace fails on the Dirichlet rows.
+
+[[mutation]]
+id = "diffusion-reaction-dirichlet-rate-missing-not-refused"
+area = "physics-kit"
+describes = "rhs does not refuse a Dirichlet condition without value_time_derivative, so a transient evaluation proceeds to call an empty rate."
+file = "physics-kit/src/fe/diffusion_reaction_system.cpp"
+old = """    if (!rate)
+      return fuse::Failure{"E-PHYSICS-DRS-DIRICHLET-RATE-MISSING","""
+new = """    if (false)
+      return fuse::Failure{"E-PHYSICS-DRS-DIRICHLET-RATE-MISSING","""
+target = "fuse_physics_diffusion_reaction_transient_test"
+test = "physics.diffusion_reaction_transient"
+# DiffusionReactionTransientTest.DirichletConditionWithoutARateRefuses fails.

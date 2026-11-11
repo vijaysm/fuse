@@ -285,10 +285,48 @@ with `Mesh::from_mesh_view()` on a partitioned mesh from [](meshes.md). In an MP
 suite has multi-rank tests of the mesh, the numbering and the assembled mass matrix, registered for 2
 and 3 ranks; a default build exercises the single-process path.
 
+## A worked example: boundary conditions and the diffusion-reaction physics module
+
+`fuse_physics::fe::BoundaryConditionManager` names a Dirichlet, Neumann or Robin condition by which
+of the six faces of a box `Domain` it sits on (`BoundaryId::XMin`, `XMax`, `YMin`, `YMax`, `ZMin`,
+`ZMax`), resolved against a mesh and dof map with no mesh-side tagging required.
+`fuse_physics::fe::DiffusionReactionSystem` owns a `Mesh`/`DofMap`/`FEBase`/`BoundaryConditionManager`
+together and provides the steady Newton residual (`fuse::num::solve`'s own `ResidualFn` contract)
+directly. The test below builds a 3 x 3 mesh of bilinear quadrilaterals, registers one condition of
+each kind together with a linear reaction, and checks that the residual vanishes to rounding for the
+affine solution `u = x + 2y`, which the bilinear space contains.
+
+```{literalinclude} ../../physics-kit/test/diffusion_reaction_system_test.cpp
+:start-at: "TEST(DiffusionReactionSystemTest, ResidualVanishesForAnAffineSolutionWithAllThreeBoundaryKinds) {"
+:end-at: "EXPECT_LE(max_abs(fx), bound);"
+```
+
+A Dirichlet condition for a steady problem, or one whose data does not depend on time, is built with
+`BoundaryCondition::steady_dirichlet(value)`. For time-dependent data set `value_time_derivative` as
+well; a transient evaluation refuses a Dirichlet condition without it.
+
+For time integration the system offers two forms. `as_temporal_problem()` is `M u' = f(t, u)` with a
+mass operator, for `fuse::num::DirkIntegrator`. `as_explicit_form_temporal_problem()` is
+`u' = M^-1 f(t, u)`, for the explicit integrators and `fuse::num::RosenbrockIntegrator`, which take no
+mass operator. `physics.diffusion_reaction_transient` measures second order for SDIRK22, Kutta22 and
+ROS22, and `physics.diffusion_reaction_steady_order` measures the spatial order of a nonlinear steady
+solve for bilinear and biquadratic quadrilaterals and trilinear hexahedra.
+
 ## Limitations
 
-- **No physics modules.** Only the generic operators above: mass, stiffness, load and the transient
-  reaction-diffusion kernel. Anything else is yours to write.
+- **A Rosenbrock integrator needs a Jacobian action for tight stage tolerances.** Without one it
+  differences `explicit_rhs`, whose accuracy limits the stage solve; a tolerance below that limit is
+  refused (`E-INTEGRATOR-STAGE-SOLVE-FAILED`). Set `TemporalProblem::jacobian_action`, or use
+  `DirkIntegrator` on the mass form.
+- **No material-id-keyed properties.** `DiffusionReactionCoefficients` is one position-dependent set
+  of coefficients for the whole domain, not a per-block map (the self-generated box meshes carry no
+  material/block id at all).
+- **A preconditioner is optional.** `fuse::num::solve` differences the residual and needs no matrix.
+  `assemble_approximate_jacobian()` returns the matrix a `JacobiPreconditioner` or `SsorPreconditioner`
+  can be built from; it leaves out the derivative of a field-dependent diffusion coefficient.
+- **General cells are validated on every visit.** A cell with a constant Jacobian (a box, a simplex)
+  is validated by one evaluation; a distorted or second-order cell is inspected recursively each time
+  it is bound.
 - **Mesh generators are boxes.** `generate_box()` makes `Hex8` cells and `generate_2d_box()` makes
   `Quad4` cells. Other cell kinds come from `add_element()` or `from_mesh_view()`; polygonal and
   polyhedral cells are refused (`E-PHYSICS-MESH-CELL-SHAPE`).
@@ -310,14 +348,23 @@ and 3 ranks; a default build exercises the single-process path.
 | `E-PHYSICS-DOFMAP-DOF-NOT-VISIBLE` | an index or a `storage()` query names a degree of freedom this rank cannot see |
 | `E-PHYSICS-DOFMAP-AGREEMENT-REFUSED`, `E-PHYSICS-DOFMAP-AGREEMENT-COMM-FAILURE` | the ranks disagreed, or the communication that agrees a failure failed |
 | `E-PHYSICS-DOFMAP-SUBENTITY-UNSUPPORTED`, `E-PHYSICS-DOFMAP-ORIENTATION-NOT-FOUND`, `E-PHYSICS-DOFMAP-KEY-TOO-WIDE` | structural checks that a conforming mesh and a built-in basis cannot reach |
+| `E-PHYSICS-BC-UNKNOWN-BOUNDARY` | a boundary id names an axis beyond the domain's own dimension (e.g. `ZMin` on a 2-D domain) |
+| `E-PHYSICS-BC-DUPLICATE` | a second condition was registered on a boundary id that already has one |
+| `E-PHYSICS-BC-ROBIN-COEFFICIENT` | a Robin condition's own coefficient was not strictly positive |
+| `E-PHYSICS-BC-NO-CONDITIONS` | `resolve()` was called with no condition ever registered |
+| `E-PHYSICS-BC-MPI-NOT-SUPPORTED` | `resolve()` was called against a multi-rank `DofMap` |
+| `E-PHYSICS-BC-UNMATCHED` | a registered boundary condition matched no side of the mesh at all |
+| `E-PHYSICS-DRS-NOT-SCALAR` | `DiffusionReactionSystem` was constructed against a `DofMap` with more than one variable |
+| `E-PHYSICS-DRS-NOT-INITIALIZED` | `assemble_residual`, `rhs`, `mass`, `explicit_rhs`, `assemble_approximate_jacobian` or `project_initial_condition` was called before `initialize()` |
+| `E-PHYSICS-DRS-DIRICHLET-RATE-MISSING` | a transient evaluation met a Dirichlet condition without `value_time_derivative` |
 
 ## Tests
 
 The tests are the `physics.*` entries of `ctest` (reference topology, quadrature, basis, geometry
 map, `FEBase`, faces, mesh, domain, DOF map, algebraic system, mass, diffusion and transient
-reaction-diffusion assembly, the linear solve, and a manufactured-solution convergence study of a
-steady reaction-diffusion problem solved with Newton-Krylov) and, in an MPI build, the
-`parallel.physics_*` entries.
+reaction-diffusion assembly, the linear solve, a manufactured-solution convergence study of a
+steady reaction-diffusion problem solved with Newton-Krylov, boundary conditions, and the
+diffusion-reaction physics module) and, in an MPI build, the `parallel.physics_*` entries.
 
 ## See also
 

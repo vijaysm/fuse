@@ -192,6 +192,75 @@ superseded = [                       # upstream paths fuse has replaced (fuse::b
                                                                           # tested by physics.linear_
                                                                           # layer's own projection-
                                                                           # solve assertion.
+  # Boundary conditions and the diffusion-reaction physics module, port-adapted onto
+  # fuse_physics::fe::BoundaryConditionManager / DiffusionReactionSystem (docs/dev/physics-kit.md).
+  "include/physics/common/karma_boundary_condition.h",   # BCType/typed-value storage replaced by
+                                                          # BoundaryId (geometric, box-face identity)
+                                                          # and BoundaryConditionKind + a plain
+                                                          # (position, time) -> value callable;
+                                                          # physics.boundary_condition
+  "include/physics/common/karma_physics_bc_manager.h",   # (element,side)/node discovery through a
+                                                          # MOAB mesh's side sets replaced by
+                                                          # BoundaryConditionManager::resolve's own
+                                                          # geometric classification (physics-kit's
+                                                          # self-generated box meshes carry no side
+                                                          # sets at all); integrate_face_load/
+                                                          # integrate_neumann_load/integrate_robin's
+                                                          # own math restated directly in
+                                                          # DiffusionReactionSystem's own per-element
+                                                          # face loop (not a separate ported
+                                                          # function); physics.boundary_condition and
+                                                          # physics.diffusion_reaction_system's own
+                                                          # ResidualVanishesForAnAffineSolutionWith
+                                                          # AllThreeBoundaryKinds test
+  "include/physics/base/karma_physics_base.h",           # PARTIAL: DiffusionReactionSystem replaces
+                                                          # the small subset of virtuals a single
+                                                          # concrete (non-abstract) physics module
+                                                          # needs -- form_initial_guess,
+                                                          # the commented-out compute_L2_error,
+                                                          # find_boundary_conditions -- and DROPS the
+                                                          # rest (coupled-physics registry, named-
+                                                          # multi-system lookup, PETSc Mat
+                                                          # preallocation, checkpoint I/O, the nine
+                                                          # time-stepping-framework lifecycle hooks)
+                                                          # with reasons stated in
+                                                          # diffusion_reaction_system.hpp's own header
+                                                          # comment; see docs/dev/physics-kit.md's own
+                                                          # table for the full virtual-by-virtual
+                                                          # mapping
+  "include/physics/base/karma_physics_base_property_manager.h",  # NOT ported: KARMA's own generic
+                                                          # function-pointer property registry is
+                                                          # replaced by a single, directly-owned
+                                                          # DiffusionReactionCoefficients struct (no
+                                                          # registry, no material_id-keyed map --
+                                                          # diffusion_reaction_properties.hpp's own
+                                                          # header comment states why: physics-kit's
+                                                          # self-generated meshes carry no
+                                                          # material/block id to key against)
+  "include/physics/diffusion-reaction/diffusion_reaction_assembly.h",  # DiffusionReactionCoefficients
+                                                          # restated in diffusion_reaction_properties.hpp
+                                                          # (the load term is set_forcing; source and
+                                                          # source_derivative are not carried);
+                                                          # element_diffusion_reaction/
+                                                          # assemble_diffusion_reaction's own math
+                                                          # restated in DiffusionReactionSystem's
+                                                          # raw_spatial_operator (quadrature-weighted
+                                                          # position-dependent diffusion, nodal
+                                                          # reaction through the mass matrix, Neumann/
+                                                          # Robin face terms); physics.diffusion_
+                                                          # reaction_system
+  "include/physics/diffusion-reaction/diffusion_reaction_system_property_manager.h",  # NOT ported as
+                                                          # a map: single DiffusionReactionCoefficients
+                                                          # instance instead (diffusion_reaction_
+                                                          # properties.hpp's own header comment)
+  "include/physics/diffusion-reaction/diffusion_reaction_system.h",       # consolidated, with
+  "include/physics/diffusion-reaction/diffusion_reaction_system_operator.h",  # _operator.h and
+  "include/physics/diffusion-reaction/diffusion_reaction_mass_operator.h",    # _mass_operator.h,
+                                                          # into ONE DiffusionReactionSystem class
+                                                          # (diffusion_reaction_system.hpp's own
+                                                          # header comment: "ONE CONCRETE CLASS, NOT
+                                                          # AN ABSTRACT BASE"); physics.diffusion_
+                                                          # reaction_system
 ]
 retire_at = "all superseded"          # subtree deleted whole when every path is superseded
 retired   = ""                       # "<date> @ <fuse sha>" once done
@@ -199,7 +268,7 @@ open      = ["PETSc-backed native component unregistered",
              "distorted-pyramid quadrature: volume and a non-polynomial integrand's convergence are measured for a straight-edged pyramid; a curved (order-2 geometry) pyramid remains open",
              "DEBUG BUILD IS BROKEN: src/numerics/spatial/karma_domain.C:32,54,77 uses unqualified Hexagon/Unstructured from the scoped enum KARMA::DomainShape, inside assert(). All three verified presets (release, asan=RelWithDebInfo, no-exceptions) define NDEBUG, so the line has never been compiled. The assertion is also vacuous: (Type != Hexagon || Type != Unstructured) is a tautology. Fix when porting, as a real invariant (I6), not an assert.",
              "test/assembly_test.C (low-level PETSc scatter primitives) is NOT retired: DuplicateEntriesAreSummed (test/linalg/dist_sparse_matrix_test.cpp) covers its repeated-INSERT-then-ADD accumulation behaviour; RefusesATripletWhoseRowIsNotOwnedHere and RefusesATripletWhoseColumnIsOutOfRange cover its negative/out-of-range index refusals, but only on the MATRIX side -- its OWN negative/out-of-range refusal checks on the VECTOR scatter (KARMA::scatter on a Vec) have no DEDICATED fuse::linalg test naming them, even though AlgebraicSystem::assemble_vector shares the identical exchange_foreign_entries machinery (and its own in_range_fn check) the matrix path uses; its ISLocalToGlobalMapping permuted-local-ordering behaviour has no direct analogue at this layer at all (DofMap::local_to_global, tested by dof_map_test.cpp, is where that concern actually lives in this port)",
-             "test/diffusion_assembly_test.C's elaborate BC-manager machinery (physics/diffusion-reaction/'s own Dirichlet/Neumann/Robin condition discovery) is out of scope for numerics/'s core assembly; only its stiffness-operator mathematics is ported",
+             "test/diffusion_assembly_test.C's elaborate BC-manager machinery was out of scope for numerics/'s core assembly when that line was first written; it is now ported, onto fuse_physics::fe::BoundaryConditionManager/DiffusionReactionSystem rather than literally, with the superseded entries above naming the covering fuse tests -- a P2 case and two transient integrators (DIRK, Rosenbrock) are covered; a 3-D Hex8 ladder is not, for the FE-core cost docs/dev/physics-kit.md's own Known limits states with file:line",
              "the nonlinear convergence-rate study (physics.steady_reaction_diffusion_mms) runs in 2-D (Quad4, N = 4, 8, 16; about 44,000 FEBase::reinit calls, 0.83 s wall in a Debug build, about 19 us per call). A 3-D ratio-2 ladder (N = 4, 8, 16 Hex8, 4096 elements at the finest level) is tractable and is the open follow-up",
              "the steady Jacobian K - M diag(R'(u)) is built directly from element_mass_matrix/element_stiffness_matrix/reaction_derivative, because element_transient_reaction_diffusion's Jacobian under the state=state_old substitution is only half the steady Jacobian plus an M/h term. It is wired through JacobiPreconditioner and SsorPreconditioner (RefreshPreconditionerFn/PreconditionerApplyFn) and, for a coupled two-variable row, fuse::num::BlockJacobiPreconditioner; each preconditioned solve is checked for agreement with the unpreconditioned baseline within the summed algebraic_l2_error_bound, not against an iteration count (no reference solver to compare counts with)",
              "DofMap's ghost resolution (dof_map.cpp pass 3) and AlgebraicSystem's foreign-entry exchange (exchange_foreign_entries) route through fuse::linalg::Reducer::alltoallv, a point-to-point exchange (one MPI_Alltoall for counts, one MPI_Alltoallv for the payload); build-verified with FUSE_ENABLE_MPI=ON, not run where MPI cannot start",
