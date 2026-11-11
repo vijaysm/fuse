@@ -39,6 +39,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <span>
 #include <utility>
@@ -197,6 +198,12 @@ class Mesh {
   std::vector<fe::GeometryVariant> element_kind_;
   std::vector<bool> element_owned_;
   std::vector<GlobalId> element_gid_;
+  /// The elements on each side, keyed by the side's sorted global vertex
+  /// ids and listed in handle order. `add_element` maintains it, so
+  /// `neighbor` is a lookup; a search over every side of every element
+  /// instead makes each query linear, and a pass over all sides quadratic,
+  /// in the number of elements.
+  std::map<std::vector<GlobalId>, std::vector<EntityHandle>> side_elements_;
 };
 
 }  // namespace fuse::physics::spatial

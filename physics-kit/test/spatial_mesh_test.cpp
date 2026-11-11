@@ -19,9 +19,11 @@
 
 #include <array>
 #include <memory>
+#include <optional>
+#include <stdexcept>
+#include <vector>
 
 #include <gtest/gtest.h>
-#include <stdexcept>
 
 #include "fuse/backend/native_mesh.hpp"
 #include "fuse_physics/spatial/mesh_utils.hpp"
@@ -80,6 +82,54 @@ TEST(SpatialMeshTest, TwoElementBoxHasExactlyTenBoundaryFaces) {
   Mesh mesh(3);
   mesh.generate_box(2, 1, 1, Point(0, 0, 0), Point(2, 1, 1));
   EXPECT_EQ(extract_boundary_faces(mesh).size(), 10u);
+}
+
+// physics.spatial_mesh.NeighborMatchesAnExhaustiveSearchOverEverySide --
+// the side lookup against its definition: the lowest-numbered other
+// element one of whose sides has the same sorted global vertex ids, or
+// none. Checked for every side of a 3 x 2 x 2 box.
+TEST(SpatialMeshTest, NeighborMatchesAnExhaustiveSearchOverEverySide) {
+  Mesh mesh(3);
+  mesh.generate_box(3, 2, 2, Point(0, 0, 0), Point(3, 2, 2));
+  std::size_t boundary_sides = 0;
+  for (EntityHandle element = 1; element <= mesh.n_elements(); ++element) {
+    for (unsigned side = 0; side < mesh.n_sides(element); ++side) {
+      const auto target = mesh.canonical_side_vertex_ids(element, side);
+      std::optional<EntityHandle> expected;
+      for (EntityHandle other = 1; other <= mesh.n_elements() && !expected; ++other) {
+        if (other == element) continue;
+        for (unsigned s = 0; s < mesh.n_sides(other); ++s)
+          if (mesh.canonical_side_vertex_ids(other, s) == target) expected = other;
+      }
+      EXPECT_EQ(mesh.neighbor(element, side), expected) << "element " << element << " side " << side;
+      if (!expected) ++boundary_sides;
+    }
+  }
+  // Surface of a 3 x 2 x 2 box of unit cells: 2 (3*2 + 3*2 + 2*2) faces.
+  EXPECT_EQ(boundary_sides, 32u);
+}
+
+// physics.spatial_mesh.RegeneratingAMeshReplacesItsSideLookup -- a mesh
+// generated a second time answers neighbour queries for the second mesh
+// only. The first mesh is two cells stacked in y: vertices 1 2 / 3 4 / 5 6,
+// cell 1 on vertices (1, 2, 4, 3) and cell 2 on (3, 4, 6, 5), sharing the
+// side {3, 4}. The second mesh is the single cell on vertices (1, 2, 4, 3):
+// its side {3, 4} has the same vertex ids as the shared side of the first
+// mesh, so a lookup that still held the first mesh would report cell 2,
+// which no longer exists, as its neighbour.
+TEST(SpatialMeshTest, RegeneratingAMeshReplacesItsSideLookup) {
+  Mesh mesh(2);
+  mesh.generate_2d_box(1, 2, Point(0, 0, 0), Point(1, 2, 0));
+  std::size_t shared = 0;
+  for (unsigned side = 0; side < mesh.n_sides(1); ++side)
+    if (mesh.neighbor(1, side) == EntityHandle{2}) {
+      ++shared;
+      EXPECT_EQ(mesh.canonical_side_vertex_ids(1, side), (std::vector<fuse::physics::spatial::GlobalId>{3, 4}));
+    }
+  ASSERT_EQ(shared, 1u);
+  mesh.generate_2d_box(1, 1, Point(0, 0, 0), Point(1, 1, 0));
+  ASSERT_EQ(mesh.n_elements(), 1u);
+  for (unsigned side = 0; side < mesh.n_sides(1); ++side) EXPECT_TRUE(mesh.is_boundary_side(1, side)) << "side " << side;
 }
 
 // physics.spatial_mesh.BoundingBoxAndCentroidMatchGeometry -- the mesh's

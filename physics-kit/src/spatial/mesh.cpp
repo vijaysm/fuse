@@ -66,6 +66,8 @@ EntityHandle Mesh::add_element(fe::GeometryVariant kind, std::vector<EntityHandl
   element_owned_.push_back(owned);
   const EntityHandle handle = elements_.size();
   element_gid_.push_back(gid.value_or(static_cast<GlobalId>(handle)));
+  const unsigned sides = n_sides(handle);
+  for (unsigned side = 0; side < sides; ++side) side_elements_[canonical_side_vertex_ids(handle, side)].push_back(handle);
   return handle;
 }
 
@@ -97,11 +99,13 @@ void Mesh::generate_box(unsigned nx, unsigned ny, unsigned nz, const Point& lo, 
   if (nx == 0 || ny == 0 || nz == 0) refuse("generate_box needs at least one element per axis");
   vertices_.clear();
   vertex_owned_.clear();
+  vertex_owner_.clear();
   vertex_gid_.clear();
   elements_.clear();
   element_kind_.clear();
   element_owned_.clear();
   element_gid_.clear();
+  side_elements_.clear();
   const unsigned px = nx + 1, py = ny + 1, pz = nz + 1;
   const auto vertex_index = [&](unsigned i, unsigned j, unsigned k) -> EntityHandle {
     return static_cast<EntityHandle>(k) * py * px + static_cast<EntityHandle>(j) * px + i + 1;
@@ -129,11 +133,13 @@ void Mesh::generate_2d_box(unsigned nx, unsigned ny, const Point& lo, const Poin
   if (nx == 0 || ny == 0) refuse("generate_2d_box needs at least one element per axis");
   vertices_.clear();
   vertex_owned_.clear();
+  vertex_owner_.clear();
   vertex_gid_.clear();
   elements_.clear();
   element_kind_.clear();
   element_owned_.clear();
   element_gid_.clear();
+  side_elements_.clear();
   const unsigned px = nx + 1, py = ny + 1;
   const auto vertex_index = [&](unsigned i, unsigned j) -> EntityHandle {
     return static_cast<EntityHandle>(j) * px + i + 1;
@@ -214,13 +220,11 @@ std::vector<GlobalId> Mesh::canonical_edge_vertex_ids(EntityHandle element, unsi
 }
 
 std::optional<EntityHandle> Mesh::neighbor(EntityHandle element, unsigned side) const {
-  const auto target = canonical_side_vertex_ids(element, side);
-  for (EntityHandle candidate = 1; candidate <= elements_.size(); ++candidate) {
-    if (candidate == element) continue;
-    const auto candidate_sides = n_sides(candidate);
-    for (unsigned s = 0; s < candidate_sides; ++s)
-      if (canonical_side_vertex_ids(candidate, s) == target) return candidate;
-  }
+  const auto found = side_elements_.find(canonical_side_vertex_ids(element, side));
+  if (found == side_elements_.end()) return std::nullopt;
+  // The lowest-numbered other element on this side.
+  for (const EntityHandle candidate : found->second)
+    if (candidate != element) return candidate;
   return std::nullopt;
 }
 
