@@ -102,6 +102,23 @@ own restart does. `SolverReport::residual_norm` is always the recomputed value.
 No silent cap, same as PCG: exhausting `GmresOptions::max_iterations` (the total Arnoldi-step budget
 across every restart cycle) without a verified convergence returns `E-LINALG-NO-CONVERGENCE`.
 
+Attainable accuracy. With an inexactly applied operator the Arnoldi recurrence keeps reducing its
+own residual estimate while the true residual stops at a level set by the operator's error (Simoncini
+and Szyld, SIAM J. Sci. Comput. 25, 2003; van den Eshof and Sleijpen, SIAM J. Matrix Anal. Appl. 26,
+2004). A tolerance below that level can never be verified. The test for it uses only quantities the
+solver already computes and has no threshold of its own: at a verification point, the rotation
+estimate has met the tolerance, the recomputed residual has not, and the recomputed residual is no
+smaller than `beta`, the fresh residual the restart cycle began from. A cycle that began from a true
+residual has then made no true progress while reporting convergence, and a restart cannot help. The
+solve stops with `x` at the cycle-start iterate: `E-LINALG-ATTAINABLE-ACCURACY` by default, or a
+`SolverReport` with `at_attainable_accuracy` set when `GmresOptions::return_at_attainable_accuracy`
+asks for it. A cycle that reduced the true residual at all restarts as before, and a cycle that
+stagnates without its recurrence reporting convergence still ends in `E-LINALG-NO-CONVERGENCE`.
+`test/linalg/gmres_attainable_accuracy_test.cpp` uses a tridiagonal operator whose product is rounded
+to single precision: at `rel_tol = 1e-12` the solve stops after 50 iterations (restart 20) or 90
+(restart 40) at a relative residual of 2.4e-8, where the unrounded operator converges; GMRES(1) on a
+plane rotation still reports `E-LINALG-NO-CONVERGENCE`.
+
 ## What is and is not verified
 
 Measured at tier 0, one rank, against Eigen (`test/linalg/{pcg,gmres}_test.cpp`):

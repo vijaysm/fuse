@@ -157,10 +157,21 @@ gmres: 4 iterations, x[0] = 4
 | Options | `rel_tol = 1e-10`, `max_iterations = 1000`, `monitor` | the same plus `restart = 30` |
 | Requires | symmetric positive definite operator, symmetric preconditioner | any operator; right-preconditioned (z = M⁻¹v, w = Az) |
 | Convergence | relative to ‖b‖; the true residual is recomputed before convergence is accepted | the same; `restart < 1` is `E-LINALG-OPTIONS` |
-| Failure | `E-LINALG-NO-CONVERGENCE` after `max_iterations`, with the last relative residual in the message | the same |
+| Failure | `E-LINALG-NO-CONVERGENCE` after `max_iterations`, with the last relative residual in the message | the same; `E-LINALG-ATTAINABLE-ACCURACY` when the operator's own error prevents the tolerance from being reached (below) |
 
 A zero right-hand side returns immediately with x = 0 and `converged = true`. `monitor(iteration,
 residual_norm)` is called at every iteration when set.
+
+**Attainable accuracy.** An operator that is applied inexactly -- a finite-differenced Jacobian
+action, a reduced-precision kernel -- limits how small the true residual `b - A x` can become. `gmres`
+detects this instead of iterating to `max_iterations`: when its recurrence reports the tolerance met
+but the recomputed residual is no smaller than the residual the current restart cycle began from, it
+stops and leaves `x` at that cycle-start iterate. By default this is a failure,
+`E-LINALG-ATTAINABLE-ACCURACY`, with both residuals in the message; ask for a looser tolerance or a
+more accurate operator. A caller with its own convergence test on an outer residual sets
+`GmresOptions::return_at_attainable_accuracy = true` and receives a report with `converged = false`
+and `at_attainable_accuracy = true` instead. Stagnation of a short restart cycle on a hard problem is
+a different condition and still ends in `E-LINALG-NO-CONVERGENCE`; increase `restart`.
 
 ## Schur slab solver
 

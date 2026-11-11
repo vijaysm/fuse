@@ -413,3 +413,47 @@ test = "linalg.derivative_gate"
 # band's own bounds would otherwise have matched, is unaffected (this
 # mutation touches only the one test's own literals). File restored and
 # `cmp`-verified byte-identical.
+
+[[mutation]]
+id = "krylov-gmres-attainable-accuracy-ignores-cycle-start-residual"
+area = "linalg"
+describes = "gmres reports the attainable accuracy as soon as the rotation estimate meets the tolerance and the recomputed residual does not, without requiring that the recomputed residual be no smaller than the residual the restart cycle began from. A first cycle whose estimate converges while the true residual has only partly decreased is then reported as the attainable accuracy with the initial guess returned, instead of being restarted from."
+file = "include/fuse/linalg/gmres.hpp"
+old = """      if (residual_estimate <= opt.rel_tol * b_norm && true_norm >= beta) {"""
+new = """      if (residual_estimate <= opt.rel_tol * b_norm) {"""
+target = "fuse_linalg_gmres_attainable_accuracy_test"
+test = "linalg.gmres_attainable_accuracy"
+# GmresAttainableAccuracy.ReturnsTheCycleStartIterateWhenAsked fails at restart = 40: the returned relative residual is 1, not below the initial residual.
+
+[[mutation]]
+id = "krylov-gmres-attainable-accuracy-ignores-rotation-estimate"
+area = "linalg"
+describes = "gmres reports the attainable accuracy whenever a verified residual is no smaller than the cycle-start residual, whether or not the rotation estimate has met the tolerance. Restarted GMRES stagnating on a problem that needs a longer cycle is then reported as the attainable accuracy instead of E-LINALG-NO-CONVERGENCE."
+file = "include/fuse/linalg/gmres.hpp"
+old = """      if (residual_estimate <= opt.rel_tol * b_norm && true_norm >= beta) {"""
+new = """      if (true_norm >= beta) {"""
+target = "fuse_linalg_gmres_attainable_accuracy_test"
+test = "linalg.gmres_attainable_accuracy"
+# GmresAttainableAccuracy.RestartStagnationIsNotAttainableAccuracy fails: GMRES(1) on a plane rotation returns E-LINALG-ATTAINABLE-ACCURACY.
+
+[[mutation]]
+id = "krylov-gmres-attainable-accuracy-never-returned-as-report"
+area = "linalg"
+describes = "gmres ignores GmresOptions::return_at_attainable_accuracy and always returns the Failure."
+file = "include/fuse/linalg/gmres.hpp"
+old = """        if (opt.return_at_attainable_accuracy) {"""
+new = """        if (false) {"""
+target = "fuse_linalg_gmres_attainable_accuracy_test"
+test = "linalg.gmres_attainable_accuracy"
+# GmresAttainableAccuracy.ReturnsTheCycleStartIterateWhenAsked fails on its first assertion: the result is a Failure.
+
+[[mutation]]
+id = "krylov-gmres-attainable-accuracy-always-returned-as-report"
+area = "linalg"
+describes = "gmres returns the attainable-accuracy report as a success even when the caller did not ask for it, so a caller that only checks ok() takes an unconverged solve for a converged one."
+file = "include/fuse/linalg/gmres.hpp"
+old = """        if (opt.return_at_attainable_accuracy) {"""
+new = """        if (true) {"""
+target = "fuse_linalg_gmres_attainable_accuracy_test"
+test = "linalg.gmres_attainable_accuracy"
+# GmresAttainableAccuracy.ReportsAttainableAccuracyAsAFailureByDefault fails: the result is ok().

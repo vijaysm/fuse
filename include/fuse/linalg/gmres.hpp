@@ -34,6 +34,32 @@
 /// fresh unconditionally (never from the rotation estimate), the same
 /// Eigen's own restart does (`p0 = rhs - mat * x`).
 ///
+/// ATTAINABLE ACCURACY. When the operator is applied inexactly -- a
+/// finite-differenced Jacobian action is the common case, rounding in an
+/// ill-conditioned exact operator the other -- the Arnoldi recurrence
+/// keeps reducing its own residual estimate while the true residual
+/// `b - A x` stops at a level set by the operator's error (Simoncini and
+/// Szyld, "Theory of inexact Krylov subspace methods and applications to
+/// scientific computing", SIAM J. Sci. Comput. 25, 2003; van den Eshof
+/// and Sleijpen, "Inexact Krylov subspace methods for linear systems",
+/// SIAM J. Matrix Anal. Appl. 26, 2004). A tolerance below that level can
+/// never be verified, and without a test for it the solve runs to
+/// `max_iterations`. The test uses only quantities already computed and
+/// no threshold of its own: at a verification point, if the rotation
+/// estimate has met the tolerance, the recomputed residual has not, and
+/// the recomputed residual is no smaller than `beta`, the fresh true
+/// residual the current restart cycle began from, then the Arnoldi steps
+/// of a cycle begun from a true residual have produced no true progress
+/// while its recurrence reports convergence. Restarting cannot help (the
+/// cycle already started from a recomputed residual), so the solve stops
+/// there and leaves `x` at the cycle-start iterate. A cycle that DID
+/// reduce the true residual, however little, is unaffected and restarts
+/// as before; a cycle that stagnates WITHOUT its recurrence reporting
+/// convergence (restarted GMRES on a problem that needs a longer cycle)
+/// is not this condition and still ends in `E-LINALG-NO-CONVERGENCE`.
+/// `GmresOptions::return_at_attainable_accuracy` selects whether this is a
+/// `Failure` (the default) or a report the caller inspects.
+///
 /// NO SILENT CAP. Exhausting `GmresOptions::max_iterations` (the total
 /// Arnoldi-step budget across every restart cycle) without a verified
 /// convergence returns `E-LINALG-NO-CONVERGENCE`, carrying the iteration
@@ -69,6 +95,15 @@ struct GmresOptions {
   /// boundary's fresh `r0`) with `(total_iterations_so_far,
   /// relative_residual_norm)` -- same contract as `PcgOptions::monitor`.
   std::function<void(std::size_t, double)> monitor = nullptr;
+  /// What reaching the attainable accuracy (this file's header comment)
+  /// returns. `false`: `Failure{"E-LINALG-ATTAINABLE-ACCURACY"}`, so a
+  /// caller that only checks `ok()` never mistakes it for convergence.
+  /// `true`: a successful `SolverReport` with `converged == false` and
+  /// `at_attainable_accuracy == true`, for a caller with its own
+  /// convergence test on an outer residual (`fuse::num::solve`). In both
+  /// cases `x` holds the iterate the current restart cycle began from,
+  /// whose true residual is the one reported.
+  bool return_at_attainable_accuracy = false;
 };
 
 /// Solves `A x = b` by restarted, right-preconditioned GMRES. `x` is both
@@ -212,6 +247,25 @@ template <class Op, class Precond>
         x.copy_from(x_trial);
         if (opt.monitor) opt.monitor(total_iter, true_norm);
         return SolverReport{total_iter, true_norm, true};
+      }
+
+      // Attainable accuracy (this file's header comment): the recurrence
+      // says the tolerance is met, the recomputed residual says it is not,
+      // and that recomputed residual is no smaller than `beta`, the true
+      // residual this cycle began from. `x` is still that cycle-start
+      // iterate, the better of the two, and is left untouched.
+      if (residual_estimate <= opt.rel_tol * b_norm && true_norm >= beta) {
+        if (opt.monitor) opt.monitor(total_iter, beta);
+        if (opt.return_at_attainable_accuracy) {
+          return SolverReport{total_iter, beta, false, true};
+        }
+        return Failure{"E-LINALG-ATTAINABLE-ACCURACY",
+                      fmt::format("gmres reached its attainable accuracy after {} iterations: the "
+                                 "recurrence reports relative residual {:.6e}, the recomputed "
+                                 "residual is {:.6e} and did not decrease over the last restart "
+                                 "cycle (it began at {:.6e}); tolerance {:.6e}",
+                                 total_iter, residual_estimate / b_norm, true_norm / b_norm,
+                                 beta / b_norm, opt.rel_tol)};
       }
       if (opt.monitor) opt.monitor(total_iter, residual_estimate);
 

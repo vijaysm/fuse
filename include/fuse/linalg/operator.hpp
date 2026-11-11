@@ -39,6 +39,16 @@ struct SolverReport {
   std::size_t iterations = 0;
   double residual_norm = 0.0;
   bool converged = false;
+  /// True when the solver stopped at its attainable accuracy: the
+  /// recurrence reported the tolerance met, but the recomputed true
+  /// residual was no smaller than the true residual the current restart
+  /// cycle began from. `converged` is then false, the solution vector holds
+  /// the iterate whose true residual is `residual_norm`, and no further
+  /// iteration with this operator can be expected to reduce it. Only a
+  /// solver asked to return in this state sets it (gmres.hpp,
+  /// `GmresOptions::return_at_attainable_accuracy`); by default the same
+  /// condition is a `Failure`.
+  bool at_attainable_accuracy = false;
 };
 
 /// Any `T` for which `op.apply(x, y)` computes `y <- A x` and reports

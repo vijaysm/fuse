@@ -1442,6 +1442,7 @@ fuse_add_gtest(linalg dist_vector THROWS)
 fuse_add_gtest(linalg dist_sparse_matrix THROWS)
 fuse_add_gtest(linalg comm)
 fuse_add_gtest(linalg preconditioner THROWS)
+fuse_add_gtest(linalg gmres_attainable_accuracy)
 # Native preconditioned conjugate gradient and restarted,
 # right-preconditioned GMRES(m) (include/fuse/linalg/{pcg,gmres}.hpp),
 # checked one rank against Eigen::ConjugateGradient and Eigen's unsupported
