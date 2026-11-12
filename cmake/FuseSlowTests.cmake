@@ -40,6 +40,7 @@ set(FUSE_SLOW_TESTS
   verification.brusselator_runner                      #   10.4 s
   verification.gray_scott_multirate                    #   10.0 s
   verification.brusselator_restart                     #   over the 10 s tier-0 threshold once the windows 3 and 6 row was added (tools/check-test-cost.py)
+  physics.diffusion_reaction_steady_order_fine         #   46.1 s, one run of an unoptimised build
 )
 
 # Appends the label to each listed row that exists in the CURRENT directory:

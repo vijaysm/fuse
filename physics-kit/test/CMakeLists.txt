@@ -49,6 +49,7 @@ fuse_add_gtest(physics boundary_condition SRC_DIR . NO_LAYER_LIB LIBS fuse::phys
 fuse_add_gtest(physics diffusion_reaction_system SRC_DIR . NO_LAYER_LIB LIBS fuse::physics_kit)
 fuse_add_gtest(physics diffusion_reaction_transient SRC_DIR . NO_LAYER_LIB LIBS fuse::physics_kit)
 fuse_add_gtest(physics diffusion_reaction_steady_order SRC_DIR . NO_LAYER_LIB LIBS fuse::physics_kit)
+fuse_add_gtest(physics diffusion_reaction_steady_order_fine SRC_DIR . NO_LAYER_LIB LIBS fuse::physics_kit)
 
 # The collective mesh contract over a real communicator: owned
 # counts sum to the global total and a ghost vertex's global id agrees with its
@@ -105,3 +106,7 @@ endif()
 list(LENGTH _fuse_physics_test_files _n_physics_files)
 message(STATUS "fuse physics-kit: ${_n_physics_files} test source(s) on disk, every one registered or gated")
 
+# The `slow` label is a directory-scoped test property (cmake/
+# FuseSlowTests.cmake), so it is applied here for the rows this directory
+# registers.
+fuse_label_slow_tests()

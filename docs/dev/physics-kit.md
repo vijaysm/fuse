@@ -335,7 +335,8 @@ from data that is constant in time. `BoundaryCondition::steady_dirichlet` builds
 `DiffusionReactionSystem` is single-rank, because `BoundaryConditionManager::resolve` refuses a
 multi-rank `DofMap`.
 
-**Steady solves** (`physics.diffusion_reaction_system`, `physics.diffusion_reaction_steady_order`).
+**Steady solves** (`physics.diffusion_reaction_system`, `physics.diffusion_reaction_steady_order`,
+`physics.diffusion_reaction_steady_order_fine`).
 
 - *Exact residual.* For `u = x + 2y` with a linear reaction and one Dirichlet, one Neumann and one
   Robin boundary, the residual at the nodal values is 7.2e-16 at most, against a derived rounding
@@ -344,13 +345,14 @@ multi-rank `DofMap`.
   each. The band is twice the change between the two observed orders plus the effect of the
   algebraic error, which is bounded from the final residual, the coercivity `d pi^2` less the
   reaction shift, and the smallest eigenvalue of the mass matrix (the derivation is the header
-  comment of `diffusion_reaction_steady_order_test.cpp`; the bound is below 1e-10 on every level).
+  comment of `physics-kit/test/diffusion_reaction_steady_order.hpp`; the bound is below 1e-10 on every level).
 
   | discretisation | meshes | observed orders | band |
   |---|---|---|---|
   | Q1, 2-D | 4, 8, 16 | 2.0024, 2.0005 | 0.0039 |
   | Q2, 2-D | 4, 8, 16 | 2.977, 2.995 | 0.036 |
   | Q1, 3-D | 2, 4, 8 | 2.058, 2.012 | 0.092 |
+  | Q1, 3-D (`physics.diffusion_reaction_steady_order_fine`, a slow row: 46 s unoptimised) | 4, 8, 16 | 2.012, 2.003 | 0.018 |
 
 - *Preconditioner.* `SsorFromTheAssembledJacobianReducesGmresIterations` compares the first Newton
   step alone: the same linear system, the same right-preconditioned residual, the same fixed forcing
