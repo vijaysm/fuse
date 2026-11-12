@@ -111,13 +111,17 @@ TEST(GmresAttainableAccuracy, ReturnsTheCycleStartIterateWhenAsked) {
   const auto a = tridiagonal_operator(/*round_to_float=*/true);
   const DistVector b = right_hand_side();
   const double b_norm = b.norm2();
-  // Two cycle lengths. With restart = 20 the first cycle ends before its
-  // estimate reaches the tolerance. With restart = kN (full GMRES on this
-  // system) the estimate DOES reach it inside the first cycle while the
+  // Three cycle lengths. With restart = 5 the rotation estimate never
+  // reaches the tolerance inside a cycle: the attainable accuracy is found
+  // at a restart boundary, where the estimate has fallen below the residual
+  // the cycle began from and the recomputed residual has not. With
+  // restart = 20 the first cycle ends before its estimate reaches the
+  // tolerance and a later one reaches it. With restart = kN (full GMRES on
+  // this system) the estimate reaches it inside the first cycle while the
   // recomputed residual is still above the tolerance; that cycle reduced
   // the true residual from ||b||, so it must be restarted from, and only a
   // later cycle that makes no true progress is the attainable accuracy.
-  for (const std::size_t restart : {std::size_t{20}, kN}) {
+  for (const std::size_t restart : {std::size_t{5}, std::size_t{20}, kN}) {
     DistVector x = make_vector();
     x.set_zero();
     GmresOptions opt;

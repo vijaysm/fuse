@@ -45,21 +45,24 @@
 /// SIAM J. Matrix Anal. Appl. 26, 2004). A tolerance below that level can
 /// never be verified, and without a test for it the solve runs to
 /// `max_iterations`. The test uses only quantities already computed and
-/// no threshold of its own: at a verification point, if the rotation
-/// estimate has met the tolerance, the recomputed residual has not, and
-/// the recomputed residual is no smaller than `beta`, the fresh true
-/// residual the current restart cycle began from, then the Arnoldi steps
-/// of a cycle begun from a true residual have produced no true progress
-/// while its recurrence reports convergence. Restarting cannot help (the
-/// cycle already started from a recomputed residual), so the solve stops
-/// there and leaves `x` at the cycle-start iterate. A cycle whose
-/// recurrence reports convergence while the recomputed residual has
-/// decreased, but not to the tolerance, commits that verified iterate and
-/// restarts at once from its true residual; it does not continue to the
-/// restart boundary on an estimate known to be wrong. A cycle that
-/// stagnates WITHOUT its recurrence reporting convergence (restarted
-/// GMRES on a problem that needs a longer cycle) is not this condition
-/// and still ends in `E-LINALG-NO-CONVERGENCE`.
+/// no threshold of its own. Every cycle begins from a recomputed residual
+/// `beta`, and the residual is recomputed again wherever the cycle may end:
+/// when the rotation estimate meets the tolerance, at the restart boundary
+/// and on a breakdown. If that recomputed residual is not below `beta`
+/// while the rotation estimate is, the recurrence reports a reduction that
+/// did not take place. Restarting cannot help (the cycle already started
+/// from a recomputed residual, and would be repeated), so the solve stops
+/// there and leaves `x` at the cycle-start iterate. The estimate need not
+/// have reached the tolerance: with a short restart it typically settles
+/// well above it and well below the recomputed residual, cycle after
+/// cycle. A cycle that does reduce the recomputed residual, but not to the
+/// tolerance, commits that verified iterate and restarts from its true
+/// residual; when its rotation estimate has already met the tolerance it
+/// does so at once and does not continue to the restart boundary on an
+/// estimate known to be wrong. A cycle in which the rotation estimate
+/// shows no reduction either (restarted GMRES on a problem that needs a
+/// longer cycle) is not this condition and still ends in
+/// `E-LINALG-NO-CONVERGENCE`.
 /// `GmresOptions::return_at_attainable_accuracy` selects whether this is a
 /// `Failure` (the default) or a report the caller inspects.
 ///
@@ -251,37 +254,44 @@ template <class Op, class Precond>
         return SolverReport{total_iter, true_norm, true};
       }
 
-      // Attainable accuracy (this file's header comment): the recurrence
-      // says the tolerance is met, the recomputed residual says it is not,
-      // and that recomputed residual is no smaller than `beta`, the true
-      // residual this cycle began from. `x` is still that cycle-start
-      // iterate, the better of the two, and is left untouched.
-      if (residual_estimate <= opt.rel_tol * b_norm && true_norm >= beta) {
-        if (opt.monitor) opt.monitor(total_iter, beta);
-        if (opt.return_at_attainable_accuracy) {
-          return SolverReport{total_iter, beta, false, true};
+      if (true_norm >= beta) {
+        // This cycle began from the true residual `beta` and has produced
+        // no reduction of the recomputed residual. `x` is still the
+        // cycle-start iterate and is left there: it is never moved to an
+        // iterate whose recomputed residual is not smaller.
+        if (residual_estimate < beta) {
+          // Attainable accuracy (this file's header comment): the
+          // recurrence reports a reduction that the recomputed residual
+          // does not show.
+          if (opt.monitor) opt.monitor(total_iter, beta);
+          if (opt.return_at_attainable_accuracy) {
+            return SolverReport{total_iter, beta, false, true};
+          }
+          return Failure{"E-LINALG-ATTAINABLE-ACCURACY",
+                        fmt::format("gmres reached its attainable accuracy after {} iterations: the "
+                                   "recurrence reports relative residual {:.6e}, the recomputed "
+                                   "residual is {:.6e} and did not decrease over the last restart "
+                                   "cycle (it began at {:.6e}); tolerance {:.6e}",
+                                   total_iter, residual_estimate / b_norm, true_norm / b_norm,
+                                   beta / b_norm, opt.rel_tol)};
         }
-        return Failure{"E-LINALG-ATTAINABLE-ACCURACY",
-                      fmt::format("gmres reached its attainable accuracy after {} iterations: the "
-                                 "recurrence reports relative residual {:.6e}, the recomputed "
-                                 "residual is {:.6e} and did not decrease over the last restart "
-                                 "cycle (it began at {:.6e}); tolerance {:.6e}",
-                                 total_iter, residual_estimate / b_norm, true_norm / b_norm,
-                                 beta / b_norm, opt.rel_tol)};
+        // The recurrence shows no reduction either: the restarted method
+        // has stagnated (a longer cycle is needed). The cycle ends; the
+        // iteration budget decides.
+        if (opt.monitor) opt.monitor(total_iter, residual_estimate);
+        break;
       }
       if (opt.monitor) opt.monitor(total_iter, residual_estimate);
 
-      // Every candidate that was not accepted ends the cycle: the restart
-      // boundary and a breakdown as before, and also a rotation estimate
-      // that met the tolerance when the recomputed residual did not. In
-      // that last case the recurrence no longer describes the true
-      // residual, so further Arnoldi steps of this cycle would be judged
-      // by an estimate already known to be wrong, each at the cost of an
-      // extra `apply`; `x_trial` has a recomputed residual below `beta`
-      // (the attainable-accuracy test above returned otherwise), so it is
-      // committed and the next cycle starts from that true residual. This
-      // is the residual-replacement step pcg.hpp takes in the same
-      // situation.
+      // A verified reduction that has not reached the tolerance ends the
+      // cycle: at the restart boundary and on a breakdown, and also when
+      // the rotation estimate met the tolerance and the recomputed
+      // residual did not. In that last case the recurrence no longer
+      // describes the true residual, so further Arnoldi steps of this
+      // cycle would be judged by an estimate already known to be wrong,
+      // each at the cost of an extra `apply`. `x_trial` is committed and
+      // the next cycle starts from its true residual, the
+      // residual-replacement step pcg.hpp takes in the same situation.
       x.copy_from(x_trial);
       break;
     }

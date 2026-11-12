@@ -417,24 +417,24 @@ test = "linalg.derivative_gate"
 [[mutation]]
 id = "krylov-gmres-attainable-accuracy-ignores-cycle-start-residual"
 area = "linalg"
-describes = "gmres reports the attainable accuracy as soon as the rotation estimate meets the tolerance and the recomputed residual does not, without requiring that the recomputed residual be no smaller than the residual the restart cycle began from. A first cycle whose estimate converges while the true residual has only partly decreased is then reported as the attainable accuracy with the initial guess returned, instead of being restarted from."
+describes = "gmres treats every verification that has not met the tolerance as a cycle without reduction, without comparing the recomputed residual with the residual the restart cycle began from. A cycle that reduced the true residual, but not to the tolerance, is then reported as the attainable accuracy with the cycle-start iterate returned, instead of being restarted from."
 file = "include/fuse/linalg/gmres.hpp"
-old = """      if (residual_estimate <= opt.rel_tol * b_norm && true_norm >= beta) {"""
-new = """      if (residual_estimate <= opt.rel_tol * b_norm) {"""
+old = """      if (true_norm >= beta) {"""
+new = """      if (true_norm > opt.rel_tol * b_norm) {"""
 target = "fuse_linalg_gmres_attainable_accuracy_test"
 test = "linalg.gmres_attainable_accuracy"
-# GmresAttainableAccuracy.ReturnsTheCycleStartIterateWhenAsked fails at restart = 40: the returned relative residual is 1, not below the initial residual.
+# GmresAttainableAccuracy.ReturnsTheCycleStartIterateWhenAsked and ExactOperatorStillConverges fail.
 
 [[mutation]]
 id = "krylov-gmres-attainable-accuracy-ignores-rotation-estimate"
 area = "linalg"
-describes = "gmres reports the attainable accuracy whenever a verified residual is no smaller than the cycle-start residual, whether or not the rotation estimate has met the tolerance. Restarted GMRES stagnating on a problem that needs a longer cycle is then reported as the attainable accuracy instead of E-LINALG-NO-CONVERGENCE."
+describes = "gmres reports the attainable accuracy whenever a cycle has not reduced the recomputed residual, without asking whether the rotation estimate shows a reduction. Stagnation of restarted GMRES, where the recurrence itself shows none and a longer cycle is the remedy, is then reported as the attainable accuracy."
 file = "include/fuse/linalg/gmres.hpp"
-old = """      if (residual_estimate <= opt.rel_tol * b_norm && true_norm >= beta) {"""
-new = """      if (true_norm >= beta) {"""
+old = """        if (residual_estimate < beta) {"""
+new = """        if (true) {"""
 target = "fuse_linalg_gmres_attainable_accuracy_test"
 test = "linalg.gmres_attainable_accuracy"
-# GmresAttainableAccuracy.RestartStagnationIsNotAttainableAccuracy fails: GMRES(1) on a plane rotation returns E-LINALG-ATTAINABLE-ACCURACY.
+# GmresAttainableAccuracy.RestartStagnationIsNotAttainableAccuracy fails: the code is E-LINALG-ATTAINABLE-ACCURACY.
 
 [[mutation]]
 id = "krylov-gmres-attainable-accuracy-never-returned-as-report"
@@ -461,17 +461,27 @@ test = "linalg.gmres_attainable_accuracy"
 [[mutation]]
 id = "krylov-gmres-refuted-estimate-continues-the-cycle"
 area = "linalg"
-describes = "gmres ends a cycle only at the restart boundary or on a breakdown. When the rotation estimate has met the tolerance and the recomputed residual has not, it keeps taking Arnoldi steps of the same cycle, each judged by an estimate already known to be wrong and each costing an extra apply, instead of committing the verified iterate and restarting from its true residual."
+describes = "gmres ends a cycle that reduced the recomputed residual only at the restart boundary or on a breakdown. When the rotation estimate has met the tolerance and the recomputed residual has not, it keeps taking Arnoldi steps of the same cycle, each judged by an estimate already known to be wrong and each costing an extra apply, instead of committing the verified iterate and restarting from its true residual."
 file = "include/fuse/linalg/gmres.hpp"
-old = """      // situation.
+old = """      // residual-replacement step pcg.hpp takes in the same situation.
       x.copy_from(x_trial);
       break;"""
-new = """      // situation.
+new = """      // residual-replacement step pcg.hpp takes in the same situation.
       if (at_restart_boundary || breakdown) {
         x.copy_from(x_trial);
         break;
       }"""
 target = "fuse_linalg_gmres_attainable_accuracy_test"
 test = "linalg.gmres_attainable_accuracy"
-# GmresAttainableAccuracy.ReturnsTheCycleStartIterateWhenAsked fails: Arnoldi steps follow an estimate that met the tolerance (the monitor's iteration count advances).
+# GmresAttainableAccuracy.ReturnsTheCycleStartIterateWhenAsked fails: Arnoldi steps follow an estimate that met the tolerance.
 
+[[mutation]]
+id = "krylov-gmres-attainable-accuracy-requires-the-estimate-to-meet-the-tolerance"
+area = "linalg"
+describes = "gmres recognises the attainable accuracy only when the rotation estimate has met the tolerance. With a restart cycle too short for that, the estimate settles between the tolerance and the recomputed residual at every restart boundary, no cycle reduces the recomputed residual, and the solve runs to max_iterations."
+file = "include/fuse/linalg/gmres.hpp"
+old = """        if (residual_estimate < beta) {"""
+new = """        if (residual_estimate <= opt.rel_tol * b_norm) {"""
+target = "fuse_linalg_gmres_attainable_accuracy_test"
+test = "linalg.gmres_attainable_accuracy"
+# GmresAttainableAccuracy.ReturnsTheCycleStartIterateWhenAsked fails at restart = 5: E-LINALG-NO-CONVERGENCE after 5000 iterations.

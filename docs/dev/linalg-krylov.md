@@ -106,26 +106,35 @@ Attainable accuracy. With an inexactly applied operator the Arnoldi recurrence k
 own residual estimate while the true residual stops at a level set by the operator's error (Simoncini
 and Szyld, SIAM J. Sci. Comput. 25, 2003; van den Eshof and Sleijpen, SIAM J. Matrix Anal. Appl. 26,
 2004). A tolerance below that level can never be verified. The test for it uses only quantities the
-solver already computes and has no threshold of its own: at a verification point, the rotation
-estimate has met the tolerance, the recomputed residual has not, and the recomputed residual is no
-smaller than `beta`, the fresh residual the restart cycle began from. A cycle that began from a true
-residual has then made no true progress while reporting convergence, and a restart cannot help. The
-solve stops with `x` at the cycle-start iterate: `E-LINALG-ATTAINABLE-ACCURACY` by default, or a
-`SolverReport` with `at_attainable_accuracy` set when `GmresOptions::return_at_attainable_accuracy`
-asks for it. A cycle that reduced the true residual at all restarts as before, and a cycle that
-stagnates without its recurrence reporting convergence still ends in `E-LINALG-NO-CONVERGENCE`.
-`test/linalg/gmres_attainable_accuracy_test.cpp` uses a tridiagonal operator whose product is rounded
-to single precision: at `rel_tol = 1e-12` the solve stops after 40 iterations (restart 20) or 46
-(restart 40) at a relative residual of 2.4e-8, where the unrounded operator converges; GMRES(1) on a
-plane rotation still reports `E-LINALG-NO-CONVERGENCE`.
+solver already computes and has no threshold of its own. Every restart cycle begins from a
+recomputed residual `beta`, and the residual is recomputed wherever the cycle may end: when the
+rotation estimate meets the tolerance, at the restart boundary and on a breakdown. If the recomputed
+residual is not below `beta` while the rotation estimate is, the recurrence reports a reduction that
+did not take place, and a restart would repeat the same cycle. The solve stops with `x` at the
+cycle-start iterate: `E-LINALG-ATTAINABLE-ACCURACY` by default, or a `SolverReport` with
+`at_attainable_accuracy` set when `GmresOptions::return_at_attainable_accuracy` asks for it. `x` is
+never moved to an iterate whose recomputed residual is not smaller.
 
-A refuted estimate ends the cycle. When the rotation estimate has met the tolerance and the
-recomputed residual has decreased but not to the tolerance, the recurrence no longer describes the
-true residual; the verified iterate is committed and the next cycle starts from its true residual,
-the residual-replacement step `pcg` takes in the same situation. Continuing the cycle instead would
-take every further Arnoldi step on an estimate known to be wrong, each with an extra operator
-application: with a long restart that is the whole remaining cycle (the same test took 50 and 90
-iterations before this rule).
+The estimate need not have reached the tolerance. With a restart cycle too short for that, it
+settles between the tolerance and the recomputed residual at every boundary. Measured on the
+Brusselator example with no forcing floor, in the window starting at t = 0.08 (restart 30, tolerance
+6.9e-10): the recomputed relative residual went 9.6e-5, 2.4e-6, 6.3e-7, 5.0e-7 over the first four
+cycles and then stayed near 4.8e-7 to the end of the 1000-iteration budget, 33 cycles in all, with
+the estimate near 4e-9 at each boundary. A rule that waited for the estimate to meet the tolerance
+ran the whole budget there.
+
+A cycle that reduces the recomputed residual, but not to the tolerance, commits that iterate and
+restarts from its true residual. When its rotation estimate has already met the tolerance it does so
+at once: the recurrence no longer describes the true residual, and every further Arnoldi step of
+that cycle would be judged by an estimate known to be wrong, each with an extra operator application.
+This is the residual-replacement step `pcg` takes in the same situation. A cycle in which the
+rotation estimate shows no reduction either is stagnation of the restarted method, where a longer
+cycle is the remedy, and still ends in `E-LINALG-NO-CONVERGENCE`.
+
+`test/linalg/gmres_attainable_accuracy_test.cpp` uses a tridiagonal operator whose product is rounded
+to single precision. At `rel_tol = 1e-12` the solve stops after 30 iterations (restart 5), 40
+(restart 20) or 46 (restart 40), at a relative residual of 2.4e-8 to 2.6e-8, where the unrounded
+operator converges; GMRES(1) on a plane rotation still reports `E-LINALG-NO-CONVERGENCE`.
 
 ## What is and is not verified
 
