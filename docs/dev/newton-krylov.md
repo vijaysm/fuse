@@ -2237,3 +2237,42 @@ two-substrates-one-graph test (Sec. 13) are all unchanged -- this section adds a
 problem (reaction-diffusion, not dn_heat's affine map or the Brusselator's window), not a new
 mechanism in `fuse::petsc` or `fuse::num` itself. `kGraphVersion` stays at 14: the
 `NewtonConfig` usage sets no field beyond what Sec. 12.4's own descriptor already carries.
+
+## 15. A forcing term below the accuracy of the Jacobian action
+
+The Jacobian action of `fuse::num::solve` is a difference quotient of the residual, so its relative
+accuracy is of order sqrt(unit roundoff) at best, and worse when the residual itself is evaluated
+through inner solves. The Eisenstat-Walker forcing term has no such limit: on a well-converging
+iteration it falls quadratically and asks the linear solve for a residual that cannot be verified.
+
+`solve` sets `GmresOptions::return_at_attainable_accuracy`, so `gmres` returns its best verified
+iterate `d` together with the true linear residual `||F + J d||` ([linalg-krylov](linalg-krylov.md)).
+What follows has no threshold of its own.
+
+- If `||F + J d||` is not below `||F||`, the linear solve made no progress. The result is
+  `DivergedLinearSolve` and `x` is unchanged.
+- Otherwise `d` is an inexact Newton step with effective forcing term `||F + J d|| / ||F|| < 1`
+  (Dembo, Eisenstat and Steihaug, SIAM J. Numer. Anal. 19, 1982). The line search and the tests on
+  `||F||` apply to it as to any other step.
+- If that step does not reduce `||F||` and neither residual test is met, the result is
+  `DivergedLinearSolve`, with `x` at the step taken. This is decided before the step-length test: a
+  step that is short against `||x||` is not read as convergence when it came from a linear solve of
+  limited accuracy and `||F||` did not decrease.
+
+`NewtonIterationRecord::linear_solve_at_attainable_accuracy` records which steps were of this kind.
+
+Measured (`test/num/newton_attainable_accuracy_test.cpp`). A linear residual of dimension 40 with a
+constant forcing term of 1e-14 converges in two steps, `||F||` going 9.58, 1.55e-7, 1.8e-15, both
+linear solves at their attainable accuracy; with a forcing term of 1e-4 it takes three steps and no
+linear solve stops that way. A residual whose directional derivative is not linear in the direction
+gives `DivergedLinearSolve` with no step taken. Arctangent residuals started where a full Newton step
+overshoots give `DivergedLinearSolve` after the one step, also when a large additional unknown makes
+that step short against `||x||`.
+
+A forcing floor (`NewtonConfig::eta_min`, `EisenstatWalkerOptions::eta_min`) is therefore a cost
+setting and no longer a condition for convergence. The Brusselator example at `--end 0.1` converges
+without its floor of 1e-4 to the same final means (equal to the 12 digits printed), in 41.6 s against
+18.4 to 20.5 s with it (unoptimised build): without the floor, GMRES spends several restart cycles on
+each late Newton step before it can establish that the tolerance is out of reach. The iteration
+counts pinned by `verification.brusselator_newton_norm` and `verification.brusselator_runner` are
+those of the floor; without it the first window takes 3 Newton steps where the pinned count is 4.

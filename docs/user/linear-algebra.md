@@ -164,9 +164,9 @@ residual_norm)` is called at every iteration when set.
 
 **Attainable accuracy.** An operator that is applied inexactly -- a finite-differenced Jacobian
 action, a reduced-precision kernel -- limits how small the true residual `b - A x` can become. `gmres`
-detects this instead of iterating to `max_iterations`: when its recurrence reports the tolerance met
-but the recomputed residual is no smaller than the residual the current restart cycle began from, it
-stops and leaves `x` at that cycle-start iterate. By default this is a failure,
+detects this instead of iterating to `max_iterations`: when its recurrence reports a reduction over a
+restart cycle but the recomputed residual is no smaller than the one that cycle began from, it stops
+and leaves `x` at that cycle-start iterate. By default this is a failure,
 `E-LINALG-ATTAINABLE-ACCURACY`, with both residuals in the message; ask for a looser tolerance or a
 more accurate operator. A caller with its own convergence test on an outer residual sets
 `GmresOptions::return_at_attainable_accuracy = true` and receives a report with `converged = false`
@@ -342,8 +342,8 @@ Result<NewtonResult> solve(const ResidualFn& f, DistVector& x,
 
 `NewtonResult` carries `status`, `iterations`, `function_evaluations`, `initial_residual_norm`,
 `final_residual_norm` and a `trace` of `NewtonIterationRecord`s (`norm_f`, `eta`,
-`gmres_iterations`, `gmres_residual_norm`, `mffd_steps`, `line_search_status`,
-`line_search_lambda`, `preconditioner_refreshed`). `is_converged(status)` and
+`gmres_iterations`, `gmres_residual_norm`, `linear_solve_at_attainable_accuracy`, `mffd_steps`,
+`line_search_status`, `line_search_lambda`, `preconditioner_refreshed`). `is_converged(status)` and
 `is_diverged(status)` classify the `NewtonStatus` values `ConvergedAbsolute`, `ConvergedRelative`,
 `ConvergedStep`, `DivergedFunctionCount`, `DivergedLineSearch`, `DivergedResidualGrowth`,
 `DivergedLinearSolve`, `DivergedMaxIterations` and `DivergedFunctionError`.
@@ -361,9 +361,17 @@ The GMRES relative tolerance η_k at step k is chosen from the nonlinear progres
 `eta_initial = 0.3` starts the sequence, `eta_max = 0.9` caps it and `eta_min = 0` floors it. The
 over-solving safeguard raises η_k to at least `gamma · η_{k−1}^alpha` whenever that value exceeds
 `safeguard_threshold = 0.1`, so one lucky step cannot demand an unreasonably tight linear solve on
-the next. A floor of
-`eta_min = 1e-4` keeps GMRES from chasing the noise floor of the finite-difference Jacobian; the
-Brusselator and PETSc reaction-diffusion examples both set it. `eisenstat_walker_eta(opt, k,
+the next.
+
+A forcing term can fall below the accuracy of the finite-difference Jacobian action. The linear solve
+then stops at its attainable accuracy (above) and `solve` takes the step it returns, an inexact Newton
+step whose effective forcing term is `gmres_residual_norm / norm_f`; convergence is judged on `‖F‖`
+as for any other step, and the trace records it in `linear_solve_at_attainable_accuracy`. The result
+is `DivergedLinearSolve` only if that linear solve did not reduce the linear residual at all, or its
+step did not reduce `‖F‖`. No floor is needed for convergence. A floor of `eta_min = 1e-4` is still
+worth setting where a residual evaluation is expensive, because it stops GMRES from spending restart
+cycles on a tolerance it cannot reach: the Brusselator example converges to the same result without
+it in about twice the time. `eisenstat_walker_eta(opt, k,
 eta_prev, norm_fk, norm_fkm1, linear_residual_prev)` computes one value if you want the formula on
 its own.
 

@@ -265,6 +265,12 @@ Result<NewtonResult> solve(const ResidualFn& f, DistVector& x,
 
     GmresOptions gmres_opt = opt.gmres;
     gmres_opt.rel_tol = eta;
+    // The Jacobian action is differenced, so a forcing term can ask for
+    // more than the linear solve can deliver. gmres then returns the best
+    // verified iterate, and this loop judges the step by the nonlinear
+    // residual (newton_krylov.hpp, "ATTAINABLE ACCURACY OF THE LINEAR
+    // SOLVE").
+    gmres_opt.return_at_attainable_accuracy = true;
 
     Result<SolverReport> gmres_result{Failure{"", ""}};
     if (precond_apply) {
@@ -293,6 +299,18 @@ Result<NewtonResult> solve(const ResidualFn& f, DistVector& x,
     const SolverReport& report = gmres_result.value();
     rec.gmres_iterations = report.iterations;
     rec.gmres_residual_norm = report.residual_norm;
+    rec.linear_solve_at_attainable_accuracy = report.at_attainable_accuracy;
+
+    // A linear solve that stopped at its attainable accuracy is an inexact
+    // Newton step only if it reduced the linear residual at all, that is,
+    // if its effective forcing term ||F + J d|| / ||F|| is below 1 (Dembo,
+    // Eisenstat and Steihaug 1982). Otherwise d carries no information
+    // (it is the zero initial guess when the first cycle already failed,
+    // whose residual is ||F|| itself), and x is left where it is.
+    if (report.at_attainable_accuracy && !(report.residual_norm < norm_f)) {
+      result.trace.push_back(rec);
+      return finish(NewtonStatus::DivergedLinearSolve);
+    }
 
     if (function_evaluations > opt.max_function_evaluations) {
       result.trace.push_back(rec);
@@ -407,6 +425,14 @@ Result<NewtonResult> solve(const ResidualFn& f, DistVector& x,
     norm_f = norm_f_new;
     if (norm_f_new <= opt.atol) return finish(NewtonStatus::ConvergedAbsolute);
     if (norm_f_new <= opt.rtol * norm_f0) return finish(NewtonStatus::ConvergedRelative);
+    // The step came from a linear solve that could not meet its forcing
+    // term, and it did not reduce ||F||: asking again cannot do better (a
+    // later forcing term is met no more closely than this one was), and a
+    // short step here is not evidence of convergence, so this is tested
+    // before the step-length test.
+    if (report.at_attainable_accuracy && !(norm_f_new < norm_f_this_step)) {
+      return finish(NewtonStatus::DivergedLinearSolve);
+    }
     if (dx_norm <= opt.stol * x_norm_prev) return finish(NewtonStatus::ConvergedStep);
     if (norm_f_new > opt.divergence_tolerance * norm_f0) {
       return finish(NewtonStatus::DivergedResidualGrowth);

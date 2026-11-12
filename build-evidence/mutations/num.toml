@@ -146,3 +146,47 @@ test = "num.newton_krylov"
 # (NewtonKrylovPreconditioner.LagScheduleRefreshesExactlyAtTheDeclaredInterval),
 # 26 pass. File restored and `cmp`-verified byte-identical; rebuilt and
 # reran to confirm all 27 pass again.
+
+[[mutation]]
+id = "newton-krylov-attainable-accuracy-report-not-requested"
+area = "num"
+describes = "fuse::num::solve does not ask gmres to return at its attainable accuracy, so a forcing term below the accuracy of the differenced Jacobian action ends the nonlinear solve with a failed linear solve instead of an inexact Newton step."
+file = "src/num/newton_krylov.cpp"
+old = """    gmres_opt.return_at_attainable_accuracy = true;"""
+new = """    gmres_opt.return_at_attainable_accuracy = false;"""
+target = "fuse_num_newton_attainable_accuracy_test"
+test = "num.newton_attainable_accuracy"
+# NewtonAttainableAccuracy.ConvergesWhenTheForcingTermIsBelowTheAccuracyOfTheDifferencedAction fails.
+
+[[mutation]]
+id = "newton-krylov-linear-solve-without-progress-taken-as-a-step"
+area = "num"
+describes = "fuse::num::solve takes the iterate of a linear solve that stopped at its attainable accuracy without having reduced the linear residual below ||F||, a zero step, and goes on to the line search and the convergence tests with it."
+file = "src/num/newton_krylov.cpp"
+old = """    if (report.at_attainable_accuracy && !(report.residual_norm < norm_f)) {"""
+new = """    if (false) {"""
+target = "fuse_num_newton_attainable_accuracy_test"
+test = "num.newton_attainable_accuracy"
+# NewtonAttainableAccuracy.ALinearSolveWithoutProgressIsNotAStep fails: one iteration is counted.
+
+[[mutation]]
+id = "newton-krylov-inexact-step-without-residual-reduction-accepted"
+area = "num"
+describes = "fuse::num::solve keeps iterating after a step from a linear solve at its attainable accuracy that did not reduce ||F||, so the outcome is decided by a later test (step length, residual growth, the iteration cap) that does not name the linear solve."
+file = "src/num/newton_krylov.cpp"
+old = """    if (report.at_attainable_accuracy && !(norm_f_new < norm_f_this_step)) {"""
+new = """    if (false) {"""
+target = "fuse_num_newton_attainable_accuracy_test"
+test = "num.newton_attainable_accuracy"
+# NewtonAttainableAccuracy.AStepThatDoesNotReduceTheResidualEndsTheIteration and AShortStepThatDoesNotReduceTheResidualIsNotConvergence fail.
+
+[[mutation]]
+id = "newton-krylov-attainable-accuracy-not-recorded"
+area = "num"
+describes = "The Newton trace does not record that a step's linear solve stopped at its attainable accuracy, so a caller cannot tell an inexact step from one that met its forcing term."
+file = "src/num/newton_krylov.cpp"
+old = """    rec.linear_solve_at_attainable_accuracy = report.at_attainable_accuracy;"""
+new = """    rec.linear_solve_at_attainable_accuracy = false;"""
+target = "fuse_num_newton_attainable_accuracy_test"
+test = "num.newton_attainable_accuracy"
+# All four NewtonAttainableAccuracy tests fail on the trace flag.

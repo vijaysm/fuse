@@ -338,25 +338,17 @@ int main(int argc, char** argv) {
   // unconditionally changes nothing for every other `--accel` value.
   fuse::NewtonConfig newton_cfg;
   newton_cfg.use_block_jacobi_preconditioner = args.block_jacobi;
-  // `eta_min`'s own default (0.0, SNES's own) lets Eisenstat-Walker Choice2
-  // tighten the forcing term without a floor -- fine for a single-evaluation
-  // `G`, but this region's own `F` composes MFFD over a WHOLE window's worth
-  // of substeps (11 U-steps, 8 V-steps at the defaults), and the forcing
-  // term's own quadratic tightening (`forcing_alpha = 2.0`) reaches a
-  // demanded GMRES relative tolerance below MFFD's finite-difference noise
-  // floor in as few as 3 Newton steps at these defaults (observed, FUSE_
-  // NEWTON_DEBUG trace, with `eta_min` still at its 0.0 default: eta
-  // reaching ~6.6e-9 for the 4th step while ||F|| was already at ~9e-8
-  // relative to ||F_0|| -- GMRES's own convergence test
-  // (`E-LINALG-NO-CONVERGENCE`) then fails to reach that eta -- the trace
-  // records 0 completed outer GMRES iterations against a demanded
-  // tolerance the finite-difference Jacobian action cannot supply at that
-  // scale, despite 1208 MFFD evaluations spent trying -- reported as
-  // `DivergedLinearSolve` even though the nonlinear iterate itself was
-  // already converged for every practical purpose). A floor here is
-  // exactly the caller-set option `NewtonConfig::eta_min`'s own doc
-  // comment (`fuse/model/iteration.hpp`) names for this case. `1e-4`
-  // (two orders of magnitude above the observed stagnation point) was
+  // A forcing-term floor, set for cost and not for convergence. This
+  // region's `F` composes a whole window of substeps (11 U-steps, 8 V-steps
+  // at the defaults), and its Jacobian action is a difference quotient of
+  // that composition. Without a floor the Eisenstat-Walker forcing term
+  // falls, by the third Newton step, below the relative residual that
+  // action can deliver (about 5e-7 in the window starting at t = 0.08),
+  // and GMRES then spends several restart cycles finding that out before
+  // `fuse::num::solve` takes the step it has. The run converges either way
+  // and to the same result (`--end 0.1`: final means equal to the 12 digits
+  // printed), in 41.6 s without the floor against 18.4 to 20.5 s with it
+  // (unoptimised build). `1e-4` was
   // chosen over a tighter floor such as `1e-6` after measuring both:
   // `1e-6` also converges every window (575/575 windows, `--end 11.5`,
   // confirmed without divergence over the first 222 before being cut

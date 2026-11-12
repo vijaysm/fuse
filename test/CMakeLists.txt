@@ -513,6 +513,7 @@ fuse_add_gtest(num continuous_extension)
 # Clang toolchain need no separate -lpthread for <thread>.
 fuse_add_gtest(num line_search)
 fuse_add_gtest(num newton_krylov LIBS fuse::linalg)
+fuse_add_gtest(num newton_attainable_accuracy LIBS fuse::linalg)
 # Dense Anderson
 # Type-II reference, checked against QuasiNewtonAccel's own IQN_ILS
 # path. Needs Eigen directly (ColPivHouseholderQR/JacobiSVD), same

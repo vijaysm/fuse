@@ -122,15 +122,12 @@ void expect_order(const OrderFit& fit, double expected_order, const char* method
 // NewtonKrylovOptions tuned for a clean order-of-convergence study rather than
 // production defaults: the outer Newton loop's own atol/rtol are tight (1e-11/1e-10)
 // so the per-step nonlinear solve never contaminates an h^p truncation-error signal
-// as small as ~1e-12. The Eisenstat-Walker forcing term's DEFAULT (Choice2,
-// gamma*(||F_k||/||F_{k-1}||)^alpha, no floor) can UNDERFLOW toward zero on a
-// well-converging step (exactly the case here) and then demand a GMRES relative
-// tolerance below machine epsilon -- MEASURED directly: without a floor,
-// SDIRK34/SDIRK643/ESDIRK324L2SA (the 3+-implicit-stage methods) spuriously report
-// E-INTEGRATOR-NEWTON-FAILED (DivergedLinearSolve) even though the underlying 2x2
-// linear system is solved exactly by GMRES within 2 Arnoldi steps every time; setting
-// `eta_min` to a floor comfortably above machine epsilon (1e-10) but far below the
-// outer Newton atol/rtol fixes it without loosening either of those.
+// as small as ~1e-12. No forcing-term floor is set. The Eisenstat-Walker forcing
+// term's default (Choice2, gamma*(||F_k||/||F_{k-1}||)^alpha) falls toward zero on a
+// well-converging step, exactly the case here, and then asks GMRES for a relative
+// residual the differenced Jacobian action cannot deliver; fuse::num::solve takes the
+// step of a linear solve that stopped at its attainable accuracy and judges it by the
+// stage residual (newton_krylov.hpp), so every case below converges without one.
 NewtonKrylovOptions tight_newton_options() {
   NewtonKrylovOptions opt;
   // atol/rtol relaxed from an initial 1e-11/1e-10 attempt: MEASURED directly (a
@@ -147,7 +144,6 @@ NewtonKrylovOptions tight_newton_options() {
   opt.rtol = 1e-7;
   opt.gmres.rel_tol = 1e-9;
   opt.gmres.max_iterations = 200;
-  opt.forcing.eta_min = 1e-9;
   return opt;
 }
 
@@ -171,7 +167,6 @@ NewtonKrylovOptions very_tight_newton_options() {
   opt.rtol = 1e-10;
   opt.gmres.rel_tol = 1e-10;
   opt.gmres.max_iterations = 300;
-  opt.forcing.eta_min = 1e-10;
   return opt;
 }
 

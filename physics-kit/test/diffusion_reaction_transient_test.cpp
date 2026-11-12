@@ -327,11 +327,11 @@ void expect_order(const SelfConvergence& s, double p) {
 }
 
 // The stage systems of the mass form are linear here and are differenced
-// by fuse::num::solve; a forcing term below the accuracy of the differenced
-// operator is accepted at the attainable accuracy (fuse/linalg/gmres.hpp).
+// by fuse::num::solve, which takes the step of a linear solve that stopped
+// at the accuracy of the differenced operator and judges it by the stage
+// residual (fuse/num/newton_krylov.hpp).
 fuse::num::NewtonKrylovOptions dirk_options() {
   fuse::num::NewtonKrylovOptions opt;
-  opt.gmres.return_at_attainable_accuracy = true;
   opt.rtol = 1e-10;
   return opt;
 }

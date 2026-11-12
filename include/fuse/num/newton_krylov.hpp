@@ -266,7 +266,12 @@ enum class NewtonStatus {
   DivergedLineSearch,
   /// ||F|| grew past divergence_tolerance * ||F_0||.
   DivergedResidualGrowth,
-  /// GMRES itself reported E-LINALG-NO-CONVERGENCE.
+  /// The linear solve could not supply a usable step: GMRES reported
+  /// E-LINALG-NO-CONVERGENCE; or it stopped at its attainable accuracy
+  /// without reducing the linear residual; or it stopped there and the step
+  /// it produced did not reduce ||F|| (`NewtonIterationRecord::
+  /// linear_solve_at_attainable_accuracy` tells the last two apart from
+  /// the first).
   DivergedLinearSolve,
   /// The Newton iteration budget was exhausted with no convergence test
   /// satisfied.
@@ -367,8 +372,30 @@ struct NewtonKrylovOptions {
   MffdOptions mffd;
   EisenstatWalkerOptions forcing;
   /// `rel_tol` is overwritten every Newton step with that step's own
-  /// `eta_k` -- whatever is set here on entry is ignored; `restart` and
-  /// `max_iterations` are read as given.
+  /// `eta_k`, and `return_at_attainable_accuracy` is always set -- whatever
+  /// either holds on entry is ignored; `restart` and `max_iterations` are
+  /// read as given.
+  ///
+  /// ATTAINABLE ACCURACY OF THE LINEAR SOLVE. The Jacobian action is a
+  /// difference quotient of the residual, accurate to a relative level of
+  /// order sqrt(unit roundoff) at best, so a forcing term below that level
+  /// asks the linear solve for a residual it cannot verify (fuse/linalg/
+  /// gmres.hpp, "ATTAINABLE ACCURACY"). `gmres` then returns its best
+  /// verified iterate d, with the true linear residual ||F + J d||, and
+  /// this driver proceeds as follows, with no threshold of its own:
+  ///  - if ||F + J d|| is not below ||F||, the linear solve made no
+  ///    progress and the result is `DivergedLinearSolve`, with x unchanged;
+  ///  - otherwise d is an inexact Newton step with effective forcing term
+  ///    ||F + J d|| / ||F|| < 1; the line search and the convergence tests
+  ///    on ||F|| apply to it as to any other step;
+  ///  - if that step does not reduce ||F|| and neither residual test is
+  ///    met, the result is `DivergedLinearSolve`, with x at the step taken.
+  ///    This is decided before the step-length test (`stol`): a step that
+  ///    is short against ||x|| is not read as convergence when it came
+  ///    from a linear solve of limited accuracy and ||F|| did not decrease.
+  /// A forcing-term floor (`EisenstatWalkerOptions::eta_min`) is therefore
+  /// not needed to keep the forcing term above the accuracy of the
+  /// differenced action.
   fuse::linalg::GmresOptions gmres;
   LineSearchOptions line_search;
   /// Rebuild the preconditioner every `preconditioner_lag` Newton steps
@@ -387,6 +414,10 @@ struct NewtonIterationRecord {
   double eta = 0.0;
   std::size_t gmres_iterations = 0;
   double gmres_residual_norm = 0.0;
+  /// True when this step's linear solve stopped at its attainable accuracy
+  /// and not at the forcing term `eta` (NewtonKrylovOptions::gmres);
+  /// `gmres_residual_norm / norm_f` is then the effective forcing term.
+  bool linear_solve_at_attainable_accuracy = false;
   std::vector<MffdRecord> mffd_steps;
   LineSearchStatus line_search_status = LineSearchStatus::FullStep;
   double line_search_lambda = 1.0;

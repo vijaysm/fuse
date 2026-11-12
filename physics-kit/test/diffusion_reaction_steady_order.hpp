@@ -154,10 +154,6 @@ inline LevelResult solve_level(unsigned dimension, unsigned degree, unsigned n) 
   x.set_zero();
   fuse::num::NewtonKrylovOptions options;
   options.rtol = 1e-10;
-  // The Jacobian action is differenced, so a forcing term below its
-  // accuracy is answered at the attainable accuracy (fuse/linalg/gmres.hpp)
-  // and convergence is judged on the nonlinear residual.
-  options.gmres.return_at_attainable_accuracy = true;
   options.gmres.restart = 200;
   options.gmres.max_iterations = 4000;
   const auto solved = fuse::num::solve(
