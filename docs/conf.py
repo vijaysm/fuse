@@ -143,6 +143,48 @@ latex_elements = {
     ),
 }
 
+# -- Root index page ----------------------------------------------------------
+#
+# Read the Docs fails a build whose HTML output has no index.html at its top
+# level. The root document here is contents.md (docs/index.md is the landing
+# page for the repository and the wiki, and is excluded above), so the HTML
+# builders write contents.html and no index.html. The hook below adds an
+# index.html that redirects to the root document. It is derived from
+# ``root_doc`` and is skipped if a page named index is ever built.
+_ROOT_REDIRECT = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{title}</title>
+<link rel="canonical" href="{target}">
+<meta http-equiv="refresh" content="0; url={target}">
+</head>
+<body>
+<p>The documentation starts at <a href="{target}">{target}</a>.</p>
+</body>
+</html>
+"""
+
+
+def _write_root_redirect(app, exception):
+    from pathlib import Path
+
+    if exception is not None or app.builder.name not in ("html", "dirhtml"):
+        return
+    index = Path(app.outdir) / "index.html"
+    if index.exists():
+        return
+    target = app.builder.get_target_uri(app.config.root_doc)
+    index.write_text(
+        _ROOT_REDIRECT.format(title=app.config.html_title, target=target),
+        encoding="utf-8",
+    )
+
+
+def setup(app):
+    app.connect("build-finished", _write_root_redirect)
+
+
 # Optional API reference from Doxygen XML (requires breathe).
 # breathe_projects = {"fuse": "_doxygen/xml"}
 # breathe_default_project = "fuse"
